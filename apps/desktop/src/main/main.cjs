@@ -308,6 +308,7 @@ async function main() {
           else if(op==='settings.providers.save')value=await providerSettings.saveApi(payload);
           else if(op==='settings.providers.remove')value=await providerSettings.remove(payload);
           else if(op==='settings.models.save')value=await providerSettings.saveDefaults(payload);
+          else if(op==='settings.login.providers')value=await providerSettings.loginProviders();
           else if(op==='settings.login.start')value=await providerSettings.startLogin(payload);
           else if(op==='settings.login.status')value=providerSettings.loginStatus();
           else if(op==='settings.login.input')value=providerSettings.inputLogin(payload);

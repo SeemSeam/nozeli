@@ -9,24 +9,33 @@ export function mountProviderSettings({invoke,providers=document.getElementById(
  const form=node('form',null,{'data-provider-api-form':''});field(form,'Provider ID','provider');field(form,'API地址（base URL）','baseUrl','url');field(form,'模型ID','model');
  const protocol=node('label','API协议'),api=node('select',null,{name:'api'});for(const value of ['openai-completions','openai-responses','anthropic-messages']){const opt=node('option',value,{value});api.append(opt);}protocol.append(api);form.append(protocol);
  const key=field(form,'API密钥','key','password');form.append(node('button','添加API源',{type:'submit'}));providers.append(form);
- const loginForm=node('form',null,{'data-provider-login-form':''});field(loginForm,'登录Provider ID（留空使用官方列表选择）','provider');loginForm.append(node('button','账号登录',{type:'submit'}));providers.append(loginForm,loginArea,message);
+ const loginForm=node('form',null,{'data-provider-login-form':''}),loginLabel=node('label','选择OMP支持的账号源'),loginProvider=node('select',null,{name:'provider','data-login-provider':'',required:''}),loginStart=node('button','登录 / 激活所选源',{type:'submit'});
+ loginProvider.append(node('option','请选择账号源',{value:''}));loginLabel.append(loginProvider);loginForm.append(node('h3','账号登录'),loginLabel,loginStart);providers.append(loginForm,loginArea,message);
+ providers.insertBefore(loginForm,form);providers.insertBefore(loginArea,form);loginStart.disabled=true;
  const refreshButton=node('button','刷新源和模型',{type:'button','data-provider-refresh':''});providers.append(refreshButton);
  providers.append(node('p','模型目录可能联网更新；不会发送对话或模型请求。'));
  models.append(node('h2','三角色默认模型'),node('p','前台：优先最快响应；编排：优先强推理与规划；Worker：中等及以上能力。仅用于新会话，不改变已有会话的模型。'));
  const modelForm=node('form',null,{'data-role-model-form':''}),selects={};for(const [role,label]of [['frontdesk','前台 · 最快'],['orchestrator','编排 · 强模型'],['worker','Worker · 中等及以上']]){const wrap=node('label',label),select=node('select',null,{'data-default-role':role,name:role});selects[role]=select;wrap.append(select);modelForm.append(wrap);}modelForm.append(node('button','保存三角色默认',{type:'submit'}));models.append(modelForm);
  let polling=null,loginId=null,busy=false;
  const report=error=>{message.textContent=error?.message||'操作未完成。';modelMessage.textContent=message.textContent;};
- async function run(action){if(busy)return;busy=true;const buttons=[...providers.querySelectorAll('button'),...models.querySelectorAll('button')];for(const b of buttons)b.disabled=true;try{await action();}catch(e){report(e);}finally{busy=false;for(const b of buttons)if(b.isConnected)b.disabled=false;}}
+ async function run(action){if(busy)return;busy=true;const buttons=[...providers.querySelectorAll('button'),...models.querySelectorAll('button')];for(const b of buttons)b.disabled=true;try{await action();}catch(e){report(e);}finally{busy=false;for(const b of buttons)if(b.isConnected)b.disabled=false;loginStart.disabled=!loginProvider.value||loginProvider.disabled;}}
  function renderLogin(login){
   const draft=loginArea.querySelector('input')?.value||'';
   loginArea.replaceChildren();loginId=login?.id??null;if(!login)return;
-  loginArea.append(node('p','登录状态：'+login.state),node('pre',login.output||'正在启动官方OMP登录…',{'data-login-output':''}));
+  const states={running:'等待授权',complete:'登录完成',failed:'登录未完成',cancelled:'已取消',expired:'已过期'};
+  loginArea.append(node('p',(login.name||login.provider||'OMP')+' · '+(states[login.state]||login.state)),node('pre',login.output||'请按所选源的官方流程继续。',{'data-login-output':''}));
   if(login.state==='running'){
-   const inputForm=node('form',null,{'data-login-input-form':''});const input=field(inputForm,'官方流程输入（列表序号、验证码或回调地址）','text');input.value=draft;
+   const inputForm=node('form',null,{'data-login-input-form':''});const input=field(inputForm,'授权流程要求的验证码或回调地址','text');input.value=draft;
    inputForm.append(node('button','提交登录输入',{type:'submit'}));inputForm.addEventListener('submit',event=>{event.preventDefault();const text=input.value;input.value='';run(()=>call('settings.login.input',{id:loginId,text}));});
    const cancel=node('button','取消登录',{type:'button','data-login-cancel':''});cancel.onclick=()=>run(async()=>renderLogin(await call('settings.login.cancel',{id:loginId})));loginArea.append(inputForm,cancel);
   }else{clearInterval(polling);polling=null;}
  }
+ async function refreshLoginProviders(){
+  const selected=loginProvider.value;loginProvider.disabled=loginStart.disabled=true;
+  try{const providers=await call('settings.login.providers');loginProvider.replaceChildren(node('option','请选择账号源',{value:''}));for(const p of providers)loginProvider.append(node('option',p.name,{value:p.id}));if(providers.some(p=>p.id===selected))loginProvider.value=selected;loginProvider.disabled=false;loginStart.disabled=!loginProvider.value;}
+  catch(error){loginProvider.replaceChildren(node('option','登录源目录暂不可用，请刷新',{value:''}));report(error);}
+ }
+ loginProvider.addEventListener('change',()=>{loginStart.disabled=!loginProvider.value;});
  async function refresh(){try{
   const value=await call('settings.providers.status');list.replaceChildren();
   if(!value.sources?.length)list.append(node('p','尚无已配置源。请登录或添加API源。'));
@@ -39,9 +48,9 @@ export function mountProviderSettings({invoke,providers=document.getElementById(
   message.textContent=value.notice??'';if(value.login)renderLogin(value.login);
  }catch(e){report(e);}}
  form.addEventListener('submit',event=>{event.preventDefault();const data=Object.fromEntries(new FormData(form));key.value='';run(async()=>{await call('settings.providers.save',data);await refresh();message.textContent='API源已保存。新建Agent目录可使用此源，已有会话不变。';});});
- loginForm.addEventListener('submit',event=>{event.preventDefault();const provider=new FormData(loginForm).get('provider').trim();run(async()=>{renderLogin(await call('settings.login.start',provider?{provider}:{}));clearInterval(polling);polling=setInterval(async()=>{try{const login=await call('settings.login.status');renderLogin(login);if(login&&login.state!=='running')await refresh();}catch(e){clearInterval(polling);polling=null;report(e);}},1000);});});
+ loginForm.addEventListener('submit',event=>{event.preventDefault();const provider=loginProvider.value;if(!provider)return;run(async()=>{renderLogin(await call('settings.login.start',{provider}));clearInterval(polling);polling=setInterval(async()=>{try{const login=await call('settings.login.status');renderLogin(login);if(login&&login.state!=='running')await refresh();}catch(e){clearInterval(polling);polling=null;report(e);}},1000);});});
  for(const select of Object.values(selects))select.onchange=()=>{select.dataset.dirty='true';};
  modelForm.addEventListener('submit',event=>{event.preventDefault();run(async()=>{await call('settings.models.save',Object.fromEntries(new FormData(modelForm)));for(const select of Object.values(selects))delete select.dataset.dirty;modelMessage.textContent='默认模型已保存；仅绑定新会话，已有会话不变。';});});
- refreshButton.onclick=()=>run(refresh);
- return {refresh};
+ refreshButton.onclick=()=>run(async()=>{await refreshLoginProviders();await refresh();});
+ return {refresh:async()=>{await refreshLoginProviders();await refresh();}};
 }

@@ -24,6 +24,11 @@ try{
  await page.click('#open-settings');await page.waitForSelector('#settings-dialog[open]');checks++;
  const rect=await page.$eval('#open-settings',e=>{const r=e.getBoundingClientRect();return {left:r.left,bottom:r.bottom,height:innerHeight};});assert(rect.left<70&&rect.bottom>rect.height-100);checks++;
  await page.waitForSelector('[data-provider-api-form]');
+ await page.waitForSelector('[data-login-provider] option[value="openai-codex"]');
+ const supported=(await page.evaluate(()=>nozeli.invoke('settings.login.providers',{}))).value;
+ assert(supported.some(p=>p.id==='openai-codex'));assert.equal(await page.$eval('[data-provider-login-form] button',e=>e.disabled),true);
+ await page.select('[data-login-provider]','openai-codex');assert.equal(await page.$eval('[data-provider-login-form] button',e=>e.disabled),false);
+ assert.equal(await page.$eval('[data-login-provider]',e=>e.tagName),'SELECT');assert.equal(await page.$$eval('[data-provider-login-form] input[name="provider"]',e=>e.length),0);checks++;
  for(const [name,value]of Object.entries({provider:'settings-smoke',baseUrl:'http://127.0.0.1:9/v1',model:'synthetic-local',key:'synthetic-settings-key'}))await page.type('[data-provider-api-form] [name="'+name+'"]',value);
  await page.click('[data-provider-api-form] button[type="submit"]');await page.waitForSelector('[data-provider-row="settings-smoke"]');
  assert.equal(await page.$eval('[data-provider-api-form] [name="key"]',e=>e.value),'');checks++;
