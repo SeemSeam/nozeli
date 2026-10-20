@@ -111,3 +111,4 @@
 #reader .reader-bar.panel-compact #code-status{display:none}
 #reader .reader-bar #code-jump{white-space:nowrap;flex:none}
 #app.narrow-layout.drawer-files-open .file-navigation .file-filter{display:block!important}
+#reader.document-header-unified #document-owner-focus{flex:0 0 auto;white-space:nowrap;font-size:11px;padding:3px 6px}

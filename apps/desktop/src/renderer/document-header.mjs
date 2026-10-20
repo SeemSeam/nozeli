@@ -51,10 +51,7 @@ export function mountDocumentHeader() {
   document.body.append(viewCommands);
   const workspaceTitle = document.createElement('span');
   workspaceTitle.className = 'workspace-heading';
-  // The reader surface is a conversation when no document is open. Keep the
-  // fallback heading aligned with the visible empty-state title instead of
-  // exposing the old workspace label in dual/header transitions.
-  workspaceTitle.textContent = '对话';
+  workspaceTitle.textContent = '工作区';
   workspaceTitle.setAttribute('role', 'heading');
   workspaceTitle.setAttribute('aria-level', '1');
   header.insertBefore(workspaceTitle, tools);
@@ -71,7 +68,7 @@ export function mountDocumentHeader() {
   reader.classList.add('document-header-unified');
   function render() {
     const dual = documents.classList.contains('dual');
-    workspaceTitle.textContent = dual ? (documents.classList.contains('diff-mode') ? '文档对比' : '文档对照') : '对话';
+    workspaceTitle.textContent = dual ? (documents.classList.contains('diff-mode') ? '文档对比' : '文档对照') : '工作区';
     reader.classList.toggle('document-dual', dual);
     const parent = dual ? bar : header;
     if(tools.parentElement!==parent)parent.append(tools);

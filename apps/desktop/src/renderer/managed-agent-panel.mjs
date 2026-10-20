@@ -102,6 +102,10 @@ async function renderWorkVersions({box,record,projectId,call}){
 }
 export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},onConversation,openProjectFile,openExternal,openFrozenChange}){
  let projectId=null,active=false,ready=false,state=null,target='frontdesk',generation=0,refreshing=0;
+ const scope=window.__workspaceScope;
+ const ownsConversation=!scope||(scope.role==='surface'&&scope.kind==='conversation');
+ let pendingConversation=null;
+ if(scope?.role==='surface'&&scope.kind==='report')window.__workspaceOpenTodo=id=>openTodo(id);
  const sessionStore=createSessionStore();let historyPage=false,pageError='',timelineContext=null,contextKey='',pageRequest=0;
  const timelineBox=document.createElement('section');timelineBox.id='managed-session-timeline';$('conversation').insertBefore(timelineBox,$('reading-inbox'));
  const timelineUI=mountSessionTimeline(timelineBox,{});
@@ -317,8 +321,8 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
  const preview=createWorkTerminalPreview({readScreen:(id,workId)=>call('terminal.screen',{target:workId},id),subscribe:fn=>window.nozeli.subscribe('agent',fn)});
  const name=t=>labels[t]||state?.works.find(w=>w.id===t)?.name||'工作 Agent';
  function show(activeValue){active=activeValue;toolbar.hidden=true;$('managed-submit-task').hidden=!active;if(!active){sessionRecovery.hidden=true;sessionRecovery.replaceChildren();sessionRecoveryError='';residentStatus=null;residentRecovery.hidden=true;residentRecovery.replaceChildren();workerRecovery.hidden=true;workerRecovery.replaceChildren();workerRecoverySignature=null;progressBox.hidden=true;closureBox.hidden=true;closureBox.replaceChildren();closureSignature=null;}terminalBox.hidden=!active;document.body.dataset.managedAgents=String(active);for(const el of document.querySelectorAll('[data-provider-role]'))el.hidden=active;}
- function remember(){if(projectId&&active){drafts.set(projectId+':'+target,$('composer').value);}}
- function select(t){remember();sessionRecoveryError='';target=t;const work=state?.works.find(w=>w.id===t);viewed=work?.readOnly?{workId:t,readOnly:true}:null;lockHistory();$('composer').value=drafts.get(projectId+':'+t)??state?.drafts?.[t]??'';render();}
+ function remember(){if(ownsConversation&&projectId&&active){drafts.set(projectId+':'+target,$('composer').value);}}
+ function select(t){if(!ownsConversation)return invoke('workspace.control',{type:'conversation-action',projectId,action:'select',target:t});remember();sessionRecoveryError='';target=t;const work=state?.works.find(w=>w.id===t);viewed=work?.readOnly?{workId:t,readOnly:true}:null;lockHistory();$('composer').value=drafts.get(projectId+':'+t)??state?.drafts?.[t]??'';render();}
  function render(){
   if(!active||!state)return;
   renderConfigurationNotice(configurationNotice,state.agents||[]);
@@ -350,7 +354,7 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
   if(closureKey!==closureSignature){closureSignature=closureKey;closureBox.replaceChildren();for(const w of closing){const title=document.createElement('h3');title.textContent=w.name||'工作技术收尾';closureBox.append(title);renderClosureStatus(closureBox,w);if(w.closure?.phase==='blocked')closureBox.append(button('重试技术收尾（不重开工作）',async()=>{try{await call('retry',{workId:w.id});await refresh();}catch(error){toast(error.message);}}));}}
   closureBox.hidden=!closing.length;
   const reportStatus=$('managed-report-closure');if(reportStatus){const w=state.works.find(w=>w.id===viewed?.workId),key=JSON.stringify(w?.closure)+w?.status+w?.curated;if(reportStatus.dataset.signature!==key){reportStatus.dataset.signature=key;reportStatus.replaceChildren();renderClosureStatus(reportStatus,w);}}
-  paintTimeline();
+  if(ownsConversation)paintTimeline();
   const activeRecords=records.filter(r=>r.status!=='ended'),works=$('work-items'),recordIds=new Set(activeRecords.map(r=>r.id));
   for(const [id,row] of workRows)if(!recordIds.has(id)){row.remove();workRows.delete(id);}
   for(const [position,record] of [...activeRecords].reverse().entries()){
@@ -451,7 +455,11 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
   if(latest&&latest.revision!==viewed.revision){text.textContent=`当前显示第 ${viewed.revision} 版报告，已有第 ${latest.revision} 版结果。`;const b=button('查看最新结果',()=>openTodo(latest.id));b.dataset.managedLatestReport=latest.id;note.append(b);}
  }
  async function openTodo(id){
-  const todo=state.todos.find(t=>t.id===id);if(!todo)return;
+  const todo=state?.todos.find(t=>t.id===id);if(!todo)return;
+  if(scope?.kind!=='report'){
+    if(todo.workId)void select(todo.workId);
+    return openManaged({id:todo.id,todoId:todo.id,projectId,title:(state.works.find(w=>w.id===todo.workId)?.name||'待办'),text:todo.text||''});
+  }
   if(todo.kind==='frontdesk-route'){
    const proposal=state.frontdeskRoutes?.find(route=>route.id===todo.proposalId);
    const sourceProject=projectId,gen=generation;
@@ -516,7 +524,7 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
  async function refresh(){const id=projectId,gen=generation,version=++refreshing;if(!id||!active)return;const s=await call('status',{},id);if(id!==projectId||gen!==generation||version!==refreshing)return;state=s.state;ready=Boolean(s.ready);renderResidentRecovery(s);if(state)render();}
  const resetSession=()=>{requestReads.clear();clear();};
  function clear({rememberDraft=true}={}){if(rememberDraft)remember();identityReads.clear();renderConfigurationNotice(configurationNotice,[]);routeUI.clear();todoUI.clear();reportRequest++;historyRequest++;pageRequest++;historyPage=false;pageError='';active=false;sessionStore.reset(null);timelineBox.hidden=true;historyReceiptSignature=null;historyItems=[];historyVersion=null;historyNext=null;historyTotal=0;historyLoading=false;historyNotice='';renderHistory();if(exportDialog.open)exportDialog.close();exportSource=null;sourceMessage=null;sourceBox.hidden=true;sourceGoal.value='';preview.close();for(const row of workRows.values())row.remove();workRows.clear();generation++;ready=false;state=null;toolbar.hidden=true;toolbar.replaceChildren();progressBox.hidden=true;progressBox.replaceChildren();progressSignature=null;delete $('conversation-panel').dataset.managedConversation;projectFilePaths=new Set();fileAvailability=new Map();availabilityKey=null;availabilityRequest++;target='frontdesk';viewed=null;lockHistory();$('composer').disabled=false;for(const t of terminals.values())t.dispose();terminals.clear();terminalLayout?.dispose();terminalLayout=null;terminalBox.replaceChildren();show(false);}
- async function load(id,{connect=true,draft}={}){
+ async function load(id,{connect=true,draft,observe=false}={}){
   const oldHistory=id===projectId&&viewed?.history?viewed:null,oldTarget=target,oldDraft=$('composer').value;
   resetSession();projectId=id;sessionStore.reset(id);if(!id)return false;if(oldHistory){viewed=oldHistory;target=oldTarget;$('composer').value=oldDraft;lockHistory();}
   if(draft!==undefined){drafts.set(id+':frontdesk',draft);$('composer').value=draft;}
@@ -524,6 +532,7 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
   residentStatus=null;residentRecovery.hidden=true;residentRecovery.replaceChildren();
   void loadHistory();const gen=generation,status=await call('status',{},id);if(gen!==generation)return false;if(!status.enabled)return false;
   show(true);renderResidentRecovery(status);$('send-message').disabled=true;$('ai-status').textContent='三角色正在恢复…';let connected;
+  if(observe){state=status.state;ready=Boolean(status.ready);if(state)render();return true;}
   if(!connect){state=status.state;ready=false;if(!viewed?.history)$('composer').value=restoredComposerDraft({local:drafts.get(id+':frontdesk'),durable:state?.drafts?.frontdesk});if(state)render();await readTimeline();if(gen!==generation||id!==projectId)return true;$('ai-status').textContent='请完成 Nozeli 配置初始化；历史记录保持只读。';$('ai-status').dataset.state='unavailable';return true;}
   if(status.handoff){state=status.state;ready=false;if(state)render();$('ai-status').textContent='Agent 恢复失败：等待明确确认新会话接手';$('ai-status').dataset.state='failed';return true;}
   try{connected=await call('connect',{},id);}catch(error){
@@ -532,7 +541,7 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
    sessionRecoveryError='恢复失败：'+error.message;renderSessionRecovery(selectedSession());
    const note=document.createElement('p');note.textContent='Agent 恢复失败：'+error.message;terminalBox.replaceChildren(note,button('重试连接',()=>{if(gen===generation&&id===projectId)return load(id);}));lockHistory();toast('Agent 恢复失败；可明确确认新会话接手，历史仍可只读。');return true;
   }
-  if(gen!==generation)return true;ready=connected.ready===true;state=connected.state;renderResidentRecovery(connected);if(!ready){renderSessionRecovery(selectedSession());$('ai-status').textContent='Agent尚未就绪，请完成接手确认或重试连接';$('ai-status').dataset.state='failed';return true;}if(!viewed?.history)$('composer').value=restoredComposerDraft({local:drafts.get(id+':frontdesk'),durable:state?.drafts?.frontdesk});render();void loadHistory();return true;
+  if(gen!==generation)return true;ready=connected.ready===true;state=connected.state;renderResidentRecovery(connected);if(!ready){renderSessionRecovery(selectedSession());$('ai-status').textContent='Agent尚未就绪，请完成接手确认或重试连接';$('ai-status').dataset.state='failed';return true;}if(!viewed?.history)$('composer').value=restoredComposerDraft({local:drafts.get(id+':frontdesk'),durable:state?.drafts?.frontdesk});render();if(pendingConversation){const event=pendingConversation;pendingConversation=null;if(event.action==='select')select(event.target);if(event.action==='todo')await openTodo(event.todoId);}void loadHistory();return true;
  }
  async function enable(id){const gen=generation;projectId=id;sessionStore.reset(id);const connected=await call('enable',{},id);if(gen!==generation||id!==projectId)return;show(true);ready=connected.ready===true;state=connected.state;render();}
  function send(text,context={}){const lifecycle=selectedSession();if(!active||(!lifecycle.canSend&&lifecycle.state!=='ready'))return Promise.reject(Error(lifecycle.reason||'Agent 尚未启用；输入已保留。'));const key=JSON.stringify([projectId,target,text,context,viewed?.routingQuestionId]);if(submissions.has(key))return submissions.get(key);const requestKey=submissionKeys.get(key)||crypto.randomUUID();submissionKeys.set(key,requestKey);const promise=sendOnce(text,context,requestKey).then(result=>{submissionKeys.delete(key);return result;}).finally(()=>{if(submissions.get(key)===promise)submissions.delete(key);});submissions.set(key,promise);return promise;}
@@ -554,8 +563,10 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
   return result;
  }
  $('managed-submit-task').onclick=()=>window.__agentSend?.({background:true});
- const draftWriter=bindComposerDrafts({composer:$('composer'),current:()=>({projectId,target}),remember:({projectId,target,text})=>drafts.set(projectId+':'+target,text),persist:({projectId,target,text})=>call('draft',{target,text},projectId),onError:e=>toast('草稿保存失败：'+e.message),onInput:()=>{if(!active)return;const lifecycle=selectedSession();$('managed-submit-task').disabled=(!lifecycle.canSend&&lifecycle.state!=='ready')||!$('composer').value.trim();}});
+ const draftWriter=ownsConversation?bindComposerDrafts({composer:$('composer'),current:()=>({projectId,target}),remember:({projectId,target,text})=>drafts.set(projectId+':'+target,text),persist:({projectId,target,text})=>call('draft',{target,text},projectId),onError:e=>toast('草稿保存失败：'+e.message),onInput:()=>{if(!active)return;const lifecycle=selectedSession();$('managed-submit-task').disabled=(!lifecycle.canSend&&lifecycle.state!=='ready')||!$('composer').value.trim();}}):{settled:()=>Promise.resolve()};
  function renderTerminals(){
+  if(scope?.role==='surface'&&!ownsConversation)return;
+  if(scope?.role==='shell'&&$('provider-console').hidden)return;
   if(!state)return;
   if(!terminalLayout)terminalLayout=createTerminalLayout({root:terminalBox,onVisibility:(t,v)=>{const instance=terminals.get(t);if(instance&&instance.layoutVisible!==v){instance.layoutVisible=v;instance.setVisible(v);}}});
   const targets=terminalTargets(state);
@@ -647,6 +658,7 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
  }
  function leaveHistory(){reportRequest++;if(!viewed?.history)return false;viewed=null;lockHistory();$('composer').disabled=false;toolbar.hidden=true;if(active)render();return true;}
  window.addEventListener('nozeli-content-closed',()=>{if(!leaveHistory()&&active)select('frontdesk');});
+ window.nozeli.subscribe('workspace.control',event=>{if(event.type==='conversation-action'&&ownsConversation&&event.projectId===scope.projectId){if(!state||event.projectId!==projectId){pendingConversation=event;return;}if(event.action==='select')select(event.target);if(event.action==='todo')void openTodo(event.todoId);}});
  window.addEventListener('nozeli-content-file-opened',leaveHistory);
  window.nozeli.subscribe('agent',e=>{if(e.kind==='managed-files-changed'&&e.projectId===projectId)void refreshProjectFiles().catch(error=>toast('文件链接列表读取失败：'+error.message));});
  window.nozeli.subscribe('agent',e=>{if(!active||e.projectId!==projectId)return;if(e.kind==='managed-state'){state=e.state;render();}if(e.kind==='managed-timeline'&&!historyPage){sessionStore.apply(projectId,e.timeline||e.frame,{replace:true});}if(e.kind==='managed-error')toast(e.text);});

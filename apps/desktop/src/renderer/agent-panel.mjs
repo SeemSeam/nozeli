@@ -10,6 +10,8 @@ const $ = (id) => document.getElementById(id);
 import {mountSettingsPanel} from './settings-panel.mjs';
 export function mountAgent({ invoke, toast, attachment, getProjectId, openManaged, openProjectFile, openExternal, openFrozenChange, onMessages = () => {}, onConversation = () => {}, subscribe = window.nozeli.subscribe }) {
   const managed = mountManagedAgent({invoke,toast,onMessages,openManaged,onConversation,openProjectFile,openExternal,openFrozenChange});
+  const scope=window.__workspaceScope;
+  const ownsConversation=!scope||(scope.role==='surface'&&scope.kind==='conversation');
   let projectId = null;
   let generation = 0;
   let consoleVisible = false;
@@ -98,7 +100,7 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     $('save-status').textContent = report.writtenBack === false ? '未写回源文件' : report.writtenBack === true ? '源文件有变化' : '写回未核验';
   }
 
-  const configuration = mountConfiguration({document, invoke, onError: error => setAi(error.message, 'failed'), onInitialized: async () => {
+  const configuration = mountConfiguration({document, invoke, autoOpen:!scope||scope.role==='shell', onError: error => setAi(error.message, 'failed'), onInitialized: async () => {
     if (projectId) await loadProjectSettings(projectId, generation);
   }});
 
@@ -110,10 +112,9 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
         if (id === projectId && gen === generation) toast('旧版只读历史加载失败：' + error.message);
       });
       const connect = initialized || configuration.initialized;
-      const loaded = await managed.load(id, {connect, draft: restoredDraft});
+      const loaded = await managed.load(id, {connect:ownsConversation&&connect, observe:!ownsConversation, ...(ownsConversation?{draft:restoredDraft}:{})});
       if (id !== projectId || gen !== generation) return;
-      if (!loaded && connect) await managed.enable(id);
-      else if (!connect) setAi('请完成 Nozeli 配置初始化；仍可阅读项目和历史记录。', 'unavailable');
+      if (!connect) setAi('请完成 Nozeli 配置初始化；仍可阅读项目和历史记录。', 'unavailable');
     } catch (error) {
       if (id === projectId && gen === generation) setAi(error.message, 'failed');
     }
@@ -160,7 +161,7 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     $('quit-error').textContent = '';
     if (!$('quit-choice').open) $('quit-choice').showModal();
   });
-  $('composer').addEventListener('input', () => { if(projectId)restoredDraft=$('composer').value; });
+  if(ownsConversation)$('composer').addEventListener('input', () => { if(projectId)restoredDraft=$('composer').value; });
   window.__agentProject = (id, {draft = ''} = {}) => {
     void invoke('managed.project.active',{projectId:id||null}).then(result=>{if(!result?.ok)toast(result?.error?.message||'更新活跃项目失败');}).catch(error=>toast(error.message));
     managed.clear({rememberDraft:false});
@@ -184,10 +185,11 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     $('provider-console-project').textContent = id ? `项目：${$('project-name').textContent || id}` : '尚未打开项目';
     generation += 1;
     const gen = generation;
-    $('composer').value = draft;
+    if(ownsConversation)$('composer').value = draft;
     $('managed-doc').hidden = true;
-    if (id) void loadProjectSettings(id, gen);
+    const loading=id?loadProjectSettings(id, gen):Promise.resolve();
     if (! $('provider-console').hidden) void refreshConsole();
+    return loading;
   };
   window.__agentSelectionAction = async ({ action, excerpt, relPath, materialText, annotationRef, comment = '', background = false }) => {
     const id = projectId;
@@ -203,6 +205,7 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     return { ...result.value, requestId: result.value.requestId ?? result.value.jobId };
   };
   window.__agentSend = async ({background=false}={}) => {
+    if(!ownsConversation)return false;
     delete $('compose-status').dataset.draftSaving;
     const id = projectId;
     const materialsApi = window.__composerMaterials;

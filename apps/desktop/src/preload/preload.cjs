@@ -14,6 +14,10 @@ ipcRenderer.on('nozeli:flush', (_event, requestId) => {
 });
 
 const push = { 'menu.action': new Set(), 'external.open': new Set(), agent: new Set(), terminal: new Set(), lsp: new Set(), tex: new Set(), document:new Set(), 'document.sync':new Set(), 'document.release':new Set(), 'quit.confirm': new Set() };
+push['workspace.changed'] = new Set();
+push['workspace.control'] = new Set();
+ipcRenderer.on('nozeli:workspace-changed', (_, payload) => { for (const handler of push['workspace.changed']) handler(payload); });
+ipcRenderer.on('nozeli:workspace-control', (_, payload) => { for (const handler of push['workspace.control']) handler(payload); });
 ipcRenderer.on('nozeli:document',(_,payload)=>{for(const handler of push.document)handler(payload);});
 ipcRenderer.on('nozeli:document-sync',(_,payload)=>{for(const handler of push['document.sync'])handler(payload);});
 ipcRenderer.on('nozeli:document-release',(_,payload)=>{for(const handler of push['document.release'])handler(payload);});

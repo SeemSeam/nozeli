@@ -34,7 +34,7 @@ html:root[data-theme="dark"] {
 .settings-appearance .appearance-save-status { min-height:1.6em;color:var(--muted);margin:10px 0; }
 /* Existing hard-coded light chrome surfaces must not turn white in dark mode.
    Physical document canvases, authored content and terminal colors stay independent. */
-html[data-theme="dark"] :is(dialog,#action-confirmation,.nozeli-context-menu,.surface-menu,#chat-layout .chat-layout-menu,.generic-popover) {
+html[data-theme="dark"] :is(dialog,#action-confirmation,.nozeli-context-menu,.surface-menu,.workspace-command-menu,.generic-popover) {
   background:var(--paper)!important;color:var(--ink)!important;border-color:var(--line)!important;
 }
 html[data-theme="dark"] :is(input,select,textarea):not(.xterm-helper-textarea) {
@@ -63,7 +63,7 @@ html[data-theme="dark"] .tag-message-user { background:var(--green-soft); }
 html[data-theme="dark"] :is(.managed-terminal-summary,.tag-delivery) { color:var(--muted); }
 html[data-theme="dark"] .pane-divider { background:var(--line); }
 html[data-theme="dark"] :is(#file-toggle,#toggle-sidebar) { color:var(--ui-control-ink); }
-html[data-theme="dark"] :is(.reader-scroll,#chat-layout .dock-options,.document-context-menu) { background:var(--paper);color:var(--ink);border-color:var(--line); }
+html[data-theme="dark"] :is(.reader-scroll,.document-context-menu) { background:var(--paper);color:var(--ink);border-color:var(--line); }
 html[data-theme="dark"] #text-preview :is(blockquote,pre,:not(pre)>code),html[data-theme="dark"] .tag-markdown pre { background:var(--green-soft); }
 html[data-theme="dark"] .document-context-menu button:is(:hover,:focus-visible) { background:var(--green-soft); }
 .focus-mode > .project-view-switch { display:none!important; }

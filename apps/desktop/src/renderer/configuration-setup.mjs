@@ -1,4 +1,4 @@
-export function mountConfiguration({document, invoke, onInitialized = () => {}, onError = () => {}}) {
+export function mountConfiguration({document, invoke, onInitialized = () => {}, onError = () => {}, autoOpen = true}) {
   const $ = id => document.getElementById(id);
   const dialog = $('configuration-setup');
   let initialized = false, busy = false;
@@ -29,8 +29,8 @@ export function mountConfiguration({document, invoke, onInitialized = () => {}, 
   const ready = invoke('config.status', {}).then(result => {
     if (!result.ok) throw Error(result.error.message);
     initialized = result.value.initialized === true;
-    if (!initialized) open();
+    if (!initialized && autoOpen) open();
     return initialized;
-  }).catch(error => { status(error.message); open(); onError(error); return false; });
+  }).catch(error => { status(error.message); if(autoOpen)open(); onError(error); return false; });
   return {ready, open, get initialized() { return initialized; }};
 }

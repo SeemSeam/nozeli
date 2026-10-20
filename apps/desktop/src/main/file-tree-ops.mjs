@@ -18,8 +18,9 @@ const validateViewPaths = (paths, message, valid = validViewPath) => {
 export function treeViewValue(record) {
   const closed = validateViewPaths(record?.closed === undefined ? [] : record.closed, '目录折叠状态无效。', validClosedPath);
   const hidden = validateViewPaths(record?.hidden === undefined ? [] : record.hidden, '隐藏路径无效。');
+  const expanded=validateViewPaths(record?.expanded===undefined?[]:record.expanded,'目录展开状态无效。');
   if (record?.showHidden !== undefined && typeof record.showHidden !== 'boolean') fail('隐藏文件显示状态无效。');
-  return { closed, hidden, showHidden: record?.showHidden ?? false };
+  return { closed, hidden, expanded, showHidden: record?.showHidden ?? false };
 }
 export class FileTreeOps {
   constructor(host, { trash }) { this.host = host; this.trash = trash; this.pending = Promise.resolve(); }
@@ -54,13 +55,14 @@ export class FileTreeOps {
     this.pending = task.catch(() => {});
     return this.host.track(task);
   }
-  async view({ projectId, closed, hidden, showHidden }) {
+  async view({ projectId, closed, hidden, expanded, showHidden }) {
     const project = await this.host.requireProject(projectId);
     return this.host.track(this.host.metaLock(async () => {
       const file = path.join(this.host.projectDir(projectId), 'file-tree-view.json');
       const previous = await this.host.readVersioned(file);
       const value = treeViewValue(previous);
       if (closed !== undefined) value.closed = validateViewPaths(closed, '目录折叠状态无效。', validClosedPath);
+      if(expanded!==undefined)value.expanded=validateViewPaths(expanded,'目录展开状态无效。');
       if (hidden !== undefined) {
         value.hidden = validateViewPaths(hidden, '隐藏路径无效。');
         for (const rel of value.hidden) await this.locate(project, rel);
@@ -69,7 +71,7 @@ export class FileTreeOps {
         if (typeof showHidden !== 'boolean') fail('隐藏文件显示状态无效。');
         value.showHidden = showHidden;
       }
-      if (closed !== undefined || hidden !== undefined || showHidden !== undefined) await this.host.writeVersioned(file, { ...previous, ...value });
+      if (closed !== undefined || hidden !== undefined || expanded !== undefined || showHidden !== undefined) await this.host.writeVersioned(file, { ...previous, ...value });
       return value;
     }));
   }

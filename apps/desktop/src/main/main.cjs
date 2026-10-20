@@ -8,7 +8,7 @@ if (process.argv.includes('--nozeli-document')) {
   require('../agents/document-entry.cjs');
   return;
 }
-const { app, BrowserWindow, ipcMain, Menu, shell, clipboard } = require('electron');
+const { app, BrowserWindow, WebContentsView, screen, ipcMain, Menu, shell, clipboard } = require('electron');
 let dialog, session;
 let DesktopHost, HostError, ops, agents, managedAgents, agentHandlers, lspManager, formatterService, texManager, texLanguage;
 const http = require('node:http');
@@ -23,7 +23,7 @@ const HIDDEN = process.env.NOZELI_HIDDEN === '1';
 const FORCE_VISIBLE = process.env.NOZELI_FORCE_VISIBLE === '1';
 const DEBUG_PORT = process.env.NOZELI_DEBUG_PORT || '';
 const externalFiles=[];
-app.on('open-file',(event,file)=>{event.preventDefault();externalFiles.push(file);const win=BrowserWindow.getAllWindows()[0];if(win){revealWindow(win);win.webContents.send('nozeli:open-request');}});
+app.on('open-file',(event,file)=>{event.preventDefault();externalFiles.push(file);void revealNavigation().catch(error=>console.error('external open routing failed',error));});
 const ISOLATED_TEST_INSTANCE = process.env.NOZELI_TEST_INSTANCE === '1';
 if (HIDDEN) {
   app.commandLine.appendSwitch('ozone-platform', process.env.NOZELI_OZONE || 'headless');
@@ -87,24 +87,22 @@ function startStatic() {
 }
 
 let host, fileTreeOps, treeMenuItems;
+let workspaceNative;
+let projectWatcher;
 let allowClose = false;
 let quitting = false;
-let trustedId = null;
+let quitPending=false;
 let origin = '';
-const documentSyncs = new Map();
-async function syncDocument({projectId,relPath,hold}) {
-  const win=BrowserWindow.getAllWindows().find(w=>!w.isDestroyed());
-  if (!win) throw new HostError('NOT_READY','编辑界面尚未就绪。');
-  const requestId=randomUUID();
-  const release=()=>{if(!win.isDestroyed())win.webContents.send('nozeli:document-release',requestId);};
-  try {
-    await new Promise((resolve,reject)=>{
-      const timer=setTimeout(()=>{documentSyncs.delete(requestId);reject(new HostError('DOCUMENT_SYNC_TIMEOUT','编辑区同步超时，未应用Agent修改。'));},10000);
-      documentSyncs.set(requestId,result=>{clearTimeout(timer);documentSyncs.delete(requestId);result?.ok?resolve():reject(new HostError(result?.error?.code||'UNSAVED',result?.error?.message||'用户输入尚未成功保存。'));});
-      win.webContents.send('nozeli:document-sync',{requestId,projectId,relPath,hold});
-    });
-    return release;
-  } catch (error) { release();throw error; }
+async function syncDocument(payload) {
+  if (!workspaceNative) throw new HostError('NOT_READY','编辑界面尚未就绪。');
+  return workspaceNative.syncDocument(payload);
+}
+let restoringNavigation=null;
+async function revealNavigation(){
+  if(!workspaceNative)return;
+  let root=workspaceNative.windows.get('main');
+  if(!root||root.dead){restoringNavigation??=Promise.resolve().then(()=>workspaceNative.restoreShell?.()).finally(()=>{restoringNavigation=null;});await restoringNavigation;root=workspaceNative.windows.get('main');}
+  if(root&&!root.dead){revealWindow(root.win);root.wc.send('nozeli:open-request');}
 }
 
 function revealWindow(win) {
@@ -121,11 +119,8 @@ function revealWindow(win) {
   }
 }
 
-function trusted(event) {
-  const frame = event.senderFrame;
-  if (!frame || frame.parent != null) throw new HostError('IPC_DENIED', 'Only the top-level page may call the host.');
-  if (!origin || !frame.url.startsWith(origin)) throw new HostError('IPC_DENIED', 'Unexpected page origin.');
-  if (!event.sender || event.sender.id !== trustedId) throw new HostError('IPC_DENIED', 'Unexpected sender.');
+function trusted(event, op, payload) {
+  return workspaceNative.authorize(event, op, payload);
 }
 
   function testPickPaths() {
@@ -186,23 +181,25 @@ async function createWindow(server) {
   ]));
   if(process.platform !== 'darwin'){win.setAutoHideMenuBar(true);win.setMenuBarVisibility(false);}
   win.once('ready-to-show', () => revealWindow(win));
-  trustedId = win.webContents.id;
+  const scope = workspaceNative.registerShell(win);
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (event, url) => {
     if (!url.startsWith(origin)) event.preventDefault();
   });
   win.webContents.on('will-attach-webview', (event) => event.preventDefault());
   const recovery=new WindowRecovery(win,{
-    dialog,settle:()=>host.settled(),busy:()=>agents?.busy()||managedAgents?.busy(),
+    dialog,settle:async()=>{await workspaceNative.flush([...workspaceNative.senders.values()].filter(r=>r.role==='surface'));await host.settled();},busy:()=>agents?.busy()||managedAgents?.busy(),
     stop:async()=>{await managedAgents?.stop();await agents?.stopIdle?.();},
-    reveal:()=>revealWindow(win),onClose:()=>{allowClose=true;quitting=true;win.close();},
+    reveal:()=>revealWindow(win),onClose:()=>{allowClose=true;quitting=true;for(const r of workspaceNative.windows.values()){r.closing=true;for(const s of workspaceNative.projectRecords(r.projectId,r.windowId))workspaceNative.destroySurface(s);r.win.close();}},
   });
   win.webContents.on('did-start-navigation',(_event,_url,_inPlace,isMainFrame)=>{if(isMainFrame)recovery.navigation();});
   win.webContents.on('render-process-gone',(_event,details)=>{console.error('renderer gone',details);recovery.rendererGone(details);});
   win.on('closed',()=>recovery.destroyed());
   win.on('close',event=>{
-    if(allowClose||quitting)return;
-    event.preventDefault();recovery.requestClose();
+    if(allowClose||quitting||scope.closing)return;
+    event.preventDefault();
+    if(workspaceNative.currentWindowCount()>1)void workspaceNative.closeWindow(scope).catch(error=>console.error('window close failed',error));
+    else recovery.requestClose();
   });
   win.webContents.on('did-finish-load', () => {
     recovery.loaded();
@@ -225,9 +222,7 @@ async function main() {
   externalFiles.push(...fileArguments(process.argv,{packaged:app.isPackaged}).filter(file=>file!==__filename&&file!==APP_ROOT));
   app.on('second-instance', (_event,argv,cwd) => {
     externalFiles.push(...fileArguments(argv,{packaged:app.isPackaged,cwd}).filter(file=>file!==__filename&&file!==APP_ROOT));
-    const win = BrowserWindow.getAllWindows()[0];
-    revealWindow(win);
-    win?.webContents.send('nozeli:open-request');
+    void revealNavigation().catch(error=>console.error('external open routing failed',error));
   });
   ({ dialog, session } = require('electron'));
   ({ DesktopHost, HostError, ops } = await import('./host.mjs'));
@@ -236,19 +231,19 @@ async function main() {
   const { AgentRuntime } = await import('../agents/runtime.mjs');
   const { agentOps } = await import('../agents/ipc.mjs');
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-  host = new DesktopHost(app.getPath('userData'),{onDocumentChange:payload=>{for(const w of BrowserWindow.getAllWindows())if(!w.isDestroyed())w.webContents.send('nozeli:document',payload);}});
+  host = new DesktopHost(app.getPath('userData'),{onDocumentChange:payload=>workspaceNative?.broadcast('nozeli:document',payload,payload.projectId)});
   const { FileTreeOps } = await import('./file-tree-ops.mjs');
   ({ treeMenuItems } = await import('./file-tree-menu.mjs'));
   fileTreeOps = new FileTreeOps(host, { trash: p => shell.trashItem(p) });
   formatterService = new FormatterService({ host });
   const { TexLanguageService } = await import('./tex-language-service.mjs');
-  texLanguage = new TexLanguageService({host, onEvent: payload => { for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send('nozeli:lsp', payload); }});
+  texLanguage = new TexLanguageService({host, onEvent: payload => workspaceNative?.broadcast('nozeli:lsp',payload,payload.projectId)});
   const { TexBuildManager } = await import('./tex-build-manager.mjs');
-  texManager = new TexBuildManager({ host, onEvent: payload => { for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.webContents.send('nozeli:tex', payload); } });
-  lspManager = new LanguageServiceManager({ host, userDataDir: app.getPath('userData'), onEvent: payload => { for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.webContents.send('nozeli:lsp', payload); } });
+  texManager = new TexBuildManager({ host, onEvent: payload => workspaceNative?.broadcast('nozeli:tex',payload,payload.projectId) });
+  lspManager = new LanguageServiceManager({ host, userDataDir: app.getPath('userData'), onEvent: payload => workspaceNative?.broadcast('nozeli:lsp',payload,payload.projectId) });
   // Previous two-slot transcripts are read-only records, never another backend.
   agents = new AgentRuntime({userDataDir:app.getPath('userData')});
-  agents.onEvent((event) => { for (const win of BrowserWindow.getAllWindows()) if (!win.isDestroyed()) win.webContents.send('nozeli:agent', event); });
+  agents.onEvent(event => workspaceNative?.broadcast('nozeli:agent',event,event.projectId));
   agentHandlers = agentOps(agents);
   const {ManagedProjects}=await import('../agents/managed-projects.mjs');
   const {resolveBundledOmpRuntime}=await import('../agents/managed/omp-runtime.mjs');
@@ -276,14 +271,39 @@ async function main() {
   }});
   ompSystemSource.modelFor=role=>providerSettings.modelFor(role);
   managedAgents=new ManagedProjects({userDataDir:app.getPath('userData'),host,legacy:agents,beforeDocumentOperation:syncDocument,ompSystemSource,ompAuthBroker,ompCommand:ompRuntime?.command});
-  managedAgents.onEvent(event=>{for(const win of BrowserWindow.getAllWindows())if(!win.isDestroyed())win.webContents.send('nozeli:agent',event);});
+  managedAgents.onEvent(event=>workspaceNative?.broadcast('nozeli:agent',event,event.projectId));
   const server = await startStatic();
+  const {WorkspaceNative}=await import('./workspace-native.mjs');
+  const {ProjectWatcher}=await import('./project-watcher.mjs');
+  projectWatcher=new ProjectWatcher({onChange:event=>workspaceNative?.broadcast('nozeli:workspace-control',{type:'file-tree-changed',...event},event.projectId),onError:error=>workspaceNative?.broadcast('nozeli:workspace-control',{type:'file-tree-watch-error',...error},error.projectId)});
+  const address=server.address();origin=`http://127.0.0.1:${address.port}/`;
+  workspaceNative=new WorkspaceNative({BrowserWindow,WebContentsView,screen,origin,preload:path.join(APP_ROOT,'src/preload/preload.cjs'),userDataDir:app.getPath('userData'),host,hidden:HIDDEN,onClose:async r=>{const recovery=windowRecovery(r.win);if(recovery){recovery.requestClose();return;}await workspaceNative.flush([...workspaceNative.senders.values()]);if(agents?.busy()||managedAgents?.busy()){r.wc.send('nozeli:quit-confirm');return;}await managedAgents?.stop();await agents?.stopIdle?.();r.closing=true;for(const s of workspaceNative.projectRecords(r.projectId,r.windowId))workspaceNative.destroySurface(s);r.win.close();}});
+  workspaceNative.restoreShell=()=>createWindow(server);
+  workspaceNative.setupWindow=r=>{
+    const recovery=new WindowRecovery(r.win,{dialog,settle:async()=>{await workspaceNative.flush([...workspaceNative.surfaces.values()]);await host.settled();},busy:()=>agents?.busy()||managedAgents?.busy(),stop:async()=>{await managedAgents?.stop();await agents?.stopIdle?.();},reveal:()=>revealWindow(r.win),onClose:()=>{allowClose=true;quitting=true;for(const s of [...workspaceNative.surfaces.values()])workspaceNative.destroySurface(s);for(const w of workspaceNative.windows.values()){w.closing=true;w.win.close();}}});
+    r.wc.on('did-start-navigation',(_e,_url,_inPlace,isMain)=>{if(isMain)recovery.navigation();});
+    r.wc.on('did-finish-load',()=>recovery.loaded());r.wc.on('render-process-gone',(_e,details)=>recovery.rendererGone(details));r.win.on('closed',()=>recovery.destroyed());
+  };
+  workspaceNative.recover=async(r,details)=>{
+    if(r.role!=='surface'||r.recovering)return;r.recovering=true;
+    try{const choice=await dialog.showMessageBox(r.win,{type:'warning',title:'内容页面恢复',message:'内容页面已退出，已持久化的文件和草稿保留。',detail:'原因：'+String(details.reason||'未知')+'。重新加载可能丢失尚未收讫的输入，不会重放任务或发送消息。',buttons:['保留现场','重新加载…'],defaultId:0,cancelId:0});if(choice.response!==1||r.dead)return;const confirm=await dialog.showMessageBox(r.win,{type:'warning',message:'确认重新加载内容？未保存的输入可能丢失。',buttons:['取消','重新加载'],defaultId:0,cancelId:0});if(confirm.response===1&&!r.dead){await host.settled();r.wc.reload();}}
+    finally{r.recovering=false;}
+  };
+  app.on('before-quit',event=>{
+    if(quitting)return;event.preventDefault();if(quitPending)return;quitPending=true;
+    const r=workspaceNative.windows.get('main')||workspaceNative.windows.values().next().value;
+    if(!r){quitPending=false;return;}
+    void workspaceNative.flush([...workspaceNative.senders.values()]).then(()=>{const recovery=windowRecovery(r.win);if(recovery)recovery.requestClose();else return workspaceNative.onClose(r);}).catch(error=>console.error('quit flush failed',error)).finally(()=>{quitPending=false;});
+  });
   ipcMain.handle('nozeli:invoke', async (event, op, payload) => {
     try {
-      trusted(event);
+      const scope=trusted(event,'workspace.bootstrap',{});
       if (payload != null && (typeof payload !== 'object' || Array.isArray(payload))) {
         throw new HostError('INVALID_PAYLOAD', 'Payload must be an object.');
       }
+      if(typeof op!=='string')throw new HostError('UNKNOWN_OP','Unknown host operation.');
+      payload=await workspaceNative.resolvePayload(scope,op,payload??{});
+      trusted(event,op,payload??{});
       if(op==='settings.appearance.read'||op==='settings.appearance.save'){
         const file=path.join(app.getPath('userData'),'appearance.json');
         if(op==='settings.appearance.read'){
@@ -293,6 +313,19 @@ async function main() {
         const temporary=file+'.'+randomUUID()+'.tmp';
         try{await fs.writeFile(temporary,JSON.stringify(payload),{flag:'wx',mode:0o600});await fs.rename(temporary,file);}finally{await fs.rm(temporary,{force:true});}
         return {ok:true,value:payload};
+      }
+      if(op.startsWith('workspace.'))return {ok:true,value:await workspaceNative.invoke(scope,op,payload??{})};
+      if(op==='project.watch'){if(scope.role==='surface')throw new HostError('IPC_DENIED','Only project navigation can watch directories.');const project=await host.requireProject(scope.projectId);return {ok:true,value:await projectWatcher.watch(scope.projectId,project.root,payload.parentRelPath??'')};}
+      if(op==='project.unwatch'){if(scope.role==='surface')throw new HostError('IPC_DENIED','Only project navigation can unwatch directories.');projectWatcher.unwatchProject(scope.projectId);return {ok:true,value:{unwatched:true}};}
+      if(op==='project.open'&&scope.role!=='shell')return {ok:true,value:{project:host.publicProject(await host.requireProject(scope.projectId))}};
+      if(op==='state.write'&&scope.role!=='shell')throw new HostError('IPC_DENIED','Surface state is owned by the workspace host.');
+      if(op==='state.write'){
+        const previous=(await host.readState(scope.projectId)).state??{},incoming=payload?.state??{};
+        const workspace={...(previous.workspace??{}),...(incoming.workspace??{})};
+        for(const key of ['draft','noteDrafts','noteOffsets','retainedNoteDrafts','composerMaterials'])if(Object.hasOwn(previous.workspace??{},key))workspace[key]=previous.workspace[key];else delete workspace[key];
+        const value=await host.writeState(scope.projectId,{...previous,...incoming,workspace});
+        workspaceNative.broadcast('nozeli:workspace-control',{type:'settings',projectId:scope.projectId,projectSettings:value.state.projectSettings,workspace:value.state.workspace},scope.projectId);
+        return {ok:true,value};
       }
       if(op==='config.status')return {ok:true,value:await readNozeliConfiguration(nozeliPaths)};
       if(op==='config.initialize'){
@@ -329,11 +362,11 @@ async function main() {
           throw new HostError('SETTINGS_FAILED','OMP设置操作未完成；原有会话保持不变。请检查私有运行环境或源配置。');
         }
       }
-      if (op==='document.synced') { documentSyncs.get(payload?.requestId)?.(payload?.result);return {ok:true}; }
+      if (op==='document.synced') return {ok:true,value:workspaceNative.acknowledge(scope,payload,{...payload?.result,requestId:payload?.requestId})};
       if(op==='view.authorship'){const value=await host.viewAuthorship(payload?.visible);const item=Menu.getApplicationMenu()?.getMenuItemById('view.authorship');if(item)item.checked=value.visible;return {ok:true,value};}
       if(op==='annotation.capture'){
         const r=payload.rect;if(!r||!['left','top','right','bottom'].every(k=>Number.isFinite(r[k]))||r.right<=r.left||r.bottom<=r.top)throw Error('区域截图坐标无效');
-        const window=BrowserWindow.fromWebContents(event.sender),[w,h]=window.getContentSize();
+        const {width:w,height:h}=scope.role==='surface'?scope.view.getBounds():{width:scope.win.getContentSize()[0],height:scope.win.getContentSize()[1]};
         const x=Math.max(0,Math.floor(r.left)),y=Math.max(0,Math.floor(r.top)),right=Math.min(w,Math.ceil(r.right)),bottom=Math.min(h,Math.ceil(r.bottom));
         if(right<=x||bottom<=y)throw Error('选区不在可见窗口，请重新框选');
         const image=await event.sender.capturePage({x,y,width:right-x,height:bottom-y});
@@ -347,11 +380,11 @@ async function main() {
       }
       if (op === 'session.takeOpen') { const file=externalFiles.shift();return {ok:true,value:file?await externalTarget(host,file):null}; }
       if (op === 'session.requestClose') {
-        BrowserWindow.fromWebContents(event.sender)?.close();
+        scope.win.close();
         return { ok: true, value: { closing: true } };
       }
       if (op === 'material.pickDirectory') {
-        const owner = BrowserWindow.fromWebContents(event.sender);
+        const owner = scope.win;
         if (!owner) throw new Error('当前窗口不可用，无法选择目录。');
         const picks = testPickPaths();
         if (picks.length) return { ok: true, value: { path: picks[0] } };
@@ -369,17 +402,20 @@ async function main() {
         const width = Number(payload?.width);
         const height = Number(payload?.height);
         if (width >= 320 && width <= 1920 && height >= 480 && height <= 1400) {
-          BrowserWindow.fromWebContents(event.sender)?.setContentSize(width, height);
+          scope.win.setContentSize(width, height);
         }
         return { ok: true, value: { width, height } };
       }
       if (op === 'session.flushed') {
-        const recovery=windowRecovery(BrowserWindow.fromWebContents(event.sender));
+        if(workspaceNative.receipts.has(payload?.requestId))return {ok:true,value:workspaceNative.acknowledge(scope,payload)};
+        const recovery=windowRecovery(scope.win);
         return {ok:true,value:recovery?await recovery.acknowledge(event.sender,payload):{accepted:false}};
       }
       if (op === 'project.pick') {
-        const selected = await pickDirectory(BrowserWindow.fromWebContents(event.sender), payload?.directory);
+        if(scope.projectId)await workspaceNative.flush(workspaceNative.projectRecords(scope.projectId,'main'));
+        const selected = await pickDirectory(scope.win, payload?.directory);
         const value = await host.pick(selected);
+        if(value?.project?.id)await workspaceNative.bindProject(scope,value.project.id);
         return { ok: true, value };
       }
       if (op === 'session.quitChoice') {
@@ -389,11 +425,13 @@ async function main() {
         }
         if (payload?.choice === 'cancel') {
           try {
+            await workspaceNative.flush([...workspaceNative.senders.values()]);
             await managedAgents?.stop();
             await agents.cancelAllAndStop();
             allowClose = true;
             quitting = true;
-            BrowserWindow.fromWebContents(event.sender)?.close();
+            for(const s of [...workspaceNative.surfaces.values()])workspaceNative.destroySurface(s);
+            for(const r of workspaceNative.windows.values()){r.closing=true;r.win.close();}
             return { ok: true, value: { closing: true } };
           } catch (error) {
             allowClose = false;
@@ -405,7 +443,7 @@ async function main() {
       if (op === 'tree.labels') return { ok:true, value:await fileTreeOps.labels(payload ?? {}) };
       if (op === 'tree.label') return { ok:true, value:await fileTreeOps.setLabel(payload ?? {}) };
       if (op === 'tree.view') return { ok:true, value:await fileTreeOps.view(payload ?? {}) };
-      if (op === 'tree.mutate') return { ok:true, value:await fileTreeOps.run(payload ?? {}) };
+      if (op === 'tree.mutate') return { ok:true, value:await workspaceNative.mutateTree(payload??{},()=>fileTreeOps.run(payload??{})) };
       if(op==='ppt.draft'||op==='ppt.export'){
         const project=await host.requireProject(payload?.projectId);
         const abs=await fileTreeOps.locate(project,payload?.relPath,false);
@@ -420,7 +458,7 @@ async function main() {
           let value=null;try{const record=JSON.parse(await fs.readFile(target,'utf8'));if(record.schema!=='nozeli-pptist-draft-v1'||record.engine!=='82ecf10040ca8da67832f173b58d3baf5da59887')throw Error('PPTX 草稿版本不兼容，原草稿已保留');value=record.model;}catch(e){if(e.code!=='ENOENT')throw e;}return {ok:true,value};
         }
         const bytes=Buffer.from(payload.bytes||[]);if(bytes.length<4||bytes.length>128*1024*1024||bytes.readUInt32LE(0)!==0x04034b50)throw Error('PPTX 导出数据无效');
-        const choice=await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender),{title:'导出 PPTX 副本（格式可能变化）',defaultPath:abs.replace(/\.pptx$/i,'-Nozeli.pptx'),filters:[{name:'PowerPoint',extensions:['pptx']}]});
+        const choice=await dialog.showSaveDialog(scope.win,{title:'导出 PPTX 副本（格式可能变化）',defaultPath:abs.replace(/\.pptx$/i,'-Nozeli.pptx'),filters:[{name:'PowerPoint',extensions:['pptx']}]});
         if(choice.canceled||!choice.filePath)return {ok:true,value:{cancelled:true}};
         // Also reject symlink/hardlink aliases of the source.
         const sourceStat=await fs.stat(abs);let destStat;try{destStat=await fs.stat(choice.filePath);}catch(e){if(e.code!=='ENOENT')throw e;}
@@ -448,7 +486,7 @@ async function main() {
           let selected = null;
           const template = treeMenuItems({directory:stat.isDirectory(), root:rel === '', canPaste:payload.canPaste === true});
           const menu = Menu.buildFromTemplate(template.map(item => item.id ? {...item, click:()=>{selected=item.id;}} : item));
-          menu.popup({window:BrowserWindow.fromWebContents(event.sender), callback:()=>resolve(selected)});
+          menu.popup({window:scope.win, callback:()=>resolve(selected)});
         });
         return {ok:true,value};
       }
@@ -491,7 +529,9 @@ async function main() {
       if (Object.hasOwn(agentHandlers, op)) return { ok: true, value: await agentHandlers[op](payload ?? {}) };
       const handler = Object.hasOwn(ops, op) ? ops[op] : null;
       if (!handler || op === 'project.pick') throw new HostError('UNKNOWN_OP', 'Unknown host operation.');
+      const priorProject=scope.projectId;
       const value = await handler(host, payload ?? {});
+      if(op==='project.open'){await workspaceNative.bindProject(scope,payload.projectId);if(priorProject&&priorProject!==payload.projectId)projectWatcher?.unwatchProject(priorProject);}
       return { ok: true, value };
     } catch (error) {
       return respond(error);
@@ -510,6 +550,7 @@ async function main() {
     quitting = true;
     await host.settled();
     await managedAgents?.stop().catch(error=>console.error('managed cleanup failed',error.message));
+    projectWatcher?.close();
     await providerSettings.stop();
     await ompAuthBrokerHost?.stop().catch(error=>console.error('omp auth broker stop failed',error.message));   // 认证继承收尾：自有 serve 子进程正常退出
     server.close();

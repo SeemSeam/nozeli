@@ -227,6 +227,22 @@ function normalizeRel(relPath) {
   return parts.join('/');
 }
 
+function navigationLimit(value, fallback, max) {
+  if (value === undefined) return fallback;
+  if (!Number.isInteger(value) || value < 1) throw new HostError('INVALID_PAYLOAD', 'Limit must be a positive integer.');
+  return Math.min(value, max);
+}
+
+function navigationHidden(rel, roots) {
+  for (let current = rel; current && current !== '.'; current = path.posix.dirname(current)) if (roots.has(current)) return true;
+  return false;
+}
+
+function navigationTextCompare(a, b) { return a < b ? -1 : a > b ? 1 : 0; }
+function navigationCompare(a, b) {
+  return (a.kind === b.kind ? 0 : a.kind === 'dir' ? -1 : 1) || navigationTextCompare(a.name, b.name);
+}
+
 /** Execute links store only the program-issued job identity; status always
  * derives from the managed work record, never from persisted display text. */
 function validExecuteRef(value) {
@@ -558,6 +574,106 @@ export class DesktopHost {
         projects: registry.projects.map((item) => item.id === project.id ? { ...item, lastOpenedAt: now } : item),
       }));
       return { project: { ...this.publicProject(project), lastOpenedAt: now } };
+    })());
+  }
+
+  async navigationView(projectId, treeView) {
+    return treeView ? treeViewValue(await this.readVersioned(path.join(this.projectDir(projectId), 'file-tree-view.json'))) : null;
+  }
+
+  async navigationDirectory(project, rel) {
+    let abs = project.root;
+    for (const name of rel ? normalizeRel(rel).split('/') : []) {
+      if (name.startsWith('.') || name === 'node_modules') throw new HostError('BAD_PATH', 'Dot and dependency paths cannot be listed.');
+      abs = path.join(abs, name);
+      const stat = await fs.lstat(abs);
+      if (stat.isSymbolicLink()) throw new HostError('SYMLINK', 'Refusing to follow a symlink.');
+      if (!stat.isDirectory()) throw new HostError('NOT_A_DIRECTORY', 'Parent must be a project directory.');
+    }
+    const relative = path.relative(project.root, await fs.realpath(abs));
+    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new HostError('ESCAPE', 'Directory escapes the project.');
+    return abs;
+  }
+
+  async children(projectId, { parentRelPath = '', cursor = null, limit = 200, treeView = false } = {}) {
+    return this.track((async () => {
+      const project = await this.requireProject(projectId);
+      const parent = parentRelPath === '' ? '' : normalizeRel(parentRelPath);
+      const bounded = navigationLimit(limit, 200, 500);
+      const view = await this.navigationView(projectId, treeView);
+      const hidden = new Set(view?.hidden ?? []);
+      const abs = await this.navigationDirectory(project, parent);
+      const scope = createHash('sha256').update(JSON.stringify([projectId, parent,view?{hidden:view.hidden,showHidden:view.showHidden}:null])).digest('hex');
+      let after = null;
+      if (cursor != null) {
+        try {
+          if (typeof cursor !== 'string' || cursor.length > 8192) throw Error();
+          const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString());
+          if (decoded.scope !== scope || !Array.isArray(decoded.key) || decoded.key.length !== 2 || !['dir', 'file'].includes(decoded.key[0]) || typeof decoded.key[1] !== 'string') throw Error();
+          after = {kind: decoded.key[0], name: decoded.key[1]};
+        } catch { throw new HostError('INVALID_CURSOR', 'Cursor does not belong to this directory and view.'); }
+      }
+      const entries = [];
+      if (!navigationHidden(parent, hidden)) {
+        for (const item of await fs.readdir(abs, {withFileTypes: true})) {
+          const {name} = item;
+          if (name.startsWith('.') || name === 'node_modules' || item.isSymbolicLink() || (!item.isDirectory() && !item.isFile())) continue;
+          const relPath = parent ? `${parent}/${name}` : name;
+          const isHidden = navigationHidden(relPath, hidden);
+          if (isHidden && !view?.showHidden) continue;
+          const entry = {relPath, name, kind: item.isDirectory() ? 'dir' : 'file', depth: relPath.split('/').length - 1, ...(view ? {hidden: isHidden, hiddenRoot: hidden.has(relPath)} : {})};
+          if (!after || navigationCompare(entry, after) > 0) entries.push(entry);
+        }
+      }
+      entries.sort(navigationCompare);
+      const hasMore = entries.length > bounded;
+      entries.length = Math.min(entries.length, bounded);
+      const last = entries.at(-1);
+      const nextCursor = hasMore ? Buffer.from(JSON.stringify({scope, key: [last.kind, last.name]})).toString('base64url') : null;
+      return {entries, parentRelPath: parent, nextCursor, hasMore, truncated: hasMore, limit: bounded, ...(view ? {hiddenCount: hidden.size} : {})};
+    })());
+  }
+
+  async search(projectId, { query = '', limit = 100, treeView = true } = {}) {
+    return this.track((async () => {
+      const project = await this.requireProject(projectId);
+      if (typeof query !== 'string' || query.length > 256) throw new HostError('INVALID_PAYLOAD', 'Search query must contain at most 256 characters.');
+      const bounded = navigationLimit(limit, 100, 200), needle = query.trim().toLowerCase();
+      const view = await this.navigationView(projectId, treeView), hidden = new Set(view?.hidden ?? []);
+      const workLimit = 10000, matches = [], stack = [''];
+      if(query.trim().includes('/')){try{const rel=normalizeRel(query.trim()),parts=rel.split('/');if(parts.some(part=>part.startsWith('.')||part==='node_modules'))throw new HostError('BAD_PATH','Excluded path');const parent=path.posix.dirname(rel),name=path.posix.basename(rel),abs=path.join(await this.navigationDirectory(project,parent==='.'?'':parent),name),stat=await fs.lstat(abs),isHidden=navigationHidden(rel,hidden);if(!stat.isSymbolicLink()&&(stat.isDirectory()||stat.isFile())&&(!isHidden||view?.showHidden))return {entries:[{relPath:rel,name,kind:stat.isDirectory()?'dir':'file',depth:parts.length-1,...(view?{hidden:isHidden,hiddenRoot:hidden.has(rel)}:{})}],limit:bounded,truncated:false,hasMore:false,budgetExceeded:false,work:1,workLimit,reason:null};}catch{/* A non-exact path continues through bounded name/path search. */}}
+      let work = 0, matched = 0, budgetExceeded = false, unreadable = false;
+      while (stack.length) {
+        if (work >= workLimit) { budgetExceeded = true; break; }
+        const rel = stack.pop();
+        let dir;
+        try { dir = await fs.opendir(await this.navigationDirectory(project, rel)); } catch { unreadable = true; continue; }
+        try {
+          for (;;) {
+            if (work >= workLimit) { budgetExceeded = true; break; }
+            const item = await dir.read();
+            work++;
+            if (!item) break;
+            const {name} = item;
+            if (name.startsWith('.') || name === 'node_modules' || item.isSymbolicLink() || (!item.isDirectory() && !item.isFile())) continue;
+            const relPath = rel ? `${rel}/${name}` : name;
+            if (relPath.length > MAX_REL) { unreadable = true; continue; }
+            const isHidden = navigationHidden(relPath, hidden);
+            if (isHidden && !view?.showHidden) continue;
+            if (item.isDirectory() && !isHidden) stack.push(relPath);
+            const lowerName = name.toLowerCase(), lowerPath = relPath.toLowerCase();
+            if (!lowerName.includes(needle) && !lowerPath.includes(needle)) continue;
+            matched++;
+            const rank = lowerName === needle ? 0 : lowerName.startsWith(needle) ? 1 : lowerName.includes(needle) ? 2 : 3;
+            matches.push({relPath, name, kind: item.isDirectory() ? 'dir' : 'file', depth: relPath.split('/').length - 1, ...(view ? {hidden: isHidden, hiddenRoot: hidden.has(relPath)} : {}), rank});
+            matches.sort((a, b) => a.rank - b.rank || navigationCompare(a, b) || navigationTextCompare(a.relPath, b.relPath));
+            if (matches.length > bounded) matches.pop();
+          }
+        } finally { await dir.close(); }
+        if (budgetExceeded) break;
+      }
+      const truncated = budgetExceeded || unreadable || matched > bounded;
+      return {entries: matches.map(({rank, ...entry}) => entry), limit: bounded, truncated, hasMore: truncated, budgetExceeded, work, workLimit, reason: budgetExceeded ? 'work-budget' : unreadable ? 'unreadable' : matched > bounded ? 'result-limit' : null};
     })());
   }
 
@@ -1895,6 +2011,8 @@ export const ops = {
   'project.remove': (host, payload) => host.removeProject(payload.projectId),
   'project.open': (host, payload) => host.open(payload?.projectId),
   'project.list': (host, payload) => host.list(payload?.projectId, { treeView: payload?.treeView === true }),
+  'project.children': (host, payload) => host.children(payload?.projectId, payload ?? {}),
+  'project.search': (host, payload) => host.search(payload?.projectId, payload ?? {}),
   'word.import': (host,payload)=>host.importDoc(payload?.projectId,payload),
   'file.read': (host, payload) => host.readFile(payload?.projectId, payload?.relPath),
   'file.availability': (host, payload) => host.fileAvailability(payload?.projectId, payload?.paths),

@@ -1,6 +1,22 @@
 import {wordTextIndex,wordTransactionEdits} from '../domain/word-text.mjs';
 import {menuShortcut} from './context-menu.mjs';
-let editor,channel,ready=false;
+let editor,channel,ready=false,readOnly=false;
+window.nozeliWordModels={
+ snapshotModel(){if(!ready)throw Error('Word 文档尚未就绪');return editor.activeEditor.state.doc.toJSON();},
+ getText(){if(!ready)throw Error('Word 文档尚未就绪');return wordTextIndex(editor.activeEditor.state.doc).text;},
+ applyModel(model){
+  if(!ready||!readOnly)throw Error('只有就绪的阅读副本可接收正文');
+  const active=editor.activeEditor,selection=active.state.selection;
+  const scroll=[...document.querySelectorAll('*')].filter(node=>node.scrollTop||node.scrollLeft).map(node=>({node,top:node.scrollTop,left:node.scrollLeft}));
+  const next=active.schema.nodeFromJSON(model);
+  next.check();
+  active.view.dispatch(active.state.tr.replaceWith(0,active.state.doc.content.size,next.content).setMeta('addToHistory',false).setMeta('nozeliMirror',true));
+  const end=Math.max(0,active.state.doc.content.size);
+  active.commands.setTextSelection({from:Math.min(selection.from,end),to:Math.min(selection.to,end)});
+  lastWordDoc=active.state.doc;wordRegionDirty=true;queueAnchorLayout();
+  requestAnimationFrame(()=>{for(const {node,top,left} of scroll){node.scrollTop=top;node.scrollLeft=left;}});
+ }
+};
 const send=(type,extra={})=>parent.postMessage({nozeliWord:channel,type,...extra},location.origin);
 addEventListener('keydown',event=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s'){event.preventDefault();if(ready)send('save');}},true);
 addEventListener('message',async event=>{
@@ -8,8 +24,9 @@ addEventListener('message',async event=>{
  const data=event.data;
  if(data.type==='open'&&!channel){
   channel=data.nozeliWord;
+  readOnly=data.readOnly===true;
   try{
-   editor=new SuperDoc({selector:'#document',toolbar:'#toolbar',disableContextMenu:false,modules:{contextMenu:{menuProvider:wordMenuProvider}},document:new File([data.bytes],data.name,{type:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'}),documentMode:'editing',zoom:{mode:'manual',initial:100,fitWidth:{min:25,max:200}},telemetry:{enabled:false},onReady(){ready=true;lastWordDoc=editor.activeEditor.state.doc;send('ready',{text:wordTextIndex(lastWordDoc).text});editor.on('contextMenu:open',()=>{selectionDismissed=true;clearTimeout(window.wordSelectionTimer);send('context-menu');});editor.on('contextMenu:close',()=>send('context-close'));editor.on('zoomChange',()=>requestAnimationFrame(reportWordZoom));requestAnimationFrame(reportWordZoom);queueAnchorLayout();},onTransaction:reportWordTransaction,onEditorUpdate(){if(ready){wordRegionDirty=true;queueAnchorLayout();}},onException(error){send('error',{message:error?.error?.message||'Word 编辑器发生错误'});}});
+   editor=new SuperDoc({selector:'#document',toolbar:readOnly?false:'#toolbar',role:readOnly?'viewer':'editor',disableContextMenu:false,modules:{contextMenu:{menuProvider:wordMenuProvider}},document:new File([data.bytes],data.name,{type:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'}),documentMode:readOnly?'viewing':'editing',zoom:{mode:'manual',initial:100,fitWidth:{min:25,max:200}},telemetry:{enabled:false},onReady(){ready=true;lastWordDoc=editor.activeEditor.state.doc;send('ready',{text:wordTextIndex(lastWordDoc).text});editor.on('contextMenu:open',()=>{selectionDismissed=true;clearTimeout(window.wordSelectionTimer);send('context-menu');});editor.on('contextMenu:close',()=>send('context-close'));editor.on('zoomChange',()=>requestAnimationFrame(reportWordZoom));requestAnimationFrame(reportWordZoom);queueAnchorLayout();},onTransaction:reportWordTransaction,onEditorUpdate(){if(ready){wordRegionDirty=true;queueAnchorLayout();}},onException(error){send('error',{message:error?.error?.message||'Word 编辑器发生错误'});}});
    // Development diagnostics use the actual editor, never synthetic document state.
    window.nozeliWordEditor=editor;
   }catch(error){send('error',{message:error.message});}
@@ -56,6 +73,7 @@ function readWordClipboard(action='readRich',text){
  });
 }
 function wordMenuProvider(context,groups){
+ if(readOnly)return groups.map(group=>({...group,items:group.items.filter(item=>['copy','selectAll'].includes(item.id))})).filter(group=>group.items.length);
  const labels={'insert-link':'链接…','insert-table':'插入表格…','edit-table':'表格操作…','cell-background':'单元格底色…','update-table-of-contents':'更新目录','cut':'剪切','copy':'复制','paste':'粘贴','track-changes-accept':'接受原有修订','track-changes-reject':'拒绝原有修订','list-restart-numbering':'重新编号','list-continue-numbering':'继续编号','list-decrease-indent':'减少缩进','list-increase-indent':'增加缩进'};
  const renderItem=(id,label)=>()=>{const row=document.createElement('div');row.className='context-menu-default-content';row.dataset.command=id;const text=document.createElement('span');text.textContent=label;row.append(text);const shortcut={undo:'Ctrl/Cmd+Z',redo:'Ctrl/Cmd+Shift+Z',cut:'Ctrl/Cmd+X',copy:'Ctrl/Cmd+C',paste:'Ctrl/Cmd+V',selectAll:'Ctrl/Cmd+A'}[id];if(shortcut){const key=document.createElement('kbd');key.textContent=menuShortcut(shortcut);row.append(key);}return row;};
  const native=groups.filter(g=>g.id!=='ai-content'&&g.id!=='proofing').map(g=>({...g,items:g.items.map(item=>({...item,label:labels[item.id]||item.label,render:renderItem(item.id,labels[item.id]||item.label),...(item.id==='paste'?{action:async e=>{

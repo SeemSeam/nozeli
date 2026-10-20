@@ -1,7 +1,7 @@
 import {mountPptAnnotations} from './ppt-annotations.mjs';
 import {mountPptContextMenu} from './ppt-context-menu.mjs';
 // PPTX edits are persisted as an independent model, never over the source package.
-export async function mountPpt({parent,bytes,name,draft,onChange,onExport,onSelection,onRegionMode,noteActions,tagActions,onContextMenu,onContextClose,onSelectionStart}){
+export async function mountPpt({parent,bytes,name,draft,readOnly=false,onChange,onExport,onSelection,onRegionMode,noteActions,tagActions,onContextMenu,onContextClose,onSelectionStart}){
  const host=document.createElement('div');host.style.cssText='height:100%;min-height:0;display:flex;flex-direction:column';
  const bar=document.createElement('div');bar.hidden=true;bar.style.cssText='padding:6px 10px;display:flex;gap:12px;align-items:center';
  const info=document.createElement('span');info.textContent='PPTX · 编辑自动保存为 Nozeli 草稿，原件保持不变';
@@ -21,10 +21,11 @@ export async function mountPpt({parent,bytes,name,draft,onChange,onExport,onSele
   frame.contentWindow.onbeforeunload=null;
   const snapshot=()=>JSON.parse(JSON.stringify(engine.store.$state));
   // Do not stringify embedded image data on every store mutation. Snapshot only at save.
-  unsubscribe=engine.store.$subscribe(()=>onChange(),{flush:'post'});
+  if(!readOnly)unsubscribe=engine.store.$subscribe(()=>onChange(),{flush:'post'});
+  if(readOnly){if(typeof engine.setReadOnly!=='function')throw Error('PPT 阅读引擎缺少只读能力，请重新构建引擎。');engine.setReadOnly(true);info.textContent='PPTX · 阅读副本';}
   button.onclick=async()=>{button.disabled=true;try{await onExport(await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('PPTX 导出超时')),45000);frame.contentWindow.__nozeliExport=async blob=>{clearTimeout(timer);resolve(new Uint8Array(await blob.arrayBuffer()));};engine.exportFile();}));}catch(e){bar.hidden=false;info.textContent=e.message;}finally{button.disabled=false;}};
-  const annotations=mountPptAnnotations({host,frame,engine,onSelection,onRegionMode,noteActions,tagActions});
-  const context=mountPptContextMenu({frame,onOpen:onContextMenu,onClose:onContextClose,onSelectionStart});
-  return {...annotations,snapshot,closeContextMenu:context.close,dispose(){context.dispose();annotations.dispose();disposed=true;unsubscribe?.();host.remove();}};
+  const annotations=readOnly?{dispose(){}}:mountPptAnnotations({host,frame,engine,onSelection,onRegionMode,noteActions,tagActions});
+  const context=readOnly?{close(){},dispose(){}}:mountPptContextMenu({frame,onOpen:onContextMenu,onClose:onContextClose,onSelectionStart});
+  return {...annotations,snapshot,snapshotModel:snapshot,applyModel:model=>{if(!readOnly)throw Error('Only a reading mirror accepts shared models.');const page=engine.store.slideIndex;engine.store.$patch(model);if(Number.isInteger(page)&&page<engine.store.slides.length)engine.store.setSlideIndex(page);},closeContextMenu:context.close,dispose(){context.dispose();annotations.dispose();disposed=true;unsubscribe?.();host.remove();}};
  }catch(e){host.remove();throw e;}
 }

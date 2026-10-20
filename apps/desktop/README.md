@@ -52,6 +52,19 @@ Linux原生Wayland的项目/引用目录框使用不绑定父窗口的Electron�
 
 选区工具条不因编辑器内部input/textarea的原生滚动而关闭；正文视口滚动、Esc、文件/布局切换仍收起。真实Monaco左键拖选→内部输入滚动→讨论点击保留精确offset/quote回归通过；安装候选真实拖选→“解释”点击→私有OMP回复、单job、原文不变通过（本机`~/.local/state/nozeli-selection-live-1nPD2S/`）。Markdown Unicode选区及完整进程重启回归通过。两次解释烟测在未形成选区前失败，原件保留，不计模型成功或修改产品以放宽空选区。
 
+## 单内容分区与项目原生窗口
+
+已移植开发提交 `70f0243` 的产品源码与回归，保留本仓库既有Provider登录、默认模型联动、Agent额度和可读选区材料；两仓库没有共同提交祖先，采用产品路径三方补丁集成，不导入旧开发仓库历史、CCB或计划树。测试Office/PDF材料使用本仓库`tests/fixtures`，不依赖旧仓库路径。
+
+- 每个分区只呈现一个文件或对话。左侧已打开是平铺记录，点击切换，右键向右/向下分屏或在真实系统独立窗口打开；未呈现记录不挂载后台编辑器。当前已呈现文件分屏使用只读阅读副本，共享未保存内容但保留各自选区与阅读位置；项目主对话不复制。
+- 独立窗口保留同一活WebContentsView；标题可返回工作区。切到B保存后隐藏A浮窗，切回A恢复同窗/内容/尺寸且不主动抢焦点；主动关闭不会复活。关闭最后一个可见项目窗口也保护其他隐藏项目内容；主窗关闭时可见副窗仍可编辑，最后一窗退出。Wayland精确桌面坐标受合成器影响，未保证像素级原位置恢复。
+- 命名布局保存/重命名/载入/删除保留。载入前保存当前缓冲与导航，保留后来打开的资源与当前选区，不拿保存时的旧视图覆盖当前内容。旧多文件叶只迁移原active呈现，其余记录仍保留。
+- 本仓库Linux/Wayland实际验证：原生核心10项、冷启动生命周期9项、Word/Markdown/TeX源码/PDF真实驱动6项、Word/Sheet镜像2组及命名布局管理通过；布局/宿主/目录导航监听44项通过。证据为忽略目录`.test-output/nozeli-single-content-MRZQP9/`、`nozeli-native-lifecycle-89uhl3/`、`nozeli-native-drivers-zpYrna/`、`nozeli-office-mirrors-lcOXsp/`。已重建固定版本PPTist和renderer；TeX源码转移不等于编译验收。
+- 合并保留功能专项35项中34通过；`agent-process-budget.test.mjs`的“cap two dispatch cycle…”在所有jobs完成断言失败。本次未改该测试及其Controller/额度实现，不把它算作通过或修改断言掩盖。首次44项测试有14项因`/tmp`写入quota错误`-122`失败，改为本仓库忽略目录的磁盘TMPDIR后44项通过；未清理或覆盖用户临时数据。
+- 目标设置可见Wayland29项通过（`.test-output/nozeli-settings-ui-lxFSpX/`），无远程认证或模型请求。默认headless启动未产生renderer，90秒等待失败保留（`nozeli-settings-ui-ULFv8U/`），不把headless失败当作可见桌面设置失败，也不宣称headless已支持。
+
+本次未安装、未推送、未调用付费模型；Windows/macOS、物理多屏/DPI、全部IME及完整AI跨窗工作流未重新验收。日常已安装版本不会自动消费此次源码合并。
+
 ## 当前安装的真实 Agent 工作流验收
 
 2026-10-20，`settings-hidden-restart-fixed`实际Electron与私有OMP/GPT6.1完整66项通过：前台真实CAS保存与选区解释、主控派工、两个独立Worker工作树、GUI/原生终端原线程续作、冻结Diff、接受/丢弃、冷开零请求/零任务重放；真实180秒计时文件任务、renderer/native/main进程终止及显式原线程恢复均检查。原始项目暂存/未暂存文件、草稿、配置元数据保持，正常退出，自有账号副本清理。50次真实HTTP准入，观察input/output115754（非账单）。本机证据`~/.local/state/nozeli-agent-workflow-settings-b/result.json`；Linux/Wayland单轮，不外推其他Provider/OAuth/跨平台。

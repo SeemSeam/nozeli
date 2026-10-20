@@ -1,6 +1,6 @@
 import {openPackage,patchPackage} from './xlsx-package.mjs';
 import {mountContextMenu} from './context-menu.mjs';
-let channel,original,baseline,initial,editor,ready=false,root,lastContent,lastLayout;
+let channel,original,baseline,initial,editor,ready=false,root,lastContent,lastLayout,readOnly=false;
 const contents=sheets=>JSON.stringify(sheets.map(s=>({id:s.id,cells:(s.data||[]).map(row=>row.map(c=>c?.f?{f:c.f}:{v:c?.v??null}))})));
 const send=(type,extra={})=>parent.postMessage({nozeliSheet:channel,type,...extra},location.origin);
 // Unsupported formatting/structure changes are rejected, never silently discarded on save.
@@ -13,13 +13,47 @@ function shape(sheets){return sheets.map(s=>{
 });}
 const canonical=value=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(k=>[k,canonical(value[k])])):value;
 const layout=sheets=>JSON.stringify(canonical(shape(sheets)));
+let workbookKey=0;
+function renderWorkbook(sheets,restore=null){
+ const firstMount=!ready;
+ root.render(React.createElement(react.Workbook,{key:workbookKey,data:structuredClone(sheets),allowEdit:!readOnly,showToolbar:false,cellContextMenu:['copy'],headerContextMenu:['copy'],sheetTabContextMenu:[],hooks:{beforeAddSheet:()=>false},onChange:data=>{if(ready&&!readOnly){const next=contents(data),structure=layout(data);if(next!==lastContent||structure!==lastLayout){lastContent=next;lastLayout=structure;send('changed');}}},ref:ref=>{
+  if(!ref)return;editor=ref;window.nozeliSheetEditor=editor;
+  if(firstMount&&!ready)setTimeout(()=>{editor.calculateFormula();setTimeout(()=>{if(ready)return;initial=structuredClone(editor.getAllSheets());lastContent=contents(initial);lastLayout=layout(initial);ready=true;document.querySelector('#sheet').inert=false;send('ready');},0);},0);
+  if(restore){const saved=restore;restore=null;requestAnimationFrame(()=>restoreSheetReadingPosition(saved,true));}
+ }}));
+}
+function restoreSheetReadingPosition(saved,restoreTab=false){
+ if(!restoreTab&&editor.getSheet().id!==saved.id)return;
+ if(editor.getAllSheets().some(sheet=>sheet.id===saved.id)){
+  if(editor.getSheet().id!==saved.id)editor.activateSheet({id:saved.id});
+  // updateSheet freezes its input; setSelection normalizes ranges in place.
+  if(saved.selection?.length)editor.setSelection(structuredClone(saved.selection));
+ }
+ requestAnimationFrame(()=>{if(editor.getSheet().id!==saved.id)return;for(const {selector,top,left} of saved.scroll){const node=document.querySelector(selector);if(node){node.scrollTop=top;node.scrollLeft=left;}}});
+}
+window.nozeliSheetModels={
+ snapshotModel(){if(!ready)throw Error('电子表格尚未就绪');return structuredClone(editor.getAllSheets());},
+ applyModel(model){
+  if(!ready||!readOnly)throw Error('只有就绪的阅读副本可接收表格');
+  const saved={id:editor.getSheet().id,selection:structuredClone(editor.getSelection()),scroll:['.luckysheet-scrollbar-x','.luckysheet-scrollbar-y'].map(selector=>{const node=document.querySelector(selector);return {selector,top:node?.scrollTop||0,left:node?.scrollLeft||0};})};
+  const local=editor.getAllSheets(),next=structuredClone(model).map(sheet=>{
+   const previous=local.find(item=>item.id===sheet.id);
+   for(const key of ['scrollTop','scrollLeft','luckysheet_select_save','luckysheet_select_status']){delete sheet[key];if(previous?.[key]!==undefined)sheet[key]=structuredClone(previous[key]);}
+   if(sheet.id===saved.id){sheet.scrollTop=saved.scroll.find(item=>item.selector.endsWith('-y')).top;sheet.scrollLeft=saved.scroll.find(item=>item.selector.endsWith('-x')).left;sheet.luckysheet_select_save=saved.selection;}
+   sheet.status=sheet.id===saved.id?1:0;return sheet;
+  });
+  if(local.some(sheet=>!next.some(item=>item.id===sheet.id))){workbookKey++;renderWorkbook(next,saved);}
+  else {editor.updateSheet(next);requestAnimationFrame(()=>restoreSheetReadingPosition(saved));}
+ }
+};
 addEventListener('keydown',event=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s'){event.preventDefault();if(ready)send('save');}},true);
 addEventListener('message',async event=>{
  if(event.source!==parent||event.origin!==location.origin||!event.data?.nozeliSheet)return;const data=event.data;
  try{
   if(data.type==='open'&&!channel){
+   readOnly=data.readOnly===true;
    channel=data.nozeliSheet;original=data.bytes;baseline=await openPackage(original);root=ReactDOM.createRoot(document.querySelector('#sheet'));
-   root.render(React.createElement(react.Workbook,{data:structuredClone(baseline),showToolbar:false,cellContextMenu:['copy'],headerContextMenu:['copy'],sheetTabContextMenu:[],hooks:{beforeAddSheet:()=>false},onChange:data=>{if(ready){const next=contents(data);const structure=layout(data);if(next!==lastContent||structure!==lastLayout){lastContent=next;lastLayout=structure;send('changed');}}},ref:ref=>{if(!ref)return;const first=!editor;editor=ref;window.nozeliSheetEditor=editor;if(!first)return;setTimeout(()=>{editor.calculateFormula();setTimeout(()=>{initial=structuredClone(editor.getAllSheets());lastContent=contents(initial);lastLayout=layout(initial);ready=true;document.querySelector('#sheet').inert=false;send('ready');},0);},0);}}));
+   renderWorkbook(baseline);
   }else if(data.nozeliSheet===channel&&data.type==='context-close'){
    sheetMenu.close();
   }else if(data.nozeliSheet===channel&&data.type==='clipboard-result'){
@@ -52,8 +86,9 @@ function openSheetMenu(x,y){
  sheetMenu.open([{id:'undo',label:'撤销',shortcut:'Ctrl/Cmd+Z'},{id:'redo',label:'重做',shortcut:'Ctrl/Cmd+Shift+Z'},{separator:true},
   {id:'copy',label:'复制',enabled:Boolean(valid),shortcut:'Ctrl/Cmd+C'}, {id:'paste',label:'粘贴内容',enabled:Boolean(valid),shortcut:'Ctrl/Cmd+V'},
   {id:'clear',label:'清空内容',enabled:Boolean(valid)},{id:'formula',label:'编辑内容 / 公式',enabled:Boolean(valid&&range.row[0]===range.row[1]&&range.column[0]===range.column[1])},{id:'find',label:'查找单元格…',shortcut:'Ctrl/Cmd+F'}
- ],{x,y,run:async command=>{
+ ].filter(item=>!readOnly||['copy','find'].includes(item.id)),{x,y,run:async command=>{
   if(command==='copy')return clipboard('write',copy);
+  if(readOnly&&command!=='find')return;
   if(!current()){send('error',{message:'表格内容或选区已变化，请重新右键。'});return;}
   if(command==='undo')return editor.handleUndo();if(command==='redo')return editor.handleRedo();
   if(command==='formula'){const input=document.querySelector('#luckysheet-functionbox-cell');input.focus();getSelection()?.selectAllChildren(input);return;}

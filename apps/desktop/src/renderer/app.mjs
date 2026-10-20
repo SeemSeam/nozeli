@@ -2,7 +2,6 @@ import { mountContextMenu } from './context-menu.mjs';
 import {createDiscussionDrafts,ownsDiscussionReceipt} from './surface-identity-state.mjs';
 import {mountRegionDrawing,compositeDrawing} from './region-drawing.mjs';
 import {uiIcon,setIconButton} from './ui-icons.mjs';
-import { mountOpenFiles } from './open-files.mjs';
 import {readFileAvailability} from './file-availability.mjs';
 import {createFileIcon,updateFileIcon} from './file-icons.mjs';
 import './file-icons.css';
@@ -16,6 +15,7 @@ import { mountPpt } from './ppt-view.mjs';
 import { mountSheet } from './sheet-view.mjs';
 import { mountWord } from './word-view.mjs';
 import { tagDisplayOrdinals } from './tag-numbering.mjs';
+import { mountFileNavigator } from './file-navigator.mjs';
 import { mountFileTreeActions } from './file-tree-actions.mjs';
 import {mountProjectFileRefresh} from './project-file-refresh.mjs';
 import { tagProjectionContent } from './tag-projection-state.mjs';
@@ -44,8 +44,27 @@ import {mountAnnotationComposer,describeAnnotationSource} from './annotation-com
 import './immersive-ui.css';
 import {panelButton,observePanelWidth} from './panel-menu.mjs';
 import {mountInterfaceAppearance} from './interface-appearance.mjs';
+import {mountWorkspaceGroups} from './workspace-groups.mjs';
+
+const workspaceBootstrap = await window.nozeli.invoke('workspace.bootstrap', {});
+if (!workspaceBootstrap.ok) throw new Error(workspaceBootstrap.error?.message || '工作区身份无法读取');
+const workspaceScope = workspaceBootstrap.value;
+window.__workspaceScope = workspaceScope;
+document.documentElement.dataset.workspaceRole = workspaceScope.role;
+document.documentElement.dataset.workspaceKind = workspaceScope.kind || '';
+const isSurface = workspaceScope.role === 'surface';
+const isConversation = isSurface && workspaceScope.kind === 'conversation';
+const isDocumentMirror = isSurface && workspaceScope.kind === 'document' && workspaceScope.readOnly === true;
+let documentPublishTimer = 0;
+let mirrorRevision = -1;
+let pendingMirrorBuffer = null;
+let publishedOfficeFile = null;
+let publishedOfficeRevision = -1;
+let workspaceGroups = null;
 
 const $ = (id) => document.getElementById(id);
+const recoverResourceButton=document.createElement('button');recoverResourceButton.type='button';recoverResourceButton.textContent='已恢复原文件，继续编辑';recoverResourceButton.hidden=true;$('file-path-notice').append(recoverResourceButton);
+recoverResourceButton.addEventListener('click',async()=>{recoverResourceButton.disabled=true;try{const result=await invoke('workspace.recoverResource',{projectId:ui.project?.id,relPath:ui.file?.relPath});if(!result.ok)throw Error(result.error.message);ui.sourceMissing=false;if(ui.file){ui.file.diskPresent=true;ui.file.sourceChanged=false;}recoverResourceButton.hidden=true;$('file-path-notice').hidden=true;workspace.toast('原文件已核验，编辑现场保留。');}catch(error){workspace.toast(error.message);}finally{recoverResourceButton.disabled=false;}});
 const noteSource=document.createElement('details');noteSource.className='tag-source note-form-source';
 const noteSourceLabel=document.createElement('summary'),noteSourceQuote=document.createElement('blockquote');
 noteSource.append(noteSourceLabel,noteSourceQuote);$('note-input').before(noteSource);
@@ -75,7 +94,9 @@ function enqueue(action, freeze = false) {
   return run;
 }
   const flushCurrent = () => enqueue(() => flushNow());
-  const openFile = (relPath, view) => enqueue(() => openFileNow(relPath, view), true);
+  const openFile = (relPath, view) => isSurface
+    ? invoke('workspace.control', {type:'open-file',projectId:ui.project?.id,relPath,view})
+    : workspaceGroups?.open({kind:'document',relPath,viewState:view});
   const activateProject = projectId => enqueue(() => activateProjectNow(projectId), true);
   let searchToken = 0;
   function cancelSearch() { searchToken += 1; }
@@ -153,6 +174,7 @@ function enqueue(action, freeze = false) {
     form.style.top=`${Math.max(bounds.top+8,Math.min(Math.min(innerHeight,bounds.bottom)-height-8,ui.selectionRect.bottom+8))}px`;
   }
   function beginNote({ anchored = false } = {}) {
+    if (isDocumentMirror) return workspace.toast('阅读副本不可添加备注，请回到编辑位置。');
     const selected= ['word','ppt'].includes(ui.file?.kind) ? ui.wordSelection : captureLiveAnchor();
     if(anchored && selected?.anchor && sameNoteTarget(ui.frozenNote) && JSON.stringify(ui.frozenNote.anchor)!==JSON.stringify(selected.anchor)){
       rememberCurrentNote();ui.frozenNote=null;$('note-input').value='';
@@ -249,8 +271,9 @@ const ui = {
   projectSettings: { focusMode: false },
 };
 const workspace = mountWorkspace({ save: () => writeView(), saveProjectSettings: settings => { ui.projectSettings = { focusMode: settings?.focusMode === true }; return writeView({ projectSettings: ui.projectSettings }); }, openProject: pickProject, addNote: options => beginNote(options), send: () => window.__agentSend?.() });
+if (!isSurface) workspaceGroups = mountWorkspaceGroups({invoke,scope:workspaceScope,toast:workspace.toast});
 let composerMaterialsSaveTimer = 0;
-const composerMaterials = mountComposerMaterials({
+const composerMaterials = isConversation ? mountComposerMaterials({
   invoke, toast: message => workspace.toast(message),
   openProjectFile: target => openFile(target.relPath),
   getProjectFile: () => {
@@ -260,21 +283,12 @@ const composerMaterials = mountComposerMaterials({
     return { relPath: ui.file.relPath, absPath };
   },
   exposeProjectRoot: () => ui.project?.rootDisplay || ui.project?.root || '',
-});
+}) : null;
 window.__composerMaterials = composerMaterials;
 mountInterfaceAppearance();
 const authorship=mountDocumentAuthorship({current:()=>['text','word'].includes(ui.file?.kind)?{kind:ui.file.kind,projectId:ui.project.id,relPath:ui.file.relPath,digest:ui.file.digest,editor:ui.file.kind==='word'&&ui.word?{adapter:ui.word}:ui.editor,dirty:ui.dirty||ui.composing}:null,invoke,reload:relPath=>enqueue(()=>openFileNow(relPath,null,true),true),toast:text=>workspace.toast(text),onCompare:version=>void comparison.compareVersion(version)});
 let openFilesState = { paths: [], active: null, dirty: false, collapsed: false };
-const fileTabs = mountOpenFiles({state:()=>openFilesState,open:openFile,close:path=>enqueue(()=>closeFileTab(path),true),
-  projectId:()=>ui.project?.id,toast:message=>workspace.toast(message),manage:(action,relPath)=>enqueue(async()=>{
-    if(action==='locate'){$('file-filter').value='';const state=fileTreeState();for(const node of document.querySelectorAll('#file-tree .dir'))if(relPath.startsWith(node.dataset.path+'/')){state.closed.delete(node.dataset.path);state.searchClosed.delete(node.dataset.path);}filterTree();const node=document.querySelector('#file-tree button[data-path="'+CSS.escape(relPath)+'"]');node?.scrollIntoView({block:'nearest'});node?.focus();await persistTree();return;}
-    if(action==='openExternal'){const saved=await flushNow();if(!saved.ok)return;}
-    const result=await invoke('tree.path',{projectId:ui.project.id,relPath,action});if(!result.ok)workspace.toast(result.error.message);
-  }),
-  reorder:(from,to)=>enqueue(async()=>{const paths=openFilesState.paths;paths.splice(paths.indexOf(from),1);paths.splice(paths.indexOf(to),0,from);fileTabs.render();await writeView();}),
-  batch:(action,path)=>enqueue(async()=>{const paths=[...openFilesState.paths],index=paths.indexOf(path);const targets=action==='all'?paths:action==='others'?paths.filter(p=>p!==path):paths.slice(index+1);targets.sort((a,b)=>Number(a===ui.file?.relPath)-Number(b===ui.file?.relPath));for(const target of targets)if(!await closeFileTab(target))break;},true),
-  persist:()=>writeView()});
-function renderFileTabs(){openFilesState.active=ui.file?.relPath||null;openFilesState.dirty=Boolean(ui.dirty||ui.wordDirty);fileTabs.render();renderPathNotice();}
+function renderFileTabs(){openFilesState.active=ui.file?.relPath||null;openFilesState.dirty=Boolean(ui.dirty||ui.wordDirty);renderPathNotice();}
 function renderTagPathNotices(){
   const file=ui.file,entry=file&&openFilesState.availability?.get(file.relPath);
   const caption=entry?.status==='missing'?'原路径不存在，可能已移动或删除。原标签与引文保留，未改绑新文件。':entry?.status==='unavailable'?'原路径暂不可用。原标签与引文保留。':file?.diskPresent===false?'当前标签仍对应保留副本，未绑定到重建的磁盘正文。':'';
@@ -298,6 +312,7 @@ async function refreshOpenFileAvailability(project){
   catch(error){if(ui.project===project)workspace.toast('文件路径检查失败：'+error.message);}
 }
 async function closeFileTab(path){
+  if(isSurface)return closeCurrentSubject();
   const index=openFilesState.paths.indexOf(path);if(index<0)return true;
   if(ui.file?.relPath===path && !await closeCurrentSubject())return false;
   openFilesState.paths=openFilesState.paths.filter(p=>p!==path);
@@ -314,7 +329,9 @@ const texWorkspace = mountTexWorkspace({ getContext: () => ui, beside, closeBesi
 const markdownWorkspace = mountMarkdownWorkspace({ getContext: () => ui, render: renderTextPreview, project: projectPreviewTags, saveView: writeView, layout: () => window.dispatchEvent(new Event('nozeli-layout-change')) });
 const comparison = mountDocumentComparison({current:()=>ui.project?{projectId:ui.project.id,relPath:ui.file?.relPath,kind:ui.file?.kind,dirty:ui.dirty||ui.composing}:null,invoke,openSnapshot:(file,diff,owner)=>enqueue(()=>{if(ui.project?.id===owner.projectId&&ui.file?.relPath===owner.relPath)return openBesideSnapshot(file,diff);},true),toast:message=>workspace.toast(message)});
 const frozenChangeReader = mountFrozenChangeReader({parent:$('documents'),invoke,mountDiff:mountDocumentDiff,currentProjectId:()=>ui.project?.id});
-const openFrozenChange = target => enqueue(() => {
+const openFrozenChange = target => (!isSurface || workspaceScope.kind!=='diff')
+  ? (isSurface?invoke('workspace.control',{type:'report',projectId:ui.project?.id,report:{id:crypto.randomUUID(),projectId:ui.project?.id,kind:'diff',target,title:'Diff'}}):workspaceGroups.open({kind:'diff',resourceId:crypto.randomUUID(),viewState:{target,title:'Diff'}}))
+  : enqueue(() => {
   if(ui.composing||regionDrawing.active()){
     const message=ui.composing?'输入法组合尚未结束，请结束输入后查看变更。':'请先完成或取消当前涂鸦，再查看冻结变更。';
     workspace.toast(message);return {ok:false,error:{message}};
@@ -357,14 +374,67 @@ function setDiffMode(enabled) {
 $('compare-mode').addEventListener('click', () => setDiffMode(false));
 $('diff-mode').addEventListener('click', () => setDiffMode(true));
 function invoke(op, payload) {
+  if (isDocumentMirror && (/^(?:file\.(?:draft|save|retain)|annotation\.(?:add|update|remove|drawing|capture)|tag\.(?:put|reanchor|view)|document\.image\.put|(?:word|sheet)\.save|ppt\.export)$/.test(op)||op==='ppt.draft'&&payload?.model!==undefined)) return Promise.resolve({ok:false,error:{code:'READ_ONLY',message:'阅读副本不可修改，请回到编辑位置。'}});
   return window.nozeli.invoke(op, payload ?? {});
 }
 
 function setStatus(state, text) {
-  if(typeof fileTabs !== 'undefined')renderFileTabs();
+  renderFileTabs();
   const node = $('save-status');
   node.dataset.state = state;
-  node.textContent = text;
+  node.textContent = isDocumentMirror ? '阅读副本 · ' + text : text;
+  if (!isDocumentMirror && isSurface && ui.file) scheduleDocumentPublish();
+}
+
+function documentStatus() {
+  return {dirty:Boolean(ui.dirty),missing:Boolean(ui.sourceMissing || ui.file?.diskPresent === false),readOnly:isDocumentMirror};
+}
+function scheduleDocumentPublish() {
+  if (isDocumentMirror || !isSurface || workspaceScope.kind !== 'document' || !ui.file) return;
+  if (documentPublishTimer) return;
+  documentPublishTimer = setTimeout(() => { documentPublishTimer = 0; void publishDocumentBuffer(); }, ['word','sheet','ppt'].includes(ui.file.kind) ? 400 : 75);
+}
+async function publishDocumentBuffer() {
+  if (isDocumentMirror || !ui.project || !ui.file) return;
+  const status = documentStatus();
+  const file=ui.file,office=['word','sheet','ppt'].includes(file.kind),revision=ui.wordRevision||0;
+  const changedModel=office&&ui.word&&(publishedOfficeFile!==file||publishedOfficeRevision!==revision);
+  const model=changedModel?(ui.word.snapshotModel?.()??ui.word.snapshot?.()):undefined;
+  const result = await invoke('workspace.document.publish', {projectId:ui.project.id,relPath:file.relPath,kind:file.kind,...(file.kind === 'text' && ui.editor ? {text:ui.editor.adapter.getText()} : {}),...(model===undefined?{}:{model}),dirty:status.dirty,missing:status.missing,digest:file.digest,documentStatus:status});
+  if (!result.ok) workspace.toast(result.error?.message || '阅读副本同步失败');
+  else if(changedModel){publishedOfficeFile=file;publishedOfficeRevision=revision;}
+  await writeView();
+}
+function applyMirrorBuffer(event) {
+  if (!isDocumentMirror || event.projectId !== workspaceScope.projectId || event.relPath !== workspaceScope.relPath) return;
+  if (Number.isFinite(event.revision) && event.revision < mirrorRevision) return;
+  pendingMirrorBuffer = pendingMirrorBuffer?.relPath === event.relPath ? {...pendingMirrorBuffer,...event,...(event.model===undefined&&pendingMirrorBuffer.model!==undefined?{model:pendingMirrorBuffer.model}:{})} : event;
+  if (!ui.file || ui.file.relPath !== event.relPath) return;
+  if (Number.isFinite(event.revision)) mirrorRevision = event.revision;
+  if (ui.file.kind === 'text') {
+    const adapter = ui.editor?.adapter;
+    if (!adapter || typeof event.text !== 'string') return;
+    const before = adapter.getText();
+    if (before !== event.text) {
+      const scrollTop = adapter.getScrollTop?.();
+      adapter.applyRemoteChanges(textChangeSet(before,event.text));
+      if (scrollTop !== undefined) adapter.setScrollTop(scrollTop);
+    }
+    ui.file.text = event.text;
+  } else if (['word','sheet','ppt'].includes(ui.file.kind)) {
+    if(!ui.word?.applyModel)return;
+    if(event.model!==undefined){
+      try{ui.word.applyModel(event.model);}
+      catch(error){setStatus('error','正文同步失败：'+error.message);return;}
+    }
+  } else if (!event.dirty && event.digest && event.digest !== ui.file.digest) {
+    void enqueue(() => openFileNow(event.relPath, { ...workspaceScope.viewState, scrollTop:$('reader-scroll').scrollTop }, true));
+  }
+  ui.dirty = Boolean(event.dirty);
+  ui.sourceMissing = Boolean(event.missing);
+  if (event.digest) ui.file.digest = event.digest;
+  setStatus(ui.dirty ? 'dirty' : 'saved', ui.sourceMissing ? '原文件缺失 · 保留正文' : ui.dirty ? '编辑位置有未保存修改 · 正文已同步' : '与编辑位置同步');
+  void writeView();
 }
 
 function escapeHtml(value) {
@@ -466,6 +536,7 @@ $('markdown-preview-toggle').addEventListener('click', () => {
 });
 
 function showSelectionMenu(rect) {
+  if (isDocumentMirror) return;
   if(!rect || !ui.file || documentMenu.isSuppressed() || documentMenu.isOpen() || document.body.classList.contains('provider-console-open') || !$('note-form').hidden){$('selection-menu').hidden=true;return;}
   const bounds=markdownWorkspace.selectionViewport().getBoundingClientRect();
   const left=Math.max(8,bounds.left+8),right=Math.min(innerWidth-8,bounds.right-8);
@@ -544,6 +615,8 @@ function clearFailure() {
 }
 
   async function flushNow(confirmOverwrite = false, resolvingNoteEdit = false) {
+    if (isDocumentMirror) return {ok:true};
+    if(ui.sourceMissing)return {ok:true};
     if (!resolvingNoteEdit && workspace.hasOverflowEdits(ui.project?.id)) {
       const result = { ok: false, error: { code: 'NOTE_DRAFT_CAPACITY', message: '备注编辑草稿未持久化：已有 40 条草稿。请先明确保存或删除仅保留在内存中的备注编辑，再切换或关闭。' } };
       showFailure(result.error); return result;
@@ -634,8 +707,11 @@ function clearFailure() {
 }
 
 function scheduleSave() {
+  if (isDocumentMirror) return;
+  if(ui.sourceMissing)return;
   if (!ui.file || ui.file.kind !== 'text') return;
   ui.dirty = true;
+  scheduleDocumentPublish();
   setStatus('dirty', ui.composing ? '输入中' : '未保存');
   if (!ui.dirtySince) ui.dirtySince = Date.now();
   window.clearTimeout(ui.timer);
@@ -657,22 +733,24 @@ function fireDeadlineSave() {
 async function writeView(extra = {}) {
   if (ui.viewBlocked) return { ok: false, error: { code: 'VIEW_UNREADABLE', message: '视图未能读取，未写回已保存的工作区。' } };
   if (!ui.project) return { ok: true };
+  if (isSurface) {
+    const shared=workspace.snapshot(),settings={fontSize:shared.fontSize,conversationFontSize:shared.conversationFontSize,readingWidth:shared.readingWidth};
+    const settingsKey=JSON.stringify([settings,extra.projectSettings??ui.projectSettings]);
+    if(workspaceScope.settingsKey!==settingsKey){const saved=await invoke('workspace.settings',{projectId:ui.project.id,workspace:settings,projectSettings:extra.projectSettings??ui.projectSettings});if(!saved.ok)return saved;workspaceScope.settingsKey=settingsKey;}
+    const viewState={...workspaceScope.viewState,documentStatus:documentStatus(),pdfPage:ui.pdf?.current()||1,scrollTop:ui.editor?.adapter.getScrollTop?.()??$('reader-scroll').scrollTop,fileView:{textMode:ui.textMode,selection:ui.editor?.adapter.getSelection?.(),zoom:ui.pdf?.viewState?.(),...(ui.file&&isMarkdownPath(ui.file.relPath)?{markdownPreview:markdownWorkspace.snapshot()}:{})},workspace:workspace.snapshot(),composerMaterials:window.__composerMaterials?.snapshotPersist()};
+    workspaceScope.viewState=viewState;
+    const result = await invoke('workspace.command', {projectId:ui.project.id,requestKey:crypto.randomUUID(),command:{type:'restoreViewState',viewId:workspaceScope.viewId,viewState}});
+    if(result.ok)workspace.saved();
+    return result;
+  }
   const project = ui.project, snapshot = workspace.snapshot();
+  const {draft,noteDrafts,noteOffsets,retainedNoteDrafts,fontSize,conversationFontSize,readingWidth,...navigation}=snapshot;
   const result = await invoke('state.write', {
     projectId: ui.project.id,
     state: {
-      currentRelPath: ui.file?.relPath ?? null,
-      pdfPage: extra.pdfPage ?? ui.pdf?.current() ?? 1,
-      scrollTop: ui.textMode==='read' ? $('reader-scroll').scrollTop : ui.editor?.adapter?.getScrollTop?.() ?? $('reader-scroll').scrollTop ?? 0,
-      fileView: {
-        textMode: ui.file?.kind === 'text' ? ui.textMode : null,
-        selection: ui.editor?.adapter?.getSelection?.() ?? null,
-        zoom: ui.pdf?.viewState?.() ?? null,
-        ...(ui.file?.kind === 'text' && isMarkdownPath(ui.file.relPath) ? { markdownPreview: markdownWorkspace.snapshot() } : {}),
-      },
+      currentRelPath: workspaceGroups?.activeView()?.relPath ?? null,
       projectSettings: extra.projectSettings ?? ui.projectSettings,
-      workspace: {...snapshot, openFiles:openFilesState.paths, openFilesCollapsed:openFilesState.collapsed},
-      composerMaterials: window.__composerMaterials ? window.__composerMaterials.snapshotPersist() : undefined,
+      workspace: {...navigation, openFiles:openFilesState.paths, openFilesCollapsed:openFilesState.collapsed},
     },
   });
   if (!result.ok) showFailure(result.error);
@@ -801,6 +879,8 @@ async function refreshNotes() {
 }
 
   async function openFileNow(relPath, view, force=false) {
+    if (!isSurface) return workspaceGroups?.open({kind:'document',relPath,viewState:view});
+    if (relPath !== workspaceScope.relPath) return invoke('workspace.control',{type:'open-file',projectId:ui.project?.id,relPath,view});
     frozenChangeReader.restore({focus:false});
     const checked=await invoke('file.availability',{projectId:ui.project.id,paths:[relPath]});
     if(checked.ok){openFilesState.availability??=new Map();openFilesState.availability.set(relPath,checked.value.entries[0]);renderFileTabs();}
@@ -820,6 +900,15 @@ async function refreshNotes() {
       view = restored.ok ? restored.value.files?.[relPath] : null;
     }
     const result = await invoke('file.read', { projectId: ui.project.id, relPath });
+    if (isDocumentMirror && result.ok) {
+      const snapshot = await invoke('workspace.document.snapshot', {projectId:ui.project.id,relPath});
+      if (!snapshot.ok) { workspace.toast(snapshot.error?.message || '阅读副本同步失败'); return snapshot; }
+      const latest = pendingMirrorBuffer && pendingMirrorBuffer.relPath === relPath && (!Number.isFinite(snapshot.value?.revision) || pendingMirrorBuffer.revision >= snapshot.value.revision) ? {...snapshot.value,...pendingMirrorBuffer,...(pendingMirrorBuffer.model===undefined&&snapshot.value?.model!==undefined?{model:snapshot.value.model}:{})} : snapshot.value;
+      if (latest) {
+        pendingMirrorBuffer = {...latest,projectId:ui.project.id,relPath};
+        if (result.value.kind === 'text' && typeof latest.text === 'string') { result.value.text = latest.text; result.value.draft = null; }
+      }
+    }
     if (!result.ok) {
       window.__lastOpen = { relPath, step: 'read-failed', error: result.error };
       const message=result.error.code==='NOT_FOUND'?'原路径不存在，文件可能已移动或删除。历史引用保留，当前阅读内容未切换。':result.error.message;
@@ -850,6 +939,15 @@ async function refreshNotes() {
   ui.dirty = Boolean(file.draft && file.draft.status !== 'saved');
   $('file-path').textContent = file.relPath;
   $('subject-title').textContent = file.relPath;
+  if (isDocumentMirror) {
+    $('subject-title').textContent = file.relPath + ' · 阅读副本';
+    document.title = file.relPath + ' · 阅读副本';
+    if (!$('document-owner-focus')) {
+      const button = document.createElement('button');button.id = 'document-owner-focus';button.type = 'button';button.textContent = '回到编辑位置';
+      button.addEventListener('click', () => void invoke('workspace.control',{type:'focus-document-owner',projectId:workspaceScope.projectId,relPath:workspaceScope.relPath}));
+      $('subject-title').after(button);
+    }
+  }
   $('context-bar').textContent = ui.project.name + ' · ' + file.relPath;
   $('empty').hidden = true;
   $('empty').hidden = true;
@@ -868,12 +966,14 @@ async function refreshNotes() {
       parent: $('text-host'),
       relPath: file.relPath,
       text,
+      readOnly: isDocumentMirror,
       marks,
       tagActions: { ...tagActions, autoEdit: id => consumeInitialTagEdit(id, 'text') },
       noteActions: noteActions(ui.project.id),
       onNavigate: navigateCode,
       onStatus: message => { $('code-status').textContent = message; },
       onChange: (view, update) => {
+        if (isDocumentMirror) { if (ui.textMode !== 'edit') renderTextPreview(view.adapter.getText()); return; }
         const remote = update.transactions?.some(transaction => transaction.annotation(remoteDocumentChange));
         if (!remote) {
           authorship.changed({before:update.before??update.startState.doc.toString(),text:view.adapter.getText(),changes:update.changes});
@@ -913,6 +1013,7 @@ async function refreshNotes() {
         showSelectionMenu({ left: Math.min(from.left, to.left), right: Math.max(from.right, to.right), top: Math.min(from.top, to.top), bottom: Math.max(from.bottom, to.bottom) });
       },
       onPasteImage: async ({ view, bytes, name = '' }) => {
+        if (isDocumentMirror) return;
         const projectId = ui.project.id, relPath = ui.file.relPath;
         const base64 = await new Promise((resolve, reject) => {
           const reader = new FileReader();
@@ -993,14 +1094,14 @@ async function refreshNotes() {
     try{
       const payload={projectId:ui.project.id,relPath:file.relPath,digest:file.digest};
       const draft=await invoke('ppt.draft',payload);if(!draft.ok)throw Error(draft.error.message);
-      ui.word=await mountPpt({parent:$('word-host'),bytes:file.bytes,name:file.relPath.split('/').at(-1),draft:draft.value,
+      ui.word=await mountPpt({parent:$('word-host'),bytes:file.bytes,name:file.relPath.split('/').at(-1),draft:draft.value,readOnly:isDocumentMirror,
         onContextMenu:closer=>documentMenu.externalOpen('ppt',closer),onContextClose:()=>documentMenu.externalClosed('ppt'),onSelectionStart:()=>documentMenu.resumeSelection(),
         noteActions:noteActions(ui.project.id),tagActions:{...tagActions,autoEdit:id=>consumeInitialTagEdit(id,'ppt')},
         onRegionMode:enabled=>$('word-region').setAttribute('aria-pressed',String(enabled)),
         onSelection:selected=>{if(ui.file!==file)return;ui.wordSelection=selected;if(!selected){$('selection-menu').hidden=true;return;}if(!$('note-form').hidden)return;showSelectionMenu(selected.rect);},
         onChange:()=>{ui.wordDirty=true;ui.dirty=true;ui.wordRevision=(ui.wordRevision||0)+1;setStatus('dirty','PPTX 草稿未保存');clearTimeout(ui.timer);ui.timer=setTimeout(()=>flushCurrent(),1200);},
         onExport:async bytes=>{const saved=await flushNow();if(!saved.ok)throw Error(saved.error.message);const result=await invoke('ppt.export',{...payload,bytes});if(!result.ok)throw Error(result.error.message);workspace.toast(result.value.cancelled?'已取消导出':'PPTX 副本已导出');}
-      });$('word-region').hidden=false;$('word-region').title='拖动框选文档区域';ui.wordDirty=true;await flushNow();ui.word.setNotes((ui.annotations||[]).filter(n=>n.kind?.startsWith('ppt-')).map(n=>({...n,ordinal:ui.noteDisplayOrdinals.get(n.id)||n.ordinal})));setStatus('saved',draft.value?'PPTX · 已恢复草稿':'PPTX · 本地编辑');
+      });$('word-region').hidden=isDocumentMirror;$('word-region').title='拖动框选文档区域';if(!isDocumentMirror){ui.wordDirty=true;await flushNow();ui.word.setNotes((ui.annotations||[]).filter(n=>n.kind?.startsWith('ppt-')).map(n=>({...n,ordinal:ui.noteDisplayOrdinals.get(n.id)||n.ordinal})));}setStatus('saved',isDocumentMirror?'PPTX · 阅读副本':draft.value?'PPTX · 已恢复草稿':'PPTX · 本地编辑');
     }catch(error){$('unsupported').hidden=false;$('unsupported').textContent=error.message;setStatus('error','PPTX 未能打开');}
   } else if (['word','sheet'].includes(file.kind)) {
     $('reader').classList.add('document-word');
@@ -1009,7 +1110,7 @@ async function refreshNotes() {
     const label = file.kind === 'word' ? 'Word' : '电子表格';
     setStatus('loading', '正在打开 ' + label);
     try {
-      ui.word = await (file.kind === 'word' ? mountWord : mountSheet)({ parent: $('word-host'), bytes: file.bytes, name: file.relPath.split('/').at(-1),
+      ui.word = await (file.kind === 'word' ? mountWord : mountSheet)({ parent: $('word-host'), bytes: file.bytes, name: file.relPath.split('/').at(-1), readOnly:isDocumentMirror,
         noteActions: noteActions(ui.project.id),
         tagActions: {...tagActions,autoEdit:id=>consumeInitialTagEdit(id,'word')},
         onZoom:state=>{$('word-zoom-reset').textContent=Math.round(state.value)+'%';$('word-zoom-out').disabled=state.value<=25;$('word-zoom-in').disabled=state.value>=200;$('word-fit').setAttribute('aria-pressed',String(state.mode==='fit-width'));},
@@ -1027,6 +1128,7 @@ async function refreshNotes() {
         onContextCommand:command=>{if(ui.file!==file)return;if(command==='authorship-toggle')return authorship.toggle();if(command==='authorship-history')return authorship.history();},
         onSelectionStart:()=>documentMenu.resumeSelection(),
         onChange: update => {
+          if (isDocumentMirror) return;
           if(file.kind==='word'&&ui.word&&update?.before!==update?.text){
             let changes;
             try{
@@ -1048,7 +1150,7 @@ async function refreshNotes() {
         if(ui.word.getText()!==file.authorshipText){ui.wordChanges=null;workspace.toast('Word 引擎正文与记录位置不一致，修改者标记暂不显示。');}
       }
       $('word-zoom').hidden=file.kind!=='word';$('word-region').hidden=file.kind!=='word';
-      setStatus('saved', label + ' · 本地编辑');
+      setStatus('saved', label + (isDocumentMirror ? ' · 共享正文只读副本' : ' · 本地编辑'));
       renderWordNotes();
     } catch (error) { $('unsupported').hidden = false; $('unsupported').textContent = error.message; setStatus('error', label + ' 未能打开'); }
   } else if (file.kind === 'pdf') {
@@ -1113,6 +1215,8 @@ async function refreshNotes() {
   if(view?.fileView?.zoom)await ui.pdf?.restoreView?.(view.fileView.zoom);
   if (!ui.editor || ui.textMode === 'read') $('reader-scroll').scrollTop = Number.isFinite(view?.scrollTop) ? view.scrollTop : 0;
   renderFileTabs();
+  if (isDocumentMirror && pendingMirrorBuffer) applyMirrorBuffer(pendingMirrorBuffer);
+  if (!isDocumentMirror) scheduleDocumentPublish();
   await writeView();
 }
 
@@ -1132,12 +1236,13 @@ const treeActions = mountFileTreeActions({
   invoke, projectId: () => ui.project?.id, toast: message => workspace.toast(message),
   openExternal:ctx=>enqueue(async()=>{if(ctx.projectId!==ui.project?.id)return {ok:false,error:{message:'项目已切换'}};const saved=await flushNow();if(!saved.ok)return saved;return invoke('tree.path',{projectId:ctx.projectId,relPath:ctx.relPath,action:'openExternal'});}),
   open: openFile, refresh: () => enqueue(renderTree),
+  openAt:(path,target)=>fileNavigator.openAt(path,target), quickOpen:()=>fileNavigator.search(), selection:()=>fileNavigator.selection(),
   visibility:()=>fileTreeState(),
   changeVisibility:(action,ctx)=>enqueue(async()=>{
     if(ctx.projectId!==ui.project?.id)return;
     const state=fileTreeState(),hidden=new Set(state.hidden);
-    if(action==='hide')hidden.add(ctx.relPath);
-    if(action==='unhide')hidden.delete(ctx.relPath);
+    if(action==='hide')for(const path of ctx.paths||[ctx.relPath])hidden.add(path);
+    if(action==='unhide')for(const path of ctx.paths||[ctx.relPath])hidden.delete(path);
     const result=await invoke('tree.view',{projectId:ctx.projectId,hidden:[...hidden],showHidden:action==='toggleHidden'?!state.showHidden:state.showHidden});
     if(!result.ok)throw Error(result.error.message);
     if(ctx.projectId!==ui.project?.id)return;
@@ -1147,13 +1252,7 @@ const treeActions = mountFileTreeActions({
     workspace.toast(action==='hide'?'已在 Nozeli 文件栏隐藏；真实文件与已打开内容保持不变。':action==='unhide'?'已恢复显示。':state.showHidden?'正在显示已隐藏项；右键“显示”可恢复。':'已隐藏检查视图中的隐藏项。');
   }),
   label: ctx => fileLabels.edit(ctx),
-  collapse: parent => enqueue(async () => {
-    const state = fileTreeState();
-    for (const node of document.querySelectorAll('#file-tree .dir')) if (!parent || node.dataset.path === parent || node.dataset.path.startsWith(parent + '/')) {
-      state.closed.add(node.dataset.path); state.searchClosed.add(node.dataset.path);
-    }
-    filterTree(); await persistTree();
-  }),
+  collapse: parent => fileNavigator.collapse(parent),
   perform: request => enqueue(async () => {
     if (request.projectId !== ui.project?.id) return {ok:false,error:{message:'项目已切换。'}};
     rememberCurrentNote();
@@ -1208,81 +1307,20 @@ async function renderTree() {
   }
   await fileLabels.load(id);
   if(project!==ui.project)return;
-  const result = await invoke('project.list', { projectId: id, treeView:true });
-  if(project!==ui.project)return;
+  await fileNavigator.render();
   const tree = $('file-tree');
-  if (!result.ok) {
-    workspace.toast('目录刷新失败：'+result.error.message);
-    return;
-  }
-  const scrollTop=tree.scrollTop,focused=tree.contains(document.activeElement)?document.activeElement.dataset.path:null;
-  tree.replaceChildren();
-  const children = new Map();
-  for (const entry of result.value.entries) {
-    const parent = entry.relPath.split('/').slice(0, -1).join('/');
-    if (!children.has(parent)) children.set(parent, []);
-    children.get(parent).push(entry);
-  }
-  const ordered = [];
-  const visit = parent => {
-    const entries = children.get(parent) || [];
-    entries.sort((a, b) => Number(b.kind === 'dir') - Number(a.kind === 'dir') || a.name.localeCompare(b.name, 'zh', { numeric: true }));
-    for (const entry of entries) { ordered.push(entry); if (entry.kind === 'dir') visit(entry.relPath); }
-  };
-  visit('');
-  for (const entry of ordered) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    const expander = document.createElement('span');
-    expander.className = 'tree-expander';
-    expander.setAttribute('aria-hidden', 'true');
-    const label = document.createElement('span');
-    label.className = 'tree-label';
-    label.textContent = entry.name;
-    button.append(expander, createFileIcon(entry.relPath,{directory:entry.kind==='dir',expanded:!fileTreeState().closed.has(entry.relPath)}), label);
-    button.title = entry.relPath;
-    button.setAttribute('aria-label', entry.name);
-    button.dataset.path = entry.relPath;
-    button.dataset.hiddenRoot=String(entry.hiddenRoot===true);
-    if(entry.hidden){button.classList.add('tree-hidden-item');button.title+=' · 已在 Nozeli 隐藏';button.setAttribute('aria-label',entry.name+'，已隐藏');const badge=document.createElement('span');badge.className='tree-hidden-label';badge.textContent='已隐藏';button.append(badge);}
-    button.style.paddingLeft = `${12 + entry.depth * 12}px`;
-    if (entry.kind === 'dir') {
-      button.classList.add('dir');
-      button.setAttribute('aria-expanded', String(!fileTreeState().closed.has(entry.relPath)));
-      button.addEventListener('click', () => {
-        const collapsed = button.getAttribute('aria-expanded') === 'true';
-        const state = fileTreeState();
-        const closed = $('file-filter').value.trim() ? state.searchClosed : state.closed;
-        if (collapsed) closed.add(entry.relPath); else closed.delete(entry.relPath);
-        filterTree();
-        if (!$('file-filter').value.trim()) void persistTree();
-      });
-    } else {
-      button.addEventListener('click', () => openFile(entry.relPath));
-    }
-    if (entry.kind !== 'dir') fileLabels.decorate(button);
-    tree.append(button);
-  }
-  if(state.showHidden){const notice=document.createElement('p');notice.className='quiet tree-visibility-notice';notice.textContent='正在显示已隐藏项 · 隐藏文件夹仅列入口，不展开子树；右键“显示”恢复。';tree.prepend(notice);}
-  if (result.value.truncated) {
-    const note = document.createElement('p');
-    note.className = 'quiet';
-    note.textContent = `只显示前 ${result.value.limit} 个未隐藏项；可右键隐藏不需要的文件夹，让出显示额度。`;
-    tree.append(note);
-  }
-  // Tree hiding is a presentation preference, not document-link availability.
-  const linkListing=await invoke('project.list',{projectId:id});
+  // Link resolution is independent of lazy/hidden tree presentation.
+  const links=await invoke('project.list',{projectId:id});
   if(project!==ui.project)return;
-  if(linkListing.ok)ui.filePaths=new Set(linkListing.value.entries.filter(entry=>entry.kind!=='dir').map(entry=>entry.relPath));
+  if(links.ok)ui.filePaths=new Set(links.value.entries.filter(entry=>entry.kind!=='dir').map(entry=>entry.relPath));
   await refreshOpenFileAvailability(project);
   if(project!==ui.project)return;
   window.dispatchEvent(new CustomEvent('nozeli-project-files-refreshed',{detail:{projectId:id}}));
-  filterTree();
+  // Search is host-backed; directory expansion is managed by the navigator.
   treeActions.paint();
   for(const node of tree.querySelectorAll('button'))node.setAttribute('aria-current',String(node.dataset.path===ui.file?.relPath));
-  tree.scrollTop=scrollTop;
-  if(focused){const node=[...tree.querySelectorAll('button')].find(n=>n.dataset.path===focused);if(node&&!node.hidden)node.focus({preventScroll:true});}
 }
+const fileNavigator = mountFileNavigator({invoke, projectId:()=>ui.project?.id, open:relPath=>openFile(relPath), toast:message=>workspace.toast(message), workspaceGroups:()=>workspaceGroups, visibility:fileTreeState, onRendered:()=>{for(const b of document.querySelectorAll('#file-tree button[data-path]:not(.dir)'))fileLabels.decorate(b);treeActions.paint();}});
 mountProjectFileRefresh({subscribe:fn=>window.nozeli.subscribe('agent',fn),getProject:()=>ui.project,
   refresh:project=>enqueue(async()=>{if(ui.project===project)await renderTree();}),onError:error=>workspace.toast('目录刷新失败：'+error.message)});
 window.addEventListener('nozeli-report-exported',event=>{const project=ui.project;if(project?.id===event.detail?.projectId)void enqueue(async()=>{if(ui.project===project)await renderTree();}).catch(showFailure);});
@@ -1320,6 +1358,7 @@ async function renderRecent() {
 }
 
   async function activateProjectNow(projectId) {
+    if (isSurface && projectId !== workspaceScope.projectId) throw new Error('工作面绑定原项目，不能切换项目');
     frozenChangeReader.restore({focus:false});
     rememberCurrentNote();
     const flushed = await flushNow();
@@ -1329,7 +1368,7 @@ async function renderRecent() {
     }
     const leaving = await writeView();
     if (!leaving.ok && leaving.error?.code !== 'VIEW_UNREADABLE') return;
-    await invoke('lsp.stop').catch(() => {});
+    if(!isSurface)await invoke('lsp.stop').catch(() => {});
     const opened = await invoke('project.open', { projectId });
     if (!opened.ok) {
     setStatus('error', opened.error.message);
@@ -1343,14 +1382,13 @@ async function renderRecent() {
   destroySurface();
   $('project-name').textContent = ui.project.name;
   $('project-name').title = ui.project.root || ui.project.name;
-  document.title = ui.project.name;
+  document.title = isSurface ? (workspaceScope.relPath || (isConversation?'对话':'工作区')) : '工作区';
   $('file-path').textContent = '选择文件开始阅读';
   renderEmptyState();
   $('context-bar').textContent = ui.project.name + ' · 项目对话';
   $('composer').disabled = false;
   $('file-filter').value = '';
-  await renderTree();
-  await renderRecent();
+  if(!isSurface){await renderTree();await renderRecent();}
   const state = await invoke('state.read', { projectId });
   if (!state.ok) {
     ui.viewBlocked = true;
@@ -1362,13 +1400,15 @@ async function renderRecent() {
   openFilesState={paths:[...(state.value.state?.workspace?.openFiles||[])],collapsed:state.value.state?.workspace?.openFilesCollapsed===true,active:null,dirty:false};
   await refreshOpenFileAvailability(ui.project);
   renderFileTabs();
-  workspace.restore(state.value.state?.workspace, ui.projectSettings);
+  workspace.restore(isSurface ? (workspaceScope.viewState?.workspace || {...state.value.state?.workspace,draft:isConversation?state.value.state?.workspace?.draft:''}) : state.value.state?.workspace, isSurface?{focusMode:false}:ui.projectSettings);
+  if(isSurface)workspace.inheritSettings(state.value.state?.workspace);
   window.__composerMaterials?.setProject(projectId);
-  window.__composerMaterials?.restore(state.value.state?.composerMaterials);
+  window.__composerMaterials?.restore(isSurface?workspaceScope.viewState?.composerMaterials:state.value.state?.composerMaterials);
   showRetained(state.value.state?.workspace);
-  if (state.value.state?.currentRelPath) await openFileNow(state.value.state.currentRelPath, state.value.state);
+  if (!isSurface) await workspaceGroups.bindProject(projectId);
+  else if (workspaceScope.relPath) await openFileNow(workspaceScope.relPath, workspaceScope.viewState || state.value.files?.[workspaceScope.relPath]);
   else renderEmptyState();
-  window.__agentProject?.(ui.project.id, {draft:state.value.state?.workspace?.draft ?? ''});
+  await window.__agentProject?.(ui.project.id, {draft:isConversation?(workspaceScope.viewState?.workspace?.draft??state.value.state?.workspace?.draft??''):''});
 }
 
 async function pickProject() {
@@ -1484,29 +1524,8 @@ $('export-draft').addEventListener('click', () => {
 $('overwrite-draft').addEventListener('click', () => enqueue(() => flushNow(true), true));
 
 function filterTree() {
-  const buttons = [...document.querySelectorAll('#file-tree button')];
-  const query = $('file-filter').value.trim().toLocaleLowerCase();
-  const state = fileTreeState();
-  const closed = new Set(query ? state.searchClosed : state.closed);
-  if(state.showHidden)for(const hidden of state.hidden){const parts=hidden.split('/');parts.pop();while(parts.length){closed.delete(parts.join('/'));parts.pop();}}
-  const visible = new Set();
-  if (query) for (const button of buttons) {
-    if (!(button.dataset.searchText || button.dataset.path).toLocaleLowerCase().includes(query)) continue;
-    const parts = button.dataset.path.split('/');
-    while (parts.length) { visible.add(parts.join('/')); parts.pop(); }
-  }
-  const prefixes = [...closed].map(path => path + '/');
-  for (const button of buttons) {
-    const path = button.dataset.path;
-    button.hidden = (query && !visible.has(path)) || prefixes.some(prefix => path.startsWith(prefix));
-    if (button.classList.contains('dir')) {
-      const collapsed = closed.has(path);
-      button.dataset.collapsed = String(collapsed);
-      button.setAttribute('aria-expanded', String(!collapsed));
-      button.querySelector('.tree-expander').replaceChildren(uiIcon(collapsed?'chevron-right':'chevron-down'));
-      updateFileIcon(button.querySelector('.file-type-icon'),button.dataset.path,{directory:true,expanded:!collapsed});
-    }
-  }
+  // Only already loaded tree nodes are affected; Quick Open performs bounded host search.
+  if(typeof fileNavigator!=='undefined')fileNavigator.applyClosed(fileTreeState().closed);
 }
 function settleNoteEdit(projectId, id, submitted, text, saved) {
   if (!submitted || ui.project?.id !== projectId) return;
@@ -1983,7 +2002,7 @@ const documentMenu = mountDocumentContextMenu({
           const rect = dom?.rangeCount && !dom.isCollapsed ? dom.getRangeAt(0).getBoundingClientRect() : ui.selectionRect;
           if (rect && !secondary) ui.selectionRect = { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
         }
-        return { kind: ['legacy-word','unsupported'].includes(file.kind)?'unsupported':file.kind, secondary, reading, editable: file.kind==='text'&&!secondary&&!reading, code: Boolean(languageIdForPath(file.relPath)), selected,
+        return { kind: ['legacy-word','unsupported'].includes(file.kind)?'unsupported':file.kind, secondary, reading, editable: file.kind==='text'&&!secondary&&!reading&&!isDocumentMirror, code: Boolean(languageIdForPath(file.relPath)), selected,
           relPath: file.relPath, buildId:file.buildId, projectId, adapter, editor, element, current, selection, text,link:element.id==='text-preview'?target.closest('a[href],.conversation-file-link'):null,
           panel:true,generated:file.generated,fontSize:file.kind==='text'?workspace.snapshot().fontSize:null,
           canOpenBeside:!secondary&&['text','pdf','image'].includes(file.kind),
@@ -2004,7 +2023,7 @@ const documentMenu = mountDocumentContextMenu({
             kind:'tex',visible:beside.tex&&$('tex-preview').getAttribute('aria-pressed')==='true',linked:$('tex-sync').getAttribute('aria-pressed')==='true',
             automatic:$('tex-auto').checked,available:$('tex-sync').dataset.state!=='unavailable',hint:$('tex-sync').title,
           } : null,
-          canAnnotate: !secondary && !file.sourceChanged && (file.kind === 'pdf' || Boolean(anchor)),
+          canAnnotate: !isDocumentMirror && !secondary && !file.sourceChanged && (file.kind === 'pdf' || Boolean(anchor)),
           canDiscuss: !secondary && selected && Boolean(anchor) && !ui.pdfSelection?.kind?.includes('region'),
           canExplain: !secondary && !$('selection-explain').disabled && selected && Boolean(anchor) && !ui.pdfSelection?.kind?.includes('region'),
           page: (secondary ? beside.pdf : ui.pdf)?.current() || 1,
@@ -2014,6 +2033,7 @@ const documentMenu = mountDocumentContextMenu({
     };
   },
   async run(command, s) {
+    if (isDocumentMirror && ['cut','paste','undo','redo','format','annotate','exportPpt'].includes(command)) return;
     if(command.startsWith('document-font-')) {
       const control={'document-font-larger':'font-larger','document-font-smaller':'font-smaller','document-font-reset':'font-reset'}[command];
       return (control?$(control):document.querySelector('[data-reader-font="'+command.slice(14)+'"]'))?.click();
@@ -2107,6 +2127,7 @@ $('empty-browse').addEventListener('click', () => {
   $('file-filter').focus();
 });
 async function closeCurrentSubject(preserveDraft=false) {
+  if(isSurface&&!preserveDraft)return invoke('workspace.control',{type:'workspace-action',projectId:workspaceScope.projectId,viewId:workspaceScope.viewId,command:{type:'close',viewId:workspaceScope.viewId}}).then(result=>result.ok);
   if (workspace.hasOverflowEdits(ui.project?.id)) { await flushNow(); return false; }
   frozenChangeReader.restore({focus:false});
   if(preserveDraft){
@@ -2132,7 +2153,7 @@ async function closeCurrentSubject(preserveDraft=false) {
 }
 $('close-subject').addEventListener('click', () => enqueue(()=>ui.file?closeFileTab(ui.file.relPath):closeCurrentSubject(), true));
 $('retain-file-close').addEventListener('click',()=>enqueue(async()=>{if(ui.file?.kind==='text'&&await closeCurrentSubject(true)){renderFileTabs();workspace.toast('文本副本已保留，仍可从已打开列表查看；未重建原路径。');}},true));
-document.addEventListener('keydown',event=>{if(!(event.ctrlKey||event.metaKey)||document.body.classList.contains('provider-console-open')||document.querySelector('dialog[open]'))return;if(event.key.toLowerCase()==='w'&&ui.file){event.preventDefault();enqueue(()=>closeFileTab(ui.file.relPath),true);}if(event.key==='Tab'&&openFilesState.paths.length){event.preventDefault();const paths=openFilesState.paths,index=paths.indexOf(ui.file?.relPath);openFile(paths[(index+(event.shiftKey?-1:1)+paths.length)%paths.length]);}});
+document.addEventListener('keydown',event=>{if(!(event.ctrlKey||event.metaKey)||document.body.classList.contains('provider-console-open')||document.querySelector('dialog[open]'))return;if(event.key.toLowerCase()==='w'&&ui.file){event.preventDefault();enqueue(()=>closeFileTab(ui.file.relPath),true);}});
 document.addEventListener('keydown', event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); flushCurrent(); } });
 for (const [id, factor] of [['pdf-zoom-in', 1.2], ['pdf-zoom-out', 1/1.2], ['pdf-fit', null]]) $(id).addEventListener('click', () => enqueue(() => ui.pdf?.zoom(factor)));
 $('pdf-outline-toggle').addEventListener('click', () => enqueue(async () => {
@@ -2227,13 +2248,19 @@ async function openBesideSnapshot(file, diff=false) {
       return view.adapter.getText();
     },
   };
-  window.nozeli.subscribe('session.flush', () => enqueue(async () => {
+  window.nozeli.subscribe('session.flush', () => {
+    // Detached roots own layout chrome only; their content surfaces flush separately.
+    if(workspaceScope.role==='detached')return Promise.resolve({ok:true});
+    if(ui.composing)return Promise.resolve({ok:false,composing:true,error:{code:'COMPOSING',message:'输入法组合尚未结束，未移动工作面。'}});
+    return enqueue(async () => {
+    if(ui.composing)return {ok:false,composing:true,error:{code:'COMPOSING',message:'输入法组合尚未结束，未移动工作面。'}};
     rememberCurrentNote();
     await texWorkspace.persist();
     const saved = await flushNow();
     if (!saved.ok || ui.viewBlocked) return saved;
     return writeView();
-  }, true));
+  }, false);
+  });
   window.nozeli.subscribe('document.sync',request=>{
     void enqueue(async()=>{
       if(ui.project?.id!==request.projectId||ui.file?.relPath!==request.relPath)return {ok:true};
@@ -2247,7 +2274,43 @@ async function openBesideSnapshot(file, diff=false) {
     }).then(result=>invoke('document.synced',{requestId:request.requestId,result}));
   });
   window.nozeli.subscribe('document.release',requestId=>{ui.documentHolds.delete(requestId);$('text-host').inert=ui.documentHolds.size>0;});
+  window.nozeli.subscribe('workspace.control', event => {
+    if(event.type === 'document-buffer') { applyMirrorBuffer(event); return; }
+    if(event.type==='focus-content'&&isSurface){if(isConversation)$('composer').focus();else if(ui.editor)ui.editor.adapter.focus();else{$('reader-scroll').tabIndex=-1;$('reader-scroll').focus();}}
+    if(event.type==='settings'&&event.projectId===ui.project?.id){
+      workspace.inheritSettings(event.workspace);
+      if(event.projectSettings)ui.projectSettings={focusMode:event.projectSettings.focusMode===true};
+    }
+    if(event.type==='project'&&!isSurface&&workspaceScope.role==='shell')void activateProject(event.projectId);
+    if(event.type==='document-missing'&&event.projectId===ui.project?.id&&event.viewId===workspaceScope.viewId){
+      window.clearTimeout(ui.timer);window.clearTimeout(ui.maxTimer);ui.sourceMissing=true;
+      scheduleDocumentPublish();
+      if(ui.file){ui.file.diskPresent=false;ui.file.sourceChanged=true;}
+      $('file-path-notice').hidden=false;$('file-path-notice-text').textContent='文件已移到回收站。当前编辑器和未发送备注保留，只读；恢复原文件后点击继续编辑。';recoverResourceButton.hidden=false;
+    }
+    if(event.type==='document-renamed'&&event.projectId===ui.project?.id&&event.viewId===workspaceScope.viewId){
+      const from=ui.file?.relPath;
+      workspaceScope.relPath=event.relPath;
+      if(ui.file&&from){ui.file.relPath=event.relPath;openFilesState.paths=openFilesState.paths.map(path=>path===from?event.relPath:path);workspace.remapFiles(from,event.relPath);if(ui.frozenNote?.relPath===from)ui.frozenNote.relPath=event.relPath;$('file-path').textContent=event.relPath;$('subject-title').textContent=event.relPath.split('/').pop();document.title=event.relPath;renderFileTabs();}
+    }
+    if(event.type==='transfer-hold'){
+      if(event.held && ui.composing)return;
+      $('app').inert=Boolean(event.held)&&!ui.sourceMissing;
+      if(ui.sourceMissing)$('documents').inert=true;else $('documents').inert=false;
+    }
+    if(event.windowId)workspaceScope.windowId=event.windowId;
+    if(event.type==='open-file' && !isSurface && event.projectId){
+      void enqueue(async()=>{if(ui.project?.id!==event.projectId)await activateProjectNow(event.projectId);const layout=workspaceGroups.snapshot(),find=node=>node?.kind==='group'?(node.activeViewId===event.sourceViewId?node.id:null):node?.kind==='split'?(find(node.first)||find(node.second)):null,groupId=find(layout?.mainRoot)||layout?.detached.map(w=>find(w.root)).find(Boolean)||workspaceGroups.activeGroup();await workspaceGroups.command({type:'open',groupId,view:{kind:'document',relPath:event.relPath,viewState:event.view}});});
+    }
+    if(event.type==='report' && !isSurface){
+      const report=event.report||event;
+      void enqueue(async()=>{if(report.projectId&&ui.project?.id!==report.projectId)await activateProjectNow(report.projectId);await workspaceGroups.open({kind:report.kind==='diff'?'diff':report.history?'history':'report',resourceId:report.id||report.objectId||crypto.randomUUID(),viewState:report.kind==='diff'?{target:report.target,title:report.title}:{report}});});
+    }
+  });
+  if(isSurface)document.addEventListener('keydown',event=>{if(event.defaultPrevented||event.isComposing)return;const numbered=(event.ctrlKey||event.metaKey)&&!event.altKey&&!event.shiftKey&&/^[1-9]$/.test(event.key),cycle=event.key==='F6'&&!event.ctrlKey&&!event.metaKey&&!event.altKey;if(!numbered&&!cycle)return;event.preventDefault();event.stopImmediatePropagation();void invoke('workspace.control',{type:'group-focus',projectId:workspaceScope.projectId,viewId:workspaceScope.viewId,...(numbered?{index:Number(event.key)-1}:{direction:event.shiftKey?-1:1})});},true);
+  if(isSurface)document.addEventListener('workspace-action',event=>{const command={...event.detail.command};if(['split','maximize','closeGroup'].includes(command.type))command.groupId=workspaceScope.groupId;if(command.type==='detach'||command.type==='close')command.viewId=workspaceScope.viewId;void invoke('workspace.control',{type:'workspace-action',projectId:workspaceScope.projectId,viewId:workspaceScope.viewId,command});});
   async function applyDocumentEvent(event) {
+    if (isDocumentMirror) return;
     if (ui.project?.id !== event.projectId || ui.file?.relPath !== event.relPath || ui.file.kind !== 'text') return;
     if (!event.changes || typeof event.text !== 'string' || !event.authorship || !ui.editor?.adapter.applyRemoteChanges) return;
     if (ui.composing) { ui.pendingDocumentEvents.push(event); return; }
@@ -2280,6 +2343,8 @@ async function openBesideSnapshot(file, diff=false) {
   }
   window.nozeli.subscribe('document', event => { void enqueue(() => applyDocumentEvent(event)); });
   async function openManaged(report) {
+    if (!isSurface) { const {isCurrent,...material}=report;return workspaceGroups?.open({kind:report.history?'history':'report',resourceId:report.id||report.objectId||crypto.randomUUID(),viewState:{report:material}}); }
+    if (workspaceScope.kind === 'conversation') { const {isCurrent,...material}=report;return invoke('workspace.control',{type:'report',projectId:ui.project?.id,report:{...material,projectId:ui.project?.id}}); }
     return enqueue(async () => {
       if(report.projectId&&report.projectId!==ui.project?.id)return {ok:false,error:{message:'项目已切换，原报告未打开。'}};
       if(report.isCurrent&&!report.isCurrent())return {ok:false};
@@ -2302,7 +2367,7 @@ async function openBesideSnapshot(file, diff=false) {
       $('save-status').textContent = report.historyError ? '读取失败 · 原记录保留' : report.history ? '只读 · 可另存到项目目录' : report.objectId ? '可另存到项目目录' : report.writtenBack === false ? '未写回源文件' : report.writtenBack === true ? '源文件有变化' : '写回未核验';
     });
   }
-  mountAgent({invoke,getProjectId:()=>ui.project?.id??null,toast:text=>workspace.toast(text),attachment:()=>ui.managedReport || ui.file?.kind!=='text'?null:ui.file.relPath,openManaged,openFrozenChange,onMessages:applyAgentMessages,
+  if(workspaceScope.role!=='detached')mountAgent({invoke,getProjectId:()=>ui.project?.id??null,toast:text=>workspace.toast(text),attachment:()=>ui.managedReport || ui.file?.kind!=='text'?null:ui.file.relPath,openManaged,openFrozenChange,onMessages:applyAgentMessages,
     onConversation:info=>workspace.conversationContent(info),
     openProjectFile:target=>target.projectId===ui.project?.id?openMarkdownTarget(target):null,
     openExternal:url=>invoke('links.openExternal',{url}).then(result=>{if(!result.ok)workspace.toast(result.error.message);}),
@@ -2319,6 +2384,20 @@ async function openBesideSnapshot(file, diff=false) {
       window.__nozeliReady = false;
       async function restoreLast() {
         await authorship.ready;
+        await invoke('workspace.ready', {});
+        if(workspaceScope.role==='detached'){const opened=await invoke('project.open',{projectId:workspaceScope.projectId});if(!opened.ok)throw Error(opened.error.message);ui.project=opened.value.project;await workspaceGroups.bindProject(workspaceScope.projectId);return;}
+        if(isSurface){
+          await activateProject(workspaceScope.projectId);
+          if(ui.project?.id!==workspaceScope.projectId||ui.viewBlocked||(workspaceScope.kind==='document'&&ui.file?.relPath!==workspaceScope.relPath))throw new Error('原项目内容未能载入，未发布工作面就绪。');
+          const snapshot=await invoke('workspace.snapshot',{projectId:workspaceScope.projectId});
+          const view=snapshot.ok?snapshot.value.layout.views[workspaceScope.viewId]:null;
+          if(view?.viewState?.report&&!view.viewState.report.todoId)await openManaged(view.viewState.report);
+          if(view?.viewState?.report?.todoId)await window.__workspaceOpenTodo?.(view.viewState.report.todoId);
+          if(view?.kind==='diff'&&view.viewState?.target)await openFrozenChange(view.viewState.target);
+          const ready=await invoke('workspace.ready', {contentReady:true});
+          if(!ready.ok)throw new Error(ready.error?.message||'工作面初始化未完成');
+          return;
+        }
         const recent = await invoke('project.recent');
         const project = recent.ok ? recent.value.projects.find((item) => item.available) : null;
         if (project) await activateProject(project.id);
@@ -2326,4 +2405,4 @@ async function openBesideSnapshot(file, diff=false) {
       }
       restoreLast()
         .catch((error) => showFailure(error))
-        .finally(() => { window.__nozeliReady = true; void drainExternalOpen().catch(showFailure); });
+        .finally(() => { window.__nozeliReady = true; if(!isSurface&&workspaceScope.role!=='detached')void drainExternalOpen().catch(showFailure); });
