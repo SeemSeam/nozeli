@@ -18,7 +18,9 @@ test('readable tagged question survives restart while actual model input keeps f
  const question='请重新设计README。\n显式备注材料：这是用户自己的文字，不应被清理。\n{"schema":"my-own-json"}';
  const payload={projectId:p.id,target:'frontdesk',text:question,tags:[{relPath:'a.md',annotationId:created.annotation.id}],requestKey:'tag-question-0001'};
  const receipt=await manager.invoke('managed.send',payload);const job=c.store.state.jobs.find(j=>j.id===receipt.jobId);
- assert(job.text.startsWith(question));assert(job.text.includes(quote));assert(job.text.includes(file.digest));assert(job.text.includes('nozeli.agent-tag-material-v1'));
+ assert(job.text.startsWith(question));assert(job.text.includes(quote));assert(job.text.includes('First occurrence.'));assert(job.text.includes('Last context.'));assert(!job.text.includes('nozeli.agent-tag-material-v1'));
+ assert.equal(job.context.userInput.sources[0].materialDigest,file.digest);
+ const frozen=await fs.readFile(path.join(runtime,'objects',job.context.tagMaterial.version+'.md'),'utf8');assert(frozen.includes(quote));assert(frozen.includes('Keep this origin'));
  const visible=(await c.timeline.page()).entries.find(e=>e.jobId===job.id&&e.speaker==='user');
  assert.equal(visible.text,question);assert.equal(visible.materialSources[0].quote,quote);assert.equal(visible.materialSources[0].materialDigest,file.digest);
  assert.equal((await manager.invoke('managed.send',payload)).jobId,job.id);assert.equal(c.store.state.jobs.length,1);

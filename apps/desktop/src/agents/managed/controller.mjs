@@ -21,6 +21,7 @@ import {createWorkerTerminalLifecycle} from './worker-terminal-first-frame.mjs';
 import {MemoryVersion} from './memory-version.mjs';
 import {SessionIndex} from './session-index.mjs';
 import {WorkChanges} from './work-changes.mjs';
+import {TagMaterialDelivery} from './tag-material-delivery.mjs';
 import {loadWorkerArchive,readWorkerArchive as readWorkerArchiveFile} from './worker-archive.mjs';
 
 const tool=(name,description,properties,required=Object.keys(properties))=>({type:'function',name,description,inputSchema:{type:'object',properties,required,additionalProperties:false}});
@@ -69,9 +70,10 @@ export class Controller extends EventEmitter {
   }
   async recordNativeEntries(target,fact){
     const facts=Array.isArray(fact)?fact:Array.isArray(fact?.entries)?fact.entries.map(entry=>entry.entry?{sessionId:fact.sessionId,epoch:fact.epoch,...entry}:{sessionId:fact.sessionId,epoch:fact.epoch,entry}):[fact];
+    if(facts.some(fact=>['compaction','branch'].includes(fact?.entry?.type)))this.tagMaterialDelivery?.invalidate(this.sessions.get(target));
     await this.timeline.recordBatch(facts,target);this.publishTimeline();
   }
-  recordNativeEvent(target,fact){this.timeline.event(fact,target);this.publishTimeline();}
+  recordNativeEvent(target,fact){if(/compaction|branch/.test(fact?.event?.type||''))this.tagMaterialDelivery?.invalidate(this.sessions.get(target));this.timeline.event(fact,target);this.publishTimeline();}
   publishTimeline(){
     if(this.timelineTimer||this.store.closed)return;
     this.timelineTimer=setTimeout(()=>{this.timelineTimer=null;if(!this.store.closed)this.emit('timeline',this.timeline.frame());},25);
@@ -1049,6 +1051,9 @@ export class Controller extends EventEmitter {
       const isWork=!['frontdesk','orchestrator'].includes(job.target);
       if(isWork){const w=this.store.find(job.target);if(job.type!=='initial')await this.store.continue(w.id);job.revision=w.revision;await this.store.mutate(()=>{savedJob().revision=job.revision;});}
       const session=await this.session(job.target);let prompt=job.text,delivery;
+      this.tagMaterialDelivery??=new TagMaterialDelivery();
+      const materialDelivery=this.tagMaterialDelivery.prepare(session,job);
+      prompt=materialDelivery.text;
       const event=job.target==='orchestrator'?await eventSkill('orchestrator',job.type,{skills:this.store.state.bindings.orchestrator.skills,boundWork:job.type==='intake'&&Boolean(this.intakeBoundWork(job)),routingQuestion:job.type==='intake'&&Boolean(job.context?.routingQuestionId)}):'';
       if(isWork&&session.zeroActivityRestarted&&!session.hasPrompted&&job.type!=='initial'){const w=this.store.find(job.target);prompt='宿主已确认原线程尚未开始模型回合，已恢复同一Work的空线程。原任务要求：\n'+(w.originalBrief??w.brief)+'\n原始用户请求：\n'+w.request+'\n本次用户输入：\n'+prompt;}
       if(isWork){const recovery=await this.workerRecoveryContext(this.store.find(job.target),job);if(recovery)prompt='User-confirmed context handoff sources:\n'+JSON.stringify(recovery)+'\nCurrent explicit input (only scheduled instruction):\n'+prompt;}
@@ -1069,7 +1074,7 @@ export class Controller extends EventEmitter {
           if(this.intakeBoundWork(job)){const bound=this.intakeBoundWork(job);parts.push('程序已绑定原工作：'+bound.name+'；此输入为该工作的补充，只管理原Work，不新派工。');}
           if(job.context.handoffIntent&&job.context.handoffIntent!==job.text)parts.push('前台交接意图：'+job.context.handoffIntent);
         }
-        parts.push((job.type==='front'?'用户本次原文：':'原始请求:')+'\n'+job.text);prompt=parts.join('\n');
+        parts.push((job.type==='front'?'用户本次原文：':'原始请求:')+'\n'+materialDelivery.text);prompt=parts.join('\n');
       }
       if(event)prompt='事件技能（仅本次宿主事件）：\n'+event+'\n\n'+prompt;
       const attachments=job.context?.imageAttachments||[];if(attachments.length>8)throw Error('区域图片超过8张');const images=[];let imageBytes=0;for(const ref of attachments){if(!/^[a-f0-9]{64}$/.test(ref.digest)||ref.mime!=='image/png')throw Error('区域附件引用无效');const bytes=await new MaterialStore(path.join(this.store.state.contentRoot,'.nozeli/materials')).get(ref.digest);imageBytes+=bytes.length;if(imageBytes>24*1024*1024)throw Error('区域附件超过24MB');images.push('data:image/png;base64,'+bytes.toString('base64'));}
@@ -1078,6 +1083,7 @@ export class Controller extends EventEmitter {
       if(job.type==='front'&&this.transferFor(job)){await this.saveTransferredFront(job);return;}
       await this.store.mutate(()=>{if(isWork)this.assertDeviationReleased(job.target);savedJob().promptStartedAt=Date.now();const owner=isWork?this.store.find(job.target):this.store.state.residents[job.target];if(owner)owner.zeroActivity=false;});
       const response=await session.prompt(prompt,{timeout:session.settleTimeoutMs??600000,images,job:{id:job.id,target:job.target,revision:job.revision??null,type:job.type}});
+      materialDelivery.commit();
       if(job.type==='front'&&this.transferFor(job)){await this.saveTransferredFront(job,response);return;}
       if(this.stopping||(isWork&&['closing','ended'].includes(this.store.find(job.target).status))||(job.type==='intake'&&['closing','ended'].includes(this.intakeBoundWork(job)?.status)))throw new Error('execution interrupted after prompt');
       if(isWork&&response.files?.length)await this.recordArtifacts(job,response.files);

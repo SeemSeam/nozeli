@@ -1,6 +1,7 @@
 import {SystemTerminalBridge} from './managed/system-terminal-bridge.mjs';
 import {fileURLToPath} from 'node:url';
-import {preferredRegionAssets,compactDrawingPacket} from '../domain/region-drawing.mjs';
+import {preferredRegionAssets} from '../domain/region-drawing.mjs';
+import {tagMaterialSnapshot} from './managed/tag-material-delivery.mjs';
 import {createHash,randomUUID} from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -297,11 +298,18 @@ export class ManagedProjects {
    const previous=p.requestKey&&c.store.state.jobs.find(j=>j.key===(action==='task'?'task:':'input:')+p.requestKey);
    if(previous){if(previous.context?.submissionDigest!==submissionDigest)throw Error('submission key collision');return {accepted:true,jobId:previous.id};}
    let text=p.text;
-   if(p.relPath&&!p.tags?.length){const file=await this.host.readFile(p.projectId,p.relPath),material=p.materialText??file.draft?.text??file.text;if(typeof material!=='string')throw new Error('无法获取当前文本材料');text+='\n\n显式附带材料（可能为未保存缓冲，与磁盘不同）：'+file.relPath+'\n'+material;}
-   const packets=[];if(p.tags?.length){if(!Array.isArray(p.tags)||p.tags.length>20)throw Error('备注材料最多20项');for(const ref of p.tags){const material=await this.host.tagMaterial(p.projectId,ref);packets.push(material);const {currentText,...compact}=material;const {text:sourceText,...origin}=material.origin||{};text+='\n\n显式备注材料（按提供的位置，原版和当前版分开；笔迹仅为用户标注）：\n'+JSON.stringify(compactDrawingPacket({...compact,origin}));}}
+   if(p.relPath&&!p.tags?.length){const file=await this.host.readFile(p.projectId,p.relPath),material=p.materialText??file.draft?.text??file.text;if(typeof material!=='string')throw new Error('无法获取当前文本材料');text+='\n\n参考文件：'+file.relPath+'\n以下是用户附带的文本，可能包含尚未保存的编辑：\n\n'+material;}
+   const packets=[];if(p.tags?.length){if(!Array.isArray(p.tags)||p.tags.length>20)throw Error('备注材料最多20项');for(const ref of p.tags)packets.push(await this.host.tagMaterial(p.projectId,ref));}
+   const material=packets.length?tagMaterialSnapshot(packets):null;
+   if(material){
+    const file=path.join(c.store.root,'objects',material.version+'.md');
+    try{await fs.writeFile(file,material.full,{flag:'wx',mode:0o600});}catch(error){if(error.code!=='EEXIST')throw error;if(createHash('sha256').update(await fs.readFile(file)).digest('hex')!==material.version)throw Error('冻结讨论材料损坏，未发送');}
+    text+='\n\n参考材料\n\n'+material.full;
+   }
    const imageAttachments=preferredRegionAssets(packets).map(a=>({digest:a.digest,mime:'image/png'}));if(imageAttachments.length>8)throw Error('每次最多8个区域图片');
    if(p.routingQuestionId&&!c.store.state.todos.some(t=>t.id===p.routingQuestionId&&t.kind==='routing'&&t.status==='open'))throw new Error('澄清问题已过期');
    const context={...(p.requestKey?{submissionDigest}:{}),...(p.routingQuestionId?{routingQuestionId:p.routingQuestionId}:{}),...(imageAttachments.length?{imageAttachments}:{})};
+   if(material)context.tagMaterial={version:material.version,binding:material.binding,brief:material.brief,reusable:material.reusable};
    if(packets.length)context.userInput={text:p.text,sources:packets.map(packet=>({relPath:packet.relPath,annotationId:packet.tagId,materialDigest:packet.origin?.materialDigest,quote:packet.origin?.anchor?.quote||'',location:packet.information?.location?.label||'',changed:packet.resolution?.targetDigest!==packet.origin?.materialDigest}))};
    return action==='task'?c.submitTask(text,{requestKey:p.requestKey,context,draftText:p.text}):c.send(p.target||'frontdesk',text,{requestKey:p.requestKey,context,draftText:p.text});
   }
