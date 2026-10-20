@@ -9,6 +9,18 @@ const fail = (message) => { throw new Error(message); };
 const exists = async p => { try { await fs.lstat(p); return true; } catch (e) { if (e.code === 'ENOENT') return false; throw e; } };
 const inside = (rel, parent) => rel === parent || rel.startsWith(parent + '/');
 const key = rel => createHash('sha256').update(rel).digest('hex');
+const validClosedPath = p => typeof p === 'string' && p.length > 0 && p.length <= 4096 && !p.includes('\\') && p.split('/').every(c => c && c !== '.' && c !== '..');
+const validViewPath = p => typeof p === 'string' && p.length > 0 && p.length <= 4096 && !/[\\:\x00-\x1f]/.test(p) && p.split('/').every(c => c && c !== '.' && c !== '..' && !c.startsWith('.') && c !== 'node_modules');
+const validateViewPaths = (paths, message, valid = validViewPath) => {
+  if (!Array.isArray(paths) || paths.length > 10000 || paths.some(p => !valid(p))) fail(message);
+  return [...new Set(paths)];
+};
+export function treeViewValue(record) {
+  const closed = validateViewPaths(record?.closed === undefined ? [] : record.closed, '目录折叠状态无效。', validClosedPath);
+  const hidden = validateViewPaths(record?.hidden === undefined ? [] : record.hidden, '隐藏路径无效。');
+  if (record?.showHidden !== undefined && typeof record.showHidden !== 'boolean') fail('隐藏文件显示状态无效。');
+  return { closed, hidden, showHidden: record?.showHidden ?? false };
+}
 export class FileTreeOps {
   constructor(host, { trash }) { this.host = host; this.trash = trash; this.pending = Promise.resolve(); }
   run(input) {
@@ -42,14 +54,24 @@ export class FileTreeOps {
     this.pending = task.catch(() => {});
     return this.host.track(task);
   }
-  async view({ projectId, closed }) {
-    await this.host.requireProject(projectId);
-    const file = path.join(this.host.projectDir(projectId), 'file-tree-view.json');
-    if (closed !== undefined) {
-      if (!Array.isArray(closed) || closed.length > 10000 || closed.some(p => typeof p !== 'string' || !p || p.length > 4096 || p.includes('\\') || p.split('/').some(c => !c || c === '.' || c === '..'))) fail('目录折叠状态无效。');
-      await this.host.track(this.host.metaLock(() => this.host.writeVersioned(file, { closed: [...new Set(closed)] })));
-    }
-    return { closed: (await this.host.readVersioned(file))?.closed || [] };
+  async view({ projectId, closed, hidden, showHidden }) {
+    const project = await this.host.requireProject(projectId);
+    return this.host.track(this.host.metaLock(async () => {
+      const file = path.join(this.host.projectDir(projectId), 'file-tree-view.json');
+      const previous = await this.host.readVersioned(file);
+      const value = treeViewValue(previous);
+      if (closed !== undefined) value.closed = validateViewPaths(closed, '目录折叠状态无效。', validClosedPath);
+      if (hidden !== undefined) {
+        value.hidden = validateViewPaths(hidden, '隐藏路径无效。');
+        for (const rel of value.hidden) await this.locate(project, rel);
+      }
+      if (showHidden !== undefined) {
+        if (typeof showHidden !== 'boolean') fail('隐藏文件显示状态无效。');
+        value.showHidden = showHidden;
+      }
+      if (closed !== undefined || hidden !== undefined || showHidden !== undefined) await this.host.writeVersioned(file, { ...previous, ...value });
+      return value;
+    }));
   }
   async locate(project, rel, rootAllowed = false) {
     if (rel === '' && rootAllowed) return project.root;

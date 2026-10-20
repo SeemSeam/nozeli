@@ -1,7 +1,7 @@
 import {treeMenuItems} from '../main/file-tree-menu.mjs';
 import {mountContextMenu} from './context-menu.mjs';
 import {panelButton,panelMenuPosition,menuNotice} from './panel-menu.mjs';
-export function mountFileTreeActions({ invoke, projectId, perform, open, openExternal, label, collapse, refresh, toast }) {
+export function mountFileTreeActions({ invoke, projectId, perform, open, openExternal, label, collapse, refresh, toast, visibility, changeVisibility }) {
   const tree = document.getElementById('file-tree');
   tree.tabIndex = 0;
   let buffer = null, busy = false;
@@ -26,7 +26,7 @@ export function mountFileTreeActions({ invoke, projectId, perform, open, openExt
     dialog.showModal();if(deletion) cancel.focus();else {input.focus();input.select();}
   });
   const parent = rel => rel.split('/').slice(0,-1).join('/');
-  const target = node => ({ projectId:projectId(), relPath:node?.dataset.path || '', directory:!node || node.classList.contains('dir') });
+  const target = node => ({ projectId:projectId(), relPath:node?.dataset.path || '', directory:!node || node.classList.contains('dir'), hidden:node?.dataset.hiddenRoot==='true' });
   const paint = () => {more.disabled=!projectId();for(const node of tree.querySelectorAll('button')) node.classList.toggle('tree-cut',buffer?.projectId===projectId()&&buffer?.action==='cut'&&(node.dataset.path===buffer.source||node.dataset.path.startsWith(buffer.source+'/')));};
   async function execute(action, ctx) {
     if(!action || busy || ctx.projectId!==projectId()) return;
@@ -38,6 +38,7 @@ export function mountFileTreeActions({ invoke, projectId, perform, open, openExt
       if(action==='open'){if(ctx.directory) tree.querySelector(`[data-path="${CSS.escape(source)}"]`)?.click();else await open(source);return;}
       if(action==='openExternal'){const r=await openExternal(ctx);if(!r.ok)throw Error(r.error.message);return;}
       if(action==='refresh'){await refresh();paint();return;}
+      if(['hide','unhide','toggleHidden'].includes(action)){await changeVisibility(action,ctx);paint();return;}
       if(action==='collapse'){await collapse(source);return;}
       if(action==='label'){await label(ctx);return;}
       if(['relativePath','absolutePath','reveal'].includes(action)){const r=await invoke('tree.path',{...ctx,action});if(!r.ok)throw Error(r.error.message);return;}
@@ -54,8 +55,9 @@ export function mountFileTreeActions({ invoke, projectId, perform, open, openExt
       paint();toast('操作完成');
     }catch(e){toast(e.message||'文件操作失败');}finally{busy=false;}
   }
-  function menu(node,event){const ctx=target(node);if(!ctx.projectId)return;node?.focus({preventScroll:true});const b=node?.getBoundingClientRect()||tree.getBoundingClientRect();popup.open(treeMenuItems({directory:ctx.directory,root:!ctx.relPath,canPaste:buffer?.projectId===ctx.projectId}),{x:event?.clientX??b.left+20,y:event?.clientY??b.bottom,run:action=>execute(action,ctx)});}
-  more.addEventListener('click',()=>{const ctx=target();if(!ctx.projectId)return;popup.open([...treeMenuItems({directory:true,root:true,canPaste:buffer?.projectId===ctx.projectId}),menuNotice],{...panelMenuPosition(more),run:action=>execute(action,ctx)});more.setAttribute('aria-expanded','true');});
+  const menuItems=ctx=>treeMenuItems({directory:ctx.directory,root:!ctx.relPath,canPaste:buffer?.projectId===ctx.projectId,visibility:true,hidden:ctx.hidden,showHidden:visibility().showHidden});
+  function menu(node,event){const ctx=target(node);if(!ctx.projectId)return;node?.focus({preventScroll:true});const b=node?.getBoundingClientRect()||tree.getBoundingClientRect();popup.open(menuItems(ctx),{x:event?.clientX??b.left+20,y:event?.clientY??b.bottom,run:action=>execute(action,ctx)});}
+  more.addEventListener('click',()=>{const ctx=target();if(!ctx.projectId)return;popup.open([...menuItems(ctx),menuNotice],{...panelMenuPosition(more),run:action=>execute(action,ctx)});more.setAttribute('aria-expanded','true');});
   tree.addEventListener('contextmenu',e=>{e.preventDefault();menu(e.target.closest('button[data-path]'),e);});
   tree.addEventListener('keydown',e=>{
     if(e.target.closest('input'))return;

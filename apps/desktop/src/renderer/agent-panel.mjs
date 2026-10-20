@@ -7,6 +7,7 @@ import './conversation-rendering.css';
 const $ = (id) => document.getElementById(id);
 
 
+import {mountSettingsPanel} from './settings-panel.mjs';
 export function mountAgent({ invoke, toast, attachment, openManaged, openProjectFile, openExternal, openFrozenChange, onMessages = () => {}, onConversation = () => {}, subscribe = window.nozeli.subscribe }) {
   const managed = mountManagedAgent({invoke,toast,onMessages,openManaged,onConversation,openProjectFile,openExternal,openFrozenChange});
   let projectId = null;
@@ -117,11 +118,18 @@ export function mountAgent({ invoke, toast, attachment, openManaged, openProject
       if (id === projectId && gen === generation) setAi(error.message, 'failed');
     }
   }
-  $('agent-settings').addEventListener('click', async () => {
+  async function openProjectSettings() {
     await configuration.ready;
     if (!configuration.initialized) return configuration.open();
     if (projectId) return managed.settings(projectId);
-  });
+    toast('请先打开一个项目；应用默认模型可在设置中独立调整。');
+  }
+  const settingsPanel=mountSettingsPanel({invoke,onProjectSettings:openProjectSettings,onInitialize:async()=>{
+    await configuration.ready;
+    if(!configuration.initialized)return configuration.open();
+    toast('Nozeli 独立配置已初始化，无需重复导入。');
+  }});
+  $('agent-settings').addEventListener('click',()=>void settingsPanel.open());
   async function openConsole() {
     if (!projectId) return;
     window.dispatchEvent(new Event('nozeli-layout-change'));

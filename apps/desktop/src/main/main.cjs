@@ -259,6 +259,15 @@ async function main() {
     ompAuthBrokerHost??=new OmpAuthBrokerHost({command:ompRuntime.command,source:ompSystemSource,sourceEnv:process.env});
     return ompAuthBrokerHost.acquire();
   }};
+  const {ProviderSettings,hasProviderReferences}=await import('../agents/managed/provider-settings.mjs');
+  const providerSettings=new ProviderSettings({source:ompSystemSource,broker:ompAuthBroker,command:ompRuntime?.command,isReferenced:async provider=>{
+    for(const controller of managedAgents?.controllers?.values()??[]){
+      if(controller.starting?.size)return true;
+      for(const session of controller.sessions.values())if(!session.model||session.model.startsWith(provider+'/'))return true;
+    }
+    return hasProviderReferences(path.join(app.getPath('userData'),'nozeli','managed-v1'),provider);
+  }});
+  ompSystemSource.modelFor=role=>providerSettings.modelFor(role);
   managedAgents=new ManagedProjects({userDataDir:app.getPath('userData'),host,legacy:agents,beforeDocumentOperation:syncDocument,ompSystemSource,ompAuthBroker,ompCommand:ompRuntime?.command});
   managedAgents.onEvent(event=>{for(const win of BrowserWindow.getAllWindows())if(!win.isDestroyed())win.webContents.send('nozeli:agent',event);});
   const server = await startStatic();
@@ -273,6 +282,25 @@ async function main() {
         if(!payload||Object.keys(payload).some(key=>!['mode','includeApiKeys'].includes(key))||!['independent','import'].includes(payload.mode)||payload.includeApiKeys!==undefined&&typeof payload.includeApiKeys!=='boolean')throw new HostError('INVALID_PAYLOAD','请选择独立设置或一次性导入。');
         const value=await completeNozeliConfiguration(nozeliPaths,{choice:payload.mode,includeApiKeys:payload.includeApiKeys===true});
         return {ok:true,value};
+      }
+      if(typeof op==='string'&&op.startsWith('settings.')){
+        if(ompRuntimeError)throw ompRuntimeError;
+        try {
+          let value;
+          if(op==='settings.providers.status')value=await providerSettings.status();
+          else if(op==='settings.providers.save')value=await providerSettings.saveApi(payload);
+          else if(op==='settings.providers.remove')value=await providerSettings.remove(payload);
+          else if(op==='settings.models.save')value=await providerSettings.saveDefaults(payload);
+          else if(op==='settings.login.start')value=await providerSettings.startLogin(payload);
+          else if(op==='settings.login.status')value=providerSettings.loginStatus();
+          else if(op==='settings.login.input')value=providerSettings.inputLogin(payload);
+          else if(op==='settings.login.cancel')value=await providerSettings.cancelLogin(payload);
+          else throw new HostError('UNKNOWN_OPERATION','未知设置操作。');
+          return {ok:true,value};
+        } catch(error){
+          if(error.code==='SETTINGS_INVALID')throw error;
+          throw new HostError('SETTINGS_FAILED','OMP设置操作未完成；原有会话保持不变。请检查私有运行环境或源配置。');
+        }
       }
       if (op==='document.synced') { documentSyncs.get(payload?.requestId)?.(payload?.result);return {ok:true}; }
       if(op==='view.authorship'){const value=await host.viewAuthorship(payload?.visible);const item=Menu.getApplicationMenu()?.getMenuItemById('view.authorship');if(item)item.checked=value.visible;return {ok:true,value};}
@@ -455,6 +483,7 @@ async function main() {
     quitting = true;
     await host.settled();
     await managedAgents?.stop().catch(error=>console.error('managed cleanup failed',error.message));
+    await providerSettings.stop();
     await ompAuthBrokerHost?.stop().catch(error=>console.error('omp auth broker stop failed',error.message));   // 认证继承收尾：自有 serve 子进程正常退出
     server.close();
     app.quit();

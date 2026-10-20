@@ -1114,7 +1114,7 @@ async function refreshNotes() {
 const fileTreeStates = new Map();
 function fileTreeState() {
   const id = ui.project?.id;
-  if (!fileTreeStates.has(id)) fileTreeStates.set(id, { closed: new Set(), searchClosed: new Set(), loaded: false });
+  if (!fileTreeStates.has(id)) fileTreeStates.set(id, { closed: new Set(), searchClosed: new Set(), hidden: new Set(), showHidden:false, loaded: false });
   return fileTreeStates.get(id);
 }
 async function persistTree() {
@@ -1127,6 +1127,20 @@ const treeActions = mountFileTreeActions({
   invoke, projectId: () => ui.project?.id, toast: message => workspace.toast(message),
   openExternal:ctx=>enqueue(async()=>{if(ctx.projectId!==ui.project?.id)return {ok:false,error:{message:'项目已切换'}};const saved=await flushNow();if(!saved.ok)return saved;return invoke('tree.path',{projectId:ctx.projectId,relPath:ctx.relPath,action:'openExternal'});}),
   open: openFile, refresh: () => enqueue(renderTree),
+  visibility:()=>fileTreeState(),
+  changeVisibility:(action,ctx)=>enqueue(async()=>{
+    if(ctx.projectId!==ui.project?.id)return;
+    const state=fileTreeState(),hidden=new Set(state.hidden);
+    if(action==='hide')hidden.add(ctx.relPath);
+    if(action==='unhide')hidden.delete(ctx.relPath);
+    const result=await invoke('tree.view',{projectId:ctx.projectId,hidden:[...hidden],showHidden:action==='toggleHidden'?!state.showHidden:state.showHidden});
+    if(!result.ok)throw Error(result.error.message);
+    if(ctx.projectId!==ui.project?.id)return;
+    state.hidden=new Set(result.value.hidden);state.showHidden=result.value.showHidden;
+    if(action==='toggleHidden'&&state.showHidden){$('file-filter').value='';state.searchClosed.clear();}
+    await renderTree();
+    workspace.toast(action==='hide'?'已在 Nozeli 文件栏隐藏；真实文件与已打开内容保持不变。':action==='unhide'?'已恢复显示。':state.showHidden?'正在显示已隐藏项；右键“显示”可恢复。':'已隐藏检查视图中的隐藏项。');
+  }),
   label: ctx => fileLabels.edit(ctx),
   collapse: parent => enqueue(async () => {
     const state = fileTreeState();
@@ -1184,12 +1198,12 @@ async function renderTree() {
   if (!state.loaded) {
     const result = await invoke('tree.view', { projectId: id });
     if (project !== ui.project) return;
-    if (result.ok) { state.closed = new Set(result.value.closed); state.loaded = true; }
+    if (result.ok) { state.closed = new Set(result.value.closed);state.hidden=new Set(result.value.hidden||[]);state.showHidden=result.value.showHidden===true; state.loaded = true; }
     else workspace.toast(result.error.message);
   }
   await fileLabels.load(id);
   if(project!==ui.project)return;
-  const result = await invoke('project.list', { projectId: id });
+  const result = await invoke('project.list', { projectId: id, treeView:true });
   if(project!==ui.project)return;
   const tree = $('file-tree');
   if (!result.ok) {
@@ -1224,9 +1238,11 @@ async function renderTree() {
     button.title = entry.relPath;
     button.setAttribute('aria-label', entry.name);
     button.dataset.path = entry.relPath;
+    button.dataset.hiddenRoot=String(entry.hiddenRoot===true);
+    if(entry.hidden){button.classList.add('tree-hidden-item');button.title+=' · 已在 Nozeli 隐藏';button.setAttribute('aria-label',entry.name+'，已隐藏');const badge=document.createElement('span');badge.className='tree-hidden-label';badge.textContent='已隐藏';button.append(badge);}
     button.style.paddingLeft = `${12 + entry.depth * 12}px`;
     if (entry.kind === 'dir') {
-      button.className = 'dir';
+      button.classList.add('dir');
       button.setAttribute('aria-expanded', String(!fileTreeState().closed.has(entry.relPath)));
       button.addEventListener('click', () => {
         const collapsed = button.getAttribute('aria-expanded') === 'true';
@@ -1242,13 +1258,17 @@ async function renderTree() {
     if (entry.kind !== 'dir') fileLabels.decorate(button);
     tree.append(button);
   }
+  if(state.showHidden){const notice=document.createElement('p');notice.className='quiet tree-visibility-notice';notice.textContent='正在显示已隐藏项 · 隐藏文件夹仅列入口，不展开子树；右键“显示”恢复。';tree.prepend(notice);}
   if (result.value.truncated) {
     const note = document.createElement('p');
     note.className = 'quiet';
-    note.textContent = `只显示前 ${result.value.limit} 项。`;
+    note.textContent = `只显示前 ${result.value.limit} 个未隐藏项；可右键隐藏不需要的文件夹，让出显示额度。`;
     tree.append(note);
   }
-  ui.filePaths=new Set(result.value.entries.filter(entry=>entry.kind!=='dir').map(entry=>entry.relPath));
+  // Tree hiding is a presentation preference, not document-link availability.
+  const linkListing=await invoke('project.list',{projectId:id});
+  if(project!==ui.project)return;
+  if(linkListing.ok)ui.filePaths=new Set(linkListing.value.entries.filter(entry=>entry.kind!=='dir').map(entry=>entry.relPath));
   await refreshOpenFileAvailability(project);
   if(project!==ui.project)return;
   window.dispatchEvent(new CustomEvent('nozeli-project-files-refreshed',{detail:{projectId:id}}));
@@ -1462,7 +1482,8 @@ function filterTree() {
   const buttons = [...document.querySelectorAll('#file-tree button')];
   const query = $('file-filter').value.trim().toLocaleLowerCase();
   const state = fileTreeState();
-  const closed = query ? state.searchClosed : state.closed;
+  const closed = new Set(query ? state.searchClosed : state.closed);
+  if(state.showHidden)for(const hidden of state.hidden){const parts=hidden.split('/');parts.pop();while(parts.length){closed.delete(parts.join('/'));parts.pop();}}
   const visible = new Set();
   if (query) for (const button of buttons) {
     if (!(button.dataset.searchText || button.dataset.path).toLocaleLowerCase().includes(query)) continue;

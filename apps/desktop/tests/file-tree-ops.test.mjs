@@ -79,3 +79,108 @@ test('file-label validation, stale writer and damaged metadata cannot overwrite 
  await assert.rejects(f.ops.view({projectId,closed:['../outside']}));
  assert.ok(treeMenuItems({directory:false}).some(i=>i.id==='label'));assert.ok(!treeMenuItems({directory:true}).some(i=>i.id==='label'));
 });
+
+test('tree preferences merge under the metadata lock, persist and isolate projects', async t => {
+  const f = await fixture(t), projectId = f.project.id;
+  await fs.mkdir(path.join(f.root, 'private'));
+  await fs.writeFile(path.join(f.root, 'private/data.txt'), 'unchanged');
+  await f.ops.view({ projectId, closed: ['private'] });
+  await Promise.all([
+    f.ops.view({ projectId, hidden: ['private', 'private'] }),
+    f.ops.view({ projectId, showHidden: true }),
+  ]);
+  const reopened = new DesktopHost(f.host.userDataDir);
+  const viewOps = new FileTreeOps(reopened, { trash: () => assert.fail('view must not trash') });
+  assert.deepEqual(await viewOps.view({ projectId }), { closed: ['private'], hidden: ['private'], showHidden: true });
+  await f.ops.view({ projectId, closed: [] });
+  assert.deepEqual(await viewOps.view({ projectId }), { closed: [], hidden: ['private'], showHidden: true });
+  const otherRoot = path.join(path.dirname(f.root), 'other-project');
+  await fs.mkdir(otherRoot);
+  const other = await f.host.pick(otherRoot);
+  assert.deepEqual(await f.ops.view({ projectId: other.project.id }), { closed: [], hidden: [], showHidden: false });
+  assert.equal(await fs.readFile(path.join(f.root, 'private/data.txt'), 'utf8'), 'unchanged');
+  // Hiding is a tree preference, not a file-access permission.
+  assert.equal((await f.host.readFile(projectId, 'private/data.txt')).text, 'unchanged');
+  const legacyClosed = ['.legacy', 'node_modules', 'volume:folder'];
+  await f.ops.view({ projectId, closed: legacyClosed });
+  await f.ops.view({ projectId, showHidden: false });
+  assert.deepEqual((await viewOps.view({ projectId })).closed, legacyClosed);
+  assert.ok((await f.host.list(projectId, { treeView: true })).entries.every(entry => !entry.hidden));
+});
+
+test('tree preference validation and metadata failures never overwrite prior values', async t => {
+  const f = await fixture(t), projectId = f.project.id;
+  await f.ops.view({ projectId, closed: ['folder'], hidden: ['secret'], showHidden: true });
+  const file = path.join(f.host.projectDir(projectId), 'file-tree-view.json');
+  const original = await fs.readFile(file, 'utf8');
+  for (const rel of ['', '.', '..', '../outside', '/absolute', 'a//b', 'a/./b', 'a/../b', 'a\\b', 'C:/file', 'a\u0000b', '.git', 'a/.secret', 'node_modules', 'a/node_modules/b']) {
+    await assert.rejects(f.ops.view({ projectId, hidden: [rel] }));
+  }
+  for (const hidden of [null, 'file', [42]]) await assert.rejects(f.ops.view({ projectId, hidden }));
+  for (const showHidden of [null, 0, 'true']) await assert.rejects(f.ops.view({ projectId, showHidden }));
+  await fs.symlink(f.root, path.join(f.root, 'link'));
+  await assert.rejects(f.ops.view({ projectId, hidden: ['link/secret'] }));
+  assert.equal(await fs.readFile(file, 'utf8'), original);
+  const write = f.host.writeAtomic;
+  f.host.writeAtomic = async () => { throw Error('controlled metadata failure'); };
+  await assert.rejects(f.ops.view({ projectId, hidden: [] }), /controlled metadata failure/);
+  f.host.writeAtomic = write;
+  assert.equal(await fs.readFile(file, 'utf8'), original);
+  await fs.writeFile(file, 'broken');
+  await assert.rejects(f.ops.view({ projectId, showHidden: false }));
+  await assert.rejects(f.host.list(projectId, { treeView: true }));
+  assert.equal(await fs.readFile(file, 'utf8'), 'broken');
+  assert.ok(Array.isArray((await f.host.list(projectId)).entries));
+});
+
+test('hidden subtrees release the 2000-entry budget without changing ordinary project lists', async t => {
+  const f = await fixture(t), projectId = f.project.id;
+  await fs.mkdir(path.join(f.root, 'a-visible'));
+  await fs.mkdir(path.join(f.root, 'z-hidden'));
+  await fs.writeFile(path.join(f.root, 'a-visible/later.txt'), 'later');
+  await Promise.all(Array.from({ length: 2100 }, (_, i) => fs.writeFile(path.join(f.root, `z-hidden/item-${String(i).padStart(4, '0')}.txt`), 'hidden')));
+  const ordinary = await f.host.list(projectId);
+  assert.equal(ordinary.entries.length, 2000);
+  assert.equal(ordinary.truncated, true);
+  assert.ok(!ordinary.entries.some(entry => entry.relPath === 'a-visible/later.txt'));
+  await f.ops.view({ projectId, hidden: ['z-hidden'] });
+  const filtered = await f.host.list(projectId, { treeView: true });
+  assert.ok(filtered.entries.some(entry => entry.relPath === 'a-visible/later.txt'));
+  assert.ok(!filtered.entries.some(entry => entry.relPath.startsWith('z-hidden')));
+  assert.equal(filtered.truncated, false);
+  assert.deepEqual((await f.host.list(projectId)).entries, ordinary.entries);
+  await f.ops.view({ projectId, showHidden: true });
+  const shown = await f.host.list(projectId, { treeView: true });
+  assert.equal(shown.entries.find(entry => entry.relPath === 'z-hidden').hiddenRoot, true);
+  assert.equal(shown.entries.find(entry => entry.relPath === 'z-hidden').hidden, true);
+  assert.ok(!shown.entries.some(entry => entry.relPath.startsWith('z-hidden/')));
+  assert.equal(shown.hiddenCount, 1);
+  await f.ops.view({ projectId, hidden: [] });
+  assert.deepEqual((await f.host.list(projectId, { treeView: true })).entries.map(({ relPath }) => relPath), ordinary.entries.map(({ relPath }) => relPath));
+});
+
+test('show-hidden appends explicit roots and required ancestors beyond limit and depth safely', async t => {
+  const f = await fixture(t), projectId = f.project.id;
+  await Promise.all(Array.from({ length: 2001 }, (_, i) => fs.writeFile(path.join(f.root, `a-${String(i).padStart(4, '0')}.txt`), 'visible')));
+  const parent = 'z-parent/one/two/three/four/five/six/seven';
+  await fs.mkdir(path.join(f.root, parent), { recursive: true });
+  await fs.writeFile(path.join(f.root, parent, 'secret.txt'), 'secret');
+  await fs.mkdir(path.join(f.root, '.excluded'));
+  await fs.mkdir(path.join(f.root, 'node_modules'));
+  await fs.symlink(f.root, path.join(f.root, 'z-link'));
+  const hidden = [parent + '/secret.txt', 'z-parent', 'z-link'];
+  await assert.rejects(f.ops.view({ projectId, hidden }));
+  await f.ops.view({ projectId, hidden: hidden.slice(0, 2), showHidden: true });
+  const shown = await f.host.list(projectId, { treeView: true });
+  assert.equal(shown.entries.filter(entry => !entry.hidden).length, 2000);
+  assert.equal(shown.truncated, true);
+  for (const relPath of ['z-parent', 'z-parent/one', parent, parent + '/secret.txt']) assert.ok(shown.entries.some(entry => entry.relPath === relPath));
+  assert.equal(shown.entries.find(entry => entry.relPath === parent).hidden, true);
+  assert.equal(shown.entries.find(entry => entry.relPath === parent).hiddenRoot, false);
+  assert.equal(shown.entries.find(entry => entry.relPath === parent + '/secret.txt').hiddenRoot, true);
+  assert.ok(!shown.entries.some(entry => entry.relPath.startsWith('.') || entry.relPath.startsWith('node_modules') || entry.relPath.startsWith('z-link')));
+  await f.ops.view({ projectId, hidden: [parent + '/secret.txt'] });
+  const ancestors = await f.host.list(projectId, { treeView: true });
+  assert.equal(ancestors.entries.find(entry => entry.relPath === parent).hidden, false);
+  assert.equal(ancestors.entries.find(entry => entry.relPath === parent + '/secret.txt').hidden, true);
+});

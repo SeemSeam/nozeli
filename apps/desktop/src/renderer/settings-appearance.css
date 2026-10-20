@@ -1,0 +1,78 @@
+/* Loaded after the workspace styles. Typography deliberately never touches html,
+   body, #reader, conversations, annotation cards, document frames or terminals. */
+html:root {
+  --chrome-font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans CJK SC","PingFang SC","Microsoft YaHei",sans-serif;
+  --chrome-font-size:13px;
+  --surface:var(--paper);--border:var(--line);--accent:var(--green);
+}
+html:root[data-theme="light"] {
+  color-scheme:light;
+  --bg:#eff1ed;--paper:#fffefa;--ink:#263932;--muted:#65766d;--line:#e1e6de;
+  --green:#456654;--green-soft:#eaf1e7;--amber:#966419;--amber-soft:#faf0dc;
+  --red:#a14335;--annotation-red:#b23a2d;
+  --ui-control-ink:#566158;--ui-control-hover:#eaf0e6;--ui-control-active:#e0eade;--ui-control-focus:#466b55;
+}
+html:root[data-theme="dark"] {
+  color-scheme:dark;
+  --bg:#171d1a;--paper:#222b25;--ink:#e1e9e3;--muted:#a9b8ad;--line:#435148;
+  --green:#a6cba9;--green-soft:#34493a;--amber:#e3bd76;--amber-soft:#433923;
+  --red:#f2a698;--annotation-red:#f2a698;
+  --ui-control-ink:#c0d0c3;--ui-control-hover:#34493a;--ui-control-active:#405a48;--ui-control-focus:#a6cba9;
+}
+/* Only chrome is opted in; explicit pixel typography keeps rem-based content stable.
+   Font-only declarations avoid changing layout/weight/line-height and SVG geometry. */
+:where(#files,#side,.rail,.topbar,.project-view-switch,dialog,[data-settings-panel],.nozeli-context-menu),
+:where(#files,#side,.rail,.topbar,.project-view-switch,dialog,[data-settings-panel],.nozeli-context-menu) :not(svg,svg *, .ui-icon,.file-type-icon,.file-type-icon *, .xterm,.xterm *, .work-terminal-preview,.work-terminal-preview *, .managed-terminal-screen,.managed-terminal-screen *, .agent-terminal-screen,.agent-terminal-screen *, .cm-editor,.cm-editor *, .tag-chat-window,.tag-chat-window *, .agent-message-body,.agent-message-body *, .material-viewer,.material-viewer *) {
+  font-family:var(--chrome-font-family)!important;
+  font-size:var(--chrome-font-size)!important;
+}
+.settings-appearance h2 { margin:0 0 18px; }
+.settings-appearance h3 { margin:0 0 10px; }
+.settings-appearance .appearance-field { display:grid;grid-template-columns:minmax(110px,1fr) minmax(150px,1fr);align-items:center;gap:16px;margin:0 0 16px; }
+.settings-appearance .appearance-field select { margin:0;width:100%;min-height:34px;background:var(--paper);color:var(--ink);border:1px solid var(--line);font:inherit; }
+.settings-appearance .appearance-help { margin:10px 0;color:var(--muted);line-height:1.7; }
+.settings-appearance .appearance-save-status { min-height:1.6em;color:var(--muted);margin:10px 0; }
+.settings-appearance .appearance-zen { margin-top:22px;padding-top:20px;border-top:1px solid var(--line); }
+.settings-appearance .appearance-zen-button { display:inline-flex;align-items:center;gap:8px;padding:7px 12px;min-height:36px;background:var(--green-soft);color:var(--ink);border:1px solid var(--line); }
+.settings-appearance kbd { display:inline-block;padding:0 4px;border:1px solid var(--line);border-radius:4px;white-space:nowrap; }
+/* Existing hard-coded light chrome surfaces must not turn white in dark mode.
+   Physical document canvases, authored content and terminal colors stay independent. */
+html[data-theme="dark"] :is(dialog,#action-confirmation,.nozeli-context-menu,.surface-menu,#chat-layout .chat-layout-menu,.generic-popover) {
+  background:var(--paper)!important;color:var(--ink)!important;border-color:var(--line)!important;
+}
+html[data-theme="dark"] :is(input,select,textarea):not(.xterm-helper-textarea) {
+  background-color:var(--paper);color:var(--ink);border-color:var(--line);
+}
+html[data-theme="dark"] :is(.files,.side,.provider-console,.provider-role,.composer-wrap,.composer-preview,.tag-message-assistant,.agent-message-agent,.tag-editor,.skip,.pdf-toolbar button,.pdf-toolbar input,.rail-add) {
+  background-color:var(--paper);color:var(--ink);border-color:var(--line);
+}
+html[data-theme="dark"] :is(.agent-message-user,.tag-message-user) { background:var(--green-soft);color:var(--ink); }
+html[data-theme="dark"] :is(.ui-icon-button,.ui-icon-label,.panel-font,.panel-more):hover:not(:disabled),
+html[data-theme="dark"] :is(.nozeli-context-menu>button,.surface-menu button):is(:hover,:focus-visible) {
+  color:var(--ink);background:var(--green-soft);
+}
+html[data-theme="dark"] :is(.ui-icon-button,.panel-more,.panel-font)[aria-expanded="true"],
+html[data-theme="dark"] .ui-icon-button[aria-pressed="true"] { color:var(--ink);background:var(--ui-control-active); }
+html[data-theme="dark"] .document-menu-separator { background:var(--line); }
+html[data-theme="dark"] .provider-console-open { background:var(--bg); }
+html[data-theme="dark"] .note-anchor {
+  --tag-window-bg:var(--paper);--tag-window-ink:var(--ink);--tag-window-head:#2d3b30;--tag-window-border:var(--line);--tag-window-accent:var(--green);
+}
+html[data-theme="dark"] .note-anchor.tag-note {
+  --tag-window-bg:#302d22;--tag-window-ink:#e6d8b6;--tag-window-head:#3d3727;--tag-window-border:#75633f;--tag-window-accent:#e3bd76;
+}
+html[data-theme="dark"] :is(.tag-message,.note-form) { background:var(--tag-window-bg,var(--paper));color:var(--tag-window-ink,var(--ink)); }
+html[data-theme="dark"] .tag-message-user { background:var(--green-soft); }
+html[data-theme="dark"] :is(.managed-terminal-summary,.tag-delivery) { color:var(--muted); }
+html[data-theme="dark"] .pane-divider { background:var(--line); }
+html[data-theme="dark"] :is(#file-toggle,#toggle-sidebar) { color:var(--ui-control-ink); }
+html[data-theme="dark"] :is(.reader-scroll,#chat-layout .dock-options,.document-context-menu) { background:var(--paper);color:var(--ink);border-color:var(--line); }
+html[data-theme="dark"] #text-preview :is(blockquote,pre,:not(pre)>code),html[data-theme="dark"] .tag-markdown pre { background:var(--green-soft); }
+html[data-theme="dark"] .document-context-menu button:is(:hover,:focus-visible) { background:var(--green-soft); }
+.focus-mode > .project-view-switch { display:none!important; }
+@media(max-width:560px) {
+  .settings-appearance .appearance-field { grid-template-columns:1fr;gap:6px; }
+}
+@media(forced-colors:active) {
+  html:root[data-theme] { --bg:Canvas;--paper:Canvas;--ink:CanvasText;--muted:CanvasText;--line:ButtonBorder;--green:LinkText;--green-soft:Canvas;--ui-control-ink:ButtonText; }
+}

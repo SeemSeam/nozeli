@@ -643,7 +643,7 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
    if(typeof id==='string'&&id!==projectId){resetSession();projectId=id;sessionStore.reset(id);}
    if(!setup.open)setup.showModal();
    const box=$('managed-role-settings');box.replaceChildren();
-   $('managed-settings-status').textContent='在 Nozeli 原生 OMP 终端内使用登录与模型设置；不会读取系统 OMP 登录。';
+   $('managed-settings-status').textContent='应用默认模型与登录/API 源在左下角设置中管理；已有会话保留当前模型，可在其原生 OMP 终端内显式调整。';
    if(!state){
      $('managed-limit').disabled=true;
      const launch=button('启用三角色',async()=>{
@@ -664,7 +664,7 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
    const box=$('managed-role-settings');box.replaceChildren();
    for(const role of Object.keys(labels)){
      const row=document.createElement('fieldset'),title=document.createElement('legend');title.textContent=labels[role];
-     const note=document.createElement('p');note.textContent='Nozeli OMP · 模型、服务、登录与思考档位由原生 OMP 管理。';
+     const note=document.createElement('p');note.textContent='Nozeli OMP · 新会话使用应用默认模型；已有会话的模型与思考档位由该会话原生 OMP 管理，不会被默认设置覆盖。';
      row.append(title,note);box.append(row);
    }
  }

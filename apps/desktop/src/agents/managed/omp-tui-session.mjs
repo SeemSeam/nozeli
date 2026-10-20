@@ -153,6 +153,12 @@ export class OmpTuiSession extends EventEmitter {
       await this.#mergeExtensionConfig(deployed.configEntry);
       // instructions 完整透传（官方 --system-prompt）
       const argv = ['--cwd', this.cwd, '--system-prompt', String(this.instructions ?? ''), '--approval-mode', 'yolo', '--no-title', '--no-skills', '--session-dir', this.sessionsDir];
+      // A global default binds only a genuinely new native conversation. Resume
+      // keeps its journal model, including changes made in the native terminal.
+      if (resumeId == null && this.ompSystemSource?.modelFor) {
+        const model = await this.ompSystemSource.modelFor(this.role);
+        if (model) argv.push('--model', model);
+      }
       // Residents cannot bypass host routing with native task/shell tools.
       // Workers retain file tools inside their isolated execution copy; host
       // publication still adjudicates new files and existing-text conflicts.

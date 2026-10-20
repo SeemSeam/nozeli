@@ -150,26 +150,57 @@ export function mountWorkspace({ save, saveProjectSettings, openProject, addNote
   function applyFocusMode(enabled) {
     $('app').classList.toggle('focus-mode', enabled);
     $('toggle-focus').setAttribute('aria-pressed', String(enabled));
-    $('toggle-focus').setAttribute('aria-label', enabled ? '退出专注阅读' : '进入专注阅读');
-    $('toggle-focus').title = enabled ? '退出专注阅读 (Esc)' : '专注阅读';
+    $('toggle-focus').setAttribute('aria-label', enabled ? '退出 Zen 专注模式' : '进入 Zen 专注模式');
+    $('toggle-focus').title = enabled ? '退出 Zen (Esc)' : 'Zen 专注模式 (Ctrl/Cmd+Shift+F11)';
     $('focus-exit').hidden = !enabled;
+    document.dispatchEvent(new CustomEvent('zen:change', { detail: { enabled } }));
   }
   function focusMode(enabled, persist = true) {
     projectSettings.focusMode = Boolean(enabled);
     applyFocusMode(projectSettings.focusMode);
     render();
-    if (persist && saveProjectSettings) void saveProjectSettings({ ...projectSettings });
+    if (persist && saveProjectSettings && !$('provider-console-toggle').hidden) void saveProjectSettings({ ...projectSettings });
   }
-  window.nozeli.subscribe('menu.action', action => { if(action === 'focus' && !$('provider-console-toggle').hidden) focusMode(!projectSettings.focusMode); if(action === 'open-project') openProject(); });
-  document.addEventListener('keydown', event => { if(event.key === 'F11' && event.shiftKey && (event.ctrlKey || event.metaKey) && !$('provider-console-toggle').hidden) { event.preventDefault(); focusMode(!projectSettings.focusMode); } });
-  window.addEventListener('project-view-change', event => { state.projectView=event.detail; save(); });
-  $('toggle-focus').addEventListener('click', async () => {
-    const enabled = !$('app').classList.contains('focus-mode'); focusMode(enabled);
-    try { if (enabled) await $('app').requestFullscreen(); else if (document.fullscreenElement) await document.exitFullscreen(); } catch { /* Window-filling remains useful when fullscreen is denied. */ }
+  const modalOpen = () => [...document.querySelectorAll('dialog[open], [role="dialog"]:not([hidden]), [aria-modal="true"]:not([hidden]), [popover]:popover-open, .work-terminal-preview:not([hidden]), .nozeli-context-menu:not([hidden])')].some(node => node.getClientRects().length > 0);
+  const modalEscapes = new WeakSet();
+  window.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && modalOpen()) modalEscapes.add(event);
+  }, true);
+  let focusTransition = false;
+  async function toggleFocus(enabled = !$('app').classList.contains('focus-mode')) {
+    if ((focusTransition && enabled) || modalOpen()) return;
+    focusTransition = true;
+    if (enabled) window.__setProjectView?.('reading');
+    focusMode(enabled);
+    try {
+      if (enabled && !document.fullscreenElement) {
+        await $('app').requestFullscreen();
+        // Electron/compositors may resolve fullscreen after the user already exited Zen.
+        if (!$('app').classList.contains('focus-mode') && document.fullscreenElement) await document.exitFullscreen();
+      }
+      else if (!enabled && document.fullscreenElement) await document.exitFullscreen();
+    } catch { /* Window-filling remains useful when fullscreen is denied. */ }
+    finally { focusTransition = false; }
+  }
+  window.nozeli.subscribe('menu.action', action => { if(action === 'focus') void toggleFocus(); if(action === 'open-project') openProject(); });
+  document.addEventListener('keydown', event => {
+    if(event.key === 'F11' && event.shiftKey && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      if (!event.repeat) void toggleFocus();
+    }
   });
-  $('focus-exit').addEventListener('click', () => { focusMode(false); if (document.fullscreenElement) void document.exitFullscreen(); });
-  document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && projectSettings.focusMode) focusMode(false); });
-  document.addEventListener('keydown', event => { if (event.key === 'Escape') { focusMode(false); $('selection-menu').hidden = true; } });
+  window.addEventListener('project-view-change', event => { state.projectView=event.detail; save(); });
+  $('toggle-focus').addEventListener('click', () => { void toggleFocus(); });
+  $('focus-exit').addEventListener('click', () => { void toggleFocus(false); });
+  document.addEventListener('fullscreenchange', () => {
+    if (!document.fullscreenElement && projectSettings.focusMode && !focusTransition && !modalOpen()) focusMode(false);
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape' || event.defaultPrevented || modalEscapes.has(event) || modalOpen()) return;
+    // Leave native dialogs and popovers first; only an unclaimed Escape exits Zen.
+    if (!$('selection-menu').hidden) { $('selection-menu').hidden = true; return; }
+    if ($('app').classList.contains('focus-mode')) { event.preventDefault(); void toggleFocus(false); }
+  });
   $('show-note').addEventListener('click', addNote);
   $('selection-note').addEventListener('click', () => { $('selection-menu').hidden = true; addNote({ anchored: true }); });
   $('cancel-note').addEventListener('click', () => { const form = $('note-form'); form.hidden = true; form.classList.remove('anchored'); form.style.removeProperty('left'); form.style.removeProperty('top'); });

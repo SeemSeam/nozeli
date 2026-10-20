@@ -17,6 +17,7 @@ import { userActor } from '../domain/document-changes.mjs';
 import { listDocumentVersions, readDocumentVersion } from '../domain/document-versions.mjs';
 import { anchorText, resolveTextAnchor, textChangeSet, mapTextAnchor, validTextAnchor } from '../domain/tag-anchors.mjs';
 import {rebaseDocumentEdits, documentChangesSince} from '../domain/document-collaboration.mjs';
+import { treeViewValue } from './file-tree-ops.mjs';
 
   const NOTE_KINDS = ['image-region','ppt-selection','ppt-region','word-region', 'word-selection', 'text-selection', 'pdf-page', 'pdf-selection', 'pdf-region'];
   function boundNoteOffsets(value, { strict = false } = {}) {
@@ -560,9 +561,18 @@ export class DesktopHost {
     })());
   }
 
-  async list(projectId) {
+  async list(projectId, { treeView = false } = {}) {
     return this.track((async () => {
       const project = await this.requireProject(projectId);
+      const view = treeView === true ? treeViewValue(await this.readVersioned(path.join(this.projectDir(projectId), 'file-tree-view.json'))) : null;
+      const hiddenRoots = new Set(view?.hidden ?? []);
+      const isHidden = rel => {
+        for (let current = rel; current; current = path.posix.dirname(current)) {
+          if (hiddenRoots.has(current)) return true;
+          if (current === '.' || !current.includes('/')) break;
+        }
+        return false;
+      };
       const entries = [];
       const stack = [{ dir: project.root, rel: '', depth: 0 }];
       const skip = new Set(['node_modules']);
@@ -580,6 +590,8 @@ export class DesktopHost {
           if (name.startsWith('.') || skip.has(name)) continue;
           const abs = path.join(current.dir, name);
           const relPath = current.rel ? `${current.rel}/${name}` : name;
+          // Prune before stat/stack insertion: hidden subtrees never consume the visible budget.
+          if (hiddenRoots.has(relPath)) continue;
           let stat;
           try {
             stat = await fs.lstat(abs);
@@ -596,7 +608,33 @@ export class DesktopHost {
           if (entries.length >= LIST_LIMIT) break;
         }
       }
-      return { entries, truncated: entries.length >= LIST_LIMIT, limit: LIST_LIMIT };
+      const truncated = entries.length >= LIST_LIMIT;
+      if (view) {
+        for (const entry of entries) Object.assign(entry, { hidden: false, hiddenRoot: false });
+        if (view.showHidden) {
+          const included = new Set(entries.map(entry => entry.relPath));
+          // Explicit roots and their ancestors remain recoverable beyond the normal limit/depth.
+          // Do not enumerate hidden directories: their contents must not displace visible entries.
+          for (const root of hiddenRoots) {
+            let abs = project.root, rel = '';
+            const pending = [];
+            let valid = true;
+            for (const name of root.split('/')) {
+              abs = path.join(abs, name);
+              rel = rel ? `${rel}/${name}` : name;
+              let stat;
+              try { stat = await fs.lstat(abs); } catch { valid = false; break; }
+              if (stat.isSymbolicLink() || (!stat.isDirectory() && !stat.isFile()) || (rel !== root && !stat.isDirectory())) { valid = false; break; }
+              pending.push({ relPath: rel, name, kind: stat.isDirectory() ? 'dir' : 'file', depth: rel.split('/').length - 1, hidden: isHidden(rel), hiddenRoot: hiddenRoots.has(rel) });
+            }
+            if (valid) for (const entry of pending) if (!included.has(entry.relPath)) {
+              included.add(entry.relPath);
+              entries.push(entry);
+            }
+          }
+        }
+      }
+      return { entries, truncated, limit: LIST_LIMIT, ...(view ? { hiddenCount: hiddenRoots.size } : {}) };
     })());
   }
 
@@ -1855,7 +1893,7 @@ export const ops = {
   'project.recent': (host) => host.recent(),
   'project.remove': (host, payload) => host.removeProject(payload.projectId),
   'project.open': (host, payload) => host.open(payload?.projectId),
-  'project.list': (host, payload) => host.list(payload?.projectId),
+  'project.list': (host, payload) => host.list(payload?.projectId, { treeView: payload?.treeView === true }),
   'word.import': (host,payload)=>host.importDoc(payload?.projectId,payload),
   'file.read': (host, payload) => host.readFile(payload?.projectId, payload?.relPath),
   'file.availability': (host, payload) => host.fileAvailability(payload?.projectId, payload?.paths),
