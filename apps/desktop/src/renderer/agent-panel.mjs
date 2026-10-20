@@ -114,6 +114,7 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
       const connect = initialized || configuration.initialized;
       const loaded = await managed.load(id, {connect:ownsConversation&&connect, observe:!ownsConversation, ...(ownsConversation?{draft:restoredDraft}:{})});
       if (id !== projectId || gen !== generation) return;
+      if(!loaded&&connect&&scope?.role==='shell')await managed.enable(id);
       if (!connect) setAi('请完成 Nozeli 配置初始化；仍可阅读项目和历史记录。', 'unavailable');
     } catch (error) {
       if (id === projectId && gen === generation) setAi(error.message, 'failed');

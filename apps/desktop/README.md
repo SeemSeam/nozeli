@@ -19,6 +19,10 @@ npm run build:renderer
 
 `npm start`启动本地应用。`npm run test:host`、`npm run test:renderer`、`npm run test:electron`分别运行宿主、渲染逻辑与实际Electron回归。其他分组见package.json。tests/fixtures为合成或带来源说明的固定样本；普通测试不发起付费模型请求。live验收需显式启用和自有账号，不自动执行。
 
+同一 OS 用户只运行一个 Nozeli 应用进程：源码启动、安装版、不同 `NOZELI_CONFIG_ROOT` / `NOZELI_USER_DATA` 与 `NOZELI_TEST_INSTANCE=1` 共用 Electron 原生单实例锁；测试隔离变量只隔离配置，不允许多开。锁身份取 OS 账号家目录（不跟随 HOME、XDG 或自定义 profile），重复启动在配置初始化/迁移前退出 0，将打开文件请求交给已有实例并唤回窗口。同一进程内分屏与原生脱离窗口不受限制；terminal-client、handoff、document IPC helper 仍先行分发，不争用产品锁。正常退出由 Electron 释放锁，崩溃后由其原生机制恢复。
+
+专项真实 Electron 烟测：先正常关闭其他采用新锁的 Nozeli（不要打断正在执行的测试/Agent），在可用桌面会话和 renderer 已构建的条件下运行 `node tests/desktop-singleton.test.mjs`。该脚本加载生产 `main.cjs`，验证 A/B 独立配置且 B 更改 HOME/XDG 后仍退出 0、A 收到文件请求、B 配置未写入、同进程双 BrowserWindow、三类 helper 不抢锁，以及正常退出和崩溃后的重启；不调用模型、不安装、不自动构建。仅清收脚本自己启动的进程，合成测试 profile 留在输出路径供检查。不要并发运行其他产品 Electron 回归；它们会被已有实例接管，而非创建隔离应用。Windows/macOS 仍需在对应平台实际验收。
+
 ## 标签讨论
 
 标签按轮保留问题与同一请求下的全部助手正文；流式输出只更新对应消息，不重建卡片、覆盖旧轮或重置正在阅读的滚动和原文分页。持久化仅保存请求/消息身份，正文来自统一会话索引；冷开可按请求查回历史消息。正文超出缓存预算时保留分段读取入口，不静默截断。各文档表面共用此行为。
@@ -62,6 +66,7 @@ Linux原生Wayland的项目/引用目录框使用不绑定父窗口的Electron�
 - 本仓库Linux/Wayland实际验证：原生核心10项、冷启动生命周期9项、Word/Markdown/TeX源码/PDF真实驱动6项、Word/Sheet镜像2组及命名布局管理通过；布局/宿主/目录导航监听44项通过。证据为忽略目录`.test-output/nozeli-single-content-MRZQP9/`、`nozeli-native-lifecycle-89uhl3/`、`nozeli-native-drivers-zpYrna/`、`nozeli-office-mirrors-lcOXsp/`。已重建固定版本PPTist和renderer；TeX源码转移不等于编译验收。
 - 合并保留功能专项35项中34通过；`agent-process-budget.test.mjs`的“cap two dispatch cycle…”在所有jobs完成断言失败。本次未改该测试及其Controller/额度实现，不把它算作通过或修改断言掩盖。首次44项测试有14项因`/tmp`写入quota错误`-122`失败，改为本仓库忽略目录的磁盘TMPDIR后44项通过；未清理或覆盖用户临时数据。
 - 目标设置可见Wayland29项通过（`.test-output/nozeli-settings-ui-lxFSpX/`），无远程认证或模型请求。默认headless启动未产生renderer，90秒等待失败保留（`nozeli-settings-ui-ULFv8U/`），不把headless失败当作可见桌面设置失败，也不宣称headless已支持。
+- `d65d2be` 后续集成深测：95项布局/文件监听/Agent额度与设置行为回归通过，真实可见Wayland的跨profile单实例、核心分屏10项、冷开生命周期9项、真实仓库导航/快捷键/resize、Word/Markdown/TeX源码/PDF驱动6项及Word/Sheet未保存模型镜像2组通过。修复新项目Agent启用分支遗漏与启动完成未发布最终状态导致对话面不可用；只有导航宿主创建Agent，对话内容面订阅并回读就绪。模型联动真实验收迁移到唯一conversation surface，不再操作shell隐藏composer。之前cap2失败保留为历史记录；本轮真实测试通过情况单独列账，不覆写旧证据。测试目录精简保留104608个非删除文件并校验65414份证据哈希不变，清单在`~/.local/state/nozeli-storage-prune-zUOyHe/`。
 
 本次未安装、未推送、未调用付费模型；Windows/macOS、物理多屏/DPI、全部IME及完整AI跨窗工作流未重新验收。日常已安装版本不会自动消费此次源码合并。
 

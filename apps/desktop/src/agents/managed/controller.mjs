@@ -120,7 +120,7 @@ export class Controller extends EventEmitter {
     const preflight=await Promise.allSettled(residents.map(target=>this.makeSession(target,{preflightOnly:true})));
     const rejected=preflight.find(result=>result.status==='rejected');if(rejected)throw rejected.reason;
     const results=await Promise.allSettled(residents.map(target=>this.session(target)));const failed=results.find(result=>result.status==='rejected');if(failed)throw failed.reason;
-    this.started=true;this.kick();return this.snapshot();
+    this.started=true;this.changed();this.kick();return this.snapshot();
   }
   async applyModelDefaults(defaults){
     const sync={applied:0,pending:0,failed:[]};

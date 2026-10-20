@@ -530,7 +530,7 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
   if(draft!==undefined){drafts.set(id+':frontdesk',draft);$('composer').value=draft;}
   void refreshProjectFiles().catch(error=>toast('文件链接列表读取失败：'+error.message));
   residentStatus=null;residentRecovery.hidden=true;residentRecovery.replaceChildren();
-  void loadHistory();const gen=generation,status=await call('status',{},id);if(gen!==generation)return false;if(!status.enabled)return false;
+  void loadHistory();const gen=generation,status=await call('status',{},id);if(gen!==generation)return false;if(!status.enabled){show(true);ready=false;return false;}
   show(true);renderResidentRecovery(status);$('send-message').disabled=true;$('ai-status').textContent='三角色正在恢复…';let connected;
   if(observe){state=status.state;ready=Boolean(status.ready);if(state)render();return true;}
   if(!connect){state=status.state;ready=false;if(!viewed?.history)$('composer').value=restoredComposerDraft({local:drafts.get(id+':frontdesk'),durable:state?.drafts?.frontdesk});if(state)render();await readTimeline();if(gen!==generation||id!==projectId)return true;$('ai-status').textContent='请完成 Nozeli 配置初始化；历史记录保持只读。';$('ai-status').dataset.state='unavailable';return true;}
@@ -661,6 +661,6 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
  window.nozeli.subscribe('workspace.control',event=>{if(event.type==='conversation-action'&&ownsConversation&&event.projectId===scope.projectId){if(!state||event.projectId!==projectId){pendingConversation=event;return;}if(event.action==='select')select(event.target);if(event.action==='todo')void openTodo(event.todoId);}});
  window.addEventListener('nozeli-content-file-opened',leaveHistory);
  window.nozeli.subscribe('agent',e=>{if(e.kind==='managed-files-changed'&&e.projectId===projectId)void refreshProjectFiles().catch(error=>toast('文件链接列表读取失败：'+error.message));});
- window.nozeli.subscribe('agent',e=>{if(!active||e.projectId!==projectId)return;if(e.kind==='managed-state'){state=e.state;render();}if(e.kind==='managed-timeline'&&!historyPage){sessionStore.apply(projectId,e.timeline||e.frame,{replace:true});}if(e.kind==='managed-error')toast(e.text);});
+ window.nozeli.subscribe('agent',e=>{if(!active||e.projectId!==projectId)return;if(e.kind==='managed-state'){state=e.state;if(!ready)void refresh().catch(error=>toast(error.message));else render();}if(e.kind==='managed-timeline'&&!historyPage){sessionStore.apply(projectId,e.timeline||e.frame,{replace:true});}if(e.kind==='managed-error')toast(e.text);});
  return {get active(){return active;},reachable:true,load,enable,send,refresh,clear(options){clear(options);if(options?.rememberDraft===false)projectId=null;},console:()=>{terminalBox.hidden=false;renderTerminals();},onReport:openTodo};
 }

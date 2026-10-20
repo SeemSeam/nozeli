@@ -30,9 +30,9 @@ try{
  assert.equal((await invoke('settings.agents.status',{projectId:idA})).projectLimit,5);await page.click('#settings-close');
  await pick(projectB);await open();const idB=(await invoke('project.recent')).projects.find(p=>p.path===projectB||p.name==='b').id;
  await page.$eval('[data-agent-project-limit]',e=>{e.value='6';});await page.click('[data-agent-limits-save]');await page.waitForFunction(()=>document.querySelector('[data-agent-limits-status]').textContent.includes('已保存'));
- assert.equal((await invoke('settings.agents.status',{projectId:idB})).projectLimit,6);assert.equal((await invoke('settings.agents.status',{projectId:idA})).projectLimit,5,'B save must not change A quota');
+ assert.equal((await invoke('settings.agents.status',{projectId:idB})).projectLimit,6);
  assert.equal((await invoke('settings.agents.status')).globalLimit,before.globalLimit,'project edits preserve global quota');
- await page.click('#settings-close');await pick(projectA);await open();assert.equal(await page.$eval('[data-agent-project-limit]',e=>e.value),'5','returning to A restores its quota');
+ await page.click('#settings-close');await pick(projectA);await open();await page.waitForFunction(()=>document.querySelector('[data-agent-project-limit]').value==='5');assert.equal((await invoke('settings.agents.status',{projectId:idA})).projectLimit,5,'B save must not change A quota');
  assert.equal(await page.$$eval('#managed-settings,#managed-terminal-settings,#agent-settings,[data-managed-provider]',els=>els.length),0,'legacy Agent settings are removed');
  await page.click('#settings-close');await page.click('#open-settings');await page.click('#provider-console-toggle');await page.waitForFunction(()=>!document.querySelector('#provider-console').hidden);
  assert(await page.$('#provider-console-close'),'terminal retains return-to-reading');await page.click('#provider-console-close');await page.waitForFunction(()=>document.querySelector('#provider-console').hidden);

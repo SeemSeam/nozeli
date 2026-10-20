@@ -211,19 +211,30 @@ async function createWindow(server) {
 }
 
 async function main() {
+  const {acquireApplicationSingleton}=require('./application-singleton.cjs');
+  const pendingLaunches=[];
+  let routeLaunch=null;
+  app.on('second-instance',(_event,argv,cwd)=>{
+    if(routeLaunch)routeLaunch(argv,cwd);else pendingLaunches.push({argv,cwd});
+  });
+  // No profile resolution, migration, host or Agent creation before this lock.
+  if(!acquireApplicationSingleton(app)){app.exit(0);return;}
+  const {fileArguments, externalTarget}=await import('./external-open.mjs');
+  routeLaunch=(argv,cwd)=>{
+    externalFiles.push(...fileArguments(argv,{packaged:app.isPackaged,cwd}).filter(file=>file!==__filename&&file!==APP_ROOT));
+    void revealNavigation().catch(error=>console.error('external open routing failed',error));
+  };
+  routeLaunch(process.argv,process.cwd());
+  for(const launch of pendingLaunches)routeLaunch(launch.argv,launch.cwd);
   const {resolveNozeliPaths,initializeNozeliConfiguration,readNozeliConfiguration,completeNozeliConfiguration}=await import('../agents/managed/nozeli-config.mjs');
   const nozeliPaths=resolveNozeliPaths();
   await initializeNozeliConfiguration(nozeliPaths,{legacyDesktop:ISOLATED_TEST_INSTANCE?null:path.join(app.getPath('appData'),'Nozeli')});
+  // The temporary lock path was already restored synchronously. Chromium's
+  // session must now use the initialized profile, never the lock directory.
   app.setPath('userData',nozeliPaths.desktop);
+  app.setPath('sessionData',nozeliPaths.desktop);
   await app.whenReady();
   app.setName('Nozeli');
-  if (!app.requestSingleInstanceLock()) { app.quit(); return; }
-  const {fileArguments, externalTarget}=await import('./external-open.mjs');
-  externalFiles.push(...fileArguments(process.argv,{packaged:app.isPackaged}).filter(file=>file!==__filename&&file!==APP_ROOT));
-  app.on('second-instance', (_event,argv,cwd) => {
-    externalFiles.push(...fileArguments(argv,{packaged:app.isPackaged,cwd}).filter(file=>file!==__filename&&file!==APP_ROOT));
-    void revealNavigation().catch(error=>console.error('external open routing failed',error));
-  });
   ({ dialog, session } = require('electron'));
   ({ DesktopHost, HostError, ops } = await import('./host.mjs'));
   const { LanguageServiceManager } = await import('./language-service-manager.mjs');
