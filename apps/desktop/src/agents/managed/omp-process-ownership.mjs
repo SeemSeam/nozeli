@@ -15,8 +15,9 @@ export async function ompGroupRecord(pid, home) {
 // Linux 实证路径；其他平台返回 verified:false（不假签）。
 export async function reapOwnedOmpGroup(record) {
   if (process.platform !== 'linux' || !record?.stamp) return { descendantsReaped: 0, verified: false, platform: process.platform };
+  if (typeof record.stamp !== 'string' || !/^[a-f0-9-]{36}:\d+$/.test(record.stamp)) return { descendantsReaped: 0, verified: false, platform: process.platform };
   const boot = (await fs.readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim();
-  if (!record.stamp.startsWith(boot + ':')) return { descendantsReaped: 0, verified: false, reason: 'stale-boot' };
+  if (!record.stamp.startsWith(boot + ':')) return { descendantsReaped: 0, verified: true, reason: 'previous-boot', platform: 'linux' };
   const touched = new Set();
   for (let attempt = 0; attempt < 25; attempt++) {
     const leader = await processStamp(record.pid);
@@ -92,6 +93,9 @@ export async function recoverOmpProvider(record, root, attempt = 0) {
   const rel = path.relative(path.join(root, 'agents'), record.home);
   if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) throw new Error('provider home outside owned agents root');
   if (!record.stamp) throw new Error('provider process identity missing');
+  if (typeof record.stamp !== 'string' || !/^[a-f0-9-]{36}:\d+$/.test(record.stamp)) throw new Error('provider process identity invalid');
+  const boot = (await fs.readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim();
+  if (!record.stamp.startsWith(boot + ':')) return { pid: record.pid, status: 'previous-boot', descendantsReaped: 0, verified: true };
   const stamp = await processStamp(record.pid);
   if (!stamp) return { pid: record.pid, status: 'already-exited', ...await reapOwnedOmpGroup(record) };
   if (stamp !== record.stamp) throw new Error('provider PID identity reused');

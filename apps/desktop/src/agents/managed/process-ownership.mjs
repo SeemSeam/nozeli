@@ -15,6 +15,9 @@ export async function recoverProvider(record,root,attempt=0){
   const rel=path.relative(path.join(root,'agents'),record.home);
   if(!rel || rel.startsWith('..')||path.isAbsolute(rel))throw new Error('provider home outside owned agents root');
   if(!record.stamp)throw new Error('provider process identity missing');
+  if(typeof record.stamp!=='string'||!/^[a-f0-9-]{36}:\d+$/.test(record.stamp))throw new Error('provider process identity invalid');
+  const boot=(await fs.readFile('/proc/sys/kernel/random/boot_id','utf8')).trim();
+  if(!record.stamp.startsWith(boot+':'))return {pid:record.pid,status:'previous-boot',descendantsReaped:0,verified:true};
   const stamp=await processStamp(record.pid);if(!stamp)return {pid:record.pid,status:'already-exited',...await reapOwnedGroup(record)};if(stamp!==record.stamp)throw new Error('provider PID identity reused');
   let env,cmd;try{env=(await fs.readFile(`/proc/${record.pid}/environ`)).toString().split('\0');cmd=(await fs.readFile(`/proc/${record.pid}/cmdline`)).toString().split('\0');}catch(e){if(['ENOENT','ESRCH','EACCES'].includes(e.code)&&!(await processStamp(record.pid)))return {pid:record.pid,status:'exited-during-check',...await reapOwnedGroup(record)};if(['ENOENT','ESRCH','EACCES'].includes(e.code)&&attempt<5){await delay(20);return recoverProvider(record,root,attempt+1);}throw e;}
   if(await processStamp(record.pid)!==record.stamp)return recoverProvider(record,root);
@@ -26,9 +29,10 @@ export async function recoverProvider(record,root,attempt=0){
 
 // A dead group leader does not imply its subprocesses have exited.
 export async function reapOwnedGroup(record){
-  if(process.platform!=='linux'||!record?.stamp)return {descendantsReaped:0};
+  if(process.platform!=='linux'||!record?.stamp)return {descendantsReaped:0,verified:false};
+  if(typeof record.stamp!=='string'||!/^[a-f0-9-]{36}:\d+$/.test(record.stamp))return {descendantsReaped:0,verified:false};
   const boot=(await fs.readFile('/proc/sys/kernel/random/boot_id','utf8')).trim();
-  if(!record.stamp.startsWith(boot+':'))return {descendantsReaped:0};
+  if(!record.stamp.startsWith(boot+':'))return {descendantsReaped:0,verified:true,reason:'previous-boot'};
   const touched=new Set();
   for(let attempt=0;attempt<25;attempt++){
     const leader=await processStamp(record.pid);if(leader&&leader!==record.stamp)throw new Error('provider group identity reused');
@@ -41,7 +45,7 @@ export async function reapOwnedGroup(record){
       }catch(e){if(e.code==='EACCES'){if(!(await processStamp(Number(entry))))continue;if(attempt<5){retryScan=true;break;}}if(e.code!=='ENOENT'&&e.code!=='ESRCH')throw e;}
     }
     if(retryScan){await delay(20);continue;}
-    if(!members.length)return {descendantsReaped:touched.size};
+    if(!members.length)return {descendantsReaped:touched.size,verified:true};
     for(const member of members){if(await processStamp(member.pid)!==member.stamp)continue;try{process.kill(member.pid,attempt<10?'SIGTERM':'SIGKILL');touched.add(member.pid);}catch(e){if(e.code!=='ESRCH')throw e;}}
     await delay(100);
   }
