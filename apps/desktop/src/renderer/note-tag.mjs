@@ -24,9 +24,9 @@ function watchTagRemoval(root, cleanup) {
   tagRemovalObserver.observe(document.body, { childList: true, subtree: true });
 }
 
-export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAvailability, readReply, status = '', open = true, anchorDrift = false, history = [], draftText = '', anchor = {}, material = {}, relPath = '', displayLocation, information, executeStatus = '' }, { draw, filePath = () => '', sourceText = () => '', remove, save, execute = null, offset = () => [0, 0], move = () => {}, size = () => null, resize = () => {}, onDraft, onOpen, autoEdit = () => false } = {}) {
+export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAvailability, readReply, replyEntries = [], status = '', open = true, anchorDrift = false, history = [], draftText = '', anchor = {}, material = {}, relPath = '', displayLocation, information, executeStatus = '' }, { draw, filePath = () => '', sourceText = () => '', remove, save, execute = null, offset = () => [0, 0], move = () => {}, size = () => null, resize = () => {}, onDraft, onOpen, autoEdit = () => false } = {}) {
   const conversation = kind !== 'note';
-  const pending = status === 'pending' || status === 'accepted-awaiting-reply';
+  let pending = status === 'pending' || status === 'accepted-awaiting-reply';
   const root = document.createElement('span');
   root.className = `note-anchor tag-${kind}${status === 'followup' ? ' tag-followup' : ''}`;
   root.dataset.annotation = id;
@@ -298,19 +298,30 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   const sourceLabel = document.createElement('summary'); sourceLabel.textContent = describeAnnotationSource({ relPath: relPath || filePath(), anchor, text: sourceText(), displayLocation });
   const quote = document.createElement('blockquote'); quote.textContent = anchor.quote || material.excerpt || '已固定的选区'; source.append(sourceLabel, quote);
   if (material.imageDataUrl || anchor.imageDataUrl) { const image = document.createElement('img'); image.src = material.imageDataUrl || anchor.imageDataUrl; image.alt = '发送时固定的选区截图'; source.append(image); }
-  if (conversation) {
-    const entries = history.length ? history : (status === 'draft' ? [] : [{ question: text, reply: replyText, replyAvailability, readReply, status }]);
-    const bubble = (role, value) => {
-      const message = document.createElement('span'); message.className = 'tag-message tag-message-' + role;
-      const label = document.createElement('strong'); label.textContent = role === 'user' ? '你' : '前台';
-      const body = document.createElement('span'); body.className = 'tag-markdown'; renderTagMarkdown(body, value); message.append(label, body); transcript.append(message);
+  const transcriptRows=new Map();
+  function renderConversation(){
+    const atTail=transcript.scrollHeight-transcript.clientHeight-transcript.scrollTop<32,scrollTop=transcript.scrollTop;
+    const entries=history.length?history:(status==='draft'?[]:[{question:text,reply:replyText,replyEntries,replyAvailability,readReply,status}]);
+    const retained=new Set();let position=0;
+    const bubble=(key,role,value,read,retainBody=false)=>{
+      retained.add(key);let row=transcriptRows.get(key);
+      if(!row){const node=document.createElement('span'),label=document.createElement('strong'),body=document.createElement('span');node.className='tag-message tag-message-'+role;label.textContent=role==='user'?'你':'前台';body.className='tag-markdown';node.append(label,body);row={node,body,value:null,reader:null};transcriptRows.set(key,row);}
+      if(row.value!==value&&!(retainBody&&row.value)){renderTagMarkdown(row.body,value);row.value=value;}
+      if(read&&!row.reader){row.reader=makeOriginalReplyReader(read);row.node.append(row.reader);}
+      if(transcript.children[position]!==row.node)transcript.insertBefore(row.node,transcript.children[position]||null);position++;
     };
-    for (const entry of entries) {
-      if (entry.question) bubble('user', entry.question);
-      if (entry.reply) bubble('assistant', entry.reply);
-      if (entry.replyAvailability === 'read-required' && entry.readReply) transcript.append(makeOriginalReplyReader(entry.readReply));
-    }
-    if (!entries.length) { const welcome = document.createElement('span'); welcome.className = 'tag-conversation-empty'; welcome.textContent = '围绕这处材料继续讨论。输入问题后发送，回复会留在这里。'; transcript.append(welcome); }
+    entries.forEach((entry,index)=>{
+      const key=entry.requestId||'round-'+index;
+      if(entry.question)bubble(key+':question','user',entry.question);
+      if(entry.replyEntries?.length){for(const message of entry.replyEntries)bubble(key+':'+message.id,'assistant',message.text||'',message.availability==='read-required'?message.readReply:null,message.availability==='read-required');}
+      else if(entry.reply||entry.readReply)bubble(key+':reply','assistant',entry.reply||'',entry.replyAvailability==='read-required'?entry.readReply:null);
+    });
+    if(!entries.length)bubble('welcome','assistant','围绕这处材料继续讨论。输入问题后发送，回复会留在这里。');
+    for(const [key,row]of transcriptRows)if(!retained.has(key)){row.node.remove();transcriptRows.delete(key);}
+    transcript.scrollTop=atTail?transcript.scrollHeight:scrollTop;
+  }
+  if (conversation) {
+    renderConversation();
     editor.value = draftValue || ''; editor.placeholder = pending ? '继续记下问题，收到回复后发送…' : '关于这处材料，聊一聊…（Ctrl+Enter 发送）';
     editor.addEventListener('keydown', event => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !event.isComposing && event.keyCode !== 229 && !event.repeat && !submit.disabled) { event.preventDefault(); submit.click(); } });
     setIconButton(close,'minus');
@@ -350,6 +361,14 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
     anchor = value || {};
     sourceLabel.textContent = describeAnnotationSource({ relPath: relPath || filePath(), anchor, text: sourceText(), displayLocation });
     quote.textContent = anchor.quote || material.excerpt || '已固定的选区';
+  };
+  root.updateConversation = value => {
+    if(!conversation||value.kind==='note')return false;
+    ({text,replyText='',replyAvailability,readReply,replyEntries=[],status='',history=[]}=value);
+    pending=status==='pending'||status==='accepted-awaiting-reply';
+    submit.disabled=pending;delivery.textContent=pending?'等待前台回复…':status==='failed'?'回复失败 · 原问题已保留':'Ctrl / ⌘ + Enter 发送';
+    content.textContent=tagMarkdownSummary(displayText());editor.placeholder=pending?'继续记下问题，收到回复后发送…':'关于这处材料，聊一聊…（Ctrl+Enter 发送）';
+    renderConversation();root.updateAnchor(value.anchor);return true;
   };
   root.relayout = fitConversation;
   root.setOrdinal = value => {

@@ -1671,6 +1671,7 @@ function projectPreviewTags() {
     // its input, focus, selection and any open menu until its content changes.
     const version=tagProjectionContent({...data,anchor:projection.anchor});
     let root=previous.get(data.id);
+    if(root&&root._projectionVersion!==version&&projection.tag&&root.updateConversation?.(projection.tag))root._projectionVersion=version;
     if(!root||root._projectionVersion!==version){root?.remove();root=projection.tag?makeAnchorTag(projection.tag,{...tagActions,autoEdit:id=>consumeInitialTagEdit(id,'preview')}):makeNoteTag(projection.note,{...noteActions(ui.project.id),autoEdit:()=>false});root._projectionVersion=version;layer.append(root);}
     root.updateAnchor?.(projection.anchor);
     retained.add(data.id);
@@ -1704,7 +1705,7 @@ function addTag(material, { autoEdit = true, status = 'draft', text = '' } = {})
   return tag;
 }
 function persistTag(tag) {
-  const payload = { projectId: tag.projectId, relPath: tag.relPath, tagId: tag.id, regionImage:tag.material?.imageDataUrl?{dataUrl:tag.material.imageDataUrl,captureMode:tag.material.captureMode||'image-pixels',clipped:false}:undefined,drawing:tag.material?.drawing,annotatedImage:tag.material?.annotatedImage,sourceDraftDigest:tag.material?.sourceDraftDigest, displayLocation:tag.material?.displayLocation, materialDigest: tag.materialDigest, kind: tag.anchorKind, anchor: structuredClone(tag.originAnchor || tag.material.anchor), projection: { kind: tag.kind === 'explain' ? 'explain' : 'discuss', text: tag.text || '', draftText: tag.draftText || '', open: tag.open !== false, removed: tag.removed === true, status: tag.status, requestId: tag.requestId, messageId: tag.messageId, history: (tag.history || []).map(entry => ({ question: entry.question, status: entry.status, requestId: entry.requestId, messageId: entry.messageId })), execute: tag.execute || null } };
+  const payload = { projectId: tag.projectId, relPath: tag.relPath, tagId: tag.id, regionImage:tag.material?.imageDataUrl?{dataUrl:tag.material.imageDataUrl,captureMode:tag.material.captureMode||'image-pixels',clipped:false}:undefined,drawing:tag.material?.drawing,annotatedImage:tag.material?.annotatedImage,sourceDraftDigest:tag.material?.sourceDraftDigest, displayLocation:tag.material?.displayLocation, materialDigest: tag.materialDigest, kind: tag.anchorKind, anchor: structuredClone(tag.originAnchor || tag.material.anchor), projection: { kind: tag.kind === 'explain' ? 'explain' : 'discuss', text: tag.text || '', draftText: tag.draftText || '', open: tag.open !== false, removed: tag.removed === true, status: tag.status, requestId: tag.requestId, messageId: tag.messageId,messageIds:tag.messageIds||[], history: (tag.history || []).map(entry => ({ question: entry.question, status: entry.status, requestId: entry.requestId, messageId: entry.messageId,messageIds:entry.messageIds||[] })), execute: tag.execute || null } };
   return enqueue(async () => { const result = await invoke('tag.put', payload); if (!result.ok) workspace.toast(`标签保存失败：${result.error.message}`); else tag.information=result.value?.annotation?.information||tag.information;return result; });
 }
 const discussionDrafts = createDiscussionDrafts();
@@ -1759,10 +1760,10 @@ const tagActions = {
         discussionDrafts.set(projectId,id, { ...current, pending: null, pendingToken: null, accepted });
         tag.acceptedRequestId = accepted.requestId;
         tag.acceptedText = accepted.text;
-        const previousRequestId=tag.requestId,previousMessageId=tag.messageId;
+        const previousRequestId=tag.requestId,previousMessageId=tag.messageId,previousMessageIds=tag.messageIds||[];
         tag.requestId = accepted.requestId;
-        tag.messageId = null;
-        tag.history = [...(tag.history || (previousRequestId ? [{ question: tag.text, status: 'completed', requestId: previousRequestId, messageId: previousMessageId }] : [])), { question: submittedText, status: 'accepted-awaiting-reply', requestId: accepted.requestId }];
+        tag.messageId = null;tag.messageIds=[];
+        tag.history = [...(tag.history?.length ? tag.history : (previousRequestId ? [{ question: tag.text, status: 'completed', requestId: previousRequestId, messageId: previousMessageId,messageIds:previousMessageIds }] : [])), { question: submittedText, status: 'accepted-awaiting-reply', requestId: accepted.requestId }];
         bindTagMessages(tag);
         if (draftChanged) { tag.status = 'draft'; tag.text = current.text; persistTag(tag); projectTags(); return null; }
         tag.status = 'accepted-awaiting-reply'; tag.text = submittedText; tag.draftText = ''; persistTag(tag); projectTags();
@@ -1898,7 +1899,7 @@ $('selection-explain').addEventListener('click', async () => {
   const selected = await preparedMaterial();
   if (!selected) return workspace.toast('请选中可读取的文字或 PDF 区域。');
   if (selected.kind==='word-region') return workspace.toast('当前模型未验证图片发送能力，区域已冻结并保留，未发送。');
-  const question = `请解释：${selected.excerpt}`;
+  const question = '请解释这处选区。';
   const tag = addTag(selected, { autoEdit: false, status: 'pending', text: question });
   if (!tag) return;
   $('selection-menu').hidden = true;

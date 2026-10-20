@@ -181,6 +181,12 @@ export class ManagedProjects {
  async timelineQuery(id,action,p){
   const {index}=await this.projectionSource(id);
   if(action==='timeline.read')return {entry:await index.read(p.id,{version:p.version,field:p.field,offset:p.offset,limit:p.limit})};
+  if(action==='timeline.request'){
+   if(typeof p.requestId!=='string'||!p.requestId||p.requestId.length>512||!Number.isSafeInteger(p.offset??0)||(p.offset??0)<0)throw new HostError('INVALID_PAYLOAD','讨论轮次查询无效');
+   const rows=index.records().filter(row=>row.target==='frontdesk'&&row.jobId===p.requestId).sort((a,b)=>a.sequence-b.sequence),offset=p.offset??0;
+   const ids=[];for(const row of rows.slice(offset,offset+100)){await index.hydrate([row]);const entry=index.nativeDTO(row);if(entry?.speaker==='agent'||entry?.availability==='unavailable')ids.push(row.id);}
+   return {ids,nextOffset:offset+100<rows.length?offset+100:null};
+  }
   return index.page({cursor:p.cursor,limit:p.limit??100});
  }
  async changesQuery(id,action,p){
@@ -215,6 +221,7 @@ export class ManagedProjects {
   allowed['deviation.resolve']=['projectId','workId','deviationId','expectedRevision','expectedVersion','action','requestKey'];
   allowed['frontdesk.route.resolve']=['projectId','proposalId','expectedVersion','action','requestKey'];
   allowed['timeline.page']=['projectId','cursor','limit'];allowed['timeline.read']=['projectId','id','version','field','offset','limit'];
+  allowed['timeline.request']=['projectId','requestId','offset'];
   allowed['changes.list']=['projectId','changeSetId','offset','limit'];allowed['changes.read']=['projectId','changeSetId','fileId','maxBytes','maxLines'];
   const action=op.slice('managed.'.length);
   if(action==='frontdesk.route.resolve'&&(Object.keys(p).some(k=>!allowed[action].includes(k))||!['projectId','proposalId','requestKey'].every(k=>typeof p[k]==='string'&&p[k].trim()===p[k]&&p[k].length>0&&p[k].length<=200)||!Number.isSafeInteger(p.expectedVersion)||p.expectedVersion<1||!['continue','background'].includes(p.action)))throw new HostError('INVALID_PAYLOAD','前台去向决定的项目、提议、版本或动作无效。');
@@ -223,7 +230,7 @@ export class ManagedProjects {
   if(!allowed[action]||Object.keys(p).some(k=>!allowed[action].includes(k)))throw new Error('invalid managed payload');await this.host.requireProject(p.projectId);
   if(action==='draft')return this.saveLocalDraft(p.projectId,p.target,p.text);
   if(action==='status')return this.status(p.projectId);if(action==='enable'||action==='connect')return this.connect(p.projectId,{enable:action==='enable'});
-  if(action==='timeline.page'||action==='timeline.read')return this.timelineQuery(p.projectId,action,p);
+  if(action==='timeline.page'||action==='timeline.read'||action==='timeline.request')return this.timelineQuery(p.projectId,action,p);
   if(action==='changes.list'||action==='changes.read')return this.changesQuery(p.projectId,action,p);
   if(action==='resident.handoff')return this.handoffResident(p.projectId,p);
   if(action==='resident.history')return this.residentHistory(p.projectId,p);
@@ -295,6 +302,7 @@ export class ManagedProjects {
    const imageAttachments=preferredRegionAssets(packets).map(a=>({digest:a.digest,mime:'image/png'}));if(imageAttachments.length>8)throw Error('每次最多8个区域图片');
    if(p.routingQuestionId&&!c.store.state.todos.some(t=>t.id===p.routingQuestionId&&t.kind==='routing'&&t.status==='open'))throw new Error('澄清问题已过期');
    const context={...(p.requestKey?{submissionDigest}:{}),...(p.routingQuestionId?{routingQuestionId:p.routingQuestionId}:{}),...(imageAttachments.length?{imageAttachments}:{})};
+   if(packets.length)context.userInput={text:p.text,sources:packets.map(packet=>({relPath:packet.relPath,annotationId:packet.tagId,materialDigest:packet.origin?.materialDigest,quote:packet.origin?.anchor?.quote||'',location:packet.information?.location?.label||'',changed:packet.resolution?.targetDigest!==packet.origin?.materialDigest}))};
    return action==='task'?c.submitTask(text,{requestKey:p.requestKey,context,draftText:p.text}):c.send(p.target||'frontdesk',text,{requestKey:p.requestKey,context,draftText:p.text});
   }
   if(action==='end'){if(!['accept','discard'].includes(p.decision))throw new HostError('INVALID_PAYLOAD','请选择接受或丢弃成果。');return c.endWork(p.workId,{revision:p.revision,decision:p.decision});}

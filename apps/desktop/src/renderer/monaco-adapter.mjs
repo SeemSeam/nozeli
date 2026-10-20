@@ -166,8 +166,8 @@ export function mountMonaco({ parent, projectId, relPath, text, marks = [], tags
       const current = widgets.get(id);
       if (!current) { mountProjection(item); continue; }
       if (current.signature !== projectionSignature(item)) {
-        removeProjection(id);
-        mountProjection(item);
+        if(item.tag&&current.node.updateConversation?.(item.tag)){current.item=item;current.signature=projectionSignature(item);editor.layoutContentWidget(current.widget);continue;}
+        removeProjection(id);mountProjection(item);
         continue;
       }
       current.item = item;

@@ -473,7 +473,7 @@ async function main() {
         return {ok:true,value:await new ManagedReportExporter({host,managedAgents,beforeOperation:syncDocument}).export(payload??{})};
       }
       if(typeof op==='string'&&op.startsWith('managed.')){
-        const historyOnly=['managed.status','managed.history.list','managed.history.read','managed.artifact.read','managed.artifact.list','managed.timeline.page','managed.timeline.read','managed.changes.list','managed.changes.read','managed.worker.history','managed.resident.history','managed.draft'].includes(op);
+        const historyOnly=['managed.status','managed.history.list','managed.history.read','managed.artifact.read','managed.artifact.list','managed.timeline.page','managed.timeline.read','managed.timeline.request','managed.changes.list','managed.changes.read','managed.worker.history','managed.resident.history','managed.draft'].includes(op);
         if(ompRuntimeError&&!historyOnly)throw ompRuntimeError;
         if(!historyOnly&&(await readNozeliConfiguration(nozeliPaths)).choiceRequired)throw new HostError('CONFIG_SETUP_REQUIRED','请先完成Nozeli独立配置初始化；本地阅读不受影响。');
         return {ok:true,value:await managedAgents.invoke(op,payload??{})};

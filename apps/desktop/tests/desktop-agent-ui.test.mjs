@@ -48,6 +48,8 @@ async function run(mode){
       await page.waitForFunction(name=>document.querySelector('#provider-console-project').textContent==='项目：'+name&&document.querySelector('#ai-status').dataset.state==='unavailable'&&!document.querySelector('[data-history-reload]').disabled,{},project.name);
       assert.equal(await page.$eval('#configuration-setup',node=>node.open),false);
     }
+    const discussionHistory=await page.evaluate(projectId=>nozeli.invoke('managed.timeline.request',{projectId,requestId:'not-an-accepted-job'}),first.id);
+    assert.equal(discussionHistory.ok,true);assert.deepEqual(discussionHistory.value.ids,[]);
     await page.$eval('#composer',node=>{node.value='Keep this local draft';node.dispatchEvent(new Event('input',{bubbles:true}));});
     // Input persists an offline draft into runtime state, which intentionally
     // invalidates the history snapshot. Refresh only after that real write;

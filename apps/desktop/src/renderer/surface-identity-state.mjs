@@ -73,7 +73,7 @@ export function createIdentityHydration({limit=512}={}) {
       return pending.run(id,async()=>{
         try{
           const entry=await read(id);if(generation!==epoch)return;
-          const descriptor={id:entry.id,requestId:entry.requestId,jobId:entry.jobId,target:entry.target,speaker:entry.speaker,source:entry.source,durable:entry.durable,complete:entry.complete,status:entry.status,failed:entry.failed,streaming:Boolean(entry.streaming),text:'',availability:'read-required'};
+          const descriptor={id:entry.id,sequence:entry.sequence,requestId:entry.requestId,jobId:entry.jobId,target:entry.target,speaker:entry.speaker,source:entry.source,durable:entry.durable,complete:entry.complete,status:entry.status,failed:entry.failed,streaming:Boolean(entry.streaming),text:'',availability:'read-required'};
           if(entry.read)descriptor.read={version:entry.read.version,maxBytes:entry.read.maxBytes,fields:(entry.read.fields||[]).slice(0,8).map(({field,totalBytes})=>({field,totalBytes}))};
           descriptors.set(id,descriptor);pin(entry);
         }catch(error){if(generation===epoch)onError(error);}

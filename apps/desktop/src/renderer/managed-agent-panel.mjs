@@ -108,12 +108,19 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
  async function readTimeline(cursor){const id=projectId,gen=generation,request=++pageRequest;try{const frame=await call('timeline.page',{...(cursor?{cursor}:{}),limit:100},id);if(id!==projectId||gen!==generation||request!==pageRequest)return;historyPage=Boolean(cursor);pageError='';sessionStore.apply(id,frame,{replace:true});paintTimeline();}catch(error){if(id===projectId&&gen===generation){pageError=error.message;paintTimeline();}}}
  function paintTimeline(){if(!state)return;timelineBox.hidden=!active;const key=JSON.stringify([projectId,[...projectFilePaths]]);if(key!==contextKey){contextKey=key;timelineContext={filePaths:projectFilePaths,onFile:entry=>openProjectFile?.({projectId,...entry}),onExternal:openExternal,onError:error=>toast(error.message)};}timelineUI.render({store:sessionStore,state,context:timelineContext,call,openFrozenChange,projectId,historyPage,pageError,onPage:readTimeline,onLatest:()=>readTimeline(),onTask:entry=>{sourceMessage=entry.id;sourceBox.dataset.requestKey=crypto.randomUUID();sourceLabel.textContent='引用：'+entry.text.slice(0,160);sourceGoal.value='';sourceBox.hidden=false;sourceGoal.focus();}});const lifecycle=selectedSession();onConversation?.({count:sessionStore.getSnapshot().entries.length,state:lifecycle.state,label:lifecycle.reason||'统一会话'});}
  const identityReads=createIdentityHydration();
+ const requestReads=new Map();
  const timelineSource={
   get projectId(){return projectId;},
   getMessages:()=>sessionMessages({...sessionStore.getLookupSnapshot(),entries:[...new Map([...identityReads.entries(),...sessionStore.getLookupSnapshot().entries].map(entry=>[entry.id,entry])).values()]},state),
   ensureMessage(id){
    const project=projectId,gen=generation;
    return identityReads.ensure(id,{has:key=>sessionStore.has(key),read:async key=>{const result=await call('timeline.read',{id:key},project);return result.entry||result;},pin:entry=>{if(project===projectId&&gen===generation)sessionStore.pin(entry);},onError:error=>{if(project===projectId&&gen===generation)toast('标签原消息无法读取：'+error.message);}});
+  },
+  ensureRequest(requestId){
+   const project=projectId,gen=generation,key=project+':'+requestId;
+   if(requestReads.has(key))return requestReads.get(key);
+   const promise=(async()=>{let offset=0;do{const result=await call('timeline.request',{requestId,offset},project);if(project!==projectId||gen!==generation)return;await Promise.all(result.ids.map(id=>timelineSource.ensureMessage(id)));offset=result.nextOffset;}while(offset!=null);})();
+   const settled=promise.catch(error=>{if(project===projectId&&gen===generation)toast('讨论历史读取失败：'+error.message);});requestReads.set(key,settled);return settled;
   },
   async readMessage(id,options={}){
    const project=projectId,gen=generation,result=await call('timeline.read',{id,...options},project);
@@ -508,7 +515,7 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
   const management=document.createElement('section');management.className='managed-todo-detail-actions';$('managed-doc').append(management);todoUI.details(management,todo.id);
  }
  async function refresh(){const id=projectId,gen=generation,version=++refreshing;if(!id||!active)return;const s=await call('status',{},id);if(id!==projectId||gen!==generation||version!==refreshing)return;state=s.state;ready=Boolean(s.ready);renderResidentRecovery(s);if(state)render();}
- const resetSession=()=>clear();
+ const resetSession=()=>{requestReads.clear();clear();};
  function clear({rememberDraft=true}={}){if(rememberDraft)remember();identityReads.clear();renderConfigurationNotice(configurationNotice,[]);routeUI.clear();todoUI.clear();reportRequest++;historyRequest++;pageRequest++;historyPage=false;pageError='';active=false;sessionStore.reset(null);timelineBox.hidden=true;historyReceiptSignature=null;historyItems=[];historyVersion=null;historyNext=null;historyTotal=0;historyLoading=false;historyNotice='';renderHistory();if(exportDialog.open)exportDialog.close();exportSource=null;sourceMessage=null;sourceBox.hidden=true;sourceGoal.value='';preview.close();for(const row of workRows.values())row.remove();workRows.clear();generation++;ready=false;state=null;toolbar.hidden=true;toolbar.replaceChildren();progressBox.hidden=true;progressBox.replaceChildren();progressSignature=null;delete $('conversation-panel').dataset.managedConversation;projectFilePaths=new Set();fileAvailability=new Map();availabilityKey=null;availabilityRequest++;target='frontdesk';viewed=null;lockHistory();$('composer').disabled=false;for(const t of terminals.values())t.dispose();terminals.clear();terminalLayout?.dispose();terminalLayout=null;terminalBox.replaceChildren();show(false);if(setup.open)setup.close();}
  async function load(id,{connect=true,draft}={}){
   const oldHistory=id===projectId&&viewed?.history?viewed:null,oldTarget=target,oldDraft=$('composer').value;

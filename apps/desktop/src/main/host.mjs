@@ -1627,8 +1627,9 @@ export class DesktopHost {
 
   tagProjection(value) {
     if (!value || !['discuss', 'explain'].includes(value.kind) || typeof value.text !== 'string' || value.text.length > 20000 || typeof value.draftText !== 'string' || value.draftText.length > 20000 || !Array.isArray(value.history) || value.history.length > 1000) throw new HostError('INVALID_PAYLOAD', 'Invalid conversation projection.');
-    const out = { kind: value.kind, text: value.text, draftText: value.draftText, open: value.open !== false, removed: value.removed === true, status: String(value.status || 'draft'), requestId: value.requestId || null, messageId: value.messageId || null,
-      history: value.history.map(entry => ({ requestId: entry.requestId || null, messageId: entry.messageId || null, question: typeof entry.question === 'string' ? entry.question.slice(0, 20000) : '', status: String(entry.status || '') })),
+    const messageIds=ids=>{if(ids==null)return [];if(!Array.isArray(ids)||ids.length>10000||ids.some(id=>typeof id!=='string'||id.length>512))throw new HostError('INVALID_PAYLOAD','Invalid reply identities.');return [...new Set(ids)];};
+    const out = { kind: value.kind, text: value.text, draftText: value.draftText, open: value.open !== false, removed: value.removed === true, status: String(value.status || 'draft'), requestId: value.requestId || null, messageId: value.messageId || null, messageIds:messageIds(value.messageIds),
+      history: value.history.map(entry => ({ requestId: entry.requestId || null, messageId: entry.messageId || null,messageIds:messageIds(entry.messageIds), question: typeof entry.question === 'string' ? entry.question.slice(0, 20000) : '', status: String(entry.status || '') })),
       execute: value.execute && validExecuteRef(value.execute) ? { jobId: value.execute.jobId } : null };
     if (JSON.stringify(out).length > 1024 * 1024) throw new HostError('INVALID_PAYLOAD', 'Conversation projection is too large.');
     return out;

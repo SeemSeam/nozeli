@@ -65,5 +65,11 @@ try{
  await page.evaluate(()=>window.reading.view.render({projectId:'reading-b'}));await page.waitForFunction(()=>document.querySelector('.session-reading textarea').value==='');assert.equal(await page.$$eval('.session-term',nodes=>nodes.length),0);
  await page.evaluate(()=>window.reading.view.render({projectId:'reading-a'}));await page.waitForFunction(()=>document.querySelectorAll('.session-term').length===2);
  await page.click('.session-reading summary');await page.$$eval('.session-reading button',nodes=>nodes.find(node=>node.textContent==='清除术语与高亮').click());await page.waitForFunction(()=>document.querySelectorAll('.session-term').length===0);
+ await page.evaluate(()=>window.reading.store.apply('reading-a',{version:1,entries:[{id:'readable-user',speaker:'user',target:'frontdesk',sequence:3,text:'请围绕人的主体性重新设计README。',materialSources:[{annotationId:'tag-1',relPath:'README.md',location:'第16–21行',materialDigest:'frozen-origin',quote:'人可以以任何粒度介入工作。'}]}],deltas:[]}));
+ await page.waitForSelector('[data-message="readable-user"]');
+ assert.equal(await page.$eval('[data-message="readable-user"] .agent-message-body',node=>node.textContent.trim()),'请围绕人的主体性重新设计README。');
+ assert.equal(await page.$eval('[data-message="readable-user"]',node=>node.textContent.includes('人可以以任何粒度介入工作。')),false);
+ await page.click('[data-message="readable-user"] .session-tool summary');await page.waitForFunction(()=>document.querySelector('[data-message="readable-user"]').textContent.includes('人可以以任何粒度介入工作。'));
+ assert(await page.$eval('[data-message="readable-user"]',node=>node.textContent.includes('README.md')&&node.textContent.includes('frozen-origin')));
  console.log('session reading: explicit project controls, safe first occurrence, selection / IME, persistence and narrow layout passed');
 }finally{if(browser)await browser.close().catch(()=>{});if(child.exitCode===null){child.kill('SIGTERM');await Promise.race([exited,new Promise(resolve=>setTimeout(resolve,3000))]);if(child.exitCode===null)child.kill('SIGKILL');}await fs.rm(out,{recursive:true,force:true});}

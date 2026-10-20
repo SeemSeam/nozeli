@@ -199,15 +199,10 @@ export function mountAgent({ invoke, toast, attachment, openManaged, openProject
     const id = projectId;
     const gated = $('send-message').disabled;
     if (!id || gated || !managed.active) { const reason=!id?'尚未打开项目。':$('send-message').title||'Agent 尚未就绪或当前内容只读。';toast('发送未发出：'+reason);return false; }
-    // Explain/discuss quote the selection inline; a task's authoritative
-    // material is the host-frozen annotation reference, so it may proceed
-    // without a renderer excerpt.
     if (!excerpt?.trim() && !(action === 'task' && annotationRef)) return false;
-    const prompt = action === 'explain'
-      ? `请解释下面选中的内容，先标明随附材料中的文件和位置，再说明关键概念、上下文和依据；位置不确定时明确说明：\n\n${excerpt}`
-      : action === 'task'
-        ? `请在选中文本所在位置执行这项修改要求，直接修改当前文档并给出可审查的改动：${comment}\n\n选中内容：\n${excerpt?.trim() || '（见随附冻结备注材料）'}`
-        : `请结合下面选中的内容讨论这个问题：${comment}\n\n选中内容：\n${excerpt}`;
+    const prompt = annotationRef
+      ? action==='explain'?'请解释这处选区。':action==='task'?`请修改这处材料：\n${comment}`:comment
+      : action==='explain'?`请解释：\n${excerpt}`:`${comment}\n\n选区：\n${excerpt}`;
     const context = annotationRef ? { tags: [annotationRef], ...(background ? { background: true } : {}) } : { relPath, materialText, ...(background ? { background: true } : {}) };
     const result = await managed.send(prompt, context).then(value => ({ ok: true, value }), error => ({ ok: false, error }));
     if (!result.ok) { toast(result.error.message); return false; }

@@ -19,6 +19,16 @@ npm run build:renderer
 
 `npm start`启动本地应用。`npm run test:host`、`npm run test:renderer`、`npm run test:electron`分别运行宿主、渲染逻辑与实际Electron回归。其他分组见package.json。tests/fixtures为合成或带来源说明的固定样本；普通测试不发起付费模型请求。live验收需显式启用和自有账号，不自动执行。
 
+## 标签讨论
+
+标签按轮保留问题与同一请求下的全部助手正文；流式输出只更新对应消息，不重建卡片、覆盖旧轮或重置正在阅读的滚动和原文分页。持久化仅保存请求/消息身份，正文来自统一会话索引；冷开可按请求查回历史消息。正文超出缓存预算时保留分段读取入口，不静默截断。各文档表面共用此行为。
+
+标签讨论正文显示用户原问题，解释请求使用简短标题；文件、位置、引文和冻结版本放在默认收起的“选区来源”。模型输入仍保留完整宿主冻结材料，原生日志不改写。用户自己输入的JSON或同名标题不按文本模式删除。旧记录不被猜测重写，因旧版本已漏存的轮次问题也不凭模型生成补造。
+
+回归：`node --test tests/tag-session-identity.test.mjs tests/tag-input-presentation.test.mjs`；实际Electron消费：`node tests/desktop-tag-history.test.mjs`、`node tests/session-reading.test.mjs`。涵盖三轮、多段回复、流更新、滚动、长回复分页和重载；使用合成会话，不冒充真实Provider回复。
+
+本轮host91/91、renderer79/79、标签/输入专项44/44、原生Collab70/70通过；可见Wayland完整Electron门（阅读/重启、配置与只读历史、三轮标签）及会话简洁问题/折叠来源消费通过。Word/PPT/图片/PDF实际回归通过。未重新调用真实付费Provider，不能据此声称新模型回复已实测；旧无界面启动超时保留，改用实际可见Wayland入口验证。历史和截图留在忽略的测试输出，不进入产品数据。
+
 ## 统一设置与项目文件隐藏
 
 - 左下角“设置”统一管理私有OMP源、前台/主控/Worker默认模型、外观与通用选项。默认模型只影响新会话，已有会话不被静默切换；被默认配置或历史会话引用的源不能直接移除。密钥仅在宿主私有配置保存，不由读取API回传。

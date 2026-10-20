@@ -14,12 +14,12 @@ export async function mountImage({parent,bytes,info,onSelection=()=>{},onZoom=()
  const canvas=document.createElement('canvas');canvas.width=info.width;canvas.height=info.height;canvas.getContext('2d').drawImage(original,0,0);wrap.append(canvas);parent.append(wrap);
  const scroll=parent.parentElement;let disposed=false,scale=1,mode='fit',region=false,drawing=false,notes=[],tags=[],selection=null,drag=null;const open=new Map();
  const remember=()=>{for(const n of wrap.querySelectorAll('.note-anchor'))open.set(n.dataset.annotation,n.querySelector('.note-index')?.getAttribute('aria-expanded')==='true');};
- function paint(){remember();wrap.querySelectorAll('.image-region-mark,.note-anchor,.region-drawing-projection').forEach(n=>n.remove());
+ function paint(){remember();const retained=new Map([...wrap.querySelectorAll('.note-anchor')].filter(node=>tags.some(tag=>tag.id===node.dataset.annotation)).map(node=>[node.dataset.annotation,node]));wrap.querySelectorAll('.image-region-mark,.note-anchor,.region-drawing-projection').forEach(n=>{if(!retained.has(n.dataset.annotation))n.remove();});
   for(const [items,conversation] of [[notes,false],[tags,true]])for(const item of items){
    const a=item.anchor;if(a?.space!=='image-normalized')continue;
    for(const r of a.rects){const mark=document.createElement('span');mark.className='image-region-mark';Object.assign(mark.style,{left:r[0]*100+'%',top:r[1]*100+'%',width:r[2]*100+'%',height:r[3]*100+'%'});wrap.append(mark);}
-   const r=a.rects[0];projectDrawing(wrap,item.information?.drawing||item.drawing,r);const node=conversation?makeAnchorTag({...item,open:open.get(item.id)??item.open},tagActions):makeNoteTag(item,{...noteActions,open:id=>open.get(id)??noteActions.open?.(id)});
-   Object.assign(node.style,{position:'absolute',left:r[0]*100+'%',top:r[1]*100+'%'});wrap.append(node);node.fitConversation?.();
+   const r=a.rects[0];projectDrawing(wrap,item.information?.drawing||item.drawing,r);const node=conversation?(retained.get(item.id)||makeAnchorTag({...item,open:open.get(item.id)??item.open},tagActions)):makeNoteTag(item,{...noteActions,open:id=>open.get(id)??noteActions.open?.(id)});
+   if(conversation)node.updateConversation?.(item);Object.assign(node.style,{position:'absolute',left:r[0]*100+'%',top:r[1]*100+'%'});if(node.parentElement!==wrap)wrap.append(node);node.fitConversation?.();
   }
  }
  function captureRegion(anchor){

@@ -18,9 +18,10 @@ export async function mountWord({parent,bytes,name,onChange,onError,onSave,onSel
   authorLayer.draw(fragments);
  }
  function paint(){
-  cards.clear();overlay.replaceChildren(marks);marks.replaceChildren();
+  const previous=new Map(cards);cards.clear();marks.replaceChildren();
+  for(const [id,card]of previous)if(!tags.some(tag=>tag.id===id))card.remove();
   for(const note of notes){const card=makeNoteTag(note,noteActions);card.hidden=true;cards.set(note.id,card);overlay.append(card);}
-  for(const tag of tags){const card=makeAnchorTag(tag,tagActions);card.hidden=true;cards.set(tag.id,card);overlay.append(card);}
+  for(const tag of tags){const card=previous.get(tag.id)||makeAnchorTag(tag,tagActions);card.updateConversation?.(tag);cards.set(tag.id,card);if(card.parentElement!==overlay)overlay.append(card);}
   frame.contentWindow.postMessage({nozeliWord:channel,type:'anchors',anchors:[...notes,...tags].map(item=>({id:item.id,anchor:item.resolution?.anchor||item.anchor}))},location.origin);
  }
 

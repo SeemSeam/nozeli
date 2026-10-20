@@ -34,7 +34,8 @@ export function mountText({ parent, relPath, text, marks = [], tags = [], onChan
   class NoteWidget extends WidgetType {
     constructor(note, transient = false) { super(); this.note = note; this.transient = transient; this.content = tagProjectionContent(note); }
     updateDOM(dom) {
-      if (this.transient !== dom._transientTag || this.content !== dom._tagContent) return false;
+      if (this.transient !== dom._transientTag) return false;
+      if(this.content!==dom._tagContent){if(!this.transient||!dom.updateConversation?.(this.note))return false;dom._tagContent=this.content;}
       dom.updateAnchor?.(this.note.anchor);
       return true;
     }

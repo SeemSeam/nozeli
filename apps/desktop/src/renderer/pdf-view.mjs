@@ -45,7 +45,8 @@ export async function mountPdf({ parent, bytes, page, initialZoom = 1, fitViewpo
   function paintNotes() {
     const wrap = surface.querySelector('.pdf-page'); if (!wrap) return;
     rememberExpanded();
-    wrap.querySelectorAll('.pdf-note-mark,.note-anchor,.region-drawing-projection').forEach(node => node.remove());
+    const retained=new Map([...wrap.querySelectorAll('.note-anchor')].filter(node=>tags.some(tag=>tag.id===node.dataset.annotation&&tag.anchor.page===state.page)).map(node=>[node.dataset.annotation,node]));
+    wrap.querySelectorAll('.pdf-note-mark,.note-anchor,.region-drawing-projection').forEach(node => {if(!retained.has(node.dataset.annotation))node.remove();});
     for (const note of annotations.filter(note => note.anchor.page === state.page)) {
       const rects = note.anchor.rects || [[.025,.04,.001,.001]];
       for (const r of note.anchor.rects || []) {
@@ -61,9 +62,9 @@ export async function mountPdf({ parent, bytes, page, initialZoom = 1, fitViewpo
       if (!rect) continue;
       for (const r of tag.anchor.rects) { const mark = document.createElement('span'); mark.className = `pdf-note-mark tag-${tag.status === 'followup' ? 'followup' : tag.kind}`; Object.assign(mark.style, {left:r[0]*100+'%',top:r[1]*100+'%',width:r[2]*100+'%',height:r[3]*100+'%'}); wrap.append(mark); }
       projectDrawing(wrap,tag.information?.drawing||tag.drawing,rect);
-      const node = makeAnchorTag({ ...tag, open: openStates.get(tag.id) ?? tag.open }, tagActions);
+      const node = retained.get(tag.id)||makeAnchorTag({ ...tag, open: openStates.get(tag.id) ?? tag.open }, tagActions);node.updateConversation?.(tag);
       Object.assign(node.style, { position:'absolute', left:rect[0]*100+'%', top:rect[1]*100+'%' });
-      wrap.append(node);
+      if(node.parentElement!==wrap)wrap.append(node);
       node.fitConversation?.();
     }
   }

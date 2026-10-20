@@ -199,7 +199,8 @@ export class SessionIndex {
   legacyDTO(message) {
     const state = this.store.state, job = state.jobs?.find(j => j.id === message.jobId), receipt = message.objectId && state.receipts?.find(r => r.objectId === message.objectId);
     const attachments=message.attachments??(message.speaker==='user'?(job?.context?.imageAttachments??[]).map((ref,i)=>({digest:ref.digest,mime:ref.mime,name:'区域图片 '+(i+1)})):[]);
-    return {...message, text:message.text ?? receipt?.text ?? '', sequence:state.sessionIndex?.messageSequences?.[message.id] ?? 0, source:message.speaker === 'system' || message.publication ? 'host' : 'legacy', jobId:message.jobId ?? receipt?.sourceJobId ?? null, revision:message.revision ?? job?.revision ?? null, workId:!['frontdesk','orchestrator'].includes(message.target) ? message.target : null, attachments,...(receipt?.changeSetId ? {changeSetId:receipt.changeSetId} : {})};
+    const userInput=message.speaker==='user'&&job?.context?.userInput;
+    return {...message, text:userInput?.text ?? message.text ?? receipt?.text ?? '',...(userInput?{materialSources:userInput.sources}:{}), sequence:state.sessionIndex?.messageSequences?.[message.id] ?? 0, source:message.speaker === 'system' || message.publication || userInput ? 'host' : 'legacy', jobId:message.jobId ?? receipt?.sourceJobId ?? null, revision:message.revision ?? job?.revision ?? null, workId:!['frontdesk','orchestrator'].includes(message.target) ? message.target : null, attachments,...(receipt?.changeSetId ? {changeSetId:receipt.changeSetId} : {})};
   }
   ordered() {
     const rows = this.records().map(record => ({id:record.id, sequence:record.sequence, native:record}));

@@ -36,10 +36,12 @@ test('tag text is a live getter over the canonical session authority, not a reta
   f.api.applyAgentMessages(); assert(f.requested.includes('m'));
 });
 
-test('exact persisted message identity beats another message with the same request', () => {
-  const value = { ...tag(), messageId: 'chosen', status:'completed' };
-  const f = fixture([value], [message('chosen', 'request', 'chosen text'), message('other', 'request', 'not chosen')]);
-  f.api.applyAgentMessages([], f.source); assert.equal(value.replyText, 'chosen text');
+test('all same-request assistant segments remain ordered without admitting another request', () => {
+  const value = { ...tag(), messageId:'first',status:'completed' };
+  const f=fixture([value],[{...message('second','request','Second segment'),sequence:2},{...message('first','request','First segment'),sequence:1},message('unrelated','other','Not this discussion')]);
+  f.api.applyAgentMessages([],f.source);
+  assert.equal(value.replyText,'First segment\n\nSecond segment');
+  assert.deepEqual(value.messageIds,['first','second']);
 });
 
 test('stream replacement follows host request identity and never marks partial output completed', () => {
@@ -105,9 +107,9 @@ test('canonical native progress advances to final reply without changing complet
  const progressId=value.messageId;assert.equal(value.status,'accepted-awaiting-reply');assert.equal(value.replyText,'Reading the selected material');
  value.status='draft';value.text='NEW_UNSENT_QUESTION';
  await index.recordBatch([fact('final','Final grounded answer')],'frontdesk');
- apply();assert.equal(value.status,'draft');assert.equal(value.replyText,'Final grounded answer');assert.equal(value.text,'NEW_UNSENT_QUESTION');
+ apply();assert.equal(value.status,'draft');assert.equal(value.replyText,'Reading the selected material\n\nFinal grounded answer');assert.equal(value.text,'NEW_UNSENT_QUESTION');
  value.status='accepted-awaiting-reply';await store.mutate(()=>{store.state.jobs[0].status='completed';});apply();
- assert.notEqual(value.messageId,progressId);assert.equal(value.replyText,'Final grounded answer');assert.equal(value.status,'completed');
+ assert.notEqual(value.messageId,progressId);assert.equal(value.replyText,'Reading the selected material\n\nFinal grounded answer');assert.equal(value.status,'completed');
  assert.equal(value.history[1].messageId,value.messageId);assert.equal(value.history[0].reply,'immutable old answer');assert.equal(value.history[0].messageId,'old-message');assert.equal(value.draftText,'UNSENT_TAG');
  await store.mutate(()=>{store.state.jobs[0].status='failed';});apply();assert.equal(value.status,'failed');assert.equal(value.history[1].status,'failed');
 });
