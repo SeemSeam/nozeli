@@ -277,6 +277,16 @@ async function main() {
       if (payload != null && (typeof payload !== 'object' || Array.isArray(payload))) {
         throw new HostError('INVALID_PAYLOAD', 'Payload must be an object.');
       }
+      if(op==='settings.appearance.read'||op==='settings.appearance.save'){
+        const file=path.join(app.getPath('userData'),'appearance.json');
+        if(op==='settings.appearance.read'){
+          try{return {ok:true,value:JSON.parse(await fs.readFile(file,'utf8'))};}catch(error){if(error.code==='ENOENT')return {ok:true,value:null};throw error;}
+        }
+        if(!payload||Object.keys(payload).some(k=>!['theme','font','size'].includes(k))||!['system','light','dark'].includes(payload.theme)||!['system','sans','serif','mono'].includes(payload.font)||!Number.isInteger(payload.size)||payload.size<12||payload.size>20)throw new HostError('INVALID_PAYLOAD','外观配置无效。');
+        const temporary=file+'.'+randomUUID()+'.tmp';
+        try{await fs.writeFile(temporary,JSON.stringify(payload),{flag:'wx',mode:0o600});await fs.rename(temporary,file);}finally{await fs.rm(temporary,{force:true});}
+        return {ok:true,value:payload};
+      }
       if(op==='config.status')return {ok:true,value:await readNozeliConfiguration(nozeliPaths)};
       if(op==='config.initialize'){
         if(!payload||Object.keys(payload).some(key=>!['mode','includeApiKeys'].includes(key))||!['independent','import'].includes(payload.mode)||payload.includeApiKeys!==undefined&&typeof payload.includeApiKeys!=='boolean')throw new HostError('INVALID_PAYLOAD','请选择独立设置或一次性导入。');

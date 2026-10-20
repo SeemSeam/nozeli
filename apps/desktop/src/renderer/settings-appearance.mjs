@@ -19,6 +19,12 @@ function readPreferences() {
   catch { return normalizeAppearance(null); }
 }
 let preferences = readPreferences();
+let saveQueue=Promise.resolve();
+const appearanceReady=window.nozeli.invoke('settings.appearance.read',{}).then(result=>{
+  if(!result.ok)throw new Error(result.error.message);
+  if(result.value)preferences=normalizeAppearance(result.value);
+  applyAppearance();
+}).catch(error=>{console.error('Appearance preferences unavailable',error);});
 const systemTheme = window.matchMedia('(prefers-color-scheme: dark)');
 function applyAppearance() {
   const root = document.documentElement;
@@ -58,13 +64,17 @@ export function mountAppearanceSettings({ container, zen } = {}) {
     button.setAttribute('aria-pressed', String(enabled));
     button.title = '切换 Zen 专注模式 (Ctrl/Cmd+Shift+F11)，Esc 退出';
   }
-  container.addEventListener('change', event => {
+  container.addEventListener('change', async event => {
     const key = event.target.dataset.appearance;
     if (!['theme', 'font', 'size'].includes(key)) return;
+    await appearanceReady;
     preferences = normalizeAppearance({ ...preferences, [key]: key === 'size' ? Number(event.target.value) : event.target.value });
     applyAppearance();
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(preferences));
+      const captured={...preferences};
+      saveQueue=saveQueue.catch(()=>{}).then(async()=>{const result=await window.nozeli.invoke('settings.appearance.save',captured);if(!result.ok)throw new Error(result.error.message);});
+      await saveQueue;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(captured));
       status.textContent = '已保存，重启后继续使用。';
     } catch { status.textContent = '已应用，但本地存储不可用；重启后可能无法保留。'; }
     refresh();
@@ -76,5 +86,6 @@ export function mountAppearanceSettings({ container, zen } = {}) {
   document.addEventListener('zen:change', refresh);
   document.addEventListener('appearance:change', refresh);
   refresh();
+  void appearanceReady.then(refresh);
   return { refresh };
 }
