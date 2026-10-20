@@ -1,0 +1,23 @@
+.nozeli-context-menu{position:fixed;z-index:120000;margin:0;box-sizing:border-box;min-width:218px;max-width:calc(100vw - 12px);max-height:calc(100vh - 12px);overflow:auto;padding:5px;border:1px solid #d1d4c9;border-radius:7px;background:#fcfcf8;color:#303a32;box-shadow:0 6px 24px #27312629;font:13px/1.4 system-ui;user-select:none}
+.nozeli-context-menu[hidden]{display:none!important}
+.nozeli-context-menu>button{display:flex;align-items:center;justify-content:space-between;gap:22px;width:100%;min-height:29px;padding:5px 8px;margin:0;border:0;border-radius:3px;white-space:nowrap;text-align:left;color:inherit;background:transparent;font:inherit;cursor:default}
+.nozeli-context-menu>button:hover:not(:disabled),.nozeli-context-menu>button:focus-visible{outline:0;background:#e6ede2;color:#283e2f}
+.nozeli-context-menu>button:disabled{opacity:.42}
+.nozeli-context-menu>button[role="menuitemcheckbox"]>span::before{content:"";display:inline-block;width:1.3em}
+.nozeli-context-menu>button[role="menuitemcheckbox"][aria-checked="true"]>span::before{content:"✓"}
+.nozeli-context-menu kbd{font:11px system-ui;color:#7a8477}
+.nozeli-context-menu kbd .ui-icon{display:block;width:14px;height:14px;color:inherit;pointer-events:none}
+.document-menu-separator{height:1px;margin:5px 3px;background:#dfe2d8}
+/* Native driver shells use the same dimensions and focus treatment. */
+.context-menu,.contextmenu>.menu-content{box-sizing:border-box!important;min-width:218px!important;max-width:calc(100vw - 12px);max-height:calc(100vh - 12px);padding:5px!important;border:1px solid #d1d4c9!important;border-radius:7px!important;background:#fcfcf8!important;color:#303a32!important;box-shadow:0 6px 24px #27312629!important;font:13px/1.4 system-ui!important}
+.context-menu-item,.contextmenu .menu-item:not(.divider){min-height:29px!important;height:auto!important;padding:5px 8px!important;border-radius:3px;line-height:1.4!important;color:inherit}
+.context-menu-item:hover,.context-menu-item:focus-visible,.contextmenu .menu-item:not(.disable):hover,.contextmenu .menu-item:focus-visible{outline:0!important;background:#e6ede2!important}
+.contextmenu .sub-menu{display:none!important;box-sizing:border-box;min-width:150px;max-width:calc(100vw - 12px);max-height:calc(100vh - 12px);overflow:auto;padding:5px;border:1px solid #d1d4c9;border-radius:7px;background:#fcfcf8;box-shadow:0 6px 24px #27312629}
+.contextmenu .menu-item[data-keyboard-open=true]>.menu-item-content>.sub-menu{display:block!important}
+.context-menu-items,.contextmenu>.menu-content{overflow-y:auto}
+.context-menu kbd{font:11px system-ui;color:#7a8477;margin-left:auto}
+.context-menu-default-content{display:flex!important;align-items:center;gap:22px;width:100%;color:#303a32!important}
+.context-menu .context-menu-item.sd-is-selected{background:#e6ede2!important}
+.context-menu:has(.context-menu-item:focus) .sd-is-selected:not(:focus){background:transparent!important}
+.generic-popover{border:1px solid #d1d4c9!important;border-radius:7px!important;background:#fcfcf8!important;color:#303a32!important;box-shadow:0 6px 24px #27312629!important}
+@media(forced-colors:active){.nozeli-context-menu{background:Canvas;color:CanvasText;border-color:CanvasText}.nozeli-context-menu>button:focus-visible{outline:1px solid Highlight}}

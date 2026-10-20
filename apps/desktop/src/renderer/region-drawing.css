@@ -1,0 +1,19 @@
+#region-drawing{position:fixed;inset:0;pointer-events:none;z-index:1100}
+#region-drawing[hidden]{display:none}
+.drawing-clip{position:fixed;overflow:hidden;pointer-events:none}
+.drawing-area{position:absolute;outline:2px solid #c7362f;pointer-events:auto;touch-action:none;cursor:crosshair;background:#fff}
+.drawing-area[data-tool=eraser]{cursor:cell}
+.drawing-area>img,.drawing-area>svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;user-select:none}
+.region-drawing-projection{overflow:hidden}
+.drawing-controls{position:fixed;display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:5px;border:1px solid var(--border,#d8d0c2);border-radius:8px;background:var(--paper,#fffdf6);box-shadow:0 4px 18px #0002;pointer-events:auto;font-size:12px;color:var(--ink,#292723)}
+.drawing-controls button,.drawing-controls select{height:28px;display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border:1px solid transparent;border-radius:5px;font:inherit;background:transparent;color:inherit;cursor:pointer}
+.drawing-controls button:hover,.drawing-controls button[aria-pressed=true]{background:#c7362f12;border-color:#c7362f44}
+.drawing-controls #drawing-finish{background:#c7362f;color:white}
+.drawing-controls button:disabled{opacity:.45;cursor:default}
+.drawing-controls input[type=color]{width:28px;height:28px;border:0;padding:2px;background:transparent;cursor:pointer}
+
+.drawing-controls .ui-icon{width:16px;height:16px}
+
+.image-page.region-selecting .note-anchor,.word-note-overlay.region-selecting .note-anchor{pointer-events:none}
+/* Keep the frozen region boundary visible above the crop, including clipped views. */
+.drawing-area::after{content:'';position:absolute;inset:0;box-shadow:inset 0 0 0 1.5px #c7362f;pointer-events:none}

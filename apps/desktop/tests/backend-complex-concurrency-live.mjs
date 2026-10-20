@@ -1,0 +1,36 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+import {Controller} from '../src/agents/managed/controller.mjs';
+import {auditRuntime} from '../src/agents/managed/runtime-audit.mjs';
+import {assertSlots,assertReview} from './complex-routing-evidence.mjs';
+if(process.env.NOZELI_REAL_CODEX!=='1'||!process.env.NOZELI_CODEX_SOURCE_HOME)throw Error('explicit Codex opt-in/source required');
+const parent=process.env.NOZELI_COMPLEX_LAB_PARENT;if(!parent||!path.isAbsolute(parent)||parent.split(path.sep).includes('.ccb'))throw Error('external lab parent required');
+const root=await fs.mkdtemp(path.join(await fs.realpath(parent),'complex-concurrent-')),content=path.join(root,'project'),runtime=path.join(root,'app-data/runtime');await fs.mkdir(content);await fs.mkdir(path.join(root,'evidence'));
+const duration=120,checks=[],intervals=[];let c,failure,timer,sequence=0,previousAt,previousParallel=false,overlapMs=0;
+const json=async(name,value)=>fs.writeFile(path.join(root,'evidence',name+'.json'),JSON.stringify(value,null,2)+'\n');
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const wait=async(fn,label)=>{const until=Date.now()+720000;while(Date.now()<until){if(await fn())return;const f=c.store.state.jobs.find(j=>j.status==='failed');if(f)throw Error(label+': '+f.error);await sleep(200);}throw Error('timeout: '+label);};
+const check=(name,fn)=>{fn();checks.push(name);console.log(JSON.stringify({root,check:name}));};
+const work=name=>c.store.state.works.find(w=>w.name===name);
+const observe=()=>{const now=Date.now(),running=c.store.state.jobs.filter(j=>j.status==='running'&&!['frontdesk','orchestrator'].includes(j.target));if(previousAt&&previousParallel)overlapMs+=now-previousAt;previousAt=now;previousParallel=running.length===2;intervals.push({at:new Date(now).toISOString(),running:running.map(j=>j.target),quota:c.store.used()});};
+const front=async(text)=>{const {jobId}=await c.send('frontdesk',text);await wait(()=>c.store.state.jobs.find(j=>j.id===jobId)?.status==='completed'&&!c.running.has('orchestrator')&&!c.store.state.jobs.some(j=>j.target==='orchestrator'&&j.status==='queued'),'front');};
+try{
+ console.log(JSON.stringify({root,durationSeconds:duration}));for(const x of ['a','b'])await fs.writeFile(path.join(content,x+'.txt'),'sample:0\n');
+ c=await Controller.open({runtimeRoot:runtime,contentRoot:content,sourceHome:process.env.NOZELI_CODEX_SOURCE_HOME,isolateProcesses:true});await c.store.mutate(()=>{c.store.state.limit=2;});await c.start();
+ timer=setInterval(()=>{observe();sequence++;for(const x of ['a','b'])fs.writeFile(path.join(content,x+'.txt'),`sample:${sequence}\n`).catch(()=>{});},1000);
+ for(const [name,x] of [['采样A','a'],['采样B','b']]){
+  await front(`新建全新独立任务严格命名“${name}”。在本工作树写${x}-collector.py和${x}-samples.json。Python程序每秒实际读取用户明确提供的只读外部输入${path.join(content,x+'.txt')}，连续采样${duration}秒，记录observedAt时间戳及读到的原文，完成后验证采样持续至少${duration-1}秒、首尾sample值不同且无少于100条的结果，运行程序，读回JSON并发布结果。这是测量不断变化样本的真实长任务，不得用一份静态JSON或仅sleep代替采样。只能写本任务两个文件，不写输入txt。禁止Git、CCB/tmux及其他Agent。不要结束Work。`);
+  await wait(()=>work(name)?.threadId&&c.sessions.get(work(name).id)?.busy,'worker-start:'+name);
+ }
+ await check('two actual native worker turns are running',()=>{assertSlots(c.snapshot(),2);assert.notEqual(work('采样A').threadId,work('采样B').threadId);assert.ok(c.sessions.get(work('采样A').id).busy&&c.sessions.get(work('采样B').id).busy);});
+ await front('另一个独立目标，新建任务严格命名“并发后标记”，只写after.txt内容AFTER_OK，核验并发布结果。禁止Git/CCB/tmux。');check('full busy quota queues third Work without thread',()=>{assert.equal(work('并发后标记').status,'queued');assert.ok(!work('并发后标记').threadId);assertSlots(c.snapshot(),2);});
+ const workerJobs=c.store.state.jobs.filter(j=>!['frontdesk','orchestrator'].includes(j.target)).length;await front('仅回答一道轻问题：7加8是多少？不读取、不创建或继续任何任务。');check('frontdesk remains usable during prolonged two-worker execution',()=>assert.equal(c.store.state.jobs.filter(j=>!['frontdesk','orchestrator'].includes(j.target)).length,workerJobs));
+ const original=structuredClone(work('采样A'));await front('补充原“采样A”，不要中断采样也不要新建目标：采样完毕后，后续核验原JSON并写a-summary.md，首行必须SUMMARY_OK，说明首尾sample变化。禁止改输入文件和Git。');check('busy supplement stays on same Work and queues behind active turn',()=>{assert.equal(work('采样A').id,original.id);assert.equal(work('采样A').threadId,original.threadId);assert.equal(c.store.state.works.length,3);assert.ok(c.store.state.jobs.some(j=>j.target===original.id&&j.type==='supplement'));});
+ await wait(()=>['采样A','采样B'].every(n=>work(n)?.status==='review')&&!c.running.size&&!c.store.state.jobs.some(j=>j.status==='queued'),'collector-results');observe();
+ for(const [name,x] of [['采样A','a'],['采样B','b']]){assertReview(c.snapshot(),work(name).id);const value=JSON.parse(await fs.readFile(path.join(c.execution.directory(work(name).id),x+'-samples.json'),'utf8'));const rows=Array.isArray(value)?value:value.samples;assert.ok(Array.isArray(rows)&&rows.length>=100,'actual temporal samples');const timestamps=rows.map(r=>Date.parse(r.observedAt));assert.ok(timestamps.every(Number.isFinite),'readable recorded observation timestamps');assert.ok(timestamps.at(-1)-timestamps[0]>=119000,'observed sample interval >=119 seconds');assert.notEqual(JSON.stringify(rows[0]),JSON.stringify(rows.at(-1)));await json(x+'-sample-summary',{count:rows.length,durationMs:timestamps.at(-1)-timestamps[0],first:rows[0],last:rows.at(-1)});}
+ check('measured parallel execution overlaps at least sixty seconds',()=>assert.ok(overlapMs>=60000,`actual observed overlap ${overlapMs}ms`));assert.match(await fs.readFile(path.join(c.execution.directory(work('采样A').id),'a-summary.md'),'utf8'),/^SUMMARY_OK/);check('busy supplement executed on original thread after collector',()=>{assert.equal(work('采样A').threadId,original.threadId);assert.ok(work('采样A').revision>original.revision);});
+ clearInterval(timer);
+ for(const n of ['采样A','采样B']){const w=work(n);await c.endWork(w.id,{revision:w.revision,decision:'accept'});await wait(()=>work(n).status==='ended'&&work(n).closure?.phase==='complete','end:'+n);}await wait(()=>work('并发后标记').status==='review'&&!c.running.size,'queued-result');assert.equal((await fs.readFile(path.join(c.execution.directory(work('并发后标记').id),'after.txt'),'utf8')).trim(),'AFTER_OK');const q=work('并发后标记');await c.endWork(q.id,{revision:q.revision,decision:'accept'});await wait(()=>work('并发后标记').status==='ended'&&work('并发后标记').closure?.phase==='complete','last-end');check('all long-running results retain files and release quota on explicit outcome',()=>assertSlots(c.snapshot(),0));await json('final-state',c.snapshot());
+}catch(e){failure=e;console.error(e.stack);if(c)await json('failure-state',c.snapshot());}
+finally{clearInterval(timer);await c?.stop();const audit=await auditRuntime(runtime);if(audit.processes.length||audit.authCopies.length)failure??=Error('cleanup audit failed');await json('intervals',intervals);const result={status:failure?'FAIL':'PASS',root,checks,overlapMs,durationSeconds:duration,error:failure?.message,audit,scope:'real time-varying file sampling, no GUI; 120 seconds per collector, not an endurance SLA'};await json('result',result);console.log(JSON.stringify(result));if(failure)process.exitCode=1;}

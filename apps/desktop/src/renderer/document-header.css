@@ -1,0 +1,113 @@
+#reader.document-header-unified > .desk-header { flex-wrap:nowrap;min-width:0;min-height:44px;gap:8px;padding:6px 12px; }
+#reader.document-header-unified:not(.document-dual) #reader-bar { display:none; }
+#reader.document-header-unified .workspace-heading { display:none; }
+#reader.document-dual > .desk-header #subject-title { display:none; }
+#reader.document-dual > .desk-header .workspace-heading { display:block;flex:1;min-width:0;font-size:14px;font-weight:500; }
+#reader.document-header-unified > .desk-header #subject-title { flex:1;min-width:24px;margin:0;font-size:14px; }
+.document-meta { display:flex;align-items:center;flex:0 0 auto;gap:8px;min-width:0; }
+#reader.document-header-unified .document-meta #save-status { flex:0 1 auto;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px; }
+#reader.document-header-unified .document-meta #text-mode-toggle { flex:0 0 auto;min-height:28px;padding:2px 7px;font-size:12px;white-space:nowrap; }
+#reader.document-header-unified > .desk-header .desk-tools { flex:0 0 auto;gap:1px; }
+#reader.document-header-unified > .desk-header .desk-tools button { display:inline-flex;align-items:center;justify-content:center;flex:0 0 28px;width:28px;height:28px;min-height:28px;padding:2px;font-size:12px;white-space:nowrap; }
+#reader.document-header-unified .desk-tools svg { width:17px;height:17px; }
+#reader.document-header-unified > .desk-header.document-header-compact { padding-inline:8px;gap:5px; }
+#reader.document-header-unified > .document-header-compact .document-meta { gap:5px; }
+#reader.document-header-unified > .document-header-compact #save-status { width:10px;max-width:10px;font-size:0;overflow:visible; }
+#reader.document-header-unified > .document-header-compact .font-size-label { display:none; }
+#reader.document-header-unified > .document-header-compact #save-status::after { content:'';display:block;width:7px;height:7px;border-radius:50%;background:currentColor; }
+#reader.document-header-unified > .document-header-narrow .desk-tools button { flex-basis:24px;width:24px;padding:0;font-size:11px; }
+#reader.document-header-unified > .document-header-narrow #text-mode-toggle { padding-inline:4px;font-size:11px; }
+#reader.document-header-unified.document-dual #reader-bar { display:flex;flex-wrap:nowrap;gap:6px; }
+#reader.document-header-unified.document-dual #reader-bar .file-path { flex:1;min-width:0; }
+#reader.document-header-unified.document-dual #reader-bar .document-meta { gap:5px; }
+#reader.document-header-unified.document-dual #reader-bar #save-status { max-width:80px; }
+#reader.document-header-unified .documents.dual .reader-bar { height:44px;min-height:44px;flex:0 0 44px; }
+#reader.document-header-unified:has(#text-host[hidden]):has(#text-preview[hidden]) #text-mode-toggle { display:none; }
+#reader.document-header-unified .documents.diff-mode .document-diff { top:0; }
+#reader.document-header-unified .documents.diff-mode #primary-pane .reader-bar { visibility:hidden; }
+
+/* PDF page controls belong to its file row, with page zoom instead of text size. */
+#reader.document-pdf #font-smaller,#reader.document-pdf #font-larger,#reader.document-pdf #font-size-label { display:none; }
+#reader.document-pdf .document-meta #save-status { display:none; }
+#reader.document-pdf .desk-header,#reader.document-pdf #reader-bar { overflow-x:auto; }
+#reader.document-pdf #pdf-toolbar { flex:0 0 auto; flex-wrap:nowrap; gap:6px; padding:0; border:0; background:transparent; }
+#reader.document-pdf #pdf-toolbar .pdf-actions,#reader.document-pdf #pdf-toolbar .pdf-pages-control { flex-wrap:nowrap; white-space:nowrap; }
+#reader.document-pdf #pdf-toolbar .page-label { white-space:nowrap; }
+#reader.document-pdf #pdf-toolbar button { min-width:24px; min-height:26px; }
+#reader.document-pdf #pdf-toolbar input { width:36px; }
+#reader.document-pdf > .desk-header #subject-title { min-width:90px; }
+/* Word owns formatting/zoom inside its local editor; text-only controls do not apply. */
+#reader.document-word #font-smaller,#reader.document-word #font-larger,#reader.document-word #font-size-label,#reader.document-word .reading-footer,#reader.document-word #open-beside { display:none; }
+#word-host { height:100%; min-height:500px; }
+#reader.document-word #reader-scroll { overflow:hidden; }
+#word-host iframe { min-height:0!important; }
+
+#reader.document-word #reader-scroll:has(#word-notes:not([hidden])){display:flex;gap:12px}#reader.document-word #word-host{flex:1;min-width:0}#word-notes{flex:0 0 300px;overflow:auto;padding:12px;box-sizing:border-box}#word-notes section{margin:12px 0 28px}#word-notes blockquote{margin:8px 0;font-size:12px;color:#777}#word-notes .note-anchor{display:block;position:relative}
+#word-notes .note-anchor > .note-index{display:none}
+#word-notes .note-projection{position:relative!important;left:0!important;top:0!important;transform:none!important;width:100%!important;min-width:0;max-width:100%;box-sizing:border-box}
+#word-notes .note-projection:not(.is-collapsed){height:240px!important}
+#word-notes .note-anchor{width:100%;height:auto}
+#word-notes .note-projection{resize:none!important}
+#word-notes .note-projection-head{cursor:pointer}
+
+
+
+#word-host{position:relative;isolation:isolate}
+.word-note-overlay{position:absolute;inset:0;overflow:hidden;pointer-events:none;z-index:5}
+.word-note-overlay>.note-anchor{position:absolute;pointer-events:auto}
+.word-note-overlay>.note-anchor[hidden]{display:none}
+.word-note-overlay .note-index{z-index:2}
+.word-note-overlay .note-projection{z-index:1}
+
+.word-note-marks{position:absolute;inset:0;pointer-events:none}
+
+#reader.document-header-unified .desk-tools #word-region{width:auto;flex:0 0 auto;padding:2px 9px;white-space:nowrap}#word-region[aria-pressed=true]{background:#dce9df;border-color:#496f55}
+#word-zoom:not([hidden]){display:inline-flex;align-items:center;gap:3px;white-space:nowrap}
+#word-zoom button{min-width:28px;padding:4px 6px}
+#word-zoom-reset{font-variant-numeric:tabular-nums;min-width:48px!important}
+#word-fit[aria-pressed="true"]{background:var(--soft,#edf3ee)}
+
+/* Each split pane owns a single file row; overflow stays discoverable in … . */
+#reader.document-dual>.desk-header{display:none}
+#reader.document-header-unified .desk-tools{display:flex;flex:none;align-items:center;gap:1px;white-space:nowrap}
+#reader.document-header-unified .reader-bar{flex-direction:row;align-items:center;flex-wrap:nowrap;overflow:visible;min-width:0;gap:5px;padding-inline:8px}
+#reader.document-header-unified .reader-bar .file-path{flex:1;min-width:18px;max-width:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#reader.document-header-unified .reader-bar .desk-tools>button{width:28px;min-width:28px;height:28px;padding:3px;border:0}
+#reader.document-header-unified .reader-bar #font-settings{width:auto;min-width:56px;white-space:nowrap;padding:3px 5px}
+#reader.document-header-unified .reader-bar #font-size-label{display:inline;font-size:11px}
+#reader.document-pdf .desk-header,#reader.document-pdf #reader-bar{overflow:visible}
+#reader.document-pdf>.desk-header #subject-title{min-width:20px}
+#reader #pdf-toolbar,#reader #image-toolbar,#reader #secondary-tools{gap:3px;flex:none;white-space:nowrap;background:transparent;border:0;padding:0}
+#reader #secondary-tools{display:flex;align-items:center;font-size:11px}
+#reader #word-region,#reader #image-region{font-size:0;width:28px!important;min-width:28px;flex:none!important;padding:3px!important}
+#reader #word-region::after,#reader #image-region::after{content:'▣';font-size:15px}
+#reader .panel-narrow .document-meta #save-status{max-width:12px;font-size:0}
+#reader .panel-narrow #comparison-change{display:none}
+.file-navigation{display:flex;align-items:center;gap:3px;margin:10px 7px 6px;min-width:0}
+.file-navigation .file-filter{flex:1;min-width:0;width:0;margin:0}
+.file-navigation .panel-more{flex:none;width:26px;min-width:26px}
+.files-collapsed .file-navigation{display:none}
+#app.narrow-layout.drawer-files-open #files>.file-navigation{display:flex!important}
+#reader #tex-toolbar{display:flex;flex-wrap:nowrap;flex:none;border:0;padding:0;gap:4px;white-space:nowrap;font-size:11px;min-width:0}
+#reader #tex-toolbar select{min-width:66px;max-width:130px;padding:3px}
+#reader #tex-status{display:none}
+#reader .panel-compact #tex-toolbar>label,#reader .panel-compact #tex-engine{display:none}
+/* Keep the source filename readable before secondary TeX controls consume it. */
+#reader .panel-medium:has(#tex-toolbar:not([hidden])) #tex-toolbar>label,
+#reader .panel-medium:has(#tex-toolbar:not([hidden])) #tex-engine,
+#reader .panel-medium:has(#tex-toolbar:not([hidden])) #code-status,
+#reader .panel-medium:has(#tex-toolbar:not([hidden])) #code-jump{display:none}
+#reader.document-header-unified .reader-bar:has(#tex-toolbar:not([hidden])) .file-path{min-width:72px}
+#reader.document-header-unified .reader-bar.panel-tiny:has(#tex-toolbar:not([hidden])) .file-path{min-width:18px}
+#reader .panel-narrow #pdf-toolbar .page-label{font-size:0}
+#reader .panel-narrow #pdf-toolbar .page-label input,#reader .panel-narrow #pdf-count{font-size:11px}
+#reader .panel-narrow #pdf-count::before{content:'/ ';font-size:11px}
+.document-diff-head>header{flex-wrap:nowrap!important}
+.document-diff-head .panel-more{width:28px!important;min-width:28px!important;padding:3px!important}
+.document-diff-head .panel-narrow #comparison-change{display:none}
+@media(max-width:640px){.document-diff-head .document-diff-title,.document-diff-head #secondary-path{flex:1 1 auto!important;min-width:18px}}
+#reader[data-file-kind=unsupported] #font-control,#reader[data-file-kind=legacy-word] #font-control,#reader[data-file-kind=unsupported] #open-beside,#reader[data-file-kind=legacy-word] #open-beside{display:none}
+#reader .reader-bar #code-status{flex:0 1 auto;max-width:120px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#reader .reader-bar.panel-compact #code-status{display:none}
+#reader .reader-bar #code-jump{white-space:nowrap;flex:none}
+#app.narrow-layout.drawer-files-open .file-navigation .file-filter{display:block!important}

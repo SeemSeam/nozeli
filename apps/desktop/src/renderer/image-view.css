@@ -1,0 +1,13 @@
+#image-toolbar{display:flex;align-items:center;gap:6px;padding:5px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap;font-size:12px}
+#image-toolbar[hidden],#image-host[hidden]{display:none}
+#image-size{margin-right:auto;color:var(--muted)}
+#image-host{padding:16px;min-height:100%;width:100%;box-sizing:border-box;overflow:visible}
+.image-page{position:relative;margin-inline:auto;background:repeating-conic-gradient(#eceee9 0% 25%,#fff 0% 50%) 0/16px 16px;box-shadow:0 1px 5px #26393230;flex:none}
+.image-page>canvas{display:block;width:100%;height:100%}
+.image-page.region-selecting{cursor:crosshair;touch-action:none}
+.image-page.region-selecting .note-anchor{pointer-events:none}
+.image-region-mark{position:absolute;border:1px solid #ad3939;background:#ac383810;pointer-events:none}
+.image-page .note-anchor{z-index:7}
+#reader.document-image #font-smaller,#reader.document-image #font-larger,#reader.document-image #font-size-label{display:none}
+
+#reader.document-image .reading-footer{display:none}

@@ -1,0 +1,9 @@
+@font-face{font-family:NozeliFileIcons;src:url('../../node_modules/monaco-editor/esm/vs/base/browser/ui/codicons/codicon/codicon.ttf') format('truetype');font-display:block}
+.file-type-icon{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;flex:0 0 20px;color:var(--file-type-color);font:normal 16px/1 NozeliFileIcons;vertical-align:text-bottom;user-select:none;pointer-events:none}
+.file-type-icon::before{content:attr(data-glyph)}
+.file-type-letter::before{display:flex;align-items:center;justify-content:center;width:14px;height:16px;border:1px solid currentColor;border-radius:2px;font:700 10px/1 system-ui}
+.open-file-select{display:flex;align-items:center;gap:6px}
+.open-file-name{overflow:hidden;text-overflow:ellipsis;min-width:0}
+#subject-title>.file-type-icon,.file-path>.file-type-icon{margin-right:5px}
+.file-tree .file-type-icon{margin-left:-2px}
+@media(forced-colors:active){.file-type-icon{color:CanvasText}}

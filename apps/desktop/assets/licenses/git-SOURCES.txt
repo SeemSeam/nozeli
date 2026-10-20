@@ -1,0 +1,36 @@
+Bundled Git source and license references
+
+Git 2.53.0 is licensed under GNU GPL version 2; see git-2.53.0-COPYING
+in this directory for the verbatim upstream license and warranty disclaimer.
+Git is a separate executable invoked by Nozeli, not a linked Nozeli library.
+
+Git upstream source:
+https://github.com/git/git/tree/v2.53.0
+https://github.com/git/git/archive/refs/tags/v2.53.0.tar.gz
+
+The platform binary distribution is desktop/dugite-native v2.53.0-4,
+selected and checksum-verified by the pinned dugite 3.2.3 dependency.
+Native build scripts, patches and dependency source references:
+https://github.com/desktop/dugite-native/tree/v2.53.0-4
+https://github.com/desktop/dugite-native/archive/refs/tags/v2.53.0-4.tar.gz
+Platform binary archives and published SHA-256 digests:
+https://github.com/desktop/dugite-native/releases/tag/v2.53.0-4
+
+Upstream release versions include Git 2.53.0, Git for Windows
+2.53.0.windows.4, Git LFS 3.7.1 and Git Credential Manager 2.9.0.
+Exact component availability varies by platform archive. Component sources:
+https://github.com/git-for-windows/git/tree/v2.53.0.windows.4
+https://github.com/git-lfs/git-lfs/tree/v3.7.1
+https://github.com/git-ecosystem/git-credential-manager/tree/v2.9.0
+
+Dugite JavaScript wrapper source and MIT license:
+https://github.com/desktop/dugite/tree/v3.2.3
+The installed node_modules/dugite/LICENSE is retained in application packages.
+
+These references identify upstream sources; they are not a written source
+provision offer by Nozeli and do not claim that the native-build repository
+archive alone contains every component's complete corresponding source.
+Before external redistribution, provide complete corresponding source and
+required component notices alongside the binaries, or another applicable
+GPL-compliant source distribution mechanism. A license copy and upstream
+links alone do not establish fulfillment of those redistribution obligations.

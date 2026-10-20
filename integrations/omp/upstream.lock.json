@@ -1,0 +1,15 @@
+{
+  "schema": 4,
+  "$comment": "Pristine upstream and no-model probe inputs. Commit, patches, Bun and native addon pins are authoritative in private-runtime.lock.json. Build output hashes belong only in the generated runtime.json.",
+  "pristine_sha256": {
+    "packages/coding-agent/src/collab/host.ts": "430e19b593b6a97a2a6b4639bdc30b41155856e2c35b981e830fe4d3d077fc3d",
+    "packages/coding-agent/src/collab/protocol.ts": "264514135de2286bfcddb8c946b70f75439adcebc0770ca87152ed93d1fdb420"
+  },
+  "smoke": {
+    "adjudicator": "probes/smoke-adjudicator.cjs",
+    "adjudicator_sha256": "e42e9a6077c4b590e4dbc71fec4ccb791585e1f184099a3e5cabc148a7133feb",
+    "guest_probe_sha256": "89765c7d9f76e7931a462e958f899d645c18fb9fd71d37da648a3f542302b755",
+    "relay_script_pristine": "packages/collab-web/scripts/local-relay.ts",
+    "relay_script_sha256": "3c0104fa36b338168b1b4d322f80a58b63b1e4ac04bac3859a7d1666a48d8b37"
+  }
+}

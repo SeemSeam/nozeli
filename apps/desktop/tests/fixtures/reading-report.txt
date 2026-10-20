@@ -1,0 +1,14 @@
+# Reading collaboration regression report
+
+这是独立合成的阅读协作测试文档，不包含产品历史记录或用户资料。
+
+## Review observations
+
+- Markdown headings and UTF-8 中文 must remain byte-exact after opening.
+- A discussion annotation belongs to its original path and source digest.
+- Moving or deleting the project copy must retain the open reading snapshot.
+- The original fixture must remain unchanged across installed application restarts.
+
+## Conclusion
+
+The project copy is disposable. Source bytes, annotations and missing-path notices are checked through production renderer and IPC entry points.

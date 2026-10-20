@@ -1,0 +1,41 @@
+{
+  "packages": {
+    "@fortune-sheet/react": "1.0.4",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "exceljs": "4.4.0",
+    "jszip": "3.10.2"
+  },
+  "registry": "https://registry.npmjs.org",
+  "fortuneLicenseSource": "https://raw.githubusercontent.com/ruilisi/fortune-sheet/master/LICENSE",
+  "sha256": {
+    "jszip.js": "7f839b2d4688b845c105ebf5d2f9803075f91ea0fe72bdaac176c3a04dd3d2c1",
+    "EXCELJS-LICENSE": "2ed526b7e7c7681dc2347995b5036ddf73dc27d0539cdea59b6d4a72b63a57a0",
+    "JSZIP-LICENSE": "566c953c6090b1218ca6217dd7359d45dde46581968586dc607d59a78af6a9c4",
+    "fortune.js": "a28397b8d592619c2ad97e3fc6da8470af017061a03756313ed3a5d089abd225",
+    "react.js": "d949f1c3687aedadcedac85261865f29b17cd273997e7f6b2bfc53b2f9d4c4dd",
+    "REACT-LICENSE": "52412d7bc7ce4157ea628bbaacb8829e0a9cb3c58f57f99176126bc8cf2bfc85",
+    "react-dom.js": "35f4f974f4b2bcd44da73963347f8952e341f83909e4498227d4e26b98f66f0d",
+    "exceljs.js": "7e49da68588e250dbb8bba190d2caa8ab3787cc0284bda1d8b2f805c4df742c9",
+    "fortune.css": "1d21b02df7614de73d691b24db7b8030e16829466a2193bf805babc2959e12cf",
+    "FORTUNE-LICENSE": "5fec1b755e7753254cb63ca9400ef0159ebf6bcf05357b72f3e42e0c462a29f9",
+    "REACT-DOM-LICENSE": "52412d7bc7ce4157ea628bbaacb8829e0a9cb3c58f57f99176126bc8cf2bfc85"
+  },
+  "patches": [
+    {
+      "file": "fortune.js",
+      "scope": "calculateSheetFromula",
+      "reason": "calculateFormula wrote non-current-sheet results into current sheet; use explicit target sheet data in setCellValue",
+      "original": "setCellValue$1(ctx,r,c,result[1],null);insertUpdateFunctionGroup(ctx,r,c,id);",
+      "replacement": "setCellValue(ctx,r,c,ctx.luckysheetfile[index$1].data,result[1]);insertUpdateFunctionGroup(ctx,r,c,id);"
+    },
+    {
+      "file": "fortune.js",
+      "scope": "FormulaBar.onKeyDown",
+      "reason": "prevent Enter/Escape from reaching the grid before React deferred updater commits; otherwise next cell may be overwritten by empty input",
+      "original": "recentText.current = refs.fxInput.current.innerText;",
+      "replacement": "recentText.current = refs.fxInput.current.innerText;\n      // Nozeli: stop before the deferred React state updater; otherwise the grid handles Enter twice.\n      if (key === \"Enter\" || key === \"Escape\") { e.preventDefault(); e.stopPropagation(); }"
+    }
+  ],
+  "upstreamFortuneBundleSha256": "b20b736bf43420eff5c205b8c9c0b6d37454d139cdda656bdda91bc85830e5b9"
+}

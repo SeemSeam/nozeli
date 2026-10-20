@@ -1,0 +1,7 @@
+body{margin:0;background:#efeee9;font:14px system-ui}#toolbar{position:sticky;top:0;background:#fff;z-index:50;border-bottom:1px solid #ddd}#document{margin:12px auto;min-width:0}#error{color:#a7352c;padding:12px}html,body{min-height:100%}
+
+
+
+
+
+.word-region-selecting .superdoc-page{cursor:crosshair}.word-region-preview{position:fixed;pointer-events:none;background:#8fb39344;border:1px solid #456654;z-index:1000}

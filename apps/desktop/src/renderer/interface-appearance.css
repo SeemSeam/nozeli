@@ -1,0 +1,66 @@
+/* One optical size, stroke and interaction language for application chrome. */
+:root{--ui-icon-size:18px;--ui-icon-small:16px;--ui-hit-size:28px;--ui-control-radius:6px;--ui-control-ink:#566158;--ui-control-hover:#eaf0e6;--ui-control-active:#e0eade;--ui-control-focus:#466b55}
+.ui-icon{display:block;width:var(--ui-icon-size);height:var(--ui-icon-size);flex:none;overflow:visible;color:inherit;pointer-events:none;stroke-width:2}
+.ui-icon-button,.ui-icon-label{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;gap:6px;color:var(--ui-control-ink);border:0;border-radius:var(--ui-control-radius);vertical-align:middle;white-space:nowrap}
+.ui-icon-button{width:var(--ui-hit-size);min-width:var(--ui-hit-size);height:var(--ui-hit-size);min-height:var(--ui-hit-size);flex:0 0 var(--ui-hit-size);padding:5px}
+.ui-icon-label{min-height:var(--ui-hit-size)}
+.ui-icon-button:hover:not(:disabled),.ui-icon-label:hover:not(:disabled),.panel-more:hover:not(:disabled),.panel-font:hover:not(:disabled){background:var(--ui-control-hover);color:#2e4938}
+.ui-icon-button:is([aria-pressed=true],[aria-expanded=true]),.panel-more[aria-expanded=true],.panel-font[aria-expanded=true]{background:var(--ui-control-active);color:#31553e}
+.ui-icon-button:focus-visible,.ui-icon-label:focus-visible,.panel-more:focus-visible,.panel-font:focus-visible{outline:2px solid var(--ui-control-focus);outline-offset:1px;background:var(--ui-control-hover)}
+.ui-icon-button:disabled,.ui-icon-label:disabled{opacity:.4;cursor:default}
+.ui-icon-button.ui-danger:hover:not(:disabled){color:var(--annotation-red,#b23a2d);background:#f9ece8}
+#reader.document-header-unified .desk-tools .ui-icon-button,#reader .reader-bar .ui-icon-button,#reader #secondary-tools .ui-icon-button{width:28px;min-width:28px;height:28px;min-height:28px;flex:0 0 28px;padding:5px;border:0;border-radius:6px;color:var(--ui-control-ink)}
+#reader.document-header-unified .desk-tools svg.ui-icon,#reader .reader-bar svg.ui-icon,.chat-window-controls .ui-icon,.panel-more .ui-icon{width:18px;height:18px;flex:0 0 18px}
+#reader :is(.reader-bar,header).panel-narrow .ui-icon-button,#reader :is(.reader-bar,header).panel-tiny .panel-more{width:26px!important;min-width:26px!important;flex:0 0 26px!important;padding:4px!important}
+#reader :is(.reader-bar,header).panel-tiny .ui-icon-button{width:24px!important;min-width:24px!important;flex:0 0 24px!important;padding:3px!important}
+#reader #word-region.ui-icon-button,#reader #image-region.ui-icon-button{width:28px!important;min-width:28px;flex:0 0 28px!important;padding:5px!important;font-size:inherit}
+#reader #word-region::after,#reader #image-region::after{content:none}
+#reader .document-meta{gap:5px}
+#reader .desk-tools,#reader #secondary-tools,.conversation-head .chat-window-controls{gap:2px}
+.panel-more{border-radius:6px;padding:5px}
+.panel-font,#reader #font-settings{display:inline-flex;align-items:center;justify-content:center;gap:4px;height:28px;min-height:28px;min-width:58px;box-sizing:border-box;border:0;border-radius:6px;padding:3px 6px;font:12px system-ui;font-variant-numeric:tabular-nums;color:var(--ui-control-ink)}
+.panel-font .ui-icon,#reader #font-settings .ui-icon{width:12px;height:12px;flex:0 0 12px}
+#reader #font-settings .font-size-label{font-size:12px}
+#reader #font-settings,#reader .reader-bar #font-settings{width:auto;flex:none}
+#pick-project.ui-icon-button{width:36px;height:36px;min-width:36px;min-height:36px;flex:none;padding:8px;border:1px dashed #c9d3c5;border-radius:9px;color:#496450}
+#pick-project .ui-icon{width:20px;height:20px}
+.project-tools .ui-icon-label{gap:6px;padding-inline:12px;font-size:12px}
+.project-tools .ui-icon-label .ui-icon{width:16px;height:16px}
+.project-tools .ui-icon-label[aria-pressed=true]{color:#fff}
+#selection-menu .ui-icon-label{gap:5px;min-height:28px;padding:4px 7px;color:var(--ui-control-ink)}
+#selection-menu .ui-icon{width:16px;height:16px}
+#send-message .ui-icon{width:16px;height:16px;order:1}
+#send-message.ui-icon-label{gap:6px;color:#fff}
+.file-type-icon{display:inline-grid;place-items:center;width:20px;height:20px;flex:0 0 20px;font-size:16px;line-height:1;vertical-align:middle}
+.file-type-letter::before{box-sizing:border-box;width:15px;height:17px;border-radius:2px;font-size:10px;line-height:1}
+.file-tree button,.open-file-select{align-items:center;gap:6px}
+.tree-expander{display:inline-grid;place-items:center;flex:0 0 16px;width:16px;height:20px;color:#778374}
+.tree-expander .ui-icon{width:16px;height:16px}
+.open-file-item .open-file-close{width:26px;min-width:26px;height:26px;min-height:26px;flex:none;padding:5px;border:0;border-radius:5px}
+.open-file-close .ui-icon{width:16px;height:16px}
+#app .ui-edge-button::before{content:none!important}
+#app .ui-edge-button>.ui-icon{display:block!important;width:16px;height:16px;transform:none}
+#app.files-collapsed #file-toggle>.ui-icon,#app:not(.side-collapsed) #toggle-sidebar>.ui-icon{transform:rotate(180deg)}
+#app.narrow-layout #file-toggle>.ui-icon{transform:rotate(180deg)}
+#app.narrow-layout.drawer-files-open #file-toggle>.ui-icon{transform:none}
+#app.narrow-layout #toggle-sidebar>.ui-icon{transform:none}
+#app.narrow-layout.drawer-side-open #toggle-sidebar>.ui-icon{transform:rotate(180deg)}
+.tag-chat-window .note-projection-head{gap:5px}
+.tag-chat-window .note-projection-head>.ui-icon-button,.tag-chat-window .note-projection-head>.panel-more{width:28px;min-width:28px;height:28px;min-height:28px;flex:0 0 28px;padding:5px;border-radius:6px;font-size:12px!important;color:var(--tag-window-accent,var(--ui-control-ink));background:transparent}
+.tag-chat-window .note-projection-head .ui-icon{width:18px;height:18px}
+.tag-chat-window .note-projection-head .panel-font .ui-icon{width:12px;height:12px}
+.tag-chat-window .note-projection-head>button:hover:not(:disabled){background:var(--tag-window-source,#eaf0e6)}
+.tag-chat-window .note-projection-head>.ui-danger:hover:not(:disabled){color:var(--annotation-red);background:#f9ece8}
+.tag-chat-window.is-collapsed .note-projection-head{padding-block:5px}
+.tag-chat-window.is-collapsed .note-projection-head>.ui-icon-button,.tag-chat-window.is-collapsed .note-projection-head>.panel-more{width:26px;min-width:26px;height:26px;min-height:26px;flex-basis:26px;padding:5px}
+.tag-chat-window.is-collapsed .note-projection-head .ui-icon{width:16px;height:16px;flex:0 0 16px}
+.nozeli-context-menu kbd .ui-icon{width:14px;height:14px;color:#7a8478}
+.provider-console .provider-role-action.ui-icon-button{width:28px;height:28px;min-height:28px;padding:5px;border:0;border-radius:6px}
+#managed-terminal-grid .managed-agent-pane .ui-icon-label{gap:5px;border:0;border-radius:5px;min-height:28px;padding:4px 6px}
+#managed-terminal-grid .managed-agent-pane .ui-icon-label .ui-icon{width:16px;height:16px}
+#managed-terminal-grid .managed-agent-pane .ui-icon-label:hover:not(:disabled){color:#edf4ee;background:#314a39}
+@media(forced-colors:active){.ui-icon-button,.ui-icon-label,.panel-font,.panel-more{color:ButtonText;forced-color-adjust:auto}.ui-icon-button:focus-visible,.ui-icon-label:focus-visible{outline-color:Highlight}.ui-icon-button[aria-pressed=true]{outline:1px solid Highlight}.ui-icon-button:disabled{opacity:1;color:GrayText}}
+/* Compact chat keeps a usable target; only its glyph shrinks optically. */
+.compact-composer .conversation-controls .ui-icon{width:16px;height:16px;flex:0 0 16px}
+.compact-composer .conversation-controls .panel-font .ui-icon{width:12px;height:12px;flex:0 0 12px}
+.compact-composer .conversation-controls .ui-icon-button,.compact-composer .conversation-controls .panel-more,.compact-composer .conversation-controls .panel-font{height:28px;min-height:28px;border-radius:6px}

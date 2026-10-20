@@ -1,0 +1,28 @@
+{
+  "version": "1.47.1",
+  "dist": {
+    "shasum": "2617378323662df8f428cad3134c557d3cb13f77",
+    "tarball": "https://registry.npmjs.org/superdoc/-/superdoc-1.47.1.tgz",
+    "fileCount": 4889,
+    "integrity": "sha512-J+LDmcZvq6B7XIdP6CDb9y3/Cz97B6oye3DLshIQi+dLVEsKOaPmpDFh9Wu87xGJRjYPO5uoFydyzDin0K+U2A==",
+    "signatures": [
+      {
+        "sig": "MEUCIQDsg28N3SbLxkobSXCQpfuKVquWq2hBKEfuMI9tTTHdIgIgNRZJncYTJuz7SrfQabAQp/a6YRdfwX1tsP+F4tR4keA=",
+        "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+      },
+      {
+        "sig": "MEUCIQDXk4/sgdxM+iyVK1Hw5AcnOkx1DugJ54Ld1TzSTW009QIgfOy2jKVFch1bkxox5TvZK2H0n8FVrqvbjfkRrLdczDE=",
+        "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+      }
+    ],
+    "unpackedSize": 62439226
+  },
+  "license": "AGPL-3.0",
+  "files": {
+    "LICENSE": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef",
+    "superdoc.min.js": "57878626eb6072d67bd0cb47e6ab43a4c8ee6b57e30fd75de8bb6cd5bded07d8",
+    "superdoc.min.css": "b3de90e9cd8923fab19ad0ef4f0bcf2a3c2ea19533a9ff861fc80c45368ac787"
+  },
+  "repository": "https://github.com/superdoc-dev/superdoc",
+  "runtime": "local IIFE build; no CDN; telemetry disabled"
+}

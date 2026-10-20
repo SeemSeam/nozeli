@@ -1,0 +1,25 @@
+/* Conversation content has a project preference independent of document zoom. */
+#conversation-panel #conversation,
+#conversation-panel .agent-message,
+#conversation-panel #managed-doc,
+.note-projection.tag-chat-window,
+.tag-chat-window .tag-message,
+.tag-chat-window .composer-preview {
+  font-size:var(--conversation-font,14px);
+}
+#conversation-panel #composer,
+.tag-chat-window textarea.tag-editor {
+  font-size:var(--conversation-font,14px);
+  line-height:1.6;
+}
+#conversation-panel .agent-message-body pre,
+#conversation-panel #managed-doc pre,
+.tag-chat-window .tag-markdown pre {
+  font-size:1em;
+}
+#conversation-panel .conversation-file-link,
+.tag-chat-window .conversation-file-link { font-size:inherit; }
+.tag-chat-window .note-projection-head .panel-font{flex:none;min-width:58px;width:auto;order:1;font:11px system-ui;padding:3px 4px}
+.tag-chat-window .note-projection-head .panel-more{flex:none;width:26px;min-width:26px;order:10;padding:3px}
+.tag-chat-window.is-collapsed .panel-font{display:none}
+.tag-chat-window .note-projection-head.panel-tiny .panel-font{display:none}

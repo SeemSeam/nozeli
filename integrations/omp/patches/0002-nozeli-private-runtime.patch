@@ -1,0 +1,506 @@
+diff --git a/packages/coding-agent/src/capability/index.ts b/packages/coding-agent/src/capability/index.ts
+index 8d2155e..663c612 100644
+--- a/packages/coding-agent/src/capability/index.ts
++++ b/packages/coding-agent/src/capability/index.ts
+@@ -157,6 +157,9 @@ async function loadImpl<T>(
+ 
+ 	const results = await Promise.all(
+ 		providers.map(async provider => {
++			if (process.env.NOZELI_CONFIG_ROOT && !["native", "omp-plugins"].includes(provider.id)) {
++				return { provider, result: { items: [] } };
++			}
+ 			try {
+ 				const result = await logger.time(
+ 					`capability:${capability.id}:${provider.id}`,
+@@ -361,6 +364,7 @@ export function isForeignUserProvider(providerId: string): boolean {
+  * {@link isProviderEnabled} for the whole-provider switch.
+  */
+ export function isUserSourceEnabled(source: string, ctx?: LoadContext): boolean {
++	if (process.env.NOZELI_CONFIG_ROOT) return source === "native" || source === "omp-plugins" || source === ".nozeli/omp";
+ 	const id = source.replace(/^\./, "");
+ 	if (disabledProviders().has(id)) return false;
+ 	if (FOREIGN_USER_PROVIDERS[id] !== true) return true;
+@@ -419,6 +423,7 @@ export function enableProvider(providerId: string): void {
+  * {@link isUserSourceEnabled}.
+  */
+ export function isProviderEnabled(providerId: string): boolean {
++	if (process.env.NOZELI_CONFIG_ROOT) return providerId === "native" || providerId === "omp-plugins";
+ 	return !disabledProviders().has(providerId);
+ }
+ 
+diff --git a/packages/coding-agent/src/cli.ts b/packages/coding-agent/src/cli.ts
+index d2ab7c1..6193b05 100755
+--- a/packages/coding-agent/src/cli.ts
++++ b/packages/coding-agent/src/cli.ts
+@@ -441,11 +441,20 @@ let runningCommand: string | undefined;
+ 
+ /** Run the CLI with the given argv (no `process.argv` prefix). */
+ export async function runCli(argv: string[]): Promise<void> {
++	if (argv[0] === "--nozeli-auth-broker" || argv[0] === "--nozeli-paths") {
++		if (!process.env.NOZELI_CONFIG_ROOT) throw new Error("Private runtime mode requires NOZELI_CONFIG_ROOT");
++		// Auth imports pi-utils/env; static loading would precede ordinary profile bootstrap.
++		const { runNozeliPrivateMode } = await import("./cli/nozeli-private");
++		await runNozeliPrivateMode(argv[0]);
++		return;
++	}
+ 	let resolvedArgv = argv;
+ 	try {
+ 		const extracted = extractProfileFlags(resolvedArgv);
+ 		resolvedArgv = extracted.argv;
+-		if (extracted.profile !== undefined) {
++		if (process.env.NOZELI_CONFIG_ROOT) {
++			setProfile(undefined);
++		} else if (extracted.profile !== undefined) {
+ 			setProfile(extracted.profile);
+ 		} else {
+ 			// No explicit --profile: activate any OMP_PROFILE/PI_PROFILE inherited
+diff --git a/packages/coding-agent/src/cli/update-cli.ts b/packages/coding-agent/src/cli/update-cli.ts
+index 6159a1c..ac84108 100644
+--- a/packages/coding-agent/src/cli/update-cli.ts
++++ b/packages/coding-agent/src/cli/update-cli.ts
+@@ -2232,6 +2232,7 @@ export async function runUpdateCommand(opts: {
+ 	check: boolean;
+ 	channel?: UpdateChannel;
+ }): Promise<void> {
++	if (process.env.NOZELI_CONFIG_ROOT) throw new Error("此运行时由Nozeli整体更新，禁止单独更新 OMP");
+ 	const ompPath = resolveOmpPath();
+ 	const manager = ompPath ? await managedInstallName(ompPath) : undefined;
+ 	if (manager) {
+diff --git a/packages/coding-agent/src/config.ts b/packages/coding-agent/src/config.ts
+index 28ab063..58fe877 100644
+--- a/packages/coding-agent/src/config.ts
++++ b/packages/coding-agent/src/config.ts
+@@ -1,14 +1,14 @@
+ import * as fs from "node:fs";
+ import * as os from "node:os";
+ import * as path from "node:path";
+-import { CONFIG_DIR_NAME, getConfigAgentDirName, getProjectDir } from "@oh-my-pi/pi-utils";
++import { CONFIG_DIR_NAME, getAgentDir, getConfigAgentDirName, getProjectDir } from "@oh-my-pi/pi-utils";
+ import { isUserSourceEnabled } from "./capability";
+ import { resolveClaudePaths } from "./config/claude-paths";
+ import { expandTilde } from "./tools/path-utils";
+ 
+ export * from "./config/config-file";
+ 
+-const priorityList = [
++const priorityList = process.env.NOZELI_CONFIG_ROOT ? [{ dir: CONFIG_DIR_NAME, globalAgentDir: getAgentDir }] : [
+ 	{ dir: CONFIG_DIR_NAME, globalAgentDir: getConfigAgentDirName },
+ 	{ dir: ".claude" },
+ 	{ dir: ".codex" },
+@@ -83,7 +83,7 @@ export function getChangelogPath(): string | undefined {
+  */
+ const USER_CONFIG_BASES = priorityList.map(({ dir, globalAgentDir }) => ({
+ 	base: () =>
+-		dir === ".claude" ? resolveClaudePaths().configDir : path.join(os.homedir(), globalAgentDir?.() ?? dir),
++		process.env.NOZELI_CONFIG_ROOT ? getAgentDir() : dir === ".claude" ? resolveClaudePaths().configDir : path.join(os.homedir(), globalAgentDir?.() ?? dir),
+ 	name: dir,
+ }));
+ 
+@@ -143,7 +143,7 @@ export function getConfigDirs(subpath: string, options: GetConfigDirsOptions = {
+ 	}
+ 
+ 	// Project-level directories
+-	if (project) {
++	if (project && !process.env.NOZELI_CONFIG_ROOT) {
+ 		for (const { base, name } of PROJECT_CONFIG_BASES) {
+ 			const resolvedPath = path.resolve(cwd, base, subpath);
+ 			if (!existingOnly || fs.existsSync(resolvedPath)) {
+@@ -216,6 +216,7 @@ export function findConfigFileWithMeta(
+  * Results are in priority order (highest first).
+  */
+ export function findAllNearestProjectConfigDirs(subpath: string, cwd: string = getProjectDir()): ConfigDirEntry[] {
++	if (process.env.NOZELI_CONFIG_ROOT) return [];
+ 	const results: ConfigDirEntry[] = [];
+ 	const foundBases = new Set<string>();
+ 
+diff --git a/packages/coding-agent/src/discovery/builtin.ts b/packages/coding-agent/src/discovery/builtin.ts
+index 812575d..79df780 100644
+--- a/packages/coding-agent/src/discovery/builtin.ts
++++ b/packages/coding-agent/src/discovery/builtin.ts
+@@ -62,7 +62,7 @@ async function getConfigDirs(ctx: LoadContext): Promise<Array<{ dir: string; lev
+ 	const result: Array<{ dir: string; level: "user" | "project" }> = [];
+ 
+ 	const projectDir =
+-		normalizePathForComparison(ctx.cwd) === normalizePathForComparison(ctx.home)
++		process.env.NOZELI_CONFIG_ROOT || normalizePathForComparison(ctx.cwd) === normalizePathForComparison(ctx.home)
+ 			? null
+ 			: await ifNonEmptyDir(ctx.cwd, PATHS.projectDir);
+ 	if (projectDir) result.push({ dir: projectDir, level: "project" });
+@@ -99,6 +99,7 @@ export function getAncestorDirs(cwd: string, stopAt?: string | null): Array<{ di
+ 
+ /** Skip user config roots without stopping the project walk at those directories. */
+ export async function* getProjectAncestorDirs(ctx: LoadContext): AsyncGenerator<{ dir: string; depth: number }> {
++	if (process.env.NOZELI_CONFIG_ROOT) return;
+ 	const home = normalizePathForComparison(ctx.home);
+ 	for (const ancestor of getAncestorDirs(ctx.cwd, ctx.repoRoot ?? ctx.home)) {
+ 		if (normalizePathForComparison(ancestor.dir) === home || isUserConfigRoot(ancestor.dir)) continue;
+@@ -240,6 +241,7 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>>
+ 		{ path: path.join(userAgentDir, "mcp.json"), level: "user" as const },
+ 		{ path: path.join(userAgentDir, ".mcp.json"), level: "user" as const },
+ 	];
++	if (process.env.NOZELI_CONFIG_ROOT) paths.splice(0, 2);
+ 
+ 	const contents = await Promise.allSettled(
+ 		paths.map(async p => {
+diff --git a/packages/coding-agent/src/discovery/helpers.ts b/packages/coding-agent/src/discovery/helpers.ts
+index 8a435ea..d56ab95 100644
+--- a/packages/coding-agent/src/discovery/helpers.ts
++++ b/packages/coding-agent/src/discovery/helpers.ts
+@@ -1085,6 +1085,7 @@ export async function isForeignUserConfigRoot(root: string, configDirName: strin
+  * uninstall, list, upgrade, discovery, and doctor. Deterministic for a given `cwd`.
+  */
+ export async function resolveActiveProjectRegistryPath(cwd: string): Promise<string | null> {
++	if (process.env.NOZELI_CONFIG_ROOT) return null;
+ 	return resolveProjectRegistryPath(cwd, getProjectDiscoveryCeilings());
+ }
+ 
+diff --git a/packages/coding-agent/src/discovery/omp-extension-roots.ts b/packages/coding-agent/src/discovery/omp-extension-roots.ts
+index 05a5d37..cca34b8 100644
+--- a/packages/coding-agent/src/discovery/omp-extension-roots.ts
++++ b/packages/coding-agent/src/discovery/omp-extension-roots.ts
+@@ -18,7 +18,7 @@
+ import { AsyncLocalStorage } from "node:async_hooks";
+ import * as fs from "node:fs/promises";
+ import * as path from "node:path";
+-import { getAgentDir, isEnoent, logger, MAIN_CONFIG_FILENAMES, tryParseJson } from "@oh-my-pi/pi-utils";
++import { getAgentDir, getProjectAgentDir, isEnoent, logger, MAIN_CONFIG_FILENAMES, tryParseJson } from "@oh-my-pi/pi-utils";
+ import { YAML } from "bun";
+ import { readDirEntries, readFile } from "../capability/fs";
+ import type { ExtensionRootMode, LoadContext } from "../capability/types";
+@@ -159,7 +159,7 @@ interface ScopeDirs {
+ 
+ function scopeDirs(ctx: LoadContext): ScopeDirs {
+ 	return {
+-		project: path.join(ctx.cwd, ".omp"),
++		project: getProjectAgentDir(ctx.cwd),
+ 		user: getAgentDir(),
+ 	};
+ }
+diff --git a/packages/coding-agent/src/main.ts b/packages/coding-agent/src/main.ts
+index d9639a4..7a8a972 100644
+--- a/packages/coding-agent/src/main.ts
++++ b/packages/coding-agent/src/main.ts
+@@ -238,6 +238,7 @@ export function writeStartupNotice(parsedArgs: Pick<Args, "mode">, text: string)
+ }
+ 
+ async function checkForNewVersion(currentVersion: string): Promise<string | undefined> {
++	if (process.env.NOZELI_CONFIG_ROOT) return;
+ 	if (!cfgStartupCheckUpdate.get(settings)) {
+ 		return;
+ 	}
+diff --git a/packages/coding-agent/src/secrets/index.ts b/packages/coding-agent/src/secrets/index.ts
+index b54ebb2..d728840 100644
+--- a/packages/coding-agent/src/secrets/index.ts
++++ b/packages/coding-agent/src/secrets/index.ts
+@@ -168,7 +168,7 @@ export async function loadSecrets(cwd: string, agentDir: string): Promise<Secret
+ 	const globalPath = path.join(agentDir, "secrets.yml");
+ 
+ 	const globalEntries = await loadSecretsFile(globalPath);
+-	const projectEntries = await loadSecretsFile(projectPath);
++	const projectEntries = process.env.NOZELI_CONFIG_ROOT ? [] : await loadSecretsFile(projectPath);
+ 
+ 	if (globalEntries.length === 0) return projectEntries;
+ 	if (projectEntries.length === 0) return globalEntries;
+diff --git a/packages/natives/native/loader-state.js b/packages/natives/native/loader-state.js
+index 1c1e959..ed7bb41 100644
+--- a/packages/natives/native/loader-state.js
++++ b/packages/natives/native/loader-state.js
+@@ -55,7 +55,16 @@ function startupMarker(text) {
+ 	}
+ }
+ 
++const nozeliConfigRoot = process.env.NOZELI_CONFIG_ROOT;
++const nozeliAgentDir = process.env.NOZELI_AGENT_DIR;
+ function getNativesDir() {
++	if (nozeliConfigRoot) {
++		if (!path.isAbsolute(nozeliConfigRoot)) throw new Error("NOZELI_CONFIG_ROOT must be absolute");
++		const agent = nozeliAgentDir ?? path.join(nozeliConfigRoot, "omp");
++		const relative = path.relative(nozeliConfigRoot, agent);
++		if (!path.isAbsolute(agent) || !relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error("NOZELI_AGENT_DIR must be beneath NOZELI_CONFIG_ROOT");
++		return path.join(agent, "natives");
++	}
+ 	// Match pi-utils directory overrides without depending on pi-utils.
+ 	const override = process.env.PI_NATIVES_DIR?.trim();
+ 	if (override) {
+@@ -787,7 +796,7 @@ export function initLoaderContext(overrides = {}) {
+ 	const nativesDir = getNativesDir();
+ 	const versionedDir = path.join(nativesDir, packageVersion);
+ 	const userDataDir =
+-		platform === "win32"
++		nozeliConfigRoot ? nativesDir : platform === "win32"
+ 			? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "omp")
+ 			: path.join(os.homedir(), ".local", "bin");
+ 
+diff --git a/packages/utils/src/dirs.ts b/packages/utils/src/dirs.ts
+index 6c5317f..18a1d5d 100644
+--- a/packages/utils/src/dirs.ts
++++ b/packages/utils/src/dirs.ts
+@@ -18,6 +18,34 @@ import { expandWindowsLongPath } from "@oh-my-pi/pi-natives/path";
+ import { engines, version } from "../package.json" with { type: "json" };
+ import { isEnoent, isEnotdir } from "./fs-error";
+ 
++// Freeze the private authority before agent/project .env files can change it.
++const nozeliRoot = process.env.NOZELI_CONFIG_ROOT;
++const nozeliAgentDir = process.env.NOZELI_AGENT_DIR;
++if (nozeliRoot && !path.isAbsolute(nozeliRoot)) throw new Error("NOZELI_CONFIG_ROOT must be absolute");
++const privateRoot = nozeliRoot ? path.resolve(nozeliRoot) : undefined;
++function privateAgentPath(): string {
++	const candidate = nozeliAgentDir ?? path.join(privateRoot!, "omp");
++	if (!path.isAbsolute(candidate)) throw new Error("NOZELI_AGENT_DIR must be absolute");
++	const resolved = path.resolve(candidate);
++	const relative = path.relative(privateRoot!, resolved);
++	if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
++		throw new Error("NOZELI_AGENT_DIR must be beneath NOZELI_CONFIG_ROOT");
++	}
++	// Resolve existing ancestors too: a symlink must not redirect private state outside the root.
++	const physical = (value: string): string => {
++		try { return fs.realpathSync(value); } catch (error) {
++			if (!isEnoent(error)) throw error;
++			const parent = path.dirname(value);
++			return parent === value ? value : path.join(physical(parent), path.basename(value));
++		}
++	};
++	const actual = path.relative(physical(privateRoot!), physical(resolved));
++	if (!actual || actual === ".." || actual.startsWith(`..${path.sep}`) || path.isAbsolute(actual)) {
++		throw new Error("NOZELI_AGENT_DIR symlink escapes NOZELI_CONFIG_ROOT");
++	}
++	return resolved;
++}
++
+ /** App name (e.g. "omp") */
+ export const APP_NAME: string = "omp";
+ 
+@@ -25,7 +53,7 @@ export const APP_NAME: string = "omp";
+ export const APP_URL: string = "https://omp.sh/";
+ 
+ /** Config directory name (e.g. ".omp") */
+-export const CONFIG_DIR_NAME: string = ".omp";
++export const CONFIG_DIR_NAME: string = privateRoot ? ".nozeli/omp" : ".omp";
+ 
+ /** Ordered main settings filenames: canonical write target first, legacy-compatible YAML fallback second. */
+ export const MAIN_CONFIG_FILENAMES = ["config.yml", "config.yaml"] as const;
+@@ -92,6 +120,7 @@ export function resolveProfileEnv(omp: string | undefined, pi: string | undefine
+ }
+ 
+ function getProfileFromEnv(): string | undefined {
++	if (privateRoot) return undefined;
+ 	return resolveProfileEnv(process.env.OMP_PROFILE, process.env.PI_PROFILE);
+ }
+ 
+@@ -113,11 +142,13 @@ function readProfileFromEnvSafe(): string | undefined {
+ 
+ /** Profile-independent config root (~/.omp), shared by every omp profile. */
+ export function getBaseConfigRoot(): string {
++	if (privateRoot) return privateRoot;
+ 	return path.join(os.homedir(), getConfigDirName());
+ }
+ 
+ function getProfileConfigRoot(profile: string | undefined): string {
+ 	const root = getBaseConfigRoot();
++	if (privateRoot) return root;
+ 	return profile ? path.join(root, "profiles", profile) : root;
+ }
+ 
+@@ -305,11 +336,13 @@ export function getSafeProjectCwd(): string {
+ 
+ /** Get the config directory name relative to home (e.g. ".omp" or PI_CONFIG_DIR override). */
+ export function getConfigDirName(): string {
++	if (privateRoot) return ".nozeli/omp";
+ 	return process.env.PI_CONFIG_DIR || CONFIG_DIR_NAME;
+ }
+ 
+ /** Get the config agent directory name relative to home (e.g. ".omp/agent" or PI_CONFIG_DIR + "/agent"). */
+ export function getConfigAgentDirName(): string {
++	if (privateRoot) return privateAgentPath();
+ 	const profile = getActiveProfile();
+ 	return profile ? path.join(getConfigDirName(), "profiles", profile, "agent") : `${getConfigDirName()}/agent`;
+ }
+@@ -340,6 +373,14 @@ class DirResolver {
+ 	readonly #agentCache = new Map<string, string>();
+ 
+ 	constructor(options: { agentDirOverride?: string; profile?: string } = {}) {
++		if (privateRoot) {
++			this.configRoot = privateRoot;
++			this.agentDir = privateAgentPath();
++			this.#rootDirs = { data: this.agentDir, state: this.agentDir, cache: this.agentDir };
++			this.#agentDirs = { data: this.agentDir, state: this.agentDir, cache: this.agentDir };
++			this.#baseRootDirs = { data: this.agentDir, state: this.agentDir, cache: this.agentDir };
++			return;
++		}
+ 		const profile = normalizeProfileName(options.profile);
+ 		this.configRoot = getProfileConfigRoot(profile);
+ 
+@@ -421,14 +462,14 @@ class DirResolver {
+ 
+ 	/** Profile-independent config-root subdirectory, with optional XDG override. Shared across profiles. */
+ 	baseRootSubdir(subdir: string, xdg?: XdgCategory): string {
+-		return path.join(xdg ? this.#baseRootDirs[xdg] : getBaseConfigRoot(), subdir);
++		return path.join(privateRoot ? this.agentDir : xdg ? this.#baseRootDirs[xdg] : getBaseConfigRoot(), subdir);
+ 	}
+ 
+ 	/** Config-root subdirectory, with optional XDG override. */
+ 	rootSubdir(subdir: string, xdg?: XdgCategory): string {
+ 		const cached = this.#rootCache.get(subdir);
+ 		if (cached) return cached;
+-		const base = xdg ? this.#rootDirs[xdg] : this.configRoot;
++		const base = privateRoot ? this.agentDir : xdg ? this.#rootDirs[xdg] : this.configRoot;
+ 		const result = path.join(base, subdir);
+ 		this.#rootCache.set(subdir, result);
+ 		return result;
+@@ -436,6 +477,7 @@ class DirResolver {
+ 
+ 	/** Agent subdirectory, with optional XDG override. */
+ 	agentSubdir(userAgentDir: string | undefined, subdir: string, xdg?: XdgCategory): string {
++		if (privateRoot) userAgentDir = undefined;
+ 		if (!userAgentDir || userAgentDir === this.agentDir) {
+ 			const cached = this.#agentCache.get(subdir);
+ 			if (cached) return cached;
+@@ -574,6 +616,7 @@ export function __resetDirsFromEnvForTests(): void {
+ 
+ /** Activate a named profile. Passing undefined or "default" returns to the default profile. */
+ export function setProfile(profile: string | undefined): void {
++	if (privateRoot) { activeProfile = undefined; dirs = new DirResolver(); return; }
+ 	const next = normalizeProfileName(profile);
+ 	if (next && !activeProfile) {
+ 		// First activation of a named profile in this process: snapshot the
+@@ -622,6 +665,7 @@ export function getAgentDir(): string {
+ 
+ /** Get the project-local config directory (.omp). */
+ export function getProjectAgentDir(cwd: string = getProjectDir()): string {
++	if (privateRoot) return path.join(privateAgentPath(), "projects", Bun.hash.wyhash(path.resolve(cwd)).toString(16), "omp");
+ 	return path.join(cwd, CONFIG_DIR_NAME);
+ }
+ 
+@@ -667,6 +711,7 @@ export function getLogPath(date = new Date(), pid = process.pid): string {
+  * no-arg form — XDG semantics are preserved.
+  */
+ export function getPluginsDir(home?: string): string {
++	if (privateRoot) return dirs.rootSubdir("plugins", "data");
+ 	if (home !== undefined && home !== RESOLVER_HOME) {
+ 		return path.join(home, getConfigDirName(), "plugins");
+ 	}
+@@ -739,6 +784,7 @@ export function setWorktreesDir(dir: string | undefined): string | undefined {
+  * ignored and resolution falls through.
+  */
+ export function getWorktreesDir(): string {
++	if (privateRoot) return dirs.rootSubdir("wt", "data");
+ 	return resolveAbsoluteDir(process.env.OMP_WORKTREE_DIR) ?? worktreesDirOverride ?? dirs.rootSubdir("wt", "data");
+ }
+ 
+@@ -811,7 +857,7 @@ export function getWorktreeDir(segment: string): string {
+  */
+ export function getGithubCacheDbPath(): string {
+ 	const override = process.env.OMP_GITHUB_CACHE_DB;
+-	if (override) return override;
++	if (override && !privateRoot) return override;
+ 	return dirs.rootSubdir(path.join("cache", "github-cache.db"), "cache");
+ }
+ /**
+@@ -820,7 +866,7 @@ export function getGithubCacheDbPath(): string {
+  */
+ export function getCommitCacheDbPath(): string {
+ 	const override = process.env.OMP_COMMIT_CACHE_DB;
+-	if (override) return override;
++	if (override && !privateRoot) return override;
+ 	return dirs.rootSubdir(path.join("cache", "commit-inference.db"), "cache");
+ }
+ 
+@@ -830,7 +876,7 @@ export function getCommitCacheDbPath(): string {
+  */
+ export function getJudgmentCacheDbPath(): string {
+ 	const override = process.env.OMP_JUDGMENT_CACHE_DB;
+-	if (override) return override;
++	if (override && !privateRoot) return override;
+ 	return dirs.rootSubdir(path.join("cache", "judgment-cache.db"), "cache");
+ }
+ 
+@@ -846,7 +892,7 @@ export function getLegacyPiExtensionCacheDbPath(): string {
+  */
+ export function getAuthBrokerSnapshotCachePath(): string {
+ 	const override = process.env.OMP_AUTH_BROKER_SNAPSHOT_CACHE;
+-	if (override) return override;
++	if (override && !privateRoot) return override;
+ 	return dirs.rootSubdir(path.join("cache", "auth-broker-snapshot.enc"), "cache");
+ }
+ 
+@@ -876,6 +922,7 @@ export function getNativeGrammarsDir(): string {
+ 
+ /** Get the natives directory. PI_NATIVES_DIR overrides the usual cache root; relative values are ignored. */
+ export function getNativesDir(): string {
++	if (privateRoot) return dirs.agentSubdir(undefined, "natives", "cache");
+ 	return resolveAbsoluteDir(process.env.PI_NATIVES_DIR) ?? dirs.rootSubdir("natives", "cache");
+ }
+ 
+diff --git a/packages/utils/src/env.ts b/packages/utils/src/env.ts
+index a4d1f04..d733724 100644
+--- a/packages/utils/src/env.ts
++++ b/packages/utils/src/env.ts
+@@ -285,10 +285,10 @@ export function parseEnvFile(filePath: string): Record<string, string> {
+ }
+ 
+ // Eagerly parse the user's $HOME/.env and the current project's .env (from cwd)
+-const homeEnv = parseEnvFile(path.join(os.homedir(), ".env"));
++const homeEnv = process.env.NOZELI_CONFIG_ROOT ? {} : parseEnvFile(path.join(os.homedir(), ".env"));
+ const piEnv = parseEnvFile(path.join(getConfigRootDir(), ".env"));
+ const agentEnv = parseEnvFile(path.join(getAgentDir(), ".env"));
+-const projectEnv = parseEnvFile(path.join(getProjectDir(), ".env"));
++const projectEnv = process.env.NOZELI_CONFIG_ROOT ? {} : parseEnvFile(path.join(getProjectDir(), ".env"));
+ 
+ for (const key of Object.keys(Bun.env)) {
+ 	const value = Bun.env[key];
+diff --git a/packages/coding-agent/src/cli/nozeli-private.ts b/packages/coding-agent/src/cli/nozeli-private.ts
+new file mode 100644
+index 0000000..d0b83be
+--- /dev/null
++++ b/packages/coding-agent/src/cli/nozeli-private.ts
+@@ -0,0 +1,50 @@
++import { randomBytes } from "node:crypto";
++import path from "node:path";
++import type { AuthBrokerServerHandle } from "@oh-my-pi/pi-ai/auth-broker";
++import { mkdir, chmod } from "node:fs/promises";
++import { SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
++import { startAuthBroker } from "@oh-my-pi/pi-ai/auth-broker";
++import { getAgentDir, getAgentDbPath, getConfigRootDir, getProjectAgentDir, getSessionsDir, getNativesDir, getLogsDir, getAuthBrokerSnapshotCachePath, getGlobalDaemonRuntimeDir } from "@oh-my-pi/pi-utils/dirs";
++import { setTransports } from "@oh-my-pi/pi-utils/logger";
++import { createBrokerAuthStorage } from "./auth-broker-cli";
++
++export async function runNozeliPrivateMode(mode: string): Promise<void> {
++  setTransports({ console: false, file: false });
++  if (mode === "--nozeli-paths") {
++    process.stdout.write(JSON.stringify({ root: getConfigRootDir(), agent: getAgentDir(), project: getProjectAgentDir(), db: getAgentDbPath(), sessions: getSessionsDir(), natives: getNativesDir(), logs: getLogsDir(), snapshot: getAuthBrokerSnapshotCachePath(), daemon: getGlobalDaemonRuntimeDir("broker") }) + "\n");
++    return;
++  }
++  // The host always uses the Nozeli base vault, never a role or the official vault.
++  if (getAgentDir() !== path.join(getConfigRootDir(), "omp")) {
++    throw new Error("Private auth broker requires the Nozeli base agent directory");
++  }
++  await mkdir(getAgentDir(), { recursive: true, mode: 0o700 });
++  await chmod(getAgentDir(), 0o700);
++  const store = await SqliteAuthCredentialStore.open(getAgentDbPath());
++  await chmod(getAgentDbPath(), 0o600);
++  const storage = createBrokerAuthStorage(store);
++  let handle: AuthBrokerServerHandle | undefined;
++  let closing = false;
++  const close = async () => {
++    if (closing) return;
++    closing = true;
++    await handle?.close();
++    storage.close();
++    process.exit(0);
++  };
++  process.once("SIGTERM", () => void close());
++  process.once("SIGINT", () => void close());
++  process.stdin.once("end", () => void close());
++  process.stdin.resume();
++  try {
++    await storage.credentials.reload();
++    const token = randomBytes(32).toString("hex");
++    handle = startAuthBroker({ storage, bind: "127.0.0.1:0", bearerTokens: [token], trustProxyHeaders: false });
++    process.stdout.write(JSON.stringify({ grant: { url: handle.url, token } }) + "\n");
++  } catch {
++    await handle?.close();
++    storage.close();
++    process.stdout.write(JSON.stringify({ error: "Nozeli private auth broker startup failed" }) + "\n");
++    process.exit(1);
++  }
++}

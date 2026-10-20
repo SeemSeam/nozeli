@@ -1,0 +1,1240 @@
+diff --git a/packages/coding-agent/src/collab/host.ts b/packages/coding-agent/src/collab/host.ts
+index f0301e5..24614ee 100644
+--- a/packages/coding-agent/src/collab/host.ts
++++ b/packages/coding-agent/src/collab/host.ts
+@@ -9,7 +9,7 @@
+  * and incremental subagent-transcript reads.
+  */
+ 
+-import { randomBytes, timingSafeEqual } from "node:crypto";
++import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+ import * as fs from "node:fs/promises";
+ import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
+ import { logger } from "@oh-my-pi/pi-utils";
+@@ -64,6 +64,21 @@ import {
+ 	serializeReplicatedEntry,
+ 	serializeReplicatedEvent,
+ } from "./replication-shrink";
++import { createRequire } from "node:module";
++import { AgentBusyError } from "@oh-my-pi/pi-agent-core";
++import {
++	bindNozeliBusyError,
++	createNozeliAdmission,
++	isNozeliManagedCollab,
++	type NozeliAdjudicator,
++	NozeliAttachmentBuffer,
++	nozeliContentDigest,
++	nozeliInlineDigests,
++	nozeliPayloadDescriptor,
++	submitManagedPrompt,
++} from "./nozeli-admission";
++
++bindNozeliBusyError(AgentBusyError);
+ 
+ /** Events that change the footer state guests render. */
+ const STATE_TRIGGER_EVENTS: Record<string, true> = {
+@@ -458,6 +473,14 @@ export class CollabHost {
+ 		this.#unsubscribe = this.#ctx.session.subscribe(event => {
+ 			if (isWireAgentEvent(event)) this.#broadcastEvent(event);
+ 			this.#onEventForState(event);
++			if (this.#nozeli) {
++				if (event.type === "agent_start") this.#nozeli.onTurnStart();
++				else if (event.type === "agent_end") {
++					const continued = "willContinue" in event && event.willContinue === true;
++					const awaiting = "awaitingAsyncWork" in event && event.awaitingAsyncWork === true;
++					if (!continued && !awaiting) this.#nozeli.onTurnEnd();
++				}
++			}
+ 		});
+ 		// Subagent frames publish on the session tree's observability bus at
+ 		// any spawn depth; mirroring from it is what lets nested agents reach
+@@ -668,6 +691,244 @@ export class CollabHost {
+ 	#guestTrafficAllowed(): boolean {
+ 		return !this.ending && this.#sessionStillCurrent();
+ 	}
++	/** Nozeli admission gate; null in plain upstream rooms. Fail-closed without a host adjudicator seam. */
++	readonly #nozeli = isNozeliManagedCollab() ? createNozeliAdmission(CollabHost.#nozeliLoadAdjudicator()) : null;
++	readonly #nozeliAttachments = new NozeliAttachmentBuffer();
++	#nozeliRoomEpoch = 0;
++
++	/** NOZELI_ADMISSION_MODULE must export admitAction(); any failure fails closed. */
++	static #nozeliLoadAdjudicator(): NozeliAdjudicator | null {
++		const modulePath = process.env.NOZELI_ADMISSION_MODULE;
++		if (!modulePath) return null;
++		try {
++			const loader = createRequire(import.meta.url);
++			const loaded = loader(modulePath) as { admitAction?: unknown };
++			return typeof loaded.admitAction === "function" ? (loaded as NozeliAdjudicator) : null;
++		} catch {
++			return null;
++		}
++	}
++
++	/** Bind admission state to the real session + room rotation identity. */
++	#nozeliEnsureEpoch(): string {
++		const epoch = `${this.#sessionId}#${this.#nozeliRoomEpoch}`;
++		if (this.#nozeli && this.#nozeli.epoch() !== epoch) this.#nozeli.beginEpoch(epoch);
++		return epoch;
++	}
++
++	/** Nozeli admission busy facts, read in the same synchronous dispatch block. */
++	#nozeliBusy(): boolean {
++		const session = this.#ctx.session;
++		return (
++			session.isStreaming || session.isAborting || session.queuedMessageCount > 0 || session.isSessionTransitioning
++		);
++	}
++
++	/**
++	 * Managed prompt admission at the dispatch layer. Digest is verified against
++	 * the actual payload; admission runs (permission → epoch → identity →
++	 * dedup → forgotten-replay fence → outstanding → busy → placeholder) and
++	 * the mutation call happen without an intervening await; the submission
++	 * chain itself omits streamingBehavior so upstream throws AgentBusyError
++	 * instead of queueing/steering when the session turns busy mid-preprocessing.
++	 */
++	#nozeliAdmitPrompt(frame: Extract<CollabFrame, { t: "prompt" }>, fromPeer: number): boolean {
++		const gate = this.#nozeli;
++		if (!gate) {
++			this.#handlePrompt(frame.text, frame.images, fromPeer);
++			return true;
++		}
++		const epoch = this.#nozeliEnsureEpoch();
++		const hasRefs = frame.refs !== undefined && frame.refs.length > 0;
++		const hasInline = frame.images !== undefined && frame.images.length > 0;
++		// Mixing transport modes is rejected before any state changes.
++		if (hasRefs && hasInline) {
++			this.#send({ t: "error", message: "prompt: mixed refs+inline attachments" }, fromPeer);
++			return false;
++		}
++		// Phase 1: identity/permission/idempotency (incl. declared-digest
++		// envelope match)/fence/busy → placeholder.
++		const decision = gate.admit({
++			kind: "prompt",
++			rid: frame.rid,
++			dg: frame.dg,
++			at: frame.at,
++			ep: frame.ep,
++			ar: frame.ar,
++			canWrite: this.#peers.get(fromPeer)?.canWrite === true,
++			busy: this.#nozeliBusy(),
++		});
++		if (decision.decision === "replay") {
++			// Replay verification against the ORIGINAL immutable descriptor on
++			// the authoritative record. The probe carries only what the CURRENT
++			// request presents (text digest, ref names in order, inline image
++			// digests); all stored facts come from the record — never from live
++			// uploads (consumed or re-uploaded under the same name).
++			const textDigest = createHash("sha256").update(frame.text).digest("hex");
++			const inlineDigests = nozeliInlineDigests(frame.images ?? []);
++			const verification = gate.verifyReplay(decision.receipt.rid, {
++				textDigest,
++				refNames: hasRefs ? frame.refs! : [],
++				inlineDigests,
++			});
++			if (!verification.ok) {
++				this.#send({ t: "error", message: `replay rejected: ${verification.reason}` }, fromPeer);
++				return false;
++			}
++			this.#send(decision.receipt, fromPeer);
++			return false;
++		}
++		this.#send(decision.receipt, fromPeer);
++		if (decision.decision !== "reserved") return false;
++		const rid = frame.rid!;
++		// Phase 2: peek (never consume) attachments, verify the digest.
++		let images: ReadonlyArray<{ type: string; mimeType?: string; data?: string }>;
++		if (hasRefs) {
++			const peeked = this.#nozeliAttachments.peek(epoch, frame.refs!);
++			if (!Array.isArray(peeked)) {
++				const rejected = gate.confirm(rid, frame.dg ?? "", null);
++				if (rejected) this.#send(rejected, fromPeer);
++				return false;
++			}
++			images = peeked;
++		} else {
++			images = (frame.images ?? []) as ReadonlyArray<{ type: string; mimeType?: string; data?: string }>;
++		}
++		const described = hasRefs ? this.#nozeliAttachments.describe(epoch, frame.refs!) : [];
++		const descriptorRefs = Array.isArray(described) ? described : [];
++		const canonicalFull = nozeliContentDigest(epoch, "prompt", frame.text, images);
++		const confirmed = gate.confirm(rid, frame.dg ?? "", canonicalFull, nozeliPayloadDescriptor(frame.text, descriptorRefs, canonicalFull ?? "", hasRefs ? [] : images));
++		if (confirmed) {
++			this.#send(confirmed, fromPeer);
++			return false; // digest-mismatch / invalid-payload: nothing consumed
++		}
++		// Phase 3: host adjudication of the fully validated request.
++		const denied = gate.adjudicate(rid);
++		if (denied) {
++			this.#send(denied, fromPeer);
++			return false; // denied after validation: uploads stay resident
++		}
++		// Accepted: commit the peeks, bind the dispatch, submit.
++		if (hasRefs) this.#nozeliAttachments.commit(epoch, frame.refs!);
++		gate.beginDispatch(rid);
++		void submitManagedPrompt(
++			this.#ctx.session,
++			{ customType: COLLAB_PROMPT_MESSAGE_TYPE },
++			frame.text,
++			images,
++			() => {
++				const admitted = gate.markAdmitted(rid);
++				if (admitted) this.#send(admitted, fromPeer);
++			},
++		).then(outcome => {
++			const settled = gate.settle(rid, outcome.settle, outcome.reason);
++			if (settled) this.#send(settled, fromPeer);
++		});
++		return true;
++	}
++	#nozeliAdmitAbort(
++		frame: Extract<CollabFrame, { t: "abort" }>,
++		fromPeer: number,
++	): (() => void) | null {
++		const gate = this.#nozeli;
++		if (!gate) return () => {};
++		const epoch = this.#nozeliEnsureEpoch();
++		const decision = gate.admit({
++			kind: "abort",
++			rid: frame.rid,
++			dg: frame.dg,
++			at: frame.at,
++			ep: frame.ep,
++			ar: frame.ar,
++			tr: frame.tr,
++			canWrite: this.#peers.get(fromPeer)?.canWrite === true,
++			busy: this.#nozeliBusy(),
++		});
++		if (decision.decision === "replay") {
++			const verification = gate.verifyReplay(decision.receipt.rid, {
++				textDigest: createHash("sha256").update("").digest("hex"),
++				refNames: [],
++				inlineDigests: [],
++				target: frame.tr ?? null,
++			});
++			if (!verification.ok) {
++				this.#send({ t: "error", message: `replay rejected: ${verification.reason}` }, fromPeer);
++				return null;
++			}
++			this.#send(decision.receipt, fromPeer);
++			return null;
++		}
++		this.#send(decision.receipt, fromPeer);
++		if (decision.decision !== "reserved") return null;
++		const rid = frame.rid!;
++		const abortCanonical = nozeliContentDigest(epoch, "abort", "", [], frame.tr);
++		const dgConfirmed = gate.confirm(rid, frame.dg ?? "", abortCanonical, nozeliPayloadDescriptor("", [], abortCanonical ?? "", [], frame.tr ?? null));
++		if (dgConfirmed) {
++			this.#send(dgConfirmed, fromPeer);
++			return null;
++		}
++		const denied = gate.adjudicate(rid);
++		if (denied) {
++			this.#send(denied, fromPeer);
++			return null;
++		}
++		return () => {
++			// Generation guard: the abort may only act on the turn it was
++			// admitted against; a newer turn is never collateral-damaged.
++			if (gate.abortTargetStale(rid)) {
++				const stale = gate.settle(rid, "rejected", "stale-target-generation");
++				if (stale) this.#send(stale, fromPeer);
++				return;
++			}
++			void this.#ctx.session
++				.abort({ reason: USER_INTERRUPT_LABEL })
++				.then(() => {
++					const executed = gate.settle(rid, "executed");
++					if (executed) this.#send(executed, fromPeer);
++					if (!this.#guestTrafficAllowed()) return;
++					this.#ctx.session.emitNotice("info", "nozeli gateway interrupted", "collab");
++				})
++				.catch(error => {
++					const failed = gate.settle(rid, "unknown", String(error));
++					if (failed) this.#send(failed, fromPeer);
++					logger.warn("nozeli managed abort failed", { error: String(error) });
++				});
++		};
++	}
++
++	/** Chunked attachment frames: reassemble under the epoch budget; every
++	 * violation answers with a targeted error instead of a silent drop. */
++	#nozeliAttachmentFrame(frame: Extract<CollabFrame, { t: "attach-open" | "attach-chunk" | "attach-close" }>, fromPeer: number): void {
++		if (!this.#nozeli) return;
++		const epoch = this.#nozeliEnsureEpoch();
++		if (frame.ep !== epoch) {
++			this.#send({ t: "error", message: `attach ${frame.t}: stale epoch` }, fromPeer);
++			return;
++		}
++		if (!this.#peers.get(fromPeer)?.canWrite) {
++			this.#send({ t: "error", message: `attach ${frame.t}: read-only` }, fromPeer);
++			return;
++		}
++		const outcome =
++			frame.t === "attach-open"
++				? this.#nozeliAttachments.open(epoch, frame.up, frame.mime)
++				: frame.t === "attach-chunk"
++					? this.#nozeliAttachments.chunk(epoch, frame.up, frame.data)
++					: this.#nozeliAttachments.close(epoch, frame.up);
++		if (outcome !== "ok") this.#send({ t: "error", message: `attach ${frame.t}: ${outcome}` }, fromPeer);
++	}
++	/** Pure receipt lookup; never mutates admission state. */
++	#nozeliActionQuery(rid: string, ep: string, fromPeer: number): void {
++		if (!this.#nozeli) return;
++		const epoch = this.#nozeliEnsureEpoch();
++		if (ep !== epoch) {
++			this.#send({ t: "error", message: "action-query: stale epoch" }, fromPeer);
++			return;
++		}
++		const result = this.#nozeli.query(rid);
++		if (result.status === "ok") this.#send(result.receipts.at(-1)!, fromPeer);
++		else this.#send({ t: "error", message: "action-query: receipt forgotten" }, fromPeer);
++	}
+ 
+ 	/**
+ 	 * Outbound path for frame objects; stop() deliberately bypasses it for the
+@@ -711,6 +972,13 @@ export class CollabHost {
+ 		// An old-room answer may wait for rollback, but cannot settle against
+ 		// another session. The response handler owns that bounded deferral.
+ 		if (frame.t === "ui-response") {
++			if (this.#nozeli) {
++				this.#send(
++					{ t: "error", message: "UI responses are disabled in a Nozeli-managed room; the Nozeli gateway owns dialogs" },
++					fromPeer,
++				);
++				return;
++			}
+ 			this.#handleUiResponse(frame.reqId, frame.value, fromPeer);
+ 			return;
+ 		}
+@@ -722,18 +990,33 @@ export class CollabHost {
+ 			case "hello":
+ 				this.#handleHello(frame.name, frame.proto, frame.writeToken, fromPeer);
+ 				break;
+-			case "prompt":
+-				if (this.#rejectWhileStarting("prompting", fromPeer)) break;
+-				this.#handlePrompt(frame.text, frame.images, fromPeer);
+-				break;
+-			case "abort":
+-				if (this.#rejectWhileStarting("interrupting", fromPeer)) break;
+-				this.#handleAbort(fromPeer);
+-				break;
+-			case "agent-cmd":
+-				if (this.#rejectWhileStarting("agent control", fromPeer)) break;
+-				this.#handleAgentCmd(frame.cmd, frame.agentId, frame.text, fromPeer);
++		case "prompt": {
++			if (this.#rejectWhileStarting("prompting", fromPeer)) break;
++			this.#nozeliAdmitPrompt(frame, fromPeer);
++			break;
++		}
++		case "abort": {
++			if (this.#rejectWhileStarting("interrupting", fromPeer)) break;
++			const run = this.#nozeliAdmitAbort(frame, fromPeer);
++			if (run) run();
++			break;
++		}
++		case "attach-open":
++		case "attach-chunk":
++		case "attach-close":
++			this.#nozeliAttachmentFrame(frame, fromPeer);
++			break;
++		case "action-query":
++			this.#nozeliActionQuery(frame.rid, frame.ep, fromPeer);
++			break;
++		case "agent-cmd":
++			if (this.#nozeli) {
++				this.#send({ t: "error", message: "agent control is disabled in a Nozeli-managed room" }, fromPeer);
+ 				break;
++			}
++			if (this.#rejectWhileStarting("agent control", fromPeer)) break;
++			this.#handleAgentCmd(frame.cmd, frame.agentId, frame.text, fromPeer);
++			break;
+ 			case "fetch-transcript":
+ 				void this.#handleFetchTranscript(frame.reqId, frame.agentId, frame.fromByte, fromPeer);
+ 				break;
+@@ -809,6 +1092,9 @@ export class CollabHost {
+ 				agents: this.#snapshotAgents(),
+ 				entryCount: snapshotEntries.json.length,
+ 				readOnly: canWrite ? undefined : true,
++				nozeli: this.#nozeli
++					? { managedCollab: 1, admission: "rid-required", epoch: this.#nozeliEnsureEpoch() }
++					: undefined,
+ 			},
+ 			fromPeer,
+ 		);
+@@ -1027,7 +1313,7 @@ export class CollabHost {
+ 		);
+ 	}
+ 
+-	#handleAbort(fromPeer: number): void {
++	#handleAbort(fromPeer: number, nozeliSettle?: (status: "executed" | "unknown", reason?: string) => void): void {
+ 		const peer = this.#peers.get(fromPeer);
+ 		if (!peer?.canWrite) {
+ 			this.#rejectReadOnly("interrupting", fromPeer);
+@@ -1037,10 +1323,14 @@ export class CollabHost {
+ 		void this.#ctx.session
+ 			.abort({ reason: USER_INTERRUPT_LABEL })
+ 			.then(() => {
++				nozeliSettle?.("executed");
+ 				if (!this.#guestTrafficAllowed()) return;
+ 				this.#ctx.session.emitNotice("info", `${name} interrupted`, "collab");
+ 			})
+-			.catch(err => logger.warn("collab guest abort failed", { error: String(err) }));
++			.catch(err => {
++				nozeliSettle?.("unknown", String(err));
++				logger.warn("collab guest abort failed", { error: String(err) });
++			});
+ 	}
+ 
+ 	/**
+@@ -1055,6 +1345,9 @@ export class CollabHost {
+ 	 */
+ 	#handleRoomRecreated(): void {
+ 		if (this.#stopped) return;
++		this.#nozeliRoomEpoch++;
++		this.#nozeli?.beginEpoch(`${this.#sessionId}#${this.#nozeliRoomEpoch}`);
++		this.#nozeliAttachments.beginEpoch(`${this.#sessionId}#${this.#nozeliRoomEpoch}`);
+ 		if (this.#peers.size === 0 && this.#pendingUi.size === 0) return;
+ 		// Identities first: settle() fans `ui-request-end` out over #peers, and those
+ 		// ids belong to the room that just went away.
+diff --git a/packages/coding-agent/src/collab/nozeli-admission.ts b/packages/coding-agent/src/collab/nozeli-admission.ts
+new file mode 100644
+index 0000000..b25a0f5
+--- /dev/null
++++ b/packages/coding-agent/src/collab/nozeli-admission.ts
+@@ -0,0 +1,778 @@
++/**
++ * Nozeli managed-collab inbound action gate v4 (OMP integration unit).
++ *
++ * Round-4 restructure (executor review job_a189516cbef4): one minimal state
++ * machine, explicit transition table, authoritative records own their facts.
++ *
++ * ── Entities ────────────────────────────────────────────────────────────────
++ * LedgerRecord  authoritative per admitted action: immutable identity
++ *               (rid/kind/at/ar/dg/ep) + append-only fact list + state.
++ *               Facts always carry the record's ORIGINAL ep/ar — they are
++ *               never re-ep'd, and query() is a pure read (no fact creation).
++ * Ledger        session-scoped, never evicted: pending | admitted | unknown.
++ *               Definitive non-admission rejections RELEASE the record to the
++ *               cache immediately (counterexample A); unknown stays held.
++ * ReceiptCache  per-epoch LRU over RELEASED records only (pure query).
++ * Watermark     session-scoped strictly-monotonic attempt fence.
++ * TurnOwnership authoritative {active, generation, requestRid}: the host binds
++ *               the dispatching rid explicitly (beginDispatch); agent_end with
++ *               willContinue/awaitingAsyncWork does not end a turn; an abort
++ *               may act only while active && generation matches && the target
++ *               owns the turn (no "most recent" guessing).
++ * Attachments   ingest-budgeted upload registry with atomic peek/commit:
++ *               nothing is consumed by rejected/busy/duplicate/missing
++ *               requests; mixing refs with inline images is rejected.
++ *
++ * ── Prompt transition table ─────────────────────────────────────────────────
++ *   (shape/perm/epoch/dedup/fence/adjudicator pass)
++ *   reserved --confirm(dg match)--> pending --onPromptAdmitted--> admitted
++ *   reserved --confirm(mismatch)--> released[rejected digest-mismatch]
++ *   pending  --busy*-->            released[rejected busy]      (definitive)
++ *   pending  --false w/o fact-->   released[rejected not-dispatched]
++ *   pending/admitted --error-->    unknown (held; quarantines prompts)
++ *   admitted --turn end-->         released (facts end at admitted; the
++ *                                  gateway reconciles via its terminal facts)
++ *   unknown  --resolve(evidence)--> released[<verified outcome>]
++ *
++ * ── Abort transition table ──────────────────────────────────────────────────
++ *   pending --executed(active,gen ok)--> released[executed]
++ *   pending --stale target/gen-->       released[rejected stale-target*]
++ *   pending --error-->                   unknown (held; resolvable)
++ *   unknown  --resolve(evidence)-->      released[<verified outcome>]
++ *
++ * Adjudicator seam: synchronous CommonJS module (createRequire) exporting
++ * admitAction(); ANY exception ⇒ deny with no side effects (it runs before
++ * the placeholder). The P1 persistent Controller grants admission out-of-band
++ * into a host-refreshed grant table this module consults; absence/expiry ⇒
++ * deny. A write token plus this gate is transport admission only.
++ */
++
++import { createHash } from "node:crypto";
++
++export type NozeliActionKind = "prompt" | "abort";
++export type NozeliReceiptStatus = "rejected" | "pending" | "admitted" | "executed" | "unknown";
++
++export interface NozeliActionReceipt {
++	t: "action-receipt";
++	rid: string;
++	kind: NozeliActionKind;
++	status: NozeliReceiptStatus;
++	reason?: string;
++	seq: number;
++	ep: string;
++	ar?: string;
++}
++
++export interface NozeliImage {
++	type: string;
++	mimeType?: string;
++	data?: string;
++}
++
++export interface NozeliAdmitInput {
++	kind: NozeliActionKind;
++	rid: string | undefined;
++	/** Sender-declared payload digest; bound into the immutable envelope. */
++	dg: string | undefined;
++	at: number | undefined;
++	ep: string | undefined;
++	ar: string | undefined;
++	tr?: string;
++	canWrite: boolean;
++	busy: boolean;
++}
++
++export interface NozeliAdmitDecision {
++	/** "reject": terminal rejection fact delivered. "replay": original facts. */
++	decision: "reject" | "replay" | "reserved";
++	receipt: NozeliActionReceipt;
++	receipts?: NozeliActionReceipt[];
++}
++
++export type NozeliSettleStatus = "admitted" | "executed" | "unknown";
++
++export type NozeliQueryResult =
++	| { status: "ok"; receipts: NozeliActionReceipt[] }
++	| { status: "forgotten" };
++
++export interface NozeliAdjudicator {
++	admitAction(request: {
++		kind: NozeliActionKind;
++		rid: string;
++		ep: string;
++		admissionRef: string | undefined;
++		contentDigest?: string;
++		attempt?: number;
++		targetTurn?: string | null;
++	}): { decision: "allow" | "deny"; reason?: string };
++}
++
++const RID_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
++const BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/;
++
++export function isNozeliManagedCollab(): boolean {
++	return process.env.NOZELI_MANAGED_COLLAB === "1";
++}
++
++/** Canonical structured payload digest; invalid payloads return null. */
++export function nozeliContentDigest(
++	epoch: string,
++	kind: NozeliActionKind,
++	text: string,
++	images: ReadonlyArray<NozeliImage> = [],
++	target?: string,
++): string | null {
++	for (const image of images) {
++		if (typeof image.mimeType !== "string" || image.mimeType.length === 0) return null;
++		if (typeof image.data !== "string" || image.data.length === 0) return null;
++		if (!BASE64_PATTERN.test(image.data) || image.data.length % 4 !== 0) return null;
++	}
++	const canonical = {
++		ep: epoch,
++		kind,
++		text,
++		images: images.map(image => ({ t: image.type, m: image.mimeType as string, d: image.data as string })),
++		tr: target ?? null,
++	};
++	return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
++}
++
++type RecordState = "reserved" | "pending" | "admitted" | "unknown";
++
++/**
++ * Immutable payload descriptor captured at admission: binds the exact text,
++ * every ordered attachment's identity/digest/mime/length, and the canonical
++ * whole-payload digest. Replays compare against the descriptor with ZERO
++ * reassembly or consumption; a missing descriptor makes the replay
++ * unverifiable (rejected), never an excuse to skip verification.
++ */
++export interface NozeliPayloadDescriptor {
++	textDigest: string;
++	refs: ReadonlyArray<{ up: string; contentDigest: string; mimeType: string; length: number }>;
++	canonicalDigest: string;
++	inlineDigests: ReadonlyArray<string>;
++	target: string | null;
++}
++
++interface LedgerRecord {
++	rid: string;
++	kind: NozeliActionKind;
++	at: number;
++	ar: string | undefined;
++	ep: string;
++	/** Sender-declared digest captured at reservation (immutable). */
++	senderDg: string | undefined;
++	/** Confirmed actual digest (set by confirm; immutable afterwards). */
++	dg: string | undefined;
++	/** Immutable payload descriptor (set at confirm; authoritative for replays). */
++	descriptor: NozeliPayloadDescriptor | undefined;
++	state: RecordState;
++	facts: NozeliActionReceipt[];
++	abortGeneration?: number;
++	abortTarget?: string;
++}
++
++export interface NozeliAdmission {
++	epoch(): string;
++	beginEpoch(epoch: string): void;
++	admit(input: NozeliAdmitInput): NozeliAdmitDecision;
++	/** Second phase: verify the guest digest and freeze the payload descriptor. */
++	confirm(rid: string, dg: string, actualDg: string | null, descriptor?: NozeliPayloadDescriptor): NozeliActionReceipt | null;
++	/** Third phase: host adjudication of the fully validated request. */
++	adjudicate(rid: string): NozeliActionReceipt | null;
++	markAdmitted(rid: string): NozeliActionReceipt | null;
++	settle(rid: string, status: NozeliSettleStatus | "rejected", reason?: string): NozeliActionReceipt | null;
++	query(rid: string): NozeliQueryResult;
++	/**
++	 * Replay verification against the ORIGINAL immutable descriptor: the caller
++	 * supplies the current request's text digest and ordered ref names (plus
++	 * inline image digests when inline). Everything else — canonical digest,
++	 * per-ref content digest/mime/length — comes from the stored descriptor,
++	 * NEVER from live (possibly consumed) uploads. A missing descriptor is
++	 * "unverifiable" (reject), never a skip.
++	 */
++	verifyReplay(rid: string, probe: {
++		textDigest: string;
++		refNames: ReadonlyArray<string>;
++		inlineDigests: ReadonlyArray<string>;
++		target?: string | null;
++	}): { ok: boolean; reason?: string };
++	/** Host binds the dispatching request to the turn that is starting. */
++	beginDispatch(rid: string): void;
++	onTurnStart(): void;
++	onTurnEnd(): void;
++	/** Abort may act only on the authoritative active turn at the exact generation. */
++	abortTargetStale(rid: string): boolean;
++	resolveUnknown(rid: string, evidence: { admissionRef: string; ep: string; outcome: "not-executed" | "executed" }): NozeliActionReceipt | null;
++}
++
++/**
++ * Build the immutable payload descriptor from the confirmed payload pieces.
++ * Attachment digests are per-upload content hashes (not the raw bytes), so the
++ * descriptor stays bounded regardless of payload size.
++ */
++export function nozeliPayloadDescriptor(
++	text: string,
++	refs: ReadonlyArray<{ up: string; contentDigest: string; mimeType: string; length: number }>,
++	canonicalDigest: string,
++	images: ReadonlyArray<NozeliImage> = [],
++	target: string | null = null,
++): NozeliPayloadDescriptor {
++	const textDigest = createHash("sha256").update(text).digest("hex");
++	return Object.freeze({
++		textDigest,
++		refs: Object.freeze(refs.map(ref => Object.freeze({ ...ref }))),
++		canonicalDigest,
++		inlineDigests: Object.freeze(nozeliInlineDigests(images)),
++		target,
++	});
++}
++
++/** Hash complete validated inline image values, including MIME and ordering. */
++export function nozeliInlineDigests(images: ReadonlyArray<NozeliImage>): string[] {
++	return images.map(image => createHash("sha256").update(JSON.stringify({
++		type: image.type,
++		mimeType: image.mimeType,
++		data: image.data,
++	})).digest("hex"));
++}
++
++export function createNozeliAdmission(
++	adjudicator: NozeliAdjudicator | null,
++	maxReleasedReceipts = 512,
++): NozeliAdmission {
++	let currentEpoch = "";
++	let seq = 0;
++	let watermark = 0;
++	const ledger = new Map<string, LedgerRecord>();
++	const released = new Map<string, { facts: NozeliActionReceipt[]; kind: NozeliActionKind; at: number; ar: string | undefined; ep: string; senderDg: string | undefined; dg: string | undefined; descriptor: NozeliPayloadDescriptor | undefined }>();
++	const releasedLru = new Map<string, null>();
++	const quarantine = new Set<string>();
++	let turnActive = false;
++	let turnGeneration = 0;
++	let turnRequestRid: string | null = null;
++	let dispatchRid: string | null = null;
++
++	const nextSeq = (): number => ++seq;
++	const factFor = (record: LedgerRecord, status: NozeliReceiptStatus, reason?: string): NozeliActionReceipt => ({
++		t: "action-receipt",
++		rid: record.rid,
++		kind: record.kind,
++		status,
++		...(reason ? { reason } : {}),
++		seq: nextSeq(),
++		ep: record.ep,
++		...(record.ar ? { ar: record.ar } : {}),
++	});
++	const rejection = (input: NozeliAdmitInput, reason: string): NozeliAdmitDecision => ({
++		decision: "reject",
++		receipt: {
++			t: "action-receipt",
++			rid: input.rid ?? "",
++			kind: input.kind,
++			status: "rejected",
++			reason,
++			seq: nextSeq(),
++			ep: currentEpoch,
++			...(input.ar ? { ar: input.ar } : {}),
++		},
++	});
++	const release = (record: LedgerRecord): void => {
++		ledger.delete(record.rid);
++		// The immutable envelope survives in the released cache for replay checks.
++		released.set(record.rid, { facts: record.facts, kind: record.kind, at: record.at, ar: record.ar, ep: record.ep, senderDg: record.senderDg, dg: record.dg, descriptor: record.descriptor });
++		if (dispatchRid === record.rid) dispatchRid = null;
++		releasedLru.set(record.rid, null);
++		while (releasedLru.size > maxReleasedReceipts) {
++			const oldest = releasedLru.keys().next().value;
++			if (oldest === undefined) break;
++			releasedLru.delete(oldest);
++			released.delete(oldest);
++		}
++	};
++	const holdsPrompt = (): boolean => {
++		for (const record of ledger.values()) {
++			if (record.kind === "prompt" && (record.state === "pending" || record.state === "admitted")) return true;
++		}
++		return false;
++	};
++
++	return {
++		epoch: () => currentEpoch,
++		beginEpoch(epoch: string): void {
++			if (epoch === currentEpoch) return;
++			currentEpoch = epoch;
++			released.clear();
++			releasedLru.clear();
++			// Ledger, quarantine, watermark and turn ownership persist across rooms.
++		},
++		admit(input: NozeliAdmitInput): NozeliAdmitDecision {
++			if (!input.canWrite) return rejection(input, "read-only");
++			if (input.rid === undefined) return rejection(input, "no-request-id");
++			if (!RID_PATTERN.test(input.rid)) return rejection(input, "invalid-request-id");
++			if (input.at === undefined || !Number.isInteger(input.at) || input.at < 1 || input.at > Number.MAX_SAFE_INTEGER) return rejection(input, "invalid-attempt");
++			if (input.ep === undefined || input.ep !== currentEpoch) return rejection(input, "stale-epoch");
++			// Idempotency first: replays return the ORIGINAL facts (pure).
++			const held = ledger.get(input.rid);
++			if (held) {
++				// Payload collision: a different declared digest for the same
++				// envelope is a collision, never a replay of the old success.
++				if (held.at !== input.at || held.kind !== input.kind || held.ar !== input.ar || held.senderDg !== input.dg || (held.dg !== undefined && held.dg !== input.dg)) return rejection(input, "key-collision");
++				return { decision: "replay", receipt: { ...held.facts[held.facts.length - 1]! }, receipts: held.facts.map(item => ({ ...item })) };
++			}
++			const cached = released.get(input.rid);
++			if (cached) {
++				// Replay must verify the FULL envelope — a same-rid request with a
++				// different kind/attempt/ref/epoch is a collision, not a replay.
++				if (cached.kind !== input.kind || cached.at !== input.at || cached.ar !== input.ar || cached.ep !== input.ep || cached.senderDg !== input.dg || (cached.dg !== undefined && cached.dg !== input.dg)) {
++					return rejection(input, "key-collision");
++				}
++				return { decision: "replay", receipt: { ...cached.facts[cached.facts.length - 1]! }, receipts: cached.facts.map(item => ({ ...item })) };
++			}
++			if (input.at <= watermark) return rejection(input, "forgotten-replay");
++			// Fail-closed seam check only; the decision itself runs after digest
++			// confirmation (gate.adjudicate) so denials consume nothing.
++			if (!adjudicator) return rejection(input, "no-host-adjudicator");
++			if (input.kind === "prompt") {
++				if (quarantine.size > 0) return rejection(input, `outstanding-unknown:${[...quarantine][0]}`);
++				if (holdsPrompt()) return rejection(input, "outstanding-pending");
++				if (input.busy) {
++					// Definitive non-admission: recorded once, no placeholder held.
++					const record: LedgerRecord = { rid: input.rid, kind: input.kind, at: input.at, ar: input.ar, senderDg: input.dg, dg: undefined, descriptor: undefined, ep: currentEpoch, state: "reserved", facts: [] };
++					record.facts.push(factFor(record, "rejected", "busy"));
++					watermark = Math.max(watermark, input.at);
++					const busyFact = { ...record.facts[0]! };
++					release(record);
++					return { decision: "reject", receipt: busyFact };
++				}
++			} else {
++				if (input.tr === undefined || input.tr === "") return rejection(input, "abort-target-required");
++				if (input.tr === "*") {
++					if (!turnActive) return rejection(input, "no-active-turn");
++				} else if (input.tr !== turnRequestRid) {
++					return rejection(input, "stale-target");
++				}
++			}
++			watermark = Math.max(watermark, input.at);
++			const record: LedgerRecord = {
++				rid: input.rid,
++				kind: input.kind,
++				at: input.at,
++				ar: input.ar,
++				senderDg: input.dg,
++				dg: undefined,
++				descriptor: undefined,
++				ep: currentEpoch,
++				state: "reserved",
++				facts: [],
++				...(input.kind === "abort" ? { abortGeneration: turnGeneration, abortTarget: input.tr } : {}),
++			};
++			record.facts.push(factFor(record, "pending"));
++			ledger.set(input.rid, record);
++			return { decision: "reserved", receipt: { ...record.facts[0]! } };
++		},
++		confirm(rid: string, dg: string, actualDg: string | null, descriptor?: NozeliPayloadDescriptor): NozeliActionReceipt | null {
++			const record = ledger.get(rid);
++			if (!record || record.state !== "reserved") return null;
++			if (actualDg === null) {
++				const invalid = factFor(record, "rejected", "invalid-payload");
++				record.facts.push(invalid);
++				release(record);
++				return { ...invalid };
++			}
++			if (dg !== actualDg || (descriptor && descriptor.canonicalDigest !== actualDg)) {
++				const mismatch = factFor(record, "rejected", "digest-mismatch");
++				record.facts.push(mismatch);
++				release(record);
++				return { ...mismatch };
++			}
++			record.dg = dg;
++			record.descriptor = descriptor ? Object.freeze({
++				textDigest: descriptor.textDigest,
++				refs: Object.freeze(descriptor.refs.map(ref => Object.freeze({ ...ref }))),
++				canonicalDigest: actualDg,
++				inlineDigests: Object.freeze([...descriptor.inlineDigests]),
++				target: descriptor.target,
++			}) : undefined;
++			record.state = "pending";
++			return null;
++		},
++		adjudicate(rid: string): NozeliActionReceipt | null {
++			const record = ledger.get(rid);
++			if (!record || record.state !== "pending" || !adjudicator) return null;
++			let adjudication: { decision: "allow" | "deny"; reason?: string };
++			try {
++				adjudication = adjudicator.admitAction({ kind: record.kind, rid: record.rid, ep: record.ep, admissionRef: record.ar, contentDigest: record.dg, attempt: record.at, targetTurn: record.abortTarget ?? null });
++			} catch {
++				const errored = factFor(record, "rejected", "not-authorized:adjudicator-error");
++				record.facts.push(errored);
++				release(record);
++				return { ...errored };
++			}
++			if (adjudication.decision !== "allow") {
++				const denied = factFor(record, "rejected", `not-authorized:${adjudication.reason ?? "denied"}`);
++				record.facts.push(denied);
++				release(record);
++				return { ...denied };
++			}
++			return null;
++		},
++		markAdmitted(rid: string): NozeliActionReceipt | null {
++			const record = ledger.get(rid);
++			if (!record || record.state !== "pending") return null;
++			record.state = "admitted";
++			const admitted = factFor(record, "admitted");
++			record.facts.push(admitted);
++			return { ...admitted };
++		},
++		settle(rid: string, status: NozeliSettleStatus | "rejected", reason?: string): NozeliActionReceipt | null {
++			const record = ledger.get(rid);
++			if (!record) return null;
++			if (dispatchRid === rid) dispatchRid = null; // never let a settled rid own the next turn
++			if (record.state === "admitted" && status === "rejected") return null; // never rewrite admission
++			if (record.state === "unknown") return null;
++			if (status === "admitted") {
++				if (record.state !== "pending") return null;
++				record.state = "admitted";
++				const admitted = factFor(record, "admitted", reason);
++				record.facts.push(admitted);
++				return { ...admitted };
++			}
++			if (status === "rejected") {
++				// Definitive non-admission (busy-race, not-dispatched, stale-target…): release.
++				const rejected = factFor(record, "rejected", reason);
++				record.facts.push(rejected);
++				release(record);
++				return { ...rejected };
++			}
++			if (status === "unknown") {
++				record.state = "unknown";
++				quarantine.add(rid);
++				const unknown = factFor(record, "unknown", reason);
++				record.facts.push(unknown);
++				return { ...unknown };
++			}
++			// executed: definitive for aborts; prompts settle via turn end.
++			const executed = factFor(record, "executed", reason);
++			record.facts.push(executed);
++			release(record);
++			return { ...executed };
++		},
++		verifyReplay(rid: string, probe: {
++			textDigest: string;
++			refNames: ReadonlyArray<string>;
++			inlineDigests: ReadonlyArray<string>;
++			target?: string | null;
++		}): { ok: boolean; reason?: string } {
++			const stored = ledger.get(rid)?.descriptor ?? released.get(rid)?.descriptor;
++			if (!stored) return { ok: false, reason: "unverifiable-no-descriptor" };
++			if (stored.textDigest !== probe.textDigest) return { ok: false, reason: "text-changed" };
++			if (stored.refs.length !== probe.refNames.length) return { ok: false, reason: "refs-changed" };
++			for (let i = 0; i < stored.refs.length; i++) {
++				if (stored.refs[i]!.up !== probe.refNames[i]) return { ok: false, reason: "refs-changed" };
++			}
++			if (stored.inlineDigests.length !== probe.inlineDigests.length) return { ok: false, reason: "inline-changed" };
++			for (let i = 0; i < stored.inlineDigests.length; i++) {
++				if (stored.inlineDigests[i] !== probe.inlineDigests[i]) return { ok: false, reason: "inline-changed" };
++			}
++			if (stored.target !== (probe.target ?? null)) return { ok: false, reason: "target-changed" };
++			return { ok: true };
++		},
++		query(rid: string): NozeliQueryResult {
++			// Pure read: never creates facts, never changes seq or epochs.
++			const held = ledger.get(rid);
++			if (held) return { status: "ok", receipts: held.facts.map(item => ({ ...item })) };
++			const cached = released.get(rid);
++			if (cached) return { status: "ok", receipts: cached.facts.map(item => ({ ...item })) };
++			return { status: "forgotten" };
++		},
++		beginDispatch(rid: string): void {
++			dispatchRid = rid;
++		},
++		onTurnStart(): void {
++			turnGeneration++;
++			turnActive = true;
++			turnRequestRid = dispatchRid;
++			dispatchRid = null;
++		},
++		onTurnEnd(): void {
++			turnActive = false;
++			turnRequestRid = null;
++			// Release every admitted prompt whose turn ended without an unknown:
++			// the fact stream ends at `admitted`; gateway reconciliation owns
++			// turn completion (its terminal-facts contract).
++			for (const record of [...ledger.values()]) {
++				if (record.kind === "prompt" && record.state === "admitted") release(record);
++			}
++		},
++		abortTargetStale(rid: string): boolean {
++			const record = ledger.get(rid);
++			if (!record || record.kind !== "abort") return true;
++			if (!turnActive) return true;
++			if (record.abortGeneration !== turnGeneration) return true;
++			if (record.abortTarget === "*") return false;
++			return record.abortTarget !== turnRequestRid;
++		},
++		resolveUnknown(rid: string, evidence: { admissionRef: string; ep: string; outcome: "not-executed" | "executed" }): NozeliActionReceipt | null {
++			const record = ledger.get(rid);
++			if (!record || record.state !== "unknown") return null;
++			if (evidence.admissionRef !== record.ar || evidence.ep !== record.ep) return null;
++			quarantine.delete(rid);
++			const resolved = factFor(record, evidence.outcome === "executed" ? "executed" : "rejected", `resolved:${evidence.outcome}`);
++			record.facts.push(resolved);
++			release(record);
++			return { ...resolved };
++		},
++	};
++}
++
++/**
++ * Chunked attachment registry with INGEST budgets and atomic peek/commit.
++ * Budgets are enforced when chunks arrive (total resident bytes/uploads), not
++ * only at take; base64 validity is checked per chunk; peek never consumes;
++ * commit deletes exactly the peeks an accepted request performed.
++ */
++export interface NozeliAttachment {
++	type: "image";
++	mimeType: string;
++	data: string;
++}
++
++interface UploadState {
++	mimeType: string;
++	parts: string[];
++	bytes: number;
++	closed: boolean;
++	uploadedAt: number;
++}
++
++export class NozeliAttachmentBuffer {
++	readonly #epochs = new Map<string, { uploads: Map<string, UploadState>; residentBytes: number; used: Set<string> }>();
++	readonly #maxChunkBytes: number;
++	readonly #maxUploadBytes: number;
++	readonly #maxUploads: number;
++	readonly #maxResidentBytes: number;
++	readonly #ttlMs: number;
++
++	constructor(options: { maxChunkBytes?: number; maxUploadBytes?: number; maxUploads?: number; maxResidentBytes?: number; ttlMs?: number } = {}) {
++		this.#maxChunkBytes = options.maxChunkBytes ?? 1_048_576;
++		this.#maxUploadBytes = options.maxUploadBytes ?? 33_554_432;
++		this.#maxUploads = options.maxUploads ?? 128;
++		this.#maxResidentBytes = options.maxResidentBytes ?? 67_108_864;
++		this.#ttlMs = options.ttlMs ?? 300_000;
++	}
++
++	#slot(ep: string): { uploads: Map<string, UploadState>; residentBytes: number; used: Set<string> } {
++		let slot = this.#epochs.get(ep);
++		if (!slot) {
++			slot = { uploads: new Map(), residentBytes: 0, used: new Set() };
++			this.#epochs.set(ep, slot);
++		}
++		return slot;
++	}
++
++	#gc(slot: { uploads: Map<string, UploadState>; residentBytes: number }, now: number): void {
++		for (const [up, state] of slot.uploads) {
++			if (now - state.uploadedAt < this.#ttlMs) continue;
++			slot.residentBytes -= state.bytes;
++			slot.uploads.delete(up);
++		}
++	}
++
++	beginEpoch(ep: string): void {
++		for (const key of this.#epochs.keys()) if (key !== ep) this.#epochs.delete(key);
++	}
++
++	open(ep: string, up: string, mimeType: string): "ok" | "duplicate" | "invalid" | "over-upload-count" {
++		if (up.length === 0 || mimeType.length === 0) return "invalid";
++		const slot = this.#slot(ep);
++		this.#gc(slot, Date.now());
++		// Upload IDs are immutable identities for this room epoch, including
++		// after commit/TTL collection. Bounded tombstones prevent name reuse
++		// from substituting new bytes beneath an admitted request's refs.
++		if (slot.used.has(up)) return "duplicate";
++		if (slot.used.size >= this.#maxUploads) return "over-upload-count";
++		slot.used.add(up);
++		slot.uploads.set(up, { mimeType, parts: [], bytes: 0, closed: false, uploadedAt: Date.now() });
++		return "ok";
++	}
++
++	chunk(ep: string, up: string, data: string): "ok" | "unknown-upload" | "closed" | "invalid-base64" | "over-chunk-budget" | "over-upload-budget" | "over-resident-budget" {
++		const slot = this.#slot(ep);
++		const upload = slot.uploads.get(up);
++		if (!upload) return "unknown-upload";
++		if (upload.closed) return "closed";
++		if (data.length === 0 || !BASE64_PATTERN.test(data) || data.length % 4 !== 0) return "invalid-base64";
++		if (data.length > this.#maxChunkBytes) return "over-chunk-budget";
++		if (upload.parts.length >= Math.ceil(this.#maxUploadBytes / this.#maxChunkBytes)) return "over-upload-budget";
++		if (upload.bytes + data.length > this.#maxUploadBytes) return "over-upload-budget";
++		// INGEST aggregate budget: total resident bytes across all uploads.
++		if (slot.residentBytes + data.length > this.#maxResidentBytes) return "over-resident-budget";
++		upload.parts.push(data);
++		upload.bytes += data.length;
++		upload.uploadedAt = Date.now();
++		slot.residentBytes += data.length;
++		return "ok";
++	}
++
++	close(ep: string, up: string): "ok" | "unknown-upload" | "empty" {
++		const slot = this.#slot(ep);
++		const upload = slot.uploads.get(up);
++		if (!upload) return "unknown-upload";
++		if (upload.parts.length === 0) return "empty";
++		upload.closed = true;
++		upload.uploadedAt = Date.now();
++		return "ok";
++	}
++
++	/** Bounded descriptor facts for the named uploads WITHOUT consuming them. */
++	describe(ep: string, refs: ReadonlyArray<string>): Array<{ up: string; contentDigest: string; mimeType: string; length: number }> | "unknown-upload" | "not-closed" {
++		const slot = this.#slot(ep);
++		this.#gc(slot, Date.now());
++		const described: Array<{ up: string; contentDigest: string; mimeType: string; length: number }> = [];
++		for (const ref of refs) {
++			const upload = slot.uploads.get(ref);
++			if (!upload) return "unknown-upload";
++			if (!upload.closed) return "not-closed";
++			const contentDigest = createHash("sha256").update(upload.parts.join("")).digest("hex");
++			described.push({ up: ref, contentDigest, mimeType: upload.mimeType, length: upload.bytes });
++		}
++		return described;
++	}
++
++	/** Reassemble WITHOUT consuming (atomic all-or-nothing validation). */
++	peek(ep: string, refs: ReadonlyArray<string>): NozeliAttachment[] | "unknown-upload" | "not-closed" | "over-aggregate-budget" {
++		const slot = this.#slot(ep);
++		this.#gc(slot, Date.now());
++		let total = 0;
++		const attachments: NozeliAttachment[] = [];
++		for (const ref of refs) {
++			const upload = slot.uploads.get(ref);
++			if (!upload || !upload.closed) return "unknown-upload";
++			if (upload.parts.length === 0) return "not-closed";
++			total += upload.bytes;
++			if (total > this.#maxUploadBytes) return "over-aggregate-budget";
++			attachments.push({ type: "image", mimeType: upload.mimeType, data: upload.parts.join("") });
++		}
++		return attachments;
++	}
++
++	/** Consume exactly the uploads an ACCEPTED request peeked. */
++	commit(ep: string, refs: ReadonlyArray<string>): void {
++		const slot = this.#slot(ep);
++		for (const ref of refs) {
++			const upload = slot.uploads.get(ref);
++			if (!upload) continue;
++			slot.residentBytes -= upload.bytes;
++			slot.uploads.delete(ref);
++		}
++	}
++}
++
++/**
++ * Managed prompt submission chain: no native steer/queue; admission is the
++ * onPromptAdmitted callback; the official typed busy error is injected by the
++ * host patch (bindNozeliBusyError) — never a message-string heuristic.
++ */
++export interface NozeliPromptSession {
++	promptCustomMessage(
++		message: { customType: string; content: string | ReadonlyArray<unknown>; display?: boolean; details?: unknown; attribution?: string },
++		options?: { onPromptAdmitted?: () => void },
++	): Promise<boolean>;
++}
++
++export interface NozeliPromptOutcome {
++	settle: "admitted" | "rejected" | "unknown";
++	reason?: string;
++}
++
++export interface NozeliBusyErrorConstructor {
++	new (message?: string): Error;
++	readonly prototype: Error;
++}
++let boundBusyError: NozeliBusyErrorConstructor | null = null;
++export function bindNozeliBusyError(constructor: NozeliBusyErrorConstructor): void {
++	boundBusyError = constructor;
++}
++
++export async function submitManagedPrompt(
++	session: NozeliPromptSession,
++	kind: { customType: string },
++	text: string,
++	images: ReadonlyArray<NozeliImage> = [],
++	onAdmitted: () => void,
++): Promise<NozeliPromptOutcome> {
++	const content = images.length > 0 ? [{ type: "text", text }, ...images] : text;
++	let admissionFactFired = false;
++	try {
++		const dispatched = await session.promptCustomMessage(
++			{ customType: kind.customType, content, display: true, details: { from: "nozeli-gateway" }, attribution: "user" },
++			{ onPromptAdmitted: () => { admissionFactFired = true; onAdmitted(); } },
++		);
++		if (dispatched) return { settle: "admitted" };
++		return admissionFactFired
++			? { settle: "unknown", reason: "not-dispatched-after-admission" }
++			: { settle: "rejected", reason: "not-dispatched" };
++	} catch (error) {
++		if (!admissionFactFired && boundBusyError !== null && error instanceof boundBusyError) {
++			return { settle: "rejected", reason: "busy-race" };
++		}
++		const message = error instanceof Error ? error.message : String(error);
++		return { settle: "unknown", reason: message.slice(0, 200) };
++	}
++}
++
++/**
++ * Streaming redaction that keeps an unresolved tail across arbitrary chunk
++ * boundaries: only bytes that can no longer be part of a secret are emitted;
++ * finish() flushes the remainder after a final redaction pass.
++ */
++export function createStreamingRedactor(secretPattern: RegExp, maxSecretLength = 512): { push(chunk: string): string; finish(): string } {
++	let pending = "";
++	/**
++	 * A secret may still grow: a match is only emitted once a TERMINATOR (a
++	 * char that cannot extend it) follows, or the stream is finishing. Until
++	 * then everything from the candidate start is held back — no partial
++	 * token, however plausible, is ever emitted.
++	 */
++	const emitSafe = (finishing: boolean): string => {
++		let out = "";
++		for (;;) {
++			secretPattern.lastIndex = 0;
++			const match = secretPattern.exec(pending);
++			if (match) {
++				const after = match.index + match[0].length;
++				const nextChar = pending[after];
++				const terminated = nextChar === undefined ? finishing : !/[A-Za-z0-9_.-]/.test(nextChar);
++				if (terminated) {
++					out += `${pending.slice(0, match.index)}\u0000SECRET\u0000${nextChar ?? ""}`;
++					pending = pending.slice(after + (nextChar === undefined ? 0 : 1));
++					continue;
++				}
++				// May still grow: hold from the candidate start, emit the safe prefix.
++				out += pending.slice(0, match.index);
++				pending = pending.slice(match.index);
++				return out;
++			}
++			// No complete match yet: hold any tail that could still become one.
++			const lastCandidate = Math.max(pending.lastIndexOf("/r/"), pending.length - maxSecretLength);
++			const cut = lastCandidate >= 0 ? lastCandidate : Math.max(0, pending.length - maxSecretLength);
++			out += pending.slice(0, cut);
++			pending = pending.slice(cut);
++			return out;
++		}
++	};
++	return {
++		push(chunk: string): string {
++			pending += chunk;
++			return emitSafe(false);
++		},
++		finish(): string {
++			const flushed = emitSafe(true);
++			secretPattern.lastIndex = 0;
++			const tail = pending.replace(secretPattern, "\u0000SECRET\u0000");
++			pending = "";
++			return flushed + tail;
++		},
++	};
++}
+diff --git a/packages/coding-agent/src/collab/protocol.ts b/packages/coding-agent/src/collab/protocol.ts
+index d0cdbca..f347567 100644
+--- a/packages/coding-agent/src/collab/protocol.ts
++++ b/packages/coding-agent/src/collab/protocol.ts
+@@ -26,6 +26,7 @@ import {
+ import type { CollabSessionState } from "@oh-my-pi/pi-tui/status-line/types";
+ import type { AgentSessionEvent } from "../session/agent-session";
+ import type { SessionEntry, SessionHeader } from "../session/session-entries";
++import type { NozeliActionReceipt } from "./nozeli-admission";
+ 
+ export type {
+ 	CollabPromptDetails,
+@@ -53,8 +54,22 @@ export type { CollabSessionState };
+  */
+ export type CollabFrame =
+ 	// guest -> host (hello/abort/agent-cmd/fetch-transcript/ui-response are taken verbatim from the wire grammar)
+-	| Exclude<GuestFrame, { t: "prompt" }>
+-	| { t: "prompt"; text: string; images?: ImageContent[] }
++	| Exclude<GuestFrame, { t: "prompt" } | { t: "abort" }>
++	// Nozeli managed rooms: rid/dg/at/ep are the gateway transport id, content
++	// Nozeli managed rooms: rid/dg/at/ep/ar are the gateway transport id,
++	// canonical content digest, strictly-increasing attempt, session/room
++	// epoch, and the host-adjudicated admission reference (job/owner).
++	| { t: "prompt"; text: string; images?: ImageContent[]; rid?: string; dg?: string; at?: number; ep?: string; ar?: string; refs?: string[] }
++	// Abort binds to its target turn: tr = target rid, or "*" for the active turn.
++	| { t: "abort"; rid?: string; dg?: string; at?: number; ep?: string; ar?: string; tr?: string }
++	// Chunked attachments (large material): open → chunks (≤1MiB each) → close;
++	// a prompt references closed uploads via refs in order.
++	| { t: "attach-open"; up: string; ep: string; mime: string }
++	| { t: "attach-chunk"; up: string; ep: string; data: string }
++	| { t: "attach-close"; up: string; ep: string }
++	// Pure receipt lookup: answered with the retained facts, or an
++	// error when forgotten. Never mutates admission state.
++	| { t: "action-query"; rid: string; ep: string }
+ 	// host -> guest
+ 	| {
+ 			t: "welcome";
+@@ -69,8 +84,9 @@ export type CollabFrame =
+ 			 * (or a chunk arrives with `final: true`).
+ 			 */
+ 			entryCount: number;
+-			/** True when this peer joined through a read-only (view) link. */
+-			readOnly?: boolean;
++		readOnly?: boolean;
++		/** Nozeli managed-room capability advertisement; absent in plain rooms. */
++		nozeli?: { managedCollab: 1; admission: "rid-required"; epoch: string };
+ 	  }
+ 	/**
+ 	 * Targeted snapshot fragment delivered after `welcome`. Splits a large
+@@ -92,6 +108,7 @@ export type CollabFrame =
+ 	| { t: "ui-request-end"; reqId: number }
+ 	/** Targeted reply to fetch-transcript; `error` marks a terminal read failure that guests must surface without hot retrying. */
+ 	| { t: "transcript"; reqId: number; text: string; newSize: number; error?: string }
++	| NozeliActionReceipt
+ 	| { t: "bye"; reason: string }
+ 	| { t: "error"; message: string };
+ 

@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "repo": "https://github.com/can1357/oh-my-pi",
+  "tag": "v18.11.0",
+  "commit": "c2cb79e4c227aa4b22c4ccb933ff72fd88bceba4",
+  "patches": {
+    "patches/0001-nozeli-managed-collab-inbound-gate.patch": "5e0b7539268413c1eb045e09100f7b2bfc5ff69c3e87fc9f875a49b399a9b2bf",
+    "patches/0002-nozeli-private-runtime.patch": "d231afd96732aa55757f03a6255ac15560a3d5129b33e1da24dcea2b7775f2d3",
+    "patches/0003-nozeli-native-collab-runtime.patch": "ce3efb2cee9a3e8054ebb2f07cef43820660437662b2aa6e53752ca7d065e7e3"
+  },
+  "nativeAddons": {
+    "source_package": "@oh-my-pi/pi-natives-linux-x64@18.11.0",
+    "dest": "packages/natives/native/",
+    "allowlisted_untracked": [
+      "packages/natives/native/pi_natives.linux-x64-modern.node",
+      "packages/natives/native/pi_natives.linux-x64-baseline.node"
+    ],
+    "sha256": {
+      "pi_natives.linux-x64-modern.node": "6c622b25422b1674690c33dd706c1b83f0d6a8d00fa0dd15c693951e2106751b",
+      "pi_natives.linux-x64-baseline.node": "f8f73a1677a456bc44be63cb0cdf1368efe394897167a89e11872b4d680b9575"
+    }
+  },
+  "toolchain": "1.3.14",
+  "buildCommand": "bun scripts/build-binary.ts",
+  "byteReproducible": false,
+  "bunRevision": "0d9b296af",
+  "bunSource": "https://github.com/oven-sh/bun/tree/0d9b296af"
+}

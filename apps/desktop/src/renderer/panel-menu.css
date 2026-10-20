@@ -1,0 +1,9 @@
+.panel-more,.panel-font{display:inline-flex;align-items:center;justify-content:center;flex:none;box-sizing:border-box;height:28px;min-height:28px;border:0;border-radius:5px;padding:3px 6px;color:var(--ink,#303a32);font:12px system-ui;white-space:nowrap}
+.panel-more{width:28px;min-width:28px}
+.panel-more svg{width:18px;height:18px;flex:none}
+.panel-font{min-width:58px;font-variant-numeric:tabular-nums}
+.panel-more:focus-visible,.panel-font:focus-visible{outline:2px solid #456654;outline-offset:1px}
+.panel-more[aria-expanded=true],.panel-font[aria-expanded=true]{background:var(--green-soft,#e6ede2)}
+.panel-menu-notice{padding:7px 8px 4px;margin-top:5px;border-top:1px solid #dfe2d8;color:#758071;font:11px/1.5 system-ui;white-space:normal;max-width:240px}
+.panel-compact .panel-overflow-first,.panel-narrow .panel-overflow-second,.panel-tiny .panel-overflow-third{display:none!important}
+.panel-font{user-select:none}

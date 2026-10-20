@@ -1,0 +1,9 @@
+{
+  "schema": "Nozeli.AgentRoleSpec.adapter.v0",
+  "schemaStatus": "Nozeli adapter schema; upstream AgentRoleSpec fields are not claimed as standardized",
+  "roles": {
+    "frontdesk": {"displayName":"前台","model":"gpt-6.1-sol","effort":"low","lifecycle":"resident","package":"roles/frontdesk"},
+    "orchestrator": {"displayName":"Orchestrator","model":"gpt-6.1-sol","effort":"high","lifecycle":"resident","package":"roles/orchestrator"},
+    "worker": {"displayName":"工作 Agent","model":"gpt-6.1-sol","effort":"low","lifecycle":"dynamic","package":"roles/worker"}
+  }
+}

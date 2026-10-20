@@ -1,0 +1,35 @@
+.session-timeline{display:flex;flex-direction:column;gap:18px;min-width:0;padding:12px 0 24px;color:var(--ink);font-family:inherit;font-size:var(--conversation-font,14px);line-height:1.7}
+.session-timeline nav{display:flex;flex-wrap:wrap;gap:8px}
+.session-message{min-width:0;padding:16px 18px;border:1px solid var(--line);border-radius:12px;background:color-mix(in srgb,currentColor 3%,transparent)}
+.session-message header{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:.83em;color:var(--muted);margin-bottom:10px}
+.session-message header strong{color:var(--ink)}
+.session-message time{margin-left:auto}
+.session-message.agent-message-user{margin-left:20px;background:color-mix(in srgb,var(--green) 9%,transparent)}
+.session-markdown{overflow-wrap:anywhere;min-width:0}
+.session-markdown pre{overflow:auto;max-width:100%;white-space:pre}
+.session-markdown img{max-width:100%;height:auto}
+.session-markdown table{display:block;overflow:auto;max-width:100%}
+.session-worker{min-width:0;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.session-worker>details>summary{padding:15px 18px;cursor:pointer;background:color-mix(in srgb,currentColor 4%,transparent);overflow-wrap:anywhere}
+.session-worker>details>summary span{font-size:.83em;color:var(--muted)}
+.session-worker-transcript{padding:12px;display:flex;flex-direction:column;gap:10px}
+.session-frozen-files{padding:12px 18px;border-top:1px solid var(--line);font-size:.86em}
+.session-frozen-files h4{font-size:1em;margin:0 0 8px}
+.session-frozen-files ul{padding:0;margin:0;list-style:none;display:flex;flex-direction:column;gap:4px}
+.session-frozen-files li button{display:flex;align-items:center;gap:8px;text-align:left;max-width:100%;width:100%;padding:8px;border-radius:7px}
+.session-file-path{white-space:pre-wrap;overflow-wrap:anywhere;min-width:0;flex:1}
+.session-frozen-files small{flex-shrink:0;color:var(--muted)}
+.session-host-delta{padding:10px 16px;border-left:2px solid var(--green);font-size:.86em;background:color-mix(in srgb,currentColor 3%,transparent)}
+.session-host-delta p{margin:4px 0}
+.session-tool{border:1px solid var(--line);border-radius:8px;padding:8px;min-width:0}
+.session-tool pre{overflow:auto;max-height:360px}
+.session-freeze-pending,.session-empty{font-size:.86em;color:var(--muted);padding:8px 18px}
+.session-timeline button:focus-visible,.session-timeline summary:focus-visible{outline:2px solid var(--green);outline-offset:2px}
+.session-timeline [role=alert]{color:var(--annotation-red,#b23a2d)}
+.session-content,.session-original{min-width:0;max-width:100%}
+.session-content nav{font-size:.85em;margin:8px 0;align-items:center}
+.session-plain{white-space:pre-wrap;overflow-wrap:anywhere;max-width:100%;max-height:65vh;overflow:auto;font-size:.9em}
+.session-tool summary{cursor:pointer;overflow-wrap:anywhere}
+.session-tool>.session-content{margin-top:8px}
+.session-timeline button{max-width:100%;white-space:normal;overflow-wrap:anywhere}
+@media(max-width:600px){.session-timeline{gap:12px}.session-message{padding:12px}.session-worker>details>summary,.session-frozen-files{padding:12px}.session-message.agent-message-user{margin-left:8px}.session-worker-transcript{padding:6px}.session-frozen-files li button{flex-wrap:wrap}.session-frozen-files small{margin-left:auto}}

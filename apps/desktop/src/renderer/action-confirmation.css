@@ -1,0 +1,12 @@
+#action-confirmation { width:min(400px,calc(100vw - 32px));padding:20px;border-radius:8px;background:#fff; }
+#action-confirmation h2 { margin:0 0 12px;font-size:17px;line-height:1.5; }
+#action-confirmation-name { margin:0 0 8px;font-size:13px;font-weight:600;overflow-wrap:anywhere; }
+#action-confirmation-description { margin:0 0 16px;font-size:13px;color:var(--muted);line-height:1.7; }
+#action-confirmation .confirmation-skip { display:flex;align-items:center;gap:8px;font-size:12px; }
+#action-confirmation-skip { flex:0 0 auto;width:16px;height:16px;padding:0;margin:0;accent-color:var(--green); }
+#action-confirmation .confirmation-actions { display:flex;justify-content:flex-end;gap:8px;margin-top:20px; }
+#action-confirmation .confirmation-actions button { min-height:32px;padding:4px 12px;font-size:12px; }
+#action-confirmation-accept { background:var(--green);color:#fff;border-color:var(--green); }
+#action-confirmation-accept.destructive { background:#a14335;border-color:#a14335; }
+#action-confirmation-error { margin:12px 0 0;color:#a14335;font-size:12px;overflow-wrap:anywhere; }
+#restore-action-confirmations { align-self:flex-start;margin:6px 10px 10px;border:0;padding:2px;font-size:11px;color:var(--green); }

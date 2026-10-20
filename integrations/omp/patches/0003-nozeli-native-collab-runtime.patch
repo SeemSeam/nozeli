@@ -1,0 +1,370 @@
+--- a/packages/coding-agent/src/main.ts
++++ b/packages/coding-agent/src/main.ts
+@@ -754,6 +754,14 @@
+ 		// Keep guest mutations gated through setup dialogs and transcript replay,
+ 		// not just init. Only a successful outer startup opens the room for input.
+ 		mode.collabController.startupComplete();
++		if (process.env.NOZELI_MANAGED_COLLAB === "1") {
++			const relay = process.env.NOZELI_COLLAB_RELAY;
++			const endpoint = process.env.NOZELI_COLLAB_ENDPOINT;
++			if (!relay || !endpoint) throw new Error("managed collab configuration missing");
++			process.env.NOZELI_GRANT_SESSION = mode.sessionManager.getSessionId();
++			const host = await mode.collabController.start({ access: "control", relay });
++			fsSync.writeFileSync(endpoint, JSON.stringify({ sessionId: host.sessionId, link: host.link }), { mode: 0o600, flag: "wx" });
++		}
+ 	} catch (error) {
+ 		// Init publishes before startup dialogs, so any later startup failure
+ 		// must withdraw the room before restoring the terminal.
+--- a/packages/coding-agent/src/collab/host.ts
++++ b/packages/coding-agent/src/collab/host.ts
+@@ -25,6 +25,7 @@
+ import { AgentLifecycleManager } from "../registry/agent-lifecycle";
+ import { type AgentRef, AgentRegistry } from "../registry/agent-registry";
+ import type { AgentSessionEvent } from "../session/agent-session";
++import { originalEventMessage } from "../session/agent-session-events";
+ import { stripImagesFromMessage, USER_INTERRUPT_LABEL } from "../session/messages";
+ import type { SessionEntry as StoredSessionEntry } from "../session/session-entries";
+ import { TASK_SUBAGENT_LIFECYCLE_CHANNEL, TASK_SUBAGENT_PROGRESS_CHANNEL } from "../task/types";
+@@ -222,6 +223,8 @@
+ 	#webViewLink = "";
+ 	#writeToken: Uint8Array | null = null;
+ 	#sessionId: string;
++	#nozeliStreams = new WeakMap<object, string>();
++	#nozeliActiveAssistantStream: string | null = null;
+ 	#startedAt = 0;
+ 	readonly #instanceId: string;
+ 	readonly #generation: number;
+@@ -498,6 +501,11 @@
+ 		}
+ 		this.#registryUnsubscribe = AgentRegistry.global().onChange(() => this.#scheduleAgentsBroadcast());
+ 		this.#ctx.sessionManager.onEntryAppended = entry => {
++			if (this.#nozeli && this.#broadcastAllowed()) {
++				this.#socket?.sendBatch(this.#nozeliRawEntries([entry]));
++				this.#scheduleStateBroadcast();
++				return;
++			}
+ 			if (isWireSessionEntry(entry) && this.#broadcastAllowed()) {
+ 				const bounded = serializeReplicatedEntry(entry);
+ 				const shrunk = bounded.value;
+@@ -708,11 +716,20 @@
+ 			return null;
+ 		}
+ 	}
++	static #nozeliJobId(nonce: string): string {
++		const modulePath = process.env.NOZELI_ADMISSION_MODULE;
++		if (!modulePath) throw new Error("managed adjudicator missing");
++		const loaded = createRequire(import.meta.url)(modulePath);
++		const grant = loaded.readSnapshot(process.env.NOZELI_GRANT_FILE).grants[nonce];
++		if (!grant || typeof grant.jobId !== "string") throw new Error("managed job binding missing");
++		return grant.jobId;
++	}
+ 
+ 	/** Bind admission state to the real session + room rotation identity. */
+ 	#nozeliEnsureEpoch(): string {
+ 		const epoch = `${this.#sessionId}#${this.#nozeliRoomEpoch}`;
+ 		if (this.#nozeli && this.#nozeli.epoch() !== epoch) this.#nozeli.beginEpoch(epoch);
++		if (this.#nozeli) process.env.NOZELI_COLLAB_EPOCH = epoch;
+ 		return epoch;
+ 	}
+ 
+@@ -720,6 +737,7 @@
+ 	#nozeliBusy(): boolean {
+ 		const session = this.#ctx.session;
+ 		return (
++			(process.env.NOZELI_MANAGED_COLLAB === "1" && (typeof this.#ctx.editor.getText() !== "string" || this.#ctx.editor.getText().length > 0)) ||
+ 			session.isStreaming || session.isAborting || session.queuedMessageCount > 0 || session.isSessionTransitioning
+ 		);
+ 	}
+@@ -813,13 +831,14 @@
+ 		gate.beginDispatch(rid);
+ 		void submitManagedPrompt(
+ 			this.#ctx.session,
+-			{ customType: COLLAB_PROMPT_MESSAGE_TYPE },
++			{ customType: COLLAB_PROMPT_MESSAGE_TYPE, requestId: rid, epoch, jobId: CollabHost.#nozeliJobId(frame.ar!) },
+ 			frame.text,
+ 			images,
+ 			() => {
+ 				const admitted = gate.markAdmitted(rid);
+ 				if (admitted) this.#send(admitted, fromPeer);
+ 			},
++			() => { if (this.#nozeliBusy()) throw new AgentBusyError(); },
+ 		).then(outcome => {
+ 			const settled = gate.settle(rid, outcome.settle, outcome.reason);
+ 			if (settled) this.#send(settled, fromPeer);
+@@ -954,10 +973,40 @@
+ 		return this.#peers.size > 0 && this.#guestTrafficAllowed();
+ 	}
+ 
++	*#nozeliRawEntries(entries: StoredSessionEntry[]): Generator<CollabFrame> {
++		for (const entry of entries) {
++			const bytes = Buffer.from(JSON.stringify(entry));
++			if (bytes.length > 64 * 1024 * 1024) throw new Error("native entry exceeds managed replication budget");
++			for (let offset = 0, index = 0; offset < bytes.length; offset += 512 * 1024, index++) {
++				yield { t: "nozeli-entry-part", id: entry.id, index, final: offset + 512 * 1024 >= bytes.length, data: bytes.subarray(offset, offset + 512 * 1024).toString("base64"), streamId: entry.type === "message" ? this.#nozeliStreams.get(entry.message) : undefined };
++			}
++		}
++	}
+ 	/** Broadcast one session event, bounded and serialized exactly once. */
+ 	#broadcastEvent(event: AgentSessionEvent): void {
+ 		if (!this.#broadcastAllowed()) return;
+-		this.#socket?.send(encodeEventFrame(serializeReplicatedEvent(event).json));
++		if (this.#nozeli) {
++			const message = "message" in event ? event.message : null;
++			let streamId: string | null = null;
++			if (message && typeof message === "object" && message.role === "assistant") {
++				if (event.type === "message_start") this.#nozeliActiveAssistantStream = randomBytes(16).toString("hex");
++				streamId = this.#nozeliActiveAssistantStream;
++				if (event.type === "message_end") {
++					const original = originalEventMessage(event) ?? message;
++					if (streamId) this.#nozeliStreams.set(original, streamId);
++					this.#nozeliActiveAssistantStream = null;
++				}
++			}
++			const branch = this.#ctx.sessionManager.getBranchView();
++			let requestId: string | null = null;
++			for (let i = branch.length - 1; i >= 0; i--) {
++				const entry = branch[i];
++				const details = entry.type === "custom_message" && entry.customType === COLLAB_PROMPT_MESSAGE_TYPE ? entry.details : entry.type === "custom" && entry.customType === "nozeli-manual-binding" ? entry.data : null;
++				if (details && typeof details === "object" && "requestId" in details && typeof details.requestId === "string") { requestId = details.requestId; break; }
++				if (entry.type === "message" && entry.message.role === "user") break;
++			}
++			this.#send({ t: "nozeli-event", event, requestId, epoch: this.#nozeliEnsureEpoch(), streamId });
++		} else this.#socket?.send(encodeEventFrame(serializeReplicatedEvent(event).json));
+ 	}
+ 
+ 	#handleFrame(frame: CollabFrame, fromPeer: number): void {
+@@ -987,6 +1036,9 @@
+ 		// shared, or one whose room is already ending.
+ 		if (!this.#guestTrafficAllowed()) return;
+ 		switch (frame.t) {
++			case "nozeli-sync":
++				if (this.#nozeli && typeof frame.nonce === "string" && frame.nonce.length <= 128) this.#send(frame, fromPeer);
++				break;
+ 			case "hello":
+ 				this.#handleHello(frame.name, frame.proto, frame.writeToken, fromPeer);
+ 				break;
+@@ -1077,7 +1129,7 @@
+ 		// copy. Chunk frames are assembled from these strings only as the
+ 		// transport drains.
+ 		const snapshot = this.#ctx.sessionManager.snapshotForReplication();
+-		const snapshotEntries = this.#serializeSnapshotEntries(snapshot.entries.filter(isWireSessionEntry));
++		const snapshotEntries = this.#nozeli ? { json: [] as string[], bytes: [] as number[] } : this.#serializeSnapshotEntries(snapshot.entries.filter(isWireSessionEntry));
+ 		const state = this.#buildState();
+ 		// State broadcasts pause while no guest is joined, so the dedupe baseline
+ 		// may predate this welcome; with no other peer to keep current, the welcome
+@@ -1098,6 +1150,7 @@
+ 			},
+ 			fromPeer,
+ 		);
++		if (this.#nozeli) socket.sendBatch(this.#nozeliRawEntries(snapshot.entries), fromPeer);
+ 		socket.sendBatch(this.#snapshotChunks(snapshotEntries.json, snapshotEntries.bytes), fromPeer);
+ 		if (canWrite) {
+ 			for (const pending of this.#pendingUi.values()) {
+--- a/packages/coding-agent/src/collab/protocol.ts
++++ b/packages/coding-agent/src/collab/protocol.ts
+@@ -53,6 +53,9 @@
+  * that serialize into those shapes.
+  */
+ export type CollabFrame =
++	| { t: "nozeli-sync"; nonce: string }
++	| { t: "nozeli-entry-part"; id: string; index: number; final: boolean; data: string; streamId?: string }
++	| { t: "nozeli-event"; event: AgentSessionEvent; requestId: string | null; epoch: string; streamId: string | null }
+ 	// guest -> host (hello/abort/agent-cmd/fetch-transcript/ui-response are taken verbatim from the wire grammar)
+ 	| Exclude<GuestFrame, { t: "prompt" } | { t: "abort" }>
+ 	// Nozeli managed rooms: rid/dg/at/ep are the gateway transport id, content
+--- a/packages/coding-agent/src/collab/relay-client.ts
++++ b/packages/coding-agent/src/collab/relay-client.ts
+@@ -503,7 +503,8 @@
+ 
+ 	#openSocket(): void {
+ 		this.#clearBackpressureDrain();
+-		const url = `${this.#opts.wsUrl}?role=${this.#opts.role}`;
++		const capability = process.env.NOZELI_COLLAB_CAPABILITY;
++		const url = `${this.#opts.wsUrl}?role=${this.#opts.role}${capability ? `&cap=${encodeURIComponent(capability)}` : ""}`;
+ 		const options = {
+ 			proxy: getProxyForUrl("collab", new URL(url)),
+ 		} satisfies Bun.WebSocketOptions;
+--- a/packages/coding-agent/src/collab/nozeli-admission.ts
++++ b/packages/coding-agent/src/collab/nozeli-admission.ts
+@@ -602,12 +602,16 @@
+ 		const upload = slot.uploads.get(up);
+ 		if (!upload) return "unknown-upload";
+ 		if (upload.closed) return "closed";
+-		if (data.length === 0 || !BASE64_PATTERN.test(data) || data.length % 4 !== 0) return "invalid-base64";
+-		if (data.length > this.#maxChunkBytes) return "over-chunk-budget";
+-		if (upload.parts.length >= Math.ceil(this.#maxUploadBytes / this.#maxChunkBytes)) return "over-upload-budget";
+-		if (upload.bytes + data.length > this.#maxUploadBytes) return "over-upload-budget";
+-		// INGEST aggregate budget: total resident bytes across all uploads.
+-		if (slot.residentBytes + data.length > this.#maxResidentBytes) return "over-resident-budget";
++		const rejection = data.length === 0 || !BASE64_PATTERN.test(data) || data.length % 4 !== 0 ? "invalid-base64"
++			: data.length > this.#maxChunkBytes ? "over-chunk-budget"
++			: upload.parts.length >= 64 || upload.bytes + data.length > this.#maxUploadBytes ? "over-upload-budget"
++			: slot.residentBytes + data.length > this.#maxResidentBytes ? "over-resident-budget" : null;
++		if (rejection) {
++			// Never allow close/peek to reinterpret a rejected prefix as a complete image.
++			slot.residentBytes -= upload.bytes;
++			slot.uploads.delete(up);
++			return rejection;
++		}
+ 		upload.parts.push(data);
+ 		upload.bytes += data.length;
+ 		upload.uploadedAt = Date.now();
+@@ -677,7 +681,7 @@
+ export interface NozeliPromptSession {
+ 	promptCustomMessage(
+ 		message: { customType: string; content: string | ReadonlyArray<unknown>; display?: boolean; details?: unknown; attribution?: string },
+-		options?: { onPromptAdmitted?: () => void },
++		options?: { onPromptAdmitted?: () => void; beforePromptAdmitted?: () => void },
+ 	): Promise<boolean>;
+ }
+ 
+@@ -697,17 +701,18 @@
+ 
+ export async function submitManagedPrompt(
+ 	session: NozeliPromptSession,
+-	kind: { customType: string },
++	kind: { customType: string; requestId?: string; epoch?: string; jobId?: string },
+ 	text: string,
+ 	images: ReadonlyArray<NozeliImage> = [],
+ 	onAdmitted: () => void,
++	beforePromptAdmitted?: () => void,
+ ): Promise<NozeliPromptOutcome> {
+ 	const content = images.length > 0 ? [{ type: "text", text }, ...images] : text;
+ 	let admissionFactFired = false;
+ 	try {
+ 		const dispatched = await session.promptCustomMessage(
+-			{ customType: kind.customType, content, display: true, details: { from: "nozeli-gateway" }, attribution: "user" },
+-			{ onPromptAdmitted: () => { admissionFactFired = true; onAdmitted(); } },
++			{ customType: kind.customType, content, display: true, details: { from: "nozeli-gateway", requestId: kind.requestId, epoch: kind.epoch, jobId: kind.jobId }, attribution: "user" },
++			{ beforePromptAdmitted, onPromptAdmitted: () => { admissionFactFired = true; onAdmitted(); } },
+ 		);
+ 		if (dispatched) return { settle: "admitted" };
+ 		return admissionFactFired
+--- a/packages/coding-agent/src/session/agent-session.ts
++++ b/packages/coding-agent/src/session/agent-session.ts
+@@ -265,6 +265,7 @@
+ import { generateSessionTitle, nerdGlyphsActive } from "../utils/title-generator";
+ import { buildNamedToolChoice, isToolChoiceActive } from "../utils/tool-choice";
+ import type { VibeModeState } from "../vibe/state";
++import { bindOriginalEventMessage } from "./agent-session-events";
+ import type { AgentSessionEvent, AgentSessionEventListener } from "./agent-session-events";
+ import type {
+ 	AgentSessionConfig,
+@@ -3964,6 +3965,9 @@
+ 				displayEvent = { ...event, message: { ...message, content: deobfuscatedContent } };
+ 			}
+ 		}
++		if (process.env.NOZELI_MANAGED_COLLAB === "1" && event.type === "message_end") {
++			bindOriginalEventMessage(displayEvent, event.message);
++		}
+ 
+ 		if (event.type === "turn_start") {
+ 			this.#advisors.onPrimaryTurnStart();
+@@ -7550,7 +7554,7 @@
+ 	 */
+ 	async promptCustomMessage<T = unknown>(
+ 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details" | "attribution">,
+-		options?: Pick<PromptOptions, "streamingBehavior" | "toolChoice" | "onPromptAdmitted"> & {
++		options?: Pick<PromptOptions, "streamingBehavior" | "toolChoice" | "onPromptAdmitted" | "beforePromptAdmitted"> & {
+ 			queueChipText?: string;
+ 			queueOnly?: boolean;
+ 		},
+@@ -7560,7 +7564,7 @@
+ 
+ 	async #promptCustomMessage<T = unknown>(
+ 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details" | "attribution">,
+-		options?: Pick<PromptOptions, "streamingBehavior" | "toolChoice" | "onPromptAdmitted"> & {
++		options?: Pick<PromptOptions, "streamingBehavior" | "toolChoice" | "onPromptAdmitted" | "beforePromptAdmitted"> & {
+ 			queueChipText?: string;
+ 			queueOnly?: boolean;
+ 		},
+@@ -7581,7 +7585,7 @@
+ 	async #dispatchCustomPrompt<T = unknown>(
+ 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details" | "attribution">,
+ 		options:
+-			| (Pick<PromptOptions, "streamingBehavior" | "toolChoice" | "onPromptAdmitted"> & {
++			| (Pick<PromptOptions, "streamingBehavior" | "toolChoice" | "onPromptAdmitted" | "beforePromptAdmitted"> & {
+ 					queueChipText?: string;
+ 					queueOnly?: boolean;
+ 			  })
+@@ -7841,7 +7845,7 @@
+ 		expandedText: string,
+ 		options?: Pick<
+ 			PromptOptions,
+-			"toolChoice" | "images" | "skipCompactionCheck" | "solutionSpace" | "onPromptAdmitted"
++			"toolChoice" | "images" | "skipCompactionCheck" | "solutionSpace" | "onPromptAdmitted" | "beforePromptAdmitted"
+ 		> & {
+ 			prependMessages?: AgentMessage[];
+ 			skipPostPromptRecoveryWait?: boolean;
+@@ -7852,6 +7856,7 @@
+ 		// every pre-dispatch bail (generation bump from abort, disposal, usage
+ 		// preflight denial) exits silently, and prompt() uses the outcome to hand
+ 		// the typed text back to the host instead of losing it.
++		options?.beforePromptAdmitted?.();
+ 		this.#beginInFlight();
+ 		const generation = this.#promptGeneration;
+ 		this.#promptSequence++;
+--- a/packages/coding-agent/src/session/agent-session-events.ts
++++ b/packages/coding-agent/src/session/agent-session-events.ts
+@@ -9,6 +9,15 @@
+ import type { TodoItem } from "@oh-my-pi/pi-tui/tools/todo";
+ import type { CustomMessage } from "./messages";
+ import type { CacheWarmingRefreshEnd, CacheWarmingRefreshStart } from "./cache-warmer";
++
++// Out-of-band identity only: never serialized into SDK/provider message content.
++const originalEventMessages = new WeakMap<object, object>();
++export function bindOriginalEventMessage(event: AgentSessionEvent, message: object): void {
++  originalEventMessages.set(event, message);
++}
++export function originalEventMessage(event: AgentSessionEvent): object | undefined {
++  return originalEventMessages.get(event);
++}
+ 
+ /** Session-specific events that extend the core AgentEvent. */
+ export type AgentSessionEvent =
+--- a/packages/coding-agent/src/session/session-manager.ts
++++ b/packages/coding-agent/src/session/session-manager.ts
+@@ -898,6 +898,7 @@
+ 	readonly #blobs: BlobStore;
+ 
+ 	#sessionId = "";
++	#nozeliManualPending: { jobId: string; requestId: string; epoch: string } | undefined;
+ 	#sessionName: string | undefined;
+ 	#titleSource: SessionTitleSource | undefined;
+ 	#titleRevision = 0;
+@@ -3399,6 +3400,12 @@
+ 	): string {
+ 		const entry: SessionMessageEntry = { type: "message", ...this.#freshEntryFields(), message };
+ 		this.#recordEntry(entry);
++		if (message.role === "user" && this.#nozeliManualPending) {
++			const pending = this.#nozeliManualPending;
++			this.#nozeliManualPending = undefined;
++			if (pending.epoch !== process.env.NOZELI_COLLAB_EPOCH || !pending.epoch.startsWith(`${this.#sessionId}#`)) throw new Error("managed manual binding epoch changed");
++			this.appendCustomEntry("nozeli-manual-binding", { ...pending, inputEntryId: entry.id });
++		}
+ 		return entry.id;
+ 	}
+ 
+@@ -3572,6 +3579,11 @@
+ 	}
+ 
+ 	appendCustomEntry(customType: string, data?: unknown): string {
++		if (process.env.NOZELI_MANAGED_COLLAB === "1" && customType === "nozeli-manual-pending") {
++			const pending = data as { jobId?: unknown; requestId?: unknown; epoch?: unknown } | undefined;
++			if (!pending || typeof pending.jobId !== "string" || typeof pending.requestId !== "string" || typeof pending.epoch !== "string" || pending.epoch !== process.env.NOZELI_COLLAB_EPOCH || !pending.epoch.startsWith(`${this.#sessionId}#`) || this.#nozeliManualPending) throw new Error("invalid managed manual admission binding");
++			this.#nozeliManualPending = { jobId: pending.jobId, requestId: pending.requestId, epoch: pending.epoch };
++		}
+ 		const entry: CustomEntry = { type: "custom", customType, data, ...this.#freshEntryFields() };
+ 		this.#recordEntry(entry);
+ 		return entry.id;
+--- a/packages/coding-agent/src/session/agent-session-types.ts
++++ b/packages/coding-agent/src/session/agent-session-types.ts
+@@ -441,6 +441,8 @@
+ 	 * failed before admission still only settles through the returned promise.
+ 	 */
+ 	onPromptAdmitted?: () => void;
++	/** Synchronous final guard immediately before in-flight ownership and admission. */
++	beforePromptAdmitted?: () => void;
+ }
+ 
+ /** Payload for {@link AgentSession.setPromptDropped}: a user prompt cancelled

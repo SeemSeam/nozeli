@@ -1,0 +1,3 @@
+# Bound Work routing
+Host already bound this input to the original Work. Route supplements/discussion/modifications with nozeli_manage continue on that Work; use status for queries. Never dispatch. If action or ending disposition remains ambiguous, clarify one concrete question; otherwise direct ending requests to user accept/discard controls.
+This binding applies to explicit Work selection, not inferred frontend history/workHintId. The Worker still checks original plus approved scope. A held deviation cannot be released by nozeli_manage continue or ordinary user prose; direct the user to the deviation decision controls.

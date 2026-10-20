@@ -1,0 +1,51 @@
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { cp, mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
+import net from 'node:net';
+import path from 'node:path';
+import puppeteer from 'puppeteer-core';
+
+const source = path.resolve(import.meta.dirname, '..');
+const output = await mkdtemp(path.join(source, '.test-output', 'action-confirmation-'));
+const root = path.join(output, 'app');
+await mkdir(root);
+for (const item of ['src', 'tools', 'package.json']) await cp(path.join(source, item), path.join(root, item), { recursive: true });
+await symlink(path.join(source, 'node_modules'), path.join(root, 'node_modules'), 'dir');
+await symlink(path.join(source, 'vendor'), path.join(root, 'vendor'), 'dir');
+const build = spawn(process.execPath, [path.join(root, 'tools/build-renderer.mjs')], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
+let buildLog = '';
+build.stdout.on('data', chunk => { buildLog += chunk; }); build.stderr.on('data', chunk => { buildLog += chunk; });
+assert.equal(await new Promise(resolve => build.once('exit', resolve)), 0, buildLog);
+const project = path.join(output, 'project');
+await mkdir(project);
+await writeFile(path.join(project, 'sample.md'), '# Confirm me\n\nKeep this source.\n');
+await writeFile(path.join(project, 'other.md'), '# Other\n');
+const port = await new Promise(resolve => { const server = net.createServer(); server.listen(0, '127.0.0.1', () => { const p = server.address().port; server.close(() => resolve(p)); }); });
+const require = createRequire(import.meta.url), ozone = process.env.NOZELI_OZONE || 'wayland';
+const child = spawn(require('electron'), ['--ozone-platform=' + ozone, path.join(root, 'src/main/main.cjs')], { cwd: root, env: { ...process.env, NOZELI_TEST_INSTANCE: '1', NOZELI_USER_DATA: path.join(output, 'profile'), NOZELI_TEST_PICK: project, NOZELI_DEBUG_PORT: String(port), NOZELI_AGENT_FIXTURE: '1', NOZELI_HIDDEN: ozone === 'headless' ? '1' : '0', NOZELI_OZONE: ozone }, stdio: ['ignore', 'pipe', 'pipe'] });
+const exited = new Promise(resolve => child.once('exit', resolve));
+let log = '', browser, page;
+child.stdout.on('data', chunk => { log += chunk; }); child.stderr.on('data', chunk => { log += chunk; });
+const checks = [];
+try {
+  const deadline = Date.now() + 25000;
+  for (;;) { if (child.exitCode !== null || child.signalCode) throw new Error(log); try { if ((await fetch('http://127.0.0.1:' + port + '/json/version')).ok) break; } catch {} if (Date.now() > deadline) throw new Error('Startup timeout: ' + log); await new Promise(resolve => setTimeout(resolve, 100)); }
+  browser = await puppeteer.connect({ browserURL: 'http://127.0.0.1:' + port });
+  page = (await browser.pages()).find(candidate => candidate.url().includes('127.0.0.1'));
+  await page.waitForFunction(() => window.__nozeliReady); await page.setViewport({ width: 1200, height: 800 });
+  await page.click('#pick-project'); if (await page.waitForSelector('#agent-setup[open]', { timeout: 4000 }).catch(() => null)) await page.click('#agent-skip');
+  await page.click('#file-tree button[data-path="sample.md"]'); await page.waitForFunction(() => !document.querySelector('#text-preview').hidden);
+  const original = await readFile(path.join(project, 'sample.md'), 'utf8');
+  const openConfirm = async selector => { await page.click(selector); await page.waitForSelector('#action-confirmation[open]'); };
+  await openConfirm('#close-subject'); assert.equal(await page.$eval('#action-confirmation-title', node => node.textContent), '关闭当前文件？');
+  await page.keyboard.press('Escape'); assert.equal(await page.$eval('#close-subject', node => node.hidden), false); checks.push('Escape cancels close');
+  await openConfirm('#close-subject'); await page.click('#action-confirmation-accept'); await page.waitForFunction(() => !document.querySelector('#empty').hidden && getComputedStyle(document.querySelector('#empty')).visibility !== 'hidden'); assert.equal(await readFile(path.join(project, 'sample.md'), 'utf8'), original); checks.push('confirm closes without changing source');
+  await page.click('#file-tree button[data-path="sample.md"]'); await page.waitForFunction(() => !document.querySelector('#text-preview').hidden);
+  await openConfirm('#close-subject'); await page.click('#action-confirmation-skip'); await page.click('#action-confirmation-accept'); await page.waitForFunction(() => !document.querySelector('#empty').hidden); assert.equal(await page.$eval('#restore-action-confirmations', node => node.hidden), false); checks.push('skip stored for close-file');
+  await page.click('#file-tree button[data-path="sample.md"]'); await page.waitForFunction(() => !document.querySelector('#text-preview').hidden); await page.click('#open-beside'); await page.waitForSelector('#beside-dialog[open]'); await page.select('#beside-file', 'other.md'); await page.click('#beside-form button[type="submit"]'); await page.waitForFunction(() => document.querySelector('#reader').classList.contains('document-dual'));
+  await openConfirm('#secondary-close'); await page.click('#action-confirmation-cancel'); assert.equal(await page.$eval('#reader', node => node.classList.contains('document-dual')), true); checks.push('skip does not suppress close-compare');
+  await openConfirm('#secondary-close'); await page.click('#action-confirmation-accept'); await page.waitForFunction(() => !document.querySelector('#reader').classList.contains('document-dual'));
+  await page.click('#restore-action-confirmations'); await page.waitForFunction(() => document.querySelector('#restore-action-confirmations').hidden); await page.click('#file-tree button[data-path="sample.md"]'); await page.waitForFunction(() => !document.querySelector('#text-preview').hidden); await openConfirm('#close-subject'); assert.equal(await page.$eval('#action-confirmation', node => node.open), true); checks.push('restore re-enables confirmation'); await page.click('#action-confirmation-cancel');
+  console.log(JSON.stringify({ output, checks })); await writeFile(path.join(output, 'report.json'), JSON.stringify({ checks }, null, 2));
+} finally { await browser?.disconnect(); if (child.exitCode === null && !child.signalCode) child.kill('SIGTERM'); let timer; const stopped = await Promise.race([exited.then(() => true), new Promise(resolve => { timer = setTimeout(() => resolve(false), 3000); })]); clearTimeout(timer); if (!stopped) { child.kill('SIGKILL'); await exited; } }

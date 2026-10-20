@@ -1,0 +1,6 @@
+import {startHandoff,writeRuntimeFile} from '../src/agents/handoff.mjs';
+import {mkdtemp,writeFile} from 'node:fs/promises';
+import os from 'node:os';import path from 'node:path';import {execFile} from 'node:child_process';import {promisify} from 'node:util';import assert from 'node:assert/strict';
+const dir=await mkdtemp(path.join(os.tmpdir(),'nozeli-installed-handoff-'));let sends=0;
+const server=await startHandoff(async body=>{sends++;assert.equal(body.text,'Installed handoff test');return {id:body.id,status:'accepted'};});
+try {const grant=server.issueGrant({projectId:'test',parentRequestId:'test-request'});const runtime=path.join(dir,'grant.json'),task=path.join(dir,'task.txt');await writeRuntimeFile(runtime,{url:server.url,token:grant.token,projectId:'test',role:'qa'});await writeFile(task,'Installed handoff test');const args=['--ozone-platform=headless','--nozeli-handoff','--runtime',runtime,'--file',task];for(let i=0;i<2;i++){const {stdout}=await promisify(execFile)(path.join(os.homedir(),'.local/opt/nozeli/current/nozeli'),args,{timeout:15000});assert.equal(JSON.parse(stdout.trim()).accepted,true);}assert.equal(sends,1);console.log('PASS: installed executable submits authenticated handoff; retry does not duplicate');}finally{await server.close();}

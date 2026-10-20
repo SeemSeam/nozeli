@@ -1,0 +1,4 @@
+html,body{margin:0;width:100%;height:100%;overflow:hidden}body{display:flex;flex-direction:column}#notice{font:12px system-ui;margin:0;padding:6px;background:#faf4dc;color:#66542b}#sheet{flex:1;min-height:0;width:100%}
+.luckysheet-sheets-add,.fortune-sheet-add-row{display:none!important}
+#luckysheet-sheet-content > .fortune-sheettab-button,#luckysheet-bottom-controll-row{display:none!important}
+.fortune-context-menu{display:none!important}

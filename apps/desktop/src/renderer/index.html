@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'nonce-__NOZELI_STYLE_NONCE__'; style-src-attr 'unsafe-inline'; worker-src 'self' blob:; font-src 'self'; img-src 'self' blob: data:; connect-src 'self'">
+  <meta name="nozeli-style-nonce" content="__NOZELI_STYLE_NONCE__">
+  <title>选择项目</title>
+  <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./katex.css">
+  <link rel="stylesheet" href="./workspace.css">
+  <link rel="stylesheet" href="./provider-terminal.css">
+  <link rel="stylesheet" href="./app.css">
+</head>
+<body>
+  <a class="skip" href="#reader">跳到阅读</a>
+  <div class="app" id="app">
+    <header class="topbar">
+      <div class="project-navigation"><span class="project-name" id="project-name">未打开项目</span></div>
+      <button id="toggle-focus" hidden aria-pressed="false">专注模式</button>
+    </header>
+    <nav class="project-tools project-view-switch" aria-label="项目视图"><button id="provider-console-toggle" hidden aria-pressed="false" aria-label="切换到终端">终端</button></nav>
+    <nav class="rail" aria-label="近期项目">
+      <button type="button" id="pick-project" class="rail-add" title="选择目录">+</button>
+      <div id="recent" class="recent"></div>
+    </nav>
+    <aside class="files" id="files">
+      <button type="button" id="file-toggle" class="file-toggle edge-toggle" aria-expanded="true" aria-controls="file-tree" aria-label="收起项目文件" title="收起项目文件"></button>
+      <input id="file-filter" class="file-filter" aria-label="筛选项目文件" placeholder="查找文件…">
+      <div id="file-tree" class="file-tree" role="tree"></div>
+      <button id="open-folder" class="text-button" type="button">打开项目文件夹</button>
+      <p class="file-foot">真实文件 · 自动保存</p>
+    </aside>
+    <main class="reader" id="reader">
+      <header class="desk-header"><span id="file-section-label" class="file-section-label">对话</span><h1 id="subject-title">对话</h1><div class="desk-tools" aria-label="文件控制"><span id="word-zoom" hidden aria-label="Word 页面缩放"><button id="word-zoom-out" aria-label="缩小 Word 页面">−</button><button id="word-zoom-reset" title="恢复 100%">100%</button><button id="word-fit" title="适应窗口宽度">适应</button><button id="word-zoom-in" aria-label="放大 Word 页面">＋</button></span><button id="word-region" type="button" hidden aria-pressed="false" title="拖动框选 Word 区域">区域框选</button><button id="font-smaller" aria-label="缩小正文" title="缩小正文">A−</button><span id="font-size-label" class="font-size-label" aria-live="polite">14px</span><button id="font-larger" aria-label="放大正文" title="放大正文">A＋</button><button id="open-beside" title="在旁边打开" aria-label="在旁边打开">◫</button><button id="close-subject" hidden title="关闭当前内容" aria-label="关闭当前内容">×</button></div></header>
+      <button id="focus-exit" class="focus-exit" type="button" hidden aria-label="退出专注阅读" title="退出专注阅读">⛶</button>
+      <div id="work-surface" class="work-surface" data-dock="bottom">
+      <div id="documents" class="documents">
+      <section id="primary-pane" class="document-pane" aria-label="主文档">
+      <div class="reader-bar" id="reader-bar">
+        <span id="file-path" class="file-path">选择文件开始阅读</span>
+        <span id="save-status" class="save-status" data-state="idle">未打开</span>
+        <button id="text-mode-toggle" type="button" hidden aria-pressed="false">阅读</button><button id="markdown-preview-toggle" type="button" hidden aria-pressed="false" title="显示或隐藏 Markdown 实时预览">实时预览</button><button id="markdown-sync" type="button" hidden aria-pressed="true" title="源码与预览按内容位置联动滚动">联动</button><button id="code-jump" type="button" hidden title="跳转到当前符号定义（Ctrl/Cmd+Alt+G）">跳转</button><span id="code-status" class="quiet" role="status" aria-live="polite"></span>
+      </div>
+      <div id="pdf-toolbar" class="pdf-toolbar" hidden>
+        <div class="pdf-actions"><button id="pdf-outline-toggle" aria-label="PDF 目录" aria-expanded="false">☷</button><button id="pdf-zoom-out" aria-label="缩小页面">−</button><button id="pdf-fit">适应</button><button id="pdf-zoom-in" aria-label="放大页面">＋</button><button id="pdf-search-toggle" aria-label="搜索 PDF">⌕</button><button id="pdf-region" aria-label="区域选择" aria-pressed="false" title="区域选择：拖动框选后添加本地备注">▣</button></div>
+        <div class="pdf-pages-control"><button type="button" id="pdf-prev" aria-label="上一页">‹</button>
+        <label class="page-label">第 <input id="pdf-page" inputmode="numeric" aria-label="页码"> / <span id="pdf-count">0</span> 页</label>
+        <button type="button" id="pdf-next" aria-label="下一页">›</button></div>
+      </div>
+      <form id="pdf-search" class="pdf-search" hidden><input id="pdf-query" aria-label="PDF 搜索文字" placeholder="在文档中查找…"><button type="submit">查找</button><button id="pdf-search-next" type="button">下一处</button><span id="pdf-search-status" role="status"></span></form>
+      <nav id="pdf-outline" class="pdf-outline" aria-label="PDF 目录" hidden></nav>
+      <div id="reader-scroll" class="reader-scroll">
+        <div id="empty" class="empty welcome"><span class="welcome-mark">▦</span><h2 id="empty-title">从一份材料开始</h2><p id="empty-desc">打开项目，阅读论文，留下想法。</p><button id="welcome-open" type="button">打开项目文件夹</button><button id="empty-browse" type="button" hidden>浏览文件</button><p class="quiet" id="empty-hint">PDF 阅读 · 文本编辑 · 本地备注<br>无需 CLI，也能继续阅读和写作。</p></div>
+        <div id="text-host" hidden></div>
+        <article id="text-preview" class="text-preview" hidden></article>
+        <div id="pdf-host" hidden></div>
+        <div id="image-host" hidden></div>
+        <div id="word-host" hidden></div>
+        <article id="managed-doc" class="managed-doc" hidden></article>
+        <p id="unsupported" class="empty" hidden></p>
+      </div>
+      <div class="reading-footer"><button id="show-note" type="button">＋ 本地备注</button><span id="reader-hint">选中文字后可添加备注</span></div>
+      <form id="note-form" class="note-form" hidden>
+        <div class="note-form-head">
+          <label id="note-label" for="note-input">本地备注</label>
+          <button id="cancel-note" type="button" aria-label="收起备注编辑">×</button>
+        </div>
+        <textarea id="note-input" rows="3" maxlength="4000" placeholder="写下备注"></textarea>
+        <div class="note-form-footer">
+          <span>只保存在本机，不派工</span>
+          <button type="submit" id="add-note">保存备注</button>
+        </div>
+      </form>
+      <div id="file-path-notice" role="status" hidden><span id="file-path-notice-text"></span><button type="button" id="retain-file-close" hidden>保留副本并返回对话</button></div>
+      <div id="save-failure" class="save-failure" hidden>
+        <p id="save-error"></p>
+        <button type="button" id="recover-sheet-close" hidden>保留恢复副本并关闭表格</button>
+        <button type="button" id="retry-save">重试</button>
+        <button type="button" id="export-draft">导出草稿</button>
+        <button type="button" id="overwrite-draft" hidden>仍用草稿写入</button>
+      </div>
+      <p id="retained-notice" class="quiet" hidden></p>
+      </section>
+      <div id="pane-divider" class="pane-divider" role="separator" aria-orientation="vertical" aria-label="调整双文档宽度" tabindex="0" hidden></div>
+      <section id="secondary-pane" class="document-pane secondary-pane" aria-label="对照文档，只读" hidden><header class="reader-bar"><span id="secondary-path" class="file-path"></span><div class="compare-switch" role="group" aria-label="对照视图"><button id="compare-mode" type="button" aria-pressed="true">对照</button><button id="diff-mode" type="button" aria-pressed="false" disabled title="需要两侧都打开文本文件">Diff</button></div><button id="secondary-close" aria-label="关闭对照文档">×</button></header><div id="secondary-tools" class="pdf-toolbar" hidden><button id="secondary-prev" aria-label="对照上一页">‹</button><span id="secondary-page"></span><button id="secondary-next" aria-label="对照下一页">›</button><button id="secondary-zoom-out" aria-label="缩小预览">−</button><button id="secondary-fit">适应</button><button id="secondary-zoom-in" aria-label="放大预览">＋</button></div><div id="secondary-scroll" class="reader-scroll"><div id="secondary-text" hidden></div><div id="secondary-pdf" hidden></div><p id="secondary-message" class="empty" hidden></p></div></section>
+      </div>
+      <section id="conversation-panel" class="conversation-panel" aria-label="项目对话">
+        <header id="conversation-head" class="conversation-head" tabindex="0" aria-label="对话窗口，悬浮时可拖动或用方向键移动"><span>对话</span><div class="conversation-controls"><button id="float-conversation" title="悬浮对话" aria-pressed="false">▢ 悬浮</button><details id="chat-layout"><summary>◫ 布局</summary><div class="dock-options" role="group" aria-label="对话停靠位置"><button data-dock="top">贴上</button><button data-dock="right">贴右</button><button data-dock="bottom">贴底</button><button data-dock="left">贴左</button></div></details><button id="chat-minimize" aria-label="收起对话">−</button></div></header>
+        <div id="conversation" class="conversation"><p id="ai-status" data-state="unavailable">AI 尚未接通 · 可以先记下想法，草稿仅保存在本机。</p><div id="reading-inbox" hidden></div></div>
+        <form id="compose-form" class="composer-wrap"><div id="context-bar" class="context-bar">项目对话</div><textarea id="composer" rows="2" maxlength="20000" placeholder="关于这里，聊一聊…（Enter 换行，Ctrl+Enter 发送；@ 引用项目文件，可直接粘贴图片）" aria-label="项目对话草稿"></textarea><div class="composer-footer"><label class="attach-file"><input id="attach-file" type="checkbox">附上当前文件</label><span id="compose-status">未发送</span><button id="managed-submit-task" type="button" hidden title="交给主控整理并安排工作">提交后台任务</button><button id="send-message" disabled title="尚未配置真实 CLI，不能发送">发送 ↑</button></div></form>
+        <div id="chat-resize" tabindex="0" class="chat-resize" role="separator" aria-label="调整聊天窗大小"></div>
+      </section>
+      <button id="conversation-launcher" type="button" hidden>对话 ↑</button>
+      </div>
+    </main>
+    <aside class="side" id="side" aria-label="工作与待办">
+      <button id="toggle-sidebar" class="sidebar-toggle edge-toggle" type="button" aria-expanded="true" aria-controls="sidebar-body" aria-label="收起工作与待办" title="收起工作与待办"></button>
+      <div id="sidebar-body"><section class="workflow-panel"><h2>开展的工作 <small id="work-count">00</small></h2><nav class="filters" aria-label="工作筛选"><button class="active" data-work-filter="active">开放</button><button data-work-filter="paused">暂存</button><button data-work-filter="closed">已结束</button><button data-work-filter="all">全部</button></nav><div id="work-items"></div><p class="panel-empty" id="work-empty">还没有开展的工作。</p></section><section class="inbox-panel"><h2>待办 <small id="inbox-count">00</small></h2><nav class="filters" aria-label="待办筛选"><button class="active" data-inbox-filter="all">全部</button><button data-inbox-filter="read">阅读</button><button data-inbox-filter="answer">回答</button></nav><div id="inbox-reports"></div><p class="panel-empty" id="inbox-empty">没有待阅读或待回答的内容。</p></section></div>
+    </aside>
+    <section id="provider-console" class="provider-console" hidden aria-label="当前项目 Agent 独立终端页">
+      <header class="provider-console-head"><div class="provider-console-title"><span class="provider-console-kicker">NOZELI · PROJECT AGENTS</span><strong>项目 Agent</strong><p id="provider-console-project">尚未打开项目</p><p>前台和后台是当前项目的独立 CLI。返回阅读后，后台任务继续运行。</p></div><div class="provider-console-actions"><button type="button" id="agent-settings">调整 Agent</button><button type="button" id="provider-console-refresh">重新连接</button><button type="button" id="provider-console-close">返回阅读</button></div></header>
+      <div class="provider-console-columns">
+        <article class="provider-role" aria-label="前台 CLI 终端" id="provider-terminal-qa" data-provider-role="qa"><header><strong>前台 Agent</strong><span>对话与解释</span></header><div class="provider-output" aria-label="前台原生终端"></div></article>
+        <article class="provider-role" aria-label="后台 CLI 终端" id="provider-terminal-task" data-provider-role="task"><header><strong>后台 Agent</strong><span>任务与报告</span></header><div class="provider-output" aria-label="后台原生终端"></div></article>
+      </div>
+    </section>
+  </div>
+  <dialog id="beside-dialog" aria-labelledby="beside-heading"><form id="beside-form"><header class="dialog-heading"><h2 id="beside-heading">文档对比</h2><button type="button" id="beside-cancel" aria-label="取消">×</button></header><div class="comparison-source" role="group" aria-label="对比来源"><button id="beside-source-file" type="button" aria-pressed="true">其他文件</button><button id="beside-source-history" type="button" aria-pressed="false">历史版本</button></div><div id="beside-files"><label for="beside-file">选择项目文件</label><select id="beside-file"></select></div><div id="beside-history" hidden><label for="beside-version">当前文件的已记录版本</label><select id="beside-version"></select><button id="beside-more" type="button" hidden>加载更早版本</button></div><p id="beside-status" role="status"></p><p class="quiet">对比保留当前草稿；对照内容保持只读。</p><div class="dialog-actions"><button id="beside-open" type="submit">打开对照</button><button id="beside-diff" type="submit">比较差异</button></div></form></dialog>
+  <div id="selection-menu" class="selection-menu" hidden><button id="selection-draw" hidden>涂鸦</button><button id="selection-note">备注</button><button id="selection-discuss">讨论</button><button id="selection-explain" disabled title="前台尚未就绪">解释</button></div>
+  <dialog id="configuration-setup" aria-labelledby="configuration-title"><h2 id="configuration-title">初始化 Nozeli OMP</h2><p>Nozeli 使用随应用提供的 OMP 和独立的 ~/.Nozeli 配置，不会修改系统 OMP。此选择仅初始化一次，与项目无关。</p><p>可以一次性导入系统 OMP 的模型与安全配置，或从独立空配置开始。OAuth 登录不会导入；请稍后在 Nozeli 的原生 OMP 终端中登录并设置模型、服务和思考档位。</p><label><input type="checkbox" id="configuration-api-keys">明确同意一次性复制 API 密钥到 Nozeli 私有存储（可选，不包含 OAuth）</label><p id="configuration-status" role="status"></p><div class="dialog-actions"><button type="button" id="configuration-import">导入系统 OMP 配置</button><button type="button" id="configuration-independent">使用独立配置</button><button type="button" id="configuration-cancel">稍后设置，继续阅读</button></div></dialog>
+  <dialog id="quit-choice" aria-labelledby="quit-choice-title"><h2 id="quit-choice-title">有任务尚未结束</h2><p>可以继续留在软件，或取消任务后再退出。取消会等待本应用启动的子进程结束；确认失败时窗口保持打开。</p><p id="quit-error" role="status"></p><div class="dialog-actions"><button type="button" id="quit-stay">继续留在软件</button><button type="button" id="quit-cancel">取消任务并退出</button></div></dialog>
+  <div id="toast" role="status" hidden></div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
