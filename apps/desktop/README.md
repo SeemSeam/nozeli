@@ -68,7 +68,7 @@ Linux原生Wayland的项目/引用目录框使用不绑定父窗口的Electron�
 - 目标设置可见Wayland29项通过（`.test-output/nozeli-settings-ui-lxFSpX/`），无远程认证或模型请求。默认headless启动未产生renderer，90秒等待失败保留（`nozeli-settings-ui-ULFv8U/`），不把headless失败当作可见桌面设置失败，也不宣称headless已支持。
 - `d65d2be` 后续集成深测：95项布局/文件监听/Agent额度与设置行为回归通过，真实可见Wayland的跨profile单实例、核心分屏10项、冷开生命周期9项、真实仓库导航/快捷键/resize、Word/Markdown/TeX源码/PDF驱动6项及Word/Sheet未保存模型镜像2组通过。修复新项目Agent启用分支遗漏与启动完成未发布最终状态导致对话面不可用；只有导航宿主创建Agent，对话内容面订阅并回读就绪。模型联动真实验收迁移到唯一conversation surface，不再操作shell隐藏composer。之前cap2失败保留为历史记录；本轮真实测试通过情况单独列账，不覆写旧证据。测试目录精简保留104608个非删除文件并校验65414份证据哈希不变，清单在`~/.local/state/nozeli-storage-prune-zUOyHe/`。
 
-本次未安装、未推送、未调用付费模型；Windows/macOS、物理多屏/DPI、全部IME及完整AI跨窗工作流未重新验收。日常已安装版本不会自动消费此次源码合并。
+本轮已在 `d65d2be` 上提交集成修正 `01f1408` 并安装 `workspace-singleton-01f1408`，回退保留 `quota-recovery-0faaac1`。实际安装二进制通过核心分屏10项、冷恢复/主窗关闭继续编辑9项、Word/Markdown/TeX源码/PDF驱动6项、Word/Sheet未保存镜像2组、命名布局管理，以及新对话面真实私有OMP本地HTTP模型A→B同线程与草稿保留；跨profile二次启动退出0且不写第二配置通过。证据位于 `~/.cache/nozeli-smokes/` 的 `nozeli-single-content-FQCKHo`、`nozeli-native-lifecycle-OaaelG`、`nozeli-native-drivers-QK49lO`、`nozeli-office-mirrors-9pBRzz`、`nozeli-defaults-electron-UIKmze`、`nozeli-installed-singleton-fLZpIx`。源码修正后的76项回归、设置29项和项目额度隔离也通过，集合重叠不累加。未推送、未调用付费模型；Windows/macOS、物理多屏/DPI、全部IME、TeX编译及完整付费AI跨窗工作流未重新验收。先前fixture路径和旧surface/跨项目IPC测试失败保留，不作平台失败或放宽安全校验。
 
 ## 当前安装的真实 Agent 工作流验收
 
