@@ -20,6 +20,7 @@ async function runRealBridge(home, overrides = {}) {
     registerTool: def => { tools.push(def); },
     getAllTools: () => tools.map(t => ({ name: t.name })),
     getThinkingLevel: overrides.getThinkingLevel,
+    setModel: async model => { if (overrides.rejectModel) return false; ctx.model = model; return true; },
     sendUserMessage: text => { for (const h of handlers.input ?? []) h({ type: 'input', text, source: 'rpc' }, ctx); },
     typebox: { Type: { Object: shape => ({ type: 'object', properties: shape }), String: () => ({ type: 'string' }), Unsafe: schema => schema } },
   };
@@ -38,6 +39,37 @@ async function runRealBridge(home, overrides = {}) {
   const shutdownBridge = () => { fire('session_shutdown', { type: 'session_shutdown' }); };   // 释放监听句柄
   return { pi, handlers, tools, ctx, deployed, fire, shutdownBridge };
 }
+
+test('defaults use native registry, preserve drafts, defer busy work and expose failed target', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'bridge-defaults-'));
+  let idle = true, refreshes = 0;
+  const models = ['a', 'b', 'new'].map(id => ({ provider: 'local', id }));
+  const h = await runRealBridge(home, { ctx: {
+    model: models[0], isIdle: () => idle, ui: { getEditorText: () => 'unsubmitted draft' },
+    modelRegistry: { refresh: async strategy => { assert.equal(strategy, 'offline'); refreshes++; }, find: (provider, id) => models.find(m => m.provider === provider && m.id === id) },
+  } });
+  const client = connectOmpTerminalBridge({ ...h.deployed, onTurnAdmission: async () => ({}) });
+  try {
+    await client.hello();
+    assert.equal((await client.applyDefaultModel('local/b')).model, 'local/b');
+    assert.deepEqual((await client.getState()).editorDraft, { known: true, hasText: true });
+    idle = false; h.fire('agent_start');
+    const pending = await client.applyDefaultModel('local/a');
+    assert.equal(pending.pending, true); assert.equal(pending.model, 'local/b');
+    assert.equal((await client.getState()).pendingModel, 'local/a');
+    idle = true; h.fire('agent_end');
+    // No timer grace required: even an immediate next native admission awaits selection.
+    await h.handlers.before_agent_start[0]({ prompt: 'next', systemPrompt: [] }, h.ctx);
+    assert.equal((await client.getState()).model, 'local/a');
+    await assert.rejects(client.applyDefaultModel('local/missing'), /absent from native registry/);
+    assert.equal((await client.getState()).modelError.selector, 'local/missing');
+    assert.equal((await client.getState()).pendingModel, 'local/missing');
+    await client.applyDefaultModel('');
+    assert.equal((await client.getState()).pendingModel, null);
+    assert.equal((await client.getState()).model, 'local/a');
+    assert.ok(refreshes >= 3);
+  } finally { await client.close(); h.shutdownBridge(); }
+});
 
 test('native selection observer waits for initialized session context',async()=>{
   const home=await mkdtemp(path.join(os.tmpdir(),'bridge-init-'));let initialized=false;

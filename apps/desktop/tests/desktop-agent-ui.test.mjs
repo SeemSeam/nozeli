@@ -77,7 +77,7 @@ async function run(mode){
     // Open settings through the same visible UI action the user uses, not a source-text assertion.
     { await page.click('#open-settings'); await page.click('[data-settings-section="settings-general"]'); await page.click('#provider-console-toggle'); }
     await page.waitForSelector('#configuration-setup[open]');
-    assert.equal(await page.$$eval('#configuration-setup select,#managed-settings select',nodes=>nodes.length),0);
+    assert.equal(await page.$$eval('#configuration-setup select,#settings-agents select',nodes=>nodes.length),0);
     const forbidden=await page.$$eval('button,select,option',nodes=>nodes.filter(node=>!node.hidden&&/codex|claude|保存 Provider|选择 Provider/i.test(node.textContent)).map(node=>node.textContent));
     assert.deepEqual(forbidden,[]);
     // No secret consent is checked implicitly. Import uses the actual Config importer.

@@ -167,6 +167,31 @@ export async function prepareOmpPrivateHome(home, { system = null, legacyNativeS
   await atomic(marker, JSON.stringify({ version: 1, ...credentialMigration }));
   return { agentDir: home, seeded: true, ...credentialMigration };
 }
+// Copy only the explicitly selected global provider; unrelated native edits stay owned by this home.
+export async function syncOmpSelectedProvider(home, system, selector) {
+  if (!system || !selector) return;
+  if (!system.private) throw new Error('Only a Nozeli-owned OMP source may supply models');
+  const relative = path.relative(system.root, home);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('Role home must be beneath the Nozeli root');
+  const { parse, stringify } = await import('yaml');
+  const provider = selector.slice(0, selector.indexOf('/'));
+  if (!provider) return;
+  let source;
+  for (const name of ['models.yml', 'models.yaml']) {
+    const file = path.join(system.agentDir, name);
+    if (await safe(file)) { source = parse(await fs.readFile(file, 'utf8')); break; }
+  }
+  if (!Object.hasOwn(source?.providers ?? {}, provider)) return;
+  await safe(home, true);
+  let file = path.join(home, 'models.yml'), doc = {};
+  for (const name of ['models.yml', 'models.yaml']) {
+    const candidate = path.join(home, name);
+    if (await safe(candidate)) { file = candidate; doc = parse(await fs.readFile(candidate, 'utf8')) ?? {}; break; }
+  }
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc) || (doc.providers && (typeof doc.providers !== 'object' || Array.isArray(doc.providers)))) throw new Error('Invalid private OMP model configuration; original preserved');
+  doc.providers = { ...doc.providers, [provider]: source.providers[provider] };
+  await atomic(file, stringify(doc));
+}
 export async function ompEnvironmentKey(home) {
   return `omp:${createHash('sha256').update(path.resolve(home)).digest('hex').slice(0, 24)}`;
 }

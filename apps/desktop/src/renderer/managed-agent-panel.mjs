@@ -154,7 +154,6 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
  const toolbar=document.createElement('div');toolbar.id='managed-todo-context';toolbar.setAttribute('role','status');toolbar.hidden=true;$('conversation-panel').insertBefore(toolbar,$('conversation'));
  const terminalBox=document.createElement('div');terminalBox.id='managed-terminal-grid';terminalBox.hidden=true;$('provider-console').append(terminalBox);
  const configurationNotice=document.createElement('p');configurationNotice.id='managed-configuration-notice';configurationNotice.setAttribute('role','status');configurationNotice.hidden=true;$('provider-console').insertBefore(configurationNotice,terminalBox);
- const setup=document.createElement('dialog');setup.id='managed-settings';setup.innerHTML='<h2>项目 OMP Agent</h2><p>前台和主控常驻，工作 Agent 按需启动。所有角色使用 Nozeli 内置 OMP；模型、服务、登录与思考档位请在 Nozeli 原生 OMP 终端中设置，配置独立于系统 OMP。</p><label>最多同时开放工作 <input id="managed-limit" type="number" min="1" max="16"></label><div id="managed-role-settings"></div><p id="managed-settings-status" role="status"></p><button id="managed-settings-close">关闭</button>';document.body.append(setup);
  const button=(text,fn)=>{const b=document.createElement('button');b.type='button';b.textContent=text;b.onclick=()=>Promise.resolve(fn()).catch(e=>toast(e.message));return b;};
  const call=async(op,p={},id=projectId)=>{const r=await invoke('managed.'+op,{projectId:id,...p});if(!r.ok)throw Object.assign(new Error(r.error.message),{code:r.error.code});return r.value;};
  const residentRecovery=document.createElement('section');residentRecovery.id='managed-resident-recovery';residentRecovery.hidden=true;residentRecovery.setAttribute('aria-label','常驻 Agent 会话恢复');$('conversation-panel').insertBefore(residentRecovery,$('conversation'));
@@ -516,7 +515,7 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
  }
  async function refresh(){const id=projectId,gen=generation,version=++refreshing;if(!id||!active)return;const s=await call('status',{},id);if(id!==projectId||gen!==generation||version!==refreshing)return;state=s.state;ready=Boolean(s.ready);renderResidentRecovery(s);if(state)render();}
  const resetSession=()=>{requestReads.clear();clear();};
- function clear({rememberDraft=true}={}){if(rememberDraft)remember();identityReads.clear();renderConfigurationNotice(configurationNotice,[]);routeUI.clear();todoUI.clear();reportRequest++;historyRequest++;pageRequest++;historyPage=false;pageError='';active=false;sessionStore.reset(null);timelineBox.hidden=true;historyReceiptSignature=null;historyItems=[];historyVersion=null;historyNext=null;historyTotal=0;historyLoading=false;historyNotice='';renderHistory();if(exportDialog.open)exportDialog.close();exportSource=null;sourceMessage=null;sourceBox.hidden=true;sourceGoal.value='';preview.close();for(const row of workRows.values())row.remove();workRows.clear();generation++;ready=false;state=null;toolbar.hidden=true;toolbar.replaceChildren();progressBox.hidden=true;progressBox.replaceChildren();progressSignature=null;delete $('conversation-panel').dataset.managedConversation;projectFilePaths=new Set();fileAvailability=new Map();availabilityKey=null;availabilityRequest++;target='frontdesk';viewed=null;lockHistory();$('composer').disabled=false;for(const t of terminals.values())t.dispose();terminals.clear();terminalLayout?.dispose();terminalLayout=null;terminalBox.replaceChildren();show(false);if(setup.open)setup.close();}
+ function clear({rememberDraft=true}={}){if(rememberDraft)remember();identityReads.clear();renderConfigurationNotice(configurationNotice,[]);routeUI.clear();todoUI.clear();reportRequest++;historyRequest++;pageRequest++;historyPage=false;pageError='';active=false;sessionStore.reset(null);timelineBox.hidden=true;historyReceiptSignature=null;historyItems=[];historyVersion=null;historyNext=null;historyTotal=0;historyLoading=false;historyNotice='';renderHistory();if(exportDialog.open)exportDialog.close();exportSource=null;sourceMessage=null;sourceBox.hidden=true;sourceGoal.value='';preview.close();for(const row of workRows.values())row.remove();workRows.clear();generation++;ready=false;state=null;toolbar.hidden=true;toolbar.replaceChildren();progressBox.hidden=true;progressBox.replaceChildren();progressSignature=null;delete $('conversation-panel').dataset.managedConversation;projectFilePaths=new Set();fileAvailability=new Map();availabilityKey=null;availabilityRequest++;target='frontdesk';viewed=null;lockHistory();$('composer').disabled=false;for(const t of terminals.values())t.dispose();terminals.clear();terminalLayout?.dispose();terminalLayout=null;terminalBox.replaceChildren();show(false);}
  async function load(id,{connect=true,draft}={}){
   const oldHistory=id===projectId&&viewed?.history?viewed:null,oldTarget=target,oldDraft=$('composer').value;
   resetSession();projectId=id;sessionStore.reset(id);if(!id)return false;if(oldHistory){viewed=oldHistory;target=oldTarget;$('composer').value=oldDraft;lockHistory();}
@@ -558,7 +557,7 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
  const draftWriter=bindComposerDrafts({composer:$('composer'),current:()=>({projectId,target}),remember:({projectId,target,text})=>drafts.set(projectId+':'+target,text),persist:({projectId,target,text})=>call('draft',{target,text},projectId),onError:e=>toast('草稿保存失败：'+e.message),onInput:()=>{if(!active)return;const lifecycle=selectedSession();$('managed-submit-task').disabled=(!lifecycle.canSend&&lifecycle.state!=='ready')||!$('composer').value.trim();}});
  function renderTerminals(){
   if(!state)return;
-  if(!terminalLayout){terminalLayout=createTerminalLayout({root:terminalBox,onVisibility:(t,v)=>{const instance=terminals.get(t);if(instance&&instance.layoutVisible!==v){instance.layoutVisible=v;instance.setVisible(v);}}});const b=button('Agent 设置',settings);b.id='managed-terminal-settings';terminalLayout.actions.append(b);}
+  if(!terminalLayout)terminalLayout=createTerminalLayout({root:terminalBox,onVisibility:(t,v)=>{const instance=terminals.get(t);if(instance&&instance.layoutVisible!==v){instance.layoutVisible=v;instance.setVisible(v);}}});
   const targets=terminalTargets(state);
   for(const [t,instance] of terminals)if(!targets.includes(t)){instance.dispose();terminals.delete(t);}
   terminalLayout.update(state,t=>{
@@ -646,41 +645,10 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
   if(!r.available){terminals.delete(t);instance.dispose();out.replaceChildren();out.dataset.terminalState='unavailable';const error=document.createElement('div');error.className='managed-terminal-empty';error.textContent=r.reason||'连接失败，请重试';out.append(error);}
   renderTerminals();
  }
- async function settings(id){
-   if(typeof id==='string'&&id!==projectId){resetSession();projectId=id;sessionStore.reset(id);}
-   if(!setup.open)setup.showModal();
-   const box=$('managed-role-settings');box.replaceChildren();
-   $('managed-settings-status').textContent='应用默认模型与登录/API 源在左下角设置中管理；已有会话保留当前模型，可在其原生 OMP 终端内显式调整。';
-   if(!state){
-     $('managed-limit').disabled=true;
-     const launch=button('启用三角色',async()=>{
-       const id=projectId;launch.disabled=true;
-       try{
-         const r=await invoke('managed.enable',{projectId:id});
-         if(!r?.ok)throw Error(r?.error?.message||'启用失败');
-         if(id!==projectId)return;
-         sessionStore.reset(id);const current=await call('status',{},id);state=current.state;ready=current.ready;show(true);render();await showSettings();
-       }finally{launch.disabled=false;}
-     });
-     box.append(launch);return;
-   }
-   $('managed-limit').disabled=false;$('managed-limit').value=state.limit;
-   await showSettings();
- }
- async function showSettings(){
-   const box=$('managed-role-settings');box.replaceChildren();
-   for(const role of Object.keys(labels)){
-     const row=document.createElement('fieldset'),title=document.createElement('legend');title.textContent=labels[role];
-     const note=document.createElement('p');note.textContent='Nozeli OMP · 新会话使用应用默认模型；已有会话的模型与思考档位由该会话原生 OMP 管理，不会被默认设置覆盖。';
-     row.append(title,note);box.append(row);
-   }
- }
- $('managed-limit').onchange=async()=>{try{await call('limit',{limit:Number($('managed-limit').value)});await refresh();}catch(e){toast(e.message);$('managed-limit').value=state.limit;}};
- $('managed-settings-close').onclick=()=>setup.close();
  function leaveHistory(){reportRequest++;if(!viewed?.history)return false;viewed=null;lockHistory();$('composer').disabled=false;toolbar.hidden=true;if(active)render();return true;}
  window.addEventListener('nozeli-content-closed',()=>{if(!leaveHistory()&&active)select('frontdesk');});
  window.addEventListener('nozeli-content-file-opened',leaveHistory);
  window.nozeli.subscribe('agent',e=>{if(e.kind==='managed-files-changed'&&e.projectId===projectId)void refreshProjectFiles().catch(error=>toast('文件链接列表读取失败：'+error.message));});
  window.nozeli.subscribe('agent',e=>{if(!active||e.projectId!==projectId)return;if(e.kind==='managed-state'){state=e.state;render();}if(e.kind==='managed-timeline'&&!historyPage){sessionStore.apply(projectId,e.timeline||e.frame,{replace:true});}if(e.kind==='managed-error')toast(e.text);});
- return {get active(){return active;},reachable:true,load,enable,send,refresh,clear(options){clear(options);if(options?.rememberDraft===false)projectId=null;},settings,console:()=>{terminalBox.hidden=false;renderTerminals();},onReport:openTodo};
+ return {get active(){return active;},reachable:true,load,enable,send,refresh,clear(options){clear(options);if(options?.rememberDraft===false)projectId=null;},console:()=>{terminalBox.hidden=false;renderTerminals();},onReport:openTodo};
 }

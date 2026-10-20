@@ -36,16 +36,17 @@ export function isExplicitWorkCancellation(value,name){
  return /^(?:请|麻烦|帮我|请帮我|现在|立即|确定|确认|please\s+)?\s*(?:撤销|取消|强制退出|终止|结束|停止|cancel\b|stop\b|terminate\b)/i.test(command);
 }
 export class Controller extends EventEmitter {
-  static async open({projectId=null,runtimeRoot,contentRoot,sessionFactory,readProjectText,frontdeskDocuments,beforeAccept,afterAdoption,isolateProcesses=false,checkpoint=async()=>{},ompSystemSource=null,ompAuthBroker=null,ompCommand}={}){
+  static async open({projectId=null,runtimeRoot,contentRoot,sessionFactory,readProjectText,frontdeskDocuments,beforeAccept,afterAdoption,isolateProcesses=false,checkpoint=async()=>{},ompSystemSource=null,ompAuthBroker=null,ompCommand,processBudget}={}){
     const store=await Workspace.open(runtimeRoot,contentRoot,{recoverStale:true,checkpoint});
-    const controller=new Controller(store,{projectId,sessionFactory,readProjectText,frontdeskDocuments,beforeAccept,afterAdoption,isolateProcesses,checkpoint,ompSystemSource,ompAuthBroker,ompCommand});
+    const controller=new Controller(store,{projectId,sessionFactory,readProjectText,frontdeskDocuments,beforeAccept,afterAdoption,isolateProcesses,checkpoint,ompSystemSource,ompAuthBroker,ompCommand,processBudget});
     try{await controller.timeline.initialize();await controller.restore();return controller;}catch(e){await store.close();throw e;}
   }
-  constructor(store,{projectId=null,frontdeskDocuments,sessionFactory,readProjectText,beforeAccept,afterAdoption,isolateProcesses,checkpoint=async()=>{},ompSystemSource=null,ompAuthBroker=null,ompCommand}={}){
+  constructor(store,{projectId=null,frontdeskDocuments,sessionFactory,readProjectText,beforeAccept,afterAdoption,isolateProcesses,checkpoint=async()=>{},ompSystemSource=null,ompAuthBroker=null,ompCommand,processBudget}={}){
     super();Object.assign(this,{frontdeskDocuments,store,sessionFactory,readProjectText,beforeAccept,afterAdoption,isolateProcesses,checkpoint,ompSystemSource,ompAuthBroker,ompCommand});this.execution=new ExecutionWorkspace(store);this.sessions=new Map();this.starting=new Map();this.running=new Map();this.current=new Map();this.pendingEnds=new Set();this.publicationSerial=new Map();this.intakeSerial=new Map();this.stopping=false;this.started=false;this.closures=new Map();this.configuring=new Set();this.nativeDraftTargets=new Set();this.externalTerminalTargets=new Set();this.terminals=new Map();
     this.workerTerminal=createWorkerTerminalLifecycle({getAttachment:target=>this.terminals.get(target),isAllowed:target=>!this.stopping&&!this.deviationHeld(target)&&!['queued','closing','ended'].includes(this.store.find(target).status),attach:async(target,options)=>{const {attachNativeTerminal}=await import('./native-terminal.mjs');return attachNativeTerminal(this,target,{executionJobId:options.executionJobId,onData:(data,seq)=>this.emit('native-terminal-event',{target,data,seq}),onScreen:screen=>this.emit('native-terminal-event',{target,screen}),onMethod:method=>this.emit('native-terminal-event',{target,method}),onExit:value=>this.emit('native-terminal-event',{target,ended:true,exitCode:value?.exitCode})});}});
     this.memoryVersion=new MemoryVersion(path.dirname(store.plan));
     this.projectId=projectId??store.state.workspaceId;
+    this.processBudget=processBudget;this.reclaiming=new Map();
     this.timeline=new SessionIndex(store);
     this.changes=new WorkChanges(store.root);
   }
@@ -85,7 +86,11 @@ export class Controller extends EventEmitter {
   async restore(){
     const s=this.store.state;
     await this.initializeBindings();
-    const recovered=[];for(const record of Object.values(s.providers||{}))recovered.push(await (['omp-rpc','omp-tui'].includes(record.kind)?recoverOmpProvider(record,this.store.root):recoverProvider(record,this.store.root)));
+    const recovered=[];for(const [target,record] of Object.entries(s.providers||{})){
+      const slot=this.processBudget?.restoreSlot(this.projectId,target);
+      const result=await (['omp-rpc','omp-tui'].includes(record.kind)?recoverOmpProvider(record,this.store.root):recoverProvider(record,this.store.root));recovered.push(result);
+      if(result.verified===true)this.processBudget?.release(slot);
+    }
     await this.store.mutate(()=>{
       s.jobs??=[];s.messages??=[];s.drafts??={};s.residents??={};s.providers={};s.recoveryEvents??=[];
       s.frontdeskRoutes??=[];
@@ -111,15 +116,55 @@ export class Controller extends EventEmitter {
     for(const w of this.store.state.works)if(w.status==='ended'&&w.closure?.phase!=='complete')await this.advanceClosure(w.id);
   }
   async start(){
-    const residents=['frontdesk','orchestrator'];
+    const residents=['frontdesk','orchestrator'].filter(target=>!this.sessions.get(target)||this.sessions.get(target).closed);
     const preflight=await Promise.allSettled(residents.map(target=>this.makeSession(target,{preflightOnly:true})));
     const rejected=preflight.find(result=>result.status==='rejected');if(rejected)throw rejected.reason;
     const results=await Promise.allSettled(residents.map(target=>this.session(target)));const failed=results.find(result=>result.status==='rejected');if(failed)throw failed.reason;
     this.started=true;this.kick();return this.snapshot();
   }
+  async applyModelDefaults(defaults){
+    const sync={applied:0,pending:0,failed:[]};
+    this.modelDefaultFailures=new Map();
+    if(this.stopping)return sync;
+    await Promise.all([...this.sessions].map(async([target,session])=>{
+      if(session.closed)return;
+      const role=['frontdesk','orchestrator'].includes(target)?target:'worker';
+      if(role==='worker'){
+        const work=this.store.state.works.find(work=>work.id===target);
+        if(!work||work.readOnly||['closing','ended'].includes(work.status))return;
+      }
+      try{
+        const result=await session.applyDefaultModel(defaults[role]??'');
+        if(result?.pending===true)sync.pending++;
+        else if(result?.pending===false)sync.applied++;
+        else throw Error('Native model application was not acknowledged');
+      }catch{const failure={role,message:'Agent默认模型同步失败；配置已保存，可重试保存。'};this.modelDefaultFailures.set(target,{session,failure});sync.failed.push(failure);}
+    }));
+    this.changed();
+    return sync;
+  }
+  modelSync(){
+    const sync={applied:0,pending:0,failed:[]};
+    for(const [target,session] of this.sessions){
+      if(session.closed)continue;
+      if(!['frontdesk','orchestrator'].includes(target)){
+        const work=this.store.state.works.find(work=>work.id===target);
+        if(!work||work.readOnly||['closing','ended'].includes(work.status))continue;
+      }
+      const failed=this.modelDefaultFailures?.get(target);
+      if(failed?.session===session)sync.failed.push(failed.failure);
+      else if(session.modelError)sync.failed.push({role:['frontdesk','orchestrator'].includes(target)?target:'worker',message:'Agent默认模型延后应用失败；原生当前选择已保留，请重试保存。'});
+      else if(session.pendingModel)sync.pending++;
+      else if(session.desiredModel!=null){
+        if(session.model===session.desiredModel)sync.applied++;
+        else sync.failed.push({role:['frontdesk','orchestrator'].includes(target)?target:'worker',message:'Agent默认模型尚未获原生确认；请重试保存。'});
+      }
+    }
+    return sync;
+  }
   pauseState(w,reason){w.status='paused';const source=this.store.state.jobs.findLast(j=>j.target===w.id&&j.revision===w.revision);if(!this.store.state.todos.some(t=>t.workId===w.id&&t.kind==='recovery'&&t.status==='open'&&t.revision===w.revision))this.store.state.todos.push({id:randomUUID(),workId:w.id,revision:w.revision,...(source?{sourceJobId:source.id}:{}),kind:'recovery',status:'open',text:reason});}
   snapshot(){
-    const agents=[...this.sessions.entries()].map(([target,s])=>({target,ownerId:s.viewOwnerId,terminalId:this.terminals.get(target)?.terminalId??null,provider:'omp',threadId:s.threadId||this.store.state.residents?.[target]?.threadId||this.store.state.works.find(w=>w.id===target)?.threadId,starting:this.starting.has(target),restarting:this.restarting?.has(target)??false,busy:s.busy,closed:s.closed,phase:s.phase??null,exit:s.exit&&typeof s.exit.then!=='function'?s.exit:null,model:s.model,effort:s.effort,...(s.effective?{effective:s.effective}:{}),configurationStatus:s.configurationStatus??null,capabilities:s.capabilities??null,cleanupEvidence:s.cleanupEvidence?.()??null}));
+    const agents=[...this.sessions.entries()].map(([target,s])=>({target,ownerId:s.viewOwnerId,terminalId:this.terminals.get(target)?.terminalId??null,provider:'omp',threadId:s.threadId||this.store.state.residents?.[target]?.threadId||this.store.state.works.find(w=>w.id===target)?.threadId,starting:this.starting.has(target),restarting:this.restarting?.has(target)??false,busy:s.busy,closed:s.closed,phase:s.phase??null,exit:s.exit&&typeof s.exit.then!=='function'?s.exit:null,model:s.model,desiredModel:s.desiredModel??null,pendingModel:s.pendingModel??null,effort:s.effort,...(s.effective?{effective:s.effective}:{}),configurationStatus:s.configurationStatus??null,capabilities:s.capabilities??null,cleanupEvidence:s.cleanupEvidence?.()??null}));
     for(const w of this.store.state.works)if(w.threadId&&!['ended','closing'].includes(w.status)&&!this.sessions.has(w.id))agents.push({target:w.id,provider:w.binding?.provider,threadId:w.threadId,busy:false,closed:true,resumable:w.binding?.provider==='omp'&&!w.readOnly,readOnly:w.readOnly===true,model:null,effort:null});
     const {sessionIndex,messages,...business}=this.store.state;
     return {...structuredClone(business),messages:this.timeline.messages(),timeline:this.timeline.frame(),quotaUsed:this.store.used(),agents,configuringTargets:[...(this.bindingTransitions??[])],...(this.ompSystemSource?{ompProviderStatus:this.#ompProviderStatus()}:{}),externalTerminalTargets:[...this.externalTerminalTargets],nativeDraftTargets:[...this.nativeDraftTargets],busyTargets:[...this.running.keys()],stopping:this.stopping};
@@ -573,6 +618,8 @@ export class Controller extends EventEmitter {
     }
     for(const job of this.store.state.jobs){if(this.stopping)break;if(job.status!=='queued'||this.restarting?.has(job.target)||this.configuring.has(job.target)||this.running.has(job.target)||this.nativeDraftTargets.has(job.target)||(this.store.state.drafts[job.target]&&job.explicitInput!==true))continue;
       if(this.current.has(job.target))continue;
+      if(this.reclaiming.has(job.target))continue;
+      if(this.processBudget&&(!this.sessions.get(job.target)||this.sessions.get(job.target).closed)&&!this.starting.has(job.target)&&!this.processBudget.available){await this.processBudget.reclaim?.(this.projectId,job.target);if(!this.processBudget.available)continue;}
       if(this.deviationHeld(job.target))continue;
       if(job.context?.pendingIntakeId&&['transferring','queued','running'].includes(this.store.state.jobs.find(j=>j.id===job.context.pendingIntakeId)?.status))continue;
       const target=job.target;const promise=this.runJob(job).catch(e=>this.emit('diagnostic',e.message)).finally(()=>{this.running.delete(target);this.current.delete(target);this.changed();this.kick();});this.running.set(target,promise);
@@ -587,6 +634,7 @@ export class Controller extends EventEmitter {
     return this.startSession(target);
   }
   startSession(target){
+    if(this.reclaiming.has(target))return this.reclaiming.get(target).then(()=>this.startSession(target));
     if(this.deviationHeld(target))return Promise.reject(Object.assign(Error('用户必须先处理任务偏离决定'),{code:'DEVIATION_HELD'}));
     if((this.handoffPreparing?.size||this.handoffConfirmations?.size)&&!this.handoffAdmitting?.has(target))return Promise.reject(this.residentHandoffError('OMP_HANDOFF_BUSY',target,'resident handoff operation in progress'));
     if(this.getResidentHandoff(target)&&!this.handoffAdmitting?.has(target))return Promise.reject(this.residentHandoffError('OMP_HANDOFF_CONFIRMATION_REQUIRED',target,'explicit resident handoff confirmation required'));
@@ -762,7 +810,10 @@ export class Controller extends EventEmitter {
       onSpawn:async pid=>{const stamp=await processStamp(pid);await this.store.mutate(()=>{this.store.state.providers[target]={pid,stamp,home,kind:'omp-tui'};});}};
     // P4 路线（root 决策）：OMP 角色会话 = TUI-native（OmpTuiSession，唯一 PTY/session owner）。
     // 模型/思考档位由原生会话独占，桥只观察；同一角色不双 owner。
-    let session=this.sessionFactory?this.sessionFactory(spec,target):new OmpTuiSession(spec);
+    let slot;if(this.processBudget){if(!this.processBudget.available)await this.processBudget.reclaim?.(this.projectId,preflightOnly?null:target);slot=this.processBudget.reserve(this.projectId,target);}
+    let ownership;const originalSpawn=spec.onSpawn;spec.onSpawn=async pid=>{ownership?.spawned();return originalSpawn(pid);};
+    let session;try{session=this.sessionFactory?this.sessionFactory(spec,target):new OmpTuiSession(spec);}catch(error){this.processBudget?.release(slot);throw error;}
+    if(slot)ownership=this.processBudget.bind(slot,session);
     if(!preflightOnly){this.sessions.set(target,session);this.observeSession(target,session);}
     const toolsDigest=session.toolsDigest??createHash('sha256').update(JSON.stringify(tools)).digest('hex'),resident=this.store.state.residents[target];
     try{
@@ -808,7 +859,7 @@ export class Controller extends EventEmitter {
           resumeId=undefined;session.emptySchemaUpdated=true;
         }
       }
-      if(preflightOnly)return {preflight:true,target};
+      if(preflightOnly){if(session instanceof OmpTuiSession&&!session.pid&&!session.groupRecord?.pid&&!ownership?.hasSpawned())this.processBudget?.release(slot);else await session.stop();return {preflight:true,target};}
     if(!preflightOnly&&provider==='omp'){
       // Seed private role configuration once from the independent Nozeli base.
       await prepareOmpPrivateHome(home,{system:this.ompSystemSource});
@@ -821,8 +872,10 @@ export class Controller extends EventEmitter {
           // 不伪造文件/不重放；新建 OMP 实例（不用 Codex），恢复后走同一持久化路径。
           if(resumeId&&!resident?.handoff&&(role==='worker'?this.store.find(target).zeroActivity:resident?.zeroActivity)===true&&!attempted&&String(error.message).includes('OMP_SESSION_FILE_NOT_FOUND')){
             await this.store.mutate(()=>{this.store.state.recoveryEvents.push({at:new Date().toISOString(),type:'omp-zero-activity-restarted',target,previousThreadId:resumeId});});
-            await session.stop().catch(()=>{});
-            session=this.sessionFactory?this.sessionFactory(spec,target):new OmpTuiSession(spec);   // P4：零活动重试同 dispatch（TUI-native），不混 RPC
+            const stopped=await session.stop();if(session.pid&&stopped?.confirmationComplete!==true)throw Object.assign(error,{exitUnconfirmed:true});
+            if(this.processBudget){slot=this.processBudget.reserve(this.projectId,target);}
+            try{session=this.sessionFactory?this.sessionFactory(spec,target):new OmpTuiSession(spec);}catch(error){this.processBudget?.release(slot);throw error;}
+            if(slot)ownership=this.processBudget.bind(slot,session);
             this.sessions.set(target,session);
             this.observeSession(target,session);
             await session.start();
@@ -838,6 +891,7 @@ export class Controller extends EventEmitter {
       await this.store.mutate(()=>{
         if(role==='worker'){const work=this.store.find(target);work.threadId=session.threadId;work.toolsDigest=session.toolsDigest??toolsDigest;if(provider==='omp'&&work.zeroActivity!==false)work.zeroActivity=!session.hasPrompted&&!(session.agentEnds?.length>0);}
         else this.store.state.residents[target]={threadId:session.threadId,provider,model:provider==='omp'?(session.model??spec.model??null):spec.model,effort:provider==='omp'?(session.effort??spec.effort??null):spec.effort,toolsDigest:session.toolsDigest??toolsDigest,...(provider==='omp'?{zeroActivity:!session.hasPrompted&&!(session.agentEnds?.length>0)}:{}),...(resident?.zeroActivity===false?{zeroActivity:false}:{}),...(resident?.generation!=null?{generation:resident.generation}:{}),...(resident?.handoff?{handoff:{...resident.handoff,status:'ready'}}:{})};
+      ownership?.started();
       });this.changed();return session;
     }catch(e){
       if(role==='worker'&&['WORKER_CONTEXT_RECOVERY_REQUIRED','OMP_TOOLS_DIGEST_MISMATCH','OMP_SESSION_FILE_NOT_FOUND'].includes(e.code)){
@@ -847,7 +901,7 @@ export class Controller extends EventEmitter {
         Object.assign(e,{target,role,expectedToolsDigest:resident.toolsDigest,newToolsDigest:session.toolsDigest??toolsDigest,actualToolsDigest:session.toolsDigest??toolsDigest});
         this.residentHandoffFailures??=new Map();this.residentHandoffFailures.set(target,{...e,oldThreadId:resident.threadId,sessionFile:session.sessionFile??null,unsafe:Boolean(session.busy||session.currentTicket||session.blockedTicket||session.inFlightToolCalls?.size||session.sideEffectFacts?.length)});
       }
-      if(preflightOnly)throw e;
+      if(preflightOnly){try{if(session instanceof OmpTuiSession&&!session.pid&&!session.groupRecord?.pid&&!ownership?.hasSpawned())this.processBudget?.release(slot);else await session.stop();}catch(cleanupError){e.cleanupError=cleanupError;}throw e;}
       const receipt=await session.stop();await session.controllerExitCleanup;
       if(provider==='omp'&&role!=='worker'&&resident?.handoff&&session.threadId)await this.store.mutate(()=>{Object.assign(this.store.state.residents[target],{threadId:session.threadId,handoff:{...resident.handoff,status:'start-failed'}});});
       if(session.pid&&provider==='omp'&&receipt?.confirmationComplete!==true)throw Object.assign(e,{exitUnconfirmed:true});
@@ -898,9 +952,10 @@ export class Controller extends EventEmitter {
     if(!['frontdesk','orchestrator'].includes(target)){adopted.reader=new ContextReader();outcome.taskAnchor=workerTaskAnchor(this.store.find(target),adopted.reader);}
     return outcome;
   }
-  async settleManualJob(target,{promptId,jobId,text,error}){
+  async settleManualJob(target,{promptId,jobId,text,error,effective}){
     const job=this.store.state.jobs.find(j=>j.id===jobId&&j.manualPromptId===promptId&&j.target===target);
     if(!job||job.status!=='running'||this.current.get(target)?.id!==job.id)return;
+    if(effective)await this.store.mutate(()=>{const saved=this.store.state.jobs.find(j=>j.id===job.id);if(!saved.effective)saved.effective=structuredClone(effective);});
     const message=!error&&text&&!this.timeline.records().some(record=>record.jobId===job.id)?{id:randomUUID(),target,speaker:'agent',text,jobId:job.id,manual:true}:error?{id:randomUUID(),target,speaker:'system',text:'人工回合失败：'+String(error).slice(0,200),jobId:job.id,manual:true}:null;
     // Worker 人工收尾：settle 与 job 收尾单事务（root A：无"job completed 而 Work 仍 running"半状态）。
     if(job.type==='manual'&&!error){
@@ -1049,7 +1104,7 @@ export class Controller extends EventEmitter {
       const started=await this.store.mutate(()=>{if(savedJob().status!=='queued'||this.deviationHeld(job.target))return false;savedJob().status='running';savedJob().startedAt=new Date().toISOString();return true;});if(!started)return;didStart=true;this.current.set(job.target,job);this.changed();
       if(job.context?.pendingIntakeId){const parent=this.store.state.jobs.find(j=>j.id===job.context.pendingIntakeId),work=parent&&(this.intakeBoundWork(parent)||this.store.state.works.find(w=>w.sourceJob===parent.id));if(work)await this.store.mutate(()=>{const field=job.context.softWorkHint?'workHintId':'boundWorkId';job.context[field]=work.id;savedJob().context[field]=work.id;});else {const question=parent&&this.store.state.todos.findLast(q=>q.kind==='routing'&&q.sourceJobId===parent.id&&q.status==='open');if(!question)throw Error('原目标尚未明确处理结果，请先核对已有提交');await this.store.mutate(()=>{job.context.routingQuestionId=question.id;savedJob().context.routingQuestionId=question.id;});}}
       const isWork=!['frontdesk','orchestrator'].includes(job.target);
-      if(isWork){const w=this.store.find(job.target);if(job.type!=='initial')await this.store.continue(w.id);job.revision=w.revision;await this.store.mutate(()=>{savedJob().revision=job.revision;});}
+      if(isWork){const w=this.store.find(job.target);if(job.type!=='initial'&&w.status!=='running')await this.store.continue(w.id);job.revision=w.revision;await this.store.mutate(()=>{savedJob().revision=job.revision;});}
       const session=await this.session(job.target);let prompt=job.text,delivery;
       this.tagMaterialDelivery??=new TagMaterialDelivery();
       const materialDelivery=this.tagMaterialDelivery.prepare(session,job);
@@ -1094,9 +1149,15 @@ export class Controller extends EventEmitter {
         response.metrics.context=requestContext;
       }
       const agentBody=response.completion==='host-control'||response.collab?'':response.text;const body=agentBody||(!response.collab&&job.type==='intake'?this.routingMessage(savedJob().routing):'');
-      await this.store.mutate(()=>{Object.assign(savedJob(),{status:'completed',finishedAt:new Date().toISOString(),threadId:response.threadId,turnId:response.turnId,providerStatus:response.providerStatus,completion:response.completion,metrics:response.metrics??null});if(delivery){this.store.state.contextDelivery??={};this.store.state.contextDelivery[job.target]=delivery.checkpoint;}if(body)this.store.state.messages.push({id:randomUUID(),target:job.target,speaker:agentBody?'agent':'system',text:body,jobId:job.id,...(job.type==='intake'&&(job.context.frontJobId||job.context.manual||job.context.boundWorkId)?{audience:'frontdesk',sourceJobId:job.context.frontJobId||job.id}:{})});this.store.state.modelObservations??={};this.store.state.modelObservations[`${session.model}:${session.effort}`]={status:'turn-completed',at:new Date().toISOString()};});
+      await this.store.mutate(()=>{
+        Object.assign(savedJob(),{status:'completed',finishedAt:new Date().toISOString(),threadId:response.threadId,turnId:response.turnId,providerStatus:response.providerStatus,completion:response.completion,metrics:response.metrics??null,...(response.effective?{effective:structuredClone(response.effective)}:{})});
+        if(delivery){this.store.state.contextDelivery??={};this.store.state.contextDelivery[job.target]=delivery.checkpoint;}
+        if(body)this.store.state.messages.push({id:randomUUID(),target:job.target,speaker:agentBody?'agent':'system',text:body,jobId:job.id,...(job.type==='intake'&&(job.context.frontJobId||job.context.manual||job.context.boundWorkId)?{audience:'frontdesk',sourceJobId:job.context.frontJobId||job.id}:{})});
+        if(response.effective){this.store.state.modelObservations??={};this.store.state.modelObservations[`${response.effective.model}:${response.effective.effort}`]={status:'turn-completed',at:new Date().toISOString()};}
+      });
       if(isWork&&this.store.find(job.target).status==='running')await this.store.settle(job.target);
     }catch(e){
+      if(e.code==='AGENT_PROCESS_LIMIT'&&!savedJob()?.promptStartedAt){await this.store.mutate(()=>{savedJob().status='queued';delete savedJob().startedAt;});return;}
       if(e.metrics)await this.store.mutate(()=>{savedJob().metrics={...e.metrics,context:savedJob().requestContext||null};});
       const ending=this.store.state.works.find(w=>w.id===job.target)||(job.type==='intake'?this.intakeBoundWork(job):null);
       if(this.stopping||ending&&['closing','ended'].includes(ending.status)){
@@ -1136,6 +1197,7 @@ export class Controller extends EventEmitter {
     await this.store.mutate(()=>{
       const saved=this.store.state.jobs.find(j=>j.id===job.id),manual=this.transferFor(job)?.context?.manual;
       Object.assign(saved,{status:manual?'interrupted':'completed',interruptionReason:'user-transfer',finishedAt:new Date().toISOString(),threadId:response.threadId,turnId:response.turnId,providerStatus:response.providerStatus,completion:'user-transfer'});
+      if(response.effective&&!saved.effective)saved.effective=structuredClone(response.effective);
       if(response.metrics)saved.metrics={...response.metrics,context:saved.requestContext||null,contextReads:(saved.readReceipts||[]).map(r=>({source:r.value.source,version:r.value.version,chars:r.value.text.length,offset:r.value.offset}))};
       if(manual&&response.text&&!response.collab&&response.completion!=='host-control')this.store.state.messages.push({id:randomUUID(),target:'frontdesk',speaker:'agent',text:response.text,jobId:job.id,partial:true});
     });
@@ -1184,10 +1246,23 @@ export class Controller extends EventEmitter {
       await this.store.mutate(()=>{w.closure.phase='complete';w.closure.completedAt=new Date().toISOString();delete w.closure.error;this.store.state.memoryPending=this.store.state.memoryPending.filter(x=>x!==id);for(const t of this.store.state.todos)if(t.workId===id&&t.kind==='closure'&&t.status==='open')t.status='resolved';});await this.store.updateClosureArchive(id);this.changed();this.kick();
     }catch(error){await this.blockClosure(id,error.message);}
   }
+  canReclaimIdle(target,session,{hiddenTerminal=false}={}){
+    return !this.stopping&&this.sessions.get(target)===session&&!this.running.has(target)&&!this.current.has(target)&&!this.starting.has(target)&&!this.restarting?.has(target)&&!this.configuring.has(target)&&!this.configuring.has('worker')&&!this.reclaiming.has(target)&&!this.nativeDraftTargets.has(target)&&!this.externalTerminalTargets.has(target)&&(hiddenTerminal||!this.terminals.has(target))&&!session.busy&&!session.currentTicket&&!session.blockedTicket&&!session.inFlightToolCalls?.size&&!this.store.state.jobs.some(job=>job.target===target&&['queued','running'].includes(job.status));
+  }
+  reclaimIdle(target,options){
+    const session=this.sessions.get(target);if(!session||!this.canReclaimIdle(target,session,options))return Promise.resolve(false);
+    const operation=(async()=>{
+      await this.terminals.get(target)?.close();
+      const receipt=await (session.stopIdle?session.stopIdle():session.stop());await session.controllerExitCleanup;
+      if(session.pid&&receipt?.confirmationComplete!==true)throw Object.assign(Error('空闲 Agent 退出尚未确认，名额保留'),{code:'OMP_EXIT_UNCONFIRMED'});
+      if(this.sessions.get(target)===session)this.sessions.delete(target);
+      await this.store.mutate(()=>{delete this.store.state.providers[target];});this.changed();return true;
+    })().finally(()=>this.reclaiming.delete(target));this.reclaiming.set(target,operation);return operation;
+  }
   async stop(){
     if(this.stopPromise)return this.stopPromise;
     this.stopping=true;this.workerTerminal.stop();this.changed();
     clearTimeout(this.timelineTimer);this.timelineTimer=null;
-    this.stopPromise=(async()=>{await Promise.all([...this.terminals.values()].map(t=>t.close()));await Promise.allSettled([...this.starting.values()]);await Promise.all([...this.sessions.values()].map(s=>s.stop()));await Promise.all([...this.running.values()]);await Promise.allSettled([...this.closures.values()]);await this.store.mutate(()=>{this.store.state.providers={};});const homes=[...['frontdesk','orchestrator'].map(role=>path.join(this.store.root,'agents',`resident-${role}`)),...this.store.state.works.map(w=>this.store.agentHome(w.id))];for(const home of homes)await fs.rm(path.join(home,'auth.json'),{force:true});await this.store.close();})();return this.stopPromise;
+    this.stopPromise=(async()=>{await Promise.all([...this.terminals.values()].map(t=>t.close()));await Promise.allSettled([...this.starting.values()]);await Promise.all([...this.reclaiming.values()]);const stopped=await Promise.all([...this.sessions.entries()].map(async([target,s])=>{const receipt=await s.stop();if((s.pid||s.groupRecord?.pid)&&receipt?.confirmationComplete!==true)throw Object.assign(Error('Agent exit unconfirmed; provider ownership retained'),{code:'OMP_EXIT_UNCONFIRMED',target});return target;}));await Promise.all([...this.running.values()]);await Promise.allSettled([...this.closures.values()]);await this.store.mutate(()=>{for(const target of stopped)delete this.store.state.providers[target];});const homes=[...['frontdesk','orchestrator'].map(role=>path.join(this.store.root,'agents',`resident-${role}`)),...this.store.state.works.map(w=>this.store.agentHome(w.id))];for(const home of homes)await fs.rm(path.join(home,'auth.json'),{force:true});await this.store.close();})();return this.stopPromise;
   }
 }

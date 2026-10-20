@@ -35,13 +35,26 @@ try{
  assert.equal(JSON.stringify((await page.evaluate(()=>nozeli.invoke('settings.providers.status',{})))).includes('synthetic-settings-key'),false);checks++;
  await page.click('[data-settings-section="settings-models"]');
  await page.waitForSelector('[data-default-role="frontdesk"] option[value="settings-smoke/synthetic-local"]');
+ await page.waitForFunction(()=>!document.querySelector('[data-role-model-form] button[type="submit"]').disabled);
  for(const role of ['frontdesk','orchestrator','worker'])await page.select('[data-default-role="'+role+'"]','settings-smoke/synthetic-local');
  await page.click('[data-role-model-form] button[type="submit"]');await page.waitForFunction(()=>document.querySelector('[data-model-status]').textContent.includes('已保存'));checks++;
  await page.click('[data-settings-section="settings-provider"]');await page.click('[data-provider-remove="settings-smoke"]');await page.click('[data-provider-confirm-remove="settings-smoke"]');
  await page.waitForFunction(()=>document.querySelector('[data-provider-status]').textContent.includes('引用'));assert(await page.$('[data-provider-row="settings-smoke"]'));checks++;
- await page.click('[data-settings-section="settings-models"]');for(const role of ['frontdesk','orchestrator','worker'])await page.select('[data-default-role="'+role+'"]','');
+ await page.click('[data-settings-section="settings-models"]');await page.waitForFunction(()=>!document.querySelector('[data-role-model-form] button[type="submit"]').disabled);for(const role of ['frontdesk','orchestrator','worker'])await page.select('[data-default-role="'+role+'"]','');
  await page.click('[data-role-model-form] button[type="submit"]');await page.waitForFunction(async()=>{const r=await nozeli.invoke('settings.providers.status',{});return Object.values(r.value.defaults).every(v=>!v);});
- await page.click('[data-settings-section="settings-provider"]');await page.click('[data-provider-remove="settings-smoke"]');await page.click('[data-provider-confirm-remove="settings-smoke"]');await page.waitForFunction(()=>!document.querySelector('[data-provider-row="settings-smoke"]'));checks++;
+ await page.click('[data-settings-section="settings-provider"]');await page.waitForFunction(()=>!document.querySelector('[data-model-refresh]').disabled);await page.click('[data-provider-remove="settings-smoke"]');await page.click('[data-provider-confirm-remove="settings-smoke"]');await page.waitForFunction(()=>!document.querySelector('[data-provider-row="settings-smoke"]'));checks++;
+ await page.evaluate(()=>window.dispatchEvent(new CustomEvent('nozeli-open-settings',{detail:'settings-agents'})));
+ await page.waitForFunction(()=>!document.querySelector('[data-agent-limits-save]').disabled);
+ assert.equal(await page.$eval('#settings-agents',e=>e.hidden),false);assert.equal(await page.$$eval('#settings-agents input',nodes=>nodes.length),2);checks++;
+ assert.equal(await page.$eval('[data-agent-project-limit]',e=>e.disabled),true,'no project disables only project quota');
+ assert.equal(await page.$eval('[data-agent-global-limit]',e=>e.disabled),false);
+ await page.$eval('[data-agent-global-limit]',e=>{e.value='9';});await page.click('[data-agent-limits-save]');
+ await page.waitForFunction(()=>document.querySelector('[data-agent-limits-status]').textContent.includes('已保存'));
+ assert.equal((await page.evaluate(()=>nozeli.invoke('settings.agents.status',{}))).value.globalLimit,9);checks++;
+ await page.$eval('[data-agent-global-limit]',e=>{e.value='8.5';e.step='any';});await page.click('[data-agent-limits-save]');
+ await page.waitForFunction(()=>{const text=document.querySelector('[data-agent-limits-status]').textContent;return text&&!text.includes('正在')&&!text.includes('已保存');});
+ assert.equal((await page.evaluate(()=>nozeli.invoke('settings.agents.status',{}))).value.globalLimit,9,'save error must not persist invalid quota');checks++;
+ await page.$eval('[data-agent-global-limit]',e=>{e.value='8';e.step='1';});await page.click('[data-agent-limits-save]');await page.waitForFunction(()=>document.querySelector('[data-agent-limits-status]').textContent.includes('已保存'));
  await page.click('[data-settings-section="settings-appearance"]');
  const readContent=()=>page.evaluate(()=>Object.fromEntries(['reader-scroll','conversation-panel','composer'].map(id=>{const s=getComputedStyle(document.getElementById(id));return[id,[s.fontFamily,s.fontSize]];})));
  const before=await readContent();
@@ -67,7 +80,7 @@ try{
  await page.click('#open-settings');
  await page.setViewport({width:390,height:700});
  assert.equal(await page.$eval('#settings-dialog',e=>e.getBoundingClientRect().right<=innerWidth&&e.getBoundingClientRect().left>=0),true);checks++;
- for(const section of ['settings-provider','settings-models','settings-appearance','settings-general']){await page.click('[data-settings-section="'+section+'"]');assert.equal(await page.$eval('#'+section,e=>e.hidden),false);assert.equal(await page.$eval('#settings-dialog',e=>e.scrollWidth<=e.clientWidth),true);checks++;}
+ for(const section of ['settings-provider','settings-models','settings-agents','settings-appearance','settings-general']){await page.click('[data-settings-section="'+section+'"]');assert.equal(await page.$eval('#'+section,e=>e.hidden),false);assert.equal(await page.$eval('#settings-dialog',e=>e.scrollWidth<=e.clientWidth),true);checks++;}
  assert.equal(await page.$eval('#provider-console-toggle',e=>e.closest('.settings-nav')!==null&&e.hidden),true,'No project means no terminal view, even in top-level settings');checks++;
  await page.screenshot({path:path.join(out,'settings-narrow.png')});
  await page.click('#settings-close');assert.equal(await page.$eval('#open-settings',e=>document.activeElement===e),true);checks++;

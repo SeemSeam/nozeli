@@ -267,7 +267,7 @@ async function main() {
     return ompAuthBrokerHost.acquire();
   }};
   const {ProviderSettings,hasProviderReferences}=await import('../agents/managed/provider-settings.mjs');
-  const providerSettings=new ProviderSettings({source:ompSystemSource,broker:ompAuthBroker,command:ompRuntime?.command,isReferenced:async provider=>{
+  const providerSettings=new ProviderSettings({source:ompSystemSource,broker:ompAuthBroker,command:ompRuntime?.command,onDefaultsSaved:next=>managedAgents.applyModelDefaults(next),getModelSync:()=>managedAgents.modelSync(),isReferenced:async provider=>{
     for(const controller of managedAgents?.controllers?.values()??[]){
       if(controller.starting?.size)return true;
       for(const session of controller.sessions.values())if(!session.model||session.model.startsWith(provider+'/'))return true;
@@ -299,6 +299,15 @@ async function main() {
         if(!payload||Object.keys(payload).some(key=>!['mode','includeApiKeys'].includes(key))||!['independent','import'].includes(payload.mode)||payload.includeApiKeys!==undefined&&typeof payload.includeApiKeys!=='boolean')throw new HostError('INVALID_PAYLOAD','请选择独立设置或一次性导入。');
         const value=await completeNozeliConfiguration(nozeliPaths,{choice:payload.mode,includeApiKeys:payload.includeApiKeys===true});
         return {ok:true,value};
+      }
+      if(op==='settings.agents.status'){
+        if(payload&&Object.keys(payload).some(key=>key!=='projectId'))throw new HostError('INVALID_PAYLOAD','Agent额度查询无效。');
+        return {ok:true,value:await managedAgents.resourceStatus(payload?.projectId)};
+      }
+      if(op==='settings.agents.save')return {ok:true,value:await managedAgents.saveResourceLimits(payload)};
+      if(op==='managed.project.active'){
+        if(!payload||Object.keys(payload).some(key=>key!=='projectId')||(payload.projectId!==null&&typeof payload.projectId!=='string'))throw new HostError('INVALID_PAYLOAD','当前项目无效。');
+        return {ok:true,value:await managedAgents.setActiveProject(payload.projectId)};
       }
       if(typeof op==='string'&&op.startsWith('settings.')){
         if(ompRuntimeError)throw ompRuntimeError;

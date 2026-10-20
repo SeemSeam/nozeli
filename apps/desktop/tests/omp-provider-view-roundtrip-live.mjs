@@ -25,23 +25,26 @@ try{
  await page.waitForFunction(()=>window.__nozeliReady===true);await page.click('#pick-project');await wait(async()=>{const s=await status().catch(()=>null);return s?.ready;},'project ready');
  if(await page.$eval('#provider-console',node=>node.hidden)){await page.click('#open-settings');await page.click('[data-settings-section="settings-general"]');await page.click('#provider-console-toggle');}
  let previous=await wait(()=>lease('frontdesk'),'initial terminal attached');
- for(const provider of ['omp','codex','omp']){
+ for(const round of [1,2,3]){
   const before=await status(),oldOwner=before.state.agents.find(a=>a.target==='frontdesk')?.ownerId;
-  await page.evaluate(()=>document.querySelector('#agent-settings').click());await page.waitForSelector('#managed-settings[open]');
-  await page.evaluate(provider=>{const select=document.querySelector('[data-managed-provider="frontdesk"]');select.value=provider;const row=select.closest('fieldset');[...row.querySelectorAll('button')].find(b=>b.textContent==='保存 Provider').click();},provider);
-  await wait(async()=>{const s=await status();const a=s.state.agents.find(a=>a.target==='frontdesk');return s.state.bindings.frontdesk.provider===provider&&a?.ownerId!==oldOwner&&!s.state.configuringTargets.includes('frontdesk')&&!a?.closed;},'Provider save '+provider);
-  await page.evaluate(()=>document.querySelector('#managed-settings-close').click());
-  const next=await wait(async()=>{const id=await lease('frontdesk');return id&&id!==previous?id:null;},'new view attached '+provider);
+  await page.evaluate(()=>window.dispatchEvent(new CustomEvent('nozeli-open-settings',{detail:'settings-agents'})));await page.waitForSelector('#settings-dialog[open] #settings-agents:not([hidden])');
+  await page.waitForFunction(()=>!document.querySelector('[data-agent-limits-save]').disabled);await page.click('[data-agent-limits-save]');
+  await page.waitForFunction(()=>document.querySelector('[data-agent-limits-status]').textContent.includes('已保存'));
+  assert.equal((await status()).state.agents.find(a=>a.target==='frontdesk')?.ownerId,oldOwner,'quota save preserves existing native process');
+  await invoke('managed.restart',{projectId,target:'frontdesk'});
+  await wait(async()=>{const s=await status();const a=s.state.agents.find(a=>a.target==='frontdesk');return a?.ownerId!==oldOwner&&!a?.closed;},'native restart '+round);
+  await page.evaluate(()=>document.querySelector('#settings-close').click());
+  const next=await wait(async()=>{const id=await lease('frontdesk');return id&&id!==previous?id:null;},'new view attached '+round);
   await assert.rejects(invoke('managed.terminal.input',{projectId,target:'frontdesk',terminalId:previous,data:'not-replayed'}),e=>e.code==='TERMINAL_STALE');
   await invoke('managed.terminal.input',{projectId,target:'frontdesk',terminalId:next,data:'\x15'});
-  if(provider==='omp'){
+  if(round!==2){
    await invoke('managed.terminal.input',{projectId,target:'frontdesk',terminalId:next,data:'/switch zai/glm-4.7:low\r'});
    await wait(async()=>{const s=await status();return s.state.agents.find(a=>a.target==='frontdesk')?.effective?.model==='zai/glm-4.7';},'native config command');
    await invoke('managed.terminal.input',{projectId,target:'frontdesk',terminalId:next,data:'\x15'});
   }
   const now=await status();assert.equal(now.state.jobs.length,0);assert.equal(now.state.works.length,0);
-  await invoke('session.capture',{name:'provider-roundtrip-'+facts.length+'-'+provider});
-  facts.push({provider,oldLeaseRejected:true,newLease:next,ownerChanged:true,noModelJobs:true});previous=next;
+  await invoke('session.capture',{name:'quota-native-roundtrip-'+round});
+  facts.push({round,quotaSavePreservedOwner:true,oldLeaseRejected:true,newLease:next,ownerChanged:true,noModelJobs:true});previous=next;
  }
  await invoke('session.requestClose');let timer;let closed;try{closed=await Promise.race([exit,new Promise((_,reject)=>timer=setTimeout(()=>reject(Error('exit timeout')),45000))]);}finally{clearTimeout(timer);}assert.equal(closed.code,0);await browser.disconnect();browser=null;
  await fs.writeFile(path.join(root,'result.json'),JSON.stringify({pass:true,release,facts,exit:closed},null,2));console.log(JSON.stringify({pass:true,facts,exit:closed}));

@@ -1,7 +1,7 @@
 #managed-terminal-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;overflow:auto;flex:1;min-height:0;padding:12px}
 #managed-terminal-grid .provider-role{min-height:320px;height:45vh}
 #managed-terminal-grid .provider-output{min-height:0;flex:1}
-#managed-settings,#configuration-setup{width:min(680px,calc(100vw - 24px));max-width:calc(100vw - 24px);box-sizing:border-box;max-height:85vh;overflow:auto}
+#configuration-setup{width:min(680px,calc(100vw - 24px));max-width:calc(100vw - 24px);box-sizing:border-box;max-height:85vh;overflow:auto}
 #configuration-setup .dialog-actions{display:flex;flex-wrap:wrap;gap:8px}
 #configuration-setup label{display:block;white-space:normal}
 #legacy-conversation-history{max-height:40vh;overflow:auto;padding:8px;border-bottom:1px solid var(--line)}

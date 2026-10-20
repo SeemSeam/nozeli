@@ -8,7 +8,7 @@
 //    必须零效果），执行后到达的取消按 UNKNOWN 处理，不冒成功。
 //  - 每部署代次新 token；有界帧 1MB；close 拒绝 pending 清 timer；陈旧端点只清死文件。
 // 参数完整透传：原工具 name/description/parameters（spec 完整 JSON schema，不降级为 payload:string）；
-// prompt 支持文本+图片内容块；模型与思考档位仅观察，选择与持久化由原生 OMP 独占。
+// prompt 支持文本+图片内容块；默认模型通过官方 SDK 在安全边界切换，不向编辑器注入命令。
 import fs from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
@@ -34,6 +34,8 @@ export default function nozeliTerminalBridge(pi) {
   const isWindows = process.platform === 'win32';
   const token = nodeFs.readFileSync(tokenPath, 'utf8').trim();
   let ctx = null;
+  let desiredModel = null, pendingModel = null, modelError = null, modelRevision = 0, modelApply = null;
+  let agentActive = false;
   const conns = new Map();
   const send = (socket, frame) => { try { socket.write(JSON.stringify(frame) + '\\n'); } catch {} };
   const authed = () => [...conns.entries()].filter(([, c]) => c.authed).map(([s]) => s);
@@ -55,15 +57,40 @@ export default function nozeliTerminalBridge(pi) {
     thinkingLevel: (() => { const lv = typeof pi.getThinkingLevel === 'function' ? pi.getThinkingLevel() : ctx?.getThinkingLevel?.(); return typeof lv === 'object' && lv ? (lv.level ?? null) : (lv ?? null); })(),
     cwd: ctx?.cwd ?? null,
     editorDraft: editorDraft(),
+    desiredModel, pendingModel, modelError,
   });
   let lastSelection = '';
-  const observeState = () => { if (!ctx) return; const current = state(); const key = JSON.stringify([current.model, current.modelInput, current.thinkingLevel, current.editorDraft]); if (key !== lastSelection) { lastSelection = key; broadcast({ type: 'state_change', state: current }); } };
-  const selectionTimer = setInterval(observeState, 200);
+  const applyPendingModel = async (preparing = false) => {
+    if (modelApply) return modelApply;
+    if (!pendingModel || !ctx || (!preparing && (agentActive || ctx.isIdle?.() !== true))) return;
+    const selector = pendingModel, revision = modelRevision;
+    modelApply = (async () => {
+      try {
+        // v18.11 ExtensionContext.modelRegistry + ExtensionAPI.setModel: real registry/journal/UI ownership.
+        await ctx.modelRegistry.refresh('offline');
+        if (revision !== modelRevision) return;
+        if (!preparing && (agentActive || ctx.isIdle?.() !== true)) return;
+        const slash = selector.indexOf('/');
+        const model = ctx.modelRegistry.find(selector.slice(0, slash), selector.slice(slash + 1));
+        if (slash < 1 || !model) throw Error('Default model is absent from native registry: ' + selector);
+        if (state().model !== selector && !await pi.setModel(model)) throw Error('Native model credentials unavailable: ' + selector);
+        if (state().model !== selector) throw Error('Native model verification failed: ' + selector);
+        if (revision === modelRevision) { pendingModel = null; modelError = null; }
+      } catch (error) {
+        modelError = { code: 'OMP_DEFAULT_MODEL_FAILED', message: String(error?.message ?? error), selector };
+        broadcast({ type: 'model_error', state: state() });
+        throw error;
+      } finally { modelApply = null; observeState(); }
+    })();
+    return modelApply;
+  };
+  const observeState = () => { if (!ctx) return; const current = state(); const key = JSON.stringify([current.model, current.modelInput, current.thinkingLevel, current.editorDraft, current.desiredModel, current.pendingModel, current.modelError]); if (key !== lastSelection) { lastSelection = key; broadcast({ type: 'state_change', state: current }); } };
+  const selectionTimer = setInterval(() => { observeState(); if (pendingModel && !modelError) void applyPendingModel().catch(() => {}); }, 200);
   selectionTimer.unref?.();
   pi.on('model_select', (_e, c) => { capture(c); observeState(); });
   pi.on('session_start', (_e, c) => { capture(c); broadcast({ type: 'session_start', sessionId: state().sessionId }); });
-  pi.on('agent_start', () => broadcast({ type: 'agent_start' }));
-  pi.on('agent_end', e => broadcast({ type: 'agent_end', isIdle: state().isIdle, willContinue: e?.willContinue === true, awaitingAsyncWork: e?.awaitingAsyncWork === true }));
+  pi.on('agent_start', () => { agentActive = true; broadcast({ type: 'agent_start', state: state() }); });
+  pi.on('agent_end', e => { if (e?.willContinue !== true && e?.awaitingAsyncWork !== true) agentActive = false; broadcast({ type: 'agent_end', isIdle: state().isIdle, willContinue: e?.willContinue === true, awaitingAsyncWork: e?.awaitingAsyncWork === true }); });
   pi.on('turn_start', e => broadcast({ type: 'turn_start', turnIndex: e?.turnIndex ?? null }));
   pi.on('turn_end', e => broadcast({ type: 'turn_end', turnIndex: e?.turnIndex ?? null, message: { stopReason: e?.message?.stopReason, errorMessage: e?.message?.errorMessage } }));
   let pendingInteractiveInput = null;
@@ -73,6 +100,11 @@ export default function nozeliTerminalBridge(pi) {
     const input = pendingInteractiveInput;
     pendingInteractiveInput = null;
     try {
+      // Covers native input and managed Collab alike, before the next provider round is admitted.
+      if (!agentActive) {
+        do { await applyPendingModel(true); } while (pendingModel && !modelError);
+        if (pendingModel) throw Error(modelError?.message || 'Default model not applied');
+      }
       const socket = authed().at(-1);
       if (!socket) throw Error('nozeli host admission unavailable');
       const conn = conns.get(socket), id = 'turn-' + randomUUID();
@@ -81,6 +113,11 @@ export default function nozeliTerminalBridge(pi) {
         conn.toolWaiters.set(id, value => { clearTimeout(timer); value?.isError ? reject(Error(value.content?.[0]?.text || 'turn denied')) : resolve(value); });
         send(socket, { id, op: 'turn_admit', interactive: Boolean(input), text: input?.text ?? e.prompt });
       });
+      if (!agentActive) {
+        do { await applyPendingModel(true); } while (pendingModel && !modelError);
+        if (pendingModel) throw Error(modelError?.message || 'Default model not applied');
+      }
+      broadcast({ type: 'turn_model', model: state().model, effort: state().thinkingLevel });
       if (input && result?.jobId) pi.appendEntry('nozeli-manual-pending', { jobId: result.jobId, requestId: result.requestId, epoch: process.env.NOZELI_COLLAB_EPOCH });
       if (result?.taskAnchor) return { systemPrompt: [...e.systemPrompt, 'Current host-owned task scope:\\n' + result.taskAnchor] };
     } catch (error) {
@@ -157,6 +194,13 @@ export default function nozeliTerminalBridge(pi) {
     try {
       if (req.op === 'hello') reply(true, { ...state(), tools: pi.getAllTools().map(t => t.name).filter(n => n.startsWith('nozeli')), ...registrationReceipt() });
       else if (req.op === 'get_state') reply(true, state());
+      else if (req.op === 'apply_default_model') {
+        if (typeof req.selector !== 'string') throw Error('Default model selector must be a string');
+        desiredModel = req.selector || null; pendingModel = desiredModel; modelError = null; modelRevision++;
+        observeState();
+        do { await applyPendingModel(); } while (pendingModel && !modelError && ctx?.isIdle?.() === true && !agentActive);
+        reply(true, { ...state(), pending: Boolean(pendingModel) });
+      }
       else if (req.op === 'stop') { ctx?.abort?.(); reply(true, { aborted: true }); }
       else if (req.op === 'shutdown') { reply(true, { shuttingDown: true }); setTimeout(() => ctx?.shutdown?.(), 50); }
       else if (req.op === 'prompt') reply(false, { code: 'COLLAB_REQUIRED', message: 'GUI prompt requires managed collab admission' });
@@ -321,6 +365,7 @@ export function connectOmpTerminalBridge({ socketPath, token, onEvent = () => {}
   return {
     hello: () => call('hello'),
     getState: () => call('get_state'),
+    applyDefaultModel: selector => call('apply_default_model', { selector }),
     stop: () => call('stop'),
     shutdown: () => call('shutdown'),
     toolStatus: forId => call('tool_status', { forId }),

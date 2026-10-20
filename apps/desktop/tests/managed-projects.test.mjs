@@ -162,3 +162,86 @@ test('controller acceptance ignores saved scratch history but protects every act
  file={...file,draft:{status:'dirty',text:'active user text'}};assert.deepEqual(await options.readProjectText('paper.md'),{text:'active user text',buffer:true,diskVersion:'disk-version'});
  file={...file,draft:null,draftError:{code:'METADATA_CORRUPT',message:'draft unavailable'}};await assert.rejects(options.readProjectText('paper.md'),error=>error.code==='METADATA_CORRUPT');
 });
+
+// Model synchronization fixtures implement the native session contract explicitly.
+function defaultsController(works=[]){
+ const controller=Object.create(Controller.prototype);
+ Object.assign(controller,{stopping:false,sessions:new Map(),store:{state:{works,jobs:[{id:'old-job',effective:{model:'original/model'}}]}},changed(){this.notifications=(this.notifications??0)+1;}});
+ return controller;
+}
+function defaultsSession(calls,target,{busy=false,fail=false,closed=false}={}){
+ return {closed,busy,threadId:'same-'+target,model:'original/model',effective:{model:'original/model'},async applyDefaultModel(selector){
+  calls.push({target,selector});if(fail)throw Error('secret=PRIVATE /private/path');
+  this.desiredModel=selector||null;this.pendingModel=busy&&selector?selector:null;
+  if(!busy&&selector)this.model=selector;
+  return {pending:busy&&!!selector,model:this.model};
+ }};
+}
+test('saved defaults reach all live roles across projects without waking sleeping or historical Agents',async()=>{
+ const manager=new ManagedProjects({userDataDir:'/unused',host:{},legacy:{}}),calls=[],defaults={frontdesk:'new/front',orchestrator:'new/main',worker:'new/work'};
+ for(const id of ['a','b']){
+  const c=defaultsController([{id:'live',status:'review'},{id:'sleeping',status:'paused'},{id:'ended',status:'ended'},{id:'closing',status:'closing'},{id:'archive',status:'paused',readOnly:true}]);
+  c.session=()=>{throw Error('must not wake');};c.start=c.session;c.processBudget={acquire:c.session};
+  for(const target of ['frontdesk','orchestrator','live','ended','closing','archive'])c.sessions.set(target,defaultsSession(calls,id+':'+target));
+  c.sessions.set('closed',defaultsSession(calls,id+':closed',{closed:true}));manager.controllers.set(id,c);
+ }
+ const histories=[...manager.controllers.values()].map(c=>structuredClone(c.store.state));
+ assert.deepEqual(await manager.applyModelDefaults(defaults),{applied:6,pending:0,failed:[]});
+ assert.deepEqual(calls.map(({target,selector})=>[target,selector]).sort(),['a','b'].flatMap(id=>[['frontdesk',defaults.frontdesk],['orchestrator',defaults.orchestrator],['live',defaults.worker]].map(([target,selector])=>[id+':'+target,selector])).sort());
+ for(const [index,c] of [...manager.controllers.values()].entries()){
+  assert.deepEqual(c.store.state,histories[index]);assert.equal(c.sessions.get('live').threadId,'same-'+['a','b'][index]+':live');
+  assert.deepEqual(c.sessions.get('live').effective,{model:'original/model'});assert.equal(c.sessions.has('sleeping'),false);
+ }
+ assert.equal(manager.controllers.size,2);assert.equal(manager.processBudget.used,0);
+});
+test('busy owners report pending and failures never leak native diagnostics or claim success',async()=>{
+ const c=defaultsController([{id:'worker',status:'running'}]),calls=[];
+ c.sessions.set('frontdesk',defaultsSession(calls,'frontdesk',{busy:true}));
+ c.sessions.set('orchestrator',defaultsSession(calls,'orchestrator',{fail:true}));
+ c.sessions.set('worker',defaultsSession(calls,'worker'));
+ const sync=await c.applyModelDefaults({frontdesk:'new/front',orchestrator:'new/main',worker:'new/work'});
+ assert.equal(sync.applied,1);assert.equal(sync.pending,1);assert.equal(sync.failed.length,1);
+ assert.ok(!JSON.stringify(sync).includes('PRIVATE'));assert.ok(!JSON.stringify(sync).includes('/private/path'));
+ assert.equal(c.sessions.get('frontdesk').model,'original/model');assert.equal(c.sessions.get('frontdesk').pendingModel,'new/front');
+ assert.deepEqual(c.store.state.jobs[0].effective,{model:'original/model'});
+ const cleared=await c.applyModelDefaults({frontdesk:'',orchestrator:'',worker:''});assert.equal(cleared.pending,0);
+ assert.equal(c.sessions.get('frontdesk').pendingModel,null);assert.equal(c.sessions.get('worker').model,'new/work');
+});
+test('missing native apply method is an explicit failure, not a production compatibility fallback',async()=>{
+ const c=defaultsController();c.sessions.set('frontdesk',{closed:false});
+ const sync=await c.applyModelDefaults({frontdesk:'new/front'});assert.equal(sync.applied,0);assert.equal(sync.failed.length,1);
+});
+test('manager serializes competing propagations so the newest desired model wins',async()=>{
+ const manager=new ManagedProjects({userDataDir:'/unused',host:{},legacy:{}}),calls=[];
+ let release,entered;const gate=new Promise(r=>release=r),started=new Promise(r=>entered=r);
+ manager.controllers.set('a',{async applyModelDefaults(defaults){calls.push(defaults.worker);if(calls.length===1){entered();await gate;}this.desired=defaults.worker;return {applied:1,pending:0,failed:[]};}});
+ const a=manager.applyModelDefaults({worker:'first/model'});await started;
+ const b=manager.applyModelDefaults({worker:'second/model'});assert.deepEqual(calls,['first/model']);release();await Promise.all([a,b]);
+ assert.deepEqual(calls,['first/model','second/model']);assert.equal(manager.controllers.get('a').desired,'second/model');
+});
+test('modelSync refresh observes pending completion and retains redacted failures',async()=>{
+ const manager=new ManagedProjects({userDataDir:'/unused',host:{},legacy:{}}),c=defaultsController(),calls=[];
+ manager.controllers.set('p',c);c.sessions.set('frontdesk',defaultsSession(calls,'frontdesk',{busy:true}));c.sessions.set('orchestrator',defaultsSession(calls,'orchestrator',{fail:true}));
+ await manager.applyModelDefaults({frontdesk:'new/front',orchestrator:'new/main',worker:''});
+ assert.equal(manager.modelSync().pending,1);assert.deepEqual(manager.modelSync().failed,[{role:'orchestrator',message:'Agent默认模型同步失败；配置已保存，可重试保存。'}]);
+ c.sessions.get('frontdesk').pendingModel=null;c.sessions.get('frontdesk').model='new/front';
+ assert.equal(manager.modelSync().pending,0);assert.equal(manager.modelSync().applied,1);
+});
+test('later project startup reads the current source defaults without connecting sleeping projects on save',async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'managed-model-start-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ let value='first/model',opened=0;const source={modelFor:async role=>role==='frontdesk'?value:''};
+ class Startup extends EventEmitter{
+  constructor(options){super();this.options=options;this.store={state:{works:[]}};this.sessions=new Map();}
+  async start(){this.model=await this.options.ompSystemSource.modelFor('frontdesk');this.started=true;}
+  snapshot(){return {model:this.model};}async stop(){}
+ }
+ const manager=new ManagedProjects({userDataDir:root,ompSystemSource:source,host:{requireProject:async id=>({id,root})},legacy:{projects:new Map()},openController:async options=>{opened++;return new Startup(options);}});
+ value='latest/model';assert.deepEqual(await manager.applyModelDefaults({frontdesk:value,orchestrator:'',worker:''}),{applied:0,pending:0,failed:[]});assert.equal(opened,0);
+ const result=await manager.connect('sleeping',{enable:true});assert.equal(opened,1);assert.equal(result.state.model,'latest/model');await manager.stop();
+});
+test('deferred model application errors refresh as redacted failures rather than success',async()=>{
+ const c=defaultsController();c.sessions.set('frontdesk',{closed:false,desiredModel:'new/front',pendingModel:'new/front',model:'original/model',modelError:{code:'PRIVATE /private/path'}});
+ const sync=c.modelSync();assert.equal(sync.applied,0);assert.equal(sync.failed.length,1);assert.equal(sync.failed[0].role,'frontdesk');assert.ok(!JSON.stringify(sync).includes('PRIVATE'));
+ c.sessions.get('frontdesk').modelError=null;c.sessions.get('frontdesk').pendingModel=null;
+ assert.equal(c.modelSync().applied,0);assert.equal(c.modelSync().failed.length,1);
+});

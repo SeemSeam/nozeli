@@ -262,3 +262,11 @@ test('late cancelled input remains cancelled while failed cleanup evidence is re
     assert.equal(JSON.stringify(saved.cleanupFailure).includes('private'), false);
   } finally { session.stop = originalStop; }
 });
+test('manual settlement retains the admitted ticket model, not the owner selection after defaults change',async t=>{
+ const {c}=await fixture(t),opened=await c.openManualJob('frontdesk','model-evidence','original manual input');
+ c.sessions.get('frontdesk').effective={model:'new/default',effort:'high'};
+ await c.settleManualJob('frontdesk',{promptId:'model-evidence',jobId:opened.jobId,text:'answer',effective:{model:'admitted/model',effort:'low'}});
+ assert.deepEqual(c.store.state.jobs.find(job=>job.id===opened.jobId).effective,{model:'admitted/model',effort:'low'});
+ await c.settleManualJob('frontdesk',{promptId:'model-evidence',jobId:opened.jobId,effective:{model:'new/default'}});
+ assert.deepEqual(c.store.state.jobs.find(job=>job.id===opened.jobId).effective,{model:'admitted/model',effort:'low'});
+});

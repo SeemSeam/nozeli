@@ -3,7 +3,7 @@
 // v2 修正（root 反例）：ack 失败=准入未知→阻塞（须 agent_end+isIdle+无 pending 三事实才恢复，与 RPC 阻塞规则一致）；
 // waiter/timer 统一回收（exit 映射预建带 catch，无 unhandled rejection）；工具身份稳定（桥以官方 toolCallId 原样）；
 // 取消联动（副作用前取消零效果、执行后取消丢弃不冒成功）；终态=agent_end+isIdle+!hasPending（turn_end 不足以结算）。
-// 模型与思考档位由原生 OMP 配置/会话日志独占；宿主只观察实际生效值，不覆盖恢复记录。
+// 原生 OMP 执行会话内模型切换；宿主持有显式全局角色目标，实际选型和不可变回合证据均回读原生；思考档位仍由原生独占。
 // isolation→isolatedLaunch 包裹 PTY argv；工具以原 name/description/schema 注册。
 // 输入所有权：终端输入经 input observer（nativeDraftTargets/kick）+ 人工回合门（interactive input 开 manual ticket，
 // host tools 按 ticket 裁决；agent_end+idle 终结）；不双 owner。
@@ -11,7 +11,7 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { prepareOmpPrivateHome } from './omp-provider-home.mjs';
+import { prepareOmpPrivateHome, syncOmpSelectedProvider } from './omp-provider-home.mjs';
 import { scrubProviderEnv } from './omp-credentials.mjs';
 import { pinSessionFileById, ompGroupRecord, reapOwnedOmpGroup } from './omp-process-ownership.mjs';
 import { deployOmpTerminalBridge, connectOmpTerminalBridge, readOmpTerminalToolHistory } from './omp-terminal-bridge.mjs';
@@ -110,6 +110,8 @@ export class OmpTuiSession extends EventEmitter {
     this.phase = 'constructed';
     this.threadId = null; this.sessionFile = null;
     this.busy = false; this.closed = false; this.externalTurnId = null;
+    this.desiredModel = null; this.pendingModel = null; this.modelError = null;
+    this.defaultModelRevision = 0; this.defaultModelQueue = Promise.resolve();
     this.currentTicket = null; this.blockedTicket = null; this.resolvedTickets = new Set();
     this.inFlightToolCalls = new Set(); this.completedToolCalls = new Map(); this.controlReceipts = [];
     this.agentEnds = []; this.sideEffectFacts = []; this.unsettledPromptError = null; this.failure = null;
@@ -133,7 +135,7 @@ export class OmpTuiSession extends EventEmitter {
     this.#idleWaiter = new Promise(resolve => { this.#resolveIdle = resolve; });
   }
 
-  #changed() { this.emit('change'); }
+  #changed() { if (!this.busy && this.nativeEffective) this.effective = this.nativeEffective; this.emit('change'); }
   diag(kind, details = {}) { this.diagnosticsLog ??= []; this.diagnosticsLog.push({ at: nowIso(), kind, ...details }); this.emit('diagnostic', `omp-tui: ${kind}${details.code ? ` (${details.code})` : ''}`); }
 
   async start(resumeId) {
@@ -153,11 +155,13 @@ export class OmpTuiSession extends EventEmitter {
       await this.#mergeExtensionConfig(deployed.configEntry);
       // instructions 完整透传（官方 --system-prompt）
       const argv = ['--cwd', this.cwd, '--system-prompt', String(this.instructions ?? ''), '--approval-mode', 'yolo', '--no-title', '--no-skills', '--session-dir', this.sessionsDir];
-      // A global default binds only a genuinely new native conversation. Resume
-      // keeps its journal model, including changes made in the native terminal.
-      if (resumeId == null && this.ompSystemSource?.modelFor) {
-        const model = await this.ompSystemSource.modelFor(this.role);
-        if (model) argv.push('--model', model);
+      // Resume keeps the same native journal, but follows the current role default too.
+      const defaultRevision = this.defaultModelRevision;
+      const defaultModel = await this.ompSystemSource?.modelFor?.(this.role);
+      if (defaultRevision === 0 && this.defaultModelRevision === 0) this.desiredModel = defaultModel || null;
+      if (this.desiredModel) {
+        await syncOmpSelectedProvider(this.home, this.ompSystemSource, this.desiredModel);
+        if (resumeId == null) argv.push('--model', this.desiredModel);
       }
       // Residents cannot bypass host routing with native task/shell tools.
       // Workers retain file tools inside their isolated execution copy; host
@@ -238,6 +242,12 @@ export class OmpTuiSession extends EventEmitter {
       if (resumeId != null && this.threadId !== resumeId) { await this.#teardown(); throw ompError('OMP_RESUME_IDENTITY_MISMATCH', `resume identity mismatch: pinned ${resumeId}, tui reported ${this.threadId}`); }
       this.#syncNativeState(await this.bridge.getState(), resumeId != null ? 'session-restored' : 'native-config');
       await this.collab.connect(this.threadId);
+      // A settings save can race startup; replay only the latest target to this same owner.
+      do {
+        const revision = this.defaultModelRevision;
+        await this.#applyNativeDefaultModel(this.desiredModel ?? '');
+        if (revision === this.defaultModelRevision) break;
+      } while (!this.closed);
       this.phase = 'ready';
       this.#changed();
       return { threadId: this.threadId, sessionFile: this.sessionFile, model: this.model, effective: this.effective };
@@ -249,12 +259,44 @@ export class OmpTuiSession extends EventEmitter {
     }
   }
 
+  async applyDefaultModel(selector) {
+    if (selector == null) selector = '';
+    if (typeof selector !== 'string') throw ompError('OMP_DEFAULT_MODEL_INVALID', 'model selector must be a string');
+    if (this.closed) throw ompError('OMP_SESSION_CLOSED', 'cannot change a closed owner');
+    this.defaultModelRevision++;
+    this.desiredModel = selector || null;
+    this.pendingModel = this.desiredModel;
+    this.modelError = null;
+    this.#changed();
+    // Starting owners consume the latest target before becoming ready; no process wake here.
+    if (this.phase === 'constructed' || this.phase === 'connecting') return { pending: Boolean(this.pendingModel), model: this.model };
+    const apply = this.defaultModelQueue.then(() => this.#applyNativeDefaultModel(this.desiredModel ?? ''));
+    this.defaultModelQueue = apply.catch(() => {});
+    return apply;
+  }
+
+  async #applyNativeDefaultModel(selector) {
+    try {
+      await syncOmpSelectedProvider(this.home, this.ompSystemSource, selector);
+      const state = await this.bridge.applyDefaultModel(selector);
+      this.#syncNativeState(state, 'global-default');
+      return { pending: state.pending === true, model: state.model };
+    } catch (error) {
+      this.modelError = { code: error.code ?? 'OMP_DEFAULT_MODEL_FAILED', message: error.message, selector };
+      this.#changed();
+      throw error;
+    }
+  }
+
 
   #syncNativeState(state, source = 'native') {
     if (!state || this.closed) return;
+    if (Object.hasOwn(state, 'pendingModel')) this.pendingModel = state.pendingModel;
+    if (Object.hasOwn(state, 'modelError')) this.modelError = state.modelError;
     this.model = state.model ?? null;
     this.effort = state.thinkingLevel ?? null;
-    this.effective = { model: this.model, effort: this.effort, modelSource: source, effortSource: source, selectionOwner: 'native' };
+    this.nativeEffective = { model: this.model, effort: this.effort, modelSource: source, effortSource: source, selectionOwner: 'native' };
+    if (!this.busy) this.effective = this.nativeEffective;
     if (state.editorDraft?.known === true && typeof state.editorDraft.hasText === 'boolean') {
       this.nativeDraft = state.editorDraft.hasText;
       this.emit('native-draft', this.nativeDraft);
@@ -301,7 +343,13 @@ export class OmpTuiSession extends EventEmitter {
 
   #onBridgeEvent(event) {
     this.emit('notification', { kind: 'bridge-event', event });
+    if (event.type === 'turn_model') {
+      const ticket = this.currentTicket ?? this.blockedTicket;
+      if (ticket && !ticket.effective) ticket.effective = { model: event.model, effort: event.effort };
+      if (ticket?.effective) this.effective = { ...this.effective, ...ticket.effective };
+    }
     if (event.type === 'state_change') this.#syncNativeState(event.state);
+    if (event.type === 'model_error') this.#syncNativeState(event.state);
     if (event.type === 'session_start') this.reportedSessionId = event.sessionId ?? this.reportedSessionId;
     else if (event.type === 'agent_start') { this.#agentStartSeen = true; this.#agentEndSeen = false; }
     else if (event.type === 'turn_end') {
@@ -400,7 +448,7 @@ export class OmpTuiSession extends EventEmitter {
         await this.collab?.drain();
         const answer = this.collab?.answer(promptId) ?? '';
         const turnError = this.#latestTurnError(promptId);
-        await this.onManualSettled?.({ promptId, jobId: this.manualJobId, text: answer, error: turnError ? (turnError.errorMessage || turnError.stopReason) : null });
+        await this.onManualSettled?.({ promptId, jobId: this.manualJobId, text: answer, error: turnError ? (turnError.errorMessage || turnError.stopReason) : null, effective: { ...this.manualTicket.effective } });
         if (this.currentTicket === this.manualTicket) {
           this.currentTicket = null; this.manualTicket = null; this.phase = 'idle'; this.busy = false;
           this.manualJobId = null; this.#changed();
@@ -560,7 +608,7 @@ export class OmpTuiSession extends EventEmitter {
       }
       this.phase = 'idle'; this.currentTicket = null; this.resolvedTickets.add(id);
       this.#resetSettleWaiter();
-      return { ...this.#promptReturn({ status: hostControlled ? 'aborted' : 'completed' }, { answer, receipts, id, completion: hostControlled ? 'host-control' : 'provider-completed', startedAt: ticket.startedAt }), collab: ticket.collab };
+      return { ...this.#promptReturn({ status: hostControlled ? 'aborted' : 'completed' }, { answer, receipts, id, completion: hostControlled ? 'host-control' : 'provider-completed', startedAt: ticket.startedAt, effective: ticket.effective }), collab: ticket.collab };
     } catch (error) {
       // A known settled failure/cancellation must not become an unresolved turn,
       // nor clear a newer ticket admitted after interrupt returned.
@@ -608,13 +656,13 @@ export class OmpTuiSession extends EventEmitter {
       return !this.stopRequested && !this.closed && !this.protocolEnded && this.ownerGeneration === generation && (this.currentTicket ?? this.blockedTicket) === ticket && this.#agentEndSeen && state?.isIdle === true && state?.hasPending === false;
     } catch { return false; }
   }
-  #promptReturn(result, { answer, receipts, id, completion, startedAt }) {
+  #promptReturn(result, { answer, receipts, id, completion, startedAt, effective }) {
     this.busy = false; this.#changed();
     return {
       text: answer, threadId: this.threadId, turnId: null, promptId: id,
       agentInvoked: receipts.length > 0 || answer.length > 0, files: [],
       controlReceipts: receipts, status: result.status === 'aborted' ? 'completed' : result.status, completion,
-      providerStatus: result.status, effective: { model: this.helloState?.model ?? this.model, effort: this.effort },
+      providerStatus: result.status, effective: { ...(effective ?? { model: this.model, effort: this.effort }) },
       metrics: { durationMs: Date.now() - startedAt, hostCalls: receipts.map(r => r.toolName), tokenCompleteness: 'unavailable', usage: this.capabilities.usage },
     };
   }
@@ -802,6 +850,7 @@ export class OmpTuiSession extends EventEmitter {
       threadId: this.threadId, sessionId: this.threadId, sessionFile: this.sessionFile,
       phase: this.phase, busy: this.busy, closed: this.closed, externalTurnId: this.externalTurnId,
       model: this.model, effort: this.effort, effective: this.effective ?? null, exit: this.exit ?? null,
+      desiredModel: this.desiredModel, pendingModel: this.pendingModel, modelError: this.modelError,
       toolsRegistered: true, toolsDigest: this.toolsDigest,
       startupSettled: this.phase !== 'ready-blocked-unsettled', blockedTicket: this.blockedTicket,
       promptsDelivered: this.promptsDelivered, ownerGeneration: this.ownerGeneration,

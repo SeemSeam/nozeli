@@ -57,12 +57,12 @@ try{
  assert(baseline.jobs.every(j=>!['running','queued'].includes(j.status)),'recovery must not admit or replay unresolved jobs');
  const jobs=baseline.jobs.map(j=>j.id);const ids=Object.fromEntries(['frontdesk','orchestrator'].map(r=>[r,baseline.residents[r].threadId]));
  record('retained-real-closure',{jobs:jobs.length,quota:baseline.quotaUsed,works:baseline.works.map(w=>({id:w.id,status:w.status,revision:w.revision}))});
- await app.page.evaluate(()=>document.querySelector('#agent-settings')?.click());
- await app.page.waitForSelector('#managed-settings[open]');
- const surface=await app.page.evaluate(()=>({providers:[...document.querySelectorAll('#managed-role-settings select')].map(n=>n.dataset.managedProvider),legacy:document.querySelectorAll('[data-managed-model],[data-managed-effort],#managed-load-models,#managed-omp-service,#agent-omp-service-config').length}));
- assert.deepEqual(surface.providers.sort(),['frontdesk','orchestrator','worker']);assert.equal(surface.legacy,0);
- await invoke(app.page,'session.capture',{name:'provider-only-settings'});
- await app.page.evaluate(()=>document.querySelector('#managed-settings-close').click());record('provider-only-visible-surface',surface);
+ await app.page.evaluate(()=>window.dispatchEvent(new CustomEvent('nozeli-open-settings',{detail:'settings-agents'})));
+ await app.page.waitForSelector('#settings-dialog[open] #settings-agents:not([hidden])');
+ const surface=await app.page.evaluate(()=>({limits:document.querySelectorAll('#settings-agents input[type=number]').length,legacy:document.querySelectorAll('[data-managed-provider],[data-managed-model],[data-managed-effort],#managed-load-models,#managed-omp-service,#agent-omp-service-config').length}));
+ assert.equal(surface.limits,2);assert.equal(surface.legacy,0);
+ await invoke(app.page,'session.capture',{name:'unified-agent-quota-settings'});
+ await app.page.evaluate(()=>document.querySelector('#settings-close').click());record('provider-only-visible-surface',surface);
  const projectB=path.join(evidence,'project-b');await fs.mkdir(projectB,{recursive:true});await fs.writeFile(path.join(projectB,'readme.md'),'Independent native restart isolation project.\n');
  const idB=createHash('sha256').update(projectB).digest('hex');
  await invoke(app.page,'project.pick',{directory:projectB});

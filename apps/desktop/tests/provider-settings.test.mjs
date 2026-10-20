@@ -22,3 +22,36 @@ test('login requires a supported selected provider, retains its identity and awa
  child.stdout.write('Open this URL in your browser:\nhttps://auth.example.test/authorize\n');assert.match(settings.loginStatus().output,/https:\/\/auth/);
  let answer='';child.stdin.on('data',data=>answer+=data);settings.inputLogin({id:login.id,text:'AUTH_CODE'});assert.equal(answer,'AUTH_CODE\n');assert.equal((await settings.cancelLogin({id:login.id})).state,'cancelled');assert.equal(child.signalCode,'SIGTERM');
 });
+test('default persistence failure never propagates to live Agents',async t=>{
+ const {settings}=await fixture(t);let propagated=0;settings.onDefaultsSaved=async()=>{propagated++;};
+ await fs.mkdir(settings.file);
+ await assert.rejects(settings.saveDefaults({frontdesk:'unit-source/model-real',orchestrator:'',worker:''}));
+ assert.equal(propagated,0);
+});
+test('concurrent saves persist and propagate in order with readable sync results',async t=>{
+ const {settings}=await fixture(t),first={frontdesk:'unit-source/model-real',orchestrator:'',worker:''},next={frontdesk:'',orchestrator:'unit-source/model-real',worker:''};
+ let release,entered;const gate=new Promise(r=>release=r),started=new Promise(r=>entered=r),calls=[];
+ settings.onDefaultsSaved=async(value,previous)=>{
+  assert.deepEqual(await settings.defaults(),value);
+  calls.push({value,previous});
+  if(calls.length===1){entered();await gate;}
+  return {applied:1,pending:1,failed:[{role:'worker',message:'Agent同步失败，请重试保存。'}]};
+ };
+ const a=settings.saveDefaults(first);await started;
+ const b=settings.saveDefaults(next);assert.equal(calls.length,1);assert.deepEqual(await settings.defaults(),first);
+ release();const results=await Promise.all([a,b]);
+ assert.deepEqual(calls,[{value:first,previous:{}},{value:next,previous:first}]);
+ assert.deepEqual(await settings.defaults(),next);
+ assert.deepEqual(results[1],{saved:true,sync:{applied:1,pending:1,failed:[{role:'worker',message:'Agent同步失败，请重试保存。'}]}});
+});
+test('post-persistence synchronization failure stays saved and redacts diagnostics',async t=>{
+ const {settings}=await fixture(t),value={frontdesk:'',orchestrator:'',worker:''};
+ settings.onDefaultsSaved=async()=>{throw Error('key=PRIVATE /private/path');};
+ const result=await settings.saveDefaults(value);
+ assert.equal(result.saved,true);assert.deepEqual(await settings.defaults(),value);assert.equal(result.sync.failed.length,1);
+ assert.ok(!JSON.stringify(result).includes('PRIVATE'));assert.ok(!JSON.stringify(result).includes('/private/path'));
+});
+test('settings refresh obtains current model synchronization status',async t=>{
+ const {settings}=await fixture(t);let pending=1;settings.getModelSync=()=>({applied:1-pending,pending,failed:[{role:'worker',message:'Agent同步失败，请重试保存。'}]});
+ assert.equal((await settings.status()).modelSync.pending,1);pending=0;const status=await settings.status();assert.equal(status.modelSync.pending,0);assert.equal(status.modelSync.applied,1);assert.equal(status.modelSync.failed[0].role,'worker');
+});

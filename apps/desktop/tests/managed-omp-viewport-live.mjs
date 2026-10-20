@@ -93,20 +93,16 @@ async function enableOmp(page, pid) {
   await page.click('[data-settings-section="settings-general"]');
   await page.click('#provider-console-toggle');
   await new Promise(r => setTimeout(r, 800));
-  await page.evaluate(() => document.querySelector('#agent-settings')?.click());
-  await new Promise(r => setTimeout(r, 1500));
-  await page.evaluate(() => { const p = document.querySelector('#managed-initial-provider'); p.value = 'omp'; p.dispatchEvent(new Event('change')); });
-  await new Promise(r => setTimeout(r, 3000));
-  await page.evaluate(() => [...document.querySelectorAll('#managed-settings button')].find(b => b.textContent.includes('启用三角色')).click());
+  await page.waitForFunction(async pid=>(await window.nozeli.invoke('managed.status',{projectId:pid})).value?.ready,{},pid);
   for (let i = 0; i < 120; i++) {
     await new Promise(r => setTimeout(r, 1000));
     const ready = await page.evaluate(async (pid) => {
-      if (document.querySelector('#managed-settings')?.open) return false;
+      if (document.querySelector('#settings-dialog')?.open) return false;
       try { const s = await window.nozeli.invoke('managed.status', { projectId: pid }); return s?.value?.ready === true; } catch { return false; }
     }, pid).catch(() => false);
     if (ready) return { ok: true };
   }
-  const statusText = await page.evaluate(() => document.querySelector('#managed-settings-status')?.textContent ?? '').catch(() => '');
+  const statusText = await page.evaluate(() => document.querySelector('#ai-status')?.textContent ?? '').catch(() => '');
   return { ok: false, reason: 'timeout waiting ready', statusText };
 }
 
@@ -135,14 +131,14 @@ try {
    return {viewport:{w:innerWidth,h:innerHeight,dpr:devicePixelRatio},console:rect(document.querySelector('#provider-console')),grid:rect(document.querySelector('#managed-terminal-grid')),panes:rect(document.querySelector('.managed-agent-panes')),cards:[...document.querySelectorAll('#managed-terminal-grid article:not([hidden])')].map(e=>({card:rect(e),out:rect(e.querySelector('.provider-output')),xterm:rect(e.querySelector('.xterm')),screen:rect(e.querySelector('.xterm-screen'))}))};
   });
   await app.page.screenshot({path:path.join(profile,name+'.png')});
-  await app.page.evaluate(()=>document.querySelector('#managed-terminal-settings')?.click());
-  const settings=await app.page.evaluate(()=>{const e=document.querySelector('#managed-settings'),r=e.getBoundingClientRect();return {open:e.open,x:r.x,y:r.y,w:r.width,h:r.height,scrollH:e.scrollHeight,clientH:e.clientHeight}});
+  await app.page.evaluate(()=>window.dispatchEvent(new CustomEvent('nozeli-open-settings',{detail:'settings-agents'})));
+  const settings=await app.page.evaluate(()=>{const e=document.querySelector('#settings-dialog'),r=e.getBoundingClientRect();return {open:e.open,x:r.x,y:r.y,w:r.width,h:r.height,scrollH:e.scrollHeight,clientH:e.clientHeight}});
   await app.page.screenshot({path:path.join(profile,name+'-settings.png')});
-  const settingsReach=await app.page.evaluate(()=>{const e=document.querySelector('#managed-settings');e.scrollTop=e.scrollHeight;const b=[...e.querySelectorAll('button')].filter(b=>b.checkVisibility()).at(-1);b?.scrollIntoView({block:'nearest'});const r=b?.getBoundingClientRect();return {bottomButton:b?.textContent,visible:Boolean(r&&r.top>=0&&r.bottom<=innerHeight),scrollTop:e.scrollTop,scrollWidth:e.scrollWidth,clientWidth:e.clientWidth}});
+  const settingsReach=await app.page.evaluate(()=>{const e=document.querySelector('#settings-dialog');e.scrollTop=e.scrollHeight;const b=[...e.querySelectorAll('button')].filter(b=>b.checkVisibility()).at(-1);b?.scrollIntoView({block:'nearest'});const r=b?.getBoundingClientRect();return {bottomButton:b?.textContent,visible:Boolean(r&&r.top>=0&&r.bottom<=innerHeight),scrollTop:e.scrollTop,scrollWidth:e.scrollWidth,clientWidth:e.clientWidth}});
   await app.page.screenshot({path:path.join(profile,name+'-settings-bottom.png')});
   assert.ok(settingsReach.visible,name+' settings bottom reachable');
   assert.ok(settingsReach.scrollWidth<=settingsReach.clientWidth+2,name+' settings no horizontal clipping');
-  await app.page.evaluate(()=>document.querySelector('#managed-settings')?.close());
+  await app.page.evaluate(()=>document.querySelector('#settings-dialog')?.close());
   await app.page.evaluate(()=>{const g=document.querySelector('.managed-agent-panes');g.scrollTop=g.scrollHeight;});
   await app.page.screenshot({path:path.join(profile,name+'-terminal-bottom.png')});
   const status=await app.page.evaluate(async pid=>(await window.nozeli.invoke('managed.status',{projectId:pid})).value,pidOf(projectA));

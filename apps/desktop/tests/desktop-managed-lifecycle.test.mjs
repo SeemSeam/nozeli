@@ -88,7 +88,7 @@ try {
   const id=(await invoke('project.recent')).projects[0].id;
   await stage('waiting-managed-ready');
   await page.waitForFunction(async id=>(await window.nozeli.invoke('managed.status',{projectId:id})).value?.ready,{},id).catch(async error=>{report.managedFailure=await page.evaluate(async id=>({status:await window.nozeli.invoke('managed.status',{projectId:id}),label:document.querySelector('#ai-status')?.textContent}),id);throw error;});
-  assert.equal(await page.$eval('#managed-settings',n=>n.open),false);await page.waitForSelector('[data-managed-terminal=frontdesk]');await page.waitForSelector('[data-managed-terminal=orchestrator]');report.checks.push('opening project auto-enables managed agents and mounts resident cards without setup');
+  assert.equal(await page.$eval('#settings-dialog', n=>n.open),false);await page.waitForSelector('[data-managed-terminal=frontdesk]');await page.waitForSelector('[data-managed-terminal=orchestrator]');report.checks.push('opening project auto-enables managed agents and mounts resident cards without setup');
   await stage('managed-ready');
   const state=async()=>(await invoke('managed.status',{projectId:id})).state;
   const wait=async predicate=>{for(let i=0;i<200;i++){const s=await state();if(predicate(s))return s;await new Promise(r=>setTimeout(r,25));}throw Error('state timeout');};

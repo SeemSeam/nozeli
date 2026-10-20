@@ -51,7 +51,7 @@ async function optional(file,fallback){try{return await fs.readFile(file,'utf8')
   return walk(root);
  }
 export class ProviderSettings {
- constructor({source,broker,command,sourceEnv=process.env,isReferenced=async()=>false,spawnFn=spawn}){Object.assign(this,{source,broker,command,sourceEnv,isReferenced,spawnFn});this.queue=Promise.resolve();this.login=null;}
+ constructor({source,broker,command,sourceEnv=process.env,isReferenced=async()=>false,spawnFn=spawn,onDefaultsSaved=async()=>({applied:0,pending:0,failed:[]}),getModelSync=()=>({applied:0,pending:0,failed:[]})}){Object.assign(this,{source,broker,command,sourceEnv,isReferenced,spawnFn,onDefaultsSaved,getModelSync});this.queue=Promise.resolve();this.login=null;}
  serial(fn){const result=this.queue.then(fn);this.queue=result.catch(()=>{});return result;}
  get file(){return path.join(this.source.agentDir,'nozeli-role-defaults.json');}
  async defaults(){const value=JSON.parse(await optional(this.file,'{"schema":1,"roles":{}}'));if(value.schema!==1||!value.roles||typeof value.roles!=='object')fail('全局模型配置无效，原文件已保留。');return value.roles;}
@@ -91,7 +91,7 @@ export class ProviderSettings {
    child.on('close',code=>{try{if(code!==0)throw Error();const rows=JSON.parse(output);if(!Array.isArray(rows)||rows.some(p=>!text(p.id,64)||!/^[-a-z0-9_.]+$/.test(p.id)||!text(p.name,300)))throw Error();finish(false,rows.map(({id,name})=>({id,name})));}catch{finish(true);}});
   });
  }
- async status(){await this.queue;const [snapshot,models,defaults]=await Promise.all([this.request('/v1/snapshot'),this.models(),this.defaults()]);const doc=await this.readModels();const sources=new Map();for(const entry of snapshot.credentials??[])sources.set(entry.provider,{provider:entry.provider,type:entry.credential?.type==='oauth'?'oauth':'api',configured:true});for(const [provider,config]of Object.entries(doc.value.providers??{}))sources.set(provider,{provider,type:'api',configured:true,baseUrl:typeof config.baseUrl==='string'?this.safeUrl(config.baseUrl):'',models:(config.models??[]).map(m=>m.id).filter(id=>text(id,200))});return {sources:[...sources.values()],models,defaults,login:this.loginStatus(),notice:'全局默认仅绑定新会话；已有会话及其原生配置保持不变。新增API源只自动进入新建Agent配置目录，已有目录请在项目原生OMP设置中管理。'};}
+ async status(){await this.queue;const [snapshot,models,defaults]=await Promise.all([this.request('/v1/snapshot'),this.models(),this.defaults()]);const doc=await this.readModels();const sources=new Map();for(const entry of snapshot.credentials??[])sources.set(entry.provider,{provider:entry.provider,type:entry.credential?.type==='oauth'?'oauth':'api',configured:true});for(const [provider,config]of Object.entries(doc.value.providers??{}))sources.set(provider,{provider,type:'api',configured:true,baseUrl:typeof config.baseUrl==='string'?this.safeUrl(config.baseUrl):'',models:(config.models??[]).map(m=>m.id).filter(id=>text(id,200))});return {sources:[...sources.values()],models,defaults,modelSync:await this.getModelSync(),login:this.loginStatus(),notice:'保存默认模型后联动所有项目同角色的在线Agent；进行中的回合结束后应用。休眠Agent在下次恢复原线程时应用；清空默认不强制切换，历史回合保持不变。'};}
  safeUrl(value){try{const u=new URL(value);return ['http:','https:'].includes(u.protocol)&&!u.username&&!u.password&&!u.search&&!u.hash?u.href:'';}catch{return '';}}
  async readModels(){let file=path.join(this.source.agentDir,'models.yml');if(await optional(file,null)===null&&await optional(path.join(this.source.agentDir,'models.yaml'),null)!==null)file=path.join(this.source.agentDir,'models.yaml');let value;try{value=parse(await optional(file,''))??{};}catch{fail('原生模型配置无效，原文件已保留。');}if(typeof value!=='object'||Array.isArray(value)||value.providers&&(typeof value.providers!=='object'||Array.isArray(value.providers)))fail('原生模型配置无效，原文件已保留。');return {file,value};}
  saveApi(payload){const p=validateApiSource(payload);return this.serial(async()=>{
@@ -109,7 +109,20 @@ export class ProviderSettings {
   }
   return {saved:true};
  });}
- saveDefaults(payload){if(!payload||Object.keys(payload).some(k=>!roles.includes(k))||roles.some(role=>typeof payload[role]!=='string'))fail('三角色默认配置无效。');const value=structuredClone(payload);return this.serial(async()=>{const models=await this.models();for(const role of roles)if(value[role]&&!models.some(m=>m.selector===value[role]))fail('所选模型不在当前已配置OMP目录中，请刷新。');await atomic(this.file,JSON.stringify({schema:1,roles:value},null,2)+'\n');return {saved:true};});}
+ saveDefaults(payload){
+  if(!payload||Object.keys(payload).some(k=>!roles.includes(k))||roles.some(role=>typeof payload[role]!=='string'))fail('三角色默认配置无效。');
+  const value=structuredClone(payload);
+  return this.serial(async()=>{
+   const models=await this.models();
+   for(const role of roles)if(value[role]&&!models.some(m=>m.selector===value[role]))fail('所选模型不在当前已配置OMP目录中，请刷新。');
+   const previous=await this.defaults();
+   await atomic(this.file,JSON.stringify({schema:1,roles:value},null,2)+'\n');
+   let sync;
+   try{sync=await this.onDefaultsSaved(structuredClone(value),previous);}
+   catch{sync={applied:0,pending:0,failed:[{message:'默认配置已保存，但在线Agent同步未完成；请重试保存。'}]};}
+   return {saved:true,sync};
+  });
+ }
  remove(payload){if(!payload||Object.keys(payload).some(k=>!['provider','confirm'].includes(k))||!text(payload.provider,64)||payload.confirm!==payload.provider)fail('请输入完整源ID确认移除。');return this.serial(async()=>{const provider=payload.provider;const defaults=await this.defaults();if(Object.values(defaults).some(s=>s.startsWith(provider+'/'))||await this.isReferenced(provider))fail('此源仍被全局默认或已有会话引用，未移除。请先解除引用。');const doc=await this.readModels();const snapshot=await this.request('/v1/snapshot');for(const entry of snapshot.credentials??[])if(entry.provider===provider)await this.request('/v1/credential/'+entry.id+'/disable',{cause:'removed explicitly in Nozeli settings'});if(doc.value.providers&&Object.hasOwn(doc.value.providers,provider)){delete doc.value.providers[provider];await atomic(doc.file,stringify(doc.value));}return {removed:true};});}
  loginStatus(){if(!this.login)return null;const {id,provider,name,state,output}=this.login;return {id,provider,name,state,output};}
  async startLogin(payload){

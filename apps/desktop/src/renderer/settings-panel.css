@@ -24,4 +24,8 @@
 [data-provider-api-form],[data-provider-login-form]{margin-top:18px;padding-top:12px;border-top:1px solid var(--line)}
 @media(max-width:600px){.settings-nav{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));overflow:visible}.settings-nav button{white-space:normal;min-width:0}.settings-heading p{font-size:.85em;overflow-wrap:anywhere}}
 #file-tree .tree-hidden-item{opacity:.6}#file-tree .tree-hidden-label{font-size:.8em;margin-left:6px;color:var(--muted)}#file-tree .tree-visibility-notice{padding:8px 12px;font-size:11px;white-space:normal}
-.settings-nav #provider-console-toggle,.settings-nav #settings-zen{grid-column:1/-1;font-weight:600;border-bottom:1px solid var(--line)}
+.settings-nav #settings-zen{grid-column:1/-1;font-weight:600;border-bottom:1px solid var(--line)}
+.settings-scope-label{display:flex;flex-direction:column;gap:3px;margin:12px 2px 2px;padding:12px 10px 2px;border-top:1px dashed var(--line);color:var(--muted);font-size:.8em;line-height:1.5}
+.settings-scope-label small{font-size:.9em;opacity:.8}
+.settings-scope-divider{margin:20px 0 8px;padding-top:12px;border-top:1px dashed var(--line);color:var(--muted);font-size:.8em;line-height:1.6}
+@media(max-width:600px){.settings-scope-label{grid-column:1/-1;flex-direction:row;align-items:baseline;gap:8px;margin-top:4px;padding-top:8px}}

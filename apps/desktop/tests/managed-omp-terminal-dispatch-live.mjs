@@ -91,20 +91,16 @@ async function enableOmp(page, pid) {
   await page.click('[data-settings-section="settings-general"]');
   await page.click('#provider-console-toggle');
   await new Promise(r => setTimeout(r, 800));
-  await page.evaluate(() => document.querySelector('#agent-settings')?.click());
-  await new Promise(r => setTimeout(r, 1500));
-  await page.evaluate(() => { const p = document.querySelector('#managed-initial-provider'); p.value = 'omp'; p.dispatchEvent(new Event('change')); });
-  await new Promise(r => setTimeout(r, 3000));
-  await page.evaluate(() => [...document.querySelectorAll('#managed-settings button')].find(b => b.textContent.includes('启用三角色')).click());
+  await page.waitForFunction(async pid=>(await window.nozeli.invoke('managed.status',{projectId:pid})).value?.ready,{},pid);
   for (let i = 0; i < 120; i++) {
     await new Promise(r => setTimeout(r, 1000));
     const ready = await page.evaluate(async (pid) => {
-      if (document.querySelector('#managed-settings')?.open) return false;
+      if (document.querySelector('#settings-dialog')?.open) return false;
       try { const s = await window.nozeli.invoke('managed.status', { projectId: pid }); return s?.value?.ready === true; } catch { return false; }
     }, pid).catch(() => false);
     if (ready) return { ok: true };
   }
-  const statusText = await page.evaluate(() => document.querySelector('#managed-settings-status')?.textContent ?? '').catch(() => '');
+  const statusText = await page.evaluate(() => document.querySelector('#ai-status')?.textContent ?? '').catch(() => '');
   return { ok: false, reason: 'timeout waiting ready', statusText };
 }
 

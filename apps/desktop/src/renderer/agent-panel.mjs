@@ -8,7 +8,7 @@ const $ = (id) => document.getElementById(id);
 
 
 import {mountSettingsPanel} from './settings-panel.mjs';
-export function mountAgent({ invoke, toast, attachment, openManaged, openProjectFile, openExternal, openFrozenChange, onMessages = () => {}, onConversation = () => {}, subscribe = window.nozeli.subscribe }) {
+export function mountAgent({ invoke, toast, attachment, getProjectId, openManaged, openProjectFile, openExternal, openFrozenChange, onMessages = () => {}, onConversation = () => {}, subscribe = window.nozeli.subscribe }) {
   const managed = mountManagedAgent({invoke,toast,onMessages,openManaged,onConversation,openProjectFile,openExternal,openFrozenChange});
   let projectId = null;
   let generation = 0;
@@ -118,18 +118,11 @@ export function mountAgent({ invoke, toast, attachment, openManaged, openProject
       if (id === projectId && gen === generation) setAi(error.message, 'failed');
     }
   }
-  async function openProjectSettings() {
-    await configuration.ready;
-    if (!configuration.initialized) return configuration.open();
-    if (projectId) return managed.settings(projectId);
-    toast('请先打开一个项目；应用默认模型可在设置中独立调整。');
-  }
-  const settingsPanel=mountSettingsPanel({invoke,onProjectSettings:openProjectSettings,onInitialize:async()=>{
+  const settingsPanel=mountSettingsPanel({invoke,getProjectId,onInitialize:async()=>{
     await configuration.ready;
     if(!configuration.initialized)return configuration.open();
     toast('Nozeli 独立配置已初始化，无需重复导入。');
   }});
-  $('agent-settings').addEventListener('click',()=>void settingsPanel.open());
   async function openConsole() {
     if (!projectId) return;
     window.dispatchEvent(new Event('nozeli-layout-change'));
@@ -152,9 +145,8 @@ export function mountAgent({ invoke, toast, attachment, openManaged, openProject
     const head=roleCard(role).querySelector('header');
     const trigger=document.createElement('button');trigger.type='button';trigger.className='provider-role-action';trigger.id='terminal-menu-'+role;setIconButton(trigger,'ellipsis');trigger.title=role==='qa'?'前台 Agent 设置':'后台 Agent 设置';trigger.setAttribute('aria-label',trigger.title);head.append(trigger);
     const menu=document.createElement('div');menu.className='surface-menu';menu.id='terminal-actions-'+role;
-    const settings=document.createElement('button');settings.type='button';settings.textContent='项目 Agent 设置';settings.onclick=()=>$('agent-settings').click();
     const reconnect=role==='qa'?$('provider-console-refresh'):document.createElement('button');reconnect.type='button';reconnect.textContent='刷新终端视图';reconnect.onclick=()=>refreshConsole();
-    menu.append(settings,reconnect);document.body.append(menu);mountPopupMenu(trigger,menu);
+    menu.append(reconnect);document.body.append(menu);mountPopupMenu(trigger,menu);
   }
   $('quit-stay').addEventListener('click', async () => {
     $('quit-choice').close();
@@ -170,6 +162,7 @@ export function mountAgent({ invoke, toast, attachment, openManaged, openProject
   });
   $('composer').addEventListener('input', () => { if(projectId)restoredDraft=$('composer').value; });
   window.__agentProject = (id, {draft = ''} = {}) => {
+    void invoke('managed.project.active',{projectId:id||null}).then(result=>{if(!result?.ok)toast(result?.error?.message||'更新活跃项目失败');}).catch(error=>toast(error.message));
     managed.clear({rememberDraft:false});
     // The workspace supplies its restored draft explicitly; never infer it from the old composer.
     if (projectId !== id) {
@@ -179,6 +172,7 @@ export function mountAgent({ invoke, toast, attachment, openManaged, openProject
     }
     filePaths = new Set();
     projectId = id;
+    settingsPanel.projectChanged();
     restoredDraft = draft;
     $('send-message').disabled = true;
     $('selection-discuss').disabled = false;

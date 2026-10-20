@@ -17,14 +17,99 @@ import {SessionIndex} from './managed/session-index.mjs';
 import {WorkChanges} from './managed/work-changes.mjs';
 import {readWorkerArchive} from './managed/worker-archive.mjs';
 import {residentHistoryPage} from './managed/resident-history.mjs';
+import {AgentProcessBudget,validateAgentLimit} from './managed/agent-process-budget.mjs';
+import {Workspace} from './managed/workspace.mjs';
+import {recoverOmpProvider} from './managed/omp-process-ownership.mjs';
+import {recoverProvider} from './managed/process-ownership.mjs';
 export class ManagedProjects {
  constructor({userDataDir,host,legacy,beforeDocumentOperation,ompSystemSource=null,ompAuthBroker=null,ompCommand,openController=Controller.open,attachTerminal=attachNativeTerminal}){
   Object.assign(this,{host,legacy,beforeDocumentOperation,openController,attachTerminal,ompOptions:{ompSystemSource,ompCommand,ompAuthBroker}});
   this.versions=new Map();   // ShadowVersions per project（connect 中 set 前必须初始化）
   this.connectionErrors=new Map();this.handoffFlights=new Map();
   this.root=path.join(userDataDir,'nozeli','managed-v1');this.controllers=new Map();this.flights=new Map();this.terminalFlights=new Map();this.listener=()=>{};this.stopping=false;const helper={command:process.execPath,args:[...(process.versions.electron&&process.platform==='linux'?['--ozone-platform=headless']:[]),...(!process.versions.electron||process.defaultApp?[fileURLToPath(new URL('../main/main.cjs',import.meta.url))]:[]),'--nozeli-terminal-client']};this.systemTerminals=new SystemTerminalBridge({root:path.join(this.root,'terminal-tickets'),helper});
+  this.activeProjectId=null;this.projectActivity=new Map();this.resourceFlights=new Map();
+  this.processBudget=new AgentProcessBudget({file:path.join(userDataDir,'agent-resources.json'),onAvailable:()=>{for(const c of this.controllers.values())c.kick?.();}});
+  this.processBudget.reclaim=(id,target)=>this.reclaimInactive(id,{target});
  }
  onEvent(fn){this.listener=fn;}
+ applyModelDefaults(defaults){
+  const next=structuredClone(defaults);
+  const operation=(this.modelDefaultsFlight??Promise.resolve()).catch(()=>{}).then(async()=>{
+   const sync={applied:0,pending:0,failed:[]};
+   this.modelDefaultFailures=new Map();
+   if(this.stopping)return sync;
+   await Promise.all([...this.controllers.values()].map(async controller=>{
+    if(controller.stopping)return;
+    try{const result=await controller.applyModelDefaults(next);sync.applied+=result.applied;sync.pending+=result.pending;sync.failed.push(...result.failed);}
+    catch{const failure={message:'项目在线Agent默认模型同步失败；配置已保存，可重试保存。'};this.modelDefaultFailures.set(controller,failure);sync.failed.push(failure);}
+   }));
+   return sync;
+  });
+  this.modelDefaultsFlight=operation;return operation;
+ }
+ modelSync(){
+  const sync={applied:0,pending:0,failed:[]};
+  for(const controller of this.controllers.values()){
+   if(controller.stopping)continue;
+   const failure=this.modelDefaultFailures?.get(controller);if(failure){sync.failed.push(failure);continue;}
+   const result=controller.modelSync();sync.applied+=result.applied;sync.pending+=result.pending;sync.failed.push(...result.failed);
+  }
+  return sync;
+ }
+ async initializeResources(){
+  if(this.resourceReady)return this.resourceReady;
+  const flight=(async()=>{
+   await this.processBudget.load();let entries;try{entries=await fs.readdir(this.root,{withFileTypes:true});}catch(error){if(error.code==='ENOENT')return;throw error;}
+   const records=[];
+   for(const entry of entries){if(!entry.isDirectory()||entry.name==='terminal-tickets')continue;const runtime=path.join(this.root,entry.name,'runtime');let state;try{state=JSON.parse(await fs.readFile(path.join(runtime,'state.json'),'utf8'));}catch(error){if(error.code==='ENOENT')continue;throw error;}
+    for(const [target,record] of Object.entries(state.providers??{}))records.push({runtime,record,slot:this.processBudget.restoreSlot(entry.name,target)});
+   }
+   for(const {runtime,record,slot} of records)try{const receipt=await (['omp-rpc','omp-tui'].includes(record.kind)?recoverOmpProvider(record,runtime):recoverProvider(record,runtime));if(receipt.verified===true)this.processBudget.release(slot);}catch{slot.state='unconfirmed';}
+  })();this.resourceReady=flight;try{return await flight;}catch(error){if(this.resourceReady===flight)this.resourceReady=null;throw error;}
+ }
+ validateResourceProject(id){if(id!==undefined&&id!==null&&(typeof id!=='string'||!id.trim()||id.trim()!==id||id.length>200))throw new HostError('INVALID_PAYLOAD','项目身份无效');}
+ async resourceStatus(projectId){
+  this.validateResourceProject(projectId);
+  await this.initializeResources();let projectLimit=null,projectUsed=0;
+  if(projectId){await this.host.requireProject(projectId);const state=this.controllers.get(projectId)?.store?.state??(await this.projectionSource(projectId)).state;projectLimit=state.limit??1;projectUsed=(state.works??[]).filter(w=>!['queued','ended'].includes(w.status)&&w.revision>0).length;}
+  const agents=this.processBudget.agents();
+  for(const [id,c] of this.controllers){for(const target of ['frontdesk','orchestrator',...(c.store?.state?.works??[]).filter(w=>!['queued','closing','ended'].includes(w.status)).map(w=>w.id)]){
+   const slot=agents.find(slot=>slot.projectId===id&&slot.target===target),session=c.sessions?.get(target);
+   if(slot&&session){slot.state=slot.state==='unconfirmed'?'unconfirmed':session.busy||c.running?.has(target)?'running':slot.state==='starting'?'starting':'idle';slot.blockedReason=c.externalTerminalTargets?.has(target)?'系统终端正在使用':c.nativeDraftTargets?.has(target)?'原生终端有未发送草稿':session.busy||c.running?.has(target)?'任务执行中':c.terminals?.has(target)&&id===this.activeProjectId?'当前内置终端正在使用':null;}
+   else if(!slot)agents.push({projectId:id,target,state:'sleeping'});
+  }}
+  const projectNames=new Map();for(const agent of agents){if(!projectNames.has(agent.projectId)){try{const project=await this.host.requireProject(agent.projectId);projectNames.set(agent.projectId,project.name??project.title??null);}catch{projectNames.set(agent.projectId,null);}}agent.projectName=projectNames.get(agent.projectId);const work=this.controllers.get(agent.projectId)?.store?.state?.works?.find(w=>w.id===agent.target);if(work?.name)agent.workName=work.name;}
+  return {globalLimit:this.processBudget.limit,globalUsed:this.processBudget.used,projectLimit,projectUsed,agents};
+ }
+ async saveResourceLimits(payload={}){
+  if(!payload||typeof payload!=='object'||Array.isArray(payload)||Object.keys(payload).some(key=>!['globalLimit','projectId','projectLimit'].includes(key)))throw new HostError('INVALID_PAYLOAD','Agent 设置参数无效');
+  const {globalLimit,projectId,projectLimit}=payload;validateAgentLimit(globalLimit);if(projectLimit!==undefined){validateAgentLimit(projectLimit,{project:true});if(!projectId)throw new HostError('INVALID_PAYLOAD','项目 Worker 设置需要当前项目');}
+  this.validateResourceProject(projectId);
+  await this.initializeResources();if(projectId)await this.host.requireProject(projectId);
+  const prior=this.resourceFlights.get(projectId),connecting=this.flights.get(projectId);
+  const operation=(async()=>{
+   await prior?.catch(()=>{});await connecting;let store=this.controllers.get(projectId)?.store,owned=false;
+   if(projectLimit!==undefined&&!store){const project=await this.host.requireProject(projectId);store=await Workspace.open(path.join(this.root,projectId,'runtime'),project.root,{recoverStale:true});owned=true;}
+   try{await this.processBudget.save(globalLimit,async()=>{if(projectLimit!==undefined)await store.mutate(()=>{const used=store.used();if(projectLimit<used)throw Object.assign(Error(`项目 Worker 数量不能低于当前占用 ${used}（包括暂停、待审阅与关闭中工作）`),{code:'AGENT_LIMIT_IN_USE'});store.state.limit=projectLimit;});});this.controllers.get(projectId)?.changed?.();}
+   finally{if(owned)await store.close();}
+  })();if(projectId)this.resourceFlights.set(projectId,operation);
+  try{await operation;return this.resourceStatus(projectId);}finally{if(this.resourceFlights.get(projectId)===operation)this.resourceFlights.delete(projectId);}
+ }
+ async setActiveProject(id){
+  this.validateResourceProject(id);if(id===undefined)throw new HostError('INVALID_PAYLOAD','项目身份无效');const epoch=this.activationEpoch=(this.activationEpoch??0)+1;
+  if(id!==null)await this.host.requireProject(id);if(epoch!==this.activationEpoch)return {superseded:true};this.activeProjectId=id;if(id)this.projectActivity.set(id,Date.now());
+  await this.initializeResources();if(epoch!==this.activationEpoch)return {superseded:true};await this.reclaimInactive(id,{all:true});
+  if(epoch!==this.activationEpoch)return {superseded:true};
+  if(id&&(this.controllers.has(id)||(await this.config(id)).enabled)){if(epoch!==this.activationEpoch)return {superseded:true};return this.connect(id);}
+  return this.resourceStatus(id??undefined);
+ }
+ reclaimInactive(requestingId,{all=false,target:requestedTarget}={}){
+  const operation=(this.reclaimFlight??Promise.resolve()).catch(()=>{}).then(async()=>{
+   const candidates=[...this.controllers.entries()].filter(([id])=>id!==this.activeProjectId&&id!==requestingId).sort(([a],[b])=>(this.projectActivity.get(a)??0)-(this.projectActivity.get(b)??0));
+   for(const [id,c] of candidates){for(const target of c.sessions?.keys()??[]){if(!all&&this.processBudget.available)return;try{await c.reclaimIdle?.(target,{hiddenTerminal:true});}catch(error){this.listener({projectId:id,kind:'managed-error',text:'空闲 Agent 回收未确认，名额保留：'+error.message});}}}
+   if(!all&&!this.processBudget.available&&requestedTarget){const c=this.controllers.get(requestingId),targets=['orchestrator','frontdesk',...(c?.sessions?.keys()??[])];for(const target of new Set(targets)){if(this.processBudget.available)break;if(target===requestedTarget)continue;try{await c?.reclaimIdle?.(target);}catch(error){this.listener({projectId:requestingId,kind:'managed-error',text:'空闲 Agent 回收未确认，名额保留：'+error.message});}}}
+  });this.reclaimFlight=operation;return operation;
+ }
  async config(id){await this.host.requireProject(id);try{return JSON.parse(await fs.readFile(path.join(this.root,id,'binding.json')));}catch(e){if(e.code==='ENOENT')return {enabled:false};throw e;}}
  async status(id){
   const binding=await this.config(id),controller=this.controllers.get(id),failure=this.connectionErrors.get(id);let state=controller?.snapshot()??null;
@@ -44,10 +129,11 @@ export class ManagedProjects {
  }
  async connect(id,{enable=false}={}){
   if(this.stopping)throw new Error('application closing');
+  await this.initializeResources();await this.resourceFlights.get(id);this.projectActivity.set(id,Date.now());
   const project=await this.host.requireProject(id);if(!enable&&!(await this.config(id)).enabled)return this.status(id);
   if(this.flights.has(id))return this.flights.get(id);
   if(this.controllers.has(id)){
-   const retained=this.controllers.get(id);if(retained.started||this.connectionErrors.get(id)?.handoff)return this.status(id);
+   const retained=this.controllers.get(id);if(this.connectionErrors.get(id)?.handoff)return this.status(id);if(retained.started&&(!retained.sessions||['frontdesk','orchestrator'].every(target=>retained.sessions.get(target)&&!retained.sessions.get(target).closed)))return this.status(id);
    const restart=(async()=>{try{await retained.start();this.connectionErrors.delete(id);return this.status(id);}catch(error){let handoff=null,blocked=null;if(error.code==='OMP_TOOLS_DIGEST_MISMATCH')try{handoff=await retained.prepareResidentHandoff(error.target);}catch(unsafe){blocked={code:unsafe.code??'HANDOFF_UNSAFE',message:unsafe.message};}this.connectionErrors.set(id,{error:{code:error.code??'RESIDENT_START_FAILED',message:error.message,role:error.target??null,blocked},handoff});throw error;}})().finally(()=>{if(this.flights.get(id)===restart)this.flights.delete(id);});this.flights.set(id,restart);return restart;
   }
   const flight=(async()=>{
@@ -70,8 +156,8 @@ export class ManagedProjects {
      finally{checkpointInFlight.delete(requestId);}
    };
    const frontdeskDocuments=createFrontdeskDocuments({host:this.host,projectId:id,sync:this.beforeDocumentOperation});
-   const controller=await this.openController({projectId:id,runtimeRoot:path.join(this.root,id,'runtime'),contentRoot:project.root,...this.ompOptions,frontdeskDocuments,afterAdoption:(work,receipt)=>recordAdoption({host:this.host,projectId:id,work,receipt}),beforeAccept:async work=>{for(const relPath of work.execution?.candidate?.files||[]){const release=await this.beforeDocumentOperation?.({projectId:id,relPath,hold:false});release?.();const draft=await this.host.readDraftRecord(id,relPath);if(draft?.draftError||draft&&draft.status!=='saved')throw new HostError('DRAFT_CONFLICT','成果合入受阻：请先保存或明确处理原项目草稿 '+relPath);}},isolateProcesses:true,readProjectText:async rel=>{const file=await this.host.readFile(id,rel);if(file.draftError)throw new HostError(file.draftError.code||'DRAFT_CONFLICT',file.draftError.message||'项目草稿无法读取。');const draft=file.draft&&file.draft.status!=='saved'?file.draft:null;return {text:draft?.text??file.text,buffer:Boolean(draft),diskVersion:file.digest};}});
-   controller.on('state',state=>{this.listener({projectId:id,kind:'managed-state',state});});controller.on('diagnostic',text=>this.listener({projectId:id,kind:'managed-error',text}));
+   const controller=await this.openController({projectId:id,processBudget:this.processBudget,runtimeRoot:path.join(this.root,id,'runtime'),contentRoot:project.root,...this.ompOptions,frontdeskDocuments,afterAdoption:(work,receipt)=>recordAdoption({host:this.host,projectId:id,work,receipt}),beforeAccept:async work=>{for(const relPath of work.execution?.candidate?.files||[]){const release=await this.beforeDocumentOperation?.({projectId:id,relPath,hold:false});release?.();const draft=await this.host.readDraftRecord(id,relPath);if(draft?.draftError||draft&&draft.status!=='saved')throw new HostError('DRAFT_CONFLICT','成果合入受阻：请先保存或明确处理原项目草稿 '+relPath);}},isolateProcesses:true,readProjectText:async rel=>{const file=await this.host.readFile(id,rel);if(file.draftError)throw new HostError(file.draftError.code||'DRAFT_CONFLICT',file.draftError.message||'项目草稿无法读取。');const draft=file.draft&&file.draft.status!=='saved'?file.draft:null;return {text:draft?.text??file.text,buffer:Boolean(draft),diskVersion:file.digest};}});
+   controller.on('state',state=>{this.listener({projectId:id,kind:'managed-state',state});if(this.activeProjectId!==null&&id!==this.activeProjectId&&!controller.stopping)queueMicrotask(()=>{void this.reclaimInactive(this.activeProjectId,{all:true});});});controller.on('diagnostic',text=>this.listener({projectId:id,kind:'managed-error',text}));
    controller.on('timeline',timeline=>this.listener({projectId:id,kind:'managed-timeline',timeline}));
    controller.on('files-changed',event=>{void checkpointAdopted(event);this.listener({...event,projectId:id,kind:'managed-files-changed'});});
    controller.on('native-terminal-event',event=>{const {target,screen,method,...payload}=event,terminalId=controller.terminals.get(target)?.terminalId,key=id+':'+target;if(screen)this.listener({projectId:id,kind:'managed-terminal-screen',target,terminalId,...screen});else if(method)this.listener({projectId:id,kind:'managed-terminal-diagnostic',target,terminalId,method});else{if(payload.ended)void this.systemTerminals.close(key);else this.systemTerminals.output(key,payload.data,payload.seq);this.listener({projectId:id,kind:'managed-terminal',target,terminalId,...payload});}});
@@ -101,7 +187,7 @@ export class ManagedProjects {
      let handoff=null,blocked=null;try{handoff=await controller.prepareResidentHandoff(e.target);}catch(error){blocked={code:error.code??'HANDOFF_UNSAFE',message:error.message};}
      this.connectionErrors.set(id,{error:{code:e.code,message:e.message,role:e.target??null,blocked},handoff});
      this.listener({projectId:id,kind:'managed-error',text:'OMP工具协议已变化，原会话保留；需要用户确认新会话接手。'});throw e;
-    }this.controllers.delete(id);await controller.stop().catch(()=>{});throw e;}
+    }if(e.code==='AGENT_PROCESS_LIMIT'){this.connectionErrors.set(id,{error:{code:e.code,message:e.message},handoff:null});throw e;}this.controllers.delete(id);await controller.stop().catch(()=>{});throw e;}
   })().finally(()=>this.flights.delete(id));this.flights.set(id,flight);return flight;
  }
  async handoffResident(id,p){

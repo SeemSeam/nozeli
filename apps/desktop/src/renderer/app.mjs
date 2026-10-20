@@ -2302,7 +2302,7 @@ async function openBesideSnapshot(file, diff=false) {
       $('save-status').textContent = report.historyError ? '读取失败 · 原记录保留' : report.history ? '只读 · 可另存到项目目录' : report.objectId ? '可另存到项目目录' : report.writtenBack === false ? '未写回源文件' : report.writtenBack === true ? '源文件有变化' : '写回未核验';
     });
   }
-  mountAgent({invoke,toast:text=>workspace.toast(text),attachment:()=>ui.managedReport || ui.file?.kind!=='text'?null:ui.file.relPath,openManaged,openFrozenChange,onMessages:applyAgentMessages,
+  mountAgent({invoke,getProjectId:()=>ui.project?.id??null,toast:text=>workspace.toast(text),attachment:()=>ui.managedReport || ui.file?.kind!=='text'?null:ui.file.relPath,openManaged,openFrozenChange,onMessages:applyAgentMessages,
     onConversation:info=>workspace.conversationContent(info),
     openProjectFile:target=>target.projectId===ui.project?.id?openMarkdownTarget(target):null,
     openExternal:url=>invoke('links.openExternal',{url}).then(result=>{if(!result.ok)workspace.toast(result.error.message);}),
