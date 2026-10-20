@@ -2,9 +2,10 @@
   "name": "nozeli-desktop",
   "version": "0.1.0-alpha",
   "private": true,
+  "license": "AGPL-3.0-only",
   "type": "module",
   "main": "src/main/main.cjs",
-  "description": "Nozeli desktop reading development build. Not an installer and not R0 acceptance.",
+  "description": "Nozeli：让人与 Agent 在同一工作面持续阅读、理解与创作。",
   "scripts": {
     "test:word-authorship": "node --test tests/word-authorship.test.mjs tests/document-context-menu.test.mjs && npm run build:renderer && node tests/desktop-word-authorship.test.mjs",
     "test:document-versions": "node --test tests/document-versions.test.mjs && npm run build:renderer && node tests/desktop-document-versions.test.mjs",

@@ -53,6 +53,7 @@ export async function packageRelease({root, release, source}) {
   await fs.writeFile(path.join(release, 'INSTALLATION.json'), JSON.stringify({application: 'Nozeli', version: manifest.version, installedAt: new Date().toISOString(), kind: 'local-development-snapshot', platform: process.platform, arch: process.arch, state: 'building'}, null, 2));
   await fs.cp(electron, release, {recursive: true});
   await fs.rename(path.join(release, 'electron'), path.join(release, 'nozeli'));
+  await fs.copyFile(path.resolve(source, '../../LICENSE'), path.join(release, 'NOZELI-LICENSE'));
   const application = path.join(release, 'resources/app');
   await fs.mkdir(application, {recursive: true});
   for (const name of ['src', 'dist', 'assets', 'runtime', 'package.json', 'package-lock.json', 'SOURCES.md', 'README.md']) await fs.cp(path.join(source, name), path.join(application, name), {recursive: true, filter: file => !path.relative(source, file).split(path.sep).some(part => part === '.nozeli' || part === '.ccb')});

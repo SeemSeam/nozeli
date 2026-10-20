@@ -56,7 +56,7 @@ Nozeli源码：Nozeli-${manifest.version}-source.tar.gz（仅Git管理源码，�
 
 ## 许可与交付边界
 
-根LICENSE为Electron许可，不是Nozeli统一授权。第三方声明保留在LICENSES.chromium.html、resources/app/SOURCES.md、resources/app/assets/licenses、resources/app/runtime/omp及依赖目录内，PPTist许可单独保留。
+Nozeli自有代码采用AGPL-3.0-only，正文见NOZELI-LICENSE。根LICENSE为Electron许可；第三方组件保留原许可证，声明位于LICENSES.chromium.html、resources/app/SOURCES.md、resources/app/assets/licenses、resources/app/runtime/omp及依赖目录内，PPTist许可单独保留。
 
 这是供本机使用的Alpha构建。向他人拷贝或公开上传均可能触发GPL/AGPL等义务；Git及原生发行的完整对应源码、SuperDoc/PPTist源码提供与传递依赖审计尚待补齐，未完成前不将此包作为对外发行。Nozeli源码归档和上游链接不能代替这些要求，未改变许可证或授予额外权限。
 `;
