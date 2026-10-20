@@ -32,9 +32,6 @@ html:root[data-theme="dark"] {
 .settings-appearance .appearance-field select { margin:0;width:100%;min-height:34px;background:var(--paper);color:var(--ink);border:1px solid var(--line);font:inherit; }
 .settings-appearance .appearance-help { margin:10px 0;color:var(--muted);line-height:1.7; }
 .settings-appearance .appearance-save-status { min-height:1.6em;color:var(--muted);margin:10px 0; }
-.settings-appearance .appearance-zen { margin-top:22px;padding-top:20px;border-top:1px solid var(--line); }
-.settings-appearance .appearance-zen-button { display:inline-flex;align-items:center;gap:8px;padding:7px 12px;min-height:36px;background:var(--green-soft);color:var(--ink);border:1px solid var(--line); }
-.settings-appearance kbd { display:inline-block;padding:0 4px;border:1px solid var(--line);border-radius:4px;white-space:nowrap; }
 /* Existing hard-coded light chrome surfaces must not turn white in dark mode.
    Physical document canvases, authored content and terminal colors stay independent. */
 html[data-theme="dark"] :is(dialog,#action-confirmation,.nozeli-context-menu,.surface-menu,#chat-layout .chat-layout-menu,.generic-popover) {

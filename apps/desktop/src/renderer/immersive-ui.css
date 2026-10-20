@@ -105,9 +105,9 @@ form.note-form.annotation-composer { gap:7px;padding:10px 12px 12px;background:v
 #selection-menu { transform:none;display:flex;flex-wrap:nowrap;gap:3px;max-width:calc(100vw - 16px);width:max-content;padding:4px;border:1px solid var(--line);border-radius:7px;background:var(--paper); }
 #selection-menu button { flex:none;white-space:nowrap;word-break:keep-all;min-width:42px;border:0;padding:4px 8px;font-size:12px; }
 
-/* Project Agent: keep real PTYs, remove the duplicate action row and card frame. */
-body .provider-console:not([hidden]) { inset:12px 16px 52px 70px;display:flex;border:0;border-radius:8px;background:var(--bg); }
-body .provider-console .provider-console-head { display:none; }
+/* Project Agent keeps real PTYs; view switching lives in settings. */
+body .provider-console:not([hidden]) { inset:12px 16px max(8px,env(safe-area-inset-bottom)) 70px;display:flex;border:0;border-radius:8px;background:var(--bg); }
+body .provider-console .provider-console-head { display:flex;min-height:34px;padding:2px 8px; }
 body .provider-console .provider-console-columns { padding:0;gap:10px;flex:1; }
 body .provider-console .provider-role { border:1px solid var(--line);border-radius:8px;box-shadow:none; }
 body .provider-console .provider-role > header { min-height:34px;padding:0 10px;border-bottom:1px solid var(--line);background:var(--paper);flex-wrap:nowrap;gap:8px; }
@@ -127,7 +127,7 @@ body .provider-console .provider-role > header { min-height:34px;padding:0 10px;
 .narrow-layout:not(.drawer-files-open) #files > :not(#file-toggle) { display:none!important; }
 .narrow-layout.drawer-files-open #files > #file-filter,.narrow-layout.drawer-files-open #files > #open-files,.narrow-layout.drawer-files-open #files > #file-tree { display:revert!important; }
 .narrow-layout.drawer-files-open #file-tree { overflow:auto; }
-#app.narrow-layout #file-toggle { position:fixed;top:auto;bottom:12px;left:15px;right:auto;transform:none;width:26px;height:32px;min-height:32px;max-height:32px;z-index:70;background:var(--paper); }
+#app.narrow-layout #file-toggle { position:fixed;top:50%;bottom:auto;left:15px;right:auto;transform:translateY(-50%);width:26px;height:32px;min-height:32px;max-height:32px;z-index:70;background:var(--paper); }
 .narrow-layout #file-toggle::before { transform:rotate(-45deg)!important; }
 .narrow-layout.drawer-files-open #file-toggle::before { transform:rotate(135deg)!important; }
 .narrow-layout:not(.focus-mode) > #side { position:relative;grid-column:3;grid-row:2;width:32px;height:auto;min-height:0;max-height:none;overflow:visible;background:none;border:0;box-shadow:none; }
@@ -138,6 +138,6 @@ body .provider-console .provider-role > header { min-height:34px;padding:0 10px;
 .narrow-layout #reader.document-header-unified > .desk-header { padding-inline:8px;gap:4px; }
 .narrow-layout #text-preview { padding:24px 22px 48px; }
 .narrow-layout .compact-composer .attach-file { max-width:72px;overflow:hidden;text-overflow:ellipsis; }
-.narrow-layout .provider-console:not([hidden]) { inset:12px 8px 52px 52px; }
+.narrow-layout .provider-console:not([hidden]) { inset:8px 8px max(8px,env(safe-area-inset-bottom)) 52px; }
 .narrow-layout .provider-role > header > span { display:none; }
 .focus-mode .reading-footer { display:none!important; }

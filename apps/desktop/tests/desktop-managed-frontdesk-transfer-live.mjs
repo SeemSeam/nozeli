@@ -15,7 +15,7 @@ async function openWork(w,kind='result'){const todo=(await state()).todos.filter
 async function finish(w){await openWork(w);await page.waitForSelector('[data-managed-end-result]');page.once('dialog',d=>d.accept());await page.click('[data-managed-end-result]');await wait(async()=>(await work(w.name)).status==='ended','end:'+w.name);await wait(async()=>{const current=await work(w.name);if(current.closure?.phase==='blocked')throw Error('closure blocked: '+JSON.stringify(current.closure));return current.closure?.phase==='complete';},'closure:'+w.name);}
 try{console.log(JSON.stringify({out,label:process.env.NOZELI_CONTEXT_LABEL||'frontdesk-transfer'}));await launch();if(!focus)await page.click('#pick-project');await wait(async()=>(await invoke('project.recent')).projects.length===1,'project picked',30000);projectId=(await invoke('project.recent')).projects[0].id;if(await page.$('#agent-setup[open]'))await page.click('#agent-managed-enable');await wait(async()=>(await invoke('managed.status',{projectId})).ready,'ready');runtimeRoot=(await invoke('managed.status',{projectId})).runtimeRoot;await page.waitForFunction(()=>['frontdesk','orchestrator'].every(t=>document.querySelector('[data-managed-terminal='+t+'] .provider-output')?.dataset.terminalState==='attached'),{timeout:45000});await invoke('managed.limit',{projectId,limit:2});
 
-await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-toggle').click(); });
+await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-close').click(); });
 const originalThread=(await state()).residents.frontdesk.threadId;
 await send('这是独立新问题。请读取 requirements.md，先用一句话说明主题，再逐项详细解释各条要求为何这样设计，以及可能的风险和可用性注意点，至少30条。仅讨论，不派工、不修改文件。');
 await wait(async()=>{const s=await state(),j=s.jobs.findLast(j=>j.type==='front');return j?.status==='running'&&j.readReceipts?.length>0&&s.busyTargets.includes('frontdesk');},'real frontend actively reading');
@@ -45,7 +45,7 @@ check('right side has a single stable request row',await page.$$eval('#work-item
 await page.screenshot({path:path.join(out,'active-transfer-result.png')});
 await page.$eval('#composer',n=>{n.value='';n.dispatchEvent(new Event('input',{bubbles:true}));});await pause(200);
 await finish(w);await wait(async()=>!(await state()).busyTargets.length,'user closure settles');
-const beforeRestart=await state(),jobCount=beforeRestart.jobs.length;await close();await launch();await wait(async()=>(await invoke('managed.status',{projectId})).ready,'restart without replay');await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-toggle').click(); });
+const beforeRestart=await state(),jobCount=beforeRestart.jobs.length;await close();await launch();await wait(async()=>(await invoke('managed.status',{projectId})).ready,'restart without replay');await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-close').click(); });
 check('restart keeps one ended Work and no source replay',(await state()).jobs.length===jobCount&&(await state()).works.length===1&&(await state()).works[0].status==='ended');
 await front('这是独立新问题：只用一句话说明只读终端投影的用途，不读取文件，不派工。');
 check('interrupted resident answers again on original thread',(await state()).residents.frontdesk.threadId===originalThread&&(await state()).jobs.findLast(j=>j.type==='front').status==='completed');

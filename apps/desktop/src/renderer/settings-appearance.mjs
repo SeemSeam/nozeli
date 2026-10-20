@@ -1,4 +1,3 @@
-import { setIconButton } from './ui-icons.mjs';
 
 const STORAGE_KEY = 'nozeli.appearance';
 const FONT_STACKS = Object.freeze({
@@ -44,7 +43,7 @@ window.addEventListener('storage', event => {
   }
 });
 
-export function mountAppearanceSettings({ container, zen } = {}) {
+export function mountAppearanceSettings({ container } = {}) {
   if (!container) throw new TypeError('外观设置需要容器');
   container.classList.add('settings-appearance');
   container.innerHTML = `
@@ -53,16 +52,10 @@ export function mountAppearanceSettings({ container, zen } = {}) {
     <label class="appearance-field"><span>界面字体</span><select data-appearance="font" aria-label="界面字体"><option value="system">系统字体</option><option value="sans">无衬线</option><option value="serif">衬线</option><option value="mono">等宽</option></select></label>
     <label class="appearance-field"><span>界面字号</span><select data-appearance="size" aria-label="界面字号">${Array.from({ length: 9 }, (_, i) => `<option value="${i + 12}">${i + 12} px</option>`).join('')}</select></label>
     <p class="appearance-help">字体与字号仅应用于应用界面（文件栏、工作与待办、设置和弹窗），不改变工作区、正文、编辑器、对话、输入、标签或终端的字体与字号。</p>
-    <p class="appearance-save-status" role="status" aria-live="polite"></p>
-    <section class="appearance-zen" aria-label="Zen 专注模式"><h3>Zen 专注模式</h3><p class="appearance-help">隐藏项目、文件和工作侧栏，专注当前阅读面。未打开项目时也可使用；不会创建项目。全屏不可用时仍铺满窗口。</p><button type="button" class="appearance-zen-button"></button><p class="appearance-help">切换：<kbd>Ctrl/Cmd+Shift+F11</kbd> · 退出：<kbd>Esc</kbd>。弹窗中的 Esc 优先关闭弹窗。</p></section>`;
+    <p class="appearance-save-status" role="status" aria-live="polite"></p>`;
   const status = container.querySelector('.appearance-save-status');
-  const button = container.querySelector('.appearance-zen-button');
   function refresh() {
     for (const select of container.querySelectorAll('[data-appearance]')) select.value = String(preferences[select.dataset.appearance]);
-    const enabled = document.getElementById('app')?.classList.contains('focus-mode') || false;
-    setIconButton(button, enabled ? 'minimize' : 'maximize', { text: enabled ? '退出 Zen 专注模式' : '进入 Zen 专注模式' });
-    button.setAttribute('aria-pressed', String(enabled));
-    button.title = '切换 Zen 专注模式 (Ctrl/Cmd+Shift+F11)，Esc 退出';
   }
   container.addEventListener('change', async event => {
     const key = event.target.dataset.appearance;
@@ -79,11 +72,6 @@ export function mountAppearanceSettings({ container, zen } = {}) {
     } catch { status.textContent = '已应用，但本地存储不可用；重启后可能无法保留。'; }
     refresh();
   });
-  button.addEventListener('click', () => {
-    if (typeof zen === 'function') zen();
-    else container.dispatchEvent(new CustomEvent('settings:enter-zen', { bubbles: true }));
-  });
-  document.addEventListener('zen:change', refresh);
   document.addEventListener('appearance:change', refresh);
   refresh();
   void appearanceReady.then(refresh);

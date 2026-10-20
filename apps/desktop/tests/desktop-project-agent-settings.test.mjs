@@ -70,14 +70,14 @@ try {
   const projectsA = (await page.evaluate(() => window.nozeli.invoke('project.recent'))).value.projects;
   const idA = projectsA.find((item) => item.name === path.basename(projectA)).id;
   const settingsA = (await page.evaluate((projectId) => window.nozeli.invoke('agents.settings.read', { projectId }), idA)).value;
-  await page.click('#provider-console-toggle');
+  { await page.click('#open-settings'); await page.click('[data-settings-section="settings-general"]'); await page.click('#provider-console-toggle'); }
   await page.waitForFunction(() => !document.querySelector('#provider-console').hidden);
   const placement = await page.evaluate(() => ({
     inProjectAgent: Boolean(document.querySelector('#provider-console #terminal-menu-qa')),
     inTopbar: Boolean(document.querySelector('.topbar #agent-settings')),
   }));
   if (!placement.inProjectAgent || placement.inTopbar) throw new Error(`wrong settings placement ${JSON.stringify(placement)}`);
-  await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-toggle').click(); });
+  await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-close').click(); });
 
   await page.evaluate((directory) => window.nozeli.invoke('project.pick', { directory }), projectB);
   await page.click('#pick-project');
@@ -89,7 +89,7 @@ try {
   const idB = projectsB.find((item) => item.name === path.basename(projectB)).id;
   const settingsB = (await page.evaluate((projectId) => window.nozeli.invoke('agents.settings.read', { projectId }), idB)).value;
 
-  await page.click('#provider-console-toggle');
+  { await page.click('#open-settings'); await page.click('[data-settings-section="settings-general"]'); await page.click('#provider-console-toggle'); }
   await page.waitForFunction(() => !document.querySelector('#provider-console').hidden);
   await page.click('#terminal-menu-qa');
   await page.click('#terminal-actions-qa button');
@@ -99,7 +99,7 @@ try {
   await page.waitForFunction(() => !document.querySelector('#agent-setup').open && !document.querySelector('#send-message').disabled, { timeout: 20000 });
   const adjustedB = (await page.evaluate((projectId) => window.nozeli.invoke('agents.settings.read', { projectId }), idB)).value;
 
-  await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-toggle').click(); });
+  await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-close').click(); });
   await page.click(`#recent button[title="${path.basename(projectA)}"]`);
   await page.waitForFunction((name) => document.querySelector('#project-name').textContent === name, {}, path.basename(projectA));
   await new Promise((resolve) => setTimeout(resolve, 300));

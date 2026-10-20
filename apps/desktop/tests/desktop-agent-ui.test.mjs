@@ -73,7 +73,7 @@ async function run(mode){
     assert.match(await page.$eval('#compose-status',node=>node.textContent),/发送未发出/);
     assert.equal(await page.$eval('#composer',node=>node.value),'Keep this local draft');
     // Open settings through the same visible UI action the user uses, not a source-text assertion.
-    await page.click('#provider-console-toggle');
+    { await page.click('#open-settings'); await page.click('[data-settings-section="settings-general"]'); await page.click('#provider-console-toggle'); }
     await page.waitForSelector('#configuration-setup[open]');
     assert.equal(await page.$$eval('#configuration-setup select,#managed-settings select',nodes=>nodes.length),0);
     const forbidden=await page.$$eval('button,select,option',nodes=>nodes.filter(node=>!node.hidden&&/codex|claude|保存 Provider|选择 Provider/i.test(node.textContent)).map(node=>node.textContent));

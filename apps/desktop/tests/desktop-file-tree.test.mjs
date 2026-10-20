@@ -47,7 +47,7 @@ try {
   await prepareReading(page);
 
   await page.click('#pick-project');
-  await page.waitForSelector('#file-tree button');await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-toggle').click(); });
+  await page.waitForSelector('#file-tree button');await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-close').click(); });
   const selector = rel => '#file-tree button[data-path="' + rel + '"]';
   // Inspect the native Menu in this isolated test process, then activate its
   // command callback. OS-native menu surfaces cannot be clicked through CDP.

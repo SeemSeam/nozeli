@@ -18,7 +18,7 @@ try{
  await wait(async()=>(await work('浮窗销售核对'))?.status==='review','Worker review');const w=await work('浮窗销售核对');
  await page.waitForFunction(id=>document.querySelector('[data-managed-terminal="'+id+'"] .provider-output')?.dataset.terminalState==='attached',{timeout:45000},w.id);
  if(await page.$eval('#toggle-sidebar',n=>n.getAttribute('aria-expanded')!=='true'))await page.click('#toggle-sidebar');
- await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-toggle').click(); });
+ await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-close').click(); });
  const original=await invoke('managed.terminal.screen',{projectId,target:w.id}),before=await state();check('host screen includes real Codex and result',original.available&&original.lines.flat().some(r=>/Codex|GPT-6|400/.test(r.text)));
  check('actual ANSI colors exist in parsed screen',original.lines.flat().some(r=>r.fg||r.bg));
  await page.evaluate(()=>{window.__previewEvents=[];window.__previewUnsub=nozeli.subscribe('agent',e=>{if(e.kind==='managed-terminal-diagnostic')window.__previewEvents.push(e);});document.querySelector('#composer').value='浮窗验收未发送草稿';});

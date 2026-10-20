@@ -130,7 +130,7 @@ try {
   await page.setViewport({ width: 1440, height: 900 });
   await page.click('#pick-project');
   await page.waitForFunction(() => document.querySelector('#project-name').textContent === 'project');
-  await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-toggle').click(); });
+  await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-close').click(); });
   const id = await page.evaluate(async () => (await nozeli.invoke('project.recent', {})).value.projects[0].id);
   const snapshot = async () => page.evaluate(({ state, id }) => window.__reviewSnapshot(state, id), { state, id });
   const sidebar = async () => {

@@ -60,7 +60,7 @@ try {
   await page.waitForFunction(() => window.__nozeliReady);
   await page.setViewport({ width: 1440, height: 900 });
   await page.click('#pick-project'); await page.waitForFunction(()=>document.querySelector('#project-name').textContent==='project');
-  await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-toggle').click(); });
+  await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-close').click(); });
   if(await page.$eval('#toggle-sidebar',n=>n.getAttribute('aria-expanded')!=='true'))await page.click('#toggle-sidebar');
   const state=count=>({works:Array.from({length:count},(_,i)=>({id:'worker-'+i,name:'核对 '+(i+1),status:'review',binding:{model:'gpt-6.1-sol',effort:'low'}})),quotaUsed:count,limit:16,busyTargets:['frontdesk','orchestrator',...Array.from({length:count},(_,i)=>'worker-'+i)],bindings:{frontdesk:{model:'gpt-6.1-sol',effort:'low'},orchestrator:{model:'gpt-6.1-sol',effort:'high'}},messages:[],todos:[],jobs:[],receipts:[],drafts:{},agents:[],contentRoot:project});
   const screens={};for(let i=0;i<6;i++)screens['worker-'+i]={available:true,terminalId:'pty-'+i,threadId:'thread-'+i,seq:1,version:1,cols:100,rows:24,lines:Array.from({length:24},(_,y)=>[{text:y===0?'Worker '+(i+1)+' 红字 ANSI':'屏幕内容 '+y,cells:100,fg:y===0?'#cd0000':null,bg:null}])};

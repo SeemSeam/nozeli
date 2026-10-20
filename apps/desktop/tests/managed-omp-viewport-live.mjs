@@ -89,8 +89,9 @@ async function stopApp(app) {
 
 async function enableOmp(page, pid) {
   await page.evaluate(() => document.querySelector('#pick-project')?.click());
-  await waitFor(() => page.evaluate(() => !document.querySelector('#provider-console-toggle')?.hidden), 15000, 'toggle visible');
-  await page.evaluate(() => { const t = document.querySelector('#provider-console-toggle'); if (t && !t.hidden) t.click(); });
+  await page.click('#open-settings');
+  await page.click('[data-settings-section="settings-general"]');
+  await page.click('#provider-console-toggle');
   await new Promise(r => setTimeout(r, 800));
   await page.evaluate(() => document.querySelector('#agent-settings')?.click());
   await new Promise(r => setTimeout(r, 1500));
@@ -115,7 +116,7 @@ try {
  app=await launchApp(projectA+'\n'+projectA.replace('projA','projB'));
  const enabled=await enableOmp(app.page,pidOf(projectA));
  if(!enabled.ok)throw Error(JSON.stringify(enabled));
- await app.page.evaluate(()=>{if(!document.querySelector('#provider-console')?.checkVisibility())document.querySelector('#provider-console-toggle')?.click();});
+ if(!await app.page.$eval('#provider-console',node=>node.checkVisibility())){await app.page.click('#open-settings');await app.page.click('[data-settings-section="settings-general"]');await app.page.click('#provider-console-toggle');}
  await app.page.evaluate(async pid=>window.nozeli.invoke('managed.draft',{projectId:pid,target:'frontdesk',text:'viewport-preserved-draft'}),pidOf(projectA));
  const snapshots=[];
  const fontScope=await app.page.evaluate(()=>{const font=()=>getComputedStyle(document.querySelector('#managed-terminal-grid .xterm-screen .xterm-rows')).fontSize;const before=font();document.querySelector('#font-larger')?.click();return {before,after:font(),readerLabel:document.querySelector('#font-size-label')?.textContent,terminalFontControl:false};});
@@ -123,7 +124,7 @@ try {
  for(const [name,width,height] of [['wide',1280,800],['low',1100,480],['narrow',600,700],['narrow-low',480,480],['single',1100,700],['double',1280,800],['restored',1280,800],['zoomed',600,480]]){
   await app.page.evaluate(async({width,height})=>window.nozeli.invoke('session.resize',{width,height}),{width,height});
   if(name==='single'||name==='double')await app.page.evaluate(mode=>{const e=document.querySelector('#managed-terminal-grid select');e.value=mode;e.dispatchEvent(new Event('change'));},name==='single'?'1':'2');
-  if(name==='restored')await app.page.evaluate(async()=>{document.querySelector('#provider-console-close')?.click();await new Promise(r=>setTimeout(r,150));document.querySelector('#provider-console-toggle')?.click();});
+  if(name==='restored'){await app.page.click('#provider-console-close');await new Promise(r=>setTimeout(r,150));await app.page.click('#open-settings');await app.page.click('[data-settings-section="settings-general"]');await app.page.click('#provider-console-toggle');}
   if(name==='zoomed'){
     await writeFile(path.join(profile,'userData','viewport-zoom'),'1.25');
   }
@@ -162,7 +163,7 @@ try {
  await waitFor(()=>app.page.$eval(`[data-project-id="${pidOf(projectB)}"]`,e=>e.getAttribute('aria-current')==='true'));
  await app.page.evaluate(id=>document.querySelector(`[data-project-id="${id}"]`)?.click(),pidOf(projectA));
  await waitFor(()=>app.page.$eval(`[data-project-id="${pidOf(projectA)}"]`,e=>e.getAttribute('aria-current')==='true'));
- await app.page.evaluate(()=>document.querySelector('#provider-console-toggle')?.click());
+ await app.page.click('#provider-console-close');
  await new Promise(r=>setTimeout(r,2000));
  await app.page.screenshot({path:path.join(profile,'project-return.png')});
  const returned=await app.page.evaluate(async pid=>(await window.nozeli.invoke('managed.status',{projectId:pid})).value,pidOf(projectA));

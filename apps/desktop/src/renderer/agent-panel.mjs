@@ -146,7 +146,7 @@ export function mountAgent({ invoke, toast, attachment, openManaged, openProject
   $('provider-console-toggle').addEventListener('click',()=>{if(!configuration.initialized)return configuration.open();selectView(consoleVisible?'reading':'terminal');});
   $('provider-console-close').addEventListener('click', () => {
     selectView('reading');
-    $('provider-console-toggle').focus();
+    $('open-settings').focus();
   });
   for (const role of ['qa','task']) {
     const head=roleCard(role).querySelector('header');

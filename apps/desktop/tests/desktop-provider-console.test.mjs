@@ -261,7 +261,7 @@ try {
     return {probes,leaks,isolated:[...document.querySelectorAll('.document-pane,.reader-scroll')].every(e=>getComputedStyle(e).isolation==='isolate')};
   });
   record('focused annotation painting stays in its document viewport',boundary.probes>0&&boundary.leaks===0&&boundary.isolated,JSON.stringify(boundary));
-  await pointerClick(page, '#provider-console-toggle');
+  { await pointerClick(page, '#open-settings'); await pointerClick(page, '[data-settings-section="settings-general"]'); await pointerClick(page, '#provider-console-toggle'); }
   await page.waitForFunction(() => !document.querySelector('#provider-console').hidden && document.querySelectorAll('.provider-role').length === 2);
   const desktopConsole = await page.evaluate(() => {
     const consoleNode = document.querySelector('#provider-console');
@@ -280,7 +280,7 @@ try {
       parent: consoleNode.parentElement?.id,
       viewport: { width: innerWidth, height: innerHeight },
       cards,
-      toggleInProjectHeader: document.querySelector('.desk-header #provider-console-toggle') !== null,
+      toggleInProjectHeader: document.querySelector('#settings-general #provider-console-toggle') !== null,
     };
   });
   record('provider console is scoped to the active project', desktopConsole.project.includes(path.basename(project)) && desktopConsole.toggleInProjectHeader, JSON.stringify(desktopConsole));
@@ -519,7 +519,7 @@ try {
   await page.waitForFunction(()=>!document.querySelector('#empty').hidden);
   await new Promise(resolve=>setTimeout(resolve,200));
   const secondProjectId = (await page.evaluate(() => window.nozeli.invoke('project.recent'))).value.projects.find(item => item.name === path.basename(secondProject))?.id;
-  await pointerClick(page, '#provider-console-toggle');
+  { await pointerClick(page, '#open-settings'); await pointerClick(page, '[data-settings-section="settings-general"]'); await pointerClick(page, '#provider-console-toggle'); }
   await page.waitForFunction(() => !document.querySelector('#provider-console').hidden && document.querySelector('#provider-console-project').textContent.includes('nozeli-provider-console-second'));
   const secondConsole = await page.evaluate(async () => ({ project: document.querySelector('#provider-console-project').textContent, states: [...document.querySelectorAll('[data-provider-role] .provider-output')].map(node => node.dataset.terminalState) }));
   const secondRoles = secondProjectId ? (await page.evaluate(id => window.nozeli.invoke('agents.status', { projectId: id }), secondProjectId)).value.roles : {};

@@ -339,26 +339,18 @@ form.note-form #note-input {
 .topbar{position:relative;justify-content:center;min-height:48px}
 .topbar .project-navigation{display:flex;align-items:center;justify-content:center;gap:20px;max-width:100%;min-width:0}
 .topbar .project-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
-.app#app{padding-bottom:52px;grid-template-rows:0 minmax(0,1fr)}
+.app#app{padding-bottom:max(8px,env(safe-area-inset-bottom));grid-template-rows:0 minmax(0,1fr)}
 .app#app>.topbar{height:0;min-height:0;overflow:hidden}
 .app#app.narrow-layout:not(.focus-mode){grid-template-rows:0 minmax(0,1fr)}
-.project-view-switch{position:fixed;right:max(12px,env(safe-area-inset-right));bottom:max(8px,env(safe-area-inset-bottom));z-index:1220;display:flex;align-items:center;gap:2px;padding:3px;border:1px solid var(--line);border-radius:8px;background:var(--paper);box-shadow:0 2px 10px #26393214;box-sizing:border-box;height:36px}
-.project-view-switch:has(button:not([hidden])){display:flex}
-.project-view-switch:not(:has(button:not([hidden]))){display:none}
-.project-view-switch button.ui-icon-label{display:inline-flex;align-items:center;justify-content:center;gap:4px;min-width:54px;min-height:28px;padding:3px 8px;border:0;border-radius:5px;color:var(--muted);font-size:11px}
-.project-view-switch button[aria-pressed=true]{background:var(--green);color:#fff}
-.project-view-switch button:focus-visible{outline:2px solid var(--green);outline-offset:2px}
-.project-view-switch .ui-icon{width:14px;height:14px}
 #toggle-focus[hidden]{display:none!important}
 .provider-console-open .rail{visibility:visible;pointer-events:auto;z-index:1201}
-.provider-console:not([hidden]){inset:64px 12px 52px 76px;width:auto;height:auto;border:1px solid var(--line);border-radius:10px}
+.provider-console:not([hidden]){inset:12px 12px max(8px,env(safe-area-inset-bottom)) 76px;width:auto;height:auto;border:1px solid var(--line);border-radius:10px}
 .provider-console .provider-console-title{display:none}
 .provider-console .provider-console-head{min-height:44px;padding:6px 12px;justify-content:flex-end}
-#provider-console-close{display:none}
 .focus-mode .topbar{display:flex}
 .focus-mode.app{display:flex;flex-direction:column}
 .focus-mode>.reader{flex:1;min-height:0;height:auto}
-@media(max-width:720px){.topbar .project-navigation{gap:10px}.provider-console:not([hidden]){inset:100px 8px 52px}.project-view-switch{right:max(8px,env(safe-area-inset-right))}.project-view-switch button.ui-icon-label{min-width:50px}}
+@media(max-width:720px){.topbar .project-navigation{gap:10px}.provider-console:not([hidden]){inset:8px 8px max(8px,env(safe-area-inset-bottom)) 64px}}
 
 /* Adjustable panel boundaries, with a generous hit area and a quiet indicator. */
 .panel-splitter{position:fixed;z-index:1250;touch-action:none;outline:none;cursor:col-resize}

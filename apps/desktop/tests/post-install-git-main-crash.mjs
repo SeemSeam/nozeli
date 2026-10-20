@@ -90,11 +90,11 @@ async function killExact(s,signal){let now;try{now=await stamp(s.pid);}catch{awa
 async function event(event,data={}){await fs.appendFile(path.join(output,'fault-timeline.jsonl'),JSON.stringify({at:new Date().toISOString(),event,...data})+'\n');}
 async function disk(){return JSON.parse(await fs.readFile(path.join(runtime,'state.json'),'utf8'));}
 async function waitFile(file){for(let n=0;n<300;n++){try{return await fs.readFile(file,'utf8');}catch{}await pause(100);}throw Error('missing fault marker '+file);}
-async function reconnect(){await launch();await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-toggle').click(); });await page.waitForFunction(()=>document.body.dataset.managedAgents==='true');await must('managed.connect',{projectId});}
+async function reconnect(){await launch();await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-close').click(); });await page.waitForFunction(()=>document.body.dataset.managedAgents==='true');await must('managed.connect',{projectId});}
 let crashedTree;
 try{
  assert.deepEqual(await fs.readdir(path.join(output,'empty-provider-source')),[]);
- await launch();report.startup=await ownedTree();await page.click('#pick-project');await page.waitForFunction(()=>document.querySelector('#project-name').textContent==='project');await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-toggle').click(); });projectId=(await must('project.recent')).projects[0].id;
+ await launch();report.startup=await ownedTree();await page.click('#pick-project');await page.waitForFunction(()=>document.querySelector('#project-name').textContent==='project');await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-close').click(); });projectId=(await must('project.recent')).projects[0].id;
  runtime=(await must('managed.enable',{projectId})).runtimeRoot;await must('managed.limit',{projectId,limit:4});await page.reload();await page.waitForFunction(()=>window.__nozeliReady&&document.body.dataset.managedAgents==='true');
  const a=await submit('GIT-A'),b=await submit('GIT-B'),c=await submit('FAIL-C');let s=await status();const ta=todo(s,a,'git'),tb=todo(s,b,'git');assert(ta&&tb&&todo(s,c,'recovery'));await writeSnapshot('01-real-failures');
  const jobs=s.jobs.length,unrelated=s.todos.filter(t=>t.workId!==a.id),works=s.works,staging=unownedIndex(),head=git('rev-parse','HEAD');

@@ -41,7 +41,7 @@ try {
   await page.waitForFunction(() => window.__nozeliReady, { polling: 100 });
 
   await page.click('#pick-project');
-  await page.waitForSelector('#file-tree button');await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-toggle').click(); });
+  await page.waitForSelector('#file-tree button');await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-close').click(); });
   const selector = rel => '#file-tree button[data-path="' + rel + '"]';
   await page.click(selector('sample.md'));
   await page.waitForFunction(()=>window.__nozeliInput?.text().includes('Target annotated'));

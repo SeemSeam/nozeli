@@ -207,17 +207,20 @@ try {
   assert.ok(copied.trim().length > 0);
   checks.push('status and tag status text can be selected and copied');
 
-  // --- Top entry: reading <-> terminal console ---
-  await page.click('#provider-console-toggle');
+  // --- General settings entry: reading <-> terminal console ---
+  { await page.click('#open-settings'); await page.click('[data-settings-section="settings-general"]'); await page.click('#provider-console-toggle'); }
   await page.waitForSelector('#provider-console:not([hidden])');
-  await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-toggle').click(); });
+  await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-close').click(); });
   await page.waitForSelector('#provider-console[hidden]');
-  checks.push('top reading/terminal entry switches without leaving the work surface');
+  checks.push('general settings terminal entry switches without leaving the work surface');
   const narrow = await page.createCDPSession();
   await narrow.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 800, deviceScaleFactor: 1, mobile: false });
   await new Promise(resolve => setTimeout(resolve, 300));
+  await page.click('#open-settings');
+  await page.click('[data-settings-section="settings-general"]');
   assert.equal(await page.$eval('#provider-console-toggle', node => !node.hidden && node.offsetParent !== null), true);
   await page.screenshot({ path: path.join(output, 'narrow-topbar.png') });
+  await page.click('#settings-close');
   await narrow.send('Emulation.clearDeviceMetricsOverride');
 
   // --- External tool writes refresh the tree without touching user edits ---

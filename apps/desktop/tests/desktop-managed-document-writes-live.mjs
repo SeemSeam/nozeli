@@ -17,7 +17,7 @@ async function finish(w){await openWork(w);page.once('dialog',d=>d.accept());awa
 if(!focus)await fs.writeFile(path.join(project,'work.txt'),'base\n用户保留第二行\n');
 try{console.log(JSON.stringify({out,label:process.env.NOZELI_CONTEXT_LABEL||'managed-document-writes'}));await launch();if(!focus)await page.click('#pick-project');await wait(async()=>(await invoke('project.recent')).projects.length===1,'project picked',30000);projectId=(await invoke('project.recent')).projects[0].id;if(await page.$('#agent-setup[open]'))await page.click('#agent-managed-enable');await wait(async()=>(await invoke('managed.status',{projectId})).ready,'ready');runtimeRoot=(await invoke('managed.status',{projectId})).runtimeRoot;await page.waitForFunction(()=>['frontdesk','orchestrator'].every(t=>document.querySelector('[data-managed-terminal='+t+'] .provider-output')?.dataset.terminalState==='attached'),{timeout:45000});await invoke('managed.limit',{projectId,limit:2});
 
-await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-toggle').click(); });
+await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-close').click(); });
 const priorReadJobs=(await state()).jobs.length;
 if(!focus){await send('正式独立后台任务，命名“文本保护”。只处理已存在的 work.txt。先使用 nozeli_document_read 获取全文和读取句柄；暂不修改，用 nozeli_publish 发布 problem 问我是否将首行改为 Worker 内容。收到下一轮回复再执行。不要用 shell 写入，不移动删除，不提交Git。');
 }else{const existing=await work('文本保护');assert(existing?.status==='paused');await openWork(existing,'problem');await send('恢复后继续原工作。请先重新用 nozeli_document_read 读取 work.txt 并记住新句柄，暂不修改，再发布 problem 问我是否修改首行；仍等我下一轮答复，不用 shell 写入。');}

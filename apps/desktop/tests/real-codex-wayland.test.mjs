@@ -58,11 +58,11 @@ async function freePort() {
     await page.click('#composer'); await page.type('#composer', 'Reply exactly NOZELI_ELECTRON_REAL_OK. Do not use tools.'); await page.click('#send-message');
     await page.waitForFunction(() => [...document.querySelectorAll('#conversation .agent-message, #conversation [data-role="qa"]')].some(node => node.textContent.includes('NOZELI_ELECTRON_REAL_OK')) || document.body.innerText.includes('401 Unauthorized'), { timeout: 90000 });
     await wait(1500); report.steps.push({ name: 'real-foreground-request-submitted', ok: true });
-    await page.click('#provider-console-toggle');
+    { await page.click('#open-settings'); await page.click('[data-settings-section="settings-general"]'); await page.click('#provider-console-toggle'); }
     await page.waitForSelector('.provider-output .xterm', { timeout: 30000 });
     await wait(1200); report.steps.push({ name: 'native-terminal-opened', ok: true }); await capture(page, '03-terminal-open');
     const before = await page.evaluate(() => ({ qa: document.querySelector('[data-provider-role="qa"] .provider-meta')?.textContent, state: document.querySelector('[data-provider-role="qa"]')?.dataset.terminalState || document.querySelector('[data-provider-role="qa"] .provider-output')?.dataset.terminalState }));
-    await page.click('#provider-console-close'); await wait(500); await page.click('#provider-console-toggle'); await page.waitForSelector('.provider-output .xterm', { timeout: 30000 }); await wait(800);
+    await page.click('#provider-console-close'); await wait(500); { await page.click('#open-settings'); await page.click('[data-settings-section="settings-general"]'); await page.click('#provider-console-toggle'); } await page.waitForSelector('.provider-output .xterm', { timeout: 30000 }); await wait(800);
     const after = await page.evaluate(() => ({ qa: document.querySelector('[data-provider-role="qa"] .provider-meta')?.textContent, state: document.querySelector('[data-provider-role="qa"] .provider-output')?.dataset.terminalState }));
     report.steps.push({ name: 'terminal-hide-reopen', ok: true, before, after }); await capture(page, '04-terminal-reopen');
     const terminalInput = await page.$('.provider-output .xterm-helper-textarea');

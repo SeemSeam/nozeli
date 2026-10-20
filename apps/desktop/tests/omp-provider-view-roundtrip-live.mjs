@@ -23,7 +23,7 @@ try{
  await wait(async()=>{try{return(await fetch(`http://127.0.0.1:${port}/json/version`)).ok;}catch{return false;}},'devtools');
  browser=await puppeteer.connect({browserURL:`http://127.0.0.1:${port}`,defaultViewport:null,protocolTimeout:60000});page=(await browser.pages()).find(p=>p.url().includes('127.0.0.1'));
  await page.waitForFunction(()=>window.__nozeliReady===true);await page.click('#pick-project');await wait(async()=>{const s=await status().catch(()=>null);return s?.ready;},'project ready');
- await page.evaluate(()=>{const consolePanel=document.querySelector('#provider-console');if(consolePanel?.hidden)document.querySelector('#provider-console-toggle').click();});
+ if(await page.$eval('#provider-console',node=>node.hidden)){await page.click('#open-settings');await page.click('[data-settings-section="settings-general"]');await page.click('#provider-console-toggle');}
  let previous=await wait(()=>lease('frontdesk'),'initial terminal attached');
  for(const provider of ['omp','codex','omp']){
   const before=await status(),oldOwner=before.state.agents.find(a=>a.target==='frontdesk')?.ownerId;

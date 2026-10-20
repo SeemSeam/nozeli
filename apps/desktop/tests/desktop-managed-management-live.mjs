@@ -6,7 +6,7 @@ const initial=(await invoke('managed.status',{projectId})).state;
 const original=initial.works.find(w=>w.status==='review');assert.ok(original);
 async function settle(label){const deadline=Date.now()+240000;while(Date.now()<deadline){const s=(await invoke('managed.status',{projectId})).state;const failed=s.jobs.slice(initial.jobs.length).find(j=>j.status==='failed');if(failed)throw Error(label+': '+failed.error);if(!s.busyTargets.length&&!s.jobs.some(j=>j.status==='queued'||j.status==='running'))return s;await pause(300);}throw Error('timeout '+label);}
 async function submit(text){await page.$eval('#composer',(n,text)=>{n.value=text;n.dispatchEvent(new Event('input',{bubbles:true}));},text);await page.click('#send-message');await page.waitForFunction(()=>document.querySelector('#composer').value==='');return settle(text);}
-if(await page.$eval('#provider-console',n=>!n.hidden))await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-toggle').click(); });
+if(await page.$eval('#provider-console',n=>!n.hidden))await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-close').click(); });
 let s=await submit('新独立任务，命名“排队验证B”：只读查看 apps/desktop/src/agents/managed-projects.mjs 并用一句话说明用途。禁止修改文件。与已有任务独立，额度已满时正常排队。');
 const queued=s.works.find(w=>w.name==='排队验证B');assert.ok(queued);check('independent task queues while prior review occupies slot',queued.status==='queued'&&s.quotaUsed===1&&!queued.threadId);
 const workerTurns=s.jobs.filter(j=>j.target===original.id).length;

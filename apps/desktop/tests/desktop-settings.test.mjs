@@ -54,7 +54,7 @@ try{
  await page.screenshot({path:path.join(out,'settings-dark.png')});
  await page.reload();await page.waitForFunction(()=>window.__nozeliReady);await page.click('#open-settings');await page.click('[data-settings-section="settings-appearance"]');
  assert.equal(await page.$eval('[data-appearance="theme"]',e=>e.value),'dark');assert.equal(await page.$eval('[data-appearance="font"]',e=>e.value),'serif');assert.equal(await page.$eval('[data-appearance="size"]',e=>e.value),'20');checks++;
- await page.click('.appearance-zen-button');await page.waitForFunction(()=>document.querySelector('#app').classList.contains('focus-mode')&&!document.querySelector('#settings-dialog').open);checks++;
+ await page.click('#settings-zen');await page.waitForFunction(()=>document.querySelector('#app').classList.contains('focus-mode')&&!document.querySelector('#settings-dialog').open);checks++;
  await page.keyboard.press('Escape');await page.waitForFunction(()=>!document.querySelector('#app').classList.contains('focus-mode'));checks++;
  await page.keyboard.down('Control');await page.keyboard.down('Shift');await page.keyboard.press('F11');await page.keyboard.up('Shift');await page.keyboard.up('Control');await page.waitForFunction(()=>document.querySelector('#app').classList.contains('focus-mode'));checks++;
  await page.evaluate(()=>window.dispatchEvent(new Event('nozeli-open-settings')));await page.waitForSelector('#settings-dialog[open]');await page.keyboard.press('Escape');assert.equal(await page.$eval('#app',e=>e.classList.contains('focus-mode')),true,'Esc closes settings before Zen');checks++;
@@ -63,6 +63,7 @@ try{
  await page.setViewport({width:390,height:700});
  assert.equal(await page.$eval('#settings-dialog',e=>e.getBoundingClientRect().right<=innerWidth&&e.getBoundingClientRect().left>=0),true);checks++;
  for(const section of ['settings-provider','settings-models','settings-appearance','settings-general']){await page.click('[data-settings-section="'+section+'"]');assert.equal(await page.$eval('#'+section,e=>e.hidden),false);assert.equal(await page.$eval('#settings-dialog',e=>e.scrollWidth<=e.clientWidth),true);checks++;}
+ assert.equal(await page.$eval('#provider-console-toggle',e=>e.closest('.settings-nav')!==null&&e.hidden),true,'No project means no terminal view, even in top-level settings');checks++;
  await page.screenshot({path:path.join(out,'settings-narrow.png')});
  await page.click('#settings-close');assert.equal(await page.$eval('#open-settings',e=>document.activeElement===e),true);checks++;
  console.log(JSON.stringify({checks,out,scope:'actual Electron isolated profile; no remote authentication or model requests'}));

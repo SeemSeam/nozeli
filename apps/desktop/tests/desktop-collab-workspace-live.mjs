@@ -71,8 +71,10 @@ async function click(selector) {
 async function compose(text, background = false) {
   const previousJobs=new Set((await state()).jobs.map(job=>job.id));
   await click('#composer');
+  await page.waitForFunction(()=>document.activeElement===document.querySelector('#composer'),{timeout:5000});
   await page.keyboard.down('Control'); await page.keyboard.press('KeyA'); await page.keyboard.up('Control');
   await page.keyboard.sendCharacter(text);
+  assert.equal(await page.$eval('#composer',node=>node.value),text,'Physical task input must remain in composer before dispatch');
   if(background)await click('#managed-submit-task');
   else {operations.push({layer:'real-dom-keyboard',key:'Control+Enter',at:Date.now()});await page.keyboard.down('Control');await page.keyboard.press('Enter');await page.keyboard.up('Control');}
   return wait(async()=>{const s=await state();return s.jobs.find(job=>!previousJobs.has(job.id)&&(job.text===text||job.text.startsWith(text+'\n\n')));},'exact input durable admission',30000);
@@ -404,7 +406,7 @@ try {
   check('GUI supplement keeps original Worker thread and worktree', a2.threadId === a.threadId && a2.execution.directory === a.execution.directory && (await state()).works.length === 2);
   await frozen(a2, 'WORK_A_SECOND');
   await selectWork(b);
-  if (!await page.$eval('body', node => node.classList.contains('provider-console-open'))) await click('#provider-console-toggle');
+  if (!await page.$eval('body', node => node.classList.contains('provider-console-open'))) { await click('#open-settings'); await click('[data-settings-section="settings-general"]'); await click('#provider-console-toggle'); }
   const terminalSelector = '[data-managed-terminal="' + b.id + '"] .xterm-helper-textarea';
   await page.waitForSelector(terminalSelector);
   await page.waitForFunction(target => document.querySelector('[data-managed-terminal="' + target + '"] .provider-output')?.dataset.terminalState === 'attached', {}, b.id);
@@ -422,7 +424,7 @@ try {
     (await invoke('managed.terminal.attach', {projectId: id, target: b.id})).terminalId === attachment.terminalId);
   const manualNative = (await timeline()).entries.filter(e => e.jobId === added[0].id && e.source === 'native');
   check('Manual job owns native tool results and original session', manualNative.some(e => e.tool?.toolCallId && e.tool.name) && manualNative.every(e => e.sessionId === b.threadId));
-  await click('#provider-console-toggle');
+  await click('#provider-console-close');
   await frozen(b2, 'WORK_B_NATIVE');
   await collectFrames();
   const projection = await timeline();

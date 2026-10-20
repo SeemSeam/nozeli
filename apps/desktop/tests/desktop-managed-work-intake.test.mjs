@@ -60,7 +60,7 @@ try {
   await page.waitForFunction(() => window.__nozeliReady);
   await page.setViewport({ width: 1440, height: 900 });
   await page.click('#pick-project'); await page.waitForFunction(()=>document.querySelector('#project-name').textContent==='project');
-  await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-toggle').click(); });
+  await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-close').click(); });
   if(await page.$eval('#toggle-sidebar',n=>n.getAttribute('aria-expanded')!=='true'))await page.click('#toggle-sidebar');
   const id=await page.evaluate(async()=>{const r=await nozeli.invoke('project.recent',{});return r.value.projects[0].id;});
   const s={works:[],quotaUsed:0,limit:2,busyTargets:['frontdesk','orchestrator'],bindings:{frontdesk:{model:'gpt-6.1-sol',effort:'low'},orchestrator:{model:'gpt-6.1-sol',effort:'high'}},messages:[],todos:[],jobs:[],receipts:[],drafts:{},agents:[],contentRoot:project};

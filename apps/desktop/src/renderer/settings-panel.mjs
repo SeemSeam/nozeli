@@ -10,6 +10,10 @@ export function mountSettingsPanel({invoke,onProjectSettings,onInitialize}) {
   const dialog=$('settings-dialog'),trigger=$('open-settings');
   setIconButton(trigger,'settings',{label:'设置'});
   setIconButton($('settings-close'),'close',{label:'关闭设置'});
+  const zenButton=$('settings-zen');
+  function refreshZen(){const active=$('app').classList.contains('focus-mode');zenButton.textContent=active?'退出 Zen 专注模式':'进入 Zen 专注模式';zenButton.setAttribute('aria-pressed',String(active));}
+  zenButton.addEventListener('click',()=>{dialog.close();$('toggle-focus').click();});
+  document.addEventListener('zen:change',refreshZen);
   let returnFocus=trigger;
   const appearance=mountAppearanceSettings({container:$('settings-appearance')});
   const provider=mountProviderSettings({invoke,providers:$('settings-provider'),models:$('settings-models'),onProjectSettings:()=>leave(onProjectSettings)});
@@ -25,6 +29,7 @@ export function mountSettingsPanel({invoke,onProjectSettings,onInitialize}) {
   async function open(section='settings-provider'){
     if(!dialog.open){returnFocus=document.activeElement;dialog.showModal();}
     select(section);appearance.refresh();
+    refreshZen();
     $('settings-error').textContent='';
     try{await provider.refresh();}catch(error){$('settings-error').textContent=error.message;}
   }
@@ -35,7 +40,7 @@ export function mountSettingsPanel({invoke,onProjectSettings,onInitialize}) {
   for(const button of dialog.querySelectorAll('[data-settings-section]'))button.addEventListener('click',()=>select(button.dataset.settingsSection));
   $('settings-initialize').addEventListener('click',()=>leave(onInitialize));
   $('settings-project-agent').addEventListener('click',()=>leave(onProjectSettings));
-  window.addEventListener('settings:enter-zen',()=>{dialog.close();$('toggle-focus').click();});
+  $('provider-console-toggle').addEventListener('click',()=>dialog.close());
   window.addEventListener('nozeli-open-settings',()=>void open());
   return {open};
 }

@@ -131,10 +131,17 @@ function trusted(event) {
   function testPickPaths() {
     return (process.env.NOZELI_TEST_PICK || '').split('\n').filter(Boolean);
   }
+  function showDirectoryDialog(owner, options) {
+    // Native Wayland parent export can stall before the portal receives a request.
+    // The unparented overload avoids xdg-foreign; other backends retain modality.
+    const ozone=app.commandLine.getSwitchValue('ozone-platform');
+    const wayland=process.platform==='linux'&&(ozone==='wayland'||(!ozone&&Boolean(process.env.WAYLAND_DISPLAY)));
+    return wayland ? dialog.showOpenDialog(options) : dialog.showOpenDialog(owner, options);
+  }
   async function pickDirectory(win, requested) {
     const picks = testPickPaths();
     if (picks.length) return picks.includes(requested) ? requested : picks[0];
-    const result = await dialog.showOpenDialog(win, { properties: ['openDirectory'], title: '选择项目目录' });
+    const result = await showDirectoryDialog(win, { properties: ['openDirectory'], title: '选择项目目录' });
     if (result.canceled || !result.filePaths?.[0]) return null;
     return result.filePaths[0];
   }
@@ -338,7 +345,7 @@ async function main() {
         if (!owner) throw new Error('当前窗口不可用，无法选择目录。');
         const picks = testPickPaths();
         if (picks.length) return { ok: true, value: { path: picks[0] } };
-        const result = await dialog.showOpenDialog(owner, { title: '选择引用文件所在目录', properties: ['openDirectory'], ...(typeof payload?.path === 'string' && path.isAbsolute(payload.path) ? { defaultPath: payload.path } : {}) });
+        const result = await showDirectoryDialog(owner, { title: '选择引用文件所在目录', properties: ['openDirectory'], ...(typeof payload?.path === 'string' && path.isAbsolute(payload.path) ? { defaultPath: payload.path } : {}) });
         return { ok: true, value: result.canceled || !result.filePaths?.[0] ? { canceled: true } : { path: result.filePaths[0] } };
       }
       if (op === 'session.capture' && process.env.NOZELI_SHOT_DIR) {

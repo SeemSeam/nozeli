@@ -15,7 +15,7 @@ async function openWork(w,kind='result'){const todo=(await state()).todos.filter
 async function finish(w){await openWork(w);await page.waitForSelector('[data-managed-end-result]');page.once('dialog',d=>d.accept());await page.click('[data-managed-end-result]');await wait(async()=>(await work(w.name)).status==='ended','end:'+w.name);await wait(async()=>{const current=await work(w.name);if(current.closure?.phase==='blocked')throw Error('closure blocked: '+JSON.stringify(current.closure));return current.closure?.phase==='complete';},'closure:'+w.name);}
 try{console.log(JSON.stringify({out,label:process.env.NOZELI_CONTEXT_LABEL||'frontdesk-read'}));await launch();if(!focus)await page.click('#pick-project');await wait(async()=>(await invoke('project.recent')).projects.length===1,'project picked',30000);projectId=(await invoke('project.recent')).projects[0].id;if(await page.$('#agent-setup[open]'))await page.click('#agent-managed-enable');await wait(async()=>(await invoke('managed.status',{projectId})).ready,'ready');runtimeRoot=(await invoke('managed.status',{projectId})).runtimeRoot;await page.waitForFunction(()=>['frontdesk','orchestrator'].every(t=>document.querySelector('[data-managed-terminal='+t+'] .provider-output')?.dataset.terminalState==='attached'),{timeout:45000});await invoke('managed.limit',{projectId,limit:2});
 
-await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-toggle').click(); });
+await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-close').click(); });
 const originalThread=(await state()).residents.frontdesk.threadId;
 if(!focus){
 await front('请读取 requirements.md，只回答长期记忆用什么、等待审查是否占额度，附文件来源。无需执行任务。');
@@ -54,7 +54,7 @@ check('repeat conversion returns same receipt',duplicate.jobId===conversion.id&&
 // preserve test draft until explicitly cleared, then user closes the second Work.
 await page.$eval('#composer',n=>{n.value='';n.dispatchEvent(new Event('input',{bubbles:true}));});await pause(200);
 await finish(await work('引用清单'));await wait(async()=>!(await state()).busyTargets.length,'second work ended');
-const pre=await state(),count=pre.jobs.length;await close();await launch();await wait(async()=>(await invoke('managed.status',{projectId})).ready,'same-thread restart');await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-toggle').click(); });
+const pre=await state(),count=pre.jobs.length;await close();await launch();await wait(async()=>(await invoke('managed.status',{projectId})).ready,'same-thread restart');await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-close').click(); });
 check('new read support resumes resident thread without resetting history',(await state()).residents.frontdesk.threadId===originalThread&&(await state()).jobs.length===count);
 await front('这是独立新问题：请读取 summary.md，简短说明已接受成果的内容，附文件来源。仅查询不派工。');
 const memoryJob=(await state()).jobs.findLast(j=>j.type==='front'),memoryGoal=(await state()).frontGoals.find(g=>g.id===memoryJob.context.frontGoalId);

@@ -54,7 +54,7 @@ try {
   await page.waitForFunction(() => window.__nozeliReady);
   await page.setViewport({ width: 1440, height: 900 });
   await page.click('#pick-project'); await page.waitForFunction(()=>document.querySelector('#project-name').textContent==='project');
-  await page.click('#provider-console-toggle');
+  { await page.click('#open-settings'); await page.click('[data-settings-section="settings-general"]'); await page.click('#provider-console-toggle'); }
   const state=count=>({works:Array.from({length:count-2},(_,i)=>({id:'worker-'+i,name:'工作 '+(i+1),status:['running','paused','review'][i%3],binding:{model:'gpt-6.1-sol',effort:'high'}})),quotaUsed:count-2,limit:16,busyTargets:[],bindings:{frontdesk:{model:'gpt-6-luna',effort:'medium'},orchestrator:{model:'gpt-6.1-sol',effort:'high'}}});
   for(const width of [1440,1000,600]){
    await page.setViewport({width,height:900});

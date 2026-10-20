@@ -53,7 +53,7 @@ try {
   await page.waitForFunction(() => window.__nozeliReady, { polling: 100 });
   await prepareReading(page);
   await page.click('#pick-project');
-  await page.waitForSelector('#file-tree button');await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-toggle').click(); });
+  await page.waitForSelector('#file-tree button');await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-close').click(); });
   await page.click('#file-tree button[data-path="sample.md"]');
   await page.waitForFunction(()=>window.__nozeliInput?.text().includes('Target'));
   await page.click('#text-mode-toggle');

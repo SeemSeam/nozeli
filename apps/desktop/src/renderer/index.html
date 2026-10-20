@@ -19,7 +19,6 @@
       <div class="project-navigation"><span class="project-name" id="project-name">未打开项目</span></div>
       <button id="toggle-focus" hidden aria-pressed="false">专注模式</button>
     </header>
-    <nav class="project-tools project-view-switch" aria-label="项目视图"><button id="provider-console-toggle" hidden aria-pressed="false" aria-label="切换到终端">终端</button></nav>
     <nav class="rail" aria-label="近期项目">
       <button type="button" id="pick-project" class="rail-add" title="选择目录">+</button>
       <div id="recent" class="recent"></div>
@@ -111,16 +110,18 @@
     <header class="settings-heading"><div><h2 id="settings-title">设置</h2><p>应用偏好与 Nozeli 私有 OMP</p></div><button type="button" id="settings-close" aria-label="关闭设置">×</button></header>
     <div class="settings-layout">
       <nav class="settings-nav" aria-label="设置分类">
+        <button type="button" id="provider-console-toggle" hidden aria-pressed="false" aria-label="切换到终端">终端</button>
+        <button type="button" id="settings-zen" aria-pressed="false">进入 Zen 专注模式</button>
         <button type="button" data-settings-section="settings-provider" aria-current="page">OMP 源管理</button>
         <button type="button" data-settings-section="settings-models">默认模型</button>
-        <button type="button" data-settings-section="settings-appearance">外观与专注</button>
+        <button type="button" data-settings-section="settings-appearance">外观</button>
         <button type="button" data-settings-section="settings-general">通用</button>
       </nav>
       <div class="settings-content">
         <p id="settings-error" role="alert"></p>
         <section id="settings-provider" aria-label="OMP 源管理"></section>
         <section id="settings-models" aria-label="三角色默认模型" hidden></section>
-        <section id="settings-appearance" aria-label="外观与专注" hidden></section>
+        <section id="settings-appearance" aria-label="外观" hidden></section>
         <section id="settings-general" aria-label="通用设置" hidden>
           <h3>通用</h3><p class="settings-hint">应用级设置统一收纳在这里。正文与对话的阅读字号仍由各自工具栏控制。</p>
           <div class="settings-card"><h4>当前项目 Agent</h4><p>查看当前项目的三角色配置与并发工作额度。调整默认模型不会替换已有会话。</p><button type="button" id="settings-project-agent">打开项目 Agent 设置</button></div>

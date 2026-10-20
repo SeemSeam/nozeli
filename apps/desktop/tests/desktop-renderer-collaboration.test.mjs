@@ -47,7 +47,7 @@ try {
   const page = await waitForDesktopPage(browser);
   await page.waitForFunction(() => window.__nozeliReady);
   await prepareReading(page);
-  await page.click('#pick-project'); await page.waitForSelector('#file-tree button'); await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-toggle').click(); });
+  await page.click('#pick-project'); await page.waitForSelector('#file-tree button'); await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-close').click(); });
   await page.click('#file-tree button[data-path="sample.md"]'); await page.waitForFunction(() => window.__nozeliInput?.text().includes('first target'));
   await page.click('#text-mode-toggle');
   const observation = await page.evaluate(async () => {

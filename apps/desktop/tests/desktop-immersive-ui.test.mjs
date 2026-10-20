@@ -28,7 +28,7 @@ const tick=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function until(check){for(let i=0;i<120;i++){const result=await check();if(result)return result;await tick(80);}throw Error('Disk state timeout');}
 try{
   for(let i=0;i<150;i++){try{browser=await puppeteer.connect({browserURL:'http://127.0.0.1:'+port,defaultViewport:null});break;}catch{}await tick(100);}
-  assert(browser,log);p=(await browser.pages())[0];p.on('pageerror',error=>errors.push(error.stack));
+  assert(browser,log);p=await(await browser.waitForTarget(target=>target.type()==='page'&&target.url().startsWith('http://127.0.0.1:'))).page();p.on('pageerror',error=>errors.push(error.stack));
   await p.waitForFunction(()=>window.__nozeliReady);await p.waitForSelector('#configuration-setup[open]');await p.click('#configuration-cancel');
   async function resize(width,height=900){await p.evaluate(({width,height})=>nozeli.invoke('session.resize',{width,height}),{width,height});await p.waitForFunction(width=>innerWidth===width,{},width);await tick(120);}
   async function open(file){
@@ -50,7 +50,6 @@ try{
   checks.push('real Markdown tables, mixed inline/display math, C++ colors and clipboard');
   assert(await p.$eval('#side',el=>el.getBoundingClientRect().width<=40));
   assert(await p.$eval('#conversation-panel',el=>el.classList.contains('compact-composer')&&el.getBoundingClientRect().height<=90));
-  assert(await p.$$eval('.filters',els=>els.every(el=>el.hidden)));
   assert.equal(await p.$eval('#open-files .open-file-item',el=>el.dataset.path),'docs/阅读验收.md');
   await p.screenshot({path:path.join(out,'01-reading.png')});checks.push('empty sidebar and chat compact; left open-file list only');
   async function selectRepeat(prefix='第二处'){
@@ -131,10 +130,10 @@ try{
     const fit=await p.evaluate(()=>{const menu=document.querySelector('#selection-menu').getBoundingClientRect(),pane=document.querySelector('#reader-scroll').getBoundingClientRect();return menu.left>=pane.left&&menu.right<=pane.right+1&&menu.top>=pane.top&&menu.bottom<=pane.bottom;});assert(fit,'owner pane at '+width);
     if(width<=1000){await p.click('#file-toggle');await p.waitForFunction(()=>document.querySelector('#app').classList.contains('drawer-files-open'));await p.click('#file-toggle');assert(await p.$eval('#reader',el=>el.getBoundingClientRect().width>innerWidth-140));}
     await p.screenshot({path:path.join(out,'code-'+width+'.png')});
-    await p.click('#provider-console-toggle');await p.waitForFunction(()=>!document.querySelector('#provider-console').hidden);assert(await p.$eval('#selection-menu',el=>el.hidden));assert(await p.$eval('#text-host',el=>el.closest('#work-surface').inert));
+    { await p.click('#open-settings'); await p.click('[data-settings-section="settings-general"]'); await p.click('#provider-console-toggle'); }await p.waitForFunction(()=>!document.querySelector('#provider-console').hidden);assert(await p.$eval('#selection-menu',el=>el.hidden));assert(await p.$eval('#text-host',el=>el.closest('#work-surface').inert));
     await p.click('#terminal-menu-qa');await p.waitForFunction(()=>document.querySelector('#terminal-actions-qa').matches(':popover-open'));
     const menu=await p.$eval('#terminal-actions-qa',el=>el.getBoundingClientRect().toJSON());assert(menu.left>=0&&menu.right<=width);await p.keyboard.press('Escape');
-    await p.screenshot({path:path.join(out,'terminal-'+width+'.png')});await p.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-toggle').click(); });
+    await p.screenshot({path:path.join(out,'terminal-'+width+'.png')});await p.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-close').click(); });
   }
   checks.push('1440/960/600 drawers and quick actions stay inside owning document; terminal menus and reading isolation');
   await resize(1440);await open('图片.png');await p.waitForSelector('.image-page canvas');

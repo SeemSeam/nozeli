@@ -87,8 +87,9 @@ async function stopApp(app) {
 
 async function enableOmp(page, pid) {
   await page.evaluate(() => document.querySelector('#pick-project')?.click());
-  await waitFor(() => page.evaluate(() => !document.querySelector('#provider-console-toggle')?.hidden), 15000, 'toggle visible');
-  await page.evaluate(() => { const t = document.querySelector('#provider-console-toggle'); if (t && !t.hidden) t.click(); });
+  await page.click('#open-settings');
+  await page.click('[data-settings-section="settings-general"]');
+  await page.click('#provider-console-toggle');
   await new Promise(r => setTimeout(r, 800));
   await page.evaluate(() => document.querySelector('#agent-settings')?.click());
   await new Promise(r => setTimeout(r, 1500));
