@@ -486,7 +486,12 @@ function clearQuickSelection(){
 }
 window.addEventListener('resize',clearQuickSelection);
 window.addEventListener('nozeli-layout-change',clearQuickSelection);
-document.addEventListener('scroll',event=>{if($('reader-scroll').contains(event.target))clearQuickSelection();},true);
+document.addEventListener('scroll',event=>{
+  // Editors scroll their hidden input to keep native selection/composition in
+  // sync. That does not move the document or invalidate its action geometry.
+  if(event.target instanceof Element&&event.target.matches('input,textarea'))return;
+  if($('reader-scroll').contains(event.target))clearQuickSelection();
+},true);
 // Keep the reading selection stable while a pointer chooses its action.
 $('selection-menu').addEventListener('pointerdown', event => event.preventDefault());
 addEventListener('keydown',event=>{if(event.key==='Escape')$('selection-menu').hidden=true;},true);

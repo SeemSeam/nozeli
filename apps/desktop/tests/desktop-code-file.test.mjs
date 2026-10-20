@@ -25,7 +25,19 @@ try {
   assert.equal(await page.$eval('#code-jump', node => node.hidden), false);
   const helperStart = source.indexOf('helper(2)'); await page.evaluate((from, to) => window.__nozeliInput.select(from, to), helperStart, helperStart + 6);
   await page.evaluate(() => document.querySelector('#code-jump').click()); await page.waitForFunction(() => document.querySelector('#code-status').textContent.includes('已跳转到 helper 定义'));
-  console.log(JSON.stringify({ output, checks: ['real project JavaScript opened', 'code navigation control visible', 'current-file definition jump'] }));
+  // A browser-native textarea scroll follows Monaco mouse selection. It must
+  // not dismiss document actions when the visible document has not moved.
+  const drag=await page.$eval('#text-host .view-line',node=>{const r=node.getBoundingClientRect();return{x:r.left+3,y:r.top+r.height/2,end:r.left+130};});
+  await page.mouse.move(drag.x,drag.y);await page.mouse.down();await page.mouse.move(drag.end,drag.y,{steps:12});await page.mouse.up();
+  await page.waitForSelector('#selection-menu:not([hidden])',{visible:true});
+  const selected=await page.evaluate(()=>window.__nozeliInput.selection());assert(selected.to>selected.from);
+  await page.$eval('#text-host textarea',node=>new Promise(resolve=>{node.addEventListener('scroll',()=>resolve(),{once:true});node.scrollTop=node.scrollTop?0:20;}));
+  assert.equal(await page.$eval('#selection-menu',node=>node.hidden),false,'Editor input scroll cannot erase a live source selection');
+  assert.deepEqual(await page.evaluate(()=>window.__nozeliInput.selection()),selected);
+  await page.click('#selection-discuss');await page.waitForSelector('.tag-editor',{visible:true});
+  const notes=await page.evaluate(async()=>{const recent=await nozeli.invoke('project.recent',{});return(await nozeli.invoke('annotation.list',{projectId:recent.value.projects[0].id,relPath:'main.js'})).value.annotations;});
+  assert(notes.some(note=>note.anchor.start===selected.from&&note.anchor.end===selected.to&&note.anchor.quote===source.slice(selected.from,selected.to)));
+  console.log(JSON.stringify({ output, checks: ['real project JavaScript opened', 'code navigation control visible', 'current-file definition jump', 'physical selection survives native editor input scrolling', 'physical discussion click persists exact source offsets and quote'] }));
 } finally {
   await browser?.disconnect();
   if (child.exitCode === null && !child.signalCode) child.kill('SIGTERM');
