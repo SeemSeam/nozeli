@@ -1,3 +1,4 @@
+import { contentToolForPage } from './native-content-tools.fixture.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -49,7 +50,7 @@ try {
   await page.waitForFunction(() => !document.querySelector('#text-preview').hidden);
   const report = { checks: [] };
   for (const mode of ['read', 'edit']) {
-    if (mode === 'edit') await page.click('#text-mode-toggle');
+    if (mode === 'edit') await contentToolForPage(page, ['view', 'text-mode']);
     for (const collapsed of [false, true]) {
       await page.evaluate(mode => {
         if (mode === 'edit') {
@@ -74,7 +75,7 @@ try {
       if (collapsed) { await page.focus(remove); await page.keyboard.press('Enter'); }
       else await page.click(remove);
       await page.waitForFunction(() => !document.querySelector('.note-anchor.tag-discuss'));
-      await page.click('#font-larger');
+      await contentToolForPage(page, ['view', 'document-font', 'document-font-larger']);
       assert.equal(await page.$(selector), null, 'redraw restored removed projection');
       report.checks.push(`${mode}: ${collapsed ? 'collapsed keyboard' : 'expanded pointer'} removal and redraw`);
     }

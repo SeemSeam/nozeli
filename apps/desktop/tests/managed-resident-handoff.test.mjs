@@ -58,6 +58,7 @@ for(const scenario of ['queued','running','manual','closing','unknown','unresolv
  if(['unknown','unresolved','unconfirmed'].includes(scenario))c.sessions.set('orchestrator',{sideEffectFacts:scenario==='unknown'?[{outcome:'unverified-cancelled'}]:[],blockedTicket:scenario==='unresolved'?{}:null,pid:scenario==='unconfirmed'?123:null,stop:async()=>({confirmationComplete:false})});
  await assert.rejects(c.prepareResidentHandoff('frontdesk'),e=>['OMP_HANDOFF_BUSY','OMP_HANDOFF_UNRESOLVED','OMP_HANDOFF_SIDE_EFFECTS_UNKNOWN','OMP_EXIT_UNCONFIRMED'].includes(e.code));assert.deepEqual(c.store.state.residents.frontdesk,before);assert.equal(c.store.state.residentArchive?.frontdesk?.handoffs,undefined);
  if(scenario==='closing')c.store.state.works[0].status='paused';
+ if(scenario==='unconfirmed')c.sessions.get('orchestrator').stop=async()=>({confirmationComplete:true});
 });
 
 test('confirm rechecks safety after prepare and refuses newly queued input',async t=>{
@@ -97,4 +98,41 @@ for(const scenario of ['missing','empty','native-message','unknown-entry','admit
  assert.equal(c.store.state.drafts.frontdesk,'保留的未发送草稿');
  assert.equal(c.store.state.residentArchive?.frontdesk?.handoffs,undefined);
  if(before!==null)assert.equal(await readFile(oldFile,'utf8'),before);
+});
+
+test('frontdesk clear creates only a fresh frontdesk owner and preserves all source ledgers',async t=>{
+ const {c,calls,oldFile}=await fixture(t);await c.session('orchestrator');const orchestrator=c.sessions.get('orchestrator');
+ await c.store.mutate(()=>{c.store.state.drafts.frontdesk='retained GUI draft';c.store.state.jobs.push({id:'old-front',target:'frontdesk',type:'front',text:'OLD_SENTINEL',status:'completed',context:{}});c.store.state.messages.push({id:'old-message',target:'frontdesk',speaker:'user',jobId:'old-front',text:'OLD_SENTINEL'});});
+ const before=structuredClone({jobs:c.store.state.jobs,messages:c.store.state.messages,works:c.store.state.works,drafts:c.store.state.drafts,orchestrator:c.store.state.residents.orchestrator});
+ const result=await c.clearFrontdeskContext();assert.equal(result.cleared,true);assert.equal(result.oldThreadId,'old-frontdesk');assert.notEqual(result.threadId,result.oldThreadId);assert.equal(c.sessions.get('orchestrator'),orchestrator);assert.equal(orchestrator.closed,false);
+ assert.deepEqual({jobs:c.store.state.jobs,messages:c.store.state.messages,works:c.store.state.works,drafts:c.store.state.drafts,orchestrator:c.store.state.residents.orchestrator},before);
+ assert.equal(c.store.state.residentArchive.frontdesk.handoffs.at(-1).id,result.archiveId);assert.equal(c.store.state.frontdeskContextEpoch.messageId,'old-message');assert.equal(await readFile(oldFile,'utf8'),historyBytes('old-frontdesk'));assert.equal(calls.filter(x=>x.target==='frontdesk'&&x.resumeId==null).length,1);
+});
+
+for(const scenario of ['busy','nativeDraft','queued','lease','tools','restart','configuration'])test(`frontdesk clear rejects ${scenario} before durable changes`,async t=>{
+ const {c,calls}=await fixture(t);const session=new EventEmitter();Object.assign(session,{closed:false,busy:false,inFlightToolCalls:new Set()});c.sessions.set('frontdesk',session);
+ if(scenario==='busy')session.busy=true;if(scenario==='nativeDraft')c.nativeDraftTargets.add('frontdesk');if(scenario==='queued')c.store.state.jobs.push({id:'queued',target:'frontdesk',status:'queued'});if(scenario==='lease')c.externalTerminalTargets.add('frontdesk');if(scenario==='tools')session.inFlightToolCalls.add('tool');if(scenario==='restart')c.restarting=new Map([['frontdesk',Promise.resolve()]]);if(scenario==='configuration')c.configuring.add('frontdesk');
+ const before=JSON.stringify(c.store.state),count=calls.length;await assert.rejects(c.clearFrontdeskContext(),{code:'FRONTDESK_CONTEXT_CLEAR_BUSY'});assert.equal(JSON.stringify(c.store.state),before);assert.equal(calls.length,count);c.sessions.delete('frontdesk');c.restarting?.clear();
+});
+
+test('clear fences simultaneous clear, send and manual admissions until new identity is ready',async t=>{
+ const {c}=await fixture(t);const first=c.clearFrontdeskContext();await assert.rejects(c.clearFrontdeskContext(),{code:'FRONTDESK_CONTEXT_CLEAR_BUSY'});await assert.rejects(c.send('frontdesk','must not disappear'),{code:'FRONTDESK_CONTEXT_CLEAR_BUSY'});await assert.rejects(c.openManualJob('frontdesk','late','must not disappear'),{code:'FRONTDESK_CONTEXT_CLEAR_BUSY'});await first;assert(!c.store.state.jobs.some(j=>j.text==='must not disappear'));
+});
+
+test('clear startup failure retains new identity and archive, never resumes the old context',async t=>{
+ const {c,failNext,calls}=await fixture(t);failNext();await assert.rejects(c.clearFrontdeskContext(),/startup after identity failed/);assert.equal(c.store.state.residents.frontdesk.threadId,'new-1');assert.equal(c.store.state.residents.frontdesk.contextClear.status,'start-failed');assert.equal(c.store.state.residentArchive.frontdesk.handoffs.length,1);await assert.rejects(c.send('frontdesk','unsafe retry'),{code:'FRONTDESK_CONTEXT_CLEAR_BUSY'});assert(!calls.slice(1).some(call=>call.resumeId==='old-frontdesk'));
+});
+
+test('clear disk failure keeps old durable identity and prevents implicit resume',async t=>{
+ const {c,calls}=await fixture(t);const save=c.store.save;c.store.save=async()=>{throw Error('disk failure');};try{await assert.rejects(c.clearFrontdeskContext(),/disk failure/);}finally{c.store.save=save;}assert.equal(c.store.state.residents.frontdesk.threadId,'old-frontdesk');assert.equal(c.store.state.residentArchive?.frontdesk?.handoffs,undefined);assert.equal(calls.filter(call=>call.resumeId==null).length,0);await assert.rejects(c.send('frontdesk','unsafe retry'),{code:'FRONTDESK_CONTEXT_CLEAR_BUSY'});
+});
+
+test('clear unconfirmed stop retains identity and never starts a replacement',async t=>{
+ const {c,calls}=await fixture(t);const owner={pid:123,closed:false,stop:async()=>({confirmationComplete:false})};c.sessions.set('frontdesk',owner);await assert.rejects(c.clearFrontdeskContext(),{code:'OMP_EXIT_UNCONFIRMED'});assert.equal(c.store.state.residents.frontdesk.threadId,'old-frontdesk');assert.equal(c.sessions.get('frontdesk'),owner);assert.equal(calls.filter(call=>call.resumeId==null).length,0);c.sessions.delete('frontdesk');
+});
+
+test('frontdesk replacement reserves only after old owner releases its single budget slot',async t=>{
+ const {c}=await fixture(t);let occupied=1,reclaims=0;const old={closed:false,pid:123,stop:async()=>{occupied--;old.closed=true;return {confirmationComplete:true};}};c.sessions.set('frontdesk',old);
+ c.processBudget={get available(){return occupied===0;},reclaim:async()=>{reclaims++;},reserve:(_project,target)=>{assert.equal(target,'frontdesk');assert.equal(occupied,0);occupied++;return {};},bind:()=>({started(){},spawned(){}})};
+ await c.clearFrontdeskContext();assert.equal(occupied,1);assert.equal(reclaims,0);c.processBudget=null;
 });

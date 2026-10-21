@@ -22,3 +22,10 @@ html[data-workspace-role=shell] .app#app>.topbar{height:40px;min-height:40px;ove
 html[data-workspace-role=shell] .workspace-pane-header{height:auto;min-height:34px;flex-wrap:wrap;padding-block:3px}
 .workspace-pane-header button{white-space:nowrap;flex-shrink:0}
 .workspace-pane-title{flex:1;min-width:70px}
+/* Native compositor movement owns the top edge and title whitespace. The filename
+   remains a non-draggable content handle for context menus and pane attachment. */
+html[data-workspace-role=detached] .workspace-pane{border-top:0}
+html[data-workspace-role=detached] .workspace-pane-header{-webkit-app-region:drag;cursor:default;padding-top:7px;box-sizing:border-box;height:34px}
+html[data-workspace-role=detached] .workspace-pane-title{-webkit-app-region:no-drag;flex:0 1 auto;max-width:60%;cursor:grab}
+.workspace-pane{box-sizing:border-box;min-width:0;min-height:0}
+.workspace-split>:first-child,.workspace-split>:last-child{min-width:0;min-height:0;overflow:hidden}

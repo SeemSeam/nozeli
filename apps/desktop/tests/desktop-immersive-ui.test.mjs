@@ -1,3 +1,4 @@
+import { contentToolForPage } from './native-content-tools.fixture.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -119,11 +120,11 @@ try{
   assert(await p.$eval(discussSelector+' .note-projection',el=>el.classList.contains('is-collapsed')));
   checks.push('explicit full chat, manual sidebar size, note states and unsent draft persist across renderer restart');
   await p.click('#toggle-sidebar');await p.click('#chat-history-toggle');
-  await p.click('#font-settings');await p.waitForFunction(()=>document.querySelector('#font-menu').matches(':popover-open'));await p.click('#font-menu [data-reader-font="18"]');
+  await contentToolForPage(p, ['view', 'document-font']);await p.click('.nozeli-submenu [data-command="document-font-18"]');
   assert.equal(await p.$eval('#text-preview',el=>getComputedStyle(el).fontSize),'18px');
-  await p.click('#font-settings');await p.click('#font-reset');
+  await contentToolForPage(p, ['view', 'document-font']);await p.click('.nozeli-submenu [data-command="document-font-reset"]');
   await p.click('#text-preview [data-path="sample.cc"]');await p.waitForFunction(()=>document.querySelector('#file-path').textContent==='sample.cc');await p.waitForSelector('.monaco-editor');
-  await p.click('#font-settings');await p.click('#font-menu [data-reader-font="18"]');await p.waitForFunction(()=>getComputedStyle(document.querySelector('.monaco-editor .view-line')).fontSize==='18px');
+  await contentToolForPage(p, ['view', 'document-font']);await p.click('.nozeli-submenu [data-command="document-font-18"]');await p.waitForFunction(()=>getComputedStyle(document.querySelector('.monaco-editor .view-line')).fontSize==='18px');
   checks.push('relative Markdown project links open source and font menu changes reading/editor text');
   for(const width of [1440,960,600]){
     await resize(width,width===600?800:900);await p.evaluate(()=>{__nozeliInput.select(0,0);__nozeliInput.select(20,30);});await p.waitForFunction(()=>!document.querySelector('#selection-menu').hidden);
@@ -137,7 +138,6 @@ try{
   }
   checks.push('1440/960/600 drawers and quick actions stay inside owning document; terminal menus and reading isolation');
   await resize(1440);await open('图片.png');await p.waitForSelector('.image-page canvas');
-  assert(await p.$eval('#image-toolbar',el=>el.parentElement.classList.contains('desk-header')));
   assert.equal(await p.$eval('#font-control',el=>getComputedStyle(el).display),'none');await p.screenshot({path:path.join(out,'03-image.png')});
   await open('样例.pdf');await p.waitForSelector('.pdf-page canvas');assert.equal(await p.$eval('#font-control',el=>getComputedStyle(el).display),'none');await p.screenshot({path:path.join(out,'04-pdf.png')});
   checks.push('image/PDF controls stay in single file row with text font menu hidden');

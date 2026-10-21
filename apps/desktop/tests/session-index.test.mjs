@@ -17,6 +17,20 @@ async function fixture(t) {
 }
 const fact=(id,text,extra={})=>({sessionId:'native-session',epoch:'native-session#0',requestId:'request-a',jobId:'job-a',entry:{type:'message',id,parentId:null,message:{role:'assistant',content:[{type:'text',text}]}},...extra});
 
+test('context clear starts an empty current view while explicit history and subsequent messages survive',async t=>{
+ const {store,index}=await fixture(t);
+ await index.recordBatch([fact('before-clear','Archived answer')],'frontdesk');
+ const boundary=store.state.sessionIndex.sequence;
+ await store.mutate(()=>{store.state.frontdeskContextEpoch={sequence:boundary};});
+ assert.deepEqual(index.frame().entries,[]);assert.deepEqual(index.frame().deltas,[]);assert.equal(index.frame().hasMore,false);
+ assert(index.messages().some(e=>e.text==='Archived answer'));
+ assert((await index.page({cursor:'before:'+Number.MAX_SAFE_INTEGER})).entries.some(e=>e.text==='Archived answer'));
+ await index.recordBatch([fact('after-clear','New answer')],'frontdesk');
+ assert.deepEqual(index.frame().entries.map(e=>e.text),['New answer']);
+ const restored=new SessionIndex(store);await restored.initialize();
+ assert.deepEqual(restored.frame().entries.map(e=>e.text),['New answer']);
+});
+
 test('durable entry replaces its exact native stream, duplicate snapshot cannot repeat the answer',async t=>{
   const {index}=await fixture(t);
   index.event({sessionId:'native-session',epoch:'native-session#0',requestId:'request-a',jobId:'job-a',streamId:'native-stream-7',event:{type:'message_update',message:{role:'assistant',content:[{type:'text',text:'Partial'}]}}},'frontdesk');

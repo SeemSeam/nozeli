@@ -43,7 +43,9 @@ function closureErrorFacts(work){
 }
 export function compactFacts(state,used,{job,target}={}){
  const relevant=relevantWorkIds(state,job,target);
- const requests=managedWorkRecords(state).filter(r=>!r.workId).slice(-8).map(r=>({id:r.id,name:r.name,status:r.phase}));
+ const boundary=target==='frontdesk'?state.frontdeskContextEpoch:null;
+ const priorJobs=new Set(boundary?(state.jobs||[]).slice(0,boundary.jobCount).map(j=>j.id):[]);
+ const requests=managedWorkRecords(state).filter(r=>!r.workId&&(!boundary||!priorJobs.has(r.id.replace(/^request:/,'')))).slice(-8).map(r=>({id:r.id,name:r.name,status:r.phase}));
  const works=state.works.filter(w=>w.status!=='ended'||w.closure?.phase!=='complete'||relevant.has(w.id));
  return {quota:{used,limit:state.limit},works:works.map(w=>({id:w.id,name:w.name||w.request,status:w.status,revision:w.revision,report:w.result?.objectId?{objectId:w.result.objectId,revision:w.result.revision??w.revision}:w.closure?.report??null,outcome:w.outcome??null,nextAction:w.status==='ended'?(w.closure?.phase==='blocked'?{kind:'technical-retry',workId:w.id}:null):{kind:w.status==='review'?'user-review':w.status==='paused'?'worker-discussion':'execution',workId:w.id},closurePhase:w.closure?.phase??null,...closureErrorFacts(w)})),questions:state.todos.filter(t=>t.kind==='routing'&&t.status==='open').map(t=>({id:t.id,text:t.text})),...(requests.length?{requests}:{})};
 }
@@ -66,7 +68,8 @@ export function prepareDelivery(state,{target,threadId,generation=0,job,used,mem
  if(memoryVersion!=null)facts.memoryVersion=memoryVersion;
  const stateDelta=factDelta(previous?.facts,facts);
  const messages=state.messages||[],at=messages.findIndex(m=>m.jobId===job.id&&m.speaker==='user'&&m.target===target),end=at<0?messages.length:at;
- let start=0;if(previous?.messageId){const i=messages.findIndex(m=>m.id===previous.messageId);if(i>=0)start=i+1;}
+ let start=0;if(target==='frontdesk'&&state.frontdeskContextEpoch?.messageId){const i=messages.findIndex(m=>m.id===state.frontdeskContextEpoch.messageId);start=i<0?messages.length:i+1;}
+ if(previous?.messageId){const i=messages.findIndex(m=>m.id===previous.messageId);if(i>=0)start=Math.max(start,i+1);}
  const sourceGoal=job.context?.frontGoalId&&state.frontGoals?.find(g=>g.id===job.context.frontGoalId);
  const rows=messages.slice(start,end).filter(m=>m.text&&!sourceGoal?.jobIds.includes(m.jobId)&&(!job.context?.frontJobId||m.jobId!==job.context.frontJobId)&&m.jobId!==job.id&&(target==='frontdesk'?(m.audience==='frontdesk'||m.target==='frontdesk'&&m.speaker==='system'):m.target==='frontdesk'&&m.speaker!=='system'));
  // Unseen cross-role dialogue only. Older text stays retrievable on demand.

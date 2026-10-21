@@ -1,3 +1,4 @@
+import { contentToolForPage } from './native-content-tools.fixture.mjs';
 import {prepareReading, waitForDesktopPage} from './reading-setup.fixture.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -55,7 +56,7 @@ async function open(rel) {
   await page.click('#file-tree button[data-path="' + rel + '"]'); await page.waitForFunction(rel => document.querySelector('#file-path').textContent === rel, {}, rel); await tick(180);
   if (await page.$eval('#app', node => node.classList.contains('drawer-files-open'))) await page.click('#file-toggle');
 }
-async function chooser(history = false) { await page.click('#open-beside'); await page.waitForSelector('#beside-dialog[open]'); if (history) await page.click('#beside-source-history'); await page.waitForFunction(() => !document.querySelector('#beside-open').disabled); }
+async function chooser(history = false) { await contentToolForPage(page, ['history', 'compareFile']); await page.waitForSelector('#beside-dialog[open]'); if (history) await page.click('#beside-source-history'); await page.waitForFunction(() => !document.querySelector('#beside-open').disabled); }
 async function historical(revision) { await chooser(true); await page.select('#beside-version', String(revision)); await page.click('#beside-diff'); await page.waitForSelector('.document-diff .cm-mergeView'); await tick(150); }
 const diffText = () => page.$$eval('.document-diff-body .cm-content', nodes => nodes.map(node => node.cmTile.root.view.state.doc.toString()));
 async function closeDiff() { await page.click('#secondary-close');await page.waitForSelector('#action-confirmation[open]');await page.click('#action-confirmation-accept'); await page.waitForFunction(() => !document.querySelector('.document-diff') && document.querySelector('#secondary-pane').hidden); }
@@ -77,7 +78,7 @@ try {
   assert.deepEqual(await diffText(), [saved[2], saved[1]]); await shot('02-saved-history-diff'); await closeDiff();
   assert.deepEqual(await fs.readFile(path.join(project, '阅读.md')), sourceBefore); assert.deepEqual(await fs.readFile(new FileChanges(project).location('阅读.md')), ledgerBefore);
   report.checks.push('switch between ordinary compare and diff; change selected version; comparisons leave source and ledger unchanged');
-  await page.click('#font-settings'); await page.click('#authorship-history'); await page.waitForSelector('#document-change-history[open] .change-history-compare');
+  await contentToolForPage(page, ['history', 'authorship-history']); await page.waitForSelector('#document-change-history[open] .change-history-compare');
   await page.click('.change-history-entry[data-event-id] .change-history-compare'); await page.waitForSelector('.document-diff');
   assert(await page.$eval('#document-change-history', n => !n.open)); assert.match(await page.$eval('#diff-count', n => n.textContent), /内容相同/); await closeDiff();
   report.checks.push('click a save batch in the existing modification history to compare it directly');
@@ -87,7 +88,7 @@ try {
   await historical(0); assert((await diffText())[0].includes('value = 42')); assert((await diffText())[1].includes('value = 0')); assert((await page.$$eval('.document-diff .cm-line span', n => n.length)) > 0); await closeDiff();
   await open('sample.tex'); await historical(0); assert((await diffText())[0].includes('New')); assert((await diffText())[1].includes('Old')); await closeDiff();
   report.checks.push('other project text comparison remains supported; primary switch cleans comparison; C++ highlighting and TeX version comparison');
-  await open('bad-history.md');await page.click('#open-beside');await page.waitForSelector('#beside-dialog[open]');await page.click('#beside-source-history');
+  await open('bad-history.md');await contentToolForPage(page, ['history', 'compareFile']);await page.waitForSelector('#beside-dialog[open]');await page.click('#beside-source-history');
   await page.waitForFunction(()=>document.querySelector('#beside-status').textContent.includes('损坏'));assert.equal(await page.$$eval('#beside-version option',n=>n.length),0);
   assert(await page.$eval('#beside-open',n=>n.disabled));assert(await page.$eval('#beside-diff',n=>n.disabled));await shot('09-corrupt-history-refused');await page.keyboard.press('Escape');
   report.checks.push('switch to a corrupt history clears previous file versions and disables comparison without changing the source');
@@ -117,7 +118,7 @@ try {
   await page.waitForFunction(() => document.querySelector('#project-name').textContent === '另一个项目'); assert.equal(await page.$('.document-diff'), null);
   await page.click('#recent button[title="历史对比验收"]'); await page.waitForFunction(() => document.querySelector('#project-name').textContent === '历史对比验收'); await open('阅读.md');
   report.checks.push('project switch removes historical views and keeps each project independent');
-  await page.click('#text-mode-toggle'); await page.waitForFunction(() => !document.querySelector('#text-host').hidden);
+  await contentToolForPage(page, ['view', 'text-mode']); await page.waitForFunction(() => !document.querySelector('#text-host').hidden);
   await page.evaluate(() => __nozeliInput.select(10, 12)); const selectionBefore = await page.evaluate(() => __nozeliInput.selection());
   // A genuine external conflict leaves an unsaved buffer for comparison.
   await fs.writeFile(path.join(project, '阅读.md'), saved[2] + '\n外部进程修改\n');

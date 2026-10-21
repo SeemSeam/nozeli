@@ -1,3 +1,4 @@
+import { contentToolForPage, openContentToolsForPage } from './native-content-tools.fixture.mjs';
 import {prepareReading, waitForDesktopPage, waitForReadingProject} from './reading-setup.fixture.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -68,7 +69,7 @@ try {
   await selectAgain();await frame.evaluate(()=>{__nozeliPptist.store.slideIndex=1});await page.waitForFunction(()=>document.querySelector('#selection-menu').hidden);await frame.evaluate(()=>{__nozeliPptist.store.slideIndex=0});
   await selectAgain();checks.push('selection menu dismisses on Escape, empty selection, canvas click and slide change; no delayed reopen');
   await page.waitForSelector('#selection-menu:not([hidden])');await page.click('#selection-note');await page.waitForSelector('#note-form:not([hidden])');await page.type('#note-input','PPT 文字备注');await page.click('#add-note');await page.waitForSelector('.word-note-overlay .note-anchor:not([hidden])');
-  await page.click('#word-region');
+  await contentToolForPage(page, ['view', 'region']);
   const canvas=await frame.$eval('.canvas .viewport-wrapper',n=>{const b=n.getBoundingClientRect();return{x:b.x+20,y:b.y+60}});
   await page.mouse.move(fb.x+canvas.x,fb.y+canvas.y);await page.mouse.down();await page.mouse.move(fb.x+canvas.x+80,fb.y+canvas.y+45,{steps:10});await page.mouse.up();
   await page.waitForSelector('#selection-menu:not([hidden])');await page.click('#selection-note');await page.waitForSelector('#note-form:not([hidden])');await page.type('#note-input','PPT 区域备注');await page.click('#add-note');await page.waitForFunction(()=>document.querySelectorAll('.word-note-overlay .note-anchor').length===2);
@@ -88,7 +89,7 @@ try {
   const ws=new WebSocket(log.match(/Debugger listening on (ws:\/\/[^\s]+)/)[1]);await new Promise(r=>ws.once('open',r));
   const expression=`process.mainModule.require('electron').dialog.showSaveDialog=async()=>({canceled:false,filePath:${JSON.stringify(path.join(project,'exported.pptx'))}})`;
   await new Promise(resolve=>{ws.on('message',raw=>{if(JSON.parse(raw).id===1)resolve();});ws.send(JSON.stringify({id:1,method:'Runtime.evaluate',params:{expression}}));});
-  await page.click('#document-more');await page.click('#document-context-menu [data-command=file]');await page.click('.nozeli-submenu [data-command=exportPpt]');
+  await openContentToolsForPage(page);await page.click('#document-context-menu [data-command=file]');await page.click('.nozeli-submenu [data-command=exportPpt]');
   const until=Date.now()+45000;let exported;
   for(;;){try{exported=await readFile(path.join(project,'exported.pptx'));break;}catch{}if(Date.now()>until)throw Error('export timeout');await new Promise(r=>setTimeout(r,100));}
   // Choose the original path: host must refuse even when the native dialog allows it.

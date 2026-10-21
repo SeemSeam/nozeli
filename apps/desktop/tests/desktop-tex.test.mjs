@@ -1,3 +1,4 @@
+import { contentToolForPage } from './native-content-tools.fixture.mjs';
 import {prepareReading, waitForDesktopPage, waitForReadingProject} from './reading-setup.fixture.mjs';
 import {clickPreviewControl, openPreviewMenu} from './preview-menu-support.mjs';
 import assert from 'node:assert/strict';
@@ -88,7 +89,7 @@ try{
  await page.screenshot({path:path.join(output,'02-tex-error-keeps-preview.png')});checks.push('syntax error retains successful PDF and exposes file/line diagnostics');
  await page.click('#tex-diagnostics button');await page.waitForFunction(()=>__nozeliInput.selection().to>__nozeliInput.selection().from);checks.push('diagnostic clicks select offending source line');
  await page.evaluate(()=>__nozeliInput.replace(__nozeliInput.text().replace('\\InvalidNozeliCommand\n','')));
- await page.click('#tex-build');await page.waitForFunction(async projectId=>(await nozeli.invoke('tex.status',{projectId})).value.phase==='success',{timeout:30000},projectId);
+ await contentToolForPage(page, ['texBuild']);await page.waitForFunction(async projectId=>(await nozeli.invoke('tex.status',{projectId})).value.phase==='success',{timeout:30000},projectId);
  await clickPreviewControl(page, 'tex-preview');await page.waitForSelector('#secondary-pane[hidden]');await clickPreviewControl(page, 'tex-preview');await page.waitForSelector('#secondary-pdf canvas');
  await page.click('#file-tree button[data-path="read.md"]');await page.waitForSelector('#tex-toolbar[hidden]');await page.waitForSelector('#secondary-pane[hidden]');checks.push('preview toggle and file switch dispose TeX pane');
  await page.click('#file-tree button[data-path="main.tex"]');await page.waitForSelector('#tex-toolbar:not([hidden])');await page.waitForSelector('#secondary-pdf canvas');

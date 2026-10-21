@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {createHash, randomUUID} from 'node:crypto';
-import {validateLayout} from '../domain/workspace-layout.mjs';
+import {validateLayout,singleContentLayout} from '../domain/workspace-layout.mjs';
 
 const fail = (code, message) => { throw Object.assign(new Error(message), {code}); };
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -28,12 +28,11 @@ function navigation(value, depth = 0) {
   return Object.fromEntries(Object.entries(value).filter(([key]) => navigationKeys.has(key)).map(([key, item]) => [key, navigation(item, depth + 1)]).filter(([, item]) => item !== undefined));
 }
 function snapshot(projectId, input) {
-  const source = structuredClone(input);
-  validateLayout(source);
+  const source = singleContentLayout(input);
   if (source.projectId !== projectId) fail('PROJECT_SCOPE_DENIED', 'Layout belongs to another project.');
   const node = value => value.kind === 'split'
     ? {...pick(value, ['kind','id','axis','ratio']), first: node(value.first), second: node(value.second)}
-    : pick(value, ['kind','id','views','activeViewId']);
+    : pick(value, ['kind','id','views','activeViewId','historyViewIds']);
   const layout = {...pick(source, ['schema','singleContent','projectId','revision','maximized']), mainRoot: node(source.mainRoot), detached: source.detached.map(window => ({...pick(window, ['id','boundsDip','alwaysOnTop']), root: node(window.root)})), views: Object.fromEntries(Object.entries(source.views).map(([id, view]) => [id, {...pick(view, ['id','projectId','resourceId','kind','relPath','pinned','preview','readOnly','sourceViewId']), ...(view.viewState ? {viewState: navigation(view.viewState)} : {})}]))};
   return validateLayout(layout);
 }

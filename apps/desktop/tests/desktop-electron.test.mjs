@@ -1,3 +1,4 @@
+import { contentToolForPage } from './native-content-tools.fixture.mjs';
 import {installFileTreeClicks} from './file-tree-clicks.fixture.mjs';
   import { spawn } from 'node:child_process';
   import { createRequire } from 'node:module';
@@ -193,8 +194,8 @@ try {
   const linked = await page.evaluate((id) => window.nozeli.invoke('file.read', { projectId: id, relPath: '逃逸链接' }), projectId);
   record('symlink rejected over real IPC', linked.ok === false, linked.error?.code || '');
   await page.click('#file-tree button[data-path="中文 目录/笔记.md"]');
-  await page.waitForFunction(() => document.querySelector('#text-mode-toggle')?.textContent === '编辑');
-  await page.click('#text-mode-toggle');
+  await page.waitForSelector('#text-preview:not([hidden])');
+  await contentToolForPage(page, ['view', 'text-mode']);
   await page.waitForSelector('.cm-content');
   await page.waitForFunction(() => !document.querySelector('#text-host').inert);
   await page.focus('.cm-content');
@@ -283,7 +284,7 @@ try {
     for (const type of ['pointerdown', 'pointermove', 'pointerup']) node.addEventListener(type, event => trace.push({ type: event.type, target: event.target.className || event.target.tagName }), true);
     window.__pdfRegionTrace = trace;
   });
-  await page.click('#pdf-region');
+  await contentToolForPage(page, ['view', 'region']);
   const pageBox = await page.$eval('#pdf-host .pdf-page', node => node.getBoundingClientRect().toJSON());
   await page.mouse.move(pageBox.x + 30, pageBox.y + 70);
   await page.mouse.down();
@@ -318,7 +319,7 @@ try {
   record('note tag expands, drags, and accepts keyboard movement', await page.evaluate(() => { const card = document.querySelector('.note-projection'); return card && !card.hidden && card.style.transform.includes('px'); }));
   await page.evaluate(name => window.nozeli.invoke('session.capture', { name }), 'note-tags');
   const beforeZoom = region.anchor.rects[0].slice();
-  await page.click('#pdf-zoom-in');
+  await contentToolForPage(page, ['view', 'zoom-in']);
   await page.waitForFunction(width => document.querySelector('#pdf-host canvas').width > width, {}, canvas.width);
   const afterZoom = await page.evaluate(async (id) => (await window.nozeli.invoke('annotation.list', { projectId: id, relPath: '中文 目录/样例.pdf' })).value.annotations.find(note => note.note === '鼠标框选').anchor.rects[0], projectId);
   record('zoom does not rewrite the stored page rectangle', JSON.stringify(afterZoom) === JSON.stringify(beforeZoom), JSON.stringify(afterZoom));
@@ -462,7 +463,7 @@ try {
   record('shortened dirty text can delete a stale note without a page error', removedStale.ok && (page.__errors || []).length === 0, JSON.stringify({ removedStale, errors: page.__errors || [] }));
   await page.click('#file-tree button[data-path="中文 目录/样例.pdf"]');
   await page.waitForSelector('#pdf-host canvas');
-  await page.click('#pdf-search-toggle');
+  await contentToolForPage(page, ['find']);
   await page.type('#pdf-query', 'Nozeli');
   const searchPromise = page.$eval('#pdf-search', node => node.requestSubmit());
   await page.click('#file-tree button[data-path="中文 目录/第二份.md"]');
@@ -523,7 +524,7 @@ try {
   await page.waitForFunction(() => document.querySelector('#pdf-page').value === '1');
   await page.click('#show-note');
   await page.type('#note-input', 'PAGE1_FROZEN');
-  await page.click('#pdf-next');
+  await contentToolForPage(page, ['view', 'page-next']);
   await page.waitForFunction(() => document.querySelector('#pdf-page').value === '2');
   await page.click('#file-tree button[data-path="中文 目录/笔记.md"]');
   await page.waitForFunction(() => document.querySelector('#file-path').textContent.endsWith('笔记.md'));

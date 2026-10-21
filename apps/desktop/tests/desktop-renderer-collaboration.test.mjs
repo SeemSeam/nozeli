@@ -1,3 +1,4 @@
+import { contentToolForPage } from './native-content-tools.fixture.mjs';
 import {prepareReading, waitForDesktopPage} from './reading-setup.fixture.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -49,7 +50,7 @@ try {
   await prepareReading(page);
   await page.click('#pick-project'); await page.waitForSelector('#file-tree button'); await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-close').click(); });
   await page.click('#file-tree button[data-path="sample.md"]'); await page.waitForFunction(() => window.__nozeliInput?.text().includes('first target'));
-  await page.click('#text-mode-toggle');
+  await contentToolForPage(page, ['view', 'text-mode']);
   const observation = await page.evaluate(async () => {
     const fixture = __collaborationFixture, base = fixture.snapshot().text;
     const dom = document.querySelector('#text-host .cm-editor');
@@ -81,7 +82,7 @@ try {
   assert.equal(observation.undone.text, original.replace('first','AGENT ONE').replace('second','AGENT TWO'));
   assert.equal(observation.deferred, true, 'remote event is deferred during composition');
   assert.match(observation.afterIME.text, /^IME AGENT/);
-  await page.click('#text-mode-toggle');
+  await contentToolForPage(page, ['view', 'text-mode']);
   await page.waitForFunction(() => document.querySelector('#text-preview').textContent.includes('AGENT ONE'));
   await writeFile(path.join(output, 'observations.json'), JSON.stringify(observation, null, 2));
   await page.screenshot({ path: path.join(output, 'collaboration.png') });

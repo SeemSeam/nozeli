@@ -1,3 +1,4 @@
+import { contentToolForPage } from './native-content-tools.fixture.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -45,7 +46,7 @@ try {
   const selector = rel => '#file-tree button[data-path="' + rel + '"]';
   await page.click(selector('sample.md'));
   await page.waitForFunction(()=>window.__nozeliInput?.text().includes('Target annotated'));
-  await page.click('#text-mode-toggle'); // read -> split (default edit mode)
+  await contentToolForPage(page, ['view', 'text-mode']); // read -> split (default edit mode)
   await page.waitForSelector('#text-host .cm-content');
   await page.waitForSelector('#text-preview:not([hidden])');
   const splitNote = async () => {
@@ -109,7 +110,7 @@ try {
   await page.screenshot({path:path.join(output,'split-single-owner.png')});
 
   // Read mode owns the interactive projection on the reading surface.
-  await page.click('#text-mode-toggle'); // split -> read
+  await contentToolForPage(page, ['view', 'text-mode']); // split -> read
   await page.waitForSelector('#text-preview .note-anchor');
   const readState=await page.evaluate(()=>({leftHidden:document.querySelector('#text-host').hidden,leftVisibleCard:[...document.querySelectorAll('#text-host .note-anchor')].every(n=>n.offsetParent===null),right:document.querySelectorAll('#text-preview .note-anchor').length}));
   assert.equal(readState.leftHidden,true,'read mode hides the source editor');
@@ -121,7 +122,7 @@ try {
   // Back to split: the right-side card must not survive the switch and the
   // left card returns with its collapsed/open state intact.
   const collapsedInRead=await page.evaluate(() => { const card=document.querySelector('#text-preview .note-anchor .note-projection'); return card ? card.classList.contains('is-collapsed') : null; });
-  await page.click('#text-mode-toggle'); // read -> split
+  await contentToolForPage(page, ['view', 'text-mode']); // read -> split
   await page.waitForSelector('#text-host .note-anchor');
   await page.waitForFunction(()=>document.querySelectorAll('#text-preview .note-anchor').length===0);
   const backToSplit=await page.evaluate(() => ({ left: document.querySelectorAll('#text-host .note-anchor').length, collapsed: document.querySelector('#text-host .note-anchor .note-projection')?.classList.contains('is-collapsed') }));
@@ -135,11 +136,11 @@ try {
   await page.waitForSelector('#selection-discuss',{visible:true});await page.click('#selection-discuss');
   await page.waitForSelector('#text-host .tag-discuss .tag-editor');
   await page.type('#text-host .tag-discuss .tag-editor','Unsent split discussion draft');
-  await page.click('#text-mode-toggle'); // split -> read
+  await contentToolForPage(page, ['view', 'text-mode']); // split -> read
   await page.waitForSelector('#text-preview .tag-discuss .tag-editor');
   const readDraft=await page.evaluate(()=>document.querySelector('#text-preview .tag-discuss .tag-editor').value);
   assert.equal(readDraft,'Unsent split discussion draft','draft must appear in read mode');
-  await page.click('#text-mode-toggle'); // read -> split
+  await contentToolForPage(page, ['view', 'text-mode']); // read -> split
   await page.waitForSelector('#text-host .tag-discuss .tag-editor');
   const splitDraft=await page.evaluate(()=>({value:document.querySelector('#text-host .tag-discuss .tag-editor').value,right:document.querySelectorAll('#text-preview .tag-discuss').length}));
   assert.equal(splitDraft.value,'Unsent split discussion draft','draft must survive the mode round-trip');

@@ -1,3 +1,4 @@
+import { contentToolForPage } from './native-content-tools.fixture.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import net from 'node:net';
@@ -88,7 +89,7 @@ try{
  await page.evaluate(projectId=>window.dispatchEvent(new CustomEvent('nozeli-report-exported',{detail:{projectId}})),id);
  await page.waitForFunction(()=>document.querySelector('.tag-path-notice')?.textContent.includes('原路径不存在')&&document.querySelector('[data-managed-file="deleted.md"]')?.dataset.availability==='missing');
  assert.equal(await page.evaluate(()=>__nozeliInput.text()),deletionBefore);await assert.rejects(fs.stat(path.join(project,'deleted.md')),e=>e.code==='ENOENT');check('real deletion preserves old tagged text and marks historical artifact missing');
- await page.click('#file-tree [data-path="source.md"]');await page.waitForFunction(()=>window.__nozeliInput?.text().includes('Original anchored text'));if(await page.$eval('#text-host',n=>n.hidden))await page.click('#text-mode-toggle');
+ await page.click('#file-tree [data-path="source.md"]');await page.waitForFunction(()=>window.__nozeliInput?.text().includes('Original anchored text'));if(await page.$eval('#text-host',n=>n.hidden))await contentToolForPage(page, ['view', 'text-mode']);
  await page.waitForSelector('.note-anchor');await page.evaluate(()=>{document.querySelector('.cm-editor').dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));window.__nozeliInput.replace('# Source\n\nOriginal anchored text.\nUnsaved local suffix.\n');window.__nozeliInput.select(10,18);document.querySelector('#composer').value='unsent conversation';});
  const before=await page.evaluate(()=>({text:__nozeliInput.text(),selection:__nozeliInput.selection(),draft:document.querySelector('#composer').value}));
  await fs.rename(path.join(project,'source.md'),path.join(project,'moved.md'));

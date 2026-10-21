@@ -1,3 +1,4 @@
+import { contentToolForPage } from './native-content-tools.fixture.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -37,7 +38,6 @@ try {
   const open=async rel=>{await page.click(`#file-tree button[data-path="${rel}"]`);await page.waitForFunction(rel=>document.querySelector('#file-path').textContent===rel,{},rel);};
   const checks = [];
   await open('test.cpp');await page.waitForSelector('#text-host .monaco-editor');
-  assert.equal(await page.$eval('#text-mode-toggle',n=>n.hidden),true);
   await page.evaluate(()=>{window.__nozeliInput.focus();window.__nozeliInput.select(0,10);});
   await page.click('#selection-note');await page.type('#note-input','C++ drag note');await page.click('#add-note');
   await page.waitForSelector('#text-host .tag-note .note-projection-head');
@@ -68,11 +68,9 @@ try {
   assert.equal(await page.evaluate(()=>window.__nozeliInput.text()),'int main(){return 0;}\n');
   checks.push('code note edit and discussion drag/input do not leak into code');
 
-  await open('read.md');await page.waitForSelector('#text-preview:not([hidden])');assert.equal(await page.$eval('#text-mode-toggle',n=>n.hidden),false);checks.push('Markdown keeps reading/edit switch');
+  await open('read.md');await page.waitForSelector('#text-preview:not([hidden])');await contentToolForPage(page, ['view', 'text-mode']);await page.waitForSelector('#text-host .cm-editor');checks.push('Markdown editing remains available from the content menu');
   await open('sample.pdf');await page.waitForSelector('#pdf-host .textLayer span');
-  const row=await page.evaluate(()=>({header:document.querySelector('.desk-header').getBoundingClientRect().toJSON(),tools:document.querySelector('#pdf-toolbar').getBoundingClientRect().toJSON(),font:getComputedStyle(document.querySelector('#font-larger')).display}));
-  assert.equal(row.font,'none');assert.ok(row.tools.y>=row.header.y && row.tools.bottom<=row.header.bottom,JSON.stringify(row));
-  await page.click('#pdf-region');
+  await contentToolForPage(page, ['view', 'region']);
   const pdf=await page.$eval('#pdf-host .pdf-page',n=>n.getBoundingClientRect().toJSON());
   const x=pdf.x+60,y=pdf.y+65;
   await page.mouse.move(x,y);await page.mouse.down();await page.mouse.move(x+180,y+100,{steps:12});await page.mouse.up();

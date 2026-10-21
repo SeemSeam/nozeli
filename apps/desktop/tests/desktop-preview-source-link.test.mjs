@@ -1,3 +1,4 @@
+import { contentToolForPage } from './native-content-tools.fixture.mjs';
 import {prepareReading, waitForDesktopPage} from './reading-setup.fixture.mjs';
 import {clickPreviewControl, openPreviewMenu} from './preview-menu-support.mjs';
 import assert from 'node:assert/strict';
@@ -44,7 +45,7 @@ const texPage=()=>page.$eval('#secondary-page',el=>Number(el.textContent.split('
 async function nativeNavigate(offset){await page.evaluate(offset=>{__nozeliInput.select(offset,offset);__nozeliInput.focus();},offset);await page.keyboard.press('ArrowRight');await tick(500);}
 async function undoTo(original){for(let i=0;i<5;i++){if(await page.evaluate(()=>__nozeliInput.text())===original)return;await page.keyboard.down('Control');await page.keyboard.press('KeyZ');await page.keyboard.up('Control');await tick(50);}assert.equal(await page.evaluate(()=>__nozeliInput.text()),original);}
 try{
- await launch();await resize(1440,950);await open('阅读.md');await page.click('#text-mode-toggle');await page.waitForSelector('#markdown-divider:not([hidden])');await tick(350);
+ await launch();await resize(1440,950);await open('阅读.md');await contentToolForPage(page, ['view', 'text-mode']);await page.waitForSelector('#markdown-divider:not([hidden])');await tick(350);
  assert.equal(await page.$eval('#markdown-sync',el=>el.getAttribute('aria-pressed')),'true');
  assert(await page.$eval('#document-view-commands',el=>el.hidden&&el.getClientRects().length===0));
  await openPreviewMenu(page,'markdown-sync','source');
@@ -98,7 +99,7 @@ try{
  const stateAfterWheel=await page.$eval('#tex-sync',el=>el.dataset.state);report.texWheel={before:beforeWheel,after:afterWheel,beforeGeometry,afterGeometry,beforeInverse,afterInverse};assert.equal(stateAfterWheel,'ready');assert(afterGeometry.pdf>beforeGeometry.pdf,JSON.stringify(report.texWheel));assert.equal(afterInverse.relPath,'main.tex');assert(afterInverse.line>beforeInverse.line,JSON.stringify(report.texWheel));assert.notEqual(afterWheel,beforeWheel,JSON.stringify(report.texWheel));mark('PDF zoom and real page-local wheel reuse PDF coordinates and move the source lines');
  await clickPreviewControl(page, 'tex-auto');await page.waitForFunction(()=>!document.querySelector('#tex-auto').checked&&document.querySelector('#tex-status').textContent==='设置已保存');
  await nativeNavigate(main.length-1);await page.keyboard.type('\n% UI_STALE_LINK');await tick(250);const frozenPage=await texPage();await wheel('#text-host .monaco-scrollable-element',-500);assert.equal(await texPage(),frozenPage);assert.equal(await page.$eval('#tex-sync',el=>el.dataset.state),'paused');
- await undoTo(main);await page.click('#tex-build');await page.waitForFunction(async id=>(await nozeli.invoke('tex.status',{projectId:id})).value.phase==='success',{timeout:30000},id);await page.waitForFunction(()=>document.querySelector('#tex-sync').dataset.state==='ready',{timeout:10000});mark('stale source pauses navigation; native undo and a matching successful build restore linking');
+ await undoTo(main);await contentToolForPage(page, ['texBuild']);await page.waitForFunction(async id=>(await nozeli.invoke('tex.status',{projectId:id})).value.phase==='success',{timeout:30000},id);await page.waitForFunction(()=>document.querySelector('#tex-sync').dataset.state==='ready',{timeout:10000});mark('stale source pauses navigation; native undo and a matching successful build restore linking');
  await clickPreviewControl(page, 'tex-sync');await open('阅读.md');await page.waitForSelector('#markdown-divider:not([hidden])');assert.equal(await page.$eval('#markdown-sync',el=>el.getAttribute('aria-pressed')),'true');await close();await launch();await page.waitForSelector('#markdown-divider:not([hidden])');assert.equal(await page.$eval('#markdown-sync',el=>el.getAttribute('aria-pressed')),'true');
  await open('main.tex');await page.waitForSelector('#secondary-pdf .textLayer');assert.equal(await page.$eval('#tex-sync',el=>el.getAttribute('aria-pressed')),'false');assert.equal(await page.$eval('#tex-auto',el=>el.checked),false);await clickPreviewControl(page, 'tex-sync');await tick(300);await page.screenshot({path:path.join(output,'04-restored-linking.png')});mark('full native app close/relaunch preserves Markdown per-file and TeX per-root link preferences');
  for(const [name,source]of Object.entries(sources))assert.equal(await readFile(path.join(project,name),'utf8'),source,name);

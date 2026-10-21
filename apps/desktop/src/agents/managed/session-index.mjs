@@ -219,7 +219,10 @@ export class SessionIndex {
     return this.ordered().filter(row => row.sequence < before).slice(-limit);
   }
   frame(cursor, limit = 100) {
-    const rows = this.select(cursor, limit), entries = [], deltas=[];
+    const epoch=this.store.state.frontdeskContextEpoch;
+    const boundary=epoch?.sequence??(epoch?.messageId?this.ordered().find(row=>row.id===epoch.messageId)?.sequence:undefined);
+    const current=cursor==null&&Number.isSafeInteger(boundary);
+    const rows = this.select(cursor, limit).filter(row=>!current||row.sequence>boundary), entries = [], deltas=[];
     let bytes = 0, first = rows[0]?.sequence ?? 0;
     for (let i = rows.length - 1; i >= 0; i--) {
       const dto = rows[i].delta ?? boundedDTO(rows[i].native ? this.nativeDTO(rows[i].native) : this.legacyDTO(rows[i].legacy));
@@ -230,7 +233,7 @@ export class SessionIndex {
       bytes+=size;
     }
     if (cursor == null) entries.push(...this.streams.values());
-    const hasMore = this.ordered().some(row => row.sequence < first);
+    const hasMore = this.ordered().some(row => row.sequence < first&&(!current||row.sequence>boundary));
     return {version:1, entries, deltas, hasMore, nextCursor:hasMore ? 'before:' + first : null};
   }
   async page({cursor, limit = 100} = {}) {
@@ -288,7 +291,7 @@ export class SessionIndex {
     while (this.streams.size > 16) this.streams.delete(this.streams.keys().next().value);
   }
   messages() {
-    return this.frame(null, 200).entries.filter(entry => entry.speaker !== 'tool' && !entry.streaming && entry.availability !== 'not-loaded').map(entry => ({...entry, source:entry.source}));
+    return this.frame('before:'+Number.MAX_SAFE_INTEGER, 200).entries.filter(entry => entry.speaker !== 'tool' && !entry.streaming && entry.availability !== 'not-loaded').map(entry => ({...entry, source:entry.source}));
   }
   async drain() { await this.serial; }
 }

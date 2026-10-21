@@ -85,3 +85,10 @@ test('soft Work routing hint restores relevant history without hard-binding the 
  assert.equal(hint.workHintId,'ended-14');assert.equal(hint.binding,false);assert.equal(hint.boundWorkId,undefined);
  assert.equal(JSON.stringify(job),before);
 });
+
+test('frontdesk reset epoch survives restore and compaction without changing orchestrator delivery',()=>{
+ const s=initial();s.jobs=[{id:'old-request',type:'intake',target:'orchestrator',text:'OLD_REQUEST_SENTINEL',status:'queued',context:{manual:true}}];s.messages.push({id:'boundary',jobId:'old-event',target:'frontdesk',audience:'frontdesk',speaker:'system',text:'OLD_CROSS_ROLE_SENTINEL'});s.frontdeskContextEpoch={messageId:'boundary',jobId:'old-request',jobCount:1};s.contextDelivery={orchestrator:{threadId:'orch',generation:0,facts:compactFacts(s,1),messageId:'u1'}};
+ const restored=JSON.parse(JSON.stringify(s)),checkpoint=JSON.stringify(restored.contextDelivery.orchestrator);restored.messages.push({id:'current',jobId:'fresh',target:'frontdesk',speaker:'user',text:'new prompt'});
+ for(const generation of [0,1]){const front=prepareDelivery(restored,{target:'frontdesk',threadId:'fresh-native',generation,job:{id:'fresh',context:{}},used:1});const text=JSON.stringify(front.sections);assert(!text.includes('OLD_REQUEST_SENTINEL'));assert(!text.includes('OLD_CROSS_ROLE_SENTINEL'));assert.equal(front.stats.externalMessages,0);assert(front.checkpoint.facts.works.some(w=>w.id==='w'));}
+ assert.equal(JSON.stringify(restored.contextDelivery.orchestrator),checkpoint);const orch=prepareDelivery(restored,{target:'orchestrator',threadId:'other-orch',job:{id:'new-intake',context:{}},used:1});assert(JSON.stringify(orch.sections).includes('OLD_REQUEST_SENTINEL'));assert(JSON.stringify(orch.sections).includes('answer'));
+});

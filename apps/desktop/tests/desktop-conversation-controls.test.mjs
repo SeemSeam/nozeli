@@ -96,11 +96,9 @@ try {
   await panelAction('#chat-maximize','chat-expand');
   assert.equal(await page.$eval('#work-surface', node => node.classList.contains('chat-expanded')), true);
   assert.equal(await page.$eval('#documents', node => getComputedStyle(node).display), 'none');
-  assert.equal(await page.$eval('#reader > .desk-header',node=>getComputedStyle(node).display),'none','full conversation must hide document title and commands');
   await preserve('maximize');
   await page.screenshot({ path: path.join(output, 'maximized-1440.png') });
   await panelAction('#chat-maximize','chat-expand');
-  assert.notEqual(await page.$eval('#reader > .desk-header',node=>getComputedStyle(node).display),'none','restored document shows its own header');
   const restored = await page.$eval('#conversation-panel', node => node.getBoundingClientRect().toJSON());
   assert.ok(Math.abs(restored.width - floating.width) < 1 && Math.abs(restored.height - floating.height) < 1 && Math.abs(restored.x - floating.x) < 1 && Math.abs(restored.y - floating.y) < 1);
   report.checks.push('floating maximize/restore retains exact window bounds and document');
@@ -145,7 +143,6 @@ try {
   const emptyState = await page.evaluate(() => ({
     title: document.querySelector('#subject-title').textContent,
     documents: getComputedStyle(document.querySelector('#documents')).display,
-    header: getComputedStyle(document.querySelector('#reader > .desk-header')).display,
     layoutMenu: getComputedStyle(document.querySelector('#chat-layout')).display,
     panelHidden: document.querySelector('#conversation-panel').hidden,
     launcherHidden: document.querySelector('#conversation-launcher').hidden,
@@ -155,7 +152,6 @@ try {
   }));
   assert.equal(emptyState.title, '未打开文件');
   assert.notEqual(emptyState.documents, 'none');
-  assert.notEqual(emptyState.header, 'none', 'empty workspace keeps its own header');
   assert.notEqual(emptyState.layoutMenu, 'none', 'conversation layout controls stay available on the empty workspace');
   assert.equal(emptyState.panelHidden, false);
   assert.equal(emptyState.launcherHidden, true);

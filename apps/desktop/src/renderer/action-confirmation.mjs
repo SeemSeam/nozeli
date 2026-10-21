@@ -5,6 +5,7 @@ const actions = [
   { selector: '#secondary-close', key: 'closeCompare', title: '关闭对照文件？', command: '关闭对照', description: '只关闭右侧对照，文件内容会保留。', name: () => document.getElementById('secondary-path').textContent },
   { selector: '.tag-remove', key: 'removeTag', title: '移除对话标签？', command: '移除标签', description: '对话历史会保留，标签中未发送的输入会被丢弃。', name: node => '对话标签 ' + (node.closest('.note-anchor')?.querySelector('.tag-ordinal')?.textContent || '') },
   { selector: '.tag-delete', key: 'deleteNote', title: '删除这条备注？', command: '删除备注', description: '备注会被删除，原文件内容保持不变。', name: node => '备注 ' + (node.closest('.note-anchor')?.querySelector('.tag-ordinal')?.textContent || '') },
+  { selector: '#chat-clear-frontdesk-context', key: 'clearFrontdeskContext', title: '清空前台 Agent 上下文？', command: '清空前台上下文', description: '仅开启新的前台会话。主控和 Worker 不受影响；原对话历史、报告、项目文件及未发送草稿保留。', name: () => '当前项目的前台 Agent', alwaysConfirm: true },
 ];
 
 export function mountActionConfirmation({ scope, preferences, setPreferences, toast }) {
@@ -45,7 +46,7 @@ export function mountActionConfirmation({ scope, preferences, setPreferences, to
     const node = event.target.closest?.(actions.map(action => action.selector).join(','));
     if (!node || node.disabled || replaying.has(node)) return;
     const action = actions.find(action => node.matches(action.selector));
-    if (preferences()?.[action.key] === true) return;
+    if (!action.alwaysConfirm && preferences()?.[action.key] === true) return;
     event.preventDefault(); event.stopImmediatePropagation();
     if (pending) return;
     pending = { node, action, scope: scope(), path: path(), name: action.name(node) };
@@ -53,6 +54,7 @@ export function mountActionConfirmation({ scope, preferences, setPreferences, to
     confirm.textContent = action.command;
     confirm.classList.toggle('destructive', action.key === 'deleteNote' || action.key === 'removeTag');
     skip.checked = false; skip.title = '仅适用于当前项目的' + action.command + '操作';
+    label.hidden=action.alwaysConfirm===true;
     error.hidden = true; confirm.disabled = false; cancel.disabled = false;
     dialog.showModal(); cancel.focus({ preventScroll: true });
   }, true);

@@ -160,6 +160,14 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
  const configurationNotice=document.createElement('p');configurationNotice.id='managed-configuration-notice';configurationNotice.setAttribute('role','status');configurationNotice.hidden=true;$('provider-console').insertBefore(configurationNotice,terminalBox);
  const button=(text,fn)=>{const b=document.createElement('button');b.type='button';b.textContent=text;b.onclick=()=>Promise.resolve(fn()).catch(e=>toast(e.message));return b;};
  const call=async(op,p={},id=projectId)=>{const r=await invoke('managed.'+op,{projectId:id,...p});if(!r.ok)throw Object.assign(new Error(r.error.message),{code:r.error.code});return r.value;};
+ let clearingFrontdesk=false;
+ const clearFrontdeskContext=button('清空前台上下文',async()=>{
+  if(!ownsConversation||target!=='frontdesk'||!projectId||clearingFrontdesk)return;
+  const id=projectId,gen=generation;clearingFrontdesk=true;clearFrontdeskContext.disabled=true;
+  try{await draftWriter.settled();await call('frontdesk.context.clear',{},id);if(id!==projectId||gen!==generation)return;await refresh();await readTimeline();toast('前台上下文已清空；主控、工作和对话历史保持不变。');}
+  finally{clearingFrontdesk=false;if(id===projectId&&gen===generation)render();}
+ });
+ clearFrontdeskContext.id='chat-clear-frontdesk-context';clearFrontdeskContext.className='chat-context-clear';clearFrontdeskContext.title='仅重开前台上下文，不清空主控或工作；原对话历史保留';clearFrontdeskContext.hidden=!ownsConversation;clearFrontdeskContext.disabled=true;$('conversation-head').querySelector('.conversation-controls').append(clearFrontdeskContext);
  const residentRecovery=document.createElement('section');residentRecovery.id='managed-resident-recovery';residentRecovery.hidden=true;residentRecovery.setAttribute('aria-label','常驻 Agent 会话恢复');$('conversation-panel').insertBefore(residentRecovery,$('conversation'));
  let residentStatus=null,handoffPending=false;
  const sessionRecovery=document.createElement('section');sessionRecovery.id='managed-session-recovery';sessionRecovery.hidden=true;sessionRecovery.setAttribute('aria-label','当前会话恢复');sessionRecovery.setAttribute('role','status');residentRecovery.after(sessionRecovery);
@@ -213,7 +221,7 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
   }
   for(const entry of archives){
    const id=projectId,gen=generation,archiveId=entry.archiveId||entry.id;
-   const resident=status?.state?.residents?.[entry.role];paragraph(`${labels[entry.role]||entry.role} · 原会话 ${entry.oldThreadId||entry.threadId} → 新会话 ${resident?.threadId||'待启动'} · 第 ${entry.generation??resident?.handoff?.generation??'?'} 代来源：${entry.reason||'用户明确确认接手'}`);
+   const resident=status?.state?.residents?.[entry.role];paragraph(entry.reason==='user-frontdesk-context-clear'?'前台 · 上下文已清空，原对话历史已归档保留。':`${labels[entry.role]||entry.role} · 原会话 ${entry.oldThreadId||entry.threadId} → 新会话 ${resident?.threadId||'待启动'} · 第 ${entry.generation??resident?.handoff?.generation??'?'} 代来源：${entry.reason||'用户明确确认接手'}`);
    if(!archiveId)continue;
    const read=button('查看原会话历史（只读）',async()=>{
     if(id!==projectId||gen!==generation)return;
@@ -325,6 +333,7 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
  function select(t){if(!ownsConversation)return invoke('workspace.control',{type:'conversation-action',projectId,action:'select',target:t});remember();sessionRecoveryError='';target=t;const work=state?.works.find(w=>w.id===t);viewed=work?.readOnly?{workId:t,readOnly:true}:null;lockHistory();$('composer').value=drafts.get(projectId+':'+t)??state?.drafts?.[t]??'';render();}
  function render(){
   if(!active||!state)return;
+  clearFrontdeskContext.disabled=clearingFrontdesk||!ready||target!=='frontdesk'||Boolean(viewed?.history)||state.busyTargets?.includes('frontdesk')||state.nativeDraftTargets?.includes('frontdesk')||state.externalTerminalTargets?.includes('frontdesk');
   renderConfigurationNotice(configurationNotice,state.agents||[]);
   renderWorkerRecovery();
   routeUI.render(state,projectId,ready);

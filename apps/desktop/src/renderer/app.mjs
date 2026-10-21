@@ -375,7 +375,7 @@ $('compare-mode').addEventListener('click', () => setDiffMode(false));
 $('diff-mode').addEventListener('click', () => setDiffMode(true));
 function invoke(op, payload) {
   if (isDocumentMirror && (/^(?:file\.(?:draft|save|retain)|annotation\.(?:add|update|remove|drawing|capture)|tag\.(?:put|reanchor|view)|document\.image\.put|(?:word|sheet)\.save|ppt\.export)$/.test(op)||op==='ppt.draft'&&payload?.model!==undefined)) return Promise.resolve({ok:false,error:{code:'READ_ONLY',message:'阅读副本不可修改，请回到编辑位置。'}});
-  return window.nozeli.invoke(op, payload ?? {});
+  return window.nozeli.invoke(op, payload ?? {}).then(result=>result?.error?.code==='IPC_DENIED'?{...result,error:{...result.error,message:`${op}: ${result.error.message}`}}:result);
 }
 
 function setStatus(state, text) {
@@ -2333,7 +2333,9 @@ async function openBesideSnapshot(file, diff=false) {
     }
   });
   if(isSurface)document.addEventListener('keydown',event=>{if(event.defaultPrevented||event.isComposing)return;const numbered=(event.ctrlKey||event.metaKey)&&!event.altKey&&!event.shiftKey&&/^[1-9]$/.test(event.key),cycle=event.key==='F6'&&!event.ctrlKey&&!event.metaKey&&!event.altKey;if(!numbered&&!cycle)return;event.preventDefault();event.stopImmediatePropagation();void invoke('workspace.control',{type:'group-focus',projectId:workspaceScope.projectId,viewId:workspaceScope.viewId,...(numbered?{index:Number(event.key)-1}:{direction:event.shiftKey?-1:1})});},true);
-  if(isSurface)document.addEventListener('workspace-action',event=>{const command={...event.detail.command};if(['split','maximize','closeGroup'].includes(command.type))command.groupId=workspaceScope.groupId;if(command.type==='detach'||command.type==='close')command.viewId=workspaceScope.viewId;void invoke('workspace.control',{type:'workspace-action',projectId:workspaceScope.projectId,viewId:workspaceScope.viewId,command});});
+  if(isSurface)document.addEventListener('workspace-action',event=>{const command={...event.detail.command};if(['split','maximize','closeGroup'].includes(command.type))command.groupId=workspaceScope.groupId;if(['detach','close','closeContent'].includes(command.type))command.viewId=workspaceScope.viewId;void invoke('workspace.control',{type:'workspace-action',projectId:workspaceScope.projectId,viewId:workspaceScope.viewId,command});});
+  let relayPaneInput=false;
+  if(isSurface){window.nozeli.subscribe('workspace.control',event=>{if(event.type==='pane-resize-session')relayPaneInput=event.active===true;});for(const type of ['pointermove','pointerup','pointercancel','keydown'])window.addEventListener(type,event=>{if(!relayPaneInput||type==='pointermove'&&!event.buttons||type==='keydown'&&event.key!=='Escape')return;void invoke('workspace.control',{type:'pane-pointer',projectId:workspaceScope.projectId,eventType:type==='keydown'?'pointercancel':type,buttons:event.buttons,clientX:event.clientX,clientY:event.clientY});},true);}
   async function applyDocumentEvent(event) {
     if (isDocumentMirror) return;
     if (ui.project?.id !== event.projectId || ui.file?.relPath !== event.relPath || ui.file.kind !== 'text') return;
@@ -2399,7 +2401,7 @@ async function openBesideSnapshot(file, diff=false) {
   });
   function refreshConversationLauncher(){const button=$('workspace-open-conversation');button.disabled=!ui.project?.id;button.title=ui.project?.id?'打开当前项目对话':'请先打开项目';}
   refreshConversationLauncher();
-  $('workspace-open-conversation').addEventListener('click',async()=>{const projectId=ui.project?.id;if(!projectId)return;const button=$('workspace-open-conversation');button.disabled=true;try{const result=await invoke('workspace.control',{type:'conversation-action',projectId,action:'select',target:'frontdesk'});if(!result.ok)workspace.toast(result.error.message);}catch(error){workspace.toast(error.message);}finally{refreshConversationLauncher();}});
+  $('workspace-open-conversation').addEventListener('click',async()=>{const projectId=ui.project?.id;if(!projectId)return;const button=$('workspace-open-conversation');button.disabled=true;try{const result=await invoke('workspace.control',{type:'conversation-action',projectId,action:'select',target:'frontdesk',groupId:workspaceGroups.activeGroup()});if(!result.ok)workspace.toast(result.error.message);}catch(error){workspace.toast(error.message);}finally{refreshConversationLauncher();}});
       let openingExternal=false, externalAgain=false;
       async function drainExternalOpen(){
         if(!window.__nozeliReady)return;

@@ -48,6 +48,7 @@ test('artifact publications verify real project files, deduplicate and survive r
 test('terminal attach is single-flight and stale close/input cannot affect replacement',async()=>{
  let count=0,closed=0,release;
  const gate=new Promise(r=>release=r),c={started:true,store:{state:{works:[]}},terminals:new Map()};
+ c.assertFrontdeskContextAdmission=Controller.prototype.assertFrontdeskContextAdmission;
  const m=new ManagedProjects({userDataDir:'/unused',host:{requireProject:async()=>({})},legacy:{},attachTerminal:async(_c,target,{terminalId})=>{count++;await gate;const t={terminalId,threadId:'thread',replay:'',seq:0,input(){},resize(){},async close(){closed++;c.terminals.delete(target);}};c.terminals.set(target,t);return t;}});
  m.controllers.set('p',c);
  const a=m.invoke('managed.terminal.attach',{projectId:'p',target:'frontdesk'}),b=m.invoke('managed.terminal.attach',{projectId:'p',target:'frontdesk'});await new Promise(r=>setImmediate(r));assert.equal(count,1);release();const [first,second]=await Promise.all([a,b]);assert.equal(first.terminalId,second.terminalId);
@@ -61,6 +62,7 @@ test('terminal attach is single-flight and stale close/input cannot affect repla
 test('owner-pinned attach refuses obsolete owner and late old exit cannot close replacement',async()=>{
  const old={viewOwnerId:'old'},next={viewOwnerId:'next'};let callbacks,entered=0;
  const c={started:true,store:{state:{works:[]}},sessions:new Map([['frontdesk',old]]),terminals:new Map()};
+ c.assertFrontdeskContextAdmission=Controller.prototype.assertFrontdeskContextAdmission;
  const m=new ManagedProjects({userDataDir:'/unused',host:{requireProject:async()=>({})},legacy:{},attachTerminal:async(_c,target,options)=>{entered++;callbacks=options;const t={terminalId:options.terminalId,threadId:'history',replay:'',seq:0,input(){},resize(){},close:async()=>{if(c.terminals.get(target)===t)c.terminals.delete(target);}};c.terminals.set(target,t);return t;}});m.controllers.set('p',c);
  const events=[];m.onEvent(e=>events.push(e));
  const lease=await m.invoke('managed.terminal.attach',{projectId:'p',target:'frontdesk',ownerId:'old'});
@@ -75,6 +77,7 @@ test('owner-pinned attach refuses obsolete owner and late old exit cannot close 
 test('Provider replaced while attach waits rejects old result without closing new view',async()=>{
  let release;const barrier=new Promise(r=>release=r);const old={viewOwnerId:'old'},next={viewOwnerId:'next'};
  const c={started:true,store:{state:{works:[]}},sessions:new Map([['frontdesk',old]]),terminals:new Map()};
+ c.assertFrontdeskContextAdmission=Controller.prototype.assertFrontdeskContextAdmission;
  const m=new ManagedProjects({userDataDir:'/unused',host:{requireProject:async()=>({})},legacy:{},attachTerminal:async(_c,target,{terminalId})=>{await barrier;return {terminalId,threadId:'old-thread',close:async()=>{throw Error('must not close replacement');}};}});m.controllers.set('p',c);
  const pending=m.invoke('managed.terminal.attach',{projectId:'p',target:'frontdesk',ownerId:'old'});await new Promise(r=>setImmediate(r));
  c.sessions.set('frontdesk',next);c.terminals.set('frontdesk',{terminalId:'replacement'});release();
@@ -82,6 +85,7 @@ test('Provider replaced while attach waits rejects old result without closing ne
 });
 test('automatic attachment waits for a racing model turn to finish',async()=>{
  let release,count=0;const busy=new Promise(r=>release=r),c={started:true,store:{state:{works:[]}},running:new Map([['worker',busy]]),terminals:new Map()};
+ c.assertFrontdeskContextAdmission=Controller.prototype.assertFrontdeskContextAdmission;
  const m=new ManagedProjects({userDataDir:'/unused',host:{requireProject:async()=>({})},legacy:{},attachTerminal:async(_c,target,{terminalId})=>{count++;const t={terminalId,threadId:'same-thread',seq:0,replay:''};c.terminals.set(target,t);return t;}});m.controllers.set('p',c);
  const attached=m.invoke('managed.terminal.attach',{projectId:'p',target:'worker'});await new Promise(r=>setImmediate(r));assert.equal(count,0);c.running.delete('worker');release();assert.equal((await attached).threadId,'same-thread');assert.equal(count,1);
 });

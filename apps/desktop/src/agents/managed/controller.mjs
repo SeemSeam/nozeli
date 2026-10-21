@@ -116,6 +116,7 @@ export class Controller extends EventEmitter {
     for(const w of this.store.state.works)if(w.status==='ended'&&w.closure?.phase!=='complete')await this.advanceClosure(w.id);
   }
   async start(){
+    this.assertFrontdeskContextAdmission('frontdesk');
     const residents=['frontdesk','orchestrator'].filter(target=>!this.sessions.get(target)||this.sessions.get(target).closed);
     const preflight=await Promise.allSettled(residents.map(target=>this.makeSession(target,{preflightOnly:true})));
     const rejected=preflight.find(result=>result.status==='rejected');if(rejected)throw rejected.reason;
@@ -123,9 +124,11 @@ export class Controller extends EventEmitter {
     this.started=true;this.changed();this.kick();return this.snapshot();
   }
   async applyModelDefaults(defaults){
+    this.assertFrontdeskContextAdmission('frontdesk');
     const sync={applied:0,pending:0,failed:[]};
     this.modelDefaultFailures=new Map();
     if(this.stopping)return sync;
+    this.modelDefaultsApplying=(this.modelDefaultsApplying??0)+1;
     await Promise.all([...this.sessions].map(async([target,session])=>{
       if(session.closed)return;
       const role=['frontdesk','orchestrator'].includes(target)?target:'worker';
@@ -140,6 +143,7 @@ export class Controller extends EventEmitter {
         else throw Error('Native model application was not acknowledged');
       }catch{const failure={role,message:'Agent默认模型同步失败；配置已保存，可重试保存。'};this.modelDefaultFailures.set(target,{session,failure});sync.failed.push(failure);}
     }));
+    this.modelDefaultsApplying--;
     this.changed();
     return sync;
   }
@@ -167,7 +171,7 @@ export class Controller extends EventEmitter {
     const agents=[...this.sessions.entries()].map(([target,s])=>({target,ownerId:s.viewOwnerId,terminalId:this.terminals.get(target)?.terminalId??null,provider:'omp',threadId:s.threadId||this.store.state.residents?.[target]?.threadId||this.store.state.works.find(w=>w.id===target)?.threadId,starting:this.starting.has(target),restarting:this.restarting?.has(target)??false,busy:s.busy,closed:s.closed,phase:s.phase??null,exit:s.exit&&typeof s.exit.then!=='function'?s.exit:null,model:s.model,desiredModel:s.desiredModel??null,pendingModel:s.pendingModel??null,effort:s.effort,...(s.effective?{effective:s.effective}:{}),configurationStatus:s.configurationStatus??null,capabilities:s.capabilities??null,cleanupEvidence:s.cleanupEvidence?.()??null}));
     for(const w of this.store.state.works)if(w.threadId&&!['ended','closing'].includes(w.status)&&!this.sessions.has(w.id))agents.push({target:w.id,provider:w.binding?.provider,threadId:w.threadId,busy:false,closed:true,resumable:w.binding?.provider==='omp'&&!w.readOnly,readOnly:w.readOnly===true,model:null,effort:null});
     const {sessionIndex,messages,...business}=this.store.state;
-    return {...structuredClone(business),messages:this.timeline.messages(),timeline:this.timeline.frame(),quotaUsed:this.store.used(),agents,configuringTargets:[...(this.bindingTransitions??[])],...(this.ompSystemSource?{ompProviderStatus:this.#ompProviderStatus()}:{}),externalTerminalTargets:[...this.externalTerminalTargets],nativeDraftTargets:[...this.nativeDraftTargets],busyTargets:[...this.running.keys()],stopping:this.stopping};
+    return {...structuredClone(business),messages:this.timeline.messages(),timeline:this.timeline.frame(),quotaUsed:this.store.used(),agents,configuringTargets:[...new Set([...(this.bindingTransitions??[]),...(this.frontdeskContextClear?['frontdesk']:[])])],frontdeskContextClearFailed:this.frontdeskContextClearFailed===true,...(this.ompSystemSource?{ompProviderStatus:this.#ompProviderStatus()}:{}),externalTerminalTargets:[...this.externalTerminalTargets],nativeDraftTargets:[...this.nativeDraftTargets],busyTargets:[...this.running.keys()],stopping:this.stopping};
   }
   // Nonsecret Nozeli-owned configuration and native role selection status.
   #ompProviderStatus(){
@@ -213,6 +217,7 @@ export class Controller extends EventEmitter {
     });
   }
   async setBinding(role,{provider='omp',skills}={}){
+    this.assertFrontdeskContextAdmission(role);
     if(this.handoffPreparing?.size||this.residentHandoffs?.size||this.handoffConfirmations?.size)throw this.residentHandoffError('OMP_HANDOFF_CONFIRMATION_REQUIRED',role,'resident handoff blocks binding changes');
     if(!Object.hasOwn(roles,role))throw new Error('unknown role');
     if(provider!=='omp')throw Object.assign(new Error('Only the bundled OMP runtime is supported'),{code:'BACKEND_UNSUPPORTED'});
@@ -283,6 +288,7 @@ export class Controller extends EventEmitter {
   }
   // Called only inside a store mutation so accepted input and its effects are durable together.
   queueJob(target,type,value,{key=randomUUID(),context={},priority=false}={}){
+    this.assertFrontdeskContextAdmission(target);
     if(this.handoffPreparing?.size||this.residentHandoffs?.size||this.handoffConfirmations?.size)throw this.residentHandoffError('OMP_HANDOFF_CONFIRMATION_REQUIRED',target,'resident handoff blocks new jobs');
     if(!['frontdesk','orchestrator'].includes(target)&&this.store.find(target).readOnly)throw Object.assign(new Error('Historical provider work is read-only'),{code:'HISTORICAL_SESSION_READ_ONLY'});
     if(this.stopping)throw new Error('host stopping');
@@ -336,6 +342,7 @@ export class Controller extends EventEmitter {
   }
   async send(target,value,{priority=false,native=false,context={},requestKey,draftText}={}){
     this.validateTarget(target);
+    this.assertFrontdeskContextAdmission(target);
     if(!['frontdesk','orchestrator'].includes(target)&&this.store.find(target).readOnly)throw Object.assign(new Error('Historical provider work is read-only; confirm explicit context recovery before new input'),{code:'HISTORICAL_SESSION_READ_ONLY'});
     if(typeof value!=='string'||!value.trim()||value.length>32000)throw new Error('invalid input');
     if (!native) await this.sessions.get(target)?.refreshNativeDraft?.();
@@ -386,6 +393,8 @@ export class Controller extends EventEmitter {
   frontGoal(job){return this.store.state.frontGoals?.find(g=>g.id===this.store.state.jobs.find(j=>j.id===job.id)?.context?.frontGoalId);}
   canReuseFrontGoal(value,goal){
     if(!goal)return false;
+    const boundary=this.store.state.frontdeskContextEpoch?.jobId;
+    if(boundary&&this.store.state.jobs.findIndex(j=>j.id===goal.rootJobId)<=this.store.state.jobs.findIndex(j=>j.id===boundary))return false;
     const original=this.store.state.jobs.find(j=>j.id===goal.intakeJobId),bound=original&&(this.intakeBoundWork(original)||this.store.state.works.find(w=>w.sourceJob===original.id));
     if(bound&&['closing','ended'].includes(bound.status))return false;
     const text=value.trim();
@@ -633,7 +642,8 @@ export class Controller extends EventEmitter {
     if(this.restarting?.has(target))return this.restarting.get(target);
     return this.startSession(target);
   }
-  startSession(target){
+  startSession(target,{contextClear=false}={}){
+    if(!contextClear)this.assertFrontdeskContextAdmission(target);
     if(this.reclaiming.has(target))return this.reclaiming.get(target).then(()=>this.startSession(target));
     if(this.deviationHeld(target))return Promise.reject(Object.assign(Error('用户必须先处理任务偏离决定'),{code:'DEVIATION_HELD'}));
     if((this.handoffPreparing?.size||this.handoffConfirmations?.size)&&!this.handoffAdmitting?.has(target))return Promise.reject(this.residentHandoffError('OMP_HANDOFF_BUSY',target,'resident handoff operation in progress'));
@@ -645,6 +655,7 @@ export class Controller extends EventEmitter {
   }
   restart(target){
     this.validateTarget(target);
+    this.assertFrontdeskContextAdmission(target);
     if(this.deviationHeld(target))return Promise.reject(Object.assign(Error('用户必须先处理任务偏离决定'),{code:'DEVIATION_HELD'}));
     if(this.stopping)return Promise.reject(new Error('host stopping'));
     if(!['frontdesk','orchestrator'].includes(target)&&['queued','closing','ended'].includes(this.store.find(target).status))return Promise.reject(new Error('work cannot restart in current state'));
@@ -662,6 +673,55 @@ export class Controller extends EventEmitter {
       return this.startSession(target);
     })().finally(()=>{if(this.restarting.get(target)===promise)this.restarting.delete(target);this.changed();this.kick();});
     this.restarting.set(target,promise);this.changed();return promise;
+  }
+  assertFrontdeskContextAdmission(target){
+    if(target==='frontdesk'&&(this.frontdeskContextClear||this.frontdeskContextClearFailed))throw Object.assign(Error('前台上下文正在清除或清除未完成，请重试清除；输入未接收'),{code:'FRONTDESK_CONTEXT_CLEAR_BUSY'});
+  }
+  assertFrontdeskContextClearSafe({clearing=false}={}){
+    const target='frontdesk',session=this.sessions.get(target);
+    if(this.modelDefaultsApplying||session?.pendingModel)throw Object.assign(Error('前台模型配置尚未完成'),{code:'FRONTDESK_CONTEXT_CLEAR_BUSY'});
+    const busy=this.stopping||(!clearing&&this.configuring.has(target))||this.restarting?.has(target)||this.starting.has(target)||this.reclaiming.has(target)||this.handoffPreparing?.size||this.residentHandoffs?.size||this.handoffConfirmations?.size||this.running.has(target)||this.current.has(target)||this.externalTerminalTargets.has(target)||this.nativeDraftTargets.has(target)||this.store.state.jobs.some(j=>j.target===target&&(!['completed','cancelled'].includes(j.status)&&j.manual===true||['queued','running','transferring'].includes(j.status)))||session&&(session.busy||session.currentTicket||session.blockedTicket||session.unsettledPromptError||session.inFlightToolCalls?.size||session.sideEffectFacts?.length||session.phase?.includes('unsettled')||session.phase?.includes('unresolved'));
+    if(busy)throw Object.assign(Error('前台有输入、工具、终端租约或配置操作尚未完成；上下文未清除'),{code:'FRONTDESK_CONTEXT_CLEAR_BUSY'});
+    if(this.store.state.bindings.frontdesk?.provider!=='omp')throw Object.assign(Error('只能清除 OMP 前台上下文'),{code:'FRONTDESK_CONTEXT_CLEAR_UNAVAILABLE'});
+  }
+  clearFrontdeskContext(){
+    if(this.frontdeskContextClear)return Promise.reject(Object.assign(Error('前台上下文正在清除'),{code:'FRONTDESK_CONTEXT_CLEAR_BUSY'}));
+    try{this.assertFrontdeskContextClearSafe();}catch(error){return Promise.reject(error);}
+    this.configuring.add('frontdesk');
+    // Fence admissions synchronously, then drain earlier store transactions before
+    // checking idleness. Nothing already accepted may be discarded by this cut.
+    const operation=Promise.resolve().then(async()=>{
+      await this.store.serial;
+      const old=this.sessions.get('frontdesk');
+      await old?.refreshNativeDraft?.();this.assertFrontdeskContextClearSafe({clearing:true});
+      const previous=structuredClone(this.store.state.residents.frontdesk??{}),oldThreadId=previous.threadId??old?.threadId??null;
+      const sessionFile=old?.sessionFile??(oldThreadId?await pinSessionFileById(path.join(this.store.root,'agents','resident-frontdesk-omp','sessions'),oldThreadId):null);
+      this.frontdeskContextClearFailed=true;
+      await this.terminals.get('frontdesk')?.close();
+      if(old){
+        const receipt=await old.stop();await old.controllerExitCleanup;
+        if((old.pid||old.groupRecord?.pid)&&receipt?.confirmationComplete!==true)throw Object.assign(Error('原前台进程退出未确认，保留原上下文'),{code:'OMP_EXIT_UNCONFIRMED'});
+        if(this.sessions.get('frontdesk')===old)this.sessions.delete('frontdesk');
+      }
+      await this.timeline.drain();
+      if(this.stopping)throw Error('host stopping');
+      const archiveId=randomUUID(),at=new Date().toISOString();
+      // The archive and epoch commit atomically before any fresh owner starts.
+      // Failure leaves the old durable identity intact, never deletes its log.
+      await this.store.mutate(()=>{
+        if((this.store.state.residents.frontdesk?.threadId??null)!==(previous.threadId??null))throw Error('Frontdesk identity changed during context clear');
+        const slot=(this.store.state.residentArchive??={}).frontdesk??={};slot.handoffs??=[];
+        slot.handoffs.push({...previous,id:archiveId,role:'frontdesk',oldThreadId,sessionFile,archivedAt:at,reason:'user-frontdesk-context-clear'});
+        this.store.state.frontdeskContextEpoch={archiveId,at,sequence:this.store.state.sessionIndex?.sequence??0,messageId:this.timeline.messages().at(-1)?.id??null,jobId:this.store.state.jobs.at(-1)?.id??null,jobCount:this.store.state.jobs.length};
+        this.store.state.residents.frontdesk={provider:'omp',generation:(previous.generation??0)+1,zeroActivity:true,contextClear:{archiveId,oldThreadId,at,status:'archived'}};
+        delete this.store.state.providers.frontdesk;
+      });
+      const session=await this.startSession('frontdesk',{contextClear:true});
+      this.frontdeskContextClearFailed=false;
+      this.started=true;
+      return {cleared:true,oldThreadId,threadId:session.threadId,archiveId};
+    }).finally(()=>{if(this.frontdeskContextClear===operation)this.frontdeskContextClear=null;this.configuring.delete('frontdesk');this.changed();});
+    this.frontdeskContextClear=operation;this.changed();return operation;
   }
   async recoverWorkerContext(id,{revision,oldThreadId,confirmed}={}){
     if(confirmed!==true)throw Error('Explicit confirmation of a new native conversation is required');
@@ -810,7 +870,7 @@ export class Controller extends EventEmitter {
       onSpawn:async pid=>{const stamp=await processStamp(pid);await this.store.mutate(()=>{this.store.state.providers[target]={pid,stamp,home,kind:'omp-tui'};});}};
     // P4 路线（root 决策）：OMP 角色会话 = TUI-native（OmpTuiSession，唯一 PTY/session owner）。
     // 模型/思考档位由原生会话独占，桥只观察；同一角色不双 owner。
-    let slot;if(this.processBudget){if(!this.processBudget.available)await this.processBudget.reclaim?.(this.projectId,preflightOnly?null:target);slot=this.processBudget.reserve(this.projectId,target);}
+    let slot;if(this.processBudget){if(!this.processBudget.available&&!(target==='frontdesk'&&this.frontdeskContextClear))await this.processBudget.reclaim?.(this.projectId,preflightOnly?null:target);slot=this.processBudget.reserve(this.projectId,target);}
     let ownership;const originalSpawn=spec.onSpawn;spec.onSpawn=async pid=>{ownership?.spawned();return originalSpawn(pid);};
     let session;try{session=this.sessionFactory?this.sessionFactory(spec,target):new OmpTuiSession(spec);}catch(error){this.processBudget?.release(slot);throw error;}
     if(slot)ownership=this.processBudget.bind(slot,session);
@@ -868,7 +928,7 @@ export class Controller extends EventEmitter {
         // 已派工/已发 prompt 的历史不可当空会话：promptStartedAt!=null 即有历史（含 cancelled——取消不消除已发 prompt/副作用）。
         const attempted=this.store.state.jobs.some(j=>j.target===target&&j.promptStartedAt!==null&&(!j.threadId||j.threadId===resumeId));
         if(provider==='omp'){
-          // OMP 零活动恢复缺失：仅可证明从未 admitted（promptStartedAt 全空 + durable zeroActivity）时允许显式新代次；
+          // 仅检查当前线程；缺少线程归属的旧任务仍保守阻止恢复，其他明确旧线程不影响当前零活动会话。
           // 不伪造文件/不重放；新建 OMP 实例（不用 Codex），恢复后走同一持久化路径。
           if(resumeId&&!resident?.handoff&&(role==='worker'?this.store.find(target).zeroActivity:resident?.zeroActivity)===true&&!attempted&&String(error.message).includes('OMP_SESSION_FILE_NOT_FOUND')){
             await this.store.mutate(()=>{this.store.state.recoveryEvents.push({at:new Date().toISOString(),type:'omp-zero-activity-restarted',target,previousThreadId:resumeId});});
@@ -891,6 +951,7 @@ export class Controller extends EventEmitter {
       await this.store.mutate(()=>{
         if(role==='worker'){const work=this.store.find(target);work.threadId=session.threadId;work.toolsDigest=session.toolsDigest??toolsDigest;if(provider==='omp'&&work.zeroActivity!==false)work.zeroActivity=!session.hasPrompted&&!(session.agentEnds?.length>0);}
         else this.store.state.residents[target]={threadId:session.threadId,provider,model:provider==='omp'?(session.model??spec.model??null):spec.model,effort:provider==='omp'?(session.effort??spec.effort??null):spec.effort,toolsDigest:session.toolsDigest??toolsDigest,...(provider==='omp'?{zeroActivity:!session.hasPrompted&&!(session.agentEnds?.length>0)}:{}),...(resident?.zeroActivity===false?{zeroActivity:false}:{}),...(resident?.generation!=null?{generation:resident.generation}:{}),...(resident?.handoff?{handoff:{...resident.handoff,status:'ready'}}:{})};
+        if(role==='frontdesk'&&resident?.contextClear)this.store.state.residents[target].contextClear={...resident.contextClear,status:'ready'};
       ownership?.started();
       });this.changed();return session;
     }catch(e){
@@ -904,6 +965,7 @@ export class Controller extends EventEmitter {
       if(preflightOnly){try{if(session instanceof OmpTuiSession&&!session.pid&&!session.groupRecord?.pid&&!ownership?.hasSpawned())this.processBudget?.release(slot);else await session.stop();}catch(cleanupError){e.cleanupError=cleanupError;}throw e;}
       const receipt=await session.stop();await session.controllerExitCleanup;
       if(provider==='omp'&&role!=='worker'&&resident?.handoff&&session.threadId)await this.store.mutate(()=>{Object.assign(this.store.state.residents[target],{threadId:session.threadId,handoff:{...resident.handoff,status:'start-failed'}});});
+      if(role==='frontdesk'&&resident?.contextClear&&session.threadId)await this.store.mutate(()=>{Object.assign(this.store.state.residents[target],{threadId:session.threadId,contextClear:{...resident.contextClear,status:'start-failed'}});});
       if(session.pid&&provider==='omp'&&receipt?.confirmationComplete!==true)throw Object.assign(e,{exitUnconfirmed:true});
       if(this.sessions.get(target)===session)this.sessions.delete(target);await this.store.mutate(()=>{delete this.store.state.providers[target];});throw e;
     }
@@ -916,12 +978,14 @@ export class Controller extends EventEmitter {
   // 语义沿原合同：frontdesk→front；orchestrator→intake（dispatch/manage 可用）；
   // Worker→manual 绑定当前 Work/revision（续改/发布按既有 revision 规则，不伪装 front）。
   async openManualJob(target,promptId,text){
+    this.assertFrontdeskContextAdmission(target);
     if(this.handoffPreparing?.size||this.residentHandoffs?.size||this.handoffConfirmations?.size)throw this.residentHandoffError('OMP_HANDOFF_CONFIRMATION_REQUIRED',target,'resident handoff blocks manual input');
     if(typeof text!=='string'||!text.trim()||text.length>32000)throw Error('invalid manual input');
     const now=new Date().toISOString();
     // 单序列化事务内 CAS（root P5 边界1）：未收尾检查/同 promptId 幂等/Work 状态/建账 同一 mutate——
     // 并发 Promise.all 双调用串行执行，第二个在事务内看到已入账 job 即拒绝；不靠进程内 mutex 或外部快检。
     const outcome=await this.store.mutate(()=>{
+      this.assertFrontdeskContextAdmission(target);
       const state=this.store.state;
       const pending=state.jobs.find(j=>j.target===target&&j.manual===true&&j.status==='running');
       if(pending){

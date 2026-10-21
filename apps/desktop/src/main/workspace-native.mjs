@@ -39,19 +39,22 @@ export class WorkspaceNative {
     wc.on('did-start-navigation', (_event, _url, _inPlace, main) => {
       if (!main) return;
       record.generation++; record.ready = false;
+      record.boundsSequence=0;
+      this.cancelDrags(record);
       if (record.role !== 'surface') for (const surface of this.projectRecords(record.projectId, record.windowId)) surface.view.setVisible(false);
       for (const [id, receipt] of this.receipts) if (receipt.record === record) { receipt.reject(fail('SURFACE_RELOADED')); this.receipts.delete(id); }
     });
     wc.on('render-process-gone', (_event, details) => {
       if(record.role!=='surface')for(const surface of this.projectRecords(record.projectId,record.windowId))surface.view.setVisible(false);
       record.ready = false; record.generation++;
+      this.cancelDrags(record);
       for (const [id, receipt] of this.receipts) if (receipt.record === record) { receipt.reject(fail('RENDERER_GONE')); this.receipts.delete(id); }
       this.recover?.(record, details);
     });
     wc.once('destroyed', () => {
       record.dead = true; this.senders.delete(wc.id);
       for (const [id, receipt] of this.receipts) if (receipt.record === record) { receipt.reject(fail('SURFACE_DESTROYED')); this.receipts.delete(id); }
-      for (const [id, drag] of this.drags) if (drag.source === record || drag.target?.record === record) this.drags.delete(id);
+      this.cancelDrags(record);
     });
     return record;
   }
@@ -95,9 +98,8 @@ export class WorkspaceNative {
     await this.host.requireProject(projectId);
     if (this.layouts.has(projectId)) return this.layouts.get(projectId);
     let value;
-    try { value = JSON.parse(await fs.readFile(this.filename(projectId), 'utf8')); validateLayout(value); if (value.projectId !== projectId) throw fail('INVALID_LAYOUT'); }
+    try { value = singleContentLayout(JSON.parse(await fs.readFile(this.filename(projectId), 'utf8'))); if (value.projectId !== projectId) throw fail('INVALID_LAYOUT'); }
     catch (error) { if (error.code !== 'ENOENT') throw error; const legacy=await this.host.readState(projectId);value = createLayout(projectId, legacy?.state??{}); }
-    value=singleContentLayout(value);
     this.layouts.set(projectId, value); return value;
   }
   filename(projectId) { return path.join(this.directory, createHash('sha256').update(projectId).digest('hex') + '.json'); }
@@ -200,6 +202,31 @@ export class WorkspaceNative {
   }
   projectVisibility(projectId){this.activeProjectId=projectId;for(const root of this.windows.values()){if(root.windowId==='main'||root.dead||root.win.isDestroyed())continue;const visible=root.projectId===projectId;root.projectHidden=!visible;if(!visible)root.win.hide();else if(!this.hidden){if(typeof root.win.showInactive==='function')root.win.showInactive();else root.win.show();}}}
   currentWindowCount(){const projectId=this.shell&&!this.shell.dead?this.shell.projectId:this.activeProjectId;return [...this.windows.values()].filter(root=>!root.dead&&(root.windowId==='main'||!projectId||root.projectId===projectId)).length;}
+  scheduleBounds(r) {
+    if(r.closing||r.dead||!r.ready||r.win.isDestroyed())return;
+    r.boundsDirty=true;
+    clearTimeout(r.boundsTimer);
+    r.boundsTimer=setTimeout(()=>{r.boundsTimer=null;void this.saveBounds(r).catch(this.onError);},150);
+    r.boundsTimer.unref?.();
+  }
+  async saveBounds(r) {
+    if(r.boundsSaving||!r.boundsDirty)return;
+    r.boundsDirty=false;r.boundsSaving=true;
+    try {
+      await this.serial(r.projectId,async()=>{
+        if(r.closing||r.dead||!r.ready||r.win.isDestroyed())return;
+        const current=await this.layout(r.projectId),item=current.detached.find(w=>w.id===r.windowId);
+        if(!item)return;
+        const boundsDip=r.win.getBounds(),alwaysOnTop=r.win.isAlwaysOnTop();
+        if(item.alwaysOnTop===alwaysOnTop&&['x','y','width','height'].every(key=>item.boundsDip?.[key]===boundsDip[key]))return;
+        const next=reduceLayout(current,{type:'windowBounds',windowId:r.windowId,boundsDip,alwaysOnTop});
+        await this.persist(next);this.layouts.set(r.projectId,next);this.changed(next);
+      });
+    } finally {
+      r.boundsSaving=false;
+      if(r.boundsDirty)this.scheduleBounds(r);
+    }
+  }
   async detached(layout, item) {
     const old = this.windows.get(item.id); if (old) return old;
     const win = new this.BrowserWindow({ ...restoreBounds(item.boundsDip, this.screen), frame:false, icon:this.icon, show: false, title: 'Nozeli', alwaysOnTop: !!item.alwaysOnTop, webPreferences: this.preferences });
@@ -208,9 +235,10 @@ export class WorkspaceNative {
     this.windows.set(item.id, r);
     this.setupWindow?.(r);
     win.on('close', event => { if (r.closing) return; event.preventDefault(); void this.closeWindow(r).catch(this.onError); });
-    const saveBounds=()=>{if(r.closing||!r.ready)return;void this.serial(r.projectId,async()=>{const current=await this.layout(r.projectId);if(!current.detached.some(w=>w.id===r.windowId))return;const next=reduceLayout(current,{type:'windowBounds',windowId:r.windowId,boundsDip:win.getBounds(),alwaysOnTop:win.isAlwaysOnTop()});await this.persist(next);this.layouts.set(r.projectId,next);this.changed(next);}).catch(this.onError);};
+    const saveBounds=()=>this.scheduleBounds(r);
     win.on('moved',saveBounds);win.on('resized',saveBounds);
-    win.on('closed', () => this.windows.delete(item.id));
+    win.on('resize',()=>{if(!r.dead)r.wc.send('nozeli:workspace-control',{type:'viewport-changed'});});
+    win.on('closed', () => { clearTimeout(r.boundsTimer); this.windows.delete(item.id); });
     let timer;
     const ready = new Promise((resolve, reject) => { r.readyResolve = resolve; timer = setTimeout(() => reject(fail('WINDOW_NOT_READY')), 10000); });
     try { await win.loadURL(this.origin); await ready; const active=this.shell&&!this.shell.dead?this.shell.projectId:layout.projectId;r.projectHidden=active!==layout.projectId;const committed=this.layouts.get(layout.projectId)?.detached.some(w=>w.id===item.id);if(committed&&!this.hidden&&!r.projectHidden)win.show();return r; }
@@ -281,7 +309,7 @@ export class WorkspaceNative {
           remapped.set(id,current?.id??id);savedViews[current?.id??id]=current??view;
         }
         next.views={...savedViews,...currentViews};
-        for(const windowId of ['main',...next.detached.map(window=>window.id)])for(const pane of layoutGroups(next,windowId)){pane.views=pane.views.map(id=>remapped.get(id)??id);pane.activeViewId=remapped.get(pane.activeViewId)??pane.activeViewId;}
+        for(const windowId of ['main',...next.detached.map(window=>window.id)])for(const pane of layoutGroups(next,windowId)){pane.views=pane.views.map(id=>remapped.get(id)??id);pane.activeViewId=remapped.get(pane.activeViewId)??pane.activeViewId;if(pane.historyViewIds)pane.historyViewIds=[...new Set(pane.historyViewIds.map(id=>remapped.get(id)??id))].filter(id=>next.views[id]&&!pane.views.includes(id));}
         for(const view of Object.values(next.views))if(view.sourceViewId)view.sourceViewId=remapped.get(view.sourceViewId)??view.sourceViewId;
         next.closedViews=structuredClone(layout.closedViews??[]);
         next.revision=layout.revision+1;validateLayout(next);
@@ -339,6 +367,7 @@ export class WorkspaceNative {
       try{await this.reconcile(next);}finally{for(const s of affected){s.transferring=false;s.held=false;if(!s.dead)s.wc.send('nozeli:workspace-control',{type:'transfer-hold',held:false});}}
       this.projectVisibility(this.shell&&!this.shell.dead?this.shell.projectId:this.activeProjectId??layout.projectId);
       this.changed(next);
+      for(const move of staged){const target=this.windows.get(move.destinationWindowId);if(target&&!target.dead)target.wc.send('nozeli:workspace-control',{type:'surface-focus',viewId:move.surface.viewId,projectId:next.projectId});}
       return result;
     });
   }
@@ -423,17 +452,35 @@ export class WorkspaceNative {
     if (op === 'workspace.bounds') {
       if (r.role === 'surface' || p.windowId !== r.windowId) throw fail('IPC_DENIED');
       const layout = await this.layout(r.projectId), groups = layoutGroups(layout, r.windowId);
+      if(p.layoutRevision!==undefined&&p.layoutRevision!==layout.revision){this.changed(layout);return {stale:true};}
+      if(p.sequence!==undefined){if(!Number.isSafeInteger(p.sequence)||p.sequence<1)throw fail('INVALID_BOUNDS');if(p.sequence<=(r.boundsSequence??0))return {stale:true};}
+      const [currentWidth,currentHeight]=r.win.getContentSize();
+      if(p.viewport&&(Math.abs(p.viewport.width-currentWidth)>1||Math.abs(p.viewport.height-currentHeight)>1)){
+        r.wc.send('nozeli:workspace-control',{type:'viewport-changed',width:currentWidth,height:currentHeight});return {stale:true};
+      }
+      if(p.sequence!==undefined)r.boundsSequence=p.sequence;
       for (const surface of this.projectRecords(r.projectId, r.windowId)) {
         const item = p.groups?.find(item => item.viewId === surface.viewId && groups.some(g => g.id === item.groupId && g.activeViewId === surface.viewId));
         const rect = item?.rect;
         const [width, height] = r.win.getContentSize();
         const valid = rect && ['x','y','width','height'].every(k => Number.isFinite(rect[k])) && rect.x >= 0 && rect.y >= 0 && rect.width > 0 && rect.height > 0 && rect.x + rect.width <= width + 1 && rect.y + rect.height <= height + 1;
+        const occluded=valid&&Array.isArray(p.overlayRects)&&p.overlayRects.some(b=>b&&['x','y','width','height'].every(k=>Number.isFinite(b[k]))&&b.width>0&&b.height>0&&b.x<rect.x+rect.width&&b.x+b.width>rect.x&&b.y<rect.y+rect.height&&b.y+b.height>rect.y);
         if (valid) surface.view.setBounds(Object.fromEntries(Object.entries(rect).map(([k,v]) => [k,Math.round(v)])));
-        surface.view.setVisible(!!valid && !p.overlay && (surface.ready||surface.loading) && ![...this.drags.values()].some(d=>d.projectId===r.projectId));
+        surface.view.setVisible(!!valid && !p.overlay && !occluded && (surface.ready||surface.loading) && ![...this.drags.values()].some(d=>d.projectId===r.projectId&&!(d.source.role==='detached'&&d.source.windowId===r.windowId)));
       }
       return {};
     }
     if (op === 'workspace.control') {
+      if(p.type==='pane-resize'){
+        if(r.role==='surface')throw fail('IPC_DENIED');r.resizing=p.active===true;
+        for(const surface of this.projectRecords(r.projectId,r.windowId))surface.wc.send('nozeli:workspace-control',{type:'pane-resize-session',active:r.resizing});return {};
+      }
+      if(p.type==='pane-pointer'){
+        if(r.role!=='surface')throw fail('IPC_DENIED');const root=this.windows.get(r.windowId);if(!root||root.projectId!==r.projectId||!root.resizing)return {};
+        if(!['pointermove','pointerup','pointercancel'].includes(p.eventType))throw fail('INVALID_COMMAND');const b=r.view.getBounds();
+        if(p.eventType!=='pointercancel'&&(!Number.isFinite(p.clientX)||!Number.isFinite(p.clientY)))throw fail('INVALID_COMMAND');
+        root.wc.send('nozeli:workspace-control',{type:'pane-pointer',eventType:p.eventType,buttons:p.buttons,clientX:b.x+(p.clientX??0),clientY:b.y+(p.clientY??0)});return {};
+      }
       if(p.type==='window-control'){
         if(!['shell','detached','surface'].includes(r.role))throw fail('IPC_DENIED');
         if(p.action==='minimize')r.win.minimize();
@@ -447,7 +494,12 @@ export class WorkspaceNative {
       if(p.type==='conversation-action'){
         const conversation=Object.values(layout.views).find(v=>v.kind==='conversation');
         const root=this.windows.get(r.windowId)||this.windows.get('main');if(!root)throw fail('NO_ROOT');
-        const result=await this.command(root,{projectId:r.projectId,expectedRevision:layout.revision,requestKey:randomUUID(),command:conversation?{type:'activate',viewId:conversation.id}:{type:'open',groupId:layoutGroups(layout,root.windowId)[0]?.id,view:{kind:'conversation'}}});
+        const localGroups=layoutGroups(layout,root.windowId),source=r.role==='surface'?findView(layout,r.viewId)?.group:null;
+        const target=p.groupId?localGroups.find(g=>g.id===p.groupId):source||localGroups[0];
+        if(!target)throw fail('INVALID_GROUP');
+        const found=conversation&&findView(layout,conversation.id);
+        const action=conversation?(p.groupId&&found&&found.group.id!==target.id?{type:'move',viewId:conversation.id,targetGroupId:target.id}:{type:'activate',viewId:conversation.id,groupId:target.id}):{type:'open',groupId:target.id,view:{kind:'conversation'}};
+        const result=await this.command(root,{projectId:r.projectId,expectedRevision:layout.revision,requestKey:randomUUID(),command:action});
         const owner=this.surfaces.get(Object.values(result.layout.views).find(v=>v.kind==='conversation').id);if(!owner)throw fail('NO_ACTIVE_VIEW');
         if(owner.ready)owner.wc.send('nozeli:workspace-control',p);else(owner.pendingControls??=[]).push(p);owner.win.show();owner.win.focus();return {};
       }
@@ -457,7 +509,7 @@ export class WorkspaceNative {
       const group=layoutGroups(layout,r.windowId).find(g=>g.activeViewId),surface=this.surfaces.get(p.viewId||group?.activeViewId);
       if(!surface||surface.projectId!==r.projectId)throw fail('NO_ACTIVE_VIEW');surface.wc.send('nozeli:workspace-control',p);return {};
     }
-    if (op === 'workspace.windows.list') return [...this.windows.values()].filter(w => w.projectId === r.projectId).map(w => ({ id:w.windowId, nativeWindowId:w.win.id,projectId:w.projectId,visible:!w.projectHidden&&typeof w.win.isVisible==='function'?w.win.isVisible():!w.projectHidden,projectHidden:!!w.projectHidden,surfaces:this.projectRecords(w.projectId,w.windowId).map(s=>({viewId:s.viewId,webContentsId:s.wc.id,relPath:s.relPath})) }));
+    if (op === 'workspace.windows.list') return [...this.windows.values()].filter(w => w.projectId === r.projectId).map(w => ({ id:w.windowId, nativeWindowId:w.win.id,projectId:w.projectId,visible:!w.projectHidden&&typeof w.win.isVisible==='function'?w.win.isVisible():!w.projectHidden,projectHidden:!!w.projectHidden,surfaces:this.projectRecords(w.projectId,w.windowId).map(s=>({viewId:s.viewId,webContentsId:s.wc.id,relPath:s.relPath,visible:s.view.getVisible?.()??null,bounds:s.view.getBounds()})) }));
     if (op === 'workspace.windows.focus' || op === 'workspace.windows.recall' || op === 'workspace.windows.topmost') {
       const w = this.windows.get(p.windowId); if (!w || w.projectId !== r.projectId) throw fail('IPC_DENIED');
       if (op.endsWith('recall')) w.win.setBounds(restoreBounds(w.win.getBounds(), this.screen));
@@ -472,6 +524,19 @@ export class WorkspaceNative {
     if (op.startsWith('workspace.drag.')) return this.drag(r, op, p);
     throw fail('UNKNOWN_OP');
   }
+  finishDrag(sessionId, d, cancelled = false) {
+    if(this.drags.get(sessionId)!==d)return;
+    clearTimeout(d.timer);
+    this.drags.delete(sessionId);
+    this.broadcast('nozeli:workspace-control',{type:'drag-ended',sessionId},d.projectId);
+  }
+  cancelDrags(record) {
+    for(const [id,d] of this.drags){
+      // Docking can destroy the source window; the ending command owns its final visibility broadcast.
+      if(d.source===record){if(!d.ending)this.finishDrag(id,d,true);}
+      else if(d.target?.record===record)d.target=null;
+    }
+  }
   dragPoint(d, p) {
     for(const r of this.windows.values())if(r.projectId===d.projectId&&!r.dead){
       const bounds=r.win.getContentBounds();
@@ -484,37 +549,41 @@ export class WorkspaceNative {
       const layout = await this.layout(r.projectId);
       if (!!p.viewId === !!p.groupId) throw fail('INVALID_DRAG');
       if (p.viewId ? findView(layout,p.viewId)?.windowId !== r.windowId : !layoutGroups(layout,r.windowId).some(g => g.id === p.groupId)) throw fail('IPC_DENIED');
+      for(const [id,d] of this.drags)if(d.projectId===r.projectId){if(d.ending)throw fail('INVALID_DRAG');this.finishDrag(id,d,true);}
       const sessionId = randomUUID();
       this.drags.set(sessionId,{source:r,projectId:r.projectId,viewId:p.viewId,groupId:p.groupId,revision:layout.revision,topology:topology(layout),generation:r.generation,expires:Date.now()+30000});
       const drag=this.drags.get(sessionId);drag.start={x:p.screenX,y:p.screenY,bounds:r.win.getBounds()};
-      for(const surface of this.projectRecords(r.projectId))surface.view.setVisible(false);
+      drag.timer=setTimeout(()=>this.finishDrag(sessionId,drag,true),30000);drag.timer.unref?.();
+      for(const surface of this.projectRecords(r.projectId))if(r.role!=='detached'||surface.windowId!==r.windowId)surface.view.setVisible(false);
       this.broadcast('nozeli:workspace-control',{type:'drag-session',sessionId,projectId:r.projectId},r.projectId); return {sessionId};
     }
     const d = this.drags.get(p.sessionId);
-    if (!d || d.projectId !== r.projectId || d.expires < Date.now() || d.source.generation !== d.generation) throw fail('INVALID_DRAG');
+    if (!d || d.projectId !== r.projectId) throw fail('INVALID_DRAG');
+    if(d.expires<Date.now()||d.source.dead||d.source.generation!==d.generation){this.finishDrag(p.sessionId,d,true);throw fail('INVALID_DRAG');}
     if (op === 'workspace.drag.target') {
       const layout = await this.layout(r.projectId);
       if (p.targetGroupId && !layoutGroups(layout,r.windowId).some(g => g.id === p.targetGroupId)) throw fail('IPC_DENIED');
       if(p.targetGroupId){if(!d.target||r!==d.source||d.target.record===d.source)d.target={record:r,groupId:p.targetGroupId,axis:p.axis,side:p.side,index:p.index};}else if(d.target?.record===r)d.target=null;return {};
     }
     if (d.source !== r) throw fail('IPC_DENIED');
+    if(op==='workspace.drag.cancel'||p.cancelled===true){if(d.ending)throw fail('INVALID_DRAG');this.finishDrag(p.sessionId,d,true);return {};}
+    if(d.ending)throw fail('INVALID_DRAG');
     if(op==='workspace.drag.update'){
       if(!Number.isFinite(p.screenX)||!Number.isFinite(p.screenY))throw fail('INVALID_DRAG');
       d.target=null;d.screenX=p.screenX;d.screenY=p.screenY;
       this.dragPoint(d,p);return {};
     }
+    try {
     if(op==='workspace.drag.end'&&p.cancelled===false){
+      d.ending=true;clearTimeout(d.timer);
+      if(Number.isFinite(d.screenX)&&Number.isFinite(d.screenY))p={...p,screenX:d.screenX,screenY:d.screenY};
       d.target=null;this.dragPoint(d,p);
       await new Promise(resolve=>setTimeout(resolve,60));
       if(this.drags.get(p.sessionId)!==d||d.source.dead)throw fail('INVALID_DRAG');
     }
-    this.drags.delete(p.sessionId);
-    this.broadcast('nozeli:workspace-control',{type:'drag-ended',sessionId:p.sessionId},r.projectId);
-    if (op === 'workspace.drag.cancel' || p.cancelled === true) return {};
     if (op !== 'workspace.drag.end' || p.cancelled !== false) throw fail('INVALID_DRAG');
-    const target = d.target;
+    const target = d.groupId&&!layoutGroups(await this.layout(r.projectId),r.windowId).find(g=>g.id===d.groupId)?.activeViewId?null:d.target;
     if(!target&&r.role==='detached'&&Number.isFinite(p.screenX)&&Number.isFinite(p.screenY)&&Number.isFinite(d.start.x)&&Number.isFinite(d.start.y)){
-      const b=d.start.bounds;r.win.setBounds(restoreBounds({...b,x:b.x+p.screenX-d.start.x,y:b.y+p.screenY-d.start.y},this.screen));
       return {layout:await this.layout(r.projectId),windowId:r.windowId};
     }
     const command = target ? d.groupId ? {type:'moveGroup',groupId:d.groupId,targetGroupId:target.groupId,axis:target.axis,side:target.side} : target.axis ? {type:'split',groupId:target.groupId,axis:target.axis,side:target.side,moveViewId:d.viewId} : {type:'move',viewId:d.viewId,targetGroupId:target.groupId,index:target.index} : {type:'detach',viewId:d.viewId,groupId:d.groupId};
@@ -529,5 +598,6 @@ export class WorkspaceNative {
       if (window) window.win.setBounds(restoreBounds({x:p.screenX,y:p.screenY,width:1000,height:760},this.screen));
     }
     return result;
+    } finally { this.finishDrag(p.sessionId,d); }
   }
 }

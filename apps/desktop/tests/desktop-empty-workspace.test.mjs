@@ -1,3 +1,4 @@
+import { contentToolForPage } from './native-content-tools.fixture.mjs';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { chmod, cp, mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
@@ -225,7 +226,7 @@ try {
 
   // Comparison pane closing changes nothing else.
   await openFile(page, 'a.md');
-  await page.click('#open-beside'); await page.waitForSelector('#beside-dialog[open]');
+  await contentToolForPage(page, ['history', 'compareFile']); await page.waitForSelector('#beside-dialog[open]');
   await page.select('#beside-file', 'b.md'); await page.click('#beside-form button[type="submit"]');
   await wait(page, () => document.querySelector('#reader').classList.contains('document-dual'));
   const beforeBeside = layoutOf(await snap(page));
@@ -235,7 +236,7 @@ try {
   check('closing the comparison pane keeps the file and conversation layout', afterBeside.emptyHidden === true && afterBeside.filePath === 'a.md' && JSON.stringify(layoutOf(afterBeside)) === JSON.stringify(beforeBeside), JSON.stringify(afterBeside));
 
   // A failing save refuses to close and keeps the input.
-  await page.click('#text-mode-toggle');
+  await contentToolForPage(page, ['view', 'text-mode']);
   await wait(page, () => !document.querySelector('#text-host').hidden);
   await chmod(path.join(projectA, 'a.md'), 0o444);
   await page.click('#text-host .cm-content');

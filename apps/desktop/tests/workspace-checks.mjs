@@ -1,3 +1,4 @@
+import { contentToolForPage } from './native-content-tools.fixture.mjs';
 import assert from 'node:assert/strict';
 
 export async function checkWorkspace({ page, projectId, record }) {
@@ -54,7 +55,7 @@ export async function checkWorkspace({ page, projectId, record }) {
   await page.type('#file-filter', '第二份');
   record('file filter hides unrelated files', await page.$eval('#file-tree button[data-path="中文 目录/笔记.md"]', n => n.hidden));
   await page.$eval('#file-filter', n => { n.value=''; n.dispatchEvent(new Event('input')); });
-  await click('open-beside'); await page.waitForSelector('#beside-dialog[open]');
+  await contentToolForPage(page, ['history', 'compareFile']); await page.waitForSelector('#beside-dialog[open]');
   await page.select('#beside-file', '中文 目录/第二份.md');
   await page.$eval('#beside-form', n => n.requestSubmit());
   await page.waitForSelector('#secondary-text .cm-content');

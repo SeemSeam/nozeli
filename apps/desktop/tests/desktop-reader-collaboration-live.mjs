@@ -1,3 +1,4 @@
+import { contentToolForPage } from './native-content-tools.fixture.mjs';
 // Installed Linux reader acceptance. Paid execution is explicitly opt-in; never reset ROOT.
 // NOZELI_REAL_OMP=1 NOZELI_OMP_IMPORT_API_KEYS=1 node apps/desktop/tests/desktop-reader-collaboration-live.mjs /absolute/release /absolute/fresh-root
 import fs from 'node:fs/promises';
@@ -472,17 +473,17 @@ try {
   await resize(1440);
   stage = 'source-version';
   // Real editor prefix edit creates a new version; frozen annotation is never rewritten.
-  await click('#text-mode-toggle');
+  await contentToolForPage(page, ['view', 'text-mode']);
   await page.evaluate(() => { window.__nozeliInput.focus(); window.__nozeliInput.select(0,0); });
   const prefix = 'Reader-owned prefix version two.\n\n'; await page.keyboard.sendCharacter(prefix);
   await wait(() => page.$eval('#save-status', el => el.dataset.state === 'saved'), 'real source prefix autosave');
   check('Source prefix edit saved through actual editor', await fs.readFile(path.join(fixture.projectA, fixture.files.paper), 'utf8') === prefix + originalPaper);
-  await click('#text-mode-toggle'); await frozenOrigin();
+  await contentToolForPage(page, ['view', 'text-mode']); await frozenOrigin();
   const continuation = await sendTag(fixture.questions.followup, '03-followup');
   check('Source-edit continuation retains same selection conversation', (await annotations()).find(n => n.id === discussionId)?.projection.history.length === 3, {discussionId, accepted: [explained.job.id,readable.job.id,continuation.job.id]});
   // Remove both current occurrences through the real editor, then bind the orphan to
   // the visible replacement. The original quote and material remain immutable.
-  await click('#text-mode-toggle');
+  await contentToolForPage(page, ['view', 'text-mode']);
   const currentText = prefix + originalPaper, replacement = 'The revised cache expires after 75 seconds.';
   for (let index = currentText.lastIndexOf(fixture.files.quote); index >= 0; index = currentText.lastIndexOf(fixture.files.quote, index - 1)) {
     await page.evaluate(({index, length}) => { window.__nozeliInput.focus(); window.__nozeliInput.select(index, index + length); }, {index, length: fixture.files.quote.length});
@@ -507,7 +508,7 @@ try {
   await page.evaluate(({start,length}) => { window.__nozeliInput.focus(); window.__nozeliInput.select(start,start + length); }, {start,length:replacement.length});
   await click('#unlocated-tags .unlocated-tag:has([data-annotation=' + JSON.stringify(discussionId) + ']) .tag-relocate');
   await wait(async () => (await annotations()).find(n => n.id === discussionId)?.resolution?.method === 'manual', 'discussion explicit reanchor');
-  if (await page.$eval('#text-preview', el => el.hidden)) await click('#text-mode-toggle');
+  if (await page.$eval('#text-preview', el => el.hidden)) await contentToolForPage(page, ['view', 'text-mode']);
   await fill(tag(discussionId) + ' .tag-editor', 'UNSENT_TAG_ALPHA_REOPEN'); await fill('#composer', 'UNSENT_MAIN_ALPHA_REOPEN');
   await persistedDrafts(null, 'UNSENT_TAG_ALPHA_REOPEN', 'UNSENT_MAIN_ALPHA_REOPEN');
   if (!await page.$eval(tag(frozenNote.id) + ' .note-projection', el => el.classList.contains('is-collapsed'))) await click(tag(frozenNote.id) + ' .tag-close');

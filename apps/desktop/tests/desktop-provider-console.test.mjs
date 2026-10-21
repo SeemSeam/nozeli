@@ -1,3 +1,4 @@
+import { contentToolForPage } from './native-content-tools.fixture.mjs';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { copyFile, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
@@ -137,16 +138,16 @@ try {
   await page.click('#file-tree button[data-path="reading.md"]');
   await page.waitForFunction(() => window.__nozeliInput?.text?.().includes('Provider console fixture') && !document.querySelector('#text-host').inert);
   record('opening a document exposes content close control', await page.$eval('#close-subject', n => !n.hidden));
-  const initialMode = await page.evaluate(() => ({ previewHidden: document.querySelector('#text-preview').hidden, toggleHidden: document.querySelector('#text-mode-toggle').hidden }));
-  if (initialMode.previewHidden && !initialMode.toggleHidden) await page.click('#text-mode-toggle');
+  const initialMode = await page.$eval('#text-preview', node => ({previewHidden: node.hidden}));
+  if (initialMode.previewHidden) await contentToolForPage(page, ['view', 'text-mode']);
   await page.waitForFunction(() => !document.querySelector('#text-preview').hidden && document.querySelector('#text-preview p'));
   const previewDrag = await physicalDragSelect(page, '#text-preview p');
   record('physical Markdown preview drag selects text and opens menu', previewDrag.text.length > 0 && !previewDrag.menuHidden, JSON.stringify(previewDrag));
-  await page.click('#text-mode-toggle');
+  await contentToolForPage(page, ['view', 'text-mode']);
   await page.waitForFunction(() => !document.querySelector('#text-host').hidden && document.querySelector('#text-host .cm-line'));
   const sourceDrag = await physicalDragSelect(page, '#text-host .cm-line');
   record('physical CodeMirror source drag selects text and opens menu', sourceDrag.text.length > 0 && !sourceDrag.menuHidden, JSON.stringify(sourceDrag));
-  await page.click('#text-mode-toggle');
+  await contentToolForPage(page, ['view', 'text-mode']);
   await page.waitForFunction(() => !document.querySelector('#text-preview').hidden);
   await page.evaluate(() => { const selection = window.getSelection(); selection?.removeAllRanges(); });
   await page.evaluate(() => window.__nozeliInput.select(0, 8));
@@ -387,7 +388,7 @@ try {
   await page.evaluate(() => window.nozeli.invoke('session.capture', { name: 'pdf-label-open-1440' }));
   await doubleClickTag(page, pdfSelector + ' .note-projection-head');
   record('PDF header double click closes the tag', (await tagGeometry(page, pdfSelector)).collapsed === true);
-  await page.click('#pdf-zoom-in');
+  await contentToolForPage(page, ['view', 'zoom-in']);
   await page.waitForFunction(() => document.querySelector('.pdf-page .note-anchor.tag-discuss .note-index')?.getAttribute('aria-expanded') === 'false');
   record('PDF zoom preserves an explicitly closed tag', (await tagGeometry(page, pdfSelector)).collapsed === true);
   const closedAfterZoom = await page.$eval(pdfSelector + ' .note-projection', node => ({ height: node.getBoundingClientRect().height, collapsed: node.classList.contains('is-collapsed') }));
@@ -395,11 +396,11 @@ try {
   await page.$eval(pdfSelector, node => node.scrollIntoView({ block: 'center' }));
   await doubleClickTag(page, pdfSelector + ' .note-projection-head');
   record('PDF header double click reopens after zoom', (await tagGeometry(page, pdfSelector)).collapsed === false);
-  await page.click('#pdf-fit');
+  await contentToolForPage(page, ['fit']);
   await page.waitForFunction(() => document.querySelector('.pdf-page .note-anchor.tag-discuss .note-index')?.getAttribute('aria-expanded') === 'true');
   const afterFit = await tagGeometry(page, pdfSelector);
   record('PDF fit preserves open state and index placement', !afterFit.collapsed && Math.abs(afterFit.dx + 18) <= 1 && Math.abs(afterFit.dy + 12) <= 1, JSON.stringify(afterFit));
-  await page.click('#pdf-region');
+  await contentToolForPage(page, ['view', 'region']);
   await page.waitForFunction(() => document.querySelector('#pdf-region').getAttribute('aria-pressed') === 'true');
   const pdfPageBox = await page.$eval('.pdf-page', node => node.getBoundingClientRect().toJSON());
   await page.mouse.move(pdfPageBox.left + pdfPageBox.width * 0.22, pdfPageBox.top + pdfPageBox.height * 0.28);
@@ -411,7 +412,7 @@ try {
   record('physical PDF region drag opens selection menu and freezes preview', regionSelection.menuVisible && regionSelection.previewGone && regionSelection.region, JSON.stringify(regionSelection));
   await page.click('#file-path');
   await page.waitForFunction(() => document.querySelector('#selection-menu').hidden);
-  await page.click('#pdf-region');
+  await contentToolForPage(page, ['view', 'region']);
   await page.waitForFunction(() => document.querySelector('#pdf-region').getAttribute('aria-pressed') === 'false');
   await resize(page, 390, 844);
   await page.waitForFunction(() => document.querySelector('.pdf-page')?.clientWidth < 390 && document.querySelector('.pdf-page .note-anchor.tag-discuss'));
@@ -439,7 +440,7 @@ try {
   await page.mouse.move(sizeX,sizeY); await page.mouse.down(); await page.mouse.move(sizeX-75,sizeY-50,{steps:12}); await page.mouse.up();
   const resizedBox = await page.$eval(pdfSelector+' .note-projection',n=>n.getBoundingClientRect().toJSON());
   record('physical full-window resize changes dimensions',Math.abs(resizedBox.width-cardBox.width)>20 && Math.abs(resizedBox.height-cardBox.height)>20,JSON.stringify({before:cardBox,after:resizedBox}));
-  await page.click('#pdf-zoom-in');
+  await contentToolForPage(page, ['view', 'zoom-in']);
   await page.waitForFunction(() => document.querySelector('.pdf-page .note-anchor.tag-discuss .note-projection'));
   await new Promise(resolve=>setTimeout(resolve,350));
   const afterRedrawSize=await page.$eval(pdfSelector+' .note-projection',n=>n.getBoundingClientRect().toJSON());

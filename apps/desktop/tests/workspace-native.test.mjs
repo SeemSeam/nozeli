@@ -15,6 +15,7 @@ class View { constructor(){this.webContents=new Contents();}setVisible(value){th
 class Window extends EventEmitter {
  constructor(options={}){super();this.options=options;this.webContents=new Contents();this.children=[];this.contentView={addChildView:v=>this.children.push(v),removeChildView:v=>{this.children=this.children.filter(x=>x!==v);}};this.bounds={x:0,y:0,width:1000,height:760};}
  async loadURL(){}show(){}focus(){}getBounds(){return this.bounds;}getContentBounds(){return this.bounds;}getContentSize(){return [1000,760];}isAlwaysOnTop(){return false;}isDestroyed(){return !!this.destroyed;}destroy(){this.destroyed=true;this.webContents.emit('destroyed');this.emit('closed');}
+ setBounds(bounds){this.bounds={...bounds};this.emit('moved');}
 }
 async function fixture(t){const directory=await mkdtemp(path.join(os.tmpdir(),'workspace-native-'));t.after(()=>rm(directory,{recursive:true,force:true}));const host={requireProject:async id=>({id}),readState:async()=>({workspace:{minimized:true}}),settled:async()=>{}};const native=new WorkspaceNative({BrowserWindow:Window,WebContentsView:View,screen:{getDisplayMatching:()=>({workArea:{x:-1920,y:0,width:1920,height:1080}})},origin:'http://127.0.0.1:9000/',userDataDir:directory,host});const root=native.registerShell(new Window());root.projectId='p';root.ready=true;native.layouts.set('p',createLayout('p',{workspace:{minimized:true}}));return {native,root};}
 function receipt(native,r,ok=true){r.ready=true;r.wc.onSend=(channel,payload)=>{if(channel==='nozeli:flush')queueMicrotask(()=>native.acknowledge(r,{requestId:payload,ok}));};}
@@ -106,4 +107,109 @@ test('frontdesk context clear is limited to shell or same-project conversation s
  assert.equal(native.authorize(event(root),op,{projectId:'p'}),root);
  const conversation=native.register(new Contents(),{role:'surface',projectId:'p',viewId:'conversation',windowId:'main',kind:'conversation'});assert.equal(native.authorize(event(conversation),op,{projectId:'p'}),conversation);
  const document=native.register(new Contents(),{role:'surface',projectId:'p',viewId:'document',windowId:'main',kind:'document',relPath:'a.txt'});assert.throws(()=>native.authorize(event(document),op,{projectId:'p'}),{code:'CONVERSATION_OWNER_REQUIRED'});assert.throws(()=>native.authorize(event(conversation),op,{projectId:'foreign'}),{code:'PROJECT_SCOPE_DENIED'});
+});
+
+test('detached moved and resized events coalesce and persist only the final bounds',async t=>{
+  const {native}=await fixture(t);
+  let layout=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'document',relPath:'bounds.txt'}});
+  layout=reduceLayout(layout,{type:'detach',viewId:Object.keys(layout.views)[0],windowId:'bounds-window'});native.layouts.set('p',layout);
+  native.setupWindow=r=>queueMicrotask(()=>native.invoke(r,'workspace.ready',{}));
+  const r=await native.detached(layout,layout.detached[0]);
+  t.after(()=>{clearTimeout(r.boundsTimer);r.win.destroy();});
+  let writes=0;native.persist=async()=>{writes++;};
+  for(let x=-1800;x<-1700;x++){r.win.setBounds({x,y:30,width:900,height:700});r.win.emit('resized');}
+  assert.equal(writes,0);
+  await new Promise(resolve=>setTimeout(resolve,190));
+  assert.equal(writes,1);
+  assert.deepEqual(native.layouts.get('p').detached[0].boundsDip,r.win.getBounds());
+  r.win.emit('moved');await new Promise(resolve=>setTimeout(resolve,190));assert.equal(writes,1);
+});
+
+test('replacing, cancelling and expiring drags removes hiding state and broadcasts completion',async t=>{
+  const {native,root}=await fixture(t),groupId=native.layouts.get('p').mainRoot.id;
+  const first=await native.drag(root,'workspace.drag.begin',{groupId});
+  const second=await native.drag(root,'workspace.drag.begin',{groupId});
+  assert.equal(native.drags.has(first.sessionId),false);assert.equal(native.drags.size,1);
+  assert.ok(root.wc.sent.some(({payload})=>payload.type==='drag-ended'&&payload.sessionId===first.sessionId));
+  native.drags.get(second.sessionId).expires=0;
+  await assert.rejects(native.drag(root,'workspace.drag.update',{...second,screenX:0,screenY:0}),{code:'INVALID_DRAG'});
+  assert.equal(native.drags.size,0);
+  const third=await native.drag(root,'workspace.drag.begin',{groupId});
+  root.wc.emit('did-start-navigation',{},native.origin,false,true);
+  assert.equal(native.drags.size,0);
+  assert.ok(root.wc.sent.some(({payload})=>payload.type==='drag-ended'&&payload.sessionId===third.sessionId));
+});
+
+test('drag completion stays active until the layout command settles and cleans up failures',async t=>{
+  const {native,root}=await fixture(t),layout=native.layouts.get('p');
+  const session=await native.drag(root,'workspace.drag.begin',{groupId:layout.mainRoot.id});
+  let release,entered;
+  const commandEntered=new Promise(resolve=>{entered=resolve;});
+  native.command=async()=>{entered();await new Promise(resolve=>{release=resolve;});throw Object.assign(new Error('failed transfer'),{code:'TRANSFER_FAILED'});};
+  const ending=native.drag(root,'workspace.drag.end',{...session,cancelled:false});
+  await commandEntered;
+  assert.equal(native.drags.has(session.sessionId),true);
+  assert.equal(root.wc.sent.some(({payload})=>payload.type==='drag-ended'),false);
+  await assert.rejects(native.drag(root,'workspace.drag.begin',{groupId:layout.mainRoot.id}),{code:'INVALID_DRAG'});
+  await assert.rejects(native.drag(root,'workspace.drag.end',{...session,cancelled:false}),{code:'INVALID_DRAG'});
+  release();await assert.rejects(ending,{code:'TRANSFER_FAILED'});
+  assert.equal(native.drags.size,0);
+  assert.equal(root.wc.sent.filter(({payload})=>payload.type==='drag-ended').length,1);
+});
+
+test('drag-ended bounds consumer restores the active native editor after cancellation',async t=>{
+  const {native,root}=await fixture(t);
+  const layout=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'document',relPath:'visible.txt'}});
+  native.layouts.set('p',layout);await native.reconcile(layout);
+  const surface=[...native.surfaces.values()][0],group=layout.mainRoot;
+  surface.ready=true;
+  const bounds={windowId:'main',groups:[{groupId:group.id,viewId:surface.viewId,rect:{x:0,y:40,width:900,height:600}}]};
+  await native.invoke(root,'workspace.bounds',bounds);assert.equal(surface.view.visible,true);
+  const session=await native.drag(root,'workspace.drag.begin',{viewId:surface.viewId});
+  await native.invoke(root,'workspace.bounds',bounds);assert.equal(surface.view.visible,false);
+  let consumed;
+  root.wc.onSend=(_channel,payload)=>{if(payload.type==='drag-ended')consumed=native.invoke(root,'workspace.bounds',bounds);};
+  await native.drag(root,'workspace.drag.cancel',session);await consumed;
+  assert.equal(native.drags.size,0);assert.equal(surface.view.visible,true);
+});
+
+test('native content resize input is accepted only during its same-window root gesture',async t=>{
+ const {native,root}=await fixture(t);const l=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'document',relPath:'resize.txt'}});native.layouts.set('p',l);await native.reconcile(l);
+ const surface=[...native.surfaces.values()][0];surface.view.setBounds({x:100,y:40,width:600,height:500});
+ const input={type:'pane-pointer',eventType:'pointermove',buttons:1,clientX:20,clientY:30};
+ await native.invoke(surface,'workspace.control',input);assert.equal(root.wc.sent.some(e=>e.payload.type==='pane-pointer'),false);
+ await assert.rejects(native.invoke(surface,'workspace.control',{type:'pane-resize',active:true}),{code:'IPC_DENIED'});
+ await native.invoke(root,'workspace.control',{type:'pane-resize',active:true});await native.invoke(surface,'workspace.control',input);
+ assert.deepEqual(root.wc.sent.at(-1).payload,{type:'pane-pointer',eventType:'pointermove',buttons:1,clientX:120,clientY:70});
+ const count=root.wc.sent.length;await native.invoke(root,'workspace.control',{type:'pane-resize',active:false});await native.invoke(surface,'workspace.control',input);assert.equal(root.wc.sent.length,count);
+});
+
+test('a context menu occludes only intersecting content and closing restores native visibility',async t=>{
+ const {native,root}=await fixture(t);let layout=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'document',relPath:'left.txt'}});const left=layout.mainRoot.id;
+ layout=reduceLayout(layout,{type:'split',groupId:left,axis:'x'});const right=layout.mainRoot.second.id;layout=reduceLayout(layout,{type:'open',groupId:right,view:{kind:'document',relPath:'right.txt'}});native.layouts.set('p',layout);await native.reconcile(layout);
+ const surfaces=[...native.surfaces.values()];for(const s of surfaces)s.ready=true;
+ const groups=[{groupId:left,viewId:layout.mainRoot.first.activeViewId,rect:{x:0,y:40,width:450,height:600}},{groupId:right,viewId:layout.mainRoot.second.activeViewId,rect:{x:456,y:40,width:450,height:600}}];
+ await native.invoke(root,'workspace.bounds',{windowId:'main',groups,overlay:false,overlayRects:[{x:10,y:50,width:200,height:200}]});
+ assert.equal(native.surfaces.get(groups[0].viewId).view.visible,false);assert.equal(native.surfaces.get(groups[1].viewId).view.visible,true);
+ await native.invoke(root,'workspace.bounds',{windowId:'main',groups,overlay:false,overlayRects:[]});assert(surfaces.every(s=>s.view.visible));
+});
+
+test('late layout from before a native resize cannot hide the current visible content',async t=>{
+ const {native,root}=await fixture(t);const layout=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'document',relPath:'resize-late.txt'}});native.layouts.set('p',layout);await native.reconcile(layout);
+ const surface=[...native.surfaces.values()][0];surface.ready=true;root.win.getContentSize=()=>[600,500];
+ const groups=[{groupId:layout.mainRoot.id,viewId:surface.viewId,rect:{x:1,y:34,width:598,height:465}}];
+ await native.invoke(root,'workspace.bounds',{windowId:'main',viewport:{width:600,height:500},groups});assert.equal(surface.view.visible,true);
+ const current=structuredClone(surface.view.bounds);
+ const result=await native.invoke(root,'workspace.bounds',{windowId:'main',viewport:{width:1000,height:760},groups:[{...groups[0],rect:{x:1,y:34,width:998,height:725}}]});
+ assert.equal(result.stale,true);assert.equal(surface.view.visible,true);assert.deepEqual(surface.view.bounds,current);assert.equal(root.wc.sent.at(-1).payload.type,'viewport-changed');
+});
+
+test('a pre-dock layout or out-of-order visibility update cannot blank the current native owner',async t=>{
+ const {native,root}=await fixture(t);const l=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'conversation'}});native.layouts.set('p',l);await native.reconcile(l);const s=[...native.surfaces.values()][0];s.ready=true;
+ const base={windowId:'main',viewport:{width:1000,height:760},layoutRevision:l.revision,groups:[{groupId:l.mainRoot.id,viewId:s.viewId,rect:{x:0,y:40,width:900,height:600}}],overlay:false};
+ await native.invoke(root,'workspace.bounds',{...base,sequence:3});assert.equal(s.view.visible,true);
+ const oldLayout=await native.invoke(root,'workspace.bounds',{...base,sequence:4,layoutRevision:l.revision-1,groups:[]});assert.equal(oldLayout.stale,true);assert.equal(s.view.visible,true);
+ const oldVisibility=await native.invoke(root,'workspace.bounds',{...base,sequence:2,groups:[],overlay:true});assert.equal(oldVisibility.stale,true);assert.equal(s.view.visible,true);
+ await native.invoke(root,'workspace.bounds',{...base,sequence:4,overlay:true});assert.equal(s.view.visible,false);
+ await native.invoke(root,'workspace.bounds',{...base,sequence:5});assert.equal(s.view.visible,true);
 });

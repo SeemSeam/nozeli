@@ -120,6 +120,7 @@ try {
   await shell.click('.workspace-pane-header [data-workspace-command="floatOpen"]');
   const detached = await scoped(scope => scope.role === 'detached' && scope.projectId === projectId);
   await until(async () => (await call(page, 'workspace.bootstrap')).windowId === detached.scope.windowId, 'same content floated');
+  assert.equal(await detached.page.$eval('#toast',n=>n.textContent.includes('IPC_DENIED')),false);
   assert.equal(await visible(detached.page, '.workspace-toolbar'), 0);
   assert.equal(await visible(detached.page, '#workspace-layout-menu'), 0);
   assert.equal(await visible(detached.page,'.workspace-pane-header button,.workspace-pane-header img'),0);
@@ -136,11 +137,13 @@ try {
   await titleAction(other.page,'dock');
   await detached.page.screenshot({path:path.join(out,'detached-single-title.png')});
   await contentTool(detached.page, page, viewId, ['view', 'document-font', 'document-font-smaller']);
-  const from=await detached.page.$eval('.workspace-pane-header',el=>{const b=el.getBoundingClientRect();return {x:b.left+80,y:b.top+b.height/2,sx:screenX,sy:screenY};});
+  const from=await detached.page.$eval('.workspace-pane-title',el=>{const b=el.getBoundingClientRect();return {x:b.left+b.width/2,y:b.top+b.height/2,sx:screenX,sy:screenY};});
   const target=await shell.$eval('.workspace-pane',el=>{const b=el.getBoundingClientRect();return {x:screenX+b.left+b.width/2,y:screenY+b.top+b.height/2};});
   await detached.page.mouse.move(from.x,from.y);await detached.page.mouse.down();
   await detached.page.mouse.move(from.x+20,from.y,{steps:4});
-  await detached.page.mouse.move(target.x-from.sx,target.y-from.sy,{steps:12});
+  const movedOrigin=await detached.page.evaluate(()=>({x:screenX,y:screenY}));
+  await detached.page.mouse.move(target.x-movedOrigin.x,target.y-movedOrigin.y);
+  await shell.waitForSelector('[data-drop-side]',{visible:true});
   await detached.page.mouse.up();
   await until(async () => (await call(page, 'workspace.bootstrap')).windowId === 'main', 'same content docked');
   assert.equal(await page.evaluate(() => document.querySelector('#text-host .cm-editor') === window.__chromeEditorNode), true);
@@ -181,10 +184,13 @@ try {
   await ppt.page.waitForFunction(()=>document.querySelector('#ppt-frame').contentDocument.documentElement.style.cursor==='');
   report.checks.push('PPT content menu controls the real iframe annotation region mode without a duplicate file toolbar');
 
+  const targetPane=await shell.$$eval('.workspace-pane',els=>els.at(-1).dataset.workspaceGroup);
+  await shell.locator('[data-workspace-group="'+targetPane+'"] .workspace-pane-title').click();
   await shell.click('#workspace-open-conversation');
   const chat = await scoped(scope => scope.role === 'surface' && scope.kind === 'conversation' && scope.projectId === projectId);
   await chat.page.waitForSelector('#conversation-head', {visible: true});
   const conversationId = (await call(chat.page, 'workspace.bootstrap')).viewId;
+  assert.equal(await shell.$eval('[data-view-id="'+conversationId+'"]',el=>el.closest('[data-workspace-group]').dataset.workspaceGroup),targetPane);
   await shell.waitForFunction(id => !document.querySelector(`[data-editor-view="${id}"]`), {}, conversationId);
   await shell.screenshot({path:path.join(out,'opened-project-separator.png')});
   assert.equal(await visible(chat.page, '#conversation-head'), 1);
@@ -192,8 +198,17 @@ try {
   await chat.page.click('#conversation-head',{button:'right'});
   await chat.page.waitForSelector('#conversation-context-menu:not([hidden])', {visible: true});
   const actions = await chat.page.$$eval('#conversation-context-menu [data-command^="chat-workspace-"]', nodes => nodes.map(node => node.dataset.command).sort());
-  assert.deepEqual(actions, ['chat-workspace-close', 'chat-workspace-detach']);
+  assert.deepEqual(actions, ['chat-workspace-close', 'chat-workspace-detach','chat-workspace-split-x','chat-workspace-split-y']);
   await chat.page.keyboard.press('Escape');
+  await chat.page.evaluate(()=>{window.__splitComposer=document.querySelector('#composer');});
+  for(const axis of ['x','y']){
+    const splitRevision=(await call(shell,'workspace.snapshot',{projectId})).layout.revision;
+    await chat.page.locator('#composer').click({button:'right'});
+    await chat.page.locator('#conversation-context-menu:not([hidden]) [data-command="chat-workspace-split-'+axis+'"]').click();
+    await until(async()=>{const l=(await call(shell,'workspace.snapshot',{projectId})).layout;return l.revision>splitRevision&&await shell.$$eval('.workspace-divider',(nodes,axis)=>nodes.some(n=>n.parentElement.dataset.axis===axis),axis);},'conversation context split '+axis);
+    assert.equal(await chat.page.evaluate(()=>document.querySelector('#composer')===window.__splitComposer),true);
+    assert.equal(Object.values((await call(shell,'workspace.snapshot',{projectId})).layout.views).filter(v=>v.kind==='conversation').length,1);
+  }
   assert.equal(await visible(chat.page, '#chat-clear-frontdesk-context'), 0);
   await chat.page.click('[data-chat-window-action="chat-workspace-close"]');
   await shell.waitForSelector('#workspace-open-conversation.conversation-minimized',{visible:true});
@@ -202,6 +217,17 @@ try {
   await shell.click('#workspace-open-conversation');
   const restoredChat=await scoped(s=>s.kind==='conversation'&&s.viewId===conversationId);
   await restoredChat.page.waitForSelector('[data-chat-window-action="chat-workspace-detach"]',{visible:true});
+  const beforeConversationSplit=(await call(shell,'workspace.snapshot',{projectId})).layout;
+  await call(shell,'workspace.command',{projectId,expectedRevision:beforeConversationSplit.revision,requestKey:crypto.randomUUID(),command:{type:'split',groupId:await shell.$eval('[data-view-id="'+conversationId+'"]',el=>el.closest('[data-workspace-group]').dataset.workspaceGroup),axis:'x',side:'after'}});
+  await shell.waitForSelector('.workspace-pane-title',{visible:true});
+  const alternatePane=await shell.$$eval('.workspace-pane',els=>els.find(el=>el.querySelector('.workspace-pane-title'))?.dataset.workspaceGroup);
+  assert(alternatePane);assert.notEqual(alternatePane,targetPane);
+  await restoredChat.page.evaluate(()=>{window.__paneComposer=document.querySelector('#composer');});
+  await shell.locator('[data-workspace-group="'+alternatePane+'"] .workspace-pane-title').click();await shell.click('#workspace-open-conversation');
+  await shell.waitForFunction(({id,group})=>document.querySelector('[data-view-id="'+id+'"]')?.closest('[data-workspace-group]')?.dataset.workspaceGroup===group,{}, {id:conversationId,group:alternatePane});
+  assert.equal(await restoredChat.page.evaluate(()=>document.querySelector('#composer')===window.__paneComposer),true);
+  assert.equal(Object.values((await call(shell,'workspace.snapshot',{projectId})).layout.views).filter(v=>v.kind==='conversation').length,1);
+  report.checks.push('new and existing unique conversation open in the clicked active pane; existing live composer is moved, not copied');
   report.checks.push('minimal conversation header; close minimizes to sole bottom launcher and restores same conversation identity');
   assert.deepEqual(report.errors, []);
   report.ok = true;

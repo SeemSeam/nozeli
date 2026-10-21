@@ -3,7 +3,8 @@ const encoder=new TextEncoder();
 const kinds=new Set(['document','conversation','report','diff','history']);
 const invalid=(message,code='LAYOUT_INVALID')=>{throw Object.assign(new Error(message),{code});};
 const id=prefix=>prefix+'-'+globalThis.crypto.randomUUID();
-const group=()=>({kind:'group',id:id('group'),views:[],activeViewId:null});
+const historyLimit=5;
+const group=()=>({kind:'group',id:id('group'),views:[],activeViewId:null,historyViewIds:[]});
 const clone=value=>structuredClone(value);
 const relPath=value=>typeof value==='string'&&value.length>0&&value.length<=4096&&!/[\\\x00-\x1f]/.test(value)&&!value.startsWith('/')&&!value.split('/').some(part=>!part||part==='.'||part==='..');
 const identity=(value,max=200)=>typeof value==='string'&&value.length>0&&value.length<=max&&!/[\x00-\x1f]/.test(value)&&!['__proto__','constructor','prototype'].includes(value);
@@ -37,13 +38,27 @@ function removeNode(layout,nodeId){
 }
 function checkedGroup(layout,groupId){const result=groupId?findGroup(layout,groupId):{group:layoutGroups(layout)[0],windowId:'main'};if(!result?.group)invalid('工作区分区已变化。','LAYOUT_STALE');return result;}
 function checkedView(layout,viewId){const result=findView(layout,viewId);if(!result)invalid('工作区标签已变化。','LAYOUT_STALE');return result;}
-function detachFromGroup(layout,viewId){const {group:source}=checkedView(layout,viewId);source.views=source.views.filter(v=>v!==viewId);if(source.activeViewId===viewId)source.activeViewId=source.views.at(-1)??null;return source;}
-function addToGroup(target,viewId,index){target.views=[viewId];target.activeViewId=viewId;}
-function cleanup(layout,dropEmpty=false){
- if(dropEmpty)for(const entry of [...layout.detached])if(!layoutGroups(layout,entry.id).some(g=>g.views.length)){layout.detached=layout.detached.filter(w=>w.id!==entry.id);delete layout.maximized[entry.id];}
+function forgetHistory(layout,viewId){for(const entry of roots(layout))for(const pane of layoutGroups(layout,entry.id))if(pane.historyViewIds)pane.historyViewIds=pane.historyViewIds.filter(v=>v!==viewId);}
+function detachFromGroup(layout,viewId){const {group:source}=checkedView(layout,viewId);source.views=source.views.filter(v=>v!==viewId);if(source.activeViewId===viewId)source.activeViewId=source.views.at(-1)??null;forgetHistory(layout,viewId);return source;}
+function addToGroup(target,viewId){
+ const previous=target.activeViewId;
+ target.historyViewIds=(target.historyViewIds??[]).filter(v=>v!==viewId&&v!==previous);
+ if(previous&&previous!==viewId)target.historyViewIds.unshift(previous);
+ target.historyViewIds=target.historyViewIds.slice(0,historyLimit);
+ target.views=[viewId];target.activeViewId=viewId;
+}
+function restoreDocument(layout,target){
+ while(target.historyViewIds?.length){
+  const viewId=target.historyViewIds.shift();
+  if(layout.views[viewId]&&!findView(layout,viewId)){target.views=[viewId];target.activeViewId=viewId;return;}
+ }
+}
+function cleanup(layout,previous){
+ // Remove windows emptied by an operation, not intentional empty panes or windows.
+ for(const entry of [...layout.detached])if(layoutGroups(previous,entry.id).some(g=>g.views.length)&&!layoutGroups(layout,entry.id).some(g=>g.views.length)){layout.detached=layout.detached.filter(w=>w.id!==entry.id);delete layout.maximized[entry.id];}
  for(const [windowId,groupId]of Object.entries(layout.maximized))if(!layoutGroups(layout,windowId).some(g=>g.id===groupId))delete layout.maximized[windowId];
 }
-function closeView(layout,viewId){const view=layout.views[viewId];if(!view)invalid('已打开文件已变化。','LAYOUT_STALE');const found=findView(layout,viewId);layout.closedViews??=[];layout.closedViews.push({view:clone(view),groupId:found?.group.id});layout.closedViews=layout.closedViews.slice(-50);if(found)detachFromGroup(layout,viewId);delete layout.views[viewId];}
+function closeView(layout,viewId,{restore=true}={}){const view=layout.views[viewId];if(!view)invalid('已打开文件已变化。','LAYOUT_STALE');const found=findView(layout,viewId);layout.closedViews??=[];layout.closedViews.push({view:clone(view),groupId:found?.group.id});layout.closedViews=layout.closedViews.slice(-50);if(found)detachFromGroup(layout,viewId);else forgetHistory(layout,viewId);delete layout.views[viewId];if(found&&restore)restoreDocument(layout,found.group);}
 export function validateLayout(layout){
  if(!layout||layout.schema!==2||!identity(layout.projectId)||!Number.isSafeInteger(layout.revision)||layout.revision<0||!Array.isArray(layout.detached)||!layout.views||typeof layout.views!=='object'||Array.isArray(layout.views)||!layout.maximized||typeof layout.maximized!=='object'||Array.isArray(layout.maximized))invalid('工作区布局记录无效。');
  if(Object.keys(layout.views).length>512||encoder.encode(JSON.stringify(layout)).byteLength>1024*1024)invalid('工作区布局超过容量限制。','LAYOUT_LIMIT');
@@ -61,6 +76,7 @@ export function validateLayout(layout){
   }else if(node.kind==='group'){
    if(!Array.isArray(node.views)||layout.singleContent===true&&node.views.length>1||node.activeViewId!==null&&!node.views.includes(node.activeViewId)||node.views.length&&node.activeViewId===null)invalid('每个工作区分区只能呈现一个文件或对话。');
    for(const v of node.views){if(!Object.hasOwn(layout.views,v)||assigned.has(v))invalid('工作区内容重复或丢失。');assigned.add(v);}
+   if(node.historyViewIds!==undefined&&(!Array.isArray(node.historyViewIds)||node.historyViewIds.length>historyLimit||new Set(node.historyViewIds).size!==node.historyViewIds.length||node.historyViewIds.some(v=>!Object.hasOwn(layout.views,v)||node.views.includes(v))))invalid('工作区访问历史无效。');
   }else invalid('工作区节点类型无效。');
  }
  inspect(layout.mainRoot,0);
@@ -74,7 +90,7 @@ export function validateLayout(layout){
  for(const [windowId,groupId]of Object.entries(layout.maximized))if(!layoutGroups(layout,windowId).some(g=>g.id===groupId))invalid('工作区最大化目标无效。');
  return layout;
 }
-export function singleContentLayout(input){const layout=clone(input);if(layout.singleContent===true)return validateLayout(layout);for(const root of roots(layout))walk(root.root,node=>{if(node.kind==='group'){const active=node.activeViewId&&node.views.includes(node.activeViewId)?node.activeViewId:node.views.at(-1)??null;node.views=active?[active]:[];node.activeViewId=active;}});layout.singleContent=true;layout.revision++;return validateLayout(layout);}
+export function singleContentLayout(input){const layout=clone(input);for(const root of roots(layout))walk(root.root,node=>{if(node.kind==='group'&&node.historyViewIds)node.historyViewIds=[...new Set(node.historyViewIds)].filter(v=>layout.views[v]&&!node.views.includes(v)).slice(0,historyLimit);});if(layout.singleContent===true)return validateLayout(layout);for(const root of roots(layout))walk(root.root,node=>{if(node.kind==='group'){const active=node.activeViewId&&node.views.includes(node.activeViewId)?node.activeViewId:node.views.at(-1)??null;node.views=active?[active]:[];node.activeViewId=active;}});layout.singleContent=true;layout.revision++;return validateLayout(layout);}
 export function createLayout(projectId,legacy={}){
  if(!identity(projectId))invalid('项目身份无效。');
  const first=group(),layout={schema:2,singleContent:true,projectId,revision:0,mainRoot:first,detached:[],views:{},maximized:{}};
@@ -116,6 +132,7 @@ export function reduceLayout(previous,command){
   case 'moveGroup':{
    const source=checkedGroup(layout,command.groupId).group,target=checkedGroup(layout,command.targetGroupId).group;
    if(source.id===target.id)break;
+   for(const viewId of source.views)forgetHistory(layout,viewId);
    if(command.axis!==undefined){if(!['x','y'].includes(command.axis)||!['before','after'].includes(command.side??'after'))invalid('分屏方向无效。');removeNode(layout,source.id);const current=checkedGroup(layout,target.id).group;replaceNode(layout,current.id,{kind:'split',id:id('split'),axis:command.axis,ratio:.5,first:command.side==='before'?source:current,second:command.side==='before'?current:source});}
    else{for(const v of source.views)addToGroup(target,v);source.views=[];source.activeViewId=null;removeNode(layout,source.id);}break;
   }
@@ -126,7 +143,7 @@ export function reduceLayout(previous,command){
    const windowId=command.windowId??'main',entry=roots(layout).find(w=>w.id===windowId);if(!entry)invalid('窗口已变化。','LAYOUT_STALE');
    const count={single:1,columns:2,rows:2,three:3,grid:4}[command.preset];if(!count)invalid('布局预设无效。');
    const original=layoutGroups(layout,windowId),next=Array.from({length:count},()=>group());
-   original.forEach((g,index)=>{if(index<count&&g.activeViewId)addToGroup(next[index],g.activeViewId);});
+   original.forEach((g,index)=>{if(index<count){next[index].historyViewIds=[...(g.historyViewIds??[])];if(g.activeViewId)addToGroup(next[index],g.activeViewId);}});
    next.forEach(g=>g.activeViewId??=g.views[0]??null);
    const pair=(axis,a,b,ratio=.5)=>({kind:'split',id:id('split'),axis,ratio,first:a,second:b});
    const root=count===1?next[0]:count===2?pair(command.preset==='rows'?'y':'x',...next):count===3?pair('x',next[0],pair('x',next[1],next[2]),1/3):pair('y',pair('x',next[0],next[1]),pair('x',next[2],next[3]));
@@ -135,17 +152,18 @@ export function reduceLayout(previous,command){
   case 'maximize':{const found=checkedGroup(layout,command.groupId);if(layout.maximized[found.windowId]===command.groupId)delete layout.maximized[found.windowId];else layout.maximized[found.windowId]=command.groupId;break;}
   case 'detach':{
    if(!identity(command.windowId)||roots(layout).some(w=>w.id===command.windowId)||Boolean(command.viewId)===Boolean(command.groupId))invalid('独立窗口目标无效。');
-   let target;if(command.groupId){target=checkedGroup(layout,command.groupId).group;removeNode(layout,target.id);}else{if(!layout.views[command.viewId])invalid('已打开文件不存在。');if(findView(layout,command.viewId))detachFromGroup(layout,command.viewId);target=group();addToGroup(target,command.viewId);}
+   let target;if(command.groupId){target=checkedGroup(layout,command.groupId).group;for(const viewId of target.views)forgetHistory(layout,viewId);removeNode(layout,target.id);}else{if(!layout.views[command.viewId])invalid('已打开文件不存在。');if(findView(layout,command.viewId))detachFromGroup(layout,command.viewId);else forgetHistory(layout,command.viewId);target=group();addToGroup(target,command.viewId);}
    layout.detached.push({id:command.windowId,root:target,alwaysOnTop:false});break;
   }
   case 'dock':{
    const window=layout.detached.find(w=>w.id===command.windowId);if(!window)invalid('独立窗口已变化。','LAYOUT_STALE');const target=checkedGroup(layout,command.targetGroupId).group;
    if(layoutGroups(layout,window.id).some(g=>g.id===target.id))invalid('不能停靠到原窗口。');
-   for(const g of layoutGroups(layout,window.id))for(const viewId of g.views){const fresh=target.activeViewId?split(layout,{groupId:target.id,axis:'x',side:'after'}):target;addToGroup(fresh,viewId);}
+   for(const g of layoutGroups(layout,window.id))for(const viewId of g.views){forgetHistory(layout,viewId);const fresh=target.activeViewId?split(layout,{groupId:target.id,axis:'x',side:'after'}):target;addToGroup(fresh,viewId);fresh.historyViewIds=[...new Set([...(fresh.historyViewIds??[]),...(g.historyViewIds??[])])].slice(0,historyLimit);}
    layout.detached=layout.detached.filter(w=>w.id!==window.id);delete layout.maximized[window.id];break;
   }
-  case 'close':{closeView(layout,command.viewId);break;}
-  case 'closeGroup':{const {group:source}=checkedGroup(layout,command.groupId);for(const v of [...source.views])closeView(layout,v);removeNode(layout,source.id);break;}
+  case 'close':{if(layout.views[command.viewId]?.kind==='conversation'){const found=findView(layout,command.viewId);if(found){detachFromGroup(layout,command.viewId);restoreDocument(layout,found.group);}}else closeView(layout,command.viewId);break;}
+  case 'closeContent':{const view=layout.views[command.viewId];if(!view)invalid('已打开文件已变化。','LAYOUT_STALE');const found=findView(layout,command.viewId);if(found){detachFromGroup(layout,command.viewId);restoreDocument(layout,found.group);}break;}
+  case 'closeGroup':{const {group:source}=checkedGroup(layout,command.groupId);for(const v of [...source.views])closeView(layout,v,{restore:false});removeNode(layout,source.id);break;}
   case 'windowBounds':{const window=layout.detached.find(w=>w.id===command.windowId);if(!window)invalid('独立窗口已变化。','LAYOUT_STALE');window.boundsDip=clone(command.boundsDip);if(command.alwaysOnTop!==undefined)window.alwaysOnTop=command.alwaysOnTop;break;}
   case 'restoreViewState':{if(!layout.views[command.viewId])invalid('已打开文件不存在。');layout.views[command.viewId].viewState=clone(command.viewState);break;}
   case 'renameResource':{
@@ -158,5 +176,5 @@ export function reduceLayout(previous,command){
   }
   default:invalid('未知工作区操作。');
  }
- cleanup(layout,['close','closeMany','closeGroup','move','moveGroup','dock'].includes(command.type)||command.type==='detach'&&Boolean(command.viewId));layout.revision++;return validateLayout(layout);
+ if(command.type!=='closeContent')cleanup(layout,previous);layout.revision++;return validateLayout(layout);
 }

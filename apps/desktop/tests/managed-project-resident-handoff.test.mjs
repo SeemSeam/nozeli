@@ -11,7 +11,14 @@ test('archived resident text is read-only and bound to current project role arch
  const r=await m.residentHistory('a',{role:'orchestrator',archiveId:'archive-a'});assert.equal(r.readOnly,true);assert.match(r.text,/old answer/);assert.equal(await fs.readFile(file,'utf8'),text);await assert.rejects(m.residentHistory('b',{role:'orchestrator',archiveId:'archive-a'}),/归档身份/);await assert.rejects(m.residentHistory('a',{role:'worker',archiveId:'archive-a'}));
 });
 
-test('retry connection restarts retained unready controller without repeating handoff generation',async()=>{
- const m=Object.create(ManagedProjects.prototype);m.stopping=false;m.host={requireProject:async()=>({})};m.config=async()=>({enabled:true});m.flights=new Map();m.connectionErrors=new Map([['a',{error:{code:'HANDOFF_START_FAILED'},handoff:null}]]);let starts=0;const c={started:false,start:async()=>{starts++;c.started=true;}};m.controllers=new Map([['a',c]]);m.status=async()=>({ready:c.started});
+test('retry connection restarts retained unready controller without repeating handoff generation',async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-retry-connection-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const m=new ManagedProjects({userDataDir:root,host:{requireProject:async()=>({})},legacy:{}});m.config=async()=>({enabled:true});m.connectionErrors.set('a',{error:{code:'HANDOFF_START_FAILED'},handoff:null});let starts=0;const c={started:false,start:async()=>{starts++;c.started=true;}};m.controllers.set('a',c);m.status=async()=>({ready:c.started});
  const [a,b]=await Promise.all([m.connect('a'),m.connect('a')]);assert.equal(a.ready,true);assert.equal(b.ready,true);assert.equal(starts,1);assert.equal(m.connectionErrors.has('a'),false);
+});
+
+test('frontdesk clear accepts only project identity and never connects resident pairs',async()=>{
+ const m=Object.create(ManagedProjects.prototype);m.host={requireProject:async()=>({})};m.flights=new Map();m.terminalFlights=new Map();m.controllers=new Map();let calls=0;
+ m.connect=async(id,options)=>{assert.deepEqual(options,{startResidents:false});m.controllers.set(id,{clearFrontdeskContext:async()=>{calls++;return {cleared:true,oldThreadId:'old',threadId:'new',archiveId:'archive'};}});};
+ await assert.rejects(m.invoke('managed.frontdesk.context.clear',{projectId:'a',target:'orchestrator'}),{code:'INVALID_PAYLOAD'});assert.equal(calls,0);const result=await m.invoke('managed.frontdesk.context.clear',{projectId:'a'});assert.equal(result.threadId,'new');assert.equal(calls,1);
 });

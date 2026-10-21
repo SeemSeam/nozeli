@@ -1,3 +1,4 @@
+import { contentToolForPage } from './native-content-tools.fixture.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import net from 'node:net';
@@ -39,7 +40,7 @@ const tree=()=>page.$$eval('#file-tree button',ns=>ns.map(n=>({path:n.dataset.pa
 async function switchTo(project){await page.click('#recent button[title="'+project.name+'"]');await page.waitForFunction(n=>document.querySelector('#project-name').textContent===n,{},project.name);await page.waitForFunction(()=>document.querySelector('#file-tree [data-path="note.txt"]'));}
 try{
  for(let i=0;i<150;i++){try{browser=await puppeteer.connect({browserURL:'http://127.0.0.1:'+port,defaultViewport:{width:1440,height:900}});break;}catch{}await pause(100);}assert(browser,log);page=(await browser.pages())[0];page.on('pageerror',e=>errors.push(e.message));await page.waitForFunction(()=>window.__nozeliReady);await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-close').click(); });
- await page.click('#file-tree [data-path="note.txt"]');await page.waitForFunction(()=>window.__nozeliInput?.text()==='original note\n');await page.$eval('#text-mode-toggle',n=>n.click());await page.waitForSelector('.cm-editor');
+ await page.click('#file-tree [data-path="note.txt"]');await page.waitForFunction(()=>window.__nozeliInput?.text()==='original note\n');await contentToolForPage(page, ['view', 'text-mode']);await page.waitForSelector('.cm-editor');
  await page.evaluate(()=>{document.querySelector('.cm-editor').dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));window.__nozeliInput.selectAll();window.__nozeliInput.insert('unsaved editor draft\n');window.__nozeliInput.select(2,8);document.querySelector('#composer').value='unsent conversation draft';document.querySelector('#composer').dispatchEvent(new Event('input',{bubbles:true}));});
  const before=await page.evaluate(()=>({text:window.__nozeliInput.text(),selection:window.__nozeliInput.selection(),writes:window.__fileOps.filter(x=>x.op==='file.write').length}));
  await page.click('#file-tree [data-path="folded"]');await page.$eval('#file-tree',n=>n.scrollTop=390);await page.evaluate(()=>document.querySelector('#file-tree [data-path="row-25.txt"]').focus({preventScroll:true}));const scroll=await page.$eval('#file-tree',n=>n.scrollTop),count=await scans();
@@ -60,7 +61,7 @@ try{
  await notify(b.id);await pause(200);assert.equal((await tree()).some(n=>n.path==='queued-old.txt'),false);await switchTo(b);await page.waitForSelector('#file-tree [data-path="queued-old.txt"]');check('returning to project lists latest real contents');
 
  await page.click('#file-tree [data-path="generated/moved.md"]');await page.waitForFunction(()=>document.querySelector('#file-path').textContent==='generated/moved.md');
- if(await page.$eval('#text-host',n=>n.hidden))await page.click('#text-mode-toggle');
+ if(await page.$eval('#text-host',n=>n.hidden))await contentToolForPage(page, ['view', 'text-mode']);
  await page.evaluate(()=>{document.querySelector('.cm-editor').dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));window.__nozeliInput.selectAll();window.__nozeliInput.insert('完整未保存副本：删除期间仍然保留\n');window.__nozeliInput.select(2,8);});
  const retained=await page.evaluate(()=>({text:__nozeliInput.text(),selection:__nozeliInput.selection()}));
  await fs.rm(path.join(b.dir,'generated/moved.md'));await notify();

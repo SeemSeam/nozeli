@@ -1,3 +1,4 @@
+import { contentToolForPage } from './native-content-tools.fixture.mjs';
 // Opt-in real Electron + installed Codex journey: SAME-SURFACE live collaboration.
 // The text editor stays mounted in EDIT mode the whole time; worker rounds are driven
 // through the non-destructive managed.send(work) supplement channel. Human input is
@@ -110,7 +111,7 @@ try {
   try { await invoke('managed.binding',{projectId,role:'worker',effort:'medium'}); } catch(e){ console.log('BINDING-FALLBACK '+e.message); }
   await page.click('#file-tree [data-path="surface.md"]');
   await page.waitForFunction(()=>window.__nozeliInput?.text()?.includes('目标甲'),{timeout:30000});
-  await page.click('#text-mode-toggle');
+  await contentToolForPage(page, ['view', 'text-mode']);
   await page.waitForSelector('#text-host .cm-content',{visible:true});
 
   // Round 1 (real CLI): read only, publish problem, stay paused.

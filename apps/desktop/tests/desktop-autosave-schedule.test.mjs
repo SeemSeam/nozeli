@@ -1,3 +1,4 @@
+import { contentToolForPage } from './native-content-tools.fixture.mjs';
 import {prepareReading, waitForDesktopPage} from './reading-setup.fixture.mjs';
 import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
@@ -56,7 +57,7 @@ try {
   await page.waitForSelector('#file-tree button');await page.evaluate(() => { if (document.body.classList.contains('provider-console-open')) document.querySelector('#provider-console-close').click(); });
   await page.click('#file-tree button[data-path="sample.md"]');
   await page.waitForFunction(()=>window.__nozeliInput?.text().includes('Target'));
-  await page.click('#text-mode-toggle');
+  await contentToolForPage(page, ['view', 'text-mode']);
   await page.waitForSelector('#text-host .cm-content');
 
   await page.evaluate(()=>{

@@ -1,3 +1,4 @@
+import { contentToolForPage } from './native-content-tools.fixture.mjs';
 import {prepareReading, waitForDesktopPage} from './reading-setup.fixture.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -29,7 +30,7 @@ try {
   await prepareReading(page);await page.click('#pick-project');
   await page.click('#file-tree button[data-path="left.md"]'); await page.waitForFunction(() => document.querySelector('#file-path').textContent === 'left.md');
   const before = await page.evaluate(() => window.__nozeliInput.text());
-  await page.click('#open-beside'); await page.waitForSelector('#beside-dialog[open]'); await page.select('#beside-file', 'right.md'); await page.click('#beside-form button[type="submit"]');
+  await contentToolForPage(page, ['history', 'compareFile']); await page.waitForSelector('#beside-dialog[open]'); await page.select('#beside-file', 'right.md'); await page.click('#beside-form button[type="submit"]');
   await page.waitForFunction(() => document.querySelector('#secondary-path').textContent === 'right.md');
   assert.equal(await page.$eval('#diff-mode', node => node.disabled), false);
   await page.click('#diff-mode'); await page.waitForSelector('.document-diff .cm-mergeView');

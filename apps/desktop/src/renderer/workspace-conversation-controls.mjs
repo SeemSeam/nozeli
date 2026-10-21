@@ -18,9 +18,11 @@ export function mountConversationControls({close}) {
   };
   window.nozeli.subscribe('workspace.control',()=>queueMicrotask(updateChrome));updateChrome();
   const actions = [
+    {id:'chat-workspace-split-x',label:'向右拆分',command:{type:'split',axis:'x',side:'after'}},
+    {id:'chat-workspace-split-y',label:'向下拆分',command:{type:'split',axis:'y',side:'after'}},
     {id:'chat-workspace-detach',label:'脱离为独立窗口',command:{type:'detach'}},
     {id:'chat-workspace-dock',label:'移回主窗口',command:{type:'dock'}},
-    {id:'chat-workspace-close',label:'收起到底部',command:{type:'closePane'}},
+    {id:'chat-workspace-close',label:'收起到底部',command:{type:'closeContent'}},
   ];
   const windowActions = [
     {id:'chat-window-minimize',label:'最小化窗口',action:'minimize'},

@@ -66,7 +66,6 @@ try {
   assert.notEqual(await page.$eval('#selection-discuss',n=>getComputedStyle(n).display),'none');
   assert.equal(await reopened.$('#word-add-note'),null);
   assert.equal(await reopened.$('.word-modes'),null);
-  assert.equal(await page.$eval('#word-region',n=>!!n.closest('.desk-header')),true);
   await page.keyboard.press('Escape');
   await page.waitForFunction(()=>document.querySelector('#selection-menu').hidden);
   range=await selectionCoordinates();

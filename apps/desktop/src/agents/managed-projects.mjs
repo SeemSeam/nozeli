@@ -127,12 +127,13 @@ export class ManagedProjects {
     try{await store.mutate(()=>{if(!['frontdesk','orchestrator'].includes(target)&&!store.state.works.some(work=>work.id===target&&work.status!=='ended'))throw new HostError('INVALID_PAYLOAD','草稿所属工作无效');store.state.drafts??={};store.state.drafts[target]=value;});}finally{await store.close();}
   }).finally(()=>{if(this.draftFlights.get(id)===operation)this.draftFlights.delete(id);});this.draftFlights.set(id,operation);return operation;
  }
- async connect(id,{enable=false}={}){
+ async connect(id,{enable=false,startResidents=true}={}){
   if(this.stopping)throw new Error('application closing');
   await this.initializeResources();await this.resourceFlights.get(id);this.projectActivity.set(id,Date.now());
   const project=await this.host.requireProject(id);if(!enable&&!(await this.config(id)).enabled)return this.status(id);
   if(this.flights.has(id))return this.flights.get(id);
   if(this.controllers.has(id)){
+   if(!startResidents)return this.status(id);
    const retained=this.controllers.get(id);if(this.connectionErrors.get(id)?.handoff)return this.status(id);if(retained.started&&(!retained.sessions||['frontdesk','orchestrator'].every(target=>retained.sessions.get(target)&&!retained.sessions.get(target).closed)))return this.status(id);
    const restart=(async()=>{try{await retained.start();this.connectionErrors.delete(id);return this.status(id);}catch(error){let handoff=null,blocked=null;if(error.code==='OMP_TOOLS_DIGEST_MISMATCH')try{handoff=await retained.prepareResidentHandoff(error.target);}catch(unsafe){blocked={code:unsafe.code??'HANDOFF_UNSAFE',message:unsafe.message};}this.connectionErrors.set(id,{error:{code:error.code??'RESIDENT_START_FAILED',message:error.message,role:error.target??null,blocked},handoff});throw error;}})().finally(()=>{if(this.flights.get(id)===restart)this.flights.delete(id);});this.flights.set(id,restart);return restart;
   }
@@ -174,7 +175,7 @@ export class ManagedProjects {
       const legacy=persistedRoles?.[role]??persisted;
       if(legacy?.provider==='omp'&&legacy.model&&typeof controller.migrateNativeBinding==='function')await controller.migrateNativeBinding(role,{model:legacy.model,effort:legacy.effort});
     }
-    await controller.start();
+    if(startResidents)await controller.start();
     // 不再独立发现模型：配置和选择全部由正在运行的原生 Agent 负责。
      if(controller.store?.state?.bindings){
        const roles=controller.store.state.bindings;
@@ -311,6 +312,14 @@ export class ManagedProjects {
   allowed['timeline.request']=['projectId','requestId','offset'];
   allowed['changes.list']=['projectId','changeSetId','offset','limit'];allowed['changes.read']=['projectId','changeSetId','fileId','maxBytes','maxLines'];
   const action=op.slice('managed.'.length);
+  if(action==='frontdesk.context.clear'){
+   if(!p||typeof p!=='object'||Array.isArray(p)||Object.keys(p).length!==1||typeof p.projectId!=='string'||!p.projectId.trim())throw new HostError('INVALID_PAYLOAD','清除前台上下文仅接受 projectId');
+   await this.host.requireProject(p.projectId);
+   if(this.flights.has(p.projectId)||this.terminalFlights.has(p.projectId+':frontdesk'))throw new HostError('FRONTDESK_CONTEXT_CLEAR_BUSY','前台连接或终端操作尚未完成');
+   if(!this.controllers.has(p.projectId))await this.connect(p.projectId,{startResidents:false});
+   const controller=this.controllers.get(p.projectId);if(!controller)throw new HostError('FRONTDESK_CONTEXT_CLEAR_UNAVAILABLE','项目尚未启用前台');
+   return controller.clearFrontdeskContext();
+  }
   if(action==='frontdesk.route.resolve'&&(Object.keys(p).some(k=>!allowed[action].includes(k))||!['projectId','proposalId','requestKey'].every(k=>typeof p[k]==='string'&&p[k].trim()===p[k]&&p[k].length>0&&p[k].length<=200)||!Number.isSafeInteger(p.expectedVersion)||p.expectedVersion<1||!['continue','background'].includes(p.action)))throw new HostError('INVALID_PAYLOAD','前台去向决定的项目、提议、版本或动作无效。');
   if(action==='deviation.resolve'&&(Object.keys(p).some(k=>!allowed[action].includes(k))||!['projectId','workId','deviationId','requestKey'].every(k=>typeof p[k]==='string'&&p[k].trim()===p[k]&&p[k].length>0&&p[k].length<=200)||!Number.isSafeInteger(p.expectedRevision)||p.expectedRevision<1||!Number.isSafeInteger(p.expectedVersion)||p.expectedVersion<1||!['continue','replan'].includes(p.action)))throw new HostError('INVALID_PAYLOAD','任务偏离决定的身份、版本或动作无效。');
   if((action==='history.list'||action==='history.read')&&Object.keys(p).some(k=>!allowed[action].includes(k)))throw new HostError('INVALID_PAYLOAD','历史报告查询参数无效。');
@@ -372,6 +381,7 @@ export class ManagedProjects {
   if(action==='frontdesk.route.resolve')return c.resolveFrontdeskRoute(p);
   const assertNotHeld=()=>{const work=c.store.state.works.find(w=>w.id===p.target);if(work?.status!=='ended'&&['pending','replanned'].includes(work?.deviation?.status))throw new HostError('WORK_DEVIATION_HELD','此工作因任务偏离暂停；请使用任务偏离决定按钮明确授权。普通输入、重启或终端不能恢复执行。');};
   if(['restart','terminal.system','terminal.attach','terminal.input'].includes(action))assertNotHeld();
+  if(['terminal.system','terminal.attach','terminal.input'].includes(action))c.assertFrontdeskContextAdmission(p.target);
   if(action==='worker.handoff'){if(p.confirmed!==true||typeof p.oldThreadId!=='string'||!p.oldThreadId||!Number.isInteger(p.revision))throw new HostError('INVALID_PAYLOAD','请明确确认原 Worker 会话接手。');return c.recoverWorkerContext(p.workId,{revision:p.revision,oldThreadId:p.oldThreadId,confirmed:true});}
   if(['task','intake.retry','message.task'].includes(action)&&!(typeof p.requestKey==='string'&&/^[a-zA-Z0-9:_-]{8,160}$/.test(p.requestKey)))throw Error('invalid submission key');
   if(action==='message.task')return c.convertMessage(p.messageId,p.text,{requestKey:p.requestKey});
@@ -433,6 +443,7 @@ export class ManagedProjects {
     const observed=c.sessions?.get(p.target);
     const assertOwner=()=>{if(p.ownerId&&c.sessions?.get(p.target)?.viewOwnerId!==p.ownerId)throw new HostError('TERMINAL_STALE','终端所属 Agent 已变化，请重新连接');};
     assertNotHeld();
+    c.assertFrontdeskContextAdmission(p.target);
     assertOwner();
     if(c.isolateProcesses&&c.current.has(p.target)&&c.store.state.works.some(w=>w.id===p.target))await c.workerTerminal.prepare(p.target,{executionJobId:c.current.get(p.target).id});
     let t=c.terminals.get(p.target);if(t?.closed){await t.close();t=null;}
@@ -448,6 +459,7 @@ export class ManagedProjects {
       onExit:value=>{const current=c.terminals.get(p.target);if((sessionOwner&&c.sessions?.get(p.target)!==sessionOwner)||(current&&current.terminalId!==terminalId))return;void this.systemTerminals.close(key);this.listener({projectId:p.projectId,kind:'managed-terminal',target:p.target,terminalId,ended:true,exitCode:value?.exitCode});}});
     }
     assertNotHeld();
+    c.assertFrontdeskContextAdmission(p.target);
     if(p.ownerId&&c.sessions?.get(p.target)?.viewOwnerId!==p.ownerId){if(c.terminals.get(p.target)===t)await t.close();throw new HostError('TERMINAL_STALE','终端所属 Agent 已变化，请重新连接');}
     return {terminalId:t.terminalId,ownerId:c.sessions?.get(p.target)?.viewOwnerId??observed?.viewOwnerId??null,threadId:t.threadId,replay:t.replay,replayFrames:t.replayFrames,seq:t.seq};
    })().finally(()=>{if(this.terminalFlights.get(key)===flight)this.terminalFlights.delete(key);});flight.action='attach';flight.ownerId=p.ownerId;this.terminalFlights.set(key,flight);return flight;
@@ -456,7 +468,7 @@ export class ManagedProjects {
   const terminal=c.terminals.get(p.target);
   if(!terminal||terminal.terminalId!==p.terminalId||terminal.closed){if(action==='terminal.close')return {closed:false,stale:true};throw new HostError('TERMINAL_STALE','终端连接已过期，请重新连接');}
   if(this.systemTerminals.owns(key)&&['terminal.input','terminal.resize'].includes(action))throw Error('系统终端正在接管输入，请先接回内置终端。');
-  if(action==='terminal.input'){assertNotHeld();if(typeof p.data!=='string'||p.data.length>10000)throw new Error('invalid terminal input');terminal.input(p.data);return {accepted:true};}
+  if(action==='terminal.input'){c.assertFrontdeskContextAdmission(p.target);assertNotHeld();if(typeof p.data!=='string'||p.data.length>10000)throw new Error('invalid terminal input');terminal.input(p.data);return {accepted:true};}
   if(action==='terminal.resize'){if(!Number.isInteger(p.cols)||!Number.isInteger(p.rows)||p.cols<2||p.cols>500||p.rows<2||p.rows>200)throw new Error('invalid terminal size');terminal.resize(p.cols,p.rows);return {accepted:true};}
   if(action==='terminal.close'){await this.systemTerminals.close(key);const flight=terminal.close().then(()=>({closed:true})).finally(()=>{if(this.terminalFlights.get(key)===flight)this.terminalFlights.delete(key);});flight.action='close';this.terminalFlights.set(key,flight);return flight;}
  }

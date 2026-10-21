@@ -1,3 +1,4 @@
+import { contentToolForPage } from './native-content-tools.fixture.mjs';
 // Opt-in real Electron + installed Codex journey: VERSION CHECKPOINT lifecycle.
 // Real CLI delivery → automatic checkpoint → pending-retry on injected failure →
 // list/diff → human save drift not mixed into frozen checkpoint → stale-baseline
@@ -105,7 +106,7 @@ try {
   await invoke('managed.limit', { projectId, limit: 3 });
   await page.click('#file-tree [data-path="surface.md"]');
   await page.waitForFunction(() => window.__nozeliInput?.text()?.includes('目标甲'), { timeout: 30000 });
-  await page.click('#text-mode-toggle');
+  await contentToolForPage(page, ['view', 'text-mode']);
   await page.waitForSelector('#text-host .cm-content', { visible: true });
 
   // Round 1: real CLI reads and publishes problem (no edits).

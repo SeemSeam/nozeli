@@ -1,3 +1,4 @@
+import { contentToolForPage } from './native-content-tools.fixture.mjs';
 // Real Electron (fixture agents, no model) journey for the reading/editing package:
 // native clipboard image paste, note-first execute entry, region copy coverage,
 // top reading/terminal entry, external-write tree refresh and right-click creation.
@@ -68,7 +69,7 @@ try {
   await page.click('#file-tree button[data-path="paper.md"]');
   await page.waitForFunction(() => document.querySelector('#file-path').textContent === 'paper.md');
   // Markdown opens in reading mode; the top entry keeps reading and terminal one click away.
-  await page.click('#text-mode-toggle');
+  await contentToolForPage(page, ['view', 'text-mode']);
   await page.waitForSelector('#text-host .cm-content', { visible: true });
 
   // --- Native clipboard image paste into the source editor ---
@@ -150,7 +151,7 @@ try {
   };
 
   // --- Reading preview displays the pasted image; reopening keeps it ---
-  await page.click('#text-mode-toggle');
+  await contentToolForPage(page, ['view', 'text-mode']);
   await page.waitForSelector('#text-preview .markdown-image img[data-image-state="loaded"]', { timeout: 10000 });
   await page.waitForFunction(() => document.querySelector('#text-preview .markdown-image img')?.naturalWidth > 0, { timeout: 10000 });
   await page.screenshot({ path: path.join(output, 'preview-image.png') });
@@ -159,7 +160,7 @@ try {
   checks.push('markdown preview renders the pasted image from disk and survives reopen');
 
   // --- Note save never dispatches; execute entry dispatches exactly once ---
-  await page.click('#text-mode-toggle');
+  await contentToolForPage(page, ['view', 'text-mode']);
   await page.waitForSelector('#text-host .cm-content', { visible: true });
   await page.click('#text-host .cm-content');
   await page.keyboard.down('Control'); await page.keyboard.press('Home'); await page.keyboard.up('Control');
@@ -224,7 +225,7 @@ try {
   await narrow.send('Emulation.clearDeviceMetricsOverride');
 
   // --- External tool writes refresh the tree without touching user edits ---
-  if (await page.$eval('#text-host', node => node.hidden)) { await page.click('#text-mode-toggle'); }
+  if (await page.$eval('#text-host', node => node.hidden)) { await contentToolForPage(page, ['view', 'text-mode']); }
   await page.waitForSelector('#text-host .cm-content', { visible: true });
   let draftTyped = false;
   for (let attempt = 0; attempt < 4 && !draftTyped; attempt++) {

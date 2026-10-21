@@ -1,3 +1,4 @@
+import { contentToolForPage } from './native-content-tools.fixture.mjs';
 import {prepareReading, waitForDesktopPage, waitForReadingProject} from './reading-setup.fixture.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -76,7 +77,6 @@ try {
   assert.notEqual(await page.$eval('#selection-discuss',n=>getComputedStyle(n).display),'none');
   assert.equal(await reopened.$('#word-add-note'),null);
   assert.equal(await reopened.$('.word-modes'),null);
-  assert.equal(await page.$eval('#word-region',n=>!!n.closest('.desk-header')),true);
   await page.keyboard.press('Escape');
   await page.waitForFunction(()=>document.querySelector('#selection-menu').hidden);
   range=await selectionCoordinates();
@@ -117,7 +117,7 @@ try {
   await page.waitForSelector('.word-note-overlay .note-anchor:not([hidden])');
   assert.deepEqual(errors,[]);
   await page.screenshot({path:path.join(output,'word-reopened.png')});
-  await page.click('#word-region');
+  await contentToolForPage(page, ['view', 'region']);
   await finalFrame.waitForFunction(()=>document.body.classList.contains('word-region-selecting'));
   await finalFrame.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
   const regionBox=await finalFrame.$eval('.superdoc-page',n=>{const r=n.getBoundingClientRect();return {x:r.left+100,y:r.top+190};});

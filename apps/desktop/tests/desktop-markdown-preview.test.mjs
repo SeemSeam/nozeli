@@ -1,3 +1,4 @@
+import { contentToolForPage } from './native-content-tools.fixture.mjs';
 import {prepareReading, waitForDesktopPage} from './reading-setup.fixture.mjs';
 import {clickPreviewControl, openPreviewMenu} from './preview-menu-support.mjs';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
@@ -92,11 +93,10 @@ async function waitDisk(check){
 try {
   await launch();await resize(1440);await open('main.md');
   assert(await page.$eval('#text-host',el=>el.hidden));assert(await page.$eval('#markdown-preview-toggle',el=>el.hidden));
-  assert.equal(await page.$eval('#text-mode-toggle',el=>el.textContent),'编辑');
   await openPreviewMenu(page,'markdown-preview-toggle');
   assert.equal(await page.$eval('.nozeli-submenu [data-command="preview-toggle"]',el=>el.getAttribute('aria-checked')),'false');
   assert(await page.$eval('.nozeli-submenu [data-command="preview-link"]',el=>el.disabled));await page.keyboard.press('Escape');
-  await page.click('#text-mode-toggle');await split();
+  await contentToolForPage(page, ['view', 'text-mode']);await split();
   await page.waitForFunction(()=>document.querySelector('#text-preview pre code')?.dataset.highlighted==='cpp');
   const markup = await page.$eval('#text-preview',el=>({tables:el.querySelectorAll('table').length,math:el.querySelectorAll('.katex').length,errors:el.querySelectorAll('.katex-error').length,colors:new Set([...el.querySelectorAll('pre code span')].map(node=>node.style.color)).size}));
   assert(markup.tables===1&&markup.math===3&&markup.errors===0&&markup.colors>=3);report.markup=markup;
@@ -164,8 +164,8 @@ try {
   assert.equal(discussion.anchor.start,markdown.indexOf('重复引文'));
   assert.equal((await call('agents.messages',{projectId})).value.messages.length,0);
   await page.click('#text-host .tag-discuss .tag-window-title',{count:2});
-  await page.click('#text-mode-toggle');assert(await page.$eval('#text-host',el=>el.hidden));assert(await page.$eval('#markdown-preview-toggle',el=>el.hidden));
-  await page.click('#text-mode-toggle');await split();assert(await page.$('#text-host .tag-discuss'));assert.equal(await page.$('#text-preview .note-anchor'),null);
+  await contentToolForPage(page, ['view', 'text-mode']);assert(await page.$eval('#text-host',el=>el.hidden));assert(await page.$eval('#markdown-preview-toggle',el=>el.hidden));
+  await contentToolForPage(page, ['view', 'text-mode']);await split();assert(await page.$('#text-host .tag-discuss'));assert.equal(await page.$('#text-preview .note-anchor'),null);
   mark('preview toggle and full reading keep notes/discussion drafts; split discussion typing uses the single source-owned projection without dispatch');
 
   await endOfSource();await page.keyboard.type('FILE_SWITCH_PENDING');await open('second.markdown');
@@ -177,7 +177,7 @@ try {
   await page.waitForFunction(()=>document.querySelector('#save-status').dataset.state==='saved');assert.equal(await text(),markdown);
   mark('pending render cannot leak into another Markdown file; file switching restores split mode and flushes the actual buffer');
 
-  await page.click('#open-beside');await page.waitForSelector('#beside-dialog[open]');await page.select('#beside-file','second.markdown');await page.click('#beside-form button[type=submit]');
+  await contentToolForPage(page, ['history', 'compareFile']);await page.waitForSelector('#beside-dialog[open]');await page.select('#beside-file','second.markdown');await page.click('#beside-form button[type=submit]');
   await page.waitForFunction(()=>!document.querySelector('#secondary-pane').hidden);assert(!await page.$eval('#reader-scroll',el=>el.classList.contains('markdown-split')));
   await page.click('#diff-mode');await page.waitForSelector('.document-diff .cm-mergeView');
   const diffPoint=await page.$eval('.document-diff .cm-editor',el=>{const b=el.getBoundingClientRect();return{x:b.left+5,y:b.top+20};});await page.mouse.click(diffPoint.x,diffPoint.y,{button:'right'});await page.waitForSelector('#document-context-menu:not([hidden])');
