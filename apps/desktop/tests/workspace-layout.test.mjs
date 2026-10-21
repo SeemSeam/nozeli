@@ -6,6 +6,29 @@ test('opening another file replaces presentation and retains flat opened metadat
 test('split-open from opened file creates exactly one adjacent reading view',()=>{let s=open(empty(),'a.md');const writer=Object.keys(s.views)[0];s=reduceLayout(s,{type:'splitOpen',viewId:writer,groupId:s.mainRoot.id,axis:'x'});assert.equal(layoutGroups(s).length,2);const mirror=Object.values(s.views).find(v=>v.sourceViewId===writer);assert(mirror.readOnly);assert.equal(mirror.resourceId,s.views[writer].resourceId);assert.equal(findView(s,writer).windowId,'main');single(s);});
 test('split-open an inactive opened file uses its existing view identity',()=>{let s=open(empty(),'a.md');const first=Object.keys(s.views)[0];s=open(s,'b.md');const count=Object.keys(s.views).length;s=reduceLayout(s,{type:'splitOpen',viewId:first,groupId:s.mainRoot.id,axis:'y'});assert.equal(Object.keys(s.views).length,count);assert(findView(s,first));assert.equal(layoutGroups(s).length,2);single(s);});
 test('floating and docking preserve references without creating a tab stack',()=>{let s=open(empty(),'a.txt');const a=Object.keys(s.views)[0];s=reduceLayout(s,{type:'restoreViewState',viewId:a,viewState:{pdfPage:4,scrollTop:120}});s=reduceLayout(s,{type:'detach',viewId:a,windowId:'floating'});assert.equal(findView(s,a).windowId,'floating');s=open(s,'b.txt');s=reduceLayout(s,{type:'dock',windowId:'floating'});assert.equal(s.detached.length,0);assert.equal(layoutGroups(s).length,2);assert.deepEqual(s.views[a].viewState,{pdfPage:4,scrollTop:120});single(s);});
+test('more than 32 floating windows survive serialization and dock without losing views',()=>{
+ let s=empty();const expectedWindows=[];
+ for(let n=0;n<40;n++){
+  s=open(s,'floating-'+n+'.txt');const viewId=s.mainRoot.activeViewId,windowId='floating-'+n;
+  s=reduceLayout(s,{type:'restoreViewState',viewId,viewState:{scrollTop:n*10}});
+  s=reduceLayout(s,{type:'detach',viewId,windowId});expectedWindows.push({windowId,viewId});
+ }
+ assert.equal(s.detached.length,40);assert.equal(layoutGroups(s).flatMap(g=>g.views).length,0);single(s);
+ const expectedViews=structuredClone(s.views),expectedIds=ids(s),serialized=JSON.stringify(s);
+ s=validateLayout(JSON.parse(serialized));assert.equal(JSON.stringify(s),serialized);
+ for(const {windowId,viewId}of expectedWindows)assert.equal(findView(s,viewId).windowId,windowId);
+ // Rotate target panes to keep docking balanced within the existing tree-depth safety limit.
+ const targets=[s.mainRoot.id];
+ for(const {windowId}of expectedWindows){
+  const targetGroupId=targets.shift(),before=new Set(layoutGroups(s).map(g=>g.id));
+  s=reduceLayout(s,{type:'dock',windowId,targetGroupId});
+  targets.push(targetGroupId,...layoutGroups(s).filter(g=>!before.has(g.id)).map(g=>g.id));
+ }
+ assert.equal(s.detached.length,0);assert.equal(layoutGroups(s).length,40);
+ assert.deepEqual(ids(s),expectedIds);assert.deepEqual(s.views,expectedViews);
+ for(const {viewId}of expectedWindows)assert.equal(findView(s,viewId).windowId,'main');
+ single(s);
+});
 test('close pane preserves opened file while explicit resource close removes it',()=>{let s=open(empty(),'a.txt');const a=Object.keys(s.views)[0],pane=s.mainRoot.id;s=reduceLayout(s,{type:'closePane',groupId:pane});assert(s.views[a]);assert.equal(findView(s,a),null);assert.equal(layoutGroups(s).length,1);s=reduceLayout(s,{type:'close',viewId:a});assert.equal(s.views[a],undefined);s=reduceLayout(s,{type:'reopenClosed',groupId:s.mainRoot.id});assert.equal(s.mainRoot.activeViewId,a);single(s);});
 test('legacy multi-file groups migrate to one active file with other opened records retained',()=>{const s=createLayout('project-a',{currentRelPath:'b.txt',workspace:{minimized:true,openFiles:['a.txt','b.txt']}});const legacy=structuredClone(s);delete legacy.singleContent;legacy.mainRoot.views=Object.keys(legacy.views);legacy.mainRoot.activeViewId=legacy.mainRoot.views[1];const migrated=singleContentLayout(legacy);assert.deepEqual(ids(migrated),ids(legacy));assert.equal(migrated.mainRoot.views.length,1);assert.equal(migrated.views[migrated.mainRoot.activeViewId].relPath,'b.txt');single(migrated);});
 test('presets never discard opened metadata or assign multiple files to one pane',()=>{let s=empty();for(let n=0;n<8;n++)s=open(s,'file'+n+'.txt');const expected=ids(s);for(const preset of ['columns','rows','grid','three','single']){s=reduceLayout(s,{type:'preset',preset});assert.deepEqual(ids(s),expected);single(s);}});

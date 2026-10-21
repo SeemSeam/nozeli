@@ -19,8 +19,8 @@ export function restoreBounds(bounds, screen) {
 }
 
 export class WorkspaceNative {
-  constructor({ BrowserWindow, WebContentsView, screen, origin, preload, userDataDir, host, hidden = false, onClose, onError = console.error, recover }) {
-    Object.assign(this, { BrowserWindow, WebContentsView, screen, origin, preload, host, hidden, onClose, onError, recover });
+  constructor({ BrowserWindow, WebContentsView, screen, origin, preload, icon, userDataDir, host, hidden = false, onClose, onError = console.error, recover }) {
+    Object.assign(this, { BrowserWindow, WebContentsView, screen, origin, preload, icon, host, hidden, onClose, onError, recover });
     this.directory = path.join(userDataDir, 'nozeli', 'workspace-v2');
     this.senders = new Map(); this.windows = new Map(); this.surfaces = new Map(); this.layouts = new Map(); this.queues = new Map(); this.receipts = new Map(); this.requests = new Map(); this.drags = new Map(); this.leases = new Map(); this.epoch = 0;
     this.buffers=new Map();
@@ -85,6 +85,7 @@ export class WorkspaceNative {
     if ((r.held||r.recoveryHeld||r.syncHolds?.size) && mutatesDocument) throw fail('TRANSFER_HELD');
     if (r.held && op.startsWith('managed.') && !['managed.status','managed.history.list','managed.history.read','managed.artifact.read','managed.artifact.list','managed.timeline.page','managed.timeline.read'].includes(op)) throw fail('TRANSFER_HELD');
     if (r.role === 'surface' && op === 'managed.draft' && r.kind !== 'conversation') throw fail('CONVERSATION_OWNER_REQUIRED');
+    if(op==='managed.frontdesk.context.clear'&&r.role!=='shell'&&!(r.role==='surface'&&r.kind==='conversation'&&payload.projectId===r.projectId))throw fail('CONVERSATION_OWNER_REQUIRED');
     if (r.role !== 'shell' && op === 'managed.enable') throw fail('IPC_DENIED');
     return r;
   }
@@ -201,7 +202,8 @@ export class WorkspaceNative {
   currentWindowCount(){const projectId=this.shell&&!this.shell.dead?this.shell.projectId:this.activeProjectId;return [...this.windows.values()].filter(root=>!root.dead&&(root.windowId==='main'||!projectId||root.projectId===projectId)).length;}
   async detached(layout, item) {
     const old = this.windows.get(item.id); if (old) return old;
-    const win = new this.BrowserWindow({ ...restoreBounds(item.boundsDip, this.screen), show: false, title: 'Nozeli — 工作区', alwaysOnTop: !!item.alwaysOnTop, webPreferences: this.preferences });
+    const win = new this.BrowserWindow({ ...restoreBounds(item.boundsDip, this.screen), frame:false, icon:this.icon, show: false, title: 'Nozeli', alwaysOnTop: !!item.alwaysOnTop, webPreferences: this.preferences });
+    win.setMenu?.(null);win.setMenuBarVisibility?.(false);
     const r = this.register(win.webContents, { role: 'detached', projectId: layout.projectId, windowId: item.id, win });
     this.windows.set(item.id, r);
     this.setupWindow?.(r);
@@ -432,6 +434,14 @@ export class WorkspaceNative {
       return {};
     }
     if (op === 'workspace.control') {
+      if(p.type==='window-control'){
+        if(!['shell','detached','surface'].includes(r.role))throw fail('IPC_DENIED');
+        if(p.action==='minimize')r.win.minimize();
+        else if(p.action==='maximize'){if(r.win.isMaximized())r.win.unmaximize();else r.win.maximize();}
+        else if(p.action==='close')r.win.close();
+        else throw fail('INVALID_COMMAND');
+        return {};
+      }
       const layout = await this.layout(r.projectId);
       if(p.type==='focus-document-owner'){if(r.role==='surface'&&p.relPath!==r.relPath)throw fail('PROJECT_SCOPE_DENIED');const lease=this.leases.get(this.resource(r.projectId,p.relPath)),owner=lease&&this.surfaces.get(lease.viewId);if(!owner)throw fail('NO_ACTIVE_VIEW');const root=this.windows.get(owner.windowId);if(!root)throw fail('NO_ROOT');await this.command(root,{projectId:r.projectId,expectedRevision:layout.revision,requestKey:randomUUID(),command:{type:'activate',viewId:owner.viewId}});owner.win.show();owner.win.focus();owner.wc.focus();owner.wc.send('nozeli:workspace-control',{type:'focus-content'});return {};}
       if(p.type==='conversation-action'){
@@ -476,6 +486,7 @@ export class WorkspaceNative {
       if (p.viewId ? findView(layout,p.viewId)?.windowId !== r.windowId : !layoutGroups(layout,r.windowId).some(g => g.id === p.groupId)) throw fail('IPC_DENIED');
       const sessionId = randomUUID();
       this.drags.set(sessionId,{source:r,projectId:r.projectId,viewId:p.viewId,groupId:p.groupId,revision:layout.revision,topology:topology(layout),generation:r.generation,expires:Date.now()+30000});
+      const drag=this.drags.get(sessionId);drag.start={x:p.screenX,y:p.screenY,bounds:r.win.getBounds()};
       for(const surface of this.projectRecords(r.projectId))surface.view.setVisible(false);
       this.broadcast('nozeli:workspace-control',{type:'drag-session',sessionId,projectId:r.projectId},r.projectId); return {sessionId};
     }
@@ -502,6 +513,10 @@ export class WorkspaceNative {
     if (op === 'workspace.drag.cancel' || p.cancelled === true) return {};
     if (op !== 'workspace.drag.end' || p.cancelled !== false) throw fail('INVALID_DRAG');
     const target = d.target;
+    if(!target&&r.role==='detached'&&Number.isFinite(p.screenX)&&Number.isFinite(p.screenY)&&Number.isFinite(d.start.x)&&Number.isFinite(d.start.y)){
+      const b=d.start.bounds;r.win.setBounds(restoreBounds({...b,x:b.x+p.screenX-d.start.x,y:b.y+p.screenY-d.start.y},this.screen));
+      return {layout:await this.layout(r.projectId),windowId:r.windowId};
+    }
     const command = target ? d.groupId ? {type:'moveGroup',groupId:d.groupId,targetGroupId:target.groupId,axis:target.axis,side:target.side} : target.axis ? {type:'split',groupId:target.groupId,axis:target.axis,side:target.side,moveViewId:d.viewId} : {type:'move',viewId:d.viewId,targetGroupId:target.groupId,index:target.index} : {type:'detach',viewId:d.viewId,groupId:d.groupId};
     if(command.type==='move'&&Number.isInteger(command.index)){
       const source=findView(await this.layout(r.projectId),d.viewId);

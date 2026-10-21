@@ -45,7 +45,7 @@ function cleanup(layout,dropEmpty=false){
 }
 function closeView(layout,viewId){const view=layout.views[viewId];if(!view)invalid('已打开文件已变化。','LAYOUT_STALE');const found=findView(layout,viewId);layout.closedViews??=[];layout.closedViews.push({view:clone(view),groupId:found?.group.id});layout.closedViews=layout.closedViews.slice(-50);if(found)detachFromGroup(layout,viewId);delete layout.views[viewId];}
 export function validateLayout(layout){
- if(!layout||layout.schema!==2||!identity(layout.projectId)||!Number.isSafeInteger(layout.revision)||layout.revision<0||!Array.isArray(layout.detached)||layout.detached.length>32||!layout.views||typeof layout.views!=='object'||Array.isArray(layout.views)||!layout.maximized||typeof layout.maximized!=='object'||Array.isArray(layout.maximized))invalid('工作区布局记录无效。');
+ if(!layout||layout.schema!==2||!identity(layout.projectId)||!Number.isSafeInteger(layout.revision)||layout.revision<0||!Array.isArray(layout.detached)||!layout.views||typeof layout.views!=='object'||Array.isArray(layout.views)||!layout.maximized||typeof layout.maximized!=='object'||Array.isArray(layout.maximized))invalid('工作区布局记录无效。');
  if(Object.keys(layout.views).length>512||encoder.encode(JSON.stringify(layout)).byteLength>1024*1024)invalid('工作区布局超过容量限制。','LAYOUT_LIMIT');
  const nodes=new Set(),assigned=new Set(),windowIds=new Set(['main']);let conversation=0;
  for(const [viewId,view]of Object.entries(layout.views)){

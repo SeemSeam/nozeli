@@ -16,7 +16,6 @@ export function mountDocumentHeader() {
   const status = document.getElementById('save-status');
   const mode = document.getElementById('text-mode-toggle');
   const tools = header.querySelector('.desk-tools');
-  const more = panelButton('document-more'); tools.append(more);
   const secondaryRow = document.getElementById('secondary-pane').querySelector('.reader-bar');
   secondaryRow.insertBefore(document.getElementById('secondary-tools'),document.getElementById('secondary-close'));
   secondaryRow.append(panelButton('secondary-more'));
@@ -49,12 +48,13 @@ export function mountDocumentHeader() {
   viewCommands.id = 'document-view-commands'; viewCommands.hidden = true;
   viewCommands.append(document.getElementById('markdown-preview-toggle'), document.getElementById('markdown-sync'));
   document.body.append(viewCommands);
-  const workspaceTitle = document.createElement('span');
-  workspaceTitle.className = 'workspace-heading';
-  workspaceTitle.textContent = '工作区';
-  workspaceTitle.setAttribute('role', 'heading');
-  workspaceTitle.setAttribute('aria-level', '1');
-  header.insertBefore(workspaceTitle, tools);
+  // Native pane chrome owns the title and tools button. Its menu is rendered
+  // inside this content WebContents, anchored independently of hidden rows.
+  const contentToolsAnchor = document.createElement('span');
+  contentToolsAnchor.id = 'document-content-tools-anchor';
+  contentToolsAnchor.setAttribute('aria-hidden', 'true');
+  contentToolsAnchor.style.cssText = 'position:fixed;right:8px;top:0;width:1px;height:1px;visibility:hidden;pointer-events:none';
+  document.body.append(contentToolsAnchor);
   const definitions = [
     ['open-beside', 'layout', '在旁边打开文件'],
     ['toggle-focus', 'maximize', null],
@@ -68,7 +68,6 @@ export function mountDocumentHeader() {
   reader.classList.add('document-header-unified');
   function render() {
     const dual = documents.classList.contains('dual');
-    workspaceTitle.textContent = dual ? (documents.classList.contains('diff-mode') ? '文档对比' : '文档对照') : '工作区';
     reader.classList.toggle('document-dual', dual);
     const parent = dual ? bar : header;
     if(tools.parentElement!==parent)parent.append(tools);
@@ -94,8 +93,6 @@ export function mountDocumentHeader() {
       else header.insertBefore(metadata, tools);
     }
     metadata.hidden = close.hidden;
-    more.hidden = close.hidden;
-    more.disabled=status.dataset.state==='loading';
     if(parent.lastElementChild!==tools)parent.append(tools);
     const markdown=/\.(md|markdown)$/i.test(path.textContent);
     for(const node of fontMenu.querySelectorAll('[data-reading-width]'))node.hidden=!markdown;

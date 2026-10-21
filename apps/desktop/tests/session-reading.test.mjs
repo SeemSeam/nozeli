@@ -27,24 +27,6 @@ try{
  for(let i=0;i<150;i++){try{browser=await puppeteer.connect({browserURL:'http://127.0.0.1:'+port,defaultViewport:null});break;}catch{if(child.exitCode!==null)throw Error(log);await new Promise(resolve=>setTimeout(resolve,100));}}
  assert(browser,log);
  const target=await browser.waitForTarget(target=>target.type()==='page'&&target.url().endsWith('/index.html'));const page=await target.page();await page.waitForFunction(()=>window.reading);
- const boundaries=await page.evaluate(()=>{
-  const r=window.reading,root=document.querySelector('#fixture');
-  const terms=r.normalizeReadingTerms([' term ','term','x'.repeat(81),'',...Array.from({length:100},(_,i)=>'entry'+i)]);
-  r.renderTagMarkdown(root,'`term` **term** *term* [term](https://example.com) `term.md`\n\nterm term <img src=x onerror=alert(1)>',{filePaths:new Set(['term.md'])});
-  const before=root.textContent;
-  r.highlightReadingTerms(root,{enabled:true,terms:['term']});
-  const first=[root.querySelectorAll('mark').length,root.querySelector('mark')?.textContent,root.querySelector('mark')?.parentElement.tagName];
-  r.highlightReadingTerms(root,{enabled:true,terms:['term']});const idempotent=root.querySelectorAll('mark').length;
-  const excluded=document.createElement('div');excluded.innerHTML='<code>blocked</code><pre>blocked</pre><a>blocked</a><strong>blocked</strong><em>blocked</em><mark>blocked</mark><input value="blocked"><textarea>blocked</textarea><div contenteditable>blocked</div><div data-streaming="true">blocked</div><button class="conversation-file-link">blocked</button><p>blocked blocked</p>';root.append(excluded);
-  r.highlightReadingTerms(excluded,{enabled:true,terms:['blocked']});
-  const skip=[excluded.querySelectorAll('mark[data-session-term]').length,excluded.querySelector('mark[data-session-term]')?.parentElement.tagName];
-  r.highlightReadingTerms(root,{enabled:false,terms:['term','blocked']});const preserved=before===root.textContent.slice(0,before.length);
-  const stream=document.createElement('p');stream.textContent='term';r.highlightReadingTerms(stream,{enabled:true,terms:['term'],settled:false});
-  const storage=new Map(),adapter={getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value)};
-  r.saveReadingPreferences(adapter,'one',{enabled:true,terms:['term']});
-  return {terms:terms.length,first,idempotent,skip,preserved,unsafe:!!root.querySelector('img,script'),stream:stream.querySelectorAll('mark').length,one:r.loadReadingPreferences(adapter,'one'),two:r.loadReadingPreferences(adapter,'two'),unavailable:r.saveReadingPreferences(null,'one',{terms:[]})};
- });
- assert.equal(boundaries.terms,64);assert.deepEqual(boundaries.first.slice(0,2),[1,'term']);assert.equal(boundaries.idempotent,1);assert.deepEqual(boundaries.skip,[1,'P']);assert(boundaries.preserved);assert.equal(boundaries.unsafe,false);assert.equal(boundaries.stream,0);assert.deepEqual(boundaries.one,{enabled:true,terms:['term']});assert.deepEqual(boundaries.two,{enabled:false,terms:[]});assert.equal(boundaries.unavailable,false);
  const deferred=await page.evaluate(()=>{
   const root=document.querySelector('#fixture');root.textContent='selected term';const scheduler=window.reading.createReadingScheduler(root),node=root.firstChild,selection=getSelection(),range=document.createRange();range.selectNodeContents(node);selection.removeAllRanges();selection.addRange(range);
   scheduler.update(()=>root.textContent='changed');const same=root.firstChild===node&&selection.toString()==='selected term';selection.removeAllRanges();document.dispatchEvent(new Event('selectionchange'));const resumed=root.textContent==='changed';
@@ -52,24 +34,13 @@ try{
  });
  assert.deepEqual(deferred,{same:true,resumed:true,during:'changed',after:'latest'});
  await page.evaluate(()=>{document.querySelector('#fixture').replaceChildren();const r=window.reading;r.store.apply('reading-a',{version:1,entries:[{id:'m1',speaker:'agent',target:'frontdesk',source:'native',sequence:1,text:'Mercury Mercury'},{id:'m2',speaker:'agent',target:'frontdesk',source:'native',sequence:2,text:'Mercury Mercury'}],deltas:[]});});
- await page.waitForSelector('[data-message="m2"]');assert.equal(await page.$$eval('.session-term',nodes=>nodes.length),0);
- await page.click('.session-reading summary');await page.type('.session-reading textarea','Mercury');await page.$$eval('.session-reading button',nodes=>nodes.find(node=>node.textContent==='保存术语').click());await page.click('.session-reading input');await page.waitForFunction(()=>document.querySelectorAll('.session-term').length===2);
- assert.deepEqual(await page.$$eval('[data-message]',nodes=>nodes.map(node=>node.querySelectorAll('.session-term').length)),[1,1]);
- const mountedSelection=await page.evaluate(async()=>{
-  const body=document.querySelector('[data-message="m1"] .session-markdown'),node=body.firstChild,selection=getSelection(),range=document.createRange();range.selectNodeContents(body);selection.removeAllRanges();selection.addRange(range);document.querySelector('.session-reading input').click();await new Promise(resolve=>requestAnimationFrame(resolve));const preserved=body.firstChild===node&&selection.toString()==='Mercury Mercury';selection.removeAllRanges();document.dispatchEvent(new Event('selectionchange'));return preserved;
- });
- assert.equal(mountedSelection,true);await page.waitForFunction(()=>document.querySelectorAll('.session-term').length===0);
- await page.evaluate(async()=>{document.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));document.querySelector('.session-reading input').click();await new Promise(resolve=>requestAnimationFrame(resolve));});
- assert.equal(await page.$$eval('.session-term',nodes=>nodes.length),0);await page.evaluate(()=>document.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true})));await page.waitForFunction(()=>document.querySelectorAll('.session-term').length===2);
+ await page.waitForSelector('[data-message="m2"]');
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
- await page.evaluate(()=>window.reading.view.render({projectId:'reading-b'}));await page.waitForFunction(()=>document.querySelector('.session-reading textarea').value==='');assert.equal(await page.$$eval('.session-term',nodes=>nodes.length),0);
- await page.evaluate(()=>window.reading.view.render({projectId:'reading-a'}));await page.waitForFunction(()=>document.querySelectorAll('.session-term').length===2);
- await page.click('.session-reading summary');await page.$$eval('.session-reading button',nodes=>nodes.find(node=>node.textContent==='清除术语与高亮').click());await page.waitForFunction(()=>document.querySelectorAll('.session-term').length===0);
  await page.evaluate(()=>window.reading.store.apply('reading-a',{version:1,entries:[{id:'readable-user',speaker:'user',target:'frontdesk',sequence:3,text:'请围绕人的主体性重新设计README。',materialSources:[{annotationId:'tag-1',relPath:'README.md',location:'第16–21行',materialDigest:'frozen-origin',quote:'人可以以任何粒度介入工作。'}]}],deltas:[]}));
  await page.waitForSelector('[data-message="readable-user"]');
  assert.equal(await page.$eval('[data-message="readable-user"] .agent-message-body',node=>node.textContent.trim()),'请围绕人的主体性重新设计README。');
  assert.equal(await page.$eval('[data-message="readable-user"]',node=>node.textContent.includes('人可以以任何粒度介入工作。')),false);
  await page.click('[data-message="readable-user"] .session-tool summary');await page.waitForFunction(()=>document.querySelector('[data-message="readable-user"]').textContent.includes('人可以以任何粒度介入工作。'));
  assert(await page.$eval('[data-message="readable-user"]',node=>node.textContent.includes('README.md')&&node.textContent.includes('frozen-origin')));
- console.log('session reading: explicit project controls, safe first occurrence, selection / IME, persistence and narrow layout passed');
+ console.log('session Markdown: selection / IME protection, readable messages and frozen material sources passed');
 }finally{if(browser)await browser.close().catch(()=>{});if(child.exitCode===null){child.kill('SIGTERM');await Promise.race([exited,new Promise(resolve=>setTimeout(resolve,3000))]);if(child.exitCode===null)child.kill('SIGKILL');}await fs.rm(out,{recursive:true,force:true});}

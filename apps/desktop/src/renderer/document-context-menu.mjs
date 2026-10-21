@@ -64,7 +64,8 @@ export function documentCommands(s) {
   if(s.canMode)views.push({id:'text-mode',label:s.reading?'切换到编辑':'切换到阅读',checked:!s.reading});
   if(s.kind==='pdf'&&s.panel)views.push({id:'page-prev',label:'上一页',enabled:s.page>1},{id:'page-next',label:'下一页',enabled:!s.pages||s.page<s.pages},{id:'zoom-out',label:'缩小页面'},{id:'zoom-in',label:'放大页面'},...(!s.secondary?[{id:'pdf-outline',label:'PDF 目录',checked:s.outline},{id:'region',label:'区域框选',checked:s.region}]:[]));
   if(s.kind==='image'&&s.panel)views.push({id:'zoom-out',label:'缩小图片'},{id:'zoom-in',label:'放大图片'},{id:'region',label:'区域框选',checked:s.region});
-  if(s.kind==='word'&&s.panel)views.push({id:'fit',label:'适应窗口宽度'},{id:'actual',label:'原始比例 · 100%'},{id:'zoom-out',label:'缩小页面'},{id:'zoom-in',label:'放大页面'},{id:'region',label:'区域框选',checked:s.region});
+  if(s.kind==='word'&&s.panel)views.push({id:'fit',label:'适应窗口宽度',enabled:s.canZoom!==false},{id:'actual',label:'原始比例 · 100%',enabled:s.canZoom!==false},{id:'zoom-out',label:'缩小页面',enabled:s.canZoom!==false&&s.canZoomOut!==false},{id:'zoom-in',label:'放大页面',enabled:s.canZoom!==false&&s.canZoomIn!==false},{id:'region',label:'区域框选',checked:s.region,enabled:s.canRegion!==false});
+  if(s.kind==='ppt'&&s.panel&&s.canRegion)views.push({id:'region',label:'区域框选',checked:s.region});
   if(views.length)items.push({id:'view',label:'视图',children:views});
   if(s.canChangeComparison)items.push({id:'comparison',label:'对照',children:[{id:'comparison-change',label:'更换对照文件或历史版本…'},...(s.canDiff||s.diffVisible?[{id:'comparison-diff',label:'显示 Diff 差异',checked:s.diffVisible}]:[])]});
   if(s.preview?.kind==='tex'&&s.canLog)items.push({id:'tex-log',label:'编译诊断与日志',checked:s.logVisible});
@@ -115,7 +116,7 @@ export async function formatEditor({ adapter, projectId, relPath, current = () =
 // engines. Annotation actions belong only to the selection toolbar.
 export function mountDocumentContextMenu({ root, surfaceAt, run, hideQuickActions = () => {}, status = () => {} }) {
   let external = null, suppressed = false;
-  const shell = mountContextMenu({id:'document-context-menu',label:'文档操作',onOpen:()=>{suppressed=true;hideQuickActions();},onClose:()=>document.querySelectorAll('#document-more,#secondary-more,#diff-primary-more').forEach(button=>button.setAttribute('aria-expanded','false')),onError:status});
+  const shell = mountContextMenu({id:'document-context-menu',label:'文档操作',onOpen:()=>{suppressed=true;hideQuickActions();},onClose:()=>document.querySelectorAll('#secondary-more,#diff-primary-more,#document-content-tools-anchor').forEach(button=>button.setAttribute('aria-expanded','false')),onError:status});
   const close = (restore=false) => { shell.close(restore); const owner=external;external=null;owner?.close?.(); };
   const ignored = target => target.closest('.tag-window,.note-anchor,#note-form,.cm-panel,.find-widget,.suggest-widget') || (target.closest('input,textarea,button,a,[contenteditable="true"]') && !target.closest('.monaco-editor,.cm-content') && !target.closest('#text-preview a[href],#text-preview .conversation-file-link'));
   const prepare = (event, keyboard = false) => {
@@ -160,6 +161,22 @@ export function mountDocumentContextMenu({ root, surfaceAt, run, hideQuickAction
   for(const event of ['resize','nozeli-project-change','project-view-change'])window.addEventListener(event,onScroll);
   root.addEventListener('scroll',onScroll,true);
   return { close, openSurface,
+    async execute(command,target){
+      try{
+        const surface=target&&surfaceAt(target);
+        if(!surface)throw Error('当前文档没有可用的内容工具。');
+        const active=surface.snapshot();
+        const enabled=items=>items.some(item=>item.enabled!==false&&!item.separator&&(item.children?enabled(item.children):item.id===command));
+        if(typeof command!=='string'||!enabled(documentMoreCommands(active)))throw Error('当前文档不支持此操作，或操作暂不可用。');
+        if(!active.current())throw Error('文档已切换，未执行内容操作。');
+        const result=await run(command,active);
+        if(result?.ok===false)throw Error(result.error?.message||'内容操作未完成。');
+        return result??{ok:true};
+      }catch(error){
+        const message=error?.message||String(error);status(message);
+        return {ok:false,error:{message}};
+      }
+    },
     openMore(target,trigger){const surface=surfaceAt(target);if(!surface)return;close();const active=surface.snapshot();shell.open(documentMoreCommands(active),{...panelMenuPosition(trigger),run:command=>{if(active.current())return run(command,active);}});trigger.setAttribute('aria-expanded','true');},
     isOpen:()=>shell.isOpen()||Boolean(external), isSuppressed:()=>suppressed,
     resumeSelection(){close();suppressed=false;},

@@ -37,6 +37,8 @@ const MIME = {
   '.js': 'text/javascript; charset=utf-8',
   '.mjs': 'text/javascript; charset=utf-8',
   '.json': 'application/json',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
   '.wasm': 'application/wasm',
   '.bcmap': 'application/octet-stream',
   '.ttf': 'font/ttf',
@@ -159,6 +161,7 @@ async function createWindow(server) {
     width: 1440,
     height: 900,
     show: !HIDDEN,
+    frame: false,
     title: '选择项目',
     icon: path.join(APP_ROOT,'assets/nozeli.png'),
     backgroundColor: '#f3f4f0',
@@ -179,7 +182,7 @@ async function createWindow(server) {
     {label:'视图',submenu:[{label:'专注模式',accelerator:'CmdOrCtrl+Shift+F11',click:()=>menuAction('focus')},{id:'view.authorship',label:'显示修改者',type:'checkbox',checked:true,click:()=>menuAction('authorship-toggle')},{label:'当前文件修改记录…',click:()=>menuAction('authorship-history')},{role:'togglefullscreen',label:'全屏'}]},
     {label:'窗口',submenu:[{role:'minimize',label:'最小化'},{role:'zoom',label:'缩放窗口'}]},
   ]));
-  if(process.platform !== 'darwin'){win.setAutoHideMenuBar(true);win.setMenuBarVisibility(false);}
+  if(process.platform !== 'darwin'){win.setMenu(null);win.setMenuBarVisibility(false);}
   win.once('ready-to-show', () => revealWindow(win));
   const scope = workspaceNative.registerShell(win);
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -288,7 +291,7 @@ async function main() {
   const {ProjectWatcher}=await import('./project-watcher.mjs');
   projectWatcher=new ProjectWatcher({onChange:event=>workspaceNative?.broadcast('nozeli:workspace-control',{type:'file-tree-changed',...event},event.projectId),onError:error=>workspaceNative?.broadcast('nozeli:workspace-control',{type:'file-tree-watch-error',...error},error.projectId)});
   const address=server.address();origin=`http://127.0.0.1:${address.port}/`;
-  workspaceNative=new WorkspaceNative({BrowserWindow,WebContentsView,screen,origin,preload:path.join(APP_ROOT,'src/preload/preload.cjs'),userDataDir:app.getPath('userData'),host,hidden:HIDDEN,onClose:async r=>{const recovery=windowRecovery(r.win);if(recovery){recovery.requestClose();return;}await workspaceNative.flush([...workspaceNative.senders.values()]);if(agents?.busy()||managedAgents?.busy()){r.wc.send('nozeli:quit-confirm');return;}await managedAgents?.stop();await agents?.stopIdle?.();r.closing=true;for(const s of workspaceNative.projectRecords(r.projectId,r.windowId))workspaceNative.destroySurface(s);r.win.close();}});
+  workspaceNative=new WorkspaceNative({BrowserWindow,WebContentsView,screen,origin,preload:path.join(APP_ROOT,'src/preload/preload.cjs'),icon:path.join(APP_ROOT,'assets/nozeli.png'),userDataDir:app.getPath('userData'),host,hidden:HIDDEN,onClose:async r=>{const recovery=windowRecovery(r.win);if(recovery){recovery.requestClose();return;}await workspaceNative.flush([...workspaceNative.senders.values()]);if(agents?.busy()||managedAgents?.busy()){r.wc.send('nozeli:quit-confirm');return;}await managedAgents?.stop();await agents?.stopIdle?.();r.closing=true;for(const s of workspaceNative.projectRecords(r.projectId,r.windowId))workspaceNative.destroySurface(s);r.win.close();}});
   workspaceNative.restoreShell=()=>createWindow(server);
   workspaceNative.setupWindow=r=>{
     const recovery=new WindowRecovery(r.win,{dialog,settle:async()=>{await workspaceNative.flush([...workspaceNative.surfaces.values()]);await host.settled();},busy:()=>agents?.busy()||managedAgents?.busy(),stop:async()=>{await managedAgents?.stop();await agents?.stopIdle?.();},reveal:()=>revealWindow(r.win),onClose:()=>{allowClose=true;quitting=true;for(const s of [...workspaceNative.surfaces.values()])workspaceNative.destroySurface(s);for(const w of workspaceNative.windows.values()){w.closing=true;w.win.close();}}});

@@ -18,6 +18,12 @@ test('menus reflect editable, read-only, PDF and supported formatter capabilitie
   }
   assert.ok(ids({kind:'pdf',reading:true,canAnnotate:true}).includes('pageReference'));
 });
+test('PPT region and export tools remain available only to an eligible document owner',()=>{
+ const owner=ids({kind:'ppt',panel:true,projectId:'p',canRegion:true,canExport:true});
+ assert(owner.includes('region'));assert(owner.includes('exportPpt'));
+ const mirror=ids({kind:'ppt',panel:true,projectId:'p',canRegion:false,canExport:false});
+ assert(!mirror.includes('region'));assert(!mirror.includes('exportPpt'));
+});
 test('folding commands require a code surface with a folding-capable editor', () => {
   for (const editable of [true, false]) {
     const commands = documentCommands({kind:'text', code:true, canFold:true, editable, relPath:'a.cpp'});

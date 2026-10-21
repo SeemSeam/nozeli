@@ -100,3 +100,10 @@ test('loading a named arrangement preserves reopened resource identities, naviga
   assert.deepEqual(Object.values(restored.views).filter(view=>view.kind==='conversation').map(view=>view.id),[conversation.id]);
   assert.deepEqual(current,before,'loading cannot mutate the previous layout while committing a replacement');
 });
+
+test('frontdesk context clear is limited to shell or same-project conversation surface',async t=>{
+ const {native,root}=await fixture(t),op='managed.frontdesk.context.clear',event=r=>({sender:r.wc,senderFrame:r.wc.mainFrame});
+ assert.equal(native.authorize(event(root),op,{projectId:'p'}),root);
+ const conversation=native.register(new Contents(),{role:'surface',projectId:'p',viewId:'conversation',windowId:'main',kind:'conversation'});assert.equal(native.authorize(event(conversation),op,{projectId:'p'}),conversation);
+ const document=native.register(new Contents(),{role:'surface',projectId:'p',viewId:'document',windowId:'main',kind:'document',relPath:'a.txt'});assert.throws(()=>native.authorize(event(document),op,{projectId:'p'}),{code:'CONVERSATION_OWNER_REQUIRED'});assert.throws(()=>native.authorize(event(conversation),op,{projectId:'foreign'}),{code:'PROJECT_SCOPE_DENIED'});
+});

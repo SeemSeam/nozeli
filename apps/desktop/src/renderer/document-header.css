@@ -1,8 +1,6 @@
 #reader.document-header-unified > .desk-header { flex-wrap:nowrap;min-width:0;min-height:44px;gap:8px;padding:6px 12px; }
 #reader.document-header-unified:not(.document-dual) #reader-bar { display:none; }
-#reader.document-header-unified .workspace-heading { display:none; }
 #reader.document-dual > .desk-header #subject-title { display:none; }
-#reader.document-dual > .desk-header .workspace-heading { display:block;flex:1;min-width:0;font-size:14px;font-weight:500; }
 #reader.document-header-unified > .desk-header #subject-title { flex:1;min-width:24px;margin:0;font-size:14px; }
 .document-meta { display:flex;align-items:center;flex:0 0 auto;gap:8px;min-width:0; }
 #reader.document-header-unified .document-meta #save-status { flex:0 1 auto;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px; }

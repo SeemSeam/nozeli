@@ -3,7 +3,7 @@ import {createRoot} from 'react-dom/client';
 import {renderTagMarkdown} from './tag-markdown.mjs';
 import {createFileIcon} from './file-icons.mjs';
 import {groupSession,followTranscriptTail,updateTranscriptTailLock} from './session-store.mjs';
-import {SessionReading,useReadingMarkdown} from './session-reading.mjs';
+import {useReadingMarkdown} from './session-reading.mjs';
 import './session-timeline.css';
 const h=React.createElement;
 const Markdown=memo(function Markdown({text,context,settled=false}){
@@ -108,4 +108,4 @@ function Timeline({store,state,context,call,openFrozenChange,projectId,onTask,on
  return h('div',{ref,className:'session-timeline','data-session-version':'1'},h('nav',{'aria-label':'会话历史'},historyPage&&h('button',{type:'button',onClick:onLatest},'返回最新消息'),snapshot.hasMore&&h('button',{type:'button',onClick:()=>onPage(snapshot.nextCursor)},'读取更早一页'),pageError&&h('p',{role:'alert'},pageError)),
   !rows.length&&h('p',{className:'session-empty'},'会话记录将在这里显示。输入和材料不会自动发送。'),rows.map(row=>row.kind==='worker'?h(Worker,{key:row.id,row,state,context,call,openFrozenChange,projectId}):row.kind==='reply'?h(Reply,{key:row.id,row,context,onTask,call}):row.kind==='delta'?h('article',{key:row.id,className:'session-host-delta','data-host-delta':row.delta.id},h('strong',null,'Nozeli · '+row.delta.kind),h(Content,{value:row.delta.text,context})):h(Message,{key:row.id,entry:row.entry,context,onTask,call})));
 }
-export function mountSessionTimeline(container,props){const root=createRoot(container);return {render(next){const merged={...props,...next};root.render(h(SessionReading,{projectId:merged.projectId,key:merged.projectId},h(Timeline,merged)));},destroy(){root.unmount();}};}
+export function mountSessionTimeline(container,props){const root=createRoot(container);return {render(next){const merged={...props,...next};root.render(h(Timeline,{...merged,key:merged.projectId}));},destroy(){root.unmount();}};}

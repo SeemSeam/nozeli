@@ -115,7 +115,7 @@ function enqueue(action, freeze = false) {
   function renderUnlocatedTags() {
     let panel = $('unlocated-tags');
     if (!panel) { panel = document.createElement('details'); panel.id = 'unlocated-tags'; $('reader-scroll').prepend(panel); }
-    const notes = (ui.annotations || []).filter(note => !note.projection?.removed && (!['word-selection','word-region'].includes(note.kind)||note.projection) && !note.resolution?.anchor);
+    const notes = (ui.annotations || []).filter(note => !note.projection?.removed && !ui.threads.get(note.id)?.removed && (!['word-selection','word-region'].includes(note.kind)||note.projection) && !note.resolution?.anchor);
     panel.hidden = !notes.length; panel.replaceChildren();
     const summary = document.createElement('summary'); summary.textContent = `${notes.length} 个标签待定位（原文和备注已保留）`; panel.append(summary);
     for (const note of notes) {
@@ -1376,13 +1376,14 @@ async function renderRecent() {
   }
   window.dispatchEvent(new Event('nozeli-project-change'));
   ui.project = opened.value.project;
+  refreshConversationLauncher();
   ui.file = null;
   openFilesState={paths:[],active:null,dirty:false,collapsed:false};
   closeBeside();
   destroySurface();
   $('project-name').textContent = ui.project.name;
   $('project-name').title = ui.project.root || ui.project.name;
-  document.title = isSurface ? (workspaceScope.relPath || (isConversation?'对话':'工作区')) : '工作区';
+  document.title = isSurface ? (workspaceScope.relPath || (isConversation?'对话':'工作区')) : ui.project.name+' — Nozeli';
   $('file-path').textContent = '选择文件开始阅读';
   renderEmptyState();
   $('context-bar').textContent = ui.project.name + ' · 项目对话';
@@ -1741,6 +1742,7 @@ const tagActions = {
     discussionDrafts.delete(tag.projectId,id);
     if (ui.initialTagId === id) { ui.initialTagId = null; ui.initialTagSurface = null; }
     projectTags();
+    renderUnlocatedTags();
   },
   onOpen: (id, open) => { const tag = ui.threads.get(id); if (tag) { tag.open = open; persistTag(tag); } },
   onDraft: (id, text) => {
@@ -2005,11 +2007,13 @@ const documentMenu = mountDocumentContextMenu({
         return { kind: ['legacy-word','unsupported'].includes(file.kind)?'unsupported':file.kind, secondary, reading, editable: file.kind==='text'&&!secondary&&!reading&&!isDocumentMirror, code: Boolean(languageIdForPath(file.relPath)), selected,
           relPath: file.relPath, buildId:file.buildId, projectId, adapter, editor, element, current, selection, text,link:element.id==='text-preview'?target.closest('a[href],.conversation-file-link'):null,
           panel:true,generated:file.generated,fontSize:file.kind==='text'?workspace.snapshot().fontSize:null,
+          canZoom:!['word','ppt','sheet'].includes(file.kind)||typeof ui.word?.zoom==='function',
+          canZoomOut:file.kind!=='word'||!$('word-zoom-out').disabled,canZoomIn:file.kind!=='word'||!$('word-zoom-in').disabled,
           canOpenBeside:!secondary&&['text','pdf','image'].includes(file.kind),
           readingWidth:file.kind==='text'&&isMarkdownPath(file.relPath)?workspace.snapshot().readingWidth:null,
           canMode:!secondary&&file.kind==='text'&&!isCodePath(file.relPath)&&!/\.tex$/i.test(file.relPath),
-          region:$(file.kind==='image'?'image-region':file.kind==='word'?'word-region':'pdf-region').getAttribute('aria-pressed')==='true',
-          outline:$('pdf-outline-toggle').getAttribute('aria-expanded')==='true',canExport:file.kind==='ppt',
+          region:$(file.kind==='image'?'image-region':['word','ppt'].includes(file.kind)?'word-region':'pdf-region').getAttribute('aria-pressed')==='true',canRegion:!isDocumentMirror&&!secondary&&(!['word','ppt'].includes(file.kind)||typeof ui.word?.region==='function'),
+          outline:$('pdf-outline-toggle').getAttribute('aria-expanded')==='true',canExport:file.kind==='ppt'&&!isDocumentMirror,
           canLog:!$('tex-diagnostics').hidden,logVisible:$('tex-diagnostics').open,
           canChangeComparison:secondary&&!beside.tex&&Boolean(beside.file),canDiff:secondary&&ui.file?.kind==='text'&&file.kind==='text',diffVisible:Boolean(beside.diff),
           texOptions:!$('tex-toolbar').hidden&&(!secondary||beside.tex)?{roots:Array.from($('tex-root').options,n=>n.value).filter(Boolean),root:$('tex-root').value,engines:Array.from($('tex-engine').options,n=>n.value).filter(Boolean),engine:$('tex-engine').value,building:!$('tex-cancel').hidden}:null,
@@ -2052,7 +2056,7 @@ const documentMenu = mountDocumentContextMenu({
       control.dispatchEvent(new Event('change'));return;
     }
     if(command==='pdf-outline')return $('pdf-outline-toggle').click();
-    if(command==='region')return $(s.kind==='image'?'image-region':s.kind==='word'?'word-region':'pdf-region').click();
+    if(command==='region')return $(s.kind==='image'?'image-region':['word','ppt'].includes(s.kind)?'word-region':'pdf-region').click();
     if(command==='zoom-in'||command==='zoom-out')return $(s.secondary?'secondary-zoom-'+(command==='zoom-in'?'in':'out'):s.kind==='image'?'image-'+(command==='zoom-in'?'in':'out'):s.kind==='word'?'word-'+command:'pdf-'+command).click();
     if(command==='page-prev'||command==='page-next')return $(s.secondary?'secondary-'+(command==='page-prev'?'prev':'next'):'pdf-'+(command==='page-prev'?'prev':'next')).click();
     if(command==='authorship-toggle')return authorship.toggle();
@@ -2071,7 +2075,23 @@ const documentMenu = mountDocumentContextMenu({
     if(command==='imageInfo')return workspace.toast($('image-size').textContent+' · '+s.relPath);
     if(command==='wordWrap')return s.adapter?.command('wordWrap');
     if(command==='foldAll'||command==='unfoldAll')return s.adapter?.[command]();
-    if(command==='page')return $('pdf-page').focus();
+    if(command==='page') {
+      let dialog=$('document-page-dialog');
+      if(!dialog){
+        dialog=document.createElement('dialog');dialog.id='document-page-dialog';
+        dialog.innerHTML='<form><label>跳转到 PDF 页面 <input name="page" aria-label="PDF 页码" type="number" min="1" required></label><button type="submit">跳转</button><button type="button">取消</button></form>';
+        document.body.append(dialog);
+        dialog.querySelector('button[type="button"]').onclick=()=>dialog.close();
+      }
+      const input=dialog.querySelector('input');input.value=String(s.page);
+      if(s.pages)input.max=String(s.pages);else input.removeAttribute('max');
+      dialog.querySelector('form').onsubmit=event=>{
+        event.preventDefault();if(!s.current()){dialog.close();return;}
+        const page=Number(input.value);dialog.close();
+        enqueue(async()=>{if(s.current())await (s.secondary?beside.pdf:ui.pdf)?.go(page);});
+      };
+      dialog.showModal();input.focus();input.select();return;
+    }
     const adapter = s.adapter;
     const stillSame = () => s.current() && (!adapter || (adapter.getText() === s.text && adapter.getSelection().anchor===s.selection.anchor && adapter.getSelection().head===s.selection.head));
     const clipboard = async (action, text) => { const result = await invoke('document.clipboard', { action, text }); if (!result.ok) throw new Error(result.error.message); return result.value; };
@@ -2098,7 +2118,10 @@ const documentMenu = mountDocumentContextMenu({
 
 // Header menus inspect the current surface without moving its live caret.
 function primaryMenuTarget(){return [$('text-host'),$('text-preview'),$('pdf-host'),$('image-host'),$('word-host'),$('unsupported')].find(node=>!node.hidden);}
-$('document-more').addEventListener('click',()=>{const target=primaryMenuTarget();if(target)documentMenu.openMore(target,$('document-more'));});
+function openContentTools() {
+  const target=beside.diff?.merge.a.dom||primaryMenuTarget();
+  if(target)documentMenu.openMore(target,$('document-content-tools-anchor'));
+}
 $('secondary-more').addEventListener('click',()=>{const target=beside.diff?.merge.b.dom||(beside.pdf?$('secondary-pdf'):$('secondary-text'));documentMenu.openMore(target,$('secondary-more'));});
 // A driver can notify the host asynchronously after its own menu is visible.
 // Close the current native menu directly when any host menu takes ownership.
@@ -2276,6 +2299,8 @@ async function openBesideSnapshot(file, diff=false) {
   window.nozeli.subscribe('document.release',requestId=>{ui.documentHolds.delete(requestId);$('text-host').inert=ui.documentHolds.size>0;});
   window.nozeli.subscribe('workspace.control', event => {
     if(event.type === 'document-buffer') { applyMirrorBuffer(event); return; }
+    if(event.type==='content-tools'&&isSurface&&!isConversation&&event.projectId===workspaceScope.projectId&&event.viewId===workspaceScope.viewId){openContentTools();return;}
+    if(event.type==='content-command'&&isSurface&&!isConversation&&event.projectId===workspaceScope.projectId&&event.viewId===workspaceScope.viewId){void documentMenu.execute(event.command,beside.diff?.merge.a.dom||primaryMenuTarget());return;}
     if(event.type==='focus-content'&&isSurface){if(isConversation)$('composer').focus();else if(ui.editor)ui.editor.adapter.focus();else{$('reader-scroll').tabIndex=-1;$('reader-scroll').focus();}}
     if(event.type==='settings'&&event.projectId===ui.project?.id){
       workspace.inheritSettings(event.workspace);
@@ -2372,6 +2397,9 @@ async function openBesideSnapshot(file, diff=false) {
     openProjectFile:target=>target.projectId===ui.project?.id?openMarkdownTarget(target):null,
     openExternal:url=>invoke('links.openExternal',{url}).then(result=>{if(!result.ok)workspace.toast(result.error.message);}),
   });
+  function refreshConversationLauncher(){const button=$('workspace-open-conversation');button.disabled=!ui.project?.id;button.title=ui.project?.id?'打开当前项目对话':'请先打开项目';}
+  refreshConversationLauncher();
+  $('workspace-open-conversation').addEventListener('click',async()=>{const projectId=ui.project?.id;if(!projectId)return;const button=$('workspace-open-conversation');button.disabled=true;try{const result=await invoke('workspace.control',{type:'conversation-action',projectId,action:'select',target:'frontdesk'});if(!result.ok)workspace.toast(result.error.message);}catch(error){workspace.toast(error.message);}finally{refreshConversationLauncher();}});
       let openingExternal=false, externalAgain=false;
       async function drainExternalOpen(){
         if(!window.__nozeliReady)return;
