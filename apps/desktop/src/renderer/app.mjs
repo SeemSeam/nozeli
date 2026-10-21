@@ -1374,6 +1374,7 @@ async function renderRecent() {
     setStatus('error', opened.error.message);
     return;
   }
+  if (!isSurface) await workspaceGroups.bindProject(projectId);
   window.dispatchEvent(new Event('nozeli-project-change'));
   ui.project = opened.value.project;
   refreshConversationLauncher();
@@ -1406,8 +1407,7 @@ async function renderRecent() {
   window.__composerMaterials?.setProject(projectId);
   window.__composerMaterials?.restore(isSurface?workspaceScope.viewState?.composerMaterials:state.value.state?.composerMaterials);
   showRetained(state.value.state?.workspace);
-  if (!isSurface) await workspaceGroups.bindProject(projectId);
-  else if (workspaceScope.relPath) await openFileNow(workspaceScope.relPath, workspaceScope.viewState || state.value.files?.[workspaceScope.relPath]);
+  if (isSurface && workspaceScope.relPath) await openFileNow(workspaceScope.relPath, workspaceScope.viewState || state.value.files?.[workspaceScope.relPath]);
   else renderEmptyState();
   await window.__agentProject?.(ui.project.id, {draft:isConversation?(workspaceScope.viewState?.workspace?.draft??state.value.state?.workspace?.draft??''):''});
 }
