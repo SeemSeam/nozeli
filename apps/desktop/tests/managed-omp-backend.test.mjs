@@ -189,6 +189,20 @@ test('recovery gates: never-dispatched green, cancelled-after-prompt red, unknow
     assert.equal(ompSessions.filter(s => s.starts.includes(null)).length, 1, 'exactly one fresh OMP session (restart only)');
   }
 
+  for(const threadId of ['older-completed-thread','omp-old',null]){
+    const {c,created}=await makeCtrl([],{});
+    const historical={id:randomUUID(),key:randomUUID(),target:'frontdesk',type:'front',text:'historical input must never replay',context:{},status:'completed',promptStartedAt:123,threadId,at:new Date().toISOString()};
+    await c.store.mutate(()=>{c.store.state.residents.frontdesk={threadId:'omp-old',provider:'omp',toolsDigest:'fixture-omp-digest',zeroActivity:true};c.store.state.jobs.push(historical);c.store.state.drafts.frontdesk='unsent draft';});
+    await c.sessions.get('frontdesk').stop();c.sessions.delete('frontdesk');
+    const before=created.length;
+    if(threadId==='older-completed-thread'){
+      const restored=await c.session('frontdesk');assert.notEqual(restored.threadId,'omp-old');
+      assert.equal(created.slice(before).filter(s=>s.starts.includes(null)).length,1);
+    }else await assert.rejects(c.session('frontdesk'),/OMP_SESSION_FILE_NOT_FOUND/);
+    assert.deepEqual(c.store.state.jobs.find(j=>j.id===historical.id),historical);
+    assert.equal(c.store.state.drafts.frontdesk,'unsent draft');
+  }
+
   // (b) 已派工后 cancel + zeroActivity 旧 true + 缺文件 → 红（不得当空会话）
   {
     const { c, created } = await makeCtrl([{ id: 'j1', target: 'frontdesk', type: 'front', status: 'cancelled', promptStartedAt: 123, text: 'x', context: {}, at: new Date().toISOString() }], {});

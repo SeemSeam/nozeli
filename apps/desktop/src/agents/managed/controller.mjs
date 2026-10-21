@@ -866,7 +866,7 @@ export class Controller extends EventEmitter {
     }
       try{await session.start(resumeId);}catch(error){
         // 已派工/已发 prompt 的历史不可当空会话：promptStartedAt!=null 即有历史（含 cancelled——取消不消除已发 prompt/副作用）。
-        const attempted=this.store.state.jobs.some(j=>j.target===target&&j.promptStartedAt!==null);
+        const attempted=this.store.state.jobs.some(j=>j.target===target&&j.promptStartedAt!==null&&(!j.threadId||j.threadId===resumeId));
         if(provider==='omp'){
           // OMP 零活动恢复缺失：仅可证明从未 admitted（promptStartedAt 全空 + durable zeroActivity）时允许显式新代次；
           // 不伪造文件/不重放；新建 OMP 实例（不用 Codex），恢复后走同一持久化路径。
