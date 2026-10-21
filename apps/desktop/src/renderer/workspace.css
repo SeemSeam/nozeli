@@ -391,3 +391,4 @@ html[data-workspace-role="surface"]:is([data-workspace-kind="document"],[data-wo
 html[data-workspace-role="surface"] #focus-exit{position:fixed}
 html[data-workspace-role="surface"]:not([data-workspace-kind="conversation"]) #reader>.desk-header,
 html[data-workspace-role="surface"] #primary-pane>#reader-bar{display:none!important}
+html[data-workspace-role="surface"][data-workspace-kind="conversation"] #app>#provider-console:not([hidden]){display:flex!important;position:fixed;inset:0;width:100%;height:100%;z-index:1300}

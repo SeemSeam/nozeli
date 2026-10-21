@@ -29,6 +29,7 @@ export function mountConversationControls({close}) {
   ];
   function commands() {
     const entries = actions.filter(item => item.command.type !== 'dock' || detached()).map(({id,label}) => ({id,label}));
+    entries.push({id:'chat-agent-terminal',label:'打开 Agent 终端'});
     if (detached()) entries.push(...windowActions.map(({id,label}) => ({id,label})));
     const history = document.getElementById('chat-history-toggle');
     if (history) entries.push({id:'chat-history-toggle',label:header.closest('.compact-composer')?'展开对话历史':'收起对话历史',enabled:!history.disabled});
@@ -37,6 +38,7 @@ export function mountConversationControls({close}) {
     return entries;
   }
   async function run(id) {
+    if(id==='chat-agent-terminal'){window.__setProjectView?.('terminal');return;}
     if(id==='chat-window-close')return run('chat-workspace-close');
     if (id === 'chat-clear-frontdesk-context' || id === 'chat-history-toggle') {
       const button = document.getElementById(id);
