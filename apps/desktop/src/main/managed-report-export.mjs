@@ -3,7 +3,7 @@ import {HostError} from './host.mjs';
 import {managedReportSource} from '../agents/managed-report-source.mjs';
 
 // Reports remain external immutable objects. Export only creates a separate
-// Markdown file at the registered project root; never accepts renderer text.
+// format-matched file at the registered project root; never accepts renderer text.
 export class ManagedReportExporter {
   constructor({host, managedAgents, beforeOperation}) {
     Object.assign(this, {host, managedAgents, beforeOperation});
@@ -19,9 +19,9 @@ export class ManagedReportExporter {
       throw new HostError('INVALID_PAYLOAD', '报告身份无效。');
     // Portable basename only. No internal metadata paths, device names or ADS.
     if (typeof relPath !== 'string' || Buffer.byteLength(relPath) > 200 ||
-        !/^[^\x00-\x1f\x7f/\\:*?"<>|. ][^\x00-\x1f\x7f/\\:*?"<>|]*\.md$/i.test(relPath) ||
-        /[. ]\.md$/i.test(relPath) || /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(relPath))
-      throw new HostError('BAD_PATH', '请输入项目根目录中的 Markdown 文件名，例如：阅读报告.md。');
+        !/^[^\x00-\x1f\x7f/\\:*?"<>|. ][^\x00-\x1f\x7f/\\:*?"<>|]*\.(?:md|html)$/i.test(relPath) ||
+        /[. ]\.(?:md|html)$/i.test(relPath) || /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(relPath))
+      throw new HostError('BAD_PATH', '请输入项目根目录中的报告文件名（.html 或 .md）。');
     const project = await this.host.requireProject(projectId);
     // Production uses the registered runtime capability. Small injected live
     // adapters retain their controller source; errors never trigger fallback.
@@ -33,6 +33,9 @@ export class ManagedReportExporter {
           throw new HostError('REPORT_MISSING', '当前项目没有这份历史报告，未另存。');
         return managedReportSource({project, runtime:controller.store.root, objectId, controller});
       })();
+    const extension = report.report.format === 'html-static' ? '.html' : report.report.format === 'markdown' ? '.md' : null;
+    if (!extension || !relPath.toLowerCase().endsWith(extension))
+      throw new HostError('BAD_PATH', `这份报告只能另存为 ${extension || '受支持格式'} 文件。`);
     const readReport = () => report.read();
     const check = async () => {
       const current = await this.host.requireProject(projectId);

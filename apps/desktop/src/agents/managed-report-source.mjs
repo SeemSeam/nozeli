@@ -3,8 +3,10 @@ import {constants} from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {HostError} from '../main/host.mjs';
+import {decodeReportState,validReportDescriptor,reportExtension} from './managed/report-descriptor.mjs';
+import {HTML_REPORT_OBJECT_MAX_BYTES} from './managed/html-report.mjs';
 
-const REPORT_LIMIT=8*1024*1024,STATE_LIMIT=32*1024*1024;
+const REPORT_LIMIT=HTML_REPORT_OBJECT_MAX_BYTES,STATE_LIMIT=32*1024*1024;
 const fail=(code,message)=>new HostError(code,message+'，未另存。');
 const unavailable=()=>fail('REPORT_UNAVAILABLE','报告来源缺失、过大或不是安全的普通文件');
 const invalid=()=>fail('REPORT_INVALID','历史报告快照损坏或不属于当前项目');
@@ -60,8 +62,8 @@ function receiptFor(state,project,objectId) {
   if(rows.length!==1)throw invalid();
   const row=rows[0],works=state.works.filter(work=>work?.id===row.workId);
   if(works.length!==1||!Number.isInteger(works[0].revision)||!Number.isInteger(row.revision)||row.revision<1||row.revision>works[0].revision||
-     typeof row.id!=='string'||!['result','problem'].includes(row.kind)||typeof row.text!=='string'||Buffer.byteLength(row.text)>REPORT_LIMIT)throw invalid();
-  if(row.snapshot?.reportDigest&&row.snapshot.reportDigest!==createHash('sha256').update(row.text).digest('hex'))throw invalid();
+     typeof row.id!=='string'||!['result','problem'].includes(row.kind)||!validReportDescriptor(row.report)||row.report.objectId!==objectId)throw invalid();
+  if(row.snapshot?.reportDigest&&row.snapshot.reportDigest!==row.report.digest)throw invalid();
   return row;
 }
 
@@ -71,17 +73,19 @@ export async function managedReportSource({project,runtime,objectId,controller,c
   let snapshot,offlineState;
   if(!controller) {
     snapshot=await readRegular(path.join(runtime,'state.json'),STATE_LIMIT);
-    try{offlineState=JSON.parse(snapshot.toString('utf8'));}catch{throw invalid();}
+    try{offlineState=decodeReportState(JSON.parse(snapshot.toString('utf8')));}catch{throw invalid();}
   }
-  const state=()=>controller?controller.store?.state:offlineState;
+  const state=()=>{
+    try{return controller?decodeReportState(controller.store?.state):offlineState;}catch{throw invalid();}
+  };
   const checkRoot=()=>{
     if(controller&&(typeof controller.store?.root!=='string'||path.resolve(controller.store.root)!==path.resolve(runtime)))throw invalid();
   };
   checkRoot();
-  const receipt=receiptFor(state(),project,objectId),text=receipt.text;
-  const identity=row=>JSON.stringify([row.id,row.workId,row.revision,row.kind,row.text]);
+  const receipt=receiptFor(state(),project,objectId),report=Object.freeze(structuredClone(receipt.report));
+  const identity=row=>JSON.stringify([row.id,row.workId,row.revision,row.kind,row.report]);
   const frozenIdentity=identity(receipt);
-  return {mode:controller?'active':'offline',objectId,read:async()=>{
+  const source={mode:controller?'active':'offline',objectId,report,read:async()=>{
     if(currentController()!==controller)throw changed();
     if(!controller) {
       const current=await readRegular(path.join(runtime,'state.json'),STATE_LIMIT);
@@ -89,10 +93,24 @@ export async function managedReportSource({project,runtime,objectId,controller,c
     }
     checkRoot();
     if(identity(receiptFor(state(),project,objectId))!==frozenIdentity)throw changed();
-    const bytes=await readRegular(path.join(runtime,'objects',objectId+'.md'),REPORT_LIMIT);
-    if(!bytes.equals(Buffer.from(text,'utf8'))||currentController()!==controller)throw changed();
+    const bytes=await readRegular(path.join(runtime,'objects',objectId+reportExtension(report)),REPORT_LIMIT);
+    if(bytes.length!==report.byteLength||createHash('sha256').update(bytes).digest('hex')!==report.digest||currentController()!==controller)throw changed();
     return bytes;
+  },readManifest:async()=>{
+    await source.read();
+    if(report.manifestDigest===null)return {version:1,assets:[],references:[]};
+    const bytes=await readRegular(path.join(runtime,'objects',objectId+'.manifest.json'),REPORT_LIMIT);
+    if(createHash('sha256').update(bytes).digest('hex')!==report.manifestDigest)throw changed();
+    let manifest;try{manifest=JSON.parse(bytes.toString('utf8'));}catch{throw invalid();}
+    await source.read();return manifest;
+  },readReference:async id=>{
+    const manifest=await source.readManifest(),ref=manifest.references.find(r=>String(r.id)===String(id));
+    if(!ref)throw invalid();if(ref.kind==='external')return {kind:'external',url:ref.url};
+    const result=await managedArtifact({project,runtime,controller,currentController},{objectId,relPath:ref.relPath});
+    if(result.digest!==ref.digest||result.size!==ref.byteLength)throw changed();
+    return {...ref,bytes:Buffer.from(result.base64,'base64')};
   }};
+  return source;
 }
 
 const OBJECT_ID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -128,7 +146,7 @@ async function historySnapshot({project,runtime,controller,currentController}) {
     }
     bytes=await readRegular(path.join(runtime,'state.json'),STATE_LIMIT);
   }
-  try {state=JSON.parse(bytes.toString('utf8'));}catch{throw invalid();}
+  try {state=decodeReportState(JSON.parse(bytes.toString('utf8')));}catch{throw invalid();}
   if(!state||state.schema!==2||state.contentRoot!==project.root||
      !Array.isArray(state.works)||!Array.isArray(state.todos)||!Array.isArray(state.receipts)||
      !Array.isArray(state.memoryPending)||!Number.isInteger(state.limit)||state.limit<1||typeof state.workspaceId!=='string')throw invalid();
@@ -141,9 +159,9 @@ async function historySnapshot({project,runtime,controller,currentController}) {
     const work=works.get(row?.workId);
     if(!row||typeof row.objectId!=='string'||!OBJECT_ID.test(row.objectId)||objects.has(row.objectId)||typeof row.id!=='string'||receipts.has(row.id)||
        !work||!Number.isInteger(row.revision)||row.revision<1||row.revision>work.revision||
-       !['result','problem'].includes(row.kind)||typeof row.text!=='string'||Buffer.byteLength(row.text)>REPORT_LIMIT||
+       !['result','problem'].includes(row.kind)||!validReportDescriptor(row.report)||row.report.objectId!==row.objectId||
        typeof row.at!=='string'||row.at.length>64||!Number.isFinite(Date.parse(row.at)))throw invalid();
-    if(row.snapshot?.reportDigest&&row.snapshot.reportDigest!==createHash('sha256').update(row.text).digest('hex'))throw invalid();
+    if(row.snapshot?.reportDigest&&row.snapshot.reportDigest!==row.report.digest)throw invalid();
     objects.add(row.objectId);receipts.add(row.id);
   }
   if(currentController()!==controller)throw changed();
@@ -164,13 +182,13 @@ export async function managedHistory(options,{objectId,version,offset=0,limit=50
     const source=await managedReportSource({...options,objectId});
     const bytes=await source.read();
     if((await historySnapshot(options)).version!==snapshot.version)throw changed();
-    return {projectId:options.project.id,objectId,mode,version:snapshot.version,text:bytes.toString('utf8'),byteLength:bytes.length,objectVerified:true};
+    return {projectId:options.project.id,objectId,mode,version:snapshot.version,report:source.report,byteLength:bytes.length,objectVerified:true,...(source.report.format==='markdown'?{bodyAvailability:'inline',body:bytes.toString('utf8')}:{bodyAvailability:'isolated-source-only'})};
   }
   const rows=[...(snapshot.state?.receipts||[])].sort((a,b)=>Date.parse(b.at)-Date.parse(a.at)||(a.objectId<b.objectId?-1:a.objectId>b.objectId?1:0));
   if(offset>rows.length)throw payloadError();
   const items=rows.slice(offset,offset+limit).map(row=>{
     const work=snapshot.works.get(row.workId);
-    return {objectId:row.objectId,workId:row.workId,workName:typeof work.name==='string'?work.name.slice(0,110):'工作',revision:row.revision,kind:row.kind,at:row.at,workStatus:work.status.slice(0,64),excerpt:row.text.slice(0,512),objectVerified:false};
+    return {objectId:row.objectId,workId:row.workId,workName:typeof work.name==='string'?work.name.slice(0,110):'工作',revision:row.revision,kind:row.kind,at:row.at,workStatus:work.status.slice(0,64),report:row.report,excerpt:row.report.excerpt,objectVerified:false};
   });
   return {projectId:options.project.id,mode,version:snapshot.version,offset,limit,total:rows.length,nextOffset:offset+items.length<rows.length?offset+items.length:null,items};
 }
@@ -183,11 +201,12 @@ export async function managedArtifact(options,{objectId,relPath}={}) {
   const receipt=receiptFor(snapshot.state,options.project,objectId),files=receipt.snapshot?.files||[],seen=new Set();
   const safePath=value=>typeof value==='string'&&value.length>0&&value.length<=1024&&!value.includes('\\')&&!path.posix.isAbsolute(value)&&!value.split('/').some(part=>!part||part==='.'||part==='..');
   if(!Array.isArray(files))throw invalid();
-  for(const file of files){if(!file||!safePath(file.relPath)||seen.has(file.relPath)||typeof file.digest!=='string'||!/^[a-f0-9]{64}$/.test(file.digest)||!Number.isSafeInteger(file.size)||file.size<0)throw invalid();seen.add(file.relPath);}
+  for(const file of files){if(!file||!safePath(file.relPath)||seen.has(file.relPath)||!Number.isSafeInteger(file.size)||file.size<0||!(file.digest===null?file.size===0:typeof file.digest==='string'&&/^[a-f0-9]{64}$/.test(file.digest)))throw invalid();seen.add(file.relPath);}
   const metadata=files.map(({relPath,digest,size})=>({relPath,digest,size}));
   if(relPath===undefined)return {projectId:options.project.id,objectId,files:metadata,readOnly:true};
   if(!safePath(relPath))throw payloadError();const file=metadata.find(file=>file.relPath===relPath);if(!file)throw new HostError('ARTIFACT_UNAVAILABLE','报告没有此成果快照；未读取原项目同名文件。');
   const source=await managedReportSource({...options,objectId});await source.read();
+  if(file.digest===null){if((await historySnapshot(options)).version!==snapshot.version)throw changed();return {projectId:options.project.id,objectId,relPath,digest:null,size:0,availability:'absent',text:null,base64:null,readOnly:true};}
   const bytes=await readRegular(path.join(options.runtime,'objects','artifacts',objectId,relPath),64*1024*1024);
   if(bytes.length!==file.size||createHash('sha256').update(bytes).digest('hex')!==file.digest)throw new HostError('ARTIFACT_CHANGED','成果快照摘要变化，未以原项目文件替代。');
   if((await historySnapshot(options)).version!==snapshot.version)throw changed();

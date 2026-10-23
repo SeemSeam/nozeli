@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {memoryContext,ContextReader} from './context-reader.mjs';
+import {readStoredReport,reportExtension,reportSemanticText} from './report-descriptor.mjs';
 
 export const frontReadLimits={chars:8000};
 export const versionOf=text=>createHash('sha256').update(text).digest('hex');
@@ -45,8 +46,9 @@ export async function frontSource(controller,selector,job){
  if(selector==='state')return {source:'runtime/work-state',text:controller.routingContext({role:'frontdesk'})};
  if(selector.startsWith('report:')){
   const name=selector.slice(7),w=controller.store.state.works.findLast(w=>(w.name||w.request)===name);
-  const report=w&&controller.store.state.receipts.findLast(r=>r.workId===w.id&&r.kind==='result');if(!report)throw Error('未找到已发布结果');
-  return {source:`objects/${report.objectId}.md`,text:report.text,version:report.objectId,revision:report.revision,workId:w.id};
+  const receipt=w&&controller.store.state.receipts.findLast(r=>r.workId===w.id&&r.kind==='result');if(!receipt)throw Error('未找到已发布结果');
+  const bytes=await readStoredReport(controller.store,receipt);
+  return {source:`objects/${receipt.objectId}${reportExtension(receipt.report)}`,text:reportSemanticText(bytes,receipt.report),version:receipt.report.digest,revision:receipt.revision,workId:w.id};
  }
  throw Error('未知读取选择器；使用file:相对路径、memory:关键词、检索返回的memory-topic:正文引用、memory-page:0、state或report:工作名');
 }

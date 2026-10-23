@@ -14,7 +14,7 @@ async function safeFile(root,rel){
  workPath(rel);if(process.platform!=='linux')fail('SAFE_OPEN_UNSUPPORTED','此平台尚无安全逐级文件打开实现');const handles=[];
  try{let directory=await fs.open(root,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);handles.push(directory);
   const parts=rel.split('/');for(const part of parts.slice(0,-1)){directory=await fs.open('/proc/self/fd/'+directory.fd+'/'+part,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);handles.push(directory);}
-  const file=await fs.open('/proc/self/fd/'+directory.fd+'/'+parts.at(-1),constants.O_RDONLY|constants.O_NOFOLLOW);handles.push(file);const stat=await file.stat();if(!stat.isFile()||stat.size>32*1024*1024)fail('PATH_REJECTED','非普通文件或超过32MiB：'+rel);return {bytes:await file.readFile(),mode:stat.mode&0o111?'100755':'100644'};
+  const file=await fs.open('/proc/self/fd/'+directory.fd+'/'+parts.at(-1),constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);handles.push(file);const stat=await file.stat({bigint:true});if(!stat.isFile()||stat.nlink!==1n||stat.size>32n*1024n*1024n)fail('PATH_REJECTED','非安全普通文件或超过32MiB：'+rel);const bytes=Buffer.alloc(Number(stat.size));let offset=0;while(offset<bytes.length){const result=await file.read(bytes,offset,bytes.length-offset,offset);if(!result.bytesRead)break;offset+=result.bytesRead;}const after=await file.stat({bigint:true}),entry=await fs.lstat('/proc/self/fd/'+directory.fd+'/'+parts.at(-1),{bigint:true});for(const current of [after,entry])if(current.dev!==stat.dev||current.ino!==stat.ino||current.size!==stat.size||current.mtimeNs!==stat.mtimeNs||current.ctimeNs!==stat.ctimeNs||current.nlink!==1n)fail('SOURCE_CHANGED','文件读取期间变化：'+rel);if(offset!==bytes.length)fail('SOURCE_CHANGED','文件读取期间变化：'+rel);return {bytes,mode:Number(stat.mode)&0o111?'100755':'100644'};
  }catch(error){if(error.code==='ENOENT')return null;throw error;}finally{for(const handle of handles.reverse())await handle.close();}
 }
 function documentText(bytes){if(bytes===null)return '';let text;try{text=new TextDecoder('utf-8',{fatal:true}).decode(bytes);}catch{fail('UNSUPPORTED','文档操作仅支持UTF-8文本');}if(text.includes('\0'))fail('UNSUPPORTED','文档操作不支持二进制文件');return text.replace(/\r\n?/g,'\n');}
@@ -84,7 +84,7 @@ export class ExecutionWorkspace {
  }
  async prepareInner(id){
   let m=await this.readManifest(id);
-  if(m?.schema>=2&&m.preparation==='complete'){await this.reconcileFreeze(m);await this.identity(m,{target:false});await this.reconcileDocument(m);await this.save(m);return m;}
+  if(m?.schema>=2&&m.preparation==='complete'){await this.reconcilePublication(m);await this.reconcileFreeze(m);await this.identity(m,{target:false});await this.reconcileDocument(m);await this.save(m);return m;}
   if(!m||m.schema<2){
    await this.initializeRepository();const legacy=m,dir=this.directory(id),repo=await repository(this.store.content),branchRef='refs/heads/nozeli/work-'+id+'-'+randomUUID();
    const exists=await fs.lstat(dir).catch(()=>null);if(exists&&!legacy)fail('BASELINE_MISSING','执行目录已有内容但缺少基线，已保留');
@@ -119,10 +119,26 @@ export class ExecutionWorkspace {
   else if(digest===intent.value.beforeDigest){await cleanup();delete m.documentIntent;await this.save(m);}
   else fail('DOCUMENT_RECOVERY','执行文件与持久化编辑意图不一致，已保留现场');
  }
- async publish(work,job,isActive=()=>true,retainCandidate=null){return this.locked(work.id,async()=>{
+ async publicationCommitted(intent){
+  let handle;try{handle=await fs.open(this.store.file,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);const before=await handle.stat({bigint:true});if(!before.isFile()||before.nlink!==1n||before.size>32n*1024n*1024n)fail('PUBLICATION_RECOVERY_HELD','报告提交状态无法安全确认');const buffer=Buffer.alloc(Number(before.size)+1);let offset=0;while(offset<buffer.length){const {bytesRead}=await handle.read(buffer,offset,buffer.length-offset,offset);if(!bytesRead)break;offset+=bytesRead;}const after=await handle.stat({bigint:true}),current=await fs.lstat(this.store.file,{bigint:true});for(const stat of [after,current])if(stat.dev!==before.dev||stat.ino!==before.ino||stat.size!==before.size||stat.mtimeNs!==before.mtimeNs||stat.ctimeNs!==before.ctimeNs||stat.nlink!==1n)fail('PUBLICATION_RECOVERY_HELD','报告提交状态在读取期间变化');if(offset!==Number(before.size))fail('PUBLICATION_RECOVERY_HELD','报告提交状态大小变化');const state=JSON.parse(buffer.subarray(0,offset).toString());if(state.schema!==2||state.contentRoot!==this.store.content||!Array.isArray(state.receipts))fail('PUBLICATION_RECOVERY_HELD','报告提交状态无效');const rows=state.receipts.filter(row=>row.id===intent.receiptId);if(!rows.length)return false;if(rows.length!==1||rows[0].workId!==intent.workId||rows[0].revision!==intent.candidate.revision||rows[0].snapshot?.candidate?.commit!==intent.candidate.commit)fail('PUBLICATION_RECOVERY_HELD','报告提交身份冲突');return true;}finally{await handle?.close();}
+ }
+ async restorePublication(m,intent,committed){
+  const head=await str(m.repo,['rev-parse',m.branchRef]),desired=committed?intent.candidate.commit:intent.before;
+  if(head!==desired){const expected=committed?intent.before:intent.candidate.commit;if(head!==expected)fail('PUBLICATION_RECOVERY_HELD','候选分支已变化；保留报告提交意图');await git(m.repo,['update-ref',m.branchRef,desired,expected]);}
+  if(committed)m.candidate=intent.candidate;else if(intent.previousCandidate)m.candidate=intent.previousCandidate;else delete m.candidate;
+  delete m.publicationIntent;try{await this.save(m);}catch(error){m.publicationIntent=intent;throw error;}
+ }
+ async reconcilePublication(m){if(!m.publicationIntent)return;const intent=m.publicationIntent;await this.identity(m,{target:false,worker:false});await this.restorePublication(m,intent,await this.publicationCommitted(intent));}
+ async publish(work,job,isActive=()=>true,retainCandidate=null,{receiptId}={}){return this.locked(work.id,async()=>{
   const m=await this.prepareInner(work.id);await this.identity(m,{target:false});if(!isActive())fail('WORK_STOPPED','工作已停止');
   const candidate=await this.snapshot(m,m.directory,m.inputCommit,'Nozeli Worker checkpoint '+work.id);candidate.revision=work.revision;candidate.jobId=job?.id;
+  candidate.fileDigests=Object.fromEntries(Object.entries(candidate.files).map(([rel,file])=>[rel,file.digest]));
   candidate.files=names(await git(m.repo,['diff-tree','--no-commit-id','--name-only','-r','-z',m.inputCommit,candidate.commit]));
+  if(receiptId){
+   const intent={receiptId,workId:work.id,before:m.candidate?.commit||m.inputCommit,previousCandidate:structuredClone(m.candidate||null),candidate};m.publicationIntent=intent;await this.save(m);
+   try{await git(m.repo,['update-ref',m.branchRef,candidate.commit,intent.before]);m.candidate=candidate;await this.save(m);if(!isActive())fail('WORK_STOPPED','工作已停止');const retained=retainCandidate?await retainCandidate(m,candidate):null;await this.restorePublication(m,intent,true);return {applied:[],conflicts:[],candidate,...(retained?{changeSet:retained}:{})};}
+   catch(error){let committed;try{committed=await this.publicationCommitted(intent);if(!committed)await this.restorePublication(m,intent,false);}catch(recoveryError){throw Object.assign(new AggregateError([error,recoveryError],'报告提交无法确认；保留候选和恢复意图'),{code:'PUBLICATION_RECOVERY_HELD'});}if(committed)throw Object.assign(new Error('报告已持久化但候选提交收尾失败；保留恢复意图',{cause:error}),{code:'PUBLICATION_COMMIT_UNKNOWN'});throw error;}
+  }
   m.freezeIntent={commit:candidate.commit,before:m.candidate?.commit||m.inputCommit,candidate};await this.save(m);
   await git(m.repo,['update-ref',m.branchRef,candidate.commit,m.freezeIntent.before]);m.candidate=candidate;delete m.freezeIntent;await this.save(m);const retained=retainCandidate?await retainCandidate(m,candidate):null;return {applied:[],conflicts:[],candidate,...(retained?{changeSet:retained}:{})};
  });}

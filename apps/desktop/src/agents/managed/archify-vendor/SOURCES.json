@@ -1,0 +1,203 @@
+{
+  "name": "Archify offline static rendering closure",
+  "version": "2.16.0-dev.0",
+  "distribution": "Inspected Archify skill distribution; package.json version 2.16.0-dev.0, SKILL.md author tt-a1i. Exact inspected source bytes are recorded per file; no upstream repository URL was independently verified.",
+  "basedOn": "Cocoon-AI/architecture-diagram-generator (MIT, v1.0), as attributed by the inspected SKILL.md",
+  "license": "MIT",
+  "generatorDigest": "dbcb03866820923800f474441623a04c4bbb6d74581485f00353091dd4d50fc3",
+  "adaptation": "CLI renderers scoped into reentrant functions; schema/semantic/layout checks retained; render-output checker returns data; process environment, disk writes, viewer template and network capture removed. Static CSS retains theme/preset palettes and semantic classes with print contrast. No external fonts or runtime npm. Built-in Simple Icons 16.28.0 paths CC0; trademarks not licensed. Exported SVG carries applicable notices. Generator identity excludes self-referential identity and manifest. Upstream hashes pin the inspected source bytes, shipped hashes pin modified closure.",
+  "files": [
+    {
+      "path": "../archify-diagram.mjs",
+      "sha256": "2382d34ddde3c74bd6c87f36af0b62d57291b2e69797f2681f5ad4130a332fdb",
+      "source": "Nozeli static adapter"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "2f724fa953b4eaa8ec75fa56919ce474b57adce54d2456a3791510bc53735cbd",
+      "source": "LICENSE",
+      "upstreamSha256": "2f724fa953b4eaa8ec75fa56919ce474b57adce54d2456a3791510bc53735cbd"
+    },
+    {
+      "path": "SIMPLE-ICONS-LICENSE",
+      "sha256": "9046848b63a5c92bff14e4accca80bd987e0623b74adf9226ce5198d312b79d5"
+    },
+    {
+      "path": "notices.mjs",
+      "sha256": "5be64dc9fb73fe50a9a440e79844ae03380a815245c44d6c5c564f9f7872f42b"
+    },
+    {
+      "path": "renderers/architecture/grid.mjs",
+      "sha256": "f6de99c32436feed3378b0ddef516bb4732ff27a89c543b50635d4d14a15a55a",
+      "source": "renderers/architecture/grid.mjs",
+      "upstreamSha256": "f6de99c32436feed3378b0ddef516bb4732ff27a89c543b50635d4d14a15a55a"
+    },
+    {
+      "path": "renderers/architecture/render-architecture.mjs",
+      "sha256": "9e63aa7da66e47fec79218bf260f69e04d5a29bd9836e00bd18b62f183d481ec",
+      "source": "renderers/architecture/render-architecture.mjs",
+      "upstreamSha256": "efd618c832f6ac02f0b2dc51e1cae89d4cda45ba24b475cd233adb2db3421f2a"
+    },
+    {
+      "path": "renderers/dataflow/render-dataflow.mjs",
+      "sha256": "59439275196a357e7c75ec36b9ac00bd14b169958ab07160d9414b86662e81c0",
+      "source": "renderers/dataflow/render-dataflow.mjs",
+      "upstreamSha256": "8a1b831b0dabfd7117f95ea578959b4c9ece73e70c09ee6a3d3250a39e9c861b"
+    },
+    {
+      "path": "renderers/lifecycle/render-lifecycle.mjs",
+      "sha256": "602776eafe393f0f96597f60bb136035ed773cce2bccc6a6f371a5586b3a4690",
+      "source": "renderers/lifecycle/render-lifecycle.mjs",
+      "upstreamSha256": "6e1fa98a28527f9c47b00e6f13b9036058d597ac56e601072497fdc3ac6153ff"
+    },
+    {
+      "path": "renderers/sequence/render-sequence.mjs",
+      "sha256": "93b10dccd572e5da6a9ef4fb6a2ef64281801928901d0e2dede088ed605c1400",
+      "source": "renderers/sequence/render-sequence.mjs",
+      "upstreamSha256": "bd568e3b246f37477adb046c520be10504b65bf30f8eaed3c43cd0dbbcee98ce"
+    },
+    {
+      "path": "renderers/shared/brand-marks.mjs",
+      "sha256": "7b766dbdd1a580d6789b8a8f2e0f8c429944d877d69208ecdd172b77683efa46",
+      "source": "renderers/shared/brand-marks.mjs",
+      "upstreamSha256": "4557b7f3eec25a3dba66a0f5da1c5dca6ec607e2a68e9be51cd697cefe9e6425"
+    },
+    {
+      "path": "renderers/shared/cli.mjs",
+      "sha256": "7bb298dccd77a20e968a3ab7f229ddc470c6c9a0ea954450d7a9f44af380977f",
+      "source": "renderers/shared/cli.mjs",
+      "upstreamSha256": "a36a3e028b976454272c2aadcef777aa9343d07f118994005d850689213ac6a8"
+    },
+    {
+      "path": "renderers/shared/desktop-readability.mjs",
+      "sha256": "b36203a11df348706e541f309266a0f9b914dac6a7eb8ba804e3abe8f8d6c710",
+      "source": "renderers/shared/desktop-readability.mjs",
+      "upstreamSha256": "b36203a11df348706e541f309266a0f9b914dac6a7eb8ba804e3abe8f8d6c710"
+    },
+    {
+      "path": "renderers/shared/diagnostics.mjs",
+      "sha256": "296f9720680817575e8435fe20d1bc742d3dd77c5ea506a2eb718b25fe367d03",
+      "source": "renderers/shared/diagnostics.mjs",
+      "upstreamSha256": "27ac252f47abbda260643f7400c126bab840aca5c050005d721ae32b87744136"
+    },
+    {
+      "path": "renderers/shared/engineering-profiles.mjs",
+      "sha256": "7e99f9d5423f66cc9ab6224da56dc2d5aa6c6faec29178034794e9db6b5b2889",
+      "source": "renderers/shared/engineering-profiles.mjs",
+      "upstreamSha256": "7e99f9d5423f66cc9ab6224da56dc2d5aa6c6faec29178034794e9db6b5b2889"
+    },
+    {
+      "path": "renderers/shared/generated-brand-marks.mjs",
+      "sha256": "0f157d229c12df6f53763a3b88684baa5803a52484c49c4d34ec40b8743beea2",
+      "source": "renderers/shared/generated-brand-marks.mjs",
+      "upstreamSha256": "0f157d229c12df6f53763a3b88684baa5803a52484c49c4d34ec40b8743beea2"
+    },
+    {
+      "path": "renderers/shared/generated-validators.mjs",
+      "sha256": "b7db8e42033c8357d4be47b3cd536e43a6e53d4572502a22537b5da0c8e9133f",
+      "source": "renderers/shared/generated-validators.mjs",
+      "upstreamSha256": "b7db8e42033c8357d4be47b3cd536e43a6e53d4572502a22537b5da0c8e9133f"
+    },
+    {
+      "path": "renderers/shared/geometry.mjs",
+      "sha256": "94209d428a4b6c68d309420536a541c305cbb7392a7bb7b8f7edc7a539169f85",
+      "source": "renderers/shared/geometry.mjs",
+      "upstreamSha256": "959974e13d2ff735b5fedc59f5aa053907fdbf33f59e2ed6ba89dfd3e5b889b6"
+    },
+    {
+      "path": "renderers/shared/i18n.mjs",
+      "sha256": "da0320ac6c002f421c516cb4921e9b806a4ba5b3e9a4f6cbcdef0b16e2917d47",
+      "source": "renderers/shared/i18n.mjs",
+      "upstreamSha256": "da0320ac6c002f421c516cb4921e9b806a4ba5b3e9a4f6cbcdef0b16e2917d47"
+    },
+    {
+      "path": "renderers/shared/layout-report.mjs",
+      "sha256": "44c2f74a20e483dd37dae6791ede39284ce3bac1a2a13872d2912999e8504df5",
+      "source": "renderers/shared/layout-report.mjs",
+      "upstreamSha256": "44c2f74a20e483dd37dae6791ede39284ce3bac1a2a13872d2912999e8504df5"
+    },
+    {
+      "path": "renderers/shared/legend.mjs",
+      "sha256": "4c8b37f10fb5c783a28bff6aa35bc3966155213ee32f64a8252eab5b9e64a747",
+      "source": "renderers/shared/legend.mjs",
+      "upstreamSha256": "4c8b37f10fb5c783a28bff6aa35bc3966155213ee32f64a8252eab5b9e64a747"
+    },
+    {
+      "path": "renderers/shared/text-fit.mjs",
+      "sha256": "35b6ef2c64d88c1ea4e5aab2af7c4e8a2c2e1be62db71263787d39a9797e7dea",
+      "source": "renderers/shared/text-fit.mjs",
+      "upstreamSha256": "35b6ef2c64d88c1ea4e5aab2af7c4e8a2c2e1be62db71263787d39a9797e7dea"
+    },
+    {
+      "path": "renderers/shared/utils.mjs",
+      "sha256": "0b6f157bb885f6bbd14c8c7d3b0a4ceca818aa4881186a70dfe19bc98ab55093",
+      "source": "renderers/shared/utils.mjs",
+      "upstreamSha256": "20124265300eb286db184a053561005cc32b6128dc1bc1b3f9520ffa8d43a241"
+    },
+    {
+      "path": "renderers/shared/validator.mjs",
+      "sha256": "7460d7fcbcdf710649256c5e96142ae26d807a655d3296ee8caf7f5e158622cc",
+      "source": "renderers/shared/validator.mjs",
+      "upstreamSha256": "7460d7fcbcdf710649256c5e96142ae26d807a655d3296ee8caf7f5e158622cc"
+    },
+    {
+      "path": "renderers/workflow/render-workflow.mjs",
+      "sha256": "d0bc9f6105bf0854bcd636dcbaa7d6ce4314d8b194407b5c00002518919424b1",
+      "source": "renderers/workflow/render-workflow.mjs",
+      "upstreamSha256": "fbee868d29fb769b174eab61d7b2f2a88e11d64fee2101f306f8dd3f4d5a772a"
+    },
+    {
+      "path": "schemas/architecture.schema.json",
+      "sha256": "6082753901daa49abb128a4722b14215033f744727e1c18fd465949c927eeb65",
+      "source": "schemas/architecture.schema.json",
+      "upstreamSha256": "6082753901daa49abb128a4722b14215033f744727e1c18fd465949c927eeb65"
+    },
+    {
+      "path": "schemas/common.schema.json",
+      "sha256": "ba6f6023450034a1f52f474fe887be23633f819d12570a0dc0f27a4743724d1a",
+      "source": "schemas/common.schema.json",
+      "upstreamSha256": "ba6f6023450034a1f52f474fe887be23633f819d12570a0dc0f27a4743724d1a"
+    },
+    {
+      "path": "schemas/dataflow.schema.json",
+      "sha256": "244e6be87ec908bf2524cf2b2cc21823d7d2c775b22915c20cfab95fb79b259b",
+      "source": "schemas/dataflow.schema.json",
+      "upstreamSha256": "244e6be87ec908bf2524cf2b2cc21823d7d2c775b22915c20cfab95fb79b259b"
+    },
+    {
+      "path": "schemas/lifecycle.schema.json",
+      "sha256": "f0dbe72f612449b4dd5326a1cfd0057a6d2fa68e66c132da387ff2d427516088",
+      "source": "schemas/lifecycle.schema.json",
+      "upstreamSha256": "f0dbe72f612449b4dd5326a1cfd0057a6d2fa68e66c132da387ff2d427516088"
+    },
+    {
+      "path": "schemas/sequence.schema.json",
+      "sha256": "1184b00d4847811cae6829affa1815ef4b42546cadc60c7a0cc2019315f3f7ea",
+      "source": "schemas/sequence.schema.json",
+      "upstreamSha256": "1184b00d4847811cae6829affa1815ef4b42546cadc60c7a0cc2019315f3f7ea"
+    },
+    {
+      "path": "schemas/workflow.schema.json",
+      "sha256": "dfb071455616ffaf26d3df65f3cbdd02af070fd61ed46a82f37c9ae098ed0d4a",
+      "source": "schemas/workflow.schema.json",
+      "upstreamSha256": "dfb071455616ffaf26d3df65f3cbdd02af070fd61ed46a82f37c9ae098ed0d4a"
+    },
+    {
+      "path": "scripts/check-render-output.mjs",
+      "sha256": "f2171bce886f7daaad122a7ea1b9cbe3d99f36f1f85555925747389420e4d5a5",
+      "source": "scripts/check-render-output.mjs",
+      "upstreamSha256": "5b86f60bd6607c580e1d2daaf181a129d81c3293310b3c7f38eda6435b8520b5"
+    },
+    {
+      "path": "static-style.mjs",
+      "sha256": "5f3affae06dd645feb8985c81e2547eac3de3d09ae725e5867da2764430234e3",
+      "source": "assets/template.html",
+      "upstreamSha256": "9cde0dffc1190a7611074167dc8c37b60bffc3cc26a05e00a1c9bb167678916c"
+    },
+    {
+      "path": "generator-identity.mjs",
+      "sha256": "212855542099145d6023fc27a5f38e3d23e8af78f47c2d553f0d508b6bc7e70f",
+      "source": "Nozeli generated identity; SHA-256 of canonical sorted path/hash list excluding self and SOURCES.json"
+    }
+  ]
+}

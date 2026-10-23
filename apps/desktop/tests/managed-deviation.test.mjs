@@ -17,7 +17,7 @@ async function fixture(t){
   this.insideTool=true;
   try{
    if(text.includes('TRIGGER_SCOPE'))await this.onTool({tool:'nozeli_report_deviation',arguments:{changedGoal:'Different proposed goal',reason:'Original task does not authorize the trigger',progress:'Original evidence retained; trigger not executed'},callId:'deviation:'+this.target});
-   else await this.onTool({tool:'nozeli_publish',arguments:{kind:'problem',text:'Original task resumed; source inspected',files:[]},callId:randomUUID()});
+   else await this.onTool({tool:'nozeli_publish',arguments:{kind: 'problem', text: '原始任务已恢复；来源已核对。', files: []},callId:randomUUID()});
   }finally{this.insideTool=false;}
   return {completion:'host-control',threadId:this.threadId};
  } }

@@ -16,6 +16,7 @@ import {recordAdoption} from './managed/adoption-history.mjs';
 import {SessionIndex} from './managed/session-index.mjs';
 import {WorkChanges} from './managed/work-changes.mjs';
 import {readWorkerArchive} from './managed/worker-archive.mjs';
+import {decodeReportState} from './managed/report-descriptor.mjs';
 import {residentHistoryPage} from './managed/resident-history.mjs';
 import {AgentProcessBudget,validateAgentLimit} from './managed/agent-process-budget.mjs';
 import {Workspace} from './managed/workspace.mjs';
@@ -264,6 +265,7 @@ export class ManagedProjects {
   await this.host.requireProject(id);const controller=this.controllers.get(id),runtime=path.join(this.root,id,'runtime');
   if(controller)return {controller,state:controller.store.state,index:controller.timeline,changes:controller.changes};
   let state;try{state=JSON.parse(await fs.readFile(path.join(runtime,'state.json'),'utf8'));}catch(error){if(error.code!=='ENOENT')throw error;state={messages:[],jobs:[],receipts:[],works:[]};}
+  if(state.schema===2)state=decodeReportState(state);
   const index=new SessionIndex({root:runtime,state});return {state,index,changes:new WorkChanges(runtime)};
  }
  async timelineQuery(id,action,p){

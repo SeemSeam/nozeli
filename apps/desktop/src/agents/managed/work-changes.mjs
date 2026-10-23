@@ -147,6 +147,18 @@ export class WorkChanges {
   await atomic(this.file(id, true), {version: 1, binding, changeSetId: id, status: 'archiving'});
   return this.complete(binding, id);
  });}
+ async discardUnpublished(changeSetId,expectedBinding){return this.locked(async()=>{
+  const id=setId(changeSetId),record=await this.record(id,expectedBinding);await this.verifyInner(id,expectedBinding);
+  const state=await json(path.join(path.dirname(this.root),'state.json'));
+  if(!state||!Array.isArray(state.receipts))reject('CHANGES_RECOVERY_HELD','Publication state cannot be confirmed; evidence retained');
+  if(state.receipts.some(receipt=>receipt.changeSetId===id))reject('CHANGES_REFERENCED','Published evidence cannot be discarded');
+  const manifestBytes=await fs.readFile(this.file(id)),intent=await json(this.file(id,true));
+  if(JSON.stringify(JSON.parse(manifestBytes.toString()))!==JSON.stringify(record)||intent&&(intent.changeSetId!==id||JSON.stringify(intent.binding)!==JSON.stringify(record.binding)))reject('CHANGES_RECOVERY_HELD','Evidence ownership changed; retained');
+  await git(this.evidenceRepo,['update-ref','--stdin'],'start\ndelete refs/nozeli/changes/'+id+'/input '+record.binding.inputCommit+'\ndelete refs/nozeli/changes/'+id+'/candidate '+record.binding.candidateCommit+'\nprepare\ncommit\n');
+  if(!(await fs.readFile(this.file(id))).equals(manifestBytes))reject('CHANGES_RECOVERY_HELD','Evidence manifest changed during cleanup; retained');
+  await fs.unlink(this.file(id));if(intent)await fs.unlink(this.file(id,true));
+  return {changeSetId:id,discarded:true};
+ });}
  async complete(binding, id) {
   // A complete orphan pack/ref from a crash can recover even after source GC.
   try {await this.closure(binding);} catch {

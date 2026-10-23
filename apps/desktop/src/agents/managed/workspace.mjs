@@ -6,6 +6,8 @@ import {artifactSnapshot,digest} from './report-review.mjs';
 import {reconcileTodos} from '../../domain/todo-management.mjs';
 import {safeBytes} from './execution-workspace.mjs';
 import {recordBusinessTimeline} from './session-index.mjs';
+import {prepareHtmlReport,HTML_REPORT_OBJECT_MAX_BYTES} from './html-report.mjs';
+import {decodeReportState,reportDescriptor,reportExtension,readStoredReport,MAX_REPORT_BYTES} from './report-descriptor.mjs';
 
 export async function atomicJson(file,value){
   const tmp=`${file}.${randomUUID()}.tmp`;const handle=await fs.open(tmp,'wx',0o600);
@@ -30,8 +32,9 @@ export class Workspace {
     await handle.writeFile(owner);await handle.close();
     const store=new Workspace(runtime,content,lock,owner);store.checkpoint=checkpoint;
     try{
-      try{store.state=JSON.parse(await fs.readFile(store.file,'utf8'));if(store.state.schema!==2||store.state.contentRoot!==content)throw new Error('incompatible workspace');}
-      catch(error){if(error.code!=='ENOENT')throw error;store.state={schema:2,workspaceId:randomUUID(),contentRoot:content,limit:1,works:[],todos:[],receipts:[],memoryPending:[]};await store.save();}
+      let original;try{original=JSON.parse(await fs.readFile(store.file,'utf8'));}catch(error){if(error.code!=='ENOENT')throw error;}
+      if(original!==undefined){if(!original||original.schema!==2||original.contentRoot!==content)throw new Error('incompatible workspace');store.state=decodeReportState(original);if(original.reportStateVersion!==1){for(const receipt of store.state.receipts)await readStoredReport(store,receipt);await store.save();}}
+      else{store.state={schema:2,reportStateVersion:1,workspaceId:randomUUID(),contentRoot:content,limit:1,works:[],todos:[],receipts:[],memoryPending:[]};await store.save();}
       for(const dir of ['objects','agents','memory','evidence'])await fs.mkdir(path.join(runtime,dir),{recursive:true,mode:0o700});
       store.plan=path.join(runtime,'memory','plan-tree.md');await fs.writeFile(store.plan,'# Plan Tree\n\nWorker reports and sourced host closure facts.\n',{flag:'wx'}).catch(e=>{if(e.code!=='EEXIST')throw e;});
       return store;
@@ -43,7 +46,7 @@ export class Workspace {
   used(){return this.state.works.filter(w=>w.status!=='queued'&&w.status!=='ended'&&w.revision>0).length;}
   find(id){const w=this.state.works.find(w=>w.id===id);if(!w)throw new Error('unknown work');return w;}
   deviationHeld(id){const w=this.find(id);return ['pending','replanned'].includes(w.deviation?.status);}
-  async reportDeviation(id,job,{changedGoal,reason,progress},receipt){return this.mutate(async()=>{
+  async reportDeviation(id,job,{changedGoal,reason,progress},receipt){return this.mutate(async tx=>{
     const w=this.find(id),old=this.state.receipts.find(r=>r.id===receipt);
     if(old){if(old.workId!==id||old.sourceJobId!==job.id||old.deviation?.changedGoal!==changedGoal||old.deviation?.reason!==reason||old.deviation?.progress!==progress)throw Error('deviation receipt collision');return structuredClone(old.deviation);}
     if(w.status!=='running'||w.revision!==job.revision||this.deviationHeld(id))throw Error('stale or inactive deviation source');
@@ -52,18 +55,63 @@ export class Workspace {
     if(!sourceJob)throw Error('missing admitted deviation source');
     const sourceText=job.context?.approvedSourceText??sourceJob.text,at=new Date().toISOString(),objectId=randomUUID(),todoId=randomUUID();
     const event={id:randomUUID(),revision:w.revision,version:1,status:'pending',changedGoal,reason,progress,admittedJobId:job.id,sourceJobId:sourceJob.id,sourceText,source:`state.json#job:${sourceJob.id}`,sourceContext:structuredClone(sourceJob.context||{}),todoId,objectId,at};
-    const body=`# 任务偏离：等待用户决定\n\n## 原始任务\n${w.request}\n\n## 触发输入（尚未执行）\n${sourceText}\n\n来源作业：${sourceJob.id}\n\n## 拟改变的目标\n${changedGoal}\n\n## 偏离原因\n${reason}\n\n## 已有进展与未执行部分\n${progress}\n\n工作已暂停；只有用户明确选择继续本工作或交主控重新规划后才处理。`;
-    await fs.writeFile(path.join(this.root,'objects',objectId+'.md'),body,{flag:'wx',mode:0o600});
+    // 宿主偏离问题与 Worker problem 同为轻量 Markdown；来源身份保留在 event/收据字段，不依赖正文格式。
+    const body='# 任务偏离：等待用户决定\n\n'+[['原始任务',w.request],['触发输入（尚未执行）',sourceText],['拟改变的目标',changedGoal],['偏离原因',reason],['已有进展与未执行部分',progress]].map(([title,value])=>'## '+title+'\n\n'+value+'\n').join('\n')+'\n工作已暂停；只有用户明确决定后才处理。\n';
+    // P2：对象写入失败/save 失败整体回滚（仅删自建对象文件）。
+    const objectFiles=[];
+    tx.onRollback(async()=>{
+      const durable=await this.#durableReceipt(receipt);
+      if(durable!=='absent')return {commitUnknown:{scope:'deviation',receiptId:receipt,workId:id,objectId,objectFiles:[...objectFiles],durable}};
+      const failures=[];
+      for(const file of objectFiles)await fs.rm(file,{force:true}).catch(failure=>failures.push(failure));
+      if(failures.length)throw Object.assign(new Error('deviation rollback cleanup incomplete'),{code:'DEVIATION_ROLLBACK_INCOMPLETE',files:[...objectFiles],failures});
+    });
+    for(const [suffix,data] of [['.md',Buffer.from(body)]]){const file=path.join(this.root,'objects',objectId+suffix),handle=await fs.open(file,'wx',0o600);objectFiles.push(file);try{await handle.writeFile(data);await handle.sync();}finally{await handle.close();}}
     if(w.deviation){w.deviationHistory??=[];w.deviationHistory.push(structuredClone(w.deviation));}
     w.deviation=event;w.status='paused';w.problem={objectId,revision:w.revision};
-    const row={id:receipt,workId:id,revision:w.revision,kind:'problem',text:body,objectId,sourceJobId:job.id,deviation:structuredClone(event),at};this.state.receipts.push(row);this.projectReceipt(row,{jobId:job.id});
-    this.state.todos.push({id:todoId,workId:id,revision:w.revision,kind:'deviation',status:'open',sourceJobId:sourceJob.id,objectId,deviationId:event.id,expectedVersion:1,text:body});
+    const report=reportDescriptor(Buffer.from(body),{format:'markdown',objectId,title:'任务偏离：等待用户决定'});
+    const row={id:receipt,workId:id,revision:w.revision,kind:'problem',report,objectId,sourceJobId:job.id,deviation:structuredClone(event),at};this.state.receipts.push(row);this.projectReceipt(row,{jobId:job.id});
+    this.state.todos.push({id:todoId,workId:id,revision:w.revision,kind:'deviation',status:'open',sourceJobId:sourceJob.id,objectId,deviationId:event.id,expectedVersion:1,text:report.excerpt});
     return structuredClone(event);
   });}
+  // 事务化变更：fn(tx) 内通过 tx.onRollback 注册回滚钩子；save 失败或 fn 抛错时按注册
+  // 顺序执行钩子。钩子返回 {commitUnknown} 表示磁盘提交结果不明或已提交：立即停止一切
+  // 后续清理（保留对象文件与已变更的内存状态，使其与可能已生效的磁盘状态对齐），并把
+  // hold 附加到原始错误上抛出；否则恢复事务前状态。清理钩子自身的失败不吞掉原始错误，
+  // 收集为 error.rollbackFailures 一并上抛。仅当磁盘 state.json 可读且其中确无对应收据
+  // （proven absent）时才允许删除本事务自建文件。
   async mutate(fn){
     if(this.closed||this.closing)throw new Error('workspace closed');
-    const run=this.serial.then(async()=>{if(this.closed)throw new Error('workspace closed');const prior=structuredClone(this.state);try{const result=await fn();reconcileTodos(this.state,prior);recordBusinessTimeline(prior,this.state);await this.save();return result;}catch(error){this.state=prior;throw error;}});
+    const run=this.serial.then(async()=>{
+      if(this.closed)throw new Error('workspace closed');
+      const prior=structuredClone(this.state);
+      const rollback=[];
+      const tx={onRollback:async hook=>{if(typeof hook!=='function')throw new Error('rollback hook must be a function');rollback.push(hook);}};
+      try{
+        const result=await fn(tx);
+        reconcileTodos(this.state,prior);recordBusinessTimeline(prior,this.state);
+        await this.save();
+        return result;
+      }catch(error){
+        let held=null;const failures=[];
+        for(const hook of rollback){
+          let outcome;try{outcome=await hook(error);}catch(failure){failures.push(failure);continue;}
+          if(outcome?.commitUnknown){held??=outcome.commitUnknown;break;}
+        }
+        if(held){if(failures.length)error.rollbackFailures=failures;error.commitUnknown=held;throw error;}
+        this.state=prior;
+        if(failures.length)error.rollbackFailures=failures;
+        throw error;
+      }
+    });
     this.serial=run.catch(()=>{});return run;
+  }
+  // 提交不确定性判定：事务失败后从磁盘重读 state.json。收据已在磁盘 => 'present'；
+  // 可读且无该收据 => 'absent'；读不出或解析不了 => 'unknown'（不可证明缺席，按已提交对待）。
+  async #durableReceipt(receiptId){
+    if(typeof receiptId!=='string'||!receiptId)return 'unknown';
+    let text;try{text=await fs.readFile(this.file,'utf8');}catch{return 'unknown';}
+    try{const stored=JSON.parse(text);const receipts=stored&&Array.isArray(stored.receipts)?stored.receipts:[];return receipts.some(r=>r&&r.id===receiptId)?'present':'absent';}catch{return 'unknown';}
   }
   submit(request,brief,options={}){return this.mutate(()=>this.submitState(request,brief,options));}
   submitState(request,brief,{name,sourceJob}={}){
@@ -88,16 +136,61 @@ export class Workspace {
     this.state.messages??=[];
     if(!this.state.messages.some(m=>m.objectId===row.objectId))this.state.messages.push({id:randomUUID(),target:row.workId,speaker:'agent',objectId:row.objectId,publication:row.kind,revision:row.revision,...(jobId?{jobId}:{})});
   }
-  async publish(id,revision,kind,text,receipt,{jobId,files=[],changeSetId=null}={}){return this.mutate(async()=>{
+  async publish(id,revision,kind,body,receipt,{jobId,files=[],changeSetId=null,isActive=()=>true,publicationInputDigest=null,retainCandidate=null}={}){return this.mutate(async tx=>{
     const w=this.find(id);
-    if(!['problem','result'].includes(kind)||!text?.trim())throw new Error('invalid publication');
-    const old=this.state.receipts.find(x=>x.id===receipt);if(old){if(old.workId!==id||old.revision!==revision||old.text!==text||old.kind!==kind||changeSetId&&old.changeSetId!==changeSetId)throw new Error('receipt collision');this.projectReceipt(old,{jobId});return old;}
-    if(w.revision!==revision||w.status!=='running')throw new Error('stale or inactive run');
-    const objectId=randomUUID();const file=path.join(this.root,'objects',`${objectId}.md`);await fs.writeFile(file,text,{flag:'wx',mode:0o600});
-    const paths=[...files.map(f=>f.relPath),...(this.state.fileOperations||[]).filter(o=>o.workId===id).map(o=>o.relPath)];
-    const snapshot=kind==='result'?{reportDigest:digest(Buffer.from(text)),directory:w.execution?.directory||this.content,candidate:structuredClone(w.execution?.candidate||null),files:await artifactSnapshot(w.execution?.directory||this.content,[...paths,...(w.execution?.candidate?.files||[])]),operationIds:(this.state.fileOperations||[]).filter(o=>o.workId===id).map(o=>o.id)}:undefined;
-    if(snapshot){snapshot.artifactDirectory=path.join(this.root,'objects','artifacts',objectId);for(const entry of snapshot.files)if(entry.digest!==null){const target=path.join(snapshot.artifactDirectory,entry.relPath);await fs.mkdir(path.dirname(target),{recursive:true,mode:0o700});const bytes=await safeBytes(snapshot.directory,entry.relPath);if(bytes===null||digest(bytes)!==entry.digest)throw Error('artifact changed during publication');const handle=await fs.open(target,'wx',0o600);try{await handle.writeFile(bytes);await handle.sync();}finally{await handle.close();}}}
-    const row={id:receipt,workId:id,revision,kind,text,objectId,at:new Date().toISOString(),...(jobId?{sourceJobId:jobId,jobId}:{}),...(changeSetId?{changeSetId}:{}),...(snapshot?{snapshot}:{})};this.state.receipts.push(row);
+    // kind 显式决定对象格式：result=自包含静态 HTML，problem=轻量 Markdown 文本；不嗅探正文、不接受另一种正文。
+    const format=kind==='result'?'html-static':kind==='problem'?'markdown':null;
+    if(!format||typeof body!=='string'||!body.trim()||Buffer.byteLength(body)>8*1024*1024)throw new Error('invalid publication');
+    const publicationDigest=digest(Buffer.from(JSON.stringify(format==='markdown'?{kind,text:body,files}:{kind,html:body,files})));
+    const old=this.state.receipts.find(x=>x.id===receipt);if(old){if(old.workId!==id||old.revision!==revision||old.publicationDigest!==publicationDigest||old.kind!==kind||changeSetId&&old.changeSetId!==changeSetId)throw new Error('receipt collision');this.projectReceipt(old,{jobId});return old;}
+    const active=()=>{if(w.revision!==revision||w.status!=='running'||!isActive())throw new Error('stale or inactive run');};active();
+    const objectId=randomUUID(),directory=w.execution?.directory||this.content;
+    const paths=[...files.map(f=>f.relPath),...(this.state.fileOperations||[]).filter(o=>o.workId===id).map(o=>o.relPath),...(w.execution?.candidate?.files||[])];
+    const frozenFiles=await artifactSnapshot(directory,paths),frozenBytes=new Map();
+    for(const entry of frozenFiles)if(entry.digest!==null){const bytes=await safeBytes(directory,entry.relPath);if(bytes===null||digest(bytes)!==entry.digest)throw Error('artifact changed during publication');frozenBytes.set(entry.relPath,bytes);}
+    const assetPath=value=>{if(typeof value!=='string'||value.includes('\\')||value.includes('\u0000')||path.posix.isAbsolute(value)||value.split('/').some(p=>!p||p==='.'||p==='..'))throw Error('invalid report resource path');return value;};
+    const referencePath=href=>{const clean=href.split('#')[0];let rel;try{rel=decodeURIComponent(clean);}catch{throw Error('invalid report reference');}const line=/:\d+(?::\d+)?$/.exec(rel);if(line)rel=rel.slice(0,line.index);return assetPath(rel);};
+    const declared=new Set(files.map(file=>file.relPath));
+    // Markdown problem 不经 HTML 准备/引用冻结；files 冻结与工件复制对两种 kind 一致保留。
+    const prepared=format==='html-static'?await prepareHtmlReport(body,{readAsset:async rel=>{rel=assetPath(rel);const bytes=frozenBytes.get(rel);if(!bytes||!declared.has(rel))throw Object.assign(Error('Report image must be included in files: '+rel),{code:'REPORT_RESOURCE_NOT_DECLARED'});return {bytes,digest:digest(bytes)};},resolveReference:async href=>{
+      if(/^https?:\/\//i.test(href)){const url=new URL(href);if(url.username||url.password)throw Error('invalid external reference');return {kind:'external',url:url.href};}
+      const relPath=referencePath(href);let entry=frozenFiles.find(f=>f.relPath===relPath);
+      if(!entry){const bytes=await safeBytes(directory,relPath);if(bytes===null)throw Error('missing report reference: '+relPath);entry={relPath,digest:digest(bytes),size:bytes.length};frozenFiles.push(entry);frozenBytes.set(relPath,bytes);}
+      if(entry.digest===null)throw Error('missing report reference: '+relPath);
+      return {kind:'artifact',relPath,digest:entry.digest,byteLength:entry.size,mediaType:'application/octet-stream'};
+    }}):null;
+    const bytes=prepared?Buffer.from(prepared.html):Buffer.from(body),manifestBytes=prepared?Buffer.from(JSON.stringify(prepared.manifest)):null;
+    if(bytes.length>(format==='html-static'?HTML_REPORT_OBJECT_MAX_BYTES:MAX_REPORT_BYTES))throw Error('report exceeds frozen resource budget');active();
+    if(kind==='result'&&w.execution?.candidate?.fileDigests)for(const entry of frozenFiles)if((w.execution.candidate.fileDigests[entry.relPath]??null)!==entry.digest)throw Error('Report artifact differs from frozen candidate: '+entry.relPath);
+    const report=prepared?reportDescriptor(bytes,{format,objectId,title:prepared.title,excerpt:prepared.excerpt,manifestDigest:digest(manifestBytes)}):reportDescriptor(bytes,{format,objectId});
+    const snapshot={reportDigest:report.digest,directory,candidate:structuredClone(w.execution?.candidate||null),files:frozenFiles,operationIds:(this.state.fileOperations||[]).filter(o=>o.workId===id).map(o=>o.id),artifactDirectory:path.join(this.root,'objects','artifacts',objectId)};
+    // P1 事务化发布：最终快照校验后、写任何报告对象前注册回滚钩子。save 失败不再遗留
+    // object/manifest/artifacts 孤儿；仅删除本事务自建文件（wx 新建），未知文件一律保留。
+    for(const entry of frozenFiles)if(entry.digest!==null){const current=await safeBytes(directory,entry.relPath);if(current===null||digest(current)!==entry.digest)throw Error('artifact changed during publication');}
+    const created=[],artifactFiles=[];
+    tx.onRollback(async()=>{
+      const durable=await this.#durableReceipt(receipt);
+      if(durable!=='absent')return {commitUnknown:{scope:'publication',receiptId:receipt,workId:id,objectId,artifactDirectory:snapshot.artifactDirectory,objectFiles:[...created,...artifactFiles],durable}};
+      const failures=[];
+      for(const file of [...created,...artifactFiles])await fs.rm(file,{force:true}).catch(failure=>failures.push(failure));
+      const directories=new Set([snapshot.artifactDirectory]);
+      for(const file of artifactFiles)for(let dir=path.dirname(file);dir!==snapshot.artifactDirectory&&inside(snapshot.artifactDirectory,dir);dir=path.dirname(dir))directories.add(dir);
+      for(const dir of [...directories].sort((a,b)=>b.split(path.sep).length-a.split(path.sep).length))await fs.rmdir(dir).catch(failure=>{if(!['ENOENT','ENOTEMPTY','EEXIST'].includes(failure.code))failures.push(failure);});
+      if(failures.length)throw Object.assign(new Error('publication rollback cleanup incomplete'),{code:'PUBLICATION_ROLLBACK_INCOMPLETE',files:[...created,...artifactFiles],failures});
+    });
+    if(retainCandidate!=null){
+      if(typeof retainCandidate!=='function')throw new Error('retainCandidate must be a function');
+      const retained=await retainCandidate();
+      if(retained!=null){
+        if(typeof retained!=='object'||Array.isArray(retained))throw new Error('invalid retainCandidate result');
+        if(retained.changeSetId!=null){if(typeof retained.changeSetId!=='string'||!retained.changeSetId.trim())throw new Error('invalid retained changeSetId');changeSetId=retained.changeSetId;}
+        if(retained.rollback!=null){if(typeof retained.rollback!=='function')throw new Error('invalid retainCandidate rollback');tx.onRollback(async()=>{await retained.rollback();});}
+      }
+    }
+    for(const entry of frozenFiles)if(entry.digest!==null){const target=path.join(snapshot.artifactDirectory,entry.relPath);await fs.mkdir(path.dirname(target),{recursive:true,mode:0o700});const handle=await fs.open(target,'wx',0o600);artifactFiles.push(target);try{await handle.writeFile(frozenBytes.get(entry.relPath));await handle.sync();}finally{await handle.close();}}
+    for(const [suffix,data] of prepared?[['.html',bytes],['.manifest.json',manifestBytes]]:[[reportExtension(report),bytes]]){const file=path.join(this.root,'objects',objectId+suffix),handle=await fs.open(file,'wx',0o600);created.push(file);try{await handle.writeFile(data);await handle.sync();}finally{await handle.close();}}
+    active();
+    const row={id:receipt,workId:id,revision,kind,report,publicationDigest,publicationInputDigest,objectId,at:new Date().toISOString(),...(jobId?{sourceJobId:jobId,jobId}:{}),...(changeSetId?{changeSetId}:{}),snapshot};this.state.receipts.push(row);
     this.projectReceipt(row,{jobId});
     if(kind==='result')w.result={objectId,revision};else w.problem={objectId,revision};
     if(kind==='result')for(const todo of this.state.todos)if(todo.workId===id&&todo.kind==='result'&&['open','iterating'].includes(todo.status))todo.status='superseded';
@@ -126,15 +219,16 @@ export class Workspace {
   async archiveReport(id){
     return this.mutate(async()=>{
       const w=this.find(id),closure=w.closure;if(!closure?.stopped)throw Error('provider stop must be confirmed before archival');
-      const relPath=`reports/${id}.md`,file=path.join(path.dirname(this.plan),relPath);
+      let relPath,file;
       const source=this.state.receipts.findLast(r=>r.workId===id&&r.revision===w.revision&&r.kind==='result')||this.state.receipts.findLast(r=>r.workId===id&&r.kind==='problem');
       let bytes,kind,sourceRef;
-      if(source){bytes=await fs.readFile(path.join(this.root,'objects',source.objectId+'.md'));if(source.snapshot?.reportDigest&&digest(bytes)!==source.snapshot.reportDigest)throw Error('immutable Worker report digest mismatch');kind=source.kind==='result'?'worker-report':'worker-problem';sourceRef=`objects/${source.objectId}.md`;}
+      if(source){bytes=await readStoredReport(this,source);kind=source.kind==='result'?'worker-report':'worker-problem';sourceRef=`objects/${source.objectId}${reportExtension(source.report)}`;}
       else{kind='host-termination';sourceRef=`state.json#work:${id}`;bytes=Buffer.from(`# Host termination record\n\nWork: ${w.name||id}\nDecision: ${closure.decision||'unknown (legacy)'}\nEnded: ${w.endedAt}\nProvider stopped: confirmed\nNo final Worker result report exists for revision ${w.revision}. This record is not a successful completion report.\nSource: ${sourceRef}\n`);}
+      relPath=`reports/${id}${source?reportExtension(source.report):'.md'}`;file=path.join(path.dirname(this.plan),relPath);
       if(closure.report){const existing=await fs.readFile(file);if(digest(existing)!==closure.report.digest)throw Error('archived report changed');return closure.report;}
       await fs.mkdir(path.dirname(file),{recursive:true,mode:0o700});
       try{const handle=await fs.open(file,'wx',0o600);try{await handle.writeFile(bytes);await handle.sync();}finally{await handle.close();}}catch(error){if(error.code!=='EEXIST')throw error;if(!bytes.equals(await fs.readFile(file)))throw Error('existing archived report differs');}
-      closure.report={relPath,digest:digest(bytes),kind,source:sourceRef,revision:w.revision,at:new Date().toISOString(),...(kind==='worker-report'?{summary:bytes.toString('utf8').split(/\n\s*\n/).map(s=>s.replace(/^#{1,6}\s+[^\n]*\n?/gm,'').trim()).find(Boolean)?.replace(/\s+/g,' ').slice(0,240)||''}:{})};
+      closure.report={relPath,digest:digest(bytes),kind,source:sourceRef,format:source?.report.format||'markdown',mediaType:source?.report.mediaType||'text/markdown',revision:w.revision,at:new Date().toISOString(),...(kind==='worker-report'?{summary:source.report.excerpt.slice(0,240)}:{})};
       await this.updateArchiveState(w);return structuredClone(closure.report);
     });
   }
