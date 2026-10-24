@@ -8,7 +8,8 @@ if (process.argv.includes('--nozeli-document')) {
   require('../agents/document-entry.cjs');
   return;
 }
-const { app, BrowserWindow, WebContentsView, screen, ipcMain, Menu, shell, clipboard } = require('electron');
+const { app, BaseWindow, WebContentsView, screen, ipcMain, Menu, shell, clipboard, nativeTheme } = require('electron');
+const {WorkspaceWindow} = require('./workspace-window.cjs');
 let dialog, session;
 let DesktopHost, HostError, ops, agents, managedAgents, agentHandlers, lspManager, formatterService, texManager, texLanguage;
 const http = require('node:http');
@@ -30,6 +31,13 @@ if (HIDDEN) {
   app.disableHardwareAcceleration();
 }
 if (DEBUG_PORT) app.commandLine.appendSwitch('remote-debugging-port', DEBUG_PORT);
+// Wayland + this Electron's Vulkan backend crashes the GPU process during
+// startup (exit 133), which kills renderer module evaluation before the shell
+// reports ready; --disable-vulkan alone does not stop the cascade. Composite in
+// software on Wayland, matching Chromium's own post-crash fallback.
+if (process.platform === 'linux' && process.argv.some(arg => arg.includes('ozone-platform=wayland'))) app.commandLine.appendSwitch('disable-gpu');
+// Speculative DNS has no resource request to fence in an isolated session.
+app.commandLine.appendSwitch('dns-prefetch-disable');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -89,7 +97,7 @@ function startStatic() {
 }
 
 let host, fileTreeOps, treeMenuItems;
-let workspaceNative;
+let workspaceNative, isolatedPreview, workspaceCapture;
 let projectWatcher;
 let allowClose = false;
 let quitting = false;
@@ -157,7 +165,7 @@ function respond(error) {
 async function createWindow(server) {
   const address = server.address();
   origin = `http://127.0.0.1:${address.port}/`;
-  const win = new BrowserWindow({
+  const win = new WorkspaceWindow({
     width: 1440,
     height: 900,
     show: !HIDDEN,
@@ -183,7 +191,7 @@ async function createWindow(server) {
     {label:'窗口',submenu:[{role:'minimize',label:'最小化'},{role:'zoom',label:'缩放窗口'}]},
   ]));
   if(process.platform !== 'darwin'){win.setMenu(null);win.setMenuBarVisibility(false);}
-  win.once('ready-to-show', () => revealWindow(win));
+  win.webContents.once('did-finish-load', () => revealWindow(win));
   const scope = workspaceNative.registerShell(win);
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (event, url) => {
@@ -199,6 +207,7 @@ async function createWindow(server) {
   win.webContents.on('render-process-gone',(_event,details)=>{console.error('renderer gone',details);recovery.rendererGone(details);});
   win.on('closed',()=>recovery.destroyed());
   win.on('close',event=>{
+    if(workspaceCapture?.active){event.preventDefault();void workspaceCapture.shutdown().then(()=>win.close()).catch(error=>console.error('drawing close failed',error));return;}
     if(allowClose||quitting||scope.closing)return;
     event.preventDefault();
     if(workspaceNative.currentWindowCount()>1)void workspaceNative.closeWindow(scope).catch(error=>console.error('window close failed',error));
@@ -221,7 +230,9 @@ async function main() {
     if(routeLaunch)routeLaunch(argv,cwd);else pendingLaunches.push({argv,cwd});
   });
   // No profile resolution, migration, host or Agent creation before this lock.
-  if(!acquireApplicationSingleton(app)){app.exit(0);return;}
+  // Isolated test instances run synthetic profiles in parallel; they must not
+  // kill each other over the OS-account singleton, which guards real launches.
+  if(!ISOLATED_TEST_INSTANCE && !acquireApplicationSingleton(app)){app.exit(0);return;}
   const {fileArguments, externalTarget}=await import('./external-open.mjs');
   routeLaunch=(argv,cwd)=>{
     externalFiles.push(...fileArguments(argv,{packaged:app.isPackaged,cwd}).filter(file=>file!==__filename&&file!==APP_ROOT));
@@ -285,14 +296,31 @@ async function main() {
   }});
   ompSystemSource.modelFor=role=>providerSettings.modelFor(role);
   managedAgents=new ManagedProjects({userDataDir:app.getPath('userData'),host,legacy:agents,beforeDocumentOperation:syncDocument,ompSystemSource,ompAuthBroker,ompCommand:ompRuntime?.command});
-  managedAgents.onEvent(event=>workspaceNative?.broadcast('nozeli:agent',event,event.projectId));
+  managedAgents.onEvent(event=>{workspaceNative?.broadcast('nozeli:agent',event,event.projectId);if(event.kind==='managed-state'&&(managedAgents.activeProjectId===null||managedAgents.activeProjectId===event.projectId))void workspaceNative?.conversationState(event.projectId,event.state).catch(error=>console.error('conversation connection state',error));});
   const server = await startStatic();
   const {WorkspaceNative}=await import('./workspace-native.mjs');
   const {ProjectWatcher}=await import('./project-watcher.mjs');
   projectWatcher=new ProjectWatcher({onChange:event=>workspaceNative?.broadcast('nozeli:workspace-control',{type:'file-tree-changed',...event},event.projectId),onError:error=>workspaceNative?.broadcast('nozeli:workspace-control',{type:'file-tree-watch-error',...error},error.projectId)});
   const address=server.address();origin=`http://127.0.0.1:${address.port}/`;
-  workspaceNative=new WorkspaceNative({BrowserWindow,WebContentsView,screen,origin,preload:path.join(APP_ROOT,'src/preload/preload.cjs'),icon:path.join(APP_ROOT,'assets/nozeli.png'),userDataDir:app.getPath('userData'),host,hidden:HIDDEN,onClose:async r=>{const recovery=windowRecovery(r.win);if(recovery){recovery.requestClose();return;}await workspaceNative.flush([...workspaceNative.senders.values()]);if(agents?.busy()||managedAgents?.busy()){r.wc.send('nozeli:quit-confirm');return;}await managedAgents?.stop();await agents?.stopIdle?.();r.closing=true;for(const s of workspaceNative.projectRecords(r.projectId,r.windowId))workspaceNative.destroySurface(s);r.win.close();}});
+  workspaceNative=new WorkspaceNative({BrowserWindow:WorkspaceWindow,WebContentsView,screen,origin,preload:path.join(APP_ROOT,'src/preload/preload.cjs'),icon:path.join(APP_ROOT,'assets/nozeli.png'),userDataDir:app.getPath('userData'),host,hidden:HIDDEN,onClose:async r=>{const recovery=windowRecovery(r.win);if(recovery){recovery.requestClose();return;}await workspaceNative.flush([...workspaceNative.senders.values()]);if(agents?.busy()||managedAgents?.busy()){r.wc.send('nozeli:quit-confirm');return;}await managedAgents?.stop();await agents?.stopIdle?.();r.closing=true;for(const s of workspaceNative.projectRecords(r.projectId,r.windowId))workspaceNative.destroySurface(s);r.win.close();}});
+  const {IsolatedPreviewManager}=await import('./isolated-preview.mjs');
+  isolatedPreview=new IsolatedPreviewManager({WebContentsView,session,workspace:workspaceNative,host,managedAgents});
+  try{const saved=JSON.parse(await fs.readFile(path.join(app.getPath('userData'),'appearance.json'),'utf8'));if(['light','dark'].includes(saved.theme))nativeTheme.themeSource=saved.theme;isolatedPreview.setAppearance({palette:saved.palette,mode:nativeTheme.shouldUseDarkColors?'dark':'light'});}catch{}
+  nativeTheme.on('updated',()=>{isolatedPreview.setAppearance({palette:isolatedPreview.appearance?.palette??'sage',mode:nativeTheme.shouldUseDarkColors?'dark':'light'});});
+  workspaceNative.isolatedPreview=isolatedPreview;
+  const {WorkspaceCapture}=await import('./workspace-capture.mjs');
+  workspaceCapture=new WorkspaceCapture({workspace:workspaceNative,WebContentsView,origin,preload:path.join(APP_ROOT,'src/preload/workspace-capture.cjs'),directory:path.join(app.getPath('userData'),'nozeli','drawing-captures'),host,deliver:async(session,event)=>{await workspaceNative.deliverDrawing(session,event);}});
+  ipcMain.handle('nozeli:capture',async(event,op,payload)=>{try{return {ok:true,value:await workspaceCapture.invoke(event,op,payload)}}catch(error){return respond(error)}});
   workspaceNative.restoreShell=()=>createWindow(server);
+  workspaceNative.ensureConversation=async(projectId,target)=>{
+    const configuration=await readNozeliConfiguration(nozeliPaths);if(configuration.choiceRequired)throw Object.assign(Error('请先完成 Agent 配置，再打开对话。'),{code:'CONFIG_SETUP_REQUIRED'});
+    let status=await managedAgents.connect(projectId,{enable:true});
+    if(status.handoff)throw Object.assign(Error('原会话需要确认接手，请在连接与历史中处理。'),{code:'AGENT_HANDOFF_REQUIRED'});
+    if(!['frontdesk','orchestrator'].includes(target)){const controller=managedAgents.controllers.get(projectId);await controller.session(target);status=await managedAgents.status(projectId);}
+    const starting=managedAgents.controllers.get(projectId)?.starting?.get(target);if(starting){await starting;status=await managedAgents.status(projectId);}
+    const agent=status.state?.agents?.find(a=>a.target===target);
+    if(!status.ready||!agent||agent.closed||agent.restarting||!['ready','idle','prompt-inflight'].includes(agent.phase))throw Object.assign(Error(status.connectionError?.message||'当前 Agent 会话尚未就绪，请重试连接。'),{code:'AGENT_NOT_READY'});
+  };
   workspaceNative.setupWindow=r=>{
     const recovery=new WindowRecovery(r.win,{dialog,settle:async()=>{await workspaceNative.flush([...workspaceNative.surfaces.values()]);await host.settled();},busy:()=>agents?.busy()||managedAgents?.busy(),stop:async()=>{await managedAgents?.stop();await agents?.stopIdle?.();},reveal:()=>revealWindow(r.win),onClose:()=>{allowClose=true;quitting=true;for(const s of [...workspaceNative.surfaces.values()])workspaceNative.destroySurface(s);for(const w of workspaceNative.windows.values()){w.closing=true;w.win.close();}}});
     r.wc.on('did-start-navigation',(_e,_url,_inPlace,isMain)=>{if(isMain)recovery.navigation();});
@@ -307,7 +335,7 @@ async function main() {
     if(quitting)return;event.preventDefault();if(quitPending)return;quitPending=true;
     const r=workspaceNative.windows.get('main')||workspaceNative.windows.values().next().value;
     if(!r){quitPending=false;return;}
-    void workspaceNative.flush([...workspaceNative.senders.values()]).then(()=>{const recovery=windowRecovery(r.win);if(recovery)recovery.requestClose();else return workspaceNative.onClose(r);}).catch(error=>console.error('quit flush failed',error)).finally(()=>{quitPending=false;});
+    void workspaceCapture.shutdown().then(()=>workspaceNative.flush([...workspaceNative.senders.values()])).then(()=>{const recovery=windowRecovery(r.win);if(recovery)recovery.requestClose();else return workspaceNative.onClose(r);}).catch(error=>console.error('quit flush failed',error)).finally(()=>{quitPending=false;});
   });
   ipcMain.handle('nozeli:invoke', async (event, op, payload) => {
     try {
@@ -318,28 +346,46 @@ async function main() {
       if(typeof op!=='string')throw new HostError('UNKNOWN_OP','Unknown host operation.');
       payload=await workspaceNative.resolvePayload(scope,op,payload??{});
       trusted(event,op,payload??{});
+      if(op==='workspace.capture.begin')return {ok:true,value:await workspaceCapture.begin(scope,payload??{})};
+      if(op==='workspace.capture.source')return {ok:true,value:workspaceCapture.source(scope,payload??{})};
       if(op==='settings.appearance.read'||op==='settings.appearance.save'){
         const file=path.join(app.getPath('userData'),'appearance.json');
         if(op==='settings.appearance.read'){
           try{return {ok:true,value:JSON.parse(await fs.readFile(file,'utf8'))};}catch(error){if(error.code==='ENOENT')return {ok:true,value:null};throw error;}
         }
-        if(!payload||Object.keys(payload).some(k=>!['theme','font','size'].includes(k))||!['system','light','dark'].includes(payload.theme)||!['system','sans','serif','mono'].includes(payload.font)||!Number.isInteger(payload.size)||payload.size<12||payload.size>20)throw new HostError('INVALID_PAYLOAD','外观配置无效。');
+        if(!payload||Object.keys(payload).some(k=>!['theme','palette','font','size'].includes(k))||!['system','light','dark'].includes(payload.theme)||(Object.hasOwn(payload,'palette')&&!['sage','slate'].includes(payload.palette))||!['system','sans','serif','mono'].includes(payload.font)||!Number.isInteger(payload.size)||payload.size<12||payload.size>20)throw new HostError('INVALID_PAYLOAD','外观配置无效。');
+        if(!Object.hasOwn(payload,'palette')){
+          let palette='sage';
+          try{const previous=JSON.parse(await fs.readFile(file,'utf8'));if(['sage','slate'].includes(previous?.palette))palette=previous.palette;}catch(error){if(error.code!=='ENOENT')throw error;}
+          payload={...payload,palette};
+        }
         const temporary=file+'.'+randomUUID()+'.tmp';
         try{await fs.writeFile(temporary,JSON.stringify(payload),{flag:'wx',mode:0o600});await fs.rename(temporary,file);}finally{await fs.rm(temporary,{force:true});}
+        workspaceNative.broadcast('nozeli:workspace-control',{type:'appearance',value:payload});
+        // The explicit appearance choice is also Chromium's preferred scheme:
+        // every renderer (including isolated report views) then resolves
+        // prefers-color-scheme and light-dark() consistently with the app
+        // theme, and live setting changes propagate without per-page work.
+        if(nativeTheme.themeSource!==payload.theme)nativeTheme.themeSource=payload.theme;
+        isolatedPreview?.setAppearance({palette:payload.palette,mode:nativeTheme.shouldUseDarkColors?'dark':'light'});
         return {ok:true,value:payload};
       }
       if(op.startsWith('workspace.'))return {ok:true,value:await workspaceNative.invoke(scope,op,payload??{})};
+      if(op.startsWith('isolated-preview.'))return {ok:true,value:await isolatedPreview.invoke(scope,op,payload??{})};
       if(op==='project.watch'){if(scope.role==='surface')throw new HostError('IPC_DENIED','Only project navigation can watch directories.');const project=await host.requireProject(scope.projectId);return {ok:true,value:await projectWatcher.watch(scope.projectId,project.root,payload.parentRelPath??'')};}
       if(op==='project.unwatch'){if(scope.role==='surface')throw new HostError('IPC_DENIED','Only project navigation can unwatch directories.');projectWatcher.unwatchProject(scope.projectId);return {ok:true,value:{unwatched:true}};}
       if(op==='project.open'&&scope.role!=='shell')return {ok:true,value:{project:host.publicProject(await host.requireProject(scope.projectId))}};
       if(op==='state.write'&&scope.role!=='shell')throw new HostError('IPC_DENIED','Surface state is owned by the workspace host.');
       if(op==='state.write'){
-        const previous=(await host.readState(scope.projectId)).state??{},incoming=payload?.state??{};
-        const workspace={...(previous.workspace??{}),...(incoming.workspace??{})};
-        for(const key of ['draft','noteDrafts','noteOffsets','retainedNoteDrafts','composerMaterials'])if(Object.hasOwn(previous.workspace??{},key))workspace[key]=previous.workspace[key];else delete workspace[key];
-        const value=await host.writeState(scope.projectId,{...previous,...incoming,workspace});
-        workspaceNative.broadcast('nozeli:workspace-control',{type:'settings',projectId:scope.projectId,projectSettings:value.state.projectSettings,workspace:value.state.workspace},scope.projectId);
-        return {ok:true,value};
+        const projectId=scope.projectId;
+        return workspaceNative.serial('settings:'+projectId,async()=>{
+          const previous=(await host.readState(projectId)).state??{},incoming=payload?.state??{};
+          const workspace={...(previous.workspace??{}),...(incoming.workspace??{})};
+          for(const key of ['draft','noteDrafts','noteOffsets','retainedNoteDrafts','composerMaterials','confirmationSkips'])if(Object.hasOwn(previous.workspace??{},key))workspace[key]=previous.workspace[key];else delete workspace[key];
+          const value=await host.writeState(projectId,{...previous,...incoming,workspace});
+          workspaceNative.broadcast('nozeli:workspace-control',{type:'settings',projectId,projectSettings:value.state.projectSettings,workspace:value.state.workspace},projectId);
+          return {ok:true,value};
+        });
       }
       if(op==='config.status')return {ok:true,value:await readNozeliConfiguration(nozeliPaths)};
       if(op==='config.initialize'){
@@ -377,7 +423,7 @@ async function main() {
         }
       }
       if (op==='document.synced') return {ok:true,value:workspaceNative.acknowledge(scope,payload,{...payload?.result,requestId:payload?.requestId})};
-      if(op==='view.authorship'){const value=await host.viewAuthorship(payload?.visible);const item=Menu.getApplicationMenu()?.getMenuItemById('view.authorship');if(item)item.checked=value.visible;return {ok:true,value};}
+      if(op==='view.authorship'){const value=await host.viewAuthorship(payload?.visible);const item=Menu.getApplicationMenu()?.getMenuItemById('view.authorship');if(item)item.checked=value.visible;if(payload?.visible!==undefined)workspaceNative.broadcast('nozeli:workspace-control',{type:'authorship-visibility',visible:value.visible});return {ok:true,value};}
       if(op==='annotation.capture'){
         const r=payload.rect;if(!r||!['left','top','right','bottom'].every(k=>Number.isFinite(r[k]))||r.right<=r.left||r.bottom<=r.top)throw Error('区域截图坐标无效');
         const {width:w,height:h}=scope.role==='surface'?scope.view.getBounds():{width:scope.win.getContentSize()[0],height:scope.win.getContentSize()[1]};
@@ -394,6 +440,7 @@ async function main() {
       }
       if (op === 'session.takeOpen') { const file=externalFiles.shift();return {ok:true,value:file?await externalTarget(host,file):null}; }
       if (op === 'session.requestClose') {
+        await workspaceCapture.shutdown();
         scope.win.close();
         return { ok: true, value: { closing: true } };
       }
@@ -511,7 +558,7 @@ async function main() {
       if (op.startsWith('tex.')) {
         const method = { 'tex.inspect':'inspect', 'tex.view':'view', 'tex.configure':'configure', 'tex.build':'request', 'tex.status':'status', 'tex.cancel':'cancel', 'tex.artifact':'artifact', 'tex.sync':'sync' }[op];
         if (!method) throw new HostError('UNKNOWN_OP', 'Unknown TeX operation.');
-        return { ok: true, value: await texManager[method](payload ?? {}) };
+        const value=await texManager[method](payload??{});if(op==='tex.configure')workspaceNative.broadcast('nozeli:workspace-control',{type:'tex-configuration',projectId:payload.projectId,config:value},payload.projectId);return {ok:true,value};
       }
       if (op === 'formatter.format') return { ok: true, value: await formatterService.format(payload ?? {}) };
       if (op === 'document.clipboard') {
@@ -530,14 +577,24 @@ async function main() {
         if (payload?.action !== 'write' || typeof payload.text !== 'string' || payload.text.length > 8 * 1024 * 1024) throw new HostError('INVALID_PAYLOAD', 'Invalid clipboard text.');
         await clipboard.writeText(payload.text); return { ok: true, value: null };
       }
+      if(op==='report.copySource'){
+        if(Object.keys(payload).some(key=>!['projectId','objectId'].includes(key))||typeof payload.projectId!=='string'||typeof payload.objectId!=='string')throw new HostError('INVALID_PAYLOAD','报告身份无效。');
+        const source=await managedAgents.reportSource(payload.projectId,payload.objectId);
+        const bytes=await source.read();
+        let text;try{text=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes);}catch{throw new HostError('REPORT_INVALID','报告不是有效的UTF-8源文件。');}
+        await clipboard.writeText(text);
+        return {ok:true,value:{copied:true,byteLength:bytes.length,format:source.report.format}};
+      }
       if(op==='report.export'){
         const {ManagedReportExporter}=await import('./managed-report-export.mjs');
         return {ok:true,value:await new ManagedReportExporter({host,managedAgents,beforeOperation:syncDocument}).export(payload??{})};
       }
       if(typeof op==='string'&&op.startsWith('managed.')){
-        const historyOnly=['managed.status','managed.history.list','managed.history.read','managed.artifact.read','managed.artifact.list','managed.timeline.page','managed.timeline.read','managed.timeline.request','managed.changes.list','managed.changes.read','managed.worker.history','managed.resident.history','managed.draft'].includes(op);
-        if(ompRuntimeError&&!historyOnly)throw ompRuntimeError;
-        if(!historyOnly&&(await readNozeliConfiguration(nozeliPaths)).choiceRequired)throw new HostError('CONFIG_SETUP_REQUIRED','请先完成Nozeli独立配置初始化；本地阅读不受影响。');
+        const historyOnly=['managed.status','managed.history.list','managed.history.read','managed.artifact.read','managed.artifact.list','managed.timeline.page','managed.timeline.read','managed.timeline.request','managed.changes.list','managed.changes.read','managed.worker.history','managed.resident.history','managed.draft','managed.disposition','managed.terminal.screen'].includes(op);
+        // Local disposition still passes sender/project/mutation authorization above.
+        const localDisposition=op==='managed.end'||op==='managed.retry';
+        if(ompRuntimeError&&!historyOnly&&!localDisposition)throw ompRuntimeError;
+        if(!historyOnly&&!localDisposition&&(await readNozeliConfiguration(nozeliPaths)).choiceRequired)throw new HostError('CONFIG_SETUP_REQUIRED','请先完成Nozeli独立配置初始化；本地阅读不受影响。');
         return {ok:true,value:await managedAgents.invoke(op,payload??{})};
       }
       if (Object.hasOwn(agentHandlers, op)) return { ok: true, value: await agentHandlers[op](payload ?? {}) };
@@ -545,7 +602,10 @@ async function main() {
       if (!handler || op === 'project.pick') throw new HostError('UNKNOWN_OP', 'Unknown host operation.');
       const priorProject=scope.projectId;
       const value = await handler(host, payload ?? {});
-      if(op==='project.open'){await workspaceNative.bindProject(scope,payload.projectId);if(priorProject&&priorProject!==payload.projectId)projectWatcher?.unwatchProject(priorProject);}
+      if(op==='project.open'){
+        if(scope.role==='shell')try{await managedAgents.setActiveProject(payload.projectId);}catch(error){workspaceNative.broadcast('nozeli:agent',{projectId:payload.projectId,kind:'managed-error',text:'Agent 连接失败，文件仍可打开：'+error.message},payload.projectId);}
+        await workspaceNative.bindProject(scope,payload.projectId);if(priorProject&&priorProject!==payload.projectId)projectWatcher?.unwatchProject(priorProject);
+      }
       return { ok: true, value };
     } catch (error) {
       return respond(error);
@@ -553,7 +613,7 @@ async function main() {
   });
   await createWindow(server);
   app.on('activate', async () => {
-    if (quitting || BrowserWindow.getAllWindows().length > 0) return;
+    if (quitting || BaseWindow.getAllWindows().length > 0) return;
     allowClose = false;
     await createWindow(server);
   });

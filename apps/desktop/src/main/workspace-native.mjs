@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createLayout, validateLayout, reduceLayout, singleContentLayout, layoutGroups, findView } from '../domain/workspace-layout.mjs';
 import {WorkspaceLayoutStore} from './workspace-layout-store.mjs';
+import {mergeDrawingMaterials} from '../domain/drawing-delivery.mjs';
 
 const fail = (code, message = code) => Object.assign(new Error(message), { code });
 const writes = new Set(['file.save','file.draft','file.retain','sheet.save','sheet.recover','word.save','word.import','document.image.put','annotation.add','annotation.update','annotation.remove','annotation.drawing','tag.put','tag.view','tag.reanchor','tag.material']);
@@ -27,6 +28,26 @@ export class WorkspaceNative {
     this.namedLayouts=new WorkspaceLayoutStore({directory:path.join(userDataDir,'nozeli','named-layouts')});
     this.preferences = { contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true, allowRunningInsecureContent: false, backgroundThrottling: false, preload };
   }
+  async requireConversation(projectId,target='frontdesk'){
+    if(!this.ensureConversation)return;
+    try{await this.ensureConversation(projectId,target);}
+    catch(error){this.broadcast('nozeli:workspace-control',{type:'conversation-unavailable',projectId,target,error:{code:error.code||'AGENT_NOT_READY',message:error.message}},projectId);throw error;}
+  }
+  async conversationState(projectId,state){
+    const owner=[...this.surfaces.values()].find(s=>s.projectId===projectId&&s.kind==='conversation'&&s.conversationAdmitted&&!s.dead);
+    if(!owner||owner.transferring||this.conversationClosing?.has(projectId))return;
+    if(this.windows.get(owner.windowId)?.projectHidden)return;
+    if(state?.configuringTargets?.includes(owner.conversationTarget||'frontdesk'))return;
+    const agent=state?.agents?.find(a=>a.target===(owner.conversationTarget||'frontdesk'));
+    if(agent?.starting)return;
+    if(agent&&!agent.closed&&!agent.restarting&&['ready','idle','prompt-inflight'].includes(agent.phase))return;
+    this.conversationClosing??=new Set();this.conversationClosing.add(projectId);
+    const error={code:'AGENT_DISCONNECTED',message:'当前会话连接已中断；草稿保留，未发送。请重试连接。'};
+    owner.conversationBlocked=true;owner.view.setVisible(false);owner.wc.send('nozeli:workspace-control',{type:'conversation-unavailable',projectId,error});
+    try{const root=this.windows.get(owner.windowId);if(root&&!root.dead){await this.command(root,{projectId,expectedRevision:(await this.layout(projectId)).revision,requestKey:randomUUID(),command:{type:'closeContent',viewId:owner.viewId}});}}
+    catch(failure){this.onError(failure);}
+    finally{this.conversationClosing.delete(projectId);if((!this.shell||this.shell.dead)&&this.restoreShell)await this.restoreShell();this.broadcast('nozeli:workspace-control',{type:'conversation-unavailable',projectId,error},projectId);}
+  }
   register(wc, scope) {
     const record = { ...scope, wc, generation: 0, ready: false, dead: false };
     this.senders.set(wc.id, record);
@@ -38,6 +59,7 @@ export class WorkspaceNative {
     wc.on('will-attach-webview', event => event.preventDefault());
     wc.on('did-start-navigation', (_event, _url, _inPlace, main) => {
       if (!main) return;
+      this.isolatedPreview?.closeScope(record);
       record.generation++; record.ready = false;
       record.boundsSequence=0;
       this.cancelDrags(record);
@@ -45,6 +67,7 @@ export class WorkspaceNative {
       for (const [id, receipt] of this.receipts) if (receipt.record === record) { receipt.reject(fail('SURFACE_RELOADED')); this.receipts.delete(id); }
     });
     wc.on('render-process-gone', (_event, details) => {
+      this.isolatedPreview?.closeScope(record);
       if(record.role!=='surface')for(const surface of this.projectRecords(record.projectId,record.windowId))surface.view.setVisible(false);
       record.ready = false; record.generation++;
       this.cancelDrags(record);
@@ -52,6 +75,7 @@ export class WorkspaceNative {
       this.recover?.(record, details);
     });
     wc.once('destroyed', () => {
+      this.isolatedPreview?.closeScope(record);
       record.dead = true; this.senders.delete(wc.id);
       for (const [id, receipt] of this.receipts) if (receipt.record === record) { receipt.reject(fail('SURFACE_DESTROYED')); this.receipts.delete(id); }
       this.cancelDrags(record);
@@ -77,7 +101,11 @@ export class WorkspaceNative {
     if (!r || r.dead || !frame || frame.parent != null || frame !== event.sender.mainFrame || frame.url !== this.origin) throw fail('IPC_DENIED');
     if (typeof op !== 'string') throw fail('UNKNOWN_OP');
     if (payload.projectId && payload.projectId !== r.projectId && !(r.role === 'shell' && ['workspace.project','project.open'].includes(op))) throw fail('PROJECT_SCOPE_DENIED');
-    if (r.role !== 'shell' && !op.startsWith('workspace.') && !surfaceOps.test(op)) throw fail('IPC_DENIED');
+    if(r.role==='surface'&&r.kind==='terminal'&&op.startsWith('managed.')&&(op!=='managed.terminal.screen'||payload.target!==this.layouts.get(r.projectId)?.views[r.viewId]?.viewState?.workId))throw fail('IPC_DENIED');
+    if(this.captureProjectId===r.projectId&&(writes.has(op)||op==='managed.send'||op==='workspace.command'&&payload.command?.type!=='restoreViewState'||op==='workspace.project'))throw fail('CAPTURE_ACTIVE','请先完成或退出涂鸦');
+    if(op==='report.copySource'&&!(r.role==='shell'||r.role==='surface'&&['report','history'].includes(r.kind)))throw fail('IPC_DENIED');
+    if(op.startsWith('isolated-preview.')&&r.role==='surface'&&(!['report','document','history'].includes(r.kind)||r.kind==='history'&&['isolated-preview.open','isolated-preview.update'].includes(op)&&payload.profile!=='staticReport'))throw fail('IPC_DENIED');
+    if (r.role !== 'shell' && !op.startsWith('workspace.') && !op.startsWith('isolated-preview.') && !surfaceOps.test(op)) throw fail('IPC_DENIED');
     if (r.role === 'detached' && !op.startsWith('workspace.') && !['project.open','project.list','project.children','project.search','config.status','session.flushed','session.requestClose','session.quitChoice','state.read','view.authorship'].includes(op)) throw fail('IPC_DENIED');
     if (r.role === 'surface' && (writes.has(op) || op === 'ppt.export' || op === 'ppt.draft' && payload.model !== undefined)) {
       const lease = this.leases.get(this.resource(r.projectId, r.relPath));
@@ -86,7 +114,7 @@ export class WorkspaceNative {
     if (writes.has(op) && r.role !== 'surface' && payload.relPath && this.leases.has(this.resource(r.projectId,payload.relPath))) throw fail('EDIT_LEASE_DENIED');
     const mutatesDocument=writes.has(op)||op==='ppt.export'||op==='ppt.draft'&&payload.model!==undefined;
     if ((r.held||r.recoveryHeld||r.syncHolds?.size) && mutatesDocument) throw fail('TRANSFER_HELD');
-    if (r.held && op.startsWith('managed.') && !['managed.status','managed.history.list','managed.history.read','managed.artifact.read','managed.artifact.list','managed.timeline.page','managed.timeline.read'].includes(op)) throw fail('TRANSFER_HELD');
+    if (r.held && op.startsWith('managed.') && !['managed.status','managed.history.list','managed.history.read','managed.artifact.read','managed.artifact.list','managed.timeline.page','managed.timeline.read','managed.disposition'].includes(op)) throw fail('TRANSFER_HELD');
     if (r.role === 'surface' && op === 'managed.draft' && r.kind !== 'conversation') throw fail('CONVERSATION_OWNER_REQUIRED');
     if(op==='managed.frontdesk.context.clear'&&r.role!=='shell'&&!(r.role==='surface'&&r.kind==='conversation'&&payload.projectId===r.projectId))throw fail('CONVERSATION_OWNER_REQUIRED');
     if (r.role !== 'shell' && op === 'managed.enable') throw fail('IPC_DENIED');
@@ -122,7 +150,7 @@ export class WorkspaceNative {
       r.readOnly = this.leases.get(key)?.viewId !== r.viewId;
     }else if(descriptor?.readOnly)r.readOnly=true;
     const viewState=this.layouts.get(r.projectId)?.views[r.viewId]?.viewState;
-    return { role: r.role, projectId: r.projectId, viewId: r.viewId, kind: r.kind, relPath: r.relPath, windowId: r.windowId, generation: r.generation, readOnly: !!r.readOnly, viewState, lease: r.relPath ? this.leases.get(this.resource(r.projectId, r.relPath)) : null };
+    return { role: r.role, projectId: r.projectId, viewId: r.viewId, kind: r.kind, relPath: r.relPath, windowId: r.windowId, generation: r.generation, readOnly: !!r.readOnly, draftOnly:viewState?.draftOnly===true, viewState, lease: r.relPath ? this.leases.get(this.resource(r.projectId, r.relPath)) : null };
   }
   flush(records) { return Promise.all([...new Set(records)].filter(r => !r.dead).map(r => this.flushOne(r))).then(() => this.host.settled()); }
   async flushOne(record, channel = 'nozeli:flush', detail = {}) {
@@ -143,12 +171,12 @@ export class WorkspaceNative {
     if (result?.ok && !result?.composing) {if(p.hold)(record.syncHolds??=new Set()).add(payload.requestId);p.resolve({...result,requestId:payload.requestId});}else p.reject(fail(result?.composing ? 'COMPOSITION_ACTIVE' : result?.error?.code || 'FLUSH_FAILED', result?.error?.message));
     return { accepted: true };
   }
-  async syncDocument({ projectId, relPath, hold }) {
+  async syncDocument({ projectId, relPath, hold, captureBuffer = false }) {
     const owner = [...this.surfaces.values()].find(r => r.projectId === projectId && r.relPath === relPath && this.leases.get(this.resource(projectId, relPath))?.viewId === r.viewId);
     if (!owner) return () => {};
     let requestId;
     const release=()=>{if(requestId){owner.syncHolds?.delete(requestId);if(!owner.dead)owner.wc.send('nozeli:document-release',requestId);}};
-    try{const result=await this.flushOne(owner,'nozeli:document-sync',{projectId,relPath,hold});requestId=result.requestId;return release;}
+    try{const result=await this.flushOne(owner,'nozeli:document-sync',{projectId,relPath,hold,captureBuffer});requestId=result.requestId;return release;}
     catch(error){requestId=error.requestId;release();throw error;}
   }
   projectRecords(projectId, windowId) { return [...this.surfaces.values()].filter(r => r.projectId === projectId && (windowId === undefined || r.windowId === windowId)); }
@@ -192,8 +220,12 @@ export class WorkspaceNative {
     const work=async()=>{
       const generation=r.generation;
       if(r.projectId&&r.projectId!==projectId)await this.flush(this.projectRecords(r.projectId));
-      const layout=await this.layout(projectId);
+      let layout=await this.layout(projectId);
+      for(const view of Object.values(layout.views))if(view.kind==='conversation'&&!view.viewState?.draftOnly&&findView(layout,view.id)){
+        try{await this.requireConversation(projectId,'frontdesk');}catch{layout=reduceLayout(layout,{type:'closeContent',viewId:view.id});await this.persist(layout);this.layouts.set(projectId,layout);}
+      }
       if(r.dead||r.generation!==generation)throw fail('SHELL_CHANGED');
+      if(r.projectId!==projectId)this.isolatedPreview?.closeScope(r);
       for(const surface of [...this.surfaces.values()])if(surface.windowId==='main'){if(surface.projectId!==projectId)this.destroySurface(surface);else surface.view.setVisible(false);}
       r.projectId=projectId;await this.reconcile(layout);this.projectVisibility(projectId);this.changed(layout);return {layout,windowId:r.windowId};
     };
@@ -250,30 +282,42 @@ export class WorkspaceNative {
     for (const view of Object.values(layout.views)) {
       const found = findView(layout, view.id);if(!found)continue;const destination = this.windows.get(found.windowId);
       if (!destination || destination.projectId !== layout.projectId) continue;
+      if(view.kind==='conversation'&&!view.viewState?.draftOnly&&!this.surfaces.has(view.id)){
+        try{await this.requireConversation(layout.projectId,'frontdesk');}catch{continue;}
+      }
       let r = this.surfaces.get(view.id);
       if (!r) {
         const nativeView = new this.WebContentsView({ webPreferences: this.preferences });
         r = this.register(nativeView.webContents, { role: 'surface', viewId: view.id, projectId: layout.projectId, kind: view.kind, relPath: view.relPath, windowId: found.windowId, win: destination.win, view: nativeView });
+        if(view.kind==='conversation'){r.conversationAdmitted=!view.viewState?.draftOnly;r.conversationTarget='frontdesk';}
         r.loading=true;
         this.surfaces.set(view.id, r); nativeView.setVisible(false);
         destination.win.contentView.addChildView(nativeView);
         const [initialWidth,initialHeight]=destination.win.getContentSize();nativeView.setBounds({x:0,y:0,width:Math.max(280,initialWidth),height:Math.max(180,initialHeight)});
         void nativeView.webContents.loadURL(this.origin).catch(error=>{r.ready=false;this.onError(error);});
       } else if (r.windowId !== found.windowId) {
-        r.view.setVisible(false); r.win.contentView.removeChildView(r.view); destination.win.contentView.addChildView(r.view);
+        const previousWindow=r.win;
+        r.view.setVisible(false); previousWindow.contentView.removeChildView(r.view); destination.win.contentView.addChildView(r.view);
+        this.isolatedPreview?.reparentScope(r,destination.win);
         r.win = destination.win; r.windowId = found.windowId;
         const lease = this.leases.get(this.resource(r.projectId, r.relPath)); if (lease?.viewId === r.viewId) lease.windowId = r.windowId;
         r.wc.send('nozeli:workspace-control', { type: 'host', ...this.bootstrap(r) });
       }
     }
-    for (const [id, r] of this.surfaces) if (r.projectId === layout.projectId && (!layout.views[id]||!findView(layout,id))) this.destroySurface(r);
-    for (const [id, r] of this.windows) if (id !== 'main' && r.projectId === layout.projectId && !layout.detached.some(w => w.id === id)) { r.closing = true; r.win.destroy(); this.windows.delete(id); }
+    // Views pushed to a group's recent history stay resident (bounded) so switching back
+    // reuses the same renderer; only closed or aged-out views release their surface.
+    const resident=new Set();
+    for(const windowId of ['main',...layout.detached.map(w=>w.id)])for(const g of layoutGroups(layout,windowId)){if(g.activeViewId)resident.add(g.activeViewId);for(const id of (g.historyViewIds||[]).slice(0,3))resident.add(id);}
+    for (const [id, r] of this.surfaces) if (r.projectId === layout.projectId && !r.previewRecoveryFailed && (!layout.views[id]||!resident.has(id))) this.destroySurface(r);
+    for (const [id, r] of this.windows) if (id !== 'main' && r.projectId === layout.projectId && !layout.detached.some(w => w.id === id) && !this.isolatedPreview?.holdsWindow(r.win)) { r.closing = true; r.win.destroy(); this.windows.delete(id); }
   }
   destroySurface(r) {
+    if(r.previewRecoveryFailed)throw fail('TRANSFER_RECOVERY_REQUIRED','报告正文回滚未确认；不能销毁原生承载。');
+    this.isolatedPreview?.closeScope(r);
     r.view.setVisible(false); if (!r.win.isDestroyed()) r.win.contentView.removeChildView(r.view);
     r.wc.close(); this.surfaces.delete(r.viewId);
     const key = this.resource(r.projectId, r.relPath); if (this.leases.get(key)?.viewId === r.viewId) this.leases.delete(key);
-    if(!this.projectRecords(r.projectId).some(surface=>surface.relPath===r.relPath))this.buffers.delete(key);
+    if(!this.projectRecords(r.projectId).some(surface=>surface.relPath===r.relPath)){const retained=this.buffers.get(key);if(!retained?.dirty)this.buffers.delete(key);}
   }
   async command(r, payload) {
     if (r.role === 'surface' && payload.command?.type !== 'restoreViewState') throw fail('IPC_DENIED');
@@ -287,6 +331,10 @@ export class WorkspaceNative {
       if (previous) { if (previous.input !== JSON.stringify(payload)) throw fail('REQUEST_KEY_REUSED'); return previous.result; }
       if (payload.expectedRevision !== layout.revision && !(r.role==='surface'&&payload.command?.type==='restoreViewState'&&payload.expectedRevision===undefined)) throw fail('LAYOUT_STALE');
       const command = { ...payload.command };
+      if(command.type==='restoreViewState'&&layout.views[command.viewId]?.kind==='conversation'){
+        const saved=layout.views[command.viewId].viewState??{},incoming=command.viewState??{};
+        command.viewState={...incoming,draftOnly:saved.draftOnly,conversationMaterials:{...incoming.conversationMaterials,frontdesk:mergeDrawingMaterials(incoming.conversationMaterials?.frontdesk,saved.conversationMaterials?.frontdesk)}};
+      }
       if(command.type==='open'&&command.view?.kind==='document'){
         const existing=Object.values(layout.views).find(v=>v.kind==='document'&&v.relPath===command.view.relPath&&!v.readOnly);
         if(existing){const target=command.groupId;for(const key of Object.keys(command))delete command[key];command.type='activate';command.viewId=existing.id;command.groupId=target;const owner=this.surfaces.get(existing.id);if(owner){owner.win.show();owner.win.focus();}}
@@ -315,18 +363,22 @@ export class WorkspaceNative {
         next.revision=layout.revision+1;validateLayout(next);
       }else next=reduceLayout(layout, command);
       if(command.type==='restoreViewState')next.revision=layout.revision;
+      for(const view of Object.values(next.views))if(view.kind==='conversation'&&!view.viewState?.draftOnly&&findView(next,view.id)&&!findView(layout,view.id))await this.requireConversation(next.projectId,'frontdesk');
       const affected = this.projectRecords(layout.projectId).filter(s => {
+        // Reading metadata cannot move or close a surface; flushing here can wait on the renderer that is awaiting this write.
+        if(command.type==='restoreViewState')return false;
         const before = findView(layout, s.viewId), after = findView(next, s.viewId);
         return command.type==='restoreLayout' || !after || before?.windowId !== after.windowId;
       });
+      if(affected.some(s=>s.previewRecoveryFailed))throw fail('TRANSFER_RECOVERY_REQUIRED','报告正文迁移回滚尚未确认；保留窗口与阅读现场，禁止继续迁移。');
       for(const s of affected){s.transferring=true;s.wc.send('nozeli:workspace-control',{type:'transfer-hold',held:true});}
       const generations=new Map(affected.map(s=>[s,s.generation]));
       try { await this.flush(affected);for(const s of affected)s.held=true; }
-      catch(error){for(const s of affected){s.transferring=false;if(!s.dead)s.wc.send('nozeli:workspace-control',{type:'transfer-hold',held:false});}throw error;}
-      const prepared = [], staged = [];
+      catch(error){for(const s of affected){s.transferring=false;if(!s.dead)s.wc.send('nozeli:workspace-control',{type:'transfer-hold',held:!!s.recoveryHeld});this.persistPendingViewState(s);}throw error;}
+      const prepared = [], staged = [], pendingStates=new Map();
       try {
         for (const item of next.detached) if (!this.windows.has(item.id)) { await this.detached(next, item); prepared.push(item.id); }
-        for(const s of affected)if(s.pendingViewState&&next.views[s.viewId]){next.views[s.viewId].viewState=s.pendingViewState;s.pendingViewState=null;}
+        for(const s of affected)if(s.pendingViewState&&next.views[s.viewId]){const state=s.pendingViewState;pendingStates.set(s,state);next.views[s.viewId].viewState=state;}
         if(r.dead||affected.some(s=>s.dead||s.generation!==generations.get(s)))throw fail('TRANSFER_SOURCE_CHANGED');
         for(const item of next.detached){const destination=this.windows.get(item.id);if(!destination||destination.dead||destination.win.isDestroyed())throw fail('TRANSFER_TARGET_CHANGED');}
         for(const s of affected){
@@ -336,25 +388,26 @@ export class WorkspaceNative {
           const move={surface:s,source:s.win,sourceWindowId:s.windowId,destination:destination.win,destinationWindowId:location.windowId,bounds:s.view.getBounds(),removed:false,attached:false};
           staged.push(move);destination.staging=(destination.staging||0)+1;
           s.view.setVisible(false);s.win.contentView.removeChildView(s.view);move.removed=true;
-          destination.win.contentView.addChildView(s.view);move.attached=true;
+          destination.win.contentView.addChildView(s.view);move.attached=true;this.isolatedPreview?.reparentScope(s,destination.win);move.previewMoved=true;
         }
         await this.persist(next);
       } catch (error) {
-        let rollbackFailed=false;
+        let rollbackFailed=error.previewRollbackFailed===true;const rollbackErrors=[];
         for(const move of staged.reverse()){
           const s=move.surface;
           try{
             if(move.removed){try{move.destination.contentView.removeChildView(s.view);}catch(removeError){if(move.attached)throw removeError;}
-              move.source.contentView.addChildView(s.view);}
+              move.source.contentView.addChildView(s.view);if(move.previewMoved)this.isolatedPreview?.reparentScope(s,move.source);}
             s.win=move.source;s.windowId=move.sourceWindowId;s.view.setBounds(move.bounds);
-          }catch(rollbackError){rollbackFailed=true;s.recoveryHeld=true;this.onError(rollbackError);}
+          }catch(rollbackError){rollbackFailed=true;s.recoveryHeld=true;this.isolatedPreview?.holdScope(s,[move.source,move.destination]);rollbackErrors.push(rollbackError);this.onError(rollbackError);}
           const target=this.windows.get(move.destinationWindowId);if(target)target.staging=Math.max(0,(target.staging||1)-1);
         }
         // Never destroy a prepared parent if native rollback could not confirm that its live child returned.
-        if(!rollbackFailed)for(const id of prepared){const w=this.windows.get(id);if(w){w.closing=true;w.win.destroy();this.windows.delete(id);}}
-        for(const s of affected){s.transferring=false;s.held=!!s.recoveryHeld;if(!s.dead)s.wc.send('nozeli:workspace-control',{type:'transfer-hold',held:s.held});}
-        this.changed(layout);throw error;
+        if(!rollbackFailed)for(const id of prepared){const w=this.windows.get(id);if(w&&!this.isolatedPreview?.holdsWindow(w.win)){w.closing=true;w.win.destroy();this.windows.delete(id);}}
+        for(const s of affected){s.transferring=false;s.held=!!s.recoveryHeld;if(!s.dead)s.wc.send('nozeli:workspace-control',{type:'transfer-hold',held:s.held});this.persistPendingViewState(s);}
+        this.changed(layout);if(rollbackErrors.length){const failure=new AggregateError([error,...rollbackErrors],'工作区迁移失败且回滚未确认；原生窗口和阅读现场已保留。原因：'+error.message,{cause:error});failure.code='TRANSFER_ROLLBACK_FAILED';throw failure;}throw error;
       }
+      for(const [surface,state]of pendingStates)if(surface.pendingViewState===state)surface.pendingViewState=null;
       this.layouts.set(layout.projectId, next);
       for(const move of staged){
         const s=move.surface;s.win=move.destination;s.windowId=move.destinationWindowId;
@@ -364,15 +417,57 @@ export class WorkspaceNative {
       }
       const result = { layout: next, windowId: r.windowId };
       this.requests.set(requestId, { input: JSON.stringify(payload), result }); if (this.requests.size > 512) this.requests.delete(this.requests.keys().next().value);
-      try{await this.reconcile(next);}finally{for(const s of affected){s.transferring=false;s.held=false;if(!s.dead)s.wc.send('nozeli:workspace-control',{type:'transfer-hold',held:false});}}
+      try{await this.reconcile(next);}finally{for(const s of affected){s.transferring=false;s.held=!!s.recoveryHeld;if(!s.dead)s.wc.send('nozeli:workspace-control',{type:'transfer-hold',held:s.held});this.persistPendingViewState(s);}}
       this.projectVisibility(this.shell&&!this.shell.dead?this.shell.projectId:this.activeProjectId??layout.projectId);
       this.changed(next);
+      if(command.type==='closeContent'){
+        const prior=findView(layout,command.viewId),group=prior&&layoutGroups(next,prior.windowId).find(group=>group.id===prior.group.id),owner=group?.activeViewId&&this.surfaces.get(group.activeViewId);
+        if(owner){const focus=()=>{if(!owner.dead&&owner.ready&&owner.view.getVisible()&&findView(this.layouts.get(layout.projectId),owner.viewId)?.group.activeViewId===owner.viewId){owner.returnFocus=null;owner.wc.focus();owner.wc.send('nozeli:workspace-control',{type:'focus-content'});}};owner.returnFocus=focus;focus();}
+      }
       for(const move of staged){const target=this.windows.get(move.destinationWindowId);if(target&&!target.dead)target.wc.send('nozeli:workspace-control',{type:'surface-focus',viewId:move.surface.viewId,projectId:next.projectId});}
       return result;
     });
   }
+  persistPendingViewState(surface) {
+    if(surface.dead||!surface.pendingViewState||surface.pendingStateFlight)return;
+    surface.pendingStateFlight=this.serial(surface.projectId,async()=>{
+      if(surface.dead||surface.transferring||!surface.pendingViewState)return;
+      const layout=await this.layout(surface.projectId),state=surface.pendingViewState;
+      if(!layout.views[surface.viewId])return;
+      const next=reduceLayout(layout,{type:'restoreViewState',viewId:surface.viewId,viewState:state});next.revision=layout.revision;
+      await this.persist(next);this.layouts.set(surface.projectId,next);
+      if(surface.pendingViewState===state)surface.pendingViewState=null;
+      this.changed(next);
+    }).catch(error=>this.onError(error)).finally(()=>{surface.pendingStateFlight=null;});
+  }
+  async deliverDrawing(session,event){
+    const projectId=session.projectId;
+    const liveOwner=this.projectRecords(projectId).find(s=>s.kind==='conversation'&&!s.dead);
+    if(liveOwner?.ready)await this.flush([liveOwner]);
+    await this.serial(projectId,async()=>{
+      const layout=await this.layout(projectId);let conversation=Object.values(layout.views).find(v=>v.kind==='conversation');
+      if(!conversation){const next=reduceLayout(layout,{type:'open',view:{kind:'conversation',viewState:{draftOnly:true}}});conversation=Object.values(next.views).find(v=>v.kind==='conversation');await this.persist(next);this.layouts.set(projectId,next);}
+      if(!liveOwner){conversation.viewState={...conversation.viewState,draftOnly:true};}
+      const current=await this.layout(projectId),descriptor=current.views[conversation.id],state=descriptor.viewState??={},materials=state.conversationMaterials??{},frontdesk=materials.frontdesk??{pending:[],quote:null};
+      const key='drawing-'+event.deliveryId;
+      const delivered=frontdesk.deliveredDrawingIds??[];
+      if(!delivered.includes(event.deliveryId)){
+        descriptor.viewState={...state,conversationMaterials:{...materials,frontdesk:{...frontdesk,pending:[...(frontdesk.pending??[]),{...event.attachment,key,deliveryId:event.deliveryId,status:'ok'}],deliveredDrawingIds:[...delivered,event.deliveryId]}},conversationInput:state.conversationInput??{projectId,target:'frontdesk'}};
+        await this.persist(current);
+      }
+    });
+    const saved=await this.layout(projectId),recipient=Object.values(saved.views).find(v=>v.kind==='conversation');
+    if(this.shell?.projectId!==projectId||recipient?.viewState?.conversationInput?.target!=='frontdesk'){this.broadcast('nozeli:workspace-control',{type:'drawing-saved',projectId},projectId);return;}
+    const root=this.windows.get(session.window.windowId)??this.shell,layout=await this.layout(projectId),conversation=Object.values(layout.views).find(v=>v.kind==='conversation');
+    await this.command(root,{projectId,expectedRevision:layout.revision,requestKey:'drawing-open-'+event.deliveryId,command:{type:'activate',viewId:conversation.id}});
+    const owner=this.surfaces.get(conversation.id);if(!owner)throw fail('DRAFT_UNAVAILABLE');
+    if(owner.ready)owner.wc.send('nozeli:workspace-control',event);else(owner.pendingControls??=[]).push(event);
+    owner.win.show();owner.wc.focus();
+  }
   async closeWindow(r) {
     if (r.closePending) return;
+    if(r.captureSession)throw fail('CAPTURE_ACTIVE','请先完成或退出涂鸦');
+    if(this.isolatedPreview?.holdsWindow(r.win))throw fail('TRANSFER_RECOVERY_REQUIRED','此窗口仍承载尚未确认回滚的报告正文；现场已保留。');
     if(r.staging||[...this.surfaces.values()].some(s=>s.windowId===r.windowId&&s.transferring))throw fail('TRANSFER_IN_PROGRESS');
     r.closePending = true;
     try {
@@ -409,12 +504,14 @@ export class WorkspaceNative {
       const lease=this.leases.get(this.resource(r.projectId,r.relPath));if(r.role!=='surface'||r.readOnly||p.projectId!==r.projectId||p.relPath!==r.relPath||lease?.viewId!==r.viewId||lease.generation!==r.generation)throw fail('EDIT_LEASE_DENIED');if(p.text!==undefined&&(typeof p.text!=='string'||Buffer.byteLength(p.text)>8*1024*1024))throw fail('INVALID_BUFFER');
       if(p.model!==undefined&&(!p.model||typeof p.model!=='object'||Buffer.byteLength(JSON.stringify(p.model))>32*1024*1024))throw fail('INVALID_BUFFER');
       const key=this.resource(r.projectId,r.relPath),previous=this.buffers.get(key),value={projectId:r.projectId,relPath:r.relPath,text:p.text,model:p.model??previous?.model,dirty:p.dirty===true,missing:p.missing===true,digest:p.digest,kind:p.kind,revision:(previous?.revision??0)+1,sourceViewId:r.viewId};this.buffers.set(key,value);
+      if(previous?.text!==value.text||previous?.missing!==value.missing||previous?.dirty!==value.dirty)for(const slot of this.isolatedPreview?.slots.values()??[])if(slot.projectId===r.projectId&&slot.profile==='offlineDevelopment')this.isolatedPreview.emit(slot,'buffers-changed',{relPath:r.relPath});
       const layout=this.layouts.get(r.projectId);if(layout?.views[r.viewId]){layout.views[r.viewId].viewState={...layout.views[r.viewId].viewState,documentStatus:{dirty:value.dirty,missing:value.missing,readOnly:false}};if(value.dirty)layout.views[r.viewId].preview=false;}
       for(const surface of this.projectRecords(r.projectId))if(surface.relPath===r.relPath&&surface.viewId!==r.viewId&&surface.readOnly&&!surface.dead)surface.wc.send('nozeli:workspace-control',{type:'document-buffer',...value,model:p.model});if(layout)this.changed(layout);return {revision:value.revision};
     }
     if(op==='workspace.settings')return this.serial('settings:'+r.projectId,async()=>{
-      if(!r.projectId||p.projectId!==r.projectId||!p.workspace||typeof p.workspace!=='object'||Object.keys(p.workspace).some(key=>!['fontSize','conversationFontSize','readingWidth'].includes(key)))throw fail('INVALID_SETTINGS');
-      if(Object.values(p.workspace).some(value=>!Number.isFinite(value))||p.projectSettings!==undefined&&(!p.projectSettings||Object.keys(p.projectSettings).some(key=>key!=='focusMode')||typeof p.projectSettings.focusMode!=='boolean'))throw fail('INVALID_SETTINGS');
+      if(!r.projectId||p.projectId!==r.projectId||!p.workspace||typeof p.workspace!=='object'||Object.keys(p.workspace).some(key=>!['fontSize','conversationFontSize','readingWidth','confirmationSkips'].includes(key)))throw fail('INVALID_SETTINGS');
+      const skips=p.workspace.confirmationSkips;
+      if(Object.entries(p.workspace).some(([key,value])=>key!=='confirmationSkips'&&!Number.isFinite(value))||skips!==undefined&&(!skips||typeof skips!=='object'||Array.isArray(skips)||Object.entries(skips).some(([key,value])=>!['closeDocument','closeCompare','removeTag','deleteNote'].includes(key)||typeof value!=='boolean'))||p.projectSettings!==undefined&&(!p.projectSettings||Object.keys(p.projectSettings).some(key=>key!=='focusMode')||typeof p.projectSettings.focusMode!=='boolean'))throw fail('INVALID_SETTINGS');
       const prior=(await this.host.readState(r.projectId)).state??{};
       const value=await this.host.writeState(r.projectId,{...prior,workspace:{...prior.workspace,...p.workspace},projectSettings:p.projectSettings??prior.projectSettings});
       this.broadcast('nozeli:workspace-control',{type:'settings',projectId:r.projectId,workspace:value.state.workspace,projectSettings:value.state.projectSettings},r.projectId);return value;
@@ -423,6 +520,7 @@ export class WorkspaceNative {
       r.ready=r.role!=='surface'||p.contentReady===true;r.readyResolve?.();const result=this.bootstrap(r);const layout=this.layouts.get(r.projectId);
       if(r.ready)r.loading=false;
       if(r.ready)r.wc.emit('nozeli-content-ready');
+      if(r.ready)r.returnFocus?.();
       if(layout)this.changed(layout);if(r.ready){for(const control of r.pendingControls||[])r.wc.send('nozeli:workspace-control',control);r.pendingControls=[];}return result;
     }
     if(op==='workspace.focus'){
@@ -466,7 +564,9 @@ export class WorkspaceNative {
         const valid = rect && ['x','y','width','height'].every(k => Number.isFinite(rect[k])) && rect.x >= 0 && rect.y >= 0 && rect.width > 0 && rect.height > 0 && rect.x + rect.width <= width + 1 && rect.y + rect.height <= height + 1;
         const occluded=valid&&Array.isArray(p.overlayRects)&&p.overlayRects.some(b=>b&&['x','y','width','height'].every(k=>Number.isFinite(b[k]))&&b.width>0&&b.height>0&&b.x<rect.x+rect.width&&b.x+b.width>rect.x&&b.y<rect.y+rect.height&&b.y+b.height>rect.y);
         if (valid) surface.view.setBounds(Object.fromEntries(Object.entries(rect).map(([k,v]) => [k,Math.round(v)])));
-        surface.view.setVisible(!!valid && !p.overlay && !occluded && (surface.ready||surface.loading) && ![...this.drags.values()].some(d=>d.projectId===r.projectId&&!(d.source.role==='detached'&&d.source.windowId===r.windowId)));
+        surface.view.setVisible(!!valid && !surface.conversationBlocked && !p.overlay && !occluded && surface.ready && ![...this.drags.values()].some(d=>d.projectId===r.projectId&&!(d.source.role==='detached'&&d.source.windowId===r.windowId)));
+        for(const slot of this.isolatedPreview?.slots.values()??[])if(slot.scope===surface)this.isolatedPreview.bounds(slot,slot.bounds);
+        surface.returnFocus?.();
       }
       return {};
     }
@@ -492,7 +592,9 @@ export class WorkspaceNative {
       const layout = await this.layout(r.projectId);
       if(p.type==='focus-document-owner'){if(r.role==='surface'&&p.relPath!==r.relPath)throw fail('PROJECT_SCOPE_DENIED');const lease=this.leases.get(this.resource(r.projectId,p.relPath)),owner=lease&&this.surfaces.get(lease.viewId);if(!owner)throw fail('NO_ACTIVE_VIEW');const root=this.windows.get(owner.windowId);if(!root)throw fail('NO_ROOT');await this.command(root,{projectId:r.projectId,expectedRevision:layout.revision,requestKey:randomUUID(),command:{type:'activate',viewId:owner.viewId}});owner.win.show();owner.win.focus();owner.wc.focus();owner.wc.send('nozeli:workspace-control',{type:'focus-content'});return {};}
       if(p.type==='conversation-action'){
+        await this.requireConversation(r.projectId,p.target||'frontdesk');
         const conversation=Object.values(layout.views).find(v=>v.kind==='conversation');
+        if(conversation?.viewState?.draftOnly){conversation.viewState={...conversation.viewState,draftOnly:false};await this.persist(layout);const live=this.surfaces.get(conversation.id);if(live)live.wc.send('nozeli:workspace-control',{type:'drawing-connect',projectId:r.projectId});}
         const root=this.windows.get(r.windowId)||this.windows.get('main');if(!root)throw fail('NO_ROOT');
         const localGroups=layoutGroups(layout,root.windowId),source=r.role==='surface'?findView(layout,r.viewId)?.group:null;
         const target=p.groupId?localGroups.find(g=>g.id===p.groupId):source||localGroups[0];
@@ -501,6 +603,7 @@ export class WorkspaceNative {
         const action=conversation?(p.groupId&&found&&found.group.id!==target.id?{type:'move',viewId:conversation.id,targetGroupId:target.id}:{type:'activate',viewId:conversation.id,groupId:target.id}):{type:'open',groupId:target.id,view:{kind:'conversation'}};
         const result=await this.command(root,{projectId:r.projectId,expectedRevision:layout.revision,requestKey:randomUUID(),command:action});
         const owner=this.surfaces.get(Object.values(result.layout.views).find(v=>v.kind==='conversation').id);if(!owner)throw fail('NO_ACTIVE_VIEW');
+        owner.conversationAdmitted=true;owner.conversationBlocked=false;owner.conversationTarget=p.target||'frontdesk';
         if(owner.ready)owner.wc.send('nozeli:workspace-control',p);else(owner.pendingControls??=[]).push(p);owner.win.show();owner.win.focus();return {};
       }
       if(r.role==='surface'){

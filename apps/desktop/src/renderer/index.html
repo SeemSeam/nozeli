@@ -22,7 +22,11 @@
     <nav class="rail" aria-label="近期项目">
       <button type="button" id="pick-project" class="rail-add" title="选择目录">+</button>
       <div id="recent" class="recent"></div>
-      <button type="button" id="open-settings" class="rail-settings" aria-label="设置" aria-haspopup="dialog" aria-controls="settings-dialog" title="设置">设置</button>
+      <div class="rail-actions" role="group" aria-label="项目操作">
+        <button type="button" id="workspace-drawing" class="rail-action" aria-label="涂鸦" title="涂鸦" disabled>涂鸦</button>
+        <button type="button" id="workspace-open-conversation" class="rail-action workspace-conversation-launcher" aria-label="打开当前项目对话" title="打开当前项目对话" disabled>对话</button>
+        <button type="button" id="open-settings" class="rail-action rail-settings" aria-label="设置" aria-haspopup="dialog" aria-controls="settings-dialog" title="设置">设置</button>
+      </div>
     </nav>
     <aside class="files" id="files">
       <button type="button" id="file-toggle" class="file-toggle edge-toggle" aria-expanded="true" aria-controls="file-tree" aria-label="收起项目文件" title="收起项目文件"></button>
@@ -104,20 +108,26 @@
       </div>
     </section>
   </div>
-    <button type="button" id="workspace-open-conversation" class="workspace-conversation-launcher" aria-label="打开当前项目对话" title="打开当前项目对话" disabled>对话</button>
+
   <dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-title">
     <header class="settings-heading"><div><h2 id="settings-title">设置</h2><p>应用偏好与 Nozeli 私有 OMP</p></div><button type="button" id="settings-close" aria-label="关闭设置">×</button></header>
     <div class="settings-layout">
       <nav class="settings-nav" aria-label="设置分类">
-        <button type="button" id="settings-zen" aria-pressed="false">进入 Zen 专注模式</button>
         <div class="settings-scope-label">通用设置 <small>所有项目共享</small></div>
-        <button type="button" data-settings-section="settings-provider" aria-current="page">OMP 源管理</button>
+        <button type="button" data-settings-section="settings-appearance" aria-current="page">外观</button>
+        <button type="button" data-settings-section="settings-reading-display">阅读显示</button>
+        <button type="button" data-settings-section="settings-provider">AI 连接与账号</button>
         <button type="button" data-settings-section="settings-models">默认模型</button>
-        <button type="button" data-settings-section="settings-appearance">外观</button>
-        <button type="button" data-settings-section="settings-general">通用</button>
-        <div class="settings-scope-label">当前项目设置 <small>当前打开的项目</small></div>
+        <button type="button" data-settings-section="settings-agents">Agent 资源</button>
+        <button type="button" data-settings-section="settings-general">快捷键与初始化</button>
+        <div class="settings-scope-label">当前项目设置 <small id="settings-project-name">未打开项目</small><details><summary>项目路径</summary><span id="settings-project-path"></span><button type="button" id="settings-copy-project-path">复制路径</button></details></div>
+        <button type="button" data-settings-section="settings-project-reading">阅读与对话</button>
+        <button type="button" data-settings-section="settings-project-workspace">工作区</button>
+        <button type="button" data-settings-section="settings-project-tex">TeX 编译</button>
+        <button type="button" data-settings-section="settings-project-confirmations">交互与确认</button>
+        <div class="settings-scope-label">快捷操作 <small>立即执行，不切换设置分类</small></div>
         <button type="button" id="provider-console-toggle" hidden aria-pressed="false" aria-label="切换到终端">终端</button>
-        <button type="button" data-settings-section="settings-agents">Agent 额度</button>
+        <button type="button" id="settings-zen" aria-pressed="false">进入 Zen 专注模式</button>
       </nav>
       <div class="settings-content">
         <p id="settings-error" role="alert"></p>
@@ -125,8 +135,13 @@
         <section id="settings-models" aria-label="三角色默认模型" hidden></section>
         <section id="settings-agents" aria-label="Agent 额度" hidden></section>
         <section id="settings-appearance" aria-label="外观" hidden></section>
+        <section id="settings-reading-display" aria-label="阅读显示" hidden></section>
+        <section id="settings-project-reading" aria-label="当前项目阅读与对话" hidden></section>
+        <section id="settings-project-workspace" aria-label="当前项目工作区" hidden></section>
+        <section id="settings-project-tex" aria-label="当前项目TeX编译" hidden></section>
+        <section id="settings-project-confirmations" aria-label="当前项目交互与确认" hidden></section>
         <section id="settings-general" aria-label="通用设置" hidden>
-          <h3>通用</h3><p class="settings-hint">应用级设置统一收纳在这里。正文与对话的阅读字号仍由各自工具栏控制。</p>
+          <h3>快捷键与初始化</h3><p class="settings-hint">正文与对话的显示偏好位于当前项目的“阅读与对话”；各文件的常用操作仍在内容附近。</p>
           <div class="settings-card"><h4>Nozeli 配置初始化</h4><p>首次使用可选择独立配置或明确同意导入系统 OMP；完成后不可重复导入。不会自动复制登录凭据。</p><button type="button" id="settings-initialize">查看初始化状态</button></div>
           <p class="settings-hint">发送：Ctrl / Cmd + Enter；换行：Enter。Zen：Ctrl / Cmd + Shift + F11；退出：Esc。</p>
         </section>

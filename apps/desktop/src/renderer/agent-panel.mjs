@@ -15,7 +15,7 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
   let projectId = null;
   let generation = 0;
   let consoleVisible = false;
-  let restoredDraft = '';
+  let restoredInput;
   let filePaths = new Set();
   const legacyArchive = document.createElement('details');
   legacyArchive.id = 'legacy-conversation-history';
@@ -111,8 +111,8 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
       void loadLegacyHistory(id, gen).catch(error => {
         if (id === projectId && gen === generation) toast('旧版只读历史加载失败：' + error.message);
       });
-      const connect = initialized || configuration.initialized;
-      const loaded = await managed.load(id, {connect:ownsConversation&&connect, observe:!ownsConversation, ...(ownsConversation?{draft:restoredDraft}:{})});
+      const connect = !scope?.viewState?.draftOnly && !scope?.draftOnly && (initialized || configuration.initialized);
+      const loaded = await managed.load(id, {connect:ownsConversation&&connect, observe:!ownsConversation, ...(ownsConversation?{input:restoredInput}:{})});
       if (id !== projectId || gen !== generation) return;
       if(!loaded&&connect&&scope?.role==='shell')await managed.enable(id);
       if (!connect) setAi('请完成 Nozeli 配置初始化；仍可阅读项目和历史记录。', 'unavailable');
@@ -120,6 +120,11 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
       if (id === projectId && gen === generation) setAi(error.message, 'failed');
     }
   }
+  subscribe('workspace.control', event => {
+    if (event.type !== 'drawing-connect' || !ownsConversation || event.projectId !== projectId) return;
+    if (scope) { scope.draftOnly = false; scope.viewState = {...scope.viewState, draftOnly:false}; }
+    void loadProjectSettings(projectId, generation);
+  });
   const settingsPanel=mountSettingsPanel({invoke,getProjectId,onInitialize:async()=>{
     await configuration.ready;
     if(!configuration.initialized)return configuration.open();
@@ -162,8 +167,8 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     $('quit-error').textContent = '';
     if (!$('quit-choice').open) $('quit-choice').showModal();
   });
-  if(ownsConversation)$('composer').addEventListener('input', () => { if(projectId)restoredDraft=$('composer').value; });
-  window.__agentProject = (id, {draft = ''} = {}) => {
+  if(ownsConversation)$('composer').addEventListener('input',()=>{if(projectId)restoredInput={projectId,frame:{...scope?.viewState,workspace:{...scope?.viewState?.workspace,draft:$('composer').value},composerMaterials:window.__composerMaterials?.snapshotPersist()}};});
+  window.__agentProject = (id, {input} = {}) => {
     void invoke('managed.project.active',{projectId:id||null}).then(result=>{if(!result?.ok)toast(result?.error?.message||'更新活跃项目失败');}).catch(error=>toast(error.message));
     managed.clear({rememberDraft:false});
     // The workspace supplies its restored draft explicitly; never infer it from the old composer.
@@ -175,7 +180,7 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     filePaths = new Set();
     projectId = id;
     settingsPanel.projectChanged();
-    restoredDraft = draft;
+    restoredInput = input;
     $('send-message').disabled = true;
     $('selection-discuss').disabled = false;
     $('selection-explain').disabled = true;
@@ -186,7 +191,7 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     $('provider-console-project').textContent = id ? `项目：${$('project-name').textContent || id}` : '尚未打开项目';
     generation += 1;
     const gen = generation;
-    if(ownsConversation)$('composer').value = draft;
+    if(ownsConversation)$('composer').readOnly=true;
     $('managed-doc').hidden = true;
     const loading=id?loadProjectSettings(id, gen):Promise.resolve();
     if (! $('provider-console').hidden) void refreshConsole();
@@ -220,14 +225,12 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     const text = snap?.text || rawText;
     if (!text.trim() && !(snap?.attachments?.length)) return;
     const externals = (snap?.attachments || []).filter(a => a.digest);
-    if (externals.length) {
-      toast('当前前台尚不支持本地材料附件；请引用项目文件与选区。');
-      $('compose-status').textContent = '发送未发出：附件不受当前前台支持';
-      return;
-    }
+    const images = externals.filter(a => a.source === 'drawing' && a.storage === 'app-data' && a.mime === 'image/png');
+    if (images.length !== externals.length) return reject('仅支持显式发送涂鸦 PNG，其他本地附件仍不受支持');
+    if (images.length > 8 || images.reduce((sum, a) => sum + a.size, 0) > 24 * 1024 * 1024) return reject('图片超过 8 张或 24 MiB 上限');
     const relPath = $('attach-file').checked ? attachment() : (snap?.attachments || []).find(a => a.relPath && a.source !== 'selection')?.relPath || null;
     const materialText = relPath && typeof window.__nozeliInput?.text === 'function' ? window.__nozeliInput.text() : null;
-    const result = await managed.send(text,{relPath,materialText,background}).then(value=>({ok:true,value}),error=>({ok:false,error}));
+    const result = await managed.send(text.trim() ? text : '请查看附带的涂鸦截图。',{relPath,materialText,background,composerText:rawText,imageAttachments:images.map(a=>({digest:a.digest,mime:a.mime,storage:'app-data',deliveryId:a.deliveryId}))}).then(value=>({ok:true,value}),error=>({ok:false,error}));
     if (!result.ok) return reject(result.error.message);
     return result.value;
   };

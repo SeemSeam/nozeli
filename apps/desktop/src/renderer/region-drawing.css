@@ -1,5 +1,5 @@
-#region-drawing{position:fixed;inset:0;pointer-events:none;z-index:1100}
-#region-drawing[hidden]{display:none}
+.region-drawing-editor{position:fixed;inset:0;pointer-events:none;z-index:1100}
+.region-drawing-editor[hidden]{display:none}
 .drawing-clip{position:fixed;overflow:hidden;pointer-events:none}
 .drawing-area{position:absolute;outline:2px solid #c7362f;pointer-events:auto;touch-action:none;cursor:crosshair;background:#fff}
 .drawing-area[data-tool=eraser]{cursor:cell}
@@ -8,7 +8,7 @@
 .drawing-controls{position:fixed;display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:5px;border:1px solid var(--border,#d8d0c2);border-radius:8px;background:var(--paper,#fffdf6);box-shadow:0 4px 18px #0002;pointer-events:auto;font-size:12px;color:var(--ink,#292723)}
 .drawing-controls button,.drawing-controls select{height:28px;display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border:1px solid transparent;border-radius:5px;font:inherit;background:transparent;color:inherit;cursor:pointer}
 .drawing-controls button:hover,.drawing-controls button[aria-pressed=true]{background:#c7362f12;border-color:#c7362f44}
-.drawing-controls #drawing-finish{background:#c7362f;color:white}
+.drawing-controls [data-drawing-action=finish]{background:#c7362f;color:white}
 .drawing-controls button:disabled{opacity:.45;cursor:default}
 .drawing-controls input[type=color]{width:28px;height:28px;border:0;padding:2px;background:transparent;cursor:pointer}
 
@@ -17,3 +17,8 @@
 .image-page.region-selecting .note-anchor,.word-note-overlay.region-selecting .note-anchor{pointer-events:none}
 /* Keep the frozen region boundary visible above the crop, including clipped views. */
 .drawing-area::after{content:'';position:absolute;inset:0;box-shadow:inset 0 0 0 1.5px #c7362f;pointer-events:none}
+.drawing-fullscreen{background:#252925;pointer-events:auto}
+.drawing-fullscreen .drawing-clip{z-index:1}
+.drawing-fullscreen .drawing-controls{z-index:2}
+.drawing-source{flex-basis:100%;max-width:620px;max-height:64px;overflow:auto;padding:3px 5px;color:var(--muted,#666);font-size:11px;overflow-wrap:anywhere}
+.drawing-controls :is(button,input,select):focus-visible{outline:2px solid var(--ui-control-focus,#466b55);outline-offset:2px}

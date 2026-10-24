@@ -1,0 +1,10 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {captureOutput} from '../src/domain/capture-sources.mjs';
+const layer=(id,x,width)=>({bounds:{x,y:0,width,height:100},source:{sourceId:id,identity:{relPath:id}}});
+const session={width:200,height:100,tiles:[{id:'main',width:200,height:100,x:0,y:0,layers:[layer('a',0,100),layer('b',100,100)]}]};
+test('unselected capture never binds file sources',()=>{assert.deepEqual(captureOutput(session,{scopeMode:'none',pixelScale:1}).sources,[]);});
+test('crop retains only actual output sources at fractional display scale',()=>{const result=captureOutput(session,{scopeMode:'rectangle',pixelScale:1.5,crop:{x:151,y:0,width:149,height:150}});assert.deepEqual(result.sources.map(s=>s.sourceId),['b']);assert.equal(result.sources[0].captureRegion.width,149/1.5);assert.equal(result.sources[0].selection,null);});
+test('an opaque upper guest excludes fully covered parent provenance',()=>{const copy=structuredClone(session);copy.tiles[0].layers=[layer('parent',0,200),layer('guest',0,200)];assert.deepEqual(captureOutput(copy,{scopeMode:'window',windowId:'main',pixelScale:1}).sources.map(s=>s.sourceId),['guest']);});
+test('invalid scope and geometry are rejected rather than selecting other window',()=>{assert.throws(()=>captureOutput(session,{scopeMode:'window',windowId:'missing',pixelScale:1}));assert.throws(()=>captureOutput(session,{scopeMode:'none',pixelScale:0}));assert.throws(()=>captureOutput(session,{scopeMode:'rectangle',pixelScale:1}));});
+test('combined upper layers fully hide parent metadata and partial coverage clips provenance',()=>{const copy=structuredClone(session);copy.tiles[0].layers=[layer('parent',0,200),layer('left',0,100),layer('right',100,100)];assert.deepEqual(captureOutput(copy,{scopeMode:'window',windowId:'main',pixelScale:1}).sources.map(s=>s.sourceId),['left','right']);copy.tiles[0].layers.pop();const parent=captureOutput(copy,{scopeMode:'window',windowId:'main',pixelScale:1}).sources.find(s=>s.sourceId==='parent');assert.deepEqual(parent.outputRegion,{x:100,y:0,width:100,height:100});});

@@ -1,0 +1,11 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import {randomUUID} from 'node:crypto';
+import {WorkspaceCaptureStore} from '../src/main/workspace-capture-store.mjs';
+const dataUrl='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7ioAAAAASUVORK5CYII=';
+const record=(projectId,id=randomUUID())=>({id,projectId,width:1,height:1,tiles:[{width:1,height:1,layers:[{bounds:{x:0,y:0,width:1,height:1},dataUrl}]}]});
+test('capacity is project bounded and explicit unreferenced discard frees the slot',async t=>{const directory=await fs.mkdtemp(path.join(os.tmpdir(),'drawing-store-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));const store=new WorkspaceCaptureStore({directory,maxCaptures:1}),a=record('a');await store.saveFrozen(a);await store.saveFrozen(record('b'));await assert.rejects(store.saveFrozen(record('a')));await assert.rejects(store.discard(a.id,'b'));await store.discard(a.id,'a');await store.saveFrozen(record('a'));});
+test('saved local drawing retains immutable evidence and cannot be discarded',async t=>{const directory=await fs.mkdtemp(path.join(os.tmpdir(),'drawing-local-store-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));const store=new WorkspaceCaptureStore({directory}),a=record('a');await store.saveFrozen(a);await store.saveResult(a.id,'a',{state:'local',attachment:{mime:'image/png',source:'drawing',digest:'a'.repeat(64),size:64},sources:[]});await assert.rejects(store.discard(a.id,'a'));assert.equal((await store.listRecoverable('a'))[0].state,'local');assert.equal((await store.load(a.id,'a')).result.attachment.digest,'a'.repeat(64));});

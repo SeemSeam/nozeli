@@ -1,3 +1,4 @@
+import { appendDrawingMaterial } from '../domain/drawing-delivery.mjs';
 import { renderTagMarkdown } from './tag-markdown.mjs';
 import { createFileIcon, fileIconType } from './file-icons.mjs';
 import './conversation-rendering.css';
@@ -33,6 +34,29 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
   let pending = [];       // [{key,name,mime,size,kind,source,status,digest?,relPath?,note?}]
   let quoteTo = null;
   let seq = 0;
+  let revision = 0;
+  let materialOwner = { projectId, target: null, pending, quote: quoteTo, reads: 0 };
+  const readingOwners = new Map();
+  const ownerKey = owner => JSON.stringify([owner.projectId, owner.target]);
+  function persistedMaterials(owner) {
+    return { pending: owner.pending.map(({ key, name, mime, size, kind, source, status, digest, relPath, note, frozenText, deliveryId, sources }) => ({ key, name, mime, size, kind, source, status, digest, relPath, note, frozenText, deliveryId, sources })), quote: owner.quote, deliveredDrawingIds: owner.deliveredDrawingIds || [] };
+  }
+  function beginRead() {
+    if (!materialOwner.projectId || !materialOwner.target || composer.readOnly) { toast('请先核实材料的接收目标；材料尚未读取。'); return null; }
+    const owner = materialOwner;
+    owner.reads++;
+    readingOwners.set(ownerKey(owner), owner);
+    return owner;
+  }
+  function materialsChanged(owner) {
+    if (owner === materialOwner) renderChips();
+    composerReady?.({ projectId: owner.projectId, target: owner.target, materials: persistedMaterials(owner) });
+  }
+  function endRead(owner) {
+    owner.reads--;
+    if (!owner.reads && readingOwners.get(ownerKey(owner)) === owner) readingOwners.delete(ownerKey(owner));
+    materialsChanged(owner);
+  }
 
   /* ---------- markup (inserted around the untouched textarea) ----------
    * 2026-10-17 用户纠正：不做输入框内编辑工具或正文预览——textarea 保持
@@ -82,33 +106,33 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
 
   /* ---------- local files → host-managed immutable materials -------------- */
   async function addLocalFiles(files, source) {
-    for (const file of files) {
-      const key = `f${++seq}`;
-      if (file.size > 8 * 1024 * 1024) {
-        pending.push({ key, name: file.name, mime: file.type || 'application/octet-stream', size: file.size, kind: 'binary', source, status: 'error', note: '超过单文件 8 MiB 上限，未添加' });
-        renderChips(); continue;
+    const owner = beginRead();
+    if (!owner) return;
+    try {
+      // Stage the entire selection before the first await; every late receipt
+      // and subsequent file belongs to this container, even after switching.
+      const entries = [];
+      for (const file of files) {
+        const entry = { key: `f${++seq}`, name: file.name, mime: file.type || 'application/octet-stream', size: file.size, kind: classify(file.name, file.type), source, status: 'reading' };
+        if (file.size > 8 * 1024 * 1024) { entry.status = 'error'; entry.note = '超过单文件 8 MiB 上限，未添加'; }
+        else if (owner.pending.some(a => a.name === file.name && a.size === file.size)) { entry.status = 'dup'; entry.note = '同名同大小材料已在列表'; }
+        owner.pending.push(entry);
+        if (entry.status === 'reading') entries.push({ file, entry });
       }
-      if (pending.some(a => a.name === file.name && a.size === file.size)) {
-        pending.push({ key, name: file.name, mime: file.type || '', size: file.size, kind: 'binary', source, status: 'dup', note: '同名同大小材料已在列表' });
-        renderChips(); continue;
+      materialsChanged(owner);
+      for (const { file, entry } of entries) {
+        if (!owner.pending.includes(entry)) continue;
+        try {
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          if (!owner.pending.includes(entry)) continue;
+          const result = await invoke('material.attach', { name: file.name, mime: entry.mime, size: file.size, source, bytes: b64(bytes) });
+          if (!result?.ok) throw new Error(result?.error?.message || '材料保存失败');
+          entry.digest = result.value.digest; entry.status = 'ok';
+          if (result.value.duplicate) entry.note = '相同内容已在历史材料中复用';
+        } catch (error) { entry.status = 'error'; entry.note = String(error.message || error).slice(0, 80); }
+        materialsChanged(owner);
       }
-      const kind = classify(file.name, file.type);
-      const entry = { key, name: file.name, mime: file.type || 'application/octet-stream', size: file.size, kind, source, status: 'reading' };
-      pending.push(entry); renderChips();
-      try {
-        const bytes = new Uint8Array(await file.arrayBuffer());
-        const result = await invoke('material.attach', { name: file.name, mime: entry.mime, size: file.size, source, bytes: b64(bytes) });
-        if (!result || !result.ok) throw new Error(result?.error?.message || '材料保存失败');
-        entry.digest = result.value.digest;
-        entry.status = 'ok';
-        if (result.value.duplicate) entry.note = '相同内容已在历史材料中复用';
-      } catch (error) {
-        entry.status = 'error';
-        entry.note = String(error.message || error).slice(0, 80);
-      }
-      renderChips();
-    }
-    composerReady?.();
+    } finally { endRead(owner); }
   }
   function b64(bytes) {
     let out = ''; const chunk = 0x8000;
@@ -274,31 +298,32 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
   panel.addEventListener('keydown', event => { if (event.key === 'Escape') { event.stopPropagation(); closePicker(); } });
   panel.querySelector('.cm-cancel').addEventListener('click', () => { picked.clear(); closePicker(); });
   confirmBtn.addEventListener('click', async () => {
-    confirmBtn.disabled = true; confirmBtn.textContent = '读取所选文件…';
-    let added = 0, failed = 0;
-    for (const [abs, info] of [...picked]) {
-      const inProject = projectId && projectRoot() && abs.startsWith(projectRoot());
-      if (pending.some(a => a.absPath === abs)) { picked.delete(abs); continue; }
-      const entry = { key: `e${++seq}`, name: info.name, absPath: abs, kind: 'binary', source: 'path-select', status: 'reading', note: inProject ? '项目文件 · 只读引用' : '项目外 · 只读材料' };
-      if (inProject) entry.relPath = abs.slice(projectRoot().length + 1).replace(/\\/g, '/');
-      pending.push(entry); added++; renderChips();
-      const result = await invoke('material.attachPath', { path: abs });
-      if (result?.ok) {
-        entry.digest = result.value.digest; entry.mime = result.value.mime; entry.size = result.value.size;
-        entry.kind = classify(info.name, result.value.mime); entry.status = 'ok';
-        if (looksLikeCredential(info.name)) entry.note = (inProject ? '项目文件' : '项目外 · 只读材料') + ' · 注意：疑似凭据/密钥文件，确认后再随消息引用';
-      } else {
-        entry.status = 'error'; entry.note = result?.error?.message?.slice(0, 90) || '读取失败';
-        failed++;
+    const owner = beginRead();
+    if (!owner) return;
+    const selected = [...picked], root = projectRoot();
+    picked.clear(); updatePickerCount(); closePicker();
+    try {
+      const entries = [];
+      for (const [abs, info] of selected) {
+        if (owner.pending.some(a => a.absPath === abs)) continue;
+        const inProject = owner.projectId && root && abs.startsWith(root);
+        const entry = { key: `e${++seq}`, name: info.name, absPath: abs, kind: 'binary', source: 'path-select', status: 'reading', note: inProject ? '项目文件 · 只读引用' : '项目外 · 只读材料' };
+        if (inProject) entry.relPath = abs.slice(root.length + 1).replace(/\\/g, '/');
+        owner.pending.push(entry); entries.push({ abs, entry, inProject });
       }
-      picked.delete(abs);
-      renderChips();
-    }
-    updatePickerCount();
-    confirmBtn.disabled = false; confirmBtn.textContent = '引用所选文件';
-    if (!failed) closePicker();
-    else { errorEl.hidden = false; errorEl.textContent = `${failed} 个文件未能读取（已标注在材料列表）`; }
-    composerReady?.();
+      materialsChanged(owner);
+      for (const { abs, entry, inProject } of entries) {
+        if (!owner.pending.includes(entry)) continue;
+        try {
+          const result = await invoke('material.attachPath', { path: abs });
+          if (!result?.ok) throw new Error(result?.error?.message || '读取失败');
+          entry.digest = result.value.digest; entry.mime = result.value.mime; entry.size = result.value.size;
+          entry.kind = classify(entry.name, result.value.mime); entry.status = 'ok';
+          if (looksLikeCredential(entry.name)) entry.note = (inProject ? '项目文件' : '项目外 · 只读材料') + ' · 注意：疑似凭据/密钥文件，确认后再随消息引用';
+        } catch (error) { entry.status = 'error'; entry.note = String(error.message || error).slice(0, 90); }
+        materialsChanged(owner);
+      }
+    } finally { endRead(owner); }
   });
   function looksLikeCredential(name) {
     return /(^|[\\/])(\.env|id_rsa|id_ed25519|.*\.pem|.*\.key|credentials\.json|.*\.p12|.*\.kdbx)$/i.test(name);
@@ -392,8 +417,10 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
     chip.append(main, x);
     return chip;
   }
-  const sourceLabel = s => ({ 'local-select': '本地选择', paste: '粘贴', drop: '拖入', current: '当前文件', selection: '选区', project: '项目文件', 'path-select': '路径引用' }[s] || s);
+  const sourceLabel = s => ({ 'local-select': '本地选择', paste: '粘贴', drop: '拖入', current: '当前文件', selection: '选区', project: '项目文件', 'path-select': '路径引用',drawing:'涂鸦' }[s] || s);
   function renderChips() {
+    revision++;
+    materialOwner.pending = pending; materialOwner.quote = quoteTo;
     chipRow.replaceChildren();
     pending.forEach(a => chipRow.append(chipNode(a)));
     updateSendState();
@@ -403,7 +430,7 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
   function updateSendState() {
     const send = document.getElementById('send-message');
     if (!send) return;
-    const blocked = pending.some(a => a.status === 'error');
+    const blocked = pending.some(a => a.status === 'error' || a.status === 'reading');
     send.classList.toggle('cm-send-blocked', blocked);
     if (blocked) send.title = '有材料未就绪，先移除或重新添加'; else send.title = '';
   }
@@ -411,9 +438,12 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
   /* ---------- reply quote --------------------------------------------------- */
   quoteCancel.addEventListener('click', () => setQuote(null));
   function setQuote(message) {
+    revision++;
     quoteTo = message ? { role: message.role, time: message.createdAt || message.time || '', text: String(message.text || '') } : null;
+    materialOwner.quote = quoteTo;
     quoteBar.hidden = !quoteTo;
     if (quoteTo) quoteText.textContent = `回复 ${quoteTo.role === 'user' ? '你' : '前台'}${quoteTo.time ? ' ' + quoteTo.time : ''}：${quoteTo.text.replace(/\s+/g, ' ').slice(0, 60)}${quoteTo.text.length > 60 ? '…' : ''}`;
+    composerReady?.();
   }
 
   /* ---------- chip open → project file or material viewer ------------------ */
@@ -467,6 +497,8 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
       return;
     }
     const { name, mime, size, bytes, source } = result.value;
+    const drawing=pending.find(a=>a.digest===digest&&a.source==='drawing');
+    if(drawing){const provenance=document.createElement('p');provenance.textContent=drawing.sources?.length?drawing.sources.map(s=>s.summary||s.identity?.relPath||'工作区来源 · 仅视口').join('；'):'工作区截图，未锚定文件';body.append(provenance);}
     viewer.querySelector('.mv-title').textContent = `${name} · ${fmtSize(size)} · 只读${source === 'paste' ? ' · 粘贴' : source === 'drop' ? ' · 拖入' : source === 'path-select' ? ' · 路径引用' : ' · 本地选择'}`;
     note.remove();
     const kind = classify(name, mime);
@@ -516,9 +548,18 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
     return `> 回复 ${quoteTo.role === 'user' ? '你' : '前台'}${quoteTo.time ? ' ' + quoteTo.time : ''}：${excerpt}${quoteTo.text.length > 200 ? '…' : ''}\n\n${composer.value}`;
   }
   return {
-    setProject(id) { if (id === projectId) return; projectId = id; quoteTo = null; quoteBar.hidden = true; closeAt(); if (!panel.hidden) closePicker(); void refreshFilePaths(); },
+    appendDrawing(delivery) {
+      if (delivery.projectId !== materialOwner.projectId || delivery.target !== materialOwner.target) return false;
+      const before = persistedMaterials(materialOwner), next = appendDrawingMaterial(before, delivery);
+      if (next === before) return false;
+      materialOwner.pending = next.pending; materialOwner.deliveredDrawingIds = next.deliveredDrawingIds;
+      pending = materialOwner.pending; revision++;
+      materialsChanged(materialOwner);
+      return true;
+    },
+    setProject(id) { if (id === projectId) return; projectId = id; materialOwner = { projectId: id, target: null, pending: [], quote: null, reads: 0 }; pending = materialOwner.pending; quoteTo = null; quoteBar.hidden = true; renderChips(); closeAt(); if (!panel.hidden) closePicker(); void refreshFilePaths(); },
     setFilePaths(paths) { filePathsCache = paths || []; },
-    blocked() { return pending.some(a => a.status === 'error'); },
+    blocked() { return pending.some(a => a.status === 'error' || a.status === 'reading'); },
     /** Snapshot for send: text (with quote) + material descriptors. */
     snapshot() {
       return {
@@ -527,26 +568,31 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
           name: a.name, mime: a.mime || 'application/octet-stream', size: a.size ?? 0, kind: a.kind,
           digest: a.digest || null, relPath: a.relPath || null, source: a.source,
           frozenText: a.frozenText || null,
+          ...(a.source === 'drawing' ? { storage: 'app-data', deliveryId: a.deliveryId || a.key?.slice('drawing-'.length), sources: a.sources || [] } : {}),
         })),
       };
     },
     /** Receipt: clear only if nothing changed since the snapshot token. */
     confirmSent(token) {
       if (!token) return;
-      if (token.pendingRef !== pending) return;
+      if (token.pendingRef !== pending || token.revision !== revision || token.projectId !== projectId) return;
       pending = [];
+      materialOwner.pending = pending;
       renderChips();
       setQuote(null);
     },
-    token() { return { pendingRef: pending }; },
-    restore(value) {
-      pending = Array.isArray(value?.pending) ? value.pending.filter(a => a && a.key) : [];
-      quoteTo = value?.quote || null;
+    token() { return { pendingRef: pending, revision, projectId }; },
+    restore(value, identity = materialOwner) {
+      const next = { projectId: identity.projectId ?? projectId, target: typeof identity.target === 'string' ? identity.target : null };
+      if (next.projectId !== materialOwner.projectId || next.target !== materialOwner.target) { picked.clear(); closePicker(); closeAt(); }
+      const inFlight = readingOwners.get(ownerKey(next));
+      materialOwner = inFlight || { ...next, pending: Array.isArray(value?.pending) ? value.pending.filter(a => a && a.key).map(a => a.status === 'reading' ? { ...a, status: 'error', note: '上次读取未完成；材料已保留，请移除后重新添加。' } : a) : [], quote: value?.quote || null, deliveredDrawingIds: value?.deliveredDrawingIds || [], reads: 0 };
+      pending = materialOwner.pending; quoteTo = materialOwner.quote;
       quoteBar.hidden = !quoteTo;
       if (quoteTo) quoteText.textContent = `回复 ${quoteTo.role === 'user' ? '你' : '前台'}${quoteTo.time ? ' ' + quoteTo.time : ''}：${String(quoteTo.text || '').replace(/\s+/g, ' ').slice(0, 60)}`;
       renderChips();
     },
-    snapshotPersist() { return { pending: pending.map(({ key, name, mime, size, kind, source, status, digest, relPath, note, frozenText }) => ({ key, name, mime, size, kind, source, status, digest, relPath, note, frozenText })), quote: quoteTo }; },
+    snapshotPersist() { return persistedMaterials(materialOwner); },
     setQuote,
     statusNote(message) { statusEl.textContent = message; },
     refreshFilePaths,

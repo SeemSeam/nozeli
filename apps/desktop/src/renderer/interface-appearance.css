@@ -9,6 +9,14 @@
 .ui-icon-button:focus-visible,.ui-icon-label:focus-visible,.panel-more:focus-visible,.panel-font:focus-visible{outline:2px solid var(--ui-control-focus);outline-offset:1px;background:var(--ui-control-hover)}
 .ui-icon-button:disabled,.ui-icon-label:disabled{opacity:.4;cursor:default}
 .ui-icon-button.ui-danger:hover:not(:disabled){color:var(--annotation-red,#b23a2d);background:#f9ece8}
+/* Explicit opt-in actions: ordinary controls remain owned by their component. */
+.ui-action{min-height:32px;padding:6px 12px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);font:inherit;line-height:1.5;cursor:pointer}
+.ui-action[data-ui-action=primary]{background:var(--ui-action-bg);border-color:var(--ui-action-bg);color:var(--ui-action-ink)}
+.ui-action[data-ui-action=danger]{background:var(--ui-danger-bg);border-color:var(--ui-danger-bg);color:var(--ui-danger-ink)}
+.ui-action[data-ui-action=primary]:hover:not(:disabled){background:var(--ui-action-bg);color:var(--ui-action-ink)}
+.ui-action[data-ui-action=danger]:hover:not(:disabled){background:var(--ui-danger-bg);color:var(--ui-danger-ink)}
+.ui-action:focus-visible{outline:2px solid var(--ui-control-focus);outline-offset:2px}
+.ui-action:disabled{cursor:default}
 #reader.document-header-unified .desk-tools .ui-icon-button,#reader .reader-bar .ui-icon-button,#reader #secondary-tools .ui-icon-button{width:28px;min-width:28px;height:28px;min-height:28px;flex:0 0 28px;padding:5px;border:0;border-radius:6px;color:var(--ui-control-ink)}
 #reader.document-header-unified .desk-tools svg.ui-icon,#reader .reader-bar svg.ui-icon,.chat-window-controls .ui-icon,.panel-more .ui-icon{width:18px;height:18px;flex:0 0 18px}
 #reader :is(.reader-bar,header).panel-narrow .ui-icon-button,#reader :is(.reader-bar,header).panel-tiny .panel-more{width:26px!important;min-width:26px!important;flex:0 0 26px!important;padding:4px!important}
@@ -30,7 +38,7 @@
 #selection-menu .ui-icon-label{gap:5px;min-height:28px;padding:4px 7px;color:var(--ui-control-ink)}
 #selection-menu .ui-icon{width:16px;height:16px}
 #send-message .ui-icon{width:16px;height:16px;order:1}
-#send-message.ui-icon-label{gap:6px;color:#fff}
+#send-message.ui-icon-label{gap:6px}
 .file-type-icon{display:inline-grid;place-items:center;width:20px;height:20px;flex:0 0 20px;font-size:16px;line-height:1;vertical-align:middle}
 .file-type-letter::before{box-sizing:border-box;width:15px;height:17px;border-radius:2px;font-size:10px;line-height:1}
 .file-tree button,.open-file-select{align-items:center;gap:6px}
@@ -64,3 +72,15 @@
 .compact-composer .conversation-controls .ui-icon{width:16px;height:16px;flex:0 0 16px}
 .compact-composer .conversation-controls .panel-font .ui-icon{width:12px;height:12px;flex:0 0 12px}
 .compact-composer .conversation-controls .ui-icon-button,.compact-composer .conversation-controls .panel-more,.compact-composer .conversation-controls .panel-font{height:28px;min-height:28px;border-radius:6px}
+/* All bottom-rail actions share one layout and interaction contract. */
+.rail .rail-actions{display:flex;flex-direction:column;align-items:center;gap:6px;margin-top:auto;flex:0 0 auto}
+.rail .rail-actions>.rail-action{position:static;display:grid;place-items:center;box-sizing:border-box;flex:0 0 34px;width:34px;min-width:34px;height:34px;min-height:34px;margin:0;padding:7px;border:1px solid var(--line);border-radius:9px;background:var(--paper);color:var(--muted);cursor:pointer;font:inherit}
+.rail .rail-actions>.rail-action>.ui-icon{width:18px;height:18px}
+.rail .rail-actions>.rail-action:hover:not(:disabled){background:var(--green-soft);color:var(--green)}
+.rail .rail-actions>.rail-action:active:not(:disabled),.rail .rail-actions>.rail-action[aria-pressed=true]{background:var(--ui-control-active);color:var(--green)}
+.rail .rail-actions>.rail-action:focus-visible{outline:2px solid var(--ui-control-focus);outline-offset:2px}
+.rail .rail-actions>.rail-action:disabled{opacity:.45;cursor:default}
+.rail .rail-actions>.rail-action[aria-busy=true]{opacity:.65;cursor:progress}
+.rail .rail-actions>.rail-action.conversation-minimized{color:var(--green);border-color:var(--green);background:var(--green-soft)}
+.rail .rail-actions>.rail-action[data-state=error]{color:var(--red);border-color:var(--red)}
+@media(max-width:600px){.rail .rail-actions{position:fixed;bottom:12px;left:9px;z-index:30}.focus-mode .rail .rail-actions{display:none}}

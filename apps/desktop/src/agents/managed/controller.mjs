@@ -1,3 +1,4 @@
+import {dispositionBinding,sameDispositionBinding,workDisposition} from '../../domain/work-disposition.mjs';
 import {ExecutionWorkspace} from './execution-workspace.mjs';
 import {intakeLineage} from '../../domain/managed-work-records.mjs';
 import {runtimeFailureMessage} from '../../domain/runtime-failure-message.mjs';
@@ -41,10 +42,10 @@ export function isExplicitWorkCancellation(value,name){
  return /^(?:请|麻烦|帮我|请帮我|现在|立即|确定|确认|please\s+)?\s*(?:撤销|取消|强制退出|终止|结束|停止|cancel\b|stop\b|terminate\b)/i.test(command);
 }
 export class Controller extends EventEmitter {
-  static async open({projectId=null,runtimeRoot,contentRoot,sessionFactory,readProjectText,frontdeskDocuments,beforeAccept,afterAdoption,isolateProcesses=false,checkpoint=async()=>{},ompSystemSource=null,ompAuthBroker=null,ompCommand,processBudget}={}){
+  static async open({localOnly=false,projectId=null,runtimeRoot,contentRoot,sessionFactory,readProjectText,frontdeskDocuments,beforeAccept,afterAdoption,isolateProcesses=false,checkpoint=async()=>{},ompSystemSource=null,ompAuthBroker=null,ompCommand,processBudget}={}){
     const store=await Workspace.open(runtimeRoot,contentRoot,{recoverStale:true,checkpoint});
     const controller=new Controller(store,{projectId,sessionFactory,readProjectText,frontdeskDocuments,beforeAccept,afterAdoption,isolateProcesses,checkpoint,ompSystemSource,ompAuthBroker,ompCommand,processBudget});
-    try{await controller.timeline.initialize();await controller.restore();return controller;}catch(e){await store.close();throw e;}
+    try{await controller.timeline.initialize();const s=store.state;s.jobs??=[];s.messages??=[];s.drafts??={};s.residents??={};s.providers??={};s.frontdeskRoutes??=[];s.recoveryEvents??=[];controller.coldQueued=new Set(s.works.filter(w=>w.status==='queued').map(w=>w.id));controller.coldJobs=new Set(s.jobs.filter(j=>['queued','running'].includes(j.status)).map(j=>j.id));controller.localOnly=localOnly;if(!localOnly)await controller.restore();return controller;}catch(e){await store.close();throw e;}
   }
   constructor(store,{projectId=null,frontdeskDocuments,sessionFactory,readProjectText,beforeAccept,afterAdoption,isolateProcesses,checkpoint=async()=>{},ompSystemSource=null,ompAuthBroker=null,ompCommand,processBudget}={}){
     super();Object.assign(this,{frontdeskDocuments,store,sessionFactory,readProjectText,beforeAccept,afterAdoption,isolateProcesses,checkpoint,ompSystemSource,ompAuthBroker,ompCommand});this.execution=new ExecutionWorkspace(store);this.sessions=new Map();this.starting=new Map();this.running=new Map();this.current=new Map();this.pendingEnds=new Set();this.publicationSerial=new Map();this.intakeSerial=new Map();this.stopping=false;this.started=false;this.closures=new Map();this.configuring=new Set();this.nativeDraftTargets=new Set();this.externalTerminalTargets=new Set();this.terminals=new Map();
@@ -120,7 +121,13 @@ export class Controller extends EventEmitter {
     await this.finalizeTransfers({restoring:true});
     for(const w of this.store.state.works)if(w.status==='ended'&&w.closure?.phase!=='complete')await this.advanceClosure(w.id);
   }
+  async prepareOnline(){
+    if(!this.localOnly)return;
+    if(!this.onlinePreparation)this.onlinePreparation=this.initializeBindings().then(()=>{this.localOnly=false;}).catch(error=>{this.onlinePreparation=null;throw error;});
+    await this.onlinePreparation;
+  }
   async start(){
+    await this.prepareOnline();
     this.assertFrontdeskContextAdmission('frontdesk');
     const residents=['frontdesk','orchestrator'].filter(target=>!this.sessions.get(target)||this.sessions.get(target).closed);
     const preflight=await Promise.allSettled(residents.map(target=>this.makeSession(target,{preflightOnly:true})));
@@ -182,7 +189,7 @@ export class Controller extends EventEmitter {
   #ompProviderStatus(){
     const rolesStatus={};
     for(const role of ['frontdesk','orchestrator','worker']){
-      const binding=this.store.state.bindings[role]||{};
+      const binding=this.store.state.bindings?.[role]||{};
       if(binding.provider!=='omp')continue;
       const session=this.sessions.get(role);
       rolesStatus[role]={selectionOwner:'native',configurationStatus:session?.configurationStatus??null,...(session?.effective?{effective:session.effective}:{})};
@@ -345,7 +352,8 @@ export class Controller extends EventEmitter {
     if(route.action==='continue')return route.status==='queued'?`补充已保存到“${name}”，等待名额后由原工作 Agent 一并接收。`:`补充已交给“${name}”，继续使用原工作 Agent。`;
     return `已建立“${name}”${this.store.find(route.workId).status==='queued'?'，等待工作名额':'，已开始调度'}。`;
   }
-  async send(target,value,{priority=false,native=false,context={},requestKey,draftText}={}){
+  async send(target,value,options={}){return ['frontdesk','orchestrator'].includes(target)?this.sendUnlocked(target,value,options):this.workLocked(target,()=>this.sendUnlocked(target,value,options));}
+  async sendUnlocked(target,value,{priority=false,native=false,context={},requestKey,draftText}={}){
     this.validateTarget(target);
     this.assertFrontdeskContextAdmission(target);
     if(!['frontdesk','orchestrator'].includes(target)&&this.store.find(target).readOnly)throw Object.assign(new Error('Historical provider work is read-only; confirm explicit context recovery before new input'),{code:'HISTORICAL_SESSION_READ_ONLY'});
@@ -626,12 +634,13 @@ export class Controller extends EventEmitter {
   kick(){if(this.stopping||!this.started)return;if(this.kicking){this.again=true;return;}this.kicking=true;queueMicrotask(async()=>{try{do{this.again=false;await this.pump();}while(this.again&&!this.stopping);}catch(e){this.emit('diagnostic',e.message);}finally{this.kicking=false;}});}
   async pump(){
     while(!this.stopping && this.store.used()<this.store.state.limit){
-      if(!this.store.state.works.some(w=>w.status==='queued'))break;
-      const activated=await this.store.activateNext({initialize:w=>{w.binding=structuredClone(this.store.state.bindings.worker);this.queueJob(w.id,'initial',this.initialWorkerText(w),{key:`initial:${w.id}`,context:{sourceInputJobIds:[...new Set([...(w.sourceInputJobIds||[]),...(w.inputs||[]).flatMap(i=>i.sourceInputJobIds||[i.sourceJobId])])],imageAttachments:w.imageAttachments||this.store.state.jobs.find(j=>j.id===w.sourceJob)?.context?.imageAttachments}});}});
+      if(!this.store.state.works.some(w=>w.status==='queued'&&!this.coldQueued?.has(w.id)))break;
+      const activated=await this.store.activateNext({isEligible:w=>!this.coldQueued?.has(w.id),initialize:w=>{w.binding=structuredClone(this.store.state.bindings.worker);this.queueJob(w.id,'initial',this.initialWorkerText(w),{key:`initial:${w.id}`,context:{sourceInputJobIds:[...new Set([...(w.sourceInputJobIds||[]),...(w.inputs||[]).flatMap(i=>i.sourceInputJobIds||[i.sourceJobId])])],imageAttachments:w.imageAttachments||this.store.state.jobs.find(j=>j.id===w.sourceJob)?.context?.imageAttachments}});}});
       if(!activated)break;this.changed();
     }
     for(const job of this.store.state.jobs){if(this.stopping)break;if(job.status!=='queued'||this.restarting?.has(job.target)||this.configuring.has(job.target)||this.running.has(job.target)||this.nativeDraftTargets.has(job.target)||(this.store.state.drafts[job.target]&&job.explicitInput!==true))continue;
       if(this.current.has(job.target))continue;
+      if(this.coldJobs?.has(job.id))continue;
       if(this.reclaiming.has(job.target))continue;
       if(this.processBudget&&(!this.sessions.get(job.target)||this.sessions.get(job.target).closed)&&!this.starting.has(job.target)&&!this.processBudget.available){await this.processBudget.reclaim?.(this.projectId,job.target);if(!this.processBudget.available)continue;}
       if(this.deviationHeld(job.target))continue;
@@ -1245,7 +1254,7 @@ export class Controller extends EventEmitter {
         parts.push((job.type==='front'?'用户本次原文：':'原始请求:')+'\n'+materialDelivery.text);prompt=parts.join('\n');
       }
       if(event)prompt='事件技能（仅本次宿主事件）：\n'+event+'\n\n'+prompt;
-      const attachments=job.context?.imageAttachments||[];if(attachments.length>8)throw Error('区域图片超过8张');const images=[];let imageBytes=0;for(const ref of attachments){if(!/^[a-f0-9]{64}$/.test(ref.digest)||ref.mime!=='image/png')throw Error('区域附件引用无效');const bytes=await new MaterialStore(path.join(this.store.state.contentRoot,'.nozeli/materials')).get(ref.digest);imageBytes+=bytes.length;if(imageBytes>24*1024*1024)throw Error('区域附件超过24MB');images.push('data:image/png;base64,'+bytes.toString('base64'));}
+      const attachments=job.context?.imageAttachments||[];if(attachments.length>8)throw Error('图片超过8张');const images=[];let imageBytes=0;for(const ref of attachments){if(!/^[a-f0-9]{64}$/.test(ref.digest)||ref.mime!=='image/png'||ref.storage!=null&&ref.storage!=='app-data')throw Error('图片附件引用无效');const bytes=ref.storage==='app-data'?await this.readDrawingImage(ref):await new MaterialStore(path.join(this.store.state.contentRoot,'.nozeli/materials')).get(ref.digest);imageBytes+=bytes.length;if(bytes.length>8*1024*1024||imageBytes>24*1024*1024)throw Error('图片附件超过大小上限');images.push('data:image/png;base64,'+bytes.toString('base64'));}
       const requestContext={...(delivery?.stats||{}),eventChars:job.text.length,hostAddedChars:Math.max(0,prompt.length-job.text.length),instructionChars:session.instructions?.length||0,baseInstructionChars:session.baseInstructions?.length||0,dynamicToolChars:JSON.stringify(session.tools||[]).length,...(event?{eventSkill:{delivery:'message',chars:event.length,digest:createHash('sha256').update(event).digest('hex')}}:{})};
       await this.store.mutate(()=>{savedJob().requestContext={promptChars:prompt.length,...requestContext};});
       if(job.type==='front'&&this.transferFor(job)){await this.saveTransferredFront(job);return;}
@@ -1315,12 +1324,42 @@ export class Controller extends EventEmitter {
       if(manual&&response.text&&!response.collab&&response.completion!=='host-control')this.store.state.messages.push({id:randomUUID(),target:'frontdesk',speaker:'agent',text:response.text,jobId:job.id,partial:true});
     });
   }
-  async endWork(id,{revision,decision}={}){
-    if(this.store.find(id).readOnly)throw Object.assign(new Error('Historical provider work is read-only; original outcomes and worktrees are retained'),{code:'HISTORICAL_SESSION_READ_ONLY'});
-    await this.store.end(id,{by:'user',revision,decision});this.changed();this.kick();
-    await this.advanceClosure(id);const w=this.store.find(id);return {accepted:true,status:'ended',outcome:w.outcome,closure:structuredClone(w.closure)};
+  workLocked(id,fn){this.workOperations??=new Map();const operation=(this.workOperations.get(id)??Promise.resolve()).catch(()=>{}).then(fn);this.workOperations.set(id,operation);return operation.finally(()=>{if(this.workOperations.get(id)===operation)this.workOperations.delete(id);});}
+  async validateLocalIdentity(id){
+    // Activation precedes asynchronous worktree preparation. Read ownership only
+    // after that target's existing startup/evidence operation has settled.
+    if(this.starting.has(id))await this.starting.get(id);
+    await this.execution.serial.get(id);
+    const w=this.store.find(id),manifest=await this.execution.readManifest(id);
+    if(manifest){await this.execution.identity(manifest,{target:false});if(manifest.workId!==id)throw Error('Execution Work identity mismatch');if(manifest.candidate?.commit!==w.execution?.candidate?.commit)throw Error('Frozen candidate identity changed');}
+    else if(w.revision!==0||w.execution)throw Error('Execution ownership evidence missing; resources retained');
+    const record=this.store.state.providers?.[id];
+    if(record){
+      if(!Number.isSafeInteger(record.pid)||record.pid<=0||typeof record.home!=='string'||record.home!==this.store.agentHome(id)||typeof record.stamp!=='string'||!/^[a-f0-9-]{36}:\d+$/.test(record.stamp))throw Error('Worker process ownership identity is unverified');
+      const stamp=await processStamp(record.pid);if(stamp&&stamp!==record.stamp)throw Error('Worker PID identity reused; resources retained');
+    }
+    if(!record&&!this.sessions.has(id)&&[...(this.processBudget?.slots??[])].some(slot=>slot.projectId===this.projectId&&slot.target===id))throw Error('Worker budget owner identity is unknown');
   }
-  async retryClosure(id){const w=this.store.find(id);if(w.status!=='ended'||!w.closure)throw Error('work has no ended closure');await this.advanceClosure(id);return {accepted:true,status:'ended',closure:structuredClone(w.closure)};}
+  async validateAcceptSource(id){
+    const w=this.store.find(id),receipt=this.store.state.receipts.find(r=>r.workId===id&&r.objectId===w.result?.objectId&&r.revision===w.revision&&r.kind==='result');
+    if(!receipt?.snapshot?.candidate||receipt.snapshot.candidate.commit!==w.execution?.candidate?.commit)throw Error('Acceptance requires a final Worker report bound to the frozen candidate');
+    const capability={project:{id:this.projectId,root:this.store.content},runtime:this.store.root,objectId:receipt.objectId,controller:this,currentController:()=>this};
+    const source=await managedReportSource(capability),manifest=await source.readManifest();
+    for(const file of receipt.snapshot.files||[])await managedArtifact(capability,{objectId:receipt.objectId,relPath:file.relPath});
+    for(const reference of manifest.references||[])await source.readReference(reference.id);
+  }
+  async endWork(id,{revision,decision,binding,requestKey}={}){return this.workLocked(id,async()=>{
+    const w=this.store.find(id);binding??=dispositionBinding(w);requestKey??=`internal:${id}:${revision}:${decision}`;
+    if(!sameDispositionBinding(binding,dispositionBinding(w))||revision!==w.revision)throw Error('stale disposition binding');
+    if(w.status!=='ended'){
+      const capability=workDisposition(this.store.state,w)[decision];if(!capability?.allowed)throw Error(capability?.message??'explicit decision required');
+      await this.validateLocalIdentity(id);if(decision==='accept')await this.validateAcceptSource(id);
+    }
+    if(w.status==='ended'&&!w.closure?.decision)await this.validateLocalIdentity(id);
+    await this.store.end(id,{by:'user',revision,decision,binding,requestKey,validateAdmission:()=>{const current=this.store.find(id);if(current.status==='ended'&&!current.closure?.decision&&decision==='discard')return;const capability=workDisposition(this.store.state,current)[decision];if(!capability?.allowed)throw Error(capability?.message??'explicit decision required');}});this.changed();
+    await this.advanceClosure(id);return {accepted:true,status:'ended',outcome:w.outcome,closure:structuredClone(w.closure)};
+  });}
+  async retryClosure(id,{binding,requestKey}={}){return this.workLocked(id,async()=>{const w=this.store.find(id);binding??=dispositionBinding(w);requestKey??=w.closure?.requestKey;if(w.status!=='ended'||!['accept','discard'].includes(w.closure?.decision)||!w.closure.binding||!sameDispositionBinding(binding,w.closure.binding)||!sameDispositionBinding(binding,dispositionBinding(w))||typeof requestKey!=='string')throw Error('work has no matching immutable closure confirmation');await this.advanceClosure(id);return {accepted:true,status:'ended',closure:structuredClone(w.closure)};});}
   advanceClosure(id){
     if(this.closures.has(id))return this.closures.get(id);
     const promise=this.finishClosure(id).finally(()=>this.closures.delete(id));this.closures.set(id,promise);return promise;
@@ -1329,15 +1368,21 @@ export class Controller extends EventEmitter {
   async finishClosure(id){
     const w=this.store.find(id);if(w.status!=='ended'||!w.closure||w.closure.phase==='complete')return;
     try{
+      if(!w.closure.binding||!sameDispositionBinding(w.closure.binding,dispositionBinding(w)))throw Error('Closure confirmation binding missing or changed; resources retained');
       if(!w.closure.stopped){
         await this.store.mutate(()=>{w.closure.phase='stopping';});this.workerTerminal.pause(id);
         await this.terminals.get(id)?.close();if(this.starting.has(id))await this.starting.get(id).catch(()=>{});
-        const session=this.sessions.get(id),receipt=await session?.stop();
-        if(receipt?.confirmationComplete===false||receipt?.confirmed===false||session?.pid&&(w.binding?.provider||this.store.state.bindings.worker?.provider)==='omp'&&receipt?.confirmationComplete!==true)throw Error('Worker process exit is not confirmed; resources retained');
+        const session=this.sessions.get(id),record=this.store.state.providers?.[id],slots=[...(this.processBudget?.slots??[])].filter(slot=>slot.projectId===this.projectId&&slot.target===id);
+        let receipt;
+        if(session){receipt=await session.stop();if((session.pid||session.groupRecord?.pid||record||slots.length)&&receipt?.confirmationComplete!==true)throw Error('Worker process exit is not confirmed; resources retained');}
+        else if(record){const recovery=await (['omp-rpc','omp-tui'].includes(record.kind)?recoverOmpProvider(record,this.store.root):recoverProvider(record,this.store.root));if(recovery.verified!==true)throw Error('Persisted Worker owner exit is not confirmed');receipt={confirmationComplete:true,recovery};}
+        else if(slots.length)throw Error('Process budget owner lacks verifiable provider identity; resources retained');
         if(this.running.has(id))await this.running.get(id);
+        if(this.starting.has(id)||this.current.has(id)||this.sessions.get(id)?.busy)throw Error('Worker execution remains in flight');
         await this.checkpoint('provider-stopped',{workId:id});
         await this.store.mutate(()=>{delete this.store.state.providers[id];});
-        await this.store.markStopped(id,{at:new Date().toISOString(),confirmed:true,...(receipt?{provider:receipt}:{})});this.sessions.delete(id);
+        for(const slot of slots)this.processBudget?.release(slot);
+        await this.store.markStopped(id,{at:new Date().toISOString(),...(receipt?{confirmed:true,provider:receipt}:{ownership:'no-recorded-native-owner'})});this.sessions.delete(id);
       }
       await this.store.archiveReport(id);await this.checkpoint('report-archived',{workId:id});
       await this.timeline.drain();

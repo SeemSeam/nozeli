@@ -1494,6 +1494,7 @@ export class DesktopHost {
       draft: typeof w.draft === 'string' ? w.draft.slice(0, 20000) : '',
       noteOffsets: boundNoteOffsets(w.noteOffsets, { strict: strictOffsets }),
       noteDrafts: boundNoteDrafts(w.noteDrafts),
+      confirmationSkips:Object.fromEntries(['closeDocument','closeCompare','removeTag','deleteNote'].filter(key=>typeof w.confirmationSkips?.[key]==='boolean').map(key=>[key,w.confirmationSkips[key]])),
     };
     const projectSettingsIn = input.projectSettings && typeof input.projectSettings === 'object' ? input.projectSettings : {};
     const projectSettings = { focusMode: projectSettingsIn.focusMode === true };
@@ -1525,6 +1526,7 @@ export class DesktopHost {
       const prior = previous ? this.readBoundState(previous).workspace : null;
       if (!Object.hasOwn(input ?? {}, 'workspace') && prior) state.workspace = prior;
       else state.workspace.retainedNoteDrafts = mergeRetained(prior?.retainedNoteDrafts, []);
+      if(!Object.hasOwn(input?.workspace??{},'confirmationSkips')&&prior?.confirmationSkips)state.workspace.confirmationSkips=prior.confirmationSkips;
       state.files = { ...(previous?.files ?? {}) };
       if (state.currentRelPath) {
         const fileView = this.readBoundState(state);
@@ -1898,21 +1900,45 @@ export class DesktopHost {
       const name = typeof input?.name === 'string' ? input.name.trim() : '';
       if (!name || name.length > 255 || name.includes('/') || name.includes('\\') || /[\x00-\x1f]/.test(name)) throw new HostError('INVALID_ATTACHMENT', '附件文件名无效。');
       const mime = typeof input?.mime === 'string' && input.mime.length <= 100 ? input.mime : 'application/octet-stream';
-      const source = ['local-select', 'paste', 'drop'].includes(input?.source) ? input.source : 'local-select';
+      const source = ['local-select', 'paste', 'drop', 'drawing'].includes(input?.source) ? input.source : 'local-select';
       const base64 = typeof input?.bytes === 'string' ? input.bytes : '';
       const bytes = Buffer.from(base64, 'base64');
       if (!bytes.length || bytes.byteLength > 8 * 1024 * 1024) throw new HostError('INVALID_ATTACHMENT', '附件为空或超过单文件 8 MiB 上限。');
       if (typeof input?.size === 'number' && input.size !== bytes.byteLength) throw new HostError('INVALID_ATTACHMENT', '附件大小与内容不一致。');
+      if (source === 'drawing') this.validateDrawingPng(bytes, mime);
       await this.materials.ensureDirectory();
       const stored = await this.materials.put(bytes);
       const registry = await this.attachmentRegistry(true);
-      const previous = registry.attachments.find(entry => entry.digest === stored.digest && entry.name === name);
+      const previous = registry.attachments.find(entry => entry.digest === stored.digest && entry.name === name && entry.source === source);
       if (previous) return { digest: stored.digest, ...previous, duplicate: true };
       const entry = { digest: stored.digest, name, mime, size: bytes.byteLength, source, createdAt: new Date().toISOString() };
       registry.attachments.push(entry);
       await this.writeAttachmentRegistry(registry);
       return { digest: stored.digest, ...entry, duplicate: false };
     })());
+  }
+
+  validateDrawingPng(bytes, mime = 'image/png') {
+    if (mime !== 'image/png' || !bytes.length || bytes.length > 8 * 1024 * 1024 || bytes.length < 33 || !bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])) || bytes.toString('ascii',12,16) !== 'IHDR') throw new HostError('INVALID_ATTACHMENT', '涂鸦材料不是有效的有界 PNG。');
+    const width = bytes.readUInt32BE(16), height = bytes.readUInt32BE(20);
+    if (!width || !height || width > 20000 || height > 20000 || width * height > 40_000_000) throw new HostError('INVALID_ATTACHMENT', '涂鸦 PNG 超过像素上限。');
+  }
+
+  async readDrawingImage(ref) {
+    if (ref?.storage !== 'app-data' || ref.mime !== 'image/png' || !/^[a-f0-9]{64}$/.test(ref.digest)) throw new HostError('INVALID_ATTACHMENT', '涂鸦图片引用无效。');
+    const registry = await this.attachmentRegistry(false);
+    if (!registry.attachments.some(a => a.digest === ref.digest && a.mime === 'image/png' && a.source === 'drawing')) throw new HostError('INVALID_ATTACHMENT', '图片不是已登记的涂鸦材料。');
+    const bytes = await this.materials.get(ref.digest);
+    this.validateDrawingPng(bytes);
+    return bytes;
+  }
+
+  async drawingImageSources(projectId, ref) {
+    const {WorkspaceCaptureStore} = await import('./workspace-capture-store.mjs');
+    const store = new WorkspaceCaptureStore({directory:path.join(this.userDataDir,'nozeli','drawing-captures')});
+    const record = await store.load(ref.deliveryId, projectId);
+    if (!record.result || record.result.attachment?.digest !== ref.digest) throw new HostError('INVALID_ATTACHMENT', '涂鸦图片与冻结捕获记录不符。');
+    return structuredClone(record.result.sources || []);
   }
 
   /** Bounded read-back for the renderer's read-only attachment preview. */
@@ -1945,7 +1971,8 @@ export class DesktopHost {
 
   async writeAttachmentRegistry(registry) {
     const file = path.join(this.metaRoot, 'material-attachments.json');
-    const text = JSON.stringify({ schemaVersion: 1, attachments: registry.attachments.slice(-500) });
+    const drawings=registry.attachments.filter(entry=>entry.source==='drawing'),ordinary=registry.attachments.filter(entry=>entry.source!=='drawing').slice(-500);
+    const text = JSON.stringify({ schemaVersion: 1, attachments: [...ordinary,...drawings] });
     await fs.writeFile(file, text, { encoding: 'utf8', mode: 0o600 });
   }
 
