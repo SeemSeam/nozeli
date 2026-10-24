@@ -29,3 +29,5 @@ html[data-workspace-role=detached] .workspace-pane-header{-webkit-app-region:dra
 html[data-workspace-role=detached] .workspace-pane-title{-webkit-app-region:no-drag;flex:0 1 auto;max-width:60%;cursor:grab}
 .workspace-pane{box-sizing:border-box;min-width:0;min-height:0}
 .workspace-split>:first-child,.workspace-split>:last-child{min-width:0;min-height:0;overflow:hidden}
+/* display:contents removes split boxes, not their children's percentage basis. */
+.workspace-narrow .workspace-pane.is-focused{flex:1 1 0;min-width:0;min-height:0}

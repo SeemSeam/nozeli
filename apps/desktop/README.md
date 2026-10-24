@@ -1,5 +1,7 @@
 # Nozeli desktop 0.1alpha
 
+2026-10-24 独立窗口返回补修（源码，未安装）：主工作区进入 `workspace-narrow` 时，分割祖先 `display:contents` 后仍向聚焦分区留下百分比 `flex-basis`，返回内容只占半幅。聚焦分区现显式使用 `flex:1 1 0`，不改布局树、文件或报告身份。真实 Electron 修前复现：590px 主窗可用宽约491px，报告分区仅242px；修后约491px，原生内容宽489px。`desktop-report-actions-live.mjs` 新增真实收窄主窗／独立报告返回的宽高填满断言，并保留原报告 document、选区、details 和零导航；14组通过、正常退出0，证据 `/tmp/nozeli-offline-results-n394us/`，定向几何 `/tmp/nozeli-offline-results-XANhz4/`；相关原生布局／预览83项通过。截图分别为shell与实际guest，不把shell截图的空白占位当正文证据。仅Linux已验，未更新日常安装，不声称覆盖用户现场的所有可能原因。
+
 Electron桌面阅读、批注、编辑与受管OMP协作产品。平台、构建、Release和许可边界以[仓库README](../../README.md)为准。
 
 ## 构建
