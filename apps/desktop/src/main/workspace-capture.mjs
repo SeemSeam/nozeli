@@ -45,7 +45,11 @@ export class WorkspaceCapture {
     }
     if(this.preparing)throw Error('正在冻结工作面，请稍候');
     const token=++this.token;this.preparing=true;
-    const flight=this.capture(owner,payload,token);
+    // A queued layout reconcile (window close, command, bounds application)
+    // can land between the pre-checks and the layer captures; that abort is
+    // safe by design, and the freeze retries it whole — every layer is
+    // re-read, nothing is mixed — instead of pushing a retry onto the user.
+    const flight=(async()=>{for(let attempt=0;;attempt++){try{return await this.capture(owner,payload,token);}catch(error){if(error?.code!=='CAPTURE_CONTENT_CHANGED'||attempt>=2)throw error;}}})();
     let timer;
     try{
       const session=await Promise.race([
@@ -164,7 +168,7 @@ export class WorkspaceCapture {
       // after each layer: a reloaded, resized, hidden or moved-on window must
       // abort the whole freeze instead of mixing evidence.
       const currentSize=root.win.getContentSize();
-      if(root.dead||root.generation!==generation||root.projectId!==snap.projectId||!root.win.isVisible()||!view.getVisible()||view.webContents.isDestroyed()||JSON.stringify(view.getBounds())!==JSON.stringify(bounds)||currentSize[0]!==dipWidth||currentSize[1]!==dipHeight||String(this.workspace.screen.getDisplayMatching(root.win.getBounds()).id)!==String(display.id)||this.layerStack(root.win.contentView.children)!==before)throw Error('捕获期间本窗口内容改变，请重试');
+      if(root.dead||root.generation!==generation||root.projectId!==snap.projectId||!root.win.isVisible()||!view.getVisible()||view.webContents.isDestroyed()||JSON.stringify(view.getBounds())!==JSON.stringify(bounds)||currentSize[0]!==dipWidth||currentSize[1]!==dipHeight||String(this.workspace.screen.getDisplayMatching(root.win.getBounds()).id)!==String(display.id)||this.layerStack(root.win.contentView.children)!==before)throw Object.assign(new Error('捕获期间本窗口内容改变，请重试'),{code:'CAPTURE_CONTENT_CHANGED'});
       layers.push({bounds,dataUrl:'data:image/png;base64,'+png.toString('base64'),source});
     }
     if(!layers.length)throw Error('发起窗口没有可捕获的可见内容');

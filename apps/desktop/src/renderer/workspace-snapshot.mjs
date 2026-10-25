@@ -22,17 +22,19 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{}}){
   let cardState=null,cardMessageDraft='',cardSavedText=null,cardSavedRect=null;
   const call=async(op,p={})=>{const result=await invoke(op,p);if(!result?.ok)throw Error(result?.error?.message||'涂鸦操作失败');return result.value;};
   const image=url=>{const im=new Image();im.src=url;return im.decode().then(()=>im);};
-  const status=text=>{if(statusEl)statusEl.textContent=text;};
+  const status=text=>{if(statusEl){statusEl.textContent=text;statusEl.title=text;}};
   const closeDialogEl=()=>{if(dialog?.open)dialog.close();};
 
   function ensure(){
     if(dialog)return;
     dialog=document.createElement('dialog');dialog.setAttribute('aria-label','工作面涂鸦');
     // The editor is position:fixed; inside the top-layer dialog that resolves
-    // against the dialog box, so the dialog itself must span the viewport.
-    Object.assign(dialog.style,{width:'calc(100vw - 24px)',height:'calc(100dvh - 24px)',maxWidth:'none',maxHeight:'none',padding:'0',border:'0',background:'#252925',overflow:'hidden'});
-    const bar=document.createElement('div');Object.assign(bar.style,{position:'fixed',top:'8px',right:'12px',zIndex:'1300',display:'flex',gap:'6px',alignItems:'center',flexWrap:'wrap',justifyContent:'flex-end',maxWidth:'70vw'});
-    statusEl=document.createElement('span');statusEl.dataset.snapshotStatus='true';statusEl.style.cssText='font-size:12px;color:#e8e4da';
+    // against the dialog box, so the dialog must span the viewport — full bleed
+    // with no inset, keeping the frozen workspace at its live size.
+    Object.assign(dialog.style,{width:'100vw',height:'100dvh',maxWidth:'none',maxHeight:'none',margin:'0',padding:'0',border:'0',background:'#252925',overflow:'hidden'});
+    // Compact corner chips float above the frozen image: status bottom-left,
+    // recovery + exit bottom-right. No header band, no layout reserve.
+    statusEl=document.createElement('span');statusEl.dataset.snapshotStatus='true';statusEl.style.cssText='position:fixed;left:12px;bottom:10px;z-index:1300;max-width:min(60vw,520px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:#e8e4da;background:#000a;padding:4px 10px;border-radius:6px';
     // One light recovery selector replaces the old per-record resume/drop button groups.
     recoverRow=document.createElement('div');recoverRow.hidden=true;recoverRow.style.cssText='display:flex;gap:4px;align-items:center';
     recoverSelect=document.createElement('select');recoverSelect.setAttribute('aria-label','恢复未完成涂鸦');recoverSelect.style.cssText='max-width:240px;height:28px;font-size:12px';
@@ -49,9 +51,10 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{}}){
       if(failed)toast(failed+' 份记录删除失败');
     };
     recoverRow.append(recoverSelect,recoverClean);
+    const bar=document.createElement('div');Object.assign(bar.style,{position:'fixed',right:'12px',bottom:'10px',zIndex:'1300',display:'flex',gap:'6px',alignItems:'center'});
     const exit=document.createElement('button');exit.type='button';exit.textContent='退出';exit.style.cssText='padding:4px 10px';
     exit.onclick=()=>void exitDialog();
-    bar.append(statusEl,recoverRow,exit);dialog.append(bar);document.body.append(dialog);
+    bar.append(recoverRow,exit);dialog.append(statusEl,bar);document.body.append(dialog);
     dialog.addEventListener('cancel',event=>{event.preventDefault();if(cardState)void backToDrawing();else void exitDialog();});
     // The session can be ended behind our back (committed elsewhere, shutdown,
     // superseded); the host tells us and the dialog must close without fighting it.

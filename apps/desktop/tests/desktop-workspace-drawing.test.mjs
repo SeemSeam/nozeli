@@ -344,8 +344,8 @@ try{
  const previousDraft=await fs.readFile(blockedDraft).catch(error=>{if(error.code!=='ENOENT')throw error;return null;});
  await fs.rm(blockedDraft,{force:true});await fs.mkdir(blockedDraft);
  try{
- const failureBounds=await shell.$eval('dialog[aria-label="工作面涂鸦"] .drawing-area',node=>node.getBoundingClientRect().toJSON());
- await shell.mouse.move(failureBounds.x+40,failureBounds.y+40);await shell.mouse.down();await shell.mouse.move(failureBounds.x+100,failureBounds.y+100,{steps:8});await shell.mouse.up();
+
+  const failureBounds=await shell.$eval('dialog[aria-label="工作面涂鸦"] .drawing-area',node=>node.getBoundingClientRect().toJSON());await shell.mouse.move(failureBounds.x+failureBounds.width*.55,failureBounds.y+failureBounds.height*.45);await shell.mouse.down();await shell.mouse.move(failureBounds.x+failureBounds.width*.7,failureBounds.y+failureBounds.height*.6,{steps:8});await shell.mouse.up();
  for(let attempt=0;attempt<2;attempt++){
  await shell.keyboard.press('Escape');await call(shell,'workspace.capture.begin',{projectId:fixture.a.id});
  await shell.waitForSelector('dialog[aria-label="工作面涂鸦"] .drawing-area',{visible:true,timeout:3000});
@@ -365,7 +365,7 @@ try{
  const shutdownCapture=await call(shell,'workspace.capture.begin',{projectId:fixture.a.id});
  const finalBounds=await shell.$eval('dialog[aria-label="工作面涂鸦"] .drawing-area',n=>n.getBoundingClientRect().toJSON());
  await profile(shell, 'stroke/flush-gesture', async () => {
-  await shell.mouse.move(finalBounds.x+30,finalBounds.y+30);await shell.mouse.down();await shell.mouse.move(finalBounds.x+80,finalBounds.y+80,{steps:5});await shell.mouse.up();
+ await shell.mouse.move(finalBounds.x+finalBounds.width*.45,finalBounds.y+finalBounds.height*.45);await shell.mouse.down();await shell.mouse.move(finalBounds.x+finalBounds.width*.6,finalBounds.y+finalBounds.height*.6,{steps:5});await shell.mouse.up();
   await shell.waitForFunction(()=>document.querySelectorAll('dialog[aria-label="工作面涂鸦"] .drawing-area svg polyline').length===1);
  });
  for(const p of await browser.pages())if(await p.evaluate(()=>window.__workspaceScope?.role==='detached').catch(()=>false))await call(p,'session.requestClose');
@@ -377,7 +377,7 @@ try{
  const savedAtExit=JSON.parse(await fs.readFile(path.join(captureDirectory,shutdownCapture.captureId+'.drawing.json'),'utf8')).drawing;
  assert.equal(savedAtExit.width,shutdownCapture.width);assert.equal(savedAtExit.height,shutdownCapture.height);assert.equal(savedAtExit.strokes.length,1);
  const exitPoints=savedAtExit.strokes[0].points,start=exitPoints[0],end=exitPoints.at(-1);
- for(const [actual,expected] of [[start,[30/finalBounds.width,30/finalBounds.height]],[end,[80/finalBounds.width,80/finalBounds.height]]]){
+ for(const [actual,expected] of [[start,[.45,.45]],[end,[.6,.6]]]){
  assert(Math.abs(actual[0]-expected[0])<=1/finalBounds.width&&Math.abs(actual[1]-expected[1])<=1/finalBounds.height,'the exact visible unfinished stroke survives normal shutdown');
  }
  report.checks.push('Normal shutdown durably flushes the active drawing without auto delivery');

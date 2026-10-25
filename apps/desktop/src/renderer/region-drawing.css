@@ -21,4 +21,6 @@
 .drawing-fullscreen .drawing-clip{z-index:1}
 .drawing-fullscreen .drawing-controls{z-index:2}
 .drawing-source{flex-basis:100%;max-width:620px;max-height:64px;overflow:auto;padding:3px 5px;color:var(--muted,#666);font-size:11px;overflow-wrap:anywhere}
+.drawing-fullscreen .drawing-controls{flex-wrap:nowrap;max-width:none}
+.drawing-fullscreen .drawing-source{flex-basis:auto;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .drawing-controls :is(button,input,select):focus-visible{outline:2px solid var(--ui-control-focus,#466b55);outline-offset:2px}

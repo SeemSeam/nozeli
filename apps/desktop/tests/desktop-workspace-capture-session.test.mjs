@@ -266,13 +266,25 @@ test('unrelated project revision churn never aborts; owner layer stack changes d
   let revision=0;churn.workspace.layout=async()=>({revision:++revision});
   const described=await churn.capture.begin(churn.owner(),{});
   assert.ok(described.captureId);
-  // A sibling layer resized/reparented mid-freeze aborts this window's capture.
+  // A sibling layer resized/reparented on every attempt keeps aborting the
+  // freeze even across the bounded whole-capture retries.
   const v1=makeView(),v2=makeView({dip:[50,50]});
   const sized=await makeCapture({root:makeRoot({views:[v1,v2]})});
   t.after(sized.cleanup);
   const sizedCapture=v1.webContents.capturePage;
-  v1.webContents.capturePage=async()=>{v2.bounds={x:50,y:0,width:50,height:50};return sizedCapture();};
+  let churnStep=0;
+  v1.webContents.capturePage=async()=>{v2.bounds={x:50+churnStep++,y:0,width:50,height:50};return sizedCapture();};
   await assert.rejects(()=>sized.capture.begin(sized.owner(),{}),/捕获期间本窗口内容改变/);
+  // A one-shot transient change is absorbed by the internal whole-capture
+  // retry instead of pushing a retry onto the caller.
+  const transient=makeView(),transientPeer=makeView({dip:[50,50]});
+  const transientRoot=await makeCapture({root:makeRoot({views:[transient,transientPeer]})});
+  t.after(transientRoot.cleanup);
+  const transientCapture=transient.webContents.capturePage;
+  let oneShot=false;
+  transient.webContents.capturePage=async()=>{if(!oneShot){oneShot=true;transientPeer.bounds={x:50,y:0,width:50,height:50};}return transientCapture();};
+  const absorbed=await transientRoot.capture.begin(transientRoot.owner(),{});
+  assert.ok(absorbed.captureId,'a transient mid-freeze change is retried whole, not surfaced');
   // A surface switch/reload (generation bump) mid-freeze aborts too.
   const v3=makeView();v3.webContents.senderScope=surfaceScope(v3,{viewId:'view-surface'});
   const reloaded=await makeCapture({root:makeRoot({views:[v3]})});
