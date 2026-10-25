@@ -18,7 +18,7 @@ button, input, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
 button:disabled, textarea:disabled { cursor: not-allowed; opacity: .72; }
 button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
-.skip { position: fixed; left: 8px; top: 48px; z-index: 1100; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); color: var(--ink); white-space: nowrap; transform: translateY(calc(-100% - 56px)); -webkit-app-region: no-drag; }
+.skip { position: fixed; left: 8px; top: 48px; z-index: 1100; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); color: var(--ink); white-space: nowrap; transform: translateY(calc(-100% - 56px)); -webkit-app-region: no-drag; pointer-events: none; }
 .skip:focus { transform: none; outline: 2px solid var(--green); outline-offset: 2px; }
 .app {
   display: grid;

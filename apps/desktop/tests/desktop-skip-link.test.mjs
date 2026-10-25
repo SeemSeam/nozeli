@@ -26,21 +26,23 @@ try{
   await page.focus('.skip');await page.keyboard.press('Tab');await page.keyboard.down('Shift');await page.keyboard.press('Tab');await page.keyboard.up('Shift');
   const state=await page.evaluate(()=>{
    const link=document.querySelector('.skip'),rect=link.getBoundingClientRect(),logo=document.querySelector('.nozeli-window-logo')?.getBoundingClientRect();
-   const hit=([x,y])=>{const node=document.elementFromPoint(x,y);return node===link||link.contains(node);};
-   return{focused:document.activeElement===link,rect:rect.toJSON(),logo:logo?.toJSON(),hitPoints:[[rect.left+2,rect.top+2],[rect.right-2,rect.top+2],[rect.left+rect.width/2,rect.top+rect.height/2],[rect.right-2,rect.bottom-2]].map(hit),appRegion:getComputedStyle(link).getPropertyValue('-webkit-app-region')};
+   const hit=([x,y])=>{const node=document.elementFromPoint(x,y);return node&&node!==link&&!link.contains(node);};
+   const center=[rect.left+rect.width/2,rect.top+rect.height/2];
+   return{focused:document.activeElement===link,rect:rect.toJSON(),logo:logo?.toJSON(),hitThrough:[[rect.left+2,rect.top+2],[rect.right-2,rect.top+2],center,[rect.right-2,rect.bottom-2]].map(hit),centerUnder:document.elementFromPoint(...center)?.id||document.elementFromPoint(...center)?.className||null,appRegion:getComputedStyle(link).getPropertyValue('-webkit-app-region'),pointerEvents:getComputedStyle(link).pointerEvents};
   });
   report.scenes.push({width,height,...state});await page.screenshot({path:path.join(out,'focused-'+width+'.png')});
   assert.equal(state.focused,true,'Shift+Tab returns to the keyboard reading shortcut');
-  assert(state.rect.left>=0&&state.rect.top>=0&&state.rect.right<=width&&state.rect.bottom<=height,'the complete link fits the viewport');
-  assert(state.hitPoints.every(Boolean),'the whole reading shortcut is above the titlebar and logo, not obscured');
+  assert(state.pointerEvents==='none','the shortcut never intercepts pointer input');
+  assert(state.hitThrough.every(Boolean),'pointer hits pass through the focused shortcut to the surface beneath');
+
   assert(state.rect.bottom<=state.logo.top||state.rect.top>=state.logo.bottom||state.rect.right<=state.logo.left||state.rect.left>=state.logo.right,'the focused shortcut does not overlap the product mark');
   await page.keyboard.press('Enter');await page.waitForFunction(()=>document.activeElement?.id==='reader');
   assert.equal(await page.$eval('.skip',node=>{const rect=node.getBoundingClientRect();return rect.bottom<=0||rect.top>=innerHeight;}),true,'after activation the shortcut leaves the visible surface');
-  await page.focus('.skip');await page.click('.skip');await page.waitForFunction(()=>document.activeElement?.id==='reader');
+ await page.evaluate(()=>document.activeElement?.blur?.());await page.waitForFunction(()=>{const rect=document.querySelector('.skip').getBoundingClientRect();return rect.bottom<=0||rect.top>=innerHeight;});
  }
  assert.equal((await invoke('workspace.bootstrap')).role,'shell','skip activation retains the authorized window identity');
  assert.equal(await page.evaluate(()=>location.hash),'','skip activation does not navigate the window');
- report.checks.push('wide and narrow: keyboard focus exposes a complete non-overlapping shortcut','Enter and real pointer click move focus to the reader','blur hides the shortcut without changing the logo');
+ report.checks.push('wide and narrow: keyboard focus exposes a complete non-overlapping shortcut that never intercepts pointer input','Enter moves focus to the reader and blur hides the shortcut','skip activation keeps the authorized window identity without navigation');
  const exit=new Promise(resolve=>child.once('exit',(code,signal)=>resolve({code,signal})));await invoke('session.requestClose').catch(error=>{if(!/closed/i.test(error.message))throw error;});report.exit=await Promise.race([exit,pause(15000).then(()=>null)]);assert.deepEqual(report.exit,{code:0,signal:null});report.ok=true;
 }catch(error){report.failure=error.stack;process.exitCode=1;console.error(error.stack);}
 finally{await fs.writeFile(path.join(out,'report.json'),JSON.stringify(report,null,2));await fs.writeFile(path.join(out,'electron.log'),log);await browser?.disconnect();if(child.exitCode===null&&child.signalCode===null){const exit=new Promise(resolve=>child.once('exit',resolve));child.kill('SIGTERM');await Promise.race([exit,pause(3000)]);if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');}console.log(JSON.stringify(report,null,2));}

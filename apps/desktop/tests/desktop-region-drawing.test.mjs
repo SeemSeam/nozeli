@@ -168,6 +168,9 @@ async function setupShell(knowProjectId) {
   shell.on('pageerror', error => report.errors.push('shell: ' + error.message));
   await shell.waitForFunction(() => window.__nozeliReady === true);
   report.runtime={binary,userAgent:await browser.userAgent(),platform:process.platform,arch:process.arch,devicePixelRatio:await shell.evaluate(()=>devicePixelRatio)};
+  // The first-run configuration dialog opens a beat after ready; an immediate
+  // #pick-project click races it and is silently swallowed by the modal.
+  await shell.waitForFunction(() => document.querySelector('#configuration-setup')?.open === true, {timeout: 8000, polling: 50}).catch(() => {});
   if (await shell.$('#configuration-setup[open]')) {
     await shell.click('#configuration-cancel');
     await shell.waitForFunction(() => !document.querySelector('#configuration-setup').open);
