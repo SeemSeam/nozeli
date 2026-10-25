@@ -2,6 +2,7 @@ import {makeOriginalReplyReader} from './tag-original-reader.mjs';
 import {setIconButton} from './ui-icons.mjs';
 import { renderTagMarkdown, tagMarkdownSummary } from './tag-markdown.mjs';
 import { mountAnnotationComposer, describeAnnotationSource } from './annotation-composer.mjs';
+import { mountThreadTranscript, threadRounds } from './discussion-thread.mjs';
 import { panelButton, observePanelWidth } from './panel-menu.mjs';
 // Tags are persistent view projections with two display states: open and closed-summary.
 const mountedTagCleanups = new Map();
@@ -302,28 +303,8 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   const sourceLabel = document.createElement('summary'); sourceLabel.textContent = describeAnnotationSource({ relPath: relPath || filePath(), anchor, text: sourceText(), displayLocation });
   const quote = document.createElement('blockquote'); quote.textContent = anchor.quote || material.excerpt || '已固定的选区'; source.append(sourceLabel, quote);
   if (material.imageDataUrl || anchor.imageDataUrl) { const image = document.createElement('img'); image.src = material.imageDataUrl || anchor.imageDataUrl; image.alt = '发送时固定的选区截图'; source.append(image); }
-  const transcriptRows=new Map();
-  function renderConversation(){
-    const atTail=transcript.scrollHeight-transcript.clientHeight-transcript.scrollTop<32,scrollTop=transcript.scrollTop;
-    const entries=history.length?history:(status==='draft'?[]:[{question:text,reply:replyText,replyEntries,replyAvailability,readReply,status}]);
-    const retained=new Set();let position=0;
-    const bubble=(key,role,value,read,retainBody=false)=>{
-      retained.add(key);let row=transcriptRows.get(key);
-      if(!row){const node=document.createElement('span'),label=document.createElement('strong'),body=document.createElement('span');node.className='tag-message tag-message-'+role;label.textContent=role==='user'?'你':'前台';body.className='tag-markdown';node.append(label,body);row={node,body,value:null,reader:null};transcriptRows.set(key,row);}
-      if(row.value!==value&&!(retainBody&&row.value)){renderTagMarkdown(row.body,value);row.value=value;}
-      if(read&&!row.reader){row.reader=makeOriginalReplyReader(read);row.node.append(row.reader);}
-      if(transcript.children[position]!==row.node)transcript.insertBefore(row.node,transcript.children[position]||null);position++;
-    };
-    entries.forEach((entry,index)=>{
-      const key=entry.requestId||'round-'+index;
-      if(entry.question)bubble(key+':question','user',entry.question);
-      if(entry.replyEntries?.length){for(const message of entry.replyEntries)bubble(key+':'+message.id,'assistant',message.text||'',message.availability==='read-required'?message.readReply:null,message.availability==='read-required');}
-      else if(entry.reply||entry.readReply)bubble(key+':reply','assistant',entry.reply||'',entry.replyAvailability==='read-required'?entry.readReply:null);
-    });
-    if(!entries.length)bubble('welcome','assistant','围绕这处材料继续讨论。输入问题后发送，回复会留在这里。');
-    for(const [key,row]of transcriptRows)if(!retained.has(key)){row.node.remove();transcriptRows.delete(key);}
-    transcript.scrollTop=atTail?transcript.scrollHeight:scrollTop;
-  }
+  const renderThread=mountThreadTranscript(transcript);
+  const renderConversation=()=>renderThread(threadRounds({text,replyText,replyEntries,replyAvailability,readReply,status,history}));
   if (conversation) {
     renderConversation();
     editor.value = draftValue || ''; editor.placeholder = pending ? '继续记下问题，收到回复后发送…' : '关于这处材料，聊一聊…（Ctrl+Enter 发送）';

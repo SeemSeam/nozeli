@@ -161,3 +161,24 @@
 .snapshot-card-back:hover{color:var(--ink,#263932);background-color:color-mix(in srgb,var(--ink,#263932) 6%,transparent)}
 .snapshot-card-actions button:disabled{opacity:.5;cursor:default}
 .snapshot-card-actions button:focus-visible{outline:2px solid var(--ui-control-focus,#466b55);outline-offset:2px}
+.snapshot-card-actions button[hidden]{display:none}
+/* Tag-style thread transcript inside the snapshot card (shared layer with
+   file tags: same .tag-message rows, scoped paper styling for the dialog). */
+.snapshot-card-thread{
+  display:flex;flex-direction:column;gap:7px;min-height:44px;max-height:200px;
+  overflow:auto;overscroll-behavior:contain;padding:2px;
+}
+.snapshot-card-thread[hidden]{display:none}
+.snapshot-card-thread .tag-message{gap:4px;max-width:100%;padding:7px 9px;border-radius:9px;font-size:12px;line-height:1.5}
+.snapshot-card-thread .tag-message>strong{font-size:10px;color:var(--muted,#65766d)}
+.snapshot-card-thread .tag-message-user{background:color-mix(in srgb,var(--ink,#263932) 7%,transparent);margin-left:14px}
+.snapshot-card-thread .tag-message-assistant{background:var(--paper,#fffdf6);border:1px solid var(--line,#e4e7e0);margin-right:8px}
+.snapshot-card-thread .tag-message-assistant .tag-markdown>*+*{margin-top:4px}
+.snapshot-card-status{min-height:16px;font-size:11px;line-height:1.5;color:var(--muted,#65766d)}
+.snapshot-card-status:not(:empty)::before{content:'';display:inline-block;width:6px;height:6px;margin-right:6px;border-radius:50%;background:#a6cba9;vertical-align:1px;box-shadow:0 0 0 3px rgba(166,203,169,.16)}
+.snapshot-card-status[data-state=error]{color:#b63029}
+.snapshot-card-status[data-state=error]::before{background:#c7362f;box-shadow:0 0 0 3px rgba(199,54,47,.16)}
+.snapshot-card-followup{background-color:var(--ink,#263932);color:var(--paper,#fffdf6);border:0;box-shadow:0 2px 10px rgba(38,57,50,.28)}
+.snapshot-card-followup:hover{background-color:color-mix(in srgb,var(--ink,#263932) 88%,#000)}
+.snapshot-card-open{background-color:transparent;color:var(--ink,#263932);border:1px solid var(--line,#e4e7e0)}
+.snapshot-card-open:hover{border-color:color-mix(in srgb,var(--ink,#263932) 35%,transparent);background-color:color-mix(in srgb,var(--ink,#263932) 5%,transparent)}

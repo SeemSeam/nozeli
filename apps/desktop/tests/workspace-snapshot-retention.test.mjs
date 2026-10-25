@@ -10,7 +10,11 @@
 //      autosave, re-finish and restart keep the newest question;
 //   5. a failed flush never closes the dialog and a repeated exit never
 //      cancels the session (no implicit discard);
-//   6. commit holds keep the card readOnly and a failed commit restores it.
+//   6. commit holds keep the card readOnly and a failed commit restores it;
+//   7. 发送讨论 = direct commit + scripted managed.send + requestId finalize —
+//      replies project into the card, 续问 reuses the committed digest, a
+//      failed send retries on the same delivery/requestKey, and a refused
+//      gate never commits anything.
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
 import {createRequire} from 'node:module';
@@ -37,8 +41,8 @@ const png='data:image/png;base64,'+Buffer.concat([Buffer.from([0x89,0x50,0x4E,0x
 await build({absWorkingDir:root,stdin:{resolveDir:root,contents:`
 import {mountWorkspaceSnapshot} from './src/renderer/workspace-snapshot.mjs';
 const PNG=${JSON.stringify(png)};
-const state={beginCount:0,recoverForks:0,saveMode:'ok',commitMode:'ok',stranded:false,recoverable:[],lastGoodSave:null};
-const calls=[],pendingSaves=[],pendingCommits=[],toasts=[];
+const state={beginCount:0,recoverForks:0,saveMode:'ok',commitMode:'ok',stranded:false,recoverable:[],lastGoodSave:null,agentReady:true,sendMode:'ok',finalizeMode:'ok',requestSeq:0,jobs:[],messages:[],directReceipts:new Map(),recoverScripted:{},seenRequestKeys:new Map()};
+const calls=[],pendingSaves=[],pendingCommits=[],toasts=[],sends=[];
 const descriptor=()=>({captureId:'cap-'+state.beginCount,windowId:'win-1',width:8,height:8,omittedWindowCount:0,createdAt:'2026-10-25T00:00:00.000Z',
  sources:[{sourceId:'src-1',summary:'fixture 来源 · 视口'}],
  tiles:[{x:0,y:0,width:8,height:8,windowBounds:{x:0,y:0,width:8,height:8},layers:[{dataUrl:PNG,bounds:{x:0,y:0,width:8,height:8}}]}],
@@ -56,10 +60,39 @@ const invoke=async(op,p={})=>{
  if(op==='workspace.capture.commit'){
   if(state.commitMode==='fail')return {ok:false,error:{message:'fixture 提交失败'}};
   if(state.commitMode==='hold')return new Promise(resolve=>pendingCommits.push(resolve));
-  return {ok:true,value:{}};
+  if(p.direct&&!p.requestId){
+   const prior=[...state.directReceipts.entries()].find(([id,receipt])=>id.startsWith(p.captureId)&&receipt.question===(p.target?.card?.message||'').trim());
+   if(prior){const [id,receipt]=prior;return {ok:true,value:{saved:true,attached:true,captureId:p.captureId,deliveryId:id,attachment:receipt.attachment,state:'pending-delivery',direct:true}};}
+   const deliveryId=p.captureId+':direct'+(state.directReceipts.size+1);
+   const attachment={projectId:'fixture-project',instanceId:'fixture-instance',storage:'recovery',digest:'a'.repeat(64),name:'drawing-'+deliveryId+'.png',mime:'image/png',size:97,source:'drawing'};
+   state.directReceipts.set(deliveryId,{attachment,question:(p.target?.card?.message||'').trim(),state:'pending-delivery',thread:p.target?.card?.thread||[]});
+   return {ok:true,value:{saved:true,attached:true,captureId:p.captureId,deliveryId,attachment,state:'pending-delivery',direct:true}};
+  }
+  if(p.direct&&p.requestId){
+   if(state.finalizeMode==='fail')return {ok:false,error:{message:'fixture 回执保存失败'}};
+   const receipt=[...state.directReceipts.entries()].find(([id,receipt])=>id.startsWith(p.captureId));
+   if(!receipt)return {ok:false,error:{message:'fixture 无待完成直发回执'}};
+   receipt[1].state='delivered';receipt[1].requestId=p.requestId;receipt[1].thread=p.target?.card?.thread||[];
+   return {ok:true,value:{saved:true,attached:true,captureId:p.captureId,deliveryId:receipt[0],requestId:p.requestId,state:'delivered',direct:true}};
+  }
+  return {ok:true,value:{saved:true,attached:!p.local,captureId:p.captureId}};
  }
+ if(op==='managed.status')return {ok:true,value:{enabled:true,ready:state.agentReady!==false,state:{jobs:state.jobs}}};
+ if(op==='managed.send'){
+  sends.push({p});
+  if(state.sendMode==='fail')return {ok:false,error:{message:'fixture 发送失败'}};
+  if(state.seenRequestKeys.has(p.requestKey))return {ok:true,value:{accepted:true,jobId:state.seenRequestKeys.get(p.requestKey),deduplicated:true}};
+  const requestId='req-'+(++state.requestSeq);
+  state.jobs.push({id:requestId,status:'completed'});
+  state.seenRequestKeys.set(p.requestKey,requestId);
+  state.messages.push({id:'msg-'+requestId,target:'frontdesk',speaker:'agent',jobId:requestId,sequence:state.messages.length+1,text:'fixture 回复 '+requestId+'：已看到这处笔迹。',availability:'readable'});
+  return {ok:true,value:{accepted:true,jobId:requestId}};
+ }
+ if(op==='managed.timeline.request'){const ids=state.messages.filter(m=>m.jobId===p.requestId).map(m=>m.id);return {ok:true,value:{ids,nextOffset:null}};}
+ if(op==='managed.timeline.read'){const message=state.messages.find(m=>m.id===p.id);return message?{ok:true,value:{entry:message}}:{ok:false,error:{message:'fixture 无此消息'}};}
  if(op==='workspace.capture.cancel')return {ok:true,value:{}};
  if(op==='workspace.capture.recover'){
+  if(state.recoverScripted[p.id])return {ok:true,value:state.recoverScripted[p.id]};
   if(p.id===p.captureId){
    if(!state.stranded)return {ok:false,error:{message:'没有未完成记录'}};
    const draft=state.stranded===true?(state.lastGoodSave||{drawing:{schema:drawingSchema,width:8,height:8,strokes:[]},target:{regionImage:{dataUrl:PNG}}}):state.stranded;
@@ -91,8 +124,13 @@ window.snapshotFixture={
  dialogOpen:()=>!!(dialog()&&dialog().open),
  editorVisible:()=>{const area=document.querySelector('#snapshot-drawing .drawing-area');return !!area&&area.getClientRects().length>0;},
  areaBox:()=>{const area=document.querySelector('#snapshot-drawing .drawing-area');const b=area.getBoundingClientRect();return {x:b.x,y:b.y,width:b.width,height:b.height};},
- card:()=>({open:!!(card()&&!card().hidden),value:cardText()?cardText().value:null,readOnly:cardText()?cardText().readOnly:null,
-  buttons:[...['加入对话草稿','仅保存本地','返回笔迹']].map(label=>{const b=[...dialog().querySelectorAll('button')].find(node=>node.textContent===label);return {label,disabled:b?b.disabled:null};})}),
+ card:()=>{const buttons=[...dialog().querySelectorAll('.snapshot-card-actions button')].map(node=>({label:node.textContent,disabled:node.disabled,hidden:node.hidden}));return {open:!!(card()&&!card().hidden),value:cardText()?cardText().value:null,readOnly:cardText()?cardText().readOnly:null,primary:buttons[0]?.label??null,buttons,
+  thread:[...document.querySelectorAll('[aria-label="位置讨论卡"] .tag-message')].map(node=>node.textContent.trim())};},
+ statusLine:()=>document.querySelector('.snapshot-card-status')?.textContent||'',
+ sends:()=>[...sends],setSendMode:mode=>{state.sendMode=mode;},setAgentReady:value=>{state.agentReady=value;},
+ setFinalizeMode:mode=>{state.finalizeMode=mode;},messages:()=>state.messages.length,
+ stagePendingRecovery:()=>{const pending=[...state.directReceipts.entries()].reverse().find(([,receipt])=>receipt.state==='pending-delivery');if(!pending)throw Error('fixture 没有待恢复的直发回执');const [,info]=pending;const thread=state.lastGoodSave?.target?.card?.thread||[];state.directReceipts.set('cap-recover:direct1',{attachment:info.attachment,question:info.question,state:'pending-delivery',thread:[]});state.recoverable=[{id:'rec-pending',state:'pending-delivery',createdAt:new Date().toISOString()}];state.recoverScripted={'rec-pending':{...descriptor(),captureId:'cap-recover',recoverable:[],receipt:{id:'cap-recover:direct1',attachment:info.attachment,state:'pending-delivery',card:{message:info.question,thread:[]}},drawingDraft:{drawing:state.lastGoodSave.drawing,target:structuredClone(state.lastGoodSave.target)}}};},
+ directReceipts:()=>[...state.directReceipts.entries()].map(([id,receipt])=>({id,...receipt})),
  typeCard:text=>{const node=cardText();node.value=text;node.dispatchEvent(new Event('input',{bubbles:true}));},
  clickFinish:()=>document.querySelector('#snapshot-drawing-finish').click(),
  clickButton,
@@ -132,7 +170,7 @@ try{
  // Hidden fixture windows never produce frames, so the default rAF polling
  // stalls after the first synchronous evaluation; poll on a timer instead.
  // puppeteer-core 25: waitForFunction(pageFunction, options, ...args).
- const waitFixture=(source,label,timeout=8000)=>page.waitForFunction(new Function('return ('+source.replace(/\bfx\b/g,'window.snapshotFixture')+')'),{polling:50,timeout}).then(()=>{},async error=>{throw Error(label+' timeout · status='+JSON.stringify(await fixture(fx=>fx.status()))+' · saves='+JSON.stringify(await fixture(fx=>fx.saveCalls()))+' · toasts='+JSON.stringify(await fixture(fx=>fx.toasts())));});
+ const waitFixture=(source,label,timeout=8000)=>page.waitForFunction(new Function('return ('+source.replace(/\bfx\b/g,'window.snapshotFixture')+')'),{polling:50,timeout}).then(()=>{},async error=>{throw Error(label+' timeout · status='+JSON.stringify(await fixture(fx=>fx.status()))+' · statusLine='+JSON.stringify(await fixture(fx=>fx.statusLine()))+' · thread='+JSON.stringify(await fixture(fx=>fx.card().thread))+' · pageErrors='+JSON.stringify(pageErrors)+' · saves='+JSON.stringify(await fixture(fx=>fx.saveCalls()))+' · toasts='+JSON.stringify(await fixture(fx=>fx.toasts())));});
 
  // ── Scene A: a superseded write stays dirty; the newest revision still reaches the store.
  await fixture(fx=>fx.setSaveMode('hold'));
@@ -200,12 +238,12 @@ try{
  await waitFixture('fx.pendingCommits()===1','commit held in flight');
  let cardState=await fixture(fx=>fx.card());
  assert.equal(cardState.readOnly,true,'card input is readOnly while the commit is in flight');
- assert.deepEqual(cardState.buttons.map(b=>b.disabled),[true,true,true],'card buttons are disabled while the commit is in flight');
+ assert.ok(cardState.buttons.filter(b=>!b.hidden).length>=4&&cardState.buttons.filter(b=>!b.hidden).every(b=>b.disabled),'card buttons are disabled while the commit is in flight');
  assert.equal(await fixture(fx=>fx.dialogOpen()),true,'the dialog stays open during the commit');
  await fixture(fx=>fx.settleCommits('fixture 提交失败'));
  await waitFixture('fx.card().open&&!fx.card().readOnly','failed commit restores the editable card');
  cardState=await fixture(fx=>fx.card());
- assert.deepEqual(cardState.buttons.map(b=>b.disabled),[false,false,false],'failed commit re-enables the card');
+ assert.ok(cardState.buttons.filter(b=>!b.hidden).every(b=>!b.disabled),'failed commit re-enables the card');
  await fixture(fx=>fx.setCommitMode('ok'));
  await fixture(fx=>fx.clickButton('加入对话草稿'));
  await waitFixture('!fx.dialogOpen()','successful commit closes the dialog');
@@ -317,6 +355,161 @@ try{
  await waitFixture('fx.card().open','re-finish opens the recovered card');
  assert.equal((await fixture(fx=>fx.card())).value,'恢复的问题','the question survived recovery, drawing, quit and reopen without completing');
  report.scenes.push('recovered-card-survives-quit-reopen');
+ // Scene H's same-id reload is consumed: later sessions start clean.
+ await fixture(fx=>fx.setStranded(false));
+
+ // ── Scene I: one explicit 发送讨论 = direct commit + managed send + finalize;
+ // replies project into the card by requestId; 续问 reuses the committed digest.
+ await fixture(fx=>fx.clickButton('退出'));
+ await waitFixture('!fx.dialogOpen()','scene H session exited cleanly');
+ await fixture(fx=>fx.open());
+ await waitFixture('fx.dialogOpen()&&fx.editorVisible()','direct-send session opened');
+ await stroke(page,.3,.3,.6,.6);
+ await fixture(fx=>fx.clickFinish());
+ await waitFixture('fx.card().open&&!fx.card().readOnly','card opened for direct send');
+ await fixture(fx=>fx.typeCard('直发的问题'));
+ const toastBaselineI=(await fixture(fx=>fx.toasts())).length;
+ await fixture(fx=>fx.clickButton('发送讨论'));
+ await waitFixture('fx.card().thread.some(t=>t.includes("直发的问题"))&&fx.card().thread.some(t=>t.includes("fixture 回复"))','question and scripted reply rendered inside the card');
+ let commits=await fixture(fx=>fx.ops('workspace.capture.commit'));
+ let directCommits=commits.filter(c=>c.direct);
+ assert.equal(directCommits.length,2,'direct send = one material commit plus one requestId finalize commit');
+ assert.equal(directCommits[0].requestId,undefined,'the material commit carries no requestId yet');
+ assert.equal(typeof directCommits[1].requestId,'string','the finalize commit associates the requestId');
+ let sentList=await fixture(fx=>fx.sends());
+ assert.equal(sentList.length,1,'exactly one managed send');
+ assert.equal(sentList[0].p.text,'直发的问题');
+ assert.ok(/^snap-[a-zA-Z0-9:_-]+-1$/.test(sentList[0].p.requestKey),'deterministic per-round request key');
+ const receipts=await fixture(fx=>fx.directReceipts());
+ assert.equal(receipts.length,1);
+ assert.equal(receipts[0].state,'delivered','receipt finalized to delivered');
+ assert.equal(typeof receipts[0].requestId,'string','the persisted receipt carries the requestId association');
+ assert.equal(await fixture(fx=>fx.dialogOpen()),true,'the thread card stays open after sending');
+ let threadCard=await fixture(fx=>fx.card());
+ assert.equal(threadCard.primary,'发送续问','the primary action becomes 续问 once a round is accepted');
+ assert.ok(threadCard.buttons.some(b=>b.label==='进入对话'&&!b.hidden),'an explicit conversation entry replaces focus stealing');
+ await fixture(fx=>fx.typeCard('继续追问'));
+ await fixture(fx=>fx.clickButton('发送续问'));
+ await waitFixture('fx.sends().length===2&&fx.card().thread.some(t=>t.includes("继续追问"))','follow-up sent and rendered');
+ sentList=await fixture(fx=>fx.sends());
+ assert.equal(sentList[1].p.imageAttachments[0].digest,sentList[0].p.imageAttachments[0].digest,'续问 reuses the committed image digest without re-upload');
+ commits=await fixture(fx=>fx.ops('workspace.capture.commit'));
+ assert.equal(commits.filter(c=>c.direct&&!c.requestId).length,1,'续问 never re-commits the capture material');
+ assert.equal(commits.filter(c=>c.direct&&c.requestId).length,2,'every accepted round finalizes the receipt exactly once');
+ const followupFinalize=commits.filter(c=>c.direct&&c.requestId).at(-1);
+ assert.equal(followupFinalize.target.card.thread.length,2,'the follow-up finalize persists BOTH rounds onto the receipt');
+ assert.ok(followupFinalize.target.card.thread.every(round=>round.requestId),'every persisted round keeps its requestId association');
+ assert.match(await fixture(fx=>fx.statusLine()),/已回复|等待前台回复/,'thread status line reflects the reply state');
+ const newToastsI=(await fixture(fx=>fx.toasts())).slice(toastBaselineI);
+ assert.ok(newToastsI.length>0&&newToastsI.every(t=>!t.includes('失败')),'the direct-send flow reports success without masked errors');
+ report.scenes.push('direct-send-thread-and-followup');
+
+ // ── Scene J: a failed send keeps the input and the single committed receipt;
+ // the in-card retry reuses the same delivery id and requestKey — no re-commit,
+ // no duplicate dispatch.
+ await fixture(fx=>fx.clickButton('完成讨论'));
+ await waitFixture('!fx.dialogOpen()','finalized thread closed with 完成');
+ await fixture(fx=>fx.open());
+ await waitFixture('fx.dialogOpen()&&fx.editorVisible()','retry session opened');
+ await stroke(page,.35,.35,.55,.55);
+ await fixture(fx=>fx.clickFinish());
+ await waitFixture('fx.card().open','card opened for the failing send');
+ await fixture(fx=>fx.typeCard('会失败的问题'));
+ await fixture(fx=>fx.setSendMode('fail'));
+ const materialBaseline=(await fixture(fx=>fx.ops('workspace.capture.commit'))).filter(c=>c.direct&&!c.requestId).length;
+ const finBaselineJ=(await fixture(fx=>fx.ops('workspace.capture.commit'))).filter(c=>c.direct&&c.requestId).length;
+ const sendBaselineJ=(await fixture(fx=>fx.sends())).length;
+ await fixture(fx=>fx.clickButton('发送讨论'));
+ await waitFixture('fx.statusLine().includes("发送失败")&&fx.card().open&&!fx.card().readOnly','send failure surfaced while keeping the editable card');
+ assert.equal((await fixture(fx=>fx.ops('workspace.capture.commit'))).filter(c=>c.direct&&!c.requestId).length,materialBaseline+1,'the material was committed exactly once before the failed send');
+ assert.equal((await fixture(fx=>fx.sends())).length,sendBaselineJ+1,'the failed attempt was dispatched once');
+ assert.equal((await fixture(fx=>fx.card())).value,'会失败的问题','the refused input stays in the card');
+ assert.equal((await fixture(fx=>fx.card())).primary,'发送讨论','retry stays the primary action before any accepted round');
+ await fixture(fx=>fx.setSendMode('ok'));
+ await fixture(fx=>fx.clickButton('发送讨论'));
+ await waitFixture('fx.sends().length==='+sendBaselineJ+'+2&&fx.card().thread.some(t=>t.includes("会失败的问题"))&&fx.card().thread.some(t=>t.includes("fixture 回复"))','the retried round renders question and reply');
+ sentList=await fixture(fx=>fx.sends());
+ assert.equal(sentList.at(-1).p.requestKey,sentList.at(-2).p.requestKey,'the retry reuses the deterministic requestKey');
+ assert.equal(sentList.at(-1).p.imageAttachments[0].digest,sentList.at(-2).p.imageAttachments[0].digest,'the retry reuses the committed attachment digest');
+ const allDirect=(await fixture(fx=>fx.ops('workspace.capture.commit'))).filter(c=>c.direct);
+ assert.equal(allDirect.filter(c=>!c.requestId).length,materialBaseline+1,'retry adds only the finalize commit — never a second material commit');
+ assert.equal(allDirect.filter(c=>c.requestId).length,finBaselineJ+1,'this session finalizes its receipt exactly once');
+ const finalizeCommit=(await fixture(fx=>fx.ops('workspace.capture.commit'))).filter(c=>c.direct).at(-1);
+ assert.equal(typeof finalizeCommit.requestId,'string','the retry finalize associates its requestId');
+ report.scenes.push('failed-send-retry-idempotent');
+
+ // ── Scene K: a refused gate never commits anything; after readiness returns
+ // the same click completes the whole chain.
+ await fixture(fx=>fx.clickButton('完成讨论'));
+ await waitFixture('!fx.dialogOpen()','scene J closed');
+ await fixture(fx=>fx.open());
+ await waitFixture('fx.dialogOpen()&&fx.editorVisible()','gate session opened');
+ await stroke(page,.4,.4,.6,.6);
+ await fixture(fx=>fx.clickFinish());
+ await waitFixture('fx.card().open','card opened for the gated send');
+ await fixture(fx=>fx.typeCard('门禁未就绪的问题'));
+ await fixture(fx=>fx.setAgentReady(false));
+ const commitBaseline=(await fixture(fx=>fx.ops('workspace.capture.commit'))).length;
+ const sendBaseline=(await fixture(fx=>fx.sends())).length;
+ await fixture(fx=>fx.clickButton('发送讨论'));
+ await waitFixture('fx.statusLine().includes("发送未发出")','gate refusal surfaced in the card');
+ assert.equal((await fixture(fx=>fx.ops('workspace.capture.commit'))).length,commitBaseline,'a refused send never commits the capture');
+ assert.equal((await fixture(fx=>fx.sends())).length,sendBaseline,'a refused send never dispatches work');
+ assert.equal((await fixture(fx=>fx.card())).value,'门禁未就绪的问题','the refused question stays editable');
+ await fixture(fx=>fx.setAgentReady(true));
+ await fixture(fx=>fx.clickButton('发送讨论'));
+ await waitFixture('fx.card().thread.some(t=>t.includes("门禁未就绪的问题"))','the send completes once the gate recovers');
+ report.scenes.push('gate-refusal-never-commits');
+
+ // ── Scene L: crash between send and receipt finalize → real recovery reopens
+ // the full thread (draft rounds + durable timeline); the follow-up round never
+ // re-dispatches round 1 and persists every round onto the recovered receipt.
+ await fixture(fx=>fx.clickButton('完成讨论'));
+ await waitFixture('!fx.dialogOpen()','scene K closed');
+ await fixture(fx=>fx.open());
+ await waitFixture('fx.dialogOpen()&&fx.editorVisible()','recovery scene session opened');
+ await stroke(page,.32,.32,.58,.58);
+ await fixture(fx=>fx.clickFinish());
+ await waitFixture('fx.card().open','card opened for the crashing send');
+ await fixture(fx=>fx.typeCard('崩溃前的问题'));
+ await fixture(fx=>fx.setFinalizeMode('fail'));
+ const sendBaselineL=(await fixture(fx=>fx.sends())).length;
+ const matBaselineL=(await fixture(fx=>fx.ops('workspace.capture.commit'))).filter(c=>c.direct&&!c.requestId).length;
+ const msgBaselineL=await fixture(fx=>fx.messages());
+ await fixture(fx=>fx.clickButton('发送讨论'));
+ await waitFixture('fx.statusLine().includes("回执保存失败")&&fx.card().thread.some(t=>t.includes("崩溃前的问题"))&&fx.card().thread.some(t=>t.includes("fixture 回复"))','round one is sent and rendered while the failed finalize stays visible');
+ assert.equal((await fixture(fx=>fx.sends())).length,sendBaselineL+1,'exactly one dispatch for round one');
+ assert.equal(await fixture(fx=>fx.messages()),msgBaselineL+1,'exactly one timeline message for round one');
+ assert.equal((await fixture(fx=>fx.ops('workspace.capture.commit'))).filter(c=>c.direct&&!c.requestId).length,matBaselineL+1,'the material committed exactly once');
+ const pendingReceipts=(await fixture(fx=>fx.directReceipts())).filter(r=>r.state==='pending-delivery');
+ assert.equal(pendingReceipts.length,1,'the receipt stays pending-delivery after the failed finalize');
+ // Close with the receipt pending — the record remains recoverable.
+ await fixture(fx=>fx.clickButton('完成讨论'));
+ await waitFixture('!fx.dialogOpen()','pending card closed without forcing a finalize');
+ // Real recovery: the staged record mirrors the store (receipt + persisted draft).
+ await fixture(fx=>fx.stagePendingRecovery());
+ await fixture(fx=>fx.open());
+ await waitFixture('fx.dialogOpen()&&fx.editorVisible()','recovery selector session opened');
+ await fixture(fx=>fx.selectRecover('rec-pending'));
+ await waitFixture('fx.editorVisible()','recovered draft reopened');
+ await fixture(fx=>fx.clickFinish());
+ await waitFixture('fx.card().open&&fx.card().thread.some(t=>t.includes("崩溃前的问题"))&&fx.card().thread.some(t=>t.includes("fixture 回复"))','reopened card retains the full round and its durable reply');
+ const reopenedCard=await fixture(fx=>fx.card());
+ assert.equal(reopenedCard.primary,'发送续问','the reopened thread card offers 续问, not a resend');
+ assert.match(await fixture(fx=>fx.statusLine()),/已回复|等待前台回复/,'the reopened card projects the real reply state — delivery success is never shown as a reply');
+ assert.equal((await fixture(fx=>fx.ops('workspace.capture.commit'))).filter(c=>c.direct&&!c.requestId).length,matBaselineL+1,'recovery itself never re-commits the material');
+ // Follow-up from the recovered card: no duplicate dispatch, full persistence.
+ await fixture(fx=>fx.setFinalizeMode('ok'));
+ await fixture(fx=>fx.typeCard('恢复后的续问'));
+ await fixture(fx=>fx.clickButton('发送续问'));
+ await waitFixture('fx.card().thread.some(t=>t.includes("恢复后的续问"))&&fx.directReceipts().find(r=>r.id==="cap-recover:direct1"&&r.state==="delivered")&&fx.directReceipts().find(r=>r.id==="cap-recover:direct1").thread.length===2','the follow-up finalizes the recovered receipt with BOTH rounds');
+ assert.equal((await fixture(fx=>fx.sends())).length,sendBaselineL+2,'round one is never re-dispatched after the failed finalize');
+ assert.equal(await fixture(fx=>fx.messages()),msgBaselineL+2,'exactly one new timeline message for the follow-up');
+ assert.equal((await fixture(fx=>fx.ops('workspace.capture.commit'))).filter(c=>c.direct&&!c.requestId).length,matBaselineL+1,'续问 after recovery adds no material commit');
+ const recoveredReceipt=(await fixture(fx=>fx.directReceipts())).find(r=>r.id==='cap-recover:direct1');
+ assert.equal(typeof recoveredReceipt.requestId,'string','the recovered receipt keeps its newest requestId association');
+ assert.ok(recoveredReceipt.thread.every(round=>round.requestId),'every persisted round on the recovered receipt keeps its requestId');
+ report.scenes.push('recovery-reopens-thread-followup-persists');
 
  assert.deepEqual(pageErrors,[],'no renderer errors across all retention scenes');
  report.ok=true;

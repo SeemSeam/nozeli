@@ -184,6 +184,20 @@ try{
   assert.equal((await snapshot()).state.jobs.length,initial.state.jobs.length,'opening local discussion never sends');
   await shell.type('[aria-label="讨论说明"]','请解释这里的红色标记。');
  });
+
+ // Direct 发送讨论 is gated by agent readiness (shared discussion layer): with
+ // no configured agent the card refuses the handoff, keeps the question
+ // editable, commits nothing and dispatches nothing — the draft path below
+ // still works unchanged afterwards.
+ const gateReceiptFile=path.join(await fixture.storage.recoveryDirectory(fixture.a.id),'drawing-captures',snapshotSession.captureId+'.result.json');
+ assert(!await fs.stat(gateReceiptFile).then(()=>true,()=>false),'no receipt exists before any handoff');
+ await shell.evaluate(()=>[...document.querySelectorAll('[aria-label="位置讨论卡"] button')].find(b=>b.textContent==='发送讨论').click());
+ await shell.waitForFunction(()=>{const line=document.querySelector('[aria-label="位置讨论卡"] .snapshot-card-status');return line&&line.textContent.includes('发送未发出');},{timeout:10000});
+ assert.equal(await shell.$eval('[aria-label="讨论说明"]',node=>node.value),'请解释这里的红色标记。','a refused direct send keeps the question editable');
+ assert.equal(await shell.$eval('[aria-label="位置讨论卡"]',node=>node.querySelector('.snapshot-card-send').disabled),false,'the refused card stays retryable');
+ assert.equal((await snapshot()).state.jobs.length,initial.state.jobs.length,'a refused direct send dispatches no work');
+ assert(!await fs.stat(gateReceiptFile).then(()=>true,()=>false),'a refused direct send persists no capture receipt');
+ report.checks.push('Direct send is refused by the shared agent gate without committing or dispatching anything');
  await shell.screenshot({path:path.join(out,'drawing-local-discussion.png')});
  await shell.evaluate(()=>[...document.querySelectorAll('[aria-label="位置讨论卡"] button')].find(b=>b.textContent==='加入对话草稿').click());
  const chat=await scoped('conversation');await chat.page.waitForSelector('.cm-chip',{visible:true});

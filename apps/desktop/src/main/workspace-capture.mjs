@@ -228,7 +228,12 @@ export class WorkspaceCapture {
   }
 
   async describe(s){
-    return {captureId:s.id,projectId:s.projectId,tiles:s.tiles,width:s.width,height:s.height,sources:s.sources,omittedWindowCount:s.omittedWindowCount??0,drawingDraft:s.drawingDraft??null,recoverable:await s.store.listRecoverable(s.projectId)};
+    // `receipt` (2026-10-25 direct-send alignment) is a backward-compatible
+    // association view: the live pending receipt, else the recovered record's
+    // persisted result, so a reopened discussion card can show its thread
+    // state (question, delivery state, requestId, attachment identity).
+    const receipt=s.pendingReceipt?.result??s.recovered?.result??null;
+    return {captureId:s.id,projectId:s.projectId,tiles:s.tiles,width:s.width,height:s.height,sources:s.sources,omittedWindowCount:s.omittedWindowCount??0,drawingDraft:s.drawingDraft??null,recoverable:await s.store.listRecoverable(s.projectId),...(receipt?{receipt}:{})};
   }
 
   // The drawing dialog lives in the initiating root renderer; only that
@@ -319,6 +324,45 @@ export class WorkspaceCapture {
       // live dialog) retries the original delivery id when question and ink
       // are unchanged, including after another crash on the recovery fork.
       // Editing starts a new intent instead.
+      //
+      // Direct-send handoff (2026-10-25 discussion alignment): the snapshot
+      // card's single 发送讨论 click commits first, sends through the managed
+      // image-attachment chain, then finalizes. The initial direct commit
+      // stores the material and a pending-delivery receipt WITHOUT routing the
+      // image into the conversation draft (the explicit send replaces the
+      // draft chip) and keeps the session alive; the finalize associates the
+      // requestId, marks the receipt delivered and ends the session. Receipt
+      // semantics are unchanged: an unchanged retry reuses the original
+      // delivery id, an edited one forks a distinct intent below.
+      if(p.direct&&!p.requestId){
+        if(prior?.result&&sameDrawing&&question===priorQuestion){
+          return {saved:true,attached:true,captureId:s.id,deliveryId:prior.id,attachment:prior.result.attachment,state:'pending-delivery',direct:true};
+        }
+        const intent=s.editIntent??s.id;
+        const stored=await this.host.attachMaterial({projectId:s.projectId,name:'drawing-'+intent+'.png',mime:'image/png',source:'drawing',size:bytes.length,bytes:bytes.toString('base64')});
+        const attachment={...stored,kind:'image',source:'drawing',sources:s.sources};
+        const result={id:intent,projectId:s.projectId,attachment,sources:s.sources,state:'pending-delivery',drawing:p.drawing,card};
+        await s.store.saveResult(intent,s.projectId,result);
+        s.pendingReceipt={id:intent,projectId:s.projectId,createdAt:s.createdAt,state:'frozen',tiles:s.tiles,width:s.width,height:s.height,sources:s.sources,omittedWindowCount:s.omittedWindowCount??0,ownerGeneration:s.ownerGeneration,result,drawingDraft:draft};
+        if(intent===s.id)s.ownReceipt=true;else s.editIntent=null;
+        return {saved:true,attached:true,captureId:s.id,deliveryId:intent,attachment,state:'pending-delivery',direct:true};
+      }
+      // Per-round finalize: associate the newest requestId, persist the full
+      // discussion thread onto the receipt and mark it delivered. The question
+      // legitimately advances with rounds (ink stays bound to the delivery
+      // identity), the call is idempotent for an already-delivered receipt,
+      // and the session is NOT ended here — the card's completion paths own
+      // it, so 续问 can keep refreshing this receipt with later rounds.
+      if(p.direct&&p.requestId){
+        if(!prior?.result||!sameDrawing)throw Error('直发回执与当前涂鸦不一致；请重新发送，或改用加入对话草稿。');
+        const result={...prior.result,state:'delivered',requestId:p.requestId,card};
+        await s.store.saveResult(prior.id,s.projectId,result);
+        if(prior.id!==s.id){
+          const baseline=await s.store.load(s.id,s.projectId);
+          if(!baseline.result)await s.store.saveResult(s.id,s.projectId,result);
+        }
+        return {saved:true,attached:true,captureId:s.id,deliveryId:prior.id,requestId:p.requestId,state:'delivered',direct:true};
+      }
       if(!p.local&&prior?.result&&sameDrawing&&question===priorQuestion){
         const result={...prior.result,state:'delivered'},sources=result.sources??prior.sources??[];
         await this.deliver({projectId:s.projectId,window:{windowId:s.windowId}},{type:'drawing-material',projectId:s.projectId,target:'frontdesk',deliveryId:prior.id,attachment:result.attachment,sources,card:priorCard});

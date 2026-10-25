@@ -197,10 +197,18 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     if (! $('provider-console').hidden) void refreshConsole();
     return loading;
   };
-  window.__agentSelectionAction = async ({ action, excerpt, relPath, materialText, annotationRef, comment = '', background = false }) => {
+  // Shared send gate (discussion-thread layer): file-tag discussions and the
+ // workspace-snapshot thread card join the same readiness contract.
+  const agentSendGate = () => {
     const id = projectId;
     const gated = $('send-message').disabled;
-    if (!id || gated || !managed.active) { const reason=!id?'尚未打开项目。':$('send-message').title||'Agent 尚未就绪或当前内容只读。';toast('发送未发出：'+reason);return false; }
+    if (!id || gated || !managed.active) return { ok: false, message: '发送未发出：' + (!id ? '尚未打开项目。' : $('send-message').title || 'Agent 尚未就绪或当前内容只读。') };
+    return { ok: true, projectId: id };
+  };
+  window.__agentSelectionAction = async ({ action, excerpt, relPath, materialText, annotationRef, comment = '', background = false }) => {
+    const id = projectId;
+    const gate = agentSendGate();
+    if (!gate.ok) { toast(gate.message); return false; }
     if (!excerpt?.trim() && !(action === 'task' && annotationRef)) return false;
     const prompt = annotationRef
       ? action==='explain'?'请解释这处选区。':action==='task'?`请修改这处材料：\n${comment}`:comment
@@ -209,6 +217,16 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     const result = await managed.send(prompt, context).then(value => ({ ok: true, value }), error => ({ ok: false, error }));
     if (!result.ok) { toast(result.error.message); return false; }
     return { ...result.value, requestId: result.value.requestId ?? result.value.jobId };
+  };
+  // Direct discussion send for the workspace-snapshot thread card: same gate,
+  // same managed.send image-attachment chain the composer uses.
+  window.__agentDiscussionGate = agentSendGate;
+  window.__agentDiscussionSend = async ({ text, imageAttachments, requestKey }) => {
+    const gate = agentSendGate();
+    if (!gate.ok) { toast(gate.message); return false; }
+    const result = await managed.send(text, { imageAttachments, requestKey }).then(value => ({ ok: true, value }), error => ({ ok: false, error }));
+    if (!result.ok) { toast(result.error.message); return false; }
+    return { accepted: true, requestId: result.value.requestId ?? result.value.jobId };
   };
   window.__agentSend = async ({background=false}={}) => {
     if(!ownsConversation)return false;

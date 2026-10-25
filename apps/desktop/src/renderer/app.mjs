@@ -294,7 +294,8 @@ const composerMaterials = isConversation ? mountComposerMaterials({
 }) : null;
 window.__composerMaterials = composerMaterials;
 mountInterfaceAppearance();
-const workspaceSnapshot=mountWorkspaceSnapshot({invoke,getProjectId:()=>ui.project?.id??workspaceScope.projectId,toast:message=>workspace.toast(message)});
+const workspaceSnapshot=mountWorkspaceSnapshot({invoke,getProjectId:()=>ui.project?.id??workspaceScope.projectId,toast:message=>workspace.toast(message),
+  openConversation:async()=>{const button=$('workspace-open-conversation');if(button&&!button.disabled&&!button.hidden){button.click();return;}const result=await invoke('workspace.control',{type:'conversation-action',projectId:ui.project?.id??workspaceScope.projectId,action:'open'});if(!result.ok)workspace.toast(result.error?.message||'打开对话失败');}});
 const drawingLauncher=mountDrawingLauncher({activate:()=>workspaceSnapshot.open(),getProjectId:()=>ui.project?.id??workspaceScope.projectId,onError:message=>workspace.toast(message)});
 window.addEventListener('nozeli-draw-current-window',()=>void workspaceSnapshot.open());
 const authorship=mountDocumentAuthorship({current:()=>['text','word'].includes(ui.file?.kind)?{kind:ui.file.kind,projectId:ui.project.id,relPath:ui.file.relPath,digest:ui.file.digest,editor:ui.file.kind==='word'&&ui.word?{adapter:ui.word}:ui.editor,dirty:ui.dirty||ui.composing}:null,invoke,reload:relPath=>enqueue(()=>openFileNow(relPath,null,true),true),toast:text=>workspace.toast(text),onCompare:version=>void comparison.compareVersion(version)});
