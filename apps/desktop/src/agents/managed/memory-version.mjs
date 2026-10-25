@@ -21,7 +21,7 @@ export class MemoryVersion {
   this.cache.set(rel,{identity,value});return value;
  }
  async snapshot(){
-  const root=await this.file('plan-tree.md');
+  const root=await this.file('index.md');
   const paths=[...new Set([...String(root.text??'').matchAll(/\]\((topics\/[A-Za-z0-9_-]+\.md)\)/g)].map(m=>m[1]))].sort();
   const topics=await Promise.all(paths.map(rel=>this.file(rel)));
   const version=digest(JSON.stringify([root,...topics].map(({path,digest})=>({path,digest}))));

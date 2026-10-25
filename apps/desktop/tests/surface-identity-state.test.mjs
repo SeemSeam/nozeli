@@ -1,29 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createInflightReads,createIdentityHydration,createDiscussionDrafts,createProjectFiles,restoredComposerDraft,bindComposerDrafts,ownsDiscussionReceipt} from '../src/renderer/surface-identity-state.mjs';
+import {createInflightReads,createIdentityHydration,createDiscussionDrafts,createProjectFiles,bindComposerDrafts,ownsDiscussionReceipt} from '../src/renderer/surface-identity-state.mjs';
 import {makeOriginalReplyReader} from '../src/renderer/tag-original-reader.mjs';
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};};
 import {mountArchivePages} from '../src/renderer/archive-pages.mjs';
 import {createSessionStore,sessionMessages} from '../src/renderer/session-store.mjs';
 import {createTagSessionProjection} from '../src/renderer/tag-session-projection.mjs';
 
-test('restored workspace drafts override stale managed drafts including explicit empty projects',()=>{
- assert.equal(restoredComposerDraft({draft:'restored B',local:'old A',durable:'host B'}),'restored B');
- assert.equal(restoredComposerDraft({draft:'',local:'old A'}),'');
- assert.equal(restoredComposerDraft({}),'');
-});
 
-test('native composer input persists during deferred Agent initialization and survives late restoration',async()=>{
+test('composer persistence retains captured project identity across queued writes and explicit empty drafts',async()=>{
  const composer=new EventTarget();composer.value='';
- const initialization=deferred(),write=deferred(),local=new Map(),durable=new Map(),calls=[];
- let active=false,identity={projectId:'A',target:'frontdesk'};
+ const write=deferred(),local=new Map(),durable=new Map(),calls=[];
+ let identity={projectId:'A',target:'frontdesk'};
  const writer=bindComposerDrafts({composer,current:()=>identity,remember:d=>local.set(d.projectId,d.text),persist:async d=>{calls.push(d);await write.promise;durable.set(d.projectId,d.text);},onInput:()=>{},onError:error=>{throw error;}});
- const loading=initialization.promise.then(()=>{active=true;composer.value=restoredComposerDraft({local:local.get('A'),durable:undefined});});
  composer.value='UNSENT_MAIN_ALPHA';composer.dispatchEvent(new Event('input'));
  await Promise.resolve();await Promise.resolve();
- assert.equal(active,false);assert.deepEqual(calls,[{projectId:'A',target:'frontdesk',text:'UNSENT_MAIN_ALPHA'}]);
- initialization.resolve();await loading;
- assert.equal(composer.value,'UNSENT_MAIN_ALPHA');
+ assert.deepEqual(calls,[{projectId:'A',target:'frontdesk',text:'UNSENT_MAIN_ALPHA'}]);
  write.resolve();await writer.settled();assert.equal(durable.get('A'),'UNSENT_MAIN_ALPHA');
  // Input queued before a project switch must not be redirected to the new one.
  composer.value='A newer draft';composer.dispatchEvent(new Event('input'));

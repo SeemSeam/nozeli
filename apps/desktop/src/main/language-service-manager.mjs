@@ -76,7 +76,7 @@ export class LanguageServiceManager {
   }
 
   async logPath(projectId) {
-    const dir = path.join(this.userDataDir, 'nozeli', 'v1', 'lsp');
+    const dir = path.join(await this.host.storage.localDirectory(projectId),'lsp');
     await mkdir(dir, { recursive: true, mode: 0o700 });
     return path.join(dir, `${projectId}-${++this.sequence}.log`);
   }
@@ -225,6 +225,7 @@ export class LanguageServiceManager {
     this.event({ projectId: session.projectId, type: 'stopped', logFile: session.logFile });
   }
 
+  async stopProject(projectId){if(this.session?.projectId===projectId)await this.stop(this.session);}
   async stopAll() { await this.stop(); }
   status() { return this.session ? { projectId: this.session.projectId, ready: this.session.ready, logFile: this.session.logFile, cwd: this.session.root } : { ready: false }; }
 }

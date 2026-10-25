@@ -48,6 +48,7 @@ export function mountPptContextMenu({frame,onOpen,onClose,onSelectionStart}) {
   };
   const hover=event=>{const row=event.target.closest('.menu-item:not(.divider):not(.disable)');if(row&&menu?.contains(row))reveal(row);};
   const scroll=event=>{if(!event.target.closest?.('.contextmenu'))close();};
-  doc.addEventListener('pointerdown',down,true);doc.addEventListener('contextmenu',context,true);doc.addEventListener('keydown',key,true);doc.addEventListener('pointerover',hover,true);doc.addEventListener('scroll',scroll,true);win.addEventListener('resize',close);
-  return {close,dispose(){close();observer.disconnect();onClose?.();doc.removeEventListener('pointerdown',down,true);doc.removeEventListener('contextmenu',context,true);doc.removeEventListener('keydown',key,true);doc.removeEventListener('pointerover',hover,true);doc.removeEventListener('scroll',scroll,true);win.removeEventListener('resize',close);link.remove();}};
+  // Region annotations stop propagation at document; resume selection before them.
+  win.addEventListener('pointerdown',down,true);doc.addEventListener('contextmenu',context,true);doc.addEventListener('keydown',key,true);doc.addEventListener('pointerover',hover,true);doc.addEventListener('scroll',scroll,true);win.addEventListener('resize',close);
+  return {close,dispose(){close();observer.disconnect();onClose?.();win.removeEventListener('pointerdown',down,true);doc.removeEventListener('contextmenu',context,true);doc.removeEventListener('keydown',key,true);doc.removeEventListener('pointerover',hover,true);doc.removeEventListener('scroll',scroll,true);win.removeEventListener('resize',close);link.remove();}};
 }

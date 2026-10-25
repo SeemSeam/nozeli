@@ -1,3 +1,4 @@
+import {openTestController,openTestWorkspace} from './project-storage.fixture.mjs';
 // Provider-only Controller boundary: native selection owns model/effort; provider
 // roundtrips, tool admission and exact recovery retain historical ownership.
 import test from 'node:test';
@@ -50,7 +51,7 @@ async function fixture(t, { ompFailStart = false } = {}) {
       return session;
     },
   };
-  const c = await Controller.open(options);
+  const c = await openTestController(options);
   await c.store.mutate(()=>{for(const binding of Object.values(c.store.state.bindings))binding.provider='omp';});
   await c.start();
   t.after(async () => { await c.stop().catch(() => {}); await fs.rm(root, { recursive: true, force: true }); });
@@ -79,7 +80,7 @@ test('no service YAML required: omp starts and follows system default without an
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nozeli-omp-manual-'));
   const options = { runtimeRoot: path.join(root, 'data'), contentRoot: path.join(root, 'content'), projectHome: async home => { await fs.mkdir(home, { recursive: true }); },
     sessionFactory: (spec, target) => new FakeOmpSession(spec, target) };   // 无任何服务配置
-  const c = await Controller.open(options); await c.start();
+  const c = await openTestController(options); await c.start();
   t.after(async () => { await c.stop().catch(() => {}); await fs.rm(root, { recursive: true, force: true }); });
   const r = await c.setBinding('frontdesk', { provider: 'omp' });
   assert.equal(r.saved, true, 'follow-default enable needs no service YAML (system-native default)');
@@ -143,9 +144,11 @@ test('restore dispatches recovery by provider kind (omp record skips codex auth 
   // 直接验证分派函数存在且 omp 记录走 omp 恢复：此处以受控 record 断言已退出路径（无真实进程）。
   const { recoverOmpProvider } = await import('../src/agents/managed/omp-process-ownership.mjs');
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nozeli-omp-rec-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
   const home = path.join(root, 'agents', 'x');
   await fs.mkdir(home, { recursive: true });
-  const result = await recoverOmpProvider({ pid: 999999999, home, stamp: 'boot:1' }, root);
+  const boot = (await fs.readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim();
+  const result = await recoverOmpProvider({ kind: 'omp-rpc', pid: 999999999, home, stamp: `${boot}:1` }, root);
   assert.ok(['already-exited', 'exited-during-check'].includes(result.status));
 });
 
@@ -154,7 +157,7 @@ test('recovery gates: never-dispatched green, cancelled-after-prompt red, unknow
   const makeCtrl = async (jobs, residentExtra) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'p3rec-'));
     const created = [];
-    const c = await Controller.open({
+    const c = await openTestController({
       runtimeRoot: path.join(root, 'data'), contentRoot: path.join(root, 'content'),
       projectHome: async home => { await fs.mkdir(home, { recursive: true }); },
       ompModelsYml: 'providers:\n  na:\n    models:\n      - id: g0\n',

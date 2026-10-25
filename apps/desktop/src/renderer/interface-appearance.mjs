@@ -26,11 +26,11 @@ export function mountInterfaceAppearance() {
   }
 }
 
-export function mountDrawingLauncher({invoke,getProjectId,onError=()=>{}}) {
+export function mountDrawingLauncher({activate,getProjectId,onError=()=>{}}) {
   const button=document.getElementById('workspace-drawing');
   let busy=false;
   const refresh=()=>{button.disabled=busy||!getProjectId();button.setAttribute('aria-busy',String(busy));};
-  const begin=async()=>{const projectId=getProjectId();if(!projectId||busy)return;busy=true;refresh();try{const result=await invoke('workspace.capture.begin',{projectId});if(!result?.ok)throw Error(result?.error?.message||'无法开始涂鸦');}catch(error){onError(error.message);}finally{busy=false;refresh();}};
+  const begin=async()=>{if(!getProjectId()||busy)return;busy=true;refresh();try{await activate();}catch(error){onError(error.message);}finally{busy=false;refresh();}};
   button.addEventListener('click',begin);refresh();
   return {refresh,dispose(){button.removeEventListener('click',begin);}};
 }

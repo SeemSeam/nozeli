@@ -98,7 +98,7 @@ try {
   assert(await page.$eval('.nozeli-submenu [data-command="preview-link"]',el=>el.disabled));await page.keyboard.press('Escape');
   await contentToolForPage(page, ['view', 'text-mode']);await split();
   await page.waitForFunction(()=>document.querySelector('#text-preview pre code')?.dataset.highlighted==='cpp');
-  const markup = await page.$eval('#text-preview',el=>({tables:el.querySelectorAll('table').length,math:el.querySelectorAll('.katex').length,errors:el.querySelectorAll('.katex-error').length,colors:new Set([...el.querySelectorAll('pre code span')].map(node=>node.style.color)).size}));
+  const markup = await page.$eval('#text-preview',el=>({tables:el.querySelectorAll('table').length,math:el.querySelectorAll('.katex').length,errors:el.querySelectorAll('.katex-error').length,colors:new Set([...el.querySelectorAll('pre code span')].map(node=>getComputedStyle(node).color)).size}));
   assert(markup.tables===1&&markup.math===3&&markup.errors===0&&markup.colors>=3);report.markup=markup;
   await shot('01-split');mark('Markdown defaults to reading; editing shows source and live rendered math/table/highlight side by side');
   // This regression also exercises the explicitly available independent mode.

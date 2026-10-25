@@ -1,3 +1,4 @@
+import {openTestController,openTestWorkspace} from './project-storage.fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createTagSessionProjection } from '../src/renderer/tag-session-projection.mjs';
@@ -94,7 +95,7 @@ test('failed durable replies do not become completed just because original text 
 
 test('canonical native progress advances to final reply without changing completed history or local drafts',async t=>{
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-tag-native-'));
- const store=await Workspace.open(path.join(root,'runtime'),path.join(root,'project'));
+ const store=await openTestWorkspace(path.join(root,'runtime'),path.join(root,'project'));
  t.after(async()=>{await store.close();await fs.rm(root,{recursive:true,force:true});});
  await store.mutate(()=>{store.state.jobs=[{id:'job-a',target:'frontdesk',status:'running',context:{},collabAttempts:[{requestId:'request-a',sessionId:'native-session',epoch:'native-session#0'}]}];});
  const index=new SessionIndex(store);await index.initialize();

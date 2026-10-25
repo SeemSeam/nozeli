@@ -19,7 +19,6 @@ class WorkspaceWindow extends BaseWindow {
       root.removeChildView(this.chromeView);
       addChildView(this.chromeView, 0);
       for (const child of root.children) if (child !== this.chromeView) addChildView(child);
-      if(this.captureOverlay&&root.children.includes(this.captureOverlay))addChildView(this.captureOverlay);
     };
     const resize = () => {
       const [width, height] = this.getContentSize();

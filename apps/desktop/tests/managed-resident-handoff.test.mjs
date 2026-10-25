@@ -1,3 +1,4 @@
+import {openTestController,openTestWorkspace} from './project-storage.fixture.mjs';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
@@ -11,7 +12,7 @@ const historyBytes=id=>JSON.stringify({type:'session',id,version:3,timestamp:'20
 async function fixture(t){
  const root=await mkdtemp(path.join(os.tmpdir(),'resident-handoff-'));
  const calls=[];let nextId=0,failNew=false;
- const c=await Controller.open({runtimeRoot:path.join(root,'runtime'),contentRoot:path.join(root,'content'),projectHome:async()=>{},sessionFactory:(spec,target)=>{
+ const c=await openTestController({runtimeRoot:path.join(root,'runtime'),contentRoot:path.join(root,'content'),projectHome:async()=>{},sessionFactory:(spec,target)=>{
   const session=new EventEmitter();Object.assign(session,{toolsDigest:'current-schema',busy:false,closed:false,phase:'ready',sideEffectFacts:[],inFlightToolCalls:new Set()});
   session.start=async resumeId=>{calls.push({target,resumeId});session.threadId=resumeId??`new-${++nextId}`;session.sessionFile=path.join(spec.home,'sessions',session.threadId+'.jsonl');await mkdir(path.dirname(session.sessionFile),{recursive:true});if(!resumeId)await writeFile(session.sessionFile,historyBytes(session.threadId));if(failNew&&!resumeId){failNew=false;throw Error('startup after identity failed');}return session;};
   session.assertToolsDigest=expected=>{if(expected!=='current-schema')throw Object.assign(Error('historical schema not equivalent'),{code:'OMP_TOOLS_DIGEST_MISMATCH'});};

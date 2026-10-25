@@ -18,6 +18,9 @@ import { listDocumentVersions, readDocumentVersion } from '../domain/document-ve
 import { anchorText, resolveTextAnchor, textChangeSet, mapTextAnchor, validTextAnchor } from '../domain/tag-anchors.mjs';
 import {rebaseDocumentEdits, documentChangesSince} from '../domain/document-collaboration.mjs';
 import { treeViewValue } from './file-tree-ops.mjs';
+import {ProjectStorage} from './project-storage.mjs';
+import {ensureProjectGit} from './project-git.mjs';
+import {ProjectAttachments,validateDrawingPng} from './project-attachments.mjs';
 
   const NOTE_KINDS = ['image-region','ppt-selection','ppt-region','word-region', 'word-selection', 'text-selection', 'pdf-page', 'pdf-selection', 'pdf-region'];
   function boundNoteOffsets(value, { strict = false } = {}) {
@@ -249,9 +252,7 @@ function validExecuteRef(value) {
   return !value || (typeof value === 'object' && typeof value.jobId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.jobId));
 }
 
-function projectIdFor(root) {
-  return createHash('sha256').update(root).digest('hex');
-}
+const validProjectId=value=>typeof value==='string'&&/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(value);
 
 function draftKey(relPath) {
   return createHash('sha256').update(relPath).digest('hex');
@@ -302,10 +303,10 @@ export class DesktopHost {
       throw new HostError('INVALID_DIRECTORY', 'Application metadata directory must be absolute.');
     }
     this.userDataDir = path.resolve(userDataDir);
-    this.metaRoot = path.join(this.userDataDir, 'nozeli', 'v1');
-    this.materials = new MaterialStore(path.join(this.metaRoot, 'materials'), { maxBytes: materialMaxBytes });
+    this.storage=new ProjectStorage(this.userDataDir);
+    this.attachments=new ProjectAttachments(this.storage);
+    this.metaRoot = path.join(this.userDataDir,'nozeli','settings');
     this.maxReadBytes = materialMaxBytes;
-    this.registryPath = path.join(this.metaRoot, 'registry.json');
     this.metaLock = lock();
     this.fileLocks = new Map();
     this.projectLocks = new Map();
@@ -413,43 +414,19 @@ export class DesktopHost {
   }
 
   async updateRegistry(mutator) {
-    return this.metaLock(async () => {
-      await this.ensureMeta();
-      const current = await this.readVersioned(this.registryPath) ?? { schemaVersion: SCHEMA, projects: [] };
-      const next = mutator(current);
-      next.schemaVersion = SCHEMA;
-      await this.writeAtomic(this.registryPath, next);
-      return next;
-    });
+    const current={schemaVersion:SCHEMA,projects:await this.storage.list()},next=mutator(current);
+    for(const p of next.projects)await this.storage.db.request(this.storage.catalog,'put',{collection:'instances',id:p.id,value:p});
+    return next;
   }
 
   projectDir(projectId) {
-    if (!/^[a-f0-9]{64}$/.test(projectId)) throw new HostError('UNKNOWN_PROJECT', 'Unknown project.');
-    return path.join(this.metaRoot, 'projects', projectId);
+    if(!validProjectId(projectId))throw new HostError('UNKNOWN_PROJECT','项目身份无效');
+    const p=this.storage.bindings.get(projectId);if(!p)throw new HostError('UNKNOWN_PROJECT','项目尚未加载');
+    return path.join(this.storage.root,'recovery',p.instanceId);
   }
 
-  async requireProject(projectId) {
-    const registry = await this.readVersioned(this.registryPath);
-    const project = registry?.projects?.find((item) => item.id === projectId);
-    if (!project) throw new HostError('UNKNOWN_PROJECT', 'Project is not registered.');
-    let rootStat;
-    try {
-      rootStat = await fs.stat(project.root);
-    } catch (error) {
-      if (error.code === 'ENOENT') {
-        throw new HostError('PROJECT_ROOT_MISSING', 'Registered directory is gone. Re-pick it; same folder name is not reused.', {
-          projectId,
-        });
-      }
-      throw new HostError('ACCESS_DENIED', 'Registered directory cannot be read.', { cause: error.code });
-    }
-    if (!rootStat.isDirectory()) throw new HostError('NOT_A_DIRECTORY', 'Registered root is not a directory.');
-    const real = await fs.realpath(project.root);
-    if (real !== project.root) {
-      throw new HostError('PROJECT_ROOT_MISSING', 'Registered directory no longer matches its canonical path.');
-    }
-    return project;
-  }
+  async requireRegisteredProject(projectId){return this.storage.requireRegistered(projectId);}
+  async requireProject(projectId){return this.storage.requireOnline(projectId);}
 
   async resolveFile(project, relPath) {
     const rel = normalizeRel(relPath);
@@ -493,33 +470,11 @@ export class DesktopHost {
   }
 
   async registerDirectory(input) {
-    if (typeof input !== 'string' || !path.isAbsolute(input)) {
-      throw new HostError('NOT_A_DIRECTORY', 'Pick an absolute directory.');
-    }
-    let real;
-    try {
-      real = await fs.realpath(input);
-    } catch (error) {
-      if (error.code === 'ENOENT') throw new HostError('NOT_A_DIRECTORY', 'Directory does not exist.');
-      throw new HostError('ACCESS_DENIED', 'Directory cannot be resolved.', { cause: error.code });
-    }
-    const stat = await fs.stat(real);
-    if (!stat.isDirectory()) throw new HostError('NOT_A_DIRECTORY', 'Selection is not a directory.');
-    const id = projectIdFor(real);
-    const now = new Date().toISOString();
-    await this.updateRegistry((registry) => {
-      const projects = registry.projects.filter((item) => item.id !== id);
-      projects.push({
-        id,
-        root: real,
-        name: path.basename(real) || real,
-        openedAt: registry.projects.find((item) => item.id === id)?.openedAt ?? now,
-        lastOpenedAt: now,
-      });
-      return { schemaVersion: SCHEMA, projects };
-    });
-    await fs.mkdir(this.projectDir(id), { recursive: true, mode: 0o700 });
-    return this.publicProject(await this.requireProject(id));
+    if(typeof input!=='string'||!path.isAbsolute(input))throw new HostError('NOT_A_DIRECTORY','请选择绝对目录');
+    const project=await this.storage.register(input),key='git-init',previous=await this.storage.getRecovery(project.id,key);
+    const operationId=previous?.operationId??randomUUID();
+    await ensureProjectGit(project.root,{operationId,expectedIdentity:project.identity,journal:{read:()=>this.storage.getRecovery(project.id,key),write:value=>this.storage.putRecovery(project.id,key,value)}});
+    return this.publicProject(project);
   }
 
   publicProject(project) {
@@ -534,36 +489,9 @@ export class DesktopHost {
     })());
   }
 
-  async removeProject(projectId) {
-    return this.track((async () => {
-      await this.updateRegistry(registry => {
-        if (!registry.projects.some(item => item.id === projectId)) throw new HostError('UNKNOWN_PROJECT', 'Project is not registered.');
-        return {...registry, projects: registry.projects.map(item => item.id === projectId ? {...item, removedFromRecent: true} : item)};
-      });
-      return {removed: true};
-    })());
-  }
+  async removeProject(projectId,options={}){return this.track(this.storage.remove(projectId,options));}
 
-  async recent() {
-    return this.track((async () => {
-      await this.ensureMeta();
-      const registry = await this.readVersioned(this.registryPath);
-      const projects = [];
-      for (const item of registry?.projects ?? []) {
-        if (item.removedFromRecent) continue;
-        let available = false;
-        try {
-          const real = await fs.realpath(item.root);
-          available = real === item.root;
-        } catch {
-          available = false;
-        }
-        projects.push({ ...this.publicProject(item), available });
-      }
-      projects.sort((a, b) => String(b.lastOpenedAt).localeCompare(String(a.lastOpenedAt)));
-      return { projects };
-    })());
-  }
+  async recent(){return this.track((async()=>{const projects=[];for(const p of await this.storage.list()){if(p.removed)continue;const available=await this.storage.requireOnline(p.id).then(()=>true,()=>false);projects.push({...this.publicProject(p),available});}projects.sort((a,b)=>String(b.lastOpenedAt).localeCompare(String(a.lastOpenedAt)));return {projects};})());}
 
   async open(projectId) {
     return this.track((async () => {
@@ -578,7 +506,7 @@ export class DesktopHost {
   }
 
   async navigationView(projectId, treeView) {
-    return treeView ? treeViewValue(await this.readVersioned(path.join(this.projectDir(projectId), 'file-tree-view.json'))) : null;
+    return treeView ? treeViewValue(await this.storage.getLocal(projectId,'file-tree-view')) : null;
   }
 
   async navigationDirectory(project, rel) {
@@ -680,7 +608,7 @@ export class DesktopHost {
   async list(projectId, { treeView = false } = {}) {
     return this.track((async () => {
       const project = await this.requireProject(projectId);
-      const view = treeView === true ? treeViewValue(await this.readVersioned(path.join(this.projectDir(projectId), 'file-tree-view.json'))) : null;
+      const view = treeView === true ? treeViewValue(await this.storage.getLocal(projectId,'file-tree-view')) : null;
       const hiddenRoots = new Set(view?.hidden ?? []);
       const isHidden = rel => {
         for (let current = rel; current; current = path.posix.dirname(current)) {
@@ -754,13 +682,10 @@ export class DesktopHost {
     })());
   }
 
-  draftPath(projectId, relPath) {
-    return path.join(this.projectDir(projectId), 'drafts', `${draftKey(relPath)}.json`);
-  }
 
   async readDraftRecord(projectId, relPath) {
     try {
-      return await this.readVersioned(this.draftPath(projectId, relPath));
+      return await this.storage.getRecovery(projectId,'draft:'+draftKey(relPath));
     } catch (error) {
       if (error instanceof HostError && (error.code === 'METADATA_CORRUPT' || error.code === 'SCHEMA_UNSUPPORTED')) {
         return { draftError: { code: error.code, message: error.message } };
@@ -776,7 +701,7 @@ export class DesktopHost {
     if (typeof baseDigest !== 'string' || !/^[a-f0-9]{64}$/.test(baseDigest)) {
       throw new HostError('INVALID_PAYLOAD', 'Draft baseline digest is required.');
     }
-    const file = this.draftPath(projectId, relPath);
+    await this.requireRegisteredProject(projectId);
     const record = {
       schemaVersion: SCHEMA,
       projectId,
@@ -787,7 +712,7 @@ export class DesktopHost {
       lastError,
       updatedAt: new Date().toISOString(),
     };
-    await this.writeVersioned(file, record);
+    await this.storage.putRecovery(projectId,'draft:'+draftKey(relPath),record);
     return record;
   }
 
@@ -866,7 +791,7 @@ export class DesktopHost {
       const authorshipText = kind.kind === 'word' ? await wordText(bytes) : text;
       let authorship = null, authorshipError = null;
       if (authorshipText != null) {
-        try { const store = new FileChanges(project.root); authorship = publicChanges(await store.withLock(located.rel, () => store.observe(located.rel, authorshipText, digest, kind.kind === 'word' ? {textSpace:'docx-main-text'} : {}))); }
+        try { const store = new FileChanges({storage:this.storage,projectId:project.id,root:project.root}); authorship = publicChanges(await store.withLock(located.rel, () => store.observe(located.rel, authorshipText, digest, kind.kind === 'word' ? {textSpace:'docx-main-text'} : {}))); }
         catch (error) { authorshipError = { code:error.code || 'CHANGE_HISTORY_IO', message:error.message }; }
       }
       return {
@@ -901,7 +826,7 @@ export class DesktopHost {
   async documentHistory(projectId, relPath, { eventId = null, scope = null, cursor = null, limit = 100 } = {}) {
     return this.track(this.fileLock(projectId, normalizeRel(relPath))(async () => {
       const project = await this.requireProject(projectId), located = await this.resolveFile(project, relPath);
-      const store = new FileChanges(project.root);
+      const store = new FileChanges({storage:this.storage,projectId:project.id,root:project.root});
       return store.withLock(located.rel, async () => {
         let ledger;
         if (located.missing) ledger = await store.read(located.rel);
@@ -941,7 +866,7 @@ export class DesktopHost {
   async withDocumentLedger(projectId, relPath, work) {
     return this.track(this.fileLock(projectId, normalizeRel(relPath))(async () => {
       const project = await this.requireProject(projectId), located = await this.resolveFile(project, relPath);
-      const store = new FileChanges(project.root);
+      const store = new FileChanges({storage:this.storage,projectId:project.id,root:project.root});
       return store.withLock(located.rel, async () => {
         let ledger;
         if (located.missing) ledger = await store.read(located.rel);
@@ -961,15 +886,15 @@ export class DesktopHost {
   }
 
   documentVersion(projectId, relPath, version) {
-    return this.withDocumentLedger(projectId, relPath, ledger => readDocumentVersion(ledger, version, digest => this.materials.get(digest)));
+    return this.withDocumentLedger(projectId, relPath, ledger => readDocumentVersion(ledger, version, digest => this.storage.readObject(projectId,digest)));
   }
 
   async documentStatus(projectId,relPath) {
     const rel=normalizeRel(relPath),project=await this.requireProject(projectId),located=await this.resolveFile(project,rel);
     if(located.missing)return {deleted:true};
-    const store=new FileChanges(project.root);
-    const [source,history]=await Promise.all([fs.stat(located.abs),fs.lstat(store.location(rel)).catch(error=>{if(error.code==='ENOENT')return null;throw error;})]);
-    const signature=JSON.stringify([source.ino,source.size,source.mtimeMs,source.ctimeMs,history?.size,history?.mtimeMs,history?.ctimeMs]),key=projectId+'\0'+rel;
+    const store=new FileChanges({storage:this.storage,projectId:project.id,root:project.root});
+    const [source,revision]=await Promise.all([fs.stat(located.abs),store.recordRevision(rel)]);
+    const signature=JSON.stringify([source.ino,source.size,source.mtimeMs,source.ctimeMs,revision]),key=projectId+'\0'+rel;
     const cached=this.documentStatusCache.get(key);
     if(cached?.signature===signature)return {authorship:cached.authorship};
     const result=await this.documentHistory(projectId,rel);
@@ -978,7 +903,7 @@ export class DesktopHost {
   }
 
   async frontdeskReceipt(projectId,actor,operationId,fingerprint,relPath=null) {
-    const project=await this.requireProject(projectId),store=new FileChanges(project.root);
+    const project=await this.requireProject(projectId),store=new FileChanges({storage:this.storage,projectId:project.id,root:project.root});
     const entries=relPath?[await store.read(workPath(relPath))].filter(Boolean):await store.all();
     for(const entry of entries){
       if(![...entry.events,...(entry.operationReceipts||[]),entry.pending?.candidate.events.at(-1)].some(event=>event?.operationId===operationId))continue;
@@ -1000,7 +925,7 @@ export class DesktopHost {
     if(typeof operationId!=='string'||!/^[a-f0-9]{64}$/.test(operationId)||typeof requestFingerprint!=='string'||!/^[a-f0-9]{64}$/.test(requestFingerprint))throw new HostError('INVALID_PAYLOAD','创建需要宿主操作标识。');
     text=anchorText(text);
     return this.track(this.fileLock(projectId,rel)(async()=>{
-      const project=await this.requireProject(projectId),store=new FileChanges(project.root);
+      const project=await this.requireProject(projectId),store=new FileChanges({storage:this.storage,projectId:project.id,root:project.root});
       return store.withLock(rel,async()=>{
         beforeApply();const draft=await this.readDraftRecord(projectId,rel);
         if(draft)throw new HostError('UNSAVED','此路径已有用户草稿，未覆盖。');
@@ -1040,7 +965,7 @@ export class DesktopHost {
       if (!['text','word'].includes(kind) || bytes.length > (kind==='word'?32*1024*1024:MAX_TEXT_BYTES)) throw new HostError('UNSUPPORTED','文档工具支持UTF-8文本及DOCX正文；其他格式请使用对应编辑器。');
       const draft = await this.readDraftRecord(projectId, located.rel);
       if (draft?.draftError || draft && draft.status !== 'saved') throw new HostError('UNSAVED','用户草稿尚未成功保存，未用磁盘旧版本替代；请先处理草稿。');
-      const store = new FileChanges(project.root);
+      const store = new FileChanges({storage:this.storage,projectId:project.id,root:project.root});
       const authorshipText=kind==='word'?await wordText(bytes):new TextDecoder('utf-8').decode(bytes);
       const ledger = await store.withLock(located.rel, () => store.observe(located.rel, authorshipText, digestBytes(bytes),kind==='word'?{textSpace:'docx-main-text'}:{}));
       const readHandle = randomUUID();
@@ -1071,7 +996,7 @@ export class DesktopHost {
     });
     const fingerprint = requestFingerprint || digestBytes(Buffer.from(JSON.stringify({ readHandle, edits:normalized, contexts })));
     return this.track(this.fileLock(projectId, read.relPath)(async () => {
-      const project = await this.requireProject(projectId), located = await this.resolveFile(project,read.relPath), store = new FileChanges(project.root);
+      const project = await this.requireProject(projectId), located = await this.resolveFile(project,read.relPath), store = new FileChanges({storage:this.storage,projectId:project.id,root:project.root});
       return store.withLock(read.relPath, async () => {
         beforeApply();
         const prior = await store.read(read.relPath), receipt = prior?[...prior.events,...(prior.operationReceipts||[])].find(event=>event.operationId===operationId):null;
@@ -1122,7 +1047,7 @@ export class DesktopHost {
     if(payload!==null&&(!(payload instanceof Uint8Array)||payload.length>32*1024*1024))throw new HostError('INVALID_PAYLOAD','Worker候选无效');
     if((payload===null?null:digestBytes(payload))!==op.afterDigest)throw new HostError('INVALID_PAYLOAD','候选digest不符');
     return this.track(this.fileLock(projectId,rel)(async()=>{
-      const project=await this.requireProject(projectId),store=new FileChanges(project.root);
+      const project=await this.requireProject(projectId),store=new FileChanges({storage:this.storage,projectId:project.id,root:project.root});
       return store.withLock(rel,async()=>{
         beforeApply();const draft=await this.readDraftRecord(projectId,rel);
         if(draft?.draftError||draft&&draft.status!=='saved')throw new HostError('UNSAVED','用户未保存内容保留，未合入Worker候选');
@@ -1168,10 +1093,10 @@ export class DesktopHost {
   async retainDraft(projectId, relPath, baseDigest, text) {
     const rel = normalizeRel(relPath);
     return this.track(this.fileLock(projectId, rel)(async () => {
-      const project = await this.requireProject(projectId);
+      const project = await this.requireRegisteredProject(projectId);
       // Retention never accesses the source path, which may now be a directory
       // or an inaccessible link. Require a baseline previously read by this host.
-      const provenance=await this.readVersioned(path.join(this.projectDir(project.id),'provenance',`${draftKey(rel)}.json`));
+      const provenance=await this.storage.getRecovery(projectId,'provenance:'+rel);
       if(!provenance?.digests?.includes(baseDigest))throw new HostError('BASELINE_UNKNOWN','没有此文件的读取基线，未保存无来源副本。');
       const record = await this.persistDraft(project.id, rel, baseDigest, text, 'dirty');
       return {draft:{text:record.text,baseDigest:record.baseDigest,status:record.status,updatedAt:record.updatedAt}};
@@ -1227,12 +1152,12 @@ export class DesktopHost {
   }
 
   async rememberMaterial(projectId, relPath, bytes) {
-    const stored = await this.materials.put(bytes);
+    const stored = await this.storage.putObject(projectId,bytes);
     await this.metaLock(async () => {
-      const file = path.join(this.projectDir(projectId), 'provenance', `${draftKey(relPath)}.json`);
-      const prior = await this.readVersioned(file);
+      const prior = await this.storage.getProject(projectId,'provenance',relPath);
       const digests = [...new Set([...(prior?.digests ?? []), stored.digest])];
-      await this.writeVersioned(file, { relPath, digests });
+      await this.storage.putProject(projectId,'provenance',relPath,{relPath,digests});
+      await this.storage.putRecovery(projectId,'provenance:'+relPath,{relPath,digests});
     });
     return stored;
   }
@@ -1286,7 +1211,7 @@ export class DesktopHost {
       const digest = digestBytes(bytes);
       // Keep every exported revision even when the original is missing or changes.
       const recoveryPath = await this.backupBaseline(projectId, rel, bytes, digest);
-      const changes = kind === 'word' ? new FileChanges(project.root) : null;
+      const changes = kind === 'word' ? new FileChanges({storage:this.storage,projectId:project.id,root:project.root}) : null;
       const commit = async () => {
         try {
           if (located.missing) throw new HostError('DELETED', 'Office 原文件已删除，编辑副本已保留。', { recoveryPath });
@@ -1324,7 +1249,7 @@ export class DesktopHost {
     return this.track(this.fileLock(projectId, rel)(async () => {
       const project = await this.requireProject(projectId);
       const located = await this.resolveFile(project, rel);
-      const changeStore = new FileChanges(project.root);
+      const changeStore = new FileChanges({storage:this.storage,projectId:project.id,root:project.root});
       return changeStore.withLock(rel, () => this.saveLocked(project,located,baseDigest,text,{...options,changeStore}));
     }));
   }
@@ -1460,8 +1385,8 @@ export class DesktopHost {
 
   async readState(projectId) {
     return this.track((async () => {
-      await this.requireProject(projectId);
-      const state = await this.readVersioned(path.join(this.projectDir(projectId), 'view.json'));
+      await this.requireRegisteredProject(projectId);
+      const state = await this.storage.getLocal(projectId,'view');
       if (!state) return { state: null };
       return { state: this.readBoundState(state), files: state.files ?? {} };
     })());
@@ -1520,9 +1445,9 @@ export class DesktopHost {
 
   async writeState(projectId, input) {
     return this.track(this.metaLock(async () => {
-      await this.requireProject(projectId);
+      await this.requireRegisteredProject(projectId);
       const state = { ...this.boundState(input ?? {}, { strictOffsets: true }), updatedAt: new Date().toISOString() };
-      const previous = await this.readVersioned(path.join(this.projectDir(projectId), 'view.json'));
+      const previous = await this.storage.getLocal(projectId,'view');
       const prior = previous ? this.readBoundState(previous).workspace : null;
       if (!Object.hasOwn(input ?? {}, 'workspace') && prior) state.workspace = prior;
       else state.workspace.retainedNoteDrafts = mergeRetained(prior?.retainedNoteDrafts, []);
@@ -1533,16 +1458,13 @@ export class DesktopHost {
         delete fileView.workspace;
         state.files[normalizeRel(state.currentRelPath)] = fileView;
       }
-      await this.writeVersioned(path.join(this.projectDir(projectId), 'view.json'), state);
+      await this.storage.putLocal(projectId,'view',state);
       return { state };
     }));
   }
 
-  annotationDir(projectId) {
-    return path.join(this.projectDir(projectId), 'annotations');
-  }
 
-  async tagStore(projectId) { return new FileTags((await this.requireProject(projectId)).root); }
+  async tagStore(projectId) { const project=await this.requireProject(projectId);return new FileTags({storage:this.storage,projectId,root:project.root}); }
 
   async resolveTag(store, record, bytes) {
     const targetDigest = bytes ? digestBytes(bytes) : null;
@@ -1560,14 +1482,14 @@ export class DesktopHost {
     }
     if (record.kind === 'word-selection') return {targetDigest, ...locateWordQuote(await wordText(bytes),record.anchor)};
     if (record.kind !== 'text-selection') return { ...base, method: 'unknown-image-or-page-change' };
-    const origin = await store.materials.get(record.materialDigest);
+    const origin = await store.getMaterial(record.materialDigest);
     if (!isUtf8Text(bytes) || !isUtf8Text(origin)) return { ...base, method: 'not-text' };
     return { targetDigest, ...resolveTextAnchor(record.anchor, origin.toString('utf8'), bytes.toString('utf8')) };
   }
 
   async listAnnotations(projectId, relPath) {
     return this.track((async () => {
-      const project = await this.requireProject(projectId), store = new FileTags(project.root);
+      const project = await this.requireProject(projectId), store = new FileTags({storage:this.storage,projectId:project.id,root:project.root});
       const filter = relPath == null ? null : normalizeRel(relPath);
       const files = filter ? [await store.read(filter)].filter(Boolean) : await store.all();
       const annotations = [];
@@ -1590,7 +1512,7 @@ export class DesktopHost {
       if (!file) return;
       const beforeDigest = digestBytes(before), afterDigest = digestBytes(after);
       const changes = mapping == null ? null : textChangeSet(before.toString('utf8'), after.toString('utf8'), mapping);
-      await store.materials.put(before); await store.materials.put(after);
+      await store.putMaterial(before); await store.putMaterial(after);
       const tags = [];
       for (const tag of file.tags) {
         const previous = await this.resolveTag(store, tag, before);
@@ -1616,8 +1538,8 @@ export class DesktopHost {
       if (typeof materialDigest !== 'string' || !/^[a-f0-9]{64}$/.test(materialDigest)) {
         throw new HostError('INVALID_PAYLOAD', 'Annotation requires a material digest.');
       }
-      const material = await this.materials.get(materialDigest);
-      const provenance = await this.readVersioned(path.join(this.projectDir(projectId), 'provenance', `${draftKey(relPath)}.json`));
+      const material = await this.storage.readObject(projectId,materialDigest);
+      const provenance = await this.storage.getProject(projectId,'provenance',relPath);
       if (!provenance?.digests?.includes(materialDigest)) throw new HostError('ANCHOR_MISMATCH', 'Material does not belong to this document.');
       const kind = input?.kind;
       const anchor = input?.anchor;
@@ -1684,8 +1606,8 @@ export class DesktopHost {
       }
       const now = new Date().toISOString();
       return this.metaLock(async () => {
-      const store = new FileTags(project.root);
-      await store.ensure(); await store.materials.put(material);
+      const store = new FileTags({storage:this.storage,projectId:project.id,root:project.root});
+      await store.putMaterial(material);
       const sidecar = await store.read(relPath);
       const ordinal = (sidecar?.nextOrdinal || 1);
       const information=await buildAnnotationPackage({store,userDataDir:this.userDataDir,projectId,relPath,kind,anchor:storedAnchor,materialDigest,material,image:input.regionImage,drawing:input.drawing,annotatedImage:input.annotatedImage,sourceDraftDigest:input.sourceDraftDigest,displayLocation:input.displayLocation});
@@ -1780,7 +1702,7 @@ export class DesktopHost {
 
   async reanchorTag(projectId, input) {
     return this.track(this.metaLock(async () => {
-      const project = await this.requireProject(projectId), store = new FileTags(project.root), rel = normalizeRel(input?.relPath);
+      const project = await this.requireProject(projectId), store = new FileTags({storage:this.storage,projectId:project.id,root:project.root}), rel = normalizeRel(input?.relPath);
       const file = await store.read(rel), tag = file?.tags.find(t => t.id === input.annotationId);
       if (!tag || tag.kind !== 'text-selection') throw new HostError('NOT_FOUND', 'Text tag was not found.');
       const located = await this.resolveFile(project, rel), bytes = await this.readSource(located.abs), digest = digestBytes(bytes);
@@ -1788,7 +1710,7 @@ export class DesktopHost {
       if (!isUtf8Text(bytes) || !validTextAnchor(input.anchor, anchorText(bytes.toString('utf8')))) throw new HostError('INVALID_ANCHOR', 'Relocation must match the current text.');
       const current = { start: input.anchor.start, end: input.anchor.end, quote: input.anchor.quote };
       const resolution = { targetDigest: digest, anchor: current, method: 'manual', locationStatus: 'exact', contentStatus: 'modified' };
-      await store.materials.put(bytes);
+      await store.putMaterial(bytes);
       const next = { ...tag, resolutions: { ...tag.resolutions, [digest]: resolution }, relocations: [...(tag.relocations || []), { ...resolution, createdAt: new Date().toISOString() }] };
       await store.write(rel, { ...file, tags: file.tags.map(t => t.id === tag.id ? next : t) }, file.revision);
       return { saved: true };
@@ -1801,9 +1723,9 @@ export class DesktopHost {
       if(!record?.information?.drawing)throw new HostError('NOT_FOUND','涂鸦标签不存在');
       const located=await this.resolveFile(project,rel),current=await this.readSource(located.abs);
       if(digestBytes(current)!==record.materialDigest)throw new HostError('CONFLICT','原件已变化，旧涂鸦保留；请在新版本重新框选');
-      if(record.kind==='ppt-region'){const draft=await pptSnapshot(this.userDataDir,projectId,rel,record.materialDigest);if(draft.digest!==record.information.draft?.digest)throw new HostError('CONFLICT','PPT草稿已变化，未修改旧涂鸦');}
+      if(record.kind==='ppt-region'){const draft=await pptSnapshot(this.storage,projectId,rel,record.materialDigest);if(draft.digest!==record.information.draft?.digest)throw new HostError('CONFLICT','PPT草稿已变化，未修改旧涂鸦');}
       const raw=record.information.assets.find(a=>a.role==='region-screenshot');if(!raw)throw new HostError('NOT_FOUND','原始区域截图缺失');
-      const regionImage={dataUrl:'data:image/png;base64,'+(await store.materials.get(raw.digest)).toString('base64'),captureMode:raw.captureMode,clipped:raw.clipped};
+      const regionImage={dataUrl:'data:image/png;base64,'+(await store.getMaterial(raw.digest)).toString('base64'),captureMode:raw.captureMode,clipped:raw.clipped};
       if(!update)return {regionImage,sourceDraftDigest:record.information.draft?.digest};
       if(record.updatedAt!==input.expectedUpdatedAt||record.materialDigest!==input.materialDigest)throw new HostError('ANNOTATION_CONFLICT','涂鸦已被修改，草稿保留，请重新打开');
       const information=await buildAnnotationPackage({store,userDataDir:this.userDataDir,projectId,relPath:rel,kind:record.kind,anchor:record.anchor,materialDigest:record.materialDigest,material:current,image:regionImage,drawing:input.drawing,annotatedImage:input.annotatedImage,sourceDraftDigest:record.information.draft?.digest});
@@ -1828,10 +1750,12 @@ export class DesktopHost {
       if (!bytes.length || bytes.byteLength > 8 * 1024 * 1024) throw new HostError('INVALID_IMAGE', '剪贴板图片数据无效或超过 8 MiB。');
       let info; try { info = imageInfo(bytes); } catch (error) { throw new HostError('INVALID_IMAGE', error.message); }
       if (!['image/png', 'image/jpeg', 'image/webp'].includes(info.mime)) throw new HostError('UNSUPPORTED_IMAGE', '仅支持粘贴 PNG、JPEG 或 WebP 图片。');
-      const store = new FileTags(project.root);
-      const { digest, byteLength } = await store.materials.put(bytes);
+      const store = new FileTags({storage:this.storage,projectId:project.id,root:project.root});
+      const { digest, byteLength } = await store.putMaterial(bytes);
+      const resource='nozeli-assets/'+digest+(info.mime==='image/png'?'.png':info.mime==='image/jpeg'?'.jpg':'.webp');
+      const destination=await this.resolveFile(project,resource);if(destination.missing){await fs.mkdir(path.dirname(destination.abs),{recursive:true});await this.replaceFile(destination.abs,bytes,{createOnly:true});}
       const from = path.posix.dirname(located.rel);
-      const relRef = (from === '.' ? '' : '../'.repeat(from.split('/').length)) + '.nozeli/materials/' + digest;
+      const relRef = path.posix.relative(from,resource);
       return { relRef, digest, mime: info.mime, byteLength, width: info.width, height: info.height };
     })());
   }
@@ -1857,10 +1781,10 @@ export class DesktopHost {
       }
       const rel = segments.join('/');
       if (!rel) throw new HostError('INVALID_REF', '图片引用无效。');
-      if (segments.includes('.nozeli') && !/^\.nozeli\/materials\/[0-9a-f]{64}$/.test(rel)) throw new HostError('INVALID_REF', '仅支持 .nozeli/materials 内容寻址图片。');
+      if (segments.includes('.nozeli'))throw new HostError('INVALID_REF','正式文档图片必须使用项目公开资源目录，不引用私有元数据');
       const target = await this.resolveFile(project, rel);
       if (target.missing) throw new HostError('NOT_FOUND', '图片文件不存在：' + rel);
-      if (!imageExtension.test(target.rel) && !/^\.nozeli\/materials\/[0-9a-f]{64}$/.test(target.rel)) throw new HostError('UNSUPPORTED_IMAGE', '引用的文件不是受支持的图片。');
+      if (!imageExtension.test(target.rel)) throw new HostError('UNSUPPORTED_IMAGE', '引用的文件不是受支持的图片。');
       const bytes = await fs.readFile(target.abs);
       if (bytes.byteLength > 8 * 1024 * 1024) throw new HostError('IMAGE_TOO_LARGE', '图片超过 8 MiB，不能在预览中显示。');
       let info; try { info = imageInfo(bytes); } catch (error) { throw new HostError('INVALID_IMAGE', error.message); }
@@ -1870,15 +1794,15 @@ export class DesktopHost {
 
   async tagMaterial(projectId, input) {
     return this.track((async () => {
-      const project = await this.requireProject(projectId), store = new FileTags(project.root), rel = normalizeRel(input?.relPath);
+      const project = await this.requireProject(projectId), store = new FileTags({storage:this.storage,projectId:project.id,root:project.root}), rel = normalizeRel(input?.relPath);
       const file = await store.read(rel), tag = file?.tags.find(t => t.id === input.annotationId);
       if (!tag) throw new HostError('NOT_FOUND', 'Tag was not found.');
-      const origin = await store.materials.get(tag.materialDigest), located = await this.resolveFile(project, rel);
+      const origin = await store.getMaterial(tag.materialDigest), located = await this.resolveFile(project, rel);
       const current = located.missing ? null : await this.readSource(located.abs), resolution = await this.resolveTag(store, tag, current);
       let currentSource=null;
-      if(current){const {digest,byteLength}=await store.materials.put(current);currentSource={digest,relPath:'.nozeli/materials/'+digest,bytes:byteLength};}
+      if(current){const {digest,byteLength}=await store.putMaterial(current);currentSource={digest,relPath:'.nozeli/objects/sha256/'+digest,bytes:byteLength};}
       let draftStatus='not-applicable',currentDraft=null;
-      if(tag.kind.startsWith('ppt-')){try{const snapshot=await pptSnapshot(this.userDataDir,projectId,rel,resolution.targetDigest);draftStatus=snapshot.digest===tag.information?.draft?.digest?'unchanged':'changed';await store.materials.put(snapshot.bytes);currentDraft={digest:snapshot.digest,relPath:'.nozeli/materials/'+snapshot.digest,mime:'application/json',bytes:snapshot.bytes.length};}catch{draftStatus='unavailable';}}
+      if(tag.kind.startsWith('ppt-')){try{const snapshot=await pptSnapshot(this.storage,projectId,rel,resolution.targetDigest);draftStatus=snapshot.digest===tag.information?.draft?.digest?'unchanged':'changed';await store.putMaterial(snapshot.bytes);currentDraft={digest:snapshot.digest,relPath:'.nozeli/objects/sha256/'+snapshot.digest,mime:'application/json',bytes:snapshot.bytes.length};}catch{draftStatus='unavailable';}}
       const reasons=[];
       let information=null;
       try{information=await verifyAnnotationPackage(store,tag.information);}catch{reasons.push('备注资源缺失或摘要校验失败');}
@@ -1892,89 +1816,11 @@ export class DesktopHost {
     })());
   }
 
-  /** Renderer-selected local files become immutable host-managed materials.
-   * Bytes never enter the user's project; the copy lives under the
-   * application data dir so historical references stay readable. */
-  async attachMaterial(input) {
-    return this.track((async () => {
-      const name = typeof input?.name === 'string' ? input.name.trim() : '';
-      if (!name || name.length > 255 || name.includes('/') || name.includes('\\') || /[\x00-\x1f]/.test(name)) throw new HostError('INVALID_ATTACHMENT', '附件文件名无效。');
-      const mime = typeof input?.mime === 'string' && input.mime.length <= 100 ? input.mime : 'application/octet-stream';
-      const source = ['local-select', 'paste', 'drop', 'drawing'].includes(input?.source) ? input.source : 'local-select';
-      const base64 = typeof input?.bytes === 'string' ? input.bytes : '';
-      const bytes = Buffer.from(base64, 'base64');
-      if (!bytes.length || bytes.byteLength > 8 * 1024 * 1024) throw new HostError('INVALID_ATTACHMENT', '附件为空或超过单文件 8 MiB 上限。');
-      if (typeof input?.size === 'number' && input.size !== bytes.byteLength) throw new HostError('INVALID_ATTACHMENT', '附件大小与内容不一致。');
-      if (source === 'drawing') this.validateDrawingPng(bytes, mime);
-      await this.materials.ensureDirectory();
-      const stored = await this.materials.put(bytes);
-      const registry = await this.attachmentRegistry(true);
-      const previous = registry.attachments.find(entry => entry.digest === stored.digest && entry.name === name && entry.source === source);
-      if (previous) return { digest: stored.digest, ...previous, duplicate: true };
-      const entry = { digest: stored.digest, name, mime, size: bytes.byteLength, source, createdAt: new Date().toISOString() };
-      registry.attachments.push(entry);
-      await this.writeAttachmentRegistry(registry);
-      return { digest: stored.digest, ...entry, duplicate: false };
-    })());
-  }
-
-  validateDrawingPng(bytes, mime = 'image/png') {
-    if (mime !== 'image/png' || !bytes.length || bytes.length > 8 * 1024 * 1024 || bytes.length < 33 || !bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])) || bytes.toString('ascii',12,16) !== 'IHDR') throw new HostError('INVALID_ATTACHMENT', '涂鸦材料不是有效的有界 PNG。');
-    const width = bytes.readUInt32BE(16), height = bytes.readUInt32BE(20);
-    if (!width || !height || width > 20000 || height > 20000 || width * height > 40_000_000) throw new HostError('INVALID_ATTACHMENT', '涂鸦 PNG 超过像素上限。');
-  }
-
-  async readDrawingImage(ref) {
-    if (ref?.storage !== 'app-data' || ref.mime !== 'image/png' || !/^[a-f0-9]{64}$/.test(ref.digest)) throw new HostError('INVALID_ATTACHMENT', '涂鸦图片引用无效。');
-    const registry = await this.attachmentRegistry(false);
-    if (!registry.attachments.some(a => a.digest === ref.digest && a.mime === 'image/png' && a.source === 'drawing')) throw new HostError('INVALID_ATTACHMENT', '图片不是已登记的涂鸦材料。');
-    const bytes = await this.materials.get(ref.digest);
-    this.validateDrawingPng(bytes);
-    return bytes;
-  }
-
-  async drawingImageSources(projectId, ref) {
-    const {WorkspaceCaptureStore} = await import('./workspace-capture-store.mjs');
-    const store = new WorkspaceCaptureStore({directory:path.join(this.userDataDir,'nozeli','drawing-captures')});
-    const record = await store.load(ref.deliveryId, projectId);
-    if (!record.result || record.result.attachment?.digest !== ref.digest) throw new HostError('INVALID_ATTACHMENT', '涂鸦图片与冻结捕获记录不符。');
-    return structuredClone(record.result.sources || []);
-  }
-
-  /** Bounded read-back for the renderer's read-only attachment preview. */
-  async readMaterialAttachment(input) {
-    return this.track((async () => {
-      const digest = typeof input?.digest === 'string' ? input.digest : '';
-      const bytes = await this.materials.get(digest).catch(() => null);
-      if (!bytes) throw new HostError('NOT_FOUND', '附件材料不存在或已被清理。');
-      const registry = await this.attachmentRegistry(false);
-      const entry = registry.attachments.find(item => item.digest === digest) || {};
-      return { digest, name: entry.name || '附件', mime: entry.mime || 'application/octet-stream', size: bytes.byteLength, source: entry.source || 'local-select', bytes: bytes.toString('base64') };
-    })());
-  }
-
-  async attachmentRegistry(forWrite) {
-    const file = path.join(this.metaRoot, 'material-attachments.json');
-    if (forWrite) {
-      await fs.mkdir(this.metaRoot, { recursive: true, mode: 0o700 });
-      try {
-        const parsed = JSON.parse(await fs.readFile(file, 'utf8'));
-        if (parsed && Array.isArray(parsed.attachments)) return parsed;
-      } catch (error) { if (error.code !== 'ENOENT') throw new HostError('ATTACHMENT_REGISTRY', '附件登记不可读。'); }
-      return { schemaVersion: 1, attachments: [] };
-    }
-    try {
-      const parsed = JSON.parse(await fs.readFile(file, 'utf8'));
-      return parsed && Array.isArray(parsed.attachments) ? parsed : { attachments: [] };
-    } catch { return { attachments: [] }; }
-  }
-
-  async writeAttachmentRegistry(registry) {
-    const file = path.join(this.metaRoot, 'material-attachments.json');
-    const drawings=registry.attachments.filter(entry=>entry.source==='drawing'),ordinary=registry.attachments.filter(entry=>entry.source!=='drawing').slice(-500);
-    const text = JSON.stringify({ schemaVersion: 1, attachments: [...ordinary,...drawings] });
-    await fs.writeFile(file, text, { encoding: 'utf8', mode: 0o600 });
-  }
+  async attachMaterial(input){return this.track(this.attachments.attach(input));}
+  validateDrawingPng(bytes,mime='image/png'){return validateDrawingPng(bytes,mime);}
+  async readDrawingImage(ref){const bytes=await this.attachments.readBytes(ref);validateDrawingPng(bytes,ref.mime);return bytes;}
+  async drawingImageSources(projectId,ref){return this.attachments.drawingSources(projectId,ref);}
+  async readMaterialAttachment(ref){return this.track(this.attachments.read(ref));}
 
   /** User-action-scoped directory browsing for the composer reference panel.
    * Single level, paged; nothing is read beyond names/types/sizes. */
@@ -2011,22 +1857,11 @@ export class DesktopHost {
       const raw = typeof input?.path === 'string' ? input.path.trim() : '';
       if (!raw || raw.length > 4096 || /[\x00-\x1f]/.test(raw)) throw new HostError('INVALID_ATTACHMENT', '路径无效。');
       const target = path.resolve(raw);
-      let stats;
-      try { stats = await fs.lstat(target); } catch (error) { throw new HostError('INVALID_ATTACHMENT', `文件不可读（${error.code === 'ENOENT' ? '不存在' : error.code || '错误'}）：${target}`); }
-      if (!stats.isFile() || stats.isSymbolicLink()) throw new HostError('INVALID_ATTACHMENT', `只能引用常规文件（不跟随符号链接）：${target}`);
-      if (stats.size > 8 * 1024 * 1024) throw new HostError('INVALID_ATTACHMENT', `文件超过单文件 8 MiB 上限：${path.basename(target)}（${stats.size} 字节）`);
-      const bytes = await fs.readFile(target);
+      const handle=await fs.open(target,constants.O_RDONLY|(constants.O_NOFOLLOW||0));let bytes;
+      try{const before=await handle.stat();if(!before.isFile()||before.size>8*1024*1024)throw new HostError('INVALID_ATTACHMENT','只能引用不超过8MiB的普通文件');const data=Buffer.alloc(Number(before.size)+1);let count=0;while(count<data.length){const result=await handle.read(data,count,data.length-count,count);if(!result.bytesRead)break;count+=result.bytesRead;}const after=await handle.stat(),entry=await fs.lstat(target);if(entry.isSymbolicLink()||count!==before.size||['dev','ino','size','mtimeMs','ctimeMs'].some(k=>before[k]!==after[k]||before[k]!==entry[k]))throw new HostError('INVALID_ATTACHMENT','文件读取期间已变化，未导入');bytes=data.subarray(0,count);}finally{await handle.close();}
       const name = path.basename(target);
       const mime = 'application/octet-stream';
-      await this.materials.ensureDirectory();
-      const stored = await this.materials.put(bytes);
-      const registry = await this.attachmentRegistry(true);
-      const previous = registry.attachments.find(entry => entry.digest === stored.digest && entry.name === name);
-      if (previous) return { digest: stored.digest, ...previous, duplicate: true };
-      const entry = { digest: stored.digest, name, mime, size: bytes.byteLength, source: 'path-select', createdAt: new Date().toISOString() };
-      registry.attachments.push(entry);
-      await this.writeAttachmentRegistry(registry);
-      return { digest: stored.digest, ...entry, duplicate: false };
+      return this.attachments.attach({projectId:input.projectId,name,mime,source:'path-select',bytes:bytes.toString('base64'),size:bytes.length});
     })());
   }
 
@@ -2035,7 +1870,7 @@ export class DesktopHost {
 export const ops = {
   'project.pick': () => { throw new HostError('INVALID_PAYLOAD', 'Directory selection is supplied by the host, not the page.'); },
   'project.recent': (host) => host.recent(),
-  'project.remove': (host, payload) => host.removeProject(payload.projectId),
+  'project.remove': (host, payload) => host.removeProject(payload.projectId,{operationId:payload.operationId}),
   'project.open': (host, payload) => host.open(payload?.projectId),
   'project.list': (host, payload) => host.list(payload?.projectId, { treeView: payload?.treeView === true }),
   'project.children': (host, payload) => host.children(payload?.projectId, payload ?? {}),
@@ -2059,7 +1894,7 @@ export const ops = {
   'state.read': (host, payload) => host.readState(payload?.projectId),
   'state.write': (host, payload) => host.writeState(payload?.projectId, payload?.state),
   'annotation.list': (host, payload) => host.listAnnotations(payload?.projectId, payload?.relPath),
-  'annotation.drawing.source':async(host,payload)=>{await host.requireProject(payload.projectId);const {digest}=await pptSnapshot(host.userDataDir,payload.projectId,normalizeRel(payload.relPath),payload.materialDigest);return {digest};},
+  'annotation.drawing.source':async(host,payload)=>{await host.requireProject(payload.projectId);const {digest}=await pptSnapshot(host.storage,payload.projectId,normalizeRel(payload.relPath),payload.materialDigest);return {digest};},
   'annotation.drawing.read':(host,payload)=>host.drawingMaterial(payload?.projectId,payload),
   'annotation.drawing':(host,payload)=>host.drawingMaterial(payload?.projectId,payload,true),
   'annotation.add': (host, payload) => host.addAnnotation(payload?.projectId, payload),

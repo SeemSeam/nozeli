@@ -114,6 +114,10 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
     let left = Math.max(0, paneLeft), top = Math.max(0, paneTop);
     let right = Math.min(viewport.clientWidth, paneLeft + paneNode.clientWidth);
     let bottom = Math.min(viewport.clientHeight, paneTop + paneNode.clientHeight);
+    // CodeMirror's sticky line-number gutter covers content even while the
+    // scroller itself is visible. Fit cards beside it, not underneath it.
+    const gutter = paneNode.matches('.cm-scroller') ? paneNode.querySelector(':scope > .cm-gutters')?.getBoundingClientRect() : null;
+    if (gutter && gutter.right > left && gutter.left <= left) left = Math.min(right, gutter.right);
     if (overlay) {
       const box = overlay.getBoundingClientRect();
       left = Math.max(left, box.left); right = Math.min(right, box.right);
@@ -387,5 +391,13 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
 }
 
 export function makeNoteTag(note, actions = {}) {
-  return makeAnchorTag({ id: note.id, ordinal: note.ordinal, kind: 'note', relPath: note.relPath, displayLocation: note.displayLocation,information:note.information, text: note.note, status: actions.draft?.(note.id) ?? '', open: actions.open?.(note.id) ?? true, anchor: note.anchor || {}, material: { imageDataUrl: note.anchor?.imageDataUrl || '' }, executeStatus: note.execute?.jobId ? (note.execute.status || '已提交 · 见工作与待办') : '' }, { ...actions, onDraft: (id, text) => actions.onDraft?.(id, text, note), save: (_, text) => actions.update?.(note, text), execute: (id, text) => actions.execute?.(note, text) });
+  const save = async (_, text) => {
+    const saved = await actions.update?.(note, text);
+    // An unchanged-text save can retain this projection while advancing the host
+    // revision. Subsequent drafts/saves must use that confirmed record, not the
+    // original closure snapshot; failed saves retain their conflict baseline.
+    if (saved) note = saved;
+    return saved;
+  };
+  return makeAnchorTag({ id: note.id, ordinal: note.ordinal, kind: 'note', relPath: note.relPath, displayLocation: note.displayLocation,information:note.information, text: note.note, status: actions.draft?.(note.id) ?? '', open: actions.open?.(note.id) ?? true, anchor: note.anchor || {}, material: { imageDataUrl: note.anchor?.imageDataUrl || '' }, executeStatus: note.execute?.jobId ? (note.execute.status || '已提交 · 见工作与待办') : '' }, { ...actions, onDraft: (id, text) => actions.onDraft?.(id, text, note), save, execute: (id, text) => actions.execute?.(note, text) });
 }

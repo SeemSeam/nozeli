@@ -33,24 +33,21 @@ test('paste stores immutable bytes once and yields document-relative markdown re
     await seed(fx.root, 'paper.md', '# 标题\n');
     await seed(fx.root, 'notes/deep/note.md', '# 笔记\n');
     const rootRef = await fx.host.pasteDocumentImage(fx.projectId, { relPath: 'paper.md', bytes: realPng.toString('base64') });
-    assert.match(rootRef.relRef, /^\.nozeli\/materials\/[0-9a-f]{64}$/);
     assert.equal(rootRef.mime, 'image/png');
     const digest = rootRef.digest;
-    const stored = await readFile(path.join(fx.root, '.nozeli', 'materials', digest));
+    const stored = await readFile(path.resolve(fx.root, rootRef.relRef));
     assert.equal(digestBytes(stored), digest);
     // Re-pasting identical content is idempotent: same file, never overwritten.
     const again = await fx.host.pasteDocumentImage(fx.projectId, { relPath: 'paper.md', bytes: realPng.toString('base64') });
     assert.equal(again.digest, digest);
     const nested = await fx.host.pasteDocumentImage(fx.projectId, { relPath: 'notes/deep/note.md', bytes: jpegBytes.toString('base64') });
-    assert.equal(nested.relRef, '../../.nozeli/materials/' + nested.digest);
     assert.equal(nested.mime, 'image/png');
     // A different image with the same visible name never collides: names are digests.
     assert.notEqual(nested.digest, digest);
     // Refs resolve back to the same bytes from both documents.
-    for (const [relPath, ref] of [['paper.md', rootRef.relRef], ['notes/deep/note.md', nested.relRef]]) {
+    for (const [relPath, ref, expected] of [['paper.md', rootRef.relRef, realPng], ['notes/deep/note.md', nested.relRef, jpegBytes]]) {
       const loaded = await fx.host.readDocumentImage(fx.projectId, { relPath, ref });
-      assert.equal(loaded.mime.startsWith('image/'), true);
-      assert.ok(loaded.bytes.length > 0);
+      assert.deepEqual(Buffer.from(loaded.bytes, 'base64'), expected);
     }
   } finally { await fx.cleanup(); }
 });
@@ -59,15 +56,15 @@ test('paste rejects unknown documents, invalid or unsupported image data', async
   const fx = await scratch();
   try {
     await seed(fx.root, 'paper.md', '# 标题\n');
-    await assert.rejects(fx.host.pasteDocumentImage(fx.projectId, { relPath: 'missing.md', bytes: realPng.toString('base64') }), /不存在/);
-    await assert.rejects(fx.host.pasteDocumentImage(fx.projectId, { relPath: 'paper.md', bytes: brokenBytes.toString('base64') }), /格式|图片/);
-    await assert.rejects(fx.host.pasteDocumentImage(fx.projectId, { relPath: 'paper.md', bytes: '' }), /无效/);
+    await assert.rejects(fx.host.pasteDocumentImage(fx.projectId, { relPath: 'missing.md', bytes: realPng.toString('base64') }), {code:'NOT_FOUND'});
+    await assert.rejects(fx.host.pasteDocumentImage(fx.projectId, { relPath: 'paper.md', bytes: brokenBytes.toString('base64') }), {code:'INVALID_IMAGE'});
+    await assert.rejects(fx.host.pasteDocumentImage(fx.projectId, { relPath: 'paper.md', bytes: '' }), {code:'INVALID_IMAGE'});
     const tooBig = Buffer.alloc(9 * 1024 * 1024);
-    await assert.rejects(fx.host.pasteDocumentImage(fx.projectId, { relPath: 'paper.md', bytes: tooBig.toString('base64') }), /8 MiB/);
+    await assert.rejects(fx.host.pasteDocumentImage(fx.projectId, { relPath: 'paper.md', bytes: tooBig.toString('base64') }), {code:'INVALID_IMAGE'});
     // The failing pastes must leave no stray material files behind.
     const { readdir } = await import('node:fs/promises');
-    const materials = path.join(fx.root, '.nozeli', 'materials');
-    assert.deepEqual(await readdir(materials).catch(() => []), []);
+    const visible = (await readdir(fx.root, {recursive:true})).filter(rel=>rel.split(path.sep).every(part=>!part.startsWith('.')));
+    assert.deepEqual(visible, ['paper.md']);
   } finally { await fx.cleanup(); }
 });
 
@@ -80,13 +77,13 @@ test('preview reads are bounded: hidden paths, escapes, non-images and remote ur
     // Visible project image files resolve relative to the markdown document.
     const visible = await fx.host.readDocumentImage(fx.projectId, { relPath: 'paper.md', ref: 'pic.png' });
     assert.equal(visible.relPath, 'pic.png');
-    await assert.rejects(fx.host.readDocumentImage(fx.projectId, { relPath: 'paper.md', ref: '../outside.png' }), /超出项目|隐藏|无效/);
-    await assert.rejects(fx.host.readDocumentImage(fx.projectId, { relPath: 'paper.md', ref: '.nozeli/tags/secret.json' }), /materials|隐藏/);
-    await assert.rejects(fx.host.readDocumentImage(fx.projectId, { relPath: 'paper.md', ref: 'https://example.com/a.png' }), /无效/);
-    await assert.rejects(fx.host.readDocumentImage(fx.projectId, { relPath: 'paper.md', ref: 'paper.md' }), /图片/);
-    await assert.rejects(fx.host.readDocumentImage(fx.projectId, { relPath: 'paper.md', ref: 'missing.png' }), /不存在/);
-    // Material refs keep working after the markdown file itself moves nowhere; digest mismatch is refused.
-    await assert.rejects(fx.host.readDocumentImage(fx.projectId, { relPath: 'paper.md', ref: '.nozeli/materials/' + '0'.repeat(64) }), /不存在/);
-    assert.equal((await fx.host.readDocumentImage(fx.projectId, { relPath: 'paper.md', ref: pasted.relRef })).bytes.length > 0, true);
+    await assert.rejects(fx.host.readDocumentImage(fx.projectId, { relPath: 'paper.md', ref: '../outside.png' }), {code:'INVALID_REF'});
+    await assert.rejects(fx.host.readDocumentImage(fx.projectId, { relPath: 'paper.md', ref: '.nozeli/tags/secret.json' }), {code:'INVALID_REF'});
+    await assert.rejects(fx.host.readDocumentImage(fx.projectId, { relPath: 'paper.md', ref: 'https://example.com/a.png' }), {code:'INVALID_REF'});
+    await assert.rejects(fx.host.readDocumentImage(fx.projectId, { relPath: 'paper.md', ref: 'paper.md' }), {code:'UNSUPPORTED_IMAGE'});
+    await assert.rejects(fx.host.readDocumentImage(fx.projectId, { relPath: 'paper.md', ref: 'missing.png' }), {code:'NOT_FOUND'});
+    await assert.rejects(fx.host.readDocumentImage(fx.projectId, { relPath: 'paper.md', ref: '.nozeli/materials/' + '0'.repeat(64) }), {code:'INVALID_REF'});
+    const retained = await fx.host.readDocumentImage(fx.projectId, {relPath:'paper.md',ref:pasted.relRef});
+    assert.deepEqual(Buffer.from(retained.bytes,'base64'),realPng);
   } finally { await fx.cleanup(); }
 });

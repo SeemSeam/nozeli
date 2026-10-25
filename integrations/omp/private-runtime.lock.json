@@ -6,7 +6,7 @@
   "patches": {
     "patches/0001-nozeli-managed-collab-inbound-gate.patch": "5e0b7539268413c1eb045e09100f7b2bfc5ff69c3e87fc9f875a49b399a9b2bf",
     "patches/0002-nozeli-private-runtime.patch": "d231afd96732aa55757f03a6255ac15560a3d5129b33e1da24dcea2b7775f2d3",
-    "patches/0003-nozeli-native-collab-runtime.patch": "ce3efb2cee9a3e8054ebb2f07cef43820660437662b2aa6e53752ca7d065e7e3"
+    "patches/0003-nozeli-native-collab-runtime.patch": "11cf7ac06901fde8df2c982649bda9a60fc70b56940f44d200d76f1235515c1e"
   },
   "nativeAddons": {
     "source_package": "@oh-my-pi/pi-natives-linux-x64@18.11.0",

@@ -31,3 +31,9 @@ test('read-only work screen does not wait for attach, create, control or take sy
  assert.equal((await read('w')).threadId,'thread');assert.equal(snapshots,1);for(const id of ['q','e','missing'])assert.equal((await read(id)).available,false);assert.equal(snapshots,1);await assert.rejects(read('frontdesk'),/工作Agent/);await assert.rejects(m.invoke('managed.terminal.screen',{projectId:'p',target:'w',cols:100}),/payload/);
  c.terminals.get('w').snapshot=async()=>{c.store.state.works=c.store.state.works.map(w=>w.id==='w'?{...w,status:'ended'}:w);return {};};assert.equal((await read('w')).available,false);
 });
+test('cold screen preview never creates a controller or restores a session',async()=>{
+ const m=new ManagedProjects({userDataDir:'/unused',host:{requireProject:async()=>{}},legacy:{}});
+ m.controller=()=>{throw Error('must not restore controller');};
+ const result=await m.invoke('managed.terminal.screen',{projectId:'cold',target:'work'});
+ assert.equal(result.available,false);assert.match(result.reason,/不会启动新会话/);assert.equal(m.controllers.has('cold'),false);
+});

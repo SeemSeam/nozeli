@@ -1,6 +1,3 @@
-import fs from 'node:fs/promises';
-import { constants } from 'node:fs';
-import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { FileTags } from './file-tags.mjs';
 import { anchorText, textChangeSet } from './tag-anchors.mjs';
@@ -14,31 +11,16 @@ export class ChangeFileError extends Error {
   constructor(code, message, details = {}) { super(message); this.code = code; this.details = details; }
 }
 const corrupt = () => { throw new ChangeFileError('CHANGE_HISTORY_CORRUPT', '修改记录损坏，原记录已保留；未覆盖文档。'); };
+const storageLocks = new WeakMap();
 export class FileChanges {
-  constructor(root) { this.root = root; this.directory = path.join(root, '.nozeli', 'changes'); this.keys = new FileTags(root); }
-  location(rel) { return path.join(this.directory, this.keys.key(rel) + '.json'); }
-  async directories(create = false) {
-    for (const dir of [path.join(this.root, '.nozeli'), this.directory]) {
-      if (create) await fs.mkdir(dir, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
-      const stat = await fs.lstat(dir).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
-      if (!stat) return false;
-      if (!stat.isDirectory() || stat.isSymbolicLink()) throw new ChangeFileError('SYMLINK', '修改记录目录不可为链接。');
-    }
-    return true;
-  }
+  constructor({ storage, projectId, root }) { this.storage = storage; this.projectId = projectId; this.root = root; this.keys = new FileTags({ storage, projectId, root }); this.revisions = new Map(); }
+  async recordRevision(rel) { return (await this.storage.getProjectRecord(this.projectId, 'file_changes', this.keys.key(rel)))?.revision ?? null; }
   async read(rel) {
-    const file = this.location(rel);
-    if (!await this.directories()) return null;
-    const linkStat=await fs.lstat(file).catch(error=>{if(error.code==='ENOENT')return null;throw error;});
-    if(!linkStat)return null;
-    if(!linkStat.isFile()||linkStat.isSymbolicLink()||linkStat.size>MAX_LEDGER)corrupt();
-    let handle;
-    try { handle = await fs.open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)); }
-    catch (error) { if (error.code === 'ENOENT') return null; if (error.code === 'ELOOP') corrupt(); throw error; }
-    let raw;
-    try { const stat = await handle.stat(); if (!stat.isFile() || stat.size > MAX_LEDGER) corrupt(); raw = await handle.readFile('utf8'); }
-    finally { await handle.close(); }
-    let value; try { value = JSON.parse(raw); } catch { corrupt(); }
+    const record = await this.storage.getProjectRecord(this.projectId, 'file_changes', this.keys.key(rel));
+    this.revisions.set(rel, record?.revision ?? null);
+    if (!record) return null;
+    const value = record.value;
+    if (Buffer.byteLength(JSON.stringify(value)) > MAX_LEDGER) corrupt();
     if (value?.format !== 'nozeli.file-changes' || value.schemaVersion !== 1) throw new ChangeFileError('SCHEMA_UNSUPPORTED', '修改记录版本未知，未覆盖。');
     this.validate(value, rel);
     return value;
@@ -74,38 +56,22 @@ export class FileChanges {
     }
   }
   async withLock(rel, work) {
-    await this.directories(true);
-    const file = this.location(rel) + '.lock';
-    let held;
-    for (let i=0;i<2;i++) {
-      try { held = await fs.open(file, 'wx', 0o600); break; }
-      catch (error) {
-        if (error.code !== 'EEXIST') throw error;
-        // Recover only an identifiable dead host's lock. An unidentifiable or
-        // living writer is a conflict, never permission to erase its journal.
-        const stat = await fs.lstat(file); if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024) corrupt();
-        let old; try { old = JSON.parse(await fs.readFile(file,'utf8')); } catch { corrupt(); }
-        if (!Number.isSafeInteger(old.pid) || old.pid < 1) corrupt();
-        let alive = true; try { process.kill(old.pid, 0); } catch (err) { if (err.code === 'ESRCH') alive = false; }
-        if (alive || i) throw new ChangeFileError('CHANGE_HISTORY_BUSY', '另一个程序正在写此文档，当前内容已保留。');
-        await fs.unlink(file);
-      }
-    }
-    try { await held.writeFile(JSON.stringify({ pid: process.pid })); await held.sync(); return await work(); }
-    finally { await held.close(); await fs.unlink(file); }
+    this.keys.key(rel);
+    let locks = storageLocks.get(this.storage);
+    if (!locks) { locks = new Map(); storageLocks.set(this.storage, locks); }
+    const key = this.projectId + '\0' + rel;
+    const prior = locks.get(key) || Promise.resolve();
+    const task = prior.catch(() => {}).then(work);
+    locks.set(key, task);
+    try { return await task; } finally { if (locks.get(key) === task) locks.delete(key); }
   }
   async write(rel, value) {
     this.validate(value, rel);
     const raw = JSON.stringify(value);
     if (Buffer.byteLength(raw) > MAX_LEDGER) throw new ChangeFileError('CHANGE_HISTORY_FULL', '修改记录已达32MiB上限，草稿已保留，请先归档历史。');
-    await this.directories(true);
-    const temp = path.join(this.directory, '.pending-' + randomUUID());
-    let handle;
-    try {
-      handle = await fs.open(temp, 'wx', 0o600); await handle.writeFile(raw); await handle.sync(); await handle.close(); handle = null;
-      await fs.rename(temp, this.location(rel));
-      if (process.platform !== 'win32') { const dir = await fs.open(this.directory,'r'); try { await dir.sync(); } finally { await dir.close(); } }
-    } finally { await handle?.close(); await fs.unlink(temp).catch(error=>{if(error.code!=='ENOENT')throw error;}); }
+    if (!this.revisions.has(rel)) await this.read(rel);
+    const result = await this.storage.putProject(this.projectId, 'file_changes', this.keys.key(rel), value, { expectedRevision: this.revisions.get(rel) ?? 0 });
+    this.revisions.set(rel, result.revision);
     return value;
   }
   initial(rel, text, digest, metadata = {}) { return { format:'nozeli.file-changes',schemaVersion:1,...metadata,relPath:rel,docId:randomUUID(),revision:0,digest,text:anchorText(text),textDigest:textDigest(anchorText(text)),spans:[],points:[],events:[],attempts:[],pending:null }; }
@@ -143,17 +109,13 @@ export class FileChanges {
     return this.write(rel, candidate);
   }
   async all() {
-    if (!await this.directories()) return [];
-    const result = [];
-    for (const name of await fs.readdir(this.directory)) {
-      if (!/^[a-f0-9]{64}\.json$/.test(name)) continue;
-      const stat=await fs.lstat(path.join(this.directory,name));if(!stat.isFile()||stat.isSymbolicLink()||stat.size>MAX_LEDGER)corrupt();
-      const handle = await fs.open(path.join(this.directory,name), constants.O_RDONLY | (constants.O_NOFOLLOW??0));
-      let probe; try { const stat=await handle.stat();if(!stat.isFile()||stat.size>MAX_LEDGER)corrupt();probe=JSON.parse(await handle.readFile('utf8')); } finally { await handle.close(); }
-      if (path.basename(this.location(probe.relPath)) !== name) corrupt();
-      result.push(await this.read(probe.relPath));
-    }
-    return result;
+    const rows = await this.storage.listProject(this.projectId, 'file_changes');
+    return rows.map(({ id, value, revision }) => {
+      if (this.keys.key(value?.relPath) !== id) corrupt();
+      this.validate(value, value.relPath);
+      this.revisions.set(value.relPath, revision);
+      return value;
+    });
   }
 }
 export { publicChanges };

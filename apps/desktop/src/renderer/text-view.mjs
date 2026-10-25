@@ -10,7 +10,44 @@ import { tagProjectionContent } from './tag-projection-state.mjs';
 import { basicSetup } from 'codemirror';
 import { invertedEffects, toggleLineComment } from '@codemirror/commands';
 import { openSearchPanel } from '@codemirror/search';
+import { syntaxHighlighting } from '@codemirror/language';
+import { classHighlighter } from '@lezer/highlight';
 import { acceptCompletion, moveCompletionSelection, selectedCompletionIndex, startCompletion } from '@codemirror/autocomplete';
+// One var-based theme adapts to any palette/mode combination without reconfigure:
+// the tokens resolve at paint time, so switching themes never touches editor state,
+// history, selections or the docChanged gate below.
+export const readerEditorTheme = () => EditorView.theme({
+  '&': { backgroundColor: 'var(--doc-paper)', color: 'var(--doc-ink)' },
+  '&.cm-focused': { outline: 'none' },
+  '.cm-scroller': { fontFamily: 'inherit' },
+  '.cm-content': { caretColor: 'var(--doc-cursor)' },
+  '.cm-cursor,.cm-dropCursor': { borderLeftColor: 'var(--doc-cursor)', borderLeftWidth: '2px' },
+  '.cm-selectionBackground,&.cm-focused .cm-selectionBackground': { backgroundColor: 'var(--doc-selection)' },
+  '.cm-activeLine': { backgroundColor: 'var(--doc-active-line)' },
+  '.cm-gutters': { backgroundColor: 'var(--doc-paper)', color: 'var(--doc-muted)', border: 'none', borderRight: '1px solid var(--doc-line)' },
+  '.cm-activeLineGutter': { backgroundColor: 'var(--doc-active-line)' },
+  '.cm-foldGutter span': { color: 'var(--doc-muted)' },
+  '.cm-selectionMatch': { backgroundColor: 'var(--doc-search)' },
+  '.cm-searchMatch': { backgroundColor: 'var(--doc-search)' },
+  '.cm-searchMatch-selected': { backgroundColor: 'var(--doc-selection)' },
+  '.cm-panels': { backgroundColor: 'var(--doc-paper)', color: 'var(--doc-ink)' },
+  '.cm-panels.cm-panels-top': { borderBottom: '1px solid var(--doc-line)' },
+  '.cm-tooltip': { backgroundColor: 'var(--paper)', border: '1px solid var(--doc-line)', color: 'var(--ink)' },
+  '.cm-tooltip.cm-tooltip-autocomplete>ul>li[aria-selected]': { background: 'var(--doc-selection)', color: 'var(--doc-ink)' },
+  '.tok-keyword, .tok-modifier, .tok-operatorKeyword': { color: 'var(--tok-keyword)' },
+  '.tok-atom, .tok-bool, .tok-null': { color: 'var(--tok-atom)' },
+  '.tok-number': { color: 'var(--tok-number)' },
+  '.tok-definition': { color: 'var(--tok-definition)' },
+  '.tok-variableName': { color: 'var(--tok-variable)' },
+  '.tok-typeName, .tok-className, .tok-namespace': { color: 'var(--tok-type)' },
+  '.tok-propertyName, .tok-attributeName': { color: 'var(--tok-property)' },
+  '.tok-comment': { color: 'var(--tok-comment)' },
+  '.tok-string, .tok-string2, .tok-character': { color: 'var(--tok-string)' },
+  '.tok-meta, .tok-processingInstruction': { color: 'var(--tok-meta)' },
+  '.tok-punctuation, .tok-operator': { color: 'var(--tok-punctuation)' },
+  '.tok-invalid': { color: 'var(--tok-invalid)' },
+  '.cm-scroller > .cm-selectionLayer .cm-selectionBackground, &.cm-focused .cm-scroller > .cm-selectionLayer .cm-selectionBackground': { backgroundColor: 'var(--doc-selection)' },
+});
 import { mapTextAnchor } from '../domain/tag-anchors.mjs';
 export function projectTextAnchor(anchor, length) {
   const size = Math.max(0, Number.isInteger(length) ? length : 0);
@@ -104,6 +141,8 @@ export function mountText({ parent, relPath, text, marks = [], tags = [], onChan
       doc: text,
       extensions: [
         basicSetup,
+        readerEditorTheme(),
+        syntaxHighlighting(classHighlighter),
         EditorView.cspNonce.of(document.querySelector('meta[name="nozeli-style-nonce"]').content),
         EditorState.readOnly.of(readOnly),
         EditorView.editable.of(!readOnly),

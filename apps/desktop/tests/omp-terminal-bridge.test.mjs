@@ -46,7 +46,7 @@ test('defaults use native registry, preserve drafts, defer busy work and expose 
   const models = ['a', 'b', 'new'].map(id => ({ provider: 'local', id }));
   const h = await runRealBridge(home, { ctx: {
     model: models[0], isIdle: () => idle, ui: { getEditorText: () => 'unsubmitted draft' },
-    modelRegistry: { refresh: async strategy => { assert.equal(strategy, 'offline'); refreshes++; }, find: (provider, id) => models.find(m => m.provider === provider && m.id === id) },
+    modelRegistry: { refresh: async strategy => { assert.equal(strategy, 'offline'); refreshes++; }, refreshProvider: async (provider,strategy) => { assert.equal(provider,'local');assert.equal(strategy,'online-if-uncached');if(!models.some(m=>m.id==='discovered'))models.push({provider:'local',id:'discovered'}); }, find: (provider, id) => models.find(m => m.provider === provider && m.id === id) },
   } });
   const client = connectOmpTerminalBridge({ ...h.deployed, onTurnAdmission: async () => ({}) });
   try {
@@ -61,12 +61,13 @@ test('defaults use native registry, preserve drafts, defer busy work and expose 
     // No timer grace required: even an immediate next native admission awaits selection.
     await h.handlers.before_agent_start[0]({ prompt: 'next', systemPrompt: [] }, h.ctx);
     assert.equal((await client.getState()).model, 'local/a');
+    assert.equal((await client.applyDefaultModel('local/discovered')).model,'local/discovered');
     await assert.rejects(client.applyDefaultModel('local/missing'), /absent from native registry/);
     assert.equal((await client.getState()).modelError.selector, 'local/missing');
     assert.equal((await client.getState()).pendingModel, 'local/missing');
     await client.applyDefaultModel('');
     assert.equal((await client.getState()).pendingModel, null);
-    assert.equal((await client.getState()).model, 'local/a');
+    assert.equal((await client.getState()).model, 'local/discovered');
     assert.ok(refreshes >= 3);
   } finally { await client.close(); h.shutdownBridge(); }
 });

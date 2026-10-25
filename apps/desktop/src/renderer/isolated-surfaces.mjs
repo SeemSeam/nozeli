@@ -11,11 +11,11 @@ function surface(parent, {invoke, profile, projectId, objectId, entryPath, onRef
   status.className = 'isolated-status'; status.setAttribute('role', 'status');
   parent.append(status, viewport);
   let generation = 0, opened = false, disposed = false, frame = 0;
-  const bounds = () => { if(document.querySelector('dialog[open]'))return {x:0,y:0,width:0,height:0};const r = viewport.getBoundingClientRect(); return {x:r.x,y:r.y,width:r.width,height:r.height}; };
+  const bounds = () => { if(document.querySelector('dialog[open], .nozeli-context-menu:not([hidden])'))return {x:0,y:0,width:0,height:0};const r = viewport.getBoundingClientRect(); return {x:r.x,y:r.y,width:r.width,height:r.height}; };
   const layout = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(() => { if(opened && !disposed) void invoke('isolated-preview.bounds',{key:id,bounds:bounds()}); }); };
   const observer = new ResizeObserver(layout); observer.observe(viewport);
   window.addEventListener('resize', layout); window.addEventListener('nozeli-layout-change', layout); document.addEventListener('scroll',layout,true);
-  const modals=new MutationObserver(layout);modals.observe(document.body,{subtree:true,attributes:true,attributeFilter:['open']});
+  const modals=new MutationObserver(layout);modals.observe(document.body,{subtree:true,attributes:true,attributeFilter:['open','hidden'],childList:true});
   const unsubscribe = window.nozeli.subscribe('isolated-preview', event => {
     if(disposed || event.key !== id || event.generation !== generation) return;
     if(event.type === 'reference') void openReference(event);
@@ -49,9 +49,9 @@ function surface(parent, {invoke, profile, projectId, objectId, entryPath, onRef
       if(disposed || current !== generation) return;
       if(!result.ok) throw Error(result.error?.message || '预览失败');
       opened = true; status.dataset.state = 'ready';
-      status.textContent = profile === 'staticReport' ? '静态 HTML · 禁止脚本 · 原件只读' : `快照 ${current}${result.value?.unsaved || extra.buffers?.some(buffer=>buffer.dirty) ? ' · 含未保存编辑' : ''} · 离线 · 刷新不保存文件`;
+      status.textContent = profile === 'staticReport' ? '' : `快照 ${current}${result.value?.unsaved || extra.buffers?.some(buffer=>buffer.dirty) ? ' · 含未保存编辑' : ''} · 离线 · 刷新不保存文件`;
       layout();
-    } catch(error) { if(!disposed && current === generation) {status.dataset.state='error';status.textContent='当前编辑未成功预览；上一版保留。'+error.message;} }
+    } catch(error) { if(!disposed && current === generation) {status.dataset.state='error';status.textContent=(profile==='staticReport'?'冻结报告读取失败；原件保留。':'当前编辑未成功预览；上一版保留。')+error.message;} }
   }
   function dispose() {
     if(disposed) return; disposed=true; ++generation; cancelAnimationFrame(frame);observer.disconnect();modals.disconnect();
@@ -65,10 +65,8 @@ window.addEventListener('pagehide',closeIsolatedSurfaces);
 
 export function mountStaticReport(parent, {invoke,projectId,objectId,onReference}) {
   const shell=document.createElement('section');shell.className='isolated-report';parent.append(shell);
-  const controls=document.createElement('div');controls.className='isolated-controls';shell.append(controls);
-  const print=document.createElement('button');print.type='button';print.textContent='打印 HTML 报告';controls.append(print);
   const view=surface(shell,{invoke,profile:'staticReport',projectId,objectId,onReference});
-  print.onclick=()=>{void invoke('isolated-preview.print',{key:view.key}).then(result=>{if(!result.ok)view.status.textContent=result.error?.message||'打印失败';});};
+  view.print=async()=>{const result=await invoke('isolated-preview.print',{key:view.key});if(!result.ok){view.status.dataset.state='error';view.status.textContent=result.error?.message||'打印失败';throw Error(view.status.textContent);}};
   void view.refresh();return view;
 }
 

@@ -225,12 +225,12 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     const text = snap?.text || rawText;
     if (!text.trim() && !(snap?.attachments?.length)) return;
     const externals = (snap?.attachments || []).filter(a => a.digest);
-    const images = externals.filter(a => a.source === 'drawing' && a.storage === 'app-data' && a.mime === 'image/png');
+    const images = externals.filter(a => a.source === 'drawing' && a.storage === 'recovery' && a.mime === 'image/png');
     if (images.length !== externals.length) return reject('仅支持显式发送涂鸦 PNG，其他本地附件仍不受支持');
     if (images.length > 8 || images.reduce((sum, a) => sum + a.size, 0) > 24 * 1024 * 1024) return reject('图片超过 8 张或 24 MiB 上限');
     const relPath = $('attach-file').checked ? attachment() : (snap?.attachments || []).find(a => a.relPath && a.source !== 'selection')?.relPath || null;
     const materialText = relPath && typeof window.__nozeliInput?.text === 'function' ? window.__nozeliInput.text() : null;
-    const result = await managed.send(text.trim() ? text : '请查看附带的涂鸦截图。',{relPath,materialText,background,composerText:rawText,imageAttachments:images.map(a=>({digest:a.digest,mime:a.mime,storage:'app-data',deliveryId:a.deliveryId}))}).then(value=>({ok:true,value}),error=>({ok:false,error}));
+    const result = await managed.send(text.trim() ? text : '请查看附带的涂鸦截图。',{relPath,materialText,background,composerText:rawText,imageAttachments:images.map(a=>({digest:a.digest,mime:a.mime,source:a.source,storage:a.storage,projectId:a.projectId,instanceId:a.instanceId,deliveryId:a.deliveryId}))}).then(value=>({ok:true,value}),error=>({ok:false,error}));
     if (!result.ok) return reject(result.error.message);
     return result.value;
   };

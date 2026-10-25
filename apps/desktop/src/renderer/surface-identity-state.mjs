@@ -36,9 +36,6 @@ export function createProjectFiles({list, current, apply}) {
   };
 }
 
-export function restoredComposerDraft({draft, local, durable}) {
-  return draft !== undefined ? draft : local ?? durable ?? '';
-}
 
 // Native input is usable while status/connect is pending. Persist each captured
 // project/target even before Agent activation; readiness only gates sending.
@@ -46,7 +43,7 @@ export function bindComposerDrafts({composer,current,remember,persist,onInput,on
   let pending=Promise.resolve();
   composer.addEventListener('input',()=>{
     const identity=current();
-    if(!identity.projectId)return;
+    if(!identity?.projectId||!identity.target)return;
     const draft={...identity,text:composer.value};
     remember(draft);
     pending=pending.catch(()=>{}).then(()=>persist(draft)).catch(onError);

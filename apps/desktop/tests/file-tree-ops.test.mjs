@@ -16,7 +16,7 @@ async function fixture(t) {
   const picked=await host.pick(path.join(root,'project'));
   const project=await host.requireProject(picked.project.id);
   const ops=new FileTreeOps(host,{trash:p=>fs.rename(p,path.join(root,'trash',path.basename(p)))});
-  return {root:project.root,host,project,ops,run:input=>ops.run({projectId:project.id,...input}),store:new FileTags(project.root)};
+  return {root:project.root,host,project,ops,run:input=>ops.run({projectId:project.id,...input}),store:new FileTags({storage:host.storage,projectId:project.id,root:project.root})};
 }
 test('file operations copy/cut/rename/create/trash and no-overwrite',async t=>{
   const f=await fixture(t);await f.run({action:'createFolder',target:'',name:'目录'});
@@ -46,8 +46,12 @@ test('metadata failure and symlink rejection leave original files intact',async 
  const f=await fixture(t);await fs.writeFile(path.join(f.root,'a.txt'),'original');
  await fs.symlink(f.root,path.join(f.root,'link'));
  await assert.rejects(f.run({action:'cut',source:'a.txt',target:'link'}));
- await f.store.ensure();await fs.writeFile(f.store.location('a.txt'),'broken');
+ await f.store.write('a.txt',{file:{fileId:randomUUID()},nextOrdinal:1,tags:[]});
+ const tagKey=f.store.key('a.txt');
+ const projectId=f.project.id;
+ await f.host.storage.putProject(projectId,'file_tags',tagKey,'broken');
  await assert.rejects(f.run({action:'rename',source:'a.txt',name:'b.txt'}));
+ assert.equal(await f.host.storage.getProject(projectId,'file_tags',tagKey),'broken');
  assert.equal(await fs.readFile(path.join(f.root,'a.txt'),'utf8'),'original');await assert.rejects(fs.stat(path.join(f.root,'b.txt')));
 });
 test('native menus expose target-specific commands',()=>{
@@ -74,7 +78,7 @@ test('file-label validation, stale writer and damaged metadata cannot overwrite 
  await assert.rejects(f.ops.setLabel({...value,note:'stale'}),/其他操作/);
  for(const patch of [{colors:['invalid']},{colors:['red','red']},{note:'x'.repeat(2001)},{relPath:'../a.txt'},{relPath:''}])await assert.rejects(f.ops.setLabel({...value,expectedRevision:1,...patch}));
  assert.equal((await f.ops.labels({projectId})).labels['a.txt'].note,'safe');
- await fs.writeFile(f.store.location('a.txt'),'broken');await assert.rejects(f.ops.setLabel({...value,expectedRevision:1}));assert.equal(await fs.readFile(f.store.location('a.txt'),'utf8'),'broken');
+ await f.host.storage.putProject(projectId,'file_tags',f.store.key('a.txt'),'broken');await assert.rejects(f.ops.setLabel({...value,expectedRevision:1}));assert.equal(await f.host.storage.getProject(projectId,'file_tags',f.store.key('a.txt')),'broken');
  await f.ops.view({projectId,closed:['src','src/deep']});assert.deepEqual((await new FileTreeOps(f.host,{trash:()=>{}}).view({projectId})).closed,['src','src/deep']);
  await assert.rejects(f.ops.view({projectId,closed:['../outside']}));
  assert.ok(treeMenuItems({directory:false}).some(i=>i.id==='label'));assert.ok(!treeMenuItems({directory:true}).some(i=>i.id==='label'));
@@ -91,13 +95,14 @@ test('tree preferences merge under the metadata lock, persist and isolate projec
   ]);
   const reopened = new DesktopHost(f.host.userDataDir);
   const viewOps = new FileTreeOps(reopened, { trash: () => assert.fail('view must not trash') });
-  assert.deepEqual(await viewOps.view({ projectId }), { closed: ['private'], hidden: ['private'], showHidden: true });
+  const requestedFields=({closed,hidden,showHidden})=>({closed,hidden,showHidden});
+  assert.deepEqual(requestedFields(await viewOps.view({projectId})),{closed:['private'],hidden:['private'],showHidden:true});
   await f.ops.view({ projectId, closed: [] });
-  assert.deepEqual(await viewOps.view({ projectId }), { closed: [], hidden: ['private'], showHidden: true });
+  assert.deepEqual(requestedFields(await viewOps.view({projectId})),{closed:[],hidden:['private'],showHidden:true});
   const otherRoot = path.join(path.dirname(f.root), 'other-project');
   await fs.mkdir(otherRoot);
   const other = await f.host.pick(otherRoot);
-  assert.deepEqual(await f.ops.view({ projectId: other.project.id }), { closed: [], hidden: [], showHidden: false });
+  assert.deepEqual(requestedFields(await f.ops.view({projectId:other.project.id})),{closed:[],hidden:[],showHidden:false});
   assert.equal(await fs.readFile(path.join(f.root, 'private/data.txt'), 'utf8'), 'unchanged');
   // Hiding is a tree preference, not a file-access permission.
   assert.equal((await f.host.readFile(projectId, 'private/data.txt')).text, 'unchanged');
@@ -111,8 +116,7 @@ test('tree preferences merge under the metadata lock, persist and isolate projec
 test('tree preference validation and metadata failures never overwrite prior values', async t => {
   const f = await fixture(t), projectId = f.project.id;
   await f.ops.view({ projectId, closed: ['folder'], hidden: ['secret'], showHidden: true });
-  const file = path.join(f.host.projectDir(projectId), 'file-tree-view.json');
-  const original = await fs.readFile(file, 'utf8');
+  const original = await f.host.storage.getLocal(projectId, 'file-tree-view');
   for (const rel of ['', '.', '..', '../outside', '/absolute', 'a//b', 'a/./b', 'a/../b', 'a\\b', 'C:/file', 'a\u0000b', '.git', 'a/.secret', 'node_modules', 'a/node_modules/b']) {
     await assert.rejects(f.ops.view({ projectId, hidden: [rel] }));
   }
@@ -120,16 +124,16 @@ test('tree preference validation and metadata failures never overwrite prior val
   for (const showHidden of [null, 0, 'true']) await assert.rejects(f.ops.view({ projectId, showHidden }));
   await fs.symlink(f.root, path.join(f.root, 'link'));
   await assert.rejects(f.ops.view({ projectId, hidden: ['link/secret'] }));
-  assert.equal(await fs.readFile(file, 'utf8'), original);
-  const write = f.host.writeAtomic;
-  f.host.writeAtomic = async () => { throw Error('controlled metadata failure'); };
+  assert.deepEqual(await f.host.storage.getLocal(projectId, 'file-tree-view'), original);
+  const put = f.host.storage.putLocal;
+  f.host.storage.putLocal = async () => { throw Error('controlled metadata failure'); };
   await assert.rejects(f.ops.view({ projectId, hidden: [] }), /controlled metadata failure/);
-  f.host.writeAtomic = write;
-  assert.equal(await fs.readFile(file, 'utf8'), original);
-  await fs.writeFile(file, 'broken');
+  f.host.storage.putLocal = put;
+  assert.deepEqual(await f.host.storage.getLocal(projectId, 'file-tree-view'), original);
+  await f.host.storage.putLocal(projectId, 'file-tree-view', 'broken');
   await assert.rejects(f.ops.view({ projectId, showHidden: false }));
   await assert.rejects(f.host.list(projectId, { treeView: true }));
-  assert.equal(await fs.readFile(file, 'utf8'), 'broken');
+  assert.equal(await f.host.storage.getLocal(projectId, 'file-tree-view'), 'broken');
   assert.ok(Array.isArray((await f.host.list(projectId)).entries));
 });
 

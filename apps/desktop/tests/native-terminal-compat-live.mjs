@@ -1,9 +1,9 @@
 import fs from 'node:fs/promises';import path from 'node:path';import os from 'node:os';import assert from 'node:assert/strict';import {createRequire} from 'node:module';import {spawn} from 'node:child_process';
 const require=createRequire(import.meta.url);
 export async function run(){
- const {Controller}=await import('../src/agents/managed/controller.mjs'),{attachNativeTerminal}=await import('../src/agents/managed/native-terminal.mjs'),{auditRuntime}=await import('../src/agents/managed/runtime-audit.mjs'),{Terminal}=require('@xterm/xterm');
+ const {openTestController}=await import('./project-storage.fixture.mjs'),{attachNativeTerminal}=await import('../src/agents/managed/native-terminal.mjs'),{auditRuntime}=await import('../src/agents/managed/runtime-audit.mjs'),{Terminal}=require('@xterm/xterm');
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-native-compat-')),checks=[],methods=[],x=new Terminal({cols:120,rows:32,allowProposedApi:true});await fs.mkdir(root+'/project');await fs.writeFile(root+'/project/README.md','# Native Codex terminal check\n');
- const c=await Controller.open({runtimeRoot:root+'/runtime',contentRoot:root+'/project',sourceHome:process.env.NOZELI_CODEX_SOURCE_HOME||path.join(os.homedir(),'.codex')});let output='',t,failure;
+ const c=await openTestController({runtimeRoot:root+'/runtime',contentRoot:root+'/project',sourceHome:process.env.NOZELI_CODEX_SOURCE_HOME||path.join(os.homedir(),'.codex')});let output='',t,failure;
  const pause=ms=>new Promise(r=>setTimeout(r,ms)),wait=async(fn,timeout=15000)=>{const end=Date.now()+timeout;while(!await fn()){if(Date.now()>end)throw Error('condition timeout');await pause(50);}},check=(name,ok)=>{assert(ok,name);checks.push(name);console.log(JSON.stringify({check:name}));};
  x.onData(d=>c.terminals.get('frontdesk')?.input(d));
  const attach=()=>attachNativeTerminal(c,'frontdesk',{onMethod:m=>methods.push(m),onData:d=>{output+=d;x.write(d);}});

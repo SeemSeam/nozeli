@@ -1,3 +1,7 @@
+/* Root-resolved chrome colors remain identical across host and conversation WCV.
+   Session content overrides --paper/--ink locally; titles are workspace chrome. */
+:root{--workspace-header-paper:var(--paper,#fff);--workspace-header-ink:var(--ink,#292929);--workspace-seam:color-mix(in srgb,var(--ink,#292929) 16%,var(--paper,#fff));--workspace-focus-seam:color-mix(in srgb,var(--ink,#292929) 32%,var(--paper,#fff))}
+@media(forced-colors:active){:root{--workspace-header-paper:Canvas;--workspace-header-ink:CanvasText;--workspace-seam:ButtonBorder;--workspace-focus-seam:Highlight}}
 #reader.document-header-unified > .desk-header { flex-wrap:nowrap;min-width:0;min-height:44px;gap:8px;padding:6px 12px; }
 #reader.document-header-unified:not(.document-dual) #reader-bar { display:none; }
 #reader.document-dual > .desk-header #subject-title { display:none; }
@@ -100,10 +104,10 @@
 #reader .panel-narrow #pdf-toolbar .page-label{font-size:0}
 #reader .panel-narrow #pdf-toolbar .page-label input,#reader .panel-narrow #pdf-count{font-size:11px}
 #reader .panel-narrow #pdf-count::before{content:'/ ';font-size:11px}
-.document-diff-head>header{flex-wrap:nowrap!important}
+.document-diff:not(.frozen-change-reader) .document-diff-head>header{flex-wrap:nowrap!important}
 .document-diff-head .panel-more{width:28px!important;min-width:28px!important;padding:3px!important}
 .document-diff-head .panel-narrow #comparison-change{display:none}
-@media(max-width:640px){.document-diff-head .document-diff-title,.document-diff-head #secondary-path{flex:1 1 auto!important;min-width:18px}}
+@media(max-width:640px){.document-diff:not(.frozen-change-reader) .document-diff-head .document-diff-title,.document-diff:not(.frozen-change-reader) .document-diff-head #secondary-path{flex:1 1 auto!important;min-width:18px}}
 #reader[data-file-kind=unsupported] #font-control,#reader[data-file-kind=legacy-word] #font-control,#reader[data-file-kind=unsupported] #open-beside,#reader[data-file-kind=legacy-word] #open-beside{display:none}
 #reader .reader-bar #code-status{flex:0 1 auto;max-width:120px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #reader .reader-bar.panel-compact #code-status{display:none}

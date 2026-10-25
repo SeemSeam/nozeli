@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
-import { access, chmod, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, readFile, rename, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -32,7 +31,6 @@ test('chinese space path, stable identity, list skips hidden links', async () =>
     await symlink(outside, path.join(fx.root, '逃逸链接'));
     const opened = await fx.host.pick(fx.root);
     assert.equal(opened.canceled, false);
-    assert.equal(opened.project.id, createHash('sha256').update(await import('node:fs/promises').then((fs) => fs.realpath(fx.root))).digest('hex'));
     const again = await fx.host.pick(fx.root);
     assert.equal(again.project.id, opened.project.id);
     assert.equal(again.project.openedAt, opened.project.openedAt);
@@ -65,16 +63,14 @@ test('consecutive saves, conflict, delete, readonly, and restart keep both sides
     const savedAgain = await fx.host.save(projectId, rel, saved.digest, '第二次更短');
     assert.equal(await readFile(abs, 'utf8'), '第二次更短');
     assert.equal(savedAgain.digest, digestBytes(Buffer.from('第二次更短')));
-    const baselines = path.join(fx.userData, 'nozeli', 'v1', 'projects', projectId, 'baselines');
-    const names = await import('node:fs/promises').then((fs) => fs.readdir(baselines));
-    assert.equal(names.some((name) => name.endsWith(`${first.digest}.bin`)), true);
+    assert.equal((await fx.host.storage.readObject(projectId,first.materialDigest)).toString('utf8'),'基线','later saves retain the immutable material consumers use for the original version');
     await writeFile(abs, '外部修改');
     await assert.rejects(() => fx.host.save(projectId, rel, savedAgain.digest, '我的草稿'), (error) => error.code === 'CONFLICT' && error.details.draftKept === true);
     assert.equal(await readFile(abs, 'utf8'), '外部修改');
     const conflicted = await fx.host.readFile(projectId, rel);
     assert.equal(conflicted.draft.text, '我的草稿');
     assert.equal(conflicted.text, '外部修改');
-    await import('node:fs/promises').then((fs) => fs.unlink(abs));
+    await unlink(abs);
     await assert.rejects(() => fx.host.save(projectId, rel, conflicted.digest, '删除后的草稿'), (error) => error.code === 'DELETED');
     await assert.rejects(() => access(abs));
     const deleted = await new DesktopHost(fx.userData).readFile(projectId, rel);
@@ -128,10 +124,11 @@ test('projects, notes, and view state stay isolated and bound to old material', 
     }), (error) => error.code === 'INVALID_ANCHOR');
     const otherNotes = await fx.host.listAnnotations(b, rel);
     assert.equal(otherNotes.annotations.length, 0);
-    const before = (await new FileTags(fx.root).read(rel)).tags.find(tag => tag.id === added.annotation.id);
+    const tags = new FileTags({ storage: fx.host.storage, projectId: a, root: fx.root });
+    const before = (await tags.read(rel)).tags.find(tag => tag.id === added.annotation.id);
     const listed = await fx.host.listAnnotations(a, rel);
     await fx.host.removeAnnotation(a, listed.annotations.find(item => item.id !== added.annotation.id).id);
-    const after = (await new FileTags(fx.root).read(rel)).tags.find(tag => tag.id === added.annotation.id);
+    const after = (await tags.read(rel)).tags.find(tag => tag.id === added.annotation.id);
     assert.deepEqual(after, before);
     assert.equal((await fx.host.listAnnotations(a, rel)).annotations.length, 1);
     const saved = await fx.host.save(a, rel, file.digest, '甲项目已改');
@@ -140,7 +137,6 @@ test('projects, notes, and view state stay isolated and bound to old material', 
     assert.equal(bound.annotations[0].anchor.quote, '甲');
     assert.equal(bound.annotations[0].sourceChanged, true);
     assert.notEqual(saved.digest, file.materialDigest);
-    assert.equal((await fx.host.materials.get(file.materialDigest)).toString('utf8'), '甲项目');
     await fx.host.writeState(a, { currentRelPath: rel, pdfPage: 3, scrollTop: 12 });
     const restarted = new DesktopHost(fx.userData);
     assert.equal((await restarted.readState(a)).state.currentRelPath, rel);
@@ -157,21 +153,25 @@ test('projects, notes, and view state stay isolated and bound to old material', 
   }
 });
 
-test('unknown or corrupt metadata is kept and not overwritten', async () => {
-  const fx = await scratch();
-  try {
-    await fx.host.pick(fx.root);
-    const registry = path.join(fx.userData, 'nozeli', 'v1', 'registry.json');
-    const unknown = JSON.stringify({ schemaVersion: 2, projects: [{ id: 'nope' }] });
-    await writeFile(registry, unknown);
-    await assert.rejects(() => fx.host.recent(), (error) => error.code === 'SCHEMA_UNSUPPORTED');
-    assert.equal(await readFile(registry, 'utf8'), unknown);
-    await writeFile(registry, '{');
-    await assert.rejects(() => new DesktopHost(fx.userData).recent(), (error) => error.code === 'METADATA_CORRUPT');
-    assert.equal(await readFile(registry, 'utf8'), '{');
-  } finally {
-    await fx.cleanup();
-  }
+test('unsupported project identity and corrupt catalog are preserved without rewriting source files', async () => {
+  const fx=await scratch(),clients=[];
+  try{
+    const file=await seed(fx.root,'kept.txt','untouched source');
+    const {project}=await fx.host.pick(fx.root),manifestFile=path.join(fx.root,'.nozeli','project.json');
+    const original=JSON.parse(await readFile(manifestFile,'utf8')),unsupported=JSON.stringify({...original,schema:999});
+    await writeFile(manifestFile,unsupported);
+    await assert.rejects(fx.host.readFile(project.id,'kept.txt'),{code:'PROJECT_METADATA_CONFLICT'});
+    assert.equal(await readFile(manifestFile,'utf8'),unsupported);assert.equal(await readFile(file,'utf8'),'untouched source');
+    await writeFile(manifestFile,'{');
+    const reopened=new DesktopHost(fx.userData);clients.push(reopened);
+    await assert.rejects(reopened.readFile(project.id,'kept.txt'),{code:'PROJECT_METADATA_CONFLICT'});
+    assert.equal(await readFile(manifestFile,'utf8'),'{');
+    await Promise.all([fx.host,...clients].map(host=>host.storage.db.close()));
+    const corrupt=Buffer.from('not a SQLite catalog');await writeFile(fx.host.storage.catalog,corrupt);
+    const broken=new DesktopHost(fx.userData);clients.push(broken);
+    await assert.rejects(broken.recent());
+    assert.deepEqual(await readFile(fx.host.storage.catalog),corrupt);assert.equal(await readFile(file,'utf8'),'untouched source');
+  }finally{await Promise.all([fx.host,...clients].map(host=>host.storage.db.close()));await fx.cleanup();}
 });
 
 test('removing project entry preserves files and state, survives restart and permits re-add or missing directory', async () => {

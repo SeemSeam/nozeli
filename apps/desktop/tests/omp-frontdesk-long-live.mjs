@@ -6,7 +6,7 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import {Controller} from '../src/agents/managed/controller.mjs';
+import {openTestController} from './project-storage.fixture.mjs'
 
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const HOLD_MS=165000;
@@ -38,7 +38,7 @@ test('actual frontdesk survives an active native response beyond the former 150-
   });
   await fs.writeFile(path.join(source,'models.yml'),`providers:\n  native-long-local:\n    api: openai-completions\n    baseUrl: http://127.0.0.1:${server.address().port}/v1\n    auth: none\n    models:\n      - id: scripted\n        input: [text]\n`);
   await fs.writeFile(path.join(source,'config.yml'),'setupVersion: 2\nstartup:\n  checkUpdate: false\nmarketplace:\n  autoUpdate: "off"\nautoResume: false\nmodelRoles:\n  default: native-long-local/scripted\ndefaultThinkingLevel: off\n');
-  controller=await Controller.open({runtimeRoot:path.join(privateRoot,'desktop','runtime'),contentRoot:content,ompSystemSource:{root:privateRoot,agentDir:source,private:true}});
+  controller=await openTestController({runtimeRoot:path.join(privateRoot,'desktop','runtime'),contentRoot:content,ompSystemSource:{root:privateRoot,agentDir:source,private:true}});
   await controller.start();
   const thread=controller.store.state.residents.frontdesk.threadId;
   const accepted=await controller.send('frontdesk','Wait for this self-owned native response; no tools or files.',{requestKey:'native-long-frontdesk'});

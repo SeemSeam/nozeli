@@ -44,7 +44,7 @@ try{
   }
   await resize(1440);await open('docs/阅读验收.md');
   await p.waitForFunction(()=>document.querySelector('#text-preview pre code')?.dataset.highlighted==='cpp');
-  const markup=await p.$eval('#text-preview',el=>({links:el.querySelectorAll('a').length,tables:el.querySelectorAll('table').length,math:el.querySelectorAll('.katex').length,mathError:el.querySelectorAll('.katex-error').length,codeColors:new Set([...el.querySelectorAll('pre code span')].map(s=>s.style.color)).size,copy:el.querySelectorAll('.conversation-copy').length,strongMath:!!el.querySelector('strong .katex')}));
+  const markup=await p.$eval('#text-preview',el=>({links:el.querySelectorAll('a').length,tables:el.querySelectorAll('table').length,math:el.querySelectorAll('.katex').length,mathError:el.querySelectorAll('.katex-error').length,codeColors:new Set([...el.querySelectorAll('pre code span')].map(s=>getComputedStyle(s).color)).size,copy:el.querySelectorAll('.conversation-copy').length,strongMath:!!el.querySelector('strong .katex')}));
   assert(markup.links&&markup.tables&&markup.math>=4&&markup.mathError===0&&markup.codeColors>=3&&markup.copy===1&&markup.strongMath);
   await p.click('#text-preview .conversation-copy');await p.waitForFunction(()=>document.querySelector('#text-preview .conversation-copy').textContent==='✓');
   assert.equal((await p.evaluate(()=>nozeli.invoke('document.clipboard',{action:'read'}))).value,'#include <iostream>\nint main() { return 0; }');

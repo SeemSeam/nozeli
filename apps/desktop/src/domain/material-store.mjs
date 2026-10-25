@@ -18,7 +18,7 @@ export const digestBytes = bytes => createHash('sha256').update(bytes).digest('h
  * Unsupported filesystems fail explicitly. This is not a user-document save API.
  */
 export class MaterialStore {
-  constructor(directory, { maxBytes = 32 * 1024 * 1024 } = {}) {
+  constructor(directory, { maxBytes = 32 * 1024 * 1024, createDirectory = true } = {}) {
     if (typeof directory !== 'string' || !path.isAbsolute(directory)) {
       throw new MaterialError('INVALID_DIRECTORY', 'Material directory must be absolute.');
     }
@@ -27,6 +27,7 @@ export class MaterialStore {
     }
     this.directory = path.resolve(directory);
     this.maxBytes = maxBytes;
+    this.createDirectory=createDirectory;
   }
 
   location(digest) {
@@ -37,7 +38,7 @@ export class MaterialStore {
   }
 
   async ensureDirectory() {
-    await fs.mkdir(this.directory, { recursive: true, mode: 0o700 });
+    if(this.createDirectory)await fs.mkdir(this.directory, { recursive: true, mode: 0o700 });
     const stat = await fs.lstat(this.directory);
     if (!stat.isDirectory() || stat.isSymbolicLink()) {
       throw new MaterialError('INVALID_DIRECTORY', 'Material directory is not a regular directory.');

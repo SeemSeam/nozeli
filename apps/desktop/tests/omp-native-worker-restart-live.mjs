@@ -3,14 +3,14 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {Controller} from '../src/agents/managed/controller.mjs';
+import {openTestController} from './project-storage.fixture.mjs'
 import {resolveSystemOmpSource} from '../src/agents/managed/omp-system-source.mjs';
 import {OmpAuthBrokerHost,resolveSystemBrokerGrant} from '../src/agents/managed/omp-auth-broker.mjs';
 import {processStamp} from '../src/agents/managed/process-ownership.mjs';
 const root=path.resolve(process.argv[2]);await fs.mkdir(root,{recursive:true});
 const source=resolveSystemOmpSource({}),broker=new OmpAuthBrokerHost({command:'omp',source,sourceEnv:process.env});
 const auth={acquire:async()=>{const remote=await resolveSystemBrokerGrant(source,process.env,{command:'omp'});return remote?broker.acquire(()=>remote):broker.acquire();}};
-const c=await Controller.open({runtimeRoot:path.join(root,'runtime'),contentRoot:path.join(root,'project'),ompSystemSource:source,ompAuthBroker:auth,projectHome:async()=>{}});
+const c=await openTestController({runtimeRoot:path.join(root,'runtime'),contentRoot:path.join(root,'project'),ompSystemSource:source,ompAuthBroker:auth,projectHome:async()=>{}});
 const facts=[];const wait=async(fn)=>{const until=Date.now()+30000;while(Date.now()<until){if(await fn())return;await new Promise(r=>setTimeout(r,100));}throw Error('Worker exit timeout');};
 try{
  await c.setBinding('worker',{provider:'omp'});

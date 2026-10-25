@@ -1,5 +1,12 @@
 # Sources and licenses
 
+## Static HTML reports and offline diagrams (2026-10-23)
+
+HTML/CSS/JavaScript syntax analysis uses the existing MIT Lezer parsers, now explicit production dependencies: `@lezer/html` 1.3.13, `@lezer/css` 1.3.8 and `@lezer/javascript` 1.5.5. Host SVG validation reuses `@xmldom/xmldom` 0.9.12 (MIT); raster bounds reuse `image-size` 2.0.2 (MIT). These parsers do not grant HTML any application or filesystem privileges.
+
+The Nozeli-owned static diagram closure under `src/agents/managed/archify-vendor/` is derived from the inspected Archify 2.16.0-dev.0 skill distribution. Its `SOURCES.json` records exact inspected and shipped file hashes plus generator identity. The original MIT copyright holders, tt-a1i and Cocoon AI, are retained in the vendor LICENSE and exported SVG notices. The adaptation removes remote capture, process/filesystem CLI behavior and the interactive viewer runtime; it renders and validates architecture, workflow, sequence, dataflow and lifecycle diagrams offline. Built-in Simple Icons 16.28.0 paths retain CC0 notices; trademark rights are not granted. Runtime generation never loads a personal skill path, CCB, CDN or runtime npm package. This is a product-owned adapted closure, not an assertion of an unverified upstream repository URL.
+
+
 ## Product-managed Git (2026-10-18)
 
 Nozeli ships `dugite` 3.2.3 (MIT, https://github.com/desktop/dugite) as a production dependency, with its platform-specific Git archive unpacked inside the application. Git is a separate executable, not an in-process implementation. The Linux x64 archive is `dugite-native-v2.53.0-4098283-ubuntu-x64.tar.gz` from https://github.com/desktop/dugite-native/releases/tag/v2.53.0-4, SHA-256 `cca76aa31ad9e835e771ee7f55b73934777fbd8d16757a10d307ba06de860901`; the dependency installer verifies its pinned digest. Windows/macOS use the corresponding upstream platform archives, not this Linux binary.

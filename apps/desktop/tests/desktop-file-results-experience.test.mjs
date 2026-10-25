@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import puppeteer from 'puppeteer-core';
 import {DesktopHost} from '../src/main/host.mjs';
 import {Workspace} from '../src/agents/managed/workspace.mjs';
+import {staticReport,historicalMarkdownState} from './static-report.fixture.mjs';
 
 // Explicit sequential-GUI opt-in. Never connects to or closes a user window.
 // Published reports/Host/IPC/editor/files are real; Agent scheduling is a fixture.
@@ -26,21 +27,22 @@ const read=await host.readFile(id,'source.md'),tagId=randomUUID();
 await host.putTag(id,{relPath:'source.md',tagId,materialDigest:read.materialDigest,kind:'text-selection',anchor:{start:10,end:18,quote:sourceText.slice(10,18)},projection:{kind:'discuss',text:'保留的旧问题',draftText:'',open:true,status:'draft',history:[]}});
 await host.putTag(id,{relPath:'deleted.md',tagId:randomUUID(),materialDigest:(await host.readFile(id,'deleted.md')).materialDigest,kind:'text-selection',anchor:{start:10,end:18,quote:sourceText.slice(10,18)},projection:{kind:'discuss',text:'删除前的问题',draftText:'',open:true,status:'draft',history:[]}});
 const runtime=path.join(profile,'nozeli','managed-v1',id,'runtime');
-const store=await Workspace.open(runtime,project),work=await store.submit('request','brief',{name:'报告副本旅程'});await store.activate(work.id);
+const store=await Workspace.open(runtime,project,{storage:host.storage,projectId:id}),work=await store.submit('request','brief',{name:'报告副本旅程'});await store.activate(work.id);
 const text='# Exact external report\n\n[历史文件](source.md)\n\n中文与尾换行。\n';
-const receipt=await store.publish(work.id,1,'result',text,'gui-report');await store.settle(work.id);
-store.state.works[0].status='ended';Object.assign(store.state,{jobs:[],drafts:{},agents:[],busyTargets:[],quotaUsed:0,artifacts:['source.md','deleted.md'].map(relPath=>({id:randomUUID(),workId:work.id,relPath}))});store.state.messages.push({id:randomUUID(),target:'frontdesk',speaker:'agent',text:'历史引用 [原文](source.md) 和 [删除文件](deleted.md)'});await store.save();await store.close();
+const receipt=await store.publish(work.id,1,'result',staticReport(text),'gui-report');await store.settle(work.id);
+store.state.works[0].status='ended';Object.assign(store.state,{jobs:[],drafts:{},agents:[],busyTargets:[],quotaUsed:0,artifacts:['source.md','deleted.md'].map(relPath=>({id:randomUUID(),workId:work.id,relPath}))});store.state.messages.push({id:randomUUID(),target:'frontdesk',speaker:'agent',text:'历史引用 [原文](source.md) 和 [删除文件](deleted.md)'});await store.save();await historicalMarkdownState(store,new Map([[receipt.objectId,text]]));
+receipt.report=store.state.receipts.find(row=>row.objectId===receipt.objectId).report;
 // Inject only a non-model Controller factory at the production adapter seam.
 // The renderer, managed.* dispatch, report.export handler and editing barrier are
 // unchanged. This fixture validates file UI; it is not provider/CLI acceptance.
-await fs.writeFile(path.join(profile,'nozeli','managed-v1',id,'binding.json'),JSON.stringify({enabled:true,provider:'codex'}));
+await host.storage.putLocal(id,'managed:binding',{enabled:true,provider:'codex'});
 const secondProject=path.join(out,'other-project');await fs.mkdir(secondProject);await fs.writeFile(path.join(secondProject,'other.md'),'# Other project\n');
 const secondId=(await host.pick(secondProject)).project.id;await host.open(id);
 const fixtureModule=path.join(root,'src/main/file-results-controller-fixture.mjs');
 await fs.writeFile(fixtureModule,`import {EventEmitter} from 'node:events';
 import {Workspace} from '../agents/managed/workspace.mjs';
-export async function openFileResultsController({runtimeRoot,contentRoot}) {
- const store=await Workspace.open(runtimeRoot,contentRoot);
+export async function openFileResultsController({runtimeRoot,contentRoot,storage,projectId}) {
+ const store=await Workspace.open(runtimeRoot,contentRoot,{storage,projectId});
  const controller=new EventEmitter();Object.assign(controller,{store,started:false,running:new Map(),closures:new Map(),terminals:new Map(),current:new Map(),sessions:new Map(),externalTerminalTargets:new Set(['frontdesk','orchestrator']),stopping:false});
  controller.snapshot=()=>({...structuredClone(store.state),agents:[],quotaUsed:store.used(),busyTargets:[],externalTerminalTargets:['frontdesk','orchestrator'],nativeDraftTargets:[],stopping:controller.stopping});
  controller.start=async()=>{controller.started=true;return controller.snapshot();};
@@ -53,11 +55,11 @@ const mainFile=path.join(root,'src/main/main.cjs');let main=await fs.readFile(ma
 const seam='new ManagedProjects({userDataDir:app.getPath(\'userData\'),host,legacy:agents,beforeDocumentOperation:syncDocument})';
 assert(main.includes(seam));
 main=main.replace(seam,"new ManagedProjects({userDataDir:app.getPath('userData'),host,legacy:agents,beforeDocumentOperation:syncDocument,openController:(await import('./file-results-controller-fixture.mjs')).openFileResultsController})");
-// Controlled filesystem latency on the original report read, never an IPC stub.
+// Controlled storage latency on the original report read, never an IPC stub.
 const delayGate=path.join(out,'delay-report-read'),delayEntered=path.join(out,'delay-entered');
 const hostSeam="  managedAgents=new ManagedProjects";assert(main.includes(hostSeam));
-main=main.replace(hostSeam,`  const fileResultsOriginalReadSource=host.readSource.bind(host);
-  host.readSource=async file=>{if(file.endsWith(${JSON.stringify(receipt.objectId+'.md')})){for(;;){try{await fs.stat(${JSON.stringify(delayGate)});}catch(e){if(e.code==='ENOENT')break;throw e;}await fs.writeFile(${JSON.stringify(delayEntered)},'entered');await new Promise(r=>setTimeout(r,10));}}return fileResultsOriginalReadSource(file);};
+main=main.replace(hostSeam,`  const fileResultsOriginalReadObject=host.storage.readObject.bind(host.storage);
+  host.storage.readObject=async (projectId,digest)=>{if(digest===${JSON.stringify(receipt.report.digest)}){for(;;){try{await fs.stat(${JSON.stringify(delayGate)});}catch(e){if(e.code==='ENOENT')break;throw e;}await fs.writeFile(${JSON.stringify(delayEntered)},'entered');await new Promise(r=>setTimeout(r,10));}}return fileResultsOriginalReadObject(projectId,digest);};
 ${hostSeam}`);
 await fs.writeFile(mainFile,main);
 assert(main.includes("new ManagedReportExporter({host,managedAgents,beforeOperation:syncDocument}).export(payload??{})"),'production report.export IPC must exist');
@@ -79,7 +81,7 @@ try{
  await page.click('[data-managed-report-export]');await page.waitForSelector('#managed-report-export[open]');
  await page.$eval('#managed-report-export input',n=>n.value='报告副本.md');await page.click('#managed-report-export [type=submit]');
  await page.waitForFunction(()=>!document.querySelector('#managed-report-export').open);await page.waitForSelector('#file-tree [data-path="报告副本.md"]');
- assert.equal(await fs.readFile(path.join(project,'报告副本.md'),'utf8'),text);assert.equal(await fs.readFile(path.join(runtime,'objects',receipt.objectId+'.md'),'utf8'),text);check('ended historical report exports exact real original and refreshes project tree');
+ assert.equal(await fs.readFile(path.join(project,'报告副本.md'),'utf8'),text);assert.equal((await store.readObject(receipt.report.digest)).toString('utf8'),text);check('ended historical report exports exact real original and refreshes project tree');
  await page.click('[data-managed-report-export]');await page.$eval('#managed-report-export input',n=>n.value='报告副本.md');await page.click('#managed-report-export [type=submit]');
  await page.waitForFunction(()=>document.querySelector('.managed-export-status').textContent.includes('已存在'));
  assert.equal(await page.$eval('#managed-report-export input',n=>n.value),'报告副本.md');assert.equal(await fs.readFile(path.join(project,'报告副本.md'),'utf8'),text);check('name collision keeps dialog filename and original file');

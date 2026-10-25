@@ -1,245 +1,191 @@
+import {openTestWorkspace} from './project-storage.fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import {Workspace} from '../src/agents/managed/workspace.mjs';
+import {readManagedState} from '../src/agents/managed/managed-storage.mjs';
 import {staticReport} from './static-report.fixture.mjs';
-
-// 回归焦点：
-// P1 publish 本地 try 清理止步于 mutate.save —— state.json 落盘失败遗留
-// object/manifest/artifacts 孤儿、重试换新 ID；P2 deviation 先写 body 后写
-// manifest，manifest 失败遗留半成品 body。修复后：事务级回滚钩子仅在磁盘
-// state.json 可读且确无对应收据（proven absent）时删除本事务自建文件；提交
-// 结果不明/已提交时保留对象与已变更内存状态并上抛 commitUnknown hold；清理
-// 失败以 rollbackFailures 附加在原始错误上，绝不静默、绝不替换原始错误。
 
 async function fixture(t,{job=false}={}){
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'managed-workspace-rollback-'));
-  const store=await Workspace.open(path.join(root,'runtime'),path.join(root,'content'));
+  const store=await openTestWorkspace(path.join(root,'runtime'),path.join(root,'content'));
   const work=await store.submit('原始请求','任务简报',{name:'回滚验证'});
   await store.activate(work.id);
-  if(job)store.state.jobs=[{id:'job-source',target:work.id,revision:1,status:'completed',text:'源任务文本',context:{}}];
-  t.after(async()=>{await store.close().catch(()=>{});await fs.rm(root,{recursive:true,force:true});});
+  if(job)await store.mutate(()=>{store.state.jobs=[{id:'job-source',target:work.id,revision:1,status:'completed',text:'源任务文本',context:{}}];});
+  t.after(async()=>{await store.close();await fs.rm(root,{recursive:true,force:true});});
   return {root,store,work};
 }
-
-async function listObjects(store){
-  const dir=path.join(store.root,'objects');const out=[];
-  const walk=async directory=>{for(const entry of await fs.readdir(directory,{withFileTypes:true})){const full=path.join(directory,entry.name);if(entry.isDirectory())await walk(full);else out.push(path.relative(dir,full));}};
-  await walk(dir);return out.sort();
+const durable=store=>readManagedState(store.storage,store.projectId,{offline:false});
+const receipt=(store,id)=>store.storage.getProject(store.projectId,'managed_receipts',id);
+async function failedTransaction(store,id){
+  const rows=await store.listPending();
+  const pending=rows.find(row=>row.kind==='business'&&row.collections.managed_receipts?.some(row=>row.id===id));
+  assert.ok(pending,'failed transaction retains its complete candidate collections');
+  assert.equal(pending.status,'pending');
+  assert.equal(pending.automaticReplay,false);
+  assert.equal(pending.requiresConfirmation,true);
+  return pending;
+}
+async function assertStoredReport(store,row){
+  assert.match(row.report.digest,/^[a-f0-9]{64}$/);
+  const bytes=await store.storage.readObject(store.projectId,row.report.digest);
+  assert.ok(bytes.length);
+  if(row.report.manifestDigest)await store.storage.readObject(store.projectId,row.report.manifestDigest);
+  if(row.snapshot){
+    await store.storage.readObject(store.projectId,row.snapshot.manifestDigest);
+    for(const file of row.snapshot.files)if(file.objectDigest)await store.storage.readObject(store.projectId,file.objectDigest);
+  }
+  return bytes;
+}
+function failCommit(t,store,{after=false,unknown=false}={}){
+  const storage=store.storage,original=storage.replaceProjectCollections.bind(storage);
+  storage.replaceProjectCollections=async(...args)=>{
+    if(after)await original(...args);
+    throw Object.assign(new Error('injected project transaction failure'),{
+      code:unknown?'STORAGE_RESULT_UNKNOWN':'EINJECTED_COMMIT',
+      ...(unknown?{commitUnknown:{projectId:store.projectId}}:{})
+    });
+  };
+  const restore=()=>{storage.replaceProjectCollections=original;};
+  t.after(restore);
+  return restore;
 }
 
-test('publish: state save failure before rename leaves no receipt/objects and restores exact state',async t=>{
+test('publish: rejected project transaction restores state and retains immutable recovery evidence for explicit inspection',async t=>{
   const {store,work}=await fixture(t);
   await fs.writeFile(path.join(store.content,'note.txt'),'artifact bytes');
-  const html=staticReport('state save failure body');
-  const priorState=structuredClone(store.state);
-  const priorDisk=await fs.readFile(store.file);
-  const priorObjects=await listObjects(store);
-  const realSave=store.save.bind(store);
-  store.save=async()=>{throw Object.assign(new Error('injected state save failure'),{code:'EINJECTED_SAVE'});};
-  await assert.rejects(
-    store.publish(work.id,1,'result',html,'receipt-save-fail',{files:[{relPath:'note.txt'}]}),
-    error=>error.code==='EINJECTED_SAVE'&&!error.commitUnknown&&!error.rollbackFailures
-  );
-  store.save=realSave;
-  assert.deepEqual(store.state,priorState,'in-memory state must be restored exactly (receipt/message/todo invisible)');
-  assert.ok((await fs.readFile(store.file)).equals(priorDisk),'state.json on disk must be untouched');
-  assert.deepEqual(await listObjects(store),priorObjects,'no orphan object/manifest/artifact files');
+  const html=staticReport('transaction failure body'),priorState=structuredClone(store.state),priorDisk=await durable(store);
+  const restore=failCommit(t,store);
+  await assert.rejects(store.publish(work.id,1,'result',html,'receipt-save-fail',{files:[{relPath:'note.txt'}]}),{code:'EINJECTED_COMMIT'});
+  restore();
+  assert.deepEqual(store.state,priorState);
+  assert.deepEqual(await durable(store),priorDisk,'project collections remain atomic');
+  assert.equal(await receipt(store,'receipt-save-fail'),null);
+  const pending=await failedTransaction(store,'receipt-save-fail');
+  const candidate=pending.collections.managed_receipts.find(row=>row.id==='receipt-save-fail').value;
+  await assertStoredReport(store,candidate);
+  await store.requireOnline();
   const row=await store.publish(work.id,1,'result',html,'receipt-save-fail',{files:[{relPath:'note.txt'}]});
-  assert.equal(row.id,'receipt-save-fail');
-  assert.equal(store.state.receipts.length,1);
-  assert.deepEqual(await listObjects(store),[`artifacts/${row.objectId}/note.txt`,`${row.objectId}.html`,`${row.objectId}.manifest.json`].sort());
+  assert.equal(row.report.digest,candidate.report.digest,'retry deduplicates immutable report bytes');
   const replay=await store.publish(work.id,1,'result',html,'receipt-save-fail',{files:[{relPath:'note.txt'}]});
-  assert.equal(replay.objectId,row.objectId,'retry reuses the same receipt instead of orphaning a new ID');
-  assert.equal(store.state.receipts.length,1);
+  assert.equal(replay.objectId,row.objectId);
+  assert.equal((await store.storage.listProject(store.projectId,'managed_receipts')).length,1);
+  await assertStoredReport(store,row);
 });
 
-test('publish: save failure after rename keeps committed state and objects (commit unknown hold)',async t=>{
+test('publish: unknown response after project commit retains committed receipt and immutable objects',async t=>{
   const {store,work}=await fixture(t);
-  const realSave=store.save.bind(store);
-  store.save=async()=>{await realSave();throw Object.assign(new Error('injected post-rename failure'),{code:'EINJECTED_POST_RENAME'});};
-  let hold=null;
-  await assert.rejects(
-    store.publish(work.id,1,'result',staticReport('post rename body'),'receipt-post-rename'),
-    error=>{hold=error.commitUnknown;return error.code==='EINJECTED_POST_RENAME';}
-  );
-  store.save=realSave;
-  assert.equal(hold?.scope,'publication');
-  assert.equal(hold?.durable,'present');
-  assert.equal(hold?.receiptId,'receipt-post-rename');
-  const row=store.state.receipts.find(r=>r.id==='receipt-post-rename');
-  assert.ok(row,'committed in-memory state is kept so failed settlement display can find the saved result');
-  assert.equal(store.find(work.id).result.revision,1);
-  const disk=JSON.parse(await fs.readFile(store.file,'utf8'));
-  assert.ok(disk.receipts.some(r=>r.id==='receipt-post-rename'),'durable receipt exists');
-  const objects=await listObjects(store);
-  assert.ok(objects.includes(`${row.objectId}.html`),'objects must not be removed for a possibly committed receipt');
-  assert.ok(objects.includes(`${row.objectId}.manifest.json`));
+  const restore=failCommit(t,store,{after:true,unknown:true});
+  await assert.rejects(store.publish(work.id,1,'result',staticReport('committed body'),'receipt-unknown'),error=>error.code==='STORAGE_RESULT_UNKNOWN'&&Boolean(error.commitUnknown));
+  restore();
+  assert.ok(store.state.receipts.some(row=>row.id==='receipt-unknown'),'unknown acknowledgement must not blindly restore prior in-memory state');
+  const row=await receipt(store,'receipt-unknown');
+  assert.ok(row,'real transaction committed before the acknowledgement was lost');
+  await assertStoredReport(store,row);
+  await failedTransaction(store,'receipt-unknown');
+  assert.equal((await durable(store)).works.find(row=>row.id===work.id).result.revision,1);
 });
 
-test('publish: unreadable durable state keeps everything and surfaces commit unknown',async t=>{
-  const {root,store,work}=await fixture(t);
-  const parked=path.join(root,'state.parked.json');
-  const realSave=store.save.bind(store);
-  store.save=async()=>{await realSave();await fs.rename(store.file,parked);throw Object.assign(new Error('injected state loss'),{code:'EINJECTED_STATE_LOSS'});};
-  let hold=null;
-  await assert.rejects(
-    store.publish(work.id,1,'result',staticReport('unreadable state body'),'receipt-unreadable'),
-    error=>{hold=error.commitUnknown;return error.code==='EINJECTED_STATE_LOSS';}
-  );
-  store.save=realSave;
-  assert.equal(hold?.durable,'unknown');
-  const row=store.state.receipts.find(r=>r.id==='receipt-unreadable');
-  assert.ok(row,'no blind prior restore while durable outcome is unknown');
-  assert.ok((await listObjects(store)).includes(`${row.objectId}.html`),'no cleanup when commit outcome is unknown');
-  await fs.rename(parked,store.file);
+test('publish: unknown response without a committed receipt retains candidate evidence without automatic replay',async t=>{
+  const {store,work}=await fixture(t);
+  const restore=failCommit(t,store,{unknown:true});
+  await assert.rejects(store.publish(work.id,1,'result',staticReport('unknown body'),'receipt-unreadable'),error=>error.code==='STORAGE_RESULT_UNKNOWN'&&Boolean(error.commitUnknown));
+  restore();
+  assert.ok(store.state.receipts.some(row=>row.id==='receipt-unreadable'),'unknown transaction retains the proposed receipt until reconciliation');
+  assert.equal(await receipt(store,'receipt-unreadable'),null);
+  const pending=await failedTransaction(store,'receipt-unreadable');
+  await assertStoredReport(store,pending.collections.managed_receipts.find(row=>row.id==='receipt-unreadable').value);
 });
 
-test('deviation: Markdown body write failure removes partial object and restores exact state',async t=>{
+test('deviation: recovery object write failure leaves no business changes or paused work',async t=>{
   const {store,work}=await fixture(t,{job:true});
-  const priorState=structuredClone(store.state);
-  const priorDisk=await fs.readFile(store.file);
-  const priorObjects=await listObjects(store);
-  const objectsDir=path.join(store.root,'objects');
-  const originalOpen=fs.open;
-  const report=()=>store.reportDeviation(work.id,{id:'job-report',revision:1,context:{sourceJobId:'job-source'}},{changedGoal:'新目标',reason:'偏离原因',progress:'已有进展'},'deviation-receipt-1');
+  const priorState=structuredClone(store.state),priorDisk=await durable(store);
+  const original=store.storage.putRecoveryObject.bind(store.storage);
+  store.storage.putRecoveryObject=async()=>{throw Object.assign(new Error('injected object write failure'),{code:'EINJECTED_BODY'});};
   try{
-    fs.open=async(file,...args)=>{
-      const handle=await originalOpen(file,...args);
-      if(typeof file==='string'&&file.startsWith(objectsDir)&&file.endsWith('.md'))handle.writeFile=async()=>{throw Object.assign(new Error('injected body write failure'),{code:'EINJECTED_BODY'});};
-      return handle;
-    };
-    await assert.rejects(report(),error=>error.code==='EINJECTED_BODY'&&!error.commitUnknown&&!error.rollbackFailures);
-  }finally{fs.open=originalOpen;}
+    await assert.rejects(store.reportDeviation(work.id,{id:'job-report',revision:1,context:{sourceJobId:'job-source'}},{changedGoal:'新目标',reason:'偏离原因',progress:'已有进展'},'deviation-body'),{code:'EINJECTED_BODY'});
+  }finally{store.storage.putRecoveryObject=original;}
   assert.deepEqual(store.state,priorState);
-  assert.ok((await fs.readFile(store.file)).equals(priorDisk));
-  assert.deepEqual(await listObjects(store),priorObjects,'partial deviation body must not stay visible');
+  assert.deepEqual(await durable(store),priorDisk);
   assert.equal(store.deviationHeld(work.id),false);
-  const event=await report();
+  const event=await store.reportDeviation(work.id,{id:'job-report',revision:1,context:{sourceJobId:'job-source'}},{changedGoal:'新目标',reason:'偏离原因',progress:'已有进展'},'deviation-body');
   assert.equal(event.status,'pending');
-  assert.equal(store.state.receipts.length,1);
   assert.equal(store.deviationHeld(work.id),true);
-  assert.equal(store.find(work.id).status,'paused');
-  const objects=await listObjects(store);
-  assert.equal(objects.filter(f=>f.endsWith('.md')).length,1);
-  assert.equal(objects.filter(f=>f.endsWith('.html')||f.endsWith('.manifest.json')).length,0,'deviation problem is a lightweight Markdown object without HTML/manifest');
+  const row=await receipt(store,'deviation-body');
+  assert.equal(row.report.format,'markdown');
+  assert.match((await assertStoredReport(store,row)).toString(),/偏离原因/);
+  assert.equal(row.report.manifestDigest,null,'Markdown problems do not acquire an HTML manifest');
 });
 
-test('deviation: state save failure removes both object files and restores exact state',async t=>{
+test('deviation: rejected project transaction restores state but retains pending problem bytes',async t=>{
   const {store,work}=await fixture(t,{job:true});
-  const priorState=structuredClone(store.state);
-  const priorDisk=await fs.readFile(store.file);
-  const priorObjects=await listObjects(store);
-  const realSave=store.save.bind(store);
-  store.save=async()=>{throw Object.assign(new Error('injected deviation save failure'),{code:'EINJECTED_SAVE'});};
-  await assert.rejects(
-    store.reportDeviation(work.id,{id:'job-report',revision:1,context:{sourceJobId:'job-source'}},{changedGoal:'新目标',reason:'偏离原因',progress:'已有进展'},'deviation-receipt-2'),
-    error=>error.code==='EINJECTED_SAVE'&&!error.commitUnknown
-  );
-  store.save=realSave;
+  const priorState=structuredClone(store.state),priorDisk=await durable(store),restore=failCommit(t,store);
+  await assert.rejects(store.reportDeviation(work.id,{id:'job-report',revision:1,context:{sourceJobId:'job-source'}},{changedGoal:'新目标',reason:'偏离原因',progress:'已有进展'},'deviation-save'),{code:'EINJECTED_COMMIT'});
+  restore();
   assert.deepEqual(store.state,priorState);
-  assert.ok((await fs.readFile(store.file)).equals(priorDisk));
-  assert.deepEqual(await listObjects(store),priorObjects,'both deviation object files must be rolled back');
+  assert.deepEqual(await durable(store),priorDisk);
+  const pending=await failedTransaction(store,'deviation-save');
+  await assertStoredReport(store,pending.collections.managed_receipts.find(row=>row.id==='deviation-save').value);
   assert.equal(store.find(work.id).status,'running');
 });
 
-test('retainCandidate: invoked after validation, changeSetId override, evidence rollback only on proven-absent commit',async t=>{
-  const {store,work}=await fixture(t);
-  await fs.writeFile(path.join(store.content,'note.txt'),'artifact bytes');
-  const html=staticReport('retain candidate body');
+test('retainCandidate: validation precedes capture, rejected transaction rolls back evidence, replay does not recapture',async t=>{
+  const {store,work}=await fixture(t),html=staticReport('retain candidate body');
   let calls=0;const discarded=[];
   const retainCandidate=async()=>{calls++;return {changeSetId:'cs-retain-1',rollback:async()=>{discarded.push('cs-retain-1');}};};
   await assert.rejects(store.publish(work.id,1,'result','','receipt-invalid',{retainCandidate}),/invalid publication/);
-  assert.equal(calls,0,'invalid report must not capture evidence');
-  const realSave=store.save.bind(store);
-  store.save=async()=>{throw Object.assign(new Error('injected save failure'),{code:'EINJECTED_SAVE'});};
-  await assert.rejects(store.publish(work.id,1,'result',html,'receipt-retain',{files:[{relPath:'note.txt'}],retainCandidate}),error=>error.code==='EINJECTED_SAVE');
-  store.save=realSave;
-  assert.deepEqual(discarded,['cs-retain-1'],'proven-absent commit discards captured evidence exactly once');
-  assert.equal(calls,1);
-  assert.deepEqual(await listObjects(store),[]);
-  const row=await store.publish(work.id,1,'result',html,'receipt-retain',{files:[{relPath:'note.txt'}],retainCandidate});
-  assert.equal(row.changeSetId,'cs-retain-1');
+  assert.equal(calls,0);
+  const restore=failCommit(t,store);
+  await assert.rejects(store.publish(work.id,1,'result',html,'receipt-retain',{retainCandidate}),{code:'EINJECTED_COMMIT'});
+  restore();
   assert.deepEqual(discarded,['cs-retain-1']);
-  const replay=await store.publish(work.id,1,'result',html,'receipt-retain',{files:[{relPath:'note.txt'}],retainCandidate});
+  await store.requireOnline();
+  const row=await store.publish(work.id,1,'result',html,'receipt-retain',{retainCandidate});
+  assert.equal(row.changeSetId,'cs-retain-1');
+  const replay=await store.publish(work.id,1,'result',html,'receipt-retain',{retainCandidate});
   assert.equal(replay.objectId,row.objectId);
-  assert.equal(calls,2,'receipt replay must not re-capture evidence');
-  assert.equal(store.state.receipts.length,1);
+  assert.equal(calls,2);
+  assert.deepEqual(discarded,['cs-retain-1']);
 });
 
-test('retainCandidate rollback: skipped on unknown commit; failure surfaced without hiding original error',async t=>{
-  const {store,work}=await fixture(t);
-  const html=staticReport('evidence rollback body');
-  const realSave=store.save.bind(store);
-  const discarded=[];
-  store.save=async()=>{await realSave();throw Object.assign(new Error('injected post-rename failure'),{code:'EINJECTED_POST_RENAME'});};
-  await assert.rejects(
-    store.publish(work.id,1,'result',html,'receipt-evidence-present',{retainCandidate:async()=>({changeSetId:'cs-present',rollback:async()=>{discarded.push('cs-present');}})}),
-    error=>error.code==='EINJECTED_POST_RENAME'&&error.commitUnknown?.durable==='present'
-  );
-  store.save=realSave;
-  assert.deepEqual(discarded,[],'evidence must not be discarded when commit outcome is present/unknown');
-  const kept=store.state.receipts.find(r=>r.id==='receipt-evidence-present');
-  assert.ok(kept);
-  store.save=async()=>{throw Object.assign(new Error('injected save failure'),{code:'EINJECTED_SAVE'});};
-  await assert.rejects(
-    store.publish(work.id,1,'problem','# problem body\n\n等待用户决定。','receipt-evidence-fail',{retainCandidate:async()=>({rollback:async()=>{throw Object.assign(new Error('discard failed'),{code:'EINJECTED_DISCARD'});}})}),
-    error=>{
-      assert.equal(error.code,'EINJECTED_SAVE','original error must not be replaced');
-      assert.equal(error.rollbackFailures?.length,1);
-      assert.equal(error.rollbackFailures[0].code,'EINJECTED_DISCARD');
-      return true;
-    }
-  );
-  store.save=realSave;
-  const objects=await listObjects(store);
-  assert.deepEqual(objects,[`${kept.objectId}.html`,`${kept.objectId}.manifest.json`].sort(),'workspace-owned files of the failed attempt still cleaned; evidence failure surfaced, not silent');
+test('retainCandidate rollback is skipped when the project transaction outcome is unknown',async t=>{
+  const {store,work}=await fixture(t),discarded=[];
+  const restore=failCommit(t,store,{after:true,unknown:true});
+  await assert.rejects(store.publish(work.id,1,'result',staticReport('unknown evidence'),'receipt-evidence-present',{retainCandidate:async()=>({changeSetId:'cs-present',rollback:async()=>{discarded.push('cs-present');}})}),error=>error.code==='STORAGE_RESULT_UNKNOWN'&&Boolean(error.commitUnknown));
+  restore();
+  assert.deepEqual(discarded,[],'possibly committed candidate evidence must never be discarded');
+  const row=await receipt(store,'receipt-evidence-present');
+  assert.equal(row.changeSetId,'cs-present');
+  await assertStoredReport(store,row);
 });
 
-test('publish: artifact changed after freeze fails before any write or capture',async t=>{
+test('retainCandidate rollback failure remains attached to the original transaction error',async t=>{
+  const {store,work}=await fixture(t),restore=failCommit(t,store);
+  await assert.rejects(store.publish(work.id,1,'problem','# problem body\n\n等待用户决定。','receipt-evidence-fail',{retainCandidate:async()=>({rollback:async()=>{throw Object.assign(new Error('discard failed'),{code:'EINJECTED_DISCARD'});}})}),error=>{
+    assert.equal(error.code,'EINJECTED_COMMIT');
+    assert.equal(error.rollbackFailures?.length,1);
+    assert.equal(error.rollbackFailures[0].code,'EINJECTED_DISCARD');
+    return true;
+  });
+  restore();
+  assert.equal(await receipt(store,'receipt-evidence-fail'),null);
+  const pending=await failedTransaction(store,'receipt-evidence-fail');
+  await assertStoredReport(store,pending.collections.managed_receipts.find(row=>row.id==='receipt-evidence-fail').value);
+});
+
+test('publish: artifact changed after freeze fails before object writes or candidate capture',async t=>{
   const {store,work}=await fixture(t);
   await fs.writeFile(path.join(store.content,'note.txt'),'frozen bytes');
-  const priorObjects=await listObjects(store);
-  const priorDisk=await fs.readFile(store.file);
-  let captures=0,activeCalls=0;
+  const priorDisk=await durable(store);
+  let captures=0,activeCalls=0,writes=0;
+  const original=store.storage.putObject.bind(store.storage);
+  store.storage.putObject=async(...args)=>{writes++;return original(...args);};
   const isActive=async()=>{activeCalls++;if(activeCalls===2)await fs.writeFile(path.join(store.content,'note.txt'),'changed bytes');return true;};
-  await assert.rejects(
-    store.publish(work.id,1,'result',staticReport('artifact flip body'),'receipt-flip',{files:[{relPath:'note.txt'}],isActive,retainCandidate:async()=>{captures++;return {};}}),
-    /artifact changed during publication/
-  );
-  assert.equal(captures,0,'retainCandidate runs after the last artifact re-read, so nothing is captured');
-  assert.deepEqual(await listObjects(store),priorObjects);
-  assert.ok((await fs.readFile(store.file)).equals(priorDisk));
-});
-
-test('publish rollback: cleanup failure surfaced on the original error, remaining own files still removed',async t=>{
-  const {store,work}=await fixture(t);
-  await fs.writeFile(path.join(store.content,'note.txt'),'artifact bytes');
-  const realSave=store.save.bind(store);
-  store.save=async()=>{throw Object.assign(new Error('injected save failure'),{code:'EINJECTED_SAVE'});};
-  const originalRm=fs.rm;let blocked=true;
   try{
-    fs.rm=async(target,options)=>{
-      const file=String(target);
-      if(blocked&&file.endsWith('.html')&&file.startsWith(path.join(store.root,'objects')+path.sep)){blocked=false;throw Object.assign(new Error('injected rm failure'),{code:'EINJECTED_RM'});}
-      return originalRm(target,options);
-    };
-    await assert.rejects(
-      store.publish(work.id,1,'result',staticReport('cleanup failure body'),'receipt-rm-fail',{files:[{relPath:'note.txt'}]}),
-      error=>{
-        assert.equal(error.code,'EINJECTED_SAVE','original error must not be replaced by the cleanup failure');
-        assert.equal(error.rollbackFailures?.length,1);
-        assert.equal(error.rollbackFailures[0].code,'PUBLICATION_ROLLBACK_INCOMPLETE');
-        return true;
-      }
-    );
-  }finally{fs.rm=originalRm;}
-  store.save=realSave;
-  const objects=await listObjects(store);
-  assert.deepEqual(objects.filter(f=>f.endsWith('.manifest.json')),[],'cleanup continues past the failed removal');
-  assert.deepEqual(objects.filter(f=>f.startsWith('artifacts/')),[],'own artifact copies are removed');
-  assert.equal(objects.filter(f=>f.endsWith('.html')).length,1,'the un-removable file stays visible via the surfaced failure, never silently dropped');
-  assert.ok(!store.state.receipts.some(r=>r.id==='receipt-rm-fail'),'state stays rolled back');
+    await assert.rejects(store.publish(work.id,1,'result',staticReport('artifact flip body'),'receipt-flip',{files:[{relPath:'note.txt'}],isActive,retainCandidate:async()=>{captures++;return {};}}),/artifact changed during publication/);
+  }finally{store.storage.putObject=original;}
+  assert.equal(captures,0);
+  assert.equal(writes,0);
+  assert.deepEqual(await durable(store),priorDisk);
 });

@@ -11,6 +11,7 @@ import {createRequire} from 'node:module';
 import puppeteer from 'puppeteer-core';
 import {DesktopHost} from '../src/main/host.mjs';
 import {contentTool, openContentTools} from './native-content-tools.fixture.mjs';
+import {configureNativeConversation} from './native-conversation-ready.fixture.mjs';
 
 const source = path.resolve(import.meta.dirname, '..');
 const appRoot = path.resolve(process.env.NOZELI_TEST_APP_ROOT || source);
@@ -28,6 +29,7 @@ for (const key of Object.keys(env)) if (/^(NOZELI_|CCB_|CODEX_|OMP_|PI_)/.test(k
 Object.assign(env, {NOZELI_TEST_INSTANCE: '1', NOZELI_CONFIG_ROOT: config, NOZELI_USER_DATA: profile, NOZELI_DEBUG_PORT: String(port), NOZELI_HIDDEN: '0', NOZELI_TEST_PICK: project});
 const report = {out, checks: [], errors: []}, pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 let child, browser, shell, log = '', launchError;
+let cleanupConversation;
 async function until(fn, label) {
   const deadline = Date.now() + 60000;
   while (Date.now() < deadline) {
@@ -186,6 +188,8 @@ try {
 
   const targetPane=await shell.$$eval('.workspace-pane',els=>els.at(-1).dataset.workspaceGroup);
   await shell.locator('[data-workspace-group="'+targetPane+'"] .workspace-pane-title').click();
+  cleanupConversation=await configureNativeConversation(shell);
+  await until(async()=>(await call(shell,'managed.status',{projectId})).ready,'real native conversation owner ready');
   await shell.click('#workspace-open-conversation');
   const chat = await scoped(scope => scope.role === 'surface' && scope.kind === 'conversation' && scope.projectId === projectId);
   await chat.page.waitForSelector('#conversation-head', {visible: true});
@@ -238,7 +242,8 @@ try {
   throw error;
 } finally {
   await browser?.disconnect();
-  if (child && child.exitCode === null && child.signalCode === null) { child.kill('SIGTERM'); await pause(1000); if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }
+  if (child && child.exitCode === null && child.signalCode === null) { const stopped=new Promise(resolve=>child.once('exit',resolve)); child.kill('SIGTERM'); await pause(1000); if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); await stopped; }
+  await cleanupConversation?.();
   await fs.writeFile(path.join(out, 'report.json'), JSON.stringify(report, null, 2));
   await fs.writeFile(path.join(out, 'main.log'), log);
   console.log(JSON.stringify(report, null, 2));

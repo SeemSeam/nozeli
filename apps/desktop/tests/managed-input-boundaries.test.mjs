@@ -1,3 +1,6 @@
+import {openTestController,openTestWorkspace,readTestState,writeTestState,readTestObject} from './project-storage.fixture.mjs';
+import {dispositionIntent} from './disposition-intent.fixture.mjs';
+import {staticReport} from './static-report.fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -16,17 +19,17 @@ async function fixture(t,{holdWorker=false}={}){
   async prompt(text){this.busy=true;prompts.push({target:this.target,text});try{const job=c.current.get(this.target);
    if(!['frontdesk','orchestrator'].includes(this.target)){
     if(holdWorker)await new Promise((_,reject)=>this.rejectTurn=reject);
-    await this.onTool({tool:'nozeli_publish',arguments:{kind:'result',text:'Fixture report',files:[]},callId:randomUUID()});
+    await this.onTool({tool:'nozeli_publish',arguments:{kind: 'result', html: staticReport('Fixture report'), files: []},callId:randomUUID()});
    }
    return {threadId:this.threadId,turnId:randomUUID(),text:'fixture'};
   }finally{this.busy=false;}}
  }
  const options={runtimeRoot:path.join(root,'data'),contentRoot:path.join(root,'content'),projectHome:async home=>fs.mkdir(home,{recursive:true}),sessionFactory:(spec,target)=>new Session(spec,target)};
- const open=async()=>{c=await Controller.open(options);controllers.push(c);return c;};await open();await c.start();
+ const open=async()=>{c=await openTestController(options);controllers.push(c);return c;};await open();await c.start();await wait(()=>!c.kicking);
  t.after(async()=>{for(const controller of controllers)await controller.stop();await fs.rm(root,{recursive:true,force:true});});
  return {c,open,prompts};
 }
-function observeSaves(c){const snapshots=[],save=c.store.save.bind(c.store);c.store.save=async()=>{await save();snapshots.push(JSON.parse(await fs.readFile(c.store.file,'utf8')));};return snapshots;}
+function observeSaves(c){const snapshots=[],save=c.store.save.bind(c.store);c.store.save=async(...args)=>{await save(...args);snapshots.push(await readTestState(c.store));};return snapshots;}
 
 test('every persisted activation includes the binding and initial job',async t=>{
  const {c}=await fixture(t),snapshots=observeSaves(c);const w=await c.store.submit('original','brief',{name:'Alpha'});c.kick();await wait(()=>c.store.find(w.id).status==='review'&&!c.running.size);
@@ -44,7 +47,7 @@ test('a send checked before user-end cannot enqueue after the end intent',async 
  await c.setDraft(w.id,'Keep my rejected draft');
  let release;const gate=new Promise(resolve=>release=resolve),block=c.store.mutate(async()=>gate);
  await Promise.resolve();
- const ending=c.store.end(w.id,{by:'user',revision:c.store.find(w.id).revision,decision:'discard'});const sending=c.send(w.id,'Late input');release();await block;await ending;
+ const ending=c.store.end(w.id,dispositionIntent(c.store.find(w.id)));const sending=c.send(w.id,'Late input');release();await block;await ending;
  await assert.rejects(sending,/closing|current state/);assert.ok(!c.store.state.jobs.some(j=>j.target===w.id&&j.text==='Late input'));assert.equal(c.store.state.drafts[w.id],'Keep my rejected draft');
 });
 test('active user cancellation is cancelled, without failure UI or model-failure observation',async t=>{
@@ -80,8 +83,8 @@ test('priority input cannot overtake a persisted initial job',async t=>{
 });
 test('late publication after user end is rejected without a new receipt',async t=>{
  const {c}=await fixture(t);c.started=false;const w=await c.store.submit('original','brief',{name:'Alpha'});await c.store.activate(w.id);
- c.current.set(w.id,{target:w.id,revision:1,id:'late-job'});await c.store.end(w.id,{by:'user',revision:c.store.find(w.id).revision,decision:'discard'});
- await assert.rejects(c.onTool(w.id,{tool:'nozeli_publish',arguments:{kind:'result',text:'Late report',files:[]},callId:'late-call'}),/closing/);assert.equal(c.store.state.receipts.length,0);c.current.delete(w.id);
+ c.current.set(w.id,{target:w.id,revision:1,id:'late-job'});await c.store.end(w.id,dispositionIntent(c.store.find(w.id)));
+ await assert.rejects(c.onTool(w.id,{tool:'nozeli_publish',arguments:{kind: 'result', html: staticReport('Late report'), files: []},callId:'late-call'}),/closing/);assert.equal(c.store.state.receipts.length,0);c.current.delete(w.id);
 });
 ;
 test('user-input limit still rejects oversized input without erasing its draft',async t=>{
@@ -101,9 +104,9 @@ test('manual task bypasses frontend, accepts once by key and keeps later draft',
  assert.notEqual((await c.submitTask('one',{requestKey:'manual-two'})).jobId,first.jobId);
 });
 test('dispatch, lineage and route commit once; save failure rolls everything back',async t=>{
- const {c}=await fixture(t);c.started=false;const accepted=await c.submitTask('Atomic request',{requestKey:'atomic-one'}),job=c.store.state.jobs.find(j=>j.id===accepted.jobId);c.current.set('orchestrator',structuredClone(job));const save=c.store.save.bind(c.store),before=await fs.readFile(c.store.file,'utf8');let failed=false;
+ const {c}=await fixture(t);c.started=false;const accepted=await c.submitTask('Atomic request',{requestKey:'atomic-one'}),job=c.store.state.jobs.find(j=>j.id===accepted.jobId);c.current.set('orchestrator',structuredClone(job));const save=c.store.save.bind(c.store),before=await readTestState(c.store).then(state=>JSON.stringify(state));let failed=false;
  c.store.save=async()=>{if(!failed){failed=true;throw Error('injected disk failure');}return save();};const args={tool:'nozeli_dispatch',arguments:{name:'Atomic',brief:'Do actual bounded work'}};
- await assert.rejects(c.onTool('orchestrator',args),/disk failure/);assert.equal(c.store.state.works.length,0);assert.equal(c.store.state.jobs[0].routing,undefined);assert.equal(await fs.readFile(c.store.file,'utf8'),before);
+ await assert.rejects(c.onTool('orchestrator',args),/disk failure/);assert.equal(c.store.state.works.length,0);assert.equal(c.store.state.jobs[0].routing,undefined);assert.equal(await readTestState(c.store).then(state=>JSON.stringify(state)),before);
  const snapshots=observeSaves(c),receipt=await c.onTool('orchestrator',args);assert.equal((await c.onTool('orchestrator',args)).workId,receipt.workId);assert.equal(c.store.state.works.length,1);
  for(const s of snapshots){const w=s.works[0];assert.equal(w.sourceJob,job.id);assert.deepEqual(w.sourceInputJobIds,[job.id]);assert.equal(s.jobs[0].routing.workId,w.id);}
  c.current.delete('orchestrator');

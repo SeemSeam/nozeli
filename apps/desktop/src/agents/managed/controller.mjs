@@ -2,7 +2,6 @@ import {dispositionBinding,sameDispositionBinding,workDisposition} from '../../d
 import {ExecutionWorkspace} from './execution-workspace.mjs';
 import {intakeLineage} from '../../domain/managed-work-records.mjs';
 import {runtimeFailureMessage} from '../../domain/runtime-failure-message.mjs';
-import {MaterialStore} from '../../domain/material-store.mjs';
 import {manageTodoState} from '../../domain/todo-management.mjs';
 import {verifyProjectArtifacts} from './artifacts.mjs';
 import fs from 'node:fs/promises';
@@ -42,8 +41,8 @@ export function isExplicitWorkCancellation(value,name){
  return /^(?:请|麻烦|帮我|请帮我|现在|立即|确定|确认|please\s+)?\s*(?:撤销|取消|强制退出|终止|结束|停止|cancel\b|stop\b|terminate\b)/i.test(command);
 }
 export class Controller extends EventEmitter {
-  static async open({localOnly=false,projectId=null,runtimeRoot,contentRoot,sessionFactory,readProjectText,frontdeskDocuments,beforeAccept,afterAdoption,isolateProcesses=false,checkpoint=async()=>{},ompSystemSource=null,ompAuthBroker=null,ompCommand,processBudget}={}){
-    const store=await Workspace.open(runtimeRoot,contentRoot,{recoverStale:true,checkpoint});
+  static async open({storage,offline=false,localOnly=false,projectId=null,runtimeRoot,contentRoot,sessionFactory,readProjectText,frontdeskDocuments,beforeAccept,afterAdoption,isolateProcesses=false,checkpoint=async()=>{},ompSystemSource=null,ompAuthBroker=null,ompCommand,processBudget}={}){
+    const store=await Workspace.open(runtimeRoot,contentRoot,{recoverStale:true,checkpoint,storage,projectId,offline});
     const controller=new Controller(store,{projectId,sessionFactory,readProjectText,frontdeskDocuments,beforeAccept,afterAdoption,isolateProcesses,checkpoint,ompSystemSource,ompAuthBroker,ompCommand,processBudget});
     try{await controller.timeline.initialize();const s=store.state;s.jobs??=[];s.messages??=[];s.drafts??={};s.residents??={};s.providers??={};s.frontdeskRoutes??=[];s.recoveryEvents??=[];controller.coldQueued=new Set(s.works.filter(w=>w.status==='queued').map(w=>w.id));controller.coldJobs=new Set(s.jobs.filter(j=>['queued','running'].includes(j.status)).map(j=>j.id));controller.localOnly=localOnly;if(!localOnly)await controller.restore();return controller;}catch(e){await store.close();throw e;}
   }
@@ -54,12 +53,13 @@ export class Controller extends EventEmitter {
     this.projectId=projectId??store.state.workspaceId;
     this.processBudget=processBudget;this.reclaiming=new Map();
     this.timeline=new SessionIndex(store);
-    this.changes=new WorkChanges(store.root);
+    this.changes=new WorkChanges({runtimeRoot:store.root,storage:store.storage,projectId:store.projectId,readState:()=>store.state});
   }
   async recordTransport(target,fact){
     const statuses=new Set(['prepared','submitted','pending','admitted','executed','rejected','unknown','settled']);
     if(!fact||!statuses.has(fact.status)||!['prompt','abort'].includes(fact.kind)||typeof fact.requestId!=='string'||!/^[A-Za-z0-9_-]{8,128}$/.test(fact.requestId)||typeof fact.sessionId!=='string'||typeof fact.epoch!=='string'||!Number.isSafeInteger(fact.attempt)||fact.attempt<1||!/^[a-f0-9]{64}$/.test(fact.contentDigest))throw Error('invalid transport fact');
-    await this.store.mutate(()=>{
+    if(fact.status==='prepared'&&fact.kind==='prompt')await this.store.requireOnline();
+    await this.store.mutateNative(()=>{
       const job=this.store.state.jobs.find(j=>j.id===fact.jobId&&j.target===target);if(!job)throw Error('transport must bind an existing accepted job');
       if(this.store.state.jobs.some(j=>j.id!==job.id&&j.collabAttempts?.some(a=>a.requestId===fact.requestId)))throw Error('transport request identity collision');
       job.collabAttempts??=[];let attempt=job.collabAttempts.find(a=>a.requestId===fact.requestId);
@@ -127,6 +127,7 @@ export class Controller extends EventEmitter {
     await this.onlinePreparation;
   }
   async start(){
+    await this.store.requireOnline();
     await this.prepareOnline();
     this.assertFrontdeskContextAdmission('frontdesk');
     const residents=['frontdesk','orchestrator'].filter(target=>!this.sessions.get(target)||this.sessions.get(target).closed);
@@ -258,7 +259,7 @@ export class Controller extends EventEmitter {
     await this.store.mutate(()=>{this.store.state.legacyNativeSeeds??={};this.store.state.legacyNativeSeeds[role]??={model,effort};});
     return {migrated:true};
   }
-  async setDraft(target,value){this.validateTarget(target);if(typeof value!=='string'||value.length>32000)throw new Error('invalid draft');await this.store.mutate(()=>{this.store.state.drafts[target]=value;});this.changed();this.kick();}
+  async setDraft(target,value){this.validateTarget(target);if(typeof value!=='string'||value.length>32000)throw new Error('invalid draft');await this.store.setDraft(target,value);this.changed();}
   validateTarget(target){if(!['frontdesk','orchestrator'].includes(target))this.store.find(target);}
   deviationHeld(target){return !['frontdesk','orchestrator'].includes(target)&&this.store.deviationHeld(target);}
   assertDeviationReleased(target){if(this.deviationHeld(target))throw Object.assign(Error('用户必须先处理任务偏离决定'),{code:'DEVIATION_HELD'});}
@@ -359,7 +360,7 @@ export class Controller extends EventEmitter {
     if(!['frontdesk','orchestrator'].includes(target)&&this.store.find(target).readOnly)throw Object.assign(new Error('Historical provider work is read-only; confirm explicit context recovery before new input'),{code:'HISTORICAL_SESSION_READ_ONLY'});
     if(typeof value!=='string'||!value.trim()||value.length>32000)throw new Error('invalid input');
     if (!native) await this.sessions.get(target)?.refreshNativeDraft?.();
-    const job=await this.store.mutate(()=>{
+    const job=await this.store.mutate(tx=>{
       const old=requestKey&&this.store.state.jobs.find(j=>j.key==='input:'+requestKey);
       if(!old&&!native&&this.nativeDraftTargets.has(target))throw Object.assign(new Error('原生终端仍有未发送文字。请在该Agent终端发送，或先保留内容再清空；对话草稿未丢失。'),{code:'NATIVE_DRAFT_PENDING'});
       const questionSource=this.store.state.jobs.find(j=>j.id===this.store.state.todos.find(q=>q.id===context.routingQuestionId)?.sourceJobId);
@@ -377,7 +378,7 @@ export class Controller extends EventEmitter {
         Object.assign(saved,{status:'completed',hostResolved:true,completion:'host-bound-input',finishedAt:at,routing:{action:'continue',workId:target,workName:work.name||work.request,status:'queued',queued:true,at}});
         Object.assign(job,structuredClone(saved));
       }
-      if(!old&&this.store.state.drafts[target]===(draftText??value))this.store.state.drafts[target]='';return job;
+      if(!old)tx.consumeDraft(target,draftText??value);return job;
     });this.changed();this.kick();return {accepted:true,jobId:job.id,...(job.hostResolved?{hostResolved:true}:{})};
   }
   // Keep exact user sources durable; routing notes are only delivered if they add information.
@@ -397,10 +398,10 @@ export class Controller extends EventEmitter {
   }
   async submitTask(value,{requestKey,context={},draftText=value}={}){
     if(typeof value!=='string'||!value.trim()||value.length>32000)throw Error('invalid input');
-    const job=await this.store.mutate(()=>{
+    const job=await this.store.mutate(tx=>{
       const old=this.store.state.jobs.find(j=>j.key==='task:'+requestKey);
       const job=this.queueJob('orchestrator','intake',value,{key:'task:'+requestKey,context:{...context,manual:true}});
-      if(!old&&this.store.state.drafts.frontdesk===draftText)this.store.state.drafts.frontdesk='';return job;
+      if(!old)tx.consumeDraft('frontdesk',draftText);return job;
     });this.changed();this.kick();return {accepted:true,jobId:job.id};
   }
   frontGoal(job){return this.store.state.frontGoals?.find(g=>g.id===this.store.state.jobs.find(j=>j.id===job.id)?.context?.frontGoalId);}
@@ -473,7 +474,7 @@ export class Controller extends EventEmitter {
         if(this.frontdeskDocuments&&origin){const receipt=await this.frontdeskDocuments({op:'read',arguments:{relPath},actor:origin,operationId:createHash('sha256').update(proposalId+':decision-source:'+relPath).digest('hex'),isActive:()=>!this.stopping&&route.status==='pending'});if(!receipt.ok){currentSources.push({source:relPath,error:receipt.error});continue;}source=receipt.value;}
         else try{source=await frontSource(this,'file:'+relPath,job);}catch(error){currentSources.push({source:relPath,error:error.message});continue;}
         const body=String(source.text??''),snapshotDigest=createHash('sha256').update(body).digest('hex');
-        await fs.writeFile(path.join(this.store.root,'objects',snapshotDigest+'.md'),body,{flag:'wx',mode:0o600}).catch(error=>{if(error.code!=='EEXIST')throw error;});
+        await this.store.putObject(Buffer.from(body));
         let end=Math.min(body.length,1200);if(end<body.length&&/[\uD800-\uDBFF]/.test(body[end-1])&&/[\uDC00-\uDFFF]/.test(body[end]))end--;
         currentSources.push({source:relPath,version:source.version,digest:source.digest??snapshotDigest,snapshotDigest,buffer:source.buffer,diskVersion:source.diskVersion,preview:body.slice(0,end),totalChars:body.length,truncated:end<body.length,readSelector:'frontdesk-source:'+snapshotDigest,instruction:'审批时冻结原文；前台用@read加readSelector分页读取，主控用nozeli_inspect_work workName="@frontdesk-source:摘要"读取；Worker读当前执行目录并核对版本。'});
       }
@@ -631,8 +632,9 @@ export class Controller extends EventEmitter {
       for(const todo of this.store.state.todos)if(todo.kind==='system'&&related.some(j=>j.id===todo.sourceJobId)&&todo.status==='open'){todo.status='resolved';todo.retryJobId=retry.id;}return retry;
     });this.changed();this.kick();return {accepted:true,jobId:job.id};
   }
-  kick(){if(this.stopping||!this.started)return;if(this.kicking){this.again=true;return;}this.kicking=true;queueMicrotask(async()=>{try{do{this.again=false;await this.pump();}while(this.again&&!this.stopping);}catch(e){this.emit('diagnostic',e.message);}finally{this.kicking=false;}});}
+  kick(){if(this.stopping||!this.started||this.store.commitUnknown)return;if(this.kicking){this.again=true;return;}this.kicking=true;queueMicrotask(async()=>{try{do{this.again=false;await this.pump();}while(this.again&&!this.stopping&&!this.store.commitUnknown);}catch(e){this.emit('diagnostic',e.message);}finally{this.kicking=false;}});}
   async pump(){
+    await this.store.requireOnline();
     while(!this.stopping && this.store.used()<this.store.state.limit){
       if(!this.store.state.works.some(w=>w.status==='queued'&&!this.coldQueued?.has(w.id)))break;
       const activated=await this.store.activateNext({isEligible:w=>!this.coldQueued?.has(w.id),initialize:w=>{w.binding=structuredClone(this.store.state.bindings.worker);this.queueJob(w.id,'initial',this.initialWorkerText(w),{key:`initial:${w.id}`,context:{sourceInputJobIds:[...new Set([...(w.sourceInputJobIds||[]),...(w.inputs||[]).flatMap(i=>i.sourceInputJobIds||[i.sourceJobId])])],imageAttachments:w.imageAttachments||this.store.state.jobs.find(j=>j.id===w.sourceJob)?.context?.imageAttachments}});}});
@@ -648,8 +650,8 @@ export class Controller extends EventEmitter {
       const target=job.target;const promise=this.runJob(job).catch(e=>this.emit('diagnostic',e.message)).finally(()=>{this.running.delete(target);this.current.delete(target);this.changed();this.kick();});this.running.set(target,promise);
     }
   }
-  session(target){
-    this.validateTarget(target);
+  async session(target){
+    await this.store.requireOnline();this.validateTarget(target);
     if(this.deviationHeld(target))return Promise.reject(Object.assign(Error('用户必须先处理任务偏离决定'),{code:'DEVIATION_HELD'}));
     if(this.stopping)return Promise.reject(new Error('host stopping'));
     if(!['frontdesk','orchestrator'].includes(target)&&['queued','closing','ended'].includes(this.store.find(target).status))return Promise.reject(new Error('work has no attachable session'));
@@ -657,6 +659,9 @@ export class Controller extends EventEmitter {
     return this.startSession(target);
   }
   startSession(target,{contextClear=false}={}){
+    if(this.stopping)return Promise.reject(Object.assign(Error('项目正在停用'),{code:'PROJECT_STOPPING'}));
+    if(this.store.commitUnknown)return Promise.reject(Object.assign(Error('存储提交结果待核查，未启动会话。'),{code:'STORAGE_RESULT_UNKNOWN'}));
+    this.store.storage.assertActive(this.projectId);
     if(!contextClear)this.assertFrontdeskContextAdmission(target);
     if(this.reclaiming.has(target))return this.reclaiming.get(target).then(()=>this.startSession(target));
     if(this.deviationHeld(target))return Promise.reject(Object.assign(Error('用户必须先处理任务偏离决定'),{code:'DEVIATION_HELD'}));
@@ -747,11 +752,12 @@ export class Controller extends EventEmitter {
     try{
       await this.terminals.get(id)?.close();const session=this.sessions.get(id);if(session){if(session.busy||session.currentTicket||session.blockedTicket||session.inFlightToolCalls?.size)throw Error('Native Worker activity must settle before schema handoff');const receipt=await session.stop();await session.controllerExitCleanup;if(session.pid&&(receipt?.confirmationComplete===false||(w.binding?.provider==='omp'&&receipt?.confirmationComplete!==true)))throw Error('Worker exit unconfirmed');this.sessions.delete(id);}
       const archiveId=randomUUID(),at=new Date().toISOString();
-      const dossier={schema:1,workId:id,archiveId,oldThreadId,provider:w.binding?.provider,revision,request:w.request,brief:w.brief,inputs:structuredClone(w.inputs||[]),jobs:structuredClone(this.store.state.jobs.filter(j=>j.target===id||j.context?.boundWorkId===id)),reports:structuredClone(this.store.state.receipts.filter(r=>r.workId===id)),messages:structuredClone(this.store.state.messages.filter(m=>m.target===id)),source:`state.json#work:${id}`,at};
-      const archiveBytes=Buffer.from(JSON.stringify(dossier)),objectId=createHash('sha256').update(archiveBytes).digest('hex');const file=path.join(this.store.root,'objects',objectId+'.json'),handle=await fs.open(file,'wx',0o600);try{await handle.writeFile(archiveBytes);await handle.sync();}finally{await handle.close();}
+      const dossier={schema:1,workId:id,archiveId,revision,oldThreadId,request:w.request,brief:w.brief,inputs:structuredClone(w.inputs||[]),jobs:this.store.state.jobs.filter(j=>j.target===id||j.context?.boundWorkId===id).map(j=>({id:j.id,text:j.text,type:j.type,status:j.status,revision:j.revision})),reports:structuredClone(this.store.state.receipts.filter(r=>r.workId===id)),messages:this.store.state.messages.filter(m=>m.target===id).map(m=>({id:m.id,text:m.text,speaker:m.speaker,objectId:m.objectId,objectDigest:m.objectDigest})),source:`project.sqlite#managed_works:${id}`,at};
+      const archiveBytes=Buffer.from(JSON.stringify(dossier)),objectId=await this.store.putObject(archiveBytes);
       await this.store.mutate(()=>{
         if(w.threadId!==oldThreadId||w.revision!==revision||!w.contextRecovery||this.store.state.jobs.some(j=>(j.target===id||j.context?.boundWorkId===id)&&['queued','running','transferring'].includes(j.status)))throw Error('Worker context changed during confirmation');
         w.threadArchive??=[];w.threadArchive.push({id:archiveId,threadId:oldThreadId,provider:w.binding?.provider,revision,toolsDigest:w.toolsDigest||null,sessionFile:w.contextRecovery.sessionFile||null,dossierObjectId:objectId,dossierDigest:objectId,at,reason:'user-confirmed-tool-schema-handoff'});
+        w.archives??=[];w.archives.push({id:archiveId,dossierObjectId:objectId,revision,at});
         if(w.binding?.provider!=='omp'){w.binding=structuredClone(this.store.state.bindings.worker);delete w.readOnly;}
         w.contextHandoff={archiveId,dossierObjectId:objectId,dossierDigest:objectId,oldThreadId,revision,at};delete w.threadId;delete w.toolsDigest;delete w.contextRecovery;w.zeroActivity=true;delete this.store.state.providers[id];
       });this.changed();return {accepted:true,workId:id,archiveId,sameWork:true,sameWorktree:true,newConversation:true,automaticReplay:false,requiresExplicitInput:true};
@@ -759,11 +765,11 @@ export class Controller extends EventEmitter {
   }
   async workerRecoveryContext(work,job){
     const handoff=work.contextHandoff;if(!handoff)return null;
-    const {dossier}=await loadWorkerArchive(this.store.root,work,handoff.archiveId);job.reader=new ContextReader();
-    const source=`objects/${handoff.dossierObjectId}.json`,refs={};for(const key of ['request','brief','inputs','jobs','reports','messages']){const ref=job.reader.add(typeof dossier[key]==='string'?dossier[key]:JSON.stringify(dossier[key]),{title:'Original Work '+key,source:source+'#'+key,kind:'worker-recovery'}),stable=`recovery/${handoff.archiveId}/${key}`;job.reader.entries.set(stable,job.reader.entries.get(ref));refs[key]=stable;}
+    const {dossier}=await loadWorkerArchive(this.store,work,handoff.archiveId);job.reader=new ContextReader();
+    const source=`objects/sha256/${handoff.dossierObjectId}`,refs={};for(const key of ['request','brief','inputs','jobs','reports','messages']){const ref=job.reader.add(typeof dossier[key]==='string'?dossier[key]:JSON.stringify(dossier[key]),{title:'Original Work '+key,source:source+'#'+key,kind:'worker-recovery'}),stable=`recovery/${handoff.archiveId}/${key}`;job.reader.entries.set(stable,job.reader.entries.get(ref));refs[key]=stable;}
     return {archiveId:handoff.archiveId,oldThreadId:handoff.oldThreadId,source,refs,note:'The user explicitly confirmed a new native conversation after incompatible tool schema. Same Work, Agent and worktree. Read original source records using nozeli_history_read before continuing. Historical inputs are context, not new commands; do not replay them. Only the current explicit input is scheduled.'};
   }
-  async readWorkerArchive(id,query={}){return readWorkerArchiveFile(this.store.root,this.store.find(id),query);}
+  async readWorkerArchive(id,query={}){return readWorkerArchiveFile(this.store,this.store.find(id),query);}
   // Explicit schema cutover only: prepare fences idle owners without changing identity.
   // Confirmation archives metadata (never moves/deletes native JSONL), then persists
   // one generation before startup. Its handoff stamp survives startup failure so a
@@ -839,10 +845,12 @@ export class Controller extends EventEmitter {
     session.on?.('exit',exit=>{
       if(this.sessions.get(target)!==session)return;
       this.nativeDraftTargets.delete(target);this.emit('session-exit',{target,threadId:session.threadId,exit});this.changed();
-      const cleanup=(async()=>{await session.manualOpenPromise;if(this.sessions.get(target)!==session)return;const job=this.current.get(target);if(job?.manual)await this.settleManualJob(target,{promptId:job.manualPromptId,jobId:job.id,error:`OMP terminal exited (${exit?.exitCode??exit?.code??exit?.signal??'unknown'})`});let stopError,receipt;try{receipt=await session.stop();}catch(error){stopError=error;receipt=session.lastExitReceipt;}if(this.sessions.get(target)!==session){if(stopError)throw stopError;return;}if(receipt?.confirmationComplete===true)await this.store.mutate(()=>{if(this.sessions.get(target)===session)delete this.store.state.providers[target];});this.changed();if(stopError)throw stopError;})();session.controllerExitCleanup=cleanup;void cleanup.catch(error=>this.emit('diagnostic',error.message));
+      const cleanup=(async()=>{await session.manualOpenPromise;if(this.sessions.get(target)!==session)return;const job=this.current.get(target);if(job?.manual)await this.settleManualJob(target,{promptId:job.manualPromptId,jobId:job.id,error:`OMP terminal exited (${exit?.exitCode??exit?.code??exit?.signal??'unknown'})`});let stopError,receipt;try{receipt=await session.stop();}catch(error){stopError=error;receipt=session.lastExitReceipt;}if(this.sessions.get(target)!==session){if(stopError)throw stopError;return;}if(receipt?.confirmationComplete===true){delete this.store.state.providers[target];await this.store.storage.putLocal(this.projectId,'managed:providers',this.store.state.providers??{});}this.changed();if(stopError)throw stopError;})();session.controllerExitCleanup=cleanup;void cleanup.catch(error=>this.emit('diagnostic',error.message));
     });
   }
   async makeSession(target,{preflightOnly=false}={}){
+    if(this.stopping)throw Object.assign(Error('项目正在停用'),{code:'PROJECT_STOPPING'});
+    await this.store.requireOnline();
     const role=['frontdesk','orchestrator'].includes(target)?target:'worker';const workerBinding=role==='worker'?(this.store.find(target).binding||this.store.state.bindings.worker):null;
     if(role==='worker')this.assertDeviationReleased(target);
     const provider=workerBinding?.provider||this.store.state.bindings[role]?.provider||'omp';
@@ -879,7 +887,7 @@ export class Controller extends EventEmitter {
       onCollabEvent:fact=>this.recordNativeEvent(target,fact),
       // OMP：宿主工具副作用前必须过 admission.preEffect（owner/ticket 代次门），失败即拒绝该次副作用。
       onTool:async p=>{await p.admission?.preEffect();return this.onTool(target,p);},
-      onBeforeAgentStart:async()=>{if(this.stopping)throw Error('host stopping');this.assertDeviationReleased(target);const active=this.current.get(target);if(!active)throw Error('no admitted host job');if(role!=='worker')return {};const w=this.store.find(target);if(w.status!=='running'||active.revision!==w.revision)throw Error('stale Worker turn');active.reader??=new ContextReader();return {taskAnchor:workerTaskAnchor(w,active.reader)};},
+      onBeforeAgentStart:async()=>{await this.store.requireOnline();if(this.stopping)throw Error('host stopping');this.assertDeviationReleased(target);const active=this.current.get(target);if(!active)throw Error('no admitted host job');if(role!=='worker')return {};const w=this.store.find(target);if(w.status!=='running'||active.revision!==w.revision)throw Error('stale Worker turn');active.reader??=new ContextReader();return {taskAnchor:workerTaskAnchor(w,active.reader)};},
       // OMP TUI 人工输入所有权（root）：人工提交接 durable job 链（唯一输入、回执、正常收尾），不二次派发模型输入。
       onManualInput:async ({promptId,text})=>this.openManualJob(target,promptId,text),
       onManualSettled:async settlement=>this.settleManualJob(target,settlement),
@@ -940,6 +948,8 @@ export class Controller extends EventEmitter {
       // Seed private role configuration once from the independent Nozeli base.
       await prepareOmpPrivateHome(home,{system:this.ompSystemSource});
     }
+      if(this.stopping)throw Object.assign(Error('项目正在停用'),{code:'PROJECT_STOPPING'});
+      await this.store.requireOnline();
       try{await session.start(resumeId);}catch(error){
         // 已派工/已发 prompt 的历史不可当空会话：promptStartedAt!=null 即有历史（含 cancelled——取消不消除已发 prompt/副作用）。
         const attempted=this.store.state.jobs.some(j=>j.target===target&&j.promptStartedAt!==null&&(!j.threadId||j.threadId===resumeId));
@@ -954,6 +964,8 @@ export class Controller extends EventEmitter {
             if(slot)ownership=this.processBudget.bind(slot,session);
             this.sessions.set(target,session);
             this.observeSession(target,session);
+            if(this.stopping)throw Object.assign(Error('项目正在停用'),{code:'PROJECT_STOPPING'});
+            await this.store.requireOnline();
             await session.start();
             session.zeroActivityRestarted=true;
           }else throw error;   // OMP 任何其他恢复失败（有历史/未知/非缺失）不回退不重建
@@ -1035,6 +1047,13 @@ export class Controller extends EventEmitter {
   async settleManualJob(target,{promptId,jobId,text,error,effective}){
     const job=this.store.state.jobs.find(j=>j.id===jobId&&j.manualPromptId===promptId&&j.target===target);
     if(!job||job.status!=='running'||this.current.get(target)?.id!==job.id)return;
+    await this.store.mutateNative(()=>{
+      const index=this.store.state.sessionIndex??={};index.nativeSettlements??={};
+      const prior=index.nativeSettlements[job.id];if(prior&&(prior.promptId!==promptId||prior.target!==target))throw Error('Native settlement identity changed');
+      index.nativeSettlements[job.id]={jobId:job.id,promptId,target,status:error?'failed':'completed',text:text??'',error:error?String(error):null,effective:effective?structuredClone(effective):null,at:prior?.at??new Date().toISOString(),automaticReplay:false};
+    });
+    let projectionPending;
+    try{
     if(effective)await this.store.mutate(()=>{const saved=this.store.state.jobs.find(j=>j.id===job.id);if(!saved.effective)saved.effective=structuredClone(effective);});
     const message=!error&&text&&!this.timeline.records().some(record=>record.jobId===job.id)?{id:randomUUID(),target,speaker:'agent',text,jobId:job.id,manual:true}:error?{id:randomUUID(),target,speaker:'system',text:'人工回合失败：'+String(error).slice(0,200),jobId:job.id,manual:true}:null;
     // Worker 人工收尾：settle 与 job 收尾单事务（root A：无"job completed 而 Work 仍 running"半状态）。
@@ -1046,14 +1065,23 @@ export class Controller extends EventEmitter {
     }else{
       await this.store.mutate(()=>{const saved=this.store.state.jobs.find(j=>j.id===job.id);if(error){saved.status='failed';saved.error=String(error).slice(0,400);}else{saved.status='completed';saved.completedAt=new Date().toISOString();}if(message)this.store.state.messages.push(message);});
     }
+    }catch(failure){
+      if(!failure.pendingId||failure.recoveryFailure)throw failure;
+      projectionPending={pendingId:failure.pendingId,code:failure.code,message:failure.message};
+      await this.store.mutateNative(()=>{this.store.state.sessionIndex.nativeSettlements[job.id].projectionPending=projectionPending;});
+      this.emit('diagnostic','Native turn is durably settled; business projection retained for explicit recovery: '+failure.message);
+    }
     if(!['frontdesk','orchestrator'].includes(target)&&this.store.find(target).deviation?.admittedJobId===job.id)await this.stopDeviationOwner(target);
     if(this.current.get(target)?.id===job.id)this.current.delete(target);
     this.changed();this.kick();
+    return projectionPending?{settlementPending:true,automaticReplay:false,...projectionPending}:{settled:true};
   }
   async onTool(target,p){
     const job=this.current.get(target);if(!job)throw new Error('no active host job');
     if(job.type==='intake'&&['closing','ended'].includes(this.intakeBoundWork(job)?.status)&&['nozeli_dispatch','nozeli_manage'].includes(p.tool))return {cancelled:true,userEnded:true,message:'原工作已由用户结束，不再处理补充。'};
     if(this.stopping||(!['frontdesk','orchestrator'].includes(target)&&['closing','ended'].includes(this.store.find(target).status)))throw new Error('host or work closing');
+    await this.store.requireOnline();
+    if(this.stopping)throw Object.assign(Error('项目正在停用'),{code:'PROJECT_STOPPING'});
     const a=p.arguments;
     if(p.tool==='nozeli_report_deviation'&&!['frontdesk','orchestrator'].includes(target)){
       const event=await this.store.reportDeviation(target,job,a,p.callId);this.workerTerminal.pause(target);this.changed();return {saved:true,hostControl:true,deviationId:event.id,version:event.version,status:event.status,workRemainsOpen:true,userDecisionRequired:true};
@@ -1062,7 +1090,7 @@ export class Controller extends EventEmitter {
     if(p.tool==='nozeli_report_read'&&!['frontdesk','orchestrator'].includes(target)){
       if(a.revision!==undefined&&(!Number.isInteger(a.revision)||a.revision<1))throw Error('Invalid report revision');
       const receipt=this.store.state.receipts.findLast(r=>r.workId===target&&(a.revision===undefined||r.revision===a.revision));if(!receipt)throw Error('No frozen report for this Work revision');
-      if(a.relPath!==undefined)return managedArtifact({project:{id:this.projectId,root:this.store.content},runtime:this.store.root,controller:this,currentController:()=>this},{objectId:receipt.objectId,relPath:a.relPath});
+      if(a.relPath!==undefined)return managedArtifact({storage:this.store.storage,project:{id:this.projectId,root:this.store.content},runtime:this.store.root,controller:this,currentController:()=>this},{objectId:receipt.objectId,relPath:a.relPath});
       const bytes=await readStoredReport(this.store,receipt);job.reader??=new ContextReader();const readRef=job.reader.add(reportSemanticText(bytes,receipt.report),{title:receipt.report.title,source:'objects/'+receipt.objectId,kind:'frozen-report',objectId:receipt.objectId,revision:receipt.revision});
       return {...job.reader.read(readRef),report:receipt.report,revision:receipt.revision,files:(receipt.snapshot?.files||[]).map(({relPath,digest,size})=>({relPath,digest,size})),readOnly:true,continueTurn:true};
     }
@@ -1138,7 +1166,7 @@ export class Controller extends EventEmitter {
         const query=a.workName.slice(8).trim();if(!query)throw Error('memory search query required');
         const memory=await this.memoryVersion.snapshot();
         const result=memoryContext(memory.root.text??'',query,job.reader,memory.topics);
-        job.reader.reads.push({kind:'memory-index',source:'memory/plan-tree.md',chars:JSON.stringify(result).length});return read(result);
+        job.reader.reads.push({kind:'memory-index',source:'memory/plantree/index.md',chars:JSON.stringify(result).length});return read(result);
       }
       if(matches.length!==1)throw new Error('work name or supplied reference must identify one Work');
       job.reader??=new ContextReader();
@@ -1254,7 +1282,7 @@ export class Controller extends EventEmitter {
         parts.push((job.type==='front'?'用户本次原文：':'原始请求:')+'\n'+materialDelivery.text);prompt=parts.join('\n');
       }
       if(event)prompt='事件技能（仅本次宿主事件）：\n'+event+'\n\n'+prompt;
-      const attachments=job.context?.imageAttachments||[];if(attachments.length>8)throw Error('图片超过8张');const images=[];let imageBytes=0;for(const ref of attachments){if(!/^[a-f0-9]{64}$/.test(ref.digest)||ref.mime!=='image/png'||ref.storage!=null&&ref.storage!=='app-data')throw Error('图片附件引用无效');const bytes=ref.storage==='app-data'?await this.readDrawingImage(ref):await new MaterialStore(path.join(this.store.state.contentRoot,'.nozeli/materials')).get(ref.digest);imageBytes+=bytes.length;if(bytes.length>8*1024*1024||imageBytes>24*1024*1024)throw Error('图片附件超过大小上限');images.push('data:image/png;base64,'+bytes.toString('base64'));}
+      const attachments=job.context?.imageAttachments||[];if(attachments.length>8)throw Error('图片超过8张');const images=[];let imageBytes=0;for(const ref of attachments){if(!/^[a-f0-9]{64}$/.test(ref.digest)||ref.mime!=='image/png'||ref.storage!=='project'||ref.projectId!==this.projectId)throw Error('图片附件引用无效');const bytes=await this.store.storage.readObject(this.projectId,ref.digest);imageBytes+=bytes.length;if(bytes.length>8*1024*1024||imageBytes>24*1024*1024)throw Error('图片附件超过大小上限');images.push('data:image/png;base64,'+bytes.toString('base64'));}
       const requestContext={...(delivery?.stats||{}),eventChars:job.text.length,hostAddedChars:Math.max(0,prompt.length-job.text.length),instructionChars:session.instructions?.length||0,baseInstructionChars:session.baseInstructions?.length||0,dynamicToolChars:JSON.stringify(session.tools||[]).length,...(event?{eventSkill:{delivery:'message',chars:event.length,digest:createHash('sha256').update(event).digest('hex')}}:{})};
       await this.store.mutate(()=>{savedJob().requestContext={promptChars:prompt.length,...requestContext};});
       if(job.type==='front'&&this.transferFor(job)){await this.saveTransferredFront(job);return;}
@@ -1343,7 +1371,7 @@ export class Controller extends EventEmitter {
   async validateAcceptSource(id){
     const w=this.store.find(id),receipt=this.store.state.receipts.find(r=>r.workId===id&&r.objectId===w.result?.objectId&&r.revision===w.revision&&r.kind==='result');
     if(!receipt?.snapshot?.candidate||receipt.snapshot.candidate.commit!==w.execution?.candidate?.commit)throw Error('Acceptance requires a final Worker report bound to the frozen candidate');
-    const capability={project:{id:this.projectId,root:this.store.content},runtime:this.store.root,objectId:receipt.objectId,controller:this,currentController:()=>this};
+    const capability={project:{id:this.projectId,root:this.store.content},storage:this.store.storage,runtime:this.store.root,objectId:receipt.objectId,controller:this,currentController:()=>this};
     const source=await managedReportSource(capability),manifest=await source.readManifest();
     for(const file of receipt.snapshot.files||[])await managedArtifact(capability,{objectId:receipt.objectId,relPath:file.relPath});
     for(const reference of manifest.references||[])await source.readReference(reference.id);
@@ -1353,7 +1381,7 @@ export class Controller extends EventEmitter {
     if(!sameDispositionBinding(binding,dispositionBinding(w))||revision!==w.revision)throw Error('stale disposition binding');
     if(w.status!=='ended'){
       const capability=workDisposition(this.store.state,w)[decision];if(!capability?.allowed)throw Error(capability?.message??'explicit decision required');
-      await this.validateLocalIdentity(id);if(decision==='accept')await this.validateAcceptSource(id);
+      await this.validateLocalIdentity(id);
     }
     if(w.status==='ended'&&!w.closure?.decision)await this.validateLocalIdentity(id);
     await this.store.end(id,{by:'user',revision,decision,binding,requestKey,validateAdmission:()=>{const current=this.store.find(id);if(current.status==='ended'&&!current.closure?.decision&&decision==='discard')return;const capability=workDisposition(this.store.state,current)[decision];if(!capability?.allowed)throw Error(capability?.message??'explicit decision required');}});this.changed();
@@ -1384,21 +1412,10 @@ export class Controller extends EventEmitter {
         for(const slot of slots)this.processBudget?.release(slot);
         await this.store.markStopped(id,{at:new Date().toISOString(),...(receipt?{confirmed:true,provider:receipt}:{ownership:'no-recorded-native-owner'})});this.sessions.delete(id);
       }
+      if(w.closure.decision==='accept')try{await this.validateAcceptSource(id);}catch(error){throw Error('Acceptance requires intact frozen report bytes; no current-file fallback ('+error.message+'); resources retained');}
       await this.store.archiveReport(id);await this.checkpoint('report-archived',{workId:id});
       await this.timeline.drain();
       for(const receipt of this.store.state.receipts.filter(r=>r.workId===id&&r.changeSetId))await this.changes.verify(receipt.changeSetId);
-      if(w.closure.decision==='accept'&&this.execution){
-        const receipt=this.store.state.receipts.find(r=>r.workId===id&&r.objectId===w.result?.objectId&&r.revision===w.revision&&r.kind==='result');
-        if(!receipt?.snapshot?.candidate||receipt.snapshot.candidate.commit!==w.execution?.candidate?.commit)throw Error('Acceptance requires a final Worker report bound to the frozen candidate; resources retained');
-        const capability={project:{id:this.projectId,root:this.store.content},runtime:this.store.root,objectId:receipt.objectId,controller:this,currentController:()=>this};
-        try{
-          // Frozen bytes only: every receipt snapshot file and manifest reference must
-          // reverify through the managed capabilities; current project files never substitute.
-          const source=await managedReportSource(capability),manifest=await source.readManifest();
-          for(const file of receipt.snapshot.files||[])await managedArtifact(capability,{objectId:receipt.objectId,relPath:file.relPath});
-          for(const reference of manifest.references||[])await source.readReference(reference.id);
-        }catch(error){throw Error('Acceptance requires intact frozen report bytes; no current-file fallback ('+error.message+'); resources retained');}
-      }
       if(!['accept','discard'].includes(w.closure.decision))throw Error('Legacy outcome is uncertain; explicit user disposition is required. Resources preserved.');
       if(!w.closure.git?.complete){
         await this.store.mutate(()=>{w.closure.phase='integrating';});
@@ -1432,6 +1449,15 @@ export class Controller extends EventEmitter {
     if(this.stopPromise)return this.stopPromise;
     this.stopping=true;this.workerTerminal.stop();this.changed();
     clearTimeout(this.timelineTimer);this.timelineTimer=null;
-    this.stopPromise=(async()=>{await Promise.all([...this.terminals.values()].map(t=>t.close()));await Promise.allSettled([...this.starting.values()]);await Promise.all([...this.reclaiming.values()]);const stopped=await Promise.all([...this.sessions.entries()].map(async([target,s])=>{const receipt=await s.stop();if((s.pid||s.groupRecord?.pid)&&receipt?.confirmationComplete!==true)throw Object.assign(Error('Agent exit unconfirmed; provider ownership retained'),{code:'OMP_EXIT_UNCONFIRMED',target});return target;}));await Promise.all([...this.running.values()]);await Promise.allSettled([...this.closures.values()]);await this.store.mutate(()=>{for(const target of stopped)delete this.store.state.providers[target];});const homes=[...['frontdesk','orchestrator'].map(role=>path.join(this.store.root,'agents',`resident-${role}`)),...this.store.state.works.map(w=>this.store.agentHome(w.id))];for(const home of homes)await fs.rm(path.join(home,'auth.json'),{force:true});await this.store.close();})();return this.stopPromise;
+    this.stopPromise=(async()=>{
+      const stopped=new Set(),stopOwners=async()=>Promise.all([...this.sessions.entries()].filter(([target])=>!stopped.has(target)).map(async([target,s])=>{const receipt=await s.stop();await s.controllerExitCleanup;if((s.pid||s.groupRecord?.pid)&&receipt?.confirmationComplete!==true)throw Object.assign(Error('Agent exit unconfirmed; provider ownership retained'),{code:'OMP_EXIT_UNCONFIRMED',target});stopped.add(target);}));
+      await Promise.all([stopOwners(),Promise.all([...this.terminals.values()].map(t=>t.close())),Promise.allSettled([...this.starting.values()]),Promise.all([...this.reclaiming.values()])]);
+      await stopOwners();
+      await Promise.all([...this.running.values()]);await Promise.allSettled([...this.closures.values()]);
+      for(const target of stopped)delete this.store.state.providers[target];
+      await this.store.storage.putLocal(this.projectId,'managed:providers',this.store.state.providers??{});
+      if(Object.keys(this.store.state.providers??{}).length)throw Object.assign(Error('Unverified provider ownership retained'),{code:'OMP_EXIT_UNCONFIRMED'});
+      await this.store.close();return {stopped:[...stopped],confirmationComplete:true};
+    })();return this.stopPromise;
   }
 }

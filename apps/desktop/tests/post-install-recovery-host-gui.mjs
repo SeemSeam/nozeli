@@ -26,6 +26,7 @@ async function manifest(dir,prefix=''){for(const entry of await fs.readdir(dir,{
 await manifest(path.join(app,'src'),'src');await manifest(path.join(app,'tools'),'tools');sourceHashes['package.json']=hash(await fs.readFile(path.join(app,'package.json')));
 await fs.writeFile(path.join(output,'source-hashes.json'),JSON.stringify(sourceHashes,null,2));
 const transport=path.join(app,'transport-fixture.mjs');await fs.copyFile(path.join(source,'tests/post-install-recovery-transport.fixture.mjs'),transport);await fs.chmod(transport,0o755);
+await fs.copyFile(path.join(source,'tests/static-report.fixture.mjs'),path.join(app,'static-report.fixture.mjs'));
 await fs.mkdir(path.join(app,'bin'));await fs.symlink('../transport-fixture.mjs',path.join(app,'bin','codex'));
 const mainPath=path.join(app,'src/main/main.cjs'),originalMain=await fs.readFile(mainPath,'utf8');
 const anchor='managedAgents=new ManagedProjects({userDataDir:app.getPath(\'userData\'),host,legacy:agents,beforeDocumentOperation:syncDocument});';

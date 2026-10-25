@@ -1,3 +1,4 @@
+import {openTestController,openTestWorkspace} from './project-storage.fixture.mjs';
 // Real private bundled OMP + CollabHost, no model turns, no extension/transport fake.
 // Barriers wrap only public session acquisition / terminal snapshot interfaces.
 // Run from apps/desktop: node --test tests/omp-tui-attach-races.test.mjs
@@ -55,7 +56,7 @@ async function openController(t) {
   await mkdir(agentDir);
   await writeFile(path.join(agentDir, 'config.yml'), 'startup:\n  checkUpdate: false\n  showSplash: false\nmarketplace:\n  autoUpdate: "off"\nautoResume: false\nsetupVersion: 2\nmodelRoles:\n  default: synthetic-omp/model\n');
   await writeFile(path.join(agentDir, 'models.yml'), 'providers:\n  synthetic-omp:\n    api: openai-completions\n    baseUrl: http://127.0.0.1:9/\n    auth: none\n    models:\n      - id: model\n');
-  c = await Controller.open({
+  c = await openTestController({
     runtimeRoot: path.join(dir, 'runtime'), contentRoot: path.join(dir, 'content'),
     ompCommand: command, ompSystemSource: { private: true, root: dir, agentDir },
     sessionFactory: spec => {

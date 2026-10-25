@@ -1,6 +1,6 @@
 const encoder=new TextEncoder();
 
-const kinds=new Set(['document','conversation','report','diff','history']);
+const kinds=new Set(['document','conversation','report','diff','history','terminal']);
 const invalid=(message,code='LAYOUT_INVALID')=>{throw Object.assign(new Error(message),{code});};
 const id=prefix=>prefix+'-'+globalThis.crypto.randomUUID();
 const historyLimit=5;
@@ -67,6 +67,7 @@ export function validateLayout(layout){
   if(!identity(viewId)||!view||view.id!==viewId||view.projectId!==layout.projectId||!identity(view.resourceId,8192)||!kinds.has(view.kind)||view.relPath!==undefined&&!relPath(view.relPath))invalid('工作区内容身份无效。');
   if(view.kind==='document'&&!relPath(view.relPath))invalid('文档缺少有效项目路径。');
   if(view.kind==='conversation'&&++conversation>1)invalid('项目主对话不能重复。');
+  if(view.kind==='terminal'&&(!identity(view.viewState?.workId)||view.resourceId!=='terminal:'+view.viewState.workId))invalid('终端预览缺少有效工作身份。');
   if(view.pinned!==undefined&&typeof view.pinned!=='boolean'||view.preview!==undefined&&typeof view.preview!=='boolean'||view.readOnly!==undefined&&typeof view.readOnly!=='boolean')invalid('标签状态无效。');
  }
  function inspect(node,depth){

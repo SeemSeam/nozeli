@@ -1,10 +1,12 @@
+import {openTestController,openTestWorkspace} from './project-storage.fixture.mjs';
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs/promises';import path from 'node:path';import os from 'node:os';import {randomUUID} from 'node:crypto';
 import {Controller} from '../src/agents/managed/controller.mjs';
 async function chooseBackground(c,job,reason){if(c.frontGoal(job)?.intakeJobId)return c.handoffFront(job,reason);const proposal=await c.proposeFrontdeskRoute(job,reason);return c.resolveFrontdeskRoute({proposalId:proposal.proposalId,expectedVersion:proposal.version,action:'background',requestKey:randomUUID()});}
 async function fixture(t){
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-frontgoal-target-'));
  class Session{constructor(spec){Object.assign(this,spec);}async start(id){this.threadId=id||randomUUID();return this;}async stop(){this.closed=true;}}
- const c=await Controller.open({runtimeRoot:root+'/runtime',contentRoot:root+'/project',projectHome:home=>fs.mkdir(home,{recursive:true}),sessionFactory:spec=>new Session(spec)});await c.start();c.started=false;
+ const c=await openTestController({runtimeRoot:root+'/runtime',contentRoot:root+'/project',projectHome:home=>fs.mkdir(home,{recursive:true}),sessionFactory:spec=>new Session(spec)});await c.start();c.started=false;
+ while(c.kicking)await new Promise(resolve=>setTimeout(resolve,5));
  t.after(async()=>{await c.stop();await fs.rm(root,{recursive:true,force:true});});await c.store.mutate(()=>c.store.state.limit=2);
  const a=await c.store.submit('count request','count brief',{name:'人物计数'}),b=await c.store.submit('style request','style brief',{name:'格式检查'});await c.store.activate(a.id);await c.store.activate(b.id);await c.store.mutate(()=>{c.store.find(a.id).status='paused';c.store.find(b.id).status='paused';});
  const original=await c.enqueue('orchestrator','intake','创建队列标记');const q=await c.store.submit('queue request','queue brief',{name:'队列标记',sourceJob:original.jobId});

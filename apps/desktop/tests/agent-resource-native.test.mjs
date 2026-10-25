@@ -15,7 +15,7 @@ async function send(c,key){const r=await c.send('frontdesk','仅回复确认，�
 test('native processes sleep on project switch and resume the original nonempty threads without replay',{timeout:180000},async t=>{
  const f=await fixture(t,2),{manager:m,projects:[a,b]}=f;await m.setActiveProject(a.id);await m.connect(a.id,{enable:true});const ca=m.controllers.get(a.id);await send(ca,'native-alpha-first');await ca.setDraft('frontdesk','PERSIST_GUI_DRAFT');const thread=ca.store.state.residents.frontdesk.threadId,old=ca.sessions.get('frontdesk'),stamp=await processStamp(old.pid),jobs=ca.store.state.jobs.length;
  await m.setActiveProject(b.id);await m.connect(b.id,{enable:true});assert.notEqual(await processStamp(old.pid),stamp,'inactive idle native process exited');assert.equal((await m.resourceStatus(b.id)).globalUsed,2);const before=f.requests.length;
- await m.setActiveProject(a.id);await wait(()=>m.controllers.get(a.id).sessions.get('frontdesk')?.phase==='ready'||m.controllers.get(a.id).sessions.get('frontdesk')?.phase==='idle','resident resume');assert.equal(ca.store.state.residents.frontdesk.threadId,thread);assert.equal(ca.store.state.jobs.length,jobs);assert.equal(ca.store.state.drafts.frontdesk,'PERSIST_GUI_DRAFT');await pause(300);assert.equal(f.requests.length,before,'restoring a project does not issue a model request');assert.equal(await fs.readFile(a.rootDisplay+'/source.txt','utf8'),'KEEP_alpha');
+ await m.setActiveProject(a.id);assert.equal(ca.sessions.size,0,'activation keeps enabled historical project asleep');assert.equal(m.processBudget.used,0);assert.equal(f.requests.length,before);const ownersBeforeResume=f.owners.length;await m.connect(a.id);await wait(()=>m.controllers.get(a.id).sessions.get('frontdesk')?.phase==='ready'||m.controllers.get(a.id).sessions.get('frontdesk')?.phase==='idle','explicit resident resume');assert(f.owners.length>ownersBeforeResume,'explicit connect restores native owners');assert.equal(ca.store.state.residents.frontdesk.threadId,thread);assert.equal(ca.store.state.jobs.length,jobs);assert.equal(ca.store.state.drafts.frontdesk,'PERSIST_GUI_DRAFT');await pause(300);assert.equal(f.requests.length,before,'explicit restoration does not issue a model request');assert.equal(await fs.readFile(a.rootDisplay+'/source.txt','utf8'),'KEEP_alpha');
  const resident=ca.sessions.get('frontdesk'),view=resident.terminalAttachment(ca,'frontdesk');view.input('NATIVE_DRAFT_DO_NOT_LOSE');await wait(()=>ca.nativeDraftTargets.has('frontdesk'),'actual native draft observed');await m.setActiveProject(b.id).catch(error=>{assert.equal(error.code,'AGENT_PROCESS_LIMIT');});assert.equal(await processStamp(resident.pid)!==null,true,'native unsent input protects process');assert(ca.nativeDraftTargets.has('frontdesk'));view.input('\x01\x0b');await wait(async()=>{await resident.refreshNativeDraft();return !ca.nativeDraftTargets.has('frontdesk');},'native draft clear');
  t.diagnostic(JSON.stringify({root:f.root,requests:f.requests.length,owners:f.owners.length,scope:'actual private OMP sessions; local scripted model only'}));
 });
@@ -35,4 +35,30 @@ test('abrupt host death is recovered before new admission and restores the origi
  const {spawn}=await import('node:child_process');const child=spawn(process.execPath,[phase],{env:process.env,stdio:['ignore','pipe','pipe']});let diagnostic='';child.stderr.on('data',chunk=>diagnostic+=chunk);const exited=new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',(code,signal)=>resolve({code,signal}));});t.after(async()=>{if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');await exited;});const exit=await exited;assert.equal(exit.signal,'SIGKILL',diagnostic);
  const prior=JSON.parse(await fs.readFile(receipt));assert.equal(f.requests.length,1);await m.initializeResources();assert.equal(m.processBudget.used,0,'confirmed orphan exits are inventoried before new admission');
  await m.setActiveProject(a.id);await m.connect(a.id,{enable:true});const c=m.controllers.get(a.id);assert.equal(c.store.state.residents.frontdesk.threadId,prior.thread);assert.equal(c.store.state.jobs.length,prior.jobs);assert.equal(c.store.state.jobs[0].status,'completed');assert.equal(c.store.state.drafts.frontdesk,'KEEP_AFTER_HOST_CRASH');assert.equal(f.requests.length,1,'cold recovery does not replay the completed turn');assert.equal(m.processBudget.used,2);t.diagnostic(JSON.stringify({root:f.root,scope:'actual SIGKILL of owning host, cold inventory, original thread and persisted draft, no HTTP replay'}));
+});
+
+for(const loss of ['root','metadata'])test('real native in-flight '+loss+' loss stops owned processes without request replay',{timeout:120000},async t=>{
+ const f=await fixture(t,2),{manager:m,projects:[a]}=f;
+ const projectRoot=(await m.host.requireRegisteredProject(a.id)).root;
+ await m.setActiveProject(a.id);await m.connect(a.id,{enable:true});
+ const c=m.controllers.get(a.id);await c.setDraft('frontdesk','KEEP_UNSENT_NATIVE_LOSS');
+ f.hold();const sent=await c.send('frontdesk','等待本地验收响应，不使用工具。',{requestKey:'source-loss-'+loss});
+ await wait(()=>f.requests.length===1,'real native HTTP admission');
+ const owners=[...c.sessions.values()].map(session=>({pid:session.pid}));
+ const source=loss==='root'?projectRoot:path.join(projectRoot,'.nozeli'),moved=source+'-offline';
+ await fs.rename(source,moved);
+ await assert.rejects(m.host.storage.requireOnline(a.id),{code:loss==='root'?'PROJECT_ROOT_MISSING':'PROJECT_METADATA_MISSING'});
+ assert.equal(c.stopping,true);
+ await assert.rejects(c.onTool('frontdesk',{tool:'nozeli_document_create',callId:'late-source-loss',arguments:{relPath:'late.txt',text:'must not write'}}));
+ await wait(()=>!m.controllers.has(a.id),'managed stop completion',30000);
+ for(const owner of owners)assert.equal(await processStamp(owner.pid),null,'actual owned CLI process exited');
+ assert.equal(await fs.readFile(path.join(loss==='root'?moved:projectRoot,'source.txt'),'utf8'),'KEEP_alpha');
+ assert.equal(await fs.stat(source).then(()=>true,()=>false),false,'missing source is never recreated');
+ assert.equal(f.requests.length,1,'in-flight request was not replayed');
+ assert.equal(c.store.state.jobs.filter(job=>job.id===sent.jobId).length,1);
+ assert.equal((await m.host.storage.getRecovery(a.id,'managed:drafts')).frontdesk,'KEEP_UNSENT_NATIVE_LOSS');
+ await fs.rename(moved,source);await m.host.storage.retry(a.id);await pause(250);
+ assert.equal(f.requests.length,1,'source recovery does not replay accepted input');
+ assert.equal(m.controllers.has(a.id),false,'retry does not restart native sessions');
+ t.diagnostic(JSON.stringify({root:f.root,loss,requests:f.requests.length,owners:owners.length,scope:'actual private OMP CLI/native processes and held loopback model response; no remote provider, inference or user data'}));
 });

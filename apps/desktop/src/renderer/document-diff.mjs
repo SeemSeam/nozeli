@@ -3,14 +3,17 @@ import { EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { markdown } from '@codemirror/lang-markdown';
 import { languageSupportForPath } from './code-language.mjs';
+import { readerEditorTheme } from './text-view.mjs';
 import { basicSetup } from 'codemirror';
+import { syntaxHighlighting } from '@codemirror/language';
+import { classHighlighter } from '@lezer/highlight';
 
 export function mountDocumentDiff({ parent, leftPath, leftText, rightPath, rightText, onNavigate = () => {} }) {
   const language = path => /\.(md|markdown)$/i.test(path) ? markdown() : languageSupportForPath(path);
   const nonce = document.querySelector('meta[name="nozeli-style-nonce"]').content;
   const makeState = (path, doc) => ({
     doc,
-    extensions: [basicSetup, language(path), EditorState.readOnly.of(true), EditorView.editable.of(false), EditorView.cspNonce.of(nonce)],
+    extensions: [basicSetup, readerEditorTheme(), syntaxHighlighting(classHighlighter), language(path), EditorState.readOnly.of(true), EditorView.editable.of(false), EditorView.cspNonce.of(nonce)],
   });
   parent.replaceChildren();
   const merge = new MergeView({

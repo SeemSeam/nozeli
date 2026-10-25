@@ -30,26 +30,40 @@ async function optional(file,fallback){try{return await fs.readFile(file,'utf8')
    return /^(?:Select a provider:|\d+\. |Enter number|Open this URL|Local shortcut|Paste the authorization|Enter |Please |Visit |User code|Code:|Waiting|Opening|You can|To authenticate)/i.test(value);
   }).join('\n');
  }
- export async function hasProviderReferences(root,provider){
-  const matches=value=>typeof value==='string'&&value.startsWith(provider+'/');
-  async function walk(dir){
-   let entries;try{entries=await fs.readdir(dir,{withFileTypes:true});}catch(error){if(error.code==='ENOENT')return false;throw error;}
-   for(const entry of entries){
-    if(entry.isSymbolicLink())continue;const file=path.join(dir,entry.name);
-    if(entry.isDirectory()){if(await walk(file))return true;}
-    else if(entry.name==='state.json'){
-     const state=JSON.parse(await fs.readFile(file,'utf8'));
-     if(Object.values(state.bindings??{}).some(b=>matches(b.model))||(state.works??[]).some(w=>matches(w.binding?.model))||Object.values(state.legacyNativeSeeds??{}).some(b=>matches(b.model)))return true;
-    }else if(entry.name.endsWith('.jsonl')){
-     const stream=createReadStream(file,{encoding:'utf8'}),lines=createInterface({input:stream,crlfDelay:Infinity});
-     try{for await(const line of lines){let row;try{row=JSON.parse(line);}catch{return true;}if(matches(row.model)||row.message?.provider===provider)return true;}}
-     finally{lines.close();stream.destroy();}
-    }
+export async function hasProviderReferences({storage},provider){
+ if(!storage||!text(provider,64))fail('Provider reference scan requires project storage and a provider ID');
+ const matches=value=>typeof value==='string'&&value.startsWith(provider+'/');
+ const bindingUses=value=>value?.provider===provider||matches(value?.model);
+ async function walk(directory){
+  const stat=await fs.lstat(directory).catch(error=>{if(error.code==='ENOENT')return null;throw error;});
+  if(!stat)return false;if(stat.isSymbolicLink()||!stat.isDirectory())return true;
+  for(const entry of await fs.readdir(directory,{withFileTypes:true})){
+   if(entry.isSymbolicLink())return true;
+   const file=path.join(directory,entry.name);
+   if(entry.isDirectory()){if(await walk(file))return true;}
+   else if(entry.isFile()&&entry.name.endsWith('.jsonl')){
+    const stream=createReadStream(file,{encoding:'utf8'}),lines=createInterface({input:stream,crlfDelay:Infinity});
+    try{for await(const line of lines){if(!line.trim())continue;let row;try{row=JSON.parse(line);}catch{return true;}
+     if(matches(row.model)||row.provider===provider||row.model?.provider===provider||row.message?.provider===provider||matches(row.message?.model))return true;
+    }}finally{lines.close();stream.destroy();}
    }
-   return false;
   }
-  return walk(root);
+  return false;
  }
+ // Missing/corrupt project authority cannot prove that a credential is unused.
+ try{
+  for(const project of await storage.list()){
+   await storage.requireOnline(project.id);
+   const roles=await storage.getLocal(project.id,'managed:bindings')??{};
+   if(Object.values(roles).some(bindingUses))return true;
+   for(const row of await storage.listProject(project.id,'managed_works')){
+    if(bindingUses(row.value.binding)||bindingUses((await storage.getLocal(project.id,'managed:works:'+row.id))?.binding))return true;
+   }
+   if(await walk(path.join(await storage.localDirectory(project.id),'execution','agents')))return true;
+  }
+  return false;
+ }catch{return true;}
+}
 export class ProviderSettings {
  constructor({source,broker,command,sourceEnv=process.env,isReferenced=async()=>false,spawnFn=spawn,onDefaultsSaved=async()=>({applied:0,pending:0,failed:[]}),getModelSync=()=>({applied:0,pending:0,failed:[]})}){Object.assign(this,{source,broker,command,sourceEnv,isReferenced,spawnFn,onDefaultsSaved,getModelSync});this.queue=Promise.resolve();this.login=null;}
  serial(fn){const result=this.queue.then(fn);this.queue=result.catch(()=>{});return result;}

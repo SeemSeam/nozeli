@@ -4,8 +4,8 @@ import {ContextReader,memoryContext} from '../src/agents/managed/context-reader.
 test('historical Work summaries cannot crowd a matching organized topic out of primary memory retrieval',()=>{
  const history=Array.from({length:12},(_,i)=>`<!-- work:w${i} -->\n# 服务端口\n旧报告记服务端口8042，未证明当前生效。\n<!-- /work:w${i} -->`).join('\n');
  const reader=new ContextReader(),found=memoryContext('# Plan Tree\n'+history,'服务端口',reader,[{path:'topics/service-rules.md',text:'# 项目规则\n当前用户约定服务端口8142。来源：用户新决定；旧文档仍8042。\n离线不重试。超时7/9秒冲突未决。'}]);
- assert(found.matches.some(m=>m.source==='memory/topics/service-rules.md'),'organized topic must be in primary matching sources');
- const topic=found.matches.find(m=>m.source==='memory/topics/service-rules.md');const page=reader.read(topic.readRef);
+ assert(found.matches.some(m=>m.source==='memory/plantree/topics/service-rules.md'),'organized topic must be in primary matching sources');
+ const topic=found.matches.find(m=>m.source==='memory/plantree/topics/service-rules.md');const page=reader.read(topic.readRef);
  assert(page.text.includes('8142')&&page.text.includes('冲突未决'));
  assert(found.historyMatches.length>0,'history remains explicitly retrievable');
  const old=reader.read(found.historyMatches[0].readRef);assert(old.source.includes('#work:'));assert(old.text.includes('8042'));

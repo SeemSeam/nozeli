@@ -71,7 +71,13 @@ export default function nozeliTerminalBridge(pi) {
         if (revision !== modelRevision) return;
         if (!preparing && (agentActive || ctx.isIdle?.() !== true)) return;
         const slash = selector.indexOf('/');
-        const model = ctx.modelRegistry.find(selector.slice(0, slash), selector.slice(slash + 1));
+        let model = ctx.modelRegistry.find(selector.slice(0, slash), selector.slice(slash + 1));
+        if (slash > 0 && !model) {
+          await ctx.modelRegistry.refreshProvider(selector.slice(0, slash), 'online-if-uncached');
+          if (revision !== modelRevision) return;
+          if (!preparing && (agentActive || ctx.isIdle?.() !== true)) return;
+          model = ctx.modelRegistry.find(selector.slice(0, slash), selector.slice(slash + 1));
+        }
         if (slash < 1 || !model) throw Error('Default model is absent from native registry: ' + selector);
         if (state().model !== selector && !await pi.setModel(model)) throw Error('Native model credentials unavailable: ' + selector);
         if (state().model !== selector) throw Error('Native model verification failed: ' + selector);

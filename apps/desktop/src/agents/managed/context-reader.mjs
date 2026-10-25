@@ -24,10 +24,10 @@ const preview=(text,size)=>text?.length>size?text.slice(0,size)+'… [正文可�
 function sections(value){
   const text=String(value),rows=[];let cursor=0;
   for(const match of text.matchAll(/<!-- work:([^>]+) -->([\s\S]*?)<!-- \/work:\1 -->/g)){
-    if(match.index>cursor){const outside=text.slice(cursor,match.index).trim();if(outside)rows.push({text:outside,source:'memory/plan-tree.md'});}
-    rows.push({text:match[2].trim(),source:`memory/plan-tree.md#work:${match[1]}`});cursor=match.index+match[0].length;
+    if(match.index>cursor){const outside=text.slice(cursor,match.index).trim();if(outside)rows.push({text:outside,source:'memory/plantree/index.md'});}
+    rows.push({text:match[2].trim(),source:`memory/plantree/index.md#work:${match[1]}`});cursor=match.index+match[0].length;
   }
-  const outside=text.slice(cursor).trim();if(outside)rows.push({text:outside,source:'memory/plan-tree.md'});
+  const outside=text.slice(cursor).trim();if(outside)rows.push({text:outside,source:'memory/plantree/index.md'});
   return rows.map((row,index)=>({...row,index,title:(/^#{1,6}\s+(.+)$/m.exec(row.text)?.[1]||row.text.split('\n').find(s=>s.trim())||'项目记忆').slice(0,100)}));
 }
 function queryTerms(query){
@@ -37,7 +37,7 @@ function queryTerms(query){
 }
 export function memoryContext(text,query,reader,topics=[]){
   const rootRows=sections(text).map(row=>({...row,kind:row.source.includes('#work:')?'history':'index'}));
-  const topicRows=topics.filter(t=>t.text!==null).map((t,index)=>({text:t.text,source:'memory/'+t.path,kind:'topic',title:(/^#{1,6}\s+(.+)$/m.exec(t.text)?.[1]||t.path).slice(0,100),index:index+100000}));
+  const topicRows=topics.filter(t=>t.text!==null).map((t,index)=>({text:t.text,source:'memory/plantree/'+t.path,kind:'topic',title:(/^#{1,6}\s+(.+)$/m.exec(t.text)?.[1]||t.path).slice(0,100),index:index+100000}));
   const rows=[...rootRows,...topicRows],terms=queryTerms(query);
   const rank=items=>items.map(row=>{const title=row.title.toLowerCase(),body=row.text.toLowerCase();return {...row,score:terms.reduce((score,term)=>score+(title.includes(term)?5:0)+(body.includes(term)?1:0),0)};}).filter(row=>row.score>0).sort((a,b)=>b.score-a.score||b.index-a.index).slice(0,4);
   const primary=rank(rows.filter(row=>row.kind!=='history')),history=rank(rootRows.filter(row=>row.kind==='history'));
@@ -46,5 +46,5 @@ export function memoryContext(text,query,reader,topics=[]){
     matches:(primary.length?primary:history).map(row=>entry(row,true)),
     historyMatches:history.map(row=>entry(row,false)),
     recent:rootRows.filter(row=>row.kind==='history').slice(-6).reverse().map(row=>entry(row,false)),
-    allReadRef:reader.add(text,{title:'Plan Tree 根索引与 Work 历史（分页；主题另读）',source:'memory/plan-tree.md'})};
+    allReadRef:reader.add(text,{title:'Plan Tree 根索引与 Work 历史（分页；主题另读）',source:'memory/plantree/index.md'})};
 }

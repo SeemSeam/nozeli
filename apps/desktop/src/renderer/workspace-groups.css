@@ -1,11 +1,32 @@
 #workspace-groups{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0;height:100%;background:var(--paper,#fff);color:var(--ink,#292929)}
-.workspace-tree{flex:1;min-height:0;min-width:0;display:flex;overflow:hidden}.workspace-split{display:flex;flex:1;min-width:0;min-height:0;overflow:hidden}.workspace-split[data-axis=x]{flex-direction:row}.workspace-split[data-axis=y]{flex-direction:column}.workspace-split>:first-child{flex:0 0 calc(var(--ratio,.5)*100% - 3px)}.workspace-split>:last-child{flex:1}.workspace-divider{flex:0 0 6px;background:var(--line,#e5e5e5);touch-action:none}.workspace-split[data-axis=x]>.workspace-divider{cursor:col-resize}.workspace-split[data-axis=y]>.workspace-divider{cursor:row-resize}.workspace-pane{display:flex;flex:1;flex-direction:column;min-width:280px;min-height:180px;overflow:hidden;border:1px solid transparent}.workspace-pane.is-focused{border-color:var(--accent,#6792cb)}.workspace-pane-header{height:34px;flex:none;display:flex;align-items:center;gap:6px;padding:0 8px;background:var(--panel,#f5f5f5)}.workspace-pane-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.workspace-pane-header button{border:0;background:transparent;color:inherit;cursor:pointer;padding:4px 7px}.workspace-pane-header button:first-of-type{margin-left:auto}.workspace-content{flex:1;min-height:0;position:relative;display:flex;align-items:center;justify-content:center;color:#777}.workspace-narrow .workspace-split{display:contents}.workspace-narrow .workspace-divider,.workspace-narrow .workspace-pane:not(.is-focused){display:none}html[data-workspace-role=detached] #workspace-groups{position:fixed;inset:0}html[data-workspace-role=shell] #reader{display:flex;flex-direction:column;min-width:0}html[data-workspace-role=shell] #work-surface{display:none}
+.workspace-tree{flex:1;min-height:0;min-width:0;display:flex;overflow:hidden}
+.workspace-split{display:grid;flex:1;min-width:0;min-height:0;overflow:hidden}
+/* Tracks resolve this split's ratio on its parent box, not a nested child's --ratio. */
+.workspace-split[data-axis=x]{grid-template-columns:minmax(0,calc(var(--ratio,.5)*100% - 3px)) 6px minmax(0,1fr);grid-template-rows:minmax(0,1fr)}
+.workspace-split[data-axis=y]{grid-template-rows:minmax(0,calc(var(--ratio,.5)*100% - 3px)) 6px minmax(0,1fr);grid-template-columns:minmax(0,1fr)}
+/* Keep the existing six-pixel resize target; paint only a neutral one-pixel seam. */
+.workspace-divider{position:relative;background:var(--workspace-header-paper);touch-action:none}
+.workspace-divider::after{content:'';position:absolute;background:var(--workspace-seam)}
+.workspace-split[data-axis=x]>.workspace-divider{cursor:col-resize}
+.workspace-split[data-axis=x]>.workspace-divider::after{inset:0 auto 0 2px;width:1px}
+.workspace-split[data-axis=y]>.workspace-divider{cursor:row-resize}
+.workspace-split[data-axis=y]>.workspace-divider::after{inset:2px 0 auto;height:1px}
+.workspace-divider:focus-visible{outline:2px solid var(--ui-control-focus);outline-offset:-2px}
+.workspace-pane{display:flex;flex:1;flex-direction:column;min-width:280px;min-height:180px;overflow:hidden;border:1px solid var(--workspace-seam)}
+.workspace-pane.is-focused{border-color:var(--workspace-focus-seam)}
+.workspace-pane-header{height:34px;min-height:34px;box-sizing:border-box;flex:none;display:flex;align-items:center;gap:6px;padding:0 8px;border-bottom:1px solid var(--workspace-seam);background:var(--workspace-header-paper);color:var(--workspace-header-ink);font:500 13px/20px var(--chrome-font-family,system-ui,sans-serif)}
+.workspace-pane-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:inherit}
+.workspace-pane-header button{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;height:28px;min-height:28px;border:0;border-radius:6px;background:transparent;color:inherit;cursor:pointer;padding:3px 7px;font:400 12px/20px var(--chrome-font-family,system-ui,sans-serif)}
+.workspace-pane-header button:first-of-type{margin-left:auto}
+.workspace-content{flex:1;min-height:0;position:relative;display:flex;align-items:center;justify-content:center;color:var(--muted,#777)}
+.workspace-narrow .workspace-split{display:contents}.workspace-narrow .workspace-divider,.workspace-narrow .workspace-pane:not(.is-focused){display:none}
+html[data-workspace-role=detached] #workspace-groups{position:fixed;inset:0}
+html[data-workspace-role=shell] #reader{display:flex;flex-direction:column;min-width:0}html[data-workspace-role=shell] #work-surface{display:none}
 .workspace-open-editor-list{display:flex;flex-direction:column}.workspace-open-editor-row{display:flex;gap:4px;align-items:center}#workspace-open-editors .workspace-open-editor-row>[data-editor-view]{width:auto;flex:1;text-align:left}#workspace-open-editors .workspace-open-editor-row>[data-editor-close]{width:24px;flex:0 0 24px;text-align:center}.workspace-open-editor-row button{font-size:11px;padding:3px 5px}
 .workspace-narrow .workspace-pane{min-width:0;min-height:0}.workspace-open-editor-row>[data-editor-view]{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.workspace-open-editor-row small{color:var(--muted,#777);font-size:10px}.workspace-open-editor-row [data-missing=true]::after{content:' · 缺失';color:var(--danger,#b43b39)}.workspace-open-editor-row [data-missing=unavailable]::after{content:' · 暂不可用'}
-.workspace-pane-header{flex:none;min-height:34px;gap:6px}
 .workspace-pane-header .workspace-pane-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .workspace-pane-header [data-workspace-content-tools]{color:var(--muted);font-size:11px}
-@media(max-width:600px){.workspace-pane-header{gap:3px}.workspace-pane-header button{padding-inline:5px;font-size:11px}}
+@media(max-width:600px){.workspace-pane-header{gap:3px}.workspace-pane-header button{padding-inline:5px}}
 html[data-workspace-role=shell] .topbar,.nozeli-draggable{-webkit-app-region:drag}
 .nozeli-window-logo{width:22px;height:22px;flex:none;margin-right:7px}
 .nozeli-window-controls{display:flex;align-items:center;gap:2px;margin-left:6px;-webkit-app-region:no-drag}
@@ -19,15 +40,15 @@ html[data-workspace-role=shell] .app#app>.topbar{height:40px;min-height:40px;ove
 .workspace-pane[data-drop-side]::after{content:'';position:absolute;inset:0;pointer-events:none;z-index:10;background:var(--green-soft);opacity:.65;border:2px solid var(--green)}
 .workspace-pane{position:relative}
 .workspace-pane[data-drop-side=left]::after{right:50%}.workspace-pane[data-drop-side=right]::after{left:50%}.workspace-pane[data-drop-side=top]::after{bottom:50%}.workspace-pane[data-drop-side=bottom]::after{top:50%}
-html[data-workspace-role=shell] .workspace-pane-header{height:auto;min-height:34px;flex-wrap:wrap;padding-block:3px}
 .workspace-pane-header button{white-space:nowrap;flex-shrink:0}
 .workspace-pane-title{flex:1;min-width:70px}
 /* Native compositor movement owns the top edge and title whitespace. The filename
    remains a non-draggable content handle for context menus and pane attachment. */
 html[data-workspace-role=detached] .workspace-pane{border-top:0}
-html[data-workspace-role=detached] .workspace-pane-header{-webkit-app-region:drag;cursor:default;padding-top:7px;box-sizing:border-box;height:34px}
+html[data-workspace-role=detached] .workspace-pane-header{-webkit-app-region:drag;cursor:default}
 html[data-workspace-role=detached] .workspace-pane-title{-webkit-app-region:no-drag;flex:0 1 auto;max-width:60%;cursor:grab}
+html[data-workspace-role=detached] .workspace-pane-header button{-webkit-app-region:no-drag;cursor:pointer}
 .workspace-pane{box-sizing:border-box;min-width:0;min-height:0}
 .workspace-split>:first-child,.workspace-split>:last-child{min-width:0;min-height:0;overflow:hidden}
-/* display:contents removes split boxes, not their children's percentage basis. */
+/* Narrow mode removes split tracks and gives the visible pane the flex viewport. */
 .workspace-narrow .workspace-pane.is-focused{flex:1 1 0;min-width:0;min-height:0}

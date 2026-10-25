@@ -1,0 +1,38 @@
+/* Shared fenced-code color ownership for conversations, tags and documents.
+   These surfaces match the AA-adjusted semantic palettes in markdown-code.mjs. */
+:root {
+  --markdown-code-background:var(--doc-code-bg,#FFFFFF);
+  --markdown-code-foreground:#27332D;
+}
+html[data-theme=dark] {
+  --markdown-code-background:var(--doc-code-bg,#242A27);
+  --markdown-code-foreground:#E5EAE7;
+}
+html[data-theme=dark] pre[data-markdown-code] > code span {
+  color:var(--markdown-token-dark,inherit);
+}
+pre[data-markdown-code],
+:is(#text-preview,.tag-markdown,.agent-message-body,.session-markdown) pre[data-markdown-code] {
+  background:var(--markdown-code-background);
+  color:var(--markdown-code-foreground);
+}
+pre[data-markdown-code] > code {
+  background:transparent;
+  color:var(--markdown-code-foreground);
+}
+pre[data-markdown-code] > code span {
+  color:var(--markdown-token-light,inherit);
+}
+html[data-theme=dark] pre[data-markdown-code] > code span {
+  color:var(--markdown-token-dark,inherit);
+}
+@media(forced-colors:active) {
+  pre[data-markdown-code],
+  :is(#text-preview,.tag-markdown,.agent-message-body,.session-markdown) pre[data-markdown-code] {
+    background:Canvas;
+    color:CanvasText;
+  }
+  pre[data-markdown-code] > code,
+  pre[data-markdown-code] > code span,
+  html[data-theme=dark] pre[data-markdown-code] > code span { color:CanvasText; }
+}

@@ -1,5 +1,3 @@
-import fs from 'node:fs/promises';
-import path from 'node:path';
 import {createHash} from 'node:crypto';
 const digest=bytes=>createHash('sha256').update(bytes).digest('hex');
 const fail=(code,message)=>{throw Object.assign(new Error(message),{code});};
@@ -9,20 +7,18 @@ export function publicArchive(value){
  if(!value||typeof value!=='object')return value;
  return Object.fromEntries(Object.entries(value).filter(([key])=>!privateKey.test(key)).map(([key,item])=>[key,publicArchive(item)]));
 }
-export async function loadWorkerArchive(runtime,work,archiveId){
- const archive=work?.threadArchive?.find(row=>row.id===archiveId);
- if(!archive||!(/^[a-f0-9-]{36}$/i.test(archive.dossierObjectId)||/^[a-f0-9]{64}$/.test(archive.dossierObjectId)))fail('ARCHIVE_IDENTITY','Invalid Worker history identity');
- const file=path.join(runtime,'objects',archive.dossierObjectId+'.json');const stat=await fs.lstat(file);
- if(!stat.isFile()||stat.isSymbolicLink()||stat.size>64*1024*1024)fail('ARCHIVE_UNSAFE','Worker history is unsafe or exceeds the archive budget');
- const bytes=await fs.readFile(file),expected=archive.dossierDigest??(/^[a-f0-9]{64}$/.test(archive.dossierObjectId)?archive.dossierObjectId:null);
- if(!expected)fail('ARCHIVE_UNVERIFIED','Historical dossier has no original content digest; retained for explicit recovery');
+export async function loadWorkerArchive(store,work,archiveId){
+ const archive=work?.archives?.find(row=>row.id===archiveId);
+ if(!archive||!/^[a-f0-9]{64}$/.test(archive.dossierObjectId))fail('ARCHIVE_IDENTITY','Invalid Worker history identity');
+ const expected=archive.dossierObjectId,bytes=await store.readObject(expected);
+ if(bytes.length>64*1024*1024)fail('ARCHIVE_UNSAFE','Worker history exceeds the archive budget');
  if(digest(bytes)!==expected)fail('ARCHIVE_CORRUPT','Worker handoff archive changed; original source retained');
  const dossier=JSON.parse(bytes);
  if(dossier.workId!==work.id||dossier.archiveId!==archiveId)fail('ARCHIVE_IDENTITY','Worker archive ownership mismatch');
  return {archive,dossier,digest:expected};
 }
-export async function readWorkerArchive(runtime,work,{archiveId,offset=0,version}={}){
- const saved=await loadWorkerArchive(runtime,work,archiveId);
+export async function readWorkerArchive(store,work,{archiveId,offset=0,version}={}){
+ const saved=await loadWorkerArchive(store,work,archiveId);
  const text=JSON.stringify(publicArchive(saved.dossier),null,2),publicVersion=digest(text);
  if(version&&version!==publicVersion)fail('ARCHIVE_CHANGED','History version changed; reload the original page');
  if(!Number.isSafeInteger(offset)||offset<0||offset>text.length||offset&&/[\uDC00-\uDFFF]/.test(text[offset]))fail('ARCHIVE_OFFSET','Invalid Worker history offset');

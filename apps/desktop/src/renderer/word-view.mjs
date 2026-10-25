@@ -27,6 +27,10 @@ export async function mountWord({parent,bytes,name,readOnly=false,onChange,onErr
 
  const marks=document.createElement('div');marks.className='word-note-marks';overlay.append(marks);
  const channel=crypto.randomUUID(),pending=new Map();let disposed=false,readyResolve,readyReject;
+ const appearance=()=>({theme:document.documentElement.dataset.theme==='dark'?'dark':'light',palette:document.documentElement.dataset.palette==='slate'?'slate':'sage'});
+ const postAppearance=()=>{if(!disposed)frame.contentWindow?.postMessage({nozeliWord:channel,type:'appearance',...appearance()},location.origin);};
+ const onAppearance=()=>postAppearance();
+ document.addEventListener('appearance:change',onAppearance);
  const ready=new Promise((resolve,reject)=>{readyResolve=resolve;readyReject=reject;});
  const timer=setTimeout(()=>readyReject(Error('Word 文档打开超时')),45000);
  const receive=event=>{
@@ -67,9 +71,9 @@ export async function mountWord({parent,bytes,name,readOnly=false,onChange,onErr
   else if(data.type==='error'){const error=Error(data.message);if(data.requestId){pending.get(data.requestId)?.reject(error);pending.delete(data.requestId);}else{clearTimeout(timer);readyReject(error);onError?.(error);}}
  };
  addEventListener('message',receive);
- frame.onload=()=>frame.contentWindow.postMessage({nozeliWord:channel,type:'open',bytes:new Uint8Array(bytes),name,readOnly},location.origin);
+ frame.onload=()=>frame.contentWindow.postMessage({nozeliWord:channel,type:'open',bytes:new Uint8Array(bytes),name,readOnly,...appearance()},location.origin);
  parent.replaceChildren(frame,authorLayer.node,overlay);parent.hidden=false;
- const dispose=()=>{if(disposed)return;disposed=true;clearTimeout(timer);removeEventListener('message',receive);for(const p of pending.values())p.reject(Error('Word 已关闭'));pending.clear();onContextClose?.();frame.remove();overlay.remove();authorLayer.node.remove();cards.clear();};
+ const dispose=()=>{if(disposed)return;disposed=true;clearTimeout(timer);document.removeEventListener('appearance:change',onAppearance);removeEventListener('message',receive);for(const p of pending.values())p.reject(Error('Word 已关闭'));pending.clear();onContextClose?.();frame.remove();overlay.remove();authorLayer.node.remove();cards.clear();};
  try{await ready;}catch(error){dispose();throw error;}
  return {dispose,snapshotModel:()=>frame.contentWindow.nozeliWordModels.snapshotModel(),applyModel:model=>{frame.contentWindow.nozeliWordModels.applyModel(model);bodyText=frame.contentWindow.nozeliWordModels.getText();},closeContextMenu:()=>frame.contentWindow.postMessage({nozeliWord:channel,type:'context-close'},location.origin),getText:()=>bodyText,setAuthorship:(value,options)=>{attribution=value;authorshipOptions=options;frame.contentWindow.postMessage({nozeliWord:channel,type:'authorship-state',enabled:Boolean(value&&options.visible)},location.origin);projectAuthors();},zoom:value=>frame.contentWindow.postMessage({nozeliWord:channel,type:'zoom',value},location.origin),region:enabled=>frame.contentWindow.postMessage({nozeliWord:channel,type:'region',enabled},location.origin),setNotes:value=>{notes=value;paint();},setTags:value=>{tags=value;paint();},locate:anchor=>frame.contentWindow.postMessage({nozeliWord:channel,type:'locate',anchor},location.origin),export:()=>new Promise((resolve,reject)=>{if(disposed)return reject(Error('Word 已关闭'));const id=crypto.randomUUID();const timeout=setTimeout(()=>{pending.delete(id);reject(Error('Word 导出超时，文档仍保留在窗口中'));},30000);pending.set(id,{resolve:value=>{clearTimeout(timeout);resolve(value);},reject:error=>{clearTimeout(timeout);reject(error);}});frame.contentWindow.postMessage({nozeliWord:channel,type:'export',requestId:id},location.origin);})};
 }

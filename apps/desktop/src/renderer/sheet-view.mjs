@@ -1,6 +1,10 @@
 export async function mountSheet({parent,bytes,name,readOnly=false,onChange,onError,onSave,onContextMenu,onContextClose}){
  const frame=document.createElement('iframe');frame.title='电子表格编辑器';frame.src='./sheet-frame.html';frame.style.cssText='display:block;width:100%;height:100%;min-height:0;border:0';frame.setAttribute('sandbox','allow-scripts allow-same-origin');
  const channel=crypto.randomUUID(),pending=new Map();let disposed=false,readyResolve,readyReject;
+ const appearance=()=>({theme:document.documentElement.dataset.theme==='dark'?'dark':'light',palette:document.documentElement.dataset.palette==='slate'?'slate':'sage'});
+ const postAppearance=()=>{if(!disposed)frame.contentWindow?.postMessage({nozeliSheet:channel,type:'appearance',...appearance()},location.origin);};
+ const onAppearance=()=>postAppearance();
+ document.addEventListener('appearance:change',onAppearance);
  const ready=new Promise((resolve,reject)=>{readyResolve=resolve;readyReject=reject;});
  const timer=setTimeout(()=>readyReject(Error('电子表格打开超时')),45000);
  const receive=event=>{
@@ -16,9 +20,9 @@ export async function mountSheet({parent,bytes,name,readOnly=false,onChange,onEr
   else if(data.type==='error'){const error=Error(data.message);if(data.requestId){pending.get(data.requestId)?.reject(error);pending.delete(data.requestId);}else{clearTimeout(timer);readyReject(error);onError?.(error);}}
  };
  addEventListener('message',receive);
- frame.onload=()=>frame.contentWindow.postMessage({nozeliSheet:channel,type:'open',bytes:new Uint8Array(bytes),name,readOnly},location.origin);
+ frame.onload=()=>frame.contentWindow.postMessage({nozeliSheet:channel,type:'open',bytes:new Uint8Array(bytes),name,readOnly,...appearance()},location.origin);
  parent.replaceChildren(frame);parent.hidden=false;
- const dispose=()=>{if(disposed)return;disposed=true;clearTimeout(timer);removeEventListener('message',receive);for(const p of pending.values())p.reject(Error('电子表格已关闭'));pending.clear();onContextClose?.();frame.remove();};
+ const dispose=()=>{if(disposed)return;disposed=true;clearTimeout(timer);document.removeEventListener('appearance:change',onAppearance);removeEventListener('message',receive);for(const p of pending.values())p.reject(Error('电子表格已关闭'));pending.clear();onContextClose?.();frame.remove();};
  try{await ready;}catch(error){dispose();throw error;}
  const request=type=>new Promise((resolve,reject)=>{if(disposed)return reject(Error('电子表格已关闭'));const id=crypto.randomUUID();const timeout=setTimeout(()=>{pending.delete(id);reject(Error('电子表格导出超时，文档仍保留在窗口中'));},30000);pending.set(id,{resolve:value=>{clearTimeout(timeout);resolve(value);},reject:error=>{clearTimeout(timeout);reject(error);}});frame.contentWindow.postMessage({nozeliSheet:channel,type,requestId:id},location.origin);});
  return {dispose,snapshotModel:()=>frame.contentWindow.nozeliSheetModels.snapshotModel(),applyModel:model=>frame.contentWindow.nozeliSheetModels.applyModel(model),closeContextMenu:()=>frame.contentWindow.postMessage({nozeliSheet:channel,type:'context-close'},location.origin),export:()=>request('export'),snapshot:()=>request('snapshot')};

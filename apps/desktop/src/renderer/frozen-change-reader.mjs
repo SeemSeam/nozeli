@@ -1,6 +1,9 @@
 // Frozen result viewing never opens a live project file or replaces its editor.
 // Inject the existing MergeView mount so this lifecycle can also run without Electron.
-export function mountFrozenChangeReader({ parent, invoke, mountDiff, currentProjectId }) {
+// onExit belongs to a dedicated host surface: awaiting it must not clear this
+// overlay. The host closes content through pane history and owns its disposal.
+// Omit onExit for a local overlay that restores the retained reader in place.
+export function mountFrozenChangeReader({ parent, invoke, mountDiff, currentProjectId, onExit }) {
   const document = parent.ownerDocument;
   let overlay = null, diff = null, retained = [], focus = null, generation = 0;
 
@@ -38,9 +41,27 @@ export function mountFrozenChangeReader({ parent, invoke, mountDiff, currentProj
     overlay.replaceChildren();
     const head = document.createElement('div'); head.className = 'document-diff-head';
     const left = document.createElement('header'), right = document.createElement('header');
-    const back = document.createElement('button'); back.type = 'button'; back.textContent = '返回阅读';
-    back.addEventListener('click', () => restore());
-    const title = document.createElement('span'); title.className = 'document-diff-title'; title.textContent = '冻结变更 · 只读';
+    const back = document.createElement('button'); back.type = 'button'; back.textContent = onExit ? '关闭对比' : '返回阅读';
+    const exitStatus = document.createElement('p'); exitStatus.className = 'frozen-change-exit-status'; exitStatus.setAttribute('role', 'status'); exitStatus.hidden = true;
+    back.addEventListener('click', async () => {
+      if (!onExit) { restore(); return; }
+      if (back.disabled) return;
+      back.disabled = true;
+      try {
+        const result = await onExit();
+        if (result === false || result?.ok === false) throw new Error(result?.error?.message || '宿主未能关闭对比');
+      } catch (error) {
+        if (token !== generation) return;
+        exitStatus.textContent = '关闭对比失败：' + (error?.message || '请重试'); exitStatus.hidden = false;
+      } finally {
+        if (token === generation) back.disabled = false;
+      }
+    });
+    const title = document.createElement('span'); title.className = 'document-diff-title'; title.textContent = '冻结变更';
+    const pathDetails = document.createElement('details'); pathDetails.className = 'frozen-change-path';
+    const pathSummary = document.createElement('summary'); pathSummary.textContent = '完整路径';
+    const fullPath = document.createElement('p'); fullPath.textContent = '正在读取文件身份…';
+    pathDetails.append(pathSummary, fullPath);
     const previous = document.createElement('button'), next = document.createElement('button'), count = document.createElement('span');
     previous.type = next.type = 'button'; previous.textContent = '上一处'; next.textContent = '下一处';
     previous.setAttribute('aria-label', '上一处差异'); next.setAttribute('aria-label', '下一处差异');
@@ -48,8 +69,11 @@ export function mountFrozenChangeReader({ parent, invoke, mountDiff, currentProj
     previous.addEventListener('click', () => diff?.navigate(-1));
     next.addEventListener('click', () => diff?.navigate(1));
     const navigation = document.createElement('div'); navigation.className = 'diff-navigation'; navigation.append(previous, count, next);
-    const versions=document.createElement('span');versions.className='frozen-change-versions';versions.textContent='输入版本 → 候选版本 · 只读';
-    left.append(back, title);right.append(versions,navigation);head.append(left,right);
+    const versions = document.createElement('div'); versions.className = 'frozen-change-versions';
+    const versionLabel = document.createElement('span'); versionLabel.textContent = '输入版本 → 候选版本 · 只读';
+    const mode = document.createElement('span'); mode.className = 'frozen-change-mode'; mode.hidden = true;
+    versions.append(versionLabel, mode);
+    left.append(back, title, pathDetails); right.append(versions, navigation); head.append(left, right, exitStatus);
     const body = document.createElement('div'); body.className = 'document-diff-body';
     const status = document.createElement('p'); status.setAttribute('role', 'status'); status.textContent = '正在读取冻结版本…';
     body.append(status); overlay.append(head, body); back.focus({ preventScroll: true });
@@ -57,16 +81,18 @@ export function mountFrozenChangeReader({ parent, invoke, mountDiff, currentProj
     try { result = await invoke('managed.changes.read', { projectId, changeSetId, fileId }); }
     catch (error) { result = { ok: false, error: { message: error.message } }; }
     if (token !== generation || projectId !== currentProjectId()) return { ok: false, stale: true };
-    if (!result.ok) { status.textContent = '冻结变更不可用：' + (result.error?.message || '读取失败'); return result; }
+    if (!result.ok) { status.textContent = '暂时无法读取冻结版本，原文件未被替代。可以关闭对比后重试。';const details=document.createElement('details'),summary=document.createElement('summary'),diagnostic=document.createElement('pre');summary.textContent='读取失败详情';diagnostic.textContent=result.error?.message||'读取失败';details.append(summary,diagnostic);body.append(details);return result; }
     const value = result.value;
     const presentation = frozenChangePresentation(value);
-    title.textContent = presentation.path + ' · 冻结变更 · 只读'; title.title = title.textContent;
-    versions.textContent = '输入版本 → 候选版本 · 只读' + (presentation.modeChange ? ' · 模式 ' + presentation.modeChange : '');
+    const shortPath = path => path.split('/').pop() || path;
+    title.textContent = (presentation.leftPath === presentation.rightPath ? shortPath(presentation.rightPath) : shortPath(presentation.leftPath) + ' → ' + shortPath(presentation.rightPath)) + ' · 冻结变更';
+    fullPath.textContent = presentation.path;
+    if (presentation.modeChange) { mode.textContent = '模式 ' + presentation.modeChange; mode.hidden = false; }
     if (!presentation.text) { status.textContent = presentation.reason; return result; }
     diff = mountDiff({ parent: body, leftPath: presentation.leftPath, rightPath: presentation.rightPath,
       leftText: presentation.before, rightText: presentation.after,
       onNavigate(index, total) {
-        count.textContent = total ? index < 0 ? `${total} 处差异` : `${index + 1}/${total} 处差异` : presentation.modeChange ? '内容相同 · 模式 ' + presentation.modeChange : '内容相同';
+        count.textContent = total ? index < 0 ? `${total} 处差异` : `${index + 1}/${total} 处差异` : '内容相同';
         previous.disabled = next.disabled = !total;
       },
     });

@@ -16,6 +16,7 @@ const validateViewPaths = (paths, message, valid = validViewPath) => {
   return [...new Set(paths)];
 };
 export function treeViewValue(record) {
+  if(record!=null&&(typeof record!=='object'||Array.isArray(record)))throw Object.assign(new Error('目录视图状态损坏，原记录未覆盖。'),{code:'TREE_VIEW_INVALID'});
   const closed = validateViewPaths(record?.closed === undefined ? [] : record.closed, '目录折叠状态无效。', validClosedPath);
   const hidden = validateViewPaths(record?.hidden === undefined ? [] : record.hidden, '隐藏路径无效。');
   const expanded=validateViewPaths(record?.expanded===undefined?[]:record.expanded,'目录展开状态无效。');
@@ -32,7 +33,7 @@ export class FileTreeOps {
   async labels({ projectId }) {
     const project = await this.host.requireProject(projectId);
     const labels = Object.create(null);
-    for (const file of await new FileTags(project.root).all()) if (file.fileLabel) {
+    for (const file of await new FileTags({ storage: this.host.storage, projectId, root: project.root }).all()) if (file.fileLabel) {
       if (!Number.isSafeInteger(file.fileLabel.revision) || file.fileLabel.revision < 1) fail('文件标记版本损坏，未覆盖。');
       labels[file.file.relPath] = { ...validateFileLabel(file.fileLabel), revision: file.fileLabel.revision };
     }
@@ -44,7 +45,7 @@ export class FileTreeOps {
       const value = validateFileLabel(input), project = await this.host.requireProject(projectId);
       const abs = await this.locate(project, relPath);
       if (!(await fs.lstat(abs)).isFile()) fail('颜色和备注仅用于现有文件。');
-      const store = new FileTags(project.root), old = await store.read(relPath);
+      const store = new FileTags({ storage: this.host.storage, projectId, root: project.root }), old = await store.read(relPath);
       if (old?.fileLabel) { validateFileLabel(old.fileLabel); if (!Number.isSafeInteger(old.fileLabel.revision) || old.fileLabel.revision < 1) fail('文件标记版本损坏，未覆盖。'); }
       const revision = old?.fileLabel?.revision ?? 0;
       if (!Number.isSafeInteger(expectedRevision) || expectedRevision !== revision) fail('文件标记已被其他操作修改，请重新打开后编辑；当前修改未覆盖。');
@@ -56,10 +57,9 @@ export class FileTreeOps {
     return this.host.track(task);
   }
   async view({ projectId, closed, hidden, expanded, showHidden }) {
-    const project = await this.host.requireProject(projectId);
+    const project = await this.host.storage.requireRegistered(projectId);
     return this.host.track(this.host.metaLock(async () => {
-      const file = path.join(this.host.projectDir(projectId), 'file-tree-view.json');
-      const previous = await this.host.readVersioned(file);
+      const previous = await this.host.storage.getLocal(projectId, 'file-tree-view');
       const value = treeViewValue(previous);
       if (closed !== undefined) value.closed = validateViewPaths(closed, '目录折叠状态无效。', validClosedPath);
       if(expanded!==undefined)value.expanded=validateViewPaths(expanded,'目录展开状态无效。');
@@ -71,7 +71,7 @@ export class FileTreeOps {
         if (typeof showHidden !== 'boolean') fail('隐藏文件显示状态无效。');
         value.showHidden = showHidden;
       }
-      if (closed !== undefined || hidden !== undefined || expanded !== undefined || showHidden !== undefined) await this.host.writeVersioned(file, { ...previous, ...value });
+      if (closed !== undefined || hidden !== undefined || expanded !== undefined || showHidden !== undefined) await this.host.storage.putLocal(projectId, 'file-tree-view', { ...previous, ...value });
       return value;
     }));
   }
@@ -92,8 +92,8 @@ export class FileTreeOps {
   }
   async perform({ projectId, action, source = '', target = '', name }) {
     const project = await this.host.requireProject(projectId);
-    const store = new FileTags(project.root);
-    const changes = new FileChanges(project.root), allChanges=await changes.all();
+    const store = new FileTags({ storage: this.host.storage, projectId, root: project.root });
+    const changes = new FileChanges({ storage: this.host.storage, projectId, root: project.root }), allChanges=await changes.all();
     if (action === 'createFile' || action === 'createFolder') {
       const dir = await this.locate(project, target, true);
       const destination = path.join(dir, this.validName(name));
@@ -114,7 +114,7 @@ export class FileTreeOps {
     if (stat.isDirectory()) await walk(src);
     if (action === 'trash') {
       await this.trash(src);
-      // Keep sidecars and recovery drafts so an OS recycle-bin restore retains tags.
+      // Keep metadata and recovery drafts so a recycle-bin restore retains tags.
       return { removed: source };
     }
     if (!['copy', 'cut', 'rename'].includes(action)) fail('不支持的文件操作。');
@@ -142,33 +142,34 @@ export class FileTreeOps {
     const sidecars = allTags.filter(s => inside(s.file.relPath, source));
     const plan = sidecars.map(old => ({ old, rel: destination + old.file.relPath.slice(source.length) }));
     for (const item of plan) if (await store.read(item.rel)) fail('目标位置保留有标签记录，请使用其他名称。');
-    // Prepare metadata before mutating the source. Roll back on operational failure.
-    const staged = [], recovery = [];
+    const tagRows = await this.host.storage.listProject(projectId, 'file_tags');
+    const changeRows = await this.host.storage.listProject(projectId, 'file_changes');
+    const nextTags = tagRows.map(({ id, value }) => ({ id, value }));
+    const nextChanges = changeRows.map(({ id, value }) => ({ id, value }));
+    const provenanceRows = await this.host.storage.listProject(projectId, 'provenance');
+    const nextProvenance = provenanceRows.map(({ id, value }) => ({ id, value }));
+    const recovery = [];
     let sourceMoved = false, destinationCreated = false;
+    for (const {old,rel} of changePlan) {
+      const value = {...old,relPath:rel,docId:action==='copy'?randomUUID():old.docId,...(action==='copy'?{copiedFrom:{docId:old.docId,relPath:old.relPath}}:{})};
+      nextChanges.push({id:key(rel),value});
+    }
+    for (const {old,rel} of plan) {
+      const copy = action === 'copy';
+      const value = { ...old, file: { ...old.file, relPath: rel, fileId: copy ? randomUUID() : old.file.fileId }, tags: old.tags.map(t => ({ ...t, relPath: rel, id: copy ? randomUUID() : t.id, ...(copy && t.projection ? { projection: { ...t.projection, removed: true, requestId: null, messageId: null } } : {}) })) };
+      store.validate(value, rel); nextTags.push({id:key(rel),value});
+    }
     try {
-      for(const {old,rel}of changePlan){
-        const value={...old,relPath:rel,docId:action==='copy'?randomUUID():old.docId,...(action==='copy'?{copiedFrom:{docId:old.docId,relPath:old.relPath}}:{})};
-        await changes.withLock(rel,()=>changes.write(rel,value));staged.push(changes.location(rel));
-      }
-      for (const { old, rel } of plan) {
-        const copy = action === 'copy';
-        const value = { ...old, file: { ...old.file, relPath: rel, fileId: copy ? randomUUID() : old.file.fileId }, tags: old.tags.map(t => ({ ...t, relPath: rel, id: copy ? randomUUID() : t.id, ...(copy && t.projection ? { projection: { ...t.projection, removed: true, requestId: null, messageId: null } } : {}) })) };
-        await store.write(rel, value, null); staged.push(store.location(rel));
-      }
       if (action !== 'copy') {
-        // Recovery records are path-addressed too. Preserve unsaved drafts and provenance.
-        for (const folder of ['drafts', 'provenance']) {
-          const root = path.join(this.host.projectDir(projectId), folder);
-          for (const filename of await fs.readdir(root).catch(e => { if(e.code==='ENOENT') return []; throw e; })) {
-            if (!filename.endsWith('.json')) continue;
-            const oldPath = path.join(root, filename), bytes = await fs.readFile(oldPath);
-            const record = JSON.parse(bytes);
-            if (!record.relPath || !inside(record.relPath, source)) continue;
-            const rel = destination + record.relPath.slice(source.length), next = path.join(root, key(rel)+'.json');
-            const handle = await fs.open(next,'wx');
-            try { await handle.writeFile(JSON.stringify({...record,relPath:rel})); } finally {await handle.close();}
-            recovery.push({oldPath, next});
-          }
+        for (const { id, value } of await this.host.storage.listRecovery(projectId)) {
+          if (!id.startsWith('draft:') || !value?.relPath || !inside(value.relPath, source)) continue;
+          const rel = destination + value.relPath.slice(source.length), next = 'draft:' + key(rel);
+          if (await this.host.storage.getRecovery(projectId,next)) fail('目标位置保留有草稿，请使用其他名称。');
+          await this.host.storage.putRecovery(projectId,next,{...value,relPath:rel}); recovery.push({old:id,next});
+        }
+        for (const { id, value } of provenanceRows) if (inside(id,source)) {
+          const rel = destination + id.slice(source.length);
+          nextProvenance.push({id:rel,value:{...value,relPath:rel}});
         }
       }
       if (action === 'copy') {
@@ -181,18 +182,22 @@ export class FileTreeOps {
         else { await fs.link(src,dest); destinationCreated = true; await fs.unlink(src); }
         sourceMoved = true;
       }
+      const moved = id => action !== 'copy' && inside(id,source);
+      await this.host.storage.replaceProjectCollections(projectId, {
+        file_tags: nextTags.filter(row => !moved(row.value.file.relPath)),
+        file_changes: nextChanges.filter(row => !moved(row.value.relPath)),
+        provenance: nextProvenance.filter(row => !moved(row.id)),
+      });
     } catch (error) {
-      if (!sourceMoved) {
-        if (destinationCreated) await fs.rm(dest,{recursive:true,force:true});
-        for (const p of staged) await fs.unlink(p);
-        for (const r of recovery) await fs.unlink(r.next);
-      }
+      if(error.commitUnknown||error.code==='STORAGE_RESULT_UNKNOWN'){await this.host.storage.putRecovery(projectId,'tree-operation:'+randomUUID(),{source,destination,action,sourceMoved,destinationCreated,phase:'needs-attention',operationId:error.operationId??null}).catch(()=>{});throw error;}
+      if (sourceMoved) {
+        await fs.rename(dest, src); sourceMoved = false; destinationCreated = false;
+      } else if (destinationCreated) await fs.rm(dest,{recursive:true,force:true});
+      for (const r of recovery) await this.host.storage.putRecovery(projectId,r.next,null);
       throw error;
     }
     if (action !== 'copy') {
-      for(const {old}of changePlan)await fs.unlink(changes.location(old.relPath));
-      for (const { old } of plan) await fs.unlink(store.location(old.file.relPath));
-      for (const r of recovery) await fs.unlink(r.oldPath);
+      for (const r of recovery) await this.host.storage.putRecovery(projectId,r.old,null);
     }
     return { relPath: destination, ...(action !== 'copy' ? { from: source } : {}) };
   }

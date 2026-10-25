@@ -1,5 +1,4 @@
 /* Quiet chrome, persistent user layouts, and one continuous document surface. */
-#app { --files:174px; --side:288px; }
 .files > #open-folder,.files > .file-foot,.reading-footer { display:none!important; }
 #reader .file-section-label { display:none; }
 #reader.document-header-unified .document-meta #save-status.quiet-saved,
@@ -25,8 +24,8 @@
 .app #file-toggle,.app #toggle-sidebar { width:20px;height:44px;min-height:44px;max-height:44px;border:0;border-radius:4px;box-shadow:none;background:transparent;opacity:.65; }
 .app #file-toggle:hover,.app #toggle-sidebar:hover,.app #file-toggle:focus-visible,.app #toggle-sidebar:focus-visible { background:#718b6022;opacity:1; }
 .edge-toggle::before { width:8px;height:8px;border-width:0 2px 2px 0; }
-.app.side-collapsed { --side:38px; }
-.app.files-collapsed { --files:38px; }
+.app.side-collapsed { --side:20px; }
+.app.files-collapsed { --files:20px; }
 .app.side-collapsed #toggle-sidebar,.app.files-collapsed #file-toggle { left:8px;right:auto; }
 .edge-toggle #sidebar-badge { display:block!important;position:absolute;top:-12px;left:5px;min-width:16px;font-size:9px;padding:1px 3px;background:var(--annotation-red);color:white;border-radius:9px; }
 .edge-toggle #sidebar-badge[hidden] { display:none!important; }

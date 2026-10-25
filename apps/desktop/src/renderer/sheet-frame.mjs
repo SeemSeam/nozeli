@@ -46,14 +46,18 @@ window.nozeliSheetModels={
   else {editor.updateSheet(next);requestAnimationFrame(()=>restoreSheetReadingPosition(saved));}
  }
 };
+ function applyAppearance(theme,palette){document.documentElement.dataset.theme=theme==='dark'?'dark':'light';document.documentElement.dataset.palette=palette==='slate'?'slate':'sage';}
+ 
 addEventListener('keydown',event=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s'){event.preventDefault();if(ready)send('save');}},true);
 addEventListener('message',async event=>{
  if(event.source!==parent||event.origin!==location.origin||!event.data?.nozeliSheet)return;const data=event.data;
  try{
   if(data.type==='open'&&!channel){
    readOnly=data.readOnly===true;
-   channel=data.nozeliSheet;original=data.bytes;baseline=await openPackage(original);root=ReactDOM.createRoot(document.querySelector('#sheet'));
+   channel=data.nozeliSheet;applyAppearance(data.theme,data.palette);original=data.bytes;baseline=await openPackage(original);root=ReactDOM.createRoot(document.querySelector('#sheet'));
    renderWorkbook(baseline);
+  }else if(data.nozeliSheet===channel&&data.type==='appearance'){
+   applyAppearance(data.theme,data.palette);
   }else if(data.nozeliSheet===channel&&data.type==='context-close'){
    sheetMenu.close();
   }else if(data.nozeliSheet===channel&&data.type==='clipboard-result'){

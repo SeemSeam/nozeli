@@ -8,6 +8,7 @@ import {safeBytes} from './execution-workspace.mjs';
 import {recordBusinessTimeline} from './session-index.mjs';
 import {prepareHtmlReport,HTML_REPORT_OBJECT_MAX_BYTES} from './html-report.mjs';
 import {decodeReportState,reportDescriptor,reportExtension,readStoredReport,MAX_REPORT_BYTES} from './report-descriptor.mjs';
+import {readManagedState,saveManagedState,readManagedObject,listManagedPending,reconcileManagedPending,retainManagedNativeProjection} from './managed-storage.mjs';
 
 export async function atomicJson(file,value){
   const tmp=`${file}.${randomUUID()}.tmp`;const handle=await fs.open(tmp,'wx',0o600);
@@ -16,9 +17,11 @@ export async function atomicJson(file,value){
 }
 const inside=(a,b)=>a===b || (!path.relative(a,b).startsWith(`..${path.sep}`) && path.relative(a,b)!=='..' && !path.isAbsolute(path.relative(a,b)));
 export class Workspace {
-  static async open(runtimeRoot,contentRoot,{recoverStale=false,checkpoint=async()=>{}}={}){
-    await fs.mkdir(runtimeRoot,{recursive:true,mode:0o700});await fs.mkdir(contentRoot,{recursive:true});
-    const runtime=await fs.realpath(runtimeRoot),content=await fs.realpath(contentRoot);
+  static async open(runtimeRoot,contentRoot,{recoverStale=false,checkpoint=async()=>{},storage,projectId,offline=false}={}){
+    if(!storage||!projectId)throw Error('Project storage binding required');
+    const project=await storage.requireRegistered(projectId);
+    await fs.mkdir(runtimeRoot,{recursive:true,mode:0o700});
+    const runtime=await fs.realpath(runtimeRoot),content=project.root;
     if(inside(runtime,content)||inside(content,runtime))throw new Error('runtime and content roots overlap');
     const lock=path.join(runtime,'host.lock');let handle;
     try{handle=await fs.open(lock,'wx',0o600);}catch(error){
@@ -30,19 +33,66 @@ export class Workspace {
     }
     const owner=JSON.stringify({pid:process.pid,hostId:randomUUID(),stamp:await processStamp(process.pid)});
     await handle.writeFile(owner);await handle.close();
-    const store=new Workspace(runtime,content,lock,owner);store.checkpoint=checkpoint;
+    const store=new Workspace(runtime,content,lock,owner);Object.assign(store,{checkpoint,storage,projectId,offline,operationId:randomUUID(),objectRoot:path.join(project.metadataRoot,'objects','sha256')});
     try{
-      let original;try{original=JSON.parse(await fs.readFile(store.file,'utf8'));}catch(error){if(error.code!=='ENOENT')throw error;}
-      if(original!==undefined){if(!original||original.schema!==2||original.contentRoot!==content)throw new Error('incompatible workspace');store.state=decodeReportState(original);if(original.reportStateVersion!==1){for(const receipt of store.state.receipts)await readStoredReport(store,receipt);await store.save();}}
-      else{store.state={schema:2,reportStateVersion:1,workspaceId:randomUUID(),contentRoot:content,limit:1,works:[],todos:[],receipts:[],memoryPending:[]};await store.save();}
-      for(const dir of ['objects','agents','memory','evidence'])await fs.mkdir(path.join(runtime,dir),{recursive:true,mode:0o700});
-      store.plan=path.join(runtime,'memory','plan-tree.md');await fs.writeFile(store.plan,'# Plan Tree\n\nWorker reports and sourced host closure facts.\n',{flag:'wx'}).catch(e=>{if(e.code!=='EEXIST')throw e;});
+      store.state=decodeReportState(await readManagedState(storage,projectId,{offline,onCollections:collections=>{store.committedCollections=collections;}}));
+      for(const dir of ['agents','evidence'])await fs.mkdir(path.join(runtime,dir),{recursive:true,mode:0o700});
+      store.plan=path.join(project.metadataRoot,'memory','plantree','index.md');
+      if(!offline){await storage.requireOnline(projectId);await fs.mkdir(path.dirname(store.plan),{recursive:true,mode:0o700});await fs.writeFile(store.plan,'# Plan Tree\n\nProject semantic memory.\n',{flag:'wx',mode:0o600}).catch(e=>{if(e.code!=='EEXIST')throw e;});}
       return store;
     }catch(error){await store.close();throw error;}
   }
-  constructor(root,content,lock,owner){Object.assign(this,{root,content,lock,owner});this.file=path.join(root,'state.json');this.serial=Promise.resolve();}
-  save(){return atomicJson(this.file,this.state);}
-  async close(){if(this.closed)return;this.closing=true;await this.serial;if(await fs.readFile(this.lock,'utf8')!==this.owner)throw new Error('workspace owner changed');await fs.unlink(this.lock);this.closed=true;}
+  constructor(root,content,lock,owner){Object.assign(this,{root,content,lock,owner});this.serial=Promise.resolve();this.draftSerial=Promise.resolve();this.draftVersions=new Map();}
+  save(options){return saveManagedState(this,options);}
+  persistNativeFacts(){
+    const jobs=(this.state.jobs??[]).map(job=>({id:job.id,target:job.target,local:Object.fromEntries(['collabAttempts','manualPromptId','sessionFile','transport'].filter(key=>job[key]!==undefined).map(key=>[key,job[key]]))}));
+    return this.storage.putRecovery(this.projectId,'managed:native-facts',structuredClone({schema:1,projectId:this.projectId,sessionIndex:this.state.sessionIndex,jobs,messages:this.state.sessionIndex?.portableMessages??[]}));
+  }
+  async mutateNative(fn){
+    if(this.closed||this.closing)throw Error('workspace closed');
+    const run=this.serial.then(async()=>{
+      if(this.closed)throw Error('workspace closed');
+      if(this.nativeCommitUnknown)throw Object.assign(Error('Native journal commit outcome requires explicit recovery'),{code:'STORAGE_RESULT_UNKNOWN',commitUnknown:this.nativeCommitUnknown});
+      const prior=structuredClone(this.state);
+      try{
+        const result=await fn();recordBusinessTimeline(prior,this.state);
+        await retainManagedNativeProjection(this,(this.state.sessionIndex?.portableMessages??[]).filter(row=>!(prior.sessionIndex?.portableMessages??[]).some(old=>old.id===row.id)));
+        // Native receipt ACKs depend only on this instance's recovery WAL, never on the removable project ledger.
+        await this.persistNativeFacts();return result;
+      }catch(error){
+        if(error.code==='STORAGE_RESULT_UNKNOWN'||error.commitUnknown){this.nativeCommitUnknown=error.commitUnknown??{projectId:this.projectId,nativeFacts:true};this.commitUnknown=this.nativeCommitUnknown;error.commitUnknown=this.nativeCommitUnknown;throw error;}
+        const drafts=this.state.drafts;this.state=prior;if(drafts!==undefined)this.state.drafts=drafts;throw error;
+      }
+    });
+    this.serial=run.catch(()=>{});return run;
+  }
+  persistDrafts(){
+    const run=this.draftSerial.catch(()=>{}).then(()=>this.storage.putRecovery(this.projectId,'managed:drafts',structuredClone(this.state.drafts??{})));
+    this.draftSerial=run;return run;
+  }
+  setDraft(target,value){
+    this.state.drafts??={};this.state.drafts[target]=value;this.draftVersions.set(target,(this.draftVersions.get(target)??0)+1);return this.persistDrafts();
+  }
+  confirmDrafts(intents){
+    const run=this.draftSerial.catch(()=>{}).then(async()=>{
+      const drafts=structuredClone(this.state.drafts??{}),confirmed=[];
+      for(const intent of intents)if((this.draftVersions.get(intent.target)??0)===intent.version&&drafts[intent.target]===intent.value){drafts[intent.target]='';confirmed.push(intent);}
+      if(!confirmed.length)return;
+      await this.storage.putRecovery(this.projectId,'managed:drafts',drafts);
+      for(const intent of confirmed)if((this.draftVersions.get(intent.target)??0)===intent.version&&this.state.drafts?.[intent.target]===intent.value)this.state.drafts[intent.target]='';
+    });
+    this.draftSerial=run;return run;
+  }
+  listPending(){return listManagedPending(this.storage,this.projectId);}
+  reconcilePending(options){return reconcileManagedPending(this.storage,this.projectId,options);}
+  async putObject(bytes){
+    bytes=Buffer.from(bytes);const {digest:objectDigest}=await this.storage.putRecoveryObject(this.projectId,bytes);
+    await this.storage.putRecovery(this.projectId,'managed:recovery-object:'+objectDigest,{digest:objectDigest,byteLength:bytes.length,operationId:this.operationId});
+    try{return (await this.storage.putObject(this.projectId,bytes)).digest;}catch(error){this.offline=true;await this.storage.putRecovery(this.projectId,'managed:object-pending:'+objectDigest,{operationId:this.operationId,digest:objectDigest,status:'pending',error:{code:error.code,message:error.message}});return objectDigest;}
+  }
+  async readObject(digest){return readManagedObject(this.storage,this.projectId,digest);}
+  async requireOnline(){if(this.commitUnknown)throw Object.assign(Error('Workspace commit outcome requires explicit reconciliation'),{code:'STORAGE_RESULT_UNKNOWN',commitUnknown:this.commitUnknown});await this.storage.requireOnline(this.projectId);this.offline=false;}
+  async close(){if(this.closed)return;this.closing=true;await this.serial;await this.draftSerial;if(await fs.readFile(this.lock,'utf8')!==this.owner)throw new Error('workspace owner changed');await fs.unlink(this.lock);this.closed=true;}
   used(){return this.state.works.filter(w=>w.status!=='queued'&&w.status!=='ended'&&w.revision>0).length;}
   find(id){const w=this.state.works.find(w=>w.id===id);if(!w)throw new Error('unknown work');return w;}
   deviationHeld(id){const w=this.find(id);return ['pending','replanned'].includes(w.deviation?.status);}
@@ -57,16 +107,7 @@ export class Workspace {
     const event={id:randomUUID(),revision:w.revision,version:1,status:'pending',changedGoal,reason,progress,admittedJobId:job.id,sourceJobId:sourceJob.id,sourceText,source:`state.json#job:${sourceJob.id}`,sourceContext:structuredClone(sourceJob.context||{}),todoId,objectId,at};
     // 宿主偏离问题与 Worker problem 同为轻量 Markdown；来源身份保留在 event/收据字段，不依赖正文格式。
     const body='# 任务偏离：等待用户决定\n\n'+[['原始任务',w.request],['触发输入（尚未执行）',sourceText],['拟改变的目标',changedGoal],['偏离原因',reason],['已有进展与未执行部分',progress]].map(([title,value])=>'## '+title+'\n\n'+value+'\n').join('\n')+'\n工作已暂停；只有用户明确决定后才处理。\n';
-    // P2：对象写入失败/save 失败整体回滚（仅删自建对象文件）。
-    const objectFiles=[];
-    tx.onRollback(async()=>{
-      const durable=await this.#durableReceipt(receipt);
-      if(durable!=='absent')return {commitUnknown:{scope:'deviation',receiptId:receipt,workId:id,objectId,objectFiles:[...objectFiles],durable}};
-      const failures=[];
-      for(const file of objectFiles)await fs.rm(file,{force:true}).catch(failure=>failures.push(failure));
-      if(failures.length)throw Object.assign(new Error('deviation rollback cleanup incomplete'),{code:'DEVIATION_ROLLBACK_INCOMPLETE',files:[...objectFiles],failures});
-    });
-    for(const [suffix,data] of [['.md',Buffer.from(body)]]){const file=path.join(this.root,'objects',objectId+suffix),handle=await fs.open(file,'wx',0o600);objectFiles.push(file);try{await handle.writeFile(data);await handle.sync();}finally{await handle.close();}}
+    await this.putObject(Buffer.from(body));
     if(w.deviation){w.deviationHistory??=[];w.deviationHistory.push(structuredClone(w.deviation));}
     w.deviation=event;w.status='paused';w.problem={objectId,revision:w.revision};
     const report=reportDescriptor(Buffer.from(body),{format:'markdown',objectId,title:'任务偏离：等待用户决定'});
@@ -74,44 +115,42 @@ export class Workspace {
     this.state.todos.push({id:todoId,workId:id,revision:w.revision,kind:'deviation',status:'open',sourceJobId:sourceJob.id,objectId,deviationId:event.id,expectedVersion:1,text:report.excerpt});
     return structuredClone(event);
   });}
-  // 事务化变更：fn(tx) 内通过 tx.onRollback 注册回滚钩子；save 失败或 fn 抛错时按注册
-  // 顺序执行钩子。钩子返回 {commitUnknown} 表示磁盘提交结果不明或已提交：立即停止一切
-  // 后续清理（保留对象文件与已变更的内存状态，使其与可能已生效的磁盘状态对齐），并把
-  // hold 附加到原始错误上抛出；否则恢复事务前状态。清理钩子自身的失败不吞掉原始错误，
-  // 收集为 error.rollbackFailures 一并上抛。仅当磁盘 state.json 可读且其中确无对应收据
-  // （proven absent）时才允许删除本事务自建文件。
+  // Serialize business mutations; immutable objects remain retained when a commit fails.
   async mutate(fn){
     if(this.closed||this.closing)throw new Error('workspace closed');
+    if(this.commitUnknown)throw Object.assign(Error('Workspace commit outcome requires explicit reconciliation'),{code:'STORAGE_RESULT_UNKNOWN',commitUnknown:this.commitUnknown});
     const run=this.serial.then(async()=>{
       if(this.closed)throw new Error('workspace closed');
+      if(this.commitUnknown)throw Object.assign(Error('Workspace commit outcome requires explicit reconciliation'),{code:'STORAGE_RESULT_UNKNOWN',commitUnknown:this.commitUnknown});
       const prior=structuredClone(this.state);
-      const rollback=[];
-      const tx={onRollback:async hook=>{if(typeof hook!=='function')throw new Error('rollback hook must be a function');rollback.push(hook);}};
+      const rollback=[],draftIntents=[];
+      const tx={onRollback:async hook=>{if(typeof hook!=='function')throw new Error('rollback hook must be a function');rollback.push(hook);},consumeDraft:(target,value)=>{
+        if(this.state.drafts?.[target]===value)draftIntents.push({target,value,version:this.draftVersions.get(target)??0});
+      }};
       try{
         const result=await fn(tx);
         reconcileTodos(this.state,prior);recordBusinessTimeline(prior,this.state);
-        await this.save();
+        await this.save({draftIntents});
         return result;
       }catch(error){
+        if(error.code==='STORAGE_RESULT_UNKNOWN'||error.commitUnknown){
+          this.commitUnknown=error.commitUnknown??{projectId:this.projectId,pendingId:error.pendingId};
+          error.commitUnknown=this.commitUnknown;this.offline=true;
+          // The project may already reference retained Git candidates and objects. Never compensate an unknown commit.
+          throw error;
+        }
+        const tentative=this.state,drafts=this.state.drafts;this.state=prior;if(drafts!==undefined)this.state.drafts=drafts;
         let held=null;const failures=[];
         for(const hook of rollback){
-          let outcome;try{outcome=await hook(error);}catch(failure){failures.push(failure);continue;}
+          let outcome;try{outcome=await hook(error);}catch(failure){failures.push(failure);if(failure.code==='STORAGE_RESULT_UNKNOWN'||failure.commitUnknown){held=failure.commitUnknown??{projectId:this.projectId};break;}continue;}
           if(outcome?.commitUnknown){held??=outcome.commitUnknown;break;}
         }
-        if(held){if(failures.length)error.rollbackFailures=failures;error.commitUnknown=held;throw error;}
-        this.state=prior;
+        if(held){const latestDrafts=this.state.drafts;this.state=tentative;if(latestDrafts!==undefined)this.state.drafts=latestDrafts;if(failures.length)error.rollbackFailures=failures;error.commitUnknown=held;this.commitUnknown=held;this.offline=true;throw error;}
         if(failures.length)error.rollbackFailures=failures;
         throw error;
       }
     });
     this.serial=run.catch(()=>{});return run;
-  }
-  // 提交不确定性判定：事务失败后从磁盘重读 state.json。收据已在磁盘 => 'present'；
-  // 可读且无该收据 => 'absent'；读不出或解析不了 => 'unknown'（不可证明缺席，按已提交对待）。
-  async #durableReceipt(receiptId){
-    if(typeof receiptId!=='string'||!receiptId)return 'unknown';
-    let text;try{text=await fs.readFile(this.file,'utf8');}catch{return 'unknown';}
-    try{const stored=JSON.parse(text);const receipts=stored&&Array.isArray(stored.receipts)?stored.receipts:[];return receipts.some(r=>r&&r.id===receiptId)?'present':'absent';}catch{return 'unknown';}
   }
   submit(request,brief,options={}){return this.mutate(()=>this.submitState(request,brief,options));}
   submitState(request,brief,{name,sourceJob}={}){
@@ -129,7 +168,7 @@ export class Workspace {
     initialize?.(w);return structuredClone(w);
   }
   activate(id,options){return this.mutate(()=>this.activateState(this.find(id),options));}
-  activateNext(options){return this.mutate(()=>{const w=this.state.works.find(w=>w.status==='queued');return w&&this.used()<this.state.limit?this.activateState(w,options):null;});}
+  activateNext(options){return this.mutate(()=>{const w=this.state.works.find(w=>w.status==='queued'&&(!options?.isEligible||options.isEligible(w)));return w&&this.used()<this.state.limit?this.activateState(w,options):null;});}
   agentHome(id){return path.join(this.root,'agents',this.find(id).agentId);}
   bind(id,threadId){return this.mutate(()=>{this.find(id).threadId=threadId;});}
   projectReceipt(row,{jobId}={}){
@@ -163,32 +202,21 @@ export class Workspace {
     if(bytes.length>(format==='html-static'?HTML_REPORT_OBJECT_MAX_BYTES:MAX_REPORT_BYTES))throw Error('report exceeds frozen resource budget');active();
     if(kind==='result'&&w.execution?.candidate?.fileDigests)for(const entry of frozenFiles)if((w.execution.candidate.fileDigests[entry.relPath]??null)!==entry.digest)throw Error('Report artifact differs from frozen candidate: '+entry.relPath);
     const report=prepared?reportDescriptor(bytes,{format,objectId,title:prepared.title,excerpt:prepared.excerpt,manifestDigest:digest(manifestBytes)}):reportDescriptor(bytes,{format,objectId});
-    const snapshot={reportDigest:report.digest,directory,candidate:structuredClone(w.execution?.candidate||null),files:frozenFiles,operationIds:(this.state.fileOperations||[]).filter(o=>o.workId===id).map(o=>o.id),artifactDirectory:path.join(this.root,'objects','artifacts',objectId)};
-    // P1 事务化发布：最终快照校验后、写任何报告对象前注册回滚钩子。save 失败不再遗留
-    // object/manifest/artifacts 孤儿；仅删除本事务自建文件（wx 新建），未知文件一律保留。
+    const snapshot={reportDigest:report.digest,candidate:w.execution?.candidate?{commit:w.execution.candidate.commit,tree:w.execution.candidate.tree,jobId:w.execution.candidate.jobId}:null,files:frozenFiles,operationIds:(this.state.fileOperations||[]).filter(o=>o.workId===id).map(o=>o.id)};
+    await this.storage.putRecovery(this.projectId,'managed:publication:'+receipt,{operationId:this.operationId,workId:id,revision,receiptId:receipt,objectId,report,files:frozenFiles,status:'prepared'});
     for(const entry of frozenFiles)if(entry.digest!==null){const current=await safeBytes(directory,entry.relPath);if(current===null||digest(current)!==entry.digest)throw Error('artifact changed during publication');}
-    const created=[],artifactFiles=[];
-    tx.onRollback(async()=>{
-      const durable=await this.#durableReceipt(receipt);
-      if(durable!=='absent')return {commitUnknown:{scope:'publication',receiptId:receipt,workId:id,objectId,artifactDirectory:snapshot.artifactDirectory,objectFiles:[...created,...artifactFiles],durable}};
-      const failures=[];
-      for(const file of [...created,...artifactFiles])await fs.rm(file,{force:true}).catch(failure=>failures.push(failure));
-      const directories=new Set([snapshot.artifactDirectory]);
-      for(const file of artifactFiles)for(let dir=path.dirname(file);dir!==snapshot.artifactDirectory&&inside(snapshot.artifactDirectory,dir);dir=path.dirname(dir))directories.add(dir);
-      for(const dir of [...directories].sort((a,b)=>b.split(path.sep).length-a.split(path.sep).length))await fs.rmdir(dir).catch(failure=>{if(!['ENOENT','ENOTEMPTY','EEXIST'].includes(failure.code))failures.push(failure);});
-      if(failures.length)throw Object.assign(new Error('publication rollback cleanup incomplete'),{code:'PUBLICATION_ROLLBACK_INCOMPLETE',files:[...created,...artifactFiles],failures});
-    });
     if(retainCandidate!=null){
       if(typeof retainCandidate!=='function')throw new Error('retainCandidate must be a function');
       const retained=await retainCandidate();
       if(retained!=null){
         if(typeof retained!=='object'||Array.isArray(retained))throw new Error('invalid retainCandidate result');
         if(retained.changeSetId!=null){if(typeof retained.changeSetId!=='string'||!retained.changeSetId.trim())throw new Error('invalid retained changeSetId');changeSetId=retained.changeSetId;}
-        if(retained.rollback!=null){if(typeof retained.rollback!=='function')throw new Error('invalid retainCandidate rollback');tx.onRollback(async()=>{await retained.rollback();});}
+        if(retained.rollback!=null){if(typeof retained.rollback!=='function')throw new Error('invalid retainCandidate rollback');tx.onRollback(()=>retained.rollback());}
       }
     }
-    for(const entry of frozenFiles)if(entry.digest!==null){const target=path.join(snapshot.artifactDirectory,entry.relPath);await fs.mkdir(path.dirname(target),{recursive:true,mode:0o700});const handle=await fs.open(target,'wx',0o600);artifactFiles.push(target);try{await handle.writeFile(frozenBytes.get(entry.relPath));await handle.sync();}finally{await handle.close();}}
-    for(const [suffix,data] of prepared?[['.html',bytes],['.manifest.json',manifestBytes]]:[[reportExtension(report),bytes]]){const file=path.join(this.root,'objects',objectId+suffix),handle=await fs.open(file,'wx',0o600);created.push(file);try{await handle.writeFile(data);await handle.sync();}finally{await handle.close();}}
+    for(const entry of frozenFiles)if(entry.digest!==null)entry.objectDigest=await this.putObject(frozenBytes.get(entry.relPath));
+    await this.putObject(bytes);if(manifestBytes)await this.putObject(manifestBytes);
+    snapshot.manifestDigest=await this.putObject(Buffer.from(JSON.stringify({version:1,report,files:frozenFiles})));
     active();
     const row={id:receipt,workId:id,revision,kind,report,publicationDigest,publicationInputDigest,objectId,at:new Date().toISOString(),...(jobId?{sourceJobId:jobId,jobId}:{}),...(changeSetId?{changeSetId}:{}),snapshot};this.state.receipts.push(row);
     this.projectReceipt(row,{jobId});
@@ -204,12 +232,28 @@ export class Workspace {
   // 不留"Work 已 continue 无 job"或"job 已 completed Work 仍 running"的半状态）。
   continueWithManualJob(id,job){return this.mutate(()=>{const revision=this.continueState(id);job.revision=revision;job.context.boundWorkId=id;this.state.jobs.push(job);return revision;});}
   settleWithManualJob(id,job,{error,agentMessage,systemMessage}={}){return this.mutate(()=>{this.settleState(id);const saved=this.state.jobs.find(j=>j.id===job.id);if(error){saved.status='failed';saved.error=String(error).slice(0,400);}else{saved.status='completed';saved.completedAt=new Date().toISOString();}if(agentMessage)this.state.messages.push(agentMessage);else if(systemMessage)this.state.messages.push(systemMessage);});}
-  async end(id,{by,revision,decision}){
+  async end(id,{by,revision,decision,binding,requestKey,validateAdmission}){
     await this.mutate(()=>{
       const w=this.find(id);if(by!=='user'||!['accept','discard'].includes(decision))throw Error('explicit user accept/discard decision required');
-      if(w.status==='ended'){if(w.outcome===decision)return;if(w.outcome||w.closure?.decision)throw Error('work already ended with another decision');if(w.closure?.git?.complete||w.closure?.workerHome?.cleaned||w.closure?.phase==='complete')throw Error('legacy resources already disposed; preserve historical outcome');if(revision!==w.revision)throw Error('stale work revision');w.outcome=decision;w.closure??={revision:w.revision,at:w.endedAt};w.closure.decision=decision;w.closure.phase='requested';w.closure.dispositionAt=new Date().toISOString();return;}
       if(revision!==w.revision)throw Error('stale work revision');
-      const at=new Date().toISOString();w.status='ended';w.endedBy='user';w.endedAt=at;w.outcome=decision;w.closure={decision,phase:'requested',at,revision:w.revision};
+      const fields=['workId','revision','objectId','candidateCommit'],current={workId:id,revision:w.revision,objectId:w.result?.objectId??null,candidateCommit:w.execution?.candidate?.commit??null};
+      if(!binding||typeof binding!=='object'||Array.isArray(binding)||Object.keys(binding).length!==fields.length||fields.some(key=>!Object.hasOwn(binding,key)||binding[key]!==current[key]))throw Error('stale or invalid disposition binding');
+      if(typeof requestKey!=='string'||!/^[a-zA-Z0-9:_-]{8,160}$/.test(requestKey))throw Error('invalid disposition request key');
+      if(this.state.works.some(other=>other.id!==id&&other.closure?.requestKey===requestKey))throw Error('disposition request key collision');
+      if(w.status==='ended'){
+        const closure=w.closure;
+        if(w.outcome||closure?.decision){
+          if(w.outcome!==decision||closure?.decision!==decision)throw Error('work already ended with another decision');
+          if(!closure.binding||fields.some(key=>closure.binding[key]!==binding[key]))throw Error('work already ended without matching disposition binding');
+          if(closure.requestKey!==requestKey)throw Error('work already ended with another disposition request key');
+          return;
+        }
+        if(closure?.git?.complete||closure?.workerHome?.cleaned||closure?.phase==='complete')throw Error('legacy resources already disposed; preserve historical outcome');
+        validateAdmission?.();
+        w.outcome=decision;w.closure??={revision:w.revision,at:w.endedAt};Object.assign(w.closure,{decision,binding:{...current},requestKey,phase:'requested',dispositionAt:new Date().toISOString()});return;
+      }
+      validateAdmission?.();
+      const at=new Date().toISOString();w.status='ended';w.endedBy='user';w.endedAt=at;w.outcome=decision;w.closure={decision,binding:{...current},requestKey,phase:'requested',at,revision:w.revision};
       for(const todo of this.state.todos)if(todo.workId===id&&['open','iterating'].includes(todo.status)&&['result','problem','routing','recovery','deviation'].includes(todo.kind)){todo.status='cancelled';todo.resolution={status:'work-ended',decision,at,revision:w.revision};}
       for(const j of this.state.jobs||[])if((j.target===id||j.context?.boundWorkId===id||j.context?.workId===id)&&['queued','transferring'].includes(j.status)){j.status='cancelled';j.interruptionReason='user-ended';j.finishedAt=at;}
     });
@@ -222,20 +266,18 @@ export class Workspace {
       let relPath,file;
       const source=this.state.receipts.findLast(r=>r.workId===id&&r.revision===w.revision&&r.kind==='result')||this.state.receipts.findLast(r=>r.workId===id&&r.kind==='problem');
       let bytes,kind,sourceRef;
-      if(source){bytes=await readStoredReport(this,source);kind=source.kind==='result'?'worker-report':'worker-problem';sourceRef=`objects/${source.objectId}${reportExtension(source.report)}`;}
-      else{kind='host-termination';sourceRef=`state.json#work:${id}`;bytes=Buffer.from(`# Host termination record\n\nWork: ${w.name||id}\nDecision: ${closure.decision||'unknown (legacy)'}\nEnded: ${w.endedAt}\nProvider stopped: confirmed\nNo final Worker result report exists for revision ${w.revision}. This record is not a successful completion report.\nSource: ${sourceRef}\n`);}
-      relPath=`reports/${id}${source?reportExtension(source.report):'.md'}`;file=path.join(path.dirname(this.plan),relPath);
-      if(closure.report){const existing=await fs.readFile(file);if(digest(existing)!==closure.report.digest)throw Error('archived report changed');return closure.report;}
-      await fs.mkdir(path.dirname(file),{recursive:true,mode:0o700});
-      try{const handle=await fs.open(file,'wx',0o600);try{await handle.writeFile(bytes);await handle.sync();}finally{await handle.close();}}catch(error){if(error.code!=='EEXIST')throw error;if(!bytes.equals(await fs.readFile(file)))throw Error('existing archived report differs');}
-      closure.report={relPath,digest:digest(bytes),kind,source:sourceRef,format:source?.report.format||'markdown',mediaType:source?.report.mediaType||'text/markdown',revision:w.revision,at:new Date().toISOString(),...(kind==='worker-report'?{summary:source.report.excerpt.slice(0,240)}:{})};
+      if(source){bytes=await readStoredReport(this,source);kind=source.kind==='result'?'worker-report':'worker-problem';sourceRef=`objects/sha256/${source.report.digest}`;}
+      else{kind='host-termination';sourceRef=`project.sqlite#managed_works:${id}`;bytes=Buffer.from(`# Host termination record\n\nWork: ${w.name||id}\nDecision: ${closure.decision||'unknown'}\nEnded: ${w.endedAt}\nProvider stopped: confirmed\nNo final Worker result report exists for revision ${w.revision}. This is not a successful completion report.\n`);}
+      if(closure.report){await this.readObject(closure.report.digest);return closure.report;}
+      const objectDigest=await this.putObject(bytes);relPath=`../../objects/sha256/${objectDigest}`;
+      closure.report={relPath,digest:objectDigest,kind,source:sourceRef,format:source?.report.format||'markdown',mediaType:source?.report.mediaType||'text/markdown',revision:w.revision,at:new Date().toISOString(),...(kind==='worker-report'?{summary:source.report.excerpt.slice(0,240)}:{})};
       await this.updateArchiveState(w);return structuredClone(closure.report);
     });
   }
   async updateArchiveState(w){
     const report=w.closure?.report;if(!report)return;
-    const directory=path.dirname(this.plan),metadataPath=`reports/${w.id}.json`;
-    await atomicJson(path.join(directory,metadataPath),{schema:1,workId:w.id,name:w.name,request:w.request,approvedScopes:structuredClone(w.approvedScopes||[]),deviation:structuredClone(w.deviation||null),deviationHistory:structuredClone(w.deviationHistory||[]),revision:w.revision,status:w.status,outcome:w.outcome||null,endedAt:w.endedAt,report:structuredClone(report),stopReceipt:structuredClone(w.closure.stopReceipt||null),workerHome:structuredClone(w.closure.workerHome||null),phase:w.closure.phase,git:structuredClone(w.closure.git||null),error:w.closure.error||null});
+    await this.requireOnline();
+    const directory=path.dirname(this.plan),metadataPath=`project.sqlite#managed_works:${w.id}`;
     const previous=await fs.readFile(this.plan,'utf8'),marker=`<!-- report:${w.id} -->`,end=`<!-- /report:${w.id} -->`;
     const clean=text=>String(text||'').replace(/[\r\n]+/g,' ').replace(/[<>\[\]]/g,'').slice(0,240);
     const fact=w.closure.git?.status||'technical closure '+w.closure.phase;
@@ -243,7 +285,7 @@ export class Workspace {
     let next;const start=previous.indexOf(marker),close=start<0?-1:previous.indexOf(end,start);
     if(start<0)next=previous+'\n'+block+'\n';else if(close>=0)next=previous.slice(0,start)+block+previous.slice(close+end.length);else throw Error('Incomplete report index marker; preserve root for recovery');
     if(next!==previous){const temporary=`${this.plan}.${randomUUID()}.tmp`;const handle=await fs.open(temporary,'wx',0o600);try{await handle.writeFile(next);await handle.sync();}finally{await handle.close();}if(await fs.readFile(this.plan,'utf8')!==previous){await fs.rm(temporary,{force:true});throw Error('Plan Tree changed during archival; retry without overwriting user edits');}await fs.rename(temporary,this.plan);}
-    if(process.platform!=='win32')for(const target of [directory,path.join(directory,'reports')]){const handle=await fs.open(target,'r');try{await handle.sync();}finally{await handle.close();}}
+    if(process.platform!=='win32'){const handle=await fs.open(directory,'r');try{await handle.sync();}finally{await handle.close();}}
   }
   updateClosureArchive(id){return this.mutate(()=>this.updateArchiveState(this.find(id)));}
   async cleanupWorkerHome(id){

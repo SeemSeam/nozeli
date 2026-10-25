@@ -1,4 +1,4 @@
-.isolated-report { display:flex;flex-direction:column;min-height:520px;height:72vh; }
+.isolated-report { display:flex;flex-direction:column;min-height:0;flex:1 1 0; }
 .isolated-controls { display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px;flex:none; }
 .isolated-controls label { display:flex;align-items:center;gap:4px; }
 .isolated-status { font-size:12px;padding:6px 10px;margin:0;flex:none;overflow-wrap:anywhere; }

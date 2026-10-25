@@ -15,10 +15,10 @@ class Node {
   getAttribute(name) { return this.attributes.get(name) ?? null; }
   removeAttribute(name) { this.attributes.delete(name); }
   addEventListener(name, fn) { this.listeners.set(name, fn); }
-  click() { this.listeners.get('click')?.(); }
+  click() { return this.listeners.get('click')?.(); }
   focus(options) { this.ownerDocument.activeElement = this; this.focusOptions = options; }
 }
-function fixture(invoke) {
+function fixture(invoke, onExit) {
   const document = { createElement(tag) { return new Node(this, tag); } };
   const parent = new Node(document), reading = new Node(document), comparison = new Node(document);
   const editor = { buffer: 'unsaved draft', undo: ['original'], selection: { anchor: 2, head: 5 } };
@@ -26,7 +26,7 @@ function fixture(invoke) {
   comparison.inert = true; comparison.style.visibility = 'visible'; comparison.setAttribute('aria-hidden', 'false');
   parent.append(reading, comparison); reading.focus();
   const mounts = [], navigation = []; let destroyed = 0, projectId = 'p';
-  const reader = mountFrozenChangeReader({ parent, invoke, currentProjectId: () => projectId, mountDiff(options) {
+  const reader = mountFrozenChangeReader({ parent, invoke, onExit, currentProjectId: () => projectId, mountDiff(options) {
     mounts.push(options); options.parent.replaceChildren(new Node(document)); options.onNavigate(-1, 2);
     return { navigate: direction => navigation.push(direction), destroy() { destroyed++; options.parent.replaceChildren(); } };
   } });
@@ -115,7 +115,7 @@ test('missing/corrupt evidence remains a visible error, never a live-file fallba
     });
     assert.equal((await f.reader.open(target)).ok, false); assert.equal(f.mounts.length, 0);
     assert.deepEqual(calls, ['managed.changes.read']);
-    assert.match(f.parent.children[2].children[1].children[0].textContent, /retained object missing/);
+    const diagnostic=f.parent.children[2].children[1].children[1];assert.equal(diagnostic.tagName,'details');assert.equal(diagnostic.children[1].textContent,'retained object missing');
     f.reader.restore(); assert.equal(f.reading.editor, f.editor);
   }
 });
@@ -126,10 +126,14 @@ test('rename and copy retain both syntax paths, title and exact frozen modes', a
     const f=fixture(async()=>({ok:true,value}));await f.reader.open(target);
     assert.equal(f.mounts[0].leftPath,'old/module.py');assert.equal(f.mounts[0].rightPath,'new/module.ts');
     const head=f.parent.children[2].children[0];
-    assert.equal(head.children[0].children[1].textContent,'old/module.py → new/module.ts · 冻结变更 · 只读');
-    assert.match(head.children[1].children[0].textContent,/100644 → 100755/);
+    assert.equal(head.children[0].children[1].textContent,'module.py → module.ts · 冻结变更');
+    const details = head.children[0].children[2];
+    assert.equal(details.tagName, 'details'); assert.equal(details.children[0].tagName, 'summary');
+    assert.equal(details.children[1].textContent, 'old/module.py → new/module.ts');
+    assert.equal(head.children[1].children[0].children[0].textContent,'输入版本 → 候选版本 · 只读');
+    assert.equal(head.children[1].children[0].children[1].textContent,'模式 100644 → 100755');
     f.mounts[0].onNavigate(-1,0);
-    assert.equal(head.children[1].children[1].children[1].textContent,'内容相同 · 模式 100644 → 100755');
+    assert.equal(head.children[1].children[1].children[1].textContent,'内容相同');
     assert.equal(head.children[1].children[1].children[0].disabled,true);
     f.reader.restore();
   }
@@ -139,4 +143,38 @@ test('unsupported files retain exact modes from the frozen file manifest',()=>{
  const value={availability:'unsupported',reason:'special-file',file:{path:'link',before:{mode:'100644'},after:{mode:'120000'}},before:null,after:null};
  const presentation=frozenChangePresentation(value);
  assert.equal(presentation.text,false);assert.equal(presentation.modeChange,'100644 → 120000');
+});
+
+test('dedicated exit awaits the host without removing its overlay or restoring a nonexistent reader', async () => {
+  let finish, exits = 0;
+  const f = fixture(async () => ({ok:true,value:available}), () => { exits++; return new Promise(resolve => { finish = resolve; }); });
+  await f.reader.open(target);
+  const overlay = f.parent.children[2], back = overlay.children[0].children[0].children[0];
+  assert.equal(back.textContent, '关闭对比');
+  const closing = back.click(); assert.equal(back.disabled, true);
+  await back.click(); assert.equal(exits, 1);
+  assert.equal(f.reader.active, true); assert.equal(f.destroyed(), 0); assert.equal(f.reading.inert, true);
+  finish({ok:true}); await closing;
+  assert.equal(f.reader.active, true); assert.equal(f.parent.children[2], overlay);
+  assert.equal(f.document.activeElement, back);
+  f.reader.restore({focus:false});
+});
+
+test('host exit failures retain normal and unreadable evidence with an announced retryable error', async () => {
+  for (const readable of [true, false]) {
+    for (const failure of ['throw', 'envelope', 'false']) {
+      const f = fixture(async () => readable ? {ok:true,value:available} : {ok:false,error:{message:'retained object missing'}}, async () => {
+        if (failure === 'throw') throw Error('host close failed');
+        return failure === 'false' ? false : {ok:false,error:{message:'host close failed'}};
+      });
+      await f.reader.open(target);
+      const overlay = f.parent.children[2], head = overlay.children[0], back = head.children[0].children[0];
+      await back.click();
+      assert.equal(f.reader.active, true); assert.equal(f.parent.children[2], overlay);
+      assert.equal(f.reading.inert, true); assert.equal(back.disabled, false);
+      assert.equal(head.children[2].hidden, false); assert.match(head.children[2].textContent, /关闭对比失败/);
+      assert.equal(head.children[2].getAttribute('role'), 'status');
+      f.reader.restore({focus:false});
+    }
+  }
 });

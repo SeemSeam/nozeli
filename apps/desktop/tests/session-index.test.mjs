@@ -1,3 +1,4 @@
+import {openTestController,openTestWorkspace} from './project-storage.fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -9,13 +10,20 @@ import {NativeCollabRuntime} from '../src/agents/managed/collab/runtime.mjs';
 
 async function fixture(t) {
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-session-index-'));
-  const store=await Workspace.open(path.join(root,'runtime'),path.join(root,'project'));
+  const store=await openTestWorkspace(path.join(root,'runtime'),path.join(root,'project'));
   await store.mutate(()=>{store.state.jobs=[{id:'job-a',target:'frontdesk',status:'running',context:{},collabAttempts:[{requestId:'request-a',sessionId:'native-session',epoch:'native-session#0'},{requestId:'request-a',sessionId:'session-two',epoch:'session-two#0'}]},{id:'job-b',target:'other-work',revision:2,status:'running',context:{}}];store.state.messages=[{id:'user-a',target:'frontdesk',speaker:'user',text:'Original question',jobId:'job-a'}];});
   const index=new SessionIndex(store);await index.initialize();
   t.after(async()=>{if(!store.closed)await store.close();await fs.rm(root,{recursive:true,force:true});});
   return {root,store,index};
 }
 const fact=(id,text,extra={})=>({sessionId:'native-session',epoch:'native-session#0',requestId:'request-a',jobId:'job-a',entry:{type:'message',id,parentId:null,message:{role:'assistant',content:[{type:'text',text}]}},...extra});
+
+test('publication messages expose descriptor summary without copying report body into conversation',async t=>{
+ const {store,index}=await fixture(t),report={format:'html-static',mediaType:'text/html',objectId:'frozen-report',digest:'a'.repeat(64),byteLength:100,title:'Conclusion',excerpt:'Verified frozen summary',manifestDigest:'b'.repeat(64)};
+ store.state.receipts=[{id:'publication',workId:'work',objectId:report.objectId,revision:4,report}];
+ const row=index.legacyDTO({id:'publication-message',target:'work',speaker:'agent',publication:'result',objectId:report.objectId});
+ assert.equal(row.text,report.excerpt);assert.deepEqual(row.report,report);assert.equal(row.workId,'work');assert.equal(row.revision,4);assert.equal(row.source,'host');assert.equal(row.objectId,report.objectId);
+});
 
 test('context clear starts an empty current view while explicit history and subsequent messages survive',async t=>{
  const {store,index}=await fixture(t);
@@ -35,6 +43,8 @@ test('durable entry replaces its exact native stream, duplicate snapshot cannot 
   const {index}=await fixture(t);
   index.event({sessionId:'native-session',epoch:'native-session#0',requestId:'request-a',jobId:'job-a',streamId:'native-stream-7',event:{type:'message_update',message:{role:'assistant',content:[{type:'text',text:'Partial'}]}}},'frontdesk');
   const stream=index.frame().entries.find(e=>e.streaming);assert.equal(stream.text,'Partial');
+  index.event({sessionId:'native-session',epoch:'native-session#0',requestId:'request-a',jobId:'job-a',streamId:'native-stream-7',event:{type:'message_update',message:{role:'assistant',content:[{type:'text',text:'Complete live snapshot'}]},assistantMessageEvent:{type:'text_delta',delta:' snapshot'}}},'frontdesk');
+  assert.equal(index.frame().entries.find(e=>e.streaming).text,'Complete live snapshot','The cumulative snapshot replaces prior text; skipped deltas are not required or appended');assert.equal(index.frame().entries.find(e=>e.streaming).id,stream.id);
   await index.recordBatch([fact('entry-1','Complete answer',{streamId:'native-stream-7'})],'frontdesk');
   await index.recordBatch([fact('entry-1','Complete answer',{streamId:'native-stream-7'})],'frontdesk');
   const page=index.frame(),answers=page.entries.filter(e=>e.speaker==='agent');
@@ -52,11 +62,11 @@ test('equal entry IDs from different native sessions stay distinct; changed immu
 });
 
 test('failed index persistence never publishes an uncommitted native answer and permits exact recovery',async t=>{
-  const {store,index}=await fixture(t),save=store.save.bind(store);
-  store.save=async()=>{throw Error('storage unavailable');};
+  const {store,index}=await fixture(t),persistNativeFacts=store.persistNativeFacts.bind(store);
+  store.persistNativeFacts=async()=>{throw Error('storage unavailable');};
   await assert.rejects(index.recordBatch([fact('entry-save','Recoverable answer')],'frontdesk'),/storage unavailable/);
   assert.equal(index.frame().entries.some(e=>e.text==='Recoverable answer'),false);
-  store.save=save;
+  store.persistNativeFacts=persistNativeFacts;
   await index.recordBatch([fact('entry-save','Recoverable answer')],'frontdesk');
   assert.equal(index.frame().entries.filter(e=>e.text==='Recoverable answer').length,1);
 });

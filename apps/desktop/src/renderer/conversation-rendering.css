@@ -9,7 +9,7 @@
 .agent-message-body h1,.agent-message-body h2,.agent-message-body h3,.agent-message-body h4 { margin: .75em 0 .35em; line-height: 1.3; }
 .agent-message-body ul,.agent-message-body ol { margin: .45em 0; padding-left: 1.6em; }
 .agent-message-body blockquote { margin: .55em 0; padding-left: 10px; border-left: 3px solid #b9c9bc; color: var(--muted); }
-.agent-message-body pre { position: relative; max-width: 100%; overflow: auto; margin: .7em 0; padding: 26px 12px 12px; background: #2639320d; border: 1px solid var(--line); border-radius: 7px; white-space: pre; }
+.agent-message-body pre { position: relative; max-width: 100%; overflow: auto; margin: .7em 0; padding: 26px 12px 12px; border: 1px solid var(--line); border-radius: 7px; white-space: pre; }
 /* ---- 主对话输入材料与格式（composer-materials.mjs） ---- */
 .cm-quote{display:flex;gap:8px;align-items:center;margin:0 0 6px;padding:4px 10px;border-left:3px solid var(--green);background:var(--green-soft);border-radius:6px;font-size:11px;color:var(--muted)}
 .cm-quote-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

@@ -175,8 +175,7 @@ async function selectWork(work) {
   const row = '[data-managed-work="' + work.id + '"]';
   if (await page.$eval('#toggle-sidebar', node => node.getAttribute('aria-expanded') !== 'true')) await click('#toggle-sidebar');
   await page.waitForSelector(row);
-  await page.$eval(row + ' details', node => {if (!node.open) node.querySelector('summary').click();});
-  await click(row + ' [data-managed-work-discuss]');
+  await click(row + ' .managed-work-open');
   await page.waitForFunction(target => document.querySelector('#conversation-panel').dataset.managedConversation === target, {}, work.id);
 }
 async function frozen(work, marker) {

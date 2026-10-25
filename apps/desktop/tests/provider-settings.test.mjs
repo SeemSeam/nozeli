@@ -6,12 +6,41 @@ import path from 'node:path';
 import {EventEmitter} from 'node:events';
 import {PassThrough} from 'node:stream';
 import {ProviderSettings,validateApiSource,loginDisplay,hasProviderReferences} from '../src/agents/managed/provider-settings.mjs';
+import {ProjectStorage} from '../src/main/project-storage.mjs';
 const source={provider:'unit-source',baseUrl:'https://api.example.test/v1',api:'openai-completions',model:'model-real',key:'TEST_ONLY_NOT_A_SECRET'};
 async function fixture(t){const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-provider-settings-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));const settings=new ProviderSettings({source:{root,agentDir:root},broker:{acquire:async()=>({})},command:'/unused'});let entries=[],next=1;settings.request=async(route,body)=>{if(route==='/v1/snapshot')return {credentials:entries};if(route==='/v1/credential'){const entry={id:next++,provider:body.provider,credential:body.credential};entries.push(entry);return {entry};}const id=Number(route.split('/')[3]);entries=entries.filter(e=>e.id!==id);return {ok:true};};settings.models=async()=>[{selector:'unit-source/model-real',provider:'unit-source',id:'model-real'}];return {root,settings};}
+async function referenceFixture(t){
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-provider-references-')),content=path.join(root,'project'),storage=new ProjectStorage(path.join(root,'profile'));
+ await fs.mkdir(content);const project=await storage.register(content);
+ t.after(async()=>{await storage.db.close();await fs.rm(root,{recursive:true,force:true});});
+ return {root,content,storage,project};
+}
 test('API input refuses executable, URL credentials and unexpected fields',()=>{assert.equal(validateApiSource(source).provider,'unit-source');for(const change of [{provider:'__proto__'},{baseUrl:'https://user:password@example.test'},{baseUrl:'file:///tmp/key'},{model:'!command'},{key:'key\nvalue'},{command:'spawn'},{api:'unknown'}])assert.throws(()=>validateApiSource({...source,...change}));});
 test('serial source additions preserve native credentials privately and redact API',async t=>{const {root,settings}=await fixture(t);await Promise.all([settings.saveApi(source),settings.saveApi({...source,provider:'second-source'})]);const file=path.join(root,'models.yml'),bytes=await fs.readFile(file,'utf8');assert.match(bytes,/unit-source/);assert.match(bytes,/second-source/);assert.ok(bytes.includes(source.key));if(process.platform!=='win32')assert.equal((await fs.stat(file)).mode&0o777,0o600);const status=await settings.status();assert.ok(!JSON.stringify(status).includes(source.key));assert.equal(status.sources.length,2);});
 test('defaults validate real catalog, consume role separately, and block removal',async t=>{const {settings}=await fixture(t);await settings.saveApi(source);await assert.rejects(settings.saveDefaults({frontdesk:'fake/model',orchestrator:'',worker:''}));await settings.saveDefaults({frontdesk:'unit-source/model-real',orchestrator:'',worker:'unit-source/model-real'});assert.equal(await settings.modelFor('worker'),'unit-source/model-real');assert.equal(await settings.modelFor('orchestrator'),'');await assert.rejects(settings.remove({provider:source.provider,confirm:source.provider}),/引用/);await settings.saveDefaults({frontdesk:'',orchestrator:'',worker:''});assert.throws(()=>settings.remove({provider:source.provider,confirm:'wrong'}));assert.equal((await settings.remove({provider:source.provider,confirm:source.provider})).removed,true);});
-test('native journal reference protects source without blocking unrelated source',async t=>{const {root}=await fixture(t);await fs.mkdir(path.join(root,'sessions'));await fs.writeFile(path.join(root,'sessions','native.jsonl'),JSON.stringify({type:'model_change',model:'unit-source/model-real'})+'\n');assert.equal(await hasProviderReferences(root,'unit-source'),true);assert.equal(await hasProviderReferences(root,'unrelated'),false);});
+test('native journal reference uses registered local execution and does not block unrelated source',async t=>{
+ const {storage,project}=await referenceFixture(t),sessions=path.join(await storage.localDirectory(project.id),'execution','agents','resident-frontdesk-omp','sessions');
+ await fs.mkdir(sessions,{recursive:true});await fs.writeFile(path.join(sessions,'native.jsonl'),JSON.stringify({type:'model_change',model:'unit-source/model-real'})+'\n');
+ assert.equal(await hasProviderReferences({storage},'unit-source'),true);assert.equal(await hasProviderReferences({storage},'unrelated'),false);
+});
+test('provider references protect registered bindings and never import old runtime state',async t=>{
+ const {root,storage,project}=await referenceFixture(t);
+ const legacy=path.join(root,'profile','nozeli','managed-v1','old-project','runtime');await fs.mkdir(legacy,{recursive:true});await fs.writeFile(path.join(legacy,'state.json'),JSON.stringify({bindings:{worker:{model:'obsolete-provider/model'}}}));
+ assert.equal(await hasProviderReferences({storage},'obsolete-provider'),false);
+ await storage.putLocal(project.id,'managed:bindings',{frontdesk:{model:'role-provider/model'}});
+ assert.equal(await hasProviderReferences({storage},'role-provider'),true);
+ await storage.putProject(project.id,'managed_works','work-one',{id:'work-one',status:'paused'});
+ await storage.putLocal(project.id,'managed:works:work-one',{binding:{provider:'work-provider',model:'work-provider/model'}});
+ assert.equal(await hasProviderReferences({storage},'work-provider'),true);assert.equal(await hasProviderReferences({storage},'unrelated'),false);
+});
+test('unavailable removed projects and malformed local journals conservatively retain provider credentials',async t=>{
+ const {root,content,storage,project}=await referenceFixture(t),sessions=path.join(await storage.localDirectory(project.id),'execution','agents','worker','sessions');
+ await fs.mkdir(sessions,{recursive:true});await fs.writeFile(path.join(sessions,'native.jsonl'),'incomplete native record\n');
+ assert.equal(await hasProviderReferences({storage},'any-provider'),true);
+ await fs.unlink(path.join(sessions,'native.jsonl'));await storage.remove(project.id);await storage.db.request(path.join(project.metadataRoot,'project.sqlite'),'close');
+ await fs.rename(content,path.join(root,'disconnected'));
+ assert.equal(await hasProviderReferences({storage},'any-provider'),true);await assert.rejects(fs.access(content),{code:'ENOENT'});
+});
 test('failed model config persistence rolls back new broker credential',async t=>{const {root,settings}=await fixture(t);await fs.mkdir(path.join(root,'models.yml'));settings.readModels=async()=>({file:path.join(root,'models.yml'),value:{}});await assert.rejects(settings.saveApi(source));assert.deepEqual((await settings.request('/v1/snapshot')).credentials,[]);});
 test('OAuth projection preserves provider picker and authorization URL but drops unknown secrets',()=>{const display=loginDisplay('Select a provider:\n  1. OpenAI Codex\nOpen this URL in your browser:\nhttps://auth.example.test/authorize?state=PUBLIC\nrefresh_token=PRIVATE\nunknown private output\nEnter number (1-2): ');assert.match(display,/OpenAI Codex/);assert.match(display,/https:\/\/auth/);assert.ok(!display.includes('PRIVATE'));assert.ok(!display.includes('unknown private'));});
 test('login requires a supported selected provider, retains its identity and awaits cancellation',async t=>{

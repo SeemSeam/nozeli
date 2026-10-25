@@ -104,10 +104,10 @@ const state = {
     { id: 'ended-report', workId: 'ended-d', kind: 'result', objectId: 'ended-report-body', revision: 1, status: 'resolved' },
   ],
   receipts: [
-    { id: 'receipt-a-old', workId: 'review-a', kind: 'result', objectId: 'report-a-old', revision: 1, text: '# 旧版报告 v1\n\n第一轮历史成果，已经被第二轮替代。' },
-    { id: 'receipt-a-current', workId: 'review-a', kind: 'result', objectId: 'report-a-current', revision: 2, text: longReport },
-    { id: 'receipt-b', workId: 'problem-b', kind: 'problem', objectId: 'problem-b-body', revision: 1, text: '# 原 Worker 的问题\n\n已完成基础核对。阻塞点：请选择业务方案甲或乙。' },
-    { id: 'receipt-ended', workId: 'ended-d', kind: 'result', objectId: 'ended-report-body', revision: 1, text: '# 已结束历史报告\n\n成果和依据仍然可读。' },
+    {id:'receipt-a-old',workId:'review-a',kind:'result',objectId:'report-a-old',revision:1,body:'# 旧版报告 v1\n\n第一轮历史成果，已经被第二轮替代。',report:{format:'markdown',mediaType:'text/markdown',objectId:'report-a-old',title:'Historical fixture report',excerpt:'# 旧版报告 v1\n\n第一轮历史成果，已经被第二轮替代。'.slice(0,512)}},
+    {id:'receipt-a-current',workId:'review-a',kind:'result',objectId:'report-a-current',revision:2,body:longReport,report:{format:'markdown',mediaType:'text/markdown',objectId:'report-a-current',title:'Historical fixture report',excerpt:longReport.slice(0,512)}},
+    {id:'receipt-b',workId:'problem-b',kind:'problem',objectId:'problem-b-body',revision:1,body:'# 原 Worker 的问题\n\n已完成基础核对。阻塞点：请选择业务方案甲或乙。',report:{format:'markdown',mediaType:'text/markdown',objectId:'problem-b-body',title:'Historical fixture report',excerpt:'# 原 Worker 的问题\n\n已完成基础核对。阻塞点：请选择业务方案甲或乙。'.slice(0,512)}},
+    {id:'receipt-ended',workId:'ended-d',kind:'result',objectId:'ended-report-body',revision:1,body:'# 已结束历史报告\n\n成果和依据仍然可读。',report:{format:'markdown',mediaType:'text/markdown',objectId:'ended-report-body',title:'Historical fixture report',excerpt:'# 已结束历史报告\n\n成果和依据仍然可读。'.slice(0,512)}},
   ],
   jobs: [{ id: 'routing-job', type: 'intake', target: 'orchestrator', status: 'completed', text: '需要澄清的原请求', routing: { action: 'clarify' } }],
   messages: [], drafts: {}, agents: [], artifacts: [], quotaUsed: 3, limit: 8, busyTargets: [],
@@ -140,7 +140,7 @@ try {
     await sidebar();
     await page.click(`#inbox-reports [data-managed-todo="${todoId}"]`);
     const todo = state.todos.find(t => t.id === todoId);
-    const text = state.receipts.find(r => r.objectId && r.objectId === todo.objectId)?.text || todo.text;
+    const text = state.receipts.find(r => r.objectId && r.objectId === todo.objectId)?.body || todo.text;
     const needle = text.split('\n')[0].replace(/^#+\s*/, '');
     await page.waitForFunction(needle => !document.querySelector('#managed-doc').hidden &&
       document.querySelector('#managed-doc').textContent.includes(needle) && document.querySelector('#managed-result-actions'), {}, needle);

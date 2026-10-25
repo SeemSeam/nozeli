@@ -12,11 +12,20 @@ export function intakeLineage(state,job){
 export const recordExcerpt=(value,size=120)=>String(value||'').replace(/\s+/g,' ').trim().slice(0,size);
 const reviewExcerpt=value=>recordExcerpt(String(value||'').replace(/```[\s\S]*?```/g,' ').replace(/!?(\[([^\]]+)\])\([^)]*\)/g,'$2').replace(/^\s{0,3}#{1,6}\s+/gm,'').replace(/[*_`>]/g,''),180);
 const todoPhases={'frontdesk-route':'前台去向 · 等待用户决定',deviation:'任务偏离 · 等待用户决定',result:'报告待审查',problem:'等待回答',routing:'需要明确目标',recovery:'执行待恢复',git:'Git 待处理',closure:'收尾待处理',system:'系统异常待处理'};
+// A publication and its round's settlement are independent durable facts.
+// Only the exact current Work/receipt/job binding can expose this exception.
+export function resultSettlementIssue(state,work){
+ if(!work||work.readOnly||!['paused','review'].includes(work.status)||!Number.isInteger(work.revision)||work.result?.revision!==work.revision||!work.result?.objectId)return null;
+ const receipt=state.receipts?.find(r=>r.kind==='result'&&r.workId===work.id&&r.objectId===work.result.objectId&&r.revision===work.revision);
+ const job=receipt&&state.jobs?.find(j=>j.id===receipt.jobId&&j.target===work.id&&j.revision===work.revision);
+ if(!job||!['failed','interrupted','unknown'].includes(job.status))return null;
+ return {objectId:receipt.objectId,jobId:job.id,status:job.status,error:typeof job.error==='string'?job.error:''};
+}
 // A read-only inbox: backend identities and lifecycle remain authoritative.
 export function managedReviewTodos(state){
  const todos=state.todos||[],works=state.works||[],jobs=state.jobs||[],receipts=state.receipts||[];
  const currentPublication=(todo,work)=>{
-  if(work&&todo.kind==='result'&&work.status!=='review')return false;
+  if(work&&todo.kind==='result'&&work.status!=='review'&&!(work.status==='paused'&&resultSettlementIssue(state,work)?.objectId===todo.objectId))return false;
   if(work&&(['queued','running','closing','ended'].includes(work.status)||work.revision!=null&&todo.revision!=null&&work.revision!==todo.revision))return false;
   if(jobs.some(j=>(j.target===todo.workId||j.context?.boundWorkId===todo.workId)&&['queued','running'].includes(j.status)))return false;
   const publication=work?.[todo.kind];
@@ -32,9 +41,9 @@ export function managedReviewTodos(state){
   if(todo.kind==='routing'&&jobs.some(j=>j.context?.routingQuestionId===todo.id&&['queued','running'].includes(j.status)))return false;
   return true;
  }).map(todo=>{
-  const work=works.find(w=>w.id===todo.workId),receipt=receipts.find(r=>r.objectId===todo.objectId&&todo.objectId);
-  const label=todo.kind==='frontdesk-route'?'前台去向决定':todo.kind==='deviation'?'任务偏离决定':todo.kind==='result'?'完成报告':todo.kind==='problem'?'待回答问题':todo.kind==='routing'?'主控澄清':todo.kind==='git'?'Git 事项':todo.kind==='closure'?'收尾异常':todo.kind==='recovery'?'执行恢复':'系统异常';
-  return {...todo,title:[work?.name||recordExcerpt(work?.request,56),label,todo.revision!=null?'第 '+todo.revision+' 版':''].filter(Boolean).join(' · '),excerpt:reviewExcerpt(receipt?.text||todo.text),phase:todoPhases[todo.kind]||'待处理',actionableKind:todo.kind};
+  const work=works.find(w=>w.id===todo.workId),receipt=receipts.find(r=>r.objectId===todo.objectId&&todo.objectId),settlementIssue=todo.kind==='result'?resultSettlementIssue(state,work):null;
+  const label=settlementIssue?'已保存结果 · 完成状态待核查':todo.kind==='frontdesk-route'?'前台去向决定':todo.kind==='deviation'?'任务偏离决定':todo.kind==='result'?'完成报告':todo.kind==='problem'?'待回答问题':todo.kind==='routing'?'主控澄清':todo.kind==='git'?'Git 事项':todo.kind==='closure'?'收尾异常':todo.kind==='recovery'?'执行恢复':'系统异常';
+  return {...todo,title:[work?.name||recordExcerpt(work?.request,56),label,todo.revision!=null?'第 '+todo.revision+' 版':''].filter(Boolean).join(' · '),excerpt:receipt?.report?.excerpt||reviewExcerpt(todo.text),phase:settlementIssue?'结果已保存 · 完成状态待核查':todoPhases[todo.kind]||'待处理',actionableKind:todo.kind,...(settlementIssue?{settlementIssue}:{})};
  });
 }
 const phases={queued:'排队中',running:'执行中',paused:'待回答/处理',review:'结果待审查',closing:'历史结束待处理',ended:'已结束'};
@@ -87,6 +96,8 @@ export function managedWorkRecords(state){
   if(w.status==='queued')record.phase=`排队第 ${queued.findIndex(q=>q.id===w.id)+1} 位`;
   const pending=jobs.findLast(j=>(j.target===w.id&&j.type!=='initial'||j.context?.boundWorkId===w.id)&&['queued','running'].includes(j.status));
   if(pending)record.phase=pending.type==='intake'?'补充已接收，主控整理中':'补充已接收，等待执行';
+  const settlementIssue=resultSettlementIssue(state,w);
+  if(settlementIssue){record.settlementIssue=settlementIssue;if(!pending&&!jobs.some(j=>j.target===w.id&&['queued','running'].includes(j.status)))record.phase='结果已保存 · 完成状态待核查';}
   const failedIntake=jobs.findLast(j=>j.context?.boundWorkId===w.id&&['failed','interrupted'].includes(j.status)&&!j.routing);if(failedIntake&&!['closing','ended'].includes(w.status)&&!pending&&!jobs.some(j=>j.context?.retryOf===failedIntake.id&&j.routing)){record.retryJobId=failedIntake.id;record.phase='补充处理失败，待重试';}
   if(deviationHeld(w)){record.phase=deviationPresentation(w).phase;record.deviation=w.deviation;record.todoId=w.deviation.todoId;delete record.retryJobId;}
   if(w.status==='ended'){

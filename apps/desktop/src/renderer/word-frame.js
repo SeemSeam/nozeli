@@ -18,6 +18,8 @@ window.nozeliWordModels={
  }
 };
 const send=(type,extra={})=>parent.postMessage({nozeliWord:channel,type,...extra},location.origin);
+ function applyAppearance(theme,palette){document.documentElement.dataset.theme=theme==='dark'?'dark':'light';document.documentElement.dataset.palette=palette==='slate'?'slate':'sage';}
+ 
 addEventListener('keydown',event=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s'){event.preventDefault();if(ready)send('save');}},true);
 addEventListener('message',async event=>{
  if(event.source!==parent||event.origin!==location.origin||!event.data?.nozeliWord)return;
@@ -25,11 +27,14 @@ addEventListener('message',async event=>{
  if(data.type==='open'&&!channel){
   channel=data.nozeliWord;
   readOnly=data.readOnly===true;
+  applyAppearance(data.theme,data.palette);
   try{
    editor=new SuperDoc({selector:'#document',toolbar:readOnly?false:'#toolbar',role:readOnly?'viewer':'editor',disableContextMenu:false,modules:{contextMenu:{menuProvider:wordMenuProvider}},document:new File([data.bytes],data.name,{type:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'}),documentMode:readOnly?'viewing':'editing',zoom:{mode:'manual',initial:100,fitWidth:{min:25,max:200}},telemetry:{enabled:false},onReady(){ready=true;lastWordDoc=editor.activeEditor.state.doc;send('ready',{text:wordTextIndex(lastWordDoc).text});editor.on('contextMenu:open',()=>{selectionDismissed=true;clearTimeout(window.wordSelectionTimer);send('context-menu');});editor.on('contextMenu:close',()=>send('context-close'));editor.on('zoomChange',()=>requestAnimationFrame(reportWordZoom));requestAnimationFrame(reportWordZoom);queueAnchorLayout();},onTransaction:reportWordTransaction,onEditorUpdate(){if(ready){wordRegionDirty=true;queueAnchorLayout();}},onException(error){send('error',{message:error?.error?.message||'Word 编辑器发生错误'});}});
    // Development diagnostics use the actual editor, never synthetic document state.
    window.nozeliWordEditor=editor;
   }catch(error){send('error',{message:error.message});}
+ }else if(data.nozeliWord===channel&&data.type==='appearance'){
+  applyAppearance(data.theme,data.palette);
  }else if(data.nozeliWord===channel&&data.type==='context-close'){
   closeWordContextMenu();
  }else if(data.nozeliWord===channel&&data.type==='clipboard-result'){

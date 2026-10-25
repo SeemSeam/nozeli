@@ -220,6 +220,7 @@ export function mountTexWorkspace({ getContext, beside, closeBeside, openFile })
     else if (showPreview) { ensurePane(); if (active?.state?.lastSuccess) void showArtifact(active.state.lastSuccess); }
   };
   window.nozeli.subscribe('tex', receive);
+  window.nozeli.subscribe('workspace.control',event=>{if(event.type!=='tex-configuration'||!active||event.projectId!==active.projectId||configuring)return;clearTimeout(timer);active.config=event.config;configurationEpoch++;$('tex-root').value=event.config.root;$('tex-engine').value=event.config.engine;$('tex-auto').checked=event.config.automatic;message('项目编译设置已更新；下次编译使用新配置。');});
   return {
     changed,
     persist: rememberPosition,

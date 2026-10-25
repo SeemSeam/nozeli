@@ -33,6 +33,7 @@ export function mountDocumentAuthorship({current,invoke,reload,toast,onCompare})
   toggle.addEventListener('click',()=>setVisible(!visible));historyButton.addEventListener('click',()=>void history());
   window.nozeli.subscribe('menu.action',action=>{if(action==='authorship-toggle')setVisible(!visible);if(action==='authorship-history')void history();});
   window.nozeli.subscribe('document',event=>{const file=current();if(file?.projectId===event.projectId&&file?.relPath===event.relPath)void probe().catch(()=>{});});
+  window.nozeli.subscribe('workspace.control',event=>{if(event.type==='authorship-visibility'){visible=event.visible;visibilityChanges++;updateVisibility();render();}});
   let layoutFrame=0;
   const scheduleProjection=()=>{cancelAnimationFrame(layoutFrame);layoutFrame=requestAnimationFrame(projectMarkdown);};
   const resize=new ResizeObserver(scheduleProjection);resize.observe(document.getElementById('text-preview'));

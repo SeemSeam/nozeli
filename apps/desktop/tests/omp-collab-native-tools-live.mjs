@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { OmpTuiSession } from '../src/agents/managed/omp-tui-session.mjs';
 import { prepareOmpPrivateHome } from '../src/agents/managed/omp-provider-home.mjs';
-import { Controller } from '../src/agents/managed/controller.mjs';
+import {openTestController} from './project-storage.fixture.mjs'
 
 test('isolated native Worker survives real bash tool execution and durably settles Collab', { timeout: 120000 }, async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'omp-collab-native-tools-'));
@@ -214,7 +214,7 @@ test('actual Controller recovers same Worker after reviewed publication and revi
   });
   await writeFile(path.join(source, 'models.yml'), `providers:\n  controller-kill-local:\n    api: openai-completions\n    baseUrl: http://127.0.0.1:${server.address().port}/v1\n    auth: none\n    models:\n      - id: scripted\n        input: [text]\n`);
   await writeFile(path.join(source, 'config.yml'), 'setupVersion: 2\nstartup:\n  checkUpdate: false\nmarketplace:\n  autoUpdate: "off"\nautoResume: false\nmodelRoles:\n  default: controller-kill-local/scripted\ndefaultThinkingLevel: off\n');
-  controller = await Controller.open({ runtimeRoot: path.join(privateRoot, 'desktop', 'runtime'), contentRoot: content, ompSystemSource: { root: privateRoot, agentDir: source, private: true } });
+  controller = await openTestController({ runtimeRoot: path.join(privateRoot, 'desktop', 'runtime'), contentRoot: content, ompSystemSource: { root: privateRoot, agentDir: source, private: true } });
   await controller.start();
   work = await controller.store.submit('Create a native reviewed result', 'Run native bash then publish reviewed.txt', { name: 'Native crash recovery' });
   controller.kick();
@@ -233,4 +233,19 @@ test('actual Controller recovers same Worker after reviewed publication and revi
   assert.equal(requests, count, 'explicit restart must not replay accepted input');
   assert.equal(controller.store.state.jobs.find(job => job.id === accepted.jobId).status, 'failed');
   assert.equal(await readFile(path.join(controller.execution.directory(work.id), 'crash-partial.txt'), 'utf8'), 'partial');
+});
+
+test('native fragmented document-sized tool arguments survive streaming backlog and settle exactly once', { timeout: 120000 }, async t => {
+  const root=await mkdtemp(path.join(os.tmpdir(),'omp-collab-stream-burst-')),home=path.join(root,'home'),cwd=path.join(root,'project');await mkdir(cwd);t.diagnostic('Self-owned loopback streaming evidence: '+root);
+  const expected='来源规则 αβ 中文 👩‍🔬\\n"quoted"\n'.repeat(800),argumentsJson=JSON.stringify({text:expected}),entries=[],events=[],facts=[];let requests=0,calls=0,session,serverError;
+  const server=http.createServer((req,res)=>{let body='';req.on('data',chunk=>body+=chunk);req.on('end',()=>{try{const request=JSON.parse(body);requests++;assert(requests<=2,'No provider replay');res.writeHead(200,{'content-type':'text/event-stream'});const chunks=[],send=(delta,finish_reason=null)=>chunks.push('data: '+JSON.stringify({id:'burst-'+requests,object:'chat.completion.chunk',choices:[{index:0,delta,finish_reason}]})+'\n\n');
+    if(requests===1){assert(request.tools.some(tool=>tool.function?.name==='nozeli_burst_capture'));send({role:'assistant',tool_calls:[{index:0,id:'burst-call',type:'function',function:{name:'nozeli_burst_capture',arguments:''}}]});for(let offset=0;offset<argumentsJson.length;offset+=3)send({tool_calls:[{index:0,function:{arguments:argumentsJson.slice(offset,offset+3)}}]});send({},'tool_calls');}
+    else{assert(request.messages.some(message=>message.role==='tool'&&message.tool_call_id==='burst-call'));send({role:'assistant',content:'The complete document-sized argument was written.'});send({},'stop');}res.end(chunks.join('')+'data: [DONE]\n\n');
+  }catch(error){serverError=error;res.destroy(error);}});});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(async()=>{let receipt;try{receipt=await session?.stop();}finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));await writeFile(path.join(root,'evidence.json'),JSON.stringify({requests,calls,expectedChars:expected.length,argumentChars:argumentsJson.length,entries,events,facts,transport:session?.collab?.diagnostics(),serverError:serverError?.message,receipt},null,2));}assert.equal(receipt?.confirmationComplete,true);});
+  await prepareOmpPrivateHome(home);await writeFile(path.join(home,'models.yml'),`providers:\n  stream-burst-local:\n    api: openai-completions\n    baseUrl: http://127.0.0.1:${server.address().port}/v1\n    auth: none\n    models:\n      - id: scripted\n        input: [text]\n`);await writeFile(path.join(home,'config.yml'),'setupVersion: 2\nstartup:\n  checkUpdate: false\nmarketplace:\n  autoUpdate: "off"\nautoResume: false\nmodelRoles:\n  default: stream-burst-local/scripted\ndefaultThinkingLevel: off\n');
+  session=new OmpTuiSession({role:'frontdesk',home,cwd,tools:[{name:'nozeli_burst_capture',description:'Write the complete supplied test document.',inputSchema:{type:'object',properties:{text:{type:'string'}},required:['text']}}],onTool:async payload=>{assert.equal(payload.tool,'nozeli_burst_capture');assert.deepEqual(payload.arguments,{text:expected});await payload.admission.preEffect();calls++;await writeFile(path.join(cwd,'tool-burst-proof.txt'),payload.arguments.text);return {written:true};},onCollabEntry:fact=>entries.push(fact),onCollabEvent:fact=>events.push(fact),onTransportFact:fact=>facts.push(fact),settleTimeoutMs:60000});
+  await session.start();const deadline=Date.now()+20000;while((await session.bridge.getState()).model!=='stream-burst-local/scripted'){assert(Date.now()<deadline,'Native model initialization');await new Promise(resolve=>setTimeout(resolve,100));}
+  const result=await session.prompt('Write the supplied complete self-owned document through the registered tool.',{timeout:60000,job:{id:'burst-job',target:'frontdesk',type:'frontdesk'}});assert.equal(serverError,undefined);assert.equal(result.completion,'provider-completed');assert.equal(calls,1);assert.equal(requests,2);assert.equal(await readFile(path.join(cwd,'tool-burst-proof.txt'),'utf8'),expected);
+  const raw=entries.flatMap(fact=>fact.entries??[fact]),call=raw.find(fact=>fact.entry?.message?.content?.some?.(block=>block.type==='toolCall'&&block.id==='burst-call'));assert(call,'Actual native journal retains the complete tool call');assert.deepEqual(call.entry.message.content.find(block=>block.id==='burst-call').arguments,{text:expected});assert(call.streamId&&events.some(fact=>fact.streamId===call.streamId),'Durable call and live snapshots retain native stream identity');assert(raw.some(fact=>fact.entry?.message?.role==='toolResult'&&fact.entry.message.toolCallId==='burst-call'));assert.equal(facts.filter(fact=>fact.status==='settled').length,1);assert(!facts.some(fact=>fact.status==='unknown'),JSON.stringify(session.collab.diagnostics()));
 });

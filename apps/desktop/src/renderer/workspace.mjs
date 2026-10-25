@@ -28,13 +28,15 @@ export function mountWorkspace({ save, saveProjectSettings, openProject, addNote
       const current = state, previous = current.confirmationSkips;
       current.confirmationSkips = value;
       try {
-        const result = await save();
+        const projectId=window.__workspaceScope?.projectId;
+        const result=await window.nozeli.invoke('workspace.settings',{projectId,workspace:{confirmationSkips:value}});
         if (result?.ok === false) current.confirmationSkips = previous;
         return result;
       } catch (error) { current.confirmationSkips = previous; throw error; }
     },
     toast,
   });
+  document.addEventListener('nozeli-restore-confirmations',event=>{event.detail.result=confirmation.restore();});
   const controls = mountConversationControls({close: () => conversationFont.close()});
   const conversationFont = mountConversationFont({
     getSize: () => state.conversationFontSize,
@@ -49,7 +51,7 @@ export function mountWorkspace({ save, saveProjectSettings, openProject, addNote
     if (!composer) return;
     const panelLimit = Math.min(180, Math.max(108, innerHeight * 0.24));
     composer.style.height = '0px';
-    const contentHeight = composer.scrollHeight;
+    const contentHeight = composer.value ? composer.scrollHeight : 0;
     const height = clamp(contentHeight, compact()?28:42, panelLimit);
     composer.style.height = height + 'px';
     composer.style.overflowY = contentHeight > panelLimit ? 'auto' : 'hidden';
@@ -136,7 +138,7 @@ export function mountWorkspace({ save, saveProjectSettings, openProject, addNote
     render();
     if (persist && saveProjectSettings && !$('provider-console-toggle').hidden) void saveProjectSettings({ ...projectSettings });
   }
-  const modalOpen = () => [...document.querySelectorAll('dialog[open], [role="dialog"]:not([hidden]), [aria-modal="true"]:not([hidden]), [popover]:popover-open, .work-terminal-preview:not([hidden]), .nozeli-context-menu:not([hidden])')].some(node => node.getClientRects().length > 0);
+  const modalOpen = () => [...document.querySelectorAll('dialog[open], [role="dialog"]:not([hidden]), [aria-modal="true"]:not([hidden]), [popover]:popover-open, .nozeli-context-menu:not([hidden])')].some(node => node.getClientRects().length > 0);
   const modalEscapes = new WeakSet();
   window.addEventListener('keydown', event => {
     if (event.key === 'Escape' && modalOpen()) modalEscapes.add(event);
@@ -198,7 +200,7 @@ export function mountWorkspace({ save, saveProjectSettings, openProject, addNote
     if(innerWidth>1000)return;
     let touched=false;
     if(state.drawerFilesOpen && !event.target.closest('#files,#file-tree-dialog,#file-label-dialog,#file-tree-menu')){state.drawerFilesOpen=false;touched=true;}
-    if(state.drawerSideOpen && !event.target.closest('#side,.work-terminal-preview:not([hidden])')){state.drawerSideOpen=false;touched=true;}
+    if(state.drawerSideOpen && !event.target.closest('#side')){state.drawerSideOpen=false;touched=true;}
     if(touched)changed();
   });
   document.addEventListener('keydown',event=>{if(event.key==='Escape' && innerWidth<=1000 && (state.drawerFilesOpen || state.drawerSideOpen)){state.drawerFilesOpen=false;state.drawerSideOpen=false;changed();}});
@@ -210,7 +212,7 @@ export function mountWorkspace({ save, saveProjectSettings, openProject, addNote
   const overflowEdits = new Map();
   const editKey = (projectId, id) => `${projectId}:${id}`;
   return { toast,
-    inheritSettings(value={}) { for(const key of ['fontSize','conversationFontSize','readingWidth'])if(Number.isFinite(value[key]))state[key]=value[key];render(); },
+    inheritSettings(value={}) { for(const key of ['fontSize','conversationFontSize','readingWidth'])if(Number.isFinite(value[key]))state[key]=value[key];if(Object.hasOwn(value,'confirmationSkips')){state.confirmationSkips={...value.confirmationSkips};confirmation.refresh();}render(); },
     editDraft(projectId, annotationId) { return overflowEdits.get(editKey(projectId, annotationId)) || (state.noteDrafts || []).find(item => item.annotationId === annotationId && item.projectId === projectId) || null; },
     hasOverflowEdits(projectId) { return [...overflowEdits.values()].some(item => item.projectId === projectId); },
     rememberEdit(draft) {

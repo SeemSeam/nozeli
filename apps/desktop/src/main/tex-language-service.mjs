@@ -114,6 +114,7 @@ export class TexLanguageService {
   }
   sync(input) { return this.run(input); }
   request(input) { return this.run(input,input.action); }
+  async stopProject(projectId){const pending=this.sessions.get(projectId);if(!pending)return;const s=await pending;try{await request(s.connection,'shutdown',undefined,1000);await s.connection.sendNotification('exit');}catch{}s.connection.dispose();s.child.kill();await Promise.race([s.exited,new Promise(resolve=>{const t=setTimeout(()=>{s.child.kill('SIGKILL');resolve();},1000);t.unref();})]);this.sessions.delete(projectId);}
   async stopAll() {
     this.stopping=true;
     await Promise.allSettled([...this.sessions.values()].map(async pending=>{const s=await pending;try{await request(s.connection,'shutdown',undefined,1000);await s.connection.sendNotification('exit');}catch{}s.connection.dispose();s.child.kill();await Promise.race([s.exited,new Promise(resolve=>{const t=setTimeout(()=>{s.child.kill('SIGKILL');resolve();},1000);t.unref();})]);}));

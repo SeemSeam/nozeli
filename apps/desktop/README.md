@@ -2,6 +2,18 @@
 
 Electron桌面阅读、批注、编辑与受管OMP协作产品。平台、构建、Release和许可边界以[仓库README](../../README.md)为准。
 
+## 新项目存储（2026-10-24，冻结候选待审核）
+
+项目内容在`.nozeli/project.sqlite`与`objects/sha256`，运行时Plan Tree为`.nozeli/memory/plantree/index.md`；本机catalog/UI/执行及独立恢复位于`userData/nozeli/storage-v2`。SQLite记录按collection/id逐实体事务保存、版本CAS，非整个Controller状态JSON；对象引用按manifest及摘要校验。开发`docs/plantree`不移动或忽略。未知/旧测试格式明确拒绝，不自动导入或覆盖。
+
+新建项目自动补齐Git，已有仓保留HEAD/index/dirty，新仓稳定句柄取原字节、禁用hook并创建一次基线；`.nozeli`规则受管追加。新位置自动fork项目/instance身份，保留不可变历史来源，不继承进程、信任和写回队列。catalog同时核验原根和元数据目录实体；仅同UUID不授予写权限。
+
+源根或`.nozeli`失联后停止新源操作，关闭只要求本机恢复落盘；本机恢复中心可在无项目页导出完整文本/Office模型/图文稿。关闭、移除入口、清理本机、OS回收站删除为不同动作；破坏性动作有准确范围确认、owner停稳及持久操作收据，不降级永久删除。SQLite deadline先隔离退出旧worker再报结果未知，独立恢复库可用，显式重试核验receipt/目录后才建新代际，不自动重发请求。
+
+冻结候选`storage-v2-review-20261024b`尚未激活；297源码/354构建文件核对一致。固定运行时84项存储/Git/候选/图片/配置行为通过；真实候选在新隔离profile完成根/元数据失联、关闭去重、恢复全文导出、冷开移除不复活、打开另一个项目、本机清理和实际OS回收站，正常exit0，最终证据`/home/bfly/.cache/nozeli-smokes/storage-cutover/nozeli-storage-lifecycle-3uiKXo/`。仅Linux定向验收，不代表全仓旧测试夹具、真实CLI在途/Office各格式/跨平台或断电资格完成。原用户测试元数据尚未清理，关联用户Git的一处旧worktree必须保留或单独审核注销，不擅自改用户Git/账号。没有提交或安装。
+
+审核补修：`clean-local`只能删除确认范围内的`ui.sqlite`及其journal/WAL/SHM，完整保留`execution`（其中包含真实原生会话和Git关联worktree），不再递归删除。使用真实会话目录、真实Git worktree和未提交结果的回归6/6通过；源码真实Electron再次完成根失联/恢复导出/冷开/清本机/OS回收站，证据`~/.cache/nozeli-smokes/storage-cutover/nozeli-storage-lifecycle-DurWDJ/`。此补修尚未进入上述b冻结包，不能把旧包视为修复后候选。
+
 ## 构建
 
 开发前提：Node 22+、npm、Git、Bun 1.3.14、Linux x64原生编译工具及Electron系统依赖。首次构建：

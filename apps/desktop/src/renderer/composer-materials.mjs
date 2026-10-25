@@ -6,8 +6,8 @@ import './conversation-rendering.css';
 /* Composer materials and formatting for the main conversation.
  * - The original #composer textarea stays the single editing source.
  * - Renderer-selected local files are stored host-side (material.attach) as
- *   immutable copies under application data; nothing is written into the
- *   user's project and no upload happens.
+ *   immutable instance recovery copies; sending promotes supported materials
+ *   into project objects without altering user documents.
  * - Pending attachments, reply quote and preview state persist per project
  *   through the workspace snapshot hooks. */
 
@@ -39,7 +39,7 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
   const readingOwners = new Map();
   const ownerKey = owner => JSON.stringify([owner.projectId, owner.target]);
   function persistedMaterials(owner) {
-    return { pending: owner.pending.map(({ key, name, mime, size, kind, source, status, digest, relPath, note, frozenText, deliveryId, sources }) => ({ key, name, mime, size, kind, source, status, digest, relPath, note, frozenText, deliveryId, sources })), quote: owner.quote, deliveredDrawingIds: owner.deliveredDrawingIds || [] };
+    return { pending: owner.pending.map(({ key, name, mime, size, kind, source, status, digest, relPath, note, frozenText, deliveryId, sources, projectId, instanceId, storage }) => ({ key, name, mime, size, kind, source, status, digest, relPath, note, frozenText, deliveryId, sources, projectId, instanceId, storage })), quote: owner.quote, deliveredDrawingIds: owner.deliveredDrawingIds || [] };
   }
   function beginRead() {
     if (!materialOwner.projectId || !materialOwner.target || composer.readOnly) { toast('请先核实材料的接收目标；材料尚未读取。'); return null; }
@@ -125,9 +125,9 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
         try {
           const bytes = new Uint8Array(await file.arrayBuffer());
           if (!owner.pending.includes(entry)) continue;
-          const result = await invoke('material.attach', { name: file.name, mime: entry.mime, size: file.size, source, bytes: b64(bytes) });
+          const result = await invoke('material.attach', { projectId: owner.projectId, name: file.name, mime: entry.mime, size: file.size, source, bytes: b64(bytes) });
           if (!result?.ok) throw new Error(result?.error?.message || '材料保存失败');
-          entry.digest = result.value.digest; entry.status = 'ok';
+          Object.assign(entry, result.value); entry.status = 'ok';
           if (result.value.duplicate) entry.note = '相同内容已在历史材料中复用';
         } catch (error) { entry.status = 'error'; entry.note = String(error.message || error).slice(0, 80); }
         materialsChanged(owner);
@@ -315,9 +315,9 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
       for (const { abs, entry, inProject } of entries) {
         if (!owner.pending.includes(entry)) continue;
         try {
-          const result = await invoke('material.attachPath', { path: abs });
+          const result = await invoke('material.attachPath', { projectId: owner.projectId, path: abs });
           if (!result?.ok) throw new Error(result?.error?.message || '读取失败');
-          entry.digest = result.value.digest; entry.mime = result.value.mime; entry.size = result.value.size;
+          Object.assign(entry, result.value);
           entry.kind = classify(entry.name, result.value.mime); entry.status = 'ok';
           if (looksLikeCredential(entry.name)) entry.note = (inProject ? '项目文件' : '项目外 · 只读材料') + ' · 注意：疑似凭据/密钥文件，确认后再随消息引用';
         } catch (error) { entry.status = 'error'; entry.note = String(error.message || error).slice(0, 90); }
@@ -491,7 +491,8 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
     body.append(note);
     viewer.hidden = false;
     body.focus();
-    const result = await invoke('material.read', { digest });
+    const ref = pending.find(a => a.digest === digest);
+    const result = await invoke('material.read', { projectId: ref?.projectId || materialOwner.projectId, instanceId: ref?.instanceId, storage: ref?.storage, source: ref?.source, digest });
     if (!result?.ok) {
       note.textContent = '附件读取失败：' + (result?.error?.message || '未知错误');
       return;
@@ -543,9 +544,11 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
 
   /* ---------- send snapshot / confirm -------------------------------------- */
   function composedText() {
-    if (!quoteTo) return composer.value;
+    const questions=pending.filter(a=>a.source==='drawing'&&a.status==='ok'&&typeof a.frozenText==='string'&&a.frozenText.trim()).map(a=>'涂鸦问题：'+a.frozenText);
+    const text=[composer.value,...questions].filter(Boolean).join('\n\n');
+    if (!quoteTo) return text;
     const excerpt = quoteTo.text.replace(/\s+/g, ' ').slice(0, 200);
-    return `> 回复 ${quoteTo.role === 'user' ? '你' : '前台'}${quoteTo.time ? ' ' + quoteTo.time : ''}：${excerpt}${quoteTo.text.length > 200 ? '…' : ''}\n\n${composer.value}`;
+    return `> 回复 ${quoteTo.role === 'user' ? '你' : '前台'}${quoteTo.time ? ' ' + quoteTo.time : ''}：${excerpt}${quoteTo.text.length > 200 ? '…' : ''}\n\n${text}`;
   }
   return {
     appendDrawing(delivery) {
@@ -568,7 +571,8 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
           name: a.name, mime: a.mime || 'application/octet-stream', size: a.size ?? 0, kind: a.kind,
           digest: a.digest || null, relPath: a.relPath || null, source: a.source,
           frozenText: a.frozenText || null,
-          ...(a.source === 'drawing' ? { storage: 'app-data', deliveryId: a.deliveryId || a.key?.slice('drawing-'.length), sources: a.sources || [] } : {}),
+          projectId: a.projectId, instanceId: a.instanceId, storage: a.storage,
+          ...(a.source === 'drawing' ? { deliveryId: a.deliveryId || a.key?.slice('drawing-'.length), sources: a.sources || [] } : {}),
         })),
       };
     },

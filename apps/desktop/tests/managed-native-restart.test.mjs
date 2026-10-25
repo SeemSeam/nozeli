@@ -4,11 +4,11 @@ import { EventEmitter } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { Controller } from '../src/agents/managed/controller.mjs';
+import {openTestController} from './project-storage.fixture.mjs';
 
 async function fixture(t) {
   const root=await mkdtemp(path.join(os.tmpdir(),'native-restart-'));
-  const c=await Controller.open({runtimeRoot:path.join(root,'runtime'),contentRoot:path.join(root,'content'),projectHome:async()=>{}});
+  const c=await openTestController({runtimeRoot:path.join(root,'runtime'),contentRoot:path.join(root,'content'),projectHome:async()=>{}});
   const owners=[]; let live=0, fail=false, stopGate=null;
   c.store.state.bindings.frontdesk.provider='omp';
   c.sessionFactory=(spec,target)=>{

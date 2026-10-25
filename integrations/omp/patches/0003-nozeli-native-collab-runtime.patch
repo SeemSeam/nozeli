@@ -174,7 +174,165 @@
  	// Nozeli managed rooms: rid/dg/at/ep are the gateway transport id, content
 --- a/packages/coding-agent/src/collab/relay-client.ts
 +++ b/packages/coding-agent/src/collab/relay-client.ts
-@@ -503,7 +503,8 @@
+@@ -10,6 +10,7 @@
+  * closing the room.
+  */
+ import { getProxyForUrl } from "@oh-my-pi/pi-ai/utils/proxy";
++import { getStreamingEventAppend, type StreamingAppendProof } from "@oh-my-pi/pi-ai/utils/block-symbols";
+ import { logger } from "@oh-my-pi/pi-utils";
+ import { open, sealSerialized } from "./crypto";
+ import type { CollabFrame, EncodedFrame, RelayControlMessage } from "./protocol";
+@@ -74,6 +75,23 @@
+ const WS_BACKPRESSURE_DRAIN_THRESHOLD = 32 * 1024;
+ const WS_BACKPRESSURE_DRAIN_RETRY_MS = 25;
+ 
++/** Native text/thinking snapshots replace; tool-call runs merge their lossless raw deltas. */
++function cumulativeSnapshotKey(frame: CollabFrame | EncodedFrame): string | undefined {
++	if (typeof frame === "string" || frame.t !== "nozeli-event" || !frame.streamId || !frame.epoch) return;
++	const event = frame.event;
++	if (event.type !== "message_update" || event.message.role !== "assistant") return;
++	const update = event.assistantMessageEvent;
++	if (update.type !== "text_delta" && update.type !== "thinking_delta" && update.type !== "toolcall_delta") return;
++	// The native producer shares one immutable, complete snapshot in both fields.
++	// Missing partials (RPC delta mode), lifecycle events and block boundaries are fences.
++	if (update.partial !== event.message || !Array.isArray(event.message.content)) return;
++	const block = event.message.content[update.contentIndex];
++	if (update.type === "text_delta" && (block?.type !== "text" || typeof block.text !== "string")) return;
++	if (update.type === "thinking_delta" && (block?.type !== "thinking" || typeof block.thinking !== "string")) return;
++	if (update.type === "toolcall_delta" && (block?.type !== "toolCall" || typeof block.id !== "string" || typeof block.name !== "string" || typeof update.delta !== "string")) return;
++	return JSON.stringify([frame.epoch, frame.requestId, frame.streamId, update.type, update.contentIndex, block?.type === "toolCall" ? [block.id, block.name] : null]);
++}
++
+ interface PendingSend {
+ 	frames: Iterator<CollabFrame | string>;
+ 	targetPeer: number;
+@@ -84,6 +102,14 @@
+ 	preparedEnvelope?: Uint8Array;
+ 	/** Next batch frame, pulled right after a write so an exhausted batch leaves the head at once. */
+ 	head?: CollabFrame | string;
++	/** Set before sealing: in-flight ciphertext must never be replaced. */
++	started?: boolean;
++	replacementKey?: string;
++	/** Raw argument fragments must survive even when parsed arguments lag. Charged in bytes. */
++	toolDelta?: string;
++	toolProof?: StreamingAppendProof;
++	toolDeltaBytes?: number;
++	toolLastCodeUnit?: number;
+ }
+ 
+ export interface CollabSocketOptions {
+@@ -198,13 +224,69 @@
+ 	send(frame: CollabFrame | EncodedFrame, targetPeer = 0): void {
+ 		if (this.#closed) return;
+ 		try {
++			const replacementKey = cumulativeSnapshotKey(frame);
++			const tail = this.#pendingSends.at(-1);
++			let replace = !!replacementKey && tail?.replacementKey === replacementKey && tail.targetPeer === targetPeer && !tail.started;
++			let toolDelta: string | undefined;
++			let toolProof: StreamingAppendProof | undefined;
++			let toolDeltaBytes: number | undefined;
++			let toolLastCodeUnit: number | undefined;
++			let incomingDeltaBytes = 0;
++			if (replacementKey && typeof frame !== "string" && frame.t === "nozeli-event" && frame.event.type === "message_update" && frame.event.assistantMessageEvent.type === "toolcall_delta") {
++				// Parsed arguments can be throttled, and the authoritative provider
++				// buffer is symbol-keyed (not JSON-serializable). Preserve ALL raw
++				// fragments, including incomplete JSON, instead of replacing them.
++				toolProof = getStreamingEventAppend(frame.event.assistantMessageEvent);
++				// Bare-token lineage proves the exact append without cumulative scans.
++				if (replace && (!tail.toolProof || !toolProof || toolProof.previous !== tail.toolProof.token || toolProof.before !== tail.toolProof.after || toolProof.delta !== frame.event.assistantMessageEvent.delta)) replace = false;
++				const delta = frame.event.assistantMessageEvent.delta;
++				incomingDeltaBytes = Buffer.byteLength(JSON.stringify(delta)) - 2;
++				// JSON escapes lone surrogates but emits a joined pair as four UTF-8
++				// bytes; account for a pair split across adjacent provider fragments.
++				const high = replace ? tail.toolLastCodeUnit : undefined;
++				const low = delta.charCodeAt(0);
++				const joinedPair = high !== undefined && high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff;
++				toolDeltaBytes = (replace ? tail.toolDeltaBytes ?? 0 : 0) + incomingDeltaBytes - (joinedPair ? 8 : 0);
++				toolLastCodeUnit = delta.length ? delta.charCodeAt(delta.length - 1) : high;
++				toolDelta = (replace ? tail.toolDelta ?? "" : "") + frame.event.assistantMessageEvent.delta;
++				// Serialize the combined payload only when this queue slot starts.
++			}
+ 			const serialized = typeof frame === "string" ? frame : JSON.stringify(frame);
++			// Match the existing serialized-payload budget exactly. Retained raw
++			// proof metadata is bounded by the same stream payload, not multiplied
++			// into the wire limit. No accumulated JSON is rescanned here.
++			const bytes = Buffer.byteLength(serialized) - incomingDeltaBytes + (toolDeltaBytes ?? 0);
++			// Adjacent only: any intervening frame/batch, recipient or stream is an
++			// ordering fence. Reuse the slot's preparation promise, bounding flush
++			// bookkeeping as well as queued data during a synchronous native burst.
++			if (replace) {
++				if (this.#pendingSendBytes - tail.bytes + bytes > MAX_PENDING_SEND_BYTES) {
++					this.#failOverload();
++					return;
++				}
++				this.#pendingSendBytes += bytes - tail.bytes;
++				tail.bytes = bytes;
++				tail.frames = this.#singleFrame(serialized, toolDelta);
++				tail.toolDelta = toolDelta;
++				tail.toolProof = toolProof;
++				tail.toolDeltaBytes = toolDeltaBytes;
++				tail.toolLastCodeUnit = toolLastCodeUnit;
++				return;
++			}
+ 			const prepared = Promise.withResolvers<void>();
+ 			this.#sendChain = Promise.all([this.#sendChain, prepared.promise]).then(() => {});
+-			this.#enqueueSend([serialized].values(), targetPeer, Buffer.byteLength(serialized), prepared.resolve, true);
++			this.#enqueueSend(this.#singleFrame(serialized), targetPeer, bytes, prepared.resolve, true, replacementKey, toolDelta, toolProof, toolDeltaBytes, toolLastCodeUnit);
+ 		} catch (err) {
+ 			this.#failFatal(`could not serialize collab frame: ${String(err)}; rejoin to resync`);
+ 		}
++	}
++
++	*#singleFrame(serialized: string, toolDelta?: string): Generator<string> {
++		if (toolDelta === undefined) { yield serialized; return; }
++		// Only locally serialized and classified native tool updates reach here.
++		const frame = JSON.parse(serialized) as Extract<CollabFrame, { t: "nozeli-event" }>;
++		if (frame.event.type === "message_update" && frame.event.assistantMessageEvent.type === "toolcall_delta") frame.event.assistantMessageEvent.delta = toolDelta;
++		yield JSON.stringify(frame);
+ 	}
+ 
+ 	/**
+@@ -278,6 +360,11 @@
+ 		bytes: number,
+ 		onPrepared?: () => void,
+ 		eager = false,
++		replacementKey?: string,
++		toolDelta?: string,
++		toolProof?: StreamingAppendProof,
++		toolDeltaBytes?: number,
++		toolLastCodeUnit?: number,
+ 	): void {
+ 		// The queue invariant, enforced in one place: targeted work is only ever
+ 		// admitted for a peer still being served. A batch queued for a peer that has
+@@ -294,7 +381,7 @@
+ 			this.#failOverload();
+ 			return;
+ 		}
+-		this.#pendingSends.push({ frames, targetPeer, bytes, cancelled: false, eager, onPrepared });
++		this.#pendingSends.push({ frames, targetPeer, bytes, cancelled: false, eager, onPrepared, replacementKey, toolDelta, toolProof, toolDeltaBytes, toolLastCodeUnit });
+ 		this.#pendingSendBytes += bytes;
+ 		this.#pumpSends();
+ 	}
+@@ -337,6 +424,7 @@
+ 			if (!pending.eager && !(await this.#waitForWritable(generation))) return;
+ 			if (this.#closed || generation !== this.#sendGeneration) return;
+ 			if (pending.cancelled) continue;
++			pending.started = true;
+ 			let value = pending.head;
+ 			pending.head = undefined;
+ 			if (value === undefined) {
+@@ -432,6 +520,10 @@
+ 	 * either written to the transport or retained as a prepared envelope.
+ 	 */
+ 	flush(): Promise<void> {
++		// A flush captures the exact prefix promised to its caller; subsequent
++		// snapshots must not replace that prefix or delay it indefinitely.
++		const tail = this.#pendingSends.at(-1);
++		if (tail) tail.replacementKey = undefined;
+ 		return this.#sendChain;
+ 	}
+ 
+@@ -503,7 +595,8 @@
  
  	#openSocket(): void {
  		this.#clearBackpressureDrain();
@@ -368,3 +526,632 @@
  }
  
  /** Payload for {@link AgentSession.setPromptDropped}: a user prompt cancelled
+--- a/packages/coding-agent/test/collab/relay-client-backpressure.test.ts
++++ b/packages/coding-agent/test/collab/relay-client-backpressure.test.ts
+@@ -1,6 +1,9 @@
+ import { afterEach, describe, expect, it, vi } from "bun:test";
++import { appendStreamingPartialJson, captureStreamingEventAppend, clearStreamingPartialJson, copyStreamingPartialJsonState, getStreamingAppendProof, setStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
+ import { generateRoomKey, importRoomKey, open, seal } from "../../src/collab/crypto";
+ import { type CollabFrame, packEnvelope, unpackEnvelope } from "../../src/collab/protocol";
++import type { AssistantMessage, AssistantMessageEvent } from "@oh-my-pi/pi-ai/types";
++import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
+ import { CollabSocket } from "../../src/collab/relay-client";
+ 
+ const ORIGINAL_WEBSOCKET = globalThis.WebSocket;
+@@ -109,6 +112,222 @@
+ 			expect(result?.reason).toContain("resync");
+ 			expect(result?.reason).toContain("before retrying");
+ 			expect(ws.sent).toEqual([]);
++		} finally {
++			socket.close();
++		}
++	});
++	it("validates 100000 one-character appends without prefix scans or proof chains", () => {
++		const producer = {};
++		const startsWith = vi.spyOn(String.prototype, "startsWith");
++		let previous = getStreamingAppendProof(producer);
++		for (let index = 0; index < 100_000; index++) {
++			appendStreamingPartialJson(producer, "x");
++			const forwarded = {};
++			copyStreamingPartialJsonState(forwarded, producer);
++			const proof = getStreamingAppendProof({ ...forwarded })!;
++			expect(proof.previous).toBe(previous?.token);
++			expect(proof.before).toBe(index);
++			expect(proof.after).toBe(index + 1);
++			expect(proof.delta).toBe("x");
++			expect(Object.keys(proof.token)).toHaveLength(0);
++			previous = proof;
++		}
++		expect(startsWith).not.toHaveBeenCalled();
++		setStreamingPartialJson(producer, "reset");
++		appendStreamingPartialJson(producer, "x");
++		expect(getStreamingAppendProof(producer)?.previous).toBeUndefined();
++		const transformed = {};
++		copyStreamingPartialJsonState(transformed, producer);
++		setStreamingPartialJson(transformed, "decoded replacement");
++		expect(getStreamingAppendProof(transformed)).toBeUndefined();
++	});
++	it("bounds native cumulative bursts while preserving contents, flush and every ordering fence", async () => {
++		BackpressuredWebSocket.instances = [];
++		BackpressuredWebSocket.initialBufferedAmount = HIGH_WATER_MARK;
++		globalThis.WebSocket = BackpressuredWebSocket as unknown as typeof WebSocket;
++		const key = await importRoomKey(generateRoomKey());
++		const socket = new CollabSocket({ wsUrl: "ws://localhost:8788/r/native-burst", role: "host", key });
++		const encrypt = vi.spyOn(crypto.subtle, "encrypt");
++		const closed: string[] = [];
++		socket.onClose = reason => closed.push(reason);
++		const toolProducer = {};
++		const snapshot = (kind: "text" | "thinking" | "toolcall", size: number, streamId = "stream", requestId = "request", epoch = "epoch"): CollabFrame => {
++			const block = kind === "text" ? { type: "text", text: "文".repeat(size) } : kind === "thinking" ? { type: "thinking", thinking: "考".repeat(size) } : { type: "toolCall", id: "call", name: "write", arguments: { text: "文".repeat(size) } };
++			if (kind === "toolcall") { if (size === 1) setStreamingPartialJson(toolProducer, ""); appendStreamingPartialJson(toolProducer, "文"); Object.assign(block, toolProducer); }
++			const message = { role: "assistant", content: [block], timestamp: 1 };
++			const update = { type: `${kind}_delta`, contentIndex: 0, delta: "文", partial: message };
++			if (kind === "toolcall") captureStreamingEventAppend(update, block);
++			return { t: "nozeli-event", requestId, epoch, streamId, event: { type: "message_update", message, assistantMessageEvent: update } } as CollabFrame;
++		};
++		const expected: Array<{ frame: CollabFrame; target: number }> = [];
++		const send = (frame: CollabFrame, target = 0) => { socket.send(frame, target); expected.push({ frame, target }); };
++		const burst = (kind: "text" | "thinking" | "toolcall", stream = "stream", request = "request", epoch = "epoch", target = 0) => {
++			// Thousands of immutable native snapshots would exceed both the 256
++			// slot cap and 16 MiB byte cap if retained per token. No timers/model.
++			for (let size = 1; size <= 2_000; size++) socket.send(snapshot(kind, size, stream, request, epoch), target);
++			const final = snapshot(kind, 2_000, stream, request, epoch);
++			if (kind === "toolcall" && final.t === "nozeli-event" && final.event.type === "message_update" && final.event.assistantMessageEvent.type === "toolcall_delta") final.event.assistantMessageEvent.delta = "文".repeat(2_000);
++			expected.push({ frame: JSON.parse(JSON.stringify(final)) as CollabFrame, target });
++		};
++		try {
++			socket.connect();
++			const ws = BackpressuredWebSocket.instances[0]!;
++			ws.open();
++			// This first durable frame is sealing/blocked, so every burst below is
++			// deterministically queued, independent of encryption scheduling.
++			send({ t: "error", message: "start fence" });
++			burst("text");
++			let prefixFlushed = false;
++			void socket.flush().then(() => { prefixFlushed = true; });
++			burst("text");
++			send({ t: "nozeli-event", epoch: "epoch", requestId: "request", streamId: "stream", event: { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "文".repeat(2_000) }], timestamp: 1 } } } as CollabFrame);
++			burst("text");
++			burst("thinking");
++			send({ t: "action-receipt", rid: "request", kind: "prompt", status: "admitted", seq: 2, ep: "epoch" });
++			burst("thinking");
++			const entry = { t: "nozeli-entry-part", id: "entry", index: 0, final: true, data: Buffer.from("durable full entry").toString("base64"), streamId: "stream" } as CollabFrame;
++			socket.sendBatch([entry]); expected.push({ frame: entry, target: 0 });
++			burst("thinking");
++			burst("toolcall");
++			// Identity, recipient and subtype changes are fences even with no
++			// intervening lifecycle frame. Distinct streams must all survive.
++			burst("text", "other-stream");
++			burst("text", "other-stream", "other-request");
++			burst("text", "other-stream", "other-request", "other-epoch");
++			burst("text", "other-stream", "other-request", "other-epoch", 7);
++			send({ t: "nozeli-sync", nonce: "sync-fence" } as CollabFrame);
++			burst("text", "other-stream", "other-request", "other-epoch", 7);
++			send({ t: "bye", reason: "complete" });
++			expect(closed).toEqual([]);
++			// Once the final queued regular frame is sealed, flush must settle;
++			// no orphan preparation promises from replaced snapshots may remain.
++			let flushed = false;
++			void socket.flush().then(() => { flushed = true; });
++			await waitUntil(() => { ws.bufferedAmount = 0; return ws.sent.length === expected.length && flushed && prefixFlushed; }, "native burst did not drain/flush");
++			const actual = await Promise.all(ws.sent.map(async bytes => {
++				const envelope = unpackEnvelope(bytes)!;
++				return { frame: await open(key, envelope.payload), target: envelope.peerId };
++			}));
++			expect(actual).toEqual(expected);
++			expect(encrypt).toHaveBeenCalledTimes(expected.length);
++			expect(closed).toEqual([]);
++		} finally {
++			socket.close();
++		}
++	});
++	it("drains buffered native deltas losslessly after shared live block finalization", async () => {
++		BackpressuredWebSocket.instances = [];
++		BackpressuredWebSocket.initialBufferedAmount = HIGH_WATER_MARK;
++		globalThis.WebSocket = BackpressuredWebSocket as unknown as typeof WebSocket;
++		const key = await importRoomKey(generateRoomKey());
++		const socket = new CollabSocket({ wsUrl: "ws://localhost:8788/r/buffered-native", role: "host", key });
++		const stream = new AssistantMessageEventStream();
++		const block = { type: "toolCall" as const, id: "buffered-call", name: "nozeli_document_apply", arguments: {} };
++		const message = { role: "assistant", content: [block], timestamp: 1 } as AssistantMessage;
++		const json = JSON.stringify({ text: "正文\\n\"quoted\"👩‍🔬".repeat(1_000) });
++		for (const delta of json) {
++			appendStreamingPartialJson(block, delta);
++			stream.push({ type: "toolcall_delta", contentIndex: 0, delta, partial: message });
++		}
++		block.arguments = JSON.parse(json) as Record<string, unknown>;
++		clearStreamingPartialJson(block);
++		stream.push({ type: "toolcall_end", contentIndex: 0, toolCall: block, partial: message });
++		stream.end(message);
++		const closed: string[] = [];
++		socket.onClose = reason => closed.push(reason);
++		try {
++			socket.connect();
++			const ws = BackpressuredWebSocket.instances[0]!;
++			ws.open();
++			socket.send({ t: "error", message: "blocked head" });
++			for await (const update of stream) {
++				const snapshot = { ...message, content: [{ ...block }] };
++				const event = { type: "message_update", message: snapshot, assistantMessageEvent: { ...update, partial: snapshot } as AssistantMessageEvent };
++				socket.send({ t: "nozeli-event", epoch: "epoch", requestId: "request", streamId: "stream", event } as CollabFrame);
++			}
++			socket.send({ t: "nozeli-sync", nonce: "after-buffer" });
++			expect(closed).toEqual([]);
++			await waitUntil(() => { ws.bufferedAmount = 0; return ws.sent.length === 4; }, "buffered native stream did not drain");
++			const frames = await Promise.all(ws.sent.map(bytes => open(key, unpackEnvelope(bytes)!.payload)));
++			const raw = frames.flatMap(f => f.t === "nozeli-event" && f.event.type === "message_update" && f.event.assistantMessageEvent.type === "toolcall_delta" ? [f.event.assistantMessageEvent.delta] : []).join("");
++			expect(raw).toBe(json);
++			expect(frames[2]).toMatchObject({ t: "nozeli-event", event: { assistantMessageEvent: { type: "toolcall_end", toolCall: { id: "buffered-call", arguments: JSON.parse(json) } } } });
++			expect(frames[3]).toEqual({ t: "nozeli-sync", nonce: "after-buffer" });
++		} finally { socket.close(); }
++	});
++	it.each([1_000, 200_000])("merges tool JSON losslessly with stale parsed arguments and no toolcall_end (%s sections)", async sections => {
++		BackpressuredWebSocket.instances = [];
++		BackpressuredWebSocket.initialBufferedAmount = HIGH_WATER_MARK;
++		globalThis.WebSocket = BackpressuredWebSocket as unknown as typeof WebSocket;
++		const key = await importRoomKey(generateRoomKey());
++		const socket = new CollabSocket({ wsUrl: "ws://localhost:8788/r/native-tool-json", role: "host", key });
++		const closed: string[] = [];
++		socket.onClose = reason => closed.push(reason);
++		const json = JSON.stringify({ document: "chapter.tex", content: "\\section{结果}\n".repeat(sections) });
++		const producer = {};
++		const frame = (delta: string, raw?: string): CollabFrame => {
++			// Parsed previews may stay stale until the end. Authoritative raw
++			// bytes must survive even if this stream never reaches toolcall_end.
++			const message = { role: "assistant", content: [{ type: "toolCall", id: "document-call", name: "nozeli_document_apply", arguments: {} }], timestamp: 1 };
++			if (raw !== undefined) { appendStreamingPartialJson(producer, delta); copyStreamingPartialJsonState(message.content[0]!, producer); }
++			const update = { type: "toolcall_delta", contentIndex: 0, delta, partial: message };
++			captureStreamingEventAppend(update, message.content[0]!);
++			// Provider finalization may clear shared live blocks before the next
++			// async consumer sees queued events. Event proof must remain immutable.
++			clearStreamingPartialJson(message.content[0]!);
++			return { t: "nozeli-event", epoch: "epoch", requestId: "request", streamId: "stream", event: { type: "message_update", message, assistantMessageEvent: update } } as CollabFrame;
++		};
++		try {
++			socket.connect();
++			const ws = BackpressuredWebSocket.instances[0]!;
++			ws.open();
++			socket.send({ t: "error", message: "blocked head" });
++			const split = Math.floor(json.length / 2);
++			let accumulated = "";
++			const chunkSize = sections === 1_000 ? 1 : 4_096;
++			for (let offset = 0; offset < split; offset += chunkSize) { const delta = json.slice(offset, Math.min(offset + chunkSize, split)); accumulated += delta; socket.send(frame(delta, accumulated)); }
++			socket.send({ t: "nozeli-sync", nonce: "middle" });
++			for (let offset = split; offset < json.length; offset += chunkSize) { const delta = json.slice(offset, offset + chunkSize); accumulated += delta; socket.send(frame(delta, accumulated)); }
++			expect(closed).toEqual([]);
++			await waitUntil(() => { ws.bufferedAmount = 0; return ws.sent.length === 4; }, "tool JSON burst did not drain");
++			const received = await Promise.all(ws.sent.map(bytes => open(key, unpackEnvelope(bytes)!.payload)));
++			expect(received).toEqual([{ t: "error", message: "blocked head" }, frame(json.slice(0, split)), { t: "nozeli-sync", nonce: "middle" }, frame(json.slice(split))]);
++			const raw = received.flatMap(f => f.t === "nozeli-event" && f.event.type === "message_update" && f.event.assistantMessageEvent.type === "toolcall_delta" ? [f.event.assistantMessageEvent.delta] : []).join("");
++			expect(Buffer.from(raw)).toEqual(Buffer.from(json));
++			expect(JSON.parse(raw)).toEqual(JSON.parse(json));
++			expect(closed).toEqual([]);
++		} finally {
++			socket.close();
++		}
++	});
++
++
++	it.each(["delta-only", "ordinary-collab", "lifecycle-fenced", "oversized-snapshot", "tool-delta-bytes", "tool-missing-raw", "tool-full-delta"])("fails closed for real managed overload: %s", async mode => {
++		vi.spyOn(crypto.subtle, "encrypt").mockResolvedValue(new Uint8Array([1, 2, 3, 4]).buffer);
++		BackpressuredWebSocket.instances = [];
++		BackpressuredWebSocket.initialBufferedAmount = HIGH_WATER_MARK;
++		globalThis.WebSocket = BackpressuredWebSocket as unknown as typeof WebSocket;
++		const socket = new CollabSocket({ wsUrl: "ws://localhost:8788/r/native-overload", role: "host", key: {} as CryptoKey });
++		const closed: Array<{ reason: string; reconnect: boolean }> = [];
++		socket.onClose = (reason, reconnect) => closed.push({ reason, reconnect });
++		try {
++			socket.connect();
++			const toolProducer = {};
++			BackpressuredWebSocket.instances[0]!.open();
++			for (let i = 0; i < 300 && closed.length === 0; i++) {
++				const tool = mode.startsWith("tool-");
++				const block = tool ? { type: "toolCall", id: "call", name: "nozeli_document_apply", arguments: {} } : { type: "text", text: mode === "oversized-snapshot" && i === 2 ? "x".repeat(9 * 1024 * 1024) : `part ${i}` };
++				if (tool && mode !== "tool-missing-raw") { if (mode === "tool-full-delta") setStreamingPartialJson(toolProducer, ""); appendStreamingPartialJson(toolProducer, mode === "tool-full-delta" ? "x".repeat(i + 1) : "x".repeat(64 * 1024)); Object.assign(block, toolProducer); }
++				const message = { role: "assistant", content: [block], timestamp: 1 };
++				const event = { type: "message_update", message, assistantMessageEvent: { type: tool ? "toolcall_delta" : "text_delta", contentIndex: 0, delta: mode === "tool-full-delta" ? "x".repeat(i + 1) : tool ? "x".repeat(64 * 1024) : "x", ...(mode !== "delta-only" ? { partial: message } : {}) } };
++				if (tool) captureStreamingEventAppend(event.assistantMessageEvent, block);
++				socket.send((mode === "ordinary-collab" ? { t: "event", event } : { t: "nozeli-event", epoch: "epoch", requestId: "request", streamId: "stream", event }) as CollabFrame);
++				if (mode === "lifecycle-fenced") socket.send({ t: "nozeli-sync", nonce: `fence-${i}` } as CollabFrame);
++			}
++			expect(closed).toHaveLength(1);
++			expect(closed[0]).toMatchObject({ reconnect: false });
++			expect(closed[0]!.reason).toContain("backlog exceeded");
++			expect(BackpressuredWebSocket.instances[0]!.sent).toEqual([]);
+ 		} finally {
+ 			socket.close();
+ 		}
+--- a/packages/ai/src/utils/block-symbols.ts
++++ b/packages/ai/src/utils/block-symbols.ts
+@@ -1,8 +1,17 @@
+ /** Stores streamed tool-call argument JSON for live renderers and parser recovery. */
+ export const kStreamingPartialJson = Symbol("provider.block.partialJson");
+ 
++const kStreamingAppend = Symbol("provider.block.append");
++export interface StreamingAppendProof {
++	readonly previous: object | undefined;
++	readonly token: object;
++	readonly before: number;
++	readonly after: number;
++	readonly delta: string;
++}
++
+ /** Carries streamed tool-call argument JSON without exposing a string-keyed property. */
+-export type StreamingPartialJsonCarrier = object & { [kStreamingPartialJson]?: string };
++export type StreamingPartialJsonCarrier = object & { [kStreamingPartialJson]?: string; [kStreamingAppend]?: StreamingAppendProof };
+ 
+ /** Reads streamed tool-call argument JSON from a block or event snapshot. */
+ export function getStreamingPartialJson(block: StreamingPartialJsonCarrier | null | undefined): string | undefined {
+@@ -12,11 +21,47 @@
+ /** Writes streamed tool-call argument JSON to a block or clears it with `undefined`. */
+ export function setStreamingPartialJson(block: StreamingPartialJsonCarrier, value: string | undefined): void {
+ 	block[kStreamingPartialJson] = value;
++	block[kStreamingAppend] = undefined;
+ }
+ 
+ /** Clears streamed tool-call argument JSON without deleting or changing object shape. */
+ export function clearStreamingPartialJson(block: StreamingPartialJsonCarrier): void {
+-	if (Object.hasOwn(block, kStreamingPartialJson)) block[kStreamingPartialJson] = undefined;
++	setStreamingPartialJson(block, undefined);
++}
++
++/** Append at the producer; bare tokens carry lineage without retaining a chain. */
++export function appendStreamingPartialJson(block: StreamingPartialJsonCarrier, delta: string): string {
++	const current = block[kStreamingPartialJson] ?? "";
++	const proof = block[kStreamingAppend];
++	const next = current + delta;
++	block[kStreamingPartialJson] = next;
++	block[kStreamingAppend] = { previous: proof?.token, token: {}, before: current.length, after: next.length, delta };
++	return next;
++}
++
++export function getStreamingAppendProof(block: StreamingPartialJsonCarrier): StreamingAppendProof | undefined {
++	return block[kStreamingAppend];
++}
++
++/** Only for wrappers forwarding identical raw bytes and delta identity. */
++export function copyStreamingPartialJsonState(target: StreamingPartialJsonCarrier, source: StreamingPartialJsonCarrier): void {
++	target[kStreamingPartialJson] = source[kStreamingPartialJson];
++	target[kStreamingAppend] = source[kStreamingAppend];
++}
++
++const kStreamingEventAppend = Symbol("provider.event.append");
++type AppendEventCarrier = object & { [kStreamingEventAppend]?: StreamingAppendProof };
++export function captureStreamingEventAppend(event: AppendEventCarrier, block: StreamingPartialJsonCarrier): void {
++	if (!Object.hasOwn(event, kStreamingEventAppend)) event[kStreamingEventAppend] = getStreamingAppendProof(block);
++}
++export function getStreamingEventAppend(event: AppendEventCarrier): StreamingAppendProof | undefined {
++	return event[kStreamingEventAppend];
++}
++export function copyStreamingEventAppend(target: AppendEventCarrier, source: AppendEventCarrier): void {
++	target[kStreamingEventAppend] = source[kStreamingEventAppend];
++}
++export function clearStreamingEventAppend(event: AppendEventCarrier): void {
++	event[kStreamingEventAppend] = undefined;
+ }
+ 
+ /** Stores a provider-local stream block index without exposing a string-keyed property. */
+--- a/packages/ai/src/providers/openai-shared.ts
++++ b/packages/ai/src/providers/openai-shared.ts
+@@ -79,6 +79,7 @@
+ 	stripUnpairedOpenAIResponsesComputerReasoningIdsForReplay,
+ } from "../utils";
+ import {
++	appendStreamingPartialJson,
+ 	clearStreamingPartialJson,
+ 	isCarriedReasoning,
+ 	kStreamingArgumentsDone,
+@@ -3099,7 +3100,7 @@
+ 	delta = optionalResponsesText(delta, "function call arguments delta") ?? "";
+ 	// A non-blank `.done` consumed the buffer; a late delta must not reopen it.
+ 	if (!delta || block[kStreamingPartialJson] === undefined) return;
+-	block[kStreamingPartialJson] += delta;
++	appendStreamingPartialJson(block, delta);
+ 	const throttled = parseStreamingJsonThrottled(block[kStreamingPartialJson], block[kStreamingLastParseLen] ?? 0);
+ 	if (throttled) {
+ 		block.arguments = throttled.value;
+@@ -3134,7 +3135,7 @@
+ ): void {
+ 	delta = optionalResponsesText(delta, "custom tool input delta") ?? "";
+ 	if (!delta) return;
+-	block[kStreamingPartialJson] += delta;
++	appendStreamingPartialJson(block, delta);
+ 	block.arguments = { input: block[kStreamingPartialJson] };
+ 	stream.push({ type: "toolcall_delta", contentIndex, delta, partial: output });
+ }
+--- a/packages/ai/src/providers/anthropic.ts
++++ b/packages/ai/src/providers/anthropic.ts
+@@ -76,6 +76,7 @@
+ 	isPerCallContextMessage,
+ 	isSyntheticUser,
+ 	kConversationalUser,
++	appendStreamingPartialJson,
+ 	kStreamingBlockIndex,
+ 	kStreamingLastParseLen,
+ 	kStreamingPartialJson,
+@@ -3202,7 +3203,7 @@
+ 									continue;
+ 								}
+ 								streamedReplayUnsafeContent = true;
+-								block[kStreamingPartialJson] += event.delta.partial_json;
++								appendStreamingPartialJson(block, event.delta.partial_json);
+ 								const throttled = parseStreamingJsonThrottled(
+ 									block[kStreamingPartialJson],
+ 									block[kStreamingLastParseLen] ?? 0,
+--- a/packages/ai/src/providers/amazon-bedrock.ts
++++ b/packages/ai/src/providers/amazon-bedrock.ts
+@@ -40,6 +40,7 @@
+ 	clearStreamingPartialJson,
+ 	kStreamingBlockIndex,
+ 	kStreamingLastParseLen,
++	appendStreamingPartialJson,
+ 	kStreamingPartialJson,
+ } from "../utils/block-symbols";
+ import { AssistantMessageEventStream } from "../utils/event-stream";
+@@ -909,7 +910,7 @@
+ 			stream.push({ type: "text_delta", contentIndex: index, delta: delta.text, partial: output });
+ 		}
+ 	} else if (delta?.toolUse && block?.type === "toolCall") {
+-		block[kStreamingPartialJson] = (block[kStreamingPartialJson] || "") + (delta.toolUse.input || "");
++		appendStreamingPartialJson(block, delta.toolUse.input || "");
+ 		const throttled = parseStreamingJsonThrottled(block[kStreamingPartialJson], block[kStreamingLastParseLen] ?? 0);
+ 		if (throttled) {
+ 			block.arguments = throttled.value;
+--- a/packages/ai/src/providers/apple-foundation-models.ts
++++ b/packages/ai/src/providers/apple-foundation-models.ts
+@@ -26,7 +26,7 @@
+ 	ToolChoice,
+ } from "../types";
+ import { normalizeSystemPrompts } from "../utils";
+-import { clearStreamingPartialJson, kStreamingLastParseLen, kStreamingPartialJson } from "../utils/block-symbols";
++import { appendStreamingPartialJson, clearStreamingPartialJson, kStreamingLastParseLen, kStreamingPartialJson } from "../utils/block-symbols";
+ import { AssistantMessageEventStream } from "../utils/event-stream";
+ import { decodeFoundationModelsArguments, toFoundationModelsSchema, toolWireSchema } from "../utils/schema";
+ import { transformMessages } from "./transform-messages";
+@@ -343,8 +343,7 @@
+ 						}
+ 						const delta = event.arguments ?? "";
+ 						const block = output.content[index] as ToolCallBlock;
+-						const partialJson = (block[kStreamingPartialJson] ?? "") + delta;
+-						block[kStreamingPartialJson] = partialJson;
++						const partialJson = appendStreamingPartialJson(block, delta);
+ 						const throttled = parseStreamingJsonThrottled(partialJson, block[kStreamingLastParseLen] ?? 0);
+ 						if (throttled) {
+ 							block.arguments = throttled.value;
+--- a/packages/ai/src/providers/cursor.ts
++++ b/packages/ai/src/providers/cursor.ts
+@@ -220,6 +220,7 @@
+ 	kStreamingBlockKind,
+ 	kStreamingEnvelopeId,
+ 	kStreamingLastParseLen,
++	appendStreamingPartialJson,
+ 	kStreamingPartialJson,
+ } from "../utils/block-symbols";
+ import { deterministicUuid } from "../utils/deterministic-id";
+@@ -5343,8 +5344,7 @@
+ 			if (chunk.length === 0) {
+ 				return;
+ 			}
+-			const nextBuffer = current + chunk;
+-			target[kStreamingPartialJson] = nextBuffer;
++			const nextBuffer = appendStreamingPartialJson(target, chunk);
+ 			// Throttle mid-stream parses to keep total parse work O(N) instead of O(N²)
+ 			// in the argument-buffer length; the authoritative full parse runs in
+ 			// `toolCallCompleted` (mcp branch) and the fallback end-of-stream path.
+--- a/packages/ai/src/dialect/owned-stream.ts
++++ b/packages/ai/src/dialect/owned-stream.ts
+@@ -6,11 +6,10 @@
+ 	ToolCall,
+ } from "../types";
+ import {
+-	clearStreamingPartialJson,
+ 	copyCursorExecResolved,
+-	getStreamingPartialJson,
++	copyStreamingPartialJsonState,
++	copyStreamingEventAppend,
+ 	type StreamingPartialJsonCarrier,
+-	setStreamingPartialJson,
+ } from "../utils/block-symbols";
+ import { AssistantMessageEventStream } from "../utils/event-stream";
+ import { INVALID_ARGUMENTS_RAW_LIMIT, invalidToolCallArguments } from "../utils/tool-call-arguments";
+@@ -54,8 +53,7 @@
+ 		arguments: source.arguments,
+ 		...(source.rawBlock !== undefined ? { rawBlock: source.rawBlock } : {}),
+ 	};
+-	const partialJson = getStreamingPartialJson(source);
+-	if (partialJson !== undefined) setStreamingPartialJson(block, partialJson);
++	copyStreamingPartialJsonState(block, source);
+ 	copyCursorExecResolved(block, source);
+ 	return block;
+ }
+@@ -65,9 +63,7 @@
+ 	target.name = source.name;
+ 	target.arguments = source.arguments;
+ 	target.rawBlock = source.rawBlock;
+-	const partialJson = getStreamingPartialJson(source);
+-	if (partialJson === undefined) clearStreamingPartialJson(target);
+-	else setStreamingPartialJson(target, partialJson);
++	copyStreamingPartialJsonState(target, source);
+ 	copyCursorExecResolved(target, source);
+ }
+ 
+@@ -146,6 +142,7 @@
+ 							event.contentIndex,
+ 							event.delta,
+ 							src?.type === "toolCall" ? src : undefined,
++							event,
+ 						);
+ 						break;
+ 					}
+@@ -244,7 +241,7 @@
+ 		if (this.#emitEvents) this.#out.push({ type: "toolcall_start", contentIndex: index, partial: this.#partial });
+ 	}
+ 
+-	nativeToolDelta(srcIndex: number, delta: string, source: StreamingToolCall | undefined): void {
++	nativeToolDelta(srcIndex: number, delta: string, source: StreamingToolCall | undefined, event: object): void {
+ 		if (this.#stopped) return;
+ 		let entry = this.#nativeBlocks.get(srcIndex);
+ 		if (!entry && hasNamedNativeToolCall(source) && this.#toolChannel !== "inband") {
+@@ -253,8 +250,11 @@
+ 		}
+ 		if (!entry) return;
+ 		if (source) syncToolCall(entry.block, source);
+-		if (this.#emitEvents)
+-			this.#out.push({ type: "toolcall_delta", contentIndex: entry.index, delta, partial: this.#partial });
++		if (this.#emitEvents) {
++			const forwarded = { type: "toolcall_delta" as const, contentIndex: entry.index, delta, partial: this.#partial };
++			copyStreamingEventAppend(forwarded, event);
++			this.#out.push(forwarded);
++		}
+ 	}
+ 
+ 	nativeToolEnd(srcIndex: number, toolCall: ToolCall): void {
+--- a/packages/ai/src/utils/leaked-thinking-stream.ts
++++ b/packages/ai/src/utils/leaked-thinking-stream.ts
+@@ -43,11 +43,10 @@
+ 	ToolCall,
+ } from "../types";
+ import {
+-	clearStreamingPartialJson,
+ 	copyCursorExecResolved,
+-	getStreamingPartialJson,
++	copyStreamingPartialJsonState,
++	copyStreamingEventAppend,
+ 	type StreamingPartialJsonCarrier,
+-	setStreamingPartialJson,
+ } from "./block-symbols";
+ import { AssistantMessageEventStream } from "./event-stream";
+ 
+@@ -55,17 +54,14 @@
+ 
+ function cloneToolCall(source: StreamingToolCall): StreamingToolCall {
+ 	const block: StreamingToolCall = { ...source, arguments: source.arguments };
+-	const partialJson = getStreamingPartialJson(source);
+-	if (partialJson !== undefined) setStreamingPartialJson(block, partialJson);
++	copyStreamingPartialJsonState(block, source);
+ 	copyCursorExecResolved(block, source);
+ 	return block;
+ }
+ 
+ function syncToolCall(target: StreamingToolCall, source: StreamingToolCall): void {
+ 	Object.assign(target, source);
+-	const partialJson = getStreamingPartialJson(source);
+-	if (partialJson === undefined) clearStreamingPartialJson(target);
+-	else setStreamingPartialJson(target, partialJson);
++	copyStreamingPartialJsonState(target, source);
+ 	copyCursorExecResolved(target, source);
+ }
+ 
+@@ -128,7 +124,7 @@
+ 					}
+ 					case "toolcall_delta": {
+ 						const block = event.partial.content[event.contentIndex];
+-						projector?.toolDelta(event.contentIndex, event.delta, block?.type === "toolCall" ? block : undefined);
++						projector?.toolDelta(event.contentIndex, event.delta, block?.type === "toolCall" ? block : undefined, event);
+ 						break;
+ 					}
+ 					case "toolcall_end":
+@@ -317,7 +313,7 @@
+ 		this.#out.push({ type: "toolcall_start", contentIndex: index, partial: this.#partial });
+ 	}
+ 
+-	toolDelta(srcIndex: number, delta: string, source: StreamingToolCall | undefined): void {
++	toolDelta(srcIndex: number, delta: string, source: StreamingToolCall | undefined, event: object): void {
+ 		let entry = this.#toolBlocks.get(srcIndex);
+ 		if (!entry && source) {
+ 			this.toolStart(srcIndex, source);
+@@ -325,7 +321,9 @@
+ 		}
+ 		if (!entry) return;
+ 		if (source) syncToolCall(entry.block, source);
+-		this.#out.push({ type: "toolcall_delta", contentIndex: entry.index, delta, partial: this.#partial });
++		const forwarded = { type: "toolcall_delta" as const, contentIndex: entry.index, delta, partial: this.#partial };
++		copyStreamingEventAppend(forwarded, event);
++		this.#out.push(forwarded);
+ 	}
+ 
+ 	toolEnd(srcIndex: number, toolCall: ToolCall): void {
+--- a/packages/ai/src/providers/openai-completions.ts
++++ b/packages/ai/src/providers/openai-completions.ts
+@@ -36,7 +36,7 @@
+ } from "../types";
+ import { normalizeSystemPrompts, resolveCacheRetention } from "../utils";
+ import { createAbortSourceTracker } from "../utils/abort";
+-import { isDemotedThinking, kStreamingLastParseLen } from "../utils/block-symbols";
++import { appendStreamingPartialJson, clearStreamingPartialJson, isDemotedThinking, kStreamingLastParseLen, setStreamingPartialJson } from "../utils/block-symbols";
+ import { hasVisibleAssistantContent, withReplaySafeStreamRetry } from "../utils/empty-completion-retry";
+ import { AssistantMessageEventStream } from "../utils/event-stream";
+ import type { RawHttpRequestDump } from "../utils/http-inspector";
+@@ -1081,6 +1081,7 @@
+ 				block.arguments =
+ 					typeof block.partialArgs === "string" ? parseToolCallArguments(block.partialArgs) : block.partialArgs;
+ 				delete block.partialArgs;
++				clearStreamingPartialJson(block);
+ 				if (block.streamIndex !== undefined) {
+ 					if (toolCallBlockByIndex.get(block.streamIndex) === block) {
+ 						toolCallBlockByIndex.delete(block.streamIndex);
+@@ -1598,8 +1599,8 @@
+ 							if (typeof rawArgs === "string") {
+ 								if (rawArgs.length > 0) {
+ 									delta = rawArgs;
+-									const prev = typeof block.partialArgs === "string" ? block.partialArgs : "";
+-									block.partialArgs = prev + rawArgs;
++									if (typeof block.partialArgs !== "string") setStreamingPartialJson(block, "");
++									block.partialArgs = appendStreamingPartialJson(block, rawArgs);
+ 									const throttled = parseStreamingJsonThrottled(
+ 										block.partialArgs,
+ 										block[kStreamingLastParseLen] ?? 0,
+@@ -1631,6 +1632,7 @@
+ 										: undefined;
+ 								const merged = mergeStreamingArgumentObjects(prev, rawArgs);
+ 								block.partialArgs = merged;
++								setStreamingPartialJson(block, undefined);
+ 								block.arguments = merged;
+ 							}
+ 							stream.push({
+--- a/packages/ai/src/utils/event-stream.ts
++++ b/packages/ai/src/utils/event-stream.ts
+@@ -1,5 +1,6 @@
+ import * as AIError from "../error";
+ import type { AssistantMessage, AssistantMessageEvent } from "../types";
++import { captureStreamingEventAppend } from "./block-symbols";
+ 
+ /** Anything a stream watchdog can consult for in-flight consumer-side local work. */
+ export interface LocalWorkSource {
+@@ -232,6 +233,10 @@
+ 
+ 	override push(event: AssistantMessageEvent): void {
+ 		if (this.done) return;
++		if (event.type === "toolcall_delta") {
++			const block = event.partial.content[event.contentIndex];
++			if (block?.type === "toolCall") captureStreamingEventAppend(event, block);
++		}
+ 
+ 		if (event.type === "error" && event.error.stopReason === "error") {
+ 			AIError.classifyMessage(event.error);
+--- a/packages/ai/src/utils/glyph-codec.ts
++++ b/packages/ai/src/utils/glyph-codec.ts
+@@ -8,7 +8,7 @@
+ 	TextContent,
+ 	ToolCall,
+ } from "../types";
+-import { getStreamingPartialJson, setStreamingPartialJson } from "./block-symbols";
++import { clearStreamingEventAppend, getStreamingPartialJson, setStreamingPartialJson } from "./block-symbols";
+ import { AssistantMessageEventStream } from "./event-stream";
+ import glyphNotice from "./glyph-notice.md" with { type: "text" };
+ 
+@@ -416,11 +416,9 @@
+ 					else this.#setView(channel, view);
+ 				}
+ 				if (!delta) return;
+-				this.#out.push(
+-					delta === event.delta && !this.#projected
+-						? event
+-						: { ...event, delta, partial: this.#partial(event.partial) },
+-				);
++				const forwarded = delta === event.delta && !this.#projected ? event : { ...event, delta, partial: this.#partial(event.partial) };
++				if (channel.tokens || delta !== event.delta) clearStreamingEventAppend(forwarded);
++				this.#out.push(forwarded);
+ 				return;
+ 			}
+ 			case "toolcall_end": {

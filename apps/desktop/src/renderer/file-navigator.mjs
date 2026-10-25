@@ -10,6 +10,17 @@ export function mountFileNavigator({invoke, projectId, open, toast=()=>{}, works
   tree.addEventListener('contextmenu',()=>editorMenu.close());
   const directories=new Map(), expanded=new Set(), selected=new Set(), sessions=new Map(), requests=new Map(), pendingLoads=new Map();
   let owner=null, revision=0, anchor=null, focusedPath=null, visible=[], frame=0, paintedStart=-1, paintedEnd=-1, paintedVisible=null;
+  let transitioning=false,transitionGeneration=0;
+  const unavailable = new Set();
+  window.nozeli?.subscribe?.('workspace.control', event => {
+    if (event.type === 'project-unavailable') unavailable.add(event.projectId);
+    if (['project-unavailable','project-closed'].includes(event.type) && event.projectId === owner) {
+      revision++; transitionGeneration++; searchSequence++; directories.clear(); visible=[]; selected.clear();
+      clearTimeout(timer); if(overlay.open)overlay.close(); results.replaceChildren(); editorList.replaceChildren();
+      tree.replaceChildren(); tree.textContent = event.type === 'project-unavailable' ? '项目目录不可用；可关闭或移除入口。' : '';
+    }
+  });
+  window.addEventListener('nozeli-project-transition',event=>{transitioning=event.detail.active;transitionGeneration++;searchSequence++;if(!transitioning){paintEditors();void checkEditorPaths();}});
   rowHeight=Math.max(20,Number(rowHeight)||32);overscan=Math.max(0,Math.min(20,Number(overscan)||8));
   tree.style.setProperty('--tree-row-height',`${rowHeight}px`);
   tree.setAttribute('aria-multiselectable','true');
@@ -17,12 +28,14 @@ export function mountFileNavigator({invoke, projectId, open, toast=()=>{}, works
   const paintSelection=()=>rows().forEach(b=>b.setAttribute('aria-selected',String(selected.has(b.dataset.path))));
   function select(path,event){const all=visible.filter(v=>v.entry).map(v=>v.entry.relPath);if(event.shiftKey&&anchor&&all.includes(anchor)){if(!event.ctrlKey&&!event.metaKey)selected.clear();const a=all.indexOf(anchor),b=all.indexOf(path);all.slice(Math.min(a,b),Math.max(a,b)+1).forEach(p=>selected.add(p));}else if(event.ctrlKey||event.metaKey){if(selected.has(path))selected.delete(path);else selected.add(path);anchor=path;}else{selected.clear();selected.add(path);anchor=path;}paintSelection();}
   function persistExpanded(){sessions.set(owner,[...expanded]);const id=owner;if(id)void invoke('tree.view',{projectId:id,expanded:[...expanded]}).then(r=>{if(!r.ok&&id===owner)toast('目录状态未保存：'+(r.error?.message||'未知错误'));}).catch(e=>toast(e.message));}
-  function watch(path){if(owner)void invoke('project.watch',{projectId:owner,parentRelPath:path}).then(result=>{if(!result.ok)toast('外部变更监听失败：'+(result.error?.message||'未知错误'));else if(result.value?.overflow)toast('目录监听已达上限，请手动刷新未覆盖目录。');}).catch(e=>toast(e.message));}
+  function watch(path){if(window.__workspaceScope?.role==='surface')return;// Directory watching belongs to project navigation only; surfaces must not raise it.
+    if(owner)void invoke('project.watch',{projectId:owner,parentRelPath:path}).then(result=>{if(!result.ok)toast('外部变更监听失败：'+(result.error?.message||'未知错误'));else if(result.value?.overflow)toast('目录监听已达上限，请手动刷新未覆盖目录。');}).catch(e=>toast(e.message));}
   tree.addEventListener('click',e=>{const b=e.target.closest('button[data-path]');if(!b)return;focusedPath=b.dataset.path;select(b.dataset.path,e);if(e.ctrlKey||e.metaKey||e.shiftKey){e.preventDefault();e.stopImmediatePropagation();}},true);
   function focusIndex(index){const item=visible[index];if(!item)return;const top=index*rowHeight,bottom=top+rowHeight;if(top<tree.scrollTop)tree.scrollTop=top;else if(bottom>tree.scrollTop+tree.clientHeight)tree.scrollTop=bottom-tree.clientHeight;focusedPath=item.entry?.relPath||null;paint();const node=item.entry?rows().find(b=>b.dataset.path===focusedPath):tree.querySelector(`button[data-index="${index}"]`);node?.focus({preventScroll:true});}
   tree.addEventListener('focusin',e=>{if(e.target.dataset.path)focusedPath=e.target.dataset.path;});
   tree.addEventListener('keydown',e=>{const i=Number(e.target.dataset.index);if(!Number.isInteger(i))return;if(['ArrowDown','ArrowUp','Home','End'].includes(e.key)){e.preventDefault();const n=e.key==='Home'?0:e.key==='End'?visible.length-1:Math.max(0,Math.min(visible.length-1,i+(e.key==='ArrowDown'?1:-1)));focusIndex(n);if(e.shiftKey&&visible[n]?.entry)select(visible[n].entry.relPath,e);}if(e.key==='ArrowRight'&&e.target.classList.contains('dir')&&e.target.getAttribute('aria-expanded')!=='true'){e.preventDefault();e.target.click();}if(e.key==='ArrowLeft'){if(e.target.getAttribute('aria-expanded')==='true'){e.preventDefault();e.target.click();}else{const parent=e.target.dataset.path?.split('/').slice(0,-1).join('/'),n=visible.findIndex(v=>v.entry?.relPath===parent);if(n>=0){e.preventDefault();focusIndex(n);}}}});
   async function load(path,append=false){
+    if (!projectId() || unavailable.has(projectId()) || transitioning) return false;
     const id=projectId(),token=revision,old=directories.get(path);
     if(pendingLoads.get(path)?.token===token)return false;
     const request=(requests.get(path)||0)+1,pending={token,request};requests.set(path,request);pendingLoads.set(path,pending);
@@ -30,6 +43,7 @@ export function mountFileNavigator({invoke, projectId, open, toast=()=>{}, works
   }
   function flatten(){visible=[];const draw=(path,depth)=>{const page=directories.get(path);if(!page)return;for(const entry of page.entries){visible.push({entry,depth});if(entry.kind==='dir'&&expanded.has(entry.relPath)&&!entry.hiddenRoot)draw(entry.relPath,depth+1);}if(page.nextCursor)visible.push({parent:path,depth,more:true});else if(page.truncated)visible.push({parent:path,depth,incomplete:true});};draw('',0);}
   function paint(){
+    if (!projectId() || unavailable.has(projectId())) return;
     const active=tree.contains(document.activeElement)?document.activeElement:null,hadFocus=!!active,activeIndex=active?.dataset.index;
     const start=Math.max(0,Math.floor(tree.scrollTop/rowHeight)-overscan),count=Math.min(100,Math.ceil((tree.clientHeight||400)/rowHeight)+overscan*2),end=Math.min(visible.length,start+count),fragment=document.createDocumentFragment();
     if(paintedVisible===visible&&paintedStart===start&&paintedEnd===end)return;
@@ -54,6 +68,7 @@ export function mountFileNavigator({invoke, projectId, open, toast=()=>{}, works
   tree.addEventListener('scroll',()=>{if(!frame)frame=requestAnimationFrame(()=>{frame=0;paint();});},{passive:true});
   if(typeof ResizeObserver!=='undefined')new ResizeObserver(()=>paint()).observe(tree);
   async function refresh(){
+    if (unavailable.has(projectId())) return;
     const id=projectId(),switching=id!==owner;
     if(switching){revision++;if(owner)sessions.set(owner,[...expanded]);owner=id;expanded.clear();selected.clear();directories.clear();anchor=null;focusedPath=null;tree.scrollTop=0;searchSequence++;results.replaceChildren();editorList.replaceChildren();tree.replaceChildren();if(overlay.open)overlay.close();if(id){const state=await invoke('tree.view',{projectId:id});if(id!==projectId())return;for(const path of sessions.get(id)||state.value?.expanded||[])expanded.add(path);}}
     if(!id){render();return;}
@@ -62,6 +77,7 @@ export function mountFileNavigator({invoke, projectId, open, toast=()=>{}, works
     if(id!==projectId())return;render();paintEditors();await checkEditorPaths();
   }
   async function refreshDirectory(parentRelPath=''){
+    if (!projectId() || unavailable.has(projectId()) || transitioning) return;
     if(!directories.has(parentRelPath)||(parentRelPath&&!expanded.has(parentRelPath)))return;
     const id=owner,token=revision,target=Math.max(1,directories.get(parentRelPath).entries.length),request=(requests.get(parentRelPath)||0)+1;requests.set(parentRelPath,request);let cursor,page,entries=[];
     do{const r=await invoke('project.children',{projectId:id,parentRelPath,cursor,limit:100,treeView:true});if(id!==projectId()||token!==revision||requests.get(parentRelPath)!==request)return;if(!r.ok){toast('目录读取失败：'+(r.error?.message||'未知错误'));return;}page=r.value;entries.push(...(page.entries||[]));cursor=page.nextCursor;}while(cursor&&entries.length<target);
@@ -90,7 +106,7 @@ export function mountFileNavigator({invoke, projectId, open, toast=()=>{}, works
   const editors=document.createElement('details');editors.id='workspace-open-editors';editors.open=true;const heading=document.createElement('summary');heading.textContent='已打开';const editorList=document.createElement('div');editorList.className='workspace-open-editor-list';editors.append(heading,editorList);tree.before(editors);
   function paintEditors(){const api=workspaceGroups(),layout=api?.snapshot();editorList.replaceChildren();if(!layout||layout.projectId!==projectId())return;for(const [id,view] of Object.entries(layout.views||{})){if(view.kind==='conversation')continue;const row=document.createElement('div');row.className='workspace-open-editor-row';const b=document.createElement('button');b.type='button';b.dataset.editorView=id;const status=view.viewState?.documentStatus||{};b.textContent=(view.relPath?.split('/').pop()||view.viewState?.title||({report:'报告',diff:'Diff',history:'历史'}[view.kind])||view.kind)+(status.dirty?' ●':'')+((view.readOnly||status.readOnly)?' [只读]':'')+(status.missing?' [缺失]':'');b.title=(view.relPath||b.textContent)+(status.dirty?' · 未保存':'');if(view.relPath?.includes('/')){const parent=document.createElement('small');parent.textContent=' · '+view.relPath.split('/').slice(0,-1).join('/');b.append(parent);}const hidden=Array.from(visibility().hidden||[]).some(p=>view.relPath===p||view.relPath?.startsWith(p+'/'));if(hidden)b.title+=' · 已隐藏';b.onclick=()=>void api.command({type:'activate',viewId:id,groupId:api.activeGroup?.()}).catch(e=>toast(e.message));const close=document.createElement('button');close.type='button';close.textContent='×';close.title='关闭 '+b.textContent;close.dataset.editorClose=id;close.onclick=()=>void api.command({type:'close',viewId:id}).catch(e=>toast(e.message));row.append(b,close);editorList.append(row);}}
   editorList.addEventListener('contextmenu',event=>{const node=event.target.closest('[data-editor-view]'),view=workspaceGroups()?.snapshot()?.views[node?.dataset.editorView],id=projectId();if(!view)return;event.preventDefault();const api=workspaceGroups();editorMenu.open([{id:'split-x',label:'分屏打开（右侧）'},{id:'split-y',label:'分屏打开（下方）'},{id:'float',label:'在独立窗口打开'},{id:'locate',label:'在文件树中定位'},{id:'close',label:'关闭'}],{x:event.clientX,y:event.clientY,run:key=>{if(id!==projectId())return;const viewId=view.id;if(key==='locate')return view.relPath&&locate(view.relPath);if(key==='split-x'||key==='split-y')return api.command({type:'splitOpen',viewId,groupId:api.activeGroup?.(),axis:key==='split-x'?'x':'y',side:'after'});if(key==='float')return api.command({type:'floatOpen',viewId});if(key==='close')return api.command({type:'close',viewId});}});});
-  async function checkEditorPaths(){const api=workspaceGroups(),layout=api?.snapshot(),id=projectId();if(!layout||layout.projectId!==id)return;const paths=Object.values(layout.views).filter(v=>v.kind==='document'&&v.relPath).map(v=>v.relPath);try{const availability=await readFileAvailability(invoke,id,paths);if(id!==projectId())return;for(const node of editorList.querySelectorAll('[data-editor-view]')){const view=layout.views[node.dataset.editorView],entry=availability.get(view?.relPath);if(entry?.status==='missing'){node.dataset.missing='true';}else if(entry?.status==='unavailable')node.dataset.missing='unavailable';}}catch(e){if(id===projectId())toast(e.message);}}
+  async function checkEditorPaths(){if(transitioning||!projectId()||unavailable.has(projectId()))return;const generation=transitionGeneration,api=workspaceGroups(),layout=api?.snapshot(),id=projectId();if(!layout||layout.projectId!==id)return;const paths=Object.values(layout.views).filter(v=>v.kind==='document'&&v.relPath).map(v=>v.relPath);try{const availability=await readFileAvailability(invoke,id,paths);if(transitioning||generation!==transitionGeneration||id!==projectId())return;for(const node of editorList.querySelectorAll('[data-editor-view]')){const view=layout.views[node.dataset.editorView],entry=availability.get(view?.relPath);if(entry?.status==='missing'){node.dataset.missing='true';}else if(entry?.status==='unavailable')node.dataset.missing='unavailable';}}catch(e){if(!transitioning&&generation===transitionGeneration&&id===projectId())toast(e.message);}}
   if(document.documentElement.dataset.workspaceRole==='shell'){
     window.nozeli?.subscribe?.('workspace.changed',()=>queueMicrotask(()=>{paintEditors();void checkEditorPaths();}));
     window.nozeli?.subscribe?.('workspace.control',event=>{if(event.type==='quick-open')showSearch();if(event.type==='file-tree-changed'&&event.projectId===projectId())void refreshDirectory(event.parentRelPath||'');if(event.type==='file-tree-watch-error'&&event.projectId===projectId())toast('目录监听不可用：'+event.message+'；可手动刷新。');});

@@ -1,3 +1,4 @@
+import {projectReportEvidence} from './report-evidence.fixture.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -88,14 +89,19 @@ try {
   const id=(await invoke('project.recent')).projects[0].id;
   await stage('waiting-managed-ready');
   await page.waitForFunction(async id=>(await window.nozeli.invoke('managed.status',{projectId:id})).value?.ready,{},id).catch(async error=>{report.managedFailure=await page.evaluate(async id=>({status:await window.nozeli.invoke('managed.status',{projectId:id}),label:document.querySelector('#ai-status')?.textContent}),id);throw error;});
-  assert.equal(await page.$eval('#settings-dialog', n=>n.open),false);await page.waitForSelector('[data-managed-terminal=frontdesk]');await page.waitForSelector('[data-managed-terminal=orchestrator]');report.checks.push('opening project auto-enables managed agents and mounts resident cards without setup');
+  assert.equal(await page.$eval('#settings-dialog', n=>n.open),false);await page.waitForFunction(async id=>{const s=(await window.nozeli.invoke('managed.status',{projectId:id})).value?.state;return s?.agents?.some(a=>a.target==='frontdesk'&&!a.closed)&&s.agents?.some(a=>a.target==='orchestrator'&&!a.closed);},{},id);report.checks.push('opening project auto-enables managed resident sessions without setup');
   await stage('managed-ready');
+  if(await page.$('#workspace-open-conversation:not([disabled])'))await page.click('#workspace-open-conversation');
+  await page.waitForSelector('#send-message:not([disabled])',{timeout:30000});
   const state=async()=>(await invoke('managed.status',{projectId:id})).state;
   const wait=async predicate=>{for(let i=0;i<200;i++){const s=await state();if(predicate(s))return s;await new Promise(r=>setTimeout(r,25));}throw Error('state timeout');};
-  const send=async text=>{const frontend=await page.$eval('#conversation-panel',n=>!n.dataset.managedConversation||n.dataset.managedConversation==='frontdesk');await page.$eval('#composer',(el,text)=>{el.value=text;el.dispatchEvent(new Event('input',{bubbles:true}));},text);await page.click('#send-message');if(frontend&&!/^(?:LIGHT|FAIL)/.test(text)){await page.waitForSelector('[data-frontdesk-route-action="background"]');await page.click('[data-frontdesk-route-action="background"]');}};
+  const send=async text=>{const frontend=await page.$eval('#conversation-panel',n=>!n.dataset.managedConversation||n.dataset.managedConversation==='frontdesk');await page.$eval('#composer',(el,text)=>{el.value=text;el.dispatchEvent(new Event('input',{bubbles:true}));},text);await page.waitForSelector('#send-message:not([disabled])');await page.click('#send-message');if(frontend&&!/^(?:LIGHT|FAIL)/.test(text)){await page.waitForSelector('[data-frontdesk-route-action="background"]');await page.click('[data-frontdesk-route-action="background"]');}};
   const confirmClick=async(selector,expected)=>{
-    let timer,listener;const confirmation=new Promise((resolve,reject)=>{listener=async dialog=>{try{assert.equal(dialog.type(),'confirm');assert.match(dialog.message(),expected);report.browserEvents.push({type:'confirmed-user-action',message:dialog.message(),stage:report.stage,at:new Date().toISOString()});await dialog.accept();resolve();}catch(error){await dialog.dismiss().catch(()=>{});reject(error);}};page.once('dialog',listener);timer=setTimeout(()=>reject(Error('Expected confirmation dialog did not appear for '+selector)),5000);});
-    try{await Promise.all([page.click(selector),confirmation]);}finally{clearTimeout(timer);page.off('dialog',listener);}
+    await page.click(selector);await page.waitForSelector('.managed-report-dialog[open]',{visible:true});
+    assert.match(await page.$eval('.managed-report-dialog p',n=>n.textContent),expected);
+    assert.equal(await page.evaluate(()=>document.activeElement?.textContent),'取消');
+    report.browserEvents.push({type:'confirmed-user-action',message:await page.$eval('.managed-report-dialog p',n=>n.textContent),stage:report.stage,at:new Date().toISOString()});
+    await page.keyboard.press('Tab');await page.keyboard.press('Enter');await page.waitForSelector('.managed-report-dialog',{hidden:true});
   };
   await send('LIGHT hello');await wait(s=>s.jobs[0]?.status==='completed'&&!s.busyTargets.length);assert.equal((await state()).works.length,0);report.checks.push('light question stays frontdesk');
   const copyText='Copy full plain text\n\n| column | 中文 |\n| --- | --- |\n| value | 𝛼 😀 |\n\n'+('unabridged clipboard content\n'.repeat(300));
@@ -128,7 +134,7 @@ try {
   await page.focus('#composer');await page.keyboard.down('Control');await page.keyboard.press('Enter');await page.keyboard.up('Control');
   await wait(s=>s.jobs.length===beforeKeys+1&&s.jobs.at(-1).status==='completed'&&!s.busyTargets.length);
   report.checks.push('closed selected session rejects visibly, reading recovery preserves input without replay, keyboard shares send and guards IME/repeat');
-  await send('NEW Alpha task');let s=await wait(s=>s.works[0]?.status==='paused'&&!s.busyTargets.length);const first=s.works[0],thread=first.threadId;const failed=s.jobs.find(job=>job.status==='failed');assert.equal(failed,undefined,failed?.error||'initial question must not mask a failed job');assert.equal(typeof thread,'string');assert(thread.length>0,'initial Worker has a real session identity');const question=s.receipts.find(receipt=>receipt.workId===first.id&&receipt.kind==='problem'&&receipt.revision===first.revision);assert(question,'paused Worker must have published its controlled question');assert.equal(question.text,'请选择核验方向');assert.equal(s.quotaUsed,1);
+  await send('NEW Alpha task');let s=await wait(s=>s.works[0]?.status==='paused'&&!s.busyTargets.length);const first=s.works[0],thread=first.threadId;const failed=s.jobs.find(job=>job.status==='failed');assert.equal(failed,undefined,failed?.error||'initial question must not mask a failed job');assert.equal(typeof thread,'string');assert(thread.length>0,'initial Worker has a real session identity');const question=s.receipts.find(receipt=>receipt.workId===first.id&&receipt.kind==='problem'&&receipt.revision===first.revision);assert(question,'paused Worker must have published its controlled question');assert.equal(question.report.format,'markdown');assert.match((await projectReportEvidence(invoke,id,question.objectId)).body,/请选择核验方向/);assert.equal(s.quotaUsed,1);
   await stage('first-worker-paused');
   await send('NEW Beta task');await wait(s=>s.works.length===2&&!s.busyTargets.length);assert.equal((await state()).works[1].status,'queued');report.checks.push('worker question holds quota; new independent work queues');
   await send('CONTINUE Alpha detail');s=await wait(s=>s.works[0].status==='review'&&!s.busyTargets.length);assert.equal(s.works[0].threadId,thread);assert.equal(s.works.length,2);report.checks.push('frontdesk supplement routes to same worker');
@@ -136,8 +142,8 @@ try {
   await send('CLARIFY ALL Which work');s=await wait(s=>s.todos.some(t=>t.kind==='routing'&&t.status==='open')&&!s.busyTargets.length);assert.equal(s.works.length,2);report.checks.push('routing ambiguity creates clarification');
   if(await page.$eval('#toggle-sidebar',n=>n.getAttribute('aria-expanded')!=='true'))await page.click('#toggle-sidebar');
   const result=s.todos.find(t=>t.workId===first.id&&t.kind==='result'&&t.status==='open');
-  await page.click('#inbox-reports [data-managed-todo="'+result.id+'"]');await page.waitForSelector('#managed-result-actions');assert.equal(await page.$eval('#conversation-panel',n=>n.dataset.managedConversation),first.id);
-  await send('worker followup');s=await wait(s=>s.works[0].revision===3&&s.works[0].status==='review'&&!s.busyTargets.length);assert.equal(s.works[0].threadId,thread);report.checks.push('todo discussion continues original worker');
+  await page.click('#inbox-reports [data-managed-todo="'+result.id+'"]');const reportSurface=await (async()=>{for(let i=0;i<100;i++){for(const p of await browser.pages()){const hit=await p.evaluate(()=>window.__workspaceScope?.kind==='report'&&window.__nozeliReady).catch(()=>false);if(hit)return p;}await new Promise(r=>setTimeout(r,100));}throw Error('report surface not mounted');})();await reportSurface.waitForSelector('[data-report-discuss]:not(:disabled)');await reportSurface.click('[data-report-discuss]');const discussionPage=await (async()=>{for(let i=0;i<100;i++){for(const p of await browser.pages()){const hit=await p.evaluate(()=>window.__workspaceScope?.kind==='conversation'&&window.__nozeliReady).catch(()=>false);if(hit)return p;}await new Promise(r=>setTimeout(r,100));}throw Error('conversation surface not mounted');})();await discussionPage.waitForFunction(id=>document.querySelector('#conversation-panel')?.dataset.managedConversation===id,{},first.id);report.checks.push('report discussion button admits the original Worker conversation');
+  await send('worker followup');s=await wait(s=>s.works[0].revision===3&&s.works[0].status==='review'&&!s.busyTargets.length);assert.equal(s.works[0].threadId,thread);report.checks.push('continuation prompt routes to the original Worker thread without replay');
   await page.waitForSelector('[data-managed-latest-report]');assert.equal(await page.$eval('[data-managed-end-result]',n=>n.disabled),true);assert.ok(await page.$eval('#managed-result-update',n=>n.textContent.includes('第 3 版')));
   await page.$$eval('[data-worker-round] > details',nodes=>nodes.forEach(node=>{node.open=true;}));
   await page.waitForFunction(()=>[...document.querySelectorAll('[data-managed-message]')].some(node=>node.textContent.includes('Controlled result')));report.checks.push('published result readable in expanded worker conversation and stale review cannot end new revision');
@@ -157,6 +163,7 @@ try {
   console.log(JSON.stringify({ output, ...report }));
 } catch (error) {
   report.failure = error.stack;
+  report.appLog = log.slice(-8000);
   report.failureStage=report.stage;report.electronAtFailure={exitCode:child.exitCode,signalCode:child.signalCode};report.pageUrl=page?.url();
   await page?.screenshot({ path: path.join(output, 'failure.png') }).catch(() => {});
   await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));

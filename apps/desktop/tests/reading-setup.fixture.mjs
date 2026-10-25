@@ -26,10 +26,23 @@ export async function prepareReading(page) {
   await page.waitForFunction(()=>window.__nozeliReady===true);
   const status=await page.evaluate(()=>window.nozeli.invoke('config.status',{}));
   if(!status.ok)throw Error(status.error.message);
-  if(!status.value.initialized){
-    await page.waitForFunction(()=>document.querySelector('#configuration-setup')?.open||window.__readingSetupDismissed===true);
-    if(await page.$eval('#configuration-setup',node=>node.open))await page.click('#configuration-cancel');
+  // The one-time setup dialog may (re)open while its own config.status probe is
+  // still resolving, so a single cancel can race a second showModal. Dismiss
+  // deterministically: wait open===true, cancel, wait open===false, and repeat
+  // while the dialog reappears; end by proving no modal remains to block clicks.
+  for(let round=0;round<10;round++){
+    const open=await page.$eval('#configuration-setup',node=>node.open).catch(()=>false);
+    if(!open){
+      if(status.value.initialized)break;
+      await page.waitForFunction(()=>document.querySelector('#configuration-setup')?.open===true||window.__readingSetupDismissed===true,{timeout:5000}).catch(()=>{});
+      if(!(await page.$eval('#configuration-setup',node=>node.open).catch(()=>false)))break;
+    }
+    await page.waitForSelector('#configuration-setup[open]',{timeout:5000});
+    await page.click('#configuration-cancel');
+    await page.waitForFunction(()=>document.querySelector('#configuration-setup').open===false,{timeout:5000});
     await page.evaluate(()=>{window.__readingSetupDismissed=true;});
+    await new Promise(resolve=>setTimeout(resolve,250));
   }
+  await page.waitForFunction(()=>!document.querySelector('#configuration-setup[open]'),{timeout:5000});
   installFileTreeClicks(page,message=>console.log('reading smoke: '+message));
 }

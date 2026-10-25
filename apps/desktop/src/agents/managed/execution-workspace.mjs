@@ -83,6 +83,7 @@ export class ExecutionWorkspace {
   await atomicJson(intentFile,{repo:root,ref,commit,status:'complete'});await fs.rm(index,{force:true});
  }
  async prepareInner(id){
+  await this.store.storage.requireOnline(this.store.projectId);
   let m=await this.readManifest(id);
   if(m?.schema>=2&&m.preparation==='complete'){await this.reconcilePublication(m);await this.reconcileFreeze(m);await this.identity(m,{target:false});await this.reconcileDocument(m);await this.save(m);return m;}
   if(!m||m.schema<2){
@@ -120,7 +121,8 @@ export class ExecutionWorkspace {
   else fail('DOCUMENT_RECOVERY','执行文件与持久化编辑意图不一致，已保留现场');
  }
  async publicationCommitted(intent){
-  let handle;try{handle=await fs.open(this.store.file,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);const before=await handle.stat({bigint:true});if(!before.isFile()||before.nlink!==1n||before.size>32n*1024n*1024n)fail('PUBLICATION_RECOVERY_HELD','报告提交状态无法安全确认');const buffer=Buffer.alloc(Number(before.size)+1);let offset=0;while(offset<buffer.length){const {bytesRead}=await handle.read(buffer,offset,buffer.length-offset,offset);if(!bytesRead)break;offset+=bytesRead;}const after=await handle.stat({bigint:true}),current=await fs.lstat(this.store.file,{bigint:true});for(const stat of [after,current])if(stat.dev!==before.dev||stat.ino!==before.ino||stat.size!==before.size||stat.mtimeNs!==before.mtimeNs||stat.ctimeNs!==before.ctimeNs||stat.nlink!==1n)fail('PUBLICATION_RECOVERY_HELD','报告提交状态在读取期间变化');if(offset!==Number(before.size))fail('PUBLICATION_RECOVERY_HELD','报告提交状态大小变化');const state=JSON.parse(buffer.subarray(0,offset).toString());if(state.schema!==2||state.contentRoot!==this.store.content||!Array.isArray(state.receipts))fail('PUBLICATION_RECOVERY_HELD','报告提交状态无效');const rows=state.receipts.filter(row=>row.id===intent.receiptId);if(!rows.length)return false;if(rows.length!==1||rows[0].workId!==intent.workId||rows[0].revision!==intent.candidate.revision||rows[0].snapshot?.candidate?.commit!==intent.candidate.commit)fail('PUBLICATION_RECOVERY_HELD','报告提交身份冲突');return true;}finally{await handle?.close();}
+  const row=await this.store.storage.getProject(this.store.projectId,'managed_receipts',intent.receiptId);if(!row)return false;
+  if(row.workId!==intent.workId||row.revision!==intent.candidate.revision||row.snapshot?.candidate?.commit!==intent.candidate.commit)fail('PUBLICATION_RECOVERY_HELD','报告提交身份冲突');return true;
  }
  async restorePublication(m,intent,committed){
   const head=await str(m.repo,['rev-parse',m.branchRef]),desired=committed?intent.candidate.commit:intent.before;
@@ -154,6 +156,7 @@ export class ExecutionWorkspace {
   try{const captured=await safeFile(m.directory,h.rel);if(byteDigest(captured?.bytes??null)!==h.digest)fail('STALE_VERSION','文件已变化');await fs.writeFile(temp,text,{flag:'wx',mode:captured?parseInt(captured.mode,8)&0o777:0o644});if(!isActive())fail('WORK_STOPPED','工作已停止');if(byteDigest(await safeBytes(m.directory,h.rel))!==h.digest)fail('STALE_VERSION','文件已变化');const value={relPath:h.rel,beforeDigest:h.digest,digest:byteDigest(Buffer.from(text)),eventId:callId,version:{digest:byteDigest(Buffer.from(text))}};m.documentIntent={callId,fingerprint,value,temp:path.join(m.directory,path.posix.dirname(h.rel),tempName),file:path.join(m.directory,h.rel)};await this.save(m);if(!isActive())fail('WORK_STOPPED','工作已停止');if(byteDigest(await safeBytes(m.directory,h.rel))!==h.digest)fail('STALE_VERSION','文件已变化');await fs.rename(temp,file);m.documentCalls??={};if(callId)m.documentCalls[callId]={fingerprint,value};delete m.documentIntent;await this.save(m);this.handles.delete(a.readHandle);return {ok:true,continueTurn:true,value};}finally{await fs.rm(temp,{force:true});await parent.close();}
  }catch(e){return {ok:false,continueTurn:true,error:{code:e.code||'DOCUMENT_FAILED',message:e.message}};}});}
  async finish(work,{decision,reportPersisted,isActive=()=>false,validateAcceptance}={}){return this.locked(work.id,()=>this.repositoryLocked(async()=>{
+  await this.store.storage.requireOnline(this.store.projectId);
   if(!['accept','discard'].includes(decision))fail('DECISION_REQUIRED','需要用户明确选择接受或放弃');if(!reportPersisted)fail('REPORT_REQUIRED','报告必须先持久化');if(isActive())fail('WORK_ACTIVE','必须先停止Worker');
   let m=await this.readManifest(work.id);
   if(!m&&decision==='discard'&&work.revision===0&&!await fs.lstat(this.directory(work.id)).catch(e=>{if(e.code==='ENOENT')return null;throw e;})){
@@ -173,7 +176,7 @@ export class ExecutionWorkspace {
  }));}
  async integrate(m,work){
   if(!m.candidate||m.candidate.revision!==work.revision)fail('CANDIDATE_REQUIRED','缺少当前版本的冻结候选');
-  const requests=[work.request,...(work.inputs||[]).map(i=>i.text)];if((work.inputs||[]).some(i=>i.userAction==='no-commit')||/(?:不(?:要|得|许|必)?|禁止|别)\s*(?:提交|commit|做\s*git)|(?:do\s+not|don't|no)\s+(?:git\s+)?commit/i.test(requests.filter(Boolean).join('\n')))fail('USER_NO_COMMIT','此工作明确要求不提交Git；请先明确更新这一约束，再选择接受');
+  const requests=[work.request,...(work.inputs||[]).map(i=>i.text)];if((work.inputs||[]).some(i=>i.userAction==='no-commit')||/(?:不(?:要|得|许|必)?|禁止)\s*(?:提交|commit|做\s*git)|(?:^|[\s，。；！？,.!?;：:]|请|千万|务必|暂时|先)别\s*(?:提交|commit|做\s*git)|\b(?:do\s+not|don't|no)\s+(?:git\s+)?commit/im.test(requests.filter(Boolean).join('\n')))fail('USER_NO_COMMIT','此工作明确要求不提交Git；请先明确更新这一约束，再选择接受');
   let intent=m.finishIntent;
   if(!intent){
    const files=[],base=entries(await git(m.repo,['ls-tree','-r','-z',m.baseCommit])),input=entries(await git(m.repo,['ls-tree','-r','-z',m.inputCommit])),candidate=entries(await git(m.repo,['ls-tree','-r','-z',m.candidate.commit])),staged=entries(await git(m.repo,['ls-files','--stage','-z']));

@@ -8,17 +8,17 @@ export function mountProviderSettings({invoke,providers=document.getElementById(
  providers.append(node('h2','OMP 源'),node('p','使用Nozeli私有OMP账号登录或配置API源。密钥仅存宿主私有配置与认证库，不回传界面。'),list);
  const form=node('form',null,{'data-provider-api-form':''});field(form,'Provider ID','provider');field(form,'API地址（base URL）','baseUrl','url');field(form,'模型ID','model');
  const protocol=node('label','API协议'),api=node('select',null,{name:'api'});for(const value of ['openai-completions','openai-responses','anthropic-messages']){const opt=node('option',value,{value});api.append(opt);}protocol.append(api);form.append(protocol);
- const key=field(form,'API密钥','key','password');form.append(node('button','添加API源',{type:'submit'}));providers.append(form);
+ const key=field(form,'API密钥','key','password');form.append(node('button','添加API源',{type:'submit',class:'ui-action','data-ui-action':'primary'}));providers.append(form);
  const loginForm=node('form',null,{'data-provider-login-form':''}),loginLabel=node('label','选择OMP支持的账号源'),loginProvider=node('select',null,{name:'provider','data-login-provider':'',required:''}),loginStart=node('button','登录 / 激活所选源',{type:'submit'});
  loginProvider.append(node('option','请选择账号源',{value:''}));loginLabel.append(loginProvider);loginForm.append(node('h3','账号登录'),loginLabel,loginStart);providers.append(loginForm,loginArea,message);
  providers.insertBefore(loginForm,form);providers.insertBefore(loginArea,form);loginStart.disabled=true;
  const refreshButton=node('button','刷新源和模型',{type:'button','data-provider-refresh':''});providers.append(refreshButton);
  providers.append(node('p','模型目录可能联网更新；不会发送对话或模型请求。'));
  models.append(node('h2','三角色默认模型'),node('p','前台：优先最快响应；编排：优先强推理与规划；Worker：中等及以上能力。保存后，所有项目同角色 Agent 联动切换；执行中的回合不打断，结束后应用。休眠 Agent 恢复时应用，不新建对话。'));
- const modelForm=node('form',null,{'data-role-model-form':''}),selects={};for(const [role,label]of [['frontdesk','前台 · 最快'],['orchestrator','编排 · 强模型'],['worker','Worker · 中等及以上']]){const wrap=node('label',label),select=node('select',null,{'data-default-role':role,name:role});selects[role]=select;wrap.append(select);modelForm.append(wrap);}modelForm.append(node('button','保存三角色默认',{type:'submit'}));models.append(modelForm);
+ const modelForm=node('form',null,{'data-role-model-form':''}),selects={};for(const [role,label]of [['frontdesk','前台 · 最快'],['orchestrator','编排 · 强模型'],['worker','Worker · 中等及以上']]){const wrap=node('label',label),select=node('select',null,{'data-default-role':role,name:role});selects[role]=select;wrap.append(select);modelForm.append(wrap);}modelForm.append(node('button','保存三角色默认',{type:'submit',class:'ui-action','data-ui-action':'primary'}));models.append(modelForm);
  const catalogMessage=node('p','正在读取可用模型…',{role:'status','aria-live':'polite','data-model-catalog-status':''});
  const modelRefresh=node('button','刷新模型列表',{type:'button','data-model-refresh':''}),configureSource=node('button','配置 OMP 源',{type:'button','data-model-configure-source':''});
- modelForm.before(catalogMessage,modelRefresh,configureSource);
+ const modelActions=node('div',null,{class:'settings-actions'});modelActions.append(modelRefresh,configureSource);modelForm.before(catalogMessage,modelActions);
  const modelSave=modelForm.querySelector('button[type="submit"]');let catalogReady=false,refreshFlight=null;
  for(const select of Object.values(selects)){select.disabled=true;select.append(node('option','正在读取模型…',{value:''}));}modelSave.disabled=true;
  configureSource.onclick=()=>window.dispatchEvent(new CustomEvent('nozeli-open-settings',{detail:'settings-provider'}));
@@ -59,8 +59,8 @@ export function mountProviderSettings({invoke,providers=document.getElementById(
   if(!value.sources?.length)list.append(node('p','尚无已配置源。请登录或添加API源。'));
   for(const source of value.sources??[]){
    const row=node('div',null,{'data-provider-row':source.provider});row.append(node('strong',source.provider),node('span',' · '+(source.type==='oauth'?'账号登录':'API')+(source.baseUrl?' · '+source.baseUrl:'')));
-   const remove=node('button','移除',{type:'button','data-provider-remove':source.provider});
-   remove.onclick=()=>{remove.disabled=true;row.append(node('p','确认移除 '+source.provider+'？将禁用其私有凭据；仍有会话引用时会拒绝。'));const confirm=node('button','确认移除 '+source.provider,{type:'button','data-provider-confirm-remove':source.provider});confirm.onclick=()=>run(async()=>{await call('settings.providers.remove',{provider:source.provider,confirm:source.provider});await refreshAfterChange();message.textContent='已移除源。';});const cancel=node('button','取消',{type:'button'});cancel.onclick=()=>refresh();row.append(confirm,cancel);};row.append(remove);list.append(row);
+   const remove=node('button','移除',{type:'button','data-ui-action':'danger','data-provider-remove':source.provider});
+   remove.onclick=()=>{remove.disabled=true;row.append(node('p','确认移除 '+source.provider+'？将禁用其私有凭据；仍有会话引用时会拒绝。'));const confirm=node('button','确认移除 '+source.provider,{type:'button','data-ui-action':'danger','data-provider-confirm-remove':source.provider});confirm.onclick=()=>run(async()=>{await call('settings.providers.remove',{provider:source.provider,confirm:source.provider});await refreshAfterChange();message.textContent='已移除源。';});const cancel=node('button','取消',{type:'button'});cancel.onclick=()=>refresh();row.append(confirm,cancel);};row.append(remove);list.append(row);
   }
   const available=value.models??[];catalogReady=available.length>0;
   for(const [role,select]of Object.entries(selects)){const selected=select.dataset.dirty==='true'?select.value:value.defaults?.[role]||'';select.replaceChildren(node('option','沿用原生OMP选择',{value:''}));for(const model of available)select.append(node('option',`${model.name||model.id||model.selector} · ${model.provider}`,{value:model.selector}));if(selected&&!available.some(m=>m.selector===selected))select.append(node('option',selected+'（当前目录不可用；原选择保留）',{value:selected}));select.value=selected;select.disabled=!catalogReady;}

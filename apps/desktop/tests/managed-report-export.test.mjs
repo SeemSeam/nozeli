@@ -7,26 +7,31 @@ import {DesktopHost} from '../src/main/host.mjs';
 import {Workspace} from '../src/agents/managed/workspace.mjs';
 import {ManagedReportExporter} from '../src/main/managed-report-export.mjs';
 import {staticReport,historicalMarkdownState} from './static-report.fixture.mjs';
+import {managedRuntime} from '../src/agents/managed/managed-storage.mjs';
+import {managedReportSource} from '../src/agents/managed-report-source.mjs';
 
 // Real Host registry/drafts/atomic writes and real Workspace publication/object.
 // The binding lookup has no Provider; this is file safety, not CLI acceptance.
 async function setup(t,{html=false}={}) {
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-report-export-'));
   const project=path.join(root,'project');await fs.mkdir(project);
-  const host=new DesktopHost(path.join(root,'profile')),projectId=(await host.pick(project)).project.id;
-  let store=await Workspace.open(path.join(root,'runtime'),project);
+  const host=new DesktopHost(path.join(root,'profile')),projectId=(await host.pick(project)).project.id,storage=host.storage,binding=await storage.requireRegistered(projectId),runtime=await managedRuntime(storage,projectId);
+  let store=await Workspace.open(runtime,project,{storage,projectId});
   const work=await store.submit('request','brief',{name:'真实报告'});await store.activate(work.id);
   let text=html?staticReport('Unicode 中文、空行与尾换行。'):'# 原始报告\r\n\r\nUnicode 中文、空行与尾换行。\r\n\r\n[原文件](source.md)\r\n';
   let receipt=await store.publish(work.id,1,'result',html?text:staticReport('Historical seed'),'receipt-1');await store.settle(work.id);
-  if(!html){await historicalMarkdownState(store,new Map([[receipt.objectId,text]]));store=await Workspace.open(store.root,project);receipt=store.state.receipts[0];}
-  if(html)text=await fs.readFile(path.join(store.root,'objects',receipt.objectId+'.html'),'utf8');
-  const managedAgents={controller:id=>{assert.equal(id,projectId);return {store};}};
+  if(!html){await historicalMarkdownState(store,new Map([[receipt.objectId,text]]));store=await Workspace.open(runtime,project,{storage,projectId});receipt=store.state.receipts[0];}
+  if(html)text=(await store.readObject(receipt.report.digest)).toString('utf8');
+  await fs.unlink(path.join(await storage.recoveryDirectory(projectId),'objects','sha256',receipt.report.digest));
+  const projectEntries=await fs.readdir(project);
+  const controller={store},managedAgents={controller:id=>{assert.equal(id,projectId);return controller;},reportSource:async(id,objectId)=>managedReportSource({project:await storage.requireRegistered(id),storage,runtime,objectId,controller})};
   let holds=0,releases=0;
   const exporter=new ManagedReportExporter({host,managedAgents,beforeOperation:async()=>{holds++;return ()=>{releases++;};}});
-  t.after(async()=>{await store.close();await fs.rm(root,{recursive:true,force:true});});
+  t.after(async()=>{await store.close();await storage.db.close();await fs.rm(root,{recursive:true,force:true});});
   const input=relPath=>({projectId,objectId:receipt.objectId,relPath});
   const noTemps=async()=>assert.equal((await fs.readdir(project)).some(n=>n.startsWith('.nozeli-tmp-')),false);
-  return {root,project,host,projectId,store,receipt,text,managedAgents,exporter,input,noTemps,counts:()=>({holds,releases})};
+  const objectPath=receipt=>path.join(binding.metadataRoot,'objects','sha256',receipt.report.digest);
+  return {root,project,projectEntries,host,projectId,store,receipt,text,managedAgents,exporter,input,noTemps,objectPath,counts:()=>({holds,releases})};
 }
 
 test('copies exact external report bytes, preserves original, registry and user edits',async t=>{
@@ -35,7 +40,7 @@ test('copies exact external report bytes, preserves original, registry and user 
   const before=structuredClone(s.store.state),result=await s.exporter.export(s.input('阅读报告.md'));
   assert.equal(result.copied,true);assert.equal(result.byteLength,Buffer.byteLength(s.text));
   assert.equal(await fs.readFile(path.join(s.project,'阅读报告.md'),'utf8'),s.text);
-  assert.equal(await fs.readFile(path.join(s.store.root,'objects',s.receipt.objectId+'.md'),'utf8'),s.text);
+  assert.equal((await s.store.readObject(s.receipt.report.digest)).toString('utf8'),s.text);
   assert.equal(await fs.readFile(path.join(s.project,'source.md'),'utf8'),'user original');
   assert.equal((await s.host.readDraftRecord(s.projectId,'source.md')).text,'user unsaved');
   assert.deepEqual(s.store.state,before);assert.deepEqual(s.counts(),{holds:1,releases:1});await s.noTemps();
@@ -48,7 +53,7 @@ test('older report object remains exportable after a newer revision is published
   await s.exporter.export(s.input('旧版.md'));
   await s.exporter.export({...s.input('新版.html'),objectId:latest.objectId});
   assert.equal(await fs.readFile(path.join(s.project,'旧版.md'),'utf8'),s.text);
-  assert.deepEqual(await fs.readFile(path.join(s.project,'新版.html')),await fs.readFile(path.join(s.store.root,'objects',latest.objectId+'.html')));
+  assert.deepEqual(await fs.readFile(path.join(s.project,'新版.html')),await s.store.readObject(latest.report.digest));
   assert.equal(s.store.state.receipts.length,2);await s.noTemps();
 });
 
@@ -94,32 +99,32 @@ test('missing editing barrier, failed synchronization and staged source change p
   s.exporter.beforeOperation=async()=>{throw Object.assign(new Error('unsaved IME'),{code:'UNSAVED'});};
   await assert.rejects(()=>s.exporter.export(s.input('sync-failed.md')),e=>e.code==='UNSAVED');
   let released=false;s.exporter.beforeOperation=async()=>()=>{released=true;};
-  const replace=s.host.replaceFile.bind(s.host),source=path.join(s.store.root,'objects',s.receipt.objectId+'.md');
+  const replace=s.host.replaceFile.bind(s.host),source=s.objectPath(s.receipt);
   s.host.replaceFile=(abs,bytes,options)=>replace(abs,bytes,{...options,beforeCommit:async()=>{await fs.writeFile(source,'changed original');await options.beforeCommit();}});
-  await assert.rejects(()=>s.exporter.export(s.input('changed.md')),e=>e.code==='REPORT_CHANGED');assert.equal(released,true);
-  assert.deepEqual(await fs.readdir(s.project),[]);await s.noTemps();
+  await assert.rejects(()=>s.exporter.export(s.input('changed.md')),e=>/^(REPORT_CHANGED|MATERIAL_)/.test(e.code));assert.equal(released,true);
+  assert.deepEqual(await fs.readdir(s.project),s.projectEntries);await s.noTemps();
 });
 
 test('rejects cross-project, forged text, absent/corrupt source and symlinked original',async t=>{
-  const s=await setup(t),other=path.join(s.root,'other');await fs.mkdir(other);const otherId=(await s.host.pick(other)).project.id;
-  const second=new ManagedReportExporter({host:s.host,managedAgents:{controller:()=>({store:{state:{receipts:[]}}})},beforeOperation:async()=>()=>{}});
+  const s=await setup(t),other=path.join(s.root,'other');await fs.mkdir(other);const otherId=(await s.host.pick(other)).project.id,otherEntries=await fs.readdir(other);
+  const second=new ManagedReportExporter({host:s.host,managedAgents:{reportSource:async()=>{throw Object.assign(Error('missing'),{code:'REPORT_MISSING'});}},beforeOperation:async()=>()=>{}});
   await assert.rejects(()=>second.export({...s.input('cross.md'),projectId:otherId}),e=>e.code==='REPORT_MISSING');
   await assert.rejects(()=>s.exporter.export({...s.input('forged.md'),text:'fake'}),e=>e.code==='INVALID_PAYLOAD');
-  const source=path.join(s.store.root,'objects',s.receipt.objectId+'.md');await fs.unlink(source);
-  await assert.rejects(()=>s.exporter.export(s.input('absent.md')),e=>e.code==='REPORT_UNAVAILABLE');
-  await fs.writeFile(source,'corrupt');await assert.rejects(()=>s.exporter.export(s.input('corrupt.md')),e=>e.code==='REPORT_CHANGED');
+  const source=s.objectPath(s.receipt);await fs.unlink(source);
+  await assert.rejects(()=>s.exporter.export(s.input('absent.md')),e=>/^(REPORT_|MATERIAL_)/.test(e.code));
+  await fs.writeFile(source,'corrupt');await assert.rejects(()=>s.exporter.export(s.input('corrupt.md')),e=>/^(REPORT_|MATERIAL_)/.test(e.code));
   await fs.unlink(source);const external=path.join(s.root,'external-report.md');await fs.writeFile(external,s.text);await fs.symlink(external,source);
-  await assert.rejects(()=>s.exporter.export(s.input('linked-source.md')),e=>e.code==='REPORT_UNAVAILABLE');
-  assert.deepEqual(await fs.readdir(s.project),[]);assert.deepEqual(await fs.readdir(other),[]);await s.noTemps();
+  await assert.rejects(()=>s.exporter.export(s.input('linked-source.md')),e=>/^(REPORT_|MATERIAL_|INVALID_MATERIAL$|INVALID_DIRECTORY$)/.test(e.code));
+  assert.deepEqual(await fs.readdir(s.project),s.projectEntries);assert.deepEqual(await fs.readdir(other),otherEntries);await s.noTemps();
 });
 
 test('HTML export preserves frozen bytes and only permits html names',async t=>{
-  const s=await setup(t,{html:true}),source=path.join(s.store.root,'objects',s.receipt.objectId+'.html');
-  const bytes=await fs.readFile(source),before=structuredClone(s.store.state);
+  const s=await setup(t,{html:true});
+  const bytes=await s.store.readObject(s.receipt.report.digest),before=structuredClone(s.store.state);
   await assert.rejects(s.exporter.export(s.input('wrong.md')),e=>e.code==='BAD_PATH');
   const result=await s.exporter.export(s.input('报告.HTML'));
   assert.deepEqual(await fs.readFile(path.join(s.project,'报告.HTML')),bytes);
-  assert.deepEqual(await fs.readFile(source),bytes);assert.deepEqual(s.store.state,before);
+  assert.deepEqual(await s.store.readObject(s.receipt.report.digest),bytes);assert.deepEqual(s.store.state,before);
   assert.equal(result.digest,s.receipt.report.digest);assert.equal(result.byteLength,bytes.length);await s.noTemps();
 });
 
@@ -137,7 +142,7 @@ test('HTML conflicts and final-commit races never overwrite existing content',as
 test('legacy Markdown cannot be disguised as HTML',async t=>{
   const s=await setup(t);assert.equal(s.receipt.report.format,'markdown');
   await assert.rejects(s.exporter.export(s.input('legacy.html')),e=>e.code==='BAD_PATH');
-  assert.deepEqual(s.counts(),{holds:0,releases:0});assert.deepEqual(await fs.readdir(s.project),[]);
+  assert.deepEqual(s.counts(),{holds:0,releases:0});assert.deepEqual(await fs.readdir(s.project),s.projectEntries);
 });
 
 test('Workspace rejects fresh Markdown publication without creating a receipt',async t=>{

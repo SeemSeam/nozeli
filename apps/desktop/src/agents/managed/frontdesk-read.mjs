@@ -21,8 +21,8 @@ export async function projectText(root,relPath){
 export async function frontSource(controller,selector,job){
  if(selector.startsWith('frontdesk-source:')){
   const digest=selector.slice(17);if(!/^[a-f0-9]{64}$/.test(digest))throw Error('无效冻结来源');
-  const text=await fs.readFile(path.join(controller.store.root,'objects',digest+'.md'),'utf8');if(versionOf(text)!==digest)throw Error('冻结来源摘要不匹配');
-  return {source:'objects/'+digest+'.md',version:digest,text};
+  const text=(await controller.store.readObject(digest)).toString('utf8');if(versionOf(text)!==digest)throw Error('冻结来源摘要不匹配');
+  return {source:'objects/sha256/'+digest,version:digest,text};
  }
  if(selector.startsWith('file:')){
   const rel=validateFrontPath(selector.slice(5));await projectText(controller.store.content,rel);
@@ -33,16 +33,16 @@ export async function frontSource(controller,selector,job){
   const query=selector.slice(7).trim();if(!query)throw Error('需要记忆检索词');
   const memory=await controller.memoryVersion.snapshot(),reader=new ContextReader(),result=memoryContext(memory.root.text??'',query,reader,memory.topics);
   // Stable selectors, rather than ephemeral Orchestrator readRefs.
-  const entry=row=>({title:row.title,source:row.source,kind:row.kind,...(row.preview!==undefined?{preview:row.preview}:{}),body:row.kind==='topic'?'memory-topic:'+row.source.slice('memory/topics/'.length)+':0':'memory-page:0'});
+  const entry=row=>({title:row.title,source:row.source,kind:row.kind,...(row.preview!==undefined?{preview:row.preview}:{}),body:row.kind==='topic'?'memory-topic:'+row.source.slice('memory/plantree/topics/'.length)+':0':'memory-page:0'});
   return {source:'memory#index',version:memory.version,text:JSON.stringify({matches:result.matches.map(entry),historyMatches:result.historyMatches.map(entry),totalChars:result.totalChars,note:'优先定位整理主题；historyMatches 是原Work历史，不能直接当作当前规则。主题也须核对来源、适用范围及未决冲突。需要正文时复制对应body到@read；主题不在根索引正文中。没有命中不代表没有历史。',body:'memory-page:0'})};
  }
  if(selector.startsWith('memory-topic:')){
   const match=/^memory-topic:([A-Za-z0-9_-]+\.md):(\d+)$/.exec(selector);if(!match)throw Error('无效主题正文引用');
   const memory=await controller.memoryVersion.snapshot(),topic=memory.topics.find(t=>t.path==='topics/'+match[1]);
   if(!topic||topic.text===null)throw Error('未找到根索引链接的可读主题');
-  return {source:'memory/'+topic.path,text:topic.text,version:topic.digest,offset:Number(match[2])};
+  return {source:'memory/plantree/'+topic.path,text:topic.text,version:topic.digest,offset:Number(match[2])};
  }
- if(selector.startsWith('memory-page:')){const text=await fs.readFile(controller.store.plan,'utf8');return {source:'memory/plan-tree.md',text,version:versionOf(text),offset:Number(selector.slice(12))};}
+ if(selector.startsWith('memory-page:')){const text=await fs.readFile(controller.store.plan,'utf8');return {source:'memory/plantree/index.md',text,version:versionOf(text),offset:Number(selector.slice(12))};}
  if(selector==='state')return {source:'runtime/work-state',text:controller.routingContext({role:'frontdesk'})};
  if(selector.startsWith('report:')){
   const name=selector.slice(7),w=controller.store.state.works.findLast(w=>(w.name||w.request)===name);

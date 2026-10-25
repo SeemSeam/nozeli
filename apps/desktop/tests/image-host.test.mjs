@@ -6,7 +6,7 @@ test('image material validates dimensions/regions and preserves immutable screen
  try{const file=await host.readFile(project.id,'sample.png');assert.equal(file.kind,'image');assert.equal(file.image.width,1);assert.ok(file.bytes);
  const input={relPath:'sample.png',materialDigest:file.digest,kind:'image-region',anchor:{space:'image-normalized',width:1,height:1,rects:[[0,0,1,1]],quote:''},note:'检查图像区域',regionImage:{dataUrl:'data:image/png;base64,'+png.toString('base64'),captureMode:'image-pixels'}};
  const {annotation}=await host.addAnnotation(project.id,input);const packet=await host.tagMaterial(project.id,{relPath:'sample.png',annotationId:annotation.id});assert.deepEqual(packet.information.location.pixelRects,[{x:0,y:0,width:1,height:1}]);assert.equal(packet.information.assets[0].captureMode,'image-pixels');assert.equal(packet.resolution.locationStatus,'exact');
- const tags=await new FileTags(root).read('sample.png');assert.equal(tags.tags[0].note,input.note);assert.equal(tags.tags[0].information.assets.length,1);
+ const tags=await new FileTags({storage:host.storage,projectId:project.id,root}).read('sample.png');assert.equal(tags.tags[0].note,input.note);assert.equal(tags.tags[0].information.assets.length,1);
  await assert.rejects(host.addAnnotation(project.id,{...input,anchor:{...input.anchor,width:2}}),/尺寸/);
  await assert.rejects(host.addAnnotation(project.id,{...input,anchor:{...input.anchor,rects:[[.9,0,.5,1]]}}),/inside/);
  await assert.rejects(host.addAnnotation(project.id,{...input,regionImage:null}),/截图/);

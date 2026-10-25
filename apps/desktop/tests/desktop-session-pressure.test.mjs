@@ -105,7 +105,8 @@ try {
       return {entry:{id:args.id,availability:'available',version:args.version,field:args.field,offset:args.offset,nextOffset:end<c.originalBytes.length?end:null,totalBytes:c.originalBytes.length,content}};
     };
     let view;
-    c.mount=()=>{view=mountSessionTimeline(document.querySelector('#timeline'),{store,state:c.state,projectId:c.project,context:{filePaths:new Set(),onFile(){},onExternal(){},onError(error){throw error;}},call:c.call,openFrozenChange:args=>c.opened.push(args),onPage(){},onLatest(){}});view.render({});};
+    const navigationContainer=document.createElement('div');navigationContainer.className='session-navigation-slot';document.querySelector('#conversation').after(navigationContainer);
+    c.mount=()=>{view=mountSessionTimeline(document.querySelector('#timeline'),{store,state:c.state,projectId:c.project,navigationContainer,context:{filePaths:new Set(),onFile(){},onExternal(){},onError(error){throw error;}},call:c.call,openFrozenChange:args=>c.opened.push(args),onPage(){},onLatest(){}});view.render({});};
     c.unmount=()=>{view.destroy();view=null;};
     c.render=()=>view.render({state:{...c.state},projectId:c.project});
     c.worker=()=>({id:'worker',target:'worker',workId:'work',jobId:'job',revision:1,speaker:'agent',source:'native',sequence:1,text:'SYNTHETIC worker **body** preserved'});

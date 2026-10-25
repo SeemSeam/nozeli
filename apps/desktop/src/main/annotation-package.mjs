@@ -1,14 +1,13 @@
 import {validateDrawing} from '../domain/region-drawing.mjs';
-import fs from 'node:fs/promises';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {anchorText} from '../domain/tag-anchors.mjs';
 import {wordText} from './word-anchors.mjs';
 const hash=b=>createHash('sha256').update(b).digest('hex');
-export async function pptSnapshot(userDataDir,projectId,relPath,digest){
- const key=hash(projectId+'\0'+relPath+'\0'+digest);
- const record=JSON.parse(await fs.readFile(path.join(userDataDir,'ppt-drafts',key+'.json'),'utf8'));
- if(record.schema!=='nozeli-pptist-draft-v1'||record.sourceDigest!==digest||!Array.isArray(record.model?.slides))throw Error('PPT 草稿版本无效');
+export async function pptSnapshot(storage,projectId,relPath,digest){
+ const key=hash(relPath+'\0'+digest);
+ const record=await storage.getRecovery(projectId,'ppt:'+key);
+ if(record?.schema!=='nozeli-pptist-draft-v1'||record.sourceDigest!==digest||!Array.isArray(record.model?.slides))throw Error('PPT 草稿版本无效');
  const {slides,theme,viewportSize,viewportRatio,title}=record.model;
  const model={slides,theme,viewportSize,viewportRatio,title};
  const bytes=Buffer.from(JSON.stringify({schema:record.schema,engine:record.engine,sourceDigest:digest,model}));
@@ -16,9 +15,9 @@ export async function pptSnapshot(userDataDir,projectId,relPath,digest){
 }
 function geometry(e){return {left:e.left,top:e.top,width:e.width,height:e.height,rotation:e.rotate||0};}
 function linePosition(text,offset){const before=text.slice(0,offset),last=before.lastIndexOf('\n');return {line:before.split('\n').length,column:offset-last,offset};}
-export async function buildAnnotationPackage({store,userDataDir,projectId,relPath,kind,anchor,materialDigest,material,image,drawing,annotatedImage,sourceDraftDigest,displayLocation}){
- const ref=async(bytes,mime,role)=>{const {digest}=await store.materials.put(bytes);return {role,digest,mime,bytes:bytes.length,relPath:path.posix.join('.nozeli/materials',digest)};};
- const result={schema:'nozeli.annotation-material-v1',capturedAt:new Date().toISOString(),source:{digest:materialDigest,relPath:path.posix.join('.nozeli/materials',materialDigest),format:path.extname(relPath).slice(1)},location:{kind,anchor},assets:[],limitations:[]};
+export async function buildAnnotationPackage({store,projectId,relPath,kind,anchor,materialDigest,material,image,drawing,annotatedImage,sourceDraftDigest,displayLocation}){
+ const ref=async(bytes,mime,role)=>{const {digest}=await store.putMaterial(bytes);return {role,digest,mime,bytes:bytes.length,relPath:path.posix.join('.nozeli/objects/sha256',digest)};};
+ const result={schema:'nozeli.annotation-material-v1',capturedAt:new Date().toISOString(),source:{digest:materialDigest,relPath:path.posix.join('.nozeli/objects/sha256',materialDigest),format:path.extname(relPath).slice(1)},location:{kind,anchor},assets:[],limitations:[]};
  const loc=result.location;
  if(kind==='text-selection'){
   const text=anchorText(material.toString('utf8'));loc.offsetEncoding='utf16-lf-normalized';loc.start=linePosition(text,anchor.start);loc.end=linePosition(text,anchor.end);loc.label=`第 ${loc.start.line} 行第 ${loc.start.column} 列至第 ${loc.end.line} 行第 ${loc.end.column} 列`;loc.context={before:text.slice(Math.max(0,anchor.start-200),anchor.start),quote:anchor.quote,after:text.slice(anchor.end,anchor.end+200)};
@@ -27,7 +26,7 @@ export async function buildAnnotationPackage({store,userDataDir,projectId,relPat
   loc.pixelRects=anchor.rects.map(([x,y,w,h])=>({x:Math.floor(x*anchor.width),y:Math.floor(y*anchor.height),width:Math.ceil((x+w)*anchor.width)-Math.floor(x*anchor.width),height:Math.ceil((y+h)*anchor.height)-Math.floor(y*anchor.height)}));
   const r=loc.pixelRects[0];loc.label=`图片区域 x=${r.x}, y=${r.y}, ${r.width}×${r.height} 像素（原图 ${anchor.width}×${anchor.height}）`;
  }else if(kind.startsWith('ppt-')){
-  const snapshot=await pptSnapshot(userDataDir,projectId,relPath,materialDigest);if(drawing&&sourceDraftDigest!==snapshot.digest)throw Error('PPT草稿版本已变化，旧涂鸦已保留，请重新确认原区域');const index=snapshot.model.slides.findIndex(s=>s.id===anchor.slideId);if(index<0)throw Error('备注对应的 PPT 幻灯片已不存在，请重新选取');
+  const snapshot=await pptSnapshot(store.storage,projectId,relPath,materialDigest);if(drawing&&sourceDraftDigest!==snapshot.digest)throw Error('PPT草稿版本已变化，旧涂鸦已保留，请重新确认原区域');const index=snapshot.model.slides.findIndex(s=>s.id===anchor.slideId);if(index<0)throw Error('备注对应的 PPT 幻灯片已不存在，请重新选取');
   const slide=snapshot.model.slides[index];loc.page=index+1;loc.label=`第 ${index+1} 张幻灯片`;loc.coordinateSpace='nozeli-pptist-draft';loc.pageSize={width:snapshot.model.viewportSize,height:snapshot.model.viewportSize*snapshot.model.viewportRatio};
   if(anchor.elementId){const element=slide.elements.find(e=>e.id===anchor.elementId);if(!element)throw Error('备注对应的 PPT 对象已不存在');loc.object={id:element.id,type:element.type,...geometry(element)};loc.context={quote:anchor.quote,prefix:anchor.prefix,suffix:anchor.suffix};}
   result.draft=await ref(snapshot.bytes,'application/json','pptist-draft');result.draft.schema='nozeli-pptist-draft-v1';
@@ -60,8 +59,8 @@ export async function verifyAnnotationPackage(store, information) {
  if (!information) return null;
  const result=structuredClone(information);
  for (const ref of [result.source,result.draft,...(result.assets||[])].filter(Boolean)) {
-  const bytes=await store.materials.get(ref.digest);
-  ref.relPath=path.posix.join('.nozeli/materials',ref.digest);
+  const bytes=await store.getMaterial(ref.digest);
+  ref.relPath=path.posix.join('.nozeli/objects/sha256',ref.digest);
   ref.bytes=bytes.length;
  }
 

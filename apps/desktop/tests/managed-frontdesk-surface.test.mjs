@@ -12,7 +12,7 @@ const document={createElement:tag=>new Element(tag)};
 const buttons=box=>box.children.filter(child=>child.dataset.frontdeskRouteAction);
 
 test('frontdesk route IPC admits only exact project/proposal/version/user-action payloads',async()=>{
- const calls=[],manager=new ManagedProjects({userDataDir:'/unused-frontdesk-surface',host:{requireProject:async id=>{if(id!=='project-1')throw Error('unknown project');return {id};}},legacy:{projects:new Map()}});
+ const calls=[],manager=new ManagedProjects({userDataDir:'/unused-frontdesk-surface',host:{storage:{},requireProject:async id=>{if(id!=='project-1')throw Error('unknown project');return {id};}},legacy:{projects:new Map()}});
  manager.controllers.set('project-1',{started:true,resolveFrontdeskRoute:async p=>{calls.push(p);return {accepted:true};}});
  const p=payload();assert.equal((await manager.invoke('managed.frontdesk.route.resolve',p)).accepted,true);assert.deepEqual(calls,[p]);
  for(const patch of [{projectId:''},{proposalId:4},{proposalId:' padded '},{expectedVersion:0},{expectedVersion:1.1},{action:'approve'},{action:'replan'},{requestKey:''},{requestKey:' padded '},{actor:'user'},{workId:'work-1'}])await assert.rejects(manager.invoke('managed.frontdesk.route.resolve',{...p,...patch}),error=>error.code==='INVALID_PAYLOAD');

@@ -1,3 +1,4 @@
+import {projectReportEvidence} from './report-evidence.fixture.mjs';
 // Opt-in real Electron/provider consumer regressions. No fixture or injected tool output.
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -60,7 +61,7 @@ try{
  assert((await fs.readFile(path.join(project,'result.txt'),'utf8')).includes('SAME_WORK_REVISION_2'));
  const second=await waitReview('排队材料'),secondReceipt=(await state()).receipts.findLast(receipt=>receipt.workId===second.id&&receipt.kind==='result');
  check('released quota executes original queued supplement',(await invoke('managed.artifact.read',{projectId,objectId:secondReceipt.objectId,relPath:'queued.txt'})).text.includes(queuedMarker));
- const history=await invoke('managed.history.list',{projectId,offset:0,limit:50});const old=await invoke('managed.history.read',{projectId,objectId:firstReceipt.objectId,version:history.version});check('superseded accepted report remains readable by immutable identity',old.text===firstReceipt.text);
+ const history=await invoke('managed.history.list',{projectId,offset:0,limit:50});const old=await invoke('managed.history.read',{projectId,objectId:firstReceipt.objectId,version:history.version});check('superseded accepted report remains readable by immutable identity',(await projectReportEvidence(invoke,projectId,old.objectId)).body===await fs.readFile(path.join(runtimeRoot,'objects',firstReceipt.report.objectId+(firstReceipt.report.format==='html-static'?'.html':'.md')),'utf8'));
  await openReport(second);await compose('重启后保留的讨论草稿');await wait(async()=>(await state()).drafts[second.id]==='重启后保留的讨论草稿','restart draft persistence');const before=await state();await archive('before-restart');await close();await launch();await wait(async()=>(await invoke('managed.status',{projectId})).ready,'restart readiness');snapshot=await state();
  check('restart retains original thread, report and draft without replay',snapshot.jobs.length===before.jobs.length&&snapshot.works.find(work=>work.id===second.id).threadId===second.threadId&&snapshot.drafts[second.id]==='重启后保留的讨论草稿');
  await invoke('managed.draft',{projectId,target:second.id,text:''});await openReport(second);await compose('');page.once('dialog',dialog=>dialog.accept());await page.$$eval('#managed-result-actions button',nodes=>nodes.find(node=>node.textContent==='丢弃成果并结束').click());

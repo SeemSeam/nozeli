@@ -43,6 +43,7 @@ await build({
         return {entry:{id:args.id,version,field:args.field,offset:args.offset,nextOffset:end<bytes.length?end:null,totalBytes:bytes.length,content:new TextDecoder('utf-8',{fatal:true}).decode(bytes.slice(args.offset,end)),availability:'available'}};
       }if(op!=='changes.list')throw Error('Unexpected consumer IPC: '+op);const page=pages.get(args.changeSetId+':'+args.offset);if(!page)throw Error('Missing bounded page');return page;},
       openFrozenChange:args=>{opened.push(args);},onTask(){},onPage(){},onLatest(){}};
+    const navigationContainer=document.createElement('div');navigationContainer.className='session-navigation-slot';document.querySelector('#conversation').after(navigationContainer);props.navigationContainer=navigationContainer;
     const view=mountSessionTimeline(document.querySelector('#timeline'),props);
     view.render({});
     window.consumer={store,calls,opened,pages,originals,state,

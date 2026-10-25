@@ -14,6 +14,7 @@ import {randomUUID} from 'node:crypto';
 import puppeteer from 'puppeteer-core';
 import {DesktopHost} from '../src/main/host.mjs';
 import {Workspace} from '../src/agents/managed/workspace.mjs';
+import {readManagedState} from '../src/agents/managed/managed-storage.mjs';
 import {processStamp} from '../src/agents/managed/process-ownership.mjs';
 
 const source = path.resolve(import.meta.dirname, '..');
@@ -29,7 +30,7 @@ execFileSync('git', ['-C', project, 'add', 'paper.md']);
 execFileSync('git', ['-C', project, '-c', 'user.name=Nozeli local fixture', '-c', 'user.email=fixture@localhost', 'commit', '-qm', 'Synthetic fixture']);
 const host = new DesktopHost(profile), projectId = (await host.pick(project)).project.id;
 const runtime = path.join(profile, 'nozeli', 'managed-v1', projectId, 'runtime');
-const store = await Workspace.open(runtime, project);
+const store = await Workspace.open(runtime,project,{storage:host.storage,projectId});
 const oldIndependent = 'RESET_OLD_INDEPENDENT_REQUEST_' + randomUUID();
 const oldOtherRole = 'RESET_OLD_ORCHESTRATOR_DIALOGUE_' + randomUUID();
 // Seed explicitly historical data, not a fake native session or fake live round.
@@ -99,7 +100,7 @@ async function invoke(page, op, payload = {}) {
   return result.value;
 }
 const state = async () => (await invoke(shell, 'managed.status', {projectId})).state;
-const persisted = async () => JSON.parse(await fs.readFile(path.join(runtime, 'state.json'), 'utf8'));
+const persisted = async () => (await readManagedState(host.storage,projectId));
 const front = s => s.agents.find(agent => agent.target === 'frontdesk');
 const orch = s => s.agents.find(agent => agent.target === 'orchestrator');
 const business = s => Object.fromEntries(['jobs', 'messages', 'works', 'todos', 'receipts', 'fileOperations'].map(key => [key, s[key]]));
@@ -272,8 +273,12 @@ try {
   for (const message of before.messages) assert.deepEqual(after.messages.find(item => item.id === message.id), message);
   checks.push('next actual native round uses effective model/new thread and excludes old frontdesk, cross-role and independent-request input');
 
-  await chat.waitForSelector('[data-resident-history="' + archiveId + '"]', {visible: true});
-  await chat.click('[data-resident-history="' + archiveId + '"]');
+  await chat.locator('#composer').click({button: 'right'});
+  await chat.waitForSelector('#conversation-context-menu:not([hidden]) [data-command="chat-agent-details"]', {visible: true});
+  await chat.click('#conversation-context-menu [data-command="chat-agent-details"]');
+  await chat.waitForSelector('#managed-agent-details[open]', {visible: true});
+  await chat.waitForSelector('#managed-agent-details [data-resident-history="' + archiveId + '"]', {visible: true});
+  await chat.click('#managed-agent-details [data-resident-history="' + archiveId + '"]');
   const historyPage = await until(() => surface('history'), 'old history surface');
   await historyPage.waitForFunction(() => window.__nozeliReady);
   await until(async () => {
@@ -296,6 +301,10 @@ try {
   assert.deepEqual((await state()).jobs, after.jobs);
   assert.equal(await fs.readFile(path.join(project, 'paper.md'), 'utf8'), original);
   assert.deepEqual(rendererErrors, []);
+  await shell.bringToFront();
+  const restoredViewId=(await invoke(chat,'workspace.bootstrap')).viewId;
+  await until(async()=>(await invoke(shell,'workspace.windows.list',{projectId})).some(window=>window.visible&&window.surfaces.some(surface=>surface.viewId===restoredViewId&&surface.visible&&surface.bounds.width>0&&surface.bounds.height>0)),'restored native conversation visibly composited');
+  await chat.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
   await chat.screenshot({path: path.join(root, 'frontdesk-context-cleared.png')});
   checks.push('old archive is visibly readable; repeated launcher/history reads do not duplicate conversation or replay jobs');
   const report = {pass: true, root, checks, modelService: 'scripted HTTP on 127.0.0.1 only; not a public or real intelligence model', requests: requests.map(request => request.model), oldThreadId: front(before).threadId, threadId: front(cleared).threadId, orchestratorThreadId: orch(before).threadId, archiveId};

@@ -9,7 +9,9 @@ export function appendDrawingMaterial(materials, delivery) {
   const deliveries = Array.isArray(materials?.deliveredDrawingIds) ? materials.deliveredDrawingIds : [];
   if (deliveries.includes(delivery.deliveryId)) return materials;
   const pending = Array.isArray(materials?.pending) ? materials.pending : [];
-  const entry = { key: 'drawing-' + delivery.deliveryId, deliveryId: delivery.deliveryId, name: a.name, mime: a.mime, size: a.size, digest: a.digest, kind: 'image', source: 'drawing', status: 'ok', sources: Array.isArray(delivery.sources) ? structuredClone(delivery.sources) : [] };
+  const entry = { key: 'drawing-' + delivery.deliveryId, deliveryId: delivery.deliveryId, projectId: a.projectId, instanceId: a.instanceId, storage: a.storage, name: a.name, mime: a.mime, size: a.size, digest: a.digest, kind: 'image', source: 'drawing', status: 'ok', sources: Array.isArray(delivery.sources) ? structuredClone(delivery.sources) : [] };
+  if(typeof a.frozenText==='string')entry.frozenText=a.frozenText;
+  if(typeof a.note==='string')entry.note=a.note;
   return { ...materials, pending: [...pending, entry], quote: materials?.quote ?? null, deliveredDrawingIds: [...deliveries, delivery.deliveryId] };
 }
 

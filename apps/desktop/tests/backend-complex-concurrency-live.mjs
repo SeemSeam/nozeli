@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import assert from 'node:assert/strict';
-import {Controller} from '../src/agents/managed/controller.mjs';
+import {openTestController} from './project-storage.fixture.mjs'
 import {auditRuntime} from '../src/agents/managed/runtime-audit.mjs';
 import {assertSlots,assertReview} from './complex-routing-evidence.mjs';
 if(process.env.NOZELI_REAL_CODEX!=='1'||!process.env.NOZELI_CODEX_SOURCE_HOME)throw Error('explicit Codex opt-in/source required');
@@ -17,7 +17,7 @@ const observe=()=>{const now=Date.now(),running=c.store.state.jobs.filter(j=>j.s
 const front=async(text)=>{const {jobId}=await c.send('frontdesk',text);await wait(()=>c.store.state.jobs.find(j=>j.id===jobId)?.status==='completed'&&!c.running.has('orchestrator')&&!c.store.state.jobs.some(j=>j.target==='orchestrator'&&j.status==='queued'),'front');};
 try{
  console.log(JSON.stringify({root,durationSeconds:duration}));for(const x of ['a','b'])await fs.writeFile(path.join(content,x+'.txt'),'sample:0\n');
- c=await Controller.open({runtimeRoot:runtime,contentRoot:content,sourceHome:process.env.NOZELI_CODEX_SOURCE_HOME,isolateProcesses:true});await c.store.mutate(()=>{c.store.state.limit=2;});await c.start();
+ c=await openTestController({runtimeRoot:runtime,contentRoot:content,sourceHome:process.env.NOZELI_CODEX_SOURCE_HOME,isolateProcesses:true});await c.store.mutate(()=>{c.store.state.limit=2;});await c.start();
  timer=setInterval(()=>{observe();sequence++;for(const x of ['a','b'])fs.writeFile(path.join(content,x+'.txt'),`sample:${sequence}\n`).catch(()=>{});},1000);
  for(const [name,x] of [['采样A','a'],['采样B','b']]){
   await front(`新建全新独立任务严格命名“${name}”。在本工作树写${x}-collector.py和${x}-samples.json。Python程序每秒实际读取用户明确提供的只读外部输入${path.join(content,x+'.txt')}，连续采样${duration}秒，记录observedAt时间戳及读到的原文，完成后验证采样持续至少${duration-1}秒、首尾sample值不同且无少于100条的结果，运行程序，读回JSON并发布结果。这是测量不断变化样本的真实长任务，不得用一份静态JSON或仅sleep代替采样。只能写本任务两个文件，不写输入txt。禁止Git、CCB/tmux及其他Agent。不要结束Work。`);

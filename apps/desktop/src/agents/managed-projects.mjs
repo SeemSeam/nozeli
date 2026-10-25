@@ -1,4 +1,3 @@
-import {MaterialStore} from '../domain/material-store.mjs';
 import {workDisposition} from '../domain/work-disposition.mjs';
 import {SystemTerminalBridge} from './managed/system-terminal-bridge.mjs';
 import {fileURLToPath} from 'node:url';
@@ -10,7 +9,6 @@ import path from 'node:path';
 import {Controller} from './managed/controller.mjs';
 import {createFrontdeskDocuments} from './managed/frontdesk-documents.mjs';
 import {ShadowVersions} from './managed/shadow-versions.mjs';
-import {atomicJson} from './managed/workspace.mjs';
 import {attachNativeTerminal} from './managed/native-terminal.mjs';
 import {managedReportSource,managedHistory,managedArtifact} from './managed-report-source.mjs';
 import {HostError} from '../main/host.mjs';
@@ -24,15 +22,18 @@ import {AgentProcessBudget,validateAgentLimit} from './managed/agent-process-bud
 import {Workspace} from './managed/workspace.mjs';
 import {recoverOmpProvider} from './managed/omp-process-ownership.mjs';
 import {recoverProvider} from './managed/process-ownership.mjs';
+import {readManagedState,managedRuntime,readManagedObject} from './managed/managed-storage.mjs';
+import {boundedProjectWait} from '../domain/project-lifecycle-wait.mjs';
 export class ManagedProjects {
- constructor({userDataDir,host,legacy,beforeDocumentOperation,ompSystemSource=null,ompAuthBroker=null,ompCommand,openController=Controller.open,attachTerminal=attachNativeTerminal}){
-  Object.assign(this,{host,legacy,beforeDocumentOperation,openController,attachTerminal,ompOptions:{ompSystemSource,ompCommand,ompAuthBroker}});
+ constructor({userDataDir,host,legacy,beforeDocumentOperation,ompSystemSource=null,ompAuthBroker=null,ompCommand,openController=Controller.open,attachTerminal=attachNativeTerminal,stopTimeoutMs=15000}){
+  Object.assign(this,{host,legacy,beforeDocumentOperation,openController,attachTerminal,stopTimeoutMs,ompOptions:{ompSystemSource,ompCommand,ompAuthBroker}});
   this.versions=new Map();   // ShadowVersions per project（connect 中 set 前必须初始化）
   this.connectionErrors=new Map();this.handoffFlights=new Map();
-  this.root=path.join(userDataDir,'nozeli','managed-v1');this.controllers=new Map();this.flights=new Map();this.terminalFlights=new Map();this.listener=()=>{};this.stopping=false;const helper={command:process.execPath,args:[...(process.versions.electron&&process.platform==='linux'?['--ozone-platform=headless']:[]),...(!process.versions.electron||process.defaultApp?[fileURLToPath(new URL('../main/main.cjs',import.meta.url))]:[]),'--nozeli-terminal-client']};this.systemTerminals=new SystemTerminalBridge({root:path.join(this.root,'terminal-tickets'),helper});
+  this.root=path.join(userDataDir,'runtime','managed');this.controllers=new Map();this.flights=new Map();this.terminalFlights=new Map();this.listener=()=>{};this.stopping=false;const helper={command:process.execPath,args:[...(process.versions.electron&&process.platform==='linux'?['--ozone-platform=headless']:[]),...(!process.versions.electron||process.defaultApp?[fileURLToPath(new URL('../main/main.cjs',import.meta.url))]:[]),'--nozeli-terminal-client']};this.systemTerminals=new SystemTerminalBridge({root:path.join(this.root,'terminal-tickets'),helper});
   this.activeProjectId=null;this.projectActivity=new Map();this.resourceFlights=new Map();
   this.processBudget=new AgentProcessBudget({file:path.join(userDataDir,'agent-resources.json'),onAvailable:()=>{for(const c of this.controllers.values())c.kick?.();}});
   this.processBudget.reclaim=(id,target)=>this.reclaimInactive(id,{target});
+  this.host.storage.onUnavailable=(id,reason)=>{const pending=this.markUnavailable(id,reason);pending.catch(()=>{});return pending;};
  }
  onEvent(fn){this.listener=fn;}
  applyModelDefaults(defaults){
@@ -62,19 +63,26 @@ export class ManagedProjects {
  async initializeResources(){
   if(this.resourceReady)return this.resourceReady;
   const flight=(async()=>{
-   await this.processBudget.load();let entries;try{entries=await fs.readdir(this.root,{withFileTypes:true});}catch(error){if(error.code==='ENOENT')return;throw error;}
-   const records=[];
-   for(const entry of entries){if(!entry.isDirectory()||entry.name==='terminal-tickets')continue;const runtime=path.join(this.root,entry.name,'runtime');let state;try{state=JSON.parse(await fs.readFile(path.join(runtime,'state.json'),'utf8'));}catch(error){if(error.code==='ENOENT')continue;throw error;}
-    for(const [target,record] of Object.entries(state.providers??{}))records.push({runtime,record,slot:this.processBudget.restoreSlot(entry.name,target)});
+   await this.processBudget.load();const records=[];
+   for(const project of await this.host.storage.list()){
+    const providers=await this.host.storage.getLocal(project.id,'managed:providers')??{};
+    for(const [target,record] of Object.entries(providers)){
+     const live=this.controllers.get(project.id)?.sessions?.get(target);if(live&&!live.closed)continue;
+     const slot=[...this.processBudget.slots].find(slot=>slot.projectId===project.id&&slot.target===target)??this.processBudget.restoreSlot(project.id,target);
+     records.push({runtime:await managedRuntime(this.host.storage,project.id),record,slot});
+    }
    }
-   for(const {runtime,record,slot} of records)try{const receipt=await (['omp-rpc','omp-tui'].includes(record.kind)?recoverOmpProvider(record,runtime):recoverProvider(record,runtime));if(receipt.verified===true)this.processBudget.release(slot);}catch{slot.state='unconfirmed';}
+   for(const {runtime,record,slot} of records)try{
+    const receipt=await (['omp-rpc','omp-tui'].includes(record.kind)?recoverOmpProvider(record,runtime):recoverProvider(record,runtime));
+    if(receipt.verified===true){const providers=await this.host.storage.getLocal(slot.projectId,'managed:providers')??{};if(JSON.stringify(providers[slot.target])===JSON.stringify(record)){delete providers[slot.target];await this.host.storage.putLocal(slot.projectId,'managed:providers',providers);this.processBudget.release(slot);}else slot.state='unconfirmed';}else slot.state='unconfirmed';
+   }catch{slot.state='unconfirmed';}
   })();this.resourceReady=flight;try{return await flight;}catch(error){if(this.resourceReady===flight)this.resourceReady=null;throw error;}
  }
  validateResourceProject(id){if(id!==undefined&&id!==null&&(typeof id!=='string'||!id.trim()||id.trim()!==id||id.length>200))throw new HostError('INVALID_PAYLOAD','项目身份无效');}
  async resourceStatus(projectId){
   this.validateResourceProject(projectId);
   await this.initializeResources();let projectLimit=null,projectUsed=0;
-  if(projectId){await this.host.requireProject(projectId);const state=this.controllers.get(projectId)?.store?.state??(await this.projectionSource(projectId)).state;projectLimit=state.limit??1;projectUsed=(state.works??[]).filter(w=>!['queued','ended'].includes(w.status)&&w.revision>0).length;}
+  if(projectId){await this.host.requireRegisteredProject(projectId);const state=this.controllers.get(projectId)?.store?.state??(await this.projectionSource(projectId)).state;projectLimit=state.limit??1;projectUsed=(state.works??[]).filter(w=>!['queued','ended'].includes(w.status)&&w.revision>0).length;}
   const agents=this.processBudget.agents();
   for(const [id,c] of this.controllers){for(const target of ['frontdesk','orchestrator',...(c.store?.state?.works??[]).filter(w=>!['queued','closing','ended'].includes(w.status)).map(w=>w.id)]){
    const slot=agents.find(slot=>slot.projectId===id&&slot.target===target),session=c.sessions?.get(target);
@@ -92,7 +100,7 @@ export class ManagedProjects {
   const prior=this.resourceFlights.get(projectId),connecting=this.flights.get(projectId);
   const operation=(async()=>{
    await prior?.catch(()=>{});await connecting;let store=this.controllers.get(projectId)?.store,owned=false;
-   if(projectLimit!==undefined&&!store){const project=await this.host.requireProject(projectId);store=await Workspace.open(path.join(this.root,projectId,'runtime'),project.root,{recoverStale:true});owned=true;}
+   if(projectLimit!==undefined&&!store){const project=await this.host.requireProject(projectId);store=await Workspace.open(await managedRuntime(this.host.storage,projectId),project.root,{storage:this.host.storage,projectId,recoverStale:true});owned=true;}
    try{await this.processBudget.save(globalLimit,async()=>{if(projectLimit!==undefined)await store.mutate(()=>{const used=store.used();if(projectLimit<used)throw Object.assign(Error(`项目 Worker 数量不能低于当前占用 ${used}（包括暂停、待审阅与关闭中工作）`),{code:'AGENT_LIMIT_IN_USE'});store.state.limit=projectLimit;});});this.controllers.get(projectId)?.changed?.();}
    finally{if(owned)await store.close();}
   })();if(projectId)this.resourceFlights.set(projectId,operation);
@@ -100,7 +108,7 @@ export class ManagedProjects {
  }
  async setActiveProject(id){
   this.validateResourceProject(id);if(id===undefined)throw new HostError('INVALID_PAYLOAD','项目身份无效');const epoch=this.activationEpoch=(this.activationEpoch??0)+1;
-  if(id!==null)await this.host.requireProject(id);if(epoch!==this.activationEpoch)return {superseded:true};this.activeProjectId=id;if(id)this.projectActivity.set(id,Date.now());
+  if(id!==null)await this.host.requireRegisteredProject(id);if(epoch!==this.activationEpoch)return {superseded:true};this.activeProjectId=id;if(id)this.projectActivity.set(id,Date.now());
   await this.initializeResources();if(epoch!==this.activationEpoch)return {superseded:true};await this.reclaimInactive(id,{all:true});
   if(epoch!==this.activationEpoch)return {superseded:true};
   return this.resourceStatus(id??undefined);
@@ -112,14 +120,14 @@ export class ManagedProjects {
    if(!all&&!this.processBudget.available&&requestedTarget){const c=this.controllers.get(requestingId),targets=['orchestrator','frontdesk',...(c?.sessions?.keys()??[])];for(const target of new Set(targets)){if(this.processBudget.available)break;if(target===requestedTarget)continue;try{await c?.reclaimIdle?.(target);}catch(error){this.listener({projectId:requestingId,kind:'managed-error',text:'空闲 Agent 回收未确认，名额保留：'+error.message});}}}
   });this.reclaimFlight=operation;return operation;
  }
- async config(id){await this.host.requireProject(id);try{return JSON.parse(await fs.readFile(path.join(this.root,id,'binding.json')));}catch(e){if(e.code==='ENOENT')return {enabled:false};throw e;}}
+ async config(id){await this.host.requireRegisteredProject(id);return await this.host.storage.getLocal(id,'managed:binding')??{enabled:false};}
  async status(id){
   const binding=await this.config(id),controller=this.controllers.get(id),failure=this.connectionErrors.get(id);let state=controller?.snapshot()??null;
   if(!state&&binding.enabled){const source=await this.projectionSource(id);const timeline=await source.index.page();const {sessionIndex,messages,...business}=source.state;state={jobs:[],works:[],todos:[],receipts:[],drafts:{},limit:1,...business,messages:source.index.messages(),timeline,agents:[],quotaUsed:(business.works??[]).filter(w=>!['queued','ended'].includes(w.status)).length,configuringTargets:[],externalTerminalTargets:[],nativeDraftTargets:[],busyTargets:[],stopping:false};}
-  return {enabled:binding.enabled===true,ready:controller?.started===true,runtimeRoot:path.join(this.root,id,'runtime'),state,connectionError:failure?.error??null,handoff:failure?.handoff??null};
+  return {enabled:binding.enabled===true,ready:controller?.started===true,runtimeRoot:await managedRuntime(this.host.storage,id),state,connectionError:failure?.error??null,handoff:failure?.handoff??null};
  }
  async disposition(id,workId){
-  await this.host.requireProject(id);const c=this.controllers.get(id),state=c?.store?.state??(await this.projectionSource(id)).state;
+  await this.host.requireRegisteredProject(id);const c=this.controllers.get(id),state=c?.store?.state??(await this.projectionSource(id)).state;
   const work=state.works?.find(w=>w.id===workId);if(!work)throw new HostError('WORK_NOT_FOUND','工作不存在');
   const session=c?.sessions?.get(workId),failure=this.connectionErrors.get(id);
   const sessionState=c?.starting?.has(workId)?'starting':session&&!session.closed?'ready':failure?'failed':work.threadId?'sleeping':'notStarted';
@@ -132,22 +140,22 @@ export class ManagedProjects {
   this.draftFlights??=new Map();const prior=this.draftFlights.get(id)??Promise.resolve(),connecting=this.flights.get(id);
   const operation=prior.catch(()=>{}).then(async()=>{
     if(connecting){await connecting;const connected=this.controllers.get(id);if(connected)return connected.setDraft(target,value);}
-    const project=await this.host.requireProject(id);const {Workspace}=await import('./managed/workspace.mjs');const store=await Workspace.open(path.join(this.root,id,'runtime'),project.root,{recoverStale:true});
-    try{await store.mutate(()=>{if(!['frontdesk','orchestrator'].includes(target)&&!store.state.works.some(work=>work.id===target&&work.status!=='ended'))throw new HostError('INVALID_PAYLOAD','草稿所属工作无效');store.state.drafts??={};store.state.drafts[target]=value;});}finally{await store.close();}
+    await this.host.requireRegisteredProject(id);const state=(await this.projectionSource(id)).state;
+    if(!['frontdesk','orchestrator'].includes(target)&&!state.works.some(work=>work.id===target&&work.status!=='ended'))throw new HostError('INVALID_PAYLOAD','草稿所属工作无效');const drafts=await this.host.storage.getRecovery(id,'managed:drafts')??{};drafts[target]=value;await this.host.storage.putRecovery(id,'managed:drafts',drafts);
   }).finally(()=>{if(this.draftFlights.get(id)===operation)this.draftFlights.delete(id);});this.draftFlights.set(id,operation);return operation;
  }
  async loadLocal(id,workId){
-  await this.host.requireProject(id);
-  if(!this.controllers.has(id)){
-   let state;try{state=JSON.parse(await fs.readFile(path.join(this.root,id,'runtime','state.json'),'utf8'));}catch(error){if(error.code==='ENOENT')throw new HostError('WORK_NOT_FOUND','本地工作账本不存在');throw error;}
-   if(state.schema!==2||!Array.isArray(state.works)||workId!==undefined&&!state.works.some(work=>work.id===workId))throw new HostError('WORK_NOT_FOUND','本地工作账本身份无效');
-  }
+  await this.host.requireRegisteredProject(id);
+  const state=(await this.projectionSource(id)).state;if(workId!==undefined&&!state.works.some(work=>work.id===workId))throw new HostError('WORK_NOT_FOUND','本地工作账本身份无效');
   await this.connect(id,{enable:true,startResidents:false,localOnly:true});const c=this.controllers.get(id);if(!c)throw new HostError('MANAGED_UNAVAILABLE','项目本地账本不可用');return c;
  }
  async connect(id,{enable=false,startResidents=true,localOnly=false}={}){
   if(this.stopping)throw new Error('application closing');
+  this.host.storage.assertActive(id);
+  if(this.projectStops?.has(id))throw new HostError('PROJECT_STOPPING','项目正在停用，未启动新会话');
   if(!localOnly)await this.initializeResources();await this.resourceFlights.get(id);this.projectActivity.set(id,Date.now());
-  const project=await this.host.requireProject(id);if(!enable&&!(await this.config(id)).enabled)return this.status(id);
+  this.host.storage.assertActive(id);
+  const project=await (localOnly?this.host.requireRegisteredProject(id):this.host.requireProject(id));let offline=false;if(localOnly)try{await this.host.storage.requireOnline(id);}catch{offline=true;}if(!enable&&!(await this.config(id)).enabled)return this.status(id);
   if(this.flights.has(id)){await this.flights.get(id);return this.connect(id,{enable,startResidents,localOnly});}
   if(this.controllers.has(id)){
    if(!startResidents)return this.status(id);
@@ -158,7 +166,7 @@ export class ManagedProjects {
    await this.draftFlights?.get(id);
    if(!localOnly){await this.legacy.connectFlight?.get(id);
    const old=this.legacy.projects.get(id);if(old&&this.legacy.roleBusy(old))throw new Error('旧 Agent 有进行中的输入，请先处理再启用三角色');if(old)await this.legacy.stopSlots(old);}
-   const versions=new ShadowVersions({projectRoot:project.root});
+   const versions=new ShadowVersions({projectRoot:project.root,projectId:id,storage:this.host.storage});
    this.versions.set(id,versions);
    // Only adopted bytes belong to the original-root version history.
    const checkpointInFlight=new Set();
@@ -174,8 +182,8 @@ export class ManagedProjects {
      finally{checkpointInFlight.delete(requestId);}
    };
    const frontdeskDocuments=createFrontdeskDocuments({host:this.host,projectId:id,sync:this.beforeDocumentOperation});
-   const controller=await this.openController({localOnly:true,projectId:id,processBudget:this.processBudget,runtimeRoot:path.join(this.root,id,'runtime'),contentRoot:project.root,...this.ompOptions,frontdeskDocuments,afterAdoption:(work,receipt)=>recordAdoption({host:this.host,projectId:id,work,receipt}),beforeAccept:async work=>{for(const relPath of work.execution?.candidate?.files||[]){const release=await this.beforeDocumentOperation?.({projectId:id,relPath,hold:false});release?.();const draft=await this.host.readDraftRecord(id,relPath);if(draft?.draftError||draft&&draft.status!=='saved')throw new HostError('DRAFT_CONFLICT','成果合入受阻：请先保存或明确处理原项目草稿 '+relPath);}},isolateProcesses:true,readProjectText:async rel=>{const file=await this.host.readFile(id,rel);if(file.draftError)throw new HostError(file.draftError.code||'DRAFT_CONFLICT',file.draftError.message||'项目草稿无法读取。');const draft=file.draft&&file.draft.status!=='saved'?file.draft:null;return {text:draft?.text??file.text,buffer:Boolean(draft),diskVersion:file.digest};}});
-   controller.readDrawingImage=ref=>this.host.readDrawingImage(ref);
+   const controller=await this.openController({storage:this.host.storage,offline,localOnly:true,projectId:id,processBudget:this.processBudget,runtimeRoot:await managedRuntime(this.host.storage,id),contentRoot:project.root,...this.ompOptions,frontdeskDocuments,afterAdoption:(work,receipt)=>recordAdoption({host:this.host,projectId:id,work,receipt}),beforeAccept:async work=>{for(const relPath of work.execution?.candidate?.files||[]){const release=await this.beforeDocumentOperation?.({projectId:id,relPath,hold:false});release?.();const draft=await this.host.readDraftRecord(id,relPath);if(draft?.draftError||draft&&draft.status!=='saved')throw new HostError('DRAFT_CONFLICT','成果合入受阻：请先保存或明确处理原项目草稿 '+relPath);}},isolateProcesses:true,readProjectText:async rel=>{const file=await this.host.readFile(id,rel);if(file.draftError)throw new HostError(file.draftError.code||'DRAFT_CONFLICT',file.draftError.message||'项目草稿无法读取。');const draft=file.draft&&file.draft.status!=='saved'?file.draft:null;return {text:draft?.text??file.text,buffer:Boolean(draft),diskVersion:file.digest};}});
+   try{this.host.storage.assertActive(id);if(this.projectStops?.has(id))throw new HostError('PROJECT_STOPPING','项目正在停用。');}catch(error){controller.stopping=true;await boundedProjectWait(controller.stop(),{timeoutMs:this.stopTimeoutMs});throw error;}
    controller.on('state',state=>{this.listener({projectId:id,kind:'managed-state',state});if(controller.started&&this.activeProjectId!==null&&id!==this.activeProjectId&&!controller.stopping)queueMicrotask(()=>{void this.reclaimInactive(this.activeProjectId,{all:true});});});controller.on('diagnostic',text=>this.listener({projectId:id,kind:'managed-error',text}));
    controller.on('timeline',timeline=>this.listener({projectId:id,kind:'managed-timeline',timeline}));
    controller.on('files-changed',event=>{this.adoptionCheckpoints??=new Set();const pending=checkpointAdopted(event);this.adoptionCheckpoints.add(pending);void pending.finally(()=>this.adoptionCheckpoints.delete(pending));this.listener({...event,projectId:id,kind:'managed-files-changed'});});
@@ -183,24 +191,13 @@ export class ManagedProjects {
    this.controllers.set(id,controller);
    if(localOnly)return this.status(id);
    try{
-    // Native OMP alone owns model selection; saved bindings only seed old native selections.
-    const persisted=await this.config(id);
-    if(persisted.model||persisted.effort||Object.values(persisted.roles??{}).some(r=>r?.model||r?.effort)){
-      const original=await fs.readFile(path.join(this.root,id,'binding.json'),'utf8');
-      await fs.writeFile(path.join(this.root,id,'binding.before-native-selection.json'),original,{flag:'wx',mode:0o600}).catch(error=>{if(error.code!=='EEXIST')throw error;});
-    }
-    const persistedRoles=persisted.roles&&typeof persisted.roles==='object'?persisted.roles:null;
-    for(const role of ['frontdesk','orchestrator','worker']){
-      const legacy=persistedRoles?.[role]??persisted;
-      if(legacy?.provider==='omp'&&legacy.model&&typeof controller.migrateNativeBinding==='function')await controller.migrateNativeBinding(role,{model:legacy.model,effort:legacy.effort});
-    }
     if(startResidents)await controller.start();
     // 不再独立发现模型：配置和选择全部由正在运行的原生 Agent 负责。
      if(controller.store?.state?.bindings){
        const roles=controller.store.state.bindings;
        const projection={schema:1,enabled:true,roles:{}};
        for(const role of ['frontdesk','orchestrator','worker'])projection.roles[role]={provider:'omp'};
-       await atomicJson(path.join(this.root,id,'binding.json'),projection);
+       await this.host.storage.putLocal(id,'managed:binding',projection);
      }
      return this.status(id);}
    catch(e){if(e.code==='OMP_TOOLS_DIGEST_MISMATCH'&&typeof controller.prepareResidentHandoff==='function'){
@@ -220,8 +217,8 @@ export class ManagedProjects {
   })().finally(()=>{if(this.handoffFlights.get(key)===flight)this.handoffFlights.delete(key);});flight.token=p.token;flight.oldThreadId=p.oldThreadId;this.handoffFlights.set(key,flight);return flight;
  }
  async residentHistory(id,{role,archiveId,offset=0,version}){
-  await this.host.requireProject(id);if(!['frontdesk','orchestrator'].includes(role))throw Error('仅支持居民归档历史');
-  const c=this.controllers.get(id);const state=c?.store?.state??JSON.parse(await fs.readFile(path.join(this.root,id,'runtime','state.json'),'utf8'));
+  await this.host.requireRegisteredProject(id);if(!['frontdesk','orchestrator'].includes(role))throw Error('仅支持居民归档历史');
+  const c=this.controllers.get(id);const state=c?.store?.state??(await this.projectionSource(id)).state;
   if(['codex','claude'].includes(archiveId)){
    const historical=state.residentArchive?.[role]?.[archiveId];if(!historical?.readOnly)throw Error('历史身份不属于当前项目角色');
    if(!Array.isArray(historical.messages))throw new HostError('HISTORY_UNVERIFIED','旧后端档案没有冻结消息边界；原记录保留，不混入当前OMP对话。');
@@ -229,26 +226,26 @@ export class ManagedProjects {
    return {projectId:id,role,archiveId,provider:archiveId,threadId:historical.threadId,source:'host-message-ledger',...await residentHistoryPage({messages,offset,version})};
   }
   const record=state.residentArchive?.[role]?.handoffs?.find(r=>r.id===archiveId);if(!record||record.provider!=='omp')throw Error('归档身份不属于当前项目角色');
-  const home=path.join(this.root,id,'runtime','agents',`resident-${role}-omp`),sessions=path.join(home,'sessions');
+  const home=path.join(await managedRuntime(this.host.storage,id),'agents',`resident-${role}-omp`),sessions=path.join(home,'sessions');
   const {pinSessionFileById}=await import('./managed/omp-process-ownership.mjs');const file=await pinSessionFileById(sessions,record.threadId);if(!file)throw Error('原归档会话文件缺失，未创建替代历史');
   const real=await fs.realpath(file),root=await fs.realpath(sessions);if(!real.startsWith(root+path.sep))throw Error('归档来源越界');
   return {projectId:id,role,archiveId,threadId:record.threadId,...await residentHistoryPage({file:real,offset,version})};
  }
  controller(id){const c=this.controllers.get(id);if(!c?.started||this.stopping)throw new Error('项目三角色尚未就绪');return c;}
  async artifactList(id,objectId){
-  const project=await this.host.requireProject(id),controller=this.controllers.get(id);
-  return managedArtifact({project,runtime:path.join(this.root,id,'runtime'),controller,currentController:()=>this.controllers.get(id)},{objectId});
+  const project=await this.host.requireRegisteredProject(id),controller=this.controllers.get(id);
+  return managedArtifact({storage:this.host.storage,project,runtime:await managedRuntime(this.host.storage,id),controller,currentController:()=>this.controllers.get(id)},{objectId});
  }
  async artifactRead(id,{objectId,relPath}){
-  const project=await this.host.requireProject(id),controller=this.controllers.get(id);
+  const project=await this.host.requireRegisteredProject(id),controller=this.controllers.get(id);
   if(typeof relPath!=='string')throw new HostError('INVALID_PAYLOAD','成果路径无效。');
-  return managedArtifact({project,runtime:path.join(this.root,id,'runtime'),controller,currentController:()=>this.controllers.get(id)},{objectId,relPath});
+  return managedArtifact({storage:this.host.storage,project,runtime:await managedRuntime(this.host.storage,id),controller,currentController:()=>this.controllers.get(id)},{objectId,relPath});
  }
  async reportSource(id,objectId){
-  const project=await this.host.requireProject(id);
-  if(!/^[a-f0-9]{64}$/.test(id)||!/^[0-9a-f-]{36}$/i.test(objectId))throw new Error('报告身份无效，未另存。');
+  const project=await this.host.requireRegisteredProject(id);
+  if(!/^[0-9a-f-]{36}$/i.test(id)||!/^[0-9a-f-]{36}$/i.test(objectId))throw new Error('报告身份无效，未另存。');
   const controller=this.controllers.get(id);
-  return managedReportSource({project,runtime:path.join(this.root,id,'runtime'),objectId,controller,currentController:()=>this.controllers.get(id)});
+  return managedReportSource({storage:this.host.storage,project,runtime:await managedRuntime(this.host.storage,id),objectId,controller,currentController:()=>this.controllers.get(id)});
  }
  // 后台低优先级清理评估：仅由检查点成功路径触发，按项目去抖；失败只报
  // versions-gc-error，不阻断保存，不谎称成功。阈值经环境变量调（测试用
@@ -280,11 +277,11 @@ export class ManagedProjects {
   }
  }
  async projectionSource(id){
-  await this.host.requireProject(id);const controller=this.controllers.get(id),runtime=path.join(this.root,id,'runtime');
-  if(controller)return {controller,state:controller.store.state,index:controller.timeline,changes:controller.changes};
-  let state;try{state=JSON.parse(await fs.readFile(path.join(runtime,'state.json'),'utf8'));}catch(error){if(error.code!=='ENOENT')throw error;state={messages:[],jobs:[],receipts:[],works:[]};}
-  if(state.schema===2)state=decodeReportState(state);
-  const index=new SessionIndex({root:runtime,state});return {state,index,changes:new WorkChanges(runtime)};
+  await this.host.requireRegisteredProject(id);const storage=this.host.storage,controller=this.controllers.get(id),runtime=await managedRuntime(storage,id);
+  if(controller)return {controller,store:controller.store,state:controller.store.state,index:controller.timeline,changes:controller.changes};
+  let offline=false;try{await storage.requireOnline(id);}catch{offline=true;}
+  const state=decodeReportState(await readManagedState(storage,id,{offline})),store={root:runtime,state,storage,projectId:id,offline,readObject:digest=>readManagedObject(storage,id,digest)};
+  const index=new SessionIndex(store);return {store,state,index,changes:new WorkChanges({runtimeRoot:runtime,storage,projectId:id,readState:()=>state})};
  }
  async timelineQuery(id,action,p){
   const {index}=await this.projectionSource(id);
@@ -304,6 +301,33 @@ export class ManagedProjects {
   const expectedBinding={projectId:id,workId:receipt.workId,revision:receipt.revision,jobId:receipt.sourceJobId,receiptId:receipt.id};
   const result=await (action==='changes.list'?changes.list({changeSetId:p.changeSetId,offset:p.offset,limit:p.limit,expectedBinding}):changes.read({changeSetId:p.changeSetId,fileId:p.fileId,maxBytes:p.maxBytes,maxLines:p.maxLines,expectedBinding}));
   const {repo,commonDir,...binding}=result.binding;return {...result,binding};
+ }
+ async markUnavailable(id,reason){
+  const controller=this.controllers.get(id);if(controller){controller.started=false;controller.stopping=true;controller.localOnly=true;controller.store.offline=true;controller.changed();}
+  this.connectionErrors.set(id,{error:{code:reason?.code??'PROJECT_UNAVAILABLE',message:reason?.message??'项目不可用；原生执行停止结果待核查'},handoff:null});
+  try{return await this.stopProject(id);}catch(error){this.connectionErrors.set(id,{error:{code:error.code??'OMP_EXIT_UNCONFIRMED',message:'项目不可用且原生停稳尚未确认：'+error.message},handoff:null});throw error;}
+ }
+ async stopProject(id){
+  this.projectStops??=new Map();if(this.projectStops.has(id))return boundedProjectWait(this.projectStops.get(id),{timeoutMs:this.stopTimeoutMs});
+  const current=this.controllers.get(id);if(current){current.started=false;current.stopping=true;}
+  const earlyStop=current?.stop();earlyStop?.catch(()=>{});
+  const operation=(async()=>{
+   await Promise.all([this.flights.get(id),this.draftFlights?.get(id),this.resourceFlights.get(id)]);
+   const controller=this.controllers.get(id);if(controller){controller.started=false;const receipt=await (controller===current?earlyStop:controller.stop());if(receipt?.confirmationComplete!==true)throw new HostError('OMP_EXIT_UNCONFIRMED','项目进程停稳未确认；保留执行现场');}
+   else{
+    const providers=await this.host.storage.getLocal(id,'managed:providers')??{},runtime=await managedRuntime(this.host.storage,id);
+    for(const [target,record] of Object.entries(providers)){
+     const receipt=await (['omp-rpc','omp-tui'].includes(record.kind)?recoverOmpProvider(record,runtime):recoverProvider(record,runtime));
+     if(receipt?.verified!==true)throw new HostError('OMP_EXIT_UNCONFIRMED','本机进程所有权未核实；保留登记和执行现场');
+     delete providers[target];await this.host.storage.putLocal(id,'managed:providers',providers);
+    }
+   }
+   await Promise.all([...this.terminalFlights.entries()].filter(([key])=>key.startsWith(id+':')).map(([,flight])=>flight));
+   await Promise.all([...(controller?.sessions?.keys()??[])].map(target=>this.systemTerminals.close(id+':'+target)));
+   if(this.controllers.get(id)===controller)this.controllers.delete(id);this.connectionErrors.delete(id);this.versions.delete(id);
+   if(this.activeProjectId===id)this.activeProjectId=null;return {projectId:id,confirmationComplete:true};
+  })().finally(()=>{if(this.projectStops.get(id)===operation)this.projectStops.delete(id);});this.projectStops.set(id,operation);
+  return boundedProjectWait(operation,{timeoutMs:this.stopTimeoutMs});
  }
  busy(){return this.flights.size>0||[...this.controllers.values()].some(c=>c.running.size>0||c.closures.size>0);}
  stopVersionsGc(){for(const state of Object.values(this.versionGcState??{})){if(state.timer){clearTimeout(state.timer);state.timer=null;}}}
@@ -344,21 +368,22 @@ export class ManagedProjects {
   if(action==='frontdesk.route.resolve'&&(Object.keys(p).some(k=>!allowed[action].includes(k))||!['projectId','proposalId','requestKey'].every(k=>typeof p[k]==='string'&&p[k].trim()===p[k]&&p[k].length>0&&p[k].length<=200)||!Number.isSafeInteger(p.expectedVersion)||p.expectedVersion<1||!['continue','background'].includes(p.action)))throw new HostError('INVALID_PAYLOAD','前台去向决定的项目、提议、版本或动作无效。');
   if(action==='deviation.resolve'&&(Object.keys(p).some(k=>!allowed[action].includes(k))||!['projectId','workId','deviationId','requestKey'].every(k=>typeof p[k]==='string'&&p[k].trim()===p[k]&&p[k].length>0&&p[k].length<=200)||!Number.isSafeInteger(p.expectedRevision)||p.expectedRevision<1||!Number.isSafeInteger(p.expectedVersion)||p.expectedVersion<1||!['continue','replan'].includes(p.action)))throw new HostError('INVALID_PAYLOAD','任务偏离决定的身份、版本或动作无效。');
   if((action==='history.list'||action==='history.read')&&Object.keys(p).some(k=>!allowed[action].includes(k)))throw new HostError('INVALID_PAYLOAD','历史报告查询参数无效。');
-  if(!allowed[action]||Object.keys(p).some(k=>!allowed[action].includes(k)))throw new Error('invalid managed payload');await this.host.requireProject(p.projectId);
+  if(!allowed[action]||Object.keys(p).some(k=>!allowed[action].includes(k)))throw new Error('invalid managed payload');
+  if(['draft','status','timeline.page','timeline.read','timeline.request','resident.history','worker.history','disposition','history.list','history.read','artifact.read','artifact.list','changes.list','changes.read'].includes(action))await this.host.requireRegisteredProject(p.projectId);else await this.host.requireProject(p.projectId);
   if(action==='draft')return this.saveLocalDraft(p.projectId,p.target,p.text);
   if(action==='status')return this.status(p.projectId);if(action==='enable'||action==='connect')return this.connect(p.projectId,{enable:action==='enable'});
   if(action==='timeline.page'||action==='timeline.read'||action==='timeline.request')return this.timelineQuery(p.projectId,action,p);
   if(action==='changes.list'||action==='changes.read')return this.changesQuery(p.projectId,action,p);
   if(action==='resident.handoff')return this.handoffResident(p.projectId,p);
   if(action==='resident.history')return this.residentHistory(p.projectId,p);
-  if(action==='worker.history'){const source=await this.projectionSource(p.projectId),work=source.state.works?.find(w=>w.id===p.workId);return readWorkerArchive(path.join(this.root,p.projectId,'runtime'),work,{archiveId:p.archiveId,offset:p.offset??0,version:p.version});}
+  if(action==='worker.history'){const source=await this.projectionSource(p.projectId),work=source.state.works?.find(w=>w.id===p.workId);return readWorkerArchive(source.store,work,{archiveId:p.archiveId,offset:p.offset??0,version:p.version});}
   if(action==='artifact.read')return this.artifactRead(p.projectId,p);
   if(action==='artifact.list')return this.artifactList(p.projectId,p.objectId);
   if(action==='history.list'||action==='history.read'){
-   const project=await this.host.requireProject(p.projectId),controller=this.controllers.get(p.projectId);
+   const project=await this.host.requireRegisteredProject(p.projectId),controller=this.controllers.get(p.projectId);
    if(action==='history.read'&&typeof p.objectId!=='string')throw new HostError('INVALID_PAYLOAD','历史报告查询参数无效。');
    const {projectId,...query}=p;
-   return managedHistory({project,runtime:path.join(this.root,projectId,'runtime'),controller,currentController:()=>this.controllers.get(projectId)},query);
+   return managedHistory({storage:this.host.storage,project,runtime:await managedRuntime(this.host.storage,projectId),controller,currentController:()=>this.controllers.get(projectId)},query);
   }
   if(action==='versions.list'||action==='versions.diff'||action==='versions.restore'){
    const versions=this.versions.get(p.projectId);
@@ -394,7 +419,7 @@ export class ManagedProjects {
     const {Workspace}=await import('./managed/workspace.mjs');
     const {manageTodoState}=await import('../domain/todo-management.mjs');
     const project=await this.host.requireProject(p.projectId);
-    const store=await Workspace.open(path.join(this.root,p.projectId,'runtime'),project.root,{recoverStale:true});
+    const store=await Workspace.open(await managedRuntime(this.host.storage,p.projectId),project.root,{storage:this.host.storage,projectId:p.projectId,recoverStale:true});
     try{return await store.mutate(()=>manageTodoState(store.state,p));}finally{await store.close();}
   }
   if(action==='disposition')return this.disposition(p.projectId,p.workId);
@@ -423,15 +448,14 @@ export class ManagedProjects {
    const packets=[];if(p.tags?.length){if(!Array.isArray(p.tags)||p.tags.length>20)throw Error('备注材料最多20项');for(const ref of p.tags)packets.push(await this.host.tagMaterial(p.projectId,ref));}
    const material=packets.length?tagMaterialSnapshot(packets):null;
    if(material){
-    const file=path.join(c.store.root,'objects',material.version+'.md');
-    try{await fs.writeFile(file,material.full,{flag:'wx',mode:0o600});}catch(error){if(error.code!=='EEXIST')throw error;if(createHash('sha256').update(await fs.readFile(file)).digest('hex')!==material.version)throw Error('冻结讨论材料损坏，未发送');}
+    if(await c.store.putObject(Buffer.from(material.full))!==material.version)throw Error('冻结讨论材料摘要不一致');
     text+='\n\n参考材料\n\n'+material.full;
    }
    if(p.imageAttachments!=null&&(!Array.isArray(p.imageAttachments)||p.imageAttachments.length>8))throw Error('每次最多8张图片');
    const drawingImages=[],drawingSources=[];let imageBytes=0;
-   for(const ref of p.imageAttachments||[]){const bytes=await this.host.readDrawingImage(ref),sources=await this.host.drawingImageSources(p.projectId,ref);imageBytes+=bytes.length;drawingImages.push({digest:ref.digest,mime:'image/png',storage:'app-data',deliveryId:ref.deliveryId});drawingSources.push({digest:ref.digest,sources});}
-   const imageAttachments=[...preferredRegionAssets(packets).map(a=>({digest:a.digest,mime:'image/png'})),...drawingImages];
-   for(const ref of imageAttachments.filter(ref=>ref.storage!=='app-data')){const bytes=await new MaterialStore(path.join(c.store.state.contentRoot,'.nozeli/materials')).get(ref.digest);if(bytes.length>8*1024*1024)throw Error('单张图片超过8MiB');imageBytes+=bytes.length;}
+   for(const ref of p.imageAttachments||[]){const sources=await this.host.drawingImageSources(p.projectId,ref),promoted=await this.host.attachments.promote(p.projectId,ref,{sources});if(promoted.mime!=='image/png'||promoted.source!=='drawing')throw Error('仅支持已登记的涂鸦 PNG');imageBytes+=promoted.size;drawingImages.push(promoted);drawingSources.push({digest:promoted.digest,sourceManifest:promoted.sourceManifest,sources});}
+   const imageAttachments=[...preferredRegionAssets(packets).map(a=>({digest:a.digest,mime:'image/png',storage:'project',projectId:p.projectId})),...drawingImages];
+   for(const ref of imageAttachments.filter(ref=>!drawingImages.includes(ref))){const bytes=await this.host.storage.readObject(p.projectId,ref.digest);if(bytes.length>8*1024*1024)throw Error('单张图片超过8MiB');imageBytes+=bytes.length;}
    if(imageAttachments.length>8||imageBytes>24*1024*1024)throw Error('图片超过8张或24MiB');
    if(p.routingQuestionId&&!c.store.state.todos.some(t=>t.id===p.routingQuestionId&&t.kind==='routing'&&t.status==='open'))throw new Error('澄清问题已过期');
    const context={...(p.requestKey?{submissionDigest}:{}),...(p.routingQuestionId?{routingQuestionId:p.routingQuestionId}:{}),...(imageAttachments.length?{imageAttachments}:{})};
@@ -444,10 +468,10 @@ export class ManagedProjects {
   if(action==='retry')return c.retryClosure(p.workId,{binding:p.binding,requestKey:p.requestKey});
   if(action==='restart'){await this.systemTerminals.close(p.projectId+':'+p.target);const session=await c.restart(p.target);return {restarted:true,target:p.target,threadId:session.threadId,closed:session.closed};}
   if(action==='binding'){const value=await c.setBinding(p.role,{skills:p.skills});
-    // 持久化失败必须上抛（不吞掉还回 saved）：binding.json 是重启逐角色恢复的依据。
+    // Provider selection and executable trust remain local to this instance.
     const roles=c.store.state.bindings;const projection={schema:1,enabled:true,roles:{}};
     for(const role of ['frontdesk','orchestrator','worker'])projection.roles[role]={provider:'omp'};
-    await atomicJson(path.join(this.root,p.projectId,'binding.json'),projection);
+    await this.host.storage.putLocal(p.projectId,'managed:binding',projection);
     return value;}
   if(action==='limit'){if(!Number.isInteger(p.limit)||p.limit<1||p.limit>16||p.limit<c.store.used())throw new Error('额度须为1–16且不小于当前占用');await c.store.mutate(()=>{c.store.state.limit=p.limit;});c.changed();c.kick();return {saved:true};}
   if(action==='terminal.screen'){

@@ -57,8 +57,11 @@ const zero = value => /^0+$/.test(value);
 
 export class WorkChanges {
  constructor(options) {
-  const root = typeof options === 'string' ? options : options?.runtimeRoot;
+  const root = options?.runtimeRoot;
   if (typeof root !== 'string' || !path.isAbsolute(root)) reject('CHANGES_ARGUMENT', 'Absolute private runtimeRoot required');
+  if (!options.storage || ['putObject', 'readObject', 'getProject', 'putProject', 'listProject'].some(key => typeof options.storage[key] !== 'function')) reject('CHANGES_ARGUMENT', 'Project storage authority required');
+  this.storage = options.storage; this.projectId = identifier(options.projectId);
+  this.readState = options.readState || (() => typeof options.state === 'function' ? options.state() : options.state);
   this.root = path.join(root, 'work-changes'); this.evidenceRepo = path.join(this.root, 'objects.git'); this.pending = Promise.resolve();
  }
  locked(fn) {const result = this.pending.then(fn); this.pending = result.catch(() => {}); return result;}
@@ -83,7 +86,8 @@ export class WorkChanges {
   }
   const actual = await fs.realpath(path.resolve(repo, await text(repo, ['rev-parse', '--git-common-dir'])));
   if (actual !== commonDir || await fs.realpath(await text(repo, ['rev-parse', '--show-toplevel'])) !== repo) reject('CHANGES_BINDING', 'Project repository mismatch');
-  const binding = {projectId: input.projectId === undefined ? repo : identifier(input.projectId), workId: identifier(input.workId), revision: integer(input.revision, undefined, Number.MAX_SAFE_INTEGER), jobId: identifier(input.jobId), receiptId: identifier(input.receiptId), repo, commonDir, inputCommit: oid(input.inputCommit), candidateCommit: oid(input.candidateCommit)};
+  if (input.projectId !== undefined && input.projectId !== this.projectId) reject('CHANGES_BINDING', 'Project storage ownership mismatch');
+  const binding = {projectId: this.projectId, workId: identifier(input.workId), revision: integer(input.revision, undefined, Number.MAX_SAFE_INTEGER), jobId: identifier(input.jobId), receiptId: identifier(input.receiptId), repo, commonDir, inputCommit: oid(input.inputCommit), candidateCommit: oid(input.candidateCommit)};
   if (binding.revision === undefined) reject('CHANGES_BINDING', 'Revision required');
   for (const commit of [binding.inputCommit, binding.candidateCommit]) if (await text(repo, ['cat-file', '-t', commit]) !== 'commit') reject('CHANGES_BINDING', 'Commit object required');
   binding.inputTree = await text(repo, ['rev-parse', binding.inputCommit + '^{tree}']);
@@ -131,7 +135,10 @@ export class WorkChanges {
     if (mode === '160000') return {oid: object, mode, type: 'gitlink', bytes: null};
     const type = await text(this.evidenceRepo, ['cat-file', '-t', object]);
     if (type !== 'blob') reject('CHANGES_CORRUPT', 'File object is not a blob');
-    return {oid: object, mode, type: mode === '120000' ? 'symlink' : 'blob', bytes: Number(await text(this.evidenceRepo, ['cat-file', '-s', object]))};
+    const bytes = await git(this.evidenceRepo, ['cat-file', 'blob', object]);
+    const reference = await this.storage.putObject(this.projectId, bytes);
+    if (reference.byteLength !== bytes.length || reference.digest !== hash(bytes)) reject('CHANGES_CORRUPT', 'Published blob digest mismatch');
+    return {oid: object, mode, type: mode === '120000' ? 'symlink' : 'blob', bytes: bytes.length, object: reference};
    };
    const before = await side(beforeMode, beforeOid), after = await side(afterMode, afterOid), binary = stat[1] === '-';
    const unsupported = [before, after].some(value => value && value.type !== 'blob');
@@ -142,14 +149,14 @@ export class WorkChanges {
  async capture(input) {return this.locked(async () => {
   const binding = await this.binding(input), id = idFor(binding);
   await this.initialize(binding.objectFormat);
-  const prior = await json(this.file(id));
+  const prior = await this.storage.getProject(this.projectId, 'managed_change_sets', id);
   if (prior) return this.verifyInner(id);
   await atomic(this.file(id, true), {version: 1, binding, changeSetId: id, status: 'archiving'});
   return this.complete(binding, id);
  });}
  async discardUnpublished(changeSetId,expectedBinding){return this.locked(async()=>{
   const id=setId(changeSetId),record=await this.record(id,expectedBinding);await this.verifyInner(id,expectedBinding);
-  const state=await json(path.join(path.dirname(this.root),'state.json'));
+  const state=await this.readState();
   if(!state||!Array.isArray(state.receipts))reject('CHANGES_RECOVERY_HELD','Publication state cannot be confirmed; evidence retained');
   if(state.receipts.some(receipt=>receipt.changeSetId===id))reject('CHANGES_REFERENCED','Published evidence cannot be discarded');
   const manifestBytes=await fs.readFile(this.file(id)),intent=await json(this.file(id,true));
@@ -157,9 +164,11 @@ export class WorkChanges {
   await git(this.evidenceRepo,['update-ref','--stdin'],'start\ndelete refs/nozeli/changes/'+id+'/input '+record.binding.inputCommit+'\ndelete refs/nozeli/changes/'+id+'/candidate '+record.binding.candidateCommit+'\nprepare\ncommit\n');
   if(!(await fs.readFile(this.file(id))).equals(manifestBytes))reject('CHANGES_RECOVERY_HELD','Evidence manifest changed during cleanup; retained');
   await fs.unlink(this.file(id));if(intent)await fs.unlink(this.file(id,true));
+  // Portable manifests and their immutable objects are retained; only unpublished local evidence is released.
   return {changeSetId:id,discarded:true};
  });}
  async complete(binding, id) {
+  if (binding.projectId !== this.projectId) reject('CHANGES_BINDING', 'Project storage ownership mismatch');
   // A complete orphan pack/ref from a crash can recover even after source GC.
   try {await this.closure(binding);} catch {
    if (JSON.stringify(await this.binding(binding)) !== JSON.stringify(binding)) reject('CHANGES_BINDING', 'Recovery source identity changed');
@@ -167,40 +176,60 @@ export class WorkChanges {
   }
   await this.refs(binding, id);
   const files = await this.manifest(binding, id);
-  await atomic(this.file(id), {version: 1, binding, changeSetId: id, evidenceRepo: this.evidenceRepo, status: 'verified', files});
+  const record = {version: 2, binding, changeSetId: id, status: 'verified', files};
+  const bytes = Buffer.from(JSON.stringify(record)), reference = await this.storage.putObject(this.projectId, bytes);
+  if (reference.digest !== hash(bytes) || reference.byteLength !== bytes.length) reject('CHANGES_CORRUPT', 'Published manifest digest mismatch');
+  const prior = await this.storage.getProject(this.projectId, 'managed_change_sets', id);
+  if (prior && (prior.digest !== reference.digest || prior.byteLength !== reference.byteLength)) reject('CHANGES_CORRUPT', 'Immutable change set already published with different content');
+  await atomic(this.file(id), record);
+  if (!prior) await this.storage.putProject(this.projectId, 'managed_change_sets', id, reference);
   return this.verifyInner(id);
  }
  async recover(changeSetId) {return this.locked(async () => {
   const id = setId(changeSetId);
-  if (await json(this.file(id))) return this.verifyInner(id);
+  if (await this.storage.getProject(this.projectId, 'managed_change_sets', id)) return this.verifyInner(id);
   const intent = await json(this.file(id, true));
   if (!intent || intent.version !== 1 || intent.changeSetId !== id || idFor(intent.binding) !== id) reject('CHANGES_UNAVAILABLE', 'Valid archive intent required');
   await this.initialize(intent.binding.objectFormat);
   return this.complete(intent.binding, id);
  });}
  async record(id, expectedBinding) {
-  const record = await json(this.file(id));
-  if (!record || record.version !== 1 || record.status !== 'verified') reject('CHANGES_UNAVAILABLE', 'No verified archive receipt');
-  if (record.changeSetId !== id || idFor(record.binding) !== id || record.evidenceRepo !== this.evidenceRepo) reject('CHANGES_CORRUPT', 'Archive binding mismatch');
+  const reference = await this.storage.getProject(this.projectId, 'managed_change_sets', id);
+  if (!reference) reject('CHANGES_UNAVAILABLE', 'No verified archive receipt');
+  const bytes = await this.objectBytes(reference);
+  let record; try {record = JSON.parse(bytes.toString('utf8'));} catch {reject('CHANGES_CORRUPT', 'Invalid published manifest');}
+  if (record.version !== 2 || record.status !== 'verified' || !Array.isArray(record.files)) reject('CHANGES_CORRUPT', 'Invalid published manifest');
+  if (record.changeSetId !== id || idFor(record.binding) !== id || record.binding.projectId !== this.projectId) reject('CHANGES_CORRUPT', 'Archive binding mismatch');
   if (expectedBinding) for (const [key, value] of Object.entries(expectedBinding)) if (!(key in record.binding) || record.binding[key] !== value) reject('CHANGES_BINDING', 'Change set ownership mismatch: ' + key);
   return record;
  }
  summary(record) {return {changeSetId: record.changeSetId, binding: record.binding, verified: true, total: record.files.length, added: record.files.some(file => file.binary) ? null : record.files.reduce((sum, file) => sum + file.added, 0), deleted: record.files.some(file => file.binary) ? null : record.files.reduce((sum, file) => sum + file.deleted, 0)};}
+ async objectBytes(reference) {
+  if (!reference || !/^[0-9a-f]{64}$/.test(reference.digest || '') || !Number.isSafeInteger(reference.byteLength) || reference.byteLength < 0) reject('CHANGES_CORRUPT', 'Invalid object reference');
+  const value = await this.storage.readObject(this.projectId, reference.digest);
+  const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+  if (bytes.length !== reference.byteLength || hash(bytes) !== reference.digest) reject('CHANGES_CORRUPT', 'Published object digest mismatch');
+  return bytes;
+ }
+ async sideBytes(metadata, binding) {
+  const bytes = await this.objectBytes(metadata.object);
+  if (bytes.length !== metadata.bytes || createHash(binding.objectFormat).update('blob ' + bytes.length + '\0').update(bytes).digest('hex') !== metadata.oid) reject('CHANGES_CORRUPT', 'Blob digest mismatch');
+  return bytes;
+ }
  async verifyInner(id, expectedBinding) {
-  const record = await this.record(id, expectedBinding); await this.closure(record.binding);
-  for (const [side, commit] of [['input', record.binding.inputCommit], ['candidate', record.binding.candidateCommit]]) if (await text(this.evidenceRepo, ['rev-parse', '--verify', 'refs/nozeli/changes/' + id + '/' + side]) !== commit) reject('CHANGES_CORRUPT', 'Retention ref missing or changed');
-  if (JSON.stringify(await this.manifest(record.binding, id)) !== JSON.stringify(record.files)) reject('CHANGES_CORRUPT', 'Archive file index mismatch');
+  const record = await this.record(id, expectedBinding);
+  for (const file of record.files) for (const side of ['before', 'after']) if (file[side] && file[side].type !== 'gitlink') await this.sideBytes(file[side], record.binding);
   return this.summary(record);
  }
  async verify(id) {return this.locked(() => this.verifyInner(setId(id)));}
  async list({changeSetId, offset, limit, expectedBinding} = {}) {return this.locked(async () => {
-  await this.verifyInner(setId(changeSetId), expectedBinding);
+  setId(changeSetId);
   const record = await this.record(changeSetId, expectedBinding), start = integer(offset, 0, Number.MAX_SAFE_INTEGER), count = integer(limit, 100, WORK_CHANGES_LIMITS.page, 1);
   return {changeSetId, binding: record.binding, files: record.files.slice(start, start + count), total: record.files.length, nextOffset: start + count < record.files.length ? start + count : null};
  });}
  async read({changeSetId, fileId, maxBytes, maxLines, expectedBinding} = {}) {return this.locked(async () => {
   const byteBudget = integer(maxBytes, WORK_CHANGES_LIMITS.bytes, WORK_CHANGES_LIMITS.bytes, 1), lineBudget = integer(maxLines, WORK_CHANGES_LIMITS.lines, WORK_CHANGES_LIMITS.lines, 1);
-  await this.verifyInner(setId(changeSetId), expectedBinding);
+  setId(changeSetId);
   const record = await this.record(changeSetId, expectedBinding), file = record.files.find(value => value.fileId === fileId);
   if (!file) reject('CHANGES_FILE', 'File handle does not belong to change set');
   const result = {changeSetId, binding: record.binding, file, before: null, after: null, availability: file.availability, reason: file.reason};
@@ -210,10 +239,7 @@ export class WorkChanges {
   let lines = 0;
   for (const side of ['before', 'after']) {
    const metadata = file[side]; if (!metadata) continue;
-   const size = Number(await text(this.evidenceRepo, ['cat-file', '-s', metadata.oid]));
-   if (size !== metadata.bytes || size > byteBudget) reject('CHANGES_CORRUPT', 'Blob size changed');
-   const bytes = await collect(child(this.evidenceRepo, ['cat-file', 'blob', metadata.oid]), '', byteBudget);
-   if (createHash(record.binding.objectFormat).update('blob ' + bytes.length + '\0').update(bytes).digest('hex') !== metadata.oid) reject('CHANGES_CORRUPT', 'Blob digest mismatch');
+   const bytes = await this.sideBytes(metadata, record.binding);
    let content; try {content = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(bytes);} catch {return {...result, before: null, after: null, availability: 'unsupported', reason: 'non-utf8'};}
    if (content.includes('\0')) return {...result, before: null, after: null, availability: 'unsupported', reason: 'binary'};
    lines += bytes.length ? 1 + bytes.reduce((sum, byte) => sum + (byte === 10 ? 1 : 0), 0) - (bytes.at(-1) === 10 ? 1 : 0) : 0;

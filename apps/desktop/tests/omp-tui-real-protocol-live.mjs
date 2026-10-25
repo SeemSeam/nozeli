@@ -12,7 +12,7 @@ import { mkdtemp, mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { Controller } from '../src/agents/managed/controller.mjs';
+import {openTestController} from './project-storage.fixture.mjs'
 
 const OMP_BIN = process.env.NOZELI_OMP_BIN;
 const unhandled = [];
@@ -66,14 +66,14 @@ function syntheticServer() {
 
 async function openController(root, port) {
   const modelsYml = ['providers:', '  synthetic-omp:', '    api: openai-completions', `    baseUrl: http://127.0.0.1:${port}/v1`, '    auth: none', '    models:', '      - id: model', '        reasoning: true', ''].join('\n');
-  const c = await Controller.open({ runtimeRoot: path.join(root, 'runtime'), contentRoot: path.join(root, 'content'), projectHome: async () => {}, ompModelsYml: modelsYml });
+  const c = await openTestController({ runtimeRoot: path.join(root, 'runtime'), contentRoot: path.join(root, 'content'), projectHome: async () => {}, ompModelsYml: modelsYml });
   for (const role of ['frontdesk', 'orchestrator', 'worker']) c.store.state.bindings[role] = { ...c.store.state.bindings[role], provider: 'omp', model: 'synthetic-omp/model', effort: 'low' };
   await c.start();
   c.kick();
   return c;
 }
 const waitForJob = async (c, key) => { for (let i = 0; i < 200; i++) { const j = c.store.state.jobs.find(j => j.key === key); if (j) return j; await new Promise(r => setTimeout(r, 100)); } throw new Error('job not created: ' + key); };
-const objectBytes = async (c, objectId) => readFile(path.join(c.store.root, 'objects', `${objectId}.md`), 'utf8');
+const objectBytes = async (c, objectId) => {const receipt=c.store.state.receipts.find(row=>row.objectId===objectId);assert(receipt,'persisted report receipt');return (await c.store.readObject(receipt.report.digest)).toString('utf8');};
 
 test('A 主链 + B 取消精确 + C 冷开恢复 + D 有界显式停止', async t => {
   assert.ok(OMP_BIN, 'NOZELI_OMP_BIN required');
@@ -135,7 +135,7 @@ test('A 主链 + B 取消精确 + C 冷开恢复 + D 有界显式停止', async 
   fixture.state.mode = 'scripted';
   const callsBeforeResume = fixture.state.calls.length;
   await stopController();
-  c = await Controller.open({ runtimeRoot: path.join(root, 'runtime'), contentRoot: path.join(root, 'content'), projectHome: async () => {}, ompModelsYml: ['providers:', '  synthetic-omp:', '    api: openai-completions', `    baseUrl: http://127.0.0.1:${port}/v1`, '    auth: none', '    models:', '      - id: model', '        reasoning: true', ''].join('\n') });
+  c = await openTestController({ runtimeRoot: path.join(root, 'runtime'), contentRoot: path.join(root, 'content'), projectHome: async () => {}, ompModelsYml: ['providers:', '  synthetic-omp:', '    api: openai-completions', `    baseUrl: http://127.0.0.1:${port}/v1`, '    auth: none', '    models:', '      - id: model', '        reasoning: true', ''].join('\n') });
   for (const role of ['frontdesk', 'orchestrator', 'worker']) c.store.state.bindings[role] = { ...c.store.state.bindings[role], provider: 'omp', model: 'synthetic-omp/model', effort: 'low' };
   await c.start();
   c.kick();

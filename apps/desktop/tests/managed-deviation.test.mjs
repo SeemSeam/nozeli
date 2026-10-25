@@ -1,3 +1,5 @@
+import {openTestController,openTestWorkspace,readTestState,writeTestState,readTestObject} from './project-storage.fixture.mjs';
+import {dispositionIntent} from './disposition-intent.fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -22,7 +24,7 @@ async function fixture(t){
   return {completion:'host-control',threadId:this.threadId};
  } }
  const options={runtimeRoot:path.join(root,'runtime'),contentRoot:path.join(root,'content'),sessionFactory:(spec,target)=>new Session(spec,target),projectHome:home=>fs.mkdir(home,{recursive:true})};
- const open=async()=>{const c=await Controller.open(options);c.execution=null;controllers.push(c);return c;};
+ const open=async()=>{const c=await openTestController(options);c.execution=null;controllers.push(c);return c;};
  const c=await open();await c.store.mutate(()=>{for(const binding of Object.values(c.store.state.bindings))binding.provider='omp';});
  t.after(async()=>{for(const controller of controllers)if(!controller.store.closed)await controller.stop();await fs.rm(root,{recursive:true,force:true});});
  const submitted=await c.store.submit('Original immutable task','Brief',{name:'Original'});await c.store.activate(submitted.id);await c.store.mutate(()=>{c.store.find(submitted.id).status='paused';});
@@ -36,7 +38,7 @@ test('deviation tool durably pauses with exact admitted source and stops outside
  assert.equal(w.status,'paused');assert.equal(w.request,'Original immutable task');assert.equal(c.store.used(),1);assert.equal(w.deviation.sourceText,'TRIGGER_SCOPE exact user text');
  assert(calls.some(row=>row.stop===id));assert(w.threadId);assert.equal(c.sessions.has(id),false);await fs.stat(c.store.agentHome(id));
  const todo=c.store.state.todos.find(row=>row.id===w.deviation.todoId);assert.equal(todo.kind,'deviation');assert.equal(todo.objectId,w.problem.objectId);
- assert.match(await fs.readFile(path.join(c.store.root,'objects',todo.objectId+'.md'),'utf8'),/Original immutable task[\s\S]*TRIGGER_SCOPE exact user text/);
+ assert.match(await readTestObject(c.store,todo.objectId).then(bytes=>bytes.toString('utf8')),/Original immutable task[\s\S]*TRIGGER_SCOPE exact user text/);
  await assert.rejects(c.store.continue(id),{code:'DEVIATION_HELD'});await assert.rejects(c.session(id),{code:'DEVIATION_HELD'});await assert.rejects(c.restart(id),{code:'DEVIATION_HELD'});
  await assert.rejects(c.openManualJob(id,'native-blocked','continue'),{code:'DEVIATION_HELD'});
  const queued=await c.send(id,'continue');await c.runJob(c.store.state.jobs.find(j=>j.id===queued.jobId));assert.equal(c.store.state.jobs.find(j=>j.id===queued.jobId).status,'queued');assert.equal(w.revision,2);
@@ -67,10 +69,10 @@ test('cold restore retains held gate, todo, request history and never replays qu
 });
 
 test('ending blocked work archives actual Worker problem bytes as incomplete with separate user facts',async t=>{
- const {c,run,id}=await fixture(t),w=await run(),report=await fs.readFile(path.join(c.store.root,'objects',w.problem.objectId+'.md'));
- await c.store.end(id,{by:'user',revision:w.revision,decision:'discard'});await c.store.markStopped(id,{confirmed:true});const archived=await c.store.archiveReport(id);
+ const {c,run,id}=await fixture(t),w=await run(),report=await readTestObject(c.store,w.problem.objectId);
+ await c.store.end(id,dispositionIntent(w));await c.store.markStopped(id,{confirmed:true});const archived=await c.store.archiveReport(id);
  assert.equal(archived.kind,'worker-problem');assert.deepEqual(await fs.readFile(path.join(path.dirname(c.store.plan),archived.relPath)),report);
- const metadata=JSON.parse(await fs.readFile(path.join(path.dirname(c.store.plan),'reports',id+'.json'),'utf8'));assert.equal(metadata.outcome,'discard');assert.equal(metadata.deviation.sourceText,'TRIGGER_SCOPE exact user text');
+ const metadata=(await readTestState(c.store)).works.find(work=>work.id===id);assert.equal(metadata.outcome,'discard');assert.equal(metadata.deviation.sourceText,'TRIGGER_SCOPE exact user text');
 });
 
 test('inherited frontdesk association is only a hint and does not prohibit new-work classification',async t=>{

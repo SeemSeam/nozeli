@@ -3,9 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {DesktopHost} from '../src/main/host.mjs';
-import {Controller} from '../src/agents/managed/controller.mjs';
-import {WorkChanges} from '../src/agents/managed/work-changes.mjs';
+import {staticReport} from './static-report.fixture.mjs';
 
 const exec = promisify(execFile);
 export async function git(cwd, args) {
@@ -15,7 +13,8 @@ export async function git(cwd, args) {
 
 // Synthetic host/native history, not a model run. Both sides are actual commits;
 // the production capture, archive projection, IPC, React and reader consume them.
-export async function prepareFrozenWorkflow(out) {
+export async function prepareFrozenWorkflow(out,{appRoot=path.resolve(import.meta.dirname,'..')}={}) {
+  const [{DesktopHost},{Controller},{WorkChanges}]=await Promise.all([import(path.join(appRoot,'src/main/host.mjs')),import(path.join(appRoot,'src/agents/managed/controller.mjs')),import(path.join(appRoot,'src/agents/managed/work-changes.mjs'))]);
   const configRoot=path.join(out,'.Nozeli'),profile=path.join(configRoot,'desktop');
   const project=path.join(out,'project-a'),other=path.join(out,'project-b'),worker=path.join(out,'worker');
   await fs.mkdir(project,{recursive:true});await fs.mkdir(other);
@@ -35,8 +34,8 @@ export async function prepareFrozenWorkflow(out) {
   const host=new DesktopHost(profile);
   const a=await host.registerDirectory(project),b=await host.registerDirectory(other);
   await host.writeState(a.id,{workspace:{draft:'Preloaded main draft — never send'}});
-  const runtimeRoot=path.join(profile,'nozeli','managed-v1',a.id,'runtime');
-  const c=await Controller.open({projectId:a.id,runtimeRoot,contentRoot:project});
+  const runtimeRoot=path.join(await host.storage.localDirectory(a.id),'execution');
+  const c=await Controller.open({storage:host.storage,projectId:a.id,runtimeRoot,contentRoot:project});
   let binding,receipt,work,jobId='fixture-worker-job';
   try {
     work=await c.store.submit('Fixture retained Git result','Read-only product consumer evidence',{name:'Retained Git Worker'});
@@ -44,14 +43,14 @@ export async function prepareFrozenWorkflow(out) {
     await c.store.mutate(()=>c.store.state.jobs.push({id:jobId,target:work.id,revision:1,type:'work',status:'completed',text:'Preloaded independent no-model history',context:{},collabAttempts:[{requestId:'fixture-request-0001',sessionId:'fixture-native-history',epoch:'fixture-native-history#0',kind:'prompt',status:'settled'}],completedAt:new Date().toISOString()}));
     binding=await c.changes.capture({projectId:a.id,workId:work.id,revision:1,jobId,receiptId:'fixture-result-receipt',repo:project,commonDir:await fs.realpath(path.join(project,'.git')),inputCommit,candidateCommit});
     assert.equal(binding.verified,true);
-    receipt=await c.store.publish(work.id,1,'result','Fixture result backed by retained real Git commits.','fixture-result-receipt',{jobId,changeSetId:binding.changeSetId});
+    receipt=await c.store.publish(work.id,1,'result',staticReport('Fixture result backed by retained real Git commits.'),'fixture-result-receipt',{jobId,changeSetId:binding.changeSetId});
     await c.recordNativeEntries(work.id,{sessionId:'fixture-native-history',epoch:'fixture-native-history#0',jobId,requestId:'fixture-request-0001',entry:{type:'message',id:'fixture-worker-answer',message:{role:'assistant',content:[{type:'text',text:Array.from({length:500},(_,i)=>`Preloaded Worker history ${i}; this is not a model execution.`).join('\n')}]}}});
     await c.store.mutate(()=>{const w=c.store.find(work.id);w.status='ended';w.endedAt=new Date().toISOString();w.closure={phase:'complete',decision:'discard',revision:1};c.store.state.drafts.frontdesk='Preloaded main draft — never send';for(const todo of c.store.state.todos)todo.status='resolved';});
   } finally {await c.stop();}
-  await fs.writeFile(path.join(path.dirname(runtimeRoot),'binding.json'),JSON.stringify({schema:1,enabled:true,roles:{frontdesk:{provider:'omp'},orchestrator:{provider:'omp'},worker:{provider:'omp'}}}));
-  const changes=new WorkChanges(runtimeRoot),files=(await changes.list({changeSetId:binding.changeSetId})).files;
+  await host.storage.putLocal(a.id,'managed:binding',{schema:1,enabled:true,roles:{frontdesk:{provider:'omp'},orchestrator:{provider:'omp'},worker:{provider:'omp'}}});
+  const changes=new WorkChanges({runtimeRoot,storage:host.storage,projectId:a.id}),files=(await changes.list({changeSetId:binding.changeSetId})).files;
   const file=files.find(file=>file.path===relPath);assert(file);
-  return {out,configRoot,profile,project,other,worker,a,b,runtimeRoot,source,relPath,inputCommit,candidateCommit,workId:work.id,jobId,receiptId:receipt.id,changeSetId:binding.changeSetId,fileId:file.fileId,
+  return {out,configRoot,profile,project,other,worker,a,b,storage:host.storage,runtimeRoot,source,relPath,inputCommit,candidateCommit,workId:work.id,jobId,receiptId:receipt.id,changeSetId:binding.changeSetId,fileId:file.fileId,
     async removeWorktree(){
       await git(project,['worktree','remove','--force',worker]);await git(project,['branch','-D','fixture-candidate']);
       await git(project,['reflog','expire','--expire=now','--all']);await git(project,['gc','--prune=now']);

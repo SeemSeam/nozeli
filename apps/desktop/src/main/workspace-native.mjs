@@ -1,9 +1,9 @@
-import { randomUUID, createHash } from 'node:crypto';
-import fs from 'node:fs/promises';
-import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { createLayout, validateLayout, reduceLayout, singleContentLayout, layoutGroups, findView } from '../domain/workspace-layout.mjs';
 import {WorkspaceLayoutStore} from './workspace-layout-store.mjs';
 import {mergeDrawingMaterials} from '../domain/drawing-delivery.mjs';
+import {normalizeOfficeRecovery} from './office-recovery.mjs';
+import {listManagedPending,readManagedObject} from '../agents/managed/managed-storage.mjs';
 
 const fail = (code, message = code) => Object.assign(new Error(message), { code });
 const writes = new Set(['file.save','file.draft','file.retain','sheet.save','sheet.recover','word.save','word.import','document.image.put','annotation.add','annotation.update','annotation.remove','annotation.drawing','tag.put','tag.view','tag.reanchor','tag.material']);
@@ -22,10 +22,10 @@ export function restoreBounds(bounds, screen) {
 export class WorkspaceNative {
   constructor({ BrowserWindow, WebContentsView, screen, origin, preload, icon, userDataDir, host, hidden = false, onClose, onError = console.error, recover }) {
     Object.assign(this, { BrowserWindow, WebContentsView, screen, origin, preload, icon, host, hidden, onClose, onError, recover });
-    this.directory = path.join(userDataDir, 'nozeli', 'workspace-v2');
     this.senders = new Map(); this.windows = new Map(); this.surfaces = new Map(); this.layouts = new Map(); this.queues = new Map(); this.receipts = new Map(); this.requests = new Map(); this.drags = new Map(); this.leases = new Map(); this.epoch = 0;
     this.buffers=new Map();
-    this.namedLayouts=new WorkspaceLayoutStore({directory:path.join(userDataDir,'nozeli','named-layouts')});
+    this.namedLayouts=new WorkspaceLayoutStore({storage:host.storage});
+    this.lifecycle = new Map();
     this.preferences = { contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true, allowRunningInsecureContent: false, backgroundThrottling: false, preload };
   }
   async requireConversation(projectId,target='frontdesk'){
@@ -49,7 +49,7 @@ export class WorkspaceNative {
     finally{this.conversationClosing.delete(projectId);if((!this.shell||this.shell.dead)&&this.restoreShell)await this.restoreShell();this.broadcast('nozeli:workspace-control',{type:'conversation-unavailable',projectId,error},projectId);}
   }
   register(wc, scope) {
-    const record = { ...scope, wc, generation: 0, ready: false, dead: false };
+    const record = { ...scope, wc, generation: 0, recoveryOwner:randomUUID(), ready: false, dead: false };
     this.senders.set(wc.id, record);
     wc.on('focus',()=>{if(record.role==='surface'){const root=this.windows.get(record.windowId);if(root&&!root.dead)root.wc.send('nozeli:workspace-control',{type:'surface-focus',viewId:record.viewId,projectId:record.projectId});}});
     wc.on('before-input-event',(event,input)=>{if(record.role!=='surface'||input.type!=='keyDown'||input.isComposing)return;const numbered=(input.control||input.meta)&&!input.alt&&!input.shift&&/^[1-9]$/.test(input.key),cycle=input.key==='F6'&&!input.control&&!input.meta&&!input.alt;if(!numbered&&!cycle)return;const root=this.windows.get(record.windowId);if(!root||root.dead||root.projectId!==record.projectId)return;event.preventDefault();root.wc.send('nozeli:workspace-control',{type:'group-focus',projectId:record.projectId,viewId:record.viewId,...(numbered?{index:Number(input.key)-1}:{direction:input.shift?-1:1})});});
@@ -100,9 +100,9 @@ export class WorkspaceNative {
     const r = this.senders.get(event.sender?.id), frame = event.senderFrame;
     if (!r || r.dead || !frame || frame.parent != null || frame !== event.sender.mainFrame || frame.url !== this.origin) throw fail('IPC_DENIED');
     if (typeof op !== 'string') throw fail('UNKNOWN_OP');
-    if (payload.projectId && payload.projectId !== r.projectId && !(r.role === 'shell' && ['workspace.project','project.open'].includes(op))) throw fail('PROJECT_SCOPE_DENIED');
+    if (payload.projectId && payload.projectId !== r.projectId && !(r.role === 'shell' && ['workspace.project','workspace.closeProject','workspace.recovery.object','workspace.recovery.settle','project.open','project.remove','project.retry','project.lifecycle.preview','project.lifecycle.reconcile'].includes(op))) throw fail('PROJECT_SCOPE_DENIED');
     if(r.role==='surface'&&r.kind==='terminal'&&op.startsWith('managed.')&&(op!=='managed.terminal.screen'||payload.target!==this.layouts.get(r.projectId)?.views[r.viewId]?.viewState?.workId))throw fail('IPC_DENIED');
-    if(this.captureProjectId===r.projectId&&(writes.has(op)||op==='managed.send'||op==='workspace.command'&&payload.command?.type!=='restoreViewState'||op==='workspace.project'))throw fail('CAPTURE_ACTIVE','请先完成或退出涂鸦');
+    if (this.lifecycle.has(r.projectId) && (writes.has(op) || op === 'managed.send' || op === 'workspace.project' || op === 'workspace.command')) throw fail('PROJECT_LIFECYCLE_ACTIVE', '项目正在保留并关闭，请等待操作结果。');
     if(op==='report.copySource'&&!(r.role==='shell'||r.role==='surface'&&['report','history'].includes(r.kind)))throw fail('IPC_DENIED');
     if(op.startsWith('isolated-preview.')&&r.role==='surface'&&(!['report','document','history'].includes(r.kind)||r.kind==='history'&&['isolated-preview.open','isolated-preview.update'].includes(op)&&payload.profile!=='staticReport'))throw fail('IPC_DENIED');
     if (r.role !== 'shell' && !op.startsWith('workspace.') && !op.startsWith('isolated-preview.') && !surfaceOps.test(op)) throw fail('IPC_DENIED');
@@ -123,20 +123,17 @@ export class WorkspaceNative {
   resource(projectId, relPath) { return `${projectId}\0${relPath}`; }
   async layout(projectId) {
     if (!projectId || typeof projectId !== 'string') throw fail('INVALID_PROJECT');
-    await this.host.requireProject(projectId);
+    await this.host.requireRegisteredProject(projectId);
     if (this.layouts.has(projectId)) return this.layouts.get(projectId);
-    let value;
-    try { value = singleContentLayout(JSON.parse(await fs.readFile(this.filename(projectId), 'utf8'))); if (value.projectId !== projectId) throw fail('INVALID_LAYOUT'); }
-    catch (error) { if (error.code !== 'ENOENT') throw error; const legacy=await this.host.readState(projectId);value = createLayout(projectId, legacy?.state??{}); }
+    const saved = await this.host.storage.getLocal(projectId, 'workspace:layout');
+    const value = saved ? singleContentLayout(saved) : createLayout(projectId);
+    if (value.projectId !== projectId) throw fail('INVALID_LAYOUT');
     this.layouts.set(projectId, value); return value;
   }
-  filename(projectId) { return path.join(this.directory, createHash('sha256').update(projectId).digest('hex') + '.json'); }
   async persist(layout) {
-    await fs.mkdir(this.directory, { recursive: true });
-    const target = this.filename(layout.projectId), temporary = target + '.' + randomUUID() + '.tmp';
+    await this.host.requireRegisteredProject(layout.projectId);
     validateLayout(layout);
-    try { const handle=await fs.open(temporary,'wx');try{await handle.writeFile(JSON.stringify(layout));await handle.sync();}finally{await handle.close();}await fs.rename(temporary,target);const directory=await fs.open(this.directory,'r');try{await directory.sync();}finally{await directory.close();} }
-    catch (error) { await fs.unlink(temporary).catch(() => {}); throw error; }
+    await this.host.storage.putLocal(layout.projectId, 'workspace:layout', layout);
   }
   serial(projectId, work) {
     const next = (this.queues.get(projectId) || Promise.resolve()).catch(() => {}).then(work);
@@ -215,8 +212,74 @@ export class WorkspaceNative {
       finally{for(const s of affected){s.transferring=false;s.held=!!s.recoveryHeld;if(!s.dead)s.wc.send('nozeli:workspace-control',{type:'transfer-hold',held:s.held});}}
     });
   }
+  async closeProject(projectId, {operationId = randomUUID()} = {}) {
+    if (typeof operationId !== 'string' || !operationId || operationId.length > 160) throw fail('INVALID_OPERATION_ID');
+    const input = JSON.stringify({action:'close-project',projectId,operationId});
+    const previous = this.lifecycle.get(projectId);
+    if (previous) {
+      if (previous.operationId !== operationId || previous.input !== input) throw fail('PROJECT_LIFECYCLE_ACTIVE', '该项目已有不同的生命周期操作。');
+      return previous.promise;
+    }
+    const operation = {operationId,input};
+    operation.promise = (async () => {
+      await this.host.requireRegisteredProject(projectId);
+      const key = `lifecycle:close:${operationId}`;
+      const prior = await this.host.storage.getRecovery(projectId,key);
+      if (prior) {
+        if (prior.input !== input) throw fail('OPERATION_ID_REUSED');
+        if (prior.phase === 'complete') return prior.result;
+        throw fail(prior.error?.code || 'PROJECT_CLOSE_PENDING', prior.error?.message || '已有关闭操作尚待核查；未重复冲刷。');
+      }
+      await this.host.storage.putRecovery(projectId,key,{action:'close-project',projectId,operationId,input,phase:'preparing'});
+      const records = this.projectRecords(projectId);
+      if (records.some(record => record.previewRecoveryFailed)) throw fail('TRANSFER_RECOVERY_REQUIRED', '报告恢复未确认，不能关闭项目。');
+      const shell = this.shell?.projectId === projectId ? this.shell : null;
+      // Hold input while capturing; restore it if any owner cannot persist.
+      for (const record of [...records, ...(shell ? [shell] : [])]) record.wc.send('nozeli:workspace-control', {type:'lifecycle-hold', held:true, operationId});
+      try {
+        const results = await Promise.allSettled([...records, ...(shell ? [shell] : [])].map(record => this.flushOne(record)));
+        const failures = results.flatMap((result, index) => result.status === 'rejected' ? [{viewId:records[index]?.viewId ?? 'shell', code:result.reason.code, message:result.reason.message}] : []);
+        if (failures.length) throw Object.assign(fail('PROJECT_FLUSH_FAILED', '部分内容未能保存到本机，项目保持打开。'), {failures});
+        await this.host.settled();
+        await this.host.storage.putRecovery(projectId,key,{action:'close-project',projectId,operationId,input,phase:'captured',receipts:results.map((result,index)=>({owner:records[index]?.viewId??'shell',result:result.value}))});
+        for (const record of records) this.destroySurface(record);
+        for (const [id, root] of this.windows) if (id !== 'main' && root.projectId === projectId) { root.closing = true; root.win.destroy(); this.windows.delete(id); }
+        if (shell) { this.isolatedPreview?.closeScope(shell); shell.projectId = null; shell.wc.send('nozeli:workspace-control', {type:'project-closed', projectId, operationId}); }
+        if (this.activeProjectId === projectId) this.activeProjectId = null;
+        const result = {closed:true, projectId, operationId};
+        await this.host.storage.putRecovery(projectId,key,{action:'close-project',projectId,operationId,input,phase:'complete',result});
+        return result;
+      } catch (error) {
+        await this.host.storage.putRecovery(projectId,key,{action:'close-project',projectId,operationId,input,phase:'needs-attention',error:{code:error.code||'ERROR',message:error.message}}).catch(()=>{});
+        for (const record of [...records, ...(shell ? [shell] : [])]) if (!record.dead) record.wc.send('nozeli:workspace-control', {type:'lifecycle-hold', held:false, operationId});
+        throw error;
+      }
+    })();
+    this.lifecycle.set(projectId, operation);
+    try { return await operation.promise; } finally { if (this.lifecycle.get(projectId) === operation) this.lifecycle.delete(projectId); }
+  }
+  async saveRecovery(record, payload) {
+    if (payload.projectId !== record.projectId || record.role === 'surface' && payload.viewId !== record.viewId) throw fail('PROJECT_SCOPE_DENIED');
+    if (record.role === 'surface' && record.readOnly) throw fail('EDIT_LEASE_DENIED');
+    await this.host.requireRegisteredProject(payload.projectId);
+    if (!Number.isSafeInteger(payload.generation) || payload.generation < 0) throw fail('INVALID_RECOVERY_GENERATION');
+    const key = `workspace:${record.viewId || record.role}`;
+    const generation = record.generation;
+    const snapshot=structuredClone(payload);
+    snapshot.candidate=await normalizeOfficeRecovery(snapshot.kind,snapshot.candidate);
+    return this.serial(`recovery:${record.projectId}`, async () => {
+      const prior = await this.host.storage.getRecovery(record.projectId, key);
+      if (record.dead || record.generation !== generation) throw fail('SURFACE_CHANGED');
+      const ownerGeneration = `${record.recoveryOwner}:${record.generation}`;
+      if (prior?.ownerGeneration === ownerGeneration && prior.generation > payload.generation) return {retained:true, generation:prior.generation};
+      if (prior && prior.ownerGeneration !== ownerGeneration) await this.host.storage.putRecovery(record.projectId, `${key}:retained:${prior.ownerGeneration}`, prior);
+      await this.host.storage.putRecovery(record.projectId, key, {...snapshot, ownerGeneration, retainedAt:new Date().toISOString()});
+      return {retained:true, generation:payload.generation};
+    });
+  }
   async bindProject(r, projectId) {
     if (r.role !== 'shell') throw fail('IPC_DENIED');
+    this.host.storage.assertActive(projectId);
     const work=async()=>{
       const generation=r.generation;
       if(r.projectId&&r.projectId!==projectId)await this.flush(this.projectRecords(r.projectId));
@@ -225,6 +288,7 @@ export class WorkspaceNative {
         try{await this.requireConversation(projectId,'frontdesk');}catch{layout=reduceLayout(layout,{type:'closeContent',viewId:view.id});await this.persist(layout);this.layouts.set(projectId,layout);}
       }
       if(r.dead||r.generation!==generation)throw fail('SHELL_CHANGED');
+      this.host.storage.assertActive(projectId);
       if(r.projectId!==projectId)this.isolatedPreview?.closeScope(r);
       for(const surface of [...this.surfaces.values()])if(surface.windowId==='main'){if(surface.projectId!==projectId)this.destroySurface(surface);else surface.view.setVisible(false);}
       r.projectId=projectId;await this.reconcile(layout);this.projectVisibility(projectId);this.changed(layout);return {layout,windowId:r.windowId};
@@ -442,8 +506,11 @@ export class WorkspaceNative {
   }
   async deliverDrawing(session,event){
     const projectId=session.projectId;
+    const question=typeof event.card?.message==='string'?event.card.message.trim():'';
+    if(question)event={...event,attachment:{...event.attachment,frozenText:question,note:'涂鸦问题：'+question}};
     const liveOwner=this.projectRecords(projectId).find(s=>s.kind==='conversation'&&!s.dead);
     if(liveOwner?.ready)await this.flush([liveOwner]);
+    let alreadyDelivered=false;
     await this.serial(projectId,async()=>{
       const layout=await this.layout(projectId);let conversation=Object.values(layout.views).find(v=>v.kind==='conversation');
       if(!conversation){const next=reduceLayout(layout,{type:'open',view:{kind:'conversation',viewState:{draftOnly:true}}});conversation=Object.values(next.views).find(v=>v.kind==='conversation');await this.persist(next);this.layouts.set(projectId,next);}
@@ -451,12 +518,18 @@ export class WorkspaceNative {
       const current=await this.layout(projectId),descriptor=current.views[conversation.id],state=descriptor.viewState??={},materials=state.conversationMaterials??{},frontdesk=materials.frontdesk??{pending:[],quote:null};
       const key='drawing-'+event.deliveryId;
       const delivered=frontdesk.deliveredDrawingIds??[];
-      if(!delivered.includes(event.deliveryId)){
+      alreadyDelivered=delivered.includes(event.deliveryId);
+      if(!alreadyDelivered){
         descriptor.viewState={...state,conversationMaterials:{...materials,frontdesk:{...frontdesk,pending:[...(frontdesk.pending??[]),{...event.attachment,key,deliveryId:event.deliveryId,status:'ok'}],deliveredDrawingIds:[...delivered,event.deliveryId]}},conversationInput:state.conversationInput??{projectId,target:'frontdesk'}};
         await this.persist(current);
       }
     });
     const saved=await this.layout(projectId),recipient=Object.values(saved.views).find(v=>v.kind==='conversation');
+    if(alreadyDelivered){
+      const owner=recipient&&this.surfaces.get(recipient.id);
+      if(owner?.ready)owner.wc.send('nozeli:workspace-control',event);else if(owner)(owner.pendingControls??=[]).push(event);
+      return;
+    }
     if(this.shell?.projectId!==projectId||recipient?.viewState?.conversationInput?.target!=='frontdesk'){this.broadcast('nozeli:workspace-control',{type:'drawing-saved',projectId},projectId);return;}
     const root=this.windows.get(session.window.windowId)??this.shell,layout=await this.layout(projectId),conversation=Object.values(layout.views).find(v=>v.kind==='conversation');
     await this.command(root,{projectId,expectedRevision:layout.revision,requestKey:'drawing-open-'+event.deliveryId,command:{type:'activate',viewId:conversation.id}});
@@ -466,7 +539,6 @@ export class WorkspaceNative {
   }
   async closeWindow(r) {
     if (r.closePending) return;
-    if(r.captureSession)throw fail('CAPTURE_ACTIVE','请先完成或退出涂鸦');
     if(this.isolatedPreview?.holdsWindow(r.win))throw fail('TRANSFER_RECOVERY_REQUIRED','此窗口仍承载尚未确认回滚的报告正文；现场已保留。');
     if(r.staging||[...this.surfaces.values()].some(s=>s.windowId===r.windowId&&s.transferring))throw fail('TRANSFER_IN_PROGRESS');
     r.closePending = true;
@@ -488,6 +560,28 @@ export class WorkspaceNative {
   }
   async invoke(r, op, p = {}) {
     if (op === 'workspace.bootstrap') return this.bootstrap(r);
+    if (op === 'workspace.closeProject') {
+      if (r.role !== 'shell') throw fail('IPC_DENIED');
+      return this.closeProject(p.projectId, {operationId:p.operationId});
+    }
+    if (op === 'workspace.recovery.list') {
+      if (r.role !== 'shell') throw fail('IPC_DENIED');
+      const projects = await this.host.storage.list(), entries = [];
+      for (const project of projects) {
+        const descriptor={id:project.id,name:project.name,root:project.root,removed:project.removed};
+        for (const item of await this.host.storage.listRecovery(project.id)) if (item.id.startsWith('workspace:')) entries.push({project:descriptor,id:item.id,value:item.value});
+        for (const pending of await listManagedPending(this.host.storage,project.id)) entries.push({project:descriptor,id:pending.id,value:{...pending,projectId:project.id,recoveryKind:'managed'}});
+        const hold=this.host.storage.lifecycleHolds.get(project.id);if(hold)entries.push({project:descriptor,id:'lifecycle:'+hold.operationId,value:{projectId:project.id,recoveryKind:'lifecycle',operationId:hold.operationId,action:hold.action}});
+      }
+      return {entries};
+    }
+    if(op==='workspace.recovery.object'){
+      if(r.role!=='shell'||typeof p.digest!=='string'||! /^[a-f0-9]{64}$/.test(p.digest))throw fail('IPC_DENIED');
+      await this.host.requireRegisteredProject(p.projectId);
+      const bytes=await readManagedObject(this.host.storage,p.projectId,p.digest);
+      return {digest:p.digest,bytes:{encoding:'base64',byteLength:bytes.length,data:bytes.toString('base64')}};
+    }
+    if (op === 'workspace.recovery') return this.saveRecovery(r, p);
     if(op.startsWith('workspace.layouts.')){
       if(r.role==='surface'||p.projectId!==r.projectId)throw fail('IPC_DENIED');
       if(op.endsWith('.list'))return this.namedLayouts.list(r.projectId);
@@ -517,6 +611,9 @@ export class WorkspaceNative {
       this.broadcast('nozeli:workspace-control',{type:'settings',projectId:r.projectId,workspace:value.state.workspace,projectSettings:value.state.projectSettings},r.projectId);return value;
     });
     if (op === 'workspace.ready') {
+      // Reapply after the renderer exists: a hidden WCV otherwise retains hidden
+      // page visibility despite the constructor preference, blocking PDF.js rAF.
+      if(r.role==='surface'&&p.contentReady!==true)r.wc.setBackgroundThrottling(false);
       r.ready=r.role!=='surface'||p.contentReady===true;r.readyResolve?.();const result=this.bootstrap(r);const layout=this.layouts.get(r.projectId);
       if(r.ready)r.loading=false;
       if(r.ready)r.wc.emit('nozeli-content-ready');

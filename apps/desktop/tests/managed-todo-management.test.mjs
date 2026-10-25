@@ -1,17 +1,20 @@
+import {openTestWorkspace} from './project-storage.fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {Workspace} from '../src/agents/managed/workspace.mjs';
 import {manageTodoState,reconcileTodos,todoCapabilities} from '../src/domain/todo-management.mjs';
+import {reportDescriptor} from '../src/agents/managed/report-descriptor.mjs';
+import {staticReport} from './static-report.fixture.mjs';
+import {readManagedState} from '../src/agents/managed/managed-storage.mjs';
 
 async function fixture(t){
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-todo-management-'));
  const runtime=path.join(root,'runtime'),content=path.join(root,'content');
- let store=await Workspace.open(runtime,content);
+ let store=await openTestWorkspace(runtime,content);
  t.after(async()=>{await store.close();await fs.rm(root,{recursive:true,force:true});});
- return {root,get store(){return store;},async restart(){await store.close();store=await Workspace.open(runtime,content);return store;},
+ return {root,get store(){return store;},async restart(){await store.close();store=await openTestWorkspace(runtime,content);return store;},
   async seed(todos,works=[]){await store.mutate(()=>{store.state.todos.push(...structuredClone(todos));store.state.works.push(...structuredClone(works));});},
   manage(payload){return store.mutate(()=>manageTodoState(store.state,payload));},
   todo(id='todo'){return store.state.todos.find(todo=>todo.id===id);}};
@@ -23,7 +26,8 @@ const rejectsCode=(promise,code)=>assert.rejects(promise,error=>error.code===cod
 test('close and reopen are durable local reminders with idempotent receipts and no source mutations',async t=>{
  const f=await fixture(t);
  await f.seed([reminder({workId:'work'})],[{id:'work',status:'paused',revision:3}]);
- await f.store.mutate(()=>{Object.assign(f.store.state,{messages:[{id:'message',text:'source body'}],receipts:[{id:'receipt',text:'report body'}],jobs:[{id:'event-a',status:'failed'}],gitIntents:[{id:'intent',status:'uncertain'}]});});
+ const reportBytes=Buffer.from(staticReport('report body'));await f.store.putObject(reportBytes);
+ await f.store.mutate(()=>{const objectId='00000000-0000-4000-8000-000000000001';Object.assign(f.store.state,{messages:[{id:'message',text:'source body'}],receipts:[{id:'receipt',objectId,report:reportDescriptor(reportBytes,{format:'html-static',objectId})}],jobs:[{id:'event-a',status:'failed'}],gitIntents:[{id:'intent',status:'uncertain'}]});});
  const source=structuredClone({works:f.store.state.works,messages:f.store.state.messages,receipts:f.store.state.receipts,jobs:f.store.state.jobs,gitIntents:f.store.state.gitIntents});
  const close=request('close',0,{reason:'Handled offline'}),receipt=await f.manage(close);
  assert.equal(receipt.managementRevision,1);assert.equal(f.todo().status,'closed');assert.equal(f.todo().closedBy,'user:local');assert.equal(f.todo().reason,'Handled offline');assert(f.todo().closedAt);assert(f.todo().settledAt);
@@ -42,7 +46,7 @@ test('remove erases only private reminder content, action ledgers and history; m
  const remove=request('remove',1,{reason:'Private deletion reason'}),receipt=await f.manage(remove);
  assert.equal(f.todo(),undefined);assert.deepEqual(f.store.state.todoManagementActions,[]);assert.equal(f.store.state.todoActions.length,1);assert.equal(f.store.state.todoActions[0].requestKey,'keep');
  const tombstone=f.store.state.todoTombstones[0];assert.deepEqual(Object.keys(tombstone).sort(),['todoId','sourceIdentity','removedAt','projectId','expectedRevision','requestKey'].sort());
- const bytes=await fs.readFile(f.store.file,'utf8');for(const secret of ['Private reminder body','Private closure reason','Private deletion reason','Private recovery result','old-private'])assert.equal(bytes.includes(secret),false,secret);
+ const saved=await readManagedState(f.store.storage,f.store.projectId,{offline:false});const bytes=JSON.stringify(saved);for(const secret of ['Private reminder body','Private closure reason','Private deletion reason','Private recovery result','old-private'])assert.equal(bytes.includes(secret),false,secret);
  await f.restart();assert.deepEqual(await f.manage(remove),receipt);assert.equal(f.store.state.todoTombstones.length,1);assert.deepEqual(f.store.state.works,works);assert.deepEqual(f.store.state.messages,messages);
 });
 
@@ -102,12 +106,14 @@ test('serialized competing operations accept one version and preserve exact-key 
 });
 
 test('write failures roll back close and remove, including ledgers and tombstones',async t=>{
- const f=await fixture(t);await f.seed([reminder()]);
+ const f=await fixture(t);await f.seed([reminder()]);await f.restart();
  for(const [action,revision] of [['close',0],['remove',1]]){
-  const file=f.store.file,bytes=await fs.readFile(file),before=structuredClone(f.store.state);f.store.file=path.join(f.root,'missing-parent','state.json');
-  await assert.rejects(f.manage(request(action,revision)),{code:'ENOENT'});f.store.file=file;
-  assert.deepEqual(f.store.state,before);assert.deepEqual(await fs.readFile(file),bytes);
-  await f.restart();assert.deepEqual(f.store.state,before);await f.manage(request(action,revision));
+  const storage=f.store.storage,replace=storage.replaceProjectCollections.bind(storage),before=structuredClone(f.store.state),durable=await readManagedState(storage,f.store.projectId,{offline:false});
+  storage.replaceProjectCollections=async()=>{throw Object.assign(new Error('injected transaction rejection'),{code:'EINJECTED_COMMIT'});};
+  try{await assert.rejects(f.manage(request(action,revision)),{code:'EINJECTED_COMMIT'});}finally{storage.replaceProjectCollections=replace;}
+  assert.deepEqual(f.store.state,before);assert.deepEqual(await readManagedState(storage,f.store.projectId,{offline:false}),durable);
+  const pending=(await f.store.listPending()).find(row=>row.kind==='business'&&row.error?.code==='EINJECTED_COMMIT');assert(pending);assert.equal(pending.automaticReplay,false);assert.equal(pending.requiresConfirmation,true);
+  await f.restart();for(const key of ['todos','todoManagementActions','todoTombstones','todoActions','todoManagementHistory','todoHistory','works','jobs','messages','receipts'])assert.deepEqual(f.store.state[key]??[],before[key]??[],`${key} must survive rejected ${action} unchanged across recovery`);await f.manage(request(action,revision));
  }
  await f.restart();assert.equal(f.todo(),undefined);assert.equal(f.store.state.todoTombstones.length,1);
 });

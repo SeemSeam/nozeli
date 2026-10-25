@@ -22,7 +22,7 @@ export function mountActionConfirmation({ scope, preferences, setPreferences, to
   const error = document.createElement('p'); error.id = 'action-confirmation-error'; error.setAttribute('role', 'status'); error.hidden = true;
   const buttons = document.createElement('div'); buttons.className = 'confirmation-actions';
   const cancel = document.createElement('button'); cancel.type = 'button'; cancel.id = 'action-confirmation-cancel'; cancel.textContent = '取消';
-  const confirm = document.createElement('button'); confirm.type = 'button'; confirm.id = 'action-confirmation-accept';
+  const confirm = document.createElement('button'); confirm.type = 'button'; confirm.id = 'action-confirmation-accept'; confirm.className = 'ui-action';
   buttons.append(cancel, confirm);
   dialog.append(title, name, description, label, error, buttons);
   document.body.append(dialog);
@@ -52,7 +52,7 @@ export function mountActionConfirmation({ scope, preferences, setPreferences, to
     pending = { node, action, scope: scope(), path: path(), name: action.name(node) };
     title.textContent = action.title; name.textContent = pending.name; description.textContent = action.description;
     confirm.textContent = action.command;
-    confirm.classList.toggle('destructive', action.key === 'deleteNote' || action.key === 'removeTag');
+    confirm.dataset.uiAction = action.key === 'deleteNote' || action.key === 'removeTag' ? 'danger' : 'primary';
     skip.checked = false; skip.title = '仅适用于当前项目的' + action.command + '操作';
     label.hidden=action.alwaysConfirm===true;
     error.hidden = true; confirm.disabled = false; cancel.disabled = false;
@@ -83,15 +83,16 @@ export function mountActionConfirmation({ scope, preferences, setPreferences, to
     replaying.add(request.node);
     try { request.node.click(); } finally { replaying.delete(request.node); }
   });
-  restore.addEventListener('click', async () => {
+  async function restorePreferences() {
     restore.disabled = true;
     try {
       const result = await setPreferences({});
       if (result?.ok === false) throw new Error('确认偏好未能保存，请重试。');
-      refresh(); toast('已恢复此项目的操作确认。');
-    } catch (failure) { toast(failure?.message || '确认偏好未能保存，请重试。'); }
+      refresh(); toast('已恢复此项目的操作确认。');return true;
+    } catch (failure) { toast(failure?.message || '确认偏好未能保存，请重试。');throw failure; }
     finally { restore.disabled = false; }
-  });
+  }
+  restore.addEventListener('click',()=>void restorePreferences().catch(()=>{}));
   refresh();
-  return { refresh, dismiss };
+  return { refresh, dismiss, restore:restorePreferences };
 }

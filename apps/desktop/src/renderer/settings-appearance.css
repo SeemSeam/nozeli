@@ -3,6 +3,7 @@
 html:root {
   --chrome-font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans CJK SC","PingFang SC","Microsoft YaHei",sans-serif;
   --chrome-font-size:13px;
+  --ui-action-bg:#456654;--ui-action-ink:#fff;--ui-danger-bg:#a14335;--ui-danger-ink:#fff;
   --surface:var(--paper);--border:var(--line);--accent:var(--green);
 }
 html:root[data-theme="light"] {
@@ -18,11 +19,68 @@ html:root[data-theme="dark"] {
   --green:#a6cba9;--green-soft:#34493a;--amber:#e3bd76;--amber-soft:#433923;
   --red:#f2a698;--annotation-red:#f2a698;
   --ui-control-ink:#c0d0c3;--ui-control-hover:#34493a;--ui-control-active:#405a48;--ui-control-focus:#a6cba9;
+  --ui-action-bg:#a6cba9;--ui-action-ink:#17251b;--ui-danger-bg:#f2a698;--ui-danger-ink:#321913;
 }
+/* Palette is independent of luminance. Sage above remains the historical default;
+   only Nozeli-owned surfaces opt into these semantic slate colors. */
+html:root[data-palette="slate"][data-theme="light"] {
+  --bg:#edf1f5;--paper:#fbfcfe;--ink:#263544;--muted:#586b7e;--line:#ccd6e0;
+  --green:#355f88;--green-soft:#e4edf6;--amber:#855b19;--amber-soft:#f7eedb;
+  --red:#a03936;--annotation-red:#ad3935;--danger:var(--red);--danger-soft:#fae9e7;
+  --success:#2e6c4b;
+  --ui-control-ink:#4d6278;--ui-control-hover:#e4edf6;--ui-control-active:#d4e3f1;--ui-control-focus:#355f88;
+  --ui-action-bg:#355f88;--ui-action-ink:#fff;--ui-danger-bg:#a03936;--ui-danger-ink:#fff;
+  --palette-chat-canvas:#f3f6fa;--palette-chat-surface:#fbfcfe;--palette-chat-ink:#263544;--palette-chat-muted:#586b7e;--palette-chat-line:#ccd6e0;
+  --palette-chat-user:#e2edf8;--palette-chat-frontdesk:#eaf0f6;--palette-chat-orchestrator:#f0ebf7;--palette-chat-worker:#e6f1f2;--palette-chat-system:#f7eedb;
+  --palette-note-bg:#fffaf0;--palette-note-ink:#70521d;--palette-note-head:#f7eedb;--palette-note-line:#c9ad72;
+  --diff-added:#f3f7fa;--diff-added-text:#edf2f8;--diff-deleted:#faf5f7;--diff-deleted-text:#f4eaf0;
+}
+html:root[data-palette="slate"][data-theme="dark"] {
+  --bg:#171e27;--paper:#222d3a;--ink:#e3eaf2;--muted:#acbdcf;--line:#46596d;
+  --green:#a4c7ed;--green-soft:#30465f;--amber:#e4bf7d;--amber-soft:#443a28;
+  --red:#f1aaa3;--annotation-red:#f1aaa3;--danger:var(--red);--danger-soft:#4c3032;
+  --success:#a1d5b4;
+  --ui-control-ink:#c1d2e3;--ui-control-hover:#30465f;--ui-control-active:#3c5571;--ui-control-focus:#a4c7ed;
+  --ui-action-bg:#a4c7ed;--ui-action-ink:#182b40;--ui-danger-bg:#f1aaa3;--ui-danger-ink:#341c1b;
+  --palette-chat-canvas:#1b2531;--palette-chat-surface:#222d3a;--palette-chat-ink:#e3eaf2;--palette-chat-muted:#acbdcf;--palette-chat-line:#46596d;
+  --palette-chat-user:#30465f;--palette-chat-frontdesk:#273747;--palette-chat-orchestrator:#363047;--palette-chat-worker:#263e43;--palette-chat-system:#443a28;
+  --palette-note-bg:#342e23;--palette-note-ink:#eddbb6;--palette-note-head:#443a28;--palette-note-line:#8f7748;
+  --diff-added:#24323d;--diff-added-text:#263642;--diff-deleted:#342b36;--diff-deleted-text:#3b2d39;
+}
+html:root[data-palette="slate"] :is(.session-surface,.session-timeline) {
+  --chat-canvas:var(--palette-chat-canvas);--chat-surface:var(--palette-chat-surface);--chat-ink:var(--palette-chat-ink);--chat-muted:var(--palette-chat-muted);--chat-line:var(--palette-chat-line);
+  --chat-user:var(--palette-chat-user);--chat-frontdesk:var(--palette-chat-frontdesk);--chat-orchestrator:var(--palette-chat-orchestrator);--chat-worker:var(--palette-chat-worker);--chat-system:var(--palette-chat-system);
+  --chat-action:var(--green);--chat-action-ink:var(--ui-action-ink);
+}
+/* Document-domain tokens: reading surfaces alias chrome paper/ink by default and may
+   diverge later without touching chrome. Semantic additions keep editor states legible. */
+:root {
+  --doc-paper:var(--paper);--doc-ink:var(--ink);--doc-muted:var(--muted);--doc-line:var(--line);
+  --doc-cursor:var(--ink);--doc-selection:var(--green-soft);--doc-active-line:color-mix(in srgb,var(--paper) 90%,var(--ink) 10%);
+  --doc-search:var(--amber-soft);--doc-link:var(--green);
+}
+html:root { --doc-code-bg:#242a27; }
+html:root[data-theme="light"] { --doc-code-bg:#f6f8f5; }
+html:root[data-palette="slate"][data-theme="light"] { --doc-code-bg:#f2f6fa; }
+html:root[data-palette="slate"][data-theme="dark"] { --doc-code-bg:#1a2432; }
+/* Syntax tokens follow the theme mode only; palettes keep identical code hues. */
+html[data-theme="light"] {
+  --tok-keyword:#770088;--tok-atom:#221199;--tok-number:#116644;--tok-definition:#0000cc;--tok-variable:#096b0d;
+  --tok-variable2:#05569e;--tok-type:#825000;--tok-property:#0000cc;--tok-comment:#59616d;--tok-string:#a01111;
+  --tok-meta:#a01111;--tok-qualifier:#555555;--tok-builtin:#3300aa;--tok-bracket:#756000;--tok-punctuation:#24292f;--tok-invalid:#b51c27;
+}
+html[data-theme="dark"] {
+  --tok-keyword:#d2a8ff;--tok-atom:#c6a0ff;--tok-number:#e3bd76;--tok-definition:#61afef;--tok-variable:#98c379;
+  --tok-variable2:#7dcfff;--tok-type:#e3bd76;--tok-property:#61afef;--tok-comment:#98a0ad;--tok-string:#98c379;
+  --tok-meta:#f08a95;--tok-qualifier:#b6bdca;--tok-builtin:#56b6c2;--tok-bracket:#b6bdca;--tok-punctuation:#b6bdca;--tok-invalid:#ff8890;
+}
+/* Both line and changed-token variables are BACKGROUNDS, never text colors. */
+html:root[data-palette="sage"][data-theme="light"] { --diff-added:#f4f7f1;--diff-added-text:#e8eee7;--diff-deleted:#faf6f2;--diff-deleted-text:#f1e9e5; }
+html:root[data-palette="sage"][data-theme="dark"] { --diff-added:#26322b;--diff-added-text:#293b31;--diff-deleted:#342a30;--diff-deleted-text:#3d2c32; }
 /* Only chrome is opted in; explicit pixel typography keeps rem-based content stable.
    Font-only declarations avoid changing layout/weight/line-height and SVG geometry. */
-:where(#files,#side,.rail,.topbar,.project-view-switch,dialog,[data-settings-panel],.nozeli-context-menu),
-:where(#files,#side,.rail,.topbar,.project-view-switch,dialog,[data-settings-panel],.nozeli-context-menu) :not(svg,svg *, .ui-icon,.file-type-icon,.file-type-icon *, .xterm,.xterm *, .work-terminal-preview,.work-terminal-preview *, .managed-terminal-screen,.managed-terminal-screen *, .agent-terminal-screen,.agent-terminal-screen *, .cm-editor,.cm-editor *, .tag-chat-window,.tag-chat-window *, .agent-message-body,.agent-message-body *, .material-viewer,.material-viewer *) {
+:where(#files,#side,.rail,.topbar,.project-view-switch,dialog,[data-settings-panel],.nozeli-context-menu):not(.settings-dialog,#action-confirmation),
+:where(#files,#side,.rail,.topbar,.project-view-switch,dialog,[data-settings-panel],.nozeli-context-menu) :not(svg,svg *, .settings-dialog,.settings-dialog *,#action-confirmation,#action-confirmation *, .ui-icon,.file-type-icon,.file-type-icon *, .xterm,.xterm *, .managed-terminal-screen,.managed-terminal-screen *, .agent-terminal-screen,.agent-terminal-screen *, .cm-editor,.cm-editor *, .tag-chat-window,.tag-chat-window *, .agent-message-body,.agent-message-body *, .material-viewer,.material-viewer *, .managed-work-entry,.managed-work-entry *, .managed-todo-row,.managed-todo-row *) {
   font-family:var(--chrome-font-family)!important;
   font-size:var(--chrome-font-size)!important;
 }
@@ -34,7 +92,7 @@ html:root[data-theme="dark"] {
 .settings-appearance .appearance-save-status { min-height:1.6em;color:var(--muted);margin:10px 0; }
 /* Existing hard-coded light chrome surfaces must not turn white in dark mode.
    Physical document canvases, authored content and terminal colors stay independent. */
-html[data-theme="dark"] :is(dialog,#action-confirmation,.nozeli-context-menu,.surface-menu,.workspace-command-menu,.generic-popover) {
+html[data-theme="dark"] :is(dialog:not(.settings-dialog):not(#action-confirmation),.nozeli-context-menu,.surface-menu,.workspace-command-menu,.generic-popover) {
   background:var(--paper)!important;color:var(--ink)!important;border-color:var(--line)!important;
 }
 html[data-theme="dark"] :is(input,select,textarea):not(.xterm-helper-textarea) {
@@ -58,18 +116,88 @@ html[data-theme="dark"] .note-anchor {
 html[data-theme="dark"] .note-anchor.tag-note {
   --tag-window-bg:#302d22;--tag-window-ink:#e6d8b6;--tag-window-head:#3d3727;--tag-window-border:#75633f;--tag-window-accent:#e3bd76;
 }
+/* Local-note actions use the note accent, not white on the dark theme's pale amber. */
+html[data-theme="dark"] .note-anchor.tag-note .tag-chat-window :is(.tag-controls>button:first-child,.tag-edit) {
+  background:var(--tag-window-accent);color:var(--bg);
+}
+.tag-chat-window > .tag-editor:focus-visible,
+.tag-chat-window :is(.tag-controls > button,.tag-edit):focus-visible {
+  outline:2px solid var(--ui-control-focus);outline-offset:2px;
+}
 html[data-theme="dark"] :is(.tag-message,.note-form) { background:var(--tag-window-bg,var(--paper));color:var(--tag-window-ink,var(--ink)); }
 html[data-theme="dark"] .tag-message-user { background:var(--green-soft); }
 html[data-theme="dark"] :is(.managed-terminal-summary,.tag-delivery) { color:var(--muted); }
 html[data-theme="dark"] .pane-divider { background:var(--line); }
 html[data-theme="dark"] :is(#file-toggle,#toggle-sidebar) { color:var(--ui-control-ink); }
 html[data-theme="dark"] :is(.reader-scroll,.document-context-menu) { background:var(--paper);color:var(--ink);border-color:var(--line); }
-html[data-theme="dark"] #text-preview :is(blockquote,pre,:not(pre)>code),html[data-theme="dark"] .tag-markdown pre { background:var(--green-soft); }
+html[data-theme="dark"] #text-preview :is(blockquote,:not(pre)>code),html[data-theme="dark"] :is(#text-preview,.tag-markdown) pre:not([data-markdown-code]) { background:var(--green-soft); }
 html[data-theme="dark"] .document-context-menu button:is(:hover,:focus-visible) { background:var(--green-soft); }
+/* Explicit chrome opt-ins leave authored document/PDF/office and terminal content
+   alone. Shiki's paired foreground/background and multicolor tokens stay fixed. */
+html[data-palette="slate"] :is(.files,.side,.composer-wrap,.composer-preview,.tag-message-assistant,.agent-message-agent,.tag-editor,.skip,.pdf-toolbar button,.pdf-toolbar input,.rail-add,.document-context-menu,.nozeli-context-menu,.surface-menu,.workspace-command-menu,.generic-popover) {
+  background-color:var(--paper);color:var(--ink);border-color:var(--line);
+}
+html[data-palette="slate"] :is(.settings-dialog,dialog:not(.settings-dialog),#files,#side,.composer-wrap,.tag-chat-window,.note-form) :is(input,select,textarea):not(.xterm-helper-textarea) {
+  background-color:var(--paper);color:var(--ink);border-color:var(--line);
+}
+html[data-palette="slate"] :is(.ui-icon-button,.ui-icon-label,.panel-font,.panel-more):hover:not(:disabled),
+html[data-palette="slate"] :is(.document-context-menu button,.nozeli-context-menu>button,.surface-menu button):is(:hover,:focus-visible) { background:var(--ui-control-hover);color:var(--ink);outline-color:var(--ui-control-focus); }
+html[data-palette="slate"] :is(.ui-icon-button,.panel-more,.panel-font):is([aria-pressed="true"],[aria-expanded="true"]) { background:var(--ui-control-active);color:var(--ink); }
+html[data-palette="slate"] :is(.ui-danger,.tag-remove):hover:not(:disabled) { background:var(--danger-soft);color:var(--red); }
+html[data-palette="slate"] :is(.document-menu-separator,.pane-divider) { background:var(--line); }
+html[data-palette="slate"] :is(.tree-expander,.document-context-menu kbd,.nozeli-context-menu kbd .ui-icon,.tag-delivery) { color:var(--muted); }
+html[data-palette="slate"] #pick-project.ui-icon-button { color:var(--green);border-color:var(--line); }
+html[data-palette="slate"] .recent button[aria-current="true"] { box-shadow:-3px 0 var(--green); }
+html[data-palette="slate"] :is(#file-toggle,#toggle-sidebar) { color:var(--ui-control-ink);border-color:var(--line);background:var(--green-soft); }
+html[data-palette="slate"] :is(#file-toggle,#toggle-sidebar):is(:hover,:focus-visible) { background:var(--ui-control-active);outline-color:var(--ui-control-focus); }
+html[data-palette="slate"] #toast { background:var(--ui-action-bg);color:var(--ui-action-ink); }
+html[data-palette="slate"] .save-failure { background:var(--danger-soft);border-color:var(--red);color:var(--red); }
+html[data-palette="slate"] .file-tree button[aria-current="true"] { box-shadow:inset 2px 0 var(--green); }
+html[data-palette="slate"] .chat-tool:focus-visible { outline-color:var(--ui-control-focus); }
+html[data-palette="slate"] .cm-entry[data-path][aria-selected="true"]::before,
+html[data-palette="slate"] .cm-picker-foot .cm-confirm:not(:disabled) { background:var(--ui-action-bg);color:var(--ui-action-ink); }
+html[data-palette="slate"] .agent-message-body blockquote { border-color:var(--line); }
+html[data-palette="slate"] .agent-message-body .conversation-file-link { background:var(--green-soft); }
+html[data-palette="slate"] .note-anchor {
+  --tag-window-bg:var(--paper);--tag-window-ink:var(--ink);--tag-window-head:var(--green-soft);--tag-window-border:var(--line);--tag-window-accent:var(--green);
+  --tag-bg:var(--green-soft);--tag-color:var(--green);--tag-border:var(--line);--tag-number-fill:var(--green-soft);--tag-number-ink:var(--green);
+}
+html[data-palette="slate"] .note-anchor.tag-note {
+  --tag-window-bg:var(--palette-note-bg);--tag-window-ink:var(--palette-note-ink);--tag-window-head:var(--palette-note-head);--tag-window-border:var(--palette-note-line);--tag-window-accent:var(--amber);
+  --tag-bg:var(--amber-soft);--tag-color:var(--amber);--tag-border:var(--palette-note-line);--tag-number-fill:var(--amber-soft);--tag-number-ink:var(--amber);
+}
+html[data-palette="slate"] :is(.tag-message,.note-form) { background:var(--tag-window-bg,var(--palette-note-bg));color:var(--tag-window-ink,var(--ink));border-color:var(--tag-window-border,var(--palette-note-line)); }
+html[data-palette="slate"] :is(.agent-message-user,.tag-message-user) { background:var(--green-soft);color:var(--ink); }
+html[data-palette="slate"] .tag-chat-window :is(.tag-controls>button:first-child,.tag-edit),
+html[data-palette="slate"] .note-form-footer #add-note { background:var(--ui-action-bg);color:var(--ui-action-ink); }
+html[data-palette="slate"] .tag-source :is(blockquote,img) { border-color:var(--line); }
+html[data-palette="slate"] .save-status[data-state="saved"],html[data-palette="slate"] #save-status.quiet-saved::after { color:var(--success); }
+.document-diff  :is(.cm-editor,.cm-gutters) { background:var(--paper);color:var(--ink); }
+.document-diff  .cm-gutters { color:var(--muted); }
+.document-diff  :is(.cm-activeLine,.cm-activeLineGutter,.cm-selectionBackground) { background:var(--green-soft); }
+.document-diff  .cm-merge-a .cm-changedLine { background:var(--diff-deleted); }
+.document-diff  .cm-merge-b .cm-changedLine { background:var(--diff-added); }
+.document-diff  .cm-merge-a .cm-changedText { background:var(--diff-deleted-text); }
+.document-diff  .cm-merge-b .cm-changedText { background:var(--diff-added-text); }
+.document-diff  .cm-merge-a .cm-changedLineGutter { background:var(--red); }
+.document-diff  .cm-merge-b .cm-changedLineGutter { background:var(--success); }
+@media(forced-colors:active) {
+  html:root[data-palette="slate"][data-theme] {
+    --bg:Canvas;--paper:Canvas;--ink:CanvasText;--muted:CanvasText;--line:ButtonBorder;--green:LinkText;--green-soft:Canvas;--amber:LinkText;--amber-soft:Canvas;--red:LinkText;--annotation-red:LinkText;--danger-soft:Canvas;
+    --success:LinkText;
+    --ui-control-ink:ButtonText;--ui-control-hover:Canvas;--ui-control-active:Canvas;--ui-control-focus:Highlight;--ui-action-bg:ButtonFace;--ui-action-ink:ButtonText;--ui-danger-bg:ButtonFace;--ui-danger-ink:ButtonText;
+    --palette-chat-canvas:Canvas;--palette-chat-surface:Canvas;--palette-chat-ink:CanvasText;--palette-chat-muted:CanvasText;--palette-chat-line:ButtonBorder;
+    --palette-chat-user:Canvas;--palette-chat-frontdesk:Canvas;--palette-chat-orchestrator:Canvas;--palette-chat-worker:Canvas;--palette-chat-system:Canvas;
+    --palette-note-bg:Canvas;--palette-note-ink:CanvasText;--palette-note-head:Canvas;--palette-note-line:ButtonBorder;
+    --diff-added:Canvas;--diff-added-text:Canvas;--diff-deleted:Canvas;--diff-deleted-text:Canvas;
+  }
+}
 .focus-mode > .project-view-switch { display:none!important; }
 @media(max-width:560px) {
   .settings-appearance .appearance-field { grid-template-columns:1fr;gap:6px; }
 }
 @media(forced-colors:active) {
-  html:root[data-theme] { --bg:Canvas;--paper:Canvas;--ink:CanvasText;--muted:CanvasText;--line:ButtonBorder;--green:LinkText;--green-soft:Canvas;--ui-control-ink:ButtonText; }
+  html:root[data-theme] { --bg:Canvas;--paper:Canvas;--ink:CanvasText;--muted:CanvasText;--line:ButtonBorder;--green:LinkText;--green-soft:Canvas;--ui-control-ink:ButtonText;--ui-action-bg:ButtonFace;--ui-action-ink:ButtonText;--ui-danger-bg:ButtonFace;--ui-danger-ink:ButtonText;--doc-selection:Highlight;--doc-cursor:CanvasText;--doc-search:Canvas;--diff-added:Canvas;--diff-added-text:Canvas;--diff-deleted:Canvas;--diff-deleted-text:Canvas; }
+  .cm-editor [class*="tok-"]{color:CanvasText!important}
+  .document-diff .cm-changedText{outline:1px dashed CanvasText}
 }

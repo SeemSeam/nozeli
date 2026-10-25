@@ -1,3 +1,4 @@
+import {openTestController,openTestWorkspace} from './project-storage.fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readableTagMaterial,tagMaterialSnapshot,TagMaterialDelivery} from '../src/agents/managed/tag-material-delivery.mjs';
@@ -35,9 +36,9 @@ test('region material keeps page, coordinates, user drawing semantics and unavai
 test('Controller dispatches readable first input, compact followup and complete context after invalidation',async t=>{
  const fs=await import('node:fs/promises'),os=await import('node:os'),path=await import('node:path');
  const {Controller}=await import('../src/agents/managed/controller.mjs');const {frontSource}=await import('../src/agents/managed/frontdesk-read.mjs');
- const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-readable-dispatch-')),c=await Controller.open({runtimeRoot:path.join(root,'runtime'),contentRoot:path.join(root,'project'),projectHome:async()=>{}});
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-readable-dispatch-')),c=await openTestController({runtimeRoot:path.join(root,'runtime'),contentRoot:path.join(root,'project'),projectHome:async()=>{}});
  t.after(async()=>{await c.stop();await fs.rm(root,{recursive:true,force:true});});
- const material=tagMaterialSnapshot([packet()]);await fs.writeFile(path.join(c.store.root,'objects',material.version+'.md'),material.full);
+ const material=tagMaterialSnapshot([packet()]);assert.equal(await c.store.putObject(Buffer.from(material.full)),material.version);
  const prompts=[],session={threadId:'original-thread',instructions:'',tools:[],async prompt(text){prompts.push(text);return {text:'Grounded answer',threadId:this.threadId,providerStatus:'completed'};}};
  c.session=async()=>session;c.kick=()=>{};
  const send=async(question,key)=>{const context={userInput:{text:question},tagMaterial:{version:material.version,binding:material.binding,brief:material.brief,reusable:material.reusable}};const receipt=await c.send('frontdesk',question+'\n\n参考材料\n\n'+material.full,{requestKey:key,context});await c.runJob(c.store.state.jobs.find(j=>j.id===receipt.jobId));assert.equal(c.store.state.jobs.find(j=>j.id===receipt.jobId).status,'completed');return c.store.state.jobs.find(j=>j.id===receipt.jobId);};

@@ -13,8 +13,6 @@ const engines = ['xelatex', 'pdflatex', 'lualatex', 'tectonic'];
 const skipped = new Set(['node_modules', 'target', 'dist', 'build', 'vendor']);
 const generated = /\.(?:aux|log|fls|fdb_latexmk|synctex(?:\.gz)?|xdv|toc|out|blg|bcf|run\.xml)$/i;
 const MAX_BYTES = 64 * 1024 * 1024;
-async function json(file, fallback) { try { return JSON.parse(await fs.readFile(file, 'utf8')); } catch (e) { if (e.code === 'ENOENT') return fallback; throw e; } }
-async function atomic(file, value) { await fs.mkdir(path.dirname(file), { recursive: true }); const temp = file + '.' + randomUUID(); await fs.writeFile(temp, JSON.stringify(value, null, 2)); await fs.rename(temp, file); }
 function relPath(value) { if (typeof value !== 'string' || !value || path.posix.isAbsolute(value) || value.includes('\\') || value.split('/').some(p => !p || p === '..' || p === '.' || p.startsWith('.')) || /[\x00-\x1f:]/.test(value)) throw fail('TEX_PATH', 'TeX 文件路径必须位于项目内，且不能是隐藏文件。'); return value; }
 
 async function walk(root, rel = '', result = [], discover = false) {
@@ -84,21 +82,21 @@ export function parseTexDiagnostics(log, files, cwdRel = '') {
 }
 export class TexBuildManager {
   constructor({ host, onEvent = () => {}, timeout = 120000, findSynctex = () => executable('synctex') } = {}) { this.host = host; this.onEvent = onEvent; this.slots = new Map(); this.watchers = new Map(); this.syncJobs = new Set(); this.timeout = timeout; this.stopping = false; this.findSynctex = findSynctex; }
-  dir(projectId) { return path.join(this.host.projectDir(projectId), 'tex'); }
+  async dir(projectId) { return path.join(await this.host.storage.localDirectory(projectId), 'tex'); }
   async slot(projectId) {
-    await this.host.requireProject(projectId);
-    if (!this.slots.has(projectId)) this.slots.set(projectId, json(path.join(this.dir(projectId), 'last-success.json'), null).then(lastSuccess => ({ sequence: 0, state: { phase: 'idle', lastSuccess }, pending: null, job: null })));
+    await this.host.storage.requireRegistered(projectId);
+    if (!this.slots.has(projectId)) this.slots.set(projectId, this.host.storage.getRecovery(projectId, 'tex:last-success').then(lastSuccess => ({ sequence: 0, state: { phase: 'idle', lastSuccess }, pending: null, job: null })));
     return this.slots.get(projectId);
   }
   publish(projectId, slot, patch) { slot.state = { ...slot.state, ...patch, projectId, sequence: slot.sequence }; this.onEvent(structuredClone(slot.state)); return structuredClone(slot.state); }
-  async config(projectId) { await this.host.requireProject(projectId); return json(path.join(this.dir(projectId), 'config.json'), { root: '', engine: 'xelatex', automatic: true }); }
+  async config(projectId) { return await this.host.storage.getProject(projectId, 'settings', 'tex') ?? { root: '', engine: 'xelatex', automatic: true }; }
   async configure({ projectId, root, engine, automatic }) {
     const project = await this.host.requireProject(projectId);
     if (root && /["'`$;&|<>!]/.test(root)) throw fail('TEX_ROOT', '入口文件名含编译器不支持的特殊字符。');
     if (!engines.includes(engine) || typeof automatic !== 'boolean') throw fail('TEX_CONFIG', '不支持的 TeX 引擎或自动编译设置。');
     if (root) { relPath(root); if (!/\.tex$/i.test(root)) throw fail('TEX_ROOT', '入口必须是 .tex 文件。'); const file = await this.host.resolveFile(project, root); if (file.missing) throw fail('TEX_ROOT', '入口文件不存在。'); }
     await this.cancel({ projectId });
-    const value = { root: root || '', engine, automatic }; await atomic(path.join(this.dir(projectId), 'config.json'), value); return value;
+    const value = { root: root || '', engine, automatic }; await this.host.storage.putProject(projectId, 'settings', 'tex', value); return value;
   }
   async inspect({ projectId, relPath: current }) {
     const project = await this.host.requireProject(projectId), config = await this.config(projectId);
@@ -125,19 +123,19 @@ export class TexBuildManager {
     }
     const tools = {};
     for (const engine of engines) tools[engine] = Boolean(await executable(engine) && (engine === 'tectonic' || await executable('latexmk')));
-    const hasConfig = Boolean(await json(path.join(this.dir(projectId),'config.json'),null));
+    const hasConfig = Boolean(await this.host.storage.getProject(projectId,'settings','tex'));
     const inference = inferTex({texts,current,config,tools,hasConfig});
     config.root = inference.root; config.engine = inference.engine;
     return { inference, config, configuredRoot, view: config.root ? await this.view({ projectId, root: config.root }) : null, roots, texFiles: files.filter(p => /\.tex$/i.test(p)), tools, syncTool: Boolean(await this.findSynctex()), state: structuredClone((await this.slot(projectId)).state) };
   }
   async view({ projectId, root, view }) {
-    await this.host.requireProject(projectId); relPath(root);
-    const file = path.join(this.dir(projectId), 'views', hash(root) + '.json');
+    await this.host.storage.requireRegistered(projectId); relPath(root);
+    const key = 'tex:view:' + hash(root);
     if (view !== undefined) {
       if (typeof view.preview !== 'boolean' || !Number.isInteger(view.page) || view.page < 1 || view.page > 100000 || !Number.isFinite(view.zoom) || view.zoom < .4 || view.zoom > 3 || !Number.isFinite(view.scrollTop) || view.scrollTop < 0 || view.scrollTop > 1e7) throw fail('TEX_VIEW', '无效预览位置。');
-      await this.host.track(atomic(file, { preview: view.preview, page: view.page, zoom: view.zoom, scrollTop: view.scrollTop, linked: view.linked !== false }));
+      await this.host.track(this.host.storage.putLocal(projectId, key, { preview: view.preview, page: view.page, zoom: view.zoom, scrollTop: view.scrollTop, linked: view.linked !== false }));
     }
-    return json(file, { preview: true, page: 1, zoom: 1, scrollTop: 0, linked: true });
+    return await this.host.storage.getLocal(projectId, key) ?? { preview: true, page: 1, zoom: 1, scrollTop: 0, linked: true };
   }
   async status({ projectId }) { return structuredClone((await this.slot(projectId)).state); }
   async request({ projectId, buffers = [] }) {
@@ -165,10 +163,9 @@ export class TexBuildManager {
       try {
         const result = await this.build(request, job);
         if (request.sequence === slot.sequence && !job.cancelled) {
-          await atomic(path.join(this.dir(projectId), 'last-success.json'), result);
+          await this.host.storage.putRecovery(projectId, 'tex:last-success', result);
           if (request.sequence !== slot.sequence || job.cancelled) {
-            if (slot.state.lastSuccess) await atomic(path.join(this.dir(projectId), 'last-success.json'), slot.state.lastSuccess);
-            else await fs.rm(path.join(this.dir(projectId), 'last-success.json'), { force: true });
+            await this.host.storage.putRecovery(projectId, 'tex:last-success', slot.state.lastSuccess ?? null);
             continue;
           }
           this.publish(projectId, slot, { phase: 'success', lastSuccess: result, diagnostics: result.diagnostics, message: `已更新 · ${(result.durationMs / 1000).toFixed(1)} 秒`, log: result.log });
@@ -185,7 +182,7 @@ export class TexBuildManager {
     const environment = { ...process.env, PATH: path.dirname(engine) + path.delimiter + path.dirname(compiler) + path.delimiter + (process.env.PATH || ''), openin_any: 'p', openout_any: 'p', shell_escape: 'f' };
     const version = await run(engine, ['--version'], { env: environment, timeout: 10000 }, job);
     if (job.cancelled) throw fail('TEX_CANCELLED', '编译已取消。');
-    const cache = this.dir(projectId), builds = path.join(cache, 'builds'); await fs.mkdir(builds, { recursive: true });
+    const cache = await this.dir(projectId), builds = path.join(cache, 'builds'); await fs.mkdir(builds, { recursive: true });
     const old = await fs.readdir(builds);
     const used = await diskUsage(builds);
     if (old.length >= 100 || used + 3 * MAX_BYTES > 512 * 1024 * 1024) throw fail('TEX_CACHE_LIMIT', 'TeX 历史缓存已达上限；请保留所需历史后清理应用 TeX 缓存。');
@@ -204,16 +201,17 @@ export class TexBuildManager {
       const bytes = active ? Buffer.from(draft.text, 'utf8') : disk;
       total += bytes.length; if (total > MAX_BYTES) throw fail('TEX_LIMIT', '编译资源超过 64 MiB 限制。');
       const target = path.join(input, rel); await fs.mkdir(path.dirname(target), { recursive: true }); await fs.writeFile(target, bytes);
+      await this.host.storage.putRecoveryObject(projectId, bytes);
       manifest.push({ relPath: rel, diskDigest, digest: hash(bytes), draft: Boolean(active), bytes: bytes.length });
     }
     if (!manifest.some(f => f.relPath === config.root) || buffers.some(b => !manifest.some(f => f.relPath === b.relPath))) throw fail('TEX_ROOT', '入口或草稿文件已移除。');
     const base = { schemaVersion: 1, projectId, sequence, buildId, root: config.root, engine: config.engine, engineVersion: version.output.split('\n')[0], files: manifest, snapshotBytes: total, createdAt: new Date().toISOString() };
-    await atomic(path.join(buildDir, 'manifest.json'), base);
+    await this.host.storage.putRecovery(projectId, 'tex:build:' + buildId, {...base,status:'building'});
     // Preserve aux between serialized builds; remove inputs deleted since the previous snapshot.
-    const previous = await json(path.join(cache, 'work', workKey + '.json'), []);
+    const previous = await this.host.storage.getRecovery(projectId, 'tex:work:' + workKey) ?? [];
     await fs.mkdir(work, { recursive: true });
     for (const rel of previous) if (!files.includes(rel)) await fs.rm(path.join(work, rel), { force: true });
-    await fs.cp(input, work, { recursive: true }); await atomic(path.join(cache, 'work', workKey + '.json'), files);
+    await fs.cp(input, work, { recursive: true }); await this.host.storage.putRecovery(projectId, 'tex:work:' + workKey, files);
     const cwdRel = path.posix.dirname(config.root), cwd = path.join(work, cwdRel), filename = path.posix.basename(config.root), stem = filename.replace(/\.tex$/i, '');
     const out = path.join(cwd, stem + '.pdf'); await fs.rm(out, { force: true });
     const args = config.engine === 'tectonic'
@@ -233,18 +231,19 @@ export class TexBuildManager {
       // An ordinary autosave of exactly the frozen draft is not a concurrent conflict.
       if (currentDigest !== entry.diskDigest && currentDigest !== entry.digest) throw fail('TEX_CONFLICT', `编译期间原件变化：${entry.relPath}；旧预览保留，请重新编译。`);
     }
+    await this.host.storage.putRecoveryObject(projectId, pdf);
     await fs.writeFile(path.join(buildDir, 'preview.pdf'), pdf);
     let synctexDigest = null;
-    try { const syncFile = path.join(cwd, stem + '.synctex.gz'); if ((await fs.stat(syncFile)).size > MAX_BYTES) throw fail('TEX_LIMIT', 'SyncTeX 产物超过体积限制。'); const data = await fs.readFile(syncFile); await fs.writeFile(path.join(buildDir, 'preview.synctex.gz'), data); synctexDigest = hash(data); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    try { const syncFile = path.join(cwd, stem + '.synctex.gz'); if ((await fs.stat(syncFile)).size > MAX_BYTES) throw fail('TEX_LIMIT', 'SyncTeX 产物超过体积限制。'); const data = await fs.readFile(syncFile); await this.host.storage.putRecoveryObject(projectId,data); await fs.writeFile(path.join(buildDir, 'preview.synctex.gz'), data); synctexDigest = hash(data); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     const result = { ...base, durationMs: Date.now() - start, pdfDigest: hash(pdf), synctexDigest, diagnostics, log };
-    await atomic(path.join(buildDir, 'manifest.json'), result); return result;
+    await this.host.storage.putRecovery(projectId, 'tex:build:' + buildId, result); return result;
   }
   async artifact({ projectId, buildId }) {
-    await this.host.requireProject(projectId);
+    await this.host.storage.requireRegistered(projectId);
     if (typeof buildId !== 'string' || !/^[0-9a-f-]{36}$/.test(buildId)) throw fail('TEX_BUILD', '无效编译版本。');
-    const dir = path.join(this.dir(projectId), 'builds', buildId), metadata = await json(path.join(dir, 'manifest.json'), null);
+    const metadata = await this.host.storage.getRecovery(projectId, 'tex:build:' + buildId);
     if (!metadata?.pdfDigest) throw fail('TEX_BUILD', '编译结果不存在。');
-    const bytes = await fs.readFile(path.join(dir, 'preview.pdf'));
+    const bytes = await this.host.storage.readRecoveryObject(projectId, metadata.pdfDigest);
     if (hash(bytes) !== metadata.pdfDigest) throw fail('TEX_INTEGRITY', '编译产物校验失败。');
     return { bytes, metadata };
   }
@@ -257,22 +256,31 @@ export class TexBuildManager {
     if (metadata.projectId !== projectId || metadata.buildId !== buildId || !engines.includes(metadata.engine)) throw fail('TEX_BUILD', '构建不属于当前项目。');
     relPath(metadata.root);
     const entry = metadata.files.find(file => file.relPath === source);
-    const buildDir = path.join(this.dir(projectId), 'builds', buildId), inputDir = path.join(buildDir, 'input');
+    const buildDir = path.join(await this.dir(projectId), 'builds', buildId);
     if (!entry) throw fail('TEX_SYNC_SOURCE', '当前源码不属于此编译结果。');
-    const frozen = await fs.readFile(path.join(inputDir, source));
+    const frozen = await this.host.storage.readRecoveryObject(projectId, entry.digest);
     if (hash(frozen) !== entry.digest) throw fail('TEX_INTEGRITY', '编译源码快照校验失败。');
     if (normalizedTexText(text) !== normalizedTexText(frozen.toString('utf8'))) throw fail('TEX_SYNC_STALE', '源码已有修改，等待对应的新编译结果后恢复联动。');
     if (!metadata.synctexDigest) throw fail('TEX_SYNC_MISSING', '此编译结果没有位置映射，无法联动。');
+    await fs.mkdir(buildDir,{recursive:true});
     const syncFile = path.join(buildDir, 'preview.synctex.gz');
-    if ((await fs.stat(syncFile)).size > MAX_BYTES || hash(await fs.readFile(syncFile)) !== metadata.synctexDigest) throw fail('TEX_INTEGRITY', '编译位置映射校验失败。');
+    const syncBytes = await this.host.storage.readRecoveryObject(projectId,metadata.synctexDigest);
+    await fs.writeFile(syncFile,syncBytes);
+    await fs.writeFile(path.join(buildDir,'preview.pdf'),await this.host.storage.readRecoveryObject(projectId,metadata.pdfDigest));
     const tool = await this.findSynctex();
     if (!tool) throw fail('TEX_SYNC_TOOL', '未安装SyncTeX定位工具；预览可独立阅读。');
     if (this.syncJobs.size >= 4) throw fail('TEX_SYNC_BUSY', '定位请求正在处理。');
-    const workRoot = path.join(this.dir(projectId), 'work', hash(metadata.engine + ':' + metadata.root).slice(0, 16)), cwd = path.join(workRoot, path.posix.dirname(metadata.root));
+    const workRoot = path.join(await this.dir(projectId), 'work', hash(metadata.engine + ':' + metadata.root).slice(0, 16)), cwd = path.join(workRoot, path.posix.dirname(metadata.root));
+    for (const file of metadata.files) {
+      relPath(file.relPath);
+      const target = path.join(workRoot,file.relPath);
+      await fs.mkdir(path.dirname(target),{recursive:true});
+      await fs.writeFile(target,await this.host.storage.readRecoveryObject(projectId,file.digest));
+    }
     const pdf = path.join(buildDir, 'preview.pdf');
     const args = direction === 'forward' ? ['view', '-i', `${line}:${column}:${path.join(workRoot, source)}`, '-o', pdf] : ['edit', '-o', `${page}:${x}:${y}:${pdf}`];
     if (this.stopping) throw fail('TEX_STOPPED', '应用正在退出。');
-    const job = { cancelled: false }; this.syncJobs.add(job);
+    const job = { cancelled: false, projectId }; this.syncJobs.add(job);
     try {
       job.completion = run(tool, args, { cwd, timeout: 2000 }, job);
       const result = await job.completion;
@@ -285,7 +293,7 @@ export class TexBuildManager {
       for (const r of records) {
         const target = syncSourcePath(r.Input, workRoot, cwd, metadata.files);
         if (!target || !Number.isInteger(r.Line) || r.Line < 1) continue;
-        const targetEntry = metadata.files.find(file => file.relPath === target), bytes = await fs.readFile(path.join(inputDir, target));
+        const targetEntry = metadata.files.find(file => file.relPath === target), bytes = await this.host.storage.readRecoveryObject(projectId,targetEntry.digest);
         if (hash(bytes) !== targetEntry.digest) throw fail('TEX_INTEGRITY', '定位源码快照校验失败。');
         const frozenText = normalizedTexText(bytes.toString('utf8'));
         if (r.Line > frozenText.split('\n').length) continue;
@@ -301,5 +309,6 @@ export class TexBuildManager {
       return { buildId, relPath: null };
     } finally { this.syncJobs.delete(job); }
   }
+  async stopProject(projectId){this.watchers.get(projectId)?.close();this.watchers.delete(projectId);const pending=this.slots.get(projectId);if(pending){await this.cancel({projectId});await (await pending).running;}const jobs=[...this.syncJobs].filter(job=>job.projectId===projectId);for(const job of jobs){job.cancelled=true;terminate(job.child);}await Promise.allSettled(jobs.map(job=>job.completion));this.slots.delete(projectId);}
   async stopAll() { this.stopping = true; const syncJobs = [...this.syncJobs]; for (const job of syncJobs) { job.cancelled = true; terminate(job.child); } for (const watcher of this.watchers.values()) watcher.close(); this.watchers.clear(); for (const [projectId] of this.slots) await this.cancel({ projectId }); await Promise.allSettled([...syncJobs.map(job => job.completion), ...[...this.slots.values()].map(async slot => (await slot).running)]); }
 }

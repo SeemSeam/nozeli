@@ -1,0 +1,17 @@
+import {mountText} from '../src/renderer/text-view.mjs';
+import {mountDocumentDiff} from '../src/renderer/document-diff.mjs';
+import {mountMonaco} from '../src/renderer/monaco-adapter.mjs';
+import {renderTagMarkdown} from '../src/renderer/tag-markdown.mjs';
+import '../src/renderer/settings-appearance.mjs';
+import '../src/renderer/settings-appearance.css';
+import '../src/renderer/document-comparison.css';
+const content='const anchor = 42;\n// readable comment\nfunction alpha(){ return anchor; }\nal';
+let changed=0;
+const cm=mountText({parent:document.getElementById('cm'),relPath:'probe.js',text:content,onChange:()=>changed++});
+const diff=mountDocumentDiff({parent:document.getElementById('diff'),leftPath:'probe.js',leftText:content,rightPath:'probe.js',rightText:content.replace('42','43')});
+const monaco=mountMonaco({parent:document.getElementById('monaco'),projectId:'isolated-theme-review',relPath:'probe.ts',text:'const count: number = 42;\n// code comment'});
+const tex=mountMonaco({parent:document.getElementById('tex'),projectId:'isolated-theme-review',relPath:'probe.tex',text:'\\section{Theme}\n% TeX comment\nHello $x=42$'});
+const markdown=document.createElement('section');markdown.id='markdown';document.body.append(markdown);renderTagMarkdown(markdown,'# Markdown theme\n\n```js\nconst answer = 42;\n// syntax comment\n```');
+const before=cm.state.doc.toString();
+window.review={cm,diff,monaco,tex,get changes(){return changed;},before,set(value){window.reviewPreference={...value};for(const listener of window.reviewListeners['workspace.control']||[])listener({type:'appearance',value});},state(){return {text:cm.state.doc.toString(),selection:cm.state.selection.toJSON(),scroll:cm.scrollDOM.scrollTop,changes:changed,model:monaco.getText()};}};
+window.reviewReady=true;

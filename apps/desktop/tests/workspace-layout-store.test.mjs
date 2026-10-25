@@ -5,15 +5,21 @@ import path from 'node:path';
 import os from 'node:os';
 import {createLayout, validateLayout} from '../src/domain/workspace-layout.mjs';
 import {WorkspaceLayoutStore} from '../src/main/workspace-layout-store.mjs';
+import {ProjectStorage} from '../src/main/project-storage.mjs';
 
 async function fixture(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'nozeli-layout-store-'));
-  t.after(() => fs.rm(directory, {recursive: true, force: true}));
-  return {directory, store: new WorkspaceLayoutStore({directory})};
+  const clients=[],ids=new Map();
+  const bind=client=>new Proxy(client,{get(target,key){const value=Reflect.get(target,key);return typeof value==='function'?((id,...args)=>value.call(target,ids.get(id)??id,...args)):value;}});
+  const open=()=>{const client=new ProjectStorage(path.join(directory,'profile'));clients.push(client);return bind(client);};
+  const storage=open();
+  for(const alias of ['project-a','project-b']){const root=path.join(directory,alias);await fs.mkdir(root);ids.set(alias,(await storage.register(root)).id);}
+  t.after(async()=>{await Promise.all(clients.map(client=>client.db.close()));await fs.rm(directory,{recursive:true,force:true});});
+  return {storage,store:new WorkspaceLayoutStore({storage}),reopen:()=>new WorkspaceLayoutStore({storage:open()})};
 }
 
 test('named layouts persist arrangement and navigation without bodies, drafts, attachments or credentials', async t => {
-  const {directory, store} = await fixture(t);
+  const {storage,store,reopen} = await fixture(t);
   const layout = createLayout('project-a', {currentRelPath: 'src/example.txt'});
   const document = Object.values(layout.views).find(view => view.kind === 'document');
   document.viewState = {pdfPage: 3, scrollTop: 240, fileView: {textMode: 'edit', selection: {start: 2, end: 5}}, workspace: {dock: 'right', fontSize: 18, draft: 'SECRET DRAFT', noteDrafts: [{text: 'SECRET NOTE'}]}, composerMaterials: [{body: 'SECRET ATTACHMENT'}], token: 'SECRET TOKEN', report: {id: 'report-id', body: 'SECRET BODY'}};
@@ -23,7 +29,7 @@ test('named layouts persist arrangement and navigation without bodies, drafts, a
   const saved = await store.save('project-a', '  编程  ', layout);
   assert.equal(saved.name, '编程'); assert.ok(Number.isFinite(Date.parse(saved.updatedAt)));
   document.viewState.scrollTop = 999;
-  const loaded = await new WorkspaceLayoutStore({directory}).load('project-a', '编程');
+  const loaded = await reopen().load('project-a', '编程');
   validateLayout(loaded);
   assert.equal(loaded.views[document.id].viewState.scrollTop, 240);
   assert.deepEqual(loaded.views[document.id].viewState.fileView.selection, {start: 2, end: 5});
@@ -33,15 +39,11 @@ test('named layouts persist arrangement and navigation without bodies, drafts, a
   loaded.views[document.id].viewState.scrollTop = 777;
   assert.equal((await store.load('project-a', '编程')).views[document.id].viewState.scrollTop, 240);
   assert.deepEqual((await store.list('project-a')).layouts, [{name: '编程', updatedAt: saved.updatedAt}]);
-  const directories = await fs.readdir(directory);
-  assert.equal(directories.length, 1); assert.match(directories[0], /^[a-f0-9]{64}$/);
-  const files = await fs.readdir(path.join(directory, directories[0]));
-  assert.equal(files.length, 1); assert.match(files[0], /^[a-f0-9]{64}\.json$/);
-  assert.equal((await fs.readFile(path.join(directory, directories[0], files[0]), 'utf8')).includes('SECRET'), false);
+  assert.equal(JSON.stringify(await storage.getLocal('project-a','workspace:named-layouts')).includes('SECRET'),false,'persisted arrangements exclude private buffers, not only the loaded projection');
 });
 
 test('project isolation, canonical names, replacement save, rename conflicts and deletion survive restart', async t => {
-  const {directory, store} = await fixture(t);
+  const {store,reopen} = await fixture(t);
   assert.deepEqual(await store.list('project-a'), {layouts: []});
   const a = createLayout('project-a'), b = createLayout('project-b');
   await store.save('project-a', 'e\u0301', a);
@@ -55,7 +57,7 @@ test('project isolation, canonical names, replacement save, rename conflicts and
   assert.equal((await store.load('project-a', 'é')).revision, 12);
   assert.equal((await store.rename('project-a', 'é', 'new')).name, 'new');
   await assert.rejects(store.load('project-a', 'é'), {code: 'LAYOUT_NOT_FOUND'});
-  const restarted = new WorkspaceLayoutStore({directory});
+  const restarted = reopen();
   assert.equal((await restarted.load('project-a', 'new')).revision, 12);
   assert.deepEqual(await restarted.delete('project-a', 'new'), {deleted: true});
   await assert.rejects(restarted.load('project-a', 'new'), {code: 'LAYOUT_NOT_FOUND'});

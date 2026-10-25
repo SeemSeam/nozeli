@@ -37,7 +37,7 @@ node integrations/omp/prepare-private-runtime.mjs /absolute/disposable-build-dir
 - `upstream.lock.json`：pristine 上游源码哈希，以及保留的零模型协议探针输入哈希。
 - `patches/0001-*`：managed CollabHost 入站准入门，epoch/attempt 水位、实算摘要、重放判定与受管提交链。
 - `patches/0002-*`：私有目录、认证 broker 和仅产品管理的更新行为。
-- `patches/0003-*`：真实 managed CollabHost 启动、relay capability、无损分块 journal entries 与原生消息身份。
+- `patches/0003-*`：真实 managed CollabHost 启动、relay capability、无损分块 journal entries、原生消息身份与有界流式快照合并。只合并同身份的相邻累计 text/thinking 快照；工具参数保留全部 delta，并在 SDK 事件入队时捕获不可变 append 证明，防止共享 live block 终结后证明丢失。控制/生命周期/原始日志/批次/sync/flush 均是屏障；普通 Collab、256 项/16 MiB 上限及 unknown 防重投不放宽。
 - `src/nozeli-admission.ts`：独立准入逻辑回归测试与协议探针使用的源码。
 
 产品 relay、guest、grant/adjudicator 和传输实现归 `apps/desktop/src/agents/managed/collab/` 所有，未从本目录运行历史 P1 gateway。原生 custom entries 与消息祖先 ID 决定 request/job 归属，不以输出时序推断。保留的准入门补丁不等同于引入旧业务网关。
@@ -51,6 +51,9 @@ export UPSTREAM_CLONE=/absolute/path/printed/by/prepare/source
 bun test integrations/omp/tests/
 bun --no-env-file integrations/omp/tests/accepted-replay-fixture.ts
 npm --prefix apps/desktop run test:collab
+# 实际 SDK 缓冲事件→AES 队列及编译后 CLI 大工具参数流（localhost 脚本响应，不调用付费模型）：
+(cd "$UPSTREAM_CLONE" && bun test packages/coding-agent/test/collab/relay-client-backpressure.test.ts)
+node --test apps/desktop/tests/omp-collab-native-tools-live.mjs
 node integrations/omp/probes/native-managed-smoke.mjs "$PWD/apps/desktop/runtime/omp/omp"
 # 环境具备 bubblewrap Worker 前提时：
 node integrations/omp/probes/native-managed-smoke.mjs "$PWD/apps/desktop/runtime/omp/omp" --worker

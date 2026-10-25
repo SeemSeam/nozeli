@@ -3,13 +3,12 @@ import {makeNoteTag,makeAnchorTag} from './note-tag.mjs';
 import './image-view.css';
 export async function mountImage({parent,bytes,info,onSelection=()=>{},onZoom=()=>{},onRegion=()=>{},noteActions={},tagActions={}}){
  parent.replaceChildren();parent.hidden=false;
- const data=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes?.data??bytes),url=URL.createObjectURL(new Blob([data],{type:info.mime}));
- const img=new Image();img.src=url;
- try{await img.decode();}catch{URL.revokeObjectURL(url);throw Error('此图片无法解码；原文件未修改。');}
- URL.revokeObjectURL(url);
- if(img.naturalWidth!==info.width||img.naturalHeight!==info.height)throw Error('图片显示方向或尺寸与原件不一致，未开启标注。');
- // Freeze decoded pixels so animated formats cannot change beneath an anchor.
- const original=document.createElement('canvas');original.width=info.width;original.height=info.height;const bitmap=await createImageBitmap(new Blob([data],{type:info.mime}));original.getContext('2d').drawImage(bitmap,0,0);bitmap.close();
+ const data=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes?.data??bytes),blob=new Blob([data],{type:info.mime});
+ let bitmap;try{bitmap=await createImageBitmap(blob);}catch{throw Error('此图片无法解码；原文件未修改。');}
+ if(bitmap.width!==info.width||bitmap.height!==info.height){bitmap.close();throw Error('图片显示方向或尺寸与原件不一致，未开启标注。');}
+ // Freeze decoded pixels without Image.decode(), which waits for a paint in a hidden native view.
+ const original=document.createElement('canvas');original.width=info.width;original.height=info.height;
+ try{original.getContext('2d').drawImage(bitmap,0,0);}finally{bitmap.close();}
  const wrap=document.createElement('div');wrap.className='image-page';wrap.setAttribute('aria-label','图片查看与区域标注');
  const canvas=document.createElement('canvas');canvas.width=info.width;canvas.height=info.height;canvas.getContext('2d').drawImage(original,0,0);wrap.append(canvas);parent.append(wrap);
  const scroll=parent.parentElement;let disposed=false,scale=1,mode='fit',region=false,drawing=false,notes=[],tags=[],selection=null,drag=null;const open=new Map();

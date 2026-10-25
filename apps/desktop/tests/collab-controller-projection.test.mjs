@@ -1,3 +1,4 @@
+import {openTestController,openTestWorkspace} from './project-storage.fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -5,11 +6,14 @@ import os from 'node:os';
 import path from 'node:path';
 import {Controller} from '../src/agents/managed/controller.mjs';
 import {ManagedProjects} from '../src/agents/managed-projects.mjs';
+import {DesktopHost} from '../src/main/host.mjs';
+import {managedRuntime} from '../src/agents/managed/managed-storage.mjs';
 
 async function fixture(t){
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-collab-owner-'));
  const options={projectId:'project-a',runtimeRoot:path.join(root,'runtime'),contentRoot:path.join(root,'project')};
- const controller=await Controller.open(options);
+ const controller=await openTestController(options);
+ Object.assign(options,{storage:controller.store.storage,projectId:controller.projectId});
  await controller.store.mutate(()=>controller.store.state.jobs.push({id:'accepted-job',target:'frontdesk',type:'front',status:'running',text:'Original input',context:{}}));
  const controllers=[controller];
  t.after(async()=>{for(const c of controllers)if(!c.store.closed)await c.stop();await fs.rm(root,{recursive:true,force:true});});
@@ -27,7 +31,7 @@ test('unknown delivery preserves its admission facts and forbids a new request I
  await c.recordTransport('frontdesk',transport('unknown',{reason:'receipt connection lost'}));
  await assert.rejects(c.recordTransport('frontdesk',transport('prepared',{requestId:'second-request-02',attempt:2})),/cannot be dispatched again/);
  await c.stop();
- const recovered=await Controller.open(options);controllers.push(recovered);
+ const recovered=await openTestController(options);controllers.push(recovered);
  const job=recovered.store.state.jobs.find(j=>j.id==='accepted-job');
  assert.equal(job.status,'interrupted');assert.equal(job.collabAttempts[0].status,'unknown');assert.equal(job.collabAttempts[0].everAdmitted,true);
  await assert.rejects(recovered.recordTransport('frontdesk',transport('prepared',{requestId:'second-request-02',attempt:2})),/cannot be dispatched again/);
@@ -61,19 +65,21 @@ test('canonical native answer can become an explicitly requested task without a 
 });
 
 test('read-only timeline and changes queries do not connect a controller and reject forged cross-project changes',async t=>{
- const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-collab-readonly-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-collab-readonly-'));
  const projectRoot=path.join(root,'project');await fs.mkdir(projectRoot);
  let starts=0;
- const projects=new ManagedProjects({userDataDir:root,host:{requireProject:async id=>{if(id!=='project-a')throw Error('unknown project');return {id,root:projectRoot};}},legacy:{projects:new Map()},openController:async()=>{starts++;throw Error('must not start');}});
- const runtime=path.join(projects.root,'project-a','runtime');await fs.mkdir(runtime,{recursive:true});
- await fs.writeFile(path.join(runtime,'state.json'),JSON.stringify({schema:2,contentRoot:projectRoot,messages:[{id:'old-msg',target:'frontdesk',speaker:'agent',text:'Read-only historical answer'}],jobs:[],works:[],receipts:[],todos:[],drafts:{}}));
- const timeline=await projects.invoke('managed.timeline.page',{projectId:'project-a',limit:100});
+ const host=new DesktopHost(root),{project}=await host.pick(projectRoot),projectId=project.id;
+ t.after(async()=>{await host.storage.db.close();await fs.rm(root,{recursive:true,force:true});});
+ const projects=new ManagedProjects({userDataDir:root,host,legacy:{projects:new Map()},openController:async()=>{starts++;throw Error('must not start');}});
+ const runtime=await managedRuntime(host.storage,projectId),store=await openTestWorkspace(runtime,projectRoot,{storage:host.storage,projectId});
+ await store.mutate(()=>{store.state.jobs??=[];store.state.messages??=[];store.state.messages.push({id:'old-msg',target:'frontdesk',speaker:'agent',text:'Read-only historical answer'});});await store.close();
+ const timeline=await projects.invoke('managed.timeline.page',{projectId,limit:100});
  assert.equal(timeline.entries[0].text,'Read-only historical answer');
- assert.equal((await projects.invoke('managed.timeline.read',{projectId:'project-a',id:'old-msg'})).entry.id,'old-msg');
- await assert.rejects(projects.invoke('managed.changes.list',{projectId:'project-a',changeSetId:'b'.repeat(64)}),{code:'CHANGES_BINDING'});
- await Promise.all([projects.invoke('managed.draft',{projectId:'project-a',target:'frontdesk',text:'Earlier unsent input'}),projects.invoke('managed.draft',{projectId:'project-a',target:'frontdesk',text:'Newest unsent input'})]);
- assert.equal(JSON.parse(await fs.readFile(path.join(runtime,'state.json'),'utf8')).drafts.frontdesk,'Newest unsent input');
- await assert.rejects(projects.invoke('managed.draft',{projectId:'project-a',target:'foreign-work',text:'not admitted'}),{code:'INVALID_PAYLOAD'});
+ assert.equal((await projects.invoke('managed.timeline.read',{projectId,id:'old-msg'})).entry.id,'old-msg');
+ await assert.rejects(projects.invoke('managed.changes.list',{projectId,changeSetId:'b'.repeat(64)}),{code:'CHANGES_BINDING'});
+ await Promise.all([projects.invoke('managed.draft',{projectId,target:'frontdesk',text:'Earlier unsent input'}),projects.invoke('managed.draft',{projectId,target:'frontdesk',text:'Newest unsent input'})]);
+ assert.equal((await host.storage.getRecovery(projectId,'managed:drafts')).frontdesk,'Newest unsent input');
+ await assert.rejects(projects.invoke('managed.draft',{projectId,target:'foreign-work',text:'not admitted'}),{code:'INVALID_PAYLOAD'});
  assert.equal(starts,0);assert.equal(projects.controllers.size,0);await projects.stop();
 });
 
@@ -94,7 +100,7 @@ test('offline timeline original IPC forwards immutable bounded field pages',asyn
  await c.recordNativeEntries('frontdesk',{sessionId:'native-owner-session',epoch:'native-owner-session#0',jobId:'accepted-job',requestId:'request-identity-01',entry:{type:'message',id:'long-original',message:{role:'assistant',content:text}}});
  const id=c.snapshot().timeline.entries.find(e=>e.entryId==='long-original').id;
  await c.stop();
- const projects=new ManagedProjects({userDataDir:root,host:{requireProject:async id=>({id,root:options.contentRoot})},legacy:{projects:new Map()}});
+ const storage=c.store.storage,projects=new ManagedProjects({userDataDir:root,host:{storage,requireProject:id=>storage.requireOnline(id),requireRegisteredProject:id=>storage.requireRegistered(id)},legacy:{projects:new Map()}});
  projects.projectionSource=async()=>({index:c.timeline});
  const discovery=await projects.invoke('managed.timeline.read',{projectId:options.projectId,id});
  assert.equal(discovery.entry.availability,'read-required');

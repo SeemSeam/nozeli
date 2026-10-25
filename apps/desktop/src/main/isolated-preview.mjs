@@ -5,7 +5,7 @@ import path from 'node:path';
 import {parser as htmlParser} from '@lezer/html';
 import {parser as javascriptParser} from '@lezer/javascript';
 import {parser as cssParser} from '@lezer/css';
-import { withReportReaderStyle } from '../agents/managed/report-reader-style.mjs';
+import { withReportReaderStyle, upgradeReportReaderStyle, reportAccentCss } from '../agents/managed/report-reader-style.mjs';
 
 export const PREVIEW_LIMITS=Object.freeze({files:128,fileBytes:8*1024*1024,totalBytes:32*1024*1024});
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
@@ -115,18 +115,68 @@ export const OFFLINE_BOOTSTRAP=`(()=>{'use strict';for(const name of ['RTCPeerCo
 export function previewUrlMember(raw,origin,files){try{const url=new URL(raw);if(url.origin!==origin||url.username||url.password||url.search||/%(?:2e|2f|5c|25)/i.test(url.pathname))return null;const rel=previewPath(decodeURIComponent(url.pathname.slice(1)));return files.has(rel)?rel:null;}catch{return null;}}
 
 export class IsolatedPreviewManager{
-  constructor({WebContentsView,session,workspace,host,managedAgents}){Object.assign(this,{WebContentsView,session,workspace,host,managedAgents});this.slots=new Map();this.pending=new Map();this.generations=new Map();}
+  constructor({WebContentsView,session,workspace,host,managedAgents}){Object.assign(this,{WebContentsView,session,workspace,host,managedAgents});this.slots=new Map();this.pending=new Map();this.generations=new Map();this.recoveryScopes=new Set();}
   id(scope,key){if(typeof key!=='string'||key.length<1||key.length>256||/[\x00-\x1f\x7f]/.test(key))throw fail('预览身份无效。');return `${scope.wc.id}:${key}`;}
   emit(slot,type,detail={}){if(slot.closed||slot.scope.dead||slot.scope.wc.isDestroyed())return;slot.scope.wc.send('nozeli:isolated-preview',{key:slot.key,generation:slot.generation,type,...detail});}
-  closeScope(scope){for(const slot of new Set([...this.slots.values(),...this.pending.values()]))if(slot.scope===scope)this.close(slot);for(const key of this.generations.keys())if(key.startsWith(scope.wc.id+':'))this.generations.set(key,this.generations.get(key)+1);}
+  closeScope(scope){for(const slot of new Set([...this.slots.values(),...this.pending.values()]))if(slot.scope===scope)this.close(slot);this.recoveryScopes.delete(scope);for(const key of this.generations.keys())if(key.startsWith(scope.wc.id+':'))this.generations.set(key,this.generations.get(key)+1);}
+  reparentScope(scope, destination) {
+    const previous = scope.previewWindow ?? scope.win;
+    const moved = [];
+    try {
+      for (const slot of this.slots.values()) {
+        if (slot.scope !== scope || slot.closed || !slot.view || !slot.parentWindow || slot.parentWindow===destination) continue;
+        const entry = {slot, source:slot.parentWindow};
+        moved.push(entry);
+        slot.view.setVisible(false);
+        entry.source.contentView.removeChildView(slot.view);slot.parentWindow=null;
+        destination.contentView.addChildView(slot.view);slot.parentWindow=destination;
+      }
+      scope.previewWindow=destination;
+    } catch (error) {
+      const failures=[];
+      for (const entry of moved.reverse()) {
+        try {
+          if(entry.slot.parentWindow===entry.source)continue;
+          if(entry.slot.parentWindow){entry.slot.parentWindow.contentView.removeChildView(entry.slot.view);entry.slot.parentWindow=null;}
+          entry.source.contentView.addChildView(entry.slot.view);entry.slot.parentWindow=entry.source;
+        } catch (rollbackError) {
+          failures.push(rollbackError);
+        }
+      }
+      scope.previewWindow=previous;
+      if(failures.length){this.holdScope(scope,[previous,destination,...moved.map(entry=>entry.source)]);const failure=new AggregateError([error,...failures],'报告正文迁移失败，部分回滚尚未确认；原生窗口与阅读现场已保留。',{cause:error});failure.code='PREVIEW_ROLLBACK_FAILED';failure.previewRollbackFailed=true;throw failure;}
+      throw error;
+    }
+  }
+  holdScope(scope,parents){scope.recoveryHeld=true;scope.previewRecoveryFailed=true;scope.previewRecoveryParents??=new Set();for(const parent of parents)if(parent)scope.previewRecoveryParents.add(parent);this.recoveryScopes.add(scope);}
+  holdsWindow(win){for(const scope of this.recoveryScopes)if(scope.previewRecoveryParents.has(win))return true;return false;}
   close(slot){
     if(slot.closed)return;slot.closed=true;slot.cancel?.(fail('预览请求已取消。'));
     if(this.slots.get(slot.id)===slot)this.slots.delete(slot.id);if(this.pending.get(slot.id)===slot)this.pending.delete(slot.id);
-    if(slot.view){try{slot.scope.win.contentView.removeChildView(slot.view);}catch{}const wc=slot.view.webContents;if(!wc.isDestroyed()){wc.forcefullyCrashRenderer();wc.close({waitForBeforeUnload:false});}}
+    if(slot.view){try{(slot.parentWindow??slot.scope.previewWindow??slot.scope.win).contentView.removeChildView(slot.view);}catch{}const wc=slot.view.webContents;if(!wc.isDestroyed())wc.close({waitForBeforeUnload:false});}
     if(slot.protocolHandled)slot.session.protocol.unhandle('https');slot.files.clear();
   }
-  bounds(slot,bounds){if(!bounds||!['x','y','width','height'].every(k=>Number.isFinite(bounds[k])))throw fail('预览区域无效。');const parent=slot.scope.role==='surface'?slot.scope.view.getBounds():{x:0,y:0,width:slot.scope.win.getContentSize()[0],height:slot.scope.win.getContentSize()[1]};const x=Math.max(0,Math.round(bounds.x)),y=Math.max(0,Math.round(bounds.y)),width=Math.max(0,Math.min(Math.round(bounds.width),parent.width-x)),height=Math.max(0,Math.min(Math.round(bounds.height),parent.height-y));slot.bounds={x,y,width,height};slot.view.setBounds({x:parent.x+x,y:parent.y+y,width,height});slot.view.setVisible(width>0&&height>0&&(slot.scope.role!=='surface'||slot.scope.view.getVisible()));}
+  bounds(slot,bounds){if(!bounds||!['x','y','width','height'].every(k=>Number.isFinite(bounds[k])))throw fail('预览区域无效。');const parent=slot.scope.role==='surface'?slot.scope.view.getBounds():{x:0,y:0,width:slot.scope.win.getContentSize()[0],height:slot.scope.win.getContentSize()[1]};const x=Math.max(0,Math.round(bounds.x)),y=Math.max(0,Math.round(bounds.y)),width=Math.max(0,Math.min(Math.round(bounds.width),parent.width-x)),height=Math.max(0,Math.min(Math.round(bounds.height),parent.height-y));slot.bounds={x,y,width,height};slot.view.setBounds({x:parent.x+x,y:parent.y+y,width,height});slot.view.setVisible(!slot.scope.transferring&&!slot.scope.previewRecoveryFailed&&width>0&&height>0&&(slot.scope.role!=='surface'||slot.scope.view.getVisible()));}
   snapshot(slot){const unsaved=[...slot.files.values()].some(f=>f.dirty);return {key:slot.key,generation:slot.generation,profile:slot.profile,projectId:slot.projectId,entryPath:slot.entry,origin:slot.origin,files:[...slot.files].map(([path,f])=>({path,digest:f.digest,version:f.version,dirty:f.dirty})),dirty:unsaved,unsaved};}
+  // Enum-only appearance injection for live static reports: values come from the
+  // fixed accent map; the frozen object and its export bytes never change.
+  setAppearance(value) {
+    this.appearance = { palette: value?.palette === 'slate' ? 'slate' : 'sage', mode: value?.mode === 'dark' ? 'dark' : 'light' };
+    for (const slot of this.slots.values()) if (slot.profile === 'staticReport' && slot.view && !slot.closed) void this.injectReportAppearance(slot);
+  }
+  injectReportAppearance(slot) {
+    // Serialize per slot: concurrent did-finish-load and setAppearance callers must
+    // not race key removal/insertion or only the last key would be tracked.
+    slot.accentChain = (slot.accentChain ?? Promise.resolve()).then(async () => {
+      const wc = slot.view?.webContents;
+      if (slot.closed || !wc || wc.isDestroyed()) return;
+      const css = reportAccentCss(this.appearance?.palette ?? 'sage', this.appearance?.mode ?? 'light');
+      for (const key of slot.accentKeys ?? []) await wc.removeInsertedCSS(key).catch(() => {});
+      try { slot.accentKeys = [await wc.insertCSS(css, { cssOrigin: 'user' })]; }
+      catch (error) { slot.accentKeys = [];if(!slot.closed&&!wc.isDestroyed())this.emit(slot,'error',{message:'报告配色更新失败：'+error.message}); }
+    });
+    return slot.accentChain;
+  }
   async invoke(scope,op,p){
     const id=this.id(scope,p.key),old=this.slots.get(id);
     if(op==='isolated-preview.close'){this.generations.set(id,(this.generations.get(id)||0)+1);const pending=this.pending.get(id);if(pending)this.close(pending);if(old)this.close(old);return {closed:true};}
@@ -147,9 +197,9 @@ export class IsolatedPreviewManager{
       throw fail('未知预览操作。');
     }
     if(p.projectId!==scope.projectId||!['staticReport','offlineDevelopment'].includes(p.profile)||!Number.isSafeInteger(p.generation)||p.generation<1||p.generation<=(this.generations.get(id)||0))throw fail('预览项目、配置或版本无效。');
-    const generation=p.generation;this.generations.set(id,generation);const ownerGeneration=scope.generation,ownerWindow=scope.windowId;
+    const generation=p.generation;this.generations.set(id,generation);const ownerGeneration=scope.generation;
     const previousPending=this.pending.get(id);if(previousPending)this.close(previousPending);
-    const alive=()=>!scope.dead&&scope.generation===ownerGeneration&&scope.windowId===ownerWindow&&scope.projectId===p.projectId&&this.generations.get(id)===generation;
+    const alive=()=>!scope.dead&&scope.generation===ownerGeneration&&scope.projectId===p.projectId&&this.generations.get(id)===generation;
     let snapshot,source,manifest;
     try{
       if(p.profile==='staticReport'){source=await this.managedAgents.reportSource(p.projectId,p.objectId);if(source.report?.format!=='html-static')throw fail('此报告不是静态 HTML。');const bytes=await source.read();manifest=await source.readManifest();snapshot={entry:'report.html',projectId:p.projectId,files:new Map([['report.html',{bytes,mediaType:'text/html',digest:hash(bytes),version:null,dirty:false}]])};}
@@ -174,7 +224,7 @@ export class IsolatedPreviewManager{
         if(slot.profile==='staticReport'&&file.mediaType==='text/html'){
           // Only served bytes change: use an intercepted same-origin navigation,
           // not a custom external protocol blocked by CSP sandbox.
-          let text=withReportReaderStyle(bytes.toString('utf8'));
+          let text=upgradeReportReaderStyle(withReportReaderStyle(bytes.toString('utf8')));
           for(const [target,ref]of referenceTargets)text=text.replaceAll('href="nozeli-report-ref:'+ref.id+'"','href="'+target+'"');
           bytes=Buffer.from(text);
         }
@@ -188,10 +238,11 @@ export class IsolatedPreviewManager{
         // color-scheme:light dark, so no pin may override it. Development
         // previews keep their original explicit pin.
         if(slot.profile==='offlineDevelopment'&&['light','dark'].includes(p.theme))wc.on('did-finish-load',()=>{void wc.insertCSS(':root{color-scheme:'+p.theme+'!important}',{cssOrigin:'user'}).catch(error=>this.emit(slot,'error',{message:error.message}));});
+        if(slot.profile==='staticReport')wc.on('did-finish-load',()=>{void this.injectReportAppearance(slot);});
         const navigation=(event,url)=>{const target=typeof url==='string'?url:url?.url??event.url;if(slot.profile==='offlineDevelopment'&&member(target)&&slot.files.get(member(target)).mediaType==='text/html')return;if(slot.profile==='staticReport'&&target?.startsWith(origin+'/report.html#'))return;event.preventDefault();if(slot.profile==='staticReport'){const ref=referenceTargets.get(target);if(ref)this.emit(slot,'reference',{reference:ref,referenceId:String(ref.id),objectId:p.objectId});}};
         wc.on('will-navigate',navigation);wc.on('will-frame-navigate',(event,url,_inPlace,legacyMainFrame)=>{const mainFrame=event.isMainFrame??legacyMainFrame;if(!mainFrame)event.preventDefault();else navigation(event,url??event.url);});
         wc.on('console-message',(_event,details,...legacy)=>this.emit(slot,'console',{level:details?.level??details,message:String(details?.message??legacy[0]??'').slice(0,2000)}));wc.on('render-process-gone',(_e,details)=>this.emit(slot,'error',{message:'预览进程已退出：'+details.reason}));wc.on('unresponsive',()=>this.emit(slot,'error',{message:'预览无响应；可关闭或刷新，编辑缓冲保留。'}));
-        await cancellable(wc.loadURL(origin+'/'+slot.entry.split('/').map(encodeURIComponent).join('/')));if(!alive()||slot.closed)throw fail('预览请求已过期。');scope.win.contentView.addChildView(slot.view);this.bounds(slot,p.bounds??old?.bounds??{x:0,y:0,width:0,height:0});this.pending.delete(id);this.slots.set(id,slot);if(old)this.close(old);this.emit(slot,'ready',this.snapshot(slot));return this.snapshot(slot);
+        await cancellable(wc.loadURL(origin+'/'+slot.entry.split('/').map(encodeURIComponent).join('/')));if(!alive()||slot.closed)throw fail('预览请求已过期。');slot.parentWindow=scope.previewWindow??scope.win;slot.parentWindow.contentView.addChildView(slot.view);this.bounds(slot,p.bounds??old?.bounds??{x:0,y:0,width:0,height:0});this.pending.delete(id);this.slots.set(id,slot);if(old)this.close(old);this.emit(slot,'ready',this.snapshot(slot));return this.snapshot(slot);
       }catch(error){this.close(slot);throw error;}
     }catch(error){if(alive())scope.wc.send('nozeli:isolated-preview',{key:p.key,generation,type:'error',message:error.message,previousPreserved:!!old});throw error;}
   }

@@ -8,7 +8,7 @@ import {renderDeviationGate} from '../src/renderer/work-deviation.mjs';
 
 const work=()=>({id:'work-1',name:'Original',request:'Original goal',status:'paused',revision:2,deviation:{id:'deviation-1',revision:2,version:1,status:'pending',todoId:'todo-1',sourceJobId:'job-1',sourceText:'<exact>\nchanged input',changedGoal:'Different goal',reason:'Scope changed',progress:'Partial files retained'}});
 const payload=()=>({projectId:'project-1',workId:'work-1',deviationId:'deviation-1',expectedRevision:2,expectedVersion:1,action:'continue',requestKey:'decision-1'});
-function manager(controller){const m=new ManagedProjects({userDataDir:'/unused-deviation-test',host:{requireProject:async id=>{if(id!=='project-1')throw Error('unknown project');return {id};}},legacy:{projects:new Map()}});m.controllers.set('project-1',{started:true,...controller});return m;}
+function manager(controller){const m=new ManagedProjects({userDataDir:'/unused-deviation-test',host:{storage:{},requireProject:async id=>{if(id!=='project-1')throw Error('unknown project');return {id};}},legacy:{projects:new Map()}});m.controllers.set('project-1',{started:true,...controller});return m;}
 
 test('user deviation IPC validates exact decision identity before controller admission',async()=>{
  const calls=[],m=manager({resolveDeviation:async p=>{calls.push(p);return {accepted:true,workId:p.workId};}}),p=payload();

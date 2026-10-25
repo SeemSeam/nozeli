@@ -116,13 +116,13 @@ test('owner destruction during async open fences late completion before session 
   await assert.rejects(pending);assert.equal(h.sessions.length,0);assert.equal(h.manager.slots.size,0);
 });
 
-test('close and owner transfer terminate pending guest without awaiting renderer load',async()=>{
-  for(const action of ['close','transfer']){
+test('explicit close and owner invalidation cancel pending loads without reviving their guest',async()=>{
+  for(const action of ['close','invalidate']){
     let entered;const started=new Promise(resolve=>entered=resolve),h=harness({load:wc=>{entered(wc);return new Promise(()=>{});}});
     const opening=h.manager.invoke(h.scope,'isolated-preview.open',h.payload),rejected=assert.rejects(opening,/取消|过期/);
     const wc=await started;assert.equal(h.manager.pending.size,1);assert.equal(h.manager.slots.size,0);
     if(action==='close')await h.manager.invoke(h.scope,'isolated-preview.close',{key:'report'});else h.manager.closeScope(h.scope);
-    await rejected;assert.equal(wc.crashed,true);assert.equal(wc.dead,true);assert.equal(h.manager.pending.size,0);assert.equal(h.manager.slots.size,0);
+    await rejected;assert.equal(wc.dead,true);assert.equal(h.manager.pending.size,0);assert.equal(h.manager.slots.size,0);
   }
 });
 
@@ -131,5 +131,23 @@ test('new generation cancels stalled replacement while preserving last successfu
   await h.manager.invoke(h.scope,'isolated-preview.open',h.payload);const committed=h.views[0];
   const replacement=h.manager.invoke(h.scope,'isolated-preview.update',{...h.payload,generation:2}),rejected=assert.rejects(replacement,/取消|过期/);
   const pending=await started;h.reject();await assert.rejects(h.manager.invoke(h.scope,'isolated-preview.update',{...h.payload,generation:3}));await rejected;
-  assert.equal(pending.crashed,true);assert.equal(pending.dead,true);assert.equal(committed.webContents.dead,false);assert.equal(h.manager.slots.size,1);assert.equal(h.manager.pending.size,0);
+  assert.equal(pending.dead,true);assert.equal(committed.webContents.dead,false);assert.equal(h.manager.slots.size,1);assert.equal(h.manager.pending.size,0);
+});
+
+for(const outcome of ['commit','rollback','close'])test(`pending report load completing after transfer ${outcome} uses only its valid parent`,async()=>{
+ let releaseLoad,entered;
+ const loaded=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>releaseLoad=resolve);
+ const h=harness({load:wc=>{entered(wc);return gate;}});
+ const parent=()=>{const children=new Set();return {children,contentView:{addChildView:view=>children.add(view),removeChildView:view=>children.delete(view)},getContentSize:()=>[800,600]};};
+ const source=parent(),destination=parent();h.scope.win=source;h.scope.role='surface';h.scope.view={getBounds:()=>({x:5,y:40,width:700,height:500}),getVisible:()=>true};
+ const opening=h.manager.invoke(h.scope,'isolated-preview.open',h.payload);
+ const rejected=outcome==='close'?assert.rejects(opening,/取消|过期/):null;
+ const wc=await loaded;assert.equal(h.manager.pending.size,1);h.scope.transferring=true;
+ h.manager.reparentScope(h.scope,destination);
+ if(outcome==='commit'){h.scope.win=destination;h.scope.windowId='floating';}
+ if(outcome==='rollback')h.manager.reparentScope(h.scope,source);
+ if(outcome==='close'){h.manager.closeScope(h.scope);h.scope.dead=true;}
+ h.scope.transferring=false;releaseLoad();
+ if(outcome==='close'){await rejected;assert.equal(wc.dead,true);assert.equal(h.manager.slots.size,0);assert.equal(h.manager.pending.size,0);assert.equal(source.children.size,0);assert.equal(destination.children.size,0);}
+ else {await opening;const slot=[...h.manager.slots.values()][0],owner=outcome==='commit'?destination:source,other=outcome==='commit'?source:destination;assert.equal(slot.view.webContents,wc);assert.equal(slot.parentWindow,owner);assert(owner.children.has(slot.view));assert.equal(other.children.size,0);assert.equal(wc.dead,false);assert.equal(h.manager.pending.size,0);}
 });

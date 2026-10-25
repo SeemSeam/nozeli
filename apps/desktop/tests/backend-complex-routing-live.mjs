@@ -4,7 +4,7 @@ import os from 'node:os';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {Controller} from '../src/agents/managed/controller.mjs';
+import {openTestController} from './project-storage.fixture.mjs'
 import {auditRuntime} from '../src/agents/managed/runtime-audit.mjs';
 import {assertSameWork,assertSlots,assertReview,assertNoReplay} from './complex-routing-evidence.mjs';
 
@@ -35,7 +35,7 @@ const end=async(w,decision='accept')=>{await c.endWork(w.id,{revision:w.revision
 try{
  console.log(JSON.stringify({root,scope:'real Backend CLI; no GUI',version:execFileSync('codex',['--version'],{encoding:'utf8'}).trim()}));
  await fs.writeFile(path.join(content,'people.txt'),'Mira: apple\nMira: pear\nNia: plum\n');
- c=await Controller.open(options);c.on('state',record);await c.store.mutate(()=>{c.store.state.limit=2;});await c.start();
+ c=await openTestController(options);c.on('state',record);await c.store.mutate(()=>{c.store.state.limit=2;});await c.start();
  await front('仅用一句中文说明平均数是什么，不读取文件，不创建任务。');await check('light answer has no Work',()=>assert.equal(c.store.state.works.length,0));
  await front('新建独立任务，严格命名“人物计数”：读取people.txt，为我指定的人物统计条目，写count.md并读回核验。人物未指定，必须先用问题待办问我，不猜。'+constraints);
  await wait(()=>c.store.state.works.some(w=>w.name==='人物计数'&&w.status==='paused')&&!c.running.size,'A-question');const a0=structuredClone(work('人物计数'));
@@ -46,12 +46,12 @@ try{
  await front('第三个全新独立目标：新建任务严格命名“队列标记”，仅创建queued.txt，内容QUEUED_OK，读回后发布结果。不是前两个任务的补充。'+constraints);
  const q0=structuredClone(work('队列标记'));await check('full quota queues third without native thread',()=>{assert.equal(q0.status,'queued');assert.ok(!q0.threadId);assertSlots(c.snapshot(),2);});
  const soakMs=Number(process.env.NOZELI_COMPLEX_SOAK_MS||60000);assert.ok(Number.isFinite(soakMs)&&soakMs>=60000,'soak at least 60 seconds');stage='waiting-soak';const until=Date.now()+soakMs;while(Date.now()<until){assertSlots(c.snapshot(),2);assert.equal(work('队列标记').status,'queued');await sleep(1000);}await check('two waiting Workers preserve full quota through measured soak',()=>assertSlots(c.snapshot(),2));
- const beforeRestart=c.snapshot();await c.setDraft(a0.id,'保留但不发送的续问草稿');await c.stop();c=await Controller.open(options);c.on('state',record);await c.start();await check('real stop/reopen retains paused threads, draft and queue without replay',()=>{assertNoReplay(beforeRestart,c.snapshot());assert.equal(c.store.state.drafts[a0.id],'保留但不发送的续问草稿');assertSlots(c.snapshot(),2);assert.equal(work('队列标记').status,'queued');});await c.setDraft(a0.id,'');
+ const beforeRestart=c.snapshot();await c.setDraft(a0.id,'保留但不发送的续问草稿');await c.stop();c=await openTestController(options);c.on('state',record);await c.start();await check('real stop/reopen retains paused threads, draft and queue without replay',()=>{assertNoReplay(beforeRestart,c.snapshot());assert.equal(c.store.state.drafts[a0.id],'保留但不发送的续问草稿');assertSlots(c.snapshot(),2);assert.equal(work('队列标记').status,'queued');});await c.setDraft(a0.id,'');
  // Answers are accepted concurrently; each is routed by real low frontdesk/high Orchestrator.
  await send('回答“人物计数”：目标人物是Mira，请原Agent继续，count.md包含人物和数字2。');await send('回答“格式检查”：采用Markdown表格，style.md包含FORMAT_TABLE，并读回核验。');await idle();
  await check('both answers resume original Workers and produce actual verified bytes',async()=>{assertSameWork(a0,assertReview(c.snapshot(),a0.id));assertSameWork(b0,assertReview(c.snapshot(),b0.id));assert.match(await readArtifact('count.md'),/Mira/);assert.match(await readArtifact('count.md'),/2/);assert.match(await readArtifact('style.md'),/FORMAT_TABLE/);assertSlots(c.snapshot(),2);});
  for(const [round,prompt,expected] of [[1,'仍不满意，原“人物计数”报告太长。不要新建目标，保持Mira，count.md改为一句含COUNT_V2和数字2的中文，核验后重新报告。','COUNT_V2'],[2,'还是不满意，继续原“人物计数”，将同一统计目标人物改成Nia。count.md改为一句含COUNT_V3、Nia和数字1的中文；不创建独立任务。','COUNT_V3']]){const previous=structuredClone(work('人物计数'));await front(prompt+constraints);await idle();await check('dissatisfaction '+round+' keeps original Work/thread and revises real output',async()=>{assertSameWork(previous,assertReview(c.snapshot(),a0.id));assert.equal(c.store.state.works.length,3);assert.match(await readArtifact('count.md'),new RegExp(expected));assert.equal(work('队列标记').status,'queued');});}
- const reviewed=c.snapshot();await c.stop();c=await Controller.open(options);c.on('state',record);await c.start();await check('review restart preserves completed side effects and queued Work',()=>{assertNoReplay(reviewed,c.snapshot());assertSlots(c.snapshot(),2);assertReview(c.snapshot(),a0.id);});
+ const reviewed=c.snapshot();await c.stop();c=await openTestController(options);c.on('state',record);await c.start();await check('review restart preserves completed side effects and queued Work',()=>{assertNoReplay(reviewed,c.snapshot());assertSlots(c.snapshot(),2);assertReview(c.snapshot(),a0.id);});
  await end(work('格式检查'));await wait(()=>work('队列标记').status==='review'&&!c.running.size,'queued-autostart');await check('normal user end cleans only B and starts actual queued worker',async()=>{assert.ok(work('队列标记').threadId);assert.notEqual(work('队列标记').threadId,a0.threadId);assert.equal((await readArtifact('queued.txt')).trim(),'QUEUED_OK');assertSlots(c.snapshot(),2);await assert.rejects(fs.stat(c.store.agentHome(b0.id)),{code:'ENOENT'});assert.ok(await readArtifact('style.md'));});
  await end(work('人物计数'));await end(work('队列标记'),'discard');await check('explicit outcomes preserve adopted output and discard only owned candidate',async()=>{assertSlots(c.snapshot(),0);assert.equal(work('队列标记').outcome,'discard');assert.match(await readArtifact('count.md'),/COUNT_V3/);await assert.rejects(fs.stat(path.join(content,'queued.txt')),{code:'ENOENT'});for(const w of c.store.state.works)assert.ok(w.closure.report);assert(!c.store.state.jobs.some(j=>['curate','git'].includes(j.type)));});
  await json('final-state',c.snapshot());

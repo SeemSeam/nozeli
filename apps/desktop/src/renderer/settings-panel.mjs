@@ -3,6 +3,7 @@ import {setIconButton} from './ui-icons.mjs';
 import {mountProviderSettings} from './provider-settings.mjs';
 import {mountAppearanceSettings} from './settings-appearance.mjs';
 import {mountAgentSettings} from './settings-agents.mjs';
+import {mountProjectSettings} from './settings-project.mjs';
 import './settings-appearance.css';
 
 // Application preferences have one home; project/session controls remain explicit.
@@ -19,20 +20,31 @@ export function mountSettingsPanel({invoke,onInitialize,getProjectId=()=>null}) 
   const appearance=mountAppearanceSettings({container:$('settings-appearance')});
   const agents=mountAgentSettings({invoke,container:$('settings-agents'),getProjectId});
   const provider=mountProviderSettings({invoke,providers:$('settings-provider'),models:$('settings-models')});
+  const projectSettings=mountProjectSettings({invoke,getProjectId});
+  let selected='settings-appearance';
+  const display=$('settings-reading-display');display.innerHTML='<h3>阅读显示 · 所有项目共享</h3><label><input type="checkbox" data-authorship-visible>显示修改者</label><p>影响支持来源标记的文本与 Word，不改变文档内容。</p><p role="status"></p>';
+  const authorship=display.querySelector('input'),displayStatus=display.querySelector('[role="status"]');
+  let authorshipRequest=0;authorship.disabled=true;
+  authorship.onchange=async()=>{const request=++authorshipRequest;authorship.disabled=true;displayStatus.textContent='正在保存…';try{const result=await invoke('view.authorship',{visible:authorship.checked});if(request!==authorshipRequest)return;displayStatus.textContent=result.ok?'已保存，所有窗口生效。':result.error.message;}catch(error){if(request===authorshipRequest)displayStatus.textContent=error.message;}finally{if(request===authorshipRequest)authorship.disabled=false;}};
+  window.nozeli.subscribe('workspace.control',event=>{if(event.type==='authorship-visibility')authorship.checked=event.visible;});
+  function identity(){const source=$('project-name');$('settings-project-name').textContent=getProjectId()?source.textContent:'未打开项目';$('settings-project-path').textContent=getProjectId()?source.title:'';$('settings-copy-project-path').disabled=!getProjectId();}
+  $('settings-copy-project-path').onclick=()=>void invoke('document.clipboard',{action:'write',text:$('settings-project-path').textContent});
   function leave(action){dialog.close();void action?.();}
   function select(id){
-    if(!Array.from(dialog.querySelectorAll('[data-settings-section]')).some(button=>button.dataset.settingsSection===id))id='settings-provider';
+    if(!Array.from(dialog.querySelectorAll('[data-settings-section]')).some(button=>button.dataset.settingsSection===id))id='settings-appearance';
     for(const button of dialog.querySelectorAll('[data-settings-section]')){
       const active=button.dataset.settingsSection===id;
       button.setAttribute('aria-current',active?'page':'false');
       $(button.dataset.settingsSection).hidden=!active;
     }
     dialog.querySelector('.settings-content').scrollTop=0;
+    selected=id;identity();void projectSettings.refresh(id);
+    if(id==='settings-reading-display'){const request=++authorshipRequest;authorship.disabled=true;void invoke('view.authorship').then(result=>{if(request!==authorshipRequest)return;if(result.ok){authorship.checked=result.value.visible;displayStatus.textContent='';authorship.disabled=false;}else displayStatus.textContent=result.error.message;}).catch(error=>{if(request===authorshipRequest)displayStatus.textContent=error.message;});}
     if(id==='settings-agents')void agents.refresh();
     if(id==='settings-models')void provider.refresh();
     if(id==='settings-provider')void provider.refreshProviders();
   }
-  async function open(section='settings-provider'){
+  async function open(section=selected){
     if(!dialog.open){returnFocus=document.activeElement;dialog.showModal();}
     select(section);appearance.refresh();
     refreshZen();
@@ -46,5 +58,5 @@ export function mountSettingsPanel({invoke,onInitialize,getProjectId=()=>null}) 
   $('settings-initialize').addEventListener('click',()=>leave(onInitialize));
   $('provider-console-toggle').addEventListener('click',()=>dialog.close());
   window.addEventListener('nozeli-open-settings',event=>void open(typeof event.detail==='string'?event.detail:undefined));
-  return {open,projectChanged(){if(dialog.open&&!$('settings-agents').hidden)void agents.refresh();}};
+  return {open,projectChanged(){identity();if(dialog.open){if(selected.startsWith('settings-project-'))void projectSettings.refresh(selected);if(selected==='settings-agents')void agents.projectChanged();}}};
 }

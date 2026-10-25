@@ -29,8 +29,8 @@ export async function recordAdoption({ host, projectId, work, receipt }) {
   if (receipt?.status !== 'merged' || !/^[a-f0-9]{40,64}$/.test(receipt.commit || '') || !Array.isArray(receipt.operations) || !work?.id) fail('ADOPTION_RECEIPT_INVALID', 'A completed integration receipt is required for attribution');
   const project = await host.requireProject(projectId), root = project.root;
   if (work.execution?.repo && await fs.realpath(work.execution.repo) !== await fs.realpath(root)) fail('ADOPTION_IDENTITY_CHANGED', 'Adoption repository does not match the project');
-  const store = new FileChanges(root), env = gitEnv();
-  const actor = { id: 'nozeli:worker:' + work.id, kind: 'agent2', name: work.name || 'Worker', mark: 'W', workId: work.id, threadId: work.threadId || null };
+  const store = new FileChanges({root,storage:host.storage,projectId}), env = gitEnv();
+  const actor = { id: 'nozeli:worker:' + work.id, kind: 'agent2', name: work.name || 'Worker', mark: 'W', workId: work.id };
   const files = [];
   for (const op of receipt.operations) {
     const rel = workPath(op.relPath);

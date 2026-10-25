@@ -97,7 +97,13 @@ function startStatic() {
 }
 
 let host, fileTreeOps, treeMenuItems;
-let workspaceNative, isolatedPreview, workspaceCapture;
+let workspaceNative, isolatedPreview, workspaceCapture, projectLifecycle;
+async function finishDrawing({windowId,projectId}={}){
+  const active=workspaceCapture?.active;
+  if(windowId&&active?.windowId!==windowId||projectId&&active?.projectId!==projectId)return;
+  if(active){const owner=workspaceNative.senders.get(active.ownerWc.id);if(owner&&!owner.dead)await workspaceNative.flush([owner]);}
+  await workspaceCapture?.shutdown();
+}
 let projectWatcher;
 let allowClose = false;
 let quitting = false;
@@ -207,7 +213,7 @@ async function createWindow(server) {
   win.webContents.on('render-process-gone',(_event,details)=>{console.error('renderer gone',details);recovery.rendererGone(details);});
   win.on('closed',()=>recovery.destroyed());
   win.on('close',event=>{
-    if(workspaceCapture?.active){event.preventDefault();void workspaceCapture.shutdown().then(()=>win.close()).catch(error=>console.error('drawing close failed',error));return;}
+    if(workspaceCapture?.active?.windowId===scope.windowId){event.preventDefault();void finishDrawing({windowId:scope.windowId}).then(()=>win.close()).catch(error=>console.error('drawing close failed',error));return;}
     if(allowClose||quitting||scope.closing)return;
     event.preventDefault();
     if(workspaceNative.currentWindowCount()>1)void workspaceNative.closeWindow(scope).catch(error=>console.error('window close failed',error));
@@ -242,7 +248,7 @@ async function main() {
   for(const launch of pendingLaunches)routeLaunch(launch.argv,launch.cwd);
   const {resolveNozeliPaths,initializeNozeliConfiguration,readNozeliConfiguration,completeNozeliConfiguration}=await import('../agents/managed/nozeli-config.mjs');
   const nozeliPaths=resolveNozeliPaths();
-  await initializeNozeliConfiguration(nozeliPaths,{legacyDesktop:ISOLATED_TEST_INSTANCE?null:path.join(app.getPath('appData'),'Nozeli')});
+  await initializeNozeliConfiguration(nozeliPaths);
   // The temporary lock path was already restored synchronously. Chromium's
   // session must now use the initialized profile, never the lock directory.
   app.setPath('userData',nozeliPaths.desktop);
@@ -292,7 +298,7 @@ async function main() {
       if(controller.starting?.size)return true;
       for(const session of controller.sessions.values())if(!session.model||session.model.startsWith(provider+'/'))return true;
     }
-    return hasProviderReferences(path.join(app.getPath('userData'),'nozeli','managed-v1'),provider);
+    return hasProviderReferences({storage:host.storage},provider);
   }});
   ompSystemSource.modelFor=role=>providerSettings.modelFor(role);
   managedAgents=new ManagedProjects({userDataDir:app.getPath('userData'),host,legacy:agents,beforeDocumentOperation:syncDocument,ompSystemSource,ompAuthBroker,ompCommand:ompRuntime?.command});
@@ -309,8 +315,12 @@ async function main() {
   nativeTheme.on('updated',()=>{isolatedPreview.setAppearance({palette:isolatedPreview.appearance?.palette??'sage',mode:nativeTheme.shouldUseDarkColors?'dark':'light'});});
   workspaceNative.isolatedPreview=isolatedPreview;
   const {WorkspaceCapture}=await import('./workspace-capture.mjs');
-  workspaceCapture=new WorkspaceCapture({workspace:workspaceNative,WebContentsView,origin,preload:path.join(APP_ROOT,'src/preload/workspace-capture.cjs'),directory:path.join(app.getPath('userData'),'nozeli','drawing-captures'),host,deliver:async(session,event)=>{await workspaceNative.deliverDrawing(session,event);}});
-  ipcMain.handle('nozeli:capture',async(event,op,payload)=>{try{return {ok:true,value:await workspaceCapture.invoke(event,op,payload)}}catch(error){return respond(error)}});
+  workspaceCapture=new WorkspaceCapture({workspace:workspaceNative,host,deliver:async(session,event)=>{await workspaceNative.deliverDrawing(session,event);}});
+  const {ProjectLifecycle}=await import('./project-lifecycle.mjs');
+  const {reconcileManagedPending}=await import('../agents/managed/managed-storage.mjs');
+  projectLifecycle=new ProjectLifecycle({host,workspace:workspaceNative,managed:managedAgents,reconcileManaged:(id,options)=>reconcileManagedPending(host.storage,id,options),trashItem:target=>shell.trashItem(target),beforeStop:async id=>{projectWatcher?.unwatchProject(id);await texManager?.stopProject(id);await texLanguage?.stopProject(id);await lspManager?.stopProject(id);},protectedRoots:[APP_ROOT,path.dirname(APP_ROOT),nozeliPaths.root]});
+  const stopManagedUnavailable=host.storage.onUnavailable;
+  host.storage.onUnavailable=(id,error)=>{workspaceNative.unavailableProjects??=new Set();if(workspaceNative.unavailableProjects.has(id))return;workspaceNative.unavailableProjects.add(id);const stopped=stopManagedUnavailable(id,error);void Promise.allSettled([stopped,projectLifecycle.beforeStop(id)]).then(results=>{if(results.some(result=>result.status==='rejected'))workspaceNative.broadcast('nozeli:workspace-control',{type:'project-stop-pending',projectId:id,error:{code:'OMP_EXIT_UNCONFIRMED',message:'原生停稳尚未确认，未允许继续执行或清理。'}},id);});workspaceNative.broadcast('nozeli:workspace-control',{type:'project-unavailable',projectId:id,error:{code:error.code,message:error.message}},id);};
   workspaceNative.restoreShell=()=>createWindow(server);
   workspaceNative.ensureConversation=async(projectId,target)=>{
     const configuration=await readNozeliConfiguration(nozeliPaths);if(configuration.choiceRequired)throw Object.assign(Error('请先完成 Agent 配置，再打开对话。'),{code:'CONFIG_SETUP_REQUIRED'});
@@ -335,7 +345,7 @@ async function main() {
     if(quitting)return;event.preventDefault();if(quitPending)return;quitPending=true;
     const r=workspaceNative.windows.get('main')||workspaceNative.windows.values().next().value;
     if(!r){quitPending=false;return;}
-    void workspaceCapture.shutdown().then(()=>workspaceNative.flush([...workspaceNative.senders.values()])).then(()=>{const recovery=windowRecovery(r.win);if(recovery)recovery.requestClose();else return workspaceNative.onClose(r);}).catch(error=>console.error('quit flush failed',error)).finally(()=>{quitPending=false;});
+    void workspaceNative.flush([...workspaceNative.senders.values()]).then(()=>finishDrawing()).then(()=>{const recovery=windowRecovery(r.win);if(recovery)recovery.requestClose();else return workspaceNative.onClose(r);}).catch(error=>console.error('quit flush failed',error)).finally(()=>{quitPending=false;});
   });
   ipcMain.handle('nozeli:invoke', async (event, op, payload) => {
     try {
@@ -345,9 +355,16 @@ async function main() {
       }
       if(typeof op!=='string')throw new HostError('UNKNOWN_OP','Unknown host operation.');
       payload=await workspaceNative.resolvePayload(scope,op,payload??{});
+      if(['material.attach','material.attachPath'].includes(op))payload={...payload,projectId:scope.projectId};
+      if(op==='material.read'&&payload.projectId!==scope.projectId)throw new HostError('PROJECT_SCOPE_DENIED','附件不属于当前项目');
       trusted(event,op,payload??{});
+      const admissionProject=payload?.projectId??scope.projectId;
+      if(admissionProject&&!['workspace.recovery','workspace.recovery.list','workspace.recovery.object','session.flushed','workspace.bootstrap','project.lifecycle.reconcile'].includes(op))host.storage.assertActive(admissionProject);
+      if(['project.lifecycle.preview','project.lifecycle.execute','project.lifecycle.reconcile'].includes(op)){if(scope.role!=='shell')throw new HostError('IPC_DENIED','只能在主窗口管理项目');await finishDrawing({projectId:payload.projectId});if(op.endsWith('preview'))return {ok:true,value:await projectLifecycle.preview(payload)};if(op.endsWith('reconcile'))return {ok:true,value:await projectLifecycle.reconcile(payload)};return {ok:true,value:await projectLifecycle.execute(payload)};}
+      if(op==='project.retry'){if(scope.role!=='shell')throw new HostError('IPC_DENIED','仅主窗可重试项目');await managedAgents.stopProject(payload.projectId);const value=await host.storage.retry(payload.projectId);workspaceNative.unavailableProjects?.delete(payload.projectId);return {ok:true,value};}
+      if(op==='workspace.recovery.settle'){if(scope.role!=='shell')throw new HostError('IPC_DENIED','仅主窗可明确结算保留成果');return {ok:true,value:await projectLifecycle.settleManaged(payload)};}
       if(op==='workspace.capture.begin')return {ok:true,value:await workspaceCapture.begin(scope,payload??{})};
-      if(op==='workspace.capture.source')return {ok:true,value:workspaceCapture.source(scope,payload??{})};
+      if(op.startsWith('workspace.capture.'))return {ok:true,value:await workspaceCapture.invoke(event,op.slice('workspace.capture.'.length),payload??{})};
       if(op==='settings.appearance.read'||op==='settings.appearance.save'){
         const file=path.join(app.getPath('userData'),'appearance.json');
         if(op==='settings.appearance.read'){
@@ -440,7 +457,7 @@ async function main() {
       }
       if (op === 'session.takeOpen') { const file=externalFiles.shift();return {ok:true,value:file?await externalTarget(host,file):null}; }
       if (op === 'session.requestClose') {
-        await workspaceCapture.shutdown();
+        await finishDrawing({windowId:scope.windowId});
         scope.win.close();
         return { ok: true, value: { closing: true } };
       }
@@ -509,14 +526,13 @@ async function main() {
         const project=await host.requireProject(payload?.projectId);
         const abs=await fileTreeOps.locate(project,payload?.relPath,false);
         if(path.extname(abs).toLowerCase()!=='.pptx'||!/^[a-f0-9]{64}$/.test(payload?.digest||''))throw Error('PPTX 参数无效');
-        const key=require('node:crypto').createHash('sha256').update(project.id+'\0'+payload.relPath+'\0'+payload.digest).digest('hex');
-        const folder=path.join(app.getPath('userData'),'ppt-drafts'),target=path.join(folder,key+'.json');
+        const key='ppt:'+require('node:crypto').createHash('sha256').update(payload.relPath+'\0'+payload.digest).digest('hex');
         if(op==='ppt.draft'){
           if(payload.model!==undefined){
             const text=JSON.stringify({schema:'nozeli-pptist-draft-v1',engine:'82ecf10040ca8da67832f173b58d3baf5da59887',sourceDigest:payload.digest,model:payload.model});if(!Array.isArray(payload.model?.slides)||!payload.model.slides.length||Buffer.byteLength(text)>256*1024*1024)throw Error('PPTX 草稿无效或超过 256 MB');
-            await fs.mkdir(folder,{recursive:true});const temp=target+'.'+randomUUID()+'.tmp';await fs.writeFile(temp,text);await fs.rename(temp,target);return {ok:true,value:{saved:true}};
+            await host.storage.putRecovery(project.id,key,JSON.parse(text));return {ok:true,value:{saved:true}};
           }
-          let value=null;try{const record=JSON.parse(await fs.readFile(target,'utf8'));if(record.schema!=='nozeli-pptist-draft-v1'||record.engine!=='82ecf10040ca8da67832f173b58d3baf5da59887')throw Error('PPTX 草稿版本不兼容，原草稿已保留');value=record.model;}catch(e){if(e.code!=='ENOENT')throw e;}return {ok:true,value};
+          const record=await host.storage.getRecovery(project.id,key);if(record&&(record.schema!=='nozeli-pptist-draft-v1'||record.engine!=='82ecf10040ca8da67832f173b58d3baf5da59887'))throw Error('PPTX 草稿版本不兼容，原草稿已保留');return {ok:true,value:record?.model??null};
         }
         const bytes=Buffer.from(payload.bytes||[]);if(bytes.length<4||bytes.length>128*1024*1024||bytes.readUInt32LE(0)!==0x04034b50)throw Error('PPTX 导出数据无效');
         const choice=await dialog.showSaveDialog(scope.win,{title:'导出 PPTX 副本（格式可能变化）',defaultPath:abs.replace(/\.pptx$/i,'-Nozeli.pptx'),filters:[{name:'PowerPoint',extensions:['pptx']}]});
@@ -601,6 +617,7 @@ async function main() {
       const handler = Object.hasOwn(ops, op) ? ops[op] : null;
       if (!handler || op === 'project.pick') throw new HostError('UNKNOWN_OP', 'Unknown host operation.');
       const priorProject=scope.projectId;
+      if(op==='project.remove'){await finishDrawing({projectId:payload.projectId});return {ok:true,value:await projectLifecycle.removeProject(payload.projectId,{operationId:payload.operationId})};}
       const value = await handler(host, payload ?? {});
       if(op==='project.open'){
         if(scope.role==='shell')try{await managedAgents.setActiveProject(payload.projectId);}catch(error){workspaceNative.broadcast('nozeli:agent',{projectId:payload.projectId,kind:'managed-error',text:'Agent 连接失败，文件仍可打开：'+error.message},payload.projectId);}
@@ -608,6 +625,7 @@ async function main() {
       }
       return { ok: true, value };
     } catch (error) {
+      if(['PROJECT_ROOT_MISSING','PROJECT_METADATA_MISSING','PROJECT_METADATA_CONFLICT','PROJECT_IDENTITY_CONFLICT'].includes(error.code)&&payload?.projectId)host.storage.onUnavailable(payload.projectId,error);
       return respond(error);
     }
   });

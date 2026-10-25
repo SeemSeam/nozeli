@@ -8,6 +8,7 @@ import {spawn} from 'node:child_process';
 import {createRequire} from 'node:module';
 import puppeteer from 'puppeteer-core';
 import {DesktopHost} from '../src/main/host.mjs';
+import {configureNativeConversation} from './native-conversation-ready.fixture.mjs';
 const source=path.resolve(import.meta.dirname,'..'),out=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-pane-history-'));
 const project=path.join(out,'Project'),config=path.join(out,'.Nozeli'),profile=path.join(config,'desktop');await fs.mkdir(project);
 const originals=Object.fromEntries(['a.txt','b.txt','c.txt','d.txt'].map(name=>[name,'File '+name+'\nKeep original bytes\n']));
@@ -19,6 +20,7 @@ async function until(fn,label){const end=Date.now()+45000;do{const value=await f
 async function call(page,op,payload={}){const r=await page.evaluate((op,payload)=>nozeli.invoke(op,payload),op,payload);assert(r.ok,op+': '+JSON.stringify(r.error));return r.value;}
 async function scoped(test){return until(async()=>{for(const page of await browser.pages()){const scope=await page.evaluate(()=>window.__workspaceScope).catch(()=>null);if(scope&&test(scope)&&await page.evaluate(()=>__nozeliReady))return {page,scope};}},'registered ready content');}
 const snapshot=async()=>(await call(shell,'workspace.snapshot',{projectId})).layout;
+let cleanupConversation;
 async function open(name){await shell.locator('#file-tree [data-path="'+name+'"]').click();return scoped(s=>s.kind==='document'&&s.relPath===name&&!s.readOnly);}
 async function current(groupId,name){return until(async()=>{const layout=await snapshot();const find=n=>n?.kind==='group'?(n.id===groupId?n:null):n?.kind==='split'?(find(n.first)||find(n.second)):null;const group=find(layout.mainRoot)||layout.detached.map(w=>find(w.root)).find(Boolean),view=layout.views[group?.activeViewId];return view?.relPath===name?view:false;},'pane restores '+name);}
 async function closeFile(root,groupId){await root.locator('[data-workspace-group="'+groupId+'"] [data-workspace-command="close"]').click();}
@@ -36,6 +38,7 @@ try{
  const beforeSplit=await snapshot();await call(shell,'workspace.command',{projectId,expectedRevision:beforeSplit.revision,requestKey:crypto.randomUUID(),command:{type:'split',groupId:firstGroup,axis:'x',side:'after'}});
  const split=await snapshot(),other=split.mainRoot.second.id;await shell.locator('[data-workspace-group="'+other+'"] .workspace-pane-title').click();await open('c.txt');await open('d.txt');
  await closeFile(shell,other);await current(other,'c.txt');await current(firstGroup,'b.txt');report.checks.push('a second pane has its own C→D stack; closing D leaves first pane B untouched');
+ cleanupConversation=await configureNativeConversation(shell);await until(async()=>(await call(shell,'managed.status',{projectId})).ready,'real native conversation owner ready');
  await shell.locator('[data-workspace-group="'+firstGroup+'"] .workspace-pane-title').click();await shell.click('#workspace-open-conversation');const chat=await scoped(s=>s.kind==='conversation');await chat.page.waitForFunction(()=>!document.querySelector('#composer').disabled);await chat.page.locator('#composer').fill('Unsent history smoke draft');
  await chat.page.locator('[data-chat-window-action="chat-workspace-close"]').click();await current(firstGroup,'b.txt');await shell.waitForSelector('#workspace-open-conversation.conversation-minimized',{visible:true});await shell.click('#workspace-open-conversation');const chatRestored=await scoped(s=>s.kind==='conversation'&&s.viewId===chat.scope.viewId);await chatRestored.page.waitForFunction(()=>document.querySelector('#composer').value==='Unsent history smoke draft');
  report.checks.push('conversation minimize restores that pane previous file; unique conversation and unsent draft reopen intact');
@@ -55,4 +58,4 @@ try{
  report.checks.push('cold native restart retains the floating pane stack and restores D→A→B with original file bytes');
  for(const [name,text]of Object.entries(originals))assert.equal(await fs.readFile(path.join(project,name),'utf8'),text);assert.deepEqual(report.errors,[]);report.ok=true;console.log(JSON.stringify(report,null,2));
 }catch(error){report.failure=error.stack;console.error(JSON.stringify(report,null,2));throw error;}
-finally{await fs.writeFile(path.join(out,'report.json'),JSON.stringify(report,null,2));await fs.writeFile(path.join(out,'main.log'),log);await browser?.disconnect();if(child&&child.exitCode===null){child.kill('SIGTERM');await pause(600);if(child.exitCode===null)child.kill('SIGKILL');}}
+finally{await fs.writeFile(path.join(out,'report.json'),JSON.stringify(report,null,2));await fs.writeFile(path.join(out,'main.log'),log);await browser?.disconnect();if(child&&child.exitCode===null&&child.signalCode===null){const stopped=new Promise(resolve=>child.once('exit',resolve));child.kill('SIGTERM');await pause(600);if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');await stopped;}await cleanupConversation?.();}

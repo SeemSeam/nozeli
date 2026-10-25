@@ -59,8 +59,7 @@ async function compose(text,background=false){
 async function selectWork(work){
   const row='[data-managed-work="'+work.id+'"]';
   if(await page.$eval('#toggle-sidebar',n=>n.getAttribute('aria-expanded')!=='true'))await click('#toggle-sidebar');
-  await page.waitForSelector(row);await page.$eval(row+' details',n=>{if(!n.open)n.querySelector('summary').click();});
-  await click(row+' [data-managed-work-discuss]');
+  await page.waitForSelector(row);await click(row+' .managed-work-open');
   await page.waitForFunction(target=>document.querySelector('#conversation-panel').dataset.managedConversation===target,{},work.id);
 }
 async function review(workId,revision=0){

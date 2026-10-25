@@ -1,6 +1,3 @@
-import fs from 'node:fs/promises';
-import {constants} from 'node:fs';
-import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {readHtmlReportText,HTML_REPORT_OBJECT_MAX_BYTES} from './html-report.mjs';
 
@@ -33,36 +30,17 @@ export function reportDescriptor(bytes,{format,objectId,title,excerpt,manifestDi
  if(!validReportDescriptor(report))throw Error('Invalid report descriptor');
  return report;
 }
-// Only the unversioned historical schema may contain an inline Markdown body.
-// Migration preserves object identity and bytes; it never guesses a format.
 export function decodeReportState(state){
- if(!state||state.schema!==2)throw Error('Incompatible report state');
- if(state.reportStateVersion!==undefined&&state.reportStateVersion!==1)throw Error('Unsupported report state version');
- const legacy=state.reportStateVersion===undefined;
- const receipts=(state.receipts||[]).map(receipt=>{
-  let report=receipt.report;
-  if(legacy&&!report&&typeof receipt.text==='string'){const bytes=Buffer.from(receipt.text);if(receipt.snapshot?.reportDigest&&receipt.snapshot.reportDigest!==hash(bytes))throw Error('Legacy report digest mismatch');report=reportDescriptor(bytes,{format:'markdown',objectId:receipt.objectId});}
-  if(!validReportDescriptor(report)||report.objectId!==receipt.objectId||!legacy&&Object.hasOwn(receipt,'text'))throw Error('Invalid receipt report descriptor');
-  if(legacy&&report&&typeof receipt.text==='string'&&hash(Buffer.from(receipt.text))!==report.digest)throw Error('Legacy report body differs');
-  const {text,...row}=receipt;return {...row,report};
- });
- return {...state,reportStateVersion:1,receipts};
+ if(!state||state.schema!==2||state.reportStateVersion!==1)throw Error('Incompatible report state');
+ for(const receipt of state.receipts??[])if(!validReportDescriptor(receipt.report)||receipt.report.objectId!==receipt.objectId||Object.hasOwn(receipt,'text'))throw Error('Invalid receipt report descriptor');
+ return state;
 }
 export async function readStoredReport(store,receipt){
  const report=Object.freeze(structuredClone(receipt?.report));
  if(!validReportDescriptor(report)||report.objectId!==receipt.objectId)throw Error('Invalid receipt report descriptor');
  const identity=JSON.stringify([receipt.id,receipt.workId,receipt.revision,report]);
  const current=()=>{const rows=store.state.receipts.filter(row=>row.objectId===report.objectId);if(rows.length!==1||JSON.stringify([rows[0].id,rows[0].workId,rows[0].revision,rows[0].report])!==identity)throw Error('Report receipt changed during read');};current();
- const directory=path.join(store.root,'objects'),file=path.join(directory,report.objectId+reportExtension(report));
- const ancestors=async()=>{for(let current=directory;;current=path.dirname(current)){const stat=await fs.lstat(current);if(!stat.isDirectory()||stat.isSymbolicLink())throw Error('Report object ancestor changed');if(path.dirname(current)===current)break;}};await ancestors();
- const before=await fs.lstat(file,{bigint:true});if(!before.isFile()||before.nlink!==1n||before.size!==BigInt(report.byteLength))throw Error('Report object is not an immutable regular file');
- const handle=await fs.open(file,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
- try{
-  const opened=await handle.stat({bigint:true});if(opened.dev!==before.dev||opened.ino!==before.ino||opened.size!==before.size||opened.mtimeNs!==before.mtimeNs||opened.ctimeNs!==before.ctimeNs||opened.nlink!==1n)throw Error('Report object changed during read');
-  const buffer=Buffer.alloc(report.byteLength+1);let offset=0;while(offset<buffer.length){const {bytesRead}=await handle.read(buffer,offset,buffer.length-offset,offset);if(!bytesRead)break;offset+=bytesRead;}const bytes=buffer.subarray(0,offset),after=await handle.stat({bigint:true});await ancestors();const entry=await fs.lstat(file,{bigint:true});
-  for(const current of [after,entry])if(current.dev!==opened.dev||current.ino!==opened.ino||current.size!==opened.size||current.mtimeNs!==opened.mtimeNs||current.ctimeNs!==opened.ctimeNs||current.nlink!==1n)throw Error('Report bytes changed');
-  if(bytes.length!==report.byteLength||hash(bytes)!==report.digest)throw Error('Report bytes changed');
-  current();
-  return bytes;
- }finally{await handle.close();}
+ const bytes=await store.readObject(report.digest);
+ if(bytes.length!==report.byteLength||hash(bytes)!==report.digest)throw Error('Report bytes changed');
+ current();return bytes;
 }

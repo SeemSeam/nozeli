@@ -4,7 +4,8 @@ import os from 'node:os';
 import {spawn,execFileSync} from 'node:child_process';
 import {once} from 'node:events';
 import assert from 'node:assert/strict';
-import {Controller} from '../src/agents/managed/controller.mjs';
+import {openTestController,testStorageOptions} from './project-storage.fixture.mjs';
+import {readManagedState} from '../src/agents/managed/managed-storage.mjs';
 import {auditRuntime} from '../src/agents/managed/runtime-audit.mjs';
 import {recoverProvider} from '../src/agents/managed/process-ownership.mjs';
 import {assertSlots,assertNoReplay,assertReview} from './complex-routing-evidence.mjs';
@@ -21,7 +22,7 @@ const check=(name,fn)=>{fn();checks.push(name);console.log(JSON.stringify({check
 const wait=async(fn,label,{allowFailure=false}={})=>{stage=label;const until=Date.now()+720000;while(Date.now()<until){if(await fn())return;if(!allowFailure){const f=c.store.state.jobs.find(j=>j.status==='failed');if(f)throw Error(label+': '+f.error);}await sleep(100);}throw Error('timeout: '+label);};
 if(isChild){
  try{
-  await fs.mkdir(content,{recursive:true});await fs.writeFile(path.join(content,'input.txt'),'alpha\nbeta\ngamma\n');c=await Controller.open(options);await c.store.mutate(()=>{c.store.state.limit=2;});await c.start();
+  await fs.mkdir(content,{recursive:true});await fs.writeFile(path.join(content,'input.txt'),'alpha\nbeta\ngamma\n');c=await openTestController(options);await c.store.mutate(()=>{c.store.state.limit=2;});await c.start();
   for(const name of ['故障A','故障B']){await c.send('frontdesk',`新建全新独立任务，严格命名“${name}”，不是其他任务的补充。读取input.txt，写${name==='故障A'?'a':'b'}.md，按我指定的前缀编号三行；前缀未指定，必须先发布problem问我，然后结束当前回合等待。禁止Git、CCB、tmux和其他Agent。`);await wait(()=>c.store.state.works.some(w=>w.name===name&&w.status==='paused')&&!c.running.size,'question:'+name);}
   const works=c.snapshot().works;const sessions=await Promise.all(works.map(w=>c.session(w.id)));
   const started=sessions.map(s=>once(s,'turn-started'));
@@ -35,7 +36,7 @@ if(isChild){
   const child=spawn(process.execPath,[new URL(import.meta.url).pathname,'child',root],{env:process.env,stdio:['ignore','pipe','pipe']});let log='';for(const s of [child.stdout,child.stderr])s.on('data',x=>log+=x);let timer;const exit=await Promise.race([once(child,'close').then(([code,signal])=>({code,signal})),new Promise((_,reject)=>{timer=setTimeout(()=>{child.kill('SIGKILL');reject(Error('child bounded startup timeout'));},1500000);})]).finally(()=>clearTimeout(timer));await fs.writeFile(path.join(root,'evidence/child.log'),log);
   check('independent real host SIGKILL after two acknowledged native worker turns',()=>assert.equal(exit.signal,'SIGKILL'));
   const before=JSON.parse(await fs.readFile(path.join(root,'evidence/prekill.json'))).state;
-  c=await Controller.open(options);
+  c=await openTestController(options);
   check('stale host recovery retains both slots, original threads and recovery todos without replay',()=>{assertNoReplay(before,c.snapshot());assertSlots(c.snapshot(),2);for(const w of before.works){assert.equal(c.store.find(w.id).status,'paused');assert.ok(c.store.state.todos.some(t=>t.workId===w.id&&t.kind==='recovery'&&t.status==='open'));}for(const j of before.jobs.filter(j=>j.status==='running'))assert.equal(c.store.state.jobs.find(x=>x.id===j.id).status,'interrupted');});
   await write('recovered-before-input',c.snapshot());await c.start();
   for(const w of before.works)await c.send(w.id,`宿主被终止，用户明确要求在原会话继续。先核对input.txt和实际已写文件，保留已发生结果，不重复不必要写入。最终确保${w.name==='故障A'?'a':'b'}.md包含${w.name}前缀、三行编号，读回验证并发布result。禁止Git/CCB/tmux。`);
@@ -50,7 +51,7 @@ if(isChild){
  finally{
   try{await c?.stop();}catch(e){failure??=e;}
   // On an early parent failure, recover only provider records in this new owned lab.
-  try{const saved=JSON.parse(await fs.readFile(path.join(runtime,'state.json')));for(const record of Object.values(saved.providers||{}))await recoverProvider(record,runtime);for(const dir of await fs.readdir(path.join(runtime,'agents')))await fs.rm(path.join(runtime,'agents',dir,'auth.json'),{force:true});}catch(e){failure??=e;}
+  try{const {storage,projectId}=await testStorageOptions(options),saved=await readManagedState(storage,projectId);for(const record of Object.values(saved.providers||{}))await recoverProvider(record,runtime);for(const dir of await fs.readdir(path.join(runtime,'agents')))await fs.rm(path.join(runtime,'agents',dir,'auth.json'),{force:true});}catch(e){failure??=e;}
   const audit=await auditRuntime(runtime);if(audit.processes.length||audit.authCopies.length)failure??=Error('cleanup failed');const result={status:failure?'FAIL':'PASS',root,stage,checks,error:failure?.message,audit,cli:execFileSync('codex',['--version'],{encoding:'utf8'}).trim(),node:process.version,platform:os.platform(),scope:'real Backend SIGKILL/two native worker turns; no GUI'};await write('result',result);console.log(JSON.stringify(result));if(failure)process.exitCode=1;
  }
 }

@@ -35,7 +35,7 @@
       <button id="open-folder" class="text-button" type="button">打开项目文件夹</button>
       <p class="file-foot">真实文件 · 自动保存</p>
     </aside>
-    <main class="reader" id="reader">
+    <main class="reader" id="reader" tabindex="-1">
       <header class="desk-header"><span id="file-section-label" class="file-section-label">工作区</span><h1 id="subject-title">工作区</h1><div class="desk-tools" aria-label="文件控制"><span id="word-zoom" hidden aria-label="Word 页面缩放"><button id="word-zoom-out" aria-label="缩小 Word 页面">−</button><button id="word-zoom-reset" title="恢复 100%">100%</button><button id="word-fit" title="适应窗口宽度">适应</button><button id="word-zoom-in" aria-label="放大 Word 页面">＋</button></span><button id="word-region" type="button" hidden aria-pressed="false" title="拖动框选 Word 区域">区域框选</button><button id="font-smaller" aria-label="缩小正文" title="缩小正文">A−</button><span id="font-size-label" class="font-size-label" aria-live="polite">14px</span><button id="font-larger" aria-label="放大正文" title="放大正文">A＋</button><button id="open-beside" title="在旁边打开" aria-label="在旁边打开">◫</button><button id="close-subject" hidden title="关闭当前内容" aria-label="关闭当前内容">×</button></div></header>
       <button id="focus-exit" class="focus-exit" type="button" hidden aria-label="退出专注阅读" title="退出专注阅读">⛶</button>
       <div id="work-surface" class="work-surface">
@@ -120,6 +120,7 @@
         <button type="button" data-settings-section="settings-models">默认模型</button>
         <button type="button" data-settings-section="settings-agents">Agent 资源</button>
         <button type="button" data-settings-section="settings-general">快捷键与初始化</button>
+        <button type="button" data-settings-section="settings-recovery">本机恢复 <span class="badge" id="settings-recovery-count" hidden></span></button>
         <div class="settings-scope-label">当前项目设置 <small id="settings-project-name">未打开项目</small><details><summary>项目路径</summary><span id="settings-project-path"></span><button type="button" id="settings-copy-project-path">复制路径</button></details></div>
         <button type="button" data-settings-section="settings-project-reading">阅读与对话</button>
         <button type="button" data-settings-section="settings-project-workspace">工作区</button>
@@ -144,6 +145,11 @@
           <h3>快捷键与初始化</h3><p class="settings-hint">正文与对话的显示偏好位于当前项目的“阅读与对话”；各文件的常用操作仍在内容附近。</p>
           <div class="settings-card"><h4>Nozeli 配置初始化</h4><p>首次使用可选择独立配置或明确同意导入系统 OMP；完成后不可重复导入。不会自动复制登录凭据。</p><button type="button" id="settings-initialize">查看初始化状态</button></div>
           <p class="settings-hint">发送：Ctrl / Cmd + Enter；换行：Enter。Zen：Ctrl / Cmd + Shift + F11；退出：Esc。</p>
+        </section>
+        <section id="settings-recovery" aria-label="本机恢复" hidden>
+          <h3>本机恢复</h3>
+          <p class="settings-hint">以下内容保留在本机，不表示已写回项目。查看和导出不会重新连接或创建原目录。</p>
+          <div id="settings-recovery-list"></div>
         </section>
       </div>
     </div>

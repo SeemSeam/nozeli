@@ -35,7 +35,37 @@ for (const [id, module] of Object.entries(languageDefinitions)) {
 }
 const completionProviders = new Map();
 const lspRequest = (state, action, extra = {}) => state?.projectId && /\.(?:[cm]?js|jsx|ts|tsx|tex|bib|sty|cls)$/i.test(state.relPath) ? window.nozeli.invoke('lsp.request', { projectId: state.projectId, relPath: state.relPath, text: state.model.getValue(), version: state.version, action, ...extra }) : Promise.resolve({ ok: false });
-installTex(monaco, lspRequest).catch(error => console.error('TeX highlighting', error));
+installTex(monaco, lspRequest).catch(error => console.error('TeX highlighting', error)).finally(applyMonacoAppearance);
+// Editor chrome follows the effective appearance (mode x palette); token colors come
+// from Monaco's built-in vs/vs-dark rule sets, which are complete for the Monarch
+// grammars registered above. TeX keeps base-theme tokens this round (readable, plain).
+const MONACO_THEMES = {
+  sage: { light: { paper: '#fffefa', ink: '#263932', muted:'#65766d', line: '#e1e6de', selection: '#eaf1e7', active: '#f4f6f0' }, dark: { paper: '#222b25', ink: '#e1e9e3', muted:'#a9b8ad', line: '#435148', selection: '#34493a', active: '#2a3530' } },
+  slate: { light: { paper: '#fbfcfe', ink: '#263544', muted:'#586b7e', line: '#ccd6e0', selection: '#e4edf6', active: '#f0f4f8' }, dark: { paper: '#222d3a', ink: '#e3eaf2', muted:'#acbdcf', line: '#46596d', selection: '#30465f', active: '#2a3542' } },
+};
+function applyMonacoAppearance() {
+  const root = document.documentElement;
+  const mode = root.dataset.theme === 'dark' ? 'dark' : 'light';
+  const palette = root.dataset.palette === 'slate' ? 'slate' : 'sage';
+  const c = MONACO_THEMES[palette][mode];
+  const id = 'nozeli-' + palette + '-' + mode;
+  monaco.editor.defineTheme(id, {
+    base: mode === 'dark' ? 'vs-dark' : 'vs', inherit: true, rules: [],
+    colors: {
+      'editor.background': c.paper, 'editor.foreground': c.ink,
+      'editorLineNumber.foreground': c.muted, 'editorLineNumber.activeForeground': c.ink,
+      'editor.lineHighlightBackground': c.active,
+      'editor.selectionBackground': c.selection, 'editor.inactiveSelectionBackground': c.selection,
+      'editorGutter.background': c.paper, 'editorIndentGuide.background1': c.line,
+      'editorWidget.background': c.paper, 'editorWidget.border': c.line,
+      'editorSuggestWidget.selectedBackground': c.selection,
+      'editorOverviewRuler.border': c.line, 'minimap.background': c.paper,
+    },
+  });
+  monaco.editor.setTheme(id);
+}
+applyMonacoAppearance();
+document.addEventListener('appearance:change', applyMonacoAppearance);
 const fallbackCompletions = (id, model, range) => {
   const symbols = new Set(documentSymbols(model.getValue()).map(item => item.name));
   return { suggestions: completionLabelsFor(id, model.getValue()).map(label => ({ label, insertText: label, kind: symbols.has(label) ? monaco.languages.CompletionItemKind.Function : monaco.languages.CompletionItemKind.Keyword, range })) };

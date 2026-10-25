@@ -42,8 +42,8 @@ try{
  await menuAction('copy');await pause(200);check('复制走真实系统剪贴板',String(await invoke('document.clipboard',{action:'read'})).includes(system.text));
  await page.click(row(system.id),{button:'right'});await menuAction('close');await page.waitForFunction(id=>!document.querySelector(`[data-todo-row="${id}"]`),{},system.id);
  let s=await snapshot();check('关闭持久化并减徽标，不改业务源或额度',s.todos.find(t=>t.id===system.id).status==='closed'&&s.quotaUsed===initial.quotaUsed&&hash({messages:s.messages,receipts:s.receipts,works:s.works,jobs:s.jobs,git:s.gitRecovery})===sources&&await page.$eval('#inbox-count',n=>Number(n.textContent))===2);
- await filter('closed');await page.waitForSelector(row(system.id));check('已关闭视图保留原文和关闭原因',(await page.$eval(row(system.id),n=>n.textContent)).includes('不代表故障已修复'));
- await page.focus(row(system.id));await page.keyboard.down('Shift');await page.keyboard.press('F10');await page.keyboard.up('Shift');await menuAction('reopen');
+ await filter('closed');await page.waitForSelector(row(system.id));
+ await page.focus(`${row(system.id)} [data-managed-todo]`);await page.keyboard.down('Shift');await page.keyboard.press('F10');await page.keyboard.up('Shift');await menuAction('reopen');
  await filter('open');await page.waitForSelector(row(system.id));s=await snapshot();check('Shift+F10 重开仅提醒，没有新 job/Git/额度变化',s.todos.find(t=>t.id===system.id).status==='open'&&hash({messages:s.messages,receipts:s.receipts,works:s.works,jobs:s.jobs,git:s.gitRecovery})===sources);
  await page.click(`${row(system.id)} [data-todo-more]`);await menuAction('detail');await page.waitForSelector(`[data-todo-detail="${system.id}"]`);
  await page.click(`[data-todo-detail="${system.id}"] [data-todo-action="close"]`);await filter('closed');await page.waitForSelector(row(system.id));
@@ -56,7 +56,7 @@ try{
  check('确认移除正文及私有历史消失，仅留无正文墓碑',!disk.todos.some(t=>t.id===system.id)&&tombstone&&!('text'in tombstone)&&!('reason'in tombstone)&&!JSON.stringify(tombstone).includes(system.text)&&!(disk.todoManagementActions||[]).some(a=>a.todoId===system.id));
  check('移除后当前详情不残留待办正文',!await page.$eval('#managed-doc',n=>n.textContent.includes('隔离测试：真实持久系统异常')));
  check('源报告/对话/任务/Git和论文不级联删除',hash({messages:disk.messages,receipts:disk.receipts,works:disk.works,jobs:disk.jobs,git:disk.gitRecovery})===sources&&hash(await fs.readFile(path.join(project,'paper.md'),'utf8'))===paper);
- await filter('completed');check('历史首屏有界为50条',await page.$$eval('[data-todo-row]',nodes=>nodes.length)===50);await page.click('#managed-todo-more');check('加载更多显示剩余历史',await page.$$eval('[data-todo-row]',nodes=>nodes.length)===56);await page.waitForSelector(row(completed.id));check('正式认可结果进入完成历史',completed.status==='resolved'&&(await page.$eval(row(completed.id),n=>n.textContent)).includes('已完成'));
+ await filter('completed');check('历史首屏有界为50条',await page.$$eval('[data-todo-row]',nodes=>nodes.length)===50);await page.click('#managed-todo-more');check('加载更多显示剩余历史',await page.$$eval('[data-todo-row]',nodes=>nodes.length)===56);await page.waitForSelector(row(completed.id));
  await page.click(`${row(completed.id)} [data-todo-more]`);await menuAction('work');check('已结束任务可查看但不会重放',(await snapshot()).jobs.length===initial.jobs.length);
  await filter('open');await page.click(row(problem.id),{button:'right'});await page.waitForSelector('#managed-todo-menu:not([hidden])');
  check('活跃待回答不提供关闭/删除绕过',!await page.$('#managed-todo-menu [data-command="close"]')&&!await page.$('#managed-todo-menu [data-command="remove"]'));

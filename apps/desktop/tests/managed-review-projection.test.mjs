@@ -9,10 +9,11 @@ const todo=(id,extra={})=>({id,workId:'w',kind:'result',status:'open',revision:2
 test('review projection preserves backend identity, binding and fields without mutating history',()=>{
  const s=state();s.works.push(work('w',{result:{objectId:'new-object',revision:2}}));
  s.todos.push(todo('old',{revision:1}),todo('new',{agentId:'original-worker',readAt:'2026-10-13',custom:{source:'kept'}}));
- s.receipts.push({objectId:'new-object',text:'# 完成\n\n**已核对** [来源](sources.md)。\n```text\ninternal log\n```'});
+ s.receipts.push({objectId:'new-object',report:{format:'html-static',excerpt:'完成 已核对 来源。'}});
  const before=structuredClone(s),rows=managedReviewTodos(s);
  assert.deepEqual(rows.map(t=>t.id),['new']);assert.equal(rows[0].agentId,'original-worker');assert.deepEqual(rows[0].custom,{source:'kept'});
- assert.equal(rows[0].kind,'result');assert.equal(rows[0].actionableKind,'result');assert.equal(rows[0].title,'核对文献 · 完成报告 · 第 2 版');assert.equal(rows[0].phase,'报告待审查');assert.equal(rows[0].excerpt,'完成 已核对 来源。');
+ assert.equal(rows[0].kind,'result');assert.equal(rows[0].actionableKind,'result');
+ assert.equal(rows[0].excerpt,'完成 已核对 来源。');assert(!rows[0].excerpt.includes('<'));
  assert.notEqual(rows[0],s.todos[1]);assert.deepEqual(s,before);
 });
 
@@ -53,7 +54,7 @@ test('current paused problem and frontdesk clarification remain distinct with or
 });
 
 test('work summary stays the requested goal rather than report or error text',()=>{
- const s=state();s.works.push(work());s.todos.push(todo('report'));s.receipts.push({id:'receipt',workId:'w',kind:'result',objectId:'report-object',text:'结果与目标不同'});
+ const s=state();s.works.push(work());s.todos.push(todo('report'));s.receipts.push({id:'receipt',workId:'w',kind:'result',objectId:'report-object',report:{format:'markdown',excerpt:'结果与目标不同'}});
  let record=managedWorkRecords(s)[0];assert.equal(record.description,'核对引用并补全来源');assert.equal(record.todoId,'report');
  s.works[0].status='ended';s.works[0].closure={phase:'blocked',decision:'accept',error:'hook rejected'};
  record=managedWorkRecords(s)[0];assert.equal(record.description,'核对引用并补全来源');assert.equal(record.closureError,'hook rejected');
@@ -78,3 +79,27 @@ test('discard and historic unknown disposition preserve report entry without inv
 });
 
 test('empty legacy state has no synthetic actionable todos',()=>{assert.deepEqual(managedReviewTodos({}),[]);});
+
+function failedPublication(){
+ const s=state();s.works.push(work('w',{status:'paused',result:{objectId:'saved-object',revision:2}}));
+ s.todos.push(todo('saved',{objectId:'saved-object'}));
+ s.receipts.push({workId:'w',kind:'result',objectId:'saved-object',revision:2,jobId:'published-job',report:{format:'html-static',excerpt:'Saved candidate'}});
+ s.jobs.push({id:'published-job',target:'w',revision:2,type:'initial',status:'failed',error:'collab-drain-timeout'});
+ return s;
+}
+test('saved publication remains readable when its own round fails, without making Work successful',()=>{
+ const s=failedPublication(),before=structuredClone(s),rows=managedReviewTodos(s),record=managedWorkRecords(s)[0];
+ assert.deepEqual(rows.map(row=>row.id),['saved']);assert.equal(rows[0].settlementIssue.jobId,'published-job');assert.equal(rows[0].settlementIssue.status,'failed');
+ assert.equal(record.settlementIssue.objectId,'saved-object');assert.equal(record.status,'paused');assert.deepEqual(s,before);
+});
+test('saved result failure binding rejects unrelated receipts, targets and revisions',()=>{
+ for(const alter of [s=>{s.receipts[0].workId='other';},s=>{s.receipts[0].objectId='other';},s=>{s.receipts[0].revision=1;},s=>{s.jobs[0].target='other';},s=>{s.jobs[0].revision=1;},s=>{s.works[0].result.revision=1;},s=>{s.receipts=[];}]){
+  const s=failedPublication();alter(s);assert.deepEqual(managedReviewTodos(s),[]);assert(!managedWorkRecords(s)[0].settlementIssue);
+ }
+});
+test('saved failed report does not expose review during new active input or override ending',()=>{
+ const s=failedPublication();s.jobs.push({id:'new-input',target:'w',type:'manual',revision:2,status:'queued'});assert.deepEqual(managedReviewTodos(s),[]);
+ s.jobs.pop();s.jobs[0].status='completed';assert.deepEqual(managedReviewTodos(s),[]);
+ s.jobs[0].status='interrupted';assert.equal(managedReviewTodos(s)[0].settlementIssue.status,'interrupted');
+ s.works[0].status='ended';assert.deepEqual(managedReviewTodos(s),[]);assert.equal(managedWorkRecords(s)[0].status,'ended');
+});

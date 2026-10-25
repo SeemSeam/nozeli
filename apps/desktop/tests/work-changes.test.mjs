@@ -7,6 +7,7 @@ import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {WorkChanges} from '../src/agents/managed/work-changes.mjs';
 import {ExecutionWorkspace} from '../src/agents/managed/execution-workspace.mjs';
+import {ProjectStorage} from '../src/main/project-storage.mjs';
 
 const exec = promisify(execFile);
 async function git(cwd, args) {
@@ -37,9 +38,12 @@ async function fixture(t) {
  const candidateCommit = await str(worker, ['rev-parse', 'HEAD']);
  await write('user.txt', 'staged by user\n'); await git(repo, ['add', 'user.txt']); await write('user.txt', 'dirty after staging\n'); await write('untracked.txt', 'untouched untracked\n');
  const commonDir = await fs.realpath(path.join(repo, '.git'));
- const input = {projectId: 'project-a', workId: 'work-a', revision: 1, jobId: 'job-a', receiptId: 'receipt-a', repo, commonDir, inputCommit, candidateCommit};
- const changes = new WorkChanges(runtimeRoot);
- return {root, repo, worker, runtimeRoot, input, changes};
+ const portable = path.join(root, 'portable'); await fs.mkdir(portable);
+ const storage = new ProjectStorage(path.join(root, 'profile')); t.after(() => storage.db.close());
+ const projectId = (await storage.register(portable)).id, state = {receipts: []};
+ const input = {projectId, workId: 'work-a', revision: 1, jobId: 'job-a', receiptId: 'receipt-a', repo, commonDir, inputCommit, candidateCommit};
+ const options = {runtimeRoot, storage, projectId, state}, changes = new WorkChanges(options);
+ return {root, repo, worker, runtimeRoot, portable, storage, projectId, state, options, input, changes};
 }
 async function userState(f) {
  return {head: await str(f.repo, ['rev-parse', 'HEAD']), index: await fs.readFile(path.join(f.repo, '.git', 'index')), user: await fs.readFile(path.join(f.repo, 'user.txt')), untracked: await fs.readFile(path.join(f.repo, 'untracked.txt')), refs: await str(f.repo, ['show-ref'])};
@@ -73,13 +77,14 @@ test('freezes real paths, rename, empty, deletion, mode, special files, binary a
  await assert.rejects(fs.stat(path.join(f.changes.evidenceRepo, 'objects', 'info', 'alternates')), {code: 'ENOENT'});
 });
 
-test('source worktree/ref removal and both repositories GC preserve exact archived sides after cold reopen', async t => {
+test('project object closure survives removal of all execution evidence and source repositories after cold reopen', async t => {
  const f = await fixture(t), {changeSetId} = await f.changes.capture(f.input), files = await allFiles(f.changes, changeSetId);
  const expected = await Promise.all(files.map(file => f.changes.read({changeSetId, fileId: file.fileId})));
  await removeSource(f); await assert.rejects(git(f.repo, ['cat-file', '-e', f.input.candidateCommit]));
- await git(f.changes.evidenceRepo, ['gc', '--prune=now']);
- const reopened = new WorkChanges({runtimeRoot: f.runtimeRoot}); assert.equal((await reopened.verify(changeSetId)).verified, true);
+ await fs.rm(f.runtimeRoot, {recursive: true}); await fs.rm(f.repo, {recursive: true});
+ const reopened = new WorkChanges({...f.options, runtimeRoot: path.join(f.root, 'new-runtime')}); assert.equal((await reopened.verify(changeSetId)).verified, true);
  assert.deepEqual(await Promise.all(files.map(file => reopened.read({changeSetId, fileId: file.fileId}))), expected);
+ await assert.rejects(fs.stat(reopened.root), {code: 'ENOENT'});
 });
 
 test('list pagination and byte/line budgets are explicit; file capabilities never accept arbitrary path/ref or cross-work binding', async t => {
@@ -108,19 +113,21 @@ for (const window of ['before-pack', 'after-pack', 'after-refs']) test('archive 
  const intents = await fs.readdir(path.join(f.changes.root, 'intents')); assert.equal(intents.length, 1); const id = intents[0].replace(/\.json$/, '');
  await assert.rejects(f.changes.verify(id), {code: 'CHANGES_UNAVAILABLE'});
  if (window !== 'before-pack') await removeSource(f);
- const reopened = new WorkChanges(f.runtimeRoot), recovered = await reopened.recover(id);
+ const reopened = new WorkChanges(f.options), recovered = await reopened.recover(id);
  assert.equal(recovered.verified, true); assert.equal(recovered.total, 9);
 });
 
-test('missing archived pack or forged file index refuses verification/read without live filesystem reconstruction', async t => {
+test('published manifest and file object corruption refuse reads without live reconstruction', async t => {
  const f = await fixture(t), {changeSetId} = await f.changes.capture(f.input), files = await allFiles(f.changes, changeSetId);
- const receiptPath = f.changes.file(changeSetId), original = await fs.readFile(receiptPath), receipt = JSON.parse(original);
- receipt.files[0].path = '../../secret'; await fs.writeFile(receiptPath, JSON.stringify(receipt));
- await assert.rejects(f.changes.verify(changeSetId), {code: 'CHANGES_CORRUPT'}); await fs.writeFile(receiptPath, original);
- const packRoot = path.join(f.changes.evidenceRepo, 'objects', 'pack'), packs = (await fs.readdir(packRoot)).filter(name => name.endsWith('.pack')); assert.equal(packs.length, 1);
- await fs.unlink(path.join(packRoot, packs[0]));
- await assert.rejects(new WorkChanges(f.runtimeRoot).verify(changeSetId));
- await assert.rejects(f.changes.read({changeSetId, fileId: files[0].fileId}));
+ const reference = await f.storage.getProject(f.projectId, 'managed_change_sets', changeSetId);
+ const objects = await f.storage.objects(f.projectId), manifestPath = objects.location(reference.digest);
+ const original = await fs.readFile(manifestPath), receipt = JSON.parse(original);
+ receipt.files[0].path = '../../secret'; await fs.writeFile(manifestPath, JSON.stringify(receipt));
+ await assert.rejects(f.changes.verify(changeSetId)); await assert.rejects(f.changes.list({changeSetId})); await fs.writeFile(manifestPath, original);
+ const edit = files.find(file => file.path === 'edit.txt');
+ await fs.unlink(objects.location(edit.after.object.digest));
+ await assert.rejects(new WorkChanges(f.options).verify(changeSetId));
+ await assert.rejects(f.changes.read({changeSetId, fileId: edit.fileId}));
 });
 
 test('source missing objects, repository mismatch and external object borrowing cannot produce verified receipts', async t => {
@@ -133,7 +140,7 @@ test('source missing objects, repository mismatch and external object borrowing 
 });
 
 test('input baseline includes user dirty/staged material but worker diff excludes unchanged input overlays', async t => {
- const f = await fixture(t), store = {root: path.join(f.root, 'execution-runtime'), content: f.repo, state: {works: [{id: 'actual', revision: 1}]}};
+ const f = await fixture(t), store = {root: path.join(f.root, 'execution-runtime'), content: f.repo, storage: f.storage, projectId: f.projectId, state: {works: [{id: 'actual', revision: 1}]}};
  const execution = new ExecutionWorkspace(store), m = await execution.prepare('actual');
  await fs.writeFile(path.join(m.directory, 'edit.txt'), 'actual worker result\n');
  const {candidate} = await execution.publish(store.state.works[0], {id: 'actual-job'});
@@ -160,4 +167,42 @@ test('new candidate gets separate immutable identity and viewing never invokes c
  const current = (await allFiles(f.changes, second.changeSetId)).find(file => file.path === 'edit.txt');
  assert.equal((await f.changes.read({changeSetId: second.changeSetId, fileId: current.fileId})).after.text, 'second revision\n');
  await assert.rejects(fs.stat(marker), {code: 'ENOENT'});
+});
+
+test('publication retries preserve immutable references and discard uses current project state only', async t => {
+ const f = await fixture(t), first = await f.changes.capture(f.input);
+ const reference = await f.storage.getProject(f.projectId, 'managed_change_sets', first.changeSetId);
+ assert.deepEqual(await f.changes.capture(f.input), first);
+ assert.deepEqual(await f.storage.getProject(f.projectId, 'managed_change_sets', first.changeSetId), reference);
+ f.state.receipts.push({changeSetId: first.changeSetId});
+ await assert.rejects(f.changes.discardUnpublished(first.changeSetId, f.input), {code: 'CHANGES_REFERENCED'});
+ const noState = new WorkChanges({...f.options, state: undefined});
+ await fs.writeFile(path.join(f.runtimeRoot, 'state.json'), JSON.stringify({receipts: []}));
+ await assert.rejects(noState.discardUnpublished(first.changeSetId), {code: 'CHANGES_RECOVERY_HELD'});
+ const wrongProject = new WorkChanges({...f.options, projectId: 'wrong-project'});
+ await assert.rejects(wrongProject.list({changeSetId: first.changeSetId}));
+});
+
+test('failed project manifest publication recovers local evidence without publishing an incomplete closure', async t => {
+ const f = await fixture(t), put = f.storage.putProject.bind(f.storage);
+ f.storage.putProject = async () => {throw Object.assign(new Error('project offline'), {code: 'PROJECT_ROOT_MISSING'});};
+ await assert.rejects(f.changes.capture(f.input), {code: 'PROJECT_ROOT_MISSING'});
+ const intents = await fs.readdir(path.join(f.changes.root, 'intents')), changeSetId = intents[0].replace(/\.json$/, '');
+ await assert.rejects(f.changes.list({changeSetId}), {code: 'CHANGES_UNAVAILABLE'});
+ f.storage.putProject = put;
+ await removeSource(f);
+ const recovered = await new WorkChanges(f.options).recover(changeSetId);
+ assert.equal(recovered.verified, true);
+ assert.equal((await f.changes.list({changeSetId})).total, 9);
+});
+
+test('discard releases only unreferenced local evidence and preserves immutable project closure', async t => {
+ const f = await fixture(t), {changeSetId} = await f.changes.capture(f.input);
+ const reference = await f.storage.getProject(f.projectId, 'managed_change_sets', changeSetId);
+ const files = await allFiles(f.changes, changeSetId), expected = await Promise.all(files.map(file => f.changes.read({changeSetId, fileId: file.fileId})));
+ assert.deepEqual(await f.changes.discardUnpublished(changeSetId, f.input), {changeSetId, discarded: true});
+ await assert.rejects(fs.stat(f.changes.file(changeSetId)), {code: 'ENOENT'});
+ assert.deepEqual(await f.storage.getProject(f.projectId, 'managed_change_sets', changeSetId), reference);
+ await fs.rm(f.runtimeRoot, {recursive: true});
+ assert.deepEqual(await Promise.all(files.map(file => f.changes.read({changeSetId, fileId: file.fileId}))), expected);
 });

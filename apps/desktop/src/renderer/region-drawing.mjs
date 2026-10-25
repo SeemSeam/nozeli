@@ -46,7 +46,15 @@ export function mountDrawingEditor({getRect,getViewport,container=document.body,
  const up=e=>{if(area.hasPointerCapture(e.pointerId))area.releasePointerCapture(e.pointerId);completeStroke();};area.onpointerup=up;area.onpointercancel=up;
  undo.onclick=()=>{completeStroke();if(history.length){future.push(structuredClone(data.strokes));data.strokes=history.pop();changed();}};
  redo.onclick=()=>{completeStroke();if(future.length){history.push(structuredClone(data.strokes));data.strokes=future.pop();changed();}};
- cancel.onclick=()=>{if(finishing||!draft)return;completeStroke();if(!fullscreen&&JSON.stringify(data.strokes)!==JSON.stringify(baseline?.strokes||[])&&!window.confirm('放弃本次笔迹修改？冻结画面和已保留草稿不会被删除。'))return;const old=baseline,target=draft;suspend();onCancel(target,old);};
+ cancel.onclick=async()=>{if(finishing||!draft)return;completeStroke();if(!fullscreen&&JSON.stringify(data.strokes)!==JSON.stringify(baseline?.strokes||[])&&!window.confirm('放弃本次笔迹修改？冻结画面和已保留草稿不会被删除。'))return;const old=baseline,target=draft;
+  // Fullscreen hosts (workspace snapshot) own retention-gated exits: the
+  // verdict only exists after awaits, so onCancel is awaited and may veto with
+  // false — the editor then stays live with strokes, dirty revision and error
+  // state intact and the host keeps handling the dialog. Any other result,
+  // and every non-fullscreen selection editor, keep the legacy
+  // suspend-then-cancel order unchanged.
+  if(fullscreen){if(await onCancel(target,old)===false)return;suspend();return;}
+  suspend();onCancel(target,old);};
  const save=async(destination)=>{if(!draft||finishing)return;completeStroke();finishing=true;paint();const target=draft;try{const image=await compositeDrawing(target.regionImage.dataUrl,data);if(draft!==target)return;const value=structuredClone(data);await (destination==='local'?onSaveLocal:onFinish)(target,value,image,{destination});if(draft===target)suspend();}catch(e){onError(e.message);}finally{finishing=false;if(draft)paint();}};
  finish.onclick=()=>void save('conversation');local.onclick=()=>void save('local');
  adjust.onclick=async()=>{if(finishing||!draft)return;completeStroke();finishing=true;paint();try{await onAdjustRange?.(draft,structuredClone(data));}catch(e){onError(e.message);}finally{finishing=false;if(draft)paint();}};

@@ -1,3 +1,4 @@
+import {openTestController,openTestWorkspace,readTestState,writeTestState,readTestObject} from './project-storage.fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -7,7 +8,7 @@ import {Controller} from '../src/agents/managed/controller.mjs';
 
 test('ending one Work retires only its exact actionable questions and recovery notices without erasing evidence',async t=>{
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'work-todo-lifecycle-'));
- const c=await Controller.open({runtimeRoot:path.join(root,'runtime'),contentRoot:path.join(root,'project'),projectHome:async()=>{}});
+ const c=await openTestController({runtimeRoot:path.join(root,'runtime'),contentRoot:path.join(root,'project'),projectHome:async()=>{}});
  t.after(async()=>{await c.stop();await fs.rm(root,{recursive:true,force:true});});
  const a=await c.store.submit('A request','brief',{name:'Alpha'}),b=await c.store.submit('B request','brief',{name:'Beta'});
  const ask=await c.enqueue('orchestrator','intake','Should Alpha be cancelled?');
@@ -25,5 +26,5 @@ test('ending one Work retires only its exact actionable questions and recovery n
  assert.equal(recovery.text,'original connection error');assert.equal(recovery.sourceJobId,'failed-original');
  assert.equal(c.store.state.todos.find(t=>t.sourceJobId===unrelated.jobId).status,'open');
  assert.equal(c.store.state.todos.find(t=>t.id==='other-recovery').status,'open');assert.deepEqual(c.store.find(b.id),bBefore);
- const persisted=JSON.parse(await fs.readFile(c.store.file,'utf8'));assert.equal(persisted.todos.find(t=>t.id===question.id).status,'cancelled');assert.equal(persisted.todos.find(t=>t.id==='old-recovery').text,'original connection error');
+ const persisted=await readTestState(c.store);assert.equal(persisted.todos.find(t=>t.id===question.id).status,'cancelled');assert.equal(persisted.todos.find(t=>t.id==='old-recovery').text,'original connection error');
 });

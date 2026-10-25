@@ -1,4 +1,6 @@
-html,body{margin:0;width:100%;height:100%;overflow:hidden}body{display:flex;flex-direction:column}#notice{font:12px system-ui;margin:0;padding:6px;background:#faf4dc;color:#66542b}#sheet{flex:1;min-height:0;width:100%}
+html,body{margin:0;width:100%;height:100%;overflow:hidden}body{display:flex;flex-direction:column}#notice{font:12px system-ui;margin:0;padding:6px;background:var(--notice-bg,#faf0dc);color:var(--notice-ink,#966419);border-bottom:1px solid var(--notice-line,#e1e6de)}#sheet{flex:1;min-height:0;width:100%}
+/* Appearance belongs to this notice only; Fortune's grid and cell colors stay native. */
+html[data-theme=light][data-palette=sage] #notice{--notice-bg:#faf0dc;--notice-ink:#966419;--notice-line:#e1e6de}html[data-theme=dark][data-palette=sage] #notice{--notice-bg:#433923;--notice-ink:#e3bd76;--notice-line:#435148}html[data-theme=light][data-palette=slate] #notice{--notice-bg:#f7eedb;--notice-ink:#855b19;--notice-line:#ccd6e0}html[data-theme=dark][data-palette=slate] #notice{--notice-bg:#443a28;--notice-ink:#e4bf7d;--notice-line:#46596d}
 .luckysheet-sheets-add,.fortune-sheet-add-row{display:none!important}
 #luckysheet-sheet-content > .fortune-sheettab-button,#luckysheet-bottom-controll-row{display:none!important}
 .fortune-context-menu{display:none!important}

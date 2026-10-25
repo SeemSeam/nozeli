@@ -9,9 +9,9 @@
 .document-diff-head>header:first-child{border-right:1px solid var(--line)}
 .document-diff-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}
 .document-diff-head #secondary-path{flex:1;max-width:none;color:var(--ink);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.document-diff-head button{flex:none;font-size:11px;min-height:25px;padding:2px 6px}
-.diff-navigation{display:flex;align-items:center;gap:3px;flex:none}
-.diff-navigation span{font-size:10px;color:var(--muted);white-space:nowrap}
+.document-diff-head button{flex:none;font-size:var(--chrome-font-size,13px);min-height:28px;padding:3px 8px}
+.diff-navigation{display:flex;align-items:center;flex-wrap:wrap;gap:6px;flex:none}
+.diff-navigation span{font-size:max(12px,calc(var(--chrome-font-size,13px) - 1px));color:var(--muted);white-space:normal}
 .document-diff-body{display:flex;flex:1;min-height:0;min-width:0;overflow:hidden}
 .document-diff .cm-editor{font-size:var(--reader-font,14px)}
 .document-diff-body .cm-mergeView .cm-mergeViewEditor{overflow:hidden}
@@ -23,6 +23,15 @@
 .documents.diff-mode .document-diff{inset:0}
 .documents .comparison-change{font-size:11px;padding:2px 5px;min-height:24px}
 .change-history-compare{font-size:11px;min-height:24px;padding:2px 7px;margin-left:auto}
-@media(max-width:640px){.document-diff-head>header{flex-wrap:wrap;gap:3px;padding:4px}.document-diff-head .document-diff-title,.document-diff-head #secondary-path{flex:1 0 100%;font-size:10px}.document-diff-head .compare-switch button{font-size:10px;padding:2px 4px}.document-diff-head button{font-size:10px}.diff-navigation span{font-size:9px}}
-.frozen-change-reader .frozen-change-versions{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-@media(max-width:640px){.frozen-change-reader .document-diff-head{grid-template-columns:minmax(0,1fr)}.frozen-change-reader .document-diff-head>header:first-child{border-right:0}.frozen-change-reader .document-diff-head>header:last-child{justify-content:space-between}.frozen-change-reader .frozen-change-versions{flex:1;font-size:10px}}
+@media(max-width:640px){.document-diff-head>header{flex-wrap:wrap;gap:6px;padding:6px}.document-diff-head .document-diff-title,.document-diff-head #secondary-path{flex:1 0 100%}.document-diff-head .compare-switch button{font-size:var(--chrome-font-size,13px);padding:3px 8px}}
+.frozen-change-reader .document-diff-head{display:flex;flex-wrap:wrap;gap:0;max-height:50%;overflow:auto;font-family:var(--chrome-font-family,system-ui,sans-serif);font-size:var(--chrome-font-size,13px)}
+.frozen-change-reader .document-diff-head>header{display:grid;grid-template-columns:auto minmax(0,1fr);box-sizing:border-box;flex:1 1 26rem;align-content:start;gap:8px;padding:8px;border-right:0;font-size:inherit}
+.frozen-change-reader .document-diff-head>header:last-of-type{grid-template-columns:minmax(0,1fr)}
+.frozen-change-reader .document-diff-title{font-size:inherit}
+.frozen-change-path{grid-column:1 / -1;min-width:0;font-size:max(12px,calc(var(--chrome-font-size,13px) - 1px))}
+.frozen-change-path summary{width:fit-content;cursor:pointer;min-height:28px;display:list-item;align-content:center}
+.frozen-change-path p{margin:4px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;user-select:text}
+.frozen-change-versions{display:flex;flex-direction:column;gap:4px;min-width:0;word-break:normal;overflow-wrap:normal;font-size:max(12px,calc(var(--chrome-font-size,13px) - 1px));color:var(--muted)}
+.frozen-change-exit-status{flex:1 0 100%;box-sizing:border-box;margin:0;padding:8px;color:var(--red);overflow-wrap:anywhere}
+.frozen-change-reader :is(button,summary):focus-visible{outline:2px solid var(--green);outline-offset:2px}
+.frozen-change-reader .diff-navigation{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;min-width:0;width:100%}

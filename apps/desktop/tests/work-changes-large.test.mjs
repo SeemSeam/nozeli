@@ -6,6 +6,7 @@ import path from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {WorkChanges} from '../src/agents/managed/work-changes.mjs';
+import {ProjectStorage} from '../src/main/project-storage.mjs';
 
 const exec = promisify(execFile);
 async function git(cwd, args) {return (await exec('git', ['-c', 'user.name=Bounded Test', '-c', 'user.email=test@example.invalid', ...args], {cwd})).stdout.trim();}
@@ -21,8 +22,11 @@ async function fixture(t) {
  await fs.writeFile(path.join(repo, 'invalid.txt'), Buffer.from([255, 254, 253]));
  await git(repo, ['add', '.']); await git(repo, ['commit', '-m', 'candidate']);
  const candidateCommit = await git(repo, ['rev-parse', 'HEAD']);
- const changes = new WorkChanges(path.join(root, 'runtime'));
- const input = {projectId: 'bounded', workId: 'w', revision: 1, jobId: 'j', receiptId: 'r', repo, commonDir: path.join(repo, '.git'), inputCommit, candidateCommit};
+ const portable = path.join(root, 'portable'); await fs.mkdir(portable);
+ const storage = new ProjectStorage(path.join(root, 'profile')); t.after(() => storage.db.close());
+ const projectId = (await storage.register(portable)).id;
+ const changes = new WorkChanges({runtimeRoot: path.join(root, 'runtime'), storage, projectId});
+ const input = {projectId, workId: 'w', revision: 1, jobId: 'j', receiptId: 'r', repo, commonDir: path.join(repo, '.git'), inputCommit, candidateCommit};
  return {root, repo, changes, input};
 }
 

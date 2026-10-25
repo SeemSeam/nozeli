@@ -18,8 +18,8 @@ button, input, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
 button:disabled, textarea:disabled { cursor: not-allowed; opacity: .72; }
 button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
-.skip { position: absolute; left: 8px; top: -40px; background: #fff; }
-.skip:focus { top: 8px; }
+.skip { position: fixed; left: 8px; top: 48px; z-index: 1100; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); color: var(--ink); white-space: nowrap; transform: translateY(calc(-100% - 56px)); -webkit-app-region: no-drag; }
+.skip:focus { transform: none; outline: 2px solid var(--green); outline-offset: 2px; }
 .app {
   display: grid;
   grid-template-columns: 52px 208px minmax(0, 1fr) 280px;
@@ -95,7 +95,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .note p { margin: 6px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .note .stale { color: var(--amber); }
 .note button { margin-left: auto; border: 0; background: transparent; color: var(--red); }
-.app.files-collapsed { grid-template-columns: 52px 38px minmax(0, 1fr) 280px; }
+.app.files-collapsed { grid-template-columns: 44px 20px minmax(0, 1fr) 288px; }
 .files-collapsed .file-tree { display: none; }
 @media (max-width: 720px) {
   body { overflow: auto; }

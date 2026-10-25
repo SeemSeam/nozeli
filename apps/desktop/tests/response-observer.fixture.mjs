@@ -1,0 +1,10 @@
+import WebSocket from 'ws';
+// Test-only main-process inspector: controlled reply delays and one-shot IPC failures.
+export async function observeResponses(port){
+ const target=(await (await fetch(`http://127.0.0.1:${port}/json/list`)).json())[0];
+ const socket=new WebSocket(target.webSocketDebuggerUrl);await new Promise((resolve,reject)=>{socket.once('open',resolve);socket.once('error',reject);});
+ let sequence=0;const pending=new Map();socket.on('message',bytes=>{const message=JSON.parse(bytes);if(message.id){pending.get(message.id)?.(message);pending.delete(message.id);}});
+ async function evaluate(expression){const id=++sequence;const response=new Promise(resolve=>pending.set(id,resolve));socket.send(JSON.stringify({id,method:'Runtime.evaluate',params:{expression,awaitPromise:true,returnByValue:true}}));const message=await response;if(message.result?.exceptionDetails)throw Error(JSON.stringify(message.result.exceptionDetails));return message.result?.result?.value;}
+ await evaluate(`(()=>{const ipc=process.mainModule.require('electron').ipcMain,original=ipc._invokeHandlers.get('nozeli:invoke');globalThis.responseObserver={holds:{},releases:{},failures:{},events:[]};ipc._invokeHandlers.set('nozeli:invoke',async(event,op,payload)=>{if(responseObserver.failures[op]){delete responseObserver.failures[op];return {ok:false,error:{code:'TEST_BIND_FAILURE',message:'Isolated binding failure'}};}const result=await original(event,op,payload);responseObserver.events.push({op,payload,result});if(responseObserver.holds[op]&&result.ok){delete responseObserver.holds[op];await new Promise(resolve=>responseObserver.releases[op]=resolve);}return result;});})()`);
+ return {failOnce:op=>evaluate(`responseObserver.failures[${JSON.stringify(op)}]=true`),hold:op=>evaluate(`responseObserver.holds[${JSON.stringify(op)}]=true`),held:op=>evaluate(`!!responseObserver.releases[${JSON.stringify(op)}]`),release:op=>evaluate(`(()=>{responseObserver.releases[${JSON.stringify(op)}]?.();delete responseObserver.releases[${JSON.stringify(op)}];})()`),events:()=>evaluate('responseObserver.events'),close:()=>socket.close()};
+}

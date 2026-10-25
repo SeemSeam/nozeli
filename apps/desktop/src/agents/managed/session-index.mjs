@@ -64,7 +64,7 @@ export function recordBusinessTimeline(prior, state) {
   }
 }
 
-/** Native journal is the content authority; this index stores identity and immutable object references. */
+/** Native journals stay local; accepted visible messages are projected into the project ledger. */
 export class SessionIndex {
   constructor(store) {
     this.store = store;
@@ -76,7 +76,7 @@ export class SessionIndex {
   }
   async initialize() {
     await fs.mkdir(this.root, {recursive:true, mode:0o700});
-    await this.store.mutate(() => { timelineState(this.store.state); });
+    await this.store.mutateNative(() => { timelineState(this.store.state); });
     await this.hydrate(this.records().slice(-200));
   }
   records() { return this.store.state.sessionIndex?.entries ?? []; }
@@ -90,7 +90,7 @@ export class SessionIndex {
     }
   }
   async object(record) {
-    if (this.cache.has(record.id)) return this.cache.get(record.id).value;
+    if (this.cache.has(record.id)&&!this.cache.get(record.id).value.unavailable) return this.cache.get(record.id).value;
     if (!/^[a-f0-9]{64}$/.test(record.objectId)) fail('TIMELINE_OBJECT', 'Invalid immutable journal reference');
     const file = path.join(this.root, record.objectId + '.json');
     const stat = await fs.lstat(file);
@@ -170,11 +170,21 @@ export class SessionIndex {
       prepared.push({record, entry, bytes:bytes.length}); prior.set(id, record);
     }
     if (!prepared.length&&!updates.length&&!manualBindings.length) return;
-    await this.store.mutate(() => {
-      const index = timelineState(this.store.state);
+    const portable=[];
+    for(const {record,entry} of prepared){
+      const message=entry.type==='message'?entry.message:null;
+      if(!message||!['assistant','user'].includes(message.role)||message.role==='user'&&record.jobId)continue;
+      const text=textOf(message.content);if(!text)continue;
+      const objectDigest=await this.store.putObject(Buffer.from(text));
+      portable.push({id:record.id,target:record.target,speaker:message.role==='assistant'?'agent':'user',text,objectDigest,jobId:record.jobId,revision:record.revision,at:record.at,status:message.isError||['error','aborted'].includes(message.stopReason)?'failed':'completed',nativeEntryDigest:record.objectId});
+    }
+    await this.store.mutateNative(() => {
+      const index = timelineState(this.store.state);index.portableMessages??=[];
+      for(const message of portable)if(!index.portableMessages.some(row=>row.id===message.id))index.portableMessages.push(message);
       for (const {record} of prepared) { record.sequence = ++index.sequence; index.entries.push(record); }
       for(const update of updates){const record=index.entries.find(r=>r.id===update.id);if(record)Object.assign(record,update);}
       for(const binding of manualBindings){index.manualAssociations??={};index.manualAssociations[binding.id]=binding;const record=index.entries.find(r=>r.id===binding.id);if(record){if(record.jobId&&record.jobId!==binding.jobId)fail('TIMELINE_OWNER','Manual entry ownership changed');if(record.epoch!==binding.epoch||record.sessionId!==binding.sessionId)fail('TIMELINE_OWNER','Manual input epoch mismatch');Object.assign(record,{jobId:binding.jobId,requestId:binding.requestId,revision:binding.revision,ownership:'verified'});}}
+      index.portableMessages=index.portableMessages.filter(message=>!(message.speaker==='user'&&index.entries.some(record=>record.id===message.id&&record.jobId)));
     });
     for (const item of prepared) this.cacheEntry(item.record.id, item.entry, item.bytes);
     for (const {record} of prepared) {
@@ -198,13 +208,14 @@ export class SessionIndex {
   }
   legacyDTO(message) {
     const state = this.store.state, job = state.jobs?.find(j => j.id === message.jobId), receipt = message.objectId && state.receipts?.find(r => r.objectId === message.objectId);
-    const attachments=message.attachments??(message.speaker==='user'?(job?.context?.imageAttachments??[]).map((ref,i)=>({digest:ref.digest,mime:ref.mime,...(ref.storage?{storage:ref.storage}:{}),name:(ref.storage==='app-data'?'涂鸦截图 ':'区域图片 ')+(i+1)})):[]);
+    const attachments=message.attachments??(message.speaker==='user'?(job?.context?.imageAttachments??[]).map((ref,i)=>({...ref,name:ref.name||'区域图片 '+(i+1)})):[]);
     const userInput=message.speaker==='user'&&job?.context?.userInput;
-    return {...message, text:userInput?.text ?? message.text ?? receipt?.report?.excerpt ?? '',...(receipt?{report:receipt.report}:{}),...(userInput?{materialSources:userInput.sources}:{}),...(message.speaker==='user'&&job?.context?.drawingSources?{drawingSources:job.context.drawingSources}:{}), sequence:state.sessionIndex?.messageSequences?.[message.id] ?? 0, source:message.speaker === 'system' || message.publication || userInput ? 'host' : 'legacy', jobId:message.jobId ?? receipt?.sourceJobId ?? null, revision:message.revision ?? receipt?.revision ?? job?.revision ?? null, workId:!['frontdesk','orchestrator'].includes(message.target) ? message.target : null, attachments,...(receipt?.changeSetId ? {changeSetId:receipt.changeSetId} : {})};
+    return {...message, text:userInput?.text ?? message.text ?? receipt?.report?.excerpt ?? '',...(receipt?{report:receipt.report}:{}),...(userInput?{materialSources:userInput.sources}:{}),...(message.speaker==='user'&&job?.context?.drawingSources?{drawingSources:job.context.drawingSources}:{}), sequence:state.sessionIndex?.messageSequences?.[message.id] ?? 0, source:message.nativeEntryDigest?'portable':message.speaker === 'system' || message.publication || userInput ? 'host' : 'legacy', jobId:message.jobId ?? receipt?.sourceJobId ?? null, revision:message.revision ?? receipt?.revision ?? job?.revision ?? null, workId:!['frontdesk','orchestrator'].includes(message.target) ? message.target : null, attachments,...(receipt?.changeSetId ? {changeSetId:receipt.changeSetId} : {})};
   }
   ordered() {
+    const nativeIds=new Set(this.records().map(record=>record.id));
     const rows = this.records().map(record => ({id:record.id, sequence:record.sequence, native:record}));
-    for (const [position,message] of (this.store.state.messages ?? []).entries()) rows.push({id:message.id, sequence:this.store.state.sessionIndex?.messageSequences?.[message.id] ?? position+1, legacy:message});
+    for (const [position,message] of (this.store.state.messages ?? []).entries()) if(!nativeIds.has(message.id))rows.push({id:message.id, sequence:this.store.state.sessionIndex?.messageSequences?.[message.id] ?? position+1, legacy:message});
     for(const delta of this.store.state.sessionIndex?.deltas??[])rows.push({id:delta.id,sequence:delta.sequence,delta});
     return rows.sort((a,b) => a.sequence - b.sequence || a.id.localeCompare(b.id));
   }

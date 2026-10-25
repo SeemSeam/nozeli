@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { pipeline } from 'node:stream/promises';
 
 const exec = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -55,12 +56,23 @@ export async function ensureGit() {
 }
 
 /** options.env replaces inherited env, preserving isolated Git callers. */
-export async function runGit(cwd, args, { env = process.env, encoding = 'buffer', maxBuffer = 64 * 1024 * 1024, timeout = 60000 } = {}) {
+export async function runGit(cwd, args, { env = process.env, encoding = 'buffer', maxBuffer = 64 * 1024 * 1024, timeout = 60000, input } = {}) {
   await ensureGit();
   const { dugite, command } = await provisioning;
   const runtimeEnv = environment(dugite, env).env;
   try {
-    return (await exec(command, args, { cwd, env: runtimeEnv, encoding, maxBuffer, timeout, windowsHide: true })).stdout;
+    const execution = exec(command, args, { cwd, env: runtimeEnv, encoding, maxBuffer, timeout, windowsHide: true });
+    if (input !== undefined) {
+      try {
+        const [result] = await Promise.all([execution, pipeline(input, execution.child.stdin)]);
+        return result.stdout;
+      } catch (error) {
+        execution.child.kill();
+        await execution.catch(() => {});
+        throw error;
+      }
+    }
+    return (await execution).stdout;
   } catch (error) {
     if (error.code === 'ENOENT' || error.code === 'EACCES' || error.code === 'ENOEXEC') throw broken(error);
     // Keep stdout/stderr/code intact for Git plumbing callers (CAS, conflicts).
