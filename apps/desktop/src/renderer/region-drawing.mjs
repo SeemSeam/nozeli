@@ -25,7 +25,16 @@ export function mountDrawingEditor({getRect,getViewport,container=document.body,
  const color=document.createElement('input');color.type='color';color.id=idPrefix+'-color';color.value='#c7362f';color.setAttribute('aria-label','画笔颜色');
  const width=document.createElement('select');width.id=idPrefix+'-width';width.setAttribute('aria-label','画笔粗细');for(const n of [2,4,8,12]){const o=document.createElement('option');o.value=n;o.textContent=n+' px';width.append(o);}width.value='4';
  const source=document.createElement('div');source.className='drawing-source';source.setAttribute('role','status');
- setIconButton(pen,'pencil',{text:'画笔',label:'画笔'});setIconButton(undo,'reset',{label:'撤销笔画'});finish.dataset.drawingAction='finish';bar.append(pen,eraser,color,width,undo,redo);if(onAdjustRange)bar.append(adjust);if(onSaveLocal)bar.append(local);bar.append(finish,cancel,source);root.append(clip,bar);container.append(root);
+ // Capsule toolbar: segmented tool group | ink settings | history | finish/exit,
+ // with the frozen-source caption folded under the controls. The capsule floats
+ // above the image — layout() positions it and never reserves layout space.
+ setIconButton(pen,'pencil',{text:'画笔',label:'画笔'});setIconButton(eraser,'eraser',{text:'擦除笔画'});setIconButton(undo,'undo',{text:'撤销'});setIconButton(redo,'redo',{text:'重做'});setIconButton(finish,'check',{text:'完成'});setIconButton(cancel,'close',{text:fullscreen?'退出':'取消'});
+ if(onAdjustRange)setIconButton(adjust,'scan',{text:'调整范围'});if(onSaveLocal)setIconButton(local,'sticky-note',{text:'仅保存本地备注'});
+ const group=(...controls)=>{const g=document.createElement('div');g.className='drawing-group';g.append(...controls);return g;};
+ const sep=()=>{const s=document.createElement('div');s.className='drawing-sep';s.setAttribute('aria-hidden','true');return s;};
+ const row=document.createElement('div');row.className='drawing-controls-row';row.append(group(pen,eraser),sep(),group(color,width),sep(),group(undo,redo));
+ if(onAdjustRange)row.append(sep(),adjust);if(onSaveLocal)row.append(local);finish.dataset.drawingAction='finish';row.append(sep(),finish,cancel);
+ bar.append(row,source);root.append(clip,bar);container.append(root);
  let data=null,baseline=null,svg=null,stroke=null,tool='pen',frame=0,history=[],future=[],draft=null,finishing=false,generation=0,disposed=false;
  const setTool=t=>{tool=t;pen.setAttribute('aria-pressed',String(t==='pen'));eraser.setAttribute('aria-pressed',String(t==='eraser'));area.dataset.tool=t;};setTool('pen');pen.onclick=()=>setTool('pen');eraser.onclick=()=>setTool('eraser');
  function paint(){svg?.remove();svg=drawingSvg(data);area.append(svg);for(const control of bar.querySelectorAll('button,input,select'))control.disabled=finishing;undo.disabled=finishing||!history.length;redo.disabled=finishing||!future.length;root.setAttribute('aria-busy',String(finishing));}

@@ -6,6 +6,7 @@
 // 完成 opens a screenshot-bound discussion card at the drawn position instead
 // of silently routing the image into the main draft. Nothing is auto-sent.
 import {mountDrawingEditor,drawingSvg} from './region-drawing.mjs';
+import {uiIcon} from './ui-icons.mjs';
 import {CAPTURE_PIXELS} from '../domain/workspace-capture.mjs';
 
 export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{}}){
@@ -22,7 +23,7 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{}}){
   let cardState=null,cardMessageDraft='',cardSavedText=null,cardSavedRect=null;
   const call=async(op,p={})=>{const result=await invoke(op,p);if(!result?.ok)throw Error(result?.error?.message||'涂鸦操作失败');return result.value;};
   const image=url=>{const im=new Image();im.src=url;return im.decode().then(()=>im);};
-  const status=text=>{if(statusEl){statusEl.textContent=text;statusEl.title=text;}};
+  const status=text=>{if(statusEl){statusEl.textContent=text;statusEl.title=text;statusEl.dataset.state=/失败|错误/.test(text)?'error':'info';}};
   const closeDialogEl=()=>{if(dialog?.open)dialog.close();};
 
   function ensure(){
@@ -34,12 +35,12 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{}}){
     Object.assign(dialog.style,{width:'100vw',height:'100dvh',maxWidth:'none',maxHeight:'none',margin:'0',padding:'0',border:'0',background:'#252925',overflow:'hidden'});
     // Compact corner chips float above the frozen image: status bottom-left,
     // recovery + exit bottom-right. No header band, no layout reserve.
-    statusEl=document.createElement('span');statusEl.dataset.snapshotStatus='true';statusEl.style.cssText='position:fixed;left:12px;bottom:10px;z-index:1300;max-width:min(60vw,520px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:#e8e4da;background:#000a;padding:4px 10px;border-radius:6px';
+    statusEl=document.createElement('span');statusEl.className='snapshot-status';statusEl.dataset.snapshotStatus='true';
     // One light recovery selector replaces the old per-record resume/drop button groups.
-    recoverRow=document.createElement('div');recoverRow.hidden=true;recoverRow.style.cssText='display:flex;gap:4px;align-items:center';
-    recoverSelect=document.createElement('select');recoverSelect.setAttribute('aria-label','恢复未完成涂鸦');recoverSelect.style.cssText='max-width:240px;height:28px;font-size:12px';
+    recoverRow=document.createElement('div');recoverRow.className='snapshot-recovery';recoverRow.hidden=true;
+    recoverSelect=document.createElement('select');recoverSelect.className='snapshot-recovery-select';recoverSelect.setAttribute('aria-label','恢复未完成涂鸦');
     recoverSelect.onchange=()=>{const id=recoverSelect.value;recoverSelect.value='';if(id&&session)void resumeRecord(id);};
-    recoverClean=document.createElement('button');recoverClean.type='button';recoverClean.textContent='清理记录';recoverClean.title='仅删除尚未交接的涂鸦恢复记录';recoverClean.style.cssText='height:28px;padding:2px 8px;font-size:12px';
+    recoverClean=document.createElement('button');recoverClean.type='button';recoverClean.className='snapshot-recovery-clean';recoverClean.textContent='清理记录';recoverClean.title='仅删除尚未交接的涂鸦恢复记录';
     recoverClean.onclick=async()=>{
       if(!session)return;
       const stale=(session.recoverable??[]).filter(r=>r?.id&&r.id!==session.captureId);
@@ -51,8 +52,8 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{}}){
       if(failed)toast(failed+' 份记录删除失败');
     };
     recoverRow.append(recoverSelect,recoverClean);
-    const bar=document.createElement('div');Object.assign(bar.style,{position:'fixed',right:'12px',bottom:'10px',zIndex:'1300',display:'flex',gap:'6px',alignItems:'center'});
-    const exit=document.createElement('button');exit.type='button';exit.textContent='退出';exit.style.cssText='padding:4px 10px';
+    const bar=document.createElement('div');bar.className='snapshot-corner';
+    const exit=document.createElement('button');exit.type='button';exit.className='snapshot-exit';exit.textContent='退出';exit.prepend(uiIcon('close'));
     exit.onclick=()=>void exitDialog();
     bar.append(recoverRow,exit);dialog.append(statusEl,bar);document.body.append(dialog);
     dialog.addEventListener('cancel',event=>{event.preventDefault();if(cardState)void backToDrawing();else void exitDialog();});
@@ -273,23 +274,22 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{}}){
   }
   function ensureCard(){
     if(card)return;
-    card=document.createElement('div');card.hidden=true;card.setAttribute('role','group');card.setAttribute('aria-label','位置讨论卡');
-    Object.assign(card.style,{position:'fixed',inset:'0',zIndex:'1250',background:'#252925',overflow:'hidden'});
-    cardBox=document.createElement('div');Object.assign(cardBox.style,{position:'absolute',background:'#fff',boxShadow:'0 0 0 1.5px #c7362f'});
+    card=document.createElement('div');card.hidden=true;card.setAttribute('role','group');card.setAttribute('aria-label','位置讨论卡');card.className='snapshot-card';
+    cardBox=document.createElement('div');cardBox.className='snapshot-card-box';
     cardImage=document.createElement('img');cardImage.alt='冻结截图';cardImage.draggable=false;
     Object.assign(cardImage.style,{display:'block',width:'100%',height:'100%',pointerEvents:'none',userSelect:'none'});
     cardOverlay=document.createElement('div');Object.assign(cardOverlay.style,{position:'absolute',inset:'0',pointerEvents:'none'});
-    cardPanel=document.createElement('div');Object.assign(cardPanel.style,{position:'absolute',display:'flex',flexDirection:'column',gap:'6px',width:'min(340px,calc(100vw - 32px))',padding:'10px',border:'1px solid #c7362f',borderRadius:'10px',background:'#fffdf6',boxShadow:'0 6px 24px #0006',color:'#292723',fontSize:'12px'});
-    const title=document.createElement('strong');title.textContent='位置讨论';title.style.fontSize='13px';
-    cardHint=document.createElement('span');cardHint.style.cssText='color:#666;max-height:56px;overflow:auto;overflow-wrap:anywhere';
-    cardText=document.createElement('textarea');cardText.placeholder='补充说明（可留空；发送仍在对话中确认）';cardText.setAttribute('aria-label','讨论说明');
-    Object.assign(cardText.style,{minHeight:'56px',resize:'vertical',font:'inherit',padding:'4px'});
-    const row=document.createElement('div');row.style.cssText='display:flex;gap:6px;flex-wrap:wrap';
-    cardSend=document.createElement('button');cardSend.type='button';cardSend.textContent='加入对话草稿';
-    cardLocal=document.createElement('button');cardLocal.type='button';cardLocal.textContent='仅保存本地';
-    cardBack=document.createElement('button');cardBack.type='button';cardBack.textContent='返回笔迹';
-    for(const b of [cardSend,cardLocal,cardBack])Object.assign(b.style,{borderRadius:'6px',padding:'4px 10px',cursor:'pointer',font:'inherit'});
-    cardSend.style.cssText+=';background:#c7362f;color:#fff;border:0';
+    // Visual language lives in region-drawing.css (snapshot-card-*): paper
+    // panel, red marker title, hint chip, pill actions. Only the computed
+    // position stays inline — layoutCard() sets left/top per stroke rect.
+    cardPanel=document.createElement('div');cardPanel.className='snapshot-card-panel';
+    const title=document.createElement('strong');title.textContent='位置讨论';title.className='snapshot-card-title';
+    cardHint=document.createElement('span');cardHint.className='snapshot-card-hint';
+    cardText=document.createElement('textarea');cardText.placeholder='补充说明（可留空；发送仍在对话中确认）';cardText.setAttribute('aria-label','讨论说明');cardText.className='snapshot-card-text';
+    const row=document.createElement('div');row.className='snapshot-card-actions';
+    cardSend=document.createElement('button');cardSend.type='button';cardSend.textContent='加入对话草稿';cardSend.className='snapshot-card-send';
+    cardLocal=document.createElement('button');cardLocal.type='button';cardLocal.textContent='仅保存本地';cardLocal.className='snapshot-card-local';
+    cardBack=document.createElement('button');cardBack.type='button';cardBack.textContent='返回笔迹';cardBack.className='snapshot-card-back';
     cardText.addEventListener('input',()=>{if(!cardState)return;changeSeq++;clearTimeout(saveTimer);saveTimer=setTimeout(()=>void enqueueWrite(),400);});
     cardText.addEventListener('compositionstart',()=>{cardText.dataset.composing='true';});
     cardText.addEventListener('compositionend',()=>{delete cardText.dataset.composing;});
