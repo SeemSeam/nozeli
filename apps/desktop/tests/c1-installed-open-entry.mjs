@@ -65,10 +65,10 @@ export async function prepareOpenEntry(env){
  else root=os.tmpdir();
  const output=await fs.mkdtemp(path.join(root,'nozeli-c1-open-'));await fs.chmod(output,0o700);
  const emptyHome=path.join(output,'empty-source-home'),emptyBin=path.join(output,'empty-bin');await fs.mkdir(emptyHome);await fs.mkdir(emptyBin);
- try{
-  const {detectProviders}=await import(pathToFileURL(path.join(entry.installed,'src/agents/detect.mjs')));
-  const preflight=await detectProviders({env:{PATH:emptyBin}});
-  if(!preflight||!Array.isArray(preflight.providers)||preflight.providers.length!==3||preflight.providers.some(p=>p.available!==false)||Object.keys(preflight.commands||{}).length)fail('PROVIDER_PREFLIGHT_FAILED');
+try{
+  const {AgentRuntime}=await import(pathToFileURL(path.join(entry.installed,'src/agents/runtime.mjs')));
+  const preflight=await new AgentRuntime({userDataDir:emptyHome}).detect();
+  if(!preflight||!Array.isArray(preflight.providers)||preflight.providers.length!==0||preflight.readOnly!==true)fail('PROVIDER_PREFLIGHT_FAILED');
   if((await fs.readdir(emptyHome)).length||(await fs.readdir(emptyBin)).length)fail('PROVIDER_HOME_NOT_EMPTY');
   return {...entry,output,emptyHome,emptyBin,preflight};
  }catch(e){await fs.writeFile(path.join(output,'entry-rejection.json'),JSON.stringify({code:e.code||'PROVIDER_PREFLIGHT_FAILED',spawned:false}));fail(e.code||'PROVIDER_PREFLIGHT_FAILED');}
