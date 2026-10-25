@@ -102,7 +102,9 @@ window.snapshotFixture={
 };
 `},bundle:true,format:'iife',platform:'browser',outfile:path.join(out,'entry.js'),loader:{'.css':'css','.ttf':'file','.woff':'file','.woff2':'file'}});
 await fs.writeFile(path.join(out,'index.html'),'<!doctype html><html><meta charset="utf-8"><title>snapshot retention fixture</title><link rel="stylesheet" href="entry.css"><body>renderer-component-only · 工作面涂鸦保留 fixture · 非真实原生捕获/Worker/模型证据<script>window.nozeli={subscribe:()=>()=>{}};</script><script src="entry.js"></script></body></html>');
-await fs.writeFile(path.join(out,'main.cjs'),`const {app,BrowserWindow}=require('electron');app.whenReady().then(()=>{const win=new BrowserWindow({show:${process.env.NOZELI_TEST_VISIBLE==='1'},width:900,height:1000,webPreferences:{contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});win.loadFile(${JSON.stringify(path.join(out,'index.html'))});});app.on('window-all-closed',()=>app.quit());`);
+// The window must be visible: hidden Wayland windows produce no frames (rAF
+// stalls) and stop acknowledging CDP input dispatches, which wedges strokes.
+await fs.writeFile(path.join(out,'main.cjs'),`const {app,BrowserWindow}=require('electron');app.whenReady().then(()=>{const win=new BrowserWindow({show:true,width:900,height:1000,webPreferences:{contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});win.loadFile(${JSON.stringify(path.join(out,'index.html'))});});app.on('window-all-closed',()=>app.quit());`);
 const ozone=process.env.NOZELI_OZONE||'wayland',flags=['--remote-debugging-port='+port,'--ozone-platform='+ozone,'--user-data-dir='+path.join(out,'profile')];
 if(process.platform==='linux'&&ozone==='wayland')flags.push('--disable-gpu');
 const child=spawn(createRequire(import.meta.url)('electron'),[path.join(out,'main.cjs'),...flags],{cwd:root,stdio:['ignore','pipe','pipe']});
@@ -127,7 +129,10 @@ try{
  const pageErrors=[];
  page.on('pageerror',error=>pageErrors.push(error.stack));
  const fixture=(fn,...args)=>page.evaluate((code,args)=>{const f=new Function('return ('+code+')')();return f(window.snapshotFixture,...args);},fn.toString(),args);
- const waitFixture=(source,label,timeout=8000)=>page.waitForFunction(new Function('return ('+source.replace(/\bfx\b/g,'window.snapshotFixture')+')'),{timeout}).then(()=>{},async error=>{throw Error(label+' timeout · status='+JSON.stringify(await fixture(fx=>fx.status()))+' · saves='+JSON.stringify(await fixture(fx=>fx.saveCalls()))+' · toasts='+JSON.stringify(await fixture(fx=>fx.toasts())));});
+ // Hidden fixture windows never produce frames, so the default rAF polling
+ // stalls after the first synchronous evaluation; poll on a timer instead.
+ // puppeteer-core 25: waitForFunction(pageFunction, options, ...args).
+ const waitFixture=(source,label,timeout=8000)=>page.waitForFunction(new Function('return ('+source.replace(/\bfx\b/g,'window.snapshotFixture')+')'),{polling:50,timeout}).then(()=>{},async error=>{throw Error(label+' timeout · status='+JSON.stringify(await fixture(fx=>fx.status()))+' · saves='+JSON.stringify(await fixture(fx=>fx.saveCalls()))+' · toasts='+JSON.stringify(await fixture(fx=>fx.toasts())));});
 
  // ── Scene A: a superseded write stays dirty; the newest revision still reaches the store.
  await fixture(fx=>fx.setSaveMode('hold'));
