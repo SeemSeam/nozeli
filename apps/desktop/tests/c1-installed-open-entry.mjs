@@ -46,7 +46,7 @@ export async function validateReleaseEntry(env){
   if(!row||typeof row.path!=='string'||!hex.test(row.sha256||'')||!/^(src|dist)\//.test(row.path)||path.posix.normalize(row.path)!==row.path||row.path.includes('\\')||row.path.split('/').some(p=>['..','.ccb','.nozeli','auth.json','state.json'].includes(p))||seen.has(row.path))fail('MANIFEST_PATH_INVALID');
   seen.add(row.path);src||=row.path.startsWith('src/');dist||=row.path.startsWith('dist/');
  }
- if(!src||!dist||!seen.has('src/agents/detect.mjs')||!seen.has('src/main/host.mjs'))fail('MANIFEST_INCOMPLETE');
+ if(!src||!dist||!seen.has('src/agents/handoff-entry.cjs')||!seen.has('src/main/host.mjs'))fail('MANIFEST_INCOMPLETE');
  const installed=path.join(raw,'resources/app');
  const actual=new Set();
  async function walk(dir,prefix){try{if(!(await fs.lstat(dir)).isDirectory()||await fs.realpath(dir)!==dir)fail('BUILT_FILE_UNSAFE');}catch{fail('BUILT_FILE_UNSAFE');}for(const item of await fs.readdir(dir,{withFileTypes:true})){if(item.isSymbolicLink())fail('BUILT_FILE_UNSAFE');const rel=prefix+'/'+item.name;if(item.isDirectory())await walk(path.join(dir,item.name),rel);else if(item.isFile())actual.add(rel);else fail('BUILT_FILE_UNSAFE');}}
