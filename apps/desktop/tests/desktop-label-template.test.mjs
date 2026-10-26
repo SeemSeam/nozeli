@@ -44,7 +44,7 @@ try{
  await page.click(tag('note')+' .tag-edit');await page.focus(tag('note')+' .tag-editor');await page.keyboard.down('Control');await page.keyboard.press('a');await page.keyboard.up('Control');await page.keyboard.type('**retained note draft**');
  await dbl(tag('note')+' .tag-editor');assert.ok(!(await geometry(card('note'))).collapsed);
  await dbl(tag('note')+' .note-projection-head');await dbl(tag('note')+' .note-projection-content');await page.click(tag('note')+' .tag-edit');assert.equal(await page.$eval(tag('note')+' .tag-editor',e=>e.value),'**retained note draft**');
- await page.click(tag('note')+' .tag-controls button:first-child');await pause(80);assert.equal(await page.$eval(tag('note')+' .tag-note-body strong',e=>e.textContent),'retained note draft');assert.equal(await page.evaluate(()=>window.__tagTests.note.saved),1);report.checks.push('explicit edit preserves Markdown draft through collapse; local save refreshes rendered preview');
+ await page.click(tag('note')+' .tag-composer .tag-send');await pause(80);assert.equal(await page.$eval(tag('note')+' .tag-note-body strong',e=>e.textContent),'retained note draft');assert.equal(await page.evaluate(()=>window.__tagTests.note.saved),1);report.checks.push('explicit edit preserves Markdown draft through collapse; local save refreshes rendered preview');
  await page.setViewport({width:390,height:844});await page.evaluate(()=>{const host=document.querySelector('#test-label-host');host.style.flexDirection='column';host.style.overflow='auto';for(const p of host.children){p.style.flex='0 0 600px';p.style.height='600px';}});await pause(200);
  const narrow=await geometry(card('note'));assert.ok(narrow.bounds.left>=0&&narrow.bounds.right<=390);await page.screenshot({path:path.join(base,'unified-narrow.png')});report.checks.push('note window fits 390px viewport');
  await page.evaluate(async()=>{
@@ -75,29 +75,30 @@ try{
  }
  report.checks.push('saved offset and width survive 1440/800/390/1440 pane clamps without persistence writes, clipped header actions, draft loss or focus/caret changes');
  await page.setViewport({width:390,height:900});await page.$eval('#test-label-host',n=>{n.style.width='260px';n.style.removeProperty('--conversation-font');});await pause(200);
- const fontEditor='#test-label-host .tag-editor',more='#test-label-host [data-chat-more]';
- await page.focus(fontEditor);await page.$eval(fontEditor,n=>n.setSelectionRange(4,10));
- assert.equal(await page.$eval('#test-label-host [data-chat-font]',n=>n.getBoundingClientRect().width),0);
- await page.click(more);await page.waitForSelector('#conversation-context-menu:not([hidden])');
- // A physical click first hovers the owner: the submenu must not replace its hit target.
- await page.click('#conversation-context-menu [data-command="chat-font"]');
- await page.waitForSelector('.nozeli-submenu [data-command="chat-font-20"]',{visible:true});
- const submenu=await page.$eval('.nozeli-submenu',n=>n.getBoundingClientRect().toJSON());
- assert(submenu.left>=0&&submenu.top>=0&&submenu.right<=390&&submenu.bottom<=900);
- assert.equal(await page.evaluate(()=>document.activeElement.dataset.command),'chat-font-larger');
- await page.screenshot({path:path.join(base,'narrow-font-pointer-menu.png')});
- await page.click('.nozeli-submenu [data-command="chat-font-20"]');
- await page.waitForFunction(()=>document.querySelector('#test-label-host .tag-editor').style.fontSize==='20px'||getComputedStyle(document.querySelector('#test-label-host .tag-editor')).fontSize==='20px');
- assert.equal(await page.evaluate(()=>document.activeElement===document.querySelector('#test-label-host .tag-editor')),true);
- assert.equal(await page.$eval(fontEditor,n=>n.value),'retained geometry draft');
- assert.deepEqual(await page.$eval(fontEditor,n=>[n.selectionStart,n.selectionEnd]),[4,10]);
- await page.click(more);await page.keyboard.press('ArrowRight');
- await page.waitForSelector('.nozeli-submenu [data-command="chat-font-20"]',{visible:true});
- await page.keyboard.press('Escape');assert.equal(await page.evaluate(()=>document.activeElement===document.querySelector('#test-label-host .tag-editor')),true);
- await page.click(more);await page.$eval('#test-label-host',n=>n.scrollTop+=20);
- await page.waitForSelector('#conversation-context-menu:not([hidden])',{hidden:true});
+const fontEditor='#test-label-host .tag-editor';
+const openConversationFontMenu=async()=>{await page.click(fontEditor,{button:'right'});await page.waitForSelector('#conversation-context-menu:not([hidden])');};
+await page.focus(fontEditor);await page.$eval(fontEditor,n=>n.setSelectionRange(4,10));
+assert.equal(await page.$$eval('#test-label-host [data-chat-font]',nodes=>nodes.length),0,'compact card exposes no per-card font dropdown');
+await openConversationFontMenu();
+// A physical click first hovers the owner: the submenu must not replace its hit target.
+await page.click('#conversation-context-menu [data-command="chat-font"]');
+await page.waitForSelector('.nozeli-submenu [data-command="chat-font-20"]',{visible:true});
+const submenu=await page.$eval('.nozeli-submenu',n=>n.getBoundingClientRect().toJSON());
+assert(submenu.left>=0&&submenu.top>=0&&submenu.right<=390&&submenu.bottom<=900);
+assert.equal(await page.evaluate(()=>document.activeElement.dataset.command),'chat-font-larger');
+await page.screenshot({path:path.join(base,'narrow-font-pointer-menu.png')});
+await page.click('.nozeli-submenu [data-command="chat-font-20"]');
+await page.waitForFunction(()=>document.querySelector('#test-label-host .tag-editor').style.fontSize==='20px'||getComputedStyle(document.querySelector('#test-label-host .tag-editor')).fontSize==='20px');
+assert.equal(await page.evaluate(()=>document.activeElement===document.querySelector('#test-label-host .tag-editor')),true);
+assert.equal(await page.$eval(fontEditor,n=>n.value),'retained geometry draft');
+assert.deepEqual(await page.$eval(fontEditor,n=>[n.selectionStart,n.selectionEnd]),[4,10]);
+await openConversationFontMenu();await page.focus('#conversation-context-menu [data-command="chat-font"]');await page.keyboard.press('ArrowRight');
+await page.waitForSelector('.nozeli-submenu [data-command="chat-font-20"]',{visible:true});
+await page.keyboard.press('Escape');assert.equal(await page.evaluate(()=>document.activeElement===document.querySelector('#test-label-host .tag-editor')),true);
+await openConversationFontMenu();await page.$eval('#test-label-host',n=>n.scrollTop+=20);
+await page.waitForSelector('#conversation-context-menu:not([hidden])',{hidden:true});
  await page.setViewport({width:1440,height:900});await pause(200);
- report.checks.push('390px physical more→font owner click opens bounded submenu without activating an overlaid command; 20px choice retains editor focus/draft/caret, keyboard Escape restores focus, reader scroll dismisses menu');
+report.checks.push('390px right-click font owner click opens bounded submenu without activating an overlaid command; 20px choice retains editor focus/draft/caret, keyboard Escape restores focus, reader scroll dismisses menu; no per-card font dropdown exists');
  await page.evaluate(()=>{const pane=document.querySelector('#test-label-host');pane.style.width='220px';pane.scrollTop=40;});await pause(200);
  const split=await fitState();assert(split.bounds.width<220&&split.bounds.right<=split.right+1&&split.bounds.left>=split.left-1,JSON.stringify(split));assert.equal(split.sizes,0);
  report.checks.push('sub-240px pane overrides the shell minimum width and clamps after scroll');

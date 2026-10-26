@@ -425,7 +425,7 @@ try {
     const box = card.getBoundingClientRect(), pane = card.closest('.reader-scroll').getBoundingClientRect();
     const control = card.querySelector('.tag-close').getBoundingClientRect();
     const composer = card.querySelector('.tag-editor').getBoundingClientRect();
-    const button = card.querySelector('.tag-controls button').getBoundingClientRect();
+    const button = card.querySelector('.tag-composer .tag-send').getBoundingClientRect();
     const visible = r => r.left >= pane.left && r.right <= Math.min(pane.right,innerWidth) && r.top >= pane.top && r.bottom <= Math.min(pane.bottom,innerHeight);
     return { viewport:innerWidth, card:box.toJSON(), pane:pane.toJSON(), close:control.toJSON(), editor:composer.toJSON(), send:button.toJSON(), closeVisible:visible(control), editorVisible:visible(composer), sendVisible:visible(button) };
   });

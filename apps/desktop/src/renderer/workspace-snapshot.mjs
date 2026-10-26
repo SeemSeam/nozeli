@@ -469,11 +469,12 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
     if(cardText.dataset.composing==='true'){cardStatus('输入法组合尚未结束，请完成输入后再发送。','error');return;}
     if(discussion?.pending())return;
     const question=cardText.value.trim()||'请查看这张工作面涂鸦截图。';
-    const gate=await transport.gate();
-    if(!gate?.ok){const message=gate?.message||'发送未发出：Agent 尚未就绪。';cardStatus(message,'error');toast(message);return;}
     sending=true;setCardBusy(true);
     cardStatus('正在发送讨论…');
     try{
+      const gate=await transport.gate();
+      if(session!==active||cardState!==state)return;
+      if(!gate?.ok){const message=gate?.message||'发送未发出：Agent 尚未就绪。';cardStatus(message,'error');toast(message);return;}
       if(!state.delivery){
         const flushed=await flushWrite();if(!flushed.ok)throw flushed.error;
         // Late results stay scoped to the session that started them: if the host
@@ -490,7 +491,8 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
       const delivery=state.delivery;
       const round=(discussion.thread.history?.length||0)+1;
       const requestKey='snap-'+String(delivery.deliveryId).replace(/[^a-zA-Z0-9:_-]/g,'_')+'-'+round;
-      const sent=await transport.send({text:question,imageAttachments:[{...delivery.attachment,deliveryId:delivery.deliveryId}],requestKey});
+      const sent=await transport.send({projectId:gate.projectId,text:question,imageAttachments:[{...delivery.attachment,deliveryId:delivery.deliveryId}],requestKey});
+      if(session!==active||cardState!==state)return;
       if(sent===false||!sent?.accepted){cardStatus('发送未发出：会话未就绪或被拒绝；输入已保留，可重试。','error');return;}
       discussion.record(question,sent.requestId);
       // (retained-message bookkeeping resets below to force the round persist)

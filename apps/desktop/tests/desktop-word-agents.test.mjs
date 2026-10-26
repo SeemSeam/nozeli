@@ -76,12 +76,12 @@ try {
   await page.click('#selection-discuss');
   await page.waitForSelector('.word-note-overlay .tag-discuss:not([hidden]) .tag-editor');
   await page.click('.word-note-overlay .tag-discuss .tag-editor');await page.keyboard.type('WORD_DISCUSS_QUESTION');
-  await page.evaluate(()=>[...document.querySelectorAll('.word-note-overlay .tag-controls button')].find(n=>n.textContent==='发送讨论').click());
+  await page.evaluate(()=>[...document.querySelectorAll('.word-note-overlay .tag-composer .tag-send')].find(n=>n.textContent==='发送讨论').click());
   await page.waitForFunction(()=>document.querySelector('.word-note-overlay .tag-transcript')?.textContent.includes('Word Agent 测试回复'));
   const messages=await page.evaluate(async projectId=>(await window.nozeli.invoke('agents.messages',{projectId})).value.messages,projectId);
   assert.ok(messages.some(m=>m.text.includes('WORD_DISCUSS_QUESTION')&&m.text.includes('原始首句')));
   await page.click('.word-note-overlay .tag-discuss .tag-editor');await page.keyboard.type('SECOND_ROUND');
-  await page.evaluate(()=>[...document.querySelectorAll('.word-note-overlay .tag-controls button')].find(n=>n.textContent==='发送续问').click());
+  await page.evaluate(()=>[...document.querySelectorAll('.word-note-overlay .tag-composer .tag-send')].find(n=>n.textContent==='发送续问').click());
   await page.waitForFunction(()=>document.querySelectorAll('.word-note-overlay .tag-message-assistant').length===2);
   await open('read.md');await open('sample.docx');
   await page.waitForFunction(()=>document.querySelectorAll('.word-note-overlay .tag-message-assistant').length===2);

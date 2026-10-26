@@ -1,6 +1,6 @@
 // Local reminder administration only: source Work, publication and Git facts are never changed.
 const sourceFields=['kind','workId','revision','sourceJobId','gitIntentId','objectId','reviewCycle','closureHistoryId'];
-const anomalyKinds=new Set(['system','recovery','git','closure']);
+const anomalyKinds=new Set(['system','recovery','git','closure','attention']);
 const revisionOf=todo=>Number.isSafeInteger(todo.managementRevision)&&todo.managementRevision>=0?todo.managementRevision:0;
 const fail=(code,message)=>{throw Object.assign(new Error(message),{code});};
 const nonempty=value=>typeof value==='string'&&value.trim().length>0;

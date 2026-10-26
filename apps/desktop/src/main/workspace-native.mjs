@@ -28,10 +28,10 @@ export class WorkspaceNative {
     this.lifecycle = new Map();
     this.preferences = { contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true, allowRunningInsecureContent: false, backgroundThrottling: false, preload };
   }
-  async requireConversation(projectId,target='frontdesk'){
+  async requireConversation(projectId,target='frontdesk',{notify=true}={}){
     if(!this.ensureConversation)return;
     try{await this.ensureConversation(projectId,target);}
-    catch(error){this.broadcast('nozeli:workspace-control',{type:'conversation-unavailable',projectId,target,error:{code:error.code||'AGENT_NOT_READY',message:error.message}},projectId);throw error;}
+    catch(error){if(notify)this.broadcast('nozeli:workspace-control',{type:'conversation-unavailable',projectId,target,error:{code:error.code||'AGENT_NOT_READY',message:error.message}},projectId);throw error;}
   }
   async conversationState(projectId,state){
     const owner=[...this.surfaces.values()].find(s=>s.projectId===projectId&&s.kind==='conversation'&&s.conversationAdmitted&&!s.dead);
@@ -100,13 +100,13 @@ export class WorkspaceNative {
     const r = this.senders.get(event.sender?.id), frame = event.senderFrame;
     if (!r || r.dead || !frame || frame.parent != null || frame !== event.sender.mainFrame || frame.url !== this.origin) throw fail('IPC_DENIED');
     if (typeof op !== 'string') throw fail('UNKNOWN_OP');
-    if (payload.projectId && payload.projectId !== r.projectId && !(r.role === 'shell' && ['workspace.project','workspace.closeProject','workspace.recovery.object','workspace.recovery.settle','project.open','project.remove','project.retry','project.lifecycle.preview','project.lifecycle.reconcile'].includes(op))) throw fail('PROJECT_SCOPE_DENIED');
+    if (payload.projectId && payload.projectId !== r.projectId && !(r.role === 'shell' && ['managed.status','managed.attention.ack','workspace.project','workspace.closeProject','workspace.recovery.object','workspace.recovery.settle','project.open','project.remove','project.retry','project.lifecycle.preview','project.lifecycle.reconcile'].includes(op))) throw fail('PROJECT_SCOPE_DENIED');
     if(r.role==='surface'&&r.kind==='terminal'&&op.startsWith('managed.')&&(op!=='managed.terminal.screen'||payload.target!==this.layouts.get(r.projectId)?.views[r.viewId]?.viewState?.workId))throw fail('IPC_DENIED');
-    if (this.lifecycle.has(r.projectId) && (writes.has(op) || op === 'managed.send' || op === 'workspace.project' || op === 'workspace.command')) throw fail('PROJECT_LIFECYCLE_ACTIVE', '项目正在保留并关闭，请等待操作结果。');
+    if (this.lifecycle.has(r.projectId) && (writes.has(op) || op === 'managed.send' || ['managed.attention.respond','managed.attention.draft.write'].includes(op) || op === 'workspace.project' || op === 'workspace.command')) throw fail('PROJECT_LIFECYCLE_ACTIVE', '项目正在保留并关闭，请等待操作结果。');
     if(op==='report.copySource'&&!(r.role==='shell'||r.role==='surface'&&['report','history'].includes(r.kind)))throw fail('IPC_DENIED');
     if(op.startsWith('isolated-preview.')&&r.role==='surface'&&(!['report','document','history'].includes(r.kind)||r.kind==='history'&&['isolated-preview.open','isolated-preview.update'].includes(op)&&payload.profile!=='staticReport'))throw fail('IPC_DENIED');
     if (r.role !== 'shell' && !op.startsWith('workspace.') && !op.startsWith('isolated-preview.') && !surfaceOps.test(op)) throw fail('IPC_DENIED');
-    if (r.role === 'detached' && !op.startsWith('workspace.') && !['project.open','project.list','project.children','project.search','config.status','session.flushed','session.requestClose','session.quitChoice','state.read','view.authorship'].includes(op)) throw fail('IPC_DENIED');
+    if (r.role === 'detached' && !op.startsWith('workspace.') && !['project.open','project.list','project.children','project.search','config.status','session.flushed','session.requestClose','session.quitChoice','state.read','view.authorship','managed.status','managed.timeline.request','managed.timeline.read'].includes(op) && !(op==='managed.send'&&payload.target==='frontdesk'&&r.drawingConversationProject===r.projectId)) throw fail('IPC_DENIED');
     if (r.role === 'surface' && (writes.has(op) || op === 'ppt.export' || op === 'ppt.draft' && payload.model !== undefined)) {
       const lease = this.leases.get(this.resource(r.projectId, r.relPath));
       if (!lease || lease.viewId !== r.viewId || payload.relPath !== r.relPath || lease.generation !== r.generation) throw fail('EDIT_LEASE_DENIED');
@@ -668,6 +668,12 @@ export class WorkspaceNative {
       return {};
     }
     if (op === 'workspace.control') {
+      if(p.type==='open-settings'){
+        if(!['settings-appearance','settings-reading-display','settings-provider','settings-models','settings-agents','settings-recovery'].includes(p.section))throw fail('INVALID_SETTINGS');
+        if((!this.shell||this.shell.dead)&&this.restoreShell)await this.restoreShell();
+        if(!this.shell||this.shell.dead)throw fail('MAIN_WINDOW_UNAVAILABLE');
+        const control={type:'open-settings',section:p.section,projectId:r.projectId};if(this.shell.ready)this.shell.wc.send('nozeli:workspace-control',control);else(this.shell.pendingControls??=[]).push(control);this.shell.win.show();this.shell.win.focus();return {};
+      }
       if(p.type==='pane-resize'){
         if(r.role==='surface')throw fail('IPC_DENIED');r.resizing=p.active===true;
         for(const surface of this.projectRecords(r.projectId,r.windowId))surface.wc.send('nozeli:workspace-control',{type:'pane-resize-session',active:r.resizing});return {};
@@ -689,9 +695,14 @@ export class WorkspaceNative {
       const layout = await this.layout(r.projectId);
       if(p.type==='focus-document-owner'){if(r.role==='surface'&&p.relPath!==r.relPath)throw fail('PROJECT_SCOPE_DENIED');const lease=this.leases.get(this.resource(r.projectId,p.relPath)),owner=lease&&this.surfaces.get(lease.viewId);if(!owner)throw fail('NO_ACTIVE_VIEW');const root=this.windows.get(owner.windowId);if(!root)throw fail('NO_ROOT');await this.command(root,{projectId:r.projectId,expectedRevision:layout.revision,requestKey:randomUUID(),command:{type:'activate',viewId:owner.viewId}});owner.win.show();owner.win.focus();owner.wc.focus();owner.wc.send('nozeli:workspace-control',{type:'focus-content'});return {};}
       if(p.type==='conversation-action'){
-        await this.requireConversation(r.projectId,p.target||'frontdesk');
-        const conversation=Object.values(layout.views).find(v=>v.kind==='conversation');
-        if(conversation?.viewState?.draftOnly){conversation.viewState={...conversation.viewState,draftOnly:false};await this.persist(layout);const live=this.surfaces.get(conversation.id);if(live)live.wc.send('nozeli:workspace-control',{type:'drawing-connect',projectId:r.projectId});}
+        const projectId=r.projectId,generation=r.generation;
+        if(p.action==='prepare'&&p.target!=='frontdesk')throw fail('INVALID_COMMAND');
+        await this.requireConversation(projectId,p.target||'frontdesk',{notify:p.action!=='prepare'});
+        if(r.dead||r.projectId!==projectId||r.generation!==generation)throw fail('PROJECT_SCOPE_DENIED');
+        const current=await this.layout(projectId);
+        const conversation=Object.values(current.views).find(v=>v.kind==='conversation');
+        if(conversation?.viewState?.draftOnly){conversation.viewState={...conversation.viewState,draftOnly:false};await this.persist(current);const live=this.surfaces.get(conversation.id);if(live)live.wc.send('nozeli:workspace-control',{type:'drawing-connect',projectId});}
+        if(p.action==='prepare'){r.drawingConversationProject=projectId;return {projectId,target:'frontdesk',ready:true};}
         const root=this.windows.get(r.windowId)||this.windows.get('main');if(!root)throw fail('NO_ROOT');
         const localGroups=layoutGroups(layout,root.windowId),source=r.role==='surface'?findView(layout,r.viewId)?.group:null;
         const target=p.groupId?localGroups.find(g=>g.id===p.groupId):source||localGroups[0];

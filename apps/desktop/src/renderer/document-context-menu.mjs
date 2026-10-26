@@ -9,6 +9,14 @@ export function documentCommands(s) {
   const items = [];
   const add = (id, label, enabled = true, shortcut = '') => items.push({ id, label, enabled, shortcut });
   const separator = () => items.push({ separator: true });
+  if (s.annotateMenu) {
+    if (items.length) separator();
+    const pointable = Boolean(s.pointTarget), selectable = Boolean(s.pointSelected);
+    const where = pointable || selectable ? '' : '此处不是文档位置，无法定位批注';
+    add('note-here', selectable ? '备注选区' : '在此备注', pointable || selectable, where);
+    add('discuss-here', selectable ? '讨论选区' : '在此讨论', pointable || selectable, where);
+    add('explain-selection', '解释选区', Boolean(s.canExplain), s.canExplain ? '' : selectable ? '解释暂不可用，前台尚未就绪' : '需先选中文字或区域');
+  }
   if (s.editable) {
     add('undo', '撤销', true, 'Ctrl/Cmd+Z'); add('redo', '重做', true, 'Ctrl/Cmd+Shift+Z'); separator();
     add('cut', '剪切', selected, 'Ctrl/Cmd+X');
@@ -122,10 +130,13 @@ export function mountDocumentContextMenu({ root, surfaceAt, run, hideQuickAction
   const prepare = (event, keyboard = false) => {
     const surface = surfaceAt(event.target);
     if (!surface || ignored(event.target)) return null;
+    if (!keyboard) surface.pointer = { x: event.clientX, y: event.clientY }; else surface.pointer = null;
     if (!keyboard && surface.adapter) {
       const pos = surface.adapter.offsetAtPoint?.(event.clientX, event.clientY), s = surface.adapter.getSelection();
       if (Number.isInteger(pos) && (pos < s.from || pos > s.to || s.from === s.to)) surface.adapter.setSelection(pos);
     } else if (!keyboard && surface.reading) {
+      // Selection hit-test happens before any mutation: a pointer inside the
+      // kept selection keeps it; anything else becomes a fresh document point.
       const selection = window.getSelection();
       const inside = selection?.rangeCount && selection.anchorNode && selection.focusNode && !selection.isCollapsed && root.contains(selection.anchorNode) && root.contains(selection.focusNode) && Array.from(selection.getRangeAt(0).getClientRects()).some(r => event.clientX >= r.left && event.clientX <= r.right && event.clientY >= r.top && event.clientY <= r.bottom);
       const region = surface.selectionRect;
@@ -136,6 +147,12 @@ export function mountDocumentContextMenu({ root, surfaceAt, run, hideQuickAction
   };
   const openSurface = (surface, {left,bottom}, focus=document.activeElement) => {
     close(); const active=surface.snapshot();
+    // The document point freezes at menu-open: coordinates and source identity
+    // are captured here once, never recomputed from a later pointer position.
+    if (surface.pointer && typeof surface.pointAt === 'function') {
+      try { active.pointTarget = surface.pointAt(surface.pointer.x, surface.pointer.y, active) || null; }
+      catch { active.pointTarget = null; }
+    }
     shell.open(documentCommands(active),{x:left,y:bottom,focus,run:command=>{if(active.current())return run(command,active);}});
   };
   const open = (event, keyboard = false) => {

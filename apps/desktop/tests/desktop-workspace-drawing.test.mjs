@@ -133,6 +133,7 @@ try{
  shell=(await scoped('shell')).page;shell.on('pageerror',e=>report.errors.push(e.stack));
  report.runtime={binary,source,userAgent:await browser.userAgent(),platform:process.platform,arch:process.arch,devicePixelRatio:await shell.evaluate(()=>devicePixelRatio)};
  if(await shell.$eval('#configuration-setup',n=>n.open)){await shell.click('#configuration-cancel');await shell.waitForFunction(()=>!document.querySelector('#configuration-setup').open);}
+ if(await shell.$eval('#settings-dialog',n=>n.open))await shell.click('#settings-close');
  await shell.waitForSelector('[data-project-id="'+fixture.a.id+'"]',{visible:true});await shell.click('[data-project-id="'+fixture.a.id+'"]');
  await until(async()=>(await call(shell,'workspace.bootstrap')).projectId===fixture.a.id,'project binding');
  const initial=await snapshot(),baseline=execution(initial.state);assert.deepEqual(baseline.providers,{});assert.deepEqual(baseline.agents,[]);assert.deepEqual(baseline.residents,{});assert.deepEqual(baseline.workThreads,[]);await offline(baseline);

@@ -181,10 +181,12 @@ export class Controller extends EventEmitter {
   }
   pauseState(w,reason){w.status='paused';const source=this.store.state.jobs.findLast(j=>j.target===w.id&&j.revision===w.revision);if(!this.store.state.todos.some(t=>t.workId===w.id&&t.kind==='recovery'&&t.status==='open'&&t.revision===w.revision))this.store.state.todos.push({id:randomUUID(),workId:w.id,revision:w.revision,...(source?{sourceJobId:source.id}:{}),kind:'recovery',status:'open',text:reason});}
   snapshot(){
-    const agents=[...this.sessions.entries()].map(([target,s])=>({target,ownerId:s.viewOwnerId,terminalId:this.terminals.get(target)?.terminalId??null,provider:'omp',threadId:s.threadId||this.store.state.residents?.[target]?.threadId||this.store.state.works.find(w=>w.id===target)?.threadId,starting:this.starting.has(target),restarting:this.restarting?.has(target)??false,busy:s.busy,closed:s.closed,phase:s.phase??null,exit:s.exit&&typeof s.exit.then!=='function'?s.exit:null,model:s.model,desiredModel:s.desiredModel??null,pendingModel:s.pendingModel??null,effort:s.effort,...(s.effective?{effective:s.effective}:{}),configurationStatus:s.configurationStatus??null,capabilities:s.capabilities??null,cleanupEvidence:s.cleanupEvidence?.()??null}));
+    const agents=[...this.sessions.entries()].map(([target,s])=>({target,ownerId:s.viewOwnerId,terminalId:this.terminals.get(target)?.terminalId??null,provider:'omp',threadId:s.threadId||this.store.state.residents?.[target]?.threadId||this.store.state.works.find(w=>w.id===target)?.threadId,starting:this.starting.has(target),restarting:this.restarting?.has(target)??false,busy:s.busy,closed:s.closed,phase:s.phase??null,exit:s.exit&&typeof s.exit.then!=='function'?s.exit:null,model:s.model,desiredModel:s.desiredModel??null,pendingModel:s.pendingModel??null,effort:s.effort,interactions:s.closed?[]:structuredClone(s.interactions??[]),modelError:s.modelError??null,...(s.effective?{effective:s.effective}:{}),configurationStatus:s.configurationStatus??null,capabilities:s.capabilities??null,cleanupEvidence:s.cleanupEvidence?.()??null}));
     for(const w of this.store.state.works)if(w.threadId&&!['ended','closing'].includes(w.status)&&!this.sessions.has(w.id))agents.push({target:w.id,provider:w.binding?.provider,threadId:w.threadId,busy:false,closed:true,resumable:w.binding?.provider==='omp'&&!w.readOnly,readOnly:w.readOnly===true,model:null,effort:null});
     const {sessionIndex,messages,...business}=this.store.state;
-    return {...structuredClone(business),messages:this.timeline.messages(),timeline:this.timeline.frame(),quotaUsed:this.store.used(),agents,configuringTargets:[...new Set([...(this.bindingTransitions??[]),...(this.frontdeskContextClear?['frontdesk']:[])])],frontdeskContextClearFailed:this.frontdeskContextClearFailed===true,...(this.ompSystemSource?{ompProviderStatus:this.#ompProviderStatus()}:{}),externalTerminalTargets:[...this.externalTerminalTargets],nativeDraftTargets:[...this.nativeDraftTargets],busyTargets:[...this.running.keys()],stopping:this.stopping};
+    const storageBlocked=Boolean(this.store.commitUnknown||this.store.nativeCommitUnknown);
+    const nativeDraftBlockedTargets=[...(this.nativeDraftBlockedOwners??[])].filter(([target,ownerId])=>this.nativeDraftTargets.has(target)&&this.sessions.get(target)?.viewOwnerId===ownerId).map(([target])=>target);
+    return {...structuredClone(business),messages:this.timeline.messages(),timeline:this.timeline.frame(),quotaUsed:this.store.used(),agents,storageBlocked,nativeDraftBlockedTargets,configuringTargets:[...new Set([...(this.bindingTransitions??[]),...(this.frontdeskContextClear?['frontdesk']:[])])],frontdeskContextClearFailed:this.frontdeskContextClearFailed===true,...(this.ompSystemSource?{ompProviderStatus:this.#ompProviderStatus()}:{}),externalTerminalTargets:[...this.externalTerminalTargets],nativeDraftTargets:[...this.nativeDraftTargets],busyTargets:[...this.running.keys()],stopping:this.stopping};
   }
   // Nonsecret Nozeli-owned configuration and native role selection status.
   #ompProviderStatus(){
@@ -362,7 +364,10 @@ export class Controller extends EventEmitter {
     if (!native) await this.sessions.get(target)?.refreshNativeDraft?.();
     const job=await this.store.mutate(tx=>{
       const old=requestKey&&this.store.state.jobs.find(j=>j.key==='input:'+requestKey);
-      if(!old&&!native&&this.nativeDraftTargets.has(target))throw Object.assign(new Error('原生终端仍有未发送文字。请在该Agent终端发送，或先保留内容再清空；对话草稿未丢失。'),{code:'NATIVE_DRAFT_PENDING'});
+      if(!old&&!native&&this.nativeDraftTargets.has(target)){
+        this.nativeDraftBlockedOwners??=new Map();this.nativeDraftBlockedOwners.set(target,this.sessions.get(target)?.viewOwnerId);this.changed();
+        throw Object.assign(new Error('原生会话仍有未发送文字，已阻断本次发送。请在工作区待办中保留并处理原生草稿；当前对话草稿未丢失，输入尚未受理。'),{code:'NATIVE_DRAFT_PENDING'});
+      }
       const questionSource=this.store.state.jobs.find(j=>j.id===this.store.state.todos.find(q=>q.id===context.routingQuestionId)?.sourceJobId);
       const boundWorkId=context.boundWorkId||questionSource?.context?.boundWorkId;
       if(boundWorkId)context={...context,boundWorkId};
@@ -832,6 +837,27 @@ export class Controller extends EventEmitter {
     })().finally(()=>{if(this.handoffConfirmations.get(role)===promise)this.handoffConfirmations.delete(role);});
     this.handoffConfirmations.set(role,promise);return promise;
   }
+  async respondInteraction(target,ownerId,interactionId,answer,{cancel=false}={}){
+    const session=this.sessions.get(target);
+    if(this.stopping||!ownerId||!session||session.closed||session.viewOwnerId!==ownerId||this.restarting?.has(target))throw Object.assign(Error('原生问题所属会话已替换或关闭'),{code:'INTERACTION_STALE'});
+    if(typeof session.respondInteraction!=='function')throw Object.assign(Error('当前原生会话不支持结构化问题回答'),{code:'INTERACTION_CAPABILITY_UNAVAILABLE'});
+    return session.respondInteraction(interactionId,answer,{cancel});
+  }
+
+  async readNativeDraft(target,ownerId){
+    const session=this.sessions.get(target);
+    if(this.stopping||!ownerId||!session||session.closed||session.viewOwnerId!==ownerId||this.restarting?.has(target))throw Object.assign(Error('原生草稿所属会话已替换或关闭'),{code:'INTERACTION_STALE'});
+    if(typeof session.readNativeDraft!=='function')throw Object.assign(Error('当前原生会话不支持读取草稿'),{code:'NATIVE_DRAFT_CAPABILITY_UNAVAILABLE'});
+    return session.readNativeDraft();
+  }
+
+  async replaceNativeDraft(target,ownerId,expectedText,text){
+    const session=this.sessions.get(target);
+    if(this.stopping||!ownerId||!session||session.closed||session.viewOwnerId!==ownerId||this.restarting?.has(target))throw Object.assign(Error('原生草稿所属会话已替换或关闭'),{code:'INTERACTION_STALE'});
+    if(typeof session.replaceNativeDraft!=='function')throw Object.assign(Error('当前原生会话不支持替换草稿'),{code:'NATIVE_DRAFT_CAPABILITY_UNAVAILABLE'});
+    return session.replaceNativeDraft(expectedText,text);
+  }
+
   observeSession(target,session){
     session.viewOwnerId??=randomUUID();
     session.on?.('diagnostic',message=>{if(this.sessions.get(target)===session)this.emit('diagnostic',`${target}: ${message}`);});
@@ -839,12 +865,12 @@ export class Controller extends EventEmitter {
     session.on?.('native-draft',hasText=>{
       if(this.sessions.get(target)!==session)return;
       const previous=this.nativeDraftTargets.has(target);
-      if(hasText)this.nativeDraftTargets.add(target);else this.nativeDraftTargets.delete(target);
+      if(hasText)this.nativeDraftTargets.add(target);else{this.nativeDraftTargets.delete(target);this.nativeDraftBlockedOwners?.delete(target);}
       if(previous!==hasText){this.changed();if(!hasText)this.kick();}
     });
     session.on?.('exit',exit=>{
       if(this.sessions.get(target)!==session)return;
-      this.nativeDraftTargets.delete(target);this.emit('session-exit',{target,threadId:session.threadId,exit});this.changed();
+      this.nativeDraftTargets.delete(target);this.nativeDraftBlockedOwners?.delete(target);this.emit('session-exit',{target,threadId:session.threadId,exit});this.changed();
       const cleanup=(async()=>{await session.manualOpenPromise;if(this.sessions.get(target)!==session)return;const job=this.current.get(target);if(job?.manual)await this.settleManualJob(target,{promptId:job.manualPromptId,jobId:job.id,error:`OMP terminal exited (${exit?.exitCode??exit?.code??exit?.signal??'unknown'})`});let stopError,receipt;try{receipt=await session.stop();}catch(error){stopError=error;receipt=session.lastExitReceipt;}if(this.sessions.get(target)!==session){if(stopError)throw stopError;return;}if(receipt?.confirmationComplete===true){delete this.store.state.providers[target];await this.store.storage.putLocal(this.projectId,'managed:providers',this.store.state.providers??{});}this.changed();if(stopError)throw stopError;})();session.controllerExitCleanup=cleanup;void cleanup.catch(error=>this.emit('diagnostic',error.message));
     });
   }
@@ -1286,7 +1312,7 @@ export class Controller extends EventEmitter {
       const requestContext={...(delivery?.stats||{}),eventChars:job.text.length,hostAddedChars:Math.max(0,prompt.length-job.text.length),instructionChars:session.instructions?.length||0,baseInstructionChars:session.baseInstructions?.length||0,dynamicToolChars:JSON.stringify(session.tools||[]).length,...(event?{eventSkill:{delivery:'message',chars:event.length,digest:createHash('sha256').update(event).digest('hex')}}:{})};
       await this.store.mutate(()=>{savedJob().requestContext={promptChars:prompt.length,...requestContext};});
       if(job.type==='front'&&this.transferFor(job)){await this.saveTransferredFront(job);return;}
-      await this.store.mutate(()=>{if(isWork)this.assertDeviationReleased(job.target);savedJob().promptStartedAt=Date.now();const owner=isWork?this.store.find(job.target):this.store.state.residents[job.target];if(owner)owner.zeroActivity=false;});
+      await this.store.mutate(()=>{if(isWork)this.assertDeviationReleased(job.target);delete savedJob().resourceBlocked;savedJob().promptStartedAt=Date.now();const owner=isWork?this.store.find(job.target):this.store.state.residents[job.target];if(owner)owner.zeroActivity=false;});
       const response=await session.prompt(prompt,{timeout:session.settleTimeoutMs??600000,images,job:{id:job.id,target:job.target,revision:job.revision??null,type:job.type}});
       materialDelivery.commit();
       if(job.type==='front'&&this.transferFor(job)){await this.saveTransferredFront(job,response);return;}
@@ -1307,7 +1333,7 @@ export class Controller extends EventEmitter {
       });
       if(isWork&&this.store.find(job.target).status==='running')await this.store.settle(job.target);
     }catch(e){
-      if(e.code==='AGENT_PROCESS_LIMIT'&&!savedJob()?.promptStartedAt){await this.store.mutate(()=>{savedJob().status='queued';delete savedJob().startedAt;});return;}
+      if(e.code==='AGENT_PROCESS_LIMIT'&&!savedJob()?.promptStartedAt){await this.store.mutate(()=>{savedJob().status='queued';savedJob().resourceBlocked=true;delete savedJob().startedAt;});return;}
       if(e.metrics)await this.store.mutate(()=>{savedJob().metrics={...e.metrics,context:savedJob().requestContext||null};});
       const ending=this.store.state.works.find(w=>w.id===job.target)||(job.type==='intake'?this.intakeBoundWork(job):null);
       if(this.stopping||ending&&['closing','ended'].includes(ending.status)){

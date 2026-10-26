@@ -40,6 +40,111 @@ async function runRealBridge(home, overrides = {}) {
   return { pi, handlers, tools, ctx, deployed, fire, shutdownBridge };
 }
 
+test('native questions are observed once across bound UI copies and close only with the original dialog',async()=>{
+ const home=await mkdtemp(path.join(os.tmpdir(),'bridge-attention-'));let answer;
+ const original={select:()=>new Promise(resolve=>{answer=resolve;})};
+ const h=await runRealBridge(home,{ctx:{ui:original}}),client=connectOmpTerminalBridge({...h.deployed});
+ try{
+  await client.hello();h.ctx.ui={...h.ctx.ui,select:h.ctx.ui.select.bind(h.ctx.ui)};h.fire('session_start');
+  const pending=h.ctx.ui.select('请选择分析路线',['A','B']);
+  const state=await client.getState();assert.equal(state.interactions.length,1);assert.equal(state.interactions[0].title,'请选择分析路线');
+  assert.equal((await client.getState()).interactions[0].id,state.interactions[0].id,'reading does not answer or replace the dialog');
+  answer('B');assert.equal(await pending,'B');assert.equal((await client.getState()).interactions.length,0);
+  h.fire('plan_review_requested',{reviewId:'plan-1',title:'计划等待裁决',options:[{id:'keep',label:'保留'}]});assert.equal((await client.getState()).interactions[0].method,'plan');
+  h.fire('plan_review_resolved',{reviewId:'plan-1'});assert.equal((await client.getState()).interactions.length,0);
+ }finally{await client.close();h.shutdownBridge();}
+});
+
+test('workspace answers return native values and await actual signal-driven dialog cleanup',async()=>{
+ const home=await mkdtemp(path.join(os.tmpdir(),'bridge-answers-'));let visible=false,closed=0,local;
+ const dialog=(...args)=>new Promise(resolve=>{visible=true;local=resolve;const options=args.at(-1);options.signal.addEventListener('abort',()=>{visible=false;closed++;resolve(undefined);},{once:true});});
+ const ui=Object.fromEntries(['select','confirm','input','editor','askDialog','approve'].map(method=>[method,dialog]));
+ const h=await runRealBridge(home,{ctx:{ui}}),client=connectOmpTerminalBridge({...h.deployed});
+ const questions=[{id:'q',question:'路线？',options:[{label:'A',description:'first'},{label:'B'}],multi:true,recommended:1}];
+ const cases=[
+  ['select',['路线',['A',{label:'B',description:'second'}]],'B','B'],
+  ['confirm',['确认','保留原输入？'],false,false],
+  ['input',['输入','提示'],'exact text','exact text'],
+  ['editor',['编辑','original\ntext'],'new\ntext','new\ntext'],
+  ['askDialog',[questions],{kind:'submit',results:[{id:'q',selectedOptions:['B'],note:'note'}]},{kind:'submit',results:[{id:'q',question:'路线？',options:['A','B'],multi:true,selectedOptions:['B'],note:'note'}]}],
+  ['approve',[{full:'Write file',compact:'write',grants:[{scope:'target',label:'This file',alwaysLabel:'Always file'}]}],{grant:'target',always:true},{grant:'target',always:true}],
+  ['askDialog',[questions],{kind:'submit',results:[{id:'q',selectedOptions:[]}]},{kind:'submit',results:[{id:'q',question:'路线？',options:['A','B'],multi:true,selectedOptions:[]}]}],
+ ];
+ try{
+  await client.hello();
+  for(const [method,args,answer,expected] of cases){
+   const pending=h.ctx.ui[method](...args);const item=(await client.getState()).interactions[0];
+   assert.equal(item.question.method,method);assert.equal(item.capability.respond,true);assert(visible);
+   if(method==='askDialog')assert.deepEqual(item.question.questions,questions);
+   if(method==='askDialog'){
+    await assert.rejects(client.respondInteraction(item.id,{kind:'cancel'}),{code:'INTERACTION_ANSWER_INVALID'});
+    assert(visible,'cancel is an undefined native result, never an invented result discriminant');
+   }
+   if(method==='select'){
+    await assert.rejects(client.respondInteraction(item.id,'not an option'),{code:'INTERACTION_ANSWER_INVALID'});
+    assert(visible,'invalid answers must leave original dialog open');
+   }
+   const result=await client.respondInteraction(item.id,answer);assert.equal(result.accepted,true);assert.equal(visible,false,'ack follows native cleanup');
+   assert.deepEqual(await pending,expected);assert.equal((await client.getState()).interactions.length,0);
+   await assert.rejects(client.respondInteraction(item.id,answer),{code:'INTERACTION_STALE'});
+  }
+  assert.equal(closed,cases.length);
+  for(const [method,args,,] of cases){
+   const pending=h.ctx.ui[method](...args),item=(await client.getState()).interactions[0];
+   await client.respondInteraction(item.id,null,{cancel:true});
+   assert.equal(await pending,method==='confirm'?false:method==='approve'?'deny':undefined);assert.equal(visible,false);
+  }
+  const pending=h.ctx.ui.select('local answer',['A']);const id=(await client.getState()).interactions[0].id;local('A');assert.equal(await pending,'A');visible=false;
+  await assert.rejects(client.respondInteraction(id,'A'),{code:'INTERACTION_STALE'});
+ }finally{await client.close();h.shutdownBridge();}
+});
+
+test('shared prototype UI is wrapped before handler proxies capture ask and approval functions',async()=>{
+ const home=await mkdtemp(path.join(os.tmpdir(),'bridge-proxy-'));
+ const base={ui:{askDialog:(_q,{signal})=>new Promise(resolve=>signal.addEventListener('abort',()=>resolve(undefined),{once:true}))}};
+ const scoped=Object.create(base);const captured=base.ui.askDialog;
+ Object.defineProperty(scoped,'ui',{value:new Proxy(base.ui,{get:(target,key)=>key==='askDialog'?captured:target[key]})});
+ const h=await runRealBridge(home,{ctx:base}),client=connectOmpTerminalBridge({...h.deployed});
+ try{
+  await client.hello();h.handlers.session_start[0]({},scoped);
+  const pending=base.ui.askDialog([{id:'q',question:'native',options:[{label:'yes'}]}]);
+  const item=(await client.getState()).interactions[0];
+  await client.respondInteraction(item.id,{kind:'chat'});assert.deepEqual(await pending,{kind:'chat'});
+ }finally{await client.close();h.shutdownBridge();}
+});
+
+test('plan answers use native resolver and unsupported UI never pretends to answer',async()=>{
+ const home=await mkdtemp(path.join(os.tmpdir(),'bridge-plan-answer-'));let h;const picks=[];
+ h=await runRealBridge(home,{ctx:{resolvePlanReview:(id,choice,input)=>{picks.push({id,choice,input});h.fire('plan_review_resolved',{reviewId:id});return true;},ui:{custom:async()=>42}}});
+ const client=connectOmpTerminalBridge({...h.deployed});
+ try{
+  await client.hello();h.fire('plan_review_requested',{reviewId:'p',title:'Plan',planContent:'Exact plan',planFilePath:'/tmp/plan.md',options:[{id:'refine',label:'Refine',disabled:false},{id:'keep',label:'Keep',disabled:true}]});
+  const item=(await client.getState()).interactions[0];assert.equal(item.question.planContent,'Exact plan');assert.equal(item.capability.cancel,false);
+  await assert.rejects(client.respondInteraction(item.id,null,{cancel:true}),{code:'INTERACTION_CAPABILITY_UNAVAILABLE'});
+  await assert.rejects(client.respondInteraction(item.id,'keep'),{code:'INTERACTION_ANSWER_INVALID'});
+  await assert.rejects(client.respondInteraction(item.id,{choice:'refine',feedback:' '}),{code:'INTERACTION_ANSWER_INVALID'});
+  await client.respondInteraction(item.id,{choice:'refine',feedback:'Exact feedback'});assert.deepEqual(picks,[{id:'p',choice:'refine',input:{feedback:'Exact feedback'}}]);
+  h.fire('tool_approval_requested',{toolCallId:'call',toolName:'bash',reason:'permission'});
+  const raw=(await client.getState()).interactions[0];assert.equal(raw.capability.respond,false);
+  await assert.rejects(client.respondInteraction(raw.id,'once'),{code:'INTERACTION_CAPABILITY_UNAVAILABLE'});
+  h.fire('tool_approval_resolved',{toolCallId:'call'});
+  assert.equal(await h.ctx.ui.custom(()=>{}),42,'unsupported custom UI keeps its real native result');
+ }finally{await client.close();h.shutdownBridge();}
+});
+
+test('workspace draft replacement compares exact native text and never submits or discards image state',async()=>{
+ const home=await mkdtemp(path.join(os.tmpdir(),'bridge-draft-'));let text='unsubmitted\n原稿',writes=0;const images=[{type:'image',data:'retained'}];
+ const h=await runRealBridge(home,{ctx:{ui:{getEditorText:()=>text,setEditorText:value=>{text=value;writes++;},pendingImages:images}}}),client=connectOmpTerminalBridge({...h.deployed});
+ try{
+  await client.hello();const original=await client.readNativeDraft();assert.equal(original.text,text);assert.equal(original.capabilities.images,false);
+  text+=' typed while workspace open';
+  await assert.rejects(client.replaceNativeDraft(original.text,''),{code:'NATIVE_DRAFT_CHANGED'});assert.equal(writes,0);
+  const current=await client.readNativeDraft(),replaced=await client.replaceNativeDraft(current.text,'edited in workspace');assert.equal(replaced.replaced,true);assert.equal(text,'edited in workspace');
+  await client.replaceNativeDraft(text,'');assert.equal(text,'');assert.equal(writes,2);assert.equal(h.ctx.ui.pendingImages,images);
+  assert.equal((await client.getState()).editorDraft.hasText,false);
+ }finally{await client.close();h.shutdownBridge();}
+});
+
 test('defaults use native registry, preserve drafts, defer busy work and expose failed target', async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'bridge-defaults-'));
   let idle = true, refreshes = 0;

@@ -64,8 +64,8 @@ try {
   await page.waitForFunction(()=>document.querySelector('.word-note-overlay .tag-transcript')?.textContent.includes('Word Agent 测试回复'));
   await selectAgain();await page.click('#selection-discuss');
   await page.waitForSelector('.word-note-overlay .tag-discuss .tag-editor');
-  await page.evaluate(()=>{const card=[...document.querySelectorAll('.word-note-overlay .note-anchor')].find(n=>[...n.querySelectorAll('.tag-controls button')].some(b=>b.textContent==='发送讨论'));const e=card.querySelector('.tag-editor');e.value='PPT_LOCATION_DISCUSS';e.dispatchEvent(new Event('input',{bubbles:true}));});
-  await page.evaluate(()=>[...document.querySelectorAll('.word-note-overlay .tag-controls button')].find(n=>n.textContent==='发送讨论').click());
+  await page.evaluate(()=>{const card=[...document.querySelectorAll('.word-note-overlay .note-anchor')].find(n=>[...n.querySelectorAll('.tag-composer .tag-send')].some(b=>b.textContent==='发送讨论'));const e=card.querySelector('.tag-editor');e.value='PPT_LOCATION_DISCUSS';e.dispatchEvent(new Event('input',{bubbles:true}));});
+  await page.evaluate(()=>[...document.querySelectorAll('.word-note-overlay .tag-composer .tag-send')].find(n=>n.textContent==='发送讨论').click());
   await page.waitForFunction(()=>document.querySelectorAll('.word-note-overlay .tag-message-assistant').length===2);
   const agentLog=JSON.parse(await readFile(path.join(output,'profile','nozeli','v1','projects',projectId,'agent-log.json'),'utf8'));
   const requests=agentLog.requests.filter(r=>r.tagMaterials?.length);assert.equal(requests.length,2);

@@ -34,7 +34,7 @@ try{
  await page.click('#file-tree button[data-path="probe.txt"]');await page.waitForFunction(()=>window.__nozeliInput?.text?.().includes('cache expires'));
  const select=async()=>{await page.evaluate(({start,end})=>{document.querySelector('.cm-content').focus();window.__nozeliInput.select(start,end);},{start,end:start+quote.length});await page.waitForSelector('#selection-menu:not([hidden])');};
  await select();t=performance.now();await page.click('#selection-discuss');await page.waitForSelector('.tag-discuss .tag-editor');await page.click('.tag-discuss .tag-editor');await page.keyboard.type('Only return JSON {"file":...,"line":...,"column":...,"quote":...} from the attached annotation location. Do not use tools or search the file.');
- await page.evaluate(()=>[...document.querySelectorAll('.tag-controls button')].find(n=>n.textContent==='发送讨论').click());
+ await page.evaluate(()=>[...document.querySelectorAll('.tag-composer .tag-send')].find(n=>n.textContent==='发送讨论').click());
  const requests=async()=>JSON.parse(await fs.readFile(path.join(profile,'nozeli','v1','projects',id,'agent-log.json'),'utf8')).requests;
  let request;for(let i=0;i<100;i++){request=(await requests()).find(r=>r.tagMaterials?.length);if(request)break;await pause(100);}assert.ok(request);const discussion=await waitReply(request.id);report.discussion={ms:performance.now()-t,reply:discussion};assert.match(discussion,/"line"\s*:\s*4/);assert.match(discussion,/probe\.txt/);assert.equal(request.tagMaterials[0].information.location.start.line,4);
  report.checks.push('actual discussion UI sends exact fourth-line location despite duplicate quote');

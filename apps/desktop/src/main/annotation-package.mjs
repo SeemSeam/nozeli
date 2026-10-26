@@ -21,18 +21,26 @@ export async function buildAnnotationPackage({store,projectId,relPath,kind,ancho
  const loc=result.location;
  if(kind==='text-selection'){
   const text=anchorText(material.toString('utf8'));loc.offsetEncoding='utf16-lf-normalized';loc.start=linePosition(text,anchor.start);loc.end=linePosition(text,anchor.end);loc.label=`第 ${loc.start.line} 行第 ${loc.start.column} 列至第 ${loc.end.line} 行第 ${loc.end.column} 列`;loc.context={before:text.slice(Math.max(0,anchor.start-200),anchor.start),quote:anchor.quote,after:text.slice(anchor.end,anchor.end+200)};
+ }else if(kind==='text-point'){
+  const text=anchorText(material.toString('utf8'));loc.offsetEncoding='utf16-lf-normalized';loc.start=linePosition(text,anchor.start);loc.label=`第 ${loc.start.line} 行第 ${loc.start.column} 列位置`;
+  // Nearby source text is context read from the frozen material, never a
+  // quote the user selected: the point itself carries no text.
+  loc.context={before:text.slice(Math.max(0,anchor.start-400),anchor.start),after:text.slice(anchor.start,anchor.start+400)};
+ }else if(kind==='image-point'){
+  loc.coordinateSpace='image-normalized';loc.imageSize={width:anchor.width,height:anchor.height};loc.pixelPoint={x:Math.round(anchor.x*anchor.width),y:Math.round(anchor.y*anchor.height)};loc.label=`图片位置 x=${loc.pixelPoint.x}, y=${loc.pixelPoint.y} 像素（原图 ${anchor.width}×${anchor.height}）`;
  }else if(kind==='image-region'){
   loc.coordinateSpace='image-normalized';loc.imageSize={width:anchor.width,height:anchor.height};
   loc.pixelRects=anchor.rects.map(([x,y,w,h])=>({x:Math.floor(x*anchor.width),y:Math.floor(y*anchor.height),width:Math.ceil((x+w)*anchor.width)-Math.floor(x*anchor.width),height:Math.ceil((y+h)*anchor.height)-Math.floor(y*anchor.height)}));
   const r=loc.pixelRects[0];loc.label=`图片区域 x=${r.x}, y=${r.y}, ${r.width}×${r.height} 像素（原图 ${anchor.width}×${anchor.height}）`;
  }else if(kind.startsWith('ppt-')){
   const snapshot=await pptSnapshot(store.storage,projectId,relPath,materialDigest);if(drawing&&sourceDraftDigest!==snapshot.digest)throw Error('PPT草稿版本已变化，旧涂鸦已保留，请重新确认原区域');const index=snapshot.model.slides.findIndex(s=>s.id===anchor.slideId);if(index<0)throw Error('备注对应的 PPT 幻灯片已不存在，请重新选取');
-  const slide=snapshot.model.slides[index];loc.page=index+1;loc.label=`第 ${index+1} 张幻灯片`;loc.coordinateSpace='nozeli-pptist-draft';loc.pageSize={width:snapshot.model.viewportSize,height:snapshot.model.viewportSize*snapshot.model.viewportRatio};
+  const slide=snapshot.model.slides[index];loc.page=index+1;loc.coordinateSpace='nozeli-pptist-draft';loc.pageSize={width:snapshot.model.viewportSize,height:snapshot.model.viewportSize*snapshot.model.viewportRatio};
+  loc.label=kind==='ppt-point'?`第 ${index+1} 张幻灯片位置（x=${anchor.x.toFixed(3)}, y=${anchor.y.toFixed(3)}）`:`第 ${index+1} 张幻灯片`;
   if(anchor.elementId){const element=slide.elements.find(e=>e.id===anchor.elementId);if(!element)throw Error('备注对应的 PPT 对象已不存在');loc.object={id:element.id,type:element.type,...geometry(element)};loc.context={quote:anchor.quote,prefix:anchor.prefix,suffix:anchor.suffix};}
   result.draft=await ref(snapshot.bytes,'application/json','pptist-draft');result.draft.schema='nozeli-pptist-draft-v1';
  }else if(kind==='word-selection'){
   const text=await wordText(material),start=text.indexOf(anchor.quote);loc.label='Word 文字选区';loc.context={quote:anchor.quote,prefix:anchor.prefix,suffix:anchor.suffix};if(start>=0&&text.indexOf(anchor.quote,start+1)<0)loc.extractedTextOffset=start;
- }else{loc.page=anchor.page;loc.label=`第 ${anchor.page} 页${kind.endsWith('-region')?'区域':'文字选区'}`;loc.coordinateSpace=anchor.space;}
+ }else{loc.page=anchor.page;loc.label=kind==='pdf-point'?`第 ${anchor.page} 页位置（x=${anchor.x.toFixed(3)}, y=${anchor.y.toFixed(3)}）`:`第 ${anchor.page} 页${kind.endsWith('-region')?'区域':'文字选区'}`;loc.coordinateSpace=anchor.space;}
  if(Number.isInteger(displayLocation?.page)&&displayLocation.page>0&&displayLocation.page<100000){loc.renderedPage=displayLocation.page;loc.label+='（渲染第 '+displayLocation.page+' 页）';}
  if(displayLocation?.pageSize&&['width','height'].every(k=>Number.isFinite(displayLocation.pageSize[k])&&displayLocation.pageSize[k]>0&&displayLocation.pageSize[k]<100000)){loc.renderedPageSize=displayLocation.pageSize;}
  if(kind.endsWith('-region')){

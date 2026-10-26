@@ -302,7 +302,7 @@ async function main() {
   }});
   ompSystemSource.modelFor=role=>providerSettings.modelFor(role);
   managedAgents=new ManagedProjects({userDataDir:app.getPath('userData'),host,legacy:agents,beforeDocumentOperation:syncDocument,ompSystemSource,ompAuthBroker,ompCommand:ompRuntime?.command});
-  managedAgents.onEvent(event=>{workspaceNative?.broadcast('nozeli:agent',event,event.projectId);if(event.kind==='managed-state'&&(managedAgents.activeProjectId===null||managedAgents.activeProjectId===event.projectId))void workspaceNative?.conversationState(event.projectId,event.state).catch(error=>console.error('conversation connection state',error));});
+  managedAgents.onEvent(event=>{workspaceNative?.broadcast('nozeli:agent',event,event.projectId);if(event.kind==='managed-state'&&workspaceNative?.shell&&!workspaceNative.shell.dead&&workspaceNative.shell.projectId!==event.projectId)workspaceNative.shell.wc.send('nozeli:agent',event);if(event.kind==='managed-state'&&(managedAgents.activeProjectId===null||managedAgents.activeProjectId===event.projectId))void workspaceNative?.conversationState(event.projectId,event.state).catch(error=>console.error('conversation connection state',error));});
   const server = await startStatic();
   const {WorkspaceNative}=await import('./workspace-native.mjs');
   const {ProjectWatcher}=await import('./project-watcher.mjs');
@@ -323,6 +323,7 @@ async function main() {
   host.storage.onUnavailable=(id,error)=>{workspaceNative.unavailableProjects??=new Set();if(workspaceNative.unavailableProjects.has(id))return;workspaceNative.unavailableProjects.add(id);const stopped=stopManagedUnavailable(id,error);void Promise.allSettled([stopped,projectLifecycle.beforeStop(id)]).then(results=>{if(results.some(result=>result.status==='rejected'))workspaceNative.broadcast('nozeli:workspace-control',{type:'project-stop-pending',projectId:id,error:{code:'OMP_EXIT_UNCONFIRMED',message:'原生停稳尚未确认，未允许继续执行或清理。'}},id);});workspaceNative.broadcast('nozeli:workspace-control',{type:'project-unavailable',projectId:id,error:{code:error.code,message:error.message}},id);};
   workspaceNative.restoreShell=()=>createWindow(server);
   workspaceNative.ensureConversation=async(projectId,target)=>{
+    try{
     const configuration=await readNozeliConfiguration(nozeliPaths);if(configuration.choiceRequired)throw Object.assign(Error('请先完成 Agent 配置，再打开对话。'),{code:'CONFIG_SETUP_REQUIRED'});
     let status=await managedAgents.connect(projectId,{enable:true});
     if(status.handoff)throw Object.assign(Error('原会话需要确认接手，请在连接与历史中处理。'),{code:'AGENT_HANDOFF_REQUIRED'});
@@ -330,6 +331,7 @@ async function main() {
     const starting=managedAgents.controllers.get(projectId)?.starting?.get(target);if(starting){await starting;status=await managedAgents.status(projectId);}
     const agent=status.state?.agents?.find(a=>a.target===target);
     if(!status.ready||!agent||agent.closed||agent.restarting||!['ready','idle','prompt-inflight'].includes(agent.phase))throw Object.assign(Error(status.connectionError?.message||'当前 Agent 会话尚未就绪，请重试连接。'),{code:'AGENT_NOT_READY'});
+    }catch(error){await managedAgents.reportConnectionError(projectId,error);throw error;}
   };
   workspaceNative.setupWindow=r=>{
     const recovery=new WindowRecovery(r.win,{dialog,settle:async()=>{await workspaceNative.flush([...workspaceNative.surfaces.values()]);await host.settled();},busy:()=>agents?.busy()||managedAgents?.busy(),stop:async()=>{await managedAgents?.stop();await agents?.stopIdle?.();},reveal:()=>revealWindow(r.win),onClose:()=>{allowClose=true;quitting=true;for(const s of [...workspaceNative.surfaces.values()])workspaceNative.destroySurface(s);for(const w of workspaceNative.windows.values()){w.closing=true;w.win.close();}}});
@@ -408,6 +410,7 @@ async function main() {
       if(op==='config.initialize'){
         if(!payload||Object.keys(payload).some(key=>!['mode','includeApiKeys'].includes(key))||!['independent','import'].includes(payload.mode)||payload.includeApiKeys!==undefined&&typeof payload.includeApiKeys!=='boolean')throw new HostError('INVALID_PAYLOAD','请选择独立设置或一次性导入。');
         const value=await completeNozeliConfiguration(nozeliPaths,{choice:payload.mode,includeApiKeys:payload.includeApiKeys===true});
+        await managedAgents.configurationReady();
         return {ok:true,value};
       }
       if(op==='settings.agents.status'){
@@ -608,9 +611,10 @@ async function main() {
       if(typeof op==='string'&&op.startsWith('managed.')){
         const historyOnly=['managed.status','managed.history.list','managed.history.read','managed.artifact.read','managed.artifact.list','managed.timeline.page','managed.timeline.read','managed.timeline.request','managed.changes.list','managed.changes.read','managed.worker.history','managed.resident.history','managed.draft','managed.disposition','managed.terminal.screen'].includes(op);
         // Local disposition still passes sender/project/mutation authorization above.
-        const localDisposition=op==='managed.end'||op==='managed.retry';
-        if(ompRuntimeError&&!historyOnly&&!localDisposition)throw ompRuntimeError;
-        if(!historyOnly&&!localDisposition&&(await readNozeliConfiguration(nozeliPaths)).choiceRequired)throw new HostError('CONFIG_SETUP_REQUIRED','请先完成Nozeli独立配置初始化；本地阅读不受影响。');
+        const localDisposition=['managed.end','managed.retry','managed.todo.manage','managed.attention.ack','managed.attention.respond','managed.attention.draft.read','managed.attention.draft.write'].includes(op);
+        let blocked=ompRuntimeError&&!historyOnly&&!localDisposition?ompRuntimeError:null;
+        if(!blocked&&!historyOnly&&!localDisposition&&(await readNozeliConfiguration(nozeliPaths)).choiceRequired)blocked=new HostError('CONFIG_SETUP_REQUIRED','请先完成Nozeli独立配置初始化；本地阅读不受影响。');
+        if(blocked){if(payload.projectId){await host.requireRegisteredProject(payload.projectId);await managedAgents.reportConnectionError(payload.projectId,blocked);}throw blocked;}
         return {ok:true,value:await managedAgents.invoke(op,payload??{})};
       }
       if (Object.hasOwn(agentHandlers, op)) return { ok: true, value: await agentHandlers[op](payload ?? {}) };

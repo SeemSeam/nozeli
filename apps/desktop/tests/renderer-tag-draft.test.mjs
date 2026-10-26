@@ -1,10 +1,28 @@
-import test from 'node:test';
+import test,{after} from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {pathToFileURL} from 'node:url';
+import {build} from 'esbuild';
 import { createTagSessionProjection } from '../src/renderer/tag-session-projection.mjs';
 import { tagProjectionContent } from '../src/renderer/tag-projection-state.mjs';
 
-const noteTag = await import('../src/renderer/note-tag.mjs');
-const { projectTextAnchor } = await import('../src/renderer/text-view.mjs');
+// The renderer graph ships CSS now (tag-markdown → markdown-code.css), which
+// Node cannot import directly. Bundle the production modules with esbuild
+// (convention: tests/discussion-thread-transcript.test.mjs) and import the
+// bundle BEFORE the DOM double is installed, so module-scope capability
+// probes (Codemirror) fall back to their no-document stubs exactly as the
+// previous direct imports did. Test bodies and the DOM double are unchanged.
+const root=path.resolve(import.meta.dirname,'..'),bundleOut=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-tag-draft-'));
+await build({absWorkingDir:root,stdin:{resolveDir:root,contents:`
+import * as noteTag from './src/renderer/note-tag.mjs';
+import * as textView from './src/renderer/text-view.mjs';
+export {noteTag,textView};
+`},bundle:true,format:'esm',platform:'browser',outfile:path.join(bundleOut,'entry.mjs'),loader:{'.css':'empty'},logLevel:'silent'});
+const rendererBundle=await import(pathToFileURL(path.join(bundleOut,'entry.mjs')).href);
+const noteTag=rendererBundle.noteTag,{projectTextAnchor}=rendererBundle.textView;
+after(async()=>{await fs.rm(bundleOut,{recursive:true,force:true});});
 class Element {
   constructor(tag = 'span') { this.tag = tag; this.children = []; this.handlers = {}; this.style = {}; this.dataset = {}; this.hidden = false; this.value = ''; this.textContent = ''; this.attributes = new Map(); const classes = new Set(); this.classList = { add: (...items) => items.forEach(item => classes.add(item)), remove: (...items) => items.forEach(item => classes.delete(item)), toggle: (item, force) => force === undefined ? (classes.has(item) ? (classes.delete(item), false) : (classes.add(item), true)) : (force ? classes.add(item) : classes.delete(item), force), contains: item => classes.has(item) }; }
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
@@ -34,6 +52,15 @@ globalThis.ResizeObserver = class {
   disconnect() { this.targets.clear(); }
 };
 
+// Compact-card shapes (2026-10-26): the composer is a single row
+// (.tag-composer > .tag-editor + .tag-send), secondary actions live in the
+// non-visual .tag-menu-actions container, and the head is
+// [number, title, summary, drift, more, collapse].
+const composerOf = card => card.children.find(node => node.className === 'tag-composer');
+const editorOf = card => composerOf(card).children.find(node => node.className === 'tag-editor');
+const sendOf = card => composerOf(card).children.find(node => node.className === 'tag-send');
+const menuActionsOf = card => card.children.find(node => node.className === 'tag-menu-actions');
+const summaryOf = head => head.children[2];
 
 test('note and discussion drafts update summaries and survive collapse/re-expansion', () => {
   for (const kind of ['note', 'discuss']) {
@@ -41,8 +68,8 @@ test('note and discussion drafts update summaries and survive collapse/re-expans
     const root = noteTag.makeAnchorTag({ id: kind, ordinal: 1, kind, text: 'OLD', status: kind === 'note' ? {value: 'OLD'} : 'draft' }, { autoEdit: () => true, onDraft: (_id, value) => { draft = value; } });
     const card = root.children[1];
     const head = card.children[0];
-    const summary = head.children[1];
-    const editor = card.children.find(node => node.className === 'tag-editor');
+    const summary = summaryOf(head);
+    const editor = editorOf(card);
     editor.value = 'NEW_TYPED';
     editor.emit('input');
     assert.equal(draft, 'NEW_TYPED');
@@ -54,7 +81,7 @@ test('note and discussion drafts update summaries and survive collapse/re-expans
     head.emit('keydown', { key: 'Enter' });
     assert.equal(summary.textContent, 'NEW_TYPED');
     assert.equal(editor.hidden, kind === 'note');
-    if (kind === 'note') card.children.find(node => node.className === 'tag-controls').children.find(e => e.className === 'tag-edit').emit('click');
+    if (kind === 'note') menuActionsOf(card).children.find(e => e.className === 'tag-edit').emit('click');
     assert.equal(editor.hidden, false);
   }
 });
@@ -68,7 +95,7 @@ test('closing keeps tags visible as summaries and explicit opening restores the 
     assert.equal(card.hidden, false);
     assert.equal(card.classList.contains('is-collapsed'), true);
     assert.equal(index.getAttribute('aria-expanded'), 'false');
-    assert.match(head.children[1].textContent, /^SUMMARY_START/);
+    assert.match(summaryOf(head).textContent, /^SUMMARY_START/);
     assert.equal(removed, 0);
     index.emit('click');
     assert.equal(card.hidden, false);
@@ -80,7 +107,7 @@ test('closing keeps tags visible as summaries and explicit opening restores the 
 test('header single clicks preserve geometry until double click toggles', () => {
   for (const kind of ['note', 'discuss']) {
     const root = noteTag.makeAnchorTag({ id: kind, ordinal: 3, kind, text: 'CLICK_SUMMARY', status: kind === 'note' ? '' : 'completed', open: true });
-    const index = root.children[0], card = root.children[1], head = card.children[0], summary = head.children[1], close = head.children.find(node=>node.className==='tag-close');
+    const index = root.children[0], card = root.children[1], head = card.children[0], summary = summaryOf(head), close = head.children.find(node=>node.className==='tag-close');
     const closed = close.emit('click');
     assert.equal(closed.propagationStopped, true);
     assert.equal(card.classList.contains('is-collapsed'), true);
@@ -122,13 +149,11 @@ test('text projections clamp stale note and discussion anchors without rewriting
 test('local note deletion is an explicit expanded-card action', () => {
   let removed = 0;
   const root = noteTag.makeAnchorTag({ id: 'note', ordinal: 3, kind: 'note', text: 'KEEP', open: true }, { remove: () => { removed += 1; } });
-  const card = root.children[1], content = card.children[0].children[1], close = card.children[0].children.find(node=>node.className==='tag-close');
+  const card = root.children[1], close = card.children[0].children.find(node=>node.className==='tag-close');
   close.emit('click');
   assert.equal(removed, 0);
   card.children[0].emit('dblclick');
-  const controls = card.children.find(node => node.className === 'tag-controls');
-  assert.equal(controls.hidden, false);
-  controls.children.find(node => node.className === 'tag-delete').emit('click');
+  menuActionsOf(card).children.find(node => node.className === 'tag-delete').emit('click');
   assert.equal(removed, 1);
 });
 
@@ -137,7 +162,7 @@ test('conversation removal is available in both states and distinct from collaps
     const removed = [];
     const root = noteTag.makeAnchorTag({ id: 'thread', ordinal: 7, kind: 'discuss', text: 'Question', status: 'completed', open }, { remove: id => removed.push(id) });
     const card = root.children[1], head = card.children[0];
-    const remove = head.children.find(node => node.className === 'tag-remove');
+    const remove = menuActionsOf(card).children.find(node => node.className === 'tag-remove');
     assert.ok(remove);
     assert.equal(remove.hidden, false);
     head.children.find(node=>node.className==='tag-close').emit('click');
@@ -189,8 +214,8 @@ test('explicit index recovery still moves an offscreen card into the pane', () =
 test('send acknowledgement preserves explicit collapse', async () => {
   let resolve;
   const root = noteTag.makeAnchorTag({ id: 'pending-collapse', ordinal: 1, kind: 'discuss', text: '问题', status: 'draft', open: true }, { save: () => new Promise(r => { resolve = r; }) });
-  root.children[1].children.find(node => node.className === 'tag-editor').value = '问题';
-  const send = root.children[1].children.find(node => node.className === 'tag-controls').children[0];
+  editorOf(root.children[1]).value = '问题';
+  const send = sendOf(root.children[1]);
   const sent = send.emitAsync('click');
   root.children[1].children[0].children.find(node=>node.className==='tag-close').emit('click');
   assert.equal(root.children[0].getAttribute('aria-expanded'), 'false');
@@ -202,7 +227,7 @@ test('send acknowledgement preserves explicit collapse', async () => {
 test('discussion send keys ignore IME and held keys and share click submission', async () => {
   let calls=0,settle;
   const root=noteTag.makeAnchorTag({id:'keyboard',ordinal:1,kind:'discuss',text:'keep draft',status:'draft',open:true},{save:()=>{calls++;return new Promise(resolve=>{settle=resolve;});}});
-  const card=root.children[1],editor=card.children.find(node=>node.className==='tag-editor'),send=card.children.find(node=>node.className==='tag-controls').children[0];
+  const card=root.children[1],editor=editorOf(card),send=sendOf(card);
   send.click=()=>send.emit('click');
   editor.value='keep draft';
   for(const extra of [{isComposing:true},{keyCode:229},{repeat:true}])editor.emit('keydown',{key:'Enter',ctrlKey:true,...extra});
@@ -220,27 +245,27 @@ test('discussion send keys ignore IME and held keys and share click submission',
 test('completed conversation opens with full history and a follow-up editor', () => {
   const root = noteTag.makeAnchorTag({ id: 'completed', ordinal: 9, kind: 'discuss', text: '完整问题', status: 'completed', replyText: '完整回复第一行\n完整回复第二行', open: true });
   const card = root.children[1];
-  assert.match(card.children[0].children[1].textContent, /完整问题/);
-  assert.match(card.children[0].children[1].textContent, /完整回复第一行/);
-  assert.equal(card.children.find(node => node.className === 'tag-editor').hidden, false);
-  assert.equal(card.children.find(node => node.className === 'tag-controls').hidden, false);
-  card.children.find(node => node.className === 'tag-editor').value = '续问内容';
-  card.children.find(node => node.className === 'tag-editor').emit('input');
-  assert.equal(card.children.find(node => node.className === 'tag-editor').value, '续问内容');
+  assert.match(summaryOf(card.children[0]).textContent, /完整问题/);
+  assert.match(summaryOf(card.children[0]).textContent, /完整回复第一行/);
+  assert.equal(editorOf(card).hidden, false);
+  assert.equal(composerOf(card).hidden, false);
+  editorOf(card).value = '续问内容';
+  editorOf(card).emit('input');
+  assert.equal(editorOf(card).value, '续问内容');
   card.children[0].children.find(node=>node.className==='tag-close').emit('click');
   assert.equal(card.classList.contains('is-collapsed'), true);
-  assert.match(card.children[0].children[1].textContent, /完整回复第一行/);
+  assert.match(summaryOf(card.children[0]).textContent, /完整回复第一行/);
 });
 test('completed replies remain visible on their original tag', () => {
   const root = noteTag.makeAnchorTag({ id: 'reply', ordinal: 3, kind: 'discuss', text: '为什么？', status: 'completed', replyText: '因为它保持同一锚点。' });
-  assert.ok(root.children[1].children[0].children[1].textContent.includes('为什么？'));
-  assert.ok(root.children[1].children[0].children[1].textContent.includes('因为它保持同一锚点。'));
+  assert.ok(summaryOf(root.children[1].children[0]).textContent.includes('为什么？'));
+  assert.ok(summaryOf(root.children[1].children[0]).textContent.includes('因为它保持同一锚点。'));
 });
 
 test('pending conversations retain their follow-up editor and legacy labels remain readable', () => {
   const conversation = noteTag.makeAnchorTag({ id: 'conversation', ordinal: 1, kind: 'discuss', text: '请解释', status: 'accepted-awaiting-reply', open: true });
   assert.equal(conversation.children[1].hidden, false);
-  assert.equal(conversation.children[1].children.find(node => node.className === 'tag-editor').hidden, false);
+  assert.equal(editorOf(conversation.children[1]).hidden, false);
   const legacyExplain = noteTag.makeAnchorTag({ id: 'legacy', ordinal: 2, kind: 'explain', text: '解释', status: 'completed', replyText: '回答' });
   assert.equal(legacyExplain.children[0].textContent, '2');
 });
@@ -265,7 +290,7 @@ test('both label types share the window shell, complete collapse, and size resto
       head.emit('click',{detail:1});head.emit('click',{detail:2});
       assert.equal(card.classList.contains('is-collapsed'),before);
       head.emit('dblclick');assert.equal(card.classList.contains('is-collapsed'),!before);
-      if(!before) for(const child of card.children.slice(1)) assert.equal(child.hidden,true);
+      if(!before) for(const child of card.children.slice(1)) if(child.className!=='tag-menu-actions') assert.equal(child.hidden,true,'collapsed hides '+child.className);
     }
     assert.equal(card.style.width,'350px'); assert.equal(card.style.height,'400px');
   }
@@ -276,8 +301,8 @@ function discussion(data = {}, actions = {}) {
   const root = noteTag.makeAnchorTag({ id: 'thread', ordinal: 1, kind: 'discuss',
     text: 'FIRST', status: 'draft', open: true, ...data }, actions);
   const card = root.children[1];
-  return { root, card, editor: card.children.find(node => node.className === 'tag-editor'),
-    send: card.children.find(node => node.className === 'tag-controls').children[0] };
+  return { root, card, editor: editorOf(card),
+    send: sendOf(card) };
 }
 
 test('late acknowledgements preserve newer edits and leave another tag draft untouched', async () => {

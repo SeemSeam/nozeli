@@ -22,7 +22,7 @@ import * as rust from 'monaco-editor/languages/definitions/rust/rust.js';
 import { checkOffset, normalizeEditorText, validateEdit, canonicalChanges } from './editor-adapter.mjs';
 import { makeNoteTag, makeAnchorTag } from './note-tag.mjs';
 import { completionLabelsFor, documentSymbols, languageIdForPath, navigationTarget } from './code-language.mjs';
-import { mapTextAnchor } from '../domain/tag-anchors.mjs';
+import { mapTextAnchor, mapTextPointAnchor } from '../domain/tag-anchors.mjs';
 
 globalThis.MonacoEnvironment = { getWorker: () => new Worker(new URL('./monaco-worker.js', import.meta.url), { type: 'module' }) };
 // Monaco ships JSON semantic services separately; use its JavaScript tokenizer
@@ -107,7 +107,7 @@ export function mountMonaco({ parent, projectId, relPath, text, marks = [], tags
   // The reader owns viewport sizing; Monaco owns its virtual line geometry.
   const editor = monaco.editor.create(parent, { model, readOnly, contextmenu: false, automaticLayout: false, minimap: { enabled: false }, folding: true, showFoldingControls: 'always', foldingHighlight: true, scrollBeyondLastLine: false, fontSize: 14, tabSize: 2, tabCompletion: 'on', editContext: false, inlineSuggest: { enabled: false }, suggest: { preview: true, showMethods: true, showFunctions: true, showKeywords: true }, padding: { top: 16, bottom: 12 } });
   let before = model.getValue(), disposed = false;
-  const normalizeItem = item => item?.anchor ? item : Number.isInteger(item?.start) && Number.isInteger(item?.end) ? { ...item, anchor: { start: item.start, end: item.end, quote: item.quote } } : item;
+  const normalizeItem = item => item?.anchor ? item : Number.isInteger(item?.start) && Number.isInteger(item?.end) ? { ...item, anchor: { start: item.start, end: item.end, quote: item.quote }, point: item.point === true || (item.start === item.end && item.quote === '') } : item;
   let items = [...marks, ...tags].map(normalizeItem);
   let facade;
   const listeners = new Set();
@@ -121,7 +121,7 @@ export function mountMonaco({ parent, projectId, relPath, text, marks = [], tags
     items = items.map(item => {
       if (!item?.anchor && !Number.isInteger(item?.start)) return item;
       const anchor = item.anchor || item;
-      const mapped = mapTextAnchor(anchor, old, after, changes);
+      const mapped = item.point ? mapTextPointAnchor(anchor, old, after, changes) : mapTextAnchor(anchor, old, after, changes);
       return { ...item, ...(item.anchor ? { anchor: mapped.anchor } : mapped.anchor), ...(item.anchor ? {} : mapped.anchor), locationStatus: mapped.locationStatus, contentStatus: mapped.contentStatus };
     });
     setProjections(items);

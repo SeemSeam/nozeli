@@ -79,7 +79,7 @@ try{
     assert(await p.$eval(noteSelector+' .note-projection',el=>el.getBoundingClientRect().height<=60&&[...el.children].slice(1).every(node=>node.getBoundingClientRect().height===0)));
     await p.click(noteSelector+' .note-projection-content',{count:2});await p.waitForFunction(selector=>!document.querySelector(selector+' .note-projection').classList.contains('is-collapsed'),{},noteSelector);
   }
-  await p.click(noteSelector+' .tag-edit');assert.equal(await p.$eval(noteSelector+' .tag-editor',el=>el.value),'**第二处备注**，公式 $x^2$');
+  await p.click(noteSelector+' [data-tag-more]');await p.click('.nozeli-context-menu:not([hidden]) [data-command=card-edit]');assert.equal(await p.$eval(noteSelector+' .tag-editor',el=>el.value),'**第二处备注**，公式 $x^2$');
   await p.click(noteSelector+' .tag-close');
   const selections=await p.evaluate(()=>{
     const leafText=element=>{const walker=document.createTreeWalker(element,NodeFilter.SHOW_TEXT);return walker.nextNode();};

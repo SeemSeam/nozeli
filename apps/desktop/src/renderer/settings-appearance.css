@@ -98,7 +98,7 @@ html[data-theme="dark"] :is(dialog:not(.settings-dialog):not(#action-confirmatio
 html[data-theme="dark"] :is(input,select,textarea):not(.xterm-helper-textarea) {
   background-color:var(--paper);color:var(--ink);border-color:var(--line);
 }
-html[data-theme="dark"] :is(.files,.side,.provider-console,.provider-role,.composer-wrap,.composer-preview,.tag-message-assistant,.agent-message-agent,.tag-editor,.skip,.pdf-toolbar button,.pdf-toolbar input,.rail-add) {
+html[data-theme="dark"] :is(.files,.side,.provider-console,.provider-role,.composer-wrap,.composer-preview,.tag-message-assistant,.agent-message-agent,.tag-editor,.pdf-toolbar button,.pdf-toolbar input,.rail-add) {
   background-color:var(--paper);color:var(--ink);border-color:var(--line);
 }
 html[data-theme="dark"] :is(.agent-message-user,.tag-message-user) { background:var(--green-soft);color:var(--ink); }
@@ -134,7 +134,7 @@ html[data-theme="dark"] #text-preview :is(blockquote,:not(pre)>code),html[data-t
 html[data-theme="dark"] .document-context-menu button:is(:hover,:focus-visible) { background:var(--green-soft); }
 /* Explicit chrome opt-ins leave authored document/PDF/office and terminal content
    alone. Shiki's paired foreground/background and multicolor tokens stay fixed. */
-html[data-palette="slate"] :is(.files,.side,.composer-wrap,.composer-preview,.tag-message-assistant,.agent-message-agent,.tag-editor,.skip,.pdf-toolbar button,.pdf-toolbar input,.rail-add,.document-context-menu,.nozeli-context-menu,.surface-menu,.workspace-command-menu,.generic-popover) {
+html[data-palette="slate"] :is(.files,.side,.composer-wrap,.composer-preview,.tag-message-assistant,.agent-message-agent,.tag-editor,.pdf-toolbar button,.pdf-toolbar input,.rail-add,.document-context-menu,.nozeli-context-menu,.surface-menu,.workspace-command-menu,.generic-popover) {
   background-color:var(--paper);color:var(--ink);border-color:var(--line);
 }
 html[data-palette="slate"] :is(.settings-dialog,dialog:not(.settings-dialog),#files,#side,.composer-wrap,.tag-chat-window,.note-form) :is(input,select,textarea):not(.xterm-helper-textarea) {

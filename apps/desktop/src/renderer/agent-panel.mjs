@@ -141,7 +141,7 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     setReadingInert(true);
     await refreshConsole();
   }
-  window.__setProjectView = view => { if(view === 'terminal') void openConsole(); else closeConsole(); };
+  window.__setProjectView = view => { if(view === 'terminal') return openConsole(); else closeConsole(); };
   function selectView(view) { window.__setProjectView(view); window.dispatchEvent(new CustomEvent('project-view-change',{detail:view})); }
   $('provider-console-toggle').addEventListener('click',()=>{if(!configuration.initialized)return configuration.open();selectView(consoleVisible?'reading':'terminal');});
   $('provider-console-close').addEventListener('click', () => {
@@ -209,7 +209,9 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     const id = projectId;
     const gate = agentSendGate();
     if (!gate.ok) { toast(gate.message); return false; }
-    if (!excerpt?.trim() && !(action === 'task' && annotationRef)) return false;
+    // Point-anchored discussions carry no excerpt by design; their material
+    // arrives through the host-verified annotation reference instead.
+    if (!excerpt?.trim() && !annotationRef) return false;
     const prompt = annotationRef
       ? action==='explain'?'请解释这处选区。':action==='task'?`请修改这处材料：\n${comment}`:comment
       : action==='explain'?`请解释：\n${excerpt}`:`${comment}\n\n选区：\n${excerpt}`;
@@ -217,16 +219,6 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     const result = await managed.send(prompt, context).then(value => ({ ok: true, value }), error => ({ ok: false, error }));
     if (!result.ok) { toast(result.error.message); return false; }
     return { ...result.value, requestId: result.value.requestId ?? result.value.jobId };
-  };
-  // Direct discussion send for the workspace-snapshot thread card: same gate,
-  // same managed.send image-attachment chain the composer uses.
-  window.__agentDiscussionGate = agentSendGate;
-  window.__agentDiscussionSend = async ({ text, imageAttachments, requestKey }) => {
-    const gate = agentSendGate();
-    if (!gate.ok) { toast(gate.message); return false; }
-    const result = await managed.send(text, { imageAttachments, requestKey }).then(value => ({ ok: true, value }), error => ({ ok: false, error }));
-    if (!result.ok) { toast(result.error.message); return false; }
-    return { accepted: true, requestId: result.value.requestId ?? result.value.jobId };
   };
   window.__agentSend = async ({background=false}={}) => {
     if(!ownsConversation)return false;

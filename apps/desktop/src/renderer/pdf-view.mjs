@@ -47,7 +47,24 @@ export async function mountPdf({ parent, bytes, page, initialZoom = 1, fitViewpo
     rememberExpanded();
     const retained=new Map([...wrap.querySelectorAll('.note-anchor')].filter(node=>tags.some(tag=>tag.id===node.dataset.annotation&&tag.anchor.page===state.page)).map(node=>[node.dataset.annotation,node]));
     wrap.querySelectorAll('.pdf-note-mark,.note-anchor,.region-drawing-projection').forEach(node => {if(!retained.has(node.dataset.annotation))node.remove();});
+    // Point anchors project only in the rotation they were captured in; a
+    // rotated view keeps the record instead of painting a wrong spot.
+    const rotation = Number(wrap.dataset.rotation) || 0;
+    const paintable = item => !(item.anchor.space === 'rendered-page-normalized' && Number.isFinite(item.anchor.x)) || item.anchor.rotation === rotation;
+    const appendPointMark = (item, x, y) => {
+      const mark = document.createElement('span');
+      mark.className = `pdf-note-mark pdf-point-mark${item.status || item.kind ? ' tag-' + (item.status === 'followup' ? 'followup' : item.kind) : ''}`;
+      Object.assign(mark.style, { left: x * 100 + '%', top: y * 100 + '%', width: '10px', height: '10px', borderRadius: '50%', transform: 'translate(-5px,-5px)' });
+      wrap.append(mark);
+    };
     for (const note of annotations.filter(note => note.anchor.page === state.page)) {
+      if (!paintable(note)) continue;
+      if (Number.isFinite(note.anchor.x)) {
+        appendPointMark(note, note.anchor.x, note.anchor.y);
+        const tag = makeNoteTag(note, { ...noteActions, open: id => openStates.get(id) ?? noteActions.open?.(id) });
+        Object.assign(tag.style,{position:'absolute',left:note.anchor.x*100+'%',top:note.anchor.y*100+'%'}); wrap.append(tag);
+        continue;
+      }
       const rects = note.anchor.rects || [[.025,.04,.001,.001]];
       for (const r of note.anchor.rects || []) {
         const mark = document.createElement('span'); mark.className = 'pdf-note-mark';
@@ -58,15 +75,39 @@ export async function mountPdf({ parent, bytes, page, initialZoom = 1, fitViewpo
       Object.assign(tag.style,{position:'absolute',left:r[0]*100+'%',top:r[1]*100+'%'}); wrap.append(tag);
     }
     for (const tag of tags.filter(tag => tag.anchor.page === state.page)) {
-      const rect = tag.anchor.rects?.[0];
+      if (!paintable(tag)) continue;
+      const isPoint = Number.isFinite(tag.anchor.x) && !tag.anchor.rects;
+      const rect = tag.anchor.rects?.[0] ?? (isPoint ? [tag.anchor.x, tag.anchor.y, 0, 0] : undefined);
       if (!rect) continue;
-      for (const r of tag.anchor.rects) { const mark = document.createElement('span'); mark.className = `pdf-note-mark tag-${tag.status === 'followup' ? 'followup' : tag.kind}`; Object.assign(mark.style, {left:r[0]*100+'%',top:r[1]*100+'%',width:r[2]*100+'%',height:r[3]*100+'%'}); wrap.append(mark); }
-      projectDrawing(wrap,tag.information?.drawing||tag.drawing,rect);
+      if (isPoint) appendPointMark(tag, tag.anchor.x, tag.anchor.y);
+      else for (const r of tag.anchor.rects) { const mark = document.createElement('span'); mark.className = `pdf-note-mark tag-${tag.status === 'followup' ? 'followup' : tag.kind}`; Object.assign(mark.style, {left:r[0]*100+'%',top:r[1]*100+'%',width:r[2]*100+'%',height:r[3]*100+'%'}); wrap.append(mark); }
+      if (!isPoint) projectDrawing(wrap,tag.information?.drawing||tag.drawing,rect);
       const node = retained.get(tag.id)||makeAnchorTag({ ...tag, open: openStates.get(tag.id) ?? tag.open }, tagActions);node.updateConversation?.(tag);
       Object.assign(node.style, { position:'absolute', left:rect[0]*100+'%', top:rect[1]*100+'%' });
       if(node.parentElement!==wrap)wrap.append(node);
       node.fitConversation?.();
     }
+  }
+  // Nearby rendered text is reported as context only when the point is close
+  // to an actual text-layer line; it is never presented as a selected quote.
+  function nearbyText(wrap, x, y) {
+    const layer = wrap.querySelector('.textLayer');
+    if (!layer) return '';
+    let best = null, bestDistance = 80;
+    for (const span of layer.querySelectorAll('span')) {
+      const r = span.getBoundingClientRect();
+      if (!r.width && !r.height) continue;
+      const dx = Math.max(r.left - x, 0, x - r.right), dy = Math.max(r.top - y, 0, y - r.bottom);
+      const distance = Math.hypot(dx, dy);
+      if (distance < bestDistance) { bestDistance = distance; best = span; }
+    }
+    if (!best) return '';
+    const b = best.getBoundingClientRect(), line = [];
+    for (const span of layer.querySelectorAll('span')) {
+      const r = span.getBoundingClientRect();
+      if (Math.abs(r.top + r.bottom - b.top - b.bottom) / 2 <= Math.max(2, b.height * 0.3)) line.push(span.textContent);
+    }
+    return line.join('').replace(/\s+/g, ' ').trim().slice(0, 240);
   }
 
   async function render() {
@@ -89,7 +130,7 @@ export async function mountPdf({ parent, bytes, page, initialZoom = 1, fitViewpo
     wrap.className = 'pdf-page';
     wrap.classList.toggle('region-selecting', regionMode);
     wrap.style.width = viewport.width + 'px';
-    wrap.style.setProperty('--total-scale-factor', String(viewport.scale));
+    wrap.dataset.rotation = String(viewport.rotation);
     const canvas = document.createElement('canvas');
     canvas.width = Math.floor(viewport.width * dpr);
     canvas.height = Math.floor(viewport.height * dpr);
@@ -181,6 +222,21 @@ export async function mountPdf({ parent, bytes, page, initialZoom = 1, fitViewpo
     zoomLevel: () => state.zoom,
     pageCount: () => state.document.numPages,
     current: () => state.page,
+    pointAt(x, y) {
+      const wrap = surface.querySelector('.pdf-page');
+      if (!wrap) return null;
+      const b = wrap.getBoundingClientRect();
+      if (b.width < 1 || b.height < 1) return null;
+      if (x < b.left || x > b.right || y < b.top || y > b.bottom) return null;
+      const anchor = { page: state.page, rotation: Number(wrap.dataset.rotation) || 0, space: 'rendered-page-normalized', x: Math.min(1, Math.max(0, (x - b.left) / b.width)), y: Math.min(1, Math.max(0, (y - b.top) / b.height)) };
+      return { anchor, nearby: nearbyText(wrap, x, y) };
+    },
+    pointRect(a) {
+      const wrap = surface.querySelector('.pdf-page');
+      if (!wrap || !a || a.page !== state.page || a.space !== 'rendered-page-normalized' || !Number.isFinite(a.x) || a.rotation !== (Number(wrap.dataset.rotation) || 0)) return null;
+      const b = wrap.getBoundingClientRect();
+      return { left: b.left + a.x * b.width, top: b.top + a.y * b.height, right: b.left + a.x * b.width, bottom: b.top + a.y * b.height };
+    },
     syncPoint(fraction = .25, client = null) {
       const geometry = state.geometry, wrap = surface.querySelector('.pdf-page');
       if (!geometry || geometry.page !== state.page || !wrap) return null;

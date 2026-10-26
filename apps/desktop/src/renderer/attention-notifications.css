@@ -1,0 +1,43 @@
+/* Inline attention prompt: bounded strip inside #workspace-groups, never an
+   overlay. All rules are namespaced under .attention-prompt (the prompt) or
+   .attention-feedback (its sibling status line) so the polished attention
+   dialogue styles are never touched. Wrapping is container-bounded (flex-wrap
+   + container query), never viewport-only; tokens follow workspace reports. */
+.attention-prompt,.attention-feedback{
+  --att-paper:var(--paper,#fffdf6);
+  --att-ink:var(--ink,#263932);
+  --att-line:var(--line,#ccd6c8);
+  --att-muted:var(--muted,#5b6b60);
+  --att-accent:var(--ui-action-bg,#456654);
+  --att-accent-ink:var(--ui-action-ink,#ffffff);
+}
+.attention-prompt{display:flex;flex-direction:column;gap:6px;flex:none;min-width:0;box-sizing:border-box;container-type:inline-size;padding:6px 10px;border-bottom:1px solid var(--att-line);background:var(--att-paper);color:var(--att-ink);font-size:12.5px;line-height:1.45;pointer-events:auto}
+.attention-prompt[hidden]{display:none}
+.attention-prompt .attention-live{position:absolute;width:1px;height:1px;margin:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.attention-prompt .attention-current{display:flex;flex-wrap:wrap;align-items:center;column-gap:8px;row-gap:4px;min-width:0}
+.attention-prompt .attention-kind{display:inline-flex;align-items:center;gap:4px;flex:none;padding:2px 8px;border:1px solid var(--att-line);border-radius:999px;font-size:11px;white-space:nowrap}
+.attention-prompt .attention-kind .ui-icon{width:12px;height:12px;flex:none}
+.attention-prompt .attention-current-text{flex:1 1 150px;min-width:0;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.attention-prompt .attention-count{flex:none;font-size:11px;color:var(--att-muted)}
+.attention-prompt .attention-count[hidden]{display:none}
+.attention-prompt .attention-current button{flex:none;padding:4px 10px;border-radius:7px;border:1px solid var(--att-line);background:transparent;color:inherit;font:inherit;font-size:12px;cursor:pointer}
+.attention-prompt .attention-current button:focus-visible{outline:2px solid var(--att-accent);outline-offset:1px}
+.attention-prompt .attention-current [data-attention-open]{background:var(--att-accent);color:var(--att-accent-ink);border-color:transparent}
+.attention-prompt .attention-current [data-attention-expand]{color:var(--att-muted)}
+.attention-prompt .attention-list{display:grid;gap:4px;max-height:min(216px,36dvh);overflow-y:auto;margin:0;padding:4px;border:1px solid var(--att-line);border-radius:8px}
+.attention-prompt .attention-list[hidden]{display:none}
+.attention-prompt .attention-item{display:flex;align-items:center;gap:8px;min-width:0;padding:3px 6px;border-radius:6px;cursor:pointer}
+.attention-prompt .attention-item[aria-current='true']{background:color-mix(in srgb,var(--att-accent) 12%,transparent);box-shadow:inset 0 0 0 1px var(--att-accent)}
+.attention-prompt .attention-item:focus-visible{outline:2px solid var(--att-accent);outline-offset:1px}
+.attention-prompt .attention-item-text{flex:1;min-width:0;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.attention-prompt .attention-item-phase,.attention-prompt .attention-item-action{flex:none;font-size:11px;color:var(--att-muted)}
+@container (max-width:480px){
+  /* Compact panes: secondary item hints drop out; primary identity stays. */
+  .attention-prompt .attention-item-phase,.attention-prompt .attention-item-action{display:none}
+  .attention-prompt .attention-current{column-gap:6px}
+  .attention-prompt .attention-current button{padding:4px 8px}
+}
+.attention-feedback{display:flex;flex:none;align-items:center;gap:6px;min-width:0;box-sizing:border-box;margin:0;padding:4px 10px;border-bottom:1px solid var(--att-line);background:var(--att-paper);color:var(--att-muted);font-size:12px;pointer-events:auto}
+.attention-feedback .ui-icon{width:12px;height:12px;flex:none}
+.attention-feedback .attention-feedback-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.attention-feedback[hidden]{display:none}

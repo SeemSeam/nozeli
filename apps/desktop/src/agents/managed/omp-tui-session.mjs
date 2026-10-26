@@ -166,7 +166,7 @@ export class OmpTuiSession extends EventEmitter {
       // Residents cannot bypass host routing with native task/shell tools.
       // Workers retain file tools inside their isolated execution copy; host
       // publication still adjudicates new files and existing-text conflicts.
-      const nativeTools = this.role === 'worker' ? ['read', 'write', 'edit', 'bash'] : [];
+      const nativeTools = this.role === 'worker' ? ['read', 'write', 'edit', 'bash', 'ask'] : ['ask'];
       const activeTools = [...nativeTools, ...this.tools.map(tool => tool.name)];
       if (activeTools.length) argv.push('--tools', activeTools.join(','));
       else argv.push('--no-tools');
@@ -293,6 +293,7 @@ export class OmpTuiSession extends EventEmitter {
     if (!state || this.closed) return;
     if (Object.hasOwn(state, 'pendingModel')) this.pendingModel = state.pendingModel;
     if (Object.hasOwn(state, 'modelError')) this.modelError = state.modelError;
+    if (Array.isArray(state.interactions)) this.interactions = state.interactions;
     this.model = state.model ?? null;
     this.effort = state.thinkingLevel ?? null;
     this.nativeEffective = { model: this.model, effort: this.effort, modelSource: source, effortSource: source, selectionOwner: 'native' };
@@ -303,6 +304,28 @@ export class OmpTuiSession extends EventEmitter {
     }
     this.#changed();
   }
+  async respondInteraction(interactionId, answer, { cancel = false } = {}) {
+    if (this.closed || this.stopRequested || !this.bridge) throw ompError('INTERACTION_STALE', 'native session owner is unavailable');
+    if (typeof interactionId !== 'string' || !this.interactions?.some(item => item.id === interactionId)) throw ompError('INTERACTION_STALE', 'native interaction is no longer pending');
+    const result = await this.bridge.respondInteraction(interactionId, answer, { cancel });
+    this.#syncNativeState(result);
+    return { accepted: result.accepted === true, interactionId };
+  }
+  async readNativeDraft() {
+    if (this.closed || this.stopRequested || !this.bridge) throw ompError('INTERACTION_STALE', 'native session owner is unavailable');
+    const result = await this.bridge.readNativeDraft();
+    this.#syncNativeState(result);
+    return result;
+  }
+
+  async replaceNativeDraft(expectedText, text) {
+    if (this.closed || this.stopRequested || !this.bridge) throw ompError('INTERACTION_STALE', 'native session owner is unavailable');
+    const result = await this.bridge.replaceNativeDraft(expectedText, text);
+    this.#syncNativeState(result);
+    return result;
+  }
+
+
 
   async refreshNativeDraft() {
     if (!this.bridge || this.closed) return;

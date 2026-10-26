@@ -19,7 +19,7 @@
 }
 #conversation-panel .conversation-file-link,
 .tag-chat-window .conversation-file-link { font-size:inherit; }
-.tag-chat-window .note-projection-head .panel-font{flex:none;min-width:58px;width:auto;order:1;font:11px system-ui;padding:3px 4px}
-.tag-chat-window .note-projection-head .panel-more{flex:none;width:26px;min-width:26px;order:10;padding:3px}
-.tag-chat-window.is-collapsed .panel-font{display:none}
-.tag-chat-window .note-projection-head.panel-tiny .panel-font{display:none}
+/* The compact tag card carries no local font control (conversation size is a
+   global setting); only the more-menu trigger lives in its header. */
+.tag-chat-window .note-projection-head .panel-more{flex:none;order:10;box-sizing:border-box;width:26px;min-width:26px;height:24px;min-height:24px;padding:3px}
+.tag-chat-window .note-projection-head .panel-font{display:none}

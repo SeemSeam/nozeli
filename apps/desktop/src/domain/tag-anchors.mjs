@@ -7,6 +7,46 @@ const result = (anchor, locationStatus, contentStatus, method) => ({ anchor, loc
 export function validTextAnchor(anchor, text) {
   return Number.isSafeInteger(anchor?.start) && Number.isSafeInteger(anchor?.end) && anchor.start >= 0 && anchor.end > anchor.start && anchor.end <= text.length && text.slice(anchor.start, anchor.end) === anchor.quote;
 }
+// Zero-length anchors mark a position, not a span: quote stays empty and the
+// point is only ever mapped with an explicit rule, never a guess.
+export function validTextPointAnchor(anchor, text) {
+  return Number.isSafeInteger(anchor?.start) && Number.isSafeInteger(anchor?.end) && anchor.start === anchor.end && anchor.start >= 0 && anchor.start <= text.length && anchor.quote === '';
+}
+export function mapTextPointAnchor(anchor, before, after, changes) {
+  before = anchorText(before); after = anchorText(after);
+  if (!validTextPointAnchor(anchor, before)) return result(null, 'unresolved', 'unknown', 'invalid-source');
+  let replaced = false, leftConsumed = false, rightConsumed = false;
+  changes.iterChanges((from, to) => {
+    if (from < anchor.start && anchor.start < to) replaced = true;
+    if (from < to && to === anchor.start) leftConsumed = true;
+    if (from < to && from === anchor.start) rightConsumed = true;
+  });
+  // A hunk strictly containing the point, or adjacent hunks consuming the
+  // characters on both sides of it, destroy the position's own text: the
+  // point is orphaned rather than mapped to an arbitrary spot in the new
+  // content. A hunk touching only one side keeps the boundary (half-open
+  // convention, same as range anchors), and a pure insertion exactly at the
+  // point maps by the recorded affinity below.
+  if (replaced || (leftConsumed && rightConsumed)) return result(null, 'orphaned', 'modified', 'point-replaced');
+  const start = changes.mapPos(anchor.start, 1);
+  return result({ start, end: start, quote: '' }, 'exact', 'unchanged', 'transaction');
+}
+export function resolveTextPointAnchor(anchor, before, after) {
+  before = anchorText(before); after = anchorText(after);
+  if (!validTextPointAnchor(anchor, before)) return result(null, 'unresolved', 'unknown', 'invalid-source');
+  if (before === after) return result({ ...anchor }, 'exact', 'unchanged', 'same-material');
+  const changes = textChangeSet(before, after);
+  // An external diff that inserts exactly at the point carries no affinity
+  // evidence; unlike a live editor transaction it cannot pick a side, so the
+  // point stays pending instead of guessing before/after the new text.
+  let insertedAtPoint = false;
+  changes.iterChanges((from, to) => { if (from === to && from === anchor.start) insertedAtPoint = true; });
+  if (insertedAtPoint) return result(null, 'unresolved', 'unknown', 'point-ambiguous');
+  const mapped = mapTextPointAnchor(anchor, before, after, changes);
+  if (mapped.anchor) return mapped;
+  if (mapped.method === 'point-replaced') return result(null, 'orphaned', 'modified', 'point-replaced');
+  return result(null, 'unresolved', 'unknown', 'point-ambiguous');
+}
 export function textChangeSet(before, after, json) {
   before = anchorText(before); after = anchorText(after);
   if (json != null) {

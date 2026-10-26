@@ -29,6 +29,23 @@ async function fixture(t){const directory=await mkdtemp(path.join(os.tmpdir(),'w
 host.storage=new Proxy(storage,{get(target,key){const value=Reflect.get(target,key);return typeof value==='function'?((id,...args)=>value.call(target,id==='p'?projectId:id,...args)):value;}});
 const native=new WorkspaceNative({BrowserWindow:Window,WebContentsView:View,screen:{getDisplayMatching:()=>({workArea:{x:-1920,y:0,width:1920,height:1080}})},origin:'http://127.0.0.1:9000/',userDataDir:directory,host});const root=native.registerShell(new Window());root.projectId='p';root.ready=true;native.layouts.set('p',createLayout('p',{workspace:{minimized:true}}));return {native,root};}
 function receipt(native,r,ok=true){r.ready=true;r.wc.onSend=(channel,payload)=>{if(channel==='nozeli:flush')queueMicrotask(()=>native.acknowledge(r,{requestId:payload,ok}));};}
+test('explicit drawing preparation connects frontdesk without moving content or consuming drafts',async t=>{
+ const {native,root}=await fixture(t);
+ const layout=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'conversation',viewState:{draftOnly:true,workspace:{draft:'KEEP MAIN DRAFT'}}}});
+ native.layouts.set('p',layout);const view=Object.values(layout.views).find(v=>v.kind==='conversation');
+ let admissions=0;native.ensureConversation=async(id,target)=>{assert.equal(id,'p');assert.equal(target,'frontdesk');admissions++;};
+ const result=await native.invoke(root,'workspace.control',{projectId:'p',type:'conversation-action',action:'prepare',target:'frontdesk'});
+ assert.equal(result.ready,true);assert.equal(admissions,1);
+ assert.equal(view.viewState.draftOnly,false);assert.equal(view.viewState.workspace.draft,'KEEP MAIN DRAFT');
+ assert.equal(native.surfaces.size,0,'preparation does not activate or create a content surface');
+});
+test('refused drawing admission preserves draft-only state and allows explicit retry',async t=>{
+ const {native,root}=await fixture(t);
+ const layout=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'conversation',viewState:{draftOnly:true}}});native.layouts.set('p',layout);
+ native.ensureConversation=async()=>{throw Error('handoff confirmation required');};
+ await assert.rejects(native.invoke(root,'workspace.control',{projectId:'p',type:'conversation-action',action:'prepare',target:'frontdesk'}),/handoff confirmation/);
+ assert.equal(Object.values(layout.views).find(v=>v.kind==='conversation').viewState.draftOnly,true);
+});
 test('registered top-frame scope rejects iframe, foreign project and unknown sender',async t=>{const {native,root}=await fixture(t),event={sender:root.wc,senderFrame:root.wc.mainFrame};assert.equal(native.authorize(event,'state.read',{projectId:'p'}),root);assert.throws(()=>native.authorize(event,'state.read',{projectId:'foreign'}),{code:'PROJECT_SCOPE_DENIED'});assert.throws(()=>native.authorize({...event,senderFrame:{url:native.origin,parent:{}}},'state.read',{}),{code:'IPC_DENIED'});assert.throws(()=>native.authorize({sender:new Contents(),senderFrame:root.wc.mainFrame},'state.read',{}),{code:'IPC_DENIED'});});
 test('history surfaces can render frozen reports but cannot open executable development previews',async t=>{
  const {native}=await fixture(t),wc=new Contents(),history=native.register(wc,{role:'surface',projectId:'p',viewId:'history',kind:'history'}),event={sender:wc,senderFrame:wc.mainFrame};

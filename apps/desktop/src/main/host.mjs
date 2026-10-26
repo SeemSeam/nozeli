@@ -15,14 +15,14 @@ import { FileTags } from '../domain/file-tags.mjs';
 import { FileChanges, publicChanges } from '../domain/file-changes.mjs';
 import { userActor } from '../domain/document-changes.mjs';
 import { listDocumentVersions, readDocumentVersion } from '../domain/document-versions.mjs';
-import { anchorText, resolveTextAnchor, textChangeSet, mapTextAnchor, validTextAnchor } from '../domain/tag-anchors.mjs';
+import { anchorText, resolveTextAnchor, textChangeSet, mapTextAnchor, validTextAnchor, validTextPointAnchor, mapTextPointAnchor, resolveTextPointAnchor } from '../domain/tag-anchors.mjs';
 import {rebaseDocumentEdits, documentChangesSince} from '../domain/document-collaboration.mjs';
 import { treeViewValue } from './file-tree-ops.mjs';
 import {ProjectStorage} from './project-storage.mjs';
 import {ensureProjectGit} from './project-git.mjs';
 import {ProjectAttachments,validateDrawingPng} from './project-attachments.mjs';
 
-  const NOTE_KINDS = ['image-region','ppt-selection','ppt-region','word-region', 'word-selection', 'text-selection', 'pdf-page', 'pdf-selection', 'pdf-region'];
+  const NOTE_KINDS = ['image-region','image-point','ppt-selection','ppt-region','ppt-point','word-region', 'word-selection', 'text-selection', 'text-point', 'pdf-page', 'pdf-point', 'pdf-selection', 'pdf-region'];
   function boundNoteOffsets(value, { strict = false } = {}) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       if (strict && value != null) throw new HostError('INVALID_PAYLOAD', 'Note offsets must be an object.');
@@ -70,6 +70,24 @@ import {ProjectAttachments,validateDrawingPng} from './project-attachments.mjs';
         throw new HostError('INVALID_ANCHOR', 'Text note draft anchor is outside the annotation range.');
       }
       return { start: anchor.start, end: anchor.end, quote: anchor.quote };
+    }
+    if (kind === 'text-point') {
+      if (Object.keys(anchor).some(key => !['start', 'end', 'quote'].includes(key))) throw new HostError('INVALID_ANCHOR', 'Text point draft anchor has unsupported fields.');
+      if (!Number.isInteger(anchor.start) || anchor.start !== anchor.end || anchor.start < 0 || anchor.start > 8_000_000 || anchor.quote !== '') throw new HostError('INVALID_ANCHOR', 'Text point draft anchor must be a zero-length position without a quote.');
+      return { start: anchor.start, end: anchor.end, quote: '' };
+    }
+    if (kind === 'pdf-point') {
+      if (Object.keys(anchor).some(key => !['page', 'rotation', 'space', 'x', 'y'].includes(key))) throw new HostError('INVALID_ANCHOR', 'Unexpected PDF point draft anchor fields.');
+      if (!Number.isInteger(anchor.page) || anchor.page < 1 || anchor.page > 100000 || ![0, 90, 180, 270].includes(anchor.rotation) || anchor.space !== 'rendered-page-normalized' || !Number.isFinite(anchor.x) || !Number.isFinite(anchor.y) || anchor.x < 0 || anchor.x > 1 || anchor.y < 0 || anchor.y > 1) throw new HostError('INVALID_ANCHOR', 'PDF point draft must be a normalized point on a valid page.');
+      return { page: anchor.page, rotation: anchor.rotation, space: anchor.space, x: anchor.x, y: anchor.y };
+    }
+    if (kind === 'image-point') {
+      if (anchor.space !== 'image-normalized' || ![anchor.width, anchor.height].every(n => Number.isInteger(n) && n > 0 && n <= 20000) || !Number.isFinite(anchor.x) || !Number.isFinite(anchor.y) || anchor.x < 0 || anchor.x > 1 || anchor.y < 0 || anchor.y > 1) throw new HostError('INVALID_ANCHOR', '图片位置坐标或尺寸无效。');
+      return { space: 'image-normalized', width: anchor.width, height: anchor.height, x: anchor.x, y: anchor.y };
+    }
+    if (kind === 'ppt-point') {
+      if (typeof anchor.slideId !== 'string' || anchor.slideId.length > 100 || anchor.space !== 'pptx-slide-normalized' || typeof anchor.layout !== 'string' || anchor.layout.length > 1000000 || !Number.isFinite(anchor.x) || !Number.isFinite(anchor.y) || anchor.x < 0 || anchor.x > 1 || anchor.y < 0 || anchor.y > 1) throw new HostError('INVALID_ANCHOR', 'PPT 位置锚点无效');
+      return { space: anchor.space, slideId: anchor.slideId, layout: anchor.layout, x: anchor.x, y: anchor.y };
     }
     if (kind === 'pdf-page') {
       if (Object.keys(anchor).some(key => key !== 'page') || !Number.isInteger(anchor.page) || anchor.page < 1 || anchor.page > 100000) throw new HostError('INVALID_ANCHOR', 'PDF page draft requires only a page number.');
@@ -1471,16 +1489,21 @@ export class DesktopHost {
     const base = { targetDigest, anchor: null, locationStatus: 'unresolved', contentStatus: 'unknown', method: 'missing-source' };
     if (!bytes) return base;
     const known = record.resolutions?.[targetDigest];
-    if (known?.anchor && record.kind === 'text-selection' && !validTextAnchor(known.anchor, anchorText(bytes.toString('utf8')))) return { ...base, method: 'invalid-cached-anchor' };
+    if (known?.anchor && record.kind === 'text-point' && !validTextPointAnchor(known.anchor, anchorText(bytes.toString('utf8')))) return { ...base, method: 'invalid-cached-anchor' };
     if (known?.method === 'manual') return { ...known, targetDigest };
     if (targetDigest === record.materialDigest) {
-      if (record.kind === 'text-selection' && !validTextAnchor(record.anchor, anchorText(bytes.toString('utf8')))) return { ...base, method: 'invalid-origin-anchor' };
+      if (record.kind === 'text-point' && !validTextPointAnchor(record.anchor, anchorText(bytes.toString('utf8')))) return { ...base, method: 'invalid-origin-anchor' };
       return { ...base, anchor: record.anchor, locationStatus: 'exact', contentStatus: 'unchanged', method: 'same-material' };
     }
     if (known) {
       return { ...known, targetDigest };
     }
     if (record.kind === 'word-selection') return {targetDigest, ...locateWordQuote(await wordText(bytes),record.anchor)};
+    if (record.kind === 'text-point') {
+      const origin = await store.getMaterial(record.materialDigest);
+      if (!isUtf8Text(bytes) || !isUtf8Text(origin)) return { ...base, method: 'not-text' };
+      return { targetDigest, ...resolveTextPointAnchor(record.anchor, origin.toString('utf8'), bytes.toString('utf8')) };
+    }
     if (record.kind !== 'text-selection') return { ...base, method: 'unknown-image-or-page-change' };
     const origin = await store.getMaterial(record.materialDigest);
     if (!isUtf8Text(bytes) || !isUtf8Text(origin)) return { ...base, method: 'not-text' };
@@ -1517,7 +1540,7 @@ export class DesktopHost {
       for (const tag of file.tags) {
         const previous = await this.resolveTag(store, tag, before);
         const resolution = changes && previous.anchor
-          ? { targetDigest: afterDigest, ...mapTextAnchor(previous.anchor, before.toString('utf8'), after.toString('utf8'), changes) }
+          ? { targetDigest: afterDigest, ...(tag.kind === 'text-point' ? mapTextPointAnchor(previous.anchor, before.toString('utf8'), after.toString('utf8'), changes) : mapTextAnchor(previous.anchor, before.toString('utf8'), after.toString('utf8'), changes)) }
           : await this.resolveTag(store, tag, after);
         // An edited span remains modified relative to its origin on later shifts.
         if (afterDigest !== tag.materialDigest && previous.contentStatus === 'modified' && resolution.contentStatus === 'unchanged') resolution.contentStatus = 'modified';
@@ -1580,6 +1603,29 @@ export class DesktopHost {
           throw new HostError('ANCHOR_MISMATCH', 'Quote does not match the frozen material. It was not rebound.');
         }
         storedAnchor = { start, end, quote };
+      } else if (kind === 'text-point') {
+        if (Object.keys(anchor || {}).some((key) => !['start', 'end', 'quote'].includes(key))) throw new HostError('INVALID_ANCHOR', 'Text point anchor has unsupported fields.');
+        if (!Number.isInteger(anchor?.start) || anchor.start !== anchor.end || anchor.start < 0 || anchor.quote !== '') throw new HostError('INVALID_ANCHOR', 'Text point anchor must be zero-length without a quote.');
+        let text;
+        try {
+          text = anchorText(new TextDecoder('utf-8', { fatal: true }).decode(material));
+        } catch {
+          throw new HostError('ANCHOR_MISMATCH', 'Material is not UTF-8 text.');
+        }
+        if (anchor.start > text.length) throw new HostError('INVALID_ANCHOR', 'Text point is outside the material.');
+        if (classify(relPath, material).kind !== 'text') throw new HostError('ANCHOR_MISMATCH', 'Material is not the annotated text file.');
+        storedAnchor = { start: anchor.start, end: anchor.end, quote: '' };
+      } else if (kind === 'pdf-point') {
+        if (material.subarray(0, 5).toString('latin1') !== '%PDF-') throw new HostError('ANCHOR_MISMATCH', 'Material is not PDF.');
+        storedAnchor = boundAnchor(anchor, kind);
+      } else if (kind === 'image-point') {
+        if (!imageExtension.test(relPath)) throw new HostError('ANCHOR_MISMATCH', '不是受支持图片');
+        const info = imageInfo(material);
+        storedAnchor = boundAnchor(anchor, kind);
+        if (info.width !== storedAnchor.width || info.height !== storedAnchor.height) throw new HostError('ANCHOR_MISMATCH', '图片尺寸与冻结原件不一致');
+      } else if (kind === 'ppt-point') {
+        if (path.posix.extname(relPath).toLowerCase() !== '.pptx') throw new HostError('ANCHOR_MISMATCH', '不是 PPTX 文档');
+        storedAnchor = boundAnchor(anchor, kind);
       } else if (kind === 'pdf-page') {
         const page = anchor?.page;
         if (!Number.isInteger(page) || page < 1 || page > 100000) {
@@ -1810,9 +1856,9 @@ export class DesktopHost {
       if(!resolution.anchor||resolution.locationStatus!=='exact'||resolution.contentStatus!=='unchanged')reasons.push('位置不确定或内容已变化');
       if(resolution.targetDigest!==tag.materialDigest)reasons.push('源文件版本已变化，须重新确认');
       if(['changed','unavailable'].includes(draftStatus))reasons.push('PPT 当前草稿不同于备注快照或不可用');
-      if(tag.kind.endsWith('-region'))reasons.push('区域是视觉范围，尚无经验证的可编辑对象映射');
+      if(tag.kind.endsWith('-point'))reasons.push('位置点仅提供附近上下文，不是对象映射');
       if(!tag.information)reasons.push('旧备注未记录完整材料包');
-      return { schema:'nozeli.agent-tag-material-v1',note:tag.note,kind:tag.kind,information,currentSource,currentDraft,draftStatus,execution:{locationVerified:reasons.length===0,canAutoModify:false,reasons:[...reasons,'本接口只提供材料，修改执行器仍需校验并生成可审查差异']},tagId: tag.id, fileId: file.file.fileId, relPath: rel, origin: { materialDigest: tag.materialDigest, anchor: tag.anchor, text: tag.kind === 'text-selection' ? anchorText(origin.toString('utf8')) : null }, resolution, currentText: tag.kind === 'text-selection' && current && isUtf8Text(current) ? anchorText(current.toString('utf8')) : null };
+      return { schema:'nozeli.agent-tag-material-v1',note:tag.note,kind:tag.kind,information,currentSource,currentDraft,draftStatus,execution:{locationVerified:reasons.length===0,canAutoModify:false,reasons:[...reasons,'本接口只提供材料，修改执行器仍需校验并生成可审查差异']},tagId: tag.id, fileId: file.file.fileId, relPath: rel, origin: { materialDigest: tag.materialDigest, anchor: tag.anchor, text: ['text-selection','text-point'].includes(tag.kind) ? anchorText(origin.toString('utf8')) : null }, resolution, currentText: ['text-selection','text-point'].includes(tag.kind) && current && isUtf8Text(current) ? anchorText(current.toString('utf8')) : null };
     })());
   }
 

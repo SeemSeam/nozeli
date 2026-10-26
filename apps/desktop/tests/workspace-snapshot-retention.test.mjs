@@ -77,6 +77,7 @@ const invoke=async(op,p={})=>{
   }
   return {ok:true,value:{saved:true,attached:!p.local,captureId:p.captureId}};
  }
+ if(op==='workspace.control'&&p.type==='conversation-action'&&p.action==='prepare')return state.agentReady===false?{ok:false,error:{message:'Agent 尚未连接'}}:{ok:true,value:{projectId:p.projectId,target:'frontdesk',ready:true}};
  if(op==='managed.status')return {ok:true,value:{enabled:true,ready:state.agentReady!==false,state:{jobs:state.jobs}}};
  if(op==='managed.send'){
   sends.push({p});

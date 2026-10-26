@@ -115,7 +115,9 @@ try{
  await doc.waitForSelector('#selection-menu:not([hidden])',{visible:true});await doc.click('#selection-note');await doc.type('#note-input','Synthetic disposable note — retain on cancel');await doc.click('#add-note');
  // Markdown keeps a hidden editor projection before the visible preview projection.
  // Select the real visible element, never Puppeteer's first (hidden) match.
- const editNote=await visibleNoteControl('.note-projection.tag-chat-window .tag-edit');await editNote.click();await editNote.dispose();
+ // Compact card: edit/delete live behind the card menu ([data-tag-more]).
+ const editNote=await visibleNoteControl('.note-anchor.tag-note [data-tag-more]');await editNote.click();await editNote.dispose();
+ await doc.click('.nozeli-context-menu:not([hidden]) [data-command=card-edit]');
  const noteEditor=await visibleNoteControl('.note-projection.tag-chat-window textarea');await noteEditor.type(' — KEEP_UNSAVED_NOTE_EDIT');await noteEditor.dispose();
  const continuity=()=>doc.evaluate(()=>({noteDraft:[...document.querySelectorAll('.note-projection.tag-chat-window textarea')].find(n=>n.getBoundingClientRect().height>0)?.value,noteInput:document.querySelector('#note-input').value,text:window.__nozeliInput?.text(),selection:window.__nozeliInput?.selection(),composer:document.querySelector('#composer').value,annotationCount:new Set([...document.querySelectorAll('.note-anchor')].map(n=>n.dataset.annotation)).size}));
  const before=await continuity();
@@ -127,7 +129,7 @@ try{
   const base=`${width}-${theme}-${size}`;
   await normal();assert.equal(await doc.$eval('#action-confirmation-cancel',n=>n===document.activeElement),true);await snapshot(base+'-normal','real GUI: native content tools → compare file → close comparison');if(process.env.NOZELI_CONFIRMATION_KEYBOARD==='1')await keyboardEvidence(base+'-normal');await cancel();
   assert.equal(await doc.$eval('#secondary-close',n=>n===document.activeElement),true);
-  const deleteNote=await visibleNoteControl('.note-projection.tag-chat-window .tag-delete');await deleteNote.click();await doc.waitForSelector('#action-confirmation[open]',{visible:true});await snapshot(base+'-danger','real GUI: disposable local annotation → edit → delete; cancel only');if(process.env.NOZELI_CONFIRMATION_KEYBOARD==='1')await keyboardEvidence(base+'-danger');await cancel();
+  const deleteNote=await visibleNoteControl('.note-anchor.tag-note [data-tag-more]');await deleteNote.click();await doc.click('.nozeli-context-menu:not([hidden]) [data-command=card-remove]');await doc.waitForSelector('#action-confirmation[open]',{visible:true});await snapshot(base+'-danger','real GUI: disposable local annotation → edit → delete; cancel only');if(process.env.NOZELI_CONFIRMATION_KEYBOARD==='1')await keyboardEvidence(base+'-danger');await cancel();
   assert.equal(await deleteNote.evaluate(n=>n===document.activeElement),true);await deleteNote.dispose();
   await normal();await doc.click('#action-confirmation-skip');
   try{await chmod(store,0o500);storageBlocked=true;await doc.click('#action-confirmation-accept');await doc.waitForSelector('#action-confirmation-error:not([hidden])',{visible:true,timeout:10000});await doc.focus('#action-confirmation-cancel');await snapshot(base+'-error','real GUI + bounded filesystem fault injection: isolated profile layout storage read-only');}

@@ -27,6 +27,7 @@ function bridgeSource({ socketPath, tokenPath, tools }) {
 import * as nodeNet from 'node:net';
 import * as nodeFs from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 const MAX_FRAME = ${MAX_FRAME_BYTES}, DEDUP = ${DEDUP_WINDOW};
 export default function nozeliTerminalBridge(pi) {
   const sockPath = ${JSON.stringify(socketPath)};   // 宿主预生成端点（win32=pipe 地址；unix=绝对短路径）
@@ -42,7 +43,90 @@ export default function nozeliTerminalBridge(pi) {
   const broadcast = frame => { for (const s of authed()) send(s, { event: frame }); };
   const toolError = text => ({ content: [{ type: 'text', text }], isError: true });
   const remember = (c, id, frame) => { c.replies.set(id, frame); c.order.push(id); while (c.order.length > DEDUP) c.replies.delete(c.order.shift()); };
-  const capture = c => { if (c) ctx = c; };
+  const interactions = new Map(), responders = new Map(), wrapped = new WeakSet(), wrappedMethods = new WeakSet();
+  const uiCalls = new AsyncLocalStorage();
+  const failure = (code, message) => Object.assign(Error(message), { code });
+  const invalidAnswer = () => { throw failure('INTERACTION_ANSWER_INVALID', 'Answer does not match the native question'); };
+  const nativeAnswer = (question, answer, cancel) => {
+    const { method } = question;
+    if (cancel) return method === 'confirm' ? false : method === 'approve' ? 'deny' : undefined;
+    if (method === 'select') return question.options.some(o => (typeof o === 'string' ? o : o.label) === answer) ? answer : invalidAnswer();
+    if (method === 'confirm') return typeof answer === 'boolean' ? answer : invalidAnswer();
+    if (method === 'input' || method === 'editor') return typeof answer === 'string' ? answer : invalidAnswer();
+    if (method === 'approve') {
+      if (answer === 'once' || answer === 'deny' || (answer === 'session' && question.prompt.session)) return answer;
+      if (answer && typeof answer.always === 'boolean' && question.prompt.grants?.some(g => g.scope === answer.grant)) return { grant: answer.grant, always: answer.always };
+      return invalidAnswer();
+    }
+    if (method === 'askDialog') {
+      if (answer?.kind === 'chat') return { kind: 'chat' };
+      if (answer?.kind !== 'submit' || !Array.isArray(answer.results) || answer.results.length !== question.questions.length) return invalidAnswer();
+      const seen = new Set();
+      const results = question.questions.map(q => {
+        const item = answer.results.find(r => r?.id === q.id);
+        if (!item || seen.has(item.id) || !Array.isArray(item.selectedOptions)) return invalidAnswer();
+        seen.add(item.id);
+        const options = q.options.map(o => o.label), selected = item.selectedOptions;
+        if (new Set(selected).size !== selected.length || selected.some(s => !options.includes(s)) || (!q.multi && selected.length > 1)) return invalidAnswer();
+        if (item.customInput !== undefined && typeof item.customInput !== 'string' || item.note !== undefined && typeof item.note !== 'string') return invalidAnswer();
+        if (!q.multi && !selected.length && !item.customInput?.trim()) return invalidAnswer();
+        if (!q.multi && selected.length && item.customInput?.trim()) return invalidAnswer();
+        return { id: q.id, question: q.question, options, multi: q.multi === true, selectedOptions: selected, ...(item.customInput !== undefined ? { customInput: item.customInput } : {}), ...(item.note !== undefined ? { note: item.note } : {}) };
+      });
+      return { kind: 'submit', results };
+    }
+    return invalidAnswer();
+  };
+  const capture = c => {
+    if (!c) return;
+    ctx = c;
+    // Handler contexts proxy dialog methods with read traps. Wrap their shared
+    // prototype UI, so captured askDialog/approve calls also reach this bridge.
+    let uiContext = c;
+    while (Object.getPrototypeOf(uiContext)?.ui) uiContext = Object.getPrototypeOf(uiContext);
+    const ui = uiContext.ui;
+    if (!ui || wrapped.has(ui)) return;
+    wrapped.add(ui);
+    for (const method of ['select','confirm','input','editor','askDialog','approve','custom']) {
+      if (typeof ui[method] !== 'function') continue;
+      const original = ui[method];
+      if (wrappedMethods.has(original)) continue;
+      ui[method] = async function (...args) {
+        if (uiCalls.getStore()) return original.apply(this,args);
+        const id = randomUUID();
+        const title = method === 'askDialog' ? (Array.isArray(args[0]) ? args[0].map(q => q.question || q.title || '').join('；') : '原生问题') : typeof args[0] === 'string' ? args[0] : method === 'approve' ? '原生权限确认' : '原生交互等待用户处理';
+        const question = JSON.parse(JSON.stringify({ method, title, ...(method === 'select' ? { options: args[1] } : method === 'confirm' ? { message: args[1] } : method === 'input' ? { placeholder: args[1] } : method === 'editor' ? { prefill: args[1] } : method === 'askDialog' ? { questions: args[0] } : method === 'approve' ? { prompt: args[0] } : {}) }));
+        const supported = method !== 'custom';
+        const interaction = { id, method, title, question, capability: { respond: supported, cancel: supported, ...(!supported ? { reason: 'Custom native UI has no structured answer schema' } : {}) } };
+        const abort = new AbortController(), optionsIndex = method === 'askDialog' || method === 'approve' || method === 'custom' ? 1 : 2;
+        const options = args[optionsIndex] ?? {};
+        if (supported) args[optionsIndex] = { ...options, signal: options.signal ? AbortSignal.any([options.signal, abort.signal]) : abort.signal };
+        let completed = false, native, release;
+        const remote = new Promise(resolve => { release = resolve; });
+        interactions.set(id, interaction);
+        if (supported) responders.set(id, async (answer, cancel) => {
+          if (completed || options.signal?.aborted) throw failure('INTERACTION_STALE', 'Native interaction already settled');
+          const value = nativeAnswer(question, answer, cancel);
+          completed = true;
+          // The official signal hides an active dialog or removes its queued presentation.
+          // Await that cleanup before returning the structured answer to the original caller.
+          abort.abort();
+          try { await native; } catch (error) { release({ error }); throw error; }
+          release({ value });
+          responders.delete(id); interactions.delete(id); observeState();
+        });
+        observeState();
+        try {
+          native = Promise.resolve(uiCalls.run(id,()=>original.apply(this,args)));
+          const local = native.then(value => completed ? remote : { value }, error => completed ? remote : { error });
+          const result = await Promise.race([local, remote]);
+          if (result.error) throw result.error;
+          return result.value;
+        } finally { completed = true; responders.delete(id); interactions.delete(id); observeState(); }
+      };
+      wrappedMethods.add(ui[method]);
+    }
+  };
   const editorDraft = () => {
     if (typeof ctx?.ui?.getEditorText !== 'function') return { known: false };
     try { const text = ctx.ui.getEditorText(); return typeof text === 'string' ? { known: true, hasText: text.length > 0 } : { known: false }; }
@@ -57,6 +141,7 @@ export default function nozeliTerminalBridge(pi) {
     thinkingLevel: (() => { const lv = typeof pi.getThinkingLevel === 'function' ? pi.getThinkingLevel() : ctx?.getThinkingLevel?.(); return typeof lv === 'object' && lv ? (lv.level ?? null) : (lv ?? null); })(),
     cwd: ctx?.cwd ?? null,
     editorDraft: editorDraft(),
+    interactions: [...interactions.values()],
     desiredModel, pendingModel, modelError,
   });
   let lastSelection = '';
@@ -90,7 +175,7 @@ export default function nozeliTerminalBridge(pi) {
     })();
     return modelApply;
   };
-  const observeState = () => { if (!ctx) return; const current = state(); const key = JSON.stringify([current.model, current.modelInput, current.thinkingLevel, current.editorDraft, current.desiredModel, current.pendingModel, current.modelError]); if (key !== lastSelection) { lastSelection = key; broadcast({ type: 'state_change', state: current }); } };
+  const observeState = () => { if (!ctx) return; const current = state(); const key = JSON.stringify([current.model, current.modelInput, current.thinkingLevel, current.editorDraft, current.desiredModel, current.pendingModel, current.modelError,current.interactions]); if (key !== lastSelection) { lastSelection = key; broadcast({ type: 'state_change', state: current }); } };
   const selectionTimer = setInterval(() => { observeState(); if (pendingModel && !modelError) void applyPendingModel().catch(() => {}); }, 200);
   selectionTimer.unref?.();
   pi.on('model_select', (_e, c) => { capture(c); observeState(); });
@@ -98,6 +183,25 @@ export default function nozeliTerminalBridge(pi) {
   pi.on('agent_start', () => { agentActive = true; broadcast({ type: 'agent_start', state: state() }); });
   pi.on('agent_end', e => { if (e?.willContinue !== true && e?.awaitingAsyncWork !== true) agentActive = false; broadcast({ type: 'agent_end', isIdle: state().isIdle, willContinue: e?.willContinue === true, awaitingAsyncWork: e?.awaitingAsyncWork === true }); });
   pi.on('turn_start', e => broadcast({ type: 'turn_start', turnIndex: e?.turnIndex ?? null }));
+  pi.on('plan_review_requested', (e,c) => {
+    capture(c);
+    const id = 'plan:' + e.reviewId;
+    const question = { method: 'plan', title: e.title || '计划待裁决', options: e.options, planContent: e.planContent, planFilePath: e.planFilePath, ...(e.tiers ? { tiers: e.tiers } : {}) };
+    const supported = typeof c?.resolvePlanReview === 'function';
+    interactions.set(id, { id, method: 'plan', title: question.title, question, capability: { respond: supported, cancel: false, reason: supported ? 'Native plan API does not support dismissal' : 'Native plan resolver unavailable' } });
+    if (supported) responders.set(id, (answer, cancel) => {
+      if (cancel) throw failure('INTERACTION_CAPABILITY_UNAVAILABLE', 'Native plan review cannot be cancelled through the extension API');
+      const choice = typeof answer === 'string' ? answer : answer?.choice;
+      const input = typeof answer === 'object' && answer ? { ...(answer.feedback !== undefined ? { feedback: answer.feedback } : {}), ...(answer.role !== undefined ? { role: answer.role } : {}) } : undefined;
+      if (!e.options?.some(o => o.id === choice && !o.disabled) || (input?.feedback !== undefined && typeof input.feedback !== 'string') || (choice === 'refine' && !input?.feedback?.trim()) || (input?.role !== undefined && (!['execute','compact','keep'].includes(choice) || !e.tiers?.some(t => t.role === input.role)))) return invalidAnswer();
+      if (!c.resolvePlanReview(e.reviewId, choice, input)) throw failure('INTERACTION_STALE', 'Native plan review no longer accepts this choice');
+      responders.delete(id);
+    });
+    observeState();
+  });
+  pi.on('plan_review_resolved', e => { const id = 'plan:' + e.reviewId; interactions.delete(id); responders.delete(id); observeState(); });
+  pi.on('tool_approval_requested', (e,c) => { capture(c); const id = 'approval:' + e.toolCallId; interactions.set(id,{id,method:'approval',title:'工具权限待确认：'+e.toolName,question:{method:'approval',title:'工具权限待确认：'+e.toolName,reason:e.reason},capability:{respond:false,cancel:false,reason:'Native approval event has no resolver; awaiting structured approve UI'}});observeState(); });
+  pi.on('tool_approval_resolved', e => { interactions.delete('approval:'+e.toolCallId);observeState(); });
   pi.on('turn_end', e => broadcast({ type: 'turn_end', turnIndex: e?.turnIndex ?? null, message: { stopReason: e?.message?.stopReason, errorMessage: e?.message?.errorMessage } }));
   let pendingInteractiveInput = null;
   pi.on('input', e => { pendingInteractiveInput = e?.source === 'interactive' ? { source: 'interactive', text: e?.text ?? '' } : null; });
@@ -200,6 +304,27 @@ export default function nozeliTerminalBridge(pi) {
     try {
       if (req.op === 'hello') reply(true, { ...state(), tools: pi.getAllTools().map(t => t.name).filter(n => n.startsWith('nozeli')), ...registrationReceipt() });
       else if (req.op === 'get_state') reply(true, state());
+      else if (req.op === 'read_native_draft' || req.op === 'replace_native_draft') {
+        if (typeof ctx?.ui?.getEditorText !== 'function') throw failure('NATIVE_DRAFT_CAPABILITY_UNAVAILABLE', 'Native editor text cannot be read');
+        const current = ctx.ui.getEditorText();
+        if (typeof current !== 'string') throw failure('NATIVE_DRAFT_CAPABILITY_UNAVAILABLE', 'Native editor text is unavailable');
+        if (req.op === 'replace_native_draft') {
+          if (typeof req.expectedText !== 'string' || typeof req.text !== 'string') throw failure('NATIVE_DRAFT_INVALID', 'Native draft text must be a string');
+          if (typeof ctx.ui.setEditorText !== 'function') throw failure('NATIVE_DRAFT_CAPABILITY_UNAVAILABLE', 'Native editor text cannot be replaced');
+          if (current !== req.expectedText) throw failure('NATIVE_DRAFT_CHANGED', 'Native draft changed; read it again before replacing');
+          ctx.ui.setEditorText(req.text);
+          observeState();
+        }
+        reply(true, { text: req.op === 'replace_native_draft' ? req.text : current, replaced: req.op === 'replace_native_draft', capabilities: { text: true, images: false, limitation: 'Native editor image attachments are not exposed; text replacement preserves them and never submits' }, ...state() });
+      }
+      else if (req.op === 'respond_interaction') {
+        const interaction = interactions.get(req.interactionId);
+        if (!interaction) throw failure('INTERACTION_STALE', 'Native interaction is no longer pending');
+        const respond = responders.get(req.interactionId);
+        if (!respond) throw failure('INTERACTION_CAPABILITY_UNAVAILABLE', interaction.capability?.reason || 'Native interaction cannot be answered structurally');
+        await respond(req.answer, req.cancel === true);
+        reply(true, { accepted: true, interactionId: req.interactionId, ...state() });
+      }
       else if (req.op === 'apply_default_model') {
         if (typeof req.selector !== 'string') throw Error('Default model selector must be a string');
         desiredModel = req.selector || null; pendingModel = desiredModel; modelError = null; modelRevision++;
@@ -222,7 +347,7 @@ export default function nozeliTerminalBridge(pi) {
         reply(true, { accepted: true });
       }
       else reply(false, { code: 'UNKNOWN_OP', message: String(req.op) });
-    } catch (e) { reply(false, { code: 'OP_FAILED', message: String(e?.message ?? e) }); }
+    } catch (e) { reply(false, { code: e.code ?? 'OP_FAILED', message: String(e?.message ?? e) }); }
   }
   const listen = () => server.listen(sockPath);
   if (isWindows) return listen();   // named pipe：无文件地址（stat/unlink 不适用；占用时 listen 自然报错）
@@ -372,6 +497,9 @@ export function connectOmpTerminalBridge({ socketPath, token, onEvent = () => {}
     hello: () => call('hello'),
     getState: () => call('get_state'),
     applyDefaultModel: selector => call('apply_default_model', { selector }),
+    respondInteraction: (interactionId, answer, { cancel = false } = {}) => call('respond_interaction', { interactionId, answer, cancel }),
+    readNativeDraft: () => call('read_native_draft'),
+    replaceNativeDraft: (expectedText, text) => call('replace_native_draft', { expectedText, text }),
     stop: () => call('stop'),
     shutdown: () => call('shutdown'),
     toolStatus: forId => call('tool_status', { forId }),

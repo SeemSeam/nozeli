@@ -55,7 +55,7 @@ try {
   await page.$eval('#text-host .tag-note .tag-edit',n=>n.click());
   await page.click('#text-host .tag-note .tag-editor');await page.keyboard.type(' updated');
   assert.equal(await page.evaluate(()=>window.__nozeliInput.text()),'int main(){return 0;}\n');
-  await page.$eval('#text-host .tag-note .tag-controls button',n=>n.click());
+  await page.$eval('#text-host .tag-note .tag-composer .tag-send',n=>n.click());
   await page.waitForFunction(()=>document.querySelector('#text-host .tag-note .tag-conversation')?.textContent.includes('updated') || document.querySelector('#text-host .tag-note')?.textContent.includes('updated'));
   await page.evaluate(()=>{window.__nozeliInput.focus();window.__nozeliInput.select(11,17);});
   await page.$eval('#selection-discuss',n=>n.click());await page.waitForSelector('#text-host .tag-discuss .note-projection-head');

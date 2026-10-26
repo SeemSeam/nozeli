@@ -1,0 +1,73 @@
+// Real installed Electron + bundled OMP; local scripted model, no paid requests.
+// NOZELI_INSTALLED_BINARY=/absolute/release/nozeli node apps/desktop/tests/installed-attention-recovery-live.mjs
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import {pathToFileURL} from 'node:url';
+import {makeHarness,until} from './installed-attention-harness.mjs';
+if(process.platform!=='linux')throw Error('Linux/Wayland is required');
+const h=await makeHarness(process.env.NOZELI_INSTALLED_BINARY);
+const inputs=[],scenarios=[],errors=[];let id,original,external={status:'not-attempted'},failure;
+const server=http.createServer((req,res)=>{let body='';req.on('data',b=>body+=b);req.on('end',()=>{try{inputs.push(JSON.parse(body));const n=inputs.length;const ask=n===1;const delta=ask?{role:'assistant',tool_calls:[{index:0,id:'recovery-native-ask',type:'function',function:{name:'ask',arguments:JSON.stringify({questions:[{id:'choice',question:'恢复验收：请选择原生问题答案',options:[{label:'保留原方案'},{label:'修改方案'}]}]})}}]}:{role:'assistant',content:'LOCAL_SCRIPTED_COMPLETED'};res.writeHead(200,{'content-type':'text/event-stream'});for(const d of [delta,{}])res.write('data: '+JSON.stringify({id:'recovery-'+n,object:'chat.completion.chunk',choices:[{index:0,delta:d,finish_reason:Object.keys(d).length?null:ask?'tool_calls':'stop'}]})+'\n\n');res.end('data: [DONE]\n\n');}catch(e){res.writeHead(500);res.end(e.message);}});});
+await new Promise(r=>server.listen(0,'127.0.0.1',r));
+const status=async()=> (await h.invoke('managed.status',{projectId:id})).state;
+const shot=async(name,page=h.shell)=>page.screenshot({path:path.join(h.root,name+'.png')});
+const record=async(name,data={})=>{scenarios.push({name,at:new Date().toISOString(),...data});await fs.writeFile(path.join(h.root,'scenarios.json'),JSON.stringify(scenarios,null,2));};
+async function open(todo){await h.shell.evaluate(id=>window.__workspaceOpenTodo(id),todo.id);return until(async()=>{for(const p of await h.browser.pages())try{if(await p.$('[data-attention-conversation="'+todo.id+'"]'))return p;}catch{}},'workspace todo '+todo.id);}
+async function setEditor(page,text){await page.$eval('[data-attention-native-draft]',(n,text)=>{n.value=text;n.dispatchEvent(new Event('input',{bubbles:true}));},text);}
+async function stale(){const r=await h.shell.evaluate(({projectId,todoId})=>nozeli.invoke('managed.attention.respond',{projectId,todoId,answer:{kind:'submit',results:[{id:'choice',selectedOptions:['修改方案']}]}}),{projectId:id,todoId:original.id});assert.equal(r.ok,false,'stale source must reject answer');assert.match(r.error.code,/STALE|UNAVAILABLE/);return r;}
+async function clickText(page,text){await page.evaluate(text=>{const b=[...document.querySelectorAll('[data-attention-conversation] button')].find(b=>b.textContent===text);if(!b)throw Error('Button absent: '+text);b.click();},text);}
+async function localRecord(key){const {ProjectStorage}=await import(pathToFileURL(path.join(h.app,'src/main/project-storage.mjs')).href);const store=new ProjectStorage(h.env.NOZELI_USER_DATA);try{return await store.getLocal(id,key);}finally{await store.db.close();}}
+try{
+ await h.launch();h.shell.on('pageerror',e=>errors.push(e.message));
+ // Leave configuration uninitialized: enabling must fail locally and publish a readable settings action.
+ if(await h.shell.$eval('#configuration-setup',n=>n.open).catch(()=>false))await h.shell.click('#configuration-cancel');
+ if(await h.shell.$eval('#settings-dialog',n=>n.open))await h.shell.click('#settings-close');
+ await h.shell.click('#pick-project');id=await until(async()=>(await h.invoke('workspace.bootstrap')).projectId,'isolated project');
+ await h.invoke('managed.enable',{projectId:id}).catch(e=>{assert.equal(e.code,'CONFIG_SETUP_REQUIRED');});
+ const blocked=await until(async()=>(await status()).todos.find(t=>t.status==='open'&&t.destination?.kind==='settings'),'unconfigured settings reminder');
+ const settings=await open(blocked);assert.match(await settings.$eval('[data-attention-conversation]',n=>n.textContent),/配置|设置/);await shot('configuration-blocked-readable',settings);await clickText(settings,'打开相关设置');assert.equal(inputs.length,0);await record('configuration blocked offline readable settings action; zero model requests',{todoId:blocked.id});
+ await h.shell.waitForSelector('#settings-dialog[open]');await h.shell.locator('#settings-close').click();await h.shell.waitForFunction(()=>!document.querySelector('#settings-dialog').open);await h.invoke('config.initialize',{mode:'independent'});
+ await h.invoke('settings.providers.save',{provider:'recovery-local',model:'scripted',baseUrl:'http://127.0.0.1:'+server.address().port+'/v1',key:'local-only',api:'openai-completions'});
+ await h.invoke('settings.models.save',{frontdesk:'recovery-local/scripted',orchestrator:'recovery-local/scripted',worker:'recovery-local/scripted'});
+ if(await h.shell.$eval('#configuration-setup',n=>n.open).catch(()=>false))await h.shell.click('#configuration-cancel');
+ await h.invoke('managed.enable',{projectId:id});await until(async()=>(await h.invoke('managed.status',{projectId:id})).ready,'native residents ready');
+ const sent=await h.invoke('managed.send',{projectId:id,target:'frontdesk',text:'本地恢复验收，请提问选择。',requestKey:'installed-recovery-question'});
+ original=await until(async()=>(await status()).todos.find(t=>t.origin==='instance-attention'&&t.status==='open'&&t.destination?.kind==='conversation'),'real native ask');
+ // Explicit local notification dismissal is only acknowledgement, not cancellation of native ask.
+ await h.shell.waitForFunction(()=>{const p=document.querySelector('[data-attention-prompt]');return p&&!p.hidden&&p.textContent.includes('恢复验收');});await h.shell.locator('[data-attention-prompt]:not([hidden]) button:last-of-type').click();await until(async()=>(await status()).attentionNotified.includes(original.id),'explicit local dismiss acknowledgement');assert.equal((await status()).todos.find(t=>t.id===original.id).status,'open');
+ const question=await open(original);await question.waitForSelector('[data-attention-submit]');await shot('original-native-ask',question);assert.equal((await status()).todos.find(t=>t.id===original.id).status,'open');assert.equal(inputs.length,1);
+ await record('dismiss and workspace view never answer',{todoId:original.id});
+ // Only signal the actual provider whose private home and Linux process start stamp were recorded by this host.
+ const providers=await localRecord('managed:providers'),owner=providers.frontdesk;assert(Number.isInteger(owner?.pid));assert(owner.home.startsWith(h.env.NOZELI_USER_DATA+path.sep));
+ const {processStamp}=await import(pathToFileURL(path.join(h.app,'src/agents/managed/process-ownership.mjs')).href);assert.equal(await processStamp(owner.pid),owner.stamp);process.kill(owner.pid,'SIGTERM');
+ await until(async()=>await processStamp(owner.pid)!==owner.stamp,'original native process exit');
+ await until(async()=>{const t=(await status()).todos.find(t=>t.id===original.id);return t?.status==='open'&&t.interrupted&&t.destination.kind==='connection';},'pending recovery instead of answered');
+ await stale();await shot('original-interrupted-recovery',question);await record('real native process exited; question remains unresolved recovery',{pid:owner.pid,todoId:original.id});
+ const before=inputs.length;await h.close();await h.launch();await h.shell.click('[data-project-id="'+id+'"]');await until(async()=>(await h.invoke('workspace.bootstrap')).projectId===id,'restored isolated project');
+ const retained=(await status()).todos.find(t=>t.id===original.id);assert.equal(retained.status,'open');assert.equal(retained.interrupted,true);assert.equal(inputs.length,before);await shot('restart-unresolved-recovery');await record('normal restart keeps unresolved recovery and never replays',{requests:inputs.length});
+ await h.invoke('managed.connect',{projectId:id});await until(async()=>(await h.invoke('managed.status',{projectId:id})).ready,'recovered owner');await stale();assert.equal(inputs.length,before);await record('stale answer rejected after new recovered owner; no injected request');
+ const attached=await h.invoke('managed.terminal.attach',{projectId:id,target:'frontdesk'});assert.notEqual(attached.ownerId,original.destination.ownerId);
+ // Terminal API is setup only. All resolution reads, edits and clear are workspace dialogue controls.
+ await h.invoke('managed.terminal.input',{projectId:id,target:'frontdesk',terminalId:attached.terminalId,data:'KEEP_ORIGINAL_NATIVE_DRAFT'});
+ await until(async()=>(await status()).nativeDraftTargets.includes('frontdesk'),'real native editor draft');
+ await assert.rejects(h.invoke('managed.send',{projectId:id,target:'frontdesk',text:'本地草稿处理后显式发送。',requestKey:'installed-recovery-draft-queue'}),e=>e.code==='NATIVE_DRAFT_PENDING');
+ const draftTodo=await until(async()=>(await status()).todos.find(t=>t.status==='open'&&t.destination?.kind==='native-draft'),'actual rejected-send draft blocker');assert.equal(inputs.length,before);
+ const draftPage=await open(draftTodo);await draftPage.click('[data-attention-draft-read]');await until(async()=>await draftPage.$eval('[data-attention-native-draft]',n=>n.value==='KEEP_ORIGINAL_NATIVE_DRAFT'),'workspace native draft read');
+ await setEditor(draftPage,'WORKSPACE_EDITED_NATIVE_DRAFT');await draftPage.click('[data-attention-draft-write]');await until(async()=>(await h.invoke('managed.attention.draft.read',{projectId:id,todoId:draftTodo.id})).text==='WORKSPACE_EDITED_NATIVE_DRAFT','workspace CAS edit');
+ const backup=await localRecord('managed:attention-native-draft:'+draftTodo.id);assert.equal(backup.text,'KEEP_ORIGINAL_NATIVE_DRAFT');assert.equal(backup.ownerId,attached.ownerId);
+ // Simulate a real concurrent original editor change (setup only), then attempt stale workspace save.
+ await h.invoke('managed.terminal.input',{projectId:id,target:'frontdesk',terminalId:attached.terminalId,data:'_CONCURRENT_ORIGINAL'});
+ const changed=await until(async()=>{const d=await h.invoke('managed.attention.draft.read',{projectId:id,todoId:draftTodo.id});return d.text!=='WORKSPACE_EDITED_NATIVE_DRAFT'&&d;},'actual concurrent native editor update');
+ await setEditor(draftPage,'MUST_NOT_OVERWRITE_CONCURRENT_ORIGINAL');await draftPage.click('[data-attention-draft-write]');await until(async()=>/并发|changed/.test(await draftPage.$eval('[data-attention-conversation] [role=status]',n=>n.textContent)),'workspace CAS conflict notice');assert.equal((await h.invoke('managed.attention.draft.read',{projectId:id,todoId:draftTodo.id})).text,changed.text);await shot('workspace-native-draft-cas-conflict',draftPage);
+ // Refresh the expected original with the read control; explicit clear is saved inside the workspace.
+ await draftPage.click('[data-attention-draft-read]');await until(async()=>/已读取来源草稿/.test(await draftPage.$eval('[data-attention-conversation] [role=status]',n=>n.textContent)),'workspace refresh original');await setEditor(draftPage,'');await draftPage.click('[data-attention-draft-write]');
+ await until(async()=>(await status()).todos.find(t=>t.id===draftTodo.id)?.status==='resolved','draft blocker resolves after explicit workspace clear');assert.equal(inputs.length,before,'clearing a rejected input blocker must never submit the rejected message');
+ const queued=await h.invoke('managed.send',{projectId:id,target:'frontdesk',text:'本地草稿处理后显式发送。',requestKey:'installed-recovery-draft-queue'});await until(async()=>(await status()).jobs.find(j=>j.id===queued.jobId)?.status==='completed','explicit resubmission after workspace clear');assert.equal((await localRecord('managed:attention-native-draft:'+draftTodo.id)).text,backup.text);await shot('workspace-native-draft-cleared',draftPage);await record('native draft read/CAS edit/clear in workspace; immutable original backup, concurrent-change rejection and no automatic resubmission',{todoId:draftTodo.id,jobId:queued.jobId});
+ // Try the actual desktop terminal launcher; never substitute a synthetic bridge/client.
+ try{external=await h.invoke('managed.terminal.system',{projectId:id,target:'frontdesk'});}catch(e){external={status:'unavailable',prerequisite:e.message};}
+ if(external.attached){await until(async()=>(await status()).externalTerminalTargets.includes('frontdesk'),'actual system terminal ownership before send');const externalJob=await h.invoke('managed.send',{projectId:id,target:'frontdesk',text:'系统终端打开时正常发送本地验收。',requestKey:'installed-recovery-external-queue'});await until(async()=>(await status()).jobs.find(j=>j.id===externalJob.jobId)?.status==='completed','GUI input remains usable with a real idle system terminal');assert.equal((await status()).todos.some(t=>t.destination?.kind==='external-owner'),false,'Opening a system terminal must not fabricate a blocking reminder');const beforeReturn=inputs.length;await h.invoke('managed.terminal.return',{projectId:id,target:'frontdesk'});await until(async()=>!(await status()).externalTerminalTargets.includes('frontdesk'),'normal system-terminal control return');assert.equal(inputs.length,beforeReturn,'returning control never replays input');external={...external,status:'exercised-nonblocking',jobId:externalJob.jobId};}
+ await record('actual system-terminal normal use does not block GUI or replay input',external);await h.close();
+}catch(e){failure=e;await shot('failure').catch(()=>{});await fs.writeFile(path.join(h.root,'failure-state.json'),JSON.stringify(await status().catch(()=>null),null,2));try{await h.close();}catch(closeError){scenarios.push({name:'normal close failure',error:closeError.message});if(h.child?.exitCode===null&&!h.child.signalCode)h.child.kill('SIGTERM');}}
+finally{server.closeAllConnections();await new Promise(r=>server.close(r));await fs.writeFile(path.join(h.root,'report.json'),JSON.stringify({ok:!failure,error:failure?.stack,binary:process.env.NOZELI_INSTALLED_BINARY,installedApp:h.app,scope:'Real installed Electron + bundled OMP; scripted loopback model, no paid model requests. Terminal API used only to set up native editor text/concurrency.',requests:inputs.length,errors,scenarios,external},null,2));await fs.writeFile(path.join(h.root,'model-inputs.json'),JSON.stringify(inputs,null,2));console.log('INSTALLED_ATTENTION_RECOVERY '+h.root);if(failure){console.error(failure.stack);process.exitCode=1;}}

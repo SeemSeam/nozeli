@@ -45,6 +45,8 @@ export function mountSettingsPanel({invoke,onInitialize,getProjectId=()=>null}) 
     if(id==='settings-provider')void provider.refreshProviders();
   }
   async function open(section=selected){
+    const scope=window.__workspaceScope;
+    if(scope&&scope.role!=='shell'){const result=await invoke('workspace.control',{type:'open-settings',projectId:scope.projectId,section});if(!result.ok)throw Error(result.error?.message||'主窗口设置暂不可用');return;}
     if(!dialog.open){returnFocus=document.activeElement;dialog.showModal();}
     select(section);appearance.refresh();
     refreshZen();

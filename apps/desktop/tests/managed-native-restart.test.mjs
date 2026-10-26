@@ -23,6 +23,29 @@ async function fixture(t) {
   return {c,owners,fail:()=>{fail=true;},gate:p=>{stopGate=p;}};
 }
 
+test('native answers require exact current owner without starting or prompting a session',async t=>{
+ const {c,owners}=await fixture(t);const first=await c.session('frontdesk'),calls=[];
+ first.respondInteraction=async(...args)=>{calls.push(args);return {accepted:true};};
+ const jobs=structuredClone(c.store.state.jobs);
+ await assert.rejects(c.respondInteraction('frontdesk','wrong','q',true),{code:'INTERACTION_STALE'});
+ await assert.rejects(c.respondInteraction('missing',first.viewOwnerId,'q',true),{code:'INTERACTION_STALE'});
+ assert.deepEqual(await c.respondInteraction('frontdesk',first.viewOwnerId,'q',false,{cancel:true}),{accepted:true});
+ assert.deepEqual(calls,[['q',false,{cancel:true}]]);assert.deepEqual(c.store.state.jobs,jobs);assert.equal(owners.length,1);
+ const next=await c.restart('frontdesk');
+ await assert.rejects(c.respondInteraction('frontdesk',first.viewOwnerId,'q',true),{code:'INTERACTION_STALE'});
+ await assert.rejects(c.respondInteraction('frontdesk',next.viewOwnerId,'q',true),{code:'INTERACTION_CAPABILITY_UNAVAILABLE'});
+ assert.equal(calls.length,1);
+});
+
+test('workspace draft controls are bound to current native owner and never open another session',async t=>{
+ const {c,owners}=await fixture(t),session=await c.session('frontdesk'),calls=[];
+ session.readNativeDraft=async()=>({text:'native draft'});session.replaceNativeDraft=async(...args)=>{calls.push(args);return {replaced:true};};
+ await assert.rejects(c.readNativeDraft('frontdesk','old'),{code:'INTERACTION_STALE'});
+ await assert.rejects(c.replaceNativeDraft('frontdesk','old','native draft',''),{code:'INTERACTION_STALE'});
+ assert.deepEqual(await c.readNativeDraft('frontdesk',session.viewOwnerId),{text:'native draft'});
+ assert.deepEqual(await c.replaceNativeDraft('frontdesk',session.viewOwnerId,'native draft',''),{replaced:true});assert.deepEqual(calls,[['native draft','']]);assert.equal(owners.length,1);
+});
+
 test('restart is single flight, physically stops owner, preserves historical thread, draft and input',async t=>{
   const {c,owners,gate}=await fixture(t);const first=await c.session('frontdesk');
   c.store.state.drafts.frontdesk='unsent draft';

@@ -4,7 +4,7 @@ import { todoCapabilities } from '../domain/todo-management.mjs';
 import './managed-todos.css';
 
 const statusNames = { open:'待处理', resolved:'已完成', closed:'已关闭（不表示已修复）', iterating:'已续改，原结果保留', superseded:'已被新结果替代', cancelled:'任务已结束（未认可此结果）' };
-const kindNames = { 'frontdesk-route':'前台去向决定', deviation:'任务偏离决定', result:'结果', problem:'待回答', routing:'澄清', recovery:'恢复', git:'Git', closure:'收尾', system:'系统' };
+const kindNames = { attention:'后台待处理', 'frontdesk-route':'前台去向决定', deviation:'任务偏离决定', result:'结果', problem:'待回答', routing:'澄清', recovery:'恢复', git:'Git', closure:'收尾', system:'系统' };
 export function mountManagedTodos({ document, invoke, openTodo, viewWork, recover, refresh, toast }) {
   const $ = id => document.getElementById(id);
   let state = null, projectId = null, filter = 'open', count = 50, epoch = 0, paintSignature = '';
@@ -34,7 +34,7 @@ export function mountManagedTodos({ document, invoke, openTodo, viewWork, recove
     const current=new Map(managedReviewTodos(state||{}).map(t=>[t.id,t]));
     return (state?.todos||[]).filter(t=>t.kind!=='queue').map(t=>{
       const work=state.works?.find(w=>w.id===t.workId),receipt=state.receipts?.find(r=>r.objectId===t.objectId&&t.objectId);
-      return {...t,title:current.get(t.id)?.title||[work?.name||'无关联任务',kindNames[t.kind]||t.kind].join(' · '),excerpt:current.get(t.id)?.excerpt||receipt?.text||t.text||'无正文',pending:t.status==='open'&&(current.has(t.id)||Boolean(t.reopenedAt))};
+      return {...t,title:t.title||current.get(t.id)?.title||[work?.name||'无关联任务',kindNames[t.kind]||t.kind].join(' · '),excerpt:current.get(t.id)?.excerpt||receipt?.text||t.text||'无正文',pending:t.status==='open'&&(current.has(t.id)||Boolean(t.reopenedAt))};
     });
   }
   function text(todo){const work=state?.works?.find(w=>w.id===todo.workId);return [todo.title,statusNames[todo.status]||todo.status,'类型：'+(kindNames[todo.kind]||todo.kind),'关联任务：'+(work?.name||todo.workId||'无'),'时间：'+(todo.closedAt||todo.settledAt||todo.updatedAt||todo.createdAt||'旧记录未记录'),todo.excerpt,todo.reason?'关闭原因：'+todo.reason:'',todo.resolution?'处理结果：'+JSON.stringify(todo.resolution):''].filter(Boolean).join('\n');}
@@ -116,7 +116,7 @@ export function mountManagedTodos({ document, invoke, openTodo, viewWork, recove
       row.dataset.state=todo.status;row.dataset.kind=todo.kind;
       const open=row.querySelector('[data-managed-todo]');open.dataset.todoKind=todo.kind;open.disabled=pending.has(projectId+':'+todo.id);open.onclick=()=>openTodo(todo.id);
       row.querySelector('.managed-todo-title').textContent=todo.title;
-      const category=todo.kind==='result'?'read':['problem','routing','frontdesk-route','deviation'].includes(todo.kind)?'answer':['recovery','git','closure','system'].includes(todo.kind)?'check':'other';row.dataset.category=category;
+      const category=todo.kind==='result'?'read':['problem','routing','frontdesk-route','deviation'].includes(todo.kind)?'answer':['attention','recovery','git','closure','system'].includes(todo.kind)?'check':'other';row.dataset.category=category;
       row.querySelector('.managed-todo-marker').textContent={read:'读',answer:'答',check:'！',other:'·'}[category];
       open.setAttribute('aria-label',todo.title+' · '+(kindNames[todo.kind]||todo.kind)+' · '+(statusNames[todo.status]||todo.status));
       const more=row.querySelector('[data-todo-more]');more.setAttribute('aria-label','待办操作：'+todo.title);more.disabled=open.disabled;more.onclick=()=>showMenu(todo,null,more);

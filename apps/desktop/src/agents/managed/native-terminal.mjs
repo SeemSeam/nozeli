@@ -25,7 +25,8 @@ function attachOmpTerminalView(controller,target,session,{onData=()=>{},onScreen
 export async function attachNativeTerminal(controller,target,options={}){
   if(controller.stopping)throw new Error('application closing');   // 控制器停止后不建终端（session() 自愈会误开新 TUI）
   const execution=options.executionJobId&&controller.current.get(target)?.id===options.executionJobId&&controller.store.state.jobs.some(j=>j.id===options.executionJobId&&j.target===target&&j.status==='running')&&controller.store.state.works.some(w=>w.id===target&&!['queued','closing','ended'].includes(w.status))&&!controller.sessions.get(target)?.busy;
-  if(controller.configuring.has(target)||controller.running.has(target)&&!execution)throw new Error('Agent 正在处理，请在当前回合结束后连接终端');
+  const waiting=controller.sessions.get(target)?.interactions?.length>0;
+  if(controller.configuring.has(target)||controller.running.has(target)&&!execution&&!waiting)throw new Error('Agent 正在处理，请在当前回合结束后连接终端');
   controller.configuring.add(target);
   try{return await startNativeTerminal(controller,target,options);}finally{controller.configuring.delete(target);controller.kick();}
 }

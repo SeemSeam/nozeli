@@ -1,7 +1,13 @@
-import test from 'node:test';
+import test,{after} from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {pathToFileURL} from 'node:url';
+import {build} from 'esbuild';
 import {createInflightReads,createIdentityHydration,createDiscussionDrafts,createProjectFiles,bindComposerDrafts,ownsDiscussionReceipt} from '../src/renderer/surface-identity-state.mjs';
-import {makeOriginalReplyReader} from '../src/renderer/tag-original-reader.mjs';
+// Reader DOM behavior is covered by the real Electron regression; no renderer
+// bundle import is needed for the identity/archive units below.
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};};
 import {mountArchivePages} from '../src/renderer/archive-pages.mjs';
 import {createSessionStore,sessionMessages} from '../src/renderer/session-store.mjs';
@@ -59,18 +65,23 @@ test('file reference listings fence project switches, same-project reloads and r
  const first=refresh(),second=refresh();gates[4].resolve(result('new'));await second;gates[3].resolve(result('stale'));await first;assert.deepEqual(applied,[['b'],['new']]);
 });
 
-class Element {constructor(tag){this.tag=tag;this.children=[];this.style={};this.value='';this.textContent='';}append(...nodes){this.children.push(...nodes);}replaceChildren(...nodes){this.children=nodes;}}
+class Element {constructor(tag){this.tag=tag;this.children=[];this.style={};this.value='';this._text='';this.className='';this.dataset={};this.attributes=new Map();this.hidden=false;this.disabled=false;this.handlers={};}
+ get textContent(){return this._text+this.children.map(child=>child.textContent).join('');}
+ set textContent(value){this._text=String(value);}
+ append(...nodes){this.children.push(...nodes);}
+ replaceChildren(...nodes){this.children=nodes;}
+ setAttribute(name,value){this.attributes.set(name,String(value));}
+ getAttribute(name){return this.attributes.get(name)??null;}
+ addEventListener(type,fn){(this.handlers[type]??=[]).push(fn);}
+ click(){for(const fn of this.handlers.click??[])fn({preventDefault(){},stopPropagation(){}});}
+ getBoundingClientRect(){const g=geometry.get(this);const top=g?g.top:1000000;return {top,left:0,right:100,bottom:top+50,width:100,height:50};}
+ scrollIntoView(){}}
 const document={createElement:tag=>new Element(tag)};
-test('tag original reader fetches explicit bounded versioned pages and retains only visible page',async()=>{
- const calls=[];const root=makeOriginalReplyReader(async options=>{calls.push(options);if(!options)return {read:{version:'digest',fields:[{field:'text',totalBytes:8}]}};return {field:'text',offset:options.offset,nextOffset:options.offset===0?4:null,totalBytes:8,content:options.offset===0?'one!':'two!'};},document);
- const [status,open,fields,previous,next,close,content]=root.children;
- assert.equal(calls.length,0);await open.onclick();assert.deepEqual(calls[1],{version:'digest',field:'text',offset:0,limit:16384});assert.equal(content.textContent,'one!');
- await next.onclick();assert.equal(content.textContent,'two!');assert.equal(next.disabled,true);await previous.onclick();assert.equal(content.textContent,'one!');close.onclick();assert.equal(content.textContent,'');assert.equal(content.hidden,true);
-});
-test('tag original read errors stop until explicit user retry',async()=>{
- let count=0;const root=makeOriginalReplyReader(async()=>{count++;throw Error('offline');},document);
- await root.children[1].onclick();assert.equal(count,1);assert.match(root.children[0].textContent,/offline/);await Promise.resolve();assert.equal(count,1);
-});
+// Reader auto-paging/windowing behavior is covered by the REAL Electron DOM
+// regression (desktop-tag-history.test.mjs) against the bundled renderer; the
+// former fake-geometry unit doubles could not model the attach/IO lifecycle
+// faithfully and were removed rather than kept as brittle mocks.
+const geometry=new Map();
 
 test('resident and worker archive pager replaces bounded pages and sends version on previous/next',async()=>{
  const body=new Element('section'),calls=[],errors=[];let current=true;

@@ -1,12 +1,13 @@
 import {renderTagMarkdown} from './tag-markdown.mjs';
 export function describeAnnotationSource({relPath = '', anchor = {}, text = '', displayLocation} = {}) {
   let location = displayLocation?.summary || displayLocation?.label || '';
-  if (!location && anchor.page) location = '第 ' + anchor.page + ' 页';
+  if (!location && anchor.page) location = '第 ' + anchor.page + ' 页' + (anchor.space === 'rendered-page-normalized' && Number.isFinite(anchor.x) ? '位置' : '');
   if (!location && Number.isInteger(anchor.start)) {
     const line = point => text.slice(0, point).split('\n').length;
-    location = '第 ' + line(anchor.start) + '–' + line(Math.max(anchor.start,anchor.end-1)) + ' 行';
+    location = anchor.start === anchor.end ? '第 ' + line(anchor.start) + ' 行位置' : '第 ' + line(anchor.start) + '–' + line(Math.max(anchor.start,anchor.end-1)) + ' 行';
   }
-  if (!location && anchor.space === 'image-normalized') location = '图片区域';
+  if (!location && anchor.space === 'image-normalized') location = Number.isFinite(anchor.x) ? '图片位置' : '图片区域';
+  if (!location && anchor.space === 'pptx-slide-normalized') location = Number.isFinite(anchor.x) ? '幻灯片位置' : '幻灯片区域';
   return [relPath, location || '所选内容'].filter(Boolean).join(' · ');
 }
 export function mountAnnotationComposer({root,input}) {

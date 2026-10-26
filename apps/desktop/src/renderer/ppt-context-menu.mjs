@@ -1,8 +1,8 @@
 // Keep PPTist object/slide actions intact; coordinate the native shell only.
-export function mountPptContextMenu({frame,onOpen,onClose,onSelectionStart}) {
+export function mountPptContextMenu({frame,onOpen,onClose,onSelectionStart,pointItems}) {
   const win=frame.contentWindow,doc=frame.contentDocument;
   const link=doc.createElement('link');link.rel='stylesheet';link.href=new URL('./context-menu.css',location.href).href;doc.head.append(link);
-  let menu=null,focus=null,lastTarget=null;
+  let menu=null,focus=null,lastTarget=null,pointRows=null;
   const close=()=>{doc.querySelector('.contextmenu-mask')?.dispatchEvent(new win.MouseEvent('mousedown',{bubbles:true,button:0}));};
   const choices=panel=>[...panel.children].filter(n=>n.matches('.menu-item:not(.divider):not(.disable)'));
   const reveal=row=>{
@@ -25,10 +25,27 @@ export function mountPptContextMenu({frame,onOpen,onClose,onSelectionStart}) {
     menu=current;menu.setAttribute('role','menu');menu.setAttribute('aria-label','幻灯片操作');
     for(const row of menu.querySelectorAll('.menu-item')){row.setAttribute('role',row.classList.contains('divider')?'separator':'menuitem');row.tabIndex=-1;if(row.classList.contains('disable'))row.setAttribute('aria-disabled','true');if(row.querySelector(':scope > .menu-item-content > .sub-menu')){row.setAttribute('aria-haspopup','menu');row.setAttribute('aria-expanded','false');}}
     place();onOpen?.(close);choices(menu.querySelector('.menu-content'))[0]?.focus({preventScroll:true});
+    appendPointRows(menu);
   });
+  function appendPointRows(menu){
+    if(!pointRows||!pointRows.length)return;
+    const content=menu.querySelector('.menu-content');
+    if(!content||content.querySelector('[data-command="note-here"]'))return;
+    // Frozen at contextmenu time: slide identity and coordinates were captured
+    // before the native menu opened; the action re-validates them.
+    for(const item of pointRows){
+      const disabled=item.enabled===false;
+      const row=doc.createElement('div');row.className='menu-item'+(disabled?' disable':'');row.dataset.command=item.id;row.setAttribute('role','menuitem');row.tabIndex=-1;
+      if(disabled)row.setAttribute('aria-disabled','true');
+      if(item.hint)row.title=item.hint;
+      const body=doc.createElement('div');body.className='menu-item-content';const label=document.createElement('span');label.textContent=item.label;body.append(label);row.append(body);
+      const run=item.run;row.addEventListener('click',()=>{if(disabled)return;close();run();});
+      content.append(row);
+    }
+  }
   observer.observe(doc.body,{childList:true});
   const down=event=>{if(event.button===0&&!event.target.closest('.contextmenu,.contextmenu-mask,input,textarea,button')&&event.target.closest('.canvas')){lastTarget=event.target;onSelectionStart?.();}};
-  const context=event=>{if(event.target.closest('.contextmenu-mask'))return;close();focus=doc.activeElement;lastTarget=event.target;};
+  const context=event=>{if(event.target.closest('.contextmenu-mask'))return;pointRows=pointItems?.({clientX:event.clientX,clientY:event.clientY})||null;close();focus=doc.activeElement;lastTarget=event.target;};
   const key=event=>{
     if(!menu&&((event.shiftKey&&/^(Arrow|Home|End)/.test(event.key))||((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='a'))&&!event.target.closest('input,textarea'))onSelectionStart?.();
     if((event.key==='ContextMenu'||(event.shiftKey&&event.key==='F10'))&&!menu){

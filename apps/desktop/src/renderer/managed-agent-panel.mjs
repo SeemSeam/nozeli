@@ -18,6 +18,7 @@ import {managedProgress} from './managed-progress.mjs';
 import {readFileAvailability,availabilityCaption} from './file-availability.mjs';
 import {mountManagedTodos} from './managed-todos.mjs';
 import {mountContextMenu} from './context-menu.mjs';
+import {mountAttentionDialogue} from './attention-dialogue.mjs';
 import './managed-agent-panel.css';
 const $=id=>document.getElementById(id);
 const labels={frontdesk:'前台',orchestrator:'Orchestrator',worker:'工作 Agent'};
@@ -107,7 +108,7 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
  const ownsConversation=!scope||(scope.role==='surface'&&scope.kind==='conversation');
  let pendingConversation=null;
  let inputIdentityReason='正在核对输入归属…',inputEpoch=0;
- if(scope?.role==='surface'&&scope.kind==='report')window.__workspaceOpenTodo=id=>openTodo(id);
+ if(!scope||scope.role==='shell'||scope.role==='surface'&&scope.kind==='report')window.__workspaceOpenTodo=async id=>{await refresh();return openTodo(id);};
  if(scope?.role==='surface'&&scope.kind==='history')window.__workspaceOpenHistory=report=>report.workerArchive?openWorkerArchive(report.workerArchive.work,report.workerArchive.archive):openHistory({objectId:report.objectId,revision:report.revision,workName:report.workName||report.title,kind:report.kind},report.version);
  const sessionStore=createSessionStore();let historyPage=false,pageError='',timelineContext=null,contextKey='',pageRequest=0;
  const timelineBox=document.createElement('section');timelineBox.id='managed-session-timeline';$('conversation').insertBefore(timelineBox,$('reading-inbox'));
@@ -152,7 +153,7 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
   if(projectId)void refresh().then(()=>{agentDetailsStatus.textContent='';}).catch(error=>{agentDetailsStatus.textContent='状态读取失败：'+error.message+'；原记录与草稿未改动。';});
  });
  const progressBox=document.createElement('section');progressBox.id='managed-progress';progressBox.setAttribute('aria-label','工作进展');progressBox.setAttribute('role','status');progressBox.hidden=true;agentDetailsBody.append(progressBox);let progressSignature=null;
- const inputBlocker=document.createElement('section');inputBlocker.id='managed-input-blocker';inputBlocker.setAttribute('role','status');inputBlocker.hidden=true;const blockerText=document.createElement('p'),blockerTerminal=document.createElement('button');blockerTerminal.type='button';blockerTerminal.textContent='查看对应终端';blockerTerminal.onclick=()=>window.__setProjectView?.('terminal');inputBlocker.append(blockerText,blockerTerminal);$('compose-form').prepend(inputBlocker);
+ const inputBlocker=document.createElement('section');inputBlocker.id='managed-input-blocker';inputBlocker.setAttribute('role','status');inputBlocker.hidden=true;const blockerText=document.createElement('p'),blockerTerminal=document.createElement('button');blockerTerminal.type='button';blockerTerminal.textContent='在工作区查看待办';blockerTerminal.onclick=()=>{const todo=state?.todos.find(t=>t.origin==='instance-attention'&&t.status==='open'&&t.destination?.target===target);if(todo)void openTodo(todo.id);else toast('当前没有可打开的来源待办，请刷新状态；对话草稿保留。');};inputBlocker.append(blockerText,blockerTerminal);$('compose-form').prepend(inputBlocker);
  const identityNotice=document.createElement('section');identityNotice.id='managed-input-identity';identityNotice.hidden=true;identityNotice.setAttribute('role','status');$('compose-form').prepend(identityNotice);
  const closureBox=document.createElement('section');closureBox.id='managed-closure-progress';closureBox.hidden=true;agentDetailsBody.append(closureBox);let closureSignature=null;
  const workInfo=document.createElement('section');workInfo.id='managed-current-work';workInfo.hidden=true;agentDetailsBody.append(workInfo);
@@ -162,6 +163,7 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
  const refreshProjectFiles=createProjectFiles({list:id=>invoke('project.list',{projectId:id}),current:()=>({projectId,generation}),apply:paths=>{projectFilePaths=paths;paintTimeline();}});
  const terminals=new Map(),drafts=new Map(),submissions=new Map(),submissionKeys=new Map(),retryKeys=new Map();let viewed=null,terminalLayout=null,reportRequest=0;
  const recoveryPending=new Set();
+ const attentionDrafts=new Map();let attentionView=null;
  const deviationPending=new Set(),deviationKeys=new Map(),deviationErrors=new Map();
  function paintDeviation(box,work){
   if(work?.readOnly){box.replaceChildren(Object.assign(document.createElement('p'),{textContent:'历史工作只读；原会话、报告和草稿保留，不提供恢复或重放操作。'}));return;}
@@ -437,6 +439,7 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
   if(agentDetails.open&&selectedWork){const signature=JSON.stringify([projectId,selectedWork.id,selectedWork.status,selectedWork.revision,selectedWork.request,selectedWork.deviation]);if(workInfo.dataset.signature!==signature){workInfo.dataset.signature=signature;workInfo.replaceChildren();const heading=document.createElement('h3'),description=document.createElement('p'),versions=document.createElement('div');heading.textContent=selectedWork.name||'当前工作';description.textContent=selectedWork.request||'';versions.className='managed-work-versions';workInfo.append(heading,description,versions);if(deviationHeld(selectedWork)){const gate=document.createElement('section');paintDeviation(gate,selectedWork);workInfo.append(gate);}}const versions=workInfo.querySelector('.managed-work-versions');if(versions)void renderWorkVersions({box:versions,record:{workId:selectedWork.id,status:selectedWork.status},projectId,call});}
   $('work-count').textContent=String(activeRecords.length);$('work-empty').hidden=activeRecords.length>0;
   todoUI.render(state,projectId);
+ if(attentionView)attentionView.ui.update(state.todos.find(t=>t.id===attentionView.todoId));
   for(const box of $('managed-doc').querySelectorAll('[data-deviation-gate]')){const work=state.works.find(w=>w.id===box.dataset.deviationGate);if(work)paintDeviation(box,work);}
   for(const el of document.querySelectorAll('.workflow-panel .filters,.inbox-panel .filters'))el.hidden=true;
   renderTerminals();
@@ -497,7 +500,7 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
  function reportDialog(title,fill){const trigger=document.activeElement,dialog=document.createElement('dialog');dialog.className='managed-report-dialog';const heading=document.createElement('h2'),content=document.createElement('section'),close=button('关闭',()=>dialog.close());heading.textContent=title;fill(content);dialog.append(heading,content,close);document.body.append(dialog);dialog.addEventListener('close',()=>{dialog.remove();if(trigger?.isConnected&&trigger!==document.body)trigger.focus({preventScroll:true});else restoreReportTitleFocus();},{once:true});dialog.showModal();close.focus();return dialog;}
  function todoDetails(id){reportDialog('待办详情',content=>{todoUI.details(content,id);const note=document.createElement('p');note.textContent='提醒管理不结束工作。静态 HTML 禁止脚本，冻结原件只读。';content.append(note);});}
  async function queryDisposition(){const source=projectId,gen=generation,doc=reportDocument,request=++dispositionRequest;if(!doc?.workId)return;disposition=null;dispositionError='';updateReviewActions();try{const value=await call('disposition',{workId:doc.workId},source);if(source!==projectId||gen!==generation||doc!==reportDocument||request!==dispositionRequest)return;disposition=value;}catch(error){if(source!==projectId||gen!==generation||doc!==reportDocument||request!==dispositionRequest)return;dispositionError=error.message;}updateReviewActions();}
- async function confirmDecision(message){return new Promise(resolve=>{const trigger=document.activeElement,dialog=document.createElement('dialog');dialog.className='managed-report-dialog';const title=document.createElement('h2'),text=document.createElement('p'),cancel=button('取消',()=>finish(false)),confirm=button('确认',()=>finish(true));title.textContent='确认成果决定';text.textContent=message;confirm.className='ui-action';cancel.className='ui-action';dialog.append(title,text,cancel,confirm);document.body.append(dialog);function finish(value){dialog.close();dialog.remove();trigger?.focus?.({preventScroll:true});resolve(value);}dialog.oncancel=event=>{event.preventDefault();finish(false);};dialog.showModal();cancel.focus();});}
+ async function confirmDecision(message,title='确认成果决定'){return new Promise(resolve=>{const trigger=document.activeElement,dialog=document.createElement('dialog');dialog.className='managed-report-dialog';dialog.dataset.confirmationDialog='';const heading=document.createElement('h2'),text=document.createElement('p'),cancel=button('取消',()=>finish(false)),confirm=button('确认',()=>finish(true));cancel.dataset.confirmationCancel='';confirm.dataset.confirmationConfirm='';heading.textContent=title;text.textContent=message;confirm.className='ui-action';cancel.className='ui-action';dialog.append(heading,text,cancel,confirm);document.body.append(dialog);function finish(value){dialog.close();dialog.remove();trigger?.focus?.({preventScroll:true});resolve(value);}dialog.oncancel=event=>{event.preventDefault();finish(false);};dialog.showModal();cancel.focus();});}
  async function disposeWork(workId,decision,documentIdentity=null){
   if(dispositionPending)return;
   const source=projectId,gen=generation;dispositionPending=true;updateReviewActions();
@@ -554,6 +557,27 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
  }
  async function openTodo(id){
   const todo=state?.todos.find(t=>t.id===id);if(!todo)return;
+  if(todo.origin==='instance-attention'){
+   const sourceProject=projectId,gen=generation,request=++reportRequest;
+   const current=()=>sourceProject===projectId&&gen===generation&&request===reportRequest;
+   const opened=await openManaged({id:todo.id,todoId:todo.id,projectId:sourceProject,title:todo.title||'待办对话',text:todo.text||'',attention:true,isCurrent:current});
+   if(opened?.ok===false||!current()||scope?.kind!=='report')return;
+   reportDocument=null;disposition=null;attentionView=null;
+   const content=$('managed-doc');content.replaceChildren();
+   const destination=todo.destination||{};
+   const sourceName=labels[destination.target]||state.works?.find(w=>w.id===destination.target)?.name||'',projectName=($('project-name')?.textContent||'').trim();
+   const ui=mountAttentionDialogue(content,{document,projectId:sourceProject,todo,invoke,current,onRefresh:refresh,drafts:attentionDrafts,confirm:(message,title)=>confirmDecision(message,title),meta:{...(projectName?{projectName}:{}),...(sourceName?{sourceName}:{})},
+    openSettings:section=>{if(!current())throw Error('项目已变化，请重新打开原待办。');window.dispatchEvent(new CustomEvent('nozeli-open-settings',{detail:section}));},
+    recover:destination.target?async()=>{
+     if(!current())throw Error('项目已变化，请重新打开原待办。');
+     const agent=state.agents?.find(a=>a.target===destination.target);
+     if(destination.ownerId&&agent?.ownerId!==destination.ownerId)throw Error('原会话身份已变化，请刷新核对；不会恢复其他会话。');
+     if(!agent?.closed)throw Error('原会话尚未退出；不会重启活动会话或重放任务。请核对说明与设置后刷新。');
+     await call('restart',{target:destination.target},sourceProject);await refresh();
+    }:async()=>{await refresh();renderResidentRecovery(residentStatus);const recovery=document.createElement('section');content.append(recovery);for(const element of [residentRecovery,workerRecovery,sessionRecovery])if(!element.hidden)recovery.append(element);if(!recovery.childNodes.length)recovery.textContent='当前没有可执行的恢复动作；请打开相关设置核对连接与账号后刷新。';}
+   });
+   attentionView={todoId:todo.id,ui};return;
+  }
   if(scope?.kind!=='report'){
     return openManaged({id:todo.id,todoId:todo.id,projectId,title:(state.works.find(w=>w.id===todo.workId)?.name||'待办'),text:todo.text||''});
   }
@@ -725,7 +749,7 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
      recovery.dataset.terminalRecovery='';recovery.dataset.paneConnect='';card.querySelector('header').append(recovery);
     }
     recovery.textContent=connection==='external'?'接回内置终端':agent?.closed?'重新启动 Agent':'重新连接终端';
-    recovery.disabled=!ready||busy||closing||transition;
+    recovery.disabled=!ready||(busy&&!agent?.interactions?.length)||closing||transition;
    }else recovery?.remove();
   });
   if(ready)for(const t of targets){
@@ -734,7 +758,7 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
    // Busy work may subscribe only when the host has already registered its PTY.
    // providers[target] is app-server ownership; only terminal:target denotes PTY.
    const agent=state.agents?.find(a=>a.target===t);
-   if(!state.configuringTargets?.includes(t)&&!agent?.restarting&&!agent?.closed&&!state.externalTerminalTargets?.includes(t)&&out.dataset.terminalState!=='external'&&!terminals.has(t)&&!out.dataset.autoAttachAttempted&&(!state.busyTargets.includes(t)||state.providers?.['terminal:'+t])&&w?.status!=='closing'){
+   if(!state.configuringTargets?.includes(t)&&!agent?.restarting&&!agent?.closed&&!state.externalTerminalTargets?.includes(t)&&out.dataset.terminalState!=='external'&&!terminals.has(t)&&!out.dataset.autoAttachAttempted&&(!state.busyTargets.includes(t)||state.providers?.['terminal:'+t]||agent?.interactions?.length)&&w?.status!=='closing'){
     out.dataset.autoAttachAttempted='true';const gen=generation;
     queueMicrotask(()=>{if(gen===generation&&active&&terminalLayout?.cards.get(t)===card)void attach(t,out).catch(error=>toast('终端连接失败：'+error.message));});
    }

@@ -41,7 +41,7 @@ import { mountAgent } from './agent-panel.mjs';
 import { makeAnchorTag, makeNoteTag } from './note-tag.mjs';
 import { managedWorkRecords } from '../domain/managed-work-records.mjs';
 import {renderTagMarkdown} from './tag-markdown.mjs';
-import {markdownSelection,markdownRange} from './markdown-source.mjs';
+import {markdownSelection,markdownRange,markdownPoint,markdownPointRange} from './markdown-source.mjs';
 import {mountAnnotationComposer,describeAnnotationSource} from './annotation-composer.mjs';
 import './immersive-ui.css';
 import {panelButton,observePanelWidth} from './panel-menu.mjs';
@@ -70,7 +70,6 @@ let publishedOfficeRevision = -1;
 let workspaceGroups = null;
 
 const $ = (id) => document.getElementById(id);
-document.querySelector('.skip').addEventListener('click',event=>{event.preventDefault();$('reader').focus({preventScroll:true});});
 const recoverResourceButton=document.createElement('button');recoverResourceButton.type='button';recoverResourceButton.textContent='已恢复原文件，继续编辑';recoverResourceButton.hidden=true;$('file-path-notice').append(recoverResourceButton);
 recoverResourceButton.addEventListener('click',async()=>{recoverResourceButton.disabled=true;try{const result=await invoke('workspace.recoverResource',{projectId:ui.project?.id,relPath:ui.file?.relPath});if(!result.ok)throw Error(result.error.message);ui.sourceMissing=false;if(ui.file){ui.file.diskPresent=true;ui.file.sourceChanged=false;}recoverResourceButton.hidden=true;$('file-path-notice').hidden=true;workspace.toast('原文件已核验，编辑现场保留。');}catch(error){workspace.toast(error.message);}finally{recoverResourceButton.disabled=false;}});
 const noteSource=document.createElement('details');noteSource.className='tag-source note-form-source';
@@ -80,7 +79,7 @@ const resumeDrawing=document.createElement('button');resumeDrawing.type='button'
 const noteComposer=mountAnnotationComposer({root:$('note-form'),input:$('note-input')});
 function updateNoteSource(){
   const draft=ui.frozenNote||captureLiveAnchor();noteSource.hidden=!draft;
-  if(draft){noteSourceLabel.textContent=describeAnnotationSource({relPath:ui.file?.relPath,anchor:draft.anchor,text:ui.editor?.adapter.getText()||'',displayLocation:draft.displayLocation});noteSourceQuote.textContent=draft.anchor?.quote||'已固定的区域选区';}
+  if(draft){noteSourceLabel.textContent=describeAnnotationSource({relPath:ui.file?.relPath,anchor:draft.anchor,text:ui.editor?.adapter.getText()||'',displayLocation:draft.displayLocation});noteSourceQuote.textContent=draft.anchor?.quote||(draft.kind?.endsWith('-point')?'文档位置 · 无文字摘录':'已固定的区域选区');}
   resumeDrawing.hidden=!draft?.drawing;noteComposer.reset();positionNoteForm();
 }
 const imageToolbar=document.createElement('div');imageToolbar.id='image-toolbar';imageToolbar.hidden=true;
@@ -115,10 +114,19 @@ function enqueue(action, freeze = false) {
     return file.draft.status === 'saved' && file.draft.baseDigest === file.materialDigest;
   }
   function visibleNotes(file, notes) {
-    return notes.filter(note => !note.projection && note.resolution?.anchor && note.resolution.targetDigest === file.materialDigest).map((note, index) => ({ ...note, anchor: note.resolution.anchor, anchorDrift: note.resolution.locationStatus !== 'exact' || note.resolution.contentStatus !== 'unchanged', ordinal: ui.noteDisplayOrdinals.get(note.id) || note.ordinal || index + 1 }));
+    return notes.filter(note => !note.projection && note.resolution?.anchor && note.resolution.targetDigest === file.materialDigest).map((note, index) => {
+      const projected = { ...note, anchor: note.resolution.anchor, anchorDrift: note.resolution.locationStatus !== 'exact' || note.resolution.contentStatus !== 'unchanged', ordinal: ui.noteDisplayOrdinals.get(note.id) || note.ordinal || index + 1 };
+      // Point anchors carry display metadata only: the persisted anchor stays
+      // schema-clean; label/context come from the host's frozen material.
+      if (note.kind.endsWith('-point')) {
+        projected.anchor = { ...projected.anchor, point: true, anchorKind: note.kind, pointLabel: note.information?.location?.label || '' };
+        if (note.information?.location?.context) projected.anchor.pointContext = note.information.location.context;
+      }
+      return projected;
+    });
   }
   function textMarks(file, notes) {
-    return visibleNotes(file, notes).filter(note => note.kind === 'text-selection').map(note => ({ ...note.anchor, note, locationStatus: note.resolution.locationStatus, contentStatus: note.resolution.contentStatus }));
+    return visibleNotes(file, notes).filter(note => ['text-selection','text-point'].includes(note.kind)).map((note, index) => ({ ...note.anchor, note, locationStatus: note.resolution.locationStatus, contentStatus: note.resolution.contentStatus }));
   }
   function renderUnlocatedTags() {
     let panel = $('unlocated-tags');
@@ -129,7 +137,7 @@ function enqueue(action, freeze = false) {
     for (const note of notes) {
       const entry = document.createElement('div'); entry.className = 'unlocated-tag';
       const label = document.createElement('p'); label.textContent = `#${ui.noteDisplayOrdinals.get(note.id) || note.ordinal} · ${note.resolution?.locationStatus === 'orphaned' ? '原位置已删除' : '位置待确认'}`;
-      const quote = document.createElement('blockquote'); quote.textContent = note.anchor.quote || '原页面/区域';
+      const quote = document.createElement('blockquote'); quote.textContent = note.anchor.quote || (note.kind.endsWith('-point') ? '文档位置（原文与备注保留）' : '原页面/区域');
       const listLayout = { size: () => null, resize: () => {}, offset: () => [0, 0], move: () => {} };
       entry.append(label, quote, note.projection ? makeAnchorTag(ui.threads.get(note.id), { ...tagActions, ...listLayout }) : makeNoteTag(note, { ...noteActions(ui.project.id), ...listLayout })); panel.append(entry);
       if (note.kind === 'text-selection') {
@@ -160,6 +168,18 @@ function enqueue(action, freeze = false) {
       return { kind: 'pdf-page', anchor: { page: ui.pdf?.current() || 1 } };
     }
     return null;
+  }
+  function textPointTarget(point, source, rect) {
+    const line = source.slice(0, point.start).split('\n').length;
+    return {
+      anchorKind: 'text-point', kind: 'text', anchor: point, rect,
+      label: `第 ${line} 行位置`,
+      context: { before: source.slice(Math.max(0, point.start - 200), point.start), after: source.slice(point.start, Math.min(source.length, point.start + 200)) },
+      // Exact identity frozen at menu-open: the full source string is compared
+      // verbatim after any flush; no length/prefix heuristics that equal-length
+      // interior edits could slip through.
+      source,
+    };
   }
   function positionNoteForm() {
     const form = $('note-form');
@@ -240,6 +260,68 @@ function enqueue(action, freeze = false) {
     $('note-form').hidden = false;
     updateNoteSource();
     if (file.kind === 'pdf' && pending.kind !== 'pdf-page') ui.pdfSelection = { kind: pending.kind, anchor: pending.anchor };
+  }
+
+  // A document position is its own anchor kind: no quote, no screenshot, and
+  // the source identity frozen at capture time is re-checked after every await.
+  function openPointNote(target) {
+    if (isDocumentMirror) return workspace.toast('阅读副本不可添加备注，请回到编辑位置。');
+    if (!(sameNoteTarget(ui.frozenNote) && JSON.stringify(ui.frozenNote.anchor) === JSON.stringify(target.anchor))) {
+      rememberCurrentNote();
+      ui.frozenNote = { regionImage: null, projectId: ui.project.id, relPath: ui.file.relPath, materialDigest: ui.materialDigest, kind: target.anchorKind, anchor: structuredClone(target.anchor), text: $('note-input').value, displayLocation: target.displayLocation };
+    }
+    ui.selectionRect = target.rect;
+    workspace.rememberNote(ui.frozenNote);
+    $('note-label').textContent = '位置备注';
+    $('note-form').hidden = false;
+    updateNoteSource(); positionNoteForm(); $('note-input').focus();
+  }
+  function pointMaterial(target) {
+    const file = ui.file;
+    const label = target.label || (Number.isInteger(target.anchor.page) ? `第 ${target.anchor.page} 页位置` : '文档位置');
+    const material = { relPath: file.relPath, kind: target.anchorKind, anchor: structuredClone(target.anchor), excerpt: '', point: true, pointLabel: label, displayLocation: target.displayLocation };
+    if (target.kind === 'text') { material.materialText = ui.editor?.adapter?.getText() || ''; if (target.context) material.pointContext = target.context; }
+    else if (target.kind === 'pdf' && target.nearby) material.pointContext = { nearby: target.nearby };
+    return material;
+  }
+  function actOnPoint(target, action) {
+    if (!target?.anchor) return workspace.toast('此处不是文档位置，无法创建批注。');
+    // Identity (project/file/digest/source) was frozen when the point was
+    // captured at menu-open; the action click only replays that frozen target.
+    const frozen = { ...target, anchor: structuredClone(target.anchor) };
+    // persistTag enqueues itself, so the tag is created inside the queue with
+    // persist:false and saved exactly once outside it; a nested enqueue would
+    // wait on the very chain that is still running and deadlock.
+    const prepared = enqueue(async () => {
+      const flushed = await flushNow();
+      if (!flushed.ok) return null;
+      // Late validation against the frozen identity only; the pointer is never
+      // re-read and a changed file/digest cannot adopt the old position.
+      if (ui.project?.id !== frozen.projectId || ui.file?.relPath !== frozen.relPath) { workspace.toast('文档已切换，未在原位置创建批注。'); return null; }
+      if (!ui.file || ui.file.sourceChanged || !ui.materialDigest) { workspace.toast('来源已变化，未创建位置批注。'); return null; }
+      if (frozen.kind === 'text') {
+        const text = ui.editor?.adapter?.getText();
+        if (typeof text !== 'string' || text !== frozen.source || frozen.anchor.start > text.length) { workspace.toast('正文已变化，未按旧位置创建批注；请重新右键定位。'); return null; }
+      } else if (frozen.kind === 'ppt') {
+        if (!ui.word?.pointValid?.(frozen.anchor)) { workspace.toast('幻灯片内容已变化，请重新右键定位。'); return null; }
+      } else if (ui.materialDigest !== frozen.digest) { workspace.toast('文件版本已变化，请重新右键定位。'); return null; }
+      if (action === 'note') { openPointNote(frozen); return null; }
+      return addTag(pointMaterial(frozen), { text: '', persist: false });
+    });
+    return prepared.then(tag => tag ? persistTag(tag) : undefined);
+  }
+  function actOnPptSelection(action, frozen) {
+    // Frozen-selection replay: identity and anchor are re-checked synchronously
+    // against the live selection; drift rejects instead of acting on whatever
+    // the surface holds now. Delegation stays with the existing toolbar flows
+    // (their own flush/revision gates apply); nothing enqueues from here.
+    if (ui.project?.id !== frozen.projectId || ui.file?.relPath !== frozen.relPath) return workspace.toast('文档已切换，未对旧选区执行操作。');
+    const current = ui.wordSelection;
+    if (!current || current.kind !== frozen.kind || !current.anchor || JSON.stringify(current.anchor) !== JSON.stringify(frozen.anchor) || !ui.word?.selectionValid?.(current.anchor)) return workspace.toast('选区已变化，未对旧选区执行操作。');
+    if (action === 'note') return beginNote({ anchored: true });
+    if (action === 'discuss') return $('selection-discuss').click();
+    if ($('selection-explain').disabled) return workspace.toast($('selection-explain').title || '解释暂不可用，前台尚未就绪');
+    return $('selection-explain').click();
   }
 
 const ui = {
@@ -911,7 +993,7 @@ async function refreshNotes() {
     if (record.projection) {
       const old = ui.threads.get(record.id);
       const tag = { ...record.projection, ...old, id: record.id, ordinal: old?.ordinal || record.ordinal, anchorKind: record.kind, projectId: project.id, relPath: record.relPath, materialDigest: record.materialDigest, information:record.information,originAnchor: record.anchor, anchor: record.resolution.anchor || record.anchor, resolution: record.resolution,
-        material: { excerpt: record.anchor.quote || (record.kind.endsWith('-region')?'所选区域，内容、笔迹与位置见冻结附件':''), fileRelPath: record.relPath, anchor: record.anchor, kind: record.kind }, history: old?.history || record.projection.history, executeStatus: record.projection.execute?.jobId ? '已提交 · 见工作与待办' : '' };
+        material: { excerpt: record.anchor.quote || (record.kind.endsWith('-region')?'所选区域，内容、笔迹与位置见冻结附件':''), fileRelPath: record.relPath, anchor: record.anchor, kind: record.kind, ...(record.kind.endsWith('-point') ? { point: true, pointLabel: record.information?.location?.label || '', ...(record.information?.location?.context ? { pointContext: record.information.location.context } : {}) } : {}) }, history: old?.history || record.projection.history, executeStatus: record.projection.execute?.jobId ? '已提交 · 见工作与待办' : '' };
       bindTagMessages(tag);
       ui.threads.set(record.id, tag);
     } else if (!ui.noteOpenStates.has(`${project.id}:${record.id}`)) ui.noteOpenStates.set(`${project.id}:${record.id}`, record.view?.collapsed !== true);
@@ -1085,7 +1167,7 @@ async function refreshNotes() {
     ui.editor = languageIdForPath(file.relPath)
       ? mountMonaco({ ...editorOptions, projectId: ui.project.id, projectionActions: { ...tagActions }, noteActions: noteActions(ui.project.id) })
       : mountText(editorOptions);
-    ui.editor.setTags?.([...ui.threads.values()].filter(tag => tag.relPath === file.relPath && tag.anchorKind === 'text-selection' && tag.anchor).map(tag => ({ ...tag.anchor, tag, locationStatus: tag.resolution?.locationStatus, contentStatus: tag.resolution?.contentStatus })));
+    ui.editor.setTags?.([...ui.threads.values()].filter(tag => tag.relPath === file.relPath && ['text-selection','text-point'].includes(tag.anchorKind) && tag.anchor).map(tag => ({ ...tag.anchor, tag, point: tag.anchorKind === 'text-point', locationStatus: tag.resolution?.locationStatus, contentStatus: tag.resolution?.contentStatus })));
     $('code-jump').hidden = !languageIdForPath(file.relPath);
     $('text-mode-toggle').hidden = isCodePath(file.relPath) || /\.tex$/i.test(file.relPath);
     // Markdown opens as a rendered reading surface; editing remains an explicit choice.
@@ -1149,6 +1231,34 @@ async function refreshNotes() {
       const draft=await invoke('ppt.draft',payload);if(!draft.ok)throw Error(draft.error.message);
       ui.word=await mountPpt({parent:$('word-host'),bytes:file.bytes,name:file.relPath.split('/').at(-1),draft:draft.value,readOnly:isDocumentMirror,
         onContextMenu:closer=>documentMenu.externalOpen('ppt',closer),onContextClose:()=>documentMenu.externalClosed('ppt'),onSelectionStart:()=>documentMenu.resumeSelection(),
+        // Right-click inside an existing selection keeps it (hit-test in the
+        // frame at contextmenu, before any menu mutation, against the frozen
+        // selection rect/content and slide identity); outside it a fresh slide
+        // point freezes the same way as the document menu. Chrome keeps the
+        // native object menu untouched. Explain exists only as a row bound to
+        // an actual selection plus frontdesk readiness.
+        onPointItems:({clientX,clientY})=>{
+          if(isDocumentMirror||!ui.project||ui.file!==file||ui.file.sourceChanged||!ui.materialDigest)return null;
+          const identity={projectId:ui.project.id,relPath:file.relPath};
+          const selection=ui.word?.selectionAt?.(clientX,clientY)||null;
+          if(selection){
+            const frozen={...selection,...identity};
+            const explainReady=!$('selection-explain').disabled;
+            return [
+              {id:'note-here',label:'备注选区',run:()=>actOnPptSelection('note',frozen)},
+              {id:'discuss-here',label:'讨论选区',run:()=>actOnPptSelection('discuss',frozen)},
+              {id:'explain-selection',label:'解释选区',enabled:explainReady,hint:explainReady?'':($('selection-explain').title||'解释暂不可用，前台尚未就绪'),run:()=>actOnPptSelection('explain',frozen)},
+            ];
+          }
+          const captured=ui.word?.pointAt?.(clientX,clientY);
+          if(!captured)return null;
+          const target={...captured,anchorKind:'ppt-point',kind:'ppt',rect:{left:clientX-4,right:clientX+4,top:clientY-4,bottom:clientY+4},label:`第 ${captured.page} 张幻灯片位置`,digest:ui.materialDigest,...identity};
+          return [
+            {id:'note-here',label:'在此备注',run:()=>actOnPoint(target,'note')},
+            {id:'discuss-here',label:'在此讨论',run:()=>actOnPoint(target,'discuss')},
+            {id:'explain-selection',label:'解释选区',enabled:false,hint:'需先选中文字或区域',run:()=>{}},
+          ];
+        },
         noteActions:noteActions(ui.project.id),tagActions:{...tagActions,autoEdit:id=>consumeInitialTagEdit(id,'ppt')},
         onRegionMode:enabled=>$('word-region').setAttribute('aria-pressed',String(enabled)),
         onSelection:selected=>{if(ui.file!==file)return;ui.wordSelection=selected;if(!selected){$('selection-menu').hidden=true;return;}if(!$('note-form').hidden)return;showSelectionMenu(selected.rect);},
@@ -1406,7 +1516,7 @@ async function clearProjectPage(projectId) {
 async function removeProjectEntry(projectId) {
   const result = await invoke('project.remove', {projectId,operationId:crypto.randomUUID()});
   if (!result.ok) return workspace.toast(result.error.message);
-  await clearProjectPage(projectId); await renderRecent();
+  attentionNotifications?.dropProject?.(projectId); await clearProjectPage(projectId); await renderRecent();
 }
 async function manageProjectStorage(project,action){
   const preview=await invoke('project.lifecycle.preview',{projectId:project.id,action});if(!preview.ok)return workspace.toast(preview.error.message);
@@ -1416,12 +1526,15 @@ async function manageProjectStorage(project,action){
   cancel.textContent='取消';accept.textContent=action==='delete-project'?'移到回收站':'重置本机视图';dialog.append(title,detail,error,cancel,accept);document.body.append(dialog);
   cancel.onclick=()=>{dialog.close();dialog.remove()};accept.onclick=async()=>{accept.disabled=cancel.disabled=true;const result=await invoke('project.lifecycle.execute',{token:value.token});if(!result.ok){error.textContent=result.error.message;cancel.disabled=false;return;}dialog.close();dialog.remove();await clearProjectPage(project.id);await renderRecent();};dialog.addEventListener('cancel',()=>dialog.remove());dialog.showModal();cancel.focus();
 }
+  const attentionProjectNames = new Map();
 async function renderRecent() {
+
   const result = await invoke('project.recent');
   const host = $('recent');
   host.replaceChildren();
   if (!result.ok) return;
   const projects = [...result.value.projects].sort((a, b) => String(a.openedAt ?? '').localeCompare(String(b.openedAt ?? '')) || a.id.localeCompare(b.id));
+  attentionProjectNames.clear(); for (const project of projects) attentionProjectNames.set(project.id, project.name || '');
   for (const project of projects) {
     const button = document.createElement('button');
     button.type = 'button';
@@ -1589,16 +1702,16 @@ $('pdf-page').addEventListener('change', () => {
         setStatus('error', '选段在等待保存时已变化，请重新选择后保存备注。');
         return;
       }
-      if (!(frozen?.kind === 'text-selection' && frozen.anchor)) { setStatus('error', '先选中一段文字。'); return; }
-      kind = 'text-selection';
+      if (!(frozen?.anchor && ['text-selection','text-point'].includes(frozen.kind))) { setStatus('error', '先选中一段文字或在文档位置右键。'); return; }
+      kind = frozen.kind;
       anchor = frozen.anchor;
     } else if (['word','ppt'].includes(ui.file.kind)) {
-      if(ui.dirty || !frozen?.anchor || !['word-selection','word-region','ppt-selection','ppt-region'].includes(frozen.kind)){setStatus('error','Word 已变化，请重新选中原文添加备注。');return;}
+      if(ui.dirty || !frozen?.anchor || !['word-selection','word-region','ppt-selection','ppt-region','ppt-point'].includes(frozen.kind)){setStatus('error','内容已变化，请重新定位后添加备注。');return;}
       kind=frozen.kind;anchor=frozen.anchor;
     } else if (ui.file.kind === 'image') {
-      const selection=frozen?.kind==='image-region'?frozen:pdfSelection;if(!selection?.anchor)return;kind='image-region';anchor=selection.anchor;
+      const selection=frozen?.anchor&&['image-region','image-point'].includes(frozen.kind)?frozen:pdfSelection;if(!selection?.anchor)return;kind=selection.kind;anchor=selection.anchor;
     } else if (ui.file.kind === 'pdf') {
-      if (frozen?.anchor && ['pdf-page', 'pdf-selection', 'pdf-region'].includes(frozen.kind)) {
+      if (frozen?.anchor && ['pdf-page', 'pdf-point', 'pdf-selection', 'pdf-region'].includes(frozen.kind)) {
         kind = frozen.kind;
         anchor = frozen.anchor;
       } else if (pdfSelection?.anchor) {
@@ -1781,9 +1894,9 @@ function projectTags() {
   const selection = editingId ? [focused.selectionStart, focused.selectionEnd] : null;
   const editingSurface = focused?.closest('#text-preview,#text-host,#pdf-host,#word-host,#image-host') || $('text-host');
   const tags = activeTags();
-  ui.editor?.setTags?.(tags.filter(tag => tag.anchorKind === 'text-selection').map(tag => ({ ...tag.anchor, tag, locationStatus: tag.resolution.locationStatus, contentStatus: tag.resolution.contentStatus })));
-  ui.pdf?.setTags?.(tags.filter(tag => ['pdf-selection','pdf-region','image-region'].includes(tag.anchorKind)));
-  ui.word?.setTags?.(tags.filter(tag=>['word-selection','word-region','ppt-selection','ppt-region'].includes(tag.anchorKind)));
+  ui.editor?.setTags?.(tags.filter(tag => ['text-selection','text-point'].includes(tag.anchorKind)).map(tag => ({ ...tag.anchor, tag, point: tag.anchorKind === 'text-point', locationStatus: tag.resolution.locationStatus, contentStatus: tag.resolution.contentStatus })));
+  ui.pdf?.setTags?.(tags.filter(tag => ['pdf-selection','pdf-point','pdf-region','image-region','image-point'].includes(tag.anchorKind)));
+  ui.word?.setTags?.(tags.filter(tag=>['word-selection','word-region','ppt-selection','ppt-region','ppt-point'].includes(tag.anchorKind)));
   if (!$('text-preview').hidden && ui.file?.kind === 'text') projectPreviewTags();
   updateDisplayedOrdinals();
   renderTagPathNotices();
@@ -1801,8 +1914,8 @@ function projectPreviewTags() {
   if(!ui.file || $('text-preview').hidden || !ui.editor || $('text-preview')._markdownSourceText!==ui.editor.adapter.getText())return;
   const seen=new Set();
   const projections=[
-    ...visibleNotes(ui.file,ui.annotations||[]).filter(note=>note.kind==='text-selection').map(note=>({note,anchor:note.anchor})),
-    ...activeTags().filter(tag=>tag.anchorKind==='text-selection').map(tag=>({tag,anchor:tag.anchor})),
+    ...visibleNotes(ui.file,ui.annotations||[]).filter(note=>['text-selection','text-point'].includes(note.kind)).map(note=>({note,anchor:note.anchor,point:note.kind==='text-point'})),
+    ...activeTags().filter(tag=>['text-selection','text-point'].includes(tag.anchorKind)).map(tag=>({tag,anchor:tag.anchor,point:tag.anchorKind==='text-point'})),
   ].filter(p=>{const id=p.tag?.id||p.note?.id;if(!id||seen.has(id))return false;seen.add(id);return true;});
   const preview=$('text-preview');
   let layer=preview.querySelector('.markdown-annotations');
@@ -1816,10 +1929,10 @@ function projectPreviewTags() {
   const retained=new Set();
   const highlights={note:[],discuss:[]},base=preview.getBoundingClientRect(),positions=new Map();
   for(const projection of projections){
-    const range=markdownRange(preview,projection.anchor);if(!range)continue;
-    highlights[projection.tag?'discuss':'note'].push(range);
+    const range=projection.point?markdownPointRange(preview,projection.anchor):markdownRange(preview,projection.anchor);if(!range)continue;
+    if(!projection.point)highlights[projection.tag?'discuss':'note'].push(range);
     const start=range.cloneRange();start.collapse(true);
-    const rect=start.getBoundingClientRect();if(!rect.height)continue;
+    const rect=start.getBoundingClientRect();if(!rect.height&&!rect.width)continue;
     const data=projection.tag||projection.note;
     // Layout/font changes reposition the same interactive projection. Retain
     // its input, focus, selection and any open menu until its content changes.
@@ -2177,14 +2290,71 @@ const documentMenu = mountDocumentContextMenu({
           canAnnotate: !isDocumentMirror && !secondary && !file.sourceChanged && (file.kind === 'pdf' || Boolean(anchor)),
           canDiscuss: !secondary && selected && Boolean(anchor) && !ui.pdfSelection?.kind?.includes('region'),
           canExplain: !secondary && !$('selection-explain').disabled && selected && Boolean(anchor) && !ui.pdfSelection?.kind?.includes('region'),
+          annotateMenu: !isDocumentMirror && !secondary && !file.sourceChanged && Boolean(ui.project) && ['text','pdf','image'].includes(file.kind),
+          pointSelected: !secondary && selected && Boolean(anchor) && !ui.pdfSelection?.kind?.includes('region'),
+          selectionKey: selected && anchor && !secondary ? JSON.stringify([anchor.kind, anchor.anchor, adapter ? [selection.from, selection.to, text.length] : null]) : null,
           page: (secondary ? beside.pdf : ui.pdf)?.current() || 1,
           pages:(secondary ? beside.pdf : ui.pdf)?.pageCount?.(),
         };
+      },
+      // Point capture runs once per menu-open on the frozen pointer position;
+      // surfaces without a real document point return null and the menu items
+      // stay disabled with a reason instead of guessing a location.
+      pointAt(x, y) {
+        if (secondary || isDocumentMirror || !ui.project || file.sourceChanged) return null;
+        const identity = { projectId: ui.project?.id, relPath: file.relPath, digest: ui.materialDigest };
+        if (file.kind === 'text') {
+          const source = editor?.adapter?.getText();
+          // An empty editor document is still a document: offset 0 is a valid
+          // zero-length anchor (host accepts start<=length). The rendered
+          // preview keeps rejecting blank chrome — no reliable leaf exists.
+          if (typeof source !== 'string') return null;
+          const at = { left: x - 4, right: x + 4, top: y - 4, bottom: y + 4 };
+          if (reading || element.id === 'text-preview') {
+            if (element._markdownSourceText !== source) return null;
+            const point = markdownPoint(element, x, y, source);
+            if (!point) return null;
+            return { ...textPointTarget(point, source, at), ...identity };
+          }
+          const pos = adapter?.offsetAtPoint?.(x, y);
+          if (!Number.isInteger(pos) || pos < 0 || pos > source.length) return null;
+          return { ...textPointTarget({ start: pos, end: pos, quote: '' }, source, at), ...identity };
+        }
+        if ((file.kind === 'pdf' || file.kind === 'image') && typeof ui.pdf?.pointAt === 'function') {
+          const captured = ui.pdf.pointAt(x, y);
+          if (!captured) return null;
+          return { ...identity, anchorKind: `${file.kind}-point`, kind: file.kind, anchor: captured.anchor, rect: ui.pdf.pointRect?.(captured.anchor) || { left: x - 4, right: x + 4, top: y - 4, bottom: y + 4 }, nearby: captured.nearby || '', label: file.kind === 'pdf' ? `第 ${captured.anchor.page} 页位置` : '图片位置' };
+        }
+        return null;
       },
     };
   },
   async run(command, s) {
     if (isDocumentMirror && ['cut','paste','undo','redo','format','annotate','exportPpt'].includes(command)) return;
+    if (command === 'note-here' || command === 'discuss-here' || command === 'explain-selection') {
+      // An effective selection at the pointer wins; otherwise the frozen
+      // document point becomes the anchor. Explain never runs on a point.
+      // Selection actions replay only the exact selection the menu froze:
+      // the live signature is re-read synchronously here, and any drift —
+      // including equal-length interior edits — rejects instead of acting on
+      // whatever the surface happens to hold now.
+      const liveSelectionKey = () => {
+        const live = captureLiveAnchor();
+        if (!live) return null;
+        const sel = s.adapter ? s.adapter.getSelection() : null;
+        return JSON.stringify([live.kind, live.anchor, sel ? [sel.from, sel.to, s.adapter.getText().length] : null]);
+      };
+      if (command === 'explain-selection') {
+        if (!s.pointSelected) return workspace.toast('需先选中文字或区域，位置点不能直接解释。');
+        if (!s.selectionKey || liveSelectionKey() !== s.selectionKey) return workspace.toast('选区已变化，未对旧选区执行解释。');
+        return $('selection-explain').click();
+      }
+      if (s.pointSelected) {
+        if (!s.selectionKey || liveSelectionKey() !== s.selectionKey) return workspace.toast('选区已变化，未对旧选区执行操作。');
+        return (command === 'note-here' ? $('selection-note') : $('selection-discuss')).click();
+      }
+      return actOnPoint(s.pointTarget, command === 'note-here' ? 'note' : 'discuss');
+    }
     if(command.startsWith('document-font-')) {
       const control={'document-font-larger':'font-larger','document-font-smaller':'font-smaller','document-font-reset':'font-reset'}[command];
       return (control?$(control):document.querySelector('[data-reader-font="'+command.slice(14)+'"]'))?.click();
@@ -2461,6 +2631,7 @@ async function openBesideSnapshot(file, diff=false) {
       if(event.projectSettings)ui.projectSettings={focusMode:event.projectSettings.focusMode===true};
     }
     if(event.type==='project'&&!isSurface&&workspaceScope.role==='shell')void activateProject(event.projectId);
+    if(event.type==='open-settings'&&workspaceScope.role==='shell')window.dispatchEvent(new CustomEvent('nozeli-open-settings',{detail:event.section}));
     if(event.type==='document-missing'&&event.projectId===ui.project?.id&&event.viewId===workspaceScope.viewId){
       window.clearTimeout(ui.timer);window.clearTimeout(ui.maxTimer);ui.sourceMissing=true;
       scheduleDocumentPublish();
@@ -2539,14 +2710,14 @@ async function openBesideSnapshot(file, diff=false) {
       renderFileTabs();
       $('close-subject').hidden = false;
       workspace.revealContent();
-      $('file-section-label').textContent = '文件';
+      $('file-section-label').textContent = report.attention ? '待办对话' : '文件';
       $('empty').hidden = true;
       $('managed-doc').hidden = false;
       $('managed-doc').textContent = report.text || '';
-      $('file-path').textContent = report.history ? (report.historyMode==='offline'?'离线历史':'历史报告')+' · 原版本只读 · 原件保留' : report.objectId ? '外置报告 · 原件保留' : report.writtenBack === false ? '报告 · 未写回源文件' : report.writtenBack === true ? '报告 · 已检测到源文件变化' : '报告 · 写回未核验';
+      $('file-path').textContent = report.attention ? '工作区待办对话 · 答案仅提交给来源原生交互' : report.history ? (report.historyMode==='offline'?'离线历史':'历史报告')+' · 原版本只读 · 原件保留' : report.objectId ? '外置报告 · 原件保留' : report.writtenBack === false ? '报告 · 未写回源文件' : report.writtenBack === true ? '报告 · 已检测到源文件变化' : '报告 · 写回未核验';
       $('subject-title').textContent = report.title || '报告';
       $('save-status').dataset.state = 'idle';
-      $('save-status').textContent = report.historyError ? '读取失败 · 原记录保留' : report.history ? '只读 · 可另存到项目目录' : report.objectId ? '可另存到项目目录' : report.writtenBack === false ? '未写回源文件' : report.writtenBack === true ? '源文件有变化' : '写回未核验';
+      $('save-status').textContent = report.attention ? '独立回答 · 不修改主对话草稿' : report.historyError ? '读取失败 · 原记录保留' : report.history ? '只读 · 可另存到项目目录' : report.objectId ? '可另存到项目目录' : report.writtenBack === false ? '未写回源文件' : report.writtenBack === true ? '源文件有变化' : '写回未核验';
     });
   }
   if(workspaceScope.role!=='detached')mountAgent({invoke,getProjectId:()=>ui.project?.id??null,toast:text=>workspace.toast(text),attachment:()=>ui.managedReport || ui.file?.kind!=='text'?null:ui.file.relPath,openManaged,openFrozenChange,onMessages:applyAgentMessages,
@@ -2554,6 +2725,20 @@ async function openBesideSnapshot(file, diff=false) {
     openProjectFile:target=>target.projectId===ui.project?.id?openMarkdownTarget(target):null,
     openExternal:url=>invoke('links.openExternal',{url}).then(result=>{if(!result.ok)workspace.toast(result.error.message);}),
   });
+  let attentionNotifications=null;
+  if(workspaceScope.role==='shell'){
+    const {mountAttentionNotifications}=await import('./attention-notifications.mjs');
+    const recent=await invoke('project.recent');
+    for(const project of recent.value?.projects??[])if(!attentionProjectNames.has(project.id))attentionProjectNames.set(project.id,project.name||'');
+    const notifications=mountAttentionNotifications({invoke,subscribe:window.nozeli.subscribe,onError:message=>workspace.toast(message),projectName:id=>attentionProjectNames.get(id)??null,openTodo:async(projectId,todoId)=>{
+      if(ui.project?.id!==projectId)await enqueue(()=>activateProjectNow(projectId));
+      if(ui.project?.id!==projectId)throw Error('项目切换未完成，待办仍保留。');
+      document.dispatchEvent(new CustomEvent('nozeli-reveal-work-sidebar'));
+      await window.__workspaceOpenTodo?.(todoId);
+    }});
+    attentionNotifications=notifications;
+    for(const project of recent.value?.projects??[]){const result=await invoke('managed.status',{projectId:project.id});if(result.ok)notifications.receive({kind:'managed-state',projectId:project.id,state:result.value.state});}
+  }
   const conversationErrors=new Map();
   function refreshConversationLauncher(){const button=$('workspace-open-conversation'),error=conversationErrors.get(ui.project?.id);button.disabled=!ui.project?.id;button.dataset.state=error?'error':'';button.title=(error?'对话 · 连接异常：'+(error.message||''):(ui.project?.id?'打开当前项目对话':'请先打开项目'));button.setAttribute('aria-label',button.title);}
   setIconButton($('workspace-open-conversation'),'message-square',{label:'打开当前项目对话'});

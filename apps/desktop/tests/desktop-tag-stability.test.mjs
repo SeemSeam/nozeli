@@ -132,7 +132,7 @@ try {
   assert.equal(await page.$eval('#file-path',el=>el.textContent),'test.txt');
   assert((await page.$eval('.note-anchor.tag-note .tag-editor',el=>el.value)).includes('MEMORY_ONLY_CAPACITY'));
   const overflowText=await page.$eval('.note-anchor.tag-note .tag-editor',el=>el.value);
-  const saveButton=await page.$$('.note-anchor.tag-note .tag-controls button');
+  const saveButton=await page.$$('.note-anchor.tag-note .tag-composer .tag-send');
   await saveButton[0].click();
   await waitTag((_tag,file)=>file.tags.find(t=>t.id===capacityId)?.note===overflowText);
   await page.click('#file-tree button[data-path="other.txt"]');

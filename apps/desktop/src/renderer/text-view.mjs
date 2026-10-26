@@ -48,11 +48,16 @@ export const readerEditorTheme = () => EditorView.theme({
   '.tok-invalid': { color: 'var(--tok-invalid)' },
   '.cm-scroller > .cm-selectionLayer .cm-selectionBackground, &.cm-focused .cm-scroller > .cm-selectionLayer .cm-selectionBackground': { backgroundColor: 'var(--doc-selection)' },
 });
-import { mapTextAnchor } from '../domain/tag-anchors.mjs';
+import { mapTextAnchor, mapTextPointAnchor } from '../domain/tag-anchors.mjs';
 export function projectTextAnchor(anchor, length) {
   const size = Math.max(0, Number.isInteger(length) ? length : 0);
   const start = Number.isInteger(anchor?.start) ? anchor.start : null;
   const end = Number.isInteger(anchor?.end) ? anchor.end : null;
+  // Zero-length anchors are positions: no highlight, the widget marks the spot.
+  if (start !== null && end !== null && start === end && start >= 0) {
+    const at = Math.min(start, size);
+    return { start: at, end: at, mark: null, point: true, drifted: at !== start };
+  }
   if (start === null || end === null || start < 0 || end <= start) return { start: 0, end: size, mark: size > 0 ? [0, size] : null, drifted: true };
   const projectedStart = Math.max(0, Math.min(start, size));
   const projectedEnd = Math.max(0, Math.min(end, size));
@@ -104,6 +109,10 @@ export function mountText({ parent, relPath, text, marks = [], tags = [], onChan
       let items = value.items;
       if (transaction.docChanged) items = items.map(item => {
         if (item.locationStatus === 'orphaned' || item.locationStatus === 'unresolved') return item;
+        if (item.point) {
+          const mappedPoint = mapTextPointAnchor(item, transaction.startState.doc.toString(), transaction.newDoc.toString(), transaction.changes);
+          return { ...item, ...(mappedPoint.anchor || {}), locationStatus: mappedPoint.locationStatus, contentStatus: mappedPoint.contentStatus };
+        }
         const mapped = mapTextAnchor(item, transaction.startState.doc.toString(), transaction.newDoc.toString(), transaction.changes);
         return { ...item, ...(mapped.anchor || {}), locationStatus: mapped.locationStatus, contentStatus: mapped.contentStatus };
       });

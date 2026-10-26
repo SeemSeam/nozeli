@@ -1,7 +1,7 @@
 import {mountPptAnnotations} from './ppt-annotations.mjs';
 import {mountPptContextMenu} from './ppt-context-menu.mjs';
 // PPTX edits are persisted as an independent model, never over the source package.
-export async function mountPpt({parent,bytes,name,draft,readOnly=false,onChange,onExport,onSelection,onRegionMode,noteActions,tagActions,onContextMenu,onContextClose,onSelectionStart}){
+export async function mountPpt({parent,bytes,name,draft,readOnly=false,onChange,onExport,onSelection,onRegionMode,noteActions,tagActions,onContextMenu,onContextClose,onSelectionStart,onPointItems}){
  const host=document.createElement('div');host.style.cssText='height:100%;min-height:0;display:flex;flex-direction:column;background:var(--bg);color:var(--ink)';
  // Parent chrome tokens update in place; the vendor iframe keeps its native canvas.
  const bar=document.createElement('div');bar.hidden=true;bar.style.cssText='padding:6px 10px;display:flex;gap:12px;align-items:center;background:var(--paper);color:var(--ink);border-bottom:1px solid var(--line)';
@@ -38,7 +38,7 @@ export async function mountPpt({parent,bytes,name,draft,readOnly=false,onChange,
   };
   button.onclick=async()=>{button.disabled=true;try{await onExport(await exportBytes());}catch(e){bar.hidden=false;info.textContent=e.message;}finally{button.disabled=false;}};
   const annotations=readOnly?{dispose(){}}:mountPptAnnotations({host,frame,engine,onSelection,onRegionMode,noteActions,tagActions});
-  const context=readOnly?{close(){},dispose(){}}:mountPptContextMenu({frame,onOpen:onContextMenu,onClose:onContextClose,onSelectionStart});
+  const context=readOnly?{close(){},dispose(){}}:mountPptContextMenu({frame,onOpen:onContextMenu,onClose:onContextClose,onSelectionStart,pointItems:onPointItems});
   return {...annotations,snapshot,snapshotModel:snapshot,export:exportBytes,applyModel:model=>{if(!readOnly)throw Error('Only a reading mirror accepts shared models.');const page=engine.store.slideIndex;engine.store.$patch(model);if(Number.isInteger(page)&&page<engine.store.slides.length)engine.store.setSlideIndex(page);},closeContextMenu:context.close,dispose(){context.dispose();annotations.dispose();disposed=true;unsubscribe?.();host.remove();}};
  }catch(e){host.remove();throw e;}
 }

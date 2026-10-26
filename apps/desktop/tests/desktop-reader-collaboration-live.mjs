@@ -455,13 +455,15 @@ try {
   for (const width of [1440,800,390]) {
     await resize(width);
     await click(tag(discussionId) + ' .tag-close'); await click(tag(discussionId) + ' .note-index');
-    const fontSelector=tag(discussionId)+' [data-chat-font]';
-    if(await page.$eval(fontSelector,el=>el.getClientRects().length>0&&getComputedStyle(el).display!=='none'))await click(fontSelector);
-    else {await click(tag(discussionId)+' [data-chat-more]');await page.focus('#conversation-context-menu [data-command="chat-font"]');await page.keyboard.press('ArrowRight');}
+    // Per-card font dropdown is gone: the GLOBAL conversation menu (right-click
+    // on the card) owns the size at every width.
+    await click(tag(discussionId) + ' .tag-editor', {button: 'right'});
+    await page.waitForSelector('#conversation-context-menu:not([hidden])', {visible: true});
     const sizeSelector='.nozeli-context-menu:not([hidden]) [data-command="chat-font-18"]';
+    await page.focus('#conversation-context-menu [data-command="chat-font"]');await page.keyboard.press('ArrowRight');
     await page.waitForSelector(sizeSelector, {visible:true});
     await page.focus(sizeSelector);await page.keyboard.press('Enter');
-    check('Real tag font control changes to 18px at ' + width, await page.$eval(tag(discussionId) + ' [data-chat-font]', el => el.getAttribute('aria-label').includes('18px')));
+    check('Global conversation font control sets the tag to 18px at ' + width, await page.$eval(tag(discussionId) + ' .tag-editor', el => getComputedStyle(el).fontSize === '18px'));
     await page.focus(tag(discussionId) + ' .tag-editor');
     const geometry = await page.evaluate(selector => {
       const card = document.querySelector(selector + ' .note-projection'), b = card.getBoundingClientRect();

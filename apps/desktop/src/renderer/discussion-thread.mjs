@@ -12,31 +12,69 @@ import {sessionMessages} from './session-store.mjs';
 
 /** Transcript bubbles — the exact renderer the tag card uses (same DOM and
  * classes), so both surfaces keep one visual and behavioral contract:
- * keyed row reuse, original-text readers, pending/failed rows, scroll
- * retention and the welcome row for empty threads. */
-export function mountThreadTranscript(transcript,{welcome='围绕这处材料继续讨论。输入问题后发送，回复会留在这里。'}={}){
-  const rows=new Map();
-  return function render(entries){
+ * keyed row reuse, auto original-text readers, pending/failed rows, scroll
+ * retention. The empty-state welcome row is opt-in (the compact tag card
+ * ships none; hosts that want one pass {welcome}). Assistant replies follow
+ * the session timeline's grouping rule (session-store groupSession): ONE
+ * bubble per round requestId, with one keyed markdown segment per message id
+ * inside it — never one bubble per message, never merged rounds. */
+export function mountThreadTranscript(transcript,{welcome=null}={}){
+  const rows=new Map(),readers=new Set();
+  function render(entries){
     const atTail=transcript.scrollHeight-transcript.clientHeight-transcript.scrollTop<32,scrollTop=transcript.scrollTop;
     const retained=new Set();let position=0;
-    const bubble=(key,role,value,read,retainBody=false)=>{
+    const bubble=(key,role,requestId)=>{
       retained.add(key);let row=rows.get(key);
-      if(!row){const node=document.createElement('span'),label=document.createElement('strong'),body=document.createElement('span');node.className='tag-message tag-message-'+role;label.textContent=role==='user'?'你':'前台';body.className='tag-markdown';node.append(label,body);row={node,body,value:null,reader:null};rows.set(key,row);}
-      if(row.value!==value&&!(retainBody&&row.value)){renderTagMarkdown(row.body,value);row.value=value;}
-      if(read&&!row.reader){row.reader=makeOriginalReplyReader(read);row.node.append(row.reader);}
+      if(!row){const node=document.createElement('span'),label=document.createElement('strong');node.className='tag-message tag-message-'+role;label.textContent=role==='user'?'你':'前台';node.append(label);row={node,body:null,segments:new Map()};rows.set(key,row);}
+      if(requestId)row.node.dataset.requestId=requestId;else delete row.node.dataset.requestId;
       if(transcript.children[position]!==row.node)transcript.insertBefore(row.node,transcript.children[position]||null);position++;
+      return row;
+    };
+    const text=(row,value)=>{
+      if(!row.body){const node=document.createElement('span');node.className='tag-markdown';row.node.append(node);row.body={node,value:null};}
+      if(row.body.value!==value){renderTagMarkdown(row.body.node,value);row.body.value=value;}
+    };
+    /** Keyed message segments inside one round bubble. Identity is the host
+     * message id (streaming→durable replacement swaps exactly one segment,
+     * never text dedup); each segment keeps its own markdown text and its own
+     * original-reply reader, seated right after it, so late segments append
+     * without disturbing open readers. A read-required segment holds its first
+     * shown text like the previous single-bubble renderer did. */
+    const reply=(row,messages)=>{
+      const kept=new Set();let slot=1;
+      const seat=node=>{const at=row.node.children[slot];if(at!==node)row.node.insertBefore(node,at||null);slot++;};
+      for(const message of messages){
+        const key=String(message.id);kept.add(key);
+        let segment=row.segments.get(key);
+        if(!segment){const node=document.createElement('span');node.className='tag-markdown';node.dataset.messageId=key;segment={node,value:null,reader:null,held:false};row.segments.set(key,segment);}
+        const value=message.text||'',hold=message.availability==='read-required';
+        segment.held=hold;
+        if(segment.value!==value&&!(segment.held&&segment.value)){renderTagMarkdown(segment.node,value);segment.value=value;}
+        seat(segment.node);
+        if(hold&&message.readReply&&!segment.reader){segment.reader=makeOriginalReplyReader(message.readReply);readers.add(segment.reader);}
+        if(segment.reader){seat(segment.reader);segment.reader.attach?.();}
+      }
+      for(const [key,segment]of row.segments)if(!kept.has(key)){if(segment.reader){readers.delete(segment.reader);segment.reader.dispose?.();segment.reader.remove();}segment.node.remove();row.segments.delete(key);}
     };
     entries.forEach((entry,index)=>{
       const key=entry.requestId||'round-'+index;
-      if(entry.question)bubble(key+':question','user',entry.question);
-      if(entry.replyEntries?.length){for(const message of entry.replyEntries)bubble(key+':'+message.id,'assistant',message.text||'',message.availability==='read-required'?message.readReply:null,message.availability==='read-required');}
-      else if(entry.reply||entry.readReply)bubble(key+':reply','assistant',entry.reply||'',entry.replyAvailability==='read-required'?entry.readReply:null);
+      if(entry.question)text(bubble(key+':question','user',entry.requestId),entry.question);
+      if(entry.replyEntries?.length)reply(bubble(key+':reply','assistant',entry.requestId),entry.replyEntries);
+      else if(entry.reply||entry.readReply)reply(bubble(key+':reply','assistant',entry.requestId),[{id:entry.messageId??'reply',text:entry.reply||'',availability:entry.replyAvailability,readReply:entry.readReply}]);
     });
-    if(!entries.length)bubble('welcome','assistant',welcome);
-    for(const [key,row]of rows)if(!retained.has(key)){row.node.remove();rows.delete(key);}
+    if(!entries.length&&welcome)text(bubble('welcome','assistant'),welcome);
+    for(const [key,row]of rows)if(!retained.has(key)){for(const segment of row.segments.values())if(segment.reader){readers.delete(segment.reader);segment.reader.dispose?.();segment.reader.remove();}row.node.remove();rows.delete(key);}
     transcript.scrollTop=atTail?transcript.scrollHeight:scrollTop;
   };
+  // Card teardown hook: the owning card's dispose path stops every live
+  // original reader (observers, in-flight reads) instead of waiting for GC.
+  render.disposeOriginalReaders=()=>{for(const reader of readers)reader.dispose?.();readers.clear();};
+  // Explicit DOM-ready hook: the owning card calls this once connected so
+  // readers seated while the card was still detached gain their observers.
+  render.attachOriginalReaders=()=>{for(const reader of readers)reader.attach?.();};
+  return render;
 }
+
 
 /** Normalized rounds: history first, else a single live round, else none
  * while still a draft — the shared entry shape for transcripts. */
@@ -85,29 +123,25 @@ export function createThreadMessageSource({invoke,getProjectId}){
   };
 }
 
-/** Direct managed.send transport (roots without the agent panel, e.g.
- * detached snapshot windows): managed.status readiness gate, per-requestKey
- * single flight, and the same image-attachment payload the composer send
- * uses — the host deduplicates identical requestKeys, so retries never
- * double-submit. */
+/** Explicit-send admission uses the workspace's existing frontdesk connector,
+ * without selecting a pane or consuming the composer draft. The subsequent
+ * managed.send retains the admitted project and the deterministic request key. */
 export function createDirectSendTransport({invoke,getProjectId}){
   const flights=new Map();
   const gate=async()=>{
     const projectId=getProjectId();
     if(!projectId)return {ok:false,message:'发送未发出：尚未打开项目。'};
-    const result=await invoke('managed.status',{projectId}).catch(error=>({ok:false,error:{message:error.message}}));
-    if(!result?.ok)return {ok:false,message:'发送未发出：'+(result?.error?.message||'会话状态读取失败')};
-    const value=result.value;
-    if(value?.enabled!==true||value?.ready!==true)return {ok:false,message:'发送未发出：Agent 尚未就绪或当前内容只读，请先完成配置并连接。'};
+    const result=await invoke('workspace.control',{projectId,type:'conversation-action',action:'prepare',target:'frontdesk'}).catch(error=>({ok:false,error:{message:error.message}}));
+    if(projectId!==getProjectId())return {ok:false,message:'项目已切换，未发送原讨论。'};
+    if(!result?.ok)return {ok:false,message:'发送未发出：'+(result?.error?.message||'前台连接失败，请重试连接。')};
     return {ok:true,projectId};
   };
-  const send=async({text,imageAttachments,requestKey})=>{
-    const check=await gate();
-    if(!check.ok)throw Object.assign(new Error(check.message),{code:'SEND_GATE_REFUSED'});
+  const send=async({projectId=getProjectId(),text,imageAttachments,requestKey})=>{
+    if(projectId!==getProjectId())throw Error('项目已切换，未发送原讨论。');
     const key=String(requestKey||crypto.randomUUID());
     if(flights.has(key))return flights.get(key);
     const promise=(async()=>{
-      const result=await invoke('managed.send',{projectId:check.projectId,target:'frontdesk',text,imageAttachments,requestKey:key});
+      const result=await invoke('managed.send',{projectId,target:'frontdesk',text,imageAttachments,requestKey:key});
       if(!result?.ok)throw new Error(result?.error?.message||'发送失败');
       const value=result.value||{};
       return {accepted:value.accepted!==false,requestId:value.requestId??value.jobId};
@@ -118,15 +152,10 @@ export function createDirectSendTransport({invoke,getProjectId}){
   return {gate,send};
 }
 
-/** Panel-first transport: the conversation-panel gate/send (fast local
- * readiness) when this root mounted it, otherwise the shared direct
- * transport over the same managed.send chain. */
-export function createDiscussionTransport({invoke,getProjectId,panelGate=()=>window.__agentDiscussionGate,panelSend=()=>window.__agentDiscussionSend}){
-  const fallback=createDirectSendTransport({invoke,getProjectId});
-  return {
-    gate:async()=>{const local=panelGate();if(typeof local==='function'){const value=await local();return value??{ok:true};}return fallback.gate();},
-    send:async payload=>{const local=panelSend();if(typeof local==='function')return local(payload);return fallback.send(payload);},
-  };
+/** Position discussions always address the initiating project's frontdesk.
+ * A panel's selected work and composer draft are not this thread's identity. */
+export function createDiscussionTransport({invoke,getProjectId}){
+  return createDirectSendTransport({invoke,getProjectId});
 }
 
 /** Plain, cloneable thread rounds — the persisted shape riding on
