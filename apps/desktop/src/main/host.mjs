@@ -487,9 +487,9 @@ export class DesktopHost {
     return { rel, abs, missing: false };
   }
 
-  async registerDirectory(input) {
+  async registerDirectory(input, options) {
     if(typeof input!=='string'||!path.isAbsolute(input))throw new HostError('NOT_A_DIRECTORY','请选择绝对目录');
-    const project=await this.storage.register(input),key='git-init',previous=await this.storage.getRecovery(project.id,key);
+    const project=await this.storage.register(input,options),key='git-init',previous=await this.storage.getRecovery(project.id,key);
     const operationId=previous?.operationId??randomUUID();
     await ensureProjectGit(project.root,{operationId,expectedIdentity:project.identity,journal:{read:()=>this.storage.getRecovery(project.id,key),write:value=>this.storage.putRecovery(project.id,key,value)}});
     return this.publicProject(project);
@@ -499,10 +499,10 @@ export class DesktopHost {
     return { id: project.id, name: project.name, rootDisplay: project.root, openedAt: project.openedAt, lastOpenedAt: project.lastOpenedAt,...(this.guidedDemo?.isDemo(project.id)?{demo:true,source:'demo-fixture'}:{}) };
   }
 
-  async pick(directory) {
+  async pick(directory, options) {
     return this.track((async () => {
       if (directory == null) return { canceled: true };
-      const project = await this.registerDirectory(directory);
+      const project = await this.registerDirectory(directory, options);
       return { canceled: false, project };
     })());
   }
@@ -515,10 +515,9 @@ export class DesktopHost {
     return this.track((async () => {
       const project = await this.requireProject(projectId);
       const now = new Date().toISOString();
-      await this.updateRegistry((registry) => ({
-        schemaVersion: SCHEMA,
-        projects: registry.projects.map((item) => item.id === project.id ? { ...item, lastOpenedAt: now } : item),
-      }));
+      const value={...project,lastOpenedAt:now};
+      await this.storage.db.request(this.storage.catalog,'put',{collection:'instances',id:project.id,value});
+      this.storage.bindings.set(project.id,value);
       return { project: { ...this.publicProject(project), lastOpenedAt: now } };
     })());
   }

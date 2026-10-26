@@ -297,6 +297,7 @@ export class Controller extends EventEmitter {
     await this.store.mutate(()=>{delete this.store.state.providers[target];});
   }
   async enqueue(target,type,value,{key=randomUUID(),context={},priority=false}={}){
+    this.store.storage.assertActive(this.projectId);
     this.validateTarget(target);if(this.stopping)throw new Error('host stopping');if(typeof value!=='string'||!value.trim())throw new Error('invalid input');
     const job=await this.store.mutate(()=>this.queueJob(target,type,value,{key,context,priority}));
     this.changed();this.kick();return {accepted:true,jobId:job.id};
@@ -355,7 +356,7 @@ export class Controller extends EventEmitter {
     if(route.action==='continue')return route.status==='queued'?`补充已保存到“${name}”，等待名额后由原工作 Agent 一并接收。`:`补充已交给“${name}”，继续使用原工作 Agent。`;
     return `已建立“${name}”${this.store.find(route.workId).status==='queued'?'，等待工作名额':'，已开始调度'}。`;
   }
-  async send(target,value,options={}){return ['frontdesk','orchestrator'].includes(target)?this.sendUnlocked(target,value,options):this.workLocked(target,()=>this.sendUnlocked(target,value,options));}
+  async send(target,value,options={}){this.store.storage.assertActive(this.projectId);return ['frontdesk','orchestrator'].includes(target)?this.sendUnlocked(target,value,options):this.workLocked(target,()=>this.sendUnlocked(target,value,options));}
   async sendUnlocked(target,value,{priority=false,native=false,context={},requestKey,draftText}={}){
     this.validateTarget(target);
     this.assertFrontdeskContextAdmission(target);
@@ -402,6 +403,7 @@ export class Controller extends EventEmitter {
     return [...(work.frontdeskTransfer?['前台已完成操作仅为历史，不得重放；只执行原范围内剩余步骤。当前执行目录为交接时真实项目版本。\n'+JSON.stringify(work.frontdeskTransfer)]:[]),'原始用户请求：\n'+original,...supplements,'项目目录中的文件是实际材料。缺信息就发布 problem 后结束当前回合，完成则发布 result；不要等待或结束 Work。'].join('\n');
   }
   async submitTask(value,{requestKey,context={},draftText=value}={}){
+    this.store.storage.assertActive(this.projectId);
     if(typeof value!=='string'||!value.trim()||value.length>32000)throw Error('invalid input');
     const job=await this.store.mutate(tx=>{
       const old=this.store.state.jobs.find(j=>j.key==='task:'+requestKey);
@@ -1471,19 +1473,25 @@ export class Controller extends EventEmitter {
       await this.store.mutate(()=>{delete this.store.state.providers[target];});this.changed();return true;
     })().finally(()=>this.reclaiming.delete(target));this.reclaiming.set(target,operation);return operation;
   }
-  async stop(){
+  async stop({lifecycleHold}={}){
+    if(lifecycleHold){
+      // Do not trust a project id or a serialized operation id as authority.
+      this.store.storage.withLifecycleOwner(this.projectId,lifecycleHold,()=>{this.store.lifecycleHold=lifecycleHold;});
+    }
     if(this.stopPromise)return this.stopPromise;
     this.stopping=true;this.workerTerminal.stop();this.changed();
     clearTimeout(this.timelineTimer);this.timelineTimer=null;
-    this.stopPromise=(async()=>{
-      const stopped=new Set(),stopOwners=async()=>Promise.all([...this.sessions.entries()].filter(([target])=>!stopped.has(target)).map(async([target,s])=>{const receipt=await s.stop();await s.controllerExitCleanup;if((s.pid||s.groupRecord?.pid)&&receipt?.confirmationComplete!==true)throw Object.assign(Error('Agent exit unconfirmed; provider ownership retained'),{code:'OMP_EXIT_UNCONFIRMED',target});stopped.add(target);}));
-      await Promise.all([stopOwners(),Promise.all([...this.terminals.values()].map(t=>t.close())),Promise.allSettled([...this.starting.values()]),Promise.all([...this.reclaiming.values()])]);
+    const settled=async promises=>{const results=await Promise.allSettled(promises),failed=results.find(result=>result.status==='rejected');if(failed)throw failed.reason;};
+    const operation=(async()=>{
+      const stopped=new Set(),stopOwners=async()=>settled([...this.sessions.entries()].filter(([target])=>!stopped.has(target)).map(async([target,s])=>{const receipt=await s.stop();await s.controllerExitCleanup;if((s.pid||s.groupRecord?.pid)&&receipt?.confirmationComplete!==true)throw Object.assign(Error('Agent exit unconfirmed; provider ownership retained'),{code:'OMP_EXIT_UNCONFIRMED',target});stopped.add(target);}));
+      await settled([stopOwners(),settled([...this.terminals.values()].map(t=>t.close())),Promise.allSettled([...this.starting.values()]),settled([...this.reclaiming.values()])]);
       await stopOwners();
-      await Promise.all([...this.running.values()]);await Promise.allSettled([...this.closures.values()]);
+      await settled([...this.running.values()]);await Promise.allSettled([...this.closures.values()]);
       for(const target of stopped)delete this.store.state.providers[target];
       await this.store.storage.putLocal(this.projectId,'managed:providers',this.store.state.providers??{});
       if(Object.keys(this.store.state.providers??{}).length)throw Object.assign(Error('Unverified provider ownership retained'),{code:'OMP_EXIT_UNCONFIRMED'});
-      await this.store.close();return {stopped:[...stopped],confirmationComplete:true};
-    })();return this.stopPromise;
+      await this.store.close();this.store.lifecycleHold=null;return {stopped:[...stopped],confirmationComplete:true};
+    })();this.stopPromise=operation;
+    try{return await operation;}catch(error){if(this.stopPromise===operation)this.stopPromise=null;throw error;}
   }
 }

@@ -80,7 +80,7 @@ export class ProjectLifecycle {
   async run(confirmation) {
     const {projectId,operationId,instanceId,action}=confirmation;
     const hold=this.host.storage.holdProject(projectId,{operationId,instanceId,action});hold.pendingCount=0;
-    const operation=(async()=>{await this.host.storage.persistProjectHold(projectId,hold);return this.apply(confirmation,hold);})();this.operations.set(projectId,operation);
+    const operation=(async()=>{await this.host.storage.persistProjectHold(projectId,hold);return this.host.storage.withLifecycleOwner(projectId,hold,()=>this.apply(confirmation,hold));})();this.operations.set(projectId,operation);
     try{return await operation;}catch(error){if(['PROJECT_STOP_TIMEOUT','OMP_EXIT_UNCONFIRMED','STORAGE_RESULT_UNKNOWN'].includes(error.code))hold.needsStopCheck=true;throw error;}finally{if(this.operations.get(projectId)===operation)this.operations.delete(projectId);if(!hold.pendingCount&&!hold.needsStopCheck)await this.host.storage.releaseProject(projectId,hold);}
   }
   async removeProject(projectId,{operationId}={}) {
@@ -115,8 +115,9 @@ export class ProjectLifecycle {
       if(action==='delete-project')this.matchSource(confirmation.source,await this.checkDelete(project));
       hold.needsStopCheck=true;
       const auxiliary=stage(Promise.resolve().then(()=>this.beforeStop(projectId)));
-      const native=stage(Promise.resolve().then(()=>this.managed.stopProject(projectId)));
-      const [,stopped]=await Promise.all([auxiliary,native]);
+      const native=stage(Promise.resolve().then(()=>this.managed.stopProject(projectId,{lifecycleHold:hold})));
+      const admitted=stage(this.host.storage.drainProjectOperations(projectId));
+      const [,stopped]=await Promise.all([auxiliary,native,admitted]);
       if(stopped?.confirmationComplete!==true)throw fail('OMP_EXIT_UNCONFIRMED','项目写入者停稳未确认，保留所有目录。');
       hold.needsStopCheck=false;
       await stage(this.workspace.closeProject(projectId,{operationId}));
@@ -170,7 +171,17 @@ export class ProjectLifecycle {
     // Observation only: never resume trash, rm, process termination or removal.
     const project=await this.host.requireRegisteredProject(projectId);
     const hold=this.host.storage.lifecycleHolds.get(projectId);
-    if(hold?.operationId===operationId){if(hold.pendingCount||this.managed.projectStops?.has(projectId))throw fail('PROJECT_STOP_PENDING','原停稳操作仍未结束，未重新开放准入。');if(hold.needsStopCheck){const receipt=await boundedProjectWait(this.managed.stopProject(projectId),{timeoutMs:this.timeoutMs});if(receipt?.confirmationComplete!==true)throw fail('OMP_EXIT_UNCONFIRMED','原生停稳未确认。');}await this.host.storage.releaseProject(projectId,hold);}
+    if(hold?.operationId===operationId){
+      if(hold.pendingCount||this.managed.projectStops?.has(projectId))throw fail('PROJECT_STOP_PENDING','原停稳操作仍未结束，未重新开放准入。');
+      if(hold.needsStopCheck){
+        const receipt=await boundedProjectWait(this.host.storage.withLifecycleOwner(projectId,hold,async()=>{
+          const stopped=await this.managed.stopProject(projectId,{lifecycleHold:hold});
+          await this.host.storage.drainProjectOperations(projectId);return stopped;
+        }),{timeoutMs:this.timeoutMs});
+        if(receipt?.confirmationComplete!==true)throw fail('OMP_EXIT_UNCONFIRMED','原生停稳未确认。');
+      }
+      await this.host.storage.releaseProject(projectId,hold);
+    }
     let observation;
     try {
       if(record.action==='delete-project') {

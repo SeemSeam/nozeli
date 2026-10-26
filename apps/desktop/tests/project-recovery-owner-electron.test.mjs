@@ -1,0 +1,34 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import {spawn} from 'node:child_process';
+import {createRequire} from 'node:module';
+import {ProjectStorage} from '../src/main/project-storage.mjs';
+import {assertRecoverySourceStopped} from '../src/main/project-recovery-owner.mjs';
+const require=createRequire(import.meta.url);
+
+test('real Electron profile with the same synthetic registered root prevents recovery',{timeout:30000},async t=>{
+ const directory=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-owner-electron-'));
+ const root=path.join(directory,'project'),config=path.join(directory,'.Nozeli'),profile=path.join(config,'desktop');await fs.mkdir(root);
+ const storage=new ProjectStorage(profile);await storage.register(root);await storage.db.close();
+ const launcher=path.join(directory,'owner.cjs');
+ await fs.writeFile(launcher,`const {app,BrowserWindow}=require('electron'),{DatabaseSync}=require('node:sqlite');const catalog=new DatabaseSync(${JSON.stringify(path.join(profile,'nozeli','storage-v2','catalog.sqlite'))},{readOnly:true});app.setPath('userData',${JSON.stringify(profile)});app.whenReady().then(async()=>{const window=new BrowserWindow({show:false,webPreferences:{sandbox:true}});await window.loadURL('data:text/html,synthetic-owner');console.log('OWNER_READY');process.stdin.resume();process.stdin.once('end',()=>{catalog.close();app.quit();});});`);
+ const env={...process.env,NOZELI_TEST_INSTANCE:'1',NOZELI_CONFIG_ROOT:config,NOZELI_USER_DATA:profile};delete env.ELECTRON_RUN_AS_NODE;
+ const child=spawn(require('electron'),[launcher,'--ozone-platform=wayland','--disable-gpu'],{env,stdio:['pipe','pipe','pipe']});let log='';
+ child.stderr.on('data',bytes=>{log+=bytes;});
+ const exit=new Promise(resolve=>child.once('exit',resolve));
+ t.after(async()=>{child.stdin.end();await Promise.race([exit,new Promise(resolve=>{const timer=setTimeout(()=>{child.kill('SIGTERM');resolve();},3000);timer.unref();})]);await fs.rm(directory,{recursive:true,force:true});});
+ await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Electron owner startup timeout '+log)),10000);child.stdout.on('data',bytes=>{if(String(bytes).includes('OWNER_READY')){clearTimeout(timer);resolve();}});child.once('exit',code=>{clearTimeout(timer);reject(Error('Electron owner exited '+code+' '+log));});});
+ console.log('synthetic Electron identity',JSON.stringify({pid:child.pid,exe:await fs.readlink(`/proc/${child.pid}/exe`),args:(await fs.readFile(`/proc/${child.pid}/cmdline`)).toString().split('\0').filter(Boolean),profile}));
+ const entries=(await fs.readFile(`/proc/${child.pid}/environ`)).toString().split('\0');
+ console.log('synthetic profile environment',JSON.stringify(Object.fromEntries(['NOZELI_TEST_INSTANCE','NOZELI_CONFIG_ROOT','NOZELI_USER_DATA'].map(key=>[key,entries.find(value=>value.startsWith(key+'='))?.slice(key.length+1)]))));
+ await assert.rejects(assertRecoverySourceStopped(root),{code:'RECOVERY_SOURCE_ACTIVE'});
+ await assertRecoverySourceStopped(path.join(directory,'different-unregistered-root'));
+ const catalog=path.join(profile,'nozeli','storage-v2','catalog.sqlite');await fs.unlink(catalog);
+ await assert.rejects(assertRecoverySourceStopped(root),error=>['RECOVERY_SOURCE_ACTIVE','RECOVERY_OWNER_UNVERIFIED'].includes(error.code),'a deleted catalog handle must never be ignored or replaced by default-profile guessing');
+ child.stdin.end();await exit;
+ await assertRecoverySourceStopped(root);
+ console.log('real Electron catalog same-root refusal, different-root allowance, deleted-inode refusal and normal-exit release passed');
+});

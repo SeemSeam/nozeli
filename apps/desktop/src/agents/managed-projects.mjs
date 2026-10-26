@@ -98,6 +98,7 @@ export class ManagedProjects {
   if(!payload||typeof payload!=='object'||Array.isArray(payload)||Object.keys(payload).some(key=>!['globalLimit','projectId','projectLimit'].includes(key)))throw new HostError('INVALID_PAYLOAD','Agent 设置参数无效');
   const {globalLimit,projectId,projectLimit}=payload;validateAgentLimit(globalLimit);if(projectLimit!==undefined){validateAgentLimit(projectLimit,{project:true});if(!projectId)throw new HostError('INVALID_PAYLOAD','项目 Worker 设置需要当前项目');}
   this.validateResourceProject(projectId);
+  const run=async()=>{
   await this.initializeResources();if(projectId)await this.host.requireProject(projectId);
   const prior=this.resourceFlights.get(projectId),connecting=this.flights.get(projectId);
   const operation=(async()=>{
@@ -107,6 +108,7 @@ export class ManagedProjects {
    finally{if(owned)await store.close();}
   })();if(projectId)this.resourceFlights.set(projectId,operation);
   try{await operation;return this.resourceStatus(projectId);}finally{if(this.resourceFlights.get(projectId)===operation)this.resourceFlights.delete(projectId);}
+  };return projectId?this.host.storage.withProjectOperation(projectId,run):run();
  }
  async setActiveProject(id){
   if(this.guidedDemo?.isDemo(id)){await this.guidedDemo.verify(id);this.activeProjectId=id;return {demo:true,source:'demo-fixture'};}
@@ -206,6 +208,7 @@ export class ManagedProjects {
  async saveLocalDraft(id,target,value){
   if(typeof value!=='string'||value.length>32000||typeof target!=='string')throw new HostError('INVALID_PAYLOAD','本地草稿无效');
   if(this.stopping)throw new HostError('APP_CLOSING','应用正在关闭，草稿未覆盖');
+  return this.host.storage.withProjectOperation(id,async()=>{
   const current=this.controllers.get(id);if(current)return current.setDraft(target,value);
   this.draftFlights??=new Map();const prior=this.draftFlights.get(id)??Promise.resolve(),connecting=this.flights.get(id);
   const operation=prior.catch(()=>{}).then(async()=>{
@@ -213,6 +216,7 @@ export class ManagedProjects {
     await this.host.requireRegisteredProject(id);const state=(await this.projectionSource(id)).state;
     if(!['frontdesk','orchestrator'].includes(target)&&!state.works.some(work=>work.id===target&&work.status!=='ended'))throw new HostError('INVALID_PAYLOAD','草稿所属工作无效');const drafts=await this.host.storage.getRecovery(id,'managed:drafts')??{};drafts[target]=value;await this.host.storage.putRecovery(id,'managed:drafts',drafts);
   }).finally(()=>{if(this.draftFlights.get(id)===operation)this.draftFlights.delete(id);});this.draftFlights.set(id,operation);return operation;
+  });
  }
  async loadLocal(id,workId){
   await this.host.requireRegisteredProject(id);
@@ -220,8 +224,10 @@ export class ManagedProjects {
   await this.connect(id,{enable:true,startResidents:false,localOnly:true});const c=this.controllers.get(id);if(!c)throw new HostError('MANAGED_UNAVAILABLE','项目本地账本不可用');return c;
  }
  async connect(id,options={}){
-  try{const result=await this.connectAttempt(id,options);if(result.ready)await this.attention.observe(id,'connection',[]);return {...result,state:await this.attentionState(id,result.state,{connected:!!this.controllers.get(id)})};}
-  catch(error){await this.reportConnectionError(id,error);throw error;}
+  return this.host.storage.withProjectOperation(id,async()=>{
+   try{const result=await this.connectAttempt(id,options);if(result.ready)await this.attention.observe(id,'connection',[]);return {...result,state:await this.attentionState(id,result.state,{connected:!!this.controllers.get(id)})};}
+   catch(error){await this.reportConnectionError(id,error);throw error;}
+  });
  }
  async connectAttempt(id,{enable=false,startResidents=true,localOnly=false}={}){
   if(this.guidedDemo?.isDemo(id))return this.demoStatus(id);
@@ -383,13 +389,13 @@ export class ManagedProjects {
   this.connectionErrors.set(id,{error:{code:reason?.code??'PROJECT_UNAVAILABLE',message:reason?.message??'项目不可用；原生执行停止结果待核查'},handoff:null});
   try{return await this.stopProject(id);}catch(error){this.connectionErrors.set(id,{error:{code:error.code??'OMP_EXIT_UNCONFIRMED',message:'项目不可用且原生停稳尚未确认：'+error.message},handoff:null});throw error;}
  }
- async stopProject(id){
+ async stopProject(id,{lifecycleHold}={}){
   this.projectStops??=new Map();if(this.projectStops.has(id))return boundedProjectWait(this.projectStops.get(id),{timeoutMs:this.stopTimeoutMs});
   const current=this.controllers.get(id);if(current){current.started=false;current.stopping=true;}
-  const earlyStop=current?.stop();earlyStop?.catch(()=>{});
+  const earlyStop=current?.stop({lifecycleHold});earlyStop?.catch(()=>{});
   const operation=(async()=>{
-   await Promise.all([this.flights.get(id),this.draftFlights?.get(id),this.resourceFlights.get(id)]);
-   const controller=this.controllers.get(id);if(controller){controller.started=false;const receipt=await (controller===current?earlyStop:controller.stop());if(receipt?.confirmationComplete!==true)throw new HostError('OMP_EXIT_UNCONFIRMED','项目进程停稳未确认；保留执行现场');}
+   const flights=await Promise.allSettled([this.flights.get(id),this.draftFlights?.get(id),this.resourceFlights.get(id)]);
+   const controller=this.controllers.get(id);if(controller){controller.started=false;const receipt=await (controller===current?earlyStop:controller.stop({lifecycleHold}));if(receipt?.confirmationComplete!==true)throw new HostError('OMP_EXIT_UNCONFIRMED','项目进程停稳未确认；保留执行现场');}
    else{
     const providers=await this.host.storage.getLocal(id,'managed:providers')??{},runtime=await managedRuntime(this.host.storage,id);
     for(const [target,record] of Object.entries(providers)){
@@ -398,6 +404,8 @@ export class ManagedProjects {
      delete providers[target];await this.host.storage.putLocal(id,'managed:providers',providers);
     }
    }
+   if(current&&current!==this.controllers.get(id))await earlyStop;
+   const failed=flights.find(result=>result.status==='rejected'&&result.reason?.code!=='PROJECT_STOPPING');if(failed)throw failed.reason;
    await Promise.all([...this.terminalFlights.entries()].filter(([key])=>key.startsWith(id+':')).map(([,flight])=>flight));
    await Promise.all([...(controller?.sessions?.keys()??[])].map(target=>this.systemTerminals.close(id+':'+target)));
    if(this.controllers.get(id)===controller)this.controllers.delete(id);this.connectionErrors.delete(id);this.versions.delete(id);

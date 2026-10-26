@@ -43,7 +43,11 @@ export class Workspace {
     }catch(error){await store.close();throw error;}
   }
   constructor(root,content,lock,owner){Object.assign(this,{root,content,lock,owner});this.serial=Promise.resolve();this.draftSerial=Promise.resolve();this.draftVersions=new Map();}
-  save(options){return saveManagedState(this,options);}
+  save(options){
+    // A queued mutation or native exit callback may predate stop's ALS scope.
+    // Only this managed store receives the actual, still-current hold object.
+    return this.lifecycleHold?this.storage.withLifecycleOwner(this.projectId,this.lifecycleHold,()=>saveManagedState(this,options)):saveManagedState(this,options);
+  }
   persistNativeFacts(){
     const jobs=(this.state.jobs??[]).map(job=>({id:job.id,target:job.target,local:Object.fromEntries(['collabAttempts','manualPromptId','sessionFile','transport'].filter(key=>job[key]!==undefined).map(key=>[key,job[key]]))}));
     return this.storage.putRecovery(this.projectId,'managed:native-facts',structuredClone({schema:1,projectId:this.projectId,sessionIndex:this.state.sessionIndex,jobs,messages:this.state.sessionIndex?.portableMessages??[]}));

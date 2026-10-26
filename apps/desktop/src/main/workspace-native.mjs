@@ -147,7 +147,7 @@ export class WorkspaceNative {
     if (payload.projectId && payload.projectId !== r.projectId && !(r.role === 'shell' && (['demo.state','managed.status','managed.attention.ack','workspace.project','workspace.closeProject','workspace.recovery.object','workspace.recovery.settle','project.open','project.remove','project.retry','project.lifecycle.preview','project.lifecycle.reconcile'].includes(op)||op==='demo.transition'&&payload.action==='stop'))) throw fail('PROJECT_SCOPE_DENIED');
     if(op.startsWith('demo.')){if(op==='demo.result'){if(!['surface','shell','detached'].includes(r.role))throw fail('IPC_DENIED');}else if(!['demo.state','demo.send','demo.interrupt'].includes(op)&&r.role!=='shell')throw fail('IPC_DENIED');return r;}
     if(r.role==='surface'&&r.kind==='terminal'&&op.startsWith('managed.')&&(op!=='managed.terminal.screen'||payload.target!==this.layouts.get(r.projectId)?.views[r.viewId]?.viewState?.workId))throw fail('IPC_DENIED');
-    if (this.lifecycle.has(r.projectId) && (writes.has(op) || op === 'managed.send' || ['managed.attention.respond','managed.attention.draft.write'].includes(op) || op === 'workspace.project' || op === 'workspace.command')) throw fail('PROJECT_LIFECYCLE_ACTIVE', '项目正在保留并关闭，请等待操作结果。');
+    if (this.lifecycle.has(r.projectId) && !this.lifecycleFlushOwner(r,payload.flushRequestId,op) && (writes.has(op) || op === 'managed.send' || ['managed.attention.respond','managed.attention.draft.write'].includes(op) || op === 'workspace.project' || op === 'workspace.command')) throw fail('PROJECT_LIFECYCLE_ACTIVE', '项目正在保留并关闭，请等待操作结果。');
     if(op==='report.copySource'&&!(r.role==='shell'||r.role==='surface'&&['report','history'].includes(r.kind)))throw fail('IPC_DENIED');
     if(op.startsWith('isolated-preview.')&&r.role==='surface'&&(!['report','document','history'].includes(r.kind)||r.kind==='history'&&['isolated-preview.open','isolated-preview.update'].includes(op)&&payload.profile!=='staticReport'))throw fail('IPC_DENIED');
     if (r.role !== 'shell' && !op.startsWith('workspace.') && !op.startsWith('isolated-preview.') && !surfaceOps.test(op)) throw fail('IPC_DENIED');
@@ -202,10 +202,20 @@ export class WorkspaceNative {
     const requestId = randomUUID(), generation = record.generation;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.receipts.delete(requestId); reject(Object.assign(fail('FLUSH_TIMEOUT'),{requestId})); }, 10000);
-      this.receipts.set(requestId, { record, generation, hold:channel==='nozeli:document-sync'&&detail.hold, resolve: value => { clearTimeout(timer); resolve(value); }, reject: error => { clearTimeout(timer);error.requestId=requestId; reject(error); } });
+      const lifecycleHold=this.host.storage.lifecycleHolds.get(record.projectId);
+      this.receipts.set(requestId, { record, generation, lifecycleHold, hold:channel==='nozeli:document-sync'&&detail.hold, resolve: value => { clearTimeout(timer); resolve(value); }, reject: error => { clearTimeout(timer);error.requestId=requestId; reject(error); } });
       try { record.wc.send(channel, channel === 'nozeli:flush' ? requestId : { ...detail, requestId }); }
       catch (error) { this.receipts.get(requestId)?.reject(error); this.receipts.delete(requestId); }
     });
+  }
+  lifecycleFlushOwner(record,requestId,op){
+    if(op!=='workspace.recovery')return null;
+    const receipt=this.receipts.get(requestId);
+    if(!receipt||receipt.record!==record||receipt.generation!==record.generation||record.dead||!receipt.lifecycleHold||this.host.storage.lifecycleHolds.get(record.projectId)!==receipt.lifecycleHold)return null;
+    return receipt.lifecycleHold;
+  }
+  assertRecoveryAdmission(record,op,payload){
+    if(op==='workspace.recovery'&&this.host.storage.lifecycleHolds.has(record.projectId)&&!this.lifecycleFlushOwner(record,payload?.flushRequestId,op))throw fail('PROJECT_LIFECYCLE_ACTIVE','项目停稳期间仅接受当前保存回执的恢复内容。');
   }
   acknowledge(record, payload, result = payload) {
     const p = this.receipts.get(payload?.requestId);

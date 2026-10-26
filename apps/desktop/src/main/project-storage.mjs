@@ -4,6 +4,7 @@ import {randomUUID,createHash} from 'node:crypto';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {StorageDatabase} from './storage-database.mjs';
 import {MaterialStore} from '../domain/material-store.mjs';
+import {assertRecoverySourceStopped} from './project-recovery-owner.mjs';
 const fail=(code,message)=>Object.assign(Error(message),{code});
 async function checkedClose(db,file){const outcome=await db.request(file,'close');if(outcome?.closed===false)throw Object.assign(fail('STORAGE_RESULT_UNKNOWN','存储线程停止未确认；禁止清理或移动数据库'),{file,operationIds:outcome.operationIds??[],commitUnknown:{file},closeOutcome:outcome});}
 const same=(a,b)=>a&&b&&a.dev===b.dev&&a.ino===b.ino;
@@ -17,7 +18,21 @@ async function syncDirectory(directory){if(process.platform!=='win32'){const han
 export class ProjectStorage {
  constructor(userDataDir){this.root=path.join(userDataDir,'nozeli','storage-v2');this.catalog=path.join(this.root,'catalog.sqlite');this.db=new StorageDatabase();this.bindings=new Map();this.initFlight=null;this.registrations=new Map();this.generations=new Map();this.unavailable=new Map();this.lifecycleHolds=new Map();}
  lifecycleOwner=new AsyncLocalStorage();
- assertActive(id){const hold=this.lifecycleHolds.get(id);if(hold&&this.lifecycleOwner.getStore()!==hold)throw Object.assign(fail('PROJECT_LIFECYCLE_ACTIVE','项目正在停用或等待停稳核查；未接受新操作。'),{operationId:hold.operationId});}
+ operationOwner=new AsyncLocalStorage();
+ projectOperations=new Map();
+ async withProjectOperation(id,run){
+  await this.ready();
+  this.assertActive(id);
+  const inherited=this.operationOwner.getStore();
+  if(inherited?.projectId===id&&inherited.active)return run();
+  if(this.lifecycleOwner.getStore()===this.lifecycleHolds.get(id)&&this.lifecycleHolds.has(id))return run();
+  const operations=this.projectOperations.get(id)??new Set();this.projectOperations.set(id,operations);
+  let settle;const operation={projectId:id,active:true,settled:new Promise(resolve=>{settle=resolve;})};operations.add(operation);
+  try{return await this.operationOwner.run(operation,run);}
+  finally{operation.active=false;operations.delete(operation);if(!operations.size)this.projectOperations.delete(id);settle();}
+ }
+ async drainProjectOperations(id){await Promise.all([...(this.projectOperations.get(id)??[])].map(operation=>operation.settled));}
+ assertActive(id){const hold=this.lifecycleHolds.get(id),operation=this.operationOwner.getStore();if(hold&&this.lifecycleOwner.getStore()!==hold&&!(operation?.projectId===id&&operation.active&&this.projectOperations.get(id)?.has(operation)))throw Object.assign(fail('PROJECT_LIFECYCLE_ACTIVE','项目正在停用或等待停稳核查；未接受新操作。'),{operationId:hold.operationId});}
  holdProject(id,{operationId,instanceId,action}){const prior=this.lifecycleHolds.get(id);if(prior)throw fail('PROJECT_LIFECYCLE_ACTIVE','项目已有待核查生命周期操作。');const hold={operationId,instanceId,action,localClosed:false};this.lifecycleHolds.set(id,hold);return hold;}
  async releaseProject(id,hold){if(this.lifecycleHolds.get(id)!==hold)return;await this.db.request(this.catalog,'delete',{collection:'lifecycle_holds',id});if(this.lifecycleHolds.get(id)===hold)this.lifecycleHolds.delete(id);}
  sealLocal(id,hold){if(this.lifecycleHolds.get(id)!==hold)throw fail('PROJECT_LIFECYCLE_ACTIVE','生命周期令牌不匹配。');hold.localClosed=true;}
@@ -28,20 +43,41 @@ export class ProjectStorage {
  async requireRegistered(id){await this.ready();const p=this.bindings.get(id)??await this.db.request(this.catalog,'get',{collection:'instances',id});if(!p)throw fail('UNKNOWN_PROJECT','项目未登记');this.bindings.set(id,p);return p;}
  async list(){await this.ready();return (await this.db.request(this.catalog,'list',{collection:'instances'})).map(r=>r.value);}
  async requireOnline(id){this.assertActive(id);const p=await this.requireRegistered(id);this.assertActive(id);if(this.unavailable.has(id))throw this.unavailable.get(id);try{try{await directoryIdentity(p.root,p.identity);}catch(e){if(e.code==='ENOENT')throw fail('PROJECT_ROOT_MISSING','原项目目录不可用；草稿仍可保留在本机');throw e;}if(!p.metadataIdentity)throw fail('PROJECT_METADATA_CONFLICT','缺少已核验的元数据实体身份');try{await directoryIdentity(p.metadataRoot,p.metadataIdentity);}catch(e){if(e.code==='ENOENT')throw fail('PROJECT_METADATA_MISSING','项目元数据不可用，未自动重建');throw e;}const manifest=await checkedMetadata(p.metadataRoot,this.db);if(manifest.projectId!==p.id)throw fail('PROJECT_IDENTITY_CONFLICT','项目身份或格式不符');this.assertActive(id);return p;}catch(error){if(error.code==='PROJECT_LIFECYCLE_ACTIVE')throw error;this.generations.set(id,(this.generations.get(id)??0)+1);this.unavailable.set(id,error);this.onUnavailable?.(id,error);await this.db.invalidate(path.join(p.metadataRoot,'project.sqlite'));throw error;}}
- async register(input){const root=await fs.realpath(input),previous=this.registrations.get(root)??Promise.resolve();const run=previous.catch(()=>{}).then(()=>this.initialize(root));this.registrations.set(root,run);try{return await run;}finally{if(this.registrations.get(root)===run)this.registrations.delete(root);}}
- async initialize(input){
+ async register(input,options={}){const root=await fs.realpath(input),previous=this.registrations.get(root)??Promise.resolve();const run=previous.catch(()=>{}).then(()=>this.initialize(root,options));this.registrations.set(root,run);try{return await run;}finally{if(this.registrations.get(root)===run)this.registrations.delete(root);}}
+ async initialize(input,{confirmRecovery}={}){
   await this.ready();const root=await fs.realpath(input),identity=await directoryIdentity(root),all=await this.list();
-  const existing=all.find(p=>p.root===root&&same(p.identity,identity));
+  let existing=all.filter(p=>p.root===root&&same(p.identity,identity)).sort((a,b)=>Number(a.removed)-Number(b.removed)||String(b.openedAt).localeCompare(String(a.openedAt)))[0];
   const key=createHash('sha256').update(JSON.stringify([root,identity.dev,identity.ino])).digest('hex'),metadataRoot=path.join(root,'.nozeli');
   let intent=await this.db.request(this.catalog,'get',{collection:'initializations',id:key});
-  if(existing&&(!intent||intent.phase==='complete')){await this.requireOnline(existing.id);const value={...existing,removed:false,lastOpenedAt:new Date().toISOString()};await this.db.request(this.catalog,'put',{collection:'instances',id:value.id,value});this.bindings.set(value.id,value);return value;}
+  let recoverySource=null;
+  if(existing&&(!intent||intent.phase==='complete')){
+   this.assertActive(existing.id);
+   const actual=await directoryIdentity(metadataRoot);
+   if(existing.removed){
+    if(!same(actual,existing.metadataIdentity))await assertRecoverySourceStopped(root);
+    await checkedClose(this.db,path.join(metadataRoot,'project.sqlite'));
+   }
+   const manifest=await checkedMetadata(metadataRoot,this.db);
+   if(existing.removed&&(!same(actual,existing.metadataIdentity)||manifest.projectId!==existing.id)){
+    const frozen={root,identity,metadataIdentity:actual,projectId:manifest.projectId,schema:manifest.schema,previousId:existing.id};
+    await assertRecoverySourceStopped(root);
+    if(!confirmRecovery||await confirmRecovery(frozen)!==true)throw fail('PROJECT_RECOVERY_CANCELLED','项目身份恢复已取消，目录及旧恢复记录保持不变。');
+    await directoryIdentity(root,identity);await directoryIdentity(metadataRoot,actual);
+    const confirmed=await checkedMetadata(metadataRoot,this.db);
+    if(confirmed.schema!==frozen.schema||confirmed.projectId!==frozen.projectId)throw fail('PROJECT_IDENTITY_CONFLICT','确认后项目身份已变化，未恢复。');
+    await assertRecoverySourceStopped(root);this.assertActive(existing.id);
+    recoverySource=frozen;intent=null;existing=null;
+   }else{
+    await this.requireOnline(existing.id);const value={...existing,removed:false,lastOpenedAt:new Date().toISOString()};await this.db.request(this.catalog,'put',{collection:'instances',id:value.id,value});this.bindings.set(value.id,value);return value;
+   }
+  }
   if(all.some(p=>p.root===root&&!same(p.identity,identity)))throw fail('PROJECT_IDENTITY_CONFLICT','原路径出现不同目录，需明确创建新项目');
-  if(existing&&existing.id!==intent?.id)throw fail('PROJECT_INITIALIZATION_CONFLICT','初始化记录与登记身份冲突');
+  if(existing&&existing.id!==intent?.id&&!(existing.removed&&existing.id===intent?.recoverySource?.previousId))throw fail('PROJECT_INITIALIZATION_CONFLICT','初始化记录与登记身份冲突');
   const checkpoint=async patch=>{const next={...intent,...patch};await this.db.request(this.catalog,'put',{collection:'initializations',id:key,value:next});intent=next;};
   if(!intent){
    let source=null;if(await present(metadataRoot))source=await checkedMetadata(metadataRoot,this.db);
    const id=randomUUID(),instanceId=randomUUID(),operationId=randomUUID(),now=new Date().toISOString();
-   await checkpoint({version:1,key,root,identity,id,instanceId,operationId,now,source,phase:'prepared',temporary:path.join(root,'.nozeli-init-'+operationId),swap:path.join(root,'.nozeli-source-'+operationId),backup:path.join(this.root,'initialization',operationId,'source')});
+   await checkpoint({version:1,key,root,identity,id,instanceId,operationId,now,source,recoverySource,phase:'prepared',temporary:path.join(root,'.nozeli-init-'+operationId),swap:path.join(root,'.nozeli-source-'+operationId),backup:path.join(this.root,'initialization',operationId,'source')});
   }
   if(intent.version!==1||intent.root!==root||!same(intent.identity,identity))throw fail('PROJECT_INITIALIZATION_CONFLICT','初始化记录身份冲突');
   const verify=()=>directoryIdentity(root,identity);
@@ -77,6 +113,7 @@ export class ProjectStorage {
   if(intent.phase==='staged'){
    await verify();await candidate(intent.temporary);await checkedClose(this.db,path.join(intent.temporary,'project.sqlite'));
    if(intent.source){
+    if(intent.recoverySource){await assertRecoverySourceStopped(root);await directoryIdentity(root,intent.recoverySource.identity);const location=await present(intent.swap)?intent.swap:metadataRoot;await directoryIdentity(location,intent.recoverySource.metadataIdentity);const source=await checkedMetadata(location,this.db);if(source.projectId!==intent.recoverySource.projectId||source.schema!==intent.recoverySource.schema)throw fail('PROJECT_IDENTITY_CONFLICT','恢复发布前来源身份已变化。');}
     if(!await present(intent.swap)){const source=await checkedMetadata(metadataRoot,this.db);if(source.projectId!==intent.source.projectId)throw fail('PROJECT_INITIALIZATION_CONFLICT','来源身份已变化');await checkedClose(this.db,path.join(metadataRoot,'project.sqlite'));await fs.rename(metadataRoot,intent.swap);}
     const source=await checkedMetadata(intent.swap,this.db);if(source.projectId!==intent.source.projectId)throw fail('PROJECT_INITIALIZATION_CONFLICT','保留来源身份冲突');await checkedClose(this.db,path.join(intent.swap,'project.sqlite'));
     // Source remains intact beside the project until its independent app-local
@@ -88,6 +125,7 @@ export class ProjectStorage {
    await checkpoint({phase:'source-preserved'});
   }
   if(intent.phase==='source-preserved'){
+   if(intent.recoverySource){await assertRecoverySourceStopped(root);await directoryIdentity(root,intent.recoverySource.identity);await directoryIdentity(intent.swap,intent.recoverySource.metadataIdentity);const source=await checkedMetadata(intent.swap,this.db);if(source.projectId!==intent.recoverySource.projectId||source.schema!==intent.recoverySource.schema)throw fail('PROJECT_IDENTITY_CONFLICT','恢复发布前来源身份已变化。');}
    await verify();if(await present(metadataRoot)){await candidate(metadataRoot);}else{await candidate(intent.temporary);await checkedClose(this.db,path.join(intent.temporary,'project.sqlite'));await fs.rename(intent.temporary,metadataRoot);}await syncDirectory(root);await checkpoint({phase:'published'});
   }
   if(!['published','source-cleanup','complete'].includes(intent.phase))throw fail('PROJECT_INITIALIZATION_PENDING','初始化需要用户明确重试');

@@ -14,6 +14,19 @@ Electron桌面阅读、批注、编辑与受管OMP协作产品。平台、构建
 
 审核补修：`clean-local`只能删除确认范围内的`ui.sqlite`及其journal/WAL/SHM，完整保留`execution`（其中包含真实原生会话和Git关联worktree），不再递归删除。使用真实会话目录、真实Git worktree和未提交结果的回归6/6通过；源码真实Electron再次完成根失联/恢复导出/冷开/清本机/OS回收站，证据`~/.cache/nozeli-smokes/storage-cutover/nozeli-storage-lifecycle-DurWDJ/`。此补修尚未进入上述b冻结包，不能把旧包视为修复后候选。
 
+### 2026-10-26 项目循环打开/移除与身份重载
+
+- 普通“移除入口后再选同目录”核验原根与元数据实体，保留原 projectId/instanceId、未发送草稿和会话历史，不自动重发旧任务。项目打开只更新目标 catalog 记录；工作区绑定不再等待非必要的后台资源回收完成，错误仍返回原项目范围。
+- 已移除目录的 `.nozeli` 若被另一实例合法替换，不忽略 inode/清单/数据库身份核验，也不直接采用另一 profile 的可写 instance。仅在明确原生确认后复用既有初始化事务建立新的项目身份，保留旧 removed 实例及本机恢复内容，并完整保留当前元数据来源副本；确认前后与发布前核对冻结的根/元数据 dev+ino、清单 schema/projectId 与数据库 identity。
+- 特殊身份恢复目前仅支持 Linux 同用户保守 owner 核验：使用真实进程 stamp、精确可执行文件与实际打开的 `catalog.sqlite` 文件描述符，按 fd/inode 前后核验并只读登记查询同根 owner（包括已 unlink 的 catalog 句柄）。真实 Electron 会重写 argv/environ，不能用缺失的测试环境变量推测默认 profile；精确 Chromium 子进程标记与固定桌面服务排除均有反例测试。可识别 owner 必须先正常退出，无可核验 catalog/权限不足等未知状态返回 `RECOVERY_OWNER_UNVERIFIED`，人工确认不能覆盖拒绝。它不是跨用户/非合作程序的目录租约，进程扫描也不能排除扫描后的竞争；沿原 source-preservation/CAS 事务保护，不宣称三平台或恶意并发完整资格。Windows/macOS 特殊恢复保持原状态、明确不可用。普通添加与同身份重载不扫描 `/proc`。
+- 生命周期先封新准入；hold 前受理的显式 operation capability 可完成且由 drain 等待。Managed 收尾只能使用当前 hold 对象；跨 IPC 仅唯一 flush receipt 绑定的原窗口/项目/代际能保留 `workspace.recovery`，不能借 token 发送模型或写原文件。并发 flush 串行，不覆盖 requestId。失败/超时保留持久 hold，显式核查后才恢复，不重放 pending。
+- 测试必须同时隔离 profile **和项目目录**。新 profile 打开真实项目仍可能执行既定元数据 fork；不能把“测试配置隔离”当作项目文件隔离。本轮不自动迁移、恢复或修改用户原 `nozeli` / `V2Ray二维码`，不安装、不提交。
+- 定向回归：`node --test tests/project-reload.test.mjs tests/project-storage-initialization.test.mjs tests/lifecycle-flush-capability.test.mjs tests/project-recovery-owner.test.mjs tests/project-lifecycle-admission.test.mjs`。真实循环入口：先 `npm run build:renderer`，再串行 `node tests/desktop-project-cycles-live.mjs`；真实 Electron＋捆绑 OMP＋本地脚本模型，不调用付费模型，使用合成根目录、正式工具与 `project.remove` 准入。
+- **最终真实循环通过（源码开发版、未安装）**：`/home/bfly/.cache/nozeli-project-cycle-fixtures/nozeli-project-cycles-bLbUUL/report.json`，`ok=true`、`errors=[]`，25次本地模型请求。三个新合成根各完成“原生 OMP Worker 正式工具写不同 nonce→成果核验/接受→正式移除→同 projectId/instanceId 重载→再次真实执行→移除”，另一个根完成真实第二 Electron 同根 owner 拒绝、正常退出后原生确认新身份恢复、再次 Worker 执行/移除，共8次执行/移除。最后一个普通重载周期先等 `busyTargets` 完整清空再附着 PTY，显式续轮实际写入后在 job 仍 running 时移除；记录真实 owner PID/stamp 退出、recent 消失、未发送草稿/原文件与恢复事实保全、无历史请求重放。每次正式 `terminal.attach` 后实际 `terminal.screen` 可读；8张真实截图已留存，已查看恢复后/普通重载图。截图中心未选文档空态仍写“未打开项目”，不把它冒充阅读内容已验收或本轮顺带修复。
+- **真实耗时，不签“全部瞬间完成”**：上述终轮新项目打开446–464ms，同身份重载126–166ms；原生 enable 1.55–1.97s、首个实际工作约3.40–4.24s；已完成工作的移除282–347ms，真实工具在途停稳移除8243ms。后者仍有约8秒停稳等待，不能以更宽 timeout 宣称无卡顿；没有整段旧安装版stage基线，不能宣称已测量全链性能提升比例。
+- **验证链与失败原件**：renderer 构建成功；身份重载/flush/probe定向34/34，最终recovery-only hold准入3/3；协作生命周期合并96/96见`/tmp/nozeli-lifecycle-merged-results.tap`，最终 fd-probe＋真实 Electron＋准入/flush 50/50见`/tmp/nozeli-owner-fd-final-results.tap`。真实 fd-owner 子回归`/tmp/nozeli-owner-electron-results.tap`覆盖同根拒绝、异根允许、已unlink catalog仍拒、正常退出后释放。此前`0jmZPf/report.json`保留真实env消失导致旧profile猜测漏检的反例；最终按实际fd修复后整体矩阵通过，没有把旧失败覆盖为成功。
+- **环境与证据边界**：Linux Wayland、真实 Electron/捆绑 OMP 与真实工具、本地确定性 OpenAI SSE 模型（不是付费模型质量验收）。系统目录选择器/原生确认的用户决定为fixture，生产准入与生命周期未mock。早期 `/tmp/nozeli-project-cycles-*` 因原生addon解压遇EDQUOT；只在对应测试owner已退出后清自建可再生natives，保留报告/日志/DB/源文件。最终通过指定 `TMPDIR=/home/bfly/.cache/nozeli-project-cycle-fixtures` 使用自有磁盘fixture，每个项目移除并核对PID退出后清该项目测试agent的natives，报告逐项记录 `stoppedNativeCachesPruned`；这不是产品自动磁盘回收修复，不外推长期资源占用或Windows/macOS。最终成功后不再重跑或安装。
+
 ## 构建
 
 开发前提：Node 22+、npm、Git、Bun 1.3.14、Linux x64原生编译工具及Electron系统依赖。首次构建：

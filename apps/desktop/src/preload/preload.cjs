@@ -1,10 +1,12 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 let flushHandler = null;
+let activeFlushRequest = null;
+let flushQueue = Promise.resolve();
 
 ipcRenderer.on('nozeli:flush', (_event, requestId) => {
-  Promise.resolve()
-    .then(() => (flushHandler ? flushHandler() : { ok: false, error: { code: 'NO_FLUSH', message: '页面尚未准备好保存。' } }))
+  flushQueue=flushQueue.catch(()=>{} )
+    .then(async () => {activeFlushRequest=requestId;try{return flushHandler ? await flushHandler() : { ok: false, error: { code: 'NO_FLUSH', message: '页面尚未准备好保存。' } };}finally{if(activeFlushRequest===requestId)activeFlushRequest=null;}})
     .then((result) => ipcRenderer.invoke('nozeli:invoke', 'session.flushed', { ...(result && typeof result === 'object' ? result : { ok: false }), requestId }))
     .catch((error) => ipcRenderer.invoke('nozeli:invoke', 'session.flushed', {
       ok: false,
@@ -35,7 +37,8 @@ ipcRenderer.on('nozeli:quit-confirm', () => { for (const handler of push['quit.c
 
 contextBridge.exposeInMainWorld('nozeli', {
   invoke(op, payload) {
-    return ipcRenderer.invoke('nozeli:invoke', op, payload ?? {});
+    const recovery=activeFlushRequest&&op==='workspace.recovery';
+    return ipcRenderer.invoke('nozeli:invoke', op, recovery ? {...payload,flushRequestId:activeFlushRequest} : payload ?? {});
   },
   subscribe(event, handler) {
     if (typeof handler !== 'function') return () => {};

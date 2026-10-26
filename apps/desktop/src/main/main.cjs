@@ -363,9 +363,11 @@ async function main() {
       payload=await workspaceNative.resolvePayload(scope,op,payload??{});
       if(['material.attach','material.attachPath'].includes(op))payload={...payload,projectId:scope.projectId};
       if(op==='material.read'&&payload.projectId!==scope.projectId)throw new HostError('PROJECT_SCOPE_DENIED','附件不属于当前项目');
+      const admissionProject=payload?.projectId??scope.projectId;
+      const execute=async()=>{
       trusted(event,op,payload??{});
       if(op.startsWith('workspace.demoControls.'))return {ok:true,value:await workspaceNative.invoke(scope,op,payload??{})};
-      const admissionProject=payload?.projectId??scope.projectId;
+      // Admission is established before asynchronous business work begins.
       if(op.startsWith('demo.'))return {ok:true,value:await guidedDemo.invoke(scope,op,payload??{})};
       if(admissionProject&&guidedDemo.isDemo(admissionProject)){
         await guidedDemo.verify(admissionProject);
@@ -407,7 +409,8 @@ async function main() {
         const value=await workspaceNative.invoke(scope,op,payload??{});
         if(op==='workspace.project'){
           if(priorProject&&priorProject!==scope.projectId)projectWatcher?.unwatchProject(priorProject);
-          if(!guidedDemo.isDemo(scope.projectId))try{await managedAgents.setActiveProject(scope.projectId);}catch(error){workspaceNative.broadcast('nozeli:agent',{projectId:scope.projectId,kind:'managed-error',text:'Agent 连接失败，文件仍可打开：'+error.message},scope.projectId);}
+          const activatedProjectId=scope.projectId;
+          if(!guidedDemo.isDemo(activatedProjectId))void managedAgents.setActiveProject(activatedProjectId).catch(error=>workspaceNative.broadcast('nozeli:agent',{projectId:activatedProjectId,kind:'managed-error',text:'Agent 资源状态未能更新，文件仍可打开：'+error.message},activatedProjectId));
         }
         return {ok:true,value};
       }
@@ -515,7 +518,10 @@ async function main() {
       }
       if (op === 'project.pick') {
         const selected = await pickDirectory(scope.win, payload?.directory);
-        const value = await host.pick(selected);
+        const value = await host.pick(selected,{confirmRecovery:async()=>{
+          const answer=await dialog.showMessageBox(scope.win,{type:'warning',title:'重新登记已移除的项目',message:'此目录的 Nozeli 身份已被另一实例替换。是否在当前位置建立新的项目身份？',detail:'旧本机实例、草稿与恢复记录及当前项目元数据副本会保留，不合并旧待处理工作。请先正常退出使用此目录的其他 Nozeli 实例。本机核验仅限同用户 Linux 实例，不能排除其他用户或不合作进程；取消不会改动项目。',buttons:['取消','建立新身份并打开'],defaultId:0,cancelId:0,noLink:true});
+          return answer.response===1;
+        }});
         return { ok: true, value };
       }
       if (op === 'session.quitChoice') {
@@ -643,6 +649,12 @@ async function main() {
       const value = await handler(host, payload ?? {});
       if(['file.save','word.save','sheet.save'].includes(op)&&guidedDemo.isDemo(payload.projectId))await guidedDemo.recordTutorialSave(scope,op,payload,value);
       return { ok: true, value };
+      };
+      workspaceNative.assertRecoveryAdmission(scope,op,payload);
+      const flushOwner=workspaceNative.lifecycleFlushOwner(scope,payload?.flushRequestId,op);
+      if(flushOwner)return await host.storage.withLifecycleOwner(scope.projectId,flushOwner,execute);
+      const control=op.startsWith('session.')||op.startsWith('project.lifecycle.')||['project.pick','project.remove','project.retry','project.recent','workspace.closeProject','workspace.recovery.settle','workspace.bootstrap','workspace.recovery','workspace.recovery.list','workspace.recovery.object'].includes(op);
+      return admissionProject&&!control ? await host.storage.withProjectOperation(admissionProject,execute) : await execute();
     } catch (error) {
       if(['PROJECT_ROOT_MISSING','PROJECT_METADATA_MISSING','PROJECT_METADATA_CONFLICT','PROJECT_IDENTITY_CONFLICT'].includes(error.code)&&payload?.projectId)host.storage.onUnavailable(payload.projectId,error);
       return respond(error);
