@@ -15,37 +15,12 @@ export function mountDemoSurface({invoke,subscribe,scope,getCurrent,setTextMode,
   async function execute(request){
     let c=check(request);const action=request.args?.semantic??request.action??request.command;
     const surfaceTarget=c.editor?.adapter.getEditorElement()??document.querySelector('#word-host:not([hidden]),#image-host:not([hidden]),#pdf-host:not([hidden]),.workspace-pane.is-focused');if(surfaceTarget){const rect=surfaceTarget.getBoundingClientRect();indicator.hidden=false;indicator.style.left=Math.max(6,rect.left+12)+'px';indicator.style.top=Math.max(6,rect.top+12)+'px';}badge.hidden=false;
-    if(action==='notification'){
-      const key=request.projectId+':'+request.args.todoId,row=[...document.querySelectorAll('[data-attention-item]')].find(node=>node.dataset.attentionItem===key);
-      if(row){if(row.getAttribute('aria-current')!=='true'){document.querySelector('[data-attention-expand]').click();row.click();}document.querySelector('[data-attention-open]').click();}
-      else{if(typeof window.__workspaceOpenTodo!=='function')throw Error('正常待办入口未就绪');await window.__workspaceOpenTodo(request.args.todoId);}
-      const end=Date.now()+14000;
-      while(Date.now()<end){check(request,true);const report=Object.values(workspaceGroups().snapshot().views).find(view=>view.kind==='report'&&view.resourceId===request.args.todoId),windows=await value('workspace.windows.list',{projectId:request.projectId});if(report&&windows.some(window=>window.surfaces.some(surface=>surface.viewId===report.id&&surface.visible)))return {todoId:request.args.todoId,viewId:report.id};await new Promise(resolve=>setTimeout(resolve,50));}
-      throw Error('正常报告处理面未确认就绪');
-    }
+    if(action==='md-preview'){setTextMode('edit');const toggle=await wait(()=>!$('markdown-preview-toggle').hidden?$('markdown-preview-toggle'):null,request);toggle.click();return {preview:true};}
     if(action==='report'){if(scope.kind!=='report')throw Error('演示报告未在正常报告面打开');await wait(()=>document.querySelector('#managed-doc .isolated-status[data-state="ready"]'),request);return {report:true};}
-    if(action==='decision'){
-      const current=await value('managed.status',{projectId:request.projectId}),todo=current.state.todos.find(todo=>todo.id===request.args.todoId);
-      if(!todo)throw Error('原演示事项已不存在');
-      if(todo.status!=='open'&&todo.resolution?.choice)return {decided:true,choice:todo.resolution.choice,alreadyDecided:true};
-      const visible=()=>value('workspace.windows.list',{projectId:request.projectId}).then(windows=>windows.some(window=>window.surfaces.some(surface=>surface.viewId===scope.viewId&&surface.visible)));
-      const deadline=Date.now()+14000;while(Date.now()<deadline){check(request,true);if(await visible())break;await new Promise(resolve=>setTimeout(resolve,50));}
-      if(!await visible())throw Error('报告处理面尚未可见，未执行决定');
-      const button=await wait(()=>document.querySelector('#managed-result-actions [data-demo-decision="accept"]'),request);
-      button.click();
-      let decided=null;const settle=Date.now()+14000;
-      while(Date.now()<settle){
-        check(request,true);
-        const status=await value('managed.status',{projectId:request.projectId});
-        decided=status.state.todos.find(todo=>todo.id===request.args.todoId);
-        if(decided?.status!=='open')break;
-        await new Promise(resolve=>setTimeout(resolve,50));
-      }
-      if(decided?.status!=='resolved'||decided?.resolution?.choice!=='accept')throw Error('演示决定没有取得正常回执');return {decided:true,choice:'accept',todoId:decided.id};
-    }
     if(action==='open'){if(!c.file)throw Error('真实文件驱动未就绪');return {relPath:c.file.relPath,kind:c.file.kind};}
     if(request.relPath&&c.file?.relPath!==request.relPath)throw Error('请先打开本章来源材料');
     if(action==='text-edit'){setTextMode('edit');const adapter=c.editor?.adapter;if(!adapter)throw Error('文本编辑器未就绪');const text='\n演示记录：方法 B 的误差更小，仍需检查样本量。\n';adapter.applyEdit({from:adapter.getText().length,insert:text});adapter.focus();const result=await flush();if(!result.ok)throw Error(result.error?.message||'文本保存未完成');return {saved:true,text:adapter.getText()};}
+    if(action==='human-edit'){setTextMode('edit');const adapter=c.editor?.adapter;if(!adapter)throw Error('文本编辑器未就绪');const text='\n（我的补充）采样时段已核对，可并入结论。\n';adapter.applyEdit({from:adapter.getText().length,insert:text});adapter.focus();const result=await flush();if(!result.ok)throw Error(result.error?.message||'文本保存未完成');return {saved:true,author:'user'};}
     if(action==='point-note'||action==='selection-explain'||action==='discussion-create'){
       const material=await selectText(request);
       if(action==='point-note'){const adapter=c.editor.adapter;adapter.setSelection(material.anchor.start);const node=adapter.getEditorElement(),rect=node.getBoundingClientRect();node.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:rect.left+50,clientY:rect.top+40,button:2}));await wait(()=>document.querySelector('.nozeli-context-menu:not([hidden])'),request);const button=[...document.querySelectorAll('.nozeli-context-menu button')].find(b=>b.textContent.includes('备注'));if(!button)throw Error('位置备注菜单不可用');button.click();await wait(()=>!$('note-form').hidden,request);$('note-input').value='演示备注：先记录想法，本地保存不派工。';$('note-form').requestSubmit();await wait(()=>$('note-form').hidden,request);return {saved:true};}
@@ -81,7 +56,7 @@ export function mountDemoSurface({invoke,subscribe,scope,getCurrent,setTextMode,
     throw Error('语义动作必须由宿主演示源处理：'+action);
   }
   subscribe('workspace.control',request=>{if(request.type!=='demo-action'||request.projectId!==scope.projectId||request.viewId!==scope.viewId)return;void (async()=>{const state=await value('demo.state',{projectId:request.projectId});if(!state.demo)throw Error('不是登记的演示项目');session=state.session;interrupted=session.status!=='playing';return execute(request);})().then(result=>invoke('demo.result',{projectId:request.projectId,sessionId:request.sessionId,epoch:request.epoch,requestId:request.requestId,ok:true,value:result}),error=>invoke('demo.result',{projectId:request.projectId,sessionId:request.sessionId,epoch:request.epoch,requestId:request.requestId,ok:false,error:{code:error.code,message:error.message}}));});
-  const interrupt=event=>{if(!event.isTrusted||event.type==='pointermove'&&!event.movementX&&!event.movementY||!session||session.status!=='playing'||event.target?.closest?.('#guided-demo-player,#guided-demo-disclosure'))return;if(event.type!=='pointermove')interrupted=true;void invoke('demo.interrupt',{...demoIdentity(session),reason:event.type}).then(result=>{if(result.ok&&result.value?.session){session=result.value.session;interrupted=session.status!=='playing';}});};
+  const interrupt=event=>{if(!event.isTrusted||event.type==='pointermove'&&!event.movementX&&!event.movementY||!session||session.status!=='playing')return;if(event.type!=='pointermove')interrupted=true;void invoke('demo.interrupt',{...demoIdentity(session),reason:event.type}).then(result=>{if(result.ok&&result.value?.session){session=result.value.session;interrupted=session.status!=='playing';}});};
   for(const name of ['pointerdown','pointermove','keydown','beforeinput','wheel'])window.addEventListener(name,interrupt,true);
   // Same-origin Office drivers have their own input documents; attach when loaded.
   const frames=new WeakSet();const wire=()=>{for(const frame of document.querySelectorAll('iframe')){const doc=frame.contentDocument;if(!doc||frames.has(doc))continue;frames.add(doc);for(const name of ['pointerdown','pointermove','keydown','beforeinput','wheel'])doc.addEventListener(name,interrupt,true);}};new MutationObserver(wire).observe(document.body,{childList:true,subtree:true});document.addEventListener('load',wire,true);wire();

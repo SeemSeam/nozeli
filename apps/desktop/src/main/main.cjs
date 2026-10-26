@@ -653,7 +653,7 @@ async function main() {
       workspaceNative.assertRecoveryAdmission(scope,op,payload);
       const flushOwner=workspaceNative.lifecycleFlushOwner(scope,payload?.flushRequestId,op);
       if(flushOwner)return await host.storage.withLifecycleOwner(scope.projectId,flushOwner,execute);
-      const control=op.startsWith('session.')||op.startsWith('project.lifecycle.')||['project.pick','project.remove','project.retry','project.recent','workspace.closeProject','workspace.recovery.settle','workspace.bootstrap','workspace.recovery','workspace.recovery.list','workspace.recovery.object'].includes(op);
+      const control=op==='demo.exit'||op.startsWith('session.')||op.startsWith('project.lifecycle.')||['project.pick','project.remove','project.retry','project.recent','workspace.closeProject','workspace.recovery.settle','workspace.bootstrap','workspace.recovery','workspace.recovery.list','workspace.recovery.object'].includes(op);
       return admissionProject&&!control ? await host.storage.withProjectOperation(admissionProject,execute) : await execute();
     } catch (error) {
       if(['PROJECT_ROOT_MISSING','PROJECT_METADATA_MISSING','PROJECT_METADATA_CONFLICT','PROJECT_IDENTITY_CONFLICT'].includes(error.code)&&payload?.projectId)host.storage.onUnavailable(payload.projectId,error);

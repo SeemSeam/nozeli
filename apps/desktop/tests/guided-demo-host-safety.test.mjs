@@ -222,6 +222,23 @@ test('manager requires explicit creation, stores private ownership, and stopped 
  assert.equal(status.state.messages.every(message=>message.source==='demo-fixture'),true);
  for(const op of ['managed.restart','managed.terminal.attach','managed.binding','managed.models'])await assert.rejects(f.manager.managed(op,{projectId:id}),{code:'DEMO_NATIVE_DISABLED'});
 });
+test('frontdesk ask and review decisions use the fixed fixture without real workers',async t=>{
+ const f=await demoFixture(t);
+ const playing=await f.manager.transition({...binding(f.created),action:'play'});
+ const asked=await f.manager.perform(f.scope,{...binding(playing),command:'conversation.ask',args:{semantic:'frontdesk-ask',stepId:'frontdesk-ask'}});
+ assert.equal(asked.accepted,true);
+ const askedState=await f.manager.state({projectId:f.created.project.id});
+ assert.equal(askedState.messages.at(-2).text.includes('同一时段观测'),true);
+ assert.equal(askedState.messages.at(-1).speaker,'agent');
+ const done=await f.manager.perform(f.scope,{...binding(playing),command:'notification.show',args:{semantic:'task-a-done',stepId:'task-a-done'}});
+ assert.equal(typeof (await f.manager.state({projectId:f.created.project.id})).messages.at(-1).text,'string','notices must carry body text');
+ const todoId=done.todoId;
+ const accepted=await f.manager.perform(f.scope,{...binding(playing),command:'notification.show',args:{semantic:'decision-accept',stepId:'review-accept'}});
+ assert.equal(accepted.todoId,todoId);
+ const decided=(await f.manager.state({projectId:f.created.project.id})).todos.find(todo=>todo.id===todoId);
+ assert.equal(decided.status,'resolved');assert.equal(decided.resolution.choice,'accept');
+ await assert.rejects(f.manager.perform(f.scope,{...binding(playing),command:'notification.show',args:{semantic:'decision-discard',stepId:'review-discard'}}),{code:'DEMO_TODO_MISSING'});
+});
 
 test('copying project metadata never copies private demo ownership or cleanup authority',async t=>{
  const f=await demoFixture(t),original=await f.host.requireProject(f.created.project.id),copy=path.join(f.directory,'user-copy');
@@ -270,9 +287,9 @@ test('replay and cleanup preserve simultaneous visible and hidden user changes i
  const before=await f.host.readFile(project.id,'research-notes.txt');
  await f.host.save(project.id,'research-notes.txt',before.digest,before.text+'\nUser exploration\n');
  await fs.writeFile(path.join(project.root,'.user-draft'),'concurrent hidden user content');
- await assert.rejects(f.manager.transition({...binding(f.created),action:'restart'}),{code:'DEMO_COPY_REQUIRED'});
+ const replay=await f.manager.transition({...binding(f.created),action:'chapter',chapterId:'learn',stepIndex:0});assert.equal(replay.project.id,project.id);assert.equal(replay.session.stepIndex,0);
  await assert.rejects(f.manager.guardLifecycle(project.id),{code:'DEMO_USER_CONTENT_RETAINED'});
- const preview=await f.manager.cleanupPreview({...binding(f.created),action:'delete-project'}),changes=preview.changes;
+ const preview=await f.manager.cleanupPreview({...binding(replay),action:'delete-project'}),changes=preview.changes;
  assert.equal(preview.preserveByDefault,true);assert.equal(preview.canAutomaticallyDelete,false);
  assert.ok(changes.some(row=>row.path==='research-notes.txt'&&row.kind==='modified'));
  assert.ok(changes.some(row=>row.path==='.user-draft'&&row.kind==='added'));
@@ -365,7 +382,7 @@ test('replacing a tutorial file with a link is retained as unknown content witho
  await fs.rename(path.join(project.root,relPath),original);await fs.writeFile(outside,'private unrelated content');
  await fs.symlink(outside,path.join(project.root,relPath));
  await assert.rejects(f.manager.guardLifecycle(projectId),{code:'DEMO_USER_CONTENT_RETAINED'});
- await assert.rejects(f.manager.transition({...binding(f.created),action:'restart'}),{code:'DEMO_COPY_REQUIRED'});
+ await f.manager.transition({...binding(f.created),action:'chapter',chapterId:'learn',stepIndex:0});
  assert.equal(await fs.readFile(outside,'utf8'),'private unrelated content');assert.deepEqual(await fs.readFile(original),bytes);
 });
 
@@ -421,4 +438,20 @@ test('demo deletion defaults to retention and explicit whole-copy consent is inv
  assert.equal(await fs.readFile(path.join(trash,path.basename(root),'my-exploration.txt'),'utf8'),'User exploration A plus B');
  assert.equal((await fs.stat(path.join(trash,path.basename(root),'my-empty-folder'))).isDirectory(),true);
  assert.equal((await f.manager.state({projectId})).session.status,'removed');
+});
+test('exiting a recovered unknown action removes only the entry and reuses its preserved project',async t=>{
+ const f=await demoFixture(t),id=f.created.project.id,project=await f.host.requireProject(id),note=path.join(project.root,'my-note.txt');
+ await fs.writeFile(note,'PRESERVED EXPLORATION');
+ f.manager.lifecycle.workspace.closeProject=async()=>({closed:true});
+ f.manager.lifecycle.managed.stopProject=async()=>({confirmationComplete:true});
+ f.manager.row(id).inflight={requestId:'unconfirmed',status:'unknown',relPath:'research-notes.txt',sessionId:f.created.session.id};
+ await f.manager.exit(binding(f.created));
+ assert.equal((await f.host.storage.requireRegistered(id)).removed,true);
+ assert.equal(await fs.readFile(note,'utf8'),'PRESERVED EXPLORATION');
+ assert.equal(f.manager.row(id).lastAction.status,'unknown');
+ const resumed=await f.manager.create({confirmed:true});
+ assert.equal(resumed.project.id,id);assert.equal(resumed.project.rootDisplay,project.root);
+ assert.equal((await f.host.storage.requireRegistered(id)).removed,false);
+ assert.equal(await fs.readFile(note,'utf8'),'PRESERVED EXPLORATION');
+ assert.deepEqual(await fs.readdir(f.examplesRoot),[path.basename(project.root)]);
 });

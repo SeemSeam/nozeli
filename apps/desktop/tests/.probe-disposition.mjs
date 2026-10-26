@@ -1,0 +1,17 @@
+import fs from 'node:fs/promises';import os from 'node:os';import path from 'node:path';
+import {Controller} from '../src/agents/managed/controller.mjs';
+import {ManagedProjects} from '../src/agents/managed-projects.mjs';
+import {staticReport} from './static-report.fixture.mjs';
+import {DesktopHost} from '../src/main/host.mjs';
+import {managedRuntime} from '../src/agents/managed/managed-storage.mjs';
+const root=await fs.mkdtemp(path.join(os.tmpdir(),'local-disposition-')),content=path.join(root,'project');await fs.mkdir(content);await fs.writeFile(path.join(content,'result.txt'),'original');
+const host=new DesktopHost(root),id=(await host.pick(content)).project.id,storage=host.storage;
+const service=new ManagedProjects({userDataDir:root,host,legacy:{projects:new Map()}});const runtimeRoot=await managedRuntime(storage,id);
+const c=await Controller.open({runtimeRoot,contentRoot:content,storage,projectId:id});const submitted=await c.store.submit('isolated task','brief');await c.store.activate(submitted.id);const w=c.store.find(submitted.id);await c.execution.prepare(w.id);await fs.writeFile(path.join(c.execution.directory(w.id),'result.txt'),'candidate');
+await c.execution.publish(w,{id:'finished-job'},()=>true);await c.store.publish(w.id,w.revision,'result',staticReport('Frozen result'),'report',{jobId:'finished-job',files:[{relPath:'result.txt'}]});await c.store.settle(w.id);await c.store.mutate(()=>c.store.state.jobs.push({id:'finished-job',target:w.id,revision:w.revision,status:'completed',type:'initial'}));
+await c.store.submit('never authorized cold queue','brief');await c.stop();await storage.putLocal(id,'managed:binding',{enabled:true});
+service.initializeResources=async()=>{throw Error('global resources forbidden');};service.openController=options=>Controller.open({...options,sessionFactory:()=>{throw Error('native session forbidden');}});
+const cap=await service.disposition(id,w.id),base={projectId:id,workId:w.id,revision:1,binding:cap.binding};
+const results=await Promise.allSettled([service.invoke('managed.end',{...base,decision:'discard',requestKey:'winning-confirmation'}),service.invoke('managed.end',{...base,decision:'accept',requestKey:'competing-confirmation'})]);
+console.log(JSON.stringify({controllers:service.controllers.size,results:results.map(r=>r.status==='rejected'?{status:'rejected',code:r.reason?.code,message:r.reason?.message,head:String(r.reason?.stack).split('\n').slice(0,6)}:r.status)},null,2));
+await service.stop();await storage.db.close();await fs.rm(root,{recursive:true,force:true});

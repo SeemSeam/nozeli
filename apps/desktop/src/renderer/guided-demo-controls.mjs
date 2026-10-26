@@ -17,25 +17,41 @@ function render(next){
   document.documentElement.dataset.theme=model.theme==='dark'?'dark':'light';document.documentElement.dataset.palette=model.palette||'sage';
   root.dataset.demoState=model.status;root.dataset.sessionId=model.sessionId;root.dataset.epoch=String(model.epoch);
   $('demo-title').textContent=model.title;$('demo-progress').textContent=model.progress;$('demo-subtitle').textContent=model.caption;
-  const select=$('demo-chapters');if(select.options.length!==model.chapters.length){select.replaceChildren();for(const chapter of model.chapters){const option=document.createElement('option');option.value=chapter.id;option.textContent=chapter.title;select.append(option);}}
-  select.value=model.chapterId;select.disabled=model.chapterDisabled;
+  // While the user is holding the slider its value is theirs; state pushes
+  // must not snap the thumb back to the still-committing step.
+  const seek=$('demo-seek');
+  seek.max=String(Math.max(0,model.stepTotal-1));
+  seek.disabled=!seekDragging&&(!model.seekable||!['playing','paused'].includes(model.status));
+  if(!seekDragging)seek.value=String(Math.min(model.stepIndex,model.stepTotal-1));
   for(const control of model.buttons){
     let button=buttons.get(control.id);
-    if(!button){button=document.createElement('button');button.type='button';button.dataset.demoControl=control.id;button.onclick=()=>{const intent=control.id==='play'?(model.status==='playing'?'pause':'play'):undefined;void action(control.id,intent?{intent}:{});if(!control.primary)$('demo-more').open=false;};buttons.set(control.id,button);$(control.primary?'demo-primary':'demo-secondary').append(button);}
+    if(!button){button=document.createElement('button');button.type='button';button.dataset.demoControl=control.id;button.onclick=()=>{const intent=control.id==='play'?(model.status==='playing'?'pause':'play'):undefined;void action(control.id,intent?{intent}:{});};buttons.set(control.id,button);$('demo-primary').append(button);}
     button.disabled=control.disabled;button.title=control.label;button.setAttribute('aria-label',control.label);
-    if(control.id==='previous-step'||control.id==='next-step')setIconButton(button,control.id==='previous-step'?'chevron-left':'chevron-right',{label:control.label});
-    else if(button.textContent!==(control.id==='stop'?'结束':control.label))button.textContent=control.id==='stop'?'结束':control.label;
+    if(button.textContent!==control.label)button.textContent=control.label;
     button.classList.toggle('demo-play',control.id==='play');
   }
   measure();
 }
-$('demo-chapters').onchange=()=>{void action('chapter',{chapterId:$('demo-chapters').value});$('demo-more').open=false;};
-$('demo-more').ontoggle=()=>measure();
+// One user drag = one seek command carrying the playback intent captured when
+// the drag paused playback; the epoch is read fresh so a just-paused session
+// cannot reject the commit that continues it.
+let seekDragging=false,seekResume=false;
+async function committedAction(controlId,extra={}){
+  const value=await invoke('workspace.bootstrap');
+  if(!value.model?.sessionId)throw Error('演示控制区不可用');
+  return invoke('workspace.demoControls.action',{sessionId:value.model.sessionId,epoch:value.model.epoch,controlId,...extra});
+}
+const seekInput=$('demo-seek');
+seekInput.addEventListener('pointerdown',()=>{if(seekInput.disabled)return;seekDragging=true;if(model?.status==='playing'){seekResume=true;void action('play',{intent:'pause'});}});
+seekInput.addEventListener('input',()=>{seekDragging=true;});
+seekInput.addEventListener('change',()=>{const index=Number(seekInput.value);seekDragging=false;const resume=seekResume;seekResume=false;if(!model||seekInput.disabled||!Number.isInteger(index))return;void committedAction('seek',{stepIndex:index,...(resume?{resume:true}:{})}).catch(showError);});
+const seekRelease=()=>{if(!seekDragging)return;seekDragging=false;if(!seekResume)return;seekResume=false;void committedAction('play',{intent:'play'}).catch(showError);};
+seekInput.addEventListener('pointerup',seekRelease);seekInput.addEventListener('pointercancel',seekRelease);seekInput.addEventListener('blur',seekRelease);
 $('demo-collapse').onclick=()=>{collapsed=!collapsed;root.classList.toggle('demo-collapsed',collapsed);$('demo-collapse').setAttribute('aria-expanded',String(!collapsed));setIconButton($('demo-collapse'),collapsed?'chevron-up':'chevron-down',{label:collapsed?'展开说明':'收起说明'});measure();};
 setIconButton($('demo-collapse'),'chevron-down',{label:'收起说明'});
 function queueMove(x,y){pendingMove={x,y};if(!moveFrame)moveFrame=requestAnimationFrame(()=>{moveFrame=0;const point=pendingMove;pendingMove=null;void invoke('workspace.demoControls.drag',point).then(value=>{bounds=value.bounds;}).catch(showError);});}
 $('demo-drag').onpointerdown=event=>{
-  if(event.button!==0||event.target.closest('button,select,summary')||!bounds)return;
+  if(event.button!==0||event.target.closest('button,input,summary')||!bounds)return;
   if(model?.status==='playing')void action('play',{intent:'pause'});
   drag={pointerId:event.pointerId,screenX:event.screenX,screenY:event.screenY,x:bounds.x,y:bounds.y};event.currentTarget.setPointerCapture(event.pointerId);event.preventDefault();
 };

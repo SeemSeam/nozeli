@@ -58,7 +58,7 @@ export function mountSettingsPanel({invoke,onInitialize,getProjectId=()=>null}) 
   dialog.addEventListener('click',event=>{if(event.target===dialog){const r=dialog.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)dialog.close();}});
   for(const button of dialog.querySelectorAll('[data-settings-section]'))button.addEventListener('click',()=>select(button.dataset.settingsSection));
   $('settings-initialize').addEventListener('click',()=>leave(onInitialize));
-  $('settings-demo-help').addEventListener('click',()=>leave(()=>window.dispatchEvent(new Event('nozeli-demo-help'))));
+  $('settings-demo-help').addEventListener('click',()=>leave(()=>window.dispatchEvent(new Event('nozeli-demo-start'))));
   $('provider-console-toggle').addEventListener('click',()=>dialog.close());
   window.addEventListener('nozeli-open-settings',event=>void open(typeof event.detail==='string'?event.detail:undefined));
   return {open,projectChanged(){identity();if(dialog.open){if(selected.startsWith('settings-project-'))void projectSettings.refresh(selected);if(selected==='settings-agents')void agents.projectChanged();}}};

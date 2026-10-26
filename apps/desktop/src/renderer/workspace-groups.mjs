@@ -113,7 +113,7 @@ export function mountWorkspaceGroups({invoke,scope,toast=()=>{}}){
       el.append(bar);
       bar.addEventListener('contextmenu',event=>void openPaneMenu(event,node,view).catch(e=>toast(e.message)));
     }
-    const content=document.createElement('div');content.className='workspace-content';content.dataset.workspaceContent=node.id;if(view)content.dataset.viewId=view.id;else{content.classList.add('workspace-pane-empty');content.append(createStartPage({project:{id:layout.projectId,name:document.getElementById('project-name').textContent},compact:groups().length>1,browseFiles:()=>window.dispatchEvent(new Event('nozeli-start-browse')),continueConversation:()=>call('workspace.control',{type:'conversation-action',action:'open',projectId:layout.projectId,groupId:node.id}).catch(error=>toast(error.message)),help:()=>window.dispatchEvent(new Event('nozeli-demo-help')),start:()=>window.dispatchEvent(new Event('nozeli-demo-help'))}));}el.append(content);return el;
+    const content=document.createElement('div');content.className='workspace-content';content.dataset.workspaceContent=node.id;if(view)content.dataset.viewId=view.id;else{content.classList.add('workspace-pane-empty');content.append(createStartPage({project:{id:layout.projectId,name:document.getElementById('project-name').textContent},compact:groups().length>1,start:()=>window.dispatchEvent(new Event('nozeli-demo-start'))}));}el.append(content);return el;
   }
   function build(node){
     if(node.kind==='group')return pane(node);
@@ -182,7 +182,7 @@ export function mountWorkspaceGroups({invoke,scope,toast=()=>{}}){
   window.nozeli.subscribe('workspace.control',event=>{if(event.type==='group-focus')void focusPane(event).catch(e=>toast(e.message));if(event.type==='surface-focus'&&layout){const target=groups().find(g=>g.activeViewId===event.viewId);if(target){activeGroup=target.id;render();}}if(event.type==='workspace-action'){const target=groups().find(g=>g.activeViewId===event.viewId),request={...event.command};if(!request.viewId&&request.type!=='dock')request.groupId??=target?.id;void command(request).catch(e=>toast(e.message));}});
   document.addEventListener('workspace-action',event=>{const request={...event.detail.command};if(!request.viewId&&request.type!=='dock')request.groupId??=group()?.id;void command(request).catch(e=>toast(e.message));});
   document.addEventListener('keydown',event=>{const numbered=(event.ctrlKey||event.metaKey)&&!event.altKey&&!event.shiftKey&&/^[1-9]$/.test(event.key);if(event.key==='F6'||numbered){event.preventDefault();void focusPane(numbered?{index:Number(event.key)-1}:{direction:event.shiftKey?-1:1}).catch(e=>toast(e.message));}});
-  function clear(){layout=null;activeGroup=null;renderedKey='';renderedPanes.clear();tree.replaceChildren();tree.append(createStartPage({openProject:()=>document.getElementById('pick-project').click(),start:()=>window.dispatchEvent(new Event('nozeli-demo-help')),help:()=>window.dispatchEvent(new Event('nozeli-demo-help'))}));}
+  function clear(){layout=null;activeGroup=null;renderedKey='';renderedPanes.clear();tree.replaceChildren();tree.append(createStartPage({start:()=>window.dispatchEvent(new Event('nozeli-demo-start'))}));}
   clear();
   const api={snapshot:()=>layout,clear,command,bindProject,open,activate,activeGroup:()=>group()?.id,activeView:()=>layout?.views[group()?.activeViewId]};window.__workspaceGroups=api;return api;
 }

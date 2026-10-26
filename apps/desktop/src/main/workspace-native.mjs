@@ -101,7 +101,7 @@ export class WorkspaceNative {
       this.isolatedPreview?.closeScope(record);
       if(record.role==='demo-controls'&&record.ready)this.demoControls.reloading(record);
       record.generation++; record.ready = false;
-      if(record.role==='shell')this.demoControls.record?.view.setVisible(false);
+      if(record.role==='shell'){this.demoControls.record?.view.setVisible(false);this.demoControls.hintRecord?.view.setVisible(false);}
       record.boundsSequence=0;
       this.cancelDrags(record);
       if (record.role !== 'surface') for (const surface of this.projectRecords(record.projectId, record.windowId)) surface.view.setVisible(false);
@@ -109,7 +109,7 @@ export class WorkspaceNative {
     });
     wc.on('render-process-gone', (_event, details) => {
       if(record.role==='demo-controls'){this.demoControls.failed(record,Error('演示控制区进程已退出：'+details.reason));return;}
-      this.isolatedPreview?.closeScope(record);
+      if(record.role==='demo-hint'){this.demoControls.hintFailed(record,Error('演示提示进程已退出：'+details.reason));return;}
       if(record.role!=='surface')for(const surface of this.projectRecords(record.projectId,record.windowId))surface.view.setVisible(false);
       record.ready = false; record.generation++;
       this.cancelDrags(record);
@@ -140,14 +140,15 @@ export class WorkspaceNative {
   }
   authorize(event, op, payload = {}) {
     const r = this.senders.get(event.sender?.id), frame = event.senderFrame;
-    const expected=r?.role==='demo-controls'?this.origin+'guided-demo-controls.html':this.origin;
+    const expected=r?.role==='demo-controls'?this.origin+'guided-demo-controls.html':r?.role==='demo-hint'?this.origin+'guided-demo-hint.html':this.origin;
     if (!r || r.dead || !frame || frame.parent != null || frame !== event.sender.mainFrame || frame.url !== expected) throw fail('IPC_DENIED');
     if (typeof op !== 'string') throw fail('UNKNOWN_OP');
     if(r.role==='demo-controls'){if(!this.demoControls.owns(r)||!this.demoControls.allowed(op))throw fail('IPC_DENIED');return r;}
-    if (payload.projectId && payload.projectId !== r.projectId && !(r.role === 'shell' && (['demo.state','managed.status','managed.attention.ack','workspace.project','workspace.closeProject','workspace.recovery.object','workspace.recovery.settle','project.open','project.remove','project.retry','project.lifecycle.preview','project.lifecycle.reconcile'].includes(op)||op==='demo.transition'&&payload.action==='stop'))) throw fail('PROJECT_SCOPE_DENIED');
+    if(r.role==='demo-hint'){if(!this.demoControls.hintOwns(r)||!this.demoControls.hintAllowed(op))throw fail('IPC_DENIED');return r;}
+    if (payload.projectId && payload.projectId !== r.projectId && !(r.role === 'shell' && (['demo.state','demo.exit','managed.status','managed.attention.ack','workspace.project','workspace.closeProject','workspace.recovery.object','workspace.recovery.settle','project.open','project.remove','project.retry','project.lifecycle.preview','project.lifecycle.reconcile'].includes(op)||op==='demo.transition'&&payload.action==='stop'))) throw fail('PROJECT_SCOPE_DENIED');
     if(op.startsWith('demo.')){if(op==='demo.result'){if(!['surface','shell','detached'].includes(r.role))throw fail('IPC_DENIED');}else if(!['demo.state','demo.send','demo.interrupt'].includes(op)&&r.role!=='shell')throw fail('IPC_DENIED');return r;}
     if(r.role==='surface'&&r.kind==='terminal'&&op.startsWith('managed.')&&(op!=='managed.terminal.screen'||payload.target!==this.layouts.get(r.projectId)?.views[r.viewId]?.viewState?.workId))throw fail('IPC_DENIED');
-    if (this.lifecycle.has(r.projectId) && !this.lifecycleFlushOwner(r,payload.flushRequestId,op) && (writes.has(op) || op === 'managed.send' || ['managed.attention.respond','managed.attention.draft.write'].includes(op) || op === 'workspace.project' || op === 'workspace.command')) throw fail('PROJECT_LIFECYCLE_ACTIVE', '项目正在保留并关闭，请等待操作结果。');
+    if (this.lifecycle.has(r.projectId) && !this.lifecycleFlushOwner(r,payload.flushRequestId,op) && (writes.has(op) || op === 'managed.send' || ['managed.attention.respond','managed.attention.draft.write'].includes(op) || op === 'workspace.project' || op === 'workspace.command'&&payload.command?.type!=='restoreViewState')) throw fail('PROJECT_LIFECYCLE_ACTIVE', '项目正在保留并关闭，请等待操作结果。');
     if(op==='report.copySource'&&!(r.role==='shell'||r.role==='surface'&&['report','history'].includes(r.kind)))throw fail('IPC_DENIED');
     if(op.startsWith('isolated-preview.')&&r.role==='surface'&&(!['report','document','history'].includes(r.kind)||r.kind==='history'&&['isolated-preview.open','isolated-preview.update'].includes(op)&&payload.profile!=='staticReport'))throw fail('IPC_DENIED');
     if (r.role !== 'shell' && !op.startsWith('workspace.') && !op.startsWith('isolated-preview.') && !surfaceOps.test(op)) throw fail('IPC_DENIED');
@@ -186,6 +187,7 @@ export class WorkspaceNative {
   }
   bootstrap(r) {
     if(r.role==='demo-controls')return this.demoControls.state();
+    if(r.role==='demo-hint')return this.demoControls.hintState();
     const descriptor=this.layouts.get(r.projectId)?.views[r.viewId];
     if (r.role === 'surface' && r.relPath && !descriptor?.readOnly) {
       const key = this.resource(r.projectId, r.relPath), lease = this.leases.get(key);
@@ -195,7 +197,7 @@ export class WorkspaceNative {
     const viewState=this.layouts.get(r.projectId)?.views[r.viewId]?.viewState;
     return { role: r.role, projectId: r.projectId, viewId: r.viewId, kind: r.kind, relPath: r.relPath, windowId: r.windowId, generation: r.generation, readOnly: !!r.readOnly, draftOnly:viewState?.draftOnly===true, viewState, lease: r.relPath ? this.leases.get(this.resource(r.projectId, r.relPath)) : null };
   }
-  flush(records) { return Promise.all([...new Set(records)].filter(r => !r.dead&&r.role!=='demo-controls').map(r => this.flushOne(r))).then(() => this.host.settled()); }
+  flush(records) { return Promise.all([...new Set(records)].filter(r => !r.dead&&!['demo-controls','demo-hint'].includes(r.role)).map(r => this.flushOne(r))).then(() => this.host.settled()); }
   async flushOne(record, channel = 'nozeli:flush', detail = {}) {
     if(!record.ready&&record.role==='surface'&&!record.dead){await new Promise((resolve,reject)=>{const generation=record.generation,timer=setTimeout(()=>{record.wc.removeListener('nozeli-content-ready',ready);reject(fail('SURFACE_NOT_READY'));},10000);const ready=()=>{clearTimeout(timer);record.dead||record.generation!==generation?reject(fail('SURFACE_CHANGED')):resolve();};record.wc.once('nozeli-content-ready',ready);});}
     if (!record.ready) throw fail('SURFACE_NOT_READY');
@@ -658,8 +660,10 @@ export class WorkspaceNative {
   }
   async invoke(r, op, p = {}) {
     if(r.role==='demo-controls')return this.demoControls.invoke(r,op,p);
+    if(r.role==='demo-hint')return this.demoControls.invoke(r,op,p);
     if(op==='workspace.demoControls.update')return this.demoControls.update(r,p.model);
     if(op==='workspace.demoControls.readyForPlay')return this.demoControls.readyForPlay(r,p.sessionId);
+    if(op==='workspace.demoHint.update')return this.demoControls.hintUpdate(r,p.hint);
     if (op === 'workspace.bootstrap') return this.bootstrap(r);
     if (op === 'workspace.closeProject') {
       if (r.role !== 'shell') throw fail('IPC_DENIED');

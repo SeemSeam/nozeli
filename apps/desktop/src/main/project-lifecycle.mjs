@@ -106,7 +106,7 @@ export class ProjectLifecycle {
       const project=await this.host.requireRegisteredProject(projectId);
       if(project.instanceId!==confirmation.instanceId || project.root!==confirmation.root)throw fail('PROJECT_IDENTITY_CONFLICT','本机绑定已变化。');
       if(this.host.guidedDemo?.isDemo(projectId)){
-        const changes=await this.host.guidedDemo.guardLifecycle(projectId,{allowChanged:action!=='delete-project'||confirmation.allowDemoChanges===true});
+        const changes=await this.host.guidedDemo.guardLifecycle(projectId,{allowChanged:action!=='delete-project'||confirmation.allowDemoChanges===true,allowPending:action==='remove'});
         if(action==='delete-project'){
           if(changes.some(change=>change.kind==='uninspected'))throw fail('DEMO_INSPECTION_INCOMPLETE','示例目录未完整核验；保留所有文件，请先检查或导出。');
           if(demoChangesDigest(changes)!==confirmation.demoChangesDigest)throw fail('DEMO_CONTENT_CHANGED','确认后示例内容发生变化，未删除；请重新查看范围。');

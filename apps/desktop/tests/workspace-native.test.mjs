@@ -162,16 +162,19 @@ test('history surfaces can render frozen reports but cannot open executable deve
  for(const profile of ['offlineDevelopment',undefined])assert.throws(()=>native.authorize(event,'isolated-preview.update',{projectId:'p',profile}),{code:'IPC_DENIED'});
  assert.throws(()=>native.authorize(event,'isolated-preview.open',{projectId:'other',profile:'staticReport'}),{code:'PROJECT_SCOPE_DENIED'});
 });
-test('demo controls cannot mutate files or sessions and reject stale owner or chapter actions',async t=>{
+test('demo controls cannot mutate files or sessions and validate seek plus stale owner actions',async t=>{
  const {native,root}=await fixture(t),view=new View();
  const record=native.register(view.webContents,{role:'demo-controls',windowId:'main',projectId:null,win:root.win,view});
  const controls=native.demoControls;controls.record=record;controls.owner=root;controls.ownerGeneration=root.generation;
- controls.model={visible:true,sessionId:'demo-session',epoch:7,buttons:[{id:'play',disabled:false}],chapters:[{id:'intro'}]};
+ controls.model={visible:true,sessionId:'demo-session',epoch:7,stepTotal:33,buttons:[{id:'play',disabled:false}]};
  const event={sender:record.wc,senderFrame:record.wc.mainFrame};
  for(const op of ['file.save','demo.create','demo.transition','project.delete','workspace.demoControls.update'])assert.throws(()=>native.authorize(event,op,{projectId:'p'}),{code:'IPC_DENIED'});
  const invoke=payload=>native.invoke(record,'workspace.demoControls.action',{sessionId:'demo-session',epoch:7,...payload});
  await assert.rejects(invoke({controlId:'play',intent:'play',epoch:6}),{code:'DEMO_CONTROLS_DENIED'});
- await assert.rejects(invoke({controlId:'chapter',chapterId:'foreign'}),{code:'DEMO_CONTROLS_DENIED'});
+ await assert.rejects(invoke({controlId:'seek',stepIndex:33}),{code:'DEMO_CONTROLS_DENIED'});
+ await assert.rejects(invoke({controlId:'seek',stepIndex:-1}),{code:'DEMO_CONTROLS_DENIED'});
+ await invoke({controlId:'seek',stepIndex:5});
+ assert.equal(root.wc.sent.at(-1).payload.controlId,'seek');assert.equal(root.wc.sent.at(-1).payload.stepIndex,5);
  controls.model.visible=false;
  await assert.rejects(invoke({controlId:'play',intent:'play'}),{code:'DEMO_CONTROLS_DENIED'});
  root.generation++;
@@ -513,4 +516,12 @@ for(const edited of [false,true])test(edited?'editing a recovered pending questi
  if(edited)assert.notEqual(frontdesk.pending[1].deliveryId,id);
  assert.equal((await store.load(id,projectId)).result.state,edited?'pending-delivery':'delivered');
  assert.equal((await store.load(resumed.captureId,projectId)).result.state,'delivered');
+});
+test('closing a project allows initial view-state retention but rejects new layout mutations',async t=>{
+ const {native,root}=await fixture(t),surface=native.register(new Contents(),{role:'surface',projectId:'p',windowId:'main',viewId:'loading',kind:'document',relPath:'a.txt'});
+ native.lifecycle.set('p',{operationId:'closing'});
+ const event={sender:surface.wc,senderFrame:surface.wc.mainFrame};
+ assert.equal(native.authorize(event,'workspace.command',{projectId:'p',command:{type:'restoreViewState',viewId:surface.viewId,viewState:{scrollTop:180}}}),surface);
+ assert.throws(()=>native.authorize({sender:root.wc,senderFrame:root.wc.mainFrame},'workspace.command',{projectId:'p',command:{type:'split'}}),{code:'PROJECT_LIFECYCLE_ACTIVE'});
+ assert.throws(()=>native.authorize(event,'file.save',{projectId:'p',relPath:'a.txt'}),{code:'PROJECT_LIFECYCLE_ACTIVE'});
 });

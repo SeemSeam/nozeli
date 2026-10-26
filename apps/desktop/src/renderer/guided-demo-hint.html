@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'">
+  <title>演示提示</title>
+  <link rel="stylesheet" href="./guided-demo-hint.css">
+</head>
+<body>
+  <section id="guided-demo-hint" aria-label="当前演示步骤说明" hidden>
+    <header><span class="hint-eyebrow">演示学习</span><span id="hint-chip"></span></header>
+    <h3 id="hint-title"></h3>
+    <p id="hint-detail"></p>
+    <footer><span id="hint-phase"></span><button type="button" id="hint-dismiss">立即开始</button></footer>
+    <span id="hint-live" role="status" aria-live="polite"></span>
+    <div class="hint-track" aria-hidden="true"><span id="hint-timer-bar"></span></div>
+  </section>
+  <script type="module" src="./guided-demo-hint.js"></script>
+</body>
+</html>

@@ -17,14 +17,8 @@
       <button type="button" id="demo-collapse" aria-label="收起说明" aria-expanded="true"></button>
     </header>
     <p id="demo-subtitle" role="status" aria-live="polite"></p>
+    <input type="range" id="demo-seek" aria-label="演示进度，可拖动跳到某一步" min="0" max="1" step="1" value="0">
     <div class="demo-primary" id="demo-primary"></div>
-    <details id="demo-more">
-      <summary aria-label="更多演示操作">更多</summary>
-      <div class="demo-menu">
-        <label>章节<select aria-label="演示章节" id="demo-chapters"></select></label>
-        <div id="demo-secondary"></div>
-      </div>
-    </details>
     <p id="demo-error" role="alert" hidden></p>
   </section>
   <script type="module" src="./guided-demo-controls.js"></script>

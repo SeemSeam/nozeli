@@ -1,57 +1,138 @@
-import fs from 'node:fs/promises';import path from 'node:path';import assert from 'node:assert/strict';import {createRequire} from 'node:module';import {createGuidedDemoHarness} from './guided-demo-live-helper.mjs';
-process.env.NOZELI_TEST_BINARY??=createRequire(import.meta.url)('electron');process.env.NOZELI_GUIDED_DEMO_ROOT??=await fs.mkdtemp(path.join((await import('node:os')).tmpdir(),'nozeli-demo-interactions-'));
-const h=await createGuidedDemoHarness({kind:'interactions'}),r=h.report;let shell;
-console.log('EVIDENCE_ROOT='+h.root);
-const mark=(name,data={})=>r.checks.push({name,...data});
-async function click(label,selector='#guided-demo-player button'){
- const page=selector.startsWith('#guided-demo-player')?(await h.scope(scope=>scope.role==='demo-controls')).page:shell;
- if(page!==shell){const secondary=await page.$$eval('#demo-secondary button',(nodes,label)=>nodes.some(node=>node.getAttribute('aria-label')===label),label);if(secondary&&!await page.$eval('#demo-more',node=>node.open))await page.click('#demo-more summary');}
- await h.until(()=>page.$$eval(selector,(nodes,label)=>nodes.some(node=>(node.getAttribute('aria-label')===label||node.textContent===label)&&!node.disabled&&node.getClientRects().length),label),'enabled '+label);
- const index=await page.$$eval(selector,(nodes,label)=>nodes.findIndex(node=>(node.getAttribute('aria-label')===label||node.textContent===label)&&!node.disabled),label),buttons=await page.$$(selector);await buttons[index].click();
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+import {createGuidedDemoHarness, stepIndex} from './guided-demo-live-helper.mjs';
+
+process.env.NOZELI_TEST_BINARY ??= (await import('node:module')).createRequire(import.meta.url)('electron');
+process.env.NOZELI_GUIDED_DEMO_ROOT ??= await fs.mkdtemp(path.join((await import('node:os')).tmpdir(), 'nozeli-demo-interactions-'));
+const h = await createGuidedDemoHarness({kind: 'interactions'});
+const r = h.report;
+let shell, controls;
+console.log('EVIDENCE_ROOT=' + h.root);
+const mark = (name, data = {}) => r.checks.push({name, ...data});
+const active = async () => (await h.invoke(shell, 'workspace.bootstrap')).projectId;
+const state = async id => h.invoke(shell, 'demo.state', {projectId: id ?? await active()});
+const model = () => h.invoke(controls, 'workspace.bootstrap').then(value => value.model);
+const click = async label => { const match = await h.until(() => controls.$$eval('[data-demo-control]', (nodes, label) => { const found = nodes.findIndex(node => node.textContent === label && !node.disabled); return found >= 0 ? found + 1 : null; }, label), 'enabled ' + label); const buttons = await controls.$$('[data-demo-control]'); await buttons[match - 1].click(); };
+const paused = () => h.until(async () => { const value = await state(); const ready = await controls.$eval('[data-demo-control="play"]', node => !node.disabled); return value.session.status === 'paused' && ready ? value : null; }, 'paused settled session');
+async function playUntil(predicate, label, timeout = 90000) {
+  const act = async intent => { const m = await model(); return h.invoke(controls, 'workspace.demoControls.action', {sessionId: m.sessionId, epoch: m.epoch, controlId: 'play', intent}); };
+  if ((await model()).status === 'playing') { await act('pause'); await paused(); }
+  await act('play');
+  await h.until(async () => (await model()).status === 'playing', 'resumed for ' + label);
+  await h.until(predicate, label, timeout);
+  await act('pause');
+  return paused();
 }
-const active=async()=>(await h.invoke(shell,'workspace.bootstrap')).projectId;
-const state=async id=>h.invoke(shell,'demo.state',{projectId:id??await active()});
-async function launch(){await h.launch();({page:shell}=await h.scope(scope=>scope.role==='shell'));if(await shell.$eval('#configuration-setup',e=>e.open).catch(()=>false))await shell.click('#configuration-cancel');}
-async function start(chapter){const previous=(await active())?(await state()).session?.id:null;await h.enumerateChapters(shell);await shell.select('#guided-demo-disclosure select[aria-label="从章节开始"]',chapter);await shell.click('#demo-create-confirm');return h.until(async()=>{const id=await active();if(!id)return;const value=await state(id);return value.session&&value.session.id!==previous?value:null;},'new '+chapter+' session');}
-async function paused(id){const {page}=await h.scope(scope=>scope.role==='demo-controls');return h.until(async()=>{const value=await state(id);const ready=await page.$eval('[data-demo-control="play"]',node=>!node.disabled);return value.session.status==='paused'&&ready?value:null;},'paused settled session');}
-async function finished(id){return h.until(async()=>{const value=await state(id);return value.session.status==='finished'?value:null;},'finished retained session');}
-try{
- const originalRoot=path.join(h.root,'original-work');await fs.mkdir(originalRoot);await fs.writeFile(path.join(originalRoot,'original.txt'),'ORIGINAL_SENTINEL\n'+Array.from({length:160},(_,i)=>'Original line '+i).join('\n'));await h.setPickDirectory(originalRoot);
- await launch();let created=await start('reading'),id=created.project.id;
- await click('暂停');let before=await paused(id);const initial=await fs.readFile(path.join(before.project.rootDisplay,'research-notes.txt'),'utf8');
- await h.auditIsolation();await h.closeNormally(shell);await launch();if(await active()!==id)await shell.click('[data-project-id="'+id+'"]');
- let recovered=await paused(id);assert.equal(recovered.session.id,before.session.id);assert(recovered.session.epoch>before.session.epoch);assert.equal(recovered.session.stepIndex,before.session.stepIndex);assert.equal(await fs.readFile(path.join(before.project.rootDisplay,'research-notes.txt'),'utf8'),initial);mark('normal restart remains paused without replay',{id,epoch:recovered.session.epoch});
- while(recovered.session.stepIndex<2){const index=recovered.session.stepIndex;await click('下一步');recovered=await h.until(async()=>{const value=await state(id);return value.session.status==='paused'&&value.session.stepIndex===index+1?value:null;},'exactly one semantic step');}
- const oldRoot=recovered.project.rootDisplay,edited=await fs.readFile(path.join(oldRoot,'research-notes.txt'),'utf8');assert.equal((edited.match(/演示记录：方法 B/g)||[]).length,1);mark('single-step performs and saves edit exactly once');
- await fs.writeFile(path.join(oldRoot,'my-exploration.txt'),'KEEP_EXPLORATION');shell.once('dialog',dialog=>void dialog.accept());await click('上一步');
- const replay=await h.until(async()=>{const next=await active();if(!next||next===id)return;const value=await state(next);return value.session.status==='paused'&&value.session.stepIndex===1?value:null;},'new-copy previous-step checkpoint');
- assert.notEqual(replay.session.id,recovered.session.id);assert.equal(await fs.readFile(path.join(oldRoot,'my-exploration.txt'),'utf8'),'KEEP_EXPLORATION');assert.equal(await fs.readFile(path.join(oldRoot,'research-notes.txt'),'utf8'),edited);assert.equal(await fs.readFile(path.join(replay.project.rootDisplay,'research-notes.txt'),'utf8'),await fs.readFile(path.join(h.appRoot,'assets/guided-demo/research-notes.txt'),'utf8'));mark('previous-step reconstructs fresh copy and preserves explored original');
- id=replay.project.id;await click('结束演示');const root=replay.project.rootDisplay;await fs.writeFile(path.join(root,'cleanup-note.txt'),'USER_CONTENT_A');
- async function preview(){await click('带我清理');await click('查看磁盘删除范围…','dialog[open] button');await shell.waitForSelector('#project-lifecycle-dialog[open]');assert((await shell.$eval('#project-lifecycle-dialog pre',e=>e.textContent)).includes('cleanup-note.txt'));}
- await preview();assert.equal(await shell.$eval('#demo-delete-consent',e=>e.checked),false);
- await shell.evaluate(()=>{document.querySelector('#demo-delete-consent').click();[...document.querySelectorAll('#project-lifecycle-dialog button')].find(button=>button.textContent==='移到回收站').click();});
- assert((await shell.$eval('#project-lifecycle-dialog [role="alert"]',e=>e.textContent)).includes('不能代点'));assert((await fs.stat(root)).isDirectory());mark('programmatic final click rejected and files retained');
- await fs.appendFile(path.join(root,'cleanup-note.txt'),'_AFTER_PREVIEW');await shell.click('#demo-delete-consent');await shell.click('#demo-delete-consent');await click('移到回收站','#project-lifecycle-dialog button');
- await h.until(()=>shell.$eval('#project-lifecycle-dialog [role="alert"]',e=>e.textContent.includes('发生变化')),'concurrent change invalidates confirmation');assert.equal(await fs.readFile(path.join(root,'cleanup-note.txt'),'utf8'),'USER_CONTENT_A_AFTER_PREVIEW');await click('取消','#project-lifecycle-dialog button');mark('post-preview edit blocks real GUI cleanup');
- await preview();await shell.click('#demo-delete-consent');await click('移到回收站','#project-lifecycle-dialog button');
- const removed=await h.until(async()=>{const value=await state(id);return value.cleanup?.complete&&value.cleanup?.trashed?value:null;},'real platform trash receipt',30000);
- await assert.rejects(fs.stat(root),{code:'ENOENT'});assert.equal(removed.session.status,'removed');const {page:controls}=await h.scope(scope=>scope.role==='demo-controls');await h.until(()=>controls.$eval('#demo-subtitle',e=>e.textContent.includes('已移至回收站')),'player shows authoritative trash outcome');mark('real platform trash completes only after trusted test input',{confirmationInput:'CDP trusted click, not a real-human qualification',projectId:id,receipt:removed.cleanup});await h.capture(shell,'cleanup-complete');
- await shell.click('#pick-project');await h.until(async()=>(await active())!==null,'normal project selection');const normalId=await active();assert.equal((await state(normalId)).isDemo,false);
- await shell.waitForSelector('#file-tree button[data-path="original.txt"]');await shell.click('#file-tree button[data-path="original.txt"]');let original=await h.scope(scope=>scope.projectId===normalId&&scope.relPath==='original.txt');
- await original.page.click('#text-host .cm-content');await original.page.keyboard.type('KEEP_ORIGINAL_EDIT ');await original.page.mouse.wheel({deltaY:320});
- const scroll=await original.page.evaluate(async()=>{await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));const candidates=['#reader-scroll','#text-host .cm-scroller'];const selector=candidates.find(selector=>{const node=document.querySelector(selector);return node&&node.scrollHeight>node.clientHeight+10;})||'#text-host .cm-scroller';const node=document.querySelector(selector);node.scrollTop=320;return {selector,top:node.scrollTop};});const savedScroll=scroll.top,viewId=original.scope.viewId;
- const finish=await start('finish');await finished(finish.project.id);await click('返回原工作面');
- await h.until(async()=>await active()===normalId,'restore original project');original=await h.scope(scope=>scope.projectId===normalId&&scope.relPath==='original.txt');assert.equal(original.scope.viewId,viewId);
- assert((await original.page.$eval('#text-host .cm-content',e=>e.textContent)).includes('KEEP_ORIGINAL_EDIT'));
- mark('original unsaved buffer is preserved before explicit save',{onDiskBeforeSave:(await fs.readFile(path.join(originalRoot,'original.txt'),'utf8')).includes('KEEP_ORIGINAL_EDIT')});const restoredScroll=await original.page.$eval(scroll.selector,node=>node.scrollTop);assert(Math.abs(restoredScroll-savedScroll)<=2,'Original reading position changed');await original.page.evaluate(()=>window.__nozeliInput.focus());await original.page.keyboard.down('Control');await original.page.keyboard.press('s');await original.page.keyboard.up('Control');await h.until(async()=>(await fs.readFile(path.join(originalRoot,'original.txt'),'utf8')).includes('KEEP_ORIGINAL_EDIT'),'original edit remains saved');mark('original non-demo document and edit restored',{projectId:normalId,viewId,savedScroll,restoredScroll});
- await h.capture(shell,'original-work-restored',{projectId:normalId});
- const resultDemo=await start('results');await click('暂停');let resultState=await paused(resultDemo.project.id);
- if(resultState.session.stepIndex<1){await click('下一步');resultState=await h.until(async()=>{const value=await state(resultDemo.project.id);return value.session.status==='paused'&&value.session.stepIndex===1?value:null;},'notification opens without automatic decision');}
- const todo=resultState.todos.find(todo=>todo.kind==='result'),source=await h.invoke(shell,'managed.history.read',{projectId:resultDemo.project.id,objectId:todo.objectId});
- const reportFile=path.join(resultState.project.rootDisplay,'report.html');await fs.appendFile(reportFile,'<p>USER_EXPLORED_CURRENT_REPORT</p>');
- const frozenReport=await h.invoke(shell,'managed.history.read',{projectId:resultDemo.project.id,objectId:todo.objectId});assert.equal(frozenReport.body,source.body);assert(!frozenReport.body.includes('USER_EXPLORED_CURRENT_REPORT'));
- const reportSurface=await h.scope(scope=>scope.projectId===resultDemo.project.id&&scope.kind==='report','normal report decision surface');await reportSurface.page.waitForSelector('#managed-result-actions [data-demo-decision="discard"]',{visible:true});await reportSurface.page.click('#managed-result-actions [data-demo-decision="discard"]');
- const discarded=await h.until(async()=>{const value=await state(resultDemo.project.id);return value.todos.find(item=>item.id===todo.id)?.status==='cancelled'?value:null;},'distinct discard receipt');assert.equal(discarded.todos.find(item=>item.id===todo.id).resolution.choice,'discard');
- await reportSurface.page.waitForFunction(()=>document.querySelector('#managed-result-actions [data-report-state]')?.textContent.includes('已丢弃演示结论'));assert((await fs.readFile(reportFile,'utf8')).includes('USER_EXPLORED_CURRENT_REPORT'));mark('discard is distinct from acceptance and frozen report preserves original bytes');
- await h.capture(reportSurface.page,'discarded-frozen-report');await h.auditIsolation();assert.deepEqual(r.errors,[]);await h.closeNormally(shell);r.ok=true;
-}catch(error){r.failure=error.stack||String(error);console.log(r.failure);if(shell){await shell.screenshot({path:path.join(h.root,'failure.png')}).catch(()=>{});r.visible=await shell.evaluate(()=>document.body.innerText.slice(-4000)).catch(()=>null);}await h.auditIsolation().catch(e=>r.auditFailure=String(e));await h.cleanupAfterFailure();process.exitCode=1;}finally{await h.save();console.log(JSON.stringify({root:h.root,ok:r.ok,checks:r.checks,failure:r.failure,visible:r.visible,errors:r.errors},null,2));}
+async function startFromSettings(){await shell.click('#open-settings');await shell.click('[data-settings-section="settings-help"]');await shell.click('#settings-demo-help');({page:controls}=await h.scope(s=>s.role==='demo-controls'));await h.until(async()=>{const value=await h.invoke(controls,'workspace.bootstrap');return value.visible&&value.model.status==='playing';},'learning starts from settings');return controls;}
+async function launch() { await h.launch(); ({page: shell} = await h.scope(s => s.role === 'shell')); if (await shell.$eval('#configuration-setup', e => e.open).catch(() => false)) await shell.click('#configuration-cancel'); }
+
+try {
+  const originalRoot = path.join(h.root, 'original-work');
+  await fs.mkdir(originalRoot);
+  await fs.writeFile(path.join(originalRoot, 'original.txt'), 'ORIGINAL_SENTINEL\n' + Array.from({length: 160}, (_, i) => 'Original line ' + i).join('\n'));
+  await h.setPickDirectory(originalRoot);
+
+  await launch();
+  controls = await h.startLearning(shell);
+  const id = await active();
+  await click('暂停');
+  const before = await paused();
+  const notes = path.join(before.project.rootDisplay, 'research-notes.txt');
+  const initial = await fs.readFile(notes, 'utf8');
+  await h.auditIsolation();
+  await h.closeNormally(shell);
+  await launch();
+  if (await active() !== id) await shell.click('[data-project-id="' + id + '"]');
+  ({page: controls} = await h.scope(s => s.role === 'demo-controls'));
+  let current = await paused();
+  assert.equal(current.session.id, before.session.id, 'restart must keep the same session');
+  assert(current.session.epoch > before.session.epoch, 'restart must advance the epoch');
+  assert.equal(await fs.readFile(notes, 'utf8'), initial, 'restart must not replay edits');
+  mark('normal restart remains paused without replay', {id});
+
+  await h.seek(controls, 0, 'seek back to the opening step');
+  current = await playUntil(async () => { const windows = await h.invoke(shell, 'workspace.windows.list', {projectId: id}); return windows.some(window => window.surfaces.some(surface => surface.relPath === 'research-notes.txt' && surface.visible)); }, 'research notes surface opens');
+  current = await playUntil(async () => (await fs.readFile(notes, 'utf8')).includes('演示记录：方法 B'), 'agent edit lands on disk');
+  const edited = await fs.readFile(notes, 'utf8');
+  assert.equal((edited.match(/演示记录：方法 B/g) || []).length, 1, 'agent edit must save exactly once');
+  mark('agent edit saves exactly once');
+  await fs.writeFile(path.join(before.project.rootDisplay, 'my-exploration.txt'), 'KEEP_EXPLORATION');
+  await h.seek(controls, stepIndex('agent-edit'), 'seek back over an already edited step');
+  current = await playUntil(async () => (await state(id)).session.stepIndex > stepIndex('agent-edit'), 'changed-source step is skipped, not replayed');
+  assert.equal(await fs.readFile(notes, 'utf8'), edited, 'replay must not duplicate or overwrite edits');
+  assert.equal(await fs.readFile(path.join(before.project.rootDisplay, 'my-exploration.txt'), 'utf8'), 'KEEP_EXPLORATION');
+  mark('seeking back preserves exploration and skips changed-file actions');
+
+  await click('结束演示');
+  await h.until(async () => await active() === null && (await h.invoke(shell, 'demo.state', {})).projects.length === 0, 'ending removes demo and restores empty workspace');
+  assert.equal(await fs.readFile(path.join(before.project.rootDisplay, 'my-exploration.txt'), 'utf8'), 'KEEP_EXPLORATION');
+  mark('ending automatically removes the demo entry and preserves files');
+
+  await shell.click('#pick-project');
+  await h.until(async () => await active() !== null, 'normal project selection');
+  const normalId = await active();
+  assert.equal((await state(normalId)).isDemo, false);
+  await shell.waitForSelector('#file-tree button[data-path="original.txt"]');
+  await shell.click('#file-tree button[data-path="original.txt"]');
+  let original = await h.scope(s => s.projectId === normalId && s.relPath === 'original.txt');
+  await original.page.click('#text-host .cm-content');
+  await original.page.keyboard.type('KEEP_ORIGINAL_EDIT ');
+  const scroll = await original.page.evaluate(async () => {
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const candidates = ['#reader-scroll', '#text-host .cm-scroller'];
+    const selector = candidates.find(selector => { const node = document.querySelector(selector); return node && node.scrollHeight > node.clientHeight + 10; }) || '#text-host .cm-scroller';
+    const node = document.querySelector(selector); node.scrollTop = 320; return {selector, top: node.scrollTop};
+  });
+  const savedScroll = scroll.top, viewId = original.scope.viewId;
+
+  controls=await startFromSettings();
+  const learnId = await active();
+  assert.notEqual(learnId, normalId, 'learning must use its own project');
+  await h.seek(controls, stepIndex('finish'), 'seek to the final step from an original project');
+  await h.until(async () => await active() === normalId && !(await h.invoke(controls, 'workspace.bootstrap')).visible, 'finish exits back to the original project', 90000);
+  original = await h.scope(s => s.projectId === normalId && s.relPath === 'original.txt');
+  assert.equal(original.scope.viewId, viewId, 'original surface identity must survive the demo');
+  assert((await original.page.$eval('#text-host .cm-content', e => e.textContent)).includes('KEEP_ORIGINAL_EDIT '), 'unsaved buffer must survive the demo');
+  mark('original unsaved buffer is preserved before explicit save', {onDiskBeforeSave: (await fs.readFile(path.join(originalRoot, 'original.txt'), 'utf8')).includes('KEEP_ORIGINAL_EDIT')});
+  const restoredScroll = await original.page.$eval(scroll.selector, node => node.scrollTop);
+  assert(Math.abs(restoredScroll - savedScroll) <= 2, 'Original reading position changed');
+  await original.page.evaluate(() => window.__nozeliInput.focus());
+  await original.page.keyboard.down('Control'); await original.page.keyboard.press('s'); await original.page.keyboard.up('Control');
+  await h.until(async () => (await fs.readFile(path.join(originalRoot, 'original.txt'), 'utf8')).includes('KEEP_ORIGINAL_EDIT '), 'original edit remains saved');
+  mark('original non-demo document and edit restored', {projectId: normalId});
+  await h.capture(shell, 'original-work-restored', {projectId: normalId});
+
+  controls=await startFromSettings();
+  const resultId = await active();
+  await h.seek(controls, stepIndex('task-a-done'), 'seek to the first task completion');
+  current = await playUntil(async () => (await state(resultId)).todos.some(todo => todo.kind === 'result'), 'task A enters the todo list');
+  const todo = current.todos.find(todo => todo.kind === 'result');
+  const source = await h.invoke(shell, 'managed.history.read', {projectId: resultId, objectId: todo.objectId});
+  const reportFile = path.join(current.project.rootDisplay, 'report.html');
+  await fs.appendFile(reportFile, '<p>USER_EXPLORED_CURRENT_REPORT</p>');
+  const frozenReport = await h.invoke(shell, 'managed.history.read', {projectId: resultId, objectId: todo.objectId});
+  assert.equal(frozenReport.body, source.body, 'frozen report must not track later edits');
+  assert(!frozenReport.body.includes('USER_EXPLORED_CURRENT_REPORT'));
+
+  await h.seek(controls, stepIndex('review-accept'), 'seek to the accept decision');
+  current = await playUntil(async () => { const value = await state(resultId); return value.todos.find(item => item.id === todo.id)?.status === 'resolved'; }, 'accept closes the reviewed task');
+  assert.equal(current.todos.find(item => item.id === todo.id).resolution.choice, 'accept');
+  assert((await fs.readFile(reportFile, 'utf8')).includes('USER_EXPLORED_CURRENT_REPORT'), 'acceptance must not rewrite the explored file');
+  mark('acceptance is a real decision and the frozen report preserves original bytes');
+  await h.capture(shell, 'accepted-frozen-report');
+  await h.auditIsolation();
+  assert.deepEqual(r.errors, []);
+  await h.closeNormally(shell);
+  r.ok = true;
+} catch (error) {
+  r.failure = error.stack || String(error);
+  console.log(r.failure);
+  if (shell) { await shell.screenshot({path: path.join(h.root, 'failure.png')}).catch(() => {}); r.visible = await shell.evaluate(() => document.body.innerText.slice(-4000)).catch(() => null); }
+  await h.auditIsolation().catch(e => r.auditFailure = String(e));
+  await h.cleanupAfterFailure();
+  process.exitCode = 1;
+} finally {
+  await h.save();
+  console.log(JSON.stringify({root: h.root, ok: r.ok, checks: r.checks, failure: r.failure, visible: r.visible, errors: r.errors}, null, 2));
+}

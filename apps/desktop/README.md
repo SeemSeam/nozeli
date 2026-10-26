@@ -27,6 +27,7 @@ Electron桌面阅读、批注、编辑与受管OMP协作产品。平台、构建
 - **验证链与失败原件**：renderer 构建成功；身份重载/flush/probe定向34/34，最终recovery-only hold准入3/3；协作生命周期合并96/96见`/tmp/nozeli-lifecycle-merged-results.tap`，最终 fd-probe＋真实 Electron＋准入/flush 50/50见`/tmp/nozeli-owner-fd-final-results.tap`。真实 fd-owner 子回归`/tmp/nozeli-owner-electron-results.tap`覆盖同根拒绝、异根允许、已unlink catalog仍拒、正常退出后释放。此前`0jmZPf/report.json`保留真实env消失导致旧profile猜测漏检的反例；最终按实际fd修复后整体矩阵通过，没有把旧失败覆盖为成功。
 - **环境与证据边界**：Linux Wayland、真实 Electron/捆绑 OMP 与真实工具、本地确定性 OpenAI SSE 模型（不是付费模型质量验收）。系统目录选择器/原生确认的用户决定为fixture，生产准入与生命周期未mock。早期 `/tmp/nozeli-project-cycles-*` 因原生addon解压遇EDQUOT；只在对应测试owner已退出后清自建可再生natives，保留报告/日志/DB/源文件。最终通过指定 `TMPDIR=/home/bfly/.cache/nozeli-project-cycle-fixtures` 使用自有磁盘fixture，每个项目移除并核对PID退出后清该项目测试agent的natives，报告逐项记录 `stoppedNativeCachesPruned`；这不是产品自动磁盘回收修复，不外推长期资源占用或Windows/macOS。最终成功后不再重跑或安装。
 
+
 ## 构建
 
 开发前提：Node 22+、npm、Git、Bun 1.3.14、Linux x64原生编译工具及Electron系统依赖。首次构建：

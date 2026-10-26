@@ -366,18 +366,9 @@ const ui = {
 const workspace = mountWorkspace({ save: () => writeView(), saveProjectSettings: settings => { ui.projectSettings = { focusMode: settings?.focusMode === true }; return writeView({ projectSettings: ui.projectSettings }); }, openProject: pickProject, addNote: options => beginNote(options), send: () => window.__agentSend?.() });
 if (!isSurface) workspaceGroups = mountWorkspaceGroups({invoke,scope:workspaceScope,toast:workspace.toast});
 if(workspaceScope.role==='shell'){
-  guidedDemo=mountGuidedDemo({invoke,subscribe:window.nozeli.subscribe,openProject:activateProject,openFile:relPath=>openFile(relPath),getProjectId:()=>ui.project?.id,captureReturn:async()=>{const retained=await retainWorkspace();if(!retained.ok)throw Error(retained.error?.message||'当前编辑尚未保留');await writeView();return {projectId:ui.project?.id};},restoreReturn:async saved=>{if(saved?.projectId)await activateProject(saved.projectId);else if(ui.project?.demo){const id=ui.project.id,result=await invoke('workspace.closeProject',{projectId:id});if(!result.ok)throw Error(result.error.message);await clearProjectPage(id);}},onError:message=>workspace.toast(message)});
-  window.addEventListener('nozeli-demo-help',()=>guidedDemo.openHelp());
-  window.addEventListener('nozeli-demo-cleanup',event=>{
-    const project=ui.project;if(!project?.demo||project.id!==event.detail.projectId)return;
-    const dialog=document.createElement('dialog'),text=document.createElement('p'),cancel=document.createElement('button'),remove=document.createElement('button'),local=document.createElement('button'),erase=document.createElement('button');
-    text.textContent='关闭项目只关闭工作面；移除入口保留文件；清理本机数据保留原文件与恢复区。删除磁盘项目会把整个目录移到回收站，必须亲自核对并确认。';
-    cancel.textContent='保留示例';remove.textContent='仅移除入口';local.textContent='查看本机数据清理范围…';erase.textContent='查看磁盘删除范围…';
-    cancel.onclick=()=>dialog.close();remove.onclick=async()=>{dialog.close();await removeProjectEntry(project.id);};
-    const preview=action=>{dialog.close();if(ui.project?.id!==project.id)return workspace.toast('活动项目已变化，未发起清理。');void manageProjectStorage(project,action);};
-    local.onclick=()=>preview('clean-local');erase.onclick=()=>preview('delete-project');
-    dialog.append(text,cancel,remove,local,erase);dialog.addEventListener('close',()=>dialog.remove());document.body.append(dialog);dialog.showModal();cancel.focus();
-  });
+  guidedDemo=mountGuidedDemo({invoke,subscribe:window.nozeli.subscribe,openProject:activateProject,openFile:relPath=>openFile(relPath),getProjectId:()=>ui.project?.id,captureReturn:async()=>{const retained=await retainWorkspace();if(!retained.ok)throw Error(retained.error?.message||'当前编辑尚未保留');await writeView();return {projectId:ui.project?.id};},restoreReturn:async saved=>{if(saved?.projectId)await activateProject(saved.projectId);else if(ui.project?.demo){const id=ui.project.id,result=await invoke('workspace.closeProject',{projectId:id});if(!result.ok)throw Error(result.error.message);await clearProjectPage(id);}},onExit:async projectId=>{attentionNotifications?.dropProject?.(projectId);await renderRecent();},onError:message=>workspace.toast(message)});
+  window.addEventListener('nozeli-demo-start',()=>void guidedDemo.start().catch(error=>workspace.toast(error.message)));
+  window.addEventListener('nozeli-demo-settings-close',()=>{const dialog=$('settings-dialog');if(dialog.open)dialog.close();});
 }
 const composerMaterials = isConversation ? mountComposerMaterials({
   invoke, toast: message => workspace.toast(message),
@@ -1506,7 +1497,6 @@ async function renderTree() {
   }
 }
 const fileNavigator = mountFileNavigator({invoke, projectId:()=>ui.project?.id, open:relPath=>openFile(relPath), toast:message=>workspace.toast(message), workspaceGroups:()=>workspaceGroups, visibility:fileTreeState, onRendered:()=>{for(const b of document.querySelectorAll('#file-tree button[data-path]:not(.dir)'))fileLabels.decorate(b);treeActions.paint();}});
-window.addEventListener('nozeli-start-browse',()=>fileNavigator.search());
 mountProjectFileRefresh({subscribe:fn=>window.nozeli.subscribe('agent',fn),getProject:()=>ui.project,
   refresh:project=>enqueue(async()=>{if(ui.project===project)await renderTree();}),onError:error=>workspace.toast('目录刷新失败：'+error.message)});
 window.addEventListener('nozeli-report-exported',event=>{const project=ui.project;if(project?.id===event.detail?.projectId)void enqueue(async()=>{if(ui.project===project)await renderTree();}).catch(showFailure);});
@@ -2500,7 +2490,7 @@ function renderEmptyState() {
   const project = ui.project;
   $('empty-title').textContent = project ? '工作区暂无打开的文件' : '从一份材料开始';
   $('empty-desc').textContent = project ? '从左侧选择文件继续阅读，或打开对话讨论。关闭文件不会结束后台任务。' : '打开项目，阅读论文，留下想法。';
-  if(!$('empty-demo-entry')){const demoEntry=document.createElement('button');demoEntry.id='empty-demo-entry';demoEntry.type='button';demoEntry.textContent='体验演示项目';demoEntry.onclick=()=>window.dispatchEvent(new Event('nozeli-demo-help'));$('empty').append(demoEntry);}
+  if(!$('empty-demo-entry')){const demoEntry=document.createElement('button');demoEntry.id='empty-demo-entry';demoEntry.type='button';demoEntry.textContent='演示学习';demoEntry.onclick=()=>window.dispatchEvent(new Event('nozeli-demo-start'));$('empty').append(demoEntry);}
   // The workspace start page owns the no-project surface; keep the in-reader
   // empty card for project-with-no-content and surface roles only.
   if(!project&&!isSurface&&workspaceGroups)$('empty').hidden=true;

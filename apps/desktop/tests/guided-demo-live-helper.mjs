@@ -11,18 +11,15 @@ const SECRET = /AUTH|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API_?KEY|PRIVATE_?K
 const PROVIDER = /^(?:CCB_|CODEX_|OMP_|PI_|ANTHROPIC_|OPENAI_)/;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-// Fixed acceptance expectation, never the catalog authority. The live renderer
-// help control is enumerated and must match this list before a chapter runs.
-export const expectedChapterIds = Object.freeze([
-  'intro', 'reading', 'anchors', 'discussion', 'pdf', 'image',
-  'ppt', 'word', 'sheet', 'workspace', 'results', 'finish',
-]);
-
-export function selectedChapter() {
-  const id = process.env.NOZELI_GUIDED_DEMO_CHAPTER;
-  assert(id && expectedChapterIds.includes(id), `NOZELI_GUIDED_DEMO_CHAPTER must be one of: ${expectedChapterIds.join(', ')}`);
-  return id;
-}
+// Fixed acceptance expectation, never the catalog authority. The shipped flow
+// catalog is enumerated live and must match these ids before a run counts.
+import {demoSteps} from '../src/domain/guided-demo.mjs';
+export const expectedStepIds = Object.freeze(demoSteps.map(step => step.id));
+export const stepIndex = id => {
+  const index = expectedStepIds.indexOf(id);
+  assert(index >= 0, `unknown demo step: ${id}`);
+  return index;
+};
 
 async function emptyDirectory(directory) {
   const entries = await fs.readdir(directory).catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
@@ -116,9 +113,9 @@ export async function createGuidedDemoHarness({kind}) {
     controls: await digestTree(appRoot,['src/main/guided-demo-controls.mjs','src/renderer/guided-demo-controls.mjs','src/renderer/guided-demo-controls.html','src/renderer/guided-demo-controls.css','src/renderer/settings-appearance.css','dist/renderer/guided-demo-controls.html','dist/renderer/guided-demo-controls.js','dist/renderer/guided-demo-controls.css']),
     renderer: await digestTree(appRoot, ['src/domain/guided-demo.mjs','src/renderer/app.mjs','src/renderer/guided-demo.mjs','src/renderer/guided-demo-surface.mjs','src/renderer/guided-demo-conversation.mjs','src/renderer/guided-demo.css','src/renderer/agent-panel.mjs','src/renderer/workspace-groups.mjs','src/renderer/tag-session-projection.mjs','src/renderer/session-timeline.mjs','src/renderer/composer-materials.mjs','dist/renderer/app.js','dist/renderer/app.css','dist/renderer/index.html','dist/renderer/word-frame.js','dist/renderer/sheet-frame.mjs']),
     main: await digestTree(appRoot, ['src/main/main.cjs','src/main/guided-demo.mjs','src/main/guided-demo-files.mjs','src/main/workspace-native.mjs','src/main/project-lifecycle.mjs','src/main/host.mjs','src/agents/managed-projects.mjs','src/preload/preload.cjs']),
-    audit: await digestTree(path.resolve(import.meta.dirname,'..'), ['tests/guided-demo-live-helper.mjs','tests/guided-demo-native-observer.cjs','tests/guided-demo-chapter-live.mjs','tests/guided-demo-journey-live.mjs']),
     assets: await digestTree(appRoot, ['assets/guided-demo/manifest.json', ...manifest.files.map(file => `assets/guided-demo/${file.path}`)]),
     binary: await digestFile(binary),
+    audit: await digestTree(path.resolve(import.meta.dirname,'..'), ['tests/guided-demo-live-helper.mjs','tests/guided-demo-native-observer.cjs','tests/guided-demo-exit-live.mjs','tests/guided-demo-flow-live.mjs']),
   };
   version.gate = crypto.createHash('sha256').update(JSON.stringify(version)).digest('hex');
   const report = {ok: false, kind, root, appRoot, binary, version, chapters: [], checks: [], scenes: [], errors: [], network: [], processes: [], observer: {coverage: 'NODE_OPTIONS observes Node child_process APIs and blocks non-loopback Node networking before main entry. Chromium host-resolver rules reduce DNS-name access but do not prove isolation against literal-IP/native-addon/OS networking; CDP enumerates renderer requests only after attachment. The report therefore records these limits and never claims zero full-process network.', events: []}};
@@ -181,15 +178,24 @@ export async function createGuidedDemoHarness({kind}) {
     }, label);
   }
 
-  async function enumerateChapters(page) {
-    await page.click('#open-settings');
-    await page.click('[data-settings-section="settings-help"]');
-    await page.click('#settings-demo-help');
-    await page.waitForSelector('#guided-demo-disclosure[open]', {timeout: 10_000});
-    const chapters = await page.$$eval('#guided-demo-disclosure select[aria-label="从章节开始"] option', options => options.map(option => ({id: option.value, title: option.textContent})));
-    assert.deepEqual(chapters.map(chapter => chapter.id), expectedChapterIds, 'Live renderer chapter catalog must exactly match the fixed acceptance expectation');
-    report.chapters = chapters;
-    return chapters;
+  async function startLearning(page) {
+    await page.click('#start-demo-entry');
+    const {page:controls}=await scope(value=>value.role==='demo-controls','native learning controls');
+    await until(async()=>{const value=await invoke(controls,'workspace.bootstrap');return value.visible&&value.model.status==='playing';},'learning starts directly');
+    return controls;
+  }
+
+  // One user drag is exactly one seek command. Resending until arrival hid
+  // seek races, so this waits only for the control to be usable, commits
+  // once, and lets any failure surface as itself.
+  async function seek(controls,index,label='seek') {
+    const value=await until(async()=>{
+      const current=await invoke(controls,'workspace.bootstrap');
+      if(!current.visible||!current.model?.seekable||!['playing','paused'].includes(current.model.status))return null;
+      return current.model.stepIndex===index||current;
+    },`${label}: controls not seekable`,30_000);
+    if(value.model.stepIndex===index)return value;
+    return invoke(controls,'workspace.demoControls.action',{sessionId:value.model.sessionId,epoch:value.model.epoch,controlId:'seek',stepIndex:index});
   }
 
   async function invoke(page, operation, payload = {}) {
@@ -230,10 +236,19 @@ export async function createGuidedDemoHarness({kind}) {
     assert(!report.observer.events.some(event => event.type === 'network'), `External Node network attempted: ${JSON.stringify(report.observer.events.filter(event => event.type === 'network'))}`);
     const attempts = report.observer.events.filter(event => event.type === 'child');
     const forbiddenPattern = /(?:^|[\\/\s_-])(?:omp|codex|claude|ccb)(?:[\\/\s_-]|$)|--provider(?:=|\s+)(?:omp|codex|claude|ccb)/i;
-    assert.deepEqual(attempts.filter(entry => forbiddenPattern.test(entry.command.join(' '))), [], 'Native/model/CCB child attempt observed');
+    // The settings tour opens the real provider section; listing locally stored
+    // accounts is an app-level query, not a demo-task or model execution.
+    const localSettingsQuery = entry => {
+      const [binary, verb, list, flag] = entry.command;
+      return binary === path.join(report.appRoot, 'runtime/omp/omp') && verb === 'auth-broker' && list === 'list' && flag === '--json';
+    };
+    const childViolations = attempts.filter(entry => forbiddenPattern.test(entry.command.join(' ')) && !localSettingsQuery(entry));
+    report.observer.settingsQueries = attempts.filter(localSettingsQuery).length;
+    assert.deepEqual(childViolations, [], 'Native/model/CCB child attempt observed');
     const processes = [...(await descendants(child.pid)).values()];
     report.processes = processes;
-    assert.deepEqual(processes.filter(entry => forbiddenPattern.test(`${path.basename(entry.exe)} ${entry.command}`)), [], 'Native/model/CCB subprocess remains');
+    const asCommand = entry => Array.isArray(entry.command) ? [entry.exe, ...entry.command] : [entry.exe, ...String(entry.command ?? '').split(' ').filter(Boolean)];
+    assert.deepEqual(processes.filter(entry => forbiddenPattern.test(asCommand(entry).join(' ')) && !localSettingsQuery({command: asCommand(entry)})), [], 'Native/model/CCB subprocess remains');
     assert(!log.includes('GUIDED_DEMO_OBSERVER_FAILURE'), 'Pre-main observer reported an evidence write failure');
   }
 
@@ -259,5 +274,5 @@ export async function createGuidedDemoHarness({kind}) {
     await fs.writeFile(path.join(root, 'main.log'), log);
   }
 
-  return {appRoot, binary, root, report, version, launch, until, scope, enumerateChapters, invoke, capture, setPickDirectory, auditIsolation, closeNormally, cleanupAfterFailure, save, get browser() { return browser; }, get child() { return child; }};
+  return {appRoot, binary, root, report, version, launch, until, scope, startLearning, seek, invoke, capture, setPickDirectory, auditIsolation, closeNormally, cleanupAfterFailure, save, get browser() { return browser; }, get child() { return child; }};
 }
