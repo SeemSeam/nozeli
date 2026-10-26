@@ -13,11 +13,11 @@ function fixture(tags, entries = []) {
   let messages = entries, renders = 0;
   const persisted = [], requested = [];
   const ui = { project: { id: 'p' }, threads: new Map(tags.map(tag => [tag.id, tag])) };
-  const { apply: applyAgentMessages } = createTagSessionProjection({
+  const { bind: bindTagMessages, apply: applyAgentMessages } = createTagSessionProjection({
     currentProjectId: () => ui.project?.id, tags: () => ui.threads.values(),
     persistTag: tag => persisted.push(tag), renderTags: () => renders++,
   });
-  const api = { applyAgentMessages };
+  const api = { applyAgentMessages, bindTagMessages };
   const source = { projectId: 'p', getMessages: () => messages, ensureMessage: async id => { requested.push(id); } };
   return { api, ui, persisted, requested, source, setMessages: next => { messages = next; }, renders: () => renders };
 }
@@ -113,4 +113,18 @@ test('canonical native progress advances to final reply without changing complet
  assert.notEqual(value.messageId,progressId);assert.equal(value.replyText,'Reading the selected material\n\nFinal grounded answer');assert.equal(value.status,'completed');
  assert.equal(value.history[1].messageId,value.messageId);assert.equal(value.history[0].reply,'immutable old answer');assert.equal(value.history[0].messageId,'old-message');assert.equal(value.draftText,'UNSENT_TAG');
  await store.mutate(()=>{store.state.jobs[0].status='failed';});apply();assert.equal(value.status,'failed');assert.equal(value.history[1].status,'failed');
+});
+
+test('acceptance binds an already-cached canonical reply without waiting for another message event',t=>{
+ const store=createSessionStore();store.reset('p');t.after(()=>store.reset(null));
+ store.apply('p',{version:1,entries:[{id:'early-reply',sequence:1,target:'frontdesk',speaker:'agent',jobId:'early-request',requestId:'early-request',text:'Reply arrived before acceptance',durable:true,status:'completed'}],deltas:[],hasMore:false,nextCursor:null},{replace:true});
+ const value={id:'early-tag',projectId:'p',status:'draft',text:'question',history:[]},f=fixture([value]);
+ f.source.getMessages=()=>sessionMessages(store.getSnapshot(),{jobs:[]});
+ f.api.applyAgentMessages([],f.source);
+ Object.assign(value,{requestId:'early-request',status:'accepted-awaiting-reply',history:[{requestId:'early-request',question:'question',status:'accepted-awaiting-reply'}]});
+ f.api.bindTagMessages(value);
+ assert.equal(value.status,'completed');assert.equal(value.messageId,'early-reply');assert.equal(value.history[0].status,'completed');assert.equal(value.replyText,'Reply arrived before acceptance');
+ value.status='draft';value.text='Keep this new unsent question';value.draftText=value.text;
+ f.api.bindTagMessages(value);
+ assert.equal(value.status,'draft');assert.equal(value.draftText,'Keep this new unsent question');assert.equal(value.history[0].status,'completed');
 });

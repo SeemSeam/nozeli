@@ -162,6 +162,21 @@ test('history surfaces can render frozen reports but cannot open executable deve
  for(const profile of ['offlineDevelopment',undefined])assert.throws(()=>native.authorize(event,'isolated-preview.update',{projectId:'p',profile}),{code:'IPC_DENIED'});
  assert.throws(()=>native.authorize(event,'isolated-preview.open',{projectId:'other',profile:'staticReport'}),{code:'PROJECT_SCOPE_DENIED'});
 });
+test('demo controls cannot mutate files or sessions and reject stale owner or chapter actions',async t=>{
+ const {native,root}=await fixture(t),view=new View();
+ const record=native.register(view.webContents,{role:'demo-controls',windowId:'main',projectId:null,win:root.win,view});
+ const controls=native.demoControls;controls.record=record;controls.owner=root;controls.ownerGeneration=root.generation;
+ controls.model={visible:true,sessionId:'demo-session',epoch:7,buttons:[{id:'play',disabled:false}],chapters:[{id:'intro'}]};
+ const event={sender:record.wc,senderFrame:record.wc.mainFrame};
+ for(const op of ['file.save','demo.create','demo.transition','project.delete','workspace.demoControls.update'])assert.throws(()=>native.authorize(event,op,{projectId:'p'}),{code:'IPC_DENIED'});
+ const invoke=payload=>native.invoke(record,'workspace.demoControls.action',{sessionId:'demo-session',epoch:7,...payload});
+ await assert.rejects(invoke({controlId:'play',intent:'play',epoch:6}),{code:'DEMO_CONTROLS_DENIED'});
+ await assert.rejects(invoke({controlId:'chapter',chapterId:'foreign'}),{code:'DEMO_CONTROLS_DENIED'});
+ controls.model.visible=false;
+ await assert.rejects(invoke({controlId:'play',intent:'play'}),{code:'DEMO_CONTROLS_DENIED'});
+ root.generation++;
+ await assert.rejects(invoke({controlId:'play',intent:'pause'}),{code:'DEMO_CONTROLS_DENIED'});
+});
 test('CAS and request-key replay are authoritative',async t=>{const {native,root}=await fixture(t);const payload={projectId:'p',expectedRevision:0,requestKey:'first',command:{type:'split',groupId:native.layouts.get('p').mainRoot.id,axis:'x',side:'after'}};const result=await native.command(root,payload);assert.equal(result.layout.revision,1);assert.equal(await native.command(root,payload),result);await assert.rejects(native.command(root,{...payload,requestKey:'second'}),{code:'LAYOUT_STALE'});});
 test('flush receipts cannot be forged by another owner or old generation',async t=>{const {native,root}=await fixture(t),other=native.register(new Contents(),{role:'surface',projectId:'p',viewId:'other'});const pending=native.flushOne(root);const requestId=root.wc.sent.at(-1).payload;assert.deepEqual(native.acknowledge(other,{requestId,ok:true}),{accepted:false});assert.deepEqual(native.acknowledge(root,{requestId,ok:false,error:{code:'UNSAVED'}}),{accepted:true});await assert.rejects(pending,{code:'UNSAVED'});});
 test('detach and dock keep the identical live WebContentsView without loading it again',async t=>{const {native,root}=await fixture(t);let layout=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'document',relPath:'a.txt'}});native.layouts.set('p',layout);await native.reconcile(layout);const surface=[...native.surfaces.values()][0],view=surface.view,wc=surface.wc;receipt(native,surface);native.detached=async(_layout,item)=>{let r=native.windows.get(item.id);if(r)return r;r=native.register(new Contents(),{role:'detached',windowId:item.id,projectId:'p',win:new Window()});r.ready=true;native.windows.set(item.id,r);return r;};const detached=await native.command(root,{projectId:'p',expectedRevision:layout.revision,requestKey:'detach',command:{type:'detach',viewId:surface.viewId}});assert.equal(native.surfaces.get(surface.viewId).view,view);assert.equal(native.surfaces.get(surface.viewId).wc,wc);assert.notEqual(surface.windowId,'main');assert.equal(native.windows.get(surface.windowId).win.options.parent,undefined);await native.command(root,{projectId:'p',expectedRevision:detached.layout.revision,requestKey:'dock',command:{type:'dock',windowId:surface.windowId}});assert.equal(surface.windowId,'main');assert.equal(surface.wc,wc);});

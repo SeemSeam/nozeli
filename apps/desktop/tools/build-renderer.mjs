@@ -46,6 +46,8 @@ const monacoStylesheetNonce = {
   },
 };
 await build({ plugins: [xtermDocumentFix, monacoStylesheetNonce], entryPoints: [path.join(root, 'src/renderer/app.mjs')], bundle: true, format: 'esm', platform: 'browser', outfile: path.join(output, 'app.js'), loader: { '.woff2': 'file', '.woff': 'file', '.ttf': 'file' }, assetNames: 'assets/[name]-[hash]' });
+await fs.copyFile(path.join(root,'src/renderer/guided-demo-controls.html'),path.join(output,'guided-demo-controls.html'));
+await build({entryPoints:[path.join(root,'src/renderer/guided-demo-controls.mjs')],bundle:true,format:'esm',platform:'browser',outfile:path.join(output,'guided-demo-controls.js')});
 // E0 comparison harness is generated only for explicit development tests.
 if (process.env.NOZELI_EDITOR_LAB === '1') {
   await build({ plugins: [monacoStylesheetNonce], entryPoints: [path.join(root, 'src/renderer/editor-lab.mjs')], bundle: true, format: 'esm', platform: 'browser', outfile: path.join(output, 'editor-lab.js'), loader: { '.ttf': 'file' } });

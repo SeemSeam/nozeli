@@ -50,12 +50,12 @@ export function createTagSessionProjection({ currentProjectId, tags, persistTag,
       Object.defineProperty(entry,'replyEntries',{configurable:true,enumerable:true,get:()=>replyEntries(entry,tag.projectId).map(message=>({...message,readReply:async options=>{if(currentProjectId()!==tag.projectId||source?.projectId!==tag.projectId)throw Error('项目已切换');return source.readMessage(message.id,options);}}))});
     }
   }
-  function apply(_messages, nextSource) {
+  function apply(_messages, nextSource, onlyTag) {
     if (nextSource) source = nextSource;
     const projectId = currentProjectId();
     const current = messages(projectId);
     const changed = new Set();
-    for (const tag of tags()) {
+    for (const tag of onlyTag ? [onlyTag] : tags()) {
       if (tag.projectId !== projectId) continue;
       bind(tag);
       for (const reference of [...(tag.history || []), tag]) {
@@ -82,5 +82,5 @@ export function createTagSessionProjection({ currentProjectId, tags, persistTag,
     for (const tag of changed) persistTag(tag);
     if (current.length || changed.size) renderTags();
   }
-  return { bind, apply };
+  return { bind: tag => apply(undefined, undefined, tag), apply };
 }

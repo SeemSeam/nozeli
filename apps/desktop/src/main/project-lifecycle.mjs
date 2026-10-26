@@ -8,6 +8,7 @@ const fail = (code, message) => Object.assign(new Error(message), {code});
 const inside = (parent, child) => {const relative=path.relative(parent,child);return relative==='' || (!relative.startsWith('..'+path.sep) && relative!=='..' && !path.isAbsolute(relative));};
 const identity = stat => ({dev:String(stat.dev),ino:String(stat.ino)});
 const same = (a,b) => a?.dev===b?.dev && a?.ino===b?.ino;
+const demoChangesDigest=changes=>createHash('sha256').update(JSON.stringify(changes)).digest('hex');
 async function statOrMissing(directory) {try{return await fs.lstat(directory);}catch(error){if(error.code==='ENOENT')return null;throw error;}}
 async function directorySnapshot(directory) {
   const stat=await statOrMissing(directory);
@@ -54,6 +55,7 @@ export class ProjectLifecycle {
     if(this.operations.has(projectId))throw fail('PROJECT_LIFECYCLE_ACTIVE','该项目已有生命周期操作。');
     this.host.storage.assertActive(projectId);
     const project=await this.host.requireRegisteredProject(projectId),local=await this.localScope(project);
+    const demoChanges=this.host.guidedDemo?.isDemo(projectId)?await this.host.guidedDemo.guardLifecycle(projectId,{allowChanged:true}):null;
     const source=action==='delete-project'?await this.checkDelete(project):null;
     const token=randomUUID(),operationId=randomUUID(),expiresAt=Date.now()+300000;
     const confirmation={token,operationId,projectId,instanceId:project.instanceId,action,root:project.root,
@@ -61,18 +63,19 @@ export class ProjectLifecycle {
       removeDirectories:action==='clean-local'?[]:[project.root],
       removeFiles:[],removeRecords:action==='clean-local'?local.records:[],
       recoveryRetained:true,sessionsRetained:true,permanentDelete:false,accountsAffected:false};
+    if(demoChanges){confirmation.demoChanges=demoChanges;confirmation.demoChangesDigest=demoChangesDigest(demoChanges);confirmation.preserveByDefault=demoChanges.length>0;}
     this.tokens.set(token,confirmation);
     return structuredClone(confirmation);
   }
   async journal(projectId,record) {
     await this.host.storage.putRecovery(projectId,'lifecycle:'+record.operationId,record);
   }
-  async execute({token}) {
+  async execute({token,allowDemoChanges=false}) {
     const confirmation=this.tokens.get(token);
     if(!confirmation || confirmation.expiresAt<Date.now())throw fail('LIFECYCLE_CONFIRMATION_EXPIRED','确认已失效，请重新查看范围。');
     this.tokens.delete(token);
     if(this.operations.has(confirmation.projectId))throw fail('PROJECT_LIFECYCLE_ACTIVE','该项目已有生命周期操作。');
-    return this.run(confirmation);
+    return this.run({...confirmation,allowDemoChanges:allowDemoChanges===true&&confirmation.preserveByDefault===true});
   }
   async run(confirmation) {
     const {projectId,operationId,instanceId,action}=confirmation;
@@ -102,6 +105,13 @@ export class ProjectLifecycle {
     try {
       const project=await this.host.requireRegisteredProject(projectId);
       if(project.instanceId!==confirmation.instanceId || project.root!==confirmation.root)throw fail('PROJECT_IDENTITY_CONFLICT','本机绑定已变化。');
+      if(this.host.guidedDemo?.isDemo(projectId)){
+        const changes=await this.host.guidedDemo.guardLifecycle(projectId,{allowChanged:action!=='delete-project'||confirmation.allowDemoChanges===true});
+        if(action==='delete-project'){
+          if(changes.some(change=>change.kind==='uninspected'))throw fail('DEMO_INSPECTION_INCOMPLETE','示例目录未完整核验；保留所有文件，请先检查或导出。');
+          if(demoChangesDigest(changes)!==confirmation.demoChangesDigest)throw fail('DEMO_CONTENT_CHANGED','确认后示例内容发生变化，未删除；请重新查看范围。');
+        }
+      }
       if(action==='delete-project')this.matchSource(confirmation.source,await this.checkDelete(project));
       hold.needsStopCheck=true;
       const auxiliary=stage(Promise.resolve().then(()=>this.beforeStop(projectId)));
@@ -112,7 +122,7 @@ export class ProjectLifecycle {
       await stage(this.workspace.closeProject(projectId,{operationId}));
       const settled=await this.host.storage.getRecovery(projectId,'lifecycle:settle-managed:'+operationId);
       if(action==='settle-managed'&&settled?.complete){await checkpoint({phase:'complete',result:settled.result});return settled.result;}
-      if(action==='remove'){const result=await this.host.storage.remove(projectId,{operationId});await checkpoint({phase:'complete',removed:true});return result;}
+      if(action==='remove'){const result=await this.host.storage.remove(projectId,{operationId});await checkpoint({phase:'complete',removed:true});await this.host.guidedDemo?.recordLifecycle(projectId,{...result,action,removed:true});return result;}
       if(action==='settle-managed'){const result=await stage(this.host.storage.withLifecycleOwner(projectId,hold,()=>this.reconcileManaged(projectId,confirmation)));await checkpoint({phase:'complete',result});await this.host.storage.putRecovery(projectId,'lifecycle:settle-managed:'+operationId,{projectId,operationId,pendingId:confirmation.pendingId,requestKey:confirmation.requestKey,complete:true,result}).catch(()=>{});if(!hold.pendingCount)this.host.storage.releaseProject(projectId,hold);return result;}
       this.host.storage.sealLocal(projectId,hold);
       if(action==='clean-local') {
@@ -122,7 +132,9 @@ export class ProjectLifecycle {
         const cleaned=await this.host.storage.withLifecycleOwner(projectId,hold,()=>this.host.storage.clearLocalViews(projectId,{ids:confirmation.removeRecords,operationId}));
         this.workspace.layouts?.delete(projectId);
         await checkpoint({phase:'complete',cleaned:true});
-        return {operationId,projectId,action,complete:true,recoveryRetained:true,...cleaned};
+        const cleanedResult={operationId,projectId,action,complete:true,recoveryRetained:true,...cleaned};
+        await this.host.guidedDemo?.recordLifecycle(projectId,{operationId,projectId,action,complete:true,removed:false});
+        return cleanedResult;
       }
       await this.host.storage.closeProjectHandles(projectId);
       const source=await this.checkDelete(project);this.matchSource(confirmation.source,source);
@@ -140,6 +152,7 @@ export class ProjectLifecycle {
       } else await checkpoint({phase:'source-gone',trashed:false,alreadyUnavailable:true});
       await this.host.storage.remove(projectId);
       await checkpoint({phase:'complete',removed:true});
+      await this.host.guidedDemo?.recordLifecycle(projectId,{operationId,projectId,action,complete:true,removed:true,trashed:record.trashed});
       return {operationId,projectId,action,complete:true,trashed:record.trashed,alreadyUnavailable:record.alreadyUnavailable===true,recoveryRetained:true};
     } catch(error) {
       await checkpoint({phase:'needs-attention',failedPhase:record.phase,error:{code:error.code||'ERROR',message:error.message}}).catch(()=>{});

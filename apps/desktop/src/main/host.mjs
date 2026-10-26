@@ -496,7 +496,7 @@ export class DesktopHost {
   }
 
   publicProject(project) {
-    return { id: project.id, name: project.name, rootDisplay: project.root, openedAt: project.openedAt, lastOpenedAt: project.lastOpenedAt };
+    return { id: project.id, name: project.name, rootDisplay: project.root, openedAt: project.openedAt, lastOpenedAt: project.lastOpenedAt,...(this.guidedDemo?.isDemo(project.id)?{demo:true,source:'demo-fixture'}:{}) };
   }
 
   async pick(directory) {

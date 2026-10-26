@@ -461,7 +461,7 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
     }
     if (main.dataset.digest) await openMaterial(main.dataset.digest, main.title);
   }
-  window.__openMaterialAttachment = async digest => openMaterial(digest);
+  window.__openMaterialAttachment = async ref => openMaterial(ref.digest, ref.name, ref);
 
   const viewer = document.createElement('aside');
   viewer.className = 'material-viewer';
@@ -480,7 +480,7 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
     if (viewerOpener && document.contains(viewerOpener)) viewerOpener.focus(); else composer.focus();
     viewerOpener = null;
   }
-  async function openMaterial(digest, title) {
+  async function openMaterial(digest, title, sourceRef) {
     viewerOpener = document.activeElement;
     const body = viewer.querySelector('.mv-body');
     viewer.querySelector('.mv-title').textContent = title || '附件';
@@ -491,7 +491,7 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
     body.append(note);
     viewer.hidden = false;
     body.focus();
-    const ref = pending.find(a => a.digest === digest);
+    const ref = sourceRef || pending.find(a => a.digest === digest);
     const result = await invoke('material.read', { projectId: ref?.projectId || materialOwner.projectId, instanceId: ref?.instanceId, storage: ref?.storage, source: ref?.source, digest });
     if (!result?.ok) {
       note.textContent = '附件读取失败：' + (result?.error?.message || '未知错误');
@@ -500,7 +500,7 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
     const { name, mime, size, bytes, source } = result.value;
     const drawing=pending.find(a=>a.digest===digest&&a.source==='drawing');
     if(drawing){const provenance=document.createElement('p');provenance.textContent=drawing.sources?.length?drawing.sources.map(s=>s.summary||s.identity?.relPath||'工作区来源 · 仅视口').join('；'):'工作区截图，未锚定文件';body.append(provenance);}
-    viewer.querySelector('.mv-title').textContent = `${name} · ${fmtSize(size)} · 只读${source === 'paste' ? ' · 粘贴' : source === 'drop' ? ' · 拖入' : source === 'path-select' ? ' · 路径引用' : ' · 本地选择'}`;
+    viewer.querySelector('.mv-title').textContent = `${name} · ${fmtSize(size)} · 只读${source === 'drawing' ? ' · 涂鸦截图' : source === 'paste' ? ' · 粘贴' : source === 'drop' ? ' · 拖入' : source === 'path-select' ? ' · 路径引用' : ' · 本地选择'}`;
     note.remove();
     const kind = classify(name, mime);
     if (kind === 'image') {

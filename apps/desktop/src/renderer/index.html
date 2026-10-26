@@ -120,6 +120,7 @@
         <button type="button" data-settings-section="settings-agents">Agent 资源</button>
         <button type="button" data-settings-section="settings-general">快捷键与初始化</button>
         <button type="button" data-settings-section="settings-recovery">本机恢复 <span class="badge" id="settings-recovery-count" hidden></span></button>
+        <button type="button" data-settings-section="settings-help">帮助与演示</button>
         <div class="settings-scope-label">当前项目设置 <small id="settings-project-name">未打开项目</small><details><summary>项目路径</summary><span id="settings-project-path"></span><button type="button" id="settings-copy-project-path">复制路径</button></details></div>
         <button type="button" data-settings-section="settings-project-reading">阅读与对话</button>
         <button type="button" data-settings-section="settings-project-workspace">工作区</button>
@@ -136,6 +137,11 @@
         <section id="settings-agents" aria-label="Agent 额度" hidden></section>
         <section id="settings-appearance" aria-label="外观" hidden></section>
         <section id="settings-reading-display" aria-label="阅读显示" hidden></section>
+        <section id="settings-help" aria-label="帮助与演示" hidden>
+          <h3>帮助与演示</h3>
+          <p class="settings-hint">用独立示例了解阅读、批注、编辑和工作区。回复为本地固定演示内容，不需要账号。</p>
+          <div class="settings-card"><h4>体验 Nozeli</h4><p>选择章节开始，可随时暂停自己试。不会自动修改你的项目；创建前会说明范围。</p><button type="button" id="settings-demo-help">打开演示与章节</button></div>
+        </section>
         <section id="settings-project-reading" aria-label="当前项目阅读与对话" hidden></section>
         <section id="settings-project-workspace" aria-label="当前项目工作区" hidden></section>
         <section id="settings-project-tex" aria-label="当前项目TeX编译" hidden></section>

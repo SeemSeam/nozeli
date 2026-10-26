@@ -4,6 +4,7 @@ import {mountManagedAgent} from './managed-agent-panel.mjs';
 import { mountPopupMenu } from './popup-menu.mjs';
 import { renderTagMarkdown } from './tag-markdown.mjs';
 import './conversation-rendering.css';
+import {mountDemoConversation} from './guided-demo-conversation.mjs';
 const $ = (id) => document.getElementById(id);
 
 
@@ -16,6 +17,7 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
   let generation = 0;
   let consoleVisible = false;
   let restoredInput;
+  const demo=mountDemoConversation({invoke,getProjectId:()=>projectId,onMessages,onConversation,subscribe});
   let filePaths = new Set();
   const legacyArchive = document.createElement('details');
   legacyArchive.id = 'legacy-conversation-history';
@@ -100,12 +102,19 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     $('save-status').textContent = report.writtenBack === false ? '未写回源文件' : report.writtenBack === true ? '源文件有变化' : '写回未核验';
   }
 
-  const configuration = mountConfiguration({document, invoke, autoOpen:!scope||scope.role==='shell', onError: error => setAi(error.message, 'failed'), onInitialized: async () => {
+  const configuration = mountConfiguration({document, invoke, autoOpen:false, onError: error => setAi(error.message, 'failed'), onInitialized: async () => {
     if (projectId) await loadProjectSettings(projectId, generation);
   }});
 
   async function loadProjectSettings(id, gen) {
     try {
+      if(await demo.bind(id)){
+        if(id!==projectId||gen!==generation)return;
+        managed.observeFixture(id,demo.state);
+        $('composer').readOnly=false;$('send-message').disabled=false;$('send-message').title='发送到离线演示源，不使用模型';
+        $('selection-explain').disabled=false;$('selection-explain').title='演示选区解释 · 固定回复';
+        $('provider-console-toggle').hidden=true;setAi('离线演示 · 非原生 Agent','demo');return;
+      }
       const initialized = await configuration.ready;
       if (id !== projectId || gen !== generation) return;
       void loadLegacyHistory(id, gen).catch(error => {
@@ -171,6 +180,7 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
   window.__agentProject = (id, {input} = {}) => {
     void invoke('managed.project.active',{projectId:id||null}).then(result=>{if(!result?.ok)toast(result?.error?.message||'更新活跃项目失败');}).catch(error=>toast(error.message));
     managed.clear({rememberDraft:false});
+    demo.clear();
     // The workspace supplies its restored draft explicitly; never infer it from the old composer.
     if (projectId !== id) {
       closeConsole();
@@ -202,7 +212,7 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
   const agentSendGate = () => {
     const id = projectId;
     const gated = $('send-message').disabled;
-    if (!id || gated || !managed.active) return { ok: false, message: '发送未发出：' + (!id ? '尚未打开项目。' : $('send-message').title || 'Agent 尚未就绪或当前内容只读。') };
+    if (!id || gated || (!managed.active&&!demo.active)) return { ok: false, message: '发送未发出：' + (!id ? '尚未打开项目。' : $('send-message').title || 'Agent 尚未就绪或当前内容只读。') };
     return { ok: true, projectId: id };
   };
   window.__agentSelectionAction = async ({ action, excerpt, relPath, materialText, annotationRef, comment = '', background = false }) => {
@@ -216,7 +226,7 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
       ? action==='explain'?'请解释这处选区。':action==='task'?`请修改这处材料：\n${comment}`:comment
       : action==='explain'?`请解释：\n${excerpt}`:`${comment}\n\n选区：\n${excerpt}`;
     const context = annotationRef ? { tags: [annotationRef], ...(background ? { background: true } : {}) } : { relPath, materialText, ...(background ? { background: true } : {}) };
-    const result = await managed.send(prompt, context).then(value => ({ ok: true, value }), error => ({ ok: false, error }));
+    const result = await (demo.active?demo.send(prompt,context):managed.send(prompt, context)).then(value => ({ ok: true, value }), error => ({ ok: false, error }));
     if (!result.ok) { toast(result.error.message); return false; }
     return { ...result.value, requestId: result.value.requestId ?? result.value.jobId };
   };
@@ -228,7 +238,7 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     const rawText = $('composer').value;
     const reject = reason => { $('compose-status').textContent='发送未发出：'+reason+'；草稿与材料仍保留';toast($('compose-status').textContent);return false; };
     if (!id) return reject('尚未打开项目');
-    if (!managed.active) return reject('Agent 尚未启用或连接，请完成配置并重试连接');
+    if (!managed.active&&!demo.active) return reject('Agent 尚未启用或连接，请完成配置并重试连接');
     if ($('send-message').disabled) return reject($('send-message').title||'Agent 尚未就绪或当前内容只读');
     if (materialsApi?.blocked()) return reject('有材料未就绪（失败/读取中），请先移除或重新添加再发送');
     const snap = materialsApi?.snapshot();
@@ -240,8 +250,10 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     if (images.length > 8 || images.reduce((sum, a) => sum + a.size, 0) > 24 * 1024 * 1024) return reject('图片超过 8 张或 24 MiB 上限');
     const relPath = $('attach-file').checked ? attachment() : (snap?.attachments || []).find(a => a.relPath && a.source !== 'selection')?.relPath || null;
     const materialText = relPath && typeof window.__nozeliInput?.text === 'function' ? window.__nozeliInput.text() : null;
-    const result = await managed.send(text.trim() ? text : '请查看附带的涂鸦截图。',{relPath,materialText,background,composerText:rawText,imageAttachments:images.map(a=>({digest:a.digest,mime:a.mime,source:a.source,storage:a.storage,projectId:a.projectId,instanceId:a.instanceId,deliveryId:a.deliveryId}))}).then(value=>({ok:true,value}),error=>({ok:false,error}));
+    const send=demo.active?demo.send:managed.send;
+    const result = await send(text.trim() ? text : '请查看附带的涂鸦截图。',{relPath,materialText,background,composerText:rawText,imageAttachments:images.map(a=>({digest:a.digest,mime:a.mime,source:a.source,storage:a.storage,projectId:a.projectId,instanceId:a.instanceId,deliveryId:a.deliveryId}))}).then(value=>({ok:true,value}),error=>({ok:false,error}));
     if (!result.ok) return reject(result.error.message);
+    if(demo.active&&projectId===id&&$('composer').value===rawText){$('composer').value='';$('composer').dispatchEvent(new Event('input',{bubbles:true}));}
     return result.value;
   };
 }

@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "id": "urban-heat-methods",
+  "version": "1",
+  "title": "城市热岛：两种观测方法",
+  "source": "Nozeli self-authored fictional teaching materials",
+  "license": "AGPL-3.0-only",
+  "files": [
+    {
+      "path": "README.md",
+      "bytes": 1043,
+      "sha256": "08a82bd384d10b6716aa34508b60df4678cca8fe8387984cc5ee73fac0958c5d"
+    },
+    {
+      "path": "research-notes.txt",
+      "bytes": 397,
+      "sha256": "58f2ea4863ef3988e5a760ec8abca568eab49bca20ad9d0086a217e982b89393"
+    },
+    {
+      "path": "comparison-before.txt",
+      "bytes": 99,
+      "sha256": "e7553bbab1b5c9495295e20607c63d1884488f689dc3927f6f26b990d14e6838"
+    },
+    {
+      "path": "comparison-after.txt",
+      "bytes": 156,
+      "sha256": "8a934e1c930a63b602f580e255b2d5f726ecf062d6814540e4c8669c96ba2e38"
+    },
+    {
+      "path": "report.html",
+      "bytes": 1050,
+      "sha256": "b7d42fe4734ef5f99ed04a618f1973fd053017147d1ff241456cde6553d3728a"
+    },
+    {
+      "path": "paper.pdf",
+      "bytes": 2126,
+      "sha256": "d48e9c1aab530aeaf0e9bdb78e7b07cbc33f913d1c451d2ec3d529cc1731008f"
+    },
+    {
+      "path": "methods.png",
+      "bytes": 11013,
+      "sha256": "a25151811ad30a3f03f5d4b3ba0ebd4c0dc2ef20aa61ffaed6ae76f2fc11de40"
+    },
+    {
+      "path": "manuscript.docx",
+      "bytes": 1858,
+      "sha256": "a353d1414382ed15192cc134a7c3a2ad38bb960a791de91d80eb6fec035e4c67"
+    },
+    {
+      "path": "measurements.xlsx",
+      "bytes": 2094,
+      "sha256": "e6120bf0b2cb5658a487123072e7fb996f1b43e88105a2d034bc72513c3dd40c"
+    },
+    {
+      "path": "presentation.pptx",
+      "bytes": 6308,
+      "sha256": "8e84f0496ae51696e954f481f15f6795ba6b21fc49e167cfe42e3aa06f5c5b24"
+    }
+  ]
+}

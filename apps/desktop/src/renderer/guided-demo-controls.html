@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'">
+  <title>演示控制</title>
+  <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./guided-demo-controls.css">
+</head>
+<body>
+  <section id="guided-demo-player" aria-label="演示播放控制" hidden>
+    <header id="demo-drag" tabindex="0" aria-label="移动演示控制区，方向键可移动" title="拖动控制区；方向键移动">
+      <span class="demo-grip" aria-hidden="true">⋮⋮</span>
+      <span data-demo-badge title="本地固定回复，不调用模型">离线演示</span>
+      <strong id="demo-title"></strong><span id="demo-progress"></span>
+      <button type="button" id="demo-collapse" aria-label="收起说明" aria-expanded="true"></button>
+    </header>
+    <p id="demo-subtitle" role="status" aria-live="polite"></p>
+    <div class="demo-primary" id="demo-primary"></div>
+    <details id="demo-more">
+      <summary aria-label="更多演示操作">更多</summary>
+      <div class="demo-menu">
+        <label>章节<select aria-label="演示章节" id="demo-chapters"></select></label>
+        <div id="demo-secondary"></div>
+      </div>
+    </details>
+    <p id="demo-error" role="alert" hidden></p>
+  </section>
+  <script type="module" src="./guided-demo-controls.js"></script>
+</body>
+</html>

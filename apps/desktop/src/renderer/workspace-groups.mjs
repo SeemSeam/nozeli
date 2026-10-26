@@ -4,6 +4,7 @@ import {windowBrand,windowControls} from './window-chrome.mjs';
 import {mountContextMenu} from './context-menu.mjs';
 import {setIconButton} from './ui-icons.mjs';
 import {mountWorkspaceTitleDrag} from './workspace-title-drag.mjs';
+import {createStartPage} from './guided-demo.mjs';
 
 // Renders the layout tree as single-content panes. The layout/domain owns assignment;
 // this module deliberately never invents tabs or group UI.
@@ -28,7 +29,7 @@ export function mountWorkspaceGroups({invoke,scope,toast=()=>{}}){
   const groups=()=>layout?layoutGroups(layout,windowId):[];const group=()=>groups().find(g=>g.id===activeGroup)||groups()[0];
   const viewTitle=v=>v?.viewState?.title||({conversation:'对话',report:'报告',diff:'Diff',history:'历史',terminal:'Terminal 预览'}[v?.kind])||v?.relPath?.split('/').pop()||'文档';
   function receive(value){if(transitioning||!value?.layout)return;if(scope.role==='shell'&&layout&&value.layout.projectId!==layout.projectId)return;layout=value.layout;windowId=value.windowId||windowId;if(!groups().some(g=>g.id===activeGroup))activeGroup=groups()[0]?.id;render();}
-  function command(request){const run=queue.then(async()=>{if(!layout)return;const action=request.type==='dock'?{...request,windowId:request.windowId||windowId,targetGroupId:request.targetGroupId||layoutGroups(layout,'main')[0]?.id}:request;const value=await call('workspace.command',{projectId:layout.projectId,expectedRevision:layout.revision,requestKey:crypto.randomUUID(),command:action});receive(value);return layout;});queue=run.catch(e=>toast(e.message));return run;}
+  function command(request){const projectId=layout?.projectId;const run=queue.then(async()=>{if(!projectId||layout?.projectId!==projectId)throw new Error('项目已切换，原布局操作未执行。');const action=request.type==='dock'?{...request,windowId:request.windowId||windowId,targetGroupId:request.targetGroupId||layoutGroups(layout,'main')[0]?.id}:request;const value=await call('workspace.command',{projectId,expectedRevision:layout.revision,requestKey:crypto.randomUUID(),command:action});if(layout?.projectId===projectId)receive(value);return layout;});queue=run.catch(e=>toast(e.message));return run;}
   const button=(label,key,run)=>{const b=document.createElement('button');b.type='button';b.textContent=label;b.dataset.workspaceCommand=key;b.onpointerdown=event=>event.preventDefault();b.onclick=()=>Promise.resolve(run()).catch(e=>toast(e.message));return b;};
   let namedLayouts=[],namedProject=null,namedSequence=0;
   async function refreshNamedLayouts(){
@@ -112,7 +113,7 @@ export function mountWorkspaceGroups({invoke,scope,toast=()=>{}}){
       el.append(bar);
       bar.addEventListener('contextmenu',event=>void openPaneMenu(event,node,view).catch(e=>toast(e.message)));
     }
-    const content=document.createElement('div');content.className='workspace-content';content.dataset.workspaceContent=node.id;if(view)content.dataset.viewId=view.id;else content.textContent='从左侧“已打开”列表选择内容';el.append(content);return el;
+    const content=document.createElement('div');content.className='workspace-content';content.dataset.workspaceContent=node.id;if(view)content.dataset.viewId=view.id;else{content.classList.add('workspace-pane-empty');content.append(createStartPage({project:{id:layout.projectId,name:document.getElementById('project-name').textContent},compact:groups().length>1,browseFiles:()=>window.dispatchEvent(new Event('nozeli-start-browse')),continueConversation:()=>call('workspace.control',{type:'conversation-action',action:'open',projectId:layout.projectId,groupId:node.id}).catch(error=>toast(error.message)),help:()=>window.dispatchEvent(new Event('nozeli-demo-help')),start:()=>window.dispatchEvent(new Event('nozeli-demo-help'))}));}el.append(content);return el;
   }
   function build(node){
     if(node.kind==='group')return pane(node);
@@ -181,6 +182,7 @@ export function mountWorkspaceGroups({invoke,scope,toast=()=>{}}){
   window.nozeli.subscribe('workspace.control',event=>{if(event.type==='group-focus')void focusPane(event).catch(e=>toast(e.message));if(event.type==='surface-focus'&&layout){const target=groups().find(g=>g.activeViewId===event.viewId);if(target){activeGroup=target.id;render();}}if(event.type==='workspace-action'){const target=groups().find(g=>g.activeViewId===event.viewId),request={...event.command};if(!request.viewId&&request.type!=='dock')request.groupId??=target?.id;void command(request).catch(e=>toast(e.message));}});
   document.addEventListener('workspace-action',event=>{const request={...event.detail.command};if(!request.viewId&&request.type!=='dock')request.groupId??=group()?.id;void command(request).catch(e=>toast(e.message));});
   document.addEventListener('keydown',event=>{const numbered=(event.ctrlKey||event.metaKey)&&!event.altKey&&!event.shiftKey&&/^[1-9]$/.test(event.key);if(event.key==='F6'||numbered){event.preventDefault();void focusPane(numbered?{index:Number(event.key)-1}:{direction:event.shiftKey?-1:1}).catch(e=>toast(e.message));}});
-  function clear(){layout=null;activeGroup=null;renderedKey='';renderedPanes.clear();tree.replaceChildren();const empty=document.createElement('p');empty.className='workspace-no-project';empty.textContent='未打开项目 · 请打开项目或查看本机恢复';tree.append(empty);}
+  function clear(){layout=null;activeGroup=null;renderedKey='';renderedPanes.clear();tree.replaceChildren();tree.append(createStartPage({openProject:()=>document.getElementById('pick-project').click(),start:()=>window.dispatchEvent(new Event('nozeli-demo-help')),help:()=>window.dispatchEvent(new Event('nozeli-demo-help'))}));}
+  clear();
   const api={snapshot:()=>layout,clear,command,bindProject,open,activate,activeGroup:()=>group()?.id,activeView:()=>layout?.views[group()?.activeViewId]};window.__workspaceGroups=api;return api;
 }

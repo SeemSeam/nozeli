@@ -86,6 +86,7 @@ export function mountManagedTodos({ document, invoke, openTodo, viewWork, recove
     const todo=rows().find(t=>t.id===id);if(!todo){container.textContent='该待办记录已移除。';return;}
     const rawTime=todo.closedAt||todo.settledAt||todo.updatedAt||todo.createdAt;
     const info=document.createElement('p');info.className='managed-todo-meta';info.textContent=[statusNames[todo.status]||todo.status,rawTime?new Date(rawTime).toLocaleString(undefined,{timeZoneName:'short'}):'旧记录未记录时间',todo.reason||'',todo.reopenedAt?'重开仅恢复提醒，不自动执行':''].filter(Boolean).join(' · ');container.append(info);
+    if(todo.source==='demo-fixture'){const notice=document.createElement('p');notice.dataset.demoBadge='true';notice.textContent='演示内容：决定仅更新本地固定样本；不写入论文、不启动真实工作。';container.append(notice);}
     if(rawTime){const original=document.createElement('details'),label=document.createElement('summary'),value=document.createElement('pre');label.textContent='原始时间（可选中复制）';value.textContent=rawTime;original.append(label,value);container.append(original);}
     for(const item of actions(todo).filter(i=>i.id!=='detail')){const b=document.createElement('button');b.type='button';b.textContent=item.label;b.dataset.todoAction=item.id;b.disabled=item.enabled===false||pending.has(projectId+':'+id);b.onclick=()=>Promise.resolve(item.run()).catch(e=>toast(e.message));container.append(b);}
     const cap=todoCapabilities(state,todo);if(cap.reason){const note=document.createElement('p');note.textContent=cap.reason;container.append(note);}

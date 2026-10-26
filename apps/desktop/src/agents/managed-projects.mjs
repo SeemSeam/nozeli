@@ -109,6 +109,7 @@ export class ManagedProjects {
   try{await operation;return this.resourceStatus(projectId);}finally{if(this.resourceFlights.get(projectId)===operation)this.resourceFlights.delete(projectId);}
  }
  async setActiveProject(id){
+  if(this.guidedDemo?.isDemo(id)){await this.guidedDemo.verify(id);this.activeProjectId=id;return {demo:true,source:'demo-fixture'};}
   this.validateResourceProject(id);if(id===undefined)throw new HostError('INVALID_PAYLOAD','项目身份无效');const epoch=this.activationEpoch=(this.activationEpoch??0)+1;
   if(id!==null)await this.host.requireRegisteredProject(id);if(epoch!==this.activationEpoch)return {superseded:true};this.activeProjectId=id;if(id)this.projectActivity.set(id,Date.now());
   await this.initializeResources();if(epoch!==this.activationEpoch)return {superseded:true};await this.reclaimInactive(id,{all:true});
@@ -123,6 +124,7 @@ export class ManagedProjects {
   });this.reclaimFlight=operation;return operation;
  }
  async config(id){await this.host.requireRegisteredProject(id);return await this.host.storage.getLocal(id,'managed:binding')??{enabled:false};}
+ async demoStatus(id){return this.guidedDemo?.isDemo(id)?this.guidedDemo.managed('managed.status',{projectId:id}):null;}
  async attentionState(id,state,{connected=false}={}){
   const facts=[];
   for(const agent of state?.agents??[]){
@@ -188,6 +190,7 @@ export class ManagedProjects {
   }
  }
  async status(id){
+  if(this.guidedDemo?.isDemo(id))return this.demoStatus(id);
   const binding=await this.config(id),controller=this.controllers.get(id),failure=this.connectionErrors.get(id);let state=controller?.snapshot()??null;
   if(!state&&binding.enabled){const source=await this.projectionSource(id);const timeline=await source.index.page();const {sessionIndex,messages,...business}=source.state;state={jobs:[],works:[],todos:[],receipts:[],drafts:{},limit:1,...business,messages:source.index.messages(),timeline,agents:[],quotaUsed:(business.works??[]).filter(w=>!['queued','ended'].includes(w.status)).length,configuringTargets:[],externalTerminalTargets:[],nativeDraftTargets:[],busyTargets:[],stopping:false};}
   state=await this.attentionState(id,state,{connected:!!controller});
@@ -221,6 +224,7 @@ export class ManagedProjects {
   catch(error){await this.reportConnectionError(id,error);throw error;}
  }
  async connectAttempt(id,{enable=false,startResidents=true,localOnly=false}={}){
+  if(this.guidedDemo?.isDemo(id))return this.demoStatus(id);
   if(this.stopping)throw new Error('application closing');
   this.host.storage.assertActive(id);
   if(this.projectStops?.has(id))throw new HostError('PROJECT_STOPPING','项目正在停用，未启动新会话');
@@ -313,6 +317,7 @@ export class ManagedProjects {
   return managedArtifact({storage:this.host.storage,project,runtime:await managedRuntime(this.host.storage,id),controller,currentController:()=>this.controllers.get(id)},{objectId,relPath});
  }
  async reportSource(id,objectId){
+  if(this.guidedDemo?.isDemo(id))return this.guidedDemo.reportSource(id,objectId);
   const project=await this.host.requireRegisteredProject(id);
   if(!/^[0-9a-f-]{36}$/i.test(id)||!/^[0-9a-f-]{36}$/i.test(objectId))throw new Error('报告身份无效，未另存。');
   const controller=this.controllers.get(id);
@@ -404,6 +409,7 @@ export class ManagedProjects {
  stopVersionsGc(){for(const state of Object.values(this.versionGcState??{})){if(state.timer){clearTimeout(state.timer);state.timer=null;}}}
  async stop(){this.stopping=true;this.stopVersionsGc();await this.systemTerminals.stop();await Promise.allSettled([...this.flights.values()]);const drafts=await Promise.allSettled([...(this.draftFlights?.values()??[])]);const results=await Promise.allSettled([...this.controllers.values()].map(c=>c.stop()));await Promise.allSettled([...this.terminalFlights.values()]);await Promise.allSettled([...(this.adoptionCheckpoints??[])]);const reminders=await Promise.allSettled([...(this.attentionPublish?.values()??[]),...this.attention.flights.values()]);this.stopVersionsGc();this.controllers.clear();const error=[...drafts,...results,...reminders].find(r=>r.status==='rejected');if(error)throw error.reason;}
  async invoke(op,p){
+  if(this.guidedDemo?.isDemo(p?.projectId))return this.guidedDemo.managed(op,p);
   if(op==='managed.frontdesk.route.resolve'&&(!p||typeof p!=='object'||Array.isArray(p)))throw new HostError('INVALID_PAYLOAD','前台去向决定参数必须是对象。');
   const allowed={status:['projectId'],connect:['projectId'],enable:['projectId'],send:['projectId','target','text','relPath','materialText','tags','routingQuestionId','requestKey'],task:['projectId','text','relPath','materialText','tags','routingQuestionId','requestKey'],'intake.retry':['projectId','jobId','requestKey'],draft:['projectId','target','text'],end:['projectId','workId','revision','decision'],retry:['projectId','workId'],restart:['projectId','target'],binding:['projectId','role','skills'],limit:['projectId','limit'],'terminal.screen':['projectId','target'],'terminal.system':['projectId','target'],'terminal.return':['projectId','target'],'terminal.attach':['projectId','target'],'terminal.input':['projectId','target','terminalId','data'],'terminal.resize':['projectId','target','terminalId','cols','rows'],'terminal.close':['projectId','target','terminalId','detach']};
   allowed['terminal.attach']=['projectId','target','ownerId'];

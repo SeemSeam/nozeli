@@ -4,6 +4,7 @@ import {WorkspaceLayoutStore} from './workspace-layout-store.mjs';
 import {mergeDrawingMaterials} from '../domain/drawing-delivery.mjs';
 import {normalizeOfficeRecovery} from './office-recovery.mjs';
 import {listManagedPending,readManagedObject} from '../agents/managed/managed-storage.mjs';
+import {GuidedDemoControls} from './guided-demo-controls.mjs';
 
 const fail = (code, message = code) => Object.assign(new Error(message), { code });
 const writes = new Set(['file.save','file.draft','file.retain','sheet.save','sheet.recover','word.save','word.import','document.image.put','annotation.add','annotation.update','annotation.remove','annotation.drawing','tag.put','tag.view','tag.reanchor','tag.material']);
@@ -27,6 +28,42 @@ export class WorkspaceNative {
     this.namedLayouts=new WorkspaceLayoutStore({storage:host.storage});
     this.lifecycle = new Map();
     this.preferences = { contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true, allowRunningInsecureContent: false, backgroundThrottling: false, preload };
+    this.demoControls=new GuidedDemoControls(this);
+  }
+  async performDemoAction(scope,payload,{manager,row}){
+    const candidates=this.projectRecords(payload.projectId).filter(record=>!record.dead&&record.ready&&!record.transferring&&(!payload.viewId||record.viewId===payload.viewId)&&(!payload.relPath||record.relPath===payload.relPath));
+    const reportCommand=payload.command==='report.open'||payload.args?.semantic==='decision';
+    const shellCommand=['workspace.split','workspace.resize','workspace.detach','workspace.dock'].includes(payload.command)||payload.command==='notification.show'&&!reportCommand;
+    const layout=reportCommand?await this.layout(payload.projectId):null;
+    const record=shellCommand?this.shell:reportCommand?candidates.find(record=>record.kind==='report'&&layout.views[record.viewId]?.resourceId===payload.args.todoId):candidates.find(record=>payload.viewId?record.viewId===payload.viewId:payload.relPath?record.relPath===payload.relPath:record.kind==='document')??(!payload.viewId&&!payload.relPath?candidates[0]:null);
+    if(!record||record.projectId!==scope.projectId)throw fail('DEMO_SURFACE_NOT_READY','请先打开当前章节对应的真实内容面。');
+    if(reportCommand){
+      // Single-content mode backgrounds earlier views instead of tabbing them;
+      // 'activate' re-attaches an orphaned report view instead of failing.
+      const found=findView(layout,record.viewId),groups=layoutGroups(layout,'main');
+      const groupId=found?.group.id??groups.find(group=>group.activeViewId)?.id??groups[0]?.id;
+      if(!groupId)throw fail('DEMO_SURFACE_NOT_READY','没有可用的主工作区分区。');
+      await manager.bound(payload,{playing:true});
+      await this.command(scope,{projectId:payload.projectId,expectedRevision:layout.revision,requestKey:randomUUID(),command:{type:'activate',viewId:record.viewId,groupId}});
+    }
+    const requestId=randomUUID(),generation=record.generation,sessionId=row.session.id,epoch=row.session.epoch;
+    this.demoRequests??=new Map();
+    await manager.acceptAction(row,{requestId,command:payload.command,viewId:record.viewId,generation,sessionId,epoch,relPath:payload.relPath});
+    if(row.session.status!=='playing'||row.session.epoch!==epoch||record.dead||record.generation!==generation){await manager.settleAction(row,requestId,{ok:false,error:{code:'DEMO_PAUSED',message:'发送动作前会话已暂停或内容面已变化。'}});throw fail('DEMO_PAUSED');}
+    return new Promise((resolve,reject)=>{
+      const timer=setTimeout(()=>{this.demoRequests.delete(requestId);void manager.settleAction(row,requestId,{ok:false,error:{code:'DEMO_ACTION_TIMEOUT',message:'真实内容面未确认动作，未自动重放。'}}).finally(()=>reject(fail('DEMO_ACTION_TIMEOUT','真实内容面未确认动作。')));},15000);
+      this.demoRequests.set(requestId,{record,generation,sessionId,epoch,manager,row,resolve:value=>{clearTimeout(timer);resolve(value);},reject:error=>{clearTimeout(timer);reject(error);}});
+      try{record.wc.send('nozeli:workspace-control',{type:'demo-action',projectId:record.projectId,viewId:record.viewId,generation,sessionId,epoch,requestId,command:payload.command,args:payload.args??{},relPath:payload.relPath});}
+      catch(error){clearTimeout(timer);this.demoRequests.delete(requestId);void manager.settleAction(row,requestId,{ok:false,error:{code:'DEMO_SURFACE_GONE',message:error.message}}).finally(()=>reject(error));}
+    });
+  }
+  async demoActionResult(scope,payload,manager){
+    const pending=this.demoRequests?.get(payload.requestId);
+    if(!pending||pending.manager!==manager||pending.record!==scope||pending.generation!==scope.generation||pending.sessionId!==payload.sessionId||pending.epoch!==payload.epoch||scope.projectId!==payload.projectId||scope.dead)throw fail('DEMO_RECEIPT_DENIED','动作回执不属于原内容面、项目或演示会话。');
+    if(typeof payload.ok!=='boolean'||Buffer.byteLength(JSON.stringify(payload))>131072)throw fail('DEMO_RECEIPT_INVALID','演示动作回执无效。');
+    this.demoRequests.delete(payload.requestId);
+    const result={ok:payload.ok,source:'demo-fixture',projectId:scope.projectId,sessionId:payload.sessionId,epoch:payload.epoch,viewId:scope.viewId,generation:scope.generation,requestId:payload.requestId,value:payload.value,error:payload.error};
+    await manager.settleAction(pending.row,payload.requestId,result);pending.resolve(result);return {accepted:true};
   }
   async requireConversation(projectId,target='frontdesk',{notify=true}={}){
     if(!this.ensureConversation)return;
@@ -34,6 +71,7 @@ export class WorkspaceNative {
     catch(error){if(notify)this.broadcast('nozeli:workspace-control',{type:'conversation-unavailable',projectId,target,error:{code:error.code||'AGENT_NOT_READY',message:error.message}},projectId);throw error;}
   }
   async conversationState(projectId,state){
+    if(this.guidedDemo?.isDemo(projectId))return;
     const owner=[...this.surfaces.values()].find(s=>s.projectId===projectId&&s.kind==='conversation'&&s.conversationAdmitted&&!s.dead);
     if(!owner||owner.transferring||this.conversationClosing?.has(projectId))return;
     if(this.windows.get(owner.windowId)?.projectHidden)return;
@@ -51,22 +89,26 @@ export class WorkspaceNative {
   register(wc, scope) {
     const record = { ...scope, wc, generation: 0, recoveryOwner:randomUUID(), ready: false, dead: false };
     this.senders.set(wc.id, record);
+    wc.on('before-input-event',(_event,input)=>{if(!['shell','demo-controls'].includes(record.role)&&input.type==='keyDown')void this.guidedDemo?.pauseProject(record.projectId,'用户操作了真实内容面，演示已暂停。').catch(this.onError);});
     wc.on('focus',()=>{if(record.role==='surface'){const root=this.windows.get(record.windowId);if(root&&!root.dead)root.wc.send('nozeli:workspace-control',{type:'surface-focus',viewId:record.viewId,projectId:record.projectId});}});
     wc.on('before-input-event',(event,input)=>{if(record.role!=='surface'||input.type!=='keyDown'||input.isComposing)return;const numbered=(input.control||input.meta)&&!input.alt&&!input.shift&&/^[1-9]$/.test(input.key),cycle=input.key==='F6'&&!input.control&&!input.meta&&!input.alt;if(!numbered&&!cycle)return;const root=this.windows.get(record.windowId);if(!root||root.dead||root.projectId!==record.projectId)return;event.preventDefault();root.wc.send('nozeli:workspace-control',{type:'group-focus',projectId:record.projectId,viewId:record.viewId,...(numbered?{index:Number(input.key)-1}:{direction:input.shift?-1:1})});});
     wc.on('before-input-event',(event,input)=>{if(record.role!=='surface'||input.type!=='keyDown'||input.isComposing)return;const quick=(input.control||input.meta)&&!input.alt&&!input.shift&&input.key.toLowerCase()==='p';if(!quick)return;const root=this.windows.get(record.windowId);if(!root||root.dead)return;event.preventDefault();root.wc.send('nozeli:workspace-control',{type:'quick-open',projectId:record.projectId,viewId:record.viewId});});
     wc.setWindowOpenHandler?.(() => ({ action: 'deny' }));
-    wc.on('will-navigate', (event, url) => { if (url !== this.origin) event.preventDefault(); });
+    wc.on('will-navigate', (event, url) => { if (url !== (record.role==='demo-controls'?this.origin+'guided-demo-controls.html':this.origin)) event.preventDefault(); });
     wc.on('will-attach-webview', event => event.preventDefault());
     wc.on('did-start-navigation', (_event, _url, _inPlace, main) => {
       if (!main) return;
       this.isolatedPreview?.closeScope(record);
+      if(record.role==='demo-controls'&&record.ready)this.demoControls.reloading(record);
       record.generation++; record.ready = false;
+      if(record.role==='shell')this.demoControls.record?.view.setVisible(false);
       record.boundsSequence=0;
       this.cancelDrags(record);
       if (record.role !== 'surface') for (const surface of this.projectRecords(record.projectId, record.windowId)) surface.view.setVisible(false);
       for (const [id, receipt] of this.receipts) if (receipt.record === record) { receipt.reject(fail('SURFACE_RELOADED')); this.receipts.delete(id); }
     });
     wc.on('render-process-gone', (_event, details) => {
+      if(record.role==='demo-controls'){this.demoControls.failed(record,Error('演示控制区进程已退出：'+details.reason));return;}
       this.isolatedPreview?.closeScope(record);
       if(record.role!=='surface')for(const surface of this.projectRecords(record.projectId,record.windowId))surface.view.setVisible(false);
       record.ready = false; record.generation++;
@@ -98,9 +140,12 @@ export class WorkspaceNative {
   }
   authorize(event, op, payload = {}) {
     const r = this.senders.get(event.sender?.id), frame = event.senderFrame;
-    if (!r || r.dead || !frame || frame.parent != null || frame !== event.sender.mainFrame || frame.url !== this.origin) throw fail('IPC_DENIED');
+    const expected=r?.role==='demo-controls'?this.origin+'guided-demo-controls.html':this.origin;
+    if (!r || r.dead || !frame || frame.parent != null || frame !== event.sender.mainFrame || frame.url !== expected) throw fail('IPC_DENIED');
     if (typeof op !== 'string') throw fail('UNKNOWN_OP');
-    if (payload.projectId && payload.projectId !== r.projectId && !(r.role === 'shell' && ['managed.status','managed.attention.ack','workspace.project','workspace.closeProject','workspace.recovery.object','workspace.recovery.settle','project.open','project.remove','project.retry','project.lifecycle.preview','project.lifecycle.reconcile'].includes(op))) throw fail('PROJECT_SCOPE_DENIED');
+    if(r.role==='demo-controls'){if(!this.demoControls.owns(r)||!this.demoControls.allowed(op))throw fail('IPC_DENIED');return r;}
+    if (payload.projectId && payload.projectId !== r.projectId && !(r.role === 'shell' && (['demo.state','managed.status','managed.attention.ack','workspace.project','workspace.closeProject','workspace.recovery.object','workspace.recovery.settle','project.open','project.remove','project.retry','project.lifecycle.preview','project.lifecycle.reconcile'].includes(op)||op==='demo.transition'&&payload.action==='stop'))) throw fail('PROJECT_SCOPE_DENIED');
+    if(op.startsWith('demo.')){if(op==='demo.result'){if(!['surface','shell','detached'].includes(r.role))throw fail('IPC_DENIED');}else if(!['demo.state','demo.send','demo.interrupt'].includes(op)&&r.role!=='shell')throw fail('IPC_DENIED');return r;}
     if(r.role==='surface'&&r.kind==='terminal'&&op.startsWith('managed.')&&(op!=='managed.terminal.screen'||payload.target!==this.layouts.get(r.projectId)?.views[r.viewId]?.viewState?.workId))throw fail('IPC_DENIED');
     if (this.lifecycle.has(r.projectId) && (writes.has(op) || op === 'managed.send' || ['managed.attention.respond','managed.attention.draft.write'].includes(op) || op === 'workspace.project' || op === 'workspace.command')) throw fail('PROJECT_LIFECYCLE_ACTIVE', '项目正在保留并关闭，请等待操作结果。');
     if(op==='report.copySource'&&!(r.role==='shell'||r.role==='surface'&&['report','history'].includes(r.kind)))throw fail('IPC_DENIED');
@@ -140,6 +185,7 @@ export class WorkspaceNative {
     this.queues.set(projectId, next); return next.finally(() => { if (this.queues.get(projectId) === next) this.queues.delete(projectId); });
   }
   bootstrap(r) {
+    if(r.role==='demo-controls')return this.demoControls.state();
     const descriptor=this.layouts.get(r.projectId)?.views[r.viewId];
     if (r.role === 'surface' && r.relPath && !descriptor?.readOnly) {
       const key = this.resource(r.projectId, r.relPath), lease = this.leases.get(key);
@@ -149,7 +195,7 @@ export class WorkspaceNative {
     const viewState=this.layouts.get(r.projectId)?.views[r.viewId]?.viewState;
     return { role: r.role, projectId: r.projectId, viewId: r.viewId, kind: r.kind, relPath: r.relPath, windowId: r.windowId, generation: r.generation, readOnly: !!r.readOnly, draftOnly:viewState?.draftOnly===true, viewState, lease: r.relPath ? this.leases.get(this.resource(r.projectId, r.relPath)) : null };
   }
-  flush(records) { return Promise.all([...new Set(records)].filter(r => !r.dead).map(r => this.flushOne(r))).then(() => this.host.settled()); }
+  flush(records) { return Promise.all([...new Set(records)].filter(r => !r.dead&&r.role!=='demo-controls').map(r => this.flushOne(r))).then(() => this.host.settled()); }
   async flushOne(record, channel = 'nozeli:flush', detail = {}) {
     if(!record.ready&&record.role==='surface'&&!record.dead){await new Promise((resolve,reject)=>{const generation=record.generation,timer=setTimeout(()=>{record.wc.removeListener('nozeli-content-ready',ready);reject(fail('SURFACE_NOT_READY'));},10000);const ready=()=>{clearTimeout(timer);record.dead||record.generation!==generation?reject(fail('SURFACE_CHANGED')):resolve();};record.wc.once('nozeli-content-ready',ready);});}
     if (!record.ready) throw fail('SURFACE_NOT_READY');
@@ -214,6 +260,7 @@ export class WorkspaceNative {
   }
   async closeProject(projectId, {operationId = randomUUID()} = {}) {
     if (typeof operationId !== 'string' || !operationId || operationId.length > 160) throw fail('INVALID_OPERATION_ID');
+    await this.guidedDemo?.pauseProject(projectId,'演示项目正在关闭，已暂停自动动作。');
     const input = JSON.stringify({action:'close-project',projectId,operationId});
     const previous = this.lifecycle.get(projectId);
     if (previous) {
@@ -282,6 +329,7 @@ export class WorkspaceNative {
     this.host.storage.assertActive(projectId);
     const work=async()=>{
       const generation=r.generation, previousProjectId=r.projectId;
+      if(previousProjectId&&previousProjectId!==projectId)await this.guidedDemo?.pauseProject(previousProjectId,'离开演示项目，自动操作已暂停。');
       const owners=previousProjectId&&previousProjectId!==projectId?[r,...this.projectRecords(previousProjectId)]:[];
       if(owners.some(owner=>owner.previewRecoveryFailed))throw fail('TRANSFER_RECOVERY_REQUIRED','报告恢复未确认，原项目保持打开。');
       const originalSurfaces=new Set(this.surfaces.values()), originalWindows=new Set(this.windows.values());
@@ -599,6 +647,9 @@ export class WorkspaceNative {
     } finally { r.closePending = false; }
   }
   async invoke(r, op, p = {}) {
+    if(r.role==='demo-controls')return this.demoControls.invoke(r,op,p);
+    if(op==='workspace.demoControls.update')return this.demoControls.update(r,p.model);
+    if(op==='workspace.demoControls.readyForPlay')return this.demoControls.readyForPlay(r,p.sessionId);
     if (op === 'workspace.bootstrap') return this.bootstrap(r);
     if (op === 'workspace.closeProject') {
       if (r.role !== 'shell') throw fail('IPC_DENIED');
@@ -709,11 +760,12 @@ export class WorkspaceNative {
         for(const slot of this.isolatedPreview?.slots.values()??[])if(slot.scope===surface)this.isolatedPreview.bounds(slot,slot.bounds);
         surface.returnFocus?.();
       }
+      this.demoControls.raise();
       return {};
     }
     if (op === 'workspace.control') {
       if(p.type==='open-settings'){
-        if(!['settings-appearance','settings-reading-display','settings-provider','settings-models','settings-agents','settings-recovery'].includes(p.section))throw fail('INVALID_SETTINGS');
+        if(!['settings-appearance','settings-reading-display','settings-provider','settings-models','settings-agents','settings-recovery','settings-help'].includes(p.section))throw fail('INVALID_SETTINGS');
         if((!this.shell||this.shell.dead)&&this.restoreShell)await this.restoreShell();
         if(!this.shell||this.shell.dead)throw fail('MAIN_WINDOW_UNAVAILABLE');
         const control={type:'open-settings',section:p.section,projectId:r.projectId};if(this.shell.ready)this.shell.wc.send('nozeli:workspace-control',control);else(this.shell.pendingControls??=[]).push(control);this.shell.win.show();this.shell.win.focus();return {};
@@ -746,7 +798,8 @@ export class WorkspaceNative {
         const current=await this.layout(projectId);
         const conversation=Object.values(current.views).find(v=>v.kind==='conversation');
         if(conversation?.viewState?.draftOnly){conversation.viewState={...conversation.viewState,draftOnly:false};await this.persist(current);const live=this.surfaces.get(conversation.id);if(live)live.wc.send('nozeli:workspace-control',{type:'drawing-connect',projectId});}
-        if(p.action==='prepare'){r.drawingConversationProject=projectId;return {projectId,target:'frontdesk',ready:true};}
+        if(this.guidedDemo?.isDemo(projectId)&&conversation){const live=this.surfaces.get(conversation.id);if(live){live.conversationAdmitted=true;live.conversationBlocked=false;live.conversationTarget='frontdesk';}}
+        if(p.action==='prepare'){if(this.guidedDemo?.isDemo(projectId))return {projectId,target:'frontdesk',ready:true,demo:true,source:'demo-fixture'};r.drawingConversationProject=projectId;return {projectId,target:'frontdesk',ready:true};}
         const root=this.windows.get(r.windowId)||this.windows.get('main');if(!root)throw fail('NO_ROOT');
         const localGroups=layoutGroups(layout,root.windowId),source=r.role==='surface'?findView(layout,r.viewId)?.group:null;
         const target=p.groupId?localGroups.find(g=>g.id===p.groupId):source||localGroups[0];

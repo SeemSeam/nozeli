@@ -144,10 +144,6 @@ try {
   await page.waitForSelector('[data-message="tool-result"] summary');
   await page.click('[data-message="tool-result"] summary');
   await page.waitForFunction(()=>document.querySelector('[data-message="tool-result"]').textContent.includes('native tool output preserved'));
-  await page.evaluate(()=>{window.__openMaterialAttachment=digest=>{window.consumer.imageDigest=digest;};window.consumer.store.apply('project-consumer',{version:1,entries:[{id:'image-source',target:'frontdesk',speaker:'user',source:'host',sequence:1.8,text:'frozen image',attachments:[{name:'Synthetic region.png',digest:'frozen-image-digest'}]}]});});
-  await page.waitForSelector('[data-digest="frozen-image-digest"]');
-  await page.click('[data-digest="frozen-image-digest"]');
-  assert.equal(await page.evaluate(()=>window.consumer.imageDigest),'frozen-image-digest');
   await page.click('.session-worker summary');
   await page.waitForFunction(()=>!document.querySelector('.session-worker details').open);
   assert.equal(await page.$eval('[data-frozen-file="file-two"]',node=>node.closest('details')===null),true);

@@ -103,7 +103,7 @@ async function renderWorkVersions({box,record,projectId,call}){
  }
 }
 export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},onConversation,openProjectFile,openExternal,openFrozenChange}){
- let projectId=null,active=false,ready=false,state=null,target='frontdesk',generation=0,refreshing=0;
+ let projectId=null,active=false,ready=false,state=null,target='frontdesk',generation=0,refreshing=0,fixtureMode=false;
  const scope=window.__workspaceScope;
  const ownsConversation=!scope||(scope.role==='surface'&&scope.kind==='conversation');
  let pendingConversation=null;
@@ -385,6 +385,7 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
  function remember(){if(ownsConversation&&projectId)captureInput();}
  function select(t){if(!ownsConversation)return invoke('workspace.control',{type:'conversation-action',projectId,action:'select',target:t});remember();inputEpoch++;inputIdentityReason='';sessionRecoveryError='';target=t;if(scope)scope.viewState={...scope.viewState,conversationInput:{projectId,target:t}};const work=state?.works.find(w=>w.id===t);viewed=work?.readOnly?{workId:t,readOnly:true}:null;$('composer').value=drafts.get(projectId+':'+t)??state?.drafts?.[t]??'';window.__composerMaterials?.restore(scope?.viewState?.conversationMaterials?.[t],{projectId,target:t});captureInput();lockHistory();render();const detail={projectId};document.dispatchEvent(new CustomEvent('nozeli-conversation-input-change',{detail}));void detail.persist?.catch(error=>toast('输入归属保存失败：'+error.message));}
  function render(){
+  if(fixtureMode){if(state)todoUI.render(state,projectId);updateReviewActions();return;}
   if(!active||!state)return;
   clearFrontdeskContext.disabled=clearingFrontdesk||!ready||target!=='frontdesk'||Boolean(viewed?.history)||state.busyTargets?.includes('frontdesk')||state.nativeDraftTargets?.includes('frontdesk')||state.externalTerminalTargets?.includes('frontdesk');
   renderConfigurationNotice(configurationNotice,state.agents||[]);
@@ -540,6 +541,13 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
  window.nozeli.subscribe('workspace.control',event=>{if(event.type==='content-command'&&event.command==='report-tools'&&event.projectId===projectId&&event.viewId===scope?.viewId){reportMenuAnchor={x:Math.max(6,event.anchor?.x||0),y:Math.max(6,event.anchor?.y||0)};openReportTools();}});
  function updateReviewActions(){
   const footer=$('managed-result-actions'),doc=reportDocument;if(!footer||!doc)return;
+  if(doc.report?.source==='demo-fixture'){
+   const todo=state?.todos.find(todo=>todo.id===doc.todoId),status=footer.querySelector('[data-report-state]'),reason=footer.querySelector('[data-report-reason]');
+   if(status)status.textContent=todo?.resolution?.choice==='accept'?'已接受演示结论（未改动真实任务）':todo?.resolution?.choice==='discard'?'已丢弃演示结论（示例文件保留）':todo?.status==='open'?'【演示内容】待决定；查看或稍后不会接受':'演示事项已关闭或移除，报告原件保留。';
+   for(const button of footer.querySelectorAll('[data-demo-decision]'))button.disabled=dispositionPending||todo?.status!=='open';
+   if(reason)reason.textContent='固定教学报告；本操作仅记录本地演示决定，不写入论文、不启动真实 Worker。';
+   return;
+  }
   const w=state?.works.find(w=>w.id===doc.workId);if(!w)return;
   const status=footer.querySelector('[data-report-state]'),reason=footer.querySelector('[data-report-reason]'),discuss=footer.querySelector('[data-report-discuss]'),accept=footer.querySelector('[data-managed-end-result]'),retry=footer.querySelector('[data-managed-closure-retry]');
   const history=doc.historical||w.revision!==doc.revision,ended=w.status==='ended',outcome=w.outcome||w.closure?.decision,decision=outcome==='accept'?'已接受':outcome==='discard'?'已丢弃':'工作已结束，原决定未记录';
@@ -579,7 +587,7 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
    attentionView={todoId:todo.id,ui};return;
   }
   if(scope?.kind!=='report'){
-    return openManaged({id:todo.id,todoId:todo.id,projectId,title:(state.works.find(w=>w.id===todo.workId)?.name||'待办'),text:todo.text||''});
+    return openManaged({id:todo.id,todoId:todo.id,projectId,title:todo.title||state.works.find(w=>w.id===todo.workId)?.name||'待办',text:todo.text||''});
   }
   if(todo.kind==='frontdesk-route'){
    const proposal=state.frontdeskRoutes?.find(route=>route.id===todo.proposalId);
@@ -595,9 +603,9 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
   if(sourceProject!==projectId||gen!==generation||request!==reportRequest)return;
   const descriptor=source?.ok?source.value.report:receipt?.report;
   const text=source?.ok?(descriptor.format==='markdown'?source.value.body:undefined):source?'报告读取失败：'+(source.error?.message||'未知错误')+'；原件保留。':todo.text||'工作排队中；尚无正式报告。';
-  const title=(w?.name||'主控事项')+(todo.revision?' · 第 '+todo.revision+' 版':'');
+  const title=todo.title||(w?.name||'主控事项')+(todo.revision?' · 第 '+todo.revision+' 版':'');
   const stillCurrent=()=>sourceProject===projectId&&gen===generation&&request===reportRequest&&state?.todos.some(t=>t.id===id&&(t.managementRevision||0)===(todo.managementRevision||0));
-  const result=await openManaged({id:todo.id,projectId:sourceProject,objectId:todo.objectId,title,text:source?.ok&&descriptor?.format==='html-static'?'静态 HTML 报告':text,report:descriptor,writtenBack:null});
+  const result=await openManaged({id:todo.id,todoId:todo.id,projectId:sourceProject,objectId:todo.objectId,title,text:source?.ok&&descriptor?.format==='html-static'?'静态 HTML 报告':text,report:descriptor,writtenBack:null});
   if(result?.ok===false)return;
   if(!stillCurrent()){if(sourceProject===projectId&&gen===generation&&request===reportRequest){$('managed-doc').replaceChildren();$('managed-doc').textContent='待办已变化或移除，请从待办面板重新查看。';}return;}
   const listing=await invoke('project.list',{projectId:sourceProject});if(!stillCurrent()){if(sourceProject===projectId&&gen===generation&&request===reportRequest){$('managed-doc').replaceChildren();$('managed-doc').textContent='待办已变化或移除，请重新查看。';}return;}
@@ -616,6 +624,10 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
   viewed={todoId:todo.id,workId:w?.id,revision:todo.revision,kind:todo.kind,routingQuestionId:routing?todo.id:null,readOnly:!business&&!routing};render();
   const footer=document.createElement('div');footer.id='managed-result-actions';
   const action= (caption,fn)=>button(caption,async()=>{try{await fn();await refresh();}catch(error){if(error.businessRejection)return;let notice=$('managed-review-error');if(!notice){notice=document.createElement('p');notice.id='managed-review-error';notice.setAttribute('role','alert');footer.append(notice);}notice.textContent=error.message;}});
+  if(todo.source==='demo-fixture')for(const [choice,caption]of [['accept','接受演示结论'],['discard','丢弃演示结论']]){
+   const decide=action(caption,async()=>{if(!stillCurrent())throw Error('原演示事项已变化，请重新打开');dispositionPending=true;updateReviewActions();try{const result=await call('todo.manage',{todoId:todo.id,expectedRevision:todo.managementRevision||0,action:'demo-'+choice,requestKey:crypto.randomUUID()},sourceProject);if(!result.accepted)throw Error('未取得演示决定回执');}finally{dispositionPending=false;updateReviewActions();}});
+   decide.dataset.demoDecision=choice;footer.append(decide);
+  }
   if(todo.status==='open'&&!todo.reopenedAt&&!w?.readOnly){
   if(w&&!['closing','ended'].includes(w.status)){
    const discuss=action('继续讨论',()=>{if(sourceProject!==projectId)return;select(w.id);});discuss.dataset.reportDiscuss='';discuss.className='ui-action';footer.append(discuss);
@@ -644,12 +656,13 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
   }
   if(w){const retry=action('重试技术收尾',()=>disposeWork(w.id,'retry',reportDocument));retry.dataset.managedClosureRetry='';retry.className='ui-action';retry.dataset.uiAction='primary';retry.hidden=true;footer.append(retry);}
   const status=document.createElement('p');status.dataset.reportState='';status.className='managed-report-state';footer.prepend(status);const reason=document.createElement('p');reason.id='managed-report-reason';reason.dataset.reportReason='';reason.setAttribute('role','status');footer.append(reason);const error=document.createElement('p');error.id='managed-review-error';error.setAttribute('role','alert');error.hidden=true;footer.append(error);
-  $('managed-doc').append(footer);void queryDisposition();
+  $('managed-doc').append(footer);if(fixtureMode)updateReviewActions();else void queryDisposition();
  }
- async function refresh(){const id=projectId,gen=generation,version=++refreshing;if(!id)return;const s=await call('status',{},id);if(id!==projectId||gen!==generation||version!==refreshing)return;state=s.state;ready=Boolean(s.ready);if(!active&&s.enabled)show(true);renderResidentRecovery(s);if(state)render();}
+ async function refresh(){const id=projectId,gen=generation,version=++refreshing;if(!id)return;const s=await call('status',{},id);if(id!==projectId||gen!==generation||version!==refreshing)return;state=s.state;if(fixtureMode){render();return;}ready=Boolean(s.ready);if(!active&&s.enabled)show(true);renderResidentRecovery(s);if(state)render();}
  const resetSession=()=>{workMenu.close();delete workInfo.dataset.workId;requestReads.clear();clear();};
  window.addEventListener('nozeli-project-change',()=>{reportMenu.close();workMenu.close();reportDocument=null;disposition=null;++dispositionRequest;});
- function clear({rememberDraft=true}={}){if(rememberDraft)remember();if(agentDetails.open)agentDetails.close();agentDetailsStatus.textContent='';workInfo.hidden=true;workInfo.replaceChildren();delete workInfo.dataset.signature;$('ai-status').textContent='';delete $('ai-status').dataset.state;identityReads.clear();renderConfigurationNotice(configurationNotice,[]);routeUI.clear();todoUI.clear();reportRequest++;historyRequest++;pageRequest++;historyPage=false;pageError='';active=false;sessionStore.reset(null);timelineBox.hidden=true;historyReceiptSignature=null;historyItems=[];historyVersion=null;historyNext=null;historyTotal=0;historyLoading=false;historyNotice='';renderHistory();if(exportDialog.open)exportDialog.close();exportSource=null;sourceMessage=null;sourceBox.hidden=true;sourceGoal.value='';for(const row of workRows.values())row.remove();workRows.clear();generation++;ready=false;state=null;toolbar.hidden=true;toolbar.replaceChildren();progressBox.hidden=true;progressBox.replaceChildren();progressSignature=null;delete $('conversation-panel').dataset.managedConversation;projectFilePaths=new Set();fileAvailability=new Map();availabilityKey=null;availabilityRequest++;target='frontdesk';viewed=null;lockHistory();$('composer').disabled=false;for(const t of terminals.values())t.dispose();terminals.clear();terminalLayout?.dispose();terminalLayout=null;terminalBox.replaceChildren();show(false);}
+ function observeFixture(id,snapshot){if(snapshot?.source!=='demo-fixture')throw Error('不是登记的演示来源');projectId=id;state=snapshot;fixtureMode=true;active=false;ready=false;render();}
+ function clear({rememberDraft=true}={}){fixtureMode=false;if(rememberDraft)remember();if(agentDetails.open)agentDetails.close();agentDetailsStatus.textContent='';workInfo.hidden=true;workInfo.replaceChildren();delete workInfo.dataset.signature;$('ai-status').textContent='';delete $('ai-status').dataset.state;identityReads.clear();renderConfigurationNotice(configurationNotice,[]);routeUI.clear();todoUI.clear();reportRequest++;historyRequest++;pageRequest++;historyPage=false;pageError='';active=false;sessionStore.reset(null);timelineBox.hidden=true;historyReceiptSignature=null;historyItems=[];historyVersion=null;historyNext=null;historyTotal=0;historyLoading=false;historyNotice='';renderHistory();if(exportDialog.open)exportDialog.close();exportSource=null;sourceMessage=null;sourceBox.hidden=true;sourceGoal.value='';for(const row of workRows.values())row.remove();workRows.clear();generation++;ready=false;state=null;toolbar.hidden=true;toolbar.replaceChildren();progressBox.hidden=true;progressBox.replaceChildren();progressSignature=null;delete $('conversation-panel').dataset.managedConversation;projectFilePaths=new Set();fileAvailability=new Map();availabilityKey=null;availabilityRequest++;target='frontdesk';viewed=null;lockHistory();$('composer').disabled=false;for(const t of terminals.values())t.dispose();terminals.clear();terminalLayout?.dispose();terminalLayout=null;terminalBox.replaceChildren();show(false);}
  async function load(id,{connect=true,input,observe=false}={}){
   let frame=input?.frame||scope?.viewState||{};
   const reloading=ownsConversation&&projectId===id&&state;
@@ -814,6 +827,6 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
  window.nozeli.subscribe('workspace.control',event=>{if(event.type==='conversation-unavailable'&&event.projectId===projectId&&!ownsConversation){target=event.target||'frontdesk';sessionRecoveryError=event.error?.message||'';if(state)render();}});
  window.addEventListener('nozeli-content-file-opened',leaveHistory);
  window.nozeli.subscribe('agent',e=>{if(e.kind==='managed-files-changed'&&e.projectId===projectId)void refreshProjectFiles().catch(error=>toast('文件链接列表读取失败：'+error.message));});
- window.nozeli.subscribe('agent',e=>{if(!active||e.projectId!==projectId)return;if(e.kind==='managed-state'){state=e.state;if(!ready)void refresh().catch(error=>toast(error.message));else render();}if(e.kind==='managed-timeline'&&!historyPage){sessionStore.apply(projectId,e.timeline||e.frame,{replace:true});}if(e.kind==='managed-error')toast(e.text);});
- return {get active(){return active;},reachable:true,load,enable,send,refresh,clear(options){clear(options);if(options?.rememberDraft===false)projectId=null;},console:()=>{terminalBox.hidden=false;renderTerminals();},onReport:openTodo};
+ window.nozeli.subscribe('agent',e=>{if((!active&&!fixtureMode)||e.projectId!==projectId)return;if(e.kind==='managed-state'){state=e.state;if(fixtureMode){render();return;}if(!ready)void refresh().catch(error=>toast(error.message));else render();}if(e.kind==='managed-timeline'&&!historyPage){sessionStore.apply(projectId,e.timeline||e.frame,{replace:true});}if(e.kind==='managed-error')toast(e.text);});
+ return {get active(){return active;},reachable:true,load,enable,send,refresh,observeFixture,clear(options){clear(options);if(options?.rememberDraft===false)projectId=null;},console:()=>{terminalBox.hidden=false;renderTerminals();},onReport:openTodo};
 }

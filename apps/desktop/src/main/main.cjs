@@ -11,7 +11,7 @@ if (process.argv.includes('--nozeli-document')) {
 const { app, BaseWindow, WebContentsView, screen, ipcMain, Menu, shell, clipboard, nativeTheme } = require('electron');
 const {WorkspaceWindow} = require('./workspace-window.cjs');
 let dialog, session;
-let DesktopHost, HostError, ops, agents, managedAgents, agentHandlers, lspManager, formatterService, texManager, texLanguage;
+let DesktopHost, HostError, ops, agents, managedAgents, agentHandlers, lspManager, formatterService, texManager, texLanguage, guidedDemo;
 const http = require('node:http');
 const { randomUUID, randomBytes } = require('node:crypto');
 const fs = require('node:fs/promises');
@@ -319,10 +319,14 @@ async function main() {
   const {ProjectLifecycle}=await import('./project-lifecycle.mjs');
   const {reconcileManagedPending}=await import('../agents/managed/managed-storage.mjs');
   projectLifecycle=new ProjectLifecycle({host,workspace:workspaceNative,managed:managedAgents,reconcileManaged:(id,options)=>reconcileManagedPending(host.storage,id,options),trashItem:target=>shell.trashItem(target),beforeStop:async id=>{projectWatcher?.unwatchProject(id);await texManager?.stopProject(id);await texLanguage?.stopProject(id);await lspManager?.stopProject(id);},protectedRoots:[APP_ROOT,path.dirname(APP_ROOT),nozeliPaths.root]});
+  const {createGuidedDemo}=await import('./guided-demo.mjs');
+  guidedDemo=await createGuidedDemo({host,workspace:workspaceNative,userDataDir:app.getPath('userData'),appRoot:APP_ROOT,examplesRoot:process.env.NOZELI_GUIDED_DEMO_ROOT||path.join(app.getPath('documents'),'Nozeli Examples')});
+  guidedDemo.lifecycle=projectLifecycle;workspaceNative.guidedDemo=guidedDemo;host.guidedDemo=guidedDemo;managedAgents.guidedDemo=guidedDemo;
   const stopManagedUnavailable=host.storage.onUnavailable;
   host.storage.onUnavailable=(id,error)=>{workspaceNative.unavailableProjects??=new Set();if(workspaceNative.unavailableProjects.has(id))return;workspaceNative.unavailableProjects.add(id);const stopped=stopManagedUnavailable(id,error);void Promise.allSettled([stopped,projectLifecycle.beforeStop(id)]).then(results=>{if(results.some(result=>result.status==='rejected'))workspaceNative.broadcast('nozeli:workspace-control',{type:'project-stop-pending',projectId:id,error:{code:'OMP_EXIT_UNCONFIRMED',message:'原生停稳尚未确认，未允许继续执行或清理。'}},id);});workspaceNative.broadcast('nozeli:workspace-control',{type:'project-unavailable',projectId:id,error:{code:error.code,message:error.message}},id);};
   workspaceNative.restoreShell=()=>createWindow(server);
   workspaceNative.ensureConversation=async(projectId,target)=>{
+    if(guidedDemo.isDemo(projectId)){await guidedDemo.verify(projectId);return;}
     try{
     const configuration=await readNozeliConfiguration(nozeliPaths);if(configuration.choiceRequired)throw Object.assign(Error('请先完成 Agent 配置，再打开对话。'),{code:'CONFIG_SETUP_REQUIRED'});
     let status=await managedAgents.connect(projectId,{enable:true});
@@ -360,7 +364,16 @@ async function main() {
       if(['material.attach','material.attachPath'].includes(op))payload={...payload,projectId:scope.projectId};
       if(op==='material.read'&&payload.projectId!==scope.projectId)throw new HostError('PROJECT_SCOPE_DENIED','附件不属于当前项目');
       trusted(event,op,payload??{});
+      if(op.startsWith('workspace.demoControls.'))return {ok:true,value:await workspaceNative.invoke(scope,op,payload??{})};
       const admissionProject=payload?.projectId??scope.projectId;
+      if(op.startsWith('demo.'))return {ok:true,value:await guidedDemo.invoke(scope,op,payload??{})};
+      if(admissionProject&&guidedDemo.isDemo(admissionProject)){
+        await guidedDemo.verify(admissionProject);
+        if(op==='config.status')return {ok:true,value:{choiceRequired:false,source:'demo-fixture',demo:true}};
+        if(op.startsWith('managed.'))return {ok:true,value:await guidedDemo.managed(op,{...payload,projectId:admissionProject})};
+        if(op.startsWith('agents.')&&!['agents.messages','agents.reports'].includes(op))throw new HostError('DEMO_NATIVE_DISABLED','演示副本禁止原生 Agent、模型及终端启动。');
+        if(['report.copySource','report.export'].includes(op))throw new HostError('DEMO_NATIVE_DISABLED','演示报告请从示例项目文件读取或另存。');
+      }
       if(admissionProject&&!['workspace.recovery','workspace.recovery.list','workspace.recovery.object','session.flushed','workspace.bootstrap','project.lifecycle.reconcile'].includes(op))host.storage.assertActive(admissionProject);
       if(['project.lifecycle.preview','project.lifecycle.execute','project.lifecycle.reconcile'].includes(op)){if(scope.role!=='shell')throw new HostError('IPC_DENIED','只能在主窗口管理项目');await finishDrawing({projectId:payload.projectId});if(op.endsWith('preview'))return {ok:true,value:await projectLifecycle.preview(payload)};if(op.endsWith('reconcile'))return {ok:true,value:await projectLifecycle.reconcile(payload)};return {ok:true,value:await projectLifecycle.execute(payload)};}
       if(op==='project.retry'){if(scope.role!=='shell')throw new HostError('IPC_DENIED','仅主窗可重试项目');await managedAgents.stopProject(payload.projectId);const value=await host.storage.retry(payload.projectId);workspaceNative.unavailableProjects?.delete(payload.projectId);return {ok:true,value};}
@@ -394,7 +407,7 @@ async function main() {
         const value=await workspaceNative.invoke(scope,op,payload??{});
         if(op==='workspace.project'){
           if(priorProject&&priorProject!==scope.projectId)projectWatcher?.unwatchProject(priorProject);
-          try{await managedAgents.setActiveProject(scope.projectId);}catch(error){workspaceNative.broadcast('nozeli:agent',{projectId:scope.projectId,kind:'managed-error',text:'Agent 连接失败，文件仍可打开：'+error.message},scope.projectId);}
+          if(!guidedDemo.isDemo(scope.projectId))try{await managedAgents.setActiveProject(scope.projectId);}catch(error){workspaceNative.broadcast('nozeli:agent',{projectId:scope.projectId,kind:'managed-error',text:'Agent 连接失败，文件仍可打开：'+error.message},scope.projectId);}
         }
         return {ok:true,value};
       }
@@ -628,6 +641,7 @@ async function main() {
       if (!handler || op === 'project.pick') throw new HostError('UNKNOWN_OP', 'Unknown host operation.');
       if(op==='project.remove'){await finishDrawing({projectId:payload.projectId});return {ok:true,value:await projectLifecycle.removeProject(payload.projectId,{operationId:payload.operationId})};}
       const value = await handler(host, payload ?? {});
+      if(['file.save','word.save','sheet.save'].includes(op)&&guidedDemo.isDemo(payload.projectId))await guidedDemo.recordTutorialSave(scope,op,payload,value);
       return { ok: true, value };
     } catch (error) {
       if(['PROJECT_ROOT_MISSING','PROJECT_METADATA_MISSING','PROJECT_METADATA_CONFLICT','PROJECT_IDENTITY_CONFLICT'].includes(error.code)&&payload?.projectId)host.storage.onUnavailable(payload.projectId,error);
