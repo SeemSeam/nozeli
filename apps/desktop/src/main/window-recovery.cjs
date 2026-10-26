@@ -48,7 +48,7 @@ class WindowRecovery {
     // Never fetch a different waiter after the await: it may belong to a new close.
     if(!this.current(p))return {accepted:false};
     this.clearTimer(p.timer);
-    if(!payload.ok){this.invalidate();this.phase='save-unconfirmed';this.reveal();return {accepted:true};}
+    if(!payload.ok){this.invalidate();this.phase='save-unconfirmed';this.reveal();this.offer('save-failed',payload.error);return {accepted:true};}
     if(this.busy()){
       this.invalidate();this.phase='agent-busy';this.reveal();this.wc.send('nozeli:quit-confirm');return {accepted:true};
     }
@@ -73,7 +73,7 @@ class WindowRecovery {
   async recover(ticket,details){
     const messages={gone:'工作区页面已退出。',timeout:'工作区暂未响应，关闭前保存尚未确认。','save-failed':'关闭前未能确认保存完成。','stop-failed':'关闭清理未完成，窗口已保留。'};
     const response=await this.dialog.showMessageBox(this.win,{type:'none',title:'工作区恢复',message:messages[ticket.reason],
-      detail:'已持久化的文件和草稿将保留。未获得保存确认的输入可能仅在内存中；重新加载可能丢失这些输入。'+(ticket.reason==='gone'?' 页面退出原因：'+String(details.reason||'未知')+'。':''),
+      detail:(ticket.reason==='save-failed'?'保存失败：'+String(details?.message||'工作区未确认保存，请检查保存提示并重试关闭。')+' ':'')+'已持久化的文件和草稿将保留。未获得保存确认的输入可能仅在内存中；重新加载可能丢失这些输入。'+(ticket.reason==='gone'?' 页面退出原因：'+String(details.reason||'未知')+'。':''),
       buttons:['继续等待','重新加载工作区…'],defaultId:0,cancelId:0,noLink:true});
     if(!this.validPrompt(ticket))return;
     if(response.response!==1){this.dismissed.add(ticket.key);return;}

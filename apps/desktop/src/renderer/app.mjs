@@ -1549,6 +1549,7 @@ async function renderRecent() {
   }
 }
 
+  let projectBinding = false;
   async function activateProjectNow(projectId) {
     if (isSurface && projectId !== workspaceScope.projectId) throw new Error('工作面绑定原项目，不能切换项目');
     const drawingSaved=await workspaceSnapshot.flush();if(!drawingSaved.ok){workspace.toast(drawingSaved.error?.message||'涂鸦尚未保存，未切换项目。');return;}
@@ -1557,6 +1558,7 @@ async function renderRecent() {
     rememberCurrentNote();
     const flushed = await retainWorkspace();
     if (!flushed.ok) {
+      workspace.toast(flushed.error?.message||'当前工作区尚未保留，未切换项目。');
       if (flushed.error?.code === 'COMPOSING') setStatus('dirty', flushed.error.message);
       return;
     }
@@ -1568,11 +1570,12 @@ async function renderRecent() {
     try{
       opened=await invoke('project.open',{projectId});
       if(!opened.ok)throw Error(opened.error.message);
-      if(!isSurface)await workspaceGroups.bindProject(projectId);
+      if(!isSurface){projectBinding=true;try{await workspaceGroups.bindProject(projectId);}finally{projectBinding=false;}}
     }catch(error){
       // Keep the existing binding on failure; do not reopen an unavailable root.
       window.dispatchEvent(new CustomEvent('nozeli-project-transition',{detail:{active:false}}));
-      setStatus('error','项目切换未完成，原项目保留：'+error.message);return;
+      const message='项目切换未完成，原项目保留：'+error.message;
+      workspace.toast(message);setStatus('error',message);return;
     }
   window.dispatchEvent(new Event('nozeli-project-change'));
   ui.project = opened.value.project;
@@ -1613,6 +1616,7 @@ async function renderRecent() {
   if (isSurface && workspaceScope.relPath) await openFileNow(workspaceScope.relPath, workspaceScope.viewState || state.value.files?.[workspaceScope.relPath]);
   else renderEmptyState();
   await window.__agentProject?.(ui.project.id, {input:isConversation?{projectId:ui.project.id,frame:workspaceScope.viewState||{}}:undefined});
+  if(workspaceScope.role==='shell')await invoke('workspace.activated',{projectId});
 }
 
 async function pickProject() {
@@ -2593,6 +2597,9 @@ async function openBesideSnapshot(file, diff=false) {
     // Detached roots own layout chrome only; their content surfaces flush separately.
     if(workspaceScope.role==='detached')return Promise.resolve({ok:true});
     if(ui.composing)return Promise.resolve({ok:false,composing:true,error:{code:'COMPOSING',message:'输入法组合尚未结束，未移动工作面。'}});
+    // The activation queue is awaiting the host's binding receipt. Capture the
+    // stationary old shell directly instead of queueing behind that same wait.
+    if(projectBinding){rememberCurrentNote();return retainWorkspace();}
     return enqueue(async () => {
     if(ui.composing)return {ok:false,composing:true,error:{code:'COMPOSING',message:'输入法组合尚未结束，未移动工作面。'}};
     rememberCurrentNote();

@@ -207,7 +207,7 @@ async function createWindow(server) {
   const recovery=new WindowRecovery(win,{
     dialog,settle:async()=>{await workspaceNative.flush([...workspaceNative.senders.values()].filter(r=>r.role==='surface'));await host.settled();},busy:()=>agents?.busy()||managedAgents?.busy(),
     stop:async()=>{await managedAgents?.stop();await agents?.stopIdle?.();},
-    reveal:()=>revealWindow(win),onClose:()=>{allowClose=true;quitting=true;for(const r of workspaceNative.windows.values()){r.closing=true;for(const s of workspaceNative.projectRecords(r.projectId,r.windowId))workspaceNative.destroySurface(s);r.win.close();}},
+    reveal:()=>revealWindow(win),onClose:()=>{allowClose=true;quitting=true;for(const s of [...workspaceNative.surfaces.values()])workspaceNative.destroySurface(s);for(const r of workspaceNative.windows.values()){r.closing=true;r.win.close();}},
   });
   win.webContents.on('did-start-navigation',(_event,_url,_inPlace,isMainFrame)=>{if(isMainFrame)recovery.navigation();});
   win.webContents.on('render-process-gone',(_event,details)=>{console.error('renderer gone',details);recovery.rendererGone(details);});
@@ -389,7 +389,15 @@ async function main() {
         isolatedPreview?.setAppearance({palette:payload.palette,mode:nativeTheme.shouldUseDarkColors?'dark':'light'});
         return {ok:true,value:payload};
       }
-      if(op.startsWith('workspace.'))return {ok:true,value:await workspaceNative.invoke(scope,op,payload??{})};
+      if(op.startsWith('workspace.')){
+        const priorProject=scope.projectId;
+        const value=await workspaceNative.invoke(scope,op,payload??{});
+        if(op==='workspace.project'){
+          if(priorProject&&priorProject!==scope.projectId)projectWatcher?.unwatchProject(priorProject);
+          try{await managedAgents.setActiveProject(scope.projectId);}catch(error){workspaceNative.broadcast('nozeli:agent',{projectId:scope.projectId,kind:'managed-error',text:'Agent 连接失败，文件仍可打开：'+error.message},scope.projectId);}
+        }
+        return {ok:true,value};
+      }
       if(op.startsWith('isolated-preview.'))return {ok:true,value:await isolatedPreview.invoke(scope,op,payload??{})};
       if(op==='project.watch'){if(scope.role==='surface')throw new HostError('IPC_DENIED','Only project navigation can watch directories.');const project=await host.requireProject(scope.projectId);return {ok:true,value:await projectWatcher.watch(scope.projectId,project.root,payload.parentRelPath??'')};}
       if(op==='project.unwatch'){if(scope.role==='surface')throw new HostError('IPC_DENIED','Only project navigation can unwatch directories.');projectWatcher.unwatchProject(scope.projectId);return {ok:true,value:{unwatched:true}};}
@@ -493,10 +501,8 @@ async function main() {
         return {ok:true,value:recovery?await recovery.acknowledge(event.sender,payload):{accepted:false}};
       }
       if (op === 'project.pick') {
-        if(scope.projectId)await workspaceNative.flush(workspaceNative.projectRecords(scope.projectId,'main'));
         const selected = await pickDirectory(scope.win, payload?.directory);
         const value = await host.pick(selected);
-        if(value?.project?.id)await workspaceNative.bindProject(scope,value.project.id);
         return { ok: true, value };
       }
       if (op === 'session.quitChoice') {
@@ -620,13 +626,8 @@ async function main() {
       if (Object.hasOwn(agentHandlers, op)) return { ok: true, value: await agentHandlers[op](payload ?? {}) };
       const handler = Object.hasOwn(ops, op) ? ops[op] : null;
       if (!handler || op === 'project.pick') throw new HostError('UNKNOWN_OP', 'Unknown host operation.');
-      const priorProject=scope.projectId;
       if(op==='project.remove'){await finishDrawing({projectId:payload.projectId});return {ok:true,value:await projectLifecycle.removeProject(payload.projectId,{operationId:payload.operationId})};}
       const value = await handler(host, payload ?? {});
-      if(op==='project.open'){
-        if(scope.role==='shell')try{await managedAgents.setActiveProject(payload.projectId);}catch(error){workspaceNative.broadcast('nozeli:agent',{projectId:payload.projectId,kind:'managed-error',text:'Agent 连接失败，文件仍可打开：'+error.message},payload.projectId);}
-        await workspaceNative.bindProject(scope,payload.projectId);if(priorProject&&priorProject!==payload.projectId)projectWatcher?.unwatchProject(priorProject);
-      }
       return { ok: true, value };
     } catch (error) {
       if(['PROJECT_ROOT_MISSING','PROJECT_METADATA_MISSING','PROJECT_METADATA_CONFLICT','PROJECT_IDENTITY_CONFLICT'].includes(error.code)&&payload?.projectId)host.storage.onUnavailable(payload.projectId,error);

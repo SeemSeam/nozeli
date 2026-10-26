@@ -49,7 +49,17 @@ test('busy Agent keeps existing quit confirmation gate and does not stop',async(
 test('stop failure keeps window and does not claim saved closure',async()=>{const f=fixture({stop:async()=>{throw Error('cleanup denied');}});f.r.requestClose();assert.deepEqual(await f.ack(),{accepted:true});assert.equal(f.counts().closed,0);assert.equal(f.r.phase,'stop-failed');assert.match(f.dialogs[0].opts.message,/窗口已保留/);});
 test('navigation during stop and repeated close cannot close a replacement page',async()=>{const stopped=deferred(),f=fixture({stop:()=>stopped.promise});f.r.requestClose();const ack=f.ack();await tick();f.r.requestClose();assert.equal(f.sends.length,1);f.r.navigation();stopped.resolve();assert.deepEqual(await ack,{accepted:false});assert.equal(f.counts().closed,0);});
 test('renderer exits while Host is settling: old ack is not accepted',async()=>{const saved=deferred(),f=fixture({settle:()=>saved.promise});f.r.requestClose();const ack=f.ack();f.r.rendererGone({reason:'killed'});saved.resolve();assert.deepEqual(await ack,{accepted:false});assert.equal(f.r.pending,null);assert.equal(f.counts().closed,0);assert.equal(f.dialogs.length,1);});
-test('renderer save refusal is consumed as a failure and never closes or stops',async()=>{const f=fixture();f.r.requestClose();assert.deepEqual(await f.r.acknowledge(f.wc,{requestId:f.r.pending.id,ok:false,error:{code:'COMPOSING'}}),{accepted:true});assert.equal(f.r.phase,'save-unconfirmed');assert.deepEqual(f.counts(),{closed:0,reloads:0,stops:0});assert.equal(f.dialogs.length,0);});
+test('renderer save refusal offers actionable recovery and retries without closing or stopping',async()=>{
+ const f=fixture();
+ for(let attempt=0;attempt<2;attempt++){
+  f.r.requestClose();assert.deepEqual(await f.r.acknowledge(f.wc,{requestId:f.r.pending.id,ok:false,error:{code:'PROJECT_SCOPE_DENIED',message:'草稿未能保存，请检查项目归属后重试。'}}),{accepted:true});
+  assert.equal(f.r.phase,'save-unconfirmed');assert.deepEqual(f.counts(),{closed:0,reloads:0,stops:0});
+  assert.equal(f.dialogs.length,attempt+1);const dialog=f.dialogs.at(-1);
+  assert.match(dialog.opts.detail,/草稿未能保存/);assert.match(dialog.opts.detail,/内存|丢失/);
+  dialog.resolve({response:0});await tick();
+ }
+ f.r.requestClose();await f.ack();assert.equal(f.counts().closed,1);
+});
 
 for(const reason of ['timeout','save-failed','stop-failed'])for(const cancelAt of ['choice','confirmation'])test(reason+': explicit close retries after '+cancelAt+' cancellation; automatic repeats stay suppressed',async()=>{
  const fault=async()=>{throw Error('retry fixture');};

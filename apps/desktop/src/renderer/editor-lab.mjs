@@ -18,6 +18,9 @@ const lab = {
   async open(directory, relPath = 'main.js') {
     const picked = await window.nozeli.invoke('project.pick', { directory });
     if (!picked.ok) throw new Error(picked.error.message);
+    if (picked.value.canceled) return;
+    const bound = await window.nozeli.invoke('workspace.project', {projectId:picked.value.project.id});
+    if (!bound.ok) throw new Error(bound.error.message);
     const opened = await window.nozeli.invoke('file.read', { projectId: picked.value.project.id, relPath });
     if (!opened.ok) throw new Error(opened.error.message);
     const listed = await window.nozeli.invoke('annotation.list', { projectId: picked.value.project.id, relPath });

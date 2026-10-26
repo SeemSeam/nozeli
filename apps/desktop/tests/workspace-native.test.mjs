@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { WorkspaceNative, restoreBounds } from '../src/main/workspace-native.mjs';
@@ -29,6 +29,114 @@ async function fixture(t){const directory=await mkdtemp(path.join(os.tmpdir(),'w
 host.storage=new Proxy(storage,{get(target,key){const value=Reflect.get(target,key);return typeof value==='function'?((id,...args)=>value.call(target,id==='p'?projectId:id,...args)):value;}});
 const native=new WorkspaceNative({BrowserWindow:Window,WebContentsView:View,screen:{getDisplayMatching:()=>({workArea:{x:-1920,y:0,width:1920,height:1080}})},origin:'http://127.0.0.1:9000/',userDataDir:directory,host});const root=native.registerShell(new Window());root.projectId='p';root.ready=true;native.layouts.set('p',createLayout('p',{workspace:{minimized:true}}));return {native,root};}
 function receipt(native,r,ok=true){r.ready=true;r.wc.onSend=(channel,payload)=>{if(channel==='nozeli:flush')queueMicrotask(()=>native.acknowledge(r,{requestId:payload,ok}));};}
+for(const failure of ['shell-save','surface-save','attachment','none'])test(`project binding ${failure} keeps recovery and native ownership consistent`,async t=>{
+ const {native,root}=await fixture(t);
+ const directory=await mkdtemp(path.join(os.tmpdir(),'project-binding-'));t.after(()=>rm(directory,{recursive:true,force:true}));
+ await mkdir(path.join(directory,'B'));const target=await native.host.storage.register(path.join(directory,'B'));
+ native.host.requireRegisteredProject=id=>native.host.storage.requireRegistered(id);
+ const source=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'document',relPath:'unsaved.txt'}});
+ const destination=reduceLayout(createLayout(target.id),{type:'open',view:{kind:'document',relPath:'target.txt'}});
+ native.layouts.set('p',source);native.layouts.set(target.id,destination);native.activeProjectId='p';
+ await native.reconcile(source);const original=[...native.surfaces.values()][0];original.view.setVisible(true);
+ native.bootstrap(original);await native.invoke(original,'workspace.document.publish',{projectId:'p',relPath:'unsaved.txt',text:'UNSAVED DOCUMENT',dirty:true});
+ const preview=new IsolatedPreviewManager({workspace:native});native.isolatedPreview=preview;
+ const guest=new View();guest.setVisible(true);root.win.contentView.addChildView(guest);preview.slots.set('source-guest',{id:'source-guest',scope:original,view:guest,parentWindow:root.win,files:new Map()});
+ const captures=[];
+ for(const owner of [root,original]){
+  owner.ready=true;owner.wc.onSend=(channel,requestId)=>{
+   if(channel!=='nozeli:flush')return;
+   void (async()=>{
+    assert.equal(root.projectId,'p','host must still admit source recovery while saving');
+    await native.saveRecovery(owner,{projectId:'p',viewId:owner.viewId,generation:1,candidate:{text:owner===root?'UNSENT COMPOSER':'UNSAVED DOCUMENT'},workspace:{draft:'KEEP DRAFT'}});
+    captures.push(owner.role);
+    const refused=failure===`${owner===root?'shell':'surface'}-save`;
+    native.acknowledge(owner,{requestId,ok:!refused,error:refused?{code:'SAVE_REFUSED',message:'retained, not confirmed'}:undefined});
+   })().catch(error=>native.acknowledge(owner,{requestId,ok:false,error}));
+  };
+ }
+ const add=root.win.contentView.addChildView;root.win.contentView.addChildView=view=>{
+  assert.equal(root.projectId,'p','target attachment must not precommit shell identity');
+  assert.equal(original.dead,false,'source renderer must survive staging');
+  if(failure==='attachment')throw Error('controlled target attachment failure');add(view);
+ };
+ const binding=native.invoke(root,'workspace.project',{projectId:target.id});
+ if(failure==='none'){
+  const result=await binding;assert.equal(result.layout,destination);assert.equal(root.projectId,target.id);assert.equal(native.activeProjectId,target.id);assert.equal(original.dead,false);assert.equal(original.view.visible,false);
+  assert.equal(native.projectRecords(target.id).length,1);
+  assert.equal(guest.visible,false,'source preview guest cannot cover the target project');
+ }else{
+  await assert.rejects(binding,failure==='attachment'?/controlled target attachment failure/:{code:'SAVE_REFUSED'});
+  assert.equal(root.projectId,'p');assert.equal(native.activeProjectId,'p');assert.equal(native.layouts.get('p'),source);
+  assert.equal(original.dead,false);assert.equal(original.view.visible,true);assert(root.win.children.includes(original.view));assert.equal(native.projectRecords(target.id).length,0);
+  assert.equal(guest.visible,true,'failed binding keeps the original preview visible');
+  native.authorize({sender:root.wc,senderFrame:root.wc.mainFrame},'state.read',{projectId:'p'});
+ }
+ assert.deepEqual(captures.sort(),['shell','surface']);
+ assert.equal((await native.host.storage.getRecovery('p','workspace:shell')).candidate.text,'UNSENT COMPOSER');
+ assert.equal((await native.host.storage.getRecovery('p',`workspace:${original.viewId}`)).candidate.text,'UNSAVED DOCUMENT');
+ assert.throws(()=>native.authorize({sender:root.wc,senderFrame:root.wc.mainFrame},'state.read',{projectId:failure==='none'?'p':target.id}),{code:'PROJECT_SCOPE_DENIED'});
+ assert.equal((await native.invoke(original,'workspace.document.snapshot',{projectId:'p',relPath:'unsaved.txt'})).text,'UNSAVED DOCUMENT');
+ if(failure==='none'){
+  await assert.rejects(native.invoke(original,'workspace.bounds',{projectId:'p',windowId:'main',groups:[]}),{code:'IPC_DENIED'});assert.equal(original.view.visible,false);
+  receipt(native,root);for(const surface of native.projectRecords(target.id))receipt(native,surface);
+  root.win.contentView.addChildView=add;await native.bindProject(root,'p');
+  assert.equal(native.surfaces.get(original.viewId),original);assert.equal(original.dead,false);
+  await native.invoke(original,'workspace.document.publish',{projectId:'p',relPath:'unsaved.txt',text:'UNSAVED DOCUMENT — CONTINUED',dirty:true});
+  assert.equal((await native.invoke(original,'workspace.document.snapshot',{projectId:'p',relPath:'unsaved.txt'})).text,'UNSAVED DOCUMENT — CONTINUED');
+  await native.closeProject(target.id);assert.equal(native.projectRecords(target.id).length,0);assert.equal(original.dead,false);
+  await native.closeProject('p');assert.equal(native.surfaces.size,0);assert.equal(original.dead,true);assert.equal(root.projectId,null);
+ }
+});
+test('binding rejects stale resident target parents without moving its guest or changing source visibility',async t=>{
+ const {native,root}=await fixture(t);receipt(native,root);
+ const directory=await mkdtemp(path.join(os.tmpdir(),'binding-resident-'));t.after(()=>rm(directory,{recursive:true,force:true}));
+ const target=await native.host.storage.register(directory);native.host.requireRegisteredProject=id=>native.host.storage.requireRegistered(id);
+ const source=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'document',relPath:'source.txt'}});native.layouts.set('p',source);await native.reconcile(source);
+ const sourceSurface=[...native.surfaces.values()][0];receipt(native,sourceSurface);sourceSurface.view.setVisible(true);native.activeProjectId='p';
+ const layout=reduceLayout(createLayout(target.id),{type:'open',view:{kind:'report',resourceId:'resident-report'}});native.layouts.set(target.id,layout);
+ const targetWin=new Window(),view=new View(),viewId=layout.mainRoot.activeViewId;
+ const targetRoot=native.register(targetWin.webContents,{role:'detached',projectId:target.id,windowId:'resident-window',win:targetWin});targetRoot.projectHidden=true;native.windows.set(targetRoot.windowId,targetRoot);
+ const resident=native.register(view.webContents,{role:'surface',projectId:target.id,viewId,windowId:targetRoot.windowId,win:targetWin,view});native.surfaces.set(viewId,resident);targetWin.contentView.addChildView(view);view.setVisible(false);
+ const preview=new IsolatedPreviewManager({workspace:native});native.isolatedPreview=preview;const guest=new View();targetWin.contentView.addChildView(guest);const slot={id:'resident-guest',scope:resident,view:guest,parentWindow:targetWin,files:new Map()};preview.slots.set(slot.id,slot);
+ await assert.rejects(native.bindProject(root,target.id),{code:'SURFACE_LOCATION_CHANGED'});
+ assert.equal(root.projectId,'p');assert.equal(native.activeProjectId,'p');assert.equal(sourceSurface.view.visible,true);assert.equal(sourceSurface.dead,false);
+ assert.equal(resident.win,targetWin);assert.equal(resident.windowId,'resident-window');assert.equal(resident.view.visible,false);assert.equal(targetRoot.projectHidden,true);assert.equal(targetWin.isDestroyed(),false);
+ assert.equal(preview.slots.get(slot.id),slot);assert.equal(slot.parentWindow,targetWin);assert(targetWin.children.includes(guest));assert(targetWin.children.includes(view));
+});
+test('a failed hold send releases every owner already held and preserves source admission',async t=>{
+ const {native,root}=await fixture(t);
+ const layout=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'document',relPath:'keep.txt'}});native.layouts.set('p',layout);await native.reconcile(layout);
+ const surface=[...native.surfaces.values()][0];surface.wc.onSend=(channel,event)=>{if(channel==='nozeli:workspace-control'&&event.type==='lifecycle-hold'&&event.held)throw Error('hold delivery failed');};
+ const directory=await mkdtemp(path.join(os.tmpdir(),'binding-hold-'));t.after(()=>rm(directory,{recursive:true,force:true}));const target=await native.host.storage.register(directory);
+ await assert.rejects(native.bindProject(root,target.id),/hold delivery failed/);
+ assert.equal(root.projectId,'p');assert.equal(surface.dead,false);
+ assert.equal(root.wc.sent.filter(event=>event.payload?.type==='lifecycle-hold').at(-1).payload.held,false);
+ assert.equal(surface.wc.sent.filter(event=>event.payload?.type==='lifecycle-hold').at(-1).payload.held,false);
+});
+test('cross-project docking waits for completed activation without holding the target serial queue',async t=>{
+ const {native,root}=await fixture(t);
+ const directory=await mkdtemp(path.join(os.tmpdir(),'binding-dock-'));t.after(()=>rm(directory,{recursive:true,force:true}));const target=await native.host.storage.register(directory);
+ native.host.requireRegisteredProject=id=>native.host.storage.requireRegistered(id);
+ let layout=reduceLayout(createLayout(target.id),{type:'open',view:{kind:'document',relPath:'B.txt'}});const viewId=layout.mainRoot.activeViewId;
+ layout=reduceLayout(layout,{type:'detach',viewId,windowId:'B-window'});native.layouts.set(target.id,layout);
+ const targetWin=new Window(),targetRoot=native.register(targetWin.webContents,{role:'detached',projectId:target.id,windowId:'B-window',win:targetWin});native.windows.set('B-window',targetRoot);
+ await native.reconcile(layout);const resident=native.surfaces.get(viewId),originalView=resident.view;receipt(native,resident);
+ let activationReady,activationError;const ready=new Promise(resolve=>activationReady=resolve);
+ root.wc.onSend=(channel,event)=>{
+  if(channel==='nozeli:flush')void native.saveRecovery(root,{projectId:'p',generation:1,candidate:{text:'KEEP A SHELL DRAFT'},workspace:{draft:'A UNSENT'}}).then(()=>native.acknowledge(root,{requestId:event,ok:true}));
+  if(channel==='nozeli:workspace-control'&&event.type==='project')void (async()=>{
+   // A renderer restore may need this queue; the waiting dock must not own it.
+   await native.serial(target.id,async()=>{});
+   await native.invoke(root,'workspace.project',{projectId:target.id});activationReady();
+  })().catch(error=>{activationError=error;activationReady();});
+ };
+ let finished=false;const docking=native.command(targetRoot,{projectId:target.id,expectedRevision:layout.revision,requestKey:'cross-project-dock',command:{type:'dock',windowId:'B-window',targetGroupId:layout.mainRoot.id}}).then(value=>{finished=true;return value;});
+ await ready;if(activationError)throw activationError;
+ assert.equal(root.projectId,target.id);assert.equal(finished,false,'host bind alone must not release docking');assert.equal(resident.windowId,'B-window');
+ await native.invoke(root,'workspace.activated',{projectId:target.id});await docking;
+ assert.equal(resident.view,originalView);assert.equal(resident.windowId,'main');assert.equal(resident.dead,false);assert(root.win.children.includes(originalView));
+ assert.equal((await native.host.storage.getRecovery('p','workspace:shell')).workspace.draft,'A UNSENT');
+});
 test('explicit drawing preparation connects frontdesk without moving content or consuming drafts',async t=>{
  const {native,root}=await fixture(t);
  const layout=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'conversation',viewState:{draftOnly:true,workspace:{draft:'KEEP MAIN DRAFT'}}}});
