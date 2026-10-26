@@ -222,22 +222,40 @@ test('manager requires explicit creation, stores private ownership, and stopped 
  assert.equal(status.state.messages.every(message=>message.source==='demo-fixture'),true);
  for(const op of ['managed.restart','managed.terminal.attach','managed.binding','managed.models'])await assert.rejects(f.manager.managed(op,{projectId:id}),{code:'DEMO_NATIVE_DISABLED'});
 });
-test('frontdesk ask and review decisions use the fixed fixture without real workers',async t=>{
+test('frontdesk ask, task completion and review decisions use the fixed fixture without real workers',async t=>{
  const f=await demoFixture(t);
+ // Production wires the shell through registerShell (workspace.shell); the
+ // fixture registers the same scope directly, so mirror that assignment or
+ // shell-routed demo actions have no record and reject before acceptance.
+ f.workspace.shell=f.scope;
  const playing=await f.manager.transition({...binding(f.created),action:'play'});
- const asked=await f.manager.perform(f.scope,{...binding(playing),command:'conversation.ask',args:{semantic:'frontdesk-ask',stepId:'frontdesk-ask'}});
- assert.equal(asked.accepted,true);
+ // The offline frontdesk reply commits (idempotent by step key), but the
+ // step only settles after the real conversation surface shows it; without
+ // one the action refuses instead of counting an unseen exchange as done.
+ await assert.rejects(f.manager.perform(f.scope,{...binding(playing),command:'conversation.ask',args:{semantic:'frontdesk-ask',stepId:'frontdesk-ask'}}),{code:'DEMO_SURFACE_NOT_READY'});
  const askedState=await f.manager.state({projectId:f.created.project.id});
  assert.equal(askedState.messages.at(-2).text.includes('同一时段观测'),true);
  assert.equal(askedState.messages.at(-1).speaker,'agent');
- const done=await f.manager.perform(f.scope,{...binding(playing),command:'notification.show',args:{semantic:'task-a-done',stepId:'task-a-done'}});
- assert.equal(typeof (await f.manager.state({projectId:f.created.project.id})).messages.at(-1).text,'string','notices must carry body text');
- const todoId=done.todoId;
- const accepted=await f.manager.perform(f.scope,{...binding(playing),command:'notification.show',args:{semantic:'decision-accept',stepId:'review-accept'}});
- assert.equal(accepted.todoId,todoId);
- const decided=(await f.manager.state({projectId:f.created.project.id})).todos.find(todo=>todo.id===todoId);
- assert.equal(decided.status,'resolved');assert.equal(decided.resolution.choice,'accept');
- await assert.rejects(f.manager.perform(f.scope,{...binding(playing),command:'notification.show',args:{semantic:'decision-discard',stepId:'review-discard'}}),{code:'DEMO_TODO_MISSING'});
+ await assert.rejects(f.manager.perform(f.scope,{...binding(playing),command:'conversation.ask',args:{semantic:'frontdesk-ask',stepId:'frontdesk-ask'}}),{code:'DEMO_SURFACE_NOT_READY'});
+ assert.equal((await f.manager.state({projectId:f.created.project.id})).messages.length,2,'the ask stays idempotent without a visible conversation');
+ // the manager pauses the session (an immediate pre-acceptance refusal would
+ // instead leave pausing to the renderer's fail path).
+ const pending=f.manager.perform(f.scope,{...binding(playing),command:'notification.show',args:{semantic:'task-a-done',stepId:'task-a-done'}});
+ await assert.rejects(bounded(pending,'task completion surface wait',3000),Error);
+ await settlePending(f);pending.catch(()=>{});
+ const state=await f.manager.state({projectId:f.created.project.id});
+ const todo=state.todos.find(todo=>todo.kind==='result');
+ assert.equal(typeof todo?.id,'string','the result todo is published host-side');
+ assert.equal(state.messages.at(-1).text.includes('任务 A 完成'),true,'notices must carry body text');
+ assert.equal(state.session.status,'paused','an unsettled surface action pauses instead of counting as done');
+ // Without the real report surface a decision is refused and the todo stays open.
+ await assert.rejects(f.manager.perform(f.scope,{...binding(playing),command:'notification.show',args:{semantic:'decision-accept',stepId:'review-accept'}}),{code:'DEMO_SESSION_STALE'});
+ assert.equal((await f.manager.state({projectId:f.created.project.id})).todos.find(item=>item.id===todo.id).status,'open');
+ // The report footer button settles the same todo through the public todo API.
+ const decided=await f.manager.managed('todo.manage',{projectId:f.created.project.id,todoId:todo.id,expectedRevision:0,action:'demo-accept'});
+ assert.equal(decided.status,'resolved');
+ const resumed=await f.manager.transition({...binding(state),action:'play'});
+ await assert.rejects(f.manager.perform(f.scope,{...binding(resumed),command:'notification.show',args:{semantic:'decision-discard',stepId:'review-discard'}}),{code:'DEMO_TODO_MISSING'});
 });
 
 test('copying project metadata never copies private demo ownership or cleanup authority',async t=>{
@@ -454,4 +472,43 @@ test('exiting a recovered unknown action removes only the entry and reuses its p
  assert.equal((await f.host.storage.requireRegistered(id)).removed,false);
  assert.equal(await fs.readFile(note,'utf8'),'PRESERVED EXPLORATION');
  assert.deepEqual(await fs.readdir(f.examplesRoot),[path.basename(project.root)]);
+});
+test('a preserved copy from an older template is retired with files kept and the next session uses the current template',async t=>{
+ const f=await demoFixture(t),oldId=f.created.project.id,project=await f.host.requireProject(oldId),retiredRoot=project.root;
+ const note=path.join(retiredRoot,'my-note.txt');
+ await fs.writeFile(note,'PRESERVED EXPLORATION');
+ f.manager.lifecycle.workspace.closeProject=async()=>({closed:true});
+ f.manager.lifecycle.managed.stopProject=async()=>({confirmationComplete:true});
+ // Age the copy into the exact shape of a real v1-era directory: that
+ // template shipped no sample.tex, so neither the directory nor the recorded
+ // expectedFiles may know the file (this is the reported TeX-step state).
+ await fs.rm(path.join(retiredRoot,'sample.tex'));
+ await f.manager.mutate(()=>{const row=f.manager.row(oldId);row.templateDigest='older-template-digest';delete row.expectedFiles['sample.tex'];});
+ const reopened=await f.manager.create({confirmed:true});
+ assert.notEqual(reopened.project.id,oldId);
+ assert.equal(reopened.templateVersion,f.created.templateVersion);
+ const fresh=f.manager.row(reopened.project.id);
+ assert.equal(typeof fresh.expectedFiles['sample.tex'],'string','the retired copy must not lend its stale expectedFiles to the new session');
+ assert.equal(hash(await fs.readFile(path.join(fresh.root,'sample.tex'))),fresh.expectedFiles['sample.tex'],'the fresh copy really ships the current template file');
+ assert.equal(await fs.readFile(path.join(retiredRoot,'my-note.txt'),'utf8'),'PRESERVED EXPLORATION','user exploration in the old copy is kept');
+ await assert.rejects(fs.lstat(path.join(retiredRoot,'sample.tex')),{code:'ENOENT'},'retirement never writes files into the old copy');
+ assert.equal((await f.host.storage.requireRegistered(oldId)).removed,true);
+ assert.equal(f.manager.isDemo(oldId),false);
+ const again=await f.manager.create({confirmed:true});
+ assert.equal(again.project.id,reopened.project.id,'the fresh template copy is itself reused afterwards');
+ assert.deepEqual((await fs.readdir(f.examplesRoot)).sort(),[path.basename(retiredRoot),path.basename(f.manager.row(again.project.id).root)].sort());
+});
+
+test('removing the currently open project must not be admitted as its own project operation',async t=>{
+ // The historical demo.exit trap, now also applying to demo.create when the
+ // shell has the old demo project open: generic per-project admission wraps
+ // the migration, drainProjectOperations waits for the wrapper itself and
+ // only the bounded stop check escapes. Control-plane ops (demo.create /
+ // demo.exit) therefore run without a wrapping project operation.
+ const f=await lifecycleCopy(t);
+ f.lifecycle.timeoutMs=250;
+ await assert.rejects(f.host.storage.withProjectOperation(f.project.id,()=>f.lifecycle.removeProject(f.project.id,{operationId:'demo-template-retire:self-wait'})),{code:'PROJECT_STOP_TIMEOUT'});
+ assert.equal((await fs.stat(f.root)).isDirectory(),true,'the timed-out removal keeps every file');
+ assert.equal(hash(await fs.readFile(path.join(f.root,f.template.files[0].path))),f.template.files[0].sha256);
+ await assert.rejects(f.host.storage.withProjectOperation(f.project.id,async()=>{}),{code:'PROJECT_LIFECYCLE_ACTIVE'},'the retained hold keeps admitting new project operations as blocked until the stop check clears');
 });

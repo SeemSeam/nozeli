@@ -155,6 +155,16 @@ test('refused drawing admission preserves draft-only state and allows explicit r
  assert.equal(Object.values(layout.views).find(v=>v.kind==='conversation').viewState.draftOnly,true);
 });
 test('registered top-frame scope rejects iframe, foreign project and unknown sender',async t=>{const {native,root}=await fixture(t),event={sender:root.wc,senderFrame:root.wc.mainFrame};assert.equal(native.authorize(event,'state.read',{projectId:'p'}),root);assert.throws(()=>native.authorize(event,'state.read',{projectId:'foreign'}),{code:'PROJECT_SCOPE_DENIED'});assert.throws(()=>native.authorize({...event,senderFrame:{url:native.origin,parent:{}}},'state.read',{}),{code:'IPC_DENIED'});assert.throws(()=>native.authorize({sender:new Contents(),senderFrame:root.wc.mainFrame},'state.read',{}),{code:'IPC_DENIED'});});
+test('document surfaces and detached windows read appearance preferences but cannot write them',async t=>{
+ const {native}=await fixture(t);
+ const documentSurface=native.register(new Contents(),{role:'surface',projectId:'p',viewId:'doc',windowId:'main',kind:'document',relPath:'a.txt'});
+ const detachedWindow=new Window(),detached=native.register(detachedWindow.webContents,{role:'detached',projectId:'p',windowId:'detached-window',win:detachedWindow});
+ for(const record of [documentSurface,detached]){
+  const event={sender:record.wc,senderFrame:record.wc.mainFrame};
+  assert.equal(native.authorize(event,'settings.appearance.read',{}),record,'the read-only global appearance preference must be readable outside the shell');
+  assert.throws(()=>native.authorize(event,'settings.appearance.save',{theme:'dark'}),{code:'IPC_DENIED'},'appearance writes stay shell-owned');
+ }
+});
 test('history surfaces can render frozen reports but cannot open executable development previews',async t=>{
  const {native}=await fixture(t),wc=new Contents(),history=native.register(wc,{role:'surface',projectId:'p',viewId:'history',kind:'history'}),event={sender:wc,senderFrame:wc.mainFrame};
  assert.equal(native.authorize(event,'isolated-preview.open',{projectId:'p',profile:'staticReport'}),history);

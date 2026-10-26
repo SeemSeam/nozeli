@@ -13,7 +13,7 @@ export function createStartPage({project,start,compact=false}){
 
 export function mountGuidedDemo({invoke,subscribe,openProject,openFile,captureReturn,restoreReturn,onExit=async()=>{},getProjectId,onError=()=>{}}){
   let executedSteps=new Set();
-  let session=null,busy=false,flight=null,token=0,returnState=null,disposed=false,transitionQueue=Promise.resolve(),failureMessage='',stopBeforeStep=null,creating=false,exiting=false,cleanupReceipt=null,captionOverride='',publishedUi='',lastSemantic='';
+  let session=null,busy=false,flight=null,token=0,returnState=null,disposed=false,transitionQueue=Promise.resolve(),failureMessage='',stopBeforeStep=null,creating=false,exiting=false,cleanupReceipt=null,captionOverride='',publishedUi='',lastSemantic='',demoSettingsOpen=false,demoSettingsSeenOpen=false;
   const runAction=createDemoActions({invoke}),controls=[],actions=new Map();
   const add=(id,label,run,primary=false)=>{const control={id,label,disabled:false,primary};controls.push(control);actions.set(id,run);return control;};
   const play=add('play','继续',async intent=>{
@@ -40,7 +40,7 @@ export function mountGuidedDemo({invoke,subscribe,openProject,openFile,captureRe
   }
   async function exitDemo(){
     if(exiting||!session)return;
-    const owner=session;exiting=true;hideHint();window.dispatchEvent(new Event('nozeli-demo-settings-close'));paint();
+    const owner=session;exiting=true;hideHint();demoSettingsOpen=false;demoSettingsSeenOpen=false;window.dispatchEvent(new Event('nozeli-demo-settings-close'));paint();
     try{
       if(!['stopped','removed'].includes(owner.status))await transition('stop',{},true);
       await restoreReturn(returnState);
@@ -63,7 +63,12 @@ export function mountGuidedDemo({invoke,subscribe,openProject,openFile,captureRe
       const terminal=['finished','stopped','removed'].includes(session.status);
       const cleanup=terminal&&(cleanupReceipt?.trashed?'已移至回收站。':cleanupReceipt?.removed?'已移除入口，文件保留。':cleanupReceipt?.complete&&cleanupReceipt.action==='clean-local'?'本机视图已重置，原文件保留。':'');
       const caption=exiting?'正在退出演示，保留示例与编辑…':creating?'正在准备独立示例副本…':flight&&session.status!=='playing'?'当前操作正在收尾；不会继续下一步。':cleanup||(terminal?'演示已结束，示例文件保留。':failureMessage?'演示已暂停：'+failureMessage:session.error?.message?'演示已暂停：'+session.error.message:captionOverride||step?.caption||'本章已完成。');
-      const modal=[...document.querySelectorAll('dialog[open],[aria-modal="true"]:not([hidden]),.nozeli-context-menu:not([hidden])')].some(node=>node.getClientRects().length&&getComputedStyle(node).visibility!=='hidden');
+      // The settings dialog the tour itself opens must not hide the playback
+      // controls: pause/end stay reachable while the visitor reads the
+      // sections. The flag survives paints before showModal() lands and only
+      // clears after the dialog has actually been seen open and then closed.
+      if(demoSettingsOpen){const settingsOpen=document.getElementById('settings-dialog')?.open;if(settingsOpen)demoSettingsSeenOpen=true;else if(demoSettingsSeenOpen)demoSettingsOpen=false;}
+      const modal=[...document.querySelectorAll('dialog[open],[aria-modal="true"]:not([hidden]),.nozeli-context-menu:not([hidden])')].some(node=>(node.id==='settings-dialog'&&demoSettingsOpen?false:node.getClientRects().length&&getComputedStyle(node).visibility!=='hidden'));
       model={visible:!modal,projectId:session.projectId,sessionId:session.id,epoch:session.epoch,status:session.status,chapterId:session.chapterId,stepIndex:session.stepIndex||0,stepTotal:flow.steps.length,title:step?.hintTitle||flow.title,caption,progress:`${Math.min((session.stepIndex||0)+1,flow.steps.length)} / ${flow.steps.length}`,seekable:!creating&&!exiting&&!flight,buttons:controls.map(control=>({...control})),theme:document.documentElement.dataset.theme,palette:document.documentElement.dataset.palette};
     }
     const key=JSON.stringify(model);if(key===publishedUi)return;publishedUi=key;
@@ -99,22 +104,79 @@ export function mountGuidedDemo({invoke,subscribe,openProject,openFile,captureRe
     return false;
   }
 
-  // file.open needs a real native surface before the host can relay; open it here
-  // and wait bounded for the driver, never skipping to a fake view.
-  async function openStep(original,step){await openFile(step.relPath);for(let attempt=0;attempt<8;attempt++){if(session?.epoch!==original.epoch||session.status!=='playing'||getProjectId()!==original.projectId)throw Object.assign(Error('原演示动作已停止'),{code:'DEMO_ACTION_CANCELLED'});try{return await runAction(original,step);}catch(error){if(error.code!=='DEMO_SURFACE_NOT_READY')throw error;await new Promise(r=>setTimeout(r,700));}}throw Error('真实内容面未就绪：'+step.relPath);}
+  // Steps that carry a relPath act on a real file surface: open/activate that
+  // file first (the same path a user takes), then wait bounded for the driver.
+  // For 'open' this IS the step; for content actions (edit/annotation/diff…)
+  // it is only the activation prelude — the action itself runs once, visibly.
+  async function openStep(original,step){
+    if(step.relPath)await openFile(step.relPath);
+    for(let attempt=0;attempt<8;attempt++){
+      if(session?.epoch!==original.epoch||session.status!=='playing'||getProjectId()!==original.projectId)throw Object.assign(Error('原演示动作已停止'),{code:'DEMO_ACTION_CANCELLED'});
+      try{return await runAction(original,step);}
+      catch(error){if(error.code!=='DEMO_SURFACE_NOT_READY')throw error;await new Promise(r=>setTimeout(r,700));}
+    }
+    throw Error('真实内容面未就绪：'+(step.relPath||'本章来源材料'));
+  }
+  // Frontdesk and background-notice steps must be SEEN in the conversation:
+  // open/activate the real conversation view through the same workspace
+  // control a user triggers, wait until its surface is visible, and only then
+  // run the action (whose receipt requires the message text on screen).
+  async function conversationStep(original,step){
+    const opened=await invoke('workspace.control',{type:'conversation-action',projectId:original.projectId,action:'open'});
+    if(!opened.ok)throw Object.assign(Error(opened.error?.message||'前台对话未能打开'),{code:opened.error?.code});
+    const deadline=Date.now()+10000;
+    while(Date.now()<deadline){
+      if(session?.epoch!==original.epoch||session.status!=='playing'||getProjectId()!==original.projectId)throw Object.assign(Error('原演示动作已停止'),{code:'DEMO_ACTION_CANCELLED'});
+      const snapshot=await invoke('workspace.snapshot',{projectId:original.projectId});
+      const conversation=snapshot.ok?Object.values(snapshot.value.layout.views).find(view=>view.kind==='conversation'):null;
+      const windows=conversation?await invoke('workspace.windows.list',{projectId:original.projectId}):null;
+      if(conversation&&windows?.ok&&windows.value.some(window=>window.surfaces.some(surface=>surface.viewId===conversation.id&&surface.visible))){
+        for(let attempt=0;attempt<8;attempt++){
+          if(session?.epoch!==original.epoch||session.status!=='playing'||getProjectId()!==original.projectId)throw Object.assign(Error('原演示动作已停止'),{code:'DEMO_ACTION_CANCELLED'});
+          try{return await runAction(original,step);}
+          catch(error){if(error.code!=='DEMO_SURFACE_NOT_READY')throw error;await new Promise(r=>setTimeout(r,700));}
+        }
+        throw Error('真实对话内容面未就绪');
+      }
+      await new Promise(r=>setTimeout(r,150));
+    }
+    throw Error('真实对话内容面未就绪');
+  }
   async function clientStep(original,step){
-    if(step.semantic==='ui.settings'){window.dispatchEvent(new CustomEvent('nozeli-open-settings',{detail:'settings-provider'}));return {ok:true,client:true};}
+    if(step.semantic==='ui.settings'){
+      // Present the real settings UI long enough to read it: sources/login
+      // first, then the model tiers. Read-only — no input, no save, no login.
+      // Interruption (pause/seek) leaves the dialog on screen and keeps the
+      // playback controls visible via demoSettingsOpen so the visitor can
+      // resume or end; the latch in paint() recycles the exemption once the
+      // dialog is really closed.
+      demoSettingsOpen=true;demoSettingsSeenOpen=false;paint();
+      const interrupted=()=>!session||session.id!==original.id||session.status!=='playing';
+      const dwell=async ms=>{const end=performance.now()+ms;while(performance.now()<end){if(interrupted())return false;await new Promise(r=>setTimeout(r,200));}return true;};
+      window.dispatchEvent(new CustomEvent('nozeli-open-settings',{detail:'settings-provider'}));
+      const sources=await dwell(6500);
+      let models=false;
+      if(sources){window.dispatchEvent(new CustomEvent('nozeli-open-settings',{detail:'settings-models'}));models=await dwell(6500);}
+      if(sources&&models){window.dispatchEvent(new Event('nozeli-demo-settings-close'));demoSettingsOpen=false;demoSettingsSeenOpen=false;}
+      paint();
+      return {ok:true,client:true,sections:sources&&models?2:1};
+    }
     if(step.semantic==='ui.finish')return {ok:true,client:true};
     return runAction(session,step);
   }
-  function runStep(original,step){
-    const execute=step.semantic==='open'?openStep(original,step):clientStep(original,step);
-    return execute.catch(error=>{
-      const reason=error?.code==='DEMO_CONTENT_CHANGED'?'示例文件已包含你的修改，未改动文件':error?.code==='DEMO_ACTION_CANCELLED'?'演示位置已变化':error.message;
-      captionOverride='这一步已跳过：'+reason;paint();
-      return {ok:true,skipped:true};
-    });
-  }
+ function runStep(original,step){
+  const conversationSemantics=new Set(['frontdesk-ask','task-a','task-b','progress','decision-continue']);
+  const execute=conversationSemantics.has(step.semantic)?conversationStep(original,step):step.relPath?openStep(original,step):clientStep(original,step);
+  return execute.catch(reason=>{
+   // Only guarded refusals become explicit skips: the visitor's own edits
+   // (DEMO_CONTENT_CHANGED) or a superseded playback position
+   // (DEMO_ACTION_CANCELLED). Every other failure is real: rethrow it so the
+   // demo pauses on the failed step instead of advancing as if it succeeded.
+   if(reason?.code==='DEMO_CONTENT_CHANGED'){captionOverride='这一步已跳过：示例文件已包含你的修改，未改动文件';paint();return {ok:true,skipped:true};}
+   if(reason?.code==='DEMO_ACTION_CANCELLED'){captionOverride='这一步已跳过：演示位置已变化';paint();return {ok:true,skipped:true};}
+   throw reason;
+  });
+ }
   async function pump(){
     if(busy||disposed||exiting||session?.status!=='playing')return;
     busy=true;
@@ -143,13 +205,17 @@ export function mountGuidedDemo({invoke,subscribe,openProject,openFile,captureRe
         const receipt=await flight;
         flight=null;
         if(token!==generation||session?.epoch!==original.epoch||session?.status!=='playing'||getProjectId()!==original.projectId){
-          if(!exiting&&!disposed&&session?.status==='paused'&&session.error&&session.stepIndex===original.stepIndex&&session.stepIndex+1<flow.steps.length){
-            captionOverride='这一步已跳过：'+session.error.message;paint();
-            await transition('chapter',{chapterId:flow.id,stepIndex:original.stepIndex+1});
-            await transition('play');
-            continue;
+          const reason=session?.status==='paused'?session.error:null;
+          if(reason){
+            // The flight was superseded and the session recorded a refusal.
+            // Report it and stay put: never advance a step or resume playback
+            // on the host's behalf as if the interrupted action had succeeded.
+            if(reason.code==='DEMO_CONTENT_CHANGED')captionOverride='这一步已跳过：示例文件已包含你的修改，未改动文件';
+            else if(reason.code==='DEMO_ACTION_CANCELLED')captionOverride='这一步已跳过：演示位置已变化';
+            else failureMessage=reason.message;
+            paint();
           }
-          paint();restartAfterFlight=session?.status==='playing'&&getProjectId()===session.projectId;break;
+          restartAfterFlight=session?.status==='playing'&&getProjectId()===session.projectId;break;
         }
         if(receipt?.ok===false)throw Error(receipt.error?.message||'真实动作未完成');
         if(!receipt?.skipped)executedSteps.add(step.id);

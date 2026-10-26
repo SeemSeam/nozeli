@@ -127,7 +127,10 @@ export class GuidedDemoControls {
     if(op==='workspace.demoHint.ready'){record.wc.setBackgroundThrottling(false);record.ready=true;this.hintPush();this.hintRaise();return this.hintState();}
     if(!this.ownerValid()||!this.owner.ready)throw fail('原主窗口已变化');
     if(op==='workspace.demoHint.size'){
-      if(!Number.isFinite(payload.height)||payload.height<1||payload.height>600)throw fail('演示提示尺寸无效');
+      // hintRaise clamps the view to the window; the report just has to be a
+      // plausible positive height. A long detail in a narrow window can wrap
+      // past 600 DIP — that is a honest measure, not an error.
+      if(!Number.isFinite(payload.height)||payload.height<1||payload.height>4096)throw fail('演示提示尺寸无效');
       this.hintHeight=Math.ceil(payload.height);this.hintRaise();return {bounds:record.view.getBounds()};
     }
     if(op==='workspace.demoHint.dismiss'){if(!this.hint?.visible||payload.key!==this.hint.key)throw fail('演示步骤已变化');this.owner.wc.send('nozeli:workspace-control',{type:'demo-hint-dismiss',key:this.hint.key});return {queued:true};}

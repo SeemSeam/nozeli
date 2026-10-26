@@ -22,12 +22,12 @@ const demoNotices={
  'task-a-done':'任务 A 完成【演示】·成果《方法比较报告》已生成并进入待办。注意：任务尚未结束——审核决定后才闭环。',
  'task-b-done':'任务 B 完成【演示】·成果《数据整理报告》已生成，同样等待你的审核。',
  'decision-continue':'你选择了“继续”【演示】：要求补充采样时段说明。Agent 继续完善，任务保持打开。',
- 'decision-accept':'你选择了“接受”【演示】：示例修改合入，任务闭环结束。',
+ 'decision-accept':'你选择了“接受”【演示】：采纳示例结论，任务闭环结束；未改动真实任务或论文。',
  'decision-discard':'你选择了“丢弃”【演示】：保留原文、不采纳修改，任务闭环结束。',
 };
+const demoConversationMarkers={'frontdesk-ask':'同一时段观测','task-a':'已提交后台任务 A','task-b':'已提交后台任务 B','progress':'后台进展','decision-continue':'要求补充采样时段说明'};
 const fixtureTitles={'task-a-done':'【演示内容】任务 A · 方法比较报告','task-b-done':'【演示内容】任务 B · 数据整理报告'};
 const blankProjection=()=>({source,demo:true,works:[],jobs:[],todos:[],receipts:[],messages:[],drafts:{},agents:[],limit:0,quotaUsed:0,configuringTargets:[],externalTerminalTargets:[],nativeDraftTargets:[],busyTargets:[],stopping:false});
-
 export async function createGuidedDemo(options){const manager=new GuidedDemo(options);await manager.initialize();return manager;}
 export class GuidedDemo {
  constructor({host,userDataDir,appRoot,examplesRoot,workspace,onEvent=()=>{}}){
@@ -83,9 +83,10 @@ export class GuidedDemo {
  }
  async openDemo({confirmed=false,chapterId='learn',returnProjectId=null}={}){
   if(confirmed!==true)throw fail('DEMO_CONFIRM_REQUIRED','请先确认创建独立演示副本及离线固定回复。');if(!chapterIds.has(chapterId))throw fail('DEMO_CHAPTER_INVALID','未知演示章节。');
+  const template=await loadDemoTemplate(this.appRoot),templateDigest=digest(JSON.stringify(template.manifest));
   const rows=Object.values(this.data.projects),current=this.workspace?.shell?.projectId;
   const existing=rows.find(row=>row.projectId===current&&!row.cleanup?.trashed)??rows.find(row=>!row.cleanup?.trashed);
-  if(existing){
+  if(existing&&existing.templateDigest===templateDigest){
    await this.verify(existing.projectId,{allowRemoved:true});
    for(const row of rows)if(row!==existing&&!row.removed)await this.exit({...row.session,sessionId:row.session.id});
    if(existing.inflight)throw fail('DEMO_ACTION_PENDING','原演示动作尚在收尾，请稍后重新进入。');
@@ -93,12 +94,29 @@ export class GuidedDemo {
    await this.mutate(()=>{existing.removed=false;existing.project={...publicProject,demo:true,source};existing.cleanup=null;existing.returnProjectId=returnProjectId;existing.projection=blankProjection();existing.requests={};existing.reports={};existing.lastAction=null;existing.session={id:randomUUID(),projectId:existing.projectId,epoch:existing.session.epoch+1,status:'paused',chapterId,stepIndex:0,createdAt:new Date().toISOString()};});
    return this.emit(existing);
   }
-  const template=await loadDemoTemplate(this.appRoot),created=await createDemoDirectory({template,examplesRoot:this.examplesRoot});
+  if(existing){
+   // A copy made from an older template cannot serve the current catalog:
+   // its recorded expectedFiles no longer match the shipped steps (for
+   // example a step that opens sample.tex on a copy created before that file
+   // existed). Retire it through the normal lifecycle — registration removed,
+   // every file on disk kept — and start the new session from the current
+   // template instead of reusing stale expectedFiles.
+   await this.verify(existing.projectId,{allowRemoved:true});
+   for(const row of rows)if(row!==existing&&!row.removed)await this.exit({...row.session,sessionId:row.session.id});
+   if(existing.inflight)throw fail('DEMO_ACTION_PENDING','原演示动作尚在收尾，请稍后重新进入。');
+   const retireSession=existing.session.id;
+   await this.host.registerDirectory(existing.root);
+   await this.mutate(()=>{if(existing.session.status!=='removed')existing.session.status='stopped';existing.session.epoch++;});
+   this.emit(existing);
+   await this.lifecycle.removeProject(existing.projectId,{operationId:'demo-template-retire:'+retireSession});
+   await this.mutate(()=>{delete this.data.projects[existing.projectId];});
+  }
+  const created=await createDemoDirectory({template,examplesRoot:this.examplesRoot});
   // Register privately before any renderer can open this directory. Normal
   // project registration owns .nozeli and the Git baseline; no real agent runs.
   const publicProject=await this.host.registerDirectory(created.root),project=await this.host.requireRegisteredProject(publicProject.id),manifest=path.join(created.root,'.nozeli','project.json');
   const manifestStat=await fs.lstat(manifest,{bigint:true}),manifestIdentity={dev:String(manifestStat.dev),ino:String(manifestStat.ino)};
-  const row={...created,projectId:project.id,instanceId:project.instanceId,manifestIdentity,manifestDigest:digest(await fs.readFile(manifest)),project:{...publicProject,demo:true,source},returnProjectId,templateDigest:digest(JSON.stringify(template.manifest)),projection:blankProjection(),requests:{},session:{id:randomUUID(),projectId:project.id,epoch:1,status:'paused',chapterId,stepIndex:0,createdAt:new Date().toISOString()},createdAt:new Date().toISOString()};
+  const row={...created,projectId:project.id,instanceId:project.instanceId,manifestIdentity,manifestDigest:digest(await fs.readFile(manifest)),project:{...publicProject,demo:true,source},returnProjectId,templateDigest,projection:blankProjection(),requests:{},session:{id:randomUUID(),projectId:project.id,epoch:1,status:'paused',chapterId,stepIndex:0,createdAt:new Date().toISOString()},createdAt:new Date().toISOString()};
   await this.mutate(()=>{this.data.projects[project.id]=row;});return this.emit(row);
  }
  async state({projectId}={}){if(!projectId)return {isDemo:false,demo:false,source,projects:Object.values(this.data.projects).filter(row=>!row.removed).map(row=>this.public(row))};if(!this.isDemo(projectId))return {isDemo:false,demo:false,projectId};const row=this.row(projectId);try{await this.verify(projectId);}catch(error){return {...this.public(row),isDemo:true,available:false,error:{code:error.code,message:error.message}};}return {...this.public(row),isDemo:true,messages:clone(row.projection.messages),todos:clone(row.projection.todos),available:true};}
@@ -134,16 +152,31 @@ export class GuidedDemo {
    if(!stat.isFile()||stat.isSymbolicLink()||digest(await fs.readFile(file))!==row.expectedFiles[payload.relPath])throw fail('DEMO_CONTENT_CHANGED','来源文件已变化；自动操作已暂停，保留所有探索内容，可以随时结束。');
   }
   let todoId=null;
-  if(payload.command==='conversation.ask')return this.send({...payload,target:'frontdesk',text:'两种方法是否在同一时段观测？请快速回答。',requestKey:'demo-step:'+args.stepId});
+  if(payload.command==='conversation.ask'){
+   // The offline reply commits first (idempotent by step key); the step only
+   // settles after the real conversation surface shows the exchange.
+   const sent=await this.send({...payload,target:'frontdesk',text:'两种方法是否在同一时段观测？请快速回答。',requestKey:'demo-step:'+args.stepId});
+   await this.workspace.performDemoAction(scope,{...payload,args:{...args,expect:demoConversationMarkers[args.semantic]??'本地固定回复'}},{manager:this,row});
+   return sent;
+  }
   if(payload.command==='notification.show'){
    const semantic=args.semantic;
-   if(['task-a','task-b','progress','decision-continue'].includes(semantic)){await this.notice(row,semantic);return {ok:true,source,noticed:true};}
-   if(['task-a-done','task-b-done'].includes(semantic)){todoId=(await this.publishFixture(row,payload)).todoId;await this.notice(row,semantic);return {ok:true,source,todoId};}
-   if(['decision-accept','decision-discard'].includes(semantic)){
+   if(['task-a','task-b','progress','decision-continue'].includes(semantic)){
+    await this.notice(row,semantic);
+    await this.workspace.performDemoAction(scope,{...payload,args:{...args,expect:demoConversationMarkers[semantic]}},{manager:this,row});
+    return {ok:true,source,noticed:true,conversation:true};
+   }
+   if(['task-a-done','task-b-done'].includes(semantic)){todoId=(await this.publishFixture(row,payload)).todoId;await this.notice(row,semantic);}
+   else if(['decision-accept','decision-discard'].includes(semantic)){
     todoId=row.projection.todos.filter(todo=>todo.kind==='result'&&todo.status==='open').at(-1)?.id;
     if(!todoId)throw fail('DEMO_TODO_MISSING','没有待审核的演示任务。');
-    await this.decide(row,todoId,semantic==='decision-accept'?'accept':'discard');
-    return {ok:true,source,todoId};
+    const decision=semantic==='decision-accept'?'accept':'discard';
+    // The decision is a real click in the visible report footer (the same
+    // button a user presses); the host only appends the timeline notice after
+    // the report surface confirms the settled todo.
+    const receipt=await this.workspace.performDemoAction(scope,{...payload,args:{...args,todoId,decision}},{manager:this,row});
+    await this.notice(row,semantic);
+    return receipt;
    }
   }
   if(payload.command==='report.open'){todoId=row.projection.todos.filter(todo=>todo.kind==='result'&&todo.status==='open').at(-1)?.id;if(!todoId)throw fail('DEMO_TODO_MISSING','原演示报告事项已不存在；没有创建替代任务。');}
@@ -222,12 +255,6 @@ export class GuidedDemo {
   if(row.projection.messages.some(message=>message.requestId===semantic))return {noticed:true,already:true};
   await this.mutate(()=>{if(row.projection.messages.length+1>recordLimit)throw fail('DEMO_HISTORY_FULL','演示会话已达记录上限，记录已保留，可以随时结束。');row.projection.messages.push({id:randomUUID(),source,demo:true,sessionId:row.session.id,requestId:semantic,jobId:semantic,target:'frontdesk',at:new Date().toISOString(),speaker:'agent',text,sequence:row.projection.messages.length+1,durable:true,complete:true,status:'completed',availability:'available'});});
   this.emit(row);return {noticed:true};
- }
- async decide(row,todoId,choice){
-  const todo=row.projection.todos.find(todo=>todo.id===todoId);if(!todo)throw fail('DEMO_TODO_MISSING','待办不存在。');
-  await this.mutate(()=>{todo.status=choice==='accept'?'resolved':'cancelled';todo.resolution={source,demo:true,choice,note:'仅处理固定演示结论；不改变真实任务或论文。'};todo.settledAt=new Date().toISOString();todo.managementRevision=(todo.managementRevision||0)+1;});
-  await this.notice(row,choice==='accept'?'decision-accept':'decision-discard');
-  return {decided:true,choice};
  }
  async publishFixture(row,payload){
   const stepId=payload.args?.stepId??'manual-report',prior=row.projection.todos.find(todo=>todo.demoStepId===stepId);

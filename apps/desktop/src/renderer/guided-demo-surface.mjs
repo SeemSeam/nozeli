@@ -17,6 +17,60 @@ export function mountDemoSurface({invoke,subscribe,scope,getCurrent,setTextMode,
     const surfaceTarget=c.editor?.adapter.getEditorElement()??document.querySelector('#word-host:not([hidden]),#image-host:not([hidden]),#pdf-host:not([hidden]),.workspace-pane.is-focused');if(surfaceTarget){const rect=surfaceTarget.getBoundingClientRect();indicator.hidden=false;indicator.style.left=Math.max(6,rect.left+12)+'px';indicator.style.top=Math.max(6,rect.top+12)+'px';}badge.hidden=false;
     if(action==='md-preview'){setTextMode('edit');const toggle=await wait(()=>!$('markdown-preview-toggle').hidden?$('markdown-preview-toggle'):null,request);toggle.click();return {preview:true};}
     if(action==='report'){if(scope.kind!=='report')throw Error('演示报告未在正常报告面打开');await wait(()=>document.querySelector('#managed-doc .isolated-status[data-state="ready"]'),request);return {report:true};}
+    if(['frontdesk-ask','task-a','task-b','progress','decision-continue'].includes(action)){
+      // Runs on the real conversation surface: the step only settles once the
+      // timeline actually shows this step's message text on screen.
+      if(scope.kind!=='conversation')throw Error('演示对话未在真实对话内容面显示');
+      const expected=request.args?.expect;
+      if(typeof expected!=='string'||!expected)throw Error('演示对话缺少可见内容锚点');
+      await wait(()=>document.body.innerText.includes(expected)?true:null,request,12000);
+      return {conversation:true,visible:true};
+    }
+    if(action==='task-a-done'||action==='task-b-done'){
+      // Shell side: walk the fresh result todo through the real attention
+      // prompt into a visible report surface. A completed task is only
+      // acknowledged after its report view is actually on screen.
+      const todoId=request.args?.todoId;
+      if(!todoId)throw Error('演示任务缺少待办身份');
+      const attentionRow=()=>[...document.querySelectorAll('[data-attention-item]')].find(node=>node.dataset.attentionItem===request.projectId+':'+todoId);
+      const row=attentionRow();
+      if(row){if(row.getAttribute('aria-current')!=='true'){document.querySelector('[data-attention-expand]')?.click();row.click();}document.querySelector('[data-attention-open]')?.click();}
+      else await window.__workspaceOpenTodo?.(todoId);
+      const end=Date.now()+12000;
+      while(Date.now()<end){
+        check(request,true);
+        const report=Object.values(workspaceGroups().snapshot().views).find(view=>view.kind==='report'&&view.resourceId===todoId);
+        const windows=await value('workspace.windows.list',{projectId:request.projectId});
+        if(report&&windows.some(window=>window.surfaces.some(surface=>surface.viewId===report.id&&surface.visible)))return {todoId,viewId:report.id};
+        await new Promise(resolve=>setTimeout(resolve,50));
+      }
+      throw Error('审核报告未在真实内容面打开');
+    }
+    if(action==='decision-accept'||action==='decision-discard'){
+      // Runs on the report surface: press the same footer button a user
+      // would, then confirm the todo actually settled through todo.manage.
+      const todoId=request.args?.todoId,choice=request.args?.decision??(action==='decision-accept'?'accept':'discard');
+      if(!todoId)throw Error('演示决定缺少待办身份');
+      const current=await value('managed.status',{projectId:request.projectId});
+      const todo=current.state.todos.find(todo=>todo.id===todoId);
+      if(!todo)throw Error('原演示事项已不存在');
+      if(todo.status!=='open')return {decided:true,choice:todo.resolution?.choice,alreadyDecided:true,todoId};
+      const visible=()=>value('workspace.windows.list',{projectId:request.projectId}).then(windows=>windows.some(window=>window.surfaces.some(surface=>surface.viewId===scope.viewId&&surface.visible)));
+      const shown=Date.now()+6000;while(Date.now()<shown){check(request,true);if(await visible())break;await new Promise(resolve=>setTimeout(resolve,50));}
+      if(!await visible())throw Error('报告处理面尚未可见，未执行决定');
+      const button=await wait(()=>document.querySelector(`#managed-result-actions [data-demo-decision="${choice}"]`),request,6000);
+      button.click();
+      const settled=Date.now()+8000;let decided=todo;
+      while(Date.now()<settled){
+        check(request,true);
+        const status=await value('managed.status',{projectId:request.projectId});
+        decided=status.state.todos.find(todo=>todo.id===todoId)??decided;
+        if(decided.status!=='open')break;
+        await new Promise(resolve=>setTimeout(resolve,50));
+      }
+      if((choice==='accept'?decided.status!=='resolved':decided.status!=='cancelled')||decided.resolution?.choice!==choice)throw Error('演示决定没有取得正常回执');
+      return {decided:true,choice,todoId};
+    }
     if(action==='open'){if(!c.file)throw Error('真实文件驱动未就绪');return {relPath:c.file.relPath,kind:c.file.kind};}
     if(request.relPath&&c.file?.relPath!==request.relPath)throw Error('请先打开本章来源材料');
     if(action==='text-edit'){setTextMode('edit');const adapter=c.editor?.adapter;if(!adapter)throw Error('文本编辑器未就绪');const text='\n演示记录：方法 B 的误差更小，仍需检查样本量。\n';adapter.applyEdit({from:adapter.getText().length,insert:text});adapter.focus();const result=await flush();if(!result.ok)throw Error(result.error?.message||'文本保存未完成');return {saved:true,text:adapter.getText()};}

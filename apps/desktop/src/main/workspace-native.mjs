@@ -8,7 +8,7 @@ import {GuidedDemoControls} from './guided-demo-controls.mjs';
 
 const fail = (code, message = code) => Object.assign(new Error(message), { code });
 const writes = new Set(['file.save','file.draft','file.retain','sheet.save','sheet.recover','word.save','word.import','document.image.put','annotation.add','annotation.update','annotation.remove','annotation.drawing','tag.put','tag.view','tag.reanchor','tag.material']);
-const surfaceOps = /^(file\.|document\.|annotation\.|tag\.|material\.|word\.|sheet\.|ppt\.|formatter\.|lsp\.(sync|request|status)$|tex\.|managed\.|report\.|project\.(open|list|children|search)$|agents\.(messages|reports)$|config\.status$|links\.openExternal$|state\.(read|write)$|view\.authorship$|session\.(flushed|requestClose|capture|resize|quitChoice)$)/;
+const surfaceOps = /^(file\.|document\.|annotation\.|tag\.|material\.|word\.|sheet\.|ppt\.|formatter\.|lsp\.(sync|request|status)$|tex\.|managed\.|report\.|project\.(open|list|children|search)$|agents\.(messages|reports)$|config\.status$|settings\.appearance\.read$|links\.openExternal$|state\.(read|write)$|view\.authorship$|session\.(flushed|requestClose|capture|resize|quitChoice)$)/;
 
 const topology=layout=>JSON.stringify({mainRoot:layout.mainRoot,detached:layout.detached.map(({id,root})=>({id,root})),views:Object.values(layout.views).map(({id,kind,resourceId,relPath})=>({id,kind,resourceId,relPath}))});
 export function restoreBounds(bounds, screen) {
@@ -32,10 +32,11 @@ export class WorkspaceNative {
   }
   async performDemoAction(scope,payload,{manager,row}){
     const candidates=this.projectRecords(payload.projectId).filter(record=>!record.dead&&record.ready&&!record.transferring&&(!payload.viewId||record.viewId===payload.viewId)&&(!payload.relPath||record.relPath===payload.relPath));
-    const reportCommand=payload.command==='report.open'||payload.args?.semantic==='decision';
-    const shellCommand=['workspace.split','workspace.resize','workspace.detach','workspace.dock'].includes(payload.command)||payload.command==='notification.show'&&!reportCommand;
+    const reportCommand=payload.command==='report.open'||['decision-accept','decision-discard'].includes(payload.args?.semantic);
+    const conversationCommand=payload.command==='conversation.ask'||['task-a','task-b','progress','decision-continue'].includes(payload.args?.semantic);
+    const shellCommand=['workspace.split','workspace.resize','workspace.detach','workspace.dock'].includes(payload.command)||payload.command==='notification.show'&&!reportCommand&&!conversationCommand;
     const layout=reportCommand?await this.layout(payload.projectId):null;
-    const record=shellCommand?this.shell:reportCommand?candidates.find(record=>record.kind==='report'&&layout.views[record.viewId]?.resourceId===payload.args.todoId):candidates.find(record=>payload.viewId?record.viewId===payload.viewId:payload.relPath?record.relPath===payload.relPath:record.kind==='document')??(!payload.viewId&&!payload.relPath?candidates[0]:null);
+    const record=shellCommand?this.shell:reportCommand?candidates.find(record=>record.kind==='report'&&layout.views[record.viewId]?.resourceId===payload.args.todoId):conversationCommand?candidates.find(record=>record.kind==='conversation'):candidates.find(record=>payload.viewId?record.viewId===payload.viewId:payload.relPath?record.relPath===payload.relPath:record.kind==='document')??(!payload.viewId&&!payload.relPath?candidates[0]:null);
     if(!record||record.projectId!==scope.projectId)throw fail('DEMO_SURFACE_NOT_READY','请先打开当前章节对应的真实内容面。');
     if(reportCommand){
       // Single-content mode backgrounds earlier views instead of tabbing them;
@@ -152,7 +153,7 @@ export class WorkspaceNative {
     if(op==='report.copySource'&&!(r.role==='shell'||r.role==='surface'&&['report','history'].includes(r.kind)))throw fail('IPC_DENIED');
     if(op.startsWith('isolated-preview.')&&r.role==='surface'&&(!['report','document','history'].includes(r.kind)||r.kind==='history'&&['isolated-preview.open','isolated-preview.update'].includes(op)&&payload.profile!=='staticReport'))throw fail('IPC_DENIED');
     if (r.role !== 'shell' && !op.startsWith('workspace.') && !op.startsWith('isolated-preview.') && !surfaceOps.test(op)) throw fail('IPC_DENIED');
-    if (r.role === 'detached' && !op.startsWith('workspace.') && !['project.open','project.list','project.children','project.search','config.status','session.flushed','session.requestClose','session.quitChoice','state.read','view.authorship','managed.status','managed.timeline.request','managed.timeline.read'].includes(op) && !(op==='managed.send'&&payload.target==='frontdesk'&&r.drawingConversationProject===r.projectId)) throw fail('IPC_DENIED');
+    if (r.role === 'detached' && !op.startsWith('workspace.') && !['project.open','project.list','project.children','project.search','config.status','settings.appearance.read','session.flushed','session.requestClose','session.quitChoice','state.read','view.authorship','managed.status','managed.timeline.request','managed.timeline.read'].includes(op) && !(op==='managed.send'&&payload.target==='frontdesk'&&r.drawingConversationProject===r.projectId)) throw fail('IPC_DENIED');
     if (r.role === 'surface' && (writes.has(op) || op === 'ppt.export' || op === 'ppt.draft' && payload.model !== undefined)) {
       const lease = this.leases.get(this.resource(r.projectId, r.relPath));
       if (!lease || lease.viewId !== r.viewId || payload.relPath !== r.relPath || lease.generation !== r.generation) throw fail('EDIT_LEASE_DENIED');
