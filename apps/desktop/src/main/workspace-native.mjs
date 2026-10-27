@@ -88,7 +88,7 @@ export class WorkspaceNative {
     finally{this.conversationClosing.delete(projectId);if((!this.shell||this.shell.dead)&&this.restoreShell)await this.restoreShell();this.broadcast('nozeli:workspace-control',{type:'conversation-unavailable',projectId,error},projectId);}
   }
   register(wc, scope) {
-    const record = { ...scope, wc, generation: 0, recoveryOwner:randomUUID(), ready: false, dead: false };
+    const record = { ...scope, wc, generation: 0, recoveryOwner:randomUUID(), ready: false, contentFailed: false, initError: null, dead: false };
     this.senders.set(wc.id, record);
     wc.on('before-input-event',(_event,input)=>{if(!['shell','demo-controls'].includes(record.role)&&input.type==='keyDown')void this.guidedDemo?.pauseProject(record.projectId,'用户操作了真实内容面，演示已暂停。').catch(this.onError);});
     wc.on('focus',()=>{if(record.role==='surface'){const root=this.windows.get(record.windowId);if(root&&!root.dead)root.wc.send('nozeli:workspace-control',{type:'surface-focus',viewId:record.viewId,projectId:record.projectId});}});
@@ -101,7 +101,7 @@ export class WorkspaceNative {
       if (!main) return;
       this.isolatedPreview?.closeScope(record);
       if(record.role==='demo-controls'&&record.ready)this.demoControls.reloading(record);
-      record.generation++; record.ready = false;
+      record.generation++; record.ready = false; record.contentFailed = false; record.initError = null;
       if(record.role==='shell'){this.demoControls.record?.view.setVisible(false);this.demoControls.hintRecord?.view.setVisible(false);}
       record.boundsSequence=0;
       this.cancelDrags(record);
@@ -112,7 +112,7 @@ export class WorkspaceNative {
       if(record.role==='demo-controls'){this.demoControls.failed(record,Error('演示控制区进程已退出：'+details.reason));return;}
       if(record.role==='demo-hint'){this.demoControls.hintFailed(record,Error('演示提示进程已退出：'+details.reason));return;}
       if(record.role!=='surface')for(const surface of this.projectRecords(record.projectId,record.windowId))surface.view.setVisible(false);
-      record.ready = false; record.generation++;
+      record.ready = false; record.generation++; record.contentFailed = false; record.initError = null;
       this.cancelDrags(record);
       for (const [id, receipt] of this.receipts) if (receipt.record === record) { receipt.reject(fail('RENDERER_GONE')); this.receipts.delete(id); }
       this.recover?.(record, details);
@@ -196,12 +196,14 @@ export class WorkspaceNative {
       r.readOnly = this.leases.get(key)?.viewId !== r.viewId;
     }else if(descriptor?.readOnly)r.readOnly=true;
     const viewState=this.layouts.get(r.projectId)?.views[r.viewId]?.viewState;
-    return { role: r.role, projectId: r.projectId, viewId: r.viewId, kind: r.kind, relPath: r.relPath, windowId: r.windowId, generation: r.generation, readOnly: !!r.readOnly, draftOnly:viewState?.draftOnly===true, viewState, lease: r.relPath ? this.leases.get(this.resource(r.projectId, r.relPath)) : null };
+    return { role: r.role, projectId: r.projectId, viewId: r.viewId, kind: r.kind, relPath: r.relPath, windowId: r.windowId, generation: r.generation, readOnly: !!r.readOnly, draftOnly:viewState?.draftOnly===true, viewState, lease: r.relPath ? this.leases.get(this.resource(r.projectId, r.relPath)) : null, contentFailed: !!r.contentFailed, initError: r.initError ?? null };
   }
   flush(records) { return Promise.all([...new Set(records)].filter(r => !r.dead&&!['demo-controls','demo-hint'].includes(r.role)).map(r => this.flushOne(r))).then(() => this.host.settled()); }
   async flushOne(record, channel = 'nozeli:flush', detail = {}) {
-    if(!record.ready&&record.role==='surface'&&!record.dead){await new Promise((resolve,reject)=>{const generation=record.generation,timer=setTimeout(()=>{record.wc.removeListener('nozeli-content-ready',ready);reject(fail('SURFACE_NOT_READY'));},10000);const ready=()=>{clearTimeout(timer);record.dead||record.generation!==generation?reject(fail('SURFACE_CHANGED')):resolve();};record.wc.once('nozeli-content-ready',ready);});}
-    if (!record.ready) throw fail('SURFACE_NOT_READY');
+    // A terminally failed surface never becomes business-ready, yet it still owns
+    // whatever it loaded: skip the readiness wait, never skip the retention flush.
+    if(!record.ready&&record.role==='surface'&&!record.dead&&!record.contentFailed){await new Promise((resolve,reject)=>{const generation=record.generation,timer=setTimeout(()=>{for(const event of ['nozeli-content-ready','nozeli-init-settled'])record.wc.removeListener(event,settled);reject(fail('SURFACE_NOT_READY'));},10000);const settled=()=>{clearTimeout(timer);for(const event of ['nozeli-content-ready','nozeli-init-settled'])record.wc.removeListener(event,settled);record.dead||record.generation!==generation?reject(fail('SURFACE_CHANGED')):resolve();};record.wc.once('nozeli-content-ready',settled);record.wc.once('nozeli-init-settled',settled);});}
+    if (!record.ready && !(channel === 'nozeli:flush' && record.role === 'surface' && record.contentFailed && !record.dead)) throw fail('SURFACE_NOT_READY');
     const requestId = randomUUID(), generation = record.generation;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.receipts.delete(requestId); reject(Object.assign(fail('FLUSH_TIMEOUT'),{requestId})); }, 10000);
@@ -720,9 +722,16 @@ export class WorkspaceNative {
       // Reapply after the renderer exists: a hidden WCV otherwise retains hidden
       // page visibility despite the constructor preference, blocking PDF.js rAF.
       if(r.role==='surface'&&p.contentReady!==true)r.wc.setBackgroundThrottling(false);
-      r.ready=r.role!=='surface'||p.contentReady===true;r.readyResolve?.();const result=this.bootstrap(r);const layout=this.layouts.get(r.projectId);
+      if(p.contentReady===true&&p.contentFailed===true)throw fail('INVALID_READY','contentReady 与 contentFailed 不能同时为真。');
+      r.ready=r.role!=='surface'||p.contentReady===true;
+      // A terminal init failure keeps its error and stays business-not-ready;
+      // it only unlocks the retention flush, never content readiness.
+      if(r.role==='surface'&&!r.ready&&p.contentFailed===true)r.contentFailed=true,r.initError={code:p.error?.code||'SURFACE_INIT_FAILED',message:String(p.error?.message||'工作面初始化未完成')};
+      else if(r.role==='surface'&&r.ready)r.contentFailed=false,r.initError=null;
+      r.readyResolve?.();const result=this.bootstrap(r);const layout=this.layouts.get(r.projectId);
       if(r.ready)r.loading=false;
       if(r.ready)r.wc.emit('nozeli-content-ready');
+      else if(r.contentFailed)r.wc.emit('nozeli-init-settled');
       if(r.ready)r.returnFocus?.();
       if(layout)this.changed(layout);if(r.ready){for(const control of r.pendingControls||[])r.wc.send('nozeli:workspace-control',control);r.pendingControls=[];}return result;
     }
@@ -771,7 +780,7 @@ export class WorkspaceNative {
         const valid = rect && ['x','y','width','height'].every(k => Number.isFinite(rect[k])) && rect.x >= 0 && rect.y >= 0 && rect.width > 0 && rect.height > 0 && rect.x + rect.width <= width + 1 && rect.y + rect.height <= height + 1;
         const occluded=valid&&Array.isArray(p.overlayRects)&&p.overlayRects.some(b=>b&&['x','y','width','height'].every(k=>Number.isFinite(b[k]))&&b.width>0&&b.height>0&&b.x<rect.x+rect.width&&b.x+b.width>rect.x&&b.y<rect.y+rect.height&&b.y+b.height>rect.y);
         if (valid) surface.view.setBounds(Object.fromEntries(Object.entries(rect).map(([k,v]) => [k,Math.round(v)])));
-        surface.view.setVisible(!!valid && !surface.conversationBlocked && !p.overlay && !occluded && surface.ready && ![...this.drags.values()].some(d=>d.projectId===r.projectId&&!(d.source.role==='detached'&&d.source.windowId===r.windowId)));
+        surface.view.setVisible(!!valid && !surface.conversationBlocked && !p.overlay && !occluded && (surface.ready || surface.contentFailed) && ![...this.drags.values()].some(d=>d.projectId===r.projectId&&!(d.source.role==='detached'&&d.source.windowId===r.windowId)));
         for(const slot of this.isolatedPreview?.slots.values()??[])if(slot.scope===surface)this.isolatedPreview.bounds(slot,slot.bounds);
         surface.returnFocus?.();
       }

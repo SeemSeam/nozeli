@@ -27,6 +27,12 @@ Electron桌面阅读、批注、编辑与受管OMP协作产品。平台、构建
 - **验证链与失败原件**：renderer 构建成功；身份重载/flush/probe定向34/34，最终recovery-only hold准入3/3；协作生命周期合并96/96见`/tmp/nozeli-lifecycle-merged-results.tap`，最终 fd-probe＋真实 Electron＋准入/flush 50/50见`/tmp/nozeli-owner-fd-final-results.tap`。真实 fd-owner 子回归`/tmp/nozeli-owner-electron-results.tap`覆盖同根拒绝、异根允许、已unlink catalog仍拒、正常退出后释放。此前`0jmZPf/report.json`保留真实env消失导致旧profile猜测漏检的反例；最终按实际fd修复后整体矩阵通过，没有把旧失败覆盖为成功。
 - **环境与证据边界**：Linux Wayland、真实 Electron/捆绑 OMP 与真实工具、本地确定性 OpenAI SSE 模型（不是付费模型质量验收）。系统目录选择器/原生确认的用户决定为fixture，生产准入与生命周期未mock。早期 `/tmp/nozeli-project-cycles-*` 因原生addon解压遇EDQUOT；只在对应测试owner已退出后清自建可再生natives，保留报告/日志/DB/源文件。最终通过指定 `TMPDIR=/home/bfly/.cache/nozeli-project-cycle-fixtures` 使用自有磁盘fixture，每个项目移除并核对PID退出后清该项目测试agent的natives，报告逐项记录 `stoppedNativeCachesPruned`；这不是产品自动磁盘回收修复，不外推长期资源占用或Windows/macOS。最终成功后不再重跑或安装。
 
+### 2026-10-27 初始化失败工作面的关闭保留链路
+
+- 内容初始化终态失败（如旧演示缺 `sample.tex`）改为显式上报：renderer `restoreLast` 失败时调用 `workspace.ready {contentFailed:true,error}`，宿主保留 `record.initError` 且 `ready` 恒 false，不伪称内容就绪；`contentReady` 与 `contentFailed` 同真以 `INVALID_READY` 拒绝。重载/崩溃（`did-start-navigation`/`render-process-gone`）重置失败态并保持 generation++ 保护。
+- `flushOne` 对终态失败面跳过 10 秒就绪等待但**必发** `nozeli:flush` 走真实保留链路；仍在加载的面照旧等待/超时 `SURFACE_NOT_READY`，不销毁、不放行。renderer 回执诚实标记：无可信项目 `{ok:true,retained:false,reason:'project-not-loaded'}`、受约文档未载入 `reason:'document-not-loaded'`（此时不写 `workspace.recovery`，不以空 candidate 覆盖既有恢复候选与索引）；真实保留/写入失败仍 `PROJECT_FLUSH_FAILED` 不放行，`TRANSFER_RECOVERY_REQUIRED` 准入不变。`viewBlocked` 依旧禁止 `writeView` 覆盖已保存工作区。
+- 失败面的错误页仍可见，但 `workspace.focus`/文档同步等业务准入不因此放行；只有 `nozeli:flush` 可进入失败面的保留链路。Linux 定向回归 104/104 通过，覆盖未就绪等待、保存失败拒绝、代际失效、可见性和生命周期准入。真实源码 Electron 在 `/tmp/nozeli-demo-failed-surface-bS2PnV/report.json` 完成“缺失活动教材→错误页可见→退役旧副本→新教材→结束演示→正常退出 0”，旧目录及自写备注保留；不将其外推为其他格式、断电恢复或 Windows/macOS 验收。安装包另用 `node tests/failed-surface-exit-check.mjs --release <release-dir>` 验证，不依赖打包后被忽略的 `NODE_OPTIONS` observer。
+
 
 ## 构建
 

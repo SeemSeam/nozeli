@@ -719,7 +719,14 @@ function clearFailure() {
 }
 let recoveryGeneration = 0;
 async function retainWorkspace() {
-  if (!ui.project || isDocumentMirror) return {ok:true};
+  if (isDocumentMirror) return {ok:true};
+  // Failed surfaces report honestly instead of writing an empty placeholder:
+  // without a trusted project or the scoped document this renderer holds nothing
+  // to retain, and the durable recovery already on the host stays authoritative.
+  if (isSurface) {
+    if (ui.project?.id !== workspaceScope.projectId) return {ok:true, retained:false, reason:'project-not-loaded'};
+    if (workspaceScope.relPath && ui.file?.relPath !== workspaceScope.relPath) return {ok:true, retained:false, reason:'document-not-loaded'};
+  } else if (!ui.project) return {ok:true};
   if (ui.composing) return {ok:false,composing:true,error:{code:'COMPOSING',message:'输入法组合尚未结束，未关闭。'}};
   window.clearTimeout(ui.timer); window.clearTimeout(ui.maxTimer); ui.maxTimer = 0;
   const project = ui.project, file = ui.file, generation = ++recoveryGeneration;
@@ -2825,6 +2832,15 @@ async function openBesideSnapshot(file, diff=false) {
         refreshConversationLauncher();
       }
       restoreLast()
-        .catch((error) => showFailure(error))
+        .catch(async (error) => {
+          showFailure(error);
+          if (!isSurface) return;
+          // Terminal init failure: the host keeps the error and this surface stays
+          // business-not-ready, while session.flush can still retain real content.
+          try {
+            const reported = await invoke('workspace.ready', {contentFailed:true, error:{code:error?.code || 'SURFACE_INIT_FAILED', message:error?.message || '工作面初始化未完成'}});
+            if (!reported.ok) workspace.toast('初始化失败状态未登记：' + (reported.error?.message || error?.message));
+          } catch (reportError) { workspace.toast('初始化失败状态未登记：' + (reportError?.message || error?.message)); }
+        })
         .finally(() => { window.__nozeliReady = true; if(!isSurface&&workspaceScope.role!=='detached')void drainExternalOpen().catch(showFailure); });
 }

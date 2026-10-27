@@ -115,7 +115,7 @@ export async function createGuidedDemoHarness({kind}) {
     main: await digestTree(appRoot, ['src/main/main.cjs','src/main/guided-demo.mjs','src/main/guided-demo-files.mjs','src/main/workspace-native.mjs','src/main/project-lifecycle.mjs','src/main/host.mjs','src/agents/managed-projects.mjs','src/preload/preload.cjs']),
     assets: await digestTree(appRoot, ['assets/guided-demo/manifest.json', ...manifest.files.map(file => `assets/guided-demo/${file.path}`)]),
     binary: await digestFile(binary),
-    audit: await digestTree(path.resolve(import.meta.dirname,'..'), ['tests/guided-demo-live-helper.mjs','tests/guided-demo-native-observer.cjs','tests/guided-demo-exit-live.mjs','tests/guided-demo-flow-live.mjs']),
+    audit: await digestTree(path.resolve(import.meta.dirname,'..'), ['tests/guided-demo-live-helper.mjs','tests/guided-demo-native-observer.cjs','tests/guided-demo-exit-live.mjs','tests/guided-demo-flow-live.mjs','tests/guided-demo-failed-surface-live.mjs']),
   };
   version.gate = crypto.createHash('sha256').update(JSON.stringify(version)).digest('hex');
   const report = {ok: false, kind, root, appRoot, binary, version, chapters: [], checks: [], scenes: [], errors: [], network: [], processes: [], observer: {coverage: 'NODE_OPTIONS observes Node child_process APIs and blocks non-loopback Node networking before main entry. Chromium host-resolver rules reduce DNS-name access but do not prove isolation against literal-IP/native-addon/OS networking; CDP enumerates renderer requests only after attachment. The report therefore records these limits and never claims zero full-process network.', events: []}};
