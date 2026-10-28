@@ -14,6 +14,7 @@
 - Preserve drafts and exact document identity across project navigation, window handoff and review operations.
 - Prepare independent Worker dependency copies and pinned build resources without modifying the source dependency tree.
 - Harden storage-worker unknown-result handling, lifecycle holds, permission decisions, conflict-safe integration and technical closure.
+- Restore layout path/project identity validation so traversal paths and foreign or malformed document records cannot enter persisted workspace state; renames retain view identity and draft state.
 - Improve cross-project file clipboard operations, quick-open navigation, model selection during refresh and attachment picker viewport behavior.
 
 ### Release scope

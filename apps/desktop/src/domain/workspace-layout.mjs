@@ -65,6 +65,8 @@ export function validateLayout(layout){
  if(Object.keys(layout.views).length>512||encoder.encode(JSON.stringify(layout)).byteLength>1024*1024)invalid('工作区布局超过容量限制。','LAYOUT_LIMIT');
  const nodes=new Set(),assigned=new Set(),windowIds=new Set(['main']);let conversation=0;
  for(const [viewId,view]of Object.entries(layout.views)){
+  if(!view||typeof view!=='object'||view.id!==viewId||!identity(viewId)||view.projectId!==layout.projectId||!kinds.has(view.kind)||!identity(view.resourceId,8192))invalid('工作区内容身份无效。');
+  if(view.kind==='document'&&!relPath(view.relPath))invalid('工作区文档路径无效。');
   if(view.kind==='document'){
    let source;
    try{source=validateDocumentSource(view.documentSource);}catch(error){invalid(error.message);}
