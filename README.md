@@ -1,68 +1,84 @@
-# Nozeli- 人+agent协作工作台
 
-# 协作编辑器
+# Nozeli
 
-markdown latex docx pptx 代码项目管理（语言服务器）
+<p align="center">
+  <img src="apps/desktop/assets/brand/nozeli-paired-tabs-logo.png" alt="Nozeli 标识" width="160">
+</p>
 
-**项目属于人，Agent 出现在需要它的地方。**
+**Agent 协作编辑工作台**
 
-Nozeli 是一个开源的 AI 协作阅读与创作工作台。不是把整个项目交给一条聊天，再等它给出答案；而是让人始终留在材料、问题与决策之中，让 Agent 在身边推进工作。
+协调你与 Agent 的协作节奏，让你看懂结果、参与修改，持续掌握项目进展。
 
-> 不是 All in Agent，而是 Agent anywhere in your project。
+主要特点：
+- 以对话为起点、以结果报告为中心，形成任务闭环。
+- 通过立体文档交互与朱批锚定视觉位置，让 Agent 跟得上你的视线。
+- 前台—调度—专家多 Agent 协作，流畅推进任务。
+- 集成多种编辑器，有时自己动手比开口描述更快。
 
-## 人不应该成为等待的人
+## 快速链接
 
-你在读论文、梳理想法或修改文件时，Agent 可以在后台开展工作。结果回到待阅读项，你选择什么时候接住它，而不必守着进度条。这里的“不等待”是让人的工作与后台执行并行，不是承诺模型零延迟或任务自动成功。
+[开始使用](#开始使用) · [开发说明](apps/desktop/README.md) · [项目计划](docs/plantree/README.md)
 
-## 接住成果，而不只是接收答案
+![Nozeli 工作面：在文档选区就地发起讨论](apps/desktop/assets/nozeli-workspace.png)
 
-AI 做得越多，人越需要理解自己的项目。Nozeli把原文、选区讨论、执行过程和文件差异放在同一工作面。你可以回看依据、比较改动、提出追问，再决定采用还是丢弃。Agent 的输出应当成为下一步思考的起点，而不是一个只能点击确认的黑盒。
+*文档、选区与讨论在同一工作面。上图展示 PPT 选区讨论入口。*
 
-## 从一个词，到一项工作
+## 为什么使用 Nozeli
 
-介入不必只有“开始”和“批准”两种粒度。选中一句话问清概念，在段落旁留下判断，直接修改文件，或把明确的一部分交给后台；工作进行中也能补充、继续讨论和审阅结果。不必为了用 AI，先把自己的工作改造成它的流程。
+### Agent 效率高，你也要接得住
 
-## 前台保持交流，后台推进执行
+Agent 交付得快，不代表人已经理解。Nozeli 希望让你看清成果与依据，审核、提问、提出修改，再由 Agent 继续推进，而不是逐渐失去对项目的掌握。
 
-- **前台**：围绕当前材料与你讨论，也能直接完成范围明确的内容修改。
-- **编排**：组织后台任务、处理工作关系，不代替 Worker 写业务文件。
-- **Worker**：在独立工作树里执行，提交可查看的结果与真实文件改动。
+任务会形成基于 HTML 和 Archify 结构图的报告。你可以把关输入、审核结果，并在审核通过后结束任务；在协作中持续承担自己的责任，也更清楚地掌握项目。
 
-不同工作不必挤进一条会话。前台与后台各自承担职责，让人保持自己的阅读和创作节奏；最终判断仍由人作出。
+![乒乓球比喻：从追不上 Agent，到接住成果并持续迭代](apps/desktop/assets/65be651bec7f2690814611da95eebb62.png)
 
-## 一个连续的工作面
+### Agent 长时执行任务，你也不必停
 
-阅读 PDF 与图片，编辑 Markdown、TeX、代码及受支持的 Office 文件；在原文旁批注、提问、解释和续聊。材料绑定来源与版本，未发送草稿保留；采用成果前检查差异，异常后显式恢复，不自动重放失败任务，也不静默覆盖文件。没有模型账号，本地阅读、编辑与批注仍可使用。
+前台—中枢—专家多 Agent 模式中，前台快速响应与分流，后台专家各自推进整块任务，中枢负责派发与收尾。你可以继续阅读、编辑、交流并发布新任务；成果准备好后，再按自己的节奏审阅，不必守着进度条。
 
-对话入口只在当前目标的原生会话真正就绪后打开；未配置或连接失败时仍可阅读文件，重试在聊天外处理。程序连接、恢复和归档信息集中在右键的“连接与历史”，不占用正常聊天内容。会话失联后收起在线对话、保留未发送草稿，显式重连不重放任务；旧会话从独立只读历史面查看。
+![等待体验对比与侧边多 Agent 分工示意](apps/desktop/assets/6dc889c5e2b608d3d29d3e51604e357d.png)
 
-对话用低饱和角色底色与文字名称区分用户、前台、主控、Worker 和系统信息，浅深主题均保留可辨识度。长回复按文档式行宽与段落层级呈现，过程按需展开；代码块可单独换行、滚动和复制，宽表不撑开整个窗口。向上阅读或选择文字时不强迫追底，可显式“回到最新”，不会因此再次发送请求。
+### 有时指挥不如动手
+
+人能同时直接编辑、批注，Agent 也能协助修改。不必反复把原文贴进聊天框，再把回复搬回文档；围绕同一份材料查看修改、反馈并继续修订，并显示作者。
+
+![人与 Agent 围绕文档共同编辑和修订](apps/desktop/assets/79cad55a437932fb4d2e6fdb0c3f4308.png)
+
+### 从“这里”入手，解决人与 Agent 的视觉对齐
+
+**Agent anywhere。** 与 Agent 在项目中立体交互，而非限制在一个侧边栏对话框。右键、框选和涂鸦都是对话锚点，对话会保存在对应位置。不必再反复解释“哪个文件、第几页、哪一段、图上哪里”。
+
+![从描述位置，到使用选区、图片与画面锚点交流](apps/desktop/assets/aed6a7b4c01edefc5db4060870ef9bd9.png)
+
+总之，让你游刃有余地掌控自己的项目，而不是跟着 Agent 跑。
 
 ## 开始使用
 
-当前为 **0.1alpha**，仅 Linux x64 / Wayland 已实测；Windows、macOS尚未提供已验证版本。便携包解压后运行 `AppRun` 或 `nozeli`，无需用户安装Node/npm或系统OMP。AI需自行配置模型账号，Linux受管执行需要可用的bubblewrap。
+1. 打开本地项目目录和需要阅读、编辑的材料。
+2. 在设置中配置 AI 源与角色默认模型；AI 使用随应用提供的私有 OMP。
+3. 直接交流，或从选区发起讨论；普通文件操作与当前用户命令可直接执行，持续后台工作沿原任务交接。敏感／管理员执行从同项目待办明确授权，系统提权仍由真实 OS 认证完成；角色分工不会把已授权能力变成“没有权限”。
+4. 从待办查看问题与成果，继续修改，或明确接受／丢弃并结束。
 
-开发构建需要Node.js 22.22.2+、npm、Git、Bun 1.3.14及原生编译工具：
+## 当前状态
 
-```sh
-cd apps/desktop
-npm ci
-npm run build:pptist
-npm run build:omp
-npm start
-```
+- 面向 Windows、macOS、Linux；当前验证以 **Linux／Wayland** 为主，其他平台尚未通过。
+- 已有阅读、批注、编辑、真实文件与后台协作工作流；具体格式、版本和能力边界见[实施状态](docs/plantree/plans/001-reader-product/implementation-status.md)。
+- 公开分发前仍需补齐第三方许可证及对应源码义务；当前本机 Alpha 包不作公开发行。
+- 2026-10-28：可信执行版本 `trusted-execution-2026-10-28T09-15-40-358Z` 已安装到本机桌面入口；729个产品文件冻结校验一致，上一版本 `native-document-review-20261028` 保留可回退。授权、待办、原生会话、生命周期、候选合入与安装保留规则最终303/303通过。捆绑Electron/私有OMP及真实 `paratera/gpt-6.1-sol` 在隔离项目/profile完成前台和Worker待办批准后原线程执行、各角色原生命令与管理员拒绝零执行，四项通过并正常退出0；证据 `~/.cache/nozeli-smokes/switch-tmp/nozeli-trusted-permissions-rdOI7I/report.json`。本轮未在个人机器实际执行root命令，Windows/macOS认证未实测；未重放用户项目输入，未提交。
+- 审校/收尾修复已安装并重启为 `review-closure-repair-2026-10-28T10-33-02-889Z`：真实项目恢复 `ready=true`、无连接错误、无运行任务，jobs仍9条未重放；旧进程正常退出0。README保留当前正文与原候选，旧限制转为可操作策略待办，不静默合入后续已修改文件。候选Markdown协同六项、正式宿主策略到真实Git四项、审校/恢复105项及会话接手36项通过。重启原件 `~/.cache/nozeli-smokes/review-closure-repair-2026-10-28T10-33-02-889Z/restart.json`。
 
-生成便携包（已提交源码的干净工作区，在`apps/desktop`执行）：
+## 进一步了解
 
-```sh
-node tools/package-portable.mjs /绝对路径/全新输出目录
-```
+- [产品方向与路线](docs/plantree/plans/001-reader-product/README.md)
+- [阅读与协作原则](docs/plantree/plans/001-reader-product/topics/reading-collaboration.md) · [材料交接规则](docs/plantree/plans/001-reader-product/topics/materials-and-handoff.md)
+- [桌面开发与验证](apps/desktop/README.md) · [私有 OMP 集成](integrations/omp/README.md)
+- [旧版开发与打包记录](docs/plantree/plans/001-reader-product/history/readme-before-product-introduction-2026-10-26.md)
 
-开发与测试见[桌面说明](apps/desktop/README.md)。配置和会话位于`~/.Nozeli`，项目批注位于项目内`.nozeli`；运行数据与账号不进入源码。TeX编译、TexLab、SyncTeX和JS/TS语言服务有各自的可选工具前提。
 
 ## 开源许可
 
-Nozeli自有代码采用 **[AGPL-3.0-only](LICENSE)**。第三方组件保留原许可证，见[来源与许可](apps/desktop/SOURCES.md)。源码开放不代表全部第三方二进制分发义务已完成，Alpha发行材料仍在完善。
+Nozeli 自有代码采用 **[AGPL-3.0-only](LICENSE)**。第三方组件保留原许可证，见[来源与许可](apps/desktop/SOURCES.md)。源码开放不代表全部第三方二进制分发义务已完成，Alpha 发行材料仍在完善。
 
 ## Thanks
 
