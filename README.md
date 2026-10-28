@@ -1,9 +1,7 @@
 
 # Nozeli
 
-<p align="center">
-  <img src="apps/desktop/assets/brand/nozeli-paired-tabs-logo.png" alt="Nozeli 标识" width="160">
-</p>
+![Nozeli 标识](apps/desktop/assets/brand/nozeli-paired-tabs-logo.png)
 
 **Agent 协作编辑工作台**
 
@@ -17,7 +15,7 @@
 
 ## 快速链接
 
-[开始使用](#开始使用) · [开发说明](apps/desktop/README.md) · [项目计划](docs/plantree/README.md)
+[开始使用](#开始使用) · [开发说明](apps/desktop/README.md) · [项目文档](docs/README.md)
 
 ![Nozeli 工作面：在文档选区就地发起讨论](apps/desktop/assets/nozeli-workspace.png)
 
@@ -29,7 +27,7 @@
 
 Agent 交付得快，不代表人已经理解。Nozeli 希望让你看清成果与依据，审核、提问、提出修改，再由 Agent 继续推进，而不是逐渐失去对项目的掌握。
 
-任务会形成基于 HTML 和 Archify 结构图的报告。你可以把关输入、审核结果，并在审核通过后结束任务；在协作中持续承担自己的责任，也更清楚地掌握项目。
+后台任务以可阅读的 HTML 报告交付，必要时使用 Archify 结构图解释流程与关系。你可以核对报告及候选文件差异，提出修改，再明确接受成果；保存批注不会自动派工，接受处理方案也不等于自动接受最终成果。
 
 ![乒乓球比喻：从追不上 Agent，到接住成果并持续迭代](apps/desktop/assets/65be651bec7f2690814611da95eebb62.png)
 
@@ -51,6 +49,10 @@ Agent 交付得快，不代表人已经理解。Nozeli 希望让你看清成果�
 
 ![从描述位置，到使用选区、图片与画面锚点交流](apps/desktop/assets/aed6a7b4c01edefc5db4060870ef9bd9.png)
 
+### 把材料、对话与成果摆在一起
+
+拖动标签拆分工作区，并排阅读文档、讨论和文件差异；需要更大空间时，将内容脱离为独立窗口，放到另一块屏幕，再移回主工作区。布局变化不复制文件，也不应丢失未保存编辑或原会话。
+
 总之，让你游刃有余地掌控自己的项目，而不是跟着 Agent 跑。
 
 ## 开始使用
@@ -60,20 +62,20 @@ Agent 交付得快，不代表人已经理解。Nozeli 希望让你看清成果�
 3. 直接交流，或从选区发起讨论；普通文件操作与当前用户命令可直接执行，持续后台工作沿原任务交接。敏感／管理员执行从同项目待办明确授权，系统提权仍由真实 OS 认证完成；角色分工不会把已授权能力变成“没有权限”。
 4. 从待办查看问题与成果，继续修改，或明确接受／丢弃并结束。
 
+推荐从四个功能开始：选中文字或框选区域添加**批注与讨论**；通过工作与待办完成**后台任务的报告—审阅—修改—接受闭环**；拖动标签进行**分屏**；从内容菜单打开**独立窗口**。文本候选文件的差异在统一工作区中查看，不必学习另一套报告内编辑器。
+
 ## 当前状态
 
-- 面向 Windows、macOS、Linux；当前验证以 **Linux／Wayland** 为主，其他平台尚未通过。
-- 已有阅读、批注、编辑、真实文件与后台协作工作流；具体格式、版本和能力边界见[实施状态](docs/plantree/plans/001-reader-product/implementation-status.md)。
-- 公开分发前仍需补齐第三方许可证及对应源码义务；当前本机 Alpha 包不作公开发行。
-- 2026-10-28：可信执行版本 `trusted-execution-2026-10-28T09-15-40-358Z` 已安装到本机桌面入口；729个产品文件冻结校验一致，上一版本 `native-document-review-20261028` 保留可回退。授权、待办、原生会话、生命周期、候选合入与安装保留规则最终303/303通过。捆绑Electron/私有OMP及真实 `paratera/gpt-6.1-sol` 在隔离项目/profile完成前台和Worker待办批准后原线程执行、各角色原生命令与管理员拒绝零执行，四项通过并正常退出0；证据 `~/.cache/nozeli-smokes/switch-tmp/nozeli-trusted-permissions-rdOI7I/report.json`。本轮未在个人机器实际执行root命令，Windows/macOS认证未实测；未重放用户项目输入，未提交。
-- 审校/收尾修复已安装并重启为 `review-closure-repair-2026-10-28T10-33-02-889Z`：真实项目恢复 `ready=true`、无连接错误、无运行任务，jobs仍9条未重放；旧进程正常退出0。README保留当前正文与原候选，旧限制转为可操作策略待办，不静默合入后续已修改文件。候选Markdown协同六项、正式宿主策略到真实Git四项、审校/恢复105项及会话接手36项通过。重启原件 `~/.cache/nozeli-smokes/review-closure-repair-2026-10-28T10-33-02-889Z/restart.json`。
+- 面向 Windows、macOS、Linux；当前验证以 **Linux x64／Wayland** 为主，其他平台尚未通过。
+- 已有阅读、批注、编辑、真实文件与后台协作工作流；具体格式、版本和能力边界见[当前状态与能力边界](docs/status.md)。
+- 版本基线 `0.1.0-alpha.1`（Alpha 审阅候选，准备发行）：Linux 本机验证通过，Windows/macOS 未验证；包含空工作台四项推荐功能引导（批注与选区讨论、任务闭环、分屏阅读、独立窗口）。
+- 公开分发前仍需完成第三方许可与对应源码义务审计（源码 vendor 产物与捆绑二进制的再分发义务均未签收）；在此之前不提供公开下载，本机 Alpha 包仅作本地验证。见[发布说明与发行边界](docs/release.md)。
 
 ## 进一步了解
 
-- [产品方向与路线](docs/plantree/plans/001-reader-product/README.md)
-- [阅读与协作原则](docs/plantree/plans/001-reader-product/topics/reading-collaboration.md) · [材料交接规则](docs/plantree/plans/001-reader-product/topics/materials-and-handoff.md)
-- [桌面开发与验证](apps/desktop/README.md) · [私有 OMP 集成](integrations/omp/README.md)
-- [旧版开发与打包记录](docs/plantree/plans/001-reader-product/history/readme-before-product-introduction-2026-10-26.md)
+- [产品文档：方向、状态与原则](docs/README.md) · [发布说明与发行边界](docs/release.md)
+- [阅读与协作原则](docs/principles.md)
+- [桌面开发与验证](apps/desktop/README.md) · [私有 OMP 集成](integrations/omp/README.md) · [第三方来源与许可](apps/desktop/SOURCES.md)
 
 
 ## 开源许可
@@ -87,6 +89,7 @@ Nozeli 自有代码采用 **[AGPL-3.0-only](LICENSE)**。第三方组件保留�
 - 桌面与运行时：[Electron](https://github.com/electron/electron)、[Chromium](https://www.chromium.org/)、[oh-my-pi](https://github.com/can1357/oh-my-pi)、[Bun](https://github.com/oven-sh/bun)。
 - 阅读与编辑：[PDF.js](https://github.com/mozilla/pdf.js)、[Monaco](https://github.com/microsoft/monaco-editor)、[CodeMirror](https://codemirror.net/)、[Lezer](https://lezer.codemirror.net/)、[Shiki](https://github.com/shikijs/shiki)、[KaTeX](https://github.com/KaTeX/KaTeX)。
 - Office：[SuperDoc](https://github.com/superdoc-dev/superdoc)、[PPTist](https://github.com/pipipi-pikachu/PPTist)、[Fortune Sheet](https://github.com/ruilisi/fortune-sheet)、[ExcelJS](https://github.com/exceljs/exceljs)、[JSZip](https://github.com/Stuk/jszip)、[word-extractor](https://github.com/morungos/node-word-extractor)。
+- 报告与结构图：[Archify 离线静态渲染](apps/desktop/src/agents/managed/archify-vendor/SOURCES.json)（MIT；原作者 tt-a1i 与 Cocoon AI，详见[保留的许可证](apps/desktop/src/agents/managed/archify-vendor/LICENSE)）、[Simple Icons](https://simpleicons.org/)（内置图标路径，CC0；商标权不在许可范围内）。
 - 界面与终端：[React](https://github.com/facebook/react)、[xterm.js](https://github.com/xtermjs/xterm.js)、[node-pty](https://github.com/microsoft/node-pty)、[Lucide](https://github.com/lucide-icons/lucide)、[Feather](https://github.com/feathericons/feather)、[IconPark](https://github.com/bytedance/IconPark)、[Font Awesome](https://github.com/FortAwesome/Font-Awesome)。
 - 文件与工具：[Git](https://git-scm.com/)、[dugite](https://github.com/desktop/dugite)、[dugite-native](https://github.com/desktop/dugite-native)、[Git LFS](https://github.com/git-lfs/git-lfs)、[Git Credential Manager](https://github.com/git-ecosystem/git-credential-manager)、[xmldom](https://github.com/xmldom/xmldom)、[image-size](https://github.com/image-size/image-size)、[YAML](https://github.com/eemeli/yaml)、[ws](https://github.com/websockets/ws)。
 - 开发：[TypeScript](https://github.com/microsoft/TypeScript)、[TypeScript Language Server](https://github.com/typescript-language-server/typescript-language-server)、[VS Code Language Server Node](https://github.com/microsoft/vscode-languageserver-node)、[Prettier](https://github.com/prettier/prettier)、[esbuild](https://github.com/evanw/esbuild)、[electron/rebuild](https://github.com/electron/rebuild)、[Puppeteer](https://github.com/puppeteer/puppeteer)。

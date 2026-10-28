@@ -90,6 +90,7 @@ export function mountText({ parent, relPath, text, marks = [], tags = [], onChan
   }
   const setMarks = StateEffect.define();
   const wrapping=new Compartment();let wrap=/\.(?:md|markdown)$/i.test(relPath);
+  const permission=new Compartment();
   let openChange=()=>{};
   const authorship=authorshipGutter(eventId=>openChange(eventId));
   function decorationsFor(items, length = text.length) {
@@ -153,8 +154,7 @@ export function mountText({ parent, relPath, text, marks = [], tags = [], onChan
         readerEditorTheme(),
         syntaxHighlighting(classHighlighter),
         EditorView.cspNonce.of(document.querySelector('meta[name="nozeli-style-nonce"]').content),
-        EditorState.readOnly.of(readOnly),
-        EditorView.editable.of(!readOnly),
+        permission.of([EditorState.readOnly.of(readOnly),EditorView.editable.of(!readOnly)]),
         language,
         field,
         authorship.extension,
@@ -207,6 +207,8 @@ export function mountText({ parent, relPath, text, marks = [], tags = [], onChan
   };
   view.dom.addEventListener('keydown', keydown, true);
   view.adapter = codeMirrorAdapter(view, { readOnly });
+  const setAdapterReadOnly=view.adapter.setReadOnly;
+  view.adapter.setReadOnly=value=>{readOnly=Boolean(value);setAdapterReadOnly(readOnly);view.dispatch({effects:permission.reconfigure([EditorState.readOnly.of(readOnly),EditorView.editable.of(!readOnly)])});};
   view.adapter.setAuthorship=(value,{visible=true,onOpen=()=>{}}={})=>{openChange=onOpen;view.dispatch({effects:authorship.set.of({authorship:value,visible})});};
   view.adapter.offsetAtPoint = (x, y) => view.posAtCoords({ x, y });
   view.adapter.isWrapped=()=>wrap;

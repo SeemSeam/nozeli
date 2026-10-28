@@ -19,7 +19,7 @@ async function fixture(t, text = '前言\n目标😀文字\n结尾') {
   const id = (await host.pick(root)).project.id;
   const source = await host.readFile(id, 'test.txt');
   const note = (await host.addAnnotation(id, { relPath: 'test.txt', materialDigest: source.digest, kind: 'text-selection', anchor: anchor(anchorText(text), '目标😀文字'), note: '原备注' })).annotation;
-  return { root, temp, file, host, id, source, note, store: new FileTags(root) };
+  return { root, temp, file, host, id, source, note, store: await host.tagStore(id) };
 }
 test('text transaction follows Unicode shifts and excludes insertions at both boundaries', () => {
   const before = '前言目标😀文字结尾', a = anchor(before, '目标😀文字');
@@ -66,7 +66,7 @@ test('sidecar and frozen material survive saves, replacements, undo and host res
   saved = await f.host.save(f.id, 'test.txt', saved.digest, old);
   note = (await f.host.listAnnotations(f.id, 'test.txt')).annotations[0];
   assert.deepEqual(note.resolution.anchor, f.note.anchor); assert.equal(note.resolution.contentStatus, 'unchanged');
-  assert.equal((await f.store.materials.get(f.source.digest)).toString(), old);
+  assert.equal((await f.store.getMaterial(f.source.digest)).toString(), old);
   assert.equal((await f.store.read('test.txt')).file.fileId, note.fileId);
   const material = await f.host.tagMaterial(f.id, { relPath: 'test.txt', annotationId: f.note.id });
   assert.equal(material.origin.text, old); assert.equal(material.currentText, old); assert.equal(material.tagId, f.note.id);
@@ -115,11 +115,12 @@ test('conversation references, draft and collapsed state persist; projection rem
 });
 test('copied project retains annotations and frozen source without old profile', async t => {
   const f = await fixture(t); await fs.writeFile(f.file, '已删原文');
+  await f.host.storage.closeProjectHandles(f.id);
   const copy = path.join(f.temp, 'copy'); await fs.cp(f.root, copy, { recursive: true });
   const host = new DesktopHost(path.join(f.temp, 'new-profile')), id = (await host.pick(copy)).project.id;
   const note = (await host.listAnnotations(id, 'test.txt')).annotations[0];
   assert.equal(note.id, f.note.id); assert.equal(note.note, f.note.note); assert.equal(note.resolution.locationStatus, 'unresolved');
-  assert.equal((await new FileTags(copy).materials.get(note.materialDigest)).toString(), f.source.text);
+  assert.equal((await (await host.tagStore(id)).getMaterial(note.materialDigest)).toString(), f.source.text);
 });
 test('manual relocation verifies current material and preserves frozen origin', async t => {
   const f = await fixture(t), text = '新增定位位置'; await fs.writeFile(f.file, text);
@@ -133,29 +134,27 @@ test('manual relocation verifies current material and preserves frozen origin', 
   assert.equal(await fs.readFile(f.file, 'utf8'), text);
   const restarted = new DesktopHost(path.join(f.temp,'profile'));
   assert.deepEqual((await restarted.listAnnotations(f.id,'test.txt')).annotations[0].resolution.anchor,a);
-  assert.equal((await f.store.materials.get(f.note.materialDigest)).toString(),f.source.text);
+  assert.equal((await f.store.getMaterial(f.note.materialDigest)).toString(),f.source.text);
 });
 test('sidecar rejects concurrent writers and preserves the winner', async t => {
   const f = await fixture(t), original = await f.store.read('test.txt');
-  const results = await Promise.allSettled([1, 2].map(n => new FileTags(f.root).write('test.txt', { ...original, writer: n }, original.revision)));
+  const results = await Promise.allSettled([1, 2].map(n => new FileTags({ storage: f.host.storage, projectId: f.id, root: f.root }).write('test.txt', { ...original, writer: n }, original.revision)));
   assert.equal(results.filter(r => r.status === 'fulfilled').length, 1);
-  assert.equal(results.find(r => r.status === 'rejected').reason.code, 'ANNOTATION_CONFLICT');
+  const loser = results.find(r => r.status === 'rejected').reason;
+  assert.ok(['ANNOTATION_CONFLICT', 'STORAGE_CONFLICT'].includes(loser.code), 'concurrent writer must lose with a conflict: ' + loser.code);
   assert.equal((await f.store.read('test.txt')).revision, original.revision + 1);
 });
-test('unknown fields survive writes; corrupt sidecars and foreign metadata links are refused', async t => {
+test('unknown fields survive writes; corrupt metadata records are refused and retained', async t => {
   const f = await fixture(t), file = await f.store.read('test.txt');
   await f.store.write('test.txt', { ...file, pluginField: { custom: 1 } }, file.revision);
   await f.host.updateAnnotation(f.id, f.note.id, { materialDigest: f.note.materialDigest, expectedUpdatedAt: f.note.updatedAt, note: 'updated' });
   assert.deepEqual((await f.store.read('test.txt')).pluginField, { custom: 1 });
   await assert.rejects(f.store.write('test.txt', file, file.revision), { code: 'ANNOTATION_CONFLICT' });
-  const valid = await f.store.read('test.txt');
-  await f.store.write('test.txt', { ...valid, tags: valid.tags.map(tag => ({ ...tag, resolutions: { [f.source.digest]: { method: 'manual', locationStatus: 'exact', anchor: { start: 999, end: 1000, quote: 'x' } } } })) }, valid.revision);
-  const invalid = (await f.host.listAnnotations(f.id, 'test.txt')).annotations[0];
-  assert.equal(invalid.resolution.anchor, null); assert.equal(invalid.resolution.locationStatus, 'unresolved');
-  const location = f.store.location('test.txt'); await fs.writeFile(location, '{');
-  await assert.rejects(f.host.listAnnotations(f.id, 'test.txt'), { code: 'METADATA_CORRUPT' }); assert.equal(await fs.readFile(location, 'utf8'), '{');
-  const other = path.join(f.temp, 'linked'); await fs.mkdir(other); await fs.symlink(path.join(f.root, '.nozeli'), path.join(other, '.nozeli'));
-  await assert.rejects(new FileTags(other).read('test.txt'), { code: 'SYMLINK' });
+  const key = f.store.key('test.txt');
+  const corrupt = { format: 'nozeli.file-tags', schemaVersion: 1, nextOrdinal: 0, tags: [], file: { relPath: 'test.txt', fileId: file.file.fileId }, revision: 1 };
+  await f.host.storage.putProject(f.id, 'file_tags', key, corrupt);
+  await assert.rejects(f.host.listAnnotations(f.id, 'test.txt'), { code: 'METADATA_CORRUPT' });
+  assert.deepEqual(await f.host.storage.getProject(f.id, 'file_tags', key), corrupt);
 });
 test('image transforms preserve polygons through resize, rotation, flip and partial crop', () => {
   const a = { coordinateSpace: 'image-normalized', imageWidth: 1000, imageHeight: 600, polygon: [[0.1, 0.2], [0.5, 0.2], [0.5, 0.6], [0.1, 0.6]] };

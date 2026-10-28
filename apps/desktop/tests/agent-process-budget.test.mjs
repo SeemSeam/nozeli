@@ -82,12 +82,12 @@ test('capacity pressure reclaims inactive LRU then active idle resident and neve
  await b.session('frontdesk');await manager.reclaimInactive(b.projectId,{target:'orchestrator'});assert.equal(b.sessions.has('orchestrator'),true);assert.equal(b.sessions.has('frontdesk'),false);
 });
 
-test('activating the current project protects its idle owners while reclaiming inactive residents without waking a project',async t=>{
+test('project activation preserves both projects idle owners without waking sleeping roles',async t=>{
  const f=await fixture(t,{limit:4}),a=await f.open('a'),b=await f.open('b'),m=new ManagedProjects({userDataDir:f.root,host:hostFor(a.store,b.store),legacy:{projects:new Map()},openController:async()=>{throw Error('project activation must not open a controller');}});
  m.processBudget=f.budget;m.resourceReady=Promise.resolve();m.controllers.set(a.projectId,a);m.controllers.set(b.projectId,b);
  await a.session('frontdesk');const owner=await b.session('frontdesk');
- const result=await m.setActiveProject(b.projectId);assert.equal(m.activeProjectId,b.projectId);assert.equal(result.globalUsed,1);assert.equal(a.sessions.size,0);assert.equal(b.sessions.get('frontdesk'),owner);assert.equal(owner.closed,false);
- const again=await m.setActiveProject(b.projectId);assert.equal(again.globalUsed,1);assert.equal(b.sessions.get('frontdesk'),owner);assert.equal(b.sessions.has('orchestrator'),false,'activation never starts another resident');
+ const result=await m.setActiveProject(b.projectId);assert.equal(m.activeProjectId,b.projectId);assert.equal(result.globalUsed,2);assert.equal(a.sessions.size,1);assert.equal(b.sessions.get('frontdesk'),owner);assert.equal(owner.closed,false);
+ await m.setActiveProject(a.projectId);const again=await m.setActiveProject(b.projectId);assert.equal(again.globalUsed,2);assert.equal(a.sessions.size,1);assert.equal(b.sessions.get('frontdesk'),owner);assert.equal(b.sessions.has('orchestrator'),false,'activation never starts another resident');
 });
 
 test('cold inventory counts unknown providers in every unconnected project before admitting new owners',async t=>{

@@ -111,6 +111,8 @@ try {
   const projectBName = (await page.evaluate(directory => window.nozeli.invoke('project.pick', { directory }), projectB)).value.project.name;
   const welcome = await snap(page);
   check('no-project welcome shows the picker entry', welcome.emptyHidden === false && welcome.emptyTitle === '从一份材料开始' && welcome.welcomeHidden === false && welcome.browseHidden === true, JSON.stringify(welcome));
+  const start = await page.$eval('#workspace-groups', node => ({ buttons: [...node.querySelectorAll('button')].map(button => button.textContent), demoEntries: node.querySelectorAll('#start-demo-entry').length }));
+  check('no-project start page has only its demo entry', start.demoEntries === 1 && start.buttons.length === 1 && start.buttons[0] === '演示学习', JSON.stringify(start));
 
   await page.click('#pick-project');
   await wait(page, name => document.querySelector('#project-name').textContent === name, 20000, projectAName);
@@ -121,14 +123,32 @@ try {
   check('project empty base layer with honest copy', base.emptyHidden === false && base.emptyTitle === '工作区暂无打开的文件' && base.browseHidden === false && base.welcomeHidden === true && base.subject === '未打开文件' && base.label === '文件' && base.documents !== 'none' && base.closeHidden === true, JSON.stringify(base));
   check('default conservative layout is the compact bottom composer', base.panelHidden === false && base.launcherHidden === true && base.dock === 'bottom' && base.compact === true && base.floating === false && base.expanded === false, JSON.stringify(base));
   await page.evaluate(() => { window.__emptyComposerRef = document.querySelector('#composer'); });
+  const projectEmpty = await page.$eval('.workspace-pane-empty', node => ({ title: node.querySelector('h2')?.textContent, description: node.querySelector('p')?.textContent, browse: Boolean(node.querySelector('[data-start-browse]')), demo: Boolean(node.querySelector('#start-demo-entry')) }));
+  check('opened project presents file access rather than a demo-only welcome', projectEmpty.title === '项目已打开' && projectEmpty.description.includes('尚未选择文件') && projectEmpty.browse && !projectEmpty.demo, JSON.stringify(projectEmpty));
 
   // Browse action: real keyboard activation expands a collapsed tree and focuses the filter.
   await page.click('#file-toggle');
   await wait(page, () => document.querySelector('#file-toggle').getAttribute('aria-expanded') === 'false');
-  await page.focus('#empty-browse');
+  const beforeBrowse = await page.evaluate(() => JSON.stringify(window.__workspaceGroups.snapshot()));
+  await page.focus('.workspace-pane-empty [data-start-browse]');
   await page.keyboard.press('Enter');
   const browseState = await page.evaluate(() => ({ expanded: document.querySelector('#file-toggle').getAttribute('aria-expanded'), focus: document.activeElement && document.activeElement.id }));
   check('browse button expands the file tree and focuses the filter from the keyboard', browseState.expanded === 'true' && browseState.focus === 'file-filter', JSON.stringify(browseState));
+  check('browsing does not reopen documents or mutate the layout', beforeBrowse === await page.evaluate(() => JSON.stringify(window.__workspaceGroups.snapshot())));
+  // Keyboard activation must target this empty pane even when another pane was active.
+  const split = await page.evaluate(async () => {
+    const api = window.__workspaceGroups, original = api.activeGroup();
+    await api.command({ type: 'split', groupId: original, axis: 'x', side: 'after' });
+    const other = [...document.querySelectorAll('[data-workspace-group]')].find(node => node.dataset.workspaceGroup !== original).dataset.workspaceGroup;
+    return { original, other };
+  });
+  await page.click('[data-workspace-group="' + split.original + '"] .workspace-pane-title');
+  await page.click('#file-toggle');
+  await page.focus('[data-workspace-group="' + split.other + '"] [data-start-browse]');
+  await page.keyboard.press('Enter');
+  const splitBrowse = await page.evaluate(() => ({ group: window.__workspaceGroups.activeGroup(), expanded: document.querySelector('#file-toggle').getAttribute('aria-expanded'), focus: document.activeElement.id, views: Object.keys(window.__workspaceGroups.snapshot().views).length }));
+  check('compact empty pane browse preserves its keyboard-selected destination', splitBrowse.group === split.other && splitBrowse.expanded === 'true' && splitBrowse.focus === 'file-filter' && splitBrowse.views === 0, JSON.stringify(splitBrowse));
+  await page.evaluate(groupId => window.__workspaceGroups.command({ type: 'closePane', groupId }), split.other);
 
   // Minimized survives closing the last file; draft and composer node stay.
   await openFile(page, 'a.md');
@@ -285,6 +305,8 @@ try {
   await wait(page, name => document.querySelector('#project-name').textContent === name, 20000, projectBName);
   const bEmpty = await snap(page);
   check('project B opens on its own empty base layer', bEmpty.emptyHidden === false && bEmpty.emptyTitle === '工作区暂无打开的文件' && bEmpty.draft === '', JSON.stringify(bEmpty));
+  const switchedEmpty = await page.$eval('.workspace-pane-empty', node => node.textContent);
+  check('project switch never renders the previous project name in its empty pane', switchedEmpty.includes('项目已打开') && !switchedEmpty.includes(projectAName) && Boolean(await page.$('.workspace-pane-empty [data-start-browse]')), switchedEmpty);
   await page.click('#chat-layout summary');
   await wait(page, () => document.querySelector('#chat-layout-menu').matches(':popover-open'));
   await page.click('#chat-layout-menu [data-dock="top"]');

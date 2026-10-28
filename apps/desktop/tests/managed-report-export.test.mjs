@@ -8,7 +8,7 @@ import {Workspace} from '../src/agents/managed/workspace.mjs';
 import {ManagedReportExporter} from '../src/main/managed-report-export.mjs';
 import {staticReport,historicalMarkdownState} from './static-report.fixture.mjs';
 import {managedRuntime} from '../src/agents/managed/managed-storage.mjs';
-import {managedReportSource} from '../src/agents/managed-report-source.mjs';
+import {managedReportSource,managedArtifact,managedHistory} from '../src/agents/managed-report-source.mjs';
 
 // Real Host registry/drafts/atomic writes and real Workspace publication/object.
 // The binding lookup has no Provider; this is file safety, not CLI acceptance.
@@ -19,12 +19,14 @@ async function setup(t,{html=false}={}) {
   let store=await Workspace.open(runtime,project,{storage,projectId});
   const work=await store.submit('request','brief',{name:'真实报告'});await store.activate(work.id);
   let text=html?staticReport('Unicode 中文、空行与尾换行。'):'# 原始报告\r\n\r\nUnicode 中文、空行与尾换行。\r\n\r\n[原文件](source.md)\r\n';
-  let receipt=await store.publish(work.id,1,'result',html?text:staticReport('Historical seed'),'receipt-1');await store.settle(work.id);
+  await fs.mkdir(path.join(project,'reports'));await fs.writeFile(path.join(project,'reports/generated.md'),'# Frozen artifact\n\n中文内容\n');
+  let receipt=await store.publish(work.id,1,'result',html?text:staticReport('Historical seed'),'receipt-1',{files:[{relPath:'reports/generated.md'}]});await store.settle(work.id);
   if(!html){await historicalMarkdownState(store,new Map([[receipt.objectId,text]]));store=await Workspace.open(runtime,project,{storage,projectId});receipt=store.state.receipts[0];}
   if(html)text=(await store.readObject(receipt.report.digest)).toString('utf8');
   await fs.unlink(path.join(await storage.recoveryDirectory(projectId),'objects','sha256',receipt.report.digest));
   const projectEntries=await fs.readdir(project);
-  const controller={store},managedAgents={controller:id=>{assert.equal(id,projectId);return controller;},reportSource:async(id,objectId)=>managedReportSource({project:await storage.requireRegistered(id),storage,runtime,objectId,controller})};
+  const managedAgents={controller:id=>{assert.equal(id,projectId);return {store};},reportSource:async(id,objectId)=>managedReportSource({project:await storage.requireRegistered(id),storage,runtime,objectId,controller:{store}})};
+  const artifactController={store};managedAgents.artifactRead=async(id,{objectId,relPath})=>managedArtifact({project:await storage.requireRegistered(id),storage,runtime,controller:artifactController,currentController:()=>artifactController},{objectId,relPath});
   let holds=0,releases=0;
   const exporter=new ManagedReportExporter({host,managedAgents,beforeOperation:async()=>{holds++;return ()=>{releases++;};}});
   t.after(async()=>{await store.close();await storage.db.close();await fs.rm(root,{recursive:true,force:true});});
@@ -145,9 +147,56 @@ test('legacy Markdown cannot be disguised as HTML',async t=>{
   assert.deepEqual(s.counts(),{holds:0,releases:0});assert.deepEqual(await fs.readdir(s.project),s.projectEntries);
 });
 
+test('copies exact frozen Markdown artifact bytes without overwriting source files',async t=>{
+  const s=await setup(t),payload={projectId:s.projectId,objectId:s.receipt.objectId,sourcePath:'reports/generated.md',relPath:'generated-copy.md'};
+  await fs.writeFile(path.join(s.project,'reports/generated.md'),'new live version');
+  const result=await s.exporter.exportArtifact(payload);
+  assert.equal(result.copied,true);assert.equal(await fs.readFile(path.join(s.project,'generated-copy.md'),'utf8'),'# Frozen artifact\n\n中文内容\n');
+  await assert.rejects(s.exporter.exportArtifact(payload),{code:'CONFLICT'});
+  for(const relPath of ['../escape.md','CON.md','sub/copy.md','bad .md'])await assert.rejects(s.exporter.exportArtifact({...payload,relPath}),{code:'BAD_PATH'});
+  assert.equal(await fs.readFile(path.join(s.project,'reports/generated.md'),'utf8'),'new live version');await s.noTemps();
+});
+
 test('Workspace rejects fresh Markdown publication without creating a receipt',async t=>{
   const s=await setup(t,{html:true}),work=s.store.state.works[0];
   const revision=await s.store.continue(work.id),before=structuredClone(s.store.state.receipts);
   await assert.rejects(s.store.publish(work.id,revision,'result','# New Markdown is not a publication format','rejected-markdown'));
   assert.deepEqual(s.store.state.receipts,before);
+});
+
+test('single-object history read pins receipt identity, not whole-state hash; versioned pages keep strict CAS',async t=>{
+  const s=await setup(t);
+  const project=await s.store.storage.requireRegistered(s.projectId);
+  const controller={store:s.store};
+  const opts=()=>({project,storage:s.store.storage,runtime:s.store.root,controller,currentController:()=>controller});
+  const objectId=s.receipt.objectId;
+  const pinned=(await managedHistory(opts(),{objectId})).version;
+  // 无关后台状态变化（如审校草稿/runtime写入touching works/messages）：无version
+  // 读取不受影响——正文不可变性由receipt身份/描述符/摘要CAS保证。
+  await s.store.mutate(()=>{s.store.state.messages??=[];s.store.state.messages.push({id:'race-seed',target:'worker',speaker:'user',text:'unrelated background state change'});});
+  const fresh=await managedHistory(opts(),{objectId});
+  assert.equal(fresh.objectVerified,true);
+  assert.notEqual(fresh.version,pinned);
+  // 显式version分页仍严格CAS：state变化后旧version必须被拒，新version可复读。
+  await assert.rejects(managedHistory(opts(),{objectId,version:pinned}),error=>error.code==='REPORT_CHANGED');
+  await managedHistory(opts(),{objectId,version:fresh.version});
+  // 竞态免疫：source.read()读取报告字节期间发生无关state变化，不再拒绝无version读取。
+  const originalReadObject=s.store.storage.readObject.bind(s.store.storage);
+  let injected=false;
+  s.store.storage.readObject=(projectId,digest,...rest)=>{
+    if(!injected&&digest===s.receipt.report.digest){
+      injected=true;
+      return s.store.mutate(()=>{s.store.state.messages.push({id:'race-window',target:'worker',speaker:'user',text:'mid-read background change'});}).then(()=>originalReadObject(projectId,digest,...rest));
+    }
+    return originalReadObject(projectId,digest,...rest);
+  };
+  try{
+    injected=false;
+    const raced=await managedHistory(opts(),{objectId});
+    assert.equal(raced.objectVerified,true);
+    injected=false;
+    await assert.rejects(managedHistory(opts(),{objectId,version:raced.version}),error=>error.code==='REPORT_CHANGED');
+  }finally{s.store.storage.readObject=originalReadObject;}
+  // controller身份变化（如重启换实例）仍必须拒绝，绝不跨实例返回正文。
+  await assert.rejects(managedHistory({...opts(),currentController:()=>({store:s.store})},{objectId}),error=>error.code==='REPORT_CHANGED');
 });

@@ -15,8 +15,9 @@ import { FileTags } from '../domain/file-tags.mjs';
 import { FileChanges, publicChanges } from '../domain/file-changes.mjs';
 import { userActor } from '../domain/document-changes.mjs';
 import { listDocumentVersions, readDocumentVersion } from '../domain/document-versions.mjs';
+import { validateDocumentSource, isProjectDocumentSource, reviewTagNamespace } from '../domain/document-source.mjs';
 import { anchorText, resolveTextAnchor, textChangeSet, mapTextAnchor, validTextAnchor, validTextPointAnchor, mapTextPointAnchor, resolveTextPointAnchor } from '../domain/tag-anchors.mjs';
-import {rebaseDocumentEdits, documentChangesSince} from '../domain/document-collaboration.mjs';
+import {rebaseDocumentEdits, documentChangesSince, resolveTextReplacements} from '../domain/document-collaboration.mjs';
 import { treeViewValue } from './file-tree-ops.mjs';
 import {ProjectStorage} from './project-storage.mjs';
 import {ensureProjectGit} from './project-git.mjs';
@@ -333,8 +334,21 @@ export class DesktopHost {
     this.documentReadBytes = 0;
     this.documentStatusCache = new Map();
     this.onDocumentChange = onDocumentChange;
+    // Review-candidate document adapter; wired by the main process to the
+    // managed review controller. Absent wiring fails closed for review reads.
+    this.reviewDocuments = null;
     this.active = 0;
     this.idle = [];
+  }
+
+  boundDocumentSource(value) {
+    if (value === undefined || value === null) return { type: 'project' };
+    try { return validateDocumentSource(value); }
+    catch (error) { throw new HostError('INVALID_DOCUMENT_SOURCE', error.message); }
+  }
+  requireReviewDocuments() {
+    if (!this.reviewDocuments) throw new HostError('REVIEW_DOCUMENTS_UNAVAILABLE', '审校文档服务尚未就绪；未回退读取项目源文件。');
+    return this.reviewDocuments;
   }
 
   track(work) {
@@ -579,14 +593,14 @@ export class DesktopHost {
     })());
   }
 
-  async search(projectId, { query = '', limit = 100, treeView = true } = {}) {
+  async search(projectId, { query = '', limit = 100, treeView = true, filesOnly = false } = {}) {
     return this.track((async () => {
       const project = await this.requireProject(projectId);
       if (typeof query !== 'string' || query.length > 256) throw new HostError('INVALID_PAYLOAD', 'Search query must contain at most 256 characters.');
       const bounded = navigationLimit(limit, 100, 200), needle = query.trim().toLowerCase();
       const view = await this.navigationView(projectId, treeView), hidden = new Set(view?.hidden ?? []);
       const workLimit = 10000, matches = [], stack = [''];
-      if(query.trim().includes('/')){try{const rel=normalizeRel(query.trim()),parts=rel.split('/');if(parts.some(part=>part.startsWith('.')||part==='node_modules'))throw new HostError('BAD_PATH','Excluded path');const parent=path.posix.dirname(rel),name=path.posix.basename(rel),abs=path.join(await this.navigationDirectory(project,parent==='.'?'':parent),name),stat=await fs.lstat(abs),isHidden=navigationHidden(rel,hidden);if(!stat.isSymbolicLink()&&(stat.isDirectory()||stat.isFile())&&(!isHidden||view?.showHidden))return {entries:[{relPath:rel,name,kind:stat.isDirectory()?'dir':'file',depth:parts.length-1,...(view?{hidden:isHidden,hiddenRoot:hidden.has(rel)}:{})}],limit:bounded,truncated:false,hasMore:false,budgetExceeded:false,work:1,workLimit,reason:null};}catch{/* A non-exact path continues through bounded name/path search. */}}
+      if(query.trim().includes('/')){try{const rel=normalizeRel(query.trim()),parts=rel.split('/');if(parts.some(part=>part.startsWith('.')||part==='node_modules'))throw new HostError('BAD_PATH','Excluded path');const parent=path.posix.dirname(rel),name=path.posix.basename(rel),abs=path.join(await this.navigationDirectory(project,parent==='.'?'':parent),name),stat=await fs.lstat(abs),isHidden=navigationHidden(rel,hidden);if(!stat.isSymbolicLink()&&(stat.isFile()||(filesOnly!==true&&stat.isDirectory()))&&(!isHidden||view?.showHidden))return {entries:[{relPath:rel,name,kind:stat.isDirectory()?'dir':'file',depth:parts.length-1,...(view?{hidden:isHidden,hiddenRoot:hidden.has(rel)}:{})}],limit:bounded,truncated:false,hasMore:false,budgetExceeded:false,work:1,workLimit,reason:null};}catch{/* A non-exact path continues through bounded name/path search. */}}
       let work = 0, matched = 0, budgetExceeded = false, unreadable = false;
       while (stack.length) {
         if (work >= workLimit) { budgetExceeded = true; break; }
@@ -606,6 +620,7 @@ export class DesktopHost {
             const isHidden = navigationHidden(relPath, hidden);
             if (isHidden && !view?.showHidden) continue;
             if (item.isDirectory() && !isHidden) stack.push(relPath);
+            if (filesOnly === true && item.isDirectory()) continue;
             const lowerName = name.toLowerCase(), lowerPath = relPath.toLowerCase();
             if (!lowerName.includes(needle) && !lowerPath.includes(needle)) continue;
             matched++;
@@ -769,7 +784,9 @@ export class DesktopHost {
     })());
   }
 
-  async readFile(projectId, relPath) {
+  async readFile(projectId, relPath, documentSource) {
+    const source = this.boundDocumentSource(documentSource);
+    if (source.type !== 'project') return this.track(this.requireReviewDocuments().read({ projectId, source, relPath: normalizeRel(relPath) }));
     return this.track(this.fileLock(projectId, normalizeRel(relPath))(async () => {
       const project = await this.requireProject(projectId);
       let located;
@@ -840,7 +857,8 @@ export class DesktopHost {
     }));
   }
 
-  async documentHistory(projectId, relPath, { eventId = null, scope = null, cursor = null, limit = 100 } = {}) {
+  async documentHistory(projectId, relPath, { eventId = null, scope = null, cursor = null, limit = 100 } = {}, documentSource) {
+    if (this.boundDocumentSource(documentSource).type !== 'project') throw new HostError('UNSUPPORTED', '审校文档没有项目修改账本；请使用版本列表。');
     return this.track(this.fileLock(projectId, normalizeRel(relPath))(async () => {
       const project = await this.requireProject(projectId), located = await this.resolveFile(project, relPath);
       const store = new FileChanges({storage:this.storage,projectId:project.id,root:project.root});
@@ -898,11 +916,13 @@ export class DesktopHost {
     }));
   }
 
-  documentVersions(projectId, relPath, options = {}) {
+  documentVersions(projectId, relPath, options = {}, documentSource) {
+    if (this.boundDocumentSource(documentSource).type !== 'project') return this.track(this.requireReviewDocuments().versions({ projectId, source: this.boundDocumentSource(documentSource), relPath: normalizeRel(relPath), cursor: options.cursor ?? null, limit: options.limit ?? 50 }));
     return this.withDocumentLedger(projectId, relPath, ledger => listDocumentVersions(ledger, options));
   }
 
-  documentVersion(projectId, relPath, version) {
+  documentVersion(projectId, relPath, version, documentSource) {
+    if (this.boundDocumentSource(documentSource).type !== 'project') return this.track(this.requireReviewDocuments().version({ projectId, source: this.boundDocumentSource(documentSource), relPath: normalizeRel(relPath), version }));
     return this.withDocumentLedger(projectId, relPath, ledger => readDocumentVersion(ledger, version, digest => this.storage.readObject(projectId,digest)));
   }
 
@@ -998,20 +1018,26 @@ export class DesktopHost {
     }));
   }
 
-  async applyDocument(projectId, actor, { readHandle, edits, operationId, contexts = [], requestFingerprint = null }, {beforeApply=()=>{}}={}) {
+  async applyDocument(projectId, actor, { readHandle, edits, replacements, operationId, contexts = [], requestFingerprint = null }, {beforeApply=()=>{}}={}) {
     const read = this.documentReads.get(readHandle);
     if (!read || read.projectId !== projectId || read.actorId !== actor.id || read.sessionId !== actor.sessionId || read.sessionInstance !== actor.sessionInstance || Date.now()-read.createdAt > 6*60*60*1000) throw new HostError('READ_HANDLE_REJECTED','读取句柄无效或属于其他会话，请重新读取。');
+    // Model calls quote exact text; only host code derives UTF-16 offsets. The
+    // resolver also returns the spans contextBefore/contextAfter cover, which
+    // must survive rebase unchanged next to the programmatic contexts parameter.
+    let replacementContexts = [];
+    if (edits === undefined && replacements !== undefined) { const resolved = resolveTextReplacements(read.text, replacements); edits = resolved.edits; replacementContexts = resolved.contexts; }
     if (typeof operationId !== 'string' || !/^[a-f0-9]{64}$/.test(operationId) || !Array.isArray(edits) || !edits.length || edits.length > 1000) throw new HostError('INVALID_PAYLOAD','需要工具生成的操作标识及1至1000处精确编辑。');
     if(!Array.isArray(contexts)||contexts.length>1000)throw new HostError('INVALID_PAYLOAD','必要上下文必须为读取版本的范围数组。');
+    const effectiveContexts=[...contexts,...replacementContexts];
     const splitPair = offset => offset > 0 && offset < read.text.length && /[\uD800-\uDBFF]/.test(read.text[offset-1]) && /[\uDC00-\uDFFF]/.test(read.text[offset]);
     let end = -1;
     const normalized = edits.map(edit => {
       if (!edit || !Number.isSafeInteger(edit.from) || !Number.isSafeInteger(edit.to) || edit.from < 0 || edit.to < edit.from || edit.to > read.text.length || edit.from <= end || typeof edit.insert !== 'string' || edit.insert.length > MAX_TEXT_BYTES || splitPair(edit.from) || splitPair(edit.to)) throw new HostError('INVALID_PAYLOAD','编辑范围必须按原读取文本的UTF-16位置递增、不重叠，且不拆开Unicode字符。');
       end = Math.max(edit.from, edit.to - 1);
       if (edit.expected !== undefined && edit.expected !== read.text.slice(edit.from,edit.to)) throw new HostError('CONFLICT','编辑原文与读取版本不符。');
-      return { from:edit.from,to:edit.to,insert:anchorText(edit.insert) };
+      return { from:edit.from,to:edit.to,insert:anchorText(edit.insert), ...(edit.expected!==undefined?{expected:edit.expected}:{}) };
     });
-    const fingerprint = requestFingerprint || digestBytes(Buffer.from(JSON.stringify({ readHandle, edits:normalized, contexts })));
+    const fingerprint = requestFingerprint || digestBytes(Buffer.from(JSON.stringify({ readHandle, edits:normalized, contexts:effectiveContexts })));
     return this.track(this.fileLock(projectId, read.relPath)(async () => {
       const project = await this.requireProject(projectId), located = await this.resolveFile(project,read.relPath), store = new FileChanges({storage:this.storage,projectId:project.id,root:project.root});
       return store.withLock(read.relPath, async () => {
@@ -1022,7 +1048,7 @@ export class DesktopHost {
           return { duplicate:true,unchanged:receipt.unchanged===true,eventId:receipt.id||null,revision:receipt.revision,digest:receipt.afterDigest };
         }
         const recovery = async () => {
-          const bytes=Buffer.from(JSON.stringify({format:'nozeli.agent-change-candidate',actor,readHandle,read,edits:normalized,contexts,operationId}), 'utf8');
+          const bytes=Buffer.from(JSON.stringify({format:'nozeli.agent-change-candidate',actor,readHandle,read,edits:normalized,contexts:effectiveContexts,operationId}), 'utf8');
           return this.backupBaseline(projectId,read.relPath+'.agent-candidate.json',bytes,digestBytes(bytes));
         };
         if (located.missing) throw new HostError('DELETED','文件已删除，未应用Agent修改。',{recoveryPath:await recovery()});
@@ -1034,7 +1060,7 @@ export class DesktopHost {
         const draft = await this.readDraftRecord(projectId,read.relPath);
         if (draft?.draftError || draft && draft.status !== 'saved') throw new HostError('UNSAVED','用户草稿尚未成功保存，Agent候选已保留，未覆盖。',{recoveryPath:await recovery()});
         let mapped;
-        try { mapped = rebaseDocumentEdits(read, ledger, normalized, contexts); }
+        try { mapped = rebaseDocumentEdits(read, ledger, normalized, effectiveContexts); }
         catch(error) { if(error.code!=='STALE_VERSION')throw error;throw new HostError('STALE_VERSION',error.message,{...documentChangesSince(read,ledger),recoveryPath:await recovery()}); }
         let merged=ledger.text;
         for(const edit of mapped){
@@ -1098,7 +1124,9 @@ export class DesktopHost {
   }
 
 
-  async draft(projectId, relPath, baseDigest, text) {
+  async draft(projectId, relPath, baseDigest, text, documentSource, expectedDraftRevision) {
+    const source = this.boundDocumentSource(documentSource);
+    if (source.type !== 'project') return this.track(this.requireReviewDocuments().save({ projectId, source, relPath: normalizeRel(relPath), text, expectedDraftRevision, mode: 'draft' }));
     return this.track(this.fileLock(projectId, normalizeRel(relPath))(async () => {
       const project = await this.requireProject(projectId);
       const located = await this.resolveFile(project, relPath);
@@ -1107,7 +1135,9 @@ export class DesktopHost {
     }));
   }
 
-  async retainDraft(projectId, relPath, baseDigest, text) {
+  async retainDraft(projectId, relPath, baseDigest, text, documentSource, expectedDraftRevision) {
+    const source = this.boundDocumentSource(documentSource);
+    if (source.type !== 'project') return this.track(this.requireReviewDocuments().save({ projectId, source, relPath: normalizeRel(relPath), text, expectedDraftRevision, mode: 'retain' }));
     const rel = normalizeRel(relPath);
     return this.track(this.fileLock(projectId, rel)(async () => {
       const project = await this.requireRegisteredProject(projectId);
@@ -1261,7 +1291,12 @@ export class DesktopHost {
     }));
   }
 
-  async save(projectId, relPath, baseDigest, text, options = {}) {
+  async save(projectId, relPath, baseDigest, text, options = {}, documentSource) {
+    const source = this.boundDocumentSource(documentSource);
+    if (source.type !== 'project') {
+      if (options.confirmOverwrite === true) throw new HostError('INVALID_PAYLOAD', '审校文档没有覆盖确认语义。');
+      return this.track(this.requireReviewDocuments().save({ projectId, source, relPath: normalizeRel(relPath), text, baseDigest, expectedDraftRevision: Number.isSafeInteger(options.expectedDraftRevision) ? options.expectedDraftRevision : undefined, anchorChanges: options.anchorChanges ?? null, mode: 'save' }));
+    }
     const rel = normalizeRel(relPath);
     return this.track(this.fileLock(projectId, rel)(async () => {
       const project = await this.requireProject(projectId);
@@ -1481,7 +1516,19 @@ export class DesktopHost {
   }
 
 
-  async tagStore(projectId) { const project=await this.requireProject(projectId);return new FileTags({storage:this.storage,projectId,root:project.root}); }
+  async tagStore(projectId, documentSource) {
+    const project = await this.requireProject(projectId);
+    const source = this.boundDocumentSource(documentSource);
+    return new FileTags({ storage: this.storage, projectId: project.id, root: project.root, ...(source.type !== 'project' ? { namespace: reviewTagNamespace(source) } : {}) });
+  }
+  // The exact bytes a review document currently presents for anchor
+  // resolution: the saved human draft when present, else the frozen candidate
+  // (or the pinned version for review-version sources). Never project disk.
+  async reviewDocumentBytes(projectId, documentSource, relPath) {
+    const source = this.boundDocumentSource(documentSource);
+    if (source.type === 'project') return null;
+    return this.requireReviewDocuments().currentBytes({ projectId, source, relPath: normalizeRel(relPath) });
+  }
 
   async resolveTag(store, record, bytes) {
     const targetDigest = bytes ? digestBytes(bytes) : null;
@@ -1509,18 +1556,26 @@ export class DesktopHost {
     return { targetDigest, ...resolveTextAnchor(record.anchor, origin.toString('utf8'), bytes.toString('utf8')) };
   }
 
-  async listAnnotations(projectId, relPath) {
+  async listAnnotations(projectId, relPath, documentSource) {
     return this.track((async () => {
-      const project = await this.requireProject(projectId), store = new FileTags({storage:this.storage,projectId:project.id,root:project.root});
+      const source = this.boundDocumentSource(documentSource);
+      const project = await this.requireProject(projectId), store = source.type === 'project'
+        ? new FileTags({storage:this.storage,projectId:project.id,root:project.root})
+        : await this.tagStore(projectId, source);
       const filter = relPath == null ? null : normalizeRel(relPath);
       const files = filter ? [await store.read(filter)].filter(Boolean) : await store.all();
       const annotations = [];
       for (const file of files) {
-        const located = await this.resolveFile(project, file.file.relPath);
-        const bytes = located.missing ? null : await this.readSource(located.abs);
+        let bytes = null;
+        if (source.type === 'project') {
+          const located = await this.resolveFile(project, file.file.relPath);
+          bytes = located.missing ? null : await this.readSource(located.abs);
+        } else {
+          bytes = await this.reviewDocumentBytes(projectId, source, file.file.relPath);
+        }
         for (const record of file.tags) {
           const resolution = await this.resolveTag(store, record, bytes);
-          annotations.push({ ...record, projectId, fileId: file.file.fileId, resolution, sourceChanged: resolution.targetDigest !== record.materialDigest });
+          annotations.push({ ...record, projectId, fileId: file.file.fileId, ...(source.type !== 'project' ? { documentSource: structuredClone(source) } : {}), resolution, sourceChanged: resolution.targetDigest !== record.materialDigest });
         }
       }
       annotations.sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
@@ -1528,9 +1583,9 @@ export class DesktopHost {
     })());
   }
 
-  async stageTagMappings(projectId, relPath, before, after, mapping = null) {
+  async stageTagMappings(projectId, relPath, before, after, mapping = null, documentSource) {
     return this.metaLock(async () => {
-      const store = await this.tagStore(projectId), file = await store.read(relPath);
+      const store = await this.tagStore(projectId, documentSource), file = await store.read(relPath);
       if (!file) return;
       const beforeDigest = digestBytes(before), afterDigest = digestBytes(after);
       const changes = mapping == null ? null : textChangeSet(before.toString('utf8'), after.toString('utf8'), mapping);
@@ -1554,15 +1609,29 @@ export class DesktopHost {
   async addAnnotation(projectId, input) {
     return this.track((async () => {
       const project = await this.requireProject(projectId);
+      const source = this.boundDocumentSource(input?.documentSource);
       const relPath = normalizeRel(input?.relPath);
-      await this.resolveFile(project, relPath);
+      if (source.type === 'project') await this.resolveFile(project, relPath);
       const materialDigest = input?.materialDigest;
       if (typeof materialDigest !== 'string' || !/^[a-f0-9]{64}$/.test(materialDigest)) {
         throw new HostError('INVALID_PAYLOAD', 'Annotation requires a material digest.');
       }
-      const material = await this.storage.readObject(projectId,materialDigest);
-      const provenance = await this.storage.getProject(projectId,'provenance',relPath);
-      if (!provenance?.digests?.includes(materialDigest)) throw new HostError('ANCHOR_MISMATCH', 'Material does not belong to this document.');
+      let material;
+      if (source.type === 'project') {
+        material = await this.storage.readObject(projectId,materialDigest);
+        const provenance = await this.storage.getProject(projectId,'provenance',relPath);
+        if (!provenance?.digests?.includes(materialDigest)) throw new HostError('ANCHOR_MISMATCH', 'Material does not belong to this document.');
+      } else {
+        // Review materials are validated against this publication's frozen
+        // candidate and saved draft digests — never the same-path project file.
+        // Only text anchors are supported on review documents this cycle.
+        if (!['text-selection', 'text-point'].includes(input?.kind)) throw new HostError('UNSUPPORTED', '审校文档仅支持文本选区与位置备注。');
+        const allowed = await this.requireReviewDocuments().materials({ projectId, source, relPath });
+        const bytes = allowed.get(materialDigest);
+        if (!bytes) throw new HostError('ANCHOR_MISMATCH', '备注材料不属于此审校文档的冻结候选或人工草稿。');
+        material = bytes;
+        await this.storage.putObject(projectId, bytes);
+      }
       const kind = input?.kind;
       const anchor = input?.anchor;
       let storedAnchor;
@@ -1651,7 +1720,7 @@ export class DesktopHost {
       }
       const now = new Date().toISOString();
       return this.metaLock(async () => {
-      const store = new FileTags({storage:this.storage,projectId:project.id,root:project.root});
+      const store = source.type === 'project' ? new FileTags({storage:this.storage,projectId:project.id,root:project.root}) : await this.tagStore(projectId, source);
       await store.putMaterial(material);
       const sidecar = await store.read(relPath);
       const ordinal = (sidecar?.nextOrdinal || 1);
@@ -1669,6 +1738,7 @@ export class DesktopHost {
         note: input.note,
         createdAt: now,
         updatedAt: now,
+        ...(source.type !== 'project' ? { documentSource: structuredClone(source) } : {}),
         ...(input.projection ? { projection: this.tagProjection(input.projection) } : {}),
       };
       if ((sidecar?.tags || []).some(tag => tag.id === record.id)) throw new HostError('ANNOTATION_CONFLICT', 'Tag already exists.');
@@ -1682,7 +1752,7 @@ export class DesktopHost {
     return this.track(this.metaLock(async () => {
       await this.requireProject(projectId);
       if (typeof annotationId !== 'string' || !/^[0-9a-f-]{36}$/i.test(annotationId)) throw new HostError('NOT_FOUND', 'Annotation was not found.');
-      const store = await this.tagStore(projectId);
+      const store = await this.tagStore(projectId, input?.documentSource);
       const sidecar = (await store.all()).find(file => file.tags.some(tag => tag.id === annotationId));
       const record = sidecar?.tags.find(tag => tag.id === annotationId);
       if (!record) throw new HostError('NOT_FOUND', 'Annotation was not found.');
@@ -1700,9 +1770,9 @@ export class DesktopHost {
     }));
   }
 
-  async removeAnnotation(projectId, annotationId) {
+  async removeAnnotation(projectId, annotationId, documentSource) {
     return this.track(this.metaLock(async () => {
-      const store = await this.tagStore(projectId);
+      const store = await this.tagStore(projectId, documentSource);
       const sidecar = (await store.all()).find(file => file.tags.some(tag => tag.id === annotationId));
       if (!sidecar) throw new HostError('NOT_FOUND', 'Annotation was not found.');
       await store.write(sidecar.file.relPath, { ...sidecar, tags: sidecar.tags.filter(tag => tag.id !== annotationId) }, sidecar.revision);
@@ -1722,7 +1792,7 @@ export class DesktopHost {
 
   async putTag(projectId, input) {
     if (!/^[0-9a-f-]{36}$/i.test(input?.tagId)) throw new HostError('INVALID_PAYLOAD', 'A stable tag UUID is required.');
-    const store = await this.tagStore(projectId), rel = normalizeRel(input?.relPath);
+    const store = await this.tagStore(projectId, input?.documentSource), rel = normalizeRel(input?.relPath);
     const sidecar = await store.read(rel), existing = sidecar?.tags.find(tag => tag.id === input.tagId);
     if (!existing) return this.addAnnotation(projectId, { ...input, relPath: rel, note: '', projection: this.tagProjection(input.projection) });
     return this.track(this.metaLock(async () => {
@@ -1736,7 +1806,7 @@ export class DesktopHost {
 
   async tagView(projectId, input) {
     return this.track(this.metaLock(async () => {
-      const store = await this.tagStore(projectId), rel = normalizeRel(input?.relPath), file = await store.read(rel);
+      const store = await this.tagStore(projectId, input?.documentSource), rel = normalizeRel(input?.relPath), file = await store.read(rel);
       const tag = file?.tags.find(tag => tag.id === input.annotationId);
       if (!tag) throw new HostError('NOT_FOUND', 'Tag was not found.');
       if (typeof input.collapsed !== 'boolean') throw new HostError('INVALID_PAYLOAD', 'Collapsed state must be boolean.');
@@ -1747,10 +1817,14 @@ export class DesktopHost {
 
   async reanchorTag(projectId, input) {
     return this.track(this.metaLock(async () => {
-      const project = await this.requireProject(projectId), store = new FileTags({storage:this.storage,projectId:project.id,root:project.root}), rel = normalizeRel(input?.relPath);
+      const project = await this.requireProject(projectId), source = this.boundDocumentSource(input?.documentSource), store = source.type === 'project' ? new FileTags({storage:this.storage,projectId:project.id,root:project.root}) : await this.tagStore(projectId, source), rel = normalizeRel(input?.relPath);
       const file = await store.read(rel), tag = file?.tags.find(t => t.id === input.annotationId);
       if (!tag || tag.kind !== 'text-selection') throw new HostError('NOT_FOUND', 'Text tag was not found.');
-      const located = await this.resolveFile(project, rel), bytes = await this.readSource(located.abs), digest = digestBytes(bytes);
+      const bytes = source.type === 'project'
+        ? await this.readSource((await this.resolveFile(project, rel)).abs)
+        : await this.reviewDocumentBytes(projectId, source, rel);
+      if (bytes === null) throw new HostError('NOT_FOUND', '此文档当前没有可定位的正文。');
+      const digest = digestBytes(bytes);
       if (digest !== input.targetDigest) throw new HostError('CONFLICT', 'Document changed before relocation.');
       if (!isUtf8Text(bytes) || !validTextAnchor(input.anchor, anchorText(bytes.toString('utf8')))) throw new HostError('INVALID_ANCHOR', 'Relocation must match the current text.');
       const current = { start: input.anchor.start, end: input.anchor.end, quote: input.anchor.quote };
@@ -1763,6 +1837,7 @@ export class DesktopHost {
   }
 
   async drawingMaterial(projectId,input,update=false){
+    if(this.boundDocumentSource(input?.documentSource).type!=='project')throw new HostError('UNSUPPORTED','审校文档不支持涂鸦区域备注。');
     return this.track(this.metaLock(async()=>{
       const project=await this.requireProject(projectId),store=await this.tagStore(projectId),rel=normalizeRel(input.relPath),file=await store.read(rel),record=file?.tags.find(t=>t.id===input.annotationId);
       if(!record?.information?.drawing)throw new HostError('NOT_FOUND','涂鸦标签不存在');
@@ -1785,6 +1860,7 @@ export class DesktopHost {
    * markdown reference relative to the edited document. Content addressing
    * makes re-pasting the same image idempotent; no file is ever overwritten. */
   async pasteDocumentImage(projectId, input) {
+    if(this.boundDocumentSource(input?.documentSource).type!=='project')throw new HostError('UNSUPPORTED','审校文档不支持粘贴图片引用。');
     return this.track((async () => {
       const project = await this.requireProject(projectId);
       const located = await this.resolveFile(project, input?.relPath);
@@ -1808,6 +1884,7 @@ export class DesktopHost {
   /** Read an image referenced by markdown so the preview can display it.
    * Only visible project image files and immutable material blobs are exposed. */
   async readDocumentImage(projectId, input) {
+    if(this.boundDocumentSource(input?.documentSource).type!=='project')throw new HostError('UNSUPPORTED','审校文档图片请从冻结材料读取。');
     return this.track((async () => {
       const project = await this.requireProject(projectId);
       const located = await this.resolveFile(project, input?.relPath);
@@ -1839,11 +1916,14 @@ export class DesktopHost {
 
   async tagMaterial(projectId, input) {
     return this.track((async () => {
-      const project = await this.requireProject(projectId), store = new FileTags({storage:this.storage,projectId:project.id,root:project.root}), rel = normalizeRel(input?.relPath);
+      const project = await this.requireProject(projectId), source = this.boundDocumentSource(input?.documentSource), store = source.type === 'project' ? new FileTags({storage:this.storage,projectId:project.id,root:project.root}) : await this.tagStore(projectId, source), rel = normalizeRel(input?.relPath);
       const file = await store.read(rel), tag = file?.tags.find(t => t.id === input.annotationId);
       if (!tag) throw new HostError('NOT_FOUND', 'Tag was not found.');
-      const origin = await store.getMaterial(tag.materialDigest), located = await this.resolveFile(project, rel);
-      const current = located.missing ? null : await this.readSource(located.abs), resolution = await this.resolveTag(store, tag, current);
+      const origin = await store.getMaterial(tag.materialDigest);
+      const current = source.type === 'project'
+        ? await (async()=>{const located = await this.resolveFile(project, rel);return located.missing ? null : await this.readSource(located.abs);})()
+        : await this.reviewDocumentBytes(projectId, source, rel);
+      const resolution = await this.resolveTag(store, tag, current);
       let currentSource=null;
       if(current){const {digest,byteLength}=await store.putMaterial(current);currentSource={digest,relPath:'.nozeli/objects/sha256/'+digest,bytes:byteLength};}
       let draftStatus='not-applicable',currentDraft=null;
@@ -1921,29 +2001,30 @@ export const ops = {
   'project.children': (host, payload) => host.children(payload?.projectId, payload ?? {}),
   'project.search': (host, payload) => host.search(payload?.projectId, payload ?? {}),
   'word.import': (host,payload)=>host.importDoc(payload?.projectId,payload),
-  'file.read': (host, payload) => host.readFile(payload?.projectId, payload?.relPath),
+  'file.read': (host, payload) => host.readFile(payload?.projectId, payload?.relPath, payload?.documentSource),
   'file.availability': (host, payload) => host.fileAvailability(payload?.projectId, payload?.paths),
-  'document.history': (host,payload) => host.documentHistory(payload?.projectId,payload?.relPath,{eventId:payload?.eventId || null,scope:payload?.scope??null,cursor:payload?.cursor??null,limit:payload?.limit??100}),
-  'document.versions': (host,payload) => host.documentVersions(payload?.projectId,payload?.relPath,{cursor:payload?.cursor??null,limit:payload?.limit??50}),
-  'document.version': (host,payload) => host.documentVersion(payload?.projectId,payload?.relPath,payload?.version),
+  'document.history': (host,payload) => host.documentHistory(payload?.projectId,payload?.relPath,{eventId:payload?.eventId || null,scope:payload?.scope??null,cursor:payload?.cursor??null,limit:payload?.limit??100},payload?.documentSource),
+  'document.versions': (host,payload) => host.documentVersions(payload?.projectId,payload?.relPath,{cursor:payload?.cursor??null,limit:payload?.limit??50},payload?.documentSource),
+  'document.version': (host,payload) => host.documentVersion(payload?.projectId,payload?.relPath,payload?.version,payload?.documentSource),
   'document.status': (host,payload) => host.documentStatus(payload?.projectId,payload?.relPath),
   'sheet.recover': (host,payload)=>host.recoverSheet(payload?.projectId,payload?.relPath,payload?.bytes),
   'sheet.save': (host, payload) => host.saveSheet(payload?.projectId, payload?.relPath, payload?.baseDigest, payload?.bytes),
   'word.save': (host, payload) => host.saveWord(payload?.projectId, payload?.relPath, payload?.baseDigest, payload?.bytes,{anchorChanges:payload?.anchorChanges??null}),
-  'file.draft': (host, payload) => host.draft(payload?.projectId, payload?.relPath, payload?.baseDigest, payload?.text),
-  'file.retain': (host, payload) => host.retainDraft(payload?.projectId, payload?.relPath, payload?.baseDigest, payload?.text),
+  'file.draft': (host, payload) => host.draft(payload?.projectId, payload?.relPath, payload?.baseDigest, payload?.text, payload?.documentSource, payload?.expectedDraftRevision),
+  'file.retain': (host, payload) => host.retainDraft(payload?.projectId, payload?.relPath, payload?.baseDigest, payload?.text, payload?.documentSource, payload?.expectedDraftRevision),
   'file.save': (host, payload) => host.save(payload?.projectId, payload?.relPath, payload?.baseDigest, payload?.text, {
     confirmOverwrite: payload?.confirmOverwrite === true,
     anchorChanges: payload?.anchorChanges ?? null,
-  }),
+    expectedDraftRevision: payload?.expectedDraftRevision,
+  }, payload?.documentSource),
   'state.read': (host, payload) => host.readState(payload?.projectId),
   'state.write': (host, payload) => host.writeState(payload?.projectId, payload?.state),
-  'annotation.list': (host, payload) => host.listAnnotations(payload?.projectId, payload?.relPath),
-  'annotation.drawing.source':async(host,payload)=>{await host.requireProject(payload.projectId);const {digest}=await pptSnapshot(host.storage,payload.projectId,normalizeRel(payload.relPath),payload.materialDigest);return {digest};},
+  'annotation.list': (host, payload) => host.listAnnotations(payload?.projectId, payload?.relPath, payload?.documentSource),
+  'annotation.drawing.source':async(host,payload)=>{if(host.boundDocumentSource(payload?.documentSource).type!=='project')throw new HostError('UNSUPPORTED','审校文档不支持PPT涂鸦。');await host.requireProject(payload.projectId);const {digest}=await pptSnapshot(host.storage,payload.projectId,normalizeRel(payload.relPath),payload.materialDigest);return {digest};},
   'annotation.drawing.read':(host,payload)=>host.drawingMaterial(payload?.projectId,payload),
   'annotation.drawing':(host,payload)=>host.drawingMaterial(payload?.projectId,payload,true),
   'annotation.add': (host, payload) => host.addAnnotation(payload?.projectId, payload),
-  'annotation.remove': (host, payload) => host.removeAnnotation(payload?.projectId, payload?.annotationId),
+  'annotation.remove': (host, payload) => host.removeAnnotation(payload?.projectId, payload?.annotationId, payload?.documentSource),
   'annotation.update': (host, payload) => host.updateAnnotation(payload?.projectId, payload?.annotationId, payload),
   'tag.put': (host, payload) => host.putTag(payload?.projectId, payload),
   'tag.view': (host, payload) => host.tagView(payload?.projectId, payload),

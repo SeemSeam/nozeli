@@ -2,11 +2,21 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 let flushHandler = null;
 let activeFlushRequest = null;
+let activeFlushDetail = null;
 let flushQueue = Promise.resolve();
+// Flush-scoped writes: exactly the ops a lifecycle/barrier flush itself must
+// persist. They carry the active flush receipt id so the host can admit them
+// against the real pending receipt instead of blanket-exempting lifecycle.
+const flushScopedWrites = new Set(['workspace.recovery', 'file.draft', 'file.save', 'file.retain', 'managed.review.instruction.save', 'managed.review.save']);
 
-ipcRenderer.on('nozeli:flush', (_event, requestId) => {
+ipcRenderer.on('nozeli:flush', (_event, request) => {
+  // Review-decision barriers send {requestId, reviewBarrier:true, ...}; a
+  // malformed payload must never be acked against a guessed receipt id.
+  const requestId = typeof request === 'string' ? request : typeof request?.requestId === 'string' ? request.requestId : null;
+  const detail = request !== null && typeof request === 'object' ? request : null;
+  if (!requestId) return;
   flushQueue=flushQueue.catch(()=>{} )
-    .then(async () => {activeFlushRequest=requestId;try{return flushHandler ? await flushHandler() : { ok: false, error: { code: 'NO_FLUSH', message: '页面尚未准备好保存。' } };}finally{if(activeFlushRequest===requestId)activeFlushRequest=null;}})
+    .then(async () => {activeFlushRequest=requestId;activeFlushDetail=detail;try{return flushHandler ? await flushHandler(detail) : { ok: false, error: { code: 'NO_FLUSH', message: '页面尚未准备好保存。' } };}finally{if(activeFlushRequest===requestId){activeFlushRequest=null;activeFlushDetail=null;}}})
     .then((result) => ipcRenderer.invoke('nozeli:invoke', 'session.flushed', { ...(result && typeof result === 'object' ? result : { ok: false }), requestId }))
     .catch((error) => ipcRenderer.invoke('nozeli:invoke', 'session.flushed', {
       ok: false,
@@ -37,8 +47,8 @@ ipcRenderer.on('nozeli:quit-confirm', () => { for (const handler of push['quit.c
 
 contextBridge.exposeInMainWorld('nozeli', {
   invoke(op, payload) {
-    const recovery=activeFlushRequest&&op==='workspace.recovery';
-    return ipcRenderer.invoke('nozeli:invoke', op, recovery ? {...payload,flushRequestId:activeFlushRequest} : payload ?? {});
+    const scoped=activeFlushRequest&&flushScopedWrites.has(op);
+    return ipcRenderer.invoke('nozeli:invoke', op, scoped ? {...payload,flushRequestId:activeFlushRequest} : payload ?? {});
   },
   subscribe(event, handler) {
     if (typeof handler !== 'function') return () => {};

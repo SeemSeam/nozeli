@@ -228,3 +228,27 @@ body[data-managed-history=true] #send-message,body[data-managed-history=true] #m
 .attention-more .ui-action{margin:0 12px 12px}
 @container (max-width:479px){.managed-attention-header h2{font-size:15px}.managed-attention-names,.managed-attention-dialogue [data-attention-status]{font-size:11px}}
 @container (max-width:300px){.managed-attention-actions .ui-action{flex:1 1 100%;width:100%}}
+/* Ended Works the host has not finished closing stay tracked: closure facts,
+   retained-candidate entry, host-only retry and the merge-strategy card live
+   inside the read-only work detail, never as live-task controls. */
+.managed-work-closure{margin:8px 0 2px;display:flex;flex-direction:column;gap:6px;font-size:12px}
+.managed-work-closure[hidden]{display:none}
+.managed-work-closure-actions{display:flex;flex-wrap:wrap;gap:8px}
+.managed-work-closure-actions button{white-space:normal}
+.managed-work-closure [data-closure-status]{margin:0}
+[data-merge-constraint-gate]{border-top:1px dashed var(--line,#ccc);margin-top:6px;padding-top:6px}
+[data-merge-constraint-gate][hidden]{display:none}
+[data-merge-constraint-gate] h3{font-size:12px;margin:0 0 4px}
+[data-merge-constraint-gate]>p:first-of-type{margin:0 0 6px;white-space:pre-wrap;overflow-wrap:anywhere}
+[data-merge-constraint-gate] button{display:block;width:100%;text-align:left;margin:4px 0;white-space:normal;overflow-wrap:anywhere}
+[data-merge-constraint-gate] [role=status],[data-merge-constraint-gate] [role=alert]{margin:6px 0 0;color:var(--muted);font-size:11px}
+[data-merge-constraint-gate] [role=alert]{color:var(--red)}
+.managed-problem-decision{margin:18px 0;padding:16px;border:1px solid var(--line);border-radius:8px;background:var(--surface,var(--paper));color:var(--ink);font-family:var(--chrome-font-family);font-size:var(--chrome-font-size,13px)}
+.managed-problem-decision h3{margin:0 0 10px;font-size:16px}
+.managed-problem-decision p{line-height:1.6;overflow-wrap:anywhere}
+.managed-problem-decision label{display:block;margin:12px 0}
+.managed-problem-decision textarea{display:block;box-sizing:border-box;width:100%;min-height:96px;margin-top:6px;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);font:inherit;resize:vertical}
+.managed-problem-decision button{font:inherit;padding:8px 12px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);cursor:pointer}
+.managed-problem-decision button:disabled{opacity:.55;cursor:default}
+.managed-problem-decision [data-problem-action=approve]{background:var(--green);color:var(--paper)}
+.managed-problem-decision [data-problem-decision-status]{margin:10px 0 0;color:var(--muted)}

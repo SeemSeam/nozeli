@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "resources": [
+    {
+      "path": "vendor/pptist/dist",
+      "tool": "tools/build-pptist.mjs",
+      "upstream": {
+        "revision": "82ecf10040ca8da67832f173b58d3baf5da59887",
+        "sha256": "f23dfaf45708a1cf04cabaa08077a16e00c2b5244e76d6821df56265a1c67c81"
+      },
+      "note": "PPTist 2.0.0 pinned build output (SOURCES.md; verified upstream archive retained at vendor/pptist/upstream.tar.gz). Ignored dist/ payload reproducibly prepared by the pinned tool; provisioned into Worker worktrees as an independent copy only while this manifest is frozen input and byte-identical in source and Worker trees."
+    }
+  ]
+}

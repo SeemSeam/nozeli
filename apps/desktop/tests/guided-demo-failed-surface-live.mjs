@@ -7,13 +7,14 @@
 // (Linux-only live evidence; see guided-demo-live-helper.mjs for isolation.)
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import {tmpdir} from 'node:os';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { createGuidedDemoHarness } from './guided-demo-live-helper.mjs';
 
 process.env.NOZELI_TEST_BINARY ??= createRequire(path.join(import.meta.dirname, '..', 'package.json'))('electron');
 process.env.NOZELI_TEST_APP_ROOT ??= path.resolve(import.meta.dirname, '..');
-process.env.NOZELI_GUIDED_DEMO_ROOT ??= await fs.mkdtemp('/tmp/nozeli-demo-failed-surface-');
+process.env.NOZELI_GUIDED_DEMO_ROOT ??= await fs.mkdtemp(path.join(tmpdir(), 'nozeli-demo-failed-surface-'));
 
 const h = await createGuidedDemoHarness({ kind: 'demo-failed-surface-exit' });
 const r = h.report;

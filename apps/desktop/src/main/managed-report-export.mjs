@@ -10,6 +10,36 @@ export class ManagedReportExporter {
   }
 
   export(payload) { return this.host.track(this.exportNow(payload)); }
+  exportArtifact(payload) { return this.host.track(this.exportArtifactNow(payload)); }
+  async exportArtifactNow(payload) {
+    if (!payload || Object.keys(payload).some(k => !['projectId','objectId','sourcePath','relPath'].includes(k))) throw new HostError('INVALID_PAYLOAD','成果另存参数无效。');
+    const {projectId,objectId,sourcePath,relPath}=payload;
+    if (!/^[0-9a-f-]{36}$/i.test(objectId||'') || typeof sourcePath!=='string' || typeof relPath!=='string') throw new HostError('INVALID_PAYLOAD','成果身份无效。');
+    if (Buffer.byteLength(relPath)>200 || !/^[^\x00-\x1f\x7f/\\:*?"<>|. ][^\x00-\x1f\x7f/\\:*?"<>|]*\.(?:md|markdown)$/i.test(relPath) || /[. ]\.(?:md|markdown)$/i.test(relPath) || /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(relPath)) throw new HostError('BAD_PATH','请输入项目根目录中的 Markdown 文件名（.md 或 .markdown）。');
+    if(!/\.(?:md|markdown)$/i.test(sourcePath))throw new HostError('BAD_PATH','此入口仅另存冻结 Markdown 成果。');
+    const artifact=await this.managedAgents.artifactRead(projectId,{objectId,relPath:sourcePath});
+    if(artifact.availability==='absent'||typeof artifact.base64!=='string')throw new HostError('ARTIFACT_UNAVAILABLE','冻结成果文件不可用，未另存。');
+    const bytes=Buffer.from(artifact.base64,'base64'),project=await this.host.requireProject(projectId);
+    const check=async()=>{const current=await this.host.requireProject(projectId);if(current.root!==project.root)throw new HostError('PROJECT_ROOT_MISSING','项目目录已变化，未另存。');const target=await this.host.resolveFile(current,relPath);if(!target.missing)throw new HostError('CONFLICT','此名称已存在，请使用其他名称；原成果未覆盖。');const draft=await this.host.readDraftRecord(projectId,relPath);if(draft)throw new HostError('UNSAVED','此名称有保留的编辑副本，请使用其他名称。');return target;};
+    await check();
+    let release;
+    try{
+      if(typeof this.beforeOperation!=='function')throw new HostError('NOT_READY','编辑保护尚未接通，未另存。');
+      release=await this.beforeOperation({projectId,relPath,hold:true});
+      return await this.host.fileLock(projectId,relPath)(async()=>{
+        const target=await check();
+        await this.host.replaceFile(target.abs,bytes,{createOnly:true,beforeCommit:async()=>{
+          await check();
+          const current=await this.managedAgents.artifactRead(projectId,{objectId,relPath:sourcePath});
+          if(current.base64!==artifact.base64)throw new HostError('ARTIFACT_CHANGED','冻结成果已变化，未另存。');
+        }});
+        return {projectId,objectId,sourcePath,relPath,byteLength:bytes.length,digest:createHash('sha256').update(bytes).digest('hex'),copied:true};
+      });
+    }catch(error){
+      if(error.code==='EEXIST')throw new HostError('CONFLICT','此名称被其他操作占用，请使用其他名称；原成果未覆盖。');
+      throw error;
+    }finally{await release?.();}
+  }
 
   async exportNow(payload) {
     if (!payload || Object.keys(payload).some(k => !['projectId','objectId','relPath'].includes(k)))

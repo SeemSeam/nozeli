@@ -1,6 +1,44 @@
 const fail=(message)=>Object.assign(Error(message),{code:'DEMO_CONTROLS_DENIED'});
 const controlsUrl=workspace=>workspace.origin+'guided-demo-controls.html';
 const hintUrl=workspace=>workspace.origin+'guided-demo-hint.html';
+const clamp=(value,min,max)=>Math.round(Math.max(min,Math.min(value,max)));
+const separated=(a,b,gap)=>a.x+a.width+gap<=b.x||b.x+b.width+gap<=a.x||a.y+a.height+gap<=b.y||b.y+b.height+gap<=a.y;
+
+// Native view rectangles, including transparent padding, must never overlap.
+// Preserve the requested drag point; move the hint first, then share scarce height.
+export function guidedDemoOverlayLayout({width,height,controlsHeight,hintHeight,position,controlsVisible=true,hintVisible=true}){
+  const margin=Math.min(8,Math.max(0,Math.floor((Math.min(width,height)-2)/4))),gap=Math.min(8,Math.max(0,height-2*margin-2));
+  const usableWidth=Math.max(1,width-2*margin),usableHeight=Math.max(1,height-2*margin);
+  const controls={width:Math.min(448,usableWidth),height:Math.min(controlsHeight,usableHeight)};
+  controls.x=clamp(position?.x??width-controls.width-16,margin,width-controls.width-margin);
+  controls.y=clamp(position?.y??height-controls.height-16,margin,height-controls.height-margin);
+  const hint={width:Math.min(404,usableWidth),height:Math.min(hintHeight,usableHeight)};
+  hint.x=clamp((width-hint.width)/2,margin,width-hint.width-margin);
+  hint.y=clamp(44,margin,height-hint.height-margin);
+  if(!controlsVisible||!hintVisible||separated(controls,hint,gap))return {controls,hint};
+  const candidates=[
+    {...hint,y:controls.y-hint.height-gap},
+    {...hint,y:controls.y+controls.height+gap},
+    {...hint,x:controls.x-hint.width-gap},
+    {...hint,x:controls.x+controls.width+gap},
+  ].filter(rect=>rect.x>=margin&&rect.y>=margin&&rect.x+rect.width<=width-margin&&rect.y+rect.height<=height-margin);
+  if(candidates.length){
+    candidates.sort((a,b)=>Math.abs(a.x-hint.x)+Math.abs(a.y-hint.y)-Math.abs(b.x-hint.x)-Math.abs(b.y-hint.y));
+    return {controls,hint:candidates[0]};
+  }
+  const sharedHeight=usableHeight-gap;
+  controls.height=Math.min(controls.height,Math.max(1,Math.floor(sharedHeight/2)));
+  hint.height=Math.min(hint.height,Math.max(1,sharedHeight-controls.height));
+  // Keep the controls on the dragged side of the hint in constrained windows.
+  if(controls.y+controls.height/2<height/2){
+    controls.y=clamp(controls.y,margin,height-margin-hint.height-gap-controls.height);
+    hint.y=clamp(hint.y,controls.y+controls.height+gap,height-margin-hint.height);
+  }else{
+    hint.y=clamp(hint.y,margin,height-margin-controls.height-gap-hint.height);
+    controls.y=clamp(controls.y,hint.y+hint.height+gap,height-margin-controls.height);
+  }
+  return {controls,hint};
+}
 
 // Presentation only. The shell remains the sole playback/operation authority.
 // Two native overlays: a compact control card and an always-on-top step hint.
@@ -26,7 +64,7 @@ export class GuidedDemoControls {
     void record.wc.loadURL(controlsUrl(this.workspace)).catch(error=>this.failed(record,error));
     if(this.watchedWindow!==owner.win){
       this.watchedWindow=owner.win;
-      owner.win.on('resize',()=>{this.raise();this.hintRaise();});owner.win.once('closed',()=>this.dispose());
+      owner.win.on('resize',()=>this.raise());owner.win.once('closed',()=>this.dispose());
     }
     this.raise();
   }
@@ -59,26 +97,27 @@ export class GuidedDemoControls {
   push(){if(this.record?.ready&&!this.record.dead)this.record.wc.send('nozeli:workspace-control',{type:'demo-controls-state',...this.state()});}
   hintPush(){if(this.hintRecord?.ready&&!this.hintRecord.dead)this.hintRecord.wc.send('nozeli:workspace-control',{type:'demo-hint-state',hint:this.hint});}
   raise(){
-    const record=this.record;if(!record||record.dead||record.win.isDestroyed())return;
-    const before=record.view.getBounds();
-    const [width,height]=record.win.getContentSize(),margin=8;
-    const panelWidth=Math.max(1,Math.min(448,width-margin*2)),panelHeight=Math.max(1,Math.min(this.height,height-margin*2));
-    const x=Math.round(Math.max(margin,Math.min(this.position?.x??width-panelWidth-16,width-panelWidth-margin)));
-    const y=Math.round(Math.max(margin,Math.min(this.position?.y??height-panelHeight-16,height-panelHeight-margin)));
-    record.view.setBounds({x,y,width:panelWidth,height:panelHeight});
-    if(record.ready&&(before.x!==x||before.y!==y||before.width!==panelWidth||before.height!==panelHeight))record.wc.send('nozeli:workspace-control',{type:'demo-controls-bounds',bounds:record.view.getBounds(),availableHeight:height-16});
-    record.win.contentView.addChildView(record.view);
-    record.view.setVisible(Boolean(this.model?.visible&&record.ready&&this.ownerValid()&&this.owner.ready));
-    this.hintRaise();
+    if(!this.owner||this.owner.win.isDestroyed())return;
+    const [width,height]=this.owner.win.getContentSize();
+    const visible=record=>Boolean(record&&!record.dead&&record.ready&&this.ownerValid()&&this.owner.ready);
+    const controlsVisible=Boolean(this.model?.visible&&visible(this.record)),hintVisible=Boolean(this.hint?.visible&&visible(this.hintRecord));
+    const layout=guidedDemoOverlayLayout({width,height,controlsHeight:this.height,hintHeight:this.hintHeight,position:this.position,controlsVisible,hintVisible});
+    for(const [record,bounds,shown] of [[this.record,layout.controls,controlsVisible],[this.hintRecord,layout.hint,hintVisible]]){
+      if(!record||record.dead)continue;
+      const before=record.view.getBounds();
+      record.view.setBounds(bounds);
+      if(record===this.record&&record.ready&&(before.x!==bounds.x||before.y!==bounds.y||before.width!==bounds.width||before.height!==bounds.height))record.wc.send('nozeli:workspace-control',{type:'demo-controls-bounds',bounds,availableHeight:bounds.height});
+      record.win.contentView.addChildView(record.view);
+      record.view.setVisible(shown);
+    }
+    const obstacles=[...(controlsVisible?[layout.controls]:[]),...(hintVisible?[layout.hint]:[])];
+    for(const surface of this.workspace.surfaces?.values()??[]){
+      if(surface.dead||!surface.ready||surface.win!==this.owner.win)continue;
+      const origin=surface.view.getBounds(),zoom=surface.wc.getZoomFactor?.()||1;
+      surface.wc.send('nozeli:workspace-control',{type:'demo-obstacles',rects:obstacles.map(rect=>({x:(rect.x-origin.x)/zoom,y:(rect.y-origin.y)/zoom,width:rect.width/zoom,height:rect.height/zoom}))});
+    }
   }
-  hintRaise(){
-    const record=this.hintRecord;if(!record||record.dead||record.win.isDestroyed())return;
-    const [width,height]=record.win.getContentSize();
-    const panelWidth=Math.max(1,Math.min(404,width-24)),panelHeight=Math.max(1,Math.min(this.hintHeight,height-64));
-    record.view.setBounds({x:Math.round((width-panelWidth)/2),y:44,width:panelWidth,height:panelHeight});
-    record.win.contentView.addChildView(record.view);
-    record.view.setVisible(Boolean(this.hint?.visible&&record.ready&&this.ownerValid()&&this.owner.ready));
-  }
+  hintRaise(){this.raise();}
   async readyForPlay(owner,sessionId){
     if(owner!==this.owner||!this.ownerValid()||this.model?.sessionId!==sessionId)throw fail('演示窗口身份已变化');
     this.ensure();if(this.record.ready)return {ready:true};

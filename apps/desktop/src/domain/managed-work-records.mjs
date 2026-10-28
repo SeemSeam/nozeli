@@ -11,7 +11,7 @@ export function intakeLineage(state,job){
 }
 export const recordExcerpt=(value,size=120)=>String(value||'').replace(/\s+/g,' ').trim().slice(0,size);
 const reviewExcerpt=value=>recordExcerpt(String(value||'').replace(/```[\s\S]*?```/g,' ').replace(/!?(\[([^\]]+)\])\([^)]*\)/g,'$2').replace(/^\s{0,3}#{1,6}\s+/gm,'').replace(/[*_`>]/g,''),180);
-const todoPhases={'frontdesk-route':'前台去向 · 等待用户决定',deviation:'任务偏离 · 等待用户决定',result:'报告待审查',problem:'等待回答',routing:'需要明确目标',recovery:'执行待恢复',git:'Git 待处理',closure:'收尾待处理',system:'系统异常待处理'};
+const todoPhases={'frontdesk-route':'前台去向 · 等待用户决定',deviation:'任务偏离 · 等待用户决定',result:'报告待审查',problem:'等待回答',routing:'需要明确目标',recovery:'执行待恢复',git:'Git 待处理',closure:'收尾待处理','merge-constraint':'合并策略 · 等待用户决定',system:'系统异常待处理'};
 // A publication and its round's settlement are independent durable facts.
 // Only the exact current Work/receipt/job binding can expose this exception.
 export function resultSettlementIssue(state,work){
@@ -42,10 +42,12 @@ export function managedReviewTodos(state){
   return true;
  }).map(todo=>{
   const work=works.find(w=>w.id===todo.workId),receipt=receipts.find(r=>r.objectId===todo.objectId&&todo.objectId),settlementIssue=todo.kind==='result'?resultSettlementIssue(state,work):null;
-  const label=settlementIssue?'已保存结果 · 完成状态待核查':todo.kind==='frontdesk-route'?'前台去向决定':todo.kind==='deviation'?'任务偏离决定':todo.kind==='result'?'完成报告':todo.kind==='problem'?'待回答问题':todo.kind==='routing'?'主控澄清':todo.kind==='git'?'Git 事项':todo.kind==='closure'?'收尾异常':todo.kind==='recovery'?'执行恢复':'系统异常';
+  const label=settlementIssue?'已保存结果 · 完成状态待核查':todo.kind==='frontdesk-route'?'前台去向决定':todo.kind==='deviation'?'任务偏离决定':todo.kind==='result'?'完成报告':todo.kind==='problem'?'待回答问题':todo.kind==='routing'?'主控澄清':todo.kind==='git'?'Git 事项':todo.kind==='closure'?'收尾异常':todo.kind==='merge-constraint'?'合入策略决定':todo.kind==='recovery'?'执行恢复':'系统异常';
   return {...todo,title:todo.title||[work?.name||recordExcerpt(work?.request,56),label,todo.revision!=null?'第 '+todo.revision+' 版':''].filter(Boolean).join(' · '),excerpt:receipt?.report?.excerpt||reviewExcerpt(todo.text),phase:settlementIssue?'结果已保存 · 完成状态待核查':todoPhases[todo.kind]||'待处理',actionableKind:todo.kind,...(settlementIssue?{settlementIssue}:{})};
  });
 }
+// Host-authored merge-constraint decision todos gate ended-Work closure retry.
+export const openMergeConstraintTodo=(state,workId)=>(state?.todos||[]).findLast(todo=>todo.kind==='merge-constraint'&&todo.workId===workId&&todo.status==='open');
 const phases={queued:'排队中',running:'执行中',paused:'待回答/处理',review:'结果待审查',closing:'历史结束待处理',ended:'已结束'};
 export function managedWorkRecords(state){
  const jobs=state.jobs||[],works=state.works||[],todos=state.todos||[],receipts=state.receipts||[],records=new Map(),roots=new Map();
@@ -100,14 +102,19 @@ export function managedWorkRecords(state){
   if(settlementIssue){record.settlementIssue=settlementIssue;if(!pending&&!jobs.some(j=>j.target===w.id&&['queued','running'].includes(j.status)))record.phase='结果已保存 · 完成状态待核查';}
   const failedIntake=jobs.findLast(j=>j.context?.boundWorkId===w.id&&['failed','interrupted'].includes(j.status)&&!j.routing);if(failedIntake&&!['closing','ended'].includes(w.status)&&!pending&&!jobs.some(j=>j.context?.retryOf===failedIntake.id&&j.routing)){record.retryJobId=failedIntake.id;record.phase='补充处理失败，待重试';}
   if(deviationHeld(w)){record.phase=deviationPresentation(w).phase;record.deviation=w.deviation;record.todoId=w.deviation.todoId;delete record.retryJobId;}
-  if(w.status==='ended'){
-   const closure=w.closure||{},decision=w.outcome||closure.decision;
-   record.outcome=decision;record.closurePhase=closure.phase;
-   record.phase=(decision==='accept'?'已接受并结束':decision==='discard'?'已丢弃并结束':'已结束')+(closure.phase==='blocked'?' · 技术收尾受阻':closure.phase==='complete'?' · 技术收尾完成':closure.phase?' · 技术收尾中':'');
-   const failure=closure.error?.message||closure.error;if(failure)record.closureError=recordExcerpt(failure);
-   const closureTodo=todos.findLast(t=>t.workId===w.id&&t.kind==='closure'&&t.status==='open');
-   if(closureTodo)record.todoId=closureTodo.id;
-  }
+ if(w.status==='ended'){
+  const closure=w.closure||{},decision=w.outcome||closure.decision;
+  record.outcome=decision;record.closurePhase=closure.phase;
+  // An ended Work is never presented as complete unless the host recorded a
+  // finished closure; a pending merge-constraint strategy is the live gate.
+  const constraintTodo=todos.findLast(t=>t.workId===w.id&&t.kind==='merge-constraint'&&t.status==='open');
+  const strategy=constraintTodo?' · 待选择合并策略':closure.phase==='blocked'?' · 技术收尾受阻':closure.phase==='complete'?' · 技术收尾完成':['stopping','integrating','cleanup'].includes(closure.phase)?' · 技术收尾中':' · 技术收尾未完成';
+  record.phase=(decision==='accept'?'已接受并结束':decision==='discard'?'已丢弃并结束':'已结束')+strategy;
+  const failure=closure.error?.message||closure.error;if(failure)record.closureError=recordExcerpt(failure);
+  const closureTodo=todos.findLast(t=>t.workId===w.id&&t.kind==='closure'&&t.status==='open');
+  if(constraintTodo){record.todoId=constraintTodo.id;record.mergeConstraintTodoId=constraintTodo.id;}
+  else if(closureTodo)record.todoId=closureTodo.id;
+ }
  }
  for(const record of records.values()){let prior='';record.events=record.events.map((event,index)=>{prior=event.at||prior;return {event,index,time:prior};}).sort((a,b)=>a.time.localeCompare(b.time)||a.index-b.index).map(row=>row.event);record.at=record.events.find(e=>e.at)?.at;}
  return [...records.values()];

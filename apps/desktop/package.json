@@ -1,6 +1,6 @@
 {
   "name": "nozeli-desktop",
-  "version": "0.1.0-alpha",
+  "version": "0.1.0-alpha.1",
   "private": true,
   "license": "AGPL-3.0-only",
   "type": "module",
@@ -59,7 +59,9 @@
     "test:system-terminal-bridge": "node --test tests/system-terminal-bridge.test.mjs tests/terminal-input.test.mjs",
     "test:managed-worktree": "node --test tests/managed-work-outcomes.test.mjs tests/execution-copy-gitignore.test.mjs tests/managed-worktree-isolation.test.mjs",
     "test:git-runtime": "node --test tests/git-runtime.test.mjs",
-    "test:document-image": "node --test tests/document-image.test.mjs"
+    "test:privilege": "node --test tests/privilege-broker.test.mjs tests/process-launch-config.test.mjs",
+    "test:document-image": "node --test tests/document-image.test.mjs",
+    "test:review-collaboration": "npm run build:renderer && node tests/desktop-markdown-collaboration-live.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "6.19.0",

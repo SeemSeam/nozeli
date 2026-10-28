@@ -108,7 +108,10 @@ export async function managedHistory(options,{objectId,version,offset=0,limit=50
     if(!snapshot.state)throw fail('REPORT_MISSING','当前项目没有这份历史报告');
     const source=await managedReportSource({...options,objectId});
     const bytes=await source.read();
-    if((await historySnapshot(options)).version!==snapshot.version)throw changed();
+    // 单对象无version读取：不可变receipt/report/controller身份已由source.read()
+    // 严格复验，不再以全state哈希拒绝窗口内无关的后台状态变化（runtime/review等）。
+    // 显式version分页仍保持严格CAS：任何state变化都要求调用方重载。
+    if(version!==undefined&&(await historySnapshot(options)).version!==snapshot.version)throw changed();
     return {projectId:options.project.id,objectId,mode,version:snapshot.version,report:source.report,byteLength:bytes.length,objectVerified:true,...(source.report.format==='markdown'?{bodyAvailability:'inline',body:bytes.toString('utf8')}:{bodyAvailability:'isolated-source-only'})};
   }
   const rows=[...(snapshot.state?.receipts||[])].sort((a,b)=>Date.parse(b.at)-Date.parse(a.at)||(a.objectId<b.objectId?-1:a.objectId>b.objectId?1:0));

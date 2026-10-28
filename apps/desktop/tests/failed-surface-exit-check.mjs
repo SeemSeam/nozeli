@@ -16,6 +16,7 @@
 // explicitly does not claim full-process network isolation.
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import {tmpdir} from 'node:os';
 import net from 'node:net';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -34,7 +35,7 @@ const release = releaseOption ? path.resolve(releaseOption) : null;
 const binary = appRoot ? createRequire(path.join(appRoot, 'package.json'))('electron') : path.join(release, 'nozeli');
 const appArguments = appRoot ? [path.join(appRoot, 'src/main/main.cjs')] : [];
 
-const root = await fs.mkdtemp(`/tmp/nozeli-failed-surface-exit-${mode}-`);
+const root = await fs.mkdtemp(path.join(tmpdir(), `nozeli-failed-surface-exit-${mode}-`));
 const report = {
   ok: false,
   kind: 'failed-surface-exit-check',

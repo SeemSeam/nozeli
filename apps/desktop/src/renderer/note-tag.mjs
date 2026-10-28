@@ -13,6 +13,62 @@ import { mountContextMenu } from './context-menu.mjs';
 // destructive removal behind the shared confirmation — behind the more menu.
 const mountedTagCleanups = new Map();
 let tagRemovalObserver = null;
+// Demo cards share one readable slot per pane. This is presentation only:
+// anchors, open state, dimensions, offsets and unsent text remain untouched.
+const demoTagPanes = new Map();
+let demoObstacles = [];
+let demoActiveAnnotation = null;
+globalThis.window?.addEventListener('nozeli-demo-active-tag', event => {
+  if (typeof event.detail?.annotationId !== 'string') return;
+  demoActiveAnnotation = event.detail.annotationId;
+  for (const group of demoTagPanes.values()) scheduleDemoTags(group);
+});
+globalThis.window?.addEventListener('nozeli-demo-obstacles', event => {
+  demoObstacles = Array.isArray(event.detail?.rects) ? event.detail.rects : [];
+  for (const group of demoTagPanes.values()) group.active?.fit();
+});
+globalThis.window?.nozeli?.subscribe('workspace.control', event => {
+  if (event.type !== 'demo-obstacles') return;
+  demoObstacles = event.rects;
+  for (const group of demoTagPanes.values()) group.active?.fit();
+});
+function scheduleDemoTags(group) {
+  if (group.frame) return;
+  group.frame = requestAnimationFrame(() => {
+    group.frame = 0;
+    const entries = [...group.entries.values()].filter(entry => entry.root.isConnected);
+    const requested = entries.find(entry => entry.root.dataset.annotation === demoActiveAnnotation);
+    if (requested) group.active = requested;
+    else if (!entries.includes(group.active)) group.active = entries.at(-1);
+    for (const entry of entries) {
+      entry.card.classList.toggle('demo-tag-parked', entry !== group.active);
+      entry.card.classList.add('demo-tag-current');
+      entry.select.hidden = entries.length < 2;
+      const signature = entries.map(item => item.root.dataset.annotation + ':' + item.label()).join('|');
+      if (entry.select.dataset.options !== signature) {
+        entry.select.replaceChildren(...entries.map(item => {
+          const option = document.createElement('option');
+          option.value = item.root.dataset.annotation; option.textContent = item.label(); return option;
+        }));
+        entry.select.dataset.options = signature;
+      }
+      entry.select.value = group.active?.root.dataset.annotation || '';
+    }
+    group.active?.fit();
+  });
+}
+function demoCardRegion(region) {
+  let spaces = [region];
+  for (const obstacle of demoObstacles) {
+    const x = obstacle.x - 8, y = obstacle.y - 8, right = obstacle.x + obstacle.width + 8, bottom = obstacle.y + obstacle.height + 8;
+    spaces = spaces.flatMap(box => {
+      if (x >= box.right || right <= box.left || y >= box.bottom || bottom <= box.top) return [box];
+      return [{...box,right:Math.min(box.right,x)},{...box,left:Math.max(box.left,right)},{...box,bottom:Math.min(box.bottom,y)},{...box,top:Math.max(box.top,bottom)}].filter(part => part.right > part.left && part.bottom > part.top);
+    });
+  }
+  spaces.sort((a,b) => (Math.min(420,b.right-b.left)*(b.bottom-b.top))-(Math.min(420,a.right-a.left)*(a.bottom-a.top)));
+  return spaces.find(box => box.right-box.left >= Math.min(240,region.right-region.left) && box.bottom-box.top >= 100) || spaces[0] || region;
+}
 function watchTagRemoval(root, cleanup) {
   if (typeof MutationObserver !== 'function' || !document.body) return;
   mountedTagCleanups.set(root, cleanup);
@@ -68,11 +124,21 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   let delta = offset(id), collapsed = !open, paneObserver = null, cardObserver = null;
   let composer = null;
   let boundPane = null, layoutMounted = false, layoutDisposed = false, layoutFrame = null;
+  let demoGroup = null, demoEntry = null;
   const layoutTimers = [];
   card.classList.toggle('is-collapsed', collapsed);
   index.setAttribute('aria-expanded', String(open));
   const head = document.createElement('span'); head.className = 'note-projection-head'; head.tabIndex = 0;
   const disposeHeader = observePanelWidth(head);
+  const demoSelect = document.createElement('select'); demoSelect.className = 'demo-tag-selector'; demoSelect.hidden = true;
+  demoSelect.setAttribute('aria-label', '切换本页演示标签');
+  demoSelect.addEventListener('pointerdown', event => event.stopPropagation());
+  demoSelect.addEventListener('keydown', event => event.stopPropagation());
+  demoSelect.addEventListener('click', event => event.stopPropagation());
+  demoSelect.addEventListener('change', () => {
+    const entry = [...demoGroup.entries.values()].find(item => item.root.dataset.annotation === demoSelect.value);
+    if (entry) { demoActiveAnnotation = entry.root.dataset.annotation; demoGroup.active = entry; scheduleDemoTags(demoGroup); requestAnimationFrame(() => entry.select.focus()); }
+  });
   head.setAttribute('aria-label', '拖动或方向键移动，双击打开或关闭');
   const initialDraft = kind === 'note' && status && typeof status === 'object' ? status.value : conversation && status !== 'draft' ? draftText : text || '';
   // The header number doubles as the source disclosure: material identity and
@@ -106,16 +172,24 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
     const scope = root.closest('.cm-scroller, #markdown-preview-scroll, .reader-scroll, .monaco-editor') || root.parentElement;
     scope?.querySelectorAll('.note-anchor.is-focused').forEach(node => node.classList.remove('is-focused'));
     root.classList.add('is-focused');
+    if (demoGroup && demoGroup.active !== demoEntry) { demoGroup.active = demoEntry; scheduleDemoTags(demoGroup); }
   };
   const position = () => { card.style.transform = `translate(${delta[0]}px,${delta[1]}px)`; fitConversation(); };
+  const ancestorScroll = event => { if (event.target !== boundPane && event.target?.contains?.(root)) fitConversation(); };
   const disposeLayout = () => {
     renderThread?.disposeOriginalReaders?.();
     composer?.dispose();
     layoutDisposed = true;
+    if (demoGroup) {
+      demoGroup.entries.delete(root);
+      if (demoGroup.entries.size) scheduleDemoTags(demoGroup);
+      else { if (demoGroup.frame) cancelAnimationFrame(demoGroup.frame); demoTagPanes.delete(boundPane); }
+    }
     paneObserver?.disconnect();
     cardObserver?.disconnect();
     boundPane?.removeEventListener('scroll', fitConversation);
     window.removeEventListener('resize', fitConversation);
+    document.removeEventListener('scroll', ancestorScroll, true);
     if (layoutFrame !== null) cancelAnimationFrame(layoutFrame);
     layoutTimers.forEach(clearTimeout);
   };
@@ -124,7 +198,7 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
     autoGrow();
     const paneNode = root.closest('.cm-scroller, #markdown-preview-scroll, .reader-scroll, .monaco-editor');
     const pane = paneNode?.getBoundingClientRect();
-    if (!pane || pane.width < 1 || pane.height < 1) return;
+    if (!pane || pane.width < 1 || pane.height < 1) { card.style.visibility = 'hidden'; return; }
     if (boundPane !== paneNode) {
       boundPane?.removeEventListener('scroll', fitConversation);
       paneObserver?.disconnect();
@@ -138,10 +212,19 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
     if (!layoutMounted) {
       layoutMounted = true;
       window.addEventListener('resize', fitConversation);
+      document.addEventListener('scroll', ancestorScroll, true);
       watchTagRemoval(root, disposeLayout);
     }
+    if (!demoGroup && document.querySelector('.guided-demo-content-badge:not([hidden])')) {
+      demoGroup = demoTagPanes.get(paneNode);
+      if (!demoGroup) { demoGroup = {entries:new Map(),active:null,frame:0}; demoTagPanes.set(paneNode,demoGroup); }
+      demoEntry = {root,card,select:demoSelect,fit:fitConversation,label:() => `${kind === 'note' ? '备注' : '讨论'} ${ordinal}`};
+      demoGroup.entries.set(root,demoEntry);
+      if (!demoActiveAnnotation || demoActiveAnnotation === id) demoGroup.active = demoEntry;
+      scheduleDemoTags(demoGroup);
+    }
+    if (demoGroup && demoGroup.active !== demoEntry) return;
     const markdownPane=root.closest('#markdown-preview-scroll');
-    if(markdownPane){const anchor=root.getBoundingClientRect();card.style.visibility=anchor.top<pane.top||anchor.top>pane.bottom?'hidden':'';}
     const overlay = root.closest('.word-note-overlay');
     const viewport = document.documentElement;
     const paneLeft = pane.left + paneNode.clientLeft, paneTop = pane.top + paneNode.clientTop;
@@ -157,9 +240,23 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
       left = Math.max(left, box.left); right = Math.min(right, box.right);
       top = Math.max(top, box.top + Number(overlay.dataset.clipTop || 0)); bottom = Math.min(bottom, box.bottom);
     }
-    if (right <= left || bottom <= top) return;
+    // Visibility follows the source marker, not the translated/clamped card.
+    // A card's own geometry must never keep an offscreen source on screen.
+    for (let parent = paneNode.parentElement; parent; parent = parent.parentElement) {
+      const style = getComputedStyle(parent);
+      if (/(auto|scroll|hidden|clip)/.test(style.overflowY)) {
+        const box = parent.getBoundingClientRect();
+        top = Math.max(top, box.top + parent.clientTop);
+        bottom = Math.min(bottom, box.top + parent.clientTop + parent.clientHeight);
+      }
+    }
+    const marker = index.getBoundingClientRect();
+    const sourceVisible = right > left && bottom > top && marker.bottom > top && marker.top < bottom;
+    card.style.visibility = sourceVisible ? '' : 'hidden';
+    if (!sourceVisible) return;
     const insetX = Math.min(8, (right - left) / 2), insetY = Math.min(8, (bottom - top) / 2);
     left += insetX; right -= insetX; top += insetY; bottom -= insetY;
+    if (demoGroup && demoObstacles.length) ({left,right,top,bottom} = demoCardRegion({left,right,top,bottom}));
     card.style.minWidth = '0px';
     card.style.maxWidth = Math.max(0, right - left) + 'px';
     const anchorBox = root.getBoundingClientRect();
@@ -371,6 +468,7 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   index.addEventListener('click', event => {
     event.preventDefault(); event.stopPropagation(); focusCard();
     if (event.detail === 1) indexClickOpen = open;
+    if (demoGroup) { demoActiveAnnotation = id; setOpen(true); scheduleDemoTags(demoGroup); return; }
     const pane = root.closest('.cm-scroller, #markdown-preview-scroll, .reader-scroll, .monaco-editor')?.getBoundingClientRect();
     const current = pane ? card.getBoundingClientRect() : null;
     const outside = pane && (current.left < pane.left + 8 || current.right > pane.right - 8 || current.top < pane.top + 8 || current.bottom > pane.bottom - 8);
@@ -441,7 +539,7 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   }
   const noteBody = document.createElement('span'); noteBody.className = 'tag-markdown tag-note-body';
   if (!conversation) { renderTagMarkdown(noteBody, initialDraft || '（无文字）'); transcript.append(noteBody); editor.placeholder = '用 Markdown 记录你的理解…'; }
-  head.append(cardNumber, title, content, sourceChange, more, close);
+  head.append(cardNumber, title, content, sourceChange, more, close, demoSelect);
   card.append(head, source, transcript, composerRow, delivery, executeStatusLine, menuActions);
   if (!conversation) {
     composer = mountAnnotationComposer({ root: card, input: editor });

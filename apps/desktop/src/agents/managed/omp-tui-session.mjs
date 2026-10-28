@@ -17,7 +17,7 @@ import { pinSessionFileById, ompGroupRecord, reapOwnedOmpGroup } from './omp-pro
 import { deployOmpTerminalBridge, connectOmpTerminalBridge, readOmpTerminalToolHistory } from './omp-terminal-bridge.mjs';
 import { createTerminalScreen } from './terminal-screen.mjs';
 import { createTerminalInputObserver } from '../../domain/terminal-input.mjs';
-import { isolatedLaunch } from './process-isolation.mjs';
+import { optionalIsolatedLaunch } from './process-isolation.mjs';
 import { resolveBundledOmpRuntime } from './omp-runtime.mjs';
 import { createRequire } from 'node:module';
 import { imageSize } from 'image-size';
@@ -36,6 +36,9 @@ const messageText = message => {
 };
 
 const normalizeTools = tools => tools.map(({ name, description, parameters, inputSchema }) => ({ name, description, parameters: parameters ?? inputSchema ?? { type: 'object', properties: {} } }));
+// 全角色原生工具集（合同第1条：全角色提供原生文件/命令工具，保留原生 OMP yolo）。
+export const NATIVE_TOOL_NAMES = ['read', 'write', 'edit', 'bash', 'ask'];
+export const activeToolsFor = (role, hostTools = []) => [...NATIVE_TOOL_NAMES, ...hostTools.map(tool => tool?.name).filter(Boolean)];
 const digestTools = tools => createHash('sha256').update(JSON.stringify(normalizeTools(tools))).digest('hex');
 const stableValue = value => Array.isArray(value) ? value.map(stableValue) : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, stableValue(value[key])])) : value;
 
@@ -163,11 +166,8 @@ export class OmpTuiSession extends EventEmitter {
         await syncOmpSelectedProvider(this.home, this.ompSystemSource, this.desiredModel);
         if (resumeId == null) argv.push('--model', this.desiredModel);
       }
-      // Residents cannot bypass host routing with native task/shell tools.
-      // Workers retain file tools inside their isolated execution copy; host
-      // publication still adjudicates new files and existing-text conflicts.
-      const nativeTools = this.role === 'worker' ? ['read', 'write', 'edit', 'bash', 'ask'] : ['ask'];
-      const activeTools = [...nativeTools, ...this.tools.map(tool => tool.name)];
+      // Roles describe work ownership, not current-user operating-system capabilities.
+      const activeTools = activeToolsFor(this.role, this.tools);
       if (activeTools.length) argv.push('--tools', activeTools.join(','));
       else argv.push('--no-tools');
       if (resumeFile) argv.push('--resume', resumeFile);
@@ -194,7 +194,7 @@ export class OmpTuiSession extends EventEmitter {
         authEnv = { OMP_AUTH_BROKER_URL: grant.url, OMP_AUTH_BROKER_TOKEN: grant.token, OMP_AUTH_BROKER_SNAPSHOT_TTL_MS: '0' };
       }
       let launch = { command: this.command, args: argv, env: {} };
-      if (this.isolation) launch = await isolatedLaunch({ command: this.command, args: argv, home: this.home, cwd: this.cwd, ...this.isolation, writable: [...(this.isolation.writable ?? []), path.dirname(deployed.socketPath)] });   // 隔离完整用于 PTY；桥端点目录可写 bind（ro-bind 根下 listen 不能建 socket 文件）
+      if (this.isolation) ({ launch } = await optionalIsolatedLaunch({ command: this.command, args: argv, home: this.home, cwd: this.cwd, readable: [...(this.isolation.readable ?? []), this.collab.root], readOnly: this.isolation.readOnly ?? [], writable: [...(this.isolation.writable ?? []), path.dirname(deployed.socketPath)] }));
       const spawnEnv = { ...scrubbedEnv, ...env, ...launch.env, ...authEnv };
       delete spawnEnv.OMP_PROFILE;
       const pty = this.tuiSpawn ?? defaultTuiSpawn();

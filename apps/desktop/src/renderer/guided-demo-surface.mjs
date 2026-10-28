@@ -9,9 +9,21 @@ export function mountDemoSurface({invoke,subscribe,scope,getCurrent,setTextMode,
   window.addEventListener('nozeli-project-change',()=>{if(session?.projectId!==scope.projectId){session=null;interrupted=true;badge.hidden=true;indicator.hidden=true;}});
   const check=(request,settling=false)=>{const c=getCurrent();if(c.project?.id!==request.projectId||scope.projectId!==request.projectId)throw Object.assign(Error('演示目标项目已变化'),{code:'DEMO_SCOPE_CHANGED'});if(session&&(session.id??session.sessionId)!==request.sessionId||!settling&&(interrupted||session&&session.epoch!==request.epoch))throw Object.assign(Error('演示已暂停或原动作身份失效'),{code:'DEMO_ACTION_CANCELLED'});return c;};
   const wait=async(predicate,request,ms=15000,settling=false)=>{const end=Date.now()+ms;while(Date.now()<end){check(request,settling);const result=predicate();if(result)return result;await new Promise(r=>setTimeout(r,50));}throw Error('真实工作面未在期限内达到预期状态');};
+  const selectDemoTag=annotationId=>window.dispatchEvent(new CustomEvent('nozeli-demo-active-tag',{detail:{annotationId}}));
+  async function showDemoTag(annotationId,request){
+    selectDemoTag(annotationId);
+    const find=()=>[...document.querySelectorAll('[data-annotation]')].find(node=>node.dataset.annotation===annotationId);
+    const root=await wait(find,request,15000,true);
+    const index=root.querySelector('.note-index');if(!index)throw Error('演示标签没有可用的打开入口');
+    index.click();
+    await wait(()=>{
+      const current=find(),card=current?.querySelector('.note-projection'),box=card?.getBoundingClientRect();
+      return box&&box.width>0&&box.height>0&&!card.classList.contains('demo-tag-parked')&&!card.classList.contains('is-collapsed')&&getComputedStyle(card).visibility!=='hidden';
+    },request,15000,true);
+  }
   async function selectText(request){const c=check(request);if(!c.editor)throw Error('文本编辑器未就绪');setTextMode('edit');const text=c.editor.adapter.getText(),start=text.indexOf('方法');const from=start>=0?start:0,to=Math.min(text.length,from+28);if(from===to)throw Error('示例原文为空');c.editor.adapter.revealRange(from,to);c.editor.adapter.focus();return {relPath:c.file.relPath,kind:'text-selection',anchor:{start:from,end:to,quote:text.slice(from,to)},excerpt:text.slice(from,to),materialText:text};}
-  async function saveTag(material,request){check(request);const tag=addTag(material,{autoEdit:false});if(!tag)throw Error('真实讨论标签未建立');const result=await persistTag(tag);if(!result?.ok)throw Error(result?.error?.message||'讨论未持久化');lastTag=tag;return tag;}
-  async function sendTag(tag,text,request){check(request);const previous=tag.acceptedRequestId;tagActions.onDraft(tag.id,text);const result=await tagActions.save(tag.id,text);return result||(tag.acceptedRequestId&&tag.acceptedRequestId!==previous?{requestId:tag.acceptedRequestId}:null);}
+  async function saveTag(material,request){check(request);const tag=addTag(material,{autoEdit:false});if(!tag)throw Error('真实讨论标签未建立');selectDemoTag(tag.id);const result=await persistTag(tag);if(!result?.ok)throw Error(result?.error?.message||'讨论未持久化');lastTag=tag;await showDemoTag(tag.id,request);return tag;}
+  async function sendTag(tag,text,request){check(request);await showDemoTag(tag.id,request);const previous=tag.acceptedRequestId;tagActions.onDraft(tag.id,text);const result=await tagActions.save(tag.id,text);return result||(tag.acceptedRequestId&&tag.acceptedRequestId!==previous?{requestId:tag.acceptedRequestId}:null);}
   async function execute(request){
     let c=check(request);const action=request.args?.semantic??request.action??request.command;
     const surfaceTarget=c.editor?.adapter.getEditorElement()??document.querySelector('#word-host:not([hidden]),#image-host:not([hidden]),#pdf-host:not([hidden]),.workspace-pane.is-focused');if(surfaceTarget){const rect=surfaceTarget.getBoundingClientRect();indicator.hidden=false;indicator.style.left=Math.max(6,rect.left+12)+'px';indicator.style.top=Math.max(6,rect.top+12)+'px';}badge.hidden=false;
@@ -109,7 +121,7 @@ export function mountDemoSurface({invoke,subscribe,scope,getCurrent,setTextMode,
     if(['split','detach','dock'].includes(action))return runDemoLayout(workspaceGroups(),request.projectId,action);
     throw Error('语义动作必须由宿主演示源处理：'+action);
   }
-  subscribe('workspace.control',request=>{if(request.type!=='demo-action'||request.projectId!==scope.projectId||request.viewId!==scope.viewId)return;void (async()=>{const state=await value('demo.state',{projectId:request.projectId});if(!state.demo)throw Error('不是登记的演示项目');session=state.session;interrupted=session.status!=='playing';return execute(request);})().then(result=>invoke('demo.result',{projectId:request.projectId,sessionId:request.sessionId,epoch:request.epoch,requestId:request.requestId,ok:true,value:result}),error=>invoke('demo.result',{projectId:request.projectId,sessionId:request.sessionId,epoch:request.epoch,requestId:request.requestId,ok:false,error:{code:error.code,message:error.message}}));});
+  subscribe('workspace.control',request=>{if(request.type!=='demo-action'||request.projectId!==scope.projectId||request.viewId!==scope.viewId)return;void (async()=>{const state=await value('demo.state',{projectId:request.projectId});if(!state.demo)throw Error('不是登记的演示项目');session=state.session;interrupted=session.status!=='playing';const result=await execute(request);if(result?.annotationId)await showDemoTag(result.annotationId,request);return result;})().then(result=>invoke('demo.result',{projectId:request.projectId,sessionId:request.sessionId,epoch:request.epoch,requestId:request.requestId,ok:true,value:result}),error=>invoke('demo.result',{projectId:request.projectId,sessionId:request.sessionId,epoch:request.epoch,requestId:request.requestId,ok:false,error:{code:error.code,message:error.message}}));});
   const interrupt=event=>{if(!event.isTrusted||event.type==='pointermove'&&!event.movementX&&!event.movementY||!session||session.status!=='playing')return;if(event.type!=='pointermove')interrupted=true;void invoke('demo.interrupt',{...demoIdentity(session),reason:event.type}).then(result=>{if(result.ok&&result.value?.session){session=result.value.session;interrupted=session.status!=='playing';}});};
   for(const name of ['pointerdown','pointermove','keydown','beforeinput','wheel'])window.addEventListener(name,interrupt,true);
   // Same-origin Office drivers have their own input documents; attach when loaded.

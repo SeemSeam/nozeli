@@ -11,6 +11,56 @@ import {ProjectLifecycle} from '../src/main/project-lifecycle.mjs';
 import {createGuidedDemo} from '../src/main/guided-demo.mjs';
 import {WorkspaceNative} from '../src/main/workspace-native.mjs';
 import {EventEmitter} from 'node:events';
+import {GuidedDemoControls,guidedDemoOverlayLayout} from '../src/main/guided-demo-controls.mjs';
+
+function assertOverlayGeometry(layout,width,height){
+ for(const rect of Object.values(layout)){
+  for(const value of Object.values(rect))assert(Number.isInteger(value));
+  assert(rect.width>0&&rect.height>0);assert(rect.x>=0&&rect.y>=0);
+  assert(rect.x+rect.width<=width&&rect.y+rect.height<=height);
+ }
+ const {controls:a,hint:b}=layout;
+ assert(a.x+a.width<=b.x||b.x+b.width<=a.x||a.y+a.height<=b.y||b.y+b.height<=a.y,JSON.stringify(layout));
+}
+test('demo overlays avoid native rectangle collisions across drag points, wrapping heights and window sizes',()=>{
+ for(const [width,height] of [[1440,900],[900,300],[480,700],[320,240],[240,120]]){
+  for(const controlsHeight of [80,142,420,1200])for(const hintHeight of [120,340,900,4096]){
+   for(const position of [null,{x:width/2-224,y:44},{x:0,y:0},{x:width,y:height},{x:-10000,y:10000}]){
+    assertOverlayGeometry(guidedDemoOverlayLayout({width,height,controlsHeight,hintHeight,position}),width,height);
+   }
+  }
+ }
+});
+test('demo layout preserves free dragging, moves hint first, and releases space when hint is hidden',()=>{
+ const input={width:1440,height:900,controlsHeight:142,hintHeight:200,position:{x:500,y:44}};
+ const layout=guidedDemoOverlayLayout(input);assertOverlayGeometry(layout,1440,900);
+ assert.equal(layout.controls.x,500);assert.equal(layout.controls.y,44);assert.notEqual(layout.hint.y,44);
+ const crowded={...input,width:320,height:240,controlsHeight:180,hintHeight:300,position:{x:8,y:8}};
+ assert(guidedDemoOverlayLayout(crowded).controls.height<180);
+ const alone=guidedDemoOverlayLayout({...crowded,hintVisible:false});
+ assert.equal(alone.controls.height,180);assert.equal(alone.controls.y,8);
+});
+test('hint size, drag and visibility updates all relayout both native overlays',async()=>{
+ let size=[360,320];
+ const win={isDestroyed:()=>false,getContentSize:()=>size,contentView:{addChildView(){}}};
+ const owner={win,ready:true,generation:1},workspace={shell:owner};
+ const obstacleEvents=[];
+ workspace.surfaces=new Map([['document',{win,ready:true,view:{getBounds:()=>({x:30,y:40,width:260,height:200})},wc:{getZoomFactor:()=>2,send:(_channel,event)=>obstacleEvents.push(event)}}]]);
+ const controller=new GuidedDemoControls(workspace);controller.owner=owner;controller.ownerGeneration=1;
+ const record=()=>{let bounds={x:0,y:0,width:1,height:1},shown=false;return {win,ready:true,wc:{send(){}},view:{getBounds:()=>bounds,setBounds:value=>{bounds=value;},setVisible:value=>{shown=value;},getVisible:()=>shown}};};
+ controller.record=record();controller.hintRecord=record();controller.model={visible:true};controller.hint={visible:true};
+ const check=()=>assertOverlayGeometry({controls:controller.record.view.getBounds(),hint:controller.hintRecord.view.getBounds()},...size);
+ controller.raise();check();
+ assert.deepEqual(obstacleEvents.at(-1),{type:'demo-obstacles',rects:[controller.record.view.getBounds(),controller.hintRecord.view.getBounds()].map(rect=>({x:(rect.x-30)/2,y:(rect.y-40)/2,width:rect.width/2,height:rect.height/2}))});
+ await controller.invoke(controller.record,'workspace.demoControls.drag',{x:8,y:44});check();
+ controller.hintInvoke(controller.hintRecord,'workspace.demoHint.size',{height:800});check();
+ await controller.invoke(controller.record,'workspace.demoControls.size',{height:250});check();
+ size=[280,180];controller.raise();check();
+ controller.hintUpdate(owner,null);assert.equal(controller.hintRecord.view.getVisible(),false);
+ assert.equal(controller.record.view.getBounds().height,164);
+ assert.deepEqual(controller.position,{x:8,y:44});
+ assert.equal(obstacleEvents.at(-1).rects.length,1);
+});
 
 
 const appRoot=fileURLToPath(new URL('../',import.meta.url));

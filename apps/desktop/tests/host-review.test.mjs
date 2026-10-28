@@ -1,4 +1,3 @@
-import { FileTags } from '../src/domain/file-tags.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -139,9 +138,7 @@ test('workspace draft/layout persists without an open file, preserves legacy wri
         ],
       },
     };
-    const viewPath = path.join(f.userData, 'nozeli', 'v1', 'projects', f.id, 'view.json');
-    await fs.mkdir(path.dirname(viewPath), { recursive: true });
-    await fs.writeFile(viewPath, JSON.stringify(legacy));
+    await f.host.storage.putLocal(f.id, 'view', legacy);
     const read = await new DesktopHost(f.userData).readState(f.id);
     assert.equal(read.state.workspace.draft, '保留的项目对话草稿');
     assert.equal(read.state.workspace.dock, 'left');
@@ -167,14 +164,15 @@ test('workspace draft/layout persists without an open file, preserves legacy wri
     assert.equal(again.state.workspace.dock, 'right');
     assert.equal(again.state.workspace.retainedNoteDrafts.length, 3);
     assert.equal(again.state.workspace.noteDrafts.find(item => item.text === '旧版未提交备注').anchor.quote, '旧版原文');
-    const before = await fs.readFile(viewPath, 'utf8');
+    const record = await f.host.storage.getLocal(f.id, 'view');
     await assert.rejects(f.host.writeState(f.id, { workspace: { draft: '清空', noteDrafts: [{ projectId: f.id, relPath: 'file.txt', materialDigest: digest, kind: 'text', anchor: { start: 0, end: 1, quote: '长' }, text: '新非法', updatedAt: 9 }] } }), { code: 'INVALID_ANCHOR' });
-    assert.equal(await fs.readFile(viewPath, 'utf8'), before);
-    await fs.writeFile(viewPath, '{');
-    const corrupt = await fs.readFile(viewPath);
-    await assert.rejects(new DesktopHost(f.userData).readState(f.id), { code: 'METADATA_CORRUPT' });
-    await assert.rejects(f.host.writeState(f.id, { workspace: { draft: '', dock: 'bottom', noteDrafts: [] } }), { code: 'METADATA_CORRUPT' });
-    assert.deepEqual(await fs.readFile(viewPath), corrupt);
+    assert.deepEqual(await f.host.storage.getLocal(f.id, 'view'), record);
+    await f.host.storage.putLocal(f.id, 'view', { workspace: { draft: '损坏后', noteDrafts: 42 } });
+    const sanitized = await f.host.readState(f.id);
+    assert.equal(sanitized.state.workspace.draft, '损坏后');
+    assert.deepEqual(sanitized.state.workspace.noteDrafts, []);
+    assert.deepEqual(sanitized.state.workspace.retainedNoteDrafts, [{ recovery: 'pending', reason: '旧备注草稿不是列表，原记录已保留。', original: 42 }]);
+    assert.deepEqual(await f.host.storage.getLocal(f.id, 'view'), { workspace: { draft: '损坏后', noteDrafts: 42 } });
   });
 
 test('save preserves the existing executable/read permission bits', { skip: process.platform === 'win32' }, async t => {
@@ -272,9 +270,9 @@ test('notes reject empty/out-of-range anchors and material borrowed from another
 
 test('material persistence failure happens before a user document is replaced', async t => {
   const f = await setup(t), read = await f.read();
-  const put = f.host.materials.put.bind(f.host.materials);
-  f.host.materials.put = bytes => digestBytes(bytes) === digestBytes(Buffer.from('after'))
-    ? Promise.reject(Object.assign(new Error('disk full'), { code: 'ENOSPC' })) : put(bytes);
+  const put = f.host.storage.putObject.bind(f.host.storage);
+  f.host.storage.putObject = (projectId, bytes) => digestBytes(bytes) === digestBytes(Buffer.from('after'))
+    ? Promise.reject(Object.assign(new Error('disk full'), { code: 'ENOSPC' })) : put(projectId, bytes);
   await assert.rejects(f.host.save(f.id, 'file.txt', read.digest, 'after'));
   assert.equal(await fs.readFile(f.file, 'utf8'), 'before');
   assert.equal((await f.read()).draft.text, 'after');
@@ -301,7 +299,7 @@ test('PDF rectangles stay inside the page and fresh sidecars never reuse numbers
     await f.host.removeAnnotation(f.id, first.annotation.id);
     const third = await f.host.addAnnotation(f.id, { relPath: 'a.pdf', materialDigest: read.digest, kind: 'pdf-page', anchor: { page: 1 }, note: '三' });
     assert.equal([first.annotation.ordinal, second.annotation.ordinal].includes(third.annotation.ordinal), false);
-    const store = new FileTags(f.project);
+    const store = await f.host.tagStore(f.id);
     const raw = await store.read('a.pdf');
     assert.equal(raw.tags.find(tag => tag.id === second.annotation.id).anchor.quote, '完整选文');
     const next = await f.host.addAnnotation(f.id, { relPath: 'a.pdf', materialDigest: read.digest, kind: 'pdf-page', anchor: { page: 1 }, note: '四' });
@@ -342,38 +340,29 @@ test('annotation update rejects stale, foreign, corrupt, and concurrent writes',
     f.host.updateAnnotation(f.id, saved.annotation.id, { materialDigest: source.materialDigest, expectedUpdatedAt: saved.annotation.updatedAt, note: 'b' }),
   ]);
   assert.equal(results.filter(item => item.status === 'fulfilled').length, 1);
-  const annotationFile = new FileTags(f.project).location('file.txt');
-  const before = await fs.readFile(annotationFile);
-  await fs.writeFile(annotationFile, '{');
+  const store = await f.host.tagStore(f.id);
+  const key = store.key('file.txt');
+  const record = await f.host.storage.getProjectRecord(f.id, 'file_tags', key);
+  const corrupt = { ...record.value, nextOrdinal: 0 };
+  await f.host.storage.putProject(f.id, 'file_tags', key, corrupt);
   await assert.rejects(f.host.updateAnnotation(f.id, saved.annotation.id, { materialDigest: source.materialDigest, expectedUpdatedAt: saved.annotation.updatedAt, note: 'bad' }), { code: 'METADATA_CORRUPT' });
-  assert.equal((await fs.readFile(annotationFile)).toString(), '{');
-  const alteredIdentity = annotationFile;
-  await fs.writeFile(alteredIdentity, before);
-  const identityBefore = await fs.readFile(alteredIdentity);
-  await fs.writeFile(alteredIdentity, JSON.stringify({ ...JSON.parse(identityBefore), file: { ...JSON.parse(identityBefore).file, relPath: 'wrong.txt' } }));
+  assert.deepEqual((await f.host.storage.getProjectRecord(f.id, 'file_tags', key)).value, corrupt);
+  await f.host.storage.putProject(f.id, 'file_tags', key, { ...record.value, file: { ...record.value.file, relPath: 'wrong.txt' } });
   await assert.rejects(f.host.updateAnnotation(f.id, saved.annotation.id, { materialDigest: source.materialDigest, expectedUpdatedAt: saved.annotation.updatedAt, note: 'identity' }), { code: 'METADATA_CORRUPT' });
-  await fs.writeFile(alteredIdentity, identityBefore);
+  await f.host.storage.putProject(f.id, 'file_tags', key, record.value);
   await assert.rejects(f.host.updateAnnotation(f.id, saved.annotation.id, { materialDigest: source.materialDigest, expectedUpdatedAt: saved.annotation.updatedAt, note: 'x'.repeat(4001) }), { code: 'INVALID_PAYLOAD' });
 });
 
-test('annotation update preserves old bytes on rename failure, prevents resurrection, and rejects unknown schema', async t => {
-  const make = async (label) => {
+test('annotation update prevents resurrection and rejects unknown schema', async t => {
+  const make = async () => {
     const f = await setup(t, '正文');
     const source = await f.read();
     const saved = await f.host.addAnnotation(f.id, { relPath: 'file.txt', materialDigest: source.materialDigest, kind: 'text-selection', anchor: { start: 0, end: 2, quote: '正文' }, note: 'before' });
-    return { f, source, saved, file: new FileTags(f.project).location('file.txt') };
+    const store = await f.host.tagStore(f.id);
+    return { f, source, saved, store, key: store.key('file.txt') };
   };
-  const failed = await make('rename-failure');
-  const originalBytes = await fs.readFile(failed.file); const rename = fs.rename;
-  fs.rename = async (from, to) => { if (to === failed.file) throw Object.assign(new Error('RENAME_FAILED'), { code: 'EIO' }); return rename(from, to); };
-  try {
-    await assert.rejects(failed.f.host.updateAnnotation(failed.f.id, failed.saved.annotation.id, { materialDigest: failed.source.materialDigest, expectedUpdatedAt: failed.saved.annotation.updatedAt, note: 'nope' }));
-  } finally {
-    fs.rename = rename;
-  }
-  assert.deepEqual(await fs.readFile(failed.file), originalBytes);
   for (const order of ['update-first', 'delete-first']) {
-    const item = await make(order);
+    const item = await make();
     const update = () => item.f.host.updateAnnotation(item.f.id, item.saved.annotation.id, { materialDigest: item.source.materialDigest, expectedUpdatedAt: item.saved.annotation.updatedAt, note: 'after' });
     const remove = () => item.f.host.removeAnnotation(item.f.id, item.saved.annotation.id);
     const results = order === 'update-first' ? await Promise.allSettled([update(), remove()]) : await Promise.allSettled([remove(), update()]);
@@ -384,13 +373,14 @@ test('annotation update preserves old bytes on rename failure, prevents resurrec
       assert.equal(results[1].status, 'rejected');
       assert.equal(results[1].reason.code, 'NOT_FOUND');
     }
-    assert.equal(JSON.parse(await fs.readFile(item.file, 'utf8')).tags.length, 0);
+    assert.equal((await item.store.read('file.txt')).tags.length, 0);
   }
-  const corrupt = await make('unknown-schema');
-  const bytes = await fs.readFile(corrupt.file); const record = JSON.parse(bytes); record.schemaVersion = 999; await fs.writeFile(corrupt.file, JSON.stringify(record));
-  const unknownBytes = await fs.readFile(corrupt.file);
+  const corrupt = await make();
+  const record = await corrupt.f.host.storage.getProjectRecord(corrupt.f.id, 'file_tags', corrupt.key);
+  const unknown = { ...record.value, schemaVersion: 999 };
+  await corrupt.f.host.storage.putProject(corrupt.f.id, 'file_tags', corrupt.key, unknown);
   await assert.rejects(corrupt.f.host.updateAnnotation(corrupt.f.id, corrupt.saved.annotation.id, { materialDigest: corrupt.source.materialDigest, expectedUpdatedAt: corrupt.saved.annotation.updatedAt, note: 'nope' }), { code: 'SCHEMA_UNSUPPORTED' });
-  assert.deepEqual(await fs.readFile(corrupt.file), unknownBytes);
+  assert.deepEqual((await corrupt.f.host.storage.getProjectRecord(corrupt.f.id, 'file_tags', corrupt.key)).value, unknown);
 });
 
 test('note offsets preserve long precise values and reject unsafe writes without replacing view', async t => {
@@ -402,9 +392,8 @@ test('note offsets preserve long precise values and reject unsafe writes without
   const huge = { [id]: [10000.125, -12000.875] };
   await f.host.writeState(f.id, { workspace: { noteOffsets: huge } });
   assert.deepEqual((await new DesktopHost(f.userData).readState(f.id)).state.workspace.noteOffsets[id], huge[id]);
-  const viewPath = path.join(f.userData, 'nozeli', 'v1', 'projects', f.id, 'view.json');
-  const before = await fs.readFile(viewPath);
+  const record = await f.host.storage.getLocal(f.id, 'view');
   await assert.rejects(f.host.writeState(f.id, { workspace: { noteOffsets: { [id]: [Number.MAX_SAFE_INTEGER + 1, 0] } } }), { code: 'INVALID_PAYLOAD' });
   await assert.rejects(f.host.writeState(f.id, { workspace: { noteOffsets: { [id]: [Number.NaN, 0] } } }), { code: 'INVALID_PAYLOAD' });
-  assert.deepEqual(await fs.readFile(viewPath), before);
+  assert.deepEqual(await f.host.storage.getLocal(f.id, 'view'), record);
 });

@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 760" role="img" aria-labelledby="title desc">
+  <title id="title">Agent 快速执行，人接得住并持续迭代</title>
+  <desc id="desc">双格乒乓球漫画。过去 Agent 快速回球，人来不及理解和接住。Nozeli 保持 Agent 快速推进，同时以清晰成果帮助人理解、审核、反馈并继续迭代。</desc>
+  <defs>
+    <linearGradient id="old" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#fff4e8"/><stop offset="1" stop-color="#fffaf3"/></linearGradient>
+    <linearGradient id="new" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#edf8f1"/><stop offset="1" stop-color="#f8fcf8"/></linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%"><feDropShadow dx="0" dy="7" stdDeviation="9" flood-color="#18352a" flood-opacity=".12"/></filter>
+    <marker id="arrowRed" markerWidth="12" markerHeight="12" refX="10" refY="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#b74444"/></marker>
+    <marker id="arrowGreen" markerWidth="12" markerHeight="12" refX="10" refY="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#32815b"/></marker>
+    <style>
+      text{font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+      .title{font-size:34px;font-weight:750;fill:#20372d}
+      .paneltitle{font-size:27px;font-weight:750;fill:#20372d}
+      .label{font-size:19px;font-weight:650;fill:#29483a}
+      .small{font-size:16px;font-weight:550;fill:#557064}
+      .note{font-size:20px;font-weight:750}
+      .line{fill:none;stroke-linecap:round;stroke-linejoin:round}
+    </style>
+  </defs>
+  <rect width="1400" height="760" rx="28" fill="#f4f6f2"/>
+  <text x="700" y="60" text-anchor="middle" class="title">Agent 快速推进，人也能接住、理解并继续迭代</text>
+
+  <rect x="48" y="98" width="624" height="614" rx="28" fill="url(#old)" stroke="#e4b8a4" stroke-width="3" filter="url(#shadow)"/>
+  <rect x="728" y="98" width="624" height="614" rx="28" fill="url(#new)" stroke="#a7cfb5" stroke-width="3" filter="url(#shadow)"/>
+  <text x="360" y="145" text-anchor="middle" class="paneltitle">以前：回球太快，人接不住</text>
+  <text x="1040" y="145" text-anchor="middle" class="paneltitle">Nozeli：快回球，也让人接得住</text>
+
+  <!-- Old interaction: multiple fast returns fly past the player. -->
+  <g transform="translate(72 175)">
+    <path d="M18 276L476 276L528 326L70 326Z" fill="#d89b70" stroke="#9b6249" stroke-width="4"/>
+    <path d="M270 276L270 326" stroke="#fff0dc" stroke-width="5"/>
+    <path d="M266 276L266 194" stroke="#6d5143" stroke-width="6"/>
+    <path d="M266 194L266 276" stroke="#f7dfc5" stroke-width="4"/>
+    <!-- Human -->
+    <circle cx="125" cy="126" r="29" fill="#f4c8a8" stroke="#9f7059" stroke-width="3"/>
+    <path d="M97 119Q108 83 143 101L153 112Q130 108 110 128Z" fill="#574437"/>
+    <path d="M91 168Q125 145 159 168L169 276H80Z" fill="#6b8fb8" stroke="#496781" stroke-width="3"/>
+    <path d="M154 190L212 224" class="line" stroke="#6b8fb8" stroke-width="16"/>
+    <path d="M210 223L237 202" class="line" stroke="#9f7059" stroke-width="7"/>
+    <ellipse cx="244" cy="196" rx="22" ry="14" transform="rotate(-38 244 196)" fill="#b74444" stroke="#853333" stroke-width="3"/>
+    <path d="M108 276L91 319M145 276L165 319" class="line" stroke="#324d6c" stroke-width="14"/>
+    <text x="126" y="394" text-anchor="middle" class="label">人：开球提出问题</text>
+    <text x="126" y="418" text-anchor="middle" class="small">忙着追赶，不及理解</text>
+    <!-- Agent robot -->
+    <rect x="422" y="98" width="64" height="55" rx="17" fill="#c5dfcf" stroke="#47765d" stroke-width="4"/>
+    <circle cx="442" cy="124" r="5" fill="#315d47"/><circle cx="466" cy="124" r="5" fill="#315d47"/>
+    <path d="M454 98V84M446 84H462" class="line" stroke="#47765d" stroke-width="4"/>
+    <path d="M412 168Q454 150 496 168L506 276H402Z" fill="#5c9c78" stroke="#47765d" stroke-width="3"/>
+    <path d="M414 187L365 215" class="line" stroke="#5c9c78" stroke-width="16"/>
+    <path d="M365 215L337 194" class="line" stroke="#47765d" stroke-width="7"/>
+    <path d="M430 276L418 319M480 276L492 319" class="line" stroke="#35634c" stroke-width="14"/>
+    <text x="455" y="394" text-anchor="middle" class="label">Agent：快速返回</text>
+    <!-- Repeated fast balls travel right-to-left, beyond human reach. -->
+    <path d="M395 167Q325 115 237 158" class="line" stroke="#b74444" stroke-width="5" stroke-dasharray="13 10" marker-end="url(#arrowRed)"/>
+    <circle cx="303" cy="139" r="11" fill="#d14b4b"/>
+    <path d="M394 208Q302 177 202 202" class="line" stroke="#b74444" stroke-width="5" stroke-dasharray="13 10" marker-end="url(#arrowRed)"/>
+    <circle cx="307" cy="191" r="11" fill="#d14b4b"/>
+    <path d="M390 244Q286 235 165 252" class="line" stroke="#b74444" stroke-width="5" stroke-dasharray="13 10" marker-end="url(#arrowRed)"/>
+    <circle cx="281" cy="239" r="11" fill="#d14b4b"/>
+    <path d="M75 197L57 188M77 213L54 213M80 229L59 239" class="line" stroke="#b74444" stroke-width="4"/>
+    <text x="285" y="76" text-anchor="middle" class="small">回得快，却缺少清楚的成果与依据</text>
+  </g>
+  <rect x="118" y="636" width="484" height="48" rx="24" fill="#fff" stroke="#e4b8a4" stroke-width="2"/>
+  <text x="360" y="667" text-anchor="middle" class="note" fill="#b74444">结果越堆越多，人越难跟上项目</text>
+
+  <!-- Nozeli interaction: one clear result reaches the paddle, feedback goes back. -->
+  <g transform="translate(752 175)">
+    <path d="M18 276L476 276L528 326L70 326Z" fill="#86b997" stroke="#47765d" stroke-width="4"/>
+    <path d="M270 276L270 326" stroke="#e8f7eb" stroke-width="5"/>
+    <path d="M266 276L266 194" stroke="#476b58" stroke-width="6"/>
+    <path d="M266 194L266 276" stroke="#e8f7eb" stroke-width="4"/>
+    <!-- Human ready to receive -->
+    <circle cx="125" cy="126" r="29" fill="#f4c8a8" stroke="#9f7059" stroke-width="3"/>
+    <path d="M97 119Q108 83 143 101L153 112Q130 108 110 128Z" fill="#574437"/>
+    <path d="M91 168Q125 145 159 168L169 276H80Z" fill="#6b8fb8" stroke="#496781" stroke-width="3"/>
+    <path d="M154 190L210 213" class="line" stroke="#6b8fb8" stroke-width="16"/>
+    <path d="M208 213L228 191" class="line" stroke="#9f7059" stroke-width="7"/>
+    <ellipse cx="236" cy="185" rx="22" ry="14" transform="rotate(-42 236 185)" fill="#32815b" stroke="#23583e" stroke-width="3"/>
+    <path d="M108 276L91 319M145 276L165 319" class="line" stroke="#324d6c" stroke-width="14"/>
+    <text x="126" y="394" text-anchor="middle" class="label">人：看懂、判断</text>
+    <text x="126" y="418" text-anchor="middle" class="small">接住成果，给出反馈</text>
+    <!-- Agent robot -->
+    <rect x="422" y="98" width="64" height="55" rx="17" fill="#c5dfcf" stroke="#47765d" stroke-width="4"/>
+    <circle cx="442" cy="124" r="5" fill="#315d47"/><circle cx="466" cy="124" r="5" fill="#315d47"/>
+    <path d="M454 98V84M446 84H462" class="line" stroke="#47765d" stroke-width="4"/>
+    <path d="M412 168Q454 150 496 168L506 276H402Z" fill="#5c9c78" stroke="#47765d" stroke-width="3"/>
+    <path d="M414 187L365 215" class="line" stroke="#5c9c78" stroke-width="16"/>
+    <path d="M365 215L337 194" class="line" stroke="#47765d" stroke-width="7"/>
+    <path d="M430 276L418 319M480 276L492 319" class="line" stroke="#35634c" stroke-width="14"/>
+    <text x="455" y="394" text-anchor="middle" class="label">Agent：仍然快速推进</text>
+    <!-- One clear result travels from Agent to the human paddle. -->
+    <path d="M399 209Q329 169 258 187" class="line" stroke="#32815b" stroke-width="5" marker-end="url(#arrowGreen)"/>
+    <circle cx="326" cy="180" r="11" fill="#32815b"/>
+    <rect x="275" y="83" width="136" height="78" rx="13" fill="#fff" stroke="#9fc9aa" stroke-width="2"/>
+    <text x="343" y="106" text-anchor="middle" class="small">成果清楚</text>
+    <text x="343" y="129" text-anchor="middle" class="small">结论 · 依据</text>
+    <text x="343" y="151" text-anchor="middle" class="small">可审 · 可反馈</text>
+    <path d="M236 165Q253 147 272 153" class="line" stroke="#32815b" stroke-width="3" stroke-dasharray="6 6"/>
+    <!-- Feedback loop back to the same Worker/Agent. -->
+    <path d="M219 236Q282 291 365 233" class="line" stroke="#32815b" stroke-width="4" stroke-dasharray="9 8" marker-end="url(#arrowGreen)"/>
+    <rect x="250" y="338" width="119" height="31" rx="15" fill="#f8fcf8" stroke="#9fc9aa"/>
+    <text x="309" y="360" text-anchor="middle" class="small">反馈 · 继续迭代</text>
+  </g>
+  <rect x="798" y="636" width="484" height="48" rx="24" fill="#fff" stroke="#a7cfb5" stroke-width="2"/>
+  <text x="1040" y="667" text-anchor="middle" class="note" fill="#32815b">快速执行 × 人能理解 × 持续迭代</text>
+</svg>

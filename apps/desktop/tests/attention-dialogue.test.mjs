@@ -95,3 +95,92 @@ test('native cancellation capability can independently hide cancel',()=>{
  const f=fixture({kind:'conversation',question:{method:'input',capability:{respond:true,cancel:false}}},async()=>{throw Error('must not invoke');});
  assert.equal(f.nodes('input').length,1);assert.equal(f.nodes('button').some(b=>'attentionSubmit' in b.dataset),true);assert.equal(f.nodes('button').some(b=>'attentionCancel' in b.dataset),false);
 });
+
+const routeDestination=(patch={})=>({kind:'frontdesk-route',proposalId:'proposal',expectedVersion:2,sourceJobId:'source-job',question:{method:'frontdesk-route',title:'处理方式决定',originalText:'修复 <calc> 后执行检查',remainingActions:'运行 checks/verify.mjs，不改检查脚本',reason:'剩余步骤需后台执行',completedOperations:[{ok:true,op:'apply',operationId:'saved-once',value:{relPath:'calc.mjs',revision:3}}]},...patch});
+const chooseRoute=(f,action)=>{const input=f.query('[data-attention-route-action="'+action+'"]');for(const other of f.nodes('input'))other.checked=false;input.checked=true;input.onchange();return input;};
+test('route todo exposes source, remainder and receipts with accessible explicit choices only',async()=>{
+ const calls=[],destination=routeDestination(),f=fixture(destination,async(...args)=>{calls.push(args);return {ok:true,value:{accepted:true}};});
+ assert.equal(f.query('[data-frontdesk-context="original"]').querySelector('pre').textContent,destination.question.originalText);
+ assert.equal(f.query('[data-frontdesk-context="remaining"]').querySelector('pre').textContent,destination.question.remainingActions);
+ assert.deepEqual(JSON.parse(f.query('[data-frontdesk-context="receipts"]').querySelector('pre').textContent),destination.question.completedOperations);
+ const radios=f.nodes('input');assert.equal(radios.length,3);assert.ok(radios.every(input=>input.type==='radio'&&!input.checked));
+ const group=f.query('[data-attention-choices]');assert.ok(group.querySelector('legend').textContent);assert.equal(group.querySelectorAll('label').length,3);assert.ok(group.querySelectorAll('label').every(label=>label.querySelector('input')&&label.querySelector('span').querySelector('span').textContent));
+ assert.equal(f.query('[data-attention-submit]').type,'submit');assert.equal(f.query('[data-attention-status]').attributes.role,'status');
+ await submit(f);assert.equal(calls.length,0,'Enter without a decision never defaults to approval');
+ chooseRoute(f,'background');assert.equal(calls.length,0,'keyboard/radio selection alone never submits');await submit(f);
+ assert.deepEqual(calls,[['managed.attention.respond',{projectId:'project',attentionKind:'frontdesk-route',attentionId:'proposal',expectedVersion:2,action:'background',sourceJobId:'source-job',requestKey:'attention:proposal:2:background'}]]);
+ assert.equal(f.query('[data-attention-submit]').disabled,true);assert.equal(f.query('[data-attention-status]').dataset.state,'ok');
+});
+test('each route action uses the same version-bound authority; cancel never retries or sends conversation text',async()=>{
+ for(const action of ['continue','cancel']){
+  const calls=[],drafts=new Map([['main-conversation',{text:'unsent main draft',materials:['image']}]]),f=fixture(routeDestination(),async(...args)=>{calls.push(args);return {ok:true,value:{accepted:true}};},{drafts,onRefresh:async()=>{throw Error('offline refresh');}});
+  chooseRoute(f,action);await submit(f);await submit(f);f.ui.update(f.todo);await submit(f);
+  assert.equal(calls.length,1);assert.equal(calls[0][0],'managed.attention.respond');assert.equal(calls[0][1].action,action);assert.equal(calls[0][1].cancel,undefined);assert.equal(calls[0][1].text,undefined);
+  assert.deepEqual(drafts.get('main-conversation'),{text:'unsent main draft',materials:['image']});assert.equal(f.query('[data-attention-submit]').disabled,true);
+ }
+});
+test('route drafts stay attached to exact proposal version and source across refreshes',async()=>{
+ const calls=[],destination=routeDestination(),f=fixture(destination,async(...args)=>{calls.push(args);return {ok:false,error:{code:'STALE_ATTENTION',message:'changed'}};});
+ chooseRoute(f,'background');await submit(f);assert.equal(calls.length,1);assert.equal(f.query('[data-attention-status]').dataset.state,'error');
+ const same=fixture(destination,async()=>({ok:true}),{drafts:f.drafts});assert.equal(same.query('[data-attention-route-action="background"]').checked,true);
+ for(const patch of [{expectedVersion:3},{sourceJobId:'replacement-source'},{proposalId:'replacement-proposal'}]){
+  const next=routeDestination(patch);f.ui.update({...f.todo,destination:next});await submit(f);assert.equal(calls.length,1);
+  assert.equal(f.query('[data-attention-submit]').disabled,true);assert.equal(f.nodes('fieldset')[0].disabled,true);
+  const replacement=fixture(next,async()=>({ok:true}),{drafts:f.drafts});assert.ok(replacement.nodes('input').every(input=>!input.checked),'old choice never applies to changed authority');
+ }
+ assert.equal(f.query('[data-attention-route-action="background"]').checked,true,'stale view preserves its own unsent draft');
+});
+test('route pending state locks duplicate submission and does not settle an unconfirmed receipt',async()=>{
+ let release;const calls=[],f=fixture(routeDestination(),async(...args)=>{calls.push(args);return await new Promise(resolve=>{release=resolve;});});
+ chooseRoute(f,'background');await submit(f);await submit(f);assert.equal(calls.length,1);assert.equal(f.query('[data-attention-conversation]').attributes['aria-busy'],'true');
+ release({ok:true,value:{accepted:false}});await settle();assert.equal(f.query('[data-attention-status]').dataset.state,'error');assert.equal(f.query('[data-attention-submit]').disabled,false);assert.equal(f.query('[data-attention-route-action="background"]').checked,true);
+});
+test('native approve remains explicitly answerable from todo without default or terminal redirection',async()=>{
+ const calls=[],f=fixture({kind:'conversation',ownerId:'worker-owner',interactionId:'approval',question:{method:'approve',prompt:{full:'读取指定文件，本次有效'}}},async(...args)=>{calls.push(args);return {ok:true,value:{}};});
+ await submit(f);assert.equal(calls.length,0);assert.ok(f.nodes('input').every(input=>!input.checked));
+ const deny=f.nodes('input').find(input=>input.value==='拒绝');deny.checked=true;deny.onchange();await submit(f);
+ assert.deepEqual(calls,[['managed.attention.respond',{projectId:'project',todoId:'todo',answer:'deny'}]]);
+ await submit(f);assert.equal(calls.length,1);
+});
+
+const permissionDestination=(patch={},questionPatch={})=>({kind:'effect-permission',requestId:'permission-request',expectedVersion:1,sourceJobId:'source-job',question:{method:'effect-permission',title:'敏感执行授权 · 等待你的决定',originalText:'写入系统标记并在 A 保存摘要',command:'/usr/bin/marker',args:['--write','/etc/marker.conf'],cwd:'/synthetic/project-a',elevation:'user',purpose:'原任务要求创建该标记',effectHash:'a'.repeat(64),...questionPatch},...patch});
+const choosePermission=(f,action)=>{const input=f.query('[data-attention-permission-action="'+action+'"]');for(const other of f.nodes('input'))other.checked=false;input.checked=true;input.onchange();return input;};
+test('permission denial and cancellation settle once without touching main or native answer drafts',async()=>{
+ for(const action of ['deny','cancel']){
+  const main={text:'leave unsent',attachments:['image']},native={text:'separate pending native answer'},drafts=new Map([['main',main],['native',native]]),calls=[];
+  const f=fixture(permissionDestination(),async(...args)=>{calls.push(args);return {ok:true,value:{accepted:true}};},{drafts,onRefresh:async()=>{throw Error('refresh unavailable');}});
+  choosePermission(f,action);await submit(f);await submit(f);f.ui.update(f.todo);await submit(f);
+  assert.equal(calls.length,1);assert.equal(calls[0][1].action,action);assert.equal(calls[0][1].text,undefined);assert.equal(calls[0][1].answer,undefined);assert.equal(calls[0][1].cancel,undefined);
+  assert.equal(drafts.get('main'),main);assert.equal(drafts.get('native'),native);assert.equal(drafts.size,2);assert.equal(f.query('[data-attention-submit]').disabled,true);
+ }
+});
+test('changed permission version, request, source or scope cannot inherit a draft approval',async()=>{
+ const calls=[],destination=permissionDestination(),f=fixture(destination,async(...args)=>{calls.push(args);return {ok:true,value:{accepted:true}};});choosePermission(f,'approve-once');
+ const restored=fixture(destination,async()=>({ok:true}),{drafts:f.drafts});assert.equal(restored.query('[data-attention-permission-action="approve-once"]').checked,true);
+ const replacements=[permissionDestination({expectedVersion:2}),permissionDestination({requestId:'another-request'}),permissionDestination({sourceJobId:'another-task'}),permissionDestination({}, {command:'/usr/bin/other'}),permissionDestination({}, {cwd:'/synthetic/project-c'}),permissionDestination({}, {args:['--different']}),permissionDestination({}, {elevation:'admin'}),permissionDestination({}, {effectHash:'b'.repeat(64)})];
+ for(const destination of replacements){
+  f.ui.update({...f.todo,destination});await submit(f);assert.equal(calls.length,0);assert.equal(f.query('[data-attention-submit]').disabled,true);
+  const next=fixture(destination,async()=>({ok:true}),{drafts:f.drafts});assert.ok(next.nodes('input').every(input=>!input.checked));
+ }
+ assert.equal(f.query('[data-attention-permission-action="approve-once"]').checked,true,'the old view retains its own choice without transferring it');
+});
+test('permission failures preserve choice and deterministic identity, without automatically retrying',async()=>{
+ const calls=[],f=fixture(permissionDestination(),async(...args)=>{calls.push(args);return {ok:false,error:{code:'STALE_ATTENTION',message:'Permission changed'}};});
+ choosePermission(f,'approve-once');await submit(f);await settle();assert.equal(calls.length,1);assert.equal(f.query('[data-attention-status]').dataset.state,'error');assert.equal(f.query('[data-attention-permission-action="approve-once"]').checked,true);
+ await submit(f);assert.deepEqual(calls[1],calls[0],'an explicit retry keeps the same version and idempotency identity');
+ f.ui.update({...f.todo,status:'resolved'});await submit(f);assert.equal(calls.length,2);assert.equal(f.nodes('fieldset')[0].disabled,true);
+});
+test('incomplete permission review evidence never exposes approval controls',async()=>{
+ for(const questionPatch of [{command:''},{cwd:''},{effectHash:'invalid'},{args:['ok',null]}]){
+  const calls=[],f=fixture(permissionDestination({},questionPatch),async(...args)=>{calls.push(args);return {ok:true};});
+  assert.equal(f.query('[data-attention-permission-action="approve-once"]'),null);await submit(f);assert.equal(calls.length,0);
+ }
+});
+
+test('unlabeled native grant or plan options cannot turn an empty selection into approval',async()=>{
+ for(const question of [{method:'approve',prompt:{grants:[{scope:'folder',label:'允许这个目录'}]}},{method:'plan',options:[{id:'execute'}]}]){
+  const calls=[],f=fixture({kind:'conversation',ownerId:'owner',interactionId:'native-choice',question},async(...args)=>{calls.push(args);return {ok:true};});
+  assert.ok(f.nodes('input').every(input=>!input.checked));await submit(f);assert.equal(calls.length,0);assert.equal(f.query('[data-attention-status]').dataset.state,'error');
+ }
+});
+

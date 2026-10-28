@@ -188,6 +188,16 @@ test('controller acceptance ignores saved scratch history but protects every act
  await options.beforeAccept(work);draft={status:'saved',text:'obsolete scratch'};await options.beforeAccept(work);
  for(const active of [{status:'dirty',text:'unsaved user text'},{status:'conflict',text:'conflicting user text'},{text:'legacy unsaved'},{status:'saved',draftError:{code:'METADATA_CORRUPT'}}]){draft=active;await assert.rejects(options.beforeAccept(work),error=>error.code==='DRAFT_CONFLICT');assert.equal(draft,active);}
  assert.ok(syncs.every(request=>request.projectId==='project-1'&&request.relPath==='paper.md'&&request.hold===false));
+ assert.ok(syncs.some(request=>request.relPath==='paper.md'));
+ // The admission set is the complete union passed by execution finish (worker-changed ∪ reviewed files),
+ // not only candidate.files: an unsaved draft on an unreferenced admitted path must block too.
+ draft=null;
+ const union={execution:{candidate:{files:['paper.md']}}};
+ await options.beforeAccept(union,['paper.md','appendix.md']);
+ assert.ok(syncs.some(request=>request.relPath==='appendix.md'));
+ draft={status:'dirty',text:'appendix unsaved'};
+ await assert.rejects(options.beforeAccept(union,['paper.md','appendix.md']),error=>error.code==='DRAFT_CONFLICT');
+ draft=null;
  draft={status:'saved'};syncError=Object.assign(Error('IME sync failed'),{code:'SYNC_FAILED'});await assert.rejects(options.beforeAccept(work),error=>error.code==='SYNC_FAILED');syncError=null;
  file={text:'current disk',digest:'disk-version',draft:{status:'saved',text:'obsolete scratch'}};assert.deepEqual(await options.readProjectText('paper.md'),{text:'current disk',buffer:false,diskVersion:'disk-version'});
  file={...file,draft:{status:'dirty',text:'active user text'}};assert.deepEqual(await options.readProjectText('paper.md'),{text:'active user text',buffer:true,diskVersion:'disk-version'});
@@ -290,4 +300,30 @@ test('deferred model application errors refresh as redacted failures rather than
  const sync=c.modelSync();assert.equal(sync.applied,0);assert.equal(sync.failed.length,1);assert.equal(sync.failed[0].role,'frontdesk');assert.ok(!JSON.stringify(sync).includes('PRIVATE'));
  c.sessions.get('frontdesk').modelError=null;c.sessions.get('frontdesk').pendingModel=null;
  assert.equal(c.modelSync().applied,0);assert.equal(c.modelSync().failed.length,1);
+});
+
+test('review instruction read/save route through ManagedProjects.invoke to the instruction ledger, never reviewAccept',async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'managed-review-route-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));const content=path.join(root,'project');await fs.mkdir(content);
+ const calls=[];
+ class Fake extends EventEmitter{
+   constructor(){super();this.started=false;}
+   async start(){this.started=true;}
+   snapshot(){return {works:[]};}
+   async stop(){}
+   async reviewInstructionRead(p){calls.push(['instruction.read',p]);return {workId:p.workId,objectId:p.objectId,revision:0,text:'',savedAt:null};}
+   async reviewInstructionSave(p){calls.push(['instruction.save',p]);return {accepted:true,workId:p.workId,objectId:p.objectId,revision:1,savedAt:'2026-10-28T00:00:00.000Z'};}
+   async reviewAccept(){calls.push(['accept']);throw Object.assign(Error('instruction action must never fall through to reviewAccept'),{code:'ROUTE_BUG'});}
+   async reviewRead(){calls.push(['read']);throw Object.assign(Error('unexpected dispatch'),{code:'ROUTE_BUG'});}
+ }
+ const fake=new Fake();
+ const m=new ManagedProjects({userDataDir:root,host:await storageHost(content,['project-1']),legacy:{projects:new Map()},openController:async()=>fake});
+ t.after(()=>m.stop());
+ m.controllers.set('project-1',fake);
+ // 真实IPC入口（非controller直调）：指令载荷没有reviewVersion，误入reviewAccept必报
+ // ‘审校版本令牌无效’（现场9Fj4Op）——必须精确落到指令账本分支。
+ const read=await m.invoke('managed.review.instruction.read',{projectId:'project-1',workId:'w-1',objectId:'00000000-0000-4000-8000-000000000001'});
+ assert.equal(read.revision,0);
+ const saved=await m.invoke('managed.review.instruction.save',{projectId:'project-1',workId:'w-1',objectId:'00000000-0000-4000-8000-000000000001',text:'续作指令草稿。',expectedRevision:0});
+ assert.equal(saved.revision,1);
+ assert.deepEqual(calls.map(entry=>entry[0]),['instruction.read','instruction.save']);
 });

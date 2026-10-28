@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="760" viewBox="0 0 1000 760" role="img" aria-labelledby="title desc">
+<title id="title">Agent in anywhere：把问题留在内容发生的地方</title>
+<desc id="desc">对比漫画：过去人反复描述文档页码、图片方位和视频时间给聊天里的Agent；Nozeli设计通过文字选区、图片框选、视频画面和涂鸦绑定来源位置，在锚点发起讨论。保存备注不会自动发送；视频为产品交互设计示意，非能力验收。</desc>
+<defs><style>
+svg{--fg:#263e35;--muted:#62766b;--border:#cad7cf;--surface:#f5f8f5;--accent:#426c9a;--success:#3c805b;--warning:#af7140;--c1:#6085ae;--c2:#80ae90;color:var(--fg)}
+text{font-family:"Noto Sans CJK SC","Microsoft YaHei",sans-serif;fill:var(--fg);font-size:14px}.title{font-size:25px;font-weight:700}.heading{font-size:18px;font-weight:700}.label{font-size:16px;font-weight:600}.small{font-size:12px;fill:var(--muted)}.caption{font-size:18px;font-weight:700}.blue{fill:var(--accent)}.green{fill:var(--success)}
+.ink{fill:none;stroke:var(--fg);stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}.thin{fill:none;stroke:var(--border);stroke-width:1.5}.arrow{fill:none;stroke:var(--muted);stroke-width:2;stroke-linecap:round;stroke-linejoin:round;marker-end:url(#arrow)}.g{stroke:var(--success);marker-end:url(#greenArrow)}.b{stroke:var(--accent);marker-end:url(#blueArrow)}
+</style>
+<marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 1L7 4L0 7" fill="none" stroke="var(--muted)" stroke-width="1.7"/></marker>
+<marker id="greenArrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 1L7 4L0 7" fill="none" stroke="var(--success)" stroke-width="1.7"/></marker>
+<marker id="blueArrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 1L7 4L0 7" fill="none" stroke="var(--accent)" stroke-width="1.7"/></marker>
+<g id="person"><circle cx="0" cy="0" r="16" fill="var(--surface)" stroke="var(--fg)" stroke-width="2.5"/><path d="M-15-4Q-11-23 9-16L16-6L4-9L-9 1" fill="var(--fg)"/><path d="M-24 31Q0 13 24 31L27 79H-27Z" fill="var(--c1)" stroke="var(--fg)" stroke-width="2.4"/><path d="M-14 80L-21 110M14 80L21 110M-23 36L-33 67M23 36L44 52" class="ink"/></g>
+<g id="bot"><rect x="-24" y="-16" width="48" height="36" rx="11" fill="var(--surface)" stroke="var(--success)" stroke-width="2.5"/><path d="M0-16V-25M-5-25H5" fill="none" stroke="var(--success)" stroke-width="2.5"/><circle cx="-8" cy="0" r="3" fill="var(--success)"/><circle cx="8" cy="0" r="3" fill="var(--success)"/><path d="M-24 34Q0 20 24 34L27 79H-27Z" fill="var(--c2)" stroke="var(--success)" stroke-width="2.4"/><path d="M-24 39L-37 59M24 39L37 59M-13 80L-17 106M13 80L17 106" fill="none" stroke="var(--success)" stroke-width="3" stroke-linecap="round"/></g>
+<g id="doc"><path d="M0 0H61L83 22V107H0Z" fill="var(--surface)" stroke="var(--border)" stroke-width="2"/><path d="M61 0V22H83M15 43H67M15 57H62M15 71H67M15 85H49" class="thin"/></g>
+</defs>
+<text x="32" y="42" class="title">不必解释“哪里哪里”，直接指给 Agent 看</text>
+<text x="32" y="68">Agent in anywhere · 让内容本身成为讨论入口，文字、画面与涂鸦都能承载问题。</text>
+
+<rect x="24" y="94" width="952" height="230" rx="18" class="thin"/>
+<text x="44" y="126" class="heading">以前：先说清“在哪里”，才能开始说问题</text>
+<use href="#doc" x="62" y="158"/>
+<text x="103" y="287" text-anchor="middle" class="small">材料在这里</text>
+<use href="#person" x="235" y="179"/>
+<path d="M285 156H617V249H314L296 267V249H285Z" fill="var(--surface)" stroke="var(--border)" stroke-width="1.5"/>
+<text x="304" y="181">“第 12 页右下角，第二张图……”</text>
+<text x="304" y="207">“视频 02:14，左边那条曲线……”</text>
+<text x="304" y="232" class="small">复制原文、截图，再解释一次位置和背景</text>
+<path d="M636 203H697" class="arrow"/>
+<use href="#bot" x="752" y="177"/>
+<path d="M796 171H943V222H819L807 233V222H796Z" fill="var(--surface)" stroke="var(--border)"/>
+<text x="811" y="193">“你指哪一处？”</text>
+<text x="811" y="213" class="small">上下文还没对上</text>
+
+<rect x="24" y="345" width="952" height="339" rx="18" fill="var(--surface)" stroke="var(--success)" stroke-width="1.5"/>
+<text x="44" y="378" class="heading">Nozeli：问题在哪里，Agent 就从哪里接上</text>
+<text x="44" y="402" class="small">选中文字，圈出区域，画下你的疑问；显式发起讨论后，问题带着来源一起交给 Agent。</text>
+
+<!-- Three anchored surfaces, each with a local question rather than a global chat. -->
+<g transform="translate(56 429)">
+<rect width="264" height="116" rx="9" fill="var(--surface)" stroke="var(--border)" stroke-width="1.5"/>
+<text x="16" y="25" class="label">文字选区</text>
+<path d="M16 43H243M16 60H232M16 77H244M16 94H199" class="thin"/>
+<path d="M33 76H178" fill="none" stroke="var(--c2)" stroke-width="14" opacity=".38"/>
+<path d="M33 70V83M178 70V83" fill="none" stroke="var(--success)" stroke-width="2"/>
+<circle cx="185" cy="65" r="10" fill="var(--success)"/><text x="185" y="69" text-anchor="middle" style="fill:var(--surface);font-size:11px">1</text>
+<path d="M185 116V130" class="arrow g"/>
+<rect y="137" width="264" height="47" rx="9" fill="var(--surface)" stroke="var(--success)"/>
+<text x="14" y="157" class="small">① 就着这段原文提问</text>
+<text x="14" y="175" class="green">“这里的推导为什么成立？”</text>
+</g>
+
+<g transform="translate(368 429)">
+<rect width="264" height="116" rx="9" fill="var(--surface)" stroke="var(--border)" stroke-width="1.5"/>
+<text x="16" y="25" class="label">图片 · 框选与涂鸦</text>
+<path d="M25 44V96H242M30 87L70 78L108 82L149 51L193 64L231 47" fill="none" stroke="var(--muted)" stroke-width="2"/>
+<path d="M130 43Q145 32 168 43Q187 61 165 72Q139 79 130 58Q125 47 135 42M180 87L162 69M172 69L162 69L165 79" fill="none" stroke="var(--warning)" stroke-width="2.6" stroke-linecap="round"/>
+<rect x="116" y="33" width="70" height="47" rx="4" fill="none" stroke="var(--success)" stroke-width="1.5" stroke-dasharray="4 4"/>
+<circle cx="191" cy="36" r="10" fill="var(--success)"/><text x="191" y="40" text-anchor="middle" style="fill:var(--surface);font-size:11px">2</text>
+<path d="M191 116V130" class="arrow g"/>
+<rect y="137" width="264" height="47" rx="9" fill="var(--surface)" stroke="var(--success)"/>
+<text x="14" y="157" class="small">② 指给 Agent 看，不用描述方位</text>
+<text x="14" y="175" class="green">“圈出的这个变化意味着什么？”</text>
+</g>
+
+<g transform="translate(680 429)">
+<rect width="264" height="116" rx="9" fill="var(--surface)" stroke="var(--border)" stroke-width="1.5"/>
+<text x="16" y="25" class="label">视频画面 · 标出这一刻</text>
+<path d="M35 85L83 54L118 73L164 43L213 74" class="thin"/>
+<rect x="141" y="37" width="54" height="43" rx="4" fill="none" stroke="var(--success)" stroke-dasharray="4 4"/>
+<path d="M145 51Q165 29 185 48Q197 66 174 75Q151 81 146 54" fill="none" stroke="var(--warning)" stroke-width="2.6"/>
+<path d="M18 100H244" class="thin"/><circle cx="112" cy="100" r="4" fill="var(--success)"/>
+<text x="218" y="92" class="small">02:14</text>
+<circle cx="201" cy="36" r="10" fill="var(--success)"/><text x="201" y="40" text-anchor="middle" style="fill:var(--surface);font-size:11px">3</text>
+<path d="M201 116V130" class="arrow g"/>
+<rect y="137" width="264" height="47" rx="9" fill="var(--surface)" stroke="var(--success)"/>
+<text x="14" y="157" class="small">③ 带上当前画面与时间位置</text>
+<text x="14" y="175" class="green">“这一刻，圈出的地方发生了什么？”</text>
+</g>
+<text x="500" y="652" text-anchor="middle" class="label">不离开内容，也不丢失问题的来处。</text>
+<text x="32" y="719" class="caption">少一点“我说的是那里”，多一点“就从这里一起看”。</text>
+<text x="32" y="744" class="small">交互设计示意，视频能力不作已验收声明。保存备注不自动派工，只有显式发送才交接给 Agent。</text>
+</svg>

@@ -52,6 +52,16 @@ test('failed startup retry pins the same new thread and does not rearchive',asyn
  const result=await c.confirmResidentHandoff(challenge);assert.equal(result.threadId,'new-1');assert.equal(calls.filter(x=>x.resumeId==null).length,1);assert.equal(calls.at(-1).resumeId,'new-1');assert.equal(c.store.state.residentArchive.frontdesk.handoffs.length,1);
 });
 
+test('confirmed handoff retries an uncreated native thread without duplicating archives or input',async t=>{
+ const {c,calls,failNext,oldFile}=await fixture(t);const challenge=await c.prepareResidentHandoff('frontdesk');failNext();
+ await assert.rejects(c.confirmResidentHandoff(challenge),/startup after identity failed/);
+ await (await import('node:fs/promises')).unlink(path.join(c.store.root,'agents','resident-frontdesk-omp','sessions','new-1.jsonl'));
+ const result=await c.confirmResidentHandoff(challenge);
+ assert.equal(result.threadId,'new-2');assert.equal(c.store.state.residentArchive.frontdesk.handoffs.length,1);
+ assert.equal(c.store.state.jobs.length,0);assert.equal(c.store.state.messages.length,0);assert.equal(await readFile(oldFile,'utf8'),historyBytes('old-frontdesk'));
+ assert.equal(calls.filter(call=>call.resumeId==null).length,2);
+});
+
 for(const scenario of ['queued','running','manual','closing','unknown','unresolved','unconfirmed'])test(`prepare refuses ${scenario} without changing identity`,async t=>{
  const {c}=await fixture(t);const before=structuredClone(c.store.state.residents.frontdesk);
  if(['queued','running','manual'].includes(scenario))c.store.state.jobs.push({id:scenario,target:'frontdesk',status:scenario==='manual'?'running':scenario,manual:scenario==='manual'});

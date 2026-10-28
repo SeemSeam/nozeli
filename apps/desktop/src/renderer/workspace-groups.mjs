@@ -113,7 +113,20 @@ export function mountWorkspaceGroups({invoke,scope,toast=()=>{}}){
       el.append(bar);
       bar.addEventListener('contextmenu',event=>void openPaneMenu(event,node,view).catch(e=>toast(e.message)));
     }
-    const content=document.createElement('div');content.className='workspace-content';content.dataset.workspaceContent=node.id;if(view)content.dataset.viewId=view.id;else{content.classList.add('workspace-pane-empty');content.append(createStartPage({project:{id:layout.projectId,name:document.getElementById('project-name').textContent},compact:groups().length>1,start:()=>window.dispatchEvent(new Event('nozeli-demo-start'))}));}el.append(content);return el;
+    const content=document.createElement('div');content.className='workspace-content';content.dataset.workspaceContent=node.id;
+    if(view)content.dataset.viewId=view.id;
+    else{
+      content.classList.add('workspace-pane-empty');
+      const projectId=layout.projectId;
+      content.append(createStartPage({project:{id:projectId},compact:groups().length>1,browse:scope.role==='shell'?()=>{
+        if(transitioning||layout?.projectId!==projectId)return;
+        activeGroup=node.id;
+        for(const pane of tree.querySelectorAll('[data-workspace-group]'))pane.classList.toggle('is-focused',pane.dataset.workspaceGroup===node.id);
+        document.getElementById('empty-browse').click();
+        scheduleBounds();
+      }:undefined}));
+    }
+    el.append(content);return el;
   }
   function build(node){
     if(node.kind==='group')return pane(node);
@@ -178,11 +191,19 @@ export function mountWorkspaceGroups({invoke,scope,toast=()=>{}}){
   window.nozeli.subscribe('workspace.changed',()=>{const root=windowId==='main'?layout?.mainRoot:layout?.detached.find(w=>w.id===windowId)?.root;updateRatios(root);});
   window.nozeli.subscribe('workspace.changed',()=>{if(scope.role!=='shell'||!layout)return;const chat=Object.values(layout.views).find(v=>v.kind==='conversation'),shown=chat&&['main',...layout.detached.map(w=>w.id)].some(id=>layoutGroups(layout,id).some(g=>g.activeViewId===chat.id));document.getElementById('workspace-open-conversation').classList.toggle('conversation-minimized',Boolean(chat&&!shown));});
   tree.addEventListener('keydown',event=>{const divider=event.target.closest('.workspace-divider');if(!divider||!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home'].includes(event.key))return;event.preventDefault();const split=divider.parentElement,current=Number(split.style.getPropertyValue('--ratio'))||.5;void command({type:'resize',splitId:split.dataset.splitId,ratio:event.key==='Home'?.5:Math.max(.05,Math.min(.95,current+(['ArrowLeft','ArrowUp'].includes(event.key)?-.05:.05)))});});
+  // workspace.focus parks the request on the surface record (closeContent-style
+  // returnFocus handoff; fired by the ready/bounds hooks) so a direct call needs
+  // no retry loop here.
+  async function focusView(viewId){
+    if(!layout?.projectId||!viewId)return;
+    await call('workspace.focus',{projectId:layout.projectId,viewId});
+  }
+
   async function focusPane(event={}){const all=groups();if(!all.length)return;const current=event.viewId?all.findIndex(g=>g.activeViewId===event.viewId):all.findIndex(g=>g.id===activeGroup),index=Number.isInteger(event.index)?event.index:(Math.max(0,current)+(event.direction||1)+all.length)%all.length,target=all[index];if(!target)return;activeGroup=target.id;render();if(target.activeViewId){await activate(target.activeViewId,target.id);await call('workspace.focus',{projectId:layout.projectId,viewId:target.activeViewId});}}
   window.nozeli.subscribe('workspace.control',event=>{if(event.type==='group-focus')void focusPane(event).catch(e=>toast(e.message));if(event.type==='surface-focus'&&layout){const target=groups().find(g=>g.activeViewId===event.viewId);if(target){activeGroup=target.id;render();}}if(event.type==='workspace-action'){const target=groups().find(g=>g.activeViewId===event.viewId),request={...event.command};if(!request.viewId&&request.type!=='dock')request.groupId??=target?.id;void command(request).catch(e=>toast(e.message));}});
   document.addEventListener('workspace-action',event=>{const request={...event.detail.command};if(!request.viewId&&request.type!=='dock')request.groupId??=group()?.id;void command(request).catch(e=>toast(e.message));});
   document.addEventListener('keydown',event=>{const numbered=(event.ctrlKey||event.metaKey)&&!event.altKey&&!event.shiftKey&&/^[1-9]$/.test(event.key);if(event.key==='F6'||numbered){event.preventDefault();void focusPane(numbered?{index:Number(event.key)-1}:{direction:event.shiftKey?-1:1}).catch(e=>toast(e.message));}});
   function clear(){layout=null;activeGroup=null;renderedKey='';renderedPanes.clear();tree.replaceChildren();tree.append(createStartPage({start:()=>window.dispatchEvent(new Event('nozeli-demo-start'))}));}
   clear();
-  const api={snapshot:()=>layout,clear,command,bindProject,open,activate,activeGroup:()=>group()?.id,activeView:()=>layout?.views[group()?.activeViewId]};window.__workspaceGroups=api;return api;
+  const api={snapshot:()=>layout,clear,command,bindProject,open,activate,focusView,activeGroup:()=>group()?.id,activeView:()=>layout?.views[group()?.activeViewId]};window.__workspaceGroups=api;return api;
 }

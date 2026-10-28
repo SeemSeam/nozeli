@@ -40,7 +40,7 @@ class TransportSession extends EventEmitter {
     const name=prompt.match(/(?:GIT-A|GIT-B|FAIL-C|GIT-D)/)?.[0];if(!name)throw Error('unbound transport worker prompt');
     if(name==='FAIL-C')throw Error('RECOVERY_TRANSPORT_WORKER_FAILED: no automatic replay allowed');
     const relPath=name+'.txt',read=await call('nozeli_document_read',{relPath});if(!read.ok)throw Error(read.error.message);
-    const value=read.value,apply=await call('nozeli_document_apply',{readHandle:value.readHandle,edits:[{from:0,to:value.text.length,insert:name+' result from real Host apply\n',expected:value.text}]});
+    const value=read.value,apply=await call('nozeli_document_apply',{readHandle:value.readHandle,replacements:[{oldText:value.text,newText:name+' result from real Host apply\n'}]});
     if(!apply.ok)throw Error(apply.error.message);
     await call('nozeli_publish',{kind:'result',html:staticReport('# '+name+'\nHost document apply succeeded; recovery transport, not a real model.'),files:[relPath]});
    }else throw Error('frontdesk model input not required by this harness');

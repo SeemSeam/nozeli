@@ -95,7 +95,10 @@ try {
   await page.waitForSelector('#send-message:not([disabled])',{timeout:30000});
   const state=async()=>(await invoke('managed.status',{projectId:id})).state;
   const wait=async predicate=>{for(let i=0;i<200;i++){const s=await state();if(predicate(s))return s;await new Promise(r=>setTimeout(r,25));}throw Error('state timeout');};
-  const send=async text=>{const frontend=await page.$eval('#conversation-panel',n=>!n.dataset.managedConversation||n.dataset.managedConversation==='frontdesk');await page.$eval('#composer',(el,text)=>{el.value=text;el.dispatchEvent(new Event('input',{bubbles:true}));},text);await page.waitForSelector('#send-message:not([disabled])');await page.click('#send-message');if(frontend&&!/^(?:LIGHT|FAIL)/.test(text)){await page.waitForSelector('[data-frontdesk-route-action="background"]');await page.click('[data-frontdesk-route-action="background"]');}};
+  // Ordinary background escalation now dispatches automatically (authority
+  // original-request); the route dialog only appears when a user decision
+  // gate is active, so accept either path instead of always waiting for it.
+  const send=async text=>{const frontend=await page.$eval('#conversation-panel',n=>!n.dataset.managedConversation||n.dataset.managedConversation==='frontdesk');await page.$eval('#composer',(el,text)=>{el.value=text;el.dispatchEvent(new Event('input',{bubbles:true}));},text);await page.waitForSelector('#send-message:not([disabled])');await page.click('#send-message');if(frontend&&!/^(?:LIGHT|FAIL)/.test(text)){const route=await page.waitForSelector('[data-frontdesk-route-action="background"]',{timeout:5000}).catch(()=>null);if(route)await page.click('[data-frontdesk-route-action="background"]');else await page.waitForFunction(async id=>{const s=(await window.nozeli.invoke('managed.status',{projectId:id})).value?.state;return (s?.jobs??[]).some(j=>j.target==='orchestrator');},{},id,{timeout:30000});}};
   const confirmClick=async(selector,expected)=>{
     await page.click(selector);await page.waitForSelector('.managed-report-dialog[open]',{visible:true});
     assert.match(await page.$eval('.managed-report-dialog p',n=>n.textContent),expected);

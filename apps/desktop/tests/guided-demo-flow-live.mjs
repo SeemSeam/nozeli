@@ -25,11 +25,15 @@ try {
   report.projectId = projectId;
   assert((await harness.invoke(controls, 'workspace.bootstrap')).model.stepTotal === expectedStepIds.length, 'flow length must match the shipped catalog');
   const {page: hint} = await harness.scope(scope => scope.role === 'demo-hint', 'native step hint');
-  await harness.until(async () => { const value = await harness.invoke(hint, 'workspace.bootstrap'); return value.model?.visible ? value : null; }, 'big hint appears on its own top view');
-  const hintModel = (await harness.invoke(hint, 'workspace.bootstrap')).model;
-  assert(hintModel.title && hintModel.detail.length > 10, 'big hint card must explain the current step');
+  await harness.until(async () => { const value = await harness.invoke(hint, 'workspace.bootstrap'); return value.model?.visible ? value : null; }, 'preparation card appears on its own top view');
+  const reading0 = await harness.until(async () => {
+    const model = (await harness.invoke(hint, 'workspace.bootstrap')).model;
+    return model?.visible && model.phase === 'reading' && model.stepIndex === 0 && model.title === demoSteps[0].hintTitle ? model : null;
+  }, 'explanation waits for the first real action receipt', 30000);
+  const windows0 = await harness.invoke(shell, 'workspace.windows.list', {projectId});
+  assert(windows0.some(window => window.surfaces.some(surface => surface.visible && surface.relPath === demoSteps[0].relPath)), 'source is visible before its explanation');
   await hint.screenshot({path: path.join(harness.root, 'hint-card.png')});
-  mark('one entry, direct start, big hint on top of any content', {hint: hintModel.title});
+  mark('one entry, direct start, explanation only after the real open', {reading: reading0.title});
 
   await harness.until(async () => { const value = await harness.invoke(hint, 'workspace.bootstrap'); return value.model?.visible ? value : null; }, 'hint visible before pausing', 30000);
   await controls.click('[data-demo-control="play"]');
@@ -48,13 +52,21 @@ try {
   }, 'paused seek lands on the target without playing');
   const landedHint = await harness.until(async () => {
     const model = (await harness.invoke(hint, 'workspace.bootstrap')).model;
-    return model?.visible && model.title === demoSteps[frontdesk].hintTitle && model.paused ? model : null;
-  }, 'target hint appears immediately after a paused seek');
-  assert.equal(landedHint.stepIndex, frontdesk, 'target hint must carry the seeked step');
+    return model?.visible && model.phase === 'acting' && model.stepIndex === frontdesk && model.paused ? model : null;
+  }, 'paused seek shows only the neutral preparation for the target');
+  assert.notEqual(landedHint.title, demoSteps[frontdesk].hintTitle, 'a paused seek must not publish the target explanation early');
+  const pausedControls = (await harness.invoke(controls, 'workspace.bootstrap')).model;
+  assert.notEqual(pausedControls.title, demoSteps[frontdesk].hintTitle, 'controls title must not lead the content either');
   await controls.click('[data-demo-control="play"]');
   await harness.until(async () => (await harness.invoke(controls, 'workspace.bootstrap')).model.status === 'playing', 'explicit resume after a paused seek');
   await harness.until(async () => (await state()).messages.some(message => message.text.includes('两种方法是否在同一时段观测')), 'frontdesk quick answer appears in conversation');
-  mark('paused seek shows the target hint; explicit resume runs the target step');
+  const frontdeskReading = await harness.until(async () => {
+    const model = (await harness.invoke(hint, 'workspace.bootstrap')).model;
+    return model?.visible && model.phase === 'reading' && model.stepIndex === frontdesk && model.title === demoSteps[frontdesk].hintTitle ? model : null;
+  }, 'explanation appears only after the answer is on screen');
+  await harness.invoke(hint, 'workspace.demoHint.dismiss', {key: frontdeskReading.key});
+  await harness.until(async () => (await harness.invoke(controls, 'workspace.bootstrap')).model.stepIndex > frontdesk, 'skipping the reading advances to the next step');
+  mark('paused seek withholds the explanation until the real answer lands; reading is skippable', {reading: frontdeskReading.title});
 
   await harness.seek(controls, stepIndex('task-progress'), 'single seek while playing');
   await harness.until(async () => {

@@ -3,7 +3,7 @@ import path from 'node:path';
 import {runGit,ensureGit} from './git-runtime.mjs';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {isolatedLaunch} from './process-isolation.mjs';
+import {optionalIsolatedLaunch} from './process-isolation.mjs';
 export const fail=(code,message)=>{throw Object.assign(Error(message),{code});};
 export function gitEnv(extra={}){const env={...process.env};for(const key of Object.keys(env))if(key.startsWith('GIT_'))delete env[key];return {...env,GIT_LITERAL_PATHSPECS:'1',GIT_CONFIG_NOSYSTEM:'1',...extra};}
 export const git=(cwd,args,extra={})=>runGit(cwd,args,{env:gitEnv(extra)});
@@ -22,10 +22,21 @@ export async function acceptanceCommit(repo,tree,parent,message,directory,attemp
  const common=await fs.realpath(path.resolve(repo,await str(repo,['rev-parse','--git-common-dir'])));await fs.copyFile(path.join(common,'config'),path.join(shadow,'.git','config'));
  await git(shadow,['config','core.bare','false']);await git(shadow,['config','core.worktree',shadow]);await git(shadow,['config','core.hooksPath',hooks]);await git(shadow,['config','commit.gpgSign','false']);await fs.mkdir(path.join(shadow,'.git','objects','info'),{recursive:true});await fs.writeFile(path.join(shadow,'.git','objects','info','alternates'),path.join(common,'objects')+'\n');
  await git(shadow,['update-ref','refs/heads/acceptance',parent]);await git(shadow,['symbolic-ref','HEAD','refs/heads/acceptance']);await git(shadow,['read-tree','--reset','-u',tree]);
- const runtime=await ensureGit(),launch=await isolatedLaunch({command:runtime.command,args:['-c','user.name=Nozeli','-c','user.email=work@nozeli.local','commit','--allow-empty','-m',message],cwd:shadow,home,writable:[shadow]});
+ const runtime=await ensureGit();
+ // Explicit sandbox opt-in can use these read domains; ordinary hooks run as the current user.
+ // The shadow repository preserves the accepted candidate, not an OS access boundary.
+ const execPath=await fs.realpath(String(runtime.env.GIT_EXEC_PATH));
+ const templateDir=runtime.env.GIT_TEMPLATE_DIR?await fs.realpath(String(runtime.env.GIT_TEMPLATE_DIR)):null;
+ const gitRoot=path.dirname(path.dirname(execPath));
+ const readable=[gitRoot,common];
+ const inside=(p,roots)=>roots.some(root=>p===root||p.startsWith(root+path.sep));
+ if(templateDir&&!inside(templateDir,readable))readable.push(templateDir);
+ if(!inside(hooks,readable)&&await fs.stat(hooks).catch(()=>null))readable.push(await fs.realpath(hooks));
+ // No mandatory bubblewrap dependency; hooks retain the current user's OS capabilities.
+ const {launch}=await optionalIsolatedLaunch({command:runtime.command,args:['-c','user.name=Nozeli','-c','user.email=work@nozeli.local','commit','--allow-empty','-m',message],cwd:shadow,home,writable:[shadow],readable});
  const hookEnv={...runtime.env};for(const key of Object.keys(hookEnv))if(key.startsWith('GIT_')&&!['GIT_EXEC_PATH','GIT_TEMPLATE_DIR'].includes(key))delete hookEnv[key];
  attempt.status='running';await persist(attempt);
- try{await promisify(execFile)(launch.command,launch.args,{cwd:shadow,env:{...hookEnv,...launch.env,HOME:home,GIT_LITERAL_PATHSPECS:'1',GIT_CONFIG_NOSYSTEM:'1',GIT_AUTHOR_NAME:'Nozeli',GIT_AUTHOR_EMAIL:'work@nozeli.local',GIT_COMMITTER_NAME:'Nozeli',GIT_COMMITTER_EMAIL:'work@nozeli.local'},timeout:60000,maxBuffer:4*1024*1024});}catch(error){
+ try{await promisify(execFile)(launch.command,launch.args,{cwd:shadow,env:{...hookEnv,...launch.env,HOME:home,GIT_EXEC_PATH:execPath,...(templateDir?{GIT_TEMPLATE_DIR:templateDir}:{}),GIT_LITERAL_PATHSPECS:'1',GIT_CONFIG_NOSYSTEM:'1',GIT_AUTHOR_NAME:'Nozeli',GIT_AUTHOR_EMAIL:'work@nozeli.local',GIT_COMMITTER_NAME:'Nozeli',GIT_COMMITTER_EMAIL:'work@nozeli.local'},timeout:60000,maxBuffer:4*1024*1024});}catch(error){
   // A normal nonzero exit is a completed rejection, not an interrupted hook.
   // Keep timeouts, signals and transport errors uncertain: they cannot authorize replay.
   if(Number.isInteger(error.code)&&!error.signal&&!error.killed){attempt.status='rejected';await persist(attempt);}

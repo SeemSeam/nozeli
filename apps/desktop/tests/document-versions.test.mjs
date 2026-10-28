@@ -14,11 +14,15 @@ async function fixture(text = '# 初稿\n重复😀\n保留\n重复😀\n') {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'nozeli-versions-')), root = path.join(dir, '项目');
   await fs.mkdir(root); const rel = 'sample.md', file = path.join(root, rel); await fs.writeFile(file, text);
   const host = new DesktopHost(path.join(dir, 'profile')), projectId = (await host.pick(root)).project.id;
-  const store = new FileChanges(root); await host.readFile(projectId, rel);
+  const store = new FileChanges({ storage: host.storage, projectId, root }); await host.readFile(projectId, rel);
   return { dir, root, rel, file, host, projectId, store, cleanup: () => fs.rm(dir, { recursive: true, force: true }) };
 }
 async function portable(fx) {
-  const host = new DesktopHost(path.join(fx.dir, 'other-profile')), projectId = (await host.pick(fx.root)).project.id;
+  // The traveling copy carries the recorded ledger but not the original host's material store.
+  const away = path.join(fx.dir, 'portable-copy');
+  await fs.cp(fx.root, away, { recursive: true });
+  await fs.rm(path.join(away, '.nozeli', 'objects'), { recursive: true, force: true });
+  const host = new DesktopHost(path.join(fx.dir, 'other-profile')), projectId = (await host.pick(away)).project.id;
   return { host, projectId };
 }
 async function save(fx, text, edits) {
@@ -30,6 +34,7 @@ const version = async (fx, revision, host = fx.host, id = fx.projectId) => {
   const selected = page.versions.find(v => v.revision === revision);
   assert(selected); return host.documentVersion(id, fx.rel, selected);
 };
+const record = fx => fx.host.storage.getProjectRecord(fx.projectId, 'file_changes', fx.store.keys.key(fx.rel));
 
 test('real saved versions, baseline, agents and restart; readonly queries preserve source, ledger and draft', async () => {
   const fx = await fixture();
@@ -40,14 +45,14 @@ test('real saved versions, baseline, agents and restart; readonly queries preser
     const from = read.text.lastIndexOf('重复');
     await fx.host.applyDocument(fx.projectId, actor, { readHandle: read.readHandle, edits: [{ from, to: from + 2, insert: 'Agent补充' }], operationId: digestBytes(Buffer.from('agent-edit')) });
     const current = await fx.host.readFile(fx.projectId, fx.rel); await fx.host.draft(fx.projectId, fx.rel, current.digest, current.text + '未保存');
-    const sourceBefore = await fs.readFile(fx.file), ledgerBefore = await fs.readFile(fx.store.location(fx.rel));
+    const sourceBefore = await fs.readFile(fx.file), ledgerBefore = await record(fx);
     const restarted = new DesktopHost(fx.host.userDataDir);
     const page = await ops['document.versions'](restarted, { projectId: fx.projectId, relPath: fx.rel });
     assert.deepEqual(page.versions.map(v => v.revision), [2, 1, 0]); assert.equal(page.versions[0].actor.kind, 'agent1');
     assert.equal(page.versions[1].actor.kind, 'user'); assert.equal(page.versions[2].actor, null); assert.equal(page.versions[2].time, null);
     assert.equal((await ops['document.version'](restarted, { projectId: fx.projectId, relPath: fx.rel, version: page.versions[2] })).text, original);
     assert.equal((await version(fx, 1)).text, original.replace('初稿', '第二稿')); assert.equal((await version(fx, 2)).text, current.text);
-    assert.deepEqual(await fs.readFile(fx.file), sourceBefore); assert.deepEqual(await fs.readFile(fx.store.location(fx.rel)), ledgerBefore);
+    assert.deepEqual(await fs.readFile(fx.file), sourceBefore); assert.deepEqual(await record(fx), ledgerBefore);
     assert.equal((await fx.host.readFile(fx.projectId, fx.rel)).draft.text, current.text + '未保存');
   } finally { await fx.cleanup(); }
 });
@@ -86,12 +91,12 @@ test('old LF/CRLF/BOM ledger works without migration; unsupported old encoding f
     try {
       await save(fx, '新\nb\n'); const ledger = await fx.store.read(fx.rel);
       delete ledger.textDigest; for (const event of ledger.events) { delete event.beforeTextDigest; delete event.afterTextDigest; }
-      await fx.store.write(fx.rel, ledger); const raw = await fs.readFile(fx.store.location(fx.rel));
+      await fx.store.write(fx.rel, ledger); const raw = await record(fx);
       const other = await portable(fx);
       const expected = anchorText(new TextDecoder().decode(Buffer.from(before)));
       if (available) assert.equal((await version(fx, 0, other.host, other.projectId)).text, expected);
       else await assert.rejects(version(fx, 0, other.host, other.projectId), e => e.code === 'HISTORY_VERSION_UNAVAILABLE');
-      assert.deepEqual(await fs.readFile(fx.store.location(fx.rel)), raw);
+      assert.deepEqual(await record(fx), raw);
       assert.equal((await version(fx, 0)).text, expected); // verified immutable material remains usable
     } finally { await fx.cleanup(); }
   }
@@ -140,10 +145,11 @@ test('corrupt inserted/removed text and coordinates are rejected without alterin
   for (const mutate of [e => { e.edits[0].insert = 'X'; }, e => { e.edits[0].removed = 'X'; }, e => { e.edits[0].newFrom++; e.edits[0].newTo++; }]) {
     const fx = await fixture('a\nb');
     try {
-      await save(fx, 'c\nb'); const ledger = await fx.store.read(fx.rel); mutate(ledger.events[0]); await fx.store.write(fx.rel, ledger);
-      const source = await fs.readFile(fx.file), raw = await fs.readFile(fx.store.location(fx.rel)); const other = await portable(fx);
+      await save(fx, 'c\nb'); const ledger = await fx.store.read(fx.rel); mutate(ledger.events[0]);
+      await fx.host.storage.putProject(fx.projectId, 'file_changes', fx.store.keys.key(fx.rel), ledger);
+      const source = await fs.readFile(fx.file), raw = await record(fx); const other = await portable(fx);
       await assert.rejects(version(fx, 0, other.host, other.projectId), e => e.code === 'CHANGE_HISTORY_CORRUPT');
-      assert.deepEqual(await fs.readFile(fx.file), source); assert.deepEqual(await fs.readFile(fx.store.location(fx.rel)), raw);
+      assert.deepEqual(await fs.readFile(fx.file), source); assert.deepEqual(await record(fx), raw);
     } finally { await fx.cleanup(); }
   }
 });

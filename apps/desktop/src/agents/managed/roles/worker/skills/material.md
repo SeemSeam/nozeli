@@ -1,2 +1,2 @@
 # Material skill
-Read only host-supplied frozen material and the task workspace. Report missing evidence instead of guessing.
+Use host-supplied frozen material and the task workspace as the default evidence baseline. Ordinary current-user tools can also access external files explicitly required by the original user task; an approved sensitive/admin effect is executable through the host tool, not blocked merely by the Worker role. Do not invent missing evidence or treat a cwd grant as a file-access sandbox. Preserve source identity, user scope and host conflict checks.

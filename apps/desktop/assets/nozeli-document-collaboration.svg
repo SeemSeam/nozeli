@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="680" viewBox="0 0 1000 680" role="img" aria-labelledby="title desc">
+<title id="title">人与 Agent，都能参与文档编辑</title>
+<desc id="desc">上下对比漫画。以前，人从文档复制内容给 Agent，收到聊天回复后手动搬回文档。Nozeli 中，人和 Agent 围绕同一份文档协作，人可以直接修改和批注，Agent可以协助编辑；人查看修改、反馈并继续修订。蓝色和绿色表示不同参与者，不表示无冲突同时写入或后台候选自动合入。</desc>
+<defs><style>
+svg{--fg:#263e35;--muted:#62766b;--border:#cad7cf;--surface:#f5f8f5;--accent:#426c9a;--success:#3c805b;--warning:#af7140;--c1:#6085ae;--c2:#80ae90;color:var(--fg)}
+text{font-family:"Noto Sans CJK SC","Microsoft YaHei",sans-serif;fill:var(--fg);font-size:14px}.title{font-size:25px;font-weight:700}.heading{font-size:18px;font-weight:700}.label{font-size:16px;font-weight:600}.small{font-size:12px;fill:var(--muted)}.caption{font-size:18px;font-weight:700}.blue{fill:var(--accent)}.green{fill:var(--success)}
+.ink{fill:none;stroke:var(--fg);stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}.thin{fill:none;stroke:var(--border);stroke-width:1.5}.arrow{fill:none;stroke:var(--muted);stroke-width:2;stroke-linecap:round;stroke-linejoin:round;marker-end:url(#arrow)}.g{stroke:var(--success);marker-end:url(#greenArrow)}.b{stroke:var(--accent);marker-end:url(#blueArrow)}
+</style>
+<marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 1L7 4L0 7" fill="none" stroke="var(--muted)" stroke-width="1.7"/></marker>
+<marker id="greenArrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 1L7 4L0 7" fill="none" stroke="var(--success)" stroke-width="1.7"/></marker>
+<marker id="blueArrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 1L7 4L0 7" fill="none" stroke="var(--accent)" stroke-width="1.7"/></marker>
+<g id="person"><circle cx="0" cy="0" r="16" fill="var(--surface)" stroke="var(--fg)" stroke-width="2.5"/><path d="M-15-4Q-11-23 9-16L16-6L4-9L-9 1" fill="var(--fg)"/><path d="M-24 31Q0 13 24 31L27 79H-27Z" fill="var(--c1)" stroke="var(--fg)" stroke-width="2.4"/><path d="M-14 80L-21 110M14 80L21 110M-23 36L-33 67M23 36L44 52" class="ink"/></g>
+<g id="bot"><rect x="-24" y="-16" width="48" height="36" rx="11" fill="var(--surface)" stroke="var(--success)" stroke-width="2.5"/><path d="M0-16V-25M-5-25H5" fill="none" stroke="var(--success)" stroke-width="2.5"/><circle cx="-8" cy="0" r="3" fill="var(--success)"/><circle cx="8" cy="0" r="3" fill="var(--success)"/><path d="M-24 34Q0 20 24 34L27 79H-27Z" fill="var(--c2)" stroke="var(--success)" stroke-width="2.4"/><path d="M-24 39L-37 59M24 39L37 59M-13 80L-17 106M13 80L17 106" fill="none" stroke="var(--success)" stroke-width="3" stroke-linecap="round"/></g>
+<g id="doc"><path d="M0 0H61L83 22V107H0Z" fill="var(--surface)" stroke="var(--border)" stroke-width="2"/><path d="M61 0V22H83M15 43H67M15 57H62M15 71H67M15 85H49" class="thin"/></g>
+</defs>
+<text x="32" y="43" class="title">不只让 Agent 给建议，也能一起把文档改好</text>
+<text x="32" y="69">人能直接编辑，Agent 也能协助修改；围绕文档，把想法一轮轮落下来。</text>
+
+<!-- Old: the human is a courier between a document and a chat window. -->
+<rect x="24" y="97" width="952" height="237" rx="18" class="thin"/>
+<text x="44" y="129" class="heading">以前：Agent 在聊天框里写，人来回搬运</text>
+<use href="#doc" x="68" y="159"/>
+<text x="109" y="291" text-anchor="middle" class="label">原文档</text>
+<text x="244" y="183" text-anchor="middle" class="small">复制一段，补充上下文</text>
+<path d="M170 218H318" class="arrow"/>
+<use href="#person" x="357" y="179"/>
+<path d="M402 200H494V229H421L409 240V229H402Z" fill="var(--surface)" stroke="var(--border)"/>
+<text x="448" y="219" text-anchor="middle" class="small">帮我改这段…</text>
+<use href="#bot" x="558" y="179"/>
+<text x="457" y="308" text-anchor="middle" class="small">人负责传递、解释、拼回去</text>
+<rect x="628" y="165" width="140" height="92" rx="10" fill="var(--surface)" stroke="var(--border)" stroke-width="1.5"/>
+<text x="644" y="188" class="small">Agent 的聊天回复</text>
+<path d="M644 203H748M644 216H740M644 229H729" fill="none" stroke="var(--success)" stroke-width="2.5"/>
+<path d="M599 218H620" class="arrow"/>
+<path d="M781 218H847" class="arrow"/>
+<text x="814" y="183" text-anchor="middle" class="small">手动贴回</text>
+<use href="#doc" x="866" y="159"/>
+<text x="907" y="291" text-anchor="middle" class="label">再改一遍</text>
+
+<!-- Nozeli: participants work around a shared document, not through copy/paste. -->
+<rect x="24" y="355" width="952" height="256" rx="18" fill="var(--surface)" stroke="var(--success)" stroke-width="1.5"/>
+<text x="44" y="387" class="heading">Nozeli：围绕同一份文档，人和 Agent 都能参与编辑</text>
+<use href="#person" x="170" y="454"/>
+<path d="M205 492L228 479M226 480L242 462" fill="none" stroke="var(--accent)" stroke-width="4" stroke-linecap="round"/>
+<text x="170" y="592" text-anchor="middle" class="label">人：编辑 · 批注 · 审核</text>
+<use href="#bot" x="831" y="454"/>
+<path d="M794 491L775 480M775 480L760 463" fill="none" stroke="var(--success)" stroke-width="4" stroke-linecap="round"/>
+<text x="831" y="592" text-anchor="middle" class="label">Agent：修改 · 完善</text>
+
+<rect x="350" y="411" width="300" height="159" rx="12" fill="var(--surface)" stroke="var(--border)" stroke-width="2"/>
+<path d="M350 445H650" class="thin"/>
+<text x="369" y="434" class="label">共同推进的文档</text>
+<path d="M370 467H563M370 486H613M370 505H591M370 524H613M370 543H545" class="thin"/>
+<path d="M370 486H530" fill="none" stroke="var(--accent)" stroke-width="5" stroke-linecap="round"/>
+<path d="M370 524H577" fill="none" stroke="var(--success)" stroke-width="5" stroke-linecap="round"/>
+<path d="M539 475V494M533 475H545" fill="none" stroke="var(--accent)" stroke-width="2"/>
+<path d="M587 514V533M581 514H593" fill="none" stroke="var(--success)" stroke-width="2"/>
+<text x="277" y="454" text-anchor="middle" class="small blue">直接修改，留下意见</text>
+<path d="M228 487H340" class="arrow b"/>
+<text x="718" y="454" text-anchor="middle" class="small green">把修改落实到文档</text>
+<path d="M773 510H660" class="arrow g"/>
+<path d="M350 542H270V520H230" class="arrow g"/>
+<text x="275" y="565" text-anchor="middle" class="small">查看修改，继续修订</text>
+
+<text x="32" y="646" class="caption">少一点复制粘贴，多一点共同创作。</text>
+<text x="32" y="670" class="small">协作理念示意：不表示无冲突同时写入；后台候选修改仍由人审核采用。</text>
+</svg>

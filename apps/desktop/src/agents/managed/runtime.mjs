@@ -8,7 +8,7 @@ export async function rolePrompt(role,{skills}={}){
  const root=path.join(here,roles[role].package),dir=path.join(root,'skills');
  const available=(await fs.readdir(dir)).filter(f=>f.endsWith('.md')).sort(),selected=skills??available;
  if(!Array.isArray(selected)||selected.some(f=>!available.includes(f)))throw new Error('unknown role skill');
- const files=role==='orchestrator'?[]:role==='worker'?[...new Set([...fixedWorkerSkills,...selected.filter(f=>f!=='material.md')])]:selected;
+ const files=role==='orchestrator'?['project-maintenance.md']:role==='worker'?[...new Set([...fixedWorkerSkills,...selected.filter(f=>f!=='material.md')])]:selected;
  return [await fs.readFile(path.join(root,'memory.md'),'utf8'),...(await Promise.all(files.map(async f=>`\n## Injected skill: ${f}\n${await fs.readFile(path.join(dir,f),'utf8')}`)))].join('\n');
 }
 

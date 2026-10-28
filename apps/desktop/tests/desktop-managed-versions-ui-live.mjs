@@ -123,7 +123,7 @@ try {
 
   // Round 2: real CLI applies one edit → review → automatic checkpoint
   // (first attempt per requestId fails via injected error → pending → retry).
-  await supplement('第二回合：用 nozeli_document_apply 把“目标甲”替换为“Agent甲完成”（expected 为“目标甲”）。完成后 nozeli_publish 报告结果。不提交Git。');
+  await supplement('第二回合：用 nozeli_document_apply 把“目标甲”替换为“Agent甲完成”（replacements 用 oldText 为“目标甲”、newText 为“Agent甲完成”）。完成后 nozeli_publish 报告结果。不提交Git。');
   await wait(async () => { const s = await state(); return workStatus(s, work.id) === 'review'; }, 'round2 applied → review', 300000);
   await wait(async () => (await versionsList()).checkpoints.some(c => c.workId === work.id), 'checkpoint published after retry', 120000);
   const list1 = await versionsList();

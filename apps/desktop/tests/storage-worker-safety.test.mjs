@@ -267,3 +267,47 @@ test('sequential replace compares nested undefined, array holes and dates using 
  assert.deepEqual(await storage.request(file,'replace',{collections:finalCollections,expectedCollections:equivalent,operationId:'persisted-json-baseline'}),{committed:true});
  assert.deepEqual(await storage.request(file,'get',{collection:'x',id:'record'}),{finished:true});
 });
+
+test('retry on a healthy live worker is an idempotent no-op that keeps the generation usable',async t=>{
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'storage-healthy-retry-')),root=path.join(dir,'project');await fs.mkdir(root);
+ const storage=new ProjectStorage(path.join(dir,'profile'));
+ t.after(async()=>{await storage.db.close();await fs.rm(dir,{recursive:true,force:true});});
+ const project=await storage.register(root),file=path.join(project.metadataRoot,'project.sqlite');
+ assert.deepEqual(await storage.putProject(project.id,'x','before','original'),{revision:1});
+ const channel=storage.db.channels.get(file);
+ assert.ok(channel);assert.equal(channel.pending.size,0);assert.equal(channel.exited,false);assert.equal(storage.db.quarantined.has(file),false);
+ assert.deepEqual(await storage.db.recover(file),{recovered:false,operations:[]});
+ for(let attempt=0;attempt<3;attempt++)assert.deepEqual(await storage.retry(project.id),{available:true,projectId:project.id,operations:[]});
+ assert.equal(storage.db.channels.get(file),channel,'repeated retry must not disturb the healthy live worker');
+ assert.equal(storage.db.quarantined.has(file),false);
+ assert.equal(await storage.getProject(project.id,'x','before'),'original');
+ assert.deepEqual(await storage.putProject(project.id,'x','before','written after retry'),{revision:2});
+ assert.equal(await storage.getProject(project.id,'x','before'),'written after retry');
+});
+
+test('retry after a real quarantine still requires the faulted generation to exit and reconciles receipts',async t=>{
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'storage-quarantined-retry-')),root=path.join(dir,'project');await fs.mkdir(root);
+ const storage=new ProjectStorage(path.join(dir,'profile'));
+ t.after(async()=>{await storage.db.close();await fs.rm(dir,{recursive:true,force:true});});
+ const project=await storage.register(root),file=path.join(project.metadataRoot,'project.sqlite');
+ assert.deepEqual(await storage.putProject(project.id,'x','before','original'),{revision:1});
+ const healthyTimeout=storage.db.timeoutMs;storage.db.timeoutMs=30;
+ const lock=new DatabaseSync(file);lock.exec('BEGIN EXCLUSIVE');
+ let failure;try{await storage.db.request(file,'put',{collection:'x',id:'after',value:'unknown',operationId:'blocked-operation'});}catch(error){failure=error;}
+ const held=storage.db.channels.get(file);
+ assert.equal(failure.code,'STORAGE_RESULT_UNKNOWN');assert.equal(failure.operationId,'blocked-operation');
+ assert.equal(storage.db.quarantined.has(file),true);assert.ok(held,'the faulted generation stays fenced while alive');
+ const exited=new Promise(resolve=>held.worker.once('exit',resolve));
+ await assert.rejects(storage.db.recover(file),/尚未退出/);
+ await exited;lock.exec('ROLLBACK');lock.close();
+ assert.equal(storage.db.channels.has(file),false);
+ storage.db.timeoutMs=healthyTimeout;
+ const outcome=await storage.retry(project.id);
+ assert.deepEqual(outcome,{available:true,projectId:project.id,operations:[{operationId:'blocked-operation',receipt:null}]});
+ assert.equal(storage.db.quarantined.has(file),false);
+ assert.equal(await storage.getProject(project.id,'x','before'),'original');
+ assert.equal(await storage.getProject(project.id,'x','after'),null);
+ assert.deepEqual(await storage.putProject(project.id,'x','after','written after recovery',{operationId:'post-recovery'}),{revision:1});
+ assert.equal(await storage.getProject(project.id,'x','after'),'written after recovery');
+ assert.deepEqual(await storage.retry(project.id),{available:true,projectId:project.id,operations:[]});
+});

@@ -113,6 +113,13 @@ dialog{width:min(480px,calc(100vw - 24px));border:1px solid var(--line);border-r
 .tag-chat-window.is-collapsed .tag-window-title{display:none}.tag-chat-window.is-collapsed>.note-projection-head{min-height:28px;border-bottom:0;padding:3px 6px}
 .tag-chat-window.is-collapsed .tag-ordinal{width:18px;height:18px;min-width:18px;min-height:18px}.tag-chat-window.is-collapsed .note-projection-content{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .note-anchor.is-focused{z-index:25}.note-anchor.is-focused .note-projection{z-index:25}
+/* Demo-only collection: old summaries never cover the currently explained card. */
+.note-projection.demo-tag-parked{display:none!important}
+.demo-tag-selector{max-width:130px;min-width:0;flex:0 1 130px;height:24px;padding:0 3px;font:inherit;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:4px}
+.demo-tag-current .note-projection-head{flex-wrap:wrap;max-height:none;min-height:32px}
+.demo-tag-current .demo-tag-selector{order:2}
+.demo-tag-current{overflow:auto!important;overscroll-behavior:contain}
+.demo-tag-current>.note-projection-head{flex-shrink:0}
 .tag-source img { display:block; max-width:100%; max-height:220px; margin-top:8px; object-fit:contain; border:1px solid #d6ddd3; }
 .tag-transcript { display:flex; flex-direction:column; gap:8px; margin:8px 0; max-height:260px; overflow:auto; }
 .tag-message { display:flex; flex-direction:column; gap:2px; padding:6px 8px; border-radius:6px; background:#f3f6f0; white-space:pre-wrap; }

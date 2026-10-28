@@ -65,6 +65,9 @@ export class StorageDatabase {
   try{const stat=await fs.lstat(file);if(!stat.isFile()||stat.isSymbolicLink())throw Error('数据库不可核查');fresh=new StorageDatabase({timeoutMs:this.timeoutMs,workerFactory:this.workerFactory});return await fresh.request(file,'receipt',{operationId,mustExist:true});}
   finally{try{await fresh?.close();}finally{const live=fresh?.channels.get(file);if(live&&!live.exited)live.worker.once('exit',()=>this.reconciliations.delete(file));else this.reconciliations.delete(file);}}
  }
- async recover(file){if(this.channels.has(file))throw Error('原存储线程尚未退出');const quarantine=this.quarantined.get(file);if(!quarantine)return {recovered:false,operations:[]};const before=await fs.lstat(file);if(!before.isFile()||before.isSymbolicLink())throw Error('数据库身份不可核查');const operations=[];for(const operationId of quarantine.operationIds??[])operations.push({operationId,receipt:await this.reconcile(file,operationId)});const after=await fs.lstat(file);if(before.dev!==after.dev||before.ino!==after.ino)throw Error('数据库身份在核查期间改变');if(this.quarantined.get(file)===quarantine)this.quarantined.delete(file);return {recovered:true,operations};}
+ // Without a quarantine every accepted operation already settled with a known
+ // outcome, so recovery is an idempotent no-op that must not fault a healthy
+ // live worker; a quarantined file stays fenced until its generation truly exits.
+ async recover(file){const quarantine=this.quarantined.get(file);if(!quarantine)return {recovered:false,operations:[]};if(this.channels.has(file))throw Error('原存储线程尚未退出');const before=await fs.lstat(file);if(!before.isFile()||before.isSymbolicLink())throw Error('数据库身份不可核查');const operations=[];for(const operationId of quarantine.operationIds??[])operations.push({operationId,receipt:await this.reconcile(file,operationId)});const after=await fs.lstat(file);if(before.dev!==after.dev||before.ino!==after.ino)throw Error('数据库身份在核查期间改变');if(this.quarantined.get(file)===quarantine)this.quarantined.delete(file);return {recovered:true,operations};}
  close(){this.closed=true;return Promise.all([...this.channels.keys()].map(file=>this.closeFile(file)));}
 }

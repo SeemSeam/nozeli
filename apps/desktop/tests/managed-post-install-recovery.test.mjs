@@ -29,7 +29,7 @@ async function fixture(t,{failWorker=false,checkpoint=async()=>{}}={}){
   async prompt(){
    this.hasPrompted=true;const job=c.current.get(this.target);calls.push({jobId:job.id,type:job.type,target:this.target});const call=(tool,arguments_)=>this.onTool({tool,arguments:arguments_,callId:randomUUID()});
    if(job.type==='intake')await call('nozeli_dispatch',{name:job.text,brief:'Change named file'});
-   else {if(failWorker)throw Error('fixture interrupted after observable file write risk');const w=c.store.find(this.target),file=w.name+'.txt';const read=await call('nozeli_document_read',{relPath:file});assert.equal(read.ok,true);const edited=await call('nozeli_document_apply',{readHandle:read.value.readHandle,edits:[{from:0,to:read.value.text.length,insert:w.name+' result\n',expected:read.value.text}]});assert.equal(edited.ok,true);await call('nozeli_publish',{kind: 'result', html: staticReport('Verified fixture '+w.name+' result'), files: [file]});}
+   else {if(failWorker)throw Error('fixture interrupted after observable file write risk');const w=c.store.find(this.target),file=w.name+'.txt';const read=await call('nozeli_document_read',{relPath:file});assert.equal(read.ok,true);const edited=await call('nozeli_document_apply',{readHandle:read.value.readHandle,replacements:[{oldText:read.value.text,newText:w.name+' result\n'}]});assert.equal(edited.ok,true);await call('nozeli_publish',{kind: 'result', html: staticReport('Verified fixture '+w.name+' result'), files: [file]});}
    return {completion:'host-control',threadId:this.threadId};
   }
  }

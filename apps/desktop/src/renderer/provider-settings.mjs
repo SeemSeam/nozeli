@@ -33,7 +33,8 @@ export function mountProviderSettings({invoke,providers=document.getElementById(
   if(saved&&!sync.applied&&!sync.pending&&!sync.failed?.length)parts.push('休眠及尚未启动的 Agent 将在恢复时应用。');
   modelMessage.textContent=parts.join('');
  }
- async function run(action){if(busy)return;busy=true;const buttons=[...providers.querySelectorAll('button'),...models.querySelectorAll('button')];for(const b of buttons)b.disabled=true;try{await refreshFlight;await action();}catch(e){report(e);}finally{busy=false;for(const b of buttons)if(b.isConnected)b.disabled=false;modelSave.disabled=!catalogReady;loginStart.disabled=!loginProvider.value||loginProvider.disabled;}}
+ function syncModelControls(){const disabled=busy||!catalogReady;for(const select of Object.values(selects))if(select.disabled!==disabled)select.disabled=disabled;modelSave.disabled=disabled;modelRefresh.disabled=refreshButton.disabled=busy||!!refreshFlight;}
+ async function run(action){if(busy)return;busy=true;for(const b of [...providers.querySelectorAll('button'),...models.querySelectorAll('button')])b.disabled=true;syncModelControls();try{await refreshFlight;await action();}catch(e){report(e);}finally{busy=false;for(const b of [...providers.querySelectorAll('button'),...models.querySelectorAll('button')])b.disabled=false;syncModelControls();loginStart.disabled=!loginProvider.value||loginProvider.disabled;}}
  function renderLogin(login){
   const draft=loginArea.querySelector('input')?.value||'';
   loginArea.replaceChildren();loginId=login?.id??null;if(!login)return;
@@ -47,32 +48,44 @@ export function mountProviderSettings({invoke,providers=document.getElementById(
  }
  async function refreshLoginProviders(){
   const selected=loginProvider.value;loginProvider.disabled=loginStart.disabled=true;
-  try{const providers=await call('settings.login.providers');loginProvider.replaceChildren(node('option','请选择账号源',{value:''}));for(const p of providers)loginProvider.append(node('option',p.name,{value:p.id}));if(providers.some(p=>p.id===selected))loginProvider.value=selected;loginProvider.disabled=false;loginStart.disabled=!loginProvider.value;}
+  try{const providers=await call('settings.login.providers');loginProvider.replaceChildren(node('option','请选择账号源',{value:''}));for(const p of providers)loginProvider.append(node('option',p.name,{value:p.id}));if(providers.some(p=>p.id===selected))loginProvider.value=selected;loginProvider.disabled=false;loginStart.disabled=busy||!loginProvider.value;}
   catch(error){loginProvider.replaceChildren(node('option','登录源目录暂不可用，请刷新',{value:''}));report(error);}
  }
- loginProvider.addEventListener('change',()=>{loginStart.disabled=!loginProvider.value;});
- async function refresh(){if(refreshFlight)return refreshFlight;
- catalogReady=false;modelSave.disabled=true;modelRefresh.disabled=true;catalogMessage.textContent='正在读取可用模型…';
- for(const select of Object.values(selects))select.disabled=true;
+ loginProvider.addEventListener('change',()=>{loginStart.disabled=busy||!loginProvider.value;});
+ const pendingChoices=new Map();
+ function renderModelChoices(select,available,savedDefault){
+  // Do not replace options underneath an open native picker or keyboard editing.
+  if(available.length&&!busy&&document.activeElement===select){pendingChoices.set(select,{available,savedDefault});return;}
+  pendingChoices.delete(select);
+  const selected=select.dataset.dirty==='true'?select.value:savedDefault;
+  const choices=[['','沿用原生OMP选择'],...available.map(model=>[model.selector,`${model.name||model.id||model.selector} · ${model.provider}`])];
+  if(selected&&!available.some(model=>model.selector===selected))choices.push([selected,selected+'（当前目录不可用；原选择保留）']);
+  if(select.options.length!==choices.length||choices.some(([value,text],index)=>select.options[index].value!==value||select.options[index].textContent!==text))select.replaceChildren(...choices.map(([value,text])=>node('option',text,{value})));
+  if(select.value!==selected)select.value=selected;
+ }
+ function flushModelChoices(select){const pending=pendingChoices.get(select);if(pending)renderModelChoices(select,pending.available,pending.savedDefault);}
+ async function refresh(duringAction=false){if(refreshFlight)return refreshFlight;if(busy&&!duringAction)return;
+ modelRefresh.disabled=refreshButton.disabled=true;catalogMessage.textContent=catalogReady?'正在刷新模型列表；现有目录和选择保留。':'正在读取可用模型…';
  refreshFlight=(async()=>{try{
   const value=await call('settings.providers.status');list.replaceChildren();
   if(!value.sources?.length)list.append(node('p','尚无已配置源。请登录或添加API源。'));
   for(const source of value.sources??[]){
    const row=node('div',null,{'data-provider-row':source.provider});row.append(node('strong',source.provider),node('span',' · '+(source.type==='oauth'?'账号登录':'API')+(source.baseUrl?' · '+source.baseUrl:'')));
    const remove=node('button','移除',{type:'button','data-ui-action':'danger','data-provider-remove':source.provider});
+   remove.disabled=busy;
    remove.onclick=()=>{remove.disabled=true;row.append(node('p','确认移除 '+source.provider+'？将禁用其私有凭据；仍有会话引用时会拒绝。'));const confirm=node('button','确认移除 '+source.provider,{type:'button','data-ui-action':'danger','data-provider-confirm-remove':source.provider});confirm.onclick=()=>run(async()=>{await call('settings.providers.remove',{provider:source.provider,confirm:source.provider});await refreshAfterChange();message.textContent='已移除源。';});const cancel=node('button','取消',{type:'button'});cancel.onclick=()=>refresh();row.append(confirm,cancel);};row.append(remove);list.append(row);
   }
   const available=value.models??[];catalogReady=available.length>0;
-  for(const [role,select]of Object.entries(selects)){const selected=select.dataset.dirty==='true'?select.value:value.defaults?.[role]||'';select.replaceChildren(node('option','沿用原生OMP选择',{value:''}));for(const model of available)select.append(node('option',`${model.name||model.id||model.selector} · ${model.provider}`,{value:model.selector}));if(selected&&!available.some(m=>m.selector===selected))select.append(node('option',selected+'（当前目录不可用；原选择保留）',{value:selected}));select.value=selected;select.disabled=!catalogReady;}
+  for(const [role,select]of Object.entries(selects))renderModelChoices(select,available,value.defaults?.[role]||'');
   catalogMessage.textContent=catalogReady?`可用模型：${available.length} 个。三个角色可分别选择。`:value.sources?.length?'已配置源，但 OMP 暂无可用模型。请检查源的授权或模型配置，再刷新列表；原选择未改动。':'尚无可用模型：此独立配置还没有 OMP 源。请先配置账号或 API 源，再刷新模型列表。';
   message.textContent=value.notice??'';renderSync(value.modelSync);if(value.login)renderLogin(value.login);
- }catch(e){catalogMessage.textContent='模型列表读取失败；原选择保留。请重试刷新，或检查 OMP 源配置。';report(e);}finally{modelRefresh.disabled=false;modelSave.disabled=busy||!catalogReady;refreshFlight=null;}})();return refreshFlight;}
- async function refreshAfterChange(){await refreshFlight;return refresh();}
+ }catch(e){catalogMessage.textContent=catalogReady?'模型列表刷新失败；现有目录和原选择保留，仍可选择和保存。请稍后刷新或检查 OMP 源配置。':'模型列表读取失败，暂无可用目录，无法保存。请刷新或检查 OMP 源配置。';if(!catalogReady)for(const select of Object.values(selects))if(select.options.length===1&&!select.value)select.options[0].textContent='暂无可用模型，请刷新';report(e);}finally{refreshFlight=null;syncModelControls();}})();return refreshFlight;}
+ async function refreshAfterChange(){await refreshFlight;return refresh(true);}
  form.addEventListener('submit',event=>{event.preventDefault();const data=Object.fromEntries(new FormData(form));key.value='';run(async()=>{await call('settings.providers.save',data);await refreshAfterChange();message.textContent='API源已保存。选择默认模型并保存后，所有项目同角色 Agent 联动切换。';});});
  loginForm.addEventListener('submit',event=>{event.preventDefault();const provider=loginProvider.value;if(!provider)return;run(async()=>{renderLogin(await call('settings.login.start',{provider}));clearInterval(polling);polling=setInterval(async()=>{try{const login=await call('settings.login.status');renderLogin(login);if(login&&login.state!=='running')await refresh();}catch(e){clearInterval(polling);polling=null;report(e);}},1000);});});
- for(const select of Object.values(selects))select.onchange=()=>{select.dataset.dirty='true';};
- modelForm.addEventListener('submit',event=>{event.preventDefault();if(!catalogReady)return;run(async()=>{const result=await call('settings.models.save',Object.fromEntries(new FormData(modelForm)));for(const select of Object.values(selects))delete select.dataset.dirty;renderSync(result?.sync,{saved:true});});});
- refreshButton.onclick=()=>run(()=>Promise.all([refreshLoginProviders(),refresh()]));
+ for(const select of Object.values(selects)){select.onchange=()=>{select.dataset.dirty='true';};select.addEventListener('blur',()=>flushModelChoices(select));}
+ modelForm.addEventListener('submit',event=>{event.preventDefault();if(busy||!catalogReady)return;const defaults=Object.fromEntries(new FormData(modelForm));for(const select of Object.values(selects))select.dataset.dirty='true';modelMessage.textContent='正在保存默认模型…';run(async()=>{const result=await call('settings.models.save',defaults);for(const select of Object.values(selects)){flushModelChoices(select);delete select.dataset.dirty;}renderSync(result?.sync,{saved:true});});});
+ refreshButton.onclick=()=>{if(!busy)return Promise.all([refreshLoginProviders(),refresh()]);};
  modelRefresh.onclick=()=>refresh();
  return {refresh,refreshProviders:()=>Promise.all([refreshLoginProviders(),refresh()])};
 }

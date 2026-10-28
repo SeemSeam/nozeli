@@ -33,6 +33,7 @@ function surface(parent, {invoke, profile, projectId, objectId, entryPath, onRef
       const confirm=document.createElement('button');confirm.type='button';confirm.textContent='在系统浏览器打开：'+reference.url;
       confirm.onclick=()=>void invoke('links.openExternal',{url:reference.url});status.replaceChildren(confirm);return;
     }
+    if(onReference&&/\.(?:md|markdown)$/i.test(reference.relPath||'')){await onReference(reference);return;}
     const dialog=document.createElement('dialog'),header=document.createElement('header'),title=document.createElement('h2'),close=document.createElement('button');
     dialog.className='report-reference-reader';title.textContent='冻结引用 · '+(reference.href||reference.relPath);close.type='button';close.textContent='关闭';header.append(title,close);dialog.append(header);
     let sourceText;

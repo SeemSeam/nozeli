@@ -3,7 +3,9 @@ import path from 'node:path';
 import {constants} from 'node:fs';
 import {createHash,randomUUID} from 'node:crypto';
 import {atomicJson} from './workspace.mjs';
+import {resolveTextReplacements} from '../../domain/document-collaboration.mjs';
 import {git,str,read,entries,repository,commitTree,fail,acceptanceCommit} from './git-service.mjs';
+import {provisionWorktreeDependencies} from './worktree-dependencies.mjs';
 export const byteDigest=bytes=>bytes===null?null:createHash('sha256').update(bytes).digest('hex');
 const excluded=new Set(['.git','.nozeli','.ccb','node_modules','.venv','venv','__pycache__']);
 export function workPath(rel){
@@ -18,7 +20,6 @@ async function safeFile(root,rel){
  }catch(error){if(error.code==='ENOENT')return null;throw error;}finally{for(const handle of handles.reverse())await handle.close();}
 }
 function documentText(bytes){if(bytes===null)return '';let text;try{text=new TextDecoder('utf-8',{fatal:true}).decode(bytes);}catch{fail('UNSUPPORTED','文档操作仅支持UTF-8文本');}if(text.includes('\0'))fail('UNSUPPORTED','文档操作不支持二进制文件');return text.replace(/\r\n?/g,'\n');}
-const splitsSurrogate=(text,at)=>at>0&&at<text.length&&/[\uD800-\uDBFF]/.test(text[at-1])&&/[\uDC00-\uDFFF]/.test(text[at]);
 async function documentParent(root,rel){
  workPath(rel);const handles=[];try{let directory=await fs.open(root,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);handles.push(directory);for(const part of rel.split('/').slice(0,-1)){const next='/proc/self/fd/'+directory.fd+'/'+part;await fs.mkdir(next).catch(error=>{if(error.code!=='EEXIST')throw error;});directory=await fs.open(next,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);handles.push(directory);}return {directory,prefix:'/proc/self/fd/'+directory.fd+'/',close:async()=>{for(const handle of handles.reverse())await handle.close();}};}catch(error){for(const handle of handles.reverse())await handle.close();throw error;}
 }
@@ -85,7 +86,7 @@ export class ExecutionWorkspace {
  async prepareInner(id){
   await this.store.storage.requireOnline(this.store.projectId);
   let m=await this.readManifest(id);
-  if(m?.schema>=2&&m.preparation==='complete'){await this.reconcilePublication(m);await this.reconcileFreeze(m);await this.identity(m,{target:false});await this.reconcileDocument(m);await this.save(m);return m;}
+ if(m?.schema>=2&&m.preparation==='complete'){await this.reconcilePublication(m);await this.reconcileFreeze(m);await this.identity(m,{target:false});await this.reconcileDocument(m);await this.provisionDependencies(m);await this.save(m);return m;}
   if(!m||m.schema<2){
    await this.initializeRepository();const legacy=m,dir=this.directory(id),repo=await repository(this.store.content),branchRef='refs/heads/nozeli/work-'+id+'-'+randomUUID();
    const exists=await fs.lstat(dir).catch(()=>null);if(exists&&!legacy)fail('BASELINE_MISSING','执行目录已有内容但缺少基线，已保留');
@@ -105,12 +106,23 @@ export class ExecutionWorkspace {
    const head=await str(m.repo,['rev-parse',m.branchRef]);if(![m.baseCommit,m.inputCommit].includes(head))fail('WORKER_REF_CHANGED','准备中的分支变化');
    await git(m.directory,['reset','--hard',m.inputCommit]);m.preparation='input-installed';await this.save(m);
   }
+  await this.provisionDependencies(m);
   if(m.preparation==='input-installed'&&m.legacy){
    const source=m.legacy.directory,selected=new Set(Object.keys(m.legacy.manifest.files||{}));
    const visit=async(dir,rel='')=>{for(const row of await fs.readdir(dir,{withFileTypes:true})){const name=rel?rel+'/'+row.name:row.name;workPath(name);if(row.isDirectory())await visit(path.join(dir,row.name),name);else{if(!row.isFile()||row.isSymbolicLink())fail('LEGACY_UNSAFE','旧候选含特殊文件，已保留：'+name);selected.add(name);}}};await visit(source);
    for(const rel of selected){workPath(rel);const bytes=await safeBytes(source,rel),target=path.join(m.directory,rel);if(bytes===null)await fs.rm(target,{force:true});else{await fs.mkdir(path.dirname(target),{recursive:true});await fs.writeFile(target,bytes);}}m.legacy.importedPaths=[...selected];
   }
   m.preparation='complete';await this.save(m);return m;
+ }
+ // Worker依赖供给：被忽略的node_modules不随worktree迁移。源项目模块与冻结
+ // 输入的package.json/package-lock.json字节一致时，向执行目录独立拷贝一份
+ // （reflink优先，绝不符号链接到可写源端）；已有模块一律保留。缺失/不匹配
+ // 把可读原因记入manifest.dependencies，绝不伪造依赖可用。
+ async provisionDependencies(m){
+  if(!m||!m.files)return null;
+  const report=await provisionWorktreeDependencies({workId:m.workId,sourceRoot:m.repo,worktreeRoot:m.directory,frozenFiles:m.files,previous:m.dependencies??null});
+  if(report!==m.dependencies){m.dependencies=report;await this.save(m);}
+  return report;
  }
  async reconcileFreeze(m){if(!m.freezeIntent)return;const head=await str(m.repo,['rev-parse',m.branchRef]);if(head===m.freezeIntent.commit){m.candidate=m.freezeIntent.candidate;delete m.freezeIntent;await this.save(m);}else if(head===m.freezeIntent.before){await git(m.repo,['update-ref',m.branchRef,m.freezeIntent.commit,head]);m.candidate=m.freezeIntent.candidate;delete m.freezeIntent;await this.save(m);}else fail('WORKER_REF_CHANGED','冻结意图与分支不一致');}
  async reconcileDocument(m){
@@ -144,18 +156,75 @@ export class ExecutionWorkspace {
   m.freezeIntent={commit:candidate.commit,before:m.candidate?.commit||m.inputCommit,candidate};await this.save(m);
   await git(m.repo,['update-ref',m.branchRef,candidate.commit,m.freezeIntent.before]);m.candidate=candidate;delete m.freezeIntent;await this.save(m);const retained=retainCandidate?await retainCandidate(m,candidate):null;return {applied:[],conflicts:[],candidate,...(retained?{changeSet:retained}:{})};
  });}
+ // ── 人工审校（managed.review）：不可变版本读取 + 受控worktree写入 ──────────
+ // 基线=候选的父提交（即Worker输入基线inputCommit）；候选=冻结发布提交。
+ // 读取只走Git对象，正文与发布快照摘要一致，永不把live磁盘当作版本。
+ async reviewSnapshot(m,receipt){
+  if(!m?.repo)fail('CANDIDATE_REQUIRED','缺少冻结候选，无法审校');
+  // 历史读取以回执冻结的候选提交为准：不随当前候选/后续发布漂移，worktree
+  // 清理后对象仍在主仓库，读取身份稳定。
+  const candidateCommit=receipt?.snapshot?.candidate?.commit||m.candidate?.commit;
+  if(!candidateCommit)fail('CANDIDATE_REQUIRED','缺少冻结候选，无法审校');
+  const baselineCommit=await str(m.repo,['rev-parse','--verify',candidateCommit+'^']);
+  const treeOf=async commit=>entries(await git(m.repo,['ls-tree','-r','-z',commit]));
+  const [base,cand]=await Promise.all([treeOf(baselineCommit),treeOf(candidateCommit)]);
+  const changed=names(await git(m.repo,['diff-tree','--no-commit-id','--name-only','-r','-z',baselineCommit,candidateCommit]));
+  const rels=[...new Set([...changed,...(receipt?.snapshot?.files||[]).map(f=>f.relPath)])].filter(rel=>base.has(rel)||cand.has(rel)).sort();
+  const blobDigest=async row=>row?byteDigest(await git(m.repo,['cat-file','blob',row[2]])):null;
+  const out=[];
+  for(const rel of rels){
+   const b=base.get(rel),c=cand.get(rel);
+   out.push({relPath:rel,baselineDigest:await blobDigest(b),candidateDigest:await blobDigest(c),baselineMode:b?b[0]:null,candidateMode:c?c[0]:null});
+  }
+  return {baselineCommit,candidateCommit,targetRef:m.targetRef??null,files:out};
+ }
+ async reviewBlob(m,commit,relPath){
+  const row=entries(await git(m.repo,['ls-tree','-r','-z',commit])).get(relPath);
+  return row?git(m.repo,['cat-file','blob',row[2]]):null;
+ }
+ // 受控应用人工草稿：先验证整个计划（任一文件drift即整体拒绝，零写入），
+ // 再逐文件写入——documentParent逐级O_NOFOLLOW固定父目录（父目录不可被换
+ // 成symlink逃逸），原子temp+sync+rename+复核，残留temp始终清理。
+ async applyReviewedFiles(m,plan){
+  if(!plan||!plan.length)return;
+  const steps=[];
+  for(const item of plan){
+   workPath(item.relPath);
+   let captured;
+   try{captured=await safeFile(m.directory,item.relPath);}
+   catch(error){fail('WORKTREE_DRIFT','执行文件不可安全读取：'+item.relPath);}
+   const current=byteDigest(captured?.bytes??null);
+   if(current!==item.toDigest&&current!==item.fromDigest)fail('WORKTREE_DRIFT','执行目录与冻结候选不一致，未写入人工审校：'+item.relPath);
+   steps.push({item,captured,current});
+  }
+  for(const {item,captured,current} of steps){
+   if(current===item.toDigest)continue;   // 幂等重放
+   const parent=await documentParent(m.directory,item.relPath);
+   const temp=parent.prefix+path.posix.basename(item.relPath)+'.nozeli-review-'+randomUUID();
+   try{
+    const handle=await fs.open(temp,'wx',captured?parseInt(captured.mode,8)&0o777:0o644);
+    try{await handle.writeFile(item.bytes);await handle.sync();}finally{await handle.close();}
+    if(byteDigest(await safeBytes(m.directory,item.relPath))!==current)fail('WORKTREE_DRIFT','写入期间执行文件变化：'+item.relPath);
+    await fs.rename(temp,path.join(m.directory,item.relPath));
+    if(byteDigest(await safeBytes(m.directory,item.relPath))!==item.toDigest)fail('WORKTREE_DRIFT','人工审校写入校验失败：'+item.relPath);
+   }finally{await fs.rm(temp,{force:true});await parent.close();}
+  }
+ }
  async refresh(){fail('INPUT_FROZEN','输入基线已冻结；继续工作会保留原工作目录，不自动覆盖Worker文件');}
  async documentOperation({work,op,arguments:a,callId,isActive=()=>true}){return this.locked(work.id,async()=>{try{
   const m=await this.prepareInner(work.id);await this.identity(m,{target:false});
   const fingerprint=byteDigest(Buffer.from(JSON.stringify({threadId:work.threadId,op,arguments:a}))),prior=m.documentCalls?.[callId];if(op!=='read'&&prior){if(prior.fingerprint!==fingerprint)fail('CONFLICT','调用标识已用于不同编辑');return {ok:true,continueTurn:true,value:{...prior.value,duplicate:true}};}
   if(op==='read'){const rel=workPath(a.relPath),bytes=await safeBytes(m.directory,rel),text=documentText(bytes),digest=byteDigest(bytes),handle=randomUUID();this.handles.set(handle,{workId:work.id,threadId:work.threadId,rel,digest});return {ok:true,readOnly:true,continueTurn:true,value:{relPath:rel,text,digest,version:{digest},readHandle:handle}};}
   const h=this.handles.get(a.readHandle);if(!h||h.workId!==work.id||h.threadId!==work.threadId)fail('READ_HANDLE_REJECTED','需要当前Worker的读取凭据');
-  const before=await safeBytes(m.directory,h.rel);if(byteDigest(before)!==h.digest)fail('STALE_VERSION','执行文件已变化，请重新读取');let text=documentText(before),end=text.length;const original=text,edits=[...(a.edits||[])].sort((x,y)=>y.from-x.from);
-  for(const e of edits){if(!Number.isInteger(e.from)||!Number.isInteger(e.to)||e.from<0||e.to<e.from||e.to>end||typeof e.insert!=='string'||splitsSurrogate(original,e.from)||splitsSurrogate(original,e.to))fail('INVALID_EDIT','编辑范围无效或切断UTF-16字符');if(e.expected!==undefined&&e.expected!==original.slice(e.from,e.to))fail('CONFLICT','编辑原文与读取版本不符');text=text.slice(0,e.from)+e.insert.replace(/\r\n?/g,'\n')+text.slice(e.to);end=e.from;}
+  const before=await safeBytes(m.directory,h.rel);if(byteDigest(before)!==h.digest)fail('STALE_VERSION','执行文件已变化，请重新读取');
+  // Same model contract as the frontdesk: quote exact text, host resolves offsets.
+  const original=documentText(before),{edits}=resolveTextReplacements(original,a.replacements);
+  const ordered=edits.sort((x,y)=>y.from-x.from);
+  let text=original;for(const e of ordered)text=text.slice(0,e.from)+e.insert+text.slice(e.to);
   if(!isActive())fail('WORK_STOPPED','工作已停止');const parent=await documentParent(m.directory,h.rel),name=path.posix.basename(h.rel),tempName=name+'.'+randomUUID(),temp=parent.prefix+tempName,file=parent.prefix+name;
   try{const captured=await safeFile(m.directory,h.rel);if(byteDigest(captured?.bytes??null)!==h.digest)fail('STALE_VERSION','文件已变化');await fs.writeFile(temp,text,{flag:'wx',mode:captured?parseInt(captured.mode,8)&0o777:0o644});if(!isActive())fail('WORK_STOPPED','工作已停止');if(byteDigest(await safeBytes(m.directory,h.rel))!==h.digest)fail('STALE_VERSION','文件已变化');const value={relPath:h.rel,beforeDigest:h.digest,digest:byteDigest(Buffer.from(text)),eventId:callId,version:{digest:byteDigest(Buffer.from(text))}};m.documentIntent={callId,fingerprint,value,temp:path.join(m.directory,path.posix.dirname(h.rel),tempName),file:path.join(m.directory,h.rel)};await this.save(m);if(!isActive())fail('WORK_STOPPED','工作已停止');if(byteDigest(await safeBytes(m.directory,h.rel))!==h.digest)fail('STALE_VERSION','文件已变化');await fs.rename(temp,file);m.documentCalls??={};if(callId)m.documentCalls[callId]={fingerprint,value};delete m.documentIntent;await this.save(m);this.handles.delete(a.readHandle);return {ok:true,continueTurn:true,value};}finally{await fs.rm(temp,{force:true});await parent.close();}
  }catch(e){return {ok:false,continueTurn:true,error:{code:e.code||'DOCUMENT_FAILED',message:e.message}};}});}
- async finish(work,{decision,reportPersisted,isActive=()=>false,validateAcceptance}={}){return this.locked(work.id,()=>this.repositoryLocked(async()=>{
+ async finish(work,{decision,reportPersisted,isActive=()=>false,validateAcceptance,reviewed=null,mergeAuthorization=null}={}){return this.locked(work.id,()=>this.repositoryLocked(async()=>{
   await this.store.storage.requireOnline(this.store.projectId);
   if(!['accept','discard'].includes(decision))fail('DECISION_REQUIRED','需要用户明确选择接受或放弃');if(!reportPersisted)fail('REPORT_REQUIRED','报告必须先持久化');if(isActive())fail('WORK_ACTIVE','必须先停止Worker');
   let m=await this.readManifest(work.id);
@@ -168,27 +237,62 @@ export class ExecutionWorkspace {
   if(m.finishIntent&&m.finishIntent.decision!==decision)fail('DECISION_CHANGED','已保存的用户决定不可更改');
   if(decision==='accept'&&!m.cleanupStarted)await this.reconcileTarget(m);
   if(!m.cleanupStarted)await this.identity(m,{target:decision==='accept'});
-  if(decision==='accept'){if(validateAcceptance)await validateAcceptance(work,m.candidate?.files||[]);if(!m.cleanupStarted){const current=await this.snapshot(m,m.directory,m.inputCommit,'Nozeli acceptance verification');if(current.tree!==m.candidate?.tree)fail('UNPUBLISHED_CHANGES','执行目录有报告后变更，必须先发布当前候选');}await this.integrate(m,work);}
-  else if(!m.finishIntent){m.finishIntent={decision,status:'authorized',at:new Date().toISOString()};await this.save(m);}
+  if(decision==='accept'){if(validateAcceptance)await validateAcceptance(work,[...new Set([...(m.candidate?.files||[]),...(reviewed?.files||[]).map(f=>f.relPath)])]);if(!m.cleanupStarted){const current=await this.snapshot(m,m.directory,m.inputCommit,'Nozeli acceptance verification');if(current.tree!==m.candidate?.tree)fail('UNPUBLISHED_CHANGES','执行目录有报告后变更，必须先发布当前候选');}await this.integrate(m,work,reviewed,mergeAuthorization);}
+  else if(!m.finishIntent){m.finishIntent={decision:'discard',status:'authorized',at:new Date().toISOString()};await this.save(m);}
   if(isActive())fail('WORK_ACTIVE','Worker仍在运行，未清理');
   m.cleanupStarted=true;await this.save(m);await this.removeOwned(m);
-  m.receipt={status:decision==='accept'?'merged':'discarded',cleaned:true,...(decision==='accept'?{commit:m.finishIntent.commit,files:m.candidate.files,operations:m.finishIntent.files.map(f=>({relPath:f.rel,beforeDigest:f.before,afterDigest:f.after,workId:work.id,commit:m.finishIntent.commit}))}:{})};await this.save(m);return m.receipt;
+  m.receipt={status:decision==='accept'?'merged':'discarded',cleaned:true,...(decision==='accept'?{commit:m.finishIntent.commit,files:m.finishIntent.files.map(f=>f.rel),operations:m.finishIntent.files.map(f=>({relPath:f.rel,beforeDigest:f.before,afterDigest:f.after,workId:work.id,commit:m.finishIntent.commit}))}:{})};await this.save(m);return m.receipt;
  }));}
- async integrate(m,work){
+ async integrate(m,work,reviewed=null,mergeAuthorization=null){
   if(!m.candidate||m.candidate.revision!==work.revision)fail('CANDIDATE_REQUIRED','缺少当前版本的冻结候选');
-  const requests=[work.request,...(work.inputs||[]).map(i=>i.text)];if((work.inputs||[]).some(i=>i.userAction==='no-commit')||/(?:不(?:要|得|许|必)?|禁止)\s*(?:提交|commit|做\s*git)|(?:^|[\s，。；！？,.!?;：:]|请|千万|务必|暂时|先)别\s*(?:提交|commit|做\s*git)|\b(?:do\s+not|don't|no)\s+(?:git\s+)?commit/im.test(requests.filter(Boolean).join('\n')))fail('USER_NO_COMMIT','此工作明确要求不提交Git；请先明确更新这一约束，再选择接受');
+  // 结构化合入授权门（取代旧的原始文本永久veto）：接受路径强制要求与决定
+  // 同事务落账的完整类型化授权——精确候选/审校版本令牌/objectId/仓库/
+  // commonDir/目标ref/targetHead，缺字段或null不允许跳过（无授权不合入）；
+  // never-commit覆盖未批准时零写入阻断；身份不匹配（含篡改）拒绝。
+  if(!mergeAuthorization||typeof mergeAuthorization!=='object'||Array.isArray(mergeAuthorization))fail('MERGE_AUTHORIZATION_REQUIRED','缺少与接受决定同事务落账的合入授权；不合入，资源保留');
+  if(mergeAuthorization.consentRequired&&mergeAuthorization.consent?.status!=='approved')fail('MERGE_CONSENT_REQUIRED','此工作带有明确的“不提交Git”约束；本地合入需在专门待办中一次性批准（绑定当前候选），原请求未改写');
+  {
+   const exact={workId:work.id,revision:work.revision,objectId:work.result?.objectId??null,candidateCommit:m.candidate.commit,reviewVersion:reviewed?.version??null,repo:m.repo,commonDir:m.commonDir,targetRef:m.targetRef};
+   for(const [key,value] of Object.entries(exact)){
+    const bound=mergeAuthorization[key];
+    if(key==='reviewVersion'){if(bound!==value)fail('MERGE_AUTHORIZATION_STALE','合入授权审校版本令牌与当前人工版本集不一致；未合入，保留现场待核对');continue;}
+    if(key==='revision'){if(!Number.isSafeInteger(bound)||bound!==value)fail('MERGE_AUTHORIZATION_STALE','合入授权与当前候选不一致（revision无效）；未合入，保留现场待核对');continue;}
+    if(typeof bound!=='string'||!bound||bound!==value)fail('MERGE_AUTHORIZATION_STALE','合入授权与当前候选不一致（'+key+(bound==null?'缺失':typeof bound!=='string'?'类型错误':'不匹配')+'）；未合入，保留现场待核对');
+   }
+   // targetHead：接受时绑定。之后目标分支的受管推进（reconcileTarget已验证的
+   // 其他工作整合链，receipt chain）是唯一允许的合法漂移——沿m.targetHistory
+   // 从授权head逐步可证推进到当前head才放行；任何不可证漂移拒绝。
+   if(mergeAuthorization.targetHead!==m.targetHead){
+    let cursor=mergeAuthorization.targetHead,guard=0;
+    if(typeof cursor==='string'&&cursor){
+     let advanced=true;
+     while(cursor!==m.targetHead&&advanced&&guard++<=((m.targetHistory||[]).length)){
+      advanced=false;
+      for(const step of m.targetHistory||[])if(step.from===cursor){cursor=step.to;advanced=true;break;}
+     }
+    }
+    if(cursor!==m.targetHead)fail('MERGE_AUTHORIZATION_STALE','合入授权targetHead与当前目标不符且无受管推进链可证；未合入，保留现场待核对');
+   }
+   m.mergeAuthorization??=structuredClone(mergeAuthorization);await this.save(m);
+  }
   let intent=m.finishIntent;
   if(!intent){
+   // 人工审校文件并入整合集合：未被Worker修改的候选文件也可被人工修订并合入。
+   const reviewedFiles=reviewed&&Array.isArray(reviewed.files)?new Map(reviewed.files.map(f=>[f.relPath,f])):null;
    const files=[],base=entries(await git(m.repo,['ls-tree','-r','-z',m.baseCommit])),input=entries(await git(m.repo,['ls-tree','-r','-z',m.inputCommit])),candidate=entries(await git(m.repo,['ls-tree','-r','-z',m.candidate.commit])),staged=entries(await git(m.repo,['ls-files','--stage','-z']));
-   for(const rel of m.candidate.files){workPath(rel);const b=base.get(rel),i=input.get(rel),c=candidate.get(rel),s=staged.get(rel);
+   for(const rel of [...new Set([...m.candidate.files,...(reviewedFiles?[...reviewedFiles.keys()]:[])])]){workPath(rel);const b=base.get(rel),i=input.get(rel),c=candidate.get(rel),s=staged.get(rel);
     const attrs=names(await git(m.repo,['check-attr','-z','filter','working-tree-encoding','text','eol','--',rel]));for(let at=2;at<attrs.length;at+=3)if(!['unspecified','unset',''].includes(attrs[at]))fail('FILTER_UNSUPPORTED','受管文件有转换属性：'+rel);
     const disk=await fs.lstat(path.join(m.repo,rel)).catch(e=>{if(e.code==='ENOENT')return null;throw e;});if(b&&disk&&((disk.mode&0o111?'100755':'100644')!==b[0]))fail('USER_DIRTY','Worker文件权限有用户修改：'+rel);
-    if(JSON.stringify(b)!==JSON.stringify(i))fail('INPUT_OVERLAP','Worker修改了含用户输入覆盖的文件，需用户核对：'+rel);
+    const reconciliation=reviewed?.reconciliation?.find(row=>row.relPath===rel);
+    const approvedReconciliation=reconciliation&&reconciliation.candidateCommit===m.candidate.commit&&reconciliation.inputCommit===m.inputCommit&&reconciliation.targetHead===m.targetHead&&reviewedFiles?.has(rel);
+    if(JSON.stringify(b)!==JSON.stringify(i)&&!approvedReconciliation)fail('INPUT_OVERLAP','Worker修改了含用户输入覆盖的文件，需用户核对：'+rel);
     if((s?.[0]??null)!==(b?.[0]??null)||(s?.[1]??null)!==(b?.[2]??null)||s&&s[2]!=='0')fail('USER_STAGED','Worker文件有用户暂存：'+rel);
-    const before=b?await git(m.repo,['cat-file','blob',b[2]]):null,after=c?await git(m.repo,['cat-file','blob',c[2]]):null;
+    const before=approvedReconciliation?await safeBytes(m.repo,rel):(b?await git(m.repo,['cat-file','blob',b[2]]):null),after=c?await git(m.repo,['cat-file','blob',c[2]]):null;
+    if(approvedReconciliation&&byteDigest(before)!==reconciliation.targetDigest)fail('USER_DIRTY','用户核对后的目标正文再次变化：'+rel);
     if(byteDigest(await safeBytes(m.repo,rel))!==byteDigest(before))fail('USER_DIRTY','Worker文件有用户修改：'+rel);
     if(c&&!['100644','100755'].includes(c[0])||b&&!['100644','100755'].includes(b[0]))fail('PATH_REJECTED','受管文件不是普通Git文件：'+rel);
-    files.push({rel,before:byteDigest(before),after:byteDigest(after),beforeMode:b?.[0]||null,beforeOid:b?.[2]||null,mode:c?.[0]||b?.[0],oid:c?.[2]||null});
+    const reviewedEntry=reviewedFiles?.get(rel)||null;
+    files.push({rel,before:byteDigest(before),after:reviewedEntry?reviewedEntry.digest:byteDigest(after),beforeMode:b?.[0]||null,beforeOid:approvedReconciliation?await this.blob(m.repo,before):(b?.[2]||null),mode:reviewedEntry?(reviewedEntry.mode??(c?.[0]||b?.[0])):(c?.[0]||b?.[0]),oid:reviewedEntry?reviewedEntry.oid:c?.[2]||null});
    }
    const directory=path.join(this.store.root,'evidence','integration-'+work.id);await fs.mkdir(directory,{recursive:true});const beforeIndex=await read(m.index);await fs.writeFile(path.join(directory,'before.index'),beforeIndex);
    const index=path.join(directory,'tree.index'),env={GIT_INDEX_FILE:index};await git(m.repo,['read-tree',m.targetHead],env);

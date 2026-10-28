@@ -4,7 +4,7 @@ import { todoCapabilities } from '../domain/todo-management.mjs';
 import './managed-todos.css';
 
 const statusNames = { open:'待处理', resolved:'已完成', closed:'已关闭（不表示已修复）', iterating:'已续改，原结果保留', superseded:'已被新结果替代', cancelled:'任务已结束（未认可此结果）' };
-const kindNames = { attention:'后台待处理', 'frontdesk-route':'前台去向决定', deviation:'任务偏离决定', result:'结果', problem:'待回答', routing:'澄清', recovery:'恢复', git:'Git', closure:'收尾', system:'系统' };
+const kindNames = { attention:'后台待处理', 'frontdesk-route':'处理方式决定', 'cross-project-permission':'跨项目访问授权', 'effect-permission':'提权/敏感执行授权', 'effect-grant':'执行授权·可撤销', 'merge-consent':'一次性合入批准', 'merge-constraint':'合并策略', 'cross-project-migrated':'授权迁移通知', deviation:'任务偏离决定', result:'结果', problem:'待回答', routing:'澄清', recovery:'恢复', git:'Git', closure:'收尾', system:'系统' };
 export function mountManagedTodos({ document, invoke, openTodo, viewWork, recover, refresh, toast }) {
   const $ = id => document.getElementById(id);
   let state = null, projectId = null, filter = 'open', count = 50, epoch = 0, paintSignature = '';
@@ -67,6 +67,7 @@ export function mountManagedTodos({ document, invoke, openTodo, viewWork, recove
     const source=projectId,cap=todoCapabilities(state,todo),work=state.works?.find(w=>w.id===todo.workId);
     const items=[{id:'detail',label:'查看详情',run:()=>openTodo(todo.id)},{id:'copy',label:'复制待办内容',run:async()=>{const r=await invoke('document.clipboard',{action:'write',text:text(todo)});if(!r.ok)throw Error(r.error?.message||'复制失败');}}];
     if(work)items.push({id:'work',label:work.status==='ended'?'查看关联任务历史':'查看关联任务',run:()=>viewWork(work.id)});
+    if(todo.status==='open'&&todo.kind==='merge-constraint')items.push({id:'choose-merge',label:'选择合并策略（never-commit / hold / none）',run:()=>openTodo(todo.id)});
     if(todo.status==='open'&&work&&['paused','review'].includes(work.status)&&['recovery','git'].includes(todo.kind)&&todo.sourceJobId&&Number.isInteger(todo.revision))items.push({id:'recover',label:todo.kind==='git'?'重查并重试原 Git 检查点':'回到原线程核查（不重放）',run:()=>recover(todo,source)});
     if(cap.close)items.push({id:'close',label:'关闭此提醒',run:()=>act('close',todo,source)});
     if(cap.reopen)items.push({id:'reopen',label:'重新打开待办（仅提醒）',run:()=>act('reopen',todo,source)});
@@ -117,7 +118,7 @@ export function mountManagedTodos({ document, invoke, openTodo, viewWork, recove
       row.dataset.state=todo.status;row.dataset.kind=todo.kind;
       const open=row.querySelector('[data-managed-todo]');open.dataset.todoKind=todo.kind;open.disabled=pending.has(projectId+':'+todo.id);open.onclick=()=>openTodo(todo.id);
       row.querySelector('.managed-todo-title').textContent=todo.title;
-      const category=todo.kind==='result'?'read':['problem','routing','frontdesk-route','deviation'].includes(todo.kind)?'answer':['attention','recovery','git','closure','system'].includes(todo.kind)?'check':'other';row.dataset.category=category;
+      const category=todo.kind==='result'?'read':['problem','routing','frontdesk-route','cross-project-permission','effect-permission','effect-grant','merge-consent','deviation'].includes(todo.kind)?'answer':['attention','recovery','git','closure','system','cross-project-migrated'].includes(todo.kind)?'check':'other';row.dataset.category=category;
       row.querySelector('.managed-todo-marker').textContent={read:'读',answer:'答',check:'！',other:'·'}[category];
       open.setAttribute('aria-label',todo.title+' · '+(kindNames[todo.kind]||todo.kind)+' · '+(statusNames[todo.status]||todo.status));
       const more=row.querySelector('[data-todo-more]');more.setAttribute('aria-label','待办操作：'+todo.title);more.disabled=open.disabled;more.onclick=()=>showMenu(todo,null,more);

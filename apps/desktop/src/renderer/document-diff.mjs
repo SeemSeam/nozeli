@@ -8,17 +8,17 @@ import { basicSetup } from 'codemirror';
 import { syntaxHighlighting } from '@codemirror/language';
 import { classHighlighter } from '@lezer/highlight';
 
-export function mountDocumentDiff({ parent, leftPath, leftText, rightPath, rightText, onNavigate = () => {} }) {
+export function mountDocumentDiff({ parent, leftPath, leftText, rightPath, rightText, leftLabel = '基线（只读）', rightLabel = '候选版本（只读）', onNavigate = () => {} }) {
   const language = path => /\.(md|markdown)$/i.test(path) ? markdown() : languageSupportForPath(path);
   const nonce = document.querySelector('meta[name="nozeli-style-nonce"]').content;
-  const makeState = (path, doc) => ({
+  const makeState = (path, doc, label) => ({
     doc,
-    extensions: [basicSetup, readerEditorTheme(), syntaxHighlighting(classHighlighter), language(path), EditorState.readOnly.of(true), EditorView.editable.of(false), EditorView.cspNonce.of(nonce)],
+    extensions: [basicSetup, readerEditorTheme(), syntaxHighlighting(classHighlighter), language(path), EditorState.readOnly.of(true), EditorView.editable.of(false), EditorView.contentAttributes.of({'aria-label':`${path} · ${label}`}), EditorView.cspNonce.of(nonce)],
   });
   parent.replaceChildren();
   const merge = new MergeView({
-    a: makeState(leftPath, leftText),
-    b: makeState(rightPath, rightText),
+    a: makeState(leftPath, leftText, leftLabel),
+    b: makeState(rightPath, rightText, rightLabel),
     parent,
     highlightChanges: true,
     gutter: true,

@@ -32,7 +32,8 @@ else
   exec ${quote(path.join(current,'nozeli'))} "$@"
 fi
 `,{mode:0o755});await fs.chmod(bin,0o755);
-const apps=path.join(home,'.local/share/applications'),icons=path.join(home,'.local/share/icons/hicolor/scalable/apps');await fs.mkdir(apps,{recursive:true});await fs.mkdir(icons,{recursive:true});await fs.copyFile(path.join(application,'assets/nozeli.svg'),path.join(icons,'nozeli.svg'));
+const apps=path.join(home,'.local/share/applications'),icons=path.join(home,'.local/share/icons/hicolor/256x256/apps');await fs.mkdir(apps,{recursive:true});await fs.mkdir(icons,{recursive:true});await fs.copyFile(path.join(application,'assets/nozeli.png'),path.join(icons,'nozeli-paired-tabs.png'));
+await fs.rm(path.join(home,'.local/share/icons/hicolor/scalable/apps/nozeli.svg'),{force:true});
 const desktop=`[Desktop Entry]
 Version=1.0
 Type=Application
@@ -41,7 +42,7 @@ Comment=Read, edit and annotate documents with AI collaboration
 Comment[zh_CN]=代码与文档编辑器 · 阅读、批注和 AI 协作
 Exec="${bin.replaceAll('"','\\"')}" %F
 TryExec=${bin}
-Icon=nozeli
+Icon=${path.join(icons,'nozeli-paired-tabs.png')}
 Terminal=false
 StartupNotify=false
 StartupWMClass=Nozeli

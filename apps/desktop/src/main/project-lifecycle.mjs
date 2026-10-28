@@ -22,7 +22,7 @@ export class ProjectLifecycle {
   constructor({host,workspace,managed,trashItem,beforeStop=async()=>{},reconcileManaged,protectedRoots=[],timeoutMs=15000}) {
     Object.assign(this,{host,workspace,managed,trashItem,beforeStop,reconcileManaged,timeoutMs});
     this.protectedRoots=[os.homedir(),host.storage.root,...protectedRoots].map(root=>path.resolve(root));
-    this.tokens=new Map();this.operations=new Map();
+    this.tokens=new Map();this.operations=new Map();this.removeAdmissions=new Map();
   }
   async localScope(project) {
     if(typeof project.instanceId!=='string' || !/^[a-f0-9-]{36}$/i.test(project.instanceId))throw fail('INVALID_INSTANCE','本机项目身份无效。');
@@ -85,10 +85,41 @@ export class ProjectLifecycle {
   }
   async removeProject(projectId,{operationId}={}) {
     if(typeof operationId!=='string'||!/^[a-zA-Z0-9:_-]{8,160}$/.test(operationId))throw fail('INVALID_OPERATION_ID');
+    // Remove admissions are serialized per project so a second click can
+    // neither reconcile nor run concurrently with the first.
+    const previous=this.removeAdmissions.get(projectId)??Promise.resolve();
+    const admission=previous.catch(()=>{}).then(()=>this.admitRemove(projectId,operationId));
+    this.removeAdmissions.set(projectId,admission);
+    try{return await admission;}finally{if(this.removeAdmissions.get(projectId)===admission)this.removeAdmissions.delete(projectId);}
+  }
+  async admitRemove(projectId,operationId) {
     const receipt=await this.host.storage.getRecovery(projectId,'lifecycle:remove:'+operationId);
     if(receipt?.complete)return receipt.result;
     const project=await this.host.requireRegisteredProject(projectId);
+    await this.retireHeldRemove(projectId,project);
     return this.run({projectId,operationId,instanceId:project.instanceId,action:'remove',root:project.root});
+  }
+  // A historical remove hold may be retired only by an explicit new remove
+  // click on the same project/instance with nothing in flight, and only via
+  // the observation-only reconcile proving the writers stopped first. Any
+  // other hold action, unknown project, mismatched instance, active operation
+  // or pending stop keeps the project locked. No unconditional release, no
+  // lock or recovery-record deletion, no replay of pending work.
+  async retireHeldRemove(projectId,project) {
+    const hold=this.host.storage.lifecycleHolds.get(projectId);
+    if(!hold)return;
+    if(hold.action!=='remove')throw fail('PROJECT_LIFECYCLE_ACTIVE',`项目仍有 ${hold.action} 生命周期操作待核查（${hold.operationId}）；请先在恢复中心核验。`);
+    if(hold.instanceId!==project.instanceId)throw fail('PROJECT_IDENTITY_CONFLICT','待核查移除操作属于另一项目实例；请先在恢复中心核验。');
+    if(this.operations.has(projectId))throw fail('PROJECT_LIFECYCLE_ACTIVE','项目生命周期操作仍在进行，本次移除未放行。');
+    if(hold.pendingCount||this.managed.projectStops?.has(projectId))throw fail('PROJECT_STOP_PENDING','原停稳操作仍未结束，本次移除未放行。');
+    const record=await this.host.storage.getRecovery(projectId,'lifecycle:'+hold.operationId);
+    if(record&&(record.projectId!==projectId||record.operationId!==hold.operationId||record.action!=='remove'||(record.instanceId!==undefined&&record.instanceId!==project.instanceId)))throw fail('PROJECT_IDENTITY_CONFLICT','待核查日志与原移除操作不匹配；保留项目及恢复记录。');
+    // Re-verify after the recovery read: anything that started or changed
+    // state during that await refuses instead of racing into reconcile.
+    if(this.host.storage.lifecycleHolds.get(projectId)!==hold||this.operations.has(projectId))throw fail('PROJECT_LIFECYCLE_ACTIVE','原移除状态在核验期间发生变化；本次移除未放行。');
+    if(hold.pendingCount||this.managed.projectStops?.has(projectId))throw fail('PROJECT_STOP_PENDING','原停稳操作仍未结束；本次移除未放行。');
+    await this.reconcile({projectId,operationId:hold.operationId});
+    if(this.host.storage.lifecycleHolds.get(projectId))throw fail('PROJECT_LIFECYCLE_ACTIVE','项目已进入新的生命周期操作，本次移除未放行。');
   }
   async settleManaged({projectId,pendingId,requestKey,confirmed}) {
     if(confirmed!==true||typeof requestKey!=='string'||requestKey.length<8||typeof pendingId!=='string')throw fail('INVALID_RECOVERY_CONFIRMATION','需要明确确认及稳定的结算请求身份。');

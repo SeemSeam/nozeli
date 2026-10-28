@@ -35,7 +35,6 @@ export function mountFileTreeActions({ invoke, projectId, perform, open, openAt,
   const paint = () => {more.disabled=!projectId();for(const node of tree.querySelectorAll('button')) node.classList.toggle('tree-cut',buffer?.projectId===projectId()&&buffer?.action==='cut'&&(node.dataset.path===buffer.source||node.dataset.path.startsWith(buffer.source+'/')));};
   async function execute(action, ctx) {
     if(!action || busy || ctx.projectId!==projectId()) return;
-    if(buffer?.projectId!==ctx.projectId) buffer=null;
     const source=ctx.relPath, destination=ctx.directory?source:parent(source);
     if(action==='copy'||action==='cut'){if(source)buffer={projectId:ctx.projectId,source,sources:sources(ctx),action};paint();return;}
     busy=true;
@@ -52,10 +51,18 @@ export function mountFileTreeActions({ invoke, projectId, perform, open, openAt,
       let request={projectId:ctx.projectId,action,source};
       if(action==='paste'){
         if(!buffer)return;
-        const paths=buffer.sources||[buffer.source];
-        if(!await confirmBatch(buffer.action==='cut'?'移动文件':'复制文件',paths,destination||'项目根目录'))return;
-        for(const path of paths){if(ctx.projectId!==projectId())throw Error('项目已切换');const r=await perform({...buffer,source:path,target:destination});if(!r.ok)throw Error(r.error.message);}
-        if(buffer.action==='cut')buffer=null;paint();toast('操作完成');return;
+        const clip=buffer,paths=[...(clip.sources||[clip.source])],cross=clip.projectId!==ctx.projectId;
+        if(!await confirmBatch((cross?'跨项目':'')+(clip.action==='cut'?'移动':'复制')+'文件',paths,destination||'项目根目录'))return;
+        const remaining=[...paths];
+        for(const path of paths){
+          if(ctx.projectId!==projectId())throw Error('项目已切换');
+          const r=await perform({projectId:ctx.projectId,...(cross?{sourceProjectId:clip.projectId}:{}),action:clip.action,source:path,target:destination});
+          if(!r.ok)throw Error(r.error.message);
+          remaining.shift();
+          if(clip.action==='cut'&&buffer===clip&&remaining.length)clip.sources=[...remaining];
+        }
+        if(clip.action==='cut'&&buffer===clip)buffer=null;
+        paint();toast('操作完成');return;
       }
       else if(action==='rename'||action==='createFile'||action==='createFolder'){
         const name=await ask(action==='rename'?'重命名':action==='createFile'?'新建文件':'新建文件夹',action==='rename'?source.split('/').at(-1):'');
@@ -64,11 +71,10 @@ export function mountFileTreeActions({ invoke, projectId, perform, open, openAt,
       if(ctx.projectId!==projectId())throw Error('项目已切换，请重新选择操作。');
       const result=await perform(request);
       if(!result.ok)throw Error(result.error.message);
-      if(action==='paste'&&buffer?.action==='cut')buffer=null;
       paint();toast('操作完成');
     }catch(e){toast(e.message||'文件操作失败');}finally{busy=false;}
   }
-  const menuItems=ctx=>[...(!ctx.directory?[{label:'在右侧打开',id:'right'},{label:'在下方打开',id:'bottom'},{label:'在新窗口打开',id:'window'},...targets().map(group=>({label:'在指定组打开 · '+group.label,id:'group:'+group.id}))]:[]),{label:'快速打开',id:'quickOpen'},...treeMenuItems({directory:ctx.directory,root:!ctx.relPath,canPaste:buffer?.projectId===ctx.projectId,visibility:true,hidden:ctx.hidden,showHidden:visibility().showHidden})];
+  const menuItems=ctx=>[...(!ctx.directory?[{label:'在右侧打开',id:'right'},{label:'在下方打开',id:'bottom'},{label:'在新窗口打开',id:'window'},...targets().map(group=>({label:'在指定组打开 · '+group.label,id:'group:'+group.id}))]:[]),{label:'快速打开',id:'quickOpen'},...treeMenuItems({directory:ctx.directory,root:!ctx.relPath,canPaste:!!buffer,visibility:true,hidden:ctx.hidden,showHidden:visibility().showHidden})];
   function menu(node,event){const ctx=target(node);if(!ctx.projectId)return;node?.focus({preventScroll:true});const b=node?.getBoundingClientRect()||tree.getBoundingClientRect();popup.open(menuItems(ctx),{x:event?.clientX??b.left+20,y:event?.clientY??b.bottom,run:action=>execute(action,ctx)});}
   more.addEventListener('click',()=>{const ctx=target();if(!ctx.projectId)return;popup.open([...menuItems(ctx),menuNotice],{...panelMenuPosition(more),run:action=>execute(action,ctx)});more.setAttribute('aria-expanded','true');});
   tree.addEventListener('contextmenu',e=>{e.preventDefault();menu(e.target.closest('button[data-path]'),e);});

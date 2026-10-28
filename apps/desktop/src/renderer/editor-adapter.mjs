@@ -35,6 +35,7 @@ export function codeMirrorAdapter(view, { readOnly = false } = {}) {
   const live = () => { if (disposed) throw new Error('Editor disposed.'); };
   return {
     engine: 'codemirror',
+    setReadOnly(value) { live(); readOnly = Boolean(value); },
     subscribe(listener) { live(); listeners.add(listener); return () => listeners.delete(listener); },
     _notify(update) { for (const listener of listeners) listener({ before: update.startState.doc.toString(), text: update.state.doc.toString(), changes: update.changes }); },
     undo() { live(); if (!readOnly) undo(view); },

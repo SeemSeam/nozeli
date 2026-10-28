@@ -59,7 +59,7 @@ $('demo-drag').onpointermove=event=>{if(drag&&event.pointerId===drag.pointerId)q
 const stopDrag=event=>{if(!drag)return;drag=null;if(event.currentTarget.hasPointerCapture(event.pointerId))event.currentTarget.releasePointerCapture(event.pointerId);};
 $('demo-drag').onpointerup=stopDrag;$('demo-drag').onpointercancel=stopDrag;
 $('demo-drag').onkeydown=event=>{if(event.target!==event.currentTarget||!bounds||!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key))return;event.preventDefault();if(model?.status==='playing')void action('play',{intent:'pause'});queueMove(bounds.x+(event.key==='ArrowLeft'?-16:event.key==='ArrowRight'?16:0),bounds.y+(event.key==='ArrowUp'?-16:event.key==='ArrowDown'?16:0));};
-window.nozeli.subscribe('workspace.control',event=>{if(event.type==='demo-controls-state'){bounds=event.bounds;render(event.model);}if(event.type==='demo-controls-bounds'){bounds=event.bounds;document.documentElement.style.setProperty('--demo-max-height',Math.max(80,event.availableHeight-16)+'px');}});
+window.nozeli.subscribe('workspace.control',event=>{if(event.type==='demo-controls-state'){bounds=event.bounds;render(event.model);}if(event.type==='demo-controls-bounds')bounds=event.bounds;});
 new ResizeObserver(measure).observe(root);
 const bootstrap=await invoke('workspace.bootstrap');bounds=bootstrap.bounds;render(bootstrap.model);
 await invoke('workspace.demoControls.ready');window.__nozeliReady=true;

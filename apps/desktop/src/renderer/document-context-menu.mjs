@@ -86,6 +86,7 @@ export function documentCommands(s) {
     ...((s.canOpenBeside??(!s.secondary&&s.kind==='text'))?[{id:'openBeside',label:'在旁边打开文件…'}]:[]),
     {id:'openExternal',label:'使用系统默认应用打开'},{id:'reveal',label:'在文件管理器中显示'},{id:'relativePath',label:'复制相对路径'},
     ...(s.canExport?[{separator:true},{id:'exportPpt',label:'导出 PPTX 副本…'}]:[]),
+    ...(s.canExportTextCopy?[{separator:true},{id:'exportTextCopy',label:s.exportTextCopyLabel}]:[]),
   ]});
   return items;
 }

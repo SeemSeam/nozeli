@@ -9,6 +9,7 @@ if (process.argv.includes('--nozeli-document')) {
   return;
 }
 const { app, BaseWindow, WebContentsView, screen, ipcMain, Menu, shell, clipboard, nativeTheme } = require('electron');
+if (process.platform === 'linux') app.setDesktopName('io.nozeli.Nozeli.desktop');
 const {WorkspaceWindow} = require('./workspace-window.cjs');
 let dialog, session;
 let DesktopHost, HostError, ops, agents, managedAgents, agentHandlers, lspManager, formatterService, texManager, texLanguage, guidedDemo;
@@ -302,8 +303,17 @@ async function main() {
     }
     return hasProviderReferences({storage:host.storage},provider);
   }});
+  const {createPrivilegeBroker}=await import('./privilege-broker.mjs');
+  // 特权执行代理：真实 OS 机制专用子进程（Linux pkexec+可信系统 python 内联 launcher）；
+  // sessionId 只是宿主准入状态，每次执行各自经 OS 提权机制启动，不声明持久 root；
+  // capabilities 如实上报可用性（机制缺失/解释器不可信→unavailable，不伪称）。
+  const privilegeBroker=createPrivilegeBroker({appRoot:APP_ROOT});
   ompSystemSource.modelFor=role=>providerSettings.modelFor(role);
-  managedAgents=new ManagedProjects({userDataDir:app.getPath('userData'),host,legacy:agents,beforeDocumentOperation:syncDocument,ompSystemSource,ompAuthBroker,ompCommand:ompRuntime?.command});
+  managedAgents=new ManagedProjects({userDataDir:app.getPath('userData'),host,legacy:agents,beforeDocumentOperation:syncDocument,ompSystemSource,ompAuthBroker,ompCommand:ompRuntime?.command,privilegeBroker});
+  // Review-candidate documents reuse the managed controller as their sole
+  // content authority; ordinary file.* operations dispatch through it.
+  const {createReviewDocumentAdapter,runReviewDecision,stripFlushEnvelope}=await import('./review-documents.mjs');
+  host.reviewDocuments=createReviewDocumentAdapter({host,managed:managedAgents});
   managedAgents.onEvent(event=>{workspaceNative?.broadcast('nozeli:agent',event,event.projectId);if(event.kind==='managed-state'&&workspaceNative?.shell&&!workspaceNative.shell.dead&&workspaceNative.shell.projectId!==event.projectId)workspaceNative.shell.wc.send('nozeli:agent',event);if(event.kind==='managed-state'&&(managedAgents.activeProjectId===null||managedAgents.activeProjectId===event.projectId))void workspaceNative?.conversationState(event.projectId,event.state).catch(error=>console.error('conversation connection state',error));});
   const server = await startStatic();
   const {WorkspaceNative}=await import('./workspace-native.mjs');
@@ -370,15 +380,23 @@ async function main() {
       trusted(event,op,payload??{});
       if(op.startsWith('workspace.demoControls.'))return {ok:true,value:await workspaceNative.invoke(scope,op,payload??{})};
       // Admission is established before asynchronous business work begins.
+      // Business payloads stay strict: the admission envelope is consumed by
+      // authorize/assertRecoveryAdmission/lifecycleFlushOwner above and never
+      // reaches managed.review.* or other controllers.
+      const businessPayload=stripFlushEnvelope(payload??{});
       if(op.startsWith('demo.'))return {ok:true,value:await guidedDemo.invoke(scope,op,payload??{})};
       if(admissionProject&&guidedDemo.isDemo(admissionProject)){
         await guidedDemo.verify(admissionProject);
         if(op==='config.status')return {ok:true,value:{choiceRequired:false,source:'demo-fixture',demo:true}};
         if(op.startsWith('managed.'))return {ok:true,value:await guidedDemo.managed(op,{...payload,projectId:admissionProject})};
         if(op.startsWith('agents.')&&!['agents.messages','agents.reports'].includes(op))throw new HostError('DEMO_NATIVE_DISABLED','演示副本禁止原生 Agent、模型及终端启动。');
-        if(['report.copySource','report.export'].includes(op))throw new HostError('DEMO_NATIVE_DISABLED','演示报告请从示例项目文件读取或另存。');
+        if(['report.copySource','report.export','report.artifact.export'].includes(op))throw new HostError('DEMO_NATIVE_DISABLED','演示报告请从示例项目文件读取或另存。');
       }
-      if(admissionProject&&!['workspace.recovery','workspace.recovery.list','workspace.recovery.object','session.flushed','workspace.bootstrap','project.lifecycle.reconcile'].includes(op))host.storage.assertActive(admissionProject);
+      // A stuck lifecycle hold must not dead-lock the remove entry itself:
+      // project.remove alone bypasses this blanket assertActive and is then
+      // validated by ProjectLifecycle.removeProject's conservative guard;
+      // ordinary writes stay blocked while any hold exists.
+      if(admissionProject&&!['workspace.recovery','workspace.recovery.list','workspace.recovery.object','session.flushed','workspace.bootstrap','project.lifecycle.reconcile','project.remove'].includes(op)&&!workspaceNative.lifecycleFlushOwner(scope,payload?.flushRequestId,op))host.storage.assertActive(admissionProject);
       if(['project.lifecycle.preview','project.lifecycle.execute','project.lifecycle.reconcile'].includes(op)){if(scope.role!=='shell')throw new HostError('IPC_DENIED','只能在主窗口管理项目');await finishDrawing({projectId:payload.projectId});if(op.endsWith('preview'))return {ok:true,value:await projectLifecycle.preview(payload)};if(op.endsWith('reconcile'))return {ok:true,value:await projectLifecycle.reconcile(payload)};return {ok:true,value:await projectLifecycle.execute(payload)};}
       if(op==='project.retry'){if(scope.role!=='shell')throw new HostError('IPC_DENIED','仅主窗可重试项目');await managedAgents.stopProject(payload.projectId);const value=await host.storage.retry(payload.projectId);workspaceNative.unavailableProjects?.delete(payload.projectId);return {ok:true,value};}
       if(op==='workspace.recovery.settle'){if(scope.role!=='shell')throw new HostError('IPC_DENIED','仅主窗可明确结算保留成果');return {ok:true,value:await projectLifecycle.settleManaged(payload)};}
@@ -406,6 +424,17 @@ async function main() {
         isolatedPreview?.setAppearance({palette:payload.palette,mode:nativeTheme.shouldUseDarkColors?'dark':'light'});
         return {ok:true,value:payload};
       }
+      if(op==='workspace.review.decide'){
+        if(scope.role!=='shell'&&!(scope.role==='surface'&&['report','history'].includes(scope.kind)))throw new HostError('IPC_DENIED','只有报告面或主窗口能执行审核决定。');
+        return {ok:true,value:await runReviewDecision({workspace:workspaceNative,managed:managedAgents,host,payload:payload??{}})};
+      }
+      // Review documents fail closed for services that are not source-aware:
+      // office/media editors, language servers, formatters and TeX operate on
+      // project files only, never on frozen candidate bodies.
+      if(payload?.documentSource&&payload.documentSource.type!=='project'&&['word.import','word.save','sheet.save','sheet.recover','lsp.sync','lsp.request','formatter.format','document.image.put','document.image.get'].includes(op))throw new HostError('UNSUPPORTED','此操作不支持审校文档。');
+      if(payload?.documentSource&&payload.documentSource.type!=='project'&&op.startsWith('tex.'))throw new HostError('UNSUPPORTED','审校文档不支持 TeX 构建。');
+      // Host-verified export source for native save-a-copy (read-only).
+      if(op==='document.export.read')return {ok:true,value:await workspaceNative.documentExportRead(scope,payload??{})};
       if(op.startsWith('workspace.')){
         const priorProject=scope.projectId;
         const value=await workspaceNative.invoke(scope,op,payload??{});
@@ -498,6 +527,14 @@ async function main() {
         const result = await showDirectoryDialog(owner, { title: '选择引用文件所在目录', properties: ['openDirectory'], ...(typeof payload?.path === 'string' && path.isAbsolute(payload.path) ? { defaultPath: payload.path } : {}) });
         return { ok: true, value: result.canceled || !result.filePaths?.[0] ? { canceled: true } : { path: result.filePaths[0] } };
       }
+      if (op === 'material.pickFiles') {
+        const owner = scope.win;
+        if (!owner) throw new Error('当前窗口不可用，无法选择文件。');
+        const picks = testPickPaths();
+        if (picks.length) return { ok: true, value: { paths: picks, canceled: false } };
+        const result = await showDirectoryDialog(owner, { title: '选择要引用的文件', properties: ['openFile', 'multiSelections'] });
+        return { ok: true, value: result.canceled ? { paths: [], canceled: true } : { paths: result.filePaths || [], canceled: false } };
+      }
       if (op === 'session.capture' && process.env.NOZELI_SHOT_DIR) {
         const name = typeof payload?.name === 'string' && /^[a-z0-9-]+$/.test(payload.name) ? payload.name : 'shot';
         const image = await event.sender.capturePage();
@@ -551,7 +588,18 @@ async function main() {
       if (op === 'tree.labels') return { ok:true, value:await fileTreeOps.labels(payload ?? {}) };
       if (op === 'tree.label') return { ok:true, value:await fileTreeOps.setLabel(payload ?? {}) };
       if (op === 'tree.view') return { ok:true, value:await fileTreeOps.view(payload ?? {}) };
-      if (op === 'tree.mutate') return { ok:true, value:await workspaceNative.mutateTree(payload??{},()=>fileTreeOps.run(payload??{})) };
+      if (op === 'tree.mutate') {
+        const request = payload ?? {};
+        if (request.sourceProjectId !== undefined) {
+          if (typeof request.sourceProjectId !== 'string' || !request.sourceProjectId) throw new HostError('INVALID_PAYLOAD', '跨项目源项目无效。');
+          // Cross-project paste runs on behalf of the shell into its active
+          // (destination) project only; the global authorize stays untouched.
+          if (scope.role !== 'shell' || request.projectId !== scope.projectId) throw new HostError('PROJECT_SCOPE_DENIED', '只能在当前打开的目标项目中粘贴。');
+        }
+        const perform=()=>workspaceNative.mutateTree(request,()=>fileTreeOps.run(request));
+        const cross=request.sourceProjectId&&request.sourceProjectId!==request.projectId;
+        return { ok:true, value:await (cross?host.storage.withProjectOperation(request.sourceProjectId,perform):perform()) };
+      }
       if(op==='ppt.draft'||op==='ppt.export'){
         const project=await host.requireProject(payload?.projectId);
         const abs=await fileTreeOps.locate(project,payload?.relPath,false);
@@ -635,26 +683,31 @@ async function main() {
         const {ManagedReportExporter}=await import('./managed-report-export.mjs');
         return {ok:true,value:await new ManagedReportExporter({host,managedAgents,beforeOperation:syncDocument}).export(payload??{})};
       }
+      if(op==='report.artifact.export'){
+        const {ManagedReportExporter}=await import('./managed-report-export.mjs');
+        return {ok:true,value:await new ManagedReportExporter({host,managedAgents,beforeOperation:syncDocument}).exportArtifact(payload??{})};
+      }
       if(typeof op==='string'&&op.startsWith('managed.')){
-        const historyOnly=['managed.status','managed.history.list','managed.history.read','managed.artifact.read','managed.artifact.list','managed.timeline.page','managed.timeline.read','managed.timeline.request','managed.changes.list','managed.changes.read','managed.worker.history','managed.resident.history','managed.draft','managed.disposition','managed.terminal.screen'].includes(op);
+        const historyOnly=['managed.status','managed.history.list','managed.history.read','managed.artifact.read','managed.artifact.list','managed.timeline.page','managed.timeline.read','managed.timeline.request','managed.changes.list','managed.changes.read','managed.worker.history','managed.resident.history','managed.draft','managed.disposition','managed.terminal.screen','managed.review.read','managed.review.instruction.read'].includes(op);
         // Local disposition still passes sender/project/mutation authorization above.
-        const localDisposition=['managed.end','managed.retry','managed.todo.manage','managed.attention.ack','managed.attention.respond','managed.attention.draft.read','managed.attention.draft.write'].includes(op);
+        const localDisposition=['managed.end','managed.retry','managed.merge.consent','managed.merge.constraint','managed.deviation.resolve','managed.problem.resolve','managed.effect.response','managed.todo.manage','managed.attention.ack','managed.attention.respond','managed.attention.draft.read','managed.attention.draft.write','managed.review.save','managed.review.accept','managed.review.instruction.save'].includes(op);
         let blocked=ompRuntimeError&&!historyOnly&&!localDisposition?ompRuntimeError:null;
         if(!blocked&&!historyOnly&&!localDisposition&&(await readNozeliConfiguration(nozeliPaths)).choiceRequired)blocked=new HostError('CONFIG_SETUP_REQUIRED','请先完成Nozeli独立配置初始化；本地阅读不受影响。');
         if(blocked){if(payload.projectId){await host.requireRegisteredProject(payload.projectId);await managedAgents.reportConnectionError(payload.projectId,blocked);}throw blocked;}
-        return {ok:true,value:await managedAgents.invoke(op,payload??{})};
+        return {ok:true,value:await managedAgents.invoke(op,businessPayload)};
       }
-      if (Object.hasOwn(agentHandlers, op)) return { ok: true, value: await agentHandlers[op](payload ?? {}) };
+      if (Object.hasOwn(agentHandlers, op)) return { ok: true, value: await agentHandlers[op](businessPayload) };
       const handler = Object.hasOwn(ops, op) ? ops[op] : null;
       if (!handler || op === 'project.pick') throw new HostError('UNKNOWN_OP', 'Unknown host operation.');
       if(op==='project.remove'){await finishDrawing({projectId:payload.projectId});return {ok:true,value:await projectLifecycle.removeProject(payload.projectId,{operationId:payload.operationId})};}
-      const value = await handler(host, payload ?? {});
+      const value = await handler(host, businessPayload);
       if(['file.save','word.save','sheet.save'].includes(op)&&guidedDemo.isDemo(payload.projectId))await guidedDemo.recordTutorialSave(scope,op,payload,value);
       return { ok: true, value };
       };
-      workspaceNative.assertRecoveryAdmission(scope,op,payload);
       const flushOwner=workspaceNative.lifecycleFlushOwner(scope,payload?.flushRequestId,op);
-      if(flushOwner)return await host.storage.withLifecycleOwner(scope.projectId,flushOwner,execute);
+      // Only a genuine registered storage hold enters withLifecycleOwner; a
+      // workspace-close receipt owner was already authorized precisely above.
+      if(flushOwner&&host.storage.lifecycleHolds.get(scope.projectId)===flushOwner)return await host.storage.withLifecycleOwner(scope.projectId,flushOwner,execute);
       const control=op==='demo.create'||op==='demo.exit'||op.startsWith('session.')||op.startsWith('project.lifecycle.')||['project.pick','project.remove','project.retry','project.recent','workspace.closeProject','workspace.recovery.settle','workspace.bootstrap','workspace.recovery','workspace.recovery.list','workspace.recovery.object'].includes(op);
       return admissionProject&&!control ? await host.storage.withProjectOperation(admissionProject,execute) : await execute();
     } catch (error) {

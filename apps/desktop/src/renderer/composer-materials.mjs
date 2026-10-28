@@ -147,6 +147,7 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
   const addButton = document.createElement('button');
   addButton.type = 'button'; addButton.className = 'cm-add'; addButton.textContent = '＋ 引用文件';
   addButton.setAttribute('aria-haspopup', 'dialog');
+  addButton.setAttribute('aria-expanded', 'false');
   footer.prepend(addButton);
   const panel = document.createElement('div');
   panel.className = 'cm-picker'; panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', '引用文件'); panel.hidden = true;
@@ -154,7 +155,8 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
     <div class="cm-picker-bar">
       <button type="button" class="cm-up" title="返回上级目录">↑ 上级</button>
       <input class="cm-path" type="text" placeholder="输入本机目录路径后 Enter，或点右侧选择…" aria-label="目录路径">
-      <button type="button" class="cm-browse">选择目录…</button>
+      <button type="button" class="cm-pick-files">选择文件…</button>
+      <button type="button" class="cm-browse">选择文件夹…</button>
     </div>
     <p class="cm-picker-error" role="status" hidden></p>
     <div class="cm-picker-list" role="listbox" aria-multiselectable="true" tabindex="0"></div>
@@ -163,26 +165,38 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
       <span class="cm-picker-more" hidden></span>
       <button type="button" class="cm-cancel">取消</button>
       <button type="button" class="cm-confirm" disabled>引用所选文件</button>
-    </div>`;
+    </div>
+  `;
   document.body.append(panel);
   const listEl = panel.querySelector('.cm-picker-list'), pathInput = panel.querySelector('.cm-path');
   const errorEl = panel.querySelector('.cm-picker-error'), countEl = panel.querySelector('.cm-picker-count');
   const moreEl = panel.querySelector('.cm-picker-more'), confirmBtn = panel.querySelector('.cm-confirm');
-  const upBtn = panel.querySelector('.cm-up'), browseBtn = panel.querySelector('.cm-browse');
+  const upBtn = panel.querySelector('.cm-up'), browseBtn = panel.querySelector('.cm-browse'), pickFilesBtn = panel.querySelector('.cm-pick-files');
   let pickerPath = null, pickerOffset = 0, pickerHasMore = false, pickerEntries = [];
   const picked = new Map(); // absPath -> {name,size}
 
-  function closePicker() { panel.hidden = true; addButton.setAttribute('aria-expanded', 'false'); addButton.focus(); }
+  function positionPicker() {
+    if (panel.hidden) return;
+    const anchor = addButton.getBoundingClientRect();
+    const bounds = panel.getBoundingClientRect();
+    panel.style.left = Math.max(8, Math.min(anchor.left, innerWidth - bounds.width - 8)) + 'px';
+    panel.style.top = Math.max(8, Math.min(anchor.top - bounds.height - 8, innerHeight - bounds.height - 8)) + 'px';
+  }
+  // Observe the rendered box, including late directory results and wrapped
+  // footer/error text, rather than guessing the file list's eventual height.
+  const pickerResize = new ResizeObserver(positionPicker);
+  pickerResize.observe(panel);
+  window.addEventListener('resize', positionPicker);
+  function closePicker() { panel.hidden = true; addButton.setAttribute('aria-expanded', 'false'); addButton.focus({ preventScroll: true }); }
   addButton.addEventListener('click', async () => {
     if (!panel.hidden) { closePicker(); return; }
-    const r = addButton.getBoundingClientRect();
-    panel.style.left = Math.max(8, Math.min(r.left, innerWidth - 560)) + 'px';
-    panel.style.top = Math.max(8, r.top - 420) + 'px';
     panel.hidden = false; addButton.setAttribute('aria-expanded', 'true');
+    positionPicker();
+    // Focus before browsing: a late response must not steal focus after Esc.
+    pathInput.focus({ preventScroll: true });
     const current = getProjectFile?.();
     const start = current?.absPath ? current.absPath.replace(/[\\/][^\\/]+$/, '') : projectRoot();
     await loadDir(start);
-    pathInput.focus();
   });
   function projectRoot() { return projectRootGetter?.() || ''; }
   async function loadDir(target, offset = 0, keepError = null) {
@@ -285,18 +299,39 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
       const result = await invoke('material.pickDirectory', { path: pickerPath });
       if (!result?.ok) throw new Error(result?.error?.message || '系统目录选择失败，请直接输入目录路径。');
       if (result.value?.path) await loadDir(result.value.path);
-      else { errorEl.hidden = true; pathInput.focus(); }
+      else { errorEl.hidden = true; if (!panel.hidden) pathInput.focus(); }
     } catch (error) {
       errorEl.hidden = false;
       errorEl.textContent = error.message;
-      pathInput.focus();
+      if (!panel.hidden) pathInput.focus();
     } finally {
       browseBtn.disabled = false;
-      browseBtn.textContent = '选择目录…';
+      browseBtn.textContent = '选择文件夹…';
     }
   });
-  panel.addEventListener('keydown', event => { if (event.key === 'Escape') { event.stopPropagation(); closePicker(); } });
-  panel.querySelector('.cm-cancel').addEventListener('click', () => { picked.clear(); closePicker(); });
+  pickFilesBtn.addEventListener('click', async () => {
+    pickFilesBtn.disabled = true;
+    try {
+      const result = await invoke('material.pickFiles', {});
+      if (!result?.ok) throw new Error(result?.error?.message || '系统文件选择失败。');
+      for (const abs of result.value?.paths || []) if (typeof abs === 'string' && abs) picked.set(abs, { name: abs.split(/[\\/]/).pop(), path: abs });
+      renderPickerList();
+      if (result.value?.paths?.length) errorEl.hidden = true;
+    } catch (error) { errorEl.hidden = false; errorEl.textContent = error.message; }
+    finally { pickFilesBtn.disabled = false; if (!panel.hidden) pathInput.focus(); }
+  });
+  document.addEventListener('keydown', event => {
+    if (panel.hidden || event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
+    // Capture before a higher layer's own Escape handler can hide it. Native
+    // dialogs, material previews and drawing retain ownership of that key.
+    const higherLayer = [...document.querySelectorAll('dialog[open], [role="dialog"]:not([hidden]), [aria-modal="true"]:not([hidden]), [popover]:popover-open, .material-viewer:not([hidden]), .region-drawing-editor:not([hidden]), .nozeli-context-menu:not([hidden])')]
+      .some(node => node !== panel && !panel.contains(node) && node.getClientRects().length > 0);
+    if (higherLayer) return;
+    event.preventDefault();
+    event.stopPropagation();
+    closePicker();
+  }, true);
+  panel.querySelector('.cm-cancel').addEventListener('click', () => { picked.clear(); updatePickerCount(); closePicker(); });
   confirmBtn.addEventListener('click', async () => {
     const owner = beginRead();
     if (!owner) return;

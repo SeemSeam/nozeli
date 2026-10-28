@@ -121,7 +121,8 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
         if (id === projectId && gen === generation) toast('旧版只读历史加载失败：' + error.message);
       });
       const connect = !scope?.viewState?.draftOnly && !scope?.draftOnly && (initialized || configuration.initialized);
-      const loaded = await managed.load(id, {connect:ownsConversation&&connect, observe:!ownsConversation, ...(ownsConversation?{input:restoredInput}:{})});
+      const ownsConnection = scope?.role === 'shell' || ownsConversation;
+      const loaded = await managed.load(id, {connect:ownsConnection&&connect, observe:!ownsConnection, ...(ownsConversation?{input:restoredInput}:{})});
       if (id !== projectId || gen !== generation) return;
       if(!loaded&&connect&&scope?.role==='shell')await managed.enable(id);
       if (!connect) setAi('请完成 Nozeli 配置初始化；仍可阅读项目和历史记录。', 'unavailable');

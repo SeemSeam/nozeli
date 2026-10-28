@@ -12,19 +12,51 @@ async function fixture(t,limit){
  await manager.saveResourceLimits({globalLimit:limit});const projects=[];for(const name of ['alpha','beta']){const dir=root+'/'+name;await fs.mkdir(dir);await fs.writeFile(dir+'/source.txt','KEEP_'+name);projects.push((await host.pick(dir)).project);}return {root,manager,projects,requests,owners,hold(){hold=true;},release(){hold=false;for(const res of pending.splice(0))answer(res);}};
 }
 async function send(c,key){const r=await c.send('frontdesk','仅回复确认，不使用工具。',{requestKey:key});await wait(()=>c.store.state.jobs.find(j=>j.id===r.jobId)?.status==='completed'&&!c.running.size,'native model job completion',60000);return r;}
-test('native processes sleep on project switch and resume the original nonempty threads without replay',{timeout:180000},async t=>{
+test('project switching keeps idle resident processes while global capacity remains available',{timeout:180000},async t=>{
+ const f=await fixture(t,6),{manager:m,projects:[a,b]}=f;await m.setActiveProject(a.id);await m.connect(a.id,{enable:true});const ca=m.controllers.get(a.id);await send(ca,'keep-alpha');const old=ca.sessions.get('frontdesk'),stamp=await processStamp(old.pid);await m.setActiveProject(b.id);await m.connect(b.id,{enable:true});assert.equal(await processStamp(old.pid),stamp,'switching with free slots must keep the idle resident alive');assert.equal(ca.sessions.get('frontdesk'),old);await m.setActiveProject(a.id);await m.connect(a.id);assert.equal(ca.sessions.get('frontdesk'),old);assert.equal((await m.resourceStatus()).globalUsed,4);assert.equal(f.owners.length,4,'switch back never respawns residents');assert.equal(f.requests.length,1,'switch never replays model input');t.diagnostic(JSON.stringify({root:f.root,scope:'real private OMP residents remain connected below global process limit'}));
+});
+
+test('capacity demand reclaims idle processes and resumes original nonempty threads without replay',{timeout:180000},async t=>{
  const f=await fixture(t,2),{manager:m,projects:[a,b]}=f;await m.setActiveProject(a.id);await m.connect(a.id,{enable:true});const ca=m.controllers.get(a.id);await send(ca,'native-alpha-first');await ca.setDraft('frontdesk','PERSIST_GUI_DRAFT');const thread=ca.store.state.residents.frontdesk.threadId,old=ca.sessions.get('frontdesk'),stamp=await processStamp(old.pid),jobs=ca.store.state.jobs.length;
  await m.setActiveProject(b.id);await m.connect(b.id,{enable:true});assert.notEqual(await processStamp(old.pid),stamp,'inactive idle native process exited');assert.equal((await m.resourceStatus(b.id)).globalUsed,2);const before=f.requests.length;
- await m.setActiveProject(a.id);assert.equal(ca.sessions.size,0,'activation keeps enabled historical project asleep');assert.equal(m.processBudget.used,0);assert.equal(f.requests.length,before);const ownersBeforeResume=f.owners.length;await m.connect(a.id);await wait(()=>m.controllers.get(a.id).sessions.get('frontdesk')?.phase==='ready'||m.controllers.get(a.id).sessions.get('frontdesk')?.phase==='idle','explicit resident resume');assert(f.owners.length>ownersBeforeResume,'explicit connect restores native owners');assert.equal(ca.store.state.residents.frontdesk.threadId,thread);assert.equal(ca.store.state.jobs.length,jobs);assert.equal(ca.store.state.drafts.frontdesk,'PERSIST_GUI_DRAFT');await pause(300);assert.equal(f.requests.length,before,'explicit restoration does not issue a model request');assert.equal(await fs.readFile(a.rootDisplay+'/source.txt','utf8'),'KEEP_alpha');
- const resident=ca.sessions.get('frontdesk'),view=resident.terminalAttachment(ca,'frontdesk');view.input('NATIVE_DRAFT_DO_NOT_LOSE');await wait(()=>ca.nativeDraftTargets.has('frontdesk'),'actual native draft observed');await m.setActiveProject(b.id).catch(error=>{assert.equal(error.code,'AGENT_PROCESS_LIMIT');});assert.equal(await processStamp(resident.pid)!==null,true,'native unsent input protects process');assert(ca.nativeDraftTargets.has('frontdesk'));view.input('\x01\x0b');await wait(async()=>{await resident.refreshNativeDraft();return !ca.nativeDraftTargets.has('frontdesk');},'native draft clear');
+ await m.setActiveProject(a.id);assert.equal(ca.sessions.size,0,'activation does not wake reclaimed sessions');assert.equal(m.processBudget.used,2,'navigation alone retains other project owners even at capacity');assert.equal(f.requests.length,before);const ownersBeforeResume=f.owners.length;await m.connect(a.id);await wait(()=>m.controllers.get(a.id).sessions.get('frontdesk')?.phase==='ready'||m.controllers.get(a.id).sessions.get('frontdesk')?.phase==='idle','explicit resident resume');assert(f.owners.length>ownersBeforeResume,'explicit connect restores native owners');assert.equal(ca.store.state.residents.frontdesk.threadId,thread);assert.equal(ca.store.state.jobs.length,jobs);assert.equal(ca.store.state.drafts.frontdesk,'PERSIST_GUI_DRAFT');await pause(300);assert.equal(f.requests.length,before,'explicit restoration does not issue a model request');assert.equal(await fs.readFile(a.rootDisplay+'/source.txt','utf8'),'KEEP_alpha');
+ const resident=ca.sessions.get('frontdesk'),orchestratorSession=ca.sessions.get('orchestrator'),view=resident.terminalAttachment(ca,'frontdesk');view.input('NATIVE_DRAFT_DO_NOT_LOSE');await wait(()=>ca.nativeDraftTargets.has('frontdesk'),'actual native draft observed');
+ const draftStamp=await processStamp(resident.pid),idleStamp=await processStamp(orchestratorSession.pid);assert.equal(m.processBudget.used,2,'process budget is full before the demand');
+ await m.setActiveProject(b.id);await m.reclaimInactive(b.id,{target:'frontdesk'}); // real cross-project capacity demand under a full budget
+ assert.equal(await processStamp(resident.pid),draftStamp,'real capacity demand cannot reclaim the owner of unsent native input');
+ assert(ca.nativeDraftTargets.has('frontdesk'),'unsent native input is still pending after the demand');
+ assert.equal(await processStamp(orchestratorSession.pid),null,'the same real demand honors the cap by reclaiming the unprotected idle owner');
+ assert.equal(m.processBudget.used,1,'exactly one process slot was freed by the demand');assert.equal(f.requests.length,before,'capacity demand never replays model input');
+ view.input('\x01\x0b');await wait(async()=>{await resident.refreshNativeDraft();return !ca.nativeDraftTargets.has('frontdesk');},'native draft clear');
+ const ownersBeforeRefill=f.owners.length;
+ await m.connect(b.id,{enable:true}); // real other-project demand: both B resident slots cannot fit while A holds one
+ assert.equal(await processStamp(resident.pid),null,'cleared draft no longer protects the idle owner under the real capacity demand');
+ const cb=m.controllers.get(b.id);
+ await wait(()=>cb.sessions.get('frontdesk')&&!cb.sessions.get('frontdesk').closed&&cb.sessions.get('orchestrator')&&!cb.sessions.get('orchestrator').closed,'both demanding residents are live after the refill');
+ assert(f.owners.length>ownersBeforeRefill,'the demanding project spawned its own native owners');
+ assert.equal(m.processBudget.used,2,'the demanding project exactly refills the freed budget');
+ assert.equal(f.requests.length,before,'capacity refill never replays model input');
+ assert.equal(ca.store.state.drafts.frontdesk,'PERSIST_GUI_DRAFT','GUI draft survives every reclaim');
  t.diagnostic(JSON.stringify({root:f.root,requests:f.requests.length,owners:f.owners.length,scope:'actual private OMP sessions; local scripted model only'}));
 });
-test('project switching cannot reclaim a real admitted native round, then background completion releases idle ownership',{timeout:240000},async t=>{
- const f=await fixture(t,4),{manager:m,projects:[a,b]}=f;await m.setActiveProject(a.id);await m.connect(a.id,{enable:true});const ca=m.controllers.get(a.id);f.hold();const r=await ca.send('frontdesk','等待本地验收响应，不使用工具。',{requestKey:'native-held-round'});await wait(()=>f.requests.length===1,'actual native HTTP request');const owner=ca.sessions.get('frontdesk'),stamp=await processStamp(owner.pid);
+test('background completion retains its native owner until capacity is demanded',{timeout:240000},async t=>{
+ const f=await fixture(t,6),{manager:m,projects:[a,b]}=f;await m.setActiveProject(a.id);await m.connect(a.id,{enable:true});const ca=m.controllers.get(a.id);f.hold();const r=await ca.send('frontdesk','等待本地验收响应，不使用工具。',{requestKey:'native-held-round'});await wait(()=>f.requests.length===1,'actual native HTTP request');const owner=ca.sessions.get('frontdesk'),stamp=await processStamp(owner.pid);
  await m.setActiveProject(b.id);await m.connect(b.id,{enable:true});assert.equal(await processStamp(owner.pid),stamp);assert.equal(ca.store.state.jobs.find(j=>j.id===r.jobId).status,'running');assert((await m.resourceStatus()).globalUsed<=4);
  const holdMs=Number(process.env.NOZELI_RESOURCE_HOLD_MS??0);assert(Number.isSafeInteger(holdMs)&&holdMs>=0&&holdMs<=180000);const heldAt=Date.now();while(Date.now()-heldAt<holdMs){await pause(Math.min(1000,holdMs-(Date.now()-heldAt)));assert.equal(await processStamp(owner.pid),stamp,'background in-flight owner stays alive');assert.equal(ca.store.state.jobs.find(j=>j.id===r.jobId).status,'running');assert((await m.resourceStatus()).globalUsed<=4);}t.diagnostic(JSON.stringify({heldMs:Date.now()-heldAt,scope:'real admitted native request deliberately held by local HTTP endpoint; not a model-compute benchmark'}));
- f.release();await wait(()=>ca.store.state.jobs.find(j=>j.id===r.jobId).status==='completed','background completion',60000);await wait(async()=>await processStamp(owner.pid)!==stamp,'inactive owner safely sleeps after completion',30000);assert.equal(ca.store.state.jobs.length,1);assert.equal(f.requests.length,1);t.diagnostic(JSON.stringify({root:f.root,scope:'real in-flight native HTTP and process protection, not a long-duration benchmark'}));
+ f.release();await wait(()=>ca.store.state.jobs.find(j=>j.id===r.jobId).status==='completed'&&!ca.running.size,'background completion',60000);await m.attentionPublish?.get(a.id);await pause(500);assert.equal(await processStamp(owner.pid),stamp,'background completion must not disconnect idle owner');assert.equal(ca.store.state.jobs.length,1);assert.equal(f.requests.length,1);t.diagnostic(JSON.stringify({root:f.root,scope:'real in-flight native HTTP and process preservation after completion'}));
 });
+test('background completion wakes another projects capacity-blocked accepted input',{timeout:180000},async t=>{
+ const f=await fixture(t,2),{manager:m,projects:[a,b]}=f;
+ await m.setActiveProject(b.id);await m.connect(b.id,{enable:true});const cb=m.controllers.get(b.id);
+ await m.setActiveProject(a.id);await m.connect(a.id,{enable:true});const ca=m.controllers.get(a.id);
+ f.hold();await ca.send('frontdesk','Only reply confirmed.',{requestKey:'capacity-held-front'});await ca.send('orchestrator','Only reply confirmed.',{requestKey:'capacity-held-orchestrator'});
+ await wait(()=>f.requests.length===2,'both native owners busy');
+ await m.setActiveProject(b.id);const job=await cb.send('frontdesk','Only reply confirmed.',{requestKey:'capacity-waiting-project'});
+ await wait(()=>!cb.kicking&&!cb.running.size,'other project waits for capacity');assert.equal(cb.store.state.jobs.find(j=>j.id===job.jobId).status,'queued');
+ f.release();await wait(()=>cb.store.state.jobs.find(j=>j.id===job.jobId).status==='completed','queued other-project input wakes on background completion',60000);
+ assert.equal(f.requests.length,3,'accepted queued input executes exactly once');t.diagnostic(JSON.stringify({root:f.root,scope:'real native global-capacity wait and cross-project completion wakeup'}));
+});
+
 test('abrupt host death is recovered before new admission and restores the original thread without replay',{timeout:180000},async t=>{
  const f=await fixture(t,2),{manager:m,projects:[a]}=f;
  const phase=path.join(f.root,'crash-phase.mjs'),receipt=path.join(f.root,'crash-receipt.json');
@@ -61,4 +93,38 @@ for(const loss of ['root','metadata'])test('real native in-flight '+loss+' loss 
  assert.equal(f.requests.length,1,'source recovery does not replay accepted input');
  assert.equal(m.controllers.has(a.id),false,'retry does not restart native sessions');
  t.diagnostic(JSON.stringify({root:f.root,loss,requests:f.requests.length,owners:owners.length,scope:'actual private OMP CLI/native processes and held loopback model response; no remote provider, inference or user data'}));
+});
+
+test('real Worker keeps its process and thread across project switch; explicit stop then connect continues the original thread under a new owner',{timeout:240000},async t=>{
+ const f=await fixture(t,6),{manager:m,projects:[a,b]}=f;
+ await m.setActiveProject(a.id);await m.connect(a.id,{enable:true});const ca=m.controllers.get(a.id);
+ const work=await ca.store.submit('真实 Worker 生命周期：切换保持，显式停用后续接','生命周期验证');
+ if(ca.store.find(work.id).status==='queued')await ca.store.activate(work.id,{initialize:w=>{w.binding=structuredClone(ca.store.state.bindings.worker);}});
+ await ca.session(work.id); // real native Worker process, no model round yet
+ const first=await ca.send(work.id,'仅回复确认，不使用工具。',{requestKey:'worker-history-first'});
+ await wait(()=>ca.store.state.jobs.find(j=>j.id===first.jobId)?.status==='completed'&&!ca.running.size,'worker first non-empty turn completes',60000);
+ const worker=ca.sessions.get(work.id);assert(worker?.pid,'real worker process must exist');
+ const stamp=await processStamp(worker.pid),thread=ca.store.find(work.id).threadId,jobs=ca.store.state.jobs.length,requests=f.requests.length;
+ assert(thread,'non-empty worker turn binds durable thread history');
+ assert.equal((await m.resourceStatus()).globalUsed,3,'residents plus worker below the global capacity');
+ await m.setActiveProject(b.id);await m.connect(b.id,{enable:true});
+ assert.equal(await processStamp(worker.pid),stamp,'switching projects below capacity keeps the real Worker process');
+ assert.equal(ca.sessions.get(work.id),worker,'worker session object is retained across the switch');
+ assert.equal(ca.store.find(work.id).threadId,thread,'worker thread identity is retained across the switch');
+ assert.equal(f.requests.length,requests,'switching never replays worker input');
+ assert.equal((await m.resourceStatus()).globalUsed,5,'both projects residents plus worker stay below capacity');
+ await m.stopProject(a.id); // explicit project stop, not a crash
+ assert.equal(await processStamp(worker.pid),null,'explicit stop exits the owned worker process');
+ await m.setActiveProject(a.id);await m.connect(a.id,{enable:true});
+ const ca2=m.controllers.get(a.id);assert.notEqual(ca2,ca,'reconnect builds a fresh controller');
+ const kept=ca2.store.find(work.id);assert.equal(kept.threadId,thread,'work keeps the original worker thread after explicit stop');
+ assert(['paused','running','review'].includes(kept.status),'work remains continuable, never auto-ended');
+ assert.equal(ca2.store.state.jobs.length,jobs,'completed jobs are retained without replay');assert.equal(f.requests.length,requests,'reconnect does not replay completed input');
+ const second=await ca2.send(work.id,'继续同一工作：仅回复确认，不使用工具。',{requestKey:'worker-continue-after-stop'});
+ await wait(()=>ca2.store.state.jobs.find(j=>j.id===second.jobId)?.status==='completed'&&!ca2.running.size,'worker continuation completes on the resumed thread',60000);
+ const resumed=ca2.sessions.get(work.id);assert(resumed?.pid&&resumed.pid!==worker.pid,'continuation runs under a new owner process after the intentional stop');
+ assert.equal(resumed.threadId,thread,'continuation resumes the original worker thread');
+ assert.equal(ca2.store.find(work.id).threadId,thread,'thread identity survives the stop-and-continue cycle');
+ assert.equal(f.requests.length,requests+1,'exactly one new model round serves the continuation');
+ t.diagnostic(JSON.stringify({root:f.root,workId:work.id,thread,owners:f.owners.length,requests:f.requests.length,scope:'actual private OMP Worker process; local scripted model only; app-restart worker coverage lives in tests/desktop-project-switch-residents-live.mjs'}));
 });

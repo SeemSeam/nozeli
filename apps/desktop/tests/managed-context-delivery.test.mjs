@@ -92,3 +92,15 @@ test('frontdesk reset epoch survives restore and compaction without changing orc
  for(const generation of [0,1]){const front=prepareDelivery(restored,{target:'frontdesk',threadId:'fresh-native',generation,job:{id:'fresh',context:{}},used:1});const text=JSON.stringify(front.sections);assert(!text.includes('OLD_REQUEST_SENTINEL'));assert(!text.includes('OLD_CROSS_ROLE_SENTINEL'));assert.equal(front.stats.externalMessages,0);assert(front.checkpoint.facts.works.some(w=>w.id==='w'));}
  assert.equal(JSON.stringify(restored.contextDelivery.orchestrator),checkpoint);const orch=prepareDelivery(restored,{target:'orchestrator',threadId:'other-orch',job:{id:'new-intake',context:{}},used:1});assert(JSON.stringify(orch.sections).includes('OLD_REQUEST_SENTINEL'));assert(JSON.stringify(orch.sections).includes('answer'));
 });
+
+test('automatic background continuation and explicit routing preserve distinct structured authority',()=>{
+ const state=initial(),auto={id:'intake',context:{frontJobId:'front-source',handoffAuthority:'original-request'}};
+ const values=delivery=>delivery.sections.flatMap(([,text])=>{try{return [JSON.parse(text)];}catch{return [];}});
+ const automatic=values(prepareDelivery(state,{target:'orchestrator',threadId:'o',job:auto,used:1})).filter(value=>value.authority);
+ assert.equal(automatic.length,1);assert.equal(automatic[0].authority,'original-request');assert.equal(automatic[0].sourceJobId,'front-source');assert.equal(automatic[0].proposalId,undefined);
+ state.frontdeskRoutes=[{id:'route',version:2,sourceJobId:'original',decision:{action:'background',authority:'user-choice'}}];
+ const job={id:'routed',context:{frontdeskRouteId:'route',handoffAuthority:'original-request'}};
+ const explicit=values(prepareDelivery(state,{target:'orchestrator',threadId:'o',job,used:1})).filter(value=>value.authority);
+ assert.equal(explicit.length,1);assert.equal(explicit[0].authority,'user-choice');assert.equal(explicit[0].proposalId,'route');assert.equal(explicit[0].version,2);assert.equal(explicit[0].sourceJobId,'original');assert.equal(explicit[0].action,'background');
+ const ordinary=values(prepareDelivery(state,{target:'frontdesk',threadId:'f',job:{id:'j2'},used:1}));assert.equal(ordinary.some(value=>value.authority),false,'viewing ordinary context never fabricates continuation authority');
+});

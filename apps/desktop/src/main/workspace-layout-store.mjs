@@ -29,7 +29,7 @@ function snapshot(projectId, input) {
   const node = value => value.kind === 'split'
     ? {...pick(value, ['kind','id','axis','ratio']), first: node(value.first), second: node(value.second)}
     : pick(value, ['kind','id','views','activeViewId','historyViewIds']);
-  const layout = {...pick(source, ['schema','singleContent','projectId','revision','maximized']), mainRoot: node(source.mainRoot), detached: source.detached.map(window => ({...pick(window, ['id','boundsDip','alwaysOnTop']), root: node(window.root)})), views: Object.fromEntries(Object.entries(source.views).map(([id, view]) => [id, {...pick(view, ['id','projectId','resourceId','kind','relPath','pinned','preview','readOnly','sourceViewId']), ...(view.viewState ? {viewState: navigation(view.viewState)} : {})}]))};
+  const layout = {...pick(source, ['schema','singleContent','projectId','revision','maximized']), mainRoot: node(source.mainRoot), detached: source.detached.map(window => ({...pick(window, ['id','boundsDip','alwaysOnTop']), root: node(window.root)})), views: Object.fromEntries(Object.entries(source.views).map(([id, view]) => [id, {...pick(view, ['id','projectId','resourceId','kind','relPath','documentSource','pinned','preview','readOnly','sourceViewId']), ...(view.viewState ? {viewState: navigation(view.viewState)} : {})}]))};
   return validateLayout(layout);
 }
 export class WorkspaceLayoutStore {

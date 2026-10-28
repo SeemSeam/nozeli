@@ -26,7 +26,12 @@ export function treeViewValue(record) {
 export class FileTreeOps {
   constructor(host, { trash }) { this.host = host; this.trash = trash; this.pending = Promise.resolve(); }
   run(input) {
-    const task = this.pending.then(() => this.host.projectLock(input.projectId)(() => this.perform(input)));
+    // Cross-project operations hold both project locks, acquired in a stable
+    // order so they can never deadlock against single-project callers.
+    const cross = typeof input?.sourceProjectId === 'string' && input.sourceProjectId && input.sourceProjectId !== input.projectId;
+    const locks = cross ? [input.projectId, input.sourceProjectId].sort() : [input.projectId];
+    const held = locks.reduceRight((work, id) => () => this.host.projectLock(id)(work), () => this.perform(input));
+    const task = this.pending.then(held);
     this.pending = task.catch(() => {});
     return this.host.track(task);
   }
@@ -90,8 +95,23 @@ export class FileTreeOps {
     if (typeof name !== 'string' || !name.trim() || name.startsWith('.') || /[<>:"/\\|?*\x00-\x1f]/.test(name) || /[. ]$/.test(name) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) fail('请输入有效的文件名，不含路径分隔符或系统保留名称。');
     return name;
   }
-  async perform({ projectId, action, source = '', target = '', name }) {
+  // Reject nested links and independent project metadata before moving or
+  // copying a whole directory.
+  async assertTransferable(src, stat) {
+    const walk = async dir => { for (const entry of await fs.readdir(dir, { withFileTypes:true })) {
+      if (entry.isSymbolicLink()) fail('目录包含符号链接，未执行操作。');
+      if (entry.name === '.nozeli' || entry.name === '.git') fail('目录包含独立项目元数据，未执行操作。');
+      if (entry.isDirectory()) await walk(path.join(dir, entry.name));
+    } };
+    if (stat.isDirectory()) await walk(src);
+  }
+  async perform({ projectId, action, sourceProjectId, source = '', target = '', name }) {
+    if (sourceProjectId !== undefined && (typeof sourceProjectId !== 'string' || !sourceProjectId)) fail('跨项目源项目无效。');
     const project = await this.host.requireProject(projectId);
+    if (sourceProjectId && sourceProjectId !== projectId) {
+      if (action !== 'copy' && action !== 'cut') fail('跨项目仅支持复制或剪切。');
+      return this.performCross({ project, projectId, sourceProjectId, action, source, target });
+    }
     const store = new FileTags({ storage: this.host.storage, projectId, root: project.root });
     const changes = new FileChanges({ storage: this.host.storage, projectId, root: project.root }), allChanges=await changes.all();
     if (action === 'createFile' || action === 'createFolder') {
@@ -105,13 +125,7 @@ export class FileTreeOps {
     }
     const src = await this.locate(project, source);
     const stat = await fs.lstat(src);
-    // Reject nested links before copying a whole directory.
-    const walk = async dir => { for (const entry of await fs.readdir(dir, { withFileTypes:true })) {
-      if (entry.isSymbolicLink()) fail('目录包含符号链接，未执行操作。');
-      if (entry.name === '.nozeli' || entry.name === '.git') fail('目录包含独立项目元数据，未执行操作。');
-      if (entry.isDirectory()) await walk(path.join(dir, entry.name));
-    } };
-    if (stat.isDirectory()) await walk(src);
+    await this.assertTransferable(src, stat);
     if (action === 'trash') {
       await this.trash(src);
       // Keep metadata and recovery drafts so a recycle-bin restore retains tags.
@@ -200,5 +214,60 @@ export class FileTreeOps {
       for (const r of recovery) await this.host.storage.putRecovery(projectId,r.old,null);
     }
     return { relPath: destination, ...(action !== 'copy' ? { from: source } : {}) };
+  }
+  // Cross-project copy/cut: the payload's projectId is the destination and
+  // sourceProjectId the origin. Destination entries always get a fresh
+  // identity: no tags, change ledgers, provenance, drafts or other source
+  // session material is copied or referenced across projects.
+  async performCross({ project, projectId, sourceProjectId, action, source, target }) {
+    const sourceProject = await this.host.requireProject(sourceProjectId);
+    const src = await this.locate(sourceProject, source);
+    const stat = await fs.lstat(src);
+    await this.assertTransferable(src, stat);
+    const parent = await this.locate(project, target, true);
+    const base = path.basename(src);
+    const destination = [target, base].filter(Boolean).join('/');
+    const dest = path.join(parent, base);
+    // A destination physically inside the copied subtree would recurse into itself.
+    const nested = path.relative(src, dest);
+    if (nested === '' || (!nested.startsWith('..') && !path.isAbsolute(nested))) fail('不能把项目内容复制到自身内部。');
+    if (await exists(dest)) fail('目标已存在，未覆盖。请先重命名。');
+    const destTags = new FileTags({ storage: this.host.storage, projectId, root: project.root });
+    if ((await destTags.all()).some(s => inside(s.file.relPath, destination))) fail('目标位置保留有标签恢复资料，请使用其他名称。');
+    const destChanges = new FileChanges({ storage: this.host.storage, projectId, root: project.root });
+    if ((await destChanges.all()).some(s => inside(s.relPath, destination))) fail('目标位置保留有修改历史，请使用其他名称。');
+    const srcChanges = new FileChanges({ storage: this.host.storage, projectId: sourceProjectId, root: sourceProject.root });
+    if ((await srcChanges.all()).some(s => inside(s.relPath, source) && s.pending)) fail('文档有待恢复的修改批次，请先重新打开文档后操作。');
+    // A durable unsaved draft means the disk bytes are not the user's content:
+    // refuse instead of snapshotting stale bytes.
+    for (const { id, value } of await this.host.storage.listRecovery(sourceProjectId))
+      if (id.startsWith('draft:') && value?.relPath && inside(value.relPath, source) && value.status !== 'saved') fail('源文件存在未保存的草稿，请先打开并保存后再跨项目操作。');
+    let destinationCreated = false, sourceRemoved = false, copyComplete = false;
+    try {
+      // Reserve the destination, then fill it; exclusive flags keep another
+      // writer from merging into the same path.
+      if (stat.isDirectory()) {
+        await fs.mkdir(dest); destinationCreated = true;
+        for (const entry of await fs.readdir(src)) await fs.cp(path.join(src, entry), path.join(dest, entry), { recursive: true, force: false, errorOnExist: true });
+      } else { await fs.copyFile(src, dest, 1); destinationCreated = true; }
+      copyComplete = true;
+      // Cut removes the source only after the destination is durable; the
+      // source's own tags and recovery material stay behind so a restore from
+      // the system trash keeps its history.
+      if (action === 'cut') { await this.trash(src); sourceRemoved = true; }
+    } catch (error) {
+      if(action==='cut'&&copyComplete){
+        const recoveryKey='tree-operation:'+randomUUID();
+        await this.host.storage.putRecovery(projectId,recoveryKey,{action,sourceProjectId,source,destination,phase:'needs-attention',destinationRetained:true,error:{message:error.message}});
+        error.message+='；目标副本已保留，请核对源路径与系统回收站，未删除任何恢复资料。';
+      }else if(destinationCreated&&!sourceRemoved){
+        try{await fs.rm(dest,{recursive:true,force:true});}
+        catch(rollbackError){await this.host.storage.putRecovery(projectId,'tree-operation:'+randomUUID(),{action,sourceProjectId,source,destination,phase:'needs-attention',destinationRetained:true,error:{message:error.message},rollbackError:{message:rollbackError.message}});}
+      }
+      throw error;
+    }
+    // No `from`/`removed` keys: the generic same-project UI would otherwise
+    // remap a same-named destination path that never was the source file.
+    return { relPath: destination, sourceProjectId, ...(action === 'cut' ? { sourceFrom: source, moved: true } : {}) };
   }
 }

@@ -87,6 +87,47 @@ for(const failure of ['shell-save','surface-save','attachment','none'])test(`pro
   await native.closeProject('p');assert.equal(native.surfaces.size,0);assert.equal(original.dead,true);assert.equal(root.projectId,null);
  }
 });
+test('project binding commit rolls back shell scope when post-flip notification fails',async t=>{
+ const {native,root}=await fixture(t);
+ const directory=await mkdtemp(path.join(os.tmpdir(),'binding-commit-rollback-'));t.after(()=>rm(directory,{recursive:true,force:true}));
+ await mkdir(path.join(directory,'B'));const target=await native.host.storage.register(path.join(directory,'B'));
+ native.host.requireRegisteredProject=id=>native.host.storage.requireRegistered(id);
+ const source=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'document',relPath:'unsaved.txt'}});
+ native.layouts.set('p',source);native.layouts.set(target.id,createLayout(target.id));native.activeProjectId='p';
+ await native.reconcile(source);
+ receipt(native,root);for(const surface of native.projectRecords('p'))receipt(native,surface);
+ const originalSend=root.wc.send.bind(root.wc);
+ root.wc.send=(channel,payload)=>{if(channel==='nozeli:workspace-changed'&&payload.layout.projectId===target.id)throw Object.assign(new Error('controlled post-flip notification failure'),{code:'COMMIT_NOTIFY_FAILED'});return originalSend(channel,payload);};
+ await assert.rejects(native.invoke(root,'workspace.project',{projectId:target.id}),{code:'COMMIT_NOTIFY_FAILED'});
+ assert.equal(root.projectId,'p','failed commit must not leave the shell record on the unannounced target');
+ assert.equal(native.activeProjectId,'p');
+ assert.equal(native.projectRecords(target.id).length,0,'staged target surfaces are cleaned up');
+ native.authorize({sender:root.wc,senderFrame:root.wc.mainFrame},'state.write',{projectId:'p'});
+ await native.saveRecovery(root,{projectId:'p',generation:1,workspace:{draft:'KEEP_AFTER_BIND_FAILURE'}});
+ assert.equal((await native.host.storage.getRecovery('p','workspace:shell')).workspace.draft,'KEEP_AFTER_BIND_FAILURE');
+ assert.throws(()=>native.authorize({sender:root.wc,senderFrame:root.wc.mainFrame},'state.read',{projectId:target.id}),{code:'PROJECT_SCOPE_DENIED'});
+});
+test('layout broadcast isolates a destroyed recipient instead of derailing the commit',async t=>{
+ const {native,root}=await fixture(t);
+ const directory=await mkdtemp(path.join(os.tmpdir(),'binding-dead-recipient-'));t.after(()=>rm(directory,{recursive:true,force:true}));
+ await mkdir(path.join(directory,'B'));const target=await native.host.storage.register(path.join(directory,'B'));
+ native.host.requireRegisteredProject=id=>native.host.storage.requireRegistered(id);
+ const source=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'document',relPath:'unsaved.txt'}});
+ native.layouts.set('p',source);native.layouts.set(target.id,reduceLayout(createLayout(target.id),{type:'open',view:{kind:'document',relPath:'target.txt'}}));native.activeProjectId='p';
+ await native.reconcile(source);
+ const deadWindow=new Window(),deadRoot=native.register(deadWindow.webContents,{role:'detached',projectId:target.id,windowId:'dead-window',win:deadWindow});
+ native.windows.set(deadRoot.windowId,deadRoot);
+ deadRoot.wc.send=()=>{throw Object.assign(new Error('Object has been destroyed'),{code:'OBJECT_DESTROYED'});};
+ deadRoot.wc.isDestroyed=()=>true;
+ const reported=[];native.onError=error=>reported.push(error);
+ receipt(native,root);for(const surface of native.projectRecords('p'))receipt(native,surface);
+ const result=await native.invoke(root,'workspace.project',{projectId:target.id});
+ assert.equal(result.layout,native.layouts.get(target.id));
+ assert.equal(root.projectId,target.id);
+ assert.equal(deadRoot.dead,true,'destroyed recipient is retired, not retried');
+ assert.equal(reported.length>=1,true,'notification failure is reported through onError, not swallowed');
+ native.authorize({sender:root.wc,senderFrame:root.wc.mainFrame},'state.read',{projectId:target.id});
+});
 test('binding rejects stale resident target parents without moving its guest or changing source visibility',async t=>{
  const {native,root}=await fixture(t);receipt(native,root);
  const directory=await mkdtemp(path.join(os.tmpdir(),'binding-resident-'));t.after(()=>rm(directory,{recursive:true,force:true}));
@@ -534,4 +575,54 @@ test('closing a project allows initial view-state retention but rejects new layo
  assert.equal(native.authorize(event,'workspace.command',{projectId:'p',command:{type:'restoreViewState',viewId:surface.viewId,viewState:{scrollTop:180}}}),surface);
  assert.throws(()=>native.authorize({sender:root.wc,senderFrame:root.wc.mainFrame},'workspace.command',{projectId:'p',command:{type:'split'}}),{code:'PROJECT_LIFECYCLE_ACTIVE'});
  assert.throws(()=>native.authorize(event,'file.save',{projectId:'p',relPath:'a.txt'}),{code:'PROJECT_LIFECYCLE_ACTIVE'});
+});
+test('workspace.focus hands off via parked returnFocus and drops stale requests',async t=>{
+ const {native,root}=await fixture(t);
+ const opened=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'document',relPath:'focus-note.md'}});
+ native.layouts.set('p',opened);const viewId=opened.mainRoot.activeViewId;
+ const surface=native.register(new Contents(),{role:'surface',projectId:'p',windowId:'main',viewId,kind:'document',relPath:'focus-note.md',view:new View()});
+ native.surfaces.set(viewId,surface);
+ surface.view.getVisible=()=>surface.view.visible;
+ let focused=0;surface.wc.focus=()=>focused++;
+ const control=()=>surface.wc.sent.filter(message=>message.channel==='nozeli:workspace-control'&&message.payload?.type==='focus-content').length;
+ // Fresh surface: not ready yet, still occluded by the asking dialog — park, fire nothing.
+ surface.ready=false;surface.view.visible=false;
+ assert.deepEqual(await native.invoke(root,'workspace.focus',{projectId:'p',viewId}),{});
+ assert.equal(focused,0);assert.equal(control(),0);assert.equal(typeof surface.returnFocus,'function');
+ // Another view takes the pane: the parked focus must not steal it once ready.
+ native.layouts.set('p',reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'document',relPath:'focus-other.md'}}));
+ surface.ready=true;surface.view.visible=true;surface.returnFocus();
+ assert.equal(focused,0);assert.equal(control(),0);assert.equal(typeof surface.returnFocus,'function','an unsatisfied attempt keeps the request parked');
+ // The writer is active again: the hook fires exactly once and clears itself.
+ native.layouts.set('p',reduceLayout(native.layouts.get('p'),{type:'activate',viewId}));
+ surface.returnFocus?.();
+ assert.equal(focused,1);assert.equal(control(),1);assert.equal(surface.returnFocus,null);
+ // A satisfied surface focuses immediately, with nothing left parked.
+ await native.invoke(root,'workspace.focus',{projectId:'p',viewId});
+ assert.equal(focused,2);assert.equal(control(),2);assert.equal(surface.returnFocus,null);
+ // A request nothing satisfied expires instead of firing stale.
+ surface.ready=false;surface.view.visible=false;
+ await native.invoke(root,'workspace.focus',{projectId:'p',viewId});
+ const stale=surface.returnFocus;assert.equal(typeof stale,'function');
+ const now=Date.now;Date.now=()=>now()+60000;try{stale();}finally{Date.now=now;}
+ assert.equal(focused,2);assert.equal(control(),2);assert.equal(surface.returnFocus,null,'expired request is dropped, not left armed');
+});
+test('open admission settles new document surfaces and reports init failure instead of success',async t=>{
+ const {native,root}=await fixture(t);
+ const settleRelPath=(relPath,state)=>{const realReconcile=native.reconcile.bind(native);native.reconcile=async layout=>{await realReconcile(layout);for(const surface of native.surfaces.values())if(surface.relPath===relPath){Object.assign(surface,state);surface.wc.onSend=(channel,payload)=>{if(channel==='nozeli:flush')queueMicrotask(()=>native.acknowledge(surface,{requestId:payload,ok:true}));};}};return ()=>{native.reconcile=realReconcile;};};
+ const command=(relPath,key)=>native.command(root,{projectId:'p',expectedRevision:native.layouts.get('p').revision,requestKey:key,command:{type:'open',view:{kind:'document',relPath}}});
+ // A surface whose init terminally failed (unreadable file) must fail the open
+ // itself — the dialog caller never sees a success result for a broken surface.
+ const restoreFailed=settleRelPath('denied.md',{contentFailed:true,initError:{code:'PATH_UNAVAILABLE',message:'原路径暂不可用，已打开保留副本。'}});
+ try{await assert.rejects(command('denied.md','open-denied'),{code:'PATH_UNAVAILABLE'});}
+ finally{restoreFailed();}
+ // A surface that becomes ready (or recovers a retained draft) admits normally.
+ const restoreReady=settleRelPath('fresh.md',{ready:true});
+ try{const admitted=await command('fresh.md','open-fresh');assert.equal(admitted.windowId,'main');assert(Object.values(admitted.layout.views).some(view=>view.relPath==='fresh.md'&&!view.readOnly));}
+ finally{restoreReady();}
+ // A surface that died before settling must fail the open too, not fall through
+ // to success — and no request-key replay may answer the failure with success.
+ const restoreDead=settleRelPath('gone.md',{dead:true});
+ try{await assert.rejects(command('gone.md','open-dead'),{code:'SURFACE_NOT_READY'});assert.equal([...native.requests.keys()].some(key=>key.endsWith(':open-denied')||key.endsWith(':open-dead')),false,'failed admissions must purge their request-key cache');}
+ finally{restoreDead();}
 });

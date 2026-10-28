@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { renderTagMarkdown } from '../src/renderer/tag-markdown.mjs';
+import {register} from 'node:module';
+register('./tex-workspace-css.fixture.mjs',import.meta.url);
+const {renderTagMarkdown}=await import('../src/renderer/tag-markdown.mjs');
 class Element {
   constructor(tag) { this.tag = tag; this.children = []; this.attrs = {}; this.dataset = {}; this._text = ''; this.ownerDocument = doc; this.listeners = {}; }
   set textContent(value) { this._text=String(value);this.children=[]; }

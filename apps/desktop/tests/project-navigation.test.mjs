@@ -18,7 +18,7 @@ async function fixture(t) {
     await fs.mkdir(path.dirname(abs), {recursive: true});
     await fs.writeFile(abs, value);
   };
-  const view = async (hidden, showHidden = false) => fs.writeFile(path.join(host.projectDir(projectId), 'file-tree-view.json'), JSON.stringify({schemaVersion: 1, hidden, showHidden}));
+  const view = async (hidden, showHidden = false) => host.storage.putLocal(projectId, 'file-tree-view', {schemaVersion: 1, hidden, showHidden});
   return {base, root, other, host, projectId, otherId, seed, view};
 }
 
@@ -124,11 +124,32 @@ test('expanded and closed presentation updates preserve children cursors', async
   await f.view([]);
   const first = await f.host.children(f.projectId, {parentRelPath: 'folder', treeView: true, limit: 1});
   assert.ok(first.nextCursor);
-  await fs.writeFile(path.join(f.host.projectDir(f.projectId), 'file-tree-view.json'), JSON.stringify({schemaVersion: 1, hidden: [], showHidden: false, expanded: ['folder'], closed: []}));
+  await f.host.storage.putLocal(f.projectId, 'file-tree-view', {schemaVersion: 1, hidden: [], showHidden: false, expanded: ['folder'], closed: []});
   const second = await f.host.children(f.projectId, {parentRelPath: 'folder', treeView: true, cursor: first.nextCursor, limit: 1});
   assert.equal(second.entries[0].name, 'second.txt');
-  await fs.writeFile(path.join(f.host.projectDir(f.projectId), 'file-tree-view.json'), JSON.stringify({schemaVersion: 1, hidden: [], showHidden: false, expanded: [], closed: ['folder']}));
+  await f.host.storage.putLocal(f.projectId, 'file-tree-view', {schemaVersion: 1, hidden: [], showHidden: false, expanded: [], closed: ['folder']});
   const third = await f.host.children(f.projectId, {parentRelPath: 'folder', treeView: true, cursor: second.nextCursor, limit: 1});
   assert.equal(third.entries[0].name, 'third.txt');
   assert.equal(third.nextCursor, null);
+});
+
+test('file-only quick-open searches do not let directories consume the bounded file result slots', async t => {
+  const f = await fixture(t);
+  await Promise.all(Array.from({length: 120}, (_, index) => f.seed(`folder-hit-${String(index).padStart(3, '0')}/leaf.md`, `MARKER-${index}\n`)));
+  await f.seed('folder-hit-exact/nested/entry.md', 'EXACT-DIRECTORY-FILE\n');
+  const ordinary = await f.host.search(f.projectId, {query: 'folder-hit', limit: 100});
+  assert(ordinary.entries.every(entry => entry.kind === 'dir'), 'ordinary navigation retains its directory-inclusive ranking');
+  const files = await ops['project.search'](f.host, {projectId: f.projectId, query: 'folder-hit', limit: 100, filesOnly: true});
+  assert.equal(files.entries.length, 100);
+  assert(files.entries.every(entry => entry.kind === 'file'));
+  assert.equal(files.truncated, true);
+  assert.equal(files.reason, 'result-limit');
+  const exactFile = await f.host.search(f.projectId, {query: 'folder-hit-119/leaf.md', filesOnly: true});
+  assert.deepEqual(exactFile.entries.map(entry => entry.relPath), ['folder-hit-119/leaf.md']);
+  assert.equal(await fs.readFile(path.join(f.root, exactFile.entries[0].relPath), 'utf8'), 'MARKER-119\n');
+  const directory = await f.host.search(f.projectId, {query: 'folder-hit-exact/nested'});
+  assert.equal(directory.entries[0].kind, 'dir');
+  const insideDirectory = await f.host.search(f.projectId, {query: 'folder-hit-exact/nested', filesOnly: true});
+  assert.deepEqual(insideDirectory.entries.map(entry => entry.relPath), ['folder-hit-exact/nested/entry.md']);
+  assert.equal(await fs.readFile(path.join(f.root, insideDirectory.entries[0].relPath), 'utf8'), 'EXACT-DIRECTORY-FILE\n');
 });

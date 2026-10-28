@@ -1,3 +1,4 @@
+import { validateDocumentSource, documentResourceId, isProjectDocumentSource } from './document-source.mjs';
 const encoder=new TextEncoder();
 
 const kinds=new Set(['document','conversation','report','diff','history','terminal']);
@@ -64,11 +65,17 @@ export function validateLayout(layout){
  if(Object.keys(layout.views).length>512||encoder.encode(JSON.stringify(layout)).byteLength>1024*1024)invalid('工作区布局超过容量限制。','LAYOUT_LIMIT');
  const nodes=new Set(),assigned=new Set(),windowIds=new Set(['main']);let conversation=0;
  for(const [viewId,view]of Object.entries(layout.views)){
-  if(!identity(viewId)||!view||view.id!==viewId||view.projectId!==layout.projectId||!identity(view.resourceId,8192)||!kinds.has(view.kind)||view.relPath!==undefined&&!relPath(view.relPath))invalid('工作区内容身份无效。');
-  if(view.kind==='document'&&!relPath(view.relPath))invalid('文档缺少有效项目路径。');
+  if(view.kind==='document'){
+   let source;
+   try{source=validateDocumentSource(view.documentSource);}catch(error){invalid(error.message);}
+   const expected=documentResourceId(layout.projectId,source,view.relPath);
+   if(view.resourceId!==expected)invalid('文档资源身份与来源不一致。');
+   if(isProjectDocumentSource(view.documentSource)&&view.documentSource!==undefined)invalid('项目文档不携带文档来源。');
+  }
   if(view.kind==='conversation'&&++conversation>1)invalid('项目主对话不能重复。');
   if(view.kind==='terminal'&&(!identity(view.viewState?.workId)||view.resourceId!=='terminal:'+view.viewState.workId))invalid('终端预览缺少有效工作身份。');
-  if(view.pinned!==undefined&&typeof view.pinned!=='boolean'||view.preview!==undefined&&typeof view.preview!=='boolean'||view.readOnly!==undefined&&typeof view.readOnly!=='boolean')invalid('标签状态无效。');
+  if(view.kind==='document'&&view.viewState?.reviewSource!==undefined)invalid('审校文档必须使用顶层文档来源，不能沿用旧报告来源。');
+  if(view.kind!=='document'&&view.documentSource!==undefined)invalid('只有文档携带文档来源。');
  }
  function inspect(node,depth){
   if(!node||typeof node!=='object'||depth>16||!identity(node.id)||nodes.has(node.id))invalid('工作区布局循环、重复或过深。');nodes.add(node.id);
@@ -113,9 +120,15 @@ export function reduceLayout(previous,command){
  validateLayout(previous);if(!command||typeof command!=='object')invalid('工作区操作无效。');const layout=clone(previous);
  switch(command.type){
   case 'open':{
-   const target=checkedGroup(layout,command.groupId).group,v=command.view;
+   const target=checkedGroup(layout,command.groupId).group;let v=command.view;
    if(!v||!kinds.has(v.kind)||v.projectId!==undefined&&v.projectId!==layout.projectId)invalid('工作区内容属于另一个项目。');
-   const resourceId=v.resourceId||(v.kind==='document'?'document:'+v.relPath:v.kind==='conversation'?'conversation:'+layout.projectId:null);
+   let documentSource;
+   if(v.kind==='document'){
+    try{documentSource=validateDocumentSource(v.documentSource);}catch(error){invalid(error.message);}
+    if(documentSource.type==='project'){const{documentSource:omit,...rest}=v;v=rest;}
+    else v={...v,documentSource};
+   }
+   const resourceId=v.kind==='document'?documentResourceId(layout.projectId,documentSource,v.relPath):v.resourceId||(v.kind==='conversation'?'conversation:'+layout.projectId:null);
    if(!identity(resourceId,8192))invalid('工作区资源身份缺失。');
    const singleton=v.kind==='conversation'?Object.values(layout.views).find(entry=>entry.kind==='conversation'):null;
    const existing=singleton||(!command.duplicate?target.views.map(viewId=>layout.views[viewId]).find(entry=>entry.resourceId===resourceId&&Boolean(entry.readOnly)===Boolean(v.readOnly)):null);
@@ -169,7 +182,7 @@ export function reduceLayout(previous,command){
   case 'restoreViewState':{if(!layout.views[command.viewId])invalid('已打开文件不存在。');layout.views[command.viewId].viewState=clone(command.viewState);break;}
   case 'renameResource':{
    if(!relPath(command.from)||!relPath(command.to))invalid('资源重命名路径无效。');
-   for(const view of Object.values(layout.views))if(view.relPath===command.from||view.relPath?.startsWith(command.from+'/')){
+   for(const view of Object.values(layout.views))if(view.documentSource===undefined&&(view.relPath===command.from||view.relPath?.startsWith(command.from+'/'))){
     const prior=view.relPath;view.relPath=command.to+prior.slice(command.from.length);
     if(view.resourceId==='document:'+prior)view.resourceId='document:'+view.relPath;
    }

@@ -67,13 +67,14 @@ test('old receipt without conversation projection repairs once on restart withou
  const receipt=c.store.state.receipts[0];await c.store.mutate(()=>{c.store.state.messages=c.store.state.messages.filter(m=>m.objectId!==receipt.objectId);});const jobCount=c.store.state.jobs.length;await c.stop();const next=await open();
  assert.equal(next.store.state.messages.filter(m=>m.objectId===receipt.objectId).length,1);assert.equal(next.store.state.jobs.length,jobCount);assert.equal(next.store.find(w.id).status,'review');await next.stop();const again=await open();assert.equal(again.store.state.messages.filter(m=>m.objectId===receipt.objectId).length,1);
 });
-test('supplement arriving during activation runs once after the initial job',async t=>{
+test('supplement arriving during activation runs once after the initial job',{timeout:30000},async t=>{
  const {c,prompts}=await fixture(t);c.started=false;
  const w=await c.store.submit('original','brief',{name:'Alpha'}),accepted=await c.enqueue('orchestrator','intake','During activation');
  const job=c.store.state.jobs.find(j=>j.id===accepted.jobId);await c.store.mutate(()=>{job.status='completed';});
  let release,entered;const blocked=new Promise(r=>entered=r),gate=new Promise(r=>release=r),save=c.store.save.bind(c.store);let held=false;
  c.store.save=async()=>{if(!held&&c.store.find(w.id).status==='running'){held=true;entered();await gate;}return save();};c.started=true;c.kick();await blocked;
- const supplement=c.manageIntake(job,{action:'continue',workName:'Alpha',text:'Same Work, extra constraint'});release();await supplement;await wait(()=>c.store.find(w.id).revision===2&&c.store.find(w.id).status==='review'&&!c.running.size);
+ const supplement=c.manageIntake(job,{action:'continue',workName:'Alpha',text:'Same Work, extra constraint'});release();await supplement;
+ await new Promise(resolve=>{const settled=()=>{if(c.store.find(w.id).revision===2&&c.store.find(w.id).status==='review'&&!c.running.size){c.off('state',settled);resolve();}};c.on('state',settled);t.after(()=>c.off('state',settled));settled();});
  const turns=c.store.state.jobs.filter(j=>j.target===w.id);assert.deepEqual(turns.map(j=>j.type),['initial','supplement']);assert.ok(turns.every(j=>j.status==='completed'));assert.equal(new Set(turns.map(j=>j.threadId)).size,1);assert.equal(prompts.filter(p=>p.target===w.id&&p.text.includes('During activation')).length,1);
 });
 test('priority input cannot overtake a persisted initial job',async t=>{

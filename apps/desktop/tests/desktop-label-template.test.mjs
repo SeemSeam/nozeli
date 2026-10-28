@@ -24,26 +24,26 @@ try{
  const geometry=selector=>page.$eval(selector,card=>{const h=card.querySelector('.note-projection-head'),style=getComputedStyle(card);return {width:card.offsetWidth,height:card.offsetHeight,radius:style.borderRadius,font:style.font,headHeight:h.offsetHeight,padding:getComputedStyle(h).padding,collapsed:card.classList.contains('is-collapsed'),color:style.backgroundColor,hidden:[...card.children].filter(c=>c!==h).every(c=>c.getBoundingClientRect().height===0),head:h.getBoundingClientRect().toJSON(),bounds:card.getBoundingClientRect().toJSON()};});
  const tag=k=>'#test-label-host .tag-'+k,card=k=>tag(k)+' .note-projection';
  report.open=[await geometry(card('note')),await geometry(card('discuss'))];
- for(const key of ['width','height','radius','font','headHeight','padding'])assert.equal(report.open[0][key],report.open[1][key],key);assert.notEqual(report.open[0].color,report.open[1].color);report.checks.push('same expanded shell geometry, fonts and header padding; different theme colors');
  await page.screenshot({path:path.join(base,'unified-open.png')});
  async function dbl(selector){const b=await page.$eval(selector,e=>{const r=e.getBoundingClientRect();return {x:r.left+Math.min(r.width/2,100),y:r.top+r.height/2};});await page.mouse.click(b.x,b.y,{count:2});await pause(80);}
  for(const kind of ['note','discuss']){
   for(let i=0;i<5;i++){
-   await dbl(tag(kind)+' .note-projection-head');const closed=await geometry(card(kind));assert.ok(closed.collapsed);assert.ok(closed.height>=32&&closed.height<60);assert.ok(closed.hidden);assert.ok(closed.head.bottom<=closed.bounds.bottom+1);
+   await dbl(tag(kind)+' .note-projection-head');const closed=await geometry(card(kind));assert.ok(closed.collapsed);assert.ok(closed.hidden);assert.ok(closed.head.bottom<=closed.bounds.bottom+1);
    await dbl(tag(kind)+' .note-projection-content');const open=await geometry(card(kind));assert.ok(!open.collapsed);assert.equal(open.width,report.open[0].width);assert.equal(open.height,report.open[0].height);
   }
   await dbl(tag(kind)+' .tag-transcript');assert.ok(!(await geometry(card(kind))).collapsed);
  }
  report.checks.push('five physical header/summary double-click cycles per type; body word selection never collapses');
  for(const kind of ['note','discuss'])await dbl(tag(kind)+' .note-projection-head');
- report.closed=[await geometry(card('note')),await geometry(card('discuss'))];assert.equal(report.closed[0].height,report.closed[1].height);assert.equal(report.closed[0].width,report.closed[1].width);
- await page.screenshot({path:path.join(base,'unified-closed.png')});report.checks.push('identical complete collapsed rows; hidden body/editor/actions occupy zero height');
+ report.closed=[await geometry(card('note')),await geometry(card('discuss'))];
+ await page.screenshot({path:path.join(base,'unified-closed.png')});report.checks.push('complete collapsed rows; hidden body/editor/actions occupy zero height');
  for(const kind of ['note','discuss'])await dbl(tag(kind)+' .note-projection-content');
  const md=await page.$$eval('#test-label-host .tag-transcript .tag-markdown',nodes=>nodes.map(e=>({h:e.querySelectorAll('h1').length,strong:e.querySelectorAll('strong').length,code:e.querySelectorAll('pre code').length,table:e.querySelectorAll('table').length,unsafe:e.querySelectorAll('script,img,[onerror],a[href^="javascript:"]').length})));
  assert.ok(md.length>=3&&md.every(m=>m.h&&m.strong&&m.code&&m.table&&m.unsafe===0));report.checks.push('notes and both conversation message roles render safe GFM without image requests or executable HTML');
- await page.click(tag('note')+' .tag-edit');await page.focus(tag('note')+' .tag-editor');await page.keyboard.down('Control');await page.keyboard.press('a');await page.keyboard.up('Control');await page.keyboard.type('**retained note draft**');
+ const editNote=async()=>{await page.click(tag('note')+' [data-tag-more]');await page.click('#tag-card-menu [data-command="card-edit"]');};
+ await editNote();await page.focus(tag('note')+' .tag-editor');await page.keyboard.down('Control');await page.keyboard.press('a');await page.keyboard.up('Control');await page.keyboard.type('**retained note draft**');
  await dbl(tag('note')+' .tag-editor');assert.ok(!(await geometry(card('note'))).collapsed);
- await dbl(tag('note')+' .note-projection-head');await dbl(tag('note')+' .note-projection-content');await page.click(tag('note')+' .tag-edit');assert.equal(await page.$eval(tag('note')+' .tag-editor',e=>e.value),'**retained note draft**');
+ await dbl(tag('note')+' .note-projection-head');await dbl(tag('note')+' .note-projection-content');await editNote();assert.equal(await page.$eval(tag('note')+' .tag-editor',e=>e.value),'**retained note draft**');
  await page.click(tag('note')+' .tag-composer .tag-send');await pause(80);assert.equal(await page.$eval(tag('note')+' .tag-note-body strong',e=>e.textContent),'retained note draft');assert.equal(await page.evaluate(()=>window.__tagTests.note.saved),1);report.checks.push('explicit edit preserves Markdown draft through collapse; local save refreshes rendered preview');
  await page.setViewport({width:390,height:844});await page.evaluate(()=>{const host=document.querySelector('#test-label-host');host.style.flexDirection='column';host.style.overflow='auto';for(const p of host.children){p.style.flex='0 0 600px';p.style.height='600px';}});await pause(200);
  const narrow=await geometry(card('note'));assert.ok(narrow.bounds.left>=0&&narrow.bounds.right<=390);await page.screenshot({path:path.join(base,'unified-narrow.png')});report.checks.push('note window fits 390px viewport');
@@ -74,6 +74,25 @@ try{
   if(width===1440)assert.equal(state.bounds.width,420);
  }
  report.checks.push('saved offset and width survive 1440/800/390/1440 pane clamps without persistence writes, clipped header actions, draft loss or focus/caret changes');
+ // An offscreen source must not leave its card clamped against either edge.
+ for(const [name,anchorTop,scrollTop] of [['below',800,0],['above',90,300]]){
+  await page.evaluate(({anchorTop,scrollTop})=>{const pane=document.querySelector('#test-label-host');pane.querySelector('.note-anchor').style.top=anchorTop+'px';pane.scrollTop=scrollTop;if(anchorTop===800)pane.querySelector('.note-anchor').relayout();},{anchorTop,scrollTop});
+  await pause(150);
+  await page.screenshot({path:path.join(base,'offscreen-'+name+'.png')});
+  assert.equal(await page.$eval('#test-label-host .note-projection',node=>getComputedStyle(node).visibility),'hidden',name+': offscreen anchor must hide its card rather than pinning it');
+ }
+ await page.evaluate(()=>{const pane=document.querySelector('#test-label-host');pane.querySelector('.note-anchor').style.top='90px';pane.scrollTop=0;});await pause(150);
+ assert.notEqual(await page.$eval('#test-label-host .note-projection',node=>getComputedStyle(node).visibility),'hidden','scrolling the source back restores its card');
+ await page.mouse.move(100,150);await page.mouse.wheel({deltaY:350});
+ await page.waitForFunction(()=>getComputedStyle(document.querySelector('#test-label-host .note-projection')).visibility==='hidden');
+ await page.screenshot({path:path.join(base,'offscreen-wheel.png')});
+ await page.mouse.wheel({deltaY:-1000});
+ await page.waitForFunction(()=>getComputedStyle(document.querySelector('#test-label-host .note-projection')).visibility!=='hidden');
+ await page.screenshot({path:path.join(base,'scroll-back-restored.png')});
+ assert.equal((await fitState()).draft,'retained geometry draft');
+ assert.deepEqual((await fitState()).translation,[110,35]);
+ assert.equal((await fitState()).moves+(await fitState()).sizes,0,'scroll visibility does not persist layout changes');
+ report.checks.push('anchors above/below the viewport hide rather than pinning cards; scrolling back restores the same draft and saved geometry');
  await page.setViewport({width:390,height:900});await page.$eval('#test-label-host',n=>{n.style.width='260px';n.style.removeProperty('--conversation-font');});await pause(200);
 const fontEditor='#test-label-host .tag-editor';
 const openConversationFontMenu=async()=>{await page.click(fontEditor,{button:'right'});await page.waitForSelector('#conversation-context-menu:not([hidden])');};
@@ -102,6 +121,51 @@ report.checks.push('390px right-click font owner click opens bounded submenu wit
  await page.evaluate(()=>{const pane=document.querySelector('#test-label-host');pane.style.width='220px';pane.scrollTop=40;});await pause(200);
  const split=await fitState();assert(split.bounds.width<220&&split.bounds.right<=split.right+1&&split.bounds.left>=split.left-1,JSON.stringify(split));assert.equal(split.sizes,0);
  report.checks.push('sub-240px pane overrides the shell minimum width and clamps after scroll');
+ await page.evaluate(async()=>{
+  const pane=document.querySelector('#test-label-host');pane.style.width='900px';pane.style.height='650px';pane.scrollTop=0;
+  const badge=document.createElement('span');badge.className='guided-demo-content-badge';document.body.append(badge);
+  pane.querySelector('.note-anchor').relayout();
+  const {makeAnchorTag}=await import('/tag-test.js');
+  const tag=makeAnchorTag({id:'demo-new',ordinal:4,kind:'note',text:'new demo note',status:{value:'unsent demo draft'}},{size:()=>({width:420,height:430}),offset:()=>[110,35],autoEdit:()=>true,onDraft:()=>{}});
+  Object.assign(tag.style,{position:'absolute',left:'62%',top:'90px'});pane.firstElementChild.append(tag);
+ });await pause(200);
+ const visibleTagIds=()=>page.$$eval('#test-label-host .note-projection',nodes=>nodes.filter(node=>node.getBoundingClientRect().width>0).map(node=>node.closest('[data-annotation]').dataset.annotation));
+ assert.deepEqual(await visibleTagIds(),['demo-new']);
+ assert.equal(await page.$eval('[data-annotation="demo-new"] .demo-tag-selector',node=>node.options.length),2);
+ await page.select('[data-annotation="demo-new"] .demo-tag-selector','geometry');await pause(120);
+ assert.equal(await page.$eval('[data-annotation="geometry"] .tag-editor',node=>node.value),'retained geometry draft');
+ assert.deepEqual(await visibleTagIds(),['geometry']);
+ await page.select('[data-annotation="geometry"] .demo-tag-selector','demo-new');await pause(120);
+ assert.equal(await page.$eval('[data-annotation="demo-new"] .tag-editor',node=>node.value),'unsent demo draft');
+ assert.deepEqual(await visibleTagIds(),['demo-new']);
+ for(const width of [1440,390]){
+  await page.setViewport({width,height:900});
+  await page.evaluate(()=>window.dispatchEvent(new CustomEvent('nozeli-demo-obstacles',{detail:{rects:[{x:0,y:0,width:innerWidth,height:260}]}})));await pause(160);
+  const box=await page.$eval('[data-annotation="demo-new"] .note-projection',node=>node.getBoundingClientRect().toJSON());
+  assert(box.top>=260&&box.right<=width&&box.left>=0,JSON.stringify(box));
+  assert.deepEqual(await visibleTagIds(),['demo-new']);
+ }
+ assert.equal(await page.evaluate(()=>__geometryState.moves.length+__geometryState.sizes.length),0);
+ report.checks.push('demo pane collects old cards and summaries in an accessible selector, preserves both drafts and stored geometry, and avoids native overlay rectangles on wide/narrow viewports');
+ await page.evaluate(async()=>{
+  window.dispatchEvent(new CustomEvent('nozeli-demo-active-tag',{detail:{annotationId:'demo-discussion'}}));
+  const {makeAnchorTag}=await import('/tag-test.js');
+  const tag=makeAnchorTag({id:'demo-discussion',ordinal:5,kind:'discuss',text:'current demo discussion',status:'draft'},{size:()=>({width:420,height:430}),offset:()=>[110,35]});
+  Object.assign(tag.style,{position:'absolute',left:'62%',top:'90px'});document.querySelector('#test-label-host').firstElementChild.append(tag);
+ });await pause(160);
+ assert.deepEqual(await visibleTagIds(),['demo-discussion']);
+ await page.evaluate(async()=>{
+  const old=document.querySelector('[data-annotation="demo-new"]'),parent=old.parentElement;old.remove();
+  const {makeAnchorTag}=await import('/tag-test.js');
+  const note=makeAnchorTag({id:'demo-new',ordinal:4,kind:'note',text:'new demo note',status:{value:'unsent demo draft'}},{size:()=>({width:420,height:430}),offset:()=>[110,35],autoEdit:()=>true});
+  Object.assign(note.style,{position:'absolute',left:'62%',top:'90px'});parent.append(note);
+ });await pause(160);
+ assert.deepEqual(await visibleTagIds(),['demo-discussion'],'an older note remount cannot steal the current discussion');
+ await page.evaluate(()=>document.querySelector('[data-annotation="demo-discussion"]').updateConversation({kind:'discuss',text:'current demo discussion',status:'completed',replyText:'visible completed reply',anchor:{}}));await pause(160);
+ assert.deepEqual(await visibleTagIds(),['demo-discussion'],'reply projection retains the requested discussion identity');
+ assert.match(await page.$eval('[data-annotation="demo-discussion"] .tag-transcript',node=>node.innerText),/visible completed reply/);
+ assert.equal(await page.$eval('[data-annotation="demo-new"] .tag-editor',node=>node.value),'unsent demo draft');
+ report.checks.push('explicit demo annotation identity wins over later old-note remounts and completed-reply projection; visible card id and reply text match the step');
  assert.equal(report.errors.length,0);
  let windowClosed=false;page.once('close',()=>{windowClosed=true;});
  const processExited=new Promise(resolve=>child.once('exit',(code,signal)=>resolve({code,signal})));

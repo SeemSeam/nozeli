@@ -1,14 +1,28 @@
 import './guided-demo.css';
 import {demoChapters,demoIdentity,unwrapDemo,createDemoActions} from '../domain/guided-demo.mjs';
 const flow=demoChapters[0];
-export function createStartPage({project,start,compact=false}){
-  const root=document.createElement('section');root.className='guided-start';root.id=compact?'': 'start-page';
-  const heading=document.createElement('h2'),description=document.createElement('p');
-  heading.textContent=compact?'选择内容':project?project.name:'在材料旁阅读、记录与共同修改';
-  description.textContent='使用一个专用演示项目学习阅读与协作，可随时结束并回到这里。';
-  root.append(heading);if(!compact)root.append(description);
-  const button=(text,run,id)=>{const b=document.createElement('button');b.type='button';b.textContent=text;if(id)b.id=id;b.onclick=run;root.append(b);};
-  button('演示学习',start,compact?undefined:'start-demo-entry');return root;
+export function createStartPage({project,start,browse,compact=false}){
+  const root=document.createElement('section');root.className='guided-start'+(project?' guided-start-project':' guided-start-welcome')+(compact?' guided-start-compact':'');if(!compact)root.id='start-page';
+  const eyebrow=document.createElement('p');eyebrow.className='guided-start-eyebrow';eyebrow.textContent=project?'推荐功能 / 从当前项目开始':'NOZELI / 阅读、批注与 AGENT 协作';
+  const heading=document.createElement('h2');heading.textContent=project?(compact?'从这里继续':'选一份材料，试试这些功能'):'不止打开文件，\n让工作真正连起来。';
+  const description=document.createElement('p');description.className='guided-start-description';description.textContent=project?(browse?'从左侧选择文件，开始批注、讨论或并排阅读；后台任务的成果可以随时回来审核。':'在主窗口选择材料，或将此分区返回主工作区，再继续阅读与协作。'):'在原文上留下想法，让 Agent 继续工作，再回到报告与文件差异中审阅结果。先从下面四个功能开始。';
+  root.append(eyebrow,heading,description);
+  const actions=document.createElement('div');actions.className='guided-start-actions';root.append(actions);
+  const button=(text,run,id,primary=false)=>{const b=document.createElement('button');b.type='button';b.textContent=text;if(id)b.id=id;if(primary)b.className='guided-start-primary';b.onclick=run;actions.append(b);return b;};
+  if(project){if(browse)button('浏览项目文件',browse,undefined,true).dataset.startBrowse='true';}
+  else{button('打开本地项目',()=>document.getElementById('pick-project')?.click(),undefined,true);button('体验演示',start,compact?undefined:'start-demo-entry');}
+  if(!compact){
+    const features=document.createElement('dl');features.className='guided-start-features';
+    const items=[
+      ['01 / 批注与选区讨论','直接在“这里”留下想法',project?'打开文档后选中文字，或在支持的画面中框选区域，添加批注或发起讨论。批注先留在本地，明确发送才交给 Agent。':'打开材料，选中文字或框选区域，即可添加批注、围绕原文讨论；图片位置也能用涂鸦说明。保存批注不会自动派工。'],
+      ['02 / 任务闭环','把交付变成可审阅的成果',project?'将需要持续推进的工作交到后台。从右侧工作与待办查看问题、阅读报告和文件差异，再接受成果或交回原 Worker 修改。':'后台 Worker 交付报告与候选文件。你可以核对差异、反馈修改，再明确接受成果；不是只有一句“已完成”。'],
+      ['03 / 分屏阅读','把材料与对话摆在一起',project?'拖动标签到分区边缘拆分，或通过主窗口布局入口调整布局。并排放置材料、对话和报告，减少来回切换。':'文档、对话与报告可以分屏摆放。打开项目后，拖动标签拆分工作区，一边看材料，一边讨论或核对修改。'],
+      ['04 / 独立窗口','让工作面延伸到另一块屏幕',project?'从内容菜单将分区脱离为独立窗口，需要时再返回主工作区。移动的是原内容，未保存编辑和会话仍保留。':'将内容脱离为独立窗口，放到另一块屏幕；也可以再移回主工作区，不必复制文档或重新开始会话。']
+    ];
+    for(const [kicker,title,detail]of items){const item=document.createElement('div'),term=document.createElement('dt'),body=document.createElement('dd'),small=document.createElement('span');small.textContent=kicker;term.append(small,document.createTextNode(title));body.textContent=detail;item.append(term,body);features.append(item);}root.append(features);
+    const foot=document.createElement('p');foot.className='guided-start-footnote';foot.textContent=project?'打开文件不会自动启动 Agent；保存批注不会自动派工。':'先打开本地目录即可阅读与编辑。需要 AI 协作时，再到设置中配置模型。';root.append(foot);
+  }
+  return root;
 }
 
 export function mountGuidedDemo({invoke,subscribe,openProject,openFile,captureReturn,restoreReturn,onExit=async()=>{},getProjectId,onError=()=>{}}){
@@ -33,10 +47,9 @@ export function mountGuidedDemo({invoke,subscribe,openProject,openFile,captureRe
     hideHint();stopBeforeStep=null;captionOverride='';failureMessage='';
     await transition('seek',{chapterId:flow.id,stepIndex:index,...(resume?{resume:true}:{})});
     const step=flow.steps[index];
-    if(session&&session.stepIndex===index&&step?.hintTitle&&session.status!=='removed'){
-      currentHint={key:hintKey(session.id,step,hintRevision),title:step.hintTitle,detail:step.hintDetail,visible:true,stepIndex:index,stepTotal:flow.steps.length,phase:'intro',durationMs:6000,remainingMs:6000};
-      publishHint();
-    }
+    // A seek never publishes the target step's explanation: only the neutral
+    // preparation state. The explanation waits for that step's own receipt.
+    if(session&&session.stepIndex===index&&step&&session.status!=='removed')prepareHint(step);
   }
   async function exitDemo(){
     if(exiting||!session)return;
@@ -69,7 +82,11 @@ export function mountGuidedDemo({invoke,subscribe,openProject,openFile,captureRe
       // clears after the dialog has actually been seen open and then closed.
       if(demoSettingsOpen){const settingsOpen=document.getElementById('settings-dialog')?.open;if(settingsOpen)demoSettingsSeenOpen=true;else if(demoSettingsSeenOpen)demoSettingsOpen=false;}
       const modal=[...document.querySelectorAll('dialog[open],[aria-modal="true"]:not([hidden]),.nozeli-context-menu:not([hidden])')].some(node=>(node.id==='settings-dialog'&&demoSettingsOpen?false:node.getClientRects().length&&getComputedStyle(node).visibility!=='hidden'));
-      model={visible:!modal,projectId:session.projectId,sessionId:session.id,epoch:session.epoch,status:session.status,chapterId:session.chapterId,stepIndex:session.stepIndex||0,stepTotal:flow.steps.length,title:step?.hintTitle||flow.title,caption,progress:`${Math.min((session.stepIndex||0)+1,flow.steps.length)} / ${flow.steps.length}`,seekable:!creating&&!exiting&&!flight,buttons:controls.map(control=>({...control})),theme:document.documentElement.dataset.theme,palette:document.documentElement.dataset.palette};
+      // The controls title is the step explanation, so it follows the same
+      // rule as the big hint: neutral until this step's action receipt has
+      // landed (reading phase), never the upcoming step's promise.
+      const earned=currentHint?.phase==='reading'&&currentHint.stepIndex===(session.stepIndex||0);
+      model={visible:!modal,projectId:session.projectId,sessionId:session.id,epoch:session.epoch,status:session.status,chapterId:session.chapterId,stepIndex:session.stepIndex||0,stepTotal:flow.steps.length,title:earned?step?.hintTitle||flow.title:flow.title,caption,progress:`${Math.min((session.stepIndex||0)+1,flow.steps.length)} / ${flow.steps.length}`,seekable:!creating&&!exiting&&!flight,buttons:controls.map(control=>({...control})),theme:document.documentElement.dataset.theme,palette:document.documentElement.dataset.palette};
     }
     const key=JSON.stringify(model);if(key===publishedUi)return;publishedUi=key;
     void invoke('workspace.demoControls.update',{model}).then(result=>{if(!result.ok){onError(result.error.message);if(session?.status==='playing')void transition('pause').catch(onError);}}).catch(onError);
@@ -78,19 +95,35 @@ export function mountGuidedDemo({invoke,subscribe,openProject,openFile,captureRe
   function transition(action,extra={},urgent=false){token++;captionOverride='';if(action==='play')failureMessage='';const owner=session&&{id:session.id,projectId:session.projectId};const task=(urgent?Promise.resolve():transitionQueue).then(async()=>{if(!session||session.id!==owner?.id||session.projectId!==owner.projectId)return;if(action==='play'){paint();unwrapDemo(await invoke('workspace.demoControls.readyForPlay',{sessionId:session.id}));}const value=unwrapDemo(await invoke('demo.transition',{...demoIdentity(session),action,...extra}));if(session.id===owner.id&&session.projectId===owner.projectId)accept(value);return value;});transitionQueue=task.catch(()=>{});return task;}
 
   // One big hint per step on its own always-on-top native view; never covered
-  // by document surfaces. Visible before the action, stays while paused.
+  // by document surfaces. The explanation FOLLOWS the content: a neutral
+  // preparation state while the real action runs, the step's explanation only
+  // after that action's receipt (and a visible content surface), held for a
+  // readable, skippable duration. Stays on screen while paused.
   let currentHint=null,hintRevision=0;
   // Hint identity carries the hint generation (bumped on every hide/seek):
-  // a stale 立即开始 for a previous visit of the same step must not skip the
-  // fresh countdown of a re-entered step.
-  const hintKey=(id,step,revision)=>id+':'+step.id+':'+revision;
+  // a stale skip for a previous visit of the same step must not skip the
+  // fresh countdown of a re-entered step. Preparation and reading carry
+  // distinct keys so the reading card re-announces itself.
+  const hintKey=(id,step,revision,phase)=>id+':'+step.id+':'+revision+':'+phase;
   const hintView=hint=>void invoke('workspace.demoHint.update',{hint}).then(result=>{if(!result.ok)onError(result.error.message);}).catch(error=>onError(error.message));
   function hideHint(){hintRevision++;currentHint=null;hintView(null);}
   function publishHint(){if(currentHint)hintView({...currentHint,paused:session?.status==='paused',theme:document.documentElement.dataset.theme,palette:document.documentElement.dataset.palette});}
-  async function hintPhase(step){
-    if(disposed||!session||!step.hintTitle)return false;
-    const id=session.id,index=session.stepIndex,revision=hintRevision,key=hintKey(id,step,revision);
-    if(currentHint?.key!==key)currentHint={key,title:step.hintTitle,detail:step.hintDetail,visible:true,stepIndex:index,stepTotal:flow.steps.length,phase:'intro',durationMs:6000,remainingMs:6000};
+  const HINT_READ_MS=6000,PREP_DETAIL='演示正用真实动作完成这一步；完成后在这里说明它的意义。';
+  // Neutral preparation state: names the action in progress, never the
+  // explanation, so no label can lead or cover content that is not there yet.
+  function prepareHint(step){
+    if(disposed||!session||!step)return;
+    currentHint={key:hintKey(session.id,step,hintRevision,'go'),title:(session.status==='playing'?'正在演示：':'待演示：')+(step.caption||flow.title),detail:PREP_DETAIL,visible:true,stepIndex:session.stepIndex||0,stepTotal:flow.steps.length,phase:'acting',durationMs:HINT_READ_MS,remainingMs:HINT_READ_MS};
+    publishHint();
+  }
+  // The step explanation, published only after its action receipt: readable
+  // for a bounded duration, skippable via the hint card's dismiss, frozen
+  // while paused, abandoned on seek/exit. Playback advances only after it.
+  async function readingPhase(step){
+    if(disposed||!session||!step.hintTitle)return true;
+    const id=session.id,index=session.stepIndex,revision=hintRevision;
+    currentHint={key:hintKey(id,step,revision,'read'),title:step.hintTitle,detail:step.hintDetail,visible:true,stepIndex:index,stepTotal:flow.steps.length,phase:'reading',durationMs:HINT_READ_MS,remainingMs:HINT_READ_MS};
+    publishHint();
     let last=performance.now(),published=0;
     while(!disposed&&!exiting&&session?.id===id&&session.stepIndex===index&&hintRevision===revision){
       const now=performance.now();
@@ -98,7 +131,7 @@ export function mountGuidedDemo({invoke,subscribe,openProject,openFile,captureRe
       else if(session.status!=='paused')return false;
       last=now;
       if(now-published>=150){publishHint();published=now;}
-      if(currentHint.remainingMs===0&&session.status==='playing'){currentHint.phase='acting';publishHint();return true;}
+      if(currentHint.remainingMs===0&&session.status==='playing')return true;
       await new Promise(resolve=>setTimeout(resolve,50));
     }
     return false;
@@ -153,13 +186,19 @@ export function mountGuidedDemo({invoke,subscribe,openProject,openFile,captureRe
       demoSettingsOpen=true;demoSettingsSeenOpen=false;paint();
       const interrupted=()=>!session||session.id!==original.id||session.status!=='playing';
       const dwell=async ms=>{const end=performance.now()+ms;while(performance.now()<end){if(interrupted())return false;await new Promise(r=>setTimeout(r,200));}return true;};
+      // The dialog's real open state is confirmed, never assumed from a
+      // timer: the explanation may only follow a settings surface that is
+      // actually on screen.
+      const opened=async()=>{const end=performance.now()+10000;while(performance.now()<end){if(interrupted())return false;if(document.getElementById('settings-dialog')?.open)return true;await new Promise(r=>setTimeout(r,100));}return false;};
       window.dispatchEvent(new CustomEvent('nozeli-open-settings',{detail:'settings-provider'}));
-      const sources=await dwell(6500);
-      let models=false;
-      if(sources){window.dispatchEvent(new CustomEvent('nozeli-open-settings',{detail:'settings-models'}));models=await dwell(6500);}
-      if(sources&&models){window.dispatchEvent(new Event('nozeli-demo-settings-close'));demoSettingsOpen=false;demoSettingsSeenOpen=false;}
+      const sources=await opened();
+      if(!sources&&!interrupted())throw Error('设置界面未能打开，未继续演示说明');
+      const readSources=sources&&await dwell(6500);
+      let readModels=false;
+      if(readSources){window.dispatchEvent(new CustomEvent('nozeli-open-settings',{detail:'settings-models'}));readModels=(await opened())&&await dwell(6500);}
+      if(readSources&&readModels){window.dispatchEvent(new Event('nozeli-demo-settings-close'));demoSettingsOpen=false;demoSettingsSeenOpen=false;}
       paint();
-      return {ok:true,client:true,sections:sources&&models?2:1};
+      return {ok:true,client:true,sections:readSources&&readModels?2:sources?1:0};
     }
     if(step.semantic==='ui.finish')return {ok:true,client:true};
     return runAction(session,step);
@@ -177,6 +216,22 @@ export function mountGuidedDemo({invoke,subscribe,openProject,openFile,captureRe
    throw reason;
   });
  }
+  // A receipt says the action ran; it does not prove the visitor can see the
+  // result (main activates views lazily and only gates on readiness). Poll
+  // the real native surface list until this step's source is actually
+  // visible before any explanation is published — a state observation, not
+  // a timed wait, and never inside the main project serial.
+  async function confirmContentPresent(original,step){
+    if(!step.relPath)return;
+    const deadline=Date.now()+15000;
+    while(Date.now()<deadline){
+      if(session?.epoch!==original.epoch||session.status!=='playing'||getProjectId()!==original.projectId)throw Object.assign(Error('原演示动作已停止'),{code:'DEMO_ACTION_CANCELLED'});
+      const snapshot=await invoke('workspace.windows.list',{projectId:original.projectId});
+      if(snapshot.ok&&snapshot.value.some(window=>window.visible&&window.surfaces.some(surface=>surface.relPath===step.relPath&&surface.visible)))return;
+      await new Promise(resolve=>setTimeout(resolve,120));
+    }
+    throw Object.assign(Error('真实内容面尚未显示：'+step.relPath),{code:'DEMO_SURFACE_NOT_VISIBLE'});
+  }
   async function pump(){
     if(busy||disposed||exiting||session?.status!=='playing')return;
     busy=true;
@@ -191,10 +246,14 @@ export function mountGuidedDemo({invoke,subscribe,openProject,openFile,captureRe
         if(lastSemantic==='ui.settings'&&step.semantic!=='ui.settings')window.dispatchEvent(new Event('nozeli-demo-settings-close'));
         lastSemantic=step.semantic;
         let generation=token;
-        if(!await hintPhase(step)){restartAfterFlight=session?.status==='playing';break;}
+        // Neutral preparation first: the explanation must never lead its content.
+        prepareHint(step);
         if(session?.status!=='playing'||session.id!==original.id||session.stepIndex!==original.stepIndex||getProjectId()!==original.projectId){restartAfterFlight=session?.status==='playing';break;}
         original={...session};generation=token;
         if(executedSteps.has(step.id)&&!['open','ui.settings','ui.finish'].includes(step.semantic)){
+          // Already demonstrated once with its content-aligned explanation:
+          // no second edit, and no label replayed over whatever is on screen
+          // now — the caption alone records the skip.
           captionOverride='此步已演示过，未重复执行。';paint();
           await transition('advance',{stepIndex:original.stepIndex+1,stepId:step.id});
           if(session?.status==='playing')await new Promise(resolve=>setTimeout(resolve,400));
@@ -219,6 +278,12 @@ export function mountGuidedDemo({invoke,subscribe,openProject,openFile,captureRe
         }
         if(receipt?.ok===false)throw Error(receipt.error?.message||'真实动作未完成');
         if(!receipt?.skipped)executedSteps.add(step.id);
+        // Content-present gate before the label: the receipt alone does not
+        // prove the surface is on screen; only then may reading start.
+        await confirmContentPresent(original,step);
+        // The explanation only now, readable and skippable; the step index
+        // advances after it, so pause/resume/seek keep this visit's identity.
+        if(!await readingPhase(step)){restartAfterFlight=session?.status==='playing';break;}
         await transition('advance',{stepIndex:original.stepIndex+1,stepId:step.id});
         if(session?.status==='playing')await new Promise(resolve=>setTimeout(resolve,150));
       }

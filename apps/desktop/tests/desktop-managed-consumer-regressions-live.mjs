@@ -52,7 +52,11 @@ try{
  await compose('');await invoke('managed.draft',{projectId,target:first.id,text:''});
  await invoke('managed.send',{projectId,target:first.id,requestKey:randomUUID(),text:'继续同一Work修改result.txt，保留原有标记并追加一行SAME_WORK_REVISION_2。实际读回验证后发布新result，报告附[result.txt](result.txt)，files列出result.txt；不结束工作，不操作Git。'});
  const updated=await waitReview('材料交接',firstRevision);check('discussion revises original Worker, thread and Work',updated.id===first.id&&updated.threadId===firstThread&&updated.revision>firstRevision);
- await openReport(updated);await page.click('#managed-doc .conversation-file-link[data-path="result.txt"]');await page.waitForFunction(()=>document.querySelector('#managed-doc').textContent.includes('SAME_WORK_REVISION_2'));check('report artifact entrance reads immutable candidate bytes, not missing original',await page.$eval('#compose-form',node=>node.inert));
+ await openReport(updated);const updatedReceipt=(await state()).receipts.findLast(receipt=>receipt.workId===updated.id&&receipt.kind==='result');assert(updatedReceipt);
+ await page.click('#managed-doc .conversation-file-link[data-path="result.txt"]');
+ const reviewTab=await wait(async()=>{for(const candidate of await browser.pages()){if(candidate===page||!candidate.url().startsWith('http://127.0.0.1/'))continue;const scope=await candidate.evaluate(()=>window.__nozeliReady===true&&window.__workspaceScope?.kind==='document'?window.__workspaceScope:null).catch(()=>null);if(scope&&scope.relPath==='result.txt'&&scope.documentSource?.type==='review'&&scope.documentSource.objectId===updatedReceipt.objectId)return candidate;}return false;},'unified review document tab from report candidate link');
+ await reviewTab.waitForFunction(()=>document.body.textContent.includes('SAME_WORK_REVISION_2')&&(document.querySelector('#file-section-label')?.textContent||'').includes('审核候选'));
+ check('report candidate entry opens the unified review document tab with the frozen candidate bytes, never the missing original');
  await invoke('managed.task',{projectId,requestKey:randomUUID(),text:'新建独立工作，名称严格为“排队材料”。创建queued.txt，写QUEUE_RESULT。接收排队中的用户补充时也原样保留其额外标记。读回验证并发布result，files列出queued.txt。不操作Git、不联网、不自行结束工作。'});
  await wait(async()=>(await state()).works.some(work=>work.name==='排队材料'&&work.status==='queued'),'independent queued work');const queued=(await state()).works.find(work=>work.name==='排队材料');
  await invoke('managed.send',{projectId,target:queued.id,requestKey:randomUUID(),text:'补充原任务：queued.txt还必须包含'+queuedMarker+'；保持同一Work，不另建任务。'});

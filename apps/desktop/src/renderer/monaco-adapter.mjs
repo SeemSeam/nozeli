@@ -34,7 +34,7 @@ for (const [id, module] of Object.entries(languageDefinitions)) {
   monaco.languages.setMonarchTokensProvider(id, module.language);
 }
 const completionProviders = new Map();
-const lspRequest = (state, action, extra = {}) => state?.projectId && /\.(?:[cm]?js|jsx|ts|tsx|tex|bib|sty|cls)$/i.test(state.relPath) ? window.nozeli.invoke('lsp.request', { projectId: state.projectId, relPath: state.relPath, text: state.model.getValue(), version: state.version, action, ...extra }) : Promise.resolve({ ok: false });
+const lspRequest = (state, action, extra = {}) => state?.documentSource?.type!=='project' ? Promise.resolve({ok:false,error:{code:'UNSUPPORTED',message:'冻结审核文档不连接项目语言服务。'}}) : state?.projectId && /\.(?:[cm]?js|jsx|ts|tsx|tex|bib|sty|cls)$/i.test(state.relPath) ? window.nozeli.invoke('lsp.request', { projectId: state.projectId, relPath: state.relPath, text: state.model.getValue(), version: state.version, action, ...extra }) : Promise.resolve({ ok: false });
 installTex(monaco, lspRequest).catch(error => console.error('TeX highlighting', error)).finally(applyMonacoAppearance);
 // Editor chrome follows the effective appearance (mode x palette); token colors come
 // from Monaco's built-in vs/vs-dark rule sets, which are complete for the Monarch
@@ -93,17 +93,17 @@ for (const id of Object.keys(languageDefinitions)) {
   }});
 }
 let sequence = 0;
-export function mountMonaco({ parent, projectId, relPath, text, marks = [], tags = [], readOnly = false, onChange = () => {}, onSelection = () => {}, onNavigate = () => {}, onStatus = () => {}, projectionActions = {}, noteActions = {} }) {
+export function mountMonaco({ parent, projectId, relPath, documentSource={type:'project'}, text, marks = [], tags = [], readOnly = false, onChange = () => {}, onSelection = () => {}, onNavigate = () => {}, onStatus = () => {}, projectionActions = {}, noteActions = {} }) {
   if (!projectId || !relPath) throw new Error('Project and document identities are required.');
   parent.replaceChildren();
   parent.hidden = false;
   const uri = monaco.Uri.from({ scheme: 'nozeli', authority: projectId, path: '/' + relPath, query: 'instance=' + ++sequence });
   const language = languageIdForPath(relPath) || 'javascript';
   const model = monaco.editor.createModel(normalizeEditorText(text), language, uri);
-  const lspState = { projectId, relPath, model, version: 1, syncTimer: 0 };
+  const lspState = { projectId, relPath, documentSource, model, version: 1, syncTimer: 0 };
   model.__nozeliLsp = lspState;
-  const syncLsp = () => { if (!/\.(?:[cm]?js|jsx|ts|tsx|tex|bib|sty|cls)$/i.test(relPath)) return; window.clearTimeout(lspState.syncTimer); lspState.syncTimer = window.setTimeout(() => window.nozeli.invoke('lsp.sync', { projectId, relPath, text: model.getValue(), version: lspState.version }).then(result => { if (!model.isDisposed() && !result.ok) onStatus(`代码智能已降级：${result.error?.message || '语言服务器不可用'}`); }).catch(() => {}), 120); };
-  syncLsp();
+  const syncLsp = () => { if (documentSource.type!=='project'||!/\.(?:[cm]?js|jsx|ts|tsx|tex|bib|sty|cls)$/i.test(relPath)) return; window.clearTimeout(lspState.syncTimer); lspState.syncTimer = window.setTimeout(() => window.nozeli.invoke('lsp.sync', { projectId, relPath, text: model.getValue(), version: lspState.version }).then(result => { if (!model.isDisposed() && !result.ok) onStatus(`代码智能已降级：${result.error?.message || '语言服务器不可用'}`); }).catch(() => {}), 120); };
+  if(documentSource.type==='project')syncLsp();else onStatus('冻结审核文档 · 保留语法着色与本地编辑；项目语言服务不适用。');
   // The reader owns viewport sizing; Monaco owns its virtual line geometry.
   const editor = monaco.editor.create(parent, { model, readOnly, contextmenu: false, automaticLayout: false, minimap: { enabled: false }, folding: true, showFoldingControls: 'always', foldingHighlight: true, scrollBeyondLastLine: false, fontSize: 14, tabSize: 2, tabCompletion: 'on', editContext: false, inlineSuggest: { enabled: false }, suggest: { preview: true, showMethods: true, showFunctions: true, showKeywords: true }, padding: { top: 16, bottom: 12 } });
   let before = model.getValue(), disposed = false;
@@ -233,7 +233,7 @@ export function mountMonaco({ parent, projectId, relPath, text, marks = [], tags
   const authorshipListeners=[editor.onDidScrollChange(scheduleAuthorship),editor.onDidLayoutChange(scheduleAuthorship),
     editor.onDidChangeHiddenAreas(scheduleAuthorship),editor.onDidContentSizeChange(scheduleAuthorship),editor.onDidChangeConfiguration(scheduleAuthorship)];
   const lspUnsubscribe = window.nozeli.subscribe('lsp', event => {
-    if (event.projectId !== projectId || (event.server === 'texlab') !== isTex(relPath) || disposed) return;
+    if (documentSource.type!=='project' || event.projectId !== projectId || (event.server === 'texlab') !== isTex(relPath) || disposed) return;
     if (event.type === 'diagnostics' && event.text != null && event.text !== model.getValue()) return;
     if (event.type === 'ready') onStatus(isTex(relPath) ? 'TexLab 编辑智能已连接。' : 'TypeScript 代码智能已连接。');
     if (event.type === 'exit') onStatus(event.server === 'texlab' ? 'TexLab 已退出；本地模板仍可用。' : `代码智能已降级；服务器已退出（日志：${event.logFile}）。`);
@@ -335,6 +335,7 @@ export function mountMonaco({ parent, projectId, relPath, text, marks = [], tags
     coordsAtOffset(offset) { live(); checkOffset(this.getText(), offset); const position = model.getPositionAt(offset); const visible = editor.getScrolledVisiblePosition(position); const node = editor.getDomNode(); if (!visible || !node) return null; const bounds = node.getBoundingClientRect(); return { left: bounds.left + visible.left, right: bounds.left + visible.left + Math.max(1, visible.width || 1), top: bounds.top + visible.top, bottom: bounds.top + visible.top + Math.max(1, visible.height || 1) }; },
     onComposition({ start, end } = {}) { live(); const element = editor.getDomNode(); if (!element) return () => {}; const onStart = () => start?.(); const onEnd = () => end?.(); element.addEventListener('compositionstart', onStart); element.addEventListener('compositionend', onEnd); return () => { element.removeEventListener('compositionstart', onStart); element.removeEventListener('compositionend', onEnd); }; },
     setSelection(anchor, head = anchor) { live(); const a = model.getPositionAt(checkOffset(this.getText(), anchor)), h = model.getPositionAt(checkOffset(this.getText(), head)); editor.setSelection(new monaco.Selection(a.lineNumber, a.column, h.lineNumber, h.column)); },
+    setReadOnly(value) { live(); readOnly=Boolean(value); editor.updateOptions({readOnly}); },
     applyEdit(edit) { live(); if (readOnly) throw new Error('Editor is read-only.'); const e = validateEdit(this.getText(), edit); editor.pushUndoStop(); editor.executeEdits('nozeli', [{ range: range(e.from, e.to), text: e.insert }]); editor.pushUndoStop(); },
     applyEdits(edits) { live(); if (readOnly) throw new Error('Editor is read-only.'); const text = this.getText(); const valid = edits.map(edit => validateEdit(text, edit)); editor.pushUndoStop(); editor.executeEdits('nozeli', valid.map(e => ({ range: range(e.from, e.to), text: e.insert }))); editor.pushUndoStop(); },
     revealRange(from, to = from) { live(); this.setSelection(from, to); editor.revealRangeInCenter(range(from, to)); },

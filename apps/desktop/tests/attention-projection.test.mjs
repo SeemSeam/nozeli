@@ -1,5 +1,29 @@
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs/promises';import os from 'node:os';import path from 'node:path';
 import {DesktopHost} from '../src/main/host.mjs';import {ManagedProjects} from '../src/agents/managed-projects.mjs';
+import {openTestController} from './project-storage.fixture.mjs';
+import {TaskPermissions} from '../src/agents/managed/task-permissions.mjs';
+import {randomUUID} from 'node:crypto';
+const waitFor=async fn=>{const end=Date.now()+3000;while(Date.now()<end){if(fn())return;await new Promise(r=>setTimeout(r,5));}throw Error('condition timeout');};
+const memoryStorage=()=>{const map=new Map();return {async getLocal(id,key){return map.get(id+':'+key)??null;},async putLocal(id,key,value){map.set(id+':'+key,value);},async list(){return [];}};};
+async function controllerFixture(t,{taskPermissions=null}={}){
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-attention-'));let c,resolve,reject;const events=[];
+  class Session { async preflightToolsDigest() {} async assertToolsDigest() {} constructor(spec,target){Object.assign(this,spec,{target,busy:false,closed:false});}async start(id){this.threadId=id||randomUUID();return this;}async stop(){this.closed=true;reject?.(Error('stopped'));}async interrupt(){events.push('interrupt-requested');return {requested:true};}async prompt(){this.busy=true;events.push(this.target+':start');try{if(this.target==='frontdesk')return await new Promise((r,j)=>{resolve=r;reject=j;});await this.onTool({tool:'nozeli_manage',arguments:{action:'clarify',workName:'',text:'后台任务已接收；请补充验收标准'},callId:randomUUID()});return {text:'',completion:'host-control',threadId:this.threadId};}finally{this.busy=false;}}}
+  const options={runtimeRoot:path.join(root,'runtime'),contentRoot:path.join(root,'project'),projectHome:home=>fs.mkdir(home,{recursive:true}),sessionFactory:(spec,target)=>new Session(spec,target),...(taskPermissions?{taskPermissions}:{})};
+  c=await openTestController(options);await c.start();t.after(async()=>{await c.stop();await fs.rm(root,{recursive:true,force:true});});
+  await c.send('frontdesk','整理项目资料并汇总');
+  await waitFor(()=>c.sessions.get('frontdesk').busy);
+  return {c,pid:c.projectId,events,front:()=>c.current.get('frontdesk'),finish:()=>resolve({text:'已处理',metrics:{tokens:null,tokenCompleteness:'unavailable'},threadId:c.sessions.get('frontdesk').threadId,completion:'stop',providerStatus:'ok'})};
+}
+async function managerFixture(t,controller,projectId,permissions=null){
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-manager-'));
+  const memory={};const memoryStorage2={async getLocal(id,key){return memory[id+':'+key]??null;},async putLocal(id,key,value){memory[id+':'+key]=value;},async list(){return [];}};
+  const storage=permissions?permissions.storage:memoryStorage2;
+  const host={storage,requireProject:async id=>({id,root:'/tmp/'+id}),requireRegisteredProject:async id=>({id,root:'/tmp/'+id}),recent:async()=>({projects:[]})};
+  const manager=new ManagedProjects({userDataDir:root,host,legacy:{projects:new Map()},beforeDocumentOperation:null});
+  manager.controllers.set(projectId,controller);
+  t.after(async()=>{await manager.stop().catch(()=>{});await fs.rm(root,{recursive:true,force:true});});
+  return manager;
+}
 async function fixture(t){const root=await fs.mkdtemp(path.join(os.tmpdir(),'attention-projection-'));const host=new DesktopHost(path.join(root,'profile'));await fs.mkdir(path.join(root,'project'));const project=(await host.pick(path.join(root,'project'))).project;const manager=new ManagedProjects({host,userDataDir:path.join(root,'profile'),legacy:{projects:new Map(),connectFlight:new Map()}});t.after(async()=>{await manager.stop();await host.storage.db.close();await fs.rm(root,{recursive:true,force:true});});return {manager,host,id:project.id};}
 const empty=()=>({jobs:[],works:[],todos:[],receipts:[],agents:[],nativeDraftTargets:[],externalTerminalTargets:[]});
 test('ordinary draft and open terminal are quiet; blocked work becomes one actionable reminder and resolves on release',async t=>{
@@ -113,4 +137,105 @@ test('phase-scoped acknowledgement is atomic across native asks and business rep
  state.todos[0].status='closed';
  await manager.attentionState(id,state,{connected:true});
  await assert.rejects(manager.invoke('managed.attention.ack',{projectId:id,ids:['biz-result'],occurrences:[{id:'biz-result',interrupted:false}]}),error=>error.code==='ATTENTION_STALE','a closed business todo rejects');
+});
+
+test('pending frontdesk route projects exactly one store todo with decision-ready destination',async t=>{
+  const {c,pid,front}=await controllerFixture(t);
+  const proposalId=(await c.proposeFrontdeskRoute(front(),'需要后台执行脚本')).proposalId;
+  const s=c.snapshot();
+  const todos=s.todos.filter(todo=>todo.kind==='frontdesk-route');
+  assert.equal(todos.length,1);
+  const destination=todos[0].destination;
+  assert.equal(destination.kind,'frontdesk-route');assert.equal(destination.proposalId,proposalId);assert.equal(destination.expectedVersion,1);assert.equal(destination.sourceJobId,front().id);
+  assert.equal(destination.question.method,'frontdesk-route');assert.match(destination.question.title,/处理方式/);assert.match(destination.question.title,/非安全授权/);
+  assert.equal(destination.question.originalText,'整理项目资料并汇总');assert.equal(destination.question.remainingActions,'需要后台执行脚本');
+  assert.deepEqual(destination.question.completedOperations,[]);
+  assert.equal(s.frontdeskRoutes.filter(route=>route.status==='pending').length,1);
+  assert.ok(pid);
+});
+test('background decision dispatches only the original scope remainder once',async t=>{
+  const {c,front}=await controllerFixture(t);
+  const proposalId=(await c.proposeFrontdeskRoute(front(),'需要后台执行脚本')).proposalId;
+  const result=await c.resolveFrontdeskRoute({proposalId,expectedVersion:1,action:'background',requestKey:'attention:'+proposalId+':1:background'});
+  assert.equal(result.accepted,true);assert.equal(result.transferred,true);assert.equal(result.version,2);
+  const intake=c.store.state.jobs.find(j=>j.type==='intake');
+  assert.ok(intake);assert.match(intake.text,/送到后台/);assert.match(intake.text,/已完成操作是历史/);
+  assert.equal(c.store.state.frontdeskRoutes.find(r=>r.id===proposalId).decision.authority,'user-choice');
+  assert.equal(c.snapshot().todos.filter(todo=>todo.kind==='frontdesk-route'&&todo.status==='open').length,0);
+  const again=await c.resolveFrontdeskRoute({proposalId,expectedVersion:1,action:'background',requestKey:'attention:'+proposalId+':1:background'});
+  assert.equal(again.duplicate,true);
+  assert.equal(c.store.state.jobs.filter(j=>j.type==='intake').length,1);
+});
+test('continue decision resumes the frontdesk goal without any shell or terminal',async t=>{
+  const {c,front,events}=await controllerFixture(t);
+  const proposalId=(await c.proposeFrontdeskRoute(front(),'需要后台执行脚本')).proposalId;
+  const result=await c.resolveFrontdeskRoute({proposalId,expectedVersion:1,action:'continue',requestKey:'attention:'+proposalId+':1:continue'});
+  assert.equal(result.transferred,false);
+  const resume=c.store.state.jobs.find(j=>j.id===result.jobId);
+  assert.equal(resume.target,'frontdesk');assert.equal(resume.type,'front');
+  assert.equal(c.store.state.frontdeskRoutes.find(r=>r.id===proposalId).status,'continued');
+  assert.equal(c.terminals.size,0);
+  assert.ok(events.includes('frontdesk:start'));
+});
+test('cancel closes the proposal with no dispatch and keeps already saved operations',async t=>{
+  const {c,front}=await controllerFixture(t);
+  const job=front();
+  await c.store.mutate(()=>{const saved=c.store.state.jobs.find(j=>j.id===job.id);saved.frontdeskOperations=[{operationId:'op1',callId:'call1',op:'apply',ok:true,at:new Date().toISOString(),value:{relPath:'summary.md',revision:3,digest:'abc'}}];});
+  const proposalId=(await c.proposeFrontdeskRoute(job,'需要后台执行脚本')).proposalId;
+  const jobsBefore=c.store.state.jobs.length;
+  const result=await c.resolveFrontdeskRoute({proposalId,expectedVersion:1,action:'cancel',requestKey:'attention:'+proposalId+':1:cancel'});
+  assert.equal(result.accepted,true);assert.equal(result.cancelled,true);assert.equal(result.jobId,null);assert.equal(result.transferred,false);
+  assert.equal(c.store.state.jobs.length,jobsBefore);
+  const route=c.store.state.frontdeskRoutes.find(r=>r.id===proposalId);
+  assert.equal(route.status,'cancelled');assert.equal(route.version,2);
+  assert.equal(route.completedOperations.length,1);assert.equal(route.completedOperations[0].value.relPath,'summary.md');
+  assert.equal(c.snapshot().todos.filter(todo=>todo.kind==='frontdesk-route').every(todo=>todo.status==='resolved'),true);
+  const again=await c.resolveFrontdeskRoute({proposalId,expectedVersion:1,action:'cancel',requestKey:'attention:'+proposalId+':1:cancel'});
+  assert.equal(again.duplicate,true);
+  assert.equal(c.store.state.jobs.length,jobsBefore);
+});
+test('stale version is rejected without side effects',async t=>{
+  const {c,front}=await controllerFixture(t);
+  const proposalId=(await c.proposeFrontdeskRoute(front(),'需要后台执行脚本')).proposalId;
+  await assert.rejects(c.resolveFrontdeskRoute({proposalId,expectedVersion:2,action:'background',requestKey:'attention:'+proposalId+':2:background'}),error=>error.code==='STALE_FRONTDESK_ROUTE');
+  assert.equal(c.store.state.frontdeskRoutes.find(r=>r.id===proposalId).status,'pending');
+  assert.equal(c.store.state.jobs.filter(j=>j.type==='intake').length,0);
+});
+test('flat managed.attention.respond maps decisions after re-verifying identity and source',async t=>{
+  const {c,pid,front}=await controllerFixture(t);
+  const manager=await managerFixture(t,c,pid);
+  const proposalId=(await c.proposeFrontdeskRoute(front(),'需要后台执行脚本')).proposalId;
+  await assert.rejects(manager.invoke('managed.attention.respond',{projectId:pid,attentionKind:'frontdesk-route',attentionId:proposalId,expectedVersion:1,action:'background',sourceJobId:'foreign-job',requestKey:'attention:'+proposalId+':1:background'}),error=>error.code==='ATTENTION_STALE');
+  await assert.rejects(manager.invoke('managed.attention.respond',{projectId:pid,attentionKind:'frontdesk-route',attentionId:proposalId,expectedVersion:1,action:'approve',sourceJobId:front().id,requestKey:'attention:'+proposalId+':1:approve'}),error=>error.code==='INVALID_PAYLOAD');
+  const ok=await manager.invoke('managed.attention.respond',{projectId:pid,attentionKind:'frontdesk-route',attentionId:proposalId,expectedVersion:1,action:'background',sourceJobId:front().id,requestKey:'attention:'+proposalId+':1:background'});
+  assert.equal(ok.accepted,true);assert.equal(ok.transferred,true);
+  const duplicate=await manager.invoke('managed.attention.respond',{projectId:pid,attentionKind:'frontdesk-route',attentionId:proposalId,expectedVersion:1,action:'background',sourceJobId:front().id,requestKey:'attention:'+proposalId+':1:background'});
+  assert.equal(duplicate.duplicate,true);
+  assert.equal(c.store.state.jobs.filter(j=>j.type==='intake').length,1);
+});
+test('effect-permission decisions project one todo and stay version-bound; legacy cross-project decisions close as migrated',async t=>{
+  const storage=memoryStorage();
+  const permissions=new TaskPermissions(storage);
+  const {c,pid,front}=await controllerFixture(t,{taskPermissions:permissions});
+  const job=front();
+  const prepared=await permissions.prepareEffect(pid,{sourceJobId:job.id,permissionTaskId:job.context.permissionTaskId,role:'frontdesk',effectType:'host-exec',frozenEffect:{version:1,command:'/usr/bin/marker',args:['--write'],cwd:'/tmp/a',scope:'host-exec',action:'user',elevation:'user',commandDigest:'0'.repeat(64)},originalText:'写入系统标记'});
+  assert.equal(prepared.status,'required');assert.equal(prepared.request.version,1);
+  const manager=await managerFixture(t,c,pid,permissions);
+  const state=await manager.attentionState(pid,c.snapshot(),{connected:true});
+  const todos=state.todos.filter(todo=>todo.destination?.kind==='effect-permission'&&todo.status==='open');
+  assert.equal(todos.length,1);
+  const question=todos[0].destination.question;
+  assert.equal(question.command,'/usr/bin/marker');assert.deepEqual(question.args,['--write']);assert.equal(question.cwd,'/tmp/a');assert.equal(question.elevation,'user');assert.match(question.effectHash,/^[a-f0-9]{64}$/);
+  assert.equal(todos[0].destination.expectedVersion,1);assert.equal(todos[0].destination.sourceJobId,job.id);
+  const flat={projectId:pid,attentionKind:'effect-permission',attentionId:prepared.request.id,expectedVersion:1,sourceJobId:job.id};
+  const denied=await manager.invoke('managed.attention.respond',{...flat,action:'deny',requestKey:'attention:'+prepared.request.id+':1:deny'});
+  assert.equal(denied.accepted,true);assert.equal(denied.grantId,null);assert.equal(denied.continued,false);
+  const duplicate=await manager.invoke('managed.attention.respond',{...flat,action:'deny',requestKey:'attention:'+prepared.request.id+':1:deny'});
+  assert.equal(duplicate.duplicate,true);
+  await assert.rejects(manager.invoke('managed.attention.respond',{...flat,action:'approve-once',requestKey:'attention:'+prepared.request.id+':1:approve-once'}),error=>error.code==='STALE_ATTENTION'||error.code==='PERMISSION_DECISION_COLLISION');
+  const after=await manager.attentionState(pid,c.snapshot(),{connected:true});
+  assert.equal(after.todos.filter(todo=>todo.destination?.kind==='effect-permission'&&todo.status==='open').length,0);
+  // The ordinary cross-project gate is gone: a stale renderer decision on an
+  // old todo closes explicitly (migration), never silently resolves.
+  await assert.rejects(manager.invoke('managed.attention.respond',{projectId:pid,attentionKind:'cross-project-permission',attentionId:'legacy-request',expectedVersion:1,sourceJobId:job.id,action:'approve',requestKey:'attention:legacy-request:1:approve'}),error=>error.code==='ATTENTION_STALE');
 });

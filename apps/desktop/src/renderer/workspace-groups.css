@@ -28,7 +28,7 @@ html[data-workspace-role=shell] #reader{display:flex;flex-direction:column;min-w
 .workspace-pane-header [data-workspace-content-tools]{color:var(--muted);font-size:11px}
 @media(max-width:600px){.workspace-pane-header{gap:3px}.workspace-pane-header button{padding-inline:5px}}
 html[data-workspace-role=shell] .topbar,.nozeli-draggable{-webkit-app-region:drag}
-.nozeli-window-logo{width:22px;height:22px;flex:none;margin-right:7px}
+.nozeli-window-logo{width:32px;height:32px;object-fit:contain;flex:none;margin-right:7px}
 .nozeli-window-controls{display:flex;align-items:center;gap:2px;margin-left:6px;-webkit-app-region:no-drag}
 .nozeli-window-controls button{width:30px;min-width:30px;padding:2px;border:0;background:transparent;font-size:18px}
 .nozeli-draggable button,.nozeli-draggable .nozeli-window-controls{-webkit-app-region:no-drag}

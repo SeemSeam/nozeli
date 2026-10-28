@@ -42,7 +42,7 @@ try {
 
 需要 Linux x86_64/glibc 桌面、Wayland 或 X11，以及 Electron 所需的系统图形/音频/NSS 等动态库。仅本机 Linux/Wayland 验证，非所有发行版/Windows/macOS支持声明。普通用户运行，不要以root运行或用 --no-sandbox 绕过安全限制；若系统禁止无特权用户命名空间，由管理员按发行版策略配置 Chromium sandbox，本包不自动提权。
 
-首次可“稍后设置，继续阅读”。AI使用随包私有OMP，但需自行配置服务/模型/账号；不附带开发者密钥、OAuth或个人数据。Linux受管Agent还需要系统bubblewrap（bwrap）和可用namespace；缺失时明确拒绝受管运行，不影响基础阅读。
+首次可“稍后设置，继续阅读”。AI使用随包私有OMP，但需自行配置服务/模型/账号；不附带开发者密钥、OAuth或个人数据。Linux受管Agent默认以当前用户运行；系统提供bubblewrap（bwrap）与可用namespace时自动启用读/写域隔离，缺失时不阻断受管运行、也不声明隔离。单条命令特权执行仅在用户逐项批准后经系统机制（pkexec）完成：每次执行各自经 OS 提权机制启动、由 OS 决定是否提示；本包不安装任何提权组件、不以root运行应用、不提权运行用户可写的运行时文件。
 
 可选能力：JS/TS语言服务仍需系统Node（或NOZELI_LSP_NODE指定），没有时普通代码编辑与内置格式化仍可用；TeX编译、TexLab、SyncTeX需外部工具，不随包提供。
 

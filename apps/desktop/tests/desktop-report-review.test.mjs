@@ -26,7 +26,24 @@ const mainSource=await readFile(mainPath,'utf8');
 const admissionStart=mainSource.indexOf('  workspaceNative.ensureConversation=async(projectId,target)=>{');
 const admissionEnd=mainSource.indexOf('  workspaceNative.setupWindow=',admissionStart);
 assert(admissionStart>=0&&admissionEnd>admissionStart);
-await writeFile(mainPath,mainSource.slice(0,admissionStart)+`  workspaceNative.ensureConversation=async(projectId,target)=>{if(!['frontdesk','orchestrator','review-a','problem-b'].includes(target))throw Error('Unknown review fixture target');};\n`+mainSource.slice(admissionEnd));
+let mainPatched=mainSource.slice(0,admissionStart)+`  workspaceNative.ensureConversation=async(projectId,target)=>{if(!['frontdesk','orchestrator','review-a','problem-b'].includes(target))throw Error('Unknown review fixture target');};\n`+mainSource.slice(admissionEnd);
+const reviewAdapterAnchor='host.reviewDocuments=createReviewDocumentAdapter({host,managed:managedAgents});';
+assert(mainPatched.includes(reviewAdapterAnchor), 'review adapter fixture anchor changed');
+mainPatched=mainPatched.replace(reviewAdapterAnchor, reviewAdapterAnchor+`
+  // Fixture review publications: the real adapter stays wired for everything
+  // else; only the fixture objectId reads a deterministic candidate body so
+  // the unified review document tab exercises the real open/read chain.
+  {const realAdapter=host.reviewDocuments;const {createHash}=await import('node:crypto');
+   const fixtureBodies={'00000000-0000-4000-8000-000000000002':{'candidate.txt':'WORKTREE_CANDIDATE_NOT_ORIGINAL\\n'}};
+   const bodyOf=args=>args.source?.type==='review'?fixtureBodies[args.source.objectId]?.[args.relPath]:undefined;
+   host.reviewDocuments={...realAdapter,
+    read:async args=>{const body=bodyOf(args);if(body===undefined)return realAdapter.read(args);const bytes=Buffer.from(body,'utf8'),digest=createHash('sha256').update(bytes).digest('hex');return {relPath:args.relPath,kind:'text',unsupportedReason:null,digest,materialDigest:digest,byteLength:bytes.length,text:body,bytes:null,encoding:'utf-8',authorship:null,authorshipText:null,authorshipError:null,image:null,draft:null,draftError:null,sourceChanged:false,diskPresent:false,mtimeMs:null,documentSource:args.source,readOnly:false,review:{workId:args.source.workId,objectId:args.source.objectId,change:'modified',status:'modified',oldPath:null,counts:{added:1,deleted:0,binary:false,unsupportedReason:null},humanEdited:false,baselineDigest:'0'.repeat(64),candidateDigest:digest,baselineUnavailable:false,textOmitted:null,draftRevision:0,textDigest:digest,reviewVersion:'f'.repeat(64),editable:true,stale:null,accepted:null,continuation:null,merge:null,origin:'candidate',byteLength:bytes.length}};},
+    currentBytes:async args=>{const body=bodyOf(args);return body===undefined?realAdapter.currentBytes(args):Buffer.from(body,'utf8');},
+    materials:async args=>{const body=bodyOf(args);return body===undefined?realAdapter.materials(args):new Map([[createHash('sha256').update(Buffer.from(body,'utf8')).digest('hex'),Buffer.from(body,'utf8')]]);},
+    versions:async args=>({versions:[],readOnly:true}),
+    save:async args=>{if(bodyOf(args)===undefined)return realAdapter.save(args);const error=new Error('Fixture review document stays read-only');error.code='READONLY';throw error;},
+    version:async args=>realAdapter.version(args)};}`);
+await writeFile(mainPath,mainPatched);
 const panelPath = path.join(root, 'src/renderer/managed-agent-panel.mjs');
 let panel = await readFile(panelPath, 'utf8');
 const callAnchor = ' const call=async(op,p={},id=projectId)=>{';
@@ -45,6 +62,31 @@ panel = panel.replace(callAnchor, `
     const items=fixture.receipts.map((r,i)=>({objectId:r.objectId,workId:r.workId,workName:fixture.works.find(w=>w.id===r.workId)?.name||'工作',revision:r.revision,kind:r.kind,at:new Date(Date.UTC(2026,0,1,0,0,i)).toISOString(),workStatus:fixture.works.find(w=>w.id===r.workId)?.status,report:r.report,excerpt:r.report.excerpt,objectVerified:false})).reverse(),offset=p.offset||0,limit=p.limit||50;
     return {ok:true,value:{projectId:p.projectId,mode:'active',version,offset,limit,total:items.length,nextOffset:offset+limit<items.length?offset+limit:null,items:items.slice(offset,offset+limit)}};
   }
+  // The collaboration review surface mounts with the REAL managed-review
+  // module; its managed.review.*/workspace.review.decide calls resolve
+  // against this fixture bridge instead of the real host controller.
+  async function fixtureReviewBridge(op,payload={}){
+    window.__reviewCalls??=[];window.__reviewCalls.push({op,p:payload});window.__reviewDecideCalls??=[];
+    if(!window.__reviewState){const stored=localStorage.getItem('__reviewFixtureState');if(stored){try{window.__reviewState=JSON.parse(stored).state;}catch{}}}
+    const fixture=window.__reviewState;
+    const receipt=fixture?.receipts.find(r=>r.objectId===payload.objectId);
+    const snapshotFiles=receipt?.snapshot?.files||[];
+    if(op==='managed.review.read'){
+      if(!snapshotFiles.length)return {ok:true,value:{workId:null,objectId:payload.objectId,revision:0,reviewVersion:null,status:'ended',files:[],capabilities:{canAccept:false,canContinue:false,canSave:false}}};
+      const stale=window.__reviewStaleReview===true;
+      return {ok:true,value:{workId:receipt.workId,objectId:receipt.objectId,revision:receipt.revision,reviewVersion:'f'.repeat(64),status:'waiting',...(stale?{stale:{code:'SUPERSEDED'}}:{}),files:snapshotFiles.map(f=>({relPath:f.relPath,change:'modified',status:'modified',candidateText:'WORKTREE_CANDIDATE_NOT_ORIGINAL',baselineText:'',candidateDigest:f.digest,baselineDigest:'0'.repeat(64),added:1,deleted:0,draft:null,editable:!stale})),capabilities:stale?{canAccept:false,canContinue:false,canSave:false}:{canAccept:true,canContinue:true,canSave:true}}};
+    }
+    if(op==='managed.review.instruction.read')return {ok:true,value:{text:'',revision:0}};
+    if(op==='managed.review.instruction.save')return {ok:true,value:{text:payload.text??'',revision:(payload.expectedRevision??0)+1}};
+    if(op==='workspace.control')return {ok:true,value:{ready:true}};
+    if(op==='workspace.review.decide'){
+      window.__reviewDecideCalls??=[];window.__reviewDecideCalls.push({...payload});
+      if(fixture?.drafts?.[payload.workId])return {ok:false,error:{code:'DRAFT_PENDING',message:'原 Worker 有未发送草稿；请先发送或明确清空，本次未继续或接受。'}};
+      if(window.__reviewEndError)return {ok:false,error:{code:'REVIEW_TOKEN_CHANGED',message:window.__reviewEndError}};
+      return {ok:true,value:{status:'ended'}};
+    }
+    return await invoke(op,payload);
+  }
   ${callAnchor}
   window.__reviewCalls??=[];window.__reviewCalls.push({op,p});
   if(!window.__reviewState){const stored=localStorage.getItem('__reviewFixtureState');if(stored){try{window.__reviewState=JSON.parse(stored).state;}catch{}}}
@@ -55,12 +97,15 @@ panel = panel.replace(callAnchor, `
   if(op==='retry'||op==='intake.retry')return {accepted:true};
   if(op==='terminal.screen')return {available:true,terminalId:'fixture-worker-terminal',version:1,cols:80,rows:1,lines:[[{text:'Fixture Worker',cells:14}]]};
   if(op==='artifact.list')return {files:fixture.receipts.find(r=>r.objectId===p.objectId)?.snapshot?.files||[]};
-  if(op==='artifact.read')return {relPath:p.relPath,text:'WORKTREE_CANDIDATE_NOT_ORIGINAL',base64:btoa('WORKTREE_CANDIDATE_NOT_ORIGINAL'),size:31,readOnly:true};
   if(op==='worker.handoff'){const work=fixture.works.find(w=>w.id===p.workId);if(p.confirmed!==true||work.threadId!==p.oldThreadId||work.revision!==p.revision)throw Error('Stale worker confirmation');work.threadArchive=[{id:'worker-archive',threadId:work.threadId,provider:'omp'}];delete work.contextRecovery;work.threadId=null;return {confirmed:true,automaticReplay:false};}
   if(op==='worker.history')return {readOnly:true,text:p.offset?' original report tail':'original goal and inputs',source:'objects/recovery-worker.json',version:'fixture-history-version',offset:p.offset||0,endOffset:p.offset?48:24,totalChars:48,nextOffset:p.offset?null:24};
+  if(op==='review.read'){const receipt=fixture.receipts.find(r=>r.objectId===p.objectId);if(!receipt?.snapshot?.files?.length)return {workId:null,objectId:p.objectId,files:[]};return {workId:receipt.workId,objectId:receipt.objectId,files:receipt.snapshot.files};}
   throw new Error('Unexpected fixture managed operation: '+op);
 `);
 panel = panel.replace(stateAnchor, ` window.__reviewSnapshot=(s,id)=>{projectId=id;state=s;window.__reviewState=s;try{localStorage.setItem('__reviewFixtureState',JSON.stringify({state:s,id}))}catch{};ready=true;show(true);render();void loadHistory();};${stateAnchor}`);
+const reviewMountAnchor='mountManagedReview(parent,{invoke,projectId:doc.projectId';
+assert(panel.includes(reviewMountAnchor), 'managed review mount fixture anchor changed');
+panel=panel.replace(reviewMountAnchor,'mountManagedReview(parent,{invoke:fixtureReviewBridge,projectId:doc.projectId');
 await writeFile(panelPath, panel);
 
 const report = { evidenceKind: 'real-electron-fixture-not-model', checks: [], errors: [], output };
@@ -182,9 +227,6 @@ try {
   const setDraft = async text => conversationPage.$eval('#composer', (n, text) => {
     n.value = text; n.dispatchEvent(new Event('input', { bubbles: true }));
   }, text);
-  const reportBody = async () => reportView.$eval('#managed-doc', n => {
-    const clone = n.cloneNode(true); clone.querySelector('#managed-result-actions')?.remove(); return clone.textContent;
-  });
   const scopedHistory = async expect => {
     const deadline = Date.now() + 30000;
     for (;;) {
@@ -252,14 +294,16 @@ try {
   assert.match(await reportView.$eval('#managed-todo-context', n => n.textContent), /多工作长标题：核对当前成果与第二轮报告/);
   assert.equal(await reportView.$$eval('#managed-result-actions button', ns => ns.some(n=>n.textContent.includes('继续讨论'))),true);
   assert.equal(await reportView.evaluate(() => window.__reviewState.todos.find(t => t.id === 'report-a-v2').status), 'open');
-  assert.equal(await reportView.evaluate(() => window.__reviewCalls.filter(c => /resolve|read|end/.test(c.op)).length), 0);
+  assert.equal(await reportView.evaluate(() => window.__reviewCalls.filter(c => /resolve|artifact\.read|(^|\.)end/.test(c.op)).length), 0);
   check('reading current report binds original worker and does not approve or resolve it');
   await reportView.click('#managed-doc .conversation-file-link[data-path="candidate.txt"]');
-  await reportView.waitForFunction(()=>document.querySelector('#managed-doc').textContent.includes('WORKTREE_CANDIDATE_NOT_ORIGINAL'));
-  assert.equal(await reportView.$eval('#compose-form',n=>n.inert),true);
-  assert.equal(await reportView.evaluate(()=>window.__reviewCalls.filter(c=>c.op==='artifact.read').at(-1).p.objectId),'00000000-0000-4000-8000-000000000002');
-  check('candidate artifact opens report-bound immutable bytes read-only, not original-root lookalike');
-  await closeReportView();await openTodo('report-a-v2');
+  const candidateTab=await scoped(s=>s.role==='surface'&&s.kind==='document'&&s.relPath==='candidate.txt'&&s.documentSource?.type==='review'&&s.documentSource.objectId==='00000000-0000-4000-8000-000000000002');
+  await candidateTab.waitForFunction(()=>document.querySelector('#file-path')?.textContent==='candidate.txt'&&document.body.textContent.includes('WORKTREE_CANDIDATE_NOT_ORIGINAL'));
+  assert.match(await candidateTab.$eval('#file-section-label',n=>n.textContent),/审核候选/);
+  await assert.rejects(readFile(path.join(project,'candidate.txt')),{code:'ENOENT'});
+  assert.equal(await reportView.$eval('#compose-form',n=>n.inert),false);
+  check('report candidate entry opens the unified review document tab with frozen bytes; the same-path project file is never touched');
+  await reportView.waitForSelector('#managed-doc [data-review-action="accept"]');
   for (const width of [800, 390]) {
     await page.evaluate(width => nozeli.invoke('session.resize', { width, height: 800 }), width);
     await page.waitForFunction(width => innerWidth === width, {}, width);
@@ -273,20 +317,20 @@ try {
     assert(bounds.left >= -1 && bounds.right <= bounds.width + 1, JSON.stringify(bounds));
     assert(bounds.scrollWidth <= bounds.clientWidth + 1, JSON.stringify(bounds));
     assert.match(await reportView.$eval('#managed-doc', n => n.textContent), /依据 70/);
-    assert.equal(await reportView.$eval('#managed-result-actions [data-managed-end-result]',node=>!node.disabled&&node.getClientRects().length>0),true);
-    assert.equal(await reportView.$eval('#managed-result-actions [data-managed-end-discard]',node=>!node.disabled&&node.getClientRects().length>0),true);
+    assert.equal(await reportView.$eval('#managed-doc [data-review-action="accept"]',node=>!node.disabled&&node.getClientRects().length>0),true);
+    assert.equal(await reportView.$eval('#managed-result-actions [data-report-discuss]',node=>!node.disabled&&node.getClientRects().length>0),true);
     check(`${width}px long report fits reader and retains full body`);
   }
   await page.evaluate(() => nozeli.invoke('session.resize', { width: 1440, height: 900 }));
   await page.waitForFunction(() => innerWidth === 1440);
   await page.waitForFunction(() => !document.querySelector('#app').classList.contains('narrow-layout'));
-  await page.evaluate(id=>{const state=window.__reviewState;state.works.find(work=>work.id==='review-a').revision=3;window.__reviewSnapshot(state,id);},id);
-  await seedView(reportView);
-  assert.equal(await reportView.$eval('[data-managed-end-result]',node=>node.disabled),true);assert.equal(await reportView.$eval('[data-managed-end-discard]',node=>node.disabled),true);
-  await reportView.$eval('[data-managed-end-discard]',node=>node.click());assert.equal(await reportView.evaluate(()=>window.__reviewCalls.filter(call=>call.op==='end').length),0);
-  await page.evaluate(id=>{const state=window.__reviewState;state.works.find(work=>work.id==='review-a').revision=2;window.__reviewSnapshot(state,id);},id);
-  await seedView(reportView);
-  check('stale result cannot accept or discard a later revision');
+  const bumpRevision=revision=>page.evaluate(({id,revision})=>{const state=window.__reviewState;state.works.find(work=>work.id==='review-a').revision=revision;window.__reviewSnapshot(state,id);return {state,id};},{id,revision});
+  await reportView.evaluate(({state,id})=>{window.__reviewStaleReview=true;window.__reviewSnapshot(state,id);},await bumpRevision(3));
+  await reportView.waitForFunction(()=>document.querySelector('#managed-doc [data-review-action="accept"]')?.disabled===true&&document.querySelector('[data-managed-end-result]')?.hidden===true);
+  assert.equal(await reportView.evaluate(()=>window.__reviewCalls.filter(call=>call.op==='end').length),0);
+  await reportView.evaluate(({state,id})=>{window.__reviewStaleReview=false;window.__reviewSnapshot(state,id);},await bumpRevision(2));
+  await reportView.waitForFunction(()=>document.querySelector('#managed-doc [data-review-action="accept"]')?.disabled!==true);
+  check('stale publication cannot accept or discard; the current publication regains review actions');
   // Synthetic UI fixture admission; no provider/model is created.
   await reportView.$$eval('#managed-result-actions button', ns => ns.find(n => n.textContent.includes('继续讨论')).click());
   conversationPage=await scoped(s=>s.role==='surface'&&s.kind==='conversation');
@@ -295,14 +339,16 @@ try {
   await conversationPage.waitForFunction(()=>window.__reviewState.drafts['review-a']==='拒绝结束后必须保留的修改草稿');
   await page.evaluate(async state=>window.__reviewSnapshot(state,(await nozeli.invoke('workspace.bootstrap')).value.projectId),await conversationPage.evaluate(()=>window.__reviewState));
   await openTodo('report-a-v2');
-  const bodyBefore = await reportBody();
-  await reportView.click('[data-managed-end-result]');
-  await reportView.waitForFunction(() => document.querySelector('#managed-review-error')?.textContent.includes('未发送草稿'));
-  assert.equal(await reportView.evaluate(() => window.__reviewCalls.filter(c => c.op === 'end').length), 0);
+  await reportView.waitForSelector('#managed-doc [data-review-action="accept"]:not(:disabled)');
+  await reportView.click('#managed-doc [data-review-action="accept"]');
+  await reportView.waitForSelector('[data-confirmation-confirm]',{visible:true});
+  await reportView.click('[data-confirmation-confirm]');
+  await reportView.waitForFunction(() => document.querySelector('[data-review-warning]')?.textContent.includes('未发送草稿'));
+  assert.equal(await reportView.evaluate(() => window.__reviewDecideCalls.length), 1);
   assert.equal(await reportView.evaluate(()=>window.__reviewState.drafts['review-a']), '拒绝结束后必须保留的修改草稿');
-  assert.equal(await reportBody(), bodyBefore);
+  assert.equal(await reportView.evaluate(() => window.__reviewCalls.some(c => c.op === 'send' || c.op === 'end')), false);
   assert.equal(await reportView.evaluate(() => window.__reviewState.works.find(w => w.id === 'review-a').status), 'review');
-  check('draft-guard end rejection preserves composer and report');
+  check('decision draft-guard rejection preserves the unsent Worker draft and the report');
   await reportView.$$eval('#managed-result-actions button',ns=>ns.find(n=>n.textContent.includes('继续讨论')).click());
   conversationPage=await scoped(s=>s.role==='surface'&&s.kind==='conversation');
   await conversationPage.waitForFunction(()=>document.querySelector('#conversation-panel').dataset.managedConversation==='review-a');
@@ -310,41 +356,39 @@ try {
   await conversationPage.waitForFunction(() => window.__reviewState.drafts['review-a'] === '');
   await page.evaluate(async state=>window.__reviewSnapshot(state,(await nozeli.invoke('workspace.bootstrap')).value.projectId),await conversationPage.evaluate(()=>window.__reviewState));
   await openTodo('report-a-v2');
-  reportView.once('dialog',d=>d.accept());
-  await reportView.click('[data-managed-end-result]');
-  await reportView.waitForFunction(() => window.__reviewCalls.some(c => c.op === 'end'));
-  await reportView.waitForFunction(() => document.querySelector('#managed-review-error')?.textContent.includes('成果版本已变化'));
-  const end = await reportView.evaluate(() => window.__reviewCalls.filter(c => c.op === 'end').at(-1));
-  assert.equal(end.p.workId, 'review-a'); assert.equal(end.p.revision, 2); assert.equal(end.p.decision,'accept');
-  assert.equal(await reportBody(), bodyBefore);
-  check('backend stale-version rejection retains report without claiming ended');
+  await reportView.evaluate(()=>{window.__reviewEndError='成果版本已变化，请重新核对后再确认';});
+  await reportView.waitForSelector('#managed-doc [data-review-action="accept"]:not(:disabled)');
+  await reportView.click('#managed-doc [data-review-action="accept"]');
+  await reportView.waitForSelector('[data-confirmation-confirm]',{visible:true});
+  await reportView.click('[data-confirmation-confirm]');
+  await reportView.waitForFunction(() => document.querySelector('[data-review-warning]')?.textContent.includes('审核版本已变化'));
+  const decision = await reportView.evaluate(() => window.__reviewDecideCalls.at(-1));
+  assert.equal(decision.workId,'review-a');assert.equal(decision.objectId,'00000000-0000-4000-8000-000000000002');assert.equal(decision.action,'accept');assert.equal(decision.reviewVersion,'f'.repeat(64));
+  check('token-changed decision rejection retains the report without claiming ended');
   await openTodo('question-b');
   assert.match(await reportView.$eval('#managed-doc', n => n.textContent), /请选择业务方案甲或乙/);
   assert.match(await reportView.$eval('#managed-todo-context', n => n.textContent), /等待原 Worker 回答的工作/);
   assert.equal(await reportView.evaluate(() => window.__reviewState.todos.find(t => t.id === 'question-b').status), 'open');
-  assert.equal(await reportView.$$eval('#managed-result-actions [data-managed-end-result]',nodes=>nodes.length),0);assert.equal(await reportView.$eval('#managed-result-actions [data-managed-end-discard]',node=>!node.disabled),true);
+  assert.equal(await reportView.$eval('#managed-result-actions [data-managed-end-result]',node=>node.hidden),true);
   check('business question body remains readable and bound to original worker');
   await openTodo('routing-question');
   assert.match(await reportView.$eval('#managed-doc', n => n.textContent), /这项请求应交给哪个工作/);
   assert.equal(await reportView.$eval('#conversation-panel', n => n.dataset.managedConversation), 'frontdesk');
   assert.equal(await reportView.evaluate(() => window.__reviewState.todos.find(t => t.id === 'routing-question').status), 'open');
-  assert.equal(await reportView.$$eval('#managed-result-actions [data-managed-end-result],#managed-result-actions [data-managed-end-discard]',nodes=>nodes.length),0);
+  assert.equal(await reportView.$$eval('#managed-result-actions [data-managed-end-result]',nodes=>nodes.length),0);
   check('routing clarification opens persistent body and binds frontdesk');
   await openTodo('closure-fault');
   assert.match(await reportView.$eval('#managed-doc', n => n.textContent), /Git hook 拒绝提交/);
   const faultBinding = await reportView.evaluate(() => ({ target: document.querySelector('#conversation-panel').dataset.managedConversation,
     disabled: document.querySelector('#composer').disabled || document.querySelector('#send-message').disabled }));
   assert(faultBinding.target !== 'closure-c' || faultBinding.disabled, 'closure fault must not offer worker business discussion');
-  await reportView.$$eval('#managed-result-actions button', ns => {
-    const retry = ns.find(n => /重试/.test(n.textContent));
-    if (!retry) throw new Error('Closure retry action missing');
-    retry.click();
-  });
-  await reportView.waitForFunction(() => window.__reviewCalls.some(c => c.op === 'retry' && c.p.workId === 'closure-c'));
-  assert.equal(await reportView.evaluate(() => window.__reviewState.works.find(w => w.id === 'closure-c').status), 'ended');
-  assert.equal(await reportView.$$eval('#managed-result-actions button',ns=>ns.some(n=>/返回原任务核查|不提交 Git/.test(n.textContent))),false);
-  assert.equal(await reportView.evaluate(()=>window.__reviewCalls.some(c=>c.op==='send'&&c.p.target==='closure-c')),false);
-  check('technical retry leaves business ended and never dispatches Worker');
+  // Without a host-verified disposition the technical-closure retry must stay
+  // disabled: action authority comes from the host disposition, not the button.
+  assert.equal(await reportView.$eval('[data-managed-closure-retry]',node=>node.hidden===false&&node.disabled===true),true);
+  await reportView.$eval('[data-managed-closure-retry]',node=>node.click());
+  assert.equal(await reportView.evaluate(()=>window.__reviewCalls.some(c=>c.op==='retry'||c.op==='send')),false);
+  assert.equal(await reportView.evaluate(()=>window.__reviewState.works.find(w=>w.id==='closure-c').status),'ended');
+  check('technical closure retry requires host disposition authority and never dispatches Worker');
   await openTodo('recovery-fault');
   await reportView.waitForFunction(() => document.querySelector('#managed-doc').textContent.includes('执行上下文恢复失败'));
   assert.equal(await reportView.$eval('#conversation-panel', n => n.dataset.managedConversation), 'frontdesk');
@@ -363,9 +407,9 @@ try {
     await page.click('[data-history-reload]');await page.waitForFunction(()=>!document.querySelector('[data-history-reload]').disabled);
     const todo=state.todos.find(t=>t.id===todoId);await page.waitForSelector(`[data-managed-history-object="${todo.objectId}"]`);await page.$eval(`[data-managed-history-object="${todo.objectId}"]`, n => n.click());
     let historyView=await scopedHistory({objectId:todo.objectId,text});
-    assert.equal(await historyView.$$eval('#managed-doc [data-managed-end-result]:not(:disabled)', ns => ns.length), 0);
+    assert.equal(await historyView.$$eval('#managed-doc [data-managed-end-result]', ns => ns.length), 0);
+    assert.equal(await historyView.$$eval('#managed-doc [data-review-action="accept"]:not(:disabled)', ns => ns.length), 0);
     assert.equal(await historyView.$eval('#compose-form',n=>n.inert),true);
-    assert.equal(await historyView.$$eval('#managed-doc #managed-result-actions',ns=>ns.length),0);
     assert.match(await historyView.$eval('#subject-title',n=>n.textContent),new RegExp('第 '+todo.revision+' 版'));
     const historyCall=await page.evaluate(()=>window.__reviewHistoryCalls.filter(c=>c.op==='managed.history.read').at(-1));assert.equal(historyCall.p.objectId,todo.objectId);assert.equal(historyCall.p.version,historyCall.version);
     check(`${todoId} historical body remains readable without current-result ending ability`);

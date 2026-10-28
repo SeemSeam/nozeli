@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="680" viewBox="0 0 1000 680" role="img" aria-labelledby="title desc">
+<title id="title">不必守着 Agent：后台推进，你继续工作</title>
+<desc id="desc">左侧上下两条漫画。以前，人发送任务，Agent长时间工作，人无聊刷手机。Nozeli中，人发送任务，前台快速回应，多个Worker在后台推进，人继续阅读和处理其他任务。右侧简图解释前台、主控、多个Worker及成果待审的分工，长期记忆放主控侧面。</desc>
+<defs>
+<style>
+svg{--fg:#263e35;--muted:#62766b;--border:#cad7cf;--surface:#f5f8f5;--accent:#426c9a;--success:#3c805b;--warning:#af7140;--c1:#6085ae;--c2:#80ae90;color:var(--fg)}
+text{font-family:"Noto Sans CJK SC","Microsoft YaHei",sans-serif;fill:var(--fg);font-size:14px}
+.title{font-size:25px;font-weight:700}.heading{font-size:18px;font-weight:700}.small{font-size:12px;fill:var(--muted)}.label{font-size:15px;font-weight:600}.caption{font-size:17px;font-weight:700}.muted{fill:var(--muted)}
+.ink{fill:none;stroke:var(--fg);stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round}.thin{fill:none;stroke:var(--border);stroke-width:1.5}.arrow{fill:none;stroke:var(--muted);stroke-width:2;stroke-linecap:round;stroke-linejoin:round;marker-end:url(#arrow)}.green{stroke:var(--success);marker-end:url(#greenArrow)}
+</style>
+<marker id="arrow" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L6 3L0 6" fill="none" stroke="var(--muted)" stroke-width="1.7"/></marker>
+<marker id="greenArrow" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L6 3L0 6" fill="none" stroke="var(--success)" stroke-width="1.7"/></marker>
+<g id="person">
+<circle cx="0" cy="0" r="15" fill="var(--surface)" stroke="var(--fg)" stroke-width="2.5"/>
+<path d="M-14-4Q-11-21 8-15L15-6L4-8L-9 1" fill="var(--fg)"/>
+<path d="M-22 29Q0 13 22 29L26 76H-26Z" fill="var(--c1)" stroke="var(--fg)" stroke-width="2.4"/>
+<path d="M-13 77L-20 106M13 77L20 106" class="ink"/>
+<path d="M-22 34L-32 64M22 34L39 56" class="ink"/>
+</g>
+<g id="bot">
+<rect x="-22" y="-15" width="44" height="34" rx="10" fill="var(--surface)" stroke="var(--success)" stroke-width="2.5"/>
+<path d="M0-15V-23M-5-23H5" fill="none" stroke="var(--success)" stroke-width="2.5"/>
+<circle cx="-8" cy="0" r="3" fill="var(--success)"/><circle cx="8" cy="0" r="3" fill="var(--success)"/>
+<path d="M-22 32Q0 20 22 32L25 72H-25Z" fill="var(--c2)" stroke="var(--success)" stroke-width="2.4"/>
+<path d="M-22 37L-34 57M22 37L34 57M-12 73L-16 95M12 73L16 95" fill="none" stroke="var(--success)" stroke-width="3" stroke-linecap="round"/>
+</g>
+<g id="laptop"><path d="M-28 0H25L32 36H-21Z" fill="var(--surface)" stroke="var(--fg)" stroke-width="2"/><path d="M-35 37H36" class="ink"/></g>
+<g id="desk"><path d="M-67 0H67M-53 0V44M53 0V44" class="ink"/></g>
+</defs>
+<text x="32" y="42" class="title">工作交给 Agent，时间留给你</text>
+<text x="32" y="67" class="muted">不是让任务瞬间完成，而是不必占住你的下一步。</text>
+
+<!-- Comic strip 1 -->
+<rect x="24" y="94" width="636" height="250" rx="18" class="thin"/>
+<text x="42" y="124" class="heading">以前：人等 Agent</text>
+<path d="M219 146V316M438 146V316" class="thin" stroke-dasharray="3 7"/>
+<text x="120" y="151" text-anchor="middle" class="label">① 人发任务</text>
+<use href="#person" x="93" y="199"/>
+<use href="#laptop" x="145" y="237"/>
+<use href="#desk" x="120" y="276"/>
+<path d="M132 179H196V205H148L140 214V205H132Z" fill="var(--surface)" stroke="var(--border)"/>
+<text x="164" y="196" text-anchor="middle" class="small">帮我处理…</text>
+<text x="326" y="151" text-anchor="middle" class="label">② Agent 长时工作</text>
+<use href="#bot" x="314" y="201"/>
+<use href="#laptop" x="371" y="238"/>
+<use href="#desk" x="334" y="276"/>
+<circle cx="386" cy="188" r="17" class="thin"/>
+<path d="M386 176V188L394 194" fill="none" stroke="var(--warning)" stroke-width="2.5"/>
+<text x="333" y="318" text-anchor="middle" class="small">执行中……</text>
+<text x="548" y="151" text-anchor="middle" class="label">③ 人无聊刷手机</text>
+<use href="#person" x="520" y="205" transform="rotate(8 520 205)"/>
+<rect x="550" y="234" width="20" height="33" rx="4" fill="var(--surface)" stroke="var(--fg)" stroke-width="2.5"/>
+<path d="M555 242H565M555 248H563" class="thin"/>
+<path d="M484 249V286H543M488 286V307M539 286V307" class="ink"/>
+<text x="579" y="202" class="small">还没好？</text>
+<text x="548" y="318" text-anchor="middle" class="small">下一步只能等着</text>
+<path d="M198 219H236" class="arrow"/><path d="M416 219H454" class="arrow"/>
+
+<!-- Comic strip 2 -->
+<rect x="24" y="365" width="636" height="262" rx="18" fill="var(--surface)" stroke="var(--success)" stroke-width="1.5"/>
+<text x="42" y="396" class="heading">Nozeli：后台推进，人继续工作</text>
+<path d="M219 418V605M438 418V605" class="thin" stroke-dasharray="3 7"/>
+<text x="120" y="432" text-anchor="middle" class="label">① 人发任务</text>
+<use href="#person" x="93" y="478"/>
+<use href="#laptop" x="145" y="516"/>
+<use href="#desk" x="120" y="555"/>
+<path d="M132 458H196V484H148L140 493V484H132Z" fill="var(--surface)" stroke="var(--border)"/>
+<text x="164" y="475" text-anchor="middle" class="small">帮我处理…</text>
+<text x="327" y="432" text-anchor="middle" class="label">② 前台快速响应</text>
+<use href="#bot" x="312" y="483"/>
+<path d="M344 457H423V490H364L354 500V490H344Z" fill="var(--surface)" stroke="var(--success)"/>
+<text x="383" y="478" text-anchor="middle" class="small">收到，后台推进</text>
+<text x="330" y="598" text-anchor="middle" class="small">前台仍可继续交流</text>
+<text x="548" y="432" text-anchor="middle" class="label">③ 人继续其他任务</text>
+<use href="#person" x="511" y="480"/>
+<path d="M542 521L567 516L590 525V553L566 544L542 551Z" fill="var(--surface)" stroke="var(--fg)" stroke-width="2"/>
+<path d="M567 516V544" class="thin"/>
+<use href="#desk" x="546" y="555"/>
+<text x="548" y="598" text-anchor="middle" class="small">继续阅读、编辑、发起新任务</text>
+<path d="M198 499H236" class="arrow green"/><path d="M416 499H454" class="arrow green"/>
+<text x="330" y="451" text-anchor="middle" class="small">多 Agent 编排在后台进行</text>
+
+<!-- Side explanation: secondary, deliberately not another comic scene. -->
+<path d="M683 105V622" class="thin"/>
+<text x="708" y="123" class="heading">背后的分工</text>
+<text x="708" y="147" class="small">前台接待与后台执行分开</text>
+<rect x="725" y="173" width="155" height="49" rx="10" fill="var(--surface)" stroke="var(--accent)" stroke-width="1.5"/>
+<text x="802" y="194" text-anchor="middle" class="label">前台接待</text>
+<text x="802" y="212" text-anchor="middle" class="small">快速响应 · 分流</text>
+<path d="M802 223V258" class="arrow"/>
+<rect x="725" y="259" width="155" height="53" rx="10" fill="var(--surface)" stroke="var(--success)" stroke-width="1.5"/>
+<text x="802" y="281" text-anchor="middle" class="label">Orchestrator</text>
+<text x="802" y="301" text-anchor="middle" class="small">任务管理 · 动态调度</text>
+<path d="M881 285H911" class="arrow"/>
+<rect x="913" y="260" width="64" height="52" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+<text x="945" y="281" text-anchor="middle" class="small">长期</text><text x="945" y="300" text-anchor="middle" class="small">记忆</text>
+<path d="M802 313V360" class="arrow"/>
+<path d="M767 313L735 360M838 313L900 360" class="arrow" stroke-dasharray="4 5"/>
+<rect x="703" y="361" width="65" height="50" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+<rect x="775" y="361" width="65" height="50" rx="9" fill="var(--surface)" stroke="var(--success)" stroke-width="1.5"/>
+<text x="853" y="392" class="heading">…</text>
+<rect x="875" y="361" width="65" height="50" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+<text x="735" y="382" text-anchor="middle" class="small">Worker 1</text><text x="735" y="400" text-anchor="middle" class="small">整块任务</text>
+<text x="807" y="382" text-anchor="middle" class="small">Worker 2</text><text x="807" y="400" text-anchor="middle" class="small">整块任务</text>
+<text x="907" y="382" text-anchor="middle" class="small">Worker N</text><text x="907" y="400" text-anchor="middle" class="small">整块任务</text>
+<path d="M807 412V459" class="arrow green"/>
+<text x="819" y="441" class="small">成果就绪</text>
+<rect x="735" y="460" width="145" height="51" rx="10" fill="var(--surface)" stroke="var(--success)" stroke-width="1.5"/>
+<text x="807" y="482" text-anchor="middle" class="label">待你审阅</text>
+<text x="807" y="501" text-anchor="middle" class="small">按你的节奏接回工作</text>
+<text x="708" y="558" class="small">角色分工示意，非执行时序。</text>
+<text x="708" y="580" class="small">Worker 2 为成果交付示例。</text>
+<text x="32" y="658" class="caption">你不必守着进度条。任务在推进，你的工作也不必停。</text>
+</svg>

@@ -18,9 +18,10 @@ const hash=text=>createHash('sha256').update(text).digest('hex');
 async function fixture(text='base\nuntouched\nbase\n') {
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-authorship-')),root=path.join(dir,'项目'),profile=path.join(dir,'profile');
   await fs.mkdir(root);const file=path.join(root,'sample.md');await fs.writeFile(file,text);
-  const host=new DesktopHost(profile),projectId=(await host.pick(root)).project.id,store=new FileChanges(root);
+  const host=new DesktopHost(profile),projectId=(await host.pick(root)).project.id,store=new FileChanges({storage:host.storage,projectId,root});
   return {dir,root,profile,file,host,projectId,store,rel:'sample.md',cleanup:()=>fs.rm(dir,{recursive:true,force:true})};
 }
+const record=(fx,rel)=>fx.host.storage.getProjectRecord(fx.projectId,'file_changes',fx.store.keys.key(rel));
 const actor=(id,role,instance='instance-'+role)=>agentActor(id,role,{provider:'codex',sessionInstance:instance,sessionId:'real-session-'+role});
 async function apply(fx,role,edits) {
   const identity=actor(fx.projectId,role),snapshot=await fx.host.readDocument(fx.projectId,fx.rel,identity);
@@ -40,12 +41,12 @@ test('group history retains over 100 old batches, paginates without writes and r
       await fx.host.save(fx.projectId,fx.rel,read.digest,read.text.slice(0,from)+insert,{anchorChanges:ChangeSet.of({from,to:from+1,insert},read.text.length).toJSON()});
     }
     const read=await fx.host.readFile(fx.projectId,fx.rel),group=lineAuthorship(read.text,read.authorship)[0],scope=groupScope(group);
-    const sourceBefore=await fs.readFile(fx.file),ledgerBefore=await fs.readFile(fx.store.location(fx.rel));
+    const sourceBefore=await fs.readFile(fx.file),ledgerBefore=await record(fx,fx.rel);
     const recent=await fx.host.documentHistory(fx.projectId,fx.rel);assert(!recent.events.some(e=>e.id===old));
     let cursor=null,events=[];
     do{const result=await fx.host.documentHistory(fx.projectId,fx.rel,{scope,cursor,limit:40});events.push(...result.events);cursor=result.nextCursor;assert.equal(result.total,105);}while(cursor);
     assert.equal(events.length,105);assert.equal(new Set(events.map(e=>e.id)).size,105);assert(events.some(e=>e.id===group.items.at(-1).eventId));assert(events.every(e=>e.edits[0].from<105));
-    assert.deepEqual(await fs.readFile(fx.file),sourceBefore);assert.deepEqual(await fs.readFile(fx.store.location(fx.rel)),ledgerBefore);
+    assert.deepEqual(await fs.readFile(fx.file),sourceBefore);assert.deepEqual(await record(fx,fx.rel),ledgerBefore);
     const page=await fx.host.documentHistory(fx.projectId,fx.rel,{scope,limit:40});
     await assert.rejects(fx.host.documentHistory(fx.projectId,fx.rel,{scope:{...scope,from:-1}}),e=>e.code==='INVALID_PAYLOAD');
     await assert.rejects(fx.host.documentHistory(fx.projectId,fx.rel,{limit:101}),e=>e.code==='INVALID_PAYLOAD');
@@ -148,10 +149,11 @@ test('journal recovers after rename/finalization failure; third disk version is 
 test('damaged/unknown history is kept and blocks overwrite while preserving a user draft',async()=>{
   const fx=await fixture();
   try{
-    const read=await fx.host.readFile(fx.projectId,fx.rel),file=fx.store.location(fx.rel),pristine=await fx.store.read(fx.rel);await fs.writeFile(file,'{damaged');
+    const read=await fx.host.readFile(fx.projectId,fx.rel),key=fx.store.keys.key(fx.rel),pristine=await fx.store.read(fx.rel),damaged={...pristine,docId:'damaged-history'};
+    await fx.host.storage.putProject(fx.projectId,'file_changes',key,damaged);
     const readable=await fx.host.readFile(fx.projectId,fx.rel);assert.equal(readable.text,read.text);assert.equal(readable.authorshipError.code,'CHANGE_HISTORY_CORRUPT');
-    await assert.rejects(fx.host.save(fx.projectId,fx.rel,read.digest,'kept draft'),e=>e.code==='CHANGE_HISTORY_CORRUPT');assert.equal(await fs.readFile(file,'utf8'),'{damaged');assert.equal(await fs.readFile(fx.file,'utf8'),read.text);assert.equal((await fx.host.readFile(fx.projectId,fx.rel)).draft.text,'kept draft');
-    const unknown=JSON.stringify({...pristine,schemaVersion:9});await fs.writeFile(file,unknown);await assert.rejects(fx.host.save(fx.projectId,fx.rel,read.digest,'another draft'),e=>e.code==='SCHEMA_UNSUPPORTED');assert.equal(await fs.readFile(file,'utf8'),unknown);assert.equal(await fs.readFile(fx.file,'utf8'),read.text);
+    await assert.rejects(fx.host.save(fx.projectId,fx.rel,read.digest,'kept draft'),e=>e.code==='CHANGE_HISTORY_CORRUPT');assert.deepEqual((await record(fx,fx.rel)).value,damaged);assert.equal(await fs.readFile(fx.file,'utf8'),read.text);assert.equal((await fx.host.readFile(fx.projectId,fx.rel)).draft.text,'kept draft');
+    const unknown={...pristine,schemaVersion:9};await fx.host.storage.putProject(fx.projectId,'file_changes',key,unknown);await assert.rejects(fx.host.save(fx.projectId,fx.rel,read.digest,'another draft'),e=>e.code==='SCHEMA_UNSUPPORTED');assert.deepEqual((await record(fx,fx.rel)).value,unknown);assert.equal(await fs.readFile(fx.file,'utf8'),read.text);
   }finally{await fx.cleanup();}
 });
 

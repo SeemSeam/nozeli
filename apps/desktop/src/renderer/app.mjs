@@ -8,6 +8,8 @@ import {createFileIcon,updateFileIcon} from './file-icons.mjs';
 import './file-icons.css';
 import { mountDocumentAuthorship } from './document-authorship.mjs';
 import { mountDocumentComparison, versionCaption } from './document-comparison.mjs';
+import './document-comparison.css';
+import {captureTextCopy,verifiedTextCopy,downloadTextCopy} from './document-export.mjs';
 import { mountImage } from './image-view.mjs';
 import { mountFileLabels } from './file-labels.mjs';
 import { mountTexWorkspace } from './tex-workspace.mjs';
@@ -25,6 +27,8 @@ import { mountComposerMaterials } from './composer-materials.mjs';
 import { mountDocumentContextMenu, formatEditor, findInReadingSurface } from './document-context-menu.mjs';
 import './context-menu.css';
 import { mountDocumentDiff } from './document-diff.mjs';
+import { flushManagedReviews, applyManagedReviewBarrier, managedReviewComposing } from './managed-review.mjs';
+import './managed-review.css';
 import { mountFrozenChangeReader } from './frozen-change-reader.mjs';
 import { createTagSessionProjection } from './tag-session-projection.mjs';
 import { mountPdf } from './pdf-view.mjs';
@@ -64,6 +68,10 @@ if(workspaceScope.role==='surface'&&workspaceScope.kind==='terminal'){
 const isSurface = workspaceScope.role === 'surface';
 const isConversation = isSurface && workspaceScope.kind === 'conversation';
 const isDocumentMirror = isSurface && workspaceScope.kind === 'document' && workspaceScope.readOnly === true;
+const documentSource = workspaceScope.kind === 'document' ? workspaceScope.documentSource || {type:'project'} : {type:'project'};
+const isReviewDocument = documentSource.type !== 'project';
+const documentReadOnly = () => isDocumentMirror || documentSource.type === 'review-version' || ui.file?.readOnly === true;
+const ownsDocumentEvent = event => event.projectId === workspaceScope.projectId && event.relPath === workspaceScope.relPath && (isReviewDocument ? event.documentKey === workspaceScope.documentKey : !event.documentSource || event.documentSource.type === 'project');
 let documentPublishTimer = 0;
 let mirrorRevision = -1;
 let pendingMirrorBuffer = null;
@@ -104,9 +112,9 @@ function enqueue(action, freeze = false) {
   return run;
 }
   const flushCurrent = () => enqueue(() => flushNow());
-  const openFile = (relPath, view) => isSurface
-    ? invoke('workspace.control', {type:'open-file',projectId:ui.project?.id,relPath,view})
-    : workspaceGroups?.open({kind:'document',relPath,viewState:view});
+  const openFile = (relPath, view, source={type:'project'}) => isSurface
+    ? invoke('workspace.control', {type:'open-file',projectId:ui.project?.id,relPath,documentSource:source,view})
+    : workspaceGroups?.open({kind:'document',relPath,documentSource:source,viewState:view});
   const activateProject = projectId => enqueue(() => activateProjectNow(projectId), true);
   let searchToken = 0;
   function cancelSearch() { searchToken += 1; }
@@ -205,7 +213,7 @@ function enqueue(action, freeze = false) {
     form.style.top=`${Math.max(bounds.top+8,Math.min(Math.min(innerHeight,bounds.bottom)-height-8,ui.selectionRect.bottom+8))}px`;
   }
   function beginNote({ anchored = false } = {}) {
-    if (isDocumentMirror) return workspace.toast('阅读副本不可添加备注，请回到编辑位置。');
+    if (documentReadOnly()) return workspace.toast('当前文档只读，请回到可编辑文档添加备注。');
     const selected= ['word','ppt'].includes(ui.file?.kind) ? ui.wordSelection : captureLiveAnchor();
     if(anchored && selected?.anchor && sameNoteTarget(ui.frozenNote) && JSON.stringify(ui.frozenNote.anchor)!==JSON.stringify(selected.anchor)){
       rememberCurrentNote();ui.frozenNote=null;$('note-input').value='';
@@ -268,7 +276,7 @@ function enqueue(action, freeze = false) {
   // A document position is its own anchor kind: no quote, no screenshot, and
   // the source identity frozen at capture time is re-checked after every await.
   function openPointNote(target) {
-    if (isDocumentMirror) return workspace.toast('阅读副本不可添加备注，请回到编辑位置。');
+    if (documentReadOnly()) return workspace.toast('当前文档只读，请回到可编辑文档添加备注。');
     if (!(sameNoteTarget(ui.frozenNote) && JSON.stringify(ui.frozenNote.anchor) === JSON.stringify(target.anchor))) {
       rememberCurrentNote();
       ui.frozenNote = { regionImage: null, projectId: ui.project.id, relPath: ui.file.relPath, materialDigest: ui.materialDigest, kind: target.anchorKind, anchor: structuredClone(target.anchor), text: $('note-input').value, displayLocation: target.displayLocation };
@@ -282,7 +290,7 @@ function enqueue(action, freeze = false) {
   function pointMaterial(target) {
     const file = ui.file;
     const label = target.label || (Number.isInteger(target.anchor.page) ? `第 ${target.anchor.page} 页位置` : '文档位置');
-    const material = { relPath: file.relPath, kind: target.anchorKind, anchor: structuredClone(target.anchor), excerpt: '', point: true, pointLabel: label, displayLocation: target.displayLocation };
+    const material = { relPath: file.relPath, documentSource, kind: target.anchorKind, anchor: structuredClone(target.anchor), excerpt: '', point: true, pointLabel: label, displayLocation: target.displayLocation };
     if (target.kind === 'text') { material.materialText = ui.editor?.adapter?.getText() || ''; if (target.context) material.pointContext = target.context; }
     else if (target.kind === 'pdf' && target.nearby) material.pointContext = { nearby: target.nearby };
     return material;
@@ -392,6 +400,7 @@ const authorship=mountDocumentAuthorship({current:()=>['text','word'].includes(u
 let openFilesState = { paths: [], active: null, dirty: false, collapsed: false };
 function renderFileTabs(){openFilesState.active=ui.file?.relPath||null;openFilesState.dirty=Boolean(ui.dirty||ui.wordDirty);renderPathNotice();}
 function renderTagPathNotices(){
+  if(isReviewDocument)return;
   const file=ui.file,entry=file&&openFilesState.availability?.get(file.relPath);
   const caption=entry?.status==='missing'?'原路径不存在，可能已移动或删除。原标签与引文保留，未改绑新文件。':entry?.status==='unavailable'?'原路径暂不可用。原标签与引文保留。':file?.diskPresent===false?'当前标签仍对应保留副本，未绑定到重建的磁盘正文。':'';
   for(const node of document.querySelectorAll('#reader-scroll .note-anchor')){
@@ -402,6 +411,7 @@ function renderTagPathNotices(){
   }
 }
 function renderPathNotice(){
+  if(isReviewDocument){$('file-path-notice').hidden=true;$('retain-file-close').hidden=true;return;}
   const file=ui.file,entry=file&&openFilesState.availability?.get(file.relPath),missing=entry?.status==='missing'||!entry&&file?.diskPresent===false,unavailable=entry?.status==='unavailable',retained=entry?.status==='present'&&file?.diskPresent===false;
   $('file-path-notice').hidden=!file||(!missing&&!unavailable&&!retained);
   $('file-path-notice-text').textContent=missing?'原路径不存在，可能已移动或删除。当前显示保留正文；不会自动重建或改绑路径。':retained?'原路径现已存在，当前仍显示保留副本；磁盘正文未自动载入，也未被覆盖。':'原路径暂不可用。当前正文保留，请检查访问权限或文件类型。';
@@ -409,6 +419,7 @@ function renderPathNotice(){
   renderTagPathNotices();
 }
 async function refreshOpenFileAvailability(project){
+  if(isReviewDocument)return;
   const paths=[...openFilesState.paths,...(ui.file?[ui.file.relPath]:[])];
   try{const availability=await readFileAvailability(invoke,project.id,paths);if(ui.project!==project)return;openFilesState.availability=availability;if(ui.file&&['missing','unavailable'].includes(availability.get(ui.file.relPath)?.status))ui.file.sourceChanged=true;renderFileTabs();}
   catch(error){if(ui.project===project)workspace.toast('文件路径检查失败：'+error.message);}
@@ -430,7 +441,7 @@ const beside = { editor: null, pdf: null, file: null, diff: null, diffHost: null
 const texWorkspace = mountTexWorkspace({ getContext: () => ui, beside, closeBeside, openFile, toast: message => workspace.toast(message) });
 const markdownWorkspace = mountMarkdownWorkspace({ getContext: () => ui, render: renderTextPreview, project: projectPreviewTags, saveView: writeView, layout: () => window.dispatchEvent(new Event('nozeli-layout-change')) });
 const webWorkspace = mountWebWorkspace({getContext:()=>ui,invoke,layout:()=>window.dispatchEvent(new Event('nozeli-layout-change'))});
-const comparison = mountDocumentComparison({current:()=>ui.project?{projectId:ui.project.id,relPath:ui.file?.relPath,kind:ui.file?.kind,dirty:ui.dirty||ui.composing}:null,invoke,openSnapshot:(file,diff,owner)=>enqueue(()=>{if(ui.project?.id===owner.projectId&&ui.file?.relPath===owner.relPath)return openBesideSnapshot(file,diff);},true),toast:message=>workspace.toast(message)});
+const comparison = mountDocumentComparison({current:()=>ui.project?{projectId:ui.project.id,relPath:ui.file?.relPath,documentSource,documentKey:workspaceScope.documentKey,kind:ui.file?.kind,dirty:ui.dirty||ui.composing}:null,invoke,openSnapshot:(file,diff,owner,left)=>enqueue(()=>{if(ui.project?.id===owner.projectId&&ui.file?.relPath===owner.relPath&&owner.documentKey===workspaceScope.documentKey)return openBesideSnapshot(file,diff,left);},true),toast:message=>workspace.toast(message)});
 const frozenChangeReader = mountFrozenChangeReader({parent:$('documents'),invoke,mountDiff:mountDocumentDiff,currentProjectId:()=>ui.project?.id,...(isSurface&&workspaceScope.kind==='diff'?{onExit:async()=>{const result=await invoke('workspace.control',{type:'workspace-action',projectId:workspaceScope.projectId,viewId:workspaceScope.viewId,command:{type:'closeContent',viewId:workspaceScope.viewId}});if(!result.ok)throw Error(result.error?.message||'关闭对比失败，内容仍保留。');}}:{})});
 const openFrozenChange = target => (!isSurface || workspaceScope.kind!=='diff')
   ? (isSurface?invoke('workspace.control',{type:'report',projectId:ui.project?.id,report:{id:crypto.randomUUID(),projectId:ui.project?.id,kind:'diff',target,title:'Diff'}}):workspaceGroups.open({kind:'diff',resourceId:crypto.randomUUID(),viewState:{target,title:'Diff'}}))
@@ -455,13 +466,13 @@ function setDiffMode(enabled) {
     beside.diffHost.className = 'document-diff';
     $('documents').append(beside.diffHost);
     const head=document.createElement('div');head.className='document-diff-head';const left=document.createElement('header'),right=document.createElement('header'),label=document.createElement('span');label.className='document-diff-title';
-    label.textContent=ui.file.relPath+' · 当前内容'+(ui.dirty||ui.composing?'（含草稿）':'');label.title=label.textContent+' · 进入对比时的快照';left.append(label);
+    label.textContent=beside.leftSnapshot?beside.leftSnapshot.relPath+' · '+versionCaption(beside.leftSnapshot.version):ui.file.relPath+' · 当前内容'+(ui.dirty||ui.composing?'（含草稿）':'');label.title=label.textContent+' · 进入对比时的快照';left.append(label);
     const navigation=document.createElement('div');navigation.className='diff-navigation';const previous=document.createElement('button'),next=document.createElement('button'),count=document.createElement('span');previous.type=next.type='button';previous.id='diff-previous';next.id='diff-next';count.id='diff-count';count.setAttribute('role','status');setIconButton(previous,'chevron-up');setIconButton(next,'chevron-down');previous.setAttribute('aria-label','上一处差异');next.setAttribute('aria-label','下一处差异');previous.title='上一处差异';next.title='下一处差异';navigation.append(previous,count,next);left.append(navigation);
     const diffMore=panelButton('diff-primary-more');left.append(diffMore);beside.diffHeaderDisposers=[observePanelWidth(left),observePanelWidth(right)];
     diffMore.addEventListener('click',()=>documentMenu.openMore(beside.diff.merge.a.dom,diffMore));
     right.append($('secondary-path'),comparisonChange,$('secondary-pane').querySelector('.compare-switch'),$('secondary-close'),$('secondary-more'));head.append(left,right);
     const body=document.createElement('div');body.className='document-diff-body';beside.diffHost.append(head,body);
-    beside.diff = mountDocumentDiff({ parent: body, leftPath: ui.file.relPath, leftText: ui.editor.adapter.getText(), rightPath: beside.file.relPath, rightText: beside.file.text,onNavigate:(index,total)=>{count.textContent=total?(index<0?`${total}处差异`:`${index+1}/${total}处差异`):'内容相同';previous.disabled=next.disabled=!total;} });
+    beside.diff = mountDocumentDiff({ parent: body, leftPath: beside.leftSnapshot?.relPath||ui.file.relPath, leftText: beside.leftSnapshot?beside.leftSnapshot.text:ui.editor.adapter.getText(), rightPath: beside.file.relPath, rightText: beside.file.text,onNavigate:(index,total)=>{count.textContent=total?(index<0?`${total}处差异`:`${index+1}/${total}处差异`):'内容相同';previous.disabled=next.disabled=!total;} });
     previous.addEventListener('click',()=>beside.diff?.navigate(-1));next.addEventListener('click',()=>beside.diff?.navigate(1));
   } else {
     beside.diffHeaderDisposers?.forEach(dispose=>dispose());beside.diffHeaderDisposers=null;
@@ -476,21 +487,23 @@ function setDiffMode(enabled) {
 }
 $('compare-mode').addEventListener('click', () => setDiffMode(false));
 $('diff-mode').addEventListener('click', () => setDiffMode(true));
-function invoke(op, payload) {
-  if (isDocumentMirror && (/^(?:file\.(?:draft|save|retain)|annotation\.(?:add|update|remove|drawing|capture)|tag\.(?:put|reanchor|view)|document\.image\.put|(?:word|sheet)\.save|ppt\.export)$/.test(op)||op==='ppt.draft'&&payload?.model!==undefined)) return Promise.resolve({ok:false,error:{code:'READ_ONLY',message:'阅读副本不可修改，请回到编辑位置。'}});
-  return window.nozeli.invoke(op, payload ?? {}).then(result=>result?.error?.code==='IPC_DENIED'?{...result,error:{...result.error,message:`${op}: ${result.error.message}`}}:result);
+function invoke(op, payload={}) {
+  if (documentReadOnly() && (/^(?:file\.(?:draft|save|retain)|annotation\.(?:add|update|remove|drawing|capture)|tag\.(?:put|reanchor|view)|document\.image\.put|(?:word|sheet)\.save|ppt\.export)$/.test(op)||op==='ppt.draft'&&payload.model!==undefined)) return Promise.resolve({ok:false,error:{code:'READ_ONLY',message:'当前文档只读，请回到可编辑的审核候选或原文件。'}});
+  if (workspaceScope.kind === 'document' && /^(?:file\.|document\.|annotation\.|tag\.|workspace\.document\.|workspace\.recovery$)/.test(op)) payload={...payload,documentSource:payload.documentSource??documentSource};
+  return window.nozeli.invoke(op, payload).then(result=>result?.error?.code==='IPC_DENIED'?{...result,error:{...result.error,message:`${op}: ${result.error.message}`}}:result);
 }
 
 function setStatus(state, text) {
   renderFileTabs();
   const node = $('save-status');
   node.dataset.state = state;
-  node.textContent = isDocumentMirror ? '阅读副本 · ' + text : text;
+  const caption=isReviewDocument&&state==='saved'?(documentReadOnly()?'冻结审核版本 · 只读':ui.file?.review?.draftRevision>0?'人工审核稿已保存 · 项目原件未修改':'Worker 冻结候选 · 项目原件未修改'):text;
+  node.textContent = isDocumentMirror ? '阅读副本 · ' + caption : caption;
   if (!isDocumentMirror && isSurface && ui.file) scheduleDocumentPublish();
 }
 
 function documentStatus() {
-  return {dirty:Boolean(ui.dirty),missing:Boolean(ui.sourceMissing || ui.file?.diskPresent === false),readOnly:isDocumentMirror};
+  return {dirty:Boolean(ui.dirty),missing:!isReviewDocument&&Boolean(ui.sourceMissing || ui.file?.diskPresent === false),readOnly:documentReadOnly()};
 }
 function scheduleDocumentPublish() {
   if (isDocumentMirror || !isSurface || workspaceScope.kind !== 'document' || !ui.file) return;
@@ -510,7 +523,7 @@ async function publishDocumentBuffer() {
   return result;
 }
 function applyMirrorBuffer(event) {
-  if (!isDocumentMirror || event.projectId !== workspaceScope.projectId || event.relPath !== workspaceScope.relPath) return;
+  if (!isDocumentMirror || !ownsDocumentEvent(event)) return;
   if (Number.isFinite(event.revision) && event.revision < mirrorRevision) return;
   pendingMirrorBuffer = pendingMirrorBuffer?.relPath === event.relPath ? {...pendingMirrorBuffer,...event,...(event.model===undefined&&pendingMirrorBuffer.model!==undefined?{model:pendingMirrorBuffer.model}:{})} : event;
   if (!ui.file || ui.file.relPath !== event.relPath) return;
@@ -577,7 +590,7 @@ function resolvePreviewImages(preview) {
   }
 }
 async function openMarkdownTarget(target){
-  const result=await openFile(target.relPath);
+  const result=await openFile(target.relPath,undefined,documentSource);
   if(result?.ok===false)return result;
   if(ui.file?.relPath!==target.relPath)return;
   if(target.fragment){let id;try{id=decodeURIComponent(target.fragment);}catch{return;} $('text-preview').querySelector('#'+CSS.escape(id))?.scrollIntoView({block:'start'});}
@@ -590,15 +603,15 @@ async function navigateCode({ path: targetPath, sourcePath, projectRelative = fa
   const normalized = [];
   for (const part of parts) { if (!part || part === '.') continue; if (part === '..') { if (!normalized.length) { $('code-status').textContent = '跳转路径不在项目范围内。'; return; } normalized.pop(); } else normalized.push(part); }
   const raw = normalized.join('/');
-  const listing = await invoke('project.list', { projectId: ui.project.id });
-  if (!listing.ok) { $('code-status').textContent = '项目文件列表读取失败。'; return; }
-  const files = new Set(listing.value.entries.filter(entry => entry.kind !== 'dir').map(entry => entry.relPath));
+  const listing = await invoke(isReviewDocument?'managed.review.read':'project.list', { projectId: ui.project.id,...(isReviewDocument?{workId:documentSource.workId,objectId:documentSource.objectId}:{}) });
+  if (!listing.ok) { $('code-status').textContent = '文档列表读取失败。'; return; }
+  const files = new Set((isReviewDocument?listing.value.files:listing.value.entries).filter(entry => entry.kind !== 'dir').map(entry => entry.relPath));
   const extensions = ['.js', '.jsx', '.ts', '.tsx', '.py', '.json', '.css', '.html', '.sql', '.java', '.c', '.h', '.cpp', '.go', '.rs'];
   const candidates = [raw, ...extensions.map(ext => raw.endsWith(ext) ? null : raw + ext), ...extensions.map(ext => `${raw}/index${ext}`)].filter(Boolean);
   const target = candidates.find(candidate => files.has(candidate));
   if (!target) { $('code-status').textContent = `项目内未找到 ${targetPath}。`; return; }
   $('code-status').textContent = `跳转到 ${target}`;
-  await openFile(target);
+  await openFile(target,undefined,documentSource);
   if (targetRange && ui.file?.relPath === target && ui.editor?.adapter) {
     const text = ui.editor.adapter.getText(), lines = text.split('\n');
     const offset = p => lines.slice(0,p.line).reduce((n,line)=>n+line.length+1,0)+p.character;
@@ -640,7 +653,7 @@ $('markdown-preview-toggle').addEventListener('click', () => {
 });
 
 function showSelectionMenu(rect) {
-  if (isDocumentMirror) return;
+  if (documentReadOnly()) return;
   if(!rect || !ui.file || documentMenu.isSuppressed() || documentMenu.isOpen() || document.body.classList.contains('provider-console-open') || !$('note-form').hidden){$('selection-menu').hidden=true;return;}
   const bounds=markdownWorkspace.selectionViewport().getBoundingClientRect();
   const left=Math.max(8,bounds.left+8),right=Math.min(innerWidth-8,bounds.right-8);
@@ -719,7 +732,9 @@ function clearFailure() {
 }
 let recoveryGeneration = 0;
 async function retainWorkspace() {
+  const reviewed=await flushManagedReviews();if(!reviewed.ok)return reviewed;
   if (isDocumentMirror) return {ok:true};
+  if(isReviewDocument&&documentReadOnly()&&!ui.dirty&&!ui.wordDirty)return writeView();
   // Failed surfaces report honestly instead of writing an empty placeholder:
   // without a trusted project or the scoped document this renderer holds nothing
   // to retain, and the durable recovery already on the host stays authoritative.
@@ -747,6 +762,7 @@ async function retainWorkspace() {
   const result = await invoke('workspace.recovery', {
     projectId:project.id, viewId:workspaceScope.viewId, relPath:file?.relPath, kind:file?.kind,
     baseDigest, sourceDigest, generation, candidate, baselineText,
+    ...(isReviewDocument?{expectedDraftRevision:file?.review?.draftRevision,reviewVersion:file?.review?.reviewVersion}:{}),
     workspace:workspaceSnapshot, composerMaterials:materialsSnapshot,
     viewState:workspaceScope.viewState, frozenNote:ui.frozenNote,
     selection:ui.editor?.adapter.getSelection?.(), scrollTop:ui.editor?.adapter.getScrollTop?.() ?? $('reader-scroll').scrollTop,
@@ -754,12 +770,13 @@ async function retainWorkspace() {
   if (!result.ok) { showFailure(result.error); return result; }
   if (inputIdentity !== JSON.stringify([workspace.snapshot(),window.__composerMaterials?.snapshotPersist(),ui.frozenNote])) return {ok:false,error:{code:'RECOVERY_CHANGED',message:'有更新的输入尚未保留，请重试关闭。'}};
   if (project !== ui.project || file !== ui.file || revision !== ui.wordRevision || baseDigest !== ui.baseDigest || sourceDigest !== file?.digest || candidate?.text !== undefined && candidate.text !== ui.editor?.adapter.getText() || ui.composing) return {ok:false,error:{code:'RECOVERY_CHANGED',message:'有更新的编辑尚未保留，请重试关闭。'}};
-  setStatus('dirty','已保留在本机 · 未写回项目');
+  setStatus(isReviewDocument&&!ui.dirty?'saved':'dirty','已保留在本机 · 未写回项目');
   return result;
 }
 
   async function flushNow(confirmOverwrite = false, resolvingNoteEdit = false) {
-    if (isDocumentMirror) return {ok:true};
+    const reviewed=await flushManagedReviews();if(!reviewed.ok)return reviewed;
+    if (documentReadOnly()) return {ok:true};
     if(ui.sourceMissing || ui.project?.available === false)return retainWorkspace();
     if (!resolvingNoteEdit && workspace.hasOverflowEdits(ui.project?.id)) {
       const result = { ok: false, error: { code: 'NOTE_DRAFT_CAPACITY', message: '备注编辑草稿未持久化：已有 40 条草稿。请先明确保存或删除仅保留在内存中的备注编辑，再切换或关闭。' } };
@@ -811,13 +828,16 @@ async function retainWorkspace() {
     projectId: ui.project.id,
     relPath: ui.file.relPath,
     baseDigest: ui.baseDigest,
+    ...(isReviewDocument?{expectedDraftRevision:ui.file.review.draftRevision}:{}),
     text,
   });
   if (!drafted.ok) { showFailure(drafted.error); return drafted; }
+  if(isReviewDocument)ui.file.review={...ui.file.review,draftRevision:drafted.value.draftRevision,reviewVersion:drafted.value.reviewVersion};
   const saved = await invoke('file.save', {
     projectId: ui.project.id,
     relPath: ui.file.relPath,
     baseDigest: ui.baseDigest,
+    ...(isReviewDocument?{expectedDraftRevision:ui.file.review.draftRevision}:{}),
     text,
     confirmOverwrite,
     anchorChanges,
@@ -833,6 +853,7 @@ async function retainWorkspace() {
   ui.dirty = ui.editor.adapter.getText() !== text;
   ui.file.digest = saved.value.digest;
   ui.file.materialDigest = saved.value.materialDigest;
+  if(isReviewDocument){ui.file.review={...ui.file.review,draftRevision:saved.value.draftRevision,reviewVersion:saved.value.reviewVersion,textDigest:saved.value.digest};$('reader').dataset.reviewDraftRevision=String(saved.value.draftRevision);}
   ui.file.diskPresent = true;
   ui.file.sourceChanged = false;
   ui.file.text = text; ui.file.draft = null;
@@ -851,7 +872,7 @@ async function retainWorkspace() {
 }
 
 function scheduleSave() {
-  if (isDocumentMirror) return;
+  if (documentReadOnly()) return;
   if(ui.sourceMissing)return;
   if (!ui.file || ui.file.kind !== 'text') return;
   ui.dirty = true;
@@ -882,7 +903,7 @@ async function writeView(extra = {}) {
     const settingsKey=JSON.stringify([settings,extra.projectSettings??ui.projectSettings]);
     if(workspaceScope.settingsKey!==settingsKey){const saved=await invoke('workspace.settings',{projectId:ui.project.id,workspace:settings,projectSettings:extra.projectSettings??ui.projectSettings});if(!saved.ok)return saved;workspaceScope.settingsKey=settingsKey;}
     if(isConversation){const materials=window.__composerMaterials?.snapshotPersist(),identity=workspaceScope.viewState?.conversationInput;workspaceScope.viewState={...workspaceScope.viewState,conversationScroll:{top:$('conversation').scrollTop,tail:$('conversation').scrollHeight-$('conversation').scrollTop-$('conversation').clientHeight<=40},...(identity?.projectId===ui.project.id&&identity.target?{conversationMaterials:{...workspaceScope.viewState?.conversationMaterials,[identity.target]:materials}}:{})};}
-    const viewState={...workspaceScope.viewState,documentStatus:documentStatus(),pdfPage:ui.pdf?.current()||1,scrollTop:ui.editor?.adapter.getScrollTop?.()??$('reader-scroll').scrollTop,fileView:{textMode:ui.textMode,selection:ui.editor?.adapter.getSelection?.(),zoom:ui.pdf?.viewState?.(),...(ui.file&&isMarkdownPath(ui.file.relPath)?{markdownPreview:markdownWorkspace.snapshot()}:{})},workspace:workspace.snapshot(),composerMaterials:window.__composerMaterials?.snapshotPersist()};
+    const viewState={...workspaceScope.viewState,documentStatus:documentStatus(),pdfPage:ui.pdf?.current()||1,scrollTop:ui.editor?.adapter.getScrollTop?.()??$('reader-scroll').scrollTop,fileView:{textMode:ui.textMode,selection:ui.editor?.adapter.getSelection?.(),materialDigest:ui.materialDigest,zoom:ui.pdf?.viewState?.(),...(ui.file&&isMarkdownPath(ui.file.relPath)?{markdownPreview:markdownWorkspace.snapshot()}:{})},workspace:workspace.snapshot(),composerMaterials:window.__composerMaterials?.snapshotPersist()};
     workspaceScope.viewState=viewState;
     const result = await invoke('workspace.command', {projectId:ui.project.id,requestKey:crypto.randomUUID(),command:{type:'restoreViewState',viewId:workspaceScope.viewId,viewState}});
     if(result.ok)workspace.saved();
@@ -986,7 +1007,7 @@ async function retryViewRead() {
   }
 
 function renderWordNotes(){
- $('word-notes')?.remove();if(ui.file?.kind==='ppt'){ui.word?.setNotes((ui.annotations||[]).filter(n=>n.kind?.startsWith('ppt-')).map(n=>({...n,ordinal:ui.noteDisplayOrdinals.get(n.id)||n.ordinal})));return;}if(ui.file?.kind!=='word')return;
+ $('word-notes')?.remove();if(ui.file?.kind==='ppt'){ui.word?.setNotes?.((ui.annotations||[]).filter(n=>n.kind?.startsWith('ppt-')).map(n=>({...n,ordinal:ui.noteDisplayOrdinals.get(n.id)||n.ordinal})));return;}if(ui.file?.kind!=='word')return;
  ui.word?.setNotes?.((ui.annotations||[]).filter(n=>['word-selection','word-region'].includes(n.kind)&&!n.projection&&n.resolution?.anchor).map(n=>({...n,ordinal:ui.noteDisplayOrdinals.get(n.id)||n.ordinal})));
  const panel=document.createElement('aside');panel.id='word-notes';panel.setAttribute('aria-label','Word 备注');
  for(const note of (ui.annotations||[]).filter(n=>['word-selection','word-region'].includes(n.kind)&&!n.projection&&!n.resolution?.anchor)){
@@ -1027,11 +1048,11 @@ async function refreshNotes() {
 
   async function openFileNow(relPath, view, force=false) {
     if (!isSurface) return workspaceGroups?.open({kind:'document',relPath,viewState:view});
-    if (relPath !== workspaceScope.relPath) return invoke('workspace.control',{type:'open-file',projectId:ui.project?.id,relPath,view});
+    if (relPath !== workspaceScope.relPath) return invoke('workspace.control',{type:'open-file',projectId:ui.project?.id,relPath,documentSource,view});
     frozenChangeReader.restore({focus:false});
-    const checked=await invoke('file.availability',{projectId:ui.project.id,paths:[relPath]});
-    if(checked.ok){openFilesState.availability??=new Map();openFilesState.availability.set(relPath,checked.value.entries[0]);renderFileTabs();}
-    if(ui.file?.relPath===relPath && !view && !force){if(checked.value?.entries[0]?.status==='missing')workspace.toast('原路径不存在，当前显示保留正文。');return;}
+    const checked=isReviewDocument?null:await invoke('file.availability',{projectId:ui.project.id,paths:[relPath]});
+    if(checked?.ok){openFilesState.availability??=new Map();openFilesState.availability.set(relPath,checked.value.entries[0]);renderFileTabs();}
+    if(ui.file?.relPath===relPath && !view && !force){if(checked?.value?.entries[0]?.status==='missing')workspace.toast('原路径不存在，当前显示保留正文。');return;}
     window.__lastOpen = { relPath, step: 'start' };
     rememberCurrentNote();
     const flushed = await flushNow();
@@ -1042,7 +1063,7 @@ async function refreshNotes() {
     }
     const viewed = await writeView();
     if (!viewed.ok && viewed.error?.code !== 'VIEW_UNREADABLE') return;
-    if (!view) {
+    if (!view && !isReviewDocument) {
       const restored = await invoke('state.read', { projectId: ui.project.id });
       view = restored.ok ? restored.value.files?.[relPath] : null;
     }
@@ -1074,11 +1095,14 @@ async function refreshNotes() {
     ui.file = file;
     window.dispatchEvent(new Event('nozeli-content-file-opened'));
     $('reader').dataset.fileKind=file.kind;
+    $('reader').dataset.documentSource=documentSource.type;
+    $('reader').dataset.documentKey=workspaceScope.documentKey||workspaceScope.resourceId||'';
+    if(isReviewDocument)$('reader').dataset.reviewDraftRevision=String(file.review.draftRevision);
     if(!openFilesState.paths.includes(relPath))openFilesState.paths.push(relPath);
     renderFileTabs();
     $('close-subject').hidden = false;
     workspace.revealContent();
-    $('file-section-label').textContent = '文件';
+    $('file-section-label').textContent = isReviewDocument ? (documentSource.type==='review-version'?'冻结审核版本':'审核候选 · 项目原件未修改') : '文件';
   ui.baseDigest = file.draft?.baseDigest ?? file.digest;
   ui.materialDigest = file.materialDigest;
   ui.anchorTransactions = [];
@@ -1086,12 +1110,13 @@ async function refreshNotes() {
   ui.dirty = Boolean(file.draft && file.draft.status !== 'saved');
   $('file-path').textContent = file.relPath;
   $('subject-title').textContent = file.relPath;
+  if(isReviewDocument){const origin=`${documentSource.type==='review-version'?'冻结版本':'审核候选'} · ${documentSource.workId} · ${documentSource.objectId}`;$('subject-title').textContent+=' · '+origin;$('file-path').title=origin;}
   if (isDocumentMirror) {
-    $('subject-title').textContent = file.relPath + ' · 阅读副本';
-    document.title = file.relPath + ' · 阅读副本';
+    $('subject-title').textContent += ' · 阅读副本';
+    document.title = $('subject-title').textContent;
     if (!$('document-owner-focus')) {
       const button = document.createElement('button');button.id = 'document-owner-focus';button.type = 'button';button.textContent = '回到编辑位置';
-      button.addEventListener('click', () => void invoke('workspace.control',{type:'focus-document-owner',projectId:workspaceScope.projectId,relPath:workspaceScope.relPath}));
+      button.addEventListener('click', () => void invoke('workspace.control',{type:'focus-document-owner',projectId:workspaceScope.projectId,relPath:workspaceScope.relPath,documentSource}));
       $('subject-title').after(button);
     }
   }
@@ -1102,7 +1127,7 @@ async function refreshNotes() {
     button.setAttribute('aria-current', button.dataset.path === file.relPath ? 'true' : 'false');
   });
   if (file.pathUnavailable) showFailure({code:'PATH_UNAVAILABLE',message:'原路径暂不可用，已打开保留副本。可导出或保留后返回对话，不会替换目录或链接。'});
-  else if (!file.diskPresent) showFailure({ code: 'DELETED', message: '文件已删除。草稿可编辑、导出或明确重建，不会自动覆盖。' });
+  else if (!file.diskPresent && !isReviewDocument) showFailure({ code: 'DELETED', message: '文件已删除。草稿可编辑、导出或明确重建，不会自动覆盖。' });
   else if (file.sourceChanged) showFailure({ code: 'CONFLICT', message: '磁盘内容与草稿基线不同。两边都保留着，没有覆盖。' });
   else { clearFailure(); if (!ui.dirty) setStatus('saved', '已保存'); else setStatus('dirty', '未保存'); }
   const notes = await refreshNotes();
@@ -1113,14 +1138,14 @@ async function refreshNotes() {
       parent: $('text-host'),
       relPath: file.relPath,
       text,
-      readOnly: isDocumentMirror,
+      readOnly: documentReadOnly(),
       marks,
       tagActions: { ...tagActions, autoEdit: id => consumeInitialTagEdit(id, 'text') },
       noteActions: noteActions(ui.project.id),
       onNavigate: navigateCode,
       onStatus: message => { $('code-status').textContent = message; },
       onChange: (view, update) => {
-        if (isDocumentMirror) { if (ui.textMode !== 'edit') renderTextPreview(view.adapter.getText()); return; }
+        if (documentReadOnly()) { if (ui.textMode !== 'edit') renderTextPreview(view.adapter.getText()); return; }
         const remote = update.transactions?.some(transaction => transaction.annotation(remoteDocumentChange));
         if (!remote) {
           authorship.changed({before:update.before??update.startState.doc.toString(),text:view.adapter.getText(),changes:update.changes});
@@ -1161,7 +1186,7 @@ async function refreshNotes() {
         showSelectionMenu({ left: Math.min(from.left, to.left), right: Math.max(from.right, to.right), top: Math.min(from.top, to.top), bottom: Math.max(from.bottom, to.bottom) });
       },
       onPasteImage: async ({ view, bytes, name = '' }) => {
-        if (isDocumentMirror) return;
+        if (documentReadOnly()) return;
         const projectId = ui.project.id, relPath = ui.file.relPath;
         const base64 = await new Promise((resolve, reject) => {
           const reader = new FileReader();
@@ -1170,6 +1195,7 @@ async function refreshNotes() {
           reader.readAsDataURL(new Blob([bytes]));
         });
         const result = await invoke('document.image.put', { projectId, relPath, bytes: base64 });
+        if(!result.ok)throw Object.assign(Error(result.error?.message||'图片未保存，正文未插入引用。'),{code:result.error?.code});
         // The reference is inserted only after the host stored the bytes.
         const alt = (name || '粘贴图片').replace(/[[\]]/g, '');
         const ref = `![${alt}](${result.value.relRef})`;
@@ -1180,7 +1206,7 @@ async function refreshNotes() {
       },
     };
     ui.editor = languageIdForPath(file.relPath)
-      ? mountMonaco({ ...editorOptions, projectId: ui.project.id, projectionActions: { ...tagActions }, noteActions: noteActions(ui.project.id) })
+      ? mountMonaco({ ...editorOptions, projectId: ui.project.id, documentSource, projectionActions: { ...tagActions }, noteActions: noteActions(ui.project.id) })
       : mountText(editorOptions);
     ui.editor.setTags?.([...ui.threads.values()].filter(tag => tag.relPath === file.relPath && ['text-selection','text-point'].includes(tag.anchorKind) && tag.anchor).map(tag => ({ ...tag.anchor, tag, point: tag.anchorKind === 'text-point', locationStatus: tag.resolution?.locationStatus, contentStatus: tag.resolution?.contentStatus })));
     $('code-jump').hidden = !languageIdForPath(file.relPath);
@@ -1188,13 +1214,14 @@ async function refreshNotes() {
     // Markdown opens as a rendered reading surface; editing remains an explicit choice.
     markdownWorkspace.restore(view?.fileView?.markdownPreview);
     setTextMode(!isCodePath(file.relPath) && view?.fileView?.textMode ? view.fileView.textMode : /\.(?:md|markdown)$/i.test(file.relPath) ? 'read' : 'edit');
-    webWorkspace.opened();
+    if(!isReviewDocument)webWorkspace.opened();
     authorship.opened(file);
-    const selection=view?.fileView?.selection;if(selection){const length=ui.editor.adapter.getText().length;ui.editor.adapter.setSelection(Math.min(selection.anchor??selection.from,length),Math.min(selection.head??selection.to,length));}
+    const selection=view?.fileView?.selection;if(selection&&(!isReviewDocument||view.fileView.materialDigest===file.materialDigest)){const length=ui.editor.adapter.getText().length;ui.editor.adapter.setSelection(Math.min(selection.anchor??selection.from,length),Math.min(selection.head??selection.to,length));}
     ui.compositionDispose = ui.editor.adapter.onComposition({
       start: () => { texWorkspace.composing(); markdownWorkspace.composing(); ui.composing = true; window.clearTimeout(ui.timer); },
       end: () => {
         ui.composing = false; texWorkspace.changed(); markdownWorkspace.changed();
+        if(isReviewDocument)ui.editor?.adapter.setReadOnly(documentReadOnly());
         webWorkspace.changed();
         const pending = ui.pendingDocumentEvents.splice(0);
         if (pending.length) void enqueue(async () => { for (const event of pending) await applyDocumentEvent(event); });
@@ -1237,14 +1264,14 @@ async function refreshNotes() {
     }
     if (savedScrollTop !== null) adapter.setScrollTop(savedScrollTop);
     $('note-label').textContent = '给选中文字添加备注';
-    void texWorkspace.enter();
+    if(!isReviewDocument)void texWorkspace.enter();else if(/\.(tex|html?)$/i.test(file.relPath))$('code-status').textContent='冻结审核文档 · 原生编辑、批注与版本比较可用；项目编译和网页预览不适用。';
   } else if(file.kind==='ppt'){
     $('reader').classList.add('document-word');$('text-mode-toggle').hidden=true;$('note-form').hidden=true;
     setStatus('loading','正在打开 PPTX');
     try{
       const payload={projectId:ui.project.id,relPath:file.relPath,digest:file.digest};
-      const draft=await invoke('ppt.draft',payload);if(!draft.ok)throw Error(draft.error.message);
-      ui.word=await mountPpt({parent:$('word-host'),bytes:file.bytes,name:file.relPath.split('/').at(-1),draft:draft.value,readOnly:isDocumentMirror,
+      const draft=isReviewDocument?null:await invoke('ppt.draft',payload);if(draft&&!draft.ok)throw Error(draft.error.message);
+      ui.word=await mountPpt({parent:$('word-host'),bytes:file.bytes,name:file.relPath.split('/').at(-1),draft:draft?.value,readOnly:documentReadOnly()||isReviewDocument,
         onContextMenu:closer=>documentMenu.externalOpen('ppt',closer),onContextClose:()=>documentMenu.externalClosed('ppt'),onSelectionStart:()=>documentMenu.resumeSelection(),
         // Right-click inside an existing selection keeps it (hit-test in the
         // frame at contextmenu, before any menu mutation, against the frozen
@@ -1279,7 +1306,7 @@ async function refreshNotes() {
         onSelection:selected=>{if(ui.file!==file)return;ui.wordSelection=selected;if(!selected){$('selection-menu').hidden=true;return;}if(!$('note-form').hidden)return;showSelectionMenu(selected.rect);},
         onChange:()=>{ui.wordDirty=true;ui.dirty=true;ui.wordRevision=(ui.wordRevision||0)+1;setStatus('dirty','PPTX 草稿未保存');clearTimeout(ui.timer);ui.timer=setTimeout(()=>flushCurrent(),1200);},
         onExport:async bytes=>{const saved=await flushNow();if(!saved.ok)throw Error(saved.error.message);const result=await invoke('ppt.export',{...payload,bytes});if(!result.ok)throw Error(result.error.message);workspace.toast(result.value.cancelled?'已取消导出':'PPTX 副本已导出');}
-      });$('word-region').hidden=isDocumentMirror;$('word-region').title='拖动框选文档区域';if(!isDocumentMirror){ui.wordDirty=true;await flushNow();ui.word.setNotes((ui.annotations||[]).filter(n=>n.kind?.startsWith('ppt-')).map(n=>({...n,ordinal:ui.noteDisplayOrdinals.get(n.id)||n.ordinal})));}setStatus('saved',isDocumentMirror?'PPTX · 阅读副本':draft.value?'PPTX · 已恢复草稿':'PPTX · 本地编辑');
+      });$('word-region').hidden=documentReadOnly()||isReviewDocument;$('word-region').title='拖动框选文档区域';if(!documentReadOnly()&&!isReviewDocument){ui.wordDirty=true;await flushNow();ui.word.setNotes((ui.annotations||[]).filter(n=>n.kind?.startsWith('ppt-')).map(n=>({...n,ordinal:ui.noteDisplayOrdinals.get(n.id)||n.ordinal})));}setStatus('saved',documentReadOnly()||isReviewDocument?'PPTX · 只读冻结正文':draft?.value?'PPTX · 已恢复草稿':'PPTX · 本地编辑');
     }catch(error){$('unsupported').hidden=false;$('unsupported').textContent=error.message;setStatus('error','PPTX 未能打开');}
   } else if (['word','sheet'].includes(file.kind)) {
     $('reader').classList.add('document-word');
@@ -1288,7 +1315,7 @@ async function refreshNotes() {
     const label = file.kind === 'word' ? 'Word' : '电子表格';
     setStatus('loading', '正在打开 ' + label);
     try {
-      ui.word = await (file.kind === 'word' ? mountWord : mountSheet)({ parent: $('word-host'), bytes: file.bytes, name: file.relPath.split('/').at(-1), readOnly:isDocumentMirror,
+      ui.word = await (file.kind === 'word' ? mountWord : mountSheet)({ parent: $('word-host'), bytes: file.bytes, name: file.relPath.split('/').at(-1), readOnly:documentReadOnly()||isReviewDocument,
         noteActions: noteActions(ui.project.id),
         tagActions: {...tagActions,autoEdit:id=>consumeInitialTagEdit(id,'word')},
         onZoom:state=>{$('word-zoom-reset').textContent=Math.round(state.value)+'%';$('word-zoom-out').disabled=state.value<=25;$('word-zoom-in').disabled=state.value>=200;$('word-fit').setAttribute('aria-pressed',String(state.mode==='fit-width'));},
@@ -1322,13 +1349,13 @@ async function refreshNotes() {
         },
         onError: error => setStatus('error', error.message),
       });
-      if(file.kind==='word'){
+      if(file.kind==='word'&&!isReviewDocument){
         ui.wordChanges=ChangeSet.empty(file.authorshipText.length);
         authorship.opened({...file,text:file.authorshipText});
         if(ui.word.getText()!==file.authorshipText){ui.wordChanges=null;workspace.toast('Word 引擎正文与记录位置不一致，修改者标记暂不显示。');}
       }
       $('word-zoom').hidden=file.kind!=='word';$('word-region').hidden=file.kind!=='word';
-      setStatus('saved', label + (isDocumentMirror ? ' · 共享正文只读副本' : ' · 本地编辑'));
+      setStatus('saved', label + (documentReadOnly()||isReviewDocument ? ' · 冻结正文只读' : ' · 本地编辑'));
       renderWordNotes();
     } catch (error) { $('unsupported').hidden = false; $('unsupported').textContent = error.message; setStatus('error', label + ' 未能打开'); }
   } else if (file.kind === 'pdf') {
@@ -1385,8 +1412,8 @@ async function refreshNotes() {
     button.addEventListener('click',()=>enqueue(async()=>{button.disabled=true;try{const result=await invoke('word.import',{projectId:ui.project.id,relPath:file.relPath,digest:file.digest});if(!result.ok){workspace.toast(result.error.message);return;}await renderTree();await openFileNow(result.value.relPath);workspace.toast(result.value.mode==='body-only'?'已打开正文导入副本；原排版和图片未导入。':'已打开 DOCX 副本，原件保持不变。');}finally{button.disabled=false;}}));box.append(document.createElement('br'),button);setStatus('idle','DOC · 导入副本');
   } else {
     $('unsupported').hidden = false;
-    $('unsupported').textContent = file.unsupportedReason || '此格式未迁移。';
-    setStatus('idle', '未迁移');
+    $('unsupported').textContent = isReviewDocument?(({'frozen-size':'冻结文件超出内联读取大小限制。','frozen-binary':'此冻结材料不是可编辑文本。'}[file.unsupportedReason]||file.unsupportedReason||'冻结材料不可内联读取。')+' 原报告与冻结材料仍保留；不会读取或修改同名项目源文件。'):(file.unsupportedReason || '此格式未迁移。');
+    setStatus('idle', isReviewDocument?'冻结材料 · 无法内联读取':'未迁移');
   }
   projectTags();
   applyPendingNote(file);
@@ -1645,13 +1672,13 @@ async function renderRecent() {
   openFilesState={paths:[...(state.value.state?.workspace?.openFiles||[])],collapsed:state.value.state?.workspace?.openFilesCollapsed===true,active:null,dirty:false};
   await refreshOpenFileAvailability(ui.project);
   renderFileTabs();
-  workspace.restore(isSurface ? (workspaceScope.viewState?.workspace || {...state.value.state?.workspace,draft:isConversation?state.value.state?.workspace?.draft:''}) : state.value.state?.workspace, isSurface?{focusMode:false}:ui.projectSettings);
+  workspace.restore(isSurface ? (workspaceScope.viewState?.workspace || (isReviewDocument?{}:{...state.value.state?.workspace,draft:isConversation?state.value.state?.workspace?.draft:''})) : state.value.state?.workspace, isSurface?{focusMode:false}:ui.projectSettings);
   workspace.inheritSettings({...state.value.state?.workspace,confirmationSkips:state.value.state?.workspace?.confirmationSkips||{}});
   if(isSurface){const shared=workspace.snapshot();workspaceScope.settingsKey=JSON.stringify([{fontSize:shared.fontSize,conversationFontSize:shared.conversationFontSize,readingWidth:shared.readingWidth},ui.projectSettings]);}
   window.__composerMaterials?.setProject(projectId);
   if(!isConversation)window.__composerMaterials?.restore(isSurface?workspaceScope.viewState?.composerMaterials:state.value.state?.composerMaterials);
-  showRetained(state.value.state?.workspace);
-  if (isSurface && workspaceScope.relPath) await openFileNow(workspaceScope.relPath, workspaceScope.viewState || state.value.files?.[workspaceScope.relPath]);
+  showRetained(isReviewDocument?workspaceScope.viewState?.workspace:state.value.state?.workspace);
+  if (isSurface && workspaceScope.relPath) await openFileNow(workspaceScope.relPath, workspaceScope.viewState || (isReviewDocument?{}:state.value.files?.[workspaceScope.relPath]));
   else renderEmptyState();
   await window.__agentProject?.(ui.project.id, {input:isConversation?{projectId:ui.project.id,frame:workspaceScope.viewState||{}}:undefined});
   if(workspaceScope.role==='shell')await invoke('workspace.activated',{projectId});
@@ -1802,15 +1829,19 @@ $('recover-sheet-close').addEventListener('click',()=>enqueue(async()=>{
  }catch(error){showFailure(error);}
 }));
 $('retry-save').addEventListener('click', () => { if (ui.viewBlocked) retryViewRead(); else flushCurrent(); });
-$('export-draft').addEventListener('click', () => {
-  const text = ui.editor?.adapter.getText() ?? '';
-  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-  const link = document.createElement('a');
-  link.href = URL.createObjectURL(blob);
-  link.download = 'nozeli-draft.txt';
-  link.click();
-  URL.revokeObjectURL(link.href);
-});
+async function exportCurrentTextCopy(){
+  if(ui.composing)throw Error('输入法组合尚未结束，请结束输入后导出副本。');
+  const file=ui.file,editor=ui.editor;if(file?.kind!=='text'||!editor)throw Error('当前文档没有可导出的文本。');
+  const local=await captureTextCopy({text:editor.adapter.getText(),relPath:file.relPath,documentKey:workspaceScope.documentKey,documentSource,frozen:isReviewDocument&&(documentSource.type==='review-version'||file.readOnly===true)});
+  if(ui.composing||ui.file!==file||ui.editor!==editor)throw Error('文档或输入状态已变化，未导出副本。');
+  if(!documentReadOnly()){const published=await publishDocumentBuffer();if(!published?.ok)throw Error(published?.error?.message||'当前正文尚未同步至宿主，未导出副本。');}
+  const result=await invoke('document.export.read',{projectId:ui.project.id,relPath:file.relPath});
+  if(!result.ok)throw Error(result.error?.message||'宿主无法读取当前文档副本。');
+  const snapshot=await verifiedTextCopy(local,result.value);
+  downloadTextCopy(snapshot);
+  workspace.toast(`已请求导出 ${snapshot.filename} · 点击时的正文副本（SHA-256 ${snapshot.digest.slice(0,12)}）；项目原件未修改。`);
+}
+$('export-draft').addEventListener('click', () => {void exportCurrentTextCopy().catch(error=>workspace.toast(error.message));});
 $('overwrite-draft').addEventListener('click', () => enqueue(() => flushNow(true), true));
 
 function filterTree() {
@@ -1863,7 +1894,7 @@ function noteActions(projectId) {
       const saved = savedNote.value?.annotation || savedNote.annotation;
       settleNoteEdit(projectId, note.id, editDraft, text, saved);
       await writeView();
-      const result = await window.__agentSelectionAction?.({ action:'task', excerpt: note.anchor?.quote || '（区域备注，材料与位置见随附冻结附件）', relPath: note.relPath, annotationRef: { relPath: note.relPath, annotationId: note.id }, comment: instruction, background: true });
+      const result = await window.__agentSelectionAction?.({ action:'task', excerpt: note.anchor?.quote || '（区域备注，材料与位置见随附冻结附件）', documentSource, relPath: note.relPath, annotationRef: { relPath: note.relPath, annotationId: note.id, documentSource }, comment: instruction, background: true });
       if (result.legacy) { (ui.executeSent ||= new Set()).add(note.id); setExecuteDisplay(note.id, '已按前台问题发送（兼容模式，无后台执行链）'); return; }
       const linked = await invoke('annotation.update', { projectId, annotationId: note.id, materialDigest: note.materialDigest, expectedUpdatedAt: saved.updatedAt, note: instruction, execute: { jobId: result.requestId } });
       if (!linked.ok) workspace.toast('执行已提交，但执行状态链接保存失败；可在工作栏查看该任务。');
@@ -2061,7 +2092,7 @@ const tagActions = {
         const saved=await persistTag(tag);
         if(!saved?.ok)return null;
         if (ui.project?.id !== projectId || ui.threads.get(id) !== tag) return null;
-        const result = await window.__agentSelectionAction?.({ action:'discuss', ...tag.material, annotationRef:{relPath:tag.relPath,annotationId:tag.id}, comment: submittedText });
+        const result = await window.__agentSelectionAction?.({ action:'discuss', ...tag.material, documentSource, annotationRef:{relPath:tag.relPath,annotationId:tag.id,documentSource}, comment: submittedText });
         if (!result?.accepted) return null;
         const current = discussionDrafts.get(projectId,id);
         if (!ownsDiscussionReceipt({projectId,currentProjectId:ui.project?.id,tag,currentTag:ui.threads.get(id),state:current,token:requestToken})) return null;
@@ -2097,7 +2128,7 @@ const tagActions = {
     setExecuteDisplay(id, '保存并发送…');
     const saved = await persistTag(tag);
     if (!saved?.ok) { setExecuteDisplay(id, ''); workspace.toast('标签材料保存失败，未发送。'); return; }
-    const result = await window.__agentSelectionAction?.({ action:'task', ...tag.material, annotationRef: { relPath: tag.relPath, annotationId: tag.id }, comment: instruction, background: true });
+    const result = await window.__agentSelectionAction?.({ action:'task', ...tag.material, documentSource, annotationRef: { relPath: tag.relPath, annotationId: tag.id, documentSource }, comment: instruction, background: true });
     if (result.legacy) { (ui.executeSent ||= new Set()).add(id); setExecuteDisplay(id, '已按前台问题发送（兼容模式，无后台执行链）'); return; }
     tag.execute = { jobId: result.requestId };
     (ui.executeLinks ||= new Map()).set(id, { jobId: result.requestId, projectId: tag.projectId });
@@ -2139,7 +2170,7 @@ function selectedMaterial() {
       const selection = ui.editor.adapter.getSelection();
       return (selection.from === selection.to) ? '' : ui.editor.adapter.getText().slice(selection.from, selection.to);
     })();
-    return excerpt?.trim() ? { excerpt, relPath: ui.file.relPath, materialText: ui.editor.adapter.getText(), anchor: captureLiveAnchor()?.anchor, kind: 'text-selection' } : null;
+    return excerpt?.trim() ? { excerpt, documentSource, relPath: ui.file.relPath, materialText: ui.editor.adapter.getText(), anchor: captureLiveAnchor()?.anchor, kind: 'text-selection' } : null;
   }
   if(['word','ppt'].includes(ui.file.kind)){
     const selected=ui.wordSelection;if(!selected?.anchor)return null;
@@ -2228,7 +2259,7 @@ $('selection-explain').addEventListener('click', async () => {
   const saved=await persistTag(tag);
   if(!saved?.ok){tag.status='failed';projectTags();return;}
   consumeDrawingDraft();
-  const result = await window.__agentSelectionAction?.({ action:'explain', ...selected, annotationRef:{relPath:tag.relPath,annotationId:tag.id} });
+  const result = await window.__agentSelectionAction?.({ action:'explain', ...selected, documentSource, annotationRef:{relPath:tag.relPath,annotationId:tag.id,documentSource} });
   tag.requestId = result?.requestId || null;
   tag.acceptedRequestId = result?.accepted ? result.requestId : null;
   tag.acceptedText = result?.accepted ? question : null;
@@ -2305,12 +2336,14 @@ const documentMenu = mountDocumentContextMenu({
           const rect = dom?.rangeCount && !dom.isCollapsed ? dom.getRangeAt(0).getBoundingClientRect() : ui.selectionRect;
           if (rect && !secondary) ui.selectionRect = { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
         }
-        return { kind: ['legacy-word','unsupported'].includes(file.kind)?'unsupported':file.kind, secondary, reading, editable: file.kind==='text'&&!secondary&&!reading&&!isDocumentMirror, code: Boolean(languageIdForPath(file.relPath)), selected,
+        return { kind: ['legacy-word','unsupported'].includes(file.kind)?'unsupported':file.kind, secondary, reading, editable: file.kind==='text'&&!secondary&&!reading&&!documentReadOnly(), code: Boolean(languageIdForPath(file.relPath)), selected,
           relPath: file.relPath, buildId:file.buildId, projectId, adapter, editor, element, current, selection, text,link:element.id==='text-preview'?target.closest('a[href],.conversation-file-link'):null,
           panel:true,generated:file.generated,fontSize:file.kind==='text'?workspace.snapshot().fontSize:null,
           canZoom:!['word','ppt','sheet'].includes(file.kind)||typeof ui.word?.zoom==='function',
           canZoomOut:file.kind!=='word'||!$('word-zoom-out').disabled,canZoomIn:file.kind!=='word'||!$('word-zoom-in').disabled,
           canOpenBeside:!secondary&&['text','pdf','image'].includes(file.kind),
+          canExportTextCopy:!secondary&&file.kind==='text'&&isReviewDocument,
+          exportTextCopyLabel:documentSource.type==='review-version'||file.readOnly===true?'导出冻结审核版本副本…':'导出当前审核稿副本…',
           readingWidth:file.kind==='text'&&isMarkdownPath(file.relPath)?workspace.snapshot().readingWidth:null,
           canMode:!secondary&&file.kind==='text'&&!isCodePath(file.relPath)&&!/\.tex$/i.test(file.relPath),
           region:$(file.kind==='image'?'image-region':['word','ppt'].includes(file.kind)?'word-region':'pdf-region').getAttribute('aria-pressed')==='true',canRegion:!isDocumentMirror&&!secondary&&(!['word','ppt'].includes(file.kind)||typeof ui.word?.region==='function'),
@@ -2328,10 +2361,10 @@ const documentMenu = mountDocumentContextMenu({
             kind:'tex',visible:beside.tex&&$('tex-preview').getAttribute('aria-pressed')==='true',linked:$('tex-sync').getAttribute('aria-pressed')==='true',
             automatic:$('tex-auto').checked,available:$('tex-sync').dataset.state!=='unavailable',hint:$('tex-sync').title,
           } : null,
-          canAnnotate: !isDocumentMirror && !secondary && !file.sourceChanged && (file.kind === 'pdf' || Boolean(anchor)),
+          canAnnotate: !documentReadOnly() && !secondary && !file.sourceChanged && (file.kind === 'pdf' || Boolean(anchor)),
           canDiscuss: !secondary && selected && Boolean(anchor) && !ui.pdfSelection?.kind?.includes('region'),
           canExplain: !secondary && !$('selection-explain').disabled && selected && Boolean(anchor) && !ui.pdfSelection?.kind?.includes('region'),
-          annotateMenu: !isDocumentMirror && !secondary && !file.sourceChanged && Boolean(ui.project) && ['text','pdf','image'].includes(file.kind),
+          annotateMenu: !documentReadOnly() && !secondary && !file.sourceChanged && Boolean(ui.project) && ['text','pdf','image'].includes(file.kind),
           pointSelected: !secondary && selected && Boolean(anchor) && !ui.pdfSelection?.kind?.includes('region'),
           selectionKey: selected && anchor && !secondary ? JSON.stringify([anchor.kind, anchor.anchor, adapter ? [selection.from, selection.to, text.length] : null]) : null,
           page: (secondary ? beside.pdf : ui.pdf)?.current() || 1,
@@ -2342,7 +2375,7 @@ const documentMenu = mountDocumentContextMenu({
       // surfaces without a real document point return null and the menu items
       // stay disabled with a reason instead of guessing a location.
       pointAt(x, y) {
-        if (secondary || isDocumentMirror || !ui.project || file.sourceChanged) return null;
+        if (secondary || documentReadOnly() || !ui.project || file.sourceChanged) return null;
         const identity = { projectId: ui.project?.id, relPath: file.relPath, digest: ui.materialDigest };
         if (file.kind === 'text') {
           const source = editor?.adapter?.getText();
@@ -2371,7 +2404,8 @@ const documentMenu = mountDocumentContextMenu({
     };
   },
   async run(command, s) {
-    if (isDocumentMirror && ['cut','paste','undo','redo','format','annotate','exportPpt'].includes(command)) return;
+    if (documentReadOnly() && ['cut','paste','undo','redo','format','annotate','exportPpt'].includes(command)) return;
+    if(command==='exportTextCopy'){if(s.current())await exportCurrentTextCopy();return;}
     if (command === 'note-here' || command === 'discuss-here' || command === 'explain-selection') {
       // An effective selection at the pointer wins; otherwise the frozen
       // document point becomes the anchor. Explain never runs on a point.
@@ -2519,7 +2553,7 @@ async function closeCurrentSubject(preserveDraft=false) {
     if(ui.file?.kind!=='text'||!ui.editor)return false;
     if(ui.composing){workspace.toast('输入法组合尚未结束，未关闭。');return false;}
     window.clearTimeout(ui.timer);
-    const saved=await invoke('file.retain',{projectId:ui.project.id,relPath:ui.file.relPath,baseDigest:ui.baseDigest,text:ui.editor.adapter.getText()});
+    const saved=await invoke('file.retain',{projectId:ui.project.id,relPath:ui.file.relPath,baseDigest:ui.baseDigest,text:ui.editor.adapter.getText(),...(isReviewDocument?{expectedDraftRevision:ui.file.review.draftRevision}:{})});
     if(!saved.ok){showFailure(saved.error);return false;}
   }else if (!(await flushNow()).ok) return false;
   const viewed = await writeView();
@@ -2579,19 +2613,23 @@ function closeBeside() {
   $('secondary-pane').setAttribute('aria-label', '对照文档，只读');
   documentMenu.close();
   beside.editor?.destroy(); beside.editor = null; beside.pdf?.destroy(); beside.pdf = null; beside.file = null;
+  beside.leftSnapshot=null;
   $('diff-mode').disabled = true; $('diff-mode').title = '需要两侧都打开文本文件';
   $('secondary-pane').hidden = true; $('pane-divider').hidden = true; $('documents').classList.remove('dual');
+  beside.previousMode=null;
 }
-$('secondary-close').addEventListener('click', () => closeBeside());
+$('secondary-close').addEventListener('click', () => {const previous=beside.previousMode;closeBeside();if(previous==='split'&&ui.editor)setTextMode(previous);});
 $('secondary-prev').addEventListener('click', () => enqueue(() => beside.pdf?.go(beside.pdf.current() - 1)));
 $('secondary-next').addEventListener('click', () => enqueue(() => beside.pdf?.go(beside.pdf.current() + 1)));
 $('secondary-zoom-out').addEventListener('click', () => enqueue(async () => { await beside.pdf?.zoom(1 / 1.15); await texWorkspace.persist(); }));
 $('secondary-zoom-in').addEventListener('click', () => enqueue(async () => { await beside.pdf?.zoom(1.15); await texWorkspace.persist(); }));
 $('secondary-fit').addEventListener('click', () => enqueue(async () => { await beside.pdf?.zoom(null); $('secondary-scroll').scrollTop = 0; $('secondary-scroll').scrollLeft = 0; await texWorkspace.persist(); }));
-async function openBesideSnapshot(file, diff=false) {
+async function openBesideSnapshot(file, diff=false, left=null) {
     if(!ui.project)return;
+    const previousMode=beside.previousMode||ui.textMode;
     if (ui.textMode === 'split') setTextMode('edit');
-    closeBeside();const relPath=file.relPath;
+    closeBeside();beside.previousMode=previousMode;const relPath=file.relPath;
+    beside.leftSnapshot=left;
     beside.file = { ...file, text: file.draft?.text ?? file.text };
     $('secondary-text').hidden = true; $('secondary-pdf').hidden = true; $('secondary-tools').hidden = true; $('secondary-message').hidden = true;
     $('secondary-pane').hidden = false; $('pane-divider').hidden = false; $('documents').classList.add('dual'); $('secondary-path').dataset.iconPath=relPath; $('secondary-path').textContent = relPath+(file.version?' · '+versionCaption(file.version):'');$('secondary-path').title=$('secondary-path').textContent+(file.draft?' · 草稿快照':' · 只读快照');
@@ -2645,12 +2683,13 @@ async function openBesideSnapshot(file, diff=false) {
     return enqueue(async () => {
     if(ui.composing)return {ok:false,composing:true,error:{code:'COMPOSING',message:'输入法组合尚未结束，未移动工作面。'}};
     rememberCurrentNote();
+    if(isReviewDocument){const saved=await flushNow();if(!saved.ok)return saved;}
     return retainWorkspace();
   }, false);
   });
   window.nozeli.subscribe('document.sync',request=>{
     void enqueue(async()=>{
-      if(ui.project?.id!==request.projectId||ui.file?.relPath!==request.relPath)return {ok:true};
+      if(!ownsDocumentEvent(request))return {ok:true};
       if(request.captureBuffer){
         if(ui.composing)return {ok:false,error:{code:'COMPOSING',message:'输入法组合尚未结束，当前编辑未预览。'}};
         if(request.hold)ui.documentHolds.add(request.requestId);
@@ -2667,13 +2706,20 @@ async function openBesideSnapshot(file, diff=false) {
   });
   window.nozeli.subscribe('document.release',requestId=>{ui.documentHolds.delete(requestId);$('text-host').inert=ui.documentHolds.size>0;});
   window.nozeli.subscribe('workspace.control', event => {
-    if(event.type==='lifecycle-hold'){if(!ui.composing)$('app').inert=Boolean(event.held);return;}
+    if(event.type==='review-barrier'){applyManagedReviewBarrier(event);return;}
+    if(event.type==='review-document-state'&&isReviewDocument&&ownsDocumentEvent(event)&&ui.file){
+      // A permission change must not replace the buffer, selection or undo.
+      ui.file.readOnly=event.readOnly===true;
+      if(!ui.composing)ui.editor?.adapter.setReadOnly(documentReadOnly());
+      setStatus(ui.dirty?'dirty':'saved',ui.dirty?'未保存输入仍保留':'已保存');return;
+    }
+    if(event.type==='lifecycle-hold'){if(!ui.composing&&!managedReviewComposing()||!event.held)$('app').inert=Boolean(event.held);return;}
     if(event.type==='project-closed'&&!isSurface){void clearProjectPage(event.projectId);return;}
     if(event.type==='project-unavailable'&&event.projectId===ui.project?.id){ui.project.available=false;ui.sourceMissing=true;window.clearTimeout(ui.timer);window.clearTimeout(ui.maxTimer);$('file-tree').replaceChildren();$('file-tree').textContent='项目目录不可用；未保存内容可保留在本机。';setStatus('error','项目不可用 · 可关闭或移除入口');return;}
     if(event.type === 'document-buffer') { applyMirrorBuffer(event); return; }
     if(event.type==='content-tools'&&isSurface&&!isConversation&&event.projectId===workspaceScope.projectId&&event.viewId===workspaceScope.viewId){openContentTools();return;}
     if(event.type==='content-command'&&event.command!=='report-tools'&&isSurface&&!isConversation&&event.projectId===workspaceScope.projectId&&event.viewId===workspaceScope.viewId){void documentMenu.execute(event.command,beside.diff?.merge.a.dom||primaryMenuTarget());return;}
-    if(event.type==='focus-content'&&isSurface){if(isConversation)$('composer').focus({preventScroll:true});else if(ui.editor)ui.editor.adapter.focus();else{$('reader-scroll').tabIndex=-1;$('reader-scroll').focus({preventScroll:true});}}
+    if(event.type==='focus-content'&&isSurface){if(isConversation)$('composer').focus({preventScroll:true});else if(ui.editor&&!$('text-host').hidden)ui.editor.adapter.focus();else{$('reader-scroll').tabIndex=-1;$('reader-scroll').focus({preventScroll:true});}}
     if(event.type==='settings'&&event.projectId===ui.project?.id){
       workspace.inheritSettings(event.workspace);
       {const shared=workspace.snapshot();workspaceScope.settingsKey=JSON.stringify([{fontSize:shared.fontSize,conversationFontSize:shared.conversationFontSize,readingWidth:shared.readingWidth},event.projectSettings??ui.projectSettings]);}
@@ -2693,13 +2739,13 @@ async function openBesideSnapshot(file, diff=false) {
       if(ui.file&&from){ui.file.relPath=event.relPath;openFilesState.paths=openFilesState.paths.map(path=>path===from?event.relPath:path);workspace.remapFiles(from,event.relPath);if(ui.frozenNote?.relPath===from)ui.frozenNote.relPath=event.relPath;$('file-path').textContent=event.relPath;$('subject-title').textContent=event.relPath.split('/').pop();document.title=event.relPath;renderFileTabs();}
     }
     if(event.type==='transfer-hold'){
-      if(event.held && ui.composing)return;
+      if(event.held && (ui.composing||managedReviewComposing()))return;
       $('app').inert=Boolean(event.held)&&!ui.sourceMissing;
       if(ui.sourceMissing)$('documents').inert=true;else $('documents').inert=false;
     }
     if(event.windowId)workspaceScope.windowId=event.windowId;
     if(event.type==='open-file' && !isSurface && event.projectId){
-      void enqueue(async()=>{if(ui.project?.id!==event.projectId)await activateProjectNow(event.projectId);const layout=workspaceGroups.snapshot(),find=node=>node?.kind==='group'?(node.activeViewId===event.sourceViewId?node.id:null):node?.kind==='split'?(find(node.first)||find(node.second)):null,groupId=find(layout?.mainRoot)||layout?.detached.map(w=>find(w.root)).find(Boolean)||workspaceGroups.activeGroup();await workspaceGroups.command({type:'open',groupId,view:{kind:'document',relPath:event.relPath,viewState:event.view}});});
+      void enqueue(async()=>{if(ui.project?.id!==event.projectId)await activateProjectNow(event.projectId);const layout=workspaceGroups.snapshot(),find=node=>node?.kind==='group'?(node.activeViewId===event.sourceViewId?node.id:null):node?.kind==='split'?(find(node.first)||find(node.second)):null,groupId=find(layout?.mainRoot)||layout?.detached.map(w=>find(w.root)).find(Boolean)||workspaceGroups.activeGroup();await workspaceGroups.command({type:'open',groupId,view:{kind:'document',relPath:event.relPath,documentSource:event.documentSource||{type:'project'},viewState:event.view}});});
     }
     if(event.type==='history-refresh'&&isSurface&&workspaceScope.kind==='history'&&event.projectId===ui.project?.id){void window.__workspaceOpenHistory?.(event.report);}
     if(event.type==='report' && !isSurface){
@@ -2713,7 +2759,7 @@ async function openBesideSnapshot(file, diff=false) {
   if(isSurface){window.nozeli.subscribe('workspace.control',event=>{if(event.type==='pane-resize-session')relayPaneInput=event.active===true;});for(const type of ['pointermove','pointerup','pointercancel','keydown'])window.addEventListener(type,event=>{if(!relayPaneInput||type==='pointermove'&&!event.buttons||type==='keydown'&&event.key!=='Escape')return;void invoke('workspace.control',{type:'pane-pointer',projectId:workspaceScope.projectId,eventType:type==='keydown'?'pointercancel':type,buttons:event.buttons,clientX:event.clientX,clientY:event.clientY});},true);}
   async function applyDocumentEvent(event) {
     if (isDocumentMirror) return;
-    if (ui.project?.id !== event.projectId || ui.file?.relPath !== event.relPath || ui.file.kind !== 'text') return;
+    if (!ownsDocumentEvent(event) || ui.file?.relPath !== event.relPath || ui.file.kind !== 'text') return;
     if (!event.changes || typeof event.text !== 'string' || !event.authorship || !ui.editor?.adapter.applyRemoteChanges) return;
     if (ui.composing) { ui.pendingDocumentEvents.push(event); return; }
     if (event.digest === ui.baseDigest) return;

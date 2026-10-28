@@ -188,3 +188,118 @@ test('show-hidden appends explicit roots and required ancestors beyond limit and
   assert.equal(ancestors.entries.find(entry => entry.relPath === parent).hidden, false);
   assert.equal(ancestors.entries.find(entry => entry.relPath === parent + '/secret.txt').hidden, true);
 });
+
+async function crossFixture(t) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nozeli-cross-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.mkdir(path.join(root, 'alpha')); await fs.mkdir(path.join(root, 'beta')); await fs.mkdir(path.join(root, 'trash'));
+  const host = new DesktopHost(path.join(root, 'profile'));
+  const pickedA = await host.pick(path.join(root, 'alpha')), pickedB = await host.pick(path.join(root, 'beta'));
+  const projectA = await host.requireProject(pickedA.project.id), projectB = await host.requireProject(pickedB.project.id);
+  const ops = new FileTreeOps(host, { trash: p => fs.rename(p, path.join(root, 'trash', path.basename(p))) });
+  const tags = id => new FileTags({ storage: host.storage, projectId: id, root: (id === projectA.id ? projectA : projectB).root });
+  return { root, host, projectA, projectB, ops, tags, trash: path.join(root, 'trash'),
+    run: input => ops.run({ projectId: projectB.id, ...input }) };
+}
+for(const moved of [false,true])test('cross-project cut retains destination when trash result is uncertain: '+moved,async t=>{
+ const f=await crossFixture(t),source=path.join(f.root,'alpha/keep.txt');await fs.writeFile(source,'KEEP-RECOVERABLE');
+ f.ops.trash=async p=>{if(moved)await fs.rename(p,path.join(f.trash,'keep.txt'));throw Error('trash result uncertain');};
+ await assert.rejects(f.run({action:'cut',sourceProjectId:f.projectA.id,source:'keep.txt',target:''}),/目标副本已保留/);
+ assert.equal(await fs.readFile(path.join(f.root,'beta/keep.txt'),'utf8'),'KEEP-RECOVERABLE');
+ assert.equal(await fs.readFile(moved?path.join(f.trash,'keep.txt'):source,'utf8'),'KEEP-RECOVERABLE');
+ const recovery=(await f.host.storage.listRecovery(f.projectB.id)).find(row=>row.id.startsWith('tree-operation:'));
+ assert.equal(recovery.value.destinationRetained,true);assert.equal(recovery.value.sourceProjectId,f.projectA.id);
+});
+
+test('cross-project copy lands with fresh identity and leaves the source unchanged', async t => {
+  const f = await crossFixture(t);
+  await fs.mkdir(path.join(f.root, 'alpha/docs')); await fs.mkdir(path.join(f.root, 'beta/docs'));
+  await fs.writeFile(path.join(f.root, 'alpha/docs/笔记.md'), 'alpha 内容');
+  await f.tags(f.projectA.id).write('docs/笔记.md', { file: { fileId: randomUUID() }, nextOrdinal: 1, tags: [] });
+  const result = await f.run({ action: 'copy', sourceProjectId: f.projectA.id, source: 'docs/笔记.md', target: 'docs' });
+  assert.equal(result.relPath, 'docs/笔记.md'); // same-relative source and destination names
+  assert.equal(result.sourceProjectId, f.projectA.id);
+  assert.equal(result.from, undefined); assert.equal(result.sourceFrom, undefined);
+  assert.equal(await fs.readFile(path.join(f.root, 'beta/docs/笔记.md'), 'utf8'), 'alpha 内容');
+  assert.equal(await fs.readFile(path.join(f.root, 'alpha/docs/笔记.md'), 'utf8'), 'alpha 内容');
+  assert.equal(await f.tags(f.projectB.id).read('docs/笔记.md'), null); // no metadata copied across projects
+  assert.ok(await f.tags(f.projectA.id).read('docs/笔记.md')); // source metadata untouched
+});
+test('cross-project folder copy is recursive and rejects nested links and project metadata', async t => {
+  const f = await crossFixture(t);
+  await fs.mkdir(path.join(f.root, 'alpha/资料/inner'), { recursive: true });
+  await fs.writeFile(path.join(f.root, 'alpha/资料/inner/深.txt'), '嵌套');
+  await fs.writeFile(path.join(f.root, 'alpha/资料/顶.txt'), '顶层');
+  const result = await f.run({ action: 'copy', sourceProjectId: f.projectA.id, source: '资料', target: '' });
+  assert.equal(result.relPath, '资料');
+  assert.equal(await fs.readFile(path.join(f.root, 'beta/资料/inner/深.txt'), 'utf8'), '嵌套');
+  assert.equal(await fs.readFile(path.join(f.root, 'beta/资料/顶.txt'), 'utf8'), '顶层');
+  assert.equal(await fs.readFile(path.join(f.root, 'alpha/资料/顶.txt'), 'utf8'), '顶层'); // source unchanged
+  await fs.symlink(path.join(f.root, 'alpha'), path.join(f.root, 'alpha/资料/linkdir'));
+  await assert.rejects(f.run({ action: 'copy', sourceProjectId: f.projectA.id, source: '资料', target: '' }), /符号链接/);
+  await fs.rm(path.join(f.root, 'alpha/资料/linkdir'));
+  await assert.rejects(fs.stat(path.join(f.root, 'beta/资料/linkdir')));
+  await fs.mkdir(path.join(f.root, 'alpha/资料/.git'));
+  await assert.rejects(f.run({ action: 'copy', sourceProjectId: f.projectA.id, source: '资料', target: '' }), /元数据/);
+  await fs.rm(path.join(f.root, 'alpha/资料/.git'), { recursive: true });
+  assert.equal(await fs.readFile(path.join(f.root, 'alpha/资料/顶.txt'), 'utf8'), '顶层');
+});
+test('cross-project duplicate destination never overwrites', async t => {
+  const f = await crossFixture(t);
+  await fs.writeFile(path.join(f.root, 'alpha/已有.txt'), '源内容');
+  await fs.writeFile(path.join(f.root, 'beta/已有.txt'), '目标原有内容');
+  await assert.rejects(f.run({ action: 'copy', sourceProjectId: f.projectA.id, source: '已有.txt', target: '' }), /目标已存在/);
+  await assert.rejects(f.run({ action: 'cut', sourceProjectId: f.projectA.id, source: '已有.txt', target: '' }), /目标已存在/);
+  assert.equal(await fs.readFile(path.join(f.root, 'beta/已有.txt'), 'utf8'), '目标原有内容');
+  assert.equal(await fs.readFile(path.join(f.root, 'alpha/已有.txt'), 'utf8'), '源内容');
+  await fs.mkdir(path.join(f.root, 'alpha/目录')); await fs.writeFile(path.join(f.root, 'alpha/目录/a.txt'), 'x');
+  await fs.mkdir(path.join(f.root, 'beta/目录')); await fs.writeFile(path.join(f.root, 'beta/目录/b.txt'), '保留');
+  await assert.rejects(f.run({ action: 'copy', sourceProjectId: f.projectA.id, source: '目录', target: '' }), /目标已存在/);
+  assert.equal(await fs.readFile(path.join(f.root, 'beta/目录/b.txt'), 'utf8'), '保留');
+  assert.ok(await fs.readFile(path.join(f.root, 'alpha/目录/a.txt'), 'utf8'));
+});
+test('cross-project cut is transactional: durable destination before source removal', async t => {
+  const f = await crossFixture(t);
+  await fs.writeFile(path.join(f.root, 'alpha/单件.txt'), '单独搬移');
+  await fs.mkdir(path.join(f.root, 'alpha/move')); await fs.writeFile(path.join(f.root, 'alpha/move/keep.txt'), '搬移内容');
+  await f.tags(f.projectA.id).write('move/keep.txt', { file: { fileId: randomUUID() }, nextOrdinal: 1, tags: [] });
+  const file = await f.run({ action: 'cut', sourceProjectId: f.projectA.id, source: '单件.txt', target: '' });
+  assert.deepEqual([file.sourceFrom, file.moved, file.from], ['单件.txt', true, undefined]);
+  assert.equal(await fs.readFile(path.join(f.root, 'beta/单件.txt'), 'utf8'), '单独搬移');
+  await assert.rejects(fs.stat(path.join(f.root, 'alpha/单件.txt')));
+  assert.ok(await fs.stat(path.join(f.trash, '单件.txt')));
+  const folder = await f.run({ action: 'cut', sourceProjectId: f.projectA.id, source: 'move', target: '' });
+  assert.equal(folder.relPath, 'move');
+  await assert.rejects(fs.stat(path.join(f.root, 'alpha/move')));
+  assert.equal(await fs.readFile(path.join(f.root, 'beta/move/keep.txt'), 'utf8'), '搬移内容');
+  assert.ok(await f.tags(f.projectA.id).read('move/keep.txt')); // source metadata and recovery kept, never migrated or dropped
+  assert.equal(await f.tags(f.projectB.id).read('move/keep.txt'), null); // fresh identity: no source metadata followed the move
+  await assert.rejects(f.run({ action: 'cut', sourceProjectId: f.projectA.id, source: 'move', target: '' })); // source is gone already
+});
+test('cross-project guards: actions, unknown source, dirty drafts, destination metadata', async t => {
+  const f = await crossFixture(t);
+  await fs.writeFile(path.join(f.root, 'alpha/a.txt'), 'x');
+  await assert.rejects(f.run({ action: 'rename', sourceProjectId: f.projectA.id, source: 'a.txt', name: 'b.txt' }), /跨项目/);
+  await assert.rejects(f.run({ action: 'trash', sourceProjectId: f.projectA.id, source: 'a.txt' }), /跨项目/);
+  await assert.rejects(f.run({ action: 'copy', sourceProjectId: '00000000-0000-0000-0000-000000000000', source: 'a.txt', target: '' }));
+  await assert.rejects(f.run({ action: 'copy', sourceProjectId: 42, source: 'a.txt', target: '' }), /跨项目源项目/);
+  await f.host.persistDraft(f.projectA.id, 'a.txt', 'a'.repeat(64), '未保存草稿', 'dirty');
+  await assert.rejects(f.run({ action: 'copy', sourceProjectId: f.projectA.id, source: 'a.txt', target: '' }), /未保存的草稿/);
+  await assert.rejects(f.run({ action: 'cut', sourceProjectId: f.projectA.id, source: 'a.txt', target: '' }), /未保存的草稿/);
+  await assert.ok(await fs.readFile(path.join(f.root, 'alpha/a.txt'), 'utf8'));
+  await assert.rejects(fs.stat(path.join(f.root, 'beta/a.txt')));
+  await f.host.persistDraft(f.projectA.id, 'a.txt', 'a'.repeat(64), '已保存', 'saved');
+  await f.tags(f.projectB.id).write('占位.txt', { file: { fileId: randomUUID() }, nextOrdinal: 1, tags: [] });
+  await fs.writeFile(path.join(f.root, 'alpha/占位.txt'), 'y');
+  await assert.rejects(f.run({ action: 'copy', sourceProjectId: f.projectA.id, source: '占位.txt', target: '' }), /标签恢复资料/);
+  await assert.rejects(fs.stat(path.join(f.root, 'beta/占位.txt')));
+  await f.run({ action: 'copy', sourceProjectId: f.projectA.id, source: 'a.txt', target: '' }); // settled drafts no longer block
+  assert.equal(await fs.readFile(path.join(f.root, 'beta/a.txt'), 'utf8'), 'x');
+});
+test('explicit same-project sourceProjectId keeps the same-project behavior', async t => {
+  const f = await crossFixture(t);
+  await fs.writeFile(path.join(f.root, 'beta/同.txt'), '内容');
+  await f.run({ action: 'copy', sourceProjectId: f.projectB.id, source: '同.txt', target: '' });
+  assert.equal(await fs.readFile(path.join(f.root, 'beta/同 副本.txt'), 'utf8'), '内容');
+  assert.equal((await f.run({ action: 'cut', sourceProjectId: f.projectB.id, source: '同.txt', target: '' })).from, '同.txt');
+});

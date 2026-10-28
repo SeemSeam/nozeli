@@ -101,3 +101,71 @@ test('changed or moved paths and forged receipt digests never acquire Worker att
   await assert.rejects(fx.call(), error => error.code === 'ADOPTION_RECEIPT_INVALID');
   assert.deepEqual(await fx.host.storage.getProjectRecord(fx.projectId,'file_changes',fx.store.keys.key('edit.md')), ledger);
 });
+
+test('reviewed merges attribute worker, user and mixed provenance without relabeling', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'nozeli-adoption-reviewed-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const root = path.join(dir, 'project'); await fs.mkdir(root);
+  const host = new DesktopHost(path.join(dir, 'profile'));
+  t.after(() => host.storage.db.close());
+  const projectId = (await host.pick(root)).project.id, store = new FileChanges({ root, storage: host.storage, projectId });
+  const env = { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@localhost', GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@localhost', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null' };
+  const git = args => runGit(root, ['-c', 'core.hooksPath=' + path.join(dir, 'no-hooks'), ...args], { env });
+  await git(['init', '-q', '--initial-branch=main']);
+  const base = { 'edit.md': Buffer.from('user line\nold\n'), 'keep.md': Buffer.from('human only\n') };
+  for (const [rel, bytes] of Object.entries(base)) await fs.writeFile(path.join(root, rel), bytes);
+  await git(['add', '--', 'edit.md', 'keep.md']); await git(['commit', '-qm', 'User baseline']);
+  const baseCommit = (await git(['rev-parse', 'HEAD'])).toString().trim();
+  await git(['switch', '-qc', 'worker']);
+  const candidate = { 'edit.md': Buffer.from('user line\nworker\n'), 'made.md': Buffer.from('created by worker\n') };
+  for (const [rel, bytes] of Object.entries(candidate)) await fs.writeFile(path.join(root, rel), bytes);
+  await git(['add', '--', 'edit.md', 'made.md']); await git(['commit', '-qm', 'Worker candidate']);
+  const candidateCommit = (await git(['rev-parse', 'HEAD'])).toString().trim();
+  // Reviewed final state merges as one integration commit on main (parent = baseline).
+  await git(['switch', '-q', 'main']);
+  const final = {
+    'edit.md': Buffer.from('user line\nworker\nhuman polish\n'),
+    'keep.md': Buffer.from('human only\nconfirmed\n'),
+    'made.md': Buffer.from('created by worker\n'),
+  };
+  for (const [rel, bytes] of Object.entries(final)) await fs.writeFile(path.join(root, rel), bytes);
+  await git(['add', '--', ...Object.keys(final)]); await git(['commit', '-qm', 'Nozeli accepted Work work-reviewed']);
+  const commit = (await git(['rev-parse', 'HEAD'])).toString().trim();
+  const work = {
+    id: 'work-reviewed', name: 'Writing Worker', threadId: 'thread-reviewed',
+    execution: { repo: root, candidate: { commit: candidateCommit } },
+    closure: { reviewedVersion: { reviewVersion: '0'.repeat(64), files: [
+      { relPath: 'edit.md', candidateDigest: hash(candidate['edit.md']), reviewedDigest: hash(final['edit.md']), draftRevision: 2 },
+      { relPath: 'keep.md', candidateDigest: hash(base['keep.md']), reviewedDigest: hash(final['keep.md']), draftRevision: 1 },
+      { relPath: 'made.md', candidateDigest: hash(final['made.md']), reviewedDigest: hash(final['made.md']), draftRevision: null },
+    ] } },
+  };
+  const receipt = { status: 'merged', commit, operations: Object.keys(final).map(relPath => ({ relPath, beforeDigest: hash(base[relPath] ?? null), afterDigest: hash(final[relPath]), commit, workId: work.id })) };
+  const call = () => recordAdoption({ host, projectId, work, receipt });
+  const result = await call();
+  assert.deepEqual(result.files.map(file => file.status), ['recorded', 'recorded', 'recorded']);
+  // Mixed chain: worker baseline→candidate, then human candidate→final.
+  const edit = (await store.read('edit.md')).events;
+  assert.equal(edit.length, 2);
+  assert.equal(edit[0].actor.kind, 'agent2');
+  assert.equal(edit[0].beforeDigest, hash(base['edit.md']));
+  assert.equal(edit[0].afterDigest, hash(candidate['edit.md']));
+  assert.equal(edit[1].actor.kind, 'user');
+  assert.equal(edit[1].beforeDigest, hash(candidate['edit.md']));
+  assert.equal(edit[1].afterDigest, hash(final['edit.md']));
+  // Worker-unchanged file: the whole human delta stays user-authored.
+  const keep = (await store.read('keep.md')).events;
+  assert.equal(keep.length, 1);
+  assert.equal(keep[0].actor.kind, 'user');
+  assert.equal(keep[0].beforeDigest, hash(base['keep.md']));
+  assert.equal(keep[0].afterDigest, hash(final['keep.md']));
+  // Worker-only file keeps Worker attribution.
+  const made = (await store.read('made.md')).events;
+  assert.equal(made.length, 1);
+  assert.equal(made[0].actor.kind, 'agent2');
+  assert.equal(made[0].afterDigest, hash(final['made.md']));
+  // Replay is idempotent for the whole reviewed chain.
+  const replay = await call();
+  assert.deepEqual(replay.files.map(file => file.status), ['duplicate', 'duplicate', 'duplicate']);
+  assert.equal((await store.read('edit.md')).events.length, 2);
+});
