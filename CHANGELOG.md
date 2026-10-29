@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Add explicit deterministic unit/integration test suites and a credential-free real Electron smoke entrypoint, with Linux CI and clean pinned builds.
+- Add contribution/security policies, issue and PR templates, dependency alerts, a user guide and structured release compliance bookkeeping.
+- Reconcile documentation with the public Alpha status; third-party source and redistribution review remains open rather than being treated as certified by publication.
+
 ## 0.1.0-alpha.1
 
 ### Reading and collaboration
@@ -21,5 +27,5 @@
 
 - Alpha qualification is Linux x64 / Wayland only. Windows and macOS are product targets, not verified release platforms.
 - AI features require user-supplied provider configuration. No credentials, user project data or personal sessions belong in release artifacts.
-- The Linux portable build is a local validation artifact. Public redistribution of bundled third-party code remains gated on corresponding-source and license compliance; a source archive or upstream URL alone does not satisfy that gate.
+- Published as a public Alpha prerelease at the repository owner's explicit request. Third-party corresponding-source and redistribution review remains incomplete; publication, a source archive or an upstream URL does not certify or discharge those obligations.
 - See [release guidance](docs/release.md) for packaging, validation and publication boundaries.

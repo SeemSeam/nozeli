@@ -1,0 +1,21 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+  - package-ecosystem: npm
+    directory: /apps/desktop
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      codemirror:
+        patterns:
+          - '@codemirror/*'
+          - '@lezer/*'
+          - codemirror
+    ignore:
+      - dependency-name: electron
+        update-types: [version-update:semver-major]
