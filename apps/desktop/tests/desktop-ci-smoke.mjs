@@ -20,7 +20,7 @@ async function until(fn,label,ms=30000){const deadline=Date.now()+ms;while(Date.
 async function invoke(op,payload={},page=shell){const r=await page.evaluate(({op,payload})=>nozeli.invoke(op,payload),{op,payload});assert(r.ok,op+': '+JSON.stringify(r.error));return r.value;}
 async function launch(){
  const port=await new Promise(r=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const port=s.address().port;s.close(()=>r(port));});});
- const env={...process.env};for(const key of Object.keys(env))if(/^(NOZELI_|CCB_|CODEX_|OMP_|PI_)/.test(key)||/AUTH|TOKEN|SECRET|PASSWORD|CREDENTIAL|API_?KEY/i.test(key)||['NODE_OPTIONS','ELECTRON_RUN_AS_NODE'].includes(key))delete env[key];
+ const env={...process.env};for(const key of Object.keys(env))if(key!=='XAUTHORITY'&&(/^(NOZELI_|CCB_|CODEX_|OMP_|PI_)/.test(key)||/AUTH|TOKEN|SECRET|PASSWORD|CREDENTIAL|API_?KEY/i.test(key)||['NODE_OPTIONS','ELECTRON_RUN_AS_NODE'].includes(key)))delete env[key];
  const ozone=process.env.NOZELI_OZONE||(process.env.WAYLAND_DISPLAY?'wayland':process.env.DISPLAY?'x11':'headless');
  Object.assign(env,{NOZELI_CONFIG_ROOT:config,NOZELI_USER_DATA:profile,NOZELI_TEST_INSTANCE:'1',NOZELI_DEBUG_PORT:String(port),NOZELI_HIDDEN:ozone==='headless'?'1':'0',NOZELI_OZONE:ozone});
  child=spawn(require('electron'),[path.join(appRoot,'src/main/main.cjs'),'--ozone-platform='+ozone],{cwd:project,env,stdio:['ignore','pipe','pipe']});

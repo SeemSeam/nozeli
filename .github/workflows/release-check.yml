@@ -43,7 +43,7 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: node -e 'const p=require("./apps/desktop/package.json");if(process.env.TAG!=="v"+p.version)throw Error("Tag/version mismatch")'
       - name: Install desktop dependencies
-        run: sudo apt-get update && sudo apt-get install -y xvfb libgtk-3-0 libnss3 libasound2t64 libgbm1
+        run: sudo apt-get update && sudo apt-get install -y xvfb libgtk-3-0 libnss3 libasound2t64 libgbm1 bubblewrap && sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Install and test
         working-directory: apps/desktop
         run: npm ci --no-audit --no-fund && npm test

@@ -227,7 +227,7 @@ const SUITES = {
       'workspace-native.test.mjs',
     ],
     runner: 'node-test',
-    preflight: [nodeVersionCheck, gitCheck],
+    preflight: [nodeVersionCheck, gitCheck, () => process.platform === 'linux' ? bwrapCheck() : null],
   },
   smoke: {
     description: 'lightweight CI smoke: actual Electron no-model startup, synthetic project registration, file browse, native edit, clean close, cold-restart persistence (headless by default, Xvfb compatible)',
@@ -402,6 +402,7 @@ function testConcurrency() {
 function suiteEnvironment(name) {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
+    if (key === 'XAUTHORITY') continue; // Xvfb display cookie, not a provider credential
     if (/AUTH|TOKEN|SECRET|PASSWORD|CREDENTIAL|API_?KEY|ASKPASS/i.test(key) || /^(?:GH_|GITHUB_|GIT_CONFIG_|CCB_|CODEX_|OMP_|PI_)/.test(key) || ['NODE_OPTIONS', 'ELECTRON_RUN_AS_NODE', 'NOZELI_CONFIG_ROOT', 'NOZELI_USER_DATA'].includes(key)) delete env[key];
   }
   const home = fs.mkdtempSync(path.join(path.dirname(artifactPath(name, 'tap')), `env-${name}-`));

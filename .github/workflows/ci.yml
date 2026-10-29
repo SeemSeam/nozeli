@@ -32,6 +32,11 @@ jobs:
           node-version: '22.22.0'
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
+      - name: Prepare isolation regression on ephemeral runner
+        if: matrix.suite == 'integration'
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Install locked dependencies
         run: npm ci --no-audit --no-fund
       - name: Run deterministic tests

@@ -12,7 +12,7 @@ node tools/test-suites.mjs smoke --list    # 任一套件的文件清单
 | 套件 | 命令 | 内容 | 额外前置 |
 | --- | --- | --- | --- |
 | unit | `npm run test:unit` | 纯逻辑：导入源码模块与 npm 依赖验证行为；允许只读源码（如读 preload 源做 vm 沙箱验证），不写真实项目文件、不起被测子进程、不用 Git/Electron/原生运行时 | 无（Node ≥ 22 + `npm ci`） |
-| integration | `npm run test:integration` | 真实临时文件／Git／存储：每个测试用 `mkdtemp(os.tmpdir())` 建独立隔离根；无 GUI、无模型提供方 | 系统 `git` 在 PATH |
+| integration | `npm run test:integration` | 真实临时文件／Git／存储与显式隔离安全回归；无GUI、无模型提供方 | 系统git；Linux需bubblewrap及可用user namespaces |
 | smoke | `npm run test:smoke` | 轻量 CI 冒烟（`tests/desktop-ci-smoke.mjs`）：真实 Electron 无模型启动→空工作台→注册合成项目→浏览文件→原生编辑→正常关闭→冷重启留存 | 先 `npm run build:renderer`（Electron 随 `npm ci` 安装） |
 | live（显式选择加入） | `NOZELI_TEST_LIVE=1 npm run test:live` | 内置原生 OMP 运行时 + 回环脚本化 HTTP：确定性、无凭据、不联网、不产生费用 | 先 `npm run build:omp`；`bwrap`、`git` 在 PATH |
 | toolchain（可选工具） | `npm run test:toolchain` | 实际TeX编译、SyncTeX正反向定位与TexLab | 系统latexmk/xelatex/pdftotext/synctex/texlab；缺失明确失败，不静默跳过 |
@@ -35,7 +35,7 @@ node tools/test-suites.mjs smoke --list    # 任一套件的文件清单
 
 - **Node ≥ 22**（`node:test`、`node:sqlite`）；开发机与 CI 一致使用 22.x。
 - **`npm ci`**（在 `apps/desktop`）：安装依赖并经 postinstall `electron-rebuild -f -w node-pty` 重建原生模块。unit/integration **不需要**预构建私有 OMP（`build:omp`）或 PPTist（`build:pptist`）。
-- **integration**：系统 `git`（部分测试直接驱动真实仓库；其余走 dugite 自带 Git）。
+- **integration**：系统git，以及Linux上的bubblewrap与可用用户命名空间；此套件含真实隔离边界回归，缺少工具明确失败，不暗中略过该文件。
 - **smoke**：先 `npm run build:renderer`（检查 `dist/renderer/app.js`）。发布级冒烟按发布流程再加 `build:pptist`、`build:omp` 后运行。
 - **live**：`NOZELI_TEST_LIVE=1` 显式选择加入；`runtime/omp/omp` 存在（`npm run build:omp`）；`bwrap`（如 `apt install bubblewrap`）与 `git` 在 PATH。
 - Ubuntu 24.04 + Node 22 的 CI 示例：
@@ -43,7 +43,7 @@ node tools/test-suites.mjs smoke --list    # 任一套件的文件清单
   - 构建+冒烟任务：`npm ci && npm run build:pptist && npm run build:omp && npm run build:renderer && xvfb-run -a npm run test:smoke`。
   - 可选 live：`NOZELI_TEST_LIVE=1 npm run test:live`（仅在已 `build:omp` 且装有 bubblewrap 时）。
 
-GitHub Ubuntu临时runner限制无特权用户命名空间，因此workflow在已安装的Electron二进制上配置root拥有的`chrome-sandbox`（4755），然后仍以普通runner用户运行应用。不加`--no-sandbox`，也不改用户机器或发布包的权限；这是CI机器准备，不是让普通用户用root运行Nozeli。
+GitHub Ubuntu临时runner限制无特权用户命名空间：workflow为隔离回归安装bubblewrap，并仅在临时runner放开AppArmor的userns限制；Electron烟测另配置root拥有的`chrome-sandbox`（4755），仍以普通runner用户运行。不加`--no-sandbox`，不改用户机器或发行包权限。环境清理保留`XAUTHORITY`这一Xvfb显示cookie路径以连接临时显示器，不保留模型/SSH/GitHub认证变量。
 
 前置缺失时 runner 以退出码 2 给出 `PREREQUISITE MISSING` 说明并停止；任何套件都不会静默跳过文件或缩小集合，套件内列出的文件不存在同样视为错误；未知选项（如 `--unknown`）直接拒绝（退出码 2），已知选项仅 `--list`。
 
