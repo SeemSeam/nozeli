@@ -3,13 +3,13 @@
   "purpose": "Machine-verifiable companion to apps/desktop/SOURCES.md and docs/release.md: pinned third-party inputs, evidence locations, exact rebuild commands and the still-pending redistribution obligations. Engineering bookkeeping only; not a legal audit or compliance certification.",
   "checkedBy": "tools/check-repository.mjs",
   "product": "Nozeli",
-  "productVersion": "0.1.0-alpha.1",
+  "productVersion": "0.1.0-alpha.2",
   "license": "AGPL-3.0-only",
   "licenseEvidence": ["LICENSE"],
   "release": {
-    "tag": "v0.1.0-alpha.1",
-    "url": "https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.1",
-    "commit": "af004b443fac1e794ca581242dfcdf4f9d9d0163",
+    "tag": "v0.1.0-alpha.2",
+    "url": "https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.2",
+    "commit": null,
     "channel": "alpha-prerelease",
     "platformsExercised": ["linux-x64-wayland"],
     "notes": "Published as a public prerelease at the repository owner's explicit request. Publication is not a compliance certification; the obligations below remain open."
@@ -155,7 +155,7 @@
     {
       "id": "agpl-corresponding-source-vendor",
       "obligation": "Offer/verify complete corresponding source for the AGPL-licensed minified or built vendor products shipped inside the distributed Linux archive (SuperDoc 1.47.1 dist; PPTist 2.0.0 dist). A Nozeli source archive or an upstream URL alone does not satisfy this.",
-      "scope": "Nozeli-0.1.0-alpha.1-linux-x64.tar.gz and any future binary distribution",
+      "scope": "Published Nozeli Linux archives, including alpha.1 and alpha.2; any future binary distribution",
       "status": "pending",
       "retainedEvidence": ["apps/desktop/vendor/superdoc-1.47.1/SOURCES.json", "apps/desktop/vendor/pptist/upstream.tar.gz"],
       "signoff": null

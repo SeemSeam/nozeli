@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-alpha.2
 
 - Add explicit deterministic unit/integration test suites and a credential-free real Electron smoke entrypoint, with Linux CI and clean pinned builds.
 - Add contribution/security policies, issue and PR templates, dependency alerts, a user guide and structured release compliance bookkeeping.

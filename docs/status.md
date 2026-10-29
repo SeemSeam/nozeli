@@ -1,6 +1,6 @@
 # 当前状态与能力边界
 
-状态基线：`0.1.0-alpha.1`（公开 Alpha 预发布，见[发布说明与发行边界](release.md)）。下述能力以 **Linux x64（Wayland 桌面）本机验证** 为准；Windows/macOS 尚未验证，安装与打包工具当前也仅实现 Linux。不以 Linux 结果推断其他平台。
+状态基线：`0.1.0-alpha.2`（Alpha预发行，见[发布说明与发行边界](release.md)）。能力以Linux x64/Wayland及GitHub Ubuntu/X11实际验证为准；Windows/macOS尚未验证，安装与打包工具仅实现Linux。
 
 ## 已具备的主要能力（Linux 实测）
 
