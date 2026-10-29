@@ -3,6 +3,7 @@ import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {createHash, randomUUID} from 'node:crypto';
 import {ensureGit} from './git-runtime.mjs';
+import {PassThrough} from 'node:stream';
 
 // Only private evidence storage is writable. Git never receives renderer paths or refs.
 const MAX_OUTPUT = 64 * 1024 * 1024;
@@ -135,10 +136,18 @@ export class WorkChanges {
     if (mode === '160000') return {oid: object, mode, type: 'gitlink', bytes: null};
     const type = await text(this.evidenceRepo, ['cat-file', '-t', object]);
     if (type !== 'blob') reject('CHANGES_CORRUPT', 'File object is not a blob');
-    const bytes = await git(this.evidenceRepo, ['cat-file', 'blob', object]);
-    const reference = await this.storage.putObject(this.projectId, bytes);
-    if (reference.byteLength !== bytes.length || reference.digest !== hash(bytes)) reject('CHANGES_CORRUPT', 'Published blob digest mismatch');
-    return {oid: object, mode, type: mode === '120000' ? 'symlink' : 'blob', bytes: bytes.length, object: reference};
+    const size=Number(await text(this.evidenceRepo,['cat-file','-s',object]));
+    if(!Number.isSafeInteger(size)||size<0)reject('CHANGES_CORRUPT','Invalid blob size');
+    const proc=await child(this.evidenceRepo,['cat-file','blob',object]);
+    // ChildProcess drains stdout on exit. Attach a backpressured consumer before
+    // storage's asynchronous directory setup, including for tiny fast blobs.
+    const output=new PassThrough({highWaterMark:256*1024});proc.stdout.pipe(output);
+    const completed=collect(proc,'',null);
+    let reference;
+    try{[reference]=await Promise.all([this.storage.putObjectStream(this.projectId,output),completed]);}
+    catch(error){proc.kill();output.destroy();await completed.catch(()=>{});throw error;}
+    if(reference.byteLength!==size)reject('CHANGES_CORRUPT','Published blob size mismatch');
+    return {oid:object,mode,type:mode==='120000'?'symlink':'blob',bytes:size,object:reference};
    };
    const before = await side(beforeMode, beforeOid), after = await side(afterMode, afterOid), binary = stat[1] === '-';
    const unsupported = [before, after].some(value => value && value.type !== 'blob');
@@ -216,9 +225,17 @@ export class WorkChanges {
   if (bytes.length !== metadata.bytes || createHash(binding.objectFormat).update('blob ' + bytes.length + '\0').update(bytes).digest('hex') !== metadata.oid) reject('CHANGES_CORRUPT', 'Blob digest mismatch');
   return bytes;
  }
+ async verifySide(metadata,binding){
+  await this.storage.withObject(this.projectId,metadata.object.digest,async file=>{
+   if(file.stat.size!==metadata.bytes||metadata.object.byteLength!==metadata.bytes)reject('CHANGES_CORRUPT','Blob size mismatch');
+   const hash=createHash(binding.objectFormat).update('blob '+metadata.bytes+'\0');
+   for await(const chunk of file.stream())hash.update(chunk);
+   if(hash.digest('hex')!==metadata.oid)reject('CHANGES_CORRUPT','Blob digest mismatch');
+  });
+ }
  async verifyInner(id, expectedBinding) {
   const record = await this.record(id, expectedBinding);
-  for (const file of record.files) for (const side of ['before', 'after']) if (file[side] && file[side].type !== 'gitlink') await this.sideBytes(file[side], record.binding);
+  for (const file of record.files) for (const side of ['before', 'after']) if (file[side] && file[side].type !== 'gitlink') await this.verifySide(file[side], record.binding);
   return this.summary(record);
  }
  async verify(id) {return this.locked(() => this.verifyInner(setId(id)));}

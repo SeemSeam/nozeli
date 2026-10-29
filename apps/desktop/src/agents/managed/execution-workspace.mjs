@@ -4,21 +4,18 @@ import {constants} from 'node:fs';
 import {createHash,randomUUID} from 'node:crypto';
 import {atomicJson} from './workspace.mjs';
 import {resolveTextReplacements} from '../../domain/document-collaboration.mjs';
-import {git,str,read,entries,repository,commitTree,fail,acceptanceCommit} from './git-service.mjs';
+import {git,str,read,repository,commitTree,fail,acceptanceCommit,gitStream,gitRecords,gitEntries,blobDigest,blobFile,blobFiles,updateIndexRows,gitEnv} from './git-service.mjs';
+import {runGit} from './git-runtime.mjs';
+import {inspectFile,readSafeBytes,safeRelativePath,TEXT_MAX_BYTES} from './file-stream.mjs';
+import {Readable,Writable} from 'node:stream';
 import {provisionWorktreeDependencies} from './worktree-dependencies.mjs';
 export const byteDigest=bytes=>bytes===null?null:createHash('sha256').update(bytes).digest('hex');
-const excluded=new Set(['.git','.nozeli','.ccb','node_modules','.venv','venv','__pycache__']);
-export function workPath(rel){
- if(typeof rel!=='string'||!rel||rel.length>1024||rel.includes('\\')||/[\x00-\x1f\x7f:*?\[\]]/.test(rel)||rel.split('/').some(p=>!p||p==='.'||p==='..'||excluded.has(p))||path.isAbsolute(rel)||/(^|\/)(?:\.env(?:\..*)?|auth\.json|credentials(?:\..*)?|[^/]+\.(?:pem|key))$/i.test(rel))fail('PATH_REJECTED','路径不可用于Worker：'+rel);return rel;
-}
-export async function safeBytes(root,rel){const value=await safeFile(root,rel);return value?.bytes??null;}
-async function safeFile(root,rel){
- workPath(rel);if(process.platform!=='linux')fail('SAFE_OPEN_UNSUPPORTED','此平台尚无安全逐级文件打开实现');const handles=[];
- try{let directory=await fs.open(root,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);handles.push(directory);
-  const parts=rel.split('/');for(const part of parts.slice(0,-1)){directory=await fs.open('/proc/self/fd/'+directory.fd+'/'+part,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);handles.push(directory);}
-  const file=await fs.open('/proc/self/fd/'+directory.fd+'/'+parts.at(-1),constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);handles.push(file);const stat=await file.stat({bigint:true});if(!stat.isFile()||stat.nlink!==1n||stat.size>32n*1024n*1024n)fail('PATH_REJECTED','非安全普通文件或超过32MiB：'+rel);const bytes=Buffer.alloc(Number(stat.size));let offset=0;while(offset<bytes.length){const result=await file.read(bytes,offset,bytes.length-offset,offset);if(!result.bytesRead)break;offset+=result.bytesRead;}const after=await file.stat({bigint:true}),entry=await fs.lstat('/proc/self/fd/'+directory.fd+'/'+parts.at(-1),{bigint:true});for(const current of [after,entry])if(current.dev!==stat.dev||current.ino!==stat.ino||current.size!==stat.size||current.mtimeNs!==stat.mtimeNs||current.ctimeNs!==stat.ctimeNs||current.nlink!==1n)fail('SOURCE_CHANGED','文件读取期间变化：'+rel);if(offset!==bytes.length)fail('SOURCE_CHANGED','文件读取期间变化：'+rel);return {bytes,mode:Number(stat.mode)&0o111?'100755':'100644'};
- }catch(error){if(error.code==='ENOENT')return null;throw error;}finally{for(const handle of handles.reverse())await handle.close();}
-}
+export const workPath=safeRelativePath;
+// Whole-body reads are reserved for bounded document/review text APIs.
+export async function safeBytes(root,rel){const value=await readSafeBytes(root,rel);return value?.bytes??null;}
+const safeFile=readSafeBytes;
+const indexDigest=async file=>(await inspectFile(path.dirname(file),path.basename(file)))?.digest??null;
+async function copyToHandle(file,handle){const source=await fs.open(file,'r');try{await handle.writeFile(source.createReadStream({autoClose:false}));}finally{await source.close();}}
 function documentText(bytes){if(bytes===null)return '';let text;try{text=new TextDecoder('utf-8',{fatal:true}).decode(bytes);}catch{fail('UNSUPPORTED','文档操作仅支持UTF-8文本');}if(text.includes('\0'))fail('UNSUPPORTED','文档操作不支持二进制文件');return text.replace(/\r\n?/g,'\n');}
 async function documentParent(root,rel){
  workPath(rel);const handles=[];try{let directory=await fs.open(root,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);handles.push(directory);for(const part of rel.split('/').slice(0,-1)){const next='/proc/self/fd/'+directory.fd+'/'+part;await fs.mkdir(next).catch(error=>{if(error.code!=='EEXIST')throw error;});directory=await fs.open(next,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);handles.push(directory);}return {directory,prefix:'/proc/self/fd/'+directory.fd+'/',close:async()=>{for(const handle of handles.reverse())await handle.close();}};}catch(error){for(const handle of handles.reverse())await handle.close();throw error;}
@@ -37,7 +34,7 @@ export class ExecutionWorkspace {
   if(m.finishIntent)return;const head=await str(m.repo,['rev-parse',m.targetRef]);if(head===m.targetHead)return;
   const known=new Map();for(const work of this.store.state?.works||[]){const other=await this.readManifest(work.id);if(other?.repo===m.repo&&other.targetRef===m.targetRef&&other.finishIntent?.status==='integrated')known.set(other.finishIntent.commit,other);}
   let cursor=head;const chain=[];while(cursor!==m.targetHead){const other=known.get(cursor);if(!other)fail('HEAD_DRIFT','目标分支有非受管提交，未自动猜测合入');chain.push(other);cursor=other.targetHead;if(chain.length>known.size)fail('HEAD_DRIFT','受管提交证明链无效');}
-  const changed=new Set(names(await git(m.repo,['diff','--name-only','-z',m.targetHead,head])));if(m.candidate?.files.some(rel=>changed.has(rel)))fail('TARGET_OVERLAP','其他工作修改了同一文件，请核对候选');
+  const changed=new Set(await gitRecords(m.repo,['diff','--name-only','-z',m.targetHead,head]));if(m.candidate?.files.some(rel=>changed.has(rel)))fail('TARGET_OVERLAP','其他工作修改了同一文件，请核对候选');
   m.targetHistory??=[];m.targetHistory.push({from:m.targetHead,to:head,managedWorks:chain.map(row=>row.workId)});m.targetHead=head;await this.save(m);
  }
  async identity(m,{target=true,worker=true}={}){
@@ -46,23 +43,19 @@ export class ExecutionWorkspace {
   if(target&&repo.targetHead!==m.targetHead&&repo.targetHead!==m.finishIntent?.commit)fail('HEAD_DRIFT','目标HEAD已变化；请保留候选并核对');
   if(worker){if((await read(path.join(m.directory,'.git')))?.toString()!==m.gitPointer)fail('IDENTITY_CHANGED','Worker Git指针变化');
    if(await fs.realpath(await str(m.directory,['rev-parse','--absolute-git-dir']))!==m.workerGitDir||await fs.realpath(path.resolve(m.directory,await str(m.directory,['rev-parse','--git-common-dir'])))!==m.commonDir||await str(m.directory,['symbolic-ref','HEAD'])!==m.branchRef)fail('IDENTITY_CHANGED','Worker Git身份变化');
-   const registered=names(await git(m.repo,['worktree','list','--porcelain','-z']));if(!registered.includes('worktree '+m.directory)||!registered.includes('branch '+m.branchRef))fail('IDENTITY_CHANGED','受管worktree注册变化');
+   const registered=await gitRecords(m.repo,['worktree','list','--porcelain','-z']);if(!registered.includes('worktree '+m.directory)||!registered.includes('branch '+m.branchRef))fail('IDENTITY_CHANGED','受管worktree注册变化');
    if(await str(m.repo,['rev-parse',m.branchRef])!==(m.candidate?.commit||m.inputCommit||m.baseCommit))fail('WORKER_REF_CHANGED','Worker分支被外部修改');
    if((await read(path.join(m.workerGitDir,'gitdir')))?.toString().trim()!==path.join(m.directory,'.git'))fail('IDENTITY_CHANGED','Worker反向注册变化');
   }return repo;
  }
- async blob(cwd,bytes){const file=path.join(this.store.root,'evidence','blob-'+randomUUID());await fs.mkdir(path.dirname(file),{recursive:true});await fs.writeFile(file,bytes,{flag:'wx',mode:0o600});try{return await str(cwd,['hash-object','-w','--no-filters',file]);}finally{await fs.unlink(file);}}
+ async blob(cwd,bytes){return (await runGit(cwd,['hash-object','-w','--no-filters','--stdin'],{env:gitEnv(),input:Readable.from([bytes])})).toString().trim();}
  async snapshot(m,root,parent,label){
-  const index=path.join(this.store.root,'evidence','index-'+randomUUID());const env={GIT_INDEX_FILE:index};await fs.mkdir(path.dirname(index),{recursive:true});
-  try{await git(m.repo,['read-tree',parent],env);const tracked=entries(await git(m.repo,['ls-tree','-r','-z',parent])),selected=new Set([...tracked.keys(),...names(await git(root,['ls-files','-co','--exclude-standard','-z']))]);let total=0;const files={};
-   for(const rel of [...selected].sort()){
-    try{workPath(rel);}catch(error){if(tracked.has(rel))throw error;continue;}
-    const captured=await safeFile(root,rel),bytes=captured?.bytes??null;if(bytes===null){await git(m.repo,['update-index','--force-remove','--',rel],env);continue;}
-    total+=bytes.length;if(total>256*1024*1024||Object.keys(files).length>=10000)fail('SNAPSHOT_LIMIT','候选超过256MiB/10000文件边界');
-    const mode=captured.mode,oid=await this.blob(m.repo,bytes);
-    if(byteDigest(await safeBytes(root,rel))!==byteDigest(bytes))fail('SOURCE_CHANGED','文件在快照期间变化：'+rel);
-    await git(m.repo,['update-index','--add','--cacheinfo',mode,oid,rel],env);files[rel]={digest:byteDigest(bytes),mode,oid};
-   }
+  const index=path.join(this.store.root,'evidence','index-'+randomUUID()),env={GIT_INDEX_FILE:index};await fs.mkdir(path.dirname(index),{recursive:true});
+  try{
+   await git(m.repo,['read-tree',parent],env);
+   const tracked=await gitEntries(m.repo,['ls-tree','-r','-z',parent]),selected=new Set([...tracked.keys(),...await gitRecords(root,['ls-files','-co','--exclude-standard','-z'])]),files={},batch=[],rows=[],format=await str(m.repo,['rev-parse','--show-object-format']);
+   const flush=async()=>{if(!batch.length)return;const captured=await blobFiles(m.repo,root,batch,tracked,format);for(const rel of batch){const file=captured.get(rel);if(file){files[rel]=file;const old=tracked.get(rel);if(old?.[0]===file.mode&&old?.[2]===file.oid)continue;rows.push({rel,...file});}else if(tracked.has(rel))rows.push({rel,oid:null});}batch.length=0;};
+   for(const rel of [...selected].sort()){try{workPath(rel);}catch(error){if(tracked.has(rel))throw error;continue;}batch.push(rel);if(batch.length===16)await flush();}await flush();await updateIndexRows(m.repo,index,rows);
    const tree=await str(m.repo,['write-tree'],env),commit=await commitTree(m.repo,tree,[parent],label,path.dirname(this.manifest(m.workId)));return {tree,commit,files};
   }finally{await fs.rm(index,{force:true});}
  }
@@ -74,13 +67,14 @@ export class ExecutionWorkspace {
   const intentFile=path.join(evidence,'repository-init.json');
   if(!top){await atomicJson(intentFile,{repo:root,created:true,status:'requested'});await git(root,['init','--initial-branch=main']);}
   const priorBytes=await read(intentFile),prior=priorBytes?JSON.parse(priorBytes):null,existingHead=await str(root,['rev-parse','--verify','HEAD']).catch(()=>null);
-  if(existingHead){if(prior?.status==='ready'&&prior.commit===existingHead&&prior.created){const targetIndex=path.resolve(root,await str(root,['rev-parse','--git-path','index'])),saved=await read(path.join(evidence,'initial.index'));if(!saved)fail('INIT_RECOVERY','初始索引恢复材料缺失');if(!await read(targetIndex)){const h=await fs.open(targetIndex+'.lock','wx',0o600);try{if(await read(targetIndex))fail('INDEX_CHANGED','恢复期间索引变化');await h.writeFile(saved);await h.sync();await h.close();await fs.rename(targetIndex+'.lock',targetIndex);}catch(error){await h.close().catch(()=>{});await fs.rm(targetIndex+'.lock',{force:true});throw error;}}await atomicJson(intentFile,{...prior,status:'complete'});}return;}
+  if(existingHead){if(prior?.status==='ready'&&prior.commit===existingHead&&prior.created){const targetIndex=path.resolve(root,await str(root,['rev-parse','--git-path','index'])),saved=path.join(evidence,'initial.index');if(!await fs.stat(saved).catch(()=>null))fail('INIT_RECOVERY','初始索引恢复材料缺失');if(!await fs.stat(targetIndex).catch(()=>null)){const h=await fs.open(targetIndex+'.lock','wx',0o600);try{if(await fs.stat(targetIndex).catch(()=>null))fail('INDEX_CHANGED','恢复期间索引变化');await copyToHandle(saved,h);await h.sync();await h.close();await fs.rename(targetIndex+'.lock',targetIndex);}catch(error){await h.close().catch(()=>{});await fs.rm(targetIndex+'.lock',{force:true});throw error;}}await atomicJson(intentFile,{...prior,status:'complete'});}return;}
   const ref=await str(root,['symbolic-ref','HEAD']),index=path.join(evidence,'initial.index'),env={GIT_INDEX_FILE:index};
   const created=!top||prior?.created===true;await atomicJson(intentFile,{repo:root,ref,created,status:'baseline-requested'});await git(root,['read-tree','--empty'],env);
-  for(const rel of names(await git(root,['ls-files','-co','--exclude-standard','-z']))){try{workPath(rel);}catch{continue;}const captured=await safeFile(root,rel);if(!captured)continue;const oid=await this.blob(root,captured.bytes);await git(root,['update-index','--add','--cacheinfo',captured.mode,oid,rel],env);}
+  const batch=[],rows=[],format=await str(root,['rev-parse','--show-object-format']);const flush=async()=>{if(!batch.length)return;const captured=await blobFiles(root,root,batch,new Map(),format);for(const [rel,file] of captured)if(file)rows.push({rel,...file});batch.length=0;};
+  for(const rel of await gitRecords(root,['ls-files','-co','--exclude-standard','-z'])){try{workPath(rel);}catch{continue;}batch.push(rel);if(batch.length===16)await flush();}await flush();await updateIndexRows(root,index,rows);
   const tree=await str(root,['write-tree'],env),commit=await commitTree(root,tree,[],'Nozeli project baseline',evidence);await atomicJson(intentFile,{repo:root,ref,commit,created,status:'ready'});
   await git(root,['update-ref',ref,commit,'0'.repeat(commit.length)]);
-  if(created){const targetIndex=path.resolve(root,await str(root,['rev-parse','--git-path','index'])),lock=targetIndex+'.lock';const h=await fs.open(lock,'wx',0o600);try{if(await read(targetIndex))fail('INDEX_CHANGED','初始化期间索引出现，未覆盖');await h.writeFile(await fs.readFile(index));await h.sync();await h.close();await fs.rename(lock,targetIndex);}catch(error){await h.close().catch(()=>{});await fs.rm(lock,{force:true});throw error;}}
+  if(created){const targetIndex=path.resolve(root,await str(root,['rev-parse','--git-path','index'])),lock=targetIndex+'.lock';const h=await fs.open(lock,'wx',0o600);try{if(await fs.stat(targetIndex).catch(()=>null))fail('INDEX_CHANGED','初始化期间索引出现，未覆盖');await copyToHandle(index,h);await h.sync();await h.close();await fs.rename(lock,targetIndex);}catch(error){await h.close().catch(()=>{});await fs.rm(lock,{force:true});throw error;}}
   await atomicJson(intentFile,{repo:root,ref,commit,status:'complete'});await fs.rm(index,{force:true});
  }
  async prepareInner(id){
@@ -99,7 +93,7 @@ export class ExecutionWorkspace {
    m.gitPointer=(await fs.readFile(path.join(m.directory,'.git'))).toString();m.workerGitDir=await fs.realpath(await str(m.directory,['rev-parse','--absolute-git-dir']));m.preparation='registered';await this.save(m);
   }
   if(m.preparation==='registered'){
-   await this.identity(m);const input=await this.snapshot(m,m.repo,m.baseCommit,'Nozeli input baseline');m.inputCommit=input.commit;m.inputTree=input.tree;m.files=input.files;m.inputProvenance={kind:'disk',head:m.baseCommit,at:new Date().toISOString(),indexDigest:byteDigest(await read(m.index))};m.preparation='input-frozen';await this.save(m);
+   await this.identity(m);const input=await this.snapshot(m,m.repo,m.baseCommit,'Nozeli input baseline');m.inputCommit=input.commit;m.inputTree=input.tree;m.files=input.files;m.inputProvenance={kind:'disk',head:m.baseCommit,at:new Date().toISOString(),indexDigest:await indexDigest(m.index)};m.preparation='input-frozen';await this.save(m);
   }
   if(m.preparation==='input-frozen'){
    if((await read(path.join(m.directory,'.git')))?.toString()!==m.gitPointer)fail('IDENTITY_CHANGED','执行目录Git指针变化');
@@ -110,7 +104,7 @@ export class ExecutionWorkspace {
   if(m.preparation==='input-installed'&&m.legacy){
    const source=m.legacy.directory,selected=new Set(Object.keys(m.legacy.manifest.files||{}));
    const visit=async(dir,rel='')=>{for(const row of await fs.readdir(dir,{withFileTypes:true})){const name=rel?rel+'/'+row.name:row.name;workPath(name);if(row.isDirectory())await visit(path.join(dir,row.name),name);else{if(!row.isFile()||row.isSymbolicLink())fail('LEGACY_UNSAFE','旧候选含特殊文件，已保留：'+name);selected.add(name);}}};await visit(source);
-   for(const rel of selected){workPath(rel);const bytes=await safeBytes(source,rel),target=path.join(m.directory,rel);if(bytes===null)await fs.rm(target,{force:true});else{await fs.mkdir(path.dirname(target),{recursive:true});await fs.writeFile(target,bytes);}}m.legacy.importedPaths=[...selected];
+   for(const rel of selected){workPath(rel);const file=await blobFile(m.repo,source,rel),before=await inspectFile(m.directory,rel);await this.installFile({...m,repo:m.directory},{rel,before:before?.digest??null,after:file?.digest??null,mode:file?.mode??null,oid:file?.oid??null},false);}m.legacy.importedPaths=[...selected];
   }
   m.preparation='complete';await this.save(m);return m;
  }
@@ -147,7 +141,7 @@ export class ExecutionWorkspace {
   const m=await this.prepareInner(work.id);await this.identity(m,{target:false});if(!isActive())fail('WORK_STOPPED','工作已停止');
   const candidate=await this.snapshot(m,m.directory,m.inputCommit,'Nozeli Worker checkpoint '+work.id);candidate.revision=work.revision;candidate.jobId=job?.id;
   candidate.fileDigests=Object.fromEntries(Object.entries(candidate.files).map(([rel,file])=>[rel,file.digest]));
-  candidate.files=names(await git(m.repo,['diff-tree','--no-commit-id','--name-only','-r','-z',m.inputCommit,candidate.commit]));
+  candidate.files=await gitRecords(m.repo,['diff-tree','--no-commit-id','--name-only','-r','-z',m.inputCommit,candidate.commit]);
   if(receiptId){
    const intent={receiptId,workId:work.id,before:m.candidate?.commit||m.inputCommit,previousCandidate:structuredClone(m.candidate||null),candidate};m.publicationIntent=intent;await this.save(m);
    try{await git(m.repo,['update-ref',m.branchRef,candidate.commit,intent.before]);m.candidate=candidate;await this.save(m);if(!isActive())fail('WORK_STOPPED','工作已停止');const retained=retainCandidate?await retainCandidate(m,candidate):null;await this.restorePublication(m,intent,true);return {applied:[],conflicts:[],candidate,...(retained?{changeSet:retained}:{})};}
@@ -166,21 +160,22 @@ export class ExecutionWorkspace {
   const candidateCommit=receipt?.snapshot?.candidate?.commit||m.candidate?.commit;
   if(!candidateCommit)fail('CANDIDATE_REQUIRED','缺少冻结候选，无法审校');
   const baselineCommit=await str(m.repo,['rev-parse','--verify',candidateCommit+'^']);
-  const treeOf=async commit=>entries(await git(m.repo,['ls-tree','-r','-z',commit]));
+  const treeOf=async commit=>gitEntries(m.repo,['ls-tree','-r','-l','-z',commit]);
   const [base,cand]=await Promise.all([treeOf(baselineCommit),treeOf(candidateCommit)]);
-  const changed=names(await git(m.repo,['diff-tree','--no-commit-id','--name-only','-r','-z',baselineCommit,candidateCommit]));
+  const changed=await gitRecords(m.repo,['diff-tree','--no-commit-id','--name-only','-r','-z',baselineCommit,candidateCommit]);
   const rels=[...new Set([...changed,...(receipt?.snapshot?.files||[]).map(f=>f.relPath)])].filter(rel=>base.has(rel)||cand.has(rel)).sort();
-  const blobDigest=async row=>row?byteDigest(await git(m.repo,['cat-file','blob',row[2]])):null;
+  const digestBlob=async row=>row?blobDigest(m.repo,row[2]):null;
   const out=[];
   for(const rel of rels){
    const b=base.get(rel),c=cand.get(rel);
-   out.push({relPath:rel,baselineDigest:await blobDigest(b),candidateDigest:await blobDigest(c),baselineMode:b?b[0]:null,candidateMode:c?c[0]:null});
+   out.push({relPath:rel,baselineDigest:await digestBlob(b),candidateDigest:await digestBlob(c),baselineMode:b?b[0]:null,candidateMode:c?c[0]:null,baselineSize:b?Number(b[3]):null,candidateSize:c?Number(c[3]):null});
   }
   return {baselineCommit,candidateCommit,targetRef:m.targetRef??null,files:out};
  }
  async reviewBlob(m,commit,relPath){
-  const row=entries(await git(m.repo,['ls-tree','-r','-z',commit])).get(relPath);
-  return row?git(m.repo,['cat-file','blob',row[2]]):null;
+  workPath(relPath);const row=(await gitEntries(m.repo,['ls-tree','-r','-l','-z',commit,'--',relPath])).get(relPath);
+  if(!row||Number(row[3])>2*1024*1024)return null;
+  return runGit(m.repo,['cat-file','blob',row[2]],{env:gitEnv(),maxBuffer:2*1024*1024});
  }
  // 受控应用人工草稿：先验证整个计划（任一文件drift即整体拒绝，零写入），
  // 再逐文件写入——documentParent逐级O_NOFOLLOW固定父目录（父目录不可被换
@@ -191,9 +186,9 @@ export class ExecutionWorkspace {
   for(const item of plan){
    workPath(item.relPath);
    let captured;
-   try{captured=await safeFile(m.directory,item.relPath);}
+   try{captured=await inspectFile(m.directory,item.relPath);}
    catch(error){fail('WORKTREE_DRIFT','执行文件不可安全读取：'+item.relPath);}
-   const current=byteDigest(captured?.bytes??null);
+   const current=captured?.digest??null;
    if(current!==item.toDigest&&current!==item.fromDigest)fail('WORKTREE_DRIFT','执行目录与冻结候选不一致，未写入人工审校：'+item.relPath);
    steps.push({item,captured,current});
   }
@@ -204,9 +199,9 @@ export class ExecutionWorkspace {
    try{
     const handle=await fs.open(temp,'wx',captured?parseInt(captured.mode,8)&0o777:0o644);
     try{await handle.writeFile(item.bytes);await handle.sync();}finally{await handle.close();}
-    if(byteDigest(await safeBytes(m.directory,item.relPath))!==current)fail('WORKTREE_DRIFT','写入期间执行文件变化：'+item.relPath);
+    if((await inspectFile(m.directory,item.relPath))?.digest!==captured?.digest)fail('WORKTREE_DRIFT','写入期间执行文件变化：'+item.relPath);
     await fs.rename(temp,path.join(m.directory,item.relPath));
-    if(byteDigest(await safeBytes(m.directory,item.relPath))!==item.toDigest)fail('WORKTREE_DRIFT','人工审校写入校验失败：'+item.relPath);
+    if((await inspectFile(m.directory,item.relPath))?.digest!==item.toDigest)fail('WORKTREE_DRIFT','人工审校写入校验失败：'+item.relPath);
    }finally{await fs.rm(temp,{force:true});await parent.close();}
   }
  }
@@ -220,7 +215,7 @@ export class ExecutionWorkspace {
   // Same model contract as the frontdesk: quote exact text, host resolves offsets.
   const original=documentText(before),{edits}=resolveTextReplacements(original,a.replacements);
   const ordered=edits.sort((x,y)=>y.from-x.from);
-  let text=original;for(const e of ordered)text=text.slice(0,e.from)+e.insert+text.slice(e.to);
+  let text=original;for(const e of ordered){if(Buffer.byteLength(text)-Buffer.byteLength(text.slice(e.from,e.to))+Buffer.byteLength(e.insert)>TEXT_MAX_BYTES)fail('TEXT_LIMIT','文档编辑超过32MiB文本边界');text=text.slice(0,e.from)+e.insert+text.slice(e.to);}
   if(!isActive())fail('WORK_STOPPED','工作已停止');const parent=await documentParent(m.directory,h.rel),name=path.posix.basename(h.rel),tempName=name+'.'+randomUUID(),temp=parent.prefix+tempName,file=parent.prefix+name;
   try{const captured=await safeFile(m.directory,h.rel);if(byteDigest(captured?.bytes??null)!==h.digest)fail('STALE_VERSION','文件已变化');await fs.writeFile(temp,text,{flag:'wx',mode:captured?parseInt(captured.mode,8)&0o777:0o644});if(!isActive())fail('WORK_STOPPED','工作已停止');if(byteDigest(await safeBytes(m.directory,h.rel))!==h.digest)fail('STALE_VERSION','文件已变化');const value={relPath:h.rel,beforeDigest:h.digest,digest:byteDigest(Buffer.from(text)),eventId:callId,version:{digest:byteDigest(Buffer.from(text))}};m.documentIntent={callId,fingerprint,value,temp:path.join(m.directory,path.posix.dirname(h.rel),tempName),file:path.join(m.directory,h.rel)};await this.save(m);if(!isActive())fail('WORK_STOPPED','工作已停止');if(byteDigest(await safeBytes(m.directory,h.rel))!==h.digest)fail('STALE_VERSION','文件已变化');await fs.rename(temp,file);m.documentCalls??={};if(callId)m.documentCalls[callId]={fingerprint,value};delete m.documentIntent;await this.save(m);this.handles.delete(a.readHandle);return {ok:true,continueTurn:true,value};}finally{await fs.rm(temp,{force:true});await parent.close();}
  }catch(e){return {ok:false,continueTurn:true,error:{code:e.code||'DOCUMENT_FAILED',message:e.message}};}});}
@@ -279,7 +274,7 @@ export class ExecutionWorkspace {
   if(!intent){
    // 人工审校文件并入整合集合：未被Worker修改的候选文件也可被人工修订并合入。
    const reviewedFiles=reviewed&&Array.isArray(reviewed.files)?new Map(reviewed.files.map(f=>[f.relPath,f])):null;
-   const files=[],base=entries(await git(m.repo,['ls-tree','-r','-z',m.baseCommit])),input=entries(await git(m.repo,['ls-tree','-r','-z',m.inputCommit])),candidate=entries(await git(m.repo,['ls-tree','-r','-z',m.candidate.commit])),staged=entries(await git(m.repo,['ls-files','--stage','-z']));
+   const files=[],base=await gitEntries(m.repo,['ls-tree','-r','-z',m.baseCommit]),input=await gitEntries(m.repo,['ls-tree','-r','-z',m.inputCommit]),candidate=await gitEntries(m.repo,['ls-tree','-r','-z',m.candidate.commit]),staged=await gitEntries(m.repo,['ls-files','--stage','-z']);
    for(const rel of [...new Set([...m.candidate.files,...(reviewedFiles?[...reviewedFiles.keys()]:[])])]){workPath(rel);const b=base.get(rel),i=input.get(rel),c=candidate.get(rel),s=staged.get(rel);
     const attrs=names(await git(m.repo,['check-attr','-z','filter','working-tree-encoding','text','eol','--',rel]));for(let at=2;at<attrs.length;at+=3)if(!['unspecified','unset',''].includes(attrs[at]))fail('FILTER_UNSUPPORTED','受管文件有转换属性：'+rel);
     const disk=await fs.lstat(path.join(m.repo,rel)).catch(e=>{if(e.code==='ENOENT')return null;throw e;});if(b&&disk&&((disk.mode&0o111?'100755':'100644')!==b[0]))fail('USER_DIRTY','Worker文件权限有用户修改：'+rel);
@@ -287,47 +282,53 @@ export class ExecutionWorkspace {
     const approvedReconciliation=reconciliation&&reconciliation.candidateCommit===m.candidate.commit&&reconciliation.inputCommit===m.inputCommit&&reconciliation.targetHead===m.targetHead&&reviewedFiles?.has(rel);
     if(JSON.stringify(b)!==JSON.stringify(i)&&!approvedReconciliation)fail('INPUT_OVERLAP','Worker修改了含用户输入覆盖的文件，需用户核对：'+rel);
     if((s?.[0]??null)!==(b?.[0]??null)||(s?.[1]??null)!==(b?.[2]??null)||s&&s[2]!=='0')fail('USER_STAGED','Worker文件有用户暂存：'+rel);
-    const before=approvedReconciliation?await safeBytes(m.repo,rel):(b?await git(m.repo,['cat-file','blob',b[2]]):null),after=c?await git(m.repo,['cat-file','blob',c[2]]):null;
-    if(approvedReconciliation&&byteDigest(before)!==reconciliation.targetDigest)fail('USER_DIRTY','用户核对后的目标正文再次变化：'+rel);
-    if(byteDigest(await safeBytes(m.repo,rel))!==byteDigest(before))fail('USER_DIRTY','Worker文件有用户修改：'+rel);
+    const captured=await inspectFile(m.repo,rel),before=approvedReconciliation?(captured?.digest??null):await blobDigest(m.repo,b?.[2]),after=await blobDigest(m.repo,c?.[2]);
+    if(approvedReconciliation&&before!==reconciliation.targetDigest)fail('USER_DIRTY','用户核对后的目标正文再次变化：'+rel);
+    if((captured?.digest??null)!==before)fail('USER_DIRTY','Worker文件有用户修改：'+rel);
     if(c&&!['100644','100755'].includes(c[0])||b&&!['100644','100755'].includes(b[0]))fail('PATH_REJECTED','受管文件不是普通Git文件：'+rel);
     const reviewedEntry=reviewedFiles?.get(rel)||null;
-    files.push({rel,before:byteDigest(before),after:reviewedEntry?reviewedEntry.digest:byteDigest(after),beforeMode:b?.[0]||null,beforeOid:approvedReconciliation?await this.blob(m.repo,before):(b?.[2]||null),mode:reviewedEntry?(reviewedEntry.mode??(c?.[0]||b?.[0])):(c?.[0]||b?.[0]),oid:reviewedEntry?reviewedEntry.oid:c?.[2]||null});
+    const reconciledBlob=approvedReconciliation?await blobFile(m.repo,m.repo,rel):null;if(approvedReconciliation&&(reconciledBlob?.digest??null)!==before)fail('USER_DIRTY','用户核对后的目标正文再次变化：'+rel);
+    files.push({rel,before,after:reviewedEntry?reviewedEntry.digest:after,beforeMode:b?.[0]||null,beforeOid:approvedReconciliation?(reconciledBlob?.oid??null):(b?.[2]||null),mode:reviewedEntry?(reviewedEntry.mode??(c?.[0]||b?.[0])):(c?.[0]||b?.[0]),oid:reviewedEntry?reviewedEntry.oid:c?.[2]||null});
    }
-   const directory=path.join(this.store.root,'evidence','integration-'+work.id);await fs.mkdir(directory,{recursive:true});const beforeIndex=await read(m.index);await fs.writeFile(path.join(directory,'before.index'),beforeIndex);
+   const directory=path.join(this.store.root,'evidence','integration-'+work.id);await fs.mkdir(directory,{recursive:true});const beforeIndex=path.join(directory,'before.index');await fs.copyFile(m.index,beforeIndex);
    const index=path.join(directory,'tree.index'),env={GIT_INDEX_FILE:index};await git(m.repo,['read-tree',m.targetHead],env);
-   for(const f of files)await this.indexFile(m,index,f);const tree=await str(m.repo,['write-tree'],env);if(m.acceptancePreparation&&(m.acceptancePreparation.tree!==tree||m.acceptancePreparation.parent!==m.targetHead||m.acceptancePreparation.candidate!==m.candidate.commit))fail('HOOK_BASELINE_CHANGED','原钩子执行基线变化，已保留恢复现场');m.acceptancePreparation??={directory,tree,parent:m.targetHead,candidate:m.candidate.commit,status:'hooks-requested'};await this.save(m);const commit=files.length?await acceptanceCommit(m.repo,tree,m.targetHead,'Nozeli accepted Work '+work.id,directory,m.acceptancePreparation,async attempt=>{m.acceptancePreparation=attempt;await this.save(m);}):m.targetHead;
-   const afterIndex=path.join(directory,'after.index');await fs.writeFile(afterIndex,beforeIndex);for(const f of files)await this.indexFile(m,afterIndex,f);
-   intent={decision:'accept',status:'prepared',directory,commit,files,beforeIndexDigest:byteDigest(beforeIndex),afterIndexDigest:byteDigest(await read(afterIndex)),token:'nozeli:'+randomUUID()};m.finishIntent=intent;await this.save(m);
+   await updateIndexRows(m.repo,index,files);const tree=await str(m.repo,['write-tree'],env);if(m.acceptancePreparation&&(m.acceptancePreparation.tree!==tree||m.acceptancePreparation.parent!==m.targetHead||m.acceptancePreparation.candidate!==m.candidate.commit))fail('HOOK_BASELINE_CHANGED','原钩子执行基线变化，已保留恢复现场');m.acceptancePreparation??={directory,tree,parent:m.targetHead,candidate:m.candidate.commit,status:'hooks-requested'};await this.save(m);const commit=files.length?await acceptanceCommit(m.repo,tree,m.targetHead,'Nozeli accepted Work '+work.id,directory,m.acceptancePreparation,async attempt=>{m.acceptancePreparation=attempt;await this.save(m);}):m.targetHead;
+   const afterIndex=path.join(directory,'after.index');await fs.copyFile(beforeIndex,afterIndex);await updateIndexRows(m.repo,afterIndex,files);
+   intent={decision:'accept',status:'prepared',directory,commit,files,beforeIndexDigest:await indexDigest(beforeIndex),afterIndexDigest:await indexDigest(afterIndex),token:'nozeli:'+randomUUID()};m.finishIntent=intent;await this.save(m);
   }
   if(intent.status==='integrated')return;
-  await this.identity(m);const currentIndex=byteDigest(await read(m.index));if(![intent.beforeIndexDigest,intent.afterIndexDigest].includes(currentIndex))fail('INDEX_CHANGED','用户索引已变化，保留恢复意图');
+  await this.identity(m);const currentIndex=await indexDigest(m.index);if(![intent.beforeIndexDigest,intent.afterIndexDigest].includes(currentIndex))fail('INDEX_CHANGED','用户索引已变化，保留恢复意图');
   const format=await str(m.repo,['rev-parse','--show-ref-format']).catch(()=>'files');if(!['files','--show-ref-format'].includes(format))fail('REF_FORMAT','仅支持Git files引用后端');
   const refFile=path.join(m.commonDir,m.targetRef),refLock=refFile+'.lock',lock=m.index+'.lock',headLock=m.headFile+'.lock',owned=[];let published=false;
   try{
    await fs.mkdir(path.dirname(refFile),{recursive:true});for(const file of [refLock,lock,headLock]){const prior=await read(file);if(prior){const stat=await fs.lstat(file),saved=intent.locks?.[file];if(prior.toString()!==intent.token&&!(file===refLock&&prior.toString()===intent.commit+'\n'&&saved?.ino===stat.ino&&saved?.dev===stat.dev))fail('GIT_LOCKED','Git锁不属于本次整合：'+file);}else{const h=await fs.open(file,'wx',0o600);await h.writeFile(intent.token);await h.sync();const stat=await h.stat();intent.locks??={};intent.locks[file]={ino:stat.ino,dev:stat.dev};await h.close();}owned.push(file);}await this.save(m);
-   await this.identity(m);if(![intent.beforeIndexDigest,intent.afterIndexDigest].includes(byteDigest(await read(m.index))))fail('INDEX_CHANGED','加锁期间用户索引变化');
+   await this.identity(m);if(![intent.beforeIndexDigest,intent.afterIndexDigest].includes(await indexDigest(m.index)))fail('INDEX_CHANGED','加锁期间用户索引变化');
    const head=await str(m.repo,['rev-parse',m.targetRef]);if(head!==m.targetHead&&head!==intent.commit)fail('HEAD_DRIFT','目标分支变化');published=head===intent.commit;
-   for(const f of intent.files){const disk=await safeFile(m.repo,f.rel),digest=byteDigest(disk?.bytes??null);if(digest!==f.before&&digest!==f.after)fail('SOURCE_CHANGED','文件在恢复/整合时变化：'+f.rel);if(disk&&![f.beforeMode,f.mode].includes(disk.mode))fail('SOURCE_CHANGED','文件权限在整合时变化：'+f.rel);}
+   for(const f of intent.files){const disk=await inspectFile(m.repo,f.rel),digest=disk?.digest??null;if(digest!==f.before&&digest!==f.after)fail('SOURCE_CHANGED','文件在恢复/整合时变化：'+f.rel);if(disk&&![f.beforeMode,f.mode].includes(disk.mode))fail('SOURCE_CHANGED','文件权限在整合时变化：'+f.rel);}
    if(!published){intent.status='applying';await this.save(m);}
    for(const f of intent.files)await this.installFile(m,f,false);
-   if(byteDigest(await read(m.index))===intent.beforeIndexDigest){const temp=m.index+'.nozeli-'+randomUUID();await fs.copyFile(path.join(intent.directory,'after.index'),temp);await fs.rename(temp,m.index);}else if(byteDigest(await read(m.index))!==intent.afterIndexDigest)fail('INDEX_CHANGED','发布后索引变化；未覆盖');
+   if(await indexDigest(m.index)===intent.beforeIndexDigest){const temp=m.index+'.nozeli-'+randomUUID();await fs.copyFile(path.join(intent.directory,'after.index'),temp);await fs.rename(temp,m.index);}else if(await indexDigest(m.index)!==intent.afterIndexDigest)fail('INDEX_CHANGED','发布后索引变化；未覆盖');
    if(!published){intent.status='files-installed';await this.save(m);const h=await fs.open(refLock,'r+');await h.truncate(0);await h.writeFile(intent.commit+'\n');await h.sync();await h.close();await fs.rename(refLock,refFile);const directory=await fs.open(path.dirname(refFile),constants.O_RDONLY|constants.O_DIRECTORY);try{await directory.sync();}finally{await directory.close();}published=true;}
    intent.status='ref-published';await this.save(m);intent.status='integrated';await this.save(m);
   }catch(error){
    if(!published&&await str(m.repo,['rev-parse',m.targetRef]).catch(()=>null)===intent.commit)published=true;
    if(!published&&['applying','files-installed'].includes(intent.status)){
-    try{for(const f of [...intent.files].reverse())await this.installFile(m,f,true);const digest=byteDigest(await read(m.index));if(digest===intent.afterIndexDigest){const temp=m.index+'.rollback-'+randomUUID();await fs.copyFile(path.join(intent.directory,'before.index'),temp);await fs.rename(temp,m.index);}else if(digest!==intent.beforeIndexDigest)fail('INDEX_CHANGED','回滚遇到外部索引变化');intent.status='prepared';await this.save(m);}catch(rollback){intent.status='rollback-blocked';intent.error=rollback.message;await this.save(m);throw Object.assign(Error('整合失败且回滚被外部变化阻止：'+rollback.message),{code:'ROLLBACK_BLOCKED'});}
+    try{for(const f of [...intent.files].reverse())await this.installFile(m,f,true);const digest=await indexDigest(m.index);if(digest===intent.afterIndexDigest){const temp=m.index+'.rollback-'+randomUUID();await fs.copyFile(path.join(intent.directory,'before.index'),temp);await fs.rename(temp,m.index);}else if(digest!==intent.beforeIndexDigest)fail('INDEX_CHANGED','回滚遇到外部索引变化');intent.status='prepared';await this.save(m);}catch(rollback){intent.status='rollback-blocked';intent.error=rollback.message;await this.save(m);throw Object.assign(Error('整合失败且回滚被外部变化阻止：'+rollback.message),{code:'ROLLBACK_BLOCKED'});}
    }throw error;
   }finally{if(intent.status!=='rollback-blocked')for(const file of owned){const bytes=await read(file);if(bytes?.toString()===intent.token||file===refLock&&bytes?.toString()===intent.commit+'\n'&&(await fs.lstat(file)).ino===intent.locks?.[file]?.ino)await fs.unlink(file);}}
  }
  async installFile(m,f,rollback){
-  const oid=rollback?f.beforeOid:f.oid,mode=rollback?f.beforeMode:f.mode,expected=rollback?f.after:f.before,wanted=rollback?f.before:f.after,disk=await safeFile(m.repo,f.rel),digest=byteDigest(disk?.bytes??null);
+  const oid=rollback?f.beforeOid:f.oid,mode=rollback?f.beforeMode:f.mode,expected=rollback?f.after:f.before,wanted=rollback?f.before:f.after,disk=await inspectFile(m.repo,f.rel),digest=disk?.digest??null;
   if(digest===wanted&&(!disk||disk.mode===mode))return;if(digest!==expected&&digest!==wanted)fail('SOURCE_CHANGED','文件在替换前变化：'+f.rel);
-  const target=path.join(m.repo,f.rel);if(!oid){if(disk)await fs.unlink(target);return;}
-  const bytes=await git(m.repo,['cat-file','blob',oid]);await fs.mkdir(path.dirname(target),{recursive:true});const temp=target+'.nozeli-'+randomUUID();await fs.writeFile(temp,bytes,{flag:'wx',mode:parseInt(mode,8)&0o777});await fs.chmod(temp,parseInt(mode,8)&0o777);if(byteDigest(await safeBytes(m.repo,f.rel))!==digest){await fs.unlink(temp);fail('SOURCE_CHANGED','写入前文件变化：'+f.rel);}await fs.rename(temp,target);
+  const parent=await documentParent(m.repo,f.rel),target=parent.prefix+path.posix.basename(f.rel),temp=target+'.nozeli-'+randomUUID();
+  try{
+   if(!oid){if((await inspectFile(m.repo,f.rel))?.digest!==disk?.digest)fail('SOURCE_CHANGED','删除前文件变化：'+f.rel);if(disk)await fs.unlink(target);return;}
+   const handle=await fs.open(temp,'wx',parseInt(mode,8)&0o777);
+   try{await gitStream(m.repo,['cat-file','blob',oid],{output:new Writable({write(chunk,encoding,done){handle.writeFile(chunk).then(()=>done(),done);}})});await handle.chmod(parseInt(mode,8)&0o777);await handle.sync();}finally{await handle.close();}
+   const temporary=await inspectFile(m.repo,path.posix.join(path.posix.dirname(f.rel),path.posix.basename(temp)));if(temporary?.digest!==wanted)fail('SOURCE_CHANGED','Git对象写入校验失败：'+f.rel);
+   if((await inspectFile(m.repo,f.rel))?.digest!==disk?.digest)fail('SOURCE_CHANGED','写入前文件变化：'+f.rel);await fs.rename(temp,target);
+  }finally{await fs.rm(temp,{force:true});await parent.close();}
  }
- async indexFile(m,index,f){const env={GIT_INDEX_FILE:index};if(f.oid)await git(m.repo,['update-index','--add','--cacheinfo',f.mode,f.oid,f.rel],env);else await git(m.repo,['update-index','--force-remove','--',f.rel],env);}
  async removeOwned(m){
   const exists=await fs.lstat(m.directory).catch(e=>{if(e.code==='ENOENT')return null;throw e;});if(exists){await this.identity(m,{target:false});if(m.finishIntent.decision==='accept'){const current=await this.snapshot(m,m.directory,m.inputCommit,'Nozeli cleanup verification');if(current.tree!==m.candidate.tree)fail('UNPUBLISHED_CHANGES','接受后执行目录又变化，未删除候选');}await git(m.repo,['worktree','remove','--force',m.directory]);}
   const ref=await str(m.repo,['rev-parse','--verify',m.branchRef]).catch(()=>null);if(ref){const expected=m.candidate?.commit||m.inputCommit||m.baseCommit;if(ref!==expected)fail('WORKER_REF_CHANGED','分支不再属于受管候选，未删除');await git(m.repo,['update-ref','-d',m.branchRef,expected]);}

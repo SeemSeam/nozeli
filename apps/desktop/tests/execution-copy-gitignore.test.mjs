@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {ExecutionWorkspace} from '../src/agents/managed/execution-workspace.mjs';
 import {git,str} from '../src/agents/managed/git-service.mjs';
+import {withSafeFile} from '../src/agents/managed/file-stream.mjs';
 import {openTestWorkspace} from './project-storage.fixture.mjs';
 
 async function fixture(t,{plain=false}={}){
@@ -103,8 +104,16 @@ test('created repository resumes after init with populated index, not staged bas
 test('target ref lock failure never writes Worker bytes into original files',async t=>{
  const f=await fixture(t);await candidate(f);const refLock=path.join(f.project,'.git','refs','heads','main.lock');await fs.writeFile(refLock,'external lock');await assert.rejects(finish(f));assert.equal(await f.read('worker.txt'),'base\n');assert(await fs.stat(f.execution.directory(f.work.id)));await fs.unlink(refLock);await finish(f);assert.equal(await f.read('worker.txt'),'worker result\n');
 });
-test('snapshot hashes captured bytes rather than reopening mutable Worker pathname',async t=>{
- const f=await fixture(t);await f.execution.prepare(f.work.id);const dir=f.execution.directory(f.work.id);await fs.mkdir(path.join(dir,'nested'));await fs.writeFile(path.join(dir,'nested','out.txt'),'safe captured');const outside=path.join(f.root,'outside');await fs.mkdir(outside);await fs.writeFile(path.join(outside,'out.txt'),'HOST SECRET');const blob=f.execution.blob.bind(f.execution);let changed=false;f.execution.blob=async(cwd,bytes)=>{if(bytes.toString()==='safe captured'&&!changed){changed=true;await fs.rename(path.join(dir,'nested'),path.join(dir,'nested-held'));await fs.symlink(outside,path.join(dir,'nested'));}return blob(cwd,bytes);};await assert.rejects(f.execution.publish(f.work,{id:'race'}));assert.equal(await f.read('worker.txt'),'base\n');assert.equal((await f.execution.readManifest(f.work.id)).candidate,undefined);
+test('streamed capture rejects an ancestor swap without reading the replacement pathname',async t=>{
+ const f=await fixture(t);await f.execution.prepare(f.work.id);const dir=f.execution.directory(f.work.id),nested=path.join(dir,'nested'),outside=path.join(f.root,'outside');
+ await fs.mkdir(nested);await fs.writeFile(path.join(nested,'out.txt'),'safe captured');await fs.mkdir(outside);await fs.writeFile(path.join(outside,'out.txt'),'HOST SECRET');
+ let captured='';
+ await assert.rejects(withSafeFile(dir,'nested/out.txt',async file=>{
+  await fs.rename(nested,path.join(dir,'nested-held'));await fs.symlink(outside,nested);
+  for await(const chunk of file.stream())captured+=chunk.toString();
+ }),{code:'SOURCE_CHANGED'});
+ assert.equal(captured,'safe captured');assert.equal(await fs.readFile(path.join(outside,'out.txt'),'utf8'),'HOST SECRET');
+ await assert.rejects(f.execution.publish(f.work,{id:'race'}));assert.equal(await f.read('worker.txt'),'base\n');assert.equal((await f.execution.readManifest(f.work.id)).candidate,undefined);
 });
 test('completed hook commit is recovered without executing hooks again',async t=>{
  const f=await fixture(t);await candidate(f);await fs.writeFile(path.join(f.project,'.git','hooks','pre-commit'),'#!/bin/sh\nprintf x >> .git/hook-count\n',{mode:0o755});const save=f.execution.save.bind(f.execution);let failed=false;f.execution.save=async m=>{if(!failed&&m.acceptancePreparation?.status==='complete'){failed=true;throw Error('crash after hook commit');}await save(m);};await assert.rejects(finish(f),/crash after hook commit/);const m=await f.execution.readManifest(f.work.id),shadow=m.acceptancePreparation.shadow;assert.equal(await fs.readFile(path.join(shadow,'.git','hook-count'),'utf8'),'x');f.execution=new ExecutionWorkspace(f.store);await finish(f);assert.equal(await fs.readFile(path.join(shadow,'.git','hook-count'),'utf8'),'x');assert.equal(await f.read('worker.txt'),'worker result\n');

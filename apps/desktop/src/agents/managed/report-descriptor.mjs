@@ -40,7 +40,7 @@ export async function readStoredReport(store,receipt){
  if(!validReportDescriptor(report)||report.objectId!==receipt.objectId)throw Error('Invalid receipt report descriptor');
  const identity=JSON.stringify([receipt.id,receipt.workId,receipt.revision,report]);
  const current=()=>{const rows=store.state.receipts.filter(row=>row.objectId===report.objectId);if(rows.length!==1||JSON.stringify([rows[0].id,rows[0].workId,rows[0].revision,rows[0].report])!==identity)throw Error('Report receipt changed during read');};current();
- const bytes=await store.readObject(report.digest);
+ const bytes=await store.readObject(report.digest,{maxBytes:report.format==='html-static'?HTML_REPORT_OBJECT_MAX_BYTES:MAX_REPORT_BYTES});
  if(bytes.length!==report.byteLength||hash(bytes)!==report.digest)throw Error('Report bytes changed');
  current();return bytes;
 }

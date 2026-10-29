@@ -1808,8 +1808,8 @@ export class Controller extends EventEmitter {
   // 冻结证据侧对象字节：WorkChanges归档对象按内容寻址存入项目存储；读取
   // 失败/损坏显式置null，绝不以源文件字节顶替。
   async #changeSideBytes(side){
-    if(!side||side.type!=='blob'||!side.object?.digest||!Number.isSafeInteger(side.bytes))return null;
-    const bytes=await this.store.readObject(side.object.digest).catch(()=>null);
+    if(!side||side.type!=='blob'||!side.object?.digest||!Number.isSafeInteger(side.bytes)||side.bytes>2*1024*1024)return null;
+    const bytes=await this.store.readObject(side.object.digest,{maxBytes:2*1024*1024}).catch(()=>null);
     return Buffer.isBuffer(bytes)&&bytes.length===side.bytes?bytes:null;
   }
   // 完整冻结变更集（分页取全）。任何缺失/失败都返回null：宁可显式unknown，
@@ -1818,13 +1818,12 @@ export class Controller extends EventEmitter {
     if(!changeSetId)return null;
     try{
       const files=[];let offset=0;
-      for(let page=0;page<200;page++){
+      for(;;){
         const batch=await this.changes.list({changeSetId,offset,limit:200});
         files.push(...batch.files);
         if(batch.nextOffset===null)return files;
         offset=batch.nextOffset;
       }
-      return null;
     }catch{return null;}
   }
   async #frozenReviewSnapshot(work,receipt){
@@ -1837,7 +1836,8 @@ export class Controller extends EventEmitter {
         relPath:change.path,oldPath:change.oldPath??null,gitStatus:change.status,
         baselineDigest:change.before?.object?.digest??null,candidateDigest:change.after?.object?.digest??null,
         baselineMode:change.before?.mode??null,candidateMode:change.after?.mode??null,
-        baselineBytes:await this.#changeSideBytes(change.before),candidateBytes:await this.#changeSideBytes(change.after),
+        baselineSize:change.before?.bytes??0,candidateSize:change.after?.bytes??0,
+        baselineBytes:null,candidateBytes:null,
         addedCount:change.added??null,deletedCount:change.deleted??null,binary:Boolean(change.binary),
         availability:change.availability,reason:change.reason??null,
         baselineUnavailable:!change.before&&change.status!=='A',
@@ -1851,12 +1851,11 @@ export class Controller extends EventEmitter {
       // 即候选摘要（同一提交区间diff的完整性），不伪造缺失；无变更集证据时
       // 显式unknown（保持显式缺失，不猜）。
       const complete=changeFiles!==null;
-      const bytes=entry.objectDigest?await this.store.readObject(entry.objectDigest).catch(()=>null):null;
       files.push({
         relPath:entry.relPath,oldPath:null,gitStatus:null,
         baselineDigest:complete?entry.digest??null:null,candidateDigest:entry.digest??null,
-        baselineMode:null,candidateMode:null,
-        baselineBytes:complete&&Buffer.isBuffer(bytes)?bytes:null,candidateBytes:Buffer.isBuffer(bytes)?bytes:null,
+        baselineMode:null,candidateMode:null,baselineSize:complete?entry.size:0,candidateSize:entry.size,
+        baselineBytes:null,candidateBytes:null,
         addedCount:complete?0:null,deletedCount:complete?0:null,binary:false,
         availability:'available',reason:null,
         baselineUnavailable:!complete,added:false,source:'frozen',
@@ -1886,13 +1885,24 @@ export class Controller extends EventEmitter {
       const changeFiles=await this.#changeSetFiles(receipt.changeSetId);
       const changeMap=new Map((changeFiles||[]).map(f=>[f.path,f]));
       const workerActor={kind:'worker',name:work.name||'Worker',workId:work.id};
+      let previewBudget=16*1024*1024;
       for(const entry of current.snapshot.files){
         if(p.relPath&&entry.relPath!==p.relPath)continue;
         const frozen=current.snapshot.source==='frozen';
-        const [baselineBytes,candidateBytes]=frozen?[entry.baselineBytes??null,entry.candidateBytes??null]:await Promise.all([
-          entry.baselineDigest===null?null:this.execution.reviewBlob(current.m,current.snapshot.baselineCommit,entry.relPath),
-          entry.candidateDigest===null?null:this.execution.reviewBlob(current.m,current.snapshot.candidateCommit,entry.relPath)]);
-        const baseline=decodeInline(baselineBytes),candidate=decodeInline(candidateBytes);
+        const sideBytes=async(side)=>{
+          const size=entry[side+'Size']??0;
+          if(size>2*1024*1024||size>previewBudget)return null;
+          previewBudget-=size;
+          if(!frozen)return entry[side+'Digest']===null?null:this.execution.reviewBlob(current.m,side==='baseline'?current.snapshot.baselineCommit:current.snapshot.candidateCommit,entry.relPath);
+          const change=changeMap.get(entry.relPath),metadata=change?.[side==='baseline'?'before':'after'];
+          if(metadata)return this.#changeSideBytes(metadata);
+          const artifact=receipt.snapshot?.files?.find(file=>file.relPath===entry.relPath);
+          if(!artifact?.objectDigest||side==='baseline'&&entry.baselineUnavailable)return null;
+          return this.store.readObject(artifact.objectDigest,{maxBytes:2*1024*1024}).catch(()=>null);
+        };
+        const baselineBytes=await sideBytes('baseline'),candidateBytes=await sideBytes('candidate');
+        const baseline=baselineBytes===null&&entry.baselineDigest!==null?{text:null,omitted:'size'}:decodeInline(baselineBytes);
+        const candidate=candidateBytes===null&&entry.candidateDigest!==null?{text:null,omitted:'size'}:decodeInline(candidateBytes);
         let draft=null;
         if(acceptedFiles){
           const a=acceptedFiles.get(entry.relPath);
@@ -1928,9 +1938,9 @@ export class Controller extends EventEmitter {
         else if(entry.baselineDigest===null||entry.candidateDigest===null)status='unknown';
         else status=entry.baselineDigest===entry.candidateDigest?'unchanged':'modified';
         const textOmitted=candidate.omitted&&candidate.omitted!=='absent'?candidate.omitted:baseline.omitted&&baseline.omitted!=='absent'?baseline.omitted:null;
-        const side=(digest,bytes,omitted)=>{
+        const side=(digest,bytes,omitted,size)=>{
           if(digest===null)return {digest:null,bytes:null,available:false,reason:null};
-          if(!Buffer.isBuffer(bytes))return {digest,bytes:null,available:false,reason:'unavailable'};
+          if(!Buffer.isBuffer(bytes))return {digest,bytes:size??null,available:false,reason:omitted==='size'?'size':'unavailable'};
           if(omitted==='size')return {digest,bytes:bytes.length,available:true,reason:'size'};
           if(omitted==='binary')return {digest,bytes:bytes.length,available:false,reason:'binary'};
           return {digest,bytes:bytes.length,available:true,reason:null};
@@ -1949,8 +1959,8 @@ export class Controller extends EventEmitter {
           ...(entry.baselineUnavailable?{baselineUnavailable:true}:{}),
           ...(textOmitted?{textOmitted}:{}),
           material:{
-            baseline:side(entry.baselineDigest,baselineBytes,baseline.omitted),
-            candidate:side(entry.candidateDigest,candidateBytes,candidate.omitted),
+            baseline:side(entry.baselineDigest,baselineBytes,baseline.omitted,entry.baselineSize),
+            candidate:side(entry.candidateDigest,candidateBytes,candidate.omitted,entry.candidateSize),
           },
           draft,
           versions:[

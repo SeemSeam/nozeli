@@ -169,11 +169,21 @@ export class ProjectStorage {
  async listProject(id,collection){return this.projectRequest(id,'list',{collection});}
  async replaceProjectCollections(id,collections,{expectedCollections}={}){return this.projectRequest(id,'replace',{collections,expectedCollections});}
  async putObject(id,bytes){return (await this.objects(id)).put(bytes);}
- async readObject(id,digest){return (await this.objects(id)).get(digest);}
+ async readObject(id,digest,options){return (await this.objects(id)).get(digest,options);}
+ async putObjectStream(id,input,options){return (await this.objects(id)).putStream(input,options);}
+ async withObject(id,digest,fn){return (await this.objects(id)).withObject(digest,fn);}
+ async verifyObject(id,digest){return (await this.objects(id)).verify(digest);}
  async listRecovery(id){return this.db.request(path.join(await this.recoveryDirectory(id),'recovery.sqlite'),'list',{collection:'recovery'});}
  async getProjectRecord(id,collection,key){return this.projectRequest(id,'record',{collection,id:key});}
  async putRecoveryObject(id,bytes){return new MaterialStore(path.join(await this.recoveryDirectory(id),'objects','sha256'),{maxBytes:256*1024*1024}).put(bytes);}
- async readRecoveryObject(id,digest){return new MaterialStore(path.join(await this.recoveryDirectory(id),'objects','sha256'),{maxBytes:256*1024*1024}).get(digest);}
+ async readRecoveryObject(id,digest,options){return new MaterialStore(path.join(await this.recoveryDirectory(id),'objects','sha256'),{maxBytes:256*1024*1024}).get(digest,options);}
+ async recoveryObjects(id){return new MaterialStore(path.join(await this.recoveryDirectory(id),'objects','sha256'),{maxBytes:256*1024*1024});}
+ async putRecoveryObjectStream(id,input,options){return (await this.recoveryObjects(id)).putStream(input,options);}
+ async withRecoveryObject(id,digest,fn){return (await this.recoveryObjects(id)).withObject(digest,fn);}
+ async promoteRecoveryObject(id,digest){
+  try{return await this.withRecoveryObject(id,digest,file=>this.putObjectStream(id,file.stream(),{digest}));}
+  catch(error){if(error.code!=='MATERIAL_MISSING')throw error;return this.verifyObject(id,digest);}
+ }
  async closeLocalHandles(id){const p=await this.requireRegistered(id);await checkedClose(this.db,path.join(this.root,'instances',p.instanceId,'ui.sqlite'));}
  async closeProjectHandles(id){const p=await this.requireRegistered(id);await checkedClose(this.db,path.join(p.metadataRoot,'project.sqlite'));await this.closeLocalHandles(id);}
  async reconcileLifecycleStorage(id){const p=await this.requireRegistered(id),outcomes=[];for(const file of [this.catalog,path.join(this.root,'instances',p.instanceId,'ui.sqlite')])if(this.db.quarantined.has(file))outcomes.push({file,...await this.db.recover(file)});return outcomes;}
