@@ -43,6 +43,8 @@ node tools/test-suites.mjs smoke --list    # 任一套件的文件清单
   - 构建+冒烟任务：`npm ci && npm run build:pptist && npm run build:omp && npm run build:renderer && xvfb-run -a npm run test:smoke`。
   - 可选 live：`NOZELI_TEST_LIVE=1 npm run test:live`（仅在已 `build:omp` 且装有 bubblewrap 时）。
 
+GitHub Ubuntu临时runner限制无特权用户命名空间，因此workflow在已安装的Electron二进制上配置root拥有的`chrome-sandbox`（4755），然后仍以普通runner用户运行应用。不加`--no-sandbox`，也不改用户机器或发布包的权限；这是CI机器准备，不是让普通用户用root运行Nozeli。
+
 前置缺失时 runner 以退出码 2 给出 `PREREQUISITE MISSING` 说明并停止；任何套件都不会静默跳过文件或缩小集合，套件内列出的文件不存在同样视为错误；未知选项（如 `--unknown`）直接拒绝（退出码 2），已知选项仅 `--list`。
 
 `node --test` 套件默认以 `--test-concurrency=2` 运行（可用 `NOZELI_TEST_CONCURRENCY` 覆盖），避免 CI 上百文件同时 fork 与 SQLite 争用；并发数本身不影响集合内容。

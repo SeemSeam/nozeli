@@ -47,6 +47,12 @@ jobs:
       - name: Install and test
         working-directory: apps/desktop
         run: npm ci --no-audit --no-fund && npm test
+      - name: Configure Electron sandbox on this ephemeral runner
+        working-directory: apps/desktop
+        run: |
+          node -e 'require("electron")'
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
       - name: Build pinned application inputs
         working-directory: apps/desktop
         run: npm run build:pptist && npm run build:omp && npm run build:renderer

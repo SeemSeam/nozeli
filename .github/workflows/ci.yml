@@ -69,6 +69,11 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y xvfb libgtk-3-0 libnss3 libasound2t64 libgbm1
       - name: Install locked dependencies
         run: npm ci --no-audit --no-fund
+      - name: Configure Electron sandbox on this ephemeral runner
+        run: |
+          node -e 'require("electron")'
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
       - name: Build pinned Office engine
         run: npm run build:pptist
       - name: Build private OMP from pinned source
