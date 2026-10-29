@@ -236,7 +236,7 @@ try {
     for (const dir of await fs.readdir(path.join(runtimeRoot,'agents'))) await fs.rm(path.join(runtimeRoot,'agents',dir,'auth.json'),{force:true});
   }
   const audit = runtimeRoot ? await auditRuntime(runtimeRoot) : null;
-  if (audit && (audit.processes.length||audit.authCopies.length)) failure ??= Error('owned runtime cleanup failed');
+  if (audit && (audit.complete!==true||audit.processes.length||audit.authCopies.length)) failure ??= Error('owned runtime cleanup failed');
   const status = failure ? 'FAIL' : (skips.length ? 'PASS_WITH_SKIPS' : 'PASS');
   await fs.writeFile(path.join(out,'result.json'), JSON.stringify({status,failure:failure?.stack,checks,skips,errors,stages,toolEvents,audit,out},null,2)).catch(()=>{});
   await fs.writeFile(path.join(out,'electron.log'),log).catch(()=>{});

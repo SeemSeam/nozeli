@@ -1,3 +1,4 @@
+import {desktopLaunch,nativeDocumentNavigation} from './desktop-runtime.fixture.mjs';
 import { contentToolForPage } from './native-content-tools.fixture.mjs';
 import {prepareReading, waitForDesktopPage, waitForReadingProject} from './reading-setup.fixture.mjs';
 import assert from 'node:assert/strict';
@@ -11,12 +12,12 @@ const root=path.resolve(import.meta.dirname,'..');await mkdir(path.join(root,'.t
 const output=await mkdtemp(path.join(root,'.test-output','image-reader-'));const project=path.join(output,'中文 论文');await mkdir(path.join(project,'sections'),{recursive:true});
 await writeFile(path.join(project,'read.md'),'# Other document\n');
 const port=await new Promise(resolve=>{const server=net.createServer();server.listen(0,'127.0.0.1',()=>{const n=server.address().port;server.close(()=>resolve(n));});});
-const child=spawn(createRequire(import.meta.url)('electron'),['--ozone-platform=wayland',path.join(root,'src/main/main.cjs')],{cwd:root,env:{...process.env,WAYLAND_DISPLAY:'wayland-0',XDG_RUNTIME_DIR:'/run/user/1000',NOZELI_TEST_INSTANCE:'1',NOZELI_USER_DATA:path.join(output,'profile'),NOZELI_TEST_PICK:project,NOZELI_DEBUG_PORT:String(port),NOZELI_AGENT_FIXTURE:'1',NOZELI_AGENT_FIXTURE_REPLY:'1'},stdio:['ignore','pipe','pipe']});
+const child=spawn(desktopLaunch(root).command,desktopLaunch(root).args,{cwd:root,env:{...process.env,...(process.env.NOZELI_TEST_BUNDLE?{PATH:''}:{}),NOZELI_CONFIG_ROOT:output,WAYLAND_DISPLAY:'wayland-0',XDG_RUNTIME_DIR:'/run/user/1000',NOZELI_TEST_INSTANCE:'1',NOZELI_USER_DATA:path.join(output,'profile'),NOZELI_TEST_PICK:project,NOZELI_DEBUG_PORT:String(port),NOZELI_AGENT_FIXTURE:'1',NOZELI_AGENT_FIXTURE_REPLY:'1'},stdio:['ignore','pipe','pipe']});
 const exited=new Promise(resolve=>child.once('exit',(code,signal)=>resolve({code,signal})));
 let closed=false;let log='';child.stdout.on('data',b=>log+=b);child.stderr.on('data',b=>log+=b);let browser,page;const checks=[];
 try{
  const deadline=Date.now()+25000;for(;;){try{if((await fetch(`http://127.0.0.1:${port}/json/version`)).ok)break;}catch{}if(Date.now()>deadline||child.exitCode!==null)throw Error(log);await new Promise(r=>setTimeout(r,100));}
- browser=await puppeteer.connect({browserURL:`http://127.0.0.1:${port}`,defaultViewport:null});page=await waitForDesktopPage(browser);
+ browser=await puppeteer.connect({browserURL:`http://127.0.0.1:${port}`,defaultViewport:null});page=nativeDocumentNavigation(await waitForDesktopPage(browser),browser);
  const errors=[];page.on('pageerror',e=>{errors.push(e.message);console.error('PAGE ERROR',e.stack);});await page.waitForFunction(()=>window.__nozeliReady);
 
  const images=await page.evaluate(()=>{const c=document.createElement('canvas');c.width=1200;c.height=800;const x=c.getContext('2d');x.fillStyle='#ffffff';x.fillRect(0,0,1200,800);x.fillStyle='#ff0000';x.fillRect(0,0,600,800);x.fillStyle='#0000ff';x.fillRect(600,0,600,800);x.fillStyle='#ffffff';x.font='100px sans-serif';x.fillText('ALPHA',60,250);x.fillText('BETA',650,250);return ['png','jpeg','webp'].map(t=>({type:t,data:c.toDataURL('image/'+t).split(',')[1]}));});

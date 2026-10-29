@@ -29,6 +29,26 @@ async function fixture(t){const directory=await mkdtemp(path.join(os.tmpdir(),'w
 host.storage=new Proxy(storage,{get(target,key){const value=Reflect.get(target,key);return typeof value==='function'?((id,...args)=>value.call(target,id==='p'?projectId:id,...args)):value;}});
 const native=new WorkspaceNative({BrowserWindow:Window,WebContentsView:View,screen:{getDisplayMatching:()=>({workArea:{x:-1920,y:0,width:1920,height:1080}})},origin:'http://127.0.0.1:9000/',userDataDir:directory,host});const root=native.registerShell(new Window());root.projectId='p';root.ready=true;native.layouts.set('p',createLayout('p',{workspace:{minimized:true}}));return {native,root};}
 function receipt(native,r,ok=true){r.ready=true;r.wc.onSend=(channel,payload)=>{if(channel==='nozeli:flush')queueMicrotask(()=>native.acknowledge(r,{requestId:payload,ok}));};}
+test('closing a resident surface keeps its viewport until renderer destruction',async t=>{
+ const {native,root}=await fixture(t);
+ const layout=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'document',relPath:'closing.ts'}});
+ await native.reconcile(layout);const surface=[...native.surfaces.values()][0],bounds=surface.view.getBounds();let closes=0;
+ surface.wc.close=()=>{closes++;};
+ native.destroySurface(surface);native.destroySurface(surface);
+ assert.equal(closes,1);assert.equal(surface.view.visible,false);assert(root.win.children.includes(surface.view));assert.deepEqual(surface.view.getBounds(),bounds);
+ assert.equal(native.surfaces.has(surface.viewId),true);
+ assert.throws(()=>native.bootstrap(surface),/SURFACE_DESTROYED/);
+ assert.throws(()=>native.authorize({sender:surface.wc,senderFrame:surface.wc.mainFrame},'workspace.bootstrap'),/IPC_DENIED/);
+ surface.wc.emit('destroyed');assert.equal(root.win.children.includes(surface.view),false);
+});
+for(const failure of ['close','detach'])test('surface '+failure+' failure rejects and can be retried',async t=>{
+ const {native,root}=await fixture(t);await native.reconcile(reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'document',relPath:'failure.ts'}}));const s=[...native.surfaces.values()][0];
+ const close=s.wc.close.bind(s.wc),remove=root.win.contentView.removeChildView;
+ if(failure==='close')s.wc.close=()=>{throw Error('close failed');};else root.win.contentView.removeChildView=()=>{throw Error('detach failed');};
+ await assert.rejects(native.destroySurface(s),new RegExp(failure+' failed'));assert.equal(s.destroyCompletion,undefined);
+ s.wc.close=close;root.win.contentView.removeChildView=remove;if(failure==='detach')s.wc.isDestroyed=()=>true;
+ assert.equal(native.surfaces.has(s.viewId),true);await Promise.all([...native.surfaces.values()].map(record=>native.destroySurface(record)));assert.equal(root.win.children.includes(s.view),false);assert.equal(native.surfaces.has(s.viewId),false);
+});
 for(const failure of ['shell-save','surface-save','attachment','none'])test(`project binding ${failure} keeps recovery and native ownership consistent`,async t=>{
  const {native,root}=await fixture(t);
  const directory=await mkdtemp(path.join(os.tmpdir(),'project-binding-'));t.after(()=>rm(directory,{recursive:true,force:true}));

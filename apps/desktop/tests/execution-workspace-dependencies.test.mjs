@@ -182,6 +182,7 @@ test('refuses when the staging root is a symlink and never deletes or writes thr
  const outside=path.join(f.root,'outside-nozeli'),fake=path.join(outside,'deps-fake');
  await fs.mkdir(path.join(fake,'node_modules','payload'),{recursive:true});
  await fs.writeFile(path.join(fake,'staging.json'),JSON.stringify({workId:'work-deps'})+'\n');
+ if(process.platform==='darwin')await fs.rename(path.join(f.directory,'.nozeli'),path.join(f.root,'retained-recovery'));
  await fs.symlink(outside,path.join(f.directory,'.nozeli'),'dir');
  m=await f.execution.prepare(f.work.id);
  assert.equal(m.dependencies.entries[0].outcome,'unsafe-target-path');
@@ -197,7 +198,7 @@ test('discards the copy with an explicit reason when the source changes during p
  const heavy=path.join(f.project,'node_modules','heavy-pkg');
  for(let i=0;i<2000;i++){await fs.mkdir(path.join(heavy,'d'+i),{recursive:true});await fs.writeFile(path.join(heavy,'d'+i,'f.js'),'export default '+i+';\n');}
  let flipped=false;
- const flip=(async()=>{for(;;){if(await fs.stat(path.join(f.directory,'.nozeli')).then(()=>true,()=>false)){await fs.writeFile(path.join(f.project,'package-lock.json'),lockJson().replaceAll('probe-project','probe-project-flipped'));flipped=true;return;}await delay(2);}})();
+ const flip=(async()=>{for(;;){if(await fs.readdir(path.join(f.directory,'.nozeli')).then(names=>names.some(n=>n.startsWith('deps-')),()=>false)){await fs.writeFile(path.join(f.project,'package-lock.json'),lockJson().replaceAll('probe-project','probe-project-flipped'));flipped=true;return;}await delay(2);}})();
  const m=await f.execution.prepare(f.work.id);
  await flip;
  assert.ok(flipped);

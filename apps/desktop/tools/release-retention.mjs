@@ -22,7 +22,7 @@ export async function ownedRelease(root, release) {
   const marker = path.join(release, 'INSTALLATION.json');
   if (!(await fs.lstat(marker)).isFile() || (await fs.lstat(marker)).isSymbolicLink()) throw Error('Installation marker must be a regular file');
   const metadata = JSON.parse(await fs.readFile(marker, 'utf8'));
-  if (metadata.application !== 'Nozeli' || metadata.kind !== 'local-development-snapshot' || metadata.platform !== 'linux') throw Error('Not a tool-owned Nozeli Linux release');
+  if (metadata.application !== 'Nozeli' || metadata.kind !== 'local-development-snapshot' || !['linux','darwin'].includes(metadata.platform)) throw Error('Not a tool-owned Nozeli release');
   return {release, metadata, stat};
 }
 

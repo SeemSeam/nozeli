@@ -152,7 +152,7 @@ export class WorkspaceNative {
   authorize(event, op, payload = {}) {
     const r = this.senders.get(event.sender?.id), frame = event.senderFrame;
     const expected=r?.role==='demo-controls'?this.origin+'guided-demo-controls.html':r?.role==='demo-hint'?this.origin+'guided-demo-hint.html':this.origin;
-    if (!r || r.dead || !frame || frame.parent != null || frame !== event.sender.mainFrame || frame.url !== expected) throw fail('IPC_DENIED');
+    if (!r || r.dead || r.destroying || !frame || frame.parent != null || frame !== event.sender.mainFrame || frame.url !== expected) throw fail('IPC_DENIED');
     if (typeof op !== 'string') throw fail('UNKNOWN_OP');
     if(r.role==='demo-controls'){if(!this.demoControls.owns(r)||!this.demoControls.allowed(op))throw fail('IPC_DENIED');return r;}
     if(r.role==='demo-hint'){if(!this.demoControls.hintOwns(r)||!this.demoControls.hintAllowed(op))throw fail('IPC_DENIED');return r;}
@@ -205,6 +205,7 @@ export class WorkspaceNative {
     this.queues.set(projectId, next); return next.finally(() => { if (this.queues.get(projectId) === next) this.queues.delete(projectId); });
   }
   bootstrap(r) {
+    if(r.dead||r.destroying)throw fail('SURFACE_DESTROYED');
     if(r.role==='demo-controls')return this.demoControls.state();
     if(r.role==='demo-hint')return this.demoControls.hintState();
     const descriptor=this.layouts.get(r.projectId)?.views[r.viewId];
@@ -216,7 +217,7 @@ export class WorkspaceNative {
     const viewState=this.layouts.get(r.projectId)?.views[r.viewId]?.viewState;
     return { role: r.role, projectId: r.projectId, viewId: r.viewId, kind: r.kind, relPath: r.relPath, ...(r.documentSource !== undefined ? { documentSource: structuredClone(r.documentSource) } : {}), resourceId: descriptor?.resourceId ?? null, documentKey: r.role === 'surface' && r.kind === 'document' ? this.resourceOfRecord(r) : null, windowId: r.windowId, generation: r.generation, readOnly: !!r.readOnly, draftOnly:viewState?.draftOnly===true, viewState, lease: r.relPath ? this.leases.get(this.resource(r.projectId, r.relPath, r.documentSource)) : null, contentFailed: !!r.contentFailed, initError: r.initError ?? null };
   }
-  flush(records) { return Promise.all([...new Set(records)].filter(r => !r.dead&&!['demo-controls','demo-hint'].includes(r.role)).map(r => this.flushOne(r))).then(() => this.host.settled()); }
+  flush(records) { return Promise.all([...new Set(records)].filter(r => !r.dead&&!r.destroying&&!['demo-controls','demo-hint'].includes(r.role)).map(r => this.flushOne(r))).then(() => this.host.settled()); }
   async flushOne(record, channel = 'nozeli:flush', detail = {}) {
     // A terminally failed surface never becomes business-ready, yet it still owns
     // whatever it loaded: skip the readiness wait, never skip the retention flush.
@@ -452,7 +453,7 @@ export class WorkspaceNative {
         if (failures.length) throw Object.assign(fail('PROJECT_FLUSH_FAILED', '部分内容未能保存到本机，项目保持打开。'), {failures});
         await this.host.settled();
         await this.host.storage.putRecovery(projectId,key,{action:'close-project',projectId,operationId,input,phase:'captured',receipts:results.map((result,index)=>({owner:records[index]?.viewId??'shell',result:result.value}))});
-        for (const record of records) this.destroySurface(record);
+        await Promise.all(records.map(record=>this.destroySurface(record)));
         for (const [id, root] of this.windows) if (id !== 'main' && root.projectId === projectId) { root.closing = true; root.win.destroy(); this.windows.delete(id); }
         if (shell) { this.isolatedPreview?.closeScope(shell); shell.projectId = null; shell.wc.send('nozeli:workspace-control', {type:'project-closed', projectId, operationId}); }
         if (this.activeProjectId === projectId) this.activeProjectId = null;
@@ -537,7 +538,7 @@ export class WorkspaceNative {
       }
       return {layout,windowId:r.windowId};
       }catch(error){
-        for(const surface of [...this.surfaces.values()])if(!originalSurfaces.has(surface))this.destroySurface(surface);
+        await Promise.all([...this.surfaces.values()].filter(surface=>!originalSurfaces.has(surface)).map(surface=>this.destroySurface(surface)));
         for(const [id,root] of this.windows)if(!originalWindows.has(root)){root.closing=true;root.win.destroy();this.windows.delete(id);}
         throw error;
       }finally{
@@ -630,19 +631,29 @@ export class WorkspaceNative {
     // reuses the same renderer; only closed or aged-out views release their surface.
     const resident=new Set();
     for(const windowId of ['main',...layout.detached.map(w=>w.id)])for(const g of layoutGroups(layout,windowId)){if(g.activeViewId)resident.add(g.activeViewId);for(const id of (g.historyViewIds||[]).slice(0,3))resident.add(id);}
-    for (const [id, r] of this.surfaces) if (r.projectId === layout.projectId && !r.previewRecoveryFailed && (!layout.views[id]||!resident.has(id))) this.destroySurface(r);
+    await Promise.all([...this.surfaces].filter(([id,r])=>r.projectId===layout.projectId&&!r.previewRecoveryFailed&&(!layout.views[id]||!resident.has(id))).map(([,r])=>this.destroySurface(r)));
     for (const [id, r] of this.windows) if (id !== 'main' && r.projectId === layout.projectId && !layout.detached.some(w => w.id === id) && !this.isolatedPreview?.holdsWindow(r.win)) { r.closing = true; r.win.destroy(); this.windows.delete(id); }
   }
   destroySurface(r) {
     if(r.previewRecoveryFailed)throw fail('TRANSFER_RECOVERY_REQUIRED','报告正文回滚未确认；不能销毁原生承载。');
+    if(r.destroyCompletion)return r.destroyCompletion;
+    r.destroying=true;
     this.isolatedPreview?.closeScope(r);
-    r.view.setVisible(false); if (!r.win.isDestroyed()) r.win.contentView.removeChildView(r.view);
-    r.wc.close(); this.surfaces.delete(r.viewId);
+    r.view.setVisible(false);
+    // Detaching a live macOS WebContentsView collapses its viewport while
+    // pending editor content-widget callbacks may still be rendering.
+    let complete,reject;const completion=r.destroyCompletion=new Promise((resolve,fail)=>{complete=resolve;reject=fail;});
+    const failed=error=>{delete r.destroyCompletion;reject(error);};
+    const detach=()=>{try{if(!r.win.isDestroyed())r.win.contentView.removeChildView(r.view);
+    this.surfaces.delete(r.viewId);
     const key = this.resourceOfRecord(r);
     if (key) {
       if (this.leases.get(key)?.viewId === r.viewId) this.leases.delete(key);
       if(!this.projectRecords(r.projectId).some(surface=>surface.relPath===r.relPath&&sameDocumentSource(surface.documentSource,r.documentSource))){const retained=this.buffers.get(key);if(!retained?.dirty)this.buffers.delete(key);}
     }
+      complete();}catch(error){failed(error);}};
+    if(r.wc.isDestroyed())detach();else {r.wc.once('destroyed',detach);try{r.wc.close();}catch(error){r.wc.removeListener('destroyed',detach);failed(error);return completion;}}
+    return completion;
   }
   async command(r, payload) {
     if (r.role === 'surface' && payload.command?.type !== 'restoreViewState') throw fail('IPC_DENIED');
@@ -855,7 +866,7 @@ export class WorkspaceNative {
         r.closing = true; this.windows.delete(r.windowId); r.win.destroy();
       } else {
         // The navigation shell may close independently; detached project windows remain alive.
-        for (const s of [...this.surfaces.values()].filter(s=>s.windowId==='main')) this.destroySurface(s);
+        await Promise.all([...this.surfaces.values()].filter(s=>s.windowId==='main').map(s=>this.destroySurface(s)));
         r.closing = true; this.windows.delete('main'); r.win.destroy();
       }
     } finally { r.closePending = false; }
@@ -981,6 +992,7 @@ export class WorkspaceNative {
       }
       if(p.sequence!==undefined)r.boundsSequence=p.sequence;
       for (const surface of this.projectRecords(r.projectId, r.windowId)) {
+        if(surface.destroying)continue;
         const item = p.groups?.find(item => item.viewId === surface.viewId && groups.some(g => g.id === item.groupId && g.activeViewId === surface.viewId));
         const rect = item?.rect;
         const [width, height] = r.win.getContentSize();

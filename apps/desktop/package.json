@@ -15,7 +15,7 @@
     "build:pptist": "node tools/build-pptist.mjs",
     "build:omp": "node ../../integrations/omp/prepare-private-runtime.mjs",
     "start": "npm run build:renderer && node tools/start.mjs",
-    "rebuild:native": "electron-rebuild -f -w node-pty",
+    "rebuild:native": "electron-rebuild -f -w node-pty && node tools/build-platform-native.mjs",
     "postinstall": "npm run rebuild:native",
     "test:host": "node --test tests/host-files.test.mjs tests/host-review.test.mjs tests/material-store.test.mjs tests/omp-only-cutover.test.mjs tests/tag-stability.test.mjs tests/tag-input-presentation.test.mjs tests/tag-material-delivery.test.mjs tests/session-index.test.mjs tests/collab-controller-projection.test.mjs tests/session-archives.test.mjs tests/legacy-resident-freeze.test.mjs tests/work-changes.test.mjs tests/work-changes-large.test.mjs",
     "test:renderer": "node --test tests/renderer-provider-terminal.test.mjs tests/renderer-tag-draft.test.mjs tests/tag-markdown.test.mjs tests/omp-only-ipc.test.mjs tests/configuration-notice.test.mjs tests/session-store.test.mjs tests/tag-session-identity.test.mjs tests/frozen-change-reader.test.mjs tests/surface-identity-state.test.mjs tests/conversation-input-state.test.mjs",

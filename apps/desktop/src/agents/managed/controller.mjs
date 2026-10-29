@@ -16,6 +16,7 @@ import { prepareOmpPrivateHome } from './omp-provider-home.mjs';
 import { recoverOmpProvider, pinSessionFileById } from './omp-process-ownership.mjs';
 import { roles, rolePrompt, eventSkill, readRoleSkill, here } from './runtime.mjs';
 import { processStamp, recoverProvider } from './process-ownership.mjs';
+import {validStamp} from '../../platform/process-query.mjs';
 import {ContextReader,memoryContext} from './context-reader.mjs';
 import {prepareDelivery,contextInstructions,residentBaseInstructions,workerTaskAnchor} from './context-delivery.mjs';
 import {frontSource,frontReadLimits,readPage} from './frontdesk-read.mjs';
@@ -1733,7 +1734,7 @@ export class Controller extends EventEmitter {
     else if(w.revision!==0||w.execution)throw Error('Execution ownership evidence missing; resources retained');
     const record=this.store.state.providers?.[id];
     if(record){
-      if(!Number.isSafeInteger(record.pid)||record.pid<=0||typeof record.home!=='string'||record.home!==this.store.agentHome(id)||typeof record.stamp!=='string'||!/^[a-f0-9-]{36}:\d+$/.test(record.stamp))throw Error('Worker process ownership identity is unverified');
+      if(!Number.isSafeInteger(record.pid)||record.pid<=0||typeof record.home!=='string'||record.home!==this.store.agentHome(id)||!validStamp(record.stamp))throw Error('Worker process ownership identity is unverified');
       const stamp=await processStamp(record.pid);if(stamp&&stamp!==record.stamp)throw Error('Worker PID identity reused; resources retained');
     }
     if(!record&&!this.sessions.has(id)&&[...(this.processBudget?.slots??[])].some(slot=>slot.projectId===this.projectId&&slot.target===id))throw Error('Worker budget owner identity is unknown');

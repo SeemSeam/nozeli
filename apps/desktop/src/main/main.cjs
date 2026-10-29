@@ -28,7 +28,7 @@ const externalFiles=[];
 app.on('open-file',(event,file)=>{event.preventDefault();externalFiles.push(file);void revealNavigation().catch(error=>console.error('external open routing failed',error));});
 const ISOLATED_TEST_INSTANCE = process.env.NOZELI_TEST_INSTANCE === '1';
 if (HIDDEN) {
-  app.commandLine.appendSwitch('ozone-platform', process.env.NOZELI_OZONE || 'headless');
+  if(process.platform==='linux')app.commandLine.appendSwitch('ozone-platform', process.env.NOZELI_OZONE || 'headless');
   app.disableHardwareAcceleration();
 }
 if (DEBUG_PORT) app.commandLine.appendSwitch('remote-debugging-port', DEBUG_PORT);
@@ -210,7 +210,7 @@ async function createWindow(server) {
   const recovery=new WindowRecovery(win,{
     dialog,settle:async()=>{await workspaceNative.flush([...workspaceNative.senders.values()].filter(r=>r.role==='surface'));await host.settled();},busy:()=>agents?.busy()||managedAgents?.busy(),
     stop:async()=>{await managedAgents?.stop();await agents?.stopIdle?.();},
-    reveal:()=>revealWindow(win),onClose:()=>{allowClose=true;quitting=true;for(const s of [...workspaceNative.surfaces.values()])workspaceNative.destroySurface(s);for(const r of workspaceNative.windows.values()){r.closing=true;r.win.close();}},
+    reveal:()=>revealWindow(win),onClose:async()=>{await Promise.all([...workspaceNative.surfaces.values()].map(s=>workspaceNative.destroySurface(s)));allowClose=true;quitting=true;for(const r of workspaceNative.windows.values()){r.closing=true;r.win.close();}},
   });
   win.webContents.on('did-start-navigation',(_event,_url,_inPlace,isMainFrame)=>{if(isMainFrame)recovery.navigation();});
   win.webContents.on('render-process-gone',(_event,details)=>{console.error('renderer gone',details);recovery.rendererGone(details);});
@@ -320,7 +320,7 @@ async function main() {
   const {ProjectWatcher}=await import('./project-watcher.mjs');
   projectWatcher=new ProjectWatcher({onChange:event=>workspaceNative?.broadcast('nozeli:workspace-control',{type:'file-tree-changed',...event},event.projectId),onError:error=>workspaceNative?.broadcast('nozeli:workspace-control',{type:'file-tree-watch-error',...error},error.projectId)});
   const address=server.address();origin=`http://127.0.0.1:${address.port}/`;
-  workspaceNative=new WorkspaceNative({BrowserWindow:WorkspaceWindow,WebContentsView,screen,origin,preload:path.join(APP_ROOT,'src/preload/preload.cjs'),icon:path.join(APP_ROOT,'assets/nozeli.png'),userDataDir:app.getPath('userData'),host,hidden:HIDDEN,onClose:async r=>{const recovery=windowRecovery(r.win);if(recovery){recovery.requestClose();return;}await workspaceNative.flush([...workspaceNative.senders.values()]);if(agents?.busy()||managedAgents?.busy()){r.wc.send('nozeli:quit-confirm');return;}await managedAgents?.stop();await agents?.stopIdle?.();r.closing=true;for(const s of workspaceNative.projectRecords(r.projectId,r.windowId))workspaceNative.destroySurface(s);r.win.close();}});
+  workspaceNative=new WorkspaceNative({BrowserWindow:WorkspaceWindow,WebContentsView,screen,origin,preload:path.join(APP_ROOT,'src/preload/preload.cjs'),icon:path.join(APP_ROOT,'assets/nozeli.png'),userDataDir:app.getPath('userData'),host,hidden:HIDDEN,onClose:async r=>{const recovery=windowRecovery(r.win);if(recovery){recovery.requestClose();return;}await workspaceNative.flush([...workspaceNative.senders.values()]);if(agents?.busy()||managedAgents?.busy()){r.wc.send('nozeli:quit-confirm');return;}await managedAgents?.stop();await agents?.stopIdle?.();r.closing=true;await Promise.all(workspaceNative.projectRecords(r.projectId,r.windowId).map(s=>workspaceNative.destroySurface(s)));r.win.close();}});
   const {IsolatedPreviewManager}=await import('./isolated-preview.mjs');
   isolatedPreview=new IsolatedPreviewManager({WebContentsView,session,workspace:workspaceNative,host,managedAgents,dialog});
   try{const saved=JSON.parse(await fs.readFile(path.join(app.getPath('userData'),'appearance.json'),'utf8'));if(['light','dark'].includes(saved.theme))nativeTheme.themeSource=saved.theme;isolatedPreview.setAppearance({palette:saved.palette,mode:nativeTheme.shouldUseDarkColors?'dark':'light'});}catch{}
@@ -350,7 +350,7 @@ async function main() {
     }catch(error){await managedAgents.reportConnectionError(projectId,error);throw error;}
   };
   workspaceNative.setupWindow=r=>{
-    const recovery=new WindowRecovery(r.win,{dialog,settle:async()=>{await workspaceNative.flush([...workspaceNative.surfaces.values()]);await host.settled();},busy:()=>agents?.busy()||managedAgents?.busy(),stop:async()=>{await managedAgents?.stop();await agents?.stopIdle?.();},reveal:()=>revealWindow(r.win),onClose:()=>{allowClose=true;quitting=true;for(const s of [...workspaceNative.surfaces.values()])workspaceNative.destroySurface(s);for(const w of workspaceNative.windows.values()){w.closing=true;w.win.close();}}});
+    const recovery=new WindowRecovery(r.win,{dialog,settle:async()=>{await workspaceNative.flush([...workspaceNative.surfaces.values()]);await host.settled();},busy:()=>agents?.busy()||managedAgents?.busy(),stop:async()=>{await managedAgents?.stop();await agents?.stopIdle?.();},reveal:()=>revealWindow(r.win),onClose:async()=>{await Promise.all([...workspaceNative.surfaces.values()].map(s=>workspaceNative.destroySurface(s)));allowClose=true;quitting=true;for(const w of workspaceNative.windows.values()){w.closing=true;w.win.close();}}});
     r.wc.on('did-start-navigation',(_e,_url,_inPlace,isMain)=>{if(isMain)recovery.navigation();});
     r.wc.on('did-finish-load',()=>recovery.loaded());r.wc.on('render-process-gone',(_e,details)=>recovery.rendererGone(details));r.win.on('closed',()=>recovery.destroyed());
   };
@@ -573,9 +573,9 @@ async function main() {
             await workspaceNative.flush([...workspaceNative.senders.values()]);
             await managedAgents?.stop();
             await agents.cancelAllAndStop();
+            await Promise.all([...workspaceNative.surfaces.values()].map(s=>workspaceNative.destroySurface(s)));
             allowClose = true;
             quitting = true;
-            for(const s of [...workspaceNative.surfaces.values()])workspaceNative.destroySurface(s);
             for(const r of workspaceNative.windows.values()){r.closing=true;r.win.close();}
             return { ok: true, value: { closing: true } };
           } catch (error) {

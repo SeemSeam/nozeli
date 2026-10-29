@@ -52,6 +52,6 @@ if(isChild){
   try{await c?.stop();}catch(e){failure??=e;}
   // On an early parent failure, recover only provider records in this new owned lab.
   try{const {storage,projectId}=await testStorageOptions(options),saved=await readManagedState(storage,projectId);for(const record of Object.values(saved.providers||{}))await recoverProvider(record,runtime);for(const dir of await fs.readdir(path.join(runtime,'agents')))await fs.rm(path.join(runtime,'agents',dir,'auth.json'),{force:true});}catch(e){failure??=e;}
-  const audit=await auditRuntime(runtime);if(audit.processes.length||audit.authCopies.length)failure??=Error('cleanup failed');const result={status:failure?'FAIL':'PASS',root,stage,checks,error:failure?.message,audit,cli:execFileSync('codex',['--version'],{encoding:'utf8'}).trim(),node:process.version,platform:os.platform(),scope:'real Backend SIGKILL/two native worker turns; no GUI'};await write('result',result);console.log(JSON.stringify(result));if(failure)process.exitCode=1;
+  const audit=await auditRuntime(runtime);if(audit.complete!==true||audit.processes.length||audit.authCopies.length)failure??=Error('cleanup failed');const result={status:failure?'FAIL':'PASS',root,stage,checks,error:failure?.message,audit,cli:execFileSync('codex',['--version'],{encoding:'utf8'}).trim(),node:process.version,platform:os.platform(),scope:'real Backend SIGKILL/two native worker turns; no GUI'};await write('result',result);console.log(JSON.stringify(result));if(failure)process.exitCode=1;
  }
 }

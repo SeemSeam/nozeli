@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
-import {processStamp} from '../agents/managed/process-ownership.mjs';
+import {linuxProcessStamp as processStamp} from '../platform/process-query.mjs';
 const fail=(code,message)=>Object.assign(Error(message),{code});
 const commandLine=async pid=>{const args=(await fs.readFile(`/proc/${pid}/cmdline`)).toString().split('\0');if(args.at(-1)==='')args.pop();return args;};
 const userManager=args=>args.length===2&&['/usr/lib/systemd/systemd','/lib/systemd/systemd'].includes(args[0])&&args[1]==='--user';
@@ -23,6 +23,9 @@ async function fixedDesktopService(pid,args,uid){
 // not a cross-user lease and never authorizes a recovery after an unknown scan.
 export async function assertRecoverySourceStopped(root){
  if(process.platform!=='linux')throw fail('RECOVERY_OWNER_UNVERIFIED','此平台尚不能核验其他实例；特殊项目恢复不可用，原状态已保留。');
+ return assertLinuxRecoverySourceStopped(root);
+}
+export async function assertLinuxRecoverySourceStopped(root){
  const ownExe=await fs.readlink('/proc/self/exe');
  for(const entry of await fs.readdir('/proc')){
   if(!/^\d+$/.test(entry)||Number(entry)===process.pid)continue;

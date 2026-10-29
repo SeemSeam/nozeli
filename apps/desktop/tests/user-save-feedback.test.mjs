@@ -33,7 +33,7 @@ async function rejectSave(f, text) {
 
 test('directory permission failure retains original and candidate; retry saves after permissions recover', async t => {
   // Real POSIX directory-denial coverage, not a Windows ACL or privileged-user claim.
-  assert.equal(process.platform, 'linux', 'This real chmod scenario requires Linux; unsupported platforms are not a passing skip.');
+  assert.ok(['linux','darwin'].includes(process.platform), 'This real chmod scenario requires a tested POSIX platform; unsupported platforms are not a passing skip.');
   assert.notEqual(process.getuid(), 0, 'This real chmod scenario requires a non-root user.');
   const f = await setup(t);
   await fs.chmod(f.project, 0o555);

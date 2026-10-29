@@ -26,6 +26,7 @@ export function dependencyIncluded(lock, relative) {
 }
 
 export async function validateRelease(root, release) {
+  if(process.platform==='darwin'){await ownedRelease(root,release);await auditBundledLinks(release);return (await import('./macos-bundle.mjs')).validateMacApplication(path.join(release,'Nozeli.app'));}
   const {metadata} = await ownedRelease(root, release);
   if (metadata.arch !== process.arch) throw Error('Release architecture does not match this machine');
   await fs.access(path.join(release, 'nozeli'), fs.constants.X_OK);
@@ -44,6 +45,7 @@ export async function validateRelease(root, release) {
 }
 
 export async function packageRelease({root, release, source}) {
+  if(process.platform==='darwin')return (await import('./macos-bundle.mjs')).assembleMacRelease({release,source,dependencyIncluded,auditBundledLinks});
   const manifest = JSON.parse(await fs.readFile(path.join(source, 'package.json'), 'utf8'));
   const lock = JSON.parse(await fs.readFile(path.join(source, 'package-lock.json'), 'utf8'));
   const require = createRequire(path.join(source, 'package.json'));

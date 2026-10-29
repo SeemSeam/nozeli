@@ -9,7 +9,7 @@ const root = path.resolve(import.meta.dirname, '..');
 const ozone = process.env.NOZELI_OZONE
   || (process.env.WAYLAND_DISPLAY ? 'wayland' : process.env.DISPLAY ? 'x11' : '');
 const args = [];
-if (ozone) args.push('--ozone-platform=' + ozone);
+if (process.platform === 'linux' && ozone) args.push('--ozone-platform=' + ozone);
 if (process.env.NOZELI_HIDDEN === '1') {
   args.push('--disable-gpu', '--disable-gpu-compositing');
 }

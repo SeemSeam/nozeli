@@ -57,9 +57,10 @@ export async function ensureGit() {
 }
 
 /** Streaming transport: pipelines enforce backpressure, and all failures reap Git. */
-export async function runGitStream(cwd,args,{env=process.env,input,output,onStdout,signal,timeout=0,maxStderr=256*1024}={}){
+export async function runGitStream(cwd,args,{env=process.env,input,output,onStdout,inputFds=[],signal,timeout=0,maxStderr=256*1024}={}){
+ if(inputFds.length>16||inputFds.some(fd=>!Number.isInteger(fd)||fd<0))throw Error('Invalid inherited Git descriptors');
  await ensureGit();const {dugite,command}=await provisioning;
- const child=spawn(command,args,{cwd,env:environment(dugite,env).env,stdio:['pipe','pipe','pipe'],windowsHide:true,shell:false});
+ const child=spawn(command,args,{cwd,env:environment(dugite,env).env,stdio:['pipe','pipe','pipe',...inputFds],windowsHide:true,shell:false});
  let stderr=Buffer.alloc(0),timer;
  child.stderr.on('data',chunk=>{if(stderr.length<maxStderr)stderr=Buffer.concat([stderr,chunk.subarray(0,maxStderr-stderr.length)]);});
  const exited=new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',(code,exitSignal)=>{if(code===0)resolve();else reject(Object.assign(new Error('Git '+(args[0]||'')+' failed: '+stderr.toString()),{code,signal:exitSignal,stderr}));});});

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- 新增 macOS arm64 目标：固定 OMP 原生输入，构建目录/进程 N-API 桥，保留文件身份、并发冲突与进程归属核验。
+- 新增 `.app` / dmg 装配、ad-hoc 签名、包内运行时校验、Terminal.app 接入及 macOS CI；本地验收范围为 macOS 26.4 arm64，不扩展已发布 Linux tag 的平台声明。
+- 修复 PDF 备注提交时切页导致的归属与草稿问题，以及隐藏文档布局、原生窗口关闭失败后的重试问题。
+- 补齐最终包六类文件、系统打开、本地脚本协作和指定候选 A→B→A 数据回退验证。显式隔离、提权、特殊项目恢复、正式签名/公证及公开分发资格仍不作支持承诺。
+
 ## 0.1.0-alpha.2
 
 - Add explicit deterministic unit/integration test suites and a credential-free real Electron smoke entrypoint, with Linux CI and clean pinned builds.

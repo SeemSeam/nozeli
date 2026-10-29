@@ -20,7 +20,7 @@ test('unknown token rejected and timed out launcher releases ownership/ticket',a
  await assert.rejects(bridge.open({key:'x',terminal:{threadId:'t'},cwd:root}),/未完成附着/);assert(rejected);assert(!bridge.owns('x'));assert.deepEqual(await fs.readdir(root),[]);
 });
 test('terminal adapter keeps helper arguments literal and other platforms explicit',async()=>{
- assert.deepEqual(terminalArguments({name:'x-terminal-emulator',resolved:'konsole'},'/path with spaces/nozeli',['--ticket','/a/$(literal).json'],'/project'),['--separate','--workdir','/project','-e','/path with spaces/nozeli','--ticket','/a/$(literal).json']);await assert.rejects(defaultTerminal({platform:'darwin'}),/尚未验收/);
+ assert.deepEqual(terminalArguments({name:'x-terminal-emulator',resolved:'konsole'},'/path with spaces/nozeli',['--ticket','/a/$(literal).json'],'/project'),['--separate','--workdir','/project','-e','/path with spaces/nozeli','--ticket','/a/$(literal).json']);assert.equal((await defaultTerminal({platform:'darwin'})).name,'Terminal.app');assert.match(terminalArguments({name:'Terminal.app'},'/path with spaces/nozeli',['--ticket',"/a/quote'$(literal).json"],'/中文 project').at(-1),/env -u ELECTRON_RUN_AS_NODE/);
 });
 test('launcher and ticket failures release resources; host stop rejects new attachments',async t=>{
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-sys-failure-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));const states=[];

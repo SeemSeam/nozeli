@@ -4,7 +4,7 @@
 
 ## 从干净输入构建
 
-开发构建环境要求 Linux x64、Node.js 22+、Git、GNU tar，以及 **Bun 1.3.14**。需要能访问 GitHub、npm registry 和 Bun 锁文件中的依赖源；不需要 npm 登录或模型凭据。入口先校验 Bun 版本，不自动更换工具链。
+开发构建环境要求 Linux x64 或 macOS arm64、Node.js 22+、Git、tar，以及 **Bun 1.3.14**。需要能访问 GitHub、npm registry 和 Bun 锁文件中的依赖源；不需要 npm 登录或模型凭据。入口先校验 Bun 版本与目标，不自动更换工具链。
 
 在仓库根目录执行：
 
@@ -21,11 +21,11 @@ node integrations/omp/prepare-private-runtime.mjs /absolute/disposable-build-dir
 
 每次调用会在默认 `.build/omp/` 或指定目录中创建新的 `build-*` 子目录，克隆 `https://github.com/can1357/oh-my-pi`，detached checkout 到 `c2cb79e4c227aa4b22c4ccb933ff72fd88bceba4`（v18.11.0），不复用已打补丁的 checkout，也不覆盖已有工作目录。
 
-随后直接下载官方 npm 包 `@oh-my-pi/pi-natives-linux-x64@18.11.0`，只读取两个指定 `.node` 成员，逐一校验 SHA-256 后写入 checkout 的 `packages/natives/native/`；不会执行该 npm 包的安装脚本。准备完成后调用 `build-private-runtime.mjs`，依次检查 commit、源码清洁性、Bun、pristine 源码和三个补丁的哈希，运行 `bun install --frozen-lockfile`，再次检查 native addons，按顺序应用补丁并运行上游 binary 构建脚本。
+随后按 `private-runtime.lock.json` schema 2 的 `targets` 选择 `@oh-my-pi/pi-natives-linux-x64@18.11.0` 或 `@oh-my-pi/pi-natives-darwin-arm64@18.11.0`，只读取锁定的 `.node` 成员，逐一校验 SHA-256 后写入 checkout 的 `packages/natives/native/`；不会执行该 npm 包的安装脚本。两个构建入口都拒绝未支持目标或摘要不匹配。准备完成后依次检查 commit、源码清洁性、Bun、pristine 源码和三个补丁的哈希，运行 `bun install --frozen-lockfile`，再次检查 native addons，按顺序应用补丁并运行上游 binary 构建脚本。
 
 输出：
 
-- `apps/desktop/runtime/omp/omp`
+- `apps/desktop/runtime/omp/<platform>-<arch>/omp`（`linux-x64` 或 `darwin-arm64`）
 - 同目录的 `LICENSE`、`THIRD-PARTY-NOTICES.txt`、`BUN-LICENSE.txt`
 - 同目录的 `runtime.json`，记录本次实际输出 SHA-256、平台、能力、输入锁和实际构建配方 SHA-256；不记录用户绝对路径。
 
@@ -54,9 +54,10 @@ npm --prefix apps/desktop run test:collab
 # 实际 SDK 缓冲事件→AES 队列及编译后 CLI 大工具参数流（localhost 脚本响应，不调用付费模型）：
 (cd "$UPSTREAM_CLONE" && bun test packages/coding-agent/test/collab/relay-client-backpressure.test.ts)
 node --test apps/desktop/tests/omp-collab-native-tools-live.mjs
-node integrations/omp/probes/native-managed-smoke.mjs "$PWD/apps/desktop/runtime/omp/omp"
+export OMP_RUNTIME="$PWD/apps/desktop/runtime/omp/$(node -p 'process.platform+"-"+process.arch')/omp"
+node integrations/omp/probes/native-managed-smoke.mjs "$OMP_RUNTIME"
 # 环境具备 bubblewrap Worker 前提时：
-node integrations/omp/probes/native-managed-smoke.mjs "$PWD/apps/desktop/runtime/omp/omp" --worker
+node integrations/omp/probes/native-managed-smoke.mjs "$OMP_RUNTIME" --worker
 ```
 
 `tests/` 包含确定性准入/重放测试、真实 AgentSession busy-race 和真实 CollabHost + relay + mock Session 集成夹具；后两类明确要求 `UPSTREAM_CLONE`，没有旧机器路径默认值。mock fixture 的模型与认证均为临时内存对象，不读取实际凭据。
@@ -64,7 +65,7 @@ node integrations/omp/probes/native-managed-smoke.mjs "$PWD/apps/desktop/runtime
 额外的底层协议探针接受本次构建的 `runtime.json` 和源码 checkout，不再接受历史二进制 hash 白名单：
 
 ```bash
-bun integrations/omp/probes/run-smoke.mjs "$PWD/apps/desktop/runtime/omp/omp" "$UPSTREAM_CLONE" "$PWD/.build/omp/protocol-smoke"
+bun integrations/omp/probes/run-smoke.mjs "$OMP_RUNTIME" "$UPSTREAM_CLONE" "$PWD/.build/omp/protocol-smoke"
 ```
 
 该探针校验当前 manifest 的二进制 hash、输入锁与构建配方 hash，并验证 guest/adjudicator/relay 输入；不发起模型请求。`native-managed-smoke.mjs` 只证明原生身份、draft/idle 与进程退出，不代表完整模型旅程验收。

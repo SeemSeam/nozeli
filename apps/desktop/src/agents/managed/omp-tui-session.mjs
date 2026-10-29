@@ -14,10 +14,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { prepareOmpPrivateHome, syncOmpSelectedProvider } from './omp-provider-home.mjs';
 import { scrubProviderEnv } from './omp-credentials.mjs';
 import { pinSessionFileById, ompGroupRecord, reapOwnedOmpGroup } from './omp-process-ownership.mjs';
+import {captureDirectChild} from '../../platform/owned-processes.mjs';
 import { deployOmpTerminalBridge, connectOmpTerminalBridge, readOmpTerminalToolHistory } from './omp-terminal-bridge.mjs';
 import { createTerminalScreen } from './terminal-screen.mjs';
 import { createTerminalInputObserver } from '../../domain/terminal-input.mjs';
-import { optionalIsolatedLaunch } from './process-isolation.mjs';
+import { isolatedLaunch } from './process-isolation.mjs';
 import { resolveBundledOmpRuntime } from './omp-runtime.mjs';
 import { createRequire } from 'node:module';
 import { imageSize } from 'image-size';
@@ -144,6 +145,7 @@ export class OmpTuiSession extends EventEmitter {
   async start(resumeId) {
     if (this.phase !== 'constructed') throw ompError('OMP_START_STATE', `start from phase ${this.phase}`);
     if (resumeId != null && typeof resumeId !== 'string') throw ompError('OMP_RESUME_INVALID', 'resumeId must be the pinned omp session id');
+    if (this.isolation && process.platform !== 'linux') throw ompError('ISOLATION_UNAVAILABLE', '此平台的显式进程隔离尚不可用；该请求未启动。');
     this.phase = 'connecting';
     try {
       if (!this.command) this.command = (await resolveBundledOmpRuntime()).command;
@@ -194,13 +196,14 @@ export class OmpTuiSession extends EventEmitter {
         authEnv = { OMP_AUTH_BROKER_URL: grant.url, OMP_AUTH_BROKER_TOKEN: grant.token, OMP_AUTH_BROKER_SNAPSHOT_TTL_MS: '0' };
       }
       let launch = { command: this.command, args: argv, env: {} };
-      if (this.isolation) ({ launch } = await optionalIsolatedLaunch({ command: this.command, args: argv, home: this.home, cwd: this.cwd, readable: [...(this.isolation.readable ?? []), this.collab.root], readOnly: this.isolation.readOnly ?? [], writable: [...(this.isolation.writable ?? []), path.dirname(deployed.socketPath)] }));
+      if (this.isolation) launch = await isolatedLaunch({ command: this.command, args: argv, home: this.home, cwd: this.cwd, readable: [...(this.isolation.readable ?? []), this.collab.root], readOnly: this.isolation.readOnly ?? [], writable: [...(this.isolation.writable ?? []), path.dirname(deployed.socketPath)] });
       const spawnEnv = { ...scrubbedEnv, ...env, ...launch.env, ...authEnv };
       delete spawnEnv.OMP_PROFILE;
       const pty = this.tuiSpawn ?? defaultTuiSpawn();
       this.pty = await pty.spawn(launch.args, { env: spawnEnv, cwd: this.cwd, cols: this.cols, rows: this.rows, command: launch.command });
       this.pid = this.pty.pid;
       this.groupRecord = await ompGroupRecord(this.pid, this.home);
+      if(process.platform==='darwin'&&!this.tuiSpawn)this.directChild=await captureDirectChild(this.groupRecord,this.pty.exited);
       // exit 映射预建（带 catch）：prompt settle 竞速消费，无消费者也不 unhandled
       this.lostPromise = this.pty.exited.then(exit => {
         this.protocolEnded = true; this.closed = true; this.phase = 'closed'; this.busy = false;
@@ -802,19 +805,13 @@ export class OmpTuiSession extends EventEmitter {
       layers.L1_shutdown = { at: nowIso() };
       await this.bridge?.shutdown().catch(e => { layers.L1_shutdown.error = String(e.message); });
       let exit = await Promise.race([this.exitPromise ?? Promise.resolve(null), new Promise(r => setTimeout(() => r(null), 8000))]);
-      if (!exit && this.groupRecord?.pid) {
-        layers.L2_sigterm = { at: nowIso() };
-        try { process.kill(-this.groupRecord.pid, 'SIGTERM'); } catch (error) { layers.L2_sigterm.error = String(error.message); }
-        exit = await Promise.race([this.exitPromise ?? Promise.resolve(null), new Promise(r => setTimeout(() => r(null), 4000))]);
-      }
-      if (!exit && this.groupRecord?.pid) {
-        layers.L3_sigkill = { at: nowIso() };
-        try { process.kill(-this.groupRecord.pid, 'SIGKILL'); } catch (error) { layers.L3_sigkill.error = String(error.message); }
-        exit = await Promise.race([this.exitPromise ?? Promise.resolve(null), new Promise(r => setTimeout(() => r(null), 3000))]);
-      }
-      layers.L4_childClose = { exit };
       let reaped = { descendantsReaped: 0, verified: false, platform: process.platform };
-      try { reaped = await reapOwnedOmpGroup(this.groupRecord); } catch (error) { reaped = { descendantsReaped: 0, verified: false, error: String(error.message) }; }
+      // Every escalation goes through identity and ownership verification. A
+      // negative PID can target a reused group before a later audit sees it.
+      try { reaped = await reapOwnedOmpGroup(this.groupRecord,{directChild:this.directChild}); }
+      catch (error) { reaped = { descendantsReaped: 0, verified: false, error: String(error.message) }; }
+      if (!exit && reaped.verified) exit = await Promise.race([this.exitPromise ?? Promise.resolve(null), new Promise(r => setTimeout(() => r(null), 3000))]);
+      layers.L4_childClose = { exit };
       layers.L5_descendants = reaped;
       this.closed = true; this.phase = 'closed'; this.busy = false;
       this.#failAllWaiters(ompError('OMP_TRANSPORT_CLOSED', 'session stopped'));
@@ -841,14 +838,18 @@ export class OmpTuiSession extends EventEmitter {
 
   async #teardown(force = false) {
     if (this.#tornDown) return; this.#tornDown = true;
-    if (this.pty && !this.protocolEnded) { try { this.pty.kill(); } catch {} }
+    if (this.pty && !this.protocolEnded) {
+      if(!this.groupRecord)throw ompError('OMP_EXIT_UNCONFIRMED','process identity was not acquired; runtime resources retained');
+      const reaped=await reapOwnedOmpGroup(this.groupRecord,{directChild:this.directChild});
+      if(!reaped.verified)throw ompError('OMP_EXIT_UNCONFIRMED','process ownership could not be verified; runtime resources retained');
+    }
     await Promise.race([this.exitPromise?.catch(() => {}), new Promise(r => setTimeout(r, 3000))]);
     try { await this.bridge?.close(); }
     finally {
       try { await this.collab?.close(); }
       finally {
         try { await this.screen?.dispose(); }
-        finally { if (this.groupRecord) await reapOwnedOmpGroup(this.groupRecord); }
+        finally { if (this.groupRecord) await reapOwnedOmpGroup(this.groupRecord,{directChild:this.directChild}); }
       }
     }
   }

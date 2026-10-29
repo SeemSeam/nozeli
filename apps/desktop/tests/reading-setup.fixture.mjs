@@ -44,5 +44,5 @@ export async function prepareReading(page) {
     await new Promise(resolve=>setTimeout(resolve,250));
   }
   await page.waitForFunction(()=>!document.querySelector('#configuration-setup[open]'),{timeout:5000});
-  installFileTreeClicks(page,message=>console.log('reading smoke: '+message));
+  if(!page.__nativeDocumentNavigation)installFileTreeClicks(page,message=>console.log('reading smoke: '+message));
 }

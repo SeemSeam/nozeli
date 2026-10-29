@@ -1,3 +1,5 @@
+import {resolveBundledOmpRuntime} from '../src/agents/managed/omp-runtime.mjs';
+const bundledCommand=(await resolveBundledOmpRuntime()).command;
 import {openTestController,openTestWorkspace} from './project-storage.fixture.mjs';
 // Real private bundled OMP + CollabHost, no model turns, no extension/transport fake.
 // Barriers wrap only public session acquisition / terminal snapshot interfaces.
@@ -14,7 +16,7 @@ import { attachNativeTerminal } from '../src/agents/managed/native-terminal.mjs'
 import { connectOmpTerminalBridge } from '../src/agents/managed/omp-terminal-bridge.mjs';
 import { processStamp } from '../src/agents/managed/process-ownership.mjs';
 
-const command = fileURLToPath(new URL('../runtime/omp/omp', import.meta.url));
+const command = bundledCommand;
 const draft = '  原始 draft\n@Worker 不提交、不重放  ';
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 async function bounded(promise, label, ms = 5000) {

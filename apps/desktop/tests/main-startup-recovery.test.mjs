@@ -14,6 +14,10 @@ function fixture(options={}){
 test('normal close waits for authoritative Host settlement and cleanup',async()=>{
  const save=deferred(),f=fixture({settle:()=>save.promise});f.r.requestClose();const ack=f.ack();assert.deepEqual(f.counts(),{closed:0,reloads:0,stops:0});save.resolve();assert.equal((await ack).accepted,true);assert.deepEqual(f.counts(),{closed:1,reloads:0,stops:1});
 });
+test('native child destruction coalesces repeat close requests and reports failure for retry',async()=>{
+ const closing=deferred();const f=fixture({onClose:()=>closing.promise});f.r.requestClose();const ack=f.ack();await tick();assert.equal(f.r.phase,'closing');f.r.requestClose();assert.equal(f.sends.length,1);
+ closing.reject(Error('child close failed'));await ack;assert.equal(f.r.phase,'stop-failed');assert.equal(f.r.pending,null);assert.equal(f.dialogs.length,1);f.dialogs[0].resolve({response:0});await tick();f.r.onClose=()=>{};f.r.requestClose();await f.ack();assert.equal(f.r.phase,'closing');
+});
 test('Host delay crossing timeout/new close cannot consume the new waiter',async()=>{
  const oldSave=deferred(),newSave=deferred();let n=0;const f=fixture({settle:()=>++n===1?oldSave.promise:newSave.promise});f.r.requestClose();const oldId=f.r.pending.id,oldAck=f.ack();f.expire();await tick();f.dialogs[0].resolve({response:0});await tick();f.r.requestClose();const next=f.r.pending;assert.notEqual(next.id,oldId);oldSave.resolve();assert.deepEqual(await oldAck,{accepted:false});assert.equal(f.r.pending,next);assert.equal(f.counts().closed,0);const ack=f.ack();newSave.resolve();assert.deepEqual(await ack,{accepted:true});assert.equal(f.counts().closed,1);
 });
