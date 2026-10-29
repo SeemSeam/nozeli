@@ -11,9 +11,9 @@ node tools/test-suites.mjs smoke --list    # 任一套件的文件清单
 
 | 套件 | 命令 | 内容 | 额外前置 |
 | --- | --- | --- | --- |
-| unit | `npm run test:unit` | 纯逻辑：仅导入源码模块与 npm 依赖，不写真实文件、不起子进程、不用 Git/Electron/原生运行时 | 无（Node ≥ 22 + `npm ci`） |
+| unit | `npm run test:unit` | 纯逻辑：导入源码模块与 npm 依赖验证行为；允许只读源码（如读 preload 源做 vm 沙箱验证），不写真实项目文件、不起被测子进程、不用 Git/Electron/原生运行时 | 无（Node ≥ 22 + `npm ci`） |
 | integration | `npm run test:integration` | 真实临时文件／Git／存储：每个测试用 `mkdtemp(os.tmpdir())` 建独立隔离根；无 GUI、无模型提供方 | 系统 `git` 在 PATH |
-| smoke | `npm run test:smoke` | 真实 Electron 无模型启动、打开本地文件、保存并干净退出 | 先 `npm run build:renderer`（Electron 随 `npm ci` 安装） |
+| smoke | `npm run test:smoke` | 轻量 CI 冒烟（`tests/desktop-ci-smoke.mjs`）：真实 Electron 无模型启动→空工作台→注册合成项目→浏览文件→原生编辑→正常关闭→冷重启留存 | 先 `npm run build:renderer`（Electron 随 `npm ci` 安装） |
 | live（显式选择加入） | `NOZELI_TEST_LIVE=1 npm run test:live` | 内置原生 OMP 运行时 + 回环脚本化 HTTP：确定性、无凭据、不联网、不产生费用 | 先 `npm run build:omp`；`bwrap`、`git` 在 PATH |
 | default | `npm test` | unit + integration 顺序执行 | 同上两者 |
 
@@ -21,14 +21,14 @@ node tools/test-suites.mjs smoke --list    # 任一套件的文件清单
 
 ## 分类边界
 
-- **unit（52 个文件）**：静态导入扫描确认无 `node:child_process`、无写文件 API、无 `git`、无 Electron。出现任一即归 integration。
+- **unit（52 个文件）**：按实际导入与行为划入——不起被测子进程、不写真实项目文件、不驱动 Git、不加载 Electron。个别文件会**只读源码**（如 `lifecycle-flush-capability` 读 preload 源码进 `vm` 沙箱验证桥接行为），因此该类别不宣称“无任何 fs 访问的纯函数保证”；划分标准是“无需文件系统副作用即可复现”。出现真实写入/子进程/Git 即归 integration。
 - **integration（121 个文件）**：真实文件系统行为（临时仓库、shadow 版本、存储切换、宿主文件读写）。所有成员均已核实使用 `mkdtemp` 独立根；Git 提交身份由测试或产品 Git 层显式注入（`GIT_AUTHOR_NAME` 等），不依赖全局 Git 配置。需要外部 TeX 工具链的两个测试（`tex-build.test.mjs` 需要 latexmk/xelatex/pdftotext，`tex-language.test.mjs` 需要 TexLab）**不在默认套件**，保留在历史命令 `npm run test:tex` / `test:tex-editor` 中按需运行。
-- **smoke（2 个脚本，顺序执行）**：`tests/desktop-electron.test.mjs`（启动→打开本地 md/txt/pdf→读写→关闭）与 `tests/desktop-close.test.mjs`（关闭保存、退出码 0、调试端口释放）。两者默认 `--ozone-platform=headless`，无需显示器；也兼容 Xvfb（`xvfb-run -a npm run test:smoke`，如需真实显示可 `NOZELI_OZONE=x11 NOZELI_TEST_VISIBLE=1`）。端口全部即时申请（listen 0），配置根与项目目录均建在 `os.tmpdir()` 独立 mkdtemp 下，不触碰个人 profile，不含固定端口常量，不发起模型请求。
+- **smoke（`tests/desktop-ci-smoke.mjs`，单脚本）**：专为本仓库 CI 设计的真正轻量冒烟：真实 Electron 进程、无模型/无凭据，覆盖启动、空工作台、注册合成项目、浏览文件、原生编辑、正常关闭（退出码）与冷重启留存。默认 `--ozone-platform=headless`，无需显示器；兼容 Xvfb（`xvfb-run -a npm run test:smoke`，如需真实显示可 `NOZELI_OZONE=x11 NOZELI_TEST_VISIBLE=1`）。端口即时申请（listen 0），配置根与项目目录均在 `os.tmpdir()` 独立 mkdtemp 下，不触碰个人 profile、无固定端口常量。
 - **live（4 个文件）**：`agent-resource-native`、`omp-default-models-live`、`omp-tui-attach-races` 需要已构建的原生运行时并经 PTY/bwrap 真实拉起；`omp-runtime-isolation` 直接验证运行时路径与 broker 隔离。全部只对 `127.0.0.1` 回环脚本端点发请求（`auth: none`、合成配置），从不读取真实账号、不在未选择加入时运行。
 
 ### 与 0.1.0-alpha.1 发布回归（“374 项”）的关系
 
-发布时在本机汇总的 374 项常规回归是当时全部可本机运行测试的聚合（含需显示器的 headless Electron 项与需已构建运行时的原生肖）。新入口把它拆成显式边界：其中纯 Node 部分即 unit+integration（173 文件），需运行时的原生肖归入 live，headless Electron 冒烟归入 smoke；数目以套件实际输出为准，本页不另行宣称覆盖率或徽章。
+发布时的“374 项”是当时按发布流程实际执行的 **24 个文件**的聚合结果，不是“本机全部测试”，也不是本页套件的某种拆分或子集；两者是不同入口，数目互不对应、互不折算。新套件的规模以各自 `node --test` 实际输出为准。
 
 ## 前置条件（含 CI）
 
@@ -42,7 +42,9 @@ node tools/test-suites.mjs smoke --list    # 任一套件的文件清单
   - 构建+冒烟任务：`npm ci && npm run build:pptist && npm run build:omp && npm run build:renderer && xvfb-run -a npm run test:smoke`。
   - 可选 live：`NOZELI_TEST_LIVE=1 npm run test:live`（仅在已 `build:omp` 且装有 bubblewrap 时）。
 
-前置缺失时 runner 以退出码 2 给出 `PREREQUISITE MISSING` 说明并停止；任何套件都不会静默跳过文件或缩小集合，套件内列出的文件不存在同样视为错误。
+前置缺失时 runner 以退出码 2 给出 `PREREQUISITE MISSING` 说明并停止；任何套件都不会静默跳过文件或缩小集合，套件内列出的文件不存在同样视为错误；未知选项（如 `--unknown`）直接拒绝（退出码 2），已知选项仅 `--list`。
+
+`node --test` 套件默认以 `--test-concurrency=2` 运行（可用 `NOZELI_TEST_CONCURRENCY` 覆盖），避免 CI 上百文件同时 fork 与 SQLite 争用；并发数本身不影响集合内容。
 
 ## Node 与 Electron 的 ABI 区分
 
@@ -50,7 +52,7 @@ postinstall 用 `electron-rebuild` 针对 Electron 重建 `node-pty`。该依赖
 
 ## 历史命令与探针（不在默认入口内）
 
-- `package.json` 中的既有专项命令（`test:host`、`test:renderer`、`test:managed-lifecycle` 等）全部保留，供定向调试；它们不属于新套件边界，部分依赖 `build:renderer` 或已构建运行时。`test:collab` 引用的 `test/native-collab.test.mjs` 路径在当前树中不存在，属历史遗留，未在新入口中复用。
+- `package.json` 中的既有专项命令（`test:host`、`test:renderer`、`test:managed-lifecycle` 等）全部保留，供定向调试；它们不属于新套件边界，部分依赖 `build:renderer` 或已构建运行时。旧的整套 Electron 长流程（`desktop-electron.test.mjs`、`desktop-close.test.mjs` 等）仍由原专项命令（如 `test:electron`、`test:close`）承载：它们是遗留专项，不进 smoke 是边界划分（smoke 只保留轻量 CI 冒烟），不是被跳过或删除；`test:collab` 已移除不存在的 `test/native-collab.test.mjs` 引用，仅保留现存文件。
 - `tests/*-live*.mjs` 中需要既有发布产物、prior report 或真实安装二进制的脚本（如 `desktop-*-live.mjs` 审计探针、`installed-handoff.test.mjs`、`c1-installed-open*.mjs` 的安装态部分、`post-install-startup-recovery-*.py`、`.probe-*.mjs`）是开发/发布期证据工具：均需显式手动运行并提供所需产物，绝不进入默认套件，也不随 CI 运行。其中部分脚本仍含本机绝对路径（历史证据语义），除已纳入维护套件的文件外不做批量改写，也未删除。
 - 已纳入维护套件的测试不再含 `/home/...` 绝对输出路径：输出统一走 `os.tmpdir()`（隔离根）或仓库内 `.test-output/`（已被根 `.gitignore` 忽略）。测试源中出现的 `/home/example`、`/tmp/...` 字符串均为拒绝路径/脱敏断言的合成输入，不落盘。
 
@@ -65,5 +67,4 @@ postinstall 用 `electron-rebuild` 针对 Electron 重建 `node-pty`。该依赖
 
 ## 结果与覆盖表述
 
-- 通过/失败数目一律以 `node --test`（或冒烟脚本 report.json + 退出码）实际输出为准。
-- 本仓库不发布覆盖率徽章，不宣称未实际测量的覆盖比例；冒烟证据目录（`.test-output/`）为仓库本地产物，不入库。
+- 通过/失败数目一律以 `node --test`（或冒烟脚本 report.json + 退出码）实际输出为准。runner 会把子进程**原始输出**原样落盘为 CI 工件：`apps/desktop/.test-output/ci/{suite}.tap`（node --test 套件的真实 TAP 流）与 `apps/desktop/.test-output/ci/smoke.log`（冒烟脚本真实合并输出），runner 自身不汇总、不复述计数。

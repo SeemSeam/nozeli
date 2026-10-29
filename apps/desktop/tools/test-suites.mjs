@@ -21,6 +21,7 @@
 //   script suites ({suite}.log). The runner never recounts or fabricates.
 
 import { spawn, spawnSync } from 'node:child_process';
+import { finished } from 'node:stream/promises';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -387,7 +388,7 @@ function testConcurrency() {
   return value;
 }
 
-function runNodeTest(suite, name) {
+async function runNodeTest(suite, name) {
   const args = [
     '--test',
     `--test-concurrency=${testConcurrency()}`,
@@ -405,7 +406,9 @@ function runNodeTest(suite, name) {
   });
   child.stderr.on('data', (chunk) => process.stderr.write(chunk));
   child.once('exit', () => stream.end());
-  return awaitExit(child);
+  const code = await awaitExit(child);
+  await finished(stream).catch(() => {}); // artifact must be flushed before exit
+  return code;
 }
 
 
@@ -462,20 +465,21 @@ async function main() {
     } else {
       // Sequential standalone scripts (smoke): each script owns its own
       // Electron lifecycle and asserts its own exit code.
-      for (const file of suite.files) {
+      for (const [index, file] of suite.files.entries()) {
         const abs = path.join(testsDir, file);
         console.error(`[test-suites] suite=${name} script=${file}`);
         const log = artifactPath(name, 'log');
         console.error(`[test-suites] log=${path.relative(process.cwd(), log)}`);
         const child = spawn(process.execPath, [abs], { cwd: appRoot });
-        const stream = fs.createWriteStream(log, { flags: 'w' });
-        // Preserve the script's real combined output; append per-script with a
-        // header so a multi-file suite keeps one honest artifact.
+        const stream = fs.createWriteStream(log, { flags: index === 0 ? 'w' : 'a' });
+        // Preserve each script's real combined output under a header line so a
+        // multi-file suite keeps one honest artifact.
         stream.write(`# script: ${file}\n`);
         child.stdout.on('data', (chunk) => { stream.write(chunk); process.stdout.write(chunk); });
         child.stderr.on('data', (chunk) => { stream.write(chunk); process.stderr.write(chunk); });
         child.once('exit', () => stream.end());
         const code = await awaitExit(child);
+        await finished(stream).catch(() => {}); // artifact must be flushed before exit
         if (code !== 0) {
           console.error(`[test-suites] suite=${name} FAILED at ${file} (exit ${code})`);
           process.exit(code);

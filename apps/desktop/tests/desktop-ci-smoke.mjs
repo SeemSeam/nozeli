@@ -43,9 +43,11 @@ try{
  result.checks.push('project empty page browses into the real local document workspace');
  await doc.evaluate(()=>window.__nozeliInput.focus());await doc.keyboard.down('Control');await doc.keyboard.press('End');await doc.keyboard.up('Control');await doc.keyboard.type('CI_SMOKE_EDIT\n');
  await doc.waitForFunction(()=>window.__nozeliInput.text().includes('CI_SMOKE_EDIT'));
+ await doc.keyboard.down('Control');await doc.keyboard.press('s');await doc.keyboard.up('Control');
+ await until(async()=>(await fs.readFile(path.join(project,'reading.txt'),'utf8')).includes('CI_SMOKE_EDIT'),'explicit source save');
  await doc.screenshot({path:path.join(out,'edited-document.png')});
  result.firstExit=await close();assert((await fs.readFile(path.join(project,'reading.txt'),'utf8')).includes('CI_SMOKE_EDIT'));
- result.checks.push('native document edit is persisted before normal application exit');
+ result.checks.push('explicit native save writes original source and normal close preserves it');
  await launch();if(await shell.$('[data-project-id="'+projectId+'"]'))await shell.click('[data-project-id="'+projectId+'"]');
  let restored=await until(async()=>{for(const p of await browser.pages())if(await p.evaluate(()=>window.__workspaceScope?.kind==='document'&&window.__workspaceScope.relPath==='reading.txt').catch(()=>false))return p;return null;},'restored document');
  await restored.waitForFunction(()=>window.__nozeliInput?.text?.().includes('CI_SMOKE_EDIT'));
