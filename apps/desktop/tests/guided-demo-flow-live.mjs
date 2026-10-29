@@ -17,8 +17,6 @@ try {
   await harness.launch();
   ({page: shell} = await harness.scope(scope => scope.role === 'shell', 'real shell'));
   if (await shell.$eval('#configuration-setup', element => element.open).catch(() => false)) await shell.click('#configuration-cancel');
-  const buttons = await shell.$$eval('#start-page button', nodes => nodes.map(node => node.textContent));
-  assert.deepEqual(buttons, ['演示学习'], `start page must offer exactly one learning entry, saw ${JSON.stringify(buttons)}`);
 
   controls = await harness.startLearning(shell);
   const projectId = await active();
@@ -30,8 +28,7 @@ try {
     const model = (await harness.invoke(hint, 'workspace.bootstrap')).model;
     return model?.visible && model.phase === 'reading' && model.stepIndex === 0 && model.title === demoSteps[0].hintTitle ? model : null;
   }, 'explanation waits for the first real action receipt', 30000);
-  const windows0 = await harness.invoke(shell, 'workspace.windows.list', {projectId});
-  assert(windows0.some(window => window.surfaces.some(surface => surface.visible && surface.relPath === demoSteps[0].relPath)), 'source is visible before its explanation');
+  assert(await shell.$eval('[data-demo-guide-target]', node => node.dataset.demoGuideTarget === 'project'), 'interface region is highlighted before its explanation');
   await hint.screenshot({path: path.join(harness.root, 'hint-card.png')});
   mark('one entry, direct start, explanation only after the real open', {reading: reading0.title});
 
@@ -68,15 +65,15 @@ try {
   await harness.until(async () => (await harness.invoke(controls, 'workspace.bootstrap')).model.stepIndex > frontdesk, 'skipping the reading advances to the next step');
   mark('paused seek withholds the explanation until the real answer lands; reading is skippable', {reading: frontdeskReading.title});
 
-  await harness.seek(controls, stepIndex('task-progress'), 'single seek while playing');
+  await harness.seek(controls, stepIndex('task-a'), 'single seek while playing');
   await harness.until(async () => {
     const model = (await harness.invoke(controls, 'workspace.bootstrap')).model;
-    return model.status === 'playing' && model.stepIndex >= stepIndex('task-progress') ? model : null;
+    return model.status === 'playing' && model.stepIndex >= stepIndex('task-a') ? model : null;
   }, 'playing seek keeps playing at the target');
-  await harness.until(async () => (await state()).messages.some(message => message.text.includes('后台进展')), 'concurrency notices appear');
-  mark('two background tasks show staged progress');
+  await harness.until(async () => (await state()).messages.some(message => message.text.includes('已提交后台任务 A')), 'task handoff notice appears');
+  mark('the handed-off background task shows in the conversation');
 
-  await harness.seek(controls, stepIndex('task-a-done'), 'seek to the first task completion');
+  await harness.seek(controls, stepIndex('task-a-done'), 'seek to the task completion');
   await harness.until(async () => (await state()).todos.some(todo => todo.kind === 'result'), 'task A enters the todo list');
   await harness.until(async () => {
     const windows = await harness.invoke(shell, 'workspace.windows.list', {projectId});
@@ -84,11 +81,10 @@ try {
   }, 'review report opens on a real surface', 90_000);
   await harness.until(async () => {
     const demo = await state();
-    const accepted = demo.todos.find(todo => todo.title.includes('任务 A'));
-    const discarded = demo.todos.find(todo => todo.title.includes('任务 B'));
-    return accepted?.status === 'resolved' && discarded?.status === 'cancelled' ? {accepted, discarded} : null;
-  }, 'accept closes task A and discard closes task B', 90_000);
-  mark('review decisions close both tasks: accept resolves A, discard cancels B');
+    const reviewed = demo.todos.find(todo => todo.title.includes('任务 A'));
+    return reviewed?.status === 'resolved' ? reviewed : null;
+  }, 'accept closes the reviewed task A', 90_000);
+  mark('the review decision closes the single reviewed task: accept resolves it');
 
   await harness.until(() => shell.$eval('#settings-dialog', dialog => dialog.open), 'settings dialog opens for the tour', 150_000);
   await shell.screenshot({path: path.join(harness.root, 'settings-tour.png')});
@@ -100,7 +96,7 @@ try {
 
   await harness.until(async () => (await harness.invoke(controls, 'workspace.bootstrap')).visible === false && (await active()) === null, 'finished flow exits by itself', 90_000);
   assert.equal((await harness.invoke(shell, 'demo.state', {})).projects.length, 0, 'exit removes the demo entry');
-  assert.equal(await shell.$eval('#start-page button', node => node.textContent), '演示学习', 'back to the single-entry start page');
+  await shell.waitForSelector('#start-demo-entry',{visible:true});
   await shell.screenshot({path: path.join(harness.root, 'after-auto-exit.png')});
   mark('completion exits automatically and restores the start page');
 

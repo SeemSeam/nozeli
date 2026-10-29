@@ -6,6 +6,8 @@
 - Add contribution/security policies, issue and PR templates, dependency alerts, a user guide and structured release compliance bookkeeping.
 - Reconcile documentation with the public Alpha status; third-party source and redistribution review remains open rather than being treated as certified by publication.
 - Fix external-file open queue validation to accept storage-v2 UUID project identities while retaining root/target identity checks; valid open claims no longer freeze as corrupt queue records.
+- Redesign automatic teaching as an interface-first, six-section Markdown workflow: one review loop, replay-safe actions, readable timed explanations and compact bottom prompts; preserve old demo copies and user edits by template digest.
+- Stream Worker input snapshots, Git blobs, immutable artifacts and acceptance writes instead of buffering whole files. Remove execution's 32 MiB per-file and 256 MiB/10,000-file snapshot gates while preserving worktree isolation, conflict checks and recovery. Keep bounded text previews separate from artifact delivery, and allow saving complete frozen report references without overwriting existing files.
 
 ## 0.1.0-alpha.1
 
