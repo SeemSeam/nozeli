@@ -217,7 +217,6 @@ const SUITES = {
       'tag-session-identity.test.mjs',
       'tag-stability.test.mjs',
       'task-permissions.test.mjs',
-      'tex-source-link.test.mjs',
       'user-save-feedback.test.mjs',
       'word-authorship.test.mjs',
       'word-host.test.mjs',
@@ -237,6 +236,12 @@ const SUITES = {
     ],
     runner: 'script',
     preflight: [nodeVersionCheck, rendererBuildCheck, electronInstallCheck],
+  },
+  toolchain: {
+    description: 'real TeX compiler, PDF text extraction and TexLab; optional external tools, never silently skipped',
+    files: ['tex-build.test.mjs', 'tex-language.test.mjs', 'tex-source-link.test.mjs'],
+    runner: 'node-test',
+    preflight: [nodeVersionCheck, gitCheck, texToolchainCheck],
   },
   live: {
     description: 'bundled native OMP runtime with deterministic loopback scripted responses; explicit opt-in; no credentials, no paid model',
@@ -313,6 +318,12 @@ function ompRuntimeCheck() {
     return `bundled native runtime not found at runtime/omp/omp: run \`npm run build:omp\` first (was: ${omp})`;
   }
   return null;
+}
+
+function texToolchainCheck() {
+  const probes = [['latexmk', '-v'], ['xelatex', '--version'], ['pdftotext', '-v'], ['synctex', '--version'], ['texlab', '--version']];
+  const missing = probes.filter(([command, ...args]) => !commandAvailable(command, args)).map(([command]) => command);
+  return missing.length ? 'Optional TeX suite requires actual tools on PATH: ' + missing.join(', ') : null;
 }
 
 function bwrapCheck() {

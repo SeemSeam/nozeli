@@ -37,6 +37,7 @@
     "test:integration": "node tools/test-suites.mjs integration",
     "test:smoke": "node tools/test-suites.mjs smoke",
     "test:live": "node tools/test-suites.mjs live",
+    "test:toolchain": "node tools/test-suites.mjs toolchain",
     "test:document-diff": "npm run build:renderer && node tests/desktop-document-diff.test.mjs",
     "test:code-electron": "npm run build:renderer && node tests/desktop-code-file.test.mjs",
     "test:close": "npm run build:renderer && node tests/desktop-close.test.mjs",

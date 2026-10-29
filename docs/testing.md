@@ -15,6 +15,7 @@ node tools/test-suites.mjs smoke --list    # 任一套件的文件清单
 | integration | `npm run test:integration` | 真实临时文件／Git／存储：每个测试用 `mkdtemp(os.tmpdir())` 建独立隔离根；无 GUI、无模型提供方 | 系统 `git` 在 PATH |
 | smoke | `npm run test:smoke` | 轻量 CI 冒烟（`tests/desktop-ci-smoke.mjs`）：真实 Electron 无模型启动→空工作台→注册合成项目→浏览文件→原生编辑→正常关闭→冷重启留存 | 先 `npm run build:renderer`（Electron 随 `npm ci` 安装） |
 | live（显式选择加入） | `NOZELI_TEST_LIVE=1 npm run test:live` | 内置原生 OMP 运行时 + 回环脚本化 HTTP：确定性、无凭据、不联网、不产生费用 | 先 `npm run build:omp`；`bwrap`、`git` 在 PATH |
+| toolchain（可选工具） | `npm run test:toolchain` | 实际TeX编译、SyncTeX正反向定位与TexLab | 系统latexmk/xelatex/pdftotext/synctex/texlab；缺失明确失败，不静默跳过 |
 | default | `npm test` | unit + integration 顺序执行 | 同上两者 |
 
 `npm test` 是安全默认：只运行不依赖预编译私有 OMP／PPTist、不依赖显示器的部分。
@@ -22,8 +23,8 @@ node tools/test-suites.mjs smoke --list    # 任一套件的文件清单
 ## 分类边界
 
 - **unit（52 个文件）**：按实际导入与行为划入——不起被测子进程、不写真实项目文件、不驱动 Git、不加载 Electron。个别文件会**只读源码**（如 `lifecycle-flush-capability` 读 preload 源码进 `vm` 沙箱验证桥接行为），因此该类别不宣称“无任何 fs 访问的纯函数保证”；划分标准是“无需文件系统副作用即可复现”。出现真实写入/子进程/Git 即归 integration。
-- **integration（121 个文件）**：真实文件系统行为（临时仓库、shadow 版本、存储切换、宿主文件读写）。所有成员均已核实使用 `mkdtemp` 独立根；Git 提交身份由测试或产品 Git 层显式注入（`GIT_AUTHOR_NAME` 等），不依赖全局 Git 配置。需要外部 TeX 工具链的两个测试（`tex-build.test.mjs` 需要 latexmk/xelatex/pdftotext，`tex-language.test.mjs` 需要 TexLab）**不在默认套件**，保留在历史命令 `npm run test:tex` / `test:tex-editor` 中按需运行。
-- **smoke（`tests/desktop-ci-smoke.mjs`，单脚本）**：专为本仓库 CI 设计的真正轻量冒烟：真实 Electron 进程、无模型/无凭据，覆盖启动、空工作台、注册合成项目、浏览文件、原生编辑、正常关闭（退出码）与冷重启留存。默认 `--ozone-platform=headless`，无需显示器；兼容 Xvfb（`xvfb-run -a npm run test:smoke`，如需真实显示可 `NOZELI_OZONE=x11 NOZELI_TEST_VISIBLE=1`）。端口即时申请（listen 0），配置根与项目目录均在 `os.tmpdir()` 独立 mkdtemp 下，不触碰个人 profile、无固定端口常量。
+- **integration**：真实临时仓库、shadow版本、存储切换和宿主文件读写；成员清单以runner为准，Git身份由测试或产品层明确提供。TeX编译、语言服务和SyncTeX真实工具测试归入独立`toolchain`套件，不能因为开发机恰有工具就当作普通CI依赖；此前误将`tex-source-link.test.mjs`归入默认集，现已按实际外部依赖更正，测试本身完整保留。
+- **smoke（`tests/desktop-ci-smoke.mjs`，单脚本）**：真实Electron进程、无模型/无凭据，覆盖空工作台、合成项目浏览、键盘编辑、显式保存、正常退出与冷启动恢复。测试在`.test-output/ci/smoke-*`创建独立项目/profile，端口即时申请；Wayland/X11可见运行，无显示器时headless，GitHub用Xvfb/X11。旧长流程专项不等于此轻量烟测。
 - **live（4 个文件）**：`agent-resource-native`、`omp-default-models-live`、`omp-tui-attach-races` 需要已构建的原生运行时并经 PTY/bwrap 真实拉起；`omp-runtime-isolation` 直接验证运行时路径与 broker 隔离。全部只对 `127.0.0.1` 回环脚本端点发请求（`auth: none`、合成配置），从不读取真实账号、不在未选择加入时运行。
 
 ### 与 0.1.0-alpha.1 发布回归（“374 项”）的关系
