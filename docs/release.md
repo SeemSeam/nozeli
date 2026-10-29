@@ -29,3 +29,11 @@
 - Linux 便携包：`node tools/package-portable.mjs <绝对输出目录>`（要求源码树已全部提交）；本机用户级安装：`node tools/install-local.mjs`。
 - 常规回归不发起付费模型请求；真实模型检查一律显式启用并由授权者自行运行。
 - 发布检查顺序：全部常规回归通过 → 构建便携包 → 从解压产物启动冒烟 → 核对 SOURCES 与 licenses 清单 → （公开分发前）完成上述审计并写入签收记录。
+
+## 持续集成与发布检查
+
+每个PR及main推送触发Linux `CI`：确定性unit/integration、干净固定输入构建（Office／OMP／renderer）、Xvfb下真实Electron烟测及统一`CI gate`。日志/TAP/合成截图只保留有限天数，失败不使用continue-on-error放行；profile和数据库不上传。
+
+`Release candidate check`通过workflow_dispatch接受已存在且版本匹配的tag，验证测试/构建/烟测和公开发行元数据门，不自动上传公开包。旧tag如果缺少新检查工具会明确失败，不能把当前main检查冒充旧包验证。
+
+CI生成的`sbom.cdx.json`来自`npm sbom --package-lock-only --sbom-format cyclonedx --omit dev`，是锁定npm生产依赖清单，不包含完整Electron/OMP原生二进制、手工vendor或字体闭包。它与compliance inventory互补，不是完整发行物SBOM或来源签名，也不代表许可证审计通过。
