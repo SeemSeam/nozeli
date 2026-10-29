@@ -59,6 +59,7 @@ postinstall 用 `electron-rebuild` 针对 Electron 重建 `node-pty`。该依赖
 
 - `package.json` 中的既有专项命令（`test:host`、`test:renderer`、`test:managed-lifecycle` 等）全部保留，供定向调试；它们不属于新套件边界，部分依赖 `build:renderer` 或已构建运行时。旧的整套 Electron 长流程（`desktop-electron.test.mjs`、`desktop-close.test.mjs` 等）仍由原专项命令（如 `test:electron`、`test:close`）承载：它们是遗留专项，不进 smoke 是边界划分（smoke 只保留轻量 CI 冒烟），不是被跳过或删除；`test:collab` 已移除不存在的 `test/native-collab.test.mjs` 引用，仅保留现存文件。
 - `tests/*-live*.mjs` 中需要既有发布产物、prior report 或真实安装二进制的脚本（如 `desktop-*-live.mjs` 审计探针、`installed-handoff.test.mjs`、`c1-installed-open*.mjs` 的安装态部分、`post-install-startup-recovery-*.py`、`.probe-*.mjs`）是开发/发布期证据工具：均需显式手动运行并提供所需产物，绝不进入默认套件，也不随 CI 运行。其中部分脚本仍含本机绝对路径（历史证据语义），除已纳入维护套件的文件外不做批量改写，也未删除。
+- `tests/desktop-worker-large-files-live.mjs`：显式真实 Electron＋原生 OMP＋回环脚本模型专项。独立合成项目含 88 MiB 归档、超过 256 MiB 输入和一万多个文件；Worker 修改小文件并生成 68 MiB 二进制，实际报告界面接受后核实合入、冻结摘要、原件保护与正常退出。运行 `NOZELI_TEST_EVIDENCE_ROOT=<测试输出根> node tests/desktop-worker-large-files-live.mjs`；安装态另传 `NOZELI_TEST_APP_ROOT=<release>/resources/app NOZELI_TEST_BINARY=<release>/nozeli`。保留样本、截图与 report.json，不接触用户项目或付费模型；冲突、回滚、准备恢复另由确定性回归覆盖，不将本专项冒充故障注入矩阵。
 - 已纳入维护套件的测试不再含 `/home/...` 绝对输出路径：输出统一走 `os.tmpdir()`（隔离根）或仓库内 `.test-output/`（已被根 `.gitignore` 忽略）。测试源中出现的 `/home/example`、`/tmp/...` 字符串均为拒绝路径/脱敏断言的合成输入，不落盘。
 
 ## 测试素材来源（fixtures）

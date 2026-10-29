@@ -120,14 +120,18 @@ export async function saveManagedState(store,{draftIntents=[]}={}){
  return {committed:true,operationId};
 }
 export const managedRuntime=async(storage,id)=>path.join(await storage.localDirectory(id),'execution');
-async function recoveryObject(storage,projectId,digest){
- return storage.readRecoveryObject(projectId,digest);
+async function recoveryObject(storage,projectId,digest,options){
+ return storage.readRecoveryObject(projectId,digest,options);
 }
-export async function readManagedObject(storage,projectId,digest){
+export async function readManagedObject(storage,projectId,digest,options={maxBytes:32*1024*1024}){
  if(!/^[a-f0-9]{64}$/.test(digest))throw Error('Invalid project object digest');
- try{await storage.requireOnline(projectId);return await storage.readObject(projectId,digest);}catch(projectError){
-  try{return await recoveryObject(storage,projectId,digest);}catch(error){if(error.code==='MATERIAL_MISSING')throw projectError;throw error;}
+ try{await storage.requireOnline(projectId);return await storage.readObject(projectId,digest,options);}catch(projectError){
+  try{return await recoveryObject(storage,projectId,digest,options);}catch(error){if(error.code==='MATERIAL_MISSING')throw projectError;throw error;}
  }
+}
+export async function verifyManagedObject(storage,projectId,digest){
+ try{await storage.requireOnline(projectId);return await storage.verifyObject(projectId,digest);}
+ catch(projectError){try{return await storage.withRecoveryObject(projectId,digest,({stat})=>({digest,byteLength:stat.size}));}catch(error){if(error.code==='MATERIAL_MISSING')throw projectError;throw error;}}
 }
 const pendingKind=(id,value)=>value.kind??(id.startsWith('managed:object-pending:')?'object':id.startsWith('managed:publication:')?'publication':value.collections?'business':'record');
 export async function listManagedPending(storage,projectId){
@@ -147,13 +151,9 @@ function referencedObjects(value,found=new Set(),parent=''){
  return found;
 }
 async function promoteObject(storage,projectId,digest){
- let bytes;
- try{bytes=await recoveryObject(storage,projectId,digest);}catch(error){if(error.code!=='MATERIAL_MISSING')throw error;bytes=await storage.readObject(projectId,digest);}
- if(createHash('sha256').update(bytes).digest('hex')!==digest)throw fail('RECOVERY_OBJECT_CORRUPT','Recovered object digest mismatch');
- const written=await storage.putObject(projectId,bytes);
+ const written=await storage.promoteRecoveryObject(projectId,digest);
  if(written.digest!==digest)throw fail('RECOVERY_OBJECT_CORRUPT','Promoted object digest mismatch');
- const verified=await storage.readObject(projectId,digest);
- if(createHash('sha256').update(verified).digest('hex')!==digest)throw fail('RECOVERY_OBJECT_CORRUPT','Promoted object verification failed');
+ await storage.verifyObject(projectId,digest);
 }
 const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
 function mergeValue(base,current,candidate,at,conflicts){

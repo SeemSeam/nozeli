@@ -112,6 +112,7 @@ const SUITES = {
       'attention-projection.test.mjs',
       'c1-installed-open-entry.test.mjs',
       'collab-controller-projection.test.mjs',
+      'core-file-stream.test.mjs',
       'curation-presentation.test.mjs',
       'discussion-thread-transcript.test.mjs',
       'document-authorship.test.mjs',

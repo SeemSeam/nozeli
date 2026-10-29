@@ -1,10 +1,10 @@
 # 发布说明与发行边界
 
-当前版本基线：**`0.1.0-alpha.1`**（见根 [CHANGELOG.md](../CHANGELOG.md) 与 `apps/desktop/package.json`）。本页记录发行状态、验证边界与公开分发前置条件；打包与验证命令见[桌面开发说明](../apps/desktop/README.md)，逐项义务的机器可读清单见 [compliance-inventory.json](../apps/desktop/compliance-inventory.json)。
+当前版本基线：**`0.1.0-alpha.2`**（见[CHANGELOG](../CHANGELOG.md)与package.json）。精确提交由同名tag及发行包RELEASE.json绑定；产品构建、测试和分发审计分别记录，不互相替代。
 
 ## 版本状态
 
-- **公开 Alpha 预发布已发布**：<https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.1>（源提交 `af004b4`，含 Linux x64 便携包、源码快照与 SHA-256 校验和）。该预发布应仓库所有者明确要求发布；**发布不是合规认证**，下述分发审计未完成。
+- **Alpha预发行**：<https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.2>，包含Linux x64便携包、源码及SHA-256校验和。继承alpha.1已公开的发布方式，新增Markdown自动教学与大文件流式交付。发布由仓库所有者明确要求；**发布不是合规认证**，下述分发审计仍未完成。
 - 本版本为 **Alpha 审阅候选**：供源码审阅、跟进开发与 Linux 本机验证使用。
 - 验证状态：**Linux x64／Wayland 本机验证**通过（阅读、批注、编辑、后台协作工作流与本机安装循环）。**Windows／macOS 为产品目标平台，未验证**；安装与打包工具当前仅实现 Linux。
 - 空工作台四项推荐功能引导（批注与选区讨论、任务闭环、分屏阅读、独立窗口）已包含在本版本中。
@@ -22,7 +22,7 @@
 4. **Electron/Chromium 二进制通告**：逐发行物核验 `LICENSES.chromium.html` 等第三方通告的存在与完整并记录核验结果。
 5. **PPTist 传递依赖审计**：`pptxtojson`、`pptxgenjs`、`hfmath` 及其传递闭包（含字体/资源）的再分发审计未完成。
 
-上述义务签收前：不发布后续公开版本，不宣称“源码已开放即义务已满足”，不以任何自动检查替代人工签收。`node tools/check-repository.mjs --public` 在此期间保持失败，作为发布门的机器侧提醒（该脚本是元数据一致性检查，不是法律审计）。
+上述义务仍未签收；仓库所有者明确要求公开Alpha预发行并不等于审计完成，也不能用免责声明替代义务。`node tools/check-repository.mjs --public`仍保持失败以如实列出阻塞；本次是所有者明确发布决定，非该检查通过，不自动推广为稳定版本或后续发行授权。
 
 ## 打包与验证入口（摘要）
 

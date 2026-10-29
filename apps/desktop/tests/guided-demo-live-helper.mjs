@@ -192,7 +192,7 @@ export async function createGuidedDemoHarness({kind}) {
     const value=await until(async()=>{
       const current=await invoke(controls,'workspace.bootstrap');
       if(!current.visible||!current.model?.seekable||!['playing','paused'].includes(current.model.status))return null;
-      return current.model.stepIndex===index||current;
+      return current;
     },`${label}: controls not seekable`,30_000);
     if(value.model.stepIndex===index)return value;
     return invoke(controls,'workspace.demoControls.action',{sessionId:value.model.sessionId,epoch:value.model.epoch,controlId:'seek',stepIndex:index});

@@ -61,7 +61,7 @@ try {
   const registryFile = path.join(h.root, 'config/desktop/guided-demo/registry.json');
   const registry = JSON.parse(await fs.readFile(registryFile, 'utf8'));
   const row = registry.projects[oldId];
-  assert.equal(row.expectedFiles['sample.tex'] !== undefined, true, 'v2 template must ship sample.tex in expectedFiles');
+  assert.equal(row.expectedFiles['sample.tex'] !== undefined, true, 'current template must ship sample.tex in expectedFiles');
   row.templateVersion = '1';
   row.templateDigest = 'legacy-v1-digest';
   delete row.expectedFiles['sample.tex'];
@@ -97,8 +97,8 @@ try {
   r.checks.push('Missing-file surface shows the honest failure text, reports contentFailed and stays SURFACE_NOT_READY for focus');
 
   // Starting learning again must retire the stale copy (real retention chain,
-  // no ten-second stall, no PROJECT_FLUSH_FAILED) and create a fresh v2 copy.
-  await shell.click('#open-settings');
+  // no ten-second stall, no PROJECT_FLUSH_FAILED) and create a fresh copy of
+  // the current template.
   await shell.click('[data-settings-section="settings-help"]');
   await shell.click('#settings-demo-help');
   ({ page: controls } = await h.scope(scope => scope.role === 'demo-controls'));
@@ -107,20 +107,21 @@ try {
     return model?.projectId !== oldId && model?.status === 'playing' ? model : null;
   }, 'starting learning retires the legacy copy and plays the new template', 90_000);
   const newId = fresh.projectId;
+  const templateVersion = JSON.parse(await fs.readFile(path.join(h.appRoot, 'assets/guided-demo/manifest.json'), 'utf8')).version;
   const newState = await h.invoke(shell, 'demo.state', { projectId: newId });
-  assert.equal(newState.templateVersion, '2');
+  assert.equal(newState.templateVersion, templateVersion);
   assert((await fs.readFile(path.join(newState.project.rootDisplay, 'sample.tex'), 'utf8')).includes('documentclass'));
   assert.equal(await fs.readFile(path.join(oldRoot, 'my-note.txt'), 'utf8'), 'KEEP OLD EXPLORATION');
   await assert.rejects(fs.stat(path.join(oldRoot, 'sample.tex')), { code: 'ENOENT' });
   assert.equal((await h.invoke(shell, 'demo.state', { projectId: oldId })).isDemo, false);
   assert(!(await h.invoke(shell, 'project.recent')).projects.some(project => project.id === oldId));
-  r.checks.push('Retirement closes the failed-surface project through the real retention chain, creates v2 and preserves old exploration');
+  r.checks.push('Retirement closes the failed-surface project through the real retention chain, creates the current template and preserves old exploration');
 
   // End the demo and leave through the front door: exit 0.
   await controls.click('[data-demo-control="stop"]');
   await h.until(async () => await activeProject() === null && !(await controlsState()).visible, 'demo end returns to the start workspace');
   assert.equal((await h.invoke(shell, 'demo.state', {})).projects.length, 0);
-  r.checks.push('Demo end removes the v2 entry and returns to the start workspace');
+  r.checks.push('Demo end removes the demo entry and returns to the start workspace');
   assert.deepEqual(r.errors, []);
   await h.auditIsolation();
   await h.closeNormally(shell);

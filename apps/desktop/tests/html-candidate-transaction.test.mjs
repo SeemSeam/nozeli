@@ -29,7 +29,9 @@ test('project transaction failure after capture removes unpublished evidence and
  assert((await storage.readObject(projectId,candidate.report.digest)).length);
  await controller.store.requireOnline();
  const saved=await controller.onTool(work.id,{tool:'nozeli_publish',arguments:{kind:'result',html:staticReport('Verified candidate'),files:['candidate.txt']},callId:'state-save-failure'});
- assert.equal(saved.saved,true);assert.equal(controller.store.state.receipts.length,1);assert.equal((await evidenceSets(controller)).length,1);
+ assert.equal(saved.saved,true);assert.equal(controller.store.state.receipts.length,1);
+ const published=controller.store.state.receipts[0],changes=await controller.changes.list({changeSetId:published.changeSetId});
+ assert.equal(changes.files.find(file=>file.path==='candidate.txt').after.object.digest,published.snapshot.files.find(file=>file.relPath==='candidate.txt').digest);
  const durable=await storage.getProject(projectId,'managed_receipts','state-save-failure');
  assert(durable);assert.equal(durable.report.digest,candidate.report.digest);
 });

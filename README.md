@@ -70,7 +70,7 @@ Agent 交付得快，不代表人已经理解。Nozeli 希望让你看清成果�
 
 - 面向 Windows、macOS、Linux；当前验证以 **Linux x64／Wayland** 为主，其他平台尚未通过。
 - 已有阅读、批注、编辑、真实文件与后台协作工作流；具体格式、版本和能力边界见[当前状态与能力边界](docs/status.md)。
-- **公开 Alpha 预发布** [`v0.1.0-alpha.1`](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.1)（源提交 `af004b4`；Linux x64 便携包＋源码快照＋SHA-256 校验和；仅 Linux 本机验证，Windows/macOS 未验证），含空工作台四项推荐功能引导（批注与选区讨论、任务闭环、分屏阅读、独立窗口）。
+- **Alpha预发行** [`v0.1.0-alpha.2`](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.2)：包含界面优先的Markdown自动教学、完整测试与GitHub CI，以及Worker大文件流式交付；Linux x64便携包、源码快照与SHA-256校验和，版本源码以对应tag为准。Windows/macOS未验证。
 - 第三方源码与再分发审计未完成（源码 vendor 产物与捆绑二进制对应源码/通告义务均未签收）：发布不是合规认证，本仓库源码归档或上游链接不自动满足对应源码义务；逐项义务、pinned 版本与签收状态见[发布说明与发行边界](docs/release.md)与[合规清单](apps/desktop/compliance-inventory.json)。
 
 ## 进一步了解

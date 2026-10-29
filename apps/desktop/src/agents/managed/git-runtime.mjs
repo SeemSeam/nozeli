@@ -1,9 +1,10 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { pipeline } from 'node:stream/promises';
+import {Readable} from 'node:stream';
 
 const exec = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -55,28 +56,29 @@ export async function ensureGit() {
   return { command, env: environment(dugite, process.env).env, version, source };
 }
 
-/** options.env replaces inherited env, preserving isolated Git callers. */
-export async function runGit(cwd, args, { env = process.env, encoding = 'buffer', maxBuffer = 64 * 1024 * 1024, timeout = 60000, input } = {}) {
-  await ensureGit();
-  const { dugite, command } = await provisioning;
-  const runtimeEnv = environment(dugite, env).env;
-  try {
-    const execution = exec(command, args, { cwd, env: runtimeEnv, encoding, maxBuffer, timeout, windowsHide: true });
-    if (input !== undefined) {
-      try {
-        const [result] = await Promise.all([execution, pipeline(input, execution.child.stdin)]);
-        return result.stdout;
-      } catch (error) {
-        execution.child.kill();
-        await execution.catch(() => {});
-        throw error;
-      }
-    }
-    return (await execution).stdout;
-  } catch (error) {
-    if (error.code === 'ENOENT' || error.code === 'EACCES' || error.code === 'ENOEXEC') throw broken(error);
-    // Keep stdout/stderr/code intact for Git plumbing callers (CAS, conflicts).
-    error.message = `Git ${args[0] || ''} failed${cwd ? ' in ' + cwd : ''}: ${error.message}`;
-    throw error;
-  }
+/** Streaming transport: pipelines enforce backpressure, and all failures reap Git. */
+export async function runGitStream(cwd,args,{env=process.env,input,output,onStdout,signal,timeout=0,maxStderr=256*1024}={}){
+ await ensureGit();const {dugite,command}=await provisioning;
+ const child=spawn(command,args,{cwd,env:environment(dugite,env).env,stdio:['pipe','pipe','pipe'],windowsHide:true,shell:false});
+ let stderr=Buffer.alloc(0),timer;
+ child.stderr.on('data',chunk=>{if(stderr.length<maxStderr)stderr=Buffer.concat([stderr,chunk.subarray(0,maxStderr-stderr.length)]);});
+ const exited=new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',(code,exitSignal)=>{if(code===0)resolve();else reject(Object.assign(new Error('Git '+(args[0]||'')+' failed: '+stderr.toString()),{code,signal:exitSignal,stderr}));});});
+ const abort=()=>child.kill('SIGKILL');
+ if(signal)signal.addEventListener('abort',abort,{once:true});
+ if(timeout)timer=setTimeout(abort,timeout);
+ try{
+  if(signal?.aborted)throw Object.assign(new Error('Git operation aborted'),{code:'ABORT_ERR'});
+  const send=pipeline(input??Readable.from([]),child.stdin);
+  const receive=output?pipeline(child.stdout,output):(async()=>{for await(const chunk of child.stdout)if(onStdout)await onStdout(chunk);})();
+  await Promise.all([exited,send,receive]);
+  if(signal?.aborted)throw Object.assign(new Error('Git operation aborted'),{code:'ABORT_ERR'});
+ }catch(error){abort();child.stdin.destroy();child.stdout.destroy();await exited.catch(()=>{});if(['ENOENT','EACCES','ENOEXEC'].includes(error.code))throw broken(error);throw error;}
+ finally{clearTimeout(timer);signal?.removeEventListener('abort',abort);}
+}
+
+/** Bounded collection is only for small plumbing/text replies, never blobs. */
+export async function runGit(cwd,args,{encoding='buffer',maxBuffer=64*1024*1024,...options}={}){
+ const chunks=[];let size=0;
+ await runGitStream(cwd,args,{...options,onStdout:chunk=>{size+=chunk.length;if(size>maxBuffer)throw Object.assign(new Error('Git text output exceeds bounded collection'),{code:'GIT_OUTPUT_LIMIT'});chunks.push(chunk);}});
+ const bytes=Buffer.concat(chunks,size);return encoding==='buffer'||encoding===null?bytes:bytes.toString(encoding);
 }

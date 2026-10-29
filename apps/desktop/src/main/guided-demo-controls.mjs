@@ -4,39 +4,34 @@ const hintUrl=workspace=>workspace.origin+'guided-demo-hint.html';
 const clamp=(value,min,max)=>Math.round(Math.max(min,Math.min(value,max)));
 const separated=(a,b,gap)=>a.x+a.width+gap<=b.x||b.x+b.width+gap<=a.x||a.y+a.height+gap<=b.y||b.y+b.height+gap<=a.y;
 
-// Native view rectangles, including transparent padding, must never overlap.
-// Preserve the requested drag point; move the hint first, then share scarce height.
+// Keep the reading area above a predictable bottom rail. Native rectangles
+// include transparent padding and never overlap; constrained views scroll.
 export function guidedDemoOverlayLayout({width,height,controlsHeight,hintHeight,position,controlsVisible=true,hintVisible=true}){
-  const margin=Math.min(8,Math.max(0,Math.floor((Math.min(width,height)-2)/4))),gap=Math.min(8,Math.max(0,height-2*margin-2));
+  const margin=Math.min(8,Math.max(0,Math.floor((Math.min(width,height)-2)/4)));
   const usableWidth=Math.max(1,width-2*margin),usableHeight=Math.max(1,height-2*margin);
-  const controls={width:Math.min(448,usableWidth),height:Math.min(controlsHeight,usableHeight)};
-  controls.x=clamp(position?.x??width-controls.width-16,margin,width-controls.width-margin);
-  controls.y=clamp(position?.y??height-controls.height-16,margin,height-controls.height-margin);
-  const hint={width:Math.min(404,usableWidth),height:Math.min(hintHeight,usableHeight)};
-  hint.x=clamp((width-hint.width)/2,margin,width-hint.width-margin);
-  hint.y=clamp(44,margin,height-hint.height-margin);
-  if(!controlsVisible||!hintVisible||separated(controls,hint,gap))return {controls,hint};
+  const budget=Math.max(2,Math.floor(usableHeight*.55));
+  const gap=Math.min(8,Math.max(0,budget-2));
+  const controls={width:Math.min(400,usableWidth),height:Math.min(controlsHeight,budget)};
+  const hint={width:Math.min(340,usableWidth),height:Math.min(hintHeight,budget)};
+  controls.x=clamp(position?.x??width-controls.width-margin,margin,width-controls.width-margin);
+  controls.y=clamp(position?.y??height-controls.height-margin,margin,height-controls.height-margin);
+  hint.x=margin;hint.y=height-margin-hint.height;
+  if(!controlsVisible||!hintVisible)return {controls,hint};
+  // Prefer the bottom-left beside bottom-right controls, not the document top.
+  if(separated(controls,hint,gap))return {controls,hint};
   const candidates=[
-    {...hint,y:controls.y-hint.height-gap},
-    {...hint,y:controls.y+controls.height+gap},
-    {...hint,x:controls.x-hint.width-gap},
-    {...hint,x:controls.x+controls.width+gap},
-  ].filter(rect=>rect.x>=margin&&rect.y>=margin&&rect.x+rect.width<=width-margin&&rect.y+rect.height<=height-margin);
-  if(candidates.length){
-    candidates.sort((a,b)=>Math.abs(a.x-hint.x)+Math.abs(a.y-hint.y)-Math.abs(b.x-hint.x)-Math.abs(b.y-hint.y));
-    return {controls,hint:candidates[0]};
-  }
-  const sharedHeight=usableHeight-gap;
-  controls.height=Math.min(controls.height,Math.max(1,Math.floor(sharedHeight/2)));
+    {...hint,x:controls.x-hint.width-gap,y:height-margin-hint.height},
+    {...hint,x:controls.x+controls.width+gap,y:height-margin-hint.height},
+  ];
+  const beside=candidates.find(rect=>rect.x>=margin&&rect.x+rect.width<=width-margin&&separated(controls,rect,gap));
+  if(beside)return {controls,hint:beside};
+  // Narrow windows share only the bottom 55%; leave the document readable.
+  const sharedHeight=Math.max(2,budget-gap);
+  controls.height=Math.min(controls.height,Math.max(1,Math.floor(sharedHeight*.62)));
   hint.height=Math.min(hint.height,Math.max(1,sharedHeight-controls.height));
-  // Keep the controls on the dragged side of the hint in constrained windows.
-  if(controls.y+controls.height/2<height/2){
-    controls.y=clamp(controls.y,margin,height-margin-hint.height-gap-controls.height);
-    hint.y=clamp(hint.y,controls.y+controls.height+gap,height-margin-hint.height);
-  }else{
-    hint.y=clamp(hint.y,margin,height-margin-controls.height-gap-hint.height);
-    controls.y=clamp(controls.y,hint.y+hint.height+gap,height-margin-controls.height);
-  }
+  controls.y=height-margin-controls.height;
+  hint.x=clamp(controls.x,margin,width-hint.width-margin);
+  hint.y=controls.y-gap-hint.height;
   return {controls,hint};
 }
 
@@ -90,6 +85,8 @@ export class GuidedDemoControls {
   hintUpdate(owner,hint){
     if(owner!==this.workspace.shell||owner.dead)throw fail('只有主窗可以更新演示提示');
     if(hint!==null&&(!hint||Array.isArray(hint)||typeof hint.title!=='string'||typeof hint.detail!=='string'||typeof hint.visible!=='boolean'||hint.title.length>200||hint.detail.length>600))throw fail('演示提示状态无效');
+    // Optional presentation fields; title is the purpose, detail the action.
+    if(hint&&[['section',80],['targetLabel',120],['result',240]].some(([key,max])=>hint[key]!==undefined&&(typeof hint[key]!=='string'||hint[key].length>max)))throw fail('演示提示文本无效');
     this.owner=owner;this.ownerGeneration=owner.generation;this.hint=hint;
     if(hint)this.hintEnsure();
     this.hintPush();this.hintRaise();return {updated:true};

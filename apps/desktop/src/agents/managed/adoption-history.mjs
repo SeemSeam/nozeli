@@ -4,12 +4,15 @@ import { FileChanges } from '../../domain/file-changes.mjs';
 import { userActor } from '../../domain/document-changes.mjs';
 import { textChangeSet } from '../../domain/tag-anchors.mjs';
 import { runGit } from './git-runtime.mjs';
-import { safeBytes, workPath } from './execution-workspace.mjs';
+import {workPath} from './execution-workspace.mjs';
+import {inspectFile} from './file-stream.mjs';
+import {gitStream} from './git-service.mjs';
 
-const digest = bytes => bytes === null ? null : createHash('sha256').update(bytes).digest('hex');
+const digest = bytes => bytes === null ? null : bytes.contentDigest ?? createHash('sha256').update(bytes).digest('hex');
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
 function text(bytes) {
   if (bytes === null) return '';
+  if(bytes.contentDigest){if(bytes.bytes===null)return null;bytes=bytes.bytes;}
   if (bytes.includes(0)) return null;
   try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { return null; }
 }
@@ -22,7 +25,13 @@ async function blob(root, commit, rel, env) {
   if (!entry) return null;
   const match = /^(100644|100755) blob ([a-f0-9]{40,64})\t([^\0]+)\0$/.exec(entry);
   if (!match || match[3] !== rel) fail('ADOPTION_BLOB_INVALID', 'Adoption history requires an exact ordinary Git blob: ' + rel);
-  return runGit(root, ['cat-file', 'blob', match[2]], { env });
+  const hash=createHash('sha256'),chunks=[];let size=0,omitted=false;
+  await gitStream(root,['cat-file','blob',match[2]],{onStdout:chunk=>{
+    hash.update(chunk);size+=chunk.length;
+    if(size>2*1024*1024||chunk.includes(0)){omitted=true;chunks.length=0;}
+    if(!omitted)chunks.push(Buffer.from(chunk));
+  }});
+  return {contentDigest:hash.digest('hex'),bytes:omitted?null:Buffer.concat(chunks)};
 }
 
 /** Record already-integrated bytes, never write/merge/reset original content. */
@@ -67,9 +76,9 @@ export async function recordAdoption({ host, projectId, work, receipt }) {
       let ledger = await store.read(rel);
       if (ledger?.pending) fail('ADOPTION_HISTORY_PENDING', 'Pending document journal preserved: ' + rel);
       if(reconciled){
-        const current=await safeBytes(root,rel);
-        if(digest(current)!==op.afterDigest)fail('ADOPTION_SOURCE_CHANGED','Reconciled path changed after integration: '+rel);
-        await store.observe(rel,text(after),op.afterDigest);
+        const current=await inspectFile(root,rel);
+        if((current?.digest??null)!==op.afterDigest)fail('ADOPTION_SOURCE_CHANGED','Reconciled path changed after integration: '+rel);
+        if(afterText!==null)await store.observe(rel,afterText,op.afterDigest);
         return {relPath:rel,status:'skipped',reason:'explicit-target-reconciliation',operationId};
       }
       const done = ledger?.events.find(event => event.operationId === operationId);
@@ -79,8 +88,8 @@ export async function recordAdoption({ host, projectId, work, receipt }) {
       const humanDone = humanEdited ? ledger?.events.find(event => event.operationId === humanOperationId) : undefined;
       if (humanDone && (humanDone.afterDigest !== op.afterDigest || humanDone.actor.id !== userActor.id || humanDone.beforeDigest !== (workerChanged ? reviewed.candidateDigest : op.beforeDigest))) fail('ADOPTION_HISTORY_CONFLICT', 'Adoption history identity conflict: ' + rel);
       if (humanEdited && workerChanged && Boolean(done) !== Boolean(humanDone)) fail('ADOPTION_HISTORY_CONFLICT', 'Partial adoption chain preserved: ' + rel);
-      const current = await safeBytes(root, rel);
-      if (digest(current) !== op.afterDigest) fail('ADOPTION_SOURCE_CHANGED', 'Adopted path moved or changed; current content preserved: ' + rel);
+      const current = await inspectFile(root, rel);
+      if ((current?.digest??null) !== op.afterDigest) fail('ADOPTION_SOURCE_CHANGED', 'Adopted path moved or changed; current content preserved: ' + rel);
       if (done || humanDone) return { relPath: rel, status: 'duplicate', eventId: (humanDone ?? done).id, operationId };
       if (beforeText === null || afterText === null || humanEdited && workerChanged && candidateText === null || ledger?.textSpace === 'docx-main-text') return { relPath: rel, status: 'skipped', reason: 'non-text-content', operationId };
       if (ledger && ledger.digest !== op.beforeDigest) {
@@ -100,7 +109,7 @@ export async function recordAdoption({ host, projectId, work, receipt }) {
         candidate = store.candidate(ledger, afterText, op.afterDigest, textChangeSet(ledger.text, afterText), workerActor, { operationId, fingerprint: receipt.commit, type: after === null ? 'delete' : before === null ? 'create' : 'edit' });
       }
       // Recheck after all reads, before the only mutation (the ledger).
-      if (digest(await safeBytes(root, rel)) !== op.afterDigest) fail('ADOPTION_SOURCE_CHANGED', 'Adopted path changed during attribution: ' + rel);
+      if (((await inspectFile(root, rel))?.digest??null) !== op.afterDigest) fail('ADOPTION_SOURCE_CHANGED', 'Adopted path changed during attribution: ' + rel);
       await store.write(rel, candidate);
       return { relPath: rel, status: 'recorded', eventId: candidate.events.at(-1).id, operationId: humanEdited && !workerChanged ? humanOperationId : operationId, ...(humanEdited && workerChanged ? { humanOperationId } : {}) };
     }));
