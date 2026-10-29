@@ -5,10 +5,13 @@ import {createHash} from 'node:crypto';
 
 const reject=(code,message)=>{throw Object.assign(new Error(message),{code});};
 export const TEXT_MAX_BYTES=32*1024*1024;
-const excluded=new Set(['.git','.nozeli','.ccb','node_modules','.venv','venv','__pycache__']);
+const snapshotExcluded=new Set(['.git','.nozeli','.ccb','node_modules','.venv','venv','__pycache__']);
+const credentials=/(^|\/)(?:\.env(?:\.[^/]*)?|auth\.json|credentials(?:\.[^/]*)?|secrets?|tokens?|id_(?:rsa|ed25519|ecdsa)(?:\.pub)?|[^/]+\.(?:pem|key|p12|pfx|keystore))(?:\/|$)/i;
 export function safeRelativePath(rel){
- if(typeof rel!=='string'||!rel||rel.length>1024||rel.includes('\\')||/[\x00-\x1f\x7f:*?\[\]]/.test(rel)||rel.split('/').some(p=>!p||p==='.'||p==='..'||excluded.has(p))||path.isAbsolute(rel)||/(^|\/)(?:\.env(?:\..*)?|auth\.json|credentials(?:\..*)?|[^/]+\.(?:pem|key))$/i.test(rel))reject('PATH_REJECTED','路径不可用于Worker：'+rel);return rel;
+ if(typeof rel!=='string'||!rel||rel.length>1024||rel.includes('\\')||/[\x00-\x1f\x7f:*?\[\]]/.test(rel)||rel.split('/').some(p=>!p||p==='.'||p==='..')||path.isAbsolute(rel))reject('PATH_REJECTED','非法相对路径：'+rel);return rel;
 }
+export function writablePath(rel){safeRelativePath(rel);if(rel.split('/').some(p=>p==='.git'||p==='.nozeli')||credentials.test(rel))reject('PATH_REJECTED','受保护的元数据或凭据路径：'+rel);return rel;}
+export function capturePath(rel){writablePath(rel);if(rel.split('/').some(p=>snapshotExcluded.has(p)))reject('PATH_REJECTED','路径不自动进入执行快照：'+rel);return rel;}
 // Pin every ancestor, never follow links, and verify both the open inode and
 // its directory entry after the consumer has finished streaming.
 export async function withSafeFile(root,rel,consume){

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Separate ordinary project file access from automatic snapshot selection: dot-directories such as `.ccb`, `.github` and `.config` are no longer rejected by name. Preserve tracked metadata without silently merging changes; explicitly declared safe ignored artifacts are frozen, reviewed and integrated with normal conflict protection.
+- Add a persistent local bug ledger and automatic Orchestrator maintenance events for pre-prompt preparation, captured publication and technical closure failures. Host recovery is bounded and verified; it retains the original Work and does not replay started Worker commands, grant privileges or turn internal failures into user questions. Unsupported repairs retain progress as pending version fixes.
+- Keep all native Agents in YOLO mode and remove ordinary host execution and unregistered-directory document access approvals. Cross-project reads/edits preserve bound handles, target CAS, local receipts and registered drafts without registering external directories or writing metadata there.
+- Limit the user inbox and notifications to result review and concrete high-danger authorization. Ordinary questions and recovery facts move to source-bound Orchestrator processing; the same Work continues once when a reliable reversible default exists, otherwise it retains an explicit backstage blocked state. High-risk grants are exact-effect-bound, and refusals/revocations and unknown-effect replay protection remain effective.
+
 ## 0.1.0-alpha.2
 
 - Add explicit deterministic unit/integration test suites and a credential-free real Electron smoke entrypoint, with Linux CI and clean pinned builds.

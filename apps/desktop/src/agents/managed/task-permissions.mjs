@@ -40,12 +40,31 @@ export function normalizeExecutionEffect({command,args,cwd,elevation='user'}={},
   return {version:1,command,args,cwd,scope:'host-exec',action:elevation,elevation};
 }
 
+// Recognized concrete effects, not a shell sandbox or an ordinary-command
+// allowlist. Native OMP remains trusted; opaque scripts are not classified.
+export function executionDanger(effect){
+  if(effect.elevation==='admin'||effect.action==='admin')return '系统管理员提权';
+  if(effect.dangerousEffect)return typeof effect.dangerousEffect==='string'?effect.dangerousEffect:JSON.stringify(effect.dangerousEffect);
+  const command=pathModule.basename(effect.command).toLowerCase().replace(/\.exe$/,'');
+  const args=effect.args??[];
+  if(['sudo','doas','pkexec','runas'].includes(command))return '系统管理员提权';
+  if(/^(mkfs(?:\..+)?|format|diskpart|shred|wipefs|blkdiscard)$/.test(command))return '格式化或不可逆销毁数据';
+  if(command==='dd'&&args.some(arg=>/^of=\/dev\//.test(arg)))return '覆盖块设备';
+  if(command==='rm'&&args.some(arg=>/^-[^-]*r/i.test(arg)||arg==='--recursive')){
+    const cwd=pathModule.resolve(effect.cwd),home=process.env.HOME?pathModule.resolve(process.env.HOME):null;
+    let options=true;
+    for(const arg of args){
+      if(options&&arg==='--'){options=false;continue;}if(options&&arg.startsWith('-'))continue;
+      const target=pathModule.resolve(cwd,arg),relative=pathModule.relative(target,cwd),withinTask=pathModule.relative(cwd,target);
+      if(target===pathModule.parse(target).root||target===home||relative===''||(!relative.startsWith('..'+pathModule.sep)&&relative!=='..'&&!pathModule.isAbsolute(relative)))return '删除工作目录、用户目录或其祖先';
+      if(withinTask==='..'||withinTask.startsWith('..'+pathModule.sep)||pathModule.isAbsolute(withinTask))return '递归删除任务目录外的数据树';
+    }
+  }
+  return null;
+}
+
 const live=grant=>grant.status==='granted';
-// Separator-neutral directory containment (works for POSIX and win32 paths).
-const withinRoot=(child,parent)=>{const c=String(child).replace(/\\/g,'/').replace(/\/+$/,''),p=String(parent).replace(/\\/g,'/').replace(/\/+$/,'');return c===p||c.startsWith(p+'/');};
-// A user-approved admin task grant covers new admin commands of the same task
-// inside the approved root; anything else re-asks.
-const coversRootTask=(grant,frozenEffect)=>Boolean(live(grant)&&grant.kind==='effect'&&grant.mode==='task'&&grant.generation!==undefined&&grant.frozenEffect?.action==='admin'&&frozenEffect?.action==='admin'&&typeof grant.frozenEffect.cwd==='string'&&typeof frozenEffect.cwd==='string'&&withinRoot(frozenEffect.cwd,grant.frozenEffect.cwd));
+const sameExecution=(left,right)=>{if(!left||!right)return false;const {dangerousEffect:ignoredLeft,...a}=left,{dangerousEffect:ignoredRight,...b}=right;return effectHash(a)===effectHash(b);};
 
 export class TaskPermissions {
   constructor(storage){this.storage=storage;this.flights=new Map();this.generation=randomUUID();}
@@ -61,14 +80,13 @@ export class TaskPermissions {
   }
   read(projectId){return this.update(projectId,state=>{
     state.requests??=[];state.grants??=[];state.decisions??=[];state.executions??=[];
-    // Explicit schema migration: the ordinary cross-project document gate is
-    // gone. Its still-pending requests are closed as migrated — never left
-    // stranded holding the frontdesk hostage, never auto-continued, and no
-    // completed input is replayed. A one-time todo informs the user.
+    // Obsolete ordinary permission requests close without user authorization
+    // or automatic command replay; original sources remain backstage facts.
     if(state.schema!==2){
       state.schema=2;const now=new Date().toISOString();
       for(const request of state.requests)if(request.kind==null&&request.status==='pending'){request.status='migrated';request.migratedAt=now;}
     }
+    for(const request of state.requests)if(request.status==='pending'&&request.effectType==='host-exec'&&request.frozenEffect&&!executionDanger(request.frozenEffect)){request.status='migrated';request.migratedAt=new Date().toISOString();request.migrationReason='default-yolo';}
     if(state.generation!==this.generation){
       state.generation=this.generation;
       // Stale only grants minted by an EARLIER generation: a grant written
@@ -77,6 +95,21 @@ export class TaskPermissions {
       for(const grant of state.grants)if(live(grant)&&grant.generation!==this.generation){grant.status='stale-generation';grant.staledAt=new Date().toISOString();}
     }
   });}
+  async prepareOrdinary(projectId,input){
+    await this.read(projectId);
+    const hash=effectHash(input.frozenEffect);
+    const refusal=await this.update(projectId,state=>{
+      const settled=state.executions.findLast(execution=>execution.permissionTaskId===input.permissionTaskId&&execution.effectHash===hash&&execution.operationKey===input.operationKey&&['completed','failed','auth-cancelled','auth-failed','unavailable'].includes(execution.status));
+      if(settled)return {status:'executed',execution:structuredClone(settled),request:null,effectHash:hash};
+      const denied=state.requests.find(r=>sameExecution(r.frozenEffect,input.frozenEffect)&&r.permissionTaskId===input.permissionTaskId&&['denied','cancelled'].includes(r.status));
+      const revoked=state.grants.find(g=>sameExecution(g.frozenEffect,input.frozenEffect)&&g.permissionTaskId===input.permissionTaskId&&g.status==='revoked');
+      if(denied||revoked)return {status:'denied',effectHash:hash,request:denied??null,grant:revoked??null,...(revoked?{reason:'revoked'}:{})};
+      if(state.grants.some(g=>g.effectHash===hash&&g.permissionTaskId===input.permissionTaskId&&live(g)&&g.generation===this.generation))return null;
+      const id=randomUUID();state.grants.push({id,requestId:'policy:'+id,kind:'effect',authority:'default-yolo',status:'granted',mode:'task',generation:this.generation,permissionTaskId:input.permissionTaskId,sourceJobId:input.sourceJobId,effectType:'host-exec',frozenEffect:input.frozenEffect,effectHash:hash,grantedAt:new Date().toISOString(),expiresAt:null});
+    });
+    if(['denied','executed'].includes(refusal?.status))return refusal;
+    return this.prepareEffect(projectId,input);
+  }
   // Gate one frozen sensitive effect. 'allowed' means a still-live grant of
   // this exact hash already covers this task; 'required' minted/kept a
   async prepareEffect(projectId,{sourceJobId,permissionTaskId,role=null,effectType,frozenEffect,ttlMs=EFFECT_TTL_MS,originalText=null,reason=null,remainingActions=null,completedOperations=null,operationKey=null}){
@@ -90,28 +123,24 @@ export class TaskPermissions {
     return this.update(projectId,state=>{
       const now=new Date().toISOString();
       for(const grant of state.grants)if(live(grant)&&grant.expiresAt&&grant.expiresAt<=now){grant.status='expired';grant.endedAt=now;}
+      const matchesExecution=execution=>execution.effectHash===hash||sameExecution((state.grants.find(g=>g.effectHash===execution.effectHash)??state.requests.find(r=>r.effectHash===execution.effectHash))?.frozenEffect,frozenEffect);
       // Crash-after-effect-before-receipt first: a durable started intent (or
       // unknown result) blocks EVERY path, including live task/root grants —
       // a crashed effect is never retried automatically.
-      const startedOnly=(state.executions??[]).findLast(e=>e.permissionTaskId===permissionTaskId&&e.effectHash===hash&&['started','unknown'].includes(e.status));
+      const startedOnly=(state.executions??[]).findLast(e=>e.permissionTaskId===permissionTaskId&&matchesExecution(e)&&['started','unknown'].includes(e.status));
       if(startedOnly)return {status:'unknown',request:null,effectHash:hash,execution:structuredClone(startedOnly)};
       // Same exact effect + same host operation id: idempotent receipt replay
       // FIRST — even under a still-live task grant, a settled operation never
       // repeats its action. A re-run needs a NEW operation id.
-      const settled=(state.executions??[]).findLast(e=>e.permissionTaskId===permissionTaskId&&e.effectHash===hash&&['completed','failed','auth-cancelled','auth-failed','unavailable'].includes(e.status)&&(operationKey==null||e.operationKey===operationKey));
+      const settled=(state.executions??[]).findLast(e=>e.permissionTaskId===permissionTaskId&&matchesExecution(e)&&['completed','failed','auth-cancelled','auth-failed','unavailable'].includes(e.status)&&(operationKey==null||e.operationKey===operationKey));
       if(settled)return {status:'executed',execution:structuredClone(settled),request:structuredClone((state.requests??[]).find(r=>r.id===settled.requestId)??null),effectHash:hash};
       const grant=state.grants.find(g=>live(g)&&g.effectHash===hash&&g.generation===this.generation&&g.permissionTaskId===permissionTaskId);
       if(grant)return {status:'allowed',grant:structuredClone(grant),request:structuredClone(state.requests.find(r=>r.id===grant.requestId)??null),effectHash:hash};
-      // Root-task authority: one user-approved admin task grant covers NEW
-      // admin commands of the same task within the approved root, without a
-      // fresh security todo. A cwd outside that root still re-asks.
-      const rootTask=(state.grants??[]).find(g=>coversRootTask(g,frozenEffect)&&g.generation===this.generation&&g.permissionTaskId===permissionTaskId);
-      if(rootTask){const covered={id:rootTask.id,requestId:rootTask.requestId,kind:'effect',status:'granted',version:rootTask.version??1,mode:'task',scope:'root-task',generation:rootTask.generation,sourceProjectId:rootTask.sourceProjectId,sourceJobId:rootTask.sourceJobId,role:rootTask.role,permissionTaskId:rootTask.permissionTaskId,effectType:'host-exec',frozenEffect:structuredClone(frozenEffect),effectHash:hash,grantedAt:rootTask.grantedAt,expiresAt:rootTask.expiresAt,coveredBy:rootTask.id};return {status:'allowed',grant:covered,request:structuredClone(state.requests.find(r=>r.id===rootTask.requestId)??null),effectHash:hash};}
       // A user revoke of a task grant closes future admission for that exact
       // effect: silently re-requesting the same frozen command is refused.
-      const revokedGrant=state.grants.find(g=>g.kind==='effect'&&g.status==='revoked'&&g.effectHash===hash&&g.permissionTaskId===permissionTaskId);
+      const revokedGrant=state.grants.find(g=>g.kind==='effect'&&g.status==='revoked'&&sameExecution(g.frozenEffect,frozenEffect)&&g.permissionTaskId===permissionTaskId);
       if(revokedGrant)return {status:'denied',request:null,grant:structuredClone(revokedGrant),effectHash:hash,reason:'revoked'};
-      const denied=state.requests.find(r=>['denied','cancelled'].includes(r.status)&&r.permissionTaskId===permissionTaskId&&r.effectHash===hash);
+      const denied=state.requests.find(r=>['denied','cancelled'].includes(r.status)&&r.permissionTaskId===permissionTaskId&&sameExecution(r.frozenEffect,frozenEffect));
       if(denied)return {status:'denied',request:structuredClone(denied),effectHash:hash};
       const unknown=(state.executions??[]).find(e=>e.effectHash===hash&&e.permissionTaskId===permissionTaskId&&e.status==='unknown');
       if(unknown)return {status:'unknown',request:null,effectHash:hash,execution:structuredClone(unknown)};
@@ -182,19 +211,6 @@ export class TaskPermissions {
       // itself blocks a second attempt until the user resolves it explicitly.
       const unknown=(state.executions??[]).find(e=>(e.grantId===grant.id||e.requestId===grant.requestId)&&['unknown','started'].includes(e.status)&&e.effectHash===hash);
       if(unknown)return deny('EFFECT_RESULT_UNKNOWN','此效果上次执行结果未知或已在执行中，不自动重放；请在待办中核对实际结果后重新申请。');
-      if(grant.effectHash!==hash&&frozenEffect){
-        // Root-task authority view: the persistent grant is the task's admin
-        // grant; a NEW command hash under its approved root is authorized by
-        // it (and dies with its revoke/expiry/generation).
-        if(coversRootTask(grant,frozenEffect))return {ok:true,grant:structuredClone({...grant,scope:'root-task',frozenEffect:structuredClone(frozenEffect),effectHash:hash,coveredBy:grant.id}),request:structuredClone((state.requests??[]).find(r=>r.id===grant.requestId)??null)};
-      }
-      // Root-task authority view: the persistent grant is the task's admin
-      // grant; a NEW command hash under its approved root is authorized by it
-      // (and dies with its revoke/expiry/generation).
-      if(grant.effectHash!==hash&&frozenEffect&&coversRootTask(grant,frozenEffect)){
-        const rootRequest=(state.requests??[]).find(r=>r.id===grant.requestId);
-        return {ok:true,grant:structuredClone({...grant,scope:'root-task',frozenEffect:structuredClone(frozenEffect),effectHash:hash,coveredBy:grant.id}),request:structuredClone(rootRequest??null)};
-      }
       if(grant.effectHash!==hash)return deny('EFFECT_HASH_MISMATCH','效果与用户批准的冻结内容不一致，未执行；请重新申请。');
       const request=(state.requests??[]).find(r=>r.id===grant.requestId);
       return {ok:true,grant:structuredClone(grant),request:structuredClone(request??null)};
@@ -210,6 +226,7 @@ export class TaskPermissions {
       const prior=state.executions.find(e=>e.requestId===requestId&&e.operationKey===operationKey);
       const now=new Date().toISOString();
       if(prior&&prior.status!=='started')return {execution:structuredClone(prior),duplicate:true};
+      if(prior&&result.status==='started')return {execution:structuredClone(prior),duplicate:true};
       if(prior&&prior.status==='started'){prior.status=result.status;prior.at=now;if(Number.isSafeInteger(result.exitCode))prior.exitCode=result.exitCode;if(result.actualIdentity&&typeof result.actualIdentity==='object')prior.actualIdentity=structuredClone(result.actualIdentity);if(str(result.receiptId,256))prior.receiptId=result.receiptId;if(grant&&live(grant)&&grant.mode==='once'&&['completed','failed','unknown'].includes(result.status)){grant.status='used';grant.usedAt=now;}return {execution:structuredClone(prior),duplicate:false};}
       const execution={id:randomUUID(),requestId,grantId,permissionTaskId:grant?.permissionTaskId??null,effectHash:hash,at:now,status:result.status,...(operationKey?{operationKey}:{}),...(Number.isSafeInteger(result.exitCode)?{exitCode:result.exitCode}:{}),...(result.actualIdentity&&typeof result.actualIdentity==='object'?{actualIdentity:structuredClone(result.actualIdentity)}:{}),...(str(result.receiptId,256)?{receiptId:result.receiptId}:{})};
       state.executions.push(execution);

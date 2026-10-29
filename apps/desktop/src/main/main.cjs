@@ -688,7 +688,7 @@ async function main() {
         return {ok:true,value:await new ManagedReportExporter({host,managedAgents,beforeOperation:syncDocument}).exportArtifact(payload??{})};
       }
       if(typeof op==='string'&&op.startsWith('managed.')){
-        const historyOnly=['managed.status','managed.history.list','managed.history.read','managed.artifact.read','managed.artifact.list','managed.timeline.page','managed.timeline.read','managed.timeline.request','managed.changes.list','managed.changes.read','managed.worker.history','managed.resident.history','managed.draft','managed.disposition','managed.terminal.screen','managed.review.read','managed.review.instruction.read'].includes(op);
+        const historyOnly=['managed.status','managed.maintenance.status','managed.history.list','managed.history.read','managed.artifact.read','managed.artifact.list','managed.timeline.page','managed.timeline.read','managed.timeline.request','managed.changes.list','managed.changes.read','managed.worker.history','managed.resident.history','managed.draft','managed.disposition','managed.terminal.screen','managed.review.read','managed.review.instruction.read'].includes(op);
         // Local disposition still passes sender/project/mutation authorization above.
         const localDisposition=['managed.end','managed.retry','managed.merge.consent','managed.merge.constraint','managed.deviation.resolve','managed.problem.resolve','managed.effect.response','managed.todo.manage','managed.attention.ack','managed.attention.respond','managed.attention.draft.read','managed.attention.draft.write','managed.review.save','managed.review.accept','managed.review.instruction.save'].includes(op);
         let blocked=ompRuntimeError&&!historyOnly&&!localDisposition?ompRuntimeError:null;

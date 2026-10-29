@@ -5,7 +5,8 @@ import {intakeLineage} from '../../domain/managed-work-records.mjs';
 import {runtimeFailureMessage} from '../../domain/runtime-failure-message.mjs';
 import {manageTodoState} from '../../domain/todo-management.mjs';
 import {verifyProjectArtifacts} from './artifacts.mjs';
-import {normalizeExecutionEffect,effectHash as hashOf} from './task-permissions.mjs';
+import {normalizeExecutionEffect,executionDanger,effectHash as hashOf} from './task-permissions.mjs';
+import {createExternalDocuments} from './external-documents.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
@@ -31,6 +32,7 @@ import {renderArchifyDiagram} from './archify-diagram.mjs';
 import {prepareHtmlReport} from './html-report.mjs';
 import {activeDrafts,computeReviewVersion,decodeInline,draftTextFor,hasActiveDrafts,normalizeReviewText,readDraftRecord,reviewDraftBytes,reviewMergeProjection,writeDraftRecord,appendDraftEntry,REVIEW_HISTORY_LIMIT,REVIEW_REQUEST_KEY} from './review-candidate.mjs';
 import {managedArtifact,managedReportSource} from '../managed-report-source.mjs';
+import {MaintenanceLedger,maintenanceBoundary} from './maintenance-ledger.mjs';
 
 // extra 合并附加 JSON Schema 键（如 oneOf），用于同一字段集按 kind 分支的入参合同。
 const tool=(name,description,properties,required=Object.keys(properties),extra={})=>({type:'function',name,description,inputSchema:{type:'object',properties,required,additionalProperties:false,...extra}});
@@ -56,9 +58,45 @@ export class Controller extends EventEmitter {
     this.workerTerminal=createWorkerTerminalLifecycle({getAttachment:target=>this.terminals.get(target),isAllowed:target=>!this.stopping&&!this.deviationHeld(target)&&!['queued','closing','ended'].includes(this.store.find(target).status),attach:async(target,options)=>{const {attachNativeTerminal}=await import('./native-terminal.mjs');return attachNativeTerminal(this,target,{executionJobId:options.executionJobId,onData:(data,seq)=>this.emit('native-terminal-event',{target,data,seq}),onScreen:screen=>this.emit('native-terminal-event',{target,screen}),onMethod:method=>this.emit('native-terminal-event',{target,method}),onExit:value=>this.emit('native-terminal-event',{target,ended:true,exitCode:value?.exitCode})});}});
     this.memoryVersion=new MemoryVersion(path.dirname(store.plan));
     this.projectId=projectId??store.state.workspaceId;
+    this.maintenance=new MaintenanceLedger(store.storage,this.projectId);this.maintenanceActions=new Map();this.maintenanceFlights=new Map();
     this.processBudget=processBudget;this.reclaiming=new Map();this.mergeDrain=null;
     this.timeline=new SessionIndex(store);
     this.changes=new WorkChanges({runtimeRoot:store.root,storage:store.storage,projectId:store.projectId,readState:()=>store.state});
+  }
+  async maintenanceEvent(bug){
+    await this.store.mutate(()=>{if(this.store.state.jobs.some(j=>j.type==='maintenance'&&j.context?.bugId===bug.id))return;this.store.state.jobs.unshift({id:randomUUID(),target:'orchestrator',type:'maintenance',status:'queued',text:'宿主自动维修事件。仅核对本机故障并调用 nozeli_maintenance；不得派业务Work、询问用户如何维修或重放原任务。bugId='+bug.id,context:{bugId:bug.id},createdAt:new Date().toISOString()});});this.changed();this.kick();
+  }
+  async maintenanceStatus(){
+    const state=await this.maintenance.read();for(const bug of state.bugs)if(bug.status==='repairing'&&!this.maintenanceFlights.has(bug.id)){bug.status='needs-version-fix';bug.recoveryUnavailable='interrupted-host-attempt';}return state;
+  }
+  async maintenanceRetry(bugId){
+    if(this.maintenanceFlights.has(bugId))return this.maintenanceFlights.get(bugId);
+    const flight=(async()=>{const bug=(await this.maintenance.read()).bugs.find(b=>b.id===bugId&&b.projectId===this.projectId);if(!bug)throw Error('unknown maintenance bug');
+      if(bug.status==='repaired')return bug;
+      const action=this.maintenanceActions.get(bugId);if(!action){if(['cancelled','human-boundary'].includes(bug.status))return bug;return this.maintenance.finish(bugId,{outcome:'needs-version-fix'});}
+      const live=this.store.state.jobs.find(j=>j.id===bug.jobId),work=this.store.state.works.find(w=>w.id===bug.workId);
+      if(this.stopping||work&&(work.revision!==bug.revision||['closing','ended'].includes(work.status))&&bug.phase!=='closure'||live?.status==='cancelled')return this.maintenance.finish(bugId,{outcome:'cancelled'});
+      if(!await this.maintenance.attempt(bugId))return (await this.maintenance.read()).bugs.find(b=>b.id===bugId);
+      try{const verified=await action();const result=await this.maintenance.finish(bugId,{verified:verified===true,outcome:verified===true?'host-outcome-verified':'needs-version-fix'});if(verified&&work?.maintenance?.bugId===bugId){await this.store.mutate(()=>{delete work.maintenance;if(bug.phase==='publication'&&['paused','running'].includes(work.status)&&work.result?.revision===bug.revision)work.status='review';else if(['session-start','input-preparation'].includes(bug.phase)&&live?.status==='failed'&&!live.promptStartedAt&&!live.collabAttempts?.some(a=>a.everAdmitted)){live.status='queued';delete live.maintenanceBugId;work.status='running';}});this.kick();}return result;}catch(error){if(work?.maintenance?.bugId===bugId)await this.store.mutate(()=>{if(work.status==='running')work.status='paused';});return this.maintenance.finish(bugId,{outcome:maintenanceBoundary(error)?'human-boundary':'needs-version-fix'});}
+    })();this.maintenanceFlights.set(bugId,flight);try{return await flight;}finally{this.maintenanceFlights.delete(bugId);const state=await this.maintenance.read();await this.store.mutate(()=>{for(const w of this.store.state.works){const bug=state.bugs.find(b=>b.id===w.maintenance?.bugId);if(bug)w.maintenance.status=bug.status;}});this.changed();}
+  }
+  async maintenanceTransaction(job,phase,run,verify=()=>true){
+    try{return await run();}catch(error){if(maintenanceBoundary(error)||error.exitUnconfirmed||error.code==='MAINTENANCE_PENDING')throw error;
+      try{this.store.storage?.assertActive?.(this.projectId);}catch{throw error;}
+      const bug=await this.maintenance.record({phase,jobId:job?.id??null,workId:job&&!['frontdesk','orchestrator'].includes(job.target)?job.target:null,revision:job?.revision??null,error,capability:phase});
+      if(job?.type==='maintenance'){await this.maintenance.finish(bug.id,{outcome:'needs-version-fix'});throw Object.assign(Error('Maintenance provider unavailable'),{code:'MAINTENANCE_PENDING',bugId:bug.id});}
+      let value;this.maintenanceActions.set(bug.id,async()=>{value=await run();return await verify(value);});await this.maintenanceEvent(bug);
+      const result=await this.maintenanceRetry(bug.id);if(result.lastOutcome?.verified)return value;
+      if(job)await this.store.mutate(()=>{const saved=this.store.state.jobs.find(j=>j.id===job.id);if(saved){saved.maintenanceBugId=bug.id;saved.maintenanceFault={phase,code:bug.error.code,symptom:bug.error.symptom};}const w=this.store.state.works.find(w=>w.id===job.target);if(w&&w.status==='running'){w.status='paused';w.maintenance={bugId:bug.id,status:result.status,message:'系统故障已记录，原任务与改动保留；后台维修中，不重放已开始操作。'};}});
+      throw Object.assign(Error('Internal maintenance pending'),{code:'MAINTENANCE_PENDING',bugId:bug.id});
+    }
+  }
+  async maintenanceScan(){
+    const adopted=[];for(const job of this.store.state.jobs.filter(j=>['failed','interrupted'].includes(j.status)&&!j.maintenanceBugId&&j.error)){
+      if(!job.maintenanceFault||!['input-preparation','publication','session-start'].includes(job.maintenanceFault.phase))continue;
+      const bug=await this.maintenance.record({phase:job.maintenanceFault.phase,jobId:job.id,workId:job.target,revision:job.revision,error:{code:job.maintenanceFault.code}});
+      await this.maintenance.finish(bug.id,{outcome:'needs-version-fix'});await this.store.mutate(()=>{job.maintenanceBugId=bug.id;for(const todo of this.store.state.todos)if(todo.sourceJobId===job.id&&['system','recovery'].includes(todo.kind))todo.status='resolved';});await this.maintenanceEvent(bug);adopted.push(bug.id);
+    }return {adopted,automaticReplay:false};
   }
   async recordTransport(target,fact){
     const statuses=new Set(['prepared','submitted','pending','admitted','executed','rejected','unknown','settled']);
@@ -179,9 +217,9 @@ export class Controller extends EventEmitter {
     await this.prepareOnline();
     this.assertFrontdeskContextAdmission('frontdesk');
     const residents=['frontdesk','orchestrator'].filter(target=>!this.sessions.get(target)||this.sessions.get(target).closed);
-    const preflight=await Promise.allSettled(residents.map(target=>this.makeSession(target,{preflightOnly:true})));
+    const preflight=await Promise.allSettled(residents.map(target=>this.maintenanceTransaction(null,'resident-preflight-'+target,()=>this.makeSession(target,{preflightOnly:true}))));
     const rejected=preflight.find(result=>result.status==='rejected');if(rejected)throw rejected.reason;
-    const results=await Promise.allSettled(residents.map(target=>this.session(target)));const failed=results.find(result=>result.status==='rejected');if(failed)throw failed.reason;
+    const results=await Promise.allSettled(residents.map(target=>this.maintenanceTransaction(null,'resident-start-'+target,()=>this.session(target),s=>Boolean(s&&!s.closed))));const failed=results.find(result=>result.status==='rejected');if(failed)throw failed.reason;
     this.started=true;this.changed();this.kick();return this.snapshot();
   }
   async applyModelDefaults(defaults){
@@ -573,33 +611,37 @@ export class Controller extends EventEmitter {
       s.frontdeskRouteDecisions.push({requestKey,identity,result:accepted});return structuredClone(accepted);
     });this.changed();this.kick();return result;
   }
-  // Registered-target resolution for frontdesk document metadata only: the
-  // ordinary cross-project permission gate is gone (any native shell under
-  // the same user reached these paths anyway), but every cross-project
-  // operation still runs host-resolved against a REGISTERED project and
-  // keeps the actor identity, durable operation receipts and the safePath /
-  // credential exclusions on the target project.
+  // Resolution discovers filesystem identity without registering a project.
   async crossProjectTarget(job,p,op){
     if(!['read','list','search','create','apply'].includes(op))return null;
-    let candidate=null;
+    const args=p.arguments??{};
     if(op==='apply'){
-      const peek=typeof this.frontdeskDocuments?.peek==='function'?this.frontdeskDocuments.peek('apply',p.arguments??{}):null;
-      if(!peek||peek.projectId===this.projectId)return null;
-      candidate=peek.projectId;
-    }else{
-      const projectPath=p.arguments?.projectPath;
-      if(projectPath===undefined||projectPath===null||projectPath==='')return null;
-      if(typeof projectPath!=='string'||projectPath.length>4096)throw Object.assign(new Error('projectPath 必须是不超过4096字符的字符串。'),{code:'INVALID_PAYLOAD'});
-      candidate=projectPath.trim();
+      const operationId=createHash('sha256').update(this.store.state.workspaceId+job.id+p.callId).digest('hex');
+      const receipt=await this.store.storage.getLocal(this.projectId,'managed:external-document:'+operationId);
+      if(receipt)return {external:true,root:receipt.root,relPath:receipt.value?.relPath??path.relative(receipt.root,receipt.path)};
+      const external=this.externalDocuments?.peek('apply',args);if(external)return external;
+      const bound=this.frontdeskDocuments?.peek?.('apply',args);
+      if(!bound||bound.projectId===this.projectId)return null;
+      return this.resolveRegisteredProject(bound.projectId);
     }
-    if(typeof this.resolveRegisteredProject!=='function')throw Object.assign(new Error('跨项目解析未接入；不执行未登记项目的访问。'),{code:'CAPABILITY_UNAVAILABLE'});
+    let candidate=args.projectPath,requestedAbsolute=null;
+    if(path.isAbsolute(args.relPath??'')||path.isAbsolute(candidate??'')){
+      const requested=path.isAbsolute(args.relPath??'')?args.relPath:path.resolve(candidate,args.relPath??'');
+      requestedAbsolute=requested;
+      const absolute=await fs.realpath(requested).catch(error=>{if(error.code==='ENOENT'&&op==='create')return requested;throw error;});
+      candidate=op==='list'||op==='search'?absolute:path.dirname(absolute);
+      p.arguments={...args,relPath:op==='list'||op==='search'?'':path.basename(absolute)};
+    }
+    if(candidate===undefined||candidate===null||candidate==='')return null;
+    if(typeof candidate!=='string'||candidate.length>4096)throw Object.assign(new Error('projectPath 无效。'),{code:'INVALID_PAYLOAD'});
+    if(typeof this.resolveRegisteredProject!=='function')throw Object.assign(new Error('文件路径解析未接入。'),{code:'CAPABILITY_UNAVAILABLE'});
     const resolved=await this.resolveRegisteredProject(candidate);
+    if(resolved.external&&requestedAbsolute)p.arguments={...p.arguments,relPath:requestedAbsolute};
+    if(resolved.relPathPrefix)p.arguments={...p.arguments,relPath:path.posix.join(resolved.relPathPrefix,p.arguments?.relPath??'')};
     return resolved.projectId===this.projectId?null:resolved;
   }
-  // Sensitive-effect authorization: the model explicitly requests one frozen
-  // privileged execution; nothing runs before the user's same-project todo
-  // decision, and OS execution happens only through the privilege broker
-  // after preEffect re-verified live task/generation/expiry/revocation.
+  // Host-managed execution: ordinary YOLO admission, or exact frozen
+  // high-danger user authorization. Both retain durable intent and receipts.
   async privilegedExecute(job,target,p){
     if(!this.taskPermissions)throw Object.assign(new Error('效果授权台账未接入。'),{code:'CAPABILITY_UNAVAILABLE'});
     const a=p.arguments??{};
@@ -611,7 +653,6 @@ export class Controller extends EventEmitter {
     let cwdStat=null;
     try{cwdStat=await fs.lstat(frozen.cwd);}catch{}
     if(!cwdStat||!cwdStat.isDirectory()||cwdStat.isSymbolicLink())throw Object.assign(new Error('cwd 必须是现存的真实目录：'+frozen.cwd),{code:'INVALID_EFFECT'});
-    const rootProject=typeof this.resolveProjectRoot==='function'?await this.resolveProjectRoot(frozen.cwd).catch(()=>null):null;
     // Pin the executable content at approval time: resolve the command through
     // the CURRENT platform's rules (absolute/relative path, else PATH lookup,
     // plus PATHEXT on win32) to the real binary and hash its bytes. An
@@ -636,10 +677,11 @@ export class Controller extends EventEmitter {
     let commandDigest;try{commandDigest=createHash('sha256').update(await fs.readFile(executable)).digest('hex');}catch(error){throw Object.assign(new Error('可执行文件无法读取以固化内容摘要：'+executable+'；'+error.message),{code:'INVALID_EFFECT'});}
     const cwdStatNow=await fs.lstat(frozen.cwd);
     const cwdIdentity={dev:cwdStatNow.dev,ino:cwdStatNow.ino,birth:cwdStatNow.birthtimeMs};
-    frozen={...frozen,commandDigest,resolvedCommand:executable,cwdIdentity};
+    frozen={...frozen,commandDigest,resolvedCommand:executable,cwdIdentity,...(a.dangerousEffect?{dangerousEffect:a.dangerousEffect}:{})};
     const goal=this.frontGoal(job);
     const originalText=goal?this.store.state.jobs.find(j=>j.id===goal.rootJobId)?.text??job.text:job.text;
-    const gate=await this.taskPermissions.prepareEffect(this.projectId,{sourceJobId:job.id,permissionTaskId:job.context?.permissionTaskId??job.id,role:['frontdesk','orchestrator'].includes(target)?target:'worker',effectType:'host-exec',frozenEffect:frozen,originalText,reason:typeof a.purpose==='string'?a.purpose:null,operationKey:String(p.callId??'')||null,...(rootProject?{}:{unregisteredCwd:true})});
+    const prepare=executionDanger(frozen)?'prepareEffect':'prepareOrdinary';
+    const gate=await this.taskPermissions[prepare](this.projectId,{sourceJobId:job.id,permissionTaskId:job.context?.permissionTaskId??job.id,role:['frontdesk','orchestrator'].includes(target)?target:'worker',effectType:'host-exec',frozenEffect:frozen,originalText,reason:executionDanger(frozen)??(typeof a.purpose==='string'?a.purpose:null),operationKey:String(p.callId??'')||null});
     if(gate.status==='executed')return {ok:true,value:{executed:true,status:gate.execution.status,exitCode:gate.execution.exitCode??null,actualIdentity:gate.execution.actualIdentity??null,receiptId:gate.execution.id,effectHash:gate.execution.effectHash,replayed:true,message:'同一效果已有持久回执；按原回执返回，不重复执行。如需再次真实执行请发起新的操作调用。'},continueTurn:true};
     if(gate.status==='unknown')return {ok:false,error:{code:'EFFECT_RESULT_UNKNOWN',message:'此命令上次执行结果未知（可能已在执行中或回执前中断），不自动重放；请在待办中核对实际结果后重新申请。'},continueTurn:true};
     if(gate.status==='denied')return {ok:false,error:{code:gate.reason==='revoked'?'EFFECT_REVOKED':'PERMISSION_DENIED',message:gate.reason==='revoked'?'此命令的任务授权已被用户撤销；未来准入已关闭，不自动重试。需用户重新明确授权。':'用户已拒绝此'+(frozen.action==='admin'?'提权':'敏感')+'执行（'+frozen.command+'）；不要重试同一命令，继续原范围内其他工作或向用户说明。',requestId:gate.request?.id??null},continueTurn:true};
@@ -647,9 +689,8 @@ export class Controller extends EventEmitter {
     const request=gate.request??{id:gate.grant.requestId,permissionTaskId:gate.grant.permissionTaskId};
     return this.#effectExecute(job,request,gate.grant,frozen,String(p.callId??'')||null);
   }
-  // Broker-only execution, strictly after a user choice. A missing or failed
-  // broker is reported honestly; the grant itself never claims OS root —
-  // only the broker's actualIdentity facts do.
+  // Broker execution retains actual OS identity; policy or user admission
+  // never impersonates system authentication.
   async #effectExecute(job,request,grant,frozen,operationKey=null){
     const broker=this.privilegeBroker;
     if(!broker||typeof broker.authenticate!=='function'||typeof broker.execute!=='function')return {ok:false,error:{code:'ELEVATION_UNAVAILABLE',message:'宿主未接入提权执行代理；未执行，不伪造授权。'},continueTurn:true};
@@ -674,6 +715,7 @@ export class Controller extends EventEmitter {
     // and receipt leaves 'started', which blocks automatic retry (unknown).
     const intent=await this.taskPermissions.recordExecution(this.projectId,{requestId:request.id,grantId:grant.id,effectHash:grant.effectHash,operationKey:pre.grant?.coveredBy?null:operationKey,result:{status:'started'}}).catch(()=>null);
     if(!intent)return {ok:false,error:{code:'EFFECT_INTENT_UNAVAILABLE',message:'执行意图未能持久化；未发射命令，请核对本地存储。'},continueTurn:true};
+    if(intent.duplicate)return {ok:false,error:{code:'EFFECT_RESULT_UNKNOWN',message:'同一操作已准入或已有回执；本次不重复执行，请读取原操作结果。'},continueTurn:true};
     let result;
     try{result=await broker.execute({requestId:request.id,effectHash:grant.effectHash,grantId:grant.id,sessionId:auth.sessionId??null,frozenEffect:pre.grant?.frozenEffect??frozen});}
     catch(error){result={status:'unknown',reason:error?.message};}
@@ -714,12 +756,11 @@ export class Controller extends EventEmitter {
     const s=this.store.state,job=s.jobs.find(j=>j.id===request.sourceJobId);
     if(!job)return null;
     const frozen=request.frozenEffect;
-    const taskAdmin=request.decision?.action==='approve-task'&&frozen.action==='admin';
-    const text='用户已批准'+(frozen.action==='admin'?'提权（root/管理员）':'敏感')+'执行：'+frozen.command+' '+(frozen.args||[]).map(v=>JSON.stringify(v)).join(' ')+'（cwd: '+frozen.cwd+'）。\n'+(taskAdmin?'用户授予该原任务的管理员能力；同任务可在该工作目录及子目录启动其他管理命令，仍逐次调用真实系统认证。这不是文件访问沙箱，也不是新任务授权。':request.decision?.action==='approve-task'?'仅该原任务可再次执行同一冻结命令，不覆盖其他命令。':'仅允许本次冻结命令一次。')+'授权可撤销、到期、任务结束或重启失效。仅继续原任务未完成部分，已完成操作不重放。';
+    const text='用户已批准'+(frozen.action==='admin'?'提权（root/管理员）':'高危')+'执行：'+frozen.command+' '+(frozen.args||[]).map(v=>JSON.stringify(v)).join(' ')+'（cwd: '+frozen.cwd+'）。\n'+(request.decision?.action==='approve-task'?'仅该原任务可再次执行同一冻结效果，不覆盖其他命令、对象或目录。':'仅允许本次冻结效果一次。')+'授权可撤销、到期、任务结束或重启失效。仅继续原任务未完成部分，已完成操作不重放。';
     const key='effect-permission:'+request.id;
     const existing=s.jobs.find(j=>j.key===key);
     if(existing)return {jobId:existing.id,repaired:false};
-    const type=job.target==='frontdesk'?'front':job.target==='orchestrator'?'intake':'supplement';
+    const type=job.target==='frontdesk'?'front':job.target==='orchestrator'?(job.type==='backstage'?'backstage':'intake'):'supplement';
     const queued=await this.store.mutate(()=>this.queueJob(job.target,type,text,{key,context:{...job.context,permissionTaskId:request.permissionTaskId??job.context?.permissionTaskId,effectRequestId:request.id,...(grantId?{effectGrantId:grantId}:{})}}));
     this.kick();
     return {jobId:queued.id,repaired:repair};
@@ -741,27 +782,82 @@ export class Controller extends EventEmitter {
       return roots.filter(root=>root!==manifest.repo);
     }catch{return [];}
   }
+  async processBackstage(){
+    if(this.stopping||this.backstageFlight)return this.backstageFlight;
+    this.backstageFlight=(async()=>{
+      const s=this.store.state;
+      const events=[];
+      const permissions=await this.taskPermissions?.read(this.projectId);
+      for(const request of permissions?.requests??[])if(request.status==='migrated')events.push({key:'migrated-permission:'+request.id,kind:'policy-migration',sourceJobId:request.sourceJobId,requestId:request.id,text:'旧的普通路径或命令授权已关闭；这不是用户授权，不重放原输入，核对原任务并保留进展。'});
+      for(const receipt of s.receipts??[]){
+        const w=s.works.find(w=>w.id===receipt.workId);
+        if(receipt.kind==='problem'&&w&&w.revision===receipt.revision&&!['closing','ended'].includes(w.status)&&!s.receipts.some(r=>r.workId===w.id&&r.revision===w.revision&&r.kind==='result'))events.push({key:'problem:'+receipt.objectId,kind:'problem',workId:w.id,revision:receipt.revision,objectId:receipt.objectId,sourceJobId:receipt.jobId});
+      }
+      for(const todo of s.todos??[]){
+        const source=s.jobs.find(job=>job.id===todo.sourceJobId);
+        if(todo.status==='open'&&['routing','recovery','system'].includes(todo.kind)&&!['backstage','maintenance'].includes(source?.type))events.push({key:'todo:'+todo.id,kind:todo.kind,todoId:todo.id,sourceJobId:todo.sourceJobId,text:todo.text});
+      }
+      for(const [target,session] of this.sessions)for(const interaction of session.interactions??[]){
+        const question=interaction.question??interaction;
+        if(question.method!=='approve'){const work=s.works.find(w=>w.id===target);events.push({key:'native:'+session.viewOwnerId+':'+interaction.id,kind:'native',target,sourceJobId:this.current.get(target)?.id,...(work?{workId:work.id,revision:work.revision}:{}),interactionId:interaction.id,ownerId:session.viewOwnerId,question,capability:interaction.capability});}
+      }
+      if(!events.length)return;
+      await this.store.mutate(()=>{
+        s.backstageEvents??=[];
+        for(const event of events){
+          if(s.backstageEvents.some(e=>e.key===event.key))continue;
+          const entry={...structuredClone(event),status:'queued',at:new Date().toISOString()};s.backstageEvents.push(entry);
+          if(event.kind==='native'&&event.target==='orchestrator'){entry.status='blocked';entry.reason='主控自身原生问题待可靠信息；原会话与问题保留，未编造回答。';continue;}
+          const queued=this.queueJob('orchestrator','backstage','后台事实核对，不是新业务请求或用户授权。核对原事件、已有材料和操作回执；只继续原范围内剩余可逆步骤，绝不重放已开始或未知效果。若缺少可靠业务事实，调用对应工具标记 blocked 并说明，不编造回答。问题报告使用 nozeli_problem_continue；原生问题使用 nozeli_backstage_respond。\n'+JSON.stringify(event),{key:'backstage:'+event.key,context:{backstageEventKey:event.key,...(event.kind==='problem'?{backstageProblem:{workId:event.workId,revision:event.revision,objectId:event.objectId}}:{})}});
+          entry.jobId=queued.id;
+        }
+      });this.kick();
+    })();
+    try{return await this.backstageFlight;}finally{this.backstageFlight=null;}
+  }
+  async continueBackstageProblem(job,a){
+    const binding=job.context?.backstageProblem;
+    if(!binding||binding.workId!==a.workId||binding.revision!==a.revision||binding.objectId!==a.objectId)throw Error('backstage problem binding mismatch');
+    const w=this.store.find(a.workId),entry=this.store.state.backstageEvents?.find(e=>e.key===job.context.backstageEventKey);
+    const prior=this.store.state.jobs.find(j=>j.key==='backstage-continue:'+a.objectId);if(prior)return {accepted:true,duplicate:true,jobId:prior.id,workId:w.id};
+    if(w.revision!==a.revision||['closing','ended'].includes(w.status)||this.deviationHeld(w.id))throw Error('original Work is no longer eligible');
+    const source=this.store.state.jobs.find(j=>j.id===entry?.sourceJobId);
+    if(source&&await this.taskPermissions?.heldFor(this.projectId,source))throw Error('original permission decision remains held');
+    if(typeof a.text!=='string'||!a.text.trim()||a.text.length>16000)throw Error('remaining reversible steps required');
+    const queued=await this.store.mutate(()=>{const next=this.queueJob(w.id,'supplement','后台已核对原问题。此输入不是新增用户授权或范围扩展；仅继续原任务剩余可逆步骤。已执行或效果未知的操作不得重放。\n'+a.text,{key:'backstage-continue:'+a.objectId,context:{backstageObjectId:a.objectId,sourceJobId:job.id}});if(entry){entry.status='continued';entry.continuationJobId=next.id;}return next;});this.changed();this.kick();return {accepted:true,workId:w.id,jobId:queued.id,hostControl:true};
+  }
+  async respondBackstage(job,a){
+    const entry=this.store.state.backstageEvents?.find(e=>e.key===job.context?.backstageEventKey);if(!entry)throw Error('backstage event unavailable');
+    if(a.blocked===true){await this.store.mutate(()=>{entry.status='blocked';entry.reason=String(a.reason??'缺少可靠信息，原进展保留。').slice(0,1000);});this.changed();return {blocked:true,hostControl:true};}
+    if(entry.kind!=='native')throw Error('non-native event requires neutral blocked disposition');
+    const session=this.sessions.get(entry.target),live=session?.interactions?.find(q=>q.id===entry.interactionId);
+    if(!live||session.viewOwnerId!==entry.ownerId||(live.question??live).method==='approve')throw Error('native interaction owner changed or requires actual permission');
+    if(entry.capability?.respond!==true||typeof session.respondInteraction!=='function')throw Error('native structured responder unavailable');
+    const result=await session.respondInteraction(entry.interactionId,a.answer,{cancel:false});
+    await this.store.mutate(()=>{entry.status='responded';entry.respondedAt=new Date().toISOString();});this.changed();return {...result,hostControl:true};
+  }
   async frontdeskOperation(job,p,op){
-    const session=this.sessions.get('frontdesk'),s=this.store.state;
+    const sourceTarget=job.target,session=this.sessions.get(sourceTarget),s=this.store.state;
     if(typeof p.callId!=='string'||!p.callId)throw Error('document operation requires tool call identity');
     const operationId=createHash('sha256').update(s.workspaceId+job.id+p.callId).digest('hex');
-    const actor={id:'nozeli:frontdesk:'+s.workspaceId,kind:'agent1',name:'前台',mark:'F',role:'frontdesk',provider:s.bindings.frontdesk.provider,sessionId:session?.threadId,sessionInstance:session?.viewOwnerId,requestId:job.id,sourceJobId:job.id};
-    const isActive=()=>!this.stopping&&p.admission?.cancelled!==true&&this.sessions.get('frontdesk')===session&&this.current.get('frontdesk')===job&&!this.transferFor(job)&&!this.frontGoal(job)?.intakeJobId&&!this.store.state.frontdeskRoutes?.some(r=>r.sourceJobId===job.id);
+    const role=['frontdesk','orchestrator'].includes(sourceTarget)?sourceTarget:'worker';
+    const work=role==='worker'?this.store.find(sourceTarget):null;
+    const actor={id:work?'nozeli:worker:'+work.id:'nozeli:'+role+':'+s.workspaceId,kind:work?'agent2':'agent1',name:work?.name||role,mark:work?'W':role==='frontdesk'?'F':'O',role,...(work?{workId:work.id,revision:work.revision}:{}),provider:(work?work.binding??s.bindings.worker:s.bindings[role]).provider,sessionId:session?.threadId,sessionInstance:session?.viewOwnerId,requestId:job.id,sourceJobId:job.id};
+    const isActive=()=>!this.stopping&&p.admission?.cancelled!==true&&this.sessions.get(sourceTarget)===session&&this.current.get(sourceTarget)===job&&(role!=='frontdesk'||!this.transferFor(job)&&!this.frontGoal(job)?.intakeJobId&&!s.frontdeskRoutes?.some(r=>r.sourceJobId===job.id))&&(role!=='worker'||!['closing','ended'].includes(this.store.find(sourceTarget).status));
     if(!isActive())return {ok:false,error:{code:'FRONTDESK_HELD',message:'当前来源等待用户决定或已转交'},continueTurn:true};
     if(!this.frontdeskDocuments)return {ok:false,error:{code:'CAPABILITY_UNAVAILABLE',message:'项目文档操作未接入；不能声称已读取或修改'},continueTurn:true};
-    // Ordinary cross-project document access runs directly against the
-    // host-resolved registered target: receipts keep the target identity and
-    // the executor keeps actor binding, safePath/credential exclusions and
-    // readHandle CAS. Sensitive execution is a separate frozen-effect todo
-    // (nozeli_privileged_execute); ordinary tools are not traps.
+    // Registered targets retain host drafts/receipts; external targets use
+    // instance-local receipts and bound filesystem CAS without registration.
     const cross=await this.crossProjectTarget(job,p,op);
     if(cross){
       const args=p.arguments??{};
       if(args.access!==undefined&&args.access!==null&&!['read','edit'].includes(args.access))return {ok:false,error:{code:'INVALID_PAYLOAD',message:'access 只能为 read 或 edit。'},continueTurn:true};
-      const relPath=op==='apply'?this.frontdeskDocuments.peek('apply',args)?.relPath:op==='list'||op==='search'?args.relPath??'':args.relPath;
-      if(typeof relPath!=='string'||(!relPath.trim()&&!(op==='list'||op==='search')))return {ok:false,error:{code:'INVALID_PAYLOAD',message:'跨项目访问需要具体文件路径（list/search 可为空表示该已登记项目的全部公共文件）。'},continueTurn:true};
+      const relPath=op==='apply'?(cross.external?cross.relPath:this.frontdeskDocuments.peek('apply',args)?.relPath):op==='list'||op==='search'?args.relPath??'':args.relPath;
+      if(typeof relPath!=='string'||(!relPath.trim()&&!(op==='list'||op==='search')))return {ok:false,error:{code:'INVALID_PAYLOAD',message:'文件操作需要具体路径；list/search 可为空目录根。'},continueTurn:true};
     }
-    const value=await this.frontdeskDocuments({op,arguments:p.arguments,actor,operationId,isActive,...(cross?{targetProjectId:cross.projectId}:{})});
+    this.externalDocuments??=createExternalDocuments({storage:this.store.storage,projectId:this.projectId});
+    const executor=cross?.external?this.externalDocuments:this.frontdeskDocuments;
+    const value=await executor({op,arguments:p.arguments,actor,operationId,isActive,...(cross?.external?{targetRoot:cross.root}:cross?{targetProjectId:cross.projectId}:{})});
     await this.store.mutate(()=>{const saved=this.store.state.jobs.find(j=>j.id===job.id);saved.frontdeskOperations??=[];const index=saved.frontdeskOperations.findIndex(r=>r.operationId===operationId),receipt={operationId,callId:p.callId,op,actor,sourceJobId:job.id,...(cross?{targetProjectId:cross.projectId}:{}),at:new Date().toISOString(),...structuredClone(value)};if(index<0)saved.frontdeskOperations.push(receipt);else if(value.ok&&!saved.frontdeskOperations[index].ok)saved.frontdeskOperations[index]=receipt;});
     if(value.ok&&['apply','create'].includes(op))this.emit('files-changed',{jobId:job.id,reason:'frontdesk-document-applied',sourceChange:!cross,...(cross?{targetProjectId:cross.projectId}:{})});
     this.changed();
@@ -1153,32 +1249,39 @@ export class Controller extends EventEmitter {
       throw Object.assign(new Error('Historical provider sessions are read-only; their identity cannot be resumed by OMP'),{code:'HISTORICAL_SESSION_READ_ONLY',target});
     }
     const home=role==='worker'?this.store.agentHome(target):path.join(this.store.root,'agents',`resident-${role}-omp`);
-    const cwd=role==='worker'&&this.execution?(await this.execution.prepare(target),this.execution.directory(target)):this.store.content;
+    const cwd=role==='worker'&&this.execution?(await this.maintenanceTransaction(this.current.get(target),'input-preparation',()=>this.execution.prepare(target)),this.execution.directory(target)):this.store.content;
     const tools=role==='frontdesk'?[tool('nozeli_handoff','Escalate the remaining original-task work to background execution with a concise reason. Ordinary reasons dispatch straight to the background under the original user request (no extra prompt); if the user explicitly chose to stay in the frontdesk, declined background earlier, or a decision is still pending, the host asks the user instead. @read reads and @new/@continue select discussion context only. This handoff never grants cross-project access, shell or credentials.',{reason:text})]:role==='orchestrator'?[tool('nozeli_inspect_work','Read named Work or readRef. @memory:keywords searches Plan Tree; @conversation reads dialogue; @state returns open works. Read-only.',{workName:text}),tool('nozeli_dispatch','Create a named Worker for a brand-new independent task. This is the required terminal decision when an explicit user task has no matching open Work.',{name:text,brief:text}),tool('nozeli_manage','Route this intake to exactly ONE terminal decision: continue an EXISTING open Work by its exact name, or clarify genuine ambiguity. status is a read-only query — it NEVER completes an intake turn: inspect/status first if needed, then always finish the turn with continue, clarify, or nozeli_dispatch. workName must be the exact name of an existing open Work — never the current request text; with no open Work at all, a continue is treated as the first background run of this new task. Ending a background intake after only status/inspect leaves the task unexecuted and violates the contract. User end decisions belong to user controls.',{action:{type:'string',enum:['continue','status','clarify']},workName:text,text})]:[tool('nozeli_publish','Publish the final result as one complete self-contained static HTML document, or a problem/question as concise Markdown text. Include every created/modified artifact in files. Work remains open; finish the turn after success.',{kind:{type:'string',enum:['problem','result']},html:{type:'string',description:'Self-contained static HTML result document; kind "result" only'},text:{type:'string',description:'Concise Markdown problem or question body; kind "problem" only'},files:{type:'array',items:{type:'string'},maxItems:256}},['kind','files'],{oneOf:[{properties:{kind:{type:'string',const:'result'}},required:['html'],not:{required:['text']}},{properties:{kind:{type:'string',const:'problem'}},required:['text'],not:{required:['html']}}]}),tool('nozeli_diagram','Render an offline validated Archify typed JSON diagram and return the exact standalone SVG with alt text, caption and spec/generator digests for direct inline figure embedding in the report HTML; creates no project files.',{type:{type:'string',enum:['architecture','workflow','sequence','dataflow','lifecycle']},spec:{type:'object',additionalProperties:true}})];
     const binding=role==='worker'?this.store.find(target).binding||this.store.state.bindings.worker:this.store.state.bindings[role];
-    if(role==='frontdesk')tools.push(
-      tool('nozeli_document_read','Read a project document and obtain the exact host version handle before editing. The returned text is the write baseline: quote oldText substrings from it verbatim for replacements. Optional projectPath: another registered project id or its registered root path (default: current project) — ordinary registered-project reads run directly under your current user account. Optional access: "read" (default, plain query) or "edit" — pass "edit" ONLY when the user\'s task explicitly asks to modify this exact file and you need the baseline first. Never upgrade plain queries to edit. apply never takes projectPath; its target follows the read handle.',{relPath:text,projectPath:text,access:{type:'string',enum:['read','edit']}},['relPath']),
+    if(role==='orchestrator')tools.push(tool('nozeli_maintenance','Inspect sanitized host bug ledger, scan proven historical internal faults without replay, or request bounded host recovery of the exact original transaction. Never marks repaired by assertion; no business Work or privileges granted.',{action:{type:'string',enum:['status','retry','scan']},bugId:text},['action']));
+    if(role==='orchestrator')tools.push(
+      tool('nozeli_problem_continue','Continue the exact original Work from context.backstageProblem after inspecting its frozen problem and receipts. Supply only remaining reversible steps; never replay unknown effects or infer new authorization.',{workId:text,revision:{type:'integer',minimum:1},objectId:text,text},['workId','revision','objectId','text']),
+      tool('nozeli_backstage_respond','Resolve the current host-bound backstage native question from existing evidence, or explicitly preserve neutral blocked state when facts are missing. Never answer permission approval or invent business facts.',{answer:{anyOf:[text,{type:'boolean'},{type:'object'}]},blocked:{type:'boolean'},reason:text},[]));
+    if(role==='worker')tools.push(tool('nozeli_report_bug','Report a suspected Nozeli program fault for host diagnosis, not a business question. No recovery is claimed from model text; preserves original Work and never replays effects.',{code:{type:'string',enum:['WORKER_SNAPSHOT_FAILED','PUBLICATION_FAILED','HOST_INTERNAL_FAILURE','UNKNOWN_PRODUCT_BUG']}}));
+    if(role==='frontdesk'||role==='orchestrator')tools.push(
+      tool('nozeli_document_read','Read a UTF-8 host document and obtain a session-bound version handle. Optional projectPath selects a registered id/root or any unregistered absolute directory; absolute relPath also works. Ordinary access requires no authorization or registration. Registered targets preserve unsaved drafts. Quote replacements from returned text; apply target follows its handle.',{relPath:text,projectPath:text,access:{type:'string',enum:['read','edit']}},['relPath']),
       tool('nozeli_document_apply','Replace exact text in a document read this session. The host locates each oldText inside the read snapshot — never send offsets or line numbers. Each oldText must match exactly one place: quote more surrounding text, or add contextBefore/contextAfter (exact neighbouring text from the read) when it occurs several times. newText uses LF newlines; CRLF is normalized. Concurrent edits, unsaved user drafts and authorship stay host-protected.',{readHandle:text,replacements:{type:'array',minItems:1,maxItems:1000,items:{type:'object',properties:{oldText:text,newText:text,contextBefore:text,contextAfter:text},required:['oldText','newText'],additionalProperties:false}}},['readHandle','replacements']),
-      tool('nozeli_document_create','Create and save a new project text document without overwriting existing files or drafts. Optional projectPath: another registered project.',{relPath:text,text,projectPath:text},['relPath','text']),
-      tool('nozeli_project_list','List a project directory; empty relPath is the root. Follow nextOffset for additional pages. Optional projectPath: another registered project.',{relPath:text,offset:{type:'integer',minimum:0},limit:{type:'integer',minimum:1,maximum:500},projectPath:text},['relPath']),
-      tool('nozeli_project_search','Search literal project text. First search: omit cursor entirely or pass null. Continue: pass back the exact cursor object returned by the previous result, verbatim; never fabricate one or reuse another query\'s cursor. scope always equals this call\'s relPath (root is the empty string). Optional projectPath: another registered project.',{query:text,relPath:text,projectPath:text,cursor:{anyOf:[{type:'object',properties:{scope:text,query:text,relPath:text,offset:{type:'integer',minimum:0}},required:['scope','query','relPath','offset'],additionalProperties:false},{type:'null'}]}},['query','relPath']));
+      tool('nozeli_document_create','Create a host text document without overwriting files or drafts. Optional projectPath: registered id/root or ordinary unregistered directory; absolute relPath accepted.',{relPath:text,text,projectPath:text},['relPath','text']),
+      tool('nozeli_project_list','List a host directory; empty relPath is the root. Follow nextOffset. Optional projectPath accepts registered ids/roots or unregistered directories; absolute relPath accepted.',{relPath:text,offset:{type:'integer',minimum:0},limit:{type:'integer',minimum:1,maximum:500},projectPath:text},['relPath']),
+      tool('nozeli_project_search','Search literal host text. Omit cursor initially; reuse the returned cursor unchanged. Optional projectPath accepts registered ids/roots or unregistered directories; absolute relPath accepted.',{query:text,relPath:text,projectPath:text,cursor:{anyOf:[{type:'object',properties:{scope:text,query:text,relPath:text,offset:{type:'integer',minimum:0}},required:['scope','query','relPath','offset'],additionalProperties:false},{type:'null'}]}},['query','relPath']));
     if(role==='worker'&&this.execution)tools.push(
-      tool('nozeli_document_read','Read an EXISTING UTF-8 project text file with a host-bound revision handle. Use this before editing existing text; shell reads do not provide a safe write baseline. The returned text is the write baseline for quoting oldText.',{relPath:text}),
+      tool('nozeli_document_read','Read candidate text by relative path; absolute relPath or projectPath selects an ordinary external/registered live document with its own host CAS handle. External writes are direct, not candidate adoption.',{relPath:text,projectPath:text},['relPath']),
       tool('nozeli_document_apply','Apply exact-text replacements against the text returned by nozeli_document_read. The host derives positions from oldText (must match exactly one place, or be disambiguated by contextBefore/contextAfter exact neighbouring text); never send offsets. newText uses LF; CRLF is normalized. After failure re-read and reconsider or publish a problem. This write continues the turn for verification/reporting. Never overwrite a stale candidate with shell.',{readHandle:text,replacements:{type:'array',minItems:1,maxItems:1000,items:{type:'object',properties:{oldText:text,newText:text,contextBefore:text,contextAfter:text},required:['oldText','newText'],additionalProperties:false}}},['readHandle','replacements']));
+    if(role==='worker')tools.push(
+      tool('nozeli_document_create','Create a live host document, optional projectPath or absolute relPath; this is not a Worker candidate artifact. For candidate files use native tools in your worktree.',{relPath:text,text,projectPath:text},['relPath','text']),
+      tool('nozeli_project_list','List an ordinary host directory. Optional projectPath selects a registered root or unregistered absolute directory; absolute relPath also works.',{relPath:text,projectPath:text,offset:{type:'integer',minimum:0},limit:{type:'integer',minimum:1,maximum:500}},['relPath']),
+      tool('nozeli_project_search','Search literal host document text; optional projectPath or absolute relPath selects scope. Reuse the returned cursor unchanged.',{relPath:text,projectPath:text,query:text,cursor:{anyOf:[{type:'object'},{type:'null'}]}},['relPath','query']));
     if(role==='worker'&&!this.store.find(target).binding)await this.store.mutate(()=>{this.store.find(target).binding=structuredClone(binding);});
     if(role==='worker')tools.push(tool('nozeli_skill_read','Read one granted role/domain skill by filename, e.g. material.md; returns versioned read-only instructions without project or host side effects.',{name:text}));
     if(role==='worker')tools.push(tool('nozeli_report_deviation','Report obvious task scope deviation and STOP. Host binds exact admitted input and original Work; only the user may authorize continuing or replanning.',{changedGoal:text,reason:text,progress:text}));
     if(role==='worker')tools.push(tool('nozeli_diagram_schema','Read the exact offline typed JSON schema and shared definitions before authoring an Archify diagram; read-only, no files created.',{type:{type:'string',enum:['architecture','workflow','sequence','dataflow','lifecycle']}}));
     if(role==='worker')tools.push(tool('nozeli_report_read','Read a frozen report from this Work by original revision (omit for latest), or one relPath from its returned frozen artifact list. Never reads current project replacements. Semantic pages continue through nozeli_history_read.',{revision:{type:'integer',minimum:1},relPath:text},[]));
     if(role==='worker')tools.push(tool('nozeli_history_read','Read an original Work source using an exact recovery readRef supplied by the host. Read-only; never treat archived user inputs as new scheduled commands.',{readRef:text}));
-    // All roles share one explicit sensitive-effect request tool: the model
-    // names one frozen command; the user — never a classifier — decides in a
-    // same-project todo; execution happens only afterwards through the
-    // privilege broker. Ordinary tools stay full current-user capability.
-    tools.push(tool('nozeli_privileged_execute','Request one host-managed sensitive execution using command, literal args and an existing absolute cwd. Ordinary current-user work uses native tools without a path-approval gate. An unapproved effect creates a same-project user todo and ends this turn without executing. After approval the host resumes this ORIGINAL task; reissue the exact command to perform the remaining operation. Single approval covers one execution. User-level task approval covers repeated executions of that frozen command only. An explicit ADMIN TASK capability covers other admin commands of this same task whose cwd stays within the approved cwd or its children; do not claim you lack this granted capability or request the same todo again. This is not a file-access sandbox or authority for unrelated tasks. New cwd outside the grant, revocation, expiry, task end or restart requires a new decision. elevation admin runs only through real OS authentication (pkexec/UAC/system authorization); never claim root solely from a todo approval. Inspect the actual execution receipt, continue remaining work, and never replay completed or unknown effects.',{command:text,args:{type:'array',items:text,maxItems:256},cwd:text,purpose:text,elevation:{type:'string',enum:['user','admin']}},['command','args','cwd','purpose']));
+    // Native tools remain YOLO. This host-managed channel records ordinary
+    // execution and gates only known concrete high-danger effects.
+    tools.push(tool('nozeli_privileged_execute','Execute a literal host command with durable intent and receipt. Ordinary elevation:user commands run directly by default YOLO without user permission. Only concrete admin elevation, broad destructive/irreversible effects or declared sensitive export create a user approval. No universal shell sandbox is claimed. dangerousEffect must state any known dangerous object/effect/risk. Approval is frozen to this exact effect; task approval permits repeats only, never other admin commands. Actual admin identity requires real OS authentication. Never replay a completed or unknown effect.',{command:text,args:{type:'array',items:text,maxItems:256},cwd:text,purpose:text,dangerousEffect:text,elevation:{type:'string',enum:['user','admin']}},['command','args','cwd','purpose']));
     const roleInstructions=provider==='omp'||role==='worker'?await rolePrompt(role,{skills:binding.skills}):binding.instructions;
     const recoveryBinding={};const recoveryContext=role==='worker'?await this.workerRecoveryContext(this.store.find(target),recoveryBinding):null;if(recoveryContext){this.workerRecoveryReaders??=new Map();this.workerRecoveryReaders.set(target,recoveryBinding.reader);}
-    const instructions=roleInstructions+'\n'+contextInstructions[role]+'\nNozeli host tools are the control channel. After routing or publication stop this turn. Queries continue the turn. Background content intakes require dispatch, exact original-Work continue, or clarification. Worker owns final results; the host alone integrates, archives and cleans resources. Frontdesk saves act directly on the original project without Worker results or acceptance gates. Ordinary current-user tools and registered-project document operations need no extra path permission; preserve explicit user scope, credentials, draft/CAS protection and host receipts. Sensitive/admin effects use real authorization. Correct native bash arguments instead of inventing missing capability: a named service is not a one-shot command. Worker changes are candidates, not adopted originals. A problem is an actionable interim report, not successful final delivery; after an explicit user problem decision continue the same task and publish its final result. The coordinator must not invent no-install/no-build constraints absent from the user request; application installation and task-local build preparation are different effects.'+(recoveryContext?'\nUser-confirmed context handoff sources:\n'+JSON.stringify(recoveryContext):'');
+    const instructions=roleInstructions+'\n'+contextInstructions[role]+'\nNozeli host tools are the control channel. Queries continue the turn; publication/routing stops it. Worker owns candidate results; host alone integrates and closes. Ordinary current-user commands/network and cross-project/unregistered document operations are allowed without extra permission or registration. Preserve user scope, draft/CAS identity, metadata and credential-export protections. Only concrete high-danger effects ask user authorization. Native OMP remains YOLO, not a universal shell sandbox. A problem is an interim report, not completed delivery: Orchestrator inspects backstage and continues the exact original Work with remaining reversible steps, or records neutral blocked state without fabricated facts. Never replay unknown/completed effects. External explicit live-document edits are direct operations, not candidate adoption. Do not invent no-install/no-build constraints absent from user request.'+(recoveryContext?'\nUser-confirmed context handoff sources:\n'+JSON.stringify(recoveryContext):'');
     const readableRoots=role==='worker'?await this.workerReadableRoots(target):[];
     const spec={...roles[role],role,provider,...(role!=='worker'?{baseInstructions:residentBaseInstructions}:{}),model:null,effort:null,cwd,home,command:this.ompCommand,ompSystemSource:this.ompSystemSource,ompAuthBroker:this.ompAuthBroker,legacyNativeSeed:binding.model?{model:binding.model,effort:binding.effort??null}:(this.store.state.legacyNativeSeeds?.[role]??null),...(this.isolateProcesses?{isolation:{writable:role==='worker'?[cwd]:[],readOnly:role==='worker'?[path.join(cwd,'.git')]:[],readable:readableRoots}}:{}),instructions,tools,finishOnHostControl:true,
       collabContext:{projectId:this.projectId,targetId:target,ownerId:randomUUID()},
@@ -1387,12 +1490,26 @@ export class Controller extends EventEmitter {
     return projectionPending?{settlementPending:true,automaticReplay:false,...projectionPending}:{settled:true};
   }
   async onTool(target,p){
+    try{return await this.handleTool(target,p);}catch(error){
+      if(maintenanceBoundary(error)||!/^INTERNAL_|^HOST_INTERNAL_/.test(String(error.code??'')))throw error;
+      const job=this.current.get(target);if(!job||job.type==='maintenance')throw error;
+      const bug=await this.maintenance.record({phase:'tool',jobId:job.id,workId:['frontdesk','orchestrator'].includes(target)?null:target,revision:job.revision??null,error});await this.maintenance.finish(bug.id,{outcome:'needs-version-fix'});
+      await this.store.mutate(()=>{const saved=this.store.state.jobs.find(j=>j.id===job.id);if(saved)saved.maintenanceBugId=bug.id;const w=this.store.state.works.find(w=>w.id===target);if(w?.status==='running'){w.status='paused';w.maintenance={bugId:bug.id,status:'needs-version-fix',message:'系统工具故障待后台诊断，原任务与改动保留。'};}});await this.maintenanceEvent(bug);return {hostControl:true,maintenance:true,bugId:bug.id,workRemainsOpen:true};
+    }
+  }
+  async handleTool(target,p){
     const job=this.current.get(target);if(!job)throw new Error('no active host job');
     if(job.type==='intake'&&['closing','ended'].includes(this.intakeBoundWork(job)?.status)&&['nozeli_dispatch','nozeli_manage'].includes(p.tool))return {cancelled:true,userEnded:true,message:'原工作已由用户结束，不再处理补充。'};
     if(this.stopping||(!['frontdesk','orchestrator'].includes(target)&&['closing','ended'].includes(this.store.find(target).status)))throw new Error('host or work closing');
     await this.store.requireOnline();
     if(this.stopping)throw Object.assign(Error('项目正在停用'),{code:'PROJECT_STOPPING'});
     const a=p.arguments;
+    if(target==='orchestrator'&&p.tool==='nozeli_problem_continue')return this.continueBackstageProblem(job,a);
+    if(target==='orchestrator'&&p.tool==='nozeli_backstage_respond')return this.respondBackstage(job,a);
+    if(p.tool==='nozeli_report_bug'&&maintenanceBoundary({code:a.code}))return {ok:false,continueTurn:true,error:{code:'MAINTENANCE_HUMAN_BOUNDARY',message:'权限、冲突或未知效果不属于静默维修；保留原生决定与待办。'}};
+    if(p.tool==='nozeli_report_bug'&&!['WORKER_SNAPSHOT_FAILED','PUBLICATION_FAILED','HOST_INTERNAL_FAILURE','UNKNOWN_PRODUCT_BUG'].includes(a.code))return {ok:false,continueTurn:true,error:{code:'INVALID_BUG_CATEGORY',message:'仅使用程序故障类别，不提交凭据、命令或用户全文。'}};
+    if(target==='orchestrator'&&p.tool==='nozeli_maintenance'){if(a.action==='status')return {...await this.maintenanceStatus(),readOnly:true,continueTurn:true};if(a.action==='scan')return {...await this.maintenanceScan(),continueTurn:true};if(a.action==='retry')return {...await this.maintenanceRetry(a.bugId),continueTurn:true};throw Error('invalid maintenance action');}
+    if(p.tool==='nozeli_report_bug'&&!['frontdesk','orchestrator'].includes(target)){const bug=await this.maintenance.record({phase:'diagnosis',jobId:job.id,workId:target,revision:job.revision,error:{code:a.code}});await this.maintenance.finish(bug.id,{outcome:'needs-version-fix'});await this.store.mutate(()=>{const saved=this.store.state.jobs.find(j=>j.id===job.id);saved.maintenanceBugId=bug.id;const w=this.store.find(target);if(w.status==='running'){w.status='paused';w.maintenance={bugId:bug.id,status:'needs-version-fix',message:'程序故障待后台诊断；原任务与改动保留。'};}});await this.maintenanceEvent(bug);return {maintenance:true,hostControl:true,bugId:bug.id,workRemainsOpen:true};}
     if(p.tool==='nozeli_report_deviation'&&!['frontdesk','orchestrator'].includes(target)){
       const event=await this.store.reportDeviation(target,job,a,p.callId);this.workerTerminal.pause(target);this.changed();return {saved:true,hostControl:true,deviationId:event.id,version:event.version,status:event.status,workRemainsOpen:true,userDecisionRequired:true};
     }
@@ -1436,6 +1553,10 @@ export class Controller extends EventEmitter {
       const binding=this.store.find(target).binding||this.store.state.bindings.worker;
       return readRoleSkill('worker',a.name,{skills:binding.skills});
     }
+    const externalDocumentTool={nozeli_document_read:'read',nozeli_document_apply:'apply',nozeli_document_create:'create',nozeli_project_list:'list',nozeli_project_search:'search'}[p.tool];
+    const externalReceipt=p.tool==='nozeli_document_apply'?await this.store.storage.getLocal(this.projectId,'managed:external-document:'+createHash('sha256').update(this.store.state.workspaceId+job.id+p.callId).digest('hex')):null;
+    if(target==='orchestrator'&&externalDocumentTool)return this.frontdeskOperation(job,p,externalDocumentTool);
+    if(!['frontdesk','orchestrator'].includes(target)&&externalDocumentTool&&(a.projectPath||path.isAbsolute(a.relPath??'')||externalReceipt||['create','list','search'].includes(externalDocumentTool)||this.externalDocuments?.peek('apply',a)||this.frontdeskDocuments?.peek?.('apply',a)))return this.frontdeskOperation(job,p,externalDocumentTool);
     if(target==='frontdesk'){
       const op={nozeli_document_read:'read',nozeli_document_apply:'apply',nozeli_document_create:'create',nozeli_project_list:'list',nozeli_project_search:'search'}[p.tool];
       if(op)return this.frontdeskOperation(job,p,op);
@@ -1517,15 +1638,23 @@ export class Controller extends EventEmitter {
       const publicationInputDigest=createHash('sha256').update(JSON.stringify({kind,[field]:body,files:a.files})).digest('hex'),existing=this.store.state.receipts.find(row=>row.id===p.callId);
       if(existing){if(existing.workId!==target||existing.revision!==job.revision||existing.publicationInputDigest!==publicationInputDigest)throw Error('receipt collision');return {saved:true,kind,object:existing.objectId,report:existing.report,files:(existing.snapshot?.files||[]).map(({relPath,size})=>({relPath,size})),rejectedFiles:[],duplicate:true,workRemainsOpen:true};}
       let frozen,receipt;
-      const isActive=()=>!this.stopping&&this.current.get(target)===job&&this.store.find(target).status==='running'&&this.store.find(target).revision===job.revision;
+      const isActive=()=>!this.stopping&&(this.current.get(target)===job||this.store.state.jobs.find(j=>j.id===job.id)?.maintenanceBugId)&&['running','paused'].includes(this.store.find(target).status)&&this.store.find(target).revision===job.revision&&(!this.store.state.jobs.find(j=>j.id===job.id)?.maintenanceBugId||!this.store.state.jobs.some(j=>j.id!==job.id&&j.target===target&&['queued','running'].includes(j.status)));
       const candidates=a.files.map(file=>this.execution&&path.isAbsolute(file)&&file.startsWith(this.execution.directory(target)+path.sep)?path.relative(this.execution.directory(target),file):file);
       const artifacts=await this.recordArtifacts(job,candidates);if(artifacts.rejected.length)throw Error('成果引用无法核验，请修正报告文件路径');
       const publish=retainCandidate=>this.store.publish(target,job.revision,kind,body,p.callId,{jobId:job.id,files:artifacts.files,publicationInputDigest,isActive,retainCandidate});
+      try{await this.maintenanceTransaction(job,'publication',async()=>{
+      const recovering=Boolean(this.store.find(target).maintenance?.bugId)&&this.store.find(target).maintenance.bugId===this.store.state.jobs.find(j=>j.id===job.id)?.maintenanceBugId;
+      if(recovering)await this.store.mutate(()=>{if(this.store.find(target).status==='paused')this.store.find(target).status='running';});
+      const current=await verifyProjectArtifacts(this.execution?this.execution.directory(target):this.store.state.contentRoot,candidates);
+      if(current.rejected.length||JSON.stringify(current.files.map(f=>[f.relPath,f.digest]))!==JSON.stringify(artifacts.files.map(f=>[f.relPath,f.digest])))throw Object.assign(Error('Captured publication inputs changed'),{code:'PUBLICATION_STALE'});
       if(this.execution&&kind==='result')frozen=await this.execution.publish(this.store.find(target),job,isActive,async(manifest,candidate)=>{
         const binding={projectId:this.projectId,workId:target,revision:job.revision,jobId:job.id,receiptId:p.callId,repo:manifest.repo,commonDir:manifest.commonDir,inputCommit:manifest.inputCommit,candidateCommit:candidate.commit};
         receipt=await publish(async()=>{const retained=await this.changes.capture(binding);return {...retained,rollback:()=>this.changes.discardUnpublished(retained.changeSetId,binding)};});
         return {changeSetId:receipt.changeSetId};
-      },{receiptId:p.callId});else receipt=await publish();
+      },{receiptId:p.callId,explicitFiles:artifacts.files.map(f=>f.relPath)});else receipt=await publish();
+      return receipt;
+      },()=>this.store.state.receipts.some(r=>r.id===p.callId&&r.workId===target&&r.publicationInputDigest===publicationInputDigest));
+      }catch(error){if(error.code==='MAINTENANCE_PENDING')return {saved:false,hostControl:true,maintenance:true,bugId:error.bugId,workRemainsOpen:true,message:'宿主发布故障已交后台维修，不转换为业务问题，不重复Worker。'};throw error;}
       this.changed();this.kick();return {saved:true,kind,object:receipt.objectId,files:artifacts.files,rejectedFiles:artifacts.rejected,...(frozen?{candidate:frozen.candidate}:{}),workRemainsOpen:true};
     }
     throw new Error('tool unavailable in this role/event');
@@ -1602,7 +1731,7 @@ export class Controller extends EventEmitter {
   }
   async ensureWorkerDelivery(job,error=null){
     const w=this.store.find(job.target);
-    if(!['running','paused'].includes(w.status)||w.revision!==job.revision||w.problem?.revision===w.revision||w.result?.revision===w.revision||deviationHeld(w)||await this.taskPermissions?.heldFor(this.projectId,job))return;
+    if(this.store.state.jobs.find(j=>j.id===job.id)?.maintenanceBugId||!['running','paused'].includes(w.status)||w.revision!==job.revision||w.problem?.revision===w.revision||w.result?.revision===w.revision||deviationHeld(w)||await this.taskPermissions?.heldFor(this.projectId,job))return;
     const text='## 宿主交付诊断：Worker 尚未交付最终报告\n\n'+(error?'本轮执行失败：'+String(error.message??error).slice(0,1500):'本回合已结束，但没有当前版本的最终成果或问题报告。')+'\n\n任务没有完成，不能冒称已交付。原任务、线程与工作树仍保留。\n\n建议处理：同意处理后让原 Worker 核对已完成操作、实际执行回执与现有改动，只执行剩余步骤、完成验证并发布最终结果；如不同意，请拒绝并写明替代要求。结果未知或原进程未确认退出时，先走明确恢复决定，不能自动重放。';
     await this.store.publish(w.id,w.revision,'problem',text,'host-missing-delivery:'+job.id,{jobId:job.id,files:[],hostDiagnostic:true,isActive:()=>!this.stopping&&['running','paused'].includes(w.status)&&w.revision===job.revision});
   }
@@ -1615,7 +1744,7 @@ export class Controller extends EventEmitter {
       if(job.context?.pendingIntakeId){const parent=this.store.state.jobs.find(j=>j.id===job.context.pendingIntakeId),work=parent&&(this.intakeBoundWork(parent)||this.store.state.works.find(w=>w.sourceJob===parent.id));if(work)await this.store.mutate(()=>{const field=job.context.softWorkHint?'workHintId':'boundWorkId';job.context[field]=work.id;savedJob().context[field]=work.id;});else {const question=parent&&this.store.state.todos.findLast(q=>q.kind==='routing'&&q.sourceJobId===parent.id&&q.status==='open');if(!question)throw Error('原目标尚未明确处理结果，请先核对已有提交');await this.store.mutate(()=>{job.context.routingQuestionId=question.id;savedJob().context.routingQuestionId=question.id;});}}
       const isWork=!['frontdesk','orchestrator'].includes(job.target);
       if(isWork){const w=this.store.find(job.target);if(job.type!=='initial'&&w.status!=='running')await this.store.continue(w.id);job.revision=w.revision;await this.store.mutate(()=>{savedJob().revision=job.revision;});}
-      const session=await this.session(job.target);let prompt=job.text,delivery;
+      const session=await this.maintenanceTransaction(job,'session-start',()=>this.session(job.target),s=>Boolean(s&&!s.closed));let prompt=job.text,delivery;
       this.tagMaterialDelivery??=new TagMaterialDelivery();
       const materialDelivery=this.tagMaterialDelivery.prepare(session,job);
       prompt=materialDelivery.text;
@@ -1676,6 +1805,10 @@ export class Controller extends EventEmitter {
         }
       }
     }catch(e){
+      if(e.code==='MAINTENANCE_PENDING'){await this.store.mutate(()=>{
+        const saved=savedJob();if(saved&&!['cancelled','interrupted'].includes(saved.status)){saved.status='failed';saved.maintenanceBugId=e.bugId;}
+        if(job.type==='backstage'){const entry=this.store.state.backstageEvents?.find(event=>event.key===job.context?.backstageEventKey),code=saved?.maintenanceFault?.code??e.code;if(entry){entry.status='blocked';entry.failureCode=/^[A-Z][A-Z0-9_]{0,79}$/.test(String(code))?code:'BACKSTAGE_PROCESSING_FAILED';entry.reason='后台核对失败（'+entry.failureCode+'）；原问题、进展与会话已保留，未重放未知效果。';}}
+      });return;}
       if(e.code==='AGENT_PROCESS_LIMIT'&&!savedJob()?.promptStartedAt){await this.store.mutate(()=>{savedJob().status='queued';savedJob().resourceBlocked=true;delete savedJob().startedAt;});return;}
       if(e.metrics)await this.store.mutate(()=>{savedJob().metrics={...e.metrics,context:savedJob().requestContext||null};});
       const ending=this.store.state.works.find(w=>w.id===job.target)||(job.type==='intake'?this.intakeBoundWork(job):null);
@@ -1688,16 +1821,21 @@ export class Controller extends EventEmitter {
         await this.store.mutate(()=>{delete this.store.state.providers[job.target];});
         await this.saveTransferredFront(job,{text:e.partialText,metrics:e.metrics,turnId:e.turnId,threadId:e.threadId,providerStatus:'interrupted'});return;
       }
+      if(job.type!=='maintenance'&&/^OMP_|^NATIVE_|^HOST_INTERNAL_/.test(String(e.code??''))){const bug=await this.maintenance.record({phase:savedJob()?.promptStartedAt?'started-turn':'startup-diagnosis',jobId:job.id,workId:ending?.id??null,revision:job.revision??null,error:e});await this.maintenance.finish(bug.id,{outcome:savedJob()?.promptStartedAt?'human-boundary':'needs-version-fix'});await this.maintenanceEvent(bug);}
       // Record the accepted input's failure before cleanup can reject or hang.
       // Native exit and durable turn failure are independent pieces of evidence.
       await this.store.mutate(()=>{
         const saved=savedJob(),w=this.store.state.works.find(w=>w.id===job.target);
         if(['cancelled','interrupted','completed'].includes(saved.status)||w&&['closing','ended'].includes(w.status))return;
         Object.assign(saved,{status:this.stopping?'interrupted':'failed',finishedAt:new Date().toISOString(),error:e.message});
+        if(job.type==='backstage'){
+          const entry=this.store.state.backstageEvents?.find(event=>event.key===job.context?.backstageEventKey);
+          if(entry){entry.status='blocked';entry.failureCode=/^[A-Z][A-Z0-9_]{0,79}$/.test(String(e.code??''))?e.code:'BACKSTAGE_PROCESSING_FAILED';entry.reason='后台核对失败（'+entry.failureCode+'）；原问题、进展与会话已保留，未重放未知效果。';}
+        }
         const binding=w?.binding||this.store.state.bindings[job.target];
         if(binding){this.store.state.modelObservations??={};this.store.state.modelObservations[`${binding.model}:${binding.effort}`]={status:'turn-failed',error:e.message,at:new Date().toISOString()};}
         this.store.state.messages.push({id:randomUUID(),target:job.target,speaker:'system',text:runtimeFailureMessage(e,{work:Boolean(ending)}).text,jobId:job.id,...(job.context?.frontJobId||job.context?.manual||job.context?.boundWorkId?{audience:'frontdesk'}:{})});
-        if(w?.status==='running')this.pauseState(w,e.message);else if(!w)this.store.state.todos.push({id:randomUUID(),kind:'system',status:'open',target:job.target,sourceJobId:job.id,text:e.message});
+        if(w?.status==='running')this.pauseState(w,e.message);else if(!w&&!['maintenance','backstage'].includes(job.type))this.store.state.todos.push({id:randomUUID(),kind:'system',status:'open',target:job.target,sourceJobId:job.id,text:e.message});
       });
       const owner=this.sessions.get(job.target),cleanupFailures=[];
       let exitReceipt;
@@ -1711,7 +1849,9 @@ export class Controller extends EventEmitter {
       });
       if(cleanupFailures.length)throw Object.assign(new AggregateError(cleanupFailures.map(({error})=>error),'native cleanup failed after turn failure'),{code:'OMP_TURN_CLEANUP_FAILED',cause:e});
       if(!['frontdesk','orchestrator'].includes(job.target))await this.ensureWorkerDelivery(job,e);
-    }finally{if(!['frontdesk','orchestrator'].includes(job.target)){this.workerTerminal.pause(job.target);if(didStart&&this.store.find(job.target).deviation?.admittedJobId===job.id)await this.stopDeviationOwner(job.target);}await this.finalizeTransfers();this.changed();if(didStart&&!this.stopping&&!['frontdesk','orchestrator'].includes(job.target))this.emit('files-changed',{jobId:job.id,workId:job.target,reason:'worker-turn-settled'});}
+    }finally{if(!['frontdesk','orchestrator'].includes(job.target)){this.workerTerminal.pause(job.target);if(didStart&&this.store.find(job.target).deviation?.admittedJobId===job.id)await this.stopDeviationOwner(job.target);}await this.finalizeTransfers();
+      if(job.type==='backstage')await this.store.mutate(()=>{const entry=this.store.state.backstageEvents?.find(e=>e.key===job.context?.backstageEventKey);if(entry?.status==='queued'){entry.status='blocked';entry.reason='后台回合未提供可靠处理；原问题与进展保留，未编造回答或执行未知效果。';}});
+      await this.processBackstage();this.changed();if(didStart&&!this.stopping&&!['frontdesk','orchestrator'].includes(job.target))this.emit('files-changed',{jobId:job.id,workId:job.target,reason:'worker-turn-settled'});}
   }
   async saveTransferredFront(job,response={}){
     await this.store.mutate(()=>{
@@ -2400,7 +2540,11 @@ export class Controller extends EventEmitter {
         const work=this.store.find(id),merge=work.closure?.merge;
         if(merge&&merge.status!=='merged'){merge.status='blocked';merge.blockedCode=error.code||'CLOSURE_BLOCKED';const noConstraintHint=['MERGE_CONSENT_REQUIRED','MERGE_CONSENT_DENIED','MERGE_AUTHORIZATION_REQUIRED','MERGE_AUTHORIZATION_STALE'].includes(error.code);merge.message=String(error.message).slice(0,600)+(noConstraintHint?'':(work.closure.reviewedVersion?'（人工审校版本与候选已完整保留；未做任何Git合入，可在明确更新约束后重试）':''));merge.attempts.push({at:new Date().toISOString(),phase:'integration',code:error.code||null,error:String(error.message).slice(0,400)});}
       });}catch(recordError){this.emit('diagnostic','Merge record retention failed: '+recordError.message);}
-      await this.blockClosure(id,error.message);
+      if(maintenanceBoundary(error)){await this.blockClosure(id,error.message);return;}
+      const bug=await this.maintenance.record({phase:'closure',workId:id,revision:w.revision,error,capability:'closure'});
+      const recoveryBinding=structuredClone(w.closure.binding),recoveryRequestKey=w.closure.requestKey;
+      this.maintenanceActions.set(bug.id,async()=>{await this.retryClosure(id,{binding:recoveryBinding,requestKey:recoveryRequestKey});return this.store.find(id).closure?.phase==='complete';});
+      await this.store.mutate(()=>{w.closure.phase='blocked';w.maintenance={bugId:bug.id,status:'detected',message:'技术收尾故障已交后台维修；原接受／丢弃决定保持。'};});await this.maintenanceEvent(bug);
     }
   }
   // 合入同意的一次性人工覆盖：待办暴露在workspace todos（kind 'merge-consent'），
@@ -2419,6 +2563,8 @@ export class Controller extends EventEmitter {
       }catch(error){this.emit('diagnostic','合入同意效果台账镜像失败：'+error.message);}
     }
     await this.store.ensureMergeConsentRequestState(id,{requestId,version,effectHash,at:new Date().toISOString()});
+    const todo=this.store.state.todos.find(t=>t.kind==='merge-consent'&&t.workId===id&&t.status==='open');
+    if(todo&&w.mergeConstraint?.classification==='never-commit')await this.store.mutate(()=>{todo.permissionPurpose='never-commit-override';});
   }
   // 用户决定端点：批准只恢复原closure/merge队列推进（不重放Worker、不改写
   // 原请求、不新建队列行）；拒绝保留阻断现场。requestKey幂等、版本绑定、

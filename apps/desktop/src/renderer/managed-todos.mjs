@@ -1,5 +1,5 @@
 import { mountContextMenu } from './context-menu.mjs';
-import { managedReviewTodos } from '../domain/managed-work-records.mjs';
+import { managedReviewTodos, userTodoEligible } from '../domain/managed-work-records.mjs';
 import { todoCapabilities } from '../domain/todo-management.mjs';
 import './managed-todos.css';
 
@@ -34,7 +34,7 @@ export function mountManagedTodos({ document, invoke, openTodo, viewWork, recove
     const current=new Map(managedReviewTodos(state||{}).map(t=>[t.id,t]));
     return (state?.todos||[]).filter(t=>t.kind!=='queue').map(t=>{
       const work=state.works?.find(w=>w.id===t.workId),receipt=state.receipts?.find(r=>r.objectId===t.objectId&&t.objectId);
-      return {...t,title:t.title||current.get(t.id)?.title||[work?.name||'无关联任务',kindNames[t.kind]||t.kind].join(' · '),excerpt:current.get(t.id)?.excerpt||receipt?.text||t.text||'无正文',pending:t.status==='open'&&(current.has(t.id)||Boolean(t.reopenedAt))};
+      return {...t,title:t.title||current.get(t.id)?.title||[work?.name||'无关联任务',kindNames[t.kind]||t.kind].join(' · '),excerpt:current.get(t.id)?.excerpt||receipt?.text||t.text||'无正文',pending:current.has(t.id)};
     });
   }
   function text(todo){const work=state?.works?.find(w=>w.id===todo.workId);return [todo.title,statusNames[todo.status]||todo.status,'类型：'+(kindNames[todo.kind]||todo.kind),'关联任务：'+(work?.name||todo.workId||'无'),'时间：'+(todo.closedAt||todo.settledAt||todo.updatedAt||todo.createdAt||'旧记录未记录'),todo.excerpt,todo.reason?'关闭原因：'+todo.reason:'',todo.resolution?'处理结果：'+JSON.stringify(todo.resolution):''].filter(Boolean).join('\n');}
@@ -67,6 +67,7 @@ export function mountManagedTodos({ document, invoke, openTodo, viewWork, recove
     const source=projectId,cap=todoCapabilities(state,todo),work=state.works?.find(w=>w.id===todo.workId);
     const items=[{id:'detail',label:'查看详情',run:()=>openTodo(todo.id)},{id:'copy',label:'复制待办内容',run:async()=>{const r=await invoke('document.clipboard',{action:'write',text:text(todo)});if(!r.ok)throw Error(r.error?.message||'复制失败');}}];
     if(work)items.push({id:'work',label:work.status==='ended'?'查看关联任务历史':'查看关联任务',run:()=>viewWork(work.id)});
+    if(!userTodoEligible(todo))return items.filter(item=>item.id!=='detail');
     if(todo.status==='open'&&todo.kind==='merge-constraint')items.push({id:'choose-merge',label:'选择合并策略（never-commit / hold / none）',run:()=>openTodo(todo.id)});
     if(todo.status==='open'&&work&&['paused','review'].includes(work.status)&&['recovery','git'].includes(todo.kind)&&todo.sourceJobId&&Number.isInteger(todo.revision))items.push({id:'recover',label:todo.kind==='git'?'重查并重试原 Git 检查点':'回到原线程核查（不重放）',run:()=>recover(todo,source)});
     if(cap.close)items.push({id:'close',label:'关闭此提醒',run:()=>act('close',todo,source)});

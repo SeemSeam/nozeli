@@ -1021,6 +1021,7 @@ export class DesktopHost {
   async applyDocument(projectId, actor, { readHandle, edits, replacements, operationId, contexts = [], requestFingerprint = null }, {beforeApply=()=>{}}={}) {
     const read = this.documentReads.get(readHandle);
     if (!read || read.projectId !== projectId || read.actorId !== actor.id || read.sessionId !== actor.sessionId || read.sessionInstance !== actor.sessionInstance || Date.now()-read.createdAt > 6*60*60*1000) throw new HostError('READ_HANDLE_REJECTED','读取句柄无效或属于其他会话，请重新读取。');
+    workPath(read.relPath);
     // Model calls quote exact text; only host code derives UTF-16 offsets. The
     // resolver also returns the spans contextBefore/contextAfter cover, which
     // must survive rebase unchanged next to the programmatic contexts parameter.
