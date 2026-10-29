@@ -55,9 +55,9 @@ jobs:
         run: node ../../tools/check-repository.mjs && xvfb-run -a npm run test:smoke
         env:
           NOZELI_OZONE: x11
-      - name: Generate dependency inventory
+      - name: Generate locked npm production dependency inventory
         working-directory: apps/desktop
-        run: mkdir -p .test-output/ci && npm sbom --sbom-format cyclonedx --omit dev > .test-output/ci/sbom.cdx.json
+        run: mkdir -p .test-output/ci && npm sbom --package-lock-only --sbom-format cyclonedx --omit dev > .test-output/ci/sbom.cdx.json
       - name: Enforce public redistribution prerequisites
         run: node tools/check-repository.mjs --public
       # No public upload step: publishing remains an explicit maintainer action

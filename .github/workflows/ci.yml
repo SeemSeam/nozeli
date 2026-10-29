@@ -82,8 +82,8 @@ jobs:
         env:
           CI: 'true'
           NOZELI_OZONE: x11
-      - name: Generate dependency inventory
-        run: mkdir -p .test-output/ci && npm sbom --sbom-format cyclonedx --omit dev > .test-output/ci/sbom.cdx.json
+      - name: Generate locked npm production dependency inventory
+        run: mkdir -p .test-output/ci && npm sbom --package-lock-only --sbom-format cyclonedx --omit dev > .test-output/ci/sbom.cdx.json
       - name: Preserve build and smoke evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6

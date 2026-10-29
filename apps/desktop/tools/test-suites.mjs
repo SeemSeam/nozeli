@@ -388,6 +388,16 @@ function testConcurrency() {
   return value;
 }
 
+function suiteEnvironment(name) {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (/AUTH|TOKEN|SECRET|PASSWORD|CREDENTIAL|API_?KEY|ASKPASS/i.test(key) || /^(?:GH_|GITHUB_|GIT_CONFIG_|CCB_|CODEX_|OMP_|PI_)/.test(key) || ['NODE_OPTIONS', 'ELECTRON_RUN_AS_NODE', 'NOZELI_CONFIG_ROOT', 'NOZELI_USER_DATA'].includes(key)) delete env[key];
+  }
+  const home = fs.mkdtempSync(path.join(path.dirname(artifactPath(name, 'tap')), `env-${name}-`));
+  Object.assign(env, { HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: path.join(home, 'config'), XDG_DATA_HOME: path.join(home, 'data'), XDG_CACHE_HOME: path.join(home, 'cache'), XDG_STATE_HOME: path.join(home, 'state'), GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'), GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' });
+  return env;
+}
+
 async function runNodeTest(suite, name) {
   const args = [
     '--test',
@@ -397,7 +407,7 @@ async function runNodeTest(suite, name) {
   const tap = artifactPath(name, 'tap');
   console.error(`[test-suites] suite=${name} runner="node --test" files=${suite.files.length} concurrency=${testConcurrency()}`);
   console.error(`[test-suites] tap=${path.relative(process.cwd(), tap)}`);
-  const child = spawn(process.execPath, args, { cwd: appRoot });
+  const child = spawn(process.execPath, args, { cwd: appRoot, env: suiteEnvironment(name) });
   const stream = fs.createWriteStream(tap, { flags: 'w' });
   // Tee the real child TAP stream to the terminal and the artifact verbatim.
   child.stdout.on('data', (chunk) => {
@@ -407,7 +417,7 @@ async function runNodeTest(suite, name) {
   child.stderr.on('data', (chunk) => process.stderr.write(chunk));
   child.once('exit', () => stream.end());
   const code = await awaitExit(child);
-  await finished(stream).catch(() => {}); // artifact must be flushed before exit
+  await finished(stream); // a failed evidence write is a real runner failure
   return code;
 }
 
@@ -470,7 +480,7 @@ async function main() {
         console.error(`[test-suites] suite=${name} script=${file}`);
         const log = artifactPath(name, 'log');
         console.error(`[test-suites] log=${path.relative(process.cwd(), log)}`);
-        const child = spawn(process.execPath, [abs], { cwd: appRoot });
+        const child = spawn(process.execPath, [abs], { cwd: appRoot, env: suiteEnvironment(name) });
         const stream = fs.createWriteStream(log, { flags: index === 0 ? 'w' : 'a' });
         // Preserve each script's real combined output under a header line so a
         // multi-file suite keeps one honest artifact.
@@ -479,7 +489,7 @@ async function main() {
         child.stderr.on('data', (chunk) => { stream.write(chunk); process.stderr.write(chunk); });
         child.once('exit', () => stream.end());
         const code = await awaitExit(child);
-        await finished(stream).catch(() => {}); // artifact must be flushed before exit
+        await finished(stream); // a failed evidence write is a real runner failure
         if (code !== 0) {
           console.error(`[test-suites] suite=${name} FAILED at ${file} (exit ${code})`);
           process.exit(code);

@@ -16,7 +16,11 @@ async function fixture({provider=false}={}){
  const dir=path.join(root,String(++next)),release=path.join(dir,'.local/opt/nozeli/releases/2026-10-13T00-00-00-000Z'),app=path.join(release,'resources/app');await fs.mkdir(app,{recursive:true});
  const marker=path.join(dir,'EXECUTABLE_WAS_STARTED'),exe=path.join(release,'nozeli'),bytes=Buffer.from(`#!/bin/sh\nprintf started > '${marker}'\n`);await fs.writeFile(exe,bytes,{mode:0o755});
  const detection=`export async function detectProviders(){return {providers:['codex','omp','claude'].map(id=>({id,available:${provider}})),commands:{}};}`;
- const files={'src/agents/detect.mjs':detection,'src/main/host.mjs':'export class DesktopHost {}','dist/renderer/index.html':'fixture-only surface'};
+ // The installed app contract the entry harness actually imports: an archive-reader
+ // runtime whose constructor only validates the absolute profile root (never writes
+ // into it) and whose detect() surfaces available providers for preflight refusal.
+ const runtime="import path from 'node:path';\nimport {detectProviders} from './detect.mjs';\nexport class AgentRuntime {\n constructor({userDataDir}={}){if(typeof userDataDir!=='string'||!path.isAbsolute(userDataDir))throw Object.assign(Error('Application metadata directory must be absolute.'),{code:'INVALID_DIRECTORY'});this.userDataDir=userDataDir;}\n async detect(){const detected=await detectProviders();return {providers:detected.providers.filter(candidate=>candidate.available),readOnly:true};}\n}\n";
+ const files={'src/agents/detect.mjs':detection,'src/agents/runtime.mjs':runtime,'src/agents/handoff-entry.cjs':'// dedicated agent entry anchor; entry validation never executes this file\n','src/main/host.mjs':'export class DesktopHost {}','dist/renderer/index.html':'fixture-only surface'};
  for(const [rel,text] of Object.entries(files)){await fs.mkdir(path.dirname(path.join(app,rel)),{recursive:true});await fs.writeFile(path.join(app,rel),text);}
  const rows=Object.entries(files).map(([p,b])=>({path:p,sha256:sha(b)})),manifest=path.join(dir,'built-manifest.json');
  const env={NOZELI_C1_MODE:'installed',NOZELI_C1_RELEASE:release,NOZELI_C1_EXPECTED_EXE_SHA256:sha(bytes),NOZELI_C1_BUILT_MANIFEST:manifest,NOZELI_C1_EVIDENCE_ROOT:root};

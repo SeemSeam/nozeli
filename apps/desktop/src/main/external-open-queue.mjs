@@ -15,7 +15,7 @@ function absolute(v){return typeof v==='string'&&path.isAbsolute(v)&&!v.includes
 function errorRecord(error){return {code:String(error?.code||'OPEN_FAILED').slice(0,64),message:String(error?.message||error).slice(0,OPEN_QUEUE_LIMITS.errorChars)};}
 const stamp=v=>fields(v,['dev','ino','size','mtimeNs'])&&['dev','ino','size','mtimeNs'].every(k=>typeof v[k]==='string'&&(k==='mtimeNs'?/^-?\d+$/:/^\d+$/).test(v[k]));
 function bindingValid(b){
- return fields(b,['projectId','canonicalRoot','relPath','canonicalTarget','requestedPath','kind','rootIdentity','targetIdentity'])&&hex(b.projectId)&&absolute(b.canonicalRoot)&&b.projectId===digest(b.canonicalRoot)&&absolute(b.canonicalTarget)&&absolute(b.requestedPath)&&stamp(b.rootIdentity)&&stamp(b.targetIdentity)&&
+ return fields(b,['projectId','canonicalRoot','relPath','canonicalTarget','requestedPath','kind','rootIdentity','targetIdentity'])&&uuid(b.projectId)&&absolute(b.canonicalRoot)&&absolute(b.canonicalTarget)&&absolute(b.requestedPath)&&stamp(b.rootIdentity)&&stamp(b.targetIdentity)&&
   (b.kind==='directory'?b.relPath===null&&b.canonicalRoot===b.canonicalTarget:b.kind==='file'&&typeof b.relPath==='string'&&b.relPath.length>0&&b.relPath.length<=1024&&!/[\\:\0]/.test(b.relPath)&&b.relPath.split('/').every(p=>p&&p!=='.'&&p!=='..')&&!path.posix.isAbsolute(b.relPath)&&path.resolve(b.canonicalRoot,...b.relPath.split('/'))===b.canonicalTarget);
 }
 function validate(data,limits){
