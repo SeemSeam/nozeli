@@ -5,6 +5,7 @@
 - Add explicit deterministic unit/integration test suites and a credential-free real Electron smoke entrypoint, with Linux CI and clean pinned builds.
 - Add contribution/security policies, issue and PR templates, dependency alerts, a user guide and structured release compliance bookkeeping.
 - Reconcile documentation with the public Alpha status; third-party source and redistribution review remains open rather than being treated as certified by publication.
+- Fix external-file open queue validation to accept storage-v2 UUID project identities while retaining root/target identity checks; valid open claims no longer freeze as corrupt queue records.
 
 ## 0.1.0-alpha.1
 
