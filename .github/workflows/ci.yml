@@ -26,8 +26,8 @@ jobs:
       run:
         working-directory: apps/desktop
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '22.22.0'
           cache: npm
@@ -40,10 +40,11 @@ jobs:
           CI: 'true'
       - name: Preserve test reports
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: linux-${{ matrix.suite }}-reports
-          path: apps/desktop/.test-output/ci/
+          path: apps/desktop/.test-output/ci/*.tap
+          include-hidden-files: true
           if-no-files-found: warn
           retention-days: 7
 
@@ -55,8 +56,8 @@ jobs:
       run:
         working-directory: apps/desktop
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '22.22.0'
           cache: npm
@@ -85,12 +86,16 @@ jobs:
         run: mkdir -p .test-output/ci && npm sbom --sbom-format cyclonedx --omit dev > .test-output/ci/sbom.cdx.json
       - name: Preserve build and smoke evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: linux-build-smoke-evidence
           path: |
-            apps/desktop/.test-output/ci/
-            apps/desktop/.test-output/smoke-*/
+            apps/desktop/.test-output/ci/*.json
+            apps/desktop/.test-output/ci/*.log
+            apps/desktop/.test-output/ci/smoke-*/*.png
+            apps/desktop/.test-output/ci/smoke-*/report.json
+            apps/desktop/.test-output/ci/smoke-*/main.log
+          include-hidden-files: true
           if-no-files-found: warn
           retention-days: 7
 
