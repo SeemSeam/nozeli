@@ -68,6 +68,7 @@ export async function isolatedLaunch({command,args=[],home,cwd,writable=[],readO
 // bwrap 可用性探测（缓存）：仅回答“能否建立隔离”，不抛错。
 let availability;
 export async function isolationAvailable(){
+ if(process.platform!=='linux')return false;
  if(availability!==undefined)return availability;
  try{
   const system=[];for(const target of SYSTEM_RO)if(await fs.stat(target).catch(()=>null))system.push(target);

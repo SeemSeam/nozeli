@@ -24,6 +24,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { finished } from 'node:stream/promises';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const appRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -58,6 +59,7 @@ const SUITES = {
       'conversation-input-state.test.mjs',
       'document-collaboration.test.mjs',
       'document-context-menu.test.mjs',
+      'pdf-note-submit.test.mjs',
       'document-export.test.mjs',
       'drawing-delivery.test.mjs',
       'editor-adapter.test.mjs',
@@ -113,6 +115,7 @@ const SUITES = {
       'c1-installed-open-entry.test.mjs',
       'collab-controller-projection.test.mjs',
       'core-file-stream.test.mjs',
+      'macos-platform.test.mjs',
       'curation-presentation.test.mjs',
       'discussion-thread-transcript.test.mjs',
       'document-authorship.test.mjs',
@@ -253,7 +256,7 @@ const SUITES = {
       'omp-tui-attach-races.test.mjs',
     ],
     runner: 'node-test',
-    preflight: [nodeVersionCheck, liveOptInCheck, gitCheck, ompRuntimeCheck, bwrapCheck, nodePtyAbiCheck],
+    preflight: [nodeVersionCheck, liveOptInCheck, gitCheck, ompRuntimeCheck, () => process.platform === 'linux' ? bwrapCheck() : null, nodePtyAbiCheck],
   },
 };
 
@@ -314,7 +317,8 @@ function liveOptInCheck() {
 }
 
 function ompRuntimeCheck() {
-  const omp = path.join(appRoot, 'runtime', 'omp', 'omp');
+  const targeted=path.join(appRoot,'runtime','omp',process.platform+'-'+process.arch,'omp');
+  const omp=fs.existsSync(targeted)?targeted:path.join(appRoot,'runtime','omp','omp');
   if (!fs.existsSync(omp)) {
     return `bundled native runtime not found at runtime/omp/omp: run \`npm run build:omp\` first (was: ${omp})`;
   }
@@ -407,7 +411,8 @@ function suiteEnvironment(name) {
     if (/AUTH|TOKEN|SECRET|PASSWORD|CREDENTIAL|API_?KEY|ASKPASS/i.test(key) || /^(?:GH_|GITHUB_|GIT_CONFIG_|CCB_|CODEX_|OMP_|PI_)/.test(key) || ['NODE_OPTIONS', 'ELECTRON_RUN_AS_NODE', 'NOZELI_CONFIG_ROOT', 'NOZELI_USER_DATA'].includes(key)) delete env[key];
   }
   const home = fs.mkdtempSync(path.join(path.dirname(artifactPath(name, 'tap')), `env-${name}-`));
-  Object.assign(env, { HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: path.join(home, 'config'), XDG_DATA_HOME: path.join(home, 'data'), XDG_CACHE_HOME: path.join(home, 'cache'), XDG_STATE_HOME: path.join(home, 'state'), GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'), GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' });
+  const temporary=fs.realpathSync(fs.mkdtempSync(path.join(process.platform==='darwin'?'/private/tmp':os.tmpdir(), 'nozeli-'+name+'-')));
+  Object.assign(env, { TMPDIR:temporary,TMP:temporary,TEMP:temporary, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: path.join(home, 'config'), XDG_DATA_HOME: path.join(home, 'data'), XDG_CACHE_HOME: path.join(home, 'cache'), XDG_STATE_HOME: path.join(home, 'state'), GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'), GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' });
   return env;
 }
 

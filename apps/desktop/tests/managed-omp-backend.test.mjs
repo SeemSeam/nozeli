@@ -147,8 +147,8 @@ test('restore dispatches recovery by provider kind (omp record skips codex auth 
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const home = path.join(root, 'agents', 'x');
   await fs.mkdir(home, { recursive: true });
-  const boot = (await fs.readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim();
-  const result = await recoverOmpProvider({ kind: 'omp-rpc', pid: 999999999, home, stamp: `${boot}:1` }, root);
+  const {bootSession}=await import('../src/platform/process-query.mjs');const boot=await bootSession();
+  const result = await recoverOmpProvider({ kind: 'omp-rpc', pid: 999999999, home, stamp: process.platform==='darwin'?`darwin:${boot}:1:1`:`${boot}:1` }, root);
   assert.ok(['already-exited', 'exited-during-check'].includes(result.status));
 });
 

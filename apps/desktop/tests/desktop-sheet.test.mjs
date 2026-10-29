@@ -1,3 +1,4 @@
+import {desktopLaunch,nativeDocumentNavigation} from './desktop-runtime.fixture.mjs';
 import {prepareReading, waitForDesktopPage, waitForReadingProject} from './reading-setup.fixture.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -18,10 +19,10 @@ await writeFile(path.join(project,'test.cpp'),'int main(){return 0;}\n');
 await writeFile(path.join(project,'sample.pdf'),await readFile(path.resolve(root,'tests/fixtures/pdf/nozeli-sample.zh.pdf')));
 await writeFile(path.join(project,'sample.xlsx'),await readFile(path.resolve(root,'tests/fixtures/office/中文 表格.xlsx')));
 const port = await new Promise(resolve => { const server = net.createServer(); server.listen(0, '127.0.0.1', () => { const value = server.address().port; server.close(() => resolve(value)); }); });
-const electron = createRequire(import.meta.url)('electron');
+
 const ozone = process.env.NOZELI_OZONE || 'wayland';
-const child = spawn(electron, ['--ozone-platform=' + ozone, path.join(root, 'src/main/main.cjs')], {
-  cwd: root, env: { ...process.env, WAYLAND_DISPLAY:process.env.WAYLAND_DISPLAY||'wayland-0', XDG_RUNTIME_DIR:process.env.XDG_RUNTIME_DIR||'/run/user/1000', NOZELI_TEST_INSTANCE:'1', NOZELI_USER_DATA:path.join(output,'profile'), NOZELI_TEST_PICK:project, NOZELI_DEBUG_PORT:String(port), NOZELI_AGENT_FIXTURE:'1', NOZELI_HIDDEN:'0', NOZELI_OZONE:ozone }, stdio: ['ignore','pipe','pipe'],
+const child = spawn(desktopLaunch(root,{ozone}).command, desktopLaunch(root,{ozone}).args, {
+  cwd: root, env: { ...process.env,...(process.env.NOZELI_TEST_BUNDLE?{PATH:''}:{}),NOZELI_CONFIG_ROOT:output, WAYLAND_DISPLAY:process.env.WAYLAND_DISPLAY||'wayland-0', XDG_RUNTIME_DIR:process.env.XDG_RUNTIME_DIR||'/run/user/1000', NOZELI_TEST_INSTANCE:'1', NOZELI_USER_DATA:path.join(output,'profile'), NOZELI_TEST_PICK:project, NOZELI_DEBUG_PORT:String(port), NOZELI_AGENT_FIXTURE:'1', NOZELI_HIDDEN:'0', NOZELI_OZONE:ozone }, stdio: ['ignore','pipe','pipe'],
 });
 let log=''; child.stdout.on('data',c=>{log+=c;});child.stderr.on('data',c=>{log+=c;});
 const exited=new Promise(resolve=>child.once('exit',resolve));let browser,page;
@@ -29,7 +30,7 @@ const checks=[];
 try {
   const deadline=Date.now()+20000;
   for (;;) { if(child.exitCode!==null)throw Error(log);try{if((await fetch(`http://127.0.0.1:${port}/json/version`)).ok)break;}catch{}if(Date.now()>deadline)throw Error('startup timeout\n'+log);await new Promise(r=>setTimeout(r,100)); }
-  browser=await puppeteer.connect({browserURL:`http://127.0.0.1:${port}`,defaultViewport:null});page=await waitForDesktopPage(browser);
+  browser=await puppeteer.connect({browserURL:`http://127.0.0.1:${port}`,defaultViewport:null});page=nativeDocumentNavigation(await waitForDesktopPage(browser),browser);
   const errors=[];page.on('pageerror',e=>{errors.push(e.message);console.log('PAGEERROR',e.message);});page.on('console',m=>{if(m.type()==='error')console.log('CONSOLE',m.text());});
   await page.waitForFunction(()=>window.__nozeliReady);
   await prepareReading(page);await page.click('#pick-project');
@@ -52,18 +53,18 @@ try {
   await frame.click('canvas',{offset:{x:155,y:50}});
   await frame.waitForFunction(()=>nozeliSheetEditor.getSelection()?.[0]?.row[0]===1&&nozeliSheetEditor.getSelection()?.[0]?.column[0]===1);
   await frame.waitForFunction(()=>nozeliSheetEditor.getSelection()?.[0]?.column[0]===1);
-  await frame.click('#luckysheet-functionbox-cell');await page.keyboard.down('Control');await page.keyboard.press('a');await page.keyboard.up('Control');await page.keyboard.type('35');await frame.waitForFunction(()=>document.querySelector('#luckysheet-functionbox-cell').textContent==='35');await page.keyboard.press('Enter');
+  await frame.click('#luckysheet-functionbox-cell');await page.keyboard.down(process.platform==='darwin'?'Meta':'Control');await page.keyboard.press('a');await page.keyboard.up(process.platform==='darwin'?'Meta':'Control');await page.keyboard.type('35');await frame.waitForFunction(()=>document.querySelector('#luckysheet-functionbox-cell').textContent==='35');await page.keyboard.press('Enter');
   await frame.waitForFunction(()=>Number(window.nozeliSheetEditor.getCellValue(1,1))===35);
   await frame.click('canvas',{offset:{x:80,y:30}});
   await frame.waitForFunction(()=>nozeliSheetEditor.getSelection()?.[0]?.row[0]===0&&nozeliSheetEditor.getSelection()?.[0]?.column[0]===0);
-  await frame.click('#luckysheet-functionbox-cell');await page.keyboard.down('Control');await page.keyboard.press('a');await page.keyboard.up('Control');await page.keyboard.sendCharacter('中文桌面修改');await page.keyboard.press('Enter');
+  await frame.click('#luckysheet-functionbox-cell');await page.keyboard.down(process.platform==='darwin'?'Meta':'Control');await page.keyboard.press('a');await page.keyboard.up(process.platform==='darwin'?'Meta':'Control');await page.keyboard.sendCharacter('中文桌面修改');await page.keyboard.press('Enter');
   await frame.waitForFunction(()=>window.nozeliSheetEditor.getCellValue(0,0)==='中文桌面修改');
   await frame.waitForFunction(()=>nozeliSheetEditor.getCellValue(3,1)===55);
   assert.equal(await frame.evaluate(()=>nozeliSheetEditor.getAllSheets()[1].data[0][1].v),55);
   await frame.click('canvas',{offset:{x:155,y:88}});
   await frame.waitForFunction(()=>nozeliSheetEditor.getSelection()?.[0]?.row[0]===3&&nozeliSheetEditor.getSelection()?.[0]?.column[0]===1);
   await frame.waitForFunction(()=>document.querySelector('#luckysheet-functionbox-cell').textContent.includes('SUM'));
-  await frame.click('#luckysheet-functionbox-cell');await page.keyboard.down('Control');await page.keyboard.press('a');await page.keyboard.up('Control');await page.keyboard.type('=SUM(B2:B3)*2');await frame.waitForFunction(()=>document.querySelector('#luckysheet-functionbox-cell').textContent==='=SUM(B2:B3)*2');await page.keyboard.press('Enter');
+  await frame.click('#luckysheet-functionbox-cell');await page.keyboard.down(process.platform==='darwin'?'Meta':'Control');await page.keyboard.press('a');await page.keyboard.up(process.platform==='darwin'?'Meta':'Control');await page.keyboard.type('=SUM(B2:B3)*2');await frame.waitForFunction(()=>document.querySelector('#luckysheet-functionbox-cell').textContent==='=SUM(B2:B3)*2');await page.keyboard.press('Enter');
   await frame.waitForFunction(()=>Number(nozeliSheetEditor.getCellValue(3,1))===110);
   assert.deepEqual(await frame.evaluate(()=>[nozeliSheetEditor.getCellValue(1,0),nozeliSheetEditor.getCellValue(2,0),nozeliSheetEditor.getCellValue(2,1),nozeliSheetEditor.getCellValue(0,1),nozeliSheetEditor.getCellValue(0,3)]),['甲','乙',20,'数值','合并单元格']);
   await open('read.md');

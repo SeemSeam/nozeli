@@ -53,7 +53,7 @@ test('broker consumes the single shared ledger hash over the FULL frozen effect'
   }
 });
 
-test('capabilities reports real availability, honest semantics, trust model', async t => {
+test('capabilities reports real availability, honest semantics, trust model', {skip:process.platform!=='linux'?'Linux-only elevation mechanism; macOS refusal tested separately':false}, async t => {
   const stubbed = await stubMechanismDir('exec "$@"');
   t.after(() => fs.rm(stubbed.bin, { recursive: true, force: true }).catch(() => {}));
   const caps = await brokerWith({ env: stubbed.env }).capabilities();
@@ -206,7 +206,7 @@ test('in-flight user execution cancel never reports completion', async t => {
   assert.ok(broker.getReceipt(result.receiptId), 'cancel path must leave a receipt'); // pre/未发射细节不影响“绝不伪完成”
 });
 
-test('admin inline launcher is honest as an unprivileged user (no fake root)', async () => {
+test('admin inline launcher is honest as an unprivileged user (no fake root)', {skip:process.platform!=='linux'?'Linux-only elevation mechanism; macOS refusal tested separately':false}, async () => {
   const identity = spawnSync('/usr/bin/python3', ['-c', LINUX_ADMIN_PYTHON, '--', '--identity'], { encoding: 'utf8' });
   assert.equal(identity.status, 7);
   assert.match(identity.stderr, /NOZELI_ADMIN_NOT_ELEVATED/); // 未提权即拒绝，不写任何结果
@@ -215,7 +215,7 @@ test('admin inline launcher is honest as an unprivileged user (no fake root)', a
   assert.match(bad.stderr, /manifest digest mismatch/);
 });
 
-test('admin without real elevation refuses instead of faking root (stub mechanism)', async t => {
+test('admin without real elevation refuses instead of faking root (stub mechanism)', {skip:process.platform!=='linux'?'Linux-only elevation mechanism; macOS refusal tested separately':false}, async t => {
   const stub = await stubMechanismDir('exec "$@"'); // 透传：python 以普通用户运行
   t.after(() => fs.rm(stub.bin, { recursive: true, force: true }).catch(() => {}));
   const marker = path.join(os.tmpdir(), `nozeli-priv-admin-${Date.now()}.marker`);
@@ -233,7 +233,7 @@ test('admin without real elevation refuses instead of faking root (stub mechanis
   assert.equal(await exists(marker), false); // 拒绝执行，零效果
 });
 
-test('forged user-owned result channel is rejected, never completed (anti-forgery)', async t => {
+test('forged user-owned result channel is rejected, never completed (anti-forgery)', {skip:process.platform!=='linux'?'Linux-only elevation mechanism; macOS refusal tested separately':false}, async t => {
   const stub = await stubMechanismDir('D="${STUB_RES}/forged"; mkdir -p "$D"; printf \'%s\\n\' \'{"phase":"pre","identity":{"uid":0,"euid":0,"gid":0,"root":true},"effectHash":"x","commandDigest":"y"}\' > "$D/control.jsonl"; printf \'%s\\n\' \'{"v":1,"effectHash":"x","exitCode":0,"stdoutB64":"","stderrB64":"","spawnError":null,"timedOut":false}\' > "$D/receipt.json"; echo "NOZELI_ADMIN_DIR $D"; exit 0');
   t.after(() => fs.rm(stub.bin, { recursive: true, force: true }).catch(() => {}));
   const marker = path.join(os.tmpdir(), `nozeli-priv-forge-${Date.now()}.marker`);
@@ -247,7 +247,7 @@ test('forged user-owned result channel is rejected, never completed (anti-forger
   assert.equal(await exists(marker), false);
 });
 
-test('admin mechanism dismissal maps to cancelled without execution', async t => {
+test('admin mechanism dismissal maps to cancelled without execution', {skip:process.platform!=='linux'?'Linux-only elevation mechanism; macOS refusal tested separately':false}, async t => {
   const stub = await stubMechanismDir('exit 126');
   t.after(() => fs.rm(stub.bin, { recursive: true, force: true }).catch(() => {}));
   const marker = path.join(os.tmpdir(), `nozeli-priv-dismiss-${Date.now()}.marker`);
@@ -259,7 +259,7 @@ test('admin mechanism dismissal maps to cancelled without execution', async t =>
   assert.equal(await exists(marker), false);
 });
 
-test('admin mechanism unavailable is honest and nothing executes', async t => {
+test('admin mechanism unavailable is honest and nothing executes', {skip:process.platform!=='linux'?'Linux-only elevation mechanism; macOS refusal tested separately':false}, async t => {
   const empty = await fs.mkdtemp(path.join(os.tmpdir(), 'nozeli-empty-'));
   const broker = brokerWith({ env: { ...process.env, PATH: empty } });
   const caps = await broker.capabilities();
@@ -273,7 +273,7 @@ test('admin mechanism unavailable is honest and nothing executes', async t => {
   assert.equal(result.error.code, 'MECHANISM_UNAVAILABLE');
 });
 
-test('admin in-flight mechanism kill reports unknown (cannot prove root child stopped)', async t => {
+test('admin in-flight mechanism kill reports unknown (cannot prove root child stopped)', {skip:process.platform!=='linux'?'Linux-only elevation mechanism; macOS refusal tested separately':false}, async t => {
   const stub = await stubMechanismDir('sleep 60');
   t.after(() => fs.rm(stub.bin, { recursive: true, force: true }).catch(() => {}));
   const broker = brokerWith({ env: stub.env });
@@ -293,4 +293,12 @@ test('PowerShell literal round-trips preserve spaces, empty args, quotes and bac
   const args=['','a b',"--value-with'quote","a''b",'C:\\work\\path\\',') ; exit 7 #'];
   assert.deepEqual(parsePowershellArgumentList(powershellArgumentList(args)),args);
   assert.throws(()=>parsePowershellArgumentList("@('unterminated)"));
+});
+
+test('macOS admin capability refuses before authentication or execution',{skip:process.platform!=='darwin'},async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-admin-refusal-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));const marker=path.join(root,'must-not-run');
+ const broker=brokerWith(),caps=await broker.capabilities();assert.equal(caps.elevationAvailable,false);
+ const auth=await broker.authenticate({requestId:'mac-auth',grantId:'mac-grant',elevation:'admin'});assert.equal(auth.status,'unavailable');assert.equal(auth.error.code,'ELEVATION_UNVERIFIED');
+ const {frozen}=await approved(interpreter,['-e',markerScript(marker)],root,'macOS拒绝',{elevation:'admin'});
+ const result=await broker.execute({requestId:'mac-exec',grantId:'mac-grant',effectHash:computeEffectHash(frozen),frozenEffect:frozen});assert.equal(result.status,'unavailable');assert.equal(result.error.code,'ELEVATION_UNVERIFIED');assert.equal(await exists(marker),false);assert.equal(broker.runningExecutions().length,0);
 });

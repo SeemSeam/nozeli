@@ -8,6 +8,9 @@ import {git,str,read,repository,commitTree,fail,acceptanceCommit,gitStream,gitRe
 import {runGit} from './git-runtime.mjs';
 import {inspectFile,readSafeBytes,safeRelativePath,TEXT_MAX_BYTES} from './file-stream.mjs';
 import {Readable,Writable} from 'node:stream';
+import {DIR_FLAGS,entry,openAt,statAt,readDirectory,renameAt,unlinkAt,retainEntryAt,writeAt,openDirectoryChain} from '../../platform/directory-fs.mjs';
+import {publishFileAt,deleteFileAt} from '../../platform/file-publication.mjs';
+import {assertUniqueTargets,assertManagedEntry} from '../../platform/filename-policy.mjs';
 import {provisionWorktreeDependencies} from './worktree-dependencies.mjs';
 export const byteDigest=bytes=>bytes===null?null:createHash('sha256').update(bytes).digest('hex');
 export const workPath=safeRelativePath;
@@ -18,7 +21,8 @@ const indexDigest=async file=>(await inspectFile(path.dirname(file),path.basenam
 async function copyToHandle(file,handle){const source=await fs.open(file,'r');try{await handle.writeFile(source.createReadStream({autoClose:false}));}finally{await source.close();}}
 function documentText(bytes){if(bytes===null)return '';let text;try{text=new TextDecoder('utf-8',{fatal:true}).decode(bytes);}catch{fail('UNSUPPORTED','文档操作仅支持UTF-8文本');}if(text.includes('\0'))fail('UNSUPPORTED','文档操作不支持二进制文件');return text.replace(/\r\n?/g,'\n');}
 async function documentParent(root,rel){
- workPath(rel);const handles=[];try{let directory=await fs.open(root,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);handles.push(directory);for(const part of rel.split('/').slice(0,-1)){const next='/proc/self/fd/'+directory.fd+'/'+part;await fs.mkdir(next).catch(error=>{if(error.code!=='EEXIST')throw error;});directory=await fs.open(next,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);handles.push(directory);}return {directory,prefix:'/proc/self/fd/'+directory.fd+'/',close:async()=>{for(const handle of handles.reverse())await handle.close();}};}catch(error){for(const handle of handles.reverse())await handle.close();throw error;}
+ workPath(rel);await assertUniqueTargets(root,[rel]);
+ return openDirectoryChain(root,rel.split('/').slice(0,-1).join('/'),{create:true,validateName:assertManagedEntry});
 }
 const names=buffer=>buffer.toString().split('\0').filter(Boolean);
 const repositoryQueues=new Map();
@@ -89,7 +93,7 @@ export class ExecutionWorkspace {
   if(m.preparation==='requested'){
    await this.identity(m,{worker:false});
    if(m.legacy&&!await fs.lstat(m.legacy.directory).catch(()=>null))await fs.rename(m.directory,m.legacy.directory);
-   if(!await read(path.join(m.directory,'.git'))){await fs.mkdir(path.dirname(m.directory),{recursive:true});const exists=await str(m.repo,['rev-parse','--verify',m.branchRef]).catch(()=>null);if(exists&&exists!==m.baseCommit)fail('WORKER_REF_CHANGED','准备中的分支已变化');await git(m.repo,['worktree','add',...(exists?[]:['-b',m.branchRef.slice(11)]),m.directory,exists?m.branchRef:m.baseCommit]);}
+   if(!await read(path.join(m.directory,'.git'))){await fs.mkdir(path.dirname(m.directory),{recursive:true});await assertUniqueTargets(path.dirname(m.directory),[...(await gitEntries(m.repo,['ls-tree','-r','-z',m.baseCommit])).keys()],{checkExisting:false});await fs.mkdir(path.dirname(m.directory),{recursive:true});const exists=await str(m.repo,['rev-parse','--verify',m.branchRef]).catch(()=>null);if(exists&&exists!==m.baseCommit)fail('WORKER_REF_CHANGED','准备中的分支已变化');await git(m.repo,['worktree','add',...(exists?[]:['-b',m.branchRef.slice(11)]),m.directory,exists?m.branchRef:m.baseCommit]);}
    m.gitPointer=(await fs.readFile(path.join(m.directory,'.git'))).toString();m.workerGitDir=await fs.realpath(await str(m.directory,['rev-parse','--absolute-git-dir']));m.preparation='registered';await this.save(m);
   }
   if(m.preparation==='registered'){
@@ -98,6 +102,7 @@ export class ExecutionWorkspace {
   if(m.preparation==='input-frozen'){
    if((await read(path.join(m.directory,'.git')))?.toString()!==m.gitPointer)fail('IDENTITY_CHANGED','执行目录Git指针变化');
    const head=await str(m.repo,['rev-parse',m.branchRef]);if(![m.baseCommit,m.inputCommit].includes(head))fail('WORKER_REF_CHANGED','准备中的分支变化');
+   await assertUniqueTargets(m.directory,[...(await gitEntries(m.repo,['ls-tree','-r','-z',m.inputCommit])).keys()]);
    await git(m.directory,['reset','--hard',m.inputCommit]);m.preparation='input-installed';await this.save(m);
   }
   await this.provisionDependencies(m);
@@ -110,7 +115,7 @@ export class ExecutionWorkspace {
  }
  // Worker依赖供给：被忽略的node_modules不随worktree迁移。源项目模块与冻结
  // 输入的package.json/package-lock.json字节一致时，向执行目录独立拷贝一份
- // （reflink优先，绝不符号链接到可写源端）；已有模块一律保留。缺失/不匹配
+ // （固定源目录后流式复制，不链接到可写源端）；已有模块一律保留。缺失/不匹配
  // 把可读原因记入manifest.dependencies，绝不伪造依赖可用。
  async provisionDependencies(m){
   if(!m||!m.files)return null;
@@ -121,9 +126,16 @@ export class ExecutionWorkspace {
  async reconcileFreeze(m){if(!m.freezeIntent)return;const head=await str(m.repo,['rev-parse',m.branchRef]);if(head===m.freezeIntent.commit){m.candidate=m.freezeIntent.candidate;delete m.freezeIntent;await this.save(m);}else if(head===m.freezeIntent.before){await git(m.repo,['update-ref',m.branchRef,m.freezeIntent.commit,head]);m.candidate=m.freezeIntent.candidate;delete m.freezeIntent;await this.save(m);}else fail('WORKER_REF_CHANGED','冻结意图与分支不一致');}
  async reconcileDocument(m){
   const intent=m.documentIntent;if(!intent)return;workPath(intent.value.relPath);const digest=byteDigest(await safeBytes(m.directory,intent.value.relPath));
-  const cleanup=async()=>{const rel=path.relative(m.directory,intent.temp).split(path.sep).join('/');workPath(rel);if(path.posix.dirname(rel)!==path.posix.dirname(intent.value.relPath))fail('DOCUMENT_RECOVERY','编辑临时文件路径不属于原目录');const parent=await documentParent(m.directory,rel);try{await fs.rm(parent.prefix+path.posix.basename(rel),{force:true});}finally{await parent.close();}};
-  if(digest===intent.value.digest){m.documentCalls??={};if(intent.callId)m.documentCalls[intent.callId]={fingerprint:intent.fingerprint,value:intent.value};await cleanup();delete m.documentIntent;await this.save(m);}
-  else if(digest===intent.value.beforeDigest){await cleanup();delete m.documentIntent;await this.save(m);}
+  const cleanup=async expected=>{
+   const rel=path.relative(m.directory,intent.temp).split(path.sep).join('/');workPath(rel);
+   if(path.posix.dirname(rel)!==path.posix.dirname(intent.value.relPath))fail('DOCUMENT_RECOVERY','编辑临时文件路径不属于原目录');
+   const temporary=await inspectFile(m.directory,rel);
+   if(!temporary)return;
+   if(temporary.digest!==expected)fail('DOCUMENT_RECOVERY','发布中断，临时文件含未核验内容；原件、编辑与恢复意图已保留');
+   const parent=await documentParent(m.directory,rel);try{await parent.verify();await deleteFileAt(entry(parent.directory.fd,path.posix.basename(rel)),{expectedDigest:expected,expectedMode:temporary.mode});}finally{await parent.close();}
+  };
+  if(digest===intent.value.digest){await cleanup(intent.value.beforeDigest);m.documentCalls??={};if(intent.callId)m.documentCalls[intent.callId]={fingerprint:intent.fingerprint,value:intent.value};delete m.documentIntent;await this.save(m);}
+  else if(digest===intent.value.beforeDigest){await cleanup(intent.value.digest);delete m.documentIntent;await this.save(m);}
   else fail('DOCUMENT_RECOVERY','执行文件与持久化编辑意图不一致，已保留现场');
  }
  async publicationCommitted(intent){
@@ -182,6 +194,7 @@ export class ExecutionWorkspace {
  // 成symlink逃逸），原子temp+sync+rename+复核，残留temp始终清理。
  async applyReviewedFiles(m,plan){
   if(!plan||!plan.length)return;
+  try{await assertUniqueTargets(m.directory,plan.map(item=>item.relPath));}catch(error){if(['ELOOP','ENOTDIR','SOURCE_CHANGED'].includes(error.code))fail('WORKTREE_DRIFT','执行目录不可安全访问；人工草稿已保留');throw error;}
   const steps=[];
   for(const item of plan){
    workPath(item.relPath);
@@ -195,14 +208,15 @@ export class ExecutionWorkspace {
   for(const {item,captured,current} of steps){
    if(current===item.toDigest)continue;   // 幂等重放
    const parent=await documentParent(m.directory,item.relPath);
-   const temp=parent.prefix+path.posix.basename(item.relPath)+'.nozeli-review-'+randomUUID();
+   const temp=entry(parent.directory.fd,path.posix.basename(item.relPath)+'.nozeli-review-'+randomUUID());
+   let retainTemp=false;
    try{
-    const handle=await fs.open(temp,'wx',captured?parseInt(captured.mode,8)&0o777:0o644);
+    const handle=await openAt(temp,'wx',captured?parseInt(captured.mode,8)&0o777:0o644);
     try{await handle.writeFile(item.bytes);await handle.sync();}finally{await handle.close();}
     if((await inspectFile(m.directory,item.relPath))?.digest!==captured?.digest)fail('WORKTREE_DRIFT','写入期间执行文件变化：'+item.relPath);
-    await fs.rename(temp,path.join(m.directory,item.relPath));
+    await parent.verify();await publishFileAt(temp,entry(parent.directory.fd,path.posix.basename(item.relPath)),{expectedDigest:captured?.digest,expectedMode:captured?.mode});
     if((await inspectFile(m.directory,item.relPath))?.digest!==item.toDigest)fail('WORKTREE_DRIFT','人工审校写入校验失败：'+item.relPath);
-   }finally{await fs.rm(temp,{force:true});await parent.close();}
+   }catch(error){retainTemp=error.retainTemp===true;throw error;}finally{if(!retainTemp)await retainEntryAt(temp);await parent.close();}
   }
  }
  async refresh(){fail('INPUT_FROZEN','输入基线已冻结；继续工作会保留原工作目录，不自动覆盖Worker文件');}
@@ -216,8 +230,9 @@ export class ExecutionWorkspace {
   const original=documentText(before),{edits}=resolveTextReplacements(original,a.replacements);
   const ordered=edits.sort((x,y)=>y.from-x.from);
   let text=original;for(const e of ordered){if(Buffer.byteLength(text)-Buffer.byteLength(text.slice(e.from,e.to))+Buffer.byteLength(e.insert)>TEXT_MAX_BYTES)fail('TEXT_LIMIT','文档编辑超过32MiB文本边界');text=text.slice(0,e.from)+e.insert+text.slice(e.to);}
-  if(!isActive())fail('WORK_STOPPED','工作已停止');const parent=await documentParent(m.directory,h.rel),name=path.posix.basename(h.rel),tempName=name+'.'+randomUUID(),temp=parent.prefix+tempName,file=parent.prefix+name;
-  try{const captured=await safeFile(m.directory,h.rel);if(byteDigest(captured?.bytes??null)!==h.digest)fail('STALE_VERSION','文件已变化');await fs.writeFile(temp,text,{flag:'wx',mode:captured?parseInt(captured.mode,8)&0o777:0o644});if(!isActive())fail('WORK_STOPPED','工作已停止');if(byteDigest(await safeBytes(m.directory,h.rel))!==h.digest)fail('STALE_VERSION','文件已变化');const value={relPath:h.rel,beforeDigest:h.digest,digest:byteDigest(Buffer.from(text)),eventId:callId,version:{digest:byteDigest(Buffer.from(text))}};m.documentIntent={callId,fingerprint,value,temp:path.join(m.directory,path.posix.dirname(h.rel),tempName),file:path.join(m.directory,h.rel)};await this.save(m);if(!isActive())fail('WORK_STOPPED','工作已停止');if(byteDigest(await safeBytes(m.directory,h.rel))!==h.digest)fail('STALE_VERSION','文件已变化');await fs.rename(temp,file);m.documentCalls??={};if(callId)m.documentCalls[callId]={fingerprint,value};delete m.documentIntent;await this.save(m);this.handles.delete(a.readHandle);return {ok:true,continueTurn:true,value};}finally{await fs.rm(temp,{force:true});await parent.close();}
+  if(!isActive())fail('WORK_STOPPED','工作已停止');const parent=await documentParent(m.directory,h.rel),name=path.posix.basename(h.rel),tempName=name+'.'+randomUUID(),temp=entry(parent.directory.fd,tempName),file=entry(parent.directory.fd,name);
+  let retainTemp=false;
+  try{const captured=await safeFile(m.directory,h.rel);if(byteDigest(captured?.bytes??null)!==h.digest)fail('STALE_VERSION','文件已变化');await writeAt(temp,text,{mode:captured?parseInt(captured.mode,8)&0o777:0o644});if(!isActive())fail('WORK_STOPPED','工作已停止');if(byteDigest(await safeBytes(m.directory,h.rel))!==h.digest)fail('STALE_VERSION','文件已变化');const value={relPath:h.rel,beforeDigest:h.digest,digest:byteDigest(Buffer.from(text)),eventId:callId,version:{digest:byteDigest(Buffer.from(text))}};m.documentIntent={callId,fingerprint,value,temp:path.join(m.directory,path.posix.dirname(h.rel),tempName),file:path.join(m.directory,h.rel)};await this.save(m);if(!isActive())fail('WORK_STOPPED','工作已停止');if(byteDigest(await safeBytes(m.directory,h.rel))!==h.digest)fail('STALE_VERSION','文件已变化');await parent.verify();await publishFileAt(temp,file,{expectedDigest:h.digest,expectedMode:captured?.mode});m.documentCalls??={};if(callId)m.documentCalls[callId]={fingerprint,value};delete m.documentIntent;await this.save(m);this.handles.delete(a.readHandle);return {ok:true,continueTurn:true,value};}catch(error){retainTemp=error.retainTemp===true;throw error;}finally{if(!retainTemp)await retainEntryAt(temp);await parent.close();}
  }catch(e){return {ok:false,continueTurn:true,error:{code:e.code||'DOCUMENT_FAILED',message:e.message}};}});}
  async finish(work,{decision,reportPersisted,isActive=()=>false,validateAcceptance,reviewed=null,mergeAuthorization=null}={}){return this.locked(work.id,()=>this.repositoryLocked(async()=>{
   await this.store.storage.requireOnline(this.store.projectId);
@@ -297,6 +312,7 @@ export class ExecutionWorkspace {
    intent={decision:'accept',status:'prepared',directory,commit,files,beforeIndexDigest:await indexDigest(beforeIndex),afterIndexDigest:await indexDigest(afterIndex),token:'nozeli:'+randomUUID()};m.finishIntent=intent;await this.save(m);
   }
   if(intent.status==='integrated')return;
+  await assertUniqueTargets(m.repo,intent.files.map(f=>f.rel));
   await this.identity(m);const currentIndex=await indexDigest(m.index);if(![intent.beforeIndexDigest,intent.afterIndexDigest].includes(currentIndex))fail('INDEX_CHANGED','用户索引已变化，保留恢复意图');
   const format=await str(m.repo,['rev-parse','--show-ref-format']).catch(()=>'files');if(!['files','--show-ref-format'].includes(format))fail('REF_FORMAT','仅支持Git files引用后端');
   const refFile=path.join(m.commonDir,m.targetRef),refLock=refFile+'.lock',lock=m.index+'.lock',headLock=m.headFile+'.lock',owned=[];let published=false;
@@ -320,17 +336,37 @@ export class ExecutionWorkspace {
  async installFile(m,f,rollback){
   const oid=rollback?f.beforeOid:f.oid,mode=rollback?f.beforeMode:f.mode,expected=rollback?f.after:f.before,wanted=rollback?f.before:f.after,disk=await inspectFile(m.repo,f.rel),digest=disk?.digest??null;
   if(digest===wanted&&(!disk||disk.mode===mode))return;if(digest!==expected&&digest!==wanted)fail('SOURCE_CHANGED','文件在替换前变化：'+f.rel);
-  const parent=await documentParent(m.repo,f.rel),target=parent.prefix+path.posix.basename(f.rel),temp=target+'.nozeli-'+randomUUID();
+  const parent=await documentParent(m.repo,f.rel),target=entry(parent.directory.fd,path.posix.basename(f.rel)),temp=entry(parent.directory.fd,target.name+'.nozeli-'+randomUUID());
+  let retainTemp=false;
   try{
-   if(!oid){if((await inspectFile(m.repo,f.rel))?.digest!==disk?.digest)fail('SOURCE_CHANGED','删除前文件变化：'+f.rel);if(disk)await fs.unlink(target);return;}
-   const handle=await fs.open(temp,'wx',parseInt(mode,8)&0o777);
+   if(!oid){if((await inspectFile(m.repo,f.rel))?.digest!==disk?.digest)fail('SOURCE_CHANGED','删除前文件变化：'+f.rel);if(disk){await parent.verify();await deleteFileAt(target,{expectedDigest:disk.digest,expectedMode:disk.mode});};return;}
+   const handle=await openAt(temp,'wx',parseInt(mode,8)&0o777);
    try{await gitStream(m.repo,['cat-file','blob',oid],{output:new Writable({write(chunk,encoding,done){handle.writeFile(chunk).then(()=>done(),done);}})});await handle.chmod(parseInt(mode,8)&0o777);await handle.sync();}finally{await handle.close();}
-   const temporary=await inspectFile(m.repo,path.posix.join(path.posix.dirname(f.rel),path.posix.basename(temp)));if(temporary?.digest!==wanted)fail('SOURCE_CHANGED','Git对象写入校验失败：'+f.rel);
-   if((await inspectFile(m.repo,f.rel))?.digest!==disk?.digest)fail('SOURCE_CHANGED','写入前文件变化：'+f.rel);await fs.rename(temp,target);
-  }finally{await fs.rm(temp,{force:true});await parent.close();}
+   const temporary=await inspectFile(m.repo,path.posix.join(path.posix.dirname(f.rel),temp.name));if(temporary?.digest!==wanted)fail('SOURCE_CHANGED','Git对象写入校验失败：'+f.rel);
+   if((await inspectFile(m.repo,f.rel))?.digest!==disk?.digest)fail('SOURCE_CHANGED','写入前文件变化：'+f.rel);await parent.verify();await publishFileAt(temp,target,{expectedDigest:disk?.digest,expectedMode:disk?.mode});
+  }catch(error){retainTemp=error.retainTemp===true;throw error;}finally{if(!retainTemp)await retainEntryAt(temp);await parent.close();}
+ }
+ async retainRecoveries(m){
+  if(process.platform!=='darwin')return;
+  const destination=path.join(this.store.root,'recovered-files',m.workId);await fs.mkdir(destination,{recursive:true,mode:0o700});
+  const root=await openDirectoryChain(m.directory),saved=await openDirectoryChain(destination);
+  const visit=async(fd,rel='')=>{
+   for(const name of await readDirectory(fd)){
+    const ref=entry(fd,name),stat=await statAt(ref,{bigint:true});if(!stat.isDirectory()||name==='.git'||name==='node_modules')continue;
+    const dir=await openAt(ref,DIR_FLAGS);try{
+     const reserved=await statAt(entry(fd,'.nozeli'),{bigint:true}).catch(e=>{if(e.code==='ENOENT')return null;throw e;});
+     if(reserved?.dev===stat.dev&&reserved.ino===stat.ino){
+      const recovery=entry(dir.fd,'recovery');const exists=await statAt(recovery,{bigint:true}).catch(e=>{if(e.code==='ENOENT')return null;throw e;});
+      if(exists){const id=randomUUID();m.retainedRecoveries??=[];m.retainedRecoveries.push({source:rel?rel+'/'+name+'/recovery':name+'/recovery',destination:path.join(destination,id)});await this.save(m);await renameAt(recovery,entry(saved.directory.fd,id),{exclusive:true});}
+     }
+     await visit(dir.fd,rel?rel+'/'+name:name);
+    }finally{await dir.close();}
+   }
+  };
+  try{await visit(root.directory.fd);await root.verify();await saved.verify();}finally{await root.close();await saved.close();}
  }
  async removeOwned(m){
-  const exists=await fs.lstat(m.directory).catch(e=>{if(e.code==='ENOENT')return null;throw e;});if(exists){await this.identity(m,{target:false});if(m.finishIntent.decision==='accept'){const current=await this.snapshot(m,m.directory,m.inputCommit,'Nozeli cleanup verification');if(current.tree!==m.candidate.tree)fail('UNPUBLISHED_CHANGES','接受后执行目录又变化，未删除候选');}await git(m.repo,['worktree','remove','--force',m.directory]);}
+  const exists=await fs.lstat(m.directory).catch(e=>{if(e.code==='ENOENT')return null;throw e;});if(exists){await this.identity(m,{target:false});if(m.finishIntent.decision==='accept'){const current=await this.snapshot(m,m.directory,m.inputCommit,'Nozeli cleanup verification');if(current.tree!==m.candidate.tree)fail('UNPUBLISHED_CHANGES','接受后执行目录又变化，未删除候选');}await this.retainRecoveries(m);await git(m.repo,['worktree','remove','--force',m.directory]);}
   const ref=await str(m.repo,['rev-parse','--verify',m.branchRef]).catch(()=>null);if(ref){const expected=m.candidate?.commit||m.inputCommit||m.baseCommit;if(ref!==expected)fail('WORKER_REF_CHANGED','分支不再属于受管候选，未删除');await git(m.repo,['update-ref','-d',m.branchRef,expected]);}
  }
  async recoverOperations(){

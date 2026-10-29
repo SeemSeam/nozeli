@@ -6,6 +6,7 @@ import {createReadStream} from 'node:fs';
 import {execFileSync} from 'node:child_process';
 import {packageRelease, validateRelease} from './local-release.mjs';
 
+if(process.platform==='darwin'){await import('./package-macos.mjs');process.exit(0);}
 if (process.platform !== 'linux' || process.arch !== 'x64') throw Error('Portable packaging currently supports Linux x64 only.');
 const [destination, ...extra] = process.argv.slice(2);
 if (!destination || extra.length || !path.isAbsolute(destination)) throw Error('usage: node tools/package-portable.mjs <absolute-new-output-directory>');

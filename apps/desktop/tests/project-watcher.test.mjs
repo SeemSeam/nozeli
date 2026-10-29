@@ -54,12 +54,13 @@ test('subscriptions are project isolated and nonrecursive until explicit directo
   await fs.mkdir(path.join(f.root, 'nested'));
   await f.watcher.watch('one', f.root);
   await f.watcher.watch('two', f.other);
+  await pause(250);f.events.length=0; // let native subscription registration settle before the first fixture mutation
   await f.next(contains('two', '', 'only-two.txt'), () => fs.writeFile(path.join(f.other, 'only-two.txt'), 'two'));
   assert.ok(f.events.every(event => event.projectId === 'two'));
   f.events.length = 0;
   await fs.writeFile(path.join(f.root, 'nested', 'not-followed.txt'), 'one');
   await pause(150);
-  assert.equal(f.events.length, 0, 'root subscription must not recurse into a child directory');
+  assert(f.events.every(event=>event.parentRelPath===''&&(event.projectId==='one'?event.paths.every(rel=>rel==='nested'):event.projectId==='two'&&event.paths.every(rel=>rel==='only-two.txt'))), 'native metadata and delayed duplicate notifications are allowed, but nested file paths or cross-project paths must not leak: '+JSON.stringify(f.events));
   await f.watcher.watch('one', f.root, 'nested');
   await f.next(contains('one', 'nested', 'nested/not-followed.txt'), () => fs.appendFile(path.join(f.root, 'nested', 'not-followed.txt'), ' updated'));
   f.watcher.unwatchProject('one');

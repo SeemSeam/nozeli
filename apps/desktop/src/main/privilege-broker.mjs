@@ -701,6 +701,7 @@ export function createPrivilegeBroker(options = {}) {
 
   const authenticate = async request => {
     const { requestId, effectHash: requestedHash = null, grantId, generation = null, expiresAt = null, elevation } = request ?? {};
+    if(platform==='darwin'&&elevation==='admin')return {status:'unavailable',error:{code:'ELEVATION_UNVERIFIED',message:'macOS 提权尚未验收，当前不可用。'}};
     if (elevation !== 'user' && elevation !== 'admin') return { status: 'failed', error: { code: 'ELEVATION_INVALID', message: "elevation 必须是 'user'|'admin'" } };
     if (typeof grantId !== 'string' || !grantId) return { status: 'failed', error: { code: 'GRANT_INVALID', message: 'grantId required' } };
     try { assertGrantLive(grantId); } catch (error) { return { status: 'failed', error: { code: error.code, message: error.message } }; }
@@ -790,6 +791,7 @@ export function createPrivilegeBroker(options = {}) {
         if (sessionId && scope !== frozenEffect.elevation) return fail('failed', 'ELEVATION_MISMATCH', `会话作用域 ${scope} 与冻结效果 ${frozenEffect.elevation} 不一致`);
       } catch (error) { return fail('failed', error.code, error.message); }
       execution.scope = scope;
+      if(platform==='darwin'&&scope==='admin')return fail('unavailable','ELEVATION_UNVERIFIED','macOS 提权尚未验收，当前不可用。');
 
       const exec = validated.exec;
       // 批准即冻结：执行前重读执行目标字节与 cwd 身份，≠批准值 → 拒绝（需重新批准）。
@@ -891,13 +893,13 @@ export function createPrivilegeBroker(options = {}) {
       const trustedPython = await resolveTrustedPython();
       const missingDeps = [];
       for (const dep of strategy.deps) if (!await findExecutable(dep)) missingDeps.push(dep);
-      const elevationAvailable = !interpreter.error && Boolean(mechanismPath) && (platform === 'linux' ? trustedPython.trusted : true) && !missingDeps.length;
+      const elevationAvailable = platform!=='darwin' && !interpreter.error && Boolean(mechanismPath) && (platform === 'linux' ? trustedPython.trusted : true) && !missingDeps.length;
       return {
         platform,
         authMethod: strategy.authMethod,
         currentIdentity: currentIdentity(),
         elevationAvailable,
-        reason: interpreter.error ? `解释器不可用：${interpreter.error}`
+        reason: platform==='darwin' ? 'macOS 提权尚未验收，当前不可用。' : interpreter.error ? `解释器不可用：${interpreter.error}`
           : !mechanismPath ? `未找到提权机制 ${strategy.executable}`
           : (platform === 'linux' && !trustedPython.trusted) ? `提权解释器不可信：${trustedPython.reason}`
           : missingDeps.length ? `机制依赖缺失：${missingDeps.join(', ')}`

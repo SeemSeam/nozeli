@@ -75,7 +75,7 @@ try{
 }catch(error){failure=error;console.error(error.stack);if(page){await archive('failure').catch(()=>{});await close().catch(()=>{});}}
 finally{
  if(browser)await browser.disconnect().catch(()=>{});if(child?.exitCode===null){child.kill('SIGTERM');await pause(2000);if(child.exitCode===null)child.kill('SIGKILL');}
- const audit=runtimeRoot?await auditRuntime(runtimeRoot):null;if(audit&&(audit.processes.length||audit.authCopies.length))failure??=Error('owned runtime cleanup incomplete');
+ const audit=runtimeRoot?await auditRuntime(runtimeRoot):null;if(audit&&(audit.complete!==true||audit.processes.length||audit.authCopies.length))failure??=Error('owned runtime cleanup incomplete');
  await fs.writeFile(path.join(out,'electron.log'),log);await fs.writeFile(path.join(out,'result.json'),JSON.stringify({pass:!failure,error:failure?.stack,checks,errors,audit,out,scope:'real Electron/provider; explicit material handoff, Work-bound discussion, queue, drafts, immutable report/artifact UI and restart; Linux only'},null,2));
  console.log(JSON.stringify({pass:!failure,out,checks}));if(failure)process.exitCode=1;
 }

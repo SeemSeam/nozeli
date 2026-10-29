@@ -21,3 +21,10 @@ apps/desktop/runtime/omp/omp
 apps/desktop/runtime/omp/omp.exe
 apps/desktop/runtime/omp/runtime.json
 apps/desktop/vendor/pptist/upstream.tar.gz
+
+apps/desktop/runtime/omp/*/omp
+apps/desktop/runtime/omp/*/runtime.json
+apps/desktop/runtime/omp/*/LICENSE
+apps/desktop/runtime/omp/*/THIRD-PARTY-NOTICES.txt
+apps/desktop/runtime/omp/*/BUN-LICENSE.txt
+apps/desktop/runtime/platform/

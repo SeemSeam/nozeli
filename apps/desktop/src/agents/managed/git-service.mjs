@@ -24,8 +24,12 @@ export async function blobFiles(cwd,root,rels,known=new Map(),format='sha1'){
  const results=new Map(),opened=[];
  const capture=async at=>{if(at===rels.length){
    const changed=opened.filter(row=>row.oid!==known.get(row.rel)?.[2]);
-   if(changed.length){const ids=(await runGit(cwd,['hash-object','-w','--no-filters','--stdin-paths'],{env:gitEnv(),input:Readable.from(changed.map(row=>'/proc/'+process.pid+'/fd/'+row.file.handle.fd+'\n'))})).toString().trim().split('\n');
-    if(ids.length!==changed.length||ids.some((oid,i)=>oid!==changed[i].oid))fail('SOURCE_CHANGED','Git对象与文件流摘要不一致');}
+   if(changed.length){
+    const inputFds=process.platform==='darwin'?changed.map(row=>row.file.handle.fd):[];
+    const names=changed.map((row,i)=>process.platform==='darwin'?'/dev/fd/'+(3+i):'/proc/'+process.pid+'/fd/'+row.file.handle.fd);
+    const oids=(await runGit(cwd,['hash-object','-w','--no-filters','--stdin-paths'],{env:gitEnv(),inputFds,input:Readable.from(names.join('\n')+'\n')})).toString().trim().split('\n');
+    if(oids.length!==changed.length||oids.some((oid,i)=>oid!==changed[i].oid))fail('SOURCE_CHANGED','Git对象与文件流摘要不一致');
+   }
    for(const {rel,file,digest,size,oid} of opened)results.set(rel,{oid,digest,size,mode:file.mode});return;
   }
   const rel=rels[at];let entered=false;const value=await withSafeFile(root,rel,async file=>{entered=true;const hash=createHash('sha256'),objectHash=createHash(format).update('blob '+file.stat.size+'\0');let size=0;for await(const chunk of file.stream()){hash.update(chunk);objectHash.update(chunk);size+=chunk.length;}if(BigInt(size)!==file.stat.size)fail('SOURCE_CHANGED','文件读取期间变化：'+rel);opened.push({rel,file,digest:hash.digest('hex'),oid:objectHash.digest('hex'),size});await capture(at+1);return true;});if(!entered){results.set(rel,null);await capture(at+1);}return value;

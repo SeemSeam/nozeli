@@ -57,3 +57,10 @@ test('late formatter result does not replace a newly moved selection',async()=>{
   assert.equal(edits,0);assert.match(message,/选区已变化/);
  }finally{globalThis.window=old;}
 });
+
+test('PDF page notes are available only in the writable primary document menu',()=>{
+ assert(ids({kind:'pdf',annotateMenu:true}).includes('note-page'));
+ assert(!ids({kind:'pdf',annotateMenu:true,secondary:true}).includes('note-page'));
+ assert(!ids({kind:'pdf',annotateMenu:false}).includes('note-page'));
+ assert(!ids({kind:'image',annotateMenu:true}).includes('note-page'));
+});

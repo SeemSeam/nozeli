@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import {assertRecoverySourceStopped} from '../src/main/project-recovery-owner.mjs';
+import {assertLinuxRecoverySourceStopped as assertRecoverySourceStopped} from '../src/main/project-recovery-owner.mjs';
 
 // Synthetic /proc reads only: no live account, project or process is changed.
 function probe(t,{args=['/usr/lib/systemd/systemd','--user'],cmdError,exeError='EACCES',exe='/fixture/nozeli',changed=false,parentArgs=['/usr/lib/systemd/systemd','--user'],parentChanged=false,parentUid=process.getuid(),fdError='EACCES'}={}){

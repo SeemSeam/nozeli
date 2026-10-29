@@ -1,3 +1,4 @@
+import {processInfo} from '../src/platform/process-query.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -197,11 +198,12 @@ for(const phase of ['claim','terminal'])test('real own child SIGKILL after '+pha
  const exit=new Promise(resolve=>child.once('exit',(code,signal)=>{exited=true;resolve({code,signal});}));let timer;
  try{
   const row=await Promise.race([new Promise((resolve,reject)=>{child.once('message',resolve);child.once('error',reject);exit.then(r=>reject(Error('early exit '+JSON.stringify(r)+log)));}),new Promise((_,reject)=>timer=setTimeout(()=>reject(Error('child timeout')),20000))]);clearTimeout(timer);
-  assert.equal(row.pid,child.pid);const stat=await fs.readFile('/proc/'+child.pid+'/stat','utf8'),start=stat.slice(stat.lastIndexOf(')')+2).split(' ')[19];const exe=await fs.realpath('/proc/'+child.pid+'/exe'),cwd=await fs.realpath('/proc/'+child.pid+'/cwd'),argv=(await fs.readFile('/proc/'+child.pid+'/cmdline','utf8')).split('\0');
-  assert.equal(exe,await fs.realpath(process.execPath));assert.equal(cwd,f.dir);assert(argv.includes(fixturePath)&&argv.includes(f.dir));assert.equal((await fs.readFile('/proc/'+child.pid+'/stat','utf8')).slice(stat.lastIndexOf(')')+2).split(' ')[19],start);
+  assert.equal(row.pid,child.pid);const info=await processInfo(child.pid),start=info.stamp,argv=child.spawnargs; // kernel identity + the exact arguments of our own fork; no environment query needed
+  const exe=await fs.realpath(argv[0]),cwd=f.dir;
+  assert.equal(exe,await fs.realpath(process.execPath));assert.equal(info.ppid,process.pid);assert(argv.includes(fixturePath)&&argv.includes(f.dir));assert.equal((await processInfo(child.pid)).stamp,start);
   child.kill('SIGKILL');assert.deepEqual(await exit,{code:null,signal:'SIGKILL'});await fs.writeFile(path.join(f.dir,'child-audit.json'),JSON.stringify({pid:child.pid,start,exe,cwd,argv,phase,signal:'SIGKILL',only:'identity-verified own child',row,exit:{code:null,signal:'SIGKILL'}},null,2));
   f.q=f.make();f.owner={...f.owner,bootId:f.q.bootId};const restored=await f.q.openQueue();if(phase==='claim'){assert.equal(restored.requests.length,1);assert.equal(restored.requests[0].lastError.code,'OPEN_INTERRUPTED');assert.equal(restored.requests[0].requiresUserAction,true);await finish(f,await claim(f,row.requestId,'retry'));}else{assert.equal(restored.requests.length,0);assert.equal(JSON.parse(await disk(f)).receipts[0].outcome,'opened');}
-  await assert.rejects(fs.stat('/proc/'+child.pid),code('ENOENT'));assert.equal(await fs.readFile(f.file,'utf8'),'Source original\n');
+  assert.equal(await processInfo(child.pid),null);assert.equal(await fs.readFile(f.file,'utf8'),'Source original\n');
  }finally{clearTimeout(timer);if(!exited){child.send('finish');await Promise.race([exit,new Promise(r=>setTimeout(r,1000))]);if(!exited)throw Error('Own child cleanup incomplete; preserved PID '+child.pid);}await fs.writeFile(path.join(f.dir,'child.log'),log);}
 });
 test('fresh Host and queue inherit the bound project and retained draft after recent-root changes',async()=>{

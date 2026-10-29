@@ -61,7 +61,7 @@ export async function validateReleaseEntry(env){
 export async function prepareOpenEntry(env){
  const entry=await validateReleaseEntry(env);
  let root=env.NOZELI_C1_EVIDENCE_ROOT;
- if(root){if(!path.isAbsolute(root)||path.normalize(root)!==root||!root.startsWith('/tmp/nozeli-'))fail('EVIDENCE_ROOT_UNSAFE');try{if(!(await fs.lstat(root)).isDirectory()||await fs.realpath(root)!==root)fail('EVIDENCE_ROOT_UNSAFE');}catch{fail('EVIDENCE_ROOT_UNSAFE');}}
+ if(root){if(!path.isAbsolute(root)||path.normalize(root)!==root||!root.startsWith(path.join(await fs.realpath(os.tmpdir()),'nozeli-')))fail('EVIDENCE_ROOT_UNSAFE');try{if(!(await fs.lstat(root)).isDirectory()||await fs.realpath(root)!==root)fail('EVIDENCE_ROOT_UNSAFE');}catch{fail('EVIDENCE_ROOT_UNSAFE');}}
  else root=os.tmpdir();
  const output=await fs.mkdtemp(path.join(root,'nozeli-c1-open-'));await fs.chmod(output,0o700);
  const emptyHome=path.join(output,'empty-source-home'),emptyBin=path.join(output,'empty-bin');await fs.mkdir(emptyHome);await fs.mkdir(emptyBin);

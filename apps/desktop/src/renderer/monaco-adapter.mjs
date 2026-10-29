@@ -173,6 +173,7 @@ export function mountMonaco({ parent, projectId, relPath, documentSource={type:'
       getId: () => 'nozeli-projection-' + id,
       getDomNode: () => node,
       getPosition: () => {
+        if(!window.innerWidth||!window.innerHeight)return null;
         const position = projectionPosition(state.item);
         return position ? { position, preference: [monaco.editor.ContentWidgetPositionPreference.EXACT] } : null;
       },
@@ -181,6 +182,9 @@ export function mountMonaco({ parent, projectId, relPath, documentSource={type:'
     widgets.set(id, state);
     editor.addContentWidget(widget);
   };
+  const layoutProjections=()=>{if(!disposed)for(const {widget}of widgets.values())editor.layoutContentWidget(widget);};
+  window.addEventListener('resize',layoutProjections);
+  document.addEventListener('visibilitychange',layoutProjections);
   const setProjections = items => {
     live();
     const next = new Map((items || []).filter(item => item?.anchor).map(item => [projectionId(item), item]));
@@ -348,7 +352,7 @@ export function mountMonaco({ parent, projectId, relPath, documentSource={type:'
     setTags(next) { live(); items = [...items.filter(item => item.note), ...next.map(normalizeItem)]; setProjections(items); },
     jumpToDefinition: jump,
     modelCount() { return monaco.editor.getModels().length; },
-    dispose() { if (!disposed) { disposed = true; cancelAnimationFrame(authorshipFrame);for(const listener of authorshipListeners)listener.dispose();authorship.node.remove();window.clearTimeout(lspState.syncTimer); lspUnsubscribe?.(); monaco.editor.setModelMarkers(model, 'typescript-language-server', []); listeners.clear(); listener.dispose(); selectionListener.dispose(); editor.getDomNode()?.removeEventListener('keydown', keyListener, true); for (const id of [...widgets.keys()]) removeProjection(id); decoration.clear(); editor.dispose(); model.dispose(); } },
+    dispose() { if (!disposed) { disposed = true;window.removeEventListener('resize',layoutProjections);document.removeEventListener('visibilitychange',layoutProjections); cancelAnimationFrame(authorshipFrame);for(const listener of authorshipListeners)listener.dispose();authorship.node.remove();window.clearTimeout(lspState.syncTimer); lspUnsubscribe?.(); monaco.editor.setModelMarkers(model, 'typescript-language-server', []); listeners.clear(); listener.dispose(); selectionListener.dispose(); editor.getDomNode()?.removeEventListener('keydown', keyListener, true); for (const id of [...widgets.keys()]) removeProjection(id); decoration.clear(); editor.dispose(); model.dispose(); } },
   };
   adapter.setProjections = setProjections;
   adapter.adapter = adapter;

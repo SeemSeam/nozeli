@@ -1,0 +1,25 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import {createHash} from 'node:crypto';
+import {createReadStream} from 'node:fs';
+import {execFileSync} from 'node:child_process';
+import {packageRelease} from './local-release.mjs';
+const [destination,...flags]=process.argv.slice(2),candidate=flags.includes('--candidate');
+if(!destination||!path.isAbsolute(destination)||flags.some(f=>f!=='--candidate'))throw Error('usage: node tools/package-portable.mjs <new-absolute-output-directory> [--candidate]');
+const source=path.resolve(import.meta.dirname,'..'),repository=path.resolve(source,'../..'),output=path.resolve(destination);
+if(output===repository||output.startsWith(source+path.sep))throw Error('Output must be outside desktop source tree');
+const run=(command,args,options={})=>execFileSync(command,args,{encoding:'utf8',maxBuffer:16*1024*1024,...options});
+const commit=run('git',['rev-parse','HEAD'],{cwd:repository}).trim(),dirty=Boolean(run('git',['status','--porcelain'],{cwd:repository}).trim());
+if(dirty&&!candidate)throw Error('Source has uncommitted changes. Use --candidate for a local review build with an explicit source snapshot.');
+const manifest=JSON.parse(await fs.readFile(path.join(source,'package.json'),'utf8'));const label=`Nozeli-${manifest.version}-darwin-arm64${candidate?'-candidate':''}`;
+await fs.mkdir(path.dirname(output),{recursive:true});await fs.mkdir(output);
+const installation=path.join(output,'.assembly');await fs.mkdir(path.join(installation,'releases'),{recursive:true});const release=path.join(installation,'releases',label);
+await packageRelease({root:installation,release,source});
+const dmgRoot=path.join(output,'image');await fs.mkdir(dmgRoot);await fs.rename(path.join(release,'Nozeli.app'),path.join(dmgRoot,'Nozeli.app'));
+const instructions=`# Nozeli ${manifest.version} — macOS arm64 本地候选\n\n适用于 Apple Silicon，最低系统版本 13.0；实际验收系统另见记录。将完整 Nozeli.app 复制到新的位置后启动。普通阅读与编辑无需 Node/npm/Bun、系统 Git 或模型账号。\n\n本包使用 ad-hoc 签名，未做 Developer ID 签名或公证，不代表可公开发行。macOS 显式隔离、提权与特殊项目恢复当前不可用。TeX 编译及语言服务依赖可选外部工具。\n\n升级前正常退出应用与 Agent，备份应用配置、各项目及 .nozeli 数据。不要覆盖运行中的应用或将未知兼容的旧版直接指向新版本数据。版本对的回退验收以独立记录为准。\n\n源码基线：${commit}；工作区修改：${dirty}。此候选不等于已提交源码。\n`;
+await fs.writeFile(path.join(dmgRoot,'使用说明.md'),instructions);await fs.writeFile(path.join(output,'使用说明.md'),instructions);
+const sourceFiles=[];for(const file of run('git',['ls-files','--cached','--others','--exclude-standard','-z'],{cwd:repository}).split('\0').filter(Boolean)){const stat=await fs.lstat(path.join(repository,file)).catch(()=>null);if(stat?.isFile())sourceFiles.push({path:file,sha256:createHash('sha256').update(await fs.readFile(path.join(repository,file))).digest('hex')});}
+await fs.writeFile(path.join(output,'SOURCE-SNAPSHOT.json'),JSON.stringify({commit,dirty,candidate,files:sourceFiles},null,2)+'\n');
+const dmg=path.join(output,label+'.dmg');run('/usr/bin/hdiutil',['create','-fs','APFS','-volname','Nozeli','-srcfolder',dmgRoot,'-format','UDZO',dmg],{stdio:'inherit'});
+const hashes=[];for(const file of [dmg,path.join(output,'SOURCE-SNAPSHOT.json'),path.join(output,'使用说明.md')]){const h=createHash('sha256');for await(const bytes of createReadStream(file))h.update(bytes);hashes.push(h.digest('hex')+'  '+path.basename(file));}await fs.writeFile(path.join(output,'SHA256SUMS.txt'),hashes.join('\n')+'\n');
+console.log(JSON.stringify({output,dmg,app:path.join(dmgRoot,'Nozeli.app'),commit,dirty,candidate,signing:'ad-hoc',notarized:false,publicRedistributionAudit:'pending'},null,2));

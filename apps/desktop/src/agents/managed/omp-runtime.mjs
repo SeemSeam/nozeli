@@ -5,7 +5,9 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 
 export async function resolveBundledOmpRuntime({ appRoot = fileURLToPath(new URL('../../../', import.meta.url)) } = {}) {
-  const directory = path.resolve(appRoot, 'runtime/omp');
+  const base = path.resolve(appRoot, 'runtime/omp');
+  const targeted = path.join(base, process.platform + '-' + process.arch);
+  const directory = await fs.access(path.join(targeted, 'runtime.json')).then(() => targeted, error => { if (error.code === 'ENOENT') return base; throw error; });
   const manifest = JSON.parse(await fs.readFile(path.join(directory, 'runtime.json'), 'utf8'));
   if (manifest.schema !== 1 || manifest.platform !== process.platform || manifest.arch !== process.arch || !['nozeli-private-auth-broker','nozeli-native-collab-runtime-v1'].every(capability=>manifest.capabilities?.includes(capability))) throw new Error('No compatible bundled Nozeli OMP runtime');
   if (!manifest.files || !manifest.files[manifest.command]) throw new Error('Bundled OMP manifest has no executable digest');

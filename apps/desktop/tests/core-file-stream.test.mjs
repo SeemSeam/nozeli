@@ -9,7 +9,7 @@ import {inspectFile,readSafeBytes,withSafeFile} from '../src/agents/managed/file
 import {git,str,blobFile,blobDigest,gitStream,gitEntries,updateIndexRows} from '../src/agents/managed/git-service.mjs';
 import {ExecutionWorkspace} from '../src/agents/managed/execution-workspace.mjs';
 
-test('large binary streams through safe capture, Git, install and rollback',{skip:process.platform!=='linux'},async t=>{
+test('large binary streams through safe capture, Git, install and rollback',{skip:!['linux','darwin'].includes(process.platform)},async t=>{
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-core-stream-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
  await git(root,['init','--initial-branch=main']);
  const file=await fs.open(path.join(root,'large.bin'),'wx');const chunk=Buffer.alloc(1024*1024,0xa5),hash=createHash('sha256');
@@ -29,8 +29,8 @@ test('large binary streams through safe capture, Git, install and rollback',{ski
  await assert.rejects(withSafeFile(root,'large.bin',async()=>{await fs.rename(path.join(root,'large.bin'),path.join(root,'moved.bin'));}),{code:'SOURCE_CHANGED'});
 });
 
-test('registered preparation resumes with the same bounded snapshot manifest',{skip:process.platform!=='linux'},async t=>{
- const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-core-resume-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+test('registered preparation resumes with the same bounded snapshot manifest',{skip:!['linux','darwin'].includes(process.platform)},async t=>{
+ const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-core-resume-')));t.after(()=>fs.rm(root,{recursive:true,force:true}));
  const content=path.join(root,'project'),data=path.join(root,'state');await fs.mkdir(content);await fs.writeFile(path.join(content,'a.txt'),'baseline');
  const store={root:data,content,projectId:'synthetic',state:{works:[{id:'resume'}]},storage:{requireOnline:async()=>{}}},workspace=new ExecutionWorkspace(store);
  const snapshot=workspace.snapshot.bind(workspace);workspace.snapshot=async()=>{throw Object.assign(new Error('synthetic interruption before input freeze'),{code:'SYNTHETIC_INTERRUPTION'});};

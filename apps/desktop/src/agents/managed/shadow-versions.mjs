@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { ensureGit, runGit } from './git-runtime.mjs';
 import { createHash, randomUUID } from 'node:crypto';
+import {entry,openDirectoryChain,renameAt,removeTreeAt,statAt} from '../../platform/directory-fs.mjs';
 import { FileChanges } from '../../domain/file-changes.mjs';
 import { workPath, safeBytes } from './execution-workspace.mjs';
 
@@ -62,8 +63,15 @@ export class ShadowVersions {
     try { await fs.access(this.gitDir); return false; }
     catch (e) { if (e.code !== 'ENOENT') throw e; }
     await fs.mkdir(path.dirname(this.gitDir), { recursive: true });
-    await runGit(this.projectRoot, ['init', '--bare', '-q', this.gitDir], { env: this.gitEnvForInit(), timeout: 60000 });
-    await this.git(['symbolic-ref', 'HEAD', REF]);
+    const parent=await openDirectoryChain(path.dirname(this.gitDir)),name='versions-init-'+randomUUID(),staging=path.join(path.dirname(this.gitDir),name),temporary=entry(parent.directory.fd,name);
+    let identity;
+    try{
+      await runGit(this.projectRoot,['init','--bare','--template=','-q',staging],{env:this.gitEnvForInit(),timeout:60000});
+      identity=await statAt(temporary,{bigint:true});
+      await runGit(this.projectRoot,['--git-dir='+staging,'symbolic-ref','HEAD',REF],{env:this.gitEnvForInit()});
+      try{await renameAt(temporary,entry(parent.directory.fd,path.basename(this.gitDir)),{exclusive:process.platform==='darwin'});}
+      catch(error){if(!['EEXIST','ENOTEMPTY'].includes(error.code))throw error;await this.git(['rev-parse','--is-bare-repository']);return false;}
+    }finally{if(identity)await removeTreeAt(temporary,{expected:identity});await parent.close();}
     return true;
   }
 

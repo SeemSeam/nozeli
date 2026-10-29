@@ -58,7 +58,12 @@ class WindowRecovery {
       this.invalidate();this.phase='stop-failed';this.offer('stop-failed');this.report('close cleanup failed',error);return {accepted:true};
     }
     if(!this.current(p))return {accepted:false};
-    this.invalidate();this.phase='closing';this.onClose();return {accepted:true};
+    p.stage='closing';this.phase='closing';
+    try{await this.onClose();this.invalidate();}catch(error){
+      if(this.current(p)){this.invalidate();this.phase='stop-failed';this.offer('stop-failed');}
+      this.report('window close failed',error);
+    }
+    return {accepted:true};
   }
   validPrompt(ticket){return this.alive()&&this.prompt===ticket&&ticket.generation===this.generation;}
   offer(reason,details={},explicit=false){

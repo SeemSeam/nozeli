@@ -947,6 +947,19 @@ async function retryViewRead() {
   window.__composerMaterials?.restore(state.value.state?.composerMaterials);
   showRetained(state.value.state?.workspace);
 }
+  function disposeTextEditor() {
+      ui.editorLayoutGeneration += 1;
+      if (ui.editorLayoutFrame) cancelAnimationFrame(ui.editorLayoutFrame);
+      ui.editorLayoutFrame = 0;
+      ui.editorLayoutSchedule = null;
+      ui.compositionDispose?.();
+      ui.compositionDispose = null;
+      ui.editorResizeObserver?.disconnect();
+      ui.editorResizeObserver = null;
+      try { ui.editor?.adapter.dispose(); } catch { /* editor already gone */ }
+    ui.editor = null;
+  }
+  window.addEventListener('pagehide',disposeTextEditor);
     function destroySurface() {
       webWorkspace.leave(); closeIsolatedSurfaces();
       frozenChangeReader.restore({focus:false});
@@ -969,16 +982,7 @@ async function retryViewRead() {
       $('close-subject').hidden = true;
       ui.composing = false;
       window.clearTimeout(ui.timer);window.clearTimeout(ui.maxTimer);ui.maxTimer = 0;ui.dirtySince = 0;
-      ui.editorLayoutGeneration += 1;
-      if (ui.editorLayoutFrame) cancelAnimationFrame(ui.editorLayoutFrame);
-      ui.editorLayoutFrame = 0;
-      ui.editorLayoutSchedule = null;
-      ui.compositionDispose?.();
-      ui.compositionDispose = null;
-      ui.editorResizeObserver?.disconnect();
-      ui.editorResizeObserver = null;
-      try { ui.editor?.adapter.dispose(); } catch { /* editor already gone */ }
-    ui.editor = null;
+      disposeTextEditor();
     try { ui.pdf?.destroy(); } catch { /* pdf worker may already be gone */ }
     ui.pdf = null;
     $('text-host').hidden = true;
@@ -1753,6 +1757,7 @@ $('pdf-page').addEventListener('change', () => {
     const selection = selected ? { from: selected.from, to: selected.to, empty: selected.from === selected.to } : null;
     const selectedText = ui.editor?.adapter.getText();
     const selectedPage = ui.pdf?.current() || 1;
+    const submittedPdfDraft=file?.kind==='pdf'&&sameNoteTarget(ui.frozenNote)?structuredClone(ui.frozenNote):null;
     const pdfSelection = ui.pdfSelection ? structuredClone(ui.pdfSelection) : null;
     enqueue(async () => {
     if (project !== ui.project || file !== ui.file) return;
@@ -1763,7 +1768,8 @@ $('pdf-page').addEventListener('change', () => {
     }
     if (!ui.materialDigest) return;
     if (ui.file.sourceChanged) { setStatus('error', '来源已变化，未把旧备注改绑到当前内容。'); return; }
-    const frozen = sameNoteTarget(ui.frozenNote) ? ui.frozenNote : null;
+    const frozen = file.kind==='pdf'?submittedPdfDraft:(sameNoteTarget(ui.frozenNote) ? ui.frozenNote : null);
+    if(frozen&&file.kind==='pdf'&&!sameNoteTarget(frozen)){setStatus('error','备注来源版本已变化，原草稿已保留。');return;}
     let anchor;
     let kind;
     if (ui.file.kind === 'text') {
@@ -1802,7 +1808,10 @@ $('pdf-page').addEventListener('change', () => {
       return;
     }
     const submitted = { projectId: ui.project.id, relPath: ui.file.relPath, materialDigest: ui.materialDigest, kind, anchor, text: note };
-    if ($('note-input').value === note) {
+    const storedDraft=workspace.noteFor(submitted.projectId,submitted.relPath,submitted.materialDigest,anchor);
+    if(storedDraft?.kind===kind&&storedDraft.text===note&&JSON.stringify(storedDraft.drawing??null)===JSON.stringify(frozen?.drawing??null))workspace.rememberNote({...submitted,text:'',drawing:null});
+    const sameDraft=sameNoteTarget(ui.frozenNote)&&ui.frozenNote.kind===kind&&JSON.stringify(ui.frozenNote.anchor)===JSON.stringify(anchor);
+    if ($('note-input').value === note && sameDraft) {
       $('note-input').value = '';
       workspace.rememberNote({ ...submitted, text: '' });
       if (ui.frozenNote && ui.frozenNote.materialDigest === submitted.materialDigest && JSON.stringify(ui.frozenNote.anchor) === JSON.stringify(submitted.anchor)) ui.frozenNote = null;
@@ -1812,8 +1821,7 @@ $('pdf-page').addEventListener('change', () => {
       form.style.removeProperty('left');
       form.style.removeProperty('top');
     } else rememberCurrentNote();
-    $('selection-menu').hidden = true;
-    ui.pdfSelection = null;
+    if(sameDraft){$('selection-menu').hidden = true;ui.pdfSelection = null;}
     await refreshNotes();
     }, true);
   });
@@ -2405,6 +2413,12 @@ const documentMenu = mountDocumentContextMenu({
   },
   async run(command, s) {
     if (documentReadOnly() && ['cut','paste','undo','redo','format','annotate','exportPpt'].includes(command)) return;
+    if(command==='note-page'){
+      if(!s.current()||documentReadOnly()||s.kind!=='pdf'||s.secondary||!Number.isInteger(s.page)||s.page<1)return;
+      rememberCurrentNote();ui.frozenNote=null;ui.selectionRect=null;$('note-input').value='';
+      window.getSelection()?.removeAllRanges();ui.pdfSelection={kind:'pdf-page',anchor:{page:s.page}};
+      beginNote({anchored:true});return;
+    }
     if(command==='exportTextCopy'){if(s.current())await exportCurrentTextCopy();return;}
     if (command === 'note-here' || command === 'discuss-here' || command === 'explain-selection') {
       // An effective selection at the pointer wins; otherwise the frozen

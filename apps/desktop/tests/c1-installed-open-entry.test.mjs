@@ -9,7 +9,7 @@ import {fileURLToPath} from 'node:url';
 import {validateReleaseEntry,prepareOpenEntry,childEnvironment} from './c1-installed-open-entry.mjs';
 
 // Entry-only synthetic filesystem fixtures, not Electron/Host/model receipts.
-const root=await fs.mkdtemp(path.join('/tmp','nozeli-c1-entry-tests-'));
+const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-c1-entry-tests-')));
 const sha=b=>createHash('sha256').update(b).digest('hex');
 let next=0;
 async function fixture({provider=false}={}){

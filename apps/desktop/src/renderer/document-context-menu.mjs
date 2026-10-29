@@ -43,7 +43,7 @@ export function documentCommands(s) {
   }
   if (s.reading && !s.secondary && s.kind === 'text') { separator(); add('edit', '切换到编辑'); }
   if(s.link){separator();add('linkOpen',s.link.matches('.conversation-file-link')?'打开引用位置':'打开链接');add('linkCopy','复制链接地址');}
-  if (s.kind === 'pdf') { separator(); add('pageReference', '复制当前页引用'); add('fit', '适应宽度'); add('fitPage', '适应整页'); add('actual', '原始比例 · 100%'); if(!s.secondary)add('page', '跳转到页面…'); }
+  if (s.kind === 'pdf') { separator(); if(s.annotateMenu&&!s.secondary)add('note-page','备注当前页'); add('pageReference', '复制当前页引用'); add('fit', '适应宽度'); add('fitPage', '适应整页'); add('actual', '原始比例 · 100%'); if(!s.secondary)add('page', '跳转到页面…'); }
   if(s.kind==='image'){separator();add('fit','适应窗口');add('actual','原始比例 · 100%');add('imageInfo','图片信息…');}
   if(s.kind==='unsupported'){items.length=0;add('openExternal','使用系统默认应用打开');add('reveal','在文件管理器中显示');add('relativePath','复制相对路径');}
   if(s.preview?.kind==='tex'||s.editable&&/\.(tex|sty|cls)$/i.test(s.relPath)){
