@@ -110,7 +110,7 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^3.7.2",
-    "electron": "44.4.5",
+    "electron": "44.9.1",
     "esbuild": "0.25.10",
     "puppeteer-core": "25.11.0"
   }
