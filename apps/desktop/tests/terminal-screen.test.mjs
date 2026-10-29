@@ -26,13 +26,13 @@ test('terminal queries have no reply transport and change notifications are boun
 });
 test('read-only work screen does not wait for attach, create, control or take system ownership',async()=>{
  let snapshots=0;const c={started:true,store:{state:{works:[{id:'w',status:'review'},{id:'q',status:'queued'},{id:'e',status:'ended'},{id:'missing',status:'paused'}]}},terminals:new Map([['w',{terminalId:'pty',threadId:'thread',snapshot:async()=>{snapshots++;return {version:1,seq:1,cols:2,rows:2,lines:[]};},input(){throw Error('input called');},resize(){throw Error('resize called');},close(){throw Error('close called');}}]])};
- const m=new ManagedProjects({userDataDir:'/unused',host:{requireProject:async id=>{assert.equal(id,'p');}},legacy:{},attachTerminal:()=>{throw Error('attach called');}});m.controllers.set('p',c);m.terminalFlights.set('p:w',new Promise(()=>{}));m.systemTerminals.owns=()=>{throw Error('ownership access');};
+ const m=new ManagedProjects({userDataDir:'/unused',host:{storage:{},requireProject:async id=>{assert.equal(id,'p');}},legacy:{},attachTerminal:()=>{throw Error('attach called');}});m.controllers.set('p',c);m.terminalFlights.set('p:w',new Promise(()=>{}));m.systemTerminals.owns=()=>{throw Error('ownership access');};
  const read=target=>m.invoke('managed.terminal.screen',{projectId:'p',target});
  assert.equal((await read('w')).threadId,'thread');assert.equal(snapshots,1);for(const id of ['q','e','missing'])assert.equal((await read(id)).available,false);assert.equal(snapshots,1);await assert.rejects(read('frontdesk'),/工作Agent/);await assert.rejects(m.invoke('managed.terminal.screen',{projectId:'p',target:'w',cols:100}),/payload/);
  c.terminals.get('w').snapshot=async()=>{c.store.state.works=c.store.state.works.map(w=>w.id==='w'?{...w,status:'ended'}:w);return {};};assert.equal((await read('w')).available,false);
 });
 test('cold screen preview never creates a controller or restores a session',async()=>{
- const m=new ManagedProjects({userDataDir:'/unused',host:{requireProject:async()=>{}},legacy:{}});
+ const m=new ManagedProjects({userDataDir:'/unused',host:{storage:{},requireProject:async()=>{}},legacy:{}});
  m.controller=()=>{throw Error('must not restore controller');};
  const result=await m.invoke('managed.terminal.screen',{projectId:'cold',target:'work'});
  assert.equal(result.available,false);assert.match(result.reason,/不会启动新会话/);assert.equal(m.controllers.has('cold'),false);

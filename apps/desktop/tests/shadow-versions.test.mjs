@@ -25,13 +25,13 @@ async function fixture(t){
   const seed = await fs.readFile(path.join(project, 'doc.md'));
   await host.save(hostProject.id, 'doc.md', sha(seed), ORIGINAL);
   assert.equal(await fs.readFile(path.join(project, 'doc.md'), 'utf8'), ORIGINAL);
-  const versions = new ShadowVersions({ projectRoot: project });
-  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); });
+  const versions = new ShadowVersions({ projectRoot: project, projectId: hostProject.id, storage: host.storage });
+  t.after(async () => { await host.storage.db.close(); await fs.rm(root, { recursive: true, force: true }); });
   return { root, project, versions, host, id: hostProject.id };
 }
 
 test('checkpoint freezes exact content: blob hash == metadata digest == ledger digest', async t => {
-  const { project, versions } = await fixture(t);
+  const { project, versions, host, id } = await fixture(t);
   const result = await versions.checkpoint({ requestId: 'r1', workId: 'w1', workName: 'W', relPaths: ['doc.md'] });
   assert.equal(result.reused, false);
   assert.ok(/^[0-9a-f]{40}$/.test(result.commit));
@@ -43,7 +43,7 @@ test('checkpoint freezes exact content: blob hash == metadata digest == ledger d
   // Real triple verification: staged blob hash, metadata digest, and the
   // file-changes ledger digest must all be the same value.
   assert.equal(sha(blob), meta.docs['doc.md'].digest);
-  const ledger = await new FileChanges(project).read('doc.md');
+  const ledger = await new FileChanges({ root: project, projectId: id, storage: host.storage }).read('doc.md');
   assert.equal(meta.docs['doc.md'].digest, ledger.digest);
   assert.equal(meta.docs['doc.md'].docId, ledger.docId);
   const list = await versions.list();
@@ -98,9 +98,9 @@ test('same requestId reuses the frozen commit; different identity is rejected', 
 });
 
 test('two instances publishing concurrently keep both commits reachable in one chain', async t => {
-  const { project } = await fixture(t);
-  const a = new ShadowVersions({ projectRoot: project });
-  const b = new ShadowVersions({ projectRoot: project });
+  const { project, host, id } = await fixture(t);
+  const a = new ShadowVersions({ projectRoot: project, projectId: id, storage: host.storage });
+  const b = new ShadowVersions({ projectRoot: project, projectId: id, storage: host.storage });
   const settled = await Promise.allSettled([
     a.checkpoint({ requestId: 'ca', workId: 'w', relPaths: ['doc.md'] }),
     b.checkpoint({ requestId: 'cb', workId: 'w', relPaths: ['doc.md'] }),
@@ -162,7 +162,7 @@ test('restore uses the viewed prep baseline; rollback event recorded; prep persi
   // Prep freezes the current view AFTER the human edit; sync channel flushed.
   const current = await fs.readFile(path.join(project, 'doc.md'));
   const prep = await versions.prepare({ commit: base.commit, relPath: 'doc.md', currentDigest: sha(current) });
-  const prepRecord = JSON.parse(await fs.readFile(path.join(project, '.nozeli', 'versions', 'preps', prep.prepId + '.json'), 'utf8'));
+  const prepRecord = await versions.readPrep(prep.prepId);
   assert.equal(prepRecord.currentDigest, sha(current));
   assert.equal(prepRecord.checkpointDigest, sha(Buffer.from(ORIGINAL, 'utf8')));
   const syncCalls = [];
@@ -176,9 +176,9 @@ test('restore uses the viewed prep baseline; rollback event recorded; prep persi
   assert.equal(result.completed, 1);
   assert.deepEqual(syncCalls, ['doc.md']);
   assert.equal(await fs.readFile(path.join(project, 'doc.md'), 'utf8'), ORIGINAL);
-  const ledger = await new FileChanges(project).read('doc.md');
+  const ledger = await new FileChanges({ root: project, projectId: id, storage: host.storage }).read('doc.md');
   assert.equal(ledger.events.at(-1).type, 'rollback');
-  const record = JSON.parse(await fs.readFile(path.join(project, '.nozeli', 'versions', 'restores', 'op-rollback-1.json'), 'utf8'));
+  const record = await versions.readRestore('op-rollback-1');
   assert.equal(record.status, 'finished');
   assert.equal(record.preps['doc.md'], prep.prepId);
   assert.equal(record.expectedBaselines['doc.md'], sha(current));

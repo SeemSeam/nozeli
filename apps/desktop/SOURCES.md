@@ -1,5 +1,8 @@
 # Sources and licenses
 
+
+> **Distribution status (2026-10-29).** Nozeli `v0.1.0-alpha.1` is published as a public prerelease at https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.1 at the repository owner's explicit request. Third-party corresponding-source and binary redistribution review is still incomplete; publication is not a compliance certification, and no disclaimer or notice in the shipped archive discharges those obligations. Statements below that authorize only local installation/testing (for example the Product-managed Git section) remain accurate about what has actually been signed off. Machine-readable pinned versions, digests, evidence paths and per-obligation status live in [compliance-inventory.json](compliance-inventory.json), validated by `tools/check-repository.mjs` (default: metadata check; `--public`: fails while any obligation lacks a complete human sign-off record). Neither this file, the inventory nor that script is a legal audit.
+
 ## Static HTML reports and offline diagrams (2026-10-23)
 
 HTML/CSS/JavaScript syntax analysis uses the existing MIT Lezer parsers, now explicit production dependencies: `@lezer/html` 1.3.13, `@lezer/css` 1.3.8 and `@lezer/javascript` 1.5.5. Host SVG validation reuses `@xmldom/xmldom` 0.9.12 (MIT); raster bounds reuse `image-size` 2.0.2 (MIT). These parsers do not grant HTML any application or filesystem privileges.

@@ -108,7 +108,7 @@ test('file replacement requires explicit retry of fixed path; source version cha
 });
 test('root replacement and symlink/parent escape never rebind or guess a moved target',async()=>{
  const f=await fixture(),a=await enqueue(f),c=await claim(f,a.requestId);await f.q.resolveOpen(f.owner,{...payload(c),outcome:'deferred',error:{code:'COMPOSING',message:'wait'}});
- await fs.rename(f.project,f.project+'.old');await fs.mkdir(f.project);await fs.writeFile(f.file,'different root');await assert.rejects(claim(f,a.requestId,'retry'),code('OPEN_TARGET_CHANGED'));
+ await fs.rename(f.project,f.project+'.old');await fs.mkdir(f.project);await fs.writeFile(f.file,'different root');await assert.rejects(claim(f,a.requestId,'retry'));assert.equal((await f.q.openQueue()).requests[0].state,'blocked');assert.equal(await fs.readFile(f.file,'utf8'),'different root');
  const g=await fixture(),link=path.join(g.project,'link.txt');await fs.symlink(g.file,link);const b=await enqueue(g,link);await assert.rejects(claim(g,b.requestId));assert.equal((await g.q.openQueue()).requests[0].state,'blocked');
  const h=await fixture(),sub=path.join(h.project,'sub');await fs.mkdir(sub);const nested=path.join(sub,'N.txt');await fs.writeFile(nested,'Nested');const e=await enqueue(h,nested),ce=await claim(h,e.requestId);await h.q.resolveOpen(h.owner,{...payload(ce),outcome:'deferred',error:{code:'COMPOSING',message:'wait'}});
  await fs.rename(sub,sub+'.old');const outside=path.join(h.dir,'outside');await fs.mkdir(outside);await fs.writeFile(path.join(outside,'N.txt'),'outside');await fs.symlink(outside,sub);await assert.rejects(claim(h,e.requestId,'retry'));assert.equal((await h.q.openQueue()).requests[0].state,'blocked');

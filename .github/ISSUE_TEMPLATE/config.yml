@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability privately
+    url: https://github.com/SeemSeam/nozeli/security/advisories/new
+    about: Do not post secrets, personal documents or exploit details in public issues.
+  - name: Usage and troubleshooting
+    url: https://github.com/SeemSeam/nozeli/blob/main/docs/user-guide.md
+    about: Installation, backups, models, annotations, review and recovery guidance.

@@ -120,13 +120,13 @@ test('omp onTool wrapper gates business state behind admission.preEffect (handof
   await runTool({ cancelled: true, preEffect: async () => { throw new Error('ADMISSION_INVALID: cancelled-before-effect'); } }).catch(() => {});
   assert.equal(c.store.state.jobs.some(j=>j.target==='orchestrator'),false,'revoked admission creates no intake');
   assert.equal(c.store.state.frontdeskRoutes.length,0,'revoked admission creates no routing proposal');
-  const proposed=await runTool({cancelled:false,preEffect:async()=>({token:'t1'})});
-  assert.equal(proposed.userDecisionRequired,true);
-  assert.equal(c.store.state.jobs.some(j=>j.target==='orchestrator'),false,'a proposal is not permission to dispatch');
-  const route=c.store.state.frontdeskRoutes.find(r=>r.id===proposed.proposalId);assert.equal(route.reason,'transfer me');
-  await c.resolveFrontdeskRoute({proposalId:route.id,expectedVersion:route.version,action:'background',requestKey:'omp-admission-background'});
+  // (b) admission 通过：普通交接在原始请求授权下直达后台（不弹权限式提问），
+  // 业务副作用（orchestrator intake）确实发生且被 preEffect 放行。
+  const dispatched=await runTool({cancelled:false,preEffect:async()=>({token:'t1'})});
+  assert.equal(dispatched.transferred,true);assert.equal(dispatched.autoBackground,true);assert.equal(dispatched.authority,'original-request');
   const intake=c.store.state.jobs.find(j=>j.target==='orchestrator'&&j.type==='intake');
-  assert.ok(intake,'explicit user decision creates intake');assert.equal(intake.context.handoffIntent,'transfer me');
+  assert.ok(intake,'admitted ordinary handoff dispatches under the original request');
+  assert.equal(intake.context.handoffIntent,'transfer me');assert.equal(intake.context.handoffAuthority,'original-request');
 });
 
 test('omp resume asserts residents toolsDigest (tools changed → refuse)', async t => {

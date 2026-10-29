@@ -1,5 +1,5 @@
 // Shipped native runtime only; loopback HTTP, no credentials or external model.
-// Run: TMPDIR=/home/bfly/.cache/nozeli-smokes node --test tests/omp-default-models-live.mjs
+// Run via the opt-in live suite: NOZELI_TEST_LIVE=1 npm run test:live (uses os.tmpdir(); no machine-local paths).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
