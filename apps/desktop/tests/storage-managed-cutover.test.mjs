@@ -191,8 +191,8 @@ test('business merge checks its complete baseline atomically against a late proj
 });
 
 test('recovery-only objects are readable online and explicitly promoted idempotently',async t=>{
- const {store,storage,project}=await fixture(t),put=storage.putObject.bind(storage);storage.putObject=async()=>{throw injected();};
- const digest=await store.putObject(Buffer.from('Recovery-only immutable object'));storage.putObject=put;
+ const {store,storage,project}=await fixture(t),put=storage.putObjectStream.bind(storage);storage.putObjectStream=async()=>{throw injected();};
+ const digest=await store.putObject(Buffer.from('Recovery-only immutable object'));storage.putObjectStream=put;
  assert.equal((await store.readObject(digest)).toString(),'Recovery-only immutable object');
  const pending=(await listManagedPending(storage,project.id)).find(row=>row.kind==='object'),options={pendingId:pending.id,requestKey:'object-promotion-once',confirmed:true};
  const result=await reconcileManagedPending(storage,project.id,options);assert.equal(result.accepted,true);assert.deepEqual(result.promotedObjects,[digest]);assert.equal((await storage.readObject(project.id,digest)).toString(),'Recovery-only immutable object');

@@ -1,6 +1,7 @@
 // Instance-local reminder ledger: source facts stay owned by their original runtime.
 import {randomUUID} from 'node:crypto';
 import {manageTodoState} from '../../domain/todo-management.mjs';
+import {userTodoEligible} from '../../domain/managed-work-records.mjs';
 const KEY='managed:attention';
 export class AttentionLedger {
  constructor(storage){this.storage=storage;this.flights=new Map();}
@@ -24,6 +25,8 @@ export class AttentionLedger {
     const text=fact.text||'后台需要用户处理';
     if(todo.text!==text||JSON.stringify(todo.destination)!==JSON.stringify(fact.destination)){todo.managementRevision++;todo.updatedAt=now;}
     Object.assign(todo,{text,title:fact.title||text,target:fact.target,workId:fact.workId,sourceJobId:fact.sourceJobId,destination:fact.destination});
+    todo.userActionable=userTodoEligible({...todo,userActionable:undefined});
+    if(!todo.userActionable)todo.backstageStatus=fact.backstageStatus||'blocked';else delete todo.backstageStatus;
    }
    for(const [key,id] of Object.entries(state.active))if(key.startsWith(scope+':')&&!current.has(key)){
     const todo=state.todos.find(t=>t.id===id);

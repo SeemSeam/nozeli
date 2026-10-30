@@ -1,12 +1,12 @@
 # 发布说明与发行边界
 
-当前版本基线：**`0.1.0-alpha.1`**（见根 [CHANGELOG.md](../CHANGELOG.md) 与 `apps/desktop/package.json`）。本页记录发行状态、验证边界与公开分发前置条件；打包与验证命令见[桌面开发说明](../apps/desktop/README.md)，逐项义务的机器可读清单见 [compliance-inventory.json](../apps/desktop/compliance-inventory.json)。
+当前版本基线：**`0.1.0-alpha.3`**（见[CHANGELOG](../CHANGELOG.md)与package.json）。精确提交由同名tag及发行包RELEASE.json绑定；产品构建、测试和分发审计分别记录，不互相替代。
 
 ## 版本状态
 
-- **公开 Alpha 预发布已发布**：<https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.1>（源提交 `af004b4`，含 Linux x64 便携包、源码快照与 SHA-256 校验和）。该预发布应仓库所有者明确要求发布；**发布不是合规认证**，下述分发审计未完成。
+- **Alpha预发行**：<https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.3>，包含Linux x64便携包、源码及SHA-256校验和。修复快速切换、系统文本复制、原生工具升级重连与失位标签操作，新增原生文件粘贴、折叠审核列表及强退；默认YOLO与后台主控恢复的权限边界见[用户指南](user-guide.md)。发布由仓库所有者本轮明确要求；**发布不是合规认证**，下述分发审计仍未完成。
 - 本版本为 **Alpha 审阅候选**：供源码审阅、跟进开发与 Linux 本机验证使用。
-- 验证状态：**Linux x64／Wayland 本机验证**通过（阅读、批注、编辑、后台协作工作流与本机安装循环）。**Windows／macOS 为产品目标平台，未验证**；安装与打包工具当前仅实现 Linux。
+- 验证状态：**Linux x64／Wayland 与 X11/XWayland 本机验证**通过（阅读、批注、编辑、后台协作工作流与本机安装循环；本次剪贴板与快速切换专项为X11/XWayland）。**Windows／macOS 为产品目标平台，未验证**；安装与打包工具当前仅实现 Linux。
 - 空工作台四项推荐功能引导（批注与选区讨论、任务闭环、分屏阅读、独立窗口）已包含在本版本中。
 - AI 能力需用户自行配置模型源与账号；发行物不含任何凭据、用户项目数据或个人会话。
 
@@ -22,7 +22,7 @@
 4. **Electron/Chromium 二进制通告**：逐发行物核验 `LICENSES.chromium.html` 等第三方通告的存在与完整并记录核验结果。
 5. **PPTist 传递依赖审计**：`pptxtojson`、`pptxgenjs`、`hfmath` 及其传递闭包（含字体/资源）的再分发审计未完成。
 
-上述义务签收前：不发布后续公开版本，不宣称“源码已开放即义务已满足”，不以任何自动检查替代人工签收。`node tools/check-repository.mjs --public` 在此期间保持失败，作为发布门的机器侧提醒（该脚本是元数据一致性检查，不是法律审计）。
+上述义务仍未签收；仓库所有者明确要求公开Alpha预发行并不等于审计完成，也不能用免责声明替代义务。`node tools/check-repository.mjs --public`仍保持失败以如实列出阻塞；本次是所有者明确发布决定，非该检查通过，不自动推广为稳定版本或后续发行授权。
 
 ## 打包与验证入口（摘要）
 
@@ -37,3 +37,11 @@
 `Release candidate check`通过workflow_dispatch接受已存在且版本匹配的tag，验证测试/构建/烟测和公开发行元数据门，不自动上传公开包。旧tag如果缺少新检查工具会明确失败，不能把当前main检查冒充旧包验证。
 
 CI生成的`sbom.cdx.json`来自`npm sbom --package-lock-only --sbom-format cyclonedx --omit dev`，是锁定npm生产依赖清单，不包含完整Electron/OMP原生二进制、手工vendor或字体闭包。它与compliance inventory互补，不是完整发行物SBOM或来源签名，也不代表许可证审计通过。
+
+## 维护者发布技能
+
+[nozeli-github](../dev_tools/skills/nozeli-github/SKILL.md) 保存本项目的提交、受保护PR合并、版本/tag/默认分支一致性、便携包实测、GitHub附件发布及中断恢复流程。安装到用户级系统OMP的 `~/.omp/agent/skills/nozeli-github` 后可跨会话使用；这是开发维护技能，不是产品运行依赖，不发布npm包。
+
+只读检查器：`python3 dev_tools/skills/nozeli-github/scripts/check_release_state.py --phase prepare`；提交推送后用 `--phase dev`，发布后用 `--phase published --assets-dir <发行物目录>`。安装副本支持 `--root <仓库目录>`。检查器不提交、不推送、不发布、不重跑CI，也不将待审计状态当作已签收。
+
+公开附件沿用 `USAGE.zh-CN.md`：打包器生成的 `使用说明.md` 保留在包内，外部发布前复制为ASCII文件名并将SHA256SUMS对应条目绑定到该文件名。GitHub会把纯中文上传文件名规范化成 `default.md`；应核对实际远端名称，不能仅凭上传命令成功认定一致。维护技能／烟测工具在tag后单独修补时，不移动产品tag，不重写原便携包的提交绑定。

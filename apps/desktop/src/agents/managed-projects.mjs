@@ -1,6 +1,7 @@
 import {AttentionLedger} from './managed/attention-ledger.mjs';
 import {TaskPermissions} from './managed/task-permissions.mjs';
 import {workDisposition} from '../domain/work-disposition.mjs';
+import {userTodoEligible} from '../domain/managed-work-records.mjs';
 import {SystemTerminalBridge} from './managed/system-terminal-bridge.mjs';
 import {fileURLToPath} from 'node:url';
 import {preferredRegionAssets} from '../domain/region-drawing.mjs';
@@ -128,18 +129,31 @@ export class ManagedProjects {
   });this.reclaimFlight=operation;return operation;
  }
  async config(id){await this.host.requireRegisteredProject(id);return await this.host.storage.getLocal(id,'managed:binding')??{enabled:false};}
- // Resolve a model-supplied opaque projectPath (registered id or exact root)
- // to a registered, currently online project. Unknown directories are never
- // auto-registered; the caller surfaces a user todo instead.
+ // Ordinary directory access does not register projects or create metadata.
  async resolveRegisteredProject(currentId,value){
   if(typeof value!=='string'||!value.trim()||value.length>4096)throw new HostError('INVALID_PAYLOAD','projectPath 无效。');
   const trimmed=value.trim();
-  if(trimmed===currentId)return {projectId:currentId};
   const registry=await this.host.recent();
   const match=(registry?.projects??[]).find(project=>project.id===trimmed||project.rootDisplay===trimmed);
-  if(!match)throw new HostError('UNKNOWN_PROJECT','目标项目未登记：请用户先在项目列表选择并注册该目录；不会自动注册未知目录。');
-  if(match.available===false)throw new HostError('PROJECT_ROOT_MISSING','目标项目目录当前不可用；请先恢复目录后重试。');
-  return {projectId:match.id,name:match.name,root:match.rootDisplay};
+  if(match){
+   if(match.available===false)throw new HostError('PROJECT_ROOT_MISSING','目标项目目录当前不可用。');
+   return {projectId:match.id,name:match.name,root:match.rootDisplay};
+  }
+  if(trimmed===currentId){const project=await this.host.requireRegisteredProject(currentId);return {projectId:currentId,root:project.rootDisplay??project.root};}
+  if(!path.isAbsolute(trimmed))throw new HostError('INVALID_PAYLOAD','未登记目录必须使用绝对路径。');
+  let root;
+  try{root=await fs.realpath(trimmed);if(!(await fs.stat(root)).isDirectory())throw Error('not directory');}
+  catch{throw new HostError('PROJECT_ROOT_MISSING','目标目录不存在或不可读取。');}
+  let registered=null,registeredRoot=null,prefix='';
+  for(const project of registry?.projects??[]){
+   if(typeof project.rootDisplay!=='string')continue;
+   let candidate;try{candidate=await fs.realpath(project.rootDisplay);}catch{continue;}
+   const relative=path.relative(candidate,root);
+   if(relative==='..'||relative.startsWith('..'+path.sep)||path.isAbsolute(relative))continue;
+   if(!registeredRoot||candidate.length>registeredRoot.length){registered=project;registeredRoot=candidate;prefix=relative.split(path.sep).join('/');}
+  }
+  if(registered){if(registered.available===false)throw new HostError('PROJECT_ROOT_MISSING','目标项目目录当前不可用。');return {projectId:registered.id,name:registered.name,root:registeredRoot,relPathPrefix:prefix};}
+  return {projectId:null,root,external:true};
  }
  async demoStatus(id){return this.guidedDemo?.isDemo(id)?this.guidedDemo.managed('managed.status',{projectId:id}):null;}
  // Host-side cwd gate for sensitive effects: the longest REGISTERED project
@@ -159,9 +173,14 @@ export class ManagedProjects {
   return best?{projectId:best.id,name:best.name??null,root:best.rootDisplay}:null;
  }
  async attentionState(id,state,{connected=false}={}){
+  const controller=connected?this.controllers.get(id):null;
+  if(controller?.processBackstage){await controller.processBackstage();state=controller.snapshot();}
   const facts=[];
   for(const agent of state?.agents??[]){
-   for(const question of agent.interactions??[])facts.push({key:agent.ownerId+':'+question.id,target:agent.target,workId:state.works?.some(w=>w.id===agent.target)?agent.target:undefined,title:'待回答 · '+question.title,text:[question.title,question.detail,'请在工作区对话中处理；查看本待办不会自动选择。'].filter(Boolean).join('\n'),destination:{kind:'conversation',target:agent.target,ownerId:agent.ownerId,threadId:agent.threadId,interactionId:question.id,question:{...(question.question??question),capability:question.capability}}});
+   for(const question of agent.interactions??[]){
+    const payload={...(question.question??question),capability:question.capability},permission=payload.method==='approve';
+    facts.push({key:agent.ownerId+':'+question.id,target:agent.target,workId:state.works?.some(w=>w.id===agent.target)?agent.target:undefined,title:(permission?'高危操作授权 · ':'后台核对 · ')+question.title,text:[question.title,question.detail,permission?'请核对具体对象、效果与风险后决定；查看不构成授权。':'原问题与会话已保留，由后台核对已有材料；缺少可靠信息时保持中性受阻，不编造答案或重放。'].filter(Boolean).join('\n'),destination:{kind:'conversation',target:agent.target,ownerId:agent.ownerId,threadId:agent.threadId,interactionId:question.id,question:payload}});
+   }
   }
   const liveOwners=new Set((state?.agents??[]).filter(a=>!a.closed).map(a=>a.ownerId));
   await this.attention.observe(id,'native',facts,{interrupted:todo=>!connected||!liveOwners.has(todo?.destination?.ownerId)});
@@ -182,12 +201,12 @@ export class ManagedProjects {
   for(const request of ledger.requests??[])if(request.kind==='effect'&&request.status==='pending'){
     const frozen=request.frozenEffect||{};
     const elevated=frozen.action==='admin';
-    permissionFacts.push({key:'permission:'+request.id,target:request.role==='orchestrator'?'orchestrator':'frontdesk',sourceJobId:request.sourceJobId,title:(elevated?'提权执行授权':'敏感执行授权')+' · 等待你的决定',text:'请求执行：'+frozen.command+' '+(frozen.args||[]).map(v=>JSON.stringify(v)).join(' ')+'\n工作目录：'+frozen.cwd+'\n'+(elevated?'单次授权仅此命令；任务提权能力允许同任务其他管理命令，可能影响全盘，不是路径沙箱。':'单次或任务授权仅覆盖该冻结命令。')+'撤销不逆转既有效果。\n原任务：'+String(request.originalText??'').slice(0,200),destination:{kind:'effect-permission',requestId:request.id,expectedVersion:request.version,sourceJobId:request.sourceJobId,question:{method:'effect-permission',title:(elevated?'提权执行授权（root/管理员）':'敏感执行授权'),originalText:request.originalText??null,command:frozen.command,args:frozen.args??[],cwd:frozen.cwd,elevation:frozen.action??'user',purpose:request.reason??null,effectHash:request.effectHash,remainingActions:request.remainingActions??null,completedOperations:request.completedOperations??null,risk:elevated?'root/admin可读写全盘、安装/删除软件和修改系统配置；工作目录不是访问沙箱，不保证回滚。':'当前用户范围的敏感命令；显式批准才执行并保留回执。'}}});
+    permissionFacts.push({key:'permission:'+request.id,target:request.role==='orchestrator'?'orchestrator':'frontdesk',sourceJobId:request.sourceJobId,title:(elevated?'提权执行授权':'敏感执行授权')+' · 等待你的决定',text:'请求执行：'+frozen.command+' '+(frozen.args||[]).map(v=>JSON.stringify(v)).join(' ')+'\n工作目录：'+frozen.cwd+'\n单次授权仅执行该冻结命令一次；任务授权仅允许原任务重复完全相同的命令、参数和工作目录，不覆盖其他管理命令。撤销不逆转既有效果。\n原任务：'+String(request.originalText??'').slice(0,200),destination:{kind:'effect-permission',requestId:request.id,expectedVersion:request.version,sourceJobId:request.sourceJobId,question:{method:'effect-permission',title:(elevated?'提权执行授权（root/管理员）':'敏感执行授权'),originalText:request.originalText??null,command:frozen.command,args:frozen.args??[],cwd:frozen.cwd,elevation:frozen.action??'user',purpose:request.reason??null,effectHash:request.effectHash,remainingActions:request.remainingActions??null,completedOperations:request.completedOperations??null,risk:elevated?'root/admin可读写全盘、安装/删除软件和修改系统配置；工作目录不是访问沙箱，不保证回滚。':'当前用户范围的敏感命令；显式批准才执行并保留回执。'}}});
   }
   for(const request of ledger.requests??[])if(request.status==='migrated')permissionFacts.push({key:'permission-migrated:'+request.id,target:'frontdesk',sourceJobId:request.sourceJobId,title:'跨项目授权待办已迁移关闭',text:'常规跨项目文档访问不再需要逐次授权，原“跨项目访问授权”待办已关闭。\n原请求未被自动继续，也未重放任何已完成输入；如仍需该访问，请在原任务中直接重试，或对敏感/提权执行使用'+String(request.action==='read'?'读取':'写入')+'（'+(request.targetProjectName||request.targetProjectId)+' / '+(request.relPath||'全部公共文件')+'）。',destination:{kind:'cross-project-migrated',requestId:request.id,sourceJobId:request.sourceJobId}});
-  for(const grant of ledger.grants??[])if(grant.kind==='effect'&&grant.status==='granted'&&grant.mode==='task'){
+  for(const grant of ledger.grants??[])if(grant.kind==='effect'&&grant.status==='granted'&&grant.mode==='task'&&grant.authority!=='default-yolo'){
     const frozen=grant.frozenEffect||{};
-    permissionFacts.push({key:'effect-grant:'+grant.id,target:'frontdesk',sourceJobId:grant.sourceJobId,title:'本任务提权/敏感执行授权生效中 · 可撤销',text:(frozen.action==='admin'?'本任务提权能力：该工作目录及子目录可启动其他管理命令，命令可能影响全盘。':'本任务授权冻结命令：'+frozen.command)+'（cwd: '+frozen.cwd+'）。\n撤销关闭未来准入，不逆转既有效果。'+(grant.expiresAt?'到期时间 '+grant.expiresAt:''),destination:{kind:'effect-grant',grantId:grant.id,expectedVersion:grant.version??1,sourceJobId:grant.sourceJobId,question:{method:'effect-grant',title:'本任务执行授权（可撤销）',command:frozen.command,args:frozen.args??[],cwd:frozen.cwd,elevation:frozen.action??'user',effectHash:grant.effectHash,grantedAt:grant.grantedAt,expiresAt:grant.expiresAt??null}}});
+    permissionFacts.push({key:'effect-grant:'+grant.id,target:'frontdesk',sourceJobId:grant.sourceJobId,title:'本任务冻结命令授权生效中 · 可撤销',text:'本任务授权冻结命令：'+frozen.command+' '+(frozen.args||[]).map(v=>JSON.stringify(v)).join(' ')+'（cwd: '+frozen.cwd+'）。仅原任务可重复完全相同的命令、参数和工作目录，不覆盖其他管理命令。\n撤销关闭未来准入，不逆转既有效果。'+(grant.expiresAt?'到期时间 '+grant.expiresAt:''),destination:{kind:'effect-grant',grantId:grant.id,expectedVersion:grant.version??1,sourceJobId:grant.sourceJobId,question:{method:'effect-grant',title:'本任务冻结命令授权（可撤销）',command:frozen.command,args:frozen.args??[],cwd:frozen.cwd,elevation:frozen.action??'user',effectHash:grant.effectHash,grantedAt:grant.grantedAt,expiresAt:grant.expiresAt??null}}});
   }
   for(const execution of ledger.executions??[])if(execution.status==='unknown')permissionFacts.push({key:'effect-unknown:'+execution.id,target:'frontdesk',sourceJobId:null,title:'执行结果未知 · 需核对',text:'一项已批准的敏感/提权执行结果未知（'+execution.effectHash.slice(0,16)+'…）。为避免重复副作用，不会自动重放；请核对系统实际状态后，在原任务中重新申请。',destination:{kind:'connection',target:'frontdesk'}});
   for(const execution of ledger.executions??[])if(['auth-cancelled','auth-failed'].includes(execution.status))permissionFacts.push({key:'effect-auth:'+execution.id,target:'frontdesk',sourceJobId:null,title:'提权认证未完成 · 可再次处理',text:'用户已批准的敏感/提权执行因系统认证'+(execution.status==='auth-cancelled'?'被取消':'失败')+'未执行（'+execution.effectHash.slice(0,16)+'…）。不自动重试；可在原任务中重新发起同一命令，宿主会再次走真实系统认证。',destination:{kind:'connection',target:'frontdesk'}});
@@ -217,7 +236,7 @@ export class ManagedProjects {
    this.listener({projectId:id,kind:'managed-state',state:merged});
    return result;
   }
-  if(todo?.origin!=='instance-attention'||destination?.kind!=='conversation'||!destination.interactionId)throw new HostError('ATTENTION_STALE','原问题已结束或不接受作答；不会将答案发送到其他会话。');
+  if(todo?.origin!=='instance-attention'||!userTodoEligible(todo)||destination?.kind!=='conversation'||!destination.interactionId)throw new HostError('ATTENTION_STALE','原问题已结束或不接受作答；不会将答案发送到其他会话。');
   const result=await controller.respondInteraction(destination.target,destination.ownerId,destination.interactionId,answer,{cancel});
   const merged=await this.attentionState(id,controller.snapshot(),{connected:true});
   this.listener({projectId:id,kind:'managed-state',state:merged});
@@ -560,6 +579,7 @@ export class ManagedProjects {
   allowed['review.instruction.read']=['projectId','workId','objectId'];
   allowed['review.instruction.save']=['projectId','workId','objectId','text','expectedRevision'];
   allowed['merge.consent']=['projectId','workId','requestId','expectedVersion','decision','requestKey','binding'];
+  allowed['maintenance.status']=['projectId'];allowed['maintenance.retry']=['projectId','bugId'];allowed['maintenance.scan']=['projectId'];
   const action=op.slice('managed.'.length);
   if(action==='frontdesk.context.clear'){
    if(!p||typeof p!=='object'||Array.isArray(p)||Object.keys(p).length!==1||typeof p.projectId!=='string'||!p.projectId.trim())throw new HostError('INVALID_PAYLOAD','清除前台上下文仅接受 projectId');
@@ -575,8 +595,10 @@ export class ManagedProjects {
   if(action==='problem.resolve'&&(!p||typeof p!=='object'||Array.isArray(p)||Object.keys(p).some(k=>!allowed[action].includes(k))||!['projectId','workId','objectId'].every(k=>typeof p[k]==='string'&&p[k].trim()===p[k]&&p[k].length>0&&p[k].length<=200)||!Number.isSafeInteger(p.revision)||p.revision<1||!['approve','reject'].includes(p.action)||(p.text!==undefined&&(typeof p.text!=='string'||p.text.length>32000))||(p.action==='reject'&&!(typeof p.text==='string'&&p.text.trim()))||typeof p.requestKey!=='string'||!/^[a-zA-Z0-9:_-]{8,160}$/.test(p.requestKey)))throw new HostError('INVALID_PAYLOAD','问题决定的项目、工作、报告、版本、反馈或动作无效。');
   if((action==='history.list'||action==='history.read')&&Object.keys(p).some(k=>!allowed[action].includes(k)))throw new HostError('INVALID_PAYLOAD','历史报告查询参数无效。');
   if(!allowed[action]||Object.keys(p).some(k=>!allowed[action].includes(k)))throw new Error('invalid managed payload');
-  if(['draft','status','attention.ack','todo.manage','timeline.page','timeline.read','timeline.request','resident.history','worker.history','disposition','history.list','history.read','artifact.read','artifact.list','changes.list','changes.read','review.read','review.save','review.continue','review.accept','review.instruction.read','review.instruction.save','merge.consent','merge.constraint'].includes(action))await this.host.requireRegisteredProject(p.projectId);else await this.host.requireProject(p.projectId);
+  if(['draft','status','maintenance.status','attention.ack','todo.manage','timeline.page','timeline.read','timeline.request','resident.history','worker.history','disposition','history.list','history.read','artifact.read','artifact.list','changes.list','changes.read','review.read','review.save','review.continue','review.accept','review.instruction.read','review.instruction.save','merge.consent','merge.constraint'].includes(action))await this.host.requireRegisteredProject(p.projectId);else await this.host.requireProject(p.projectId);
   if(action==='draft')return this.saveLocalDraft(p.projectId,p.target,p.text);
+  if(action==='maintenance.status'){const c=this.controllers.get(p.projectId);if(c&&!c.stopping)return c.maintenanceStatus();const ledger=await new (await import('./managed/maintenance-ledger.mjs')).MaintenanceLedger(this.host.storage,p.projectId).read();for(const bug of ledger.bugs)if(bug.status==='repairing'){bug.status='needs-version-fix';bug.recoveryUnavailable='interrupted-host-attempt';}return ledger;}
+  if(action==='maintenance.retry'||action==='maintenance.scan'){const controller=this.controllers.get(p.projectId);if(!controller||controller.stopping)throw new HostError('MAINTENANCE_OWNER_UNAVAILABLE','项目尚未连接；不会恢复或重放旧任务。');return action==='maintenance.scan'?controller.maintenanceScan():controller.maintenanceRetry(p.bugId);}
   if(action==='attention.ack'){if(!Array.isArray(p.ids)||p.ids.length>100||p.ids.some(id=>typeof id!=='string'||id.length>160))throw new HostError('INVALID_PAYLOAD','待办通知标识无效');if(p.occurrences!==undefined&&(!Array.isArray(p.occurrences)||p.occurrences.length>100||p.occurrences.some(item=>!item||typeof item!=='object'||typeof item.id!=='string'||item.id.length>160||typeof item.interrupted!=='boolean')))throw new HostError('INVALID_PAYLOAD','待办通知阶段无效');if(p.occurrences===undefined)return this.attention.acknowledge(p.projectId,p.ids);const source=this.controllers.get(p.projectId)?.store?.state??(await this.projectionSource(p.projectId)).state;try{return await this.attention.acknowledge(p.projectId,{ids:p.ids,occurrences:p.occurrences},(source?.todos??[]).map(todo=>({id:todo.id,status:todo.status,interrupted:todo.interrupted})));}catch(error){if(error?.code==='ATTENTION_STALE')throw new HostError('ATTENTION_STALE',error.message);throw error;}}
   if(action==='effect.response'){const q={...p};q.attentionKind=q.attentionKind??'effect-permission';return this.respondAttention(p.projectId,q);}
   if(action==='attention.respond')return this.respondAttention(p.projectId,p);

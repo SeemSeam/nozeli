@@ -1,21 +1,18 @@
 import fs from 'node:fs/promises';
-import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {memoryContext,ContextReader} from './context-reader.mjs';
 import {readStoredReport,reportExtension,reportSemanticText} from './report-descriptor.mjs';
+import {writablePath,readSafeBytes} from './file-stream.mjs';
 
 export const frontReadLimits={chars:8000};
 export const versionOf=text=>createHash('sha256').update(text).digest('hex');
 export function validateFrontPath(value){
- if(typeof value!=='string'||!value||value.includes('\\')||value.includes('\0')||path.isAbsolute(value)||value.split('/').some(p=>!p||p==='..'||p==='.'||p.startsWith('.')||p==='node_modules'))throw Error('只允许明确的项目相对文本路径；不读取私有目录');
- return value;
+ return writablePath(value);
 }
 export async function projectText(root,relPath){
- validateFrontPath(relPath);const candidate=await fs.realpath(path.join(root,relPath)),rel=path.relative(root,candidate);
- if(rel==='..'||rel.startsWith('..'+path.sep)||path.isAbsolute(rel))throw Error('文件来源超出项目');
- validateFrontPath(rel.split(path.sep).join('/'));
- const stat=await fs.stat(candidate);if(!stat.isFile()||stat.size>8*1024*1024)throw Error('只支持8MiB以内文本材料');
- const bytes=await fs.readFile(candidate);if(bytes.includes(0))throw Error('此文件不是文本材料');return {text:new TextDecoder('utf-8',{fatal:true}).decode(bytes),source:relPath};
+ validateFrontPath(relPath);
+ const captured=await readSafeBytes(root,relPath,{maxBytes:8*1024*1024});if(!captured)throw Error('文本材料不存在');
+ const bytes=captured.bytes;if(bytes.includes(0))throw Error('此文件不是文本材料');return {text:new TextDecoder('utf-8',{fatal:true}).decode(bytes),source:relPath};
 }
 // This is a host-owned source adapter, never a provider filesystem tool.
 export async function frontSource(controller,selector,job){

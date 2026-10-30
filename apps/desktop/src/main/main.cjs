@@ -8,7 +8,7 @@ if (process.argv.includes('--nozeli-document')) {
   require('../agents/document-entry.cjs');
   return;
 }
-const { app, BaseWindow, WebContentsView, screen, ipcMain, Menu, shell, clipboard, nativeTheme } = require('electron');
+const { app, BaseWindow, WebContentsView, webContents, screen, ipcMain, Menu, shell, clipboard, ClipboardItem, nativeTheme } = require('electron');
 if (process.platform === 'linux') app.setDesktopName('io.nozeli.Nozeli.desktop');
 const {WorkspaceWindow} = require('./workspace-window.cjs');
 let dialog, session;
@@ -18,6 +18,9 @@ const { randomUUID, randomBytes } = require('node:crypto');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const {WindowRecovery,forWindow:windowRecovery} = require('./window-recovery.cjs');
+const {createForceQuit} = require('./force-quit.cjs');
+let forceQuitting = false;
+const forceQuit = createForceQuit({app});
 
 const APP_ROOT = path.resolve(__dirname, '../..');
 const RENDERER_ROOT = path.join(APP_ROOT, 'dist/renderer');
@@ -36,7 +39,7 @@ if (DEBUG_PORT) app.commandLine.appendSwitch('remote-debugging-port', DEBUG_PORT
 // startup (exit 133), which kills renderer module evaluation before the shell
 // reports ready; --disable-vulkan alone does not stop the cascade. Composite in
 // software on Wayland, matching Chromium's own post-crash fallback.
-if (process.platform === 'linux' && process.argv.some(arg => arg.includes('ozone-platform=wayland'))) app.commandLine.appendSwitch('disable-gpu');
+if (process.platform === 'linux' && app.commandLine.getSwitchValue('ozone-platform')==='wayland') app.commandLine.appendSwitch('disable-gpu');
 // Speculative DNS has no resource request to fence in an isolated session.
 app.commandLine.appendSwitch('dns-prefetch-disable');
 
@@ -99,7 +102,7 @@ function startStatic() {
   });
 }
 
-let host, fileTreeOps, treeMenuItems;
+let host, fileTreeOps, treeMenuItems, nativeFileClipboard, importClipboardFiles;
 let workspaceNative, isolatedPreview, workspaceCapture, projectLifecycle;
 async function finishDrawing({windowId,projectId}={}){
   const active=workspaceCapture?.active;
@@ -192,10 +195,11 @@ async function createWindow(server) {
     },
   });
   const menuAction = action => win.webContents.send('nozeli:menu-action', action);
+  const textEdit = action => workspaceNative.editFocusedText(action, webContents.getFocusedWebContents());
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     ...(process.platform === 'darwin' ? [{role:'appMenu'}] : []),
     {label:'文件',submenu:[{label:'打开项目…',accelerator:'CmdOrCtrl+O',click:()=>menuAction('open-project')},{type:'separator'},{label:'关闭窗口',click:()=>win.close()}]},
-    {label:'编辑',submenu:[{role:'undo',label:'撤销'},{role:'redo',label:'重做'},{type:'separator'},{role:'cut',label:'剪切'},{role:'copy',label:'复制'},{role:'paste',label:'粘贴'},{role:'selectAll',label:'全选'}]},
+    {label:'编辑',submenu:[{role:'undo',label:'撤销'},{role:'redo',label:'重做'},{type:'separator'},{label:'剪切',accelerator:'CmdOrCtrl+X',click:()=>textEdit('cut')},{label:'复制',accelerator:'CmdOrCtrl+C',click:()=>textEdit('copy')},{role:'paste',label:'粘贴'},{role:'selectAll',label:'全选'}]},
     {label:'视图',submenu:[{label:'专注模式',accelerator:'CmdOrCtrl+Shift+F11',click:()=>menuAction('focus')},{id:'view.authorship',label:'显示修改者',type:'checkbox',checked:true,click:()=>menuAction('authorship-toggle')},{label:'当前文件修改记录…',click:()=>menuAction('authorship-history')},{role:'togglefullscreen',label:'全屏'}]},
     {label:'窗口',submenu:[{role:'minimize',label:'最小化'},{role:'zoom',label:'缩放窗口'}]},
   ]));
@@ -264,9 +268,16 @@ async function main() {
   const { FormatterService } = await import('./formatter-service.mjs');
   const { AgentRuntime } = await import('../agents/runtime.mjs');
   const { agentOps } = await import('../agents/ipc.mjs');
-  session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+  session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => callback(workspaceNative?.allowClipboardWrite(contents, permission, details) === true));
+  session.defaultSession.setPermissionCheckHandler((contents, permission, requestingOrigin, details) => {
+    if (!workspaceNative || requestingOrigin !== new URL(workspaceNative.origin).origin) return false;
+    return workspaceNative.allowClipboardWrite(contents, permission, details);
+  });
   host = new DesktopHost(app.getPath('userData'),{onDocumentChange:payload=>workspaceNative?.broadcast('nozeli:document',payload,payload.projectId)});
   const { FileTreeOps } = await import('./file-tree-ops.mjs');
+  const {NativeFileClipboard}=await import('./file-clipboard.mjs');
+  ({importClipboardFiles}=await import('./file-clipboard-import.mjs'));
+  nativeFileClipboard=new NativeFileClipboard(clipboard,{ClipboardItem});
   ({ treeMenuItems } = await import('./file-tree-menu.mjs'));
   fileTreeOps = new FileTreeOps(host, { trash: p => shell.trashItem(p) });
   formatterService = new FormatterService({ host });
@@ -322,7 +333,7 @@ async function main() {
   const address=server.address();origin=`http://127.0.0.1:${address.port}/`;
   workspaceNative=new WorkspaceNative({BrowserWindow:WorkspaceWindow,WebContentsView,screen,origin,preload:path.join(APP_ROOT,'src/preload/preload.cjs'),icon:path.join(APP_ROOT,'assets/nozeli.png'),userDataDir:app.getPath('userData'),host,hidden:HIDDEN,onClose:async r=>{const recovery=windowRecovery(r.win);if(recovery){recovery.requestClose();return;}await workspaceNative.flush([...workspaceNative.senders.values()]);if(agents?.busy()||managedAgents?.busy()){r.wc.send('nozeli:quit-confirm');return;}await managedAgents?.stop();await agents?.stopIdle?.();r.closing=true;for(const s of workspaceNative.projectRecords(r.projectId,r.windowId))workspaceNative.destroySurface(s);r.win.close();}});
   const {IsolatedPreviewManager}=await import('./isolated-preview.mjs');
-  isolatedPreview=new IsolatedPreviewManager({WebContentsView,session,workspace:workspaceNative,host,managedAgents});
+  isolatedPreview=new IsolatedPreviewManager({WebContentsView,session,workspace:workspaceNative,host,managedAgents,dialog});
   try{const saved=JSON.parse(await fs.readFile(path.join(app.getPath('userData'),'appearance.json'),'utf8'));if(['light','dark'].includes(saved.theme))nativeTheme.themeSource=saved.theme;isolatedPreview.setAppearance({palette:saved.palette,mode:nativeTheme.shouldUseDarkColors?'dark':'light'});}catch{}
   nativeTheme.on('updated',()=>{isolatedPreview.setAppearance({palette:isolatedPreview.appearance?.palette??'sage',mode:nativeTheme.shouldUseDarkColors?'dark':'light'});});
   workspaceNative.isolatedPreview=isolatedPreview;
@@ -372,6 +383,15 @@ async function main() {
         throw new HostError('INVALID_PAYLOAD', 'Payload must be an object.');
       }
       if(typeof op!=='string')throw new HostError('UNKNOWN_OP','Unknown host operation.');
+      // Force quit is a trusted renderer control, not a storage operation. It
+      // must remain reachable while another quit invocation awaits flush/stop.
+      if (op === 'session.quitChoice' && payload?.choice === 'force') {
+        trusted(event, op, payload);
+        forceQuitting = true;
+        quitting = true;
+        forceQuit();
+        return {ok:true,value:{closing:true,forced:true}};
+      }
       payload=await workspaceNative.resolvePayload(scope,op,payload??{});
       if(['material.attach','material.attachPath'].includes(op))payload={...payload,projectId:scope.projectId};
       if(op==='material.read'&&payload.projectId!==scope.projectId)throw new HostError('PROJECT_SCOPE_DENIED','附件不属于当前项目');
@@ -571,8 +591,11 @@ async function main() {
         if (payload?.choice === 'cancel') {
           try {
             await workspaceNative.flush([...workspaceNative.senders.values()]);
+            if (forceQuitting) return {ok:true,value:{closing:true,forced:true}};
             await managedAgents?.stop();
+            if (forceQuitting) return {ok:true,value:{closing:true,forced:true}};
             await agents.cancelAllAndStop();
+            if (forceQuitting) return {ok:true,value:{closing:true,forced:true}};
             allowClose = true;
             quitting = true;
             for(const s of [...workspaceNative.surfaces.values()])workspaceNative.destroySurface(s);
@@ -583,13 +606,29 @@ async function main() {
             return respond(error);
           }
         }
-        throw new HostError('INVALID_PAYLOAD', 'Quit choice must be stay or cancel.');
+        throw new HostError('INVALID_PAYLOAD', 'Quit choice must be stay, cancel or force.');
       }
       if (op === 'tree.labels') return { ok:true, value:await fileTreeOps.labels(payload ?? {}) };
       if (op === 'tree.label') return { ok:true, value:await fileTreeOps.setLabel(payload ?? {}) };
       if (op === 'tree.view') return { ok:true, value:await fileTreeOps.view(payload ?? {}) };
+      if (op === 'tree.clipboard.read' || op === 'tree.clipboard.mark') {
+        if(scope.role!=='shell'||payload?.projectId!==scope.projectId)throw new HostError('PROJECT_SCOPE_DENIED','只能在当前打开的项目中读取文件剪贴板。');
+        const owner=event.sender.id;
+        return {ok:true,value:op==='tree.clipboard.mark'?await nativeFileClipboard.mark(owner,scope.projectId):await nativeFileClipboard.read(owner,scope.projectId)};
+      }
       if (op === 'tree.mutate') {
         const request = payload ?? {};
+        if(request.action==='import'){
+          if(scope.role!=='shell'||request.projectId!==scope.projectId||Object.keys(request).some(key=>!['projectId','action','ticket','target'].includes(key)))throw new HostError('PROJECT_SCOPE_DENIED','只能在当前打开的目标项目中粘贴。');
+          const items=await nativeFileClipboard.take(request.ticket,event.sender.id,scope.projectId);
+          const sources=(await host.storage.list()).filter(project=>!project.removed&&items.some(item=>{const rel=path.relative(project.root,item.source);return rel===''||rel!=='..'&&!rel.startsWith('..'+path.sep)&&!path.isAbsolute(rel);}));
+          for(const source of sources){
+            await host.requireProject(source.id);
+            const affected=workspaceNative.projectRecords(source.id).filter(record=>record.relPath&&(!record.documentSource||record.documentSource.type==='project')&&items.some(item=>{const rel=path.relative(item.source,path.join(source.root,record.relPath));return rel===''||rel!=='..'&&!rel.startsWith('..'+path.sep)&&!path.isAbsolute(rel);}));
+            if(affected.length)await workspaceNative.flush(affected);
+          }
+          return {ok:true,value:await importClipboardFiles(fileTreeOps,items,request)};
+        }
         if (request.sourceProjectId !== undefined) {
           if (typeof request.sourceProjectId !== 'string' || !request.sourceProjectId) throw new HostError('INVALID_PAYLOAD', '跨项目源项目无效。');
           // Cross-project paste runs on behalf of the shell into its active
@@ -688,7 +727,7 @@ async function main() {
         return {ok:true,value:await new ManagedReportExporter({host,managedAgents,beforeOperation:syncDocument}).exportArtifact(payload??{})};
       }
       if(typeof op==='string'&&op.startsWith('managed.')){
-        const historyOnly=['managed.status','managed.history.list','managed.history.read','managed.artifact.read','managed.artifact.list','managed.timeline.page','managed.timeline.read','managed.timeline.request','managed.changes.list','managed.changes.read','managed.worker.history','managed.resident.history','managed.draft','managed.disposition','managed.terminal.screen','managed.review.read','managed.review.instruction.read'].includes(op);
+        const historyOnly=['managed.status','managed.maintenance.status','managed.history.list','managed.history.read','managed.artifact.read','managed.artifact.list','managed.timeline.page','managed.timeline.read','managed.timeline.request','managed.changes.list','managed.changes.read','managed.worker.history','managed.resident.history','managed.draft','managed.disposition','managed.terminal.screen','managed.review.read','managed.review.instruction.read'].includes(op);
         // Local disposition still passes sender/project/mutation authorization above.
         const localDisposition=['managed.end','managed.retry','managed.merge.consent','managed.merge.constraint','managed.deviation.resolve','managed.problem.resolve','managed.effect.response','managed.todo.manage','managed.attention.ack','managed.attention.respond','managed.attention.draft.read','managed.attention.draft.write','managed.review.save','managed.review.accept','managed.review.instruction.save'].includes(op);
         let blocked=ompRuntimeError&&!historyOnly&&!localDisposition?ompRuntimeError:null;
@@ -722,6 +761,7 @@ async function main() {
     await createWindow(server);
   });
   app.on('window-all-closed', async () => {
+    if (forceQuitting) return;
     await texManager?.stopAll();
     await texLanguage?.stopAll();
     await lspManager?.stopAll();

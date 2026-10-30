@@ -89,6 +89,35 @@ function comparableSchema(schema) {
 }
 const comparableTools = tools => JSON.stringify(stableValue(tools.map(tool => ({ name: tool.name, approval: tool.approval ?? 'read', parameters: comparableSchema(tool.parameters ?? tool.inputSchema ?? { type: 'object', properties: {} }) }))));
 
+// Trusted releases may add tools and optional object fields. Everything else
+// stays equivalent: this is deliberately not a general JSON Schema implication
+// solver (constraints, required fields and approval policy remain pinned).
+function compatibleSchema(previous, current) {
+  const old = comparableSchema(previous), next = comparableSchema(current);
+  if (JSON.stringify(old) === JSON.stringify(next)) return true;
+  if (!old || !next || old.type !== 'object' || next.type !== 'object') return false;
+  const { properties: oldProperties = {}, ...oldContract } = old;
+  const { properties: nextProperties = {}, ...nextContract } = next;
+  if (JSON.stringify(stableValue(oldContract)) !== JSON.stringify(stableValue(nextContract))) return false;
+  for (const [name, schema] of Object.entries(oldProperties)) {
+    if (!Object.hasOwn(nextProperties, name) || !compatibleSchema(schema, nextProperties[name])) return false;
+  }
+  const added = Object.keys(nextProperties).filter(name => !Object.hasOwn(oldProperties, name));
+  // With open objects, constraining a previously arbitrary property would
+  // narrow old accepted arguments. Closed objects provide the necessary proof.
+  return added.every(name => old.additionalProperties === false && !Object.keys(old.patternProperties ?? {}).length && !(next.required ?? []).includes(name));
+}
+function compatibleTools(previous, current) {
+  if (!Array.isArray(previous) || !Array.isArray(current)) return false;
+  const names = tools => tools.every(tool => typeof tool?.name === 'string') && new Set(tools.map(tool => tool.name)).size === tools.length;
+  if (!names(previous) || !names(current)) return false;
+  const next = new Map(current.map(tool => [tool.name, tool]));
+  return previous.every(tool => {
+    const replacement = next.get(tool.name);
+    return replacement && (tool.approval ?? 'read') === (replacement.approval ?? 'read') && compatibleSchema(tool.parameters ?? tool.inputSchema ?? { type: 'object', properties: {} }, replacement.parameters ?? replacement.inputSchema ?? { type: 'object', properties: {} });
+  });
+}
+
 export class OmpTuiSession extends EventEmitter {
   constructor(spec) {
     super();
@@ -726,7 +755,7 @@ export class OmpTuiSession extends EventEmitter {
     try { historical = history.filter(tools => digestTools(tools) === expected); }
     catch { return reject('historical-evidence-invalid'); }
     if (!historical.length) return reject('historical-digest-missing');
-    if (historical.some(tools => comparableTools(tools) !== comparableTools(this.tools))) return reject('historical-schema');
+    if (historical.some(tools => !compatibleTools(tools, this.tools))) return reject('historical-schema');
     return { expectedDigest: expected, toolsDigest: this.toolsDigest, compatible: true };
   }
 
@@ -740,7 +769,7 @@ export class OmpTuiSession extends EventEmitter {
     if (comparableTools(this.deployed?.tools ?? this.tools) !== comparableTools(registered)) return reject('bridge-requested-schema');
     const historical = this.deployed?.toolHistory?.filter(tools => Array.isArray(tools) && digestTools(tools) === expected) ?? [];
     if (!historical.length) return reject('historical-digest-missing');
-    if (historical.some(tools => comparableTools(tools) !== comparableTools(registered))) return reject('historical-schema');
+    if (historical.some(tools => !compatibleTools(tools, registered))) return reject('historical-schema');
     this.diag('tools-schema-compatible-resume', { previousDigest: expected, registeredDigest: this.toolsDigest });
   }
 

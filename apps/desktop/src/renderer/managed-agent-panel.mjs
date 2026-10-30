@@ -6,7 +6,6 @@ import {mountArchivePages as renderArchivePages} from './archive-pages.mjs';
 import {mountSessionTimeline} from './session-timeline.mjs';
 import {renderConfigurationNotice} from './configuration-notice.mjs';
 import {deviationHeld} from '../domain/work-deviation.mjs';
-import {renderDeviationGate} from './work-deviation.mjs';
 import {mountFrontdeskRoutes,frontdeskRouteText} from './frontdesk-routes.mjs';
 import {createProviderTerminal} from './provider-terminal.mjs';
 import {createTerminalLayout,terminalTargets} from './managed-terminal-layout.mjs';
@@ -170,7 +169,6 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
  const recoveryPending=new Set();
  const attentionDrafts=new Map();let attentionView=null;
  const problemDrafts=new Map();
- const deviationPending=new Set(),deviationKeys=new Map(),deviationErrors=new Map();
 const mergePending=new Set(),mergeKeys=new Map(),mergeErrors=new Map();
 const constraintVersion=todo=>todo?.constraintVersion;
 function paintMergeConstraint(box,work,todo){
@@ -209,17 +207,7 @@ async function openWorkReport(workId){
  return openHistory({objectId:publication.objectId,workName:work.name||'工作',revision:publication.revision??work.revision??1,kind:'report'});
 }
  function paintDeviation(box,work){
-  if(work?.readOnly){box.replaceChildren(Object.assign(document.createElement('p'),{textContent:'历史工作只读；原会话、报告和草稿保留，不提供恢复或重放操作。'}));return;}
-  const key=projectId+':'+work.id;
-  renderDeviationGate(box,{document,work,pending:deviationPending.has(key),error:deviationErrors.get(key)||'',resolve:action=>resolveDeviation(work,action),...(state.todos.some(t=>t.id===work.deviation?.todoId)?{inspectReport:()=>openTodo(work.deviation.todoId)}:{})});
- }
- async function resolveDeviation(work,action){
-  const id=projectId,gen=generation,key=id+':'+work.id,d=work.deviation;if(!id||deviationPending.has(key)||!deviationHeld(work))return;
-  const identity=JSON.stringify([id,work.id,d.id,d.revision,d.version,action]),requestKey=deviationKeys.get(identity)||crypto.randomUUID();deviationKeys.set(identity,requestKey);
-  deviationPending.add(key);deviationErrors.delete(key);render();
-  try{const result=await call('deviation.resolve',{workId:work.id,deviationId:d.id,expectedRevision:d.revision,expectedVersion:d.version,action,requestKey},id);if(result.accepted!==true)throw Error('宿主未确认决定；原暂停保留。');deviationKeys.delete(identity);await refresh();if(!ready&&id===projectId&&gen===generation){try{await call('connect',{},id);await refresh();}catch(error){toast('决定已保存；原任务尚未启动：'+error.message+'。请处理连接恢复，勿重复授权。');}}}
-  catch(error){if(id===projectId&&gen===generation){deviationErrors.set(key,(error.code?error.code+'：':'')+error.message);try{await refresh();}catch{} }}
-  finally{deviationPending.delete(key);if(id===projectId&&gen===generation){render();for(const box of document.querySelectorAll('[data-deviation-gate]')){const current=state.works.find(w=>w.id===box.dataset.deviationGate);if(current)paintDeviation(box,current);}}}
+  box.replaceChildren(Object.assign(document.createElement('p'),{textContent:work?.readOnly?'历史工作只读；原会话、报告和草稿保留。':'后台正在核对任务范围；原工作、来源输入、已有进展和草稿保留，不会自动扩大范围或重放。'}));
  }
  const toolbar=document.createElement('div');toolbar.id='managed-todo-context';toolbar.setAttribute('role','status');toolbar.hidden=true;agentDetailsBody.append(toolbar);
  const terminalBox=document.createElement('div');terminalBox.id='managed-terminal-grid';terminalBox.hidden=true;$('provider-console').append(terminalBox);
@@ -465,7 +453,7 @@ async function openWorkReport(workId){
   clearFrontdeskContext.disabled=clearingFrontdesk||!ready||target!=='frontdesk'||Boolean(viewed?.history)||state.busyTargets?.includes('frontdesk')||state.nativeDraftTargets?.includes('frontdesk')||state.externalTerminalTargets?.includes('frontdesk');
   renderConfigurationNotice(configurationNotice,state.agents||[]);
   renderWorkerRecovery();
-  routeUI.render(state,projectId,ready);
+  routeUI.render({...state,frontdeskRoutes:[]},projectId,ready);
   const receiptSignature=state.receipts.length+':'+(state.receipts.at(-1)?.objectId||'');
   if(historyReceiptSignature!==null&&receiptSignature!==historyReceiptSignature)void loadHistory();
   historyReceiptSignature=receiptSignature;
@@ -531,9 +519,9 @@ async function openWorkReport(workId){
     if(constraintTodo){const card=document.createElement('section');facts.append(card);paintMergeConstraint(card,selectedWork,constraintTodo);}
    }else{
     const currentResult=selectedWork.result?.revision===selectedWork.revision&&selectedWork.status==='review';
-    const note=document.createElement('p');note.textContent=currentResult?'本轮最终候选已保存。进入审核报告核对后接受或拒绝；接受后宿主合入并技术收尾。':'本轮尚未交付最终成果。若有问题报告，可接受或拒绝处理方案并接续原 Worker；也可明确丢弃结束。保留的旧成果不是本轮交付。';facts.append(note);
+    const note=document.createElement('p');note.textContent=currentResult?'本轮最终候选已保存。进入审核报告核对后接受或拒绝；接受后宿主合入并技术收尾。':'本轮尚未交付最终成果。后台核对问题并推进原工作；无法继续时保留进展。保留的旧成果不是本轮交付。';facts.append(note);
     const problemTodo=!deviationHeld(selectedWork)&&state.todos.find(t=>t.workId===selectedWork.id&&t.kind==='problem'&&t.status==='open'&&t.revision===selectedWork.revision&&t.objectId===selectedWork.problem?.objectId);
-    if(problemTodo){const decide=button('查看问题报告，接受或拒绝处理方案',()=>{if(agentDetails.open)agentDetails.close();return openTodo(problemTodo.id);});decide.dataset.managedWorkProblem=selectedWork.id;actions.append(decide);}
+    if(problemTodo){const inspect=button('查看后台问题记录',()=>{if(agentDetails.open)agentDetails.close();return openTodo(problemTodo.id);});inspect.dataset.managedWorkProblem=selectedWork.id;actions.append(inspect);}
     if(currentResult){const report=button('审核本轮成果并决定接受/结束',()=>openWorkReport(selectedWork.id));report.dataset.managedWorkReport=selectedWork.id;actions.append(report);}
     const discard=button(selectedWork.status==='queued'?'取消排队工作…':'丢弃未合入成果并结束…',()=>disposeWork(selectedWork.id,'discard'));discard.dataset.managedWorkEnd=selectedWork.id;discard.disabled=selectedWork.readOnly||selectedWork.status==='closing';actions.append(discard);
    }
@@ -682,7 +670,14 @@ async function openWorkReport(workId){
  }
  async function openTodo(id){
   const saved=await flushManagedReviews();if(!saved.ok){toast(saved.error.message);return;}
-  const todo=state?.todos.find(t=>t.id===id);if(!todo)return;
+  const todo=managedReviewTodos(state??{}).find(t=>t.id===id);
+  if(!todo){
+   const historical=state?.todos.find(t=>t.id===id);if(!historical)return;
+   const sourceProject=projectId,gen=generation,request=++reportRequest,current=()=>sourceProject===projectId&&gen===generation&&request===reportRequest;
+   const opened=await openManaged({id,todoId:id,projectId:sourceProject,title:historical.title||'后台记录',text:historical.text||'',attention:true,isCurrent:current});
+   if(opened?.ok===false||!current()||scope?.kind!=='report')return;
+   reportDocument=null;disposition=null;attentionView=null;todoUI.details($('managed-doc'),id);return;
+  }
   if(todo.origin==='instance-attention'||['frontdesk-route','cross-project-permission','effect-permission','effect-grant'].includes(todo.destination?.kind)){
    const sourceProject=projectId,gen=generation,request=++reportRequest;
    const current=()=>sourceProject===projectId&&gen===generation&&request===reportRequest;
