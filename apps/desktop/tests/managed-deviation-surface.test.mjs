@@ -29,8 +29,8 @@ test('held Work cannot enter native or restart pathways; read-only screen does n
 
 test('durable gate wins over queued supplements and hidden or completed generic reminders',()=>{
  const w=work(),todo={id:'todo-1',workId:w.id,kind:'deviation',status:'open',revision:2},state={works:[w],todos:[todo],jobs:[{id:'later',type:'supplement',target:w.id,status:'queued'}]};
- assert.equal(managedReviewTodos(state)[0].actionableKind,'deviation');assert.equal(todoCapabilities(state,todo).close,false);
- for(const status of ['closed','resolved']){todo.status=status;const record=managedWorkRecords(state)[0];assert.equal(record.todoId,todo.id);assert.equal(record.deviation.id,w.deviation.id);assert.equal(deviationHeld(w),true);assert.notEqual(record.phase,'补充已接收，等待执行');}
+ const before=structuredClone(state);assert.deepEqual(managedReviewTodos(state),[]);assert.deepEqual(state,before);assert.equal(todoCapabilities(state,todo).close,false);
+ for(const status of ['closed','resolved']){todo.status=status;const record=managedWorkRecords(state)[0];assert.equal(record.todoId,undefined);assert.equal(record.deviation.id,w.deviation.id);assert.equal(deviationHeld(w),true);assert.notEqual(record.phase,'补充已接收，等待执行');}
  w.deviation.status='replanned';const view=deviationPresentation(w);assert.equal(view.canReplan,false);assert.equal(view.sourceText,'<exact>\nchanged input');assert.equal(view.original,'Original goal');assert.match(view.continueLabel,/原始任务/);
  w.deviation.status='continued';assert.equal(deviationHeld(w),false);
 });

@@ -170,8 +170,27 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     await invoke('session.quitChoice', { choice: 'stay' });
   });
   $('quit-cancel').addEventListener('click', async () => {
-    const result = await invoke('session.quitChoice', { choice: 'cancel' });
-    if (!result.ok) $('quit-error').textContent = result.error.message;
+    $('quit-cancel').disabled = true;
+    $('quit-error').textContent = '正在取消任务；如等待过久，可以强制退出。';
+    try {
+      const result = await invoke('session.quitChoice', { choice: 'cancel' });
+      if (!result.ok) $('quit-error').textContent = result.error.message;
+    } catch (error) {
+      $('quit-error').textContent = error.message;
+    } finally {
+      $('quit-cancel').disabled = false;
+    }
+  });
+  $('quit-force').addEventListener('click', async () => {
+    $('quit-force').disabled = true;
+    $('quit-error').textContent = '正在强制退出，不等待任务收尾…';
+    try {
+      const result = await invoke('session.quitChoice', { choice: 'force' });
+      if (!result.ok) { $('quit-error').textContent = result.error.message; $('quit-force').disabled = false; }
+    } catch (error) {
+      $('quit-error').textContent = error.message;
+      $('quit-force').disabled = false;
+    }
   });
   subscribe('quit.confirm', () => {
     $('quit-error').textContent = '';

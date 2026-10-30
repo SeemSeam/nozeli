@@ -29,13 +29,13 @@ test('authoritative report pointer rejects stale open todos even when current re
  assert.deepEqual(managedReviewTodos(s),[]);assert.equal(s.todos[0].status,'open');
 });
 
-test('queue and non-open items are not actionable; independent exceptions survive report iteration and ending',()=>{
+test('ordinary backstage records remain durable without user inbox entries',()=>{
  const s=state();s.works.push(work());
  s.todos.push(todo('report'),todo('queue',{kind:'queue'}),todo('git',{kind:'git',text:'hook failed'}),todo('recovery',{kind:'recovery',text:'核对文件'}),todo('closure',{kind:'closure'}),todo('resolved',{kind:'system',status:'resolved'}),todo('system',{kind:'system',workId:undefined}));
  const ids=()=>managedReviewTodos(s).map(t=>t.id);
- assert.deepEqual(ids(),['report','git','recovery','closure','system']);
- s.works[0].status='running';s.works[0].revision=3;assert.deepEqual(ids(),['git','recovery','closure','system']);
- s.works[0].status='ended';assert.deepEqual(ids(),['git','recovery','closure','system']);
+ assert.deepEqual(ids(),['report']);
+ s.works[0].status='running';s.works[0].revision=3;assert.deepEqual(ids(),[]);
+ s.works[0].status='ended';assert.deepEqual(ids(),[]);
  assert.equal(s.todos.length,7);
 });
 
@@ -46,11 +46,11 @@ test('accepted supplemental input suppresses report review until a current deliv
  s.jobs.push({id:'manual',target:'w',type:'manual',status:'running'});assert.deepEqual(managedReviewTodos(s),[]);
 });
 
-test('current paused problem and frontdesk clarification remain distinct with original fields',()=>{
+test('problems and routing retain original facts but are not reader questions',()=>{
  const s=state();s.works.push(work('w',{status:'paused',problem:{objectId:'problem-object',revision:2}}));
  s.todos.push(todo('old-problem',{kind:'problem',revision:1}),todo('problem',{kind:'problem',text:'请选择数据源'}),{id:'routing',kind:'routing',target:'frontdesk',sourceJobId:'intake',status:'open',text:'目标属于哪个项目？'});
- const rows=managedReviewTodos(s);assert.deepEqual(rows.map(t=>t.id),['problem','routing']);assert.equal(rows[0].phase,'等待回答');assert.equal(rows[1].phase,'需要明确目标');assert.equal(rows[1].target,'frontdesk');assert.equal(rows[1].sourceJobId,'intake');
- s.jobs.push({id:'answer',type:'intake',status:'queued',context:{routingQuestionId:'routing'}});assert.deepEqual(managedReviewTodos(s).map(t=>t.id),['problem']);
+ const before=structuredClone(s);assert.deepEqual(managedReviewTodos(s),[]);assert.deepEqual(s,before);
+ s.jobs.push({id:'answer',type:'intake',status:'queued',context:{routingQuestionId:'routing'}});assert.deepEqual(managedReviewTodos(s),[]);
 });
 
 test('work summary stays the requested goal rather than report or error text',()=>{

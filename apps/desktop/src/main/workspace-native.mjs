@@ -76,7 +76,11 @@ export class WorkspaceNative {
     if(this.guidedDemo?.isDemo(projectId))return;
     const owner=[...this.surfaces.values()].find(s=>s.projectId===projectId&&s.kind==='conversation'&&s.conversationAdmitted&&!s.dead);
     if(!owner||owner.transferring||this.conversationClosing?.has(projectId))return;
-    if(this.windows.get(owner.windowId)?.projectHidden)return;
+    const root=this.windows.get(owner.windowId);
+    // Main-window cached surfaces share a shell, unlike detached roots. A
+    // background project's session event must not close content through the
+    // shell that now belongs to another project.
+    if(!root||root.projectHidden||root.projectId!==projectId)return;
     if(state?.configuringTargets?.includes(owner.conversationTarget||'frontdesk'))return;
     const agent=state?.agents?.find(a=>a.target===(owner.conversationTarget||'frontdesk'));
     if(agent?.starting)return;
@@ -130,6 +134,25 @@ export class WorkspaceNative {
     this.shell = this.register(win.webContents, { role: 'shell', windowId: 'main', projectId: null, win });
     this.windows.set('main', this.shell);
     return this.shell;
+  }
+  editFocusedText(action, wc) {
+    if (!['copy','cut'].includes(action) || !wc || wc.isDestroyed()) return false;
+    const record = this.senders.get(wc.id);
+    const preview = [...(this.isolatedPreview?.slots.values() ?? [])].find(slot => slot.view.webContents === wc);
+    if (record ? record.dead || record.transferring || !['shell','detached','surface'].includes(record.role) : !preview || preview.scope.dead || preview.scope.transferring) return false;
+    // Target the actual focused WebContents, not BaseWindow's chrome shim or
+    // the last active document. Chromium dispatches the focused frame's copy/
+    // cut event, retaining editor serialization, read-only and undo behavior.
+    wc[action]();
+    return true;
+  }
+  allowClipboardWrite(wc, permission, details) {
+    if (permission !== 'clipboard-sanitized-write' || !wc || wc.isDestroyed()) return false;
+    const record = this.senders.get(wc.id);
+    // Only our registered application main document can use navigator writes.
+    // Vendor iframes use the trusted parent bridge; reports never gain access.
+    return !!record && !record.dead && !record.transferring && ['shell','detached','surface'].includes(record.role)
+      && wc.mainFrame.url === this.origin && details?.isMainFrame === true && details.requestingUrl === this.origin;
   }
   documentSourceOf(record){ return record.documentSource === undefined ? undefined : record.documentSource; }
   payloadSource(payload){
@@ -502,13 +525,24 @@ export class WorkspaceNative {
       const originalSurfaces=new Set(this.surfaces.values()), originalWindows=new Set(this.windows.values());
       try{
       for(const owner of owners)owner.wc.send('nozeli:workspace-control',{type:'lifecycle-hold',held:true});
+      // Each owner acknowledges only after its own durable retention completes.
+      // Global host idleness also includes unrelated reads/imports/projects and
+      // is neither a save receipt nor a navigation barrier.
       const saved=await Promise.allSettled(owners.map(owner=>this.flushOne(owner)));
-      await this.host.settled();
       const refused=saved.find(result=>result.status==='rejected');if(refused)throw refused.reason;
+      // Target state is part of the staged receipt, not a cross-project renderer
+      // read. A failed read leaves shell authorization and the source scene intact.
+      const projectState=await this.host.readState(projectId);
       let layout=await this.layout(projectId);
-      for(const view of Object.values(layout.views))if(view.kind==='conversation'&&!view.viewState?.draftOnly&&findView(layout,view.id)){
-        try{await this.requireConversation(projectId,'frontdesk');}catch{layout=reduceLayout(layout,{type:'closeContent',viewId:view.id});await this.persist(layout);this.layouts.set(projectId,layout);}
+      // Restoring a scene is not an Agent connection request. Resident owners
+      // retain their admission; new conversation renderers restore the draft and
+      // use the existing explicit prepare path before sending anything.
+      let restoredConversation=false;
+      for(const view of Object.values(layout.views))if(view.kind==='conversation'&&!view.viewState?.draftOnly&&findView(layout,view.id)&&!this.surfaces.has(view.id)){
+        layout=reduceLayout(layout,{type:'restoreViewState',viewId:view.id,viewState:{...view.viewState,draftOnly:true}});
+        restoredConversation=true;
       }
+      if(restoredConversation){await this.persist(layout);this.layouts.set(projectId,layout);}
       if(r.dead||r.generation!==generation)throw fail('SHELL_CHANGED');
       this.host.storage.assertActive(projectId);
       // Stage destination views without changing the shell identity or destroying
@@ -535,7 +569,7 @@ export class WorkspaceNative {
         }
         throw error;
       }
-      return {layout,windowId:r.windowId};
+      return {layout,windowId:r.windowId,projectState};
       }catch(error){
         for(const surface of [...this.surfaces.values()])if(!originalSurfaces.has(surface))this.destroySurface(surface);
         for(const [id,root] of this.windows)if(!originalWindows.has(root)){root.closing=true;root.win.destroy();this.windows.delete(id);}
@@ -612,9 +646,14 @@ export class WorkspaceNative {
         r = this.register(nativeView.webContents, { role: 'surface', viewId: view.id, projectId: layout.projectId, kind: view.kind, relPath: view.relPath, ...(view.documentSource !== undefined ? { documentSource: structuredClone(view.documentSource) } : {}), resourceId: view.resourceId, windowId: found.windowId, win: destination.win, view: nativeView });
         if(view.kind==='conversation'){r.conversationAdmitted=!view.viewState?.draftOnly;r.conversationTarget='frontdesk';}
         r.loading=true;
+        // Keep a full-sized initialization viewport without placing an attaching
+        // guest over shell chrome. Only validated workspace.bounds admits it to
+        // the client area; attachment may reset native visibility on some hosts.
+        const [initialWidth,initialHeight]=destination.win.getContentSize(),width=Math.max(280,initialWidth),height=Math.max(180,initialHeight);
+        nativeView.setBounds({x:-width,y:-height,width,height});
         this.surfaces.set(view.id, r); nativeView.setVisible(false);
         destination.win.contentView.addChildView(nativeView);
-        const [initialWidth,initialHeight]=destination.win.getContentSize();nativeView.setBounds({x:0,y:0,width:Math.max(280,initialWidth),height:Math.max(180,initialHeight)});
+        nativeView.setVisible(false);
         void nativeView.webContents.loadURL(this.origin).catch(error=>{r.ready=false;this.onError(error);});
       } else if (r.windowId !== found.windowId) {
         const previousWindow=r.win;
@@ -1029,7 +1068,7 @@ export class WorkspaceNative {
         const current=await this.layout(projectId);
         const conversation=Object.values(current.views).find(v=>v.kind==='conversation');
         if(conversation?.viewState?.draftOnly){conversation.viewState={...conversation.viewState,draftOnly:false};await this.persist(current);const live=this.surfaces.get(conversation.id);if(live)live.wc.send('nozeli:workspace-control',{type:'drawing-connect',projectId});}
-        if(this.guidedDemo?.isDemo(projectId)&&conversation){const live=this.surfaces.get(conversation.id);if(live){live.conversationAdmitted=true;live.conversationBlocked=false;live.conversationTarget='frontdesk';}}
+        if(conversation){const live=this.surfaces.get(conversation.id);if(live){live.conversationAdmitted=true;live.conversationBlocked=false;live.conversationTarget='frontdesk';}}
         if(p.action==='prepare'){if(this.guidedDemo?.isDemo(projectId))return {projectId,target:'frontdesk',ready:true,demo:true,source:'demo-fixture'};r.drawingConversationProject=projectId;return {projectId,target:'frontdesk',ready:true};}
         const root=this.windows.get(r.windowId)||this.windows.get('main');if(!root)throw fail('NO_ROOT');
         const localGroups=layoutGroups(layout,root.windowId),source=r.role==='surface'?findView(layout,r.viewId)?.group:null;

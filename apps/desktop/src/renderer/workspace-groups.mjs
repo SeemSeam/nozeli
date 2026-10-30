@@ -172,17 +172,36 @@ export function mountWorkspaceGroups({invoke,scope,toast=()=>{}}){
       if(v&&label){label.textContent=viewTitle(v)+(v.viewState?.documentStatus?.dirty?' · 未保存':'');label.title=v.relPath||viewTitle(v);}}
     scheduleBounds();}
   function overlays(){return [...document.querySelectorAll('dialog[open], [aria-modal="true"]:not([hidden]), .nozeli-context-menu:not([hidden]), #provider-console:not([hidden])')].filter(n=>n.getClientRects().length).map(n=>{const r=n.getBoundingClientRect();return {x:r.left,y:r.top,width:r.width,height:r.height};});}
-  function bounds(){
+  function bounds(strict=false){
     frame=0;if(transitioning||!layout)return;
     const root=windowId==='main'?layout.mainRoot:layout.detached.find(w=>w.id===windowId)?.root,min=minimum(root),narrow=host.clientWidth<min.width||tree.clientHeight<min.height;
     if(narrow&&!group()?.activeViewId){const occupied=groups().find(g=>g.activeViewId);if(occupied){activeGroup=occupied.id;for(const pane of tree.querySelectorAll('[data-workspace-group]'))pane.classList.toggle('is-focused',pane.dataset.workspaceGroup===activeGroup);}}
     host.classList.toggle('workspace-narrow',narrow);
     const boxes=[];for(const el of tree.querySelectorAll('[data-workspace-content]')){const r=el.getBoundingClientRect();if(el.dataset.viewId&&r.width>0&&r.height>0)boxes.push({groupId:el.dataset.workspaceContent,viewId:el.dataset.viewId,rect:{x:r.left,y:r.top,width:r.width,height:r.height}});}
     const overlayRects=overlays(),drawer=document.getElementById('app')?.classList.contains('drawer-files-open')||document.getElementById('app')?.classList.contains('drawer-side-open');
-    const generation=transitionGeneration;return call('workspace.bounds',{projectId:layout.projectId,windowId,layoutRevision:layout.revision,sequence:++boundsSequence,viewport:{width:innerWidth,height:innerHeight},groups:boxes,overlay:Boolean(drawer),overlayRects}).catch(e=>{if(!transitioning&&generation===transitionGeneration)toast(e.message);});
+    const generation=transitionGeneration;return call('workspace.bounds',{projectId:layout.projectId,windowId,layoutRevision:layout.revision,sequence:++boundsSequence,viewport:{width:innerWidth,height:innerHeight},groups:boxes,overlay:Boolean(drawer),overlayRects}).catch(e=>{if(strict)throw e;if(!transitioning&&generation===transitionGeneration)toast(e.message);});
   }
   function scheduleBounds(){if(!frame)frame=setTimeout(bounds,0);}
-  async function bindProject(projectId){const value=await call(scope.role==='detached'?'workspace.snapshot':'workspace.project',{projectId});layout=value.layout;windowId=value.windowId||windowId;activeGroup=groups()[0]?.id;try{render();}catch(error){toast('项目已切换，布局显示失败：'+error.message);}}
+  async function flushBounds(){
+    const projectId=layout?.projectId,generation=transitionGeneration;
+    const unchanged=()=>projectId&&layout?.projectId===projectId&&!transitioning&&transitionGeneration===generation;
+    const changed=()=>Object.assign(new Error('项目或布局切换已变化，未确认工作面视口。'),{code:'WORKSPACE_BOUNDS_CHANGED'});
+    for(let attempt=0;attempt<3;attempt++){
+      clearTimeout(frame);frame=0;
+      if(!unchanged())throw changed();
+      const receipt=await bounds(true);
+      if(!unchanged())throw changed();
+      if(receipt&&!receipt.stale)return receipt;
+      if(attempt===2)break;
+      const snapshot=await call('workspace.snapshot',{projectId});
+      if(!unchanged()||snapshot.layout?.projectId!==projectId)throw changed();
+      layout=snapshot.layout;windowId=snapshot.windowId||windowId;
+      if(!groups().some(group=>group.id===activeGroup))activeGroup=groups()[0]?.id;
+      render();
+    }
+    throw Object.assign(new Error('工作面视口持续变化，项目切换未完成；请重试。'),{code:'WORKSPACE_BOUNDS_STALE'});
+  }
+  async function bindProject(projectId){const value=await call(scope.role==='detached'?'workspace.snapshot':'workspace.project',{projectId});layout=value.layout;windowId=value.windowId||windowId;activeGroup=groups()[0]?.id;try{render();}catch(error){toast('项目已切换，布局显示失败：'+error.message);}return value;}
   const open=async view=>{const existing=Object.values(layout?.views||{}).find(v=>v.kind===view.kind&&(view.kind==='document'?v.relPath===view.relPath&&!v.readOnly:view.kind==='conversation'||v.resourceId===view.resourceId));if(!existing)return command({type:'open',groupId:group()?.id,view});if(view.kind==='history'&&view.viewState?.report){await command({type:'restoreViewState',viewId:existing.id,viewState:view.viewState});await activate(existing.id,group()?.id);await call('workspace.control',{type:'history-refresh',projectId:layout.projectId,viewId:existing.id,report:view.viewState.report});return;}return activate(existing.id,group()?.id);};
   const geometryObserver=new ResizeObserver(scheduleBounds);geometryObserver.observe(host);geometryObserver.observe(tree);new MutationObserver(records=>{if(records.some(r=>!host.contains(r.target)))scheduleBounds();}).observe(document.body,{subtree:true,attributes:true,attributeFilter:['hidden','open','class']});window.addEventListener('nozeli-layout-change',scheduleBounds);
   window.addEventListener('resize',scheduleBounds);window.nozeli.subscribe('workspace.changed',receive);
@@ -205,5 +224,5 @@ export function mountWorkspaceGroups({invoke,scope,toast=()=>{}}){
   document.addEventListener('keydown',event=>{const numbered=(event.ctrlKey||event.metaKey)&&!event.altKey&&!event.shiftKey&&/^[1-9]$/.test(event.key);if(event.key==='F6'||numbered){event.preventDefault();void focusPane(numbered?{index:Number(event.key)-1}:{direction:event.shiftKey?-1:1}).catch(e=>toast(e.message));}});
   function clear(){layout=null;activeGroup=null;renderedKey='';renderedPanes.clear();tree.replaceChildren();tree.append(createStartPage({start:()=>window.dispatchEvent(new Event('nozeli-demo-start'))}));}
   clear();
-  const api={snapshot:()=>layout,clear,command,bindProject,open,activate,focusView,activeGroup:()=>group()?.id,activeView:()=>layout?.views[group()?.activeViewId]};window.__workspaceGroups=api;return api;
+  const api={snapshot:()=>layout,clear,command,bindProject,flushBounds,open,activate,focusView,activeGroup:()=>group()?.id,activeView:()=>layout?.views[group()?.activeViewId]};window.__workspaceGroups=api;return api;
 }

@@ -63,11 +63,11 @@ test('only explicit storage, context-recovery and process-budget blockers produc
 });
 test('workspace answer cannot be applied to an ended question or a replacement owner',async t=>{
  const {manager,id}=await fixture(t),state=empty();
- state.agents=[{target:'frontdesk',ownerId:'old-owner',threadId:'thread',interactions:[{id:'question',method:'confirm',title:'继续吗？'}]}];
+ state.agents=[{target:'frontdesk',ownerId:'old-owner',threadId:'thread',interactions:[{id:'question',method:'approve',title:'批准高危删除？'}]}];
  const initial=await manager.attentionState(id,state,{connected:true}),todo=initial.todos[0];
  let applied=false;const controller={snapshot:()=>state,stop:async()=>{},respondInteraction:async()=>{applied=true;}};
  manager.controllers.set(id,controller);t.after(()=>manager.controllers.delete(id));
- state.agents=[{target:'frontdesk',ownerId:'new-owner',threadId:'new-thread',interactions:[{id:'new-question',method:'confirm',title:'另一个问题'}]}];
+ state.agents=[{target:'frontdesk',ownerId:'new-owner',threadId:'new-thread',interactions:[{id:'new-question',method:'approve',title:'另一项高危授权'}]}];
  await assert.rejects(manager.respondAttention(id,{todoId:todo.id,answer:true}),e=>e.code==='ATTENTION_STALE');
  assert.equal(applied,false,'replacement owner never receives an old answer');
  const replacement=(await manager.attentionState(id,state,{connected:true})).todos.find(t=>t.destination?.ownerId==='new-owner');
@@ -218,14 +218,14 @@ test('effect-permission decisions project one todo and stay version-bound; legac
   const permissions=new TaskPermissions(storage);
   const {c,pid,front}=await controllerFixture(t,{taskPermissions:permissions});
   const job=front();
-  const prepared=await permissions.prepareEffect(pid,{sourceJobId:job.id,permissionTaskId:job.context.permissionTaskId,role:'frontdesk',effectType:'host-exec',frozenEffect:{version:1,command:'/usr/bin/marker',args:['--write'],cwd:'/tmp/a',scope:'host-exec',action:'user',elevation:'user',commandDigest:'0'.repeat(64)},originalText:'写入系统标记'});
+  const prepared=await permissions.prepareEffect(pid,{sourceJobId:job.id,permissionTaskId:job.context.permissionTaskId,role:'frontdesk',effectType:'host-exec',frozenEffect:{version:1,command:'/usr/bin/marker',args:['--write'],cwd:'/tmp/a',scope:'host-exec',action:'admin',elevation:'root',commandDigest:'0'.repeat(64)},originalText:'以管理员身份写入系统标记'});
   assert.equal(prepared.status,'required');assert.equal(prepared.request.version,1);
   const manager=await managerFixture(t,c,pid,permissions);
   const state=await manager.attentionState(pid,c.snapshot(),{connected:true});
   const todos=state.todos.filter(todo=>todo.destination?.kind==='effect-permission'&&todo.status==='open');
   assert.equal(todos.length,1);
   const question=todos[0].destination.question;
-  assert.equal(question.command,'/usr/bin/marker');assert.deepEqual(question.args,['--write']);assert.equal(question.cwd,'/tmp/a');assert.equal(question.elevation,'user');assert.match(question.effectHash,/^[a-f0-9]{64}$/);
+  assert.equal(question.command,'/usr/bin/marker');assert.deepEqual(question.args,['--write']);assert.equal(question.cwd,'/tmp/a');assert.equal(question.elevation,'admin');assert.match(question.effectHash,/^[a-f0-9]{64}$/);
   assert.equal(todos[0].destination.expectedVersion,1);assert.equal(todos[0].destination.sourceJobId,job.id);
   const flat={projectId:pid,attentionKind:'effect-permission',attentionId:prepared.request.id,expectedVersion:1,sourceJobId:job.id};
   const denied=await manager.invoke('managed.attention.respond',{...flat,action:'deny',requestKey:'attention:'+prepared.request.id+':1:deny'});

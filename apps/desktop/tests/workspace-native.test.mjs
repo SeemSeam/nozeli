@@ -11,6 +11,7 @@ import {testStorageOptions} from './project-storage.fixture.mjs';
 import {WorkspaceCapture} from '../src/main/workspace-capture.mjs';
 import {WorkspaceCaptureStore} from '../src/main/workspace-capture-store.mjs';
 import {ProjectAttachments} from '../src/main/project-attachments.mjs';
+import {DesktopHost} from '../src/main/host.mjs';
 let sequence=0;
 class Contents extends EventEmitter {
   constructor(){super();this.id=++sequence;this.mainFrame={url:'http://127.0.0.1:9000/',parent:null};this.sent=[];}
@@ -27,8 +28,42 @@ async function fixture(t){const directory=await mkdtemp(path.join(os.tmpdir(),'w
 // Native ownership tests deliberately use a stable UI scope; the adapter routes
 // its persistence calls to the registered real project, not a JSON sidecar.
 host.storage=new Proxy(storage,{get(target,key){const value=Reflect.get(target,key);return typeof value==='function'?((id,...args)=>value.call(target,id==='p'?projectId:id,...args)):value;}});
+const stateHost=new DesktopHost(directory);stateHost.storage=host.storage;stateHost.requireRegisteredProject=id=>host.requireRegisteredProject(id);host.readState=id=>stateHost.readState(id);
 const native=new WorkspaceNative({BrowserWindow:Window,WebContentsView:View,screen:{getDisplayMatching:()=>({workArea:{x:-1920,y:0,width:1920,height:1080}})},origin:'http://127.0.0.1:9000/',userDataDir:directory,host});const root=native.registerShell(new Window());root.projectId='p';root.ready=true;native.layouts.set('p',createLayout('p',{workspace:{minimized:true}}));return {native,root};}
 function receipt(native,r,ok=true){r.ready=true;r.wc.onSend=(channel,payload)=>{if(channel==='nozeli:flush')queueMicrotask(()=>native.acknowledge(r,{requestId:payload,ok}));};}
+test('native text commands target only the focused live shell, surface or isolated preview', async t => {
+ const {native,root}=await fixture(t),calls=[];
+ const surface=native.register(new Contents(),{role:'surface',projectId:'p',windowId:'main',viewId:'selection',kind:'document'});
+ root.wc.copy=()=>calls.push('shell-copy');surface.wc.copy=()=>calls.push('surface-copy');surface.wc.cut=()=>calls.push('surface-cut');
+ assert.equal(native.editFocusedText('copy',surface.wc),true);
+ assert.equal(native.editFocusedText('cut',surface.wc),true);
+ assert.equal(native.editFocusedText('copy',root.wc),true);
+ assert.deepEqual(calls,['surface-copy','surface-cut','shell-copy'],'no chrome fallback or cached active surface');
+ assert.deepEqual(surface.wc.sent,[],'native dispatch does not request report text through IPC');
+ assert.equal(native.editFocusedText('copy',null),false);
+ assert.equal(native.editFocusedText('paste',surface.wc),false);
+ surface.transferring=true;assert.equal(native.editFocusedText('cut',surface.wc),false);surface.transferring=false;
+ const unknown=new Contents();unknown.copy=()=>calls.push('unknown');
+ assert.equal(native.editFocusedText('copy',unknown),false);
+ native.isolatedPreview={slots:new Map([['report',{scope:surface,view:{webContents:unknown}}]])};
+ assert.equal(native.editFocusedText('copy',unknown),true,'isolated report can use native selection without IPC access');
+ surface.dead=true;assert.equal(native.editFocusedText('copy',unknown),false);
+ assert.equal(native.editFocusedText('copy',surface.wc),false);
+ unknown.isDestroyed=()=>true;assert.equal(native.editFocusedText('copy',unknown),false);
+});
+test('clipboard permission allows only sanitized writes from registered application main frames',async t=>{
+ const {native,root}=await fixture(t),details={isMainFrame:true,requestingUrl:native.origin};
+ assert.equal(native.allowClipboardWrite(root.wc,'clipboard-sanitized-write',details),true);
+ for(const permission of ['clipboard-read','clipboard-write','deprecated-sync-clipboard-read','notifications'])assert.equal(native.allowClipboardWrite(root.wc,permission,details),false);
+ assert.equal(native.allowClipboardWrite(null,'clipboard-sanitized-write',details),false);
+ assert.equal(native.allowClipboardWrite(new Contents(),'clipboard-sanitized-write',details),false);
+ assert.equal(native.allowClipboardWrite(root.wc,'clipboard-sanitized-write',{...details,isMainFrame:false}),false);
+ assert.equal(native.allowClipboardWrite(root.wc,'clipboard-sanitized-write',{...details,requestingUrl:native.origin+'report.html'}),false);
+ assert.equal(native.allowClipboardWrite(root.wc,'clipboard-sanitized-write',{}),false);
+ root.wc.mainFrame.url='https://untrusted.invalid/';assert.equal(native.allowClipboardWrite(root.wc,'clipboard-sanitized-write',details),false);
+ root.wc.mainFrame.url=native.origin;root.transferring=true;assert.equal(native.allowClipboardWrite(root.wc,'clipboard-sanitized-write',details),false);
+ root.transferring=false;root.dead=true;assert.equal(native.allowClipboardWrite(root.wc,'clipboard-sanitized-write',details),false);
+});
 for(const failure of ['shell-save','surface-save','attachment','none'])test(`project binding ${failure} keeps recovery and native ownership consistent`,async t=>{
  const {native,root}=await fixture(t);
  const directory=await mkdtemp(path.join(os.tmpdir(),'project-binding-'));t.after(()=>rm(directory,{recursive:true,force:true}));
@@ -533,11 +568,6 @@ test('a disconnected live conversation collapses without deleting its draft view
  const next=native.layouts.get('p');assert.equal(next.mainRoot.activeViewId,document);assert.deepEqual(next.views[chat.viewId],metadata);assert.equal(native.surfaces.has(chat.viewId),false);assert(root.wc.sent.some(e=>e.payload.type==='conversation-unavailable'));
 });
 
-test('cold restore of an unavailable conversation returns the pane to its previous document',async t=>{
- const {native,root}=await fixture(t);let l=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'document',relPath:'prior.txt'}});const document=l.mainRoot.activeViewId;l=reduceLayout(l,{type:'open',view:{kind:'conversation',viewState:{draft:'cold draft'}}});const chat=l.mainRoot.activeViewId;native.layouts.set('p',l);
- native.ensureConversation=async()=>{throw Object.assign(Error('configuration missing'),{code:'CONFIG_SETUP_REQUIRED'});};
- const result=await native.bindProject(root,'p');assert.equal(result.layout.mainRoot.activeViewId,document);assert.equal(native.surfaces.has(chat),false);assert.equal(result.layout.views[chat].viewState.draft,'cold draft');
-});
 
 for(const edited of [false,true])test(edited?'editing a recovered pending question creates a distinct handoff':'pending drawing recovery survives another crash without duplicating the persisted attachment',async t=>{
  const {native,root}=await fixture(t),project=await native.host.requireProject('p'),projectId=project.id;
@@ -625,4 +655,88 @@ test('open admission settles new document surfaces and reports init failure inst
  const restoreDead=settleRelPath('gone.md',{dead:true});
  try{await assert.rejects(command('gone.md','open-dead'),{code:'SURFACE_NOT_READY'});assert.equal([...native.requests.keys()].some(key=>key.endsWith(':open-denied')||key.endsWith(':open-dead')),false,'failed admissions must purge their request-key cache');}
  finally{restoreDead();}
+});
+test('binding uses durable owner receipts, not unrelated global host idleness or Agent admission',async t=>{
+ const {native,root}=await fixture(t);
+ const directory=await mkdtemp(path.join(os.tmpdir(),'navigation-critical-path-'));t.after(()=>rm(directory,{recursive:true,force:true}));
+ const target=await native.host.storage.register(directory);native.host.requireRegisteredProject=id=>native.host.storage.requireRegistered(id);
+ const source=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'document',relPath:'draft.txt'}});native.layouts.set('p',source);await native.reconcile(source);
+ const original=native.projectRecords('p')[0];native.bootstrap(original);original.view.setVisible(true);
+ await native.invoke(original,'workspace.document.publish',{projectId:'p',relPath:'draft.txt',text:'KEEP LIVE DRAFT',dirty:true});
+ const destination=reduceLayout(createLayout(target.id,{workspace:{minimized:true}}),{type:'open',view:{kind:'conversation',viewState:{workspace:{draft:'UNSENT TARGET'},conversationMaterials:{frontdesk:{pending:[]}}}}});native.layouts.set(target.id,destination);
+ const host=new DesktopHost(directory);let release;const unrelated=host.track(new Promise(resolve=>release=resolve));t.after(async()=>{release();await unrelated;});native.host.settled=()=>host.settled();
+ let admissions=0;native.ensureConversation=()=>{admissions++;return new Promise(()=>{});};
+ let releaseSave,entered;const durable=new Promise(resolve=>releaseSave=resolve),saving=new Promise(resolve=>entered=resolve);receipt(native,root);original.ready=true;
+ original.wc.onSend=(channel,requestId)=>{if(channel==='nozeli:flush')void(async()=>{entered();await durable;await native.saveRecovery(original,{projectId:'p',viewId:original.viewId,generation:1,candidate:{text:'KEEP LIVE DRAFT'}});native.acknowledge(original,{requestId,ok:true});})();};
+ const binding=native.bindProject(root,target.id);await saving;assert.equal(root.projectId,'p');assert.equal(original.view.visible,true);releaseSave();
+ const result=await binding;assert.equal(host.active,1,'unrelated real host task is still pending');assert.equal(admissions,0);
+ const conversation=Object.values(result.layout.views).find(view=>view.kind==='conversation'),owner=native.surfaces.get(conversation.id);
+ assert.equal(conversation.viewState.draftOnly,true);assert.equal(conversation.viewState.workspace.draft,'UNSENT TARGET');assert.equal(owner.conversationAdmitted,false);assert.equal(owner.ready,false,'navigation never fabricates content readiness');assert.equal(owner.view.visible,false);
+ assert.equal(original.dead,false);assert.equal((await native.host.storage.getRecovery('p',`workspace:${original.viewId}`)).candidate.text,'KEEP LIVE DRAFT');
+ native.ensureConversation=async()=>{admissions++;};await native.invoke(owner,'workspace.control',{projectId:target.id,type:'conversation-action',action:'prepare',target:'frontdesk'});
+ assert.equal(admissions,1);assert.equal(owner.conversationAdmitted,true);assert.equal(native.layouts.get(target.id).views[owner.viewId].viewState.draftOnly,false);
+ receipt(native,owner);receipt(native,original);await native.bindProject(root,'p');await native.bindProject(root,target.id);
+ assert.equal(native.surfaces.get(owner.viewId),owner);assert.equal(admissions,1,'cached admitted owner is reused without another connection');
+});
+for(const failure of ['unready','flush-timeout','generation'])test(`binding ${failure} refuses navigation without losing the original scene`,async t=>{
+ const {native,root}=await fixture(t);const directory=await mkdtemp(path.join(os.tmpdir(),'navigation-refusal-'));t.after(()=>rm(directory,{recursive:true,force:true}));
+ const target=await native.host.storage.register(directory);native.host.requireRegisteredProject=id=>native.host.storage.requireRegistered(id);native.layouts.set(target.id,createLayout(target.id));
+ const source=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'document',relPath:'retained.txt'}});native.layouts.set('p',source);await native.reconcile(source);
+ const owner=native.projectRecords('p')[0];owner.view.setVisible(true);native.bootstrap(owner);await native.invoke(owner,'workspace.document.publish',{projectId:'p',relPath:'retained.txt',text:'ORIGINAL BUFFER',dirty:true});
+ let started;const entered=new Promise(resolve=>started=resolve);receipt(native,root);const send=root.wc.onSend;root.wc.onSend=(channel,payload)=>{send(channel,payload);if(channel==='nozeli:flush')started();};
+ owner.ready=failure!=='unready';if(failure==='generation')owner.wc.onSend=(channel,requestId)=>{if(channel==='nozeli:flush')queueMicrotask(()=>{root.generation++;native.acknowledge(owner,{requestId,ok:true});});};
+ t.mock.timers.enable({apis:['setTimeout']});const binding=native.bindProject(root,target.id),refused=assert.rejects(binding,{code:failure==='generation'?'SHELL_CHANGED':failure==='unready'?'SURFACE_NOT_READY':'FLUSH_TIMEOUT'});
+ await entered;if(failure!=='generation')t.mock.timers.tick(10000);await refused;
+ assert.equal(root.projectId,'p');assert.equal(owner.dead,false);assert.equal(owner.view.visible,true);assert.equal(native.surfaces.get(owner.viewId),owner);assert.equal(native.projectRecords(target.id).length,0);
+ assert.equal((await native.invoke(owner,'workspace.document.snapshot',{projectId:'p',relPath:'retained.txt'})).text,'ORIGINAL BUFFER');
+ assert.equal(owner.wc.sent.filter(event=>event.payload?.type==='lifecycle-hold').at(-1).payload.held,false);assert.equal(native.receipts.size,0);
+});
+test('background session events cannot close a cached main-window conversation through another project shell',async t=>{
+ const {native,root}=await fixture(t);const layout=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'conversation',viewState:{draftOnly:true,workspace:{draft:'BACKGROUND DRAFT'}}}});native.layouts.set('p',layout);await native.reconcile(layout);
+ const owner=native.projectRecords('p')[0];owner.conversationAdmitted=true;owner.view.setVisible(false);root.projectId='other-project';
+ native.command=()=>assert.fail('background session event must not mutate the active shell layout');
+ await native.conversationState('p',{agents:[]});
+ assert.equal(native.surfaces.get(owner.viewId),owner);assert.equal(owner.dead,false);assert.equal(owner.conversationBlocked,undefined);assert.equal(owner.wc.sent.some(event=>event.payload?.type==='conversation-unavailable'),false);
+ assert.equal(native.layouts.get('p').views[owner.viewId].viewState.workspace.draft,'BACKGROUND DRAFT');
+});
+test('explicit conversation prepare awaits real admission and retains drafts on failure or changed scope',async t=>{
+ const {native,root}=await fixture(t);const layout=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'conversation',viewState:{draftOnly:true,workspace:{draft:'DO NOT SEND'}}}});native.layouts.set('p',layout);await native.reconcile(layout);
+ const owner=native.projectRecords('p')[0];let admit,entered;const starting=new Promise(resolve=>entered=resolve);native.ensureConversation=()=>{entered();return new Promise(resolve=>admit=resolve);};
+ let complete=false;const preparing=native.invoke(owner,'workspace.control',{projectId:'p',type:'conversation-action',action:'prepare',target:'frontdesk'}).then(value=>{complete=true;return value;});await starting;
+ assert.equal(complete,false);assert.equal(layout.views[owner.viewId].viewState.draftOnly,true);assert.equal(owner.conversationAdmitted,false);assert.equal(owner.wc.sent.some(event=>event.payload?.type==='drawing-connect'),false);
+ admit();await preparing;assert.equal(owner.conversationAdmitted,true);assert.equal(layout.views[owner.viewId].viewState.workspace.draft,'DO NOT SEND');
+ layout.views[owner.viewId].viewState.draftOnly=true;owner.conversationAdmitted=false;
+ native.ensureConversation=async()=>{throw Object.assign(Error('admission refused'),{code:'AGENT_NOT_READY'});};
+ await assert.rejects(native.invoke(owner,'workspace.control',{projectId:'p',type:'conversation-action',action:'prepare',target:'frontdesk'}),{code:'AGENT_NOT_READY'});
+ assert.equal(layout.views[owner.viewId].viewState.draftOnly,true);assert.equal(owner.conversationAdmitted,false);
+ const restarting=new Promise(resolve=>entered=resolve);native.ensureConversation=()=>{entered();return new Promise(resolve=>admit=resolve);};
+ const stale=native.invoke(owner,'workspace.control',{projectId:'p',type:'conversation-action',action:'prepare',target:'frontdesk'}),refused=assert.rejects(stale,{code:'PROJECT_SCOPE_DENIED'});
+ // Wait for the real admission gate, not a timer or fabricated readiness.
+ await restarting;owner.generation++;admit();await refused;
+ assert.equal(layout.views[owner.viewId].viewState.draftOnly,true);assert.equal(owner.conversationAdmitted,false);assert.equal(layout.views[owner.viewId].viewState.workspace.draft,'DO NOT SEND');
+});
+for(const refused of [false,true])test(`binding stages target state ${refused?'read failure preserves source':'snapshot before committing identity'}`,async t=>{
+ const {native,root}=await fixture(t);const directory=await mkdtemp(path.join(os.tmpdir(),'binding-state-'));t.after(()=>rm(directory,{recursive:true,force:true}));
+ const target=await native.host.storage.register(directory);native.host.requireRegisteredProject=id=>native.host.storage.requireRegistered(id);
+ const source=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'document',relPath:'source.txt'}});native.layouts.set('p',source);await native.reconcile(source);const owner=native.projectRecords('p')[0];native.bootstrap(owner);owner.view.setVisible(true);
+ await native.invoke(owner,'workspace.document.publish',{projectId:'p',relPath:'source.txt',text:'SOURCE UNSAVED',dirty:true});receipt(native,root);receipt(native,owner);
+ await native.host.storage.putLocal(target.id,'view',{currentRelPath:'target.txt',workspace:{draft:'TARGET DRAFT'},files:{'target.txt':{scrollTop:49}}});
+ const readState=native.host.readState;let resume,entered;const started=new Promise(resolve=>entered=resolve);native.host.readState=async id=>{assert.equal(id,target.id);assert.equal(root.projectId,'p');entered();await new Promise(resolve=>resume=resolve);if(refused)throw Object.assign(Error('target state unavailable'),{code:'STATE_UNAVAILABLE'});return readState(id);};
+ const binding=native.bindProject(root,target.id);const rejection=refused?assert.rejects(binding,{code:'STATE_UNAVAILABLE'}):null;await started;
+ assert.equal(root.projectId,'p');assert.equal(owner.view.visible,true);assert.equal(owner.dead,false);
+ assert.throws(()=>native.authorize({sender:root.wc,senderFrame:root.wc.mainFrame},'state.read',{projectId:target.id}),{code:'PROJECT_SCOPE_DENIED'});resume();
+ if(refused){await rejection;assert.equal(root.projectId,'p');assert.equal(owner.view.visible,true);assert.equal(native.projectRecords(target.id).length,0);}
+ else{const result=await binding;assert.equal(root.projectId,target.id);assert.equal(result.layout.projectId,target.id);assert.equal(result.projectState.state.currentRelPath,'target.txt');assert.equal(result.projectState.state.workspace.draft,'TARGET DRAFT');assert.equal(result.projectState.files['target.txt'].scrollTop,49);}
+ assert.equal(owner.dead,false);assert.equal((await native.invoke(owner,'workspace.document.snapshot',{projectId:'p',relPath:'source.txt'})).text,'SOURCE UNSAVED');
+});
+test('cold binding guests initialize outside shell chrome and enter only a ready validated pane',async t=>{
+ const {native,root}=await fixture(t);const directory=await mkdtemp(path.join(os.tmpdir(),'binding-guest-geometry-'));t.after(()=>rm(directory,{recursive:true,force:true}));const target=await native.host.storage.register(directory);native.host.requireRegisteredProject=id=>native.host.storage.requireRegistered(id);
+ const destination=reduceLayout(createLayout(target.id,{workspace:{minimized:true}}),{type:'open',view:{kind:'document',relPath:'target.txt'}});native.layouts.set(target.id,destination);receipt(native,root);
+ const attachments=[],add=root.win.contentView.addChildView;root.win.contentView.addChildView=view=>{const bounds=view.getBounds();attachments.push({...bounds});assert(bounds.width>=1000&&bounds.height>=760,'cold viewport retains full initialization dimensions');assert(bounds.x+bounds.width<=0&&bounds.y+bounds.height<=0,'cold guest cannot overlap any shell chrome even if attachment resets visibility');view.setVisible(true);add(view);};
+ await native.bindProject(root,target.id);const owner=native.projectRecords(target.id)[0],parked=owner.view.getBounds();assert.equal(attachments.length,1);assert.equal(owner.view.visible,false,'hidden reapplied after attachment');assert.equal(owner.ready,false);
+ await native.invoke(owner,'workspace.ready',{contentReady:true});assert.deepEqual(owner.view.getBounds(),parked);assert.equal(owner.view.visible,false,'business readiness alone cannot admit chrome-covering geometry');
+ const group=destination.mainRoot,rect={x:210,y:70,width:700,height:600};await native.invoke(root,'workspace.bounds',{projectId:target.id,windowId:'main',groups:[{groupId:group.id,viewId:owner.viewId,rect:{...rect,width:1000}}]});assert.deepEqual(owner.view.getBounds(),parked);assert.equal(owner.view.visible,false);
+ owner.ready=false;await native.invoke(root,'workspace.bounds',{projectId:target.id,windowId:'main',groups:[{groupId:group.id,viewId:owner.viewId,rect}]});assert.deepEqual(owner.view.getBounds(),rect);assert.equal(owner.view.visible,false,'valid pane geometry cannot fabricate content readiness');
+ await native.invoke(owner,'workspace.ready',{contentReady:true});assert.equal(owner.view.visible,false);await native.invoke(root,'workspace.bounds',{projectId:target.id,windowId:'main',groups:[{groupId:group.id,viewId:owner.viewId,rect}]});assert.equal(owner.view.visible,true);assert.deepEqual(owner.view.getBounds(),rect);
+ receipt(native,owner);await native.bindProject(root,'p');await native.bindProject(root,target.id);assert.equal(native.surfaces.get(owner.viewId),owner);assert.equal(attachments.length,1,'cached guest remains the same native owner without another attachment');assert.deepEqual(owner.view.getBounds(),rect,'cached pane geometry is not reset to staging bounds');
 });

@@ -115,7 +115,7 @@ export const OFFLINE_BOOTSTRAP=`(()=>{'use strict';for(const name of ['RTCPeerCo
 export function previewUrlMember(raw,origin,files){try{const url=new URL(raw);if(url.origin!==origin||url.username||url.password||url.search||/%(?:2e|2f|5c|25)/i.test(url.pathname))return null;const rel=previewPath(decodeURIComponent(url.pathname.slice(1)));return files.has(rel)?rel:null;}catch{return null;}}
 
 export class IsolatedPreviewManager{
-  constructor({WebContentsView,session,workspace,host,managedAgents}){Object.assign(this,{WebContentsView,session,workspace,host,managedAgents});this.slots=new Map();this.pending=new Map();this.generations=new Map();this.recoveryScopes=new Set();}
+  constructor({WebContentsView,session,workspace,host,managedAgents,dialog}){Object.assign(this,{WebContentsView,session,workspace,host,managedAgents,dialog});this.slots=new Map();this.pending=new Map();this.generations=new Map();this.recoveryScopes=new Set();}
   id(scope,key){if(typeof key!=='string'||key.length<1||key.length>256||/[\x00-\x1f\x7f]/.test(key))throw fail('预览身份无效。');return `${scope.wc.id}:${key}`;}
   emit(slot,type,detail={}){if(slot.closed||slot.scope.dead||slot.scope.wc.isDestroyed())return;slot.scope.wc.send('nozeli:isolated-preview',{key:slot.key,generation:slot.generation,type,...detail});}
   closeScope(scope){for(const slot of new Set([...this.slots.values(),...this.pending.values()]))if(slot.scope===scope)this.close(slot);this.recoveryScopes.delete(scope);for(const key of this.generations.keys())if(key.startsWith(scope.wc.id+':'))this.generations.set(key,this.generations.get(key)+1);}
@@ -184,10 +184,19 @@ export class IsolatedPreviewManager{
       if(!old||p.generation!==undefined&&p.generation!==old.generation)throw fail('预览版本已失效。');
       if(op==='isolated-preview.bounds'){this.bounds(old,p.bounds);return {updated:true};}
       if(op==='isolated-preview.snapshot')return this.snapshot(old);
+      if(op==='isolated-preview.reference.save'){
+        const reference=old.manifest?.references?.find(ref=>String(ref.id)===String(p.referenceId));
+        if(old.profile!=='staticReport'||p.generation!==old.generation||reference?.kind!=='artifact'||typeof old.source.copyReference!=='function'||!this.dialog)throw fail('冻结工件另存不可用。');
+        const choice=await this.dialog.showSaveDialog(scope.win,{title:'另存完整冻结工件（不会覆盖已有文件）',defaultPath:path.posix.basename(reference.relPath)});
+        if(choice.canceled||!choice.filePath)return {cancelled:true};
+        if(this.slots.get(id)!==old||scope.dead)throw fail('冻结引用已过期。');
+        return old.source.copyReference(String(p.referenceId),choice.filePath);
+      }
       if(op==='isolated-preview.reference'){
         if(old.profile!=='staticReport'||p.generation!==old.generation||!old.manifest.references.some(ref=>String(ref.id)===String(p.referenceId)))throw fail('冻结引用无效。');
         const reference=await old.source.readReference(String(p.referenceId));if(this.slots.get(id)!==old)throw fail('冻结引用已过期。');
         if(reference.kind==='external')return reference;
+        if(!reference.bytes)return {...reference,bytes:undefined,text:'此冻结文件为 '+reference.byteLength+' 字节，超出内嵌预览预算；摘要与完整不可变工件已验证，接受成果不受预览限制。'};
         let text;
         const textReference=reference.mediaType?.startsWith('text/')||reference.mediaType==='application/json'||reference.mediaType==='application/octet-stream'&&/\.(?:[cm]?[jt]sx?|json|md|txt|css|html?|ya?ml|toml|xml|csv|tex|bib|py|rs|go|[ch](?:pp)?|sh)$/i.test(reference.relPath||'');
         if(textReference){try{const decoded=new TextDecoder('utf-8',{fatal:true}).decode(reference.bytes);if(!/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(decoded))text=decoded;}catch{}}

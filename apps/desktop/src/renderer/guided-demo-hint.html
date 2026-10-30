@@ -9,10 +9,12 @@
 </head>
 <body>
   <section id="guided-demo-hint" aria-label="当前演示步骤说明" hidden>
-    <header><span class="hint-eyebrow">演示学习</span><span id="hint-chip"></span></header>
+    <header><span id="hint-section" class="hint-eyebrow">自动教程</span><span id="hint-chip"></span></header>
     <h3 id="hint-title"></h3>
+    <p id="hint-target" hidden></p>
     <p id="hint-detail"></p>
-    <footer><span id="hint-phase"></span><button type="button" id="hint-dismiss">跳过阅读</button></footer>
+    <p id="hint-result" hidden></p>
+    <footer><span id="hint-phase"></span><button type="button" id="hint-dismiss">继续下一步</button></footer>
     <span id="hint-live" role="status" aria-live="polite"></span>
     <div class="hint-track" aria-hidden="true"><span id="hint-timer-bar"></span></div>
   </section>
