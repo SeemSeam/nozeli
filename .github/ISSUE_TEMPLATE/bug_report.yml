@@ -1,0 +1,41 @@
+name: Bug report
+description: Report a reproducible problem without exposing personal files or credentials.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security vulnerability? Use SECURITY.md instead of this public form. Use synthetic files and redact logs. Alpha platform limits are documented in docs/status.md.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: v0.1.0-alpha.1
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: OS, architecture and desktop session
+      placeholder: Linux x64, KDE Wayland
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+      description: Steps using a synthetic project; attach a small non-private sample if needed.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+      description: Include whether the problem persists after a normal restart. Do not repeatedly retry uncertain file/command effects.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted evidence
+      description: Screenshots, error code and relevant log excerpt. Never attach API keys, profiles, databases, raw sessions or personal documents.

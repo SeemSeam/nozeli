@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { createHash } from 'node:crypto';
 import { DesktopHost } from '../src/main/host.mjs';
 import { resolveTextPointAnchor, anchorText } from '../src/domain/tag-anchors.mjs';
 
@@ -35,7 +36,7 @@ const rejects = async (promise, codeMatch, label) => {
 test('an EMPTY document is still a document: offset 0 is a valid version-bound point',async t=>{
   const { host, id } = await boot(t, { 'empty.txt': Buffer.from('', 'utf8') });
   const source = await host.readFile(id, 'empty.txt');
-  assert.equal(source.digest, require('node:crypto').createHash('sha256').update('').digest('hex'), 'empty material digest');
+  assert.equal(source.digest, createHash('sha256').update('').digest('hex'), 'empty material digest');
   const { annotation } = await host.addAnnotation(id, { relPath: 'empty.txt', kind: 'text-point', anchor: { start: 0, end: 0, quote: '' }, materialDigest: source.digest, note: 'empty doc point' });
   assert.deepEqual(annotation.anchor, { start: 0, end: 0, quote: '' }, 'offset 0 zero-length anchor persists on the empty document');
   const listed = (await host.listAnnotations(id, 'empty.txt')).annotations.find(item => item.id === annotation.id);

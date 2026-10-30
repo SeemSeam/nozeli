@@ -20,17 +20,18 @@ test('overlapping native flushes serialize callbacks and scope tokens to recover
 });
 test('lifecycle recovery authority binds the precise live receipt, sender, generation and hold',()=>{
  const hold={},record={projectId:'p',generation:4},receipt={record,generation:4,lifecycleHold:hold};
- const scope={receipts:new Map([['request',receipt]]),host:{storage:{lifecycleHolds:new Map([['p',hold]])}}};
+ const scope={receipts:new Map([['request',receipt]]),lifecycle:new Map(),host:{storage:{lifecycleHolds:new Map([['p',hold]])}}};
  const check=(r,id,op)=>WorkspaceNative.prototype.lifecycleFlushOwner.call(scope,r,id,op);
  assert.equal(check(record,'request','workspace.recovery'),hold);
- for(const op of ['managed.send','file.save','state.write','project.remove'])assert.equal(check(record,'request',op),null);
+ for(const op of ['managed.send','state.write','project.remove'])assert.equal(check(record,'request',op),null);
+ for(const op of ['file.draft','file.save','file.retain','managed.review.instruction.save','managed.review.save'])assert.equal(check(record,'request',op),hold);
  assert.equal(check({...record},'request','workspace.recovery'),null);assert.equal(check(record,'unknown','workspace.recovery'),null);
  record.generation++;assert.equal(check(record,'request','workspace.recovery'),null);record.generation--;
  scope.host.storage.lifecycleHolds.set('p',{});assert.equal(check(record,'request','workspace.recovery'),null);
 });
 test('hold rejects receipt-less recovery, exact receipt succeeds, ordinary recovery is unchanged',()=>{
  const hold={},record={projectId:'p',generation:4};
- const scope={receipts:new Map([['request',{record,generation:4,lifecycleHold:hold}]]),host:{storage:{lifecycleHolds:new Map([['p',hold]])}},lifecycleFlushOwner:WorkspaceNative.prototype.lifecycleFlushOwner};
+ const scope={receipts:new Map([['request',{record,generation:4,lifecycleHold:hold}]]),lifecycle:new Map(),host:{storage:{lifecycleHolds:new Map([['p',hold]])}},lifecycleFlushOwner:WorkspaceNative.prototype.lifecycleFlushOwner};
  const admit=payload=>WorkspaceNative.prototype.assertRecoveryAdmission.call(scope,record,'workspace.recovery',payload);
  assert.throws(()=>admit({}),{code:'PROJECT_LIFECYCLE_ACTIVE'});
  assert.throws(()=>admit({flushRequestId:'unknown'}),{code:'PROJECT_LIFECYCLE_ACTIVE'});

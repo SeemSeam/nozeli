@@ -20,6 +20,18 @@ async function replaceMetadata(f){
  const other=new ProjectStorage(path.join(f.base,'other-profile'));
  try{const replacement=await other.register(f.root);return {old,replacement};}finally{await other.db.close();}
 }
+
+// The recovery reload flow must not depend on the machine's live process table:
+// an unrelated Electron run started by a concurrently executing smoke suite has
+// no catalog handle, and the real ownership probe correctly refuses to guess —
+// which would surface RECOVERY_OWNER_UNVERIFIED before the recovery semantics
+// under test are reached. Inject the same synthetic ownership probe used by
+// project-recovery-owner.test.mjs: /proc lists no other same-user instance, and
+// the actual guard code in project-recovery-owner.mjs keeps running unmodified.
+function isolateRecoveryOwnerScan(t){
+ const readdir=fs.readdir;
+ t.mock.method(fs,'readdir',async(directory,options)=>directory==='/proc'?[]:readdir(directory,options));
+}
 test('same-identity removed reload preserves instance and recovery without special confirmation',async t=>{
  const f=await fixture(t),old=await f.storage.register(f.root);
  await f.storage.putRecovery(old.id,'unsent',{draft:'retained'});await f.storage.remove(old.id);
@@ -28,6 +40,7 @@ test('same-identity removed reload preserves instance and recovery without speci
  assert.deepEqual(await f.storage.getRecovery(old.id,'unsent'),{draft:'retained'});
 });
 test('removed legal fork requires confirmation, preserves old recovery and never adopts foreign identity',{skip:process.platform!=='linux'},async t=>{
+ isolateRecoveryOwnerScan(t);
  const f=await fixture(t),{old,replacement}=await replaceMetadata(f);
  await assert.rejects(f.storage.register(f.root),{code:'PROJECT_RECOVERY_CANCELLED'});
  assert.equal(JSON.parse(await fs.readFile(path.join(f.root,'.nozeli/project.json'))).projectId,replacement.id);
@@ -42,6 +55,7 @@ test('removed legal fork requires confirmation, preserves old recovery and never
  assert.equal((await f.storage.register(f.root)).id,result.id);
 });
 test('confirmation cannot authorize a metadata entity substituted while awaiting the user',{skip:process.platform!=='linux'},async t=>{
+ isolateRecoveryOwnerScan(t);
  const f=await fixture(t);await replaceMetadata(f);
  await assert.rejects(f.storage.register(f.root,{confirmRecovery:async()=>{
   await f.storage.db.request(path.join(f.root,'.nozeli/project.sqlite'),'close');

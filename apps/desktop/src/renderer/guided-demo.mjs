@@ -86,7 +86,7 @@ export function mountGuidedDemo({invoke,subscribe,openProject,openFile,captureRe
       // rule as the big hint: neutral until this step's action receipt has
       // landed (reading phase), never the upcoming step's promise.
       const earned=currentHint?.phase==='reading'&&currentHint.stepIndex===(session.stepIndex||0);
-      model={visible:!modal,projectId:session.projectId,sessionId:session.id,epoch:session.epoch,status:session.status,chapterId:session.chapterId,stepIndex:session.stepIndex||0,stepTotal:flow.steps.length,title:earned?step?.hintTitle||flow.title:flow.title,caption,progress:`${Math.min((session.stepIndex||0)+1,flow.steps.length)} / ${flow.steps.length}`,seekable:!creating&&!exiting&&!flight,buttons:controls.map(control=>({...control})),theme:document.documentElement.dataset.theme,palette:document.documentElement.dataset.palette};
+      model={visible:!modal,projectId:session.projectId,sessionId:session.id,epoch:session.epoch,status:session.status,chapterId:session.chapterId,section:step?.section,stepIndex:session.stepIndex||0,stepTotal:flow.steps.length,title:earned?step?.hintTitle||flow.title:flow.title,caption,progress:`${Math.min((session.stepIndex||0)+1,flow.steps.length)} / ${flow.steps.length}`,seekable:!creating&&!exiting&&!flight,buttons:controls.map(control=>({...control})),theme:document.documentElement.dataset.theme,palette:document.documentElement.dataset.palette};
     }
     const key=JSON.stringify(model);if(key===publishedUi)return;publishedUi=key;
     void invoke('workspace.demoControls.update',{model}).then(result=>{if(!result.ok){onError(result.error.message);if(session?.status==='playing')void transition('pause').catch(onError);}}).catch(onError);
@@ -106,14 +106,15 @@ export function mountGuidedDemo({invoke,subscribe,openProject,openFile,captureRe
   // distinct keys so the reading card re-announces itself.
   const hintKey=(id,step,revision,phase)=>id+':'+step.id+':'+revision+':'+phase;
   const hintView=hint=>void invoke('workspace.demoHint.update',{hint}).then(result=>{if(!result.ok)onError(result.error.message);}).catch(error=>onError(error.message));
-  function hideHint(){hintRevision++;currentHint=null;hintView(null);}
+  function hideHint(){hintRevision++;currentHint=null;for(const node of document.querySelectorAll('[data-demo-guide-target]'))delete node.dataset.demoGuideTarget;hintView(null);}
   function publishHint(){if(currentHint)hintView({...currentHint,paused:session?.status==='paused',theme:document.documentElement.dataset.theme,palette:document.documentElement.dataset.palette});}
   const HINT_READ_MS=6000,PREP_DETAIL='演示正用真实动作完成这一步；完成后在这里说明它的意义。';
   // Neutral preparation state: names the action in progress, never the
   // explanation, so no label can lead or cover content that is not there yet.
   function prepareHint(step){
     if(disposed||!session||!step)return;
-    currentHint={key:hintKey(session.id,step,hintRevision,'go'),title:(session.status==='playing'?'正在演示：':'待演示：')+(step.caption||flow.title),detail:PREP_DETAIL,visible:true,stepIndex:session.stepIndex||0,stepTotal:flow.steps.length,phase:'acting',durationMs:HINT_READ_MS,remainingMs:HINT_READ_MS};
+    for(const node of document.querySelectorAll('[data-demo-guide-target]'))delete node.dataset.demoGuideTarget;
+    const durationMs=step.readMs||HINT_READ_MS;currentHint={key:hintKey(session.id,step,hintRevision,'go'),section:step.section,title:(session.status==='playing'?'正在演示：':'待演示：')+(step.caption||flow.title),detail:PREP_DETAIL,visible:true,stepIndex:session.stepIndex||0,stepTotal:flow.steps.length,phase:'acting',durationMs,remainingMs:durationMs};
     publishHint();
   }
   // The step explanation, published only after its action receipt: readable
@@ -122,7 +123,7 @@ export function mountGuidedDemo({invoke,subscribe,openProject,openFile,captureRe
   async function readingPhase(step){
     if(disposed||!session||!step.hintTitle)return true;
     const id=session.id,index=session.stepIndex,revision=hintRevision;
-    currentHint={key:hintKey(id,step,revision,'read'),title:step.hintTitle,detail:step.hintDetail,visible:true,stepIndex:index,stepTotal:flow.steps.length,phase:'reading',durationMs:HINT_READ_MS,remainingMs:HINT_READ_MS};
+    const durationMs=step.readMs||HINT_READ_MS;currentHint={key:hintKey(id,step,revision,'read'),section:step.section,title:step.hintTitle,detail:step.hintDetail,visible:true,stepIndex:index,stepTotal:flow.steps.length,phase:'reading',durationMs,remainingMs:durationMs};
     publishHint();
     let last=performance.now(),published=0;
     while(!disposed&&!exiting&&session?.id===id&&session.stepIndex===index&&hintRevision===revision){
@@ -176,6 +177,19 @@ export function mountGuidedDemo({invoke,subscribe,openProject,openFile,captureRe
     throw Error('真实对话内容面未就绪');
   }
   async function clientStep(original,step){
+    if(step.semantic.startsWith('ui.map-')){
+      for(const node of document.querySelectorAll('[data-demo-guide-target]'))delete node.dataset.demoGuideTarget;
+      const part=step.semantic.slice('ui.map-'.length);
+      if(part==='files'&&document.getElementById('file-toggle')?.getAttribute('aria-expanded')!=='true')document.getElementById('file-toggle').click();
+      if(part==='todos')document.dispatchEvent(new CustomEvent('nozeli-reveal-work-sidebar'));
+      if(part==='conversation')unwrapDemo(await invoke('workspace.control',{type:'conversation-action',projectId:original.projectId,action:'open'}));
+      const selector={project:'.rail',files:'#files',workspace:'#workspace-groups',conversation:'#workspace-groups',todos:'#side'}[part];
+      const node=document.querySelector(selector);if(!node)throw Error('教学界面区域不存在：'+part);
+      const deadline=Date.now()+8000;
+      while(node.getBoundingClientRect().width<1||node.getBoundingClientRect().height<1){if(Date.now()>deadline)throw Error('教学界面区域不可见：'+part);await new Promise(r=>setTimeout(r,80));}
+      node.dataset.demoGuideTarget=part;
+      return {ok:true,client:true,region:part};
+    }
     if(step.semantic==='ui.settings'){
       // Present the real settings UI long enough to read it: sources/login
       // first, then the model tiers. Read-only — no input, no save, no login.
@@ -250,7 +264,7 @@ export function mountGuidedDemo({invoke,subscribe,openProject,openFile,captureRe
         prepareHint(step);
         if(session?.status!=='playing'||session.id!==original.id||session.stepIndex!==original.stepIndex||getProjectId()!==original.projectId){restartAfterFlight=session?.status==='playing';break;}
         original={...session};generation=token;
-        if(executedSteps.has(step.id)&&!['open','ui.settings','ui.finish'].includes(step.semantic)){
+        if(executedSteps.has(step.id)&&!step.semantic.startsWith('ui.map-')&&!['open','ui.settings','ui.finish'].includes(step.semantic)){
           // Already demonstrated once with its content-aligned explanation:
           // no second edit, and no label replayed over whatever is on screen
           // now — the caption alone records the skip.

@@ -33,12 +33,12 @@ try {
   const notices = path.join(release, 'resources/app/assets/licenses/pptist');
   await fs.mkdir(notices, {recursive:true});
   for (const name of ['LICENSE','README.md','package-lock.json']) await fs.copyFile(path.join(source,'vendor/pptist',name),path.join(notices,name));
-  await fs.writeFile(path.join(release, 'AppRun'), `#!/bin/sh\nset -eu\nHERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nif [ -n "\${WAYLAND_DISPLAY:-}" ]; then\n  exec "$HERE/nozeli" --ozone-platform=wayland "$@"\nelif [ -n "\${DISPLAY:-}" ]; then\n  exec "$HERE/nozeli" --ozone-platform=x11 "$@"\nelse\n  exec "$HERE/nozeli" "$@"\nfi\n`, {mode:0o755});
+  await fs.writeFile(path.join(release, 'AppRun'), `#!/bin/sh\nset -eu\nHERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nif [ -n "\${DISPLAY:-}" ]; then\n  exec "$HERE/nozeli" --ozone-platform=x11 "$@"\nelif [ -n "\${WAYLAND_DISPLAY:-}" ]; then\n  exec "$HERE/nozeli" --ozone-platform=wayland "$@"\nelse\n  exec "$HERE/nozeli" "$@"\nfi\n`, {mode:0o755});
   const instructions = `# Nozeli ${manifest.version} — Linux x64 Alpha
 
 ## 无需源码安装
 
-解压 ${label}.tar.gz 到有写权限的目录，运行 AppRun（或直接运行 nozeli）。无需 Node.js、npm、系统 OMP、Git 或源码编译。整个文件夹可移动，不要单独移动里面的文件，解压需保留可执行权限。
+解压 ${label}.tar.gz 到有写权限的目录，运行 AppRun。启动入口优先使用DISPLAY提供的X11/XWayland，以避免当前Electron原生Wayland剪贴板缺陷；直接调用二进制时应在有DISPLAY的桌面显式传 --ozone-platform=x11。无需 Node.js、npm、系统 OMP、Git 或源码编译。整个文件夹可移动，不要单独移动里面的文件，解压需保留可执行权限。
 
 需要 Linux x86_64/glibc 桌面、Wayland 或 X11，以及 Electron 所需的系统图形/音频/NSS 等动态库。仅本机 Linux/Wayland 验证，非所有发行版/Windows/macOS支持声明。普通用户运行，不要以root运行或用 --no-sandbox 绕过安全限制；若系统禁止无特权用户命名空间，由管理员按发行版策略配置 Chromium sandbox，本包不自动提权。
 

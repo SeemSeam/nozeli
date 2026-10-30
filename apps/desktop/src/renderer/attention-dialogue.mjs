@@ -78,7 +78,7 @@ export function mountAttentionDialogue(container,{document,projectId,todo,invoke
   if(question?.completedOperations?.length){const receipts=node('details');receipts.dataset.attentionPermissionDetail='receipts';receipts.append(node('summary','已完成操作回执（保留，不重放）'),node('pre',JSON.stringify(question.completedOperations,null,2)));fields.append(receipts);}
   const hash=node('details');hash.dataset.attentionPermissionDetail='hash';hash.append(node('summary','冻结效果哈希（防篡改绑定）'),node('pre',String(question?.effectHash??'')));fields.append(hash);
   const elevated=question?.elevation==='admin';
-  paragraph(elevated?'仅此一次绑定上方冻结命令；选择本任务提权能力则允许同任务在该工作目录及子目录启动其他管理命令，无需逐条待办批准。':'批准仅绑定该冻结命令与该原任务、本代会话；可随时撤销，重启后失效。');
+  paragraph('单次授权仅执行上方冻结命令一次；本任务授权仅允许原任务再次执行完全相同的冻结命令，不覆盖其他命令、参数或工作目录。可随时撤销，重启后失效。');
   paragraph(elevated?'root/管理员具有系统最高权限；工作目录检查不是文件访问沙箱，命令参数仍可影响目录以外乃至全盘，不能保证可回滚。系统认证仍逐次交给操作系统。':'当前用户范围执行；仍按显式批准执行并留回执，不扩大到其他任务。');
   paragraph('批准前零执行；拒绝或暂不授权不自动重试。系统认证（pkexec/UAC/系统授权）取消或失败不会伪造成功；执行结果未知时不自动重放。');
   // The host normalized and validated the frozen DTO (OS-absolute cwd per
@@ -86,7 +86,7 @@ export function mountAttentionDialogue(container,{document,projectId,todo,invoke
   // would strand Windows paths without authorization controls.
   const valid=typeof question?.command==='string'&&question.command.trim()&&typeof question?.cwd==='string'&&question.cwd.trim()&&typeof question?.effectHash==='string'&&/^[a-f0-9]{64}$/.test(question.effectHash)&&Array.isArray(question.args)&&question.args.every(v=>typeof v==='string');
   if(valid){
-   const options=[{label:'仅允许执行这一次',action:'approve-once',description:'执行上方冻结命令一次；之后需重新申请。'},{label:elevated?'授予本任务提权（root/管理员）能力':'本任务内允许该冻结命令',action:'approve-task',description:elevated?'同任务可在该工作目录及子目录启动其他管理命令；不逐条弹待办，但仍调用真实系统认证。命令可能影响全盘，不是路径隔离。撤销、到期、任务结束或重启后失效。':'本原任务内可再次执行同一条冻结命令；不覆盖其他命令，可随时撤销，重启后失效。'},{label:'拒绝此执行',action:'deny',description:'不执行该命令，不自动重试；继续原范围内其他工作需模型自行安排。'},{label:'暂不授权',action:'cancel',description:'暂停本次申请，保留现有进度；之后可重新申请。'}];
+   const options=[{label:'仅允许执行这一次',action:'approve-once',description:'执行上方冻结命令一次；之后需重新申请。'},{label:'本任务内允许该冻结命令',action:'approve-task',description:'仅原任务可再次执行完全相同的冻结命令、参数和工作目录；不覆盖其他管理命令。撤销、到期、任务结束或重启后失效；提权仍需真实系统认证。'},{label:'拒绝此执行',action:'deny',description:'不执行该命令，不自动重试；继续原范围内其他工作需模型自行安排。'},{label:'暂不授权',action:'cancel',description:'暂停本次申请，保留现有进度；之后可重新申请。'}];
    const read=choice('permission',(elevated?'请选择提权执行授权决定':'请选择敏感执行授权决定'),options);
    for(const input of fields.querySelectorAll('input')){const option=options.find(option=>option.label===input.value);if(option)input.dataset.attentionPermissionAction=option.action;}
    readAnswer=()=>{const option=options.find(option=>option.label===read());if(!option)throw Error('请明确选择授权决定。');return option.action;};

@@ -5,9 +5,9 @@ import { processStamp, ownerAlive } from './process-ownership.mjs';
 import {artifactSnapshot,digest} from './report-review.mjs';
 import {reconcileTodos} from '../../domain/todo-management.mjs';
 import {mergeConsentRequirement,sameMergeConsentBinding,mergeConsentBindingFields,explicitNeverCommitStatement,mergeConstraintChoices} from '../../domain/work-disposition.mjs';
-import {safeBytes} from './execution-workspace.mjs';
+import {inspectFile,withSafeFile,readSafeBytes} from './file-stream.mjs';
 import {recordBusinessTimeline} from './session-index.mjs';
-import {prepareHtmlReport,HTML_REPORT_OBJECT_MAX_BYTES} from './html-report.mjs';
+import {prepareHtmlReport,HTML_REPORT_OBJECT_MAX_BYTES,HTML_REPORT_LIMITS} from './html-report.mjs';
 import {decodeReportState,reportDescriptor,reportExtension,readStoredReport,MAX_REPORT_BYTES} from './report-descriptor.mjs';
 import {readManagedState,saveManagedState,readManagedObject,listManagedPending,reconcileManagedPending,retainManagedNativeProjection} from './managed-storage.mjs';
 export async function atomicJson(file,value){
@@ -94,11 +94,20 @@ export class Workspace {
   listPending(){return listManagedPending(this.storage,this.projectId);}
   reconcilePending(options){return reconcileManagedPending(this.storage,this.projectId,options);}
   async putObject(bytes){
-    bytes=Buffer.from(bytes);const {digest:objectDigest}=await this.storage.putRecoveryObject(this.projectId,bytes);
+    bytes=Buffer.from(bytes);const {digest:objectDigest}=await this.storage.putRecoveryObjectStream(this.projectId,[bytes]);
     await this.storage.putRecovery(this.projectId,'managed:recovery-object:'+objectDigest,{digest:objectDigest,byteLength:bytes.length,operationId:this.operationId});
-    try{return (await this.storage.putObject(this.projectId,bytes)).digest;}catch(error){this.offline=true;await this.storage.putRecovery(this.projectId,'managed:object-pending:'+objectDigest,{operationId:this.operationId,digest:objectDigest,status:'pending',error:{code:error.code,message:error.message}});return objectDigest;}
+    try{return (await this.storage.promoteRecoveryObject(this.projectId,objectDigest)).digest;}catch(error){this.offline=true;await this.storage.putRecovery(this.projectId,'managed:object-pending:'+objectDigest,{operationId:this.operationId,digest:objectDigest,status:'pending',error:{code:error.code,message:error.message}});return objectDigest;}
   }
-  async readObject(digest){return readManagedObject(this.storage,this.projectId,digest);}
+  async putFileObject(root,entry){
+    const retained=await withSafeFile(root,entry.relPath,file=>this.storage.putRecoveryObjectStream(this.projectId,file.stream(),{digest:entry.digest}));
+    if(!retained||retained.byteLength!==entry.size)throw Error('artifact changed during publication');
+    const objectDigest=retained.digest;
+    await this.storage.putRecovery(this.projectId,'managed:recovery-object:'+objectDigest,{digest:objectDigest,byteLength:retained.byteLength,operationId:this.operationId});
+    try{await this.storage.promoteRecoveryObject(this.projectId,objectDigest);}
+    catch(error){this.offline=true;await this.storage.putRecovery(this.projectId,'managed:object-pending:'+objectDigest,{operationId:this.operationId,digest:objectDigest,status:'pending',error:{code:error.code,message:error.message}});}
+    return objectDigest;
+  }
+  async readObject(digest,options){return readManagedObject(this.storage,this.projectId,digest,options);}
   async requireOnline(){if(this.commitUnknown)throw Object.assign(Error('Workspace commit outcome requires explicit reconciliation'),{code:'STORAGE_RESULT_UNKNOWN',commitUnknown:this.commitUnknown});await this.storage.requireOnline(this.projectId);this.offline=false;}
   async close(){if(this.closed)return;this.closing=true;await this.serial;await this.draftSerial;if(await fs.readFile(this.lock,'utf8')!==this.owner)throw new Error('workspace owner changed');await fs.unlink(this.lock);this.closed=true;}
   used(){return this.state.works.filter(w=>w.status!=='queued'&&w.status!=='ended'&&w.revision>0).length;}
@@ -198,16 +207,21 @@ export class Workspace {
     const active=()=>{if(w.revision!==revision||!(w.status==='running'||diagnostic&&w.status==='paused')||!isActive())throw new Error('stale or inactive run');};active();
     const objectId=randomUUID(),directory=w.execution?.directory||this.content;
     const paths=[...files.map(f=>f.relPath),...(this.state.fileOperations||[]).filter(o=>o.workId===id).map(o=>o.relPath),...(w.execution?.candidate?.files||[])];
-    const frozenFiles=await artifactSnapshot(directory,paths),frozenBytes=new Map();
-    for(const entry of frozenFiles)if(entry.digest!==null){const bytes=await safeBytes(directory,entry.relPath);if(bytes===null||digest(bytes)!==entry.digest)throw Error('artifact changed during publication');frozenBytes.set(entry.relPath,bytes);}
+    const frozenFiles=await artifactSnapshot(directory,paths);
     const assetPath=value=>{if(typeof value!=='string'||value.includes('\\')||value.includes('\u0000')||path.posix.isAbsolute(value)||value.split('/').some(p=>!p||p==='.'||p==='..'))throw Error('invalid report resource path');return value;};
     const referencePath=href=>{const clean=href.split('#')[0];let rel;try{rel=decodeURIComponent(clean);}catch{throw Error('invalid report reference');}const line=/:\d+(?::\d+)?$/.exec(rel);if(line)rel=rel.slice(0,line.index);return assetPath(rel);};
     const declared=new Set(files.map(file=>file.relPath));
     // Markdown problem 不经 HTML 准备/引用冻结；files 冻结与工件复制对两种 kind 一致保留。
-    const prepared=format==='html-static'?await prepareHtmlReport(body,{readAsset:async rel=>{rel=assetPath(rel);const bytes=frozenBytes.get(rel);if(!bytes||!declared.has(rel))throw Object.assign(Error('Report image must be included in files: '+rel),{code:'REPORT_RESOURCE_NOT_DECLARED'});return {bytes,digest:digest(bytes)};},resolveReference:async href=>{
+    const prepared=format==='html-static'?await prepareHtmlReport(body,{readAsset:async rel=>{
+      rel=assetPath(rel);const entry=frozenFiles.find(file=>file.relPath===rel);
+      if(!entry||entry.digest===null||!declared.has(rel))throw Object.assign(Error('Report image must be included in files: '+rel),{code:'REPORT_RESOURCE_NOT_DECLARED'});
+      const captured=await readSafeBytes(directory,rel,{maxBytes:HTML_REPORT_LIMITS.assetBytes}),bytes=captured?.bytes;
+      if(!bytes||digest(bytes)!==entry.digest)throw Error('artifact changed during publication');
+      return {bytes,digest:entry.digest};
+    },resolveReference:async href=>{
       if(/^https?:\/\//i.test(href)){const url=new URL(href);if(url.username||url.password)throw Error('invalid external reference');return {kind:'external',url:url.href};}
       const relPath=referencePath(href);let entry=frozenFiles.find(f=>f.relPath===relPath);
-      if(!entry){const bytes=await safeBytes(directory,relPath);if(bytes===null)throw Error('missing report reference: '+relPath);entry={relPath,digest:digest(bytes),size:bytes.length};frozenFiles.push(entry);frozenBytes.set(relPath,bytes);}
+      if(!entry){const file=await inspectFile(directory,relPath);if(file===null)throw Error('missing report reference: '+relPath);entry={relPath,digest:file.digest,size:file.size};frozenFiles.push(entry);}
       if(entry.digest===null)throw Error('missing report reference: '+relPath);
       return {kind:'artifact',relPath,digest:entry.digest,byteLength:entry.size,mediaType:'application/octet-stream'};
     }}):null;
@@ -217,7 +231,7 @@ export class Workspace {
     const report=prepared?reportDescriptor(bytes,{format,objectId,title:prepared.title,excerpt:prepared.excerpt,manifestDigest:digest(manifestBytes)}):reportDescriptor(bytes,{format,objectId});
     const snapshot={reportDigest:report.digest,candidate:w.execution?.candidate?{commit:w.execution.candidate.commit,tree:w.execution.candidate.tree,jobId:w.execution.candidate.jobId}:null,files:frozenFiles,operationIds:(this.state.fileOperations||[]).filter(o=>o.workId===id).map(o=>o.id)};
     await this.storage.putRecovery(this.projectId,'managed:publication:'+receipt,{operationId:this.operationId,workId:id,revision,receiptId:receipt,objectId,report,files:frozenFiles,status:'prepared'});
-    for(const entry of frozenFiles)if(entry.digest!==null){const current=await safeBytes(directory,entry.relPath);if(current===null||digest(current)!==entry.digest)throw Error('artifact changed during publication');}
+    for(const entry of frozenFiles)if(entry.digest!==null){const current=await inspectFile(directory,entry.relPath);if(current?.digest!==entry.digest)throw Error('artifact changed during publication');}
     if(retainCandidate!=null){
       if(typeof retainCandidate!=='function')throw new Error('retainCandidate must be a function');
       const retained=await retainCandidate();
@@ -227,7 +241,7 @@ export class Workspace {
         if(retained.rollback!=null){if(typeof retained.rollback!=='function')throw new Error('invalid retainCandidate rollback');tx.onRollback(()=>retained.rollback());}
       }
     }
-    for(const entry of frozenFiles)if(entry.digest!==null)entry.objectDigest=await this.putObject(frozenBytes.get(entry.relPath));
+    for(const entry of frozenFiles)if(entry.digest!==null)entry.objectDigest=await this.putFileObject(directory,entry);
     await this.putObject(bytes);if(manifestBytes)await this.putObject(manifestBytes);
     snapshot.manifestDigest=await this.putObject(Buffer.from(JSON.stringify({version:1,report,files:frozenFiles})));
     active();

@@ -21,6 +21,9 @@ export function mountManagedReview(parent,{invoke,projectId,workId,objectId,curr
  const warning=document.createElement('p');warning.className='managed-review-warning';warning.dataset.reviewWarning='';warning.setAttribute('role','alert');
  const outdated=document.createElement('p');outdated.className='managed-review-warning';outdated.dataset.reviewReportOutdated='';outdated.setAttribute('role','status');outdated.hidden=true;
  const files=document.createElement('div');files.className='managed-review-files';files.tabIndex=-1;files.setAttribute('role','group');files.setAttribute('aria-label','成果文件；点击文件名在文档工作区查看差异');
+ const fileDisclosure=document.createElement('details');fileDisclosure.className='managed-review-file-disclosure';
+ const fileSummary=document.createElement('summary');fileSummary.textContent='审核文件';fileDisclosure.append(fileSummary,files);
+ let fileDisclosureInitialized=false;
  const label=document.createElement('label');label.textContent='给原 Worker 的继续修改要求（保存不发送）';
  const instruction=document.createElement('textarea');instruction.dataset.reviewInstruction='';instruction.maxLength=8000;instruction.disabled=true;instruction.setAttribute('aria-label','给原 Worker 的继续修改要求');
  const instructionStatus=document.createElement('p');instructionStatus.dataset.reviewInstructionStatus='';instructionStatus.setAttribute('role','status');label.append(instruction,instructionStatus);
@@ -31,7 +34,7 @@ export function mountManagedReview(parent,{invoke,projectId,workId,objectId,curr
  const accept=button('接受此审核版本…','accept',()=>decide('accept'));
  const reload=button('刷新审核状态','refresh',refresh);
  const recover=button('重新读取已保存意见…','recover-instruction',async()=>{if(composing||draft?.snapshot().pending)return;if(!await confirm('将用宿主已保存意见替换本窗口意见。未保存内容请先复制保留；不会发送给 Worker。','恢复已保存意见'))return;instructionReady=loadInstruction();await instructionReady;paint();});
- actions.append(save,resume,accept,reload,recover);root.append(title,status,versions,warning,outdated,files,label,actions);parent.append(root);
+ actions.append(save,resume,accept,reload,recover);root.append(title,status,versions,warning,outdated,fileDisclosure,label,actions);parent.append(root);
  const fileList=mountReviewFiles(files,{openFile,onError:fail});
  let data=null,busy=false,held=false,decisionState=null,disposed=false,composing=false,timer=null,draft=null,observing=false,observeAgain=false,readGeneration=0;
  const keys=new Map();
@@ -75,6 +78,8 @@ export function mountManagedReview(parent,{invoke,projectId,workId,objectId,curr
   const request=++readGeneration,next=await call('read');if(!live()||request!==readGeneration)return;data=next;
   warning.textContent=[reviewStaleMessage(data.stale),...(data.capabilities?.reasons||[]).map(reason=>typeof reason.message==='string'?reason.message:'审核条件尚不满足')].filter(Boolean).join('\n');
   fileList.update(data.files||[]);
+  const fileCount=data.files?.length||0;fileSummary.textContent=`审核文件（${fileCount}）`;
+  if(!fileDisclosureInitialized){fileDisclosure.open=fileCount<=8;fileDisclosureInitialized=true;}
   onAvailability(Boolean(data.files?.length),root);
   paint();
  }

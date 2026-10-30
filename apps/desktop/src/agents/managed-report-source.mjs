@@ -1,8 +1,9 @@
 import path from 'node:path';
-import {createHash} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
+import fs from 'node:fs/promises';
 import {HostError} from '../main/host.mjs';
 import {decodeReportState,validReportDescriptor} from './managed/report-descriptor.mjs';
-import {readManagedState,readManagedObject} from './managed/managed-storage.mjs';
+import {readManagedState,readManagedObject,verifyManagedObject} from './managed/managed-storage.mjs';
 
 const STATE_LIMIT=32*1024*1024;
 const fail=(code,message)=>new HostError(code,message+'，未另存。');
@@ -45,7 +46,7 @@ export async function managedReportSource({project,storage,runtime,objectId,cont
     if(!controller&&identity(receiptFor(await readManagedState(storage,project.id),project,objectId))!==frozenIdentity)throw changed();
     checkRoot();
     if(identity(receiptFor(state(),project,objectId))!==frozenIdentity)throw changed();
-    const bytes=await readManagedObject(storage,project.id,report.digest);
+    const bytes=await readManagedObject(storage,project.id,report.digest,{maxBytes:report.byteLength});
     if(bytes.length!==report.byteLength||createHash('sha256').update(bytes).digest('hex')!==report.digest||currentController()!==controller)throw changed();
     return bytes;
   },readManifest:async()=>{
@@ -60,7 +61,28 @@ export async function managedReportSource({project,storage,runtime,objectId,cont
     if(!ref)throw invalid();if(ref.kind==='external')return {kind:'external',url:ref.url};
     const result=await managedArtifact({project,storage,runtime,controller,currentController},{objectId,relPath:ref.relPath});
     if(result.digest!==ref.digest||result.size!==ref.byteLength)throw changed();
-    return {...ref,bytes:Buffer.from(result.base64,'base64')};
+    return {...ref,bytes:result.base64===null?null:Buffer.from(result.base64,'base64'),availability:result.availability??'available',reason:result.reason??null};
+  },copyReference:async(id,destination)=>{
+    const manifest=await source.readManifest(),ref=manifest.references.find(row=>String(row.id)===String(id));
+    if(!ref||ref.kind!=='artifact'||!path.isAbsolute(destination))throw invalid();
+    const temporary=path.join(path.dirname(destination),'.nozeli-artifact-'+randomUUID());let handle;
+    try{
+      handle=await fs.open(temporary,'wx',0o600);
+      const copy=async file=>{
+        if(file.stat.size!==ref.byteLength)throw changed();
+        const hash=createHash('sha256');let size=0;
+        for await(const chunk of file.stream()){hash.update(chunk);size+=chunk.length;await handle.writeFile(chunk);}
+        if(size!==ref.byteLength||hash.digest('hex')!==ref.digest)throw changed();
+      };
+      let online=true;try{await storage.requireOnline(project.id);}catch{online=false;}
+      if(online){try{await storage.withObject(project.id,ref.digest,copy);}catch(error){if(error.code!=='MATERIAL_MISSING')throw error;await storage.withRecoveryObject(project.id,ref.digest,copy);}}
+      else await storage.withRecoveryObject(project.id,ref.digest,copy);
+      await handle.sync();await handle.close();handle=null;
+      await source.readManifest();
+      await fs.link(temporary,destination);
+      const directory=await fs.open(path.dirname(destination),'r');try{await directory.sync();}finally{await directory.close();}
+      return {saved:true,digest:ref.digest,byteLength:ref.byteLength,relPath:ref.relPath};
+    }finally{await handle?.close();await fs.rm(temporary,{force:true});}
   }};
   return source;
 }
@@ -137,7 +159,13 @@ export async function managedArtifact(options,{objectId,relPath}={}) {
   if(!safePath(relPath))throw payloadError();const file=metadata.find(file=>file.relPath===relPath);if(!file)throw new HostError('ARTIFACT_UNAVAILABLE','报告没有此成果快照；未读取原项目同名文件。');
   const source=await managedReportSource({...options,objectId});await source.read();
   if(file.digest===null){if((await historySnapshot(options)).version!==snapshot.version)throw changed();return {projectId:options.project.id,objectId,relPath,digest:null,size:0,availability:'absent',text:null,base64:null,readOnly:true};}
-  const bytes=await readManagedObject(options.storage,options.project.id,file.digest);
+  if(file.size>2*1024*1024){
+    const verified=await verifyManagedObject(options.storage,options.project.id,file.digest);
+    if(verified.byteLength!==file.size)throw new HostError('ARTIFACT_CHANGED','成果快照尺寸变化，未以原项目文件替代。');
+    if((await historySnapshot(options)).version!==snapshot.version)throw changed();
+    return {projectId:options.project.id,objectId,relPath,digest:file.digest,size:file.size,availability:'unavailable',reason:'byte-budget',text:null,base64:null,readOnly:true};
+  }
+  const bytes=await readManagedObject(options.storage,options.project.id,file.digest,{maxBytes:2*1024*1024});
   if(bytes.length!==file.size||createHash('sha256').update(bytes).digest('hex')!==file.digest)throw new HostError('ARTIFACT_CHANGED','成果快照摘要变化，未以原项目文件替代。');
   if((await historySnapshot(options)).version!==snapshot.version)throw changed();
   let text=null;try{text=new TextDecoder('utf-8',{fatal:true}).decode(bytes);if(text.includes('\u0000'))text=null;}catch{}

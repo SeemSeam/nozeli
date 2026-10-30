@@ -1021,6 +1021,7 @@ export class DesktopHost {
   async applyDocument(projectId, actor, { readHandle, edits, replacements, operationId, contexts = [], requestFingerprint = null }, {beforeApply=()=>{}}={}) {
     const read = this.documentReads.get(readHandle);
     if (!read || read.projectId !== projectId || read.actorId !== actor.id || read.sessionId !== actor.sessionId || read.sessionInstance !== actor.sessionInstance || Date.now()-read.createdAt > 6*60*60*1000) throw new HostError('READ_HANDLE_REJECTED','读取句柄无效或属于其他会话，请重新读取。');
+    workPath(read.relPath);
     // Model calls quote exact text; only host code derives UTF-16 offsets. The
     // resolver also returns the spans contextBefore/contextAfter cover, which
     // must survive rebase unchanged next to the programmatic contexts parameter.
@@ -1536,6 +1537,12 @@ export class DesktopHost {
     if (!bytes) return base;
     const known = record.resolutions?.[targetDigest];
     if (known?.anchor && record.kind === 'text-point' && !validTextPointAnchor(known.anchor, anchorText(bytes.toString('utf8')))) return { ...base, method: 'invalid-cached-anchor' };
+    if (known?.method === 'manual' && record.kind.startsWith('ppt-')) {
+      try {
+        const snapshot = await pptSnapshot(store.storage, store.projectId, record.relPath, targetDigest);
+        if (known.sourceDraftDigest !== snapshot.digest) return { ...base, method: 'changed-ppt-draft' };
+      } catch { return { ...base, method: 'missing-ppt-draft' }; }
+    }
     if (known?.method === 'manual') return { ...known, targetDigest };
     if (targetDigest === record.materialDigest) {
       if (record.kind === 'text-point' && !validTextPointAnchor(record.anchor, anchorText(bytes.toString('utf8')))) return { ...base, method: 'invalid-origin-anchor' };
@@ -1819,18 +1826,60 @@ export class DesktopHost {
     return this.track(this.metaLock(async () => {
       const project = await this.requireProject(projectId), source = this.boundDocumentSource(input?.documentSource), store = source.type === 'project' ? new FileTags({storage:this.storage,projectId:project.id,root:project.root}) : await this.tagStore(projectId, source), rel = normalizeRel(input?.relPath);
       const file = await store.read(rel), tag = file?.tags.find(t => t.id === input.annotationId);
-      if (!tag || tag.kind !== 'text-selection') throw new HostError('NOT_FOUND', 'Text tag was not found.');
+      if (!tag) throw new HostError('NOT_FOUND', 'Tag was not found in this document.');
+      if ((input.kind != null && input.kind !== tag.kind) || (input.materialDigest != null && input.materialDigest !== tag.materialDigest)) throw new HostError('ANCHOR_MISMATCH', 'Relocation cannot change the tag kind or original material.');
+      if (input.expectedUpdatedAt != null && input.expectedUpdatedAt !== tag.updatedAt) throw new HostError('ANNOTATION_CONFLICT', 'Tag changed before relocation.');
       const bytes = source.type === 'project'
         ? await this.readSource((await this.resolveFile(project, rel)).abs)
         : await this.reviewDocumentBytes(projectId, source, rel);
       if (bytes === null) throw new HostError('NOT_FOUND', '此文档当前没有可定位的正文。');
       const digest = digestBytes(bytes);
       if (digest !== input.targetDigest) throw new HostError('CONFLICT', 'Document changed before relocation.');
-      if (!isUtf8Text(bytes) || !validTextAnchor(input.anchor, anchorText(bytes.toString('utf8')))) throw new HostError('INVALID_ANCHOR', 'Relocation must match the current text.');
-      const current = { start: input.anchor.start, end: input.anchor.end, quote: input.anchor.quote };
-      const resolution = { targetDigest: digest, anchor: current, method: 'manual', locationStatus: 'exact', contentStatus: 'modified' };
+      const current = boundAnchor(input.anchor, tag.kind);
+      let sourceDraftDigest;
+      if (tag.kind === 'text-selection' || tag.kind === 'text-point') {
+        const valid = tag.kind === 'text-point' ? validTextPointAnchor : validTextAnchor;
+        if (classify(rel, bytes).kind !== 'text' || !isUtf8Text(bytes) || !valid(current, anchorText(bytes.toString('utf8')))) throw new HostError('INVALID_ANCHOR', 'Relocation must match the current text.');
+      } else if (tag.kind === 'word-selection' || tag.kind === 'word-region') {
+        if (path.posix.extname(rel).toLowerCase() !== '.docx') throw new HostError('ANCHOR_MISMATCH', 'Relocation requires the current Word document.');
+        if (tag.kind === 'word-selection') {
+          if (!locateWordQuote(await wordText(bytes), current).anchor) throw new HostError('ANCHOR_MISMATCH', 'Word selection is missing or ambiguous in the saved document.');
+        } else await validateWord(bytes);
+      } else if (tag.kind.startsWith('image-')) {
+        if (!imageExtension.test(rel)) throw new HostError('ANCHOR_MISMATCH', 'Relocation requires an image.');
+        const info = imageInfo(bytes);
+        if (info.width !== current.width || info.height !== current.height) throw new HostError('ANCHOR_MISMATCH', 'Image dimensions changed before relocation.');
+      } else if (tag.kind.startsWith('pdf-')) {
+        if (bytes.subarray(0, 5).toString('latin1') !== '%PDF-') throw new HostError('ANCHOR_MISMATCH', 'Relocation requires a PDF.');
+      } else if (tag.kind.startsWith('ppt-')) {
+        if (source.type !== 'project' || path.posix.extname(rel).toLowerCase() !== '.pptx') throw new HostError('ANCHOR_MISMATCH', 'Relocation requires the current PPT document.');
+        const snapshot = await pptSnapshot(this.storage, projectId, rel, digest);
+        if (input.sourceDraftDigest !== snapshot.digest) throw new HostError('CONFLICT', 'PPT draft changed before relocation.');
+        sourceDraftDigest = snapshot.digest;
+        const slide = snapshot.model.slides.find(slide => slide.id === current.slideId);
+        if (!slide) throw new HostError('ANCHOR_MISMATCH', 'Selected PPT slide no longer exists.');
+        if (tag.kind === 'ppt-selection') {
+          const element = slide.elements.find(element => element.id === current.elementId);
+          // PPTist stores rich text as HTML. Compare its text content using the
+          // same DOM text semantics as the selection driver, not raw markup.
+          const { DOMParser } = await import('@xmldom/xmldom');
+          const text = element && new DOMParser().parseFromString('<div>' + (element.content || element.text?.content || '') + '</div>', 'text/html').documentElement.textContent;
+          if (!element || !locateWordQuote(text, current).anchor) throw new HostError('ANCHOR_MISMATCH', 'Selected PPT text no longer matches the saved object.');
+        } else {
+          const layout = JSON.stringify(slide.elements.map(e => [e.id,e.left,e.top,e.width,e.height,e.rotate,e.content,e.text?.content,e.src?.length]));
+          if (current.layout !== layout) throw new HostError('ANCHOR_MISMATCH', 'Selected PPT layout changed before relocation.');
+        }
+        await store.putMaterial(snapshot.bytes);
+      }
+      const resolution = { targetDigest: digest, anchor: current, method: 'manual', locationStatus: 'exact', contentStatus: 'modified', ...(sourceDraftDigest ? { sourceDraftDigest } : {}) };
       await store.putMaterial(bytes);
-      const next = { ...tag, resolutions: { ...tag.resolutions, [digest]: resolution }, relocations: [...(tag.relocations || []), { ...resolution, createdAt: new Date().toISOString() }] };
+      const latestBytes = source.type === 'project'
+        ? await this.readSource((await this.resolveFile(project, rel)).abs)
+        : await this.reviewDocumentBytes(projectId, source, rel);
+      if (!latestBytes || digestBytes(latestBytes) !== digest) throw new HostError('CONFLICT', 'Document changed while validating relocation.');
+      if (sourceDraftDigest && (await pptSnapshot(this.storage, projectId, rel, digest)).digest !== sourceDraftDigest) throw new HostError('CONFLICT', 'PPT draft changed while validating relocation.');
+      const updatedAt = new Date(Math.max(Date.now(), (Date.parse(tag.updatedAt) || 0) + 1)).toISOString();
+      const next = { ...tag, updatedAt, resolutions: { ...tag.resolutions, [digest]: resolution }, relocations: [...(tag.relocations || []), { ...resolution, createdAt: updatedAt }] };
       await store.write(rel, { ...file, tags: file.tags.map(t => t.id === tag.id ? next : t) }, file.revision);
       return { saved: true };
     }));

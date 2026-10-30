@@ -19,8 +19,9 @@ test('missing empty native thread can restart without changing Work identity or 
 test('missing native history after accepted execution never silently starts a new conversation',async t=>{const {c,reopen,loseEmptyThreads}=await fixture(t);await submitBackground(c,'light question');await wait(()=>!c.running.size&&c.store.state.jobs[0]?.status==='completed');await c.stop();loseEmptyThreads();await assert.rejects(reopen(),/OMP_SESSION_FILE_NOT_FOUND/);});
 ;
 test('connection failure preserves exact input and reason without model-configuration advice or automatic replay',async t=>{
- const {c}=await fixture(t);c.sessions.get('frontdesk').prompt=async()=>{throw Object.assign(Error('write closed'),{code:'EPIPE'});};await submitBackground(c, 'light exact input');await wait(()=>c.store.state.jobs.some(j=>j.status==='failed')&&!c.running.size);
- assert.equal(c.store.state.jobs.length,1);assert.equal(c.store.state.jobs[0].text,'light exact input');const message=c.store.state.messages.findLast(m=>m.speaker==='system');assert(message.text.includes('write closed'));assert(message.text.includes('连接中断'));assert(!message.text.includes('模型配置'));assert.equal(c.store.state.jobs[0].error,'write closed');
+ const {c}=await fixture(t);c.sessions.get('frontdesk').prompt=async()=>{throw Object.assign(Error('write closed'),{code:'EPIPE'});};const accepted=await submitBackground(c, 'light exact input');await wait(()=>c.store.state.jobs.find(job=>job.id===accepted.jobId)?.status==='failed'&&!c.running.size);
+ const inputs=c.store.state.jobs.filter(job=>job.target==='frontdesk'&&job.type==='front');assert.equal(inputs.length,1);const saved=inputs[0];assert.equal(saved.id,accepted.jobId);assert.equal(saved.text,'light exact input');const message=c.store.state.messages.findLast(m=>m.speaker==='system'&&m.jobId===accepted.jobId);assert(message.text.includes('write closed'));assert(message.text.includes('连接中断'));assert(!message.text.includes('模型配置'));assert.equal(saved.error,'write closed');
+ for(const event of c.store.state.backstageEvents??[])assert(c.store.state.jobs.filter(job=>job.type==='backstage'&&job.context?.backstageEventKey===event.key).length<=1,'one backstage job per original event');
 });
 test('role skills retain resident identity and existing worker bindings while changing new workers',async t=>{const {c}=await fixture(t);const front=c.store.state.residents.frontdesk.threadId;await c.setBinding('frontdesk',{provider:'omp'});assert.equal(c.store.state.residents.frontdesk.threadId,front);await submitBackground(c, 'task A');await wait(()=>c.store.state.works[0]?.status==='review'&&!c.running.size);const first=c.store.state.works[0],original=structuredClone(first.binding);await c.setBinding('worker',{provider:'omp',skills:['report.md']});assert.deepEqual(c.store.find(first.id).binding,original);await c.endWork(first.id,{revision:1,decision:'accept'});await wait(()=>c.store.find(first.id).status==='ended'&&!c.running.size);await submitBackground(c, 'task B');await wait(()=>c.store.state.works[1]?.status==='review'&&!c.running.size);assert.equal(c.store.state.works[1].binding.effort,undefined);assert.deepEqual(c.store.state.works[1].binding.skills,['report.md']);await assert.rejects(c.setBinding('worker',{skills:['unknown.md']}),/unknown/);});
 test('resident settings reject accepted queued input rather than bypass it',async t=>{const {c}=await fixture(t);const before=structuredClone(c.store.state.bindings.frontdesk);await c.setDraft('frontdesk','hold automatic input');await c.enqueue('frontdesk','front','light question');await assert.rejects(c.setBinding('frontdesk',{provider:'omp'}),/accepted input/);assert.deepEqual(c.store.state.bindings.frontdesk,before);});
@@ -61,9 +62,12 @@ test('native draft still fences already accepted explicit input until deliberate
 });
 
 test('failed context delivery does not consume events; retry succeeds and restore retains checkpoint',async t=>{
- const {c,reopen,calls}=await fixture(t);await submitBackground(c, 'light first');await wait(()=>!c.running.size&&c.store.state.jobs[0].status==='completed');const before=structuredClone(c.store.state.contextDelivery.frontdesk);
- await c.store.mutate(()=>c.store.state.messages.push({id:'external-update',target:'orchestrator',audience:'frontdesk',speaker:'system',text:'Important outside update'}));c.sessions.get('frontdesk').prompt=async()=>{throw Error('fixture provider failure');};await submitBackground(c, 'light failed');await wait(()=>!c.running.size&&c.store.state.jobs.at(-1).status==='failed');assert.deepEqual(c.store.state.contextDelivery.frontdesk,before);
- await submitBackground(c, 'light retry');await wait(()=>!c.running.size&&c.store.state.jobs.at(-1).status==='completed');const retry=calls.filter(x=>x.type==='prompt'&&x.target==='frontdesk').at(-1);assert(retry.text.includes('Important outside update'));const checkpoint=structuredClone(c.store.state.contextDelivery.frontdesk);await c.stop();const restored=await reopen();assert.deepEqual(restored.store.state.contextDelivery.frontdesk,checkpoint);await submitBackground(restored, 'light after restart');await wait(()=>!restored.running.size&&restored.store.state.jobs.at(-1).status==='completed');const after=calls.filter(x=>x.type==='prompt'&&x.target==='frontdesk').at(-1);assert(!after.text.includes('Important outside update'));assert(!after.text.includes('light first'));
+ const {c,reopen,calls}=await fixture(t);const first=await submitBackground(c, 'light first');await wait(()=>!c.running.size&&c.store.state.jobs.find(job=>job.id===first.jobId)?.status==='completed');const before=structuredClone(c.store.state.contextDelivery.frontdesk);
+ await c.store.mutate(()=>c.store.state.messages.push({id:'external-update',target:'orchestrator',audience:'frontdesk',speaker:'system',text:'Important outside update'}));c.sessions.get('frontdesk').prompt=async()=>{throw Error('fixture provider failure');};const failed=await submitBackground(c, 'light failed');await wait(()=>!c.running.size&&c.store.state.jobs.find(job=>job.id===failed.jobId)?.status==='failed');assert.deepEqual(c.store.state.contextDelivery.frontdesk,before);
+ const retried=await submitBackground(c, 'light retry');await wait(()=>!c.running.size&&c.store.state.jobs.find(job=>job.id===retried.jobId)?.status==='completed');const retry=calls.filter(x=>x.type==='prompt'&&x.target==='frontdesk').at(-1);assert(retry.text.includes('Important outside update'));const checkpoint=structuredClone(c.store.state.contextDelivery.frontdesk);await c.stop();const restored=await reopen();await wait(()=>!restored.running.size&&!restored.kicking);assert.deepEqual(restored.store.state.contextDelivery.frontdesk,checkpoint);const restarted=await submitBackground(restored, 'light after restart');await wait(()=>!restored.running.size&&restored.store.state.jobs.find(job=>job.id===restarted.jobId)?.status==='completed');const after=calls.filter(x=>x.type==='prompt'&&x.target==='frontdesk').at(-1);assert(!after.text.includes('Important outside update'));assert(!after.text.includes('light first'));
+ for(const receipt of [first,failed,retried,restarted])assert.equal(restored.store.state.jobs.filter(job=>job.id===receipt.jobId&&job.target==='frontdesk'&&job.type==='front').length,1);
+ assert.equal(restored.store.state.jobs.filter(job=>job.target==='frontdesk'&&job.type==='front').length,4);
+ for(const event of restored.store.state.backstageEvents??[])assert(restored.store.state.jobs.filter(job=>job.type==='backstage'&&job.context?.backstageEventKey===event.key).length<=1,'one backstage job per original event');
 });
 
 test('restoring Worker keeps durable identity visible while provider start is pending',async t=>{
@@ -233,20 +237,24 @@ test('accepted input failure persists before failed native stop and retains unco
   session.prompt = async () => { throw Object.assign(Error('provider 502 Upstream access forbidden'), { code: 'OMP_TURN_ERROR' }); };
   session.stop = async () => { entered(); await gate; throw hold; };
   try {
-    await c.send('frontdesk', 'light preserve exact accepted input');
+    const accepted = await c.send('frontdesk', 'light preserve exact accepted input');
     await waiting;
-    const saved = c.store.state.jobs.at(-1);
+    const saved = c.store.state.jobs.find(job => job.id === accepted.jobId);
+    assert.equal(c.store.state.jobs.filter(job => job.target === 'frontdesk' && job.type === 'front').length, 1);
     assert.equal(saved.status, 'failed');
     assert.equal(saved.text, 'light preserve exact accepted input');
     assert.equal(saved.error, 'provider 502 Upstream access forbidden');
     assert.ok(c.store.state.messages.some(message => message.jobId === saved.id && message.speaker === 'system' && message.text.includes('Upstream access forbidden')));
     const owner = structuredClone(c.store.state.providers.frontdesk);
     release();
-    await wait(() => !c.running.size && Boolean(c.store.state.jobs.at(-1).cleanupFailure));
-    assert.equal(c.store.state.jobs.at(-1).status, 'failed');
+    await wait(() => !c.running.size && Boolean(c.store.state.jobs.find(job => job.id === accepted.jobId)?.cleanupFailure));
+    const cleaned = c.store.state.jobs.find(job => job.id === accepted.jobId);
+    assert.equal(cleaned.status, 'failed');
     assert.deepEqual(c.store.state.providers.frontdesk, owner);
-    assert.deepEqual(c.store.state.jobs.at(-1).cleanupFailure.stages, [{ stage: 'native-stop', category: 'collab-hold' }]);
-    assert.equal(c.store.state.jobs.at(-1).cleanupFailure.exitConfirmed, false);
+    assert.deepEqual(cleaned.cleanupFailure.stages, [{ stage: 'native-stop', category: 'collab-hold' }]);
+    assert.equal(cleaned.cleanupFailure.exitConfirmed, false);
+    assert.equal(c.store.state.jobs.filter(job => job.target === 'frontdesk' && job.type === 'front').length, 1);
+    for (const event of c.store.state.backstageEvents ?? []) assert(c.store.state.jobs.filter(job => job.type === 'backstage' && job.context?.backstageEventKey === event.key).length <= 1, 'one backstage job per original event');
   } finally { release(); session.stop = originalStop; }
 });
 

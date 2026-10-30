@@ -31,14 +31,14 @@ test('demo overlays avoid native rectangle collisions across drag points, wrappi
   }
  }
 });
-test('demo layout preserves free dragging, moves hint first, and releases space when hint is hidden',()=>{
+test('demo layout preserves reachable dragging and hides the optional hint',()=>{
  const input={width:1440,height:900,controlsHeight:142,hintHeight:200,position:{x:500,y:44}};
  const layout=guidedDemoOverlayLayout(input);assertOverlayGeometry(layout,1440,900);
  assert.equal(layout.controls.x,500);assert.equal(layout.controls.y,44);assert.notEqual(layout.hint.y,44);
  const crowded={...input,width:320,height:240,controlsHeight:180,hintHeight:300,position:{x:8,y:8}};
  assert(guidedDemoOverlayLayout(crowded).controls.height<180);
  const alone=guidedDemoOverlayLayout({...crowded,hintVisible:false});
- assert.equal(alone.controls.height,180);assert.equal(alone.controls.y,8);
+ assert.equal(alone.controls.y,8);assert(alone.controls.y+alone.controls.height<=240);
 });
 test('hint size, drag and visibility updates all relayout both native overlays',async()=>{
  let size=[360,320];
@@ -57,7 +57,6 @@ test('hint size, drag and visibility updates all relayout both native overlays',
  await controller.invoke(controller.record,'workspace.demoControls.size',{height:250});check();
  size=[280,180];controller.raise();check();
  controller.hintUpdate(owner,null);assert.equal(controller.hintRecord.view.getVisible(),false);
- assert.equal(controller.record.view.getBounds().height,164);
  assert.deepEqual(controller.position,{x:8,y:44});
  assert.equal(obstacleEvents.at(-1).rects.length,1);
 });
@@ -324,7 +323,7 @@ test('manager refuses changed root and manifest authority and never routes repla
   if(kind==='root'){
    const retained=path.join(f.directory,'retained-original');
    await fs.rename(project.root,retained);await fs.mkdir(project.root);
-   assert.equal(hash(await fs.readFile(path.join(retained,'research-notes.txt'))),hash(await fs.readFile(path.join(appRoot,'assets','guided-demo','research-notes.txt'))));
+   assert.equal(hash(await fs.readFile(path.join(retained,'research-notes.md'))),hash(await fs.readFile(path.join(appRoot,'assets','guided-demo','research-notes.md'))));
    await fs.writeFile(path.join(project.root,'user.txt'),'replacement user content');
   }else{
    const manifest=path.join(project.root,'.nozeli','project.json');
@@ -352,21 +351,21 @@ test('restart persists paused status and invalidates previous epochs without rep
 
 test('replay and cleanup preserve simultaneous visible and hidden user changes instead of blessing baseline',async t=>{
  const f=await demoFixture(t),project=await f.host.requireProject(f.created.project.id);
- const before=await f.host.readFile(project.id,'research-notes.txt');
- await f.host.save(project.id,'research-notes.txt',before.digest,before.text+'\nUser exploration\n');
+ const before=await f.host.readFile(project.id,'research-notes.md');
+ await f.host.save(project.id,'research-notes.md',before.digest,before.text+'\nUser exploration\n');
  await fs.writeFile(path.join(project.root,'.user-draft'),'concurrent hidden user content');
  const replay=await f.manager.transition({...binding(f.created),action:'chapter',chapterId:'learn',stepIndex:0});assert.equal(replay.project.id,project.id);assert.equal(replay.session.stepIndex,0);
  await assert.rejects(f.manager.guardLifecycle(project.id),{code:'DEMO_USER_CONTENT_RETAINED'});
  const preview=await f.manager.cleanupPreview({...binding(replay),action:'delete-project'}),changes=preview.changes;
  assert.equal(preview.preserveByDefault,true);assert.equal(preview.canAutomaticallyDelete,false);
- assert.ok(changes.some(row=>row.path==='research-notes.txt'&&row.kind==='modified'));
+ assert.ok(changes.some(row=>row.path==='research-notes.md'&&row.kind==='modified'));
  assert.ok(changes.some(row=>row.path==='.user-draft'&&row.kind==='added'));
  assert.equal(await fs.readFile(path.join(project.root,'.user-draft'),'utf8'),'concurrent hidden user content');
 });
 
 test('real workspace relay binds sender and generation; paused late atomic save stays paused on original session',async t=>{
  const f=await demoFixture(t),playing=await f.manager.transition({...binding(f.created),action:'play'}),projectId=playing.project.id;
- const surface=f.workspace.register(new BoundaryContents(),{role:'surface',kind:'document',projectId,viewId:'notes',relPath:'research-notes.txt',windowId:'main'});
+ const surface=f.workspace.register(new BoundaryContents(),{role:'surface',kind:'document',projectId,viewId:'notes',relPath:'research-notes.md',windowId:'main'});
  surface.ready=true;
  f.workspace.surfaces.set(surface.viewId,surface);
  let accept;const dispatched=new Promise(resolve=>{accept=resolve;});
@@ -445,7 +444,7 @@ test('same-byte manifest inode replacement invalidates operation authority but r
 
 test('replacing a tutorial file with a link is retained as unknown content without reading or overwriting its target',async t=>{
  const f=await demoFixture(t),projectId=f.created.project.id,project=await f.host.requireProject(projectId);
- const relPath='research-notes.txt',original=path.join(f.directory,'original-notes'),outside=path.join(f.directory,'user-notes');
+ const relPath='research-notes.md',original=path.join(f.directory,'original-notes'),outside=path.join(f.directory,'user-notes');
  const bytes=await fs.readFile(path.join(project.root,relPath));
  await fs.rename(path.join(project.root,relPath),original);await fs.writeFile(outside,'private unrelated content');
  await fs.symlink(outside,path.join(project.root,relPath));
@@ -456,11 +455,11 @@ test('replacing a tutorial file with a link is retained as unknown content witho
 
 test('a same-path regular-file replacement is user content rather than an approved tutorial mutation',async t=>{
  const f=await demoFixture(t),projectId=f.created.project.id,project=await f.host.requireProject(projectId);
- const file=path.join(project.root,'research-notes.txt'),retained=path.join(f.directory,'retained-notes');
+ const file=path.join(project.root,'research-notes.md'),retained=path.join(f.directory,'retained-notes');
  await fs.rename(file,retained);await fs.writeFile(file,'replacement user document');
  await assert.rejects(f.manager.guardLifecycle(projectId),{code:'DEMO_USER_CONTENT_RETAINED'});
  assert.equal(await fs.readFile(file,'utf8'),'replacement user document');
- assert.equal(hash(await fs.readFile(retained)),hash(await fs.readFile(path.join(appRoot,'assets','guided-demo','research-notes.txt'))));
+ assert.equal(hash(await fs.readFile(retained)),hash(await fs.readFile(path.join(appRoot,'assets','guided-demo','research-notes.md'))));
 });
 
 test('manager cleanup previews real lifecycle range without authorizing automatic final deletion',async t=>{
@@ -512,7 +511,7 @@ test('exiting a recovered unknown action removes only the entry and reuses its p
  await fs.writeFile(note,'PRESERVED EXPLORATION');
  f.manager.lifecycle.workspace.closeProject=async()=>({closed:true});
  f.manager.lifecycle.managed.stopProject=async()=>({confirmationComplete:true});
- f.manager.row(id).inflight={requestId:'unconfirmed',status:'unknown',relPath:'research-notes.txt',sessionId:f.created.session.id};
+ f.manager.row(id).inflight={requestId:'unconfirmed',status:'unknown',relPath:'research-notes.md',sessionId:f.created.session.id};
  await f.manager.exit(binding(f.created));
  assert.equal((await f.host.storage.requireRegistered(id)).removed,true);
  assert.equal(await fs.readFile(note,'utf8'),'PRESERVED EXPLORATION');

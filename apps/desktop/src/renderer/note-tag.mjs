@@ -104,11 +104,12 @@ function tagCardMenu(doc = globalThis.document) {
 let tagSourceSeq = 0;
 
 
-export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAvailability, readReply, replyEntries = [], status = '', open = true, anchorDrift = false, history = [], draftText = '', anchor = {}, material = {}, relPath = '', displayLocation, information, executeStatus = '', anchorKind = '' }, { draw, filePath = () => '', sourceText = () => '', remove, save, execute = null, offset = () => [0, 0], move = () => {}, size = () => null, resize = () => {}, onDraft, onOpen, autoEdit = () => false } = {}) {
+export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAvailability, readReply, replyEntries = [], status = '', open = true, anchorDrift = false, history = [], draftText = '', anchor = {}, material = {}, relPath = '', displayLocation, information, executeStatus = '', anchorKind = '' }, { draw, filePath = () => '', sourceText = () => '', remove, save, execute = null, offset = () => [0, 0], move = () => {}, size = () => null, resize = () => {}, onDraft, onOpen, autoEdit = () => false, inline = false, readOnly = false } = {}) {
   const conversation = kind !== 'note';
   let pending = status === 'pending' || status === 'accepted-awaiting-reply';
   const root = document.createElement('span');
   root.className = `note-anchor tag-${kind}${status === 'followup' ? ' tag-followup' : ''}`;
+  root.classList.toggle('tag-inline', inline);
   root.dataset.annotation = id;
   const index = document.createElement('button');
   index.type = 'button'; index.className = 'note-index';
@@ -195,6 +196,7 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   };
   const fitConversation = () => {
     if (layoutDisposed || !root.isConnected) return;
+    if (inline) { autoGrow(); return; }
     autoGrow();
     const paneNode = root.closest('.cm-scroller, #markdown-preview-scroll, .reader-scroll, .monaco-editor');
     const pane = paneNode?.getBoundingClientRect();
@@ -290,7 +292,7 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   const composerRow = document.createElement('span'); composerRow.className = 'tag-composer';
   const submit = document.createElement('button'); submit.type = 'button'; submit.className = 'tag-send';
   submit.textContent = kind === 'note' ? '保存备注' : (canFollowup ? '发送续问' : '发送讨论');
-  submit.disabled = conversation && pending;
+  submit.disabled = readOnly || (conversation && pending);
   composerRow.append(editor, submit);
   // Status lines exist only when they carry state (pending/failed/execute).
   const delivery = document.createElement('span'); delivery.className = 'tag-delivery'; delivery.setAttribute('role', 'status'); delivery.hidden = true;
@@ -320,9 +322,11 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   if (conversation) { setIconButton(removeButton, 'close'); removeButton.classList.add('ui-danger'); } else removeButton.textContent = '删除备注';
   removeButton.setAttribute('aria-label', conversation ? `移除对话标签 ${ordinal}，保留对话历史` : `删除备注 ${ordinal}`);
   removeButton.title = conversation ? '移除标签，保留对话历史' : '删除备注';
-  removeButton.addEventListener('click', event => { event.stopPropagation(); remove?.(id); });
+  removeButton.disabled = readOnly;
+  removeButton.addEventListener('click', event => { event.stopPropagation(); if (!readOnly) remove?.(id); });
   const editButton = document.createElement('button'); editButton.type = 'button'; editButton.className = 'tag-edit'; editButton.textContent = '编辑备注';
   editButton.addEventListener('click', () => openEdit());
+  editButton.disabled = readOnly;
   const drawingButton = information?.drawing && draw ? document.createElement('button') : null;
   if (drawingButton) { drawingButton.type = 'button'; drawingButton.className = 'tag-drawing-edit'; drawingButton.textContent = '编辑涂鸦'; drawingButton.onclick = () => draw(id); }
   menuActions.append(executeButton, editButton);
@@ -373,13 +377,13 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
     syncSource();
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(fitConversation);
   });
-  const setOpen = (next) => {
+  const setOpen = (next, notify = true) => {
     open = Boolean(next);
     collapsed = !open;
     card.classList.toggle('is-collapsed', collapsed);
     content.hidden = false;
     if (collapsed) editing = false;
-    const composing = !collapsed && (conversation || editing);
+    const composing = !readOnly && !collapsed && (conversation || editing);
     composerRow.hidden = !composing;
     editor.hidden = !composing;
     card.classList.toggle('editing-note', !conversation && editing && !collapsed);
@@ -393,10 +397,11 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
     close.title = close.getAttribute('aria-label');
     index.setAttribute('aria-expanded', String(open));
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(fitConversation);
-    onOpen?.(id, open);
+    if (notify && !readOnly) onOpen?.(id, open);
   };
   const toggle = () => setOpen(!open);
   const edit = () => {
+    if (readOnly) return;
     setOpen(true);
     focusCard(); editing = true;
     card.classList.toggle('editing-note', !conversation);
@@ -434,17 +439,17 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
         }
       }
     } catch (error) { setDelivery(error?.message || '发送失败，输入已保留'); }
-    finally { submit.disabled = conversation && pending; }
+    finally { submit.disabled = readOnly || (conversation && pending); }
   });
   const more = panelButton(); more.dataset.tagMore = '';
   const cardMenuItems = () => {
     const items = [];
-    if (execute) items.push({ id: 'card-execute', label: '执行修改要求', enabled: !executeButton.disabled });
-    if (drawingButton) items.push({ id: 'card-drawing', label: '编辑涂鸦' });
-    if (!conversation) items.push({ id: 'card-edit', label: '编辑备注', enabled: !editButton.hidden && !collapsed });
+    if (execute && !readOnly) items.push({ id: 'card-execute', label: '执行修改要求', enabled: !executeButton.disabled });
+    if (drawingButton && !readOnly) items.push({ id: 'card-drawing', label: '编辑涂鸦' });
+    if (!conversation && !readOnly) items.push({ id: 'card-edit', label: '编辑备注', enabled: !editing });
     items.push({ id: 'card-source', label: source.open ? '收起来源' : '查看来源', enabled: !collapsed });
     items.push({ id: 'card-collapse', label: collapsed ? `展开${conversation ? '对话' : '备注'}` : `折叠${conversation ? '对话' : '备注'}` });
-    if (remove) items.push({ separator: true }, { id: 'card-remove', label: conversation ? '移除标签，保留对话历史…' : '删除备注…' });
+    if (remove && !readOnly) items.push({ separator: true }, { id: 'card-remove', label: conversation ? '移除标签，保留对话历史…' : '删除备注…' });
     return items;
   };
   const runCardMenu = command => {
@@ -499,7 +504,7 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   });
   let dragged = false;
   head.addEventListener('pointerdown', event => {
-    if (event.button !== 0 || event.target.closest('button,textarea,input')) return;
+    if (inline || event.button !== 0 || event.target.closest('button,textarea,input')) return;
     dragged = false;
     focusCard();
     event.stopPropagation();
@@ -541,6 +546,14 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   if (!conversation) { renderTagMarkdown(noteBody, initialDraft || '（无文字）'); transcript.append(noteBody); editor.placeholder = '用 Markdown 记录你的理解…'; }
   head.append(cardNumber, title, content, sourceChange, more, close, demoSelect);
   card.append(head, source, transcript, composerRow, delivery, executeStatusLine, menuActions);
+  if (inline) {
+    if (conversation) { removeButton.classList.remove('ui-icon-button'); removeButton.textContent = '移除标签（保留历史）'; }
+    const view = document.createElement('button'); view.type = 'button'; view.className = 'tag-view'; view.textContent = '查看原文与备注';
+    view.addEventListener('click', () => { setOpen(true); if (!source.open) toggleSource(); });
+    menuActions.append(view);
+    executeButton.hidden = readOnly || !execute;
+    if (drawingButton) drawingButton.hidden = readOnly;
+  }
   if (!conversation) {
     composer = mountAnnotationComposer({ root: card, input: editor });
     // Keep the note composer's 输入/预览 tabs and preview body outside the
@@ -551,12 +564,13 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
     if (previewBody) composerRow.after(previewBody);
   }
   root.append(index, card); position();
-  setOpen(open);
+  setOpen(open, false);
   queueMicrotask(() => {
     if (!root.isConnected || layoutDisposed) return;
     // Card is in the document now: original readers seated while detached
     // gain their observers (explicit attach; readers manage their own guards).
     renderThread.attachOriginalReaders?.();
+    if (inline) { watchTagRemoval(root, disposeLayout); autoGrow(); return; }
     fitConversation();
     autoGrow();
     if (typeof requestAnimationFrame === 'function') layoutFrame = requestAnimationFrame(fitConversation);
@@ -585,7 +599,7 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
     if (value.material) { material = value.material; renderTitle(); }
     if (value.anchorKind) { anchorKind = value.anchorKind; root.dataset.anchorKind = anchorKind; }
     pending = status === 'pending' || status === 'accepted-awaiting-reply';
-    submit.disabled = pending;
+    submit.disabled = readOnly || pending;
     setDelivery(pending ? '等待前台回复…' : status === 'failed' ? '回复失败 · 原问题已保留' : '');
     content.textContent = tagMarkdownSummary(displayText());
     editor.placeholder = pending ? '继续记下问题，收到回复后发送…' : '关于这处材料，聊一聊…';

@@ -1,10 +1,10 @@
 // Pure projection for the workspace attention prompt.
 // Authoritative facts stay in managed state and the attention ledger; this
 // model only decides what the inline prompt shows and never settles todos.
-import {managedReviewTodos} from './managed-work-records.mjs';
+import {managedReviewTodos,userTodoEligible} from './managed-work-records.mjs';
 
 export const attentionCategoryMeta={
-  answer:{rank:0,icon:'message-square',label:'待回答',openLabel:'回答问题'},
+  answer:{rank:0,icon:'message-square',label:'待授权',openLabel:'审核权限'},
   review:{rank:1,icon:'check',label:'待审查',openLabel:'审阅成果'},
   blocker:{rank:2,icon:'triangle-alert',label:'受阻',openLabel:'处理阻断'}
 };
@@ -22,6 +22,7 @@ export function notificationCategory(todo){
 }
 export function notificationAction(todo){
   const destination=todo?.destination?.kind;
+  if(userTodoEligible(todo)&&todo?.kind!=='result')return '请审核高危操作权限';
   if(todo?.kind==='attention'&&destinationActions[destination])return destinationActions[destination];
   return kindActions[todo?.kind]||'需要处理';
 }
@@ -76,7 +77,7 @@ export function createAttentionNotificationModel({feedbackLimit=3}={}){
         if(row)rows.delete(key);
         known.delete(key);
         const raw=rawById.get(todoId);
-        if(raw?.status==='resolved'&&!raw.interrupted&&title){
+        if(raw?.status==='resolved'&&userTodoEligible(raw)&&!raw.interrupted&&title){
           const entry={id:'feedback-'+feedbackSeq++,projectId,todoId,title,text:FEEDBACK_ENDED+' · '+title};
           feedback.push(entry);while(feedback.length>feedbackLimit)feedback.shift();
           resolvedFeedback.push(entry);outcomes.set(key,'resolved');removed.push({key,reason:'resolved'});

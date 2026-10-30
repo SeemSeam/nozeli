@@ -5,7 +5,7 @@ const base=()=>({jobs:[],works:[],todos:[],receipts:[],drafts:{}});
 const intake=(id,extra={})=>({id,target:'orchestrator',type:'intake',text:'做一项工作',status:'queued',context:{},at:'2026-10-12T08:00:00Z',...extra});
 test('accepted request survives clarification and dispatch as one record',()=>{
  const s=base(),original=intake('one');s.jobs.push(original);const id=managedWorkRecords(s)[0].id;assert.equal(id,'request:one');assert.equal(managedWorkRecords(s)[0].workId,undefined);
- Object.assign(original,{status:'completed',routing:{action:'clarify'}});s.todos.push({id:'question',kind:'routing',sourceJobId:'one',status:'open',text:'选择格式'});assert.equal(managedWorkRecords(s)[0].todoId,'question');
+ Object.assign(original,{status:'completed',routing:{action:'clarify'}});s.todos.push({id:'question',kind:'routing',sourceJobId:'one',status:'open',text:'选择格式'});s.backstageEvents=[{key:'todo:question',sourceJobId:'one',kind:'routing',status:'blocked',reason:'所需格式信息暂缺'}];const blocked=managedWorkRecords(s)[0];assert.equal(blocked.todoId,undefined);assert.equal(blocked.id,id);assert.equal(blocked.backstage.status,'blocked');assert.equal(blocked.phase,'后台受阻 · 进展已保留');assert.equal(s.todos[0].status,'open');
  const answer=intake('answer',{text:'1',context:{routingQuestionId:'question'}});s.jobs.push(answer);assert.equal(managedWorkRecords(s).length,1);assert.equal(managedWorkRecords(s)[0].todoId,undefined);
  Object.assign(answer,{status:'completed',routing:{action:'dispatch',workId:'w'}});s.todos[0].status='resolved';s.works.push({id:'w',name:'核对',status:'review',sourceJob:'answer',request:'原文+1'});const r=managedWorkRecords(s);assert.equal(r.length,1);assert.equal(r[0].id,id);assert.equal(r[0].workId,'w');assert.deepEqual(r[0].jobIds,['one','answer']);
 });
@@ -26,3 +26,10 @@ test('review occupies quota, pending supplements and closure failures remain und
 test('lineage cycle fails explicitly',()=>{const s=base();s.jobs.push(intake('a',{context:{retryOf:'b'}}),intake('b',{context:{retryOf:'a'}}));assert.throws(()=>managedWorkRecords(s),/cycle/);});
 test('known queued Work supplement merges before management decision',()=>{const s=base();s.works.push({id:'w',name:'Queued',status:'queued'});s.jobs.push(intake('supplement',{context:{boundWorkId:'w'}}));const r=managedWorkRecords(s);assert.equal(r.length,1);assert.equal(r[0].workId,'w');assert.equal(r[0].phase,'补充已接收，主控整理中');});
 test('historic failure without timestamp follows its accepted event',()=>{const s=base();s.jobs.push(intake('old',{status:'failed',error:'old error'}));assert.deepEqual(managedWorkRecords(s)[0].events.map(e=>e.id),['old:accepted','old:failed']);});
+test('internal maintenance is not waiting for user answer and preserves accepted outcome',()=>{
+ const s=base(),w={id:'w',name:'核对',status:'paused',revision:1,maintenance:{status:'repairing',message:'进展保留'}};s.works.push(w);
+ let record=managedWorkRecords(s)[0];assert.equal(record.status,'paused');assert.equal(record.phase,'系统正在处理运行问题');assert.equal(record.todoId,undefined);
+ w.maintenance.status='needs-version-fix';record=managedWorkRecords(s)[0];assert.equal(record.phase,'系统问题待修复，进展已保留');
+ w.status='ended';w.outcome='accept';w.closure={phase:'blocked',decision:'accept'};record=managedWorkRecords(s)[0];assert.equal(record.outcome,'accept');assert.equal(record.phase,'已接受 · 系统问题待修复，进展已保留');
+ w.closure.phase='complete';assert.equal(managedWorkRecords(s)[0].phase,'已接受并结束 · 技术收尾完成');
+});

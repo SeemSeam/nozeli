@@ -4,16 +4,20 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import {spawn} from 'node:child_process';
+import {DesktopHost} from '../src/main/host.mjs';
 import {ManagedProjects} from '../src/agents/managed-projects.mjs';
 import {processStamp} from '../src/agents/managed/process-ownership.mjs';
+import {managedRuntime} from '../src/agents/managed/managed-storage.mjs';
 
 async function fixture(t){
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-quota-recovery-'));
- t.after(()=>fs.rm(root,{recursive:true,force:true}));
- const manager=new ManagedProjects({userDataDir:root,host:{requireProject:async id=>({id,name:'Recovery project'})},legacy:{projects:new Map()}});
- const runtime=path.join(manager.root,'project','runtime'),home=path.join(runtime,'agents','legacy');
+ const host=new DesktopHost(root),manager=new ManagedProjects({userDataDir:root,host,legacy:{projects:new Map()}});
+ t.after(async()=>{await host.storage.db.close();await fs.rm(root,{recursive:true,force:true});});
+ const content=path.join(root,'project');await fs.mkdir(content);
+ const {project}=await host.pick(content);
+ const runtime=await managedRuntime(host.storage,project.id),home=path.join(runtime,'agents','legacy');
  await fs.mkdir(home,{recursive:true});
- return {root,manager,runtime,home,save:providers=>fs.writeFile(path.join(runtime,'state.json'),JSON.stringify({providers}))};
+ return {root,manager,runtime,home,save:providers=>host.storage.putLocal(project.id,'managed:providers',providers)};
 }
 async function ownedProcess(t,home){
  const child=spawn(process.execPath,['-e','process.stdout.write("ready\\n");setInterval(()=>{},1000);','codex','app-server'],{detached:true,env:{...process.env,CODEX_HOME:home},stdio:['ignore','pipe','ignore']});

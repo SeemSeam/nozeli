@@ -25,7 +25,7 @@ test('route attention IPC admits only exact project/proposal/version/source/user
 
 test('route todo remains readable and non-Work; generic close cannot decide or silently dismiss it',()=>{
  const route=proposal(),todo={id:'todo-1',kind:'frontdesk-route',status:'open',proposalId:route.id,sourceJobId:route.sourceJobId,text:route.originalText},state={frontdeskRoutes:[route],works:[],todos:[todo],receipts:[],jobs:[{id:route.sourceJobId,type:'front',target:'frontdesk',status:'done'}]};
- const reviews=managedReviewTodos(state);assert.equal(reviews.length,1);assert.equal(reviews[0].id,todo.id);assert.deepEqual(managedWorkRecords(state),[]);assert.equal(todoCapabilities(state,todo).close,false);
+ const before=structuredClone(state);assert.deepEqual(managedReviewTodos(state),[]);assert.deepEqual(state,before);assert.deepEqual(managedWorkRecords(state),[]);assert.equal(todoCapabilities(state,todo).close,false);
  assert.throws(()=>manageTodoState(state,{projectId:'project-1',todoId:todo.id,expectedRevision:0,action:'close',requestKey:'generic-close'}),error=>error.code==='TODO_BLOCKED');assert.equal(route.status,'pending');assert.equal(todo.status,'open');
 });
 

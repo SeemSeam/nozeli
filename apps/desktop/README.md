@@ -42,7 +42,7 @@ npm start
 - 其余分组见 `package.json` scripts，例如 `test:collab`（加密传输与原生 Collab 边界）、`test:workspace`、`test:managed-lifecycle`、`test:word`／`test:sheet`、`test:tex`／`test:tex-editor`、`test:image`、`test:document-versions`、`test:file-tree`。
 - 普通测试使用合成 fixtures、真实临时文件与真实 Electron 宿主，**不发起付费模型请求**，也不读写用户项目或凭据。
 - 测试名前缀 `live` 本身不代表会访问真实模型：部分脚本用本机确定性模型，部分需要真实账号。运行前阅读各脚本的环境准入与说明；真实账号检查必须显式授权，不把脚本模型结果当作公网模型质量验证。
-- 私有 OMP 运行时自身的回归（`bun test integrations/omp/tests/` 等）见 [OMP 集成](../../integrations/omp/README.md)。
+- 私有 OMP 运行时自身的回归（`bun test integrations/omp/tests/` 等）见 [OMP 集成](../../integrations/omp/README.md)；测试分组总览见[测试说明](../../docs/testing.md)。
 
 测试输出（截图、日志、临时 profile）写入忽略的 `.test-output/`，不进入 Git，也不属于发行物。
 
@@ -71,7 +71,7 @@ node tools/release-retention.mjs --apply
 - 清理保护未知目录、外部/符号链接 release 与仍在运行进程对应的版本；`--dry-run` 输出完整保留／删除清单，先用它审阅。
 - 安装切换不热替换运行中的旧进程：旧窗口正常退出后重开才加载新版本。
 - Windows/macOS 安装与打包未实现。
-- 便携包是**本地验证产物**；公开分发的第三方许可与对应源码义务审计未完成，见[发布说明与发行边界](../../docs/release.md)。
+- 便携包流程与已发布的 [`v0.1.0-alpha.1`](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.1) 预发布附件一致；公开分发的第三方许可与对应源码义务审计未完成，发布不是合规认证，见[发布说明与发行边界](../../docs/release.md)与[合规清单](compliance-inventory.json)。
 
 ## 关键产品契约（开发时保持）
 

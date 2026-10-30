@@ -62,6 +62,43 @@ const sendOf = card => composerOf(card).children.find(node => node.className ===
 const menuActionsOf = card => card.children.find(node => node.className === 'tag-menu-actions');
 const summaryOf = head => head.children[2];
 
+test('unlocated inline cards keep explicit view, edit and removal actions when collapsed', () => {
+  let removed = 0;
+  const root = noteTag.makeAnchorTag({id:'unlocated-local',ordinal:3,kind:'note',text:'preserved',open:false}, {inline:true,remove:()=>removed++});
+  const card=root.children[1], actions=menuActionsOf(card);
+  assert.equal(root.classList.contains('tag-inline'),true);
+  assert.equal(actions.children.find(node=>node.className==='tag-view').textContent,'查看原文与备注');
+  const edit=actions.children.find(node=>node.className==='tag-edit');
+  assert.equal(edit.hidden,false);
+  edit.emit('click');
+  assert.equal(editorOf(card).hidden,false);
+  actions.children.find(node=>node.className==='tag-delete').emit('click');
+  assert.equal(removed,1);
+});
+
+test('collapsed inline discussions expose removal without sending or erasing history', () => {
+  let sent=0,removed=0;
+  const history=[{question:'original question',reply:'preserved reply',status:'completed'}];
+  const root=noteTag.makeAnchorTag({id:'orphan-thread',ordinal:5,kind:'discuss',text:'original question',status:'completed',history,open:false}, {inline:true,remove:()=>removed++,save:()=>sent++});
+  const card=root.children[1],actions=menuActionsOf(card);
+  assert.equal(editorOf(card).hidden,true);
+  const remove=actions.children.find(node=>node.className==='tag-remove');
+  assert.equal(remove.textContent,'移除标签（保留历史）');
+  remove.emit('click');
+  assert.equal(removed,1); assert.equal(sent,0);
+  assert.deepEqual(history,[{question:'original question',reply:'preserved reply',status:'completed'}]);
+});
+
+test('readonly inline cards cannot edit, send or remove preserved content', () => {
+  let removed=0;
+  const root=noteTag.makeAnchorTag({id:'readonly-unlocated',ordinal:4,kind:'note',text:'frozen'}, {inline:true,readOnly:true,remove:()=>removed++});
+  const card=root.children[1],actions=menuActionsOf(card);
+  const edit=actions.children.find(node=>node.className==='tag-edit'),remove=actions.children.find(node=>node.className==='tag-delete');
+  assert.equal(edit.disabled,true); assert.equal(remove.disabled,true);
+  edit.emit('click'); remove.emit('click');
+  assert.equal(editorOf(card).hidden,true); assert.equal(sendOf(card).disabled,true); assert.equal(removed,0);
+});
+
 test('note and discussion drafts update summaries and survive collapse/re-expansion', () => {
   for (const kind of ['note', 'discuss']) {
     let draft = 'OLD';

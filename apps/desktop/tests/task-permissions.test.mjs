@@ -9,7 +9,7 @@ import {createPrivilegeBroker} from '../src/main/privilege-broker.mjs';
 const wait=async fn=>{const end=Date.now()+4000;while(Date.now()<end){if(fn())return;await new Promise(r=>setTimeout(r,5));}throw Error('condition timeout');};
 const readTool=(projectPath,relPath,callId)=>({tool:'nozeli_document_read',arguments:{relPath,projectPath},callId});
 const REAL=process.execPath;
-const execTool=(_command,args,cwd,purpose,elevation)=>({tool:'nozeli_privileged_execute',arguments:{command:REAL,args,cwd,purpose,...(elevation?{elevation}:{})},callId:randomUUID()});
+const execTool=(_command,args,cwd,purpose,elevation)=>({tool:'nozeli_privileged_execute',arguments:{command:REAL,args,cwd,purpose,dangerousEffect:'Fixture-declared irreversible destruction of synthetic maintenance data',...(elevation?{elevation}:{})},callId:randomUUID()});
 // Broker fixture: records every authenticate/execute call; never performs real
 // OS work. Identity facts are fixture facts, exactly like the adapter fixture
 // of the live smoke — they prove plumbing, not real root.
@@ -189,7 +189,7 @@ test('stale version, tampered hash, task end and restart generation all fail clo
   const {c,A,B,host,openTurn,runApproved,permissions}=await fixture(t,{broker});
   await openTurn('维护系统状态');
   const frozen=normalizeExecutionEffect({command:REAL,args:['--maintain'],cwd:A.rootDisplay});
-  const blocked=await c.onTool('frontdesk',{tool:'nozeli_privileged_execute',arguments:{command:frozen.command,args:frozen.args,cwd:frozen.cwd,purpose:'维护'},callId:randomUUID()});
+  const blocked=await c.onTool('frontdesk',{tool:'nozeli_privileged_execute',arguments:{command:frozen.command,args:frozen.args,cwd:frozen.cwd,purpose:'维护',dangerousEffect:'Fixture-declared irreversible destruction of synthetic maintenance data'},callId:randomUUID()});
   const requestId=blocked.error.requestId;
   // Stale expectedVersion refuses the decision outright.
   await assert.rejects(c.resolveEffectRequest({requestId,expectedVersion:9,action:'approve-once',requestKey:'attention:'+requestId+':9:approve-once'}),/已过期/);
@@ -312,7 +312,7 @@ test('cwd validation follows the injected platform parser (win32 drive paths val
   // The single hash canon stays platform-neutral and array-correct.
   assert.match(effectHash(frozen),/^[a-f0-9]{64}$/);
 });
-test('cross-API regression: started blocks retries, completed replays receipt, new op allowed, root-task authority follows the persistent grant',async t=>{
+test('cross-API regression: started blocks retries, completed replays receipt, new op allowed, admin task grants stay exact-effect-bound',async t=>{
   const fx=brokerFixture();
   const {c,A,openTurn,runApproved,permissions,host}=await fixture(t,{broker:fx.broker});
   await openTurn('跨接口回归');
@@ -335,14 +335,13 @@ test('cross-API regression: started blocks retries, completed replays receipt, n
   // 3) a NEW operation under the same task grant is allowed again.
   const newOp=await permissions.prepareEffect(A.id,{sourceJobId:'job-r',permissionTaskId:grant0.permissionTaskId,effectType:'host-exec',frozenEffect:state0.requests.find(r=>r.id===requestId).frozenEffect,operationKey:'op-2'});
   assert.equal(newOp.status,'allowed');
-  // 4) root-task authority: a DIFFERENT admin command in the same root is
-  //    authorized through preEffect's view of the persistent grant, and dies
-  //    with that grant's revoke.
+  // 4) A different admin command needs its own approval even in the same cwd;
+  //    the existing task grant never provides broad root-command authority.
   const otherFrozen={...state0.requests.find(r=>r.id===requestId).frozenEffect,command:'/usr/bin/other-admin',args:[]};delete otherFrozen.commandDigest;
   const covered=await permissions.prepareEffect(A.id,{sourceJobId:'job-r',permissionTaskId:grant0.permissionTaskId,effectType:'host-exec',frozenEffect:otherFrozen,operationKey:'op-3'});
-  assert.equal(covered.status,'allowed');assert.equal(covered.grant.coveredBy,grant0.id);
+  assert.equal(covered.status,'required');
   const pre=await permissions.preEffect(A.id,{effectHash:covered.effectHash,permissionTaskId:grant0.permissionTaskId,grantId:grant0.id,frozenEffect:otherFrozen});
-  assert.equal(pre.ok,true,JSON.stringify(pre.code));assert.equal(pre.grant.coveredBy,grant0.id);
+  assert.equal(pre.ok,false);assert.equal(pre.code,'EFFECT_HASH_MISMATCH');
   const outside={...otherFrozen,cwd:'/etc'};delete outside.commandDigest;
   const outsidePrep=await permissions.prepareEffect(A.id,{sourceJobId:'job-r',permissionTaskId:grant0.permissionTaskId,effectType:'host-exec',frozenEffect:outside,operationKey:'op-4'});
   assert.equal(outsidePrep.status,'required');
@@ -364,4 +363,29 @@ test('legacy pending cross-project requests migrate explicitly and stop holding 
   // continuation job was queued on its behalf.
   assert.equal(await permissions.heldFor(A.id,{id:'legacy-job',context:{permissionTaskId:'legacy-task'}}),false);
   assert.equal(c.store.state.jobs.filter(j=>j.key==='frontdesk-permission:'+legacyId).length,0);
+});
+
+test('legacy ordinary host-execution requests migrate without replay while dangerous requests and denials remain binding',async t=>{
+  const {calls,broker}=brokerFixture();
+  const {c,A,host,permissions}=await fixture(t,{broker});
+  const ordinary=normalizeExecutionEffect({command:REAL,args:['--version'],cwd:A.rootDisplay});
+  const dangerous={...ordinary,dangerousEffect:'Irreversible destruction of synthetic maintenance data'};
+  const request=(id,frozenEffect,status='pending')=>({id,version:1,kind:'effect',status,effectType:'host-exec',sourceJobId:'legacy-job',permissionTaskId:'legacy-task',frozenEffect,effectHash:effectHash(frozenEffect)});
+  await host.storage.putLocal(A.id,'managed:task-permissions',{schema:2,requests:[request('legacy-ordinary',ordinary),request('legacy-dangerous',dangerous),request('legacy-denied',ordinary,'denied')],grants:[],decisions:[],executions:[]});
+  const jobsBefore=c.store.state.jobs.length;
+  const state=await permissions.read(A.id);
+  const migrated=state.requests.find(item=>item.id==='legacy-ordinary');
+  assert.equal(migrated.status,'migrated');
+  assert.equal(migrated.migrationReason,'default-yolo');
+  assert.ok(migrated.migratedAt);
+  assert.equal(state.requests.find(item=>item.id==='legacy-dangerous').status,'pending');
+  assert.equal(state.requests.find(item=>item.id==='legacy-denied').status,'denied');
+  assert.equal(state.grants.length,0);
+  assert.equal(state.executions.length,0);
+  assert.equal(c.store.state.jobs.length,jobsBefore);
+  assert.equal(calls.authenticate.length,0);
+  assert.equal(calls.execute.length,0);
+  const retry=await permissions.prepareOrdinary(A.id,{sourceJobId:'legacy-job',permissionTaskId:'legacy-task',effectType:'host-exec',frozenEffect:ordinary,operationKey:'legacy-retry'});
+  assert.equal(retry.status,'denied');
+  assert.equal((await permissions.read(A.id)).grants.length,0);
 });
