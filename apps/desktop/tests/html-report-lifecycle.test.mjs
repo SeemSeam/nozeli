@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import {randomUUID} from 'node:crypto';
+import {randomUUID,createHash} from 'node:crypto';
+import {createReadStream} from 'node:fs';
 import {Workspace} from '../src/agents/managed/workspace.mjs';
 import {Controller} from '../src/agents/managed/controller.mjs';
 import {managedReportSource,managedHistory} from '../src/agents/managed-report-source.mjs';
@@ -60,4 +61,25 @@ test('rejecting wrong publication bodies never creates receipts and legacy HTML 
  assert.equal(reportSemanticText(await readStoredReport(reopened,row),row.report).includes('历史 HTML 问题正文'),true);
  const stateOnDisk=await readTestState(reopened);
  assert.equal(stateOnDisk.reportStateVersion,1);
+});
+
+test('large linked binary publishes immutable streamed evidence without embedded preview allocation',async t=>{
+ const {store,work,options}=await fixture(t),file=path.join(store.content,'large.bin');
+ const handle=await fs.open(file,'wx');
+ try{await handle.truncate(33*1024*1024);}finally{await handle.close();}
+ const row=await store.publish(work.id,work.revision,'result',page('<p>Binary delivered</p><a href="large.bin">Large artifact</a>'),randomUUID(),{files:[{relPath:'large.bin'}]});
+ const artifact=row.snapshot.files.find(entry=>entry.relPath==='large.bin');
+ assert.equal(artifact.size,33*1024*1024);assert.equal(artifact.objectDigest,artifact.digest);
+ assert.equal((await store.storage.verifyObject(store.projectId,artifact.digest)).byteLength,artifact.size);
+ await fs.writeFile(file,'later project replacement');
+ const source=await managedReportSource({...options,objectId:row.objectId}),reference=await source.readReference('0');
+ assert.equal(reference.digest,artifact.digest);assert.equal(reference.byteLength,artifact.size);
+ assert.equal(reference.bytes,null);assert.equal(reference.reason,'byte-budget');
+ const destination=path.join(path.dirname(store.content),'exported-large.bin');
+ const saved=await source.copyReference('0',destination);
+ assert.equal(saved.byteLength,artifact.size);assert.equal(saved.digest,artifact.digest);
+ const hash=createHash('sha256');for await(const chunk of createReadStream(destination))hash.update(chunk);
+ assert.equal(hash.digest('hex'),artifact.digest);
+ await assert.rejects(source.copyReference('0',destination),{code:'EEXIST'});
+ assert.equal((await fs.stat(destination)).size,artifact.size);
 });

@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {ExecutionWorkspace} from '../src/agents/managed/execution-workspace.mjs';
 import {git,str} from '../src/agents/managed/git-service.mjs';
+import {withSafeFile} from '../src/agents/managed/file-stream.mjs';
 import {openTestWorkspace} from './project-storage.fixture.mjs';
 
 async function fixture(t,{plain=false}={}){
@@ -103,8 +104,16 @@ test('created repository resumes after init with populated index, not staged bas
 test('target ref lock failure never writes Worker bytes into original files',async t=>{
  const f=await fixture(t);await candidate(f);const refLock=path.join(f.project,'.git','refs','heads','main.lock');await fs.writeFile(refLock,'external lock');await assert.rejects(finish(f));assert.equal(await f.read('worker.txt'),'base\n');assert(await fs.stat(f.execution.directory(f.work.id)));await fs.unlink(refLock);await finish(f);assert.equal(await f.read('worker.txt'),'worker result\n');
 });
-test('snapshot hashes captured bytes rather than reopening mutable Worker pathname',async t=>{
- const f=await fixture(t);await f.execution.prepare(f.work.id);const dir=f.execution.directory(f.work.id);await fs.mkdir(path.join(dir,'nested'));await fs.writeFile(path.join(dir,'nested','out.txt'),'safe captured');const outside=path.join(f.root,'outside');await fs.mkdir(outside);await fs.writeFile(path.join(outside,'out.txt'),'HOST SECRET');const blob=f.execution.blob.bind(f.execution);let changed=false;f.execution.blob=async(cwd,bytes)=>{if(bytes.toString()==='safe captured'&&!changed){changed=true;await fs.rename(path.join(dir,'nested'),path.join(dir,'nested-held'));await fs.symlink(outside,path.join(dir,'nested'));}return blob(cwd,bytes);};await assert.rejects(f.execution.publish(f.work,{id:'race'}));assert.equal(await f.read('worker.txt'),'base\n');assert.equal((await f.execution.readManifest(f.work.id)).candidate,undefined);
+test('streamed capture rejects an ancestor swap without reading the replacement pathname',async t=>{
+ const f=await fixture(t);await f.execution.prepare(f.work.id);const dir=f.execution.directory(f.work.id),nested=path.join(dir,'nested'),outside=path.join(f.root,'outside');
+ await fs.mkdir(nested);await fs.writeFile(path.join(nested,'out.txt'),'safe captured');await fs.mkdir(outside);await fs.writeFile(path.join(outside,'out.txt'),'HOST SECRET');
+ let captured='';
+ await assert.rejects(withSafeFile(dir,'nested/out.txt',async file=>{
+  await fs.rename(nested,path.join(dir,'nested-held'));await fs.symlink(outside,nested);
+  for await(const chunk of file.stream())captured+=chunk.toString();
+ }),{code:'SOURCE_CHANGED'});
+ assert.equal(captured,'safe captured');assert.equal(await fs.readFile(path.join(outside,'out.txt'),'utf8'),'HOST SECRET');
+ await assert.rejects(f.execution.publish(f.work,{id:'race'}));assert.equal(await f.read('worker.txt'),'base\n');assert.equal((await f.execution.readManifest(f.work.id)).candidate,undefined);
 });
 test('completed hook commit is recovered without executing hooks again',async t=>{
  const f=await fixture(t);await candidate(f);await fs.writeFile(path.join(f.project,'.git','hooks','pre-commit'),'#!/bin/sh\nprintf x >> .git/hook-count\n',{mode:0o755});const save=f.execution.save.bind(f.execution);let failed=false;f.execution.save=async m=>{if(!failed&&m.acceptancePreparation?.status==='complete'){failed=true;throw Error('crash after hook commit');}await save(m);};await assert.rejects(finish(f),/crash after hook commit/);const m=await f.execution.readManifest(f.work.id),shadow=m.acceptancePreparation.shadow;assert.equal(await fs.readFile(path.join(shadow,'.git','hook-count'),'utf8'),'x');f.execution=new ExecutionWorkspace(f.store);await finish(f);assert.equal(await fs.readFile(path.join(shadow,'.git','hook-count'),'utf8'),'x');assert.equal(await f.read('worker.txt'),'worker result\n');
@@ -128,4 +137,50 @@ test('document text uses LF coordinates and rejects non-UTF8 or binary reads',as
 });
 test('document parent substitution after durable staging cannot replace or create outside files',async t=>{
  const f=await fixture(t);await f.execution.prepare(f.work.id);const dir=f.execution.directory(f.work.id),nested=path.join(dir,'nested'),outside=path.join(f.root,'external');await fs.mkdir(nested);await fs.mkdir(outside);await fs.writeFile(path.join(nested,'file.txt'),'inside');await fs.writeFile(path.join(outside,'file.txt'),'outside sentinel');const read=await f.execution.documentOperation({work:f.work,op:'read',arguments:{relPath:'nested/file.txt'}});assert(read.ok);const save=f.execution.save.bind(f.execution);let swapped=false;f.execution.save=async m=>{await save(m);if(m.documentIntent&&!swapped){swapped=true;assert(await fs.stat(m.documentIntent.temp),'new bytes must be durably staged in the original directory before rename');assert.equal(path.dirname(m.documentIntent.temp),path.dirname(m.documentIntent.file));await fs.rename(nested,path.join(dir,'held-nested'));await fs.symlink(outside,nested);}};const result=await f.execution.documentOperation({work:f.work,op:'apply',callId:'parent-race',arguments:{readHandle:read.value.readHandle,replacements:[{oldText:'inside',newText:'replacement'}]}});assert.equal(result.ok,false);assert(swapped);assert.equal(await fs.readFile(path.join(outside,'file.txt'),'utf8'),'outside sentinel');assert.deepEqual(await fs.readdir(outside),['file.txt']);assert.equal(await fs.readFile(path.join(dir,'held-nested','file.txt'),'utf8'),'inside');assert.deepEqual(await fs.readdir(path.join(dir,'held-nested')),['file.txt']);
+});
+
+test('tracked CCB metadata never blocks snapshots or becomes a deletion; missing copy reads source without write authority',async t=>{
+ const f=await fixture(t),rel='.ccb/.codex-demo-session';
+ await fs.mkdir(path.join(f.project,'.ccb'));await f.write(rel,'synthetic baseline');await git(f.project,['add',rel]);await git(f.project,['-c','user.name=Test','-c','user.email=test@example.invalid','commit','-m','metadata fixture']);
+ await f.write(rel,'current source sentinel');
+ const m=await f.execution.prepare(f.work.id);assert.equal(m.preparation,'complete');assert.equal(m.files[rel],undefined);
+ assert.equal(await str(f.project,['show',m.inputCommit+':'+rel]),'synthetic baseline');assert.equal(await f.read(rel),'current source sentinel');
+ const invoke=(op,args)=>f.execution.documentOperation({work:f.work,op,arguments:args});
+ const copied=await invoke('read',{relPath:rel});assert.equal(copied.ok,true);assert.equal(copied.value.provenance.kind,'worktree');assert.equal(copied.value.text,'synthetic baseline');
+ await fs.rm(path.join(m.directory,'.ccb'),{recursive:true});
+ const fallback=await invoke('read',{relPath:rel});assert.equal(fallback.ok,true);assert.equal(fallback.value.text,'current source sentinel');assert.equal(fallback.value.provenance.kind,'project-source');assert.equal(fallback.value.provenance.root,f.project);assert.equal(fallback.value.provenance.frozen,false);assert.equal(fallback.value.readHandle,null);assert.equal(fallback.value.editable,false);
+ const apply=await invoke('apply',{readHandle:fallback.value.readHandle,replacements:[{oldText:'current',newText:'bad'}]});assert.equal(apply.error.code,'READ_HANDLE_REJECTED');
+ for(const protectedPath of ['.git/config','.nozeli/project.json'])assert.equal((await invoke('read',{relPath:protectedPath})).error.code,'PATH_REJECTED');
+ await fs.writeFile(path.join(m.directory,'worker.txt'),'worker result\n');const published=await f.execution.publish(f.work,{id:'metadata'});assert.deepEqual(published.candidate.files,['worker.txt']);assert.equal(await str(f.project,['show',published.candidate.commit+':'+rel]),'synthetic baseline');
+ await finish(f);assert.equal(await f.read(rel),'current source sentinel');assert.equal(await str(f.project,['show','HEAD:'+rel]),'synthetic baseline');
+});
+
+test('declared ignored JSON and executable freeze exactly, exclude caches and retain CAS at acceptance',async t=>{
+ const f=await fixture(t);await f.write('.gitignore','build/\n.nozeli/\n');await git(f.project,['add','.gitignore']);await git(f.project,['-c','user.name=Test','-c','user.email=test@example.invalid','commit','-m','ignore delivery outputs']);
+ const m=await f.execution.prepare(f.work.id),dir=path.join(m.directory,'build');await fs.mkdir(dir);await fs.writeFile(path.join(dir,'validation.json'),'{"ok":true}\n');await fs.writeFile(path.join(dir,'run'),'#!/bin/sh\nexit 0\n',{mode:0o755});await fs.writeFile(path.join(dir,'cache.bin'),'not an artifact');
+ const explicitFiles=['build/validation.json','build/run'],published=await f.execution.publish(f.work,{id:'ignored'},()=>true,null,{explicitFiles});assert.deepEqual(published.candidate.files,['build/run','build/validation.json']);assert.deepEqual(published.candidate.explicitFiles,explicitFiles);assert.equal(await str(f.project,['show',published.candidate.commit+':build/validation.json']),'{"ok":true}');assert.match(await str(f.project,['ls-tree',published.candidate.commit,'build/run']),/^100755 /);await assert.rejects(str(f.project,['show',published.candidate.commit+':build/cache.bin']));await assert.rejects(fs.stat(path.join(f.project,'build/validation.json')));
+ await fs.writeFile(path.join(dir,'validation.json'),'{"ok":false}\n');await assert.rejects(finish(f),{code:'UNPUBLISHED_CHANGES'});await fs.writeFile(path.join(dir,'validation.json'),'{"ok":true}\n');
+ await fs.mkdir(path.join(f.project,'build'));await f.write('build/validation.json','user concurrent material');await assert.rejects(finish(f),{code:'USER_DIRTY'});assert.equal(await f.read('build/validation.json'),'user concurrent material');await fs.unlink(path.join(f.project,'build/validation.json'));
+ await finish(f);assert.equal(await f.read('build/validation.json'),'{"ok":true}\n');assert.equal((await fs.stat(path.join(f.project,'build/run'))).mode&0o111,0o111);assert.equal(await str(f.project,['show','HEAD:build/validation.json']),'{"ok":true}');await assert.rejects(fs.stat(path.join(f.project,'build/cache.bin')));
+});
+
+test('explicit capture refuses missing files, credentials and protected metadata without changing target',async t=>{
+ const f=await fixture(t),m=await f.execution.prepare(f.work.id),head=await str(f.project,['rev-parse','HEAD']);
+ await fs.writeFile(path.join(m.directory,'.env'),'synthetic secret');
+ for(const rel of ['.env','.git/config','.nozeli/project.json'])await assert.rejects(f.execution.publish(f.work,{id:'unsafe'},()=>true,null,{explicitFiles:[rel]}),{code:'PATH_REJECTED'});
+ await assert.rejects(f.execution.publish(f.work,{id:'missing'},()=>true,null,{explicitFiles:['build/missing.json']}),{code:'ARTIFACT_UNAVAILABLE'});assert.equal(await str(f.project,['rev-parse','HEAD']),head);
+});
+
+test('declaring a tracked deletion retains normal publication and acceptance semantics',async t=>{
+ const f=await fixture(t),m=await f.execution.prepare(f.work.id);await fs.unlink(path.join(m.directory,'worker.txt'));
+ const published=await f.execution.publish(f.work,{id:'delete'},()=>true,null,{explicitFiles:['worker.txt']});assert.deepEqual(published.candidate.files,['worker.txt']);assert.equal(published.candidate.fileDigests['worker.txt'],undefined);await finish(f);await assert.rejects(fs.stat(path.join(f.project,'worker.txt')));await assert.rejects(str(f.project,['show','HEAD:worker.txt']));
+});
+
+test('explicit CCB configuration edit publishes and merges without auto-delivering session metadata',async t=>{
+ const f=await fixture(t),config='.ccb/config.json',session='.ccb/.codex-demo-session';await fs.mkdir(path.join(f.project,'.ccb'));await f.write(config,'{"enabled":false}\n');await f.write(session,'baseline session');await git(f.project,['add','.ccb']);await git(f.project,['-c','user.name=Test','-c','user.email=test@example.invalid','commit','-m','ordinary CCB configuration']);
+ const m=await f.execution.prepare(f.work.id),invoke=(op,args)=>f.execution.documentOperation({work:f.work,op,arguments:args,callId:op+'-ccb-config'}),read=await invoke('read',{relPath:config});assert.equal(read.ok,true);assert.equal(read.value.provenance.kind,'worktree');
+ const edited=await invoke('apply',{readHandle:read.value.readHandle,replacements:[{oldText:'false',newText:'true'}]});assert.equal(edited.ok,true,JSON.stringify(edited));await fs.writeFile(path.join(m.directory,session),'worker session mutation');
+ const automatic=await f.execution.publish(f.work,{id:'ccb-auto'});assert.deepEqual(automatic.candidate.files,[]);assert.equal(await str(f.project,['show',automatic.candidate.commit+':'+config]),'{"enabled":false}');
+ const published=await f.execution.publish(f.work,{id:'ccb-explicit'},()=>true,null,{explicitFiles:[config]});assert.deepEqual(published.candidate.files,[config]);assert.equal(await str(f.project,['show',published.candidate.commit+':'+session]),'baseline session');assert.equal(await f.read(config),'{"enabled":false}\n');
+ await finish(f);assert.equal(await f.read(config),'{"enabled":true}\n');assert.equal(await str(f.project,['show','HEAD:'+config]),'{"enabled":true}');assert.equal(await f.read(session),'baseline session');
 });

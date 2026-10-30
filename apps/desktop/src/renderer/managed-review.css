@@ -10,7 +10,9 @@
 .managed-review-actions button{padding:5px 9px;font-size:12px;margin:0;}
 .managed-review-actions [data-review-action=accept]:not(:disabled){border-color:var(--green);color:var(--green);font-weight:650;}
 .managed-review-actions :is([data-review-action=refresh],[data-review-action=recover-instruction]){border-color:transparent;background:transparent;color:var(--muted);}
-.managed-review-files{margin:10px 0;border-block:1px solid var(--line);min-width:0;}
+.managed-review-file-disclosure{margin:10px 0;min-width:0;}
+.managed-review-file-disclosure>summary{cursor:pointer;padding:6px 0;font-weight:600;}
+.managed-review-files{margin:6px 0;border-block:1px solid var(--line);min-width:0;max-height:min(40vh,360px);overflow:auto;scrollbar-gutter:stable;}
 .managed-review-file{min-width:0;border-bottom:1px solid var(--line);}
 .managed-review-file:last-child{border-bottom:0;}
 .managed-review-file-header{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:6px;align-items:center;min-height:40px;}

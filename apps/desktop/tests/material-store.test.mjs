@@ -97,7 +97,22 @@ test('rejects directories used as content entries', async t => {
 
 test('requires an absolute application directory and a bounded byte limit', () => {
   assert.throws(() => new MaterialStore('relative'), { code: 'INVALID_DIRECTORY' });
-  for (const maxBytes of [0, -1, NaN, Infinity, 300 * 1024 * 1024]) {
+  for (const maxBytes of [0, -1, NaN, Infinity, Number.MAX_SAFE_INTEGER+1]) {
     assert.throws(() => new MaterialStore(os.tmpdir(), { maxBytes }), { code: 'INVALID_LIMIT' });
   }
+});
+
+test('streams large immutable objects independently of bounded reader limits', async t => {
+  const {store}=await fixture(t,{maxBytes:4});
+  const chunk=Buffer.alloc(256*1024,37),count=129;
+  async function* input(){for(let i=0;i<count;i++)yield chunk;}
+  const ref=await store.putStream(input());
+  assert.equal(ref.byteLength,chunk.length*count);
+  assert.deepEqual(await store.verify(ref.digest),ref);
+  await assert.rejects(store.get(ref.digest),{code:'MATERIAL_TOO_LARGE'});
+  const copied=new MaterialStore(path.join(path.dirname(store.directory),'copied'),{maxBytes:4});
+  assert.deepEqual(await store.withObject(ref.digest,file=>copied.putStream(file.stream(),{digest:ref.digest})),ref);
+  assert.deepEqual(await copied.verify(ref.digest),ref);
+  await assert.rejects(store.putStream([Buffer.from('wrong')],{digest:ref.digest}),{code:'MATERIAL_CORRUPT'});
+  assert.deepEqual(await fs.readdir(store.directory),[ref.digest]);
 });

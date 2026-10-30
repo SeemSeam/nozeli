@@ -1,0 +1,23 @@
+name: Feature request
+description: Explain a user need and a bounded improvement.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: User problem
+      description: What are you trying to do, and what prevents you today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Include affected platforms and how the feature fits the continuous reading/editing workspace.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and risks
+      description: Existing workflow, data preservation, compatibility, execution or privacy implications.

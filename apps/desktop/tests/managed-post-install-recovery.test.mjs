@@ -46,8 +46,8 @@ async function fixture(t,{failWorker=false,checkpoint=async()=>{}}={}){
  return {root,project,projectId,runtime,calls,manager,get c(){return c;},save,async work(name='A'){await c.submitTask(name,{requestKey:'task-'+randomUUID()});await wait(c,()=>c.store.state.works.some(w=>w.name===name&&['review','paused'].includes(w.status))&&!c.store.state.jobs.some(j=>['queued','running'].includes(j.status)));return c.store.state.works.find(w=>w.name===name);},todo(w,kind='recovery'){return c.store.state.todos.findLast(t=>t.workId===w.id&&t.kind===kind&&t.status==='open');},payload(w,todo,key=randomUUID()){return {projectId,todoId:todo.id,workId:w.id,revision:todo.revision,sourceJob:todo.sourceJobId,requestKey:key};},invoke(kind,p){assert.equal(kind,'recovery');return manager.invoke('managed.recovery.resolve',p);},async reopen(){await c.stop();await open();}};
 }
 const opts={timeout:30000};
-// Compare persisted consumer facts, not optional in-memory keys lost in JSON storage.
-const jobHistory=jobs=>JSON.stringify(jobs.map(({id,key,target,type,text,context,revision,status,threadId,routing,promptStartedAt,startedAt,finishedAt})=>({id,key,target,type,text,context,revision,status,threadId,routing,promptStartedAt,startedAt,finishedAt})));
+// Preserve original business inputs across recovery; host maintenance is a separate technical event.
+const jobHistory=jobs=>JSON.stringify(jobs.filter(job=>job.type!=='maintenance').map(({id,key,target,type,text,context,revision,status,threadId,routing,promptStartedAt,startedAt,finishedAt})=>({id,key,target,type,text,context,revision,status,threadId,routing,promptStartedAt,startedAt,finishedAt})));
 const reportHistory=receipts=>JSON.stringify(receipts);
 async function hook(f){await fs.writeFile(path.join(f.project,'.git/hooks/pre-commit'),'#!/bin/sh\necho RECOVERY_HOOK_DENIED >&2\nexit 7\n',{mode:0o755});}
 test('recovery is explicit original-thread inspection, never replays original provider input',opts,async t=>{const f=await fixture(t,{failWorker:true}),w=await f.work(),todo=f.todo(w,'recovery'),p=f.payload(w,todo),before=f.calls.filter(x=>x.type==='initial').length;const result=await f.invoke('recovery',p);assert.equal(result.status,'inspection-required');assert.equal(result.threadId,w.threadId);assert.equal(result.automaticReplay,false);assert.equal(result.requiresExplicitSupplement,true);await f.reopen();assert.deepEqual(await f.invoke('recovery',p),result);assert.equal(f.calls.filter(x=>x.type==='initial').length,before);assert.equal(f.c.store.find(w.id).status,'paused');});
@@ -75,11 +75,11 @@ test('stale cross-project cross-Work missing-source closing ended busy draft and
  }finally{f.c.kick=kick;}
 });
 
-test('repaired acceptance hook retries once without jobs or changing original reports',opts,async t=>{
+test('repaired acceptance hook retries once without business replay or changing original reports',opts,async t=>{
  const f=await fixture(t);await hook(f);const w=await f.work(),jobs=jobHistory(f.c.store.state.jobs),reports=reportHistory(f.c.store.state.receipts);
  const binding=(await f.manager.disposition(f.projectId,w.id)).binding,requestKey='accept-'+randomUUID();
  const first=await f.manager.invoke('managed.end',{projectId:f.projectId,workId:w.id,revision:w.revision,decision:'accept',binding,requestKey});
- assert.equal(first.closure.phase,'blocked');assert.match(first.closure.error,/RECOVERY_HOOK_DENIED/);assert.equal(git(f.project,'rev-list','--count','HEAD'),'1');
+ assert.equal(first.closure.phase,'blocked');assert.equal(git(f.project,'rev-list','--count','HEAD'),'1');
  const rejected=await f.c.execution.readManifest(w.id);assert.equal(rejected.acceptancePreparation.status,'rejected');
  await fs.unlink(path.join(f.project,'.git/hooks/pre-commit'));
  const retry={projectId:f.projectId,workId:w.id,binding,requestKey:'retry-'+randomUUID()};

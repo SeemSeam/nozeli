@@ -70,8 +70,8 @@ export function createReviewDocumentAdapter({ host, managed }) {
   // A missing object reads as absent; storage corruption must surface instead
   // of silently falling back to another body.
   async function objectBytes(projectId, digest) {
-    try { return await readManagedObject(host.storage, projectId, digest); }
-    catch (error) { if (['NOT_FOUND', 'OBJECT_MISSING', 'ENOENT'].includes(error.code)) return null; throw error; }
+    try { return await readManagedObject(host.storage, projectId, digest,{maxBytes:32*1024*1024}); }
+    catch (error) { if (['NOT_FOUND', 'OBJECT_MISSING', 'MATERIAL_MISSING', 'MATERIAL_TOO_LARGE', 'ENOENT'].includes(error.code)) return null; throw error; }
   }
   async function candidateBytes(projectId, value, file) {
     if (typeof file.candidateText === 'string') return Buffer.from(file.candidateText, 'utf8');

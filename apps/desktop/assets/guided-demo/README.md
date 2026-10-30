@@ -6,9 +6,10 @@
 
 我们用虚构数据了解阅读、记录与共同修改的流程。方法 A 使用固定测点，方法 B 使用移动测点。它们的覆盖范围与成本不同，不能只凭一个数字判断优劣。
 
-- research-notes.txt：用于真实编辑与保存。
+- research-notes.md：结构化 Markdown 研究笔记，主线的阅读、批注与编辑都围绕它进行。
+- comparison-before.md / comparison-after.md：并排差异演示使用的 Markdown 对照。
 - paper.pdf：三页可选中文字的阅读样例。
-- methods.png：两种方法的示意图，可用于位置讨论与涂鸦。
+- methods.png：两种方法的示意图，可用于位置讨论与涂鸦，也被笔记引用。
 - sample.tex：简短 TeX 源文件。
 - presentation.pptx：同一主题的三张幻灯片。
 - manuscript.docx：可编辑的简短研究说明。

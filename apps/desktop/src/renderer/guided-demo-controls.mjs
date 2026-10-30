@@ -1,9 +1,8 @@
-import {setIconButton} from './ui-icons.mjs';
 import './settings-appearance.css';
 import './guided-demo-controls.css';
 
 const $=id=>document.getElementById(id),root=$('guided-demo-player'),buttons=new Map();
-let model=null,bounds=null,collapsed=false,drag=null,moveFrame=0,pendingMove=null,measuredHeight=0;
+let model=null,bounds=null,drag=null,moveFrame=0,pendingMove=null,measuredHeight=0;
 const invoke=async(op,payload={})=>{const result=await window.nozeli.invoke(op,payload);if(!result.ok)throw Error(result.error?.message||'控制区操作未完成');return result.value;};
 function showError(error){$('demo-error').hidden=false;$('demo-error').textContent=error.message;}
 async function action(controlId,extra={}){
@@ -16,13 +15,14 @@ function render(next){
   model=next;root.hidden=!model;if(!model)return;
   document.documentElement.dataset.theme=model.theme==='dark'?'dark':'light';document.documentElement.dataset.palette=model.palette||'sage';
   root.dataset.demoState=model.status;root.dataset.sessionId=model.sessionId;root.dataset.epoch=String(model.epoch);
-  $('demo-title').textContent=model.title;$('demo-progress').textContent=model.progress;$('demo-subtitle').textContent=model.caption;
+  $('demo-title').textContent=model.section||model.title;$('demo-progress').textContent=model.progress;
   // While the user is holding the slider its value is theirs; state pushes
   // must not snap the thumb back to the still-committing step.
   const seek=$('demo-seek');
   seek.max=String(Math.max(0,model.stepTotal-1));
   seek.disabled=!seekDragging&&(!model.seekable||!['playing','paused'].includes(model.status));
   if(!seekDragging)seek.value=String(Math.min(model.stepIndex,model.stepTotal-1));
+  seek.setAttribute('aria-valuetext',`第 ${Number(seek.value)+1} 步，共 ${model.stepTotal} 步`);
   for(const control of model.buttons){
     let button=buttons.get(control.id);
     if(!button){button=document.createElement('button');button.type='button';button.dataset.demoControl=control.id;button.onclick=()=>{const intent=control.id==='play'?(model.status==='playing'?'pause':'play'):undefined;void action(control.id,intent?{intent}:{});};buttons.set(control.id,button);$('demo-primary').append(button);}
@@ -43,12 +43,10 @@ async function committedAction(controlId,extra={}){
 }
 const seekInput=$('demo-seek');
 seekInput.addEventListener('pointerdown',()=>{if(seekInput.disabled)return;seekDragging=true;if(model?.status==='playing'){seekResume=true;void action('play',{intent:'pause'});}});
-seekInput.addEventListener('input',()=>{seekDragging=true;});
+seekInput.addEventListener('input',()=>{seekDragging=true;if(model)seekInput.setAttribute('aria-valuetext',`第 ${Number(seekInput.value)+1} 步，共 ${model.stepTotal} 步`);});
 seekInput.addEventListener('change',()=>{const index=Number(seekInput.value);seekDragging=false;const resume=seekResume;seekResume=false;if(!model||seekInput.disabled||!Number.isInteger(index))return;void committedAction('seek',{stepIndex:index,...(resume?{resume:true}:{})}).catch(showError);});
 const seekRelease=()=>{if(!seekDragging)return;seekDragging=false;if(!seekResume)return;seekResume=false;void committedAction('play',{intent:'play'}).catch(showError);};
 seekInput.addEventListener('pointerup',seekRelease);seekInput.addEventListener('pointercancel',seekRelease);seekInput.addEventListener('blur',seekRelease);
-$('demo-collapse').onclick=()=>{collapsed=!collapsed;root.classList.toggle('demo-collapsed',collapsed);$('demo-collapse').setAttribute('aria-expanded',String(!collapsed));setIconButton($('demo-collapse'),collapsed?'chevron-up':'chevron-down',{label:collapsed?'展开说明':'收起说明'});measure();};
-setIconButton($('demo-collapse'),'chevron-down',{label:'收起说明'});
 function queueMove(x,y){pendingMove={x,y};if(!moveFrame)moveFrame=requestAnimationFrame(()=>{moveFrame=0;const point=pendingMove;pendingMove=null;void invoke('workspace.demoControls.drag',point).then(value=>{bounds=value.bounds;}).catch(showError);});}
 $('demo-drag').onpointerdown=event=>{
   if(event.button!==0||event.target.closest('button,input,summary')||!bounds)return;

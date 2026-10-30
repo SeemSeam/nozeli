@@ -38,7 +38,7 @@ try {
   const id = await active();
   await click('暂停');
   const before = await paused();
-  const notes = path.join(before.project.rootDisplay, 'research-notes.txt');
+  const notes = path.join(before.project.rootDisplay, 'research-notes.md');
   const initial = await fs.readFile(notes, 'utf8');
   await h.auditIsolation();
   await h.closeNormally(shell);
@@ -52,14 +52,14 @@ try {
   mark('normal restart remains paused without replay', {id});
 
   await h.seek(controls, 0, 'seek back to the opening step');
-  current = await playUntil(async () => { const windows = await h.invoke(shell, 'workspace.windows.list', {projectId: id}); return windows.some(window => window.surfaces.some(surface => surface.relPath === 'research-notes.txt' && surface.visible)); }, 'research notes surface opens');
-  current = await playUntil(async () => (await fs.readFile(notes, 'utf8')).includes('演示记录：方法 B'), 'agent edit lands on disk');
+  current = await playUntil(async () => { const windows = await h.invoke(shell, 'workspace.windows.list', {projectId: id}); return windows.some(window => window.surfaces.some(surface => surface.relPath === 'research-notes.md' && surface.visible)); }, 'research notes surface opens');
+  current = await playUntil(async () => (await fs.readFile(notes, 'utf8')).includes('（我的补充）采样时段已核对'), 'human edit lands on disk');
   const edited = await fs.readFile(notes, 'utf8');
-  assert.equal((edited.match(/演示记录：方法 B/g) || []).length, 1, 'agent edit must save exactly once');
-  mark('agent edit saves exactly once');
+  assert.equal((edited.match(/（我的补充）采样时段已核对/g) || []).length, 1, 'human edit must save exactly once');
+  mark('human edit saves exactly once');
   await fs.writeFile(path.join(before.project.rootDisplay, 'my-exploration.txt'), 'KEEP_EXPLORATION');
-  await h.seek(controls, stepIndex('agent-edit'), 'seek back over an already edited step');
-  current = await playUntil(async () => (await state(id)).session.stepIndex > stepIndex('agent-edit'), 'changed-source step is skipped, not replayed');
+  await h.seek(controls, stepIndex('human-edit'), 'seek back over an already edited step');
+  current = await playUntil(async () => (await state(id)).session.stepIndex > stepIndex('human-edit'), 'already executed edit step is skipped, not replayed');
   assert.equal(await fs.readFile(notes, 'utf8'), edited, 'replay must not duplicate or overwrite edits');
   assert.equal(await fs.readFile(path.join(before.project.rootDisplay, 'my-exploration.txt'), 'utf8'), 'KEEP_EXPLORATION');
   mark('seeking back preserves exploration and skips changed-file actions');

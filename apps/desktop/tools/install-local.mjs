@@ -24,10 +24,10 @@ await fs.writeFile(bin,`#!/bin/sh
 unset ELECTRON_RUN_AS_NODE NOZELI_TEST_PICK NOZELI_TEST_INSTANCE NOZELI_AGENT_FIXTURE NOZELI_AGENT_FIXTURE_REPLY NOZELI_HIDDEN NOZELI_EDITOR_LAB
 PATH="$HOME/.local/bin:$PATH"
 export PATH
-if [ -n "$WAYLAND_DISPLAY" ]; then
-  exec ${quote(path.join(current,'nozeli'))} --ozone-platform=wayland "$@"
-elif [ -n "$DISPLAY" ]; then
+if [ -n "$DISPLAY" ]; then
   exec ${quote(path.join(current,'nozeli'))} --ozone-platform=x11 "$@"
+elif [ -n "$WAYLAND_DISPLAY" ]; then
+  exec ${quote(path.join(current,'nozeli'))} --ozone-platform=wayland "$@"
 else
   exec ${quote(path.join(current,'nozeli'))} "$@"
 fi

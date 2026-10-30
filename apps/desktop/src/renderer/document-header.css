@@ -44,13 +44,7 @@
 #reader.document-word #reader-scroll { overflow:hidden; }
 #word-host iframe { min-height:0!important; }
 
-#reader.document-word #reader-scroll:has(#word-notes:not([hidden])){display:flex;gap:12px}#reader.document-word #word-host{flex:1;min-width:0}#word-notes{flex:0 0 300px;overflow:auto;padding:12px;box-sizing:border-box}#word-notes section{margin:12px 0 28px}#word-notes blockquote{margin:8px 0;font-size:12px;color:#777}#word-notes .note-anchor{display:block;position:relative}
-#word-notes .note-anchor > .note-index{display:none}
-#word-notes .note-projection{position:relative!important;left:0!important;top:0!important;transform:none!important;width:100%!important;min-width:0;max-width:100%;box-sizing:border-box}
-#word-notes .note-projection:not(.is-collapsed){height:240px!important}
-#word-notes .note-anchor{width:100%;height:auto}
-#word-notes .note-projection{resize:none!important}
-#word-notes .note-projection-head{cursor:pointer}
+#reader.document-word #word-host{flex:1;min-width:0}
 
 
 

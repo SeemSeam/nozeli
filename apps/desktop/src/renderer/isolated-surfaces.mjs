@@ -33,12 +33,15 @@ function surface(parent, {invoke, profile, projectId, objectId, entryPath, onRef
       const confirm=document.createElement('button');confirm.type='button';confirm.textContent='在系统浏览器打开：'+reference.url;
       confirm.onclick=()=>void invoke('links.openExternal',{url:reference.url});status.replaceChildren(confirm);return;
     }
-    if(onReference&&/\.(?:md|markdown)$/i.test(reference.relPath||'')){await onReference(reference);return;}
+    if(reference.availability!=='unavailable'&&onReference&&/\.(?:md|markdown)$/i.test(reference.relPath||'')){await onReference(reference);return;}
     const dialog=document.createElement('dialog'),header=document.createElement('header'),title=document.createElement('h2'),close=document.createElement('button');
     dialog.className='report-reference-reader';title.textContent='冻结引用 · '+(reference.href||reference.relPath);close.type='button';close.textContent='关闭';header.append(title,close);dialog.append(header);
     let sourceText;
     if(reference.dataUrl&&reference.mediaType?.startsWith('image/')){const image=document.createElement('img');image.src=reference.dataUrl;image.alt=reference.relPath;dialog.append(image);}
     else {sourceText=document.createElement('pre');sourceText.tabIndex=0;sourceText.textContent=reference.text??'此冻结二进制文件不支持文本阅读。';dialog.append(sourceText);}
+    const save=document.createElement('button');save.type='button';save.textContent='另存完整冻结工件';
+    save.onclick=async()=>{save.disabled=true;try{const result=await invoke('isolated-preview.reference.save',{key:id,generation:event.generation,referenceId:event.referenceId});if(!result.ok)throw Error(result.error?.message||'另存失败');if(result.value?.saved)save.textContent='完整工件已另存';}catch(error){status.textContent='冻结工件另存失败：'+error.message;}finally{save.disabled=false;}};
+    dialog.append(save);
     document.body.append(dialog);await invoke('isolated-preview.bounds',{key:id,bounds:{x:0,y:0,width:0,height:0}});const finish=()=>{dialog.close();dialog.remove();layout();};close.onclick=finish;dialog.addEventListener('cancel',event=>{event.preventDefault();finish();});dialog.showModal();
     const line=Number(/:(\d+)(?::\d+)?$/.exec(reference.href||'')?.[1]);if(sourceText&&line>0)requestAnimationFrame(()=>{sourceText.scrollTop=(line-1)*parseFloat(getComputedStyle(sourceText).lineHeight);});
   }

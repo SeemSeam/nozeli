@@ -101,11 +101,11 @@ test('publish: unknown response without a committed receipt retains candidate ev
 test('deviation: recovery object write failure leaves no business changes or paused work',async t=>{
   const {store,work}=await fixture(t,{job:true});
   const priorState=structuredClone(store.state),priorDisk=await durable(store);
-  const original=store.storage.putRecoveryObject.bind(store.storage);
-  store.storage.putRecoveryObject=async()=>{throw Object.assign(new Error('injected object write failure'),{code:'EINJECTED_BODY'});};
+  const original=store.storage.putRecoveryObjectStream.bind(store.storage);
+  store.storage.putRecoveryObjectStream=async()=>{throw Object.assign(new Error('injected object write failure'),{code:'EINJECTED_BODY'});};
   try{
     await assert.rejects(store.reportDeviation(work.id,{id:'job-report',revision:1,context:{sourceJobId:'job-source'}},{changedGoal:'新目标',reason:'偏离原因',progress:'已有进展'},'deviation-body'),{code:'EINJECTED_BODY'});
-  }finally{store.storage.putRecoveryObject=original;}
+  }finally{store.storage.putRecoveryObjectStream=original;}
   assert.deepEqual(store.state,priorState);
   assert.deepEqual(await durable(store),priorDisk);
   assert.equal(store.deviationHeld(work.id),false);

@@ -52,14 +52,23 @@ test('bundled Git creates commits and resolves transport helpers without system 
     await runGit(repo,['read-tree','HEAD'],{env:{...env,GIT_INDEX_FILE:index}});
     await fs.access(index);
     await assert.rejects(runGit(repo,['rev-parse','--verify','refs/heads/does-not-exist'],{env}),error=>Boolean(error.stderr));
-    const shadow=new ShadowVersions({projectRoot:repo});
+    const {ProjectStorage}=await import(${JSON.stringify(new URL('../src/main/project-storage.mjs', import.meta.url).href)});
+    const storage=new ProjectStorage(path.join(root,'profile'));
+    const registered=await storage.register(repo);
+    const shadow=new ShadowVersions({projectRoot:repo,projectId:registered.id,storage});
     await shadow.ensureRepo();
     assert.equal((await shadow.git(['rev-parse','--is-bare-repository'])).toString().trim(),'true');
+    await storage.db.close();
     assert.deepEqual({...process.env},before);
   `;
   const env = { ...process.env, PATH: '', LOCAL_GIT_DIRECTORY: path.join(root, 'wrong-git'), GIT_EXEC_PATH: path.join(root, 'wrong-helpers') };
   for (const key of Object.keys(env)) if (key.toLowerCase() === 'path') env[key] = '';
-  await exec(process.execPath, ['--input-type=module', '-e', code], { env, timeout: 60000, maxBuffer: 1024 * 1024 });
+  // The child now boots a real ProjectStorage whose sqlite worker threads
+  // inherit process.execArgv; `-e`/`--input-type` cannot start a Worker, so the
+  // program runs from an actual module file in the temporary root.
+  const script = path.join(root, 'git-runtime-child.mjs');
+  await fs.writeFile(script, code);
+  await exec(process.execPath, [script], { env, timeout: 60000, maxBuffer: 1024 * 1024 });
 });
 
 test('relocated unpacked installation carries Git, libraries and helpers', async t => {

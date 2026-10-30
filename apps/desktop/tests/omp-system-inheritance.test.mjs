@@ -8,14 +8,12 @@ import { resolveNozeliPaths, initializeNozeliConfiguration, readNozeliConfigurat
 import { createNozeliOmpSource, sanitizeOmpConfig } from '../src/agents/managed/omp-system-source.mjs';
 import { prepareOmpPrivateHome } from '../src/agents/managed/omp-provider-home.mjs';
 import { scrubProviderEnv } from '../src/agents/managed/omp-credentials.mjs';
-import { processStamp } from '../src/agents/managed/process-ownership.mjs';
 
 async function fixture(t) {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), 'nozeli-independent-'));
   t.after(() => fs.rm(base, { recursive: true, force: true }));
   const paths = resolveNozeliPaths({ home: base, env: {} });
-  const legacyDesktop = path.join(base, 'legacy');
-  return { base, paths, legacyDesktop };
+  return { base, paths };
 }
 async function put(file, bytes) { await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, bytes); }
 const read = file => fs.readFile(file, 'utf8');
@@ -25,58 +23,6 @@ test('production roots ignore inherited HOME/provider/profile overrides, tests r
   assert.deepEqual(paths, { root: '/actual-home/.Nozeli', desktop: '/actual-home/.Nozeli/desktop', omp: '/actual-home/.Nozeli/omp', migrations: '/actual-home/.Nozeli/migrations' });
   assert.equal(resolveNozeliPaths({ env: { NOZELI_TEST_INSTANCE: '1', NOZELI_CONFIG_ROOT: '/test/root', NOZELI_USER_DATA: '/test/root/profile' } }).desktop, '/test/root/profile');
   assert.throws(() => resolveNozeliPaths({ env: { NOZELI_TEST_INSTANCE: '1', NOZELI_CONFIG_ROOT: '/test/root', NOZELI_USER_DATA: '/outside' } }), { code: 'CONFIG_ROOT_INVALID' });
-});
-
-test('migration retains IDs, byte-identical drafts and accepted jobs while relocating host references once', async t => {
-  const { paths, legacyDesktop } = await fixture(t);
-  const rel = 'nozeli/managed-v1/stable-id/runtime/state.json';
-  const state = { workspaceId: 'same', works: [{ id: 'work', threadId: 'thread', execution: { directory: path.join(legacyDesktop, 'execution/work') } }], receipts: [{ id: 'report', snapshot: { artifactDirectory: path.join(legacyDesktop, 'artifacts') } }], jobs: [{ id: 'accepted', status: 'running', text: legacyDesktop }], drafts: { frontdesk: legacyDesktop } };
-  await put(path.join(legacyDesktop, rel), JSON.stringify(state));
-  await put(path.join(legacyDesktop, 'nozeli/v1/registry.json'), '{"projects":[{"id":"stable"}]}');
-  await put(path.join(legacyDesktop, 'nozeli/v1/projects/stable/drafts/dirty.json'), '{"text":"unsent","baseDigest":"original","status":"conflict"}');
-  await put(path.join(legacyDesktop, 'nozeli/managed-v1/stable-id/runtime/agents/worker/sessions/native.jsonl'), '{"type":"draft","text":"never replay"}\n');
-  assert.equal((await initializeNozeliConfiguration(paths, { legacyDesktop })).choiceRequired, true);
-  const migrated = JSON.parse(await read(path.join(paths.desktop, rel)));
-  assert.equal(migrated.workspaceId, 'same'); assert.equal(migrated.works[0].threadId, 'thread');
-  assert.equal(migrated.works[0].execution.directory, path.join(paths.desktop, 'execution/work'));
-  assert.equal(migrated.receipts[0].snapshot.artifactDirectory, path.join(paths.desktop, 'artifacts'));
-  assert.deepEqual(migrated.jobs, state.jobs); assert.deepEqual(migrated.drafts, state.drafts);
-  assert.equal(await read(path.join(paths.desktop, 'nozeli/v1/projects/stable/drafts/dirty.json')), '{"text":"unsent","baseDigest":"original","status":"conflict"}');
-  assert.equal(await read(path.join(paths.desktop, 'nozeli/managed-v1/stable-id/runtime/agents/worker/sessions/native.jsonl')), '{"type":"draft","text":"never replay"}\n');
-  await assert.rejects(fs.lstat(legacyDesktop), { code: 'ENOENT' });
-  await initializeNozeliConfiguration(paths, { legacyDesktop });
-  assert.deepEqual(JSON.parse(await read(path.join(paths.desktop, rel))), migrated);
-});
-
-test('conflicting desktops preserve both draft versions without merging', async t => {
-  const { paths, legacyDesktop } = await fixture(t);
-  await put(path.join(legacyDesktop, 'draft'), 'legacy unsent'); await put(path.join(paths.desktop, 'draft'), 'new unsent');
-  await assert.rejects(initializeNozeliConfiguration(paths, { legacyDesktop }), { code: 'MIGRATION_TARGET_CONFLICT' });
-  assert.equal(await read(path.join(legacyDesktop, 'draft')), 'legacy unsent'); assert.equal(await read(path.join(paths.desktop, 'draft')), 'new unsent');
-});
-
-test('migration refuses symlink source data and live source owners without changing originals', async t => {
-  const { paths, legacyDesktop, base } = await fixture(t);
-  await put(path.join(base, 'outside'), 'untouched'); await fs.mkdir(legacyDesktop);
-  await fs.symlink(path.join(base, 'outside'), path.join(legacyDesktop, 'linked'));
-  await assert.rejects(initializeNozeliConfiguration(paths, { legacyDesktop }), { code: 'MIGRATION_UNSAFE' });
-  await fs.unlink(path.join(legacyDesktop, 'linked'));
-  await put(path.join(legacyDesktop, 'runtime/host.lock'), JSON.stringify({ pid: process.pid }));
-  await assert.rejects(initializeNozeliConfiguration(paths, { legacyDesktop }), { code: 'MIGRATION_SOURCE_LIVE' });
-  assert.equal(await read(path.join(base, 'outside')), 'untouched');
-});
-
-test('interrupted rename journal resumes metadata relocation, refuses concurrent changed metadata', async t => {
-  const { paths, legacyDesktop } = await fixture(t);
-  await fs.mkdir(paths.migrations, { recursive: true }); await fs.mkdir(paths.desktop);
-  const journal = { version: 1, phase: 'prepared', source: legacyDesktop, target: paths.desktop, edits: [], worktrees: [], automaticReplay: false };
-  await put(path.join(paths.migrations, 'desktop-v1.json'), JSON.stringify(journal));
-  await initializeNozeliConfiguration(paths, { legacyDesktop });
-  assert.equal(JSON.parse(await read(path.join(paths.migrations, 'desktop-v1.json'))).phase, 'complete');
-  journal.phase = 'moved'; journal.edits = [{ rel: 'state.json', before: 'original', after: 'relocated', digest: 'wrong' }];
-  await put(path.join(paths.migrations, 'desktop-v1.json'), JSON.stringify(journal)); await put(path.join(paths.desktop, 'state.json'), 'concurrent draft');
-  await assert.rejects(initializeNozeliConfiguration(paths), { code: 'MIGRATION_METADATA_CONFLICT' });
-  assert.equal(await read(path.join(paths.desktop, 'state.json')), 'concurrent draft');
 });
 
 test('independent choice never opens official source and can be made only once', async t => {
@@ -163,21 +109,6 @@ test('ambient root/runtime selectors and credential values are scrubbed without 
   const result = scrubProviderEnv({ HOME: '/real-home', NOZELI_CONFIG_ROOT: '/ambient', NOZELI_AGENT_DIR: '/ambient', PI_CODING_AGENT_DIR: '/official', OPENAI_API_KEY: 'synthetic', OMP_AUTH_BROKER_TOKEN: 'synthetic', NODE_OPTIONS: '--require=bad', PATH: '/bin' });
   assert.deepEqual(result.env, { HOME: '/real-home', PATH: '/bin' });
 });
-
-test('confirmed dead local Electron singleton artifacts migrate without manual removal', async t => {
-  if (process.platform === 'win32') return t.skip('Electron POSIX singleton symlinks');
-  const { paths, legacyDesktop } = await fixture(t);
-  await fs.mkdir(legacyDesktop);
-  await fs.symlink(os.hostname() + '-2147483647', path.join(legacyDesktop, 'SingletonLock'));
-  await fs.symlink('/nonexistent/nozeli-old-socket', path.join(legacyDesktop, 'SingletonSocket'));
-  await fs.symlink('old-cookie', path.join(legacyDesktop, 'SingletonCookie'));
-  await put(path.join(legacyDesktop, 'draft'), 'unsent');
-  await initializeNozeliConfiguration(paths, { legacyDesktop });
-  assert.equal(await read(path.join(paths.desktop, 'draft')), 'unsent');
-  await assert.rejects(fs.lstat(path.join(paths.desktop, 'SingletonLock')), { code: 'ENOENT' });
-  await assert.rejects(fs.lstat(path.join(paths.desktop, 'SingletonSocket')), { code: 'ENOENT' });
-});
-
 test('invalid imported and private YAML errors never expose source snippets or credentials', async t => {
   const { paths, base } = await fixture(t); await initializeNozeliConfiguration(paths);
   const agentDir = path.join(base, 'official');
@@ -245,19 +176,4 @@ test('legacy projection strips official executable capabilities once, preserves 
   await put(path.join(home, 'config.yml'), stringify(cleaned));
   await prepareOmpPrivateHome(home, { system: createNozeliOmpSource(paths) });
   assert.deepEqual(parse(await read(path.join(home, 'config.yml'))).hooks, cleaned.hooks);
-});
-
-for (const identity of ['matching', 'unknown', 'reused']) test(`legacy provider ${identity} live PID fences migration without signaling or moving data`, async t => {
-  const { paths, legacyDesktop } = await fixture(t);
-  const runtime = path.join(legacyDesktop, 'nozeli/managed-v1/stable/runtime');
-  const stamp = identity === 'matching' ? await processStamp(process.pid) : identity === 'reused' ? 'different-boot:old-pid' : null;
-  const original = JSON.stringify({ providers: { worker: { pid: process.pid, stamp, home: path.join(runtime, 'agents/worker'), kind: 'omp-tui' } }, drafts: { worker: 'unsent draft' }, jobs: [{ id: 'accepted', status: 'running' }] });
-  const file = path.join(runtime, 'state.json'); await put(file, original);
-  await assert.rejects(initializeNozeliConfiguration(paths, { legacyDesktop }), error => {
-    assert.equal(error.code, identity === 'reused' && process.platform === 'linux' ? 'MIGRATION_SOURCE_LOCKED' : 'MIGRATION_SOURCE_LIVE');
-    return true;
-  });
-  assert.equal(await read(file), original);
-  await assert.rejects(fs.lstat(paths.desktop), { code: 'ENOENT' });
-  assert.doesNotThrow(() => process.kill(process.pid, 0));
 });

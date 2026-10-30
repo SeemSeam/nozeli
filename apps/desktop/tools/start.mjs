@@ -4,17 +4,16 @@ import electron from 'electron';
 
 const root = path.resolve(import.meta.dirname, '..');
 // Keep the development launch independent of the shell's current package directory.
-// Electron does not reliably infer the compositor when launched from a plain shell,
-// so select the platform from the inherited desktop session explicitly.
-const ozone = process.env.NOZELI_OZONE
-  || (process.env.WAYLAND_DISPLAY ? 'wayland' : process.env.DISPLAY ? 'x11' : '');
+// Ozone's native clipboard backend is selected before app main executes.
+// Prefer X11/XWayland until Electron's native Wayland defect #54645 is fixed.
+const ozone = process.env.NOZELI_OZONE || (process.env.DISPLAY ? 'x11' : process.env.WAYLAND_DISPLAY ? 'wayland' : '');
 const args = [];
 if (ozone) args.push('--ozone-platform=' + ozone);
 if (process.env.NOZELI_HIDDEN === '1') {
   args.push('--disable-gpu', '--disable-gpu-compositing');
 }
 args.push(path.join(root, 'src/main/main.cjs'));
-if (process.platform === 'linux' && !ozone && process.env.NOZELI_HIDDEN !== '1') {
+if (process.platform === 'linux' && !ozone && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY && process.env.NOZELI_HIDDEN !== '1') {
   console.error('Nozeli could not find DISPLAY or WAYLAND_DISPLAY. Start it inside a graphical desktop session, or set NOZELI_OZONE=wayland/x11.');
   process.exit(78);
 }
