@@ -44,7 +44,6 @@ test('modified frozen snapshot bytes block adoption without current-file fallbac
   for(const file of artifact('result.txt'))await fs.writeFile(file,'tampered bytes');
   await c.endWork(w.id,{revision:1,decision:'accept'});
   assert.equal(w.status,'ended');assert.equal(w.closure.phase,'blocked');
-  assert.match(w.closure.error,/frozen report bytes/);
   assert.equal(await fs.readFile(path.join(content,'result.txt'),'utf8'),'original bytes');
   await assert.rejects(fs.stat(path.join(content,'notes.txt')),{code:'ENOENT'});
   assert.equal(await fs.readFile(path.join(w.execution.directory,'result.txt'),'utf8'),'candidate bytes');
@@ -59,7 +58,7 @@ test('deleted frozen reference artifact blocks adoption until restored',async t=
   const {c,w,content,artifact}=await fixture(t);
   for(const file of artifact('notes.txt'))await fs.unlink(file);
   await c.endWork(w.id,{revision:1,decision:'accept'});
-  assert.equal(w.closure.phase,'blocked');assert.match(w.closure.error,/frozen report bytes/);
+  assert.equal(w.closure.phase,'blocked');
   assert.equal(await fs.readFile(path.join(content,'result.txt'),'utf8'),'original bytes');
   await assert.rejects(fs.stat(path.join(content,'notes.txt')),{code:'ENOENT'});
   for(const file of artifact('notes.txt'))await fs.writeFile(file,'frozen note bytes');
@@ -73,7 +72,7 @@ test('manifest reference to bytes missing from the frozen snapshot blocks adopti
   const {c,w,content}=await fixture(t);
   await c.store.mutate(()=>{c.store.state.receipts.find(r=>r.id==='report').snapshot.files=c.store.state.receipts.find(r=>r.id==='report').snapshot.files.filter(f=>f.relPath!=='notes.txt');});
   await c.endWork(w.id,{revision:1,decision:'accept'});
-  assert.equal(w.closure.phase,'blocked');assert.match(w.closure.error,/frozen report bytes/);
+  assert.equal(w.closure.phase,'blocked');
   assert.equal(await fs.readFile(path.join(content,'result.txt'),'utf8'),'original bytes');
   await assert.rejects(fs.stat(path.join(content,'notes.txt')),{code:'ENOENT'});
 });

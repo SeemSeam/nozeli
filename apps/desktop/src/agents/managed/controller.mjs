@@ -84,6 +84,9 @@ export class Controller extends EventEmitter {
     try{return await run();}catch(error){if(maintenanceBoundary(error)||error.exitUnconfirmed||error.code==='MAINTENANCE_PENDING')throw error;
       try{this.store.storage?.assertActive?.(this.projectId);}catch{throw error;}
       const bug=await this.maintenance.record({phase,jobId:job?.id??null,workId:job&&!['frontdesk','orchestrator'].includes(job.target)?job.target:null,revision:job?.revision??null,error,capability:phase});
+      // The scheduler is not running during resident bootstrap. Keep a bounded
+      // fault record, but never queue a repair that needs this same controller.
+      if(!job&&!this.started&&/^resident-(preflight|start)-/.test(phase)){await this.maintenance.finish(bug.id,{outcome:'needs-version-fix'});throw error;}
       if(job?.type==='maintenance'){await this.maintenance.finish(bug.id,{outcome:'needs-version-fix'});throw Object.assign(Error('Maintenance provider unavailable'),{code:'MAINTENANCE_PENDING',bugId:bug.id});}
       let value;this.maintenanceActions.set(bug.id,async()=>{value=await run();return await verify(value);});await this.maintenanceEvent(bug);
       const result=await this.maintenanceRetry(bug.id);if(result.lastOutcome?.verified)return value;
@@ -212,14 +215,34 @@ export class Controller extends EventEmitter {
     if(!this.onlinePreparation)this.onlinePreparation=this.initializeBindings().then(()=>{this.localOnly=false;}).catch(error=>{this.onlinePreparation=null;throw error;});
     await this.onlinePreparation;
   }
+  async reconcileResidentSchemaMaintenance(previousThreads){
+    const roles=['frontdesk','orchestrator'];
+    if(!roles.every(target=>{const session=this.sessions.get(target),resident=this.store.state.residents[target];return session&&!session.closed&&session.threadId&&session.threadId===resident?.threadId&&session.toolsDigest===resident?.toolsDigest;}))return;
+    const state=await this.maintenance.read();
+    for(const bug of state.bugs){
+      const match=/^resident-(?:preflight|start)-(frontdesk|orchestrator)$/.exec(bug.phase);
+      if(!match||bug.error?.code!=='OMP_TOOLS_DIGEST_MISMATCH'||bug.status==='repaired'||bug.jobId||bug.workId)continue;
+      const target=match[1];if(!previousThreads[target]||this.sessions.get(target).threadId!==previousThreads[target])continue;
+      const related=this.store.state.jobs.filter(job=>job.type==='maintenance'&&job.context?.bugId===bug.id);
+      if(related.some(job=>job.status==='running'||job.promptStartedAt!=null||job.collabAttempts?.some(attempt=>attempt.everAdmitted)))continue;
+      // Only never-admitted repair events settle; business input and unknown
+      // effects stay intact. Save before the ledger receipt for idempotence.
+      await this.store.mutate(()=>{for(const job of related)if(job.status==='queued')Object.assign(job,{status:'completed',hostResolved:true,completion:'current-schema-resumed',finishedAt:new Date().toISOString()});});
+      await this.maintenance.finish(bug.id,{verified:true,outcome:'current-schema-resumed'});
+      this.maintenanceActions.delete(bug.id);
+    }
+  }
   async start(){
     await this.store.requireOnline();
     await this.prepareOnline();
     this.assertFrontdeskContextAdmission('frontdesk');
     const residents=['frontdesk','orchestrator'].filter(target=>!this.sessions.get(target)||this.sessions.get(target).closed);
-    const preflight=await Promise.allSettled(residents.map(target=>this.maintenanceTransaction(null,'resident-preflight-'+target,()=>this.makeSession(target,{preflightOnly:true}))));
+    const previousThreads=Object.fromEntries(['frontdesk','orchestrator'].map(target=>[target,this.store.state.residents[target]?.threadId]));
+    const bootstrap=(target,phase,run)=>this.maintenanceTransaction(null,phase+'-'+target,async()=>{try{return await run();}catch(error){error.target??=target;error.role??=target;throw error;}});
+    const preflight=await Promise.allSettled(residents.map(target=>bootstrap(target,'resident-preflight',()=>this.makeSession(target,{preflightOnly:true}))));
     const rejected=preflight.find(result=>result.status==='rejected');if(rejected)throw rejected.reason;
-    const results=await Promise.allSettled(residents.map(target=>this.maintenanceTransaction(null,'resident-start-'+target,()=>this.session(target),s=>Boolean(s&&!s.closed))));const failed=results.find(result=>result.status==='rejected');if(failed)throw failed.reason;
+    const results=await Promise.allSettled(residents.map(target=>bootstrap(target,'resident-start',()=>this.session(target))));const failed=results.find(result=>result.status==='rejected');if(failed)throw failed.reason;
+    await this.reconcileResidentSchemaMaintenance(previousThreads);
     this.started=true;this.changed();this.kick();return this.snapshot();
   }
   async applyModelDefaults(defaults){
@@ -1396,6 +1419,7 @@ export class Controller extends EventEmitter {
       ownership?.started();
       });this.changed();return session;
     }catch(e){
+      e.target??=target;e.role??=role;
       if(role==='worker'&&['WORKER_CONTEXT_RECOVERY_REQUIRED','OMP_TOOLS_DIGEST_MISMATCH','OMP_SESSION_FILE_NOT_FOUND'].includes(e.code)){
         await this.store.mutate(()=>{const work=this.store.find(target);work.contextRecovery={threadId:work.threadId,revision:work.revision,code:e.code,message:e.message,expectedToolsDigest:work.toolsDigest||null,newToolsDigest:session.toolsDigest??toolsDigest,sessionFile:session.sessionFile||null};});this.changed();
       }
