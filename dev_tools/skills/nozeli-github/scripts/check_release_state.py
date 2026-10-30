@@ -62,7 +62,7 @@ class Audit:
             raise Failure('invalid version (use version without leading v)')
         self.version, self.tag = version, 'v' + version
         self.names = [f'Nozeli-{version}-linux-x64.tar.gz',
-                      f'Nozeli-{version}-source.tar.gz', '使用说明.md']
+                      f'Nozeli-{version}-source.tar.gz', 'USAGE.zh-CN.md']
         self.check(package['version'] == version, f'package version = {version}')
         self.check(package.get('private') is True, 'desktop package remains private (npm publish forbidden)')
         lock = json.loads(self.text('apps/desktop/package-lock.json'))
@@ -158,7 +158,8 @@ class Audit:
             ref = self.api(f"repos/{self.repo}/git/tags/{ref['sha']}")['object']
         self.check(ref.get('type') == 'commit' and ref.get('sha') == self.tag_sha,
                    'local and GitHub remote tag commit SHA match')
-        self.check(getattr(self, 'head', None) == self.tag_sha, 'published checkout HEAD equals release tag')
+        self.git('merge-base', '--is-ancestor', self.tag_sha, self.head)
+        self.check(True, 'clean pushed checkout contains release tag (later maintainer commits need not retag product)')
         commit = self.inventory.get('release', {}).get('commit')
         self.check(commit in (None, self.tag_sha), 'inventory commit is unset or matches tag (archive binding checked separately)')
         repo = self.api(f'repos/{self.repo}')
@@ -200,7 +201,10 @@ class Audit:
             self.check(sums == self.remote_sums, 'local and remote checksum manifests agree')
         for name in self.names:
             digest = hashlib.sha256()
-            with (directory / name).open('rb') as stream:
+            local = directory / name
+            if name == 'USAGE.zh-CN.md' and not local.exists():
+                local = directory / '使用说明.md'
+            with local.open('rb') as stream:
                 for block in iter(lambda: stream.read(1024 * 1024), b''):
                     digest.update(block)
             self.check(digest.hexdigest() == sums.get(name), f'local SHA-256: {name}')

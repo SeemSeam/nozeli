@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Correct maintainer verification for GitHub's non-ASCII asset-name sanitization: publish generated instructions as `USAGE.zh-CN.md` and bind that name in the checksum manifest. Capture clipboard smoke evidence before its native document is hidden by the conversation. These maintenance-only fixes do not change the tagged application archives.
+
 ## 0.1.0-alpha.3
 
 - Add a standalone `nozeli-github` OMP maintainer skill and read-only release checker covering protected PR delivery, exact-commit CI/tag/homepage alignment, portable archive binding, checksums and explicit Alpha audit limitations; the desktop package remains private and is not published to npm.
