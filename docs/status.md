@@ -1,6 +1,6 @@
 # 当前状态与能力边界
 
-状态基线：`0.1.0-alpha.2`（Alpha预发行，见[发布说明与发行边界](release.md)）。能力以Linux x64/Wayland及GitHub Ubuntu/X11实际验证为准；Windows/macOS尚未验证，安装与打包工具仅实现Linux。
+状态基线：`0.1.0-alpha.3`（Alpha预发行，见[发布说明与发行边界](release.md)）。能力以Linux x64/Wayland、X11/XWayland及GitHub Ubuntu/X11实际验证为准；Windows/macOS尚未验证，安装与打包工具仅实现Linux。
 
 ## 已具备的主要能力（Linux 实测）
 

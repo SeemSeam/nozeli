@@ -8,9 +8,7 @@ const fail=(code,message,details)=>{const error=new Error(message);error.code=co
 const fingerprint=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const safePath=(rel,root=false)=>{
  if(root&&rel==='')return '';
- const value=workPath(rel);
- if(value.split('/').some(part=>part.startsWith('.')||/^(?:secrets?|tokens?|id_(?:rsa|ed25519|ecdsa)(?:\.pub)?|.*\.(?:p12|pfx|keystore))$/i.test(part)))fail('PATH_REJECTED','私有目录或凭据文件不可通过前台文档工具访问。');
- return value;
+ return workPath(rel);
 };
 
 // The callback is host-owned: actor, project and operation identities never come
@@ -22,7 +20,8 @@ const safePath=(rel,root=false)=>{
 export function createFrontdeskDocuments({host,projectId,sync}) {
  const flights=new Map();
  const checkActor=actor=>{
-  if(!actor||!actor.id?.startsWith('nozeli:frontdesk:')||actor.kind!=='agent1'||actor.role!=='frontdesk'||actor.mark!=='F'||!actor.sessionId||!actor.sessionInstance||!actor.requestId||actor.sourceJobId!==actor.requestId)fail('ACTOR_REJECTED','需要宿主绑定的前台来源身份。');
+  if(!actor||!['frontdesk','orchestrator','worker'].includes(actor.role)||!actor.id?.startsWith('nozeli:'+actor.role+':')||!actor.sessionId||!actor.sessionInstance||!actor.requestId||actor.sourceJobId!==actor.requestId)fail('ACTOR_REJECTED','需要宿主绑定的 Agent 来源身份。');
+  if(actor.role==='worker'?(actor.kind!=='agent2'||actor.mark!=='W'||!actor.workId||actor.id!=='nozeli:worker:'+actor.workId):actor.kind!=='agent1')fail('ACTOR_REJECTED','Agent 来源角色与作者身份不符。');
  };
  const activeCheck=isActive=>()=>{if(typeof isActive!=='function'||!isActive())fail('WORK_STOPPED','前台请求已停止，未继续写入。');};
  async function directory(project,rel){

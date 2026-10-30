@@ -1,12 +1,12 @@
 # 发布说明与发行边界
 
-当前版本基线：**`0.1.0-alpha.2`**（见[CHANGELOG](../CHANGELOG.md)与package.json）。精确提交由同名tag及发行包RELEASE.json绑定；产品构建、测试和分发审计分别记录，不互相替代。
+当前版本基线：**`0.1.0-alpha.3`**（见[CHANGELOG](../CHANGELOG.md)与package.json）。精确提交由同名tag及发行包RELEASE.json绑定；产品构建、测试和分发审计分别记录，不互相替代。
 
 ## 版本状态
 
-- **Alpha预发行**：<https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.2>，包含Linux x64便携包、源码及SHA-256校验和。继承alpha.1已公开的发布方式，新增Markdown自动教学与大文件流式交付。发布由仓库所有者明确要求；**发布不是合规认证**，下述分发审计仍未完成。
+- **Alpha预发行**：<https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.3>，包含Linux x64便携包、源码及SHA-256校验和。修复快速切换、系统文本复制、原生工具升级重连与失位标签操作，新增原生文件粘贴、折叠审核列表及强退；默认YOLO与后台主控恢复的权限边界见[用户指南](user-guide.md)。发布由仓库所有者本轮明确要求；**发布不是合规认证**，下述分发审计仍未完成。
 - 本版本为 **Alpha 审阅候选**：供源码审阅、跟进开发与 Linux 本机验证使用。
-- 验证状态：**Linux x64／Wayland 本机验证**通过（阅读、批注、编辑、后台协作工作流与本机安装循环）。**Windows／macOS 为产品目标平台，未验证**；安装与打包工具当前仅实现 Linux。
+- 验证状态：**Linux x64／Wayland 与 X11/XWayland 本机验证**通过（阅读、批注、编辑、后台协作工作流与本机安装循环；本次剪贴板与快速切换专项为X11/XWayland）。**Windows／macOS 为产品目标平台，未验证**；安装与打包工具当前仅实现 Linux。
 - 空工作台四项推荐功能引导（批注与选区讨论、任务闭环、分屏阅读、独立窗口）已包含在本版本中。
 - AI 能力需用户自行配置模型源与账号；发行物不含任何凭据、用户项目数据或个人会话。
 
@@ -37,3 +37,9 @@
 `Release candidate check`通过workflow_dispatch接受已存在且版本匹配的tag，验证测试/构建/烟测和公开发行元数据门，不自动上传公开包。旧tag如果缺少新检查工具会明确失败，不能把当前main检查冒充旧包验证。
 
 CI生成的`sbom.cdx.json`来自`npm sbom --package-lock-only --sbom-format cyclonedx --omit dev`，是锁定npm生产依赖清单，不包含完整Electron/OMP原生二进制、手工vendor或字体闭包。它与compliance inventory互补，不是完整发行物SBOM或来源签名，也不代表许可证审计通过。
+
+## 维护者发布技能
+
+[nozeli-github](../dev_tools/skills/nozeli-github/SKILL.md) 保存本项目的提交、受保护PR合并、版本/tag/默认分支一致性、便携包实测、GitHub附件发布及中断恢复流程。安装到用户级系统OMP的 `~/.omp/agent/skills/nozeli-github` 后可跨会话使用；这是开发维护技能，不是产品运行依赖，不发布npm包。
+
+只读检查器：`python3 dev_tools/skills/nozeli-github/scripts/check_release_state.py --phase prepare`；提交推送后用 `--phase dev`，发布后用 `--phase published --assets-dir <发行物目录>`。安装副本支持 `--root <仓库目录>`。检查器不提交、不推送、不发布、不重跑CI，也不将待审计状态当作已签收。

@@ -82,10 +82,26 @@ test('late in-place normalization of a callable shared wire document keeps recei
   assert.throws(() => session.assertToolsDigest(old.toolsDigest), /bridge-receipt-digest/);
 });
 
+test('trusted additions preserve historical digest proof, original thread and zero prompt delivery', async t => {
+  const added = { type: 'object', properties: { ...nextSchema.properties, dangerousEffect: { type: 'string' } }, required: ['value'], additionalProperties: false };
+  const { session, old, deployed } = await fixture(t, [tool(oldSchema)], [tool(added), { ...tool(nextSchema), name: 'nozeli_maintenance' }]);
+  // Failing-before witness: whole-tool-list equivalence rejects both supported
+  // release changes, despite every old argument retaining its exact contract.
+  assert.notDeepEqual(deployed.toolHistory[0], session.helloState.registeredTools);
+  await session.preflightToolsDigest(old.toolsDigest);
+  session.assertToolsDigest(old.toolsDigest);
+  assert.equal(session.threadId, 'existing-thread');
+  assert.equal(session.sessionFile, '/existing/journal.jsonl');
+  assert.equal(session.promptsDelivered, 0);
+  assert.equal(session.hasPrompted, false);
+  assert(deployed.toolHistory.some(tools => JSON.stringify(tools) === JSON.stringify([tool(oldSchema)])), 'old manifest retained');
+});
+
 for (const [name, next] of [
-  ['added capability', [tool(nextSchema), { ...tool(nextSchema), name: 'nozeli_extra' }]],
   ['renamed tool', [tool(nextSchema, { name: 'nozeli_other' })]],
   ['changed approval', [tool(nextSchema, { approval: 'write' })]],
+  ['removed tool', []],
+  ['new required field', [tool({ ...nextSchema, properties: { ...nextSchema.properties, extra: { type: 'string' } }, required: ['value', 'extra'] })]],
   ['broader type', [tool(object({ type: ['string', 'null', 'number'] }))]],
   ['removed required', [tool({ ...nextSchema, required: [] })]],
   ['unknown keyword changed', [tool({ ...nextSchema, customConstraint: true })]],
@@ -107,6 +123,14 @@ test('description inside literal data is not an annotation', async t => {
   assert.throws(() => session.assertToolsDigest(old.toolsDigest), { code: 'OMP_TOOLS_DIGEST_MISMATCH' });
 });
 
+test('optional fields cannot constrain previously open object arguments', async t => {
+  const old = { ...oldSchema, additionalProperties: true };
+  const next = { ...nextSchema, additionalProperties: true, properties: { ...nextSchema.properties, extra: { type: 'string' } } };
+  const { session, old: previous } = await fixture(t, [tool(old)], [tool(next)]);
+  assert.throws(() => session.assertToolsDigest(previous.toolsDigest), /historical-schema/);
+});
+
+
 test('unproven history, forged bridge digest and stored digest alone are rejected', async t => {
   const { session, old } = await fixture(t, [tool(oldSchema)], [tool(nextSchema)]);
   session.deployed.toolHistory = [];
@@ -116,6 +140,14 @@ test('unproven history, forged bridge digest and stored digest alone are rejecte
   session.helloState = null;
   assert.throws(() => session.assertToolsDigest(session.toolsDigest), { code: 'OMP_TOOLS_DIGEST_MISMATCH' });
 });
+
+test('compatible historical additions cannot excuse a bridge that registered a different live definition', async t => {
+  const { session, old } = await fixture(t, [tool(oldSchema)], [tool(nextSchema), { ...tool(nextSchema), name: 'nozeli_maintenance' }]);
+  session.assertToolsDigest(old.toolsDigest);
+  session.deployed.tools = [tool(nextSchema)];
+  assert.throws(() => session.assertToolsDigest(old.toolsDigest), /bridge-requested-schema/);
+});
+
 
 test('manifest survives a failed upgrade and another deployment without trusting its claimed digest', async t => {
   const { session, old, home } = await fixture(t, [tool(oldSchema)], [tool(nextSchema)]);

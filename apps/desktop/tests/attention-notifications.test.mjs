@@ -10,7 +10,7 @@
 //   1. same-item update keeps one row and reuses its DOM node in place;
 //   2. ordering freezes at first show (category rank, then seq): refreshes and
 //      input order never reorder, a later answer still surfaces before earlier
-//      review/blocker rows; native-draft classifies as blocker, never answer;
+//      review rows; ordinary native input and draft blockers remain silent;
 //   3. acknowledgment from another view (attentionNotified) drops the row without
 //      resolution feedback; pre-acknowledged todos never show;
 //   4. defer acknowledges the captured occurrence only and never resolves the todo;
@@ -27,7 +27,7 @@
 //  11. in-flight acknowledge disables both actions until it settles;
 //  12. unchanged snapshots keep the focused row node, selection and scroll;
 //  13. list rows carry no buttons; the single open action serves every category
-//      with per-category label (回答问题/审阅成果/处理阻断) mirrored in dataset;
+//      with the selected source identity preserved across authorization/review;
 //  14. an acknowledgement reply landing after an interruption never drops the
 //      new reminder (post-invoke occurrence recheck);
 //  15. removing a project clears its rows and its queued feedback only.
@@ -90,13 +90,13 @@ window.__notifyFixture={log,modes,category:notificationCategory,occurrenceKey,
   remount(){document.querySelectorAll('#workspace-groups > [data-attention-prompt], #workspace-groups > [data-attention-feedback]').forEach(node=>node.remove());notifications=mount();}};
 `},bundle:true,format:'iife',platform:'browser',outfile:path.join(out,'entry.js'),loader:{'.css':'css','.ttf':'file','.woff':'file','.woff2':'file'}});
 await fs.writeFile(path.join(out,'index.html'),'<!doctype html><html data-theme="light"><meta charset="utf-8"><script>window.__earlyErrors=[];window.addEventListener("error",e=>window.__earlyErrors.push(String(e.error&&e.error.stack||e.message)));window.addEventListener("unhandledrejection",e=>window.__earlyErrors.push(String(e.reason&&e.reason.stack||e.reason)));</script><link rel="stylesheet" href="entry.css"><style>*{box-sizing:border-box}body{margin:0;height:100vh;display:flex;flex-direction:column;background:var(--paper,#fffdf6)}aside{padding:8px 12px;font:12px system-ui;border-bottom:1px solid var(--line,#ccd6c8)}#workspace-groups{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column}</style><body><aside>renderer-component-only · 后台待办提醒 fixture · 非真实宿主/OMP/模型证据</aside><div id="workspace-groups"></div><script src="entry.js"></script></body></html>');
-await fs.writeFile(path.join(out,'main.cjs'),`const {app,BrowserWindow}=require('electron');app.whenReady().then(()=>{const win=new BrowserWindow({show:${process.env.NOZELI_TEST_VISIBLE==='1'},width:980,height:720,webPreferences:{contextIsolation:true,nodeIntegration:false}});win.loadFile(${JSON.stringify(path.join(out,'index.html'))});});app.on('window-all-closed',()=>app.quit());`);
+await fs.writeFile(path.join(out,'main.cjs'),`const {app,BrowserWindow}=require('electron');app.whenReady().then(async()=>{const win=new BrowserWindow({show:${process.env.NOZELI_TEST_VISIBLE!=='0'},width:980,height:720,webPreferences:{backgroundThrottling:false,contextIsolation:true,nodeIntegration:false}});await win.loadFile(${JSON.stringify(path.join(out,'index.html'))});});app.on('window-all-closed',()=>app.quit());`);
 // Wayland + this Electron's Vulkan backend crashes the GPU process before the
 // renderer evaluates any module (the product app composites in software on
 // Wayland for the same reason); hidden windows also need throttling disabled so
 // timers keep running while the window is never shown.
 const logFile=createWriteStream(path.join(out,'main.log'));
-const child=spawn(createRequire(import.meta.url)('electron'),[path.join(out,'main.cjs'),'--remote-debugging-port='+port,'--ozone-platform='+(process.env.NOZELI_TEST_OZONE||'wayland'),'--user-data-dir='+path.join(out,'profile'),'--disable-gpu','--disable-background-timer-throttling','--disable-renderer-backgrounding','--disable-backgrounding-occluded-windows'],{cwd:root,stdio:['ignore','pipe','pipe']});
+const child=spawn(createRequire(import.meta.url)('electron'),[path.join(out,'main.cjs'),'--remote-debugging-port='+port,'--ozone-platform='+(process.env.NOZELI_TEST_OZONE||'wayland'),'--user-data-dir='+path.join(out,'profile'),'--disable-gpu-compositing','--disable-background-timer-throttling','--disable-renderer-backgrounding','--disable-backgrounding-occluded-windows'],{cwd:root,stdio:['ignore','pipe','pipe']});
 let mainLog='',browser,page;for(const stream of [child.stdout,child.stderr])stream.on('data',chunk=>{mainLog+=chunk;logFile.write(chunk);});
 const exited=new Promise(resolve=>child.once('exit',resolve));
 const tick=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -104,8 +104,8 @@ async function until(fn,label,timeout=15000){const end=Date.now()+timeout;while(
 
 // Event material mirrors the real managed-state payload: managedReviewTodos reads
 // raw todos; attentionNotified is the persisted acknowledgement ledger ids.
-const ask=(id,{title='待办 '+id,text='正文 '+id,interrupted=false,destination,status='open',kind='attention'}={})=>({id,kind,origin:'instance-attention',status,title,text,interrupted,destination:destination??{kind:'conversation',target:'frontdesk',ownerId:'owner-'+id,interactionId:'interaction-'+id,question:{method:'askDialog',questions:[]}}});
-const blockerDestination=kind=>({kind,target:'frontdesk',...(kind==='settings'?{section:'settings-recovery'}:{})});
+const ask=(id,{title='待办 '+id,text='正文 '+id,interrupted=false,destination,status='open',kind='attention'}={})=>({id,kind,origin:'instance-attention',status,title,text,interrupted,destination:destination??{kind:'conversation',target:'frontdesk',ownerId:'owner-'+id,interactionId:'interaction-'+id,question:{method:'approve',title:'管理员操作授权',reason:'明确的高危操作权限请求'}}});
+const permissionDestination=()=>({kind:'effect-permission',target:'frontdesk',question:{method:'effect-permission',elevation:'admin',command:'/usr/bin/privileged-action',cwd:'/tmp'}});
 const emit=(projectId,todos,notified=[])=>page.evaluate(({projectId,todos,notified})=>window.__notifyFixture.emit({kind:'managed-state',projectId,state:{todos,works:[],jobs:[],receipts:[],attentionNotified:notified}}),{projectId,todos,notified});
 const dom=()=>page.evaluate(()=>{
   const section=document.querySelector('#workspace-groups > [data-attention-prompt]');
@@ -164,12 +164,14 @@ try{
   assert.ok(['static','relative'].includes(state.position),'inline prompt must not be an overlay');
   assert.equal(state.feedbackNodes,1,'display-only feedback is a dedicated sibling');
   assert.equal(state.liveRole,'status');assert.equal(state.livePoliteness,'polite');
+  const ordinary={id:'ordinary-input',kind:'attention',status:'open',destination:{kind:'conversation',question:{method:'input'}}},draft={id:'ordinary-draft',kind:'attention',status:'open',destination:{kind:'native-draft'}};
+  await emit('p1',[ordinary,draft]);state=await dom();assert.equal(state.visible,false,'ordinary native input and draft facts never produce a popup');assert.deepEqual(state.items,[]);await emit('p1',[]);
   // 2. first ask appears; category and occurrence key come from the production oracle.
   await emit('p1',[ask('t1',{title:'NOTIFY_T1 路线待定'})]);
   await until(async()=>(await dom()).visible,'first ask shows the prompt');
   state=await dom();
   const oracle=await page.evaluate(todo=>({category:window.__notifyFixture.category(todo),key:window.__notifyFixture.occurrenceKey('p1',todo)}),ask('t1',{title:'NOTIFY_T1 路线待定'}));
-  assert.equal(oracle.category,'answer','an askDialog question is an answer notification');
+  assert.equal(oracle.category,'answer','a native approve permission is an authorization notification');
   assert.equal(oracle.key,'p1:t1','waiting occurrence key is the plain identity');
   assert.equal(state.kind,'answer');assert.ok(state.kindIcon,'category chip carries an icon, never color alone');
   assert.match(state.kindText,/待/,'category chip keeps its text label');
@@ -178,7 +180,6 @@ try{
   assert.equal(state.firstOfIsOpen,true);assert.equal(state.lastOfIsDefer,true,'first/last button semantics stay stable for installed acceptance');
   assert.equal(state.openButtonCount,1,'exactly one open action regardless of category');
   assert.deepEqual(state.buttons.map(button=>button.kind),['open','expand','defer'],'button order: open, expand, defer');
-  assert.equal(state.openText,'回答问题','open label follows the answer category');
   assert.equal(state.buttons[2].text,'稍后处理');
   await shot('01-single-answer');
   // 3. same-item update: one row, same DOM node, content updated in place, no acknowledge traffic.
@@ -191,8 +192,8 @@ try{
   assert.equal(sameRow,'t1','same-row update reuses the row DOM node');
   assert.equal((await fixtureLog()).invoke.length,0,'updates never acknowledge');
   scene('same-item update keeps one in-place row',{kind:state.kind});
-  // 4. blocker + review join; order freezes at first show; current stays the answer.
-  const t1=ask('t1',{title:'NOTIFY_T1 路线已更新'}),t2=ask('t2',{title:'NOTIFY_T2 连接受阻',destination:blockerDestination('connection')}),t3=ask('t3',{title:'NOTIFY_T3 结果待审查',kind:'result',workId:'w3',destination:undefined});
+  // 4. another genuine permission and result review join in stable priority order.
+  const t1=ask('t1',{title:'NOTIFY_T1 路线已更新'}),t2=ask('t2',{title:'NOTIFY_T2 管理员授权',destination:permissionDestination()}),t3=ask('t3',{title:'NOTIFY_T3 结果待审查',kind:'result',workId:'w3',destination:undefined});
   await emit('p1',[t1,t2,t3]);
   await until(async()=>(await dom()).count==='3 项','three pending rows counted');
   state=await dom();
@@ -201,33 +202,34 @@ try{
   await until(async()=>!(await dom()).listHidden,'expand reveals the pending list');
   state=await dom();
   assert.equal(state.expanded,'true');
-  assert.deepEqual(state.items.map(item=>item.key),['p1:t1','p1:t3','p1:t2'],'frozen order: answer, review, blocker');
+  assert.deepEqual(state.items.map(item=>item.key),['p1:t1','p1:t2','p1:t3'],'frozen order: permissions before result review');
   assert.ok(state.items.every(item=>item.tabindex==='0'),'list rows are keyboard selectable');
   assert.ok(state.items.every(item=>item.buttons===0),'list rows carry no per-row buttons');
-  const categories=await page.evaluate(todos=>todos.map(todo=>window.__notifyFixture.category(todo)),[t3,t2,ask('d1',{title:'NOTIFY_D1 原生草稿',destination:{kind:'native-draft',target:'frontdesk',ownerId:'owner-d1'}}),ask('s1',{title:'NOTIFY_S1 设置受阻',destination:blockerDestination('settings')})]);
-  assert.deepEqual(categories,['review','blocker','blocker','blocker'],'native-draft and settings are blockers, never answers');
+  const categories=await page.evaluate(todos=>todos.map(todo=>window.__notifyFixture.category(todo)),[t3,t2]);
+  assert.deepEqual(categories,['review','answer'],'only result reviews and actual authorizations enter this lifecycle scenario');
   // 5. refresh with shuffled input keeps the same frozen order without duplicates.
   await emit('p1',[t2,t3,t1]);
   state=await dom();
-  assert.deepEqual(state.items.map(item=>item.key),['p1:t1','p1:t3','p1:t2'],'order stable across refresh and input order');
+  assert.deepEqual(state.items.map(item=>item.key),['p1:t1','p1:t2','p1:t3'],'order stable across refresh and input order');
   await shot('02-expanded-list');
-  // 6. acknowledgment from another view drops the row silently; a later answer outranks frozen review/blocker.
+  // 6. acknowledgement elsewhere drops rows silently; permissions precede result review.
   const t4=ask('t4',{title:'NOTIFY_T4 已在他处确认'}),t15=ask('t15',{title:'NOTIFY_T15 后来居上'});
   await emit('p1',[t1,t2,t3,t4],['t1','t4']);
   state=await dom();
-  assert.deepEqual(state.items.map(item=>item.key),['p1:t3','p1:t2'],'acked-elsewhere and pre-acked rows never render');
+  assert.deepEqual(state.items.map(item=>item.key),['p1:t2','p1:t3'],'acked-elsewhere and pre-acked rows never render');
   assert.equal(state.text.includes('NOTIFY_T4'),false);
-  assert.ok(state.text.includes('NOTIFY_T3'),'next frozen row becomes current');
+  assert.ok(state.text.includes('NOTIFY_T2'),'next frozen authorization row becomes current');
   assert.equal(state.count,'2 项');
   assert.equal((state.feedback??'').includes('NOTIFY_T1'),false,'acknowledgment is never resolution feedback');
   await emit('p1',[t2,t3,t15]);
-  state=await dom();assert.equal(state.items[0].key,'p1:t15','new answer joins the ordered list');assert.ok(state.text.includes('NOTIFY_T3'),'new items do not replace the current selected reminder');
+  state=await dom();assert.deepEqual(state.items.map(item=>item.key),['p1:t2','p1:t15','p1:t3'],'later permission joins stable permission order');assert.ok(state.text.includes('NOTIFY_T2'),'new items do not replace the current selected reminder');
   await emit('p1',[t2,t3],['t15']);
   scene('acknowledgment from another view drops rows silently');
   // 7. defer acknowledges the captured occurrence only; the deferred todo stays open and never re-alerts.
+  await page.click('[data-attention-item="p1:t3"]');
+  await until(async()=>(await dom()).items.find(item=>item.key==='p1:t3')?.selected,'a different result row can be selected without opening');
   await page.click('[data-attention-item="p1:t2"]');
   await until(async()=>(await dom()).items.find(item=>item.key==='p1:t2')?.selected,'row click selects');
-  await until(async()=>(await dom()).openText==='处理阻断','open label follows the selected blocker row');
   let calls=await fixtureLog();
   const openBefore=calls.open.length;
   await page.click('[data-attention-defer]');
@@ -242,7 +244,7 @@ try{
   assert.deepEqual(state.items.map(item=>item.key),['p1:t3'],'deferred open todo never re-alerts');
   assert.equal(t2.status,'open','the deferred todo itself stays open in the source state');
   // 8. open navigates to the source project first, then acknowledges the captured occurrence.
-  await until(async()=>(await dom()).openText==='审阅成果','open label follows the selected review row');
+  await until(async()=>(await dom()).items.find(item=>item.key==='p1:t3')?.selected,'review source becomes the selected remaining item');
   await page.click('[data-attention-open]');
   await until(async()=>(await fixtureLog()).invoke.some(call=>call.ids.includes('t3')),'open acknowledges after navigation');
   calls=await fixtureLog();
@@ -274,7 +276,7 @@ try{
   await until(async()=>!(await dom()).visible,'successful defer clears the retained row');
   scene('stale click and failed ack keep the row actionable');
   // 10. cross-project isolation: another project's mutation never drops rows.
-  const t6=ask('t6',{title:'NOTIFY_T6 阻断',destination:blockerDestination('settings')});
+  const t6=ask('t6',{title:'NOTIFY_T6 高危授权',destination:permissionDestination()});
   await emit('p1',[t6]);
   await emit('p2',[ask('u1',{title:'NOTIFY_U1 他项目问题'})]);
   await until(async()=>(await dom()).count==='2 项','rows from two projects coexist');
@@ -312,7 +314,7 @@ try{
   //     occurrence is acknowledged, the stale phase rejects atomically, the
   //     interrupted occurrence still re-alerts.
   const waiting=ask('t20',{title:'NOTIFY_T20 恢复核对'});
-  const interrupted={...waiting,interrupted:true,destination:{kind:'connection',target:'frontdesk',ownerId:waiting.destination.ownerId}};
+  const interrupted={...waiting,interrupted:true};
   const keys=await page.evaluate(({waiting,interrupted})=>({waiting:window.__notifyFixture.occurrenceKey('p1',waiting),interrupted:window.__notifyFixture.occurrenceKey('p1',interrupted)}),{waiting,interrupted});
   assert.equal(keys.waiting,'p1:t20');assert.equal(keys.interrupted,'p1:t20:interrupted','interrupted occurrence key carries the phase');
   await emit('p1',[waiting]);
@@ -350,7 +352,7 @@ try{
   await emit('p1',[ask('t13',{title:'NOTIFY_T13 新一轮'})]);
   await until(async()=>(await dom()).text?.includes('NOTIFY_T13'),'a new occurrence alerts');
   // 15. unchanged snapshots keep the focused row node, selection and scroll.
-  const many=[ask('t13',{title:'NOTIFY_T13 新一轮'}),...Array.from({length:7},(_,index)=>ask('m'+index,{title:'NOTIFY_m'+index+' 第'+index+'行',destination:index%2?blockerDestination('connection'):undefined}))];
+  const many=[ask('t13',{title:'NOTIFY_T13 新一轮'}),...Array.from({length:7},(_,index)=>ask('m'+index,{title:'NOTIFY_m'+index+' 第'+index+'行',destination:index%2?permissionDestination():undefined}))];
   await emit('p1',many);
   await until(async()=>(await dom()).items.length===8,'scroll scenario rows render');
   if((await dom()).expanded!=='true')await page.click('[data-attention-expand]');
@@ -383,7 +385,7 @@ try{
   scene('reload replays without duplicates');
   // 17. an acknowledgement reply landing after an interruption never drops the new reminder.
   const raceWaiting=ask('t21',{title:'NOTIFY_T21 竞态核对'});
-  const raceInterrupted={...raceWaiting,interrupted:true,destination:{kind:'connection',target:'frontdesk',ownerId:raceWaiting.destination.ownerId}};
+  const raceInterrupted={...raceWaiting,interrupted:true};
   await emit('p1',[raceWaiting]);
   await until(async()=>(await dom()).visible,'race scenario row shows');
   await page.evaluate(()=>{window.__notifyFixture.modes.ack='hang';});

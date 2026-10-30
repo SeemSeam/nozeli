@@ -21,6 +21,16 @@ export function resultSettlementIssue(state,work){
  if(!job||!['failed','interrupted','unknown'].includes(job.status))return null;
  return {objectId:receipt.objectId,jobId:job.id,status:job.status,error:typeof job.error==='string'?job.error:''};
 }
+// One eligibility boundary for list, badge, notifications and opening actions.
+// Backstage records remain durable, but are not questions for the reader.
+export function userTodoEligible(todo){
+ if(!todo||todo.userActionable===false)return false;
+ if(todo.kind==='result')return true;
+ const destination=todo.destination;
+ if(destination?.kind==='effect-permission')return true;
+ if(todo.kind==='merge-consent'&&['merge-conflict-override','never-commit-override'].includes(todo.permissionPurpose))return true;
+ return destination?.kind==='conversation'&&destination.question?.method==='approve';
+}
 // A read-only inbox: backend identities and lifecycle remain authoritative.
 export function managedReviewTodos(state){
  const todos=state.todos||[],works=state.works||[],jobs=state.jobs||[],receipts=state.receipts||[];
@@ -34,7 +44,7 @@ export function managedReviewTodos(state){
   return latest===todo;
  };
  return todos.filter(todo=>{
-  if(todo.status!=='open'||todo.kind==='queue')return false;
+  if(todo.status!=='open'||!userTodoEligible(todo))return false;
   const work=works.find(w=>w.id===todo.workId);
   if(todo.kind==='deviation')return deviationHeld(work)&&work.deviation.todoId===todo.id;
   if(['result','problem'].includes(todo.kind))return currentPublication(todo,work);
@@ -48,7 +58,7 @@ export function managedReviewTodos(state){
 }
 // Host-authored merge-constraint decision todos gate ended-Work closure retry.
 export const openMergeConstraintTodo=(state,workId)=>(state?.todos||[]).findLast(todo=>todo.kind==='merge-constraint'&&todo.workId===workId&&todo.status==='open');
-const phases={queued:'排队中',running:'执行中',paused:'待回答/处理',review:'结果待审查',closing:'历史结束待处理',ended:'已结束'};
+const phases={queued:'排队中',running:'执行中',paused:'后台处理中 · 进展已保留',review:'结果待审查',closing:'历史结束待处理',ended:'已结束'};
 export function managedWorkRecords(state){
  const jobs=state.jobs||[],works=state.works||[],todos=state.todos||[],receipts=state.receipts||[],records=new Map(),roots=new Map();
  const reviewTodos=managedReviewTodos(state);
@@ -80,7 +90,7 @@ export function managedWorkRecords(state){
    if(waiting){record.status='transferring';record.phase=waiting.transfer?.error?'转交待处理，前台尚未停稳':'正在转交，等待前台停稳';record.description=recordExcerpt(waiting.transfer?.error||job.context?.userGoal||job.text);if(waiting.transfer?.error)record.retryJobId=waiting.id;continue;}
    const q=todos.find(t=>t.sourceJobId===job.id&&t.kind==='routing'&&t.status==='open');
    const pending=jobs.some(j=>j.type==='intake'&&j.context?.routingQuestionId===q?.id&&['queued','running'].includes(j.status));
-   if(q&&!pending){record.status='clarify';record.phase='需要明确目标';record.description=recordExcerpt(q.text);record.todoId=q.id;delete record.retryJobId;}
+   if(q&&!pending){record.status='blocked';record.phase='后台核对中 · 原请求已保留';record.description=recordExcerpt(q.text);delete record.todoId;delete record.retryJobId;}
    else if(['failed','interrupted'].includes(job.status)&&!job.routing){record.status=job.status;record.phase=job.status==='failed'?'主控处理失败':'处理被中断';record.description=recordExcerpt(job.error);record.retryJobId=job.id;}
    else if(['queued','running'].includes(job.status)){record.status='pending';record.phase=job.status==='running'?'主控正在整理':state.drafts?.orchestrator||state.nativeDraftTargets?.includes('orchestrator')?'等待主控未发送草稿处理':'等待主控安排';record.description=recordExcerpt(job.text);delete record.retryJobId;delete record.todoId;}
   }
@@ -101,7 +111,7 @@ export function managedWorkRecords(state){
   const settlementIssue=resultSettlementIssue(state,w);
   if(settlementIssue){record.settlementIssue=settlementIssue;if(!pending&&!jobs.some(j=>j.target===w.id&&['queued','running'].includes(j.status)))record.phase='结果已保存 · 完成状态待核查';}
   const failedIntake=jobs.findLast(j=>j.context?.boundWorkId===w.id&&['failed','interrupted'].includes(j.status)&&!j.routing);if(failedIntake&&!['closing','ended'].includes(w.status)&&!pending&&!jobs.some(j=>j.context?.retryOf===failedIntake.id&&j.routing)){record.retryJobId=failedIntake.id;record.phase='补充处理失败，待重试';}
-  if(deviationHeld(w)){record.phase=deviationPresentation(w).phase;record.deviation=w.deviation;record.todoId=w.deviation.todoId;delete record.retryJobId;}
+  if(deviationHeld(w)){record.phase='后台核对任务范围 · 进展已保留';record.deviation=w.deviation;delete record.todoId;delete record.retryJobId;}
  if(w.status==='ended'){
   const closure=w.closure||{},decision=w.outcome||closure.decision;
   record.outcome=decision;record.closurePhase=closure.phase;
@@ -115,7 +125,22 @@ export function managedWorkRecords(state){
   if(constraintTodo){record.todoId=constraintTodo.id;record.mergeConstraintTodoId=constraintTodo.id;}
   else if(closureTodo)record.todoId=closureTodo.id;
  }
+ if(w.maintenance&&!deviationHeld(w)&&w.maintenance.status!=='repaired'&&w.closure?.phase!=='complete'){
+  record.maintenance={status:w.maintenance.status,message:w.maintenance.message};
+  const waiting=['needs-version-fix','interrupted','cancelled'].includes(w.maintenance.status);
+  record.phase=(w.status==='ended'?(w.outcome==='accept'?'已接受 · ':'已结束 · '):'')+(waiting?'系统问题待修复，进展已保留':'系统正在处理运行问题');
+  record.description=w.maintenance.message||'已有进展保留，无需回答内部技术问题。';delete record.retryJobId;
  }
- for(const record of records.values()){let prior='';record.events=record.events.map((event,index)=>{prior=event.at||prior;return {event,index,time:prior};}).sort((a,b)=>a.time.localeCompare(b.time)||a.index-b.index).map(row=>row.event);record.at=record.events.find(e=>e.at)?.at;}
+ }
+ for(const record of records.values()){
+  const work=works.find(work=>work.id===record.workId);
+  const event=state.backstageEvents?.findLast(event=>event.status==='blocked'&&(event.revision==null||!work||event.revision===work.revision)&&(event.workId===record.workId&&record.workId||event.target===record.workId&&record.workId||event.sourceJobId&&record.jobIds.includes(event.sourceJobId)));
+  if(!event)continue;
+  record.backstage={status:event.status,kind:event.kind,reason:event.reason,sourceJobId:event.sourceJobId};
+  if(!work||work.status==='paused'){
+   record.phase='后台受阻 · 进展已保留';record.description=recordExcerpt(event.reason)||record.description;delete record.retryJobId;
+  }
+ }
+ for(const record of records.values()){if(record.todoId&&!userTodoEligible(todos.find(todo=>todo.id===record.todoId)))delete record.todoId;let prior='';record.events=record.events.map((event,index)=>{prior=event.at||prior;return {event,index,time:prior};}).sort((a,b)=>a.time.localeCompare(b.time)||a.index-b.index).map(row=>row.event);record.at=record.events.find(e=>e.at)?.at;}
  return [...records.values()];
 }

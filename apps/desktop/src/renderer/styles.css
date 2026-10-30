@@ -125,6 +125,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .unlocated-tag .tag-transcript { flex: none; min-height: 0; max-height: 220px; }
 .unlocated-tag .note-index { display: none; }
 .unlocated-tag .tag-relocate { position: relative; display: block; margin-top: 8px; }
+.unlocated-tag .tag-inline .note-projection.tag-chat-window { display: flex; position: relative !important; visibility: visible !important; width: 100% !important; max-width: 100% !important; max-height: none !important; box-sizing: border-box; }
+.tag-inline .note-projection-head { cursor: default; }
+.tag-inline .tag-chat-window .tag-menu-actions { display: flex !important; flex: none; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px; width: 100%; min-width: 0; box-sizing: border-box; }
+.tag-inline .tag-chat-window .tag-menu-actions > [hidden] { display: none !important; }
+.tag-inline .tag-chat-window .tag-menu-actions > button { position: static; flex: 0 1 auto; width: auto; min-width: 0; max-width: 100%; height: auto; white-space: normal; overflow-wrap: anywhere; }
 
 /* Markdown images pasted from the clipboard load lazily from host materials. */
 .text-preview .markdown-image { display: block; margin: 12px 0; max-width: 100%; }

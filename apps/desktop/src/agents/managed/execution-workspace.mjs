@@ -6,11 +6,11 @@ import {atomicJson} from './workspace.mjs';
 import {resolveTextReplacements} from '../../domain/document-collaboration.mjs';
 import {git,str,read,repository,commitTree,fail,acceptanceCommit,gitStream,gitRecords,gitEntries,blobDigest,blobFile,blobFiles,updateIndexRows,gitEnv} from './git-service.mjs';
 import {runGit} from './git-runtime.mjs';
-import {inspectFile,readSafeBytes,safeRelativePath,TEXT_MAX_BYTES} from './file-stream.mjs';
+import {inspectFile,readSafeBytes,writablePath,capturePath,TEXT_MAX_BYTES} from './file-stream.mjs';
 import {Readable,Writable} from 'node:stream';
 import {provisionWorktreeDependencies} from './worktree-dependencies.mjs';
 export const byteDigest=bytes=>bytes===null?null:createHash('sha256').update(bytes).digest('hex');
-export const workPath=safeRelativePath;
+export const workPath=writablePath;
 // Whole-body reads are reserved for bounded document/review text APIs.
 export async function safeBytes(root,rel){const value=await readSafeBytes(root,rel);return value?.bytes??null;}
 const safeFile=readSafeBytes;
@@ -49,13 +49,13 @@ export class ExecutionWorkspace {
   }return repo;
  }
  async blob(cwd,bytes){return (await runGit(cwd,['hash-object','-w','--no-filters','--stdin'],{env:gitEnv(),input:Readable.from([bytes])})).toString().trim();}
- async snapshot(m,root,parent,label){
+ async snapshot(m,root,parent,label,explicitFiles=[]){
   const index=path.join(this.store.root,'evidence','index-'+randomUUID()),env={GIT_INDEX_FILE:index};await fs.mkdir(path.dirname(index),{recursive:true});
   try{
    await git(m.repo,['read-tree',parent],env);
-   const tracked=await gitEntries(m.repo,['ls-tree','-r','-z',parent]),selected=new Set([...tracked.keys(),...await gitRecords(root,['ls-files','-co','--exclude-standard','-z'])]),files={},batch=[],rows=[],format=await str(m.repo,['rev-parse','--show-object-format']);
+   const tracked=await gitEntries(m.repo,['ls-tree','-r','-z',parent]),explicit=new Set(explicitFiles.map(rel=>workPath(rel))),selected=new Set([...tracked.keys(),...await gitRecords(root,['ls-files','-co','--exclude-standard','-z']),...explicit]),files={},batch=[],rows=[],format=await str(m.repo,['rev-parse','--show-object-format']);
    const flush=async()=>{if(!batch.length)return;const captured=await blobFiles(m.repo,root,batch,tracked,format);for(const rel of batch){const file=captured.get(rel);if(file){files[rel]=file;const old=tracked.get(rel);if(old?.[0]===file.mode&&old?.[2]===file.oid)continue;rows.push({rel,...file});}else if(tracked.has(rel))rows.push({rel,oid:null});}batch.length=0;};
-   for(const rel of [...selected].sort()){try{workPath(rel);}catch(error){if(tracked.has(rel))throw error;continue;}batch.push(rel);if(batch.length===16)await flush();}await flush();await updateIndexRows(m.repo,index,rows);
+   for(const rel of [...selected].sort()){try{if(explicit.has(rel))workPath(rel);else capturePath(rel);}catch{continue;}if(explicit.has(rel)&&!tracked.has(rel)&&!await inspectFile(root,rel))fail('ARTIFACT_UNAVAILABLE','声明的交付文件不存在：'+rel);batch.push(rel);if(batch.length===16)await flush();}await flush();await updateIndexRows(m.repo,index,rows);
    const tree=await str(m.repo,['write-tree'],env),commit=await commitTree(m.repo,tree,[parent],label,path.dirname(this.manifest(m.workId)));return {tree,commit,files};
   }finally{await fs.rm(index,{force:true});}
  }
@@ -71,7 +71,7 @@ export class ExecutionWorkspace {
   const ref=await str(root,['symbolic-ref','HEAD']),index=path.join(evidence,'initial.index'),env={GIT_INDEX_FILE:index};
   const created=!top||prior?.created===true;await atomicJson(intentFile,{repo:root,ref,created,status:'baseline-requested'});await git(root,['read-tree','--empty'],env);
   const batch=[],rows=[],format=await str(root,['rev-parse','--show-object-format']);const flush=async()=>{if(!batch.length)return;const captured=await blobFiles(root,root,batch,new Map(),format);for(const [rel,file] of captured)if(file)rows.push({rel,...file});batch.length=0;};
-  for(const rel of await gitRecords(root,['ls-files','-co','--exclude-standard','-z'])){try{workPath(rel);}catch{continue;}batch.push(rel);if(batch.length===16)await flush();}await flush();await updateIndexRows(root,index,rows);
+  for(const rel of await gitRecords(root,['ls-files','-co','--exclude-standard','-z'])){try{capturePath(rel);}catch{continue;}batch.push(rel);if(batch.length===16)await flush();}await flush();await updateIndexRows(root,index,rows);
   const tree=await str(root,['write-tree'],env),commit=await commitTree(root,tree,[],'Nozeli project baseline',evidence);await atomicJson(intentFile,{repo:root,ref,commit,created,status:'ready'});
   await git(root,['update-ref',ref,commit,'0'.repeat(commit.length)]);
   if(created){const targetIndex=path.resolve(root,await str(root,['rev-parse','--git-path','index'])),lock=targetIndex+'.lock';const h=await fs.open(lock,'wx',0o600);try{if(await fs.stat(targetIndex).catch(()=>null))fail('INDEX_CHANGED','初始化期间索引出现，未覆盖');await copyToHandle(index,h);await h.sync();await h.close();await fs.rename(lock,targetIndex);}catch(error){await h.close().catch(()=>{});await fs.rm(lock,{force:true});throw error;}}
@@ -137,9 +137,9 @@ export class ExecutionWorkspace {
   delete m.publicationIntent;try{await this.save(m);}catch(error){m.publicationIntent=intent;throw error;}
  }
  async reconcilePublication(m){if(!m.publicationIntent)return;const intent=m.publicationIntent;await this.identity(m,{target:false,worker:false});await this.restorePublication(m,intent,await this.publicationCommitted(intent));}
- async publish(work,job,isActive=()=>true,retainCandidate=null,{receiptId}={}){return this.locked(work.id,async()=>{
+ async publish(work,job,isActive=()=>true,retainCandidate=null,{receiptId,explicitFiles=[]}={}){return this.locked(work.id,async()=>{
   const m=await this.prepareInner(work.id);await this.identity(m,{target:false});if(!isActive())fail('WORK_STOPPED','工作已停止');
-  const candidate=await this.snapshot(m,m.directory,m.inputCommit,'Nozeli Worker checkpoint '+work.id);candidate.revision=work.revision;candidate.jobId=job?.id;
+  const candidate=await this.snapshot(m,m.directory,m.inputCommit,'Nozeli Worker checkpoint '+work.id,explicitFiles);candidate.explicitFiles=[...new Set(explicitFiles)];candidate.revision=work.revision;candidate.jobId=job?.id;
   candidate.fileDigests=Object.fromEntries(Object.entries(candidate.files).map(([rel,file])=>[rel,file.digest]));
   candidate.files=await gitRecords(m.repo,['diff-tree','--no-commit-id','--name-only','-r','-z',m.inputCommit,candidate.commit]);
   if(receiptId){
@@ -209,7 +209,7 @@ export class ExecutionWorkspace {
  async documentOperation({work,op,arguments:a,callId,isActive=()=>true}){return this.locked(work.id,async()=>{try{
   const m=await this.prepareInner(work.id);await this.identity(m,{target:false});
   const fingerprint=byteDigest(Buffer.from(JSON.stringify({threadId:work.threadId,op,arguments:a}))),prior=m.documentCalls?.[callId];if(op!=='read'&&prior){if(prior.fingerprint!==fingerprint)fail('CONFLICT','调用标识已用于不同编辑');return {ok:true,continueTurn:true,value:{...prior.value,duplicate:true}};}
-  if(op==='read'){const rel=workPath(a.relPath),bytes=await safeBytes(m.directory,rel),text=documentText(bytes),digest=byteDigest(bytes),handle=randomUUID();this.handles.set(handle,{workId:work.id,threadId:work.threadId,rel,digest});return {ok:true,readOnly:true,continueTurn:true,value:{relPath:rel,text,digest,version:{digest},readHandle:handle}};}
+  if(op==='read'){const rel=workPath(a.relPath);let bytes=await safeBytes(m.directory,rel),source='worktree';if(bytes===null){let excluded=false;try{capturePath(rel);}catch{excluded=true;}if(excluded){bytes=await safeBytes(m.repo,rel);if(bytes!==null)source='project-source';}}const text=documentText(bytes),digest=byteDigest(bytes),handle=source==='worktree'?randomUUID():null;if(handle)this.handles.set(handle,{workId:work.id,threadId:work.threadId,rel,digest});return {ok:true,readOnly:true,continueTurn:true,value:{relPath:rel,text,digest,version:{digest},readHandle:handle,provenance:{kind:source,root:source==='worktree'?m.directory:m.repo,frozen:false},editable:!!handle}};}
   const h=this.handles.get(a.readHandle);if(!h||h.workId!==work.id||h.threadId!==work.threadId)fail('READ_HANDLE_REJECTED','需要当前Worker的读取凭据');
   const before=await safeBytes(m.directory,h.rel);if(byteDigest(before)!==h.digest)fail('STALE_VERSION','执行文件已变化，请重新读取');
   // Same model contract as the frontdesk: quote exact text, host resolves offsets.
@@ -232,7 +232,7 @@ export class ExecutionWorkspace {
   if(m.finishIntent&&m.finishIntent.decision!==decision)fail('DECISION_CHANGED','已保存的用户决定不可更改');
   if(decision==='accept'&&!m.cleanupStarted)await this.reconcileTarget(m);
   if(!m.cleanupStarted)await this.identity(m,{target:decision==='accept'});
-  if(decision==='accept'){if(validateAcceptance)await validateAcceptance(work,[...new Set([...(m.candidate?.files||[]),...(reviewed?.files||[]).map(f=>f.relPath)])]);if(!m.cleanupStarted){const current=await this.snapshot(m,m.directory,m.inputCommit,'Nozeli acceptance verification');if(current.tree!==m.candidate?.tree)fail('UNPUBLISHED_CHANGES','执行目录有报告后变更，必须先发布当前候选');}await this.integrate(m,work,reviewed,mergeAuthorization);}
+  if(decision==='accept'){if(validateAcceptance)await validateAcceptance(work,[...new Set([...(m.candidate?.files||[]),...(reviewed?.files||[]).map(f=>f.relPath)])]);if(!m.cleanupStarted){const current=await this.snapshot(m,m.directory,m.inputCommit,'Nozeli acceptance verification',m.candidate?.explicitFiles||[]);if(current.tree!==m.candidate?.tree)fail('UNPUBLISHED_CHANGES','执行目录有报告后变更，必须先发布当前候选');}await this.integrate(m,work,reviewed,mergeAuthorization);}
   else if(!m.finishIntent){m.finishIntent={decision:'discard',status:'authorized',at:new Date().toISOString()};await this.save(m);}
   if(isActive())fail('WORK_ACTIVE','Worker仍在运行，未清理');
   m.cleanupStarted=true;await this.save(m);await this.removeOwned(m);
@@ -330,7 +330,7 @@ export class ExecutionWorkspace {
   }finally{await fs.rm(temp,{force:true});await parent.close();}
  }
  async removeOwned(m){
-  const exists=await fs.lstat(m.directory).catch(e=>{if(e.code==='ENOENT')return null;throw e;});if(exists){await this.identity(m,{target:false});if(m.finishIntent.decision==='accept'){const current=await this.snapshot(m,m.directory,m.inputCommit,'Nozeli cleanup verification');if(current.tree!==m.candidate.tree)fail('UNPUBLISHED_CHANGES','接受后执行目录又变化，未删除候选');}await git(m.repo,['worktree','remove','--force',m.directory]);}
+  const exists=await fs.lstat(m.directory).catch(e=>{if(e.code==='ENOENT')return null;throw e;});if(exists){await this.identity(m,{target:false});if(m.finishIntent.decision==='accept'){const current=await this.snapshot(m,m.directory,m.inputCommit,'Nozeli cleanup verification',m.candidate.explicitFiles||[]);if(current.tree!==m.candidate.tree)fail('UNPUBLISHED_CHANGES','接受后执行目录又变化，未删除候选');}await git(m.repo,['worktree','remove','--force',m.directory]);}
   const ref=await str(m.repo,['rev-parse','--verify',m.branchRef]).catch(()=>null);if(ref){const expected=m.candidate?.commit||m.inputCommit||m.baseCommit;if(ref!==expected)fail('WORKER_REF_CHANGED','分支不再属于受管候选，未删除');await git(m.repo,['update-ref','-d',m.branchRef,expected]);}
  }
  async recoverOperations(){
