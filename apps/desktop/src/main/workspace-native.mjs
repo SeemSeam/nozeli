@@ -105,6 +105,7 @@ export class WorkspaceNative {
     wc.on('did-start-navigation', (_event, _url, _inPlace, main) => {
       if (!main) return;
       this.isolatedPreview?.closeScope(record);
+      if(record.kind==='web')this.onlineBrowser?.forceCloseScope(record);
       if(record.role==='demo-controls'&&record.ready)this.demoControls.reloading(record);
       record.generation++; record.ready = false; record.contentFailed = false; record.initError = null;
       if(record.role==='shell'){this.demoControls.record?.view.setVisible(false);this.demoControls.hintRecord?.view.setVisible(false);}
@@ -116,7 +117,8 @@ export class WorkspaceNative {
     wc.on('render-process-gone', (_event, details) => {
       if(record.role==='demo-controls'){this.demoControls.failed(record,Error('演示控制区进程已退出：'+details.reason));return;}
       if(record.role==='demo-hint'){this.demoControls.hintFailed(record,Error('演示提示进程已退出：'+details.reason));return;}
-      if(record.role!=='surface')for(const surface of this.projectRecords(record.projectId,record.windowId))surface.view.setVisible(false);
+      if(record.kind==='web')this.onlineBrowser?.forceCloseScope(record);
+      if(record.role!=='surface')for(const surface of this.projectRecords(record.projectId,record.windowId)){surface.view.setVisible(false);this.onlineBrowser?.refreshScope(surface);}
       record.ready = false; record.generation++; record.contentFailed = false; record.initError = null;
       this.cancelDrags(record);
       for (const [id, receipt] of this.receipts) if (receipt.record === record) { receipt.reject(fail('RENDERER_GONE')); this.receipts.delete(id); }
@@ -124,6 +126,7 @@ export class WorkspaceNative {
     });
     wc.once('destroyed', () => {
       this.isolatedPreview?.closeScope(record);
+      this.onlineBrowser?.forceCloseScope(record);
       record.dead = true; this.senders.delete(wc.id);
       for (const [id, receipt] of this.receipts) if (receipt.record === record) { receipt.reject(fail('SURFACE_DESTROYED')); this.receipts.delete(id); }
       this.cancelDrags(record);
@@ -138,8 +141,9 @@ export class WorkspaceNative {
   editFocusedText(action, wc) {
     if (!['copy','cut'].includes(action) || !wc || wc.isDestroyed()) return false;
     const record = this.senders.get(wc.id);
-    const preview = [...(this.isolatedPreview?.slots.values() ?? [])].find(slot => slot.view.webContents === wc);
-    if (record ? record.dead || record.transferring || !['shell','detached','surface'].includes(record.role) : !preview || preview.scope.dead || preview.scope.transferring) return false;
+    const online = [...(this.onlineBrowser?.slots.values()??[])].find(slot => slot.view.webContents === wc);
+    const preview = online ?? [...(this.isolatedPreview?.slots.values() ?? [])].find(slot => slot.view.webContents === wc);
+    if (record ? record.dead || record.transferring || !['shell','detached','surface'].includes(record.role) : !preview || preview.scope.dead || preview.scope.transferring || preview.closed || (online && !online.view.getVisible())) return false;
     // Target the actual focused WebContents, not BaseWindow's chrome shim or
     // the last active document. Chromium dispatches the focused frame's copy/
     // cut event, retaining editor serialization, read-only and undo behavior.
@@ -182,6 +186,7 @@ export class WorkspaceNative {
     if (payload.projectId && payload.projectId !== r.projectId && !(r.role === 'shell' && (['demo.state','demo.exit','managed.status','managed.attention.ack','workspace.project','workspace.closeProject','workspace.recovery.object','workspace.recovery.settle','project.open','project.remove','project.retry','project.lifecycle.preview','project.lifecycle.reconcile'].includes(op)||op==='demo.transition'&&payload.action==='stop'))) throw fail('PROJECT_SCOPE_DENIED');
     if(op.startsWith('demo.')){if(op==='demo.result'){if(!['surface','shell','detached'].includes(r.role))throw fail('IPC_DENIED');}else if(!['demo.state','demo.send','demo.interrupt'].includes(op)&&r.role!=='shell')throw fail('IPC_DENIED');return r;}
     if(r.role==='surface'&&r.kind==='terminal'&&op.startsWith('managed.')&&(op!=='managed.terminal.screen'||payload.target!==this.layouts.get(r.projectId)?.views[r.viewId]?.viewState?.workId))throw fail('IPC_DENIED');
+    if(r.role==='surface'&&r.kind==='web'&&op.startsWith('web.'))return r;
     if (this.lifecycle.has(r.projectId) && !this.lifecycleFlushOwner(r,payload.flushRequestId,op) && (writes.has(op) || op === 'managed.send' || ['managed.attention.respond','managed.attention.draft.write','managed.review.save','managed.review.instruction.save','managed.review.continue','managed.review.accept','workspace.review.decide'].includes(op) || op === 'workspace.project' || op === 'workspace.command'&&payload.command?.type!=='restoreViewState')) throw fail('PROJECT_LIFECYCLE_ACTIVE', '项目正在保留并关闭，请等待操作结果。');
     if(op==='report.copySource'&&!(r.role==='shell'||r.role==='surface'&&['report','history'].includes(r.kind)))throw fail('IPC_DENIED');
     if(op.startsWith('isolated-preview.')&&r.role==='surface'&&(!['report','document','history'].includes(r.kind)||r.kind==='history'&&['isolated-preview.open','isolated-preview.update'].includes(op)&&payload.profile!=='staticReport'))throw fail('IPC_DENIED');
@@ -237,7 +242,7 @@ export class WorkspaceNative {
       r.readOnly = this.leases.get(key)?.viewId !== r.viewId;
     }else if(descriptor?.readOnly)r.readOnly=true;
     const viewState=this.layouts.get(r.projectId)?.views[r.viewId]?.viewState;
-    return { role: r.role, projectId: r.projectId, viewId: r.viewId, kind: r.kind, relPath: r.relPath, ...(r.documentSource !== undefined ? { documentSource: structuredClone(r.documentSource) } : {}), resourceId: descriptor?.resourceId ?? null, documentKey: r.role === 'surface' && r.kind === 'document' ? this.resourceOfRecord(r) : null, windowId: r.windowId, generation: r.generation, readOnly: !!r.readOnly, draftOnly:viewState?.draftOnly===true, viewState, lease: r.relPath ? this.leases.get(this.resource(r.projectId, r.relPath, r.documentSource)) : null, contentFailed: !!r.contentFailed, initError: r.initError ?? null };
+    return { role: r.role, projectId: r.projectId, viewId: r.viewId, kind: r.kind, relPath: r.relPath, ...(r.kind==='web'?{url:descriptor?.url,title:descriptor?.title}:{}), ...(r.documentSource !== undefined ? { documentSource: structuredClone(r.documentSource) } : {}), resourceId: descriptor?.resourceId ?? null, documentKey: r.role === 'surface' && r.kind === 'document' ? this.resourceOfRecord(r) : null, windowId: r.windowId, generation: r.generation, readOnly: !!r.readOnly, draftOnly:viewState?.draftOnly===true, viewState, lease: r.relPath ? this.leases.get(this.resource(r.projectId, r.relPath, r.documentSource)) : null, contentFailed: !!r.contentFailed, initError: r.initError ?? null };
   }
   flush(records) { return Promise.all([...new Set(records)].filter(r => !r.dead&&!['demo-controls','demo-hint'].includes(r.role)).map(r => this.flushOne(r))).then(() => this.host.settled()); }
   async flushOne(record, channel = 'nozeli:flush', detail = {}) {
@@ -456,6 +461,7 @@ export class WorkspaceNative {
     const operation = {operationId,input};
     operation.promise = (async () => {
       await this.host.requireRegisteredProject(projectId);
+      for(const owner of this.projectRecords(projectId).filter(s=>s.kind==='web')){const result=await this.onlineBrowser?.closeScope(owner);if(result?.cancelled||result?.closed===false)throw fail('WEB_CLOSE_CANCELLED','网页仍有未提交输入，项目保持打开。');}
       const key = `lifecycle:close:${operationId}`;
       const prior = await this.host.storage.getRecovery(projectId,key);
       if (prior) {
@@ -555,6 +561,7 @@ export class WorkspaceNative {
       for(const surface of this.surfaces.values())if(surface.windowId==='main'){
         surface.view.setVisible(false);
         for(const slot of this.isolatedPreview?.slots.values()??[])if(slot.scope===surface)slot.view.setVisible(false);
+        for(const slot of this.onlineBrowser?.slots.values()??[])if(slot.scope===surface)slot.view.setVisible(false);
       }
       if(previousProjectId!==projectId)this.isolatedPreview?.closeScope(r);
       r.projectId=projectId;
@@ -659,8 +666,9 @@ export class WorkspaceNative {
         const previousWindow=r.win;
         r.view.setVisible(false); previousWindow.contentView.removeChildView(r.view); destination.win.contentView.addChildView(r.view);
         this.isolatedPreview?.reparentScope(r,destination.win);
+        this.onlineBrowser?.reparentScope(r,destination.win);
         r.win = destination.win; r.windowId = found.windowId;
-        const lease = this.leases.get(this.resource(r.projectId, r.relPath, r.documentSource)); if (lease?.viewId === r.viewId) lease.windowId = r.windowId;
+        if(r.kind==='document'&&r.relPath){const lease=this.leases.get(this.resource(r.projectId,r.relPath,r.documentSource));if(lease?.viewId===r.viewId)lease.windowId=r.windowId;}
         r.wc.send('nozeli:workspace-control', { type: 'host', ...this.bootstrap(r) });
       }
     }
@@ -669,12 +677,13 @@ export class WorkspaceNative {
     // reuses the same renderer; only closed or aged-out views release their surface.
     const resident=new Set();
     for(const windowId of ['main',...layout.detached.map(w=>w.id)])for(const g of layoutGroups(layout,windowId)){if(g.activeViewId)resident.add(g.activeViewId);for(const id of (g.historyViewIds||[]).slice(0,3))resident.add(id);}
-    for (const [id, r] of this.surfaces) if (r.projectId === layout.projectId && !r.previewRecoveryFailed && (!layout.views[id]||!resident.has(id))) this.destroySurface(r);
+    for (const [id, r] of this.surfaces) if (r.projectId === layout.projectId && !r.previewRecoveryFailed && (!layout.views[id]||r.kind!=='web'&&!resident.has(id))) this.destroySurface(r);
     for (const [id, r] of this.windows) if (id !== 'main' && r.projectId === layout.projectId && !layout.detached.some(w => w.id === id) && !this.isolatedPreview?.holdsWindow(r.win)) { r.closing = true; r.win.destroy(); this.windows.delete(id); }
   }
   destroySurface(r) {
     if(r.previewRecoveryFailed)throw fail('TRANSFER_RECOVERY_REQUIRED','报告正文回滚未确认；不能销毁原生承载。');
     this.isolatedPreview?.closeScope(r);
+    this.onlineBrowser?.forceCloseScope(r);
     r.view.setVisible(false); if (!r.win.isDestroyed()) r.win.contentView.removeChildView(r.view);
     r.wc.close(); this.surfaces.delete(r.viewId);
     const key = this.resourceOfRecord(r);
@@ -710,6 +719,7 @@ export class WorkspaceNative {
       if (previous) { if (previous.input !== JSON.stringify(payload)) throw fail('REQUEST_KEY_REUSED'); return previous.result; }
       if (payload.expectedRevision !== layout.revision && !(r.role==='surface'&&payload.command?.type==='restoreViewState'&&payload.expectedRevision===undefined)) throw fail('LAYOUT_STALE');
       const command = { ...payload.command };
+      if(command.type==='webNavigate')throw fail('IPC_DENIED','网页导航信息只由隔离浏览宿主写入。');
       if(command.type==='restoreViewState'&&layout.views[command.viewId]?.kind==='conversation'){
         const saved=layout.views[command.viewId].viewState??{},incoming=command.viewState??{};
         command.viewState={...incoming,draftOnly:saved.draftOnly,conversationMaterials:{...incoming.conversationMaterials,frontdesk:mergeDrawingMaterials(incoming.conversationMaterials?.frontdesk,saved.conversationMaterials?.frontdesk)}};
@@ -738,6 +748,7 @@ export class WorkspaceNative {
         next.closedViews=structuredClone(layout.closedViews??[]);
         next.revision=layout.revision+1;validateLayout(next);
       }else next=reduceLayout(layout, command);
+      for(const owner of this.projectRecords(layout.projectId).filter(s=>s.kind==='web'&&!next.views[s.viewId])){const closed=await this.onlineBrowser?.closeScope(owner);if(closed?.cancelled||closed?.closed===false)throw fail('WEB_CLOSE_CANCELLED','网页仍有未提交输入，已保留。');}
       if(command.type==='restoreViewState')next.revision=layout.revision;
       for(const view of Object.values(next.views))if(view.kind==='conversation'&&!view.viewState?.draftOnly&&findView(next,view.id)&&!findView(layout,view.id))await this.requireConversation(next.projectId,'frontdesk');
       const affected = this.projectRecords(layout.projectId).filter(s => {
@@ -765,7 +776,7 @@ export class WorkspaceNative {
           const move={surface:s,source:s.win,sourceWindowId:s.windowId,destination:destination.win,destinationWindowId:location.windowId,bounds:s.view.getBounds(),removed:false,attached:false};
           staged.push(move);destination.staging=(destination.staging||0)+1;
           s.view.setVisible(false);s.win.contentView.removeChildView(s.view);move.removed=true;
-          destination.win.contentView.addChildView(s.view);move.attached=true;this.isolatedPreview?.reparentScope(s,destination.win);move.previewMoved=true;
+          destination.win.contentView.addChildView(s.view);move.attached=true;this.isolatedPreview?.reparentScope(s,destination.win);this.onlineBrowser?.reparentScope(s,destination.win);move.previewMoved=true;
         }
         await this.persist(next);
       } catch (error) {
@@ -774,9 +785,9 @@ export class WorkspaceNative {
           const s=move.surface;
           try{
             if(move.removed){try{move.destination.contentView.removeChildView(s.view);}catch(removeError){if(move.attached)throw removeError;}
-              move.source.contentView.addChildView(s.view);if(move.previewMoved)this.isolatedPreview?.reparentScope(s,move.source);}
+              move.source.contentView.addChildView(s.view);if(move.previewMoved){this.isolatedPreview?.reparentScope(s,move.source);this.onlineBrowser?.reparentScope(s,move.source);}}
             s.win=move.source;s.windowId=move.sourceWindowId;s.view.setBounds(move.bounds);
-          }catch(rollbackError){rollbackFailed=true;s.recoveryHeld=true;this.isolatedPreview?.holdScope(s,[move.source,move.destination]);rollbackErrors.push(rollbackError);this.onError(rollbackError);}
+          }catch(rollbackError){rollbackFailed=true;s.recoveryHeld=true;this.isolatedPreview?.holdScope(s,[move.source,move.destination]);this.onlineBrowser?.holdScope(s,[move.source,move.destination]);rollbackErrors.push(rollbackError);this.onError(rollbackError);}
           const target=this.windows.get(move.destinationWindowId);if(target)target.staging=Math.max(0,(target.staging||1)-1);
         }
         // Never destroy a prepared parent if native rollback could not confirm that its live child returned.
@@ -788,7 +799,7 @@ export class WorkspaceNative {
       this.layouts.set(layout.projectId, next);
       for(const move of staged){
         const s=move.surface;s.win=move.destination;s.windowId=move.destinationWindowId;
-        const lease=this.leases.get(this.resource(s.projectId,s.relPath,s.documentSource));if(lease?.viewId===s.viewId)lease.windowId=s.windowId;
+        if(s.kind==='document'&&s.relPath){const lease=this.leases.get(this.resource(s.projectId,s.relPath,s.documentSource));if(lease?.viewId===s.viewId)lease.windowId=s.windowId;}
         const target=this.windows.get(move.destinationWindowId);if(target)target.staging=Math.max(0,(target.staging||1)-1);
         s.wc.send('nozeli:workspace-control',{type:'host',...this.bootstrap(s)});
       }
@@ -882,6 +893,7 @@ export class WorkspaceNative {
     try {
       if (this.currentWindowCount() === 1) { await this.onClose(r); return; }
       await this.flush([r, ...[...this.surfaces.values()].filter(s=>s.windowId===r.windowId)]);
+      for(const owner of this.projectRecords(r.projectId,r.windowId).filter(s=>s.kind==='web')){const closed=await this.onlineBrowser?.closeScope(owner);if(closed?.cancelled||closed?.closed===false)throw fail('WEB_CLOSE_CANCELLED','网页仍有未提交输入，已保留窗口。');}
       if (r.windowId !== 'main') {
         await this.serial(r.projectId, async () => {
           let next = await this.layout(r.projectId);
@@ -1028,6 +1040,7 @@ export class WorkspaceNative {
         if (valid) surface.view.setBounds(Object.fromEntries(Object.entries(rect).map(([k,v]) => [k,Math.round(v)])));
         surface.view.setVisible(!!valid && !surface.conversationBlocked && !p.overlay && !occluded && (surface.ready || surface.contentFailed) && ![...this.drags.values()].some(d=>d.projectId===r.projectId&&!(d.source.role==='detached'&&d.source.windowId===r.windowId)));
         for(const slot of this.isolatedPreview?.slots.values()??[])if(slot.scope===surface)this.isolatedPreview.bounds(slot,slot.bounds);
+        this.onlineBrowser?.refreshScope(surface);
         surface.returnFocus?.();
       }
       this.demoControls.raise();

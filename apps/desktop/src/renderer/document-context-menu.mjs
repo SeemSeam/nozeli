@@ -14,7 +14,7 @@ export function documentCommands(s) {
     const pointable = Boolean(s.pointTarget), selectable = Boolean(s.pointSelected);
     const where = pointable || selectable ? '' : '此处不是文档位置，无法定位批注';
     add('note-here', selectable ? '备注选区' : '在此备注', pointable || selectable, where);
-    add('discuss-here', selectable ? '讨论选区' : '在此讨论', pointable || selectable, where);
+    add('discuss-here', selectable ? '讨论选区' : '讨论此文件', pointable || selectable, where);
     add('explain-selection', '解释选区', Boolean(s.canExplain), s.canExplain ? '' : selectable ? '解释暂不可用，前台尚未就绪' : '需先选中文字或区域');
   }
   if (s.editable) {

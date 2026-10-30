@@ -540,12 +540,12 @@ export class ManagedProjects {
  busy(){return this.flights.size>0||[...this.controllers.values()].some(c=>c.running.size>0||c.closures.size>0);}
  stopVersionsGc(){for(const state of Object.values(this.versionGcState??{})){if(state.timer){clearTimeout(state.timer);state.timer=null;}}}
  async stop(){this.stopping=true;this.stopVersionsGc();await this.systemTerminals.stop();await Promise.allSettled([...this.flights.values()]);const drafts=await Promise.allSettled([...(this.draftFlights?.values()??[])]);const results=await Promise.allSettled([...this.controllers.values()].map(c=>c.stop()));await Promise.allSettled([...this.terminalFlights.values()]);await Promise.allSettled([...(this.adoptionCheckpoints??[])]);const reminders=await Promise.allSettled([...(this.attentionPublish?.values()??[]),...this.attention.flights.values()]);this.stopVersionsGc();this.controllers.clear();const error=[...drafts,...results,...reminders].find(r=>r.status==='rejected');if(error)throw error.reason;}
- async invoke(op,p){
+ async invoke(op,p,sourceInput=null){
   if(this.guidedDemo?.isDemo(p?.projectId))return this.guidedDemo.managed(op,p);
   if(op==='managed.frontdesk.route.resolve'&&(!p||typeof p!=='object'||Array.isArray(p)))throw new HostError('INVALID_PAYLOAD','前台去向决定参数必须是对象。');
   const allowed={status:['projectId'],connect:['projectId'],enable:['projectId'],send:['projectId','target','text','relPath','materialText','tags','routingQuestionId','requestKey'],task:['projectId','text','relPath','materialText','tags','routingQuestionId','requestKey'],'intake.retry':['projectId','jobId','requestKey'],draft:['projectId','target','text'],end:['projectId','workId','revision','decision'],retry:['projectId','workId'],restart:['projectId','target'],binding:['projectId','role','skills'],limit:['projectId','limit'],'terminal.screen':['projectId','target'],'terminal.system':['projectId','target'],'terminal.return':['projectId','target'],'terminal.attach':['projectId','target'],'terminal.input':['projectId','target','terminalId','data'],'terminal.resize':['projectId','target','terminalId','cols','rows'],'terminal.close':['projectId','target','terminalId','detach']};
   allowed['terminal.attach']=['projectId','target','ownerId'];
-  allowed.send=[...allowed.send,'imageAttachments','drawingSources'];allowed.task=[...allowed.task,'imageAttachments','drawingSources'];
+  allowed.send=[...allowed.send,'imageAttachments','drawingSources','preserveDraft'];allowed.task=[...allowed.task,'imageAttachments','drawingSources','preserveDraft'];
   allowed.disposition=['projectId','workId'];allowed.end=['projectId','workId','revision','decision','binding','requestKey'];allowed.retry=['projectId','workId','binding','requestKey'];
   allowed['merge.constraint']=['projectId','workId','expectedVersion','decision','requestKey'];
   allowed['versions.list']=['projectId'];
@@ -689,7 +689,7 @@ export class ManagedProjects {
   if(action==='send'||action==='task'){
    if(p.requestKey!=null&&!(typeof p.requestKey==='string'&&/^[a-zA-Z0-9:_-]{8,160}$/.test(p.requestKey)))throw Error('invalid submission key');
    if(typeof p.text!=='string'||!p.text.trim())throw new Error('输入为空');
-   const submissionDigest=createHash('sha256').update(JSON.stringify([p.target||'frontdesk',p.text,p.relPath,p.materialText,p.tags,p.routingQuestionId,p.imageAttachments,p.drawingSources])).digest('hex');
+   const submissionDigest=createHash('sha256').update(JSON.stringify([p.target||'frontdesk',p.text,p.relPath,p.materialText,p.tags,p.routingQuestionId,p.imageAttachments,p.drawingSources,...(sourceInput?[sourceInput]:[])])).digest('hex');
    const previous=p.requestKey&&c.store.state.jobs.find(j=>j.key===(action==='task'?'task:':'input:')+p.requestKey);
    if(previous){if(previous.context?.submissionDigest!==submissionDigest)throw Error('submission key collision');return {accepted:true,jobId:previous.id};}
    let text=p.text;
@@ -710,8 +710,9 @@ export class ManagedProjects {
    const context={...(p.requestKey?{submissionDigest}:{}),...(p.routingQuestionId?{routingQuestionId:p.routingQuestionId}:{}),...(imageAttachments.length?{imageAttachments}:{})};
    if(material)context.tagMaterial={version:material.version,binding:material.binding,brief:material.brief,reusable:material.reusable};
    if(packets.length)context.userInput={text:p.text,sources:packets.map(packet=>({relPath:packet.relPath,annotationId:packet.tagId,materialDigest:packet.origin?.materialDigest,quote:packet.origin?.anchor?.quote||'',location:packet.information?.location?.label||'',changed:packet.resolution?.targetDigest!==packet.origin?.materialDigest}))};
+   if(sourceInput)context.userInput=structuredClone(sourceInput);
    if(drawingImages.length){context.drawingSources=drawingSources;text+='\n\n涂鸦截图来源（未锚定文件的画面仅作工作区素材）：\n'+JSON.stringify(context.drawingSources);}
-   return action==='task'?c.submitTask(text,{requestKey:p.requestKey,context,draftText:p.text}):c.send(p.target||'frontdesk',text,{requestKey:p.requestKey,context,draftText:p.text});
+   return action==='task'?c.submitTask(text,{requestKey:p.requestKey,context,draftText:p.text,preserveDraft:p.preserveDraft===true}):c.send(p.target||'frontdesk',text,{requestKey:p.requestKey,context,draftText:p.text,preserveDraft:p.preserveDraft===true});
   }
   if(action==='end'){if(!['accept','discard'].includes(p.decision))throw new HostError('INVALID_PAYLOAD','请选择接受或丢弃成果。');return c.endWork(p.workId,{revision:p.revision,decision:p.decision,binding:p.binding,requestKey:p.requestKey});}
   if(action==='retry')return c.retryClosure(p.workId,{binding:p.binding,requestKey:p.requestKey});

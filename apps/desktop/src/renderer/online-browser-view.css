@@ -1,0 +1,24 @@
+html[data-workspace-role=surface][data-workspace-kind=web] #app.app>.online-browser:not(#reader){display:flex!important}
+.online-browser{display:flex;flex-direction:column;position:absolute;inset:0;min-width:0;min-height:0;overflow:hidden;background:var(--panel-bg,#fff);color:var(--text,#202620);font:13px system-ui,sans-serif}
+.online-browser-toolbar{display:flex;flex:none;align-items:center;gap:6px;padding:8px;border-bottom:1px solid var(--border,#d8ded8);background:var(--panel-bg,#fff)}
+.online-browser-toolbar button{flex:none;min-height:30px;padding:4px 9px;border:1px solid var(--border,#cbd4cb);border-radius:5px;background:var(--panel-bg,#fff);color:inherit;cursor:pointer}
+.online-browser-toolbar button:disabled{opacity:.45;cursor:default}
+.online-browser-toolbar input{flex:1;min-width:40px;height:30px;box-sizing:border-box;padding:4px 8px;border:1px solid var(--border,#cbd4cb);border-radius:5px;background:var(--panel-bg,#fff);color:inherit;font:inherit}
+.online-browser-toolbar :focus-visible{outline:2px solid var(--accent,#527b5a);outline-offset:1px}
+.online-browser-title{flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:5px 10px 0;font-size:12px}
+.online-browser-status{flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-height:17px;margin:0;padding:2px 10px 5px;font-size:11px;color:var(--muted,#606d60)}
+.online-browser-status.is-error{color:var(--danger,#b12e2e);white-space:normal;max-height:4em;overflow:auto}
+.online-browser-viewport{flex:1;min-width:0;min-height:0;position:relative;background:#fff}
+@media(max-width:420px){.online-browser-toolbar{gap:3px;padding:5px}.online-browser-toolbar button{padding:4px}.online-browser-toolbar input{padding:4px}}
+.online-browser-content{display:flex;flex:1;min-width:0;min-height:0;position:relative;overflow:hidden}
+/* Native guests cannot be covered by renderer z-index. Reserve the panel's
+   actual rectangle so its controls always remain above/outside guest hit tests. */
+.web-discussion{position:relative;z-index:10;flex:none;box-sizing:border-box;width:340px;min-width:min(260px,85%);max-width:85%;height:100%;resize:horizontal;overflow:auto;display:flex;flex-direction:column;gap:8px;padding:12px;border-left:1px solid var(--border,#cbd4cb);box-shadow:-4px 0 15px #0002;background:var(--panel-bg,#fff)}
+.web-discussion[hidden]{display:none!important}
+.web-discussion header,.web-discussion footer{display:flex;align-items:center;justify-content:space-between;gap:8px;flex:none}
+.web-discussion button{padding:5px 10px;min-height:30px;cursor:pointer}
+.web-discussion p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.web-discussion-url,.web-discussion-notice,.web-discussion small{font-size:11px;color:var(--muted,#606d60)}
+.web-discussion-history{flex:1;min-height:70px;overflow:auto;display:flex;flex-direction:column;gap:12px}
+.web-discussion-history article{padding:8px;border:1px solid var(--border,#d8ded8);border-radius:5px}
+.web-discussion textarea{box-sizing:border-box;width:100%;min-height:80px;max-height:50%;resize:vertical;font:inherit;background:var(--panel-bg,#fff);color:inherit}

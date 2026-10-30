@@ -19,7 +19,9 @@ export async function buildAnnotationPackage({store,projectId,relPath,kind,ancho
  const ref=async(bytes,mime,role)=>{const {digest}=await store.putMaterial(bytes);return {role,digest,mime,bytes:bytes.length,relPath:path.posix.join('.nozeli/objects/sha256',digest)};};
  const result={schema:'nozeli.annotation-material-v1',capturedAt:new Date().toISOString(),source:{digest:materialDigest,relPath:path.posix.join('.nozeli/objects/sha256',materialDigest),format:path.extname(relPath).slice(1)},location:{kind,anchor},assets:[],limitations:[]};
  const loc=result.location;
- if(kind==='text-selection'){
+ if(kind==='file'){
+  loc.scope='file';loc.label='整个文件';
+ }else if(kind==='text-selection'){
   const text=anchorText(material.toString('utf8'));loc.offsetEncoding='utf16-lf-normalized';loc.start=linePosition(text,anchor.start);loc.end=linePosition(text,anchor.end);loc.label=`第 ${loc.start.line} 行第 ${loc.start.column} 列至第 ${loc.end.line} 行第 ${loc.end.column} 列`;loc.context={before:text.slice(Math.max(0,anchor.start-200),anchor.start),quote:anchor.quote,after:text.slice(anchor.end,anchor.end+200)};
  }else if(kind==='text-point'){
   const text=anchorText(material.toString('utf8'));loc.offsetEncoding='utf16-lf-normalized';loc.start=linePosition(text,anchor.start);loc.label=`第 ${loc.start.line} 行第 ${loc.start.column} 列位置`;

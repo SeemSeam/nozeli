@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Make tag location drift advisory instead of requiring relocation before discussion/task submission. Preserve frozen sources and histories, keep unresolved tags in a file-local neutral tray, and retain strict write conflict checks. Add file-bound right-click discussions, visible small-window task submission with per-message repeatability and main-draft isolation, and trusted webpage right-click discussions with host-frozen safe text, URL-bound history/drafts and real managed dispatch.
+- Present Open Website as an icon-only globe directly above Conversation in the left rail, retaining its accessible label and tooltip.
+- Add real HTTP(S) websites to the continuous workspace with an explicit Open Website entry, trusted address/history controls, persistent isolated cookies and URL/layout restoration. Retain live website forms across float/dock, use native Save As for owned downloads, deny website access to Nozeli/Node and protected app origins, and defer automatic restarts while website guests remain open. Linux Electron navigation/transfer/restart smoke verified; Windows/macOS and live account/download-dialog workflows remain unverified.
 - Correct maintainer verification for GitHub's non-ASCII asset-name sanitization: publish generated instructions as `USAGE.zh-CN.md` and bind that name in the checksum manifest. Capture clipboard smoke evidence before its native document is hidden by the conversation. These maintenance-only fixes do not change the tagged application archives.
 
 ## 0.1.0-alpha.3

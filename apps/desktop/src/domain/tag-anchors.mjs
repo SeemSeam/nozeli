@@ -4,6 +4,12 @@ import { diff } from '@codemirror/merge';
 // CodeMirror's document model uses UTF-16 positions and LF line separators.
 export const anchorText = text => text.replace(/\r\n?/g, '\n');
 const result = (anchor, locationStatus, contentStatus, method) => ({ anchor, locationStatus, contentStatus, method });
+// Position confidence is advisory for discussions, not a material-access gate.
+export function anchorAdvisory(resolution, kind) {
+  if (!resolution?.anchor) return '原位置未找到';
+  if (kind === 'file') return null;
+  return resolution.locationStatus === 'exact' && resolution.contentStatus === 'unchanged' ? null : '位置可能偏移';
+}
 export function validTextAnchor(anchor, text) {
   return Number.isSafeInteger(anchor?.start) && Number.isSafeInteger(anchor?.end) && anchor.start >= 0 && anchor.end > anchor.start && anchor.end <= text.length && text.slice(anchor.start, anchor.end) === anchor.quote;
 }

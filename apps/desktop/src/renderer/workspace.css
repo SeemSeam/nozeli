@@ -106,6 +106,11 @@ dialog{width:min(480px,calc(100vw - 24px));border:1px solid var(--line);border-r
 .tag-chat-window .tag-composer .tag-editor:focus-visible,.tag-chat-window .tag-send:focus-visible{outline:2px solid var(--ui-control-focus,#456654);outline-offset:1px}
 .tag-chat-window .tag-send{flex:none;min-height:32px;padding:5px 12px;border:0;border-radius:8px;background:var(--tag-window-accent,var(--green));color:#fff;font-size:12px;font-weight:500}
 .tag-chat-window .tag-send:disabled{opacity:.55;cursor:default}
+.tag-chat-window .tag-composer{flex-wrap:wrap}
+.tag-chat-window .tag-composer .tag-editor{flex-basis:100%}
+.tag-chat-window .tag-composer .tag-execute{flex:none;min-height:32px;padding:5px 12px;border:1px solid var(--line);border-radius:8px;font-size:12px;white-space:nowrap}
+.tag-chat-window .tag-composer .tag-execute:disabled{opacity:.55;cursor:default}
+.tag-chat-window .tag-composer .tag-execute:focus-visible{outline:2px solid var(--ui-control-focus,#456654);outline-offset:1px}
 .tag-chat-window>.tag-delivery,.tag-chat-window>.tag-execute-status{order:4;flex:none;display:block;padding:0 12px 2px;font-size:10px;color:var(--muted);min-width:0;overflow-wrap:anywhere}
 .tag-delivery{font-size:10px;color:var(--muted);min-width:0;overflow-wrap:anywhere}
 .tag-chat-window .tag-menu-actions{display:none!important}

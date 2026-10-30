@@ -1,7 +1,8 @@
+import {normalizeWebUrl} from './web-url.mjs';
 import { validateDocumentSource, documentResourceId, isProjectDocumentSource } from './document-source.mjs';
 const encoder=new TextEncoder();
 
-const kinds=new Set(['document','conversation','report','diff','history','terminal']);
+const kinds=new Set(['document','conversation','report','diff','history','terminal','web']);
 const invalid=(message,code='LAYOUT_INVALID')=>{throw Object.assign(new Error(message),{code});};
 const id=prefix=>prefix+'-'+globalThis.crypto.randomUUID();
 const historyLimit=5;
@@ -67,6 +68,7 @@ export function validateLayout(layout){
  for(const [viewId,view]of Object.entries(layout.views)){
   if(!view||typeof view!=='object'||view.id!==viewId||!identity(viewId)||view.projectId!==layout.projectId||!kinds.has(view.kind)||!identity(view.resourceId,8192))invalid('工作区内容身份无效。');
   if(view.kind==='document'&&!relPath(view.relPath))invalid('工作区文档路径无效。');
+  if(view.kind==='web'&&(normalizeWebUrl(view.url)!==view.url||view.resourceId!=='web:'+view.url||view.relPath!==undefined||typeof view.title!=='string'||view.title.length>512||/[\x00-\x1f]/.test(view.title)))invalid('网页地址或身份无效。');
   if(view.kind==='document'){
    let source;
    try{source=validateDocumentSource(view.documentSource);}catch(error){invalid(error.message);}
@@ -124,13 +126,14 @@ export function reduceLayout(previous,command){
   case 'open':{
    const target=checkedGroup(layout,command.groupId).group;let v=command.view;
    if(!v||!kinds.has(v.kind)||v.projectId!==undefined&&v.projectId!==layout.projectId)invalid('工作区内容属于另一个项目。');
+   if(v.kind==='web'){const url=normalizeWebUrl(v.url);if(v.resourceId!==undefined&&v.resourceId!=='web:'+url)invalid('网页资源身份与地址不符。');v={...v,url,title:new URL(url).host};}
    let documentSource;
    if(v.kind==='document'){
     try{documentSource=validateDocumentSource(v.documentSource);}catch(error){invalid(error.message);}
     if(documentSource.type==='project'){const{documentSource:omit,...rest}=v;v=rest;}
     else v={...v,documentSource};
    }
-   const resourceId=v.kind==='document'?documentResourceId(layout.projectId,documentSource,v.relPath):v.resourceId||(v.kind==='conversation'?'conversation:'+layout.projectId:null);
+   const resourceId=v.kind==='document'?documentResourceId(layout.projectId,documentSource,v.relPath):v.resourceId||(v.kind==='conversation'?'conversation:'+layout.projectId:v.kind==='web'?'web:'+v.url:null);
    if(!identity(resourceId,8192))invalid('工作区资源身份缺失。');
    const singleton=v.kind==='conversation'?Object.values(layout.views).find(entry=>entry.kind==='conversation'):null;
    const existing=singleton||(!command.duplicate?target.views.map(viewId=>layout.views[viewId]).find(entry=>entry.resourceId===resourceId&&Boolean(entry.readOnly)===Boolean(v.readOnly)):null);
@@ -182,6 +185,7 @@ export function reduceLayout(previous,command){
   case 'closeGroup':{const {group:source}=checkedGroup(layout,command.groupId);for(const v of [...source.views])closeView(layout,v,{restore:false});removeNode(layout,source.id);break;}
   case 'windowBounds':{const window=layout.detached.find(w=>w.id===command.windowId);if(!window)invalid('独立窗口已变化。','LAYOUT_STALE');window.boundsDip=clone(command.boundsDip);if(command.alwaysOnTop!==undefined)window.alwaysOnTop=command.alwaysOnTop;break;}
   case 'restoreViewState':{if(!layout.views[command.viewId])invalid('已打开文件不存在。');layout.views[command.viewId].viewState=clone(command.viewState);break;}
+  case 'webNavigate':{const view=layout.views[command.viewId];if(view?.kind!=='web')invalid('网页已变化。','LAYOUT_STALE');const url=normalizeWebUrl(command.url);view.url=url;view.resourceId='web:'+url;view.title=typeof command.title==='string'?command.title.replace(/[\x00-\x1f]/g,'').slice(0,512)||new URL(url).host:new URL(url).host;break;}
   case 'renameResource':{
    if(!relPath(command.from)||!relPath(command.to))invalid('资源重命名路径无效。');
    for(const view of Object.values(layout.views))if(view.documentSource===undefined&&(view.relPath===command.from||view.relPath?.startsWith(command.from+'/'))){

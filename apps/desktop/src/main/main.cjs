@@ -21,6 +21,8 @@ const {WindowRecovery,forWindow:windowRecovery} = require('./window-recovery.cjs
 const {createForceQuit} = require('./force-quit.cjs');
 let forceQuitting = false;
 const forceQuit = createForceQuit({app});
+let onlineBrowser;
+async function closeOnlineBrowsers(){for(const scope of new Set([...onlineBrowser?.slots.values()||[]].map(slot=>slot.scope))){const result=await onlineBrowser.closeScope(scope);if(result?.cancelled||result?.closed===false)throw Object.assign(Error('网站仍有未提交输入，已保留窗口。'),{code:'WEB_CLOSE_CANCELLED'});}}
 
 const APP_ROOT = path.resolve(__dirname, '../..');
 const RENDERER_ROOT = path.join(APP_ROOT, 'dist/renderer');
@@ -213,7 +215,7 @@ async function createWindow(server) {
   win.webContents.on('will-attach-webview', (event) => event.preventDefault());
   const recovery=new WindowRecovery(win,{
     dialog,settle:async()=>{await workspaceNative.flush([...workspaceNative.senders.values()].filter(r=>r.role==='surface'));await host.settled();},busy:()=>agents?.busy()||managedAgents?.busy(),
-    stop:async()=>{await managedAgents?.stop();await agents?.stopIdle?.();},
+    stop:async()=>{await closeOnlineBrowsers();await managedAgents?.stop();await agents?.stopIdle?.();},
     reveal:()=>revealWindow(win),onClose:()=>{allowClose=true;quitting=true;for(const s of [...workspaceNative.surfaces.values()])workspaceNative.destroySurface(s);for(const r of workspaceNative.windows.values()){r.closing=true;r.win.close();}},
   });
   win.webContents.on('did-start-navigation',(_event,_url,_inPlace,isMainFrame)=>{if(isMainFrame)recovery.navigation();});
@@ -337,6 +339,12 @@ async function main() {
   try{const saved=JSON.parse(await fs.readFile(path.join(app.getPath('userData'),'appearance.json'),'utf8'));if(['light','dark'].includes(saved.theme))nativeTheme.themeSource=saved.theme;isolatedPreview.setAppearance({palette:saved.palette,mode:nativeTheme.shouldUseDarkColors?'dark':'light'});}catch{}
   nativeTheme.on('updated',()=>{isolatedPreview.setAppearance({palette:isolatedPreview.appearance?.palette??'sage',mode:nativeTheme.shouldUseDarkColors?'dark':'light'});});
   workspaceNative.isolatedPreview=isolatedPreview;
+  const {OnlineBrowserManager}=await import('./online-browser.mjs');
+  const {WebDiscussions}=await import('./web-discussion.mjs');
+  const webDiscussions=new WebDiscussions({host,managedAgents});
+  const {reduceLayout}=await import('../domain/workspace-layout.mjs');
+  onlineBrowser=new OnlineBrowserManager({WebContentsView,session,workspace:workspaceNative,dialog,Menu,discussion:(projectId,request)=>webDiscussions.invoke(projectId,request),downloadDirectory:app.getPath('downloads'),onNavigate:async(scope,update)=>{await workspaceNative.serial(scope.projectId,async()=>{if(scope.dead||workspaceNative.senders.get(scope.wc.id)!==scope)return;const layout=await workspaceNative.layout(scope.projectId);if(layout.views[scope.viewId]?.kind!=='web')return;const next=reduceLayout(layout,{type:'webNavigate',viewId:scope.viewId,url:update.url,title:update.title});await workspaceNative.persist(next);workspaceNative.layouts.set(scope.projectId,next);scope.resourceId=next.views[scope.viewId].resourceId;workspaceNative.changed(next);});}});
+  workspaceNative.onlineBrowser=onlineBrowser;
   const {WorkspaceCapture}=await import('./workspace-capture.mjs');
   workspaceCapture=new WorkspaceCapture({workspace:workspaceNative,host,deliver:async(session,event)=>{await workspaceNative.deliverDrawing(session,event);}});
   const {ProjectLifecycle}=await import('./project-lifecycle.mjs');
@@ -361,7 +369,7 @@ async function main() {
     }catch(error){await managedAgents.reportConnectionError(projectId,error);throw error;}
   };
   workspaceNative.setupWindow=r=>{
-    const recovery=new WindowRecovery(r.win,{dialog,settle:async()=>{await workspaceNative.flush([...workspaceNative.surfaces.values()]);await host.settled();},busy:()=>agents?.busy()||managedAgents?.busy(),stop:async()=>{await managedAgents?.stop();await agents?.stopIdle?.();},reveal:()=>revealWindow(r.win),onClose:()=>{allowClose=true;quitting=true;for(const s of [...workspaceNative.surfaces.values()])workspaceNative.destroySurface(s);for(const w of workspaceNative.windows.values()){w.closing=true;w.win.close();}}});
+    const recovery=new WindowRecovery(r.win,{dialog,settle:async()=>{await workspaceNative.flush([...workspaceNative.surfaces.values()]);await host.settled();},busy:()=>agents?.busy()||managedAgents?.busy(),stop:async()=>{await closeOnlineBrowsers();await managedAgents?.stop();await agents?.stopIdle?.();},reveal:()=>revealWindow(r.win),onClose:()=>{allowClose=true;quitting=true;for(const s of [...workspaceNative.surfaces.values()])workspaceNative.destroySurface(s);for(const w of workspaceNative.windows.values()){w.closing=true;w.win.close();}}});
     r.wc.on('did-start-navigation',(_e,_url,_inPlace,isMain)=>{if(isMain)recovery.navigation();});
     r.wc.on('did-finish-load',()=>recovery.loaded());r.wc.on('render-process-gone',(_e,details)=>recovery.rendererGone(details));r.win.on('closed',()=>recovery.destroyed());
   };
@@ -393,6 +401,14 @@ async function main() {
         return {ok:true,value:{closing:true,forced:true}};
       }
       payload=await workspaceNative.resolvePayload(scope,op,payload??{});
+      if(op.startsWith('web.')){
+        trusted(event,op,payload);if(scope.role!=='surface'||scope.kind!=='web'||payload.viewId!==scope.viewId)throw new HostError('IPC_DENIED','网站操作不属于当前网页工作面。');
+        const method=op.slice(4);if(!['open','bounds','navigate','action','close','discussionAction'].includes(method))throw new HostError('UNKNOWN_OP','未知网站操作。');
+        const dispatch=method==='discussionAction'&&['send','task'].includes(payload.action);
+        if(dispatch&&workspaceNative.lifecycle.has(scope.projectId))throw new HostError('PROJECT_LIFECYCLE_ACTIVE','项目正在保留并关闭，问题与草稿已保留。');
+        const run=()=>onlineBrowser[method](scope,payload);
+        return {ok:true,value:await (dispatch?host.storage.withProjectOperation(scope.projectId,run):run())};
+      }
       if(['material.attach','material.attachPath'].includes(op))payload={...payload,projectId:scope.projectId};
       if(op==='material.read'&&payload.projectId!==scope.projectId)throw new HostError('PROJECT_SCOPE_DENIED','附件不属于当前项目');
       const admissionProject=payload?.projectId??scope.projectId;

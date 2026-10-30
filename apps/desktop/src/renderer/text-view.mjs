@@ -48,7 +48,7 @@ export const readerEditorTheme = () => EditorView.theme({
   '.tok-invalid': { color: 'var(--tok-invalid)' },
   '.cm-scroller > .cm-selectionLayer .cm-selectionBackground, &.cm-focused .cm-scroller > .cm-selectionLayer .cm-selectionBackground': { backgroundColor: 'var(--doc-selection)' },
 });
-import { mapTextAnchor, mapTextPointAnchor } from '../domain/tag-anchors.mjs';
+import { anchorAdvisory, mapTextAnchor, mapTextPointAnchor } from '../domain/tag-anchors.mjs';
 export function projectTextAnchor(anchor, length) {
   const size = Math.max(0, Number.isInteger(length) ? length : 0);
   const start = Number.isInteger(anchor?.start) ? anchor.start : null;
@@ -98,7 +98,9 @@ export function mountText({ parent, relPath, text, marks = [], tags = [], onChan
     const safe = projected.filter(({ anchor }) => anchor.mark || anchor.start <= length);
     return safe.length ? Decoration.set(safe.flatMap(({ mark, anchor }) => {
       const source = mark.note || mark.tag;
-      const item = source ? { ...source, anchorDrift: anchor.drifted || source.anchorDrift || mark.locationStatus === 'estimated' || mark.contentStatus === 'modified' } : null;
+      const resolution=source?{...source.resolution,anchor:{start:mark.start,end:mark.end,quote:mark.quote},locationStatus:anchor.drifted?'estimated':mark.locationStatus||'exact',contentStatus:mark.contentStatus||'unchanged'}:null;
+      if(resolution)resolution.advisory=anchorAdvisory(resolution,source.anchorKind||source.kind);
+      const item=source?{...source,resolution,anchorDrift:anchor.drifted||source.anchorDrift||mark.locationStatus==='estimated'||mark.contentStatus==='modified'}:null;
       const decorations = anchor.mark ? [Decoration.mark({ class: mark.tag ? `text-tag-${mark.tag.status === 'followup' ? 'followup' : mark.tag.kind}` : 'text-note' }).range(anchor.mark[0], anchor.mark[1])] : [];
       if (item) decorations.push(Decoration.widget({ widget: new NoteWidget(item, Boolean(mark.tag)), side: -1 }).range(anchor.start));
       return decorations;

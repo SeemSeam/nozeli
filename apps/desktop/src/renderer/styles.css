@@ -116,8 +116,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .text-preview li { margin: .35em 0 0 1.5em; }
 .text-preview-gap { height: .7em; }
 .text-preview { user-select: text; }
-#unlocated-tags { margin: 8px 16px; padding: 8px 12px; border: 1px solid #a74343; border-radius: 6px; background: var(--paper); }
-#unlocated-tags summary { cursor: pointer; color: #a74343; }
+#unlocated-tags { margin: 8px 16px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); }
+#unlocated-tags summary { cursor: pointer; color: var(--muted); }
 .unlocated-tag { min-height: 88px; padding: 12px 0; border-top: 1px solid var(--line); }
 .unlocated-tag blockquote { margin: 6px 0 12px; white-space: pre-wrap; }
 .unlocated-tag .note-anchor { display: block; width: auto; height: auto; margin: 8px 0; }

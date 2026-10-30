@@ -243,9 +243,9 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     // arrives through the host-verified annotation reference instead.
     if (!excerpt?.trim() && !annotationRef) return false;
     const prompt = annotationRef
-      ? action==='explain'?'请解释这处选区。':action==='task'?`请修改这处材料：\n${comment}`:comment
+      ? action==='explain'?'请解释这处选区。':comment
       : action==='explain'?`请解释：\n${excerpt}`:`${comment}\n\n选区：\n${excerpt}`;
-    const context = annotationRef ? { tags: [annotationRef], ...(background ? { background: true } : {}) } : { relPath, materialText, ...(background ? { background: true } : {}) };
+    const context = annotationRef ? { tags: [annotationRef], preserveDraft:true, ...(background ? { background: true } : {}) } : { relPath, materialText, preserveDraft:true, ...(background ? { background: true } : {}) };
     const result = await (demo.active?demo.send(prompt,context):managed.send(prompt, context)).then(value => ({ ok: true, value }), error => ({ ok: false, error }));
     if (!result.ok) { toast(result.error.message); return false; }
     return { ...result.value, requestId: result.value.requestId ?? result.value.jobId };

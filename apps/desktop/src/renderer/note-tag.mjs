@@ -7,10 +7,9 @@ import { mountContextMenu } from './context-menu.mjs';
 // Tags are persistent view projections with two display states: open and closed-summary.
 // Compact card contract: ~28px header (number/title/more/collapse, no local font
 // control — conversation size stays a global setting), source shown through the
-// number + <details> instead of a persistent row, one composer row with the send
-// action inside it (empty ≈32px, grows with real text to ~4 lines then scrolls),
-// status lines only when they carry state, and every secondary action — including
-// destructive removal behind the shared confirmation — behind the more menu.
+// number + <details> instead of a persistent row, a bounded composer with
+// discussion and task actions, status lines only when they carry state, and
+// secondary actions (including removal behind confirmation) in the more menu.
 const mountedTagCleanups = new Map();
 let tagRemovalObserver = null;
 // Demo cards share one readable slot per pane. This is presentation only:
@@ -104,7 +103,7 @@ function tagCardMenu(doc = globalThis.document) {
 let tagSourceSeq = 0;
 
 
-export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAvailability, readReply, replyEntries = [], status = '', open = true, anchorDrift = false, history = [], draftText = '', anchor = {}, material = {}, relPath = '', displayLocation, information, executeStatus = '', anchorKind = '' }, { draw, filePath = () => '', sourceText = () => '', remove, save, execute = null, offset = () => [0, 0], move = () => {}, size = () => null, resize = () => {}, onDraft, onOpen, autoEdit = () => false, inline = false, readOnly = false } = {}) {
+export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAvailability, readReply, replyEntries = [], status = '', open = true, anchorDrift = false, resolution, history = [], draftText = '', anchor = {}, material = {}, relPath = '', displayLocation, information, executeStatus = '', anchorKind = '' }, { draw, filePath = () => '', sourceText = () => '', remove, save, execute = null, offset = () => [0, 0], move = () => {}, size = () => null, resize = () => {}, onDraft, onOpen, autoEdit = () => false, inline = false, readOnly = false } = {}) {
   const conversation = kind !== 'note';
   let pending = status === 'pending' || status === 'accepted-awaiting-reply';
   const root = document.createElement('span');
@@ -153,8 +152,9 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   cardNumber.setAttribute('aria-controls', sourceId);
   cardNumber.setAttribute('aria-expanded', 'false');
   const content = document.createElement('span'); content.className = 'note-projection-content';
-  const sourceChange = document.createElement('span'); sourceChange.className = 'note-source-change'; sourceChange.textContent = anchorDrift ? '来源/位置已变化' : '';
-  sourceChange.hidden = !anchorDrift;
+  const sourceChange=document.createElement('span');sourceChange.className='note-source-change';
+  const renderAdvisory=()=>{const label=anchorKind==='file'?'':resolution?resolution.advisory||'':anchorDrift?'位置可能偏移':'';sourceChange.textContent=label;sourceChange.hidden=!label;sourceChange.title=label?'原引用与历史已保留；可继续讨论或提交任务，重新定位为可选。':'';};
+  renderAdvisory();
   const displayText = () => {
     if (kind === 'note') return initialDraft || '（无文字）';
     const entries = history.length ? history : [{ question: text, reply: replyText, status }];
@@ -299,23 +299,27 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   const setDelivery = value => { delivery.textContent = value || ''; delivery.hidden = !delivery.textContent; };
   setDelivery(pending ? '等待前台回复…' : status === 'failed' ? '回复失败 · 原问题已保留' : '');
   const executeStatusLine = document.createElement('span'); executeStatusLine.className = 'tag-execute-status'; executeStatusLine.setAttribute('role', 'status'); executeStatusLine.hidden = !executeStatus;
-  // Secondary actions stay real buttons (the shared right-click menu and the
-  // removal confirmation click them); visually they live behind the more menu.
+  // Keep secondary actions as real buttons for shared menu dispatch.
+  // Discussion/task submission stays visible next to the composer.
   const menuActions = document.createElement('span'); menuActions.className = 'tag-menu-actions';
-  const executeButton = document.createElement('button'); executeButton.type = 'button'; executeButton.className = 'tag-execute'; executeButton.textContent = '执行';
-  executeButton.title = '把这条材料作为修改要求交给后台执行；本地保存本身不派工';
-  executeButton.setAttribute('aria-label', `执行 ${ordinal} 对应的修改要求`);
+  const executeButton = document.createElement('button'); executeButton.type = 'button'; executeButton.className = 'tag-execute'; executeButton.textContent = '提交任务';
+  executeButton.title = '把当前要求与材料直接提交后台；保存备注和打开小窗不派工';
+  executeButton.setAttribute('aria-label', `提交 ${ordinal} 对应的任务`);
+  executeButton.disabled=readOnly;
   let executing = false;
   executeButton.addEventListener('click', async () => {
-    if (executeButton.disabled || executing) return;
+    if (readOnly || executeButton.disabled || executing) return;
     if (!execute) { executeStatusLine.textContent = '当前会话不支持后台执行。'; executeStatusLine.hidden = false; return; }
-    executing = true; executeButton.disabled = true;
+    executing = true; executeButton.disabled = true; submit.disabled = true;
+    const submitted = conversation ? editor.value : draftValue;
     try {
-      // An empty local-note edit is intentional, not a request to resend the old text.
-      const effective = kind === 'note' ? draftValue : editor.value || draftValue;
-      await execute(id, effective);
-    }
-    finally { executing = false; executeButton.disabled = false; }
+      if (!submitted.trim()) { setDelivery('请先填写任务要求；不会重复发送上一条内容。'); return; }
+      const accepted = await execute(id, submitted);
+      if (!accepted?.accepted) { setDelivery('任务未确认接收，输入已保留。'); return; }
+      setDelivery('任务已接收，进展与成果见工作栏。');
+      if (conversation && accepted.clearDraft!==false && editor.value === submitted) { draftValue='';editor.value='';autoGrow();onDraft?.(id,''); }
+    } catch(error) { setDelivery(error?.message || '提交失败，输入已保留'); }
+    finally { executing=false;executeButton.disabled=readOnly;submit.disabled=readOnly||(conversation&&pending); }
   });
   const removeButton = document.createElement('button'); removeButton.type = 'button';
   removeButton.className = conversation ? 'tag-remove' : 'tag-delete';
@@ -329,7 +333,8 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   editButton.disabled = readOnly;
   const drawingButton = information?.drawing && draw ? document.createElement('button') : null;
   if (drawingButton) { drawingButton.type = 'button'; drawingButton.className = 'tag-drawing-edit'; drawingButton.textContent = '编辑涂鸦'; drawingButton.onclick = () => draw(id); }
-  menuActions.append(executeButton, editButton);
+  if(conversation&&execute)composerRow.append(executeButton);else menuActions.append(executeButton);
+  menuActions.append(editButton);
   if (drawingButton) menuActions.append(drawingButton);
   if (remove) menuActions.append(removeButton);
   const source = document.createElement('details'); source.className = 'tag-source'; source.id = sourceId;
@@ -347,11 +352,12 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
       relPath: relPath || filePath(), anchor, text: sourceText(),
       displayLocation: point && material.pointLabel ? { label: material.pointLabel } : displayLocation,
     });
-    sourceLabel.textContent = label;
-    quote.hidden = point;
-    quote.textContent = point ? '' : anchor.quote || material.excerpt || '已固定的选区';
-    pointNote.hidden = !point;
-    pointNote.textContent = point ? '文档位置 · 无文字摘录' : '';
+    const fileDiscussion=anchorKind==='file';
+    sourceLabel.textContent=fileDiscussion?`${relPath||filePath()} · 文件讨论`:label;
+    quote.hidden=point||fileDiscussion;
+    quote.textContent=point||fileDiscussion?'':material.anchor?.quote||anchor.quote||material.excerpt||'已固定的选区';
+    pointNote.hidden=!point&&!fileDiscussion;
+    pointNote.textContent=fileDiscussion?'绑定整个文件；每次发送独立冻结材料，不依赖正文位置':point?'文档位置 · 无文字摘录':'';
     const context = point && material.pointContext ? material.pointContext : null;
     const nearby = typeof context?.nearby === 'string' ? context.nearby : '';
     const around = context && (context.before || context.after) ? context : null;
@@ -415,7 +421,7 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   editor.addEventListener('focus', focusCard);
   editor.addEventListener('dblclick', event => event.stopPropagation());
   submit.addEventListener('click', async () => {
-    if (submit.disabled) return;
+    if (submit.disabled || executing) return;
     submit.disabled = true;
     const submitted = editor.value;
     try {
@@ -444,7 +450,7 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   const more = panelButton(); more.dataset.tagMore = '';
   const cardMenuItems = () => {
     const items = [];
-    if (execute && !readOnly) items.push({ id: 'card-execute', label: '执行修改要求', enabled: !executeButton.disabled });
+    if (execute && !readOnly && !conversation) items.push({ id: 'card-execute', label: '提交任务', enabled: !executeButton.disabled });
     if (drawingButton && !readOnly) items.push({ id: 'card-drawing', label: '编辑涂鸦' });
     if (!conversation && !readOnly) items.push({ id: 'card-edit', label: '编辑备注', enabled: !editing });
     items.push({ id: 'card-source', label: source.open ? '收起来源' : '查看来源', enabled: !collapsed });
@@ -529,7 +535,7 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   });
   const isPoint = () => Boolean(material.point || anchor.point);
   const title = document.createElement('span'); title.className = 'tag-window-title';
-  const renderTitle = () => { title.textContent = !conversation ? (isPoint() ? '位置备注' : '本地备注') : isPoint() ? '位置讨论' : '选区对话'; };
+  const renderTitle = () => { title.textContent = anchorKind==='file'?'文件讨论':!conversation ? (isPoint() ? '位置备注' : '本地备注') : isPoint() ? '位置讨论' : '选区对话'; };
   renderTitle();
   if (anchorKind) root.dataset.anchorKind = anchorKind;
   const transcript = document.createElement('span'); transcript.className = 'tag-transcript'; transcript.setAttribute('role', 'log'); transcript.setAttribute('aria-label', '此标签的完整对话');
@@ -598,6 +604,9 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
     ({ text, replyText = '', replyAvailability, readReply, replyEntries = [], status = '', history = [] } = value);
     if (value.material) { material = value.material; renderTitle(); }
     if (value.anchorKind) { anchorKind = value.anchorKind; root.dataset.anchorKind = anchorKind; }
+    if(value.resolution!==undefined)resolution=value.resolution;
+    if(value.anchorDrift!==undefined)anchorDrift=value.anchorDrift;
+    renderAdvisory();
     pending = status === 'pending' || status === 'accepted-awaiting-reply';
     submit.disabled = readOnly || pending;
     setDelivery(pending ? '等待前台回复…' : status === 'failed' ? '回复失败 · 原问题已保留' : '');
@@ -616,7 +625,7 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
     removeButton.setAttribute('aria-label', conversation ? `移除对话标签 ${value}，保留对话历史` : `删除备注 ${value}`);
   };
   root.fitConversation = fitConversation;
-  root.updateExecuteStatus = value => { executeStatusLine.textContent = value || ''; executeStatusLine.hidden = !executeStatusLine.textContent; executeButton.disabled = Boolean(value && /执行中|已排队|转入后台/.test(value)); };
+  root.updateExecuteStatus = value => { executeStatusLine.textContent=value||'';executeStatusLine.hidden=!executeStatusLine.textContent;executeButton.disabled=readOnly||executing; };
   executeStatusLine.textContent = executeStatus || '';
   if (((kind === 'discuss' && status === 'draft') || (kind === 'note' && typeof status === 'object')) && autoEdit(id)) openEdit();
   return root;
@@ -631,5 +640,5 @@ export function makeNoteTag(note, actions = {}) {
     if (saved) note = saved;
     return saved;
   };
-  return makeAnchorTag({ id: note.id, ordinal: note.ordinal, kind: 'note', relPath: note.relPath, displayLocation: note.displayLocation,information:note.information, anchorKind: note.anchor?.anchorKind || note.anchorKind || '', text: note.note, status: actions.draft?.(note.id) ?? '', open: actions.open?.(note.id) ?? true, anchor: note.anchor || {}, material: { imageDataUrl: note.anchor?.imageDataUrl || '', point: Boolean(note.anchor?.point), pointLabel: note.anchor?.pointLabel || '', pointContext: note.anchor?.pointContext || null }, executeStatus: note.execute?.jobId ? (note.execute.status || '已提交 · 见工作与待办') : '' }, { ...actions, onDraft: (id, text) => actions.onDraft?.(id, text, note), save, execute: (id, text) => actions.execute?.(note, text) });
+  return makeAnchorTag({ id: note.id, ordinal: note.ordinal, kind: 'note', relPath: note.relPath, displayLocation: note.displayLocation,information:note.information,resolution:note.resolution, anchorKind: note.anchor?.anchorKind || note.anchorKind || note.kind || '', text: note.note, status: actions.draft?.(note.id) ?? '', open: actions.open?.(note.id) ?? true, anchor: note.anchor || {}, material: { imageDataUrl: note.anchor?.imageDataUrl || '', point: Boolean(note.anchor?.point), pointLabel: note.anchor?.pointLabel || '', pointContext: note.anchor?.pointContext || null }, executeStatus: note.execute?.jobId ? (note.execute.status || '已提交 · 见工作与待办') : '' }, { ...actions, onDraft: (id, text) => actions.onDraft?.(id, text, note), save, execute: (id, text) => actions.execute?.(note, text) });
 }

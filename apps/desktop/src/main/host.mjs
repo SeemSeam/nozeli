@@ -16,7 +16,7 @@ import { FileChanges, publicChanges } from '../domain/file-changes.mjs';
 import { userActor } from '../domain/document-changes.mjs';
 import { listDocumentVersions, readDocumentVersion } from '../domain/document-versions.mjs';
 import { validateDocumentSource, isProjectDocumentSource, reviewTagNamespace } from '../domain/document-source.mjs';
-import { anchorText, resolveTextAnchor, textChangeSet, mapTextAnchor, validTextAnchor, validTextPointAnchor, mapTextPointAnchor, resolveTextPointAnchor } from '../domain/tag-anchors.mjs';
+import { anchorText, anchorAdvisory, resolveTextAnchor, textChangeSet, mapTextAnchor, validTextAnchor, validTextPointAnchor, mapTextPointAnchor, resolveTextPointAnchor } from '../domain/tag-anchors.mjs';
 import {rebaseDocumentEdits, documentChangesSince, resolveTextReplacements} from '../domain/document-collaboration.mjs';
 import { treeViewValue } from './file-tree-ops.mjs';
 import {ProjectStorage} from './project-storage.mjs';
@@ -1532,10 +1532,17 @@ export class DesktopHost {
   }
 
   async resolveTag(store, record, bytes) {
+    const resolution = await this.resolveTagPosition(store, record, bytes);
+    return { ...resolution, advisory: anchorAdvisory(resolution, record.kind) };
+  }
+
+  async resolveTagPosition(store, record, bytes) {
     const targetDigest = bytes ? digestBytes(bytes) : null;
     const base = { targetDigest, anchor: null, locationStatus: 'unresolved', contentStatus: 'unknown', method: 'missing-source' };
     if (!bytes) return base;
+    if (record.kind === 'file') return { ...base, anchor: record.anchor, locationStatus: 'exact', contentStatus: targetDigest === record.materialDigest ? 'unchanged' : 'modified', method: 'file-resource' };
     const known = record.resolutions?.[targetDigest];
+    if (known?.anchor && record.kind === 'text-selection' && !validTextAnchor(known.anchor, anchorText(bytes.toString('utf8')))) return { ...base, method: 'invalid-cached-anchor' };
     if (known?.anchor && record.kind === 'text-point' && !validTextPointAnchor(known.anchor, anchorText(bytes.toString('utf8')))) return { ...base, method: 'invalid-cached-anchor' };
     if (known?.method === 'manual' && record.kind.startsWith('ppt-')) {
       try {
@@ -1600,7 +1607,7 @@ export class DesktopHost {
       const tags = [];
       for (const tag of file.tags) {
         const previous = await this.resolveTag(store, tag, before);
-        const resolution = changes && previous.anchor
+        const resolution = changes && previous.anchor && ['text-selection', 'text-point'].includes(tag.kind)
           ? { targetDigest: afterDigest, ...(tag.kind === 'text-point' ? mapTextPointAnchor(previous.anchor, before.toString('utf8'), after.toString('utf8'), changes) : mapTextAnchor(previous.anchor, before.toString('utf8'), after.toString('utf8'), changes)) }
           : await this.resolveTag(store, tag, after);
         // An edited span remains modified relative to its origin on later shifts.
@@ -1631,8 +1638,8 @@ export class DesktopHost {
       } else {
         // Review materials are validated against this publication's frozen
         // candidate and saved draft digests — never the same-path project file.
-        // Only text anchors are supported on review documents this cycle.
-        if (!['text-selection', 'text-point'].includes(input?.kind)) throw new HostError('UNSUPPORTED', '审校文档仅支持文本选区与位置备注。');
+        // Position anchors are text-only; file discussions bind the resource.
+        if (!['text-selection', 'text-point', 'file'].includes(input?.kind)) throw new HostError('UNSUPPORTED', '审校文档仅支持文本选区、位置备注与文件讨论。');
         const allowed = await this.requireReviewDocuments().materials({ projectId, source, relPath });
         const bytes = allowed.get(materialDigest);
         if (!bytes) throw new HostError('ANCHOR_MISMATCH', '备注材料不属于此审校文档的冻结候选或人工草稿。');
@@ -1642,7 +1649,11 @@ export class DesktopHost {
       const kind = input?.kind;
       const anchor = input?.anchor;
       let storedAnchor;
-      if(kind==='image-region'){
+      if (kind === 'file') {
+        if (!anchor || anchor.scope !== 'file' || Object.keys(anchor).some(key => key !== 'scope')) throw new HostError('INVALID_ANCHOR', '文件讨论只能绑定整个文件。');
+        if (input.regionImage || input.drawing || input.annotatedImage) throw new HostError('INVALID_ANCHOR', '文件讨论不能携带位置截图或涂鸦。');
+        storedAnchor = { scope: 'file' };
+      } else if(kind==='image-region'){
         if(!imageExtension.test(relPath))throw new HostError('ANCHOR_MISMATCH','不是受支持图片');
         const info=imageInfo(material);storedAnchor=boundAnchor(anchor,kind);
         if(info.width!==storedAnchor.width||info.height!==storedAnchor.height)throw new HostError('ANCHOR_MISMATCH','图片尺寸与冻结原件不一致');
@@ -1982,11 +1993,11 @@ export class DesktopHost {
       try{information=await verifyAnnotationPackage(store,tag.information);}catch{reasons.push('备注资源缺失或摘要校验失败');}
       if(information?.limitations?.length)reasons.push(...information.limitations);
       if(!resolution.anchor||resolution.locationStatus!=='exact'||resolution.contentStatus!=='unchanged')reasons.push('位置不确定或内容已变化');
-      if(resolution.targetDigest!==tag.materialDigest)reasons.push('源文件版本已变化，须重新确认');
+      if(resolution.targetDigest!==tag.materialDigest)reasons.push('源文件版本已变化，修改前须校验当前版本');
       if(['changed','unavailable'].includes(draftStatus))reasons.push('PPT 当前草稿不同于备注快照或不可用');
       if(tag.kind.endsWith('-point'))reasons.push('位置点仅提供附近上下文，不是对象映射');
       if(!tag.information)reasons.push('旧备注未记录完整材料包');
-      return { schema:'nozeli.agent-tag-material-v1',note:tag.note,kind:tag.kind,information,currentSource,currentDraft,draftStatus,execution:{locationVerified:reasons.length===0,canAutoModify:false,reasons:[...reasons,'本接口只提供材料，修改执行器仍需校验并生成可审查差异']},tagId: tag.id, fileId: file.file.fileId, relPath: rel, origin: { materialDigest: tag.materialDigest, anchor: tag.anchor, text: ['text-selection','text-point'].includes(tag.kind) ? anchorText(origin.toString('utf8')) : null }, resolution, currentText: ['text-selection','text-point'].includes(tag.kind) && current && isUtf8Text(current) ? anchorText(current.toString('utf8')) : null };
+      return { schema:'nozeli.agent-tag-material-v1',note:tag.note,kind:tag.kind,information,currentSource,currentDraft,draftStatus,discussion:{canContinue:true,relocationRequired:false,advisory:resolution.advisory},execution:{locationVerified:reasons.length===0,canAutoModify:false,reasons:[...reasons,'本接口只提供材料，修改执行器仍需校验并生成可审查差异']},tagId: tag.id, fileId: file.file.fileId, relPath: rel, origin: { materialDigest: tag.materialDigest, anchor: tag.anchor, text: (['text-selection','text-point'].includes(tag.kind) || tag.kind === 'file' && isUtf8Text(origin)) ? anchorText(origin.toString('utf8')) : null }, resolution, currentText: (['text-selection','text-point'].includes(tag.kind) || tag.kind === 'file' && current && isUtf8Text(current)) && current && isUtf8Text(current) ? anchorText(current.toString('utf8')) : null };
     })());
   }
 

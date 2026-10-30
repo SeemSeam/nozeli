@@ -844,18 +844,18 @@ async function openWorkReport(workId){
  }
  async function enable(id){const gen=generation;projectId=id;sessionStore.reset(id);const connected=await call('enable',{},id);if(gen!==generation||id!==projectId)return;show(true);ready=connected.ready===true;state=connected.state;render();}
  function send(text,context={}){const lifecycle=selectedSession();if(!active||(!lifecycle.canSend&&lifecycle.state!=='ready'))return Promise.reject(Error(lifecycle.reason||'Agent 尚未启用；输入已保留。'));const key=JSON.stringify([projectId,target,text,context,viewed?.routingQuestionId]);if(submissions.has(key))return submissions.get(key);const requestKey=submissionKeys.get(key)||crypto.randomUUID();submissionKeys.set(key,requestKey);const promise=sendOnce(text,context,requestKey).then(result=>{submissionKeys.delete(key);return result;}).finally(()=>{if(submissions.get(key)===promise)submissions.delete(key);});submissions.set(key,promise);return promise;}
- async function sendOnce(text,{relPath,materialText,tags,imageAttachments,drawingSources,background=false,composerText}={},requestKey){
-  const id=projectId,t=target,old=composerText,epoch=inputEpoch,materials=window.__composerMaterials,materialToken=materials?.token(),questionId=viewed?.routingQuestionId;
+ async function sendOnce(text,{relPath,materialText,tags,imageAttachments,drawingSources,background=false,composerText,preserveDraft=false}={},requestKey){
+  const id=projectId,t=preserveDraft?'frontdesk':target,old=composerText,epoch=inputEpoch,materials=window.__composerMaterials,materialToken=materials?.token(),questionId=preserveDraft?null:viewed?.routingQuestionId;
   await draftWriter.settled();
   const manual=background&&t==='frontdesk';
-  const result=await call(manual?'task':'send',{...(!manual?{target:t}:{}),requestKey,text,...(questionId?{routingQuestionId:questionId}:{}),...(relPath?{relPath,materialText}:{}),...(tags?{tags}:{}),...(imageAttachments?.length?{imageAttachments,drawingSources}:{})},id);
+  const result=await call(manual?'task':'send',{...(!manual?{target:t}:{}),requestKey,text,...(preserveDraft?{preserveDraft:true}:{}),...(questionId?{routingQuestionId:questionId}:{}),...(relPath?{relPath,materialText}:{}),...(tags?{tags}:{}),...(imageAttachments?.length?{imageAttachments,drawingSources}:{})},id);
   const currentMaterialToken=materials?.token();
   if(old!==undefined&&id===projectId&&t===target&&epoch===inputEpoch&&materialToken?.revision===currentMaterialToken?.revision&&$('composer').value===old){
    $('composer').value='';drafts.set(id+':'+t,'');materials?.confirmSent(materialToken);
    $('composer').dispatchEvent(new Event('input'));
    delete $('compose-status').dataset.draftSaving;
    $('compose-status').textContent=manual?'已提交后台，进展见右侧':t!=='frontdesk'?'已补充此任务':'已接收';
-  }else if(id===projectId){
+  }else if(!preserveDraft&&id===projectId){
    delete $('compose-status').dataset.draftSaving;
    $('compose-status').textContent='已接收上一稿，新输入仍保留';
   }

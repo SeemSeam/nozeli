@@ -475,7 +475,7 @@ export class Controller extends EventEmitter {
     return `已建立“${name}”${this.store.find(route.workId).status==='queued'?'，等待工作名额':'，已开始调度'}。`;
   }
   async send(target,value,options={}){this.store.storage.assertActive(this.projectId);return ['frontdesk','orchestrator'].includes(target)?this.sendUnlocked(target,value,options):this.workLocked(target,()=>this.sendUnlocked(target,value,options));}
-  async sendUnlocked(target,value,{priority=false,native=false,context={},requestKey,draftText}={}){
+  async sendUnlocked(target,value,{priority=false,native=false,context={},requestKey,draftText,preserveDraft=false}={}){
     this.validateTarget(target);
     this.assertFrontdeskContextAdmission(target);
     if(!['frontdesk','orchestrator'].includes(target)&&this.store.find(target).readOnly)throw Object.assign(new Error('Historical provider work is read-only; confirm explicit context recovery before new input'),{code:'HISTORICAL_SESSION_READ_ONLY'});
@@ -502,7 +502,7 @@ export class Controller extends EventEmitter {
         Object.assign(saved,{status:'completed',hostResolved:true,completion:'host-bound-input',finishedAt:at,routing:{action:'continue',workId:target,workName:work.name||work.request,status:'queued',queued:true,at}});
         Object.assign(job,structuredClone(saved));
       }
-      if(!old)tx.consumeDraft(target,draftText??value);return job;
+      if(!old&&!preserveDraft)tx.consumeDraft(target,draftText??value);return job;
     });this.changed();this.kick();return {accepted:true,jobId:job.id,...(job.hostResolved?{hostResolved:true}:{})};
   }
   // Keep exact user sources durable; routing notes are only delivered if they add information.
@@ -527,13 +527,13 @@ export class Controller extends EventEmitter {
     const supplements=(work.inputs||[]).map(input=>'补充用户原文：\n'+this.workerInputText(input.text,input.brief));
     return [...(work.frontdeskTransfer?['前台已完成操作仅为历史，不得重放；只执行原范围内剩余步骤。当前执行目录为交接时真实项目版本。\n'+JSON.stringify(work.frontdeskTransfer)]:[]),'原始用户请求：\n'+original,...supplements,'项目目录中的文件是实际材料。缺信息就发布 problem 后结束当前回合，完成则发布 result；不要等待或结束 Work。'].join('\n');
   }
-  async submitTask(value,{requestKey,context={},draftText=value}={}){
+  async submitTask(value,{requestKey,context={},draftText=value,preserveDraft=false}={}){
     this.store.storage.assertActive(this.projectId);
     if(typeof value!=='string'||!value.trim()||value.length>32000)throw Error('invalid input');
     const job=await this.store.mutate(tx=>{
       const old=this.store.state.jobs.find(j=>j.key==='task:'+requestKey);
       const job=this.queueJob('orchestrator','intake',value,{key:'task:'+requestKey,context:{...context,manual:true}});
-      if(!old)tx.consumeDraft('frontdesk',draftText);return job;
+      if(!old&&!preserveDraft)tx.consumeDraft('frontdesk',draftText);return job;
     });this.changed();this.kick();return {accepted:true,jobId:job.id};
   }
   frontGoal(job){return this.store.state.frontGoals?.find(g=>g.id===this.store.state.jobs.find(j=>j.id===job.id)?.context?.frontGoalId);}

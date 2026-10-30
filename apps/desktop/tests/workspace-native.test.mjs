@@ -740,3 +740,17 @@ test('cold binding guests initialize outside shell chrome and enter only a ready
  await native.invoke(owner,'workspace.ready',{contentReady:true});assert.equal(owner.view.visible,false);await native.invoke(root,'workspace.bounds',{projectId:target.id,windowId:'main',groups:[{groupId:group.id,viewId:owner.viewId,rect}]});assert.equal(owner.view.visible,true);assert.deepEqual(owner.view.getBounds(),rect);
  receipt(native,owner);await native.bindProject(root,'p');await native.bindProject(root,target.id);assert.equal(native.surfaces.get(owner.viewId),owner);assert.equal(attachments.length,1,'cached guest remains the same native owner without another attachment');assert.deepEqual(owner.view.getBounds(),rect,'cached pane geometry is not reset to staging bounds');
 });
+
+test('website detach and dock require no document path and retain the live owner',async t=>{
+ const {native,root}=await fixture(t);
+ let layout=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'web',url:'https://example.org/paper'}});
+ native.layouts.set('p',layout);await native.reconcile(layout);
+ const surface=[...native.surfaces.values()][0],view=surface.view,wc=surface.wc;receipt(native,surface);
+ native.detached=async(_layout,item)=>{let owner=native.windows.get(item.id);if(owner)return owner;owner=native.register(new Contents(),{role:'detached',windowId:item.id,projectId:'p',win:new Window()});owner.ready=true;native.windows.set(item.id,owner);return owner;};
+ let next=await native.command(root,{projectId:'p',expectedRevision:layout.revision,requestKey:'web-detach',command:{type:'detach',viewId:surface.viewId}});
+ const windowId=surface.windowId;assert.notEqual(windowId,'main');
+ assert.equal(surface.wc,wc);assert.equal(surface.view,view);assert.equal(next.layout.views[surface.viewId].url,'https://example.org/paper');
+ next=await native.command(root,{projectId:'p',expectedRevision:next.layout.revision,requestKey:'web-dock',command:{type:'dock',windowId}});
+ assert.equal(surface.windowId,'main');assert.equal(surface.wc,wc);assert.equal(surface.view,view);
+ assert(root.win.children.includes(view));assert.equal(next.layout.detached.length,0);
+});
