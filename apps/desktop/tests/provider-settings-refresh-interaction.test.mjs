@@ -67,7 +67,7 @@ const invoke=async(op,p={})=>{
   if(op==='settings.models.save'){
     state.defaults=structuredClone(p);
     if(window.__ps.saveHold)await window.__ps.saveHold;
-    return {ok:true,value:{saved:true,sync:{applied:0,pending:0,failed:[]}}};
+    return {ok:true,value:{saved:true,modelSync:{applied:0,pending:0,failed:[],sessions:[]}}};
   }
   return {ok:false,error:{message:'unexpected operation '+op}};
 };
@@ -103,7 +103,7 @@ const dom=()=>page.evaluate(()=>{
     catalog:document.querySelector('[data-model-catalog-status]').textContent};
 });
 const counts=state=>({status:state.calls.filter(call=>call.op==='settings.providers.status').length,save:state.calls.filter(call=>call.op==='settings.models.save').length});
-const setState=value=>page.evaluate(value=>window.__ps.setState(value),value);
+const setState=value=>page.evaluate(value=>window.__ps.setState(value),{...value,...(value.defaults?{defaults:Object.fromEntries(Object.entries(value.defaults).map(([role,entry])=>[role,typeof entry==='string'?{model:entry?{mode:'explicit',selector:entry}:{mode:'native-default'},thinking:{mode:'native-default'}}:entry]))}:{})});
 const holdStatus=()=>page.evaluate(()=>window.__ps.holdStatus());
 const resolveStatus=payload=>page.evaluate(payload=>window.__ps.resolveStatus(payload),payload);
 const rejectStatus=message=>page.evaluate(message=>window.__ps.rejectStatus(message),message);
@@ -134,14 +134,14 @@ const clickRefresh=()=>page.click('[data-model-refresh]');
 const blurFocus=()=>page.click('#focus-sink');
 const shot=async name=>{await page.screenshot({path:path.join(out,name+'.png')});report.screenshots.push(name+'.png');};
 
-const entry=(selector,provider,id)=>({selector,provider,id,name:id});
+const entry=(selector,provider,id)=>({selector,provider,id,name:id,credentialConfigured:true,catalogSource:'native',entitlement:'unknown',thinking:{supported:false,levels:null,source:'native-model-definition'}});
 const ALPHA=['alpha/m-one','alpha/m-two','alpha/m-three'].map(id=>entry(id,'alpha',id.slice(6)));
 const BETA=['beta/b-one','beta/b-two'].map(id=>entry(id,'beta',id.slice(5)));
-const SOURCES_ALPHA=[{provider:'alpha',type:'api',configured:true,baseUrl:'https://alpha.invalid/v1'}];
-const SOURCES_BETA=[{provider:'beta',type:'api',configured:true,baseUrl:'https://beta.invalid/v1'}];
-const payload=(catalog,defaults,sources)=>({sources,models:catalog,defaults,modelSync:{applied:0,pending:0,failed:[]},login:null});
+const SOURCES_ALPHA=[{provider:'alpha',revision:1,type:'api',credential:{configured:true,kind:'api-key'},baseUrl:'https://alpha.invalid/v1',models:[],discovery:{status:'none'}}];
+const SOURCES_BETA=[{provider:'beta',revision:1,type:'api',credential:{configured:true,kind:'api-key'},baseUrl:'https://beta.invalid/v1',models:[],discovery:{status:'none'}}];
+const payload=(catalog,defaults,sources)=>({sources,models:catalog,defaults:Object.fromEntries(Object.entries(defaults).map(([role,selector])=>[role,{model:selector?{mode:'explicit',selector}:{mode:'native-default'},thinking:{mode:'native-default'}}])),modelSync:{applied:0,pending:0,failed:[],sessions:[]},login:null});
 try{
-  for(let attempt=0;attempt<150&&!browser;attempt++){try{browser=await puppeteer.connect({browserURL:'http://127.0.0.1:'+port,defaultViewport:null,protocolTimeout:15000});}catch{if(child.exitCode!==null)throw Error(mainLog);await tick(100);}}
+  const nestedDefaults=flat=>Object.fromEntries(Object.entries(flat).map(([role,selector])=>[role,{model:selector?{mode:'explicit',selector}:{mode:'native-default'},thinking:{mode:'native-default'}}]));  for(let attempt=0;attempt<150&&!browser;attempt++){try{browser=await puppeteer.connect({browserURL:'http://127.0.0.1:'+port,defaultViewport:null,protocolTimeout:15000});}catch{if(child.exitCode!==null)throw Error(mainLog);await tick(100);}}
   assert(browser,'debug connection');
   page=await until(async()=>{for(const candidate of await browser.pages()){if(await candidate.evaluate(()=>document.readyState==='complete').catch(()=>false))return candidate;}return null;},'fixture page loaded');
   page.on('pageerror',error=>report.errors.push(String(error.stack||error)));
@@ -240,7 +240,7 @@ try{
   for(const role of ROLES)assert.equal(state.selects[role].disabled,true,role+' frozen while the save is in flight');
   assert.equal(state.saveDisabled,true,'save button disabled while busy');
   const saveCall=state.calls.filter(call=>call.op==='settings.models.save')[0];
-  assert.deepEqual(saveCall.args,submitted,'the payload carries all three role values captured before the freeze');
+  assert.deepEqual(saveCall.args,nestedDefaults(submitted),'the payload carries all three role model+thinking values captured before the freeze');
   await clickSave();await clickRefresh();await quiet();
   state=await dom();
   assert.equal(counts(state).save,1,'a real second submit during busy flight is refused');
@@ -265,13 +265,13 @@ try{
   await until(async()=>counts(await dom()).save===savesBeforePending+1,'save runs after the refresh settles');
   state=await dom();
   const lateSave=state.calls.filter(call=>call.op==='settings.models.save').at(-1);
-  assert.deepEqual(lateSave.args,{frontdesk:'beta/b-two',orchestrator:'alpha/m-one',worker:'alpha/m-one'},'the frozen snapshot is submitted, not the refreshed defaults');
+  assert.deepEqual(lateSave.args,nestedDefaults({frontdesk:'beta/b-two',orchestrator:'alpha/m-one',worker:'alpha/m-one'}),'the frozen snapshot is submitted, not the refreshed defaults');
   await releaseSave();await quiet();
   state=await dom();
   assert.deepEqual({frontdesk:state.selects.frontdesk.value,orchestrator:state.selects.orchestrator.value,worker:state.selects.worker.value},{frontdesk:'beta/b-two',orchestrator:'alpha/m-one',worker:'alpha/m-one'},'saved values are what the user submitted');
   for(const role of ROLES)assert.equal(state.selects[role].disabled,false,role+' restored after the sequenced save');
   await shot('save-waits-refresh');
-  // 10. empty catalog on a fresh surface: explicitly not savable, and a real save click does nothing.
+  // 10. empty catalog on a fresh surface: selects stay closed; a save click can only clear to native-default and never invents a selection.
   state=await freshMount({catalog:[],defaults:{},sources:SOURCES_ALPHA});
   const callsAtMount=state.calls.length;
   const savesAtMount=counts(state).save;
@@ -280,12 +280,24 @@ try{
   await quiet();
   state=await dom();
   for(const role of ROLES){assert.equal(state.selects[role].disabled,true,role+' disabled with an empty catalog');assert.deepEqual(state.selects[role].options,[''],role+' keeps only the placeholder with an empty catalog');}
-  assert.equal(state.saveDisabled,true,'save is explicitly unavailable with an empty catalog');
+  assert.equal(state.saveDisabled,true,'no catalog or stored defaults means nothing can be submitted');
   await clickSave();await quiet();
   state=await dom();
-  assert.equal(state.calls.length,callsAtMount+1,'an empty-catalog save click sends nothing beyond the status read');
-  assert.equal(counts(state).save,savesAtMount,'no defaults are ever submitted from an empty catalog');
+  assert.equal(state.calls.length,callsAtMount+1,'an empty-catalog save click sends only the status refresh read plus nothing hidden');
+  assert.equal(counts(state).save,savesAtMount,'no model selection is ever submitted from an empty catalog (user did not change any role)');
   await shot('empty-catalog-not-savable');
+  const capabilityCatalog=[{...ALPHA[0],thinking:{supported:true,levels:['off','low'],source:'native-model-definition'}},{...ALPHA[1],thinking:{supported:true,levels:['off','high'],source:'native-model-definition'}}];
+  await freshMount({catalog:capabilityCatalog,defaults:{frontdesk:'alpha/m-one',orchestrator:'',worker:''},sources:SOURCES_ALPHA});await clickRefresh();await quiet();
+  await page.focus('[data-default-role="frontdesk"]');
+  await setState({defaults:{frontdesk:'alpha/m-two',orchestrator:'',worker:''}});
+  await page.evaluate(()=>window.__ps.mounts.at(-1).api.refresh());
+  assert.equal((await dom()).selects.frontdesk.value,'alpha/m-one','focused picker defers incoming saved model change');
+  const thinkingValues=()=>page.$$eval('[data-default-thinking="frontdesk"] option',options=>options.filter(option=>!option.disabled).map(option=>option.value));
+  assert.deepEqual(await thinkingValues(),['','off','low']);
+  await blurFocus();await quiet();assert.equal((await dom()).selects.frontdesk.value,'alpha/m-two');assert.deepEqual(await thinkingValues(),['','off','high'],'blur applies the deferred model and its own native thinking capabilities together');
+  await page.select('[data-default-role="frontdesk"]','alpha/m-one');await page.$eval('[data-default-role="frontdesk"]',select=>select.dispatchEvent(new Event('change',{bubbles:true})));
+  await page.evaluate(()=>window.__ps.mounts.at(-1).api.refresh());assert.equal((await dom()).selects.frontdesk.value,'alpha/m-one');assert.deepEqual(await thinkingValues(),['','off','low'],'refresh preserves dirty model and matching native thinking capabilities');
+  await shot('model-bound-thinking-refresh');
   // Contract guard: the component never asked the double for anything else.
   state=await dom();
   assert.ok(state.calls.every(call=>['settings.providers.status','settings.models.save'].includes(call.op)),'no unexpected IPC operations');

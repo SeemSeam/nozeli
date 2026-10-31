@@ -35,6 +35,7 @@
 /* Empty chat keeps a usable input; full history is an explicit one-click view. */
 #chat-compact-status { display:none;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;color:var(--muted);margin-right:auto; }
 #chat-history-toggle { font-size:18px;padding:0;width:28px;height:28px;border:0; }
+#conversation-panel{container-type:inline-size;container-name:conversation-panel;min-width:0}
 #conversation-panel.compact-composer { flex:none;min-height:72px;padding:0;border-top:1px solid var(--line);max-height:min(190px,45%); }
 .compact-composer #conversation { display:none; }
 .compact-composer #conversation-head { min-height:24px;height:24px;flex:none;border:0;padding:0 12px;gap:9px;font-size:11px; }
@@ -49,6 +50,26 @@
 .compact-composer .composer-footer { flex:none;align-self:flex-end;padding:0;gap:8px;font-size:10px; }
 .compact-composer .composer-footer label { white-space:nowrap; }
 .compact-composer .composer-footer button { min-height:27px;padding:3px 8px; }
+
+@container conversation-panel (max-width: 520px){
+ .compact-composer #conversation-head{gap:4px;padding-inline:6px;min-width:0}
+ .compact-composer #conversation-head > span:first-child{flex:0 0 auto}
+ .compact-composer #chat-compact-status{display:none}
+ .compact-composer #conversation-head .conversation-controls{flex:1 1 auto;min-width:0;max-width:100%;overflow-x:auto;scrollbar-width:none}
+ .compact-composer #conversation-head .conversation-controls::-webkit-scrollbar{display:none}
+ .compact-composer #conversation-head .conversation-controls > button,.compact-composer #conversation-head .conversation-controls > summary{flex:0 0 auto;white-space:nowrap;width:auto;min-width:max-content}
+ .compact-composer #conversation-head .conversation-controls > .chat-tool{width:28px;min-width:28px;flex:0 0 28px}
+ .compact-composer #conversation-head .conversation-controls > #chat-clear-frontdesk-context,.compact-composer #conversation-head .conversation-controls > #chat-session-runtime{display:none}
+ .compact-composer .composer-wrap{flex-direction:column;align-items:stretch;min-width:0;overflow:visible;padding:3px 4px;gap:4px}
+ .compact-composer .composer-wrap #composer{flex:none;box-sizing:border-box;width:100%;min-width:0;height:44px;min-height:44px;max-height:96px}
+ .compact-composer .composer-footer{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-self:stretch;align-items:center;gap:4px;min-width:0}
+ .compact-composer .composer-footer .cm-add{grid-column:1/-1;grid-row:1;min-width:0}
+ .compact-composer .composer-footer .attach-file{grid-column:1/-1;grid-row:2;min-width:0;white-space:nowrap}
+ .compact-composer .composer-footer #managed-submit-task{grid-column:1;grid-row:3}
+ .compact-composer .composer-footer #send-message{grid-column:2;grid-row:3;min-width:0}
+ #conversation-panel.compact-composer .composer-footer :is(.cm-add,#managed-submit-task,#send-message){box-sizing:border-box;min-width:0;width:100%;max-width:100%;flex:0 1 auto;padding:3px 4px;font-size:10px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+}
+
 .compact-composer .attach-file input { width:12px;height:12px; }
 #chat-compact-status[data-state=failed] { color:var(--annotation-red); }
 
@@ -104,16 +125,6 @@ form.note-form.annotation-composer { gap:7px;padding:10px 12px 12px;background:v
 #selection-menu { transform:none;display:flex;flex-wrap:nowrap;gap:3px;max-width:calc(100vw - 16px);width:max-content;padding:4px;border:1px solid var(--line);border-radius:7px;background:var(--paper); }
 #selection-menu button { flex:none;white-space:nowrap;word-break:keep-all;min-width:42px;border:0;padding:4px 8px;font-size:12px; }
 
-/* Project Agent keeps real PTYs; view switching lives in settings. */
-body .provider-console:not([hidden]) { inset:12px 16px max(8px,env(safe-area-inset-bottom)) 70px;display:flex;border:0;border-radius:8px;background:var(--bg); }
-body .provider-console .provider-console-head { display:flex;min-height:34px;padding:2px 8px; }
-body .provider-console .provider-console-columns { padding:0;gap:10px;flex:1; }
-body .provider-console .provider-role { border:1px solid var(--line);border-radius:8px;box-shadow:none; }
-body .provider-console .provider-role > header { min-height:34px;padding:0 10px;border-bottom:1px solid var(--line);background:var(--paper);flex-wrap:nowrap;gap:8px; }
-.provider-role > header > span { margin-left:auto;white-space:nowrap; }
-.provider-role-action { width:28px;height:28px;min-height:28px;padding:0;border:0;font-size:19px; }
-.provider-output { position:relative; }
-.terminal-loading { position:absolute;z-index:3;top:14px;left:14px;padding:6px 10px;border-radius:5px;background:#26372b;color:#d5e3d8;font:12px sans-serif;pointer-events:none; }
 
 /* Narrow desktop windows use drawers without changing the saved wide layout. */
 #app.narrow-layout:not(.focus-mode) { display:grid;grid-template-columns:38px minmax(0,1fr) 32px;grid-template-rows:44px minmax(0,1fr);gap:0 6px;padding:0 8px 8px;height:100dvh; }
@@ -137,6 +148,4 @@ body .provider-console .provider-role > header { min-height:34px;padding:0 10px;
 .narrow-layout #reader.document-header-unified > .desk-header { padding-inline:8px;gap:4px; }
 .narrow-layout #text-preview { padding:24px 22px 48px; }
 .narrow-layout .compact-composer .attach-file { max-width:72px;overflow:hidden;text-overflow:ellipsis; }
-.narrow-layout .provider-console:not([hidden]) { inset:8px 8px max(8px,env(safe-area-inset-bottom)) 52px; }
-.narrow-layout .provider-role > header > span { display:none; }
 .focus-mode .reading-footer { display:none!important; }

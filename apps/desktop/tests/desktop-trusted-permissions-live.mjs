@@ -111,8 +111,8 @@ try{
   if(await shell.$eval('#configuration-setup',n=>n.open))await shell.click('#configuration-cancel');
   if(!realModel){
     await call('config.initialize',{mode:'independent'});
-    await call('settings.providers.save',{provider:'trusted-local',model:'scripted',baseUrl:'http://127.0.0.1:'+server.address().port+'/v1',api:'openai-completions',key:'synthetic-local-only'});
-    await call('settings.models.save',{frontdesk:'trusted-local/scripted',orchestrator:'trusted-local/scripted',worker:'trusted-local/scripted'});
+    await call('settings.providers.save',{operation:'create',provider:'trusted-local',baseUrl:'http://127.0.0.1:'+server.address().port+'/v1',api:'openai-completions',models:[{id:'scripted'}],credential:{action:'replace',value:'synthetic-local-only'}});
+    await call('settings.models.save',{frontdesk:{model:{mode:'explicit',selector:'trusted-local/scripted'},thinking:{mode:'native-default'}},orchestrator:{model:{mode:'explicit',selector:'trusted-local/scripted'},thinking:{mode:'native-default'}},worker:{model:{mode:'explicit',selector:'trusted-local/scripted'},thinking:{mode:'native-default'}}});
   }
   await shell.click('[data-project-id="'+id+'"]');
   await shell.waitForFunction(id=>window.__workspaceScope?.projectId===id,{},id);

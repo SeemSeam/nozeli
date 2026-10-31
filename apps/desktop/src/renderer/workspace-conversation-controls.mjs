@@ -31,7 +31,7 @@ export function mountConversationControls({close}) {
   ];
   function commands() {
     const entries = actions.filter(item => item.command.type !== 'dock' || detached()).map(({id,label}) => ({id,label}));
-    entries.push({id:'chat-agent-terminal',label:'打开 Agent 终端'});
+    entries.push({id:'chat-session-runtime',label:'会话管理：压缩、重载与诊断…'});
     entries.push({id:'chat-agent-details',label:'连接与历史…'});
     if (detached()) entries.push(...windowActions.map(({id,label}) => ({id,label})));
     const history = document.getElementById('chat-history-toggle');
@@ -42,7 +42,7 @@ export function mountConversationControls({close}) {
   }
   async function run(id) {
     if(id==='chat-agent-details')return window.dispatchEvent(new Event('nozeli-agent-details'));
-    if(id==='chat-agent-terminal'){window.__setProjectView?.('terminal');return;}
+    if(id==='chat-session-runtime'){const button=document.getElementById(id);if(button&&!button.hidden&&!button.disabled)button.click();return;}
     if(id==='chat-window-close')return run('chat-workspace-close');
     if (id === 'chat-clear-frontdesk-context' || id === 'chat-history-toggle') {
       const button = document.getElementById(id);

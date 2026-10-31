@@ -245,8 +245,8 @@ async function escCloses(label){
 try{
  await launch();
  await call(shell,'config.initialize',{mode:'independent'});
- await call(shell,'settings.providers.save',{provider:'pick-native-model',model:'scripted',baseUrl:'http://127.0.0.1:'+server.address().port+'/v1',api:'openai-completions',key:'synthetic-local-only'});
- await call(shell,'settings.models.save',{frontdesk:'pick-native-model/scripted',orchestrator:'pick-native-model/scripted',worker:'pick-native-model/scripted'});
+ await call(shell,'settings.providers.save',{operation:'create',provider:'pick-native-model',baseUrl:'http://127.0.0.1:'+server.address().port+'/v1',api:'openai-completions',models:[{id:'scripted'}],credential:{action:'replace',value:'synthetic-local-only'}});
+ await call(shell,'settings.models.save',{frontdesk:{model:{mode:'explicit',selector:'pick-native-model/scripted'},thinking:{mode:'native-default'}},orchestrator:{model:{mode:'explicit',selector:'pick-native-model/scripted'},thinking:{mode:'native-default'}},worker:{model:{mode:'explicit',selector:'pick-native-model/scripted'},thinking:{mode:'native-default'}}});
  // Project registration itself goes through the fixture-backed native dialog
  // (project.pick → dialog.showOpenDialog ['openDirectory']) — no env bypass.
  await enqueue({filePaths:[projectRoot],canceled:false});

@@ -87,6 +87,11 @@ try {
   await page.click('.session-message>.session-tool>summary');
   await page.waitForSelector('[data-process-entry="front-result"]');
   assert.deepEqual(await page.$$eval('[data-process-entry]',nodes=>nodes.map(node=>node.dataset.processEntry)),['front-call','front-result'],'process keeps original event order');
+  await page.focus('.session-message>.session-tool>summary');await page.keyboard.press('Space');
+  await page.waitForFunction(()=>!document.querySelector('[data-process-entry]'));
+  await page.keyboard.press('Enter');await page.waitForSelector('[data-process-entry="front-result"]');
+  await page.evaluate(()=>window.consumer.render());
+  assert.equal(await page.$eval('.session-message>.session-tool',node=>node.open),true,'process remains open across unrelated render');
   await page.evaluate(()=>window.consumer.store.apply('project-consumer',{version:1,entries:[{id:'front-final',replacesId:'front-stream',target:'frontdesk',speaker:'agent',source:'native',jobId:'front-one',sequence:3,text:'FINAL ANSWER',durable:true},{id:'other-final',target:'frontdesk',speaker:'agent',source:'native',jobId:'front-two',sequence:4,text:'OTHER ANSWER'}],deltas:[]}));
   await page.waitForSelector('[data-message="front-final"]');
   assert.equal(await page.$$eval('.session-message',nodes=>nodes.length),2,'settlement replaces the stream while another task stays separate');
@@ -114,6 +119,12 @@ try {
   await page.waitForSelector('[data-frozen-file="file-one"]');
   assert.equal(await page.$eval('.session-worker details',node=>node.open),false,'Worker is collapsed by default');
   assert.equal(await page.$('.session-worker-transcript'),null,'collapsed output is not mounted');
+  await page.click('.session-worker>details>summary');
+  await page.waitForSelector('.session-worker-transcript');
+  await page.evaluate(()=>window.consumer.render());
+  assert.equal(await page.$eval('.session-worker>details',node=>node.open),true,'mouse disclosure survives state refresh');
+  await page.focus('.session-worker>details>summary');await page.keyboard.press('Space');
+  await page.waitForFunction(()=>!document.querySelector('.session-worker-transcript'));
   assert.equal(await page.$eval('[data-frozen-file="file-one"]',node=>node.closest('details')===null),true,'frozen files stay outside collapsed output');
   assert.match(await page.$eval('[data-frozen-file="file-one"]',node=>node.textContent),/src\/space name\.ts/);
   assert.match(await page.$eval('[data-frozen-file="file-one"]',node=>node.textContent),/old\/source\.py → src\/space name\.ts/);
@@ -203,6 +214,18 @@ try {
   assert.equal(await page.$$eval('.session-timeline script,.session-timeline [onerror],.session-timeline a[href^="javascript:"]',nodes=>nodes.length),0);
   assert.equal(await page.evaluate(()=>window.consumerUnsafe===true),false);
   console.log('Synthetic-only styled surface screenshots: '+out);
+  const patch='diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-const value = 1;\n+const value = "<script>window.consumerUnsafe=true</script>";';
+  await page.evaluate(patch=>{const c=window.consumer;c.store.reset('project-consumer');c.store.apply('project-consumer',{version:1,entries:[{id:'diff-output',target:'frontdesk',speaker:'agent',source:'native',sequence:1,text:'```diff\n'+patch+'\n```'}]});},patch);
+  await page.waitForSelector('[data-message="diff-output"] code[data-highlighted=diff]');
+  assert.equal(await page.$eval('code[data-highlighted=diff]',node=>node.textContent),patch,'highlighting preserves copyable patch content');
+  assert.equal(await page.$$eval('code[data-highlighted=diff] script',nodes=>nodes.length),0,'patch contents remain inert text');
+  for(const theme of ['light','dark']){
+    await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);
+    const colors=await page.evaluate(()=>Object.fromEntries(['file','hunk','added','deleted'].map(kind=>{const node=document.querySelector('.markdown-diff-'+kind);const style=getComputedStyle(node);return [kind,{ink:style.color,paper:style.backgroundColor}];})));
+    assert.equal(new Set(Object.values(colors).map(value=>value.ink)).size,4,'diff metadata, hunk, additions and deletions remain distinguishable in '+theme);
+    assert.notEqual(colors.added.paper,colors.deleted.paper,'addition and deletion papers differ in '+theme);
+  }
+  assert.equal(await page.evaluate(()=>window.consumerUnsafe===true),false);
   await page.evaluate(()=>window.consumer.destroy());
   console.log('Session timeline React/Electron consumer contracts passed');
 } catch(error) {

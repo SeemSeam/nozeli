@@ -161,8 +161,8 @@ try{
  // Run 1: real registration, real native residents, then the crash.
  await launch('run1');
  await call('config.initialize',{mode:'independent'});
- await call('settings.providers.save',{provider:'stale-hold-local',model:'scripted',baseUrl:'http://127.0.0.1:'+server.address().port+'/v1',api:'openai-completions',key:'synthetic-local-only'});
- await call('settings.models.save',{frontdesk:'stale-hold-local/scripted',orchestrator:'stale-hold-local/scripted',worker:'stale-hold-local/scripted'});
+ await call('settings.providers.save',{operation:'create',provider:'stale-hold-local',baseUrl:'http://127.0.0.1:'+server.address().port+'/v1',api:'openai-completions',models:[{id:'scripted'}],credential:{action:'replace',value:'synthetic-local-only'}});
+ await call('settings.models.save',{frontdesk:{model:{mode:'explicit',selector:'stale-hold-local/scripted'},thinking:{mode:'native-default'}},orchestrator:{model:{mode:'explicit',selector:'stale-hold-local/scripted'},thinking:{mode:'native-default'}},worker:{model:{mode:'explicit',selector:'stale-hold-local/scripted'},thinking:{mode:'native-default'}}});
  await shell.click('#pick-project');
  const picked=await until(async()=>{const scope=await call('workspace.bootstrap');if(!scope.projectId)return;const recent=await call('project.recent');return recent.projects.find(project=>path.resolve(project.rootDisplay)===projectRoot)?scope:null;},'synthetic project registered and active');
  const projectId=picked.projectId,{project}=instancesRow();

@@ -29,8 +29,8 @@ try{
  const blocked=await until(async()=>(await status()).todos.find(t=>t.status==='open'&&t.destination?.kind==='settings'),'unconfigured settings reminder');
  const settings=await open(blocked);assert.match(await settings.$eval('[data-attention-conversation]',n=>n.textContent),/配置|设置/);await shot('configuration-blocked-readable',settings);await clickText(settings,'打开相关设置');assert.equal(inputs.length,0);await record('configuration blocked offline readable settings action; zero model requests',{todoId:blocked.id});
  await h.shell.waitForSelector('#settings-dialog[open]');await h.shell.locator('#settings-close').click();await h.shell.waitForFunction(()=>!document.querySelector('#settings-dialog').open);await h.invoke('config.initialize',{mode:'independent'});
- await h.invoke('settings.providers.save',{provider:'recovery-local',model:'scripted',baseUrl:'http://127.0.0.1:'+server.address().port+'/v1',key:'local-only',api:'openai-completions'});
- await h.invoke('settings.models.save',{frontdesk:'recovery-local/scripted',orchestrator:'recovery-local/scripted',worker:'recovery-local/scripted'});
+ await h.invoke('settings.providers.save',{operation:'create',provider:'recovery-local',baseUrl:'http://127.0.0.1:'+server.address().port+'/v1',api:'openai-completions',models:[{id:'scripted'}],credential:{action:'replace',value:'local-only'}});
+ await h.invoke('settings.models.save',{frontdesk:{model:{mode:'explicit',selector:'recovery-local/scripted'},thinking:{mode:'native-default'}},orchestrator:{model:{mode:'explicit',selector:'recovery-local/scripted'},thinking:{mode:'native-default'}},worker:{model:{mode:'explicit',selector:'recovery-local/scripted'},thinking:{mode:'native-default'}}});
  if(await h.shell.$eval('#configuration-setup',n=>n.open).catch(()=>false))await h.shell.click('#configuration-cancel');
  await h.invoke('managed.enable',{projectId:id});await until(async()=>(await h.invoke('managed.status',{projectId:id})).ready,'native residents ready');
  const sent=await h.invoke('managed.send',{projectId:id,target:'frontdesk',text:'本地恢复验收，请提问选择。',requestKey:'installed-recovery-question'});

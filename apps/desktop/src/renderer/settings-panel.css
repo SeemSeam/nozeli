@@ -18,6 +18,7 @@
 .settings-card,.settings-content fieldset{min-width:0;margin:16px 0;padding:16px;border:1px solid var(--line);border-radius:8px}
 .settings-content label{display:grid;gap:8px;margin:16px 0}.settings-content input,.settings-content select,.settings-content textarea{box-sizing:border-box;width:100%;max-width:100%;min-width:0;min-height:32px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);font:inherit;line-height:1.5}
 .settings-content input[type="checkbox"]{width:auto;min-height:0}.settings-content button{min-height:32px;max-width:100%;font:inherit;line-height:1.5;white-space:normal;overflow-wrap:anywhere;border:1px solid var(--line);border-radius:6px;padding:6px 12px}.settings-content button:not([data-ui-action]){background:var(--paper);color:var(--ink)}
+.settings-content .auto-update-toggle{display:flex;align-items:flex-start;gap:8px}.settings-content .auto-update-toggle input[type="checkbox"]{flex:none;margin:.3em 0 0}
 .settings-content button[data-ui-action="danger"]{background:transparent;color:var(--red);border-color:var(--line)}
 .settings-content button[data-ui-action="danger"]:hover:not(:disabled){background:var(--bg);color:var(--red)}
 .settings-dialog button:not([data-ui-action]):hover:not(:disabled){background:var(--ui-control-hover);color:var(--ink)}

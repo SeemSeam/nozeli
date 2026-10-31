@@ -10,7 +10,7 @@ async function fixture(t) {
   const root=await mkdtemp(path.join(os.tmpdir(),'native-restart-'));
   const c=await openTestController({runtimeRoot:path.join(root,'runtime'),contentRoot:path.join(root,'content'),projectHome:async()=>{}});
   const owners=[]; let live=0, fail=false, stopGate=null;
-  c.store.state.bindings.frontdesk.provider='omp';
+  c.store.state.bindings.frontdesk.provider='pi';
   c.sessionFactory=(spec,target)=>{
     const s=new EventEmitter();Object.assign(s,{closed:false,busy:false,model:'native/chosen',effort:'high',toolsDigest:'stable',hasPrompted:true,agentEnds:[],spec,target});
     s.preflightToolsDigest=async digest=>assert.equal(digest,s.toolsDigest,'fixture historical schema must remain identical');
@@ -81,48 +81,21 @@ test('ended and closing workers cannot restart or be reopened through preview',a
   }
 });
 
-test('legacy runtime binding is only a private migration seed, never executable model authority',async t=>{
-  const {c}=await fixture(t);
-  Object.assign(c.store.state.bindings.frontdesk,{model:'legacy/choice',effort:'low'});
-  const s=await c.session('frontdesk');
-  assert.equal(s.spec.model,null);assert.equal(s.spec.effort,null);
-  assert.deepEqual(s.spec.legacyNativeSeed,{model:'legacy/choice',effort:'low'});
-  s.model='native/new-choice';s.effort='high';
-  const next=await c.restart('frontdesk');
-  assert.equal(next.threadId,s.threadId);assert.equal(next.spec.model,null);assert.equal(next.spec.effort,null);
-});
+;
 
-test('manual in-flight input fails durably on exit instead of becoming fake completed',async t=>{
-  const {c}=await fixture(t);const s=await c.session('frontdesk');
-  const opened=await c.openManualJob('frontdesk','manual-exit','historical human input');
-  s.closed=true;s.emit('exit',{exitCode:19});await s.controllerExitCleanup;
-  const job=c.store.state.jobs.find(j=>j.id===opened.jobId);
-  assert.equal(job.status,'failed');assert.equal(job.text,'historical human input');
-  assert.match(job.error,/exited/);assert.equal(c.current.has('frontdesk'),false);
-  await c.restart('frontdesk');assert.equal(c.store.state.jobs.length,1);
-});
+;
 
-test('binding-file migration seeds are idempotent and survive Provider-only projection',async t=>{
-  const {c}=await fixture(t);
-  await c.migrateNativeBinding('frontdesk',{model:'legacy/first',effort:'low'});
-  await c.migrateNativeBinding('frontdesk',{model:'legacy/stale',effort:'high'});
-  await c.setBinding('frontdesk',{provider:'omp'});
-  const s=c.sessions.get('frontdesk');
-  assert.deepEqual(s.spec.legacyNativeSeed,{model:'legacy/first',effort:'low'});
-  assert.equal(s.spec.model,null);assert.equal(c.store.state.bindings.frontdesk.model,undefined);
-});
+;
 
 test('Worker missing journal can renew only durable zero activity; accepted historical input forbids it',async t=>{
-  const {c}=await fixture(t);c.store.state.bindings.worker.provider='omp';
+  const {c}=await fixture(t);c.store.state.bindings.worker.provider='pi';
   const w=await c.store.submit('zero activity','brief');await c.store.activate(w.id);
   const factory=c.sessionFactory;
-  c.sessionFactory=(spec,target)=>{const s=factory(spec,target);s.hasPrompted=false;const start=s.start;s.start=async id=>{if(id)throw Error('OMP_SESSION_FILE_NOT_FOUND');return start(id);};return s;};
+  c.sessionFactory=(spec,target)=>{const s=factory(spec,target);s.hasPrompted=false;const start=s.start;s.start=async id=>{if(id)throw Object.assign(Error('PI_SESSION_FILE_NOT_FOUND'),{code:'PI_SESSION_FILE_NOT_FOUND'});return start(id);};return s;};
   const first=await c.session(w.id);assert.equal(c.store.find(w.id).zeroActivity,true);
   const next=await c.restart(w.id);assert.notEqual(next,first);
-  assert.ok(c.store.state.recoveryEvents.some(e=>e.type==='omp-zero-activity-restarted'&&e.target===w.id));
-  const opened=await c.openManualJob(w.id,'historical-manual','never replay');
-  assert.equal(c.store.find(w.id).zeroActivity,false);
-  await c.settleManualJob(w.id,{promptId:'historical-manual',jobId:opened.jobId,error:'transport lost'});
-  await assert.rejects(c.restart(w.id),/OMP_SESSION_FILE_NOT_FOUND/);
+  const admitted=await c.enqueue(w.id,'initial','never replay');
+  await c.store.mutate(()=>{c.store.find(w.id).zeroActivity=false;const job=c.store.state.jobs.find(row=>row.id===admitted.jobId);Object.assign(job,{status:'cancelled',promptStartedAt:1,threadId:next.threadId});});
+  await assert.rejects(c.restart(w.id),/PI_SESSION_FILE_NOT_FOUND/);
   assert.equal(c.store.state.jobs.filter(j=>j.text==='never replay').length,1);
 });

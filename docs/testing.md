@@ -18,14 +18,14 @@ node tools/test-suites.mjs smoke --list    # 任一套件的文件清单
 | toolchain（可选工具） | `npm run test:toolchain` | 实际TeX编译、SyncTeX正反向定位与TexLab | 系统latexmk/xelatex/pdftotext/synctex/texlab；缺失明确失败，不静默跳过 |
 | default | `npm test` | unit + integration 顺序执行 | 同上两者 |
 
-`npm test` 是安全默认：只运行不依赖预编译私有 OMP／PPTist、不依赖显示器的部分。
+`npm test` 是安全默认：只运行不依赖预编译私有 Agent 运行时／PPTist、不依赖显示器的部分。
 
 ## 分类边界
 
-- **unit（52 个文件）**：按实际导入与行为划入——不起被测子进程、不写真实项目文件、不驱动 Git、不加载 Electron。个别文件会**只读源码**（如 `lifecycle-flush-capability` 读 preload 源码进 `vm` 沙箱验证桥接行为），因此该类别不宣称“无任何 fs 访问的纯函数保证”；划分标准是“无需文件系统副作用即可复现”。出现真实写入/子进程/Git 即归 integration。
+- **unit**：成员以 `tools/test-suites.mjs` 显式清单为准；按实际导入与行为划入——不起被测子进程、不写真实项目文件、不驱动 Git、不加载 Electron。个别文件只读源码，因此不宣称无任何 fs 访问。出现真实写入／子进程／Git 即归 integration；`update-lifecycle.test.mjs` 验证未保存编辑／排队任务阻止更新及冻结释放。
 - **integration**：真实临时仓库、shadow版本、存储切换和宿主文件读写；成员清单以runner为准，Git身份由测试或产品层明确提供。TeX编译、语言服务和SyncTeX真实工具测试归入独立`toolchain`套件，不能因为开发机恰有工具就当作普通CI依赖；此前误将`tex-source-link.test.mjs`归入默认集，现已按实际外部依赖更正，测试本身完整保留。
-- **smoke（`tests/desktop-ci-smoke.mjs`，单脚本）**：真实Electron进程、无模型/无凭据，覆盖空工作台、合成项目浏览、键盘编辑、显式保存、正常退出与冷启动恢复。测试在`.test-output/ci/smoke-*`创建独立项目/profile，端口即时申请；Wayland/X11可见运行，无显示器时headless，GitHub用Xvfb/X11。旧长流程专项不等于此轻量烟测。
-- **live（4 个文件）**：`agent-resource-native`、`omp-default-models-live`、`omp-tui-attach-races` 需要已构建的原生运行时并经 PTY/bwrap 真实拉起；`omp-runtime-isolation` 直接验证运行时路径与 broker 隔离。全部只对 `127.0.0.1` 回环脚本端点发请求（`auth: none`、合成配置），从不读取真实账号、不在未选择加入时运行。
+- **smoke**：当前清单为 `desktop-ci-smoke.mjs` 和 `desktop-ppt-pending-text-live.mjs`。前者实际启动 Electron，覆盖空工作台、合成项目浏览、键盘编辑、显式保存、正常退出与冷恢复；后者使用真实 PPTist，覆盖最后一次输入立即导出、外部原件冲突时原文件剪贴板拒绝及旧源草稿恢复。输出使用独立合成项目／profile、即时端口，不含模型或个人凭据。后者需要已构建 renderer／PPTist；各自结果不能互相替代。
+- **live**：Pi 分支由 `pi-native-tools-live.mjs`、`pi-lifecycle-live.mjs` 驱动实际独立 Node／Pi SDK owner；需准备固定私有 Pi 运行时，并用 `NOZELI_TEST_LIVE=1` 显式选择加入。使用回环合成 Provider，不读取真实账号。`pi-facts`、`pi-questions` 和真实付费模型任务分别记录；不恢复旧 OMP PTY 套件作为产品入口。
 
 ### 与 0.1.0-alpha.1 发布回归（“374 项”）的关系
 
@@ -57,7 +57,7 @@ postinstall 用 `electron-rebuild` 针对 Electron 重建 `node-pty`。该依赖
 
 ## 历史命令与探针（不在默认入口内）
 
-- `package.json` 中的既有专项命令（`test:host`、`test:renderer`、`test:managed-lifecycle` 等）全部保留，供定向调试；它们不属于新套件边界，部分依赖 `build:renderer` 或已构建运行时。旧的整套 Electron 长流程（`desktop-electron.test.mjs`、`desktop-close.test.mjs` 等）仍由原专项命令（如 `test:electron`、`test:close`）承载：它们是遗留专项，不进 smoke 是边界划分（smoke 只保留轻量 CI 冒烟），不是被跳过或删除；`test:collab` 已移除不存在的 `test/native-collab.test.mjs` 引用，仅保留现存文件。
+- `package.json` 中仍有效的专项命令供定向调试；成员以实际文件和 `tools/test-suites.mjs` 为准。旧 Electron 长流程继续由各专项承载，不因未进入轻量 smoke 而声称已通过或已退役。Pi 分支不提供已移除的 OMP `test:collab`／TUI 接管命令；历史适配器单测不算 Pi 产品能力证明。
 - `tests/*-live*.mjs` 中需要既有发布产物、prior report 或真实安装二进制的脚本（如 `desktop-*-live.mjs` 审计探针、`installed-handoff.test.mjs`、`c1-installed-open*.mjs` 的安装态部分、`post-install-startup-recovery-*.py`、`.probe-*.mjs`）是开发/发布期证据工具：均需显式手动运行并提供所需产物，绝不进入默认套件，也不随 CI 运行。其中部分脚本仍含本机绝对路径（历史证据语义），除已纳入维护套件的文件外不做批量改写，也未删除。
 - `tests/desktop-worker-large-files-live.mjs`：显式真实 Electron＋原生 OMP＋回环脚本模型专项。独立合成项目含 88 MiB 归档、超过 256 MiB 输入和一万多个文件；Worker 修改小文件并生成 68 MiB 二进制，实际报告界面接受后核实合入、冻结摘要、原件保护与正常退出。运行 `NOZELI_TEST_EVIDENCE_ROOT=<测试输出根> node tests/desktop-worker-large-files-live.mjs`；安装态另传 `NOZELI_TEST_APP_ROOT=<release>/resources/app NOZELI_TEST_BINARY=<release>/nozeli`。保留样本、截图与 report.json，不接触用户项目或付费模型；冲突、回滚、准备恢复另由确定性回归覆盖，不将本专项冒充故障注入矩阵。
 - `tests/desktop-maintenance-live.mjs`：真实 Electron＋原生 OMP＋回环脚本模型专项。合成项目包含已跟踪的 `.ccb` 普通文件与被忽略的 `build/` 成果；真实宿主读取／编辑后，使用测试自有分支锁制造真实发布失败，观察 bug 日志及 Orchestrator 调用后解除自有锁，由宿主重试原发布事务。核验同一 Work／线程／job、Worker 命令与发布各仅一次、无用户维修问题待办、完整冻结并经实际报告界面接受合入、正常退出。运行 `NOZELI_TEST_EVIDENCE_ROOT=<测试输出根> node tests/desktop-maintenance-live.mjs`；使用独立 HOME 和合成材料，不安装、不调用用户模型、不操作真实项目。维护权限、重启未知尝试、取消与冲突边界另由 `maintenance-runtime.test.mjs` 和既有生命周期集覆盖。
@@ -67,6 +67,9 @@ postinstall 用 `electron-rebuild` 针对 Electron 重建 `node-pty`。该依赖
 - `tests/desktop-unlocated-tags-live.mjs`：真实 Electron 文档面专项；独立合成 Word／文本／PDF／图片／PPT 标签经源文件变更确实失位，核对折叠卡片操作可见、按钮不重叠，实际删除三类区域备注、移除讨论标签并保留原历史，真实 Word 选字及文本选区重新绑定，刷新留存及正常退出。命令 `node tests/desktop-unlocated-tags-live.mjs`；安装态沿用 APP_ROOT／BINARY／EVIDENCE_ROOT 环境变量。不读取用户文档、不启模型；Word与文本重定位走实际UI，图片／PDF／PPT其他锚点及PPT草稿并发校验由 `tag-stability.test.mjs` 覆盖，不将入口显示冒充所有格式的选区交互矩阵。
 - `tests/desktop-external-paste-live.mjs`：Linux真实系统文件剪贴板专项，独立隐藏Electron原生ClipboardItem写入合成文件URI，Nozeli通过实际右键／Ctrl+V导入文件与嵌套文件夹；粘贴前核对清单仅含本测试来源，测试中文空格、二进制字节、外部cut只复制、系统新剪贴板优先、同名不覆盖／源不删除、正常退出。`node tests/desktop-external-paste-live.mjs`，有DISPLAY时默认X11，与当前启动入口一致；需真实图形会话，不能以headless进程内剪贴板代替系统剪贴板。安装态沿用APP_ROOT／BINARY／EVIDENCE_ROOT。测试写合成系统剪贴板，结束不读取／覆盖可能已被用户更新的内容；helper隐藏、stdin关闭与看门狗退出，父进程有界等待后确认终止，避免与其他剪贴板烟测并行。原生Wayland仍有Electron#54645边界；Windows／macOS原生格式有字节夹具但未相应实机验收。原内部跨项目复制／剪切由 `desktop-cross-project-clipboard-live.mjs` 另验。
 - `tests/desktop-system-text-clipboard-live.mjs`：真实桌面文本复制专项；独立GTK3系统读者 `native-clipboard-oracle.fixture.py`（Linux Python3＋PyGObject／GTK3，需DISPLAY）比较合成内容，若存在KDE Klipper则另比较其系统结果，只输出相等与否，不输出用户剪贴板。覆盖默认开发启动器、原生快捷键、可信应用write-only权限、正文／代码／Markdown／Word／PDF／表格／PPT、已有合成对话及代码按钮、cut/undo；不会调用模型生成内容。安装态传 `NOZELI_OZONE=x11 NOZELI_TEST_APP_ROOT=<release>/resources/app NOZELI_TEST_BINARY=<release>/nozeli`。只接受ELF二进制，**不得传用户安装wrapper／AppRun**，这些启动器会清除测试隔离标志，真实OS home也不会因伪造HOME而改变。现有真实项目的交互验收需要用户当轮授权，保留源文件／草稿／输入任务指纹，不默认进入CI或改写用户数据。
+- `node tests/desktop-dynamic-geometry-live.mjs`：真实原生窗口 resize/maximize/fullscreen/restore，Word/PDF/图片/Markdown/代码/XLSX/PPT 在主窗、独立窗及回嵌的自动尺寸跟随；按窗口管理器实际客户区核对，不调用手工 flushBounds 制造成功。检查内部画布／iframe、手动与适应缩放、格式化内容、逻辑选区、未保存代码与源文件字节，不启模型。
+- `node tests/desktop-file-export-live.mjs`：Linux DISPLAY＋Dolphin＋dbus-run-session＋X11/Python3；从真实文件树 Copy 到隔离 Dolphin Ctrl+V，检查中文特殊字符文件、打开并跨项目恢复的干净 DOCX/XLSX/PPTX、嵌套二进制字节及原件不变。系统剪贴板场景串行运行，只操作专用合成目标，不关闭用户窗口。
+- `node --test tests/auto-update-package-smoke.mjs`：真实 Electron 发布物、回环 feed/tag/归档、下载校验、帮助进程交接、两类布局晋升及启动失败回退。`node tests/desktop-auto-update-live.mjs` 另以真实 Nozeli 设置页验证模态阻止、闲时退出、重启健康与用户数据保留；新进程须发布不同的即时调试端点，不复用旧端口误连。仅显式隔离实例允许回环测试 feed；不修改用户安装，不开放 renderer 路径／发布源参数。先构建 renderer／随包 runtime，不上传生成包或数据库。
 - 已纳入维护套件的测试不再含 `/home/...` 绝对输出路径：输出统一走 `os.tmpdir()`（隔离根）或仓库内 `.test-output/`（已被根 `.gitignore` 忽略）。测试源中出现的 `/home/example`、`/tmp/...` 字符串均为拒绝路径/脱敏断言的合成输入，不落盘。
 
 ## 测试素材来源（fixtures）

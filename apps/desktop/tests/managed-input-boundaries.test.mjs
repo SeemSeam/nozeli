@@ -31,8 +31,16 @@ async function fixture(t,{holdWorker=false}={}){
 }
 function observeSaves(c){const snapshots=[],save=c.store.save.bind(c.store);c.store.save=async(...args)=>{await save(...args);snapshots.push(await readTestState(c.store));};return snapshots;}
 
-test('every persisted activation includes the binding and initial job',async t=>{
- const {c}=await fixture(t),snapshots=observeSaves(c);const w=await c.store.submit('original','brief',{name:'Alpha'});c.kick();await wait(()=>c.store.find(w.id).status==='review'&&!c.running.size);
+test('every persisted activation includes the binding and initial job',{timeout:30000},async t=>{
+ const {c}=await fixture(t),snapshots=observeSaves(c);const w=await c.store.submit('original','brief',{name:'Alpha'});
+ await new Promise((resolve,reject)=>{
+  const observe=()=>{
+   const failed=c.store.state.jobs.find(job=>job.target===w.id&&job.status==='failed');
+   if(failed){reject(Error(failed.error||'activation failed'));return;}
+   if(c.store.find(w.id).status==='review'&&!c.running.size)resolve();
+  };
+  c.on('state',observe);t.after(()=>c.off('state',observe));observe();c.kick();
+ });
  const activated=snapshots.filter(s=>s.works.find(x=>x.id===w.id).revision>0);assert.ok(activated.length);
  for(const s of activated){assert.ok(s.works[0].binding);assert.equal(s.jobs.filter(j=>j.key===`initial:${w.id}`).length,1,'activation must not persist without initial input');}
 });

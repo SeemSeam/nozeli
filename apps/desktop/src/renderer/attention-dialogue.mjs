@@ -169,7 +169,7 @@ export function mountAttentionDialogue(container,{document,projectId,todo,invoke
   const result=await invoke(isMergeConsent?'managed.merge.consent':'managed.attention.respond',payload);if(!result.ok)throw Object.assign(Error(result.error?.message||'回答未受理'),{code:result.error?.code});if(isDecision&&result.value?.accepted!==true&&!(isMergeConsent&&result.value?.status))throw Error('宿主尚未确认本次决定。');
   phase=cancel||isDecision&&['cancel','deny'].includes(answer)?'cancelled':'submitted';
   setStatus(isMergeConsent?(answer==='approve'?'已批准该候选的一次性本地合入；宿主按原队列继续，不重放 Worker。此批准不涉及任何提权执行。':'已拒绝本次合入；保持阻断并保留现场，未执行合入。'):isPermission?(answer==='approve-once'?'已批准执行一次；宿主将以真实系统认证执行该冻结命令，不扩大到其他命令或新任务。':answer==='approve-task'?'已批准本任务内该冻结命令；可再次执行同一条命令，随时可撤销，不覆盖未来命令。':'本次执行未授权；不执行该命令，不自动重试。'):isGrantRevoke?(answer==='revoke'?'已撤销本任务的执行授权；未来准入关闭，已执行效果不受影响。':'已保留授权；未提交撤销。'):isRoute?(answer==='cancel'?'已暂停本请求；保留已完成修改，不自动重试。':'处理方式决定已受理；只继续原范围剩余工作。'):cancel?'已向原生会话发送取消，本次请求已中断。':'回答已提交给原生会话。','ok');
-  drafts.delete(identity);try{sessionStorage.removeItem(storageKey);}catch{}try{await onRefresh();}catch{status.textContent+=' 状态刷新失败，可点击“刷新状态”重试。';}
+  if(!cancel&&answer?.kind!=='chat'){drafts.delete(identity);try{sessionStorage.removeItem(storageKey);}catch{}}else retain();try{await onRefresh();}catch{status.textContent+=' 状态刷新失败，可点击“刷新状态”重试。';}
  }
   catch(error){setStatus((error.code?error.code+'：':'')+error.message+'；未提交草稿保留。','error');}
   finally{pending=false;section.setAttribute('aria-busy','false');update(latest);}

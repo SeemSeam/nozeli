@@ -157,8 +157,8 @@ try {
   shell.on('pageerror', error => result.errors.push(error.message));
   if (await shell.$eval('#configuration-setup', node => node.open)) await shell.click('#configuration-cancel');
   await call('config.initialize', {mode: 'independent'});
-  await call('settings.providers.save', {provider: 'large-local', model: 'scripted', baseUrl: 'http://127.0.0.1:' + server.address().port + '/v1', api: 'openai-completions', key: 'synthetic-loopback-only'});
-  await call('settings.models.save', {frontdesk: 'large-local/scripted', orchestrator: 'large-local/scripted', worker: 'large-local/scripted'});
+  await call('settings.providers.save', {operation:'create',provider:'large-local',baseUrl:'http://127.0.0.1:' + server.address().port + '/v1',api:'openai-completions',models:[{id:'scripted'}],credential:{action:'replace',value:'synthetic-loopback-only'}});
+  await call('settings.models.save', {frontdesk:{model:{mode:'explicit',selector:'large-local/scripted'},thinking:{mode:'native-default'}},orchestrator:{model:{mode:'explicit',selector:'large-local/scripted'},thinking:{mode:'native-default'}},worker:{model:{mode:'explicit',selector:'large-local/scripted'},thinking:{mode:'native-default'}}});
   await shell.click('[data-project-id="' + projectId + '"]');
   await shell.waitForFunction(id => window.__workspaceScope?.projectId === id, {}, projectId);
   await call('managed.enable', {projectId});

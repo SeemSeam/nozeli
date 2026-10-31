@@ -12,15 +12,14 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { randomUUID, createHash } from 'node:crypto';
 import { Workspace } from './workspace.mjs';
-import { OmpTuiSession } from './omp-tui-session.mjs';
-import { prepareOmpPrivateHome } from './omp-provider-home.mjs';
-import { recoverOmpProvider, pinSessionFileById } from './omp-process-ownership.mjs';
+import { PiSession } from './pi-session.mjs';
+import { recoverOmpProvider } from './omp-process-ownership.mjs';
+import { recoverPiProvider } from './pi-process-ownership.mjs';
 import { roles, rolePrompt, eventSkill, readRoleSkill, here } from './runtime.mjs';
 import { processStamp, recoverProvider } from './process-ownership.mjs';
 import {ContextReader,memoryContext} from './context-reader.mjs';
 import {prepareDelivery,contextInstructions,residentBaseInstructions,workerTaskAnchor} from './context-delivery.mjs';
 import {frontSource,frontReadLimits,readPage} from './frontdesk-read.mjs';
-import {createWorkerTerminalLifecycle} from './worker-terminal-first-frame.mjs';
 import {MemoryVersion} from './memory-version.mjs';
 import {SessionIndex} from './session-index.mjs';
 import {WorkChanges} from './work-changes.mjs';
@@ -34,8 +33,8 @@ import {activeDrafts,computeReviewVersion,decodeInline,draftTextFor,hasActiveDra
 import {managedArtifact,managedReportSource} from '../managed-report-source.mjs';
 import {MaintenanceLedger,maintenanceBoundary} from './maintenance-ledger.mjs';
 
-// extra 合并附加 JSON Schema 键（如 oneOf），用于同一字段集按 kind 分支的入参合同。
-const tool=(name,description,properties,required=Object.keys(properties),extra={})=>({type:'function',name,description,inputSchema:{type:'object',properties,required,additionalProperties:false,...extra}});
+// Provider-compatible object schemas; kind-dependent invariants stay host-enforced.
+const tool=(name,description,properties,required=Object.keys(properties))=>({type:'function',name,description,inputSchema:{type:'object',properties,required,additionalProperties:false}});
 const text={type:'string'};
 const hashOfBytes=bytes=>createHash('sha256').update(bytes).digest('hex');
 export function isExplicitWorkCancellation(value,name){
@@ -47,15 +46,20 @@ export function isExplicitWorkCancellation(value,name){
  if(/(?:不要|不许|不得|不必|别|do not|don't|not to)\s*(?:真的|实际|再|actually\s+)?(?:取消|撤销|终止|结束|停止|强制退出|cancel\b|stop\b|terminate\b)/i.test(rest))return false;
  return /^(?:请|麻烦|帮我|请帮我|现在|立即|确定|确认|please\s+)?\s*(?:撤销|取消|强制退出|终止|结束|停止|cancel\b|stop\b|terminate\b)/i.test(command);
 }
+
+// Allowlisted model-change failure codes: native errors are not a
+// credential/path-safe boundary, so anything else is redacted away.
+const SAFE_MODEL_CHANGE_CODES=['PI_NO_MODEL','PI_BUSY','PI_PROVIDER_CONFLICT','PI_CREDENTIAL_ORIGIN_CHANGE','PI_CREDENTIAL_KEEP_UNAVAILABLE','PI_SESSION_LEASED','PI_RUNTIME_EXITED','PI_RUNTIME_UNAVAILABLE','PI_INVALID_PARAMS','PI_MODEL_CHANGE_FAILED'];
+
 export class Controller extends EventEmitter {
-  static async open({storage,offline=false,localOnly=false,projectId=null,runtimeRoot,contentRoot,sessionFactory,readProjectText,frontdeskDocuments,beforeAccept,afterAdoption,isolateProcesses=false,checkpoint=async()=>{},ompSystemSource=null,ompAuthBroker=null,ompCommand,processBudget,taskPermissions=null,resolveRegisteredProject=null,resolveProjectRoot=null,privilegeBroker=null}={}){
+  static async open({storage,offline=false,localOnly=false,projectId=null,runtimeRoot,contentRoot,sessionFactory,readProjectText,frontdeskDocuments,beforeAccept,afterAdoption,isolateProcesses=false,checkpoint=async()=>{},piSource=null,piRuntime=null,piAuth=null,processBudget,taskPermissions=null,resolveRegisteredProject=null,resolveProjectRoot=null,privilegeBroker=null}={}){
     const store=await Workspace.open(runtimeRoot,contentRoot,{recoverStale:true,checkpoint,storage,projectId,offline});
-    const controller=new Controller(store,{projectId,sessionFactory,readProjectText,frontdeskDocuments,beforeAccept,afterAdoption,isolateProcesses,checkpoint,ompSystemSource,ompAuthBroker,ompCommand,processBudget,taskPermissions,resolveRegisteredProject,resolveProjectRoot,privilegeBroker});
+    const controller=new Controller(store,{projectId,sessionFactory,readProjectText,frontdeskDocuments,beforeAccept,afterAdoption,isolateProcesses,checkpoint,piSource,piRuntime,piAuth,processBudget,taskPermissions,resolveRegisteredProject,resolveProjectRoot,privilegeBroker});
     try{await controller.timeline.initialize();const s=store.state;s.jobs??=[];s.messages??=[];s.drafts??={};s.residents??={};s.providers??={};s.frontdeskRoutes??=[];s.recoveryEvents??=[];controller.coldQueued=new Set(s.works.filter(w=>w.status==='queued').map(w=>w.id));controller.coldJobs=new Set(s.jobs.filter(j=>['queued','running'].includes(j.status)).map(j=>j.id));controller.localOnly=localOnly;if(localOnly){if(!offline)await controller.migrateLocalClosures();}else await controller.restore();return controller;}catch(e){await store.close();throw e;}
   }
-  constructor(store,{projectId=null,frontdeskDocuments,sessionFactory,readProjectText,beforeAccept,afterAdoption,isolateProcesses,checkpoint=async()=>{},ompSystemSource=null,ompAuthBroker=null,ompCommand,processBudget,taskPermissions=null,resolveRegisteredProject=null,resolveProjectRoot=null,privilegeBroker=null}={}){
-    super();Object.assign(this,{frontdeskDocuments,store,sessionFactory,readProjectText,beforeAccept,afterAdoption,isolateProcesses,checkpoint,ompSystemSource,ompAuthBroker,ompCommand,processBudget,taskPermissions,resolveRegisteredProject,resolveProjectRoot,privilegeBroker});this.execution=new ExecutionWorkspace(store);this.sessions=new Map();this.starting=new Map();this.running=new Map();this.current=new Map();this.pendingEnds=new Set();this.publicationSerial=new Map();this.intakeSerial=new Map();this.stopping=false;this.started=false;this.closures=new Map();this.configuring=new Set();this.nativeDraftTargets=new Set();this.externalTerminalTargets=new Set();this.terminals=new Map();
-    this.workerTerminal=createWorkerTerminalLifecycle({getAttachment:target=>this.terminals.get(target),isAllowed:target=>!this.stopping&&!this.deviationHeld(target)&&!['queued','closing','ended'].includes(this.store.find(target).status),attach:async(target,options)=>{const {attachNativeTerminal}=await import('./native-terminal.mjs');return attachNativeTerminal(this,target,{executionJobId:options.executionJobId,onData:(data,seq)=>this.emit('native-terminal-event',{target,data,seq}),onScreen:screen=>this.emit('native-terminal-event',{target,screen}),onMethod:method=>this.emit('native-terminal-event',{target,method}),onExit:value=>this.emit('native-terminal-event',{target,ended:true,exitCode:value?.exitCode})});}});
+  constructor(store,{projectId=null,frontdeskDocuments,sessionFactory,readProjectText,beforeAccept,afterAdoption,isolateProcesses=false,checkpoint=async()=>{},piSource=null,piRuntime=null,piAuth=null,processBudget,taskPermissions=null,resolveRegisteredProject=null,resolveProjectRoot=null,privilegeBroker=null}={}){
+    super();Object.assign(this,{frontdeskDocuments,store,sessionFactory,readProjectText,beforeAccept,afterAdoption,isolateProcesses,checkpoint,piSource,piRuntime,piAuth,processBudget,taskPermissions,resolveRegisteredProject,resolveProjectRoot,privilegeBroker});this.execution=new ExecutionWorkspace(store);this.sessions=new Map();this.starting=new Map();this.running=new Map();this.current=new Map();this.pendingEnds=new Set();this.publicationSerial=new Map();this.intakeSerial=new Map();this.stopping=false;this.started=false;this.closures=new Map();this.configuring=new Set();this.nativeDraftTargets=new Set();this.externalTerminalTargets=new Set();this.terminals=new Map();
+    // Worker progress is projected from session events (timeline), never a fake PTY.
     this.memoryVersion=new MemoryVersion(path.dirname(store.plan));
     this.projectId=projectId??store.state.workspaceId;
     this.maintenance=new MaintenanceLedger(store.storage,this.projectId);this.maintenanceActions=new Map();this.maintenanceFlights=new Map();
@@ -181,7 +185,7 @@ export class Controller extends EventEmitter {
     await this.migrateLocalClosures();
     const recovered=[];for(const [target,record] of Object.entries(s.providers||{})){
       const slot=this.processBudget?.restoreSlot(this.projectId,target);
-      const result=await (['omp-rpc','omp-tui'].includes(record.kind)?recoverOmpProvider(record,this.store.root):recoverProvider(record,this.store.root));recovered.push(result);
+      const result=await (record.kind==='pi-node'?recoverPiProvider(record,this.store.root):['omp-rpc','omp-tui'].includes(record.kind)?recoverOmpProvider(record,this.store.root):recoverProvider(record,this.store.root));recovered.push(result);
       if(result.verified===true)this.processBudget?.release(slot);
     }
     await this.store.mutate(()=>{
@@ -221,7 +225,7 @@ export class Controller extends EventEmitter {
     const state=await this.maintenance.read();
     for(const bug of state.bugs){
       const match=/^resident-(?:preflight|start)-(frontdesk|orchestrator)$/.exec(bug.phase);
-      if(!match||bug.error?.code!=='OMP_TOOLS_DIGEST_MISMATCH'||bug.status==='repaired'||bug.jobId||bug.workId)continue;
+      if(!match||!['OMP_TOOLS_DIGEST_MISMATCH','PI_TOOLS_DIGEST_MISMATCH'].includes(bug.error?.code)||bug.status==='repaired'||bug.jobId||bug.workId)continue;
       const target=match[1];if(!previousThreads[target]||this.sessions.get(target).threadId!==previousThreads[target])continue;
       const related=this.store.state.jobs.filter(job=>job.type==='maintenance'&&job.context?.bugId===bug.id);
       if(related.some(job=>job.status==='running'||job.promptStartedAt!=null||job.collabAttempts?.some(attempt=>attempt.everAdmitted)))continue;
@@ -247,87 +251,152 @@ export class Controller extends EventEmitter {
   }
   async applyModelDefaults(defaults){
     this.assertFrontdeskContextAdmission('frontdesk');
-    const sync={applied:0,pending:0,failed:[]};
+    const sync={applied:0,pending:0,failed:[],sessions:[]};
     this.modelDefaultFailures=new Map();
     if(this.stopping)return sync;
     this.modelDefaultsApplying=(this.modelDefaultsApplying??0)+1;
-    await Promise.all([...this.sessions].map(async([target,session])=>{
-      if(session.closed)return;
-      const role=['frontdesk','orchestrator'].includes(target)?target:'worker';
-      if(role==='worker'){
-        const work=this.store.state.works.find(work=>work.id===target);
-        if(!work||work.readOnly||['closing','ended'].includes(work.status))return;
-      }
-      try{
-        const result=await session.applyDefaultModel(defaults[role]??'');
-        if(result?.pending===true)sync.pending++;
-        else if(result?.pending===false)sync.applied++;
-        else throw Error('Native model application was not acknowledged');
-      }catch{const failure={role,message:'Agent默认模型同步失败；配置已保存，可重试保存。'};this.modelDefaultFailures.set(target,{session,failure});sync.failed.push(failure);}
-    }));
-    this.modelDefaultsApplying--;
+    const safeCode=code=>SAFE_MODEL_CHANGE_CODES.includes(code)?code:'PI_MODEL_CHANGE_FAILED';
+    try{
+      await Promise.all([...this.sessions].map(async([target,session])=>{
+        if(session.closed)return;
+        const role=['frontdesk','orchestrator'].includes(target)?target:'worker';
+        if(role==='worker'){
+          const work=this.store.state.works.find(work=>work.id===target);
+          if(!work||work.readOnly||['closing','ended'].includes(work.status))return;
+        }
+        const entry=defaults?.[role]&&typeof defaults[role]==='object'?defaults[role]:{model:{mode:'native-default'},thinking:{mode:'native-default'}};
+        const explicitModel=entry.model?.mode==='explicit'?entry.model.selector:null;
+        const explicitThinking=entry.thinking?.mode==='explicit'?entry.thinking.level:null;
+        const row={projectId:this.projectId,target,ownerId:session.viewOwnerId,sessionId:session.threadId??null};
+        if(!explicitModel&&explicitThinking==null){
+          // Both native-default: cancel queued overrides, claim no native change.
+          // A failure here is an explicit row like any other — it must never
+          // leak a raw native error into the propagation result.
+          try{
+            await session.applyDefaultModel({clear:true});
+            sync.sessions.push({...row,state:'unchanged',cleared:true,effective:session.effective??{model:session.model,effort:session.effort}});
+          }catch(error){
+            const failure={role,message:'Agent默认模型同步失败；配置已保存，可重试保存。',...(error?.code?{code:safeCode(error.code)}:{})};
+            this.modelDefaultFailures.set(target,{session,failure});
+            sync.failed.push(failure);
+            sync.sessions.push({...row,state:'failed',effective:session.effective??{model:session.model,effort:session.effort},error:{code:failure.code,message:failure.message}});
+          }
+          return;
+        }
+        const selector=explicitModel??session.model;
+        if(!selector){sync.sessions.push({...row,state:'unchanged',effective:session.effective??{model:session.model,effort:session.effort}});return;}
+        try{
+          const result=await session.applyDefaultModel({selector,...(explicitThinking?{effort:explicitThinking}:{})});
+          if(result.state==='pending')sync.pending++;
+          else if(result.state==='applied')sync.applied++;
+          sync.sessions.push({...row,state:result.state,desired:{model:selector,...(explicitThinking?{effort:explicitThinking}:{})},effective:session.effective??{model:session.model,effort:session.effort},...(result.clamped?{clamped:result.clamped}:{})});
+        }catch(error){
+          const failure={role,message:'Agent默认模型同步失败；配置已保存，可重试保存。',...(error?.code?{code:safeCode(error.code)}:{})};
+          this.modelDefaultFailures.set(target,{session,failure});
+          sync.failed.push(failure);
+          sync.sessions.push({...row,state:'failed',desired:{model:selector,...(explicitThinking?{effort:explicitThinking}:{})},effective:session.effective??{model:session.model,effort:session.effort},error:{code:failure.code,message:failure.message}});
+        }
+      }));
+    }finally{
+      this.modelDefaultsApplying--;
+    }
     this.changed();
     return sync;
   }
   modelSync(){
-    const sync={applied:0,pending:0,failed:[]};
+    const sync={applied:0,pending:0,failed:[],sessions:[]};
     for(const [target,session] of this.sessions){
       if(session.closed)continue;
       if(!['frontdesk','orchestrator'].includes(target)){
         const work=this.store.state.works.find(work=>work.id===target);
         if(!work||work.readOnly||['closing','ended'].includes(work.status))continue;
       }
+      const role=['frontdesk','orchestrator'].includes(target)?target:'worker';
       const failed=this.modelDefaultFailures?.get(target);
-      if(failed?.session===session)sync.failed.push(failed.failure);
-      else if(session.modelError)sync.failed.push({role:['frontdesk','orchestrator'].includes(target)?target:'worker',message:'Agent默认模型延后应用失败；原生当前选择已保留，请重试保存。'});
-      else if(session.pendingModel)sync.pending++;
-      else if(session.desiredModel!=null){
-        if(session.model===session.desiredModel)sync.applied++;
-        else sync.failed.push({role:['frontdesk','orchestrator'].includes(target)?target:'worker',message:'Agent默认模型尚未获原生确认；请重试保存。'});
+      let state;
+      if(failed?.session===session)state='failed';
+      else if(session.modelError)state='failed';
+      else if(session.pendingModel)state='pending';
+      else if(session.desiredModel!=null)state=session.model===session.desiredModel?'applied':'failed';
+      else state='unchanged';
+      if(state==='applied')sync.applied++;
+      else if(state==='pending')sync.pending++;
+      else if(state==='failed'){
+       // Redacted failure DTO: only allowlisted codes surface, so a native
+       // error text/code can never leak paths or secrets.
+       const known=SAFE_MODEL_CHANGE_CODES.includes(session.modelError?.code)?session.modelError.code:null;
+       sync.failed.push({role,message:'Agent默认模型延后应用失败；原生当前选择已保留，请重试保存。',...(known?{code:known}:{})});
       }
+      sync.sessions.push({projectId:this.projectId,target,ownerId:session.viewOwnerId,sessionId:session.threadId??null,desired:session.desiredModel!=null?{model:session.desiredModel,effort:session.pendingModel?.effort??session.effort}:null,effective:session.effective??{model:session.model,effort:session.effort},state});
     }
     return sync;
   }
+  // Credential/source rotation: each online session of the provider re-applies
+  // its own (possibly still pending) desired selector at its safe idle
+  // boundary. Persistence already succeeded; these rows never fail the save.
+  async applyProviderUpdate(provider){
+    const application={applied:0,pending:0,failed:[],sessions:[]};
+    if(this.stopping||!provider)return application;
+    await Promise.all([...this.sessions].map(async([target,session])=>{
+      if(session.closed)return;
+      if(!['frontdesk','orchestrator'].includes(target)){
+        const work=this.store.state.works.find(work=>work.id===target);
+        if(!work||work.readOnly||['closing','ended'].includes(work.status))return;
+      }
+      const row={projectId:this.projectId,target,ownerId:session.viewOwnerId,sessionId:session.threadId??null};
+      try{
+        const result=await session.refreshProviderSource(provider);
+        if(result.state==='applied')application.applied++;
+        else if(result.state==='pending')application.pending++;
+        application.sessions.push({...row,state:result.state,...(result.desired?{desired:{model:result.desired.selector,...(result.desired.effort?{effort:result.desired.effort}:{})}}:{}),effective:session.effective??{model:session.model,effort:session.effort}});
+      }catch(error){
+        const failure={role:['frontdesk','orchestrator'].includes(target)?target:'worker',message:'源已保存，但该Agent未能在空闲边界刷新凭据；原会话保持，可重试保存源。',code:error?.code??'PI_PROVIDER_REFRESH_FAILED'};
+        application.failed.push(failure);
+        application.sessions.push({...row,state:'failed',effective:session.effective??{model:session.model,effort:session.effort},error:{code:failure.code,message:failure.message}});
+      }
+    }));
+    this.changed();
+    return application;
+  }
   pauseState(w,reason){w.status='paused';const source=this.store.state.jobs.findLast(j=>j.target===w.id&&j.revision===w.revision);if(!this.store.state.todos.some(t=>t.workId===w.id&&t.kind==='recovery'&&t.status==='open'&&t.revision===w.revision))this.store.state.todos.push({id:randomUUID(),workId:w.id,revision:w.revision,...(source?{sourceJobId:source.id}:{}),kind:'recovery',status:'open',text:reason});}
   snapshot(){
-    const agents=[...this.sessions.entries()].map(([target,s])=>({target,ownerId:s.viewOwnerId,terminalId:this.terminals.get(target)?.terminalId??null,provider:'omp',threadId:s.threadId||this.store.state.residents?.[target]?.threadId||this.store.state.works.find(w=>w.id===target)?.threadId,starting:this.starting.has(target),restarting:this.restarting?.has(target)??false,busy:s.busy,closed:s.closed,phase:s.phase??null,exit:s.exit&&typeof s.exit.then!=='function'?s.exit:null,model:s.model,desiredModel:s.desiredModel??null,pendingModel:s.pendingModel??null,effort:s.effort,interactions:s.closed?[]:structuredClone(s.interactions??[]),modelError:s.modelError??null,...(s.effective?{effective:s.effective}:{}),configurationStatus:s.configurationStatus??null,capabilities:s.capabilities??null,cleanupEvidence:s.cleanupEvidence?.()??null}));
-    for(const w of this.store.state.works)if(w.threadId&&!['ended','closing'].includes(w.status)&&!this.sessions.has(w.id))agents.push({target:w.id,provider:w.binding?.provider,threadId:w.threadId,busy:false,closed:true,resumable:w.binding?.provider==='omp'&&!w.readOnly,readOnly:w.readOnly===true,model:null,effort:null});
+    const agents=[...this.sessions.entries()].map(([target,s])=>({target,ownerId:s.viewOwnerId,terminalId:this.terminals.get(target)?.terminalId??null,provider:'pi',threadId:s.threadId||this.store.state.residents?.[target]?.threadId||this.store.state.works.find(w=>w.id===target)?.threadId,starting:this.starting.has(target),restarting:this.restarting?.has(target)??false,busy:s.busy,closed:s.closed,phase:s.phase??null,exit:s.exit&&typeof s.exit.then!=='function'?s.exit:null,model:s.model,desiredModel:s.desiredModel??null,pendingModel:s.pendingModel??null,effort:s.effort,interactions:s.closed?[]:structuredClone(s.interactions??[]),modelError:s.modelError??null,...(s.effective?{effective:s.effective}:{}),configurationStatus:s.configurationStatus??null,capabilities:s.capabilities??null,cleanupEvidence:s.cleanupEvidence?.()??null}));
+    for(const w of this.store.state.works)if(w.threadId&&!['ended','closing'].includes(w.status)&&!this.sessions.has(w.id))agents.push({target:w.id,provider:w.binding?.provider,threadId:w.threadId,busy:false,closed:true,resumable:w.binding?.provider==='pi'&&!w.readOnly,readOnly:w.readOnly===true,model:null,effort:null});
     const {sessionIndex,messages,...business}=this.store.state;
     const storageBlocked=Boolean(this.store.commitUnknown||this.store.nativeCommitUnknown);
     const nativeDraftBlockedTargets=[...(this.nativeDraftBlockedOwners??[])].filter(([target,ownerId])=>this.nativeDraftTargets.has(target)&&this.sessions.get(target)?.viewOwnerId===ownerId).map(([target])=>target);
-    return {...structuredClone(business),messages:this.timeline.messages(),timeline:this.timeline.frame(),quotaUsed:this.store.used(),agents,storageBlocked,nativeDraftBlockedTargets,configuringTargets:[...new Set([...(this.bindingTransitions??[]),...(this.frontdeskContextClear?['frontdesk']:[])])],frontdeskContextClearFailed:this.frontdeskContextClearFailed===true,...(this.ompSystemSource?{ompProviderStatus:this.#ompProviderStatus()}:{}),externalTerminalTargets:[...this.externalTerminalTargets],nativeDraftTargets:[...this.nativeDraftTargets],busyTargets:[...this.running.keys()],stopping:this.stopping};
-  }
-  // Nonsecret Nozeli-owned configuration and native role selection status.
-  #ompProviderStatus(){
-    const rolesStatus={};
-    for(const role of ['frontdesk','orchestrator','worker']){
-      const binding=this.store.state.bindings?.[role]||{};
-      if(binding.provider!=='omp')continue;
-      const session=this.sessions.get(role);
-      rolesStatus[role]={selectionOwner:'native',configurationStatus:session?.configurationStatus??null,...(session?.effective?{effective:session.effective}:{})};
-    }
-    return {configRoot:this.ompSystemSource?.configRoot??null,authInheritance:this.ompAuthBroker?'nozeli-auth-broker':'none',roles:rolesStatus};
+    return {...structuredClone(business),messages:this.timeline.messages(),timeline:this.timeline.frame(),quotaUsed:this.store.used(),agents,storageBlocked,nativeDraftBlockedTargets,configuringTargets:[...new Set([...(this.configuring??[]),...(this.bindingTransitions??[]),...(this.frontdeskContextClear?['frontdesk']:[])])],frontdeskContextClearFailed:this.frontdeskContextClearFailed===true,externalTerminalTargets:[...this.externalTerminalTargets],nativeDraftTargets:[...this.nativeDraftTargets],busyTargets:[...this.running.keys()],stopping:this.stopping};
   }
   changed(){this.emit('state',this.snapshot());}
   async initializeBindings(){
     const skills={},defaults={};
     for(const role of Object.keys(roles)){
       skills[role]=(await fs.readdir(path.join(here,roles[role].package,'skills'))).filter(f=>f.endsWith('.md')).sort();
-      const instructions=await rolePrompt(role,{skills:skills[role]});defaults[role]={provider:'omp',skills:skills[role],instructions,instructionDigest:createHash('sha256').update(instructions).digest('hex')};
+      const instructions=await rolePrompt(role,{skills:skills[role]});defaults[role]={provider:'pi',skills:skills[role],instructions,instructionDigest:createHash('sha256').update(instructions).digest('hex')};
     }
     await this.store.mutate(async()=>{
       const s=this.store.state;s.bindings??=structuredClone(defaults);s.roleSkills=skills;for(const role of Object.keys(roles))s.bindings[role]??=structuredClone(defaults[role]);
       for(const w of s.works)if(w.threadId&&!w.binding)w.binding={...structuredClone(defaults.worker),provider:'codex'};
-      if(s.ompOnlyCutover!==1){
+      if(s.piHostCutover!==1){
+        // Separate pi migration (never a naive rename): OMP identities become
+        // read-only archives; only never-started works adopt pi defaults.
         s.residentArchive??={};s.bindingArchive??=[];
-        for(const role of ['frontdesk','orchestrator'])if(s.residents?.[role]?.provider&&s.residents[role].provider!=='omp'){const record=s.residents[role],archive=s.residentArchive[role]??={};archive[record.provider]={...structuredClone(record),readOnly:true,messages:structuredClone((s.messages??[]).filter(message=>message.target===role)),archivedAt:new Date().toISOString()};delete s.residents[role];}
-        for(const role of Object.keys(roles))if(s.bindings[role].provider!=='omp'){
-          const previous=s.bindings[role];s.bindingArchive.push({role,reason:'omp-only-cutover',binding:structuredClone(previous)});
-          if(role!=='worker'&&s.residents?.[role]){const archive=s.residentArchive[role]??={};archive[previous.provider||'codex']={...structuredClone(s.residents[role]),provider:previous.provider||'codex',readOnly:true,messages:structuredClone((s.messages??[]).filter(message=>message.target===role)),archivedAt:new Date().toISOString()};delete s.residents[role];}
+        for(const role of ['frontdesk','orchestrator'])if(s.residents?.[role]?.provider&&s.residents[role].provider!=='pi'){
+          const record=s.residents[role],archive=s.residentArchive[role]??={};
+          archive[record.provider]={...structuredClone(record),readOnly:true,messages:structuredClone((s.messages??[]).filter(message=>message.target===role)),archivedAt:new Date().toISOString()};
+          delete s.residents[role];
+        }
+        for(const role of Object.keys(roles))if(s.bindings[role].provider!=='pi'){
+          const previous=s.bindings[role];s.bindingArchive.push({role,reason:'pi-host-cutover',binding:structuredClone(previous)});
+          if(role!=='worker'&&s.residents?.[role]){const archive=s.residentArchive[role]??={};archive[previous.provider||'omp']={...structuredClone(s.residents[role]),provider:previous.provider||'omp',readOnly:true,messages:structuredClone((s.messages??[]).filter(message=>message.target===role)),archivedAt:new Date().toISOString()};delete s.residents[role];}
           s.bindings[role]=structuredClone(defaults[role]);
         }
-        for(const w of s.works)if(w.binding?.provider&&w.binding.provider!=='omp'){w.readOnly=true;w.contextRecovery={code:'HISTORICAL_SESSION_READ_ONLY',threadId:w.threadId,revision:w.revision,message:'Historical provider session retained read-only; never resumed by OMP'};if(!['ended','closing'].includes(w.status))w.status='paused';}
-        s.ompOnlyCutover=1;
+        for(const w of s.works){
+          if(w.binding?.provider==='pi')continue;
+          if(w.threadId){w.readOnly=true;w.contextRecovery={code:'WORKER_CONTEXT_RECOVERY_REQUIRED',threadId:w.threadId,revision:w.revision,message:'Original provider identity retained read-only; explicit same-Work context handoff required'};if(!['ended','closing','paused','review'].includes(w.status))w.status='paused';}
+          else w.binding=structuredClone(defaults.worker);
+        }
+        s.piHostCutover=1;
       }
       if(s.roleInstructionCutover!==1){
         const retired={orchestrator:new Set(['git.md','plan-tree.md'])};
@@ -340,11 +409,11 @@ export class Controller extends EventEmitter {
       }
     });
   }
-  async setBinding(role,{provider='omp',skills}={}){
+  async setBinding(role,{provider='pi',skills}={}){
     this.assertFrontdeskContextAdmission(role);
-    if(this.handoffPreparing?.size||this.residentHandoffs?.size||this.handoffConfirmations?.size)throw this.residentHandoffError('OMP_HANDOFF_CONFIRMATION_REQUIRED',role,'resident handoff blocks binding changes');
+    if(this.handoffPreparing?.size||this.residentHandoffs?.size||this.handoffConfirmations?.size)throw this.residentHandoffError('PI_HANDOFF_CONFIRMATION_REQUIRED',role,'resident handoff blocks binding changes');
     if(!Object.hasOwn(roles,role))throw new Error('unknown role');
-    if(provider!=='omp')throw Object.assign(new Error('Only the bundled OMP runtime is supported'),{code:'BACKEND_UNSUPPORTED'});
+    if(provider!=='pi')throw Object.assign(new Error('Only the bundled Pi runtime is supported'),{code:'BACKEND_UNSUPPORTED'});
     const selected=skills??this.store.state.bindings[role].skills;
     if(!Array.isArray(selected)||new Set(selected).size!==selected.length||selected.some(s=>!this.store.state.roleSkills[role].includes(s)))throw new Error('unknown or duplicate role skill');
     if(this.configuring.has(role)||this.restarting?.has(role))throw new Error('role configuration in progress');
@@ -353,7 +422,7 @@ export class Controller extends EventEmitter {
     this.bindingTransitions??=new Set();this.bindingTransitions.add(role);
     this.changed();
     try{
-      if(previous.provider==='omp'&&previous.model)await this.migrateNativeBinding(role,previous);
+      if(previous.provider!=='pi'&&previous.model)await this.migrateNativeBinding(role,previous);
       const instructions=await rolePrompt(role,{skills:selected});const next={provider,skills:selected,instructions,instructionDigest:createHash('sha256').update(instructions).digest('hex')};
       await this.store.mutate(()=>{this.store.state.bindings[role]=next;});
       if(role!=='worker'){await this.terminals.get(role)?.close();await this.sessions.get(role)?.stop();this.sessions.delete(role);await this.session(role);}
@@ -403,7 +472,7 @@ export class Controller extends EventEmitter {
     const session=this.sessions.get(target);if(!session)return;
     await this.terminals.get(target)?.close();
     const receipt=await session.stop();await session.controllerExitCleanup;
-    if(session.pid&&(receipt?.confirmationComplete===false||this.store.find(target).binding?.provider==='omp'&&receipt?.confirmationComplete!==true))throw Error('Deviation Worker exit unconfirmed');
+    if(session.pid&&receipt?.confirmationComplete!==true)throw Error('Deviation Worker exit unconfirmed');
     if(this.sessions.get(target)===session)this.sessions.delete(target);
     await this.store.mutate(()=>{delete this.store.state.providers[target];});
   }
@@ -416,7 +485,7 @@ export class Controller extends EventEmitter {
   // Called only inside a store mutation so accepted input and its effects are durable together.
   queueJob(target,type,value,{key=randomUUID(),context={},priority=false}={}){
     this.assertFrontdeskContextAdmission(target);
-    if(this.handoffPreparing?.size||this.residentHandoffs?.size||this.handoffConfirmations?.size)throw this.residentHandoffError('OMP_HANDOFF_CONFIRMATION_REQUIRED',target,'resident handoff blocks new jobs');
+    if(this.handoffPreparing?.size||this.residentHandoffs?.size||this.handoffConfirmations?.size)throw this.residentHandoffError('PI_HANDOFF_CONFIRMATION_REQUIRED',target,'resident handoff blocks new jobs');
     if(!['frontdesk','orchestrator'].includes(target)&&this.store.find(target).readOnly)throw Object.assign(new Error('Historical provider work is read-only'),{code:'HISTORICAL_SESSION_READ_ONLY'});
     if(this.stopping)throw new Error('host stopping');
     if(typeof value!=='string'||!value.trim())throw new Error('invalid input');
@@ -814,10 +883,12 @@ export class Controller extends EventEmitter {
       for(const request of permissions?.requests??[])if(request.status==='migrated')events.push({key:'migrated-permission:'+request.id,kind:'policy-migration',sourceJobId:request.sourceJobId,requestId:request.id,text:'旧的普通路径或命令授权已关闭；这不是用户授权，不重放原输入，核对原任务并保留进展。'});
       for(const receipt of s.receipts??[]){
         const w=s.works.find(w=>w.id===receipt.workId);
+        if(s.jobs.find(job=>job.id===receipt.jobId)?.interruptionReason==='user-interrupted')continue;
         if(receipt.kind==='problem'&&w&&w.revision===receipt.revision&&!['closing','ended'].includes(w.status)&&!s.receipts.some(r=>r.workId===w.id&&r.revision===w.revision&&r.kind==='result'))events.push({key:'problem:'+receipt.objectId,kind:'problem',workId:w.id,revision:receipt.revision,objectId:receipt.objectId,sourceJobId:receipt.jobId});
       }
       for(const todo of s.todos??[]){
         const source=s.jobs.find(job=>job.id===todo.sourceJobId);
+        if(source?.interruptionReason==='user-interrupted')continue;
         if(todo.status==='open'&&['routing','recovery','system'].includes(todo.kind)&&!['backstage','maintenance'].includes(source?.type))events.push({key:'todo:'+todo.id,kind:todo.kind,todoId:todo.id,sourceJobId:todo.sourceJobId,text:todo.text});
       }
       for(const [target,session] of this.sessions)for(const interaction of session.interactions??[]){
@@ -1057,8 +1128,8 @@ export class Controller extends EventEmitter {
     if(!contextClear)this.assertFrontdeskContextAdmission(target);
     if(this.reclaiming.has(target))return this.reclaiming.get(target).then(()=>this.startSession(target));
     if(this.deviationHeld(target))return Promise.reject(Object.assign(Error('用户必须先处理任务偏离决定'),{code:'DEVIATION_HELD'}));
-    if((this.handoffPreparing?.size||this.handoffConfirmations?.size)&&!this.handoffAdmitting?.has(target))return Promise.reject(this.residentHandoffError('OMP_HANDOFF_BUSY',target,'resident handoff operation in progress'));
-    if(this.getResidentHandoff(target)&&!this.handoffAdmitting?.has(target))return Promise.reject(this.residentHandoffError('OMP_HANDOFF_CONFIRMATION_REQUIRED',target,'explicit resident handoff confirmation required'));
+    if((this.handoffPreparing?.size||this.handoffConfirmations?.size)&&!this.handoffAdmitting?.has(target))return Promise.reject(this.residentHandoffError('PI_HANDOFF_BUSY',target,'resident handoff operation in progress'));
+    if(this.getResidentHandoff(target)&&!this.handoffAdmitting?.has(target))return Promise.reject(this.residentHandoffError('PI_HANDOFF_CONFIRMATION_REQUIRED',target,'explicit resident handoff confirmation required'));
     if(this.starting.has(target))return this.starting.get(target);
     const existing=this.sessions.get(target);if(existing&&!existing.closed)return Promise.resolve(existing);
     const promise=(async()=>{if(existing){const receipt=await existing.stop();await existing.controllerExitCleanup;if(receipt?.confirmationComplete===false&&existing.pid)throw new Error('old native owner exit unconfirmed');if(this.sessions.get(target)===existing)this.sessions.delete(target);}return this.makeSession(target);})().finally(()=>{if(this.starting.get(target)===promise)this.starting.delete(target);});
@@ -1093,7 +1164,7 @@ export class Controller extends EventEmitter {
     if(this.modelDefaultsApplying||session?.pendingModel)throw Object.assign(Error('前台模型配置尚未完成'),{code:'FRONTDESK_CONTEXT_CLEAR_BUSY'});
     const busy=this.stopping||(!clearing&&this.configuring.has(target))||this.restarting?.has(target)||this.starting.has(target)||this.reclaiming.has(target)||this.handoffPreparing?.size||this.residentHandoffs?.size||this.handoffConfirmations?.size||this.running.has(target)||this.current.has(target)||this.externalTerminalTargets.has(target)||this.nativeDraftTargets.has(target)||this.store.state.jobs.some(j=>j.target===target&&(!['completed','cancelled'].includes(j.status)&&j.manual===true||['queued','running','transferring'].includes(j.status)))||session&&(session.busy||session.currentTicket||session.blockedTicket||session.unsettledPromptError||session.inFlightToolCalls?.size||session.sideEffectFacts?.length||session.phase?.includes('unsettled')||session.phase?.includes('unresolved'));
     if(busy)throw Object.assign(Error('前台有输入、工具、终端租约或配置操作尚未完成；上下文未清除'),{code:'FRONTDESK_CONTEXT_CLEAR_BUSY'});
-    if(this.store.state.bindings.frontdesk?.provider!=='omp')throw Object.assign(Error('只能清除 OMP 前台上下文'),{code:'FRONTDESK_CONTEXT_CLEAR_UNAVAILABLE'});
+    if(this.store.state.bindings.frontdesk?.provider!=='pi')throw Object.assign(Error('只能清除 Pi 前台上下文'),{code:'FRONTDESK_CONTEXT_CLEAR_UNAVAILABLE'});
   }
   clearFrontdeskContext(){
     if(this.frontdeskContextClear)return Promise.reject(Object.assign(Error('前台上下文正在清除'),{code:'FRONTDESK_CONTEXT_CLEAR_BUSY'}));
@@ -1106,12 +1177,12 @@ export class Controller extends EventEmitter {
       const old=this.sessions.get('frontdesk');
       await old?.refreshNativeDraft?.();this.assertFrontdeskContextClearSafe({clearing:true});
       const previous=structuredClone(this.store.state.residents.frontdesk??{}),oldThreadId=previous.threadId??old?.threadId??null;
-      const sessionFile=old?.sessionFile??(oldThreadId?await pinSessionFileById(path.join(this.store.root,'agents','resident-frontdesk-omp','sessions'),oldThreadId):null);
+      const sessionFile=old?.sessionFile??null;   // Pi 会话文件由 owner 元数据绑定，归档只读保留
       this.frontdeskContextClearFailed=true;
       await this.terminals.get('frontdesk')?.close();
       if(old){
         const receipt=await old.stop();await old.controllerExitCleanup;
-        if((old.pid||old.groupRecord?.pid)&&receipt?.confirmationComplete!==true)throw Object.assign(Error('原前台进程退出未确认，保留原上下文'),{code:'OMP_EXIT_UNCONFIRMED'});
+        if((old.pid||old.groupRecord?.pid)&&receipt?.confirmationComplete!==true)throw Object.assign(Error('原前台进程退出未确认，保留原上下文'),{code:'PI_EXIT_UNCONFIRMED'});
         if(this.sessions.get('frontdesk')===old)this.sessions.delete('frontdesk');
       }
       await this.timeline.drain();
@@ -1124,7 +1195,7 @@ export class Controller extends EventEmitter {
         const slot=(this.store.state.residentArchive??={}).frontdesk??={};slot.handoffs??=[];
         slot.handoffs.push({...previous,id:archiveId,role:'frontdesk',oldThreadId,sessionFile,archivedAt:at,reason:'user-frontdesk-context-clear'});
         this.store.state.frontdeskContextEpoch={archiveId,at,sequence:this.store.state.sessionIndex?.sequence??0,messageId:this.timeline.messages().at(-1)?.id??null,jobId:this.store.state.jobs.at(-1)?.id??null,jobCount:this.store.state.jobs.length};
-        this.store.state.residents.frontdesk={provider:'omp',generation:(previous.generation??0)+1,zeroActivity:true,contextClear:{archiveId,oldThreadId,at,status:'archived'}};
+        this.store.state.residents.frontdesk={provider:'pi',generation:(previous.generation??0)+1,zeroActivity:true,contextClear:{archiveId,oldThreadId,at,status:'archived'}};
         delete this.store.state.providers.frontdesk;
       });
       const session=await this.startSession('frontdesk',{contextClear:true});
@@ -1142,7 +1213,7 @@ export class Controller extends EventEmitter {
     if(this.configuring.has(id)||this.running.has(id)||this.starting.has(id)||this.restarting?.has(id)||this.current.has(id)||this.store.state.jobs.some(j=>(j.target===id||j.context?.boundWorkId===id)&&['queued','running','transferring'].includes(j.status)))throw Error('Stop accepted Worker activity before context handoff; inputs will not be replayed');
     this.configuring.add(id);
     try{
-      await this.terminals.get(id)?.close();const session=this.sessions.get(id);if(session){if(session.busy||session.currentTicket||session.blockedTicket||session.inFlightToolCalls?.size)throw Error('Native Worker activity must settle before schema handoff');const receipt=await session.stop();await session.controllerExitCleanup;if(session.pid&&(receipt?.confirmationComplete===false||(w.binding?.provider==='omp'&&receipt?.confirmationComplete!==true)))throw Error('Worker exit unconfirmed');this.sessions.delete(id);}
+      await this.terminals.get(id)?.close();const session=this.sessions.get(id);if(session){if(session.busy||session.currentTicket||session.blockedTicket||session.inFlightToolCalls?.size)throw Error('Native Worker activity must settle before schema handoff');const receipt=await session.stop();await session.controllerExitCleanup;if(session.pid&&receipt?.confirmationComplete!==true)throw Error('Worker exit unconfirmed');this.sessions.delete(id);}
       const archiveId=randomUUID(),at=new Date().toISOString();
       const dossier={schema:1,workId:id,archiveId,revision,oldThreadId,request:w.request,brief:w.brief,inputs:structuredClone(w.inputs||[]),jobs:this.store.state.jobs.filter(j=>j.target===id||j.context?.boundWorkId===id).map(j=>({id:j.id,text:j.text,type:j.type,status:j.status,revision:j.revision})),reports:structuredClone(this.store.state.receipts.filter(r=>r.workId===id)),messages:this.store.state.messages.filter(m=>m.target===id).map(m=>({id:m.id,text:m.text,speaker:m.speaker,objectId:m.objectId,objectDigest:m.objectDigest})),source:`project.sqlite#managed_works:${id}`,at};
       const archiveBytes=Buffer.from(JSON.stringify(dossier)),objectId=await this.store.putObject(archiveBytes);
@@ -1150,7 +1221,7 @@ export class Controller extends EventEmitter {
         if(w.threadId!==oldThreadId||w.revision!==revision||!w.contextRecovery||this.store.state.jobs.some(j=>(j.target===id||j.context?.boundWorkId===id)&&['queued','running','transferring'].includes(j.status)))throw Error('Worker context changed during confirmation');
         w.threadArchive??=[];w.threadArchive.push({id:archiveId,threadId:oldThreadId,provider:w.binding?.provider,revision,toolsDigest:w.toolsDigest||null,sessionFile:w.contextRecovery.sessionFile||null,dossierObjectId:objectId,dossierDigest:objectId,at,reason:'user-confirmed-tool-schema-handoff'});
         w.archives??=[];w.archives.push({id:archiveId,dossierObjectId:objectId,revision,at});
-        if(w.binding?.provider!=='omp'){w.binding=structuredClone(this.store.state.bindings.worker);delete w.readOnly;}
+        if(w.binding?.provider!=='pi'){w.binding=structuredClone(this.store.state.bindings.worker);delete w.readOnly;}
         w.contextHandoff={archiveId,dossierObjectId:objectId,dossierDigest:objectId,oldThreadId,revision,at};delete w.threadId;delete w.toolsDigest;delete w.contextRecovery;w.zeroActivity=true;delete this.store.state.providers[id];
       });this.changed();return {accepted:true,workId:id,archiveId,sameWork:true,sameWorktree:true,newConversation:true,automaticReplay:false,requiresExplicitInput:true};
     }finally{this.configuring.delete(id);}
@@ -1169,22 +1240,22 @@ export class Controller extends EventEmitter {
   getResidentHandoff(role){return this.residentHandoffs?.get(role)??null;}
   residentHandoffError(code,role,message){return Object.assign(new Error(message),{code,target:role,role});}
   assertResidentHandoffSafe(role){
-    if(!['frontdesk','orchestrator'].includes(role)||this.store.state.bindings[role]?.provider!=='omp')throw this.residentHandoffError('OMP_HANDOFF_TARGET',role,'handoff requires an OMP resident');
-    if([...(this.handoffPreparing?.keys()??[]),...(this.handoffConfirmations?.keys()??[])].some(target=>target!==role))throw this.residentHandoffError('OMP_HANDOFF_BUSY',role,'another resident handoff is in progress');
-    if(this.stopping||this.configuring.has(role)||this.restarting?.has(role)||this.starting.size)throw this.residentHandoffError('OMP_HANDOFF_BUSY',role,'resident lifecycle operation in progress');
+    if(!['frontdesk','orchestrator'].includes(role)||this.store.state.bindings[role]?.provider!=='pi')throw this.residentHandoffError('PI_HANDOFF_TARGET',role,'handoff requires a Pi resident');
+    if([...(this.handoffPreparing?.keys()??[]),...(this.handoffConfirmations?.keys()??[])].some(target=>target!==role))throw this.residentHandoffError('PI_HANDOFF_BUSY',role,'another resident handoff is in progress');
+    if(this.stopping||this.configuring.has(role)||this.restarting?.has(role)||this.starting.size)throw this.residentHandoffError('PI_HANDOFF_BUSY',role,'resident lifecycle operation in progress');
     const s=this.store.state;
-    if(s.jobs.some(j=>j.manual===true&&!['completed','cancelled'].includes(j.status)))throw this.residentHandoffError('OMP_HANDOFF_UNRESOLVED',role,'manual settlement must be resolved before handoff');
-    if(this.running.size||this.current.size||s.jobs.some(j=>['queued','running','transferring'].includes(j.status))||s.works.some(w=>w.status==='closing')||this.closures.size)throw this.residentHandoffError('OMP_HANDOFF_BUSY',role,'active jobs or closing Work prevent handoff');
+    if(s.jobs.some(j=>j.manual===true&&!['completed','cancelled'].includes(j.status)))throw this.residentHandoffError('PI_HANDOFF_UNRESOLVED',role,'manual settlement must be resolved before handoff');
+    if(this.running.size||this.current.size||s.jobs.some(j=>['queued','running','transferring'].includes(j.status))||s.works.some(w=>w.status==='closing')||this.closures.size)throw this.residentHandoffError('PI_HANDOFF_BUSY',role,'active jobs or closing Work prevent handoff');
     for(const session of this.sessions.values()){
-      if(session.busy||session.currentTicket||session.blockedTicket||session.unsettledPromptError||session.inFlightToolCalls?.size||session.phase?.includes('unsettled')||session.phase?.includes('unresolved'))throw this.residentHandoffError('OMP_HANDOFF_UNRESOLVED',role,'unresolved resident turn prevents handoff');
-      if(session.sideEffectFacts?.length)throw this.residentHandoffError('OMP_HANDOFF_SIDE_EFFECTS_UNKNOWN',role,'unverified tool side effects prevent handoff');
+      if(session.busy||session.currentTicket||session.blockedTicket||session.unsettledPromptError||session.inFlightToolCalls?.size||session.phase?.includes('unsettled')||session.phase?.includes('unresolved'))throw this.residentHandoffError('PI_HANDOFF_UNRESOLVED',role,'unresolved resident turn prevents handoff');
+      if(session.sideEffectFacts?.length)throw this.residentHandoffError('PI_HANDOFF_SIDE_EFFECTS_UNKNOWN',role,'unverified tool side effects prevent handoff');
     }
-    if(this.residentHandoffFailures?.get(role)?.unsafe)throw this.residentHandoffError('OMP_HANDOFF_SIDE_EFFECTS_UNKNOWN',role,'unverified tool side effects prevent handoff');
+    if(this.residentHandoffFailures?.get(role)?.unsafe)throw this.residentHandoffError('PI_HANDOFF_SIDE_EFFECTS_UNKNOWN',role,'unverified tool side effects prevent handoff');
   }
   async stopResidentHandoffOwners(role){
     for(const target of ['frontdesk','orchestrator']){
       const owner=this.sessions.get(target);await this.terminals.get(target)?.close();
-      if(owner){const receipt=await owner.stop();await owner.controllerExitCleanup;if(owner.pid&&receipt?.confirmationComplete!==true)throw this.residentHandoffError('OMP_EXIT_UNCONFIRMED',role,'old native owner exit unconfirmed');if(this.sessions.get(target)===owner)this.sessions.delete(target);}
+      if(owner){const receipt=await owner.stop();await owner.controllerExitCleanup;if(owner.pid&&receipt?.confirmationComplete!==true)throw this.residentHandoffError('PI_EXIT_UNCONFIRMED',role,'old native owner exit unconfirmed');if(this.sessions.get(target)===owner)this.sessions.delete(target);}
     }
     await this.store.mutate(()=>{for(const target of ['frontdesk','orchestrator'])delete this.store.state.providers[target];});
   }
@@ -1194,9 +1265,9 @@ export class Controller extends EventEmitter {
       this.assertResidentHandoffSafe(role);
       const existing=this.getResidentHandoff(role);if(existing)return existing;
       const failure=this.residentHandoffFailures?.get(role),resident=this.store.state.residents[role];
-      if(!failure||!resident?.threadId||resident.threadId!==failure.oldThreadId)throw this.residentHandoffError('OMP_HANDOFF_NOT_REQUIRED',role,'no schema mismatch awaiting explicit handoff');
+      if(!failure||!resident?.threadId||resident.threadId!==failure.oldThreadId)throw this.residentHandoffError('PI_HANDOFF_NOT_REQUIRED',role,'no schema mismatch awaiting explicit handoff');
       await this.stopResidentHandoffOwners(role);this.assertResidentHandoffSafe(role);
-      const challenge=Object.freeze({role,oldThreadId:resident.threadId,expectedToolsDigest:failure.expectedToolsDigest,newToolsDigest:failure.newToolsDigest,token:randomUUID(),reason:'OMP_TOOLS_DIGEST_MISMATCH'});
+      const challenge=Object.freeze({role,oldThreadId:resident.threadId,expectedToolsDigest:failure.expectedToolsDigest,newToolsDigest:failure.newToolsDigest,token:randomUUID(),reason:'PI_TOOLS_DIGEST_MISMATCH'});
       this.residentHandoffs??=new Map();this.residentHandoffs.set(role,challenge);this.changed();return challenge;
     })().finally(()=>{if(this.handoffPreparing.get(role)===promise)this.handoffPreparing.delete(role);});
     this.handoffPreparing.set(role,promise);return promise;
@@ -1204,17 +1275,17 @@ export class Controller extends EventEmitter {
   confirmResidentHandoff({role,token,oldThreadId}={}){
     const challenge=this.getResidentHandoff(role),previousHandoff=this.store.state.residents[role]?.handoff;
     const saved=previousHandoff?.token===token&&previousHandoff?.oldThreadId===oldThreadId?previousHandoff:null;
-    if(!challenge||challenge.token!==token||challenge.oldThreadId!==oldThreadId)return Promise.reject(this.residentHandoffError('OMP_HANDOFF_TOKEN_INVALID',role,'handoff confirmation does not match this resident'));
+    if(!challenge||challenge.token!==token||challenge.oldThreadId!==oldThreadId)return Promise.reject(this.residentHandoffError('PI_HANDOFF_TOKEN_INVALID',role,'handoff confirmation does not match this resident'));
     this.handoffConfirmations??=new Map();if(this.handoffConfirmations.has(role))return this.handoffConfirmations.get(role);
     const promise=(async()=>{
       this.assertResidentHandoffSafe(role);await this.stopResidentHandoffOwners(role);this.assertResidentHandoffSafe(role);
       if(!saved){
         await this.store.mutate(()=>{
-          const previous=this.store.state.residents[role];if(previous?.threadId!==oldThreadId)throw this.residentHandoffError('OMP_HANDOFF_STALE',role,'resident identity changed');
+          const previous=this.store.state.residents[role];if(previous?.threadId!==oldThreadId)throw this.residentHandoffError('PI_HANDOFF_STALE',role,'resident identity changed');
           const archiveId=randomUUID(),generation=(previous.generation??0)+1;
           this.store.state.residentArchive??={};const slot=this.store.state.residentArchive[role]??={};slot.handoffs??=[];
           slot.handoffs.push({...structuredClone(previous),id:archiveId,role,oldThreadId,sessionFile:this.residentHandoffFailures.get(role).sessionFile??null,archivedAt:new Date().toISOString(),generation:previous.generation??0,reason:challenge.reason});
-          this.store.state.residents[role]={provider:'omp',generation,toolsDigest:challenge.newToolsDigest,zeroActivity:true,handoff:{archiveId,token,oldThreadId,generation,status:'confirmed'}};
+          this.store.state.residents[role]={provider:'pi',generation,toolsDigest:challenge.newToolsDigest,zeroActivity:true,handoff:{archiveId,token,oldThreadId,generation,status:'confirmed'}};
           this.store.state.recoveryEvents.push({at:new Date().toISOString(),type:'resident-handoff-confirmed',target:role,archiveId,oldThreadId,generation,expectedToolsDigest:challenge.expectedToolsDigest,newToolsDigest:challenge.newToolsDigest});
         });
       }
@@ -1229,6 +1300,52 @@ export class Controller extends EventEmitter {
     if(this.stopping||!ownerId||!session||session.closed||session.viewOwnerId!==ownerId||this.restarting?.has(target))throw Object.assign(Error('原生问题所属会话已替换或关闭'),{code:'INTERACTION_STALE'});
     if(typeof session.respondInteraction!=='function')throw Object.assign(Error('当前原生会话不支持结构化问题回答'),{code:'INTERACTION_CAPABILITY_UNAVAILABLE'});
     return session.respondInteraction(interactionId,answer,{cancel});
+  }
+
+  sessionOptions(target,ownerId){
+    this.validateTarget(target);
+    const session=this.sessions.get(target);
+    if(ownerId&&session?.viewOwnerId!==ownerId)throw Object.assign(Error('原会话已变化，请重新打开控制菜单'),{code:'INTERACTION_STALE'});
+    if(!session)return {available:false,target,busy:false,capabilities:{compact:false,reload:false,diagnostics:false},reason:'原会话尚未连接；查看不会启动 Agent'};
+    const busy=session.busy||this.running.has(target)||this.current.has(target)||this.configuring.has(target)||this.restarting?.has(target)||false;
+    return {available:!session.closed,target,ownerId:session.viewOwnerId,threadId:session.threadId,busy,capabilities:{compact:typeof session.compact==='function'&&!session.closed,reload:typeof session.reload==='function'&&!session.closed,interrupt:typeof session.interrupt==='function'&&session.busy&&!session.closed,diagnostics:true},state:{phase:session.phase,busy,jobId:this.current.get(target)?.id??null,model:session.model,effort:session.effort,hasPrompted:session.hasPrompted,exit:session.exit??null},diagnostics:String(session.diagnostics??'').slice(-16384)};
+  }
+  async sessionCommand(target,{ownerId,command,requestKey,jobId}){
+    if(!['compact','reload','interrupt'].includes(command)||typeof requestKey!=='string'||!/^[a-zA-Z0-9:_-]{8,160}$/.test(requestKey))throw Object.assign(Error('无效的会话操作'),{code:'INVALID_PAYLOAD'});
+    const options=this.sessionOptions(target,ownerId),session=this.sessions.get(target);
+    if(!ownerId||!options.available||session?.viewOwnerId!==ownerId)throw Object.assign(Error('原会话已变化或关闭'),{code:'INTERACTION_STALE'});
+    this.sessionCommands??=new Map();
+    const key=ownerId+':'+requestKey,previous=this.sessionCommands.get(key);
+    if(previous){if(previous.command!==command||previous.jobId!==jobId)throw Object.assign(Error('会话操作请求键冲突'),{code:'INVALID_PAYLOAD'});return previous.promise;}
+    if(command==='interrupt'){
+      if(!jobId||this.current.get(target)?.id!==jobId||!session.busy||this.configuring.has(target)||this.restarting?.has(target))throw Object.assign(Error('原回合已变化，未中断其他回合'),{code:'INTERACTION_STALE'});
+    }else if(this.stopping||options.busy||this.starting.has(target)||this.reclaiming.has(target)||this.store.state.jobs.some(job=>job.target===target&&['queued','running','transferring'].includes(job.status)))throw Object.assign(Error('原会话有执行或排队输入，未执行会话操作'),{code:'PI_BUSY'});
+    if(this.stopping||typeof session[command]!=='function')throw Object.assign(Error('原会话不支持此操作'),{code:'INTERACTION_CAPABILITY_UNAVAILABLE'});
+    this.configuring.add(target);this.changed();
+    const record={command,jobId,promise:null,settled:false,stopConfirmed:false};
+    if(command==='interrupt'){this.interruptions??=new Map();this.interruptions.set(jobId,record);}
+    const operation=(async()=>{
+      if(this.sessions.get(target)!==session||session.closed)throw Object.assign(Error('原会话已变化'),{code:'INTERACTION_STALE'});
+      const receipt=await session[command]();
+      record.stopConfirmed=command==='interrupt'&&receipt?.stopped===true;
+      return {accepted:command!=='interrupt'||record.stopConfirmed,ownerId,threadId:session.threadId,command,...(jobId?{jobId}:{})};
+    })().finally(()=>{record.settled=true;this.configuring.delete(target);this.changed();this.kick();});
+    record.promise=operation;this.sessionCommands.set(key,record);
+    if(this.sessionCommands.size>64)for(const [oldKey,old]of this.sessionCommands){if(this.sessionCommands.size<=64)break;if(old.settled)this.sessionCommands.delete(oldKey);}
+    return operation;
+  }
+  async settleUserInterruption(job){
+    const pending=this.interruptions?.get(job.id);
+    if(!pending)return false;
+    await pending.promise.catch(()=>{});
+    if(!pending.stopConfirmed)return false;
+    await this.store.mutate(()=>{
+      const saved=this.store.state.jobs.find(row=>row.id===job.id);
+      if(saved)Object.assign(saved,{status:'cancelled',completion:'user-interrupted',providerStatus:'cancelled',interruptionReason:'user-interrupted',finishedAt:new Date().toISOString()});
+      const work=this.store.state.works.find(row=>row.id===job.target);
+      if(work?.status==='running')work.status='paused';
+      this.store.state.messages.push({id:randomUUID(),target:job.target,speaker:'system',text:'本轮已停止；已完成修改保留，未结束工作。排队补充保持原顺序。',jobId:job.id});
+    });return true;
   }
 
   async readNativeDraft(target,ownerId){
@@ -1249,6 +1366,8 @@ export class Controller extends EventEmitter {
     session.viewOwnerId??=randomUUID();
     session.on?.('diagnostic',message=>{if(this.sessions.get(target)===session)this.emit('diagnostic',`${target}: ${message}`);});
     session.on?.('change',()=>{if(this.sessions.get(target)===session)this.changed();});
+    session.on?.('model-changed',()=>{if(this.sessions.get(target)===session)this.changed();});
+    session.on?.('interaction',()=>{if(this.sessions.get(target)===session)this.changed();});
     session.on?.('native-draft',hasText=>{
       if(this.sessions.get(target)!==session)return;
       const previous=this.nativeDraftTargets.has(target);
@@ -1258,7 +1377,7 @@ export class Controller extends EventEmitter {
     session.on?.('exit',exit=>{
       if(this.sessions.get(target)!==session)return;
       this.nativeDraftTargets.delete(target);this.nativeDraftBlockedOwners?.delete(target);this.emit('session-exit',{target,threadId:session.threadId,exit});this.changed();
-      const cleanup=(async()=>{await session.manualOpenPromise;if(this.sessions.get(target)!==session)return;const job=this.current.get(target);if(job?.manual)await this.settleManualJob(target,{promptId:job.manualPromptId,jobId:job.id,error:`OMP terminal exited (${exit?.exitCode??exit?.code??exit?.signal??'unknown'})`});let stopError,receipt;try{receipt=await session.stop();}catch(error){stopError=error;receipt=session.lastExitReceipt;}if(this.sessions.get(target)!==session){if(stopError)throw stopError;return;}if(receipt?.confirmationComplete===true){delete this.store.state.providers[target];await this.store.storage.putLocal(this.projectId,'managed:providers',this.store.state.providers??{});}this.changed();if(stopError)throw stopError;})();session.controllerExitCleanup=cleanup;void cleanup.catch(error=>this.emit('diagnostic',error.message));
+      const cleanup=(async()=>{await session.manualOpenPromise;if(this.sessions.get(target)!==session)return;const job=this.current.get(target);if(job?.manual)await this.settleManualJob(target,{promptId:job.manualPromptId,jobId:job.id,error:`Pi owner exited (${exit?.exitCode??exit?.code??exit?.signal??'unknown'})`});let stopError,receipt;try{receipt=await session.stop();}catch(error){stopError=error;receipt=session.lastExitReceipt;}if(this.sessions.get(target)!==session){if(stopError)throw stopError;return;}if(receipt?.confirmationComplete===true){delete this.store.state.providers[target];await this.store.storage.putLocal(this.projectId,'managed:providers',this.store.state.providers??{});}this.changed();if(stopError)throw stopError;})();session.controllerExitCleanup=cleanup;void cleanup.catch(error=>this.emit('diagnostic',error.message));
     });
   }
   async makeSession(target,{preflightOnly=false}={}){
@@ -1266,14 +1385,14 @@ export class Controller extends EventEmitter {
     await this.store.requireOnline();
     const role=['frontdesk','orchestrator'].includes(target)?target:'worker';const workerBinding=role==='worker'?(this.store.find(target).binding||this.store.state.bindings.worker):null;
     if(role==='worker')this.assertDeviationReleased(target);
-    const provider=workerBinding?.provider||this.store.state.bindings[role]?.provider||'omp';
-    if(provider!=='omp'){
+    const provider=workerBinding?.provider||this.store.state.bindings[role]?.provider||'pi';
+    if(provider!=='pi'){
       if(role==='worker')await this.store.mutate(()=>{const work=this.store.find(target);work.readOnly=true;work.contextRecovery={code:'HISTORICAL_SESSION_READ_ONLY',threadId:work.threadId,revision:work.revision,message:'Original provider identity retained read-only; explicit context recovery required'};});
-      throw Object.assign(new Error('Historical provider sessions are read-only; their identity cannot be resumed by OMP'),{code:'HISTORICAL_SESSION_READ_ONLY',target});
+      throw Object.assign(new Error('Historical provider sessions are read-only; their identity cannot be resumed by Pi'),{code:'HISTORICAL_SESSION_READ_ONLY',target});
     }
-    const home=role==='worker'?this.store.agentHome(target):path.join(this.store.root,'agents',`resident-${role}-omp`);
+    const home=role==='worker'?this.store.agentHome(target):path.join(this.store.root,'agents',`resident-${role}-pi`);
     const cwd=role==='worker'&&this.execution?(await this.maintenanceTransaction(this.current.get(target),'input-preparation',()=>this.execution.prepare(target)),this.execution.directory(target)):this.store.content;
-    const tools=role==='frontdesk'?[tool('nozeli_handoff','Escalate the remaining original-task work to background execution with a concise reason. Ordinary reasons dispatch straight to the background under the original user request (no extra prompt); if the user explicitly chose to stay in the frontdesk, declined background earlier, or a decision is still pending, the host asks the user instead. @read reads and @new/@continue select discussion context only. This handoff never grants cross-project access, shell or credentials.',{reason:text})]:role==='orchestrator'?[tool('nozeli_inspect_work','Read named Work or readRef. @memory:keywords searches Plan Tree; @conversation reads dialogue; @state returns open works. Read-only.',{workName:text}),tool('nozeli_dispatch','Create a named Worker for a brand-new independent task. This is the required terminal decision when an explicit user task has no matching open Work.',{name:text,brief:text}),tool('nozeli_manage','Route this intake to exactly ONE terminal decision: continue an EXISTING open Work by its exact name, or clarify genuine ambiguity. status is a read-only query — it NEVER completes an intake turn: inspect/status first if needed, then always finish the turn with continue, clarify, or nozeli_dispatch. workName must be the exact name of an existing open Work — never the current request text; with no open Work at all, a continue is treated as the first background run of this new task. Ending a background intake after only status/inspect leaves the task unexecuted and violates the contract. User end decisions belong to user controls.',{action:{type:'string',enum:['continue','status','clarify']},workName:text,text})]:[tool('nozeli_publish','Publish the final result as one complete self-contained static HTML document, or a problem/question as concise Markdown text. Include every created/modified artifact in files. Work remains open; finish the turn after success.',{kind:{type:'string',enum:['problem','result']},html:{type:'string',description:'Self-contained static HTML result document; kind "result" only'},text:{type:'string',description:'Concise Markdown problem or question body; kind "problem" only'},files:{type:'array',items:{type:'string'},maxItems:256}},['kind','files'],{oneOf:[{properties:{kind:{type:'string',const:'result'}},required:['html'],not:{required:['text']}},{properties:{kind:{type:'string',const:'problem'}},required:['text'],not:{required:['html']}}]}),tool('nozeli_diagram','Render an offline validated Archify typed JSON diagram and return the exact standalone SVG with alt text, caption and spec/generator digests for direct inline figure embedding in the report HTML; creates no project files.',{type:{type:'string',enum:['architecture','workflow','sequence','dataflow','lifecycle']},spec:{type:'object',additionalProperties:true}})];
+    const tools=role==='frontdesk'?[tool('nozeli_handoff','Escalate the remaining original-task work to background execution with a concise reason. Ordinary reasons dispatch straight to the background under the original user request (no extra prompt); if the user explicitly chose to stay in the frontdesk, declined background earlier, or a decision is still pending, the host asks the user instead. @read reads and @new/@continue select discussion context only. This handoff never grants cross-project access, shell or credentials.',{reason:text})]:role==='orchestrator'?[tool('nozeli_inspect_work','Read named Work or readRef. @memory:keywords searches Plan Tree; @conversation reads dialogue; @state returns open works. Read-only.',{workName:text}),tool('nozeli_dispatch','Create a named Worker for a brand-new independent task. This is the required terminal decision when an explicit user task has no matching open Work.',{name:text,brief:text}),tool('nozeli_manage','Route this intake to exactly ONE terminal decision: continue an EXISTING open Work by its exact name, or clarify genuine ambiguity. status is a read-only query — it NEVER completes an intake turn: inspect/status first if needed, then always finish the turn with continue, clarify, or nozeli_dispatch. workName must be the exact name of an existing open Work — never the current request text; with no open Work at all, a continue is treated as the first background run of this new task. Ending a background intake after only status/inspect leaves the task unexecuted and violates the contract. User end decisions belong to user controls.',{action:{type:'string',enum:['continue','status','clarify']},workName:text,text})]:[tool('nozeli_publish','Publish the final result as one complete self-contained static HTML document, or a problem/question as concise Markdown text. Include every created/modified artifact in files. For result require html and forbid text; for problem require text and forbid html. Host validates the exact kind/body pairing. Work remains open; finish the turn after success.',{kind:{type:'string',enum:['problem','result']},html:{type:'string',description:'Self-contained static HTML result document; kind "result" only'},text:{type:'string',description:'Concise Markdown problem or question body; kind "problem" only'},files:{type:'array',items:{type:'string'},maxItems:256}},['kind','files']),tool('nozeli_diagram','Render an offline validated Archify typed JSON diagram and return the exact standalone SVG with alt text, caption and spec/generator digests for direct inline figure embedding in the report HTML; creates no project files.',{type:{type:'string',enum:['architecture','workflow','sequence','dataflow','lifecycle']},spec:{type:'object',additionalProperties:true}})];
     const binding=role==='worker'?this.store.find(target).binding||this.store.state.bindings.worker:this.store.state.bindings[role];
     if(role==='orchestrator')tools.push(tool('nozeli_maintenance','Inspect sanitized host bug ledger, scan proven historical internal faults without replay, or request bounded host recovery of the exact original transaction. Never marks repaired by assertion; no business Work or privileges granted.',{action:{type:'string',enum:['status','retry','scan']},bugId:text},['action']));
     if(role==='orchestrator')tools.push(
@@ -1302,185 +1421,122 @@ export class Controller extends EventEmitter {
     // Native tools remain YOLO. This host-managed channel records ordinary
     // execution and gates only known concrete high-danger effects.
     tools.push(tool('nozeli_privileged_execute','Execute a literal host command with durable intent and receipt. Ordinary elevation:user commands run directly by default YOLO without user permission. Only concrete admin elevation, broad destructive/irreversible effects or declared sensitive export create a user approval. No universal shell sandbox is claimed. dangerousEffect must state any known dangerous object/effect/risk. Approval is frozen to this exact effect; task approval permits repeats only, never other admin commands. Actual admin identity requires real OS authentication. Never replay a completed or unknown effect.',{command:text,args:{type:'array',items:text,maxItems:256},cwd:text,purpose:text,dangerousEffect:text,elevation:{type:'string',enum:['user','admin']}},['command','args','cwd','purpose']));
-    const roleInstructions=provider==='omp'||role==='worker'?await rolePrompt(role,{skills:binding.skills}):binding.instructions;
+    const roleInstructions=await rolePrompt(role,{skills:binding.skills});
     const recoveryBinding={};const recoveryContext=role==='worker'?await this.workerRecoveryContext(this.store.find(target),recoveryBinding):null;if(recoveryContext){this.workerRecoveryReaders??=new Map();this.workerRecoveryReaders.set(target,recoveryBinding.reader);}
-    const instructions=roleInstructions+'\n'+contextInstructions[role]+'\nNozeli host tools are the control channel. Queries continue the turn; publication/routing stops it. Worker owns candidate results; host alone integrates and closes. Ordinary current-user commands/network and cross-project/unregistered document operations are allowed without extra permission or registration. Preserve user scope, draft/CAS identity, metadata and credential-export protections. Only concrete high-danger effects ask user authorization. Native OMP remains YOLO, not a universal shell sandbox. A problem is an interim report, not completed delivery: Orchestrator inspects backstage and continues the exact original Work with remaining reversible steps, or records neutral blocked state without fabricated facts. Never replay unknown/completed effects. External explicit live-document edits are direct operations, not candidate adoption. Do not invent no-install/no-build constraints absent from user request.'+(recoveryContext?'\nUser-confirmed context handoff sources:\n'+JSON.stringify(recoveryContext):'');
+    const instructions=roleInstructions+'\n'+contextInstructions[role]+'\nNozeli host tools are the control channel. Queries continue the turn; publication/routing stops it. Worker owns candidate results; host alone integrates and closes. Ordinary current-user commands/network and cross-project/unregistered document operations are allowed without extra permission or registration. Preserve user scope, draft/CAS identity, metadata and credential-export protections. Only concrete high-danger effects ask user authorization. Native tools remain YOLO, not a universal shell sandbox. A problem is an interim report, not completed delivery: Orchestrator inspects backstage and continues the exact original Work with remaining reversible steps, or records neutral blocked state without fabricated facts. Never replay unknown/completed effects. External explicit live-document edits are direct operations, not candidate adoption. Do not invent no-install/no-build constraints absent from user request.'+(recoveryContext?'\nUser-confirmed context handoff sources:\n'+JSON.stringify(recoveryContext):'');
     const readableRoots=role==='worker'?await this.workerReadableRoots(target):[];
-    const spec={...roles[role],role,provider,...(role!=='worker'?{baseInstructions:residentBaseInstructions}:{}),model:null,effort:null,cwd,home,command:this.ompCommand,ompSystemSource:this.ompSystemSource,ompAuthBroker:this.ompAuthBroker,legacyNativeSeed:binding.model?{model:binding.model,effort:binding.effort??null}:(this.store.state.legacyNativeSeeds?.[role]??null),...(this.isolateProcesses?{isolation:{writable:role==='worker'?[cwd]:[],readOnly:role==='worker'?[path.join(cwd,'.git')]:[],readable:readableRoots}}:{}),instructions,tools,finishOnHostControl:true,
-      collabContext:{projectId:this.projectId,targetId:target,ownerId:randomUUID()},
+    const piRuntime=this.piRuntime?{...this.piRuntime,...(this.piSource?.agentDir?{agentDir:this.piSource.agentDir}:{}),...(this.piSource?.modelFor?{modelFor:role=>this.piSource.modelFor(role)}:{}),...(this.piSource?.roleDefaultsFor?{roleDefaultsFor:async role=>{const saved=await this.piSource.roleDefaultsFor(role);return {selector:saved?.selector??null,effort:saved?.effort??roles[role]?.effort??null};}}:{})}:null;
+    const spec={...roles[role],role,provider,...(role!=='worker'?{baseInstructions:residentBaseInstructions}:{}),model:null,effort:null,cwd,home,...(piRuntime?{piRuntime}:{}),...(this.piSource?{piSystemSource:this.piSource}:{}),...(this.piAuth?{piSettingsWorker:this.piAuth}:{}),...(this.isolateProcesses?{isolation:{writable:role==='worker'?[cwd]:[],readOnly:role==='worker'?[path.join(cwd,'.git')]:[],readable:readableRoots}}:{}),instructions,tools,finishOnHostControl:true,
+      nativeContext:{projectId:this.projectId,targetId:target,ownerId:randomUUID()},
       onTransportFact:fact=>this.recordTransport(target,fact),
-      onCollabEntry:fact=>this.recordNativeEntries(target,fact),
-      onCollabEvent:fact=>this.recordNativeEvent(target,fact),
-      // OMP：宿主工具副作用前必须过 admission.preEffect（owner/ticket 代次门），失败即拒绝该次副作用。
+      onNativeEntry:fact=>this.recordNativeEntries(target,fact),
+      onNativeEvent:fact=>this.recordNativeEvent(target,fact),
+      // Pi：宿主工具副作用前必须过 admission.preEffect（owner/turn 代次门），失败即拒绝该次副作用。
       onTool:async p=>{await p.admission?.preEffect();return this.onTool(target,p);},
       onBeforeAgentStart:async()=>{await this.store.requireOnline();if(this.stopping)throw Error('host stopping');this.assertDeviationReleased(target);const active=this.current.get(target);if(!active)throw Error('no admitted host job');if(role!=='worker')return {};const w=this.store.find(target);if(w.status!=='running'||active.revision!==w.revision)throw Error('stale Worker turn');active.reader??=new ContextReader();return {taskAnchor:workerTaskAnchor(w,active.reader)};},
-      // OMP TUI 人工输入所有权（root）：人工提交接 durable job 链（唯一输入、回执、正常收尾），不二次派发模型输入。
-      onManualInput:async ({promptId,text})=>this.openManualJob(target,promptId,text),
-      onManualSettled:async settlement=>this.settleManualJob(target,settlement),
-      onSpawn:async pid=>{const stamp=await processStamp(pid);await this.store.mutate(()=>{this.store.state.providers[target]={pid,stamp,home,kind:'omp-tui'};});}};
-    // P4 路线（root 决策）：OMP 角色会话 = TUI-native（OmpTuiSession，唯一 PTY/session owner）。
-    // 模型/思考档位由原生会话独占，桥只观察；同一角色不双 owner。
+      onSpawn:async pid=>{const stamp=await processStamp(pid);await this.store.mutate(()=>{this.store.state.providers[target]={pid,stamp,home,kind:'pi-node',ownerId:spec.nativeContext.ownerId};});}};
+    // Pi 路线（host cutover）：角色会话 = host-owned Pi owner（PiSession，唯一进程/session owner）。
+    // 模型/effort 由 Pi 会话独占，宿主只观察；同一角色不双 owner。
     let slot;if(this.processBudget){if(!this.processBudget.available&&!(target==='frontdesk'&&this.frontdeskContextClear))await this.processBudget.reclaim?.(this.projectId,preflightOnly?null:target);slot=this.processBudget.reserve(this.projectId,target);}
     let ownership;const originalSpawn=spec.onSpawn;spec.onSpawn=async pid=>{ownership?.spawned();return originalSpawn(pid);};
-    let session;try{session=this.sessionFactory?this.sessionFactory(spec,target):new OmpTuiSession(spec);}catch(error){this.processBudget?.release(slot);throw error;}
+    let session;try{session=this.sessionFactory?this.sessionFactory(spec,target):new PiSession(spec);}catch(error){this.processBudget?.release(slot);throw error;}
     if(slot)ownership=this.processBudget.bind(slot,session);
     if(!preflightOnly){this.sessions.set(target,session);this.observeSession(target,session);}
     const toolsDigest=session.toolsDigest??createHash('sha256').update(JSON.stringify(tools)).digest('hex'),resident=this.store.state.residents[target];
     try{
       let resumeId=role==='worker'?this.store.find(target).threadId:resident?.threadId;
-      if(provider==='omp'&&role!=='worker'&&resumeId&&resident.zeroActivity===true&&resident.handoff&&['start-failed','confirmed','ready'].includes(resident.handoff.status)&&!this.store.state.jobs.some(job=>job.threadId===resumeId)&&!this.store.state.messages.some(message=>message.sessionId===resumeId)){
-        const pinned=await pinSessionFileById(path.join(home,'sessions'),resumeId);
-        if(!pinned){
-          if(!preflightOnly)await this.store.mutate(()=>{
-            this.store.state.recoveryEvents.push({at:new Date().toISOString(),type:'resident-handoff-uncreated-thread-retried',target,previousThreadId:resumeId});
-            delete resident.threadId;resident.handoff.status='confirmed';
-          });
-          resumeId=undefined;
-        }
-      }
       const workOwner=role==='worker'?this.store.find(target):null;
       const workerHistory=Boolean(workOwner?.threadId&&workOwner.zeroActivity!==true);
       const workerExpected=workOwner?.toolsDigest;
-      if(workerHistory&&provider==='omp'){
-        session.sessionFile=await pinSessionFileById(path.join(home,'sessions'),workOwner.threadId);
+      if(workerHistory){
         if(typeof session.preflightToolsDigest!=='function')throw Object.assign(Error('Worker historical schema preflight unavailable; original thread retained'),{code:'WORKER_CONTEXT_RECOVERY_REQUIRED',target});
         await session.preflightToolsDigest(workerExpected||toolsDigest);
       }
-      // Reject non-equivalent historical schemas before native resume can append
-      // model/session lifecycle records to the old read-only conversation log.
-      if(provider==='omp'&&role!=='worker'&&resumeId&&resident?.toolsDigest){
-        session.sessionFile=await pinSessionFileById(path.join(home,'sessions'),resident.threadId);
-        if(typeof session.preflightToolsDigest!=='function')throw Object.assign(new Error('OMP historical schema preflight unavailable'),{code:'OMP_TOOLS_DIGEST_MISMATCH'});
-        try { await session.preflightToolsDigest(resident.toolsDigest); }
-        catch(error) {
+      // Reject non-equivalent historical schemas before the Pi owner can append
+      // lifecycle records to the original read-only conversation journal.
+      if(role!=='worker'&&resumeId&&resident?.toolsDigest){
+        if(typeof session.preflightToolsDigest!=='function')throw Object.assign(new Error('Pi historical schema preflight unavailable'),{code:'PI_TOOLS_DIGEST_MISMATCH'});
+        try{await session.preflightToolsDigest(resident.toolsDigest);}
+        catch(error){
           const attempted=this.store.state.jobs.some(j=>j.target===target&&(j.manual===true||j.promptStartedAt!=null));
           const messages=this.store.state.messages.some(m=>m.target===target);
-          let empty=resident.zeroActivity===true&&!attempted&&!messages&&!resident.handoff;
-          if(empty&&session.sessionFile){
-            try {
+          let empty=resident.zeroActivity===true&&!attempted&&!messages&&!resident.handoff&&typeof session.sessionFile==='string';
+          if(empty){
+            try{
               const stat=await fs.lstat(session.sessionFile);
               if(!stat.isFile()||stat.isSymbolicLink()||stat.size>1024*1024)empty=false;
               else for(const line of (await fs.readFile(session.sessionFile,'utf8')).split('\n')){
                 if(!line.trim())continue;
-                const row=JSON.parse(line);
-                if(!['session','title','model_change','thinking_level_change','session_info'].includes(row.type)){empty=false;break;}
+                if(!['session','model_change','thinking_level_change','session_info','title'].includes(JSON.parse(line).type)){empty=false;break;}
               }
-            } catch { empty=false; }
+            }catch(error){if(error.code!=='ENOENT')empty=false;}
           }
-          if(error.code!=='OMP_TOOLS_DIGEST_MISMATCH'||!empty)throw error;
+          if(error.code!=='PI_TOOLS_DIGEST_MISMATCH'||!empty)throw error;
           // No accepted input or native message exists. Keep the old identity as
           // startup metadata, never manufacture conversation history or replay.
           if(!preflightOnly){
             await this.store.mutate(()=>{
-              this.store.state.recoveryEvents.push({at:new Date().toISOString(),type:'omp-empty-schema-updated',target,previousThreadId:resident.threadId,previousToolsDigest:resident.toolsDigest,newToolsDigest:toolsDigest});
+              this.store.state.recoveryEvents.push({at:new Date().toISOString(),type:'pi-empty-schema-updated',target,previousThreadId:resident.threadId,previousToolsDigest:resident.toolsDigest,newToolsDigest:toolsDigest});
               this.store.state.residents[target]={...resident,threadId:undefined,toolsDigest:undefined};
             });
           }
           resumeId=undefined;session.emptySchemaUpdated=true;
         }
       }
-      if(preflightOnly){if(session instanceof OmpTuiSession&&!session.pid&&!session.groupRecord?.pid&&!ownership?.hasSpawned())this.processBudget?.release(slot);else await session.stop();return {preflight:true,target};}
-    if(!preflightOnly&&provider==='omp'){
-      // Seed private role configuration once from the independent Nozeli base.
-      await prepareOmpPrivateHome(home,{system:this.ompSystemSource});
-    }
+      if(preflightOnly){if(!session.pid&&!session.groupRecord?.pid&&!ownership?.hasSpawned())this.processBudget?.release(slot);else await session.stop();return {preflight:true,target};}
       if(this.stopping)throw Object.assign(Error('项目正在停用'),{code:'PROJECT_STOPPING'});
       await this.store.requireOnline();
       try{await session.start(resumeId);}catch(error){
         // 已派工/已发 prompt 的历史不可当空会话：promptStartedAt!=null 即有历史（含 cancelled——取消不消除已发 prompt/副作用）。
         const attempted=this.store.state.jobs.some(j=>j.target===target&&j.promptStartedAt!==null&&(!j.threadId||j.threadId===resumeId));
-        if(provider==='omp'){
-          // 仅检查当前线程；缺少线程归属的旧任务仍保守阻止恢复，其他明确旧线程不影响当前零活动会话。
-          // 不伪造文件/不重放；新建 OMP 实例（不用 Codex），恢复后走同一持久化路径。
-          if(resumeId&&!resident?.handoff&&(role==='worker'?this.store.find(target).zeroActivity:resident?.zeroActivity)===true&&!attempted&&String(error.message).includes('OMP_SESSION_FILE_NOT_FOUND')){
-            await this.store.mutate(()=>{this.store.state.recoveryEvents.push({at:new Date().toISOString(),type:'omp-zero-activity-restarted',target,previousThreadId:resumeId});});
-            const stopped=await session.stop();if(session.pid&&stopped?.confirmationComplete!==true)throw Object.assign(error,{exitUnconfirmed:true});
-            if(this.processBudget){slot=this.processBudget.reserve(this.projectId,target);}
-            try{session=this.sessionFactory?this.sessionFactory(spec,target):new OmpTuiSession(spec);}catch(error){this.processBudget?.release(slot);throw error;}
-            if(slot)ownership=this.processBudget.bind(slot,session);
-            this.sessions.set(target,session);
-            this.observeSession(target,session);
-            if(this.stopping)throw Object.assign(Error('项目正在停用'),{code:'PROJECT_STOPPING'});
-            await this.store.requireOnline();
-            await session.start();
-            session.zeroActivityRestarted=true;
-          }else throw error;   // OMP 任何其他恢复失败（有历史/未知/非缺失）不回退不重建
-        }
+        const uncreatedHandoff=resumeId&&resident?.handoff&&['start-failed','confirmed','ready'].includes(resident.handoff.status)&&!this.store.state.jobs.some(job=>job.threadId===resumeId)&&!this.store.state.messages.some(message=>message.sessionId===resumeId);
+        // 仅检查当前线程；缺少线程归属的旧任务仍保守阻止恢复。不伪造会话/不重放；
+        // 新建 Pi owner 实例，恢复后走同一持久化路径。
+        const missing=error.code==='PI_SESSION_FILE_NOT_FOUND'&&resumeId&&!resident?.handoff&&(role==='worker'?this.store.find(target).zeroActivity:resident?.zeroActivity)===true&&!attempted;
+        const uncreated=error.code==='PI_SESSION_FILE_NOT_FOUND'&&uncreatedHandoff;
+        if(missing||uncreated){
+          await this.store.mutate(()=>{this.store.state.recoveryEvents.push({at:new Date().toISOString(),type:uncreated?'resident-handoff-uncreated-thread-retried':'pi-zero-activity-restarted',target,previousThreadId:resumeId});if(uncreated){delete resident.threadId;resident.handoff.status='confirmed';}});
+          const stopped=await session.stop();if(session.pid&&stopped?.confirmationComplete!==true)throw Object.assign(error,{exitUnconfirmed:true});
+          if(this.processBudget){slot=this.processBudget.reserve(this.projectId,target);}
+          try{session=this.sessionFactory?this.sessionFactory(spec,target):new PiSession(spec);}catch(error){this.processBudget?.release(slot);throw error;}
+          if(slot)ownership=this.processBudget.bind(slot,session);
+          this.sessions.set(target,session);
+          this.observeSession(target,session);
+          if(this.stopping)throw Object.assign(Error('项目正在停用'),{code:'PROJECT_STOPPING'});
+          await this.store.requireOnline();
+          await session.start();
+          session.zeroActivityRestarted=true;
+        }else throw error;   // Pi 任何其他恢复失败（有历史/未知/非缺失）不回退不重建
       }
-      if(provider==='omp'&&role!=='worker'&&resident?.threadId&&resident?.toolsDigest&&!session.emptySchemaUpdated){
-        if(typeof session.assertToolsDigest!=='function')throw Object.assign(new Error('OMP historical schema equivalence cannot be established'),{code:'OMP_TOOLS_DIGEST_MISMATCH'});
+      if(role!=='worker'&&resident?.threadId&&resident?.toolsDigest&&!session.emptySchemaUpdated){
+        if(typeof session.assertToolsDigest!=='function')throw Object.assign(new Error('Pi historical schema equivalence cannot be established'),{code:'PI_TOOLS_DIGEST_MISMATCH'});
         await session.assertToolsDigest(resident.toolsDigest);
       }
-      if(workerHistory&&provider==='omp')await session.assertToolsDigest(workerExpected||toolsDigest);
+      if(workerHistory)await session.assertToolsDigest(workerExpected||toolsDigest);
       await this.store.mutate(()=>{
-        if(role==='worker'){const work=this.store.find(target);work.threadId=session.threadId;work.toolsDigest=session.toolsDigest??toolsDigest;if(provider==='omp'&&work.zeroActivity!==false)work.zeroActivity=!session.hasPrompted&&!(session.agentEnds?.length>0);}
-        else this.store.state.residents[target]={threadId:session.threadId,provider,model:provider==='omp'?(session.model??spec.model??null):spec.model,effort:provider==='omp'?(session.effort??spec.effort??null):spec.effort,toolsDigest:session.toolsDigest??toolsDigest,...(provider==='omp'?{zeroActivity:!session.hasPrompted&&!(session.agentEnds?.length>0)}:{}),...(resident?.zeroActivity===false?{zeroActivity:false}:{}),...(resident?.generation!=null?{generation:resident.generation}:{}),...(resident?.handoff?{handoff:{...resident.handoff,status:'ready'}}:{})};
+        if(role==='worker'){const work=this.store.find(target);work.threadId=session.threadId;work.toolsDigest=session.toolsDigest??toolsDigest;if(work.zeroActivity!==false)work.zeroActivity=!session.hasPrompted&&!(session.agentEnds?.length>0);}
+        else this.store.state.residents[target]={threadId:session.threadId,provider,model:session.model??spec.model??null,effort:session.effort??spec.effort??null,toolsDigest:session.toolsDigest??toolsDigest,zeroActivity:!session.hasPrompted&&!(session.agentEnds?.length>0),...(resident?.zeroActivity===false?{zeroActivity:false}:{}),...(resident?.generation!=null?{generation:resident.generation}:{}),...(resident?.handoff?{handoff:{...resident.handoff,status:'ready'}}:{})};
         if(role==='frontdesk'&&resident?.contextClear)this.store.state.residents[target].contextClear={...resident.contextClear,status:'ready'};
       ownership?.started();
       });this.changed();return session;
     }catch(e){
       e.target??=target;e.role??=role;
-      if(role==='worker'&&['WORKER_CONTEXT_RECOVERY_REQUIRED','OMP_TOOLS_DIGEST_MISMATCH','OMP_SESSION_FILE_NOT_FOUND'].includes(e.code)){
+      if(role==='worker'&&['WORKER_CONTEXT_RECOVERY_REQUIRED','PI_TOOLS_DIGEST_MISMATCH','PI_SESSION_FILE_NOT_FOUND','PI_SESSION_IDENTITY'].includes(e.code)){
         await this.store.mutate(()=>{const work=this.store.find(target);work.contextRecovery={threadId:work.threadId,revision:work.revision,code:e.code,message:e.message,expectedToolsDigest:work.toolsDigest||null,newToolsDigest:session.toolsDigest??toolsDigest,sessionFile:session.sessionFile||null};});this.changed();
       }
-      if(e.code==='OMP_TOOLS_DIGEST_MISMATCH'&&provider==='omp'&&role!=='worker'&&resident?.threadId){
+      if(e.code==='PI_TOOLS_DIGEST_MISMATCH'&&role!=='worker'&&resident?.threadId){
         Object.assign(e,{target,role,expectedToolsDigest:resident.toolsDigest,newToolsDigest:session.toolsDigest??toolsDigest,actualToolsDigest:session.toolsDigest??toolsDigest});
         this.residentHandoffFailures??=new Map();this.residentHandoffFailures.set(target,{...e,oldThreadId:resident.threadId,sessionFile:session.sessionFile??null,unsafe:Boolean(session.busy||session.currentTicket||session.blockedTicket||session.inFlightToolCalls?.size||session.sideEffectFacts?.length)});
       }
-      if(preflightOnly){try{if(session instanceof OmpTuiSession&&!session.pid&&!session.groupRecord?.pid&&!ownership?.hasSpawned())this.processBudget?.release(slot);else await session.stop();}catch(cleanupError){e.cleanupError=cleanupError;}throw e;}
+      if(preflightOnly){try{if(!session.pid&&!session.groupRecord?.pid&&!ownership?.hasSpawned())this.processBudget?.release(slot);else await session.stop();}catch(cleanupError){e.cleanupError=cleanupError;}throw e;}
       const receipt=await session.stop();await session.controllerExitCleanup;
-      if(provider==='omp'&&role!=='worker'&&resident?.handoff&&session.threadId)await this.store.mutate(()=>{Object.assign(this.store.state.residents[target],{threadId:session.threadId,handoff:{...resident.handoff,status:'start-failed'}});});
+      if(role!=='worker'&&resident?.handoff&&session.threadId)await this.store.mutate(()=>{Object.assign(this.store.state.residents[target],{threadId:session.threadId,handoff:{...resident.handoff,status:'start-failed'}});});
       if(role==='frontdesk'&&resident?.contextClear&&session.threadId)await this.store.mutate(()=>{Object.assign(this.store.state.residents[target],{threadId:session.threadId,contextClear:{...resident.contextClear,status:'start-failed'}});});
-      if(session.pid&&provider==='omp'&&receipt?.confirmationComplete!==true)throw Object.assign(e,{exitUnconfirmed:true});
+      if(session.pid&&receipt?.confirmationComplete!==true)throw Object.assign(e,{exitUnconfirmed:true});
       if(this.sessions.get(target)===session)this.sessions.delete(target);await this.store.mutate(()=>{delete this.store.state.providers[target];});throw e;
     }
   }
-
-  // 人工回合 durable job（P4 输入所有权）：唯一输入身份；promptStartedAt 同事务落账（崩溃窗口可判定）；
-  // 收尾按官方终态事实（错误不假成功）；材料/回执经既有 onTool/intake 链——不触发第二次模型输入。
-  // 人工回合 durable job（P4 输入所有权，三角色）：唯一输入身份；promptStartedAt 同事务落账；
-  // TUI 人工输入本身即模型输入——job 直接 running（kick 不再二次派发 prompt）。
-  // 语义沿原合同：frontdesk→front；orchestrator→intake（dispatch/manage 可用）；
-  // Worker→manual 绑定当前 Work/revision（续改/发布按既有 revision 规则，不伪装 front）。
-  async openManualJob(target,promptId,text){
-    this.assertFrontdeskContextAdmission(target);
-    if(this.handoffPreparing?.size||this.residentHandoffs?.size||this.handoffConfirmations?.size)throw this.residentHandoffError('OMP_HANDOFF_CONFIRMATION_REQUIRED',target,'resident handoff blocks manual input');
-    if(typeof text!=='string'||!text.trim()||text.length>32000)throw Error('invalid manual input');
-    const now=new Date().toISOString();
-    // 单序列化事务内 CAS（root P5 边界1）：未收尾检查/同 promptId 幂等/Work 状态/建账 同一 mutate——
-    // 并发 Promise.all 双调用串行执行，第二个在事务内看到已入账 job 即拒绝；不靠进程内 mutex 或外部快检。
-    const outcome=await this.store.mutate(()=>{
-      this.assertFrontdeskContextAdmission(target);
-      const state=this.store.state;
-      const pending=state.jobs.find(j=>j.target===target&&j.manual===true&&j.status==='running');
-      if(pending){
-        if(pending.manualPromptId===promptId)return {jobId:pending.id,idempotent:true};   // 同 promptId 幂等：不新建、不重放输入
-        throw Error('上一人工回合收尾未完成（settlement pending），拒绝新输入');
-      }
-      const base={status:'running',manual:true,manualPromptId:promptId,createdAt:now,promptStartedAt:now,requestKey:'manual:'+promptId};
-      let job;
-      if(target==='frontdesk')job={...base,id:randomUUID(),type:'front',target,text,context:{permissionTaskId:randomUUID()}};
-      else if(target==='orchestrator')job={...base,id:randomUUID(),type:'intake',target,text,context:{manual:true,permissionTaskId:randomUUID()}};
-      else{
-        const work=state.works.find(w=>w.id===target);
-        this.assertDeviationReleased(target);
-        if(!work)throw Error('worker manual input requires an active Work');
-        if(['paused','review'].includes(work.status))this.store.continueState(target);   // 续改沿既有 continue 规则（running+revision++，同一事务内）
-        else if(work.status!=='running')throw Error('worker manual input requires an active Work');
-        job={...base,id:randomUUID(),type:'manual',target,text,revision:work.revision,context:{boundWorkId:target,manual:true,permissionTaskId:randomUUID()}};
-      }
-      state.jobs.push(job);
-      state.messages.push({id:randomUUID(),target,speaker:'user',text,jobId:job.id,manual:true});
-      const owner=['frontdesk','orchestrator'].includes(target)?state.residents[target]:state.works.find(w=>w.id===target);if(owner)owner.zeroActivity=false;
-      return {jobId:job.id,revision:job.revision??null,target};
-    });
-    // 事务提交后绑定 current（内存态）：同事务序列保证唯一入账者到达此处
-    const adopted=structuredClone(this.store.state.jobs.find(j=>j.id===outcome.jobId));
-    if(target==='frontdesk')await this.prepareFrontGoal(adopted);
-    this.current.set(target,adopted);this.changed();
-    if(!['frontdesk','orchestrator'].includes(target)){adopted.reader=new ContextReader();outcome.taskAnchor=workerTaskAnchor(this.store.find(target),adopted.reader);}
-    return outcome;
-  }
+  // 人工回合收尾（历史 TUI 人工输入链的 durable 结算面；Pi 输入一律经 runJob）。
   async settleManualJob(target,{promptId,jobId,text,error,effective}){
     const job=this.store.state.jobs.find(j=>j.id===jobId&&j.manualPromptId===promptId&&j.target===target);
     if(!job||job.status!=='running'||this.current.get(target)?.id!==job.id)return;
@@ -1535,7 +1591,7 @@ export class Controller extends EventEmitter {
     if(target==='orchestrator'&&p.tool==='nozeli_maintenance'){if(a.action==='status')return {...await this.maintenanceStatus(),readOnly:true,continueTurn:true};if(a.action==='scan')return {...await this.maintenanceScan(),continueTurn:true};if(a.action==='retry')return {...await this.maintenanceRetry(a.bugId),continueTurn:true};throw Error('invalid maintenance action');}
     if(p.tool==='nozeli_report_bug'&&!['frontdesk','orchestrator'].includes(target)){const bug=await this.maintenance.record({phase:'diagnosis',jobId:job.id,workId:target,revision:job.revision,error:{code:a.code}});await this.maintenance.finish(bug.id,{outcome:'needs-version-fix'});await this.store.mutate(()=>{const saved=this.store.state.jobs.find(j=>j.id===job.id);saved.maintenanceBugId=bug.id;const w=this.store.find(target);if(w.status==='running'){w.status='paused';w.maintenance={bugId:bug.id,status:'needs-version-fix',message:'程序故障待后台诊断；原任务与改动保留。'};}});await this.maintenanceEvent(bug);return {maintenance:true,hostControl:true,bugId:bug.id,workRemainsOpen:true};}
     if(p.tool==='nozeli_report_deviation'&&!['frontdesk','orchestrator'].includes(target)){
-      const event=await this.store.reportDeviation(target,job,a,p.callId);this.workerTerminal.pause(target);this.changed();return {saved:true,hostControl:true,deviationId:event.id,version:event.version,status:event.status,workRemainsOpen:true,userDecisionRequired:true};
+      const event=await this.store.reportDeviation(target,job,a,p.callId);this.changed();return {saved:true,hostControl:true,deviationId:event.id,version:event.version,status:event.status,workRemainsOpen:true,userDecisionRequired:true};
     }
     this.assertDeviationReleased(target);
     // Sensitive-effect request is available to every role: an explicit model
@@ -1801,6 +1857,7 @@ export class Controller extends EventEmitter {
       if(job.type==='front'&&this.transferFor(job)){await this.saveTransferredFront(job);return;}
       await this.store.mutate(()=>{if(isWork)this.assertDeviationReleased(job.target);delete savedJob().resourceBlocked;savedJob().promptStartedAt=Date.now();const owner=isWork?this.store.find(job.target):this.store.state.residents[job.target];if(owner)owner.zeroActivity=false;});
       const response=await session.prompt(prompt,{timeout:session.settleTimeoutMs??600000,images,job:{id:job.id,target:job.target,revision:job.revision??null,type:job.type}});
+      if(await this.settleUserInterruption(job))return;
       materialDelivery.commit();
       if(job.type==='front'&&this.transferFor(job)){await this.saveTransferredFront(job,response);return;}
       if(this.stopping||(isWork&&['closing','ended'].includes(this.store.find(job.target).status))||(job.type==='intake'&&['closing','ended'].includes(this.intakeBoundWork(job)?.status)))throw new Error('execution interrupted after prompt');
@@ -1811,7 +1868,7 @@ export class Controller extends EventEmitter {
         if(job.type==='front')response.metrics.contextReads=(savedJob().readReceipts||[]).map(r=>({source:r.value.source,version:r.value.version,chars:r.value.text.length,offset:r.value.offset}));
         response.metrics.context=requestContext;
       }
-      const agentBody=response.completion==='host-control'||response.collab?'':response.text;const body=agentBody||(!response.collab&&job.type==='intake'?this.routingMessage(savedJob().routing):'');
+      const agentBody=response.completion==='host-control'||response.projectedNative?'':response.text;const body=agentBody||(!response.projectedNative&&job.type==='intake'?this.routingMessage(savedJob().routing):'');
       await this.store.mutate(()=>{
         Object.assign(savedJob(),{status:'completed',finishedAt:new Date().toISOString(),threadId:response.threadId,turnId:response.turnId,providerStatus:response.providerStatus,completion:response.completion,metrics:response.metrics??null,...(response.effective?{effective:structuredClone(response.effective)}:{})});
         if(delivery){this.store.state.contextDelivery??={};this.store.state.contextDelivery[job.target]=delivery.checkpoint;}
@@ -1829,6 +1886,7 @@ export class Controller extends EventEmitter {
         }
       }
     }catch(e){
+      if(await this.settleUserInterruption(job))return;
       if(e.code==='MAINTENANCE_PENDING'){await this.store.mutate(()=>{
         const saved=savedJob();if(saved&&!['cancelled','interrupted'].includes(saved.status)){saved.status='failed';saved.maintenanceBugId=e.bugId;}
         if(job.type==='backstage'){const entry=this.store.state.backstageEvents?.find(event=>event.key===job.context?.backstageEventKey),code=saved?.maintenanceFault?.code??e.code;if(entry){entry.status='blocked';entry.failureCode=/^[A-Z][A-Z0-9_]{0,79}$/.test(String(code))?code:'BACKSTAGE_PROCESSING_FAILED';entry.reason='后台核对失败（'+entry.failureCode+'）；原问题、进展与会话已保留，未重放未知效果。';}}
@@ -1845,7 +1903,7 @@ export class Controller extends EventEmitter {
         await this.store.mutate(()=>{delete this.store.state.providers[job.target];});
         await this.saveTransferredFront(job,{text:e.partialText,metrics:e.metrics,turnId:e.turnId,threadId:e.threadId,providerStatus:'interrupted'});return;
       }
-      if(job.type!=='maintenance'&&/^OMP_|^NATIVE_|^HOST_INTERNAL_/.test(String(e.code??''))){const bug=await this.maintenance.record({phase:savedJob()?.promptStartedAt?'started-turn':'startup-diagnosis',jobId:job.id,workId:ending?.id??null,revision:job.revision??null,error:e});await this.maintenance.finish(bug.id,{outcome:savedJob()?.promptStartedAt?'human-boundary':'needs-version-fix'});await this.maintenanceEvent(bug);}
+      if(job.type!=='maintenance'&&/^OMP_|^PI_|^NATIVE_|^HOST_INTERNAL_/.test(String(e.code??''))){const bug=await this.maintenance.record({phase:savedJob()?.promptStartedAt?'started-turn':'startup-diagnosis',jobId:job.id,workId:ending?.id??null,revision:job.revision??null,error:e});await this.maintenance.finish(bug.id,{outcome:savedJob()?.promptStartedAt?'human-boundary':'needs-version-fix'});await this.maintenanceEvent(bug);}
       // Record the accepted input's failure before cleanup can reject or hang.
       // Native exit and durable turn failure are independent pieces of evidence.
       await this.store.mutate(()=>{
@@ -1867,13 +1925,13 @@ export class Controller extends EventEmitter {
       try{exitReceipt=await owner?.stop();}catch(error){cleanupFailures.push({stage:'native-stop',error});exitReceipt=owner?.lastExitReceipt;}
       await this.store.mutate(()=>{
         const saved=savedJob();
-        if(cleanupFailures.length)saved.cleanupFailure={at:new Date().toISOString(),stages:cleanupFailures.map(({stage,error})=>({stage,category:error.code==='OMP_COLLAB_HOLD'?'collab-hold':'cleanup-failed'})),exitConfirmed:exitReceipt?.confirmationComplete===true,evidence:owner?.cleanupEvidence?.()??null};
-        const omp=(this.store.state.works.find(w=>w.id===job.target)?.binding||this.store.state.bindings[job.target])?.provider==='omp';
-        if(this.sessions.get(job.target)===owner&&(exitReceipt?.confirmationComplete===true||!omp&&!cleanupFailures.length))delete this.store.state.providers[job.target];
+        if(cleanupFailures.length)saved.cleanupFailure={at:new Date().toISOString(),stages:cleanupFailures.map(({stage,error})=>({stage,category:error.code==='OMP_COLLAB_HOLD'||error.code==='PI_BUSY'?'native-hold':'cleanup-failed'})),exitConfirmed:exitReceipt?.confirmationComplete===true,evidence:owner?.cleanupEvidence?.()??null};
+        // Pi 进程所有权严格确认：未确认退出绝不删除 provider 登记。
+        if(this.sessions.get(job.target)===owner&&exitReceipt?.confirmationComplete===true)delete this.store.state.providers[job.target];
       });
-      if(cleanupFailures.length)throw Object.assign(new AggregateError(cleanupFailures.map(({error})=>error),'native cleanup failed after turn failure'),{code:'OMP_TURN_CLEANUP_FAILED',cause:e});
+      if(cleanupFailures.length)throw Object.assign(new AggregateError(cleanupFailures.map(({error})=>error),'native cleanup failed after turn failure'),{code:'PI_TURN_CLEANUP_FAILED',cause:e});
       if(!['frontdesk','orchestrator'].includes(job.target))await this.ensureWorkerDelivery(job,e);
-    }finally{if(!['frontdesk','orchestrator'].includes(job.target)){this.workerTerminal.pause(job.target);if(didStart&&this.store.find(job.target).deviation?.admittedJobId===job.id)await this.stopDeviationOwner(job.target);}await this.finalizeTransfers();
+    }finally{this.interruptions?.delete(job.id);if(!['frontdesk','orchestrator'].includes(job.target)){if(didStart&&this.store.find(job.target).deviation?.admittedJobId===job.id)await this.stopDeviationOwner(job.target);}await this.finalizeTransfers();
       if(job.type==='backstage')await this.store.mutate(()=>{const entry=this.store.state.backstageEvents?.find(e=>e.key===job.context?.backstageEventKey);if(entry?.status==='queued'){entry.status='blocked';entry.reason='后台回合未提供可靠处理；原问题与进展保留，未编造回答或执行未知效果。';}});
       await this.processBackstage();this.changed();if(didStart&&!this.stopping&&!['frontdesk','orchestrator'].includes(job.target))this.emit('files-changed',{jobId:job.id,workId:job.target,reason:'worker-turn-settled'});}
   }
@@ -1883,7 +1941,7 @@ export class Controller extends EventEmitter {
       Object.assign(saved,{status:manual?'interrupted':'completed',interruptionReason:'user-transfer',finishedAt:new Date().toISOString(),threadId:response.threadId,turnId:response.turnId,providerStatus:response.providerStatus,completion:'user-transfer'});
       if(response.effective&&!saved.effective)saved.effective=structuredClone(response.effective);
       if(response.metrics)saved.metrics={...response.metrics,context:saved.requestContext||null,contextReads:(saved.readReceipts||[]).map(r=>({source:r.value.source,version:r.value.version,chars:r.value.text.length,offset:r.value.offset}))};
-      if(manual&&response.text&&!response.collab&&response.completion!=='host-control')this.store.state.messages.push({id:randomUUID(),target:'frontdesk',speaker:'agent',text:response.text,jobId:job.id,partial:true});
+      if(manual&&response.text&&!response.projectedNative&&response.completion!=='host-control')this.store.state.messages.push({id:randomUUID(),target:'frontdesk',speaker:'agent',text:response.text,jobId:job.id,partial:true});
     });
   }
   workLocked(id,fn){this.workOperations??=new Map();const operation=(this.workOperations.get(id)??Promise.resolve()).catch(()=>{}).then(fn);this.workOperations.set(id,operation);return operation.finally(()=>{if(this.workOperations.get(id)===operation)this.workOperations.delete(id);});}
@@ -2030,6 +2088,10 @@ export class Controller extends EventEmitter {
   }
   async reviewRead(p={}){
     if(!p||typeof p!=='object'||Array.isArray(p))throw Object.assign(Error('审校读取参数无效'),{code:'INVALID_PAYLOAD'});
+    const work=this.#reviewWork(p.objectId,p.workId);
+    return this.workLocked(work.id,()=>this.#reviewReadNow(p));
+  }
+  async #reviewReadNow(p){
     const work=this.#reviewWork(p.objectId,p.workId);
     const receipt=this.#reviewReceipt(work,p.objectId);
     const current=await this.#reviewVersionNow(work,receipt);
@@ -2510,12 +2572,12 @@ export class Controller extends EventEmitter {
     try{
       if(!w.closure.binding||!sameDispositionBinding(w.closure.binding,dispositionBinding(w)))throw Error('Closure confirmation binding missing or changed; resources retained');
       if(!w.closure.stopped){
-        await this.store.mutate(()=>{w.closure.phase='stopping';});this.workerTerminal.pause(id);
+        await this.store.mutate(()=>{w.closure.phase='stopping';});
         await this.terminals.get(id)?.close();if(this.starting.has(id))await this.starting.get(id).catch(()=>{});
         const session=this.sessions.get(id),record=this.store.state.providers?.[id],slots=[...(this.processBudget?.slots??[])].filter(slot=>slot.projectId===this.projectId&&slot.target===id);
         let receipt;
         if(session){receipt=await session.stop();if((session.pid||session.groupRecord?.pid||record||slots.length)&&receipt?.confirmationComplete!==true)throw Error('Worker process exit is not confirmed; resources retained');}
-        else if(record){const recovery=await (['omp-rpc','omp-tui'].includes(record.kind)?recoverOmpProvider(record,this.store.root):recoverProvider(record,this.store.root));if(recovery.verified!==true)throw Error('Persisted Worker owner exit is not confirmed');receipt={confirmationComplete:true,recovery};}
+        else if(record){const recovery=await (record.kind==='pi-node'?recoverPiProvider(record,this.store.root):['omp-rpc','omp-tui'].includes(record.kind)?recoverOmpProvider(record,this.store.root):recoverProvider(record,this.store.root));if(recovery.verified!==true)throw Error('Persisted Worker owner exit is not confirmed');receipt={confirmationComplete:true,recovery};}
         else if(slots.length)throw Error('Process budget owner lacks verifiable provider identity; resources retained');
         if(this.running.has(id))await this.running.get(id);
         if(this.starting.has(id)||this.current.has(id)||this.sessions.get(id)?.busy)throw Error('Worker execution remains in flight');
@@ -2644,7 +2706,7 @@ export class Controller extends EventEmitter {
     const operation=(async()=>{
       await this.terminals.get(target)?.close();
       const receipt=await (session.stopIdle?session.stopIdle():session.stop());await session.controllerExitCleanup;
-      if(session.pid&&receipt?.confirmationComplete!==true)throw Object.assign(Error('空闲 Agent 退出尚未确认，名额保留'),{code:'OMP_EXIT_UNCONFIRMED'});
+      if(session.pid&&receipt?.confirmationComplete!==true)throw Object.assign(Error('空闲 Agent 退出尚未确认，名额保留'),{code:'PI_EXIT_UNCONFIRMED'});
       if(this.sessions.get(target)===session)this.sessions.delete(target);
       await this.store.mutate(()=>{delete this.store.state.providers[target];});this.changed();return true;
     })().finally(()=>this.reclaiming.delete(target));this.reclaiming.set(target,operation);return operation;
@@ -2655,18 +2717,18 @@ export class Controller extends EventEmitter {
       this.store.storage.withLifecycleOwner(this.projectId,lifecycleHold,()=>{this.store.lifecycleHold=lifecycleHold;});
     }
     if(this.stopPromise)return this.stopPromise;
-    this.stopping=true;this.workerTerminal.stop();this.changed();
+    this.stopping=true;this.changed();
     clearTimeout(this.timelineTimer);this.timelineTimer=null;
     const settled=async promises=>{const results=await Promise.allSettled(promises),failed=results.find(result=>result.status==='rejected');if(failed)throw failed.reason;};
     const operation=(async()=>{
       if(this.taskPermissions){const ledger=await this.taskPermissions.read(this.projectId);for(const grant of ledger.grants??[])this.privilegeBroker?.revoke?.({grantId:grant.id});for(const taskId of new Set((ledger.grants??[]).map(grant=>grant.permissionTaskId)))await this.taskPermissions.endTask(this.projectId,taskId);}
-      const stopped=new Set(),stopOwners=async()=>settled([...this.sessions.entries()].filter(([target])=>!stopped.has(target)).map(async([target,s])=>{const receipt=await s.stop();await s.controllerExitCleanup;if((s.pid||s.groupRecord?.pid)&&receipt?.confirmationComplete!==true)throw Object.assign(Error('Agent exit unconfirmed; provider ownership retained'),{code:'OMP_EXIT_UNCONFIRMED',target});stopped.add(target);}));
+      const stopped=new Set(),stopOwners=async()=>settled([...this.sessions.entries()].filter(([target])=>!stopped.has(target)).map(async([target,s])=>{const receipt=await s.stop();await s.controllerExitCleanup;if((s.pid||s.groupRecord?.pid)&&receipt?.confirmationComplete!==true)throw Object.assign(Error('Agent exit unconfirmed; provider ownership retained'),{code:'PI_EXIT_UNCONFIRMED',target});stopped.add(target);}));
       await settled([stopOwners(),settled([...this.terminals.values()].map(t=>t.close())),Promise.allSettled([...this.starting.values()]),settled([...this.reclaiming.values()])]);
       await stopOwners();
       await settled([...this.running.values()]);await Promise.allSettled([...this.closures.values()]);
       for(const target of stopped)delete this.store.state.providers[target];
       await this.store.storage.putLocal(this.projectId,'managed:providers',this.store.state.providers??{});
-      if(Object.keys(this.store.state.providers??{}).length)throw Object.assign(Error('Unverified provider ownership retained'),{code:'OMP_EXIT_UNCONFIRMED'});
+      if(Object.keys(this.store.state.providers??{}).length)throw Object.assign(Error('Unverified provider ownership retained'),{code:'PI_EXIT_UNCONFIRMED'});
       await this.store.close();this.store.lifecycleHold=null;return {stopped:[...stopped],confirmationComplete:true};
     })();this.stopPromise=operation;
     try{return await operation;}catch(error){if(this.stopPromise===operation)this.stopPromise=null;throw error;}

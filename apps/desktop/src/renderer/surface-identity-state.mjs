@@ -41,15 +41,17 @@ export function createProjectFiles({list, current, apply}) {
 // project/target even before Agent activation; readiness only gates sending.
 export function bindComposerDrafts({composer,current,remember,persist,onInput,onError}) {
   let pending=Promise.resolve();
+  const failures=new Map();
   composer.addEventListener('input',()=>{
     const identity=current();
     if(!identity?.projectId||!identity.target)return;
     const draft={...identity,text:composer.value};
     remember(draft);
-    pending=pending.catch(()=>{}).then(()=>persist(draft)).catch(onError);
+    const key=JSON.stringify([draft.projectId,draft.target]);
+    pending=pending.catch(()=>{}).then(()=>persist(draft)).then(()=>failures.delete(key),error=>{failures.set(key,error);onError(error);});
     onInput();
   });
-  return {settled:()=>pending};
+  return {settled:async()=>{let watermark;do{watermark=pending;await watermark;}while(watermark!==pending);if(failures.size)throw failures.values().next().value;}};
 }
 
 export function ownsDiscussionReceipt({projectId, currentProjectId, tag, currentTag, state, token}) {

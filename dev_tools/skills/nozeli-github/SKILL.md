@@ -1,11 +1,18 @@
 ---
 name: nozeli-github
-description: Maintain Nozeli commits, pushes, versions, protected-main PRs and CI, GitHub homepage README, release tags/pages/assets, and interrupted release recovery. Use for development delivery, release preparation, publishing, or release-state audits.
+description: Maintain Nozeli commits, pushes, versions, CI, GitHub homepage README, release tags/pages/assets, and interrupted release recovery. Never create a PR unless the user explicitly requests it; commit/push/release authorization alone is insufficient. Use for development delivery, release preparation, publishing, or release-state audits.
 ---
 
 # Nozeli GitHub Maintainer
 
 Default repository: `SeemSeam/nozeli`. This skill is standalone; it needs Python 3, git, and authenticated GitHub CLI, not another agent runtime. Nozeli is a private desktop application package: **never run npm publish**, add registry publication, or invent an automatic asset-upload workflow.
+
+## 提交规则：不主动创建 PR
+
+- 默认只执行用户授权范围内的提交、推送或发布，不自行创建 Pull Request。
+- “帮我 commit”“推送 GitHub”“发布新版本”不等于授权提 PR；只有用户当轮明确要求提 PR 才能创建。
+- 若分支保护要求必须经过 PR，保留已完成工作并报告阻塞；不得以完成提交／发布为由自行提 PR、修改保护规则或绕过检查。
+- 不因仓库已有机器人／外部贡献 PR，或以往曾用 PR 发布，就沿用自动提 PR 的流程。
 
 ## Safety and completion contract
 
@@ -13,7 +20,7 @@ Perform commit/push/release actions only within the current user's authorization
 
 Public redistribution obligations are independent of engineering checks. Preserve `pending` obligations and honest `node tools/check-repository.mjs --public` failure until actual named human review with dated evidence is available. An Alpha exception requires **current explicit owner authorization for this release** and disclosure in release notes, README and release documentation; an earlier Alpha authorization is not reusable. An exception is not compliance certification and does not make a failed CI or public audit check green. If the public gate blocks a release candidate workflow, report that exact failure separately, not as a passing workflow. Do not publish a stable release under an Alpha exception.
 
-GitHub's homepage renders README from the default branch, not from the release tag. A feature-branch README update is not a completed homepage update. `main` is protected: use a PR, required reviews/checks and the repository's allowed merge method. Never push around that protection.
+Never create a pull request unless the user explicitly requests a PR in the current conversation. Authorization to commit, push, publish, or update the homepage does not authorize PR creation. GitHub's homepage renders README from the default branch, not a release tag. Inspect current branch protection: push directly only when authorized and permitted; if protection requires a PR, stop that delivery step and report the constraint. Do not create a PR as a workaround, change protection, or use an admin bypass. Existing external/bot PRs are not permission to open maintainer PRs.
 
 ## Install and invoke
 
@@ -48,7 +55,7 @@ Respect an intentionally configured account. Never read, print, copy or embed to
 
 1. Read the repository instructions and classify the change. Tooling/docs-only work usually needs no new version or release. Runtime, dependency, packaging and user-facing changes need release consideration, not an automatic tag.
 2. Update affected callers/docs and run risk-appropriate targeted tests; use `docs/testing.md` and `apps/desktop/package.json` for current commands. For skill-only changes, syntax/help and checker fixtures suffice; do not build the entire application unnecessarily.
-3. Review the diff, commit and push the working branch. Open a PR for default-branch/homepage changes, satisfy required CI and merge through protection. Check the actual merged commit's CI, not an unrelated successful run.
+3. Review the diff; commit and push only within current authorization. Do not open a PR by default. For default-branch/homepage delivery, use an authorized push only if protection permits; otherwise report the PR requirement and retain the work without creating a PR. If the user explicitly requests a PR, satisfy its required checks and allowed merge method. Check the actual delivered commit's CI, not an unrelated successful run.
 4. Run `--phase dev` on the delivered checkout. In-progress/missing CI is incomplete; inspect again explicitly later, without checker polling. Do not create a release for development-only work.
 
 ## Release preparation
@@ -60,7 +67,7 @@ Run repository metadata/hash checks and relevant deterministic tests/builds/smok
 ## Ordered publication
 
 1. Finish release metadata and concrete notes; complete local release tests and repository checks. If audits remain pending, obtain current explicit Alpha authorization and record the still-open obligations without forging completion.
-2. **Commit → push branch → PR → required CI/review → merge** to default `main`. Update the local checkout to the merged commit using ordinary fast-forward synchronization. Verify homepage README from GitHub and green `CI` for that exact merged SHA.
+2. **Commit → authorized push → required CI**. Deliver to default `main` only through a route allowed by current protection and current authorization. Never infer PR permission from a release request: if `main` requires a PR and none was explicitly requested, report the blocker rather than opening one or weakening protection. If explicitly authorized to create a PR, use required checks/reviews and the allowed merge method. Synchronize the delivered default-branch commit normally; verify its homepage README and exact-SHA green `CI` before tagging.
 3. Confirm every release input is in this commit and the checkout is clean. **Create and push `vVERSION` at that merged commit**, only after checking no conflicting local/remote tag exists. Never force a tag. If using `Release candidate check`, inspect its workflow first: it validates an existing tag and does **not** upload assets. Its workflow-run `headSha` must match the intended tag commit; dispatch on the tag ref as well as passing the tag input. Preserve and disclose its public-audit failure when applicable; never mislabel it as a successful candidate check.
 4. **Clean package** using `node apps/desktop/tools/package-portable.mjs <absolute-new-output-directory>` from repository root. Packaging refuses dirty source and an existing output directory. Use a fresh output outside source; do not recycle an old archive. Confirm `RELEASE.json` binds version and merged/tag commit.
 5. **Unpack and smoke the actual portable Electron application**, not only source/dev mode: follow `docs/testing.md` and the archive's `使用说明.md`; use isolated synthetic project/profile data, the real bundled executable and normal sandbox policy. Record launch, rendering, reading/editing and relevant changed workflows. No root/`--no-sandbox` shortcuts, secret-bearing fixtures or automatic paid model calls. Do not claim Windows/macOS validation from Linux results.
@@ -73,13 +80,13 @@ Run repository metadata/hash checks and relevant deterministic tests/builds/smok
 
 Start with `prepare` plus `published` for release interruptions, or `dev` for ordinary work. Inspect existing commits, PR, tags, drafts and assets before any mutation. Resume at the first incomplete step; never blindly repeat tag creation or publication.
 
-- Dirty or unpushed work: preserve it, complete the intended commit/push/PR; never reset unrelated user work.
+- Dirty or unpushed work: preserve it; complete only authorized commit/push actions. Never reset unrelated work or automatically create a PR to finish delivery.
 - Missing/failed/pending exact-SHA CI: inspect the specific run and fix the cause via reviewed commits. No unrelated branch/manual run is substitute evidence. A new fix commit normally requires a new release version if the old tag is already published.
 - Tag missing: establish the intended merged SHA before creating it. Tag SHA disagreement: stop; never overwrite it. A maintainer-skill-only correction after tagging may merge separately without moving the product tag: keep product archives bound to the original commit and run the installed corrected checker from a clean pushed checkout containing that tag. Other product changes require a new version/maintainer decision.
 - Wrong/stale package: rebuild from clean intended tag in a new output, repeat unpacked smoke and checksum checks. An archive built before merge cannot be relabelled as the merged commit.
 - Missing draft/assets: create/resume the draft and upload explicitly after validation. Existing assets with different hashes require investigation, not silent replacement.
 - Published but incomplete release: disclose the incomplete state; repair only with authorization and preserved provenance, then reverify remote bytes. Do not declare success because a release page exists.
-- Homepage stale: merge docs through a protected PR and verify remote default README; do not move an old release tag for documentation maintenance.
+- Homepage stale: update the default branch only through an authorized and permitted route, then verify remote README. If protection requires a PR without explicit PR authorization, report the blocker; do not create one or move an old release tag.
 - Audit pending without current Alpha authorization, or missing human review: stop publication, retain pending state and report the exact blocker. Never convert script output to a signoff.
 
 No checker success can override any of these stop conditions.

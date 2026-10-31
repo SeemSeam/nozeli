@@ -45,3 +45,9 @@ CI生成的`sbom.cdx.json`来自`npm sbom --package-lock-only --sbom-format cycl
 只读检查器：`python3 dev_tools/skills/nozeli-github/scripts/check_release_state.py --phase prepare`；提交推送后用 `--phase dev`，发布后用 `--phase published --assets-dir <发行物目录>`。安装副本支持 `--root <仓库目录>`。检查器不提交、不推送、不发布、不重跑CI，也不将待审计状态当作已签收。
 
 公开附件沿用 `USAGE.zh-CN.md`：打包器生成的 `使用说明.md` 保留在包内，外部发布前复制为ASCII文件名并将SHA256SUMS对应条目绑定到该文件名。GitHub会把纯中文上传文件名规范化成 `default.md`；应核对实际远端名称，不能仅凭上传命令成功认定一致。维护技能／烟测工具在tag后单独修补时，不移动产品tag，不重写原便携包的提交绑定。
+
+## 自动更新发布物契约（开发源码）
+
+Linux x64 更新源固定为本仓库 GitHub Releases，使用 `Nozeli-<version>-linux-x64.tar.gz` 与 `SHA256SUMS.txt`；暂存包的 `RELEASE.json` 版本／平台／架构／提交须与精确 tag 一致，安装标记须 validated，包内须带真实二进制、renderer、更新帮助进程与解包worker。普通更新不调用系统 Node/npm/OMP、Bash、tar 命令或提权组件；归档依赖 `tar@7.5.22` 随程序分发。Pi 分支须同时保留随包 Node／Pi runtime 的完整闭包，不能以原 OMP 运行时替换。旧版缺少更新运行时的包不作不完整安装。
+
+更新器在启用时后台检查下载，闲时安装重启；原程序先确认无未保存输入和在途／排队工作，保留现场并停稳，再由独立帮助进程切换用户级 current/previous 或便携目录。新程序须完成真实工作面健康确认；启动失败回退程序、不静默回滚用户内容，失败版本停止自动反复安装。源码运行和不支持的平台只检查，不替换源码。既有 alpha.3 归档没有检测器，须先正常安装含此功能的新构建；同步源码不移动 alpha.3 tag、不替换公开附件，也不构成安装或发布授权。校验和／tag 一致性不等同数字签名或合规签收。

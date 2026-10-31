@@ -3,6 +3,7 @@ import path from 'node:path';
 import {createRequire} from 'node:module';
 import {pathToFileURL} from 'node:url';
 import {ownedRelease} from './release-retention.mjs';
+import {packagePiRuntime} from './package-pi-runtime.mjs';
 
 export async function auditBundledLinks(directory, release = directory) {
   for (const entry of await fs.readdir(directory, {withFileTypes: true})) {
@@ -34,8 +35,8 @@ export async function validateRelease(root, release) {
   const manifest = JSON.parse(await fs.readFile(path.join(application, 'package.json'), 'utf8'));
   await fs.access(path.join(application, manifest.main || 'src/main/main.cjs'));
   await fs.access(path.join(application, 'dist/renderer/app.js'));
-  const bundledOmp = await import(pathToFileURL(path.join(application, 'src/agents/managed/omp-runtime.mjs')).href);
-  await bundledOmp.resolveBundledOmpRuntime({appRoot: application});
+  const bundledPi=await import(pathToFileURL(path.join(application,'src/agents/managed/pi-runtime.mjs')).href);
+  await bundledPi.resolveBundledPiRuntime({appRoot:application,packaged:true,piHome:path.join(root,'validation-private-pi'),env:{}});
   const bundledGit = await import(pathToFileURL(path.join(application, 'src/agents/managed/git-runtime.mjs')).href);
   const gitRuntime = await bundledGit.ensureGit();
   if (gitRuntime.source !== 'bundled' || !gitRuntime.command.startsWith(application + path.sep)) throw Error('Release must contain its own relocatable Git runtime');
@@ -56,7 +57,7 @@ export async function packageRelease({root, release, source}) {
   await fs.copyFile(path.resolve(source, '../../LICENSE'), path.join(release, 'NOZELI-LICENSE'));
   const application = path.join(release, 'resources/app');
   await fs.mkdir(application, {recursive: true});
-  for (const name of ['src', 'dist', 'assets', 'runtime', 'package.json', 'package-lock.json', 'SOURCES.md', 'README.md']) await fs.cp(path.join(source, name), path.join(application, name), {recursive: true, filter: file => !path.relative(source, file).split(path.sep).some(part => part === '.nozeli' || part === '.ccb')});
+  for (const name of ['src', 'dist', 'assets', 'runtime', 'package.json', 'package-lock.json', 'SOURCES.md', 'README.md']) await fs.cp(path.join(source, name), path.join(application, name), {recursive: true, filter: file => {const parts=path.relative(source,file).split(path.sep);return !parts.some(part=>part==='.nozeli'||part==='.ccb')&&!(parts[0]==='runtime'&&parts[1]==='omp');}});
   const dependencyRoot = path.join(source, 'node_modules');
   await fs.cp(dependencyRoot, path.join(application, 'node_modules'), {recursive: true, verbatimSymlinks: true, filter: async file => {
     const relative = path.relative(dependencyRoot, file);
@@ -68,6 +69,7 @@ export async function packageRelease({root, release, source}) {
     }
     return true;
   }});
+  await packagePiRuntime({source,application,includeDependency:dependencyIncluded});
   manifest.productName = 'Nozeli';
   await fs.writeFile(path.join(application, 'package.json'), JSON.stringify(manifest, null, 2) + '\n');
   await validateRelease(root, release);

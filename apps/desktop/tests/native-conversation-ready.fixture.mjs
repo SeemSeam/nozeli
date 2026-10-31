@@ -7,8 +7,8 @@ export async function configureNativeConversation(page){
  const invoke=async(op,payload)=>{const result=await page.evaluate((op,payload)=>nozeli.invoke(op,payload),op,payload);if(!result.ok)throw Error(op+': '+result.error?.message);return result.value;};
  try{
   const configuration=await invoke('config.status',{});if(configuration.choiceRequired)await invoke('config.initialize',{mode:'independent'});
-  await invoke('settings.providers.save',{provider:'native-ui-local',model:'no-inference',baseUrl:'http://127.0.0.1:'+server.address().port+'/v1',key:'synthetic-local-only',api:'openai-completions'});
-  await invoke('settings.models.save',{frontdesk:'native-ui-local/no-inference',orchestrator:'native-ui-local/no-inference',worker:'native-ui-local/no-inference'});
+  await invoke('settings.providers.save',{operation:'create',provider:'native-ui-local',baseUrl:'http://127.0.0.1:'+server.address().port+'/v1',api:'openai-completions',models:[{id:'no-inference'}],credential:{action:'replace',value:'synthetic-local-only'}});
+  await invoke('settings.models.save',{frontdesk:{model:{mode:'explicit',selector:'native-ui-local/no-inference'},thinking:{mode:'native-default'}},orchestrator:{model:{mode:'explicit',selector:'native-ui-local/no-inference'},thinking:{mode:'native-default'}},worker:{model:{mode:'explicit',selector:'native-ui-local/no-inference'},thinking:{mode:'native-default'}}});
   const scope=await invoke('workspace.bootstrap',{});if(!scope.projectId)throw Error('Native conversation fixture requires a bound project');
   await invoke('managed.enable',{projectId:scope.projectId});
  }catch(error){await new Promise(resolve=>server.close(resolve));throw error;}

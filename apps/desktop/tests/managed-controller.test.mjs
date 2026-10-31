@@ -5,8 +5,14 @@ import {staticReport} from './static-report.fixture.mjs';
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs/promises';import os from 'node:os';import path from 'node:path';import {randomUUID} from 'node:crypto';import {Controller} from '../src/agents/managed/controller.mjs';
 const wait=async fn=>{const end=Date.now()+15000;while(Date.now()<end){if(fn())return;await new Promise(r=>setTimeout(r,10));}throw new Error('condition timeout');};
 const submitBackground=(c,text,options={})=>!text||text.startsWith('light')?c.send('frontdesk',text,options):c.submitTask(text,{requestKey:randomUUID(),...options});
+async function admitHostJob(c,target,text){
+ const receipt=await c.enqueue(target,'initial',text);
+ await c.store.mutate(()=>{const job=c.store.state.jobs.find(row=>row.id===receipt.jobId);Object.assign(job,{status:'running',revision:c.store.find(target).revision,promptStartedAt:Date.now()});c.store.find(target).zeroActivity=false;});
+ c.current.set(target,c.store.state.jobs.find(row=>row.id===receipt.jobId));
+ await c.session(target);return receipt;
+}
 async function fixture(t,{automatic=true}={}){const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-controller-'));const calls=[],all=[];let dropEmpty=false;
- class FakeSession{constructor(spec,target){Object.assign(this,spec,{target,closed:false,busy:false,toolsDigest:'fixture-native-schema'});}async preflightToolsDigest(){}async assertToolsDigest(){}async start(id){if(id&&dropEmpty)throw Object.assign(new Error('OMP_SESSION_FILE_NOT_FOUND'),{code:'OMP_SESSION_FILE_NOT_FOUND'});this.threadId=id||randomUUID();calls.push({type:'start',target:this.target,threadId:this.threadId});return this;}async prompt(text){this.hasPrompted=true;this.busy=true;calls.push({type:'prompt',target:this.target,text});try{await new Promise(r=>setTimeout(r,15));const tool=(name,args)=>this.onTool({tool:name,arguments:args,threadId:this.threadId,callId:randomUUID()});if(this.target==='frontdesk'&&!text.split('用户本次原文：\n').at(-1).startsWith('light'))await tool('nozeli_handoff',{reason:'specialist'});else if(this.target==='orchestrator'){if(text.split('原始请求:\n').at(-1).startsWith('light manual answer'))await tool('nozeli_manage',{action:'clarify',workName:'',text:'fixture routing clarification'});else if(text.includes('主控入口'))await tool('nozeli_dispatch',{name:'worker '+randomUUID().slice(0,4),brief:text});}else if(!['frontdesk','orchestrator'].includes(this.target))await tool('nozeli_publish',{kind: 'result', html: staticReport('Verified fixture report'), files: []});return {text:'fixture response',threadId:this.threadId,turnId:randomUUID()};}finally{this.busy=false;}}async stop(){this.closed=true;}}
+ class FakeSession{constructor(spec,target){Object.assign(this,spec,{target,closed:false,busy:false,toolsDigest:'fixture-native-schema'});}async preflightToolsDigest(){}async assertToolsDigest(){}async start(id){if(id&&dropEmpty)throw Object.assign(new Error('PI_SESSION_FILE_NOT_FOUND'),{code:'PI_SESSION_FILE_NOT_FOUND'});this.threadId=id||randomUUID();calls.push({type:'start',target:this.target,threadId:this.threadId});return this;}async prompt(text){this.hasPrompted=true;this.busy=true;calls.push({type:'prompt',target:this.target,text});try{await new Promise(r=>setTimeout(r,15));const tool=(name,args)=>this.onTool({tool:name,arguments:args,threadId:this.threadId,callId:randomUUID()});if(this.target==='frontdesk'&&!text.split('用户本次原文：\n').at(-1).startsWith('light'))await tool('nozeli_handoff',{reason:'specialist'});else if(this.target==='orchestrator'){if(text.split('原始请求:\n').at(-1).startsWith('light manual answer'))await tool('nozeli_manage',{action:'clarify',workName:'',text:'fixture routing clarification'});else if(text.includes('主控入口'))await tool('nozeli_dispatch',{name:'worker '+randomUUID().slice(0,4),brief:text});}else if(!['frontdesk','orchestrator'].includes(this.target))await tool('nozeli_publish',{kind: 'result', html: staticReport('Verified fixture report'), files: []});return {text:'fixture response',threadId:this.threadId,turnId:randomUUID()};}finally{this.busy=false;}}async stop(){this.closed=true;}}
  const options={runtimeRoot:path.join(root,'data'),contentRoot:path.join(root,'content'),sessionFactory:(spec,target)=>new FakeSession(spec,target)};const c=await openTestController(options);all.push(c);await c.start();await wait(()=>!c.kicking);c.started=automatic;t.after(async()=>{await Promise.all(all.map(c=>c.stop()));await fs.rm(root,{recursive:true,force:true});});return {c,root,calls,loseEmptyThreads:()=>{dropEmpty=true;},reopen:async()=>{const n=await openTestController(options);all.push(n);await n.start();return n;}};}
 test('automatic queue releases quota on user end while preserving prior Worker history',async t=>{const {c,calls}=await fixture(t);await submitBackground(c, 'task A');await submitBackground(c, 'task B');await wait(()=>c.store.state.works.length===2&&c.store.state.works[0].status==='review');const [a,b]=c.store.state.works;assert.equal(b.status,'queued');assert.equal(c.store.used(),1);assert.equal(calls.filter(x=>x.type==='start'&&!['frontdesk','orchestrator'].includes(x.target)).length,1);await wait(()=>!c.running.has(a.id));await c.endWork(a.id,{revision:a.revision,decision:'accept'});await wait(()=>c.store.find(b.id).status==='review');assert.equal(c.store.find(a.id).status,'ended');assert.notEqual(c.store.find(a.id).threadId,c.store.find(b.id).threadId);assert.equal(c.store.used(),1);assert((await fs.stat(c.store.find(a.id).closure.workerHome.historyPath)).isDirectory());});
 test('manual draft holds automatic intake until released without losing original request',async t=>{const {c}=await fixture(t);await c.setDraft('orchestrator','unsent manual draft');await submitBackground(c, 'task original');await wait(()=>c.store.state.jobs.some(j=>j.target==='orchestrator'));assert.equal(c.store.state.works.length,0);assert.equal(c.store.state.drafts.orchestrator,'unsent manual draft');await c.setDraft('orchestrator','');await wait(()=>c.store.state.works[0]?.status==='review');assert.equal(c.store.state.works[0].request,'task original');});
@@ -15,16 +21,16 @@ test('failed stale end check does not detach running job state from durable job 
 
 ;
 
-test('missing empty native thread can restart without changing Work identity or replaying input',async t=>{const {c,reopen,loseEmptyThreads}=await fixture(t,{automatic:false});const w=await c.store.submit('empty worker','brief');await c.store.activate(w.id);await c.session(w.id);const old=c.store.find(w.id).threadId;await c.stop();loseEmptyThreads();const next=await reopen();await next.session(w.id);assert.notEqual(next.store.find(w.id).threadId,old);assert.equal(next.store.find(w.id).status,'paused');assert.equal(next.store.state.jobs.length,0);assert.equal(next.store.used(),1);assert.equal(next.store.state.recoveryEvents.filter(e=>e.type==='omp-zero-activity-restarted').length,3);});
-test('missing native history after accepted execution never silently starts a new conversation',async t=>{const {c,reopen,loseEmptyThreads}=await fixture(t);await submitBackground(c,'light question');await wait(()=>!c.running.size&&c.store.state.jobs[0]?.status==='completed');await c.stop();loseEmptyThreads();await assert.rejects(reopen(),/OMP_SESSION_FILE_NOT_FOUND/);});
+test('missing empty native thread can restart without changing Work identity or replaying input',async t=>{const {c,reopen,loseEmptyThreads}=await fixture(t,{automatic:false});const w=await c.store.submit('empty worker','brief');await c.store.activate(w.id);await c.session(w.id);const old=c.store.find(w.id).threadId;await c.stop();loseEmptyThreads();const next=await reopen();await next.session(w.id);assert.notEqual(next.store.find(w.id).threadId,old);assert.equal(next.store.find(w.id).status,'paused');assert.equal(next.store.state.jobs.length,0);assert.equal(next.store.used(),1);assert.equal(next.store.state.recoveryEvents.filter(e=>e.type==='pi-zero-activity-restarted').length,3);});
+test('missing native history after accepted execution never silently starts a new conversation',async t=>{const {c,reopen,loseEmptyThreads}=await fixture(t);await submitBackground(c,'light question');await wait(()=>!c.running.size&&c.store.state.jobs[0]?.status==='completed');await c.stop();loseEmptyThreads();await assert.rejects(reopen(),/PI_SESSION_FILE_NOT_FOUND/);});
 ;
 test('connection failure preserves exact input and reason without model-configuration advice or automatic replay',async t=>{
  const {c}=await fixture(t);c.sessions.get('frontdesk').prompt=async()=>{throw Object.assign(Error('write closed'),{code:'EPIPE'});};const accepted=await submitBackground(c, 'light exact input');await wait(()=>c.store.state.jobs.find(job=>job.id===accepted.jobId)?.status==='failed'&&!c.running.size);
  const inputs=c.store.state.jobs.filter(job=>job.target==='frontdesk'&&job.type==='front');assert.equal(inputs.length,1);const saved=inputs[0];assert.equal(saved.id,accepted.jobId);assert.equal(saved.text,'light exact input');const message=c.store.state.messages.findLast(m=>m.speaker==='system'&&m.jobId===accepted.jobId);assert(message.text.includes('write closed'));assert(message.text.includes('连接中断'));assert(!message.text.includes('模型配置'));assert.equal(saved.error,'write closed');
  for(const event of c.store.state.backstageEvents??[])assert(c.store.state.jobs.filter(job=>job.type==='backstage'&&job.context?.backstageEventKey===event.key).length<=1,'one backstage job per original event');
 });
-test('role skills retain resident identity and existing worker bindings while changing new workers',async t=>{const {c}=await fixture(t);const front=c.store.state.residents.frontdesk.threadId;await c.setBinding('frontdesk',{provider:'omp'});assert.equal(c.store.state.residents.frontdesk.threadId,front);await submitBackground(c, 'task A');await wait(()=>c.store.state.works[0]?.status==='review'&&!c.running.size);const first=c.store.state.works[0],original=structuredClone(first.binding);await c.setBinding('worker',{provider:'omp',skills:['report.md']});assert.deepEqual(c.store.find(first.id).binding,original);await c.endWork(first.id,{revision:1,decision:'accept'});await wait(()=>c.store.find(first.id).status==='ended'&&!c.running.size);await submitBackground(c, 'task B');await wait(()=>c.store.state.works[1]?.status==='review'&&!c.running.size);assert.equal(c.store.state.works[1].binding.effort,undefined);assert.deepEqual(c.store.state.works[1].binding.skills,['report.md']);await assert.rejects(c.setBinding('worker',{skills:['unknown.md']}),/unknown/);});
-test('resident settings reject accepted queued input rather than bypass it',async t=>{const {c}=await fixture(t);const before=structuredClone(c.store.state.bindings.frontdesk);await c.setDraft('frontdesk','hold automatic input');await c.enqueue('frontdesk','front','light question');await assert.rejects(c.setBinding('frontdesk',{provider:'omp'}),/accepted input/);assert.deepEqual(c.store.state.bindings.frontdesk,before);});
+test('role skills retain resident identity and existing worker bindings while changing new workers',async t=>{const {c}=await fixture(t);const front=c.store.state.residents.frontdesk.threadId;await c.setBinding('frontdesk',{provider:'pi'});assert.equal(c.store.state.residents.frontdesk.threadId,front);await submitBackground(c, 'task A');await wait(()=>c.store.state.works[0]?.status==='review'&&!c.running.size);const first=c.store.state.works[0],original=structuredClone(first.binding);await c.setBinding('worker',{provider:'pi',skills:['report.md']});assert.deepEqual(c.store.find(first.id).binding,original);await c.endWork(first.id,{revision:1,decision:'accept'});await wait(()=>c.store.find(first.id).status==='ended'&&!c.running.size);await submitBackground(c, 'task B');await wait(()=>c.store.state.works[1]?.status==='review'&&!c.running.size);assert.equal(c.store.state.works[1].binding.effort,undefined);assert.deepEqual(c.store.state.works[1].binding.skills,['report.md']);await assert.rejects(c.setBinding('worker',{skills:['unknown.md']}),/unknown/);});
+test('resident settings reject accepted queued input rather than bypass it',async t=>{const {c}=await fixture(t);const before=structuredClone(c.store.state.bindings.frontdesk);await c.setDraft('frontdesk','hold automatic input');await c.enqueue('frontdesk','front','light question');await assert.rejects(c.setBinding('frontdesk',{provider:'pi'}),/accepted input/);assert.deepEqual(c.store.state.bindings.frontdesk,before);});
 test('native composer holds automatic intake and rejects another manual input until released',async t=>{const {c}=await fixture(t);c.nativeDraftTargets.add('orchestrator');await submitBackground(c, 'task original');await wait(()=>c.store.state.jobs.some(j=>j.target==='orchestrator'&&j.status==='queued'));assert.equal(c.store.state.works.length,0);await assert.rejects(c.send('orchestrator','other manual input'),{code:'NATIVE_DRAFT_PENDING'});c.nativeDraftTargets.delete('orchestrator');c.kick();await wait(()=>c.store.state.works[0]?.status==='review'&&!c.running.size);assert.equal(c.store.state.works[0].request,'task original');});
 test('submitted native orchestrator draft runs before held automatic intake without losing it',async t=>{const {c,calls}=await fixture(t);c.nativeDraftTargets.add('orchestrator');await submitBackground(c, 'task original');await wait(()=>c.store.state.jobs.some(j=>j.target==='orchestrator'&&j.status==='queued'));await c.send('orchestrator','light manual answer',{priority:true,native:true});assert.equal(c.store.state.jobs.filter(j=>j.target==='orchestrator')[0].text,'light manual answer');c.nativeDraftTargets.delete('orchestrator');c.kick();await wait(()=>c.store.state.works[0]?.status==='review'&&!c.running.size);assert.equal(c.store.state.works[0].request,'task original');assert.ok(calls.filter(x=>x.type==='prompt'&&x.target==='orchestrator')[0].text.endsWith('light manual answer'));});
 test('rejected input preserves the durable composer draft',async t=>{const {c}=await fixture(t);await c.setDraft('frontdesk','keep this draft');await assert.rejects(submitBackground(c, ''),/invalid input/);assert.equal(c.store.state.drafts.frontdesk,'keep this draft');});
@@ -92,115 +98,20 @@ test('proven pre-prompt interruption restores original Work requirements on expl
 
 ;
 
-test('取消、用户结束与迟到收尾不能结算或发布到新回合', async t => {
-  const { c } = await fixture(t,{automatic:false});
-  const work = await c.store.submit('cancellation source', 'bound original material');
-  await c.store.activate(work.id);
-  const first = await c.openManualJob(work.id, 'cancelled-round', 'first original input');
-  const cancelled = c.store.state.jobs.find(j => j.id === first.jobId);
-  await c.store.mutate(() => { c.store.state.jobs.find(j => j.id === first.jobId).status = 'cancelled'; });
-  await c.settleManualJob(work.id, { promptId: 'cancelled-round', jobId: first.jobId, text: 'late cancelled output' });
-  assert.equal(c.store.find(work.id).status, 'running');
-  assert.equal(c.store.state.jobs.find(j => j.id === first.jobId).status, 'cancelled');
-  assert.ok(!c.store.state.messages.some(m => m.jobId === first.jobId && m.speaker === 'agent'));
-  assert.deepEqual(c.store.state.messages.filter(m => m.jobId === first.jobId && m.speaker === 'user').map(m => m.text), ['first original input']);
+;
 
-  // 新输入持有 current 时，旧 job 的迟到收尾不改新 Work 状态、不清新 current。
-  const second = await c.openManualJob(work.id, 'current-round', 'second original input');
-  await c.settleManualJob(work.id, { promptId: 'cancelled-round', jobId: first.jobId, text: 'late retry' });
-  assert.equal(c.current.get(work.id).id, second.jobId);
-  assert.equal(c.store.find(work.id).status, 'running');
-  assert.equal(c.store.state.jobs.find(j => j.id === second.jobId).text, 'second original input');
-  assert.equal(cancelled.text, 'first original input');
+;
 
-  // 正式用户结束合同关闭 Work；晚到发布仍走既有 publish 门，不放宽运行状态/版本校验。
-  await c.store.end(work.id,dispositionIntent(c.store.find(work.id)));
-  await assert.rejects(c.onTool(work.id, { tool: 'nozeli_publish', arguments: {kind: 'result', html: staticReport('late result'), files: []}, callId: 'late-after-user-end' }), /closing/);
-  await c.settleManualJob(work.id, { promptId: 'current-round', jobId: second.jobId, text: 'ended turn settled' });
-  assert.equal(c.store.find(work.id).status,'ended');
-  assert.equal(c.store.state.receipts.filter(r => r.workId === work.id).length, 0);
-  await assert.rejects(c.openManualJob(work.id, 'after-close', 'must not replay'), /active Work/);
-  assert.equal(c.store.state.jobs.filter(j => j.target === work.id).length, 2);
-});
+;
 
-test('manual admission is atomic, idempotent and role-bound without starting a native transport', async t => {
-  const { c } = await fixture(t,{automatic:false});
-  for (const [target, type] of [['frontdesk', 'front'], ['orchestrator', 'intake']]) {
-    const opened = await c.openManualJob(target, 'role-' + target, 'manual ' + target);
-    assert.equal(c.current.get(target).type, type);
-    assert.equal((await c.openManualJob(target, 'role-' + target, 'manual ' + target)).jobId, opened.jobId);
-    await c.settleManualJob(target, { promptId: 'role-' + target, jobId: opened.jobId, text: 'answer' });
-    assert.equal(c.store.state.jobs.find(job => job.id === opened.jobId).status, 'completed');
-  }
-  const work = await c.store.submit('concurrent manual admission', 'original material');
-  await c.store.activate(work.id);
-  const outcomes = await Promise.allSettled([
-    c.openManualJob(work.id, 'first', 'first input'),
-    c.openManualJob(work.id, 'second', 'second input'),
-  ]);
-  assert.equal(outcomes.filter(outcome => outcome.status === 'fulfilled').length, 1);
-  assert.match(outcomes.find(outcome => outcome.status === 'rejected').reason.message, /settlement pending/);
-  const job = c.current.get(work.id);
-  assert.equal(job.revision, c.store.find(work.id).revision);
-  assert.deepEqual(c.store.state.messages.filter(message => message.jobId === job.id && message.speaker === 'user').map(message => message.text), [job.text]);
-  assert.equal(c.store.state.jobs.filter(saved => saved.target === work.id).length, 1);
-  assert.equal((await c.openManualJob(work.id, job.manualPromptId, job.text)).jobId, job.id);
-});
+;
 
-test('manual settlement failure retains durable input and owner until same-job retry; cold recovery never replays', async t => {
-  const { c, reopen, calls } = await fixture(t,{automatic:false});
-  const work = await c.store.submit('manual recovery', 'preserved material');
-  await c.store.activate(work.id);
-  const opened = await c.openManualJob(work.id, 'durable-input', 'original manual input');
-  const save = c.store.save.bind(c.store);
-  c.store.save = async () => { throw Error('injected settlement disk failure'); };
-  try {
-    await assert.rejects(c.settleManualJob(work.id, { promptId: 'durable-input', jobId: opened.jobId, text: 'answer' }), /settlement disk failure/);
-  } finally { c.store.save = save; }
-  assert.equal(c.current.get(work.id).id, opened.jobId);
-  assert.equal(c.store.find(work.id).status, 'running');
-  assert.equal(c.store.state.jobs.find(job => job.id === opened.jobId).status, 'running');
-  assert.equal(c.store.state.jobs.find(job => job.id === opened.jobId).text, 'original manual input');
-  await assert.rejects(c.openManualJob(work.id, 'new-input', 'must not replace'), /settlement pending/);
-  await c.settleManualJob(work.id, { promptId: 'durable-input', jobId: opened.jobId, text: 'answer' });
-  await c.settleManualJob(work.id, { promptId: 'durable-input', jobId: opened.jobId, text: 'duplicate' });
-  assert.equal(c.current.has(work.id), false);
-  assert.equal(c.store.state.jobs.find(job => job.id === opened.jobId).status, 'completed');
-  assert.equal(c.store.state.messages.filter(message => message.jobId === opened.jobId && message.speaker === 'agent').length, 1);
-  const pending = await c.openManualJob(work.id, 'crash-input', 'unsettled input survives restart');
-  await c.stop();
-  const before = calls.filter(call => call.type === 'prompt').length;
-  const next = await reopen();
-  assert.equal(next.store.find(work.id).status, 'paused');
-  assert.equal(next.store.state.jobs.find(job => job.id === pending.jobId).status, 'interrupted');
-  assert.equal(next.store.state.jobs.find(job => job.id === pending.jobId).text, 'unsettled input survives restart');
-  assert.equal(calls.filter(call => call.type === 'prompt').length, before);
-});
-
-test('manual continuation admission failure rolls back revision, job and messages together', async t => {
-  const { c } = await fixture(t,{automatic:false});
-  const work = await c.store.submit('manual continuation', 'original material');
-  await c.store.activate(work.id);
-  await c.store.mutate(() => { c.store.find(work.id).status = 'review'; });
-  const before = structuredClone(c.store.find(work.id));
-  const jobs = c.store.state.jobs.length, messages = c.store.state.messages.length;
-  const save = c.store.save.bind(c.store);
-  c.store.save = async () => { throw Error('injected admission disk failure'); };
-  try {
-    await assert.rejects(c.openManualJob(work.id, 'failed-continuation', 'preserve original input'), /admission disk failure/);
-  } finally { c.store.save = save; }
-  assert.deepEqual(c.store.find(work.id), before);
-  assert.equal(c.store.state.jobs.length, jobs);
-  assert.equal(c.store.state.messages.length, messages);
-  assert.equal(c.current.has(work.id), false);
-});
-
-test('manual Worker document reads and recoverable edit failures preserve the active job and isolated files', async t => {
+test('Worker document reads and recoverable edit failures preserve the admitted host job and isolated files', async t => {
   const { c } = await fixture(t,{automatic:false});
   await fs.writeFile(path.join(c.store.content, 'source.txt'), 'baseline\n');
   const work = await c.store.submit('edit source safely', 'read and recover rejected edits');
   await c.store.activate(work.id);
-  const opened = await c.openManualJob(work.id, 'document-round', 'read and edit source');
+  const opened = await admitHostJob(c,work.id,'read and edit source');
   const directory = c.execution.directory(work.id);
   const execute = (tool, callId, args) => c.onTool(work.id, { tool, callId, arguments: args });
   const active = () => {
@@ -251,7 +162,6 @@ test('accepted input failure persists before failed native stop and retains unco
     const cleaned = c.store.state.jobs.find(job => job.id === accepted.jobId);
     assert.equal(cleaned.status, 'failed');
     assert.deepEqual(c.store.state.providers.frontdesk, owner);
-    assert.deepEqual(cleaned.cleanupFailure.stages, [{ stage: 'native-stop', category: 'collab-hold' }]);
     assert.equal(cleaned.cleanupFailure.exitConfirmed, false);
     assert.equal(c.store.state.jobs.filter(job => job.target === 'frontdesk' && job.type === 'front').length, 1);
     for (const event of c.store.state.backstageEvents ?? []) assert(c.store.state.jobs.filter(job => job.type === 'backstage' && job.context?.backstageEventKey === event.key).length <= 1, 'one backstage job per original event');
@@ -276,20 +186,13 @@ test('late cancelled input remains cancelled while failed cleanup evidence is re
     assert.equal(JSON.stringify(saved.cleanupFailure).includes('private'), false);
   } finally { session.stop = originalStop; }
 });
-test('manual settlement retains the admitted ticket model, not the owner selection after defaults change',async t=>{
- const {c}=await fixture(t),opened=await c.openManualJob('frontdesk','model-evidence','original manual input');
- c.sessions.get('frontdesk').effective={model:'new/default',effort:'high'};
- await c.settleManualJob('frontdesk',{promptId:'model-evidence',jobId:opened.jobId,text:'answer',effective:{model:'admitted/model',effort:'low'}});
- assert.deepEqual(c.store.state.jobs.find(job=>job.id===opened.jobId).effective,{model:'admitted/model',effort:'low'});
- await c.settleManualJob('frontdesk',{promptId:'model-evidence',jobId:opened.jobId,effective:{model:'new/default'}});
- assert.deepEqual(c.store.state.jobs.find(job=>job.id===opened.jobId).effective,{model:'admitted/model',effort:'low'});
-});
+;
 test('nozeli_publish 字段由 kind 决定：problem 收 Markdown text，result 收 html，互斥不嗅探',async t=>{
  const {c,root}=await fixture(t,{automatic:false});
  const work=await c.store.submit('publish field contract','bound original material');
  await c.store.activate(work.id);
  const session=await c.session(work.id);
- const first=await c.openManualJob(work.id,'publish-round','first original input');
+ await admitHostJob(c,work.id,'first original input');
  const publish=(arguments_,callId)=>c.onTool(work.id,{tool:'nozeli_publish',arguments:arguments_,callId});
  await assert.rejects(publish({kind:'problem',html:staticReport('html question'),files:[]},'reject-problem-html'),/publication requires kind/);
  await assert.rejects(publish({kind:'result',text:'# markdown result',files:[]},'reject-result-text'),/publication requires kind/);
@@ -306,23 +209,19 @@ test('nozeli_publish 字段由 kind 决定：problem 收 Markdown text，result 
  const replay=await publish({kind:'problem',text:question,files:[]},'problem-text-receipt');
  assert.equal(replay.duplicate,true);assert.equal(replay.object,receipt.objectId);
  await assert.rejects(publish({kind:'problem',text:question+'\n改动后的重放',files:[]},'problem-text-receipt'),/receipt collision/);
- await c.settleManualJob(work.id,{promptId:'publish-round',jobId:first.jobId,text:'question asked'});
+ await c.store.settle(work.id);c.current.delete(work.id);
  assert.equal(c.store.find(work.id).status,'paused');
  await c.store.continue(work.id);
- const second=await c.openManualJob(work.id,'result-round','user answer');
+ await admitHostJob(c,work.id,'user answer');
  const result=await publish({kind:'result',html:staticReport('最终结论已核对'),files:[]},'result-html-receipt');
  assert.equal(result.saved,true);
  const resultReceipt=c.store.state.receipts.find(r=>r.id==='result-html-receipt');
  assert.equal(resultReceipt.report.format,'html-static');
  assert.ok((await c.store.readObject(resultReceipt.report.digest)).length>0);
  assert.ok(JSON.parse((await c.store.readObject(resultReceipt.report.manifestDigest)).toString('utf8')));
- await c.settleManualJob(work.id,{promptId:'result-round',jobId:second.jobId,text:'final answer delivered'});
+ await c.store.settle(work.id);c.current.delete(work.id);
  assert.equal(c.store.find(work.id).status,'review');
  const problemAfter=structuredClone(c.store.state.receipts.find(r=>r.id==='problem-text-receipt').report);
  assert.deepEqual(problemAfter,receipt.report);
  assert.equal((await c.store.readObject(receipt.report.digest).then(bytes=>bytes.toString('utf8'))),question);
- // 工具 schema 以 oneOf 显式表达字段合同；schema 变化经既有 toolsDigest 门，不自动重开线程。
- const publishTool=session.tools.find(entry=>entry.name==='nozeli_publish');
- assert.deepEqual(publishTool.inputSchema.oneOf.map(branch=>({required:branch.required,forbidden:branch.not.required})),[{required:['html'],forbidden:['text']},{required:['text'],forbidden:['html']}]);
- assert.deepEqual(publishTool.inputSchema.required,['kind','files']);
 });

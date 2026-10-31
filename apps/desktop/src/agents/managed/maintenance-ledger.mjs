@@ -5,8 +5,8 @@ const {version}=JSON.parse(await fs.readFile(new URL('../../../package.json',imp
 const now=()=>new Date().toISOString();
 export function maintenanceBoundary(error){
  const code=String(error?.code??'');
- if(code==='OMP_TOOLS_DIGEST_MISMATCH'||code==='WORKER_CONTEXT_RECOVERY_REQUIRED')return true;
- const guarded=new Set(['USER_DIRTY','INPUT_OVERLAP','TARGET_OVERLAP','HEAD_DRIFT','USER_STAGED','INDEX_CHANGED','SOURCE_CHANGED','IDENTITY_CHANGED','UNPUBLISHED_CHANGES','GIT_BUSY','GIT_LOCKED','WORK_BUSY','MISSING_THREAD','OMP_SESSION_FILE_NOT_FOUND','ENOENT','ENOTDIR','EISDIR','EINVAL','ELOOP','ENOSPC','EROFS']);
+ if(['OMP_TOOLS_DIGEST_MISMATCH','PI_TOOLS_DIGEST_MISMATCH','WORKER_CONTEXT_RECOVERY_REQUIRED'].includes(code))return true;
+ const guarded=new Set(['USER_DIRTY','INPUT_OVERLAP','TARGET_OVERLAP','HEAD_DRIFT','USER_STAGED','INDEX_CHANGED','SOURCE_CHANGED','IDENTITY_CHANGED','UNPUBLISHED_CHANGES','GIT_BUSY','GIT_LOCKED','WORK_BUSY','MISSING_THREAD','OMP_SESSION_FILE_NOT_FOUND','PI_SESSION_FILE_NOT_FOUND','ENOENT','ENOTDIR','EISDIR','EINVAL','ELOOP','ENOSPC','EROFS']);
  return guarded.has(code)||/PERMISSION|EACCES|EPERM|CONFLICT|STALE|CONSENT|AUTHORIZATION|DENIED|DEVIATION|DRAFT|PROCESS_LIMIT|STOPPED|STOPPING|EFFECT_|COLLAB_HOLD|EXIT_UNCONFIRMED|COMMIT|^PROJECT_|^STORAGE_|^REPORT_|^HTML_|^INVALID_|^UNSUPPORTED_/.test(code)||/invalid publication|invalid report|report resource|report image must|成果引用无法核验|missing.*resource|stale or inactive run/i.test(String(error?.message??''));
 }
 // Error messages can contain entire user documents, commands and credentials.

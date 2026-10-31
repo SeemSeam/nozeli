@@ -171,6 +171,8 @@ export function mountWorkspaceGroups({invoke,scope,toast=()=>{}}){
       if(!el)continue;el.classList.toggle('is-focused',g.id===activeGroup);
       const v=viewId?layout.views[viewId]:null,label=el.querySelector('.workspace-pane-title');
       if(v&&label){label.textContent=viewTitle(v)+(v.viewState?.documentStatus?.dirty?' · 未保存':'');label.title=v.relPath||viewTitle(v);}}
+    geometryObserver.disconnect();geometryObserver.observe(host);geometryObserver.observe(tree);
+    for(const content of tree.querySelectorAll('[data-workspace-content]'))geometryObserver.observe(content);
     scheduleBounds();}
   function overlays(){return [...document.querySelectorAll('dialog[open], [aria-modal="true"]:not([hidden]), .nozeli-context-menu:not([hidden]), #provider-console:not([hidden])')].filter(n=>n.getClientRects().length).map(n=>{const r=n.getBoundingClientRect();return {x:r.left,y:r.top,width:r.width,height:r.height};});}
   function bounds(strict=false){
@@ -205,7 +207,7 @@ export function mountWorkspaceGroups({invoke,scope,toast=()=>{}}){
   async function bindProject(projectId){const value=await call(scope.role==='detached'?'workspace.snapshot':'workspace.project',{projectId});layout=value.layout;windowId=value.windowId||windowId;activeGroup=groups()[0]?.id;try{render();}catch(error){toast('项目已切换，布局显示失败：'+error.message);}return value;}
   const open=async value=>{const view=value.kind==='web'?{...value,url:normalizeWebUrl(value.url),resourceId:'web:'+normalizeWebUrl(value.url)}:value;const existing=Object.values(layout?.views||{}).find(v=>v.kind===view.kind&&(view.kind==='document'?v.relPath===view.relPath&&!v.readOnly:view.kind==='conversation'||v.resourceId===view.resourceId));if(!existing)return command({type:'open',groupId:group()?.id,view});if(view.kind==='history'&&view.viewState?.report){await command({type:'restoreViewState',viewId:existing.id,viewState:view.viewState});await activate(existing.id,group()?.id);await call('workspace.control',{type:'history-refresh',projectId:layout.projectId,viewId:existing.id,report:view.viewState.report});return;}return activate(existing.id,group()?.id);};
   const geometryObserver=new ResizeObserver(scheduleBounds);geometryObserver.observe(host);geometryObserver.observe(tree);new MutationObserver(records=>{if(records.some(r=>!host.contains(r.target)))scheduleBounds();}).observe(document.body,{subtree:true,attributes:true,attributeFilter:['hidden','open','class']});window.addEventListener('nozeli-layout-change',scheduleBounds);
-  window.addEventListener('resize',scheduleBounds);window.nozeli.subscribe('workspace.changed',receive);
+  window.addEventListener('resize',scheduleBounds);window.visualViewport?.addEventListener('resize',scheduleBounds);window.nozeli.subscribe('workspace.changed',receive);
   window.nozeli.subscribe('workspace.control',event=>{if(event.type==='report-tools-closed'&&event.projectId===layout?.projectId){const content=[...tree.querySelectorAll('[data-workspace-content]')].find(n=>n.dataset.viewId===event.sourceViewId||n.dataset.viewId===event.viewId);content?.closest('.workspace-pane')?.querySelector('[data-workspace-command="more"]')?.focus({preventScroll:true});}});
   window.nozeli.subscribe('workspace.control',event=>{if(event.type==='viewport-changed')scheduleBounds();});
   window.nozeli.subscribe('workspace.changed',()=>{const root=windowId==='main'?layout?.mainRoot:layout?.detached.find(w=>w.id===windowId)?.root;updateRatios(root);});

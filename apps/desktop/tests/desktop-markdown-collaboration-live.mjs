@@ -72,8 +72,8 @@ try{
  await startApp();
  if(await shell.$eval('#configuration-setup',node=>node.open))await shell.click('#configuration-cancel');
  await call('config.initialize',{mode:'independent'});
- await call('settings.providers.save',{provider:'review-local',model:'scripted',baseUrl:'http://127.0.0.1:'+server.address().port+'/v1',api:'openai-completions',key:'synthetic-local-only'});
- await call('settings.models.save',{frontdesk:'review-local/scripted',orchestrator:'review-local/scripted',worker:'review-local/scripted'});
+ await call('settings.providers.save',{operation:'create',provider:'review-local',baseUrl:'http://127.0.0.1:'+server.address().port+'/v1',api:'openai-completions',models:[{id:'scripted'}],credential:{action:'replace',value:'synthetic-local-only'}});
+ await call('settings.models.save',{frontdesk:{model:{mode:'explicit',selector:'review-local/scripted'},thinking:{mode:'native-default'}},orchestrator:{model:{mode:'explicit',selector:'review-local/scripted'},thinking:{mode:'native-default'}},worker:{model:{mode:'explicit',selector:'review-local/scripted'},thinking:{mode:'native-default'}}});
  await shell.click('[data-project-id="'+projectId+'"]');await shell.waitForFunction(id=>window.__workspaceScope?.projectId===id,{},projectId);
  await call('managed.enable',{projectId});await until(async()=>(await call('managed.status',{projectId})).ready,'resident native owners');
  await shell.click('#file-tree [data-path="reading.md"]');const sourcePage=await nativeDocument(null);const sourceHistory=await call('document.history',{projectId,relPath:'reading.md'},sourcePage);
@@ -87,7 +87,7 @@ try{
  if(await shell.$eval('#toggle-sidebar',node=>node.getAttribute('aria-expanded')!=='true'))await shell.click('#toggle-sidebar');
  let page=await reportPage(todo.id);page.on('pageerror',error=>result.errors.push(error.message));
  await page.waitForSelector('[data-review-file="reading.md"]',{visible:true});
- assert.equal(await page.$eval('[data-review-file-row="reading.md"] [data-review-counts]',node=>node.textContent.trim()),'+1 / -1');
+ assert.equal(await page.$eval('[data-review-file-row="reading.md"] [data-review-counts]',node=>node.textContent.trim()),'+1 / −1');
  assert.equal(await page.$$eval('#managed-doc .cm-editor',nodes=>nodes.length),0,'report is a document index, never a parallel editor');
  const originalReview=await call('managed.review.read',{projectId,workId,objectId:receipt.objectId});assert.equal(originalReview.files.find(f=>f.relPath==='reading.md').baselineText,baseline);
  await page.click('[data-review-file="reading.md"]');let doc=await nativeDocument(receipt.objectId);assert.equal(await doc.evaluate(()=>window.__nozeliInput.text()),first);

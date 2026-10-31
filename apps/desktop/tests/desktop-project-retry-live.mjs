@@ -39,8 +39,8 @@ try{
  if(checkConnection){
   if(!await shell.$('#configuration-setup[open]')){await shell.click('#open-settings');await shell.click('[data-settings-section="settings-general"]');await shell.click('#settings-initialize');}
   await shell.click('#configuration-independent');await shell.waitForFunction(()=>!document.querySelector('#configuration-setup').open);
-  await invoke('settings.providers.save',{provider:'navigation-local',model:'scripted',baseUrl:'http://127.0.0.1:'+modelServer.address().port+'/v1',key:'synthetic-only',api:'openai-completions'});
-  await invoke('settings.models.save',{frontdesk:'navigation-local/scripted',orchestrator:'navigation-local/scripted',worker:'navigation-local/scripted'});
+  await invoke('settings.providers.save',{operation:'create',provider:'navigation-local',baseUrl:'http://127.0.0.1:'+modelServer.address().port+'/v1',api:'openai-completions',models:[{id:'scripted'}],credential:{action:'replace',value:'synthetic-only'}});
+  await invoke('settings.models.save',{frontdesk:{model:{mode:'explicit',selector:'navigation-local/scripted'},thinking:{mode:'native-default'}},orchestrator:{model:{mode:'explicit',selector:'navigation-local/scripted'},thinking:{mode:'native-default'}},worker:{model:{mode:'explicit',selector:'navigation-local/scripted'},thinking:{mode:'native-default'}}});
  }
  if(!checkConnection&&await shell.$('#configuration-setup[open]'))await shell.click('#configuration-cancel');
  await shell.click('#recent [data-project-id="'+id+'"]');

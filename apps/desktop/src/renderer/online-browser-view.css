@@ -1,5 +1,5 @@
 html[data-workspace-role=surface][data-workspace-kind=web] #app.app>.online-browser:not(#reader){display:flex!important}
-.online-browser{display:flex;flex-direction:column;position:absolute;inset:0;min-width:0;min-height:0;overflow:hidden;background:var(--panel-bg,#fff);color:var(--text,#202620);font:13px system-ui,sans-serif}
+.online-browser{--panel-bg:var(--paper);--text:var(--ink);--danger:var(--red);display:flex;flex-direction:column;position:absolute;inset:0;min-width:0;min-height:0;overflow:hidden;background:var(--panel-bg,#fff);color:var(--text,#202620);font:13px system-ui,sans-serif}
 .online-browser-toolbar{display:flex;flex:none;align-items:center;gap:6px;padding:8px;border-bottom:1px solid var(--border,#d8ded8);background:var(--panel-bg,#fff)}
 .online-browser-toolbar button{flex:none;min-height:30px;padding:4px 9px;border:1px solid var(--border,#cbd4cb);border-radius:5px;background:var(--panel-bg,#fff);color:inherit;cursor:pointer}
 .online-browser-toolbar button:disabled{opacity:.45;cursor:default}

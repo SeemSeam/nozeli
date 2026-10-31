@@ -1,0 +1,210 @@
+import type { WorkspaceRef } from "./types.js";
+
+export type RuntimeAuthType = "oauth" | "api_key" | "none";
+export type RuntimeProviderAuthSource = "none" | "oauth" | "auth_file" | "env" | "external";
+export type RuntimeSourceScope = "user" | "project" | "temporary";
+export type RuntimeSourceOrigin = "package" | "top-level";
+export type RuntimeCommandSource = "extension" | "prompt" | "skill";
+
+export interface RuntimeSourceInfo {
+  readonly path: string;
+  readonly source: string;
+  readonly scope: RuntimeSourceScope;
+  readonly origin: RuntimeSourceOrigin;
+  readonly baseDir?: string;
+}
+
+export interface RuntimeProviderRecord {
+  readonly id: string;
+  readonly name: string;
+  readonly hasAuth: boolean;
+  readonly authType: RuntimeAuthType;
+  readonly authSource: RuntimeProviderAuthSource;
+  readonly oauthSupported: boolean;
+  readonly apiKeySetupSupported: boolean;
+}
+
+/**
+ * Where pi's `enabledModels` scope puts a model: `all` when the setting is unset, `listed` when
+ * only its own `provider/model` entry enables it, `matched` when another entry enables it (a glob,
+ * bare id, fuzzy name or `:thinking` suffix), so removing its own entry cannot turn it off, and
+ * `off` when no entry enables it.
+ */
+export type RuntimeModelScope = "all" | "listed" | "matched" | "off";
+
+export interface RuntimeModelRecord {
+  readonly providerId: string;
+  readonly providerName: string;
+  readonly modelId: string;
+  readonly label: string;
+  readonly available: boolean;
+  readonly authType: RuntimeAuthType;
+  readonly reasoning: boolean;
+  /** Native per-model thinking levels (pi-ai getSupportedThinkingLevels). */
+  readonly thinkingLevels: readonly string[];
+  readonly supportsImages: boolean;
+  readonly scope: RuntimeModelScope;
+}
+
+export interface RuntimeSkillRecord {
+  readonly name: string;
+  readonly description: string;
+  readonly filePath: string;
+  readonly baseDir: string;
+  readonly source: string;
+  readonly scope: RuntimeSourceScope;
+  readonly enabled: boolean;
+  readonly disableModelInvocation: boolean;
+  readonly slashCommand: string;
+}
+
+export interface RuntimeExtensionDiagnostic {
+  readonly type: "warning" | "error" | "collision";
+  readonly message: string;
+  readonly path?: string;
+}
+
+/** A flag an extension registered with `pi.registerFlag`, set per session like `pi --name value`. */
+export interface RuntimeExtensionFlag {
+  readonly name: string;
+  readonly description?: string;
+  readonly type: "boolean" | "string";
+  readonly default?: boolean | string;
+}
+
+/** A tool an extension registered: the name the model calls and the label it gave for UIs. */
+export interface RuntimeExtensionTool {
+  readonly name: string;
+  /** Empty when the extension gave none. */
+  readonly label: string;
+  /** It replaces one of pi's own tools (read, bash, edit, ...), which keep pi-gui's handling. */
+  readonly replacesPiTool: boolean;
+}
+
+export interface RuntimeExtensionRecord {
+  readonly path: string;
+  readonly displayName: string;
+  readonly description?: string;
+  readonly enabled: boolean;
+  readonly sourceInfo: RuntimeSourceInfo;
+  readonly commands: readonly string[];
+  readonly tools: readonly RuntimeExtensionTool[];
+  readonly flags: readonly string[];
+  readonly flagDetails: readonly RuntimeExtensionFlag[];
+  readonly shortcuts: readonly string[];
+  readonly diagnostics: readonly RuntimeExtensionDiagnostic[];
+}
+
+export interface RuntimeCommandRecord {
+  readonly name: string;
+  readonly description?: string;
+  readonly source: RuntimeCommandSource;
+  readonly sourceInfo: RuntimeSourceInfo;
+}
+
+export function normalizeRuntimeCommandName(value: string): string {
+  return value.trim().replace(/^\/+/, "");
+}
+
+export function runtimeCommandToken(name: string): string {
+  return `/${normalizeRuntimeCommandName(name)}`;
+}
+
+export function skillCommandName(name: string): string {
+  return `skill:${normalizeRuntimeCommandName(name)}`;
+}
+
+export function skillSlashCommand(name: string): string {
+  return runtimeCommandToken(skillCommandName(name));
+}
+
+export interface RuntimeSettingsSnapshot {
+  readonly defaultProvider?: string;
+  readonly defaultModelId?: string;
+  readonly defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+  readonly enableSkillCommands: boolean;
+  readonly enabledModelPatterns: readonly string[];
+}
+
+export interface ModelSettingsSnapshot {
+  readonly defaultProvider?: string;
+  readonly defaultModelId?: string;
+  readonly defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+  readonly enabledModelPatterns: readonly string[];
+}
+
+export interface RuntimeSnapshot {
+  readonly workspace: WorkspaceRef;
+  readonly providers: readonly RuntimeProviderRecord[];
+  readonly models: readonly RuntimeModelRecord[];
+  readonly skills: readonly RuntimeSkillRecord[];
+  readonly extensions: readonly RuntimeExtensionRecord[];
+  readonly settings: RuntimeSettingsSnapshot;
+}
+
+export interface RuntimeLoginAuthInfo {
+  readonly url: string;
+  readonly instructions?: string;
+}
+
+export interface RuntimeLoginPrompt {
+  readonly message: string;
+  readonly placeholder?: string;
+  readonly allowEmpty?: boolean;
+}
+
+export interface RuntimeLoginCallbacks {
+  readonly onAuth: (info: RuntimeLoginAuthInfo) => void | Promise<void>;
+  readonly onPrompt: (prompt: RuntimeLoginPrompt) => Promise<string>;
+  readonly onProgress?: (message: string) => void | Promise<void>;
+  readonly onManualCodeInput?: () => Promise<string>;
+  readonly signal?: AbortSignal;
+}
+
+export interface RuntimeResourceDriver {
+  getRuntimeSnapshot(workspace: WorkspaceRef): Promise<RuntimeSnapshot>;
+  refreshRuntime(workspace: WorkspaceRef): Promise<RuntimeSnapshot>;
+  login(
+    workspace: WorkspaceRef,
+    providerId: string,
+    callbacks: RuntimeLoginCallbacks,
+  ): Promise<RuntimeSnapshot>;
+  logout(workspace: WorkspaceRef, providerId: string): Promise<RuntimeSnapshot>;
+  setProviderApiKey(
+    workspace: WorkspaceRef,
+    providerId: string,
+    apiKey: string,
+  ): Promise<RuntimeSnapshot>;
+  setDefaultModel(
+    workspace: WorkspaceRef,
+    selection: {
+      readonly provider: string;
+      readonly modelId: string;
+    },
+  ): Promise<RuntimeSnapshot>;
+  setDefaultThinkingLevel(
+    workspace: WorkspaceRef,
+    thinkingLevel: RuntimeSettingsSnapshot["defaultThinkingLevel"],
+  ): Promise<RuntimeSnapshot>;
+  setEnableSkillCommands(workspace: WorkspaceRef, enabled: boolean): Promise<RuntimeSnapshot>;
+  setScopedModelPatterns(
+    workspace: WorkspaceRef,
+    patterns: readonly string[],
+  ): Promise<RuntimeSnapshot>;
+  /** Re-resolves each model's scope against `patterns` instead of the workspace's own setting. */
+  scopeModels(
+    workspace: WorkspaceRef,
+    models: readonly RuntimeModelRecord[],
+    patterns: readonly string[],
+  ): Promise<readonly RuntimeModelRecord[]>;
+  setSkillEnabled(
+    workspace: WorkspaceRef,
+    filePath: string,
+    enabled: boolean,
+  ): Promise<RuntimeSnapshot>;
+  setExtensionEnabled(
+    workspace: WorkspaceRef,
+    filePath: string,
+    enabled: boolean,
+  ): Promise<RuntimeSnapshot>;
+}

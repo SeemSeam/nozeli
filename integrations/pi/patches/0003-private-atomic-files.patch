@@ -1,0 +1,20 @@
+--- a/packages/catalogs/node/atomic-write.ts
++++ b/packages/catalogs/node/atomic-write.ts
+@@ -21,7 +21,7 @@
+  */
+ export async function writeFileAtomic(filePath: string, data: string | Uint8Array): Promise<void> {
+   const dir = dirname(filePath);
+-  await mkdir(dir, { recursive: true });
++  await mkdir(dir, { recursive: true, mode: 0o700 });
+ 
+   // Collision-safe temp name: a pid + monotonic counter + randomness so two
+   // writers, or two writes within the same millisecond, never share a path
+@@ -29,7 +29,7 @@
+   tmpCounter = (tmpCounter + 1) >>> 0;
+   const tmpPath = `${filePath}.${process.pid}.${tmpCounter}.${randomBytes(6).toString("hex")}${TMP_SUFFIX}`;
+ 
+-  const handle = await open(tmpPath, "w");
++  const handle = await open(tmpPath, "wx", 0o600);
+   try {
+     await handle.writeFile(data);
+     await handle.sync();

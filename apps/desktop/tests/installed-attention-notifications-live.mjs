@@ -168,8 +168,8 @@ const askTodo=async marker=>until(async()=>{const state=await status();return st
 try{
   await launch();
   await invoke('config.initialize',{mode:'independent'});
-  await invoke('settings.providers.save',{provider:'notify-local',model:'scripted',baseUrl:'http://127.0.0.1:'+server.address().port+'/v1',key:'local-only',api:'openai-completions'});
-  await invoke('settings.models.save',{frontdesk:'notify-local/scripted',orchestrator:'notify-local/scripted',worker:'notify-local/scripted'});
+  await invoke('settings.providers.save',{operation:'create',provider:'notify-local',baseUrl:'http://127.0.0.1:'+server.address().port+'/v1',api:'openai-completions',models:[{id:'scripted'}],credential:{action:'replace',value:'local-only'}});
+  await invoke('settings.models.save',{frontdesk:{model:{mode:'explicit',selector:'notify-local/scripted'},thinking:{mode:'native-default'}},orchestrator:{model:{mode:'explicit',selector:'notify-local/scripted'},thinking:{mode:'native-default'}},worker:{model:{mode:'explicit',selector:'notify-local/scripted'},thinking:{mode:'native-default'}}});
   if(await shell.$eval('#configuration-setup',node=>node.open).catch(()=>false))await shell.click('#configuration-cancel');
   await shell.click('#pick-project');
   alphaId=await until(async()=>(await invoke('workspace.bootstrap')).projectId,'source project');

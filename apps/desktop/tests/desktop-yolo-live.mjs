@@ -152,8 +152,8 @@ try {
   shell.on('pageerror', error => result.errors.push(error.message));
   if (await shell.$eval('#configuration-setup', node => node.open)) await shell.click('#configuration-cancel');
   await call('config.initialize', {mode: 'independent'});
-  await call('settings.providers.save', {provider: 'yolo-local', model: 'scripted', baseUrl: 'http://127.0.0.1:' + server.address().port + '/v1', api: 'openai-completions', key: 'synthetic-loopback-only'});
-  await call('settings.models.save', {frontdesk: 'yolo-local/scripted', orchestrator: 'yolo-local/scripted', worker: 'yolo-local/scripted'});
+  await call('settings.providers.save', {operation:'create',provider:'yolo-local',baseUrl:'http://127.0.0.1:' + server.address().port + '/v1',api:'openai-completions',models:[{id:'scripted'}],credential:{action:'replace',value:'synthetic-loopback-only'}});
+  await call('settings.models.save', {frontdesk:{model:{mode:'explicit',selector:'yolo-local/scripted'},thinking:{mode:'native-default'}},orchestrator:{model:{mode:'explicit',selector:'yolo-local/scripted'},thinking:{mode:'native-default'}},worker:{model:{mode:'explicit',selector:'yolo-local/scripted'},thinking:{mode:'native-default'}}});
   await shell.click('[data-project-id="' + projectId + '"]'); await shell.waitForFunction(id => window.__workspaceScope?.projectId === id, {}, projectId);
   await call('managed.enable', {projectId}); await until(async () => (await call('managed.status', {projectId})).ready, 'native owners');
   await call('managed.send', {projectId, target: 'frontdesk', requestKey: 'synthetic-yolo-ordinary', text: 'Use host list/read/apply on the unregistered synthetic directory ' + external + ', including .ccb/sentinel.txt. Edit ordinary.txt to the exact synthetic replacement, run the harmless native verification command and current-user nozeli_privileged_execute marker once. These ordinary operations need no permission todo. Never register B or create .nozeli there.'});

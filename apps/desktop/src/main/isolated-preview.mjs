@@ -156,7 +156,16 @@ export class IsolatedPreviewManager{
     if(slot.view){try{(slot.parentWindow??slot.scope.previewWindow??slot.scope.win).contentView.removeChildView(slot.view);}catch{}const wc=slot.view.webContents;if(!wc.isDestroyed())wc.close({waitForBeforeUnload:false});}
     if(slot.protocolHandled)slot.session.protocol.unhandle('https');slot.files.clear();
   }
-  bounds(slot,bounds){if(!bounds||!['x','y','width','height'].every(k=>Number.isFinite(bounds[k])))throw fail('预览区域无效。');const parent=slot.scope.role==='surface'?slot.scope.view.getBounds():{x:0,y:0,width:slot.scope.win.getContentSize()[0],height:slot.scope.win.getContentSize()[1]};const x=Math.max(0,Math.round(bounds.x)),y=Math.max(0,Math.round(bounds.y)),width=Math.max(0,Math.min(Math.round(bounds.width),parent.width-x)),height=Math.max(0,Math.min(Math.round(bounds.height),parent.height-y));slot.bounds={x,y,width,height};slot.view.setBounds({x:parent.x+x,y:parent.y+y,width,height});slot.view.setVisible(!slot.scope.transferring&&!slot.scope.previewRecoveryFailed&&width>0&&height>0&&(slot.scope.role!=='surface'||slot.scope.view.getVisible()));}
+  bounds(slot,bounds){
+    if(!bounds||!['x','y','width','height'].every(k=>Number.isFinite(bounds[k])))throw fail('预览区域无效。');
+    // Retain the renderer's requested rectangle, not the temporary clipping
+    // against a hidden/initially zero-sized owner. Native layout reuses it.
+    slot.bounds={x:bounds.x,y:bounds.y,width:bounds.width,height:bounds.height};
+    const parent=slot.scope.role==='surface'?slot.scope.view.getBounds():{x:0,y:0,width:slot.scope.win.getContentSize()[0],height:slot.scope.win.getContentSize()[1]};
+    const x=Math.max(0,Math.round(bounds.x)),y=Math.max(0,Math.round(bounds.y)),width=Math.max(0,Math.min(Math.round(bounds.x+bounds.width),parent.width)-x),height=Math.max(0,Math.min(Math.round(bounds.y+bounds.height),parent.height)-y);
+    slot.view.setBounds({x:parent.x+x,y:parent.y+y,width,height});
+    slot.view.setVisible(!slot.scope.transferring&&!slot.scope.previewRecoveryFailed&&width>0&&height>0&&(slot.scope.role!=='surface'||slot.scope.view.getVisible()));
+  }
   snapshot(slot){const unsaved=[...slot.files.values()].some(f=>f.dirty);return {key:slot.key,generation:slot.generation,profile:slot.profile,projectId:slot.projectId,entryPath:slot.entry,origin:slot.origin,files:[...slot.files].map(([path,f])=>({path,digest:f.digest,version:f.version,dirty:f.dirty})),dirty:unsaved,unsaved};}
   // Enum-only appearance injection for live static reports: values come from the
   // fixed accent map; the frozen object and its export bytes never change.

@@ -9,7 +9,6 @@
   <link rel="stylesheet" href="./styles.css">
   <link rel="stylesheet" href="./katex.css">
   <link rel="stylesheet" href="./workspace.css">
-  <link rel="stylesheet" href="./provider-terminal.css">
   <link rel="stylesheet" href="./app.css">
 </head>
 <body>
@@ -100,17 +99,10 @@
       <button id="toggle-sidebar" class="sidebar-toggle edge-toggle" type="button" aria-expanded="true" aria-controls="sidebar-body" aria-label="收起工作与待办" title="收起工作与待办"></button>
       <div id="sidebar-body"><section class="workflow-panel"><h2>开展的工作 <small id="work-count">00</small></h2><nav class="filters" aria-label="工作筛选"><button class="active" data-work-filter="active">开放</button><button data-work-filter="paused">暂存</button><button data-work-filter="closed">已结束</button><button data-work-filter="all">全部</button></nav><div id="work-items"></div><p class="panel-empty" id="work-empty">还没有开展的工作。</p></section><section class="inbox-panel"><h2>待办 <small id="inbox-count">00</small></h2><nav class="filters" aria-label="待办筛选"><button class="active" data-inbox-filter="all">全部</button><button data-inbox-filter="read">阅读</button><button data-inbox-filter="answer">回答</button></nav><div id="inbox-reports"></div><p class="panel-empty" id="inbox-empty">没有待阅读或待回答的内容。</p></section></div>
     </aside>
-    <section id="provider-console" class="provider-console" hidden aria-label="当前项目 Agent 独立终端页">
-      <header class="provider-console-head"><div class="provider-console-title"><span class="provider-console-kicker">NOZELI · PROJECT AGENTS</span><strong>项目 Agent</strong><p id="provider-console-project">尚未打开项目</p><p>前台和后台是当前项目的独立 CLI。返回阅读后，后台任务继续运行。</p></div><div class="provider-console-actions"><button type="button" id="provider-console-refresh">重新连接</button><button type="button" id="provider-console-close">返回阅读</button></div></header>
-      <div class="provider-console-columns">
-        <article class="provider-role" aria-label="前台 CLI 终端" id="provider-terminal-qa" data-provider-role="qa"><header><strong>前台 Agent</strong><span>对话与解释</span></header><div class="provider-output" aria-label="前台原生终端"></div></article>
-        <article class="provider-role" aria-label="后台 CLI 终端" id="provider-terminal-task" data-provider-role="task"><header><strong>后台 Agent</strong><span>任务与报告</span></header><div class="provider-output" aria-label="后台原生终端"></div></article>
-      </div>
-    </section>
   </div>
 
   <dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-title">
-    <header class="settings-heading"><div><h2 id="settings-title">设置</h2><p>应用偏好与 Nozeli 私有 OMP</p></div><button type="button" id="settings-close" aria-label="关闭设置">×</button></header>
+    <header class="settings-heading"><div><h2 id="settings-title">设置</h2><p>应用偏好与 Nozeli 私有 Pi</p></div><button type="button" id="settings-close" aria-label="关闭设置">×</button></header>
     <div class="settings-layout">
       <nav class="settings-nav" aria-label="设置分类">
         <div class="settings-scope-label">通用设置 <small>所有项目共享</small></div>
@@ -122,22 +114,23 @@
         <button type="button" data-settings-section="settings-general">快捷键与初始化</button>
         <button type="button" data-settings-section="settings-recovery">本机恢复 <span class="badge" id="settings-recovery-count" hidden></span></button>
         <button type="button" data-settings-section="settings-help">帮助与演示</button>
+        <button type="button" data-settings-section="settings-update">应用更新</button>
         <div class="settings-scope-label">当前项目设置 <small id="settings-project-name">未打开项目</small><details><summary>项目路径</summary><span id="settings-project-path"></span><button type="button" id="settings-copy-project-path">复制路径</button></details></div>
         <button type="button" data-settings-section="settings-project-reading">阅读与对话</button>
         <button type="button" data-settings-section="settings-project-workspace">工作区</button>
         <button type="button" data-settings-section="settings-project-tex">TeX 编译</button>
         <button type="button" data-settings-section="settings-project-confirmations">交互与确认</button>
         <div class="settings-scope-label">快捷操作 <small>立即执行，不切换设置分类</small></div>
-        <button type="button" id="provider-console-toggle" hidden aria-pressed="false" aria-label="切换到终端">终端</button>
         <button type="button" id="settings-zen" aria-pressed="false">进入 Zen 专注模式</button>
       </nav>
       <div class="settings-content">
         <p id="settings-error" role="alert"></p>
-        <section id="settings-provider" aria-label="OMP 源管理"></section>
+        <section id="settings-provider" aria-label="Pi 源管理"></section>
         <section id="settings-models" aria-label="三角色默认模型" hidden></section>
         <section id="settings-agents" aria-label="Agent 额度" hidden></section>
         <section id="settings-appearance" aria-label="外观" hidden></section>
         <section id="settings-reading-display" aria-label="阅读显示" hidden></section>
+        <section id="settings-update" aria-label="应用更新" hidden></section>
         <section id="settings-help" aria-label="帮助与演示" hidden>
           <h3>帮助与演示</h3>
           <p class="settings-hint">用独立示例了解阅读、批注、编辑和工作区。回复为本地固定演示内容，不需要账号。</p>
@@ -149,7 +142,7 @@
         <section id="settings-project-confirmations" aria-label="当前项目交互与确认" hidden></section>
         <section id="settings-general" aria-label="通用设置" hidden>
           <h3>快捷键与初始化</h3><p class="settings-hint">正文与对话的显示偏好位于当前项目的“阅读与对话”；各文件的常用操作仍在内容附近。</p>
-          <div class="settings-card"><h4>Nozeli 配置初始化</h4><p>首次使用可选择独立配置或明确同意导入系统 OMP；完成后不可重复导入。不会自动复制登录凭据。</p><button type="button" id="settings-initialize">查看初始化状态</button></div>
+          <div class="settings-card"><h4>AI 连接初始化</h4><p>Pi 使用独立私有配置；旧版配置和会话不会自动导入或改写。请在 AI 连接中添加服务或登录账号。</p><button type="button" id="settings-initialize">查看初始化状态</button></div>
           <p class="settings-hint">发送：Ctrl / Cmd + Enter；换行：Enter。Zen：Ctrl / Cmd + Shift + F11；退出：Esc。</p>
         </section>
         <section id="settings-recovery" aria-label="本机恢复" hidden>
@@ -162,7 +155,7 @@
   </dialog>
   <dialog id="beside-dialog" aria-labelledby="beside-heading"><form id="beside-form"><header class="dialog-heading"><h2 id="beside-heading">文档对比</h2><button type="button" id="beside-cancel" aria-label="取消">×</button></header><div class="comparison-source" role="group" aria-label="对比来源"><button id="beside-source-file" type="button" aria-pressed="true">其他文件</button><button id="beside-source-history" type="button" aria-pressed="false">历史版本</button></div><div id="beside-files"><label for="beside-file">选择项目文件</label><select id="beside-file"></select></div><div id="beside-history" hidden><label for="beside-version">当前文件的已记录版本</label><select id="beside-version"></select><button id="beside-more" type="button" hidden>加载更早版本</button></div><p id="beside-status" role="status"></p><p class="quiet">对比保留当前草稿；对照内容保持只读。</p><div class="dialog-actions"><button id="beside-open" type="submit">打开对照</button><button id="beside-diff" type="submit">比较差异</button></div></form></dialog>
   <div id="selection-menu" class="selection-menu" hidden><button id="selection-draw" hidden>涂鸦</button><button id="selection-note">备注</button><button id="selection-discuss">讨论</button><button id="selection-explain" disabled title="前台尚未就绪">解释</button></div>
-  <dialog id="configuration-setup" aria-labelledby="configuration-title"><h2 id="configuration-title">初始化 Nozeli OMP</h2><p>Nozeli 使用随应用提供的 OMP 和独立私有配置，不会修改系统 OMP。此选择仅初始化一次，与项目无关。</p><p>可以一次性导入系统 OMP 的模型与安全配置，或从独立空配置开始。OAuth 登录不会导入；完成后从左下角设置管理账号登录、API 源和三角色默认模型；已有会话仍可在原生 OMP 终端内调整。</p><label><input type="checkbox" id="configuration-api-keys">明确同意一次性复制 API 密钥到 Nozeli 私有存储（可选，不包含 OAuth）</label><p id="configuration-status" role="status"></p><div class="dialog-actions"><button type="button" id="configuration-import">导入系统 OMP 配置</button><button type="button" id="configuration-independent">使用独立配置</button><button type="button" id="configuration-cancel">稍后设置，继续阅读</button></div></dialog>
+  <dialog id="configuration-setup" aria-labelledby="configuration-title"><h2 id="configuration-title">初始化 Nozeli Pi</h2><p>Nozeli 使用独立私有 Pi 配置，不读取或修改系统 Pi 配置和账号。</p><p>旧版会话保留为只读历史，不会自动转换、重放或导入密钥。完成初始化后，在设置中添加 API 源或登录账号，并选择前台／主控／Worker 默认模型。</p><label hidden><input type="checkbox" id="configuration-api-keys" disabled>旧运行环境凭据不会自动导入</label><p id="configuration-status" role="status"></p><div class="dialog-actions"><button type="button" id="configuration-import" hidden disabled>旧运行环境导入已退役</button><button type="button" id="configuration-independent">使用独立配置</button><button type="button" id="configuration-cancel">稍后设置，继续阅读</button></div></dialog>
   <dialog id="quit-choice" aria-labelledby="quit-choice-title"><h2 id="quit-choice-title">有任务尚未结束</h2><p>可以继续留在软件，或取消任务后再退出。取消会等待本应用启动的子进程结束；等待期间仍可强制退出。</p><p>强制退出不等待保存或任务收尾，未保存内容可能丢失，正在执行的操作可能未完成；下次打开不会自动重放任务。</p><p id="quit-error" role="status"></p><div class="dialog-actions"><button type="button" id="quit-stay">继续留在软件</button><button type="button" id="quit-cancel">取消任务并退出</button><button type="button" id="quit-force">强制退出</button></div></dialog>
   <div id="toast" role="status" hidden></div>
   <script type="module" src="./app.js"></script>

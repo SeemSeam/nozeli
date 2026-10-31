@@ -80,7 +80,7 @@ html:root[data-palette="sage"][data-theme="dark"] { --diff-added:#26322b;--diff-
 /* Only chrome is opted in; explicit pixel typography keeps rem-based content stable.
    Font-only declarations avoid changing layout/weight/line-height and SVG geometry. */
 :where(#files,#side,.rail,.topbar,.project-view-switch,dialog,[data-settings-panel],.nozeli-context-menu):not(.settings-dialog,#action-confirmation),
-:where(#files,#side,.rail,.topbar,.project-view-switch,dialog,[data-settings-panel],.nozeli-context-menu) :not(svg,svg *, .settings-dialog,.settings-dialog *,#action-confirmation,#action-confirmation *, .ui-icon,.file-type-icon,.file-type-icon *, .xterm,.xterm *, .managed-terminal-screen,.managed-terminal-screen *, .agent-terminal-screen,.agent-terminal-screen *, .cm-editor,.cm-editor *, .tag-chat-window,.tag-chat-window *, .agent-message-body,.agent-message-body *, .material-viewer,.material-viewer *, .managed-work-entry,.managed-work-entry *, .managed-todo-row,.managed-todo-row *) {
+:where(#files,#side,.rail,.topbar,.project-view-switch,dialog,[data-settings-panel],.nozeli-context-menu) :not(svg,svg *, .settings-dialog,.settings-dialog *,#action-confirmation,#action-confirmation *, .ui-icon,.file-type-icon,.file-type-icon *, .cm-editor,.cm-editor *, .tag-chat-window,.tag-chat-window *, .agent-message-body,.agent-message-body *, .material-viewer,.material-viewer *, .managed-work-entry,.managed-work-entry *, .managed-todo-row,.managed-todo-row *) {
   font-family:var(--chrome-font-family)!important;
   font-size:var(--chrome-font-size)!important;
 }
@@ -98,7 +98,7 @@ html[data-theme="dark"] :is(dialog:not(.settings-dialog):not(#action-confirmatio
 html[data-theme="dark"] :is(input,select,textarea):not(.xterm-helper-textarea) {
   background-color:var(--paper);color:var(--ink);border-color:var(--line);
 }
-html[data-theme="dark"] :is(.files,.side,.provider-console,.provider-role,.composer-wrap,.composer-preview,.tag-message-assistant,.agent-message-agent,.tag-editor,.pdf-toolbar button,.pdf-toolbar input,.rail-add) {
+html[data-theme="dark"] :is(.files,.side,.composer-wrap,.composer-preview,.tag-message-assistant,.agent-message-agent,.tag-editor,.pdf-toolbar button,.pdf-toolbar input,.rail-add) {
   background-color:var(--paper);color:var(--ink);border-color:var(--line);
 }
 html[data-theme="dark"] :is(.agent-message-user,.tag-message-user) { background:var(--green-soft);color:var(--ink); }
@@ -109,7 +109,7 @@ html[data-theme="dark"] :is(.nozeli-context-menu>button,.surface-menu button):is
 html[data-theme="dark"] :is(.ui-icon-button,.panel-more,.panel-font)[aria-expanded="true"],
 html[data-theme="dark"] .ui-icon-button[aria-pressed="true"] { color:var(--ink);background:var(--ui-control-active); }
 html[data-theme="dark"] .document-menu-separator { background:var(--line); }
-html[data-theme="dark"] .provider-console-open { background:var(--bg); }
+html[data-theme="dark"] .tag-delivery { color:var(--muted); }
 html[data-theme="dark"] .note-anchor {
   --tag-window-bg:var(--paper);--tag-window-ink:var(--ink);--tag-window-head:#2d3b30;--tag-window-border:var(--line);--tag-window-accent:var(--green);
 }

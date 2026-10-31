@@ -1,3 +1,7 @@
+/* Viewport chrome must not inherit the paginated document's intrinsic width.
+   Oversized manually zoomed pages scroll; only SuperDoc's fit mode scales them. */
+html,body{width:100%;min-width:0;box-sizing:border-box}
+#toolbar,#document{width:100%;max-width:100%;box-sizing:border-box}
 body{margin:0;background:#efeee9;font:14px system-ui}#toolbar{position:sticky;top:0;background:var(--frame-chrome-bg,#fff);color:var(--frame-chrome-ink,#263932);z-index:50;border-bottom:1px solid var(--frame-chrome-line,#ddd)}#document{margin:12px auto;min-width:0}#error{color:#a7352c;padding:12px}html,body{min-height:100%}
 html[data-theme=light][data-palette=sage] #toolbar{--frame-chrome-bg:#fffefa;--frame-chrome-ink:#263932;--frame-chrome-line:#e1e6de}html[data-theme=dark][data-palette=sage] #toolbar{--frame-chrome-bg:#222b25;--frame-chrome-ink:#e1e9e3;--frame-chrome-line:#435148}html[data-theme=light][data-palette=slate] #toolbar{--frame-chrome-bg:#fbfcfe;--frame-chrome-ink:#263544;--frame-chrome-line:#ccd6e0}html[data-theme=dark][data-palette=slate] #toolbar{--frame-chrome-bg:#222d3a;--frame-chrome-ink:#e3eaf2;--frame-chrome-line:#46596d}
 /* Scope vendor UI tokens to Nozeli's toolbar host, never the document surface. */

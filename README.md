@@ -60,7 +60,7 @@ Agent 交付得快，不代表人已经理解。Nozeli 希望让你看清成果�
 ## 开始使用
 
 1. 打开本地项目目录和需要阅读、编辑的材料。
-2. 在设置中配置 AI 源与角色默认模型；AI 使用随应用提供的私有 OMP。
+2. 本独立 `nozeli_pi` 分支使用 Pi 会话内核；在设置中配置 AI 源与前台／主控／Worker 默认模型。已发布 Nozeli tag 不因本分支改变，当前整合不替换已安装版本。
 3. 直接交流，或从选区发起讨论；普通文件操作与当前用户命令可直接执行，持续后台工作沿原任务交接。敏感／管理员执行从同项目待办明确授权，系统提权仍由真实 OS 认证完成；角色分工不会把已授权能力变成“没有权限”。
 4. 从待办查看问题与成果，继续修改，或明确接受／丢弃并结束。
 
@@ -77,7 +77,7 @@ Agent 交付得快，不代表人已经理解。Nozeli 希望让你看清成果�
 
 - [产品文档：方向、状态与原则](docs/README.md) · [发布说明与发行边界](docs/release.md)
 - [阅读与协作原则](docs/principles.md)
-- [桌面开发与验证](apps/desktop/README.md) · [私有 OMP 集成](integrations/omp/README.md) · [第三方来源与许可](apps/desktop/SOURCES.md) · [合规清单](apps/desktop/compliance-inventory.json)
+- [桌面开发与验证](apps/desktop/README.md) · [Pi 整合与回归记录](docs/pi-integration-execution.md) · [第三方来源与许可](apps/desktop/SOURCES.md) · [合规清单](apps/desktop/compliance-inventory.json)
 
 
 ## 参与贡献

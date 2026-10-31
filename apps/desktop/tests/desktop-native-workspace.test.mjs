@@ -75,7 +75,7 @@ const summarizeProcessMemory=stopResult=>{
  return {...stopResult,liveSummaries:{samples:live.length,firstSumRssKiB:live[0]??null,maxSumRssKiB:live.length?Math.max(...live):null,lastSumRssKiB:live.at(-1)??null,note:'finite live sum-RSS samples only; post-exit exited records excluded; shared pages double-counted; process-tree trend, no leak verdict'}};
 };
 try{
- child=spawn(process.env.NOZELI_TEST_BINARY||createRequire(import.meta.url)('electron'),[...(process.env.NOZELI_TEST_BINARY?[]:[path.join(root,'src/main/main.cjs')]),'--ozone-platform=wayland'],{cwd:root,env:{...process.env,NOZELI_TEST_INSTANCE:'1',NOZELI_CONFIG_ROOT:configRoot,NOZELI_USER_DATA:profile,NOZELI_DEBUG_PORT:String(port),NOZELI_SHOT_DIR:out,NOZELI_HIDDEN:'0'},stdio:['ignore','pipe','pipe']});
+ child=spawn(process.env.NOZELI_TEST_BINARY||createRequire(import.meta.url)('electron'),[...(process.env.NOZELI_TEST_BINARY?[]:[path.join(root,'src/main/main.cjs')]),'--ozone-platform='+(process.env.NOZELI_OZONE||'wayland')],{cwd:root,env:{...process.env,NOZELI_TEST_INSTANCE:'1',NOZELI_CONFIG_ROOT:configRoot,NOZELI_USER_DATA:profile,NOZELI_DEBUG_PORT:String(port),NOZELI_SHOT_DIR:out,NOZELI_HIDDEN:'0'},stdio:['ignore','pipe','pipe']});
  for(const s of [child.stdout,child.stderr])s.on('data',c=>log+=c);
  memorySampler=observeProcessMemory(child.pid);
  if(REGULAR_RESOURCES)resourceSampler=observeProcessResources(child.pid);
@@ -113,7 +113,7 @@ try{
  await shell.locator(fileRow(firstId)).click();
  first=await scoped(s=>s.projectId===a.id&&s.relPath==='a.txt'&&!s.readOnly);
  assert.equal(await first.page.evaluate(()=>__nozeliInput.text().includes('Preserved edit')),true);
- await first.page.bringToFront();await first.page.evaluate(()=>__nozeliInput.focus());await first.page.waitForFunction(()=>document.hasFocus());
+ await first.page.bringToFront();await first.page.click('#text-host .cm-content');await first.page.evaluate(()=>__nozeliInput.select(8,12));await first.page.waitForFunction(()=>document.hasFocus());
  await first.page.keyboard.down('Control');await first.page.keyboard.press('s');await first.page.keyboard.up('Control');
  await until(async()=>await fs.readFile(path.join(out,a.name,'a.txt'),'utf8')===await first.page.evaluate(()=>__nozeliInput.text()),'explicit save persists the retained edit');
  assert.deepEqual(await first.page.evaluate(()=>__nozeliInput.selection()),{anchor:8,head:12,from:8,to:12});
@@ -144,7 +144,7 @@ try{
  report.checks.push('right-click left opened file splits into two single-content panes');
  if(REGULAR_RESOURCES)resourceSampler.mark('resize-and-project-switches');
  // One measured live divider gesture on the split axis-x divider: click keeps the
- // revision, live drag repaints native content before release, Escape restores,
+ // persisted ratio, live drag repaints native content before release, Escape restores,
  // release commits. Both-axis coverage with minimum bounds lives in the project test.
  const splitNode=(node,id)=>!node?null:node.id===id?node:splitNode(node.first,id)??splitNode(node.second,id);
  const splitIds=node=>node?.kind==='split'?[node.id,...splitIds(node.first),...splitIds(node.second)]:[];
@@ -159,7 +159,7 @@ try{
  const domRatio=id=>shell.$eval('[data-split-id="'+id+'"]',e=>Number(e.style.getPropertyValue('--ratio')));
  await shell.bringToFront();state=await snapshot();const beforeRatio=splitNode(state.mainRoot,workspaceSplitId).ratio;
  const clickAt=await dividerPoint();await shell.mouse.click(clickAt.x,clickAt.y);await nextFramesOn(shell);
- let afterClick=await snapshot();assert.equal(afterClick.revision,state.revision,'pure divider click cannot commit a layout revision');assert.equal(splitNode(afterClick.mainRoot,workspaceSplitId).ratio,beforeRatio);assert.equal(await domRatio(workspaceSplitId),beforeRatio);
+ let afterClick=await snapshot();assert.equal(splitNode(afterClick.mainRoot,workspaceSplitId).ratio,beforeRatio,'pure divider click must preserve persisted geometry');assert.equal(await domRatio(workspaceSplitId),beforeRatio);
  const dragBaseline=await contentState(first.page),direction=beforeRatio>=.5?-1:1,live=[];
  await shell.bringToFront();const dragStart=await dividerPoint();await shell.mouse.move(dragStart.x,dragStart.y);await shell.mouse.down();
  await dualPhase(first.page,'divider live drag preview axis-'+dividerAxis+' (content surface)','divider live drag preview axis-'+dividerAxis+' (root renderer)',async()=>{
@@ -169,13 +169,13 @@ try{
    await until(async()=>{const value=await contentState(first.page);if(value[dividerAxis==='x'?'width':'height']===previous[dividerAxis==='x'?'width':'height'])return false;live.push(value);return true;},'live native content dimension change while pointer is held');
   }
  });
- const held=await snapshot();assert.equal(held.revision,afterClick.revision,'drag preview does not persist before release');
+ const held=await snapshot();assert.equal(splitNode(held.mainRoot,workspaceSplitId).ratio,beforeRatio,'drag preview must not persist divider geometry before release');
  assert.notEqual(await domRatio(workspaceSplitId),beforeRatio,'drag paints a live DOM ratio');
  for(const sample of live){assert.equal(sample.owner,firstId);assert(sample.text.length>0);}
  await shell.keyboard.press('Escape');await shell.mouse.up();
  await until(async()=>await domRatio(workspaceSplitId)===beforeRatio,'Escape restores DOM ratio');
  await until(async()=>{const current=await contentState(first.page);return current.width===dragBaseline.width&&current.height===dragBaseline.height;},'Escape restores native content bounds');
- afterClick=await snapshot();assert.equal(afterClick.revision,held.revision,'Escape cannot persist the preview');
+ afterClick=await snapshot();assert.equal(splitNode(afterClick.mainRoot,workspaceSplitId).ratio,beforeRatio,'Escape must not persist preview geometry');
  await shell.bringToFront();const commitStart=await dividerPoint();await shell.mouse.move(commitStart.x,commitStart.y);await shell.mouse.down();
  await dualPhase(first.page,'divider commit drag axis-'+dividerAxis+' (content surface)','divider commit drag axis-'+dividerAxis+' (root renderer)',async()=>{
   await shell.mouse.move(dividerAxis==='x'?commitStart.x+direction*90:commitStart.x,dividerAxis==='y'?commitStart.y+direction*90:commitStart.y,{steps:48});
@@ -183,7 +183,7 @@ try{
   await shell.mouse.up();
  });
  await until(async()=>splitNode((await snapshot()).mainRoot,workspaceSplitId).ratio!==beforeRatio,'released divider ratio persists');
- report.checks.push('measured live axis-x divider gesture: pure click preserves the revision, held drag repaints native content without persisting, Escape restores, release commits the ratio');
+ report.checks.push('measured live axis-x divider gesture: pure click preserves persisted geometry, held drag repaints native content without persisting the ratio, Escape restores, release commits the ratio');
  // Explicit native float of the live document surface.
  const before=(await call(first.page,'workspace.bootstrap')).generation,beforeWindows=await call(shell,'workspace.windows.list',{projectId:a.id}),beforeContent=beforeWindows.flatMap(w=>w.surfaces).find(s=>s.viewId===firstId);
  await context(firstId,'float');
@@ -254,7 +254,7 @@ try{
    assert.equal(await sameDriver(),true,'cancelled pane drag keeps the same live editor DOM');
    assert.equal(await docPage.evaluate(()=>__nozeliInput.text()),docEdited,'cancelled pane drag keeps editor text');
   }
-  await docPage.bringToFront();await docPage.evaluate(()=>__nozeliInput.focus());
+  await docPage.bringToFront();await docPage.click('#text-host .cm-content');await docPage.evaluate(()=>__nozeliInput.focus());
   await docPage.waitForFunction(()=>document.hasFocus()&&Boolean(document.activeElement?.closest('#text-host .cm-editor')));
   await docPage.keyboard.down('Control');await docPage.keyboard.press('KeyZ');await docPage.keyboard.up('Control');
   await nextFramesOn(docPage);

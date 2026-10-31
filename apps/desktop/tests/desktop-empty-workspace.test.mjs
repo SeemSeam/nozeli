@@ -183,6 +183,11 @@ try {
   await wait(page, () => !document.querySelector('#empty').hidden);
   const compactEmpty = await snap(page);
   check('compact composer survives closing the last file', compactEmpty.compact === true && compactEmpty.dock === 'bottom' && compactEmpty.panelHidden === false, JSON.stringify(compactEmpty));
+  await page.evaluate(()=>{const panel=document.querySelector('#conversation-panel');panel.style.flex='0 0 190px';panel.style.width='190px';panel.style.maxWidth='190px';});
+  await wait(page,()=>getComputedStyle(document.querySelector('#conversation-panel .composer-wrap')).flexDirection==='column');
+  const compactGeometry=await page.evaluate(()=>{const panel=document.querySelector('#conversation-panel'),bounds=panel.getBoundingClientRect(),nodes=[...panel.querySelectorAll('#conversation-head,#composer,.composer-footer,.composer-footer>*')].filter(n=>!n.hidden).map(n=>({id:n.id||n.className,rect:n.getBoundingClientRect().toJSON()}));return {width:bounds.width,nodes,overflow:nodes.filter(n=>n.rect.width>0&&(n.rect.left<bounds.left-1||n.rect.right>bounds.right+1)).map(n=>n.id),modelControl:Boolean(document.querySelector('#chat-session-model'))};});
+  check('narrow compact pane stacks input/footer controls within pane without a model selector',compactGeometry.width<=200&&compactGeometry.modelControl===false&&compactGeometry.overflow.length===0,JSON.stringify(compactGeometry));
+  await page.evaluate(()=>{const panel=document.querySelector('#conversation-panel');panel.style.flex='';panel.style.width='';panel.style.maxWidth='';});
 
   // Side docking survives.
   await openFile(page, 'a.md');

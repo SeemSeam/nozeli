@@ -136,7 +136,7 @@ export function mountWorkspace({ save, saveProjectSettings, openProject, addNote
     projectSettings.focusMode = Boolean(enabled);
     applyFocusMode(projectSettings.focusMode);
     render();
-    if (persist && saveProjectSettings && !$('provider-console-toggle').hidden) void saveProjectSettings({ ...projectSettings });
+    if (persist && saveProjectSettings) void saveProjectSettings({ ...projectSettings });
   }
   const modalOpen = () => [...document.querySelectorAll('dialog[open], [role="dialog"]:not([hidden]), [aria-modal="true"]:not([hidden]), [popover]:popover-open, .nozeli-context-menu:not([hidden])')].some(node => node.getClientRects().length > 0);
   const modalEscapes = new WeakSet();
@@ -241,7 +241,7 @@ export function mountWorkspace({ save, saveProjectSettings, openProject, addNote
       conversationFont.close(); conversationInitialized=false; messageCount=0;
       const initial = defaults();
       // Native workspace layout owns geometry; restore only content and sidebar preferences.
-      for (const key of [...Object.keys(initial), 'projectView', 'filesWidth', 'sideWidth', 'workRatio', 'terminalRatio']) {
+      for (const key of [...Object.keys(initial), 'projectView', 'filesWidth', 'sideWidth', 'workRatio']) {
         if (value && Object.hasOwn(value, key)) initial[key] = value[key];
       }
       state = initial;

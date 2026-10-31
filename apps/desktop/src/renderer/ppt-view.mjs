@@ -13,6 +13,7 @@ export async function mountPpt({parent,bytes,name,draft,readOnly=false,onChange,
   let engine;
   while(!disposed){engine=frame.contentWindow?.__nozeliPptist;if(engine?.ready&&engine.store.slides.length)break;if(Date.now()>deadline)throw Error('PPTX 引擎打开超时');await new Promise(r=>setTimeout(r,100));}
   if(disposed)throw Error('PPTX 已关闭');
+  if(typeof engine.flushText!=='function')throw Error('PPTX 编辑引擎缺少文本提交屏障，请重新构建引擎。');
   engine.readClipboard=async()=>{if(disposed||!frame.isConnected)throw Error('PPTX 已关闭');const result=await window.nozeli.invoke('document.clipboard',{action:'read'});if(disposed||!frame.isConnected)throw Error('PPTX 已关闭');if(!result.ok)throw Error(result.error.message);return result.value;};
   engine.store.setSlides([]);engine.importFile([new frame.contentWindow.File([new Uint8Array(bytes)],name)],{cover:true});
   while(!engine.store.slides.length||engine.busy()){if(Date.now()>deadline)throw Error('PPTX 导入失败或超时');await new Promise(r=>setTimeout(r,100));}
@@ -20,14 +21,16 @@ export async function mountPpt({parent,bytes,name,draft,readOnly=false,onChange,
   await engine.resetHistory();
   engine.store.setTitle(name.replace(/\.pptx$/i,''));
   frame.contentWindow.onbeforeunload=null;
-  const snapshot=()=>JSON.parse(JSON.stringify(engine.store.$state));
+  const flushText=()=>{if(disposed)throw Error('PPTX 已关闭');return engine.flushText()===true;};
+  const snapshot=()=>{flushText();return JSON.parse(JSON.stringify(engine.store.$state));};
   // Do not stringify embedded image data on every store mutation. Snapshot only at save.
-  if(!readOnly)unsubscribe=engine.store.$subscribe(()=>onChange(),{flush:'post'});
+  if(!readOnly)unsubscribe=engine.store.$subscribe(()=>onChange(),{flush:'sync'});
   if(readOnly){if(typeof engine.setReadOnly!=='function')throw Error('PPT 阅读引擎缺少只读能力，请重新构建引擎。');engine.setReadOnly(true);info.textContent='PPTX · 阅读副本';}
   let exporting;
   const exportBytes=()=>{
     if(disposed)return Promise.reject(Error('PPTX 已关闭'));
     if(exporting)return Promise.reject(Error('PPTX 正在导出，请完成后重试保留。'));
+    flushText();
     exporting=new Promise((resolve,reject)=>{
       const finish=(error,bytes)=>{clearTimeout(timer);delete frame.contentWindow.__nozeliExport;error?reject(error):resolve(bytes);};
       const timer=setTimeout(()=>finish(Error('PPTX 导出超时')),45000);
@@ -39,6 +42,6 @@ export async function mountPpt({parent,bytes,name,draft,readOnly=false,onChange,
   button.onclick=async()=>{button.disabled=true;try{await onExport(await exportBytes());}catch(e){bar.hidden=false;info.textContent=e.message;}finally{button.disabled=false;}};
   const annotations=readOnly?{dispose(){}}:mountPptAnnotations({host,frame,engine,onSelection,onRegionMode,noteActions,tagActions});
   const context=readOnly?{close(){},dispose(){}}:mountPptContextMenu({frame,onOpen:onContextMenu,onClose:onContextClose,onSelectionStart,pointItems:onPointItems});
-  return {...annotations,snapshot,snapshotModel:snapshot,export:exportBytes,applyModel:model=>{if(!readOnly)throw Error('Only a reading mirror accepts shared models.');const page=engine.store.slideIndex;engine.store.$patch(model);if(Number.isInteger(page)&&page<engine.store.slides.length)engine.store.setSlideIndex(page);},closeContextMenu:context.close,dispose(){context.dispose();annotations.dispose();disposed=true;unsubscribe?.();host.remove();}};
+  return {...annotations,flushText,snapshot,snapshotModel:snapshot,export:exportBytes,applyModel:model=>{if(!readOnly)throw Error('Only a reading mirror accepts shared models.');const page=engine.store.slideIndex;engine.store.$patch(model);if(Number.isInteger(page)&&page<engine.store.slides.length)engine.store.setSlideIndex(page);},closeContextMenu:context.close,dispose(){context.dispose();annotations.dispose();disposed=true;unsubscribe?.();host.remove();}};
  }catch(e){host.remove();throw e;}
 }

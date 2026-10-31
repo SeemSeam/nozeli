@@ -272,7 +272,7 @@ try{
   await shot('empty-catalog-not-savable');
   report.checks.push('empty catalog: selects and save disabled, defaults remain unchanged');
   // 2. add the two synthetic sources and refresh through the real button.
-  for(const source of sources)await invoke(shell,'settings.providers.save',{provider:source.provider,model:source.model,baseUrl:source.baseUrl,key:source.key,api:'openai-completions'});
+  for(const source of sources)await invoke(shell,'settings.providers.save',{operation:'create',provider:source.provider,baseUrl:source.baseUrl,api:'openai-completions',models:[{id:source.model}],credential:{action:'replace',value:source.key}});
   await openModelsSection();
   await mark('refresh:first-loaded:start');
   await shell.click('[data-model-refresh]');

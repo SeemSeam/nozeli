@@ -157,8 +157,8 @@ async function scenario(name, cancelFirst) {
   await launch(ctx);
   if (await ctx.shell.$eval('#configuration-setup', node => node.open)) await ctx.shell.click('#configuration-cancel');
   await call(ctx, 'config.initialize', {mode: 'independent'});
-  await call(ctx, 'settings.providers.save', {provider: 'force-quit-local', model: 'scripted', baseUrl: 'http://127.0.0.1:' + ctx.server.address().port + '/v1', api: 'openai-completions', key: 'synthetic-loopback-only'});
-  await call(ctx, 'settings.models.save', {frontdesk: 'force-quit-local/scripted', orchestrator: 'force-quit-local/scripted', worker: 'force-quit-local/scripted'});
+  await call(ctx, 'settings.providers.save', {operation:'create',provider:'force-quit-local',baseUrl:'http://127.0.0.1:' + ctx.server.address().port + '/v1',api:'openai-completions',models:[{id:'scripted'}],credential:{action:'replace',value:'synthetic-loopback-only'}});
+  await call(ctx, 'settings.models.save', {frontdesk:{model:{mode:'explicit',selector:'force-quit-local/scripted'},thinking:{mode:'native-default'}},orchestrator:{model:{mode:'explicit',selector:'force-quit-local/scripted'},thinking:{mode:'native-default'}},worker:{model:{mode:'explicit',selector:'force-quit-local/scripted'},thinking:{mode:'native-default'}}});
   await select(ctx); await call(ctx, 'managed.enable', {projectId: ctx.projectId});
   ctx.phase = 'busy';
   await call(ctx, 'managed.task', {projectId: ctx.projectId, requestKey: 'force-quit-' + name, text: 'Create exactly one synthetic Work running a harmless wait command for the force-quit check. No edits, publication, acceptance or other work.'});

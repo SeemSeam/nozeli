@@ -52,6 +52,21 @@ export async function highlightMarkdownCode(target, options = {}) {
   const token = target._markdownRenderToken;
   await Promise.all([...target.querySelectorAll('pre code')].map(async code => {
     code.parentElement.dataset.markdownCode='';
+    if (['diff','patch'].includes(code.dataset.language)) {
+      if (code.textContent.length > 100_000) return;
+      const text=code.textContent, map=code._markdownSource, parts=[];
+      let offset=0;
+      for (const line of text.match(/[^\n]*\n|[^\n]+$/gu) || []) {
+        const span=code.ownerDocument.createElement('span');
+        span.textContent=line;
+        const kind=/^(?:diff |index |--- |\+\+\+ |new file mode |deleted file mode |rename (?:from|to) )/u.test(line)?'file':line.startsWith('@@')?'hunk':line.startsWith('+')?'added':line.startsWith('-')?'deleted':'context';
+        span.className='markdown-diff-line markdown-diff-'+kind;
+        if(map){span.dataset.mdFrom=String(map[offset]);span.dataset.mdTo=String(map[offset+line.length]);}
+        parts.push(span);offset+=line.length;
+      }
+      code.replaceChildren(...parts);code.removeAttribute('data-md-from');code.removeAttribute('data-md-to');
+      code.dataset.highlighted='diff';return;
+    }
     const id = aliases[code.dataset.language] || code.dataset.language;
     if (!languages[id] || code.textContent.length > 100_000) return;
     const text = code.textContent;

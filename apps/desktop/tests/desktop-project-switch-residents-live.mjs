@@ -93,8 +93,8 @@ async function workerFile(projectId,workId,nonce,key){const before=report.reques
  assert.equal(work.threadId,report.worker.threadId,'worker continuation keeps the original thread');report.worker.files.push({nonce,path:path.join(work.execution.directory,nonce+'.txt')});return work;}
 try{
  await launch();await call('config.initialize',{mode:'independent'});
- await call('settings.providers.save',{provider:'switch-local',model:'scripted',baseUrl:'http://127.0.0.1:'+server.address().port+'/v1',api:'openai-completions',key:'synthetic-local-only'});
- await call('settings.models.save',{frontdesk:'switch-local/scripted',orchestrator:'switch-local/scripted',worker:'switch-local/scripted'});
+ await call('settings.providers.save',{operation:'create',provider:'switch-local',baseUrl:'http://127.0.0.1:'+server.address().port+'/v1',api:'openai-completions',models:[{id:'scripted'}],credential:{action:'replace',value:'synthetic-local-only'}});
+ await call('settings.models.save',{frontdesk:{model:{mode:'explicit',selector:'switch-local/scripted'},thinking:{mode:'native-default'}},orchestrator:{model:{mode:'explicit',selector:'switch-local/scripted'},thinking:{mode:'native-default'}},worker:{model:{mode:'explicit',selector:'switch-local/scripted'},thinking:{mode:'native-default'}}});
  await select(aid);
  await call('settings.agents.save',{globalLimit:6});
  await call('managed.enable',{projectId:aid});

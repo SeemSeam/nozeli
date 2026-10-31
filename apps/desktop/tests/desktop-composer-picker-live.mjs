@@ -213,8 +213,8 @@ async function escCloses(label,{expectFocusAdd=true}={}){
 try{
  await launch();
  await call(shell,'config.initialize',{mode:'independent'});
- await call(shell,'settings.providers.save',{provider:'picker-live-model',model:'scripted',baseUrl:'http://127.0.0.1:'+server.address().port+'/v1',api:'openai-completions',key:'synthetic-local-only'});
- await call(shell,'settings.models.save',{frontdesk:'picker-live-model/scripted',orchestrator:'picker-live-model/scripted',worker:'picker-live-model/scripted'});
+ await call(shell,'settings.providers.save',{operation:'create',provider:'picker-live-model',baseUrl:'http://127.0.0.1:'+server.address().port+'/v1',api:'openai-completions',models:[{id:'scripted'}],credential:{action:'replace',value:'synthetic-local-only'}});
+ await call(shell,'settings.models.save',{frontdesk:{model:{mode:'explicit',selector:'picker-live-model/scripted'},thinking:{mode:'native-default'}},orchestrator:{model:{mode:'explicit',selector:'picker-live-model/scripted'},thinking:{mode:'native-default'}},worker:{model:{mode:'explicit',selector:'picker-live-model/scripted'},thinking:{mode:'native-default'}}});
  await shell.click('#pick-project');
  const pickedScope=await until(async()=>{const scope=await call(shell,'workspace.bootstrap');if(!scope.projectId)return;const recent=await call(shell,'project.recent');return recent.projects.find(project=>path.resolve(project.rootDisplay)===projectRoot)?scope:null;},'synthetic project registered and active');
  const projectId=pickedScope.projectId;

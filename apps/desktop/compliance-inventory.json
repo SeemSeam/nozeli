@@ -18,7 +18,7 @@
   "rebuildCommands": {
     "installDependencies": {
       "command": "npm --prefix apps/desktop ci",
-      "notes": "Node.js 22+, Linux x64, native toolchain. postinstall runs @electron/rebuild for node-pty (Electron 44.4.5 ABI); does not touch global node-gyp or user config."
+      "notes": "Node.js >=22.22.2 for typescript-language-server 6.0.2, Linux x64, native toolchain. postinstall runs @electron/rebuild for node-pty (Electron 44.9.1 ABI); does not touch global node-gyp or user config. Existing CI pins Node 22.22.0 and still needs alignment."
     },
     "buildPptist": {
       "command": "npm --prefix apps/desktop run build:pptist",
@@ -62,7 +62,7 @@
     {
       "id": "electron",
       "name": "Electron (Chromium + Node)",
-      "version": "44.4.5",
+      "version": "44.9.1",
       "license": "MIT (npm shim); bundled Chromium/Binaries carry their own third-party notices (LICENSES.chromium.html inside the shipped binary)",
       "distribution": "bundled-binary",
       "evidence": ["apps/desktop/package.json", "apps/desktop/SOURCES.md"]
@@ -85,6 +85,14 @@
       "license": "MIT (upstream + retained runtime notices)",
       "distribution": "bundled-binary",
       "evidence": ["integrations/omp/README.md", "integrations/omp/private-runtime.lock.json", "integrations/omp/upstream.lock.json", "apps/desktop/SOURCES.md"]
+    },
+    {
+      "id": "pi-runtime",
+      "name": "Pi coding-agent session runtime (vendored pi-gui closure)",
+      "version": "pi-gui upstream commit eddfb19367b3ec4e59314eddfa83ed5aa6989f03; SDK @earendil-works/pi-coding-agent 1.4.0; integration in progress on integration/pi-gui, not yet in any published archive",
+      "license": "MIT (upstream pi-gui notice retained)",
+      "distribution": "vendored-source-pending-audit",
+      "evidence": ["integrations/pi/vendor/pi-gui/LICENSE", "integrations/pi/licenses/pi-1.4.0.LICENSE", "integrations/pi/upstream-manifest.json", "integrations/pi/package-lock.json", "integrations/pi/patches/0001-nozeli-owner-observer.patch", "integrations/pi/patches/0002-nozeli-custom-provider-api.patch", "integrations/pi/patches/0003-private-atomic-files.patch", "apps/desktop/SOURCES.md"]
     },
     {
       "id": "superdoc",
@@ -137,8 +145,8 @@
     {
       "id": "npm-production-dependencies",
       "name": "npm production dependency set (renderer + host)",
-      "version": "pinned by apps/desktop/package-lock.json; table in SOURCES.md (pdfjs-dist 6.3.289, monaco-editor 0.57.0, codemirror 6.x, react/react-dom 19.2.0, xterm 6.0.0, ws 8.22.0, node-pty 1.1.0, katex 0.18.0, shiki 4.5.0 family, typescript 5.9.3, prettier 3.6.2, @xmldom/xmldom 0.9.12, image-size 2.0.2, word-extractor 1.0.4, lucide-static 0.468.0 subset, ...)",
-      "license": "MIT/Apache-2.0 per package; @xterm/headless license retained at src/agents/managed/xterm-headless.LICENSE; lucide subset at src/renderer/ui-icons.LICENSE and src/renderer/workspace-conversation-controls.LICENSE; Monaco Codicons font SHA256 77f902557231f95c4c71ae517d09a1a842753656f5f665086b3e5ad8095538da, license SHA256 33e4ff1a06ef62ba21788ea162564ee8165269a24a9ce6ef301837447eab0ac6",
+      "version": "pinned by apps/desktop/package-lock.json; table in SOURCES.md (pdfjs-dist 6.4.299, monaco-editor 0.57.0, codemirror 6.x, react/react-dom 19.2.0, xterm 6.0.0, ws 8.22.0, node-pty 1.1.0, katex 0.19.1, tar 7.5.22, shiki 4.5.0 family, typescript 5.9.3, prettier 3.6.2, @xmldom/xmldom 0.9.12, image-size 2.0.2, word-extractor 1.0.4, lucide-static 0.468.0 subset, ...)",
+      "license": "MIT/Apache-2.0/BlueOak-1.0.0 per package; tar 7.5.22 package license retained in bundled node_modules; @xterm/headless license retained at src/agents/managed/xterm-headless.LICENSE; lucide subset at src/renderer/ui-icons.LICENSE and src/renderer/workspace-conversation-controls.LICENSE; Monaco Codicons font SHA256 77f902557231f95c4c71ae517d09a1a842753656f5f665086b3e5ad8095538da, license SHA256 33e4ff1a06ef62ba21788ea162564ee8165269a24a9ce6ef301837447eab0ac6",
       "distribution": "bundled-npm",
       "evidence": ["apps/desktop/package-lock.json", "apps/desktop/SOURCES.md", "apps/desktop/src/agents/managed/xterm-headless.LICENSE", "apps/desktop/src/renderer/ui-icons.LICENSE", "apps/desktop/src/renderer/workspace-conversation-controls.LICENSE"]
     },
@@ -190,6 +198,14 @@
       "scope": "Any distribution containing vendor/pptist/dist",
       "status": "pending",
       "retainedEvidence": ["apps/desktop/vendor/pptist/package-lock.json"],
+      "signoff": null
+    },
+    {
+      "id": "pi-runtime-closure-audit",
+      "obligation": "Record the exact vendored pi-gui file digests and the pinned @earendil-works/pi-coding-agent 1.4.0 dependency lock for the integrations/pi closure before any distribution ships it, mirroring the OMP runtime provenance standard.",
+      "scope": "Any distribution containing integrations/pi or a Pi session runtime built from it",
+      "status": "pending",
+      "retainedEvidence": ["integrations/pi/vendor/pi-gui/LICENSE"],
       "signoff": null
     }
   ]

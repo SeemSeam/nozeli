@@ -19,9 +19,11 @@ try{
  for(let i=0;i<150;i++){try{browser=await puppeteer.connect({browserURL:'http://127.0.0.1:'+port,defaultViewport:null});break;}catch{if(child.exitCode!==null)throw Error(log);await pause(100);}}
  assert(browser,log);console.log('settings smoke: connected',browser.targets().map(t=>[t.type(),t.url()]));page=await(await browser.waitForTarget(t=>t.type()==='page'&&t.url().startsWith('http://127.0.0.1:'),{timeout:90000})).page();
  page.on('pageerror',error=>console.error('renderer error',error));console.log('settings smoke: renderer loaded');
- await page.waitForFunction(()=>window.__nozeliReady);await page.waitForSelector('#configuration-setup[open]');
- await page.click('#configuration-independent');await page.waitForFunction(()=>!document.querySelector('#configuration-setup').open);
+ await page.waitForFunction(()=>window.__nozeliReady);
+ const initialized=await page.evaluate(()=>nozeli.invoke('config.initialize',{mode:'independent'}));assert.equal(initialized.ok,true);
+ if(await page.$eval('#configuration-setup',node=>node.open))await page.click('#configuration-cancel');
  await page.click('#open-settings');await page.waitForSelector('#settings-dialog[open]');checks++;
+ await page.click('[data-settings-section="settings-provider"]');
  const rect=await page.$eval('#open-settings',e=>{const r=e.getBoundingClientRect();return {left:r.left,bottom:r.bottom,height:innerHeight};});assert(rect.left<70&&rect.bottom>rect.height-100);checks++;
  await page.waitForSelector('[data-provider-api-form]');
  await page.waitForSelector('[data-login-provider] option[value="openai-codex"]');
@@ -29,7 +31,7 @@ try{
  assert(supported.some(p=>p.id==='openai-codex'));assert.equal(await page.$eval('[data-provider-login-form] button',e=>e.disabled),true);
  await page.select('[data-login-provider]','openai-codex');assert.equal(await page.$eval('[data-provider-login-form] button',e=>e.disabled),false);
  assert.equal(await page.$eval('[data-login-provider]',e=>e.tagName),'SELECT');assert.equal(await page.$$eval('[data-provider-login-form] input[name="provider"]',e=>e.length),0);checks++;
- for(const [name,value]of Object.entries({provider:'settings-smoke',baseUrl:'http://127.0.0.1:9/v1',model:'synthetic-local',key:'synthetic-settings-key'}))await page.type('[data-provider-api-form] [name="'+name+'"]',value);
+ for(const [name,value]of Object.entries({provider:'settings-smoke',baseUrl:'http://127.0.0.1:9/v1',models:'synthetic-local',key:'synthetic-settings-key'}))await page.type('[data-provider-api-form] [name="'+name+'"]',value);
  await page.click('[data-provider-api-form] button[type="submit"]');await page.waitForSelector('[data-provider-row="settings-smoke"]');
  assert.equal(await page.$eval('[data-provider-api-form] [name="key"]',e=>e.value),'');checks++;
  assert.equal(JSON.stringify((await page.evaluate(()=>nozeli.invoke('settings.providers.status',{})))).includes('synthetic-settings-key'),false);checks++;
@@ -38,11 +40,11 @@ try{
  await page.waitForFunction(()=>!document.querySelector('[data-role-model-form] button[type="submit"]').disabled);
  for(const role of ['frontdesk','orchestrator','worker'])await page.select('[data-default-role="'+role+'"]','settings-smoke/synthetic-local');
  await page.click('[data-role-model-form] button[type="submit"]');await page.waitForFunction(()=>document.querySelector('[data-model-status]').textContent.includes('已保存'));checks++;
- await page.click('[data-settings-section="settings-provider"]');await page.click('[data-provider-remove="settings-smoke"]');await page.click('[data-provider-confirm-remove="settings-smoke"]');
+ await page.click('[data-settings-section="settings-provider"]');await page.locator('[data-provider-remove="settings-smoke"]').click();await page.locator('[data-provider-confirm-remove="settings-smoke"]').click();
  await page.waitForFunction(()=>document.querySelector('[data-provider-status]').textContent.includes('引用'));assert(await page.$('[data-provider-row="settings-smoke"]'));checks++;
  await page.click('[data-settings-section="settings-models"]');await page.waitForFunction(()=>!document.querySelector('[data-role-model-form] button[type="submit"]').disabled);for(const role of ['frontdesk','orchestrator','worker'])await page.select('[data-default-role="'+role+'"]','');
- await page.click('[data-role-model-form] button[type="submit"]');await page.waitForFunction(async()=>{const r=await nozeli.invoke('settings.providers.status',{});return Object.values(r.value.defaults).every(v=>!v);});
- await page.click('[data-settings-section="settings-provider"]');await page.waitForFunction(()=>!document.querySelector('[data-model-refresh]').disabled);await page.click('[data-provider-remove="settings-smoke"]');await page.click('[data-provider-confirm-remove="settings-smoke"]');await page.waitForFunction(()=>!document.querySelector('[data-provider-row="settings-smoke"]'));checks++;
+ await page.click('[data-role-model-form] button[type="submit"]');await page.waitForFunction(async()=>{const r=await nozeli.invoke('settings.providers.status',{});return Object.values(r.value.defaults).every(v=>v?.model?.mode!=='explicit'&&v?.thinking?.mode!=='explicit');});
+ await page.click('[data-settings-section="settings-provider"]');await page.waitForFunction(()=>!document.querySelector('[data-model-refresh]').disabled);await page.locator('[data-provider-remove="settings-smoke"]').click();await page.locator('[data-provider-confirm-remove="settings-smoke"]').click();await page.waitForFunction(()=>!document.querySelector('[data-provider-row="settings-smoke"]'));checks++;
  await page.evaluate(()=>window.dispatchEvent(new CustomEvent('nozeli-open-settings',{detail:'settings-agents'})));
  await page.waitForFunction(()=>!document.querySelector('[data-agent-limits-save]').disabled);
  assert.equal(await page.$eval('#settings-agents',e=>e.hidden),false);assert.equal(await page.$$eval('#settings-agents input',nodes=>nodes.length),2);checks++;
@@ -81,7 +83,6 @@ try{
  await page.setViewport({width:390,height:700});
  assert.equal(await page.$eval('#settings-dialog',e=>e.getBoundingClientRect().right<=innerWidth&&e.getBoundingClientRect().left>=0),true);checks++;
  for(const section of ['settings-provider','settings-models','settings-agents','settings-appearance','settings-general']){await page.click('[data-settings-section="'+section+'"]');assert.equal(await page.$eval('#'+section,e=>e.hidden),false);assert.equal(await page.$eval('#settings-dialog',e=>e.scrollWidth<=e.clientWidth),true);checks++;}
- assert.equal(await page.$eval('#provider-console-toggle',e=>e.closest('.settings-nav')!==null&&e.hidden),true,'No project means no terminal view, even in top-level settings');checks++;
  await page.screenshot({path:path.join(out,'settings-narrow.png')});
  await page.click('#settings-close');assert.equal(await page.$eval('#open-settings',e=>document.activeElement===e),true);checks++;
  console.log(JSON.stringify({checks,out,scope:'actual Electron isolated profile; no remote authentication or model requests'}));

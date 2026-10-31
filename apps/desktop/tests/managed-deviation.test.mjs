@@ -25,7 +25,7 @@ async function fixture(t){
  } }
  const options={runtimeRoot:path.join(root,'runtime'),contentRoot:path.join(root,'content'),sessionFactory:(spec,target)=>new Session(spec,target),projectHome:home=>fs.mkdir(home,{recursive:true})};
  const open=async()=>{const c=await openTestController(options);c.execution=null;controllers.push(c);return c;};
- const c=await open();await c.store.mutate(()=>{for(const binding of Object.values(c.store.state.bindings))binding.provider='omp';});
+ const c=await open();await c.store.mutate(()=>{for(const binding of Object.values(c.store.state.bindings))binding.provider='pi';});
  t.after(async()=>{for(const controller of controllers)if(!controller.store.closed)await controller.stop();await fs.rm(root,{recursive:true,force:true});});
  const submitted=await c.store.submit('Original immutable task','Brief',{name:'Original'});await c.store.activate(submitted.id);await c.store.mutate(()=>{c.store.find(submitted.id).status='paused';});
  const run=async(text='TRIGGER_SCOPE exact user text')=>{const accepted=await c.send(submitted.id,text);const job=c.store.state.jobs.find(j=>j.id===accepted.jobId);await c.runJob(job);c.current.delete(submitted.id);return c.store.find(submitted.id);};
@@ -40,7 +40,6 @@ test('deviation tool durably pauses with exact admitted source and stops outside
  const todo=c.store.state.todos.find(row=>row.id===w.deviation.todoId);assert.equal(todo.kind,'deviation');assert.equal(todo.objectId,w.problem.objectId);
  assert.match(await readTestObject(c.store,todo.objectId).then(bytes=>bytes.toString('utf8')),/Original immutable task[\s\S]*TRIGGER_SCOPE exact user text/);
  await assert.rejects(c.store.continue(id),{code:'DEVIATION_HELD'});await assert.rejects(c.session(id),{code:'DEVIATION_HELD'});await assert.rejects(c.restart(id),{code:'DEVIATION_HELD'});
- await assert.rejects(c.openManualJob(id,'native-blocked','continue'),{code:'DEVIATION_HELD'});
  const queued=await c.send(id,'continue');await c.runJob(c.store.state.jobs.find(j=>j.id===queued.jobId));assert.equal(c.store.state.jobs.find(j=>j.id===queued.jobId).status,'queued');assert.equal(w.revision,2);
 });
 

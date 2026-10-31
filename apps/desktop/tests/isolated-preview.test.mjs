@@ -151,3 +151,23 @@ for(const outcome of ['commit','rollback','close'])test(`pending report load com
  if(outcome==='close'){await rejected;assert.equal(wc.dead,true);assert.equal(h.manager.slots.size,0);assert.equal(h.manager.pending.size,0);assert.equal(source.children.size,0);assert.equal(destination.children.size,0);}
  else {await opening;const slot=[...h.manager.slots.values()][0],owner=outcome==='commit'?destination:source,other=outcome==='commit'?source:destination;assert.equal(slot.view.webContents,wc);assert.equal(slot.parentWindow,owner);assert(owner.children.has(slot.view));assert.equal(other.children.size,0);assert.equal(wc.dead,false);assert.equal(h.manager.pending.size,0);}
 });
+
+test('report requested bounds survive an initially zero-sized native surface and later shrink/grow',async()=>{
+ const h=harness();let parent={x:20,y:30,width:0,height:0};
+ h.scope.role='surface';h.scope.view={getBounds:()=>parent,getVisible:()=>true};
+ await h.manager.invoke(h.scope,'isolated-preview.open',h.payload);
+ const slot=[...h.manager.slots.values()][0];
+ assert.equal(slot.view.visible,false);assert.deepEqual(slot.bounds,h.payload.bounds);
+ parent={x:20,y:30,width:800,height:600};h.manager.bounds(slot,slot.bounds);
+ assert.equal(slot.view.visible,true);assert.deepEqual(slot.view.bounds,{x:30,y:50,width:300,height:200});
+ parent.width=100;h.manager.bounds(slot,slot.bounds);assert.equal(slot.view.bounds.width,90);
+ parent.width=800;h.manager.bounds(slot,slot.bounds);assert.equal(slot.view.bounds.width,300);
+ assert.deepEqual(slot.bounds,h.payload.bounds);
+});
+
+test('fully scrolled-out report hides without covering review controls',async()=>{
+ const h=harness();await h.manager.invoke(h.scope,'isolated-preview.open',h.payload);
+ const slot=[...h.manager.slots.values()][0];
+ h.manager.bounds(slot,{x:10,y:-300,width:300,height:200});assert.equal(slot.view.visible,false);
+ h.manager.bounds(slot,h.payload.bounds);assert.equal(slot.view.visible,true);
+});

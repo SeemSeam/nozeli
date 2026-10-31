@@ -84,7 +84,7 @@ export class WorkspaceNative {
     if(state?.configuringTargets?.includes(owner.conversationTarget||'frontdesk'))return;
     const agent=state?.agents?.find(a=>a.target===(owner.conversationTarget||'frontdesk'));
     if(agent?.starting)return;
-    if(agent&&!agent.closed&&!agent.restarting&&['ready','idle','prompt-inflight'].includes(agent.phase))return;
+    if(agent&&!agent.closed&&!agent.restarting&&['ready','idle','prompt-inflight','reloading','compacting'].includes(agent.phase))return;
     this.conversationClosing??=new Set();this.conversationClosing.add(projectId);
     const error={code:'AGENT_DISCONNECTED',message:'当前会话连接已中断；草稿保留，未发送。请重试连接。'};
     owner.conversationBlocked=true;owner.view.setVisible(false);owner.wc.send('nozeli:workspace-control',{type:'conversation-unavailable',projectId,error});
@@ -136,7 +136,12 @@ export class WorkspaceNative {
   registerShell(win) {
     this.shell = this.register(win.webContents, { role: 'shell', windowId: 'main', projectId: null, win });
     this.windows.set('main', this.shell);
+    this.watchWindowGeometry(this.shell);
     return this.shell;
+  }
+  watchWindowGeometry(record){
+    const notify=()=>{if(!record.dead)record.wc.send('nozeli:workspace-control',{type:'viewport-changed'});};
+    for(const event of ['resize','resized','maximize','unmaximize','enter-full-screen','leave-full-screen','restore'])record.win.on(event,notify);
   }
   editFocusedText(action, wc) {
     if (!['copy','cut'].includes(action) || !wc || wc.isDestroyed()) return false;
@@ -187,7 +192,7 @@ export class WorkspaceNative {
     if(op.startsWith('demo.')){if(op==='demo.result'){if(!['surface','shell','detached'].includes(r.role))throw fail('IPC_DENIED');}else if(!['demo.state','demo.send','demo.interrupt'].includes(op)&&r.role!=='shell')throw fail('IPC_DENIED');return r;}
     if(r.role==='surface'&&r.kind==='terminal'&&op.startsWith('managed.')&&(op!=='managed.terminal.screen'||payload.target!==this.layouts.get(r.projectId)?.views[r.viewId]?.viewState?.workId))throw fail('IPC_DENIED');
     if(r.role==='surface'&&r.kind==='web'&&op.startsWith('web.'))return r;
-    if (this.lifecycle.has(r.projectId) && !this.lifecycleFlushOwner(r,payload.flushRequestId,op) && (writes.has(op) || op === 'managed.send' || ['managed.attention.respond','managed.attention.draft.write','managed.review.save','managed.review.instruction.save','managed.review.continue','managed.review.accept','workspace.review.decide'].includes(op) || op === 'workspace.project' || op === 'workspace.command'&&payload.command?.type!=='restoreViewState')) throw fail('PROJECT_LIFECYCLE_ACTIVE', '项目正在保留并关闭，请等待操作结果。');
+    if (this.lifecycle.has(r.projectId) && !this.lifecycleFlushOwner(r,payload.flushRequestId,op) && (writes.has(op) || op === 'managed.send' || ['managed.session.command','managed.attention.respond','managed.attention.draft.write','managed.review.save','managed.review.instruction.save','managed.review.continue','managed.review.accept','workspace.review.decide'].includes(op) || op === 'workspace.project' || op === 'workspace.command'&&payload.command?.type!=='restoreViewState')) throw fail('PROJECT_LIFECYCLE_ACTIVE', '项目正在保留并关闭，请等待操作结果。');
     if(op==='report.copySource'&&!(r.role==='shell'||r.role==='surface'&&['report','history'].includes(r.kind)))throw fail('IPC_DENIED');
     if(op.startsWith('isolated-preview.')&&r.role==='surface'&&(!['report','document','history'].includes(r.kind)||r.kind==='history'&&['isolated-preview.open','isolated-preview.update'].includes(op)&&payload.profile!=='staticReport'))throw fail('IPC_DENIED');
     if (r.role !== 'shell' && !op.startsWith('workspace.') && !op.startsWith('isolated-preview.') && !surfaceOps.test(op)) throw fail('IPC_DENIED');
@@ -201,9 +206,10 @@ export class WorkspaceNative {
     if (writes.has(op) && r.role !== 'surface' && typeof payload.relPath === 'string' && payload.relPath && this.leases.has(this.resource(r.projectId,payload.relPath,this.payloadSource(payload)))) throw fail('EDIT_LEASE_DENIED');
     const mutatesDocument=writes.has(op)||op==='ppt.export'||op==='ppt.draft'&&payload.model!==undefined;
     if ((r.held||r.recoveryHeld||r.syncHolds?.size) && mutatesDocument) throw fail('TRANSFER_HELD');
-    if (r.held && op.startsWith('managed.') && !['managed.status','managed.history.list','managed.history.read','managed.artifact.read','managed.artifact.list','managed.timeline.page','managed.timeline.read','managed.disposition','managed.review.read'].includes(op)) throw fail('TRANSFER_HELD');
+    if (r.held && op.startsWith('managed.') && !['managed.status','managed.session.options','managed.history.list','managed.history.read','managed.artifact.read','managed.artifact.list','managed.timeline.page','managed.timeline.read','managed.disposition','managed.review.read'].includes(op)) throw fail('TRANSFER_HELD');
     if (r.role === 'surface' && op === 'managed.draft' && r.kind !== 'conversation') throw fail('CONVERSATION_OWNER_REQUIRED');
     if(op==='managed.frontdesk.context.clear'&&r.role!=='shell'&&!(r.role==='surface'&&r.kind==='conversation'&&payload.projectId===r.projectId))throw fail('CONVERSATION_OWNER_REQUIRED');
+    if(op==='managed.session.command'&&r.role!=='shell'&&!(r.role==='surface'&&r.kind==='conversation'&&payload.projectId===r.projectId))throw fail('CONVERSATION_OWNER_REQUIRED');
     if (r.role !== 'shell' && op === 'managed.enable') throw fail('IPC_DENIED');
     return r;
   }
@@ -505,6 +511,7 @@ export class WorkspaceNative {
     const key = `workspace:${record.viewId || record.role}`;
     const generation = record.generation;
     const snapshot=structuredClone(payload);
+    delete snapshot.cleanOfficeBaseline;
     snapshot.candidate=await normalizeOfficeRecovery(snapshot.kind,snapshot.candidate);
     // Host-derived document identity travels with the retained input: recovery
     // for a review document keeps its publication source and never re-resolves
@@ -513,6 +520,9 @@ export class WorkspaceNative {
     return this.serial(`recovery:${record.projectId}`, async () => {
       const prior = await this.host.storage.getRecovery(record.projectId, key);
       if (record.dead || record.generation !== generation) throw fail('SURFACE_CHANGED');
+      const status=snapshot.documentStatus,buffer=record.role==='surface'&&record.relPath?this.buffers.get(this.resourceOfRecord(record)):null;
+      const cleanOffice=record.role==='surface'&&record.kind==='document'&&record.relPath===snapshot.relPath&&isProjectDocumentSource(record.documentSource)&&['word','sheet','ppt'].includes(snapshot.kind)&&status&&['dirty','composing','conflict','missing','readOnly'].every(key=>status[key]===false)&&/^[a-f0-9]{64}$/.test(snapshot.sourceDigest||'')&&snapshot.baseDigest===snapshot.sourceDigest&&(!buffer||buffer.sourceViewId===record.viewId&&buffer.kind===snapshot.kind&&!buffer.dirty&&!buffer.missing&&!buffer.conflict&&buffer.digest===snapshot.sourceDigest);
+      if(cleanOffice)snapshot.cleanOfficeBaseline={schemaVersion:1,sourceDigest:snapshot.sourceDigest};
       const ownerGeneration = `${record.recoveryOwner}:${record.generation}`;
       if (prior?.ownerGeneration === ownerGeneration && prior.generation > payload.generation) return {retained:true, generation:prior.generation};
       if (prior && prior.ownerGeneration !== ownerGeneration) await this.host.storage.putRecovery(record.projectId, `${key}:retained:${prior.ownerGeneration}`, prior);
@@ -625,7 +635,7 @@ export class WorkspaceNative {
     win.on('close', event => { if (r.closing) return; event.preventDefault(); void this.closeWindow(r).catch(this.onError); });
     const saveBounds=()=>this.scheduleBounds(r);
     win.on('moved',saveBounds);win.on('resized',saveBounds);
-    win.on('resize',()=>{if(!r.dead)r.wc.send('nozeli:workspace-control',{type:'viewport-changed'});});
+    this.watchWindowGeometry(r);
     win.on('closed', () => { clearTimeout(r.boundsTimer); this.windows.delete(item.id); });
     let timer;
     const ready = new Promise((resolve, reject) => { r.readyResolve = resolve; timer = setTimeout(() => reject(fail('WINDOW_NOT_READY')), 10000); });
@@ -1027,16 +1037,20 @@ export class WorkspaceNative {
       if(p.layoutRevision!==undefined&&p.layoutRevision!==layout.revision){this.changed(layout);return {stale:true};}
       if(p.sequence!==undefined){if(!Number.isSafeInteger(p.sequence)||p.sequence<1)throw fail('INVALID_BOUNDS');if(p.sequence<=(r.boundsSequence??0))return {stale:true};}
       const [currentWidth,currentHeight]=r.win.getContentSize();
-      if(p.viewport&&(Math.abs(p.viewport.width-currentWidth)>1||Math.abs(p.viewport.height-currentHeight)>1)){
+      // DOM measurements are CSS pixels; WebContentsView bounds are native DIP.
+      // Chromium page zoom is independent of both OS scale and document zoom.
+      const zoom=r.wc.getZoomFactor?.()||1;
+      const nativeRect=rect=>rect&&Object.fromEntries(['x','y','width','height'].map(key=>[key,rect[key]*zoom]));
+      if(p.viewport&&(Math.abs(p.viewport.width*zoom-currentWidth)>zoom||Math.abs(p.viewport.height*zoom-currentHeight)>zoom)){
         r.wc.send('nozeli:workspace-control',{type:'viewport-changed',width:currentWidth,height:currentHeight});return {stale:true};
       }
       if(p.sequence!==undefined)r.boundsSequence=p.sequence;
       for (const surface of this.projectRecords(r.projectId, r.windowId)) {
         const item = p.groups?.find(item => item.viewId === surface.viewId && groups.some(g => g.id === item.groupId && g.activeViewId === surface.viewId));
-        const rect = item?.rect;
+        const rect = nativeRect(item?.rect);
         const [width, height] = r.win.getContentSize();
         const valid = rect && ['x','y','width','height'].every(k => Number.isFinite(rect[k])) && rect.x >= 0 && rect.y >= 0 && rect.width > 0 && rect.height > 0 && rect.x + rect.width <= width + 1 && rect.y + rect.height <= height + 1;
-        const occluded=valid&&Array.isArray(p.overlayRects)&&p.overlayRects.some(b=>b&&['x','y','width','height'].every(k=>Number.isFinite(b[k]))&&b.width>0&&b.height>0&&b.x<rect.x+rect.width&&b.x+b.width>rect.x&&b.y<rect.y+rect.height&&b.y+b.height>rect.y);
+        const occluded=valid&&Array.isArray(p.overlayRects)&&p.overlayRects.map(nativeRect).some(b=>b&&['x','y','width','height'].every(k=>Number.isFinite(b[k]))&&b.width>0&&b.height>0&&b.x<rect.x+rect.width&&b.x+b.width>rect.x&&b.y<rect.y+rect.height&&b.y+b.height>rect.y);
         if (valid) surface.view.setBounds(Object.fromEntries(Object.entries(rect).map(([k,v]) => [k,Math.round(v)])));
         surface.view.setVisible(!!valid && !surface.conversationBlocked && !p.overlay && !occluded && (surface.ready || surface.contentFailed) && ![...this.drags.values()].some(d=>d.projectId===r.projectId&&!(d.source.role==='detached'&&d.source.windowId===r.windowId)));
         for(const slot of this.isolatedPreview?.slots.values()??[])if(slot.scope===surface)this.isolatedPreview.bounds(slot,slot.bounds);
@@ -1061,12 +1075,22 @@ export class WorkspaceNative {
         if(r.role!=='surface')throw fail('IPC_DENIED');const root=this.windows.get(r.windowId);if(!root||root.projectId!==r.projectId||!root.resizing)return {};
         if(!['pointermove','pointerup','pointercancel'].includes(p.eventType))throw fail('INVALID_COMMAND');const b=r.view.getBounds();
         if(p.eventType!=='pointercancel'&&(!Number.isFinite(p.clientX)||!Number.isFinite(p.clientY)))throw fail('INVALID_COMMAND');
-        root.wc.send('nozeli:workspace-control',{type:'pane-pointer',eventType:p.eventType,buttons:p.buttons,clientX:b.x+(p.clientX??0),clientY:b.y+(p.clientY??0)});return {};
+        const rootZoom=root.wc.getZoomFactor?.()||1,surfaceZoom=r.wc.getZoomFactor?.()||1;
+        root.wc.send('nozeli:workspace-control',{type:'pane-pointer',eventType:p.eventType,buttons:p.buttons,clientX:(b.x+(p.clientX??0)*surfaceZoom)/rootZoom,clientY:(b.y+(p.clientY??0)*surfaceZoom)/rootZoom});return {};
       }
       if(p.type==='window-control'){
         if(!['shell','detached','surface'].includes(r.role))throw fail('IPC_DENIED');
+        if(p.action==='state'){
+          const bounds=r.win.getBounds(),[width,height]=r.win.getContentSize(),chrome=this.windows.get(r.windowId)?.wc??r.wc;
+          return {bounds:{...bounds,windowState:r.win.isFullScreen()?'fullscreen':r.win.isMaximized()?'maximized':r.win.isMinimized()?'minimized':'normal'},contentSize:{width,height},chromeZoomFactor:chrome.getZoomFactor?.()||1,workArea:this.screen.getDisplayMatching(bounds).workArea};
+        }
         if(p.action==='minimize')r.win.minimize();
         else if(p.action==='maximize'){if(r.win.isMaximized())r.win.unmaximize();else r.win.maximize();}
+        else if(p.action==='fullscreen')r.win.setFullScreen(typeof p.enabled==='boolean'?p.enabled:!r.win.isFullScreen());
+        else if(p.action==='resize'){
+          if(!Number.isSafeInteger(p.width)||!Number.isSafeInteger(p.height)||p.width<320||p.height<240||p.width>16384||p.height>16384)throw fail('INVALID_BOUNDS');
+          r.win.setContentSize(p.width,p.height);
+        }
         else if(p.action==='close')r.win.close();
         else throw fail('INVALID_COMMAND');
         return {};

@@ -8,7 +8,7 @@ if (process.argv.includes('--nozeli-document')) {
   require('../agents/document-entry.cjs');
   return;
 }
-const { app, BaseWindow, WebContentsView, webContents, screen, ipcMain, Menu, shell, clipboard, ClipboardItem, nativeTheme } = require('electron');
+const { app, BaseWindow, WebContentsView, webContents, screen, ipcMain, Menu, shell, clipboard, ClipboardItem, nativeTheme, powerMonitor } = require('electron');
 if (process.platform === 'linux') app.setDesktopName('io.nozeli.Nozeli.desktop');
 const {WorkspaceWindow} = require('./workspace-window.cjs');
 let dialog, session;
@@ -21,6 +21,8 @@ const {WindowRecovery,forWindow:windowRecovery} = require('./window-recovery.cjs
 const {createForceQuit} = require('./force-quit.cjs');
 let forceQuitting = false;
 const forceQuit = createForceQuit({app});
+let autoUpdater, acknowledgeUpdateHealth, updateLifecycle, updateFrozen=false, exportClipboardFiles;
+const updateFlushWrites=new Set(['workspace.recovery','file.draft','file.save','file.retain','managed.review.instruction.save','managed.review.save']);
 let onlineBrowser;
 async function closeOnlineBrowsers(){for(const scope of new Set([...onlineBrowser?.slots.values()||[]].map(slot=>slot.scope))){const result=await onlineBrowser.closeScope(scope);if(result?.cancelled||result?.closed===false)throw Object.assign(Error('网站仍有未提交输入，已保留窗口。'),{code:'WEB_CLOSE_CANCELLED'});}}
 
@@ -280,6 +282,7 @@ async function main() {
   const {NativeFileClipboard}=await import('./file-clipboard.mjs');
   ({importClipboardFiles}=await import('./file-clipboard-import.mjs'));
   nativeFileClipboard=new NativeFileClipboard(clipboard,{ClipboardItem});
+  ({exportClipboardFiles}=await import('./file-clipboard-export.mjs'));
   ({ treeMenuItems } = await import('./file-tree-menu.mjs'));
   fileTreeOps = new FileTreeOps(host, { trash: p => shell.trashItem(p) });
   formatterService = new FormatterService({ host });
@@ -293,36 +296,31 @@ async function main() {
   agents.onEvent(event => workspaceNative?.broadcast('nozeli:agent',event,event.projectId));
   agentHandlers = agentOps(agents);
   const {ManagedProjects}=await import('../agents/managed-projects.mjs');
-  const {resolveBundledOmpRuntime}=await import('../agents/managed/omp-runtime.mjs');
-  const {createNozeliOmpSource}=await import('../agents/managed/omp-system-source.mjs');
-  const {OmpAuthBrokerHost}=await import('../agents/managed/omp-auth-broker.mjs');
-  let ompRuntime=null,ompRuntimeError=null;
-  try { ompRuntime=await resolveBundledOmpRuntime({appRoot:APP_ROOT}); }
-  catch { ompRuntimeError=new HostError('OMP_RUNTIME_UNAVAILABLE','Nozeli 私有 OMP 缺失、不兼容或校验失败；请修复安装。本地阅读与历史仍可用，不会改用系统 OMP。'); }
-  const ompSystemSource=createNozeliOmpSource(nozeliPaths);
-  let ompAuthBrokerHost=null;
-  const ompAuthBroker={acquire:async()=>{
-    if(ompRuntimeError)throw ompRuntimeError;
-    const setup=await readNozeliConfiguration(nozeliPaths);
-    if(setup.choiceRequired)throw Object.assign(Error('请先完成Nozeli独立配置初始化。'),{code:'CONFIG_SETUP_REQUIRED'});
-    ompAuthBrokerHost??=new OmpAuthBrokerHost({command:ompRuntime.command,source:ompSystemSource,sourceEnv:process.env});
-    return ompAuthBrokerHost.acquire();
-  }};
+  const {resolveBundledPiRuntime}=await import('../agents/managed/pi-runtime.mjs');
+  const {createNozeliPiSource}=await import('../agents/managed/pi-source.mjs');
+  const {PiSettingsWorker}=await import('../agents/managed/pi-auth.mjs');
+  const piSource=createNozeliPiSource(nozeliPaths);
+  let piRuntime=null,piRuntimeError=null;
+  try{piRuntime=await resolveBundledPiRuntime({appRoot:APP_ROOT,packaged:app.isPackaged,piHome:piSource.agentDir});}
+  catch(error){console.error('Pi runtime resolution',error.message);piRuntimeError=new HostError('PI_RUNTIME_UNAVAILABLE','Nozeli私有Pi运行环境缺失或校验失败；本地阅读和历史仍可用，不会切换系统运行环境。');}
+  const piAuth=piRuntime?new PiSettingsWorker({runtime:piRuntime,source:piSource}):null;
   const {ProviderSettings,hasProviderReferences}=await import('../agents/managed/provider-settings.mjs');
-  const providerSettings=new ProviderSettings({source:ompSystemSource,broker:ompAuthBroker,command:ompRuntime?.command,onDefaultsSaved:next=>managedAgents.applyModelDefaults(next),getModelSync:()=>managedAgents.modelSync(),isReferenced:async provider=>{
+  const providerSettings=new ProviderSettings({source:piSource,worker:piAuth,onDefaultsSaved:next=>managedAgents.applyModelDefaults(next),getModelSync:()=>managedAgents.modelSync(),onSourceSaved:(provider,info)=>managedAgents.applyProviderUpdate(provider,info),isReferenced:async provider=>{
     for(const controller of managedAgents?.controllers?.values()??[]){
       if(controller.starting?.size)return true;
       for(const session of controller.sessions.values())if(!session.model||session.model.startsWith(provider+'/'))return true;
     }
-    return hasProviderReferences({storage:host.storage},provider);
+    return hasProviderReferences({storage:host.storage,agentDir:piSource.agentDir},provider);
   }});
   const {createPrivilegeBroker}=await import('./privilege-broker.mjs');
   // 特权执行代理：真实 OS 机制专用子进程（Linux pkexec+可信系统 python 内联 launcher）；
   // sessionId 只是宿主准入状态，每次执行各自经 OS 提权机制启动，不声明持久 root；
   // capabilities 如实上报可用性（机制缺失/解释器不可信→unavailable，不伪称）。
   const privilegeBroker=createPrivilegeBroker({appRoot:APP_ROOT});
-  ompSystemSource.modelFor=role=>providerSettings.modelFor(role);
-  managedAgents=new ManagedProjects({userDataDir:app.getPath('userData'),host,legacy:agents,beforeDocumentOperation:syncDocument,ompSystemSource,ompAuthBroker,ompCommand:ompRuntime?.command,privilegeBroker});
+  piSource.modelFor=role=>providerSettings.modelFor(role);
+  piSource.roleDefaultsFor=role=>providerSettings.roleDefaultsFor(role);
+  const piSessionRuntime=piRuntime?{...piRuntime,args:piRuntime.args.filter(value=>value!==piRuntime.entry)}:null;
+  managedAgents=new ManagedProjects({userDataDir:app.getPath('userData'),host,legacy:agents,beforeDocumentOperation:syncDocument,piSource,piRuntime:piSessionRuntime,piAuth,privilegeBroker,modelCatalog:()=>providerSettings.models()});
   // Review-candidate documents reuse the managed controller as their sole
   // content authority; ordinary file.* operations dispatch through it.
   const {createReviewDocumentAdapter,runReviewDecision,stripFlushEnvelope}=await import('./review-documents.mjs');
@@ -384,6 +382,12 @@ async function main() {
     if(!r){quitPending=false;return;}
     void workspaceNative.flush([...workspaceNative.senders.values()]).then(()=>finishDrawing()).then(()=>{const recovery=windowRecovery(r.win);if(recovery)recovery.requestClose();else return workspaceNative.onClose(r);}).catch(error=>console.error('quit flush failed',error)).finally(()=>{quitPending=false;});
   });
+  const {AutoUpdater,acknowledgeUpdateHealth:health}=await import('./auto-update.mjs');acknowledgeUpdateHealth=health;
+  const {createUpdateLifecycle}=await import('./update-lifecycle.mjs');
+  const updateTest=ISOLATED_TEST_INSTANCE&&process.env.NOZELI_TEST_UPDATE_FEED&&process.env.NOZELI_CONFIG_ROOT&&process.env.NOZELI_USER_DATA;
+  const updateTestOptions=updateTest?{idleInterval:100,dependencies:{feed:process.env.NOZELI_TEST_UPDATE_FEED,tagApiBase:new URL(process.env.NOZELI_TEST_UPDATE_FEED).origin,allowLoopback:true}}:{};
+  updateLifecycle=createUpdateLifecycle({workspace:workspaceNative,host,managedAgents,agents,powerMonitor,idleSeconds:updateTest?0:60,isClosing:()=>quitting||quitPending||forceQuitting||Boolean(workspaceCapture?.active),freeze:held=>{updateFrozen=held;workspaceNative.broadcast('nozeli:workspace-control',{type:'lifecycle-hold',held});},quit:async()=>{allowClose=true;quitting=true;autoUpdater.stop();app.quit();}});
+  autoUpdater=new AutoUpdater({currentVersion:require(path.join(APP_ROOT,'package.json')).version,appRoot:APP_ROOT,stateDir:path.join(app.getPath('userData'),'updates'),enabled:!ISOLATED_TEST_INSTANCE||Boolean(updateTest),...updateLifecycle,...updateTestOptions,onStatus:status=>workspaceNative.broadcast('nozeli:update',status)});
   ipcMain.handle('nozeli:invoke', async (event, op, payload) => {
     try {
       const scope=trusted(event,'workspace.bootstrap',{});
@@ -401,6 +405,16 @@ async function main() {
         return {ok:true,value:{closing:true,forced:true}};
       }
       payload=await workspaceNative.resolvePayload(scope,op,payload??{});
+      if(op.startsWith('update.')){
+        if(scope.role!=='shell')throw new HostError('IPC_DENIED','更新操作只允许来自主窗口设置。');
+        if(op==='update.preferences'){if(!payload||Object.keys(payload).some(k=>k!=='enabled')||typeof payload.enabled!=='boolean')throw new HostError('INVALID_PAYLOAD','自动更新设置无效。');return {ok:true,value:await autoUpdater.setEnabled(payload.enabled)};}
+        if(Object.keys(payload).length)throw new HostError('INVALID_PAYLOAD','更新操作不接受路径或发布源参数。');
+        if(op==='update.status')return {ok:true,value:autoUpdater.status()};
+        if(op==='update.check')return {ok:true,value:await autoUpdater.check()};
+        if(op==='update.cancel'){autoUpdater.cancel();return {ok:true,value:autoUpdater.status()};}
+        throw new HostError('UNKNOWN_OP','未知更新操作。');
+      }
+      if(updateFrozen){const receipt=workspaceNative.receipts.get(payload?.flushRequestId),owned=updateFlushWrites.has(op)&&receipt?.record===scope&&receipt.generation===scope.generation;const retention=owned||['session.flushed','workspace.bootstrap','workspace.snapshot','workspace.bounds','workspace.recovery','state.write','managed.draft'].includes(op)||op==='workspace.command'&&payload.command?.type==='restoreViewState';if(!retention)throw new HostError('UPDATE_RESTART_PENDING','应用正在保留现场以安装更新，请稍候。');}
       if(op.startsWith('web.')){
         trusted(event,op,payload);if(scope.role!=='surface'||scope.kind!=='web'||payload.viewId!==scope.viewId)throw new HostError('IPC_DENIED','网站操作不属于当前网页工作面。');
         const method=op.slice(4);if(!['open','bounds','navigate','action','close','discussionAction'].includes(method))throw new HostError('UNKNOWN_OP','未知网站操作。');
@@ -499,7 +513,7 @@ async function main() {
       }
       if(op==='config.status')return {ok:true,value:await readNozeliConfiguration(nozeliPaths)};
       if(op==='config.initialize'){
-        if(!payload||Object.keys(payload).some(key=>!['mode','includeApiKeys'].includes(key))||!['independent','import'].includes(payload.mode)||payload.includeApiKeys!==undefined&&typeof payload.includeApiKeys!=='boolean')throw new HostError('INVALID_PAYLOAD','请选择独立设置或一次性导入。');
+        if(!payload||Object.keys(payload).some(key=>!['mode','includeApiKeys'].includes(key))||payload.mode!=='independent'||payload.includeApiKeys===true)throw new HostError('INVALID_PAYLOAD','Pi 使用独立配置；旧 OMP 配置与凭据不会导入，请在 AI 设置中添加服务或重新登录。');
         const value=await completeNozeliConfiguration(nozeliPaths,{choice:payload.mode,includeApiKeys:payload.includeApiKeys===true});
         await managedAgents.configurationReady();
         return {ok:true,value};
@@ -514,12 +528,13 @@ async function main() {
         return {ok:true,value:await managedAgents.setActiveProject(payload.projectId)};
       }
       if(typeof op==='string'&&op.startsWith('settings.')){
-        if(ompRuntimeError)throw ompRuntimeError;
+        if(piRuntimeError)throw piRuntimeError;
         try {
           let value;
           if(op==='settings.providers.status')value=await providerSettings.status();
           else if(op==='settings.providers.save')value=await providerSettings.saveApi(payload);
           else if(op==='settings.providers.remove')value=await providerSettings.remove(payload);
+          else if(op==='settings.providers.discover')value=await providerSettings.discover(payload);
           else if(op==='settings.models.save')value=await providerSettings.saveDefaults(payload);
           else if(op==='settings.login.providers')value=await providerSettings.loginProviders();
           else if(op==='settings.login.start')value=await providerSettings.startLogin(payload);
@@ -530,7 +545,7 @@ async function main() {
           return {ok:true,value};
         } catch(error){
           if(error.code==='SETTINGS_INVALID')throw error;
-          throw new HostError('SETTINGS_FAILED','OMP设置操作未完成；原有会话保持不变。请检查私有运行环境或源配置。');
+          throw new HostError('SETTINGS_FAILED','Pi设置操作未完成；原有会话保持不变。请检查私有运行环境或源配置。');
         }
       }
       if (op==='document.synced') return {ok:true,value:workspaceNative.acknowledge(scope,payload,{...payload?.result,requestId:payload?.requestId})};
@@ -630,7 +645,20 @@ async function main() {
       if (op === 'tree.clipboard.read' || op === 'tree.clipboard.mark') {
         if(scope.role!=='shell'||payload?.projectId!==scope.projectId)throw new HostError('PROJECT_SCOPE_DENIED','只能在当前打开的项目中读取文件剪贴板。');
         const owner=event.sender.id;
-        return {ok:true,value:op==='tree.clipboard.mark'?await nativeFileClipboard.mark(owner,scope.projectId):await nativeFileClipboard.read(owner,scope.projectId)};
+        if(op==='tree.clipboard.read')return {ok:true,value:await nativeFileClipboard.read(owner,scope.projectId)};
+        if(Object.keys(payload).some(key=>!['projectId','paths','action'].includes(key)))throw new HostError('INVALID_PAYLOAD','文件复制参数无效。');
+        const projectId=scope.projectId,generation=scope.generation;
+        const guard=async()=>{
+          if(scope.dead||scope.projectId!==projectId||scope.generation!==generation||workspaceNative.senders.get(owner)!==scope)throw new HostError('PROJECT_SCOPE_DENIED','项目已切换，请重新复制文件。');
+          if(payload.action==='cut')return;
+          const affected=workspaceNative.projectRecords(projectId).filter(r=>r.relPath&&(!r.documentSource||r.documentSource.type==='project')&&payload.paths?.some(rel=>r.relPath===rel||r.relPath.startsWith(rel+'/')));
+          for(const r of affected){
+            if(!r.ready||r.dead||r.held||r.transferring||r.recoveryHeld||r.contentFailed)throw new HostError('SOURCE_UNSAVED','请先保存并确认源文件状态。');
+            let timer;try{const state=await Promise.race([r.wc.executeJavaScript('window.__nozeliUpdateState?.()'),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('源文件仍在处理编辑')),3000);})]);if(!state?.ready||state.dirty||state.blocked)throw new HostError('SOURCE_UNSAVED','源文件存在未保存编辑或待处理操作，请先保存后再复制。');}finally{clearTimeout(timer);}
+          }
+          if(scope.dead||scope.projectId!==projectId||scope.generation!==generation)throw new HostError('PROJECT_SCOPE_DENIED','项目已切换，请重新复制文件。');
+        };
+        return {ok:true,value:await exportClipboardFiles(fileTreeOps,nativeFileClipboard,{owner,projectId,paths:payload.paths,action:payload.action,guard})};
       }
       if (op === 'tree.mutate') {
         const request = payload ?? {};
@@ -659,13 +687,11 @@ async function main() {
         const project=await host.requireProject(payload?.projectId);
         const abs=await fileTreeOps.locate(project,payload?.relPath,false);
         if(path.extname(abs).toLowerCase()!=='.pptx'||!/^[a-f0-9]{64}$/.test(payload?.digest||''))throw Error('PPTX 参数无效');
-        const key='ppt:'+require('node:crypto').createHash('sha256').update(payload.relPath+'\0'+payload.digest).digest('hex');
         if(op==='ppt.draft'){
-          if(payload.model!==undefined){
-            const text=JSON.stringify({schema:'nozeli-pptist-draft-v1',engine:'82ecf10040ca8da67832f173b58d3baf5da59887',sourceDigest:payload.digest,model:payload.model});if(!Array.isArray(payload.model?.slides)||!payload.model.slides.length||Buffer.byteLength(text)>256*1024*1024)throw Error('PPTX 草稿无效或超过 256 MB');
-            await host.storage.putRecovery(project.id,key,JSON.parse(text));return {ok:true,value:{saved:true}};
-          }
-          const record=await host.storage.getRecovery(project.id,key);if(record&&(record.schema!=='nozeli-pptist-draft-v1'||record.engine!=='82ecf10040ca8da67832f173b58d3baf5da59887'))throw Error('PPTX 草稿版本不兼容，原草稿已保留');return {ok:true,value:record?.model??null};
+          const {readPptDraft,savePptDraft}=await import('./ppt-drafts.mjs');
+          const input={host,projectId:project.id,relPath:payload.relPath,digest:payload.digest,absolute:abs};
+          if(payload.model!==undefined)return {ok:true,value:await savePptDraft({...input,model:payload.model})};
+          return {ok:true,value:await readPptDraft({...input,sourceOnly:payload.sourceOnly===true,recoverDigest:payload.recoverDigest})};
         }
         const bytes=Buffer.from(payload.bytes||[]);if(bytes.length<4||bytes.length>128*1024*1024||bytes.readUInt32LE(0)!==0x04034b50)throw Error('PPTX 导出数据无效');
         const choice=await dialog.showSaveDialog(scope.win,{title:'导出 PPTX 副本（格式可能变化）',defaultPath:abs.replace(/\.pptx$/i,'-Nozeli.pptx'),filters:[{name:'PowerPoint',extensions:['pptx']}]});
@@ -746,7 +772,7 @@ async function main() {
         const historyOnly=['managed.status','managed.maintenance.status','managed.history.list','managed.history.read','managed.artifact.read','managed.artifact.list','managed.timeline.page','managed.timeline.read','managed.timeline.request','managed.changes.list','managed.changes.read','managed.worker.history','managed.resident.history','managed.draft','managed.disposition','managed.terminal.screen','managed.review.read','managed.review.instruction.read'].includes(op);
         // Local disposition still passes sender/project/mutation authorization above.
         const localDisposition=['managed.end','managed.retry','managed.merge.consent','managed.merge.constraint','managed.deviation.resolve','managed.problem.resolve','managed.effect.response','managed.todo.manage','managed.attention.ack','managed.attention.respond','managed.attention.draft.read','managed.attention.draft.write','managed.review.save','managed.review.accept','managed.review.instruction.save'].includes(op);
-        let blocked=ompRuntimeError&&!historyOnly&&!localDisposition?ompRuntimeError:null;
+        let blocked=piRuntimeError&&!historyOnly&&!localDisposition?piRuntimeError:null;
         if(!blocked&&!historyOnly&&!localDisposition&&(await readNozeliConfiguration(nozeliPaths)).choiceRequired)blocked=new HostError('CONFIG_SETUP_REQUIRED','请先完成Nozeli独立配置初始化；本地阅读不受影响。');
         if(blocked){if(payload.projectId){await host.requireRegisteredProject(payload.projectId);await managedAgents.reportConnectionError(payload.projectId,blocked);}throw blocked;}
         return {ok:true,value:await managedAgents.invoke(op,businessPayload)};
@@ -770,7 +796,9 @@ async function main() {
       return respond(error);
     }
   });
-  await createWindow(server);
+  const initialWindow=await createWindow(server);
+  await autoUpdater.start();
+  if(process.env.NOZELI_UPDATE_RECEIPT){await initialWindow.webContents.executeJavaScript('new Promise((resolve,reject)=>{const deadline=Date.now()+20000;const timer=setInterval(()=>{if(window.__nozeliReady){clearInterval(timer);resolve(true);}else if(Date.now()>deadline){clearInterval(timer);reject(Error("应用工作面尚未就绪"));}},50);})');await acknowledgeUpdateHealth({appRoot:APP_ROOT});}
   app.on('activate', async () => {
     if (quitting || BaseWindow.getAllWindows().length > 0) return;
     allowClose = false;
@@ -778,6 +806,7 @@ async function main() {
   });
   app.on('window-all-closed', async () => {
     if (forceQuitting) return;
+    autoUpdater?.stop();
     await texManager?.stopAll();
     await texLanguage?.stopAll();
     await lspManager?.stopAll();
@@ -786,7 +815,7 @@ async function main() {
     await managedAgents?.stop().catch(error=>console.error('managed cleanup failed',error.message));
     projectWatcher?.close();
     await providerSettings.stop();
-    await ompAuthBrokerHost?.stop().catch(error=>console.error('omp auth broker stop failed',error.message));   // 认证继承收尾：自有 serve 子进程正常退出
+    await piAuth?.stop().catch(error=>console.error('Pi settings worker stop failed',error.message));
     server.close();
     app.quit();
   });

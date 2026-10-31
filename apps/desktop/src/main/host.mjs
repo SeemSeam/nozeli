@@ -926,7 +926,9 @@ export class DesktopHost {
     return this.withDocumentLedger(projectId, relPath, ledger => readDocumentVersion(ledger, version, digest => this.storage.readObject(projectId,digest)));
   }
 
-  async documentStatus(projectId,relPath) {
+  async documentStatus(projectId,relPath,documentSource) {
+    const bound=this.boundDocumentSource(documentSource);
+    if(bound.type!=='project')return this.track(this.requireReviewDocuments().status({projectId,source:bound,relPath:normalizeRel(relPath)}));
     const rel=normalizeRel(relPath),project=await this.requireProject(projectId),located=await this.resolveFile(project,rel);
     if(located.missing)return {deleted:true};
     const store=new FileChanges({storage:this.storage,projectId:project.id,root:project.root});
@@ -2066,7 +2068,7 @@ export const ops = {
   'document.history': (host,payload) => host.documentHistory(payload?.projectId,payload?.relPath,{eventId:payload?.eventId || null,scope:payload?.scope??null,cursor:payload?.cursor??null,limit:payload?.limit??100},payload?.documentSource),
   'document.versions': (host,payload) => host.documentVersions(payload?.projectId,payload?.relPath,{cursor:payload?.cursor??null,limit:payload?.limit??50},payload?.documentSource),
   'document.version': (host,payload) => host.documentVersion(payload?.projectId,payload?.relPath,payload?.version,payload?.documentSource),
-  'document.status': (host,payload) => host.documentStatus(payload?.projectId,payload?.relPath),
+  'document.status': (host,payload) => host.documentStatus(payload?.projectId,payload?.relPath,payload?.documentSource),
   'sheet.recover': (host,payload)=>host.recoverSheet(payload?.projectId,payload?.relPath,payload?.bytes),
   'sheet.save': (host, payload) => host.saveSheet(payload?.projectId, payload?.relPath, payload?.baseDigest, payload?.bytes),
   'word.save': (host, payload) => host.saveWord(payload?.projectId, payload?.relPath, payload?.baseDigest, payload?.bytes,{anchorChanges:payload?.anchorChanges??null}),

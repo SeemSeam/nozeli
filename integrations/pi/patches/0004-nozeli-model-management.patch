@@ -1,0 +1,144 @@
+Nozeli patch 0004 — model management (applies on top of patches/0001..0003).
+Purpose: custom-provider model capability metadata (name, reasoning) must
+survive the vendored CustomProviderStore round trip into the native models.json
+registry (the SDK ModelDefinitionSchema honors both fields natively); session
+model selections need an explicit session-side runtime refresh so existing
+sessions re-resolve a cached selector after credential/model-source edits
+without creating a new session; and the live native per-model thinking levels
+(session.getAvailableThinkingLevels, the same authority that clamps thinking)
+must be readable for honest capability feedback instead of a fabricated static
+tier list. No behavior of unpatched upstream is removed.
+
+--- a/packages/pi-sdk-driver/custom-provider-types.ts
++++ b/packages/pi-sdk-driver/custom-provider-types.ts
+@@ -1,4 +1,13 @@
+ export interface CustomProviderModelInput {
+   readonly id: string;
+   readonly contextWindow?: number;
++  /** Optional display name; Nozeli writes service-discovered names, never secrets. */
++  readonly name?: string;
++  /**
++   * Optional user declaration that the model supports reasoning/thinking. The
++   * native model registry honors this field from models.json, so it is real
++   * capability metadata, not UI-only state.
++   */
++  readonly reasoning?: boolean;
+ }
+
+--- a/packages/pi-sdk-driver/custom-provider-store.ts
++++ b/packages/pi-sdk-driver/custom-provider-store.ts
+@@ -103,6 +103,14 @@ function validateInput(input: CustomProviderInput): void {
+     if (model.contextWindow !== undefined && !Number.isFinite(model.contextWindow)) {
+       throw new Error(`Model ${model.id} has non-numeric contextWindow.`);
+     }
++    if (model.name !== undefined && (typeof model.name !== "string" || model.name.length > 200)) {
++      throw new Error(`Model ${model.id} has an invalid name.`);
++    }
++    if (model.reasoning !== undefined && typeof model.reasoning !== "boolean") {
++      throw new Error(`Model ${model.id} has non-boolean reasoning.`);
++    }
+   }
+ }
+@@ -126,6 +134,12 @@ function toProviderConfig(input: CustomProviderInput): Record<string, unknown> {
+       if (model.contextWindow !== undefined) {
+         entry.contextWindow = model.contextWindow;
+       }
++      if (model.name !== undefined && model.name) {
++        entry.name = model.name;
++      }
++      if (model.reasoning !== undefined) {
++        entry.reasoning = model.reasoning;
++      }
+       return entry;
+@@ -170,7 +184,16 @@ function readCustomProviders(data: ModelsJson): readonly CustomProviderEntry[] {
+             const contextWindow =
+               typeof modelConfig.contextWindow === "number" ? modelConfig.contextWindow : undefined;
+-            return contextWindow !== undefined
+-              ? { id: modelConfig.id, contextWindow }
+-              : { id: modelConfig.id };
++            const name =
++              typeof modelConfig.name === "string" && modelConfig.name
++                ? modelConfig.name.slice(0, 200)
++                : undefined;
++            const reasoning =
++              typeof modelConfig.reasoning === "boolean" ? modelConfig.reasoning : undefined;
++            const entry: CustomProviderModelInput = { id: modelConfig.id };
++            if (contextWindow !== undefined) entry.contextWindow = contextWindow;
++            if (name !== undefined) entry.name = name;
++            if (reasoning !== undefined) entry.reasoning = reasoning;
++            return entry;
+
+--- a/packages/session-driver/types.ts
++++ b/packages/session-driver/types.ts
+@@ -122,6 +122,13 @@ export interface SessionModelSelection {
+   readonly provider: string;
+   readonly modelId: string;
++  /**
++   * Re-resolve the model against the session's own runtime even when the
++   * selector is already cached. Nozeli uses this after credential/model-source
++   * edits so existing sessions pick up rotated keys without a new session.
++   */
++  readonly refresh?: boolean;
+ }
+
+--- a/packages/pi-sdk-driver/session-supervisor.ts
++++ b/packages/pi-sdk-driver/session-supervisor.ts
+@@ -1370,6 +1370,14 @@ export class SessionSupervisor implements SessionDriver {
+     // The session's own runtime, not a shared one: it holds this workspace's
+     // extension providers, so the endpoint and credentials resolved here are
+     // the ones this workspace registered even if another workspace claims the id.
++    if (selection.refresh === true) {
++      // Cached selectors would otherwise keep the pre-rotation credential;
++      // refresh re-reads models.json/auth.json without any network catalog or
++      // inference call.
++      await session.modelRuntime.refresh({ allowNetwork: false });
++    }
+     const model = await requireSessionModel(
+       session.modelRuntime,
+       selection.provider,
+@@ -1404,6 +1412,16 @@ export class SessionSupervisor implements SessionDriver {
+   }
++
++  /**
++   * Native per-model thinking levels for the session's current model. This is
++   * the same authority `applySessionThinkingLevel` clamps against, so callers
++   * can show real capability instead of a fabricated static tier list.
++   */
++  async getSessionThinkingLevels(sessionRef: SessionRef): Promise<readonly string[]> {
++    const record = await this.ensureRecord(sessionRef);
++    const session = this.requireSession(record);
++    return session.getAvailableThinkingLevels();
++  }
+
+--- a/packages/pi-sdk-driver/pi-sdk-driver.ts
++++ b/packages/pi-sdk-driver/pi-sdk-driver.ts
+@@ -100,6 +100,11 @@ export class PiSdkDriver implements SessionDriver {
+   setSessionThinkingLevel(sessionRef: SessionRef, thinkingLevel: string): Promise<void> {
+     return this.supervisor.setSessionThinkingLevel(sessionRef, thinkingLevel);
+   }
++
++  /** Native thinking levels for the session's current model (no network). */
++  getSessionThinkingLevels(sessionRef: SessionRef): Promise<readonly string[]> {
++    return this.supervisor.getSessionThinkingLevels(sessionRef);
++  }
+
+Addendum (fix round 2) — same patch series, model-bound native thinking data:
+--- a/packages/session-driver/runtime-types.ts
++++ b/packages/session-driver/runtime-types.ts
+@@ -42,6 +42,9 @@ export interface RuntimeModelRecord {
+   readonly reasoning: boolean;
++  /** Native per-model thinking levels (pi-ai getSupportedThinkingLevels). */
++  readonly thinkingLevels: readonly string[];
+   readonly supportsImages: boolean;
+--- a/packages/pi-sdk-driver/runtime-supervisor.ts
++++ b/packages/pi-sdk-driver/runtime-supervisor.ts
+@@ -37,6 +37,11 @@
+ import { resolveModelScopes } from "./model-scope.js";
++// Native per-model thinking levels: the same SDK resolver AgentSession uses
++// (getAvailableThinkingLevels), so capability data is model-bound, never a
++// fabricated static tier list.
++import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+@@ -841,6 +846,7 @@ export class RuntimeSupervisor implements RuntimeResourceDriver {
+           reasoning: Boolean(model.reasoning),
++          thinkingLevels: getSupportedThinkingLevels(model),
+           supportsImages: model.input.includes("image"),

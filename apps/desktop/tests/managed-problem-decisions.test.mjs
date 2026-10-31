@@ -27,7 +27,7 @@ async function fixture(t){
  }
  const options={runtimeRoot:path.join(root,'runtime'),contentRoot:path.join(root,'content'),sessionFactory:(spec,target)=>new Session(spec,target),projectHome:home=>fs.mkdir(home,{recursive:true})};
  const open=async()=>{const c=await openTestController(options);c.execution=null;controllers.push(c);return c;};
- const c=await open();c.execution=null;await c.store.mutate(()=>{for(const binding of Object.values(c.store.state.bindings))binding.provider='omp';c.store.state.contentRoot=path.join(root,'content');});
+ const c=await open();c.execution=null;await c.store.mutate(()=>{for(const binding of Object.values(c.store.state.bindings))binding.provider='pi';c.store.state.contentRoot=path.join(root,'content');});
  t.after(async()=>{for(const controller of controllers)if(!controller.store.closed)await controller.stop();await fs.rm(root,{recursive:true,force:true});});
  const submitted=await c.store.submit('Original task with a no-install constraint','Brief',{name:'Original'});await c.store.activate(submitted.id);
  const run=async()=>{const accepted=await c.send(submitted.id,'请继续处理');const job=c.store.state.jobs.find(j=>j.id===accepted.jobId);await c.runJob(job);c.current.delete(submitted.id);const work=c.store.find(submitted.id);return {work,revisionBefore:work.revision};};

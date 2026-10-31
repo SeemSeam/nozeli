@@ -1,0 +1,3788 @@
+import { access, realpath, stat, unlink } from "node:fs/promises";
+import { resolve } from "node:path";
+import {
+  ModelRegistry,
+  ModelRuntime,
+  SessionManager,
+  type AgentSessionRuntime,
+  type AgentSession,
+  type AgentSessionEvent,
+  type CreateAgentSessionOptions,
+  type InlineExtension,
+  type ExtensionCommandContextActions,
+  type ExtensionUIDialogOptions,
+  type ExtensionUIContext,
+  type ExtensionWidgetOptions,
+  type SessionInfo,
+} from "@earendil-works/pi-coding-agent";
+import type { SessionCatalogSnapshot, WorkspaceCatalogSnapshot } from "@pi-gui/catalogs";
+import type {
+  NavigateSessionTreeOptions,
+  NavigateSessionTreeResult,
+  SessionMessageDeliveryMode,
+  SessionMessageInput,
+  SessionQueuedMessage,
+  SessionTreeNodeSnapshot,
+  SessionTreeSnapshot,
+} from "@pi-gui/session-driver/types";
+import type {
+  CreateSessionOptions,
+  ExtensionFlagValues,
+  ForkSessionOptions,
+  ForkSessionResult,
+  HostUiRequest,
+  HostUiResponse,
+  SessionConfig,
+  SessionDriverEvent,
+  SessionEventListener,
+  SessionModelSelection,
+  SessionRef,
+  SessionPlanLimits,
+  SessionSnapshot,
+  SessionUsageSnapshot,
+  SessionSchemaInfo,
+  SessionStatus,
+  SessionTranscriptCustomMessage,
+  SessionTranscriptItem,
+  SessionTranscriptMessage,
+  Unsubscribe,
+  WorkspaceId,
+  WorkspaceRef,
+} from "@pi-gui/session-driver";
+import type { RuntimeCommandRecord } from "@pi-gui/session-driver/runtime-types";
+import { isMissingFileError, JsonCatalogStore } from "@pi-gui/catalogs/node";
+import type { SessionFileCatalogStorage } from "@pi-gui/catalogs";
+import { sessionKey } from "@pi-gui/session-driver";
+import { buildSessionSchemaInfo, readSessionFileSchemaVersion } from "./session-schema.js";
+import {
+  gatedBuiltinExtensions,
+  type BuiltinExtension,
+  type BuiltinExtensionEnabled,
+} from "./builtin-extensions.js";
+import { piAddonExtensions } from "./pi-addon-extensions.js";
+import {
+  acquireLeaseFile,
+  currentLeaseIdentity,
+  defaultIsPidAlive,
+  DEFAULT_LEASE_HEARTBEAT_MS,
+  DEFAULT_LEASE_TTL_MS,
+  type LeaseIdentity,
+  type LeaseStalenessOptions,
+  refreshLeaseFile,
+  releaseLeaseFile,
+  sessionLeasePath,
+  SessionLeasedError,
+} from "./session-lease.js";
+import {
+  applyHostUiRequestToExtensionUiState,
+  createEmptyExtensionUiState,
+  type ExtensionUiState,
+} from "./extension-ui-state.js";
+import {
+  createUnsupportedHostUiError,
+  parseUnsupportedHostUiErrorMessage,
+} from "./unsupported-host-ui.js";
+import { normalizeRuntimeCommandName, skillCommandName } from "./runtime-command-utils.js";
+import {
+  buildSnapshot,
+  chainRecoveringEventQueue,
+  createWorkspaceRef,
+  deriveSessionConfig,
+  deriveWorkspaceTitle,
+  determineRunOutcome,
+  displayMessagesFromSession,
+  extractPreview,
+  injectFileAttachmentPreamble,
+  isExtensionCardEntry,
+  isExtensionPinEntry,
+  messageText,
+  nowIso,
+  persistedToolOutput,
+  previewFromSessionInfo,
+  shouldPersistSnapshotForAgentEvent,
+  shouldTailFromDisk,
+  singleFlight,
+  titleFromSessionInfo,
+  toSessionErrorInfo,
+  transcriptFromMessages,
+  transcriptFromSession,
+  transcriptItemFromCardEntry,
+  transcriptItemFromPinEntry,
+  customMessageTranscriptItem,
+  isHiddenCustomMessage,
+  truncate,
+  workspaceToRef,
+  type RunOutcome,
+} from "./session-supervisor-utils.js";
+import { forcePersistPiSession } from "./compat/pi-session-persistence.js";
+import { createTurnCaptureExtension } from "./turn-capture.js";
+import { createTranscriptIdentityExtension } from "./transcript-identity.js";
+import { createPlanLimitsExtension, readSessionUsage } from "./session-usage.js";
+import {
+  createDesktopExtensionBridge,
+  type PiDesktopExtensionObserver,
+} from "./desktop-extension-bridge.js";
+import {
+  createAgentSessionRuntimeWithNpmFallback,
+  type PiCreateAgentSessionOptions,
+  type PiModelInfo,
+} from "./npm-package-fallback.js";
+
+type RuntimeModel = NonNullable<ReturnType<ModelRuntime["getModel"]>>;
+
+function requireModel(modelRuntime: ModelRuntime, provider: string, modelId: string): RuntimeModel {
+  const model = modelRuntime.getModel(provider, modelId);
+  if (!model) {
+    throw new Error(`Unknown model ${provider}:${modelId}`);
+  }
+  return model;
+}
+
+/**
+ * Resolve a model against a live session's runtime.
+ *
+ * The runtime was built when the session was created, so a provider added since
+ * then — a custom provider set up in Settings, say — is not in it yet. Refreshing
+ * on a miss reloads `models.json` and reapplies the session's own extension
+ * registrations, which is what makes a freshly added model selectable without
+ * reopening the session.
+ */
+async function requireSessionModel(
+  modelRuntime: ModelRuntime,
+  provider: string,
+  modelId: string,
+): Promise<RuntimeModel> {
+  const model = modelRuntime.getModel(provider, modelId);
+  if (model) {
+    return model;
+  }
+  await modelRuntime.refresh({ allowNetwork: false });
+  return requireModel(modelRuntime, provider, modelId);
+}
+
+export interface PiSdkDriverOptions {
+  readonly catalogFilePath?: string;
+  /** Existing owner for catalog state. Takes precedence over catalogFilePath when provided. */
+  readonly catalogStorage?: SessionFileCatalogStorage;
+  readonly createAgentSessionRuntimeImpl?: (
+    options?: PiCreateAgentSessionOptions,
+  ) => Promise<AgentSessionRuntime>;
+  readonly agentDir?: string;
+  readonly builtinExtensions?: readonly BuiltinExtension[];
+  /** Opens MCP sign-in pages; pi opens the platform browser when omitted. */
+  readonly openUrl?: (url: string) => void;
+  /** Read each time a session loads or reloads its extensions; defaults to enabled. */
+  readonly isBuiltinExtensionEnabled?: BuiltinExtensionEnabled;
+  /**
+   * Flag values a session started with, re-applied whenever its closed pi session
+   * reopens, since pi reads flags only when it loads extensions.
+   */
+  readonly extensionFlagValuesForSession?: (
+    sessionRef: SessionRef,
+  ) => ExtensionFlagValues | undefined;
+  readonly desktopExtensions?: PiDesktopExtensionObserver;
+  readonly onTurnCaptureBoundary?: import("@pi-gui/session-driver").TurnCaptureObserver;
+  readonly turnCaptureTimeoutMs?: number;
+  readonly generateThreadTitleOverride?: (
+    workspace: WorkspaceRef,
+    options: import("./thread-title-generator.js").GenerateThreadTitleOptions,
+  ) => Promise<string | null | undefined>;
+  readonly onNativeSessionEvent?: (sessionRef: SessionRef, event: AgentSessionEvent) => void;
+}
+
+export interface SyncWorkspaceResult {
+  readonly workspace: WorkspaceRef;
+  readonly sessions: SessionCatalogSnapshot["sessions"];
+}
+
+interface ManagedSessionRecord {
+  ref: SessionRef;
+  workspace: WorkspaceRef;
+  title: string;
+  runtime: AgentSessionRuntime | undefined;
+  session: AgentSession | undefined;
+  sessionFile: string | undefined;
+  status: SessionStatus;
+  updatedAt: string;
+  archivedAt: string | undefined;
+  preview: string | undefined;
+  config: SessionConfig | undefined;
+  runningRunId: string | undefined;
+  cancellationRequested: boolean;
+  /** A prompt is in Pi's pre-run steps (input handlers, auth, before_agent_start). */
+  promptStarting: boolean;
+  /**
+   * Stop arrived before Pi started its run (input handlers, auth), where Pi's abort is a
+   * no-op; abort at agent_start. From before_agent_start on, Pi handles the abort itself.
+   */
+  abortOnRunStart: boolean;
+  pendingRunOutcome: RunOutcome | undefined;
+  queuedMessages: SessionQueuedMessage[];
+  /** Taken off the queue to start a turn; shown in the transcript when pi starts it. */
+  startingQueuedMessage: SessionQueuedMessage | undefined;
+  queuedStartScheduled: boolean;
+  /** The latest rebuild of pi's queue from queuedMessages (see changeQueue). */
+  piQueueSync: Promise<void>;
+  /** An idle point arrived while a start was scheduled; check again when it finishes. */
+  queuedStartRecheck: boolean;
+  /**
+   * Queued messages that already started. The app's list can still hold one for a moment, and a
+   * queue change sent from it must not queue it again.
+   */
+  startedQueuedMessageIds: Set<string>;
+  /** Starting a queued message failed; it waits for the person's next send or queue change. */
+  queuedStartFailed: boolean;
+  closed: boolean;
+  listeners: Set<SessionEventListener>;
+  eventQueue: Promise<void>;
+  unsubscribeAgent: (() => void) | undefined;
+  pendingHostUiRequests: Map<
+    string,
+    {
+      resolve: (response: HostUiResponse) => void;
+      reject: (error: Error) => void;
+    }
+  >;
+  extensionUiState: ExtensionUiState;
+  /** Load diagnostics reported before anyone subscribed; the first subscriber receives them. */
+  undeliveredLoadNotices: NotifyHostUiRequest[];
+  bindingExtensions: boolean;
+  sessionCommands: RuntimeCommandRecord[];
+  /** Context, cache and usage read from pi at the last turn boundary. */
+  usage: SessionUsageSnapshot | undefined;
+  /** Path of the lease file this record currently holds, if any. */
+  leasePath: string | undefined;
+  /** mtime (epoch ms) of the JSONL last reconciled into the served transcript. */
+  transcriptDiskMtimeMs: number | undefined;
+  /** Custom message entries already sent as live transcript items. */
+  appendedCustomEntryIds: Set<string>;
+  /** A reload asked for while a turn or compaction ran; it runs once the session is idle. */
+  reloadPending: boolean;
+  /** The reload running now, and any queued behind it; reloads of one session never overlap. */
+  reloadInFlight: Promise<void> | undefined;
+  /** Extension commands (such as `/mcp login`) still running; a reload would end them. */
+  extensionCommandsRunning: number;
+}
+
+type NotifyHostUiRequest = Extract<
+  Extract<SessionDriverEvent, { type: "hostUiRequest" }>["request"],
+  { kind: "notify" }
+>;
+
+interface RegisteredCommandAdapter {
+  readonly name: string;
+  readonly invocationName?: string;
+  readonly description?: string;
+  readonly sourceInfo?: RuntimeCommandRecord["sourceInfo"];
+  readonly extensionPath?: string;
+}
+
+interface PromptTemplateAdapter {
+  readonly name: string;
+  readonly description?: string;
+  readonly sourceInfo?: RuntimeCommandRecord["sourceInfo"];
+  readonly filePath?: string;
+}
+
+const NEW_THREAD_PLACEHOLDER_TITLE = "New thread";
+
+interface SkillAdapter {
+  readonly name: string;
+  readonly description: string;
+  readonly sourceInfo?: RuntimeCommandRecord["sourceInfo"];
+  readonly filePath?: string;
+  readonly source?: string;
+}
+
+export class SessionSupervisor {
+  private readonly catalogs: SessionFileCatalogStorage;
+  private readonly createAgentSessionRuntimeImpl: (
+    options?: PiCreateAgentSessionOptions,
+  ) => Promise<AgentSessionRuntime>;
+  private readonly agentDir: string | undefined;
+  private readonly builtinExtensions: readonly InlineExtension[];
+  private readonly piAddons: readonly InlineExtension[];
+  private readonly desktopExtensions: PiDesktopExtensionObserver | undefined;
+  private readonly extensionFlagValuesForSession: PiSdkDriverOptions["extensionFlagValuesForSession"];
+  private readonly onTurnCaptureBoundary: PiSdkDriverOptions["onTurnCaptureBoundary"];
+  private readonly turnCaptureTimeoutMs: number | undefined;
+  private readonly onNativeSessionEvent: PiSdkDriverOptions["onNativeSessionEvent"];
+  private readonly records = new Map<string, ManagedSessionRecord>();
+  /** Latest plan limits a provider reported, shared by every session on that provider. */
+  private readonly planLimitsByProvider = new Map<string, SessionPlanLimits>();
+  private readonly ensureRecordInFlight = new Map<string, Promise<ManagedSessionRecord>>();
+  /** Preserve invocation order so stale touches cannot undo a later rename or removal. */
+  private readonly workspaceMutationQueues = new Map<WorkspaceId, Promise<void>>();
+  private readonly leaseIdentity: LeaseIdentity = currentLeaseIdentity();
+  private readonly leaseTtlMs = DEFAULT_LEASE_TTL_MS;
+  private readonly isPidAlive = defaultIsPidAlive;
+  private leaseHeartbeat: ReturnType<typeof setInterval> | undefined;
+
+  constructor(options: PiSdkDriverOptions = {}) {
+    this.catalogs =
+      options.catalogStorage ??
+      (options.catalogFilePath
+        ? new JsonCatalogStore({ catalogFilePath: options.catalogFilePath })
+        : new JsonCatalogStore());
+    this.createAgentSessionRuntimeImpl =
+      options.createAgentSessionRuntimeImpl ?? createAgentSessionRuntimeWithNpmFallback;
+    this.builtinExtensions = gatedBuiltinExtensions(
+      options.builtinExtensions ?? [],
+      options.isBuiltinExtensionEnabled ?? (() => true),
+    );
+    this.piAddons = piAddonExtensions(options.openUrl ? { openUrl: options.openUrl } : {});
+    this.desktopExtensions = options.desktopExtensions;
+    this.extensionFlagValuesForSession = options.extensionFlagValuesForSession;
+    this.onTurnCaptureBoundary = options.onTurnCaptureBoundary;
+    this.turnCaptureTimeoutMs = options.turnCaptureTimeoutMs;
+    this.agentDir = options.agentDir;
+    this.onNativeSessionEvent = options.onNativeSessionEvent;
+  }
+
+  /**
+   * Options every session creation shares.
+   *
+   * Deliberately no `modelRuntime`: letting `createAgentSessionServices` build
+   * one per session keeps it cwd-bound, so it holds exactly the extension
+   * providers registered for this workspace and cannot pick up another open
+   * workspace's endpoint or credentials for the same provider id.
+   */
+  private baseCreateOptions(
+    workspace: WorkspaceRef,
+    sessionManager: SessionManager,
+    extensionFlagValues: ExtensionFlagValues | undefined,
+  ): PiCreateAgentSessionOptions {
+    const createOptions: PiCreateAgentSessionOptions = {
+      cwd: workspace.path,
+      sessionManager,
+      ...(extensionFlagValues && Object.keys(extensionFlagValues).length > 0
+        ? { extensionFlagValues: new Map(Object.entries(extensionFlagValues)) }
+        : {}),
+      resourceLoaderOptions: {
+        extensionFactories: [
+          ...this.piAddons,
+          ...this.builtinExtensions,
+          {
+            name: "pi-gui-plan-limits",
+            hidden: true,
+            factory: createPlanLimitsExtension({
+              onPlanLimits: (limits) => this.planLimitsByProvider.set(limits.provider, limits),
+            }),
+          },
+          {
+            name: "pi-gui-transcript-identity",
+            hidden: true,
+            factory: createTranscriptIdentityExtension({
+              workspace,
+              onPersisted: (sessionRef, sourceMessageId) => {
+                const record = this.records.get(sessionKey(sessionRef));
+                if (!record) return;
+                this.queueDriverEvents(
+                  record,
+                  [
+                    {
+                      type: "assistantMessagePersisted",
+                      sessionRef,
+                      timestamp: nowIso(),
+                      sourceMessageId,
+                      ...(record.runningRunId ? { runId: record.runningRunId } : {}),
+                    },
+                  ],
+                  { persistSnapshot: false },
+                );
+              },
+            }),
+          },
+          ...(this.onTurnCaptureBoundary
+            ? [
+                {
+                  name: "pi-gui-turn-capture",
+                  hidden: true,
+                  factory: createTurnCaptureExtension({
+                    workspace,
+                    observer: this.onTurnCaptureBoundary,
+                    timeoutMs: this.turnCaptureTimeoutMs,
+                    getRunId: (sessionId) => {
+                      const record = this.records.get(
+                        sessionKey({ workspaceId: workspace.workspaceId, sessionId }),
+                      );
+                      return record
+                        ? (record.runningRunId ??= crypto.randomUUID())
+                        : crypto.randomUUID();
+                    },
+                    isCancelled: (sessionId) =>
+                      this.records.get(
+                        sessionKey({ workspaceId: workspace.workspaceId, sessionId }),
+                      )?.cancellationRequested ?? false,
+                    isInterrupted: (sessionId) =>
+                      this.records.get(
+                        sessionKey({ workspaceId: workspace.workspaceId, sessionId }),
+                      )?.closed ?? true,
+                  }),
+                },
+              ]
+            : []),
+        ],
+      },
+      ...(this.agentDir ? { agentDir: this.agentDir } : {}),
+    };
+    if (!this.desktopExtensions) return createOptions;
+    return {
+      ...createOptions,
+      resourceLoaderOptions: createDesktopExtensionBridge({
+        workspace,
+        observer: this.desktopExtensions,
+      }).mergeResourceLoaderOptions(createOptions.resourceLoaderOptions ?? {}),
+    };
+  }
+
+  listWorkspaces(): Promise<WorkspaceCatalogSnapshot> {
+    return this.catalogs.workspaces.listWorkspaces();
+  }
+
+  listSessions(workspaceId?: WorkspaceId): Promise<SessionCatalogSnapshot> {
+    return this.catalogs.sessions.listSessions(workspaceId);
+  }
+
+  async registerWorkspace(path: string, displayName?: string): Promise<WorkspaceRef> {
+    const workspace = await createCanonicalWorkspaceRef(path, displayName);
+    await this.registerWorkspaceRef(workspace);
+    return workspace;
+  }
+
+  async syncWorkspace(path: string, displayName?: string): Promise<SyncWorkspaceResult> {
+    const workspace = await createCanonicalWorkspaceRef(path, displayName);
+    return this.runWorkspaceMutation(workspace.workspaceId, async () => {
+      await this.registerWorkspaceRefNow(workspace);
+      return this.syncWorkspaceNow(workspace);
+    });
+  }
+
+  private async syncWorkspaceNow(workspace: WorkspaceRef): Promise<SyncWorkspaceResult> {
+    const infos = await SessionManager.list(workspace.path);
+    const existingSessions = (await this.catalogs.sessions.listSessions(workspace.workspaceId))
+      .sessions;
+    const existingByKey = new Map(
+      existingSessions.map((session) => [sessionKey(session.sessionRef), session]),
+    );
+    const nextEntries = infos.map((info) =>
+      this.sessionEntryFromInfo(
+        workspace,
+        info,
+        this.records.get(sessionKey({ workspaceId: workspace.workspaceId, sessionId: info.id })),
+        existingByKey.get(sessionKey({ workspaceId: workspace.workspaceId, sessionId: info.id })),
+      ),
+    );
+    const discoveredKeys = new Set(nextEntries.map((entry) => sessionKey(entry.sessionRef)));
+    const preservedEntries = (
+      await Promise.all(
+        existingSessions.map(async (session) => {
+          const key = sessionKey(session.sessionRef);
+          if (discoveredKeys.has(key)) {
+            return undefined;
+          }
+
+          const sessionFilePath =
+            session.sessionFilePath ?? (await this.catalogs.getSessionFile(session.sessionRef));
+          if (!sessionFilePath) {
+            return undefined;
+          }
+
+          try {
+            await access(sessionFilePath);
+          } catch (error) {
+            // Only a confirmed missing file may drop a session. Transient
+            // failures (unmounted volume, permissions) must not delete state.
+            if (isMissingFileError(error)) {
+              return undefined;
+            }
+          }
+
+          const record = this.records.get(key);
+          const runtimeSnapshot =
+            record && record.session && !record.closed ? buildSnapshot(record) : undefined;
+          return {
+            ...session,
+            sessionFilePath,
+            status: runtimeSnapshot?.status ?? ("idle" as const),
+          };
+        }),
+      )
+    ).filter((session): session is NonNullable<typeof session> => Boolean(session));
+    const preservedKeys = new Set(preservedEntries.map((entry) => sessionKey(entry.sessionRef)));
+    const mergedEntries = [...nextEntries, ...preservedEntries];
+    const nextSessionFiles = Object.fromEntries<string>([
+      ...nextEntries.map((entry, index): [string, string] => [
+        sessionKey(entry.sessionRef),
+        infos[index]?.path ?? "",
+      ]),
+      ...preservedEntries.map((entry): [string, string] => [
+        sessionKey(entry.sessionRef),
+        entry.sessionFilePath ?? "",
+      ]),
+    ]);
+
+    await this.catalogs.replaceWorkspaceSessions(
+      workspace.workspaceId,
+      mergedEntries,
+      nextSessionFiles,
+    );
+    for (const session of existingSessions) {
+      const key = sessionKey(session.sessionRef);
+      if (discoveredKeys.has(key) || preservedKeys.has(key)) {
+        continue;
+      }
+
+      await this.catalogs.sessions.deleteSession(session.sessionRef);
+      const record = this.records.get(key);
+      if (!record) {
+        continue;
+      }
+
+      record.unsubscribeAgent?.();
+      record.unsubscribeAgent = undefined;
+      record.listeners.clear();
+      await this.disposeRecordRuntimeSafely(record);
+      this.records.delete(key);
+    }
+
+    return {
+      workspace,
+      sessions: (await this.catalogs.sessions.listSessions(workspace.workspaceId)).sessions,
+    };
+  }
+
+  /**
+   * Re-scan a workspace's pi session directory from disk and reconcile the
+   * catalog. Thin wrapper over syncWorkspace keyed by workspaceId, for
+   * window-focus / external-change reconcile. Returns undefined if the
+   * workspace is no longer tracked.
+   */
+  async reconcileWorkspace(workspaceId: WorkspaceId): Promise<SyncWorkspaceResult | undefined> {
+    return this.runWorkspaceMutation(workspaceId, async () => {
+      const workspace = await this.touchWorkspaceNow(workspaceId);
+      return workspace ? this.syncWorkspaceNow(workspaceToRef(workspace)) : undefined;
+    });
+  }
+
+  /**
+   * Best-effort absolute path of a session's pi `.jsonl` file. Used by the app
+   * layer to stat the selected session on window focus and only reload the
+   * transcript when the on-disk file actually changed.
+   */
+  getSessionFilePath(sessionRef: SessionRef): Promise<string | undefined> {
+    return this.resolveSessionFilePath(sessionRef);
+  }
+
+  async renameWorkspace(workspaceId: WorkspaceId, displayName: string): Promise<void> {
+    await this.runWorkspaceMutation(workspaceId, async () => {
+      const existing = await this.catalogs.workspaces.getWorkspace(workspaceId);
+      if (!existing) {
+        throw new Error(`Unknown workspace: ${workspaceId}`);
+      }
+
+      const nextWorkspace = await createCanonicalWorkspaceRef(
+        existing.path,
+        displayName.trim() || undefined,
+      );
+      await this.registerWorkspaceRefNow(nextWorkspace);
+
+      for (const record of this.records.values()) {
+        if (record.workspace.workspaceId === workspaceId) {
+          record.workspace = nextWorkspace;
+        }
+      }
+    });
+  }
+
+  async removeWorkspace(workspaceId: WorkspaceId): Promise<void> {
+    await this.runWorkspaceMutation(workspaceId, async () => {
+      const sessions = (await this.catalogs.sessions.listSessions(workspaceId)).sessions;
+      await this.catalogs.workspaces.deleteWorkspace(workspaceId);
+
+      for (const session of sessions) {
+        const key = sessionKey(session.sessionRef);
+        const record = this.records.get(key);
+        if (!record) {
+          continue;
+        }
+
+        record.unsubscribeAgent?.();
+        record.unsubscribeAgent = undefined;
+        record.listeners.clear();
+        await this.disposeRecordRuntimeSafely(record);
+        this.records.delete(key);
+      }
+    });
+  }
+
+  async getTranscript(sessionRef: SessionRef): Promise<SessionTranscriptItem[]> {
+    const record = this.records.get(sessionKey(sessionRef));
+    if (record && record.session && !record.closed) {
+      const diskMtimeMs = record.session.isStreaming
+        ? undefined
+        : await this.statMtimeMs(record.sessionFile);
+      const tail = shouldTailFromDisk({
+        isStreaming: record.session.isStreaming,
+        diskMtimeMs,
+        baselineMtimeMs: record.transcriptDiskMtimeMs,
+      });
+      if (tail) {
+        record.transcriptDiskMtimeMs = diskMtimeMs;
+        return this.readTranscriptFromDisk(sessionRef);
+      }
+      return transcriptFromSession(record.session.sessionManager, record.updatedAt);
+    }
+    return this.readTranscriptFromDisk(sessionRef);
+  }
+
+  /**
+   * Build a transcript straight from the session's JSONL file without binding
+   * an agent runtime. Pi's file is the source of truth for closed sessions, so
+   * this can never serve a stale view.
+   */
+  private async readTranscriptFromDisk(sessionRef: SessionRef): Promise<SessionTranscriptItem[]> {
+    const sessionEntry = await this.catalogs.sessions.getSession(sessionRef);
+    const sessionFile = await this.resolveSessionFilePath(sessionRef, sessionEntry);
+    if (!sessionFile) {
+      throw new Error(`Session ${sessionKey(sessionRef)} has no tracked session file.`);
+    }
+
+    const sessionManager = SessionManager.open(sessionFile);
+    return transcriptFromSession(sessionManager, sessionEntry?.updatedAt);
+  }
+
+  private async resolveSessionFilePath(
+    sessionRef: SessionRef,
+    sessionEntry?: SessionCatalogSnapshot["sessions"][number],
+  ): Promise<string | undefined> {
+    const entry = sessionEntry ?? (await this.catalogs.sessions.getSession(sessionRef));
+    return (
+      entry?.sessionFilePath ??
+      (await this.catalogs.getSessionFile(sessionRef)) ??
+      (await this.findSessionFileOnDisk(sessionRef))
+    );
+  }
+
+  /**
+   * Report whether a session file was written by a newer pi than the bundled
+   * runtime (which would silently drop content the runtime can't parse). Cheap:
+   * live sessions read the already-parsed header; closed sessions read only the
+   * file's first line. Additive and read-only — no behavior change for
+   * current/older sessions. See {@link SessionSchemaInfo} for field names.
+   */
+  async getSessionSchemaInfo(sessionRef: SessionRef): Promise<SessionSchemaInfo> {
+    const record = this.records.get(sessionKey(sessionRef));
+    if (record?.session && !record.closed) {
+      const version = record.session.sessionManager.getHeader()?.version;
+      return buildSessionSchemaInfo(typeof version === "number" ? version : undefined);
+    }
+
+    const sessionFile = await this.resolveSessionFilePath(sessionRef);
+    if (!sessionFile) {
+      return buildSessionSchemaInfo(undefined);
+    }
+    return buildSessionSchemaInfo(await readSessionFileSchemaVersion(sessionFile));
+  }
+
+  private async findSessionFileOnDisk(sessionRef: SessionRef): Promise<string | undefined> {
+    const workspace = await this.catalogs.workspaces.getWorkspace(sessionRef.workspaceId);
+    if (!workspace) {
+      return undefined;
+    }
+    const infos = await SessionManager.list(workspace.path);
+    return infos.find((info) => info.id === sessionRef.sessionId)?.path;
+  }
+
+  async getSessionCommands(sessionRef: SessionRef): Promise<readonly RuntimeCommandRecord[]> {
+    const record = await this.ensureRecord(sessionRef);
+    return record.sessionCommands;
+  }
+
+  async respondToHostUiRequest(sessionRef: SessionRef, response: HostUiResponse): Promise<void> {
+    const record = await this.ensureRecord(sessionRef);
+    const pending = record.pendingHostUiRequests.get(response.requestId);
+    if (!pending) {
+      return;
+    }
+
+    record.pendingHostUiRequests.delete(response.requestId);
+    pending.resolve(response);
+  }
+
+  async createSession(
+    workspace: WorkspaceRef,
+    options?: CreateSessionOptions,
+  ): Promise<SessionSnapshot> {
+    await this.registerWorkspaceRef(workspace);
+
+    const initialModel = options?.initialModel;
+    const createOptions: PiCreateAgentSessionOptions = {
+      ...this.baseCreateOptions(
+        workspace,
+        SessionManager.create(workspace.path),
+        options?.extensionFlagValues,
+      ),
+      ...(initialModel
+        ? {
+            resolveInitialModel: (modelRuntime: ModelRuntime) =>
+              requireModel(modelRuntime, initialModel.provider, initialModel.modelId),
+          }
+        : {}),
+      ...(options?.initialThinkingLevel
+        ? {
+            thinkingLevel: options.initialThinkingLevel as NonNullable<
+              CreateAgentSessionOptions["thinkingLevel"]
+            >,
+          }
+        : {}),
+    };
+
+    const runtime = await this.createAgentSessionRuntimeImpl(createOptions);
+    const session = runtime.session;
+
+    const record = this.createRecord(
+      workspace,
+      runtime,
+      options?.title ?? deriveWorkspaceTitle(workspace),
+    );
+    session.sessionManager.appendSessionInfo(record.title);
+    forcePersistPiSession(session.sessionManager);
+    record.config = deriveSessionConfig(session.sessionManager);
+    const sessionFile = record.sessionFile ?? session.sessionManager.getSessionFile();
+    if (sessionFile) {
+      record.sessionFile = sessionFile;
+      await this.catalogs.setSessionFile(record.ref, sessionFile);
+    }
+
+    this.records.set(sessionKey(record.ref), record);
+    await this.bindSessionRuntimeOrDispose(record);
+    this.reportLoadDiagnostics(record, runtime);
+    await this.persistSnapshot(record);
+    const snapshot = buildSnapshot(record);
+    await this.emit(record, {
+      type: "sessionOpened",
+      sessionRef: record.ref,
+      timestamp: nowIso(),
+      snapshot,
+    });
+    return snapshot;
+  }
+
+  async validateForkSession(sourceRef: SessionRef, options: ForkSessionOptions): Promise<void> {
+    await this.resolveForkSource(sourceRef, options);
+  }
+
+  async forkSession(
+    sourceRef: SessionRef,
+    options: ForkSessionOptions,
+  ): Promise<ForkSessionResult> {
+    const { sourceRecord, sourceFile, branch, selectedEntry } = await this.resolveForkSource(
+      sourceRef,
+      options,
+    );
+
+    const position = options.position ?? "before";
+    let targetLeafId: string | undefined;
+    let selectedText: string | undefined;
+    if (position === "after") {
+      const selectedIndex = branch.findIndex((entry) => entry.id === selectedEntry.id);
+      if (selectedEntry.message.role === "assistant") {
+        // Assistant entries can be followed by tool-result entries that belong
+        // to the same visible response. Include those, but stop before the next
+        // assistant/user message so forking an earlier response does not keep a
+        // later response from the same user turn.
+        const nextMessageIndex = branch.findIndex(
+          (entry, index) =>
+            index > selectedIndex &&
+            entry.type === "message" &&
+            (entry.message.role === "user" || entry.message.role === "assistant"),
+        );
+        targetLeafId =
+          nextMessageIndex > selectedIndex
+            ? (branch[nextMessageIndex - 1]?.id ?? selectedEntry.id)
+            : (branch[branch.length - 1]?.id ?? selectedEntry.id);
+      } else {
+        const nextUserIndex = branch.findIndex(
+          (entry, index) =>
+            index > selectedIndex && entry.type === "message" && entry.message.role === "user",
+        );
+        targetLeafId =
+          nextUserIndex > selectedIndex
+            ? (branch[nextUserIndex - 1]?.id ?? selectedEntry.id)
+            : (branch[branch.length - 1]?.id ?? selectedEntry.id);
+      }
+    } else if (position === "at") {
+      targetLeafId = selectedEntry.id;
+    } else {
+      targetLeafId = selectedEntry.parentId ?? undefined;
+      selectedText =
+        messageText(selectedEntry.message as unknown as Record<string, unknown>) || undefined;
+    }
+
+    const targetWorkspace = options.targetWorkspace;
+    await this.registerWorkspaceRef(targetWorkspace);
+    const sameWorkspace = resolve(targetWorkspace.path) === resolve(sourceRecord.workspace.path);
+
+    // Build a branched SessionManager containing only the history up to the fork point.
+    let branchedManager: SessionManager;
+    if (!targetLeafId) {
+      // Forking before the first user message: start a fresh empty session in the target.
+      branchedManager = SessionManager.create(targetWorkspace.path);
+      branchedManager.newSession({ parentSession: sourceFile });
+    } else if (sameWorkspace) {
+      const opened = SessionManager.open(sourceFile);
+      const forkedPath = opened.createBranchedSession(targetLeafId);
+      if (!forkedPath) {
+        throw new Error(`Failed to create forked session from ${sessionKey(sourceRef)}.`);
+      }
+      branchedManager = opened;
+    } else {
+      const forked = SessionManager.forkFrom(sourceFile, targetWorkspace.path);
+      const fullForkPath = forked.getSessionFile();
+      let forkedPath: string | undefined;
+      try {
+        forkedPath = forked.createBranchedSession(targetLeafId);
+        if (!forkedPath) {
+          throw new Error(`Failed to create forked session from ${sessionKey(sourceRef)}.`);
+        }
+      } catch (error) {
+        await removeIntermediateForkSession(fullForkPath, undefined);
+        throw error;
+      }
+      await removeIntermediateForkSession(fullForkPath, forkedPath);
+      branchedManager = forked;
+    }
+
+    const forkConfig = deriveSessionConfig(branchedManager);
+    const forkProvider = forkConfig?.provider;
+    const forkModelId = forkConfig?.modelId;
+    const createOptions: PiCreateAgentSessionOptions = {
+      ...this.baseCreateOptions(targetWorkspace, branchedManager, options.extensionFlagValues),
+      ...(forkProvider && forkModelId
+        ? {
+            // A model the source session used may not exist in the target
+            // workspace; fall back to the runtime default rather than failing.
+            resolveInitialModel: (modelRuntime: ModelRuntime) =>
+              modelRuntime.getModel(forkProvider, forkModelId),
+          }
+        : {}),
+      ...(forkConfig?.thinkingLevel
+        ? {
+            thinkingLevel: forkConfig.thinkingLevel as NonNullable<
+              CreateAgentSessionOptions["thinkingLevel"]
+            >,
+          }
+        : {}),
+    };
+
+    const runtime = await this.createAgentSessionRuntimeImpl(createOptions);
+    const session = runtime.session;
+
+    const title = options.title ?? sourceRecord.title;
+    const record = this.createRecord(targetWorkspace, runtime, title);
+    forcePersistPiSession(session.sessionManager);
+    record.config = deriveSessionConfig(session.sessionManager);
+    const sessionFile = record.sessionFile ?? session.sessionManager.getSessionFile();
+    if (sessionFile) {
+      record.sessionFile = sessionFile;
+      await this.catalogs.setSessionFile(record.ref, sessionFile);
+    }
+
+    this.records.set(sessionKey(record.ref), record);
+    await this.bindSessionRuntimeOrDispose(record);
+    this.reportLoadDiagnostics(record, runtime);
+    await this.persistSnapshot(record);
+    const snapshot = buildSnapshot(record);
+    await this.emit(record, {
+      type: "sessionOpened",
+      sessionRef: record.ref,
+      timestamp: nowIso(),
+      snapshot,
+    });
+    return selectedText === undefined ? { snapshot } : { snapshot, selectedText };
+  }
+
+  private async resolveForkSource(
+    sourceRef: SessionRef,
+    options: ForkSessionOptions,
+  ): Promise<{
+    readonly sourceRecord: ManagedSessionRecord;
+    readonly sourceFile: string;
+    readonly branch: readonly SessionBranchEntry[];
+    readonly selectedEntry: SessionMessageBranchEntry;
+  }> {
+    const sourceRecord = await this.ensureRecord(sourceRef);
+    const sourceSession = this.requireSession(sourceRecord);
+    const sourceManager = sourceSession.sessionManager;
+    const sourceFile = sourceRecord.sessionFile ?? sourceManager.getSessionFile();
+    if (!sourceFile) {
+      throw new Error(
+        `Session ${sessionKey(sourceRef)} cannot be forked because no session file is tracked.`,
+      );
+    }
+
+    const branch = sourceManager.getBranch();
+    const selectedEntry = resolveForkSourceEntry(
+      branch,
+      displayMessagesFromSession(sourceManager),
+      options,
+    );
+    if (!selectedEntry) {
+      const selector =
+        options.sourceMessageId !== undefined
+          ? `message ${options.sourceMessageId}`
+          : options.sourceMessageIndex !== undefined
+            ? `rendered message index ${options.sourceMessageIndex}`
+            : `user message index ${options.userMessageIndex}`;
+      throw new Error(`Cannot fork session ${sessionKey(sourceRef)}: no ${selector}.`);
+    }
+
+    return { sourceRecord, sourceFile, branch, selectedEntry };
+  }
+
+  async openSession(sessionRef: SessionRef): Promise<SessionSnapshot> {
+    const record = await this.ensureRecord(sessionRef);
+    await this.touchWorkspace(record.workspace.workspaceId);
+    const snapshot = buildSnapshot(record);
+    await this.emit(record, {
+      type: "sessionOpened",
+      sessionRef: record.ref,
+      timestamp: nowIso(),
+      snapshot,
+    });
+    return snapshot;
+  }
+
+  async archiveSession(sessionRef: SessionRef): Promise<void> {
+    await this.updateArchivedState(sessionRef, nowIso());
+  }
+
+  async unarchiveSession(sessionRef: SessionRef): Promise<void> {
+    await this.updateArchivedState(sessionRef, undefined);
+  }
+
+  async sendUserMessage(sessionRef: SessionRef, input: SessionMessageInput): Promise<void> {
+    const record = await this.ensureRecord(sessionRef);
+    await this.settleReloadsBeforeSend(record);
+    record.queuedStartFailed = false;
+    return this.sendReadyMessage(record, input);
+  }
+
+  /** Synchronous until the session counts as busy (promptStarting, or a command running). */
+  private async sendReadyMessage(
+    record: ManagedSessionRecord,
+    input: SessionMessageInput,
+  ): Promise<void> {
+    const session = this.requireSession(record);
+    const isExtensionCommand = this.isExtensionCommand(session, input.text);
+    if (input.extensionCommandOnly && !isExtensionCommand) {
+      throw new Error(`${input.text.trim().split(/\s/, 1)[0]} is not an extension command`);
+    }
+    if (session.isStreaming && !isExtensionCommand && !input.deliverAs) {
+      throw new Error(
+        "Session is already streaming. Specify deliverAs ('steer' or 'followUp') to queue the message.",
+      );
+    }
+
+    // A command can wait on the person (a sign-in dialog), so a reload waits for it. Counted
+    // from here so a pending reload cannot start during the awaits before pi runs it.
+    if (isExtensionCommand) record.extensionCommandsRunning += 1;
+    try {
+      await this.sendCheckedMessage(record, session, input, isExtensionCommand);
+    } finally {
+      if (isExtensionCommand) {
+        record.extensionCommandsRunning -= 1;
+        this.whenIdle(record);
+      }
+    }
+  }
+
+  private async sendCheckedMessage(
+    record: ManagedSessionRecord,
+    session: AgentSession,
+    input: SessionMessageInput,
+    isExtensionCommand: boolean,
+  ): Promise<void> {
+    const isQueuedMessage = session.isStreaming && !isExtensionCommand && Boolean(input.deliverAs);
+    const runId = isQueuedMessage || isExtensionCommand ? undefined : crypto.randomUUID();
+    if (!isQueuedMessage && !isExtensionCommand) {
+      record.cancellationRequested = false;
+      record.abortOnRunStart = false;
+      // Stop can arrive from here on, before Pi has a run to abort.
+      record.promptStarting = true;
+    }
+    record.runningRunId = runId ?? record.runningRunId;
+    record.status = isQueuedMessage || isExtensionCommand ? record.status : "running";
+    record.updatedAt = nowIso();
+    record.config = deriveSessionConfig(session.sessionManager);
+    // A card button's command is not something the user said, so it leaves the preview.
+    if (!input.extensionCommandOnly) record.preview = truncate(input.text);
+    try {
+      await this.persistSnapshot(record);
+      await this.emit(record, sessionUpdatedEvent(record));
+    } catch (error) {
+      record.promptStarting = false;
+      throw error;
+    }
+
+    // An extension reload during the awaits above can unregister the command, and pi would
+    // then send the text to the model. Refuse outside the try so the thread is left alone.
+    if (input.extensionCommandOnly && !this.isExtensionCommand(session, input.text)) {
+      throw new Error(`${input.text.trim().split(/\s/, 1)[0]} is no longer an extension command`);
+    }
+
+    try {
+      const images = input.attachments?.flatMap(
+        (attachment: NonNullable<SessionMessageInput["attachments"]>[number]) =>
+          attachment.kind === "image"
+            ? [
+                {
+                  type: "image" as const,
+                  data: attachment.data,
+                  mimeType: attachment.mimeType,
+                },
+              ]
+            : [],
+      );
+      const promptText = injectFileAttachmentPreamble(input.text, input.attachments);
+      if (isQueuedMessage) {
+        // The queued-vs-prompt decision was made before the persistSnapshot/emit
+        // awaits above; the agent may have finished its turn in that window. A
+        // steer/follow-up now would attach to nothing and be silently dropped,
+        // so re-check the live streaming state and surface a retryable error
+        // instead. The catch below rolls back the optimistic queued entry.
+        const finished = () =>
+          new Error(
+            "Session finished streaming before the queued message could be delivered. Retry to send it as a new turn.",
+          );
+        if (!session.isStreaming) throw finished();
+        // Added to pi's queue as it is, in a queue step so it can't interleave with a change.
+        const entry = queuedMessageFromInput(input, record.updatedAt);
+        let queued = false;
+        await this.queueStep(record, async (current) => {
+          if (!current.isStreaming) throw finished();
+          record.queuedMessages = [...record.queuedMessages, entry];
+          try {
+            await this.queuePrompt(current, promptText, input.deliverAs!, images);
+          } catch (error) {
+            record.queuedMessages = record.queuedMessages.filter((message) => message !== entry);
+            throw error;
+          }
+          queued = true;
+        });
+        // The step is skipped when the session closed while it waited.
+        if (!queued) throw finished();
+        record.updatedAt = nowIso();
+        // The message is queued now, so a failure to save or announce it is not a failed send.
+        try {
+          await this.persistSnapshot(record);
+          await this.emit(record, sessionUpdatedEvent(record));
+        } catch (error) {
+          console.warn(
+            `[pi-sdk-driver] could not save a queued message for ${sessionKey(record.ref)}:`,
+            error,
+          );
+        }
+      } else if (isExtensionCommand) {
+        await session.prompt(promptText, {
+          ...(images && images.length > 0 ? { images } : {}),
+          source: "interactive",
+        });
+      } else {
+        try {
+          await session.prompt(promptText, {
+            ...(images && images.length > 0 ? { images } : {}),
+            source: "interactive",
+          });
+        } finally {
+          record.promptStarting = false;
+          if (record.abortOnRunStart) {
+            // Pi never started a run for this prompt, so nothing is left to stop.
+            record.abortOnRunStart = false;
+            record.cancellationRequested = false;
+          }
+          // pi's agent_settled arrives inside prompt(), while the send still counted as busy.
+          this.whenIdle(record);
+        }
+      }
+
+      if (isExtensionCommand) {
+        await this.syncRecordAfterSessionMutation(record, { emitUpdate: true });
+      }
+    } catch (error) {
+      // A card button's command failing says nothing about the thread, which may be mid-run:
+      // leave its state alone and let the app report the failure.
+      if (input.extensionCommandOnly) throw error;
+      if (!isQueuedMessage) {
+        record.runningRunId = undefined;
+      }
+      if (!isQueuedMessage && !isExtensionCommand) {
+        record.promptStarting = false;
+        // A prompt that failed before a run started has no turn end to run the reload.
+        this.whenIdle(record);
+      }
+      if (isQueuedMessage) {
+        // The run may have settled while the message waited to be queued.
+        if (record.session?.isStreaming || isRecordBusy(record)) record.status = "running";
+      } else {
+        record.status = isExtensionCommand ? "idle" : "failed";
+      }
+      record.updatedAt = nowIso();
+      record.preview = error instanceof Error ? error.message : String(error);
+      await this.persistSnapshot(record);
+      await this.emit(record, {
+        type: "runFailed",
+        sessionRef: record.ref,
+        timestamp: nowIso(),
+        error: toSessionErrorInfo(error, "SEND_FAILED"),
+        ...(runId ? { runId } : {}),
+      });
+      await this.emit(record, sessionUpdatedEvent(record));
+      throw error;
+    }
+  }
+
+  /**
+   * A reload swaps the session's extensions and tools, so a message goes to the reloaded ones.
+   * It waits for reloads in flight (looping, as one can queue behind another) and, when a turn
+   * just ended with a reload pending that has not started yet (its run waits for the event
+   * queue), starts that reload now rather than letting a new turn slip in with the old tools.
+   */
+  private async settleReloadsBeforeSend(record: ManagedSessionRecord): Promise<void> {
+    for (;;) {
+      if (record.reloadInFlight) {
+        await record.reloadInFlight.catch(() => undefined);
+      } else if (record.reloadPending && !record.closed && !isRecordBusy(record)) {
+        await this.runReload(record).catch((error: unknown) => {
+          console.warn(
+            `[pi-sdk-driver] pending reload failed for ${sessionKey(record.ref)}:`,
+            error,
+          );
+        });
+      } else {
+        return;
+      }
+    }
+  }
+
+  async replaceQueuedMessages(
+    sessionRef: SessionRef,
+    messages: readonly SessionQueuedMessage[],
+  ): Promise<void> {
+    const record = await this.ensureRecord(sessionRef);
+    this.requireSession(record);
+    await this.changeQueue(record, (session) => {
+      // The app's list can still hold messages pi has delivered; they must not go back to pi.
+      forgetDeliveredQueuedMessages(record, session);
+      record.queuedMessages = messages
+        .filter((message) => !record.startedQueuedMessageIds.has(message.id))
+        .map((message) => cloneQueuedMessage(message));
+      record.queuedStartFailed = false;
+    });
+
+    record.updatedAt = nowIso();
+    await this.persistSnapshot(record);
+    await this.emit(record, sessionUpdatedEvent(record));
+    // The app queues while it believes a turn is running, but pi may have settled already.
+    this.startQueuedMessageWhenIdle(record);
+  }
+
+  /**
+   * Every change to the queue is one step, run one at a time: `update` changes queuedMessages
+   * while pi's queue still matches the list as the last step left it, then pi's queue is rebuilt
+   * from the new list. An older rebuild can then never add back what a newer list dropped.
+   */
+  private changeQueue(
+    record: ManagedSessionRecord,
+    update: (session: AgentSession) => boolean | void = () => undefined,
+  ): Promise<void> {
+    return this.queueStep(record, async (session) => {
+      // An update that changed nothing returns false, and pi's queue is left as it is.
+      if (update(session) === false) return;
+      session.clearQueue();
+      await this.queueWithPi(session, record.queuedMessages);
+    });
+  }
+
+  /** Runs `step` after every earlier queue step (see changeQueue). */
+  private queueStep(
+    record: ManagedSessionRecord,
+    step: (session: AgentSession) => Promise<void>,
+  ): Promise<void> {
+    const run = record.piQueueSync
+      .catch(() => undefined)
+      .then(async () => {
+        const session = record.session;
+        if (!session || record.closed) return;
+        await step(session);
+      });
+    record.piQueueSync = run;
+    return run;
+  }
+
+  private async queueWithPi(
+    session: AgentSession,
+    messages: readonly SessionQueuedMessage[],
+  ): Promise<void> {
+    for (const message of messages) {
+      const images = message.attachments?.flatMap(
+        (attachment: NonNullable<SessionQueuedMessage["attachments"]>[number]) =>
+          attachment.kind === "image"
+            ? [
+                {
+                  type: "image" as const,
+                  data: attachment.data,
+                  mimeType: attachment.mimeType,
+                },
+              ]
+            : [],
+      );
+      const promptText = injectFileAttachmentPreamble(message.text, message.attachments);
+      await this.queuePrompt(session, promptText, message.mode, images);
+    }
+  }
+
+  /**
+   * pi reads its queue only during a turn and empties it before the turn settles, so a message
+   * queued after that (the app still showed the turn running) waits for a turn nobody starts.
+   * Once the session is idle and its events are delivered, the first queued message starts the
+   * next turn and the rest stay queued behind it. A start that fails puts the message back and
+   * waits for the person's next send or queue change, rather than retrying on its own.
+   */
+  private startQueuedMessageWhenIdle(record: ManagedSessionRecord): void {
+    if (record.queuedMessages.length === 0) return;
+    if (record.queuedStartScheduled) {
+      record.queuedStartRecheck = true;
+      return;
+    }
+    // Held until the started turn ends, so idle points inside it don't start another.
+    record.queuedStartScheduled = true;
+    record.queuedStartRecheck = false;
+    let started = false;
+    record.eventQueue
+      .then(async () => {
+        await this.settleReloadsBeforeSend(record);
+        let first: SessionQueuedMessage | undefined;
+        let sent: Promise<void> | undefined;
+        await this.changeQueue(record, (session) => {
+          if (record.queuedStartFailed || isRecordBusy(record)) return false;
+          if (record.reloadPending || record.reloadInFlight) {
+            record.queuedStartRecheck = true;
+            return false;
+          }
+          const pending = forgetDeliveredQueuedMessages(record, session);
+          // pi delivers steering before follow-ups, so a steer goes first.
+          first = pending.find((message) => message.mode === "steer") ?? pending[0];
+          if (!first) return false;
+          const starting = first;
+          record.queuedMessages = pending.filter((message) => message !== starting);
+          // Shown in the transcript when pi starts it (see takeStartingQueuedMessage).
+          record.startingQueuedMessage = starting;
+          record.startedQueuedMessageIds.add(starting.id);
+          started = true;
+          // pi's queue is cleared before the prompt reads it. sendReadyMessage marks the session
+          // busy before its first await, so nothing else starts a turn in between.
+          session.clearQueue();
+          sent = this.sendReadyMessage(record, {
+            text: starting.text,
+            ...(starting.attachments ? { attachments: starting.attachments } : {}),
+          });
+          sent.catch(() => undefined);
+        });
+        if (!first || !sent) return;
+        const starting = first;
+        try {
+          await sent;
+        } catch (error) {
+          const neverStarted = record.startingQueuedMessage === starting;
+          if (neverStarted && !record.closed) {
+            // pi never took it: back to the front, and no more starts until the person acts.
+            await this.changeQueue(record, () => {
+              record.startedQueuedMessageIds.delete(starting.id);
+              record.queuedStartFailed = true;
+              record.queuedMessages = [starting, ...record.queuedMessages];
+            });
+            record.updatedAt = nowIso();
+            await this.persistSnapshot(record);
+            await this.emit(record, sessionUpdatedEvent(record));
+          }
+          throw error;
+        } finally {
+          if (record.startingQueuedMessage === starting) record.startingQueuedMessage = undefined;
+        }
+      })
+      .catch((error: unknown) => {
+        console.warn(
+          `[pi-sdk-driver] starting a queued message failed for ${sessionKey(record.ref)}:`,
+          error,
+        );
+      })
+      .finally(() => {
+        record.queuedStartScheduled = false;
+        // A message queued as the started turn ended is now the next one's.
+        if (started || record.queuedStartRecheck) this.startQueuedMessageWhenIdle(record);
+      });
+  }
+
+  async cancelCurrentRun(sessionRef: SessionRef): Promise<void> {
+    const record = this.records.get(sessionKey(sessionRef));
+    if (!record?.session) {
+      return;
+    }
+
+    record.cancellationRequested = true;
+    if (record.promptStarting && !record.session.isStreaming) {
+      record.abortOnRunStart = true;
+    }
+    try {
+      await record.session.abort();
+    } catch (error) {
+      // Abort is best-effort. Even if the runtime reports a failure we still
+      // reset local run state below so the UI does not stay stuck on "running".
+      console.warn(`[pi-sdk-driver] abort failed for ${sessionKey(record.ref)}:`, error);
+    }
+
+    // Aborting ends the current turn, so any steer/follow-up messages queued
+    // against it can never be delivered. Clear both the SDK queue and our
+    // mirror so the composer stops showing orphaned pending messages — matching
+    // the SDK's own "clear the queue when the user aborts" convention.
+    record.session?.clearQueue();
+    record.queuedMessages = [];
+    // Again after queue changes already on their way, so none of them refills it.
+    this.changeQueue(record, () => {
+      record.queuedMessages = [];
+    }).catch(() => undefined);
+    record.runningRunId = undefined;
+    record.status = "idle";
+    await this.persistSnapshot(record);
+    await this.emit(record, sessionUpdatedEvent(record));
+    this.whenIdle(record);
+  }
+
+  async setSessionModel(sessionRef: SessionRef, selection: SessionModelSelection): Promise<void> {
+    const record = await this.ensureRecord(sessionRef);
+    const session = record.session;
+    if (!session) {
+      throw new Error(`Session ${sessionKey(record.ref)} is not active.`);
+    }
+
+    // The session's own runtime, not a shared one: it holds this workspace's
+    // extension providers, so the endpoint and credentials resolved here are
+    // the ones this workspace registered even if another workspace claims the id.
+    if (selection.refresh === true) {
+      // Cached selectors would otherwise keep the pre-rotation credential;
+      // refresh re-reads models.json/auth.json without any network catalog or
+      // inference call.
+      await session.modelRuntime.refresh({ allowNetwork: false });
+    }
+    const model = await requireSessionModel(
+      session.modelRuntime,
+      selection.provider,
+      selection.modelId,
+    );
+    const registry = new ModelRegistry(session.modelRuntime);
+    const auth = await registry.getApiKeyAndHeaders(model);
+    if (!auth.ok) {
+      throw new Error(auth.error);
+    }
+
+    const previousModel = session.model;
+    const previousThinkingLevel = session.supportsThinking()
+      ? session.thinkingLevel
+      : (session.settingsManager.getDefaultThinkingLevel() ?? DEFAULT_SESSION_THINKING_LEVEL);
+
+    session.agent.state.model = model;
+    session.sessionManager.appendModelChange(model.provider, model.id);
+    this.applySessionThinkingLevel(session, previousThinkingLevel);
+    await this.emitModelSelection(session, model, previousModel);
+    forcePersistPiSession(session.sessionManager);
+    record.config = deriveSessionConfig(session.sessionManager);
+    this.refreshUsage(record);
+    await this.persistSnapshot(record);
+    await this.emit(record, sessionUpdatedEvent(record));
+  }
+
+  /**
+   * Native per-model thinking levels for the session's current model. This is
+   * the same authority `applySessionThinkingLevel` clamps against, so callers
+   * can show real capability instead of a fabricated static tier list.
+   */
+  async getSessionThinkingLevels(sessionRef: SessionRef): Promise<readonly string[]> {
+    const record = await this.ensureRecord(sessionRef);
+    const session = this.requireSession(record);
+    return session.getAvailableThinkingLevels();
+  }
+
+  async setSessionThinkingLevel(sessionRef: SessionRef, thinkingLevel: string): Promise<void> {
+    const record = await this.ensureRecord(sessionRef);
+    const session = this.requireSession(record);
+    this.applySessionThinkingLevel(session, thinkingLevel);
+    forcePersistPiSession(session.sessionManager);
+    record.config = deriveSessionConfig(session.sessionManager);
+    await this.persistSnapshot(record);
+    await this.emit(record, sessionUpdatedEvent(record));
+  }
+
+  async renameSession(sessionRef: SessionRef, title: string): Promise<void> {
+    const record = await this.ensureRecord(sessionRef);
+    const nextTitle = title.trim();
+    if (!nextTitle) {
+      throw new Error("Session title cannot be empty.");
+    }
+
+    const sessionManager = this.getWritableSessionManager(record);
+    sessionManager.appendSessionInfo(nextTitle);
+    forcePersistPiSession(sessionManager);
+    record.title = nextTitle;
+    await this.persistSnapshot(record);
+    await this.emit(record, sessionUpdatedEvent(record));
+  }
+
+  async compactSession(sessionRef: SessionRef, customInstructions?: string): Promise<void> {
+    const record = await this.ensureRecord(sessionRef);
+    if (!record.session) {
+      throw new Error(`Session ${sessionKey(sessionRef)} is not active.`);
+    }
+
+    await record.session.compact(customInstructions);
+    record.runningRunId = undefined;
+    record.status = "idle";
+    record.config = deriveSessionConfig(record.session.sessionManager);
+    record.preview = extractPreview(record.session.messages) ?? record.preview;
+    this.refreshUsage(record);
+    await this.persistSnapshot(record);
+    await this.emit(record, sessionUpdatedEvent(record));
+    this.whenIdle(record);
+  }
+
+  /**
+   * Reloads now when the session is idle. A reload tears down extensions (and their MCP
+   * connections and tools), so, like pi's own /reload, it never interrupts a running turn or a
+   * compaction: the reload waits and runs when that ends.
+   */
+  async reloadSessionWhenIdle(sessionRef: SessionRef): Promise<"reloaded" | "deferred"> {
+    const record = await this.ensureRecord(sessionRef);
+    if (isRecordBusy(record)) {
+      record.reloadPending = true;
+      return "deferred";
+    }
+    await this.runReload(record);
+    return "reloaded";
+  }
+
+  /** The session may have just gone idle: run what waits for that. */
+  private whenIdle(record: ManagedSessionRecord): void {
+    this.runPendingReload(record);
+    this.startQueuedMessageWhenIdle(record);
+  }
+
+  /** Runs a deferred reload once the events of the turn that held it are delivered. */
+  private runPendingReload(record: ManagedSessionRecord): void {
+    if (!record.reloadPending) return;
+    record.eventQueue
+      .then(async () => {
+        if (!record.reloadPending || record.closed || isRecordBusy(record)) return;
+        await this.runReload(record);
+      })
+      .catch((error: unknown) => {
+        console.warn(
+          `[pi-sdk-driver] deferred reload failed for ${sessionKey(record.ref)}:`,
+          error,
+        );
+      });
+  }
+
+  async reloadSession(sessionRef: SessionRef): Promise<void> {
+    const record = await this.ensureRecord(sessionRef);
+    this.requireSession(record);
+    await this.runReload(record);
+  }
+
+  /**
+   * Every reload of a session goes through here, so they run one at a time. The pending flag is
+   * cleared before anything awaits, so a deferred reload asked for twice runs once.
+   */
+  private runReload(record: ManagedSessionRecord): Promise<void> {
+    record.reloadPending = false;
+    const previous = record.reloadInFlight ?? Promise.resolve();
+    const reload = previous
+      .catch(() => undefined)
+      .then(async () => {
+        this.resetExtensionUi(record);
+        await this.requireSession(record).reload();
+        await this.syncRecordAfterSessionMutation(record, { emitUpdate: true });
+      })
+      .finally(() => {
+        if (record.reloadInFlight === reload) record.reloadInFlight = undefined;
+      });
+    record.reloadInFlight = reload;
+    return reload;
+  }
+
+  async getSessionTree(sessionRef: SessionRef): Promise<SessionTreeSnapshot> {
+    const record = await this.ensureRecord(sessionRef);
+    const session = this.requireSession(record);
+    return {
+      nodes: toSessionTreeNodeSnapshots(session.sessionManager.getTree()),
+      leafId: session.sessionManager.getLeafId(),
+    };
+  }
+
+  async navigateSessionTree(
+    sessionRef: SessionRef,
+    targetId: string,
+    options: NavigateSessionTreeOptions = {},
+  ): Promise<NavigateSessionTreeResult> {
+    const record = await this.ensureRecord(sessionRef);
+    const session = this.requireSession(record);
+    const result = await session.navigateTree(targetId, options);
+    if (result.cancelled || result.aborted) {
+      return {
+        cancelled: result.cancelled,
+        ...(result.aborted ? { aborted: true } : {}),
+        ...(result.editorText ? { editorText: result.editorText } : {}),
+        ...(result.summaryEntry ? { summaryCreated: true } : {}),
+      };
+    }
+
+    record.updatedAt = nowIso();
+    await this.syncRecordAfterSessionMutation(record, { emitUpdate: true });
+    return {
+      cancelled: false,
+      ...(result.editorText ? { editorText: result.editorText } : {}),
+      ...(result.summaryEntry ? { summaryCreated: true } : {}),
+    };
+  }
+
+  subscribe(sessionRef: SessionRef, listener: SessionEventListener): Unsubscribe {
+    const record = this.records.get(sessionKey(sessionRef));
+    if (!record) {
+      throw new Error(`Unknown session ${sessionKey(sessionRef)}.`);
+    }
+
+    record.listeners.add(listener);
+    void Promise.resolve(listener(sessionUpdatedEvent(record))).catch(() => {});
+    this.replayExtensionUiState(record, listener);
+    for (const request of record.undeliveredLoadNotices.splice(0)) {
+      void Promise.resolve(
+        listener({ type: "hostUiRequest", sessionRef: record.ref, timestamp: nowIso(), request }),
+      ).catch(() => {});
+    }
+
+    return () => {
+      for (const currentRecord of this.records.values()) {
+        currentRecord.listeners.delete(listener);
+      }
+    };
+  }
+
+  async closeSession(sessionRef: SessionRef): Promise<void> {
+    const record = this.records.get(sessionKey(sessionRef));
+    if (!record) {
+      return;
+    }
+
+    record.closed = true;
+    record.runningRunId = undefined;
+    record.status = "idle";
+    this.clearExtensionUiState(record);
+    this.cancelPendingHostUiRequests(record);
+
+    if (record.session) {
+      try {
+        await record.session.abort();
+      } catch {
+        // Best effort.
+      }
+      record.unsubscribeAgent?.();
+      record.unsubscribeAgent = undefined;
+      // Guard dispose so a failure still lets us persist and emit sessionClosed
+      // below — otherwise the UI never learns the session closed.
+      await this.disposeRecordRuntimeSafely(record);
+    }
+
+    await this.persistSnapshot(record);
+    await this.emit(record, {
+      type: "sessionClosed",
+      sessionRef: record.ref,
+      timestamp: nowIso(),
+      reason: "manual",
+    });
+  }
+
+  private async ensureRecord(sessionRef: SessionRef): Promise<ManagedSessionRecord> {
+    const key = sessionKey(sessionRef);
+    const existing = this.records.get(key);
+    if (existing && existing.session && !existing.closed) {
+      return existing;
+    }
+
+    // Dedupe concurrent reopen/create for the same session. Without this, two
+    // callers both pass the guard above, both build a runtime across the awaits
+    // below, and the second overwrites (and leaks) the first.
+    return singleFlight(this.ensureRecordInFlight, key, () =>
+      this.createOrReopenRecord(sessionRef, key),
+    );
+  }
+
+  private async createOrReopenRecord(
+    sessionRef: SessionRef,
+    key: string,
+  ): Promise<ManagedSessionRecord> {
+    const existing = this.records.get(key);
+    if (existing && existing.session && !existing.closed) {
+      return existing;
+    }
+
+    const sessionEntry = await this.catalogs.sessions.getSession(sessionRef);
+    if (!sessionEntry) {
+      throw new Error(`Session ${key} is not in the catalog.`);
+    }
+
+    const workspace = await this.catalogs.workspaces.getWorkspace(sessionEntry.workspaceId);
+    if (!workspace) {
+      throw new Error(`Workspace ${sessionEntry.workspaceId} is not in the catalog.`);
+    }
+    await this.touchWorkspace(workspace.workspaceId);
+
+    const sessionFile =
+      existing?.sessionFile ??
+      sessionEntry.sessionFilePath ??
+      (await this.catalogs.getSessionFile(sessionRef));
+    if (!sessionFile) {
+      throw new Error(`Session ${key} cannot be reopened because no session file is tracked.`);
+    }
+
+    // Claim the lease before opening a writable runtime. A live foreign holder
+    // or a lease we cannot write both refuse the reopen, so two pi-gui
+    // processes never write the same file.
+    const leasePath = await this.claimSessionLease(sessionFile);
+
+    let runtime: AgentSessionRuntime;
+    try {
+      runtime = await this.createAgentSessionRuntimeImpl(
+        this.baseCreateOptions(
+          workspace,
+          SessionManager.open(sessionFile),
+          this.extensionFlagValuesForSession?.(sessionRef),
+        ),
+      );
+    } catch (error) {
+      await this.releaseLeasePath(leasePath);
+      throw error;
+    }
+    const session = runtime.session;
+
+    const record =
+      existing ?? this.createRecord(workspaceToRef(workspace), runtime, sessionEntry.title);
+    record.runtime = runtime;
+    record.session = session;
+    record.sessionFile = sessionFile;
+    record.title = sessionEntry.title;
+    record.status = sessionEntry.status;
+    record.updatedAt = sessionEntry.updatedAt;
+    record.archivedAt = sessionEntry.archivedAt;
+    record.preview = sessionEntry.previewSnippet ?? undefined;
+    record.config = deriveSessionConfig(session.sessionManager);
+    record.closed = false;
+    record.leasePath = leasePath;
+
+    this.records.set(key, record);
+    this.syncLeaseHeartbeat();
+    await this.bindSessionRuntimeOrDispose(record);
+    this.reportLoadDiagnostics(record, runtime);
+    return record;
+  }
+
+  private createRecord(
+    workspace: WorkspaceRef,
+    runtime: AgentSessionRuntime,
+    title: string,
+  ): ManagedSessionRecord {
+    const session = runtime.session;
+    const ref = {
+      workspaceId: workspace.workspaceId,
+      sessionId: session.sessionId,
+    };
+
+    const record: ManagedSessionRecord = {
+      ref,
+      workspace: { ...workspace },
+      title,
+      runtime,
+      session,
+      sessionFile: session.sessionFile ?? session.sessionManager.getSessionFile(),
+      status: "idle",
+      updatedAt: nowIso(),
+      archivedAt: undefined,
+      preview: undefined,
+      config: deriveSessionConfig(session.sessionManager),
+      runningRunId: undefined,
+      cancellationRequested: false,
+      promptStarting: false,
+      abortOnRunStart: false,
+      pendingRunOutcome: undefined,
+      queuedMessages: [],
+      startingQueuedMessage: undefined,
+      queuedStartScheduled: false,
+      piQueueSync: Promise.resolve(),
+      queuedStartRecheck: false,
+      startedQueuedMessageIds: new Set(),
+      queuedStartFailed: false,
+      closed: false,
+      listeners: new Set<SessionEventListener>(),
+      eventQueue: Promise.resolve(),
+      unsubscribeAgent: undefined,
+      pendingHostUiRequests: new Map(),
+      extensionUiState: createEmptyExtensionUiState(),
+      undeliveredLoadNotices: [],
+      bindingExtensions: false,
+      sessionCommands: [],
+      usage: undefined,
+      leasePath: undefined,
+      transcriptDiskMtimeMs: undefined,
+      appendedCustomEntryIds: new Set(),
+      reloadPending: false,
+      reloadInFlight: undefined,
+      extensionCommandsRunning: 0,
+    };
+    return record;
+  }
+
+  private getWritableSessionManager(record: ManagedSessionRecord): SessionManager {
+    const sessionManager = record.session?.sessionManager;
+    if (!sessionManager) {
+      throw new Error(`Session ${sessionKey(record.ref)} is not active.`);
+    }
+    return sessionManager;
+  }
+
+  private requireSession(record: ManagedSessionRecord): AgentSession {
+    if (!record.session) {
+      throw new Error(`Session ${sessionKey(record.ref)} is not active.`);
+    }
+    return record.session;
+  }
+
+  private requireRuntime(record: ManagedSessionRecord): AgentSessionRuntime {
+    if (!record.runtime) {
+      throw new Error(`Session ${sessionKey(record.ref)} runtime is not active.`);
+    }
+    return record.runtime;
+  }
+
+  private async disposeRecordRuntime(record: ManagedSessionRecord): Promise<void> {
+    const runtime = record.runtime;
+    const session = record.session;
+    record.runtime = undefined;
+    record.session = undefined;
+    record.sessionCommands = [];
+    // Release the lease before disposing so another writer can take
+    // over promptly. Runs on every teardown path (close/remove/sync/rebind).
+    await this.releaseSessionLease(record);
+    if (runtime) {
+      await runtime.dispose();
+      return;
+    }
+    session?.dispose();
+  }
+
+  /**
+   * Dispose without letting a failure abort the caller. Used by bulk teardown
+   * loops (workspace removal/sync) and closeSession, where one runtime failing
+   * to dispose must not skip disposing the rest or skip the sessionClosed emit.
+   */
+  private async disposeRecordRuntimeSafely(record: ManagedSessionRecord): Promise<void> {
+    try {
+      await this.disposeRecordRuntime(record);
+    } catch (error) {
+      console.warn(
+        `[pi-sdk-driver] failed to dispose runtime for ${sessionKey(record.ref)}:`,
+        error,
+      );
+    }
+  }
+
+  private leaseStaleness(): LeaseStalenessOptions {
+    return {
+      now: Date.now(),
+      ttlMs: this.leaseTtlMs,
+      self: this.leaseIdentity,
+      isPidAlive: this.isPidAlive,
+    };
+  }
+
+  /** Claim the lease for `sessionFile` or throw. Returns the lease path now held. */
+  private async claimSessionLease(sessionFile: string): Promise<string> {
+    const leasePath = sessionLeasePath(sessionFile);
+    const result = await acquireLeaseFile(leasePath, this.leaseStaleness());
+    if (result.status === "held") {
+      throw new SessionLeasedError(sessionFile, result.holder);
+    }
+    return leasePath;
+  }
+
+  /**
+   * Hold the lease for the record's current session file, moving it if a
+   * rebind (fork/newSession/switch) changed the file. Freshly created files
+   * cannot be contested, so a failure here is logged rather than thrown; the
+   * reopen path, where a foreign writer can exist, claims before binding.
+   */
+  private async acquireSessionLease(record: ManagedSessionRecord): Promise<void> {
+    const sessionFile = record.sessionFile;
+    if (!sessionFile) {
+      return;
+    }
+    const nextLeasePath = sessionLeasePath(sessionFile);
+    if (record.leasePath === nextLeasePath) {
+      return; // Already held; the heartbeat keeps it fresh.
+    }
+    if (record.leasePath) {
+      await this.releaseSessionLease(record);
+    }
+    try {
+      record.leasePath = await this.claimSessionLease(sessionFile);
+      this.syncLeaseHeartbeat();
+    } catch (error) {
+      console.warn(
+        `[pi-sdk-driver] failed to claim session lease for ${sessionKey(record.ref)}:`,
+        error,
+      );
+    }
+  }
+
+  private async releaseSessionLease(record: ManagedSessionRecord): Promise<void> {
+    const leasePath = record.leasePath;
+    if (!leasePath) {
+      return;
+    }
+    record.leasePath = undefined;
+    this.syncLeaseHeartbeat();
+    await this.releaseLeasePath(leasePath);
+  }
+
+  private async releaseLeasePath(leasePath: string): Promise<void> {
+    try {
+      await releaseLeaseFile(leasePath, this.leaseIdentity);
+    } catch (error) {
+      console.warn(`[pi-sdk-driver] failed to release session lease ${leasePath}:`, error);
+    }
+  }
+
+  /** Run the heartbeat only while this process holds at least one lease. */
+  private syncLeaseHeartbeat(): void {
+    const holdsLease = [...this.records.values()].some((record) => record.leasePath);
+    if (holdsLease && !this.leaseHeartbeat) {
+      this.leaseHeartbeat = setInterval(() => {
+        this.refreshHeldLeases().catch((error: unknown) => {
+          console.warn("[pi-sdk-driver] session lease heartbeat failed:", error);
+        });
+      }, DEFAULT_LEASE_HEARTBEAT_MS);
+      // Never keep the process alive just to refresh leases.
+      this.leaseHeartbeat.unref?.();
+    } else if (!holdsLease && this.leaseHeartbeat) {
+      clearInterval(this.leaseHeartbeat);
+      this.leaseHeartbeat = undefined;
+    }
+  }
+
+  private async refreshHeldLeases(): Promise<void> {
+    for (const record of this.records.values()) {
+      const leasePath = record.leasePath;
+      if (!leasePath) {
+        continue;
+      }
+      try {
+        const result = await refreshLeaseFile(leasePath, this.leaseIdentity, Date.now());
+        if (result === "lost" && record.leasePath === leasePath) {
+          // Only possible if this process stopped refreshing for a whole TTL
+          // (e.g. it was suspended) and another writer took the file over.
+          // Stop writing it: close the runtime so a later open has to claim
+          // the lease again and reports who holds it.
+          console.warn(
+            `[pi-sdk-driver] lost session lease for ${sessionKey(record.ref)} to another writer; closing it.`,
+          );
+          record.leasePath = undefined;
+          await this.closeSession(record.ref);
+        }
+      } catch (error) {
+        console.warn(
+          `[pi-sdk-driver] failed to refresh session lease for ${sessionKey(record.ref)}:`,
+          error,
+        );
+      }
+    }
+    this.syncLeaseHeartbeat();
+  }
+
+  private async rebindRuntimeSession(
+    record: ManagedSessionRecord,
+    session: AgentSession,
+  ): Promise<void> {
+    const previousKey = sessionKey(record.ref);
+    const nextRef = {
+      workspaceId: record.workspace.workspaceId,
+      sessionId: session.sessionId,
+    } satisfies SessionRef;
+    const nextKey = sessionKey(nextRef);
+
+    if (previousKey !== nextKey) {
+      const existingTarget = this.records.get(nextKey);
+      if (existingTarget && existingTarget !== record) {
+        for (const listener of existingTarget.listeners) {
+          record.listeners.add(listener);
+        }
+        existingTarget.unsubscribeAgent?.();
+        existingTarget.unsubscribeAgent = undefined;
+        this.cancelPendingHostUiRequests(existingTarget);
+        await this.disposeRecordRuntime(existingTarget);
+      }
+      this.records.delete(previousKey);
+      record.ref = nextRef;
+      this.records.set(nextKey, record);
+    }
+
+    record.session = session;
+    record.sessionFile = session.sessionFile ?? session.sessionManager.getSessionFile();
+    record.unsubscribeAgent?.();
+    record.unsubscribeAgent = session.subscribe((event) => {
+      this.onNativeSessionEvent?.(record.ref, event);
+      this.handleAgentEvent(record, event);
+    });
+    record.bindingExtensions = true;
+    try {
+      await session.bindExtensions({
+        uiContext: this.createExtensionUiContext(record),
+        // Tells extensions a host UI is attached (terminal pi says "tui"; the default is "print").
+        mode: "rpc",
+        abortHandler: () => {
+          if (session.isStreaming) record.cancellationRequested = true;
+          void session.abort().catch((error: unknown) => {
+            console.warn("[pi-sdk-driver] extension abort failed", error);
+          });
+        },
+        commandContextActions: this.createCommandContextActions(record),
+        onError: (error) => {
+          const unsupportedIssue = parseUnsupportedHostUiErrorMessage(error.error);
+          if (unsupportedIssue) {
+            this.emitExtensionCompatibilityIssue(record, {
+              ...unsupportedIssue,
+              ...(error.extensionPath ? { extensionPath: error.extensionPath } : {}),
+              ...(error.event ? { eventName: error.event } : {}),
+            });
+            return;
+          }
+          this.emitExtensionError(record, error.extensionPath, error.event, error.error);
+        },
+      });
+    } finally {
+      record.bindingExtensions = false;
+    }
+    record.sessionCommands = this.collectSessionCommands(session);
+    this.refreshUsage(record);
+  }
+
+  /**
+   * Bind a freshly opened runtime; if binding fails, dispose it (releasing its
+   * lease) so a half-bound record never keeps holding the session.
+   */
+  private async bindSessionRuntimeOrDispose(record: ManagedSessionRecord): Promise<void> {
+    try {
+      await this.bindSessionRuntime(record);
+    } catch (error) {
+      await this.disposeRecordRuntimeSafely(record);
+      throw error;
+    }
+  }
+
+  private async bindSessionRuntime(record: ManagedSessionRecord): Promise<void> {
+    const runtime = this.requireRuntime(record);
+    runtime.setRebindSession(async (session) => {
+      this.clearExtensionUiState(record);
+      this.cancelPendingHostUiRequests(record);
+      await this.rebindRuntimeSession(record, session);
+      // A rebind (fork/newSession/switch) can point at a different JSONL, so
+      // move the lease and reset the disk-tail baseline to the new file.
+      await this.refreshLeaseAndTranscriptBaseline(record);
+    });
+    await this.rebindRuntimeSession(record, runtime.session);
+    await this.refreshLeaseAndTranscriptBaseline(record);
+  }
+
+  /** Claim the lease and capture the disk-tail baseline for the record's current file. */
+  private async refreshLeaseAndTranscriptBaseline(record: ManagedSessionRecord): Promise<void> {
+    const [, mtimeMs] = await Promise.all([
+      this.acquireSessionLease(record),
+      this.statMtimeMs(record.sessionFile),
+    ]);
+    record.transcriptDiskMtimeMs = mtimeMs;
+  }
+
+  private async statMtimeMs(filePath: string | undefined): Promise<number | undefined> {
+    if (!filePath) {
+      return undefined;
+    }
+    try {
+      return (await stat(filePath)).mtimeMs;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private createCommandContextActions(
+    record: ManagedSessionRecord,
+  ): ExtensionCommandContextActions {
+    return {
+      waitForIdle: () => this.requireSession(record).waitForIdle(),
+      newSession: async (options) => {
+        const { cancelled } = await this.requireRuntime(record).newSession(options);
+        await this.syncRecordAfterSessionMutation(record, { emitUpdate: true });
+        return { cancelled };
+      },
+      fork: async (entryId, options) => {
+        const result = await this.requireRuntime(record).fork(entryId, options);
+        await this.syncRecordAfterSessionMutation(record, { emitUpdate: true });
+        return { cancelled: result.cancelled };
+      },
+      navigateTree: async (targetId, options) => {
+        const result = await this.requireSession(record).navigateTree(targetId, options);
+        await this.syncRecordAfterSessionMutation(record, { emitUpdate: true });
+        return { cancelled: result.cancelled };
+      },
+      switchSession: async (sessionPath, options) => {
+        // switchSession adopts an arbitrary existing JSONL. Claim it before the
+        // runtime opens it, mirroring the reopen path, so this seam can't fork
+        // a session another process holds. The rebind then moves our lease.
+        const claimedPath = await this.claimSessionLease(sessionPath);
+        const releaseUnusedClaim = async () => {
+          if (record.leasePath !== claimedPath) {
+            await this.releaseLeasePath(claimedPath);
+          }
+        };
+        let cancelled: boolean;
+        try {
+          ({ cancelled } = await this.requireRuntime(record).switchSession(sessionPath, options));
+        } catch (error) {
+          await releaseUnusedClaim();
+          throw error;
+        }
+        if (cancelled) {
+          await releaseUnusedClaim();
+        }
+        await this.syncRecordAfterSessionMutation(record, { emitUpdate: true });
+        return { cancelled };
+      },
+      reload: () => this.runReload(record),
+    };
+  }
+
+  private createExtensionUiContext(record: ManagedSessionRecord): ExtensionUIContext {
+    const noOpTheme = extensionUiThemeStub;
+
+    const createDialogPromise = <T>(
+      opts: ExtensionUIDialogOptions | undefined,
+      defaultValue: T,
+      createRequest: (requestId: string) => HostUiRequest,
+      parseResponse: (response: HostUiResponse) => T,
+    ): Promise<T> => {
+      if (opts?.signal?.aborted) {
+        return Promise.resolve(defaultValue);
+      }
+      if (record.bindingExtensions && opts?.timeout === undefined) {
+        return Promise.resolve(defaultValue);
+      }
+
+      const requestId = crypto.randomUUID();
+      return new Promise((resolve, reject) => {
+        let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+        const cleanup = () => {
+          if (timeoutId) {
+            clearTimeout(timeoutId);
+          }
+          opts?.signal?.removeEventListener("abort", onAbort);
+          record.pendingHostUiRequests.delete(requestId);
+        };
+
+        const onAbort = () => {
+          cleanup();
+          resolve(defaultValue);
+          // pi closed the dialog itself (MCP sign-in aborts its "paste the URL" input once the
+          // browser callback arrives), so the host has to take it down too.
+          this.emitHostUiRequest(record, { kind: "dismiss", requestId });
+        };
+
+        opts?.signal?.addEventListener("abort", onAbort, { once: true });
+
+        const timeoutMs = opts?.timeout;
+        if (timeoutMs !== undefined) {
+          timeoutId = setTimeout(() => {
+            cleanup();
+            resolve(defaultValue);
+          }, timeoutMs);
+        }
+
+        record.pendingHostUiRequests.set(requestId, {
+          resolve: (response) => {
+            cleanup();
+            resolve(parseResponse(response));
+          },
+          reject,
+        });
+
+        this.emitHostUiRequest(record, createRequest(requestId));
+      });
+    };
+
+    return {
+      select: (title, options, opts) =>
+        createDialogPromise(
+          opts,
+          undefined,
+          (requestId) => ({
+            kind: "select",
+            requestId,
+            title,
+            options,
+            ...(opts?.timeout ? { timeoutMs: opts.timeout } : {}),
+          }),
+          (response) =>
+            "cancelled" in response && response.cancelled
+              ? undefined
+              : "value" in response
+                ? response.value
+                : undefined,
+        ),
+      confirm: (title, message, opts) =>
+        createDialogPromise(
+          opts,
+          false,
+          (requestId) => ({
+            kind: "confirm",
+            requestId,
+            title,
+            message,
+            ...(opts?.timeout ? { timeoutMs: opts.timeout } : {}),
+          }),
+          (response) =>
+            "cancelled" in response && response.cancelled
+              ? false
+              : "confirmed" in response
+                ? response.confirmed
+                : false,
+        ),
+      input: (title, placeholder, opts) =>
+        createDialogPromise(
+          opts,
+          undefined,
+          (requestId) => ({
+            kind: "input",
+            requestId,
+            title,
+            ...(placeholder ? { placeholder } : {}),
+            ...(opts?.timeout ? { timeoutMs: opts.timeout } : {}),
+          }),
+          (response) =>
+            "cancelled" in response && response.cancelled
+              ? undefined
+              : "value" in response
+                ? response.value
+                : undefined,
+        ),
+      notify: (message, level) => {
+        this.emitHostUiRequest(record, {
+          kind: "notify",
+          requestId: crypto.randomUUID(),
+          message,
+          ...(level ? { level } : {}),
+        });
+      },
+      onTerminalInput: () => () => {},
+      setStatus: (key, text) => {
+        this.emitHostUiRequest(record, {
+          kind: "status",
+          requestId: crypto.randomUUID(),
+          key,
+          ...(text ? { text } : {}),
+        });
+      },
+      setWorkingMessage: () => {},
+      setWorkingVisible: () => {},
+      setWorkingIndicator: () => {},
+      setHiddenThinkingLabel: () => {},
+      setWidget: (key, content: unknown, options?: ExtensionWidgetOptions) => {
+        if (content === undefined || Array.isArray(content)) {
+          const lines = content as readonly string[] | undefined;
+          this.emitHostUiRequest(record, {
+            kind: "widget",
+            requestId: crypto.randomUUID(),
+            key,
+            ...(lines ? { lines } : {}),
+            placement: options?.placement === "belowEditor" ? "belowComposer" : "aboveComposer",
+          });
+        }
+      },
+      setFooter: () => {},
+      setHeader: () => {},
+      setTitle: (title) => {
+        this.emitHostUiRequest(record, {
+          kind: "title",
+          requestId: crypto.randomUUID(),
+          title,
+        });
+      },
+      // pi-gui does not render arbitrary TUI custom components. Throwing a
+      // typed unsupported-host error allows extensions to catch and degrade,
+      // while uncaught command paths fail fast and are surfaced cleanly by
+      // the desktop host.
+      custom: async () => {
+        throw createUnsupportedHostUiError("custom");
+      },
+      pasteToEditor: (text) => {
+        this.emitHostUiRequest(record, {
+          kind: "editorText",
+          requestId: crypto.randomUUID(),
+          text,
+        });
+      },
+      setEditorText: (text) => {
+        this.emitHostUiRequest(record, {
+          kind: "editorText",
+          requestId: crypto.randomUUID(),
+          text,
+        });
+      },
+      getEditorText: () => record.extensionUiState.editorText ?? "",
+      editor: (title, initialValue) =>
+        createDialogPromise(
+          undefined,
+          undefined,
+          (requestId) => ({
+            kind: "editor",
+            requestId,
+            title,
+            ...(initialValue ? { initialValue } : {}),
+          }),
+          (response) =>
+            "cancelled" in response && response.cancelled
+              ? undefined
+              : "value" in response
+                ? response.value
+                : undefined,
+        ),
+      setEditorComponent: () => {},
+      getEditorComponent: () => undefined,
+      addAutocompleteProvider: () => {},
+      get theme() {
+        return noOpTheme;
+      },
+      getAllThemes: () => [],
+      getTheme: () => undefined,
+      setTheme: () => ({
+        success: false,
+        error: "Theme switching not supported in pi-gui host UI",
+      }),
+      getToolsExpanded: () => false,
+      setToolsExpanded: () => {},
+    };
+  }
+
+  private isExtensionCommand(session: AgentSession, text: string): boolean {
+    if (!text.trimStart().startsWith("/")) {
+      return false;
+    }
+    const trimmed = text.trimStart();
+    const spaceIndex = trimmed.indexOf(" ");
+    const commandName = spaceIndex === -1 ? trimmed.slice(1) : trimmed.slice(1, spaceIndex);
+    return Boolean(session.extensionRunner?.getCommand(commandName));
+  }
+
+  private async queuePrompt(
+    session: AgentSession,
+    text: string,
+    deliverAs: SessionMessageDeliveryMode,
+    images?: readonly {
+      readonly type: "image";
+      readonly data: string;
+      readonly mimeType: string;
+    }[],
+  ): Promise<void> {
+    if (deliverAs === "steer") {
+      await session.steer(text, images ? [...images] : undefined);
+      return;
+    }
+    await session.followUp(text, images ? [...images] : undefined);
+  }
+
+  private applySessionThinkingLevel(session: AgentSession, thinkingLevel: string): void {
+    const availableLevels = session.getAvailableThinkingLevels();
+    const effectiveLevel = clampThinkingLevel(
+      thinkingLevel,
+      availableLevels,
+    ) as AgentSession["thinkingLevel"];
+    if (effectiveLevel !== session.agent.state.thinkingLevel) {
+      session.agent.state.thinkingLevel = effectiveLevel;
+      session.sessionManager.appendThinkingLevelChange(effectiveLevel);
+      return;
+    }
+    session.agent.state.thinkingLevel = effectiveLevel;
+  }
+
+  private async emitModelSelection(
+    session: AgentSession,
+    model: PiModelInfo,
+    previousModel: AgentSession["model"],
+  ): Promise<void> {
+    const emitModelSelect = (
+      session as unknown as {
+        _emitModelSelect?: (
+          nextModel: unknown,
+          previousModel: unknown,
+          source: string,
+        ) => Promise<void>;
+      }
+    )._emitModelSelect;
+    if (!emitModelSelect) {
+      return;
+    }
+    await emitModelSelect.call(session, model, previousModel, "set");
+  }
+
+  private emitHostUiRequest(
+    record: ManagedSessionRecord,
+    request: Extract<SessionDriverEvent, { type: "hostUiRequest" }>["request"],
+  ): void {
+    this.applyExtensionUiRequest(record, request);
+    this.queueDriverEvents(
+      record,
+      [
+        {
+          type: "hostUiRequest",
+          sessionRef: record.ref,
+          timestamp: nowIso(),
+          request,
+        },
+      ],
+      { persistSnapshot: false },
+    );
+  }
+
+  /**
+   * pi returns what went wrong while loading a session (an unknown or valueless
+   * extension flag, a provider an extension failed to register) instead of
+   * throwing; terminal pi prints these at startup, so show them as extension errors.
+   */
+  private reportLoadDiagnostics(record: ManagedSessionRecord, runtime: AgentSessionRuntime): void {
+    for (const diagnostic of runtime.diagnostics) {
+      const request: NotifyHostUiRequest = {
+        kind: "notify",
+        requestId: crypto.randomUUID(),
+        level: diagnostic.type,
+        message: diagnostic.message,
+      };
+      if (record.listeners.size > 0) this.emitHostUiRequest(record, request);
+      else record.undeliveredLoadNotices.push(request);
+    }
+  }
+
+  private emitExtensionError(
+    record: ManagedSessionRecord,
+    extensionPath: string,
+    eventName: string,
+    error: string,
+  ): void {
+    this.emitHostUiRequest(record, {
+      kind: "notify",
+      requestId: crypto.randomUUID(),
+      level: "error",
+      message: `[${extensionPath}] ${eventName}: ${error}`,
+    });
+  }
+
+  private emitExtensionCompatibilityIssue(
+    record: ManagedSessionRecord,
+    issue: Extract<SessionDriverEvent, { type: "extensionCompatibilityIssue" }>["issue"],
+  ): void {
+    this.queueDriverEvents(
+      record,
+      [
+        {
+          type: "extensionCompatibilityIssue",
+          sessionRef: record.ref,
+          timestamp: nowIso(),
+          issue,
+        },
+      ],
+      { persistSnapshot: false },
+    );
+  }
+
+  private applyExtensionUiRequest(
+    record: ManagedSessionRecord,
+    request: Extract<SessionDriverEvent, { type: "hostUiRequest" }>["request"],
+  ): void {
+    applyHostUiRequestToExtensionUiState(record.extensionUiState, request);
+  }
+
+  private clearExtensionUiState(record: ManagedSessionRecord): void {
+    record.extensionUiState.statuses.clear();
+    record.extensionUiState.widgets.clear();
+    record.extensionUiState.title = undefined;
+    record.extensionUiState.editorText = undefined;
+  }
+
+  private resetExtensionUi(record: ManagedSessionRecord): void {
+    this.emitHostUiRequest(record, {
+      kind: "reset",
+      requestId: crypto.randomUUID(),
+    });
+    this.clearExtensionUiState(record);
+    this.cancelPendingHostUiRequests(record);
+  }
+
+  private cancelPendingHostUiRequests(record: ManagedSessionRecord): void {
+    for (const [requestId, pending] of [...record.pendingHostUiRequests.entries()]) {
+      record.pendingHostUiRequests.delete(requestId);
+      pending.resolve({ requestId, cancelled: true });
+    }
+  }
+
+  private replayExtensionUiState(
+    record: ManagedSessionRecord,
+    listener: SessionEventListener,
+  ): void {
+    const timestamp = nowIso();
+
+    for (const [key, text] of record.extensionUiState.statuses) {
+      void Promise.resolve(
+        listener({
+          type: "hostUiRequest",
+          sessionRef: record.ref,
+          timestamp,
+          request: {
+            kind: "status",
+            requestId: `replay:status:${key}`,
+            key,
+            text,
+          },
+        }),
+      ).catch(() => {});
+    }
+
+    for (const widget of record.extensionUiState.widgets.values()) {
+      void Promise.resolve(
+        listener({
+          type: "hostUiRequest",
+          sessionRef: record.ref,
+          timestamp,
+          request: {
+            kind: "widget",
+            requestId: `replay:widget:${widget.key}`,
+            key: widget.key,
+            ...(widget.lines ? { lines: widget.lines } : {}),
+            placement: widget.placement,
+          },
+        }),
+      ).catch(() => {});
+    }
+
+    if (record.extensionUiState.title) {
+      void Promise.resolve(
+        listener({
+          type: "hostUiRequest",
+          sessionRef: record.ref,
+          timestamp,
+          request: {
+            kind: "title",
+            requestId: "replay:title",
+            title: record.extensionUiState.title,
+          },
+        }),
+      ).catch(() => {});
+    }
+
+    if (record.extensionUiState.editorText) {
+      void Promise.resolve(
+        listener({
+          type: "hostUiRequest",
+          sessionRef: record.ref,
+          timestamp,
+          request: {
+            kind: "editorText",
+            requestId: "replay:editorText",
+            text: record.extensionUiState.editorText,
+          },
+        }),
+      ).catch(() => {});
+    }
+  }
+
+  private async syncRecordAfterSessionMutation(
+    record: ManagedSessionRecord,
+    options: { emitUpdate?: boolean } = {},
+  ): Promise<void> {
+    const session = this.requireSession(record);
+    const previousKey = sessionKey(record.ref);
+    const nextRef = {
+      workspaceId: record.workspace.workspaceId,
+      sessionId: session.sessionId,
+    } satisfies SessionRef;
+    const nextKey = sessionKey(nextRef);
+
+    if (previousKey !== nextKey) {
+      this.records.delete(previousKey);
+      record.ref = nextRef;
+      this.records.set(nextKey, record);
+    }
+
+    record.sessionFile = session.sessionFile ?? session.sessionManager.getSessionFile();
+    record.title =
+      session.sessionName?.trim() || record.title || deriveWorkspaceTitle(record.workspace);
+    record.status = session.isStreaming ? "running" : "idle";
+    record.runningRunId = session.isStreaming
+      ? (record.runningRunId ?? crypto.randomUUID())
+      : undefined;
+    record.config = deriveSessionConfig(session.sessionManager);
+    const displayMessages = displayMessagesFromSession(session.sessionManager);
+    record.preview = extractPreview(
+      displayMessages.filter((message) => !isHiddenCustomMessage(message)).at(-1),
+    );
+    record.sessionCommands = this.collectSessionCommands(session);
+    // Tree navigation and reloads change which branch pi counts.
+    this.refreshUsage(record);
+    await this.persistSnapshot(record);
+    if (options.emitUpdate) {
+      await this.emit(record, sessionUpdatedEvent(record));
+    }
+  }
+
+  private queueDriverEvents(
+    record: ManagedSessionRecord,
+    events: readonly SessionDriverEvent[],
+    options?: {
+      readonly persistSnapshot?: boolean;
+    },
+  ): void {
+    if (events.length === 0) {
+      return;
+    }
+
+    record.eventQueue = chainRecoveringEventQueue(
+      record.eventQueue,
+      async () => {
+        if (options?.persistSnapshot !== false) {
+          await this.persistSnapshot(record);
+        }
+        for (const event of events) {
+          await this.emit(record, event);
+        }
+      },
+      (error) => {
+        // Contain the failure so the queue keeps flowing. A rethrow here would
+        // leave record.eventQueue rejected and freeze the session forever.
+        console.warn(
+          `[pi-sdk-driver] event queue work failed for ${sessionKey(record.ref)}:`,
+          error,
+        );
+      },
+    );
+  }
+
+  private handleAgentEvent(record: ManagedSessionRecord, event: AgentSessionEvent): void {
+    const mapped = this.mapAgentEvent(record, event);
+    if (mapped.length === 0) {
+      if (event.type === "agent_settled" || event.type === "compaction_end") {
+        this.whenIdle(record);
+      }
+      return;
+    }
+
+    this.queueDriverEvents(record, mapped, {
+      persistSnapshot: shouldPersistSnapshotForAgentEvent(event.type),
+    });
+    if (event.type === "agent_settled" || event.type === "compaction_end") {
+      this.whenIdle(record);
+    }
+  }
+
+  private mapAgentEvent(
+    record: ManagedSessionRecord,
+    event: AgentSessionEvent,
+  ): SessionDriverEvent[] {
+    const timestamp = nowIso();
+    // Calls a tool makes through ctx.executeTool() carry parentToolCallId. Pi saves them only on
+    // the parent's result, so the timeline shows the parent call alone, live and after reload.
+    if ("parentToolCallId" in event && event.parentToolCallId) {
+      return [];
+    }
+
+    switch (event.type) {
+      case "agent_start":
+        if (record.abortOnRunStart && record.session) {
+          record.abortOnRunStart = false;
+          record.session.abort().catch((error: unknown) => {
+            console.warn("[pi-sdk-driver] deferred abort failed", error);
+          });
+        }
+        record.runningRunId ??= crypto.randomUUID();
+        record.pendingRunOutcome = undefined;
+        record.status = "running";
+        return [sessionUpdatedEvent(record)];
+      case "turn_start":
+        record.status = "running";
+        return [sessionUpdatedEvent(record)];
+      case "message_start":
+      case "message_end":
+        // pi emits both for a user message; only the start may match, or a second queued
+        // message with the same text would count as started too.
+        if (event.type === "message_start" && event.message.role === "user") {
+          const queuedMessage =
+            takeStartingQueuedMessage(record, timestamp) ??
+            reconcileQueuedMessagesForStartedUserMessage(record, event.message, timestamp);
+          if (queuedMessage) {
+            record.startedQueuedMessageIds.add(queuedMessage.id);
+            this.updatePreviewFromMessage(record, event.message);
+            return [
+              {
+                type: "queuedMessageStarted" as const,
+                sessionRef: record.ref,
+                timestamp,
+                message: queuedMessage,
+              },
+              sessionUpdatedEvent(record),
+            ];
+          }
+        }
+        this.updatePreviewFromMessage(record, event.message);
+        if (event.type === "message_end" && event.message.role === "custom") {
+          this.appendCustomMessageItem(record, event.message);
+        }
+        if (event.type === "message_end" && event.message.role === "assistant") {
+          return toDriverEvents(
+            { type: "assistantMessageEnded", sessionRef: record.ref, timestamp },
+            record,
+          );
+        }
+        return [sessionUpdatedEvent(record)];
+      case "message_update":
+        this.updatePreviewFromMessage(record, event.message);
+        if (
+          event.message.role === "assistant" &&
+          event.assistantMessageEvent.type === "text_delta"
+        ) {
+          return toDriverEvents(
+            {
+              type: "assistantDelta" as const,
+              sessionRef: record.ref,
+              timestamp,
+              text: event.assistantMessageEvent.delta ?? "",
+            },
+            record,
+          );
+        }
+        return [sessionUpdatedEvent(record)];
+      case "tool_execution_start":
+        record.status = "running";
+        return toDriverEvents(
+          {
+            type: "toolStarted" as const,
+            sessionRef: record.ref,
+            timestamp,
+            toolName: event.toolName,
+            callId: event.toolCallId,
+            input: event.args,
+          },
+          record,
+        );
+      case "tool_execution_update":
+        return toDriverEvents(
+          {
+            type: "toolUpdated" as const,
+            sessionRef: record.ref,
+            timestamp,
+            callId: event.toolCallId,
+            ...(typeof event.partialResult === "string" ? { text: event.partialResult } : {}),
+            ...(typeof event.partialResult === "number" ? { progress: event.partialResult } : {}),
+          },
+          record,
+        );
+      case "tool_execution_end":
+        return toDriverEvents(
+          {
+            type: "toolFinished" as const,
+            sessionRef: record.ref,
+            timestamp,
+            callId: event.toolCallId,
+            success: !event.isError,
+            // Match the saved tool result. Pi 0.99 results can also carry structuredContent
+            // (up to 1 MiB of bash output) that Pi never saves.
+            output: persistedToolOutput(event.result),
+          },
+          record,
+        );
+      case "turn_end":
+        // The reply is persisted by turn_end, so pi's context count includes it.
+        this.refreshUsage(record);
+        return [sessionUpdatedEvent(record)];
+      case "compaction_end":
+        this.refreshUsage(record);
+        return [sessionUpdatedEvent(record)];
+      case "entry_appended":
+        if (isExtensionCardEntry(event.entry) || isExtensionPinEntry(event.entry)) {
+          return [
+            {
+              type: "transcriptItemAppended" as const,
+              sessionRef: record.ref,
+              timestamp,
+              item: isExtensionPinEntry(event.entry)
+                ? transcriptItemFromPinEntry(event.entry)
+                : transcriptItemFromCardEntry(event.entry),
+              ...(record.runningRunId ? { runId: record.runningRunId } : {}),
+            },
+          ];
+        }
+        // Custom messages an extension returns from a turn or settle boundary.
+        if (event.entry.type === "custom_message") {
+          const item = customMessageTranscriptItem(
+            { ...event.entry, role: "custom" },
+            event.entry.id,
+            event.entry.timestamp,
+          );
+          return item ? this.customMessageItemEvents(record, item) : [];
+        }
+        // Cache-warming refreshes land as usage entries. pi announces them
+        // before rescheduling the next refresh, so read once it has.
+        if (event.entry.type !== "usage") return [];
+        queueMicrotask(() => {
+          if (record.closed) return;
+          this.refreshUsage(record);
+          this.queueDriverEvents(record, [sessionUpdatedEvent(record)], { persistSnapshot: false });
+        });
+        return [];
+      case "agent_end": {
+        // Pi can retry or continue from agent_before_settle after agent_end.
+        // Keep one desktop run alive until Pi publishes its settled boundary.
+        record.pendingRunOutcome = determineRunOutcome(
+          event.messages,
+          record.cancellationRequested,
+        );
+        return [sessionUpdatedEvent(record)];
+      }
+      case "agent_settled": {
+        const outcome = record.cancellationRequested
+          ? { status: "cancelled" as const }
+          : record.pendingRunOutcome;
+        record.pendingRunOutcome = undefined;
+        record.cancellationRequested = false;
+        const runId = record.runningRunId;
+        record.runningRunId = undefined;
+        record.status = outcome?.status === "failed" ? "failed" : "idle";
+        record.updatedAt = timestamp;
+        if (outcome?.status === "failed") {
+          record.preview = outcome.error.message;
+        }
+        if (record.session) {
+          record.sessionCommands = this.collectSessionCommands(record.session);
+        }
+        // Cache warming is armed or stopped once the run settles.
+        this.refreshUsage(record);
+
+        // User cancellation is neither successful completion nor a runtime
+        // failure. Publish idle without triggering completion/failure consumers.
+        if (!outcome || outcome.status === "cancelled") return [sessionUpdatedEvent(record)];
+
+        return toDriverEvents(
+          outcome.status === "completed"
+            ? {
+                type: "runCompleted" as const,
+                sessionRef: record.ref,
+                timestamp,
+                snapshot: buildSnapshot(record),
+              }
+            : {
+                type: "runFailed" as const,
+                sessionRef: record.ref,
+                timestamp,
+                error: outcome.error,
+              },
+          record,
+          runId,
+        );
+      }
+      default:
+        return [];
+    }
+  }
+
+  private refreshUsage(record: ManagedSessionRecord): void {
+    const session = record.session;
+    if (!session) {
+      record.usage = undefined;
+      return;
+    }
+    try {
+      const provider = session.model?.provider;
+      record.usage = readSessionUsage(
+        session,
+        provider ? this.planLimitsByProvider.get(provider) : undefined,
+      );
+    } catch (error) {
+      console.warn("[pi-sdk-driver] reading session usage failed", error);
+    }
+  }
+
+  /**
+   * Pi persists an idle custom message before its message_end, so its entry is the leaf;
+   * a queued or turn-starting one is persisted just after, once this emit returns.
+   */
+  private appendCustomMessageItem(
+    record: ManagedSessionRecord,
+    message: Extract<AgentSessionEvent, { type: "message_end" }>["message"],
+  ): void {
+    const createdAt = nowIso();
+    const draft = customMessageTranscriptItem(message as Record<string, unknown>, "", createdAt);
+    if (!draft) return;
+    const append = (entryId: string) => {
+      this.queueDriverEvents(
+        record,
+        this.customMessageItemEvents(record, { ...draft, id: entryId }),
+        {
+          persistSnapshot: false,
+        },
+      );
+    };
+    const find = (depth: number) => {
+      const sessionManager = record.session?.sessionManager;
+      return sessionManager
+        ? findCustomMessageEntryId(sessionManager, message, record.appendedCustomEntryIds, depth)
+        : undefined;
+    };
+    // Checking the leaf first matters: two idle sends with equal text are both persisted
+    // before a microtask runs, and a later scan would hand them each other's ids.
+    const leafId = find(1);
+    if (leafId) {
+      append(leafId);
+      return;
+    }
+    queueMicrotask(() => {
+      if (record.closed) return;
+      const entryId = find(20);
+      if (entryId) append(entryId);
+      else
+        console.warn(
+          `[pi-sdk-driver] custom message entry not found for ${sessionKey(record.ref)}`,
+        );
+    });
+  }
+
+  private customMessageItemEvents(
+    record: ManagedSessionRecord,
+    item: SessionTranscriptCustomMessage,
+  ): SessionDriverEvent[] {
+    record.appendedCustomEntryIds.add(item.id);
+    return [
+      {
+        type: "transcriptItemAppended",
+        sessionRef: record.ref,
+        timestamp: item.createdAt,
+        item,
+        ...(record.runningRunId ? { runId: record.runningRunId } : {}),
+      },
+    ];
+  }
+
+  private updatePreviewFromMessage(record: ManagedSessionRecord, message: unknown): void {
+    const preview = extractPreview(message);
+    if (preview) {
+      record.preview = preview;
+    }
+  }
+
+  private async emit(record: ManagedSessionRecord, event: SessionDriverEvent): Promise<void> {
+    for (const listener of [...record.listeners]) {
+      try {
+        await listener(event);
+      } catch (error) {
+        // Isolate listeners: one throwing must not skip the remaining ones or
+        // reject the caller (which would poison the event queue).
+        console.warn(
+          `[pi-sdk-driver] session listener failed for ${sessionKey(record.ref)}:`,
+          error,
+        );
+      }
+    }
+  }
+
+  private async persistSnapshot(record: ManagedSessionRecord): Promise<void> {
+    const snapshot = buildSnapshot(record);
+    await this.catalogs.sessions.upsertSession({
+      sessionRef: snapshot.ref,
+      workspaceId: snapshot.ref.workspaceId,
+      title: snapshot.title,
+      updatedAt: snapshot.updatedAt,
+      status: snapshot.status,
+      ...(snapshot.archivedAt !== undefined ? { archivedAt: snapshot.archivedAt } : {}),
+      ...(snapshot.preview !== undefined ? { previewSnippet: snapshot.preview } : {}),
+      ...(record.sessionFile ? { sessionFilePath: record.sessionFile } : {}),
+    });
+    if (record.sessionFile) {
+      await this.catalogs.setSessionFile(record.ref, record.sessionFile);
+    }
+  }
+
+  private collectSessionCommands(session: AgentSession): RuntimeCommandRecord[] {
+    const commands: RuntimeCommandRecord[] = [];
+
+    for (const command of getRegisteredCommands(session)) {
+      commands.push({
+        name: normalizeRuntimeCommandName(command.invocationName ?? command.name),
+        ...(command.description ? { description: command.description } : {}),
+        source: "extension",
+        sourceInfo: runtimeSourceInfoFromLoose(command.sourceInfo, {
+          path: command.extensionPath ?? `<extension:${command.name}>`,
+          source: "extension",
+        }),
+      });
+    }
+
+    for (const template of getPromptTemplates(session)) {
+      commands.push({
+        name: normalizeRuntimeCommandName(template.name),
+        ...(template.description ? { description: template.description } : {}),
+        source: "prompt",
+        sourceInfo: runtimeSourceInfoFromLoose(template.sourceInfo, {
+          path: template.filePath ?? `<prompt:${template.name}>`,
+          source: "prompt",
+        }),
+      });
+    }
+
+    for (const skill of getSkills(session)) {
+      commands.push({
+        name: skillCommandName(skill.name),
+        description: skill.description,
+        source: "skill",
+        sourceInfo: runtimeSourceInfoFromLoose(skill.sourceInfo, {
+          path: skill.filePath ?? `<skill:${skill.name}>`,
+          source: skill.source ?? "skill",
+        }),
+      });
+    }
+
+    return commands;
+  }
+
+  private async deriveWorkspaceSortOrder(workspaceId: string): Promise<number> {
+    const current = await this.catalogs.workspaces.getWorkspace(workspaceId);
+    if (current) {
+      return current.sortOrder;
+    }
+    const listing = await this.catalogs.workspaces.listWorkspaces();
+    return listing.workspaces.length;
+  }
+
+  private async touchWorkspace(workspaceId: WorkspaceId): Promise<void> {
+    await this.runWorkspaceMutation(workspaceId, () => this.touchWorkspaceNow(workspaceId));
+  }
+
+  private async touchWorkspaceNow(
+    workspaceId: WorkspaceId,
+  ): Promise<WorkspaceCatalogSnapshot["workspaces"][number] | undefined> {
+    const current = await this.catalogs.workspaces.getWorkspace(workspaceId);
+    if (!current) {
+      return undefined;
+    }
+
+    const touched = {
+      ...current,
+      lastOpenedAt: nowIso(),
+    };
+    await this.catalogs.workspaces.upsertWorkspace(touched);
+    return touched;
+  }
+
+  private async registerWorkspaceRef(workspace: WorkspaceRef): Promise<void> {
+    await this.runWorkspaceMutation(workspace.workspaceId, () =>
+      this.registerWorkspaceRefNow(workspace),
+    );
+  }
+
+  private async registerWorkspaceRefNow(workspace: WorkspaceRef): Promise<void> {
+    const current = await this.catalogs.workspaces.getWorkspace(workspace.workspaceId);
+    await this.catalogs.workspaces.upsertWorkspace({
+      workspaceId: workspace.workspaceId,
+      path: workspace.path,
+      displayName: workspace.displayName ?? current?.displayName ?? deriveWorkspaceTitle(workspace),
+      lastOpenedAt: nowIso(),
+      sortOrder: current?.sortOrder ?? (await this.deriveWorkspaceSortOrder(workspace.workspaceId)),
+      pinned: current?.pinned ?? false,
+    });
+  }
+
+  private async runWorkspaceMutation<T>(
+    workspaceId: WorkspaceId,
+    mutation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.workspaceMutationQueues.get(workspaceId) ?? Promise.resolve();
+    const result = previous.catch(() => undefined).then(mutation);
+    const settled = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.workspaceMutationQueues.set(workspaceId, settled);
+
+    try {
+      return await result;
+    } finally {
+      if (this.workspaceMutationQueues.get(workspaceId) === settled) {
+        this.workspaceMutationQueues.delete(workspaceId);
+      }
+    }
+  }
+
+  private sessionEntryFromInfo(
+    workspace: WorkspaceRef,
+    info: SessionInfo,
+    runtimeRecord?: ManagedSessionRecord,
+    existingEntry?: SessionCatalogSnapshot["sessions"][number],
+  ): SessionCatalogSnapshot["sessions"][number] {
+    const runtimeSnapshot =
+      runtimeRecord && runtimeRecord.session && !runtimeRecord.closed
+        ? buildSnapshot(runtimeRecord)
+        : undefined;
+    const previewSnippet = runtimeSnapshot?.preview ?? previewFromSessionInfo(info);
+    const archivedAt = runtimeSnapshot?.archivedAt ?? existingEntry?.archivedAt;
+    const titleFromInfo = titleFromSessionInfo(info);
+    const entry: SessionCatalogSnapshot["sessions"][number] = {
+      sessionRef: {
+        workspaceId: workspace.workspaceId,
+        sessionId: info.id,
+      },
+      workspaceId: workspace.workspaceId,
+      title:
+        runtimeSnapshot?.title ?? resolvedCatalogSessionTitle(existingEntry?.title, titleFromInfo),
+      updatedAt: runtimeSnapshot?.updatedAt ?? info.modified.toISOString(),
+      status: runtimeSnapshot?.status ?? "idle",
+      sessionFilePath: info.path,
+    };
+    if (archivedAt) {
+      entry.archivedAt = archivedAt;
+    }
+    if (previewSnippet !== undefined) {
+      entry.previewSnippet = previewSnippet;
+    }
+    return entry;
+  }
+
+  private async updateArchivedState(
+    sessionRef: SessionRef,
+    archivedAt: string | undefined,
+  ): Promise<void> {
+    const key = sessionKey(sessionRef);
+    const record = this.records.get(key);
+    if (record) {
+      if (record.archivedAt === archivedAt) {
+        return;
+      }
+      record.archivedAt = archivedAt;
+      await this.persistSnapshot(record);
+      await this.emit(record, sessionUpdatedEvent(record));
+      return;
+    }
+
+    const sessionEntry = await this.catalogs.sessions.getSession(sessionRef);
+    if (!sessionEntry) {
+      throw new Error(`Session ${key} is not in the catalog.`);
+    }
+    if (sessionEntry.archivedAt === archivedAt) {
+      return;
+    }
+
+    const nextEntry =
+      archivedAt !== undefined
+        ? { ...sessionEntry, archivedAt }
+        : {
+            sessionRef: sessionEntry.sessionRef,
+            workspaceId: sessionEntry.workspaceId,
+            title: sessionEntry.title,
+            updatedAt: sessionEntry.updatedAt,
+            ...(sessionEntry.previewSnippet !== undefined
+              ? { previewSnippet: sessionEntry.previewSnippet }
+              : {}),
+            ...(sessionEntry.sessionFilePath !== undefined
+              ? { sessionFilePath: sessionEntry.sessionFilePath }
+              : {}),
+            status: sessionEntry.status,
+          };
+
+    await this.catalogs.sessions.upsertSession(nextEntry);
+  }
+}
+
+function resolvedCatalogSessionTitle(existingTitle: string | undefined, infoTitle: string): string {
+  const trimmedExisting = existingTitle?.trim();
+  if (!trimmedExisting) {
+    return infoTitle;
+  }
+  if (
+    trimmedExisting === NEW_THREAD_PLACEHOLDER_TITLE &&
+    infoTitle !== NEW_THREAD_PLACEHOLDER_TITLE
+  ) {
+    return infoTitle;
+  }
+  return trimmedExisting;
+}
+
+const DEFAULT_SESSION_THINKING_LEVEL = "medium";
+const THINKING_LEVEL_ORDER = ["off", "low", "medium", "high", "xhigh", "max"] as const;
+type SessionTreeNodeRecord = ReturnType<SessionManager["getTree"]>[number];
+type SessionBranchEntry = ReturnType<SessionManager["getBranch"]>[number];
+type SessionMessageBranchEntry = Extract<SessionBranchEntry, { type: "message" }>;
+
+function resolveForkSourceEntry(
+  branch: readonly SessionBranchEntry[],
+  renderedMessages: readonly unknown[],
+  options: ForkSessionOptions,
+): SessionMessageBranchEntry | undefined {
+  const messageEntries = branch.filter(
+    (entry): entry is SessionMessageBranchEntry => entry.type === "message",
+  );
+
+  if (options.sourceMessageId) {
+    return messageEntries.find((entry) => entry.id === options.sourceMessageId);
+  }
+
+  const renderedMessageItems = transcriptFromMessages(renderedMessages).filter(
+    (item): item is SessionTranscriptMessage => item.kind === "message",
+  );
+  if (options.sourceMessageIndex !== undefined) {
+    return findBranchEntryForRenderedMessageIndex(
+      branch,
+      renderedMessageItems,
+      options.sourceMessageIndex,
+    );
+  }
+
+  if (options.userMessageIndex === undefined) {
+    return undefined;
+  }
+
+  let userMessageIndex = -1;
+  const renderedSourceMessageIndex = renderedMessageItems.findIndex((item) => {
+    if (item.role !== "user") {
+      return false;
+    }
+    userMessageIndex += 1;
+    return userMessageIndex === options.userMessageIndex;
+  });
+  return renderedSourceMessageIndex === -1
+    ? undefined
+    : findBranchEntryForRenderedMessageIndex(
+        branch,
+        renderedMessageItems,
+        renderedSourceMessageIndex,
+      );
+}
+
+function findBranchEntryForRenderedMessageIndex(
+  branch: readonly SessionBranchEntry[],
+  renderedMessages: readonly SessionTranscriptMessage[],
+  targetRenderedIndex: number,
+): SessionMessageBranchEntry | undefined {
+  if (targetRenderedIndex < 0 || targetRenderedIndex >= renderedMessages.length) {
+    return undefined;
+  }
+  const branchMessages = branch.filter(
+    (entry): entry is SessionMessageBranchEntry => entry.type === "message",
+  );
+  let branchStartIndex = 0;
+  for (const [renderedIndex, renderedMessage] of renderedMessages.entries()) {
+    if (renderedMessage.role !== "user" && renderedMessage.role !== "assistant") {
+      if (renderedIndex === targetRenderedIndex) {
+        return undefined;
+      }
+      continue;
+    }
+    const branchIndex = branchMessages.findIndex((entry, index) => {
+      if (index < branchStartIndex) {
+        return false;
+      }
+      return (
+        entry.message.role === renderedMessage.role &&
+        messageText(entry.message as unknown as Record<string, unknown>) === renderedMessage.text
+      );
+    });
+    if (branchIndex === -1) {
+      return undefined;
+    }
+    const entry = branchMessages[branchIndex];
+    if (renderedIndex === targetRenderedIndex) {
+      return entry;
+    }
+    branchStartIndex = branchIndex + 1;
+  }
+  return undefined;
+}
+
+async function removeIntermediateForkSession(
+  sessionFile: string | undefined,
+  keepSessionFile: string | undefined,
+): Promise<void> {
+  if (!sessionFile || (keepSessionFile && resolve(sessionFile) === resolve(keepSessionFile))) {
+    return;
+  }
+  try {
+    await unlink(sessionFile);
+  } catch (error) {
+    if (!isMissingFileError(error)) {
+      throw error;
+    }
+  }
+}
+
+function clampThinkingLevel(level: string, availableLevels: readonly string[]): string {
+  const available = new Set(availableLevels);
+  const requestedIndex = THINKING_LEVEL_ORDER.indexOf(
+    level as (typeof THINKING_LEVEL_ORDER)[number],
+  );
+  if (requestedIndex === -1) {
+    return availableLevels[0] ?? "off";
+  }
+  for (let index = requestedIndex; index < THINKING_LEVEL_ORDER.length; index += 1) {
+    const candidate = THINKING_LEVEL_ORDER[index];
+    if (candidate && available.has(candidate)) {
+      return candidate;
+    }
+  }
+  for (let index = requestedIndex - 1; index >= 0; index -= 1) {
+    const candidate = THINKING_LEVEL_ORDER[index];
+    if (candidate && available.has(candidate)) {
+      return candidate;
+    }
+  }
+  return availableLevels[0] ?? "off";
+}
+
+async function createCanonicalWorkspaceRef(
+  path: string,
+  displayName?: string,
+): Promise<WorkspaceRef> {
+  const canonicalPath = await canonicalizePath(path);
+  return createWorkspaceRef(canonicalPath, displayName);
+}
+
+async function canonicalizePath(path: string): Promise<string> {
+  const resolvedPath = resolve(path);
+  try {
+    return await realpath(resolvedPath);
+  } catch {
+    return resolvedPath;
+  }
+}
+
+function runtimeSourceInfoFromLoose(
+  sourceInfo: RuntimeCommandRecord["sourceInfo"] | undefined,
+  fallback: { path: string; source: string },
+): RuntimeCommandRecord["sourceInfo"] {
+  if (sourceInfo) {
+    return sourceInfo;
+  }
+
+  return {
+    path: fallback.path,
+    source: fallback.source,
+    scope: "temporary",
+    origin: "top-level",
+  };
+}
+
+function getRegisteredCommands(session: AgentSession): readonly RegisteredCommandAdapter[] {
+  return (session.extensionRunner?.getRegisteredCommands() ??
+    []) as readonly RegisteredCommandAdapter[];
+}
+
+function getPromptTemplates(session: AgentSession): readonly PromptTemplateAdapter[] {
+  return session.promptTemplates as readonly PromptTemplateAdapter[];
+}
+
+function getSkills(session: AgentSession): readonly SkillAdapter[] {
+  return session.resourceLoader.getSkills().skills as readonly SkillAdapter[];
+}
+
+interface TreeToolCallRecord {
+  readonly name: string;
+  readonly arguments: Readonly<Record<string, unknown>>;
+}
+
+function toSessionTreeNodeSnapshots(
+  roots: readonly SessionTreeNodeRecord[],
+): SessionTreeNodeSnapshot[] {
+  // Iterative on purpose: one path can be thousands of entries deep.
+  type Pending = {
+    readonly node: SessionTreeNodeRecord;
+    readonly toolCalls: ReadonlyMap<string, TreeToolCallRecord>;
+  };
+  const snapshots: SessionTreeNodeSnapshot[] = [];
+  const stack: Pending[] = [...roots].reverse().map((node) => ({ node, toolCalls: new Map() }));
+  while (stack.length > 0) {
+    const { node, toolCalls } = stack.pop()!;
+    snapshots.push(toSessionTreeNodeSnapshot(node, toolCalls));
+    const childToolCalls = extendTreeToolCalls(toolCalls, node.entry);
+    for (const child of [...node.children].reverse()) {
+      stack.push({ node: child, toolCalls: childToolCalls });
+    }
+  }
+  return snapshots;
+}
+
+function toSessionTreeNodeSnapshot(
+  node: SessionTreeNodeRecord,
+  toolCalls: ReadonlyMap<string, TreeToolCallRecord>,
+): SessionTreeNodeSnapshot {
+  const role = treeNodeRole(node.entry);
+  const customType = treeNodeCustomType(node.entry);
+  const preview = treeNodePreview(node.entry, toolCalls);
+  return {
+    id: node.entry.id,
+    parentId: node.entry.parentId,
+    kind: node.entry.type,
+    timestamp: node.entry.timestamp,
+    ...(node.label ? { label: node.label } : {}),
+    ...(role ? { role } : {}),
+    ...(customType ? { customType } : {}),
+    title: treeNodeTitle(node.entry),
+    ...(preview ? { preview } : {}),
+  };
+}
+
+function extendTreeToolCalls(
+  toolCalls: ReadonlyMap<string, TreeToolCallRecord>,
+  entry: SessionTreeNodeRecord["entry"],
+): ReadonlyMap<string, TreeToolCallRecord> {
+  if (entry.type !== "message" || entry.message.role !== "assistant") {
+    return toolCalls;
+  }
+
+  const content = entry.message.content;
+  if (!Array.isArray(content)) {
+    return toolCalls;
+  }
+
+  let nextToolCalls: Map<string, TreeToolCallRecord> | undefined;
+  for (const block of content) {
+    if (
+      typeof block !== "object" ||
+      block === null ||
+      !("type" in block) ||
+      block.type !== "toolCall" ||
+      !("id" in block) ||
+      typeof block.id !== "string" ||
+      !("name" in block) ||
+      typeof block.name !== "string"
+    ) {
+      continue;
+    }
+    nextToolCalls ??= new Map(toolCalls);
+    nextToolCalls.set(block.id, {
+      name: block.name,
+      arguments:
+        "arguments" in block && typeof block.arguments === "object" && block.arguments !== null
+          ? (block.arguments as Record<string, unknown>)
+          : {},
+    });
+  }
+
+  return nextToolCalls ?? toolCalls;
+}
+
+function treeNodeRole(entry: SessionTreeNodeRecord["entry"]): string | undefined {
+  if (entry.type !== "message") {
+    return undefined;
+  }
+  return entry.message.role;
+}
+
+function treeNodeCustomType(entry: SessionTreeNodeRecord["entry"]): string | undefined {
+  if (entry.type === "custom" || entry.type === "custom_message") {
+    return entry.customType;
+  }
+  return undefined;
+}
+
+function treeNodeTitle(entry: SessionTreeNodeRecord["entry"]): string {
+  switch (entry.type) {
+    case "message":
+      switch (entry.message.role) {
+        case "user":
+          return "User";
+        case "assistant":
+          return "Assistant";
+        case "toolResult":
+          return "Tool result";
+        case "bashExecution":
+          return "Shell";
+        case "branchSummary":
+          return "Branch summary";
+        case "compactionSummary":
+          return "Compaction";
+        default:
+          return entry.message.role;
+      }
+    case "custom_message":
+      return entry.customType;
+    case "compaction":
+      return "Compaction";
+    case "branch_summary":
+      return "Branch summary";
+    case "model_change":
+      return "Model";
+    case "thinking_level_change":
+      return "Thinking";
+    case "custom":
+      return "Custom";
+    case "label":
+      return "Label";
+    case "session_info":
+      return "Title";
+    case "context_edit":
+      return "Context edit";
+    case "usage":
+      return "Usage";
+  }
+  return "Entry";
+}
+
+function treeNodePreview(
+  entry: SessionTreeNodeRecord["entry"],
+  toolCalls: ReadonlyMap<string, TreeToolCallRecord>,
+): string | undefined {
+  switch (entry.type) {
+    case "message":
+      return previewForTreeMessage(entry.message as unknown as Record<string, unknown>, toolCalls);
+    case "custom_message":
+      return previewForTreeContent(entry.content);
+    case "compaction":
+      return `${Math.max(1, Math.round(entry.tokensBefore / 1000))}k token summary`;
+    case "branch_summary":
+      return truncate(entry.summary);
+    case "model_change":
+      return `${entry.provider}:${entry.modelId}`;
+    case "thinking_level_change":
+      return entry.thinkingLevel;
+    case "custom":
+      return entry.customType;
+    case "label":
+      return entry.label ?? "(cleared)";
+    case "session_info":
+      return entry.name || "(empty)";
+    case "context_edit":
+      return `${entry.replacement === null ? "Omit" : "Replace"} ${entry.targetId} in model context`;
+    case "usage":
+      return entry.note ?? `${entry.kind}: ${entry.provider}:${entry.model}`;
+    default:
+      return undefined;
+  }
+}
+
+function previewForTreeMessage(
+  message: Record<string, unknown>,
+  toolCalls: ReadonlyMap<string, TreeToolCallRecord>,
+): string | undefined {
+  if (message.role === "toolResult") {
+    return previewForTreeToolResult(message, toolCalls);
+  }
+  const content = message.content;
+  if (typeof content === "string") {
+    return truncate(content.trim()) || undefined;
+  }
+  if (Array.isArray(content)) {
+    const preview = truncate(
+      content
+        .flatMap((part: unknown) =>
+          typeof part === "object" &&
+          part !== null &&
+          "type" in part &&
+          part.type === "text" &&
+          "text" in part &&
+          typeof part.text === "string"
+            ? [part.text]
+            : [],
+        )
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim(),
+    );
+    if (preview) {
+      return preview;
+    }
+  }
+  if (message.role === "bashExecution" && typeof message.command === "string") {
+    return truncate(message.command);
+  }
+  return undefined;
+}
+
+function previewForTreeToolResult(
+  message: Record<string, unknown>,
+  toolCalls: ReadonlyMap<string, TreeToolCallRecord>,
+): string | undefined {
+  const toolCallId = typeof message.toolCallId === "string" ? message.toolCallId : undefined;
+  const toolName = typeof message.toolName === "string" ? message.toolName : undefined;
+  const toolCall = toolCallId ? toolCalls.get(toolCallId) : undefined;
+
+  if (toolCall) {
+    return formatTreeToolCall(toolCall.name, toolCall.arguments);
+  }
+
+  if (toolName) {
+    return `[${toolName}]`;
+  }
+
+  return "[tool]";
+}
+
+function formatTreeToolCall(name: string, args: Readonly<Record<string, unknown>>): string {
+  switch (name) {
+    case "read": {
+      const path = shortenHomePath(String(args.path ?? args.file_path ?? ""));
+      const offset = typeof args.offset === "number" ? args.offset : undefined;
+      const limit = typeof args.limit === "number" ? args.limit : undefined;
+      let display = path;
+      if (offset !== undefined || limit !== undefined) {
+        const start = offset ?? 1;
+        const end = limit !== undefined ? start + limit - 1 : undefined;
+        display += `:${start}${end !== undefined ? `-${end}` : ""}`;
+      }
+      return `[read: ${display}]`;
+    }
+    case "write":
+      return `[write: ${shortenHomePath(String(args.path ?? args.file_path ?? ""))}]`;
+    case "edit":
+      return `[edit: ${shortenHomePath(String(args.path ?? args.file_path ?? ""))}]`;
+    case "bash": {
+      const rawCommand = String(args.command ?? "")
+        .replace(/[\n\t]/g, " ")
+        .trim();
+      return `[bash: ${truncate(rawCommand, 50)}]`;
+    }
+    case "grep":
+      return `[grep: /${String(args.pattern ?? "")}/ in ${shortenHomePath(String(args.path ?? "."))}]`;
+    case "find":
+      return `[find: ${String(args.pattern ?? "")} in ${shortenHomePath(String(args.path ?? "."))}]`;
+    case "ls":
+      return `[ls: ${shortenHomePath(String(args.path ?? "."))}]`;
+    default: {
+      const json = JSON.stringify(args);
+      return truncate(`[${name}: ${json}]`, 80);
+    }
+  }
+}
+
+function shortenHomePath(path: string): string {
+  const homePath = process.env.HOME ?? process.env.USERPROFILE ?? "";
+  if (homePath && path.startsWith(homePath)) {
+    return `~${path.slice(homePath.length)}`;
+  }
+  return path;
+}
+
+function previewForTreeContent(content: unknown): string | undefined {
+  if (typeof content === "string") {
+    return truncate(content.trim()) || undefined;
+  }
+  if (!Array.isArray(content)) {
+    return undefined;
+  }
+  return (
+    truncate(
+      content
+        .flatMap((part: unknown) =>
+          typeof part === "object" &&
+          part !== null &&
+          "type" in part &&
+          part.type === "text" &&
+          "text" in part &&
+          typeof part.text === "string"
+            ? [part.text]
+            : [],
+        )
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim(),
+    ) || undefined
+  );
+}
+
+const extensionUiThemeStub = new Proxy(
+  {},
+  {
+    get:
+      () =>
+      (...args: unknown[]) => {
+        const last = args.at(-1);
+        return typeof last === "string" ? last : "";
+      },
+  },
+) as ExtensionUIContext["theme"];
+
+function cloneQueuedMessage(message: SessionQueuedMessage): SessionQueuedMessage {
+  return {
+    ...message,
+    ...(message.attachments
+      ? {
+          attachments: message.attachments.map(
+            (attachment: NonNullable<SessionQueuedMessage["attachments"]>[number]) => ({
+              ...attachment,
+            }),
+          ),
+        }
+      : {}),
+  };
+}
+
+function queuedMessageFromInput(
+  input: SessionMessageInput,
+  timestamp: string,
+): SessionQueuedMessage {
+  return {
+    id: crypto.randomUUID(),
+    mode: input.deliverAs!,
+    text: input.text,
+    ...(input.attachments
+      ? {
+          attachments: input.attachments.map((attachment) => ({ ...attachment })),
+        }
+      : {}),
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+}
+
+/**
+ * A message pi delivered stays listed when its text did not match the started one (pi expanded
+ * a template, say). pi queues each kind in list order and takes from the front, so what it still
+ * holds is the last of each kind, as many as it counts; the rest count as started. Call it only
+ * when pi's queue was built from the list (no rebuild in flight).
+ */
+function forgetDeliveredQueuedMessages(
+  record: ManagedSessionRecord,
+  session: AgentSession,
+): SessionQueuedMessage[] {
+  const steers = record.queuedMessages.filter((message) => message.mode === "steer");
+  const followUps = record.queuedMessages.filter((message) => message.mode === "followUp");
+  const held = new Set([
+    ...steers.slice(Math.max(0, steers.length - session.getSteeringMessages().length)),
+    ...followUps.slice(Math.max(0, followUps.length - session.getFollowUpMessages().length)),
+  ]);
+  for (const message of record.queuedMessages) {
+    if (!held.has(message)) record.startedQueuedMessageIds.add(message.id);
+  }
+  record.queuedMessages = record.queuedMessages.filter((message) => held.has(message));
+  return record.queuedMessages;
+}
+
+/** pi's first user message after a queued message started a turn is that message. */
+function takeStartingQueuedMessage(
+  record: ManagedSessionRecord,
+  timestamp: string,
+): SessionQueuedMessage | undefined {
+  const started = record.startingQueuedMessage;
+  if (!started) return undefined;
+  record.startingQueuedMessage = undefined;
+  record.updatedAt = timestamp;
+  return started;
+}
+
+function reconcileQueuedMessagesForStartedUserMessage(
+  record: ManagedSessionRecord,
+  message: unknown,
+  timestamp: string,
+): SessionQueuedMessage | undefined {
+  if (typeof message !== "object" || message === null) {
+    return undefined;
+  }
+
+  const text = messageText(message as Record<string, unknown>);
+  if (!text) {
+    return undefined;
+  }
+
+  const steeringIndex = record.queuedMessages.findIndex(
+    (item) => item.mode === "steer" && item.text === text,
+  );
+  if (steeringIndex !== -1) {
+    const [started] = record.queuedMessages.splice(steeringIndex, 1);
+    record.updatedAt = timestamp;
+    return started;
+  }
+
+  const followUpIndex = record.queuedMessages.findIndex(
+    (item) => item.mode === "followUp" && item.text === text,
+  );
+  if (followUpIndex !== -1) {
+    const [started] = record.queuedMessages.splice(followUpIndex, 1);
+    record.updatedAt = timestamp;
+    return started;
+  }
+
+  return undefined;
+}
+
+/**
+ * Pi stores the message's own content, so identity ties the entry to the event; the entry is
+ * written after the message was created, which rules out an older entry with equal text.
+ */
+function findCustomMessageEntryId(
+  sessionManager: SessionManager,
+  message: Extract<AgentSessionEvent, { type: "message_end" }>["message"],
+  claimed: ReadonlySet<string>,
+  depth: number,
+): string | undefined {
+  if (message.role !== "custom") return undefined;
+  const branch = sessionManager.getBranch();
+  for (let index = branch.length - 1; index >= Math.max(0, branch.length - depth); index -= 1) {
+    const entry = branch[index];
+    if (
+      entry?.type === "custom_message" &&
+      entry.content === message.content &&
+      entry.customType === message.customType &&
+      entry.display === message.display &&
+      (typeof message.timestamp !== "number" || Date.parse(entry.timestamp) >= message.timestamp) &&
+      !claimed.has(entry.id)
+    ) {
+      return entry.id;
+    }
+  }
+  return undefined;
+}
+
+function sessionUpdatedEvent(record: ManagedSessionRecord): SessionDriverEvent {
+  return {
+    type: "sessionUpdated",
+    sessionRef: record.ref,
+    timestamp: record.updatedAt,
+    snapshot: buildSnapshot(record),
+  };
+}
+
+function toDriverEvents(
+  base: SessionDriverEvent,
+  record: ManagedSessionRecord,
+  runId?: string,
+): SessionDriverEvent[] {
+  const id = runId ?? record.runningRunId;
+  const event = id ? { ...base, runId: id } : base;
+  return [event, sessionUpdatedEvent(record)];
+}
+
+/** A turn (or the steps before it), a compaction or an extension command is running. */
+function isRecordBusy(record: ManagedSessionRecord): boolean {
+  return (
+    record.runningRunId !== undefined ||
+    record.promptStarting ||
+    record.session?.isStreaming === true ||
+    record.session?.isCompacting === true ||
+    record.extensionCommandsRunning > 0
+  );
+}

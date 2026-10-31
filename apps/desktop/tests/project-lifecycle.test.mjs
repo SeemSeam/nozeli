@@ -109,7 +109,7 @@ test('unconfirmed stop and unavailable trash never trigger permanent delete fall
   const f=await setup(t);
   f.managed.stopProject=async()=>({confirmationComplete:false});
   const blocked=await f.manager.preview({projectId:f.project.id,action:'delete-project'});
-  await assert.rejects(f.manager.execute({token:blocked.token}),{code:'OMP_EXIT_UNCONFIRMED'});assert.equal(f.events.length,0);
+  await assert.rejects(f.manager.execute({token:blocked.token}),{code:'PI_EXIT_UNCONFIRMED'});assert.equal(f.events.length,0);
   f.managed.stopProject=async id=>({projectId:id,confirmationComplete:true});
   await f.manager.reconcile({projectId:f.project.id,operationId:blocked.operationId});
   const denied=await f.manager.preview({projectId:f.project.id,action:'delete-project'});

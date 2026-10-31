@@ -7,8 +7,7 @@ import {mountSessionTimeline} from './session-timeline.mjs';
 import {renderConfigurationNotice} from './configuration-notice.mjs';
 import {deviationHeld} from '../domain/work-deviation.mjs';
 import {mountFrontdeskRoutes,frontdeskRouteText} from './frontdesk-routes.mjs';
-import {createProviderTerminal} from './provider-terminal.mjs';
-import {createTerminalLayout,terminalTargets} from './managed-terminal-layout.mjs';
+import {mountSessionRuntimeControls} from './session-model-controls.mjs';
 import {renderTagMarkdown} from './tag-markdown.mjs';
 import {mountStaticReport} from './isolated-surfaces.mjs';
 import {renderClosureStatus} from './curation-message.mjs';
@@ -157,7 +156,6 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
   if(projectId)void refresh().then(()=>{agentDetailsStatus.textContent='';}).catch(error=>{agentDetailsStatus.textContent='状态读取失败：'+error.message+'；原记录与草稿未改动。';});
  });
  const progressBox=document.createElement('section');progressBox.id='managed-progress';progressBox.setAttribute('aria-label','工作进展');progressBox.setAttribute('role','status');progressBox.hidden=true;agentDetailsBody.append(progressBox);let progressSignature=null;
- const inputBlocker=document.createElement('section');inputBlocker.id='managed-input-blocker';inputBlocker.setAttribute('role','status');inputBlocker.hidden=true;const blockerText=document.createElement('p'),blockerTerminal=document.createElement('button');blockerTerminal.type='button';blockerTerminal.textContent='在工作区查看待办';blockerTerminal.onclick=()=>{const todo=state?.todos.find(t=>t.origin==='instance-attention'&&t.status==='open'&&t.destination?.target===target);if(todo)void openTodo(todo.id);else toast('当前没有可打开的来源待办，请刷新状态；对话草稿保留。');};inputBlocker.append(blockerText,blockerTerminal);$('compose-form').prepend(inputBlocker);
  const identityNotice=document.createElement('section');identityNotice.id='managed-input-identity';identityNotice.hidden=true;identityNotice.setAttribute('role','status');$('compose-form').prepend(identityNotice);
  const closureBox=document.createElement('section');closureBox.id='managed-closure-progress';closureBox.hidden=true;agentDetailsBody.append(closureBox);let closureSignature=null;
  const workInfo=document.createElement('section');workInfo.id='managed-current-work';workInfo.hidden=true;agentDetailsBody.append(workInfo);
@@ -165,7 +163,7 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
  const routeUI=mountFrontdeskRoutes({document,container:routeBox,invoke,refresh});
  let projectFilePaths=new Set(),fileAvailability=new Map(),availabilityKey=null,availabilityRequest=0;
  const refreshProjectFiles=createProjectFiles({list:id=>invoke('project.list',{projectId:id}),current:()=>({projectId,generation}),apply:paths=>{projectFilePaths=paths;paintTimeline();}});
- const terminals=new Map(),drafts=new Map(),submissions=new Map(),submissionKeys=new Map(),retryKeys=new Map();let viewed=null,terminalLayout=null,reportRequest=0;
+ const drafts=new Map(),submissions=new Map(),submissionKeys=new Map(),retryKeys=new Map();let viewed=null,reportRequest=0;
  const recoveryPending=new Set();
  const attentionDrafts=new Map();let attentionView=null;
  const problemDrafts=new Map();
@@ -210,8 +208,7 @@ async function openWorkReport(workId){
   box.replaceChildren(Object.assign(document.createElement('p'),{textContent:work?.readOnly?'历史工作只读；原会话、报告和草稿保留。':'后台正在核对任务范围；原工作、来源输入、已有进展和草稿保留，不会自动扩大范围或重放。'}));
  }
  const toolbar=document.createElement('div');toolbar.id='managed-todo-context';toolbar.setAttribute('role','status');toolbar.hidden=true;agentDetailsBody.append(toolbar);
- const terminalBox=document.createElement('div');terminalBox.id='managed-terminal-grid';terminalBox.hidden=true;$('provider-console').append(terminalBox);
- const configurationNotice=document.createElement('p');configurationNotice.id='managed-configuration-notice';configurationNotice.setAttribute('role','status');configurationNotice.hidden=true;$('provider-console').insertBefore(configurationNotice,terminalBox);
+ const configurationNotice=document.createElement('p');configurationNotice.id='managed-configuration-notice';configurationNotice.setAttribute('role','status');configurationNotice.hidden=true;agentDetailsBody.prepend(configurationNotice);
  const button=(text,fn)=>{const b=document.createElement('button');b.type='button';b.textContent=text;b.onclick=()=>Promise.resolve(fn()).catch(e=>toast(e.message));return b;};
  const call=async(op,p={},id=projectId)=>{const r=await invoke('managed.'+op,{projectId:id,...p});if(!r.ok)throw Object.assign(new Error(r.error.message),{code:r.error.code});return r.value;};
  let clearingFrontdesk=false;
@@ -223,6 +220,8 @@ async function openWorkReport(workId){
  });
  clearFrontdeskContext.id='chat-clear-frontdesk-context';clearFrontdeskContext.className='chat-context-clear';clearFrontdeskContext.title='仅重开前台上下文，不清空主控或工作；原对话历史保留';clearFrontdeskContext.hidden=!ownsConversation;clearFrontdeskContext.disabled=true;$('conversation-head').querySelector('.conversation-controls').append(clearFrontdeskContext);
  const residentRecovery=document.createElement('section');residentRecovery.id='managed-resident-recovery';residentRecovery.hidden=true;residentRecovery.setAttribute('aria-label','常驻 Agent 会话恢复');agentDetailsBody.append(residentRecovery);
+ const runtimeControls=mountSessionRuntimeControls({call,toast,current:()=>({projectId,target,agent:state?.agents?.find(a=>a.target===target)}),refresh});
+ $('conversation-head').querySelector('.conversation-controls').append(runtimeControls.button);
  let residentStatus=null,handoffPending=false;
  const sessionRecovery=document.createElement('section');sessionRecovery.id='managed-session-recovery';sessionRecovery.hidden=true;sessionRecovery.setAttribute('aria-label','当前会话恢复');sessionRecovery.setAttribute('role','status');agentDetailsBody.append(sessionRecovery);
  function inputReason(){return inputIdentityReason||conversationTargetReason(state,target);}
@@ -249,16 +248,15 @@ async function openWorkReport(workId){
   $('context-bar').textContent=($('project-name').textContent||'当前项目')+' · 接收者：'+(target?name(target):'尚未核实');
  }
  let sessionRecoveryPending=false,sessionRecoveryError='';
- function selectedSession(){
-  if(ownsConversation&&inputReason())return {state:'unavailable',reason:inputReason()};
-  const agent=state?.agents?.find(a=>a.target===target),work=state?.works?.find(w=>w.id===target);
-  if(viewed?.readOnly||work?.readOnly)return {state:'unavailable',reason:'当前内容只读，请返回原对话后发送。'};
+ function selectedSession(recipient=target,independent=false){
+  if(!independent&&ownsConversation&&inputReason())return {state:'unavailable',reason:inputReason()};
+  const agent=state?.agents?.find(a=>a.target===recipient),work=state?.works?.find(w=>w.id===recipient);
+  if(!independent&&viewed?.readOnly||work?.readOnly)return {state:'unavailable',reason:'当前内容只读，请返回原对话后发送。'};
   if(ready&&(work?.status==='queued'||deviationHeld(work)))return {state:'pending',canSend:true,reason:work.status==='queued'?'任务排队中；补充会保存到原任务，不代表 Agent 已就绪。':'任务偏离暂停；补充仅排队，需先明确处理偏离决定。'};
   if(agent?.closed)return {state:'failed',reason:'原生会话已退出'+(agent.exit?'（'+(agent.exit.signal??agent.exit.exitCode??agent.exit.code??'未知原因')+'）':'')+'；请显式恢复原会话，草稿不会自动发送。',closed:true};
-  if(agent?.starting||agent?.restarting||state?.configuringTargets?.includes(target))return {state:'connecting',reason:'当前会话正在恢复或配置；输入保留，请等待后手动发送。'};
+  if(agent?.starting||agent?.restarting||state?.configuringTargets?.includes(recipient))return {state:'connecting',reason:'当前会话正在恢复或配置；输入保留，请等待后手动发送。'};
   if(!ready)return {state:'unavailable',reason:'Agent 尚未连接；请重试连接，草稿不会自动发送。'};
-  if(target!=='frontdesk'&&target!=='orchestrator'&&!agent)return {state:'unavailable',closed:true,reason:'原工作会话尚未恢复；草稿保持原归属，请显式恢复后再发送。'};
-  if(state.nativeDraftTargets?.includes(target))return {state:'pending',reason:'原生终端有未发送文字；当前对话草稿已保存。处理终端草稿后可发送。'};
+  if(recipient!=='frontdesk'&&recipient!=='orchestrator'&&!agent)return {state:'unavailable',closed:true,reason:'原工作会话尚未恢复；草稿保持原归属，请显式恢复后再发送。'};
   return {state:'ready',reason:''};
  }
  function renderSessionRecovery(lifecycle){
@@ -392,7 +390,7 @@ async function openWorkReport(workId){
  const workRows=new Map();
  const workMenu=mountContextMenu({id:'managed-work-menu',label:'工作操作',onError:message=>toast(message)});
  function inspectWork(id){const work=state?.works.find(w=>w.id===id);if(!work)return;workInfo.dataset.workId=id;agentDetailsTitle.textContent='工作详情';if(!agentDetails.open)agentDetails.showModal();render();}
- function openWorkMenu(row,event){event.preventDefault();const current=managedWorkRecords(state).find(r=>r.id===row.dataset.managedRequest),work=state.works.find(w=>w.id===current?.workId);if(!work)return;const source=projectId,gen=generation,anchor=row.querySelector('.managed-work-open'),rect=anchor.getBoundingClientRect();anchor.focus({preventScroll:true});const constraint=work.status==='ended'?openMergeConstraintTodo(state,work.id):null;workMenu.open([{id:'details',label:'查看工作详情'},{id:'terminal',label:'Terminal 只读预览',enabled:!work.readOnly},...(workResultPublication(work)?[{id:'report',label:work.status==='ended'?'查看保留候选（只读原报告）':'审核候选文件（在工作区打开原报告）'}]:[]),...(work.status==='ended'&&work.closure?.phase==='blocked'&&!constraint?[{id:'retry',label:'重试技术收尾（不重开工作）'}]:[]),{separator:true},{id:'discard',label:work.status==='queued'?'取消工作…':'丢弃成果并结束…',enabled:!work.readOnly&&!['closing','ended'].includes(work.status)}],{x:event.clientX??rect.left,y:event.clientY??rect.bottom,run:id=>{if(source!==projectId||gen!==generation)return;if(id==='details')inspectWork(work.id);else if(id==='report')return openWorkReport(work.id);else if(id==='retry')return retryClosure(work);else if(id==='terminal')return window.__workspaceGroups.open({kind:'terminal',resourceId:'terminal:'+work.id,readOnly:true,viewState:{workId:work.id,title:work.name+' · Terminal 预览'}});else if(id==='discard')return disposeWork(work.id,'discard');}});}
+ function openWorkMenu(row,event){event.preventDefault();const current=managedWorkRecords(state).find(r=>r.id===row.dataset.managedRequest),work=state.works.find(w=>w.id===current?.workId);if(!work)return;const source=projectId,gen=generation,anchor=row.querySelector('.managed-work-open'),rect=anchor.getBoundingClientRect();anchor.focus({preventScroll:true});const constraint=work.status==='ended'?openMergeConstraintTodo(state,work.id):null;workMenu.open([{id:'details',label:'查看工作详情'},...(workResultPublication(work)?[{id:'report',label:work.status==='ended'?'查看保留候选（只读原报告）':'审核候选文件（在工作区打开原报告）'}]:[]),...(work.status==='ended'&&work.closure?.phase==='blocked'&&!constraint?[{id:'retry',label:'重试技术收尾（不重开工作）'}]:[]),{separator:true},{id:'discard',label:work.status==='queued'?'取消工作…':'丢弃成果并结束…',enabled:!work.readOnly&&!['closing','ended'].includes(work.status)}],{x:event.clientX??rect.left,y:event.clientY??rect.bottom,run:id=>{if(source!==projectId||gen!==generation)return;if(id==='details')inspectWork(work.id);else if(id==='report')return openWorkReport(work.id);else if(id==='retry')return retryClosure(work);else if(id==='discard')return disposeWork(work.id);}});}
  const archive=document.createElement('details');archive.id='managed-work-archive';const archiveTitle=document.createElement('summary');archiveTitle.textContent='历史报告与已结束工作';archive.append(archiveTitle);agentDetailsBody.append(archive);
  let historyItems=[],historyVersion=null,historyNext=null,historyTotal=0,historyMode='offline',historyRequest=0,historyLoading=false,historyNotice='',historyReceiptSignature=null;
  const historyList=document.createElement('div'),historyStatus=document.createElement('p'),historyActions=document.createElement('div');historyStatus.setAttribute('role','status');historyActions.className='managed-history-actions';
@@ -444,13 +442,13 @@ async function openWorkReport(workId){
  const sourceSubmit=button('提交此引用到后台',async()=>{if(!sourceMessage)return;const id=projectId,source=sourceMessage,key=sourceBox.dataset.requestKey;sourceSubmit.disabled=true;try{const receipt=await call('message.task',{messageId:source,text:sourceGoal.value,requestKey:key},id);if(id===projectId&&source===sourceMessage){await refresh();if(id===projectId&&source===sourceMessage){sourceMessage=null;sourceBox.hidden=true;sourceGoal.value='';$('compose-status').textContent=receipt.transferring?'转交已接收，等待前台停稳；原输入草稿仍保留':'引用已交后台，原输入草稿仍保留';document.dispatchEvent(new CustomEvent('nozeli-reveal-work-sidebar'));}}}finally{sourceSubmit.disabled=false;}});
  sourceBox.append(sourceLabel,sourceGoal,sourceSubmit,button('移除引用',()=>{sourceMessage=null;sourceBox.hidden=true;sourceGoal.value='';}));$('compose-form').before(sourceBox);
  const name=t=>labels[t]||state?.works.find(w=>w.id===t)?.name||'工作 Agent';
- function show(activeValue){active=activeValue;toolbar.hidden=true;$('managed-submit-task').hidden=!active;if(!active){sessionRecovery.hidden=true;sessionRecovery.replaceChildren();sessionRecoveryError='';residentStatus=null;residentRecovery.hidden=true;residentRecovery.replaceChildren();workerRecovery.hidden=true;workerRecovery.replaceChildren();workerRecoverySignature=null;progressBox.hidden=true;closureBox.hidden=true;closureBox.replaceChildren();closureSignature=null;}terminalBox.hidden=!active;document.body.dataset.managedAgents=String(active);for(const el of document.querySelectorAll('[data-provider-role]'))el.hidden=active;}
+ function show(activeValue){active=activeValue;toolbar.hidden=true;$('managed-submit-task').hidden=!active;if(!active){sessionRecovery.hidden=true;sessionRecovery.replaceChildren();sessionRecoveryError='';residentStatus=null;residentRecovery.hidden=true;residentRecovery.replaceChildren();workerRecovery.hidden=true;workerRecovery.replaceChildren();workerRecoverySignature=null;progressBox.hidden=true;closureBox.hidden=true;closureBox.replaceChildren();closureSignature=null;}document.body.dataset.managedAgents=String(active);}
  function remember(){if(ownsConversation&&projectId)captureInput();}
  function select(t){if(!ownsConversation)return invoke('workspace.control',{type:'conversation-action',projectId,action:'select',target:t});remember();inputEpoch++;inputIdentityReason='';sessionRecoveryError='';target=t;if(scope)scope.viewState={...scope.viewState,conversationInput:{projectId,target:t}};const work=state?.works.find(w=>w.id===t);viewed=work?.readOnly?{workId:t,readOnly:true}:null;$('composer').value=drafts.get(projectId+':'+t)??state?.drafts?.[t]??'';window.__composerMaterials?.restore(scope?.viewState?.conversationMaterials?.[t],{projectId,target:t});captureInput();lockHistory();render();const detail={projectId};document.dispatchEvent(new CustomEvent('nozeli-conversation-input-change',{detail}));void detail.persist?.catch(error=>toast('输入归属保存失败：'+error.message));}
  function render(){
   if(fixtureMode){if(state)todoUI.render(state,projectId);updateReviewActions();return;}
   if(!active||!state)return;
-  clearFrontdeskContext.disabled=clearingFrontdesk||!ready||target!=='frontdesk'||Boolean(viewed?.history)||state.busyTargets?.includes('frontdesk')||state.nativeDraftTargets?.includes('frontdesk')||state.externalTerminalTargets?.includes('frontdesk');
+  clearFrontdeskContext.disabled=clearingFrontdesk||!ready||target!=='frontdesk'||Boolean(viewed?.history)||state.busyTargets?.includes('frontdesk');
   renderConfigurationNotice(configurationNotice,state.agents||[]);
   renderWorkerRecovery();
   routeUI.render({...state,frontdeskRoutes:[]},projectId,ready);
@@ -471,9 +469,9 @@ async function openWorkReport(workId){
   if(signature!==progressSignature){progressSignature=signature;const wasOpen=progressBox.querySelector('details')?.open;progressBox.replaceChildren();const summary=document.createElement('strong');summary.textContent=progress.summary;progressBox.append(summary);for(const row of progress.requests){const p=document.createElement('p');p.textContent=row.text;p.dataset.managedRequestProgress=row.id;progressBox.append(p);}if(progress.works.length){const details=document.createElement('details'),label=document.createElement('summary');label.textContent=progress.works.length+' 项工作进展';details.open=wasOpen??progress.works.length<=3;details.append(label);for(const row of progress.works){const p=document.createElement('p');p.textContent=row.text;p.dataset.managedWorkProgress=row.id;details.append(p);}progressBox.append(details);}}
   progressBox.hidden=!progress.requests.length&&!progress.works.length;
   const lifecycle=selectedSession();renderSessionRecovery(lifecycle);
-  inputBlocker.hidden=!ownsConversation||!state.nativeDraftTargets?.includes(target);blockerText.textContent=inputBlocker.hidden?'':name(target)+'原生终端有未发送文字；当前对话草稿已保存。处理终端草稿后可发送。';
+  runtimeControls.update({active,ownsConversation,projectId,history:Boolean(viewed?.history)});
   $('ai-status').textContent=`${name(target)} · ${lifecycle.reason||progress.requests[0]?.text||'已就绪'} · ${progress.summary}`;$('ai-status').dataset.state=lifecycle.state;
-  const canSend=lifecycle.canSend||lifecycle.state==='ready';$('selection-explain').disabled=!canSend;$('managed-submit-task').disabled=!canSend||!$('composer').value.trim();$('managed-submit-task').textContent=target==='frontdesk'?'提交后台任务':'补充此任务';
+  const canSend=lifecycle.canSend||lifecycle.state==='ready';$('selection-explain').disabled=!canSend;$('managed-submit-task').disabled=!canSend||!$('composer').value.trim();$('managed-submit-task').textContent=target==='frontdesk'?'提交后台任务':'保存到下一轮补充队列';
   $('composer').disabled=Boolean(viewed?.readOnly);$('send-message').disabled=!canSend;$('send-message').title=lifecycle.reason||'发送（Ctrl/Cmd+Enter）';$('managed-submit-task').hidden=!active||Boolean(viewed?.readOnly);
   if(viewed?.readOnly){const back=button('回到前台讨论',()=>{select('frontdesk');$('composer').disabled=false;});toolbar.append(back);}
   updateReviewActions();
@@ -535,7 +533,6 @@ async function openWorkReport(workId){
  if(attentionView)attentionView.ui.update(state.todos.find(t=>t.id===attentionView.todoId));
   for(const box of document.querySelectorAll('[data-deviation-gate]')){const work=state.works.find(w=>w.id===box.dataset.deviationGate);if(work)paintDeviation(box,work);}
   for(const el of document.querySelectorAll('.workflow-panel .filters,.inbox-panel .filters'))el.hidden=true;
-  renderTerminals();
  }
  async function openArtifact({objectId,relPath,sourceProject=projectId}){
   const saved=await flushManagedReviews();if(!saved.ok){toast(saved.error.message);return;}
@@ -544,16 +541,6 @@ async function openWorkReport(workId){
    const review=await call('review.read',{objectId},sourceProject);if(!current())return;
    const file=review.files?.find(file=>file.relPath===relPath);
    if(!review.workId||!file)throw Error('此路径不在报告冻结文件清单中；未打开同名项目文件。');
-   const receipt=state?.receipts.find(receipt=>receipt.objectId===objectId);
-   if(openFrozenChange&&receipt?.changeSetId&&!file.draft&&reviewInlineAvailable(file)){
-    let offset=0;
-    while(offset!==null){
-     const page=await call('changes.list',{changeSetId:receipt.changeSetId,offset,limit:100},sourceProject);if(!current())return;
-     const changed=page.files.find(entry=>entry.path===relPath);
-     if(changed){const opened=await openFrozenChange({projectId:sourceProject,changeSetId:receipt.changeSetId,fileId:changed.fileId});if(opened?.ok===false)throw Error(opened.error?.message||'工作区差异未能打开');return;}
-     offset=page.nextOffset;
-    }
-   }
    const opened=await invoke('workspace.control',{type:'open-file',projectId:sourceProject,relPath,documentSource:{type:'review',workId:review.workId,objectId}});
    if(!opened.ok)throw Error(opened.error?.message||'原生审核文档未能打开');
   }catch(error){toast('审核文档无法读取：'+error.message);}
@@ -590,7 +577,7 @@ async function openWorkReport(workId){
   if(deviationHeld(w))return '任务偏离暂停尚未解除；请使用偏离决定按钮，通用恢复不能恢复执行。';
   if(!Number.isInteger(todo.revision)||!todo.sourceJobId||!state.jobs.some(j=>j.id===todo.sourceJobId))return '历史事项缺少来源身份，不能自动恢复或提交';
   if(!['paused','review'].includes(w.status)||state.busyTargets?.some(t=>t===w.id||t==='orchestrator')||state.agents?.some(a=>a.target===w.id&&a.starting)||state.jobs.some(j=>['queued','running','transferring'].includes(j.status)&&(j.target===w.id||j.context?.boundWorkId===w.id||j.context?.workId===w.id)))return '请等待原工作及主控停稳';
-  if(state.drafts?.[w.id]||state.drafts?.orchestrator||state.nativeDraftTargets?.some(t=>t===w.id||t==='orchestrator'))return '原工作或主控还有未发送草稿，请先发送或明确清空';
+  if(state.drafts?.[w.id]||state.drafts?.orchestrator)return '原工作或主控还有未发送草稿，请先发送或明确清空';
   return '';
  }
  let reportDocument=null,disposition=null,dispositionError='',dispositionRequest=0,dispositionPending=false;
@@ -811,7 +798,7 @@ async function openWorkReport(workId){
  const resetSession=()=>{workMenu.close();delete workInfo.dataset.workId;requestReads.clear();clear();};
  window.addEventListener('nozeli-project-change',()=>{reportMenu.close();workMenu.close();reportDocument=null;disposition=null;++dispositionRequest;});
  function observeFixture(id,snapshot){if(snapshot?.source!=='demo-fixture')throw Error('不是登记的演示来源');projectId=id;state=snapshot;fixtureMode=true;active=false;ready=false;render();}
- function clear({rememberDraft=true}={}){retireReviews();fixtureMode=false;if(rememberDraft)remember();if(agentDetails.open)agentDetails.close();agentDetailsStatus.textContent='';workInfo.hidden=true;workInfo.replaceChildren();delete workInfo.dataset.signature;$('ai-status').textContent='';delete $('ai-status').dataset.state;identityReads.clear();renderConfigurationNotice(configurationNotice,[]);routeUI.clear();todoUI.clear();mergePending.clear();mergeErrors.clear();reportRequest++;historyRequest++;pageRequest++;historyPage=false;pageError='';active=false;sessionStore.reset(null);timelineBox.hidden=true;historyReceiptSignature=null;historyItems=[];historyVersion=null;historyNext=null;historyTotal=0;historyLoading=false;historyNotice='';renderHistory();if(exportDialog.open)exportDialog.close();exportSource=null;sourceMessage=null;sourceBox.hidden=true;sourceGoal.value='';for(const row of workRows.values())row.remove();workRows.clear();generation++;ready=false;state=null;toolbar.hidden=true;toolbar.replaceChildren();progressBox.hidden=true;progressBox.replaceChildren();progressSignature=null;delete $('conversation-panel').dataset.managedConversation;projectFilePaths=new Set();fileAvailability=new Map();availabilityKey=null;availabilityRequest++;target='frontdesk';viewed=null;lockHistory();$('composer').disabled=false;for(const t of terminals.values())t.dispose();terminals.clear();terminalLayout?.dispose();terminalLayout=null;terminalBox.replaceChildren();show(false);}
+ function clear({rememberDraft=true}={}){retireReviews();fixtureMode=false;if(rememberDraft)remember();if(agentDetails.open)agentDetails.close();agentDetailsStatus.textContent='';workInfo.hidden=true;workInfo.replaceChildren();delete workInfo.dataset.signature;$('ai-status').textContent='';delete $('ai-status').dataset.state;identityReads.clear();renderConfigurationNotice(configurationNotice,[]);routeUI.clear();todoUI.clear();mergePending.clear();mergeErrors.clear();reportRequest++;historyRequest++;pageRequest++;historyPage=false;pageError='';active=false;sessionStore.reset(null);timelineBox.hidden=true;historyReceiptSignature=null;historyItems=[];historyVersion=null;historyNext=null;historyTotal=0;historyLoading=false;historyNotice='';renderHistory();if(exportDialog.open)exportDialog.close();exportSource=null;sourceMessage=null;sourceBox.hidden=true;sourceGoal.value='';for(const row of workRows.values())row.remove();workRows.clear();generation++;ready=false;state=null;toolbar.hidden=true;toolbar.replaceChildren();progressBox.hidden=true;progressBox.replaceChildren();progressSignature=null;delete $('conversation-panel').dataset.managedConversation;projectFilePaths=new Set();fileAvailability=new Map();availabilityKey=null;availabilityRequest++;target='frontdesk';viewed=null;lockHistory();$('composer').disabled=false;show(false);}
  async function load(id,{connect=true,input,observe=false}={}){
   if(id!==projectId){const saved=await flushManagedReviews();if(!saved.ok){toast(saved.error.message);return false;}retireReviews();}
   let frame=input?.frame||scope?.viewState||{};
@@ -835,7 +822,7 @@ async function openWorkReport(workId){
   void (async()=>{
    let connected;
    try{connected=await call('connect',{},id);}catch(error){
-    if(gen!==generation||id!==projectId)return;terminalLayout?.dispose();terminalLayout=null;const failed=await call('status',{},id).catch(()=>status);if(gen!==generation||id!==projectId)return;state=failed.state;sessionRecoveryError='恢复失败：'+error.message+'；原目标和草稿保留，未重放。';renderResidentRecovery({...failed,connectionError:failed.connectionError||{code:error.code,message:error.message}});render();return;
+    if(gen!==generation||id!==projectId)return;const failed=await call('status',{},id).catch(()=>status);if(gen!==generation||id!==projectId)return;state=failed.state;sessionRecoveryError='恢复失败：'+error.message+'；原目标和草稿保留，未重放。';renderResidentRecovery({...failed,connectionError:failed.connectionError||{code:error.code,message:error.message}});render();return;
    }
    if(gen!==generation||id!==projectId)return;ready=connected.ready===true;state=connected.state;renderResidentRecovery(connected);render();
    if(pendingConversation){const event=pendingConversation;pendingConversation=null;if(event.action==='select')select(event.target);if(event.action==='todo')await openTodo(event.todoId);}void loadHistory();
@@ -843,18 +830,18 @@ async function openWorkReport(workId){
   return true;
  }
  async function enable(id){const gen=generation;projectId=id;sessionStore.reset(id);const connected=await call('enable',{},id);if(gen!==generation||id!==projectId)return;show(true);ready=connected.ready===true;state=connected.state;render();}
- function send(text,context={}){const lifecycle=selectedSession();if(!active||(!lifecycle.canSend&&lifecycle.state!=='ready'))return Promise.reject(Error(lifecycle.reason||'Agent 尚未启用；输入已保留。'));const key=JSON.stringify([projectId,target,text,context,viewed?.routingQuestionId]);if(submissions.has(key))return submissions.get(key);const requestKey=submissionKeys.get(key)||crypto.randomUUID();submissionKeys.set(key,requestKey);const promise=sendOnce(text,context,requestKey).then(result=>{submissionKeys.delete(key);return result;}).finally(()=>{if(submissions.get(key)===promise)submissions.delete(key);});submissions.set(key,promise);return promise;}
+ function send(text,context={}){const recipient=context.preserveDraft?'frontdesk':target,lifecycle=selectedSession(recipient,context.preserveDraft===true);if(!active||(!lifecycle.canSend&&lifecycle.state!=='ready'))return Promise.reject(Error(lifecycle.reason||'Agent 尚未启用；输入已保留。'));const key=JSON.stringify([projectId,recipient,text,context,context.preserveDraft?null:viewed?.routingQuestionId]);if(submissions.has(key))return submissions.get(key);const requestKey=submissionKeys.get(key)||crypto.randomUUID();submissionKeys.set(key,requestKey);const promise=sendOnce(text,context,requestKey).then(result=>{submissionKeys.delete(key);return result;}).finally(()=>{if(submissions.get(key)===promise)submissions.delete(key);});submissions.set(key,promise);return promise;}
  async function sendOnce(text,{relPath,materialText,tags,imageAttachments,drawingSources,background=false,composerText,preserveDraft=false}={},requestKey){
   const id=projectId,t=preserveDraft?'frontdesk':target,old=composerText,epoch=inputEpoch,materials=window.__composerMaterials,materialToken=materials?.token(),questionId=preserveDraft?null:viewed?.routingQuestionId;
   await draftWriter.settled();
   const manual=background&&t==='frontdesk';
   const result=await call(manual?'task':'send',{...(!manual?{target:t}:{}),requestKey,text,...(preserveDraft?{preserveDraft:true}:{}),...(questionId?{routingQuestionId:questionId}:{}),...(relPath?{relPath,materialText}:{}),...(tags?{tags}:{}),...(imageAttachments?.length?{imageAttachments,drawingSources}:{})},id);
   const currentMaterialToken=materials?.token();
-  if(old!==undefined&&id===projectId&&t===target&&epoch===inputEpoch&&materialToken?.revision===currentMaterialToken?.revision&&$('composer').value===old){
+  if(!preserveDraft&&old!==undefined&&id===projectId&&t===target&&epoch===inputEpoch&&materialToken?.revision===currentMaterialToken?.revision&&$('composer').value===old){
    $('composer').value='';drafts.set(id+':'+t,'');materials?.confirmSent(materialToken);
    $('composer').dispatchEvent(new Event('input'));
    delete $('compose-status').dataset.draftSaving;
-   $('compose-status').textContent=manual?'已提交后台，进展见右侧':t!=='frontdesk'?'已补充此任务':'已接收';
+   $('compose-status').textContent=manual?'已提交后台，进展见右侧':t!=='frontdesk'?'已保存到此任务的下一轮补充队列':'已接收';
   }else if(!preserveDraft&&id===projectId){
    delete $('compose-status').dataset.draftSaving;
    $('compose-status').textContent='已接收上一稿，新输入仍保留';
@@ -864,98 +851,6 @@ async function openWorkReport(workId){
  }
  $('managed-submit-task').onclick=()=>window.__agentSend?.({background:true});
  const draftWriter=ownsConversation?bindComposerDrafts({composer:$('composer'),current:()=>projectId&&!inputReason()?{projectId,target}:null,remember:({projectId,target,text})=>drafts.set(projectId+':'+target,text),persist:({projectId,target,text})=>call('draft',{target,text},projectId),onError:e=>toast('草稿保存失败：'+e.message),onInput:()=>{inputEpoch++;captureInput();if(!active)return;const lifecycle=selectedSession();$('managed-submit-task').disabled=(!lifecycle.canSend&&lifecycle.state!=='ready')||!$('composer').value.trim();}}):{settled:()=>Promise.resolve()};
- function renderTerminals(){
-  if(scope?.role==='surface'&&!ownsConversation)return;
-  if(scope?.role==='shell'&&$('provider-console').hidden)return;
-  if(!state)return;
-  if(!terminalLayout)terminalLayout=createTerminalLayout({root:terminalBox,onVisibility:(t,v)=>{const instance=terminals.get(t);if(instance&&instance.layoutVisible!==v){instance.layoutVisible=v;instance.setVisible(v);}}});
-  const targets=terminalTargets(state);
-  for(const [t,instance] of terminals)if(!targets.includes(t)){instance.dispose();terminals.delete(t);}
-  terminalLayout.update(state,t=>{
-   const card=document.createElement('article');card.className='provider-role managed-agent-pane';card.dataset.managedTerminal=t;
-   const h=document.createElement('header'),identity=document.createElement('div');identity.className='managed-agent-identity';
-   const title=document.createElement('strong');identity.append(title);h.append(identity);
-   const out=document.createElement('div');out.className='provider-output';
-   const empty=document.createElement('div');empty.className='managed-terminal-empty';empty.textContent='正在准备终端…';out.append(empty);card.append(h,out);return card;
-  },(t,card)=>{
-   const w=state.works.find(w=>w.id===t),busy=state.busyTargets.includes(t),closing=w?.status==='closing';
-   card.dataset.name=name(t);card.dataset.phase=w?.status||(busy?'running':'idle');card.querySelector('strong').textContent=name(t);
-   const external=state.externalTerminalTargets?.includes(t);
-   const out=card.querySelector('.provider-output');
-   if(w?.readOnly){const view=terminals.get(t);if(view){terminals.delete(t);view.dispose();}out.replaceChildren(Object.assign(document.createElement('p'),{textContent:'历史会话只读；不会以 OMP 重连或重放原任务。'}));return;}
-   if(deviationHeld(w)){const view=terminals.get(t);if(view){terminals.delete(t);view.dispose();}out.replaceChildren();const note=document.createElement('p');note.textContent='任务偏离暂停：原会话与成果保留。请在此明确决定后继续原 Worker；原生输入和重连不会绕过该决定。';out.append(note);const gate=document.createElement('section');paintDeviation(gate,w);out.append(gate);const detail=button('查看原工作与交付/结束操作',()=>inspectWork(w.id));detail.dataset.managedHeldWorkDetail=w.id;out.append(detail);card.querySelector('[data-terminal-recovery]')?.remove();delete out.dataset.autoAttachAttempted;return;}
-   const agent=state.agents?.find(a=>a.target===t),transition=state.configuringTargets?.includes(t)||agent?.restarting;
-   const view=terminals.get(t);
-   if(view&&(agent?.closed||transition||(view.ownerId&&agent?.ownerId&&view.ownerId!==agent.ownerId)||(view.leaseId&&agent?.terminalId&&view.leaseId!==agent.terminalId))){
-     terminals.delete(t);view.dispose();delete out.dataset.connectionId;delete out.dataset.autoAttachAttempted;
-     out.dataset.terminalState=agent?.closed?'exited':'stale';out.replaceChildren();
-   }
-   if(agent?.closed&&!external)out.dataset.terminalState='exited';
-   if(external&&terminals.has(t)){terminals.get(t).dispose();terminals.delete(t);out.replaceChildren();}
-   if(external)out.dataset.terminalState='external';
-   if(external||out.dataset.terminalState==='external'){let note=out.querySelector('.managed-terminal-empty');if(!note){note=document.createElement('div');note.className='managed-terminal-empty';out.append(note);}note.textContent=external?'系统终端正在操作此 Agent，会话保持同步。':'系统终端已断开，可重开或接回内置终端。';}
-   const connection=out.dataset.terminalState,needsRetry=['exited','unavailable','external','stale'].includes(connection);
-   let recovery=card.querySelector('[data-terminal-recovery]');
-   if(needsRetry){
-    if(!recovery){
-     recovery=button('重新连接终端',async()=>{
-       const id=projectId,gen=generation;recovery.disabled=true;
-       try{
-         await call('terminal.return',{target:t},id);
-         const currentAgent=state.agents?.find(a=>a.target===t);
-         if(currentAgent?.closed)await call('restart',{target:t},id);
-         if(id!==projectId||gen!==generation)return;
-         terminals.get(t)?.dispose();terminals.delete(t);out.dataset.autoAttachAttempted='true';
-         await attach(t,out);await refresh();
-       }finally{if(id===projectId&&gen===generation)recovery.disabled=false;}
-     });
-     recovery.dataset.terminalRecovery='';recovery.dataset.paneConnect='';card.querySelector('header').append(recovery);
-    }
-    recovery.textContent=connection==='external'?'接回内置终端':agent?.closed?'重新启动 Agent':'重新连接终端';
-    recovery.disabled=!ready||(busy&&!agent?.interactions?.length)||closing||transition;
-   }else recovery?.remove();
-  });
-  if(ready)for(const t of targets){
-   const card=terminalLayout.cards.get(t),out=card.querySelector('.provider-output'),w=state.works.find(w=>w.id===t);
-   if(w?.readOnly||deviationHeld(w))continue;
-   // Busy work may subscribe only when the host has already registered its PTY.
-   // providers[target] is app-server ownership; only terminal:target denotes PTY.
-   const agent=state.agents?.find(a=>a.target===t);
-   if(!state.configuringTargets?.includes(t)&&!agent?.restarting&&!agent?.closed&&!state.externalTerminalTargets?.includes(t)&&out.dataset.terminalState!=='external'&&!terminals.has(t)&&!out.dataset.autoAttachAttempted&&(!state.busyTargets.includes(t)||state.providers?.['terminal:'+t]||agent?.interactions?.length)&&w?.status!=='closing'){
-    out.dataset.autoAttachAttempted='true';const gen=generation;
-    queueMicrotask(()=>{if(gen===generation&&active&&terminalLayout?.cards.get(t)===card)void attach(t,out).catch(error=>toast('终端连接失败：'+error.message));});
-   }
-  }
- }
- async function attach(t,out){
-  if(state.works.find(w=>w.id===t)?.readOnly)throw Error('历史会话只读，不能连接原生终端。');
-  if(deviationHeld(state.works.find(w=>w.id===t)))throw Error('任务偏离暂停中，请在 Work 卡明确决定。');
-  if(terminals.has(t)){if(!['exited','unavailable','stale'].includes(out.dataset.terminalState))return;const old=terminals.get(t);terminals.delete(t);old.dispose();}
-  const id=projectId,gen=generation,ownerId=state.agents?.find(a=>a.target===t)?.ownerId;out.replaceChildren();
-  let instance;
-  const current=()=>gen===generation&&id===projectId&&terminals.get(t)===instance&&(!instance.ownerId||!state.agents?.find(a=>a.target===t)?.ownerId||state.agents.find(a=>a.target===t).ownerId===instance.ownerId);
-  const adapted=async(op,p)=>{try{
-   if(op==='terminal.attach'){
-    const r=await call('terminal.attach',{target:t,...(ownerId?{ownerId}:{})},id);
-    if(!current()||(ownerId&&r.ownerId!==ownerId))return {ok:false,error:{code:'TERMINAL_STALE',message:'Agent 已变化，旧视图未附着。'}};
-    instance.ownerId=r.ownerId??ownerId;instance.leaseId=r.terminalId;out.dataset.connectionId=r.terminalId;
-    return {ok:true,value:{...r,available:true}};
-   }
-   if(op==='terminal.ack')return {ok:true,value:{}};
-   if(op==='terminal.detach')return {ok:true,value:{detached:true}};
-   if(!current())return {ok:false,error:{code:'TERMINAL_STALE',message:'终端连接已过期，请重新连接'}};
-   if(op==='terminal.input')return {ok:true,value:await call('terminal.input',{target:t,terminalId:p.terminalId,data:p.data},id)};
-   if(op==='terminal.resize')return {ok:true,value:await call('terminal.resize',{target:t,terminalId:p.terminalId,cols:p.cols,rows:p.rows},id)};
-   throw Error('unsupported terminal action');
-  }catch(e){return {ok:false,error:{code:e.code,message:e.message}};}};
-  const subscribe=(_event,fn)=>window.nozeli.subscribe('agent',e=>{const lease=instance.leaseId??state.agents?.find(a=>a.target===t)?.terminalId;if(current()&&lease===e.terminalId&&e.projectId===id&&e.kind==='managed-terminal'&&e.target===t)fn({projectId:id,role:t,terminalId:e.terminalId,exitCode:e.exitCode,type:e.ended?'terminal.exit':'terminal.output',data:e.data,seq:e.seq});});
-  instance=createProviderTerminal({container:out,invoke:adapted,subscribe,toast,onState:()=>{if(current()&&terminalLayout?.cards.get(t)?.contains(out))renderTerminals();}});
-  instance.ownerId=ownerId;terminals.set(t,instance);renderTerminals();
-  const r=await instance.attach({projectId:id,role:t});
-  if(!current()){instance.dispose();return;}
-  if(!r.available){terminals.delete(t);instance.dispose();out.replaceChildren();out.dataset.terminalState='unavailable';const error=document.createElement('div');error.className='managed-terminal-empty';error.textContent=r.reason||'连接失败，请重试';out.append(error);}
-  renderTerminals();
- }
  function leaveHistory(){reportRequest++;if(!viewed?.history)return false;viewed=null;lockHistory();$('composer').disabled=false;toolbar.hidden=true;if(active)render();return true;}
  window.addEventListener('nozeli-content-closed',()=>{if(!leaveHistory()&&active&&ownsConversation)select('frontdesk');});
  window.nozeli.subscribe('workspace.control',event=>{
@@ -978,5 +873,5 @@ async function openWorkReport(workId){
  window.addEventListener('nozeli-content-file-opened',leaveHistory);
  window.nozeli.subscribe('agent',e=>{if(e.kind==='managed-files-changed'&&e.projectId===projectId)void refreshProjectFiles().catch(error=>toast('文件链接列表读取失败：'+error.message));});
  window.nozeli.subscribe('agent',e=>{if((!active&&!fixtureMode)||e.projectId!==projectId)return;if(e.kind==='managed-state'){state=e.state;if(fixtureMode){render();return;}if(!ready)void refresh().catch(error=>toast(error.message));else render();}if(e.kind==='managed-timeline'&&!historyPage){sessionStore.apply(projectId,e.timeline||e.frame,{replace:true});}if(e.kind==='managed-error')toast(e.text);});
- return {get active(){return active;},reachable:true,load,enable,send,refresh,observeFixture,clear(options){clear(options);if(options?.rememberDraft===false)projectId=null;},console:()=>{terminalBox.hidden=false;renderTerminals();},onReport:openTodo};
+ return {get active(){return active;},reachable:true,load,enable,send,refresh,observeFixture,flushDrafts:()=>draftWriter.settled(),clear(options){clear(options);if(options?.rememberDraft===false)projectId=null;},onReport:openTodo};
 }

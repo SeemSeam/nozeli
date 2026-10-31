@@ -49,11 +49,19 @@ export class WebDiscussions {
       }
     }
     // Query persisted native history by the exact managed job, never the current page or latest response.
+    const latestUser=thread.messages.findLast(message=>message.role==='user');
     for(const message of thread.messages.filter(m=>m.role==='user'&&m.requestId)){
       let offset=0;
       try {
         do {
           const page=await this.managedAgents.invoke('managed.timeline.request',{projectId,requestId:message.requestId,offset});
+          if(page.job?.id===message.requestId){
+            const before=message.status,phase=page.job.status;
+            if(['failed','cancelled','interrupted','unknown','queued','running','transferring'].includes(phase)||phase==='completed'&&message.action!=='task')message.status=phase;
+            if(page.job.error)message.error=page.job.error;else if(phase==='completed')delete message.error;
+            // Retain failed input once, but never overwrite later typing or resend it.
+            if(phase==='failed'&&before!=='failed'&&message===latestUser&&!thread.draft)thread.draft=message.text;
+          }
           for(const id of page.ids??[]){
             const {entry}=await this.managedAgents.invoke('managed.timeline.read',{projectId,id});
             if(entry?.speaker!=='agent'||entry.jobId!==message.requestId)continue;

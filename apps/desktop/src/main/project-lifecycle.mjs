@@ -149,7 +149,7 @@ export class ProjectLifecycle {
       const native=stage(Promise.resolve().then(()=>this.managed.stopProject(projectId,{lifecycleHold:hold})));
       const admitted=stage(this.host.storage.drainProjectOperations(projectId));
       const [,stopped]=await Promise.all([auxiliary,native,admitted]);
-      if(stopped?.confirmationComplete!==true)throw fail('OMP_EXIT_UNCONFIRMED','项目写入者停稳未确认，保留所有目录。');
+      if(stopped?.confirmationComplete!==true)throw fail('PI_EXIT_UNCONFIRMED','项目写入者停稳未确认，保留所有目录。');
       hold.needsStopCheck=false;
       await stage(this.workspace.closeProject(projectId,{operationId}));
       const settled=await this.host.storage.getRecovery(projectId,'lifecycle:settle-managed:'+operationId);

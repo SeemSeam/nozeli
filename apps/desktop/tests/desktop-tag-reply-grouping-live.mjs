@@ -244,8 +244,8 @@ async function askRound(round) {
 try {
   await launch();
   await invoke('config.initialize', {mode: 'independent'});
-  await invoke('settings.providers.save', {provider: 'tagreply-local', model: 'scripted', baseUrl: 'http://127.0.0.1:' + server.address().port + '/v1', key: 'local-only', api: 'openai-completions'});
-  await invoke('settings.models.save', {frontdesk: 'tagreply-local/scripted', orchestrator: 'tagreply-local/scripted', worker: 'tagreply-local/scripted'});
+  await invoke('settings.providers.save', {operation:'create',provider:'tagreply-local',baseUrl:'http://127.0.0.1:' + server.address().port + '/v1',api:'openai-completions',models:[{id:'scripted'}],credential:{action:'replace',value:'local-only'}});
+  await invoke('settings.models.save', {frontdesk:{model:{mode:'explicit',selector:'tagreply-local/scripted'},thinking:{mode:'native-default'}},orchestrator:{model:{mode:'explicit',selector:'tagreply-local/scripted'},thinking:{mode:'native-default'}},worker:{model:{mode:'explicit',selector:'tagreply-local/scripted'},thinking:{mode:'native-default'}}});
   if (await shell.$eval('#configuration-setup', node => node.open)) await shell.click('#configuration-cancel');
   await shell.click('#pick-project');
   projectId = await until(async () => (await invoke('workspace.bootstrap')).projectId, 'source project');

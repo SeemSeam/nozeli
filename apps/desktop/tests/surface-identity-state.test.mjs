@@ -30,6 +30,27 @@ test('composer persistence retains captured project identity across queued write
  composer.value='';composer.dispatchEvent(new Event('input'));await writer.settled();assert.equal(durable.get('B'),'');
 });
 
+test('composer close drain waits for input appended while an earlier write is pending',async()=>{
+ const composer=new EventTarget(),first=deferred(),second=deferred();let writes=0,settled=false;
+ const writer=bindComposerDrafts({composer,current:()=>({projectId:'A',target:'frontdesk'}),remember:()=>{},persist:()=>++writes===1?first.promise:second.promise,onInput:()=>{},onError:()=>{}});
+ composer.value='first';composer.dispatchEvent(new Event('input'));
+ const draining=writer.settled().then(()=>{settled=true;});
+ composer.value='last accepted text';composer.dispatchEvent(new Event('input'));
+ first.resolve();await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(writes,2);assert.equal(settled,false,'last accepted input must reach durable storage before close can acknowledge');
+ second.resolve();await draining;assert.equal(settled,true);
+});
+
+test('a successful other-project draft cannot hide an unresolved persistence failure',async()=>{
+ const composer=new EventTarget(),durable=new Map(),errors=[];let identity={projectId:'A',target:'frontdesk'},failA=true;
+ const writer=bindComposerDrafts({composer,current:()=>identity,remember:()=>{},persist:async draft=>{if(draft.projectId==='A'&&failA)throw Object.assign(Error('draft disk full'),{code:'ENOSPC'});durable.set(draft.projectId,draft.text);},onInput:()=>{},onError:error=>errors.push(error)});
+ composer.value='A original';composer.dispatchEvent(new Event('input'));await assert.rejects(writer.settled(),{code:'ENOSPC'});
+ identity={projectId:'B',target:'frontdesk'};composer.value='B original';composer.dispatchEvent(new Event('input'));await assert.rejects(writer.settled(),{code:'ENOSPC'});
+ assert.equal(durable.get('B'),'B original');assert.equal(durable.has('A'),false);
+ identity={projectId:'A',target:'frontdesk'};failA=false;composer.value='A current';composer.dispatchEvent(new Event('input'));await writer.settled();
+ assert.equal(durable.get('A'),'A current');assert.equal(errors.length,1);
+});
+
 test('failed native draft writes report once and do not block newer captured input',async()=>{
  const composer=new EventTarget(),errors=[],saved=[];let attempts=0;
  const writer=bindComposerDrafts({composer,current:()=>({projectId:'A',target:'frontdesk'}),remember:()=>{},persist:async d=>{if(++attempts===1)throw Error('disk failed');saved.push(d.text);},onInput:()=>{},onError:error=>errors.push(error.message)});

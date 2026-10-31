@@ -52,10 +52,8 @@ globalThis.ResizeObserver = class {
   disconnect() { this.targets.clear(); }
 };
 
-// Compact-card shapes (2026-10-26): the composer is a single row
-// (.tag-composer > .tag-editor + .tag-send), secondary actions live in the
-// non-visual .tag-menu-actions container, and the head is
-// [number, title, summary, drift, more, collapse].
+// The composer exposes discussion and task submission; secondary actions live
+// in .tag-menu-actions. The head retains number/title/summary/drift/more/collapse.
 const composerOf = card => card.children.find(node => node.className === 'tag-composer');
 const editorOf = card => composerOf(card).children.find(node => node.className === 'tag-editor');
 const sendOf = card => composerOf(card).children.find(node => node.className === 'tag-send');
@@ -436,4 +434,40 @@ test('projection invalidation ignores draft typing and anchor movement but notic
   assert.equal(tagProjectionContent(tag), before, 'draft and coordinate changes retain interactive roots');
   tag.replyText = 'CANONICAL REPLY';
   assert.notEqual(tagProjectionContent(tag), before);
+});
+
+test('drift is advisory and task receipts preserve newer discussion input', async () => {
+  let accept, calls=0;
+  const drafts=[];
+  const root=noteTag.makeAnchorTag({id:'drift-task',ordinal:1,kind:'discuss',anchorKind:'text-selection',text:'old question',draftText:'new task',resolution:{anchor:null,advisory:'原位置未找到'}}, {
+    execute:async(_id,text)=>{calls++;assert.equal(text,'new task');return new Promise(resolve=>{accept=resolve;});},
+    onDraft:(_id,text)=>drafts.push(text),
+  });
+  const card=root.children[1],editor=editorOf(card),button=composerOf(card).children.find(node=>node.className==='tag-execute');
+  const advisory=card.children[0].children.find(node=>node.className==='note-source-change');
+  assert.equal(advisory.textContent,'原位置未找到');assert.equal(button.disabled,false);
+  const pending=button.emitAsync('click');
+  assert.equal(sendOf(card).disabled,true);assert.equal(button.disabled,true);
+  await button.emitAsync('click');assert.equal(calls,1);
+  editor.value='newer input';editor.emit('input');accept({accepted:true});await pending;
+  assert.equal(editor.value,'newer input');assert.equal(drafts.at(-1),'newer input');
+  editor.value='';await button.emitAsync('click');assert.equal(calls,1,'empty task must not resend historical question');
+});
+
+test('file discussion hides positional advisory and only confirmed acceptance clears its composer', async () => {
+  let receipt={accepted:false};
+  const root=noteTag.makeAnchorTag({id:'whole-file',ordinal:2,kind:'discuss',anchorKind:'file',draftText:'task',resolution:{advisory:'原位置未找到'},anchor:{scope:'file'},relPath:'whole.txt'}, {execute:async()=>receipt});
+  const card=root.children[1],editor=editorOf(card),button=composerOf(card).children.find(node=>node.className==='tag-execute');
+  assert.equal(card.children[0].children.find(node=>node.className==='note-source-change').hidden,true);
+  await button.emitAsync('click');assert.equal(editor.value,'task');
+  receipt={accepted:true,clearDraft:false};await button.emitAsync('click');assert.equal(editor.value,'task');
+  receipt={accepted:true};await button.emitAsync('click');assert.equal(editor.value,'');
+});
+
+test('advisory changes invalidate projected tag content without changing its origin', () => {
+  const tag={id:'advisory',kind:'discuss',material:{anchor:{quote:'original'}},resolution:{advisory:null,locationStatus:'exact',contentStatus:'unchanged'}};
+  const before=tagProjectionContent(tag);
+  tag.resolution={advisory:'原位置未找到',locationStatus:'unresolved',contentStatus:'unknown'};
+  assert.notEqual(tagProjectionContent(tag),before);
+  assert.equal(tag.material.anchor.quote,'original');
 });

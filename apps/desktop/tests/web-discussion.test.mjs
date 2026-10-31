@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {WebDiscussions,webDiscussionEnvelope} from '../src/main/web-discussion.mjs';
-import {webPageCaptureScript} from '../src/main/web-page-capture.mjs';
 
 function harness(){
  const recovery=new Map(),objects=[],calls=[];
@@ -33,9 +32,6 @@ test('unknown dispatch retries use same immutable material and request identity'
  await h.service.invoke('p',{...p,material:{...material,text:'later page'}});const sent=h.calls.find(c=>c.op==='managed.send');assert.match(sent.p.text,/public content/);assert.doesNotMatch(sent.p.text,/later page/);assert.equal(h.objects.length,1);
 });
 
-test('capture excludes form and editable controls instead of reading their values',()=>{
- assert.match(webPageCaptureScript,/form,input,textarea,select,button/);assert.match(webPageCaptureScript,/contenteditable/);assert.doesNotMatch(webPageCaptureScript,/\.value\b/);assert.match(webPageCaptureScript,/getComputedStyle/);
-});
 
 test('long escaped webpage snapshots remain intact while sent envelope advertises bounded excerpt',async()=>{
  const h=harness(),long={...material,text:'"\\\n\u0001😀'.repeat(30000)};
@@ -44,4 +40,21 @@ test('long escaped webpage snapshots remain intact while sent envelope advertise
  assert.equal(JSON.parse(h.objects[0].text).text,long.text);assert.equal(result.messages[0].delivery.truncated,true);assert.ok(result.messages[0].delivery.textCharacters<long.text.length);assert.equal(result.messages[0].delivery.snapshotTextCharacters,long.text.length);
  assert.throws(()=>webDiscussionEnvelope('x'.repeat(16001),material),/16000/);
  const short=webDiscussionEnvelope('question',material);assert.equal(short.delivery.truncated,false);assert.ok(short.text.length<32000);
+});
+
+test('exact terminal job failure is visible and restores only the untouched latest draft once',async()=>{
+ const h=harness(),base=h.service.managedAgents.invoke.bind(h.service.managedAgents);let phase='running';
+ h.service.managedAgents.invoke=async(op,p)=>op==='managed.timeline.request'?{ids:[],nextOffset:null,job:{id:p.requestId,status:phase,...(phase==='failed'?{error:'No API key found for the selected model'}:{})}}:base(op,p);
+ const p={action:'send',url:material.url,text:'Original question',messageId:'failed-message',material};await h.service.invoke('p',{action:'draft',url:material.url,text:p.text});const accepted=await h.service.invoke('p',p);assert.equal(accepted.draft,'');
+ phase='failed';const failed=await h.service.invoke('p',{action:'read',url:material.url});assert.equal(failed.messages[0].status,'failed');assert.match(failed.messages[0].error,/No API key/);assert.equal(failed.draft,p.text);
+ await h.service.invoke('p',{action:'draft',url:material.url,text:''});assert.equal((await h.service.invoke('p',{action:'read',url:material.url})).draft,'','intentional clearing is not undone by repeated failure polling');
+ assert.equal(h.calls.filter(call=>call.op==='managed.send').length,1);assert.equal(h.objects.length,1);
+});
+
+test('older failure cannot overwrite new typing and foreign request status cannot relabel the message',async()=>{
+ const h=harness(),base=h.service.managedAgents.invoke.bind(h.service.managedAgents);let mode='running';
+ h.service.managedAgents.invoke=async(op,p)=>op==='managed.timeline.request'?{ids:[],nextOffset:null,job:{id:mode==='foreign'?'other-request':p.requestId,status:mode==='running'?'running':'failed',error:'controlled failure'}}:base(op,p);
+ await h.service.invoke('p',{action:'send',url:material.url,text:'sent',messageId:'preserved-message',material});await h.service.invoke('p',{action:'draft',url:material.url,text:'new unrelated typing'});
+ mode='foreign';const unrelated=await h.service.invoke('p',{action:'read',url:material.url});assert.equal(unrelated.messages[0].status,'running');assert.equal(unrelated.draft,'new unrelated typing');
+ mode='failed';const failed=await h.service.invoke('p',{action:'read',url:material.url});assert.equal(failed.messages[0].status,'failed');assert.equal(failed.draft,'new unrelated typing');
 });

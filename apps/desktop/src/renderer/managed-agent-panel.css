@@ -1,15 +1,10 @@
-#managed-terminal-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;overflow:auto;flex:1;min-height:0;padding:12px}
-#managed-terminal-grid .provider-role{min-height:320px;height:45vh}
-#managed-terminal-grid .provider-output{min-height:0;flex:1}
 #configuration-setup{width:min(680px,calc(100vw - 24px));max-width:calc(100vw - 24px);box-sizing:border-box;max-height:85vh;overflow:auto}
 #configuration-setup .dialog-actions{display:flex;flex-wrap:wrap;gap:8px}
 #configuration-setup label{display:block;white-space:normal}
 #legacy-conversation-history{max-height:40vh;overflow:auto;padding:8px;border-bottom:1px solid var(--line)}
 #legacy-conversation-history article{padding:8px 0;white-space:normal;overflow-wrap:anywhere}
 #managed-role-settings fieldset{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
-body[data-managed-agents=true] .provider-console-columns{display:none}
 
-.managed-terminal-actions{grid-column:1/-1;display:flex;gap:8px;align-items:center}
 
 body[data-managed-agents=true] #conversation-panel.compact-composer{min-height:110px;overflow:hidden}
 body[data-managed-agents=true] #conversation{min-height:0;flex:1 1 auto}
@@ -30,37 +25,8 @@ body[data-managed-agents=true] #managed-doc{overflow-wrap:anywhere;line-height:1
 #managed-report-export .managed-export-status{white-space:normal;overflow-wrap:anywhere}
 [data-managed-report-export]{margin-top:16px}
 
-#managed-terminal-grid[hidden],#managed-todo-context[hidden]{display:none}
+#managed-todo-context[hidden]{display:none}
 #managed-todo-context{padding:6px 8px;color:var(--muted,#888);font-size:12px;flex-shrink:0;overflow-wrap:anywhere}
-/* Layout changes retain existing terminal instances. */
-#managed-terminal-grid{display:flex;flex-direction:column;overflow:hidden;padding:0;gap:0;min-width:0}
-#managed-terminal-grid .managed-terminal-actions{position:fixed;left:50%;bottom:max(8px,env(safe-area-inset-bottom));transform:translateX(-50%);z-index:1220;display:flex;align-items:center;flex-wrap:nowrap;height:36px;max-width:calc(100vw - 180px);box-sizing:border-box;padding:3px 8px;border:1px solid var(--line);border-radius:8px;background:var(--paper);gap:8px;font-size:11px;box-shadow:0 2px 10px #26393214}
-.managed-terminal-summary{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#43584b;font-weight:500}
-.managed-terminal-actions label{display:flex;align-items:center;flex:none;gap:3px;white-space:nowrap}
-.managed-terminal-actions select{font-size:11px;padding:3px;border:1px solid #cfd7cd;border-radius:5px;background:#fff;max-width:96px;min-height:28px}
-.managed-terminal-actions button{flex:none;min-height:28px;font-size:11px;padding:3px 7px;white-space:nowrap}
-.managed-agent-panes{display:grid;grid-template-columns:repeat(var(--agent-columns,2),minmax(0,1fr));grid-auto-rows:minmax(var(--agent-pane-min-height,280px),1fr);grid-template-rows:repeat(var(--agent-rows,1),minmax(var(--agent-pane-min-height,280px),1fr));gap:10px;padding:10px;overflow:auto;min-height:0;min-width:0;flex:1}
-#managed-terminal-grid .provider-role{height:auto;min-height:280px;min-width:0;border-radius:8px;box-shadow:none;display:flex;flex-direction:column}
-#managed-terminal-grid .provider-role[hidden]{display:none}
-#managed-terminal-grid .provider-role>header{flex:none;flex-wrap:nowrap;margin:0}
-.managed-agent-identity{display:flex;min-width:0}
-.managed-agent-identity strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#managed-terminal-grid button{font-size:12px;min-height:28px;padding:4px 9px;flex-shrink:0}
-#managed-terminal-grid .provider-output{padding:0;overflow:hidden;min-height:0;flex:1;display:flex;flex-direction:column}
-.managed-terminal-empty{margin:auto;padding:24px;color:#a1afa6;font-size:12px;line-height:1.8;text-align:center;max-width:260px}
-@media(max-width:720px){#managed-terminal-grid .managed-terminal-actions{padding:3px 5px;gap:5px;max-width:calc(100vw - 160px)}.managed-terminal-actions label{font-size:0;gap:0}.managed-terminal-actions select{max-width:84px}.managed-agent-panes{gap:8px;padding:8px}}
-/* CCB-inspired compact terminal borders and role labels. */
-.managed-agent-panes{gap:3px;padding:4px;background:#101512}
-#managed-terminal-grid .managed-agent-pane{--pane-accent:#9ece6a;border:1px solid #415348;border-radius:0;position:relative}
-#managed-terminal-grid .managed-agent-pane[data-managed-terminal=frontdesk]{--pane-accent:#7dcfff}
-#managed-terminal-grid .managed-agent-pane[data-managed-terminal=orchestrator]{--pane-accent:#73daca}
-#managed-terminal-grid .managed-agent-pane:focus-within{border-color:var(--pane-accent);box-shadow:inset 0 0 0 1px var(--pane-accent)}
-#managed-terminal-grid .provider-role>header{min-height:28px;padding:2px 6px;background:#18221b;color:#dae5dd;border-bottom:1px solid #34473a}
-.managed-agent-identity{align-items:center;flex:1}
-.managed-agent-identity strong{background:var(--pane-accent);color:#142019;padding:2px 7px;font-size:12px}
-#managed-terminal-grid .managed-agent-pane button{background:transparent;color:#bdcec2;border:1px solid #3c5143;min-height:24px;padding:2px 7px}
-.managed-pane-pages{display:flex;gap:4px}.managed-pane-pages [aria-pressed=true]{background:#3d6050;color:white}
-#managed-terminal-grid [data-terminal-recovery]{align-self:center;flex:none;margin:8px}
 
 #managed-progress{padding:10px 12px;margin:8px 4px;border-left:2px solid var(--accent,#355e4b);background:var(--surface,#f4f5f3);border-radius:6px;color:var(--muted,#536358);font-size:12px;line-height:1.55;overflow-wrap:anywhere}
 #managed-progress[hidden]{display:none}
@@ -142,6 +108,20 @@ body[data-managed-agents=true] #managed-doc{overflow-wrap:anywhere;line-height:1
  body[data-managed-agents=true] .compact-composer .composer-footer .attach-file{margin-right:auto;max-width:none}
  body[data-managed-agents=true] #managed-result-actions button{max-width:100%;white-space:normal;overflow-wrap:anywhere}
 }
+@container conversation-panel (max-width: 520px){
+ body[data-managed-agents=true] #conversation-panel.compact-composer{min-height:144px;max-height:none}
+ body[data-managed-agents=true] .compact-composer .composer-wrap{flex-direction:column;align-items:stretch;min-width:0;overflow:visible}
+ body[data-managed-agents=true] .compact-composer .composer-wrap #composer{flex:none;box-sizing:border-box;width:100%;min-width:0;height:44px;min-height:44px;max-height:96px}
+ body[data-managed-agents=true] .compact-composer .composer-footer{display:grid;grid-template-columns:minmax(0,1fr) minmax(56px,1fr);align-self:stretch;align-items:center;gap:4px;min-width:0}
+ body[data-managed-agents=true] #conversation-panel.compact-composer .composer-footer .cm-add,
+ body[data-managed-agents=true] #conversation-panel.compact-composer .composer-footer #managed-submit-task,
+ body[data-managed-agents=true] #conversation-panel.compact-composer .composer-footer #send-message{box-sizing:border-box;min-width:0;width:100%;max-width:100%;flex:0 1 auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ body[data-managed-agents=true] #conversation-panel.compact-composer .composer-footer .cm-add{grid-column:1/-1;grid-row:1;padding:3px 4px;font-size:10px}
+ body[data-managed-agents=true] #conversation-panel.compact-composer .composer-footer .attach-file{grid-column:1/-1;grid-row:2;max-width:100%;margin:0;white-space:nowrap}
+ body[data-managed-agents=true] #conversation-panel.compact-composer .composer-footer #managed-submit-task{grid-column:1;grid-row:3;padding:3px 2px;font-size:9px}
+ body[data-managed-agents=true] #conversation-panel.compact-composer .composer-footer #send-message{grid-column:2;grid-row:3;min-width:0;padding:3px 2px;font-size:10px}
+ body[data-managed-agents=true] #conversation-panel.compact-composer .composer-footer #compose-status{display:none!important}
+}
 
 #managed-work-archive [data-managed-history-object]{display:flex;flex-direction:column;gap:4px;padding:8px 0}
 #managed-work-archive [data-managed-history-object] span{font-size:11px;line-height:1.5;color:var(--muted);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
@@ -182,8 +162,6 @@ body[data-managed-history=true] #send-message,body[data-managed-history=true] #m
 #managed-agent-details button{margin:4px 8px 4px 0;white-space:normal}
 #managed-agent-details #ai-status{font-size:12px;line-height:1.6;user-select:text}
 #managed-agent-details [role=status]:empty{display:none}
-#managed-input-blocker{padding:8px 10px;border:1px solid var(--chat-line,var(--line));border-radius:8px;color:var(--chat-ink,var(--ink));background:var(--chat-surface,var(--paper));overflow-wrap:anywhere}
-#managed-input-blocker p{margin:0 0 6px}#managed-input-blocker[hidden]{display:none}
 .managed-attention-dialogue{white-space:normal;line-height:1.6;max-width:860px;margin:0 auto;padding:16px;overflow-wrap:anywhere;box-sizing:border-box;width:100%;min-width:0}
 .managed-attention-header{margin:0 0 4px}
 .managed-attention-header h2{margin:0;font-size:16px;font-weight:600;line-height:1.45;overflow-wrap:anywhere}

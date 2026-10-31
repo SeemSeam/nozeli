@@ -39,7 +39,7 @@ const testsDir = path.join(appRoot, 'tests');
 //                provider, no prebuilt private runtime.
 //   smoke        actual Electron app: startup, local file open, clean exit.
 //                Headless by default; Xvfb compatible; ephemeral ports only.
-//   live         actual bundled native OMP runtime with deterministic loopback
+//   live         actual private Pi SDK owners with deterministic loopback
 //                responses; explicit opt-in; no credentials, no network model.
 // ---------------------------------------------------------------------------
 const SUITES = {
@@ -81,13 +81,15 @@ const SUITES = {
       'note-form-layout.test.mjs',
       'notification-retention.test.mjs',
       'omp-only-ipc.test.mjs',
-      'online-browser.test.mjs',
+      'pi-facts.test.mjs',
+      'pi-session-admission.test.mjs',
+      'pi-discovery-listing.test.mjs',
       'project-file-refresh.test.mjs',
       'project-recovery-owner.test.mjs',
       'project-switches.test.mjs',
-      'renderer-provider-terminal.test.mjs',
       'runtime-failure-message.test.mjs',
       'session-store.test.mjs',
+      'session-controls.test.mjs',
       'settings-agents-ui.test.mjs',
       'surface-identity-state.test.mjs',
       'tag-markdown.test.mjs',
@@ -96,12 +98,11 @@ const SUITES = {
       'terminal-screen.test.mjs',
       'tex-inference.test.mjs',
       'tex-workspace-persist.test.mjs',
-      'web-discussion.test.mjs',
+      'update-lifecycle.test.mjs',
       'worker-terminal-first-frame-oct12-deadline.test.mjs',
       'worker-terminal-first-frame-oct12.test.mjs',
       'worker2-long-context.test.mjs',
       'workspace-layout.test.mjs',
-      'workspace-web-layout.test.mjs',
     ],
     runner: 'node-test',
     preflight: [nodeVersionCheck],
@@ -114,6 +115,7 @@ const SUITES = {
       'agent-process-budget.test.mjs',
       'annotation-package.test.mjs',
       'attention-projection.test.mjs',
+      'auto-update.test.mjs',
       'c1-installed-open-entry.test.mjs',
       'collab-controller-projection.test.mjs',
       'core-file-stream.test.mjs',
@@ -193,8 +195,13 @@ const SUITES = {
       'omp-terminal-bridge.test.mjs',
       'omp-tui-session.test.mjs',
       'omp-tui-tools-compat.test.mjs',
+      'online-browser.test.mjs',
+      'pi-process-ownership.test.mjs',
+      'pi-provider-runtime.test.mjs',
+      'pi-questions.test.mjs',
       'point-anchor-guards.test.mjs',
       'post-install-worker2-presentation.test.mjs',
+      'ppt-source-recovery.test.mjs',
       'privilege-broker.test.mjs',
       'process-launch-config.test.mjs',
       'project-git-edge.test.mjs',
@@ -229,6 +236,7 @@ const SUITES = {
       'tag-stability.test.mjs',
       'task-permissions.test.mjs',
       'user-save-feedback.test.mjs',
+      'web-discussion.test.mjs',
       'word-authorship.test.mjs',
       'word-host.test.mjs',
       'work-changes-large.test.mjs',
@@ -236,6 +244,7 @@ const SUITES = {
       'workspace-capture-store.test.mjs',
       'workspace-layout-store.test.mjs',
       'workspace-native.test.mjs',
+      'workspace-web-layout.test.mjs',
       'yolo-backstage-failure.test.mjs',
       'yolo-external-documents.test.mjs',
       'yolo-host-execution.test.mjs',
@@ -248,6 +257,7 @@ const SUITES = {
     description: 'lightweight CI smoke: actual Electron no-model startup, synthetic project registration, file browse, native edit, clean close, cold-restart persistence (headless by default, Xvfb compatible)',
     files: [
       'desktop-ci-smoke.mjs',
+      'desktop-ppt-pending-text-live.mjs',
     ],
     runner: 'script',
     preflight: [nodeVersionCheck, rendererBuildCheck, electronInstallCheck],
@@ -259,15 +269,13 @@ const SUITES = {
     preflight: [nodeVersionCheck, gitCheck, texToolchainCheck],
   },
   live: {
-    description: 'bundled native OMP runtime with deterministic loopback scripted responses; explicit opt-in; no credentials, no paid model',
+    description: 'actual Pi SDK owners with deterministic loopback HTTP, real files and private sessions; explicit opt-in, no paid model',
     files: [
-      'agent-resource-native.test.mjs',
-      'omp-default-models-live.mjs',
-      'omp-runtime-isolation.test.mjs',
-      'omp-tui-attach-races.test.mjs',
+      'pi-native-tools-live.mjs',
+      'pi-lifecycle-live.mjs',
     ],
     runner: 'node-test',
-    preflight: [nodeVersionCheck, liveOptInCheck, gitCheck, ompRuntimeCheck, bwrapCheck, nodePtyAbiCheck],
+    preflight: [nodeVersionCheck, liveOptInCheck, gitCheck, piRuntimeCheck, bwrapCheck],
   },
 };
 
@@ -319,7 +327,7 @@ function electronInstallCheck() {
 function liveOptInCheck() {
   if (process.env.NOZELI_TEST_LIVE !== '1') {
     return [
-      'live suite not enabled: this suite drives the real bundled native OMP runtime.',
+      'live suite not enabled: this suite drives actual private Pi SDK owner processes.',
       'It is deterministic (loopback scripted HTTP only, no credentials, no paid model),',
       'but it must never run unattended. Re-run with NOZELI_TEST_LIVE=1 to opt in.',
     ].join(' ');
@@ -327,11 +335,9 @@ function liveOptInCheck() {
   return null;
 }
 
-function ompRuntimeCheck() {
-  const omp = path.join(appRoot, 'runtime', 'omp', 'omp');
-  if (!fs.existsSync(omp)) {
-    return `bundled native runtime not found at runtime/omp/omp: run \`npm run build:omp\` first (was: ${omp})`;
-  }
+function piRuntimeCheck(){
+  const integration=path.resolve(appRoot,'../../integrations/pi');
+  for(const name of ['runtime-manifest.json','src/owner.mjs','dist/vendor/pi-gui/packages/pi-sdk-driver/index.js','node_modules/@earendil-works/pi-coding-agent/package.json'])if(!fs.existsSync(path.join(integration,name)))return 'Private Pi runtime is not prepared: run npm run build:pi';
   return null;
 }
 
@@ -348,25 +354,6 @@ function bwrapCheck() {
   return null;
 }
 
-// node-pty is rebuilt for Electron by postinstall (electron-rebuild). The
-// dependency uses node-addon-api (N-API), whose binaries are ABI-stable across
-// Node and Electron, so plain-Node live tests can still load it. Probe anyway:
-// if a rebuild ever produces an Electron-only binary, fail loudly instead of
-// letting the live suite crash test-by-test.
-function nodePtyAbiCheck() {
-  const probe = spawnSync(
-    process.execPath,
-    ['-e', "require('node-pty'); console.log('ok')"],
-    { cwd: appRoot, encoding: 'utf8', timeout: 30000 },
-  );
-  if (probe.status !== 0 || !probe.stdout.includes('ok')) {
-    return [
-      'node-pty does not load under plain Node (likely an Electron-only ABI after a rebuild).',
-      'Reinstall dependencies with `npm ci` (postinstall rebuild) — do not skip or trim the live suite.',
-    ].join(' ');
-  }
-  return null;
-}
 
 // ---------------------------------------------------------------------------
 // Runner

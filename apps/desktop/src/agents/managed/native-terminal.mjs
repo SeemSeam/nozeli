@@ -1,6 +1,6 @@
-import { OmpTuiSession } from './omp-tui-session.mjs';
 import {randomUUID} from 'node:crypto';
 // 关闭视图不终止会话（owner 是 session）；系统终端接管经同一 input 通道（managed-projects 既有合同）。
+// Pi 会话没有 PTY 表面：worker 进度经会话事件（timeline）投影，绝不伪造终端。
 function attachOmpTerminalView(controller,target,session,{onData=()=>{},onScreen=()=>{},onExit=()=>{},terminalId}={}){
   if(session.closed||session.protocolEnded)throw new Error('会话已停止，终端不可附着；原始输入与身份保持不变。');   // attach 前已 stop：不建视图不覆盖身份
   const attachment=session.terminalAttachment(controller,target);
@@ -23,7 +23,7 @@ function attachOmpTerminalView(controller,target,session,{onData=()=>{},onScreen
   return attachment;
 }
 export async function attachNativeTerminal(controller,target,options={}){
-  if(controller.stopping)throw new Error('application closing');   // 控制器停止后不建终端（session() 自愈会误开新 TUI）
+  if(controller.stopping)throw new Error('application closing');   // 控制器停止后不建终端（session() 自愈会误开新会话）
   const execution=options.executionJobId&&controller.current.get(target)?.id===options.executionJobId&&controller.store.state.jobs.some(j=>j.id===options.executionJobId&&j.target===target&&j.status==='running')&&controller.store.state.works.some(w=>w.id===target&&!['queued','closing','ended'].includes(w.status))&&!controller.sessions.get(target)?.busy;
   const waiting=controller.sessions.get(target)?.interactions?.length>0;
   if(controller.configuring.has(target)||controller.running.has(target)&&!execution&&!waiting)throw new Error('Agent 正在处理，请在当前回合结束后连接终端');
@@ -36,6 +36,8 @@ async function startNativeTerminal(controller,target,{onData=()=>{},onScreen=()=
   const work=controller.store.state.works.find(w=>w.id===target);
   if(work&&['queued','closing','ended'].includes(work.status))throw new Error('work has no attachable session');
   const session=await controller.session(target);
-  if(!(session instanceof OmpTuiSession))throw Object.assign(new Error('Only the bundled OMP native session can attach a terminal'),{code:'HISTORICAL_SESSION_READ_ONLY'});
+  // Only a PTY-owning session can attach a real view. Pi owners expose session
+  // events instead; progress is never projected through a fake PTY.
+  if(typeof session?.terminalAttachment!=='function')throw Object.assign(new Error('Pi 会话不提供终端视图；Agent 进度经会话事件时间线查看，不伪造 PTY。'),{code:'NATIVE_TERMINAL_UNAVAILABLE'});
   return attachOmpTerminalView(controller,target,session,{onData,onScreen,onExit,terminalId});
 }

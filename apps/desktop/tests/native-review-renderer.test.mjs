@@ -52,6 +52,16 @@ test('unsent opinions stay durable without sending a decision or caching file bo
  assert.equal(f.calls.some(([op])=>/review\.(accept|continue|save)$/.test(op)),false);
  assert.equal(f.surface.retained,false);
 });
+test('review report keeps candidate files inline and exposes only the two explicit decisions',async t=>{
+ const f=report(t);await f.surface.ready;
+ const review=all(f.root).find(node=>node.dataset.managedReview),file=all(f.root).find(node=>node.dataset.reviewFile==='same.md');
+ assert.ok(file,'candidate file is immediately available inside the report');
+ assert.ok(review.contains(file),'file link belongs to the review report');
+ assert.equal(all(f.root).some(node=>node.className==='managed-review-file-disclosure'),false,'file list is not hidden behind a second disclosure');
+ assert.deepEqual(all(f.root).filter(node=>['continue','accept'].includes(node.dataset.reviewAction)).map(node=>node.dataset.reviewAction),['continue','accept'],'only explicit continue and accept decisions are shown');
+ assert.match(by(f.root)('reviewInstructionStatus').children[0].textContent,/自动保存/);
+});
+
 
 test('native comparison reads frozen pair and never opens a project source implicitly',async t=>{
  const d=dom(t),calls=[],opened=[],source={type:'review',workId:'work-a',objectId:'publication-a'};

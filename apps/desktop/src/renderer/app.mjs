@@ -55,6 +55,7 @@ import {mountWorkspaceGroups} from './workspace-groups.mjs';
 import {mountGuidedDemo} from './guided-demo.mjs';
 import {createProjectSwitches,requireProjectSwitch} from './project-switches.mjs';
 import {mountDemoSurface} from './guided-demo-surface.mjs';
+import {mountAutoUpdate} from './auto-update-view.mjs';
 
 const workspaceBootstrap = await window.nozeli.invoke('workspace.bootstrap', {});
 if (!workspaceBootstrap.ok) throw new Error(workspaceBootstrap.error?.message || '工作区身份无法读取');
@@ -63,8 +64,15 @@ window.__workspaceScope = workspaceScope;
 document.documentElement.dataset.workspaceRole = workspaceScope.role;
 document.documentElement.dataset.workspaceKind = workspaceScope.kind || '';
 if(workspaceScope.role==='surface'&&workspaceScope.kind==='terminal'){
-  const {mountTerminalPreview}=await import('./work-terminal-preview.mjs');
-  await mountTerminalPreview({scope:workspaceScope,invoke:window.nozeli.invoke,subscribe:window.nozeli.subscribe});
+  // Retired terminal panes remain explicit instead of showing a fabricated view.
+  // Keep the ready handshake so native window lifecycle remains observable.
+  const root=document.createElement('section');root.className='work-terminal-removed';root.setAttribute('aria-label','终端工作面已移除');
+  const note=document.createElement('p');note.setAttribute('role','status');
+  note.textContent='此工作面来自旧版终端布局，当前没有可显示的真实终端画面，也不会伪造。请关闭本窗格，回到主窗口的对话与工作面板查看会话进展。';
+  root.append(note);document.getElementById('app').replaceChildren(root);
+  await invoke('workspace.ready',{});
+  const ready=await invoke('workspace.ready',{contentReady:true});if(!ready.ok)throw Error(ready.error.message);
+  window.__nozeliReady=true;
 }else if(workspaceScope.role==='surface'&&workspaceScope.kind==='web'){
   const {mountOnlineBrowser}=await import('./online-browser-view.mjs');
   const online=mountOnlineBrowser({root:document.getElementById('app'),scope:workspaceScope,invoke:window.nozeli.invoke,subscribe:window.nozeli.subscribe});
@@ -86,6 +94,26 @@ let workspaceGroups = null;
 let guidedDemo = null;
 
 const $ = (id) => document.getElementById(id);
+let pptRecoveryControls=null;
+function showPptRecovery(file,info){
+  pptRecoveryControls?.remove();pptRecoveryControls=null;
+  if(isReviewDocument||documentReadOnly()||!info?.sourceChanged&&!info?.recoverable?.length)return;
+  const project=ui.project,box=document.createElement('section');box.id='ppt-source-recovery';box.setAttribute('role','status');
+  const text=document.createElement('p');text.textContent=info.sourceChanged?'原 PPTX 已在外部更改；当前恢复的是旧版本保留草稿，原件未修改。':'其他源版本的 PPTX 草稿仍保留，可按需恢复。';box.append(text);
+  const reopen=async choice=>{
+    if(ui.file!==file||ui.project!==project)return;
+    const saved=await flushNow();if(!saved.ok){workspace.toast(saved.error?.message||'草稿未保存，未切换版本');return;}
+    if(ui.file!==file||ui.project!==project)return;
+    await enqueue(()=>openFileNow(file.relPath,null,true,choice),true);
+  };
+  const disk=document.createElement('button');disk.type='button';disk.textContent='查看当前磁盘版（保留草稿）';disk.onclick=()=>void reopen({sourceOnly:true}).catch(error=>workspace.toast(error.message));box.append(disk);
+  if(info.recoverable?.length){
+    const select=document.createElement('select');select.setAttribute('aria-label','保留的 PPTX 草稿版本');
+    for(const [index,record]of info.recoverable.entries()){const option=document.createElement('option');option.value=record.digest;option.textContent=record.updatedAt?'源版本保留稿 · '+new Date(record.updatedAt).toLocaleString():'源版本保留稿 '+(index+1);select.append(option);}
+    const restore=document.createElement('button');restore.type='button';restore.textContent='恢复所选保留稿';restore.onclick=()=>void reopen({recoverDigest:select.value}).catch(error=>workspace.toast(error.message));box.append(select,restore);
+  }
+  $('reader-scroll').before(box);pptRecoveryControls=box;
+}
 const recoverResourceButton=document.createElement('button');recoverResourceButton.type='button';recoverResourceButton.textContent='已恢复原文件，继续编辑';recoverResourceButton.hidden=true;$('file-path-notice').append(recoverResourceButton);
 recoverResourceButton.addEventListener('click',async()=>{recoverResourceButton.disabled=true;try{const result=await invoke('workspace.recoverResource',{projectId:ui.project?.id,relPath:ui.file?.relPath});if(!result.ok)throw Error(result.error.message);ui.sourceMissing=false;if(ui.file){ui.file.diskPresent=true;ui.file.sourceChanged=false;}recoverResourceButton.hidden=true;$('file-path-notice').hidden=true;workspace.toast('原文件已核验，编辑现场保留。');}catch(error){workspace.toast(error.message);}finally{recoverResourceButton.disabled=false;}});
 const noteSource=document.createElement('details');noteSource.className='tag-source note-form-source';
@@ -447,7 +475,7 @@ const ui = {
   textMode: 'edit',
   projectSettings: { focusMode: false },
 };
-const workspace = mountWorkspace({ save: () => writeView(), saveProjectSettings: settings => { ui.projectSettings = { focusMode: settings?.focusMode === true }; return writeView({ projectSettings: ui.projectSettings }); }, openProject: pickProject, addNote: options => beginNote(options), send: () => window.__agentSend?.() });
+const workspace = mountWorkspace({ save: () => writeView(), saveProjectSettings: settings => { if (!ui.project) return; ui.projectSettings = { focusMode: settings?.focusMode === true }; return writeView({ projectSettings: ui.projectSettings }); }, openProject: pickProject, addNote: options => beginNote(options), send: () => window.__agentSend?.() });
 if (!isSurface) workspaceGroups = mountWorkspaceGroups({invoke,scope:workspaceScope,toast:workspace.toast});
 if(workspaceScope.role==='shell'){
   guidedDemo=mountGuidedDemo({invoke,subscribe:window.nozeli.subscribe,openProject:id=>requireProjectSwitch(activateProject(id)),openFile:relPath=>openFile(relPath),getProjectId:()=>ui.project?.id,captureReturn:async()=>{const retained=await retainWorkspace();if(!retained.ok)throw Error(retained.error?.message||'当前编辑尚未保留');await writeView();return {projectId:ui.project?.id};},restoreReturn:async saved=>{if(saved?.projectId)await requireProjectSwitch(activateProject(saved.projectId));else if(ui.project?.demo){const id=ui.project.id,result=await invoke('workspace.closeProject',{projectId:id});if(!result.ok)throw Error(result.error.message);await clearProjectPage(id);}},onExit:async projectId=>{attentionNotifications?.dropProject?.(projectId);await renderRecent();},onError:message=>workspace.toast(message)});
@@ -807,7 +835,13 @@ function clearFailure() {
   ui.conflict = null;
 }
 let recoveryGeneration = 0;
+let agentPanel;
+async function flushConversationDrafts(){
+ try{await agentPanel?.flushDrafts();return {ok:true};}
+ catch(error){return {ok:false,error:{code:error.code||'CONVERSATION_DRAFT_FAILED',message:'对话草稿未能持久化；原输入保留，请重试。'}};}
+}
 async function retainWorkspace() {
+  const drafts=await flushConversationDrafts();if(!drafts.ok)return drafts;
   const reviewed=await flushManagedReviews();if(!reviewed.ok)return reviewed;
   if (isDocumentMirror) return {ok:true};
   if(isReviewDocument&&documentReadOnly()&&!ui.dirty&&!ui.wordDirty)return writeView();
@@ -822,6 +856,8 @@ async function retainWorkspace() {
   window.clearTimeout(ui.timer); window.clearTimeout(ui.maxTimer); ui.maxTimer = 0;
   const project = ui.project, file = ui.file, generation = ++recoveryGeneration;
   const revision = ui.wordRevision, baseDigest = ui.baseDigest, sourceDigest = file?.digest, baselineText = ui.lastSavedText;
+  const captureStatus=()=>({dirty:Boolean(ui.dirty||ui.wordDirty),composing:projectComposing(),conflict:Boolean(ui.conflict),missing:Boolean(ui.sourceMissing||ui.file?.diskPresent===false),readOnly:documentReadOnly()});
+  const capturedDocumentStatus=captureStatus();
   const workspaceSnapshot = workspace.snapshot(), materialsSnapshot = window.__composerMaterials?.snapshotPersist();
   const inputIdentity = JSON.stringify([workspaceSnapshot,materialsSnapshot,ui.frozenNote]);
   let candidate;
@@ -835,9 +871,11 @@ async function retainWorkspace() {
     showFailure(result.error); return result;
   }
   if (project !== ui.project || file !== ui.file || revision !== ui.wordRevision || baseDigest !== ui.baseDigest || sourceDigest !== file?.digest || projectComposing()) return {ok:false,error:{code:'RECOVERY_CHANGED',message:'保存期间内容已变化，请重试；窗口仍保留。'}};
+  if(JSON.stringify(capturedDocumentStatus)!==JSON.stringify(captureStatus()))return {ok:false,error:{code:'RECOVERY_CHANGED',message:'保存期间文档状态已变化，请重试。'}};
   const result = await invoke('workspace.recovery', {
     projectId:project.id, viewId:workspaceScope.viewId, relPath:file?.relPath, kind:file?.kind,
     baseDigest, sourceDigest, generation, candidate, baselineText,
+    documentStatus:capturedDocumentStatus,
     ...(isReviewDocument?{expectedDraftRevision:file?.review?.draftRevision,reviewVersion:file?.review?.reviewVersion}:{}),
     workspace:workspaceSnapshot, composerMaterials:materialsSnapshot,
     viewState:workspaceScope.viewState, frozenNote:ui.frozenNote,
@@ -851,6 +889,7 @@ async function retainWorkspace() {
 }
 
   async function flushNow(confirmOverwrite = false, resolvingNoteEdit = false) {
+    const drafts=await flushConversationDrafts();if(!drafts.ok)return drafts;
     const reviewed=await flushManagedReviews();if(!reviewed.ok)return reviewed;
     if (documentReadOnly()) return {ok:true};
     if(ui.sourceMissing || ui.project?.available === false)return retainWorkspace();
@@ -859,8 +898,9 @@ async function retainWorkspace() {
       showFailure(result.error); return result;
     }
     if(ui.file?.kind==='ppt' && ui.word){
-      while(ui.wordDirty){const revision=ui.wordRevision;const result=await invoke('ppt.draft',{projectId:ui.project.id,relPath:ui.file.relPath,digest:ui.file.digest,model:ui.word.snapshot()});if(!result.ok){setStatus('error',result.error.message);return result;}ui.wordDirty=revision!==ui.wordRevision;}
-      ui.dirty=false;setStatus('saved','PPTX 草稿已保存 · 原件未修改');return {ok:true};
+      try{ui.word.flushText();}catch(error){return {ok:false,error:{code:error.code||'PPT_COMMIT_FAILED',message:error.message}};}
+      while(ui.wordDirty){const revision=ui.wordRevision;const result=await invoke('ppt.draft',{projectId:ui.project.id,relPath:ui.file.relPath,digest:ui.file.digest,model:ui.word.snapshot()});if(!result.ok){setStatus('error',result.error.message);return result;}ui.wordDirty=revision!==ui.wordRevision;if(result.value.sourceChanged){ui.file.sourceChanged=true;ui.conflict={code:'CONFLICT',message:'原 PPTX 已变化；旧版本草稿已保留，原件未覆盖'};}}
+      ui.dirty=false;setStatus(ui.file.sourceChanged?'conflict':'saved',ui.file.sourceChanged?'原 PPTX 已变化 · 草稿保留，原件未覆盖':'PPTX 草稿已保存 · 原件未修改');return {ok:true};
     }
     if (['word','sheet'].includes(ui.file?.kind) && ui.word) {
       while (ui.wordDirty) {
@@ -1114,7 +1154,7 @@ async function refreshNotes() {
   return result.value.annotations;
 }
 
-  async function openFileNow(relPath, view, force=false) {
+  async function openFileNow(relPath, view, force=false, pptChoice=null) {
     if (!isSurface) return workspaceGroups?.open({kind:'document',relPath,viewState:view});
     if (relPath !== workspaceScope.relPath) return invoke('workspace.control',{type:'open-file',projectId:ui.project?.id,relPath,documentSource,view});
     frozenChangeReader.restore({focus:false});
@@ -1161,6 +1201,7 @@ async function refreshNotes() {
     $('reader-scroll').scrollTop = $('reader-scroll').scrollLeft = 0;
     const file = result.value;
     ui.file = file;
+    pptRecoveryControls?.remove();pptRecoveryControls=null;
     window.dispatchEvent(new Event('nozeli-content-file-opened'));
     $('reader').dataset.fileKind=file.kind;
     $('reader').dataset.documentSource=documentSource.type;
@@ -1338,8 +1379,13 @@ async function refreshNotes() {
     setStatus('loading','正在打开 PPTX');
     try{
       const payload={projectId:ui.project.id,relPath:file.relPath,digest:file.digest};
-      const draft=isReviewDocument?null:await invoke('ppt.draft',payload);if(draft&&!draft.ok)throw Error(draft.error.message);
-      ui.word=await mountPpt({parent:$('word-host'),bytes:file.bytes,name:file.relPath.split('/').at(-1),draft:draft?.value,readOnly:documentReadOnly()||isReviewDocument,
+      const draft=isReviewDocument?null:await invoke('ppt.draft',{...payload,...(pptChoice??{})});if(draft&&!draft.ok)throw Error(draft.error.message);
+      const recovered=draft?.value;
+      if(recovered?.sourceChanged&&recovered.sourceBytes){
+        file.bytes=recovered.sourceBytes;file.digest=recovered.sourceDigest;file.materialDigest=recovered.sourceDigest;file.sourceChanged=true;ui.baseDigest=file.digest;ui.materialDigest=file.materialDigest;payload.digest=file.digest;
+        ui.conflict={code:'CONFLICT',message:'原 PPTX 已变化；正在显示旧版本保留草稿，原件未修改'};
+      }
+      ui.word=await mountPpt({parent:$('word-host'),bytes:file.bytes,name:file.relPath.split('/').at(-1),draft:recovered?.model,readOnly:documentReadOnly()||isReviewDocument,
         onContextMenu:closer=>documentMenu.externalOpen('ppt',closer),onContextClose:()=>documentMenu.externalClosed('ppt'),onSelectionStart:()=>documentMenu.resumeSelection(),
         // Right-click inside an existing selection keeps it (hit-test in the
         // frame at contextmenu, before any menu mutation, against the frozen
@@ -1374,7 +1420,7 @@ async function refreshNotes() {
         onSelection:selected=>{if(ui.file!==file)return;ui.wordSelection=selected;if(!selected){$('selection-menu').hidden=true;return;}if(!$('note-form').hidden)return;showSelectionMenu(selected.rect);},
         onChange:()=>{ui.wordDirty=true;ui.dirty=true;ui.wordRevision=(ui.wordRevision||0)+1;setStatus('dirty','PPTX 草稿未保存');clearTimeout(ui.timer);ui.timer=setTimeout(()=>flushCurrent(),1200);},
         onExport:async bytes=>{const saved=await flushNow();if(!saved.ok)throw Error(saved.error.message);const result=await invoke('ppt.export',{...payload,bytes});if(!result.ok)throw Error(result.error.message);workspace.toast(result.value.cancelled?'已取消导出':'PPTX 副本已导出');}
-      });$('word-region').hidden=documentReadOnly()||isReviewDocument;$('word-region').title='拖动框选文档区域';if(!documentReadOnly()&&!isReviewDocument){ui.wordDirty=true;await flushNow();ui.word.setNotes((ui.annotations||[]).filter(n=>n.kind?.startsWith('ppt-')).map(n=>({...n,ordinal:ui.noteDisplayOrdinals.get(n.id)||n.ordinal})));}setStatus('saved',documentReadOnly()||isReviewDocument?'PPTX · 只读冻结正文':draft?.value?'PPTX · 已恢复草稿':'PPTX · 本地编辑');
+      });$('word-region').hidden=documentReadOnly()||isReviewDocument;$('word-region').title='拖动框选文档区域';if(!documentReadOnly()&&!isReviewDocument){ui.wordDirty=true;await flushNow();ui.word.setNotes(file.sourceChanged?[]:(ui.annotations||[]).filter(n=>n.kind?.startsWith('ppt-')).map(n=>({...n,ordinal:ui.noteDisplayOrdinals.get(n.id)||n.ordinal})));}setStatus(file.sourceChanged?'conflict':'saved',file.sourceChanged?'PPTX 原件已变化 · 旧版本草稿已恢复':documentReadOnly()||isReviewDocument?'PPTX · 只读冻结正文':recovered?.model?'PPTX · 已恢复草稿':'PPTX · 本地编辑');showPptRecovery(file,recovered);
     }catch(error){$('unsupported').hidden=false;$('unsupported').textContent=error.message;setStatus('error','PPTX 未能打开');}
   } else if (['word','sheet'].includes(file.kind)) {
     $('reader').classList.add('document-word');
@@ -1788,6 +1834,7 @@ async function pickProject() {
 
 $('pick-project').addEventListener('click', pickProject);
 if (workspaceScope.role === 'shell') {
+  mountAutoUpdate({root:$('settings-update'),invoke,subscribe:window.nozeli.subscribe});
   // Local recovery lives inside the settings dialog: no persistent toolbar
   // button; the nav entry carries a count badge while records are retained.
   const recoveryNav=document.querySelector('[data-settings-section="settings-recovery"]'),recoverySection=$('settings-recovery'),recoveryList=$('settings-recovery-list'),recoveryCount=$('settings-recovery-count');
@@ -1830,7 +1877,11 @@ if (workspaceScope.role === 'shell') {
   };
   $('settings-dialog').addEventListener('toggle',()=>{if($('settings-dialog').open)void renderRecovery();});
   recoveryNav.addEventListener('click',()=>void renderRecovery());
-} else { document.querySelector('[data-settings-section="settings-recovery"]')?.setAttribute('hidden','');$('settings-recovery')?.setAttribute('hidden',''); }
+} else { for(const section of ['settings-recovery','settings-update']){document.querySelector('[data-settings-section="'+section+'"]')?.setAttribute('hidden','');$(section)?.setAttribute('hidden','');} }
+window.__nozeliUpdateState=async()=>{
+  const queued=actions;await queued;
+  return {ready:window.__nozeliReady===true,dirty:Boolean(ui.dirty||ui.wordDirty||ui.maxFlushPending||projectComposing()||managedReviewComposing()||regionDrawing.active()||projectSwitches.pending()),blocked:Boolean(ui.conflict||ui.file?.sourceChanged||ui.viewBlocked||ui.sourceMissing||ui.documentHolds.size||[...document.querySelectorAll('dialog[open],[aria-modal="true"]')].some(node=>node.getClientRects().length>0))};
+};
 $('pdf-prev').addEventListener('click', () => enqueue(async () => { await ui.pdf?.go((ui.pdf.current() || 1) - 1); }));
 $('pdf-next').addEventListener('click', () => enqueue(async () => { await ui.pdf?.go((ui.pdf.current() || 1) + 1); }));
 $('pdf-page').addEventListener('change', () => {
@@ -2933,7 +2984,7 @@ async function openBesideSnapshot(file, diff=false, left=null) {
       $('save-status').textContent = report.attention ? '独立回答 · 不修改主对话草稿' : report.historyError ? '读取失败 · 原记录保留' : report.history ? '只读 · 可另存到项目目录' : report.objectId ? '可另存到项目目录' : report.writtenBack === false ? '未写回源文件' : report.writtenBack === true ? '源文件有变化' : '写回未核验';
     });
   }
-  if(workspaceScope.role!=='detached')mountAgent({invoke,getProjectId:()=>ui.project?.id??null,toast:text=>workspace.toast(text),attachment:()=>ui.managedReport || ui.file?.kind!=='text'?null:ui.file.relPath,openManaged,openFrozenChange,onMessages:applyAgentMessages,
+  if(workspaceScope.role!=='detached')agentPanel=mountAgent({invoke,getProjectId:()=>ui.project?.id??null,toast:text=>workspace.toast(text),attachment:()=>ui.managedReport || ui.file?.kind!=='text'?null:ui.file.relPath,openManaged,openFrozenChange,onMessages:applyAgentMessages,
     onConversation:info=>workspace.conversationContent(info),
     openProjectFile:target=>target.projectId===ui.project?.id?openMarkdownTarget(target):null,
     openExternal:url=>invoke('links.openExternal',{url}).then(result=>{if(!result.ok)workspace.toast(result.error.message);}),

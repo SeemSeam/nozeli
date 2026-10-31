@@ -1,0 +1,50 @@
+--- a/packages/pi-sdk-driver/custom-provider-store.ts
++++ b/packages/pi-sdk-driver/custom-provider-store.ts
+@@ -96,6 +96,7 @@
+       `Base URL must start with http:// or https://: ${JSON.stringify(input.baseUrl)}`,
+     );
+   }
++  if (input.api && !['openai-completions','openai-responses','anthropic-messages'].includes(input.api)) throw new Error('Unsupported custom provider API');
+   if (input.models.length === 0) {
+     throw new Error("At least one model is required.");
+   }
+@@ -113,7 +114,7 @@
+   const trimmedKey = input.apiKey?.trim();
+   return {
+     baseUrl: input.baseUrl,
+-    api: OPENAI_COMPLETIONS_API,
++    api: input.api ?? OPENAI_COMPLETIONS_API,
+     apiKey: trimmedKey ? trimmedKey : CUSTOM_PROVIDER_PLACEHOLDER_API_KEY,
+     [PI_GUI_CUSTOM_PROVIDER_MARKER]: true,
+     models: input.models.map((model) => {
+@@ -167,6 +168,7 @@
+     entries.push({
+       providerId,
+       baseUrl,
++      api: config.api as CustomProviderInput['api'],
+       ...(apiKey !== undefined ? { apiKey } : {}),
+       models,
+     });
+--- a/packages/pi-sdk-driver/custom-provider-types.ts
++++ b/packages/pi-sdk-driver/custom-provider-types.ts
+@@ -7,6 +7,7 @@
+   readonly providerId: string;
+   readonly baseUrl: string;
+   readonly apiKey?: string;
++  readonly api?: 'openai-completions' | 'openai-responses' | 'anthropic-messages';
+   readonly models: readonly CustomProviderModelInput[];
+ }
+ 
+@@ -14,10 +15,11 @@
+   readonly providerId: string;
+   readonly baseUrl: string;
+   readonly apiKey?: string;
++  readonly api?: 'openai-completions' | 'openai-responses' | 'anthropic-messages';
+   readonly models: readonly CustomProviderModelInput[];
+ }
+ 
+-export const CUSTOM_PROVIDER_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
++export const CUSTOM_PROVIDER_ID_PATTERN = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
+ export const OPENAI_COMPLETIONS_API = "openai-completions";
+ 
+ export const CUSTOM_PROVIDER_PLACEHOLDER_API_KEY = "unused";

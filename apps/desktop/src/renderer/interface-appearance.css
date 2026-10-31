@@ -63,10 +63,6 @@
 .tag-chat-window.is-collapsed .note-projection-head>.ui-icon-button,.tag-chat-window.is-collapsed .note-projection-head>.panel-more{width:26px;min-width:26px;height:26px;min-height:26px;flex-basis:26px;padding:5px}
 .tag-chat-window.is-collapsed .note-projection-head .ui-icon{width:16px;height:16px;flex:0 0 16px}
 .nozeli-context-menu kbd .ui-icon{width:14px;height:14px;color:#7a8478}
-.provider-console .provider-role-action.ui-icon-button{width:28px;height:28px;min-height:28px;padding:5px;border:0;border-radius:6px}
-#managed-terminal-grid .managed-agent-pane .ui-icon-label{gap:5px;border:0;border-radius:5px;min-height:28px;padding:4px 6px}
-#managed-terminal-grid .managed-agent-pane .ui-icon-label .ui-icon{width:16px;height:16px}
-#managed-terminal-grid .managed-agent-pane .ui-icon-label:hover:not(:disabled){color:#edf4ee;background:#314a39}
 @media(forced-colors:active){.ui-icon-button,.ui-icon-label,.panel-font,.panel-more{color:ButtonText;forced-color-adjust:auto}.ui-icon-button:focus-visible,.ui-icon-label:focus-visible{outline-color:Highlight}.ui-icon-button[aria-pressed=true]{outline:1px solid Highlight}.ui-icon-button:disabled{opacity:1;color:GrayText}}
 /* Compact chat keeps a usable target; only its glyph shrinks optically. */
 .compact-composer .conversation-controls .ui-icon{width:16px;height:16px;flex:0 0 16px}

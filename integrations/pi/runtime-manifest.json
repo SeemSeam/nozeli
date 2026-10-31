@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "upstream": {
+    "repository": "https://github.com/minghinmatthewlam/pi-gui",
+    "commit": "eddfb19367b3ec4e59314eddfa83ed5aa6989f03",
+    "license": "MIT"
+  },
+  "sdk": "@earendil-works/pi-coding-agent@1.4.0",
+  "entry": "src/owner.mjs",
+  "files": {
+    "src/owner.mjs": "13a792bc1cbf28a1ab1c14993f31d2c8dd20ddb9f57d4cbc3fb8072a90cc72b7",
+    "src/bridge.mjs": "a6c03724888bf4af54f90c932983131e1c88f6cb557b77e702ce6155505365bc",
+    "src/facts.mjs": "ac4f0775088babe674d64dfa4cac0f5b8b6199a6341c30862cd48c761917e951",
+    "src/tools.mjs": "728e033f3943e640c4d166a900776ea7ff9c312552200ddefa8183ca8871b826",
+    "src/questions.mjs": "84b45d9008d20def0f53f5582d9bb4a02763aeeb3b3b4865c950f214f0a6c0d8",
+    "src/catalog-memory.mjs": "32894625049686253231ba3de106a07a4607a929674dcef9d8d91ea3ecd647e4",
+    "dist/vendor/pi-gui/packages/pi-sdk-driver/index.js": "7b7ce898a049f0ce686854a57cc86580211186d6f785ff632b3f0ceaac79d4d6",
+    "package-lock.json": "d524a6760b40882e4ff74e3c3abb001eefffba2278dfbdd5169d3d4bd2a71dd9"
+  }
+}

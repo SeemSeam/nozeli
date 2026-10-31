@@ -1,0 +1,44 @@
+--- a/packages/pi-sdk-driver/index.ts
++++ b/packages/pi-sdk-driver/index.ts
+@@ -19,6 +19,7 @@
+ } from "./runtime-supervisor.js";
+ export type { PiSdkDriverOptions, SyncWorkspaceResult } from "./session-supervisor.js";
+ export { SessionSupervisor } from "./session-supervisor.js";
++export { createAgentSessionRuntimeWithNpmFallback } from "./npm-package-fallback.js";
+ export { SessionLeasedError } from "./session-lease.js";
+ export type { LeaseInfo } from "./session-lease.js";
+ export { RUNTIME_SCHEMA_VERSION } from "./session-schema.js";
+--- a/packages/pi-sdk-driver/session-supervisor.ts
++++ b/packages/pi-sdk-driver/session-supervisor.ts
+@@ -187,6 +187,7 @@
+     workspace: WorkspaceRef,
+     options: import("./thread-title-generator.js").GenerateThreadTitleOptions,
+   ) => Promise<string | null | undefined>;
++  readonly onNativeSessionEvent?: (sessionRef: SessionRef, event: AgentSessionEvent) => void;
+ }
+ 
+ export interface SyncWorkspaceResult {
+@@ -305,6 +306,7 @@
+   private readonly extensionFlagValuesForSession: PiSdkDriverOptions["extensionFlagValuesForSession"];
+   private readonly onTurnCaptureBoundary: PiSdkDriverOptions["onTurnCaptureBoundary"];
+   private readonly turnCaptureTimeoutMs: number | undefined;
++  private readonly onNativeSessionEvent: PiSdkDriverOptions["onNativeSessionEvent"];
+   private readonly records = new Map<string, ManagedSessionRecord>();
+   /** Latest plan limits a provider reported, shared by every session on that provider. */
+   private readonly planLimitsByProvider = new Map<string, SessionPlanLimits>();
+@@ -334,6 +336,7 @@
+     this.onTurnCaptureBoundary = options.onTurnCaptureBoundary;
+     this.turnCaptureTimeoutMs = options.turnCaptureTimeoutMs;
+     this.agentDir = options.agentDir;
++    this.onNativeSessionEvent = options.onNativeSessionEvent;
+   }
+ 
+   /**
+@@ -1927,6 +1930,7 @@
+     record.sessionFile = session.sessionFile ?? session.sessionManager.getSessionFile();
+     record.unsubscribeAgent?.();
+     record.unsubscribeAgent = session.subscribe((event) => {
++      this.onNativeSessionEvent?.(record.ref, event);
+       this.handleAgentEvent(record, event);
+     });
+     record.bindingExtensions = true;

@@ -3,24 +3,10 @@ import path from 'node:path';
 import { build } from 'esbuild';
 
 const root = path.resolve(import.meta.dirname, '..');
-// xterm 6.0.0 groups documentOverride ?? condition ? a : b incorrectly,
-// dropping the nonce-aware document for viewport styles. Correct the exact
-// published expression at bundle time; leave installed dependencies untouched.
-const xtermDocumentFix = {
-  name: 'xterm-document-override',
-  setup(builder) {
-    builder.onLoad({ filter: /@xterm[/\\]xterm[/\\]lib[/\\]xterm\.m?js$/ }, async ({ path: file }) => {
-      const source = await fs.readFile(file, 'utf8');
-      const broken = 'this._document??typeof window<"u"?window.document:null';
-      if (source.split(broken).length !== 2) throw new Error('Recheck xterm documentOverride CSP compatibility after dependency change.');
-      return { contents: source.replace(broken, 'this._document??(typeof window<"u"?window.document:null)'), loader: 'js' };
-    });
-  },
-};
 const output = path.join(root, 'dist/renderer');
 await fs.mkdir(output, { recursive: true });
 await fs.copyFile(path.join(root,'src/renderer/context-menu.css'),path.join(output,'context-menu.css'));
-for (const name of ['index.html', 'styles.css', 'workspace.css', 'provider-terminal.css']) await fs.copyFile(path.join(root, 'src/renderer', name), path.join(output, name));
+for (const name of ['index.html', 'styles.css', 'workspace.css']) await fs.copyFile(path.join(root, 'src/renderer', name), path.join(output, name));
 await fs.copyFile(path.join(root,'assets/brand/nozeli-small-icon.png'),path.join(output,'nozeli-small-icon.png'));
 await fs.copyFile(path.join(root, 'node_modules/katex/dist/katex.min.css'), path.join(output, 'katex.css'));
 await fs.cp(path.join(root, 'node_modules/katex/dist/fonts'), path.join(output, 'fonts'), { recursive: true });
@@ -45,7 +31,7 @@ const monacoStylesheetNonce = {
 
   },
 };
-await build({ plugins: [xtermDocumentFix, monacoStylesheetNonce], entryPoints: [path.join(root, 'src/renderer/app.mjs')], bundle: true, format: 'esm', platform: 'browser', outfile: path.join(output, 'app.js'), loader: { '.woff2': 'file', '.woff': 'file', '.ttf': 'file' }, assetNames: 'assets/[name]-[hash]' });
+await build({ plugins: [monacoStylesheetNonce], entryPoints: [path.join(root, 'src/renderer/app.mjs')], bundle: true, format: 'esm', platform: 'browser', outfile: path.join(output, 'app.js'), loader: { '.woff2': 'file', '.woff': 'file', '.ttf': 'file' }, assetNames: 'assets/[name]-[hash]' });
 await fs.copyFile(path.join(root,'src/renderer/guided-demo-controls.html'),path.join(output,'guided-demo-controls.html'));
 await build({entryPoints:[path.join(root,'src/renderer/guided-demo-controls.mjs')],bundle:true,format:'esm',platform:'browser',outfile:path.join(output,'guided-demo-controls.js')});
 await fs.copyFile(path.join(root,'src/renderer/guided-demo-hint.html'),path.join(output,'guided-demo-hint.html'));

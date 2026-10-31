@@ -166,8 +166,8 @@ try {
   phase = 'old-connect'; await start(oldAppRoot, oldBinary, false, 'old');
   if (await shell.$eval('#configuration-setup', node => node.open)) await shell.click('#configuration-cancel');
   await call('config.initialize', {mode: 'independent'});
-  await call('settings.providers.save', {provider: 'schema-upgrade-local', model: 'scripted', baseUrl: 'http://127.0.0.1:' + server.address().port + '/v1', api: 'openai-completions', key: 'synthetic-loopback-only'});
-  await call('settings.models.save', Object.fromEntries(['frontdesk', 'orchestrator', 'worker'].map(role => [role, 'schema-upgrade-local/scripted'])));
+  await call('settings.providers.save', {operation:'create',provider:'schema-upgrade-local',baseUrl:'http://127.0.0.1:' + server.address().port + '/v1',api:'openai-completions',models:[{id:'scripted'}],credential:{action:'replace',value:'synthetic-loopback-only'}});
+  await call('settings.models.save', Object.fromEntries(['frontdesk', 'orchestrator', 'worker'].map(role => [role, {model:{mode:'explicit',selector:'schema-upgrade-local/scripted'},thinking:{mode:'native-default'}}])));
   await shell.click('[data-project-id="' + projectId + '"]');
   await shell.waitForFunction(id => window.__workspaceScope?.projectId === id, {}, projectId);
   await call('managed.enable', {projectId});

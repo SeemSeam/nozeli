@@ -140,7 +140,7 @@ try {
   await shell.waitForSelector('#configuration-setup[open]');
   await shell.click('#configuration-independent');
   await shell.waitForFunction(() => !document.querySelector('#configuration-setup').open);
-  await invoke(shell, 'settings.providers.save', {provider: 'reset-local', model: 'scripted', baseUrl: 'http://127.0.0.1:' + server.address().port + '/v1', key: 'synthetic-local-only', api: 'openai-completions'});
+  await invoke(shell, 'settings.providers.save', {operation:'create',provider:'reset-local',baseUrl:'http://127.0.0.1:' + server.address().port + '/v1',api:'openai-completions',models:[{id:'scripted'}],credential:{action:'replace',value:'synthetic-local-only'}});
   await shell.click('#open-settings');
   await shell.waitForSelector('#settings-dialog[open]');
   await shell.click('[data-settings-section="settings-models"]');

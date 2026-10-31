@@ -1,7 +1,5 @@
 import {mountConfiguration} from './configuration-setup.mjs';
-import {setIconButton} from './ui-icons.mjs';
 import {mountManagedAgent} from './managed-agent-panel.mjs';
-import { mountPopupMenu } from './popup-menu.mjs';
 import { renderTagMarkdown } from './tag-markdown.mjs';
 import './conversation-rendering.css';
 import {mountDemoConversation} from './guided-demo-conversation.mjs';
@@ -15,7 +13,6 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
   const ownsConversation=!scope||(scope.role==='surface'&&scope.kind==='conversation');
   let projectId = null;
   let generation = 0;
-  let consoleVisible = false;
   let restoredInput;
   const demo=mountDemoConversation({invoke,getProjectId:()=>projectId,onMessages,onConversation,subscribe});
   let filePaths = new Set();
@@ -60,28 +57,6 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
 
 
 
-  function roleCard(role) {
-    return document.querySelector('[data-provider-role="' + role + '"]');
-  }
-
-  function closeConsole() {
-    consoleVisible = false;
-    $('provider-console').hidden = true;
-    document.body.classList.remove('provider-console-open');
-    setReadingInert(false);
-    $('provider-console-toggle').setAttribute('aria-pressed', 'false');
-    setIconButton($('provider-console-toggle'),'terminal',{text:'终端',label:'切换到终端'});
-  }
-
-  function setReadingInert(value) {
-    for (const node of document.querySelectorAll('#work-surface,#files,#side,#selection-menu')) node.inert = value;
-    if (value) $('selection-menu').hidden = true;
-  }
-
-  async function refreshConsole() {
-    return managed.console();
-  }
-
   async function openReport(reportId) {
     const id = projectId;
     const gen = generation;
@@ -113,7 +88,7 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
         managed.observeFixture(id,demo.state);
         $('composer').readOnly=false;$('send-message').disabled=false;$('send-message').title='发送到离线演示源，不使用模型';
         $('selection-explain').disabled=false;$('selection-explain').title='演示选区解释 · 固定回复';
-        $('provider-console-toggle').hidden=true;setAi('离线演示 · 非原生 Agent','demo');return;
+        setAi('离线演示 · 非原生 Agent','demo');return;
       }
       const initialized = await configuration.ready;
       if (id !== projectId || gen !== generation) return;
@@ -140,31 +115,7 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     if(!configuration.initialized)return configuration.open();
     toast('Nozeli 独立配置已初始化，无需重复导入。');
   }});
-  async function openConsole() {
-    if (!projectId) return;
-    window.dispatchEvent(new Event('nozeli-layout-change'));
-    consoleVisible = true;
-    $('provider-console').hidden = false;
-    document.body.classList.add('provider-console-open');
-    $('provider-console-toggle').setAttribute('aria-pressed', 'true');
-    setIconButton($('provider-console-toggle'),'book-open',{text:'阅读',label:'切换到阅读'});
-    setReadingInert(true);
-    await refreshConsole();
-  }
-  window.__setProjectView = view => { if(view === 'terminal') return openConsole(); else closeConsole(); };
-  function selectView(view) { window.__setProjectView(view); window.dispatchEvent(new CustomEvent('project-view-change',{detail:view})); }
-  $('provider-console-toggle').addEventListener('click',()=>{if(!configuration.initialized)return configuration.open();selectView(consoleVisible?'reading':'terminal');});
-  $('provider-console-close').addEventListener('click', () => {
-    selectView('reading');
-    $('open-settings').focus();
-  });
-  for (const role of ['qa','task']) {
-    const head=roleCard(role).querySelector('header');
-    const trigger=document.createElement('button');trigger.type='button';trigger.className='provider-role-action';trigger.id='terminal-menu-'+role;setIconButton(trigger,'ellipsis');trigger.title=role==='qa'?'前台 Agent 设置':'后台 Agent 设置';trigger.setAttribute('aria-label',trigger.title);head.append(trigger);
-    const menu=document.createElement('div');menu.className='surface-menu';menu.id='terminal-actions-'+role;
-    const reconnect=role==='qa'?$('provider-console-refresh'):document.createElement('button');reconnect.type='button';reconnect.textContent='刷新终端视图';reconnect.onclick=()=>refreshConsole();
-    menu.append(reconnect);document.body.append(menu);mountPopupMenu(trigger,menu);
-  }
+  window.__setProjectView = view => { if (view !== 'reading') window.dispatchEvent(new CustomEvent('project-view-change',{detail:'reading'})); };
   $('quit-stay').addEventListener('click', async () => {
     $('quit-choice').close();
     await invoke('session.quitChoice', { choice: 'stay' });
@@ -203,9 +154,7 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     demo.clear();
     // The workspace supplies its restored draft explicitly; never infer it from the old composer.
     if (projectId !== id) {
-      closeConsole();
       legacyArchive.replaceChildren();legacyArchive.hidden=true;
-      for (const role of ['qa', 'task']) roleCard(role).querySelector('.provider-output').replaceChildren();
     }
     filePaths = new Set();
     projectId = id;
@@ -217,14 +166,11 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     $('selection-explain').title = '请先完成配置并连接前台 Agent';
     $('send-message').title = '前台尚未就绪';
     setAi(id ? '正在加载项目会话；草稿不会自动发送。' : '尚未打开项目。', id ? 'pending' : 'unavailable');
-    $('provider-console-toggle').hidden = !id;
-    $('provider-console-project').textContent = id ? `项目：${$('project-name').textContent || id}` : '尚未打开项目';
     generation += 1;
     const gen = generation;
     if(ownsConversation)$('composer').readOnly=true;
     $('managed-doc').hidden = true;
     const loading=id?loadProjectSettings(id, gen):Promise.resolve();
-    if (! $('provider-console').hidden) void refreshConsole();
     return loading;
   };
   // Shared send gate (discussion-thread layer): file-tag discussions and the
@@ -276,4 +222,5 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     if(demo.active&&projectId===id&&$('composer').value===rawText){$('composer').value='';$('composer').dispatchEvent(new Event('input',{bubbles:true}));}
     return result.value;
   };
+  return {flushDrafts:()=>managed.flushDrafts()};
 }

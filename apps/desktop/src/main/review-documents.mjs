@@ -155,6 +155,12 @@ export function createReviewDocumentAdapter({ host, managed }) {
   }
 
   return {
+    async status({projectId,source,relPath}) {
+      const canonical=validateDocumentSource(source);
+      if(canonical.type==='project')throw new HostError('INVALID_PAYLOAD','项目文档使用项目状态接口。');
+      const {value,file}=await reviewFile(projectId,canonical,relPath);
+      return {deleted:false,authorship:null,documentSource:canonical,readOnly:!editableOf(canonical,value,file)};
+    },
     async read({ projectId, source, relPath }) {
       const canonical = validateDocumentSource(source);
       if (canonical.type === 'project') throw new HostError('INVALID_PAYLOAD', '项目文档不经审校适配器读取。');

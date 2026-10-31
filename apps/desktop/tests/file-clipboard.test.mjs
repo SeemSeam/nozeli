@@ -4,10 +4,13 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
+import {createHash} from 'node:crypto';
+import {encodeRecoveryBytes} from '../src/domain/office-recovery.mjs';
 import {DesktopHost} from '../src/main/host.mjs';
 import {FileTreeOps} from '../src/main/file-tree-ops.mjs';
-import {NativeFileClipboard,parseFileClipboard,fileIdentity} from '../src/main/file-clipboard.mjs';
+import {NativeFileClipboard,parseFileClipboard,serializeFileClipboard,fileIdentity} from '../src/main/file-clipboard.mjs';
 import {importClipboardFiles} from '../src/main/file-clipboard-import.mjs';
+import {exportClipboardFiles} from '../src/main/file-clipboard-export.mjs';
 const parse=(format,bytes,platform='linux')=>parseFileClipboard(new Map([[format,Buffer.isBuffer(bytes)?bytes:Buffer.from(bytes)]]),platform);
 
 test('Linux native URI/GNOME/KDE byte fixtures preserve multiple filenames; external cut is copy-only',()=>{
@@ -117,4 +120,150 @@ test('import preserves executable and read-only file modes without privileged bi
   const result=await f.run(['script.sh','readonly.txt']);assert.deepEqual(result.items.map(item=>item.ok),[true,true]);
   assert.equal((await fs.stat(path.join(f.root,'script.sh'))).mode&0o7777,0o755);assert.equal(await fs.readFile(path.join(f.root,'script.sh'),'utf8'),script);
   assert.equal((await fs.stat(path.join(f.root,'readonly.txt'))).mode&0o7777,0o444);assert.equal(await fs.readFile(path.join(f.root,'readonly.txt'),'utf8'),'READ ONLY');
+});
+
+function fakeNative(){
+  class ClipboardItem {
+    constructor(values){this.values=values;this.types=Object.keys(values);}
+    async getType(type){return this.values[type];}
+  }
+  let data=[],writes=0;
+  const native=new NativeFileClipboard({read:async()=>data,write:async items=>{data=items;writes++;}},{ClipboardItem,platform:'linux'});
+  return {native,writes:()=>writes};
+}
+test('export serializers emit encoded Linux copy semantics and parseable Windows/macOS bytes',()=>{
+  const paths=['/tmp/中文 # 100%.txt','/tmp/folder & <one>'];
+  const linux=serializeFileClipboard(paths,'linux');
+  assert.equal(linux.get('application/x-kde-cutselection').toString(),'0');
+  assert.equal(linux.get('x-special/gnome-copied-files').toString().split('\n')[0],'copy');
+  assert.match(linux.get('text/uri-list').toString(),/%E4%B8%AD%E6%96%87%20%23%20100%25/);
+  for(const format of ['text/uri-list','x-special/gnome-copied-files'])assert.deepEqual(parse(format,linux.get(format)),paths);
+  const windows=['C:\\资料\\a #.txt','D:\\folder'];
+  const win=serializeFileClipboard(windows,'win32'),drop=win.get('CF_HDROP');
+  assert.equal(drop.readUInt32LE(0),20);assert.equal(drop.readUInt32LE(16),1);
+  assert.equal(drop.subarray(-4).equals(Buffer.alloc(4)),true);
+  assert.equal(win.get('Preferred DropEffect').readUInt32LE(),1);
+  assert.deepEqual(parse('CF_HDROP',drop,'win32'),windows);
+  assert.deepEqual(parse('NSFilenamesPboardType',serializeFileClipboard(paths,'darwin').get('NSFilenamesPboardType'),'darwin'),paths);
+  assert.throws(()=>serializeFileClipboard(['/tmp/ok','relative'],'linux'));
+});
+test('copy exports files/folders/multiselection while same-owner paste keeps internal buffer generation',async t=>{
+  const f=await fixture(t),clip=fakeNative();
+  await fs.writeFile(path.join(f.root,'中文 #.txt'),'SOURCE');await fs.mkdir(path.join(f.root,'folder'));await fs.writeFile(path.join(f.root,'folder','nested'),'NESTED');
+  const result=await exportClipboardFiles(f.ops,clip.native,{owner:10,projectId:f.project.id,paths:['中文 #.txt','folder','folder/nested'],guard:async()=>{}});
+  const snapshot=await clip.native.snapshot();
+  assert.deepEqual(parseFileClipboard(snapshot.entries),[path.join(f.root,'中文 #.txt'),path.join(f.root,'folder')]);
+  assert.deepEqual(await clip.native.read(10,'destination'),{kind:'internal',generation:result.generation});
+  assert.equal((await clip.native.read(11,'destination')).kind,'external');
+  assert.equal((await clip.native.read(10,'destination')).kind,'internal');
+  await exportClipboardFiles(f.ops,clip.native,{owner:10,projectId:f.project.id,paths:['中文 #.txt'],action:'cut',guard:async()=>{}});
+  assert.deepEqual(parseFileClipboard((await clip.native.snapshot()).entries),[]);
+  assert.equal(await fs.readFile(path.join(f.root,'中文 #.txt'),'utf8'),'SOURCE');
+});
+test('metadata, symlinks, invalid paths and unsaved source refuse export without changing clipboard',async t=>{
+  const f=await fixture(t),clip=fakeNative();await clip.native.mark(10,f.project.id);
+  const previous=(await clip.native.snapshot()).generation;
+  await fs.writeFile(path.join(f.root,'a.txt'),'DISK');await fs.mkdir(path.join(f.root,'bad'));await fs.mkdir(path.join(f.root,'bad','.nozeli'));
+  await fs.symlink(path.join(f.root,'a.txt'),path.join(f.root,'link'));await fs.mkdir(path.join(f.root,'linked-folder'));await fs.symlink(path.join(f.root,'a.txt'),path.join(f.root,'linked-folder','nested'));
+  for(const paths of [['../escape'],['.nozeli'],['bad'],['link'],['linked-folder'],['a.txt','a.txt/../escape']]){
+    await assert.rejects(exportClipboardFiles(f.ops,clip.native,{owner:10,projectId:f.project.id,paths,guard:async()=>{}}));
+    assert.equal((await clip.native.snapshot()).generation,previous);
+  }
+  await f.host.persistDraft(f.project.id,'a.txt','a'.repeat(64),'UNSAVED','dirty');
+  await assert.rejects(exportClipboardFiles(f.ops,clip.native,{owner:10,projectId:f.project.id,paths:['a.txt'],guard:async()=>{}}),/草稿/);
+  assert.equal(await fs.readFile(path.join(f.root,'a.txt'),'utf8'),'DISK');assert.equal(clip.writes(),1);
+});
+test('source mutations and stale live host scope during preparation preserve prior clipboard',async t=>{
+  const f=await fixture(t),clip=fakeNative();await clip.native.mark(10,f.project.id);
+  await fs.mkdir(path.join(f.root,'folder'));await fs.writeFile(path.join(f.root,'folder','a.txt'),'ORIGINAL');
+  const previous=(await clip.native.snapshot()).generation;
+  let calls=0;
+  await assert.rejects(exportClipboardFiles(f.ops,clip.native,{owner:10,projectId:f.project.id,paths:['folder'],guard:async()=>{if(++calls===2)await fs.writeFile(path.join(f.root,'folder','a.txt'),'CHANGED');}}),/变化/);
+  calls=0;
+  await assert.rejects(exportClipboardFiles(f.ops,clip.native,{owner:10,projectId:f.project.id,paths:['folder'],guard:async()=>{if(++calls===3)throw Error('stale shell scope');}}),/stale shell scope/);
+  assert.equal((await clip.native.snapshot()).generation,previous);assert.equal(clip.writes(),1);
+});
+
+test('opened clean reader provenance and matching recovery candidate allow Copy; actual retained edits refuse it',async t=>{
+  const f=await fixture(t),clip=fakeNative(),relPath='opened.txt',text='SAVED SOURCE\n';
+  await fs.writeFile(path.join(f.root,relPath),text);
+  await f.host.readFile(f.project.id,relPath);
+  const capture={projectId:f.project.id,relPath,kind:'text',generation:1,candidate:{text},baselineText:text};
+  await f.host.storage.putRecovery(f.project.id,'workspace:view-clean',capture);
+  const copy=()=>exportClipboardFiles(f.ops,clip.native,{owner:10,projectId:f.project.id,paths:[relPath],guard:async()=>{}});
+  await copy();
+  const previous=(await clip.native.snapshot()).generation;
+  for(const patch of [{candidate:{text:'UNSAVED INPUT'}},{dirty:true},{conflict:{message:'disk changed'}},{offline:true}]){
+    await f.host.storage.putRecovery(f.project.id,'workspace:view-clean',{...capture,...patch});
+    await assert.rejects(copy(),/未保存|冲突|未写回/);
+    assert.equal((await clip.native.snapshot()).generation,previous);
+    assert.equal(await fs.readFile(path.join(f.root,relPath),'utf8'),text);
+  }
+  // Retained/offline views use the same capture schema, not the live buffer.
+  await f.host.storage.putRecovery(f.project.id,'workspace:view-clean',capture);
+  await f.host.storage.putRecovery(f.project.id,'workspace:view-clean:retained:old-owner',{...capture,candidate:{text:'OLD UNSAVED INPUT'}});
+  await assert.rejects(copy(),/未写回/);
+  assert.equal((await clip.native.snapshot()).generation,previous);
+  assert.equal(clip.writes(),1);
+});
+
+test('clean Office capture requires host receipt bound to current disk baseline, never stale viewState',async t=>{
+  const f=await fixture(t),clip=fakeNative();
+  for(const [kind,extension] of [['word','docx'],['sheet','xlsx'],['ppt','pptx']]){
+    const relPath='clean.'+extension,disk=Buffer.from('source ZIP serialization '+kind),exported=Buffer.from('different clean ZIP serialization '+kind);
+    await fs.writeFile(path.join(f.root,relPath),disk);
+    const sourceDigest=createHash('sha256').update(disk).digest('hex');
+    const status={dirty:false,composing:false,conflict:false,missing:false};
+    const snapshot={projectId:f.project.id,relPath,kind,sourceDigest,baseDigest:sourceDigest,candidate:{bytes:encodeRecoveryBytes(exported)},documentStatus:status,cleanOfficeBaseline:{schemaVersion:1,sourceDigest}};
+    const key='workspace:office-'+kind;
+    const copy=()=>exportClipboardFiles(f.ops,clip.native,{owner:10,projectId:f.project.id,paths:[relPath],guard:async()=>{}});
+    await f.host.storage.putRecovery(f.project.id,key,snapshot);await copy();
+    const previous=(await clip.native.snapshot()).generation;
+    for(const patch of [
+      {cleanOfficeBaseline:undefined},
+      {cleanOfficeBaseline:undefined,documentStatus:undefined,viewState:{documentStatus:status}},
+      {baseDigest:'0'.repeat(64)},
+      {documentStatus:{...status,dirty:true}},
+      {documentStatus:{...status,conflict:true}},
+      {documentStatus:{...status,composing:true}},
+      {offline:true},
+    ]){
+      await f.host.storage.putRecovery(f.project.id,key,{...snapshot,...patch});
+      await assert.rejects(copy());assert.equal((await clip.native.snapshot()).generation,previous);
+    }
+    await f.host.storage.putRecovery(f.project.id,key,snapshot);
+    await fs.writeFile(path.join(f.root,relPath),'externally changed ZIP');
+    await assert.rejects(copy(),/未写回/);assert.equal((await clip.native.snapshot()).generation,previous);
+  }
+});
+
+test('newer canonical clean Office receipt supersedes archived workspace history but never active drafts',async t=>{
+  const f=await fixture(t),clip=fakeNative(),relPath='historical.docx',disk=Buffer.from('SAVED ZIP');
+  await fs.writeFile(path.join(f.root,relPath),disk);
+  const sourceDigest=createHash('sha256').update(disk).digest('hex');
+  const canonical={projectId:f.project.id,relPath,kind:'word',baseDigest:sourceDigest,sourceDigest,retainedAt:'2026-10-30T12:00:00.000Z',documentStatus:{dirty:false,composing:false,conflict:false,missing:false},candidate:{bytes:encodeRecoveryBytes(Buffer.from('REEXPORTED ZIP'))},cleanOfficeBaseline:{schemaVersion:1,sourceDigest}};
+  const history={...canonical,retainedAt:'2026-10-29T12:00:00.000Z',cleanOfficeBaseline:undefined,documentStatus:undefined,candidate:{bytes:encodeRecoveryBytes(Buffer.from('HISTORICAL ZIP'))}};
+  const historyKey='workspace:office:retained:old-owner';
+  const copy=()=>exportClipboardFiles(f.ops,clip.native,{owner:10,projectId:f.project.id,paths:[relPath],guard:async()=>{}});
+  await clip.native.mark(10,f.project.id);
+  await f.host.storage.putRecovery(f.project.id,historyKey,history);
+  await assert.rejects(copy());
+  await f.host.storage.putRecovery(f.project.id,'workspace:office',canonical);
+  for(const archived of [history,{...history,dirty:true,offline:true}]){
+    await f.host.storage.putRecovery(f.project.id,historyKey,archived);
+    const preserved=await f.host.storage.getRecovery(f.project.id,historyKey);
+    await copy();
+    assert.deepEqual(parseFileClipboard((await clip.native.snapshot()).entries),[path.join(f.root,relPath)]);
+    assert.deepEqual(await f.host.storage.getRecovery(f.project.id,historyKey),preserved);
+  }
+  const previous=(await clip.native.snapshot()).generation;
+  await f.host.storage.putRecovery(f.project.id,'workspace:office',{...canonical,documentStatus:{...canonical.documentStatus,dirty:true}});
+  await assert.rejects(copy());assert.equal((await clip.native.snapshot()).generation,previous);
+  await f.host.storage.putRecovery(f.project.id,'workspace:office',canonical);
+  await f.host.persistDraft(f.project.id,relPath,sourceDigest,'UNSAVED DRAFT','dirty');
+  await assert.rejects(copy(),/草稿/);assert.equal((await clip.native.snapshot()).generation,previous);
+  await f.host.persistDraft(f.project.id,relPath,sourceDigest,'SAVED','saved');
+  await f.host.storage.putRecovery(f.project.id,historyKey,{...history,retainedAt:'2026-10-31T12:00:00.000Z'});
+  await assert.rejects(copy());assert.equal((await clip.native.snapshot()).generation,previous);
+  assert.equal(await fs.readFile(path.join(f.root,relPath),'utf8'),'SAVED ZIP');
 });

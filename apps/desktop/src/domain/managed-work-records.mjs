@@ -108,6 +108,8 @@ export function managedWorkRecords(state){
   if(w.status==='queued')record.phase=`排队第 ${queued.findIndex(q=>q.id===w.id)+1} 位`;
   const pending=jobs.findLast(j=>(j.target===w.id&&j.type!=='initial'||j.context?.boundWorkId===w.id)&&['queued','running'].includes(j.status));
   if(pending)record.phase=pending.type==='intake'?'补充已接收，主控整理中':'补充已接收，等待执行';
+  const latestWorkerJob=jobs.findLast(j=>j.target===w.id);
+  if(w.status==='paused'&&!pending&&latestWorkerJob?.interruptionReason==='user-interrupted')record.phase='本轮已停止 · 等待明确补充';
   const settlementIssue=resultSettlementIssue(state,w);
   if(settlementIssue){record.settlementIssue=settlementIssue;if(!pending&&!jobs.some(j=>j.target===w.id&&['queued','running'].includes(j.status)))record.phase='结果已保存 · 完成状态待核查';}
   const failedIntake=jobs.findLast(j=>j.context?.boundWorkId===w.id&&['failed','interrupted'].includes(j.status)&&!j.routing);if(failedIntake&&!['closing','ended'].includes(w.status)&&!pending&&!jobs.some(j=>j.context?.retryOf===failedIntake.id&&j.routing)){record.retryJobId=failedIntake.id;record.phase='补充处理失败，待重试';}

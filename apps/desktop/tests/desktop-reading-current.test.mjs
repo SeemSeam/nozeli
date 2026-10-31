@@ -1,3 +1,5 @@
+// Current native-content reading journey. Real files, physical selection,
+// immutable annotation material and recoverable unsaved text; no model calls.
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -6,76 +8,54 @@ import net from 'node:net';
 import {spawn} from 'node:child_process';
 import {createRequire} from 'node:module';
 import puppeteer from 'puppeteer-core';
-import {prepareReading} from './reading-setup.fixture.mjs';
-import {FileTags} from '../src/domain/file-tags.mjs';
+import {DesktopHost} from '../src/main/host.mjs';
+import {installFileTreeClicks} from './file-tree-clicks.fixture.mjs';
 
-// Current public reading UI only. Historical page-level #show-note workflows
-// remain in desktop-electron.test.mjs; they are not current UI acceptance.
-const root=path.resolve(import.meta.dirname,'..');
-const out=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-reading-current-'));
+const root=path.resolve(import.meta.dirname,'..'),out=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-reading-native-'));
 const configRoot=path.join(out,'.Nozeli'),profile=path.join(configRoot,'desktop'),project=path.join(out,'project');
 await fs.mkdir(project);
 const original='# Reading lifecycle\n\nA physical selection 中文🧭é keeps this local note anchored.\n\nSecond paragraph stays readable.\n';
-await fs.writeFile(path.join(project,'reading.md'),original);
-await fs.writeFile(path.join(project,'edit.txt'),'Original editable text.\n');
-const checks=[],errors=[];let child,browser,page,exited,log='',stage='';
+await fs.writeFile(path.join(project,'reading.md'),original);await fs.writeFile(path.join(project,'edit.txt'),'Original editable text.\n');
+const checks=[],errors=[];let child,browser,shell,page,exited,log='',stage='',projectId;
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-function step(name){stage=name;console.log('reading smoke: '+name);}
+async function until(fn,label,ms=30000){const end=Date.now()+ms;while(Date.now()<end){const value=await fn();if(value)return value;if(child?.exitCode!==null&&child?.exitCode!==undefined)throw Error(log);await pause(80);}throw Error('Timed out: '+label);}
+async function invoke(op,payload={},target=shell){const response=await target.evaluate(({op,payload})=>nozeli.invoke(op,payload),{op,payload});assert.equal(response.ok,true,op+': '+JSON.stringify(response));return response.value;}
+async function content(kind,relPath){return until(async()=>{for(const target of await browser.pages())if(await target.evaluate(({kind,relPath})=>window.__nozeliReady&&window.__workspaceScope?.kind===kind&&(!relPath||window.__workspaceScope.relPath===relPath),{kind,relPath}).catch(()=>false))return target;},kind+' '+(relPath||''));}
 async function launch(){
  const port=await new Promise(resolve=>{const server=net.createServer();server.listen(0,'127.0.0.1',()=>{const port=server.address().port;server.close(()=>resolve(port));});});
- const ozone=process.env.NOZELI_OZONE||'headless';
- child=spawn(createRequire(import.meta.url)('electron'),[path.join(root,'src/main/main.cjs'),'--ozone-platform='+ozone],{cwd:root,env:{...process.env,NOZELI_TEST_INSTANCE:'1',NOZELI_CONFIG_ROOT:configRoot,NOZELI_USER_DATA:profile,NOZELI_TEST_PICK:project,NOZELI_DEBUG_PORT:String(port),NOZELI_HIDDEN:process.env.NOZELI_TEST_VISIBLE==='1'?'0':'1',NOZELI_OZONE:ozone},stdio:['ignore','pipe','pipe']});
+ const ozone=process.env.NOZELI_OZONE||(process.env.DISPLAY?'x11':process.env.WAYLAND_DISPLAY?'wayland':'headless');
+ const env={...process.env};for(const key of Object.keys(env))if(key!=='XAUTHORITY'&&(/^(NOZELI_|CCB_|CODEX_|OMP_|PI_)/.test(key)||/AUTH|TOKEN|SECRET|PASSWORD|CREDENTIAL|API_?KEY/i.test(key)||['NODE_OPTIONS','ELECTRON_RUN_AS_NODE'].includes(key)))delete env[key];
+ Object.assign(env,{NOZELI_TEST_INSTANCE:'1',NOZELI_CONFIG_ROOT:configRoot,NOZELI_USER_DATA:profile,NOZELI_TEST_PICK:project,NOZELI_DEBUG_PORT:String(port),NOZELI_HIDDEN:'0',NOZELI_OZONE:ozone,NOZELI_SHOT_DIR:out});
+ child=spawn(createRequire(import.meta.url)('electron'),[path.join(root,'src/main/main.cjs'),'--ozone-platform='+ozone],{cwd:root,env,stdio:['ignore','pipe','pipe']});
  for(const stream of [child.stdout,child.stderr])stream.on('data',chunk=>log+=chunk);exited=new Promise(resolve=>child.once('exit',(code,signal)=>resolve({code,signal})));
- for(let i=0;i<150;i++){try{browser=await puppeteer.connect({browserURL:'http://127.0.0.1:'+port,defaultViewport:null});break;}catch{if(child.exitCode!==null)throw Error(log);await pause(100);}}
- assert(browser,log);const target=await browser.waitForTarget(target=>target.type()==='page'&&target.url().startsWith('http://127.0.0.1:'),{timeout:30000});page=await target.page();page.on('pageerror',error=>errors.push(error.stack));
- await prepareReading(page);
- await page.evaluate(()=>nozeli.invoke('session.resize',{width:1440,height:900}));
- await page.waitForFunction(()=>innerWidth===1440);
+ browser=await until(()=>puppeteer.connect({browserURL:'http://127.0.0.1:'+port,defaultViewport:null}).catch(()=>null),'CDP');
+ shell=await until(async()=>{for(const target of await browser.pages())if(await target.evaluate(()=>window.__nozeliReady&&window.__workspaceScope?.role==='shell').catch(()=>false))return target;},'ready shell');
+ for(const target of await browser.pages())target.on('pageerror',error=>errors.push(error.message));
+ if(await shell.$eval('#configuration-setup',node=>node.open).catch(()=>false))await shell.click('#configuration-cancel');
+ installFileTreeClicks(shell);await invoke('session.resize',{width:1440,height:900});
+ if(projectId)await shell.click('[data-project-id="'+projectId+'"]');
+ else{await shell.click('#pick-project');projectId=(await until(async()=>(await invoke('project.recent')).projects.find(row=>row.rootDisplay===project),'registered project')).id;}
+ assert.equal((await invoke('config.status')).initialized,false);
 }
-async function close(){
- void page.evaluate(()=>nozeli.invoke('session.requestClose',{})).catch(()=>{});
- assert.deepEqual(await Promise.race([exited,pause(12000).then(()=>null)]),{code:0,signal:null});
- await browser.disconnect();browser=null;page=null;
-}
-async function open(rel){await page.click('#file-tree button[data-path="'+rel+'"]');await page.waitForFunction(rel=>document.querySelector('#file-path').textContent===rel,{},rel);}
+async function close(){await invoke('session.requestClose');assert.deepEqual(await Promise.race([exited,pause(15000).then(()=>null)]),{code:0,signal:null});await browser.disconnect();browser=null;}
+async function open(rel){await shell.click('#file-tree button[data-path="'+rel+'"]');page=await content('document',rel);await page.bringToFront();}
 try{
- step('launch and choose project without initializing OMP');await launch();await page.click('#pick-project');await open('reading.md');
- await page.waitForSelector('#text-preview h1',{visible:true});assert.equal(await page.$eval('#text-preview h1',node=>node.textContent.trim()),'Reading lifecycle');
- assert.equal(await page.$eval('#configuration-setup',node=>node.open),false);checks.push('real Markdown reading, app setup cancellation and no repeated project chooser');
- step('physical drag followed by native Unicode keyboard selection and anchored local note');
+ stage='choose project and native Markdown content';await launch();await open('reading.md');
+ await page.waitForSelector('#text-preview h1',{visible:true});assert.equal(await page.$eval('#text-preview h1',node=>node.textContent.trim()),'Reading lifecycle');checks.push('native Markdown reading without initializing any provider');
+ stage='physical Unicode selection and local annotation';
  const points=await page.evaluate(()=>{const p=[...document.querySelectorAll('#text-preview p')].find(node=>node.textContent.startsWith('A physical'));p.scrollIntoView({block:'center'});const walker=document.createTreeWalker(p,NodeFilter.SHOW_TEXT);let node;while((node=walker.nextNode())&&!node.textContent.includes('physical selection')){}if(!node)throw Error('Selection text not rendered');const start=node.textContent.indexOf('physical selection'),range=document.createRange();range.setStart(node,start);range.setEnd(node,start+'physical selection'.length);const box=range.getBoundingClientRect();return{x:box.left+.2,y:box.top+box.height/2,end:box.right-.2};});
  await page.mouse.move(points.x,points.y);await page.mouse.down();await page.mouse.move(points.end,points.y,{steps:12});await page.mouse.up();await page.waitForSelector('#selection-menu:not([hidden])',{visible:true});
- const quote='physical selection 中文🧭é';
- const initialSelection=await page.evaluate(()=>getSelection().toString());
- assert(initialSelection.length>0&&quote.startsWith(initialSelection),'Physical drag must start at the exact quote origin');
- // Extend only with native keys after the mouse button is up. No synthetic
- // mouseup may refresh the product's cached preview anchor for this regression.
- await page.keyboard.down('Shift');
- for(let count=0;count<quote.length&&await page.evaluate(()=>getSelection().toString())!==quote;count++){
-  await page.keyboard.press('ArrowRight');
-  assert(quote.startsWith(await page.evaluate(()=>getSelection().toString())));
- }
- await page.keyboard.up('Shift');
- assert.equal(await page.evaluate(()=>getSelection().toString()),quote);
+ const quote='physical selection 中文🧭é',initial=await page.evaluate(()=>getSelection().toString());assert(initial.length>0&&quote.startsWith(initial));
+ await page.keyboard.down('Shift');for(let count=0;count<quote.length&&await page.evaluate(()=>getSelection().toString())!==quote;count++){await page.keyboard.press('ArrowRight');assert(quote.startsWith(await page.evaluate(()=>getSelection().toString())));}await page.keyboard.up('Shift');assert.equal(await page.evaluate(()=>getSelection().toString()),quote);
  await page.click('#selection-note');await page.waitForSelector('#note-form:not([hidden])',{visible:true});await page.type('#note-input','Current anchored local note');await page.click('#add-note');await page.waitForSelector('#text-preview .tag-note .note-projection',{visible:true});
- const projectId=await page.evaluate(async()=>(await nozeli.invoke('project.recent')).value.projects[0].id);
- const annotations=await page.evaluate(async projectId=>(await nozeli.invoke('annotation.list',{projectId,relPath:'reading.md'})).value.annotations,projectId);
- const note=annotations.find(note=>note.note==='Current anchored local note');assert(note);
- assert.deepEqual(note.anchor,{start:original.indexOf(quote),end:original.indexOf(quote)+quote.length,quote});
- assert.equal(note.relPath,'reading.md');
- assert.equal((await new FileTags(project).materials.get(note.materialDigest)).toString(),original);
- assert.equal(await fs.readFile(path.join(project,'reading.md'),'utf8'),original);assert.equal((await page.evaluate(async projectId=>nozeli.invoke('agents.messages',{projectId}),projectId)).value.messages.length,0);checks.push('native Shift+Arrow preview selection saves exact Unicode offsets, quote, source file and frozen version without dispatch or source rewrite');
- step('edit and save actual source');await open('edit.txt');await page.waitForSelector('#text-host .cm-content',{visible:true});
- await page.click('#text-host .cm-content');await page.keyboard.down('Control');await page.keyboard.press('End');await page.keyboard.up('Control');await page.keyboard.type('Saved current UI edit.');
- await page.keyboard.down('Control');await page.keyboard.press('s');await page.keyboard.up('Control');
- await page.waitForFunction(()=>document.querySelector('#save-status').dataset.state==='saved');
- assert.match(await fs.readFile(path.join(project,'edit.txt'),'utf8'),/Saved current UI edit\./);checks.push('physical editor typing and save write real source');
- step('local draft and normal restart');await page.click('#composer');await page.type('#composer','Unsent local reading draft');await close();await launch();
- await page.waitForFunction(()=>window.__nozeliInput?.text?.().includes('Saved current UI edit.'));assert.equal(await page.$eval('#composer',node=>node.value),'Unsent local reading draft');checks.push('normal close/restart restores source and unsent local draft');
- step('reopen anchored note');await open('reading.md');await page.waitForSelector('#text-preview .tag-note .note-projection',{visible:true});assert.match(await page.$eval('#text-preview .tag-note .note-projection',node=>node.textContent),/Current anchored local note/);assert.equal(await fs.readFile(path.join(project,'reading.md'),'utf8'),original);
- const reopened=await page.evaluate(async projectId=>(await nozeli.invoke('annotation.list',{projectId,relPath:'reading.md'})).value.annotations,projectId);
- const restored=reopened.find(item=>item.id===note.id);assert.deepEqual(restored.anchor,note.anchor);assert.equal(restored.materialDigest,note.materialDigest);assert.equal(restored.relPath,note.relPath);checks.push('keyboard-selected Unicode anchor and frozen origin survive full process restart');
- assert.deepEqual(errors,[]);await page.screenshot({path:path.join(out,'reading-current.png')});await close();
- await fs.writeFile(path.join(out,'report.json'),JSON.stringify({ok:true,checks,errors,out},null,2));console.log(JSON.stringify({ok:true,checks,out},null,2));
-}catch(error){console.error('Reading smoke failed at '+stage+'; '+out+'\n'+log);await page?.screenshot({path:path.join(out,'failure.png')}).catch(()=>{});await fs.writeFile(path.join(out,'report.json'),JSON.stringify({ok:false,stage,error:error.stack,checks,errors,out},null,2));throw error;
-}finally{await fs.writeFile(path.join(out,'main.log'),log);await browser?.disconnect();if(child?.exitCode===null){child.kill('SIGTERM');await Promise.race([exited,pause(3000)]);if(child.exitCode===null){child.kill('SIGKILL');await exited;}}}
+ const annotations=(await invoke('annotation.list',{projectId,relPath:'reading.md'},page)).annotations,note=annotations.find(row=>row.note==='Current anchored local note');assert(note);
+ assert.deepEqual(note.anchor,{start:original.indexOf(quote),end:original.indexOf(quote)+quote.length,quote});assert.equal(note.relPath,'reading.md');
+ const inspector=new DesktopHost(profile);try{assert.equal((await inspector.storage.readObject(projectId,note.materialDigest)).toString(),original);}finally{await inspector.storage.db.close();}
+ assert.equal(await fs.readFile(path.join(project,'reading.md'),'utf8'),original);assert.equal((await invoke('managed.status',{projectId})).state?.jobs?.length??0,0);checks.push('physical Shift+Arrow Unicode anchor and original immutable material save locally without dispatch');
+ stage='native source edit and explicit save';await open('edit.txt');await page.waitForSelector('#text-host .cm-content',{visible:true});await page.click('#text-host .cm-content');await page.keyboard.down('Control');await page.keyboard.press('End');await page.keyboard.up('Control');await page.keyboard.type('Saved current UI edit.');await page.keyboard.down('Control');await page.keyboard.press('s');await page.keyboard.up('Control');
+ await until(async()=>(await fs.readFile(path.join(project,'edit.txt'),'utf8')).includes('Saved current UI edit.'),'source saved');checks.push('real native editor typing and explicit save write source');
+ stage='unsaved text recovery and normal restart';await page.bringToFront();await page.evaluate(()=>window.__nozeliInput.focus());await page.waitForFunction(()=>document.hasFocus()&&document.activeElement?.closest('#text-host .cm-editor'));await page.keyboard.down('Control');await page.keyboard.press('End');await page.keyboard.up('Control');await page.keyboard.type('Unsent local reading draft');await page.waitForFunction(()=>window.__nozeliInput.text().includes('Unsent local reading draft'));const unsaved=await page.evaluate(()=>window.__nozeliInput.text());await close();await launch();const recovery=await invoke('workspace.recovery.list');assert(recovery.entries.some(row=>row.project.id===projectId&&row.value.relPath==='edit.txt'&&row.value.candidate?.text===unsaved),'exact unsaved bytes retained for explicit recovery');await open('edit.txt');await page.waitForFunction(()=>window.__nozeliInput?.text?.().includes('Saved current UI edit.'));assert.equal(await fs.readFile(path.join(project,'edit.txt'),'utf8'),'Original editable text.\nSaved current UI edit.');checks.push('normal close retains exact unsaved text in the recovery ledger; reopening never silently writes it over source');
+ stage='reopen original annotation';await open('reading.md');await page.waitForSelector('#text-preview .tag-note .note-projection',{visible:true});const restored=(await invoke('annotation.list',{projectId,relPath:'reading.md'},page)).annotations.find(row=>row.id===note.id);assert.deepEqual(restored.anchor,note.anchor);assert.equal(restored.materialDigest,note.materialDigest);assert.equal(await fs.readFile(path.join(project,'reading.md'),'utf8'),original);checks.push('annotation anchor and frozen source version survive complete process restart');
+ await page.screenshot({path:path.join(out,'reading-current.png')});assert.deepEqual(errors,[]);await close();await fs.writeFile(path.join(out,'report.json'),JSON.stringify({ok:true,checks,errors,out},null,2));console.log(JSON.stringify({ok:true,checks,out},null,2));
+}catch(error){await Promise.race([page?.screenshot({path:path.join(out,'failure.png')}).catch(()=>{}),pause(2000)]);await fs.writeFile(path.join(out,'report.json'),JSON.stringify({ok:false,stage,error:error.stack,checks,errors,out},null,2));console.error(out,stage,error);throw error;}
+finally{await fs.writeFile(path.join(out,'main.log'),log);await browser?.disconnect();if(child?.exitCode===null){child.kill('SIGTERM');await Promise.race([exited,pause(3000)]);if(child.exitCode===null)child.kill('SIGKILL');}}

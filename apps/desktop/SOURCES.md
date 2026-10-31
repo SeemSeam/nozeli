@@ -3,6 +3,14 @@
 
 > **Distribution status (2026-10-29).** Nozeli `v0.1.0-alpha.1` is published as a public prerelease at https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.1 at the repository owner's explicit request. Third-party corresponding-source and binary redistribution review is still incomplete; publication is not a compliance certification, and no disclaimer or notice in the shipped archive discharges those obligations. Statements below that authorize only local installation/testing (for example the Product-managed Git section) remain accurate about what has actually been signed off. Machine-readable pinned versions, digests, evidence paths and per-obligation status live in [compliance-inventory.json](compliance-inventory.json), validated by `tools/check-repository.mjs` (default: metadata check; `--public`: fails while any obligation lacks a complete human sign-off record). Neither this file, the inventory nor that script is a legal audit.
 
+## Pi session runtime cutover (2026-10-30, integration in progress)
+
+The product session runtime is migrating from the bundled private OMP TUI to the Pi coding-agent runtime. `integrations/pi` vendors the minimal pi-gui runtime closure from the read-only upstream reference repository at commit `eddfb19367b3ec4e59314eddfa83ed5aa6989f03` (MIT; notice retained at `integrations/pi/vendor/pi-gui/LICENSE`), plus local compatibility files under the same tree. The SDK is pinned to `@earendil-works/pi-coding-agent` 1.4.0; no compatibility with the OMP wire API is presumed. Runtime ownership: a standalone Node owner process (default entry `integrations/pi/src/owner.mjs`) owns native Pi sessions, model calls and tool lifecycle under host admission; Nozeli keeps sole authority over Work, versions, reports, review, task queue, process budget and materials.
+
+The product GUI no longer mounts an embedded OMP terminal. Durable Pi journal rows keep their original identities; streaming messages are transient projections. Model/thinking selection is a GUI control, not a simulated TUI. `@xterm/addon-fit` is removed and `@xterm/xterm` is development-only for historical adapter checks; `@xterm/headless` remains for retained legacy projections. Original historical sessions are not renamed or replayed as Pi sessions.
+
+Status: isolated Linux integration candidate on `integration/pi-gui`; not installed or publicly distributed. `integrations/pi/upstream-manifest.json` records 46 original/patched file SHA-256 pairs, `patches/` records the three exact modifications, and `package-lock.json` pins the SDK dependency closure. Pi SDK's fixed v1.4.0 MIT notice is retained at `integrations/pi/licenses/pi-1.4.0.LICENSE` (source: https://raw.githubusercontent.com/earendil-works/pi/v1.4.0/LICENSE). The full transitive binary/notice/corresponding-source audit remains pending; these records are not redistribution signoff.
+
 ## Static HTML reports and offline diagrams (2026-10-23)
 
 HTML/CSS/JavaScript syntax analysis uses the existing MIT Lezer parsers, now explicit production dependencies: `@lezer/html` 1.3.13, `@lezer/css` 1.3.8 and `@lezer/javascript` 1.5.5. Host SVG validation reuses `@xmldom/xmldom` 0.9.12 (MIT); raster bounds reuse `image-size` 2.0.2 (MIT). These parsers do not grant HTML any application or filesystem privileges.
@@ -28,15 +36,15 @@ This development build does not import `prototypes/`, `.ccb/`, or an absolute de
 
 | Package | Version | Role | License |
 | --- | --- | --- | --- |
-| electron | 44.4.5 | desktop host, dev launch | MIT. The npm package is a shim; the downloaded Chromium binary has its own third-party notices. |
-| pdfjs-dist | 6.3.289 | PDF rendering in the sandboxed renderer | Apache-2.0. Bundled cmaps, standard fonts, and wasm assets keep their own notices inside the package. |
+| electron | 44.9.1 | desktop host, dev launch | MIT. The npm package is a shim; the downloaded Chromium binary has its own third-party notices. |
+| pdfjs-dist | 6.4.299 | PDF rendering in the sandboxed renderer | Apache-2.0. Bundled cmaps, standard fonts, and wasm assets keep their own notices inside the package. |
 | monaco-editor | 0.57.0 | production code-editor surface and E0 isolated comparison harness | MIT; DOMPurify/marked retain their package licenses |
 | codemirror | 6.0.2 | text editing | MIT |
-| @codemirror/autocomplete | 6.19.0 | offline completion UI and sources | MIT |
+| @codemirror/autocomplete | 6.20.4 | offline completion UI and sources | MIT |
 | @codemirror/lang-cpp | 6.0.3 | C/C++ highlighting | MIT |
 | @codemirror/lang-css | 6.3.1 | CSS highlighting | MIT |
 | @codemirror/lang-go | 6.0.1 | Go highlighting | MIT |
-| @codemirror/lang-html | 6.4.9 | HTML highlighting | MIT |
+| @codemirror/lang-html | 6.4.12 | HTML highlighting | MIT |
 | @codemirror/lang-java | 6.0.2 | Java highlighting | MIT |
 | @codemirror/lang-javascript | 6.2.5 | JavaScript/JSX/TypeScript/TSX highlighting | MIT |
 | @codemirror/lang-json | 6.0.2 | JSON highlighting | MIT |
@@ -44,27 +52,28 @@ This development build does not import `prototypes/`, `.ccb/`, or an absolute de
 | @codemirror/lang-python | 6.2.1 | Python highlighting | MIT |
 | @codemirror/lang-rust | 6.0.2 | Rust highlighting | MIT |
 | @codemirror/lang-sql | 6.10.0 | SQL highlighting | MIT |
-| @codemirror/merge | 6.10.2 | readonly file/history Diff views, aligned changes and observed external-change mapping | MIT |
-| typescript-language-server | 6.0.1 | real TypeScript/JavaScript stdio LSP server | Apache-2.0 |
+| @codemirror/merge | 6.12.3 | readonly file/history Diff views, aligned changes and observed external-change mapping | MIT |
+| typescript-language-server | 6.0.2 | real TypeScript/JavaScript stdio LSP server; requires Node >=22.22.2 | Apache-2.0 |
 | vscode-jsonrpc | 9.0.3 | main-process LSP JSON-RPC transport | MIT |
 | typescript | 5.9.3 | TypeScript compiler/runtime used by the LSP server | Apache-2.0 |
 | prettier | 3.6.2 | in-memory JavaScript/TypeScript/JSON/CSS/HTML/Markdown formatter | MIT |
 | @lezer/python | 1.1.19 | Python parser runtime for CodeMirror | MIT |
-| katex | 0.18.0 | safe inline and display math rendering in conversation Markdown | MIT |
+| katex | 0.19.1 (lockfile) | safe inline and display math rendering in conversation Markdown | MIT |
 | puppeteer-core | 25.11.0 | Linux integration test only | Apache-2.0 declared; this package is not shipped in the app. |
 | esbuild | 0.25.10 | bundles the renderer during `npm start` / tests | MIT; not a runtime dependency of the window. |
-| @xterm/xterm | 6.0.0 | renderer PTY terminal UI | MIT |
+| @xterm/xterm | 6.0.0 | former renderer PTY terminal UI; unmounted by the Pi session cutover (2026-10-30) and kept only until host-side legacy terminal paths are removed | MIT |
 | @xterm/headless | 6.0.0 | bounded host-owned ANSI screen cache for read-only Worker previews; same PTY, no reply/input transport | MIT; upstream 6.0.0 LICENSE retained at src/agents/managed/xterm-headless.LICENSE (npm tarball omits license text) |
-| @xterm/addon-fit | 0.11.0 | terminal resize fitting | MIT |
+| @xterm/addon-fit | 0.11.0 | former terminal resize fitting; unused by the product renderer after the Pi session cutover | MIT |
 | ws | 8.22.0 | local native CLI WebSocket transport and notification observation | MIT |
-| node-pty | 1.1.0 | host PTY / ConPTY binding | MIT; rebuilt locally for Electron 44.4.5 ABI |
+| node-pty | 1.1.0 | host PTY / ConPTY binding | MIT; rebuilt locally for Electron 44.9.1 ABI |
+| tar | 7.5.22 | bounded, validated automatic-update archive inspection and worker extraction | BlueOak-1.0.0; bundled package license retained |
 
 `src/domain/material-store.mjs` is the executor-owned immutable byte store. This package calls it and does not modify it. UI direction follows the Nozeli continuous reading surface. It does not copy DemoEngine, simulated replies, or the old dual-PDF toolbar overlap.
 
 Local Office engines are pinned under `vendor/`, as documented below. JSZip 3.10.2 (MIT) is a direct dependency used to validate and patch document packages.
 
 
-Legacy provider-launch adapters originated in an earlier isolated CLI prototype. The current product executes only its bundled private OMP; legacy Codex/Claude records are read-only. No prototype directory, CCB runtime, ask or tmux is a product dependency.
+Legacy provider-launch adapters originated in an earlier isolated CLI prototype. The product is migrating its bundled private OMP session runtime to the Pi runtime (see the Pi session runtime cutover section); legacy Codex/Claude/OMP records are read-only. No prototype directory, CCB runtime, ask or tmux is a product dependency.
 Windows and macOS binaries and dialogs are not tested here. The native directory dialog is not exercised when `NOZELI_TEST_PICK` is set.
 
 The normal renderer mounts Monaco for supported code files; Markdown, TeX, and ordinary text use the CodeMirror/reading path, which also remains available for the isolated comparison harness and adapter coverage. Monaco dynamic stylesheets receive the application nonce at build time; the isolated harness permits inline style attributes required by Monaco, while retaining restricted script sources. Production CSP is unchanged. The earlier 0.55.1 cancellation workaround was removed after upgrading to 0.57.0, which includes the upstream fix.
@@ -90,7 +99,7 @@ Local PPTX engine at `vendor/pptist`, upstream commit `82ecf10040ca8da67832f173b
 
 No compiler source or binary is bundled in the desktop package by this change.
 The host launches detected native `latexmk` (GPL-2.0) with a selected TeX Live engine, or separately selected Tectonic (component-specific licensing; wrapper MIT).
-PDF display reuses the existing PDF.js 6.3.289 dependency.
+PDF display reuses the existing PDF.js 6.4.299 dependency.
 Linux validation used the official TinyTeX-1 v2026.10 archive in the developer's user toolchain directory, latexmk 4.88 and TeX Live 2026, plus existing Tectonic 0.17.0. TeX Live packages/fonts have individual licenses; this test installation is not a redistributable app toolchain package or cross-platform installer acceptance.
 Archive: https://github.com/rstudio/tinytex-releases/releases/download/v2026.10/TinyTeX-1-linux-x86_64-v2026.10.tar.xz
 SHA256 (matches the official GitHub release asset digest): `4d519d6236ee6798e3ec0d8e2093d1fda01aeb267aa22c2a5586d76bcfce6566`.

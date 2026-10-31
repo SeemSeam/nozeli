@@ -113,7 +113,7 @@ async function execute(project,root,label,{interrupt=false}={}){
  return record;
 }
 try{
- main=await launch('main');await call(main,'config.initialize',{mode:'independent'});await call(main,'settings.providers.save',{provider:'cycle-local',model:'scripted',baseUrl:'http://127.0.0.1:'+server.address().port+'/v1',api:'openai-completions',key:'synthetic-local-only'});await call(main,'settings.models.save',{frontdesk:'cycle-local/scripted',orchestrator:'cycle-local/scripted',worker:'cycle-local/scripted'});
+ main=await launch('main');await call(main,'config.initialize',{mode:'independent'});await call(main,'settings.providers.save',{operation:'create',provider:'cycle-local',baseUrl:'http://127.0.0.1:'+server.address().port+'/v1',api:'openai-completions',models:[{id:'scripted'}],credential:{action:'replace',value:'synthetic-local-only'}});await call(main,'settings.models.save',{frontdesk:{model:{mode:'explicit',selector:'cycle-local/scripted'},thinking:{mode:'native-default'}},orchestrator:{model:{mode:'explicit',selector:'cycle-local/scripted'},thinking:{mode:'native-default'}},worker:{model:{mode:'explicit',selector:'cycle-local/scripted'},thinking:{mode:'native-default'}}});
  for(let i=0;i<3;i++){
   const first=await choose(main,roots[i]);const a=await execute(first.project,roots[i],i+'_NEW');a.openMs=first.ms;
   const again=await choose(main,roots[i]);assert.equal(again.project.id,first.project.id,'ordinary reload identity remains');

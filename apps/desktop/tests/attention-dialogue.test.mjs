@@ -65,6 +65,19 @@ test('cancellation interrupts only after explicit confirmation',async()=>{
  assert.equal(calls.length,1);assert.equal(calls[0][0],'managed.attention.respond','confirmed cancellation targets the native respond operation');assert.equal(calls[0][1].cancel,true,'confirmed cancellation interrupts the original turn');
  assert.equal(calls[0][1].answer,undefined,'cancellation never fabricates an answer');
 });
+for(const action of ['chat','cancel'])test(`askDialog ${action} preserves typed and multi-select answers without sending them`,async()=>{
+ const calls=[],f=fixture(askDialog,async(...args)=>{calls.push(args);return {ok:true,value:{}};},{confirm:async()=>true});
+ const selected=f.nodes('input').find(node=>node.value==='Review logs');selected.checked=true;selected.onchange();
+ const custom=f.query('[data-attention-input="custom:1"]');custom.value='retained typed answer';custom.oninput();
+ await click(f.query(action==='chat'?'[data-attention-chat]':'[data-attention-cancel]'));
+ assert.equal(calls.length,1);assert.equal(f.drafts.size,1);
+ assert.deepEqual(calls[0][1].answer,action==='chat'?{kind:'chat'}:undefined);
+ const restored=fixture(askDialog,async()=>({ok:true}),{drafts:f.drafts});
+ assert.equal(restored.query('[data-attention-input="custom:1"]').value,'retained typed answer');
+ assert.equal(restored.nodes('input').find(node=>node.value==='Review logs').checked,true);
+ const other=fixture({...askDialog,ownerId:'different-owner'},async()=>({ok:true}),{drafts:f.drafts});
+ assert.equal(other.query('[data-attention-input="custom:1"]').value,'');
+});
 test('accepted answer stays settled even when the following refresh fails; no resend',async()=>{
  const calls=[];let refreshFails=false;
  const f=fixture({kind:'conversation',ownerId:'owner',interactionId:'interaction',question:{method:'input'}},async(...args)=>{calls.push(args);return {ok:true,value:{}};},{onRefresh:async()=>{if(refreshFails)throw Error('refresh failed');}});

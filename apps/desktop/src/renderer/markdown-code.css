@@ -26,6 +26,15 @@ pre[data-markdown-code] > code span {
 html[data-theme=dark] pre[data-markdown-code] > code span {
   color:var(--markdown-token-dark,inherit);
 }
+/* Keep +/- markers and header text: color is supplementary, not the only cue. */
+:root {--diff-add-ink:#17663a;--diff-add-bg:#e5f3e9;--diff-delete-ink:#a12c35;--diff-delete-bg:#fce9eb;--diff-meta-ink:#245b9b;--diff-hunk-ink:#7441a0;--diff-hunk-bg:#f0eaf8}
+html[data-theme=dark] {--diff-add-ink:#99d9aa;--diff-add-bg:#243b2c;--diff-delete-ink:#ffadb4;--diff-delete-bg:#472b32;--diff-meta-ink:#9ac8ff;--diff-hunk-ink:#d4b4f5;--diff-hunk-bg:#342e44}
+pre[data-markdown-code] > code[data-highlighted=diff] .markdown-diff-line {color:inherit}
+pre[data-markdown-code] > code[data-highlighted=diff] .markdown-diff-added {color:var(--diff-add-ink);background:var(--diff-add-bg)}
+pre[data-markdown-code] > code[data-highlighted=diff] .markdown-diff-deleted {color:var(--diff-delete-ink);background:var(--diff-delete-bg)}
+pre[data-markdown-code] > code[data-highlighted=diff] .markdown-diff-file {color:var(--diff-meta-ink);font-weight:600}
+pre[data-markdown-code] > code[data-highlighted=diff] .markdown-diff-hunk {color:var(--diff-hunk-ink);background:var(--diff-hunk-bg)}
+@media(forced-colors:active) {pre[data-markdown-code] > code[data-highlighted=diff] .markdown-diff-line {color:CanvasText;background:Canvas}}
 @media(forced-colors:active) {
   pre[data-markdown-code],
   :is(#text-preview,.tag-markdown,.agent-message-body,.session-markdown) pre[data-markdown-code] {

@@ -18,18 +18,38 @@ import {HostError} from '../main/host.mjs';
 import {recordAdoption} from './managed/adoption-history.mjs';
 import {SessionIndex} from './managed/session-index.mjs';
 import {WorkChanges} from './managed/work-changes.mjs';
+import {THINKING_LEVELS} from './managed/provider-settings.mjs';
+const MODEL_ERROR_MESSAGES={
+ PI_NO_MODEL:'所选模型当前不可用或未配置；原会话保持原模型。',
+ PI_BUSY:'当前回合执行中；模型设置将在回合结束后的空闲边界应用。',
+ PI_PROVIDER_CONFLICT:'源配置冲突；原会话保持原模型。',
+ PI_CREDENTIAL_ORIGIN_CHANGE:'API地址来源变化需明确确认或新密钥；原会话保持原模型。',
+ PI_CREDENTIAL_KEEP_UNAVAILABLE:'没有已保存的密钥可保留；原会话保持原模型。',
+ PI_SESSION_LEASED:'会话正被其他操作持有；原会话保持原模型。',
+ PI_RUNTIME_EXITED:'Pi 运行环境已退出；原会话保持原模型。',
+ PI_RUNTIME_UNAVAILABLE:'Nozeli 私有 Pi 运行环境不可用；原会话保持原模型。',
+ PI_INVALID_PARAMS:'模型或思考档位选择无效；原会话保持原模型。'
+};
+// Sanitized error DTO: native text is not a credential-safe boundary.
+const modelErrorDTO=error=>{
+ if(!error)return null;
+ const code=typeof error.code==='string'&&Object.keys(MODEL_ERROR_MESSAGES).includes(error.code)?error.code:'PI_MODEL_CHANGE_FAILED';
+ return {code,message:MODEL_ERROR_MESSAGES[code]};
+};
 import {readWorkerArchive} from './managed/worker-archive.mjs';
 import {decodeReportState} from './managed/report-descriptor.mjs';
 import {residentHistoryPage} from './managed/resident-history.mjs';
 import {AgentProcessBudget,validateAgentLimit} from './managed/agent-process-budget.mjs';
 import {Workspace} from './managed/workspace.mjs';
 import {recoverOmpProvider} from './managed/omp-process-ownership.mjs';
+import {recoverPiProvider} from './managed/pi-process-ownership.mjs';
 import {recoverProvider} from './managed/process-ownership.mjs';
 import {readManagedState,managedRuntime,readManagedObject} from './managed/managed-storage.mjs';
 import {boundedProjectWait} from '../domain/project-lifecycle-wait.mjs';
 export class ManagedProjects {
- constructor({userDataDir,host,legacy,beforeDocumentOperation,ompSystemSource=null,ompAuthBroker=null,ompCommand,openController=Controller.open,attachTerminal=attachNativeTerminal,stopTimeoutMs=15000,privilegeBroker=null}){
-  Object.assign(this,{host,legacy,beforeDocumentOperation,openController,attachTerminal,stopTimeoutMs,privilegeBroker,ompOptions:{ompSystemSource,ompCommand,ompAuthBroker}});
+ constructor({userDataDir,host,legacy,beforeDocumentOperation,ompSystemSource=null,ompAuthBroker=null,ompCommand=null,piSource=null,piRuntime=null,piAuth=null,openController=Controller.open,attachTerminal=attachNativeTerminal,stopTimeoutMs=15000,privilegeBroker=null,modelCatalog=null}){
+  // ompOptions 仅供旧 OMP 进程回收（只读历史）；新执行一律 Pi（piSource/piRuntime/piAuth）。
+  Object.assign(this,{host,legacy,beforeDocumentOperation,openController,attachTerminal,stopTimeoutMs,privilegeBroker,modelCatalog,ompOptions:{ompSystemSource,ompCommand,ompAuthBroker},piSource,piRuntime,piAuth});
   this.attention=new AttentionLedger(host.storage);
   this.permissions=new TaskPermissions(host.storage);
   this.versions=new Map();   // ShadowVersions per project（connect 中 set 前必须初始化）
@@ -44,12 +64,12 @@ export class ManagedProjects {
  applyModelDefaults(defaults){
   const next=structuredClone(defaults);
   const operation=(this.modelDefaultsFlight??Promise.resolve()).catch(()=>{}).then(async()=>{
-   const sync={applied:0,pending:0,failed:[]};
+   const sync={applied:0,pending:0,failed:[],sessions:[]};
    this.modelDefaultFailures=new Map();
    if(this.stopping)return sync;
    await Promise.all([...this.controllers.values()].map(async controller=>{
     if(controller.stopping)return;
-    try{const result=await controller.applyModelDefaults(next);sync.applied+=result.applied;sync.pending+=result.pending;sync.failed.push(...result.failed);}
+    try{const result=await controller.applyModelDefaults(next);sync.applied+=result.applied;sync.pending+=result.pending;sync.failed.push(...result.failed);sync.sessions.push(...(result.sessions??[]));}
     catch{const failure={message:'项目在线Agent默认模型同步失败；配置已保存，可重试保存。'};this.modelDefaultFailures.set(controller,failure);sync.failed.push(failure);}
    }));
    return sync;
@@ -57,13 +77,25 @@ export class ManagedProjects {
   this.modelDefaultsFlight=operation;return operation;
  }
  modelSync(){
-  const sync={applied:0,pending:0,failed:[]};
+  const sync={applied:0,pending:0,failed:[],sessions:[]};
   for(const controller of this.controllers.values()){
    if(controller.stopping)continue;
    const failure=this.modelDefaultFailures?.get(controller);if(failure){sync.failed.push(failure);continue;}
-   const result=controller.modelSync();sync.applied+=result.applied;sync.pending+=result.pending;sync.failed.push(...result.failed);
+   const result=controller.modelSync();sync.applied+=result.applied;sync.pending+=result.pending;sync.failed.push(...result.failed);sync.sessions.push(...(result.sessions??[]));
   }
   return sync;
+ }
+ async applyProviderUpdate(provider){
+  const application={applied:0,pending:0,failed:[],sessions:[]};
+  if(this.stopping||!provider)return application;
+  await Promise.all([...this.controllers.values()].map(async controller=>{
+   if(controller.stopping||typeof controller.applyProviderUpdate!=='function')return;
+   try{
+    const result=await controller.applyProviderUpdate(provider);
+    application.applied+=result.applied;application.pending+=result.pending;application.failed.push(...result.failed);application.sessions.push(...(result.sessions??[]));
+   }catch{application.failed.push({message:'源已保存，但一个项目未能刷新其在线Agent；原会话保持，可重试保存源。'});}
+  }));
+  return application;
  }
  async initializeResources(){
   if(this.resourceReady)return this.resourceReady;
@@ -78,7 +110,7 @@ export class ManagedProjects {
     }
    }
    for(const {runtime,record,slot} of records)try{
-    const receipt=await (['omp-rpc','omp-tui'].includes(record.kind)?recoverOmpProvider(record,runtime):recoverProvider(record,runtime));
+    const receipt=await (record.kind==='pi-node'?recoverPiProvider(record,runtime):['omp-rpc','omp-tui'].includes(record.kind)?recoverOmpProvider(record,runtime):recoverProvider(record,runtime));
     if(receipt.verified===true){const providers=await this.host.storage.getLocal(slot.projectId,'managed:providers')??{};if(JSON.stringify(providers[slot.target])===JSON.stringify(record)){delete providers[slot.target];await this.host.storage.putLocal(slot.projectId,'managed:providers',providers);this.processBudget.release(slot);}else slot.state='unconfirmed';}else slot.state='unconfirmed';
    }catch{slot.state='unconfirmed';}
   })();this.resourceReady=flight;try{return await flight;}catch(error){if(this.resourceReady===flight)this.resourceReady=null;throw error;}
@@ -364,7 +396,7 @@ export class ManagedProjects {
   if(this.controllers.has(id)){
    if(!startResidents)return this.status(id);
    const retained=this.controllers.get(id);if(this.connectionErrors.get(id)?.handoff)return this.status(id);if(retained.started&&(!retained.sessions||['frontdesk','orchestrator'].every(target=>retained.sessions.get(target)&&!retained.sessions.get(target).closed)))return this.status(id);
-   const restart=(async()=>{try{await retained.start();this.connectionErrors.delete(id);return this.status(id);}catch(error){let handoff=null,blocked=null;if(error.code==='OMP_TOOLS_DIGEST_MISMATCH')try{handoff=await retained.prepareResidentHandoff(error.target);}catch(unsafe){blocked={code:unsafe.code??'HANDOFF_UNSAFE',message:unsafe.message};}this.connectionErrors.set(id,{error:{code:error.code??'RESIDENT_START_FAILED',message:error.message,role:error.target??null,blocked},handoff});throw error;}})().finally(()=>{if(this.flights.get(id)===restart)this.flights.delete(id);});this.flights.set(id,restart);return restart;
+   const restart=(async()=>{try{await retained.start();this.connectionErrors.delete(id);return this.status(id);}catch(error){let handoff=null,blocked=null;if(error.code==='PI_TOOLS_DIGEST_MISMATCH')try{handoff=await retained.prepareResidentHandoff(error.target);}catch(unsafe){blocked={code:unsafe.code??'HANDOFF_UNSAFE',message:unsafe.message};}this.connectionErrors.set(id,{error:{code:error.code??'RESIDENT_START_FAILED',message:error.message,role:error.target??null,blocked},handoff});throw error;}})().finally(()=>{if(this.flights.get(id)===restart)this.flights.delete(id);});this.flights.set(id,restart);return restart;
   }
   const flight=(async()=>{
    await this.draftFlights?.get(id);
@@ -386,7 +418,7 @@ export class ManagedProjects {
      finally{checkpointInFlight.delete(requestId);}
    };
    const frontdeskDocuments=createFrontdeskDocuments({host:this.host,projectId:id,sync:this.beforeDocumentOperation});
-   const controller=await this.openController({storage:this.host.storage,offline,localOnly:true,projectId:id,processBudget:this.processBudget,runtimeRoot:await managedRuntime(this.host.storage,id),contentRoot:project.root,...this.ompOptions,taskPermissions:this.permissions,privilegeBroker:this.privilegeBroker,resolveRegisteredProject:value=>this.resolveRegisteredProject(id,value),resolveProjectRoot:value=>this.resolveProjectRoot(value),frontdeskDocuments,afterAdoption:(work,receipt)=>recordAdoption({host:this.host,projectId:id,work,receipt}),beforeAccept:async(work,admittedPaths)=>{const paths=Array.isArray(admittedPaths)&&admittedPaths.length?admittedPaths:work.execution?.candidate?.files||[];for(const relPath of paths){const release=await this.beforeDocumentOperation?.({projectId:id,relPath,hold:false});release?.();const draft=await this.host.readDraftRecord(id,relPath);if(draft?.draftError||draft&&draft.status!=='saved')throw new HostError('DRAFT_CONFLICT','成果合入受阻：请先保存或明确处理原项目草稿 '+relPath);}},isolateProcesses:false,readProjectText:async rel=>{const file=await this.host.readFile(id,rel);if(file.draftError)throw new HostError(file.draftError.code||'DRAFT_CONFLICT',file.draftError.message||'项目草稿无法读取。');const draft=file.draft&&file.draft.status!=='saved'?file.draft:null;return {text:draft?.text??file.text,buffer:Boolean(draft),diskVersion:file.digest};}});
+   const controller=await this.openController({storage:this.host.storage,offline,localOnly:true,projectId:id,processBudget:this.processBudget,runtimeRoot:await managedRuntime(this.host.storage,id),contentRoot:project.root,piSource:this.piSource,piRuntime:this.piRuntime,piAuth:this.piAuth,...this.ompOptions,taskPermissions:this.permissions,privilegeBroker:this.privilegeBroker,resolveRegisteredProject:value=>this.resolveRegisteredProject(id,value),resolveProjectRoot:value=>this.resolveProjectRoot(value),frontdeskDocuments,afterAdoption:(work,receipt)=>recordAdoption({host:this.host,projectId:id,work,receipt}),beforeAccept:async(work,admittedPaths)=>{const paths=Array.isArray(admittedPaths)&&admittedPaths.length?admittedPaths:work.execution?.candidate?.files||[];for(const relPath of paths){const release=await this.beforeDocumentOperation?.({projectId:id,relPath,hold:false});release?.();const draft=await this.host.readDraftRecord(id,relPath);if(draft?.draftError||draft&&draft.status!=='saved')throw new HostError('DRAFT_CONFLICT','成果合入受阻：请先保存或明确处理原项目草稿 '+relPath);}},isolateProcesses:false,readProjectText:async rel=>{const file=await this.host.readFile(id,rel);if(file.draftError)throw new HostError(file.draftError.code||'DRAFT_CONFLICT',file.draftError.message||'项目草稿无法读取。');const draft=file.draft&&file.draft.status!=='saved'?file.draft:null;return {text:draft?.text??file.text,buffer:Boolean(draft),diskVersion:file.digest};}});
    try{this.host.storage.assertActive(id);if(this.projectStops?.has(id))throw new HostError('PROJECT_STOPPING','项目正在停用。');}catch(error){controller.stopping=true;await boundedProjectWait(controller.stop(),{timeoutMs:this.stopTimeoutMs});throw error;}
    controller.on('state',state=>{const pending=(this.attentionPublish?.get(id)??Promise.resolve()).catch(()=>{}).then(async()=>{if(this.controllers.get(id)!==controller)return;const merged=await this.attentionState(id,state,{connected:true});this.listener({projectId:id,kind:'managed-state',state:merged});});this.attentionPublish??=new Map();this.attentionPublish.set(id,pending);pending.catch(error=>this.listener({projectId:id,kind:'managed-error',text:'待办持久化失败：'+error.message}));for(const other of this.controllers.values())if(other!==controller&&other.store.state.jobs.some(job=>job.status==='queued'&&(!other.sessions.get(job.target)||other.sessions.get(job.target).closed)))other.kick();});controller.on('diagnostic',text=>this.listener({projectId:id,kind:'managed-error',text}));
    controller.on('timeline',timeline=>this.listener({projectId:id,kind:'managed-timeline',timeline}));
@@ -400,37 +432,42 @@ export class ManagedProjects {
      if(controller.store?.state?.bindings){
        const roles=controller.store.state.bindings;
        const projection={schema:1,enabled:true,roles:{}};
-       for(const role of ['frontdesk','orchestrator','worker'])projection.roles[role]={provider:'omp'};
+       for(const role of ['frontdesk','orchestrator','worker'])projection.roles[role]={provider:'pi'};
        await this.host.storage.putLocal(id,'managed:binding',projection);
      }
      this.connectionErrors.delete(id);
      return this.status(id);}
-   catch(e){if(e.code==='OMP_TOOLS_DIGEST_MISMATCH'&&typeof controller.prepareResidentHandoff==='function'){
+   catch(e){if(e.code==='PI_TOOLS_DIGEST_MISMATCH'&&typeof controller.prepareResidentHandoff==='function'){
      let handoff=null,blocked=null;try{handoff=await controller.prepareResidentHandoff(e.target);}catch(error){blocked={code:error.code??'HANDOFF_UNSAFE',message:error.message};}
      this.connectionErrors.set(id,{error:{code:e.code,message:e.message,role:e.target??null,blocked},handoff});
-     this.listener({projectId:id,kind:'managed-error',text:'OMP工具协议已变化，原会话保留；需要用户确认新会话接手。'});throw e;
+     this.listener({projectId:id,kind:'managed-error',text:'Pi工具协议已变化，原会话保留；需要用户确认新会话接手。'});throw e;
     }if(e.code==='AGENT_PROCESS_LIMIT'){this.connectionErrors.set(id,{error:{code:e.code,message:e.message},handoff:null});throw e;}this.controllers.delete(id);await controller.stop().catch(()=>{});throw e;}
   })().finally(()=>this.flights.delete(id));this.flights.set(id,flight);return flight;
  }
  async handoffResident(id,p){
   if(this.stopping)throw Error('application closing');await this.host.requireProject(id);
   const key=id+':'+p.role;const active=this.handoffFlights.get(key);if(active){if(active.token!==p.token||active.oldThreadId!==p.oldThreadId)throw Error('接手确认已变化，请重新查看当前项目提示');return active;}
-  const c=this.controllers.get(id);if(!c||!this.connectionErrors.has(id))throw Error('没有需要确认接手的OMP协议故障');
+  const c=this.controllers.get(id);if(!c||!this.connectionErrors.has(id))throw Error('没有需要确认接手的Pi协议故障');
   const flight=(async()=>{const result=await c.confirmResidentHandoff({role:p.role,token:p.token,oldThreadId:p.oldThreadId});
    this.connectionErrors.delete(id);
-   try{await c.start();return {...result,projectId:id,status:await this.status(id)};}catch(error){if(error.code!=='OMP_TOOLS_DIGEST_MISMATCH'){this.connectionErrors.set(id,{error:{code:error.code??'HANDOFF_START_FAILED',message:error.message,role:p.role},handoff:null});throw error;}let handoff=null,blocked=null;try{handoff=await c.prepareResidentHandoff(error.target);}catch(unsafe){blocked={code:unsafe.code??'HANDOFF_UNSAFE',message:unsafe.message};}this.connectionErrors.set(id,{error:{code:error.code,message:error.message,role:error.target,blocked},handoff});return {...result,projectId:id,status:await this.status(id)};}
+   try{await c.start();return {...result,projectId:id,status:await this.status(id)};}catch(error){if(error.code!=='PI_TOOLS_DIGEST_MISMATCH'){this.connectionErrors.set(id,{error:{code:error.code??'HANDOFF_START_FAILED',message:error.message,role:p.role},handoff:null});throw error;}let handoff=null,blocked=null;try{handoff=await c.prepareResidentHandoff(error.target);}catch(unsafe){blocked={code:unsafe.code??'HANDOFF_UNSAFE',message:unsafe.message};}this.connectionErrors.set(id,{error:{code:error.code,message:error.message,role:error.target,blocked},handoff});return {...result,projectId:id,status:await this.status(id)};}
   })().finally(()=>{if(this.handoffFlights.get(key)===flight)this.handoffFlights.delete(key);});flight.token=p.token;flight.oldThreadId=p.oldThreadId;this.handoffFlights.set(key,flight);return flight;
  }
  async residentHistory(id,{role,archiveId,offset=0,version}){
   await this.host.requireRegisteredProject(id);if(!['frontdesk','orchestrator'].includes(role))throw Error('仅支持居民归档历史');
   const c=this.controllers.get(id);const state=c?.store?.state??(await this.projectionSource(id)).state;
-  if(['codex','claude'].includes(archiveId)){
+  if(['codex','claude','omp'].includes(archiveId)){
    const historical=state.residentArchive?.[role]?.[archiveId];if(!historical?.readOnly)throw Error('历史身份不属于当前项目角色');
-   if(!Array.isArray(historical.messages))throw new HostError('HISTORY_UNVERIFIED','旧后端档案没有冻结消息边界；原记录保留，不混入当前OMP对话。');
+   if(!Array.isArray(historical.messages))throw new HostError('HISTORY_UNVERIFIED','旧后端档案没有冻结消息边界；原记录保留，不混入当前Pi对话。');
    const messages=historical.messages;
    return {projectId:id,role,archiveId,provider:archiveId,threadId:historical.threadId,source:'host-message-ledger',...await residentHistoryPage({messages,offset,version})};
   }
-  const record=state.residentArchive?.[role]?.handoffs?.find(r=>r.id===archiveId);if(!record||record.provider!=='omp')throw Error('归档身份不属于当前项目角色');
+  const record=state.residentArchive?.[role]?.handoffs?.find(r=>r.id===archiveId);if(!record||!['omp','pi'].includes(record.provider))throw Error('归档身份不属于当前项目角色');
+  if(record.provider==='pi'){
+   // Pi 归档：只读账本分页（消息边界已冻结），不解析原生 journal、不重放。
+   const messages=(state.messages??[]).filter(message=>message.target===role);
+   return {projectId:id,role,archiveId,provider:'pi',threadId:record.threadId,source:'host-message-ledger',...await residentHistoryPage({messages,offset,version})};
+  }
   const home=path.join(await managedRuntime(this.host.storage,id),'agents',`resident-${role}-omp`),sessions=path.join(home,'sessions');
   const {pinSessionFileById}=await import('./managed/omp-process-ownership.mjs');const file=await pinSessionFileById(sessions,record.threadId);if(!file)throw Error('原归档会话文件缺失，未创建替代历史');
   const real=await fs.realpath(file),root=await fs.realpath(sessions);if(!real.startsWith(root+path.sep))throw Error('归档来源越界');
@@ -490,13 +527,14 @@ export class ManagedProjects {
   const index=new SessionIndex(store);return {store,state,index,changes:new WorkChanges({runtimeRoot:runtime,storage,projectId:id,readState:()=>state})};
  }
  async timelineQuery(id,action,p){
-  const {index}=await this.projectionSource(id);
+  const {index,state}=await this.projectionSource(id);
   if(action==='timeline.read')return {entry:await index.read(p.id,{version:p.version,field:p.field,offset:p.offset,limit:p.limit})};
   if(action==='timeline.request'){
    if(typeof p.requestId!=='string'||!p.requestId||p.requestId.length>512||!Number.isSafeInteger(p.offset??0)||(p.offset??0)<0)throw new HostError('INVALID_PAYLOAD','讨论轮次查询无效');
    const rows=index.records().filter(row=>row.target==='frontdesk'&&row.jobId===p.requestId).sort((a,b)=>a.sequence-b.sequence),offset=p.offset??0;
    const ids=[];for(const row of rows.slice(offset,offset+100)){await index.hydrate([row]);const entry=index.nativeDTO(row);if(entry?.speaker==='agent'||entry?.availability==='unavailable')ids.push(row.id);}
-   return {ids,nextOffset:offset+100<rows.length?offset+100:null};
+   const job=state.jobs?.find(row=>row.id===p.requestId);
+   return {ids,nextOffset:offset+100<rows.length?offset+100:null,...(job?{job:{id:job.id,status:job.status,...(typeof job.error==='string'?{error:job.error.slice(0,4096)}:{})}}:{})};
   }
   return index.page({cursor:p.cursor,limit:p.limit??100});
  }
@@ -511,7 +549,7 @@ export class ManagedProjects {
  async markUnavailable(id,reason){
   const controller=this.controllers.get(id);if(controller){controller.started=false;controller.stopping=true;controller.localOnly=true;controller.store.offline=true;controller.changed();}
   this.connectionErrors.set(id,{error:{code:reason?.code??'PROJECT_UNAVAILABLE',message:reason?.message??'项目不可用；原生执行停止结果待核查'},handoff:null});
-  try{return await this.stopProject(id);}catch(error){this.connectionErrors.set(id,{error:{code:error.code??'OMP_EXIT_UNCONFIRMED',message:'项目不可用且原生停稳尚未确认：'+error.message},handoff:null});throw error;}
+  try{return await this.stopProject(id);}catch(error){this.connectionErrors.set(id,{error:{code:error.code??'PI_EXIT_UNCONFIRMED',message:'项目不可用且原生停稳尚未确认：'+error.message},handoff:null});throw error;}
  }
  async stopProject(id,{lifecycleHold}={}){
   this.projectStops??=new Map();if(this.projectStops.has(id))return boundedProjectWait(this.projectStops.get(id),{timeoutMs:this.stopTimeoutMs});
@@ -519,12 +557,12 @@ export class ManagedProjects {
   const earlyStop=current?.stop({lifecycleHold});earlyStop?.catch(()=>{});
   const operation=(async()=>{
    const flights=await Promise.allSettled([this.flights.get(id),this.draftFlights?.get(id),this.resourceFlights.get(id)]);
-   const controller=this.controllers.get(id);if(controller){controller.started=false;const receipt=await (controller===current?earlyStop:controller.stop({lifecycleHold}));if(receipt?.confirmationComplete!==true)throw new HostError('OMP_EXIT_UNCONFIRMED','项目进程停稳未确认；保留执行现场');}
+   const controller=this.controllers.get(id);if(controller){controller.started=false;const receipt=await (controller===current?earlyStop:controller.stop({lifecycleHold}));if(receipt?.confirmationComplete!==true)throw new HostError('PI_EXIT_UNCONFIRMED','项目进程停稳未确认；保留执行现场');}
    else{
     const providers=await this.host.storage.getLocal(id,'managed:providers')??{},runtime=await managedRuntime(this.host.storage,id);
     for(const [target,record] of Object.entries(providers)){
-     const receipt=await (['omp-rpc','omp-tui'].includes(record.kind)?recoverOmpProvider(record,runtime):recoverProvider(record,runtime));
-     if(receipt?.verified!==true)throw new HostError('OMP_EXIT_UNCONFIRMED','本机进程所有权未核实；保留登记和执行现场');
+     const receipt=await (record.kind==='pi-node'?recoverPiProvider(record,runtime):['omp-rpc','omp-tui'].includes(record.kind)?recoverOmpProvider(record,runtime):recoverProvider(record,runtime));
+     if(receipt?.verified!==true)throw new HostError('PI_EXIT_UNCONFIRMED','本机进程所有权未核实；保留登记和执行现场');
      delete providers[target];await this.host.storage.putLocal(id,'managed:providers',providers);
     }
    }
@@ -580,6 +618,10 @@ export class ManagedProjects {
   allowed['review.instruction.save']=['projectId','workId','objectId','text','expectedRevision'];
   allowed['merge.consent']=['projectId','workId','requestId','expectedVersion','decision','requestKey','binding'];
   allowed['maintenance.status']=['projectId'];allowed['maintenance.retry']=['projectId','bugId'];allowed['maintenance.scan']=['projectId'];
+  allowed['model.options']=['projectId','target'];
+  allowed['model.set']=['projectId','target','ownerId','model','effort','requestKey'];
+  allowed['session.options']=['projectId','target','ownerId'];
+  allowed['session.command']=['projectId','target','ownerId','command','requestKey','jobId'];
   const action=op.slice('managed.'.length);
   if(action==='frontdesk.context.clear'){
    if(!p||typeof p!=='object'||Array.isArray(p)||Object.keys(p).length!==1||typeof p.projectId!=='string'||!p.projectId.trim())throw new HostError('INVALID_PAYLOAD','清除前台上下文仅接受 projectId');
@@ -675,6 +717,21 @@ export class ManagedProjects {
   const localAction=['end','retry','merge.consent','merge.constraint','deviation.resolve','problem.resolve'].includes(action);
   if(localAction&&((['end','retry'].includes(action)&&!p.binding)||typeof p.requestKey!=='string'||!/^[a-zA-Z0-9:_-]{8,160}$/.test(p.requestKey)))throw new HostError('INVALID_PAYLOAD','需要当前处置绑定和确认身份');
   const c=localAction?(this.controllers.get(p.projectId)??await this.loadLocal(p.projectId,p.workId)):this.controller(p.projectId);
+  if(action==='session.options')return c.sessionOptions(p.target,p.ownerId);
+  if(action==='session.command')return c.sessionCommand(p.target,p);
+  if(action==='model.options'||action==='model.set'){
+   if(typeof p.target!=='string'||!p.target.trim())throw new HostError('INVALID_PAYLOAD','需要原角色或工作身份');
+   const session=c.sessions.get(p.target);
+   if(!session||session.closed)throw new HostError('PI_OWNER_UNAVAILABLE','原会话尚未连接；不会为设置启动新工作');
+   if(action==='model.options'){
+    const catalog=this.modelCatalog?await this.modelCatalog():null;
+    return {models:catalog??[],effective:session.effective??{model:session.model,effort:session.effort},pending:session.pendingModel?{model:session.desiredModel,effort:session.pendingModel.effort??session.effort}:null,modelError:modelErrorDTO(session.modelError),thinkingLevels:session.thinkingLevels??null};
+   }
+   if(typeof p.ownerId!=='string'||p.ownerId!==session.viewOwnerId)throw new HostError('INTERACTION_STALE','原模型菜单所属会话已变化；未修改新会话');
+   if(typeof p.requestKey!=='string'||!/^[a-zA-Z0-9:_-]{8,160}$/.test(p.requestKey)||p.model!==undefined&&(typeof p.model!=='string'||!p.model.includes('/'))||p.effort!==undefined&&!THINKING_LEVELS.includes(p.effort)||p.model===undefined&&p.effort===undefined)throw new HostError('INVALID_PAYLOAD','模型或思考档位选择无效');
+   const result=await session.applyDefaultModel({selector:p.model??session.desiredModel??session.model,effort:p.effort??session.effort});
+   c.changed();return {accepted:true,appliedAtTurnEnd:result.state==='pending',...(result.state?{state:result.state}:{}),...(result.requested?{requested:result.requested}:{}),...(result.effective?{effective:result.effective}:{}),...(result.clamped?{clamped:result.clamped}:{}),...(result.thinkingLevels?{thinkingLevels:result.thinkingLevels}:{})};
+  }
   if(action==='deviation.resolve')return c.resolveDeviation(p);
   if(action==='problem.resolve')return c.resolveProblem(p);
   if(action==='frontdesk.route.resolve')return c.resolveFrontdeskRoute(p);
@@ -722,7 +779,7 @@ export class ManagedProjects {
   if(action==='binding'){const value=await c.setBinding(p.role,{skills:p.skills});
     // Provider selection and executable trust remain local to this instance.
     const roles=c.store.state.bindings;const projection={schema:1,enabled:true,roles:{}};
-    for(const role of ['frontdesk','orchestrator','worker'])projection.roles[role]={provider:'omp'};
+    for(const role of ['frontdesk','orchestrator','worker'])projection.roles[role]={provider:'pi'};
     await this.host.storage.putLocal(p.projectId,'managed:binding',projection);
     return value;}
   if(action==='limit'){if(!Number.isInteger(p.limit)||p.limit<1||p.limit>16||p.limit<c.store.used())throw new Error('额度须为1–16且不小于当前占用');await c.store.mutate(()=>{c.store.state.limit=p.limit;});c.changed();c.kick();return {saved:true};}
@@ -752,7 +809,6 @@ export class ManagedProjects {
     assertNotHeld();
     c.assertFrontdeskContextAdmission(p.target);
     assertOwner();
-    if(c.isolateProcesses&&c.current.has(p.target)&&c.store.state.works.some(w=>w.id===p.target))await c.workerTerminal.prepare(p.target,{executionJobId:c.current.get(p.target).id});
     let t=c.terminals.get(p.target);if(t?.closed){await t.close();t=null;}
     if(!t){
      if(!observed?.interactions?.length)await c.running?.get(p.target);assertNotHeld();assertOwner();if(this.stopping||c.stopping)throw Error('application closing');

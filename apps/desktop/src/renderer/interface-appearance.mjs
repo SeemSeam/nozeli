@@ -18,7 +18,7 @@ export function mountInterfaceAppearance() {
   for (const [id,[icon,label]] of Object.entries(buttons)) {
     const button=document.getElementById(id);if(button)setIconButton(button,icon,{label});
   }
-  for (const [id,icon,text] of [['provider-console-toggle','terminal','终端'],['selection-draw','pencil','涂鸦'],['selection-note','sticky-note','备注'],['selection-discuss','message-square','讨论'],['selection-explain','circle-help','解释'],['send-message','arrow','发送']]) {
+  for (const [id,icon,text] of [['selection-draw','pencil','涂鸦'],['selection-note','sticky-note','备注'],['selection-discuss','message-square','讨论'],['selection-explain','circle-help','解释'],['send-message','arrow','发送']]) {
     const button=document.getElementById(id);if(button)setIconButton(button,icon,{text,label:button.getAttribute('aria-label')||text});
   }
   for(const id of ['file-toggle','toggle-sidebar']) {

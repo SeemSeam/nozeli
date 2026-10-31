@@ -568,6 +568,16 @@ test('a disconnected live conversation collapses without deleting its draft view
  const next=native.layouts.get('p');assert.equal(next.mainRoot.activeViewId,document);assert.deepEqual(next.views[chat.viewId],metadata);assert.equal(native.surfaces.has(chat.viewId),false);assert(root.wc.sent.some(e=>e.payload.type==='conversation-unavailable'));
 });
 
+test('context reload and compaction retain the same native conversation and unsent draft',async t=>{
+ const {native}=await fixture(t);native.ensureConversation=async()=>{};
+ const layout=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'conversation',viewState:{draft:'Unsent original',messages:['native history']}}});native.layouts.set('p',layout);await native.reconcile(layout);
+ const chat=[...native.surfaces.values()].find(surface=>surface.kind==='conversation');receipt(native,chat);
+ for(const phase of ['reloading','compacting','idle']){
+  await native.conversationState('p',{agents:[{target:'frontdesk',closed:false,restarting:false,phase}]});
+  assert.equal(native.surfaces.get(chat.viewId),chat);assert.equal(chat.dead,false);assert.equal(native.layouts.get('p').mainRoot.activeViewId,chat.viewId);assert.equal(native.layouts.get('p').views[chat.viewId].viewState.draft,'Unsent original');
+ }
+});
+
 
 for(const edited of [false,true])test(edited?'editing a recovered pending question creates a distinct handoff':'pending drawing recovery survives another crash without duplicating the persisted attachment',async t=>{
  const {native,root}=await fixture(t),project=await native.host.requireProject('p'),projectId=project.id;
@@ -739,6 +749,30 @@ test('cold binding guests initialize outside shell chrome and enter only a ready
  owner.ready=false;await native.invoke(root,'workspace.bounds',{projectId:target.id,windowId:'main',groups:[{groupId:group.id,viewId:owner.viewId,rect}]});assert.deepEqual(owner.view.getBounds(),rect);assert.equal(owner.view.visible,false,'valid pane geometry cannot fabricate content readiness');
  await native.invoke(owner,'workspace.ready',{contentReady:true});assert.equal(owner.view.visible,false);await native.invoke(root,'workspace.bounds',{projectId:target.id,windowId:'main',groups:[{groupId:group.id,viewId:owner.viewId,rect}]});assert.equal(owner.view.visible,true);assert.deepEqual(owner.view.getBounds(),rect);
  receipt(native,owner);await native.bindProject(root,'p');await native.bindProject(root,target.id);assert.equal(native.surfaces.get(owner.viewId),owner);assert.equal(attachments.length,1,'cached guest remains the same native owner without another attachment');assert.deepEqual(owner.view.getBounds(),rect,'cached pane geometry is not reset to staging bounds');
+});
+test('pane bounds convert CSS pixels to native DIP without replacing owners or buffers',async t=>{
+ const {native,root}=await fixture(t);
+ const layout=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'document',relPath:'geometry.md'}});native.layouts.set('p',layout);await native.reconcile(layout);
+ const surface=[...native.surfaces.values()][0];native.bootstrap(surface);surface.ready=true;
+ await native.invoke(surface,'workspace.document.publish',{projectId:'p',relPath:'geometry.md',text:'UNSAVED geometry draft',dirty:true});
+ root.wc.getZoomFactor=()=>1.25;
+ const group=layout.mainRoot;
+ const value=await native.invoke(root,'workspace.bounds',{projectId:'p',windowId:'main',layoutRevision:layout.revision,sequence:1,viewport:{width:800,height:608},groups:[{groupId:group.id,viewId:surface.viewId,rect:{x:80,y:40,width:720,height:568}}]});
+ assert.notEqual(value.stale,true);assert.deepEqual(surface.view.getBounds(),{x:100,y:50,width:900,height:710});assert.equal(surface.view.visible,true);
+ assert.equal(native.surfaces.get(surface.viewId),surface);assert.equal((await native.invoke(surface,'workspace.document.snapshot',{projectId:'p',relPath:'geometry.md'})).text,'UNSAVED geometry draft');
+ const stale=await native.invoke(root,'workspace.bounds',{projectId:'p',windowId:'main',sequence:2,viewport:{width:1000,height:760},groups:[]});assert.equal(stale.stale,true);assert.equal(surface.view.visible,true,'stale viewport cannot blank the last admitted surface');
+ for(const event of ['resized','maximize','unmaximize','enter-full-screen','leave-full-screen','restore']){const before=root.wc.sent.length;root.win.emit(event);assert.equal(root.wc.sent.length,before+1);assert.equal(root.wc.sent.at(-1).payload.type,'viewport-changed');}
+});
+test('window controls use native fullscreen and bounded content resize',async t=>{
+ const {native,root}=await fixture(t);let full=false,size=null;
+ root.win.setFullScreen=value=>{full=value;};root.win.isFullScreen=()=>full;root.win.setContentSize=(width,height)=>{size=[width,height];};
+ await native.invoke(root,'workspace.control',{type:'window-control',action:'fullscreen',enabled:true});assert.equal(full,true);
+ await native.invoke(root,'workspace.control',{type:'window-control',action:'fullscreen'});assert.equal(full,false);
+ await native.invoke(root,'workspace.control',{type:'window-control',action:'resize',width:1280,height:900});assert.deepEqual(size,[1280,900]);
+ root.win.isMaximized=()=>false;root.win.isMinimized=()=>false;root.wc.getZoomFactor=()=>1.25;
+ const state=await native.invoke(root,'workspace.control',{type:'window-control',action:'state'});
+ assert.deepEqual(state.contentSize,{width:1000,height:760},'state reports actual client size, not the last resize request');assert.equal(state.chromeZoomFactor,1.25);assert.equal(state.workArea.width,1920);assert.equal(state.bounds.windowState,'normal');
+ await assert.rejects(native.invoke(root,'workspace.control',{type:'window-control',action:'resize',width:NaN,height:900}),{code:'INVALID_BOUNDS'});
 });
 
 test('website detach and dock require no document path and retain the live owner',async t=>{

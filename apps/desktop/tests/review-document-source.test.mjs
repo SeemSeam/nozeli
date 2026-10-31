@@ -734,3 +734,11 @@ test('document.export.read returns host-verified current bytes: buffer digest re
   const frozen = await native.documentExportRead(native.shell, { projectId, relPath: 'docs/a.md', documentSource: versionSource('baseline') });
   assert.equal(frozen.origin, 'baseline');
 });
+
+test('review status never probes a same-path project file or reports human review edits as external changes',async t=>{
+ const {host,projectId,adapter,root}=await adapterFixture(t,{files:[textFile({candidateText:'Frozen candidate'})]});host.reviewDocuments=adapter;
+ const file=path.join(root,'project/docs/a.md');await fs.mkdir(path.dirname(file),{recursive:true});await fs.writeFile(file,'Different live project body');
+ const before=await host.documentStatus(projectId,'docs/a.md',reviewSource);assert.equal(before.authorship,null);assert.equal(before.documentSource.objectId,reviewSource.objectId);
+ await fs.unlink(file);const after=await host.documentStatus(projectId,'docs/a.md',reviewSource);assert.equal(after.deleted,false);assert.equal(after.authorship,null);assert.equal(after.readOnly,false);
+ const live=await host.documentStatus(projectId,'docs/a.md');assert.equal(live.deleted,true);
+});

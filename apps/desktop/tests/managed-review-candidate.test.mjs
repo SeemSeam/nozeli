@@ -106,6 +106,25 @@ test('draftrace: concurrent saves — exactly one CAS winner, loser keeps its in
   assert.equal(record.files['reading.md'].history.length,1);
 });
 
+test('draftrace: concurrent reads keep draft text, revision and review token coherent',{timeout:30000},async t=>{
+ const {c,objectId}=await fixture(t);
+ const texts=new Map([[1,'人工版本 1。\n']]),versions=new Map();
+ const first=await c.reviewSave({objectId,relPath:'reading.md',text:texts.get(1),expectedDraftRevision:0});versions.set(1,first.reviewVersion);
+ for(let revision=2;revision<=5;revision++){
+  const text='人工版本 '+revision+'。\n';texts.set(revision,text);
+  const before=c.reviewRead({objectId});
+  const saving=c.reviewSave({objectId,relPath:'reading.md',text,expectedDraftRevision:revision-1});
+  const after=c.reviewRead({objectId});
+  const [left,saved,right]=await Promise.all([before,saving,after]);versions.set(revision,saved.reviewVersion);
+  for(const dto of [left,right]){
+   const draft=dto.files.find(file=>file.relPath==='reading.md').draft;
+   assert([revision-1,revision].includes(draft.revision));
+   assert.equal(draft.text,texts.get(draft.revision));assert.equal(draft.textDigest,sha256(Buffer.from(draft.text)));
+   assert.equal(dto.reviewVersion,versions.get(draft.revision));
+  }
+ }
+});
+
 test('originalunchanged: draft save writes no worktree, main repo, candidate or model source',async t=>{
   const {c,w,objectId,content,dir}=await fixture(t);
   const candidateBefore=w.execution.candidate.commit;

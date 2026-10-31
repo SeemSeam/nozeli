@@ -42,7 +42,7 @@ export function mountReviewFiles(parent,{openFile,onError}){
     else if(change==='unchanged'){row.counts.textContent='未修改';}
     else if(change==='unknown'||!change){row.counts.textContent='—';row.counts.setAttribute('aria-label','变更状态未知，增删行数不可用');}
     else if(Number.isInteger(file.added)&&file.added>=0&&Number.isInteger(file.deleted)&&file.deleted>=0){
-     const added=document.createElement('span'),deleted=document.createElement('span');added.className='review-added';deleted.className='review-deleted';added.textContent='+'+file.added;deleted.textContent='−'+file.deleted;row.counts.append(added,deleted);
+     const added=document.createElement('span'),separator=document.createElement('span'),deleted=document.createElement('span');added.className='review-added';separator.className='review-count-separator';deleted.className='review-deleted';added.textContent='+'+file.added;separator.textContent=' / ';deleted.textContent='−'+file.deleted;row.counts.append(added,separator,deleted);
     }else{row.counts.textContent='—';row.counts.setAttribute('aria-label','增删行数不可用');}
    }
   },

@@ -168,7 +168,6 @@ dialog{width:min(480px,calc(100vw - 24px));border:1px solid var(--line);border-r
 
 /* Each document owns its annotation stacking; focused labels stay below other surfaces. */
 .document-pane,.reader-scroll { isolation:isolate; }
-.provider-console-open :is(#work-surface,#files,#side,#selection-menu,.desk-header,.focus-exit) { visibility:hidden;pointer-events:none; }
 
 
 /* Content-sized conversation composer. */
@@ -372,14 +371,10 @@ form.note-form #note-input {
 .app#app>.topbar{height:0;min-height:0;overflow:hidden}
 .app#app.narrow-layout:not(.focus-mode){grid-template-rows:0 minmax(0,1fr)}
 #toggle-focus[hidden]{display:none!important}
-.provider-console-open .rail{visibility:visible;pointer-events:auto;z-index:1201}
-.provider-console:not([hidden]){inset:12px 12px max(8px,env(safe-area-inset-bottom)) 76px;width:auto;height:auto;border:1px solid var(--line);border-radius:10px}
-.provider-console .provider-console-title{display:none}
-.provider-console .provider-console-head{min-height:44px;padding:6px 12px;justify-content:flex-end}
 .focus-mode .topbar{display:flex}
 .focus-mode.app{display:flex;flex-direction:column}
 .focus-mode>.reader{flex:1;min-height:0;height:auto}
-@media(max-width:720px){.topbar .project-navigation{gap:10px}.provider-console:not([hidden]){inset:8px 8px max(8px,env(safe-area-inset-bottom)) 64px}}
+@media(max-width:720px){.topbar .project-navigation{gap:10px}}
 
 /* Adjustable panel boundaries, with a generous hit area and a quiet indicator. */
 .panel-splitter{position:fixed;z-index:1250;touch-action:none;outline:none;cursor:col-resize}
@@ -426,7 +421,6 @@ html[data-workspace-role="surface"]:is([data-workspace-kind="document"],[data-wo
 html[data-workspace-role="surface"] #focus-exit{position:fixed}
 html[data-workspace-role="surface"]:not([data-workspace-kind="conversation"]) #reader>.desk-header,
 html[data-workspace-role="surface"] #primary-pane>#reader-bar{display:none!important}
-html[data-workspace-role="surface"][data-workspace-kind="conversation"] #app>#provider-console:not([hidden]){display:flex!important;position:fixed;inset:0;width:100%;height:100%;z-index:1300}
 /* Collapsed edge strips are 20px. Declared with !important once here because
    three legacy layers (styles/immersive/workspace) used to fight over this
    width with mixed ID/class specificity. */

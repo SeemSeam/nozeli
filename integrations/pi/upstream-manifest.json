@@ -1,0 +1,336 @@
+{
+  "schema": 1,
+  "repository": "https://github.com/minghinmatthewlam/pi-gui",
+  "commit": "eddfb19367b3ec4e59314eddfa83ed5aa6989f03",
+  "license": "MIT",
+  "sdk": "@earendil-works/pi-coding-agent@1.4.0",
+  "files": [
+    {
+      "path": "vendor/pi-gui/packages/catalogs/dev-reload-probe.ts",
+      "upstreamPath": "packages/catalogs/src/dev-reload-probe.ts",
+      "upstreamSha256": "321e5ef3ca2753008473971e0ef731ad87d3ac020a3c71e978bc993c639e2dcc",
+      "sha256": "321e5ef3ca2753008473971e0ef731ad87d3ac020a3c71e978bc993c639e2dcc",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/catalogs/index.ts",
+      "upstreamPath": "packages/catalogs/src/index.ts",
+      "upstreamSha256": "5b94d271eb5cfb5c75bba258c61fd5cd0f2920398444ab83a217f03141e79101",
+      "sha256": "5b94d271eb5cfb5c75bba258c61fd5cd0f2920398444ab83a217f03141e79101",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/catalogs/node/atomic-write.ts",
+      "upstreamPath": "packages/catalogs/src/node/atomic-write.ts",
+      "upstreamSha256": "8a08c8c33f25ed333814860a477b8e9c5dbda00e57973e0ce0b809f7edc49f7d",
+      "sha256": "2f8f575134b756541b45be9556d25354f9d4e289bd2e29ae3f5a43877de3f171",
+      "modified": true
+    },
+    {
+      "path": "vendor/pi-gui/packages/catalogs/node/catalog-codec.ts",
+      "upstreamPath": "packages/catalogs/src/node/catalog-codec.ts",
+      "upstreamSha256": "ee6a033db5de4b0bc5871e0e541f00bc9c4998d4ef869d1e88b3f240ad9a276c",
+      "sha256": "ee6a033db5de4b0bc5871e0e541f00bc9c4998d4ef869d1e88b3f240ad9a276c",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/catalogs/node/file-errors.ts",
+      "upstreamPath": "packages/catalogs/src/node/file-errors.ts",
+      "upstreamSha256": "0db134733918e48a4d8ab1a3625d35601c9b8ea1bd81091aff4c6c643c32a14a",
+      "sha256": "0db134733918e48a4d8ab1a3625d35601c9b8ea1bd81091aff4c6c643c32a14a",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/catalogs/node/index.ts",
+      "upstreamPath": "packages/catalogs/src/node/index.ts",
+      "upstreamSha256": "446fb8c3ba34f01ad54d62bc4f08688e72d8e411ec837f564a5804055ff3f949",
+      "sha256": "446fb8c3ba34f01ad54d62bc4f08688e72d8e411ec837f564a5804055ff3f949",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/catalogs/node/json-catalog-store.ts",
+      "upstreamPath": "packages/catalogs/src/node/json-catalog-store.ts",
+      "upstreamSha256": "7571d4e5a44c5aa9c1ec73ae27e3acc1ee4f9c898230bdff84e03671c975a65b",
+      "sha256": "7571d4e5a44c5aa9c1ec73ae27e3acc1ee4f9c898230bdff84e03671c975a65b",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/catalogs/storage.ts",
+      "upstreamPath": "packages/catalogs/src/storage.ts",
+      "upstreamSha256": "43ab61a9cf75be33d55c7ceb8cca8ea4d5babaaaea205300c5366cb58defad39",
+      "sha256": "43ab61a9cf75be33d55c7ceb8cca8ea4d5babaaaea205300c5366cb58defad39",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/catalogs/types.ts",
+      "upstreamPath": "packages/catalogs/src/types.ts",
+      "upstreamSha256": "04edc97342d9935ec2f86dd1a8f2fe6db3c0915123f8f99764955d7e43baa150",
+      "sha256": "04edc97342d9935ec2f86dd1a8f2fe6db3c0915123f8f99764955d7e43baa150",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/extension-ui/index.ts",
+      "upstreamPath": "packages/extension-ui/src/index.ts",
+      "upstreamSha256": "93316f02541fff79359f1d5c86e704b6ab84aadfcb086002a6797a362f67c3b7",
+      "sha256": "93316f02541fff79359f1d5c86e704b6ab84aadfcb086002a6797a362f67c3b7",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/pi-sdk-driver/builtin-extensions.ts",
+      "upstreamPath": "packages/pi-sdk-driver/src/builtin-extensions.ts",
+      "upstreamSha256": "fcab133cc2b87f45f73f1b757b269b1338f7e93025726650caa3d0b5929ed3c7",
+      "sha256": "fcab133cc2b87f45f73f1b757b269b1338f7e93025726650caa3d0b5929ed3c7",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/pi-sdk-driver/compat/pi-global-settings.ts",
+      "upstreamPath": "packages/pi-sdk-driver/src/compat/pi-global-settings.ts",
+      "upstreamSha256": "ce45564245e888c7b776d61aed16af59c6154aa39842ddda7818c005d9503e3e",
+      "sha256": "ce45564245e888c7b776d61aed16af59c6154aa39842ddda7818c005d9503e3e",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/pi-sdk-driver/compat/pi-project-settings.ts",
+      "upstreamPath": "packages/pi-sdk-driver/src/compat/pi-project-settings.ts",
+      "upstreamSha256": "a43746c651a38b60ff4294e567ade4ce758378976f513a6ba34b7d3ff9d495cd",
+      "sha256": "a43746c651a38b60ff4294e567ade4ce758378976f513a6ba34b7d3ff9d495cd",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/pi-sdk-driver/compat/pi-session-persistence.ts",
+      "upstreamPath": "packages/pi-sdk-driver/src/compat/pi-session-persistence.ts",
+      "upstreamSha256": "cb4a43229f6a0fc12dc1ed54fb2bf774c7a948dbb48a7a0188333ac319ac161c",
+      "sha256": "cb4a43229f6a0fc12dc1ed54fb2bf774c7a948dbb48a7a0188333ac319ac161c",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/pi-sdk-driver/custom-provider-store.ts",
+      "upstreamPath": "packages/pi-sdk-driver/src/custom-provider-store.ts",
+      "upstreamSha256": "021dc9bec44c65fa4425b66b049be39f6ba8906c48147db339888d4f9e6a815a",
+      "sha256": "5fc0cd643bfda5ae5d9f2b326837e54c409321f9ef9cf39505f16c1368e96be7",
+      "modified": true
+    },
+    {
+      "path": "vendor/pi-gui/packages/pi-sdk-driver/custom-provider-types.ts",
+      "upstreamPath": "packages/pi-sdk-driver/src/custom-provider-types.ts",
+      "upstreamSha256": "05d10f115aa90a5177e0204d8c7a70aa6fcfeaad1c8ed696104265c4fffc2d95",
+      "sha256": "f7f87b65af47a297a7a37d935eec8202c0ec81d6410aabb18fe1f3dc480bc05a",
+      "modified": true
+    },
+    {
+      "path": "vendor/pi-gui/packages/pi-sdk-driver/desktop-extension-bridge.ts",
+      "upstreamPath": "packages/pi-sdk-driver/src/desktop-extension-bridge.ts",
+      "upstreamSha256": "ceda8b4a05f70bcfa947b205166b9d6ff766e0312cd58d41232e08426bb89067",
+      "sha256": "ceda8b4a05f70bcfa947b205166b9d6ff766e0312cd58d41232e08426bb89067",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/pi-sdk-driver/dev-reload-probe.ts",
+      "upstreamPath": "packages/pi-sdk-driver/src/dev-reload-probe.ts",
+      "upstreamSha256": "f18701803a44f9a07c3b5b55b99940e5283a0aa9d420242119de36abd8a7b783",
+      "sha256": "f18701803a44f9a07c3b5b55b99940e5283a0aa9d420242119de36abd8a7b783",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/pi-sdk-driver/extension-ui-state.ts",
+      "upstreamPath": "packages/pi-sdk-driver/src/extension-ui-state.ts",
+      "upstreamSha256": "ad381a59a4940c69e9a5d5ba8b9f6ba116c8b1b59fd17c1524fd812d91951cad",
+      "sha256": "ad381a59a4940c69e9a5d5ba8b9f6ba116c8b1b59fd17c1524fd812d91951cad",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/pi-sdk-driver/index.ts",
+      "upstreamPath": "packages/pi-sdk-driver/src/index.ts",
+      "upstreamSha256": "34334d33dcead2a33cc184db5adfd731e61a65d87bdc391b7217cb8658290cff",
+      "sha256": "d9033f84cc6f0cbbb210a2785735d51d7c007d9c76d0232c4bef1e92dfae33bb",
+      "modified": true
+    },
+    {
+      "path": "vendor/pi-gui/packages/pi-sdk-driver/mcp-config.ts",
+      "upstreamPath": "packages/pi-sdk-driver/src/mcp-config.ts",
+      "upstreamSha256": "3342e27d2e1ecf108814e4bc9de5047fed5534f3c0fd7bc138fba63627896e7c",
+      "sha256": "3342e27d2e1ecf108814e4bc9de5047fed5534f3c0fd7bc138fba63627896e7c",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/pi-sdk-driver/model-scope.ts",
+      "upstreamPath": "packages/pi-sdk-driver/src/model-scope.ts",
+      "upstreamSha256": "a3e8aba64f8e378e018a20a977d2cb4c8e1ad554f730a6de55f1241cb99f89f4",
+      "sha256": "a3e8aba64f8e378e018a20a977d2cb4c8e1ad554f730a6de55f1241cb99f89f4",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/pi-sdk-driver/npm-package-fallback.ts",
+      "upstreamPath": "packages/pi-sdk-driver/src/npm-package-fallback.ts",
+      "upstreamSha256": "70bfcb1a0731f7ad045916be20b9d1d23973eff3ab63435b7fdb158a4515e8e4",
+      "sha256": "70bfcb1a0731f7ad045916be20b9d1d23973eff3ab63435b7fdb158a4515e8e4",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/pi-sdk-driver/pi-addon-extensions.ts",
+      "upstreamPath": "packages/pi-sdk-driver/src/pi-addon-extensions.ts",
+      "upstreamSha256": "da9182e3550b8c2f86d7624a28acc8cf9c57d0193fefdc425133c6d8f45a6c9b",
+      "sha256": "da9182e3550b8c2f86d7624a28acc8cf9c57d0193fefdc425133c6d8f45a6c9b",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/pi-sdk-driver/pi-sdk-driver.ts",
+      "upstreamPath": "packages/pi-sdk-driver/src/pi-sdk-driver.ts",
+      "upstreamSha256": "5db94a648e87456567d96d10739fe30e9a7343b9120d5dadfc7527941a3e967f",
+      "sha256": "c6b4780176830a603b427f5e36b37a33f865f91181a1be9988859bfc56884e8b",
+      "modified": true
+    },
+    {
+      "path": "vendor/pi-gui/packages/pi-sdk-driver/runtime-command-utils.ts",
+      "upstreamPath": "packages/pi-sdk-driver/src/runtime-command-utils.ts",
+      "upstreamSha256": "32dca109d5039d899d37f674274f538eec3a68b3068d67ff9e0d07f81d85a181",
+      "sha256": "32dca109d5039d899d37f674274f538eec3a68b3068d67ff9e0d07f81d85a181",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/pi-sdk-driver/runtime-deps.ts",
+      "upstreamPath": "packages/pi-sdk-driver/src/runtime-deps.ts",
+      "upstreamSha256": "d8e66d551a555b935ba76ae4b8b1c8ca2a77c265e4a543d32e4366139446c804",
+      "sha256": "d8e66d551a555b935ba76ae4b8b1c8ca2a77c265e4a543d32e4366139446c804",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/pi-sdk-driver/runtime-supervisor.ts",
+      "upstreamPath": "packages/pi-sdk-driver/src/runtime-supervisor.ts",
+      "upstreamSha256": "88a1e0af5d0346f0a2aec53487528b21a6a7680a0f53d8c68b13e40f1f96f231",
+      "sha256": "f8d79ce0df3ab1de6aa5e425cf090f7d6c200adcda4c0ee6d3998edd953d6985",
+      "modified": true
+    },
+    {
+      "path": "vendor/pi-gui/packages/pi-sdk-driver/session-lease.ts",
+      "upstreamPath": "packages/pi-sdk-driver/src/session-lease.ts",
+      "upstreamSha256": "82a5dcef850d266735d4234c158b218160f7793edaa96fb912c8e203342e8a87",
+      "sha256": "82a5dcef850d266735d4234c158b218160f7793edaa96fb912c8e203342e8a87",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/pi-sdk-driver/session-schema.ts",
+      "upstreamPath": "packages/pi-sdk-driver/src/session-schema.ts",
+      "upstreamSha256": "3e8aa037f134847b844af7ee5d93bf0ab40ab657b3caecf9a2a6e152bb22c7aa",
+      "sha256": "3e8aa037f134847b844af7ee5d93bf0ab40ab657b3caecf9a2a6e152bb22c7aa",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/pi-sdk-driver/session-supervisor-utils.ts",
+      "upstreamPath": "packages/pi-sdk-driver/src/session-supervisor-utils.ts",
+      "upstreamSha256": "b371ff1ec8105462f6c13dca41b3376c70b8bb3c1a3e39fc0d6b0e0b83707e51",
+      "sha256": "b371ff1ec8105462f6c13dca41b3376c70b8bb3c1a3e39fc0d6b0e0b83707e51",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/pi-sdk-driver/session-supervisor.ts",
+      "upstreamPath": "packages/pi-sdk-driver/src/session-supervisor.ts",
+      "upstreamSha256": "d76f3d6f6458ac8526564744521fe4995c446e7e695cd75f6761e35e64bfe6bb",
+      "sha256": "4afa18e905ef131bdee24e445f4fad635e89f700b2e8cb45c5fd1a508fc8b15d",
+      "modified": true
+    },
+    {
+      "path": "vendor/pi-gui/packages/pi-sdk-driver/session-usage.ts",
+      "upstreamPath": "packages/pi-sdk-driver/src/session-usage.ts",
+      "upstreamSha256": "8b89f5ad03cc8691c6e19394e22a9c4682ac9b03a44769e5059e2b4cab4ddefe",
+      "sha256": "8b89f5ad03cc8691c6e19394e22a9c4682ac9b03a44769e5059e2b4cab4ddefe",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/pi-sdk-driver/thread-title-generator.ts",
+      "upstreamPath": "packages/pi-sdk-driver/src/thread-title-generator.ts",
+      "upstreamSha256": "977816c3e42a885397c361435aad9cdd93a9466fc8b97a92088b567d139deef4",
+      "sha256": "977816c3e42a885397c361435aad9cdd93a9466fc8b97a92088b567d139deef4",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/pi-sdk-driver/transcript-identity.ts",
+      "upstreamPath": "packages/pi-sdk-driver/src/transcript-identity.ts",
+      "upstreamSha256": "49bc85be3563dae0bbb9f1c475305a3baba96c42d3d5d10a4c84045ac65deadd",
+      "sha256": "49bc85be3563dae0bbb9f1c475305a3baba96c42d3d5d10a4c84045ac65deadd",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/pi-sdk-driver/turn-capture.ts",
+      "upstreamPath": "packages/pi-sdk-driver/src/turn-capture.ts",
+      "upstreamSha256": "3c22e99dd2ceabd3c1e199169e75bae405cb35c66c2b526b07562a7a1c5680d2",
+      "sha256": "3c22e99dd2ceabd3c1e199169e75bae405cb35c66c2b526b07562a7a1c5680d2",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/pi-sdk-driver/unsupported-host-ui.ts",
+      "upstreamPath": "packages/pi-sdk-driver/src/unsupported-host-ui.ts",
+      "upstreamSha256": "9a05044561b9073b49dd6fa4c12762b455b792437ff43d97dbe2f9b851405da1",
+      "sha256": "9a05044561b9073b49dd6fa4c12762b455b792437ff43d97dbe2f9b851405da1",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/session-driver/dev-reload-probe.ts",
+      "upstreamPath": "packages/session-driver/src/dev-reload-probe.ts",
+      "upstreamSha256": "c099b5d83246285a84c55bd0503df15b5aad8f45cab98733c160cae9af998092",
+      "sha256": "c099b5d83246285a84c55bd0503df15b5aad8f45cab98733c160cae9af998092",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/session-driver/extension-actions.ts",
+      "upstreamPath": "packages/session-driver/src/extension-actions.ts",
+      "upstreamSha256": "e5387b9b70f94322349ca71c9fa4641595b2f5de6b54aa62bc3544c558650efe",
+      "sha256": "e5387b9b70f94322349ca71c9fa4641595b2f5de6b54aa62bc3544c558650efe",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/session-driver/identity.ts",
+      "upstreamPath": "packages/session-driver/src/identity.ts",
+      "upstreamSha256": "a841ddb2601d4629ca3d363cedd401a3a0668dc81cc5a19ed7288f5592dc0ae4",
+      "sha256": "a841ddb2601d4629ca3d363cedd401a3a0668dc81cc5a19ed7288f5592dc0ae4",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/session-driver/index.ts",
+      "upstreamPath": "packages/session-driver/src/index.ts",
+      "upstreamSha256": "cf5f02dc6fec63857b2aea34995548658d7f639831e971be51e3ccdb5de0f9d9",
+      "sha256": "cf5f02dc6fec63857b2aea34995548658d7f639831e971be51e3ccdb5de0f9d9",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/session-driver/runtime-types.ts",
+      "upstreamPath": "packages/session-driver/src/runtime-types.ts",
+      "upstreamSha256": "2e1b7137496bd625fe4f250637284852e59460acd40f2213f6052a96c89b5071",
+      "sha256": "15d95a9ec0697bc6b7daa552fb11d96fcd1712806904ac08cbe323d34fb47fd8",
+      "modified": true
+    },
+    {
+      "path": "vendor/pi-gui/packages/session-driver/transcript.ts",
+      "upstreamPath": "packages/session-driver/src/transcript.ts",
+      "upstreamSha256": "0ba92734e49bb979ef3a327d012d452591f5df9189bc9b23cf1c4df1c31068f1",
+      "sha256": "0ba92734e49bb979ef3a327d012d452591f5df9189bc9b23cf1c4df1c31068f1",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/session-driver/turn-capture.ts",
+      "upstreamPath": "packages/session-driver/src/turn-capture.ts",
+      "upstreamSha256": "279a56b25492f942db8b1f0ce9db3262d92bd14403bef3b020e8762482a57243",
+      "sha256": "279a56b25492f942db8b1f0ce9db3262d92bd14403bef3b020e8762482a57243",
+      "modified": false
+    },
+    {
+      "path": "vendor/pi-gui/packages/session-driver/types.ts",
+      "upstreamPath": "packages/session-driver/src/types.ts",
+      "upstreamSha256": "ae6188d8389a62b8ccc7110e67a54cfd0e461ad7cbb767c4082506ee779ae5bc",
+      "sha256": "5f87000812bb73cef2da541fc5dd23fc5a011241e773a6b828a320e4700f8435",
+      "modified": true
+    },
+    {
+      "path": "vendor/pi-gui/packages/session-driver/usage.ts",
+      "upstreamPath": "packages/session-driver/src/usage.ts",
+      "upstreamSha256": "82fcfb341eb9e34afe01b0b933a774b0dfb038ede3a823f7c7d97a468a3d3d51",
+      "sha256": "82fcfb341eb9e34afe01b0b933a774b0dfb038ede3a823f7c7d97a468a3d3d51",
+      "modified": false
+    }
+  ],
+  "patches": {
+    "0001-nozeli-owner-observer.patch": "Observe raw native session events; preserve upstream session owner and export runtime factory.",
+    "0002-nozeli-custom-provider-api.patch": "Preserve existing Nozeli API protocols and provider ID syntax in the upstream custom source store.",
+    "0003-private-atomic-files.patch": "Exclusive 0600 files and 0700 directories for models.json credentials and leases."
+  }
+}

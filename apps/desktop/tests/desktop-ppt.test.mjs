@@ -94,10 +94,10 @@ try {
   for(;;){try{exported=await readFile(path.join(project,'exported.pptx'));break;}catch{}if(Date.now()>until)throw Error('export timeout');await new Promise(r=>setTimeout(r,100));}
   // Choose the original path: host must refuse even when the native dialog allows it.
   await new Promise(resolve=>{ws.on('message',raw=>{if(JSON.parse(raw).id===2)resolve();});ws.send(JSON.stringify({id:2,method:'Runtime.evaluate',params:{expression:`process.mainModule.require('electron').dialog.showSaveDialog=async()=>({canceled:false,filePath:${JSON.stringify(path.join(project,'sample.pptx'))}})`}}));});
-  // Reuse the captured document digest from the independent draft file.
-  const fsExtra=await import('node:fs/promises');const draftNames=await fsExtra.readdir(path.join(output,'profile/ppt-drafts'));const draftRecord=JSON.parse(await readFile(path.join(output,'profile/ppt-drafts',draftNames[0]),'utf8'));
-  const protectedResult=await page.evaluate(async ({projectId,digest,bytes})=>window.nozeli.invoke('ppt.export',{projectId,relPath:'sample.pptx',digest,bytes}),{projectId,digest:draftRecord.sourceDigest,bytes:Array.from(exported)});assert.equal(protectedResult.ok,false);assert.match(protectedResult.error.message,/不能覆盖/);
-  const mismatch=await page.evaluate(async projectId=>window.nozeli.invoke('ppt.draft',{projectId,relPath:'sample.pptx',digest:'f'.repeat(64)}),projectId);assert.equal(mismatch.value,null);
+  // Source identity comes from the actual input, not a legacy storage layout.
+  const sourceDigest=(await import('node:crypto')).createHash('sha256').update(original).digest('hex');
+  const protectedResult=await page.evaluate(async ({projectId,digest,bytes})=>window.nozeli.invoke('ppt.export',{projectId,relPath:'sample.pptx',digest,bytes}),{projectId,digest:sourceDigest,bytes:Array.from(exported)});assert.equal(protectedResult.ok,false);assert.match(protectedResult.error.message,/不能覆盖/);
+  const mismatch=await page.evaluate(async projectId=>window.nozeli.invoke('ppt.draft',{projectId,relPath:'sample.pptx',digest:'f'.repeat(64)}),projectId);assert.equal(mismatch.value.model,null);
   assert.deepEqual(await readFile(path.join(project,'sample.pptx')),original);checks.push('original overwrite rejected; different source digest cannot restore stale draft');
   ws.close();const JSZip=(await import('jszip')).default;const zip=await JSZip.loadAsync(exported);assert.match(await zip.file('ppt/slides/slide1.xml').async('string'),/NOZELI_INTEGRATED/);
   assert.doesNotMatch(await zip.file('ppt/slides/slide1.xml').async('string'),/NOZELI_PPTIST_TITLE/);

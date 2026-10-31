@@ -59,12 +59,12 @@ test('maintenance status is readonly even with interrupted durable attempt and n
 test('Git ref lock diagnostics retain only categorized symptom and app-relative source frames',()=>{
  const error=Object.assign(Error('cannot lock ref secret-token document body'),{code:128});error.stack='Error: secret-token\n at git (/home/private/apps/desktop/src/agents/managed/git.mjs:21:4)\n at user (/private/user/document.mjs:1:2)';
  const context=maintenanceError(error);assert.equal(context.symptom,'git-ref-lock');assert.deepEqual(context.frames,['src/agents/managed/git.mjs:21:4']);assert(!JSON.stringify(context).includes('secret-token'));assert(!JSON.stringify(context).includes('/home/private'));
- for(const code of ['INJECTED_PROJECT_COMMIT','PROJECT_UNAVAILABLE','STORAGE_UNAVAILABLE','OMP_SESSION_FILE_NOT_FOUND'])assert(maintenanceBoundary({code}),code);
+ for(const code of ['INJECTED_PROJECT_COMMIT','PROJECT_UNAVAILABLE','STORAGE_UNAVAILABLE','OMP_SESSION_FILE_NOT_FOUND','PI_SESSION_FILE_NOT_FOUND'])assert(maintenanceBoundary({code}),code);
 });
 
 test('resident mismatch escapes real startup unchanged with target and no maintenance recursion',async()=>{
  const {Controller}=await import('../src/agents/managed/controller.mjs');
- const storage=memory(),mismatch=Object.assign(Error('incompatible trusted tool schema'),{code:'OMP_TOOLS_DIGEST_MISMATCH'});let starts=0,events=0;
+ const storage=memory(),mismatch=Object.assign(Error('incompatible trusted tool schema'),{code:'PI_TOOLS_DIGEST_MISMATCH'});let starts=0,events=0;
  const c=Object.create(Controller.prototype);Object.assign(c,{projectId:'p',sessions:new Map(),maintenance:new MaintenanceLedger(storage,'p'),maintenanceActions:new Map(),maintenanceFlights:new Map(),store:{requireOnline:async()=>{},state:{jobs:[],works:[],residents:{}}},prepareOnline:async()=>{},assertFrontdeskContextAdmission(){},makeSession:async target=>{if(target==='orchestrator')throw mismatch;return {preflight:true};},session:async()=>{starts++;},maintenanceEvent:async()=>{events++;}});
  await assert.rejects(c.start(),error=>error===mismatch&&error.target==='orchestrator'&&error.role==='orchestrator');
  assert.equal(starts,0);assert.equal(events,0);assert.equal(c.started,undefined);assert.equal(c.maintenanceActions.size,0);assert.deepEqual((await c.maintenance.read()).bugs,[]);
@@ -83,11 +83,11 @@ test('verified same-thread resident startup durably settles only obsolete queued
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-bootstrap-reconciled-'));
  const c=await openTestController({runtimeRoot:path.join(root,'runtime'),contentRoot:path.join(root,'project'),projectHome:home=>fs.mkdir(home,{recursive:true})});
  t.after(async()=>{await c.stop();await fs.rm(root,{recursive:true,force:true});});c.kick=()=>{};
- const bug=await c.maintenance.record({phase:'resident-preflight-orchestrator',error:{code:'OMP_TOOLS_DIGEST_MISMATCH'}});
+ const bug=await c.maintenance.record({phase:'resident-preflight-orchestrator',error:{code:'PI_TOOLS_DIGEST_MISMATCH'}});
  for(let n=0;n<2;n++){await c.maintenance.attempt(bug.id);await c.maintenance.finish(bug.id,{outcome:'needs-version-fix'});}
  const other=await c.maintenance.record({phase:'resident-start-frontdesk',error:{code:'OMP_START_FAILED'}});
- const unknown=await c.maintenance.record({phase:'resident-start-frontdesk',error:{code:'OMP_TOOLS_DIGEST_MISMATCH'}});
- await c.store.mutate(()=>{c.store.state.residents={frontdesk:{provider:'omp',threadId:'front-original',toolsDigest:'front-current'},orchestrator:{provider:'omp',threadId:'orchestrator-original',toolsDigest:'orchestrator-current'}};c.store.state.jobs.push({id:'repair',type:'maintenance',status:'queued',context:{bugId:bug.id}},{id:'business',type:'front',status:'queued',context:{}},{id:'other',type:'maintenance',status:'queued',context:{bugId:other.id}},{id:'unknown',type:'maintenance',status:'running',promptStartedAt:'already-admitted',context:{bugId:unknown.id}});c.store.state.drafts.frontdesk='unsent draft';});
+ const unknown=await c.maintenance.record({phase:'resident-start-frontdesk',error:{code:'PI_TOOLS_DIGEST_MISMATCH'}});
+ await c.store.mutate(()=>{c.store.state.residents={frontdesk:{provider:'pi',threadId:'front-original',toolsDigest:'front-current'},orchestrator:{provider:'pi',threadId:'orchestrator-original',toolsDigest:'orchestrator-current'}};c.store.state.jobs.push({id:'repair',type:'maintenance',status:'queued',context:{bugId:bug.id}},{id:'business',type:'front',status:'queued',context:{}},{id:'other',type:'maintenance',status:'queued',context:{bugId:other.id}},{id:'unknown',type:'maintenance',status:'running',promptStartedAt:'already-admitted',context:{bugId:unknown.id}});c.store.state.drafts.frontdesk='unsent draft';});
  const previous={frontdesk:'front-original',orchestrator:'orchestrator-original'},before=structuredClone(c.store.state.jobs.slice(-3));
  await c.reconcileResidentSchemaMaintenance(previous);assert.equal(c.store.state.jobs.find(j=>j.id==='repair').status,'queued','no actual startup receipts yet');
  for(const target of ['frontdesk','orchestrator']){const resident=c.store.state.residents[target];c.sessions.set(target,{threadId:resident.threadId,toolsDigest:resident.toolsDigest,closed:false,stop:async()=>({confirmationComplete:true})});}

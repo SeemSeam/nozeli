@@ -20,12 +20,18 @@ class WorkspaceWindow extends BaseWindow {
       addChildView(this.chromeView, 0);
       for (const child of root.children) if (child !== this.chromeView) addChildView(child);
     };
+    let pendingResize=null;
     const resize = () => {
+      if(this.isDestroyed())return;
       const [width, height] = this.getContentSize();
       this.chromeView.setBounds({x:0, y:0, width, height});
     };
-    this.on('resize', resize);
+    // WM state transitions can announce resize before the final client bounds.
+    // Reconcile after the native event as well; never recreate document guests.
+    const scheduleResize=()=>{resize();if(pendingResize===null)pendingResize=setImmediate(()=>{pendingResize=null;resize();});};
+    for(const event of ['resize','resized','maximize','unmaximize','enter-full-screen','leave-full-screen','restore'])this.on(event,scheduleResize);
     this.on('closed', () => {
+      clearImmediate(pendingResize);
       if (!this.webContents.isDestroyed()) this.webContents.close({waitForBeforeUnload:false});
     });
     resize();

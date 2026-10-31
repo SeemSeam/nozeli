@@ -49,7 +49,7 @@ export function mountFileTreeActions({ invoke, projectId, perform, open, openAt,
     try {
       if(action==='copy'||action==='cut'){
         if(!source)return;
-        const paths=sources(ctx),marked=await invoke('tree.clipboard.mark',{projectId:ctx.projectId});
+        const paths=sources(ctx),marked=await invoke('tree.clipboard.mark',{projectId:ctx.projectId,paths,action});
         if(!marked.ok)throw Error(marked.error.message);
         if(ctx.projectId!==projectId())return;
         buffer={projectId:ctx.projectId,source,sources:paths,action,generation:marked.value.generation};paint();return;

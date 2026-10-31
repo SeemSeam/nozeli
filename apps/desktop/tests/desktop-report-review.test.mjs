@@ -97,7 +97,7 @@ panel = panel.replace(callAnchor, `
   if(op==='retry'||op==='intake.retry')return {accepted:true};
   if(op==='terminal.screen')return {available:true,terminalId:'fixture-worker-terminal',version:1,cols:80,rows:1,lines:[[{text:'Fixture Worker',cells:14}]]};
   if(op==='artifact.list')return {files:fixture.receipts.find(r=>r.objectId===p.objectId)?.snapshot?.files||[]};
-  if(op==='worker.handoff'){const work=fixture.works.find(w=>w.id===p.workId);if(p.confirmed!==true||work.threadId!==p.oldThreadId||work.revision!==p.revision)throw Error('Stale worker confirmation');work.threadArchive=[{id:'worker-archive',threadId:work.threadId,provider:'omp'}];delete work.contextRecovery;work.threadId=null;return {confirmed:true,automaticReplay:false};}
+  if(op==='worker.handoff'){const work=fixture.works.find(w=>w.id===p.workId);if(p.confirmed!==true||work.threadId!==p.oldThreadId||work.revision!==p.revision)throw Error('Stale worker confirmation');work.threadArchive=[{id:'worker-archive',threadId:work.threadId,provider:'pi'}];delete work.contextRecovery;work.threadId=null;return {confirmed:true,automaticReplay:false};}
   if(op==='worker.history')return {readOnly:true,text:p.offset?' original report tail':'original goal and inputs',source:'objects/recovery-worker.json',version:'fixture-history-version',offset:p.offset||0,endOffset:p.offset?48:24,totalChars:48,nextOffset:p.offset?null:24};
   if(op==='review.read'){const receipt=fixture.receipts.find(r=>r.objectId===p.objectId);if(!receipt?.snapshot?.files?.length)return {workId:null,objectId:p.objectId,files:[]};return {workId:receipt.workId,objectId:receipt.objectId,files:receipt.snapshot.files};}
   throw new Error('Unexpected fixture managed operation: '+op);
@@ -304,6 +304,10 @@ try {
   assert.equal(await reportView.$eval('#compose-form',n=>n.inert),false);
   check('report candidate entry opens the unified review document tab with frozen bytes; the same-path project file is never touched');
   await reportView.waitForSelector('#managed-doc [data-review-action="accept"]');
+ await reportView.waitForSelector('#managed-doc [data-review-file-heading]');
+ const reviewControls=await reportView.evaluate(()=>{const section=document.querySelector('#managed-doc [data-review-file-heading]')?.parentElement,review=document.querySelector('#managed-doc [data-managed-review]');return {filesVisible:Boolean(section&&!section.hidden),reviewPresent:Boolean(review),nestedFileDisclosure:document.querySelectorAll('#managed-doc .managed-review-file-disclosure').length,actions:[...document.querySelectorAll('#managed-doc [data-review-action]')].map(button=>button.dataset.reviewAction).filter(action=>['continue','accept'].includes(action)),manualUtilities:['save','refresh','recover-instruction'].filter(action=>document.querySelector('#managed-doc [data-review-action="'+action+'"]')),frozenArtifactDuplicates:document.querySelectorAll('#managed-doc [data-frozen-artifacts]').length};});
+ assert.equal(reviewControls.filesVisible,true);assert.equal(reviewControls.reviewPresent,true);assert.equal(reviewControls.nestedFileDisclosure,0);assert.deepEqual(reviewControls.actions,['continue','accept']);assert.deepEqual(reviewControls.manualUtilities,[]);assert.equal(reviewControls.frozenArtifactDuplicates,0);
+ check('report shows candidate files inline with only version-bound continue and accept actions');
   for (const width of [800, 390]) {
     await page.evaluate(width => nozeli.invoke('session.resize', { width, height: 800 }), width);
     await page.waitForFunction(width => innerWidth === width, {}, width);
@@ -415,7 +419,7 @@ try {
     check(`${todoId} historical body remains readable without current-result ending ability`);
   }
   await page.screenshot({ path: path.join(output, 'history-1440.png') });
-  await page.evaluate(id=>{const state=window.__reviewState,work=state.works.find(w=>w.id==='problem-b');work.threadId='old-worker-thread';work.contextRecovery={threadId:work.threadId,revision:work.revision,code:'OMP_TOOLS_DIGEST_MISMATCH',message:'Original Worker schema mismatch'};window.__reviewSnapshot(state,id);},id);
+  await page.evaluate(id=>{const state=window.__reviewState,work=state.works.find(w=>w.id==='problem-b');work.threadId='old-worker-thread';work.contextRecovery={threadId:work.threadId,revision:work.revision,code:'PI_TOOLS_DIGEST_MISMATCH',message:'Original Worker schema mismatch'};window.__reviewSnapshot(state,id);},id);
   await page.waitForSelector('[data-worker-handoff="problem-b"]');const jobsBeforeRecovery=await page.evaluate(()=>window.__reviewState.jobs.length);
   page.once('dialog',dialog=>dialog.dismiss());await page.click('[data-worker-handoff="problem-b"]');assert.equal(await page.evaluate(()=>window.__reviewCalls.filter(c=>c.op==='worker.handoff').length),0);
   page.once('dialog',dialog=>dialog.accept());await page.click('[data-worker-handoff="problem-b"]');await page.waitForSelector('[data-worker-history="worker-archive"]');
