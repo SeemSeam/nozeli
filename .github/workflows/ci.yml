@@ -39,6 +39,8 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Install locked dependencies
         run: npm ci --no-audit --no-fund
+      - name: Install locked Pi SDK test dependencies
+        run: npm ci --prefix ../../integrations/pi --no-audit --no-fund
       - name: Run deterministic tests
         run: npm run test:${{ matrix.suite }}
         env:
