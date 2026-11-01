@@ -7,6 +7,7 @@ import os from 'node:os';
 import {randomUUID} from 'node:crypto';
 import {str} from '../src/agents/managed/git-service.mjs';
 import {staticReport} from './static-report.fixture.mjs';
+import {readManagedPending} from '../src/agents/managed/managed-storage.mjs';
 async function fixture(t){const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-report-candidate-'));const controller=await openTestController({runtimeRoot:path.join(root,'runtime'),contentRoot:path.join(root,'project')});t.after(async()=>{await controller.stop();await fs.rm(root,{recursive:true,force:true});});const work=await controller.store.submit('Candidate publication','Produce exact frozen evidence');await controller.store.activate(work.id);await controller.execution.prepare(work.id);const job={id:randomUUID(),target:work.id,revision:1,type:'initial',status:'running',context:{}};await controller.store.mutate(()=>controller.store.state.jobs.push(job));controller.current.set(work.id,job);const manifest=await controller.execution.readManifest(work.id);return {controller,work,job,manifest,root};}
 async function evidenceSets(controller){try{return await fs.readdir(path.join(controller.changes.root,'sets'));}catch(error){if(error.code==='ENOENT')return [];throw error;}}
 async function assertUnpublished(f){const {controller,work,manifest}=f,current=await controller.execution.readManifest(work.id);assert.equal(await str(manifest.repo,['rev-parse',manifest.branchRef]),manifest.inputCommit);assert.equal(current.candidate,undefined);assert.equal(current.publicationIntent,undefined);assert.equal(controller.store.find(work.id).execution.candidate,undefined);assert.equal(controller.store.state.receipts.length,0);assert.equal(controller.store.state.todos.filter(todo=>todo.kind==='result').length,0);assert.deepEqual(await evidenceSets(controller),[]);}
@@ -23,7 +24,7 @@ test('project transaction failure after capture removes unpublished evidence and
  finally{storage.replaceProjectCollections=replace;}
  assert.equal(failed,true);await assertUnpublished(f);
  assert.deepEqual(await storage.listProject(projectId,'managed_receipts'),[]);
- const pending=(await controller.store.listPending()).find(row=>row.kind==='business'&&row.collections.managed_receipts?.length);
+ let pending;for(const row of (await controller.store.listPending()).filter(row=>row.kind==='business')){const detail=await readManagedPending(storage,projectId,row.id);if(detail.collections.managed_receipts?.length){pending={...row,...detail};break;}}
  assert(pending);assert.equal(pending.automaticReplay,false);assert.equal(pending.requiresConfirmation,true);
  const candidate=pending.collections.managed_receipts[0].value;
  assert((await storage.readObject(projectId,candidate.report.digest)).length);

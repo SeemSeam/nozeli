@@ -207,7 +207,8 @@ for(const moved of [false,true])test('cross-project cut retains destination when
  await assert.rejects(f.run({action:'cut',sourceProjectId:f.projectA.id,source:'keep.txt',target:''}),/目标副本已保留/);
  assert.equal(await fs.readFile(path.join(f.root,'beta/keep.txt'),'utf8'),'KEEP-RECOVERABLE');
  assert.equal(await fs.readFile(moved?path.join(f.trash,'keep.txt'):source,'utf8'),'KEEP-RECOVERABLE');
- const recovery=(await f.host.storage.listRecovery(f.projectB.id)).find(row=>row.id.startsWith('tree-operation:'));
+ const summary=(await f.host.storage.recoveryPage(f.projectB.id,{prefixes:['tree-operation:']})).entries[0];
+ const recovery=await f.host.storage.readRecoveryRecord(f.projectB.id,summary.id,{revision:summary.revision});
  assert.equal(recovery.value.destinationRetained,true);assert.equal(recovery.value.sourceProjectId,f.projectA.id);
 });
 

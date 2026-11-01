@@ -9,6 +9,11 @@ const PAGE_BYTES = 2 * 1024 * 1024;
 const CACHE_BYTES = 32 * 1024 * 1024;
 const READ_BYTES = 64 * 1024;
 const RESPONSE_BYTES = 128 * 1024;
+// Ordinary history pages never allocate a whole large immutable journal object.
+const HYDRATE_ENTRY_BYTES = 256 * 1024;
+const HYDRATE_BYTES = 2 * 1024 * 1024;
+// JSON.parse and public projection can transiently multiply archive size.
+const EXPLICIT_PARSE_BYTES = 8 * 1024 * 1024;
 const privateKey = key => /(?:readhandle|writehandle|capabilit|credential|password|secret|token|authorization|transport|roomkey|writekey|providerkey|apikey|socket|endpoint|sessionfile|runtimeroot|commondir)|^(?:auth|headers|cookie|cookies)$/i.test(key.replace(/[_-]/g,''));
 const publicValue = value => {
   if (Array.isArray(value)) return value.map(publicValue);
@@ -21,6 +26,7 @@ const readFields = dto => Object.fromEntries([['text',dto.text],['reasoning',dto
 const readDescriptor = dto => ({version:sha(JSON.stringify(dto)),fields:Object.entries(readFields(dto)).map(([field,value])=>({field,totalBytes:Buffer.byteLength(value)})),maxBytes:READ_BYTES});
 const boundedDTO = dto => {
   if (!dto) return dto;
+  if (dto.availability === 'read-required' && dto.read?.discoveryRequired) return dto;
   const read=readDescriptor(dto);
   if(Buffer.byteLength(JSON.stringify({entry:{...dto,read}}))<=RESPONSE_BYTES)return {...dto,read};
   const metadata=Object.fromEntries(['id','sessionId','entryId','requestId','jobId','target','workId','revision','speaker','at','sequence','source','ownership','replacesId','durable','complete','status','failed'].filter(key=>dto[key]!=null).map(key=>[key,dto[key]]));
@@ -73,29 +79,50 @@ export class SessionIndex {
     this.cacheBytes = 0;
     this.streams = new Map();
     this.serial = Promise.resolve();
+    this.hydration = Promise.resolve();
+    this.deferred = new Map();
   }
   async initialize() {
     await fs.mkdir(this.root, {recursive:true, mode:0o700});
-    await this.store.mutateNative(() => { timelineState(this.store.state); });
-    await this.hydrate(this.records().slice(-200));
+    if (!this.store.state.sessionIndex) await this.store.mutateNative(() => { timelineState(this.store.state); });
+    else timelineState(this.store.state);
   }
   records() { return this.store.state.sessionIndex?.entries ?? []; }
   cacheEntry(key, value, bytes) {
+    if (bytes > HYDRATE_ENTRY_BYTES) {
+      this.deferred.set(key, true);
+      return;
+    }
     const old = this.cache.get(key);
     if (old) this.cacheBytes -= old.bytes;
     this.cache.delete(key); this.cache.set(key, {value, bytes}); this.cacheBytes += bytes;
-    while (this.cache.size > 512 || this.cacheBytes > CACHE_BYTES && this.cache.size > 1) {
+    while (this.cache.size > 512 || this.cacheBytes > CACHE_BYTES) {
       const [id, removed] = this.cache.entries().next().value;
       this.cache.delete(id); this.cacheBytes -= removed.bytes;
     }
   }
-  async object(record) {
+  async object(record, {maxBytes = EXPLICIT_PARSE_BYTES} = {}) {
     if (this.cache.has(record.id)&&!this.cache.get(record.id).value.unavailable) return this.cache.get(record.id).value;
     if (!/^[a-f0-9]{64}$/.test(record.objectId)) fail('TIMELINE_OBJECT', 'Invalid immutable journal reference');
     const file = path.join(this.root, record.objectId + '.json');
     const stat = await fs.lstat(file);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_ENTRY_BYTES) fail('TIMELINE_OBJECT', 'Unsafe or oversized native entry');
-    const bytes = await fs.readFile(file);
+    if (stat.size > maxBytes) fail('TIMELINE_BUDGET', 'Native entry requires explicit original reading');
+    const handle = await fs.open(file, 'r');
+    let bytes;
+    try {
+      const opened = await handle.stat();
+      if (!opened.isFile() || opened.size !== stat.size || opened.ino !== stat.ino || opened.dev !== stat.dev) fail('TIMELINE_OBJECT', 'Native journal archive changed during read');
+      const buffer = Buffer.allocUnsafe(stat.size + 1);
+      let length = 0;
+      while (length < buffer.length) {
+        const {bytesRead} = await handle.read(buffer, length, buffer.length - length, length);
+        if (!bytesRead) break;
+        length += bytesRead;
+      }
+      if (length !== stat.size) fail('TIMELINE_OBJECT', 'Native journal archive changed during read');
+      bytes = buffer.subarray(0, length);
+    } finally { await handle.close(); }
     if (sha(bytes) !== record.objectId) fail('TIMELINE_CORRUPT', 'Native journal archive digest mismatch');
     const value = JSON.parse(bytes);
     if (value.id !== record.entryId) fail('TIMELINE_CORRUPT', 'Native journal archive identity mismatch');
@@ -103,10 +130,26 @@ export class SessionIndex {
     return value;
   }
   async hydrate(records) {
-    await Promise.all(records.filter(r => r.objectId).map(async record => {
-      try { await this.object(record); }
-      catch (error) { this.cacheEntry(record.id, {unavailable:true, reason:error.code || error.message}, 128); }
-    }));
+    const operation = this.hydration.then(async () => {
+      let remaining = HYDRATE_BYTES;
+      for (const record of records) {
+        if (!record.objectId || this.cache.get(record.id)?.value && !this.cache.get(record.id).value.unavailable) continue;
+        try {
+          if (!/^[a-f0-9]{64}$/.test(record.objectId)) fail('TIMELINE_OBJECT', 'Invalid immutable journal reference');
+          const stat = await fs.lstat(path.join(this.root, record.objectId + '.json'));
+          if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_ENTRY_BYTES) fail('TIMELINE_OBJECT', 'Unsafe or oversized native entry');
+          if (stat.size > HYDRATE_ENTRY_BYTES || stat.size > remaining) {
+            this.deferred.set(record.id, record.objectId);
+            continue;
+          }
+          remaining -= stat.size;
+          await this.object(record, {maxBytes:HYDRATE_ENTRY_BYTES});
+          this.deferred.delete(record.id);
+        } catch (error) { this.cacheEntry(record.id, {unavailable:true, reason:error.code || error.message}, 128); }
+      }
+    });
+    this.hydration = operation.catch(() => {});
+    await operation;
   }
   recordBatch(facts, target) {
     const operation = this.serial.then(() => this.ingest(facts, target));
@@ -191,8 +234,9 @@ export class SessionIndex {
       for (const [id, stream] of this.streams) if (stream.sessionId===record.sessionId&&stream.epoch===record.epoch&&stream.requestId===record.requestId&&stream.jobId===record.jobId&&(id===record.replacesId||stream.entryId===record.entryId)) this.streams.delete(id);
     }
   }
-  nativeDTO(record) {
-    const entry = this.cache.get(record.id)?.value;
+  nativeDTO(record, loaded) {
+    const entry = loaded ?? this.cache.get(record.id)?.value;
+    if (!entry && this.deferred.has(record.id)) return {...record, source:'native', speaker:'system', text:'', availability:'read-required', reason:'消息超过预览预算；可按需读取，较大原始记录请导出到可信本地位置', read:{version:record.objectId,fields:[],maxBytes:READ_BYTES,discoveryRequired:true,originalExport:{version:record.objectId}}};
     if (!entry) return {...record, source:'native', speaker:'system', text:'', availability:'not-loaded'};
     if (entry.unavailable) return {...record, source:'native', speaker:'system', text:'原生历史暂不可读取', availability:'unavailable', reason:entry.reason};
     const message = entry.type === 'message' ? entry.message : entry.type === 'custom_message' ? entry : null;
@@ -259,7 +303,12 @@ export class SessionIndex {
     if (!identity(id)) fail('TIMELINE_IDENTITY', 'Invalid message identity');
     const record = this.records().find(row => row.id === id);
     let dto;
-    if(record){await this.object(record);dto=this.nativeDTO(record);}
+    if(record){
+      let entry;
+      try{entry=await this.object(record,{maxBytes:EXPLICIT_PARSE_BYTES});}
+      catch(error){if(error.code!=='TIMELINE_BUDGET')throw error;this.deferred.set(record.id,record.objectId);return this.nativeDTO(record);}
+      dto=this.nativeDTO(record,entry);
+    }
     else {
       const legacy=this.store.state.messages?.find(message=>message.id===id);
       if(!legacy)fail('TIMELINE_MISSING','Message is not in this project history');

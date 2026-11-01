@@ -119,7 +119,16 @@ export class ManagedProjects {
  async resourceStatus(projectId){
   this.validateResourceProject(projectId);
   await this.initializeResources();let projectLimit=null,projectUsed=0;
-  if(projectId){await this.host.requireRegisteredProject(projectId);const state=this.controllers.get(projectId)?.store?.state??(await this.projectionSource(projectId)).state;projectLimit=state.limit??1;projectUsed=(state.works??[]).filter(w=>!['queued','ended'].includes(w.status)&&w.revision>0).length;}
+  if(projectId){
+   await this.host.requireRegisteredProject(projectId);
+   const state=this.controllers.get(projectId)?.store?.state;
+   if(state){projectLimit=state.limit??1;projectUsed=(state.works??[]).filter(w=>!['queued','ended'].includes(w.status)&&w.revision>0).length;}
+   else {
+    let offline=false;try{await this.host.storage.requireOnline(projectId);}catch{offline=true;}
+    const summary=await this.host.storage.managedResourceSummary(projectId,{offline});
+    projectLimit=summary.limit;projectUsed=summary.used;
+   }
+  }
   const agents=this.processBudget.agents();
   for(const [id,c] of this.controllers){for(const target of ['frontdesk','orchestrator',...(c.store?.state?.works??[]).filter(w=>!['queued','closing','ended'].includes(w.status)).map(w=>w.id)]){
    const slot=agents.find(slot=>slot.projectId===id&&slot.target===target),session=c.sessions?.get(target);
@@ -527,12 +536,24 @@ export class ManagedProjects {
   const index=new SessionIndex(store);return {store,state,index,changes:new WorkChanges({runtimeRoot:runtime,storage,projectId:id,readState:()=>state})};
  }
  async timelineQuery(id,action,p){
+  if(action==='timeline.read'){
+   this.timelineReadFlights??=new Map();
+   const run=(this.timelineReadFlights.get(id)??Promise.resolve()).catch(()=>{}).then(async()=>{
+    const {index}=await this.projectionSource(id);
+    return {entry:await index.read(p.id,{version:p.version,field:p.field,offset:p.offset,limit:p.limit})};
+   });
+   this.timelineReadFlights.set(id,run);
+   try{return await run;}finally{if(this.timelineReadFlights.get(id)===run)this.timelineReadFlights.delete(id);}
+  }
   const {index,state}=await this.projectionSource(id);
-  if(action==='timeline.read')return {entry:await index.read(p.id,{version:p.version,field:p.field,offset:p.offset,limit:p.limit})};
   if(action==='timeline.request'){
    if(typeof p.requestId!=='string'||!p.requestId||p.requestId.length>512||!Number.isSafeInteger(p.offset??0)||(p.offset??0)<0)throw new HostError('INVALID_PAYLOAD','讨论轮次查询无效');
    const rows=index.records().filter(row=>row.target==='frontdesk'&&row.jobId===p.requestId).sort((a,b)=>a.sequence-b.sequence),offset=p.offset??0;
-   const ids=[];for(const row of rows.slice(offset,offset+100)){await index.hydrate([row]);const entry=index.nativeDTO(row);if(entry?.speaker==='agent'||entry?.availability==='unavailable')ids.push(row.id);}
+   const ids=[];for(const row of rows.slice(offset,offset+100)){
+    await index.hydrate([row]);let entry=index.nativeDTO(row);
+    if(entry?.availability==='read-required')entry=(await this.timelineQuery(id,'timeline.read',{id:row.id})).entry;
+    if(entry?.speaker==='agent'||entry?.availability==='unavailable'||entry?.read?.discoveryRequired)ids.push(row.id);
+   }
    const job=state.jobs?.find(row=>row.id===p.requestId);
    return {ids,nextOffset:offset+100<rows.length?offset+100:null,...(job?{job:{id:job.id,status:job.status,...(typeof job.error==='string'?{error:job.error.slice(0,4096)}:{})}}:{})};
   }

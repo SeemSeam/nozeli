@@ -450,10 +450,15 @@ async function main() {
       // project.remove alone bypasses this blanket assertActive and is then
       // validated by ProjectLifecycle.removeProject's conservative guard;
       // ordinary writes stay blocked while any hold exists.
-      if(admissionProject&&!['workspace.recovery','workspace.recovery.list','workspace.recovery.object','session.flushed','workspace.bootstrap','project.lifecycle.reconcile','project.remove'].includes(op)&&!workspaceNative.lifecycleFlushOwner(scope,payload?.flushRequestId,op))host.storage.assertActive(admissionProject);
+      if(admissionProject&&!['workspace.recovery','workspace.recovery.list','workspace.recovery.detail','workspace.recovery.object','workspace.recovery.export','session.flushed','workspace.bootstrap','project.lifecycle.reconcile','project.remove'].includes(op)&&!workspaceNative.lifecycleFlushOwner(scope,payload?.flushRequestId,op))host.storage.assertActive(admissionProject);
       if(['project.lifecycle.preview','project.lifecycle.execute','project.lifecycle.reconcile'].includes(op)){if(scope.role!=='shell')throw new HostError('IPC_DENIED','只能在主窗口管理项目');await finishDrawing({projectId:payload.projectId});if(op.endsWith('preview'))return {ok:true,value:await projectLifecycle.preview(payload)};if(op.endsWith('reconcile'))return {ok:true,value:await projectLifecycle.reconcile(payload)};return {ok:true,value:await projectLifecycle.execute(payload)};}
       if(op==='project.retry'){if(scope.role!=='shell')throw new HostError('IPC_DENIED','仅主窗可重试项目');await managedAgents.stopProject(payload.projectId);const value=await host.storage.retry(payload.projectId);workspaceNative.unavailableProjects?.delete(payload.projectId);return {ok:true,value};}
       if(op==='workspace.recovery.settle'){if(scope.role!=='shell')throw new HostError('IPC_DENIED','仅主窗可明确结算保留成果');return {ok:true,value:await projectLifecycle.settleManaged(payload)};}
+      if(op==='workspace.recovery.export'){
+        if(scope.role!=='shell'||!payload||Object.keys(payload).some(key=>!['projectId','id','revision','version','reference','receiptId'].includes(key))||typeof payload.id!=='string'||! /^(workspace:|managed:(pending:|object-pending:|publication:))/.test(payload.id)||!Number.isSafeInteger(payload.revision)||payload.revision<1||typeof payload.version!=='string'||! /^[a-f0-9]{64}$/.test(payload.version)||payload.reference!==undefined&&!['object','report','receipt'].includes(payload.reference))throw new HostError('IPC_DENIED','仅主窗口可导出其登记项目的恢复记录');
+        const {exportRecoveryRecord}=await import('./recovery-export.mjs');
+        return {ok:true,value:await exportRecoveryRecord({storage:host.storage,dialog,scope,...payload})};
+      }
       if(op==='workspace.capture.begin')return {ok:true,value:await workspaceCapture.begin(scope,payload??{})};
       if(op.startsWith('workspace.capture.'))return {ok:true,value:await workspaceCapture.invoke(event,op.slice('workspace.capture.'.length),payload??{})};
       if(op==='settings.appearance.read'||op==='settings.appearance.save'){
@@ -774,6 +779,12 @@ async function main() {
         const {ManagedReportExporter}=await import('./managed-report-export.mjs');
         return {ok:true,value:await new ManagedReportExporter({host,managedAgents,beforeOperation:syncDocument}).exportArtifact(payload??{})};
       }
+      if(op==='managed.timeline.export'){
+        if(!payload||Object.keys(payload).some(key=>!['projectId','id','version'].includes(key))||payload.projectId!==scope.projectId||!['shell','surface'].includes(scope.role)||scope.role==='surface'&&scope.kind!=='conversation'||typeof payload.id!=='string'||payload.id.length>512||typeof payload.version!=='string'||! /^[a-f0-9]{64}$/.test(payload.version))throw new HostError('IPC_DENIED','原生历史导出不属于当前可信对话');
+        await host.requireRegisteredProject(payload.projectId);
+        const {exportTimelineOriginal}=await import('./timeline-export.mjs');
+        return {ok:true,value:await exportTimelineOriginal({managed:managedAgents,dialog,scope,...payload})};
+      }
       if(typeof op==='string'&&op.startsWith('managed.')){
         const historyOnly=['managed.status','managed.maintenance.status','managed.history.list','managed.history.read','managed.artifact.read','managed.artifact.list','managed.timeline.page','managed.timeline.read','managed.timeline.request','managed.changes.list','managed.changes.read','managed.worker.history','managed.resident.history','managed.draft','managed.disposition','managed.terminal.screen','managed.review.read','managed.review.instruction.read'].includes(op);
         // Local disposition still passes sender/project/mutation authorization above.
@@ -795,7 +806,7 @@ async function main() {
       // Only a genuine registered storage hold enters withLifecycleOwner; a
       // workspace-close receipt owner was already authorized precisely above.
       if(flushOwner&&host.storage.lifecycleHolds.get(scope.projectId)===flushOwner)return await host.storage.withLifecycleOwner(scope.projectId,flushOwner,execute);
-      const control=op==='demo.create'||op==='demo.exit'||op.startsWith('session.')||op.startsWith('project.lifecycle.')||['project.pick','project.remove','project.retry','project.recent','workspace.closeProject','workspace.recovery.settle','workspace.bootstrap','workspace.recovery','workspace.recovery.list','workspace.recovery.object'].includes(op);
+      const control=op==='demo.create'||op==='demo.exit'||op.startsWith('session.')||op.startsWith('project.lifecycle.')||['project.pick','project.remove','project.retry','project.recent','workspace.closeProject','workspace.recovery.settle','workspace.bootstrap','workspace.recovery','workspace.recovery.list','workspace.recovery.detail','workspace.recovery.object','workspace.recovery.export'].includes(op);
       return admissionProject&&!control ? await host.storage.withProjectOperation(admissionProject,execute) : await execute();
     } catch (error) {
       if(['PROJECT_ROOT_MISSING','PROJECT_METADATA_MISSING','PROJECT_METADATA_CONFLICT','PROJECT_IDENTITY_CONFLICT'].includes(error.code)&&payload?.projectId)host.storage.onUnavailable(payload.projectId,error);

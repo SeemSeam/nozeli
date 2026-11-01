@@ -8,7 +8,7 @@ import {ProjectStorage} from '../src/main/project-storage.mjs';
 import {ManagedProjects} from '../src/agents/managed-projects.mjs';
 import {Workspace} from '../src/agents/managed/workspace.mjs';
 import {Controller} from '../src/agents/managed/controller.mjs';
-import {managedRuntime,readManagedState,listManagedPending,reconcileManagedPending} from '../src/agents/managed/managed-storage.mjs';
+import {managedRuntime,readManagedState,listManagedPending,readManagedPending,reconcileManagedPending} from '../src/agents/managed/managed-storage.mjs';
 import {managedReportSource,managedArtifact} from '../src/agents/managed-report-source.mjs';
 
 async function fixture(t){
@@ -81,7 +81,7 @@ test('failed project commit never persists a cleared draft and pending intent su
  await assert.rejects(consumeInput(store,'Unsent request'),{code:'INJECTED_PROJECT_COMMIT'});storage.replaceProjectCollections=replace;
  assert.equal(store.state.drafts.frontdesk,'Unsent request');assert.equal((await storage.getRecovery(project.id,'managed:drafts')).frontdesk,'Unsent request');
  assert.equal((await storage.listProject(project.id,'managed_jobs')).length,0);
- const pending=(await listManagedPending(storage,project.id)).find(row=>row.kind==='business');assert.equal(pending.status,'pending');assert.equal(pending.collections.managed_jobs[0].value.text,'Unsent request');assert.equal(pending.automaticReplay,false);
+ const pending=(await listManagedPending(storage,project.id)).find(row=>row.kind==='business');assert.equal(pending.status,'pending');assert.equal((await readManagedPending(storage,project.id,pending.id)).collections.managed_jobs[0].value.text,'Unsent request');assert.equal(pending.automaticReplay,false);assert.equal(pending.collections,undefined);
  await store.close();const reopened=await Workspace.open(runtime,content,{storage,projectId:project.id});
  try{assert.equal(reopened.state.drafts.frontdesk,'Unsent request');assert.equal(reopened.state.jobs?.length??0,0);assert.equal((await reopened.listPending())[0].id,pending.id);}finally{await reopened.close();}
 });
@@ -109,14 +109,14 @@ test('lifecycle rejection retains drafts and the complete pending business candi
  const online=storage.requireOnline.bind(storage);storage.requireOnline=async()=>{throw Object.assign(Error('lifecycle held'),{code:'PROJECT_LIFECYCLE_ACTIVE'});};
  await assert.rejects(consumeInput(store,'Held lifecycle input'),{code:'PROJECT_LIFECYCLE_ACTIVE'});storage.requireOnline=online;
  assert.equal((await storage.getRecovery(project.id,'managed:drafts')).frontdesk,'Held lifecycle input');
- assert.equal((await listManagedPending(storage,project.id)).find(row=>row.kind==='business').collections.managed_jobs[0].value.text,'Held lifecycle input');
+ const pending=(await listManagedPending(storage,project.id)).find(row=>row.kind==='business');assert.equal((await readManagedPending(storage,project.id,pending.id)).collections.managed_jobs[0].value.text,'Held lifecycle input');
 });
 
 test('explicit recovery merges independent business edits, promotes verified result objects and never replays jobs',async t=>{
  const {store,storage,project}=await fixture(t),work=await store.submit('Retain result','Inspect without rerun');await store.activate(work.id);
  const replace=storage.replaceProjectCollections.bind(storage);storage.replaceProjectCollections=async()=>{throw injected();};
  await assert.rejects(store.publish(work.id,1,'problem','# Pending result\n\nRetained bytes.\n','pending-result'),{code:'INJECTED_PROJECT_COMMIT'});storage.replaceProjectCollections=replace;
- const pending=(await listManagedPending(storage,project.id)).find(row=>row.kind==='business'),receipt=pending.collections.managed_receipts.find(row=>row.id==='pending-result').value;
+ const pending=(await listManagedPending(storage,project.id)).find(row=>row.kind==='business'),receipt=(await readManagedPending(storage,project.id,pending.id)).collections.managed_receipts.find(row=>row.id==='pending-result').value;
  // Remove only this fixture's project object to require verified recovery promotion while online.
  await fs.unlink(path.join(project.metadataRoot,'objects','sha256',receipt.report.digest));
  assert.equal((await store.readObject(receipt.report.digest)).toString(),'# Pending result\n\nRetained bytes.\n');
@@ -152,7 +152,7 @@ test('recovery refuses conflicting business edits without replacing current data
 test('corrupt recovery objects block reconciliation and preserve pending results',async t=>{
  const {store,storage,project}=await fixture(t),work=await store.submit('Integrity','Verify original bytes');await store.activate(work.id);
  const replace=storage.replaceProjectCollections.bind(storage);storage.replaceProjectCollections=async()=>{throw injected();};await assert.rejects(store.publish(work.id,1,'problem','# Integrity candidate\n','corrupt-result'));storage.replaceProjectCollections=replace;
- const pending=(await listManagedPending(storage,project.id)).find(row=>row.kind==='business'),receipt=pending.collections.managed_receipts[0].value;
+ const pending=(await listManagedPending(storage,project.id)).find(row=>row.kind==='business'),receipt=(await readManagedPending(storage,project.id,pending.id)).collections.managed_receipts[0].value;
  await fs.writeFile(path.join(await storage.recoveryDirectory(project.id),'objects','sha256',receipt.report.digest),'Corrupted recovery bytes');
  await assert.rejects(reconcileManagedPending(storage,project.id,{pendingId:pending.id,requestKey:'corrupt-object-retry',confirmed:true}),{code:'MATERIAL_CORRUPT'});
  assert.equal((await storage.listProject(project.id,'managed_receipts')).length,0);assert.ok((await listManagedPending(storage,project.id)).some(row=>row.id===pending.id));
@@ -211,7 +211,7 @@ test('Controller task acceptance uses the durable intent and confirmation path w
   storage.replaceProjectCollections=replace;
   assert.equal((await storage.getRecovery(project.id,'managed:drafts')).frontdesk,'Controller original draft');
   assert.equal(controller.store.state.jobs.length,0);assert.equal((await storage.listProject(project.id,'managed_jobs')).length,0);
-  const pending=(await listManagedPending(storage,project.id)).find(row=>row.kind==='business');assert.equal(pending.collections.managed_jobs[0].value.text,'Controller original draft');
+  const pending=(await listManagedPending(storage,project.id)).find(row=>row.kind==='business');assert.equal((await readManagedPending(storage,project.id,pending.id)).collections.managed_jobs[0].value.text,'Controller original draft');
   assert.equal(controller.sessions.size,0);assert.equal(controller.starting.size,0);assert.equal(controller.running.size,0);
   await controller.store.requireOnline();const accepted=await controller.submitTask('Controller original draft',{requestKey:'controller-success-input'});
   assert.equal(accepted.accepted,true);assert.equal((await storage.getRecovery(project.id,'managed:drafts')).frontdesk,'');
@@ -239,7 +239,7 @@ test('native admitted/settled facts and canonical entries durably ACK offline wi
   assert.equal(projectCommits,0);assert.equal(controller.store.state.jobs[0].status,'running');assert.equal(controller.store.state.messages.some(row=>row.nativeEntryDigest),false);
   const native=await storage.getRecovery(project.id,'managed:native-facts');assert.equal(native.jobs[0].local.collabAttempts[0].status,'settled');assert.equal(native.sessionIndex.entries[0].entryId,'offline-answer-entry');
   const reloaded=await readManagedState(storage,project.id,{offline:true});assert.equal(reloaded.jobs[0].status,'running');assert.equal(reloaded.jobs[0].collabAttempts[0].status,'settled');assert.equal(reloaded.sessionIndex.entries[0].ownership,'verified');
-  const pending=(await listManagedPending(storage,project.id)).find(row=>row.nativeMessageIds?.length);assert.ok(pending);assert.equal(pending.collections.managed_jobs[0].value.status,'running');assert.equal(pending.automaticReplay,false);
+  const pending=(await listManagedPending(storage,project.id)).find(row=>row.nativeMessageCount>0);assert.ok(pending);assert.equal((await readManagedPending(storage,project.id,pending.id)).collections.managed_jobs[0].value.status,'running');assert.equal(pending.automaticReplay,false);
   assert.equal(controller.snapshot().timeline.entries.find(row=>row.entryId==='offline-answer-entry').text,'Retained offline native answer');
   await assert.rejects(controller.recordTransport('frontdesk',{...fact,requestId:'forbidden-new-prompt',status:'prepared'}),{code:'PROJECT_ROOT_MISSING'});
   assert.equal(controller.store.state.jobs[0].collabAttempts.length,1);assert.equal(controller.sessions.size,0);

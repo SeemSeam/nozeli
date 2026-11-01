@@ -240,6 +240,7 @@ const SUITES = {
       'storage-file-cutover.test.mjs',
       'storage-host-cutover.test.mjs',
       'storage-managed-cutover.test.mjs',
+      'storage-recovery-bounded.test.mjs',
       'storage-stress-regression.test.mjs',
       'storage-worker-safety.test.mjs',
       'system-terminal-bridge.test.mjs',

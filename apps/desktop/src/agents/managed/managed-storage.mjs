@@ -164,13 +164,17 @@ export async function verifyManagedObject(storage,projectId,digest){
  catch(projectError){try{return await storage.withRecoveryObject(projectId,digest,({stat})=>({digest,byteLength:stat.size}));}catch(error){if(error.code==='MATERIAL_MISSING')throw projectError;throw error;}}
 }
 const pendingKind=(id,value)=>value.kind??(id.startsWith('managed:object-pending:')?'object':id.startsWith('managed:publication:')?'publication':value.collections?'business':'record');
+export async function listManagedPendingPage(storage,projectId,options={}){
+ const page=await storage.recoveryPage(projectId,{...options,prefixes:['managed:pending:','managed:object-pending:','managed:publication:'],pendingOnly:true,purpose:'managed-pending'});
+ return {...page,entries:page.entries.map(({id,revision,byteLength,value})=>({id,revision,byteLength,...value,automaticReplay:false,requiresConfirmation:true}))};
+}
 export async function listManagedPending(storage,projectId){
- const rows=await storage.listRecovery(projectId),settledReceipts=new Map(),settledMessages=new Set();
- for(const {value} of rows)if(value.collections&&['committed','reconciled'].includes(value.status)){
-  for(const row of value.collections.managed_receipts??[])settledReceipts.set(row.id,row.value.report?.digest);
-  for(const row of value.collections.managed_messages??[])settledMessages.add(row.id);
- }
- return rows.filter(({id,value})=>/^managed:(pending:|object-pending:|publication:)/.test(id)&&!['reconciled','discarded'].includes(value.status)&&!(value.nativeMessageIds?.length&&value.nativeMessageIds.every(id=>settledMessages.has(id)))&&!(id.startsWith('managed:publication:')&&settledReceipts.get(value.receiptId)===value.report?.digest)).map(({id,value})=>({id,...clone(value),kind:pendingKind(id,value),automaticReplay:false,requiresConfirmation:true}));
+ const page=await listManagedPendingPage(storage,projectId,{limit:200,maxBytes:1024*1024});
+ if(page.nextCursor)throw fail('RECOVERY_PAGE_REQUIRED','Pending recovery requires paged inspection');
+ return page.entries;
+}
+export async function readManagedPending(storage,projectId,pendingId,options={}){
+ return (await storage.readRecoveryRecord(projectId,pendingId,{...options,maxBytes:options.maxBytes??8*1024*1024,purpose:'managed-pending'}))?.value??null;
 }
 function referencedObjects(value,found=new Set(),parent=''){
  if(!value||typeof value!=='object')return found;
@@ -243,7 +247,7 @@ export async function reconcileManagedPending(storage,projectId,{pendingId,reque
  const previous=flights.get(projectId)??Promise.resolve(),run=previous.catch(()=>{}).then(async()=>{
   const receiptKey='managed:reconcile:'+requestKey,previous=await storage.getRecovery(projectId,receiptKey);
   if(previous){if(previous.pendingId!==pendingId)throw fail('REQUEST_KEY_COLLISION','Recovery request key already used');if(previous.result)return previous.result;}
-  const pending=await storage.getRecovery(projectId,pendingId);
+  const pending=await readManagedPending(storage,projectId,pendingId);
   if(!pending||!/^managed:(pending:|object-pending:|publication:)/.test(pendingId))throw fail('RECOVERY_PENDING_MISSING','Pending record not found');
   if(pending.status==='reconciled')return {accepted:true,status:'reconciled',pendingId,requestKey,automaticReplay:false,duplicate:true};
   await storage.putRecovery(projectId,receiptKey,{pendingId,requestKey,status:'prepared'});

@@ -7,7 +7,7 @@ import path from 'node:path';
 import {manageTodoState,reconcileTodos,todoCapabilities} from '../src/domain/todo-management.mjs';
 import {reportDescriptor} from '../src/agents/managed/report-descriptor.mjs';
 import {staticReport} from './static-report.fixture.mjs';
-import {readManagedState} from '../src/agents/managed/managed-storage.mjs';
+import {readManagedState,readManagedPending} from '../src/agents/managed/managed-storage.mjs';
 
 async function fixture(t){
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-todo-management-'));
@@ -112,7 +112,7 @@ test('write failures roll back close and remove, including ledgers and tombstone
   storage.replaceProjectCollections=async()=>{throw Object.assign(new Error('injected transaction rejection'),{code:'EINJECTED_COMMIT'});};
   try{await assert.rejects(f.manage(request(action,revision)),{code:'EINJECTED_COMMIT'});}finally{storage.replaceProjectCollections=replace;}
   assert.deepEqual(f.store.state,before);assert.deepEqual(await readManagedState(storage,f.store.projectId,{offline:false}),durable);
-  const pending=(await f.store.listPending()).find(row=>row.kind==='business'&&row.error?.code==='EINJECTED_COMMIT');assert(pending);assert.equal(pending.automaticReplay,false);assert.equal(pending.requiresConfirmation,true);
+  let pending;for(const row of (await f.store.listPending()).filter(row=>row.kind==='business')){const detail=await readManagedPending(storage,f.store.projectId,row.id);if(detail.error?.code==='EINJECTED_COMMIT'){pending={...row,...detail};break;}}assert(pending);assert.equal(pending.automaticReplay,false);assert.equal(pending.requiresConfirmation,true);
   await f.restart();for(const key of ['todos','todoManagementActions','todoTombstones','todoActions','todoManagementHistory','todoHistory','works','jobs','messages','receipts'])assert.deepEqual(f.store.state[key]??[],before[key]??[],`${key} must survive rejected ${action} unchanged across recovery`);await f.manage(request(action,revision));
  }
  await f.restart();assert.equal(f.todo(),undefined);assert.equal(f.store.state.todoTombstones.length,1);

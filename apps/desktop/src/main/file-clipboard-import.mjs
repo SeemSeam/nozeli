@@ -56,7 +56,11 @@ async function recoveryGuard(host,project,rel,source){
   const changes=await new FileChanges({storage:host.storage,projectId:project.id,root:project.root}).all();
   if(changes.some(row=>under(row.relPath,rel)&&(!source||row.pending)))fail(source?'源文件有待恢复的修改批次。':'目标位置保留有修改历史，请使用其他名称。');
   if(!source&&(await new FileTags({storage:host.storage,projectId:project.id,root:project.root}).all()).some(row=>under(row.file.relPath,rel)))fail('目标位置保留有标签恢复资料，请使用其他名称。');
-  for(const {value} of await host.storage.listRecovery(project.id))if(value?.relPath&&under(value.relPath,rel)&&(!source||value.status!=='saved'))fail(source?'源文件存在未保存的草稿，请保存后再复制。':'目标位置保留有草稿恢复资料，请使用其他名称。');
+  let cursor=null;do{
+    const page=await host.storage.recoveryPage(project.id,{cursor,relPaths:[rel],purpose:'clipboard-guard'});
+    if(page.entries.some(row=>!source||row.value.status!=='saved'))fail(source?'源文件存在未保存的草稿，请保存后再复制。':'目标位置保留有草稿恢复资料，请使用其他名称。');
+    cursor=page.nextCursor;
+  }while(cursor);
 }
 export function importClipboardFiles(ops,items,{projectId,target=''}){
   const task=ops.pending.then(async()=>{

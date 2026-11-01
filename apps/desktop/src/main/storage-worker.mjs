@@ -3,6 +3,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {createHash} from 'node:crypto';
 import fs from 'node:fs';
 import {pathToFileURL} from 'node:url';
+import {recoveryRead,managedResourceSummary} from './storage-recovery.mjs';
 
 const databases=new Map(),identities=new Map();
 const reply=message=>workerData.replyPort.postMessage({...message,completedAt:process.hrtime.bigint()});
@@ -49,7 +50,9 @@ function open(file,{mustExist=false}={}){
  }catch(error){db.close();throw error;}
 }
 parentPort.on('message',({id,file,op,args})=>{try{const db=open(file,args);let value;
- if(op==='get')value=JSON.parse(db.prepare('SELECT value FROM records WHERE collection=? AND id=?').get(args.collection,args.id)?.value??'null');
+ if(['recoveryPage','recoveryRecord','recoveryChunk'].includes(op))value=recoveryRead(db,identities.get(file),op,args);
+ else if(op==='managedResourceSummary')value=managedResourceSummary(db,args);
+ else if(op==='get')value=JSON.parse(db.prepare('SELECT value FROM records WHERE collection=? AND id=?').get(args.collection,args.id)?.value??'null');
  else if(op==='record'){const r=db.prepare('SELECT value,revision FROM records WHERE collection=? AND id=?').get(args.collection,args.id);value=r?{value:JSON.parse(r.value),revision:r.revision}:null;}
  else if(op==='list')value=db.prepare('SELECT id,value,revision FROM records WHERE collection=? ORDER BY id').all(args.collection).map(r=>({...r,value:JSON.parse(r.value)}));
  else if(op==='all')value=db.prepare('SELECT collection,id,value,revision FROM records ORDER BY collection,id').all().map(r=>({...r,value:JSON.parse(r.value)}));

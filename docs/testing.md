@@ -55,6 +55,12 @@ Runner 为每个套件创建独立 HOME/XDG 配置目录，禁用用户/系统 G
 
 平台无关存储安全集 `storage-worker-safety.test.mjs` 覆盖原期限内已提交但主线程延迟消费回执、真正迟到／缺失回执、冲突、关闭与代际隔离；`tex-source-watcher.test.mjs` 覆盖剪枝、资源变化／新目录、链接替换和关闭期间初始化取消。两者进入默认 integration；不把 Linux 原生实测外推到 Windows/macOS。
 
+有界恢复读取进入默认integration：`storage-recovery-bounded.test.mjs`以200–300MiB合成SQLite记录验证摘要条数／字节预算、连接／scope／版本游标、UTF-8原始字节分块、未知／损坏记录保留、settled receipt/message筛选、资源窄投影及原生导出的排他发布／失败不留半份。`session-index.test.mjs`补充超过8MiB解析预算的原件仍可确切导出；`tag-input-presentation.test.mjs`覆盖冷开大回复不丢失且大工具日志不混入回复；`file-clipboard.test.mjs`覆盖无关超大恢复记录不阻断导入／导出、相关未保存记录继续阻断。路径碰撞在SQLite中按完整相对路径筛选，不用128字符显示摘要作权限或覆盖判断。
+
+真实恢复表面另运行 `node tests/desktop-managed-pending-recovery.test.mjs` 与 `node tests/desktop-office-recovery.test.mjs`（先构建renderer及已有Office/PPT依赖，配置显示器；Linux X11可设置`NOZELI_OZONE=x11`）。前者实际根目录失联、静态报告原字节导出与显式结算／冷开不重放；后者用真实Word/Sheet/PPT引擎失联编辑，按所选记录明确读取后导出候选包并校验编辑内容及原件不变。它们不代替超大库冷启动、原生另存对话框或真实账号／其他平台资格。
+
+`desktop-reading-current.test.mjs`和`desktop-storage-lifecycle.test.mjs`已同步摘要／明确详情协议。后者的完整JSON导出仍走实际恢复按钮、可信IPC和磁盘写入；仅在隔离测试进程的main inspector中固定下一次系统另存为目标，随即恢复原chooser，不增加产品环境变量／renderer路径权限或常驻后门。系统对话框本身的点击／路径输入须另记验收，不能由该适配器推导通过。
+
 ## Node 与 Electron 的 ABI 区分
 
 postinstall 用 `electron-rebuild` 针对 Electron 重建 `node-pty`。该依赖基于 node-addon-api（N-API），二进制在 Node 与 Electron 间 ABI 稳定，因此纯 Node 的 live 测试仍可直接加载。runner 在 live 前实际探测 `node -e "require('node-pty')"`：一旦某次重建产出仅 Electron ABI 的二进制，立即给出明确前置说明（重装依赖），而不是让测试逐个崩溃或被裁剪。依赖 Electron GUI 的 `desktop-*` 测试不属于任何纯 Node 套件。

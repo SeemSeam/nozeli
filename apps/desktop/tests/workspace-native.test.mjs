@@ -31,6 +31,17 @@ host.storage=new Proxy(storage,{get(target,key){const value=Reflect.get(target,k
 const stateHost=new DesktopHost(directory);stateHost.storage=host.storage;stateHost.requireRegisteredProject=id=>host.requireRegisteredProject(id);host.readState=id=>stateHost.readState(id);
 const native=new WorkspaceNative({BrowserWindow:Window,WebContentsView:View,screen:{getDisplayMatching:()=>({workArea:{x:-1920,y:0,width:1920,height:1080}})},origin:'http://127.0.0.1:9000/',userDataDir:directory,host});const root=native.registerShell(new Window());root.projectId='p';root.ready=true;native.layouts.set('p',createLayout('p',{workspace:{minimized:true}}));return {native,root};}
 function receipt(native,r,ok=true){r.ready=true;r.wc.onSend=(channel,payload)=>{if(channel==='nozeli:flush')queueMicrotask(()=>native.acknowledge(r,{requestId:payload,ok}));};}
+test('shell can inspect another registered project recovery while document surfaces cannot',async t=>{
+ const {native,root}=await fixture(t),directory=await mkdtemp(path.join(os.tmpdir(),'cross-recovery-'));t.after(()=>rm(directory,{recursive:true,force:true}));
+ const project=await native.host.storage.register(directory);native.host.requireRegisteredProject=id=>native.host.storage.requireRegistered(id);
+ await native.host.storage.putRecovery(project.id,'workspace:other',{kind:'draft',status:'retained',candidate:{text:'Exact other-project draft'}});
+ const page=await native.host.storage.recoveryPage(project.id,{purpose:'recovery-ui'}),row=page.entries[0],payload={projectId:project.id,id:row.id,revision:row.revision,version:page.version};
+ const event={sender:root.wc,senderFrame:root.wc.mainFrame};
+ const owner=native.authorize(event,'workspace.recovery.detail',payload),detail=await native.invoke(owner,'workspace.recovery.detail',payload);assert.equal(detail.value.candidate.text,'Exact other-project draft');
+ assert.equal(native.authorize(event,'workspace.recovery.export',payload),root);
+ const surface=native.register(new Contents(),{role:'surface',projectId:'p',kind:'document'});
+ for(const op of ['workspace.recovery.detail','workspace.recovery.export'])assert.throws(()=>native.authorize({sender:surface.wc,senderFrame:surface.wc.mainFrame},op,payload),{code:'PROJECT_SCOPE_DENIED'});
+});
 test('native text commands target only the focused live shell, surface or isolated preview', async t => {
  const {native,root}=await fixture(t),calls=[];
  const surface=native.register(new Contents(),{role:'surface',projectId:'p',windowId:'main',viewId:'selection',kind:'document'});

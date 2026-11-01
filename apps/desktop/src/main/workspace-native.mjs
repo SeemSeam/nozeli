@@ -4,7 +4,7 @@ import { createLayout, validateLayout, reduceLayout, singleContentLayout, layout
 import {WorkspaceLayoutStore} from './workspace-layout-store.mjs';
 import {mergeDrawingMaterials} from '../domain/drawing-delivery.mjs';
 import {normalizeOfficeRecovery} from './office-recovery.mjs';
-import {listManagedPending,readManagedObject} from '../agents/managed/managed-storage.mjs';
+import {readManagedObject} from '../agents/managed/managed-storage.mjs';
 import {ProjectTerminalHost} from './project-terminal.mjs';
 import {GuidedDemoControls} from './guided-demo-controls.mjs';
 import {applyViewGeometry} from './view-geometry.mjs';
@@ -201,7 +201,7 @@ export class WorkspaceNative {
     if (typeof op !== 'string') throw fail('UNKNOWN_OP');
     if(r.role==='demo-controls'){if(!this.demoControls.owns(r)||!this.demoControls.allowed(op))throw fail('IPC_DENIED');return r;}
     if(r.role==='demo-hint'){if(!this.demoControls.hintOwns(r)||!this.demoControls.hintAllowed(op))throw fail('IPC_DENIED');return r;}
-    if (payload.projectId && payload.projectId !== r.projectId && !(r.role === 'shell' && (['demo.state','demo.exit','managed.status','managed.attention.ack','workspace.project','workspace.closeProject','workspace.recovery.object','workspace.recovery.settle','project.open','project.remove','project.retry','project.lifecycle.preview','project.lifecycle.reconcile'].includes(op)||op==='demo.transition'&&payload.action==='stop'))) throw fail('PROJECT_SCOPE_DENIED');
+    if (payload.projectId && payload.projectId !== r.projectId && !(r.role === 'shell' && (['demo.state','demo.exit','managed.status','managed.attention.ack','workspace.project','workspace.closeProject','workspace.recovery.detail','workspace.recovery.export','workspace.recovery.object','workspace.recovery.settle','project.open','project.remove','project.retry','project.lifecycle.preview','project.lifecycle.reconcile'].includes(op)||op==='demo.transition'&&payload.action==='stop'))) throw fail('PROJECT_SCOPE_DENIED');
     if(op.startsWith('demo.')){if(op==='demo.result'){if(!['surface','shell','detached'].includes(r.role))throw fail('IPC_DENIED');}else if(!['demo.state','demo.send','demo.interrupt'].includes(op)&&r.role!=='shell')throw fail('IPC_DENIED');return r;}
     if(r.role==='surface'&&r.kind==='terminal'&&op.startsWith('managed.')&&(op!=='managed.terminal.screen'||payload.target!==this.layouts.get(r.projectId)?.views[r.viewId]?.viewState?.workId))throw fail('IPC_DENIED');
     if(op.startsWith('project-terminal.')){
@@ -960,20 +960,39 @@ export class WorkspaceNative {
     }
     if (op === 'workspace.recovery.list') {
       if (r.role !== 'shell') throw fail('IPC_DENIED');
-      const projects = await this.host.storage.list(), entries = [];
-      for (const project of projects) {
-        const descriptor={id:project.id,name:project.name,root:project.root,removed:project.removed};
-        for (const item of await this.host.storage.listRecovery(project.id)) if (item.id.startsWith('workspace:')) entries.push({project:descriptor,id:item.id,value:item.value});
-        for (const pending of await listManagedPending(this.host.storage,project.id)) entries.push({project:descriptor,id:pending.id,value:{...pending,projectId:project.id,recoveryKind:'managed'}});
-        const hold=this.host.storage.lifecycleHolds.get(project.id);if(hold)entries.push({project:descriptor,id:'lifecycle:'+hold.operationId,value:{projectId:project.id,recoveryKind:'lifecycle',operationId:hold.operationId,action:hold.action}});
+      const cursor=p.cursor??null,storage=this.host.storage;
+      if(cursor&&(typeof cursor!=='object'||cursor.schema!==1))throw fail('RECOVERY_CURSOR_INVALID');
+      let project,projectsCursor=cursor?.projectsCursor??null;
+      if(cursor?.projectId){
+        project=await storage.requireRegistered(cursor.projectId);
+        if(project.instanceId!==cursor.instanceId)throw fail('RECOVERY_CURSOR_STALE');
+      }else{
+        const projectPage=await storage.registeredProjectPage({cursor:projectsCursor,limit:1,maxBytes:8192});
+        const row=projectPage.entries[0];if(!row)return {entries:[],nextCursor:null};
+        project={...(row.value??row),id:row.id};projectsCursor=projectPage.nextCursor;
       }
-      return {entries};
+      const descriptor={id:project.id,name:String(project.name??'').slice(0,512),removed:project.removed===true||project.removed===1};
+      const nextProject=projectsCursor?{schema:1,projectsCursor}:null;
+      const binding={schema:1,projectId:project.id,instanceId:project.instanceId,projectsCursor};
+      if(cursor?.phase==='lifecycle'){
+        const hold=storage.lifecycleHolds.get(project.id);
+        return {entries:hold?[{project:descriptor,id:'lifecycle:'+hold.operationId,value:{projectId:project.id,recoveryKind:'lifecycle',operationId:hold.operationId,action:hold.action,needsCheck:true}}]:[],nextCursor:nextProject};
+      }
+      const page=await storage.recoveryPage(project.id,{cursor:cursor?.recordsCursor??null,limit:30,maxBytes:48*1024,purpose:'recovery-ui',prefixes:['workspace:','managed:pending:','managed:object-pending:','managed:publication:'],pendingOnly:true});
+      return {entries:page.entries.map(item=>({...item,version:page.version,project:descriptor})),nextCursor:page.nextCursor?{...binding,recordsCursor:page.nextCursor}:storage.lifecycleHolds.has(project.id)?{...binding,phase:'lifecycle'}:nextProject};
     }
-    if(op==='workspace.recovery.object'){
-      if(r.role!=='shell'||typeof p.digest!=='string'||! /^[a-f0-9]{64}$/.test(p.digest))throw fail('IPC_DENIED');
+    if(op==='workspace.recovery.detail'||op==='workspace.recovery.object'){
+      if(r.role!=='shell'||typeof p.id!=='string'||! /^(workspace:|managed:(pending:|object-pending:|publication:))/.test(p.id)||!Number.isSafeInteger(p.revision)||p.revision<1||typeof p.version!=='string'||! /^[a-f0-9]{64}$/.test(p.version))throw fail('IPC_DENIED');
       await this.host.requireRegisteredProject(p.projectId);
-      const bytes=await readManagedObject(this.host.storage,p.projectId,p.digest);
-      return {digest:p.digest,bytes:{encoding:'base64',byteLength:bytes.length,data:bytes.toString('base64')}};
+      const record=await this.host.storage.readRecoveryRecord(p.projectId,p.id,{revision:p.revision,version:p.version,maxBytes:8*1024*1024,purpose:'recovery-ui'});
+      if(!record)throw fail('RECOVERY_RECORD_MISSING');
+      if(op==='workspace.recovery.detail')return record;
+      // Renderer chooses a receipt identity, not a digest authority. Every
+      // material read resolves through this exact retained record revision.
+      const {recoveryReference}=await import('./recovery-export.mjs');
+      const reference=recoveryReference(record.value,p);
+      const bytes=await readManagedObject(this.host.storage,p.projectId,reference.digest,{maxBytes:1024*1024});
+      return {bytes:{encoding:'base64',byteLength:bytes.length,data:bytes.toString('base64')}};
     }
     if (op === 'workspace.recovery') return this.saveRecovery(r, p);
     if(op.startsWith('workspace.layouts.')){

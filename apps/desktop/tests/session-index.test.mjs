@@ -7,6 +7,7 @@ import path from 'node:path';
 import {Workspace} from '../src/agents/managed/workspace.mjs';
 import {SessionIndex} from '../src/agents/managed/session-index.mjs';
 import {NativeCollabRuntime} from '../src/agents/managed/collab/runtime.mjs';
+import {exportTimelineOriginal} from '../src/main/timeline-export.mjs';
 
 async function fixture(t) {
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-session-index-'));
@@ -36,7 +37,7 @@ test('context clear starts an empty current view while explicit history and subs
  await index.recordBatch([fact('after-clear','New answer')],'frontdesk');
  assert.deepEqual(index.frame().entries.map(e=>e.text),['New answer']);
  const restored=new SessionIndex(store);await restored.initialize();
- assert.deepEqual(restored.frame().entries.map(e=>e.text),['New answer']);
+  assert.deepEqual((await restored.page()).entries.map(e=>e.text),['New answer']);
 });
 
 test('durable entry replaces its exact native stream, duplicate snapshot cannot repeat the answer',async t=>{
@@ -222,4 +223,15 @@ test('oversized failed native original retains failure metadata across bounded d
   await index.recordBatch([value],'frontdesk');const record=index.records().find(row=>row.entryId==='large-failure'),entry=await index.read(record.id);
   assert.equal(entry.availability,'read-required');assert.equal(entry.status,'failed');assert.equal(entry.failed,true);assert.equal(entry.durable,true);
   const page=await index.read(record.id,{version:entry.read.version,field:'text',offset:0,limit:16384});assert.equal(page.content,'failure detail '.repeat(20000).slice(0,page.content.length));
+});
+
+test('original above the explicit parse budget remains exactly exportable after cold discovery',async t=>{
+ const {root,store,index}=await fixture(t),original=fact('export-only','界'.repeat(3*1024*1024));
+ await index.recordBatch([original],'frontdesk');const record=index.records().find(row=>row.entryId==='export-only'),cold=new SessionIndex(store);await cold.initialize();
+ const page=await cold.page(),placeholder=page.entries.find(row=>row.id===record.id);assert.equal(placeholder.availability,'read-required');assert.equal(placeholder.read.discoveryRequired,true);
+ const discovery=await cold.read(record.id);assert.equal(discovery.availability,'read-required');assert.deepEqual(discovery.read.fields,[]);
+ const target=path.join(root,'exported-original.json'),scope={projectId:'synthetic-project',generation:1,dead:false};
+ const result=await exportTimelineOriginal({managed:{projectionSource:async()=>({index:cold})},dialog:{showSaveDialog:async()=>({filePath:target})},scope,projectId:scope.projectId,id:record.id,version:record.objectId});
+ const bytes=await fs.readFile(target);assert.deepEqual(bytes,Buffer.from(JSON.stringify(original.entry)));assert.equal(result.byteLength,bytes.length);
+ assert.equal(cold.records().find(row=>row.id===record.id).objectId,record.objectId);
 });

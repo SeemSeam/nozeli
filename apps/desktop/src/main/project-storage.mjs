@@ -178,7 +178,13 @@ export class ProjectStorage {
  async putObjectStream(id,input,options){return (await this.objects(id)).putStream(input,options);}
  async withObject(id,digest,fn){return (await this.objects(id)).withObject(digest,fn);}
  async verifyObject(id,digest){return (await this.objects(id)).verify(digest);}
- async listRecovery(id){return this.db.request(path.join(await this.recoveryDirectory(id),'recovery.sqlite'),'list',{collection:'recovery'});}
+ async recoveryRequest(id,op,options={}){const p=await this.requireRegistered(id);return this.db.request(path.join(await this.recoveryDirectory(id),'recovery.sqlite'),op,{...options,projectId:id,instanceId:p.instanceId,purpose:options.purpose??'recovery'});}
+ async recoveryPage(id,options={}){return this.recoveryRequest(id,'recoveryPage',options);}
+ async readRecoveryRecord(id,key,options={}){return this.recoveryRequest(id,'recoveryRecord',{...options,id:key});}
+ async readRecoveryChunk(id,key,options={}){return this.recoveryRequest(id,'recoveryChunk',{...options,id:key});}
+ async *recoveryRecords(id,{prefixes,relPaths,maxBytes=8*1024*1024}={}){let cursor=null;do{const page=await this.recoveryPage(id,{cursor,prefixes,relPaths,purpose:'recovery-records'});for(const row of page.entries){const record=await this.readRecoveryRecord(id,row.id,{revision:row.revision,version:page.version,maxBytes,purpose:'recovery-records'});if(!record)throw fail('RECOVERY_VERSION_CHANGED','恢复记录已变化');yield record;}cursor=page.nextCursor;}while(cursor);}
+ async registeredProjectPage(options={}){await this.ready();return this.db.request(this.catalog,'recoveryPage',{...options,collection:'instances',projectId:'catalog',instanceId:'catalog',purpose:'registered-projects'});}
+ async managedResourceSummary(id,{offline=false}={}){if(!offline)return this.projectRequest(id,'managedResourceSummary',{offline:false});const directory=await this.localDirectory(id);return this.db.request(path.join(directory,'ui.sqlite'),'managedResourceSummary',{offline:true});}
  async getProjectRecord(id,collection,key){return this.projectRequest(id,'record',{collection,id:key});}
  async putRecoveryObject(id,bytes){return new MaterialStore(path.join(await this.recoveryDirectory(id),'objects','sha256'),{maxBytes:256*1024*1024}).put(bytes);}
  async readRecoveryObject(id,digest,options){return new MaterialStore(path.join(await this.recoveryDirectory(id),'objects','sha256'),{maxBytes:256*1024*1024}).get(digest,options);}

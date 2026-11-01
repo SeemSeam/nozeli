@@ -63,7 +63,7 @@ test('a pre-hold managed mutation saves under the exact stop owner without a pen
  finish.resolve();await mutation;assert.equal((await removing).removed,true);
  assert.equal(c.store.offline,false);assert.equal(c.store.closed,true);
  assert.equal((await f.storage.requireRegistered(f.project.id)).removed,true);assert.equal(f.closed.length,1);
- const pending=(await f.storage.listRecovery(f.project.id)).filter(row=>row.id.startsWith('managed:pending:'));
+ const pending=(await f.storage.recoveryPage(f.project.id,{prefixes:['managed:pending:']})).entries;
  assert(pending.length>0);assert(pending.every(row=>row.value.status==='reconciled'));
  assert.equal(await fs.readFile(path.join(f.root,'source.txt'),'utf8'),'retained source\n');
 });
@@ -104,7 +104,7 @@ test('a pre-hold connection flight is drained and cancelled without poisoning ma
  await stopping.promise;finish.resolve();await rejected;
  assert.equal((await removing).removed,true);assert.equal(opened.store.closed,true);assert.equal(opened.store.offline,false);
  assert.equal(f.storage.projectOperations.size,0);
- assert((await f.storage.listRecovery(f.project.id)).filter(row=>row.id.startsWith('managed:pending:')).every(row=>row.value.status==='reconciled'));
+ assert((await f.storage.recoveryPage(f.project.id,{prefixes:['managed:pending:']})).entries.every(row=>row.value.status==='reconciled'));
 });
 
 test('active worker interruption persists under stop owner and keeps the execution worktree',async t=>{
@@ -129,7 +129,7 @@ test('active worker interruption persists under stop owner and keeps the executi
  assert.equal(c.store.state.jobs.find(row=>row.id===job.id).status,'interrupted');
  assert.equal(c.store.closed,true);assert.equal(c.store.offline,false);assert.equal(c.store.lifecycleHold,null);
  assert.equal(await fs.readFile(path.join(execution,'running-result.txt'),'utf8'),'synthetic in-progress result\n');
- assert((await f.storage.listRecovery(f.project.id)).filter(row=>row.id.startsWith('managed:pending:')).every(row=>row.value.status==='reconciled'));
+ assert((await f.storage.recoveryPage(f.project.id,{prefixes:['managed:pending:']})).entries.every(row=>row.value.status==='reconciled'));
 });
 
 test('cold operation admission loads the persisted hold before issuing any capability',async t=>{
@@ -158,5 +158,5 @@ test('hold drains a resource operation accepted before its flight is published',
  f.manager.beforeStop=async()=>{stopping.resolve();};
  const removing=f.manager.removeProject(f.project.id,{operationId:'remove-resource-flight'});await stopping.promise;
  finish.resolve();await resource;assert.equal((await removing).removed,true);assert.equal(f.storage.projectOperations.size,0);
- assert((await f.storage.listRecovery(f.project.id)).filter(row=>row.id.startsWith('managed:pending:')).every(row=>row.value.status==='reconciled'));
+ assert((await f.storage.recoveryPage(f.project.id,{prefixes:['managed:pending:']})).entries.every(row=>row.value.status==='reconciled'));
 });
