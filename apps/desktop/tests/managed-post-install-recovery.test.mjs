@@ -82,6 +82,10 @@ test('repaired acceptance hook retries once without business replay or changing 
  assert.equal(first.closure.phase,'blocked');assert.equal(git(f.project,'rev-list','--count','HEAD'),'1');
  const rejected=await f.c.execution.readManifest(w.id);assert.equal(rejected.acceptancePreparation.status,'rejected');
  await fs.unlink(path.join(f.project,'.git/hooks/pre-commit'));
+ // The blocked closure handed itself to a background maintenance auto-retry; let that technical
+ // event settle (hook now repaired) before issuing the user retry, so the revalidated accept is
+ // not aborted by concurrent maintenance job bookkeeping mutating the workspace snapshot.
+ await wait(f.c,()=>!f.c.store.state.jobs.some(j=>['queued','running'].includes(j.status)));
  const retry={projectId:f.projectId,workId:w.id,binding,requestKey:'retry-'+randomUUID()};
  const [a,b]=await Promise.all([f.manager.invoke('managed.retry',retry),f.manager.invoke('managed.retry',retry)]);
  assert.equal(a.closure.phase,'complete');assert.deepEqual(a,b);const oid=a.closure.git.commit;assert.equal(git(f.project,'rev-parse','HEAD'),oid);assert.equal(git(f.project,'show','HEAD:A.txt'),'A result');assert.equal(git(f.project,'rev-list','--count','HEAD'),'2');

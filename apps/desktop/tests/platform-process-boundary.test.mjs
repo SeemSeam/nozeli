@@ -176,7 +176,8 @@ test('Linux bwrap isolation stays reachable through the contract when installed'
   assert.equal(isolationCapability().state,'available');
   const home=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-iso-contract-'));
   t.after(()=>fs.rm(home,{recursive:true,force:true}));
-  const launch=await isolatedLaunch({command:process.execPath,args:['-e',''],home,cwd:os.tmpdir()});
+  // cwd must be an exact subpath: the adapter refuses whole-directory roots such as os.tmpdir() itself.
+  const launch=await isolatedLaunch({command:process.execPath,args:['-e',''],home,cwd:home});
   assert.equal(launch.command,'bwrap');
   assert.ok(launch.args.includes('--unshare-pid'));
   assert.ok(launch.args.includes('--die-with-parent'));
