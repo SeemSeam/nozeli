@@ -50,7 +50,7 @@ async function open(t,script){
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-context-cutover-'));
   const native=fakeNative(script);
   const c=await openTestController({runtimeRoot:path.join(root,'runtime'),contentRoot:path.join(root,'project'),sessionFactory:spec=>new native.Session(spec),projectHome:home=>fs.mkdir(home,{recursive:true})});
-  t.after(async()=>{try{await c.stop();}finally{try{await c.store.close();}catch{}await fs.rm(root,{recursive:true,force:true});}});
+  t.after(async()=>{try{await c.stop();}finally{for(let attempt=0;;attempt++){try{await fs.rm(root,{recursive:true,force:true});break;}catch(error){if(error.code!=='ENOTEMPTY'||attempt>=20)throw error;await new Promise(resolve=>setTimeout(resolve,50));}}}});
   return {c,native,root};
 }
 
