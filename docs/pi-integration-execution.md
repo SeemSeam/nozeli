@@ -478,5 +478,11 @@ provider／预算／无能力技术故障只本地分类与去重，不产生 ma
 
 真实项目烟测使用只复制白名单view/layout/catalog的隔离本机状态，沿原项目实体身份读取现有目录，不重新登记或改写项目身份，不复制账号／provider／进程登记，不发送模型、不改论文正文／采用成果。旧日常隔离实例与高CPU旧headless验收进程均未强杀／强制重载；本轮不安装、不推送、不发布，不宣称Windows/macOS已验。完整默认回归结果另在本节后续补记，不能把以上定向集相加冒称全仓通过。
 
-完整当前混合工作树的磁盘临时目录回归：unit541/541、integration1534/1535，零跳过；唯一失败为并发未提交Orchestrator P0的`managed-work-todo-lifecycle.test.mjs`，按旧名称clarify后缺少Work归属，与本轮卡顿修复分开记录，不删除有效测试或混入P0代码。首轮`/tmp`曾报配额`-122`／SQLite I/O失败，日志保留于本机证据目录；修复候选需以“已提交基线＋仅本轮变更”独立运行完整集合后才提交，不能把混合工作树称为全绿。候选renderer构建及真实Electron5项（正常退出／冷重开均exit0）已通过：`/var/tmp/nozeli-lag-commit-check-20261101/apps/desktop/.test-output/ci/smoke-cqkizQ/report.json`。
+当时的完整混合工作树磁盘临时目录回归：unit541/541、integration1534/1535，零跳过；唯一失败为并发P0尚未迁移的`managed-work-todo-lifecycle.test.mjs`，按旧名称clarify后缺少Work归属，与本轮卡顿修复分开记录，不删除有效测试。首轮`/tmp`曾报配额`-122`／SQLite I/O失败，日志保留于本机证据目录；该次混合工作树运行不记为全绿。候选renderer构建及真实Electron5项（正常退出／冷重开均exit0）已通过，原件已保留为`/var/tmp/nozeli-lag-fixed-fngbww4v/candidate-ci/smoke-cqkizQ/report.json`。
+
+独立只读复审：存储期限／端口／代际与监听／导航保留两个切片均判定correct，无已证实的阻断项；复审未独立重跑测试，不作为运行证据。存储真实文件回归使用较短期限验证调度次序，极端调度或磁盘延迟仍可能影响该测试；生产默认8秒未调整。
+
+最终仅含本轮修复的独立候选（已提交基线`cd05653`＋本轮源码／回归，不含并发P0及其测试迁移）完整执行默认集合：unit **541/541**（62文件）、integration **1526/1526**（147文件），零失败／跳过／取消，整条`npm test`退出0；使用仓库外磁盘临时目录，未删减候选注册集合。原始TAP已保留于`/var/tmp/nozeli-lag-fixed-fngbww4v/candidate-ci/{unit,integration}.tap`。候选仅复用既有本地依赖与PPTist构建产物，不安装／下载工具、不复制个人账号。此处完整全绿结论仅覆盖该独立候选，不自动覆盖并发P0。
+
+提交前索引核验发现，并发操作已创建`05ff3cb51c4b3db0a95df092810ac225e78f111f`（Add bounded taskboard and stable Work revision management），其中同时包含了本轮已暂存的源码／回归与P0。未reset／amend／重写该提交，后续仅单独补充本验收记录。该并发提交也已将上述生命周期调用迁移为稳定workId／revision；父级在更新后实际重跑`managed-work-todo-lifecycle.test.mjs`，1/1通过。没有把此单文件通过改称混合提交已重新完整跑绿；源码修复所在提交与独立候选的全量证据分别保留。
 
