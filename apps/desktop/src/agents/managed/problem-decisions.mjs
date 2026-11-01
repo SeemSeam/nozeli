@@ -76,8 +76,9 @@ export async function resolveProblemDecision(controller,payload){
       ?'用户已在待办中批准问题报告提出的处理方案，继续同一Work按该方案执行剩余步骤。\n'+approveNote+'\n本决定不是成果接受，Work 不会因此结束；已完成操作不得重放。\n'+(text.trim()?`用户批准说明（原文）：\n${text}\n`:'')+'\n用户批准的处理方案原文（与任务锚点“用户明确批准的来源输入”一致，在本任务内按此执行）：\n'+problemText
       :'用户已在待办中拒绝问题报告提出的处理方案并给出反馈；不得按原方案执行，也不得重放已完成操作，按反馈继续同一Work。\n'+rejectNote+'\n本决定不是成果接受，Work 不会因此结束；用户反馈是本轮唯一新增授权来源。\n\n用户反馈（原文）：\n'+text+'\n\n问题报告原文（仅对照，未被批准）：\n'+problemText;
     const job=controller.queueJob(workId,'problem-resume',body,{key:`problem-resume:${objectId}:${revision}`,context:{problemObjectId:objectId,problemRevision:revision,problemDecisionAction:action,sourceJobId,...(sourceJob.context?.permissionTaskId?{permissionTaskId:sourceJob.context.permissionTaskId}:{})},priority:true});
-    // approvedScopes 与既有 workerTaskAnchor 格式兼容：deviationId/sourceJobId/
-    // sourceText/at/revision，锚点把来源作为“用户明确批准的来源输入”交付 Worker。
+    // approvedScopes keeps the explicit approval identity (deviationId/
+    // sourceJobId/sourceText/at/revision): the Worker projection exposes the
+    // approval ids, and the full frozen original stays readable by version.
     w.approvedScopes??=[];w.approvedScopes.push(decision);
     const todo=(s.todos||[]).find(t=>t.workId===workId&&t.kind==='problem'&&t.objectId===objectId);
     if(todo)todo.resolution={kind:'problem-decision',action,text,at,revision:newRevision,jobId:job.id,requestKey};

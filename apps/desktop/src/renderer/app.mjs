@@ -14,7 +14,7 @@ import { mountImage } from './image-view.mjs';
 import { mountFileLabels } from './file-labels.mjs';
 import { mountTexWorkspace } from './tex-workspace.mjs';
 import { mountMarkdownWorkspace, isMarkdownPath } from './markdown-workspace.mjs';
-import { mountWebWorkspace, closeIsolatedSurfaces } from './isolated-surfaces.mjs';
+import { mountWebWorkspace, closeIsolatedSurfaces, isWebEntry } from './isolated-surfaces.mjs';
 import { mountPpt } from './ppt-view.mjs';
 import { mountSheet } from './sheet-view.mjs';
 import { mountWord } from './word-view.mjs';
@@ -73,6 +73,9 @@ if(workspaceScope.role==='surface'&&workspaceScope.kind==='terminal'){
   await invoke('workspace.ready',{});
   const ready=await invoke('workspace.ready',{contentReady:true});if(!ready.ok)throw Error(ready.error.message);
   window.__nozeliReady=true;
+}else if(workspaceScope.role==='surface'&&workspaceScope.kind==='project-terminal'){
+  const {mountProjectTerminal}=await import('./project-terminal-view.mjs');
+  await mountProjectTerminal({root:document.getElementById('app'),scope:workspaceScope,invoke:window.nozeli.invoke,subscribe:window.nozeli.subscribe});
 }else if(workspaceScope.role==='surface'&&workspaceScope.kind==='web'){
   const {mountOnlineBrowser}=await import('./online-browser-view.mjs');
   const online=mountOnlineBrowser({root:document.getElementById('app'),scope:workspaceScope,invoke:window.nozeli.invoke,subscribe:window.nozeli.subscribe});
@@ -544,7 +547,7 @@ $('composer').disabled = true;
 const beside = { editor: null, pdf: null, file: null, diff: null, diffHost: null };
 const texWorkspace = mountTexWorkspace({ getContext: () => ui, beside, closeBeside, openFile, toast: message => workspace.toast(message) });
 const markdownWorkspace = mountMarkdownWorkspace({ getContext: () => ui, render: renderTextPreview, project: projectPreviewTags, saveView: writeView, layout: () => window.dispatchEvent(new Event('nozeli-layout-change')) });
-const webWorkspace = mountWebWorkspace({getContext:()=>ui,invoke,layout:()=>window.dispatchEvent(new Event('nozeli-layout-change'))});
+const webWorkspace = mountWebWorkspace({getContext:()=>ui,invoke,saveView:writeView,whenReady:()=>actions,layout:()=>window.dispatchEvent(new Event('nozeli-layout-change'))});
 const comparison = mountDocumentComparison({current:()=>ui.project?{projectId:ui.project.id,relPath:ui.file?.relPath,documentSource,documentKey:workspaceScope.documentKey,kind:ui.file?.kind,dirty:ui.dirty||ui.composing}:null,invoke,openSnapshot:(file,diff,owner,left)=>enqueue(()=>{if(ui.project?.id===owner.projectId&&ui.file?.relPath===owner.relPath&&owner.documentKey===workspaceScope.documentKey)return openBesideSnapshot(file,diff,left);},true),toast:message=>workspace.toast(message)});
 const frozenChangeReader = mountFrozenChangeReader({parent:$('documents'),invoke,mountDiff:mountDocumentDiff,currentProjectId:()=>ui.project?.id,...(isSurface&&workspaceScope.kind==='diff'?{onExit:async()=>{const result=await invoke('workspace.control',{type:'workspace-action',projectId:workspaceScope.projectId,viewId:workspaceScope.viewId,command:{type:'closeContent',viewId:workspaceScope.viewId}});if(!result.ok)throw Error(result.error?.message||'关闭对比失败，内容仍保留。');}}:{})});
 const openFrozenChange = target => (!isSurface || workspaceScope.kind!=='diff')
@@ -726,6 +729,7 @@ async function navigateCode({ path: targetPath, sourcePath, projectRelative = fa
 
 function setTextMode(mode) {
   documentMenu.close();
+  if(webWorkspace.active()){webWorkspace.setMode('source');return;}
   ui.previewAnchor = null;
   ui.selectionRect = null;
   $('selection-menu').hidden = true;
@@ -1019,7 +1023,7 @@ async function writeView(extra = {}) {
     const settingsKey=JSON.stringify([settings,extra.projectSettings??ui.projectSettings]);
     if(workspaceScope.settingsKey!==settingsKey){const saved=await invoke('workspace.settings',{projectId:ui.project.id,workspace:settings,projectSettings:extra.projectSettings??ui.projectSettings});if(!saved.ok)return saved;workspaceScope.settingsKey=settingsKey;}
     if(isConversation){const materials=window.__composerMaterials?.snapshotPersist(),identity=workspaceScope.viewState?.conversationInput;workspaceScope.viewState={...workspaceScope.viewState,conversationScroll:{top:$('conversation').scrollTop,tail:$('conversation').scrollHeight-$('conversation').scrollTop-$('conversation').clientHeight<=40},...(identity?.projectId===ui.project.id&&identity.target?{conversationMaterials:{...workspaceScope.viewState?.conversationMaterials,[identity.target]:materials}}:{})};}
-    const viewState={...workspaceScope.viewState,documentStatus:documentStatus(),pdfPage:ui.pdf?.current()||1,scrollTop:ui.editor?.adapter.getScrollTop?.()??$('reader-scroll').scrollTop,fileView:{textMode:ui.textMode,selection:ui.editor?.adapter.getSelection?.(),materialDigest:ui.materialDigest,zoom:ui.pdf?.viewState?.(),...(ui.file&&isMarkdownPath(ui.file.relPath)?{markdownPreview:markdownWorkspace.snapshot()}:{})},workspace:workspace.snapshot(),composerMaterials:window.__composerMaterials?.snapshotPersist()};
+    const viewState={...workspaceScope.viewState,documentStatus:documentStatus(),pdfPage:ui.pdf?.current()||1,scrollTop:ui.editor?.adapter.getScrollTop?.()??$('reader-scroll').scrollTop,fileView:{textMode:ui.textMode,selection:ui.editor?.adapter.getSelection?.(),materialDigest:ui.materialDigest,zoom:ui.pdf?.viewState?.(),...(ui.file&&isMarkdownPath(ui.file.relPath)?{markdownPreview:markdownWorkspace.snapshot()}:{}),...(webWorkspace.active()?{webMode:webWorkspace.snapshot()}:{})},workspace:workspace.snapshot(),composerMaterials:window.__composerMaterials?.snapshotPersist()};
     workspaceScope.viewState=viewState;
     const result = await invoke('workspace.command', {projectId:ui.project.id,requestKey:crypto.randomUUID(),command:{type:'restoreViewState',viewId:workspaceScope.viewId,viewState}});
     if(result.ok)workspace.saved();
@@ -1319,11 +1323,11 @@ async function refreshNotes() {
       : mountText(editorOptions);
     ui.editor.setTags?.([...ui.threads.values()].filter(tag => tag.relPath === file.relPath && ['text-selection','text-point'].includes(tag.anchorKind) && tag.anchor).map(tag => ({ ...tag.anchor, tag, point: tag.anchorKind === 'text-point', locationStatus: tag.resolution?.locationStatus, contentStatus: tag.resolution?.contentStatus })));
     $('code-jump').hidden = !languageIdForPath(file.relPath);
-    $('text-mode-toggle').hidden = isCodePath(file.relPath) || /\.tex$/i.test(file.relPath);
+    $('text-mode-toggle').hidden = isCodePath(file.relPath) || isWebEntry(file.relPath) || /\.tex$/i.test(file.relPath);
     // Markdown opens as a rendered reading surface; editing remains an explicit choice.
     markdownWorkspace.restore(view?.fileView?.markdownPreview);
     setTextMode(!isCodePath(file.relPath) && view?.fileView?.textMode ? view.fileView.textMode : /\.(?:md|markdown)$/i.test(file.relPath) ? 'read' : 'edit');
-    if(!isReviewDocument)webWorkspace.opened();
+    if(!isReviewDocument)webWorkspace.opened(view?.fileView?.webMode);
     authorship.opened(file);
     const selection=view?.fileView?.selection;if(selection&&(!isReviewDocument||view.fileView.materialDigest===file.materialDigest)){const length=ui.editor.adapter.getText().length;ui.editor.adapter.setSelection(Math.min(selection.anchor??selection.from,length),Math.min(selection.head??selection.to,length));}
     ui.compositionDispose = ui.editor.adapter.onComposition({
@@ -1343,7 +1347,7 @@ async function refreshNotes() {
     const fitEditor = () => {
       if (ui.editor?.adapter !== adapter) return 0;
       const scroll = $('reader-scroll');
-      const height = scroll ? Math.floor((ui.textMode === 'split' ? $('text-host') : scroll).getBoundingClientRect().height) : 0;
+      const height = scroll ? Math.floor((ui.textMode === 'split' || webWorkspace.snapshot() === 'split' ? $('text-host') : scroll).getBoundingClientRect().height) : 0;
       if (height <= 0) return 0;
       adapter.setViewportHeight(height);
       return height;
@@ -3007,6 +3011,20 @@ async function openBesideSnapshot(file, diff=false, left=null) {
   }
   const conversationErrors=new Map();
   function refreshConversationLauncher(){const button=$('workspace-open-conversation'),error=conversationErrors.get(ui.project?.id);button.disabled=!ui.project?.id;button.dataset.state=error?'error':'';button.title=(error?'对话 · 连接异常：'+(error.message||''):(ui.project?.id?'打开当前项目对话':'请先打开项目'));button.setAttribute('aria-label',button.title);}
+  const terminalButton=$('workspace-open-terminal');
+  let openingTerminal=false;
+  setIconButton(terminalButton,'terminal',{label:'终端'});
+  function refreshTerminalLauncher(){terminalButton.disabled=!ui.project?.id||openingTerminal;}
+  terminalButton.hidden=workspaceScope.role!=='shell';
+  window.addEventListener('nozeli-project-change',refreshTerminalLauncher);
+  terminalButton.addEventListener('click',async()=>{
+    const projectId=ui.project?.id;if(!projectId||openingTerminal)return;
+    openingTerminal=true;refreshTerminalLauncher();
+    try{const result=await invoke('project-terminal.open',{projectId,groupId:workspaceGroups.activeGroup()});if(!result.ok)throw Error(result.error?.message||'无法打开终端');}
+    catch(error){workspace.toast(error.message);}
+    finally{openingTerminal=false;refreshTerminalLauncher();}
+  });
+  refreshTerminalLauncher();
   const websiteButton=$('workspace-open-website');
   setIconButton(websiteButton,'globe',{label:'打开网站'});
   if(workspaceScope.role==='shell')websiteButton.addEventListener('click',()=>{if(!ui.project?.id){workspace.toast('请先打开项目，再打开网站。');return;}const projectId=ui.project.id,dialog=document.createElement('dialog'),form=document.createElement('form'),heading=document.createElement('h2'),input=document.createElement('input'),error=document.createElement('p'),cancel=document.createElement('button'),open=document.createElement('button');heading.textContent='打开网站';input.type='text';input.placeholder='https://example.org';input.setAttribute('aria-label','网站地址');input.required=true;input.style.width='100%';cancel.type='button';cancel.textContent='取消';open.type='submit';open.textContent='打开';error.setAttribute('role','alert');form.append(heading,input,error,cancel,open);dialog.append(form);document.body.append(dialog);const finish=()=>{dialog.close();dialog.remove();};cancel.onclick=finish;dialog.oncancel=event=>{event.preventDefault();finish();};form.onsubmit=async event=>{event.preventDefault();if(ui.project?.id!==projectId){error.textContent='项目已切换，请重新打开网址。';return;}open.disabled=true;try{await workspaceGroups.open({kind:'web',url:input.value});finish();}catch(failure){error.textContent=failure.message;open.disabled=false;}};dialog.showModal();input.focus();});
@@ -3018,7 +3036,7 @@ async function openBesideSnapshot(file, diff=false, left=null) {
   conversationFailure.append(connectionTitle,connectionReason,retryConversation,connectionDetails,closeConnection);document.body.append(conversationFailure);
   closeConnection.onclick=()=>conversationFailure.close();retryConversation.onclick=()=>{conversationFailure.close();$('workspace-open-conversation').click();};connectionDetails.onclick=()=>{conversationFailure.close();window.dispatchEvent(new Event('nozeli-agent-details'));};
   function showConversationFailure(error){if(workspaceScope.role!=='shell')return;connectionReason.textContent=error?.message||'会话连接不可用，草稿保留。';if(!conversationFailure.open)conversationFailure.showModal();}
-  window.nozeli.subscribe('workspace.control',event=>{if(event.type==='conversation-unavailable'){conversationErrors.set(event.projectId,event.error);if(event.projectId===ui.project?.id){refreshConversationLauncher();if(isConversation){$('composer').disabled=true;$('send-message').disabled=true;}else showConversationFailure(event.error);}}});
+  window.nozeli.subscribe('workspace.control',event=>{if(event.type==='conversation-unavailable'){conversationErrors.set(event.projectId,event.error);if(event.projectId===ui.project?.id){refreshConversationLauncher();if(isConversation){if(!event.retained)$('composer').disabled=true;$('send-message').disabled=true;}else if(!event.retained)showConversationFailure(event.error);}}});
   $('workspace-open-conversation').addEventListener('click',async()=>{const projectId=ui.project?.id;if(!projectId)return;const button=$('workspace-open-conversation');button.disabled=true;try{const result=await invoke('workspace.control',{type:'conversation-action',projectId,action:'open',groupId:workspaceGroups.activeGroup()});if(!result.ok)showConversationFailure(result.error);else conversationErrors.delete(projectId);}catch(error){showConversationFailure(error);}finally{refreshConversationLauncher();}});
       let openingExternal=false, externalAgain=false;
       async function drainExternalOpen(){

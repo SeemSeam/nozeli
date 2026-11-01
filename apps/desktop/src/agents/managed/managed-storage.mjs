@@ -1,7 +1,7 @@
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 
-const localFields=new Set(['providers','residents','residentArchive','drafts','bindings']);
+const localFields=new Set(['providers','residents','residentArchive','drafts','bindings','contextBudgetEpochs']);
 const workLocal=new Set(['threadId','toolsDigest','binding','execution','contextRecovery','threadArchive','contextHandoff','zeroActivity']);
 const jobLocal=new Set(['collabAttempts','manualPromptId','sessionFile','transport']);
 const table=key=>'managed_'+key.replace(/[^A-Za-z0-9_]/g,'_');
@@ -19,6 +19,19 @@ const splitRecord=(record,fields)=>{
  return {value,local};
 };
 const rowValues=rows=>rows.map(({id,value})=>({id:String(id),value:clone(value)}));
+// Local caches are idempotent writes: skipping a byte-identical rewrite keeps
+// the durable value (and transaction acknowledgment) exactly the same while
+// removing per-turn full-state rewrite volume. Memo lives per storage instance
+// and only ever records values that were successfully written.
+const localWriteMemo=new WeakMap();
+function putLocalIfChanged(storage,projectId,id,value){
+ let byStorage=localWriteMemo.get(storage);if(!byStorage)localWriteMemo.set(storage,byStorage=new Map());
+ let memo=byStorage.get(projectId);if(!memo)byStorage.set(projectId,memo=new Map());
+ const serialized=JSON.stringify(value);
+ if(memo.get(id)===serialized)return Promise.resolve();
+ memo.set(id,undefined);
+ return storage.putLocal(projectId,id,value).then(()=>{memo.set(id,serialized);},error=>{if(memo.get(id)===undefined)memo.delete(id);throw error;});
+}
 async function readCollections(storage,projectId){
  const settings=rowValues(await storage.listProject(projectId,'managed_settings')),names=settings.find(row=>row.id==='collections')?.value??[],collections={managed_settings:settings};
  for(const name of names)collections[table(name)]=rowValues(await storage.listProject(projectId,table(name)));
@@ -86,37 +99,54 @@ export async function retainManagedNativeProjection(store,messages){
 }
 async function cacheCollections(storage,projectId,collections){
  const settings=Object.fromEntries(collections.managed_settings.filter(row=>row.id!=='collections').map(row=>[row.id,row.value])),names=collections.managed_settings.find(row=>row.id==='collections')?.value??[];
- await storage.putLocal(projectId,'managed:collections',names);await storage.putLocal(projectId,'managed:cache:settings',settings);
- for(const key of names)await storage.putLocal(projectId,'managed:cache:'+key,collections[table(key)]??[]);
+ await putLocalIfChanged(storage,projectId,'managed:collections',names);await putLocalIfChanged(storage,projectId,'managed:cache:settings',settings);
+ for(const key of names)await putLocalIfChanged(storage,projectId,'managed:cache:'+key,collections[table(key)]??[]);
 }
 export async function saveManagedState(store,{draftIntents=[]}={}){
  if(store.commitUnknown)throw Object.assign(fail('STORAGE_RESULT_UNKNOWN','Workspace commit outcome requires explicit reconciliation'),{commitUnknown:store.commitUnknown});
  const {storage,projectId}=store,{collections,local}=snapshot(store.state),operationId=randomUUID(),key='managed:pending:'+operationId;
- // Intent first, project commit second, draft confirmation last. A failed/unknown project write never consumes input.
+ // Local-metadata-only mutations (for example context budget epochs) hold the
+ // committed business snapshot: no intent record and no project transaction
+ // are needed, so the O(state) recovery write amplification of long chats
+ // disappears for them while every real business change keeps the full
+ // intent-first protocol below.
+ const unchanged=collectionsEqual(store.committedCollections??{},collections);
  const pending={schema:1,kind:'business',operationId,projectId,collections,base:clone(store.committedCollections??{}),draftIntents:clone(draftIntents),status:'prepared',createdAt:new Date().toISOString(),automaticReplay:false};
- await storage.putRecovery(projectId,key,pending);
+ // Intent first, project commit second, draft confirmation last. A failed/unknown project write never consumes input.
+ if(!unchanged)await storage.putRecovery(projectId,key,pending);
  try{
   await store.persistDrafts();
-  for(const [id,value] of local)if(id!=='managed:sessionIndex')await storage.putLocal(projectId,id,value);
+  for(const [id,value] of local)if(id!=='managed:sessionIndex')await putLocalIfChanged(storage,projectId,id,value);
   if(store.offline)throw fail('PROJECT_UNAVAILABLE','Project unavailable; pending records retained locally');
   await storage.requireOnline(projectId);
-  const expectedCollections=Object.fromEntries([...new Set([...Object.keys(pending.base),...Object.keys(collections)])].map(name=>[name,pending.base[name]??[]]));
-  await storage.replaceProjectCollections(projectId,collections,{expectedCollections});
+  if(!unchanged){
+   const expectedCollections=Object.fromEntries([...new Set([...Object.keys(pending.base),...Object.keys(collections)])].map(name=>[name,pending.base[name]??[]]));
+   await storage.replaceProjectCollections(projectId,collections,{expectedCollections});
+  }
  }catch(error){
-  pending.status='pending';pending.error={code:error.code,message:error.message};error.pendingId=key;
-  if(error.code==='STORAGE_RESULT_UNKNOWN'||error.commitUnknown){error.commitUnknown={...error.commitUnknown,projectId,pendingId:key};pending.commitUnknown=clone(error.commitUnknown);}
-  await storage.putRecovery(projectId,key,pending).catch(failure=>{error.recoveryFailure=failure;});store.offline=true;throw error;
+  if(!unchanged){
+   pending.status='pending';pending.error={code:error.code,message:error.message};error.pendingId=key;
+   if(error.code==='STORAGE_RESULT_UNKNOWN'||error.commitUnknown){error.commitUnknown={...error.commitUnknown,projectId,pendingId:key};pending.commitUnknown=clone(error.commitUnknown);}
+   await storage.putRecovery(projectId,key,pending).catch(failure=>{error.recoveryFailure=failure;});
+  }
+  store.offline=true;throw error;
  }
  store.committedCollections=clone(collections);
  // Post-commit bookkeeping must not roll back a business transaction which already succeeded.
  try{
-  await storage.putRecovery(projectId,key,{...pending,status:'committed',committedAt:new Date().toISOString()});
   await store.persistNativeFacts();
-  for(const [id,value] of local)if(id==='managed:sessionIndex')await storage.putLocal(projectId,id,value);
+  for(const [id,value] of local)if(id==='managed:sessionIndex')await putLocalIfChanged(storage,projectId,id,value);
   await store.confirmDrafts(draftIntents);
   await cacheCollections(storage,projectId,collections);
-  await storage.putRecovery(projectId,key,{...pending,status:'reconciled',committedAt:new Date().toISOString()});
- }catch(error){store.recoveryError={code:error.code,message:error.message};return {committed:true,recoveryPending:true,operationId};}
+  // Single completion write: a crash before it leaves status 'prepared' and
+  // explicit reconciliation detects the already-committed snapshot exactly as
+  // the previous intermediate 'committed' marker did.
+  if(!unchanged)await storage.putRecovery(projectId,key,{...pending,status:'reconciled',committedAt:new Date().toISOString()});
+ }catch(error){
+  store.recoveryError={code:error.code,message:error.message};
+  if(!unchanged)await storage.putRecovery(projectId,key,{...pending,status:'committed',committedAt:new Date().toISOString()}).catch(failure=>{store.recoveryError.confirmationFailure={code:failure.code,message:failure.message};});
+  return {committed:true,recoveryPending:true,operationId};
+ }
  return {committed:true,operationId};
 }
 export const managedRuntime=async(storage,id)=>path.join(await storage.localDirectory(id),'execution');
@@ -194,6 +224,18 @@ const sameCollections=(a,b)=>Object.keys(b).every(name=>{
  const left=new Map((a[name]??[]).map(row=>[String(row.id),row.value])),right=b[name]??[];
  return left.size===right.length&&right.every(row=>equal(left.get(String(row.id)),row.value));
 });
+// Full bidirectional equality (sameCollections only checks b against a); used
+// to detect mutations that changed local metadata but not the business snapshot.
+const collectionsEqual=(a,b)=>{
+ for(const name of new Set([...Object.keys(a),...Object.keys(b)])){
+  const left=a[name],right=b[name];
+  if(!Array.isArray(left)||!Array.isArray(right))return equal(left,right);
+  if(left.length!==right.length)return false;
+  const byId=new Map(left.map(row=>[String(row.id),row.value]));
+  for(const row of right){const prior=byId.get(String(row.id));if(prior===undefined||!equal(prior,row.value))return false;}
+ }
+ return true;
+};
 const reconcileFlights=new WeakMap();
 export async function reconcileManagedPending(storage,projectId,{pendingId,requestKey,confirmed}={}){
  if(confirmed!==true||typeof pendingId!=='string'||typeof requestKey!=='string'||!/^[a-zA-Z0-9:_-]{8,160}$/.test(requestKey))throw fail('RECOVERY_CONFIRM_REQUIRED','Explicit pending record and confirmation request key required');

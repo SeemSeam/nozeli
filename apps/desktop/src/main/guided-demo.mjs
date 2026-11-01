@@ -5,6 +5,7 @@ import {loadDemoTemplate,createDemoDirectory,demoDirectoryIdentity,sameDemoDirec
 import {demoChapters,demoCommands} from '../domain/guided-demo.mjs';
 import {tagMaterialSnapshot} from '../agents/managed/tag-material-delivery.mjs';
 import {preferredRegionAssets} from '../domain/region-drawing.mjs';
+import {platformPersistence} from '../platform/shared/persistence.mjs';
 
 const fail=(code,message)=>Object.assign(new Error(message),{code});
 const digest=bytes=>createHash('sha256').update(bytes).digest('hex');
@@ -47,12 +48,14 @@ export class GuidedDemo {
   }
   await this.save();
  }
- async save(){const temporary=this.file+'.'+randomUUID()+'.tmp';try{await fs.writeFile(temporary,JSON.stringify(this.data),{flag:'wx',mode:0o600});await fs.rename(temporary,this.file);}finally{await fs.rm(temporary,{force:true});}}
+ async save(){await platformPersistence.writeAtomic(this.file,JSON.stringify(this.data));}
  mutate(fn){
   const operation=this.serial.then(async()=>{
+   if(this.persistenceUncertain)throw fail('DEMO_PERSISTENCE_UNCERTAIN','演示登记已发布但持久化结果不确定；请重启后核对，不会重复执行。');
    const prior=clone(this.data);
    try{const value=await fn();await this.save();return value;}
    catch(error){
+    if(error.committed){this.persistenceUncertain=true;throw error;}
     // Native pending receipts retain row references. Roll back rows in place.
     const projects=this.data.projects;
     for(const id of Object.keys(projects))if(!Object.hasOwn(prior.projects,id))delete projects[id];

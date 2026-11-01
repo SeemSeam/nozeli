@@ -347,7 +347,7 @@ async function main() {
   workspaceCapture=new WorkspaceCapture({workspace:workspaceNative,host,deliver:async(session,event)=>{await workspaceNative.deliverDrawing(session,event);}});
   const {ProjectLifecycle}=await import('./project-lifecycle.mjs');
   const {reconcileManagedPending}=await import('../agents/managed/managed-storage.mjs');
-  projectLifecycle=new ProjectLifecycle({host,workspace:workspaceNative,managed:managedAgents,reconcileManaged:(id,options)=>reconcileManagedPending(host.storage,id,options),trashItem:target=>shell.trashItem(target),beforeStop:async id=>{projectWatcher?.unwatchProject(id);await texManager?.stopProject(id);await texLanguage?.stopProject(id);await lspManager?.stopProject(id);},protectedRoots:[APP_ROOT,path.dirname(APP_ROOT),nozeliPaths.root]});
+  projectLifecycle=new ProjectLifecycle({host,workspace:workspaceNative,managed:managedAgents,reconcileManaged:(id,options)=>reconcileManagedPending(host.storage,id,options),trashItem:target=>shell.trashItem(target),beforeStop:async id=>{projectWatcher?.unwatchProject(id);await workspaceNative.projectTerminals.stopProject(id,'project-stop');await texManager?.stopProject(id);await texLanguage?.stopProject(id);await lspManager?.stopProject(id);},protectedRoots:[APP_ROOT,path.dirname(APP_ROOT),nozeliPaths.root]});
   const {createGuidedDemo}=await import('./guided-demo.mjs');
   guidedDemo=await createGuidedDemo({host,workspace:workspaceNative,userDataDir:app.getPath('userData'),appRoot:APP_ROOT,examplesRoot:process.env.NOZELI_GUIDED_DEMO_ROOT||path.join(app.getPath('documents'),'Nozeli Examples')});
   guidedDemo.lifecycle=projectLifecycle;workspaceNative.guidedDemo=guidedDemo;host.guidedDemo=guidedDemo;managedAgents.guidedDemo=guidedDemo;
@@ -423,6 +423,10 @@ async function main() {
         const run=()=>onlineBrowser[method](scope,payload);
         return {ok:true,value:await (dispatch?host.storage.withProjectOperation(scope.projectId,run):run())};
       }
+      if(op.startsWith('project-terminal.')){
+        trusted(event,op,payload);
+        return {ok:true,value:await workspaceNative.projectTerminals.invoke(scope,op,payload??{})};
+      }
       if(['material.attach','material.attachPath'].includes(op))payload={...payload,projectId:scope.projectId};
       if(op==='material.read'&&payload.projectId!==scope.projectId)throw new HostError('PROJECT_SCOPE_DENIED','附件不属于当前项目');
       const admissionProject=payload?.projectId??scope.projectId;
@@ -463,8 +467,8 @@ async function main() {
           try{const previous=JSON.parse(await fs.readFile(file,'utf8'));if(['sage','slate'].includes(previous?.palette))palette=previous.palette;}catch(error){if(error.code!=='ENOENT')throw error;}
           payload={...payload,palette};
         }
-        const temporary=file+'.'+randomUUID()+'.tmp';
-        try{await fs.writeFile(temporary,JSON.stringify(payload),{flag:'wx',mode:0o600});await fs.rename(temporary,file);}finally{await fs.rm(temporary,{force:true});}
+        const {platformPersistence}=await import('../platform/shared/persistence.mjs');
+        await platformPersistence.writeAtomic(file,JSON.stringify(payload));
         workspaceNative.broadcast('nozeli:workspace-control',{type:'appearance',value:payload});
         // The explicit appearance choice is also Chromium's preferred scheme:
         // every renderer (including isolated report views) then resolves
@@ -535,6 +539,8 @@ async function main() {
           else if(op==='settings.providers.save')value=await providerSettings.saveApi(payload);
           else if(op==='settings.providers.remove')value=await providerSettings.remove(payload);
           else if(op==='settings.providers.discover')value=await providerSettings.discover(payload);
+          else if(op==='settings.providers.nativeKeyProviders')value=await providerSettings.nativeKeyProviders();
+          else if(op==='settings.providers.nativeKey')value=await providerSettings.saveNativeKey(payload);
           else if(op==='settings.models.save')value=await providerSettings.saveDefaults(payload);
           else if(op==='settings.login.providers')value=await providerSettings.loginProviders();
           else if(op==='settings.login.start')value=await providerSettings.startLogin(payload);
@@ -811,6 +817,7 @@ async function main() {
     await texLanguage?.stopAll();
     await lspManager?.stopAll();
     quitting = true;
+    await workspaceNative.projectTerminals.stopAll().catch(error=>console.error('project terminal cleanup failed',error.message));
     await host.settled();
     await managedAgents?.stop().catch(error=>console.error('managed cleanup failed',error.message));
     projectWatcher?.close();

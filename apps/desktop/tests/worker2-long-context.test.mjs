@@ -1,8 +1,7 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
+import test from 'node:test';import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {ContextReader} from '../src/agents/managed/context-reader.mjs';
-import {prepareDelivery} from '../src/agents/managed/context-delivery.mjs';
+import {workerInitialHandoff} from '../src/agents/managed/context-delivery.mjs';
 
 test('long source pages have stable digest and contiguous readable line boundaries',()=>{
  const text=('# long source\n'+('Chinese 中文🙂 source line\n').repeat(1300)),r=new ContextReader();let ref=r.add(text,{source:'objects/long.md'}),joined='',offset=0,version=createHash('sha256').update(text).digest('hex');
@@ -10,9 +9,12 @@ test('long source pages have stable digest and contiguous readable line boundari
  assert.equal(joined,text);assert.equal(offset,text.length);
 });
 
-
-test('long unseen dialogue identifies truncated messages and preserves Unicode boundary',()=>{
- const state={limit:2,works:[],todos:[],messages:[{id:'source-id',jobId:'old',target:'frontdesk',speaker:'user',text:'x'.repeat(1199)+'🙂TAIL'}]};
- const p=prepareDelivery(state,{target:'orchestrator',threadId:'t',job:{id:'new'},used:0});const rows=JSON.parse(p.sections.find(([title])=>title==='未见前台消息')[1]);
- assert.equal(rows[0].id,'source-id');assert.equal(rows[0].text,'x'.repeat(1199));assert.equal(rows[0].totalChars,1205);assert(rows[0].truncated);assert(p.sections.some(([title,text])=>title==='截断正文'&&text.includes('@conversation')));
+test('a long original task hands off once, bounded, behind paged read refs',()=>{
+ const work={id:'w-long',name:'长文任务',status:'running',revision:1,request:('论文正文段落。').repeat(20000),inputs:[{sourceJobId:'s1',text:('补充要求。').repeat(6000)}]};
+ const reader=new ContextReader();
+ const packet=workerInitialHandoff(work,reader,{previewChars:1200});
+ assert(packet.includes('readRef'),'the remainder stays behind paged read refs');
+ let cursor=[...reader.entries.keys()].find(key=>reader.entries.get(key).title==='原始任务（不可改写）'),total=0;
+ while(cursor){const page=reader.read(cursor);total+=page.text.length;cursor=page.nextReadRef;}
+ assert.equal(total,work.request.length,'the full original remains readable exactly once through paging');
 });

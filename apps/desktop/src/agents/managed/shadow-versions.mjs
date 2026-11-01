@@ -3,7 +3,7 @@ import path from 'node:path';
 import { ensureGit, runGit } from './git-runtime.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { FileChanges } from '../../domain/file-changes.mjs';
-import { workPath, safeBytes } from './execution-workspace.mjs';
+import { writablePath as workPath, safeBytes } from './file-stream.mjs';
 
 const zero = '0'.repeat(40);
 const REF = 'refs/heads/nozeli/versions';

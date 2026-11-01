@@ -6,24 +6,29 @@ import {atomicJson} from './workspace.mjs';
 import {resolveTextReplacements} from '../../domain/document-collaboration.mjs';
 import {git,str,read,repository,commitTree,fail,acceptanceCommit,gitStream,gitRecords,gitEntries,blobDigest,blobFile,blobFiles,updateIndexRows,gitEnv} from './git-service.mjs';
 import {runGit} from './git-runtime.mjs';
-import {inspectFile,readSafeBytes,writablePath,capturePath,TEXT_MAX_BYTES} from './file-stream.mjs';
+import {createFileStream,writablePath,capturePath,TEXT_MAX_BYTES,defaultFilesystemAdapter} from './file-stream.mjs';
 import {Readable,Writable} from 'node:stream';
 import {provisionWorktreeDependencies} from './worktree-dependencies.mjs';
 export const byteDigest=bytes=>bytes===null?null:createHash('sha256').update(bytes).digest('hex');
-export const workPath=writablePath;
-// Whole-body reads are reserved for bounded document/review text APIs.
-export async function safeBytes(root,rel){const value=await readSafeBytes(root,rel);return value?.bytes??null;}
-const safeFile=readSafeBytes;
-const indexDigest=async file=>(await inspectFile(path.dirname(file),path.basename(file)))?.digest??null;
+const workPath=writablePath;
+// Whole-body reads are reserved for bounded document/review text APIs; every
+// capture and anchored write flows through the injected file-safety boundary.
 async function copyToHandle(file,handle){const source=await fs.open(file,'r');try{await handle.writeFile(source.createReadStream({autoClose:false}));}finally{await source.close();}}
 function documentText(bytes){if(bytes===null)return '';let text;try{text=new TextDecoder('utf-8',{fatal:true}).decode(bytes);}catch{fail('UNSUPPORTED','文档操作仅支持UTF-8文本');}if(text.includes('\0'))fail('UNSUPPORTED','文档操作不支持二进制文件');return text.replace(/\r\n?/g,'\n');}
-async function documentParent(root,rel){
- workPath(rel);const handles=[];try{let directory=await fs.open(root,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);handles.push(directory);for(const part of rel.split('/').slice(0,-1)){const next='/proc/self/fd/'+directory.fd+'/'+part;await fs.mkdir(next).catch(error=>{if(error.code!=='EEXIST')throw error;});directory=await fs.open(next,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);handles.push(directory);}return {directory,prefix:'/proc/self/fd/'+directory.fd+'/',close:async()=>{for(const handle of handles.reverse())await handle.close();}};}catch(error){for(const handle of handles.reverse())await handle.close();throw error;}
-}
 const names=buffer=>buffer.toString().split('\0').filter(Boolean);
 const repositoryQueues=new Map();
 export class ExecutionWorkspace {
- constructor(store){this.store=store;this.serial=new Map();this.handles=new Map();}
+ // Explicit platform filesystem adapter injection: anchored captures and
+ // write parents run on the selected adapter; platforms without a verified
+ // adapter reject with structured FS_PLATFORM_UNSUPPORTED evidence before
+ // any managed read or write.
+ constructor(store,{filesystem}={}){
+  this.store=store;
+  this.filesystem=filesystem===undefined?defaultFilesystemAdapter:filesystem;
+  this.files=createFileStream({filesystem:this.filesystem});
+  this.serial=new Map();this.handles=new Map();
+ }
+ async indexDigest(file){return (await this.files.inspectFile(path.dirname(file),path.basename(file)))?.digest??null;}
  directory(id){if(!/^[a-zA-Z0-9_-]+$/.test(id))fail('WORK_ID','非法工作标识');return path.join(this.store.root,'execution',id);}
  manifest(id){return path.join(this.store.root,'evidence','execution-'+id+'.json');}
  async readManifest(id){const bytes=await read(this.manifest(id));return bytes?JSON.parse(bytes):null;}
@@ -55,7 +60,7 @@ export class ExecutionWorkspace {
    await git(m.repo,['read-tree',parent],env);
    const tracked=await gitEntries(m.repo,['ls-tree','-r','-z',parent]),explicit=new Set(explicitFiles.map(rel=>workPath(rel))),selected=new Set([...tracked.keys(),...await gitRecords(root,['ls-files','-co','--exclude-standard','-z']),...explicit]),files={},batch=[],rows=[],format=await str(m.repo,['rev-parse','--show-object-format']);
    const flush=async()=>{if(!batch.length)return;const captured=await blobFiles(m.repo,root,batch,tracked,format);for(const rel of batch){const file=captured.get(rel);if(file){files[rel]=file;const old=tracked.get(rel);if(old?.[0]===file.mode&&old?.[2]===file.oid)continue;rows.push({rel,...file});}else if(tracked.has(rel))rows.push({rel,oid:null});}batch.length=0;};
-   for(const rel of [...selected].sort()){try{if(explicit.has(rel))workPath(rel);else capturePath(rel);}catch{continue;}if(explicit.has(rel)&&!tracked.has(rel)&&!await inspectFile(root,rel))fail('ARTIFACT_UNAVAILABLE','声明的交付文件不存在：'+rel);batch.push(rel);if(batch.length===16)await flush();}await flush();await updateIndexRows(m.repo,index,rows);
+   for(const rel of [...selected].sort()){try{if(explicit.has(rel))workPath(rel);else capturePath(rel);}catch{continue;}if(explicit.has(rel)&&!tracked.has(rel)&&!await this.files.inspectFile(root,rel))fail('ARTIFACT_UNAVAILABLE','声明的交付文件不存在：'+rel);batch.push(rel);if(batch.length===16)await flush();}await flush();await updateIndexRows(m.repo,index,rows);
    const tree=await str(m.repo,['write-tree'],env),commit=await commitTree(m.repo,tree,[parent],label,path.dirname(this.manifest(m.workId)));return {tree,commit,files};
   }finally{await fs.rm(index,{force:true});}
  }
@@ -93,7 +98,7 @@ export class ExecutionWorkspace {
    m.gitPointer=(await fs.readFile(path.join(m.directory,'.git'))).toString();m.workerGitDir=await fs.realpath(await str(m.directory,['rev-parse','--absolute-git-dir']));m.preparation='registered';await this.save(m);
   }
   if(m.preparation==='registered'){
-   await this.identity(m);const input=await this.snapshot(m,m.repo,m.baseCommit,'Nozeli input baseline');m.inputCommit=input.commit;m.inputTree=input.tree;m.files=input.files;m.inputProvenance={kind:'disk',head:m.baseCommit,at:new Date().toISOString(),indexDigest:await indexDigest(m.index)};m.preparation='input-frozen';await this.save(m);
+   await this.identity(m);const input=await this.snapshot(m,m.repo,m.baseCommit,'Nozeli input baseline');m.inputCommit=input.commit;m.inputTree=input.tree;m.files=input.files;m.inputProvenance={kind:'disk',head:m.baseCommit,at:new Date().toISOString(),indexDigest:await this.indexDigest(m.index)};m.preparation='input-frozen';await this.save(m);
   }
   if(m.preparation==='input-frozen'){
    if((await read(path.join(m.directory,'.git')))?.toString()!==m.gitPointer)fail('IDENTITY_CHANGED','执行目录Git指针变化');
@@ -104,7 +109,7 @@ export class ExecutionWorkspace {
   if(m.preparation==='input-installed'&&m.legacy){
    const source=m.legacy.directory,selected=new Set(Object.keys(m.legacy.manifest.files||{}));
    const visit=async(dir,rel='')=>{for(const row of await fs.readdir(dir,{withFileTypes:true})){const name=rel?rel+'/'+row.name:row.name;workPath(name);if(row.isDirectory())await visit(path.join(dir,row.name),name);else{if(!row.isFile()||row.isSymbolicLink())fail('LEGACY_UNSAFE','旧候选含特殊文件，已保留：'+name);selected.add(name);}}};await visit(source);
-   for(const rel of selected){workPath(rel);const file=await blobFile(m.repo,source,rel),before=await inspectFile(m.directory,rel);await this.installFile({...m,repo:m.directory},{rel,before:before?.digest??null,after:file?.digest??null,mode:file?.mode??null,oid:file?.oid??null},false);}m.legacy.importedPaths=[...selected];
+   for(const rel of selected){workPath(rel);const file=await blobFile(m.repo,source,rel),before=await this.files.inspectFile(m.directory,rel);await this.installFile({...m,repo:m.directory},{rel,before:before?.digest??null,after:file?.digest??null,mode:file?.mode??null,oid:file?.oid??null},false);}m.legacy.importedPaths=[...selected];
   }
   m.preparation='complete';await this.save(m);return m;
  }
@@ -114,14 +119,14 @@ export class ExecutionWorkspace {
  // 把可读原因记入manifest.dependencies，绝不伪造依赖可用。
  async provisionDependencies(m){
   if(!m||!m.files)return null;
-  const report=await provisionWorktreeDependencies({workId:m.workId,sourceRoot:m.repo,worktreeRoot:m.directory,frozenFiles:m.files,previous:m.dependencies??null});
+  const report=await provisionWorktreeDependencies({workId:m.workId,sourceRoot:m.repo,worktreeRoot:m.directory,frozenFiles:m.files,previous:m.dependencies??null},{filesystem:this.filesystem});
   if(report!==m.dependencies){m.dependencies=report;await this.save(m);}
   return report;
  }
  async reconcileFreeze(m){if(!m.freezeIntent)return;const head=await str(m.repo,['rev-parse',m.branchRef]);if(head===m.freezeIntent.commit){m.candidate=m.freezeIntent.candidate;delete m.freezeIntent;await this.save(m);}else if(head===m.freezeIntent.before){await git(m.repo,['update-ref',m.branchRef,m.freezeIntent.commit,head]);m.candidate=m.freezeIntent.candidate;delete m.freezeIntent;await this.save(m);}else fail('WORKER_REF_CHANGED','冻结意图与分支不一致');}
  async reconcileDocument(m){
-  const intent=m.documentIntent;if(!intent)return;workPath(intent.value.relPath);const digest=byteDigest(await safeBytes(m.directory,intent.value.relPath));
-  const cleanup=async()=>{const rel=path.relative(m.directory,intent.temp).split(path.sep).join('/');workPath(rel);if(path.posix.dirname(rel)!==path.posix.dirname(intent.value.relPath))fail('DOCUMENT_RECOVERY','编辑临时文件路径不属于原目录');const parent=await documentParent(m.directory,rel);try{await fs.rm(parent.prefix+path.posix.basename(rel),{force:true});}finally{await parent.close();}};
+  const intent=m.documentIntent;if(!intent)return;workPath(intent.value.relPath);const digest=byteDigest(await this.files.safeBytes(m.directory,intent.value.relPath));
+  const cleanup=async()=>{const rel=path.relative(m.directory,intent.temp).split(path.sep).join('/');workPath(rel);if(path.posix.dirname(rel)!==path.posix.dirname(intent.value.relPath))fail('DOCUMENT_RECOVERY','编辑临时文件路径不属于原目录');const parent=await this.files.openWriteParent(m.directory,rel);try{await parent.remove(path.posix.basename(rel));}finally{await parent.close();}};
   if(digest===intent.value.digest){m.documentCalls??={};if(intent.callId)m.documentCalls[intent.callId]={fingerprint:intent.fingerprint,value:intent.value};await cleanup();delete m.documentIntent;await this.save(m);}
   else if(digest===intent.value.beforeDigest){await cleanup();delete m.documentIntent;await this.save(m);}
   else fail('DOCUMENT_RECOVERY','执行文件与持久化编辑意图不一致，已保留现场');
@@ -178,15 +183,15 @@ export class ExecutionWorkspace {
   return runGit(m.repo,['cat-file','blob',row[2]],{env:gitEnv(),maxBuffer:2*1024*1024});
  }
  // 受控应用人工草稿：先验证整个计划（任一文件drift即整体拒绝，零写入），
- // 再逐文件写入——documentParent逐级O_NOFOLLOW固定父目录（父目录不可被换
- // 成symlink逃逸），原子temp+sync+rename+复核，残留temp始终清理。
+ // 再逐文件写入——文件边界openWriteParent逐级O_NOFOLLOW固定父目录（父目录
+ // 不可被换成symlink逃逸），原子temp+sync+rename+复核，残留temp始终清理。
  async applyReviewedFiles(m,plan){
   if(!plan||!plan.length)return;
   const steps=[];
   for(const item of plan){
    workPath(item.relPath);
    let captured;
-   try{captured=await inspectFile(m.directory,item.relPath);}
+   try{captured=await this.files.inspectFile(m.directory,item.relPath);}
    catch(error){fail('WORKTREE_DRIFT','执行文件不可安全读取：'+item.relPath);}
    const current=captured?.digest??null;
    if(current!==item.toDigest&&current!==item.fromDigest)fail('WORKTREE_DRIFT','执行目录与冻结候选不一致，未写入人工审校：'+item.relPath);
@@ -194,30 +199,30 @@ export class ExecutionWorkspace {
   }
   for(const {item,captured,current} of steps){
    if(current===item.toDigest)continue;   // 幂等重放
-   const parent=await documentParent(m.directory,item.relPath);
-   const temp=parent.prefix+path.posix.basename(item.relPath)+'.nozeli-review-'+randomUUID();
+   const parent=await this.files.openWriteParent(m.directory,item.relPath);
+   const tempName=path.posix.basename(item.relPath)+'.nozeli-review-'+randomUUID();
    try{
-    const handle=await fs.open(temp,'wx',captured?parseInt(captured.mode,8)&0o777:0o644);
+    const handle=await parent.openExclusive(tempName,{mode:captured?parseInt(captured.mode,8)&0o777:0o644});
     try{await handle.writeFile(item.bytes);await handle.sync();}finally{await handle.close();}
-    if((await inspectFile(m.directory,item.relPath))?.digest!==captured?.digest)fail('WORKTREE_DRIFT','写入期间执行文件变化：'+item.relPath);
-    await fs.rename(temp,path.join(m.directory,item.relPath));
-    if((await inspectFile(m.directory,item.relPath))?.digest!==item.toDigest)fail('WORKTREE_DRIFT','人工审校写入校验失败：'+item.relPath);
-   }finally{await fs.rm(temp,{force:true});await parent.close();}
+    if((await this.files.inspectFile(m.directory,item.relPath))?.digest!==captured?.digest)fail('WORKTREE_DRIFT','写入期间执行文件变化：'+item.relPath);
+    await parent.renameOver(tempName,path.posix.basename(item.relPath));
+    if((await this.files.inspectFile(m.directory,item.relPath))?.digest!==item.toDigest)fail('WORKTREE_DRIFT','人工审校写入校验失败：'+item.relPath);
+   }finally{await parent.remove(tempName);await parent.close();}
   }
  }
  async refresh(){fail('INPUT_FROZEN','输入基线已冻结；继续工作会保留原工作目录，不自动覆盖Worker文件');}
  async documentOperation({work,op,arguments:a,callId,isActive=()=>true}){return this.locked(work.id,async()=>{try{
   const m=await this.prepareInner(work.id);await this.identity(m,{target:false});
   const fingerprint=byteDigest(Buffer.from(JSON.stringify({threadId:work.threadId,op,arguments:a}))),prior=m.documentCalls?.[callId];if(op!=='read'&&prior){if(prior.fingerprint!==fingerprint)fail('CONFLICT','调用标识已用于不同编辑');return {ok:true,continueTurn:true,value:{...prior.value,duplicate:true}};}
-  if(op==='read'){const rel=workPath(a.relPath);let bytes=await safeBytes(m.directory,rel),source='worktree';if(bytes===null){let excluded=false;try{capturePath(rel);}catch{excluded=true;}if(excluded){bytes=await safeBytes(m.repo,rel);if(bytes!==null)source='project-source';}}const text=documentText(bytes),digest=byteDigest(bytes),handle=source==='worktree'?randomUUID():null;if(handle)this.handles.set(handle,{workId:work.id,threadId:work.threadId,rel,digest});return {ok:true,readOnly:true,continueTurn:true,value:{relPath:rel,text,digest,version:{digest},readHandle:handle,provenance:{kind:source,root:source==='worktree'?m.directory:m.repo,frozen:false},editable:!!handle}};}
+  if(op==='read'){const rel=workPath(a.relPath);let bytes=await this.files.safeBytes(m.directory,rel),source='worktree';if(bytes===null){let excluded=false;try{capturePath(rel);}catch{excluded=true;}if(excluded){bytes=await this.files.safeBytes(m.repo,rel);if(bytes!==null)source='project-source';}}const text=documentText(bytes),digest=byteDigest(bytes),handle=source==='worktree'?randomUUID():null;if(handle)this.handles.set(handle,{workId:work.id,threadId:work.threadId,rel,digest});return {ok:true,readOnly:true,continueTurn:true,value:{relPath:rel,text,digest,version:{digest},readHandle:handle,provenance:{kind:source,root:source==='worktree'?m.directory:m.repo,frozen:false},editable:!!handle}};}
   const h=this.handles.get(a.readHandle);if(!h||h.workId!==work.id||h.threadId!==work.threadId)fail('READ_HANDLE_REJECTED','需要当前Worker的读取凭据');
-  const before=await safeBytes(m.directory,h.rel);if(byteDigest(before)!==h.digest)fail('STALE_VERSION','执行文件已变化，请重新读取');
+  const before=await this.files.safeBytes(m.directory,h.rel);if(byteDigest(before)!==h.digest)fail('STALE_VERSION','执行文件已变化，请重新读取');
   // Same model contract as the frontdesk: quote exact text, host resolves offsets.
   const original=documentText(before),{edits}=resolveTextReplacements(original,a.replacements);
   const ordered=edits.sort((x,y)=>y.from-x.from);
   let text=original;for(const e of ordered){if(Buffer.byteLength(text)-Buffer.byteLength(text.slice(e.from,e.to))+Buffer.byteLength(e.insert)>TEXT_MAX_BYTES)fail('TEXT_LIMIT','文档编辑超过32MiB文本边界');text=text.slice(0,e.from)+e.insert+text.slice(e.to);}
-  if(!isActive())fail('WORK_STOPPED','工作已停止');const parent=await documentParent(m.directory,h.rel),name=path.posix.basename(h.rel),tempName=name+'.'+randomUUID(),temp=parent.prefix+tempName,file=parent.prefix+name;
-  try{const captured=await safeFile(m.directory,h.rel);if(byteDigest(captured?.bytes??null)!==h.digest)fail('STALE_VERSION','文件已变化');await fs.writeFile(temp,text,{flag:'wx',mode:captured?parseInt(captured.mode,8)&0o777:0o644});if(!isActive())fail('WORK_STOPPED','工作已停止');if(byteDigest(await safeBytes(m.directory,h.rel))!==h.digest)fail('STALE_VERSION','文件已变化');const value={relPath:h.rel,beforeDigest:h.digest,digest:byteDigest(Buffer.from(text)),eventId:callId,version:{digest:byteDigest(Buffer.from(text))}};m.documentIntent={callId,fingerprint,value,temp:path.join(m.directory,path.posix.dirname(h.rel),tempName),file:path.join(m.directory,h.rel)};await this.save(m);if(!isActive())fail('WORK_STOPPED','工作已停止');if(byteDigest(await safeBytes(m.directory,h.rel))!==h.digest)fail('STALE_VERSION','文件已变化');await fs.rename(temp,file);m.documentCalls??={};if(callId)m.documentCalls[callId]={fingerprint,value};delete m.documentIntent;await this.save(m);this.handles.delete(a.readHandle);return {ok:true,continueTurn:true,value};}finally{await fs.rm(temp,{force:true});await parent.close();}
+  if(!isActive())fail('WORK_STOPPED','工作已停止');const parent=await this.files.openWriteParent(m.directory,h.rel),name=path.posix.basename(h.rel),tempName=name+'.'+randomUUID();
+  try{const captured=await this.files.readSafeBytes(m.directory,h.rel);if(byteDigest(captured?.bytes??null)!==h.digest)fail('STALE_VERSION','文件已变化');await parent.writeExclusive(tempName,text,{mode:captured?parseInt(captured.mode,8)&0o777:0o644});if(!isActive())fail('WORK_STOPPED','工作已停止');if(byteDigest(await this.files.safeBytes(m.directory,h.rel))!==h.digest)fail('STALE_VERSION','文件已变化');const value={relPath:h.rel,beforeDigest:h.digest,digest:byteDigest(Buffer.from(text)),eventId:callId,version:{digest:byteDigest(Buffer.from(text))}};m.documentIntent={callId,fingerprint,value,temp:path.join(m.directory,path.posix.dirname(h.rel),tempName),file:path.join(m.directory,h.rel)};await this.save(m);if(!isActive())fail('WORK_STOPPED','工作已停止');if(byteDigest(await this.files.safeBytes(m.directory,h.rel))!==h.digest)fail('STALE_VERSION','文件已变化');await parent.renameOver(tempName,name);m.documentCalls??={};if(callId)m.documentCalls[callId]={fingerprint,value};delete m.documentIntent;await this.save(m);this.handles.delete(a.readHandle);return {ok:true,continueTurn:true,value};}finally{await parent.remove(tempName);await parent.close();}
  }catch(e){return {ok:false,continueTurn:true,error:{code:e.code||'DOCUMENT_FAILED',message:e.message}};}});}
  async finish(work,{decision,reportPersisted,isActive=()=>false,validateAcceptance,reviewed=null,mergeAuthorization=null}={}){return this.locked(work.id,()=>this.repositoryLocked(async()=>{
   await this.store.storage.requireOnline(this.store.projectId);
@@ -282,7 +287,7 @@ export class ExecutionWorkspace {
     const approvedReconciliation=reconciliation&&reconciliation.candidateCommit===m.candidate.commit&&reconciliation.inputCommit===m.inputCommit&&reconciliation.targetHead===m.targetHead&&reviewedFiles?.has(rel);
     if(JSON.stringify(b)!==JSON.stringify(i)&&!approvedReconciliation)fail('INPUT_OVERLAP','Worker修改了含用户输入覆盖的文件，需用户核对：'+rel);
     if((s?.[0]??null)!==(b?.[0]??null)||(s?.[1]??null)!==(b?.[2]??null)||s&&s[2]!=='0')fail('USER_STAGED','Worker文件有用户暂存：'+rel);
-    const captured=await inspectFile(m.repo,rel),before=approvedReconciliation?(captured?.digest??null):await blobDigest(m.repo,b?.[2]),after=await blobDigest(m.repo,c?.[2]);
+    const captured=await this.files.inspectFile(m.repo,rel),before=approvedReconciliation?(captured?.digest??null):await blobDigest(m.repo,b?.[2]),after=await blobDigest(m.repo,c?.[2]);
     if(approvedReconciliation&&before!==reconciliation.targetDigest)fail('USER_DIRTY','用户核对后的目标正文再次变化：'+rel);
     if((captured?.digest??null)!==before)fail('USER_DIRTY','Worker文件有用户修改：'+rel);
     if(c&&!['100644','100755'].includes(c[0])||b&&!['100644','100755'].includes(b[0]))fail('PATH_REJECTED','受管文件不是普通Git文件：'+rel);
@@ -292,42 +297,42 @@ export class ExecutionWorkspace {
    }
    const directory=path.join(this.store.root,'evidence','integration-'+work.id);await fs.mkdir(directory,{recursive:true});const beforeIndex=path.join(directory,'before.index');await fs.copyFile(m.index,beforeIndex);
    const index=path.join(directory,'tree.index'),env={GIT_INDEX_FILE:index};await git(m.repo,['read-tree',m.targetHead],env);
-   await updateIndexRows(m.repo,index,files);const tree=await str(m.repo,['write-tree'],env);if(m.acceptancePreparation&&(m.acceptancePreparation.tree!==tree||m.acceptancePreparation.parent!==m.targetHead||m.acceptancePreparation.candidate!==m.candidate.commit))fail('HOOK_BASELINE_CHANGED','原钩子执行基线变化，已保留恢复现场');m.acceptancePreparation??={directory,tree,parent:m.targetHead,candidate:m.candidate.commit,status:'hooks-requested'};await this.save(m);const commit=files.length?await acceptanceCommit(m.repo,tree,m.targetHead,'Nozeli accepted Work '+work.id,directory,m.acceptancePreparation,async attempt=>{m.acceptancePreparation=attempt;await this.save(m);}):m.targetHead;
+   await updateIndexRows(m.repo,index,files);const tree=await str(m.repo,['write-tree'],env);if(m.acceptancePreparation&&(m.acceptancePreparation.tree!==tree||m.acceptancePreparation.parent!==m.targetHead||m.acceptancePreparation.candidate!==m.candidate.commit))fail('HOOK_BASELINE_CHANGED','原钩子执行基线变化，已保留恢复现场');m.acceptancePreparation??={directory,tree,parent:m.targetHead,candidate:m.candidate.commit,status:'hooks-requested'};await this.save(m);const commit=files.length?await acceptanceCommit(m.repo,tree,m.targetHead,'Nozeli accepted Work '+work.id,directory,m.acceptancePreparation,async attempt=>{m.acceptancePreparation=attempt;await this.save(m);},{filesystem:this.filesystem}):m.targetHead;
    const afterIndex=path.join(directory,'after.index');await fs.copyFile(beforeIndex,afterIndex);await updateIndexRows(m.repo,afterIndex,files);
-   intent={decision:'accept',status:'prepared',directory,commit,files,beforeIndexDigest:await indexDigest(beforeIndex),afterIndexDigest:await indexDigest(afterIndex),token:'nozeli:'+randomUUID()};m.finishIntent=intent;await this.save(m);
+   intent={decision:'accept',status:'prepared',directory,commit,files,beforeIndexDigest:await this.indexDigest(beforeIndex),afterIndexDigest:await this.indexDigest(afterIndex),token:'nozeli:'+randomUUID()};m.finishIntent=intent;await this.save(m);
   }
   if(intent.status==='integrated')return;
-  await this.identity(m);const currentIndex=await indexDigest(m.index);if(![intent.beforeIndexDigest,intent.afterIndexDigest].includes(currentIndex))fail('INDEX_CHANGED','用户索引已变化，保留恢复意图');
+  await this.identity(m);const currentIndex=await this.indexDigest(m.index);if(![intent.beforeIndexDigest,intent.afterIndexDigest].includes(currentIndex))fail('INDEX_CHANGED','用户索引已变化，保留恢复意图');
   const format=await str(m.repo,['rev-parse','--show-ref-format']).catch(()=>'files');if(!['files','--show-ref-format'].includes(format))fail('REF_FORMAT','仅支持Git files引用后端');
   const refFile=path.join(m.commonDir,m.targetRef),refLock=refFile+'.lock',lock=m.index+'.lock',headLock=m.headFile+'.lock',owned=[];let published=false;
   try{
    await fs.mkdir(path.dirname(refFile),{recursive:true});for(const file of [refLock,lock,headLock]){const prior=await read(file);if(prior){const stat=await fs.lstat(file),saved=intent.locks?.[file];if(prior.toString()!==intent.token&&!(file===refLock&&prior.toString()===intent.commit+'\n'&&saved?.ino===stat.ino&&saved?.dev===stat.dev))fail('GIT_LOCKED','Git锁不属于本次整合：'+file);}else{const h=await fs.open(file,'wx',0o600);await h.writeFile(intent.token);await h.sync();const stat=await h.stat();intent.locks??={};intent.locks[file]={ino:stat.ino,dev:stat.dev};await h.close();}owned.push(file);}await this.save(m);
-   await this.identity(m);if(![intent.beforeIndexDigest,intent.afterIndexDigest].includes(await indexDigest(m.index)))fail('INDEX_CHANGED','加锁期间用户索引变化');
+   await this.identity(m);if(![intent.beforeIndexDigest,intent.afterIndexDigest].includes(await this.indexDigest(m.index)))fail('INDEX_CHANGED','加锁期间用户索引变化');
    const head=await str(m.repo,['rev-parse',m.targetRef]);if(head!==m.targetHead&&head!==intent.commit)fail('HEAD_DRIFT','目标分支变化');published=head===intent.commit;
-   for(const f of intent.files){const disk=await inspectFile(m.repo,f.rel),digest=disk?.digest??null;if(digest!==f.before&&digest!==f.after)fail('SOURCE_CHANGED','文件在恢复/整合时变化：'+f.rel);if(disk&&![f.beforeMode,f.mode].includes(disk.mode))fail('SOURCE_CHANGED','文件权限在整合时变化：'+f.rel);}
+   for(const f of intent.files){const disk=await this.files.inspectFile(m.repo,f.rel),digest=disk?.digest??null;if(digest!==f.before&&digest!==f.after)fail('SOURCE_CHANGED','文件在恢复/整合时变化：'+f.rel);if(disk&&![f.beforeMode,f.mode].includes(disk.mode))fail('SOURCE_CHANGED','文件权限在整合时变化：'+f.rel);}
    if(!published){intent.status='applying';await this.save(m);}
    for(const f of intent.files)await this.installFile(m,f,false);
-   if(await indexDigest(m.index)===intent.beforeIndexDigest){const temp=m.index+'.nozeli-'+randomUUID();await fs.copyFile(path.join(intent.directory,'after.index'),temp);await fs.rename(temp,m.index);}else if(await indexDigest(m.index)!==intent.afterIndexDigest)fail('INDEX_CHANGED','发布后索引变化；未覆盖');
+   if(await this.indexDigest(m.index)===intent.beforeIndexDigest){const temp=m.index+'.nozeli-'+randomUUID();await fs.copyFile(path.join(intent.directory,'after.index'),temp);await fs.rename(temp,m.index);}else if(await this.indexDigest(m.index)!==intent.afterIndexDigest)fail('INDEX_CHANGED','发布后索引变化；未覆盖');
    if(!published){intent.status='files-installed';await this.save(m);const h=await fs.open(refLock,'r+');await h.truncate(0);await h.writeFile(intent.commit+'\n');await h.sync();await h.close();await fs.rename(refLock,refFile);const directory=await fs.open(path.dirname(refFile),constants.O_RDONLY|constants.O_DIRECTORY);try{await directory.sync();}finally{await directory.close();}published=true;}
    intent.status='ref-published';await this.save(m);intent.status='integrated';await this.save(m);
   }catch(error){
    if(!published&&await str(m.repo,['rev-parse',m.targetRef]).catch(()=>null)===intent.commit)published=true;
    if(!published&&['applying','files-installed'].includes(intent.status)){
-    try{for(const f of [...intent.files].reverse())await this.installFile(m,f,true);const digest=await indexDigest(m.index);if(digest===intent.afterIndexDigest){const temp=m.index+'.rollback-'+randomUUID();await fs.copyFile(path.join(intent.directory,'before.index'),temp);await fs.rename(temp,m.index);}else if(digest!==intent.beforeIndexDigest)fail('INDEX_CHANGED','回滚遇到外部索引变化');intent.status='prepared';await this.save(m);}catch(rollback){intent.status='rollback-blocked';intent.error=rollback.message;await this.save(m);throw Object.assign(Error('整合失败且回滚被外部变化阻止：'+rollback.message),{code:'ROLLBACK_BLOCKED'});}
+    try{for(const f of [...intent.files].reverse())await this.installFile(m,f,true);const digest=await this.indexDigest(m.index);if(digest===intent.afterIndexDigest){const temp=m.index+'.rollback-'+randomUUID();await fs.copyFile(path.join(intent.directory,'before.index'),temp);await fs.rename(temp,m.index);}else if(digest!==intent.beforeIndexDigest)fail('INDEX_CHANGED','回滚遇到外部索引变化');intent.status='prepared';await this.save(m);}catch(rollback){intent.status='rollback-blocked';intent.error=rollback.message;await this.save(m);throw Object.assign(Error('整合失败且回滚被外部变化阻止：'+rollback.message),{code:'ROLLBACK_BLOCKED'});}
    }throw error;
   }finally{if(intent.status!=='rollback-blocked')for(const file of owned){const bytes=await read(file);if(bytes?.toString()===intent.token||file===refLock&&bytes?.toString()===intent.commit+'\n'&&(await fs.lstat(file)).ino===intent.locks?.[file]?.ino)await fs.unlink(file);}}
  }
  async installFile(m,f,rollback){
-  const oid=rollback?f.beforeOid:f.oid,mode=rollback?f.beforeMode:f.mode,expected=rollback?f.after:f.before,wanted=rollback?f.before:f.after,disk=await inspectFile(m.repo,f.rel),digest=disk?.digest??null;
+  const oid=rollback?f.beforeOid:f.oid,mode=rollback?f.beforeMode:f.mode,expected=rollback?f.after:f.before,wanted=rollback?f.before:f.after,disk=await this.files.inspectFile(m.repo,f.rel),digest=disk?.digest??null;
   if(digest===wanted&&(!disk||disk.mode===mode))return;if(digest!==expected&&digest!==wanted)fail('SOURCE_CHANGED','文件在替换前变化：'+f.rel);
-  const parent=await documentParent(m.repo,f.rel),target=parent.prefix+path.posix.basename(f.rel),temp=target+'.nozeli-'+randomUUID();
+  const name=path.posix.basename(f.rel),tempName=name+'.nozeli-'+randomUUID(),parent=await this.files.openWriteParent(m.repo,f.rel);
   try{
-   if(!oid){if((await inspectFile(m.repo,f.rel))?.digest!==disk?.digest)fail('SOURCE_CHANGED','删除前文件变化：'+f.rel);if(disk)await fs.unlink(target);return;}
-   const handle=await fs.open(temp,'wx',parseInt(mode,8)&0o777);
+   if(!oid){if((await this.files.inspectFile(m.repo,f.rel))?.digest!==disk?.digest)fail('SOURCE_CHANGED','删除前文件变化：'+f.rel);if(disk)await parent.remove(name);return;}
+   const handle=await parent.openExclusive(tempName,{mode:parseInt(mode,8)&0o777});
    try{await gitStream(m.repo,['cat-file','blob',oid],{output:new Writable({write(chunk,encoding,done){handle.writeFile(chunk).then(()=>done(),done);}})});await handle.chmod(parseInt(mode,8)&0o777);await handle.sync();}finally{await handle.close();}
-   const temporary=await inspectFile(m.repo,path.posix.join(path.posix.dirname(f.rel),path.posix.basename(temp)));if(temporary?.digest!==wanted)fail('SOURCE_CHANGED','Git对象写入校验失败：'+f.rel);
-   if((await inspectFile(m.repo,f.rel))?.digest!==disk?.digest)fail('SOURCE_CHANGED','写入前文件变化：'+f.rel);await fs.rename(temp,target);
-  }finally{await fs.rm(temp,{force:true});await parent.close();}
+   const temporary=await this.files.inspectFile(m.repo,path.posix.join(path.posix.dirname(f.rel),tempName));if(temporary?.digest!==wanted)fail('SOURCE_CHANGED','Git对象写入校验失败：'+f.rel);
+   if((await this.files.inspectFile(m.repo,f.rel))?.digest!==disk?.digest)fail('SOURCE_CHANGED','写入前文件变化：'+f.rel);await parent.renameOver(tempName,name);
+  }finally{await parent.remove(tempName);await parent.close();}
  }
  async removeOwned(m){
   const exists=await fs.lstat(m.directory).catch(e=>{if(e.code==='ENOENT')return null;throw e;});if(exists){await this.identity(m,{target:false});if(m.finishIntent.decision==='accept'){const current=await this.snapshot(m,m.directory,m.inputCommit,'Nozeli cleanup verification',m.candidate.explicitFiles||[]);if(current.tree!==m.candidate.tree)fail('UNPUBLISHED_CHANGES','接受后执行目录又变化，未删除候选');}await git(m.repo,['worktree','remove','--force',m.directory]);}

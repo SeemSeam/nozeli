@@ -7,15 +7,18 @@
 // 树与源端都与冻结参照字节完全一致时，才向执行目录写入独立拷贝（reflink
 // 优先，绝不创建指向可写源端的符号链接），经 .nozeli 下 marker（workId 精确
 // 匹配）门控的暂存目录 + 原子 rename 落盘。全程不运行 npm/钩子/网络、绝不
-// 改动源项目目录；目录链逐级 O_NOFOLLOW 固定，复制前/后双重核对门文件与负载
-// 身份，任一变化即放弃（不出现半成品可用假象）。缺失或不匹配以“风险 + 可执行
-// 选项”记入 manifest.dependencies，绝不伪造可用，也不是永久 cannot。
+// 改动源项目目录；目录链与全部暂存/清理写入都经平台文件边界
+// （platform/linux/filesystem.mjs chain.*，逐级 O_NOFOLLOW 固定；本模块不再
+// 自持 /proc fd 算法），复制前/后双重核对门文件与负载身份，任一变化即放弃
+// （不出现半成品可用假象）。源端 npm 符号链接一律实体化拷贝（允许并展开，
+// 绝不把链接装进执行树）。缺失或不匹配以“风险 + 可执行选项”记入
+// manifest.dependencies，绝不伪造可用，也不是永久 cannot。
 // node_modules 与 .nozeli 均被 workPath 排除，拷贝永远不会进入候选快照或合入
 // 工件。
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {constants} from 'node:fs';
 import {createHash,randomUUID} from 'node:crypto';
+import {defaultFilesystemAdapter} from './file-stream.mjs';
 
 export const DEPENDENCIES_VERSION=1;
 export const PREPARED_RESOURCES_REL='vendor/prepared-resources.json';
@@ -24,7 +27,6 @@ const STAGING_PREFIX='deps-';
 const STAGING_MARKER='staging.json';
 const MAX_MATERIALIZED=512;            // 病态符号链接扇出保护
 const MAX_RESOURCES=32;
-const DIR_FLAGS=constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW;
 const FICLONE_FALLBACK=['EINVAL','ENOSYS','ENOTSUP','EOPNOTSUPP','ENOTTY','EPERM'];
 // 与 execution-workspace 的 workPath 排除集保持一致（那边无法直接复用：会形成
 // 循环依赖）；声明资源路径同样拒绝这些段。
@@ -32,7 +34,6 @@ const EXCLUDED_SEGMENTS=new Set(['.git','.nozeli','.ccb','node_modules','.venv',
 
 const digest=bytes=>bytes===null||bytes===undefined?null:createHash('sha256').update(bytes).digest('hex');
 const readBytes=file=>fs.readFile(file).catch(error=>{if(error.code==='ENOENT')return null;throw error;});
-const fdPath=(fd,name)=>'/proc/self/fd/'+fd+(name?'/'+name:'');
 const toAbs=(root,rel)=>path.join(root,...(rel?rel.split('/'):[]));
 
 // 依赖候选=冻结输入里成对出现 package.json + package-lock.json 的目录；依赖内
@@ -54,8 +55,10 @@ export function dependencyCandidates(frozenFiles){
 // schema 严格、路径受限（相对路径、无 node_modules/.git 等段、无遍历），
 // 可携带 pinned 上游出处（revision + 源档案 SHA-256）作为供给出处记录。
 function validResourcePath(value){
- if(typeof value!=='string'||!value||value.length>1024||value.includes('\\')||value.includes('\0')||path.posix.isAbsolute(value))return false;
- return !value.split('/').some(segment=>!segment||segment==='.'||segment==='..'||EXCLUDED_SEGMENTS.has(segment));
+ if(typeof value!=='string'||!value)return false;
+ if(value.length>512||value.includes('\\')||value.includes('\0'))return false;
+ if(value.split('/').some(part=>!part||part==='.'||part==='..'||EXCLUDED_SEGMENTS.has(part)))return false;
+ return !path.isAbsolute(value);
 }
 export function parsePreparedResources(text){
  let parsed;try{parsed=JSON.parse(text);}catch{return {error:'invalid-json'};}
@@ -79,23 +82,13 @@ export function parsePreparedResources(text){
  return {resources};
 }
 
-// 从根开始逐级 O_NOFOLLOW 打开真实目录并持有 fd：任何环节是符号链接（ELOOP）
-// 或非目录（ENOTDIR）都无法通过，后续清理/写入全部固定在这些 fd 上。
-async function openRealChain(root,relDir){
- const handles=[];let directory;
- try{
-  directory=await fs.open(root,DIR_FLAGS);handles.push(directory);
-  for(const part of relDir?relDir.split('/'):[]){directory=await fs.open(fdPath(directory.fd,part),DIR_FLAGS);handles.push(directory);}
-  return {handles,directory};
- }catch(error){for(const handle of handles.reverse())await handle.close().catch(()=>{});throw error;}
-}
-
 async function copyReflink(source,destination){
  try{await fs.copyFile(source,destination,fs.constants.COPYFILE_FICLONE);}
  catch(error){if(!FICLONE_FALLBACK.includes(error.code))throw error;await fs.copyFile(source,destination);}
 }
-// 独立拷贝：符号链接一律实体化（拷贝内容），绝不重建指向源端的链接；环/断链/
-// 特殊文件跳过并记录。stack+materialized 双保护防符号链接无限展开。只读源端。
+// 独立拷贝（源端，普通路径读）：符号链接一律实体化（拷贝内容，npm 允许并保留
+// 这一语义），绝不重建指向源端的链接；环/断链/特殊文件跳过并记录。
+// stack+materialized 双保护防符号链接无限展开。只读源端。
 async function copyTree(source,destination,rel,ctx){
  const stat=await fs.lstat(source);
  if(stat.isSymbolicLink()){
@@ -128,9 +121,9 @@ async function sourcePayload(payloadPath,missingCode,missingDetail){
 }
 
 // marker 必须是常规文件、可解析 JSON 且 workId 与当前工作精确一致；只删除满足
-// 全部条件的暂存目录。删除采用固定 fd 内先 rename 再 rm，路径被换也不误删。
-async function stagingMarker(stagedFd){
- const handle=await fs.open(fdPath(stagedFd,STAGING_MARKER),constants.O_RDONLY|constants.O_NOFOLLOW).catch(()=>null);
+// 全部条件的暂存目录。删除采用固定目录内先 rename 再 rm，路径被换也不误删。
+async function stagingMarker(native,stagedHandle){
+ const handle=await native.openFile(stagedHandle,STAGING_MARKER).catch(()=>null);
  if(!handle)return null;
  try{
   const stat=await handle.stat();
@@ -139,36 +132,37 @@ async function stagingMarker(stagedFd){
   return parsed&&typeof parsed==='object'&&typeof parsed.workId==='string'?parsed:null;
  }catch{return null;}finally{await handle.close().catch(()=>{});}
 }
-async function cleanStaging(workId,wrapperFd,wrapperReal){
- for(const name of await fs.readdir(fdPath(wrapperFd)).catch(() => [])){
+async function cleanStaging(native,workId,wrapperHandle){
+ for(const name of await native.readdir(wrapperHandle).catch(() => [])){
   if(!name.startsWith(STAGING_PREFIX)||name.includes('.rm-'))continue;
-  const staged=await fs.open(fdPath(wrapperFd,name),DIR_FLAGS).catch(error=>{if(['ENOENT','ENOTDIR','ELOOP'].includes(error.code))return null;throw error;});
+  const staged=await native.openDirectory(wrapperHandle,name).catch(error=>{if(['ENOENT','ENOTDIR','ELOOP'].includes(error.code))return null;throw error;});
   if(!staged)continue;
   try{
-   if((await stagingMarker(staged.fd))?.workId!==workId)continue;
+   if((await stagingMarker(native,staged))?.workId!==workId)continue;
    const trash=name+'.rm-'+randomUUID();
-   await fs.rename(fdPath(wrapperFd,name),fdPath(wrapperFd,trash));
-   await fs.rm(path.join(wrapperReal,trash),{recursive:true,force:true});
+   await native.rename(wrapperHandle,name,wrapperHandle,trash);
+   await native.removeTree(wrapperHandle,trash);
   }finally{await staged.close().catch(()=>{});}
  }
 }
 // wrapper 必须是真实目录：仅在真正要暂存时才创建；符号链接（ELOOP）直接拒绝。
-async function openWrapper(packageFd,{create=false}={}){
- let handle=await fs.open(fdPath(packageFd,WRAPPER),DIR_FLAGS).catch(error=>{if(error.code==='ENOENT')return null;throw error;});
+async function openWrapper(native,packageHandle,{create=false}={}){
+ let handle=await native.openDirectory(packageHandle,WRAPPER).catch(error=>{if(error.code==='ENOENT')return null;throw error;});
  if(!handle&&create){
-  await fs.mkdir(fdPath(packageFd,WRAPPER),{mode:0o755}).catch(error=>{if(error.code!=='EEXIST')throw error;});
-  handle=await fs.open(fdPath(packageFd,WRAPPER),DIR_FLAGS);
+  await native.mkdir(packageHandle,WRAPPER,0o755).catch(error=>{if(error.code!=='EEXIST')throw error;});
+  handle=await native.openDirectory(packageHandle,WRAPPER);
  }
- return handle?{handle,real:await fs.realpath(fdPath(handle.fd))}:null;
+ return handle?{handle,real:await native.realpath(handle)}:null;
 }
 
 // 通用供给引擎：spec 描述负载（目标名/所在目录）、门文件（以冻结参照跟踪、
 // Worker 与源端都必须与冻结字节一致）与文案。所有负载共用全部安全机制。
-async function provisionPayload({workId,sourceRoot,worktreeRoot,frozenFiles,spec}){
+async function provisionPayload({workId,sourceRoot,worktreeRoot,frozenFiles,spec,filesystem}){
+ const native=filesystem.chain;
  const entry={dir:spec.dir||'.',kind:spec.kind,outcome:null,reason:null,detail:null,...(spec.entryExtra||{})};
  // 1) 先验证再读取：负载父目录链任一环节符号链接/非目录即整体拒绝。
  let chain;
- try{chain=await openRealChain(worktreeRoot,spec.dir);}
+ try{chain=await native.directory(worktreeRoot,spec.dir);}
  catch(error){
   if(error.code==='ELOOP'||error.code==='ENOTDIR'){entry.outcome='unsafe-target-path';entry.detail='目标路径或其父级含符号链接/非目录；拒绝读取、清理与写入。';return entry;}
   if(error.code==='ENOENT'){entry.outcome='worker-file-changed';entry.reason='target-dir-missing';entry.detail='Worker树的目标目录不存在；不供给该负载。';return entry;}
@@ -183,15 +177,15 @@ async function provisionPayload({workId,sourceRoot,worktreeRoot,frozenFiles,spec
   for(const gate of spec.gates)
    if(state[gate.rel].worker===null||state[gate.rel].worker!==state[gate.rel].frozen){entry.outcome='worker-file-changed';entry.reason=gate.label;entry.detail=spec.texts.workerChanged(gate);return entry;}
   // 3) 暂存根必须是真实目录；清理仅限 marker+workId 精确匹配的我方目录。
-  try{wrapper=await openWrapper(chain.directory.fd);}
+  try{wrapper=await openWrapper(native,chain.handle);}
   catch(error){
    if(error.code==='ELOOP'||error.code==='ENOTDIR'){entry.outcome='unsafe-target-path';entry.reason='staging-root';entry.detail='.nozeli暂存根不是真实目录（可能是符号链接）；拒绝清理与写入，未删除、未跟随任何内容。';return entry;}
    throw error;
   }
-  if(wrapper)await cleanStaging(workId,wrapper.handle.fd,wrapper.real);
+  if(wrapper)await cleanStaging(native,workId,wrapper.handle);
   // 4) 已被冻结参照跟踪的资源无需供给；已有目标（含用户自备内容/符号链接）一律保留。
   if(spec.trackedGate&&frozenFiles[spec.payloadRel]){entry.outcome='present';entry.reason='tracked';entry.detail='该资源已在冻结输入中，无需供给。';return entry;}
-  const targetName=spec.targetName,existing=await fs.lstat(fdPath(chain.directory.fd,targetName)).catch(error=>{if(error.code==='ENOENT')return null;throw error;});
+  const targetName=spec.targetName,existing=await native.lstat(chain.handle,targetName).catch(error=>{if(error.code==='ENOENT')return null;throw error;});
   if(existing){
    if(existing.isSymbolicLink()){entry.outcome='target-symlink';entry.detail='Worker目录已有'+targetName+'符号链接；保留现场，未替换、未跟随。';}
    else if(existing.isDirectory()){entry.outcome='present';entry.detail='Worker目录已有'+targetName+'；未改动（现有内容优先）。';}
@@ -214,16 +208,16 @@ async function provisionPayload({workId,sourceRoot,worktreeRoot,frozenFiles,spec
   const ctx={files:0,bytes:0,directories:0,skipped:[],stack:new Set(),materialized:new Map()};
   try{
    if(!wrapper){
-    try{wrapper=await openWrapper(chain.directory.fd,{create:true});}
+    try{wrapper=await openWrapper(native,chain.handle,{create:true});}
     catch(error){
      if(error.code==='ELOOP'||error.code==='ENOTDIR'){entry.outcome='unsafe-target-path';entry.reason='staging-root';entry.detail='.nozeli暂存根不是真实目录（可能是符号链接）；拒绝写入，未删除、未跟随任何内容。';return entry;}
      throw error;
     }
    }
-   await fs.mkdir(fdPath(wrapper.handle.fd,stagingName),{mode:0o755});
-   staging=await fs.open(fdPath(wrapper.handle.fd,stagingName),DIR_FLAGS);
-   await fs.writeFile(fdPath(staging.fd,STAGING_MARKER),JSON.stringify({workId,at:new Date().toISOString()})+'\n',{flag:'wx'});
-   await copyTree(source.root,fdPath(staging.fd,targetName),'',ctx);
+   await native.mkdir(wrapper.handle,stagingName,0o755);
+   staging=await native.openDirectory(wrapper.handle,stagingName);
+   await native.writeExclusive(staging,STAGING_MARKER,JSON.stringify({workId,at:new Date().toISOString()})+'\n');
+   await copyTree(source.root,native.anchoredPath(staging,targetName),'',ctx);
    const changed=async()=>{
     for(const gate of spec.gates)
      if(digest(await readBytes(toAbs(worktreeRoot,gate.rel)))!==state[gate.rel].frozen)return 'worker-'+gate.label;
@@ -236,13 +230,15 @@ async function provisionPayload({workId,sourceRoot,worktreeRoot,frozenFiles,spec
    };
    const drift=await changed();
    if(drift){entry.outcome='changed-during-copy';entry.reason=drift;entry.detail='复制期间'+(drift.startsWith('source')?'源端':'Worker')+'输入或负载身份发生变化；已丢弃暂存，未安装、无半成品。重新执行即可按新状态重试。';return entry;}
-   try{await fs.mkdir(fdPath(chain.directory.fd,targetName),{mode:0o755});}
+   try{await native.mkdir(chain.handle,targetName,0o755);}
    catch(error){
     if(error.code==='EEXIST'){entry.outcome='present';entry.reason='appeared-during-copy';entry.detail='复制期间目标已出现'+targetName+'；保留现有内容，丢弃暂存。';return entry;}
     throw error;
    }
-   if((await fs.readdir(fdPath(chain.directory.fd,targetName)).catch(() => ['x'])).length){entry.outcome='present';entry.reason='appeared-during-copy';entry.detail='复制期间目标目录出现内容；保留现有内容，丢弃暂存。';return entry;}
-   try{await fs.rename(fdPath(staging.fd,targetName),fdPath(chain.directory.fd,targetName));}
+   let appeared=['x'];
+   try{const probe=await native.openDirectory(chain.handle,targetName);try{appeared=await native.readdir(probe);}finally{await probe.close().catch(()=>{});}}catch{}
+   if(appeared.length){entry.outcome='present';entry.reason='appeared-during-copy';entry.detail='复制期间目标目录出现内容；保留现有内容，丢弃暂存。';return entry;}
+   try{await native.rename(staging,targetName,chain.handle,targetName);}
    catch(error){
     if(['EEXIST','ENOTEMPTY','ENOTDIR'].includes(error.code)){entry.outcome='present';entry.reason='appeared-during-copy';entry.detail='安装收尾时目标已出现内容；保留现有内容，丢弃暂存。';return entry;}
     throw error;
@@ -253,11 +249,11 @@ async function provisionPayload({workId,sourceRoot,worktreeRoot,frozenFiles,spec
    return entry;
   }finally{
    await staging?.close().catch(()=>{});
-   await fs.rm(path.join(wrapper.real,stagingName),{recursive:true,force:true}).catch(()=>{});
-   await fs.rmdir(wrapper.real).catch(()=>{});   // 仅空目录可删
+   if(wrapper)await native.removeTree(wrapper.handle,stagingName).catch(()=>{});
+   if(wrapper)await native.removeDirectoryIfEmpty(chain.handle,WRAPPER).catch(()=>{});   // 仅空目录可删
   }
  }catch(error){entry.outcome='copy-failed';entry.reason=error.code||'ERROR';entry.detail='拷贝失败，未供给（目标保持原状）：'+error.message;return entry;}
- finally{await wrapper?.handle.close().catch(()=>{});for(const handle of chain.handles.reverse())await handle.close().catch(()=>{});}
+ finally{await wrapper?.handle.close().catch(()=>{});await chain.close().catch(()=>{});}
 }
 
 const DEPS_TEXTS={
@@ -269,8 +265,8 @@ const DEPS_TEXTS={
 };
 const RESOURCE_TEXTS=tool=>({
  workerChanged:gate=>'Worker树的'+gate.file+'与冻结输入不一致（可能已被Worker修改）；不按旧清单供给资源。可执行方案：在执行目录用用户授权的真实工具按清单重新准备该资源（结果会被保留），或核对更新环境输入后重新prepare。',
- sourceMissing:gate=>'源项目缺少'+gate.file+'；无法证明声明与冻结输入一致，未供给资源。可执行方案：在源项目恢复该清单后重新prepare，或核对更新环境输入。',
- sourceDiffers:gate=>'风险：源端'+gate.file+'与冻结输入不一致，按旧声明拷贝已被拒绝。可执行方案：在执行目录用用户授权的真实工具准备该资源（结果保留），或核对更新环境输入后重新prepare。',
+ sourceMissing:gate=>'源项目缺少'+gate.file+'；无法证明声明与冻结输入一致，未供给资源。可执行方案：在源项目恢复该清单后重新prepare，或核对并更新环境输入。',
+ sourceDiffers:gate=>'风险：源端'+gate.file+'与冻结输入不一致，按旧声明拷贝已被拒绝。可执行方案：在执行目录用用户授权的真实工具准备该资源（结果保留），或核对并更新环境输入后重新prepare。',
  payloadMissing:()=>'风险：执行目录缺少已声明的准备资源'+(tool?'（由'+tool+'准备）':'')+'，构建会在此失败。宿主不运行网络/npm、不代改源项目。可执行方案：①'+(tool?'在源项目运行 node '+tool+' 重新准备，然后重新prepare；':'在源项目用对应工具重新准备，然后重新prepare；')+'②在执行目录用用户授权的真实工具准备该资源（结果会被保留）；③核对并更新环境输入。',
  provisioned:()=>'已按冻结清单从源项目独立拷贝该准备资源（reflink优先，非符号链接；源端不受Worker写入影响）。'
 });
@@ -279,7 +275,7 @@ const RESOURCE_TEXTS=tool=>({
 // 冻结包目录（与依赖候选同一目录来源：package.json+package-lock.json 成对，
 // 不做任意全树扫描）时生效；Worker/源端清单字节都必须等于冻结值。声明内的
 // path/tool 相对声明所在包基目录，报告与拷贝目标均为项目全路径。
-async function preparedResourceEntries({workId,sourceRoot,worktreeRoot,frozenFiles}){
+async function preparedResourceEntries({workId,sourceRoot,worktreeRoot,frozenFiles,filesystem}){
  const files=frozenFiles||{},entries=[];
  const declarations=[{dir:'',rel:PREPARED_RESOURCES_REL}];
  for(const candidate of dependencyCandidates(files))declarations.push({dir:candidate.dir,rel:candidate.dir?candidate.dir+'/'+PREPARED_RESOURCES_REL:PREPARED_RESOURCES_REL});
@@ -298,7 +294,7 @@ async function preparedResourceEntries({workId,sourceRoot,worktreeRoot,frozenFil
    const fullRel=declaration.dir?declaration.dir+'/'+resource.path:resource.path;
    const fullTool=resource.tool?(declaration.dir?declaration.dir+'/'+resource.tool:resource.tool):null;
    if(!validResourcePath(fullRel)){entries.push({...base,resource:fullRel.slice(0,200),outcome:'invalid-metadata',reason:'invalid-path',path:resource.path,detail:'声明资源路径拼接到包基目录后无效：'+fullRel.slice(0,200)+'；未拷贝。'});continue;}
-   entries.push(await provisionPayload({workId,sourceRoot,worktreeRoot,frozenFiles:files,spec:{
+   entries.push(await provisionPayload({workId,sourceRoot,worktreeRoot,frozenFiles:files,filesystem,spec:{
     kind:'prepared-resource',dir:path.posix.dirname(fullRel),targetName:path.posix.basename(fullRel),payloadRel:fullRel,
     gates:[{rel:declaration.rel,label:'metadata',file:declaration.rel}],
     missingCode:'source-resource-missing',trackedGate:true,
@@ -312,17 +308,17 @@ async function preparedResourceEntries({workId,sourceRoot,worktreeRoot,frozenFil
 
 // 计算供给报告；与 previous 内容一致时原样返回 previous，保证重启/重复 prepare
 // 对清单零扰动。纯计算+文件系统操作，不写清单（由调用方落账）。
-export async function provisionWorktreeDependencies({workId,sourceRoot,worktreeRoot,frozenFiles,previous=null}){
- if(process.platform!=='linux')throw Object.assign(new Error('provisioning requires the Linux safe-open path'),{code:'DEPENDENCY_PLATFORM'});
+export async function provisionWorktreeDependencies({workId,sourceRoot,worktreeRoot,frozenFiles,previous=null},{filesystem=defaultFilesystemAdapter}={}){
+ if(filesystem.supported!==true)throw Object.assign(new Error('provisioning requires the Linux safe-open path'),{code:'DEPENDENCY_PLATFORM'});
  if(!path.isAbsolute(sourceRoot||'')||!path.isAbsolute(worktreeRoot||''))throw Object.assign(new Error('provisioning requires absolute roots'),{code:'DEPENDENCY_ROOT'});
  const report={version:DEPENDENCIES_VERSION,at:new Date().toISOString(),source:sourceRoot,entries:[]};
  for(const candidate of dependencyCandidates(frozenFiles))
-  report.entries.push(await provisionPayload({workId,sourceRoot,worktreeRoot,frozenFiles,spec:{
+  report.entries.push(await provisionPayload({workId,sourceRoot,worktreeRoot,frozenFiles,filesystem,spec:{
    kind:'dependencies',dir:candidate.dir,targetName:'node_modules',payloadRel:candidate.dir?candidate.dir+'/node_modules':'node_modules',
    gates:[{rel:candidate.manifest,label:'manifest',file:'package.json'},{rel:candidate.lock,label:'lock',file:'package-lock.json'}],
    missingCode:'source-modules-missing',texts:DEPS_TEXTS
   }}));
- report.entries.push(...await preparedResourceEntries({workId,sourceRoot,worktreeRoot,frozenFiles}));
+ report.entries.push(...await preparedResourceEntries({workId,sourceRoot,worktreeRoot,frozenFiles,filesystem}));
  if(previous&&previous.version===report.version&&JSON.stringify(previous.entries)===JSON.stringify(report.entries))return previous;
  return report;
 }

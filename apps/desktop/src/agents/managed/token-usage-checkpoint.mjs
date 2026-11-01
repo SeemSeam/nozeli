@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {randomUUID} from 'node:crypto';
+import {platformPersistence} from '../../platform/shared/persistence.mjs';
 import {tokenFields,tokenBreakdown} from './turn-metrics.mjs';
 // Codex 0.161 exposes live cumulative usage notifications, but thread/read,
 // thread/resume and turns/list do not expose an authoritative saved total.
@@ -41,8 +41,7 @@ export function createTokenUsageCheckpoint({threadId,providerVersion,file,proces
  function snapshot(){return {schemaVersion:1,provider:'codex',providerVersion,threadId,processIdentity,sequence,observedAt:now(),active,turnId:turnId||provisional,observation:structuredClone(observation),terminal:structuredClone(terminal),boundary,invalidation,baselineRestorable:false,restoreReason:'provider-does-not-expose-authoritative-saved-cumulative-usage'};}
  async function write(value){
   if(!file)return;const body=JSON.stringify(value,null,2);if(Buffer.byteLength(body)>LIMIT)throw Error('usage checkpoint exceeds bounded record');
-  await fs.mkdir(path.dirname(file),{recursive:true});const temporary=file+'.'+randomUUID();let handle;
-  try{handle=await fs.open(temporary,'wx',0o600);await handle.writeFile(body);await handle.sync();await handle.close();handle=null;await fs.rename(temporary,file);}finally{await handle?.close().catch(()=>{});await fs.rm(temporary,{force:true}).catch(()=>{});}
+  platformPersistence.requireSupported();await fs.mkdir(path.dirname(file),{recursive:true});await platformPersistence.writeAtomic(file,body);
  }
  function flush(){if(!dirty)return queue;const value=snapshot();dirty=false;const next=queue.catch(()=>{}).then(()=>write(value));queue=next.catch(error=>{dirty=true;throw error;});return queue;}
  function stop({clean=false,reason}={}){

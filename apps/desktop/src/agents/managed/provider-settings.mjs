@@ -3,6 +3,7 @@ import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {createReadStream} from 'node:fs';
 import {createInterface} from 'node:readline';
+import {platformPersistence} from '../../platform/shared/persistence.mjs';
 
 const roles=['frontdesk','orchestrator','worker'];
 // Native SDK thinking vocabulary (input syntax only). Per-model support and
@@ -82,7 +83,7 @@ function migrateRoleDefaults(raw){
  for(const role of roles)value[role]=raw.roles[role]??nativeDefaultEntry();
  return value;
 }
-async function atomic(file,value){const temp=file+'.'+randomUUID()+'.tmp';try{await fs.writeFile(temp,value,{flag:'wx',mode:0o600});await fs.rename(temp,file);}finally{await fs.rm(temp,{force:true});}}
+async function atomic(file,value){await platformPersistence.writeAtomic(file,value);}
 async function optional(file,fallback){try{return await fs.readFile(file,'utf8');}catch(e){if(e.code==='ENOENT')return fallback;throw e;}}
 async function readJson(file,fallback){try{return JSON.parse(await optional(file,fallback));}catch{return null;}}
 
@@ -91,7 +92,7 @@ export function loginDisplay(output){
   const value=line.trim();
   if(/^(?:https?:\/\/)/.test(value))return !/[\s"<>]/.test(value)&&value.length<8192;
   if(/token|secret|password|api.?key|credentials saved|logged in to/i.test(value))return false;
-  return /^(?:Select a provider:|\d+\. |Enter number|Open this URL|Local shortcut|Paste the authorization|Enter |Please |Visit |User code|Code:|Waiting|Opening|You can|To authenticate)/i.test(value);
+  return /^(?:Select a provider:|\d+\. |Enter number|Open this URL|Local shortcut|Paste the authorization|Enter |Please |Visit |User code|Code:|Waiting|Opening|You can|To authenticate|请确认)/i.test(value);
  }).join('\n');
 }
 export async function hasProviderReferences({storage,agentDir},provider){
@@ -134,8 +135,13 @@ function renderInteraction(interaction){
  const lines=[];
  if(interaction.kind==='url'&&text(interaction.url,8192)&&/^https?:\/\//.test(interaction.url))lines.push('Open this URL in your browser:',interaction.url);
  else if(interaction.kind==='select'&&Array.isArray(interaction.options)&&interaction.options.length){
+  // Only the Nozeli-authored Z.AI consent select carries a trusted message
+  // (it must be shown: it names the dedicated nozeli key); arbitrary provider
+  // select text stays unrendered because it is not under our control.
+  const message=sanitizeLine(interaction.message??'');
+  if(message.startsWith('请确认'))lines.push(message);
   lines.push('Select a provider:');
-  for(const option of interaction.options.slice(0,20))lines.push((option.index??option.position??lines.length)+'. '+sanitizeLine(option.label??option.name??option.id));
+  interaction.options.slice(0,20).forEach((option,index)=>lines.push(index+1+'. '+sanitizeLine(option.label??option.name??option.id)));
  }else{lines.push(sanitizeLine(interaction.message??interaction.prompt??'Continue the authorization flow in the official app.'));}
  return lines.join('\n');
 }
@@ -212,6 +218,7 @@ export class ProviderSettings {
   return {sources:[...sources.values()],models,defaults,modelSync:await this.getModelSync(),login:this.loginStatus(),notice:configured?`目录模型 ${models.length} 个（手动配置/内置目录；凭据已配置不代表服务端授权）。保存默认模型后同步在线角色；忙会话在当前回合结束后应用，原会话身份保持。`:'尚无已配置凭据的目录模型：请登录账号、配置API源或刷新。凭据可用不代表服务端授权任何模型。'};
  }
  saveApi(payload){const p=validateApiSource(payload);return this.serial(async()=>{
+  this.refuseMutationDuringLogin(p.provider);
   const worker=this.requireWorker();
   // Revision validation, credential resolution and the revision bump all live
   // inside this serialized section; the trusted worker resolves a retained
@@ -311,6 +318,7 @@ export class ProviderSettings {
   });
  }
  remove(payload){if(!payload||Object.keys(payload).some(k=>!['provider','confirm'].includes(k))||!text(payload.provider,64)||payload.confirm!==payload.provider)fail('请输入完整源ID确认移除。');return this.serial(async()=>{
+  this.refuseMutationDuringLogin(payload.provider);
   const provider=payload.provider;const defaults=await this.defaults();
   if(Object.values(defaults).some(s=>s.model.mode==='explicit'&&s.model.selector.startsWith(provider+'/'))||await this.isReferenced(provider))fail('此源仍被全局默认或已有会话引用，未移除。请先解除引用。');
   const worker=this.requireWorker();
@@ -322,10 +330,44 @@ export class ProviderSettings {
   await Promise.all([this.writeRevisions(revisions),this.writeDiscovery(discovery)]);
   return {removed:true};});}
  loginStatus(){if(!this.login)return null;const {id,state,output}=this.login;return {id,state,output};}
+ /** Serialized-boundary guard: an active login may be about to store a
+  * credential, so a queued native-key write, custom-source credential save or
+  * removal for that provider (or any provider while the login's chooser is
+  * open) must not race or clobber it. The worker re-checks independently. */
+ refuseMutationDuringLogin(provider){
+  const login=this.login;
+  if(!login||login.state!=='running')return;
+  if(login.provider&&provider!==undefined&&login.provider!==provider)return;
+  fail('账号登录进行中；为避免覆盖登录刚保存的凭据，请先完成或取消登录，再修改源或密钥。');
+ }
  async loginProviders(){
   const worker=this.requireWorker();
   const credentials=await worker.request('authList');
   return (credentials?.credentials??[]).filter(row=>row.oauthSupported===true).map(row=>({id:row.provider,name:text(row.name,200)?row.name:row.provider}));
+ }
+
+ /** Native Pi providers whose model definitions ship with the runtime and
+  * accept desktop API-key setup (worker-derived capability, not a fixed list).
+  * A stored OAuth subscription blocks a key write so a login is never
+  * silently clobbered. */
+ async nativeKeyProviders(){
+  const worker=this.requireWorker();
+  const credentials=await worker.request('authList');
+  return (credentials?.credentials??[]).filter(row=>row.apiKeySetupSupported===true).map(row=>({id:row.provider,name:text(row.name,200)?row.name:row.provider,configured:row.hasAuth===true,credential:row.type==='oauth'?'oauth':row.type==='api_key'?'api-key':'none'}));
+ }
+ saveNativeKey(payload){
+  if(!payload||typeof payload!=='object'||Array.isArray(payload)||Object.keys(payload).some(k=>!['provider','key'].includes(k))||!text(payload.provider,64)||!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(payload.provider))fail('内置源密钥请求无效。');
+  if(!text(payload.key,16384)||payload.key.trim()!==payload.key||/[\x00-\x1f\x7f]/.test(payload.key))fail('请输入有效API密钥。');
+  const {provider,key}=payload;
+  return this.serial(async()=>{
+   this.refuseMutationDuringLogin(provider);
+   const worker=this.requireWorker();
+   const credentials=await worker.request('authList');
+   const existing=(credentials?.credentials??[]).find(row=>row.provider===provider);
+   if(existing?.type==='oauth')fail('此账号源已保存订阅登录；如需改用API密钥，请先在登录管理中退出该登录。');
+   await worker.request('authSetKey',{provider,apiKey:key},{timeoutMs:60000});
+   return {saved:true,provider,type:'api_key'};
+  });
  }
  async startLogin(payload){
   if(!payload||Object.keys(payload).some(k=>k!=='provider')||payload.provider!==undefined&&(!text(payload.provider,64)||!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(payload.provider)))fail('登录Provider无效。');

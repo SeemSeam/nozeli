@@ -10,7 +10,12 @@ export function mountProviderSettings({invoke,providers=document.getElementById(
   return {id,...(thinking?{reasoning:true}:{})};
  });
  const list=node('div',null,{'data-provider-list':''}),loginArea=node('div',null,{'data-provider-login':''});
- providers.append(node('h2','账号与 API 源'),node('p','管理 Nozeli 私有 Pi 账号与 API 源。密钥仅存于本机私有配置和认证存储，不会回传界面；留空保存即保留已存密钥。目录或凭据状态不代表服务端授权任何模型。'),list);
+ providers.append(node('h2','账号与 API 源'),node('p','管理凭据与模型目录。密钥仅存于本机；模型可列出不代表拥有推理授权。'),list);
+ const setup=node('div',null,{class:'provider-setup'});
+ const apiSection=node('details',null,{'data-provider-api-section':''}),apiSummary=node('summary','添加 API 源');apiSection.append(apiSummary);
+ const loginSection=node('details',null,{'data-provider-login-section':''});loginSection.append(node('summary','账号登录'));
+ const nativeSection=node('details',null,{'data-provider-native-section':''});nativeSection.append(node('summary','内置源密钥'));
+ setup.append(apiSection,loginSection,nativeSection);providers.append(setup);
  const form=node('form',null,{'data-provider-api-form':''});
  const providerField=field(form,'源 ID（不可改名；改名需新增源）','provider');
  const baseUrlField=field(form,'API 地址（base URL）','baseUrl','url');
@@ -20,15 +25,18 @@ export function mountProviderSettings({invoke,providers=document.getElementById(
  const key=field(form,'API密钥（编辑时留空＝保留已存密钥）','key','password');key.placeholder='新增必填；编辑留空保留原密钥，输入则替换';
  const originConsent=node('label','API地址来源变化时复用原密钥');const originConsentBox=node('input',null,{type:'checkbox',name:'confirmNewOrigin'});originConsent.prepend(originConsentBox);form.append(originConsent);originConsent.hidden=true;
  const submitButton=node('button','添加API源',{type:'submit',class:'ui-action','data-ui-action':'primary'});
- const cancelEdit=node('button','取消编辑',{type:'button','data-provider-cancel-edit':''});cancelEdit.hidden=true;
+ const cancelEdit=node('button','取消',{type:'button','data-provider-cancel-edit':''});
  const draftDiscover=node('button','先测试发现（不保存）',{type:'button','data-provider-draft-discover':''});form.append(draftDiscover);
- form.append(submitButton,cancelEdit);providers.append(form);
+ const formActions=node('div',null,{class:'settings-actions'});formActions.append(submitButton,cancelEdit);form.append(formActions);apiSection.append(form);
  const loginForm=node('form',null,{'data-provider-login-form':''}),loginLabel=node('label','选择Pi支持的账号源'),loginProvider=node('select',null,{name:'provider','data-login-provider':'',required:''}),loginStart=node('button','登录 / 激活所选源',{type:'submit'});
- loginProvider.append(node('option','请选择账号源',{value:''}));loginLabel.append(loginProvider);loginForm.append(node('h3','账号登录'),loginLabel,loginStart);providers.append(loginForm,loginArea,message);
- providers.insertBefore(loginForm,form);providers.insertBefore(loginArea,form);loginStart.disabled=true;
+ loginProvider.append(node('option','请选择账号源',{value:''}));loginLabel.append(loginProvider);loginForm.append(loginLabel,loginStart);loginSection.append(loginForm,loginArea,node('p','Z.AI（GLM Coding Plan）授权会创建/复用专用密钥“nozeli”，不修改 ZCode 密钥。Nozeli 不接管 zcode:// 回调，请手动粘贴回调地址或 code#state。'));providers.append(message);
+const nativeKeyForm=node('form',null,{'data-provider-native-key-form':''}),nativeKeyLabel=node('label','内置源 API 密钥（Pi 原生模型定义）'),nativeKeyProvider=node('select',null,{name:'provider','data-native-key-provider':'',required:''});
+const nativeKeyWrap=node('label','API密钥'),nativeKeyInput=node('input',null,{name:'key',type:'password',autocomplete:'off'});
+nativeKeyWrap.append(nativeKeyInput);nativeKeyProvider.append(node('option','正在读取内置源…',{value:''}));nativeKeyLabel.append(nativeKeyProvider);nativeKeyForm.append(nativeKeyLabel,nativeKeyWrap,node('button','保存内置源密钥',{type:'submit'}));nativeKeyForm.append(node('p','仅列出运行时声明支持密钥设置的内置 Provider（模型定义随 Pi 运行时提供，无需手填模型）；密钥写入本机私有认证存储，不回传界面。已保存订阅登录的源需先退出登录才能改用密钥。'));
+ nativeSection.append(nativeKeyForm);nativeKeyForm.querySelector('button[type="submit"]').disabled=true;
  const discoveryArea=node('div',null,{'data-provider-discovery':''});providers.append(discoveryArea);
- const refreshButton=node('button','刷新源和模型',{type:'button','data-provider-refresh':''});providers.append(refreshButton);
- providers.append(node('p','模型目录刷新不发送对话或模型请求；“发现模型”只调用该源的模型列表接口，不发起对话，也不证明推理授权。'));
+ const refreshButton=node('button','刷新源和模型',{type:'button','data-provider-refresh':''});const toolbar=node('div',null,{class:'settings-actions provider-toolbar'});toolbar.append(refreshButton);list.before(toolbar);
+ const safety=node('details',null,{class:'provider-help'});safety.append(node('summary','凭据与模型说明'),node('p','密钥不会回传界面；编辑时留空保存即保留原密钥。目录刷新不发送对话或模型请求；发现模型只调用模型列表接口，不证明推理授权。'));providers.append(safety);
  models.append(node('h2','默认模型'),node('p','为前台、主控和 Worker 分别配置默认模型与思考档位。保存后同步同角色在线会话；执行中的回合结束后应用，休眠会话恢复时应用。清除选择即恢复会话原生默认并取消排队中的切换。'));
  const modelForm=node('form',null,{'data-role-model-form':''}),selects={},thinkingSelects={};
  for(const [role,label]of [['frontdesk','前台 · 最快'],['orchestrator','编排 · 强模型'],['worker','Worker · 中等及以上']]){
@@ -45,6 +53,31 @@ export function mountProviderSettings({invoke,providers=document.getElementById(
  for(const think of Object.values(thinkingSelects)){think.disabled=true;think.append(node('option','正在读取…',{value:''}));}
  configureSource.onclick=()=>window.dispatchEvent(new CustomEvent('nozeli-open-settings',{detail:'settings-provider'}));
  let polling=null,loginId=null,busy=false;
+ let pendingRemoval=null;
+ function closeRemoval(restoreFocus=true){
+  if(!pendingRemoval)return;
+  const {box,trigger}=pendingRemoval;box.remove();pendingRemoval=null;
+  trigger.setAttribute('aria-expanded','false');if(restoreFocus&&trigger.isConnected)trigger.focus();
+ }
+ function requestRemoval(source,trigger,row){
+  if(busy)return;
+  if(pendingRemoval?.provider===source.provider){pendingRemoval.cancel.focus();return;}
+  closeRemoval(false);
+  const box=node('div',null,{'data-provider-removal':source.provider,class:'provider-removal'});
+  const error=node('p','',{role:'alert','data-provider-removal-error':''});
+  const confirm=node('button','确认移除',{type:'button','data-ui-action':'danger','data-provider-confirm-remove':source.provider});
+  const cancel=node('button','取消',{type:'button','data-provider-cancel-remove':''});
+  const actions=node('div',null,{class:'settings-actions'});actions.append(cancel,confirm);
+  box.append(node('p','确认移除 '+source.provider+'？将禁用其私有凭据；默认模型或会话仍引用时会拒绝。'),error,actions);
+  pendingRemoval={provider:source.provider,box,trigger,cancel};trigger.setAttribute('aria-expanded','true');row.append(box);cancel.focus();
+  cancel.onclick=()=>{if(!busy)closeRemoval();};
+  confirm.onclick=()=>run(async()=>{
+   error.textContent='';confirm.textContent='正在移除…';
+   try{await call('settings.providers.remove',{provider:source.provider,confirm:source.provider});closeRemoval(false);await refreshAfterChange();message.textContent='已移除 '+source.provider+'。';refreshButton.focus();}
+   catch(failure){error.textContent=failure?.message||'移除未完成，请重试或取消。';error.tabIndex=-1;error.focus();}
+   finally{confirm.textContent='确认移除';}
+  });
+ }
  const report=error=>{message.textContent=error?.message||'操作未完成。';modelMessage.textContent=message.textContent;};
  // Read-DTO -> write-DTO: only allowlisted fields; unknown/null capability values are omitted, never forwarded to settings.providers.save.
  const writeModel=m=>({id:m.id,...(text200(m.name)?{name:m.name}:{}),...(m.reasoning===true?{reasoning:true}:{})});
@@ -67,7 +100,7 @@ export function mountProviderSettings({invoke,providers=document.getElementById(
   modelMessage.textContent=parts.join('');
  }
  function syncModelControls(){const disabled=busy||!catalogReady;for(const select of Object.values(selects))if(select.disabled!==disabled)select.disabled=disabled;modelSave.disabled=busy||(!catalogReady&&!storedDefaultsExist);modelRefresh.disabled=refreshButton.disabled=busy||!!refreshFlight;for(const think of Object.values(thinkingSelects))think.disabled=busy;}
- async function run(action){if(busy)return;busy=true;for(const b of [...providers.querySelectorAll('button'),...models.querySelectorAll('button')])b.disabled=true;syncModelControls();try{await refreshFlight;await action();}catch(e){report(e);}finally{busy=false;for(const b of [...providers.querySelectorAll('button'),...models.querySelectorAll('button')])b.disabled=false;syncModelControls();loginStart.disabled=!loginProvider.value||loginProvider.disabled;}}
+ async function run(action){if(busy)return;busy=true;const inputs=[...providers.querySelectorAll('input,select,textarea')].map(input=>[input,input.disabled]);for(const [input]of inputs)input.disabled=true;for(const b of [...providers.querySelectorAll('button'),...models.querySelectorAll('button')])b.disabled=true;syncModelControls();try{await refreshFlight;await action();}catch(e){report(e);}finally{busy=false;for(const [input,disabled]of inputs)input.disabled=disabled;for(const b of [...providers.querySelectorAll('button'),...models.querySelectorAll('button')])b.disabled=false;syncModelControls();loginStart.disabled=!loginProvider.value||loginProvider.disabled;const nativeSubmit=nativeKeyForm.querySelector('button[type="submit"]');if(nativeSubmit)nativeSubmit.disabled=!nativeKeyProvider.value||nativeKeyProvider.disabled;}}
  function renderLogin(login){
   const draft=loginArea.querySelector('input')?.value||'';
   loginArea.replaceChildren();loginId=login?.id??null;if(!login)return;
@@ -85,6 +118,20 @@ export function mountProviderSettings({invoke,providers=document.getElementById(
   catch(error){loginProvider.replaceChildren(node('option','登录源目录暂不可用，请刷新',{value:''}));report(error);}
  }
  loginProvider.addEventListener('change',()=>{loginStart.disabled=busy||!loginProvider.value;});
+ async function refreshNativeKeyProviders(){
+  const selected=nativeKeyProvider.value;const submit=nativeKeyForm.querySelector('button[type="submit"]');
+  try{
+   const rows=await call('settings.providers.nativeKeyProviders');
+   nativeKeyProvider.replaceChildren(node('option','请选择内置源',{value:''}));
+   for(const row of rows)nativeKeyProvider.append(node('option',row.name+(row.credential==='oauth'?' · 已订阅登录':row.configured?' · 已存密钥':''),{value:row.id,'data-credential':row.credential}));
+   if(rows.some(row=>row.id===selected))nativeKeyProvider.value=selected;
+   nativeKeyProvider.disabled=false;submit.disabled=busy||!nativeKeyProvider.value;
+  }catch(error){nativeKeyProvider.replaceChildren(node('option','内置源目录暂不可用，请刷新',{value:''}));report(error);}
+ }
+ nativeKeyProvider.addEventListener('change',()=>{const submit=nativeKeyForm.querySelector('button[type="submit"]');submit.disabled=busy||!nativeKeyProvider.value;});
+ nativeKeyForm.addEventListener('submit',event=>{event.preventDefault();const provider=nativeKeyProvider.value;if(!provider)return;
+  run(async()=>{await call('settings.providers.nativeKey',{provider,key:nativeKeyInput.value});nativeKeyInput.value='';message.textContent='内置源密钥已保存到本机私有认证存储。';await refreshAfterChange();await refreshNativeKeyProviders();});
+ });
  const pendingChoices=new Map();
  function renderModelChoices(select,available,savedDefault){
   // Do not replace options underneath an open native picker or keyboard editing.
@@ -109,15 +156,41 @@ export function mountProviderSettings({invoke,providers=document.getElementById(
   if(think.options.length!==choices.length||choices.some(([value,text],index)=>think.options[index].value!==value||think.options[index].textContent!==text))think.replaceChildren(...choices.map(([value,text,disabled])=>{const option=node('option',text,{value});if(disabled)option.disabled=true;return option;}));
   if(think.value!==selected)think.value=selected;
  }
- function flushModelChoices(select){const pending=pendingChoices.get(select);if(!pending)return;renderModelChoices(select,pending.available,pending.savedDefault);const think=thinkingSelects[select.dataset.defaultRole];if(think)renderThinkingChoices(think,think.value,lastCatalog.find(model=>model.selector===select.value)?.thinking?.levels??null);}
+ function flushModelChoices(select,saved){
+  const pending=pendingChoices.get(select);
+  if(!pending&&saved==null)return;
+  // A deferred snapshot is only a placeholder while the native picker is
+  // open. The flush always renders from the current catalog and (after a
+  // save) the actually persisted selection, so a model added by a later
+  // refresh can never be mislabeled 当前目录不可见 and stale options never
+  // resurface once the picker closes or the save commits.
+  pendingChoices.delete(select);
+  renderModelChoices(select,lastCatalog,saved!=null?saved.model:pending.savedDefault);
+  const think=thinkingSelects[select.dataset.defaultRole];
+  if(think)renderThinkingChoices(think,think.dataset.dirty==='true'?think.value:(saved!=null?saved.thinking:think.value),lastCatalog.find(model=>model.selector===select.value)?.thinking?.levels??null);
+ }
+ const apiDrafts=new Map();
+ function rememberDraft(){apiDrafts.set(editing?.provider??'',{source:editing,provider:providerField.value,baseUrl:baseUrlField.value,api:api.value,models:modelLines.value,key:key.value});}
+ function restoreDraft(draft){if(!draft)return;editing=draft.source;providerField.value=draft.provider;baseUrlField.value=draft.baseUrl;api.value=draft.api;modelLines.value=draft.models;key.value=draft.key;updateOriginConsent();}
  function startEdit(source){
+  if(busy)return;rememberDraft();closeRemoval(false);apiSection.open=true;apiSummary.textContent='编辑 '+source.provider;
   editing=source;providerField.value=source.provider;providerField.readOnly=true;baseUrlField.value=source.baseUrl||'';api.value=source.api||'openai-completions';
   modelLines.value=formatModelLines(source.models);key.value='';originConsentBox.checked=false;originConsent.hidden=true;consentBinding='';updateOriginConsent();submitButton.textContent='保存修改（留空密钥＝保留）';cancelEdit.hidden=false;
+  restoreDraft(apiDrafts.get(source.provider));
   message.textContent='正在编辑 '+source.provider+'；密钥不回显，留空保存即保留原密钥。';
+  providerField.focus();apiSection.scrollIntoView({block:'nearest'});
  }
- function clearEdit(){editing=null;providerField.value='';providerField.readOnly=false;baseUrlField.value='';modelLines.value='';key.value='';api.value='openai-completions';originConsent.hidden=true;originConsentBox.checked=false;consentBinding='';submitButton.textContent='添加API源';cancelEdit.hidden=true;}
- cancelEdit.onclick=()=>{clearEdit();message.textContent='';};
+ function clearEdit(){apiDrafts.delete(editing?.provider??'');editing=null;providerField.value='';providerField.readOnly=false;baseUrlField.value='';modelLines.value='';key.value='';api.value='openai-completions';originConsent.hidden=true;originConsentBox.checked=false;consentBinding='';submitButton.textContent='添加API源';apiSummary.textContent='添加 API 源';apiSection.open=false;restoreDraft(apiDrafts.get(''));}
+ cancelEdit.onclick=()=>{if(busy)return;clearEdit();message.textContent='';apiSummary.focus();};
+ function modelBrowser(rows,origin,attrs={}){
+  const box=node('div',null,{class:'provider-model-browser'}),label=node('label','搜索模型'),search=node('input',null,{type:'search',placeholder:'按模型 ID 或名称筛选','data-provider-model-search':origin});label.append(search);
+  const count=node('p','',{role:'status','aria-live':'polite'}),items=node('ul',null,{...attrs,class:'provider-model-list',tabindex:'0','aria-label':origin+'模型列表'});
+  const entries=rows.map(row=>({row,text:(row.id+' '+(row.name||'')).toLowerCase()}));
+  function filter(){const query=search.value.trim().toLowerCase(),visible=entries.filter(entry=>entry.text.includes(query));items.replaceChildren(...visible.map(({row})=>node('li',row.id+(row.name&&row.name!==row.id?' · '+row.name:''))));count.textContent=visible.length?`${origin} · 显示 ${visible.length} / ${rows.length} 个模型`:'没有匹配的模型';}
+  search.oninput=filter;box.append(label,count,items);filter();return box;
+ }
  function renderDiscovery(source){
+  const panel=[...list.querySelectorAll('[data-provider-model-panel]')].find(panel=>panel.dataset.providerModelPanel===source.provider);if(panel){panel.open=true;panel.append(discoveryArea);}
   discoveryArea.replaceChildren();
   const state=source.discovery;
   if(!state||state.status==='none')return;
@@ -128,11 +201,10 @@ export function mountProviderSettings({invoke,providers=document.getElementById(
   if(state.error?.message)box.append(node('p','未回传服务端原文；可检查密钥或地址后重试。'));
   const rows=state.models??[];
   if(rows.length){
-   const listNode=node('ul',null,{'data-discovery-models':source.provider});
-   for(const row of rows)listNode.append(node('li',row.id+(row.name&&row.name!==row.id?' · '+row.name:'')+' · 服务返回，不代表推理授权'));
-   box.append(listNode);
+   box.append(modelBrowser(rows,'服务发现',{'data-discovery-models':source.provider}));
    const add=node('button','把服务返回的模型加入此源',{type:'button','data-discovery-add':source.provider});
    add.onclick=()=>run(async()=>{
+    if(editing?.provider===source.provider||apiDrafts.has(source.provider))throw Error('此源有编辑草稿。请先保存或取消编辑，再加入发现模型，以免覆盖草稿。');
     const fresh=lastSources.find(row=>row.provider===source.provider);
     if(!fresh)throw Error('源信息已变化，请刷新后重试。');
     const existing=new Map((fresh.models??[]).map(m=>[m.id,writeModel(m)]));
@@ -140,35 +212,42 @@ export function mountProviderSettings({invoke,providers=document.getElementById(
     await call('settings.providers.save',{operation:'update',provider:fresh.provider,expectedRevision:fresh.revision,baseUrl:fresh.baseUrl,api:fresh.api||'openai-completions',credential:{action:'keep'},models:[...existing.values()]});
     await refreshAfterChange();message.textContent='已把服务返回的模型加入 '+fresh.provider+'；手动配置与服务返回都会标注来源，不宣称授权。';
    });
-   box.append(add);
+   if(source.baseUrl)box.append(add);
   }
-  discoveryArea.append(box);
+  discoveryArea.append(box);discoveryArea.scrollIntoView({block:'nearest'});
  }
  async function refresh(duringAction=false){if(refreshFlight)return refreshFlight;if(busy&&!duringAction)return;
   modelRefresh.disabled=refreshButton.disabled=true;catalogMessage.textContent=catalogReady?'正在刷新模型目录；现有目录和选择保留。':'正在读取目录模型…';
   refreshFlight=(async()=>{try{
-   const value=await call('settings.providers.status');list.replaceChildren();
-   lastSources=value.sources??[];
+   const value=await call('settings.providers.status');list.replaceChildren();discoveryArea.replaceChildren();
+   lastSources=value.sources??[];lastCatalog=value.models??[];
+   if(pendingRemoval&&!lastSources.some(source=>source.provider===pendingRemoval.provider))closeRemoval(false);
    if(!value.sources?.length)list.append(node('p','尚无已配置账号或 API 源。请登录或添加 API 源。'));
    for(const source of value.sources??[]){
     const row=node('div',null,{'data-provider-row':source.provider});
-    const modelNote=(source.models?.length??0)?` · ${source.models.length} 个模型（手动配置）`:'';
-    row.append(node('strong',source.provider),node('span',' · '+(source.type==='oauth'?'账号登录':'API')+(source.credential?.configured?' · 凭据已配置':' · 未配置凭据')+(source.baseUrl?' · '+source.baseUrl:'')+modelNote+(source.revision?` · 修订 ${source.revision}`:'')));
-    const edit=node('button','编辑',{type:'button','data-provider-edit':source.provider});
+    const sourceModels=source.baseUrl?(source.models??[]):lastCatalog.filter(model=>model.provider===source.provider);
+    const info=node('div',null,{class:'provider-info'}),actions=node('div',null,{class:'settings-actions provider-row-actions'});
+    info.append(node('strong',source.provider),node('p',(source.type==='oauth'?'账号登录':source.baseUrl?'自定义 API':'内置源密钥')+' · '+(source.credential?.configured?'凭据已配置':'未配置凭据')+' · '+sourceModels.length+' 个模型',{'data-provider-summary':''}));
+    if(source.baseUrl)info.append(node('p',source.baseUrl,{class:'provider-address'}));row.append(info);
+    const modelDetails=node('details',null,{'data-provider-model-panel':source.provider}),modelSummary=node('summary','查看模型（'+sourceModels.length+'）');modelDetails.append(modelSummary);
+    modelDetails.addEventListener('toggle',()=>{if(modelDetails.open&&!modelDetails.querySelector(':scope > .provider-model-browser')){const browser=modelBrowser(sourceModels,source.baseUrl?'已配置':'内置目录',{'data-provider-model-list':source.provider});modelSummary.after(browser);if(source.discovery&&source.discovery.status!=='none'){const previous=node('button','查看上次服务发现结果',{type:'button'});previous.onclick=()=>renderDiscovery(source);modelDetails.append(previous);}}});
+    const edit=node('button',source.baseUrl?'编辑':source.type==='oauth'?'重新登录':'更新密钥',{type:'button','data-provider-edit':source.provider});
     edit.disabled=busy;
-    edit.onclick=()=>{startEdit(source);};
+    edit.onclick=()=>{if(busy)return;if(source.baseUrl){startEdit(source);return;}const section=source.type==='oauth'?loginSection:nativeSection,select=source.type==='oauth'?loginProvider:nativeKeyProvider;section.open=true;select.value=source.provider;select.dispatchEvent(new Event('change'));select.focus();};
     const discover=node('button','发现模型',{type:'button','data-provider-discover':source.provider});
     discover.disabled=busy;
     discover.onclick=()=>run(async()=>{
+     modelDetails.open=true;modelDetails.append(discoveryArea);
      discoveryArea.replaceChildren(node('p','正在向 '+source.provider+' 的模型列表接口发起有界请求…'));
-     try{const result=await call('settings.providers.discover',{provider:source.provider,expectedRevision:source.revision});renderDiscovery({...source,discovery:{status:result.status,fetchedAt:result.fetchedAt,models:result.models,error:result.error}});}
+     try{const result=await call('settings.providers.discover',{provider:source.provider,expectedRevision:source.revision});source.discovery={status:result.status,fetchedAt:result.fetchedAt,models:result.models,error:result.error};renderDiscovery(source);}
      catch(error){discoveryArea.replaceChildren();report(error);}
     });
     const remove=node('button','移除',{type:'button','data-ui-action':'danger','data-provider-remove':source.provider});
     remove.disabled=busy;
-    remove.onclick=()=>{remove.disabled=true;row.append(node('p','确认移除 '+source.provider+'？将禁用其私有凭据；仍有会话引用时会拒绝。'));const confirm=node('button','确认移除 '+source.provider,{type:'button','data-ui-action':'danger','data-provider-confirm-remove':source.provider});confirm.onclick=()=>run(async()=>{await call('settings.providers.remove',{provider:source.provider,confirm:source.provider});await refreshAfterChange();message.textContent='已移除源。';});const cancel=node('button','取消',{type:'button'});cancel.onclick=()=>refresh();row.append(confirm,cancel);};
-    row.append(edit,discover,remove);list.append(row);
-    if(source.discovery&&source.discovery.status!=='none')renderDiscovery(source);
+    remove.setAttribute('aria-expanded','false');remove.onclick=()=>requestRemoval(source,remove,row);
+    if(source.baseUrl)actions.append(edit,discover,remove);else actions.append(edit,remove);
+    row.append(actions,modelDetails);list.append(row);
+    if(pendingRemoval?.provider===source.provider){pendingRemoval.trigger=remove;remove.setAttribute('aria-expanded','true');row.append(pendingRemoval.box);}
    }
    const available=value.models??[];lastCatalog=available;catalogReady=available.length>0;storedDefaultsExist=Object.values(value.defaults??{}).some(entry=>entry?.model?.mode==='explicit');
    const defaults=value.defaults??{};
@@ -176,10 +255,10 @@ export function mountProviderSettings({invoke,providers=document.getElementById(
    const levelsFor=selector=>{const model=available.find(candidate=>candidate.selector===selector);return model?.thinking?.levels??null;};
    for(const [role,think]of Object.entries(thinkingSelects))renderThinkingChoices(think,defaults[role]?.thinking?.mode==='explicit'?defaults[role].thinking.level:'',levelsFor(selects[role].value));
    catalogMessage.textContent=catalogReady?`目录模型 ${available.length} 个（手动配置 ${available.filter(m=>m.catalogSource==='configured').length}／内置目录 ${available.filter(m=>m.catalogSource!=='configured').length}）。凭据已配置或服务列出都不代表推理授权，实际调用以服务端为准。`:value.sources?.length?'已配置账号或 API 源，但当前没有凭据已配置的目录模型。请检查授权或 API 配置后刷新；原设置未更改。':'尚无目录模型：请先登录账号或配置 API 源，再刷新模型列表。';
-   message.textContent=value.notice??'';renderSync(value.modelSync);if(value.login)renderLogin(value.login);
+   message.textContent='';renderSync(value.modelSync);if(value.login)renderLogin(value.login);
   }catch(e){catalogMessage.textContent=catalogReady?'模型目录刷新失败；现有目录和选择保留，仍可保存未变化的默认。请稍后刷新或检查 Pi 源配置。':'模型目录读取失败，暂无目录。已保存且未变化的选择仍可保存；新选择需刷新。';if(!catalogReady)for(const select of Object.values(selects))if(select.options.length===1&&!select.value)select.options[0].textContent='暂无目录模型，请刷新';report(e);}finally{refreshFlight=null;syncModelControls();}})();return refreshFlight;}
  async function refreshAfterChange(){await refreshFlight;return refresh(true);}
- form.addEventListener('submit',event=>{event.preventDefault();
+ form.addEventListener('submit',event=>{event.preventDefault();if(busy)return;
   const modelsList=parseModelLines(modelLines.value);
   if(!modelsList.length){message.textContent='请至少提供一个模型ID；可先用“发现模型”从服务端获取。';return;}
   const payload=editing?{operation:'update',provider:editing.provider,expectedRevision:editing.revision,baseUrl:baseUrlField.value,api:api.value,credential:key.value?{action:'replace',value:key.value}:{action:'keep',...(originConsentBox.checked&&consentBinding?{confirmNewOrigin:true}:{})},models:modelsList}
@@ -195,7 +274,7 @@ export function mountProviderSettings({invoke,providers=document.getElementById(
    clearEdit();
   });
  });
- draftDiscover.onclick=()=>{if(editing){message.textContent='编辑已有源请使用行内“发现模型”。';return;}
+ draftDiscover.onclick=()=>{if(busy)return;if(editing){message.textContent='编辑已有源请使用行内“发现模型”。';return;}apiSection.append(discoveryArea);
   run(async()=>{
    discoveryArea.replaceChildren(node('p','正在用表单密钥向模型列表接口发起有界请求；密钥仅此一次使用，不保存。'));
    try{
@@ -204,7 +283,7 @@ export function mountProviderSettings({invoke,providers=document.getElementById(
     const box=node('div',null,{'data-discovery-box':'draft'});
     box.append(node('h3','草稿发现 · '+(result.status==='succeeded'?'服务端返回以下模型':result.status==='unsupported'?'此地址不支持模型列表查询':'列表请求失败')));
     if(result.error?.code)box.append(node('p','错误码 '+result.error.code+'；未回传服务端原文。'));
-    if((result.models??[]).length){const ul=node('ul',null,{'data-discovery-models':'draft'});for(const row of result.models)ul.append(node('li',row.id+(row.name&&row.name!==row.id?' · '+row.name:'')+' · 服务返回，不代表推理授权'));box.append(ul,node('p','确认后仍需保存源才会进入 Pi 私有目录。'));}
+    if((result.models??[]).length)box.append(modelBrowser(result.models,'草稿服务发现',{'data-discovery-models':'draft'}),node('p','仅证明可列出，不代表推理授权；确认后仍需保存源才会进入私有目录。'));
     discoveryArea.append(box);
    }catch(error){discoveryArea.replaceChildren();report(error);}
   });
@@ -229,9 +308,9 @@ export function mountProviderSettings({invoke,providers=document.getElementById(
   for(const role of Object.keys(selects))defaults[role]={model:selects[role].value?{mode:'explicit',selector:selects[role].value}:{mode:'native-default'},thinking:thinkingSelects[role].value?{mode:'explicit',level:thinkingSelects[role].value}:{mode:'native-default'}};
   for(const select of Object.values(selects))select.dataset.dirty='true';
   modelMessage.textContent='正在保存默认模型…';
-  run(async()=>{const result=await call('settings.models.save',defaults);for(const select of Object.values(selects)){flushModelChoices(select);delete select.dataset.dirty;}for(const think of Object.values(thinkingSelects))delete think.dataset.dirty;renderSync(result?.modelSync,{saved:true});});
+  run(async()=>{const result=await call('settings.models.save',defaults);for(const [role,select]of Object.entries(selects)){flushModelChoices(select,{model:defaults[role].model.mode==='explicit'?defaults[role].model.selector:'',thinking:defaults[role].thinking.mode==='explicit'?defaults[role].thinking.level:''});delete select.dataset.dirty;}for(const think of Object.values(thinkingSelects))delete think.dataset.dirty;renderSync(result?.modelSync,{saved:true});});
  });
- refreshButton.onclick=()=>{if(!busy)return Promise.all([refreshLoginProviders(),refresh()]);};
- modelRefresh.onclick=()=>refresh();
- return {refresh,refreshProviders:()=>Promise.all([refreshLoginProviders(),refresh()])};
+refreshButton.onclick=()=>{if(!busy)return Promise.all([refreshLoginProviders(),refreshNativeKeyProviders(),refresh()]);};
+modelRefresh.onclick=()=>refresh();
+return {refresh,refreshProviders:()=>Promise.all([refreshLoginProviders(),refreshNativeKeyProviders(),refresh()])};
 }

@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
-import {safeBytes} from './execution-workspace.mjs';
+import {safeBytes} from './file-stream.mjs';
 const digest=bytes=>createHash('sha256').update(bytes).digest('hex');
 
 // Root-linked topics are the shared memory dependency set. Stat identities are

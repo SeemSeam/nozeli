@@ -29,8 +29,17 @@ try{
  await page.waitForSelector('[data-login-provider] option[value="openai-codex"]');
  const supported=(await page.evaluate(()=>nozeli.invoke('settings.login.providers',{}))).value;
  assert(supported.some(p=>p.id==='openai-codex'));assert.equal(await page.$eval('[data-provider-login-form] button',e=>e.disabled),true);
+ if(!await page.$eval('[data-provider-login-section]',node=>node.open))await page.click('[data-provider-login-section] > summary');
  await page.select('[data-login-provider]','openai-codex');assert.equal(await page.$eval('[data-provider-login-form] button',e=>e.disabled),false);
  assert.equal(await page.$eval('[data-login-provider]',e=>e.tagName),'SELECT');assert.equal(await page.$$eval('[data-provider-login-form] input[name="provider"]',e=>e.length),0);checks++;
+ assert(supported.some(provider=>provider.id==='zai'),'Z.AI/ZCode login uses the native provider inventory');
+ await page.select('[data-login-provider]','zai');await page.click('[data-provider-login-form] button[type="submit"]');
+ await page.waitForFunction(()=>document.querySelector('[data-login-output]')?.textContent.includes('nozeli'));
+ assert.match(await page.$eval('[data-login-output]',node=>node.textContent),/创建.*复用|创建\/复用/);
+ await page.screenshot({path:path.join(out,'zai-login-consent.png')});
+ await page.locator('[data-login-cancel]').click();await page.waitForFunction(()=>document.querySelector('[data-provider-login]').textContent.includes('已取消'));checks++;
+ const credentials=await page.evaluate(()=>nozeli.invoke('settings.providers.status',{}));assert.equal(credentials.value.sources.some(source=>source.provider==='zai'&&source.credential?.configured),false,'cancel before consent never provisions a credential');checks++;
+ if(!await page.$eval('[data-provider-api-section]',node=>node.open))await page.click('[data-provider-api-section] > summary');
  for(const [name,value]of Object.entries({provider:'settings-smoke',baseUrl:'http://127.0.0.1:9/v1',models:'synthetic-local',key:'synthetic-settings-key'}))await page.type('[data-provider-api-form] [name="'+name+'"]',value);
  await page.click('[data-provider-api-form] button[type="submit"]');await page.waitForSelector('[data-provider-row="settings-smoke"]');
  assert.equal(await page.$eval('[data-provider-api-form] [name="key"]',e=>e.value),'');checks++;
@@ -41,7 +50,7 @@ try{
  for(const role of ['frontdesk','orchestrator','worker'])await page.select('[data-default-role="'+role+'"]','settings-smoke/synthetic-local');
  await page.click('[data-role-model-form] button[type="submit"]');await page.waitForFunction(()=>document.querySelector('[data-model-status]').textContent.includes('已保存'));checks++;
  await page.click('[data-settings-section="settings-provider"]');await page.locator('[data-provider-remove="settings-smoke"]').click();await page.locator('[data-provider-confirm-remove="settings-smoke"]').click();
- await page.waitForFunction(()=>document.querySelector('[data-provider-status]').textContent.includes('引用'));assert(await page.$('[data-provider-row="settings-smoke"]'));checks++;
+ await page.waitForFunction(()=>document.querySelector('[data-provider-removal-error]')?.textContent.trim()&&!document.querySelector('[data-provider-confirm-remove="settings-smoke"]').disabled);assert(await page.$('[data-provider-row="settings-smoke"]'));assert.equal(await page.$$eval('[data-provider-removal]',nodes=>nodes.length),1);checks++;
  await page.click('[data-settings-section="settings-models"]');await page.waitForFunction(()=>!document.querySelector('[data-role-model-form] button[type="submit"]').disabled);for(const role of ['frontdesk','orchestrator','worker'])await page.select('[data-default-role="'+role+'"]','');
  await page.click('[data-role-model-form] button[type="submit"]');await page.waitForFunction(async()=>{const r=await nozeli.invoke('settings.providers.status',{});return Object.values(r.value.defaults).every(v=>v?.model?.mode!=='explicit'&&v?.thinking?.mode!=='explicit');});
  await page.click('[data-settings-section="settings-provider"]');await page.waitForFunction(()=>!document.querySelector('[data-model-refresh]').disabled);await page.locator('[data-provider-remove="settings-smoke"]').click();await page.locator('[data-provider-confirm-remove="settings-smoke"]').click();await page.waitForFunction(()=>!document.querySelector('[data-provider-row="settings-smoke"]'));checks++;

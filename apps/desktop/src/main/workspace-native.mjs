@@ -5,11 +5,12 @@ import {WorkspaceLayoutStore} from './workspace-layout-store.mjs';
 import {mergeDrawingMaterials} from '../domain/drawing-delivery.mjs';
 import {normalizeOfficeRecovery} from './office-recovery.mjs';
 import {listManagedPending,readManagedObject} from '../agents/managed/managed-storage.mjs';
+import {ProjectTerminalHost} from './project-terminal.mjs';
 import {GuidedDemoControls} from './guided-demo-controls.mjs';
 
 const fail = (code, message = code) => Object.assign(new Error(message), { code });
 const writes = new Set(['file.save','file.draft','file.retain','sheet.save','sheet.recover','word.save','word.import','document.image.put','annotation.add','annotation.update','annotation.remove','annotation.drawing','tag.put','tag.view','tag.reanchor','tag.material']);
-const surfaceOps = /^(file\.|document\.|annotation\.|tag\.|material\.|word\.|sheet\.|ppt\.|formatter\.|lsp\.(sync|request|status)$|tex\.|managed\.|report\.|project\.(open|list|children|search)$|agents\.(messages|reports)$|config\.status$|settings\.appearance\.read$|links\.openExternal$|state\.(read|write)$|view\.authorship$|session\.(flushed|requestClose|capture|resize|quitChoice)$)/;
+const surfaceOps = /^(file\.|document\.|annotation\.|tag\.|material\.|word\.|sheet\.|ppt\.|formatter\.|lsp\.(sync|request|status)$|tex\.|managed\.|report\.|project\.(open|list|children|search)$|agents\.(messages|reports)$|config\.status$|settings\.appearance\.read$|links\.openExternal$|project-terminal\.|state\.(read|write)$|view\.authorship$|session\.(flushed|requestClose|capture|resize|quitChoice)$)/;
 
 const topology=layout=>JSON.stringify({mainRoot:layout.mainRoot,detached:layout.detached.map(({id,root})=>({id,root})),views:Object.values(layout.views).map(({id,kind,resourceId,relPath})=>({id,kind,resourceId,relPath}))});
 export function restoreBounds(bounds, screen) {
@@ -28,6 +29,7 @@ export class WorkspaceNative {
     this.buffers=new Map();this.reviewBarriers=new Set();
     this.namedLayouts=new WorkspaceLayoutStore({storage:host.storage});
     this.lifecycle = new Map();
+    this.projectTerminals = new ProjectTerminalHost({workspace:this,host,onError:error=>this.onError(error)});
     this.preferences = { contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true, allowRunningInsecureContent: false, backgroundThrottling: false, preload };
     this.demoControls=new GuidedDemoControls(this);
   }
@@ -75,7 +77,7 @@ export class WorkspaceNative {
   async conversationState(projectId,state){
     if(this.guidedDemo?.isDemo(projectId))return;
     const owner=[...this.surfaces.values()].find(s=>s.projectId===projectId&&s.kind==='conversation'&&s.conversationAdmitted&&!s.dead);
-    if(!owner||owner.transferring||this.conversationClosing?.has(projectId))return;
+    if(!owner||owner.transferring)return;
     const root=this.windows.get(owner.windowId);
     // Main-window cached surfaces share a shell, unlike detached roots. A
     // background project's session event must not close content through the
@@ -84,13 +86,13 @@ export class WorkspaceNative {
     if(state?.configuringTargets?.includes(owner.conversationTarget||'frontdesk'))return;
     const agent=state?.agents?.find(a=>a.target===(owner.conversationTarget||'frontdesk'));
     if(agent?.starting)return;
-    if(agent&&!agent.closed&&!agent.restarting&&['ready','idle','prompt-inflight','reloading','compacting'].includes(agent.phase))return;
-    this.conversationClosing??=new Set();this.conversationClosing.add(projectId);
-    const error={code:'AGENT_DISCONNECTED',message:'当前会话连接已中断；草稿保留，未发送。请重试连接。'};
-    owner.conversationBlocked=true;owner.view.setVisible(false);owner.wc.send('nozeli:workspace-control',{type:'conversation-unavailable',projectId,error});
-    try{const root=this.windows.get(owner.windowId);if(root&&!root.dead){await this.command(root,{projectId,expectedRevision:(await this.layout(projectId)).revision,requestKey:randomUUID(),command:{type:'closeContent',viewId:owner.viewId}});}}
-    catch(failure){this.onError(failure);}
-    finally{this.conversationClosing.delete(projectId);if((!this.shell||this.shell.dead)&&this.restoreShell)await this.restoreShell();this.broadcast('nozeli:workspace-control',{type:'conversation-unavailable',projectId,error},projectId);}
+    if(agent&&!agent.closed&&!agent.restarting&&['ready','idle','prompt-inflight','reloading','compacting'].includes(agent.phase)){owner.conversationDisconnected=false;return;}
+    // Provider liveness gates execution, not access to admitted history,
+    // drafts or local diagnostics. Never evict the renderer on a turn error.
+    if(owner.conversationDisconnected)return;
+    owner.conversationDisconnected=true;
+    const error={code:'AGENT_DISCONNECTED',message:'当前会话连接已中断；历史、草稿与诊断保留。请重试连接后发送。'};
+    owner.wc.send('nozeli:workspace-control',{type:'conversation-unavailable',projectId,error,retained:true});
   }
   register(wc, scope) {
     const record = { ...scope, wc, generation: 0, recoveryOwner:randomUUID(), ready: false, contentFailed: false, initError: null, dead: false };
@@ -98,7 +100,17 @@ export class WorkspaceNative {
     wc.on('before-input-event',(_event,input)=>{if(!['shell','demo-controls'].includes(record.role)&&input.type==='keyDown')void this.guidedDemo?.pauseProject(record.projectId,'用户操作了真实内容面，演示已暂停。').catch(this.onError);});
     wc.on('focus',()=>{if(record.role==='surface'){const root=this.windows.get(record.windowId);if(root&&!root.dead)root.wc.send('nozeli:workspace-control',{type:'surface-focus',viewId:record.viewId,projectId:record.projectId});}});
     wc.on('before-input-event',(event,input)=>{if(record.role!=='surface'||input.type!=='keyDown'||input.isComposing)return;const numbered=(input.control||input.meta)&&!input.alt&&!input.shift&&/^[1-9]$/.test(input.key),cycle=input.key==='F6'&&!input.control&&!input.meta&&!input.alt;if(!numbered&&!cycle)return;const root=this.windows.get(record.windowId);if(!root||root.dead||root.projectId!==record.projectId)return;event.preventDefault();root.wc.send('nozeli:workspace-control',{type:'group-focus',projectId:record.projectId,viewId:record.viewId,...(numbered?{index:Number(input.key)-1}:{direction:input.shift?-1:1})});});
-    wc.on('before-input-event',(event,input)=>{if(record.role!=='surface'||record.dead||record.transferring||input.type!=='keyDown'||input.isComposing)return;const quick=(input.control||input.meta)&&!input.alt&&!input.shift&&input.key.toLowerCase()==='p';if(!quick)return;const root=this.windows.get(record.windowId);if(!root||root.dead||!record.projectId||root.projectId!==record.projectId)return;event.preventDefault();root.wc.focus();root.wc.send('nozeli:workspace-control',{type:'quick-open',projectId:record.projectId,viewId:record.viewId});});
+    wc.on('before-input-event',(event,input)=>{if(record.role!=='surface'||record.dead||record.transferring||input.type==='keyDown'&&input.isComposing)return;const quick=(input.control||input.meta)&&!input.alt&&!input.shift&&input.key.toLowerCase()==='p';if(!quick||record.kind==='project-terminal')return;const root=this.windows.get(record.windowId);if(!root||root.dead||!record.projectId||root.projectId!==record.projectId)return;event.preventDefault();root.wc.focus();root.wc.send('nozeli:workspace-control',{type:'quick-open',projectId:record.projectId,viewId:record.viewId});});
+    // Project terminal owns its keyboard: shell history keeps Ctrl/Cmd+P, and
+    // paste is the focused surface's native clipboard paste (no host-side
+    // clipboard read; xterm receives the paste event).
+    wc.on('before-input-event',(event,input)=>{
+      if(record.role!=='surface'||record.kind!=='project-terminal'||record.dead||input.type!=='keyDown'||input.isComposing)return;
+      const paste=input.key?.toLowerCase()==='v'&&!input.alt&&((input.control&&input.shift&&!input.meta)||(input.meta&&!input.control&&!input.shift));
+      if(!paste)return;
+      event.preventDefault();
+      try{record.wc.paste();}catch{}
+    });
     wc.setWindowOpenHandler?.(() => ({ action: 'deny' }));
     wc.on('will-navigate', (event, url) => { if (url !== (record.role==='demo-controls'?this.origin+'guided-demo-controls.html':this.origin)) event.preventDefault(); });
     wc.on('will-attach-webview', event => event.preventDefault());
@@ -191,6 +203,14 @@ export class WorkspaceNative {
     if (payload.projectId && payload.projectId !== r.projectId && !(r.role === 'shell' && (['demo.state','demo.exit','managed.status','managed.attention.ack','workspace.project','workspace.closeProject','workspace.recovery.object','workspace.recovery.settle','project.open','project.remove','project.retry','project.lifecycle.preview','project.lifecycle.reconcile'].includes(op)||op==='demo.transition'&&payload.action==='stop'))) throw fail('PROJECT_SCOPE_DENIED');
     if(op.startsWith('demo.')){if(op==='demo.result'){if(!['surface','shell','detached'].includes(r.role))throw fail('IPC_DENIED');}else if(!['demo.state','demo.send','demo.interrupt'].includes(op)&&r.role!=='shell')throw fail('IPC_DENIED');return r;}
     if(r.role==='surface'&&r.kind==='terminal'&&op.startsWith('managed.')&&(op!=='managed.terminal.screen'||payload.target!==this.layouts.get(r.projectId)?.views[r.viewId]?.viewState?.workId))throw fail('IPC_DENIED');
+    if(op.startsWith('project-terminal.')){
+      // Rail-only registration; every runtime op belongs to the exact
+      // project-terminal surface. Web/report/other views never reach a shell.
+      if(op==='project-terminal.open'){if(r.role!=='shell')throw fail('IPC_DENIED');return r;}
+      if(r.role!=='surface'||r.kind!=='project-terminal'||!['project-terminal.attach','project-terminal.read','project-terminal.write','project-terminal.resize','project-terminal.stop'].includes(op))throw fail('IPC_DENIED');
+      if(this.lifecycle.has(r.projectId)&&!['project-terminal.read','project-terminal.stop'].includes(op))throw fail('PROJECT_LIFECYCLE_ACTIVE','项目正在保留并关闭，请等待操作结果。');
+      return r;
+    }
     if(r.role==='surface'&&r.kind==='web'&&op.startsWith('web.'))return r;
     if (this.lifecycle.has(r.projectId) && !this.lifecycleFlushOwner(r,payload.flushRequestId,op) && (writes.has(op) || op === 'managed.send' || ['managed.session.command','managed.attention.respond','managed.attention.draft.write','managed.review.save','managed.review.instruction.save','managed.review.continue','managed.review.accept','workspace.review.decide'].includes(op) || op === 'workspace.project' || op === 'workspace.command'&&payload.command?.type!=='restoreViewState')) throw fail('PROJECT_LIFECYCLE_ACTIVE', '项目正在保留并关闭，请等待操作结果。');
     if(op==='report.copySource'&&!(r.role==='shell'||r.role==='surface'&&['report','history'].includes(r.kind)))throw fail('IPC_DENIED');
@@ -487,6 +507,10 @@ export class WorkspaceNative {
         if (failures.length) throw Object.assign(fail('PROJECT_FLUSH_FAILED', '部分内容未能保存到本机，项目保持打开。'), {failures});
         await this.host.settled();
         await this.host.storage.putRecovery(projectId,key,{action:'close-project',projectId,operationId,input,phase:'captured',receipts:results.map((result,index)=>({owner:records[index]?.viewId??'shell',result:result.value}))});
+        // Explicit project close reclaims the owned interactive shell before
+        // its surface goes away; cleanup failures surface honestly without
+        // stranding the close itself.
+        await this.projectTerminals.stopProject(projectId,'project-close').catch(error=>{this.onError(error);});
         for (const record of records) this.destroySurface(record);
         for (const [id, root] of this.windows) if (id !== 'main' && root.projectId === projectId) { root.closing = true; root.win.destroy(); this.windows.delete(id); }
         if (shell) { this.isolatedPreview?.closeScope(shell); shell.projectId = null; shell.wc.send('nozeli:workspace-control', {type:'project-closed', projectId, operationId}); }
@@ -807,6 +831,7 @@ export class WorkspaceNative {
       }
       for(const [surface,state]of pendingStates)if(surface.pendingViewState===state)surface.pendingViewState=null;
       this.layouts.set(layout.projectId, next);
+      this.projectTerminals.layoutChanged(next);
       for(const move of staged){
         const s=move.surface;s.win=move.destination;s.windowId=move.destinationWindowId;
         if(s.kind==='document'&&s.relPath){const lease=this.leases.get(this.resource(s.projectId,s.relPath,s.documentSource));if(lease?.viewId===s.viewId)lease.windowId=s.windowId;}
@@ -1052,7 +1077,7 @@ export class WorkspaceNative {
         const valid = rect && ['x','y','width','height'].every(k => Number.isFinite(rect[k])) && rect.x >= 0 && rect.y >= 0 && rect.width > 0 && rect.height > 0 && rect.x + rect.width <= width + 1 && rect.y + rect.height <= height + 1;
         const occluded=valid&&Array.isArray(p.overlayRects)&&p.overlayRects.map(nativeRect).some(b=>b&&['x','y','width','height'].every(k=>Number.isFinite(b[k]))&&b.width>0&&b.height>0&&b.x<rect.x+rect.width&&b.x+b.width>rect.x&&b.y<rect.y+rect.height&&b.y+b.height>rect.y);
         if (valid) surface.view.setBounds(Object.fromEntries(Object.entries(rect).map(([k,v]) => [k,Math.round(v)])));
-        surface.view.setVisible(!!valid && !surface.conversationBlocked && !p.overlay && !occluded && (surface.ready || surface.contentFailed) && ![...this.drags.values()].some(d=>d.projectId===r.projectId&&!(d.source.role==='detached'&&d.source.windowId===r.windowId)));
+        surface.view.setVisible(!!valid && !p.overlay && !occluded && (surface.ready || surface.contentFailed) && ![...this.drags.values()].some(d=>d.projectId===r.projectId&&!(d.source.role==='detached'&&d.source.windowId===r.windowId)));
         for(const slot of this.isolatedPreview?.slots.values()??[])if(slot.scope===surface)this.isolatedPreview.bounds(slot,slot.bounds);
         this.onlineBrowser?.refreshScope(surface);
         surface.returnFocus?.();
@@ -1105,7 +1130,7 @@ export class WorkspaceNative {
         const current=await this.layout(projectId);
         const conversation=Object.values(current.views).find(v=>v.kind==='conversation');
         if(conversation?.viewState?.draftOnly){conversation.viewState={...conversation.viewState,draftOnly:false};await this.persist(current);const live=this.surfaces.get(conversation.id);if(live)live.wc.send('nozeli:workspace-control',{type:'drawing-connect',projectId});}
-        if(conversation){const live=this.surfaces.get(conversation.id);if(live){live.conversationAdmitted=true;live.conversationBlocked=false;live.conversationTarget='frontdesk';}}
+        if(conversation){const live=this.surfaces.get(conversation.id);if(live){live.conversationAdmitted=true;live.conversationDisconnected=false;live.conversationTarget='frontdesk';}}
         if(p.action==='prepare'){if(this.guidedDemo?.isDemo(projectId))return {projectId,target:'frontdesk',ready:true,demo:true,source:'demo-fixture'};r.drawingConversationProject=projectId;return {projectId,target:'frontdesk',ready:true};}
         const root=this.windows.get(r.windowId)||this.windows.get('main');if(!root)throw fail('NO_ROOT');
         const localGroups=layoutGroups(layout,root.windowId),source=r.role==='surface'?findView(layout,r.viewId)?.group:null;
@@ -1115,7 +1140,7 @@ export class WorkspaceNative {
         const action=conversation?(p.groupId&&found&&found.group.id!==target.id?{type:'move',viewId:conversation.id,targetGroupId:target.id}:{type:'activate',viewId:conversation.id,groupId:target.id}):{type:'open',groupId:target.id,view:{kind:'conversation'}};
         const result=await this.command(root,{projectId:r.projectId,expectedRevision:layout.revision,requestKey:randomUUID(),command:action});
         const owner=this.surfaces.get(Object.values(result.layout.views).find(v=>v.kind==='conversation').id);if(!owner)throw fail('NO_ACTIVE_VIEW');
-        owner.conversationAdmitted=true;owner.conversationBlocked=false;owner.conversationTarget=p.target||'frontdesk';
+        owner.conversationAdmitted=true;owner.conversationDisconnected=false;owner.conversationTarget=p.target||'frontdesk';
         if(owner.ready)owner.wc.send('nozeli:workspace-control',p);else(owner.pendingControls??=[]).push(p);owner.win.show();owner.win.focus();return {};
       }
       if(r.role==='surface'){

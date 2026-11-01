@@ -26,3 +26,40 @@ test('runtime options are read-only and busy commands do not dispatch',async()=>
  busy=false;ui.button.click();await settle();assert.equal(compact.disabled,false);
  ctx=owner('p','replacement');compact.click();await settle();assert.equal(calls.filter(c=>c.op==='session.command').length,0);
 });
+
+const allText=node=>[node.textContent||'',...node.children.map(allText)].join('\n');
+const toggle=(node,open)=>{node.open=open;for(const listener of node.listeners.toggle||[])listener();};
+const contextFixture=()=>({generatedAt:'2026-01-01T00:00:00Z',session:{threadId:'synthetic-thread',ownerId:'owner',contextEpoch:'epoch-1'},lastRequest:{jobId:'synthetic-job',type:'frontdesk',status:'failed',userText:{exact:'  原文\n\n保持空白  ',chars:13,digest:'user-digest'},materials:[{kind:'tag-material',relPath:'synthetic.pdf',locationLabel:'第 2 页',version:'v2',digest:'material-digest',mode:'full',changed:true,notePresent:true}],hostAdded:{chars:30,sections:[{origin:'explicit-material',chars:30}]},projection:{label:'当前 Work',version:'scope-2',bytes:32,perRequestLimitBytes:4096,exact:'Work synthetic / scope 2'},evidence:{stage:'native-record-confirmed',nativeEntry:{id:'entry-1',contentDigest:'entry-digest'},nativeContext:{captured:false},providerObserved:false,note:'已记录后回合失败'},omissions:[{reason:'可选内容超过预算',chars:50}]},budget:{run:{usedBytes:30,limitBytes:100},epoch:{usedBytes:60,limitBytes:200,contextEpoch:'epoch-1'},receiptReserveBytes:10},provenance:{sources:[{identity:'source-1',version:'v2',digest:'source-digest',kind:'file'}],toolReads:[{source:'source-1',version:'v2',offset:0,chars:10}]},diagnostics:{providerFailures:[{code:'REJECTED',category:'content-rejection',count:5,lastAt:'2026-01-01T00:00:00Z'}]},secret:'must-not-render'});
+test('context disclosure renders only local allowlisted evidence without extra calls',async()=>{
+ environment();const calls=[],details=contextFixture();
+ const ui=mountSessionRuntimeControls({current:()=>owner(),call:async(op)=>{calls.push(op);return {available:true,ownerId:'owner',contextDetails:details};}});
+ ui.update(visible);ui.button.click();await settle();
+ const dialog=document.body.children[0],disclosure=dialog.children.find(node=>node.tag==='details'),body=disclosure.children[1];
+ assert.equal(disclosure.open,false);assert.equal(body.children.length,0);
+ toggle(disclosure,true);const rendered=allText(body);
+ for(const expected of ['  原文\n\n保持空白  ','material-digest','entry-digest','scope-2','可选内容超过预算','REJECTED','content-rejection','未提供捕获证据','未确认收到','字节不等于 token','source-digest'])assert.ok(rendered.includes(expected),expected);
+ assert.ok(!rendered.includes('must-not-render'));assert.ok(!rendered.includes('[object Object]'));
+ for(let i=0;i<3;i++){toggle(disclosure,false);toggle(disclosure,true);}
+ assert.deepEqual(calls,['session.options']);
+});
+test('pending admission, absent body and captured native request remain distinct from provider receipt',async()=>{
+ environment();const details=contextFixture();details.lastRequest.userText.exact=null;details.lastRequest.evidence={stage:'submitted',nativeContext:{captured:true,note:'本地 hook 捕获'},providerObserved:false};
+ const ui=mountSessionRuntimeControls({current:()=>owner(),call:async()=>({available:true,contextDetails:details})});
+ ui.button.click();await settle();const disclosure=document.body.children[0].children.find(node=>node.tag==='details');toggle(disclosure,true);
+ const rendered=allText(disclosure);for(const expected of ['已提交（未证明准入）','无可读取正文','已有本地 native context hook 捕获','未确认收到'])assert.ok(rendered.includes(expected),expected);
+});
+test('late snapshots cannot repopulate context after owner changes',async()=>{
+ environment();let ctx=owner(),resolve;
+ const ui=mountSessionRuntimeControls({current:()=>ctx,call:()=>new Promise(done=>{resolve=done;})});
+ ui.button.click();const disclosure=document.body.children[0].children.find(node=>node.tag==='details');toggle(disclosure,true);
+ ctx=owner('other-project','other-owner');ui.update(visible);resolve({contextDetails:contextFixture()});await settle();
+ assert.equal(disclosure.open,false);assert.equal(disclosure.children[1].children.length,0);
+ toggle(disclosure,true);assert.ok(!allText(disclosure).includes('原文\n\n保持空白'));
+});
+test('failed snapshot refresh clears old context without starting a diagnostic request',async()=>{
+ environment();let fail=false;const calls=[];
+ const ui=mountSessionRuntimeControls({current:()=>owner(),call:async(op)=>{calls.push(op);if(fail)throw Error('local read failed');return {contextDetails:contextFixture()};}});
+ ui.button.click();await settle();const dialog=document.body.children[0],disclosure=dialog.children.find(node=>node.tag==='details');toggle(disclosure,true);fail=true;
+ dialog.children.find(node=>node.className==='session-runtime-actions').children.find(node=>node.textContent==='刷新状态与诊断').click();await settle();
+ assert.equal(disclosure.children[1].children.length,0);assert.deepEqual(calls,['session.options','session.options']);assert.ok(allText(dialog).includes('读取失败：local read failed'));
+});

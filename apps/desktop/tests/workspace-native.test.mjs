@@ -560,12 +560,15 @@ test('conversation admission failure leaves the current document intact and crea
  await assert.rejects(native.invoke(root,'workspace.control',{type:'conversation-action',target:'frontdesk'}),{code:'AGENT_NOT_READY'});
  assert.deepEqual(native.layouts.get('p'),l);assert.equal(native.surfaces.size,1);assert.equal(native.surfaces.get(original.viewId),original);assert(root.wc.sent.some(e=>e.payload.type==='conversation-unavailable'));
 });
-test('a disconnected live conversation collapses without deleting its draft view or replaying input',async t=>{
- const {native,root}=await fixture(t);native.ensureConversation=async()=>{};let l=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'document',relPath:'return.txt'}});const document=l.mainRoot.activeViewId;
- l=reduceLayout(l,{type:'open',view:{kind:'conversation',viewState:{draft:'keep me',messages:['history']}}});native.layouts.set('p',l);await native.reconcile(l);const chat=[...native.surfaces.values()].find(s=>s.kind==='conversation');receipt(native,chat);const metadata=structuredClone(l.views[chat.viewId]);
- await native.conversationState('p',{agents:[{target:'frontdesk',starting:true,closed:true,phase:'constructed'}]});assert.equal(native.surfaces.get(chat.viewId),chat);assert.equal(native.layouts.get('p').mainRoot.activeViewId,chat.viewId);
- await native.conversationState('p',{agents:[{target:'frontdesk',closed:true,phase:'closed'}]});
- const next=native.layouts.get('p');assert.equal(next.mainRoot.activeViewId,document);assert.deepEqual(next.views[chat.viewId],metadata);assert.equal(native.surfaces.has(chat.viewId),false);assert(root.wc.sent.some(e=>e.payload.type==='conversation-unavailable'));
+test('a disconnected admitted conversation retains its renderer, history and draft without replay',async t=>{
+ const {native}=await fixture(t);native.ensureConversation=async()=>{};
+ const layout=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'conversation',viewState:{draft:'keep me',messages:['history']}}});native.layouts.set('p',layout);await native.reconcile(layout);
+ const chat=[...native.surfaces.values()].find(s=>s.kind==='conversation');receipt(native,chat);const metadata=structuredClone(layout.views[chat.viewId]);
+ native.command=()=>assert.fail('provider disconnection must not close admitted content');
+ for(let i=0;i<2;i++)await native.conversationState('p',{agents:[{target:'frontdesk',closed:true,phase:'closed'}]});
+ assert.equal(native.surfaces.get(chat.viewId),chat);assert.equal(chat.dead,false);assert.equal(native.layouts.get('p').mainRoot.activeViewId,chat.viewId);assert.deepEqual(native.layouts.get('p').views[chat.viewId],metadata);
+ const notices=chat.wc.sent.filter(event=>event.payload?.type==='conversation-unavailable');assert.equal(notices.length,1);assert.equal(notices[0].payload.retained,true);assert.equal(chat.conversationBlocked,undefined);
+ await native.conversationState('p',{agents:[{target:'frontdesk',closed:false,phase:'idle'}]});assert.equal(chat.conversationDisconnected,false);
 });
 
 test('context reload and compaction retain the same native conversation and unsent draft',async t=>{
@@ -787,4 +790,25 @@ test('website detach and dock require no document path and retain the live owner
  next=await native.command(root,{projectId:'p',expectedRevision:next.layout.revision,requestKey:'web-dock',command:{type:'dock',windowId}});
  assert.equal(surface.windowId,'main');assert.equal(surface.wc,wc);assert.equal(surface.view,view);
  assert(root.win.children.includes(view));assert.equal(next.layout.detached.length,0);
+});
+test('project-terminal ops bind rail registration to the shell and runtime to the exact surface',async t=>{
+ const {native,root}=await fixture(t);
+ const surface=native.register(new Contents(),{role:'surface',projectId:'p',windowId:'main',viewId:'term-view',kind:'project-terminal'});
+ const documentSurface=native.register(new Contents(),{role:'surface',projectId:'p',windowId:'main',viewId:'doc-view',kind:'document'});
+ const shellEvent={sender:root.wc,senderFrame:root.wc.mainFrame};
+ const surfaceEvent={sender:surface.wc,senderFrame:surface.wc.mainFrame};
+ const documentEvent={sender:documentSurface.wc,senderFrame:documentSurface.wc.mainFrame};
+ assert.equal(native.authorize(shellEvent,'project-terminal.open',{projectId:'p'}),root);
+ assert.throws(()=>native.authorize(surfaceEvent,'project-terminal.open',{projectId:'p'}),{code:'IPC_DENIED'},'only the rail opens a shell');
+ for(const op of ['project-terminal.attach','project-terminal.read','project-terminal.write','project-terminal.resize','project-terminal.stop'])assert.equal(native.authorize(surfaceEvent,op,{projectId:'p',viewId:'term-view'}),surface,op+' belongs to the exact terminal surface');
+ for(const op of ['project-terminal.attach','project-terminal.write','project-terminal.read'])assert.throws(()=>native.authorize(documentEvent,op,{projectId:'p',viewId:'doc-view'}),{code:'IPC_DENIED'},op+' must not reach documents');
+ assert.throws(()=>native.authorize(surfaceEvent,'project-terminal.attach',{projectId:'foreign',viewId:'term-view'}),{code:'PROJECT_SCOPE_DENIED'});
+ assert.throws(()=>native.authorize(shellEvent,'project-terminal.attach',{projectId:'p'}),{code:'IPC_DENIED'});
+ native.lifecycle.set('p',{operationId:'op'});
+ assert.equal(native.authorize(surfaceEvent,'project-terminal.read',{projectId:'p',viewId:'term-view'}),surface,'state stays readable while closing');
+ assert.equal(native.authorize(surfaceEvent,'project-terminal.stop',{projectId:'p',viewId:'term-view'}),surface,'cleanup stays reachable while closing');
+ assert.throws(()=>native.authorize(surfaceEvent,'project-terminal.write',{projectId:'p',viewId:'term-view'}),{code:'PROJECT_LIFECYCLE_ACTIVE'});
+ assert.equal(native.authorize(shellEvent,'project-terminal.open',{projectId:'p'}),root,'open admission stays with the rail; the close gate lives in the host service');
+ native.lifecycle.delete('p');
+ assert.throws(()=>native.authorize(surfaceEvent,'project-terminal.bogus',{projectId:'p',viewId:'term-view'}),{code:'IPC_DENIED'});
 });

@@ -1,0 +1,348 @@
+{
+  "schema": 1,
+  "artifact": "nozeli-platform-inventory",
+  "generatedAt": "2026-10-31T19:20:00+08:00",
+  "owner": "phase1 integration",
+  "source": {
+    "tree": "/home/bfly/yunwei/nozeli_git (main)",
+    "scope": "apps/desktop/src, apps/desktop/tools, apps/desktop/tests (names only), .github/workflows/ci.yml, integrations/pi/src/launch.mjs",
+    "method": "exhaustive grep over process.platform, /proc, signals, kill, fsync/sync, O_NOFOLLOW/O_DIRECTORY, spawn/detached, symlink/rename, dialog/clipboard/native, updater/packaging; entries cite module+function, line numbers drift with concurrent phase1 edits; cross-checked with PlatformProcessBoundary slice inventory and Main's reviewer completion list"
+  },
+  "authoritativeMatrix": "apps/desktop/src/platform/platform-capabilities.mjs (CAPABILITY_SCHEMA=1) — statuses there are the contract; this file adds call-site detail. implementationCoverage() reports DECLARED coverage only (complete ≠ ready); readiness verdicts require executed probe evidence.",
+  "sliceInventories": [
+    "docs/plantree/plans/001-reader-product/topics/platform-process-boundary-inventory.json (PlatformProcessBoundary: adapters, phase2 signatures, caller migrations, tests)"
+  ],
+  "phasePolicy": "Per Main: shared I/O ROUTING onto contracts is phase1; only native per-platform implementation/verification is phase2. FROZEN STATE: all reviewed plain atomic writers are routed onto the shared persistence contract (landed by Main + PlatformProcessBoundary); custom-transaction publications are distinguished below as an explicit uncertain-semantics remainder; native/update/elevation/dialog mechanisms stay phase2.",
+  "statusVocabulary": [
+    "implemented",
+    "not-run",
+    "unsupported",
+    "phase1-landed",
+    "legacy-only",
+    "phase2",
+    "uncertain-distinct"
+  ],
+  "entries": [
+    {
+      "id": "safe-open-chain",
+      "category": "filesystem-identity",
+      "files": [
+        "platform/linux/filesystem.mjs + platform/shared/filesystem.mjs (landed adapters)",
+        "agents/managed/file-stream.mjs (withSafeFile)",
+        "agents/managed/execution-workspace.mjs (safeFile/workPath)",
+        "agents/managed/worktree-dependencies.mjs (openRealChain, fdPath, DIR_FLAGS)"
+      ],
+      "linux": "component-wise opens via /proc/self/fd/<fd>/<name> with O_RDONLY|O_DIRECTORY|O_NOFOLLOW, held descriptors, inode/nlink identity, post-read change detection",
+      "win32": "explicit reject before I/O (adapter contract FS_PLATFORM_UNSUPPORTED)",
+      "darwin": "same explicit reject",
+      "status": "phase1-landed",
+      "phase": "phase1",
+      "notes": "worktree-dependencies now routes native pinned directory operations through filesystem.chain; source-side npm symlinks materialize into independent worktree copies. Linux behavior tested; native Windows/macOS equivalent identity proofs remain required."
+    },
+    {
+      "id": "optional-nofollow-opens",
+      "category": "filesystem-identity",
+      "files": [
+        "main/host.mjs (readSource, attachment read)",
+        "main/isolated-preview.mjs",
+        "domain/material-store.mjs",
+        "main/file-clipboard-import.mjs",
+        "main/external-open-queue-storage.mjs"
+      ],
+      "linux": "constants.O_NOFOLLOW||0 / ??0 — guard active",
+      "win32": "flag undefined → open proceeds WITHOUT the link guard; identity re-checked via lstat/dev/ino comparisons afterwards in most paths",
+      "darwin": "flag present (value differs); semantics unverified",
+      "status": "implemented on Linux; identity semantics for these reader paths remain phase2 W1/M1 (reparse points, path-case)",
+      "phase": "phase2 W1/M1 identity semantics",
+      "notes": "reader paths outside the safe-open chain"
+    },
+    {
+      "id": "process-identity-stamps",
+      "category": "proc-identity",
+      "files": [
+        "platform/linux/process-ownership.mjs (landed adapter)",
+        "agents/managed/process-ownership.mjs (processIdentityCapability, hostProcessTree facade)",
+        "agents/managed/pi-process-ownership.mjs",
+        "agents/managed/omp-process-ownership.mjs (legacy)"
+      ],
+      "linux": "/proc/<pid>/stat starttime + boot_id stamps; env-tag verified group reaping; processTree.terminateGroup; PID-reuse refusal",
+      "win32": "stamps null; reaping {verified:false}; recovery throws; ownerAlive REFUSES with PROCESS_OWNERS_UNSUPPORTED (lock/writer retained — no signal-0 existence guess); pi-session refuses unverified owners (PI_PLATFORM_UNSUPPORTED)",
+      "darwin": "same as win32",
+      "status": "phase1-landed (PlatformProcessBoundary). Probe exercises a real self stamp bound to the current boot id.",
+      "phase": "phase1 done; phase2 W2/M2 real owner-identity mechanisms"
+    },
+    {
+      "id": "recovery-source-ownership",
+      "category": "proc-identity",
+      "files": [
+        "main/project-recovery-owner.mjs (shared-selector wrapper)",
+        "platform/linux/recovery-owner.mjs (algorithm, moved verbatim)"
+      ],
+      "linux": "project-recovery ownership identity on the /proc foundation; dedicated matrix row 'recovery-source-ownership'",
+      "win32": "matrix-routed unavailable → explicit unsupported",
+      "darwin": "same",
+      "status": "phase1-landed (PlatformProcessBoundary; active first-stage identity boundary, not a phase2 residual)",
+      "phase": "phase1 landed"
+    },
+    {
+      "id": "execution-isolation",
+      "category": "isolation",
+      "files": [
+        "platform/linux/bwrap-isolation.mjs (landed adapter)",
+        "agents/managed/process-isolation.mjs"
+      ],
+      "linux": "bubblewrap read/write domain launcher, FORBIDDEN_ROOTS, cached availability probe",
+      "win32": "explicit reject, no fallback spawn",
+      "darwin": "same",
+      "status": "phase1-landed. Probe executes the real availability check; gating explicit (required by default, --no-isolation report-only).",
+      "phase": "phase2 W3/M3"
+    },
+    {
+      "id": "runtime-audit-proc-scan",
+      "category": "proc-identity",
+      "files": [
+        "agents/managed/runtime-audit.mjs"
+      ],
+      "linux": "scans /proc/*/environ for managed agent homes",
+      "win32": "empty process list with platform recorded — NOT verified-none",
+      "darwin": "same",
+      "status": "implemented on Linux; honesty caveat for non-Linux readers",
+      "phase": "phase2"
+    },
+    {
+      "id": "force-quit-tree",
+      "category": "signals",
+      "files": [
+        "main/force-quit.cjs"
+      ],
+      "linux": "/proc exe/cmdline/task-children walk + SIGKILL; app.exit independent",
+      "win32": "tree walk yields nothing → only app.exit",
+      "darwin": "same",
+      "status": "residual shared OS caller",
+      "phase": "phase2 (W2/M2)"
+    },
+    {
+      "id": "privilege-broker",
+      "category": "elevation",
+      "files": [
+        "main/privilege-broker.mjs",
+        "main/privilege-helper.cjs"
+      ],
+      "linux": "pkexec + trusted python3 launcher; root-owned facts; O_NOFOLLOW numeric opens; /proc/self/fd binding; snapshot exec; PLATFORM_VERIFICATION=implemented",
+      "win32": "UAC strategy implemented-untested; readRootResults null → CONTROL_UNVERIFIED",
+      "darwin": "osascript strategy implemented-untested; direct-path residual window self-declared",
+      "status": "residual; win/darwin 'not-run' in matrix",
+      "phase": "phase2"
+    },
+    {
+      "id": "persistence-barrier",
+      "category": "fsync-atomic",
+      "files": [
+        "platform/shared/persistence.mjs",
+        "platform/linux/persistence.mjs"
+      ],
+      "linux": "wx temp + fsync + rename + directory fsync; post-publish barrier failure → committed=true durability=uncertain",
+      "win32": "PERSISTENCE_UNSUPPORTED before any create/replace",
+      "darwin": "same",
+      "status": "phase1-landed. ROUTED CONSUMERS (all landed): nozeli-config, provider-settings, collab/atomic-state, project-storage, host, external-open-queue-storage, workspace-capture-store, managed workspace, work-changes, token-usage-checkpoint, guided-demo, auto-update-files (atomicJson), main.cjs appearance, pi-session session metadata. Probe performs a real atomic write + reopen + remnant check.",
+      "phase": "phase1 landed; native platform verification phase2"
+    },
+    {
+      "id": "custom-transaction-durability",
+      "category": "fsync-atomic",
+      "distinctClass": "uncertain-distinct — NOT plain writeAtomic routing",
+      "files": [
+        "main/project-git.mjs (marker/index-lock/ignore renames with identity verification)",
+        "main/file-clipboard-import.mjs (temp + fsync + hardlink publication)",
+        "main/file-tree-ops.mjs (reserve-then-rename moves with rollback)"
+      ],
+      "linux": "functional; identity-checked; file fsync present in most steps",
+      "win32": "unverified",
+      "darwin": "unverified",
+      "status": "UNCERTAIN SEMANTICS, deliberately distinguished: publication happens through custom transactions (rename/link/move chains), so the directory-barrier semantics AFTER the custom transaction are not stated by the shared persistence contract. Needs an explicit contract decision (extend the barrier contract to transactional publication or document per-site guarantees) — not silent treatment.",
+      "phase": "open contract decision (flagged to Main at freeze)",
+      "notes": "Preserve existing Linux per-site journal/reconciliation; mutation entrypoints require safe-file-io and durable-persistence before effects. Not a new crash-durability promise; phase2 must validate native rename/link/move identity and recovery at every site before enabling capability."
+    },
+    {
+      "id": "process-tree-kill",
+      "category": "signals",
+      "files": [
+        "main/tex-build-manager.mjs",
+        "main/auto-update.mjs",
+        "main/auto-update-helper.mjs",
+        "main/tex-language-service.mjs",
+        "main/language-service-manager.mjs",
+        "main/privilege-helper.cjs",
+        "agents/managed/git-runtime.mjs",
+        "apps/desktop/tools/start-pi-isolated.mjs"
+      ],
+      "linux": "negative-PID process-group kills",
+      "win32": "taskkill /T or child.kill branches unverified on real host",
+      "darwin": "unverified",
+      "status": "residual; managed Pi sessions use the processTree contract",
+      "phase": "phase2 (W2/M2)"
+    },
+    {
+      "id": "runtime-resolvers",
+      "category": "runtime-assets",
+      "files": [
+        "agents/managed/pi-runtime.mjs",
+        "integrations/pi/src/launch.mjs",
+        "agents/managed/git-runtime.mjs",
+        "agents/managed/omp-runtime.mjs (legacy; excluded from probe readiness)"
+      ],
+      "linux": "implemented; shared checks in platform/shared/runtime-assets.mjs; probe verifies live (git 2.53.0 self-identification; pinned Pi manifest 8-file digest verification)",
+      "win32": "dugite MinGit checks + node.exe naming in code; never executed on real Windows",
+      "darwin": "never executed",
+      "status": "matrix rows bundled-git / bundled-pi-runtime / omp-legacy-bridge; win/darwin not-run",
+      "phase": "phase2 verification"
+    },
+    {
+      "id": "bundled-node-lock",
+      "category": "runtime-assets",
+      "files": [
+        "apps/desktop/tools/node-runtime.lock.json",
+        "apps/desktop/tools/package-pi-runtime.mjs"
+      ],
+      "linux": "pinned standalone Node archive → runtime/node + NODE-RUNTIME.json",
+      "win32": "packaging refuses (no pinned archive) → packaged Pi blocked",
+      "darwin": "same",
+      "status": "bundled-node-runtime matrix row: win/darwin unsupported (honest hard blocker). Probe does real executable + digest verification when the packaged layout exists; dev-tree absence = not-run.",
+      "phase": "phase2 W0/M0 decision"
+    },
+    {
+      "id": "ipc-endpoints",
+      "category": "ipc",
+      "files": [
+        "agents/managed/omp-terminal-bridge.mjs (legacy)",
+        "agents/managed/pi-session.mjs (stdio, platform-neutral)"
+      ],
+      "linux": "unix socket (legacy OMP), Pi stdio",
+      "win32": "named-pipe branch in code, unverified",
+      "darwin": "unverified",
+      "status": "omp-legacy-bridge matrix row not-run",
+      "phase": "phase2 (W2)"
+    },
+    {
+      "id": "system-terminal",
+      "category": "terminal",
+      "files": [
+        "agents/managed/system-terminal-launch.mjs",
+        "agents/managed/system-terminal-bridge.mjs",
+        "agents/system-terminal-client.mjs",
+        "agents/managed/native-terminal.mjs (uninspected detail)"
+      ],
+      "linux": "implemented",
+      "win32": "explicit reject",
+      "darwin": "same",
+      "status": "system-terminal-attach matrix row",
+      "phase": "phase2 (W4/M4)"
+    },
+    {
+      "id": "electron-native-surface",
+      "category": "native-ui",
+      "files": [
+        "main/main.cjs",
+        "main/window-recovery.cjs",
+        "main/isolated-preview.mjs",
+        "main/update-lifecycle.mjs"
+      ],
+      "linux": "exercised in Linux smoke/Electron tests",
+      "win32": "gate W4",
+      "darwin": "gate M4",
+      "status": "electron-native-surface residual boundary",
+      "phase": "phase2 W4/M4"
+    },
+    {
+      "id": "linux-session-flags",
+      "category": "session-integration",
+      "files": [
+        "main/main.cjs",
+        "agents/managed-projects.mjs"
+      ],
+      "linux": "intentional session integration",
+      "win32": "n/a by design",
+      "darwin": "n/a",
+      "status": "linux-session-flags residual boundary",
+      "phase": "phase2"
+    },
+    {
+      "id": "updater-installer",
+      "category": "installer-updater",
+      "files": [
+        "main/auto-update.mjs",
+        "main/auto-update-helper.mjs",
+        "main/auto-update-files.mjs"
+      ],
+      "linux": "managed releases + symlink current; tested",
+      "win32": "no installer; symlink semantics unverified",
+      "darwin": "no DMG/zip/notarization path",
+      "status": "updater-installation-layout residual; Linux-only by design",
+      "phase": "phase2 W5/M5"
+    },
+    {
+      "id": "packaging-build",
+      "category": "installer-updater",
+      "files": [
+        "apps/desktop/tools/package-portable.mjs",
+        "apps/desktop/tools/package-candidate.mjs",
+        "apps/desktop/tools/local-release.mjs",
+        "apps/desktop/tools/install-local.mjs (uninspected detail)",
+        "apps/desktop/tools/release-retention.mjs",
+        "apps/desktop/tools/build-renderer.mjs / build-pptist.mjs",
+        ".github/workflows/ci.yml"
+      ],
+      "linux": "implemented (node 22.22.2 CI, build:pi, chrome-sandbox chown)",
+      "win32": "explicit refusals; phase2 W5",
+      "darwin": "same M5",
+      "status": "packaging-tools residual boundary",
+      "phase": "phase2"
+    },
+    {
+      "id": "lsp-external-node",
+      "category": "ambient-runtime",
+      "files": [
+        "main/language-service-manager.mjs",
+        "main/tex-language-service.mjs + main/tex-build-manager.mjs"
+      ],
+      "linux": "optional; honest degradation",
+      "win32": "unverified ambient consult (declared exception)",
+      "darwin": "same",
+      "status": "lsp-external-node residual boundary",
+      "phase": "phase2 (bundle or gate)"
+    },
+    {
+      "id": "win32-path-env-branches",
+      "category": "env-path",
+      "files": [
+        "agents/managed/controller.mjs",
+        "agents/managed/shadow-versions.mjs + main/project-git.mjs",
+        "agents/managed/git-service.mjs",
+        "agents/managed/work-changes.mjs"
+      ],
+      "linux": "implemented",
+      "win32": "branches exist (PATHEXT, NUL, no exec-bit), unverified",
+      "darwin": "unverified",
+      "status": "residual; phase2 verification",
+      "phase": "phase2"
+    }
+  ],
+  "legacyOnly": [
+    "agents/managed/omp-runtime.mjs, omp-terminal-bridge.mjs, omp-process-ownership.mjs, omp-tui-session.mjs, omp-auth-broker.mjs, omp-provider-home.mjs, omp-system-source.mjs — legacy OMP history/orphan recovery only; new execution is Pi. omp-credentials.mjs scrubProviderEnv is shared active code used by pi-runtime/pi-session. Legacy OMP runtime probing excluded from probe readiness (no current backend)."
+  ],
+  "activePhase1RoutingPending": [],
+  "checkoutSplitFlag": "RESOLVED: all slice adapters present on the contract tree /home/bfly/yunwei/nozeli_git.",
+  "inventoryLimits": [
+    "renderer/ and preload/ not audited here (architecture says Host-API-only; verify during W4/M4)",
+    "agents/managed/roles/ skills and dev_tools/skills not audited (prompt text only)",
+    "integrations/omp tree uninspected (legacy)",
+    "agents/managed/native-terminal.mjs, main/review-documents.mjs, main/tex-build-manager.mjs internals only spot-checked",
+    "line numbers intentionally omitted (concurrent edits)"
+  ],
+  "phase1ExitStatement": "Shared core platform contracts and active reviewed consumers migrated; Linux runtime verification is recorded separately. Windows/macOS native adapters, custom multi-file transaction qualification, process termination, dialogs, packaging/signing and per-platform runtime assets remain explicit phase2 gates. No claim of native support or full OS audit.",
+  "probe": {
+    "command": "node apps/desktop/tools/platform-probe.mjs [--pretty] [--no-isolation]",
+    "semantics": "declaredCoverage = matrix declaration only (complete ≠ ready); executedProbes = actual host executions (real safe-chain read with symlink rejection, real durable atomic write + reopen, real self process stamp, real bwrap availability with explicit required/not-requested gating, real bundled Git self-identification, full pinned Pi manifest digest verification, real bundled-Node executable + digest check only when the packaged layout exists); managedExecution.ready requires declared coverage AND executed evidence to agree; exit 1 otherwise. Runs unchanged on real Windows/macOS hosts for phase2 evidence.",
+    "verifiedRun": "2026-10-31 nozeli_git Linux (frozen state): declaredCoverage.complete=true, all required executed probes ok (safeFileIo + symlink-dir rejection, durablePersistence durable receipt, processOwnership bootId:starttime self stamp, executionIsolation available, git 2.53.0, Pi manifest 8 files), bundledNodeRuntime honestly not-run in dev tree, managedExecution.ready=true, exit 0."
+  }
+}

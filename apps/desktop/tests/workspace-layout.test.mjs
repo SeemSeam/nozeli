@@ -173,3 +173,58 @@ test('loading old long pane histories keeps nearest five and preserves older ope
  s.mainRoot.historyViewIds=ids.slice(0,-1).reverse();const migrated=singleContentLayout(s);
  assert.deepEqual(migrated.mainRoot.historyViewIds,ids.slice(3,8).reverse());assert.equal(Object.keys(migrated.views).length,Object.keys(s.views).length);single(migrated);
 });
+test('project-terminal registers one host-owned view and repeat opens reveal it',()=>{
+ let s=reduceLayout(empty(),{type:'open',view:{kind:'project-terminal',cwd:'/evil',command:'rm -rf /',viewState:{autoStart:true}}});
+ const terminal=Object.values(s.views).find(v=>v.kind==='project-terminal');
+ assert.deepEqual(Object.keys(terminal).sort(),['id','kind','projectId','resourceId']);
+ assert.equal(terminal.resourceId,'project-terminal:project-a');
+ assert.equal(s.mainRoot.activeViewId,terminal.id);
+ const again=reduceLayout(s,{type:'open',view:{kind:'project-terminal'}});
+ assert.equal(Object.values(again.views).filter(v=>v.kind==='project-terminal').length,1);
+ assert.equal(Object.values(again.views).find(v=>v.kind==='project-terminal').id,terminal.id);
+ single(s);
+});
+test('project-terminal view state accepts only bounded host sizes',()=>{
+ let s=reduceLayout(empty(),{type:'open',view:{kind:'project-terminal'}});
+ const terminal=Object.values(s.views).find(v=>v.kind==='project-terminal');
+ s=reduceLayout(s,{type:'restoreViewState',viewId:terminal.id,viewState:{cols:132,rows:43}});
+ assert.deepEqual(s.views[terminal.id].viewState,{cols:132,rows:43});
+ for(const bad of [{cols:1,rows:43},{cols:132,rows:999},{cols:132.5,rows:43},{cols:132,rows:43,command:'sh'},{autoStart:true}]){
+  let failed=false;try{reduceLayout(s,{type:'restoreViewState',viewId:terminal.id,viewState:bad});}catch{failed=true;}
+  assert.equal(failed,true,'view state '+JSON.stringify(bad)+' must be rejected');
+ }
+ single(s);
+});
+test('project-terminal cannot be duplicated into a second pane',()=>{
+ let s=reduceLayout(empty(),{type:'open',view:{kind:'project-terminal'}});
+ const terminal=Object.values(s.views).find(v=>v.kind==='project-terminal');
+ assert.throws(()=>reduceLayout(s,{type:'splitOpen',viewId:terminal.id,groupId:s.mainRoot.id,axis:'x'}));
+ assert.throws(()=>reduceLayout(s,{type:'duplicate',viewId:terminal.id,groupId:s.mainRoot.id}));
+ single(s);
+});
+test('backgrounding keeps the project-terminal present in history while closeContent orphans it',()=>{
+ let s=reduceLayout(empty(),{type:'open',view:{kind:'project-terminal'}});
+ const terminal=Object.values(s.views).find(v=>v.kind==='project-terminal');
+ s=open(s,'notes.md');
+ assert.equal(findView(s,terminal.id),null);
+ assert.equal(s.mainRoot.historyViewIds.includes(terminal.id),true);
+ s=reduceLayout(s,{type:'activate',viewId:terminal.id,groupId:s.mainRoot.id});
+ s=reduceLayout(s,{type:'closeContent',viewId:terminal.id});
+ assert.equal(findView(s,terminal.id),null);
+ assert.equal((s.mainRoot.historyViewIds??[]).includes(terminal.id),false);
+ assert.ok(s.views[terminal.id],'closed content keeps re-openable metadata');
+ single(s);
+});
+test('reopenClosed revives a closed project-terminal without forbidden fields',()=>{
+ let s=reduceLayout(empty(),{type:'open',view:{kind:'project-terminal'}});
+ const terminal=Object.values(s.views).find(v=>v.kind==='project-terminal');
+ s=reduceLayout(s,{type:'close',viewId:terminal.id});
+ assert.equal(s.views[terminal.id],undefined);
+ assert.ok(s.closedViews.some(record=>record.view.id===terminal.id));
+ s=reduceLayout(s,{type:'reopenClosed'});
+ const revived=Object.values(s.views).find(v=>v.kind==='project-terminal');
+ assert.ok(revived,'a closed terminal view is revivable');
+ assert.equal(revived.preview,undefined);
+ assert.equal(findView(s,revived.id)?.group.id,s.mainRoot.id);
+ single(s);
+});

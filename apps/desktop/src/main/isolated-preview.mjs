@@ -12,15 +12,26 @@ const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
 const fail=message=>Object.assign(Error(message),{code:'PREVIEW_DENIED'});
 const types={'.html':'text/html','.htm':'text/html','.css':'text/css','.js':'text/javascript','.mjs':'text/javascript','.json':'application/json','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.gif':'image/gif','.webp':'image/webp','.svg':'image/svg+xml'};
 export function previewPath(value){
-  if(typeof value!=='string'||value.length>1024||/[\\\x00-\x20\x7f:%?#]/.test(value)||value.startsWith('/')||value.split('/').some(p=>!p||p==='.'||p==='..'||/[. ]$/.test(p)||/^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/i.test(p)))throw fail('预览路径无效。');
+  if(typeof value!=='string'||value.length>1024||/[\\\x00-\x1f\x7f:%?#]/.test(value)||value.startsWith('/')||value.split('/').some(p=>!p||p==='.'||p==='..'||/[. ]$/.test(p)||/^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/i.test(p)))throw fail('预览路径无效。');
   if(!types[path.posix.extname(value).toLowerCase()]||value.split('/').some(p=>p.startsWith('.')))throw fail('不支持的预览资源。');
   return value;
 }
+// A reference either resolves to a capturable project file or is left to the
+// runtime member/CSP/proxy gates: external hyperlinks and remote resources
+// stay inert (blocked in the guest, never fetched by the host) instead of
+// failing the whole snapshot. Only a path that still tries to escape the
+// project root after URL-style normalization rejects the capture.
 function local(base,value){
+  if(typeof value!=='string')return null;
+  value=value.replace(/[\t\n\r]/g,'').replace(/^[\x00-\x20]+|[\x00-\x20]+$/g,'');
   if(!value||value.startsWith('#')||value.startsWith('data:'))return null;
-  if(/[\\\x00-\x20]/.test(value)||/^[a-z][a-z\d+.-]*:/i.test(value)||value.startsWith('/'))throw fail('离线预览不允许外部或绝对资源：'+value.slice(0,100));
-  const raw=value.split(/[?#]/)[0];let decoded;try{decoded=decodeURIComponent(raw);}catch{throw fail('资源编码无效。');}
-  return previewPath(path.posix.normalize(path.posix.join(path.posix.dirname(base),decoded)));
+  if(/[\\\x00-\x1f\x7f]/.test(value)||/^[a-z][a-z\d+.-]*:/i.test(value)||value.startsWith('//'))return null;
+  const raw=value.split(/[?#]/)[0];
+  if(!raw||/%(?:2e|2f|5c)/i.test(raw))return null;
+  let decoded;try{decoded=decodeURIComponent(raw);}catch{return null;}
+  const rooted=value.startsWith('/'),joined=path.posix.normalize(rooted?'/'+decoded:path.posix.join(path.posix.dirname(base),decoded));
+  if(joined==='..'||joined.startsWith('../'))throw fail('离线预览不允许逃逸项目目录：'+value.slice(0,100));
+  try{return previewPath(rooted?joined.slice(1):joined);}catch{return null;}
 }
 function checkedSyntax(parser,text,label){const tree=parser.parse(text);let count=0;tree.iterate({enter(node){if(node.type.isError)throw fail('预览 '+label+' 语法不受支持或无效。');if(++count>200000)throw fail('预览语法复杂度超过预算。');}});return tree;}
 function jsLiteral(text,node){
@@ -41,7 +52,7 @@ function jsLiteral(text,node){
 }
 const cssUnescape=value=>value.replace(/\\([\da-f]{1,6})(?:\r\n|[\t\n\r\f ])?|\\([^\n\r\f\da-f])/gi,(_,hex,char)=>hex?String.fromCodePoint(Math.min(parseInt(hex,16)||0xfffd,0x10ffff)):char);
 export function previewDependencies(name,text){
-  const result=new Set(),add=value=>{const rel=local(name,value);if(rel)result.add(rel);};
+  const result=new Set(),add=(value,navigable=false)=>{const rel=local(name,value);if(rel&&!(navigable&&!/\.html?$/i.test(rel)))result.add(rel);};
   const css=(input,inline=false)=>{
     const text=inline?'x{'+input+'}':input;
     checkedSyntax(cssParser,text,'CSS').iterate({enter(ref){
@@ -74,7 +85,28 @@ export function previewDependencies(name,text){
       if(node.name==='Attribute'){
         const attr=node.node,nameNode=attr.getChild('AttributeName'),valueNode=attr.getChild('AttributeValue')??attr.getChild('UnquotedAttributeValue');if(!nameNode||!valueNode)return;
         const key=text.slice(nameNode.from,nameNode.to).toLowerCase(),raw=text.slice(valueNode.from,valueNode.to),value=decode(/^['"]/.test(raw)?raw.slice(1,-1):raw);
-        if(key==='src'||key==='href')add(value);if(key==='srcset')throw fail('预览暂不支持 srcset；请使用明确 src。');if(key==='style')css(value,true);
+        // Navigable hrefs (a/area) may only settle on captured safe HTML; every other src/href is a resource.
+        // srcset uses a two-state character scanner per the HTML spec: URL state consumes
+        // through ASCII whitespace and keeps commas except a trailing separator comma
+        // (empty descriptors, next candidate resumes immediately); descriptor state ends
+        // at its separator comma even without whitespace between candidates.
+        const tagNode=attr.parent?.getChild('TagName'),tag=tagNode?text.slice(tagNode.from,tagNode.to).toLowerCase():'';
+        if(key==='src')add(value);
+        if(key==='href')add(value,tag==='a'||tag==='area');
+        if(key==='srcset'){
+          const space=char=>char==='\t'||char==='\n'||char==='\f'||char==='\r'||char===' ';
+          for(let i=0;i<value.length;){
+            while(i<value.length&&(space(value[i])||value[i]===','))i++;
+            if(i>=value.length)break;
+            let url='';
+            while(i<value.length&&!space(value[i]))url+=value[i++];
+            const separator=url.endsWith(',');
+            url=url.replace(/,+$/,'');
+            if(url)add(url);
+            if(!separator)while(i<value.length&&value[i]!==',')i++;
+          }
+        }
+        if(key==='style')css(value,true);
       }
       if(node.name==='StyleText')css(text.slice(node.from,node.to));
       if(node.name==='ScriptText'){
@@ -211,7 +243,7 @@ export class IsolatedPreviewManager{
         if(textReference){try{const decoded=new TextDecoder('utf-8',{fatal:true}).decode(reference.bytes);if(!/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(decoded))text=decoded;}catch{}}
         return {...reference,bytes:undefined,text,dataUrl:reference.mediaType?.startsWith('image/')?'data:'+reference.mediaType+';base64,'+reference.bytes.toString('base64'):undefined};
       }
-      if(op==='isolated-preview.print'){if(old.profile==='offlineDevelopment'&&old.entry.split('.').pop().toLowerCase()!=='html')throw fail('仅 HTML 预览支持打印。');return new Promise((resolve,reject)=>old.view.webContents.print({silent:p.silent===true,printBackground:true},(ok,reason)=>ok?resolve({printed:true}):reject(fail(reason))));}
+      if(op==='isolated-preview.print'){if(old.profile==='offlineDevelopment'&&!/\.html?$/i.test(old.entry))throw fail('仅 HTML 预览支持打印。');return new Promise((resolve,reject)=>old.view.webContents.print({silent:p.silent===true,printBackground:true},(ok,reason)=>ok?resolve({printed:true}):reject(fail(reason))));}
       throw fail('未知预览操作。');
     }
     if(p.projectId!==scope.projectId||!['staticReport','offlineDevelopment'].includes(p.profile)||!Number.isSafeInteger(p.generation)||p.generation<1||p.generation<=(this.generations.get(id)||0))throw fail('预览项目、配置或版本无效。');

@@ -70,8 +70,9 @@ Agent 交付得快，不代表人已经理解。Nozeli 希望让你看清成果�
 
 - 面向 Windows、macOS、Linux；当前验证为 **Linux x64／Wayland 与 X11/XWayland**，其他平台尚未通过。
 - 已有阅读、批注、编辑、真实文件与后台协作工作流；具体格式、版本和能力边界见[当前状态与能力边界](docs/status.md)。
-- **Alpha预发行** [`v0.1.0-alpha.3`](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.3)：修复快速项目切换、系统文本复制、原生工具升级重连与失位标签操作，支持系统文件剪贴板导入、审核长列表折叠及有界强退；Agent 默认以当前用户 YOLO 模式执行，普通问题与技术恢复交给后台主控。Linux x64便携包、源码快照与SHA-256校验和，版本源码以对应tag为准。Windows/macOS未验证。
-- 第三方源码与再分发审计未完成（源码 vendor 产物与捆绑二进制对应源码/通告义务均未签收）：发布不是合规认证，本仓库源码归档或上游链接不自动满足对应源码义务；逐项义务、pinned 版本与签收状态见[发布说明与发行边界](docs/release.md)与[合规清单](apps/desktop/compliance-inventory.json)。
+- **Alpha预发行候选 `v0.1.0-alpha.4`**（尚未发布）：本轮源码包含 Pi 原生账号与模型管理、上下文交付收敛、本地 HTML/HTM 网页视图、材料版本保护及存储写放大修复；Linux x64 已完成本机验证，Windows/macOS 未验证。目标发布与分发审计状态见[发布说明与发行边界](docs/release.md)。
+- Release：<https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.4>（公开 prerelease 目标，发布前仍需完成构建、安装与校验和核对）。
+- 第三方源码与再分发审计未完成：公开 Alpha 仍需保留未完成义务和当前发布授权说明，不构成合规认证。
 
 ## 进一步了解
 

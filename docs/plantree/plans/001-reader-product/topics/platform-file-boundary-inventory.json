@@ -1,0 +1,69 @@
+{
+  "schema": 1,
+  "slice": "platform-file-boundary",
+  "scope": "Managed file safety — anchored reads/captures, pinned write parents, Git fd source paths — first-stage shared platform readiness (docs/plantree/plans/001-reader-product/topics/windows-cross-platform-architecture.md §6 exit gate, capability id safe-file-io)",
+  "capabilitySelector": {
+    "module": "apps/desktop/src/platform/platform-capabilities.mjs",
+    "ownedBy": "RuntimeContract",
+    "consumedCapabilities": ["safe-file-io"],
+    "binding": "selectCapability({capability:'safe-file-io', implementations:{linux:linuxFilesystemAdapter}}) inside selectFilesystemAdapter(); 'available' only for matrix 'implemented'; 'not-run'/'unsupported'/unknown platforms receive unsupportedFilesystemAdapter (every operation rejects FS_PLATFORM_UNSUPPORTED with {contract, capability, platform, operation, status, reason})",
+    "contract": "nozeli.platform.filesystem/1"
+  },
+  "adapters": [
+    {
+      "module": "apps/desktop/src/platform/linux/filesystem.mjs",
+      "platform": "linux",
+      "status": "implemented (Linux regression)",
+      "operations": {
+        "openAnchoredFile(root, rel)": "pin every ancestor via O_DIRECTORY|O_NOFOLLOW opened through /proc/self/fd; open entry O_NOFOLLOW|O_NONBLOCK; returns null exactly when the entry or an ancestor is missing; entry {stat(bigint), stream(), fdSourcePath(), verify(), close()}; verify() compares dev/ino/size/mtimeNs/ctimeNs/nlink of the open inode and its directory entry plus dev/ino of every pinned ancestor and reports {stable, reason: file|entry|ancestor|missing} without deciding policy",
+        "openWriteParent(root, rel)": "pin the parent directory (mkdir missing intermediates under the pin); returns {openExclusive(name,{mode})→FileHandle 'wx', writeExclusive(name,data,{mode}), renameOver(from,to), remove(name), close()}; names validated as single safe components (FS_NAME_REJECTED otherwise)"
+      },
+      "durability": "no fsync barrier in this contract by design: anchored writes rely on the caller's durable intent manifest (documentIntent/publicationIntent reconcile-on-recovery); generic persistence barriers are the separate durable-persistence capability (platform/shared/persistence.mjs)"
+    },
+    {
+      "module": "apps/desktop/src/platform/shared/filesystem.mjs (unsupportedFilesystemAdapter)",
+      "platform": "win32|darwin|<unknown>",
+      "status": "unsupported (explicit)",
+      "operations": "full contract surface, every operation rejects FS_PLATFORM_UNSUPPORTED before any I/O; never a placeholder mac/win adapter, never a silent downgrade"
+    }
+  ],
+  "contract": {
+    "module": "apps/desktop/src/agents/managed/file-stream.mjs",
+    "policy": "safeRelativePath (structural: no '..', '.', backslash, control chars, >1024, absolute), writablePath (+ .git/.nozeli roots and credential material incl. .env*/auth.json/credentials*/secrets/tokens/id_rsa|ed25519|ecdsa[.pub]/*.pem|key|p12|pfx|keystore), capturePath (+ snapshot exclusion .git/.nozeli/.ccb/node_modules/.venv/venv/__pycache__), TEXT_MAX_BYTES=32MiB, git mode mapping (exec bit → 100755/100644), error codes PATH_REJECTED/SOURCE_CHANGED/TEXT_LIMIT preserved verbatim",
+    "io": "withSafeFile(root,rel,consume) orchestrates adapter open→policy checks→consume({stat,mode,stream,fdSourcePath})→adapter verify→policy error mapping ('文件读取期间变化/父目录变化/消失'); inspectFile (streaming digest+size+mode, no byte cap); readSafeBytes (bounded 32MiB); safeBytes (bytes|null); openWriteParent (writablePath-gated); createFileStream({filesystem}) injection; default = selectFilesystemAdapter()",
+    "gitFdSourcePaths": "git-service blobFiles feeds 'git hash-object -w --no-filters --stdin-paths' with fdSourcePath() lines (/proc/<pid>/fd/<fd>) so Git hashes the exact pinned inodes; SOURCE_CHANGED if object ids disagree with the streamed digests"
+  },
+  "callerMigrations": [
+    { "file": "apps/desktop/src/agents/managed/file-stream.mjs", "change": "/proc/self/fd mechanics + bigint identity verification extracted to platform/linux/filesystem.mjs; policy and error contract unchanged; explicit adapter injection via createFileStream" },
+    { "file": "apps/desktop/src/agents/managed/execution-workspace.mjs", "change": "constructor(store,{filesystem}) injection; local documentParent (with /proc prefix) deleted → this.files.openWriteParent at documentOperation/applyReviewedFiles/installFile/reconcileDocument; inspectFile/safeBytes/indexDigest through this.files; acceptanceCommit receives {filesystem}; SAFE_OPEN_UNSUPPORTED platform branch removed (adapter selection owns it)" },
+    { "file": "apps/desktop/src/agents/managed/git-service.mjs", "change": "blobFiles '/proc/'+process.pid+'/fd/'+fd literal → file.fdSourcePath() from the boundary; hook executability platform branch (win32||exec-bit) → hookWouldExecute(stat,{filesystem}); acceptanceCommit(...,{filesystem})" },
+    { "file": "apps/desktop/src/agents/managed/report-review.mjs", "change": "workPath import migrated to file-stream (writablePath alias); inspectFile already there" },
+    { "file": "apps/desktop/src/agents/managed/adoption-history.mjs", "change": "workPath import migrated to file-stream" },
+    { "file": "apps/desktop/src/agents/managed/controller.mjs", "change": "safeBytes import migrated to file-stream" },
+    { "file": "apps/desktop/src/agents/managed/memory-version.mjs", "change": "safeBytes import migrated to file-stream" },
+    { "file": "apps/desktop/src/agents/managed/frontdesk-documents.mjs", "change": "workPath import migrated to file-stream" },
+    { "file": "apps/desktop/src/agents/managed/shadow-versions.mjs", "change": "workPath+safeBytes imports migrated to file-stream" },
+    { "file": "apps/desktop/src/main/host.mjs", "change": "workPath+safeBytes import migrated to file-stream" }
+  ],
+  "phase2AdapterSignatures": {
+    "windows adapter (W1)": "must provide openAnchoredFile with equivalent observable identity guarantees (reparse-point/refusal semantics, final-entry identity verified after streaming, ancestor stability) and openWriteParent single-component exclusive temp + rename publish; fdSourcePath equivalent must feed Git the pinned identity (or the Git capture path must be redesigned with equivalent proof); declare capabilities.hooksExecuteRegardlessOfModeBits=true only after MinGit hook behavior is verified on a real Windows host; update platform-capabilities matrix win32 safe-file-io from 'unsupported' to 'implemented' only with real-host regression evidence",
+    "macos adapter (M1)": "same anchored identity/publish contract using verified native primitives (symlink/ directory-replacement and file-identity checks must be designed and measured on real macOS, not inferred from Linux /proc behavior); no /proc assumptions; matrix darwin row only flips with real-host evidence"
+  },
+  "tests": {
+    "file": "apps/desktop/tests/platform-filesystem.test.mjs",
+    "command": "node --test tests/platform-filesystem.test.mjs (run from apps/desktop; register in package.json alongside core-file-stream if desired)",
+    "coverage": "matrix-honest selection; unsupported-platform structured rejection for reads AND writes; Pi path policy (writable vs capture distinction); anchored read digest/size/mode, missing→null; non-regular/hardlink(nlink)/oversize/symlink refusals; in-flight file and ancestor change detection; pinned write-parent redirect race (symlink swap lands in held dir, outside sentinel untouched); single-component name guard; crash-window temp creation/cleanup/recovery; Git fd source-path end-to-end (blobFile digest/oid/mode via pinned fds); worktree-dependencies provisioning through chain.* incl. npm symlink materialization, idempotent re-provision 'present', source untouched, DEPENDENCY_PLATFORM on unsupported adapter; hook executability platform semantics; ExecutionWorkspace CAS (STALE_VERSION keeps external replacement) and unsupported-adapter explicit rejection"
+  },
+  "residualBoundariesObserved": [
+    { "id": "external-documents-durable-publish", "file": "apps/desktop/src/agents/managed/external-documents.mjs", "note": "Durable publish is persistence-barrier shaped (temp wx + fsync + CAS recheck + rename-or-link + O_DIRECTORY dirsync) on user-chosen external paths with realpath identity, not anchored-managed-tree semantics. NOT yet in the shared residual list; needs durable-persistence contract extension {mode, createOnly, beforeCommit} to migrate. Flagged to Main." },
+    { "id": "execution-workspace-ref-index-durability", "file": "apps/desktop/src/agents/managed/execution-workspace.mjs", "note": "integrate()/initializeRepository() Git ref/index publish still uses plain-path POSIX durability (fs.open wx, write+fsync, rename, O_DIRECTORY dirsync). Identity safety is anchored via inspectFile; the fsync barrier itself belongs to the durable-persistence contract once it grows a CAS/lock-aware variant. Linux-verified; explicit failure (not silent skip) elsewhere." },
+    { "id": "domain-managed-file-atomics", "file": "apps/desktop/src/domain/file-changes.mjs + file-tags.mjs + material-store.mjs", "note": "O_NOFOLLOW reads with post-open stat verification and non-win32-only directory fsync; separate persistence consumers, not yet on the shared barrier." },
+    { "id": "reader-source-anchored-reads", "file": "apps/desktop/src/agents/managed-report-source.mjs", "note": "Own O_NOFOLLOW+nlink==1 bounded read for report sources; candidate to reuse withSafeFile/inspectFile from the boundary in a later pass (behavior identical today)." },
+    { "id": "grant-snapshot-anchored-read", "file": "apps/desktop/src/agents/managed/collab/grant-adjudicator.cjs", "note": "Synchronous O_NOFOLLOW snapshot read with nlink=0 tolerance for atomic replace; own policy, not behind the boundary." },
+    { "file": "apps/desktop/src/agents/managed/frontdesk-documents.mjs directory() walk + memory-version.mjs identity re-stat", "note": "POSIX lstat/realpath/bigint-stat identity checks in read/list policies; Linux-verified soft residuals, no /proc dependency." }
+  ],
+  "residualBoundariesShared": "authoritative machine-readable list: capabilitySnapshot().residualBoundaries in apps/desktop/src/platform/platform-capabilities.mjs (privilege-broker, force-quit, project storage atomics, host file atomics, external-open-queue-storage, workspace-capture-store, managed workspace plan atomics, managed records atomics, process-tree kill, win32 path/env branches incl. git-service NUL/dev-null remnant note, updater layout, lsp node, electron surface, runtime-audit /proc scan, packaging)",
+  "knownRemainingFileConsumers": "frontdesk-read.mjs and workspace.mjs consume file-stream free functions (withSafeFile/readSafeBytes/writablePath) on the default selected adapter — injection available via createFileStream when a caller needs a deterministic boundary; tests/core-file-stream.test.mjs and tests/execution-copy-gitignore.test.mjs keep exercising the same paths end-to-end",
+  "verification": "node --check passed on every touched .mjs file; review P1/P2 fixes verified by direct import smoke (linux adapter supported:true, default selection available; provisioning outcome 'provisioned' on Linux; chain.directory('.') normalized to the pin root); full test/build execution intentionally skipped mid-flight per main-agent instruction. Linux behavior preserved by construction: policy functions and error codes verbatim, adapter reproduces the previous open/verify sequence step-for-step (same flags, same bigint field comparison, same ENOENT→null / post-open ENOENT→消失 semantics)",
+  "wrongTreeCleanup": "an earlier wrong-checkout attempt in /home/bfly/yunwei/nozeli (HEAD 528dc9f, not the Pi target) was fully reverted: 9 edited files restored byte-for-byte to their pre-edit state (user's own uncommitted diffs untouched), 4 slice files deleted; all output now lives in /home/bfly/yunwei/nozeli_git (HEAD 230d137)"
+}

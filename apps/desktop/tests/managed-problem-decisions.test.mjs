@@ -12,15 +12,18 @@ import {managedRuntime,readManagedState} from '../src/agents/managed/managed-sto
 
 const PROBLEM_TEXT='依赖缺失已核实。建议处理方案：在本任务内以普通用户权限安装构建依赖并重跑验证；不引入全局改动。';
 
-async function fixture(t){
+async function fixture(t,{readApproved=false}={}){
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-problem-')),calls=[],controllers=[];
  class Session{
   async preflightToolsDigest(){}async assertToolsDigest(){}
   constructor(spec,target){Object.assign(this,spec,{target,closed:false});}
   async start(thread){this.threadId=thread||randomUUID();return this;}
   async stop(){this.closed=true;return {confirmationComplete:true};}
-  async prompt(text){
-   calls.push({target:this.target,text});
+  async prompt(text,options={}){
+   const projection=options.projection?JSON.parse(options.projection.text):null;
+   const source=readApproved&&projection?.sources?.approvedSources?.[0];
+   const approvedSource=source?await this.onTool({tool:'nozeli_history_read',arguments:{readRef:source.readRef},callId:'approved-read:'+randomUUID()}):null;
+   calls.push({target:this.target,text,projection,approvedSource});
    await this.onTool({tool:'nozeli_publish',arguments:{kind:'problem',text:PROBLEM_TEXT,files:[]},callId:'problem:'+randomUUID()});
    return {completion:'host-control',threadId:this.threadId};
   }
@@ -105,14 +108,16 @@ test('simultaneous approve and reject cannot enqueue two continuations or mix th
  assert.deepEqual(replay,winner);
 });
 
-test('approved source is delivered through the Worker task anchor on continuation',async t=>{
- const {c,calls,run,id}=await fixture(t),{work:w,revisionBefore}=await run();
+test('approved source remains version-bound and readable on Worker continuation without a repeated task anchor',async t=>{
+ const {c,calls,run,id}=await fixture(t,{readApproved:true}),{work:w,revisionBefore}=await run();
  const result=await c.resolveProblem(decision(w));
  await c.runJob(c.store.state.jobs.find(j=>j.id===result.jobId));c.current.delete(id);
- const prompt=calls.filter(row=>row.target===id).at(-1).text;
- assert(prompt.includes('用户明确批准的来源输入'));
- assert(prompt.includes(PROBLEM_TEXT));
- assert(prompt.includes('本轮明确输入'));
+ const delivered=calls.filter(row=>row.target===id).at(-1),source=c.store.find(id).approvedScopes[0];
+ assert.equal(delivered.approvedSource.text,source.sourceText);
+ assert.equal(delivered.approvedSource.version,delivered.projection.sources.approvedSources[0].version);
+ assert(delivered.approvedSource.text.includes(PROBLEM_TEXT));
+ assert.equal(delivered.projection.sources.approvedSources[0].sourceJobId,source.sourceJobId);
+ assert.equal(JSON.stringify(delivered.projection).includes(PROBLEM_TEXT),false,'source bodies are read as data, not repeated in the control projection');
  assert.equal(c.store.find(id).status,'paused');
  assert.equal(c.store.find(id).revision,revisionBefore+1);
  assert.equal(c.store.state.jobs.filter(j=>j.type==='problem-resume').length,1);

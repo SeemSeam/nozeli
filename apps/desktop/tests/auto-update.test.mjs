@@ -83,14 +83,18 @@ for (const kind of ['managed', 'portable']) for (const healthy of [true, false])
   await acquireInstallLock(root, token);
   const journal = path.join(state, 'handoff.json');
   await atomicJson(journal, {token, parent, version: '1.0.1', expectedCommit: 'a'.repeat(40), candidate, installation: {kind, root, release: old}});
-  let inspections = 0, now = 0, launches = 0;
+  let inspections = 0, now = 0, launches = 0, receiptWrite = null;
   const spawnProcess = (binary, args, options) => {
     launches++;
     const child = new EventEmitter(); child.pid = 2147483647; child.unref = () => {};
-    if (healthy && options.env.NOZELI_UPDATE_RECEIPT) void atomicJson(options.env.NOZELI_UPDATE_RECEIPT, {token, release: path.dirname(binary), version: '1.0.1', pid: child.pid});
+    if (healthy && options.env.NOZELI_UPDATE_RECEIPT) receiptWrite = atomicJson(options.env.NOZELI_UPDATE_RECEIPT, {token, release: path.dirname(binary), version: '1.0.1', pid: child.pid});
     return child;
   };
-  const promise = runUpdateHelper(journal, {identity: async () => ++inspections === 1 ? parent : null, spawnProcess, now: () => now, pause: async () => { now += 100; await new Promise(resolve => setImmediate(resolve)); }, healthTimeout: 5000});
+  // The health poll runs on a virtual clock, so its pause must await the actual
+  // durable receipt write (fsync + rename) rather than let that write race the
+  // bounded poll budget under load; readiness stays event-driven and a failed
+  // write surfaces as itself. Without a receipt the failure path is unchanged.
+  const promise = runUpdateHelper(journal, {identity: async () => ++inspections === 1 ? parent : null, spawnProcess, now: () => now, pause: async () => { now += 100; if (receiptWrite) await receiptWrite; await new Promise(resolve => setImmediate(resolve)); }, healthTimeout: 5000});
   if (healthy) assert.equal((await promise).phase, 'installed'); else await assert.rejects(promise, /startup health/);
   assert.equal((await readJsonLocal(journal)).phase, healthy ? 'installed' : 'rolled-back');
   const active = kind === 'managed' ? await fs.realpath(path.join(root, 'current')) : old;

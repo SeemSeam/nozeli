@@ -14,7 +14,7 @@ export class StorageDatabase {
   let channel=this.channels.get(file);
   if(channel){if(channel.closing)throw unavailable('STORAGE_CLOSING','存储正在关闭');return channel;}
   const worker=this.workerFactory();channel={worker,pending:new Map(),closing:false,exited:false};this.channels.set(file,channel);worker.unref();
-  worker.on('message',m=>{if(channel.unknown)return;const p=channel.pending.get(m.id);if(!p)return;this.settle(channel,m.id,m.error?Object.assign(Error(m.error.message),{code:m.error.code,operationId:p.operationId}):null,m.value);});
+  worker.on('message',m=>{if(channel.unknown)return;const p=channel.pending.get(m.id);if(!p)return;this.settle(channel,m.id,m.error?Object.assign(Error(m.error.message),{code:m.error.code,operationId:p.operationId,rollbackFailure:m.error.rollbackFailure,closeFailure:m.error.closeFailure}):null,m.value);});
   worker.on('error',error=>{void this.quarantine(file,channel,error);});
   worker.on('exit',code=>{channel.exited=true;if(!channel.stopping||channel.pending.size)void this.quarantine(file,channel,Error('存储线程退出: '+code));if(this.channels.get(file)===channel)this.channels.delete(file);});
   return channel;

@@ -30,16 +30,30 @@ test('a settled prompt is not converted into failure by a deferred model applica
   let applied=0;
   s.applyDefaultModel=async()=>{applied++;throw Object.assign(new Error('native model refused'),{code:'PI_NO_MODEL'});};
   const transport=[];
-  s.spec.onTransportFact=async fact=>transport.push(fact.status);
+  s.spec.onTransportFact=async fact=>transport.push({...fact});
   s.request=async method=>{
-    if(method==='prompt')return {text:'ok',completion:'provider-completed',metrics:null,effective:{model:'p/m',effort:'off'}};
+    if(method==='prompt')return {text:'ok',completion:'provider-completed',metrics:null,effective:{model:'p/m',effort:'off'},nativeEntry:{id:'entry-7',contentDigest:'deadbeef',persisted:true},delivery:{phase:'native-record-confirmed',materials:[{id:'paper',version:'v3',sha256:'x',bytes:2,entryId:'entry-8'}]},contextEpoch:'compaction:0:root'};
     if(method==='flush')return {};
     throw Error('unexpected '+method);
   };
   s.current=null;s.busy=false;
   const result=await s.prompt('hello',{job:{id:'job-1'}});
   assert.equal(result.completion,'provider-completed');
-  assert.deepEqual(transport,['prepared','submitted','settled'],'settled fact is emitted exactly once');
+  assert.deepEqual(transport.map(row=>row.status),['prepared','submitted','native-record-confirmed','settled'],'record confirmation lands between submission and settlement');
+  // The transport binding tuple is immutable across every stage: the native
+  // entry's raw-text digest rides nativeEntryDigest and can never rewrite the
+  // request contentDigest the host bound at admission.
+  for(const fact of transport){
+    assert.equal(fact.requestId,transport[0].requestId);
+    assert.equal(fact.jobId,'job-1');
+    assert.equal(fact.attempt,1);
+  }
+  assert.equal(new Set(transport.map(fact=>fact.contentDigest)).size,1,'contentDigest never changes between stages');
+  const confirmed=transport.find(fact=>fact.status==='native-record-confirmed');
+  assert.equal(confirmed.entryId,'entry-7');
+  assert.equal(confirmed.nativeEntryDigest,'deadbeef','native entry digest is an additional field, not the binding digest');
+  assert.equal(result.nativeEntry.id,'entry-7');
+  assert.equal(result.contextEpoch,'compaction:0:root');
   assert.equal(applied,1,'deferred application was attempted');
   assert.equal(s.modelError.code,'PI_NO_MODEL','failure stays visible on modelError instead of rejecting the turn');
 });

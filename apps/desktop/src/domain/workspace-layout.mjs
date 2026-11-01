@@ -2,7 +2,7 @@ import {normalizeWebUrl} from './web-url.mjs';
 import { validateDocumentSource, documentResourceId, isProjectDocumentSource } from './document-source.mjs';
 const encoder=new TextEncoder();
 
-const kinds=new Set(['document','conversation','report','diff','history','terminal','web']);
+const kinds=new Set(['document','conversation','report','diff','history','terminal','web','project-terminal']);
 const invalid=(message,code='LAYOUT_INVALID')=>{throw Object.assign(new Error(message),{code});};
 const id=prefix=>prefix+'-'+globalThis.crypto.randomUUID();
 const historyLimit=5;
@@ -64,7 +64,7 @@ function closeView(layout,viewId,{restore=true}={}){const view=layout.views[view
 export function validateLayout(layout){
  if(!layout||layout.schema!==2||!identity(layout.projectId)||!Number.isSafeInteger(layout.revision)||layout.revision<0||!Array.isArray(layout.detached)||!layout.views||typeof layout.views!=='object'||Array.isArray(layout.views)||!layout.maximized||typeof layout.maximized!=='object'||Array.isArray(layout.maximized))invalid('工作区布局记录无效。');
  if(Object.keys(layout.views).length>512||encoder.encode(JSON.stringify(layout)).byteLength>1024*1024)invalid('工作区布局超过容量限制。','LAYOUT_LIMIT');
- const nodes=new Set(),assigned=new Set(),windowIds=new Set(['main']);let conversation=0;
+ const nodes=new Set(),assigned=new Set(),windowIds=new Set(['main']);let conversation=0,projectTerminal=0;
  for(const [viewId,view]of Object.entries(layout.views)){
   if(!view||typeof view!=='object'||view.id!==viewId||!identity(viewId)||view.projectId!==layout.projectId||!kinds.has(view.kind)||!identity(view.resourceId,8192))invalid('工作区内容身份无效。');
   if(view.kind==='document'&&!relPath(view.relPath))invalid('工作区文档路径无效。');
@@ -77,6 +77,14 @@ export function validateLayout(layout){
    if(isProjectDocumentSource(view.documentSource)&&view.documentSource!==undefined)invalid('项目文档不携带文档来源。');
   }
   if(view.kind==='conversation'&&++conversation>1)invalid('项目主对话不能重复。');
+  if(view.kind==='project-terminal'){
+   // Host-owned ordinary shell view: one per project, fixed resource identity,
+   // no renderer-supplied cwd/command/shell fields, size-only view state.
+   if(Object.keys(view).some(key=>!['id','projectId','kind','resourceId','viewState'].includes(key)))invalid('项目终端视图不能携带额外字段。');
+   if(view.resourceId!=='project-terminal:'+layout.projectId)invalid('项目终端身份无效。');
+   if(view.viewState!==undefined&&(!view.viewState||typeof view.viewState!=='object'||Array.isArray(view.viewState)||Object.keys(view.viewState).some(key=>!['cols','rows'].includes(key))||!Number.isSafeInteger(view.viewState.cols)||!Number.isSafeInteger(view.viewState.rows)||view.viewState.cols<2||view.viewState.cols>500||view.viewState.rows<2||view.viewState.rows>300))invalid('项目终端尺寸状态无效。');
+   if(++projectTerminal>1)invalid('每个项目只能有一个项目终端。');
+  }
   if(view.kind==='terminal'&&(!identity(view.viewState?.workId)||view.resourceId!=='terminal:'+view.viewState.workId))invalid('终端预览缺少有效工作身份。');
   if(view.kind==='document'&&view.viewState?.reviewSource!==undefined)invalid('审校文档必须使用顶层文档来源，不能沿用旧报告来源。');
   if(view.kind!=='document'&&view.documentSource!==undefined)invalid('只有文档携带文档来源。');
@@ -126,6 +134,7 @@ export function reduceLayout(previous,command){
   case 'open':{
    const target=checkedGroup(layout,command.groupId).group;let v=command.view;
    if(!v||!kinds.has(v.kind)||v.projectId!==undefined&&v.projectId!==layout.projectId)invalid('工作区内容属于另一个项目。');
+   if(v.kind==='project-terminal')v={kind:'project-terminal'};
    if(v.kind==='web'){const url=normalizeWebUrl(v.url);if(v.resourceId!==undefined&&v.resourceId!=='web:'+url)invalid('网页资源身份与地址不符。');v={...v,url,title:new URL(url).host};}
    let documentSource;
    if(v.kind==='document'){
@@ -133,19 +142,19 @@ export function reduceLayout(previous,command){
     if(documentSource.type==='project'){const{documentSource:omit,...rest}=v;v=rest;}
     else v={...v,documentSource};
    }
-   const resourceId=v.kind==='document'?documentResourceId(layout.projectId,documentSource,v.relPath):v.resourceId||(v.kind==='conversation'?'conversation:'+layout.projectId:v.kind==='web'?'web:'+v.url:null);
+   const resourceId=v.kind==='document'?documentResourceId(layout.projectId,documentSource,v.relPath):v.kind==='project-terminal'?'project-terminal:'+layout.projectId:v.resourceId||(v.kind==='conversation'?'conversation:'+layout.projectId:v.kind==='web'?'web:'+v.url:null);
    if(!identity(resourceId,8192))invalid('工作区资源身份缺失。');
-   const singleton=v.kind==='conversation'?Object.values(layout.views).find(entry=>entry.kind==='conversation'):null;
+   const singleton=v.kind==='conversation'?Object.values(layout.views).find(entry=>entry.kind==='conversation'):v.kind==='project-terminal'?Object.values(layout.views).find(entry=>entry.kind==='project-terminal'):null;
    const existing=singleton||(!command.duplicate?target.views.map(viewId=>layout.views[viewId]).find(entry=>entry.resourceId===resourceId&&Boolean(entry.readOnly)===Boolean(v.readOnly)):null);
    if(existing){const found=findView(layout,existing.id);if(found)found.group.activeViewId=existing.id;else addToGroup(target,existing.id);break;}
    const viewId=v.id??id('view');if(Object.hasOwn(layout.views,viewId))invalid('标签身份已存在。');
    layout.views[viewId]={...clone(v),id:viewId,projectId:layout.projectId,resourceId};addToGroup(target,viewId,command.index);break;
   }
   case 'activate':{const view=layout.views[command.viewId];if(!view)invalid('已打开文件已变化。','LAYOUT_STALE');const found=findView(layout,command.viewId);if(found)found.group.activeViewId=command.viewId;else addToGroup(checkedGroup(layout,command.groupId).group,command.viewId);break;}
-  case 'splitOpen':{const source=layout.views[command.viewId];if(!source)invalid('已打开文件不存在。','LAYOUT_STALE');const fresh=split(layout,{groupId:command.groupId,axis:command.axis,side:command.side??'after'});let viewId=source.id;if(findView(layout,viewId)){if(source.kind==='conversation')invalid('项目对话只能呈现一次，请移动对话。');viewId=id('view');layout.views[viewId]={...clone(source),id:viewId,readOnly:true,sourceViewId:source.sourceViewId??source.id};}addToGroup(fresh,viewId);break;}
+  case 'splitOpen':{const source=layout.views[command.viewId];if(!source)invalid('已打开文件不存在。','LAYOUT_STALE');const fresh=split(layout,{groupId:command.groupId,axis:command.axis,side:command.side??'after'});let viewId=source.id;if(findView(layout,viewId)){if(source.kind==='conversation')invalid('项目对话只能呈现一次，请移动对话。');if(source.kind==='project-terminal')invalid('项目终端只能呈现一次，请移动终端。');viewId=id('view');layout.views[viewId]={...clone(source),id:viewId,readOnly:true,sourceViewId:source.sourceViewId??source.id};}addToGroup(fresh,viewId);break;}
   case 'closePane':{const {group:source}=checkedGroup(layout,command.groupId);source.views=[];source.activeViewId=null;removeNode(layout,source.id);break;}
   case 'duplicate':{const source=layout.views[command.viewId];if(!source||source.kind!=='document')invalid('此内容不能分屏阅读。');const found=findView(layout,source.id),target=command.axis?split(layout,{groupId:command.targetGroupId??found?.group.id,axis:command.axis,side:command.side??'after'}):checkedGroup(layout,command.targetGroupId??found?.group.id).group;const viewId=id('view');layout.views[viewId]={...clone(source),id:viewId,readOnly:true,sourceViewId:source.sourceViewId??source.id};addToGroup(target,viewId);break;}
-  case 'reopenClosed':{const record=layout.closedViews?.pop();if(!record)break;if(record.view.kind==='conversation'&&Object.values(layout.views).some(v=>v.kind==='conversation'))break;const target=checkedGroup(layout,command.groupId??(findGroup(layout,record.groupId)?record.groupId:undefined)).group;const viewId=Object.hasOwn(layout.views,record.view.id)?id('view'):record.view.id;layout.views[viewId]={...record.view,id:viewId,preview:false};addToGroup(target,viewId);break;}
+  case 'reopenClosed':{const record=layout.closedViews?.pop();if(!record)break;if(['conversation','project-terminal'].includes(record.view.kind)&&Object.values(layout.views).some(v=>v.kind===record.view.kind))break;const target=checkedGroup(layout,command.groupId??(findGroup(layout,record.groupId)?record.groupId:undefined)).group;const viewId=Object.hasOwn(layout.views,record.view.id)?id('view'):record.view.id;layout.views[viewId]={...record.view,id:viewId,...(record.view.kind==='project-terminal'?{}:{preview:false})};addToGroup(target,viewId);break;}
   case 'split':split(layout,command);break;
   case 'move':{checkedView(layout,command.viewId);const target=checkedGroup(layout,command.targetGroupId).group;detachFromGroup(layout,command.viewId);addToGroup(target,command.viewId,command.index);break;}
   case 'moveGroup':{

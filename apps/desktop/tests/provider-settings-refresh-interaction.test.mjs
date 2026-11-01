@@ -69,6 +69,7 @@ const invoke=async(op,p={})=>{
     if(window.__ps.saveHold)await window.__ps.saveHold;
     return {ok:true,value:{saved:true,modelSync:{applied:0,pending:0,failed:[],sessions:[]}}};
   }
+  if(op==='settings.providers.discover')return {ok:true,value:{status:'succeeded',models:[{id:'service-only-model'}],fetchedAt:'2026-01-01T00:00:00.000Z'}};
   return {ok:false,error:{message:'unexpected operation '+op}};
 };
 window.__ps.mount=()=>{
@@ -298,9 +299,18 @@ try{
   await page.select('[data-default-role="frontdesk"]','alpha/m-one');await page.$eval('[data-default-role="frontdesk"]',select=>select.dispatchEvent(new Event('change',{bubbles:true})));
   await page.evaluate(()=>window.__ps.mounts.at(-1).api.refresh());assert.equal((await dom()).selects.frontdesk.value,'alpha/m-one');assert.deepEqual(await thinkingValues(),['','off','low'],'refresh preserves dirty model and matching native thinking capabilities');
   await shot('model-bound-thinking-refresh');
+  await freshMount({catalog:ALPHA,defaults:{frontdesk:'',orchestrator:'',worker:''},sources:[{...SOURCES_ALPHA[0],models:[{id:'configured-only-model'}]}]});await clickRefresh();await quiet();
+  await page.click('[data-provider-discover="alpha"]');
+  await page.waitForSelector('[data-discovery-models="alpha"] li');await page.waitForSelector('[data-provider-model-list="alpha"] li');
+  assert.deepEqual(await page.$$eval('[data-provider-model-list="alpha"] li',rows=>rows.map(row=>row.textContent)),['configured-only-model']);
+  assert.deepEqual(await page.$$eval('[data-discovery-models="alpha"] li',rows=>rows.map(row=>row.textContent)),['service-only-model']);
+  await page.click('[data-provider-model-panel="alpha"] summary');await page.click('[data-provider-model-panel="alpha"] summary');
+  await page.type('[data-provider-model-panel="alpha"] > .provider-model-browser input','no-match');
+  assert.equal(await page.$$eval('[data-provider-model-list="alpha"] li',rows=>rows.length),0);assert.equal(await page.$$eval('[data-discovery-models="alpha"] li',rows=>rows.length),1);
+  report.scenes.push({name:'discovery-before-first-model-expansion',configuredAndDiscoveredRemainSeparate:true});
   // Contract guard: the component never asked the double for anything else.
   state=await dom();
-  assert.ok(state.calls.every(call=>['settings.providers.status','settings.models.save'].includes(call.op)),'no unexpected IPC operations');
+  assert.ok(state.calls.every(call=>['settings.providers.status','settings.models.save','settings.providers.discover'].includes(call.op)),'no unexpected IPC operations');
   report.ok=report.errors.length===0;
 }catch(error){
   report.failure=String(error.stack||error);console.log(report.failure);

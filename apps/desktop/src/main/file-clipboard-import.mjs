@@ -5,6 +5,7 @@ import {randomUUID} from 'node:crypto';
 import {FileTags} from '../domain/file-tags.mjs';
 import {FileChanges} from '../domain/file-changes.mjs';
 import {fileIdentity,sameFileIdentity} from './file-clipboard.mjs';
+import {requireCapability} from '../platform/platform-capabilities.mjs';
 
 const inside=(file,root)=>{const rel=path.relative(root,file);return rel===''||(!rel.startsWith('..'+path.sep)&&rel!=='..'&&!path.isAbsolute(rel));};
 const under=(rel,parent)=>rel===parent||rel.startsWith(parent+'/');
@@ -59,6 +60,7 @@ async function recoveryGuard(host,project,rel,source){
 }
 export function importClipboardFiles(ops,items,{projectId,target=''}){
   const task=ops.pending.then(async()=>{
+    requireCapability('safe-file-io');requireCapability('durable-persistence');
     const registered=await ops.host.storage.list();
     const sources=registered.filter(project=>!project.removed&&items.some(item=>inside(item.source,project.root)));
     const ids=[...new Set([projectId,...sources.map(project=>project.id)])].sort();

@@ -4,10 +4,20 @@
 .isolated-status { font-size:12px;padding:6px 10px;margin:0;flex:none;overflow-wrap:anywhere; }
 .isolated-status[data-state="error"] { border-inline-start:3px solid #bf642d; }
 .isolated-viewport { flex:1;min-height:180px;position:relative;background:Canvas;color:CanvasText; }
+.web-preview-toolbar { border-bottom:1px solid var(--border,#8886);padding:4px 8px;gap:8px; }
+.web-preview-toolbar[hidden],.web-preview-toolbar [hidden] { display:none; }
+.web-preview-modes { display:flex;gap:2px; }
+.web-preview-toolbar button { min-height:28px;padding:3px 10px; }
+.web-preview-modes button[aria-pressed="true"] { background:var(--text,#252525);color:var(--bg,#fff); }
+.web-preview-toolbar button:focus-visible { outline:2px solid Highlight;outline-offset:2px; }
+.web-preview-toolbar label { font-size:12px; }
+#reader-scroll.web-preview-only { display:flex;overflow:hidden; }
+#reader-scroll.web-preview-only>#text-host { display:none; }
+#reader-scroll.web-preview-only>.web-preview-pane { flex:1;border:0; }
 #reader-scroll.web-preview-split { display:grid;grid-template-columns:minmax(220px,1fr) minmax(260px,1fr);overflow:hidden;gap:8px; }
 #reader-scroll.web-preview-split>#text-host { min-width:0;min-height:0;overflow:hidden; }
 .web-preview-pane { min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden;border-inline-start:1px solid var(--border,#8886); }
-@media(max-width:760px) { #reader-scroll.web-preview-split { grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(180px,1fr) minmax(230px,1fr); } }
+@media(max-width:760px) { #reader-scroll.web-preview-split { grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(120px,1fr) minmax(160px,1fr); } .web-preview-pane .isolated-viewport { min-height:0; } }
 @media print { .isolated-controls,.isolated-status { display:none; } }
 .report-reference-reader { box-sizing:border-box;width:min(1000px,calc(100vw - 32px));max-width:calc(100vw - 32px);max-height:calc(100vh - 48px);padding:0;overflow:hidden; }
 .report-reference-reader[open] { display:flex;flex-direction:column; }

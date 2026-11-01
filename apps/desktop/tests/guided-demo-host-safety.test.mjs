@@ -242,6 +242,15 @@ async function demoFixture(t){
  scope.ready=true;
  return {directory,userDataDir,examplesRoot,host,workspace,manager,created,scope,events};
 }
+test('published demo registry uncertainty retains receipts and blocks repeated effects',async t=>{
+ const f=await demoFixture(t),id=f.created.project.id,save=f.manager.save.bind(f.manager);
+ f.manager.save=async()=>{await save();throw Object.assign(Error('injected directory durability failure'),{committed:true,durability:'uncertain'});};
+ await assert.rejects(f.manager.mutate(()=>{f.manager.row(id).requests['uncertain-request']={accepted:true};}),error=>error.committed===true);
+ assert.equal(f.manager.row(id).requests['uncertain-request'].accepted,true);
+ const published=JSON.parse(await fs.readFile(f.manager.file,'utf8'));assert.equal(published.projects[id].requests['uncertain-request'].accepted,true);
+ let effects=0;await assert.rejects(f.manager.mutate(()=>{effects++;}),{code:'DEMO_PERSISTENCE_UNCERTAIN'});assert.equal(effects,0);
+});
+
 const binding=value=>({projectId:value.project.id,sessionId:value.session.id,epoch:value.session.epoch});
 async function bounded(promise,label,ms=3000){
  let timer;

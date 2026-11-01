@@ -24,12 +24,21 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { createMemoryCatalogStorage, seedResumeSession } from "./catalog-memory.mjs";
 import { createFactChannel } from "./facts.mjs";
+import {
+  CONTEXT_BUDGET_DEFAULTS,
+  normalizeMaterials,
+  normalizeProjection,
+  parseContextBudget,
+  sha256Hex,
+  utf8Bytes,
+} from "./context-delivery.mjs";
 import { createNativeQuestionBridge } from './questions.mjs';
 import {
   createHostToolBridge,
   createInteractionBridge,
   normalizeHostTools,
 } from "./tools.mjs";
+import { nozeliZaiCodingPlanExtension } from "./zai-coding-plan.mjs";
 
 const VENDOR_DRIVER_ENTRY = fileURLToPath(
   new URL("../dist/vendor/pi-gui/packages/pi-sdk-driver/index.js", import.meta.url),
@@ -334,13 +343,44 @@ async function normalizeImages(images) {
   }
   return attachments;
 }
+// Plain JSON copy for delivery records: no live counters, no user text.
+function toJsonShallow(record) {
+  return JSON.parse(JSON.stringify(record));
+}
 
-function systemPromptExtension(instructions, context) {
+function runContextExtension({ getTurn, instructions, isRunActive }) {
   return {
-    name: "nozeli-owner-system-prompt",
+    name: "nozeli-owner-run-context",
     hidden: true,
     factory: (pi) => {
-      pi.on("before_agent_start", async () => ({ systemPrompt: [instructions, context?.()?.taskAnchor].filter(Boolean).join('\n') }));
+      pi.on("before_agent_start", async () => {
+        // Stable role rules only. Variable host facts never ride the system
+        // prompt; they are data in the per-request projection below.
+        const turn = getTurn();
+        const result = instructions !== undefined ? { systemPrompt: instructions } : {};
+        const materialsMessage = turn?.materialsMessage;
+        if (materialsMessage) {
+          // Exactly one materials message per explicit send transaction: the
+          // slot is consumed here so agent retries never duplicate it.
+          turn.materialsMessage = null;
+          result.message = materialsMessage;
+        }
+        return Object.keys(result).length > 0 ? result : undefined;
+      });
+      pi.on("context", async (event) => {
+        const turn = getTurn();
+        const projection = turn?.projection;
+        if (!projection || turn.settled || !isRunActive()) {
+          return undefined;
+        }
+        projection.llmCalls += 1;
+        event.messages.push({
+          role: "user",
+          content: [{ type: "text", text: projection.envelopeText }],
+          timestamp: Date.now(),
+        });
+        return { messages: event.messages };
+      });
     },
   };
 }
@@ -390,8 +430,18 @@ export class OwnerRuntime {
     this.promptInFlight = null;
     this.unsubscribeDriver = null;
     this.sessionConfig = { definitions: [], nativeTools: undefined, instructions: undefined };
+    this.contextBudget = { ...CONTEXT_BUDGET_DEFAULTS };
+    // Delivery ledger: one record per explicit requestId. The record IS the
+    // duplicate guard — same identity is never resent, while the same text
+    // under a new identity is a fresh explicit input, never content-deduped.
+    this.deliveryRecords = new Map();
+    this.compactionCount = 0;
+    this.lastCompactionEntryId = null;
+    this.generationHostTextBytes = 0;
     this.journalEntries = new Map();
     this.nativeRuntime = null;
+    this.authAbort = null;
+    this.authProvider = null;
   }
 
   async ensureInitialized({ home, agentDir, cwd } = {}) {
@@ -426,15 +476,23 @@ export class OwnerRuntime {
             ...new Set([...config.nativeTools, ...config.definitions.map((tool) => tool.name)]),
           ];
         }
-        if (config.instructions !== undefined) {
-          merged.resourceLoaderOptions = {
-            ...(options.resourceLoaderOptions ?? {}),
-            extensionFactories: [
-              ...(options.resourceLoaderOptions?.extensionFactories ?? []),
-              systemPromptExtension(config.instructions, () => this.promptInFlight?.beforeAgentContext),
-            ],
-          };
-        }
+        // Always registered: the extension owns materials delivery and the
+        // ephemeral per-request projection even without role instructions.
+        // The system prompt carries ONLY the stable role rules; there is no
+        // per-turn taskAnchor and no variable host text in system authority.
+        merged.resourceLoaderOptions = {
+          ...(options.resourceLoaderOptions ?? {}),
+          extensionFactories: [
+            ...(options.resourceLoaderOptions?.extensionFactories ?? []),
+            runContextExtension({
+              getTurn: () => this.promptInFlight,
+              instructions: config.instructions,
+              // Native compaction model calls (auto/manual/overflow) are Pi's
+              // own summarization, never a host projection carrier.
+              isRunActive: () => this.facts.isRunActive() && !this.facts.isCompacting(),
+            }),
+          ],
+        };
         const runtime = await vendor.createAgentSessionRuntimeWithNpmFallback(merged);
         this.nativeRuntime = runtime;
         return runtime;
@@ -443,6 +501,10 @@ export class OwnerRuntime {
         agentDir: this.agentDir,
         catalogStorage: this.storage,
         createAgentSessionRuntimeImpl: runtimeImpl,
+        // The ZCode browser sign-in rides the same builtin-extension path for
+        // settings snapshots AND live sessions, so a stored credential
+        // resolves for real requests, not only in the settings UI.
+        builtinExtensions: [nozeliZaiCodingPlanExtension()],
         onNativeSessionEvent: (ref, event) => this.facts.onNativeSessionEvent(ref, event),
         openUrl: (url) =>
           this.send({ event: "native", eventData: { type: "openUrl", url } }),
@@ -465,6 +527,14 @@ export class OwnerRuntime {
     } else if (event?.type === "runFailed") {
       this.facts.failTurn(event.error?.message ?? "run failed");
     }
+  }
+
+  // Stable compaction epoch identity: changes ONLY when a confirmed native
+  // compaction entry appears in the journal (auto, manual or overflow all
+  // land there). Delivery records outlive an epoch change; only visibility
+  // claims keyed on older epochs are invalidated.
+  contextEpoch() {
+    return `compaction:${this.compactionCount}:${this.lastCompactionEntryId ?? "root"}`;
   }
 
   effectiveNow() {
@@ -551,6 +621,7 @@ export class OwnerRuntime {
             : undefined,
       instructions: typeof params.instructions === "string" ? params.instructions : undefined,
     };
+    this.contextBudget = parseContextBudget(params?.budget);
 
     let sessionFile = null;
     let sessionId = null;
@@ -633,6 +704,11 @@ export class OwnerRuntime {
       effort,
       effective: this.effectiveNow(),
       hasPrompted,
+      // Context-cutover surface: byte ceilings (calibratable, not token
+      // estimates) and the compaction epoch identity the host keys
+      // generation budgets on. Stable from session start, before any
+      // compaction fact exists.
+      contextDelivery: { budget: { ...this.contextBudget }, contextEpoch: this.contextEpoch() },
       ...(resume ? { entries } : {}),
     };
   }
@@ -647,12 +723,58 @@ export class OwnerRuntime {
     if (typeof params?.text !== "string" || !params.text) {
       throw Object.assign(new Error("text is required"), { code: "PI_INVALID_PARAMS" });
     }
+    const requestId = typeof params.requestId === "string" && params.requestId ? params.requestId : undefined;
+    if (requestId) {
+      const prior = this.deliveryRecords.get(requestId);
+      if (prior) {
+        // One delivery identity, one native send: never resent here. A prior
+        // unknown stays fenced until the host reconciles against the journal.
+        throw Object.assign(
+          new Error(
+            prior.phase === "native-record-confirmed"
+              ? `request ${requestId} was already delivered as native entry ${prior.text.entryId ?? "?"}; resend requires a new explicit input identity`
+              : `request ${requestId} has unknown settlement (phase ${prior.phase}); reconcile before any resend`,
+          ),
+          { code: "PI_DUPLICATE_REQUEST", deliveryPhase: prior.phase },
+        );
+      }
+    }
     const attachments = await normalizeImages(params.images);
+    const projection = normalizeProjection(params.projection, this.contextBudget.projectionMaxBytes);
+    const materials = normalizeMaterials(params.materials, { requestId, jobId: params.job?.id });
+    const textBytes = utf8Bytes(params.text);
+    const record = {
+      requestId,
+      jobId: params.job && typeof params.job.id !== "undefined" ? params.job.id : undefined,
+      sessionId: this.sessionRef.sessionId,
+      phase: "prepared",
+      text: { bytes: textBytes, sha256: sha256Hex(params.text), entryId: null, verbatim: null },
+      materials: materials ? materials.items.map(({ id, version, sha256, bytes }) => ({ id, version, sha256, bytes, entryId: null })) : [],
+      projection: projection
+        ? { bytes: projection.bytes, sha256: projection.sha256, llmCalls: 0, persisted: false }
+        : null,
+      budget: null,
+    };
+    const budgetSnapshot = () => {
+      record.budget = {
+        runHostTextBytes: materials ? materials.totalBytes : 0,
+        generationHostTextBytes: this.generationHostTextBytes + (materials ? materials.totalBytes : 0),
+        projectionMaxBytes: this.contextBudget.projectionMaxBytes,
+        runHostTextMaxBytes: this.contextBudget.runHostTextMaxBytes,
+        generationHostTextMaxBytes: this.contextBudget.generationHostTextMaxBytes,
+        contextEpoch: this.contextEpoch(),
+      };
+    };
+    const emitDelivery = () => this.facts.delivery({ type: "nozeliDelivery", ...record, projection: record.projection });
     const turn = {
       turnId: randomUUID(),
-      requestId: typeof params.requestId === "string" ? params.requestId : undefined,
-      jobId: params.job && typeof params.job.id !== "undefined" ? params.job.id : undefined,
-      beforeAgentContext: params.beforeAgentContext,
+      requestId,
+      jobId: record.jobId,
+      // The raw user text stays the ONLY user entry; materials ride one
+      // journaled custom message, the projection never journals at all.
+      rawText: params.text,
+      materialsMessage: materials ? materials.message : null,
+      projection,
       sessionId: this.sessionRef.sessionId,
       settled: false,
       aborted: false,
@@ -665,12 +787,130 @@ export class OwnerRuntime {
       turn.notifySettled = resolve;
     });
     this.promptInFlight = turn;
+    const knownIds = new Set(this.journalEntries.keys());
+    budgetSnapshot();
+    emitDelivery();
+    const verifyRecordedEntry = () => {
+      // Journal barrier evidence: the exact native entries this turn created.
+      // agent_start alone is admission, never persistence; only a persisted
+      // user entry AND the exact materials envelope confirm delivery.
+      let materialsEntry = null;
+      for (const [id, encoded] of this.journalEntries) {
+        if (knownIds.has(id)) continue;
+        const entry = JSON.parse(encoded);
+        if (entry.type === "message" && entry.message?.role === "user" && !record.text.entryId) {
+          const content = entry.message.content;
+          const joined = Array.isArray(content)
+            ? content.filter((block) => block?.type === "text" && typeof block.text === "string").map((block) => block.text).join("")
+            : typeof content === "string" ? content : "";
+          // Fidelity of the persisted text vs the submitted raw text:
+          //   exact      — byte-identical, verbatim proof;
+          //   annotated  — raw text present as an exact prefix and Pi's OWN
+          //                image-annotation lines follow (attachments were
+          //                sent, so the annotation is expected); the prefix
+          //                check is the separate proof the raw text persists;
+          //   transformed— anything else: never confirm, the native entry
+          //                does not prove the original text.
+          const exact = joined === params.text;
+          const annotated =
+            !exact &&
+            attachments.length > 0 &&
+            joined.startsWith(`${params.text}\n\n`);
+          record.text.entryId = id;
+          record.text.verbatim = exact;
+          record.text.fidelity = exact ? "exact" : annotated ? "annotated" : "transformed";
+        } else if (
+          entry.customType === "nozeli-materials" &&
+          (requestId ? entry.details?.requestId === requestId : !entry.details?.requestId)
+        ) {
+          materialsEntry = { id, entry };
+        }
+      }
+      if (materials) {
+        // ALL materials of this transaction live in ONE custom entry: verify
+        // the exact persisted envelope content and the journaled identity
+        // list against what was prepared, then stamp every material with the
+        // same native entry id. Any mismatch stays unconfirmed.
+        const persistedText = Array.isArray(materialsEntry?.entry?.content)
+          ? materialsEntry.entry.content
+              .filter((block) => block?.type === "text" && typeof block.text === "string")
+              .map((block) => block.text)
+              .join("")
+          : null;
+        const identityMatches =
+          Array.isArray(materialsEntry?.entry?.details?.materials) &&
+          materialsEntry.entry.details.materials.length === materials.items.length &&
+          materialsEntry.entry.details.materials.every(
+            (row, index) =>
+              row?.id === materials.items[index].id &&
+              String(row?.version) === materials.items[index].version &&
+              row?.sha256 === materials.items[index].sha256 &&
+              row?.bytes === materials.items[index].bytes,
+          );
+        if (
+          materialsEntry &&
+          persistedText !== null &&
+          persistedText === materials.message.content[0].text &&
+          identityMatches
+        ) {
+          for (const item of record.materials) item.entryId = materialsEntry.id;
+          record.materialsEntryVerified = true;
+        }
+      } else {
+        record.materialsEntryVerified = true;
+      }
+    };
+    const confirmRecordedEntry = () => {
+      verifyRecordedEntry();
+      // Confirmation requires the COMPLETE delivery: the raw user entry with
+      // proven fidelity (exact, or annotated with the raw text proven as an
+      // exact prefix), and — when materials were sent — the exactly-matching
+      // envelope entry. Partial or text-transformed journals never reach
+      // native-record-confirmed.
+      if (
+        !record.text.entryId ||
+        (record.text.fidelity !== "exact" && record.text.fidelity !== "annotated") ||
+        !record.materialsEntryVerified
+      ) {
+        markUnknown(record.text.fidelity === "transformed" ? "text-transformed" : "record-incomplete");
+        return false;
+      }
+      record.projection = projection
+        ? { ...record.projection, llmCalls: projection.llmCalls, persisted: false }
+        : null;
+      record.phase = "native-record-confirmed";
+      // Snapshot first: budgetSnapshot() adds this turn's bytes to the
+      // generation total, so persisting the counter after avoids double count.
+      budgetSnapshot();
+      this.generationHostTextBytes += materials ? materials.totalBytes : 0;
+      // Per-owner memory only: the durable cold-replay guard is the HOST
+      // job/collabAttempts ledger (owner processes are per-role and agentDir
+      // is shared, so a cross-owner runtime file would race and leak
+      // evidence across sessions — no runtime-side persistence here).
+      if (requestId) this.deliveryRecords.set(requestId, toJsonShallow(record));
+      emitDelivery();
+      return true;
+    };
+    const markUnknown = (reason) => {
+      record.phase = "unknown";
+      record.unknownReason = reason;
+      budgetSnapshot();
+      if (requestId) this.deliveryRecords.set(requestId, toJsonShallow(record));
+      emitDelivery();
+    };
+    // Reserve the delivery identity in memory immediately BEFORE submission
+    // (validation has already passed): once the native send may have started,
+    // the same requestId can never be replayed through this owner, whatever
+    // happens next. No disk ledger — the durable cold guard is host-side.
+    if (requestId) this.deliveryRecords.set(requestId, toJsonShallow(record));
     try {
       try {
         await this.driver.sendUserMessage(this.sessionRef, {
           text: params.text,
           ...(attachments.length > 0 ? { attachments } : {}),
         });
+        record.phase = "submitted";
+        emitDelivery();
         if (!turn.settled) {
           await Promise.race([settlePromise, new Promise((resolve) => {
             const timer = setTimeout(resolve, 15000);timer.unref();
@@ -678,21 +918,51 @@ export class OwnerRuntime {
         }
       } catch (error) {
         this.facts.failTurn(error?.message ?? String(error));
+        // Submission failed observably, but the journal may still hold the
+        // entry: verify instead of guessing, then report unknown if absent.
+        await this.flush().catch(() => {});
+        if (!confirmRecordedEntry()) markUnknown(error?.code ?? error?.message ?? "submit-failed");
         throw mapError(error, "PI_PROMPT_FAILED");
       }
-      if (!turn.settled) throw Object.assign(new Error('Pi run settlement was not observed; no automatic replay'), { code: 'PI_SETTLEMENT_UNKNOWN' });
-      await this.flush();
-      if (turn.hostToolError) throw Object.assign(new Error(turn.hostToolError.message ?? String(turn.hostToolError)), {code:'PI_HOST_TOOL_FAILED',cause:turn.hostToolError});
+      if (!turn.settled) {
+        markUnknown("settlement-not-observed");
+        throw Object.assign(new Error('Pi run settlement was not observed; no automatic replay'), { code: 'PI_SETTLEMENT_UNKNOWN' });
+      }
       const aborted = turn.aborted || turn.cancelRequested === true;
-      if (this.facts.state.turnErrorMessage && !aborted) throw Object.assign(new Error(this.facts.state.turnErrorMessage), { code: 'PI_PROVIDER_FAILED' });
+      // Every post-submission exit below (journal flush failure, incomplete
+      // confirmation, host-tool/provider errors) must leave the reserved
+      // identity fenced as unknown unless it was EXACTLY confirmed — an
+      // unconfirmed outcome never reopens the same requestId for replay.
+      try {
+        await this.flush();
+        confirmRecordedEntry();
+        if (turn.hostToolError) throw Object.assign(new Error(turn.hostToolError.message ?? String(turn.hostToolError)), {code:'PI_HOST_TOOL_FAILED',cause:turn.hostToolError});
+        if (this.facts.state.turnErrorMessage && !aborted) throw Object.assign(new Error(this.facts.state.turnErrorMessage), { code: 'PI_PROVIDER_FAILED' });
+      } catch (error) {
+        if (record.phase !== "native-record-confirmed") {
+          markUnknown(error?.code ?? error?.message ?? "post-submission-unconfirmed");
+        }
+        throw error;
+      }
       return {
         text: this.facts.state.lastAssistantText ?? '',
         completion: turn.hostControl ? 'host-control' : aborted ? 'aborted' : 'provider-completed',
         metrics: { ...(this.facts.state.turnUsage ? { usage: this.facts.state.turnUsage } : {}), ...(this.snapshot?.usage ? { sessionUsage: this.snapshot.usage } : {}) },
         effective: this.effectiveNow(), projectedNative: true,
+        // Delivery evidence is separate from the turn outcome above: a
+        // provider failure after this point never rewinds it. persisted is
+        // true only for a fully verified record confirmation.
+        nativeEntry: record.phase === "native-record-confirmed" && record.text.entryId
+          ? { id: record.text.entryId, contentDigest: record.text.sha256, persisted: true }
+          : null,
+        delivery: toJsonShallow(record),
+        contextEpoch: this.contextEpoch(),
       };
     } finally {
-      // An unknown settlement stays fenced; a known provider failure may recover.
+      // An unknown settlement stays fenced by its reserved record; a known
+      // provider failure may recover. The owner frees the in-flight slot only
+      // after settlement, and the reserved identity — not the slot — is what
+      // blocks replay.
       if (turn.settled) {
         this.promptInFlight = null;
         this.facts.endTurn();
@@ -703,6 +973,9 @@ export class OwnerRuntime {
   }
 
   async cancel(params) {
+    // A cancelled login aborts its HTTP and settles the original interaction;
+    // a remote key create that already completed is not revoked by this.
+    this.authAbort?.abort(Object.assign(new Error('login cancelled'), { code: 'PI_INTERACTION_CANCELLED' }));
     if (!this.sessionRef) {
       this.interactions.cancelAll();
       return {stopped:true,settings:true};
@@ -872,6 +1145,20 @@ export class OwnerRuntime {
       if (!prior) {
         this.facts.onNativeSessionEvent(this.sessionRef, {type:'entry_appended',entry});
         this.journalEntries.set(entry.id, encoded);
+        if (entry.type === 'compaction') {
+          // New confirmed compaction generation: bump the epoch and reset the
+          // per-generation byte accounting. Delivery records stay untouched.
+          this.compactionCount += 1;
+          this.lastCompactionEntryId = entry.id;
+          this.generationHostTextBytes = 0;
+          this.facts.delivery({
+            type: 'nozeliCompaction',
+            contextEpoch: this.contextEpoch(),
+            compactionEntryId: entry.id,
+            ...(typeof entry.firstKeptEntryId === 'string' ? { firstKeptEntryId: entry.firstKeptEntryId } : {}),
+            ...(Number.isFinite(entry.tokensBefore) ? { tokensBefore: entry.tokensBefore } : {}),
+          });
+        }
       }
     }
     const stats = await stat(file), digest = createHash('sha256').update(bytes).digest('hex');
@@ -884,6 +1171,7 @@ export class OwnerRuntime {
       seq: this.facts.currentSeq(),
       mtimeMs: stats.mtimeMs,
       sha256File: digest,
+      contextEpoch: this.contextEpoch(),
     };
   }
 
@@ -918,10 +1206,19 @@ export class OwnerRuntime {
       entryCount,
       leafId,
       seq: this.facts.currentSeq(),
+      contextDelivery: {
+        budget: { ...this.contextBudget },
+        contextEpoch: this.contextEpoch(),
+        generationHostTextBytes: this.generationHostTextBytes,
+        deliveryRecords: [...this.deliveryRecords.values()].map(
+          (record) => ({ requestId: record.requestId, phase: record.phase }),
+        ),
+      },
     };
   }
 
   async stop() {
+    this.authAbort?.abort(Object.assign(new Error('worker stopping'), { code: 'PI_INTERACTION_CANCELLED' }));
     this.questions.cancelAll();
     if (this.sessionRef) {
       const current = this.promptInFlight;
@@ -999,6 +1296,15 @@ export class OwnerRuntime {
         new Error("providerUpsert requires provider, baseUrl, models[{id}]"),
         { code: "PI_INVALID_PARAMS" },
       );
+    }
+    // A custom-source save that carries or keeps a credential — or targets the
+    // provider being logged into — must not race that login's credential write.
+    if (
+      params.apiKey !== undefined ||
+      params.preserveApiKey === true ||
+      this.authProvider === params.provider
+    ) {
+      this.refuseCredentialMutationDuringLogin(params.provider);
     }
     for (const model of params.models) {
       if (typeof model?.id !== "string" || !model.id) {
@@ -1178,6 +1484,9 @@ export class OwnerRuntime {
 
   async providerRemove(params) {
     await this.ensureInitialized(params);
+    // Removal disables the provider's stored credential; refuse while a login
+    // for that provider (or the open chooser) is in flight.
+    this.refuseCredentialMutationDuringLogin(params?.provider);
     const workspace = workspaceRefFor(path.resolve(params?.cwd ?? this.cwd ?? process.cwd()));
     await this.runtimeSupervisor().deleteCustomProvider(workspace, params.provider);
     return { removed: true };
@@ -1190,6 +1499,9 @@ export class OwnerRuntime {
         code: "PI_INVALID_PARAMS",
       });
     }
+    // Re-checked here, not only at the host: a login may have started after the
+    // host read credential state, and this write must never clobber it.
+    this.refuseCredentialMutationDuringLogin(params.provider);
     const workspace = workspaceRefFor(path.resolve(params.cwd ?? this.cwd ?? process.cwd()));
     try {
       await this.runtimeSupervisor().setProviderApiKey(workspace, params.provider, params.apiKey);
@@ -1223,20 +1535,51 @@ export class OwnerRuntime {
     };
   }
 
+  /**
+   * Worker-boundary TOCTOU guard for credential mutations: while a login for
+   * the same provider is in flight (or the in-worker chooser is still open,
+   * `authProvider === null`), a queued native-key write, custom-source
+   * credential save or removal must not run — it could overwrite the OAuth
+   * credential the login stores (or race it the other way). Unrelated
+   * providers stay unaffected; nothing secret is carried in the error.
+   */
+  refuseCredentialMutationDuringLogin(provider) {
+    if (!this.authAbort) return;
+    if (this.authProvider === null || this.authProvider === provider) {
+      throw Object.assign(
+        new Error(`A login flow is already active for ${this.authProvider ?? "a provider being chosen"}`),
+        { code: "PI_AUTH_IN_FLIGHT" },
+      );
+    }
+  }
+
   async authLogin(params) {
     await this.ensureInitialized(params);
-    const workspace = workspaceRefFor(path.resolve(params.cwd ?? this.cwd ?? process.cwd()));
-    let provider = params.provider;
-    if (!provider) {
-      const snapshot = await this.runtimeSupervisor().getRuntimeSnapshot(workspace);
-      const options = snapshot.providers.filter(row => row.oauthSupported).map(row => ({id:row.id,label:row.name??row.id}));
-      if (!options.length) throw Object.assign(new Error('No OAuth providers are available'), {code:'PI_AUTH_UNSUPPORTED'});
-      provider = await this.interactions.ask({kind:'select',options});
-      if (!options.some(row => row.id === provider)) throw Object.assign(new Error('Unknown OAuth provider'), {code:'PI_INVALID_PARAMS'});
+    // One login transaction at a time; its AbortController is the single
+    // cancellation handle: host `cancel`/`stop` aborts in-flight HTTP and
+    // settles the original interaction instead of leaving it dangling.
+    if (this.authAbort) {
+      throw Object.assign(new Error('Another login flow is already running'), {code:'PI_BUSY'});
     }
-    const notify = (eventData) => this.send({ event: "native", eventData });
+    const workspace = workspaceRefFor(path.resolve(params.cwd ?? this.cwd ?? process.cwd()));
+    const controller = new AbortController();
+    this.authAbort = controller;
+    // null while the in-worker provider chooser is still pending: a credential
+    // mutation can then race whichever provider the user is about to pick.
+    this.authProvider = null;
+    let provider = params.provider;
+    const notify = eventData => this.send({event:'native',eventData});
     try {
+      if (!provider) {
+        const snapshot = await this.runtimeSupervisor().getRuntimeSnapshot(workspace);
+        const options = snapshot.providers.filter(row => row.oauthSupported).map(row => ({id:row.id,label:row.name??row.id}));
+        if (!options.length) throw Object.assign(new Error('No OAuth providers are available'), {code:'PI_AUTH_UNSUPPORTED'});
+        provider = await this.interactions.ask({kind:'select',options});
+        if (!options.some(row => row.id === provider)) throw Object.assign(new Error('Unknown OAuth provider'), {code:'PI_INVALID_PARAMS'});
+      }
+      this.authProvider = provider;
       await this.runtimeSupervisor().login(workspace, provider, {
+        signal: controller.signal,
         onAuth: (info) => this.send({event:'interaction',interaction:{id:randomUUID(),provider,kind:'url',url:info.url,message:info.instructions}}),
         onPrompt: (prompt) =>
           this.interactions.ask({
@@ -1250,10 +1593,15 @@ export class OwnerRuntime {
         onProgress: (message) =>
           notify({ type: "authStatus", provider, state: "progress", message }),
       });
+      notify({ type: "authStatus", provider, state: "done" });
+      return { provider, ok: true };
     } catch (error) {
       throw mapError(error, "PI_AUTH_FAILED");
+    } finally {
+      if (this.authAbort === controller) {
+        this.authAbort = null;
+        this.authProvider = null;
+      }
     }
-    notify({ type: "authStatus", provider, state: "done" });
-    return { provider, ok: true };
   }
 }

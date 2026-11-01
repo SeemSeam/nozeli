@@ -218,7 +218,6 @@ try {
   assert.notEqual(await processStamp(oldOwner.pid), oldOwner.stamp, 'Old frontdesk owner fully exits');
   assert.notEqual(cleared.providers.frontdesk.pid, oldOwner.pid);
   assert.deepEqual(business(await persisted()), business(durableBefore));
-  assert.deepEqual((await persisted()).contextDelivery?.orchestrator, durableBefore.contextDelivery?.orchestrator, 'Orchestrator history delivery watermark is unchanged');
   assert.equal(await chat.$eval('#composer', node => node.value), draft);
   assert.equal((await persisted()).drafts.frontdesk, draft);
   assert.equal(requests.length, 1, 'Reset completes without requesting a model answer');

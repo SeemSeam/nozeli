@@ -1,14 +1,14 @@
 import {EventEmitter} from 'node:events';
-import {spawn} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {randomUUID,createHash} from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {processStamp} from './process-ownership.mjs';
+import {hostProcessTree} from './process-ownership.mjs';
 import {reapOwnedPiGroup} from './pi-process-ownership.mjs';
 import {scrubProviderEnv} from './omp-credentials.mjs';
 import {isolatedLaunch} from './process-isolation.mjs';
+import {platformPersistence} from '../../platform/shared/persistence.mjs';
 
 const defaultEntry=fileURLToPath(new URL('../../../../../integrations/pi/src/owner.mjs',import.meta.url));
 const fail=(code,message)=>Object.assign(Error(message),{code});
@@ -19,12 +19,21 @@ const modelSelector=value=>typeof value==='string'?value:value?.provider&&value?
 export class PiSession extends EventEmitter {
  constructor(spec){
   super();this.spec=spec;this.home=spec.home;this.cwd=spec.cwd;this.role=spec.role;
+  // Platform process service (group spawn, identity stamp, group termination)
+  // is injected per host; the default comes from the shared capability
+  // contract, so a session never guesses group semantics for a platform
+  // without a verified adapter.
+  this.processTree=spec.processTree??hostProcessTree();
   this.tools=spec.tools??[];this.toolsDigest=digest(this.tools);this.viewOwnerId=spec.nativeContext?.ownerId??randomUUID();
   this.epoch=randomUUID();this.pending=new Map();this.inFlightToolCalls=new Map();this.toolAdmissions=new Map();
   this.nativeDrain=Promise.resolve();this.nativeError=null;this.closed=false;this.busy=false;
   this.phase='new';this.model=spec.model??null;this.effort=spec.effort??null;this.interactions=[];
   this.hasPrompted=false;this.agentEnds=[];this.configurationStatus='unconfigured';
   this.thinkingLevels=null;this.admissionTail=Promise.resolve();
+  // Delivery evidence state: last nozeliDelivery fact for the admitted
+  // request, and the native compaction epoch (set only from a confirmed
+  // nozeliCompaction fact or a start/prompt result — never guessed).
+  this.lastDelivery=null;this.contextEpoch=null;
   this.capabilities={terminal:false,model:true,thinkingLevel:true,reload:true,compact:true,diagnostics:true};
  }
  get metadataFile(){return path.join(this.home,'nozeli-session-tools.json');}
@@ -36,10 +45,9 @@ export class PiSession extends EventEmitter {
  }
  assertToolsDigest(expected){return this.preflightToolsDigest(expected);}
  async saveMetadata(){
-  const temp=this.metadataFile+'.'+randomUUID()+'.tmp';
-  const handle=await fs.open(temp,'wx',0o600);
-  try{await handle.writeFile(JSON.stringify({schema:1,threadId:this.threadId,sessionFile:this.sessionFile,toolsDigest:this.toolsDigest}));await handle.sync();}finally{await handle.close();}
-  await fs.rename(temp,this.metadataFile);
+  // Shared durable atomic publish (temp + fsync + rename + directory barrier);
+  // the home directory itself is created by start() before this runs.
+  await platformPersistence.writeAtomic(this.metadataFile,JSON.stringify({schema:1,threadId:this.threadId,sessionFile:this.sessionFile,toolsDigest:this.toolsDigest}));
  }
  write(value){
   if(!this.child?.stdin?.writable)throw fail('PI_RUNTIME_CLOSED','Pi runtime input closed');
@@ -85,7 +93,26 @@ export class PiSession extends EventEmitter {
    if(event?.type==='agent_end')this.agentEnds.push(event);
    const current=this.current;
    const fact={sessionId:message.sessionId??this.threadId,epoch:this.epoch,requestId:current?.requestId,jobId:current?.job?.id,streamId:event?.streamId,event};
-   this.enqueueNative(()=>this.spec.onNativeEvent?.(fact));
+   // Typed host-authored facts are consumed for binding evidence and epoch
+   // bookkeeping in the SAME serialized drain as entries, and only when the
+   // fact provably belongs to THIS owner session and admitted request —
+   // unknown fields or another owner's facts are forwarded, never trusted.
+   this.enqueueNative(async()=>{
+    if(event?.type==='nozeliDelivery'&&current&&this.current===current&&event.sessionId===this.threadId&&event.requestId===current.requestId){
+     this.lastDelivery=event;
+     // A provider failure after journal confirmation still owes the host the
+     // record-confirmed stage: emit it here, inside the drain and before any
+     // error 'unknown' fact, with the immutable request tuple plus the
+     // separate nativeEntryDigest evidence field.
+     if(event.phase==='native-record-confirmed'&&!current.recordConfirmedTransported){
+      current.recordConfirmedTransported=true;
+      await this.transport('native-record-confirmed',current,{entryId:event.text?.entryId??null,nativeEntryDigest:event.text?.sha256??null,...(Array.isArray(event.materials)&&event.materials.length?{materials:event.materials.map(({id,version,entryId})=>({id,version,entryId}))}:{})});
+     }
+    }else if(event?.type==='nozeliCompaction'&&event.sessionId===this.threadId){
+     this.contextEpoch=typeof event.contextEpoch==='string'?event.contextEpoch:this.contextEpoch;
+    }
+    await this.spec.onNativeEvent?.(fact);
+   });
    this.emit('event',event);return;
   }
   if(message.event==='interaction'){
@@ -98,6 +125,7 @@ export class PiSession extends EventEmitter {
  }
  async start(resumeId){
   if(this.child)throw fail('PI_OWNER_EXISTS','Pi session already owns a process');
+  if(!this.processTree.verified)throw fail('PI_PLATFORM_UNSUPPORTED',`Pi owner process ownership is not verified on ${this.processTree.platform}; refusing to start an unverified owner process`);
   await fs.mkdir(this.home,{recursive:true,mode:0o700});
   const runtime=this.spec.piRuntime??{};
   if(!resumeId){
@@ -118,23 +146,28 @@ export class PiSession extends EventEmitter {
    const isolation=this.spec.isolation;
    launch=await isolatedLaunch({...launch,home:this.home,cwd:this.cwd,writable:[...(isolation.writable??[]),env.PI_CODING_AGENT_DIR],readOnly:isolation.readOnly??[],readable:[...(isolation.readable??[]),path.resolve(path.dirname(entry),'..')]});
   }
-  this.child=spawn(launch.command,launch.args,{cwd:this.cwd,env:{...env,...launch.env},detached:process.platform!=='win32',stdio:['pipe','pipe','pipe'],windowsHide:true});
+  this.child=this.processTree.spawn({command:launch.command,args:launch.args,cwd:this.cwd,env:{...env,...launch.env},stdio:['pipe','pipe','pipe'],windowsHide:true});
   const child=this.child;
   this.exitPromise=new Promise(resolve=>{child.once('exit',(code,signal)=>{this.exit={code,signal};this.phase='exited';for(const pending of this.pending.values()){clearTimeout(pending.timer);pending.reject(this.protocolError??fail('PI_RUNTIME_EXITED','Pi owner exited before acknowledgement; input will not be replayed'));}this.pending.clear();resolve(this.exit);this.emit('exit',this.exit);});child.once('error',error=>{this.spawnError=error;for(const pending of this.pending.values()){clearTimeout(pending.timer);pending.reject(error);}this.pending.clear();resolve({error:error.message});});});
   createInterface({input:child.stdout,crlfDelay:Infinity}).on('line',line=>this.receive(line));
   this.diagnostics='';child.stderr.on('data',chunk=>{this.diagnostics=(this.diagnostics+chunk.toString()).slice(-16384);});
   await new Promise((resolve,reject)=>{child.once('spawn',resolve);child.once('error',reject);});
-  this.pid=child.pid;this.groupRecord={pid:this.pid,home:this.home,ownerId:this.viewOwnerId,stamp:await processStamp(this.pid),kind:'pi-node'};
+  this.pid=child.pid;this.groupRecord={pid:this.pid,home:this.home,ownerId:this.viewOwnerId,stamp:await this.processTree.stamp(this.pid),kind:'pi-node'};
   await this.spec.onSpawn?.(this.pid);
-  const result=await this.request('start',{cwd:this.cwd,home:this.home,agentDir:env.PI_CODING_AGENT_DIR,instructions:[this.spec.baseInstructions,this.spec.instructions].filter(Boolean).join('\n'),tools:this.tools,sessionId:resumeId,sessionFile:this.sessionFile,model:this.model,effort:this.effort,role:this.role},60000);
+  const result=await this.request('start',{cwd:this.cwd,home:this.home,agentDir:env.PI_CODING_AGENT_DIR,instructions:[this.spec.baseInstructions,this.spec.instructions].filter(Boolean).join('\n'),tools:this.tools,sessionId:resumeId,sessionFile:this.sessionFile,model:this.model,effort:this.effort,role:this.role,...(this.spec.budget?{budget:this.spec.budget}:{})},60000);
   this.threadId=result.sessionId;this.sessionFile=result.sessionFile;
   if(!this.threadId||resumeId&&this.threadId!==resumeId)throw fail('PI_SESSION_IDENTITY','Pi owner did not confirm exact original session identity');
   this.model=modelSelector(result.model)??this.model;this.effort=result.effort??this.effort;this.effective=result.effective;this.thinkingLevels=result.thinkingLevels??this.thinkingLevels;this.hasPrompted=result.hasPrompted===true;
-  await this.saveMetadata();this.phase='idle';this.configurationStatus=this.model?'configured':'unconfigured';
+  this.contextDelivery=result.contextDelivery??null;this.contextEpoch=result.contextDelivery?.contextEpoch??null;await this.saveMetadata();this.phase='idle';this.configurationStatus=this.model?'configured':'unconfigured';
   return {threadId:this.threadId,sessionFile:this.sessionFile};
  }
  async transport(status,current,extra={}){
-  return this.spec.onTransportFact?.({status,kind:'prompt',sessionId:this.threadId,epoch:this.epoch,requestId:current.requestId,jobId:current.job.id,attempt:1,contentDigest:current.contentDigest,...extra});
+  const fact={status,kind:'prompt',sessionId:this.threadId,epoch:this.epoch,requestId:current.requestId,jobId:current.job.id,attempt:1,contentDigest:current.contentDigest,...extra};
+  // The transport identity tuple (requestId/jobId/attempt/contentDigest/epoch)
+  // is immutable across stages: stage-specific evidence may only ADD fields
+  // (e.g. nativeEntryDigest), never rewrite the binding keys.
+  fact.requestId=current.requestId;fact.jobId=current.job.id;fact.attempt=1;fact.contentDigest=current.contentDigest;
+  return this.spec.onTransportFact?.(fact);
  }
  async handleTool(message){
   const current=this.current;
@@ -164,26 +197,41 @@ export class PiSession extends EventEmitter {
   this.admissionTail=new Promise(resolve=>{end=resolve;});
   return {previous,end:()=>{try{end();}catch{}}};
  }
- async prompt(text,{timeout=600000,images=[],job}={}){
+ async prompt(text,{timeout=600000,images=[],materials,projection,job}={}){
   if(this.busy||!job?.id)throw fail('PI_INPUT_ADMISSION','Pi prompt requires an idle owner and durable host job');
   if(this.nativeError)throw this.nativeError;
   const gate=this.beginAdmission();
   try{
    await gate.previous;
    if(this.busy||this.stopping)throw fail('PI_INPUT_ADMISSION','Pi prompt requires an idle owner and durable host job');
-   const current={requestId:randomUUID(),job,contentDigest:digest({text,images}),cancelled:false,hostControl:false};
+   const current={requestId:randomUUID(),job,contentDigest:digest({text,images,materials}),cancelled:false,hostControl:false};
    this.current=current;this.busy=true;this.phase='prompt-inflight';
    try{
-    const beforeAgentContext=await this.spec.onBeforeAgentStart?.();
+    await this.spec.onBeforeAgentStart?.();
     await this.transport('prepared',current);await this.transport('submitted',current);
     if(current.cancelled||this.stopping)throw fail('PI_INPUT_CANCELLED','Input cancelled before runtime submission');
-    const result=await this.request('prompt',{text,images,requestId:current.requestId,job,beforeAgentContext},timeout);
+    const result=await this.request('prompt',{text,images,requestId:current.requestId,job,...(materials?{materials}:{}),...(projection?{projection}:{})},timeout);
     this.hasPrompted=true;await this.request('flush',{},30000);await this.nativeDrain;
     if(this.nativeError)throw this.nativeError;
     await Promise.all(this.inFlightToolCalls.values());
+    // Delivery evidence is separate from the turn outcome, and it must never
+    // mutate the transport binding: status/epoch/contentDigest stay the
+    // request identity tuple (contentDigest = SHA of the submitted
+    // {text,images,materials}); the native entry's own raw-text digest rides
+    // the separate nativeEntryDigest field. The drain above usually already
+    // emitted this stage from the nozeliDelivery fact; never emit twice.
+    if(result.nativeEntry?.persisted&&!current.recordConfirmedTransported)await this.transport('native-record-confirmed',current,{entryId:result.nativeEntry.id,nativeEntryDigest:result.nativeEntry.contentDigest,...(result.delivery?.materials?.length?{materials:result.delivery.materials.map(({id,version,entryId})=>({id,version,entryId}))}:{})});
+    if(typeof result.contextEpoch==='string')this.contextEpoch=result.contextEpoch;
     await this.transport('settled',current);
-    return {threadId:this.threadId,turnId:current.requestId,text:result.text??'',completion:current.hostControl?'host-control':result.completion??'provider-completed',providerStatus:current.cancelled?'cancelled':'completed',metrics:result.metrics,effective:result.effective??this.effective,projectedNative:true};
-   }catch(error){await this.transport('unknown',current,{reason:error.code??error.message}).catch(()=>{});throw error;}
+    return {threadId:this.threadId,turnId:current.requestId,text:result.text??'',completion:current.hostControl?'host-control':result.completion??'provider-completed',providerStatus:current.cancelled?'cancelled':'completed',metrics:result.metrics,effective:result.effective??this.effective,projectedNative:true,nativeEntry:result.nativeEntry??null,delivery:result.delivery??null,contextEpoch:result.contextEpoch??null};
+   }catch(error){
+    // Drain first: a provider failure after journal confirmation must still
+    // surface the record-confirmed stage BEFORE the unknown fact, and the
+    // error carries the last truthful delivery fact for the host.
+    await this.nativeDrain.catch(()=>{});
+    if(this.lastDelivery&&this.lastDelivery.requestId===current.requestId&&!(error&&error.delivery))error.delivery=this.lastDelivery;
+    await this.transport('unknown',current,{reason:error.code??error.message}).catch(()=>{});throw error;
+   }
    finally{if(this.current===current){this.current=null;this.busy=false;this.phase=this.stopping?'stopping':'idle';}}
   }finally{gate.end();if(this.pendingModel!=null&&!this.stopping)await this.applyPendingModel();}
  }
@@ -262,7 +310,7 @@ export class PiSession extends EventEmitter {
   if(this.child.exitCode===null&&this.child.signalCode===null){
    await this.request('stop',{},15000).catch(error=>{persistenceError=error;});
    const exited=await Promise.race([this.exitPromise,new Promise(resolve=>{const timer=setTimeout(()=>resolve(null),3000);timer.unref();})]);
-   if(!exited){try{process.platform==='win32'?this.child.kill():process.kill(-this.pid,'SIGTERM');}catch(error){if(error.code!=='ESRCH')throw error;}}
+   if(!exited){try{this.processTree.terminateGroup(this.pid,'SIGTERM');}catch(error){if(error.code!=='ESRCH')throw error;}}
   }
   const result=await reapOwnedPiGroup(this.groupRecord);
   await this.exitPromise;await Promise.allSettled(this.inFlightToolCalls.values());await this.nativeDrain;

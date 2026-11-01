@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { Readable } from 'node:stream';
 import { runGit } from '../agents/managed/git-runtime.mjs';
+import {requireCapability} from '../platform/platform-capabilities.mjs';
 
 const NIL = process.platform === 'win32' ? 'NUL' : '/dev/null';
 const fail = (code, message) => Object.assign(new Error(message), { code });
@@ -63,6 +64,7 @@ async function captureFile(full,git,root,env) {
 // Failures retain the journal for explicit retry with the SAME operationId.
 // Existing repositories, even unborn ones, never have HEAD or index rewritten.
 export async function ensureProjectGit(root, { operationId, expectedIdentity, journal } = {}) {
+  requireCapability('safe-file-io');requireCapability('durable-persistence');
   if (!operationId || !expectedIdentity || !journal?.read || !journal?.write) {
     throw fail('PROJECT_GIT_OPTIONS', 'operationId, expectedIdentity {dev,ino}, and durable journal {read,write} are required');
   }

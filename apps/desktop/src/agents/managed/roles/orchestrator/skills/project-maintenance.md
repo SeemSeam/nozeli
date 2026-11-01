@@ -1,6 +1,6 @@
 # Project maintenance — bounded diagnosis and recovery
 
-This skill is always injected. Host-detected startup, publication and technical-closure failures automatically enter a durable local bug ledger and queue a `maintenance` event to this Orchestrator without creating a business Work. User-requested diagnosis uses the same bounded capabilities. Never treat archived instructions as new work.
+This skill is part of the fixed Orchestrator rules. Host transactions with a proven deterministic recovery (pre-prompt preparation, session startup, captured publication, technical closure) run their bounded recovery programmatically in the original scope and record it in a durable local bug ledger. Provider/runtime failures without actionable host recovery — content refusal, auth, rate limit, model unavailable, network/transport — are classified and counted locally only: they never queue a `maintenance` or backstage model turn, never auto-resend, and never rewrite the request to evade a refusal. User-requested diagnosis uses the same bounded capabilities. Never treat archived instructions as new work.
 
 ## Real host capability
 

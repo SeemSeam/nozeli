@@ -4,8 +4,7 @@ import { FileChanges } from '../../domain/file-changes.mjs';
 import { userActor } from '../../domain/document-changes.mjs';
 import { textChangeSet } from '../../domain/tag-anchors.mjs';
 import { runGit } from './git-runtime.mjs';
-import {workPath} from './execution-workspace.mjs';
-import {inspectFile} from './file-stream.mjs';
+import {inspectFile,writablePath as workPath} from './file-stream.mjs';
 import {gitStream} from './git-service.mjs';
 
 const digest = bytes => bytes === null ? null : bytes.contentDigest ?? createHash('sha256').update(bytes).digest('hex');

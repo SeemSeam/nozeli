@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import {constants} from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
+import {platformPersistence} from '../platform/shared/persistence.mjs';
 import {CAPTURE_PIXELS} from '../domain/workspace-capture.mjs';
 import {validateDrawing} from '../domain/region-drawing.mjs';
 
@@ -40,12 +41,13 @@ export class WorkspaceCaptureStore {
   if(total-existing+bytes>this.maxBytes||count+Number(newCapture)>this.maxCaptures)throw Error('捕获恢复存储已满；原有材料未删除');
  }
  async write(id,suffix,value,limit){
+  platformPersistence.requireSupported();
   const text=JSON.stringify(value),bytes=Buffer.byteLength(text);if(bytes>limit)throw Error('捕获记录超过容量上限');
   // Capacity reservations and publication are shared across different capture IDs.
   const operation=this.capacityFlight.catch(()=>{}).then(async()=>{
    await this.ensure();const target=this.file(id,suffix);await this.capacity(target,bytes,value.projectId);
    const temporary=path.join(this.directory,'.pending-'+randomUUID());let handle;
-   try{handle=await fs.open(temporary,'wx',0o600);await handle.writeFile(text);await handle.sync();await handle.close();handle=null;await fs.rename(temporary,target);if(process.platform!=='win32'){const directory=await fs.open(this.directory,constants.O_RDONLY);try{await directory.sync();}finally{await directory.close();}}}
+   try{handle=await fs.open(temporary,'wx',0o600);await handle.writeFile(text);await handle.sync();await handle.close();handle=null;await fs.rename(temporary,target);await platformPersistence.syncDirectory(this.directory)}
    finally{await handle?.close();await fs.unlink(temporary).catch(error=>{if(error.code!=='ENOENT')throw error;});}
   });this.capacityFlight=operation;return operation;
  }
@@ -82,13 +84,14 @@ export class WorkspaceCaptureStore {
  discard(id,projectId){return this.serial(id,async()=>{
   await this.frozen(id,projectId);
   const operation=this.capacityFlight.catch(()=>{}).then(async()=>{
+   platformPersistence.requireSupported();
    // Any published result may be referenced by a note, draft or message. Even
    // unreadable result files are retained rather than guessed safe to delete.
    try{await fs.lstat(this.file(id,'.result'));throw Error('已有保存结果的捕获不能丢弃；引用材料已保留');}
    catch(error){if(error.code!=='ENOENT')throw error;}
    await fs.unlink(this.file(id,'.drawing')).catch(error=>{if(error.code!=='ENOENT')throw error;});
    await fs.unlink(this.file(id));
-   if(process.platform!=='win32'){const directory=await fs.open(this.directory,constants.O_RDONLY);try{await directory.sync();}finally{await directory.close();}}
+   await platformPersistence.syncDirectory(this.directory);
    return {discarded:true,id,projectId};
   });this.capacityFlight=operation;return operation;
  });}

@@ -578,12 +578,11 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
   }
 
   /* ---------- send snapshot / confirm -------------------------------------- */
-  function composedText() {
-    const questions=pending.filter(a=>a.source==='drawing'&&a.status==='ok'&&typeof a.frozenText==='string'&&a.frozenText.trim()).map(a=>'涂鸦问题：'+a.frozenText);
-    const text=[composer.value,...questions].filter(Boolean).join('\n\n');
-    if (!quoteTo) return text;
-    const excerpt = quoteTo.text.replace(/\s+/g, ' ').slice(0, 200);
-    return `> 回复 ${quoteTo.role === 'user' ? '你' : '前台'}${quoteTo.time ? ' ' + quoteTo.time : ''}：${excerpt}${quoteTo.text.length > 200 ? '…' : ''}\n\n${text}`;
+  function textMaterials() {
+    const materials = [];
+    if (quoteTo && typeof quoteTo.text === 'string' && quoteTo.text.trim()) materials.push({ kind: 'reply-quote', text: quoteTo.text, title: `回复 ${quoteTo.role === 'user' ? '你' : '前台'}${quoteTo.time ? ' ' + quoteTo.time : ''}` });
+    for (const attachment of pending) if (attachment.source === 'drawing' && attachment.status === 'ok' && typeof attachment.frozenText === 'string' && attachment.frozenText.trim()) materials.push({ kind: 'drawing-question', text: attachment.frozenText, title: '涂鸦问题' });
+    return materials;
   }
   return {
     appendDrawing(delivery) {
@@ -598,10 +597,11 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
     setProject(id) { if (id === projectId) return; projectId = id; materialOwner = { projectId: id, target: null, pending: [], quote: null, reads: 0 }; pending = materialOwner.pending; quoteTo = null; quoteBar.hidden = true; renderChips(); closeAt(); if (!panel.hidden) closePicker(); void refreshFilePaths(); },
     setFilePaths(paths) { filePathsCache = paths || []; },
     blocked() { return pending.some(a => a.status === 'error' || a.status === 'reading'); },
-    /** Snapshot for send: text (with quote) + material descriptors. */
+    /** Snapshot for send: exact composer text and separate explicit materials. */
     snapshot() {
       return {
-        text: composedText(),
+        text: composer.value,
+        textMaterials: textMaterials(),
         attachments: pending.filter(a => a.status === 'ok').map(a => ({
           name: a.name, mime: a.mime || 'application/octet-stream', size: a.size ?? 0, kind: a.kind,
           digest: a.digest || null, relPath: a.relPath || null, source: a.source,

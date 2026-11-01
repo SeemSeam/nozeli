@@ -336,3 +336,130 @@ NOZELI_OZONE=x11 node tests/desktop-settings.test.mjs      # 真实设置 GUI（
 
 GitHub main 保护要求 PR＋CI gate；本轮没有 PR 授权，不绕过保护。以 `integration/pi-model-management` 保存并推送候选，尚不声称已进入 main。用户已明确选择“先完成代码，暂缓公开发布”，因此不创建 release 或新 tag；旧 alpha.3 归档不改变。真实OAuth登录、付费模型和Windows/macOS未验收。
 
+
+## Windows/macOS 第一阶段共享核心准备（2026-10-31）
+
+当前实现落在 `nozeli_git` 的 Pi 主线工作树，未安装、提交或推送。本轮用户授权的是共享模块实现与整理，不是 Windows/macOS 原生功能、签名或发布验收。
+
+- 提取真实 Linux 文件句柄/目录链、Git fd 捕获、write-parent 和依赖准备实现到 `src/platform/linux/filesystem.mjs`；业务通过 `platform/shared/filesystem.mjs` 与 `createFileStream` 依赖合同调用，保留读取预算、路径策略、并发身份及 CAS；准备依赖的根目录 `.` 语义保留。
+- 进程 incarnation、整树归属/恢复、Linux bwrap 和恢复来源数据库核验归入 Linux 适配器。PiSession 使用注入进程服务；未知平台 ownerAlive 拒绝给出可释放的死亡结论，未确认后代退出不发确认回执。
+- 普通私有元数据写入与目录同步走共享持久化边界；未实现平台在副作用前明确拒绝。发布后屏障失败保留 committed/uncertain；演示登记不回滚已发布请求并阻断后续效果；捕获丢弃先检查能力。
+- Runtime 解析复用真实资产/架构/摘要/可执行检查；`implementationCoverage.complete` 仅表示声明覆盖，`platform-probe` 分开执行安全文件、持久化、owner、bwrap、Git 与 Pi 探针后才给机器 ready 结论。不依赖旧 OMP bundle 得到 Pi readiness。
+- custom rename/link/move 保留原 Linux 每路径事务与恢复语义，入口预检平台能力，不新增断电完整性承诺。第二阶段逐平台逐事务资格是放行前提，不能一次目录同步代签。
+
+验证：最终 `npm test` unit **489/489**、integration **1469/1469**，零失败/跳过；平台与邻接依赖测试27/27通过，进程/持久化/runtime/恢复定向通过，真实 Linux probe ready（开发树未打包Node如实not-run）。重定位 Git 测试首次漏复制新 runtime-assets 依赖导致2项失败；补齐真实安装目录闭包后最终完整套件全过，未改产品回退系统Git。真实 Electron＋Pi 回环模型实测发送/恢复未发送草稿/正常退出、原生候选编辑/差异/批注/冷启/同Worker续改及确切Git合入均通过（本机 `artifact://11152`）；完整回归原件 `artifact://11156` 与 `.test-output/ci/{unit,integration}.tap`。
+
+独立 reviewer 已关闭范围内阻断，认可“有边界的第一阶段共享核心准备”，不等同全OS审计或Windows/macOS原生资格。消费点/剩余原生责任见 [机器清单](platform-phase1-inventory.json)，可执行步骤、合同和W0–W5/M0–M5放行门见 [第二阶段交接](platform-phase2-handoff.md)。两平台可据此独立开始native开发；当前未实现能力继续阻断，不翻绿矩阵、不静默降级。
+
+
+## 普通项目终端（2026-10-31，未安装／提交／推送）
+
+左侧“终端”显式打开 `project-terminal` 原生工作面，真实 node-pty＋xterm 用户 Shell，初始 cwd 为登记项目根目录。不是旧 Agent/OMP 终端接管。每项目一个进程，重复入口只激活原视图，分屏／脱离／回嵌／切项目不改绑 Shell；冷布局恢复保持 not-started，不能重放命令。IPC 绑定确切 project/view/instance，不接受 renderer 命令路径或 cwd。ANSI 输出、顺序输入和分页回放有界；窗口尺寸变化真实 resize。
+
+关闭内容／项目／应用回收带唯一归属标签的进程树，含独立作业进程组；失败保留原实例并阻断新 Shell，不伪报退出。严格终端树收割使用启动前 incarnation 基线，无法检查的新进程只保留未知、不擅杀；内核会话／组来源例外仅限 strict 终端模式，不放宽 Pi 原标签检查。启动／关闭共用项目串行门，stopAll 覆盖尚未落入实例表的启动。
+
+独立 reviewer 最终关闭所有所报阻断；定向宿主／workspace／进程143/143＋renderer2/2通过。完整默认套件unit520/520、integration1470/1470零失败／跳过（新renderer登记晚于本次完整集，另2项已独立通过）。真实 Linux Electron＋PTY 验收9场景：真实pwd、ANSI、键盘写实际文件、重复入口PID不变、跨项目/非终端输入拒绝、Ctrl-C、detach/dock同PID、关闭内容回收独立组background sleep、项目切换隔离、应用正常退出回收；冷恢复不启动Shell，按原退出确认“取消任务并退出”正常exit0。最终原件 `/var/tmp/nozeli-project-terminal-Ejn83y/report.json`、`project-terminal.png`（已查看实际guest画面）；此前Ctrl-C观察误只读首128帧，补齐分页后确认真实中断生效；未修改产品以隐藏该观察错误。完整日志 `artifact://11250`。
+
+Windows/macOS缺少已验证终端进程所有权时明确拒绝，未作原生资格声明。真实系统剪贴板逐平台、IME/物理键盘和多屏未本轮验收；终端不是沙箱，用户命令在普通用户权限执行。未安装、未关闭用户窗口或修改用户项目。
+
+
+## 当前全部修改本机安装（2026-10-31，用户授权）
+
+从唯一源码树 `nozeli_git` 使用既有 install-local 构建、打包、校验并激活：current=`2026-10-31T11-17-44-818Z`，previous=`2026-10-31T03-33-41-686Z`；包含普通项目终端、模型适配 thinking／源编辑与发现、第一阶段平台共享核心及此前审核改版。生产 xterm/fit 依赖随包；Pi/Node/Git 校验沿既有安装门，未恢复 OMP 后端。按保留策略清理更早10-30安装，上一版可回退；未强关用户现有窗口，重开才加载新程序。
+
+实际安装 ELF（非源码 Electron、非用户启动 wrapper）＋隔离profile／合成项目通过：终端真实pwd/ANSI/文件写入/Ctrl-C、重复入口同PID、跨项目ACL、detach/dock、关闭shell与独立进程组background sleep回收、切项目隔离、正常退出及冷恢复不自动启动；原件 `/var/tmp/nozeli-project-terminal-8qA4IV/report.json`。同安装版Pi模型多源修订／保留密钥／跨来源拒绝／真实列表发现／thinking实际clamp／原线程轮换密钥零重放通过，正常exit0：`/var/tmp/nozeli-pi-model-mgmt-PhYRJf/report.json`。均未读取个人凭据、调用付费模型或改动用户项目。未commit/push/发布；Windows/macOS仍未验收。
+
+
+## OMP 源单向导入日常 Pi 与真实对话（2026-10-31，用户授权）
+
+用户明确授权导入 OMP 源信息和真实模型管理／测试对话。仅读取现有系统 OMP 与旧 Nozeli 私有 OMP 的静态源定义及模型缓存，单向通过安装版设置接口写入日常 `~/.Nozeli/pi`，不复制会话、扩展、执行式密钥或OAuth登录态。已有Pi源保留；密钥只进入私有配置不回传/入库，先备份原Pi文件至本机受保护目录。两份原OMP models.yml SHA前后相同。
+
+真实列表校正后：paratera 5模型、paratera2 25模型、bingxing 80模型（不把旧缓存多余ID继续列入）；三个源均revision2。easyfun真实列表请求返回DISCOVERY_UNAUTHORIZED，且无原配置模型ID；未伪造模型或宣称导入可用。需要有效凭据或明确真实模型定义后再验，不自动重试对话。
+
+实际安装ELF＋独立验证profile共享日常Pi源，合成项目中通过真实GUI发送两轮非工具连接验收：`paratera/gpt-6.1-sol`完成并精确回复`NOZELI_REAL_CHAT_0`，原生effort=low；在线切换`bingxing/AWS-GPT-5.6-Sol`后完成并精确回复`NOZELI_REAL_CHAT_1`，原生effort=off。不按名称臆造模型能力；服务列表不代表全部模型均可推理。测试后角色默认恢复系统OMP已有`paratera/gpt-6.1-sol`，thinking沿用原生默认；真实窗口正常exit0，未在用户项目发任务或改正文。
+
+脱敏原件 `/var/tmp/nozeli-real-source-import-qg38EH/report.json`、`reconciled.json`及设置截图；私有备份不提交。日常已运行进程须正常重开或刷新设置以重新读取更新源。本轮无源码功能变更、安装替换、commit/push/发布。
+
+
+## Z.AI（GLM Coding Plan / ZCode）登录与内置源密钥（2026-10-31，Linux 本地验收通过，真实 OAuth 未运行）
+
+新增 Nozeli 私有 Pi 运行时的 Z.AI（GLM Coding Plan）浏览器登录：以 pi-gui builtin extension 在**每个** ModelRuntime（设置快照与真实会话）上调用 Pi 官方 `pi.registerProvider(Provider)` native 注册路径，把 OAuth 方法**增补**到原生 `zai` Provider——原生模型（glm-4.7 … glm-5.3-highspeed）、openai-completions 传输、baseUrl 与原生 API-key 登录全部保留，仅增加 `auth.oauth`。存储走 Pi 自有 `auth.json`（凭据 type `oauth`，`access` 为持久 `id.secret` 密钥），因此真实请求与模型目录都使用该凭据，不是只在 GUI 生效。
+
+来源与许可：协议自固定 OMP 快照 `.build/omp/build-IodhZv/source` 移植并逐文件标注——`packages/ai/src/registry/oauth/zai.ts`（业务登录＋密钥铸造）、`packages/catalog/src/compat/rules/auth/zai-coding-plan.kdl`（client id/端点/`zcode://zai-auth/callback`/非标准 JSON token body/凭据路径）、`packages/ai/test/zai-oauth.test.ts`（线缆形状）。上游 MIT © Stencil Labs, Inc. 及 oh-my-pi 贡献者；无 OMP/Bun 运行时依赖，仅 Node + 已固定的 `@earendil-works/pi-ai`/`pi-coding-agent`。
+
+与上游的差异（刻意保留）：不移植 OMP 的 native-scheme 接收器——Nozeli **从不注册或接管** `zcode://` 回调；用户在自己浏览器完成授权后手动粘贴最终重定向 URL 或 `code#state`，按事务 state 常量时间校验（scheme/host/path 精确匹配），裸 code 拒绝。授权前必须显式同意（select 默认项为取消，空输入即取消），说明会创建/复用名为 `nozeli` 的专用 API 密钥；只查找/创建 `nozeli` 条目，绝不改写 ZCode 自身 `zcode-api-key` 或 OMP `oh-my-pi`，secret 一律取 copy 端点。取消：worker `authLogin` 现以 AbortController 串接，`cancel`/`stop` 中止在途 HTTP 并让原交互落定（已完成的远端创建不承诺撤销）；每个副作用步骤与返回凭据前均检查取消。错误仅含操作与状态码，不携带响应体、URL、令牌或粘贴内容；凭据不回传宿主/渲染层。
+
+支持矩阵（来自运行时 `authList`/SDK 1.4.0，非硬编码名单）：原生 Pi OAuth 入口为 anthropic、github-copilot、kimi-coding、meta、openai、openai-codex、openrouter、xai＋动态 radius（9 项，保留原生实现，不表示逐账号真实验收）；本轮新增 `zai`（GLM Coding Plan 浏览器登录）。OMP 其余 auth 条目（alibaba-coding-plan、cursor、google-antigravity、gitlab-duo、perplexity、snowflake、xiaomi、zhipu-coding-plan 等）未移植，不宣称支持；`zai-coding-cn` 不自动继承国际 ZCode 流程。设置页新增“内置源 API 密钥”表单，仅列出运行时声明支持密钥设置的 Provider，走原生 `authSetKey`；模型定义沿用 Pi，已有订阅登录不被密钥写入覆盖，无需手填模型。
+
+界面：设置→账号登录复用既有最小登录流（下拉列 Z.AI、授权链接展示、粘贴输入、取消），同意提示与静态说明均写明 nozeli 专用密钥与不接管 `zcode://`；新增确定性测试 `apps/desktop/tests/pi-zai-coding-plan.test.mjs`（适配器线缆/同意/取消/脱敏/回调校验＋宿主内置密钥面）与 `apps/desktop/tests/pi-zai-coding-plan-live.mjs`（真实私有 Node worker 协议对 127.0.0.1 确定性授权端点全流程：authList 清单、consent→URL→粘贴→token→业务→nozeli 密钥→auth.json→模型目录 authed，及取消/单飞）。
+
+边界与实测：真实账号 OAuth 未运行，未打开个人浏览器、未授权、未创建真实密钥、未读取个人凭据。父级最终构建通过；适配器与宿主边界16/16，真实 Pi OwnerRuntime＋回环 HTTP 授权协议3/3（含凭据落盘、目录认证态、取消、同源写入竞态）；真实 Electron 隔离配置设置验收30项通过，实际展示专用密钥同意文案并在同意前取消，未产生凭据或外部请求。截图与报告 `/var/tmp/nozeli-settings-ui-HOJ8q0/`；源码独立复审最终无剩余阻塞。验证环境仅 Linux，不代表 Windows/macOS 或真实远端账户验收。复现命令（仓库根）：
+
+```bash
+npm --prefix integrations/pi run build             # 重建 dist 与完整性清单
+node --test apps/desktop/tests/pi-zai-coding-plan.test.mjs
+NOZELI_TEST_LIVE=1 node --test apps/desktop/tests/pi-zai-coding-plan-live.mjs
+node apps/desktop/tools/test-suites.mjs default      # 既有回归（含 provider-settings、pi-provider-runtime）
+```
+
+真实登录需用户参与：用户在自己的浏览器打开授权链接、完成 Z.AI 登录并粘贴 `zcode://zai-auth/callback?...` 或 `code#state`；同意步骤明确将创建/复用 `nozeli` 专用密钥。父级/系统不代开个人浏览器、不自动授权。
+
+### 追加（同日，评审后冻结前）
+
+端点安全与竞态收口：适配器端点改为固定常量——生产忽略一切环境覆盖值（继承 env 无法把凭据流量改指他处）；仅在显式测试实例（`NOZELI_TEST_INSTANCE`，宿主环境清洗规则不剥离该标记）内接受回环 http(s) 端点覆盖（`zcode:` 重定向仅保协议校验），门控下的非回环/带凭据/改协议覆盖直接报错而非静默回退。全部 HTTP 请求 `redirect:'error'`（凭据 POST 绝不跟重定向），响应读取设 1MiB 字节上限（流式截断），错误仍仅含操作与状态。登录进行中（含 worker 内 Provider 选择器未定）时，宿主序列化边界与 worker 边界双层拒绝同 Provider 的凭据变更——native key 写入、自定义源凭据保存、源移除（worker `PI_AUTH_IN_FLIGHT`；无跨 Provider 全局锁，无关源不受影响；错误不携带密钥）；登录完成后的存量 OAuth 凭据仍由存储类型判定，密钥写入不得静默覆盖。renderer select 渲染修复：可信 Z.AI 同意文案（“请确认”前缀）显示于选项前，编号显式为 1./2.（原 `index??position??lines.length` 在插入文案行后会错位），外来 Provider 的 select 文案一律不渲染。新增测试：端点门控/重定向拒绝/字节上限、宿主登录-变更竞态与同意投影（integration 套件）、worker 边界同 Provider 拒绝（live 套件，夹具以测试门指向 127.0.0.1）。按指示本轮未执行任何测试/构建，父级随整包运行；真实账号 OAuth 仍未运行。
+
+父级最终修正并复验：恢复回调长度上限 `PASTED_INPUT_LIMIT=8192` 与 `authLogin` 的 native 通知闭包，避免回调解析/成功登录后的 ReferenceError；上述16＋3＋30项结果来自两处修正后的最终源码，不沿用中间失败结果。
+
+最终默认回归门 `TMPDIR=/var/tmp NOZELI_TEST_CONCURRENCY=2 npm test` 通过：unit 522/522（60文件），integration 1486/1486（144文件），零失败/跳过。原件 `apps/desktop/.test-output/ci/{unit,integration}.tap`。本轮仅源码与验证，未安装替换、提交或发布。
+
+## 前台 GLM 切换与旧 GPT 状态修复（2026-10-31，源码已验，未安装）
+
+用户报告前台选择 GLM 后对话仍显示 GPT。只读核对安装版：角色默认已保存 `bingxing/GLM-5.3-Flash`，原生 Pi journal 也已记录该模型的 model_change；此前最后一条 assistant 来自 GPT，核对时未有切换后的新 assistant。项目 `managed:residents` 仍保留 GPT。故不能把旧回复或旧持久元数据当作当前远端请求的证明，也不能声称已在用户会话验证下一轮 GLM。未发送用户测试消息、未读凭据、未修改用户项目。
+
+修复 `controller.mjs`：原生 model-changed 更新同线程 resident 模型/思考档位，事务内再次检查线程身份；休眠会话恢复后落实保存的模型/思考覆盖，已匹配时不重复切换；失败留在 modelSync，按失败时的选择判断是否真正恢复，避免 GPT 凭据刷新成功掩盖 GLM 切换失败。`provider-settings.mjs` 修复模型列表延后刷新的旧快照覆盖：失焦与保存后沿最新目录及实际保存选择刷新，不恢复过期选项。
+
+Linux 最终真实 Electron＋Pi＋本地 HTTP 实测通过：执行中 GPT 保持当前回合、GLM 显示待切换；结束后同一原线程下一轮 HTTP model 精确为 `GLM-5.3-Flash`（两次请求依次 `gpt-6.1-sol`、`GLM-5.3-Flash`）。角色下拉、同步状态、会话管理结构化事实均显示 GLM；旧 GPT 回复只保留一次、不重写；未发送草稿与原文保留。冷重开仍 GLM、原 threadId、请求数仍2，零重放。截图与日志 `/var/tmp/nozeli-defaults-electron-5W69sM/`，已查看会话事实实际画面；设置页另30项通过 `/var/tmp/nozeli-settings-ui-Vj6Qzh/`。
+
+宿主/源/准入相邻回归40/40；最终失败意图修正后的模型元数据回归8/8；模型列表交互回归通过。扩展实际 smoke 时清理旧假设：配置向导不自动开启、打开对话后才等待 Agent ready、held 回复不得先等完成、结构化事实读取 pre 而非诊断 textarea；中间失败不记通过。本轮未重跑全量默认套件，未调用真实远端 GLM，未安装/提交/发布，Windows/macOS 未验。
+
+## 账号与 API 源页简化（2026-10-31，reviewer 设计与复审通过，未安装）
+
+用户截图显示同一来源重复堆叠移除确认，要求 reviewer 重设计整页。reviewer 确定结构后由 UI 工程师实施：源名称、类型/凭据状态、模型数为摘要，地址与操作分行；模型列表按需展开、本地搜索、有界高度，原生源按运行时目录计数；服务发现与已配置/内置目录分开，不把列表返回冒充推理授权。添加 API、账号登录、内置源密钥收为折叠入口，说明按需查看。移除由全局唯一确认状态控制，跨源/重复点击不叠加；失败保留局部错误，取消不刷新。保留编辑草稿并在异步写入期间冻结输入，发现导入不得覆盖同源草稿。
+
+修改范围：`provider-settings.mjs`、`settings-panel.css`，既有设置/目录交互 smoke 及独立 `desktop-provider-settings-live.mjs`。宿主 API、安全检查与凭据存储未改。reviewer 最终源码 verdict correct，无已证实阻断。
+
+Linux 实测：构建通过；目录交互＋宿主21/21，既有真实设置30项通过；独立真实 Electron＋宿主5组行为通过（80模型搜索；重复/跨来源确认、真实默认引用拒绝与取消无刷新；390px暗色无横向溢出；延迟成功回执期间唯一确认；解除引用后实际移除及正常exit0）。985px简洁列表、模型展开/搜索与390px暗色确认截图原件 `/var/tmp/nozeli-provider-ui-CjkI7s/`，已查看实际画面。此前 GLM 真实本地请求/原线程/冷恢复 smoke 亦通过 `/var/tmp/nozeli-defaults-electron-vv81X8/`；设置原件 `/var/tmp/nozeli-settings-ui-WwqImb/`。
+
+独立 smoke 从旧综合设置脚本提取，避开其无关标签前置失败；测试环境修正 XAUTHORITY 保留、已有截图门与精确 CSS viewport，失败拒绝不使用仅延迟成功回执的观察器。未修改产品以规避测试失败。本轮未重跑全量套件；未调用外部发现/推理、未改用户项目或日常凭据、未安装/提交/发布；Windows/macOS未验。
+
+## 本地 HTML 默认网页视图（2026-10-31，已实现与实测，未安装）
+
+用户要求 HTML 可在内置浏览器打开，而不只显示代码。`.html/.htm` 现在默认进入隔离网页视图，顶部统一为网页／源码／对照、刷新网页和默认关闭的自动刷新。源码与网页共用同一已挂载编辑缓冲，切换不替换正文、选区或撤销历史；源码模式释放 native 网页；对照模式按宽度左右／上下排列，编辑器按实际源码分区高度布局。刷新捕获当前缓冲，不代替文件保存；失败保留上一网页快照并提供源码入口。保存的 `fileView.webMode` 沿已有宿主白名单和布局导航持久化，冻结审核文档继续禁用读取工作目录的网页预览。
+
+复用既有 `IsolatedPreviewManager`／独立 WebContentsView，不将本地文件放进共享在线网站 session。可读取项目内有界 CSS、图片、JS、模块、JSON 与捕获的本地 HTML 链接，支持中文／空格文件名。外链、远端脚本／样式等继续由 CSP、member gate 和 dead proxy 阻断，但不再导致整页捕获失败；`srcset` 按 URL／descriptor 状态扫描，保留 URL 中逗号并支持无空格候选分隔。项目外逃逸、越权文件、弹窗、worker、WebRTC、App IPC 与 Node 能力仍拒绝。仍为离线本地网页，不宣称可运行任意联网应用。
+
+实现：renderer `isolated-surfaces.mjs/.css`、`app.mjs`；main `isolated-preview.mjs`、`host.mjs` 的 `.htm` 与视图字段、`workspace-layout-store.mjs` 的导航字段。独立 reviewer 关闭两项 srcset 边界与窄屏分区审查，最终源码 verdict correct。
+
+Linux 验证：最终宿主/预览/布局回归50/50，构建通过。真实 Electron＋真实本地文件完整 smoke15组通过：默认网页、源码／对照、CSS／SVG／classic JS／ES modules／JSON、本地链接往返、外链阻断、多个编辑器缓冲捕获、未保存刷新／撤销、安全 realm／STUN零外发、冻结报告浅深色与390/900px布局/对比度、冻结字节导出、真实历史报告入口与主题跟随；原件 `.test-output/html-surfaces-vySTYl/`。末次窄屏源码尺寸修正重建后，focused真实HTML10组再通过，新增断言编辑器不超出源码分区；原件 `.test-output/html-surfaces-tlvps9/`，已查看 native 网页内容与源码控制面截图。报告打印因本机无 CUPS 默认打印机未验成功，仅打印媒体布局验证通过。
+
+smoke 修正实际项目激活与最终提交 generation 的 target 选择，防止对过期 native target 发安全探测；删除旧固定 RGB 默认色断言，保留主题传播、实测对比度和无溢出；恶意发布负例使用独立项目避免占用原报告 fixture 配额，不放宽产品准入。未重跑全量默认套件；GUI冷启／物理多屏／跨窗 HTML 往返及 Windows/macOS 未本轮实测。不操作用户论文、凭据或会话；未安装／提交／发布。
+
+## 克制上下文交付与三角色记忆／skill 设计（2026-11-01，未安装）
+
+用户明确授权将[克制上下文方案](context-delivery-design.md)落地并测试，同时协同设计三角色记忆／skill。运行源码现在保留 user 原文，把显式文件／标签／回复引用／涂鸦问题冻结为独立材料数据；取消“未见前台消息”、普通输入包装、全项目状态预装与逐轮 Worker 原任务副本。当前 Work 控制数据走单槽 native context 投影，不写入原生 journal，自动／手动／overflow 压缩摘要请求不携带该投影。材料持久一次与隐式同版本可见性缓存分开；显式重附总是完整发送，已记录后失败不会被视为未发送，unknown 不自动重投。准入、entry 精确核验、请求 tuple 与原文 digest、provider 结果分别记录，不混称“模型已理解”。
+
+宿主预算覆盖材料／交接与只读宿主工具文本；主要 document read／list／search 不能绕过。必要控制超限阻断整请求，效果执行前持久化计数并先写 durable intent，保留拒绝与重复效果门。原任务／批准原文按当前 Work 重新登记版本化来源，超过单 run 的长文可明确暂停，再用稳定 readRef 与返回 endOffset 在下一显式 run 续读；分页按完整 JSON 响应选取 Unicode 边界，转义与来源 metadata 也计入，不在被拒页推进游标。
+
+provider／预算／无能力技术故障只本地分类与去重，不产生 maintenance／backstage 模型扇出；宿主生成的缺失报告诊断保留可读记录但不再作为业务问题自动派模型。真实 Worker problem、原生问题与用户明确业务交接仍保留，权限／CAS／未知效果门未放宽。连接失败不销毁原对话内容面；原文、草稿与会话管理上下文详情仍可读，发送继续受连接与准入限制。详情不发模型请求，不将 hook 次数当成完整最终请求捕获。
+
+100轮压力暴露本地存储写放大：每次 full-state pending 重复写入，历史变长后触发 SQLite IO／自动 rollback 边界。修正不变业务快照与 local/cache 重写、collection delta replace 保持最终值／revision／重复ID／CAS等价；预算 epoch 本地持久化，legacy settings 可读；保留8秒 deadline、COMMIT 后 ACK、quarantine／unknown。二次 ROLLBACK 不再覆盖原始故障。独立 storage reviewer 未发现补丁引入的 P1/P2；未声称已验证断电或所有自动 rollback 故障注入。
+
+逐项父级实测：固定 Pi 全 live 门34/34（5文件，本地 scripted HTTP、真实 Node／Pi／journal），包括模型工具循环、两材料共享 exact entry、provider 拒绝后的持久确认、journal fault unknown fence、冷恢复、自动／手动／overflow 压缩、图片与进程清收；原件 `.test-output/ci/live.tap`。宿主 context cutover＋问题决定27/27（含100轮原文、五次拒绝零扇出、故障回执、跨 run 长文完整并集、真实 producer、重附、主控／Worker 正常绑定、效果预算与去重），对应 `tests/managed-context-cutover.test.mjs` 与 `tests/managed-problem-decisions.test.mjs`。主工作面生命周期72/72，旧契约迁移41/41、分页／材料／只读详情等定向门分别通过，不将不同轮次数字重复相加。
+
+最终真实 Electron＋Pi11组通过 `/var/tmp/nozeli-pi-electron-EUr9tT/`：原文前后空白／换行精确保留；原生回复的真实“引用”按钮只生成一个独立材料，不晋升 system；生产 composer 中完整长引用和涂鸦问题快照分离，检查 snapshot／JSON冷草稿边界不改变用户正文或宿主持久草稿、零推理；合成图片描述只作快照验证，未发送未注册图片，不冒充真实截图交付。HTTP400后仍是原 Page，详情无额外模型调用／凭据，390／190px深色无溢出；正常exit0，冷重开保留未发送草稿且零重放。已查看实际详情截图。
+
+[三角色记忆／skill设计](role-memory-skills-design.md)已落盘并独立审阅通过：四层来源（角色契约、用户批准项目知识、Work证据、瞬态Pi会话）、各角色职责／实际十技能目录、渐进披露、版本／冲突／撤销及原生资源白名单／reload／预算消费门。该整套知识与原生 skill 迁移仍是设计，不自动学习或导入私人资源；本轮只对现有角色说明作与上下文切换一致的收敛。
+
+本轮无个人账号／远端付费调用、无安装／提交／发布、无 Liuhuaiyu 会话或用户文件改写；不承诺消除其上游 content_policy 拒绝。仅 Linux x64／X11 实测，Windows/macOS、真实远端理解质量与完整跨屏矩阵未验。中间失败原件保留；旧 source-rewrite composer 脚本的自动向导／单根 editor 假设不作为本轮验收，相关新增快照检查已移到真实当前 conversation smoke，未改产品去迁就旧脚本。
+
+最终冻结源码默认门 `TMPDIR=/var/tmp NOZELI_TEST_CONCURRENCY=2 npm test`：unit **539/539**（62文件），integration **1519/1519**（146文件），零失败／跳过／取消；原件 `apps/desktop/.test-output/ci/{unit,integration}.tap`，本机完整输出 `artifact://12078`。独立 live 门 **34/34**（5文件）零失败／跳过，原件 `apps/desktop/.test-output/ci/live.tap`。最后两处旧断言已分别修正为来源类型真实保留及通过 Worker 实际读取批准原文／版本，不重新钉死已删除的 task-anchor 文案。最终真实 Electron11组、100轮压力、跨 run 原文完整并集与问题决定的27项均已通过；本段结果不沿用中间失败或未执行状态。

@@ -6,15 +6,14 @@ import {createReadStream} from 'node:fs';
 import {pipeline} from 'node:stream/promises';
 import {Transform} from 'node:stream';
 import {Worker} from 'node:worker_threads';
+import {platformPersistence} from '../platform/shared/persistence.mjs';
 const fs = process.versions.electron ? createRequire(import.meta.url)('original-fs').promises : nodeFs;
 
 export const MAX_ARCHIVE = 3 * 1024 ** 3;
 const MAX_UNPACKED = 10 * 1024 ** 3;
 export const inside = (root, file) => { const rel = path.relative(root, file); return rel !== '..' && !rel.startsWith('../') && !path.isAbsolute(rel); };
 export async function atomicJson(file, value) {
-  const temporary = file + '.' + crypto.randomUUID();
-  await fs.writeFile(temporary, JSON.stringify(value) + '\n', {mode: 0o600, flag: 'wx'});
-  try { await fs.rename(temporary, file); } finally { await fs.rm(temporary, {force: true}); }
+  await platformPersistence.writeAtomic(file,JSON.stringify(value)+'\n');
 }
 export async function ownedDirectory(directory) {
   const stat = await fs.lstat(directory);

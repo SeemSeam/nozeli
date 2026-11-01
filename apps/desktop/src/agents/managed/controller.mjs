@@ -1,6 +1,7 @@
 import {dispositionBinding,sameDispositionBinding,workDisposition,mergeConsentState,explicitNeverCommitStatement,mergeConstraintChoices} from '../../domain/work-disposition.mjs';
 import {deviationHeld} from '../../domain/work-deviation.mjs';
-import {ExecutionWorkspace,safeBytes} from './execution-workspace.mjs';
+import {ExecutionWorkspace} from './execution-workspace.mjs';
+import {safeBytes} from './file-stream.mjs';
 import {intakeLineage} from '../../domain/managed-work-records.mjs';
 import {runtimeFailureMessage} from '../../domain/runtime-failure-message.mjs';
 import {manageTodoState} from '../../domain/todo-management.mjs';
@@ -15,10 +16,11 @@ import { Workspace } from './workspace.mjs';
 import { PiSession } from './pi-session.mjs';
 import { recoverOmpProvider } from './omp-process-ownership.mjs';
 import { recoverPiProvider } from './pi-process-ownership.mjs';
-import { roles, rolePrompt, eventSkill, readRoleSkill, here } from './runtime.mjs';
+import { roles, rolePrompt, readRoleSkill, here } from './runtime.mjs';
 import { processStamp, recoverProvider } from './process-ownership.mjs';
 import {ContextReader,memoryContext} from './context-reader.mjs';
-import {prepareDelivery,contextInstructions,residentBaseInstructions,workerTaskAnchor} from './context-delivery.mjs';
+import {contextInstructions,residentBaseInstructions,explicitHandoffFacts,workerStateProjection,workerInitialHandoff,deliveryMaterials,PROJECTION_MAX_BYTES} from './context-delivery.mjs';
+import {HostContextBudget} from './context-budget.mjs';
 import {frontSource,frontReadLimits,readPage} from './frontdesk-read.mjs';
 import {MemoryVersion} from './memory-version.mjs';
 import {SessionIndex} from './session-index.mjs';
@@ -59,6 +61,10 @@ export class Controller extends EventEmitter {
   }
   constructor(store,{projectId=null,frontdeskDocuments,sessionFactory,readProjectText,beforeAccept,afterAdoption,isolateProcesses=false,checkpoint=async()=>{},piSource=null,piRuntime=null,piAuth=null,processBudget,taskPermissions=null,resolveRegisteredProject=null,resolveProjectRoot=null,privilegeBroker=null}={}){
     super();Object.assign(this,{frontdeskDocuments,store,sessionFactory,readProjectText,beforeAccept,afterAdoption,isolateProcesses,checkpoint,piSource,piRuntime,piAuth,processBudget,taskPermissions,resolveRegisteredProject,resolveProjectRoot,privilegeBroker});this.execution=new ExecutionWorkspace(store);this.sessions=new Map();this.starting=new Map();this.running=new Map();this.current=new Map();this.pendingEnds=new Set();this.publicationSerial=new Map();this.intakeSerial=new Map();this.stopping=false;this.started=false;this.closures=new Map();this.configuring=new Set();this.nativeDraftTargets=new Set();this.externalTerminalTargets=new Set();this.terminals=new Map();
+    // Context cutover: pending per-request {materials,projection} for the
+    // runtime contract, and the shared host budget ledger (run + compaction
+    // generation scopes, hydrated from durable epoch usage).
+    this.pendingContextDelivery=new Map();this.contextBudget=new HostContextBudget({},store.state?.contextBudgetEpochs||{});
     // Worker progress is projected from session events (timeline), never a fake PTY.
     this.memoryVersion=new MemoryVersion(path.dirname(store.plan));
     this.projectId=projectId??store.state.workspaceId;
@@ -106,7 +112,7 @@ export class Controller extends EventEmitter {
     }return {adopted,automaticReplay:false};
   }
   async recordTransport(target,fact){
-    const statuses=new Set(['prepared','submitted','pending','admitted','executed','rejected','unknown','settled']);
+    const statuses=new Set(['prepared','submitted','pending','admitted','native-record-confirmed','executed','rejected','unknown','settled']);
     if(!fact||!statuses.has(fact.status)||!['prompt','abort'].includes(fact.kind)||typeof fact.requestId!=='string'||!/^[A-Za-z0-9_-]{8,128}$/.test(fact.requestId)||typeof fact.sessionId!=='string'||typeof fact.epoch!=='string'||!Number.isSafeInteger(fact.attempt)||fact.attempt<1||!/^[a-f0-9]{64}$/.test(fact.contentDigest))throw Error('invalid transport fact');
     if(fact.status==='prepared'&&fact.kind==='prompt')await this.store.requireOnline();
     await this.store.mutateNative(()=>{
@@ -119,18 +125,38 @@ export class Controller extends EventEmitter {
         attempt={requestId:fact.requestId,sessionId:fact.sessionId,epoch:fact.epoch,attempt:fact.attempt,kind:fact.kind,contentDigest:fact.contentDigest,status:'prepared',facts:[],everAdmitted:false};job.collabAttempts.push(attempt);
       }
       for(const key of ['sessionId','epoch','attempt','kind','contentDigest'])if(attempt[key]!==fact[key])throw Error('transport immutable binding changed');
-      const receipt={status:fact.status,...(fact.reason?{reason:String(fact.reason).slice(0,400)}:{}),...(Number.isSafeInteger(fact.seq)?{seq:fact.seq}:{}),at:new Date().toISOString()};
-      if(!attempt.facts.some(old=>old.status===receipt.status&&old.seq===receipt.seq&&old.reason===receipt.reason))attempt.facts.push(receipt);
-      if(attempt.status!=='settled'&&(!Number.isSafeInteger(fact.seq)||!Number.isSafeInteger(attempt.lastNativeSequence)||fact.seq>=attempt.lastNativeSequence)){attempt.status=fact.status;if(Number.isSafeInteger(fact.seq))attempt.lastNativeSequence=fact.seq;}if(fact.status==='admitted')attempt.everAdmitted=true;
+      const receipt={status:fact.status,...(fact.reason?{reason:String(fact.reason).slice(0,400)}:{}),...(Number.isSafeInteger(fact.seq)?{seq:fact.seq}:{}),...(fact.entryId?{entryId:String(fact.entryId).slice(0,160)}:{}),...(fact.nativeEntryDigest&&/^[a-f0-9]{16,128}$/.test(String(fact.nativeEntryDigest))?{nativeEntryDigest:String(fact.nativeEntryDigest)}:{}),at:new Date().toISOString()};
+      if(!attempt.facts.some(old=>old.status===receipt.status&&old.seq===receipt.seq&&old.reason===receipt.reason&&old.entryId===receipt.entryId))attempt.facts.push(receipt);
+      if(attempt.status!=='settled'&&(!Number.isSafeInteger(fact.seq)||!Number.isSafeInteger(attempt.lastNativeSequence)||fact.seq>=attempt.lastNativeSequence)){attempt.status=fact.status;if(Number.isSafeInteger(fact.seq))attempt.lastNativeSequence=fact.seq;}
+      if(fact.status==='admitted')attempt.everAdmitted=true;
+      // Record confirmation is the exact-entry persistence barrier: it is the
+      // only stage that proves the original text is durably in native history
+      // and the only basis for delivery dedup or one-time handoff completion.
+      // The immutable transport identity tuple (request digest + session
+      // epoch) is never mutated; nativeEntryDigest/entryId ride along as
+      // evidence fields only.
+      if(fact.status==='native-record-confirmed'){attempt.everAdmitted=true;attempt.recordConfirmed=true;if(receipt.entryId)attempt.nativeEntryId=receipt.entryId;if(receipt.nativeEntryDigest)attempt.nativeEntryDigest=receipt.nativeEntryDigest;}
       if(fact.status==='rejected'&&!attempt.everAdmitted)attempt.definitiveRejection=true;
+      if(fact.status==='native-record-confirmed'&&!['frontdesk','orchestrator'].includes(target)){
+        const work=this.store.state.works.find(w=>w.id===target);
+        // A confirmed one-time handoff never repeats on later turns.
+        if(work?.contextHandoff)delete work.contextHandoff;
+      }
     });
   }
   async recordNativeEntries(target,fact){
     const facts=Array.isArray(fact)?fact:Array.isArray(fact?.entries)?fact.entries.map(entry=>entry.entry?{sessionId:fact.sessionId,epoch:fact.epoch,...entry}:{sessionId:fact.sessionId,epoch:fact.epoch,entry}):[fact];
-    if(facts.some(fact=>['compaction','branch'].includes(fact?.entry?.type)))this.tagMaterialDelivery?.invalidate(this.sessions.get(target));
+    if(facts.some(fact=>['compaction','branch'].includes(fact?.entry?.type))){this.tagMaterialDelivery?.invalidate(this.sessions.get(target));await this.#onConfirmedCompaction(target);}
     await this.timeline.recordBatch(facts,target);this.publishTimeline();
   }
-  recordNativeEvent(target,fact){if(/compaction|branch/.test(fact?.event?.type||''))this.tagMaterialDelivery?.invalidate(this.sessions.get(target));this.timeline.event(fact,target);this.publishTimeline();}
+  async recordNativeEvent(target,fact){
+    const type=fact?.event?.type||fact?.type||'';
+    // Typed runtime fact name (nozeliCompaction) plus journal entry kinds,
+    // case-insensitively: rotate the generation scope and persist BEFORE the
+    // next native fact is processed, inside the serialized native drain.
+    if(type==='nozeliCompaction'||/compaction|branch/i.test(type)){this.tagMaterialDelivery?.invalidate(this.sessions.get(target));await this.#onConfirmedCompaction(target);}
+    this.timeline.event(fact,target);this.publishTimeline();
+  }
   publishTimeline(){
     if(this.timelineTimer||this.store.closed)return;
     this.timelineTimer=setTimeout(()=>{this.timelineTimer=null;if(!this.store.closed)this.emit('timeline',this.timeline.frame());},25);
@@ -277,7 +303,7 @@ export class Controller extends EventEmitter {
             sync.sessions.push({...row,state:'unchanged',cleared:true,effective:session.effective??{model:session.model,effort:session.effort}});
           }catch(error){
             const failure={role,message:'Agent默认模型同步失败；配置已保存，可重试保存。',...(error?.code?{code:safeCode(error.code)}:{})};
-            this.modelDefaultFailures.set(target,{session,failure});
+            this.modelDefaultFailures.set(target,{session,failure,intent:null});
             sync.failed.push(failure);
             sync.sessions.push({...row,state:'failed',effective:session.effective??{model:session.model,effort:session.effort},error:{code:failure.code,message:failure.message}});
           }
@@ -292,7 +318,7 @@ export class Controller extends EventEmitter {
           sync.sessions.push({...row,state:result.state,desired:{model:selector,...(explicitThinking?{effort:explicitThinking}:{})},effective:session.effective??{model:session.model,effort:session.effort},...(result.clamped?{clamped:result.clamped}:{})});
         }catch(error){
           const failure={role,message:'Agent默认模型同步失败；配置已保存，可重试保存。',...(error?.code?{code:safeCode(error.code)}:{})};
-          this.modelDefaultFailures.set(target,{session,failure});
+            this.modelDefaultFailures.set(target,{session,failure,intent:{selector,effort:explicitThinking??null}});
           sync.failed.push(failure);
           sync.sessions.push({...row,state:'failed',desired:{model:selector,...(explicitThinking?{effort:explicitThinking}:{})},effective:session.effective??{model:session.model,effort:session.effort},error:{code:failure.code,message:failure.message}});
         }
@@ -313,8 +339,16 @@ export class Controller extends EventEmitter {
       }
       const role=['frontdesk','orchestrator'].includes(target)?target:'worker';
       const failed=this.modelDefaultFailures?.get(target);
+      // A recorded failure is evidence, not a permanent label, but recovery is
+      // judged against the recorded FAILED intent, not the session's mutable
+      // desired selector: a credential rotation re-applying the current model
+      // rewrites desiredModel and must not clear a failed saved default.
+      // Failures without an intent (clear/read) persist until a new save
+      // resets the map.
+      const intent=failed?.session===session?failed.intent:null;
+      const recovered=session.modelError==null&&!session.pendingModel&&intent!=null&&session.model===intent.selector&&(intent.effort==null||session.effort===intent.effort);
       let state;
-      if(failed?.session===session)state='failed';
+      if(failed?.session===session&&!recovered)state='failed';
       else if(session.modelError)state='failed';
       else if(session.pendingModel)state='pending';
       else if(session.desiredModel!=null)state=session.model===session.desiredModel?'applied':'failed';
@@ -324,7 +358,9 @@ export class Controller extends EventEmitter {
       else if(state==='failed'){
        // Redacted failure DTO: only allowlisted codes surface, so a native
        // error text/code can never leak paths or secrets.
-       const known=SAFE_MODEL_CHANGE_CODES.includes(session.modelError?.code)?session.modelError.code:null;
+       const recorded=failed?.session===session?failed.failure.code:null;
+       const code=session.modelError?.code??recorded;
+       const known=SAFE_MODEL_CHANGE_CODES.includes(code)?code:null;
        sync.failed.push({role,message:'Agent默认模型延后应用失败；原生当前选择已保留，请重试保存。',...(known?{code:known}:{})});
       }
       sync.sessions.push({projectId:this.projectId,target,ownerId:session.viewOwnerId,sessionId:session.threadId??null,desired:session.desiredModel!=null?{model:session.desiredModel,effort:session.pendingModel?.effort??session.effort}:null,effective:session.effective??{model:session.model,effort:session.effort},state});
@@ -690,7 +726,7 @@ export class Controller extends EventEmitter {
         const body=String(source.text??''),snapshotDigest=createHash('sha256').update(body).digest('hex');
         await this.store.putObject(Buffer.from(body));
         let end=Math.min(body.length,1200);if(end<body.length&&/[\uD800-\uDBFF]/.test(body[end-1])&&/[\uDC00-\uDFFF]/.test(body[end]))end--;
-        currentSources.push({source:relPath,version:source.version,digest:source.digest??snapshotDigest,snapshotDigest,buffer:source.buffer,diskVersion:source.diskVersion,preview:body.slice(0,end),totalChars:body.length,truncated:end<body.length,readSelector:'frontdesk-source:'+snapshotDigest,instruction:'审批时冻结原文；前台用@read加readSelector分页读取，主控用nozeli_inspect_work workName="@frontdesk-source:摘要"读取；Worker读当前执行目录并核对版本。'});
+        currentSources.push({source:relPath,version:source.version,digest:source.digest??snapshotDigest,snapshotDigest,buffer:source.buffer,diskVersion:source.diskVersion,preview:body.slice(0,end),totalChars:body.length,truncated:end<body.length,readSelector:'frontdesk-source:'+snapshotDigest,instruction:'审批时冻结原文；前台用 nozeli_source_read 按 readSelector 分页读取，主控用nozeli_inspect_work workName="@frontdesk-source:摘要"读取；Worker读当前执行目录并核对版本。'});
       }
       const scopeInputs=(goal?.jobIds||[job.id]).map(id=>s.jobs.find(j=>j.id===id)).filter(j=>j&&!j.context?.frontdeskResumeOf).map(j=>({sourceJobId:j.id,text:j.text}));
       const history={originalRequest:s.jobs.find(j=>j.id===goal?.rootJobId)?.text??route.originalText,scopeInputs,completedOperations:route.completedOperations,currentSources};
@@ -805,6 +841,14 @@ export class Controller extends EventEmitter {
     if(approvedCwd){const liveStat=await fs.lstat(frozen.cwd).catch(()=>null);if(!liveStat||liveStat.dev!==approvedCwd.dev||liveStat.ino!==approvedCwd.ino){return {ok:false,error:{code:'EFFECT_SCOPE_CHANGED',message:'批准时的工作目录身份已变化（被替换或移除），未执行；请重新申请授权。'},continueTurn:true};}}
     // Durable execution intent BEFORE the side effect: a crash between effect
     // and receipt leaves 'started', which blocks automatic retry (unknown).
+    // Receipt reservation precedes any durable intent: an effect may only fire
+    // when its run can still safely carry the receipt (design §9). Refusal
+    // pauses further model execution without claiming execution happened.
+    if(!this.contextBudget.reserveReceipt(job.target))return {ok:false,error:{code:'EFFECT_RECEIPT_SPACE_UNAVAILABLE',message:'本轮宿主文本预算余量不足以保留执行回执；为避免执行后回执缺失，本次未执行命令。请结束本回合，在新回合中重试该操作。'},requestId:request.id};
+    try{await this.#persistBudgetEpochs();}catch(error){return {ok:false,error:{code:'HOST_BUDGET_PERSIST_FAILED',message:'宿主预算记账持久化失败；未执行命令（fail-closed）。'},requestId:request.id};}
+    // Durable execution intent AFTER the budget reservation is durably
+    // accounted and BEFORE the side effect: a crash between effect and
+    // receipt leaves 'started', which blocks automatic retry (unknown).
     const intent=await this.taskPermissions.recordExecution(this.projectId,{requestId:request.id,grantId:grant.id,effectHash:grant.effectHash,operationKey:pre.grant?.coveredBy?null:operationKey,result:{status:'started'}}).catch(()=>null);
     if(!intent)return {ok:false,error:{code:'EFFECT_INTENT_UNAVAILABLE',message:'执行意图未能持久化；未发射命令，请核对本地存储。'},continueTurn:true};
     if(intent.duplicate)return {ok:false,error:{code:'EFFECT_RESULT_UNKNOWN',message:'同一操作已准入或已有回执；本次不重复执行，请读取原操作结果。'},continueTurn:true};
@@ -883,12 +927,17 @@ export class Controller extends EventEmitter {
       for(const request of permissions?.requests??[])if(request.status==='migrated')events.push({key:'migrated-permission:'+request.id,kind:'policy-migration',sourceJobId:request.sourceJobId,requestId:request.id,text:'旧的普通路径或命令授权已关闭；这不是用户授权，不重放原输入，核对原任务并保留进展。'});
       for(const receipt of s.receipts??[]){
         const w=s.works.find(w=>w.id===receipt.workId);
+        if(receipt.origin==='host-diagnostic')continue;
         if(s.jobs.find(job=>job.id===receipt.jobId)?.interruptionReason==='user-interrupted')continue;
         if(receipt.kind==='problem'&&w&&w.revision===receipt.revision&&!['closing','ended'].includes(w.status)&&!s.receipts.some(r=>r.workId===w.id&&r.revision===w.revision&&r.kind==='result'))events.push({key:'problem:'+receipt.objectId,kind:'problem',workId:w.id,revision:receipt.revision,objectId:receipt.objectId,sourceJobId:receipt.jobId});
       }
       for(const todo of s.todos??[]){
         const source=s.jobs.find(job=>job.id===todo.sourceJobId);
         if(source?.interruptionReason==='user-interrupted')continue;
+        // Diagnostic-only failures (provider/runtime, no actionable recovery)
+        // never become backstage model work; the failure stays visible in the
+        // job, the UI message and the local diagnostics ledger.
+        if(source?.diagnosticOnly)continue;
         if(todo.status==='open'&&['routing','recovery','system'].includes(todo.kind)&&!['backstage','maintenance'].includes(source?.type))events.push({key:'todo:'+todo.id,kind:todo.kind,todoId:todo.id,sourceJobId:todo.sourceJobId,text:todo.text});
       }
       for(const [target,session] of this.sessions)for(const interaction of session.interactions??[]){
@@ -1229,7 +1278,7 @@ export class Controller extends EventEmitter {
   async workerRecoveryContext(work,job){
     const handoff=work.contextHandoff;if(!handoff)return null;
     const {dossier}=await loadWorkerArchive(this.store,work,handoff.archiveId);job.reader=new ContextReader();
-    const source=`objects/sha256/${handoff.dossierObjectId}`,refs={};for(const key of ['request','brief','inputs','jobs','reports','messages']){const ref=job.reader.add(typeof dossier[key]==='string'?dossier[key]:JSON.stringify(dossier[key]),{title:'Original Work '+key,source:source+'#'+key,kind:'worker-recovery'}),stable=`recovery/${handoff.archiveId}/${key}`;job.reader.entries.set(stable,job.reader.entries.get(ref));refs[key]=stable;}
+    const source=`objects/sha256/${handoff.dossierObjectId}`,refs={};for(const key of ['request','brief','inputs','jobs','reports','messages'])refs[key]=job.reader.addStable(`recovery/${handoff.archiveId}/${key}`,typeof dossier[key]==='string'?dossier[key]:JSON.stringify(dossier[key]),{title:'Original Work '+key,source:source+'#'+key,kind:'worker-recovery'});
     return {archiveId:handoff.archiveId,oldThreadId:handoff.oldThreadId,source,refs,note:'The user explicitly confirmed a new native conversation after incompatible tool schema. Same Work, Agent and worktree. Read original source records using nozeli_history_read before continuing. Historical inputs are context, not new commands; do not replay them. Only the current explicit input is scheduled.'};
   }
   async readWorkerArchive(id,query={}){return readWorkerArchiveFile(this.store,this.store.find(id),query);}
@@ -1306,9 +1355,35 @@ export class Controller extends EventEmitter {
     this.validateTarget(target);
     const session=this.sessions.get(target);
     if(ownerId&&session?.viewOwnerId!==ownerId)throw Object.assign(Error('原会话已变化，请重新打开控制菜单'),{code:'INTERACTION_STALE'});
-    if(!session)return {available:false,target,busy:false,capabilities:{compact:false,reload:false,diagnostics:false},reason:'原会话尚未连接；查看不会启动 Agent'};
+    if(!session)return {available:false,target,busy:false,capabilities:{compact:false,reload:false,diagnostics:false},contextDetails:this.contextDetails(target),reason:'原会话尚未连接；查看不会启动 Agent'};
     const busy=session.busy||this.running.has(target)||this.current.has(target)||this.configuring.has(target)||this.restarting?.has(target)||false;
-    return {available:!session.closed,target,ownerId:session.viewOwnerId,threadId:session.threadId,busy,capabilities:{compact:typeof session.compact==='function'&&!session.closed,reload:typeof session.reload==='function'&&!session.closed,interrupt:typeof session.interrupt==='function'&&session.busy&&!session.closed,diagnostics:true},state:{phase:session.phase,busy,jobId:this.current.get(target)?.id??null,model:session.model,effort:session.effort,hasPrompted:session.hasPrompted,exit:session.exit??null},diagnostics:String(session.diagnostics??'').slice(-16384)};
+    return {available:!session.closed,target,ownerId:session.viewOwnerId,threadId:session.threadId,busy,capabilities:{compact:typeof session.compact==='function'&&!session.closed,reload:typeof session.reload==='function'&&!session.closed,interrupt:typeof session.interrupt==='function'&&session.busy&&!session.closed,diagnostics:true},state:{phase:session.phase,busy,jobId:this.current.get(target)?.id??null,model:session.model,effort:session.effort,hasPrompted:session.hasPrompted,exit:session.exit??null},diagnostics:String(session.diagnostics??'').slice(-16384),contextDetails:this.contextDetails(target)};
+  }
+  // Read-only context provenance for the session controls surface (design
+  // §11): allowlisted metadata from already-persisted state only. Viewing
+  // never issues a model request, never persists new fulltext, and never
+  // claims provider receipt from HTTP arrival alone.
+  contextDetails(target){
+    const session=this.sessions.get(target),s=this.store.state;
+    const details={generatedAt:new Date().toISOString(),session:{target,ownerId:session?.viewOwnerId??null,threadId:session?.threadId??null,contextEpoch:String(session?.contextEpoch??session?.contextGeneration??0),provider:'pi'}};
+    const jobs=s.jobs.filter(j=>j.target===target);
+    const job=[...jobs].reverse().find(j=>j.promptStartedAt||j.collabAttempts?.length)??[...jobs].reverse().find(j=>['completed','failed','interrupted','cancelled'].includes(j.status))??null;
+    const attempt=job?.collabAttempts?.at(-1)??null;
+    const stage=attempt?attempt.status==='admitted'?'native-admitted':attempt.status??null:null;
+    const materials=(job?.requestContext?.materials??[]).map(material=>({kind:material.kind??'explicit-material',id:material.id??null,relPath:material.title??null,version:typeof material.version==='string'?material.version:null,digest:typeof material.version==='string'?material.version:null,changed:material.changed===true,mode:material.mode??'full',notePresent:material.notePresent===true,bytes:material.bytes??null}));
+    const omissions=(job?.requestContext?.omissions??[]).map(omission=>({reason:String(omission.reason).slice(0,200),chars:omission.chars??null}));
+    const projectionMeta=job?.requestContext?.projection??null;
+    const pending=this.pendingContextDelivery.get(target);
+    details.lastRequest=job?{jobId:job.id,type:job.type??null,at:job.startedAt??job.createdAt??null,status:job.status,
+      userText:{chars:(job.context?.userInput?.text??job.text??'').length,digest:job.requestContext?.userTextDigest??null,exact:typeof(job.context?.userInput?.text)==='string'?job.context.userInput.text:typeof job.text==='string'?job.text:null},
+      materials,hostAdded:job.requestContext?.hostAdded??{chars:0,sections:[]},
+      projection:projectionMeta?{label:projectionMeta.label,version:projectionMeta.version,bytes:projectionMeta.bytes??null,perRequestLimitBytes:PROJECTION_MAX_BYTES,exact:pending?.projection&&pending.projection.version===projectionMeta.version?pending.projection.text:null}:null,
+      evidence:{stage,nativeEntry:attempt?.nativeEntryId||job?.delivery?.text?.entryId?{id:attempt?.nativeEntryId??job?.delivery?.text?.entryId??null,contentDigest:attempt?.nativeEntryDigest??job?.delivery?.text?.sha256??null}:null,providerObserved:job.providerStatus==='completed'&&job.status==='completed',nativeContext:{captured:false,projectionHookExecuted:Boolean(job.delivery?.projection?.llmCalls>0),capturedEvidence:job.delivery?.nativeContext?.captured===true,note:job.delivery?.nativeContext?.captured===true?'已抓取经原生 context hook 的本地请求视图；不解密opaque项，也不声称provider已理解':job.delivery?.projection?.llmCalls>0?'投影已注入原生context hook（llmCalls>0），但未抓取完整请求视图；不能标为模型实际看到':'仅有宿主准备内容；未抓取native最终视图，不能标为模型实际看到'}},
+      omissions}:null;
+    details.budget={...this.contextBudget.snapshot(target),...(job?.delivery?.budget?{native:job.delivery.budget}:{})};
+    details.provenance={sources:(job?.requestContext?.materials??[]).map(material=>({identity:material.id??null,version:material.version??null,digest:material.version??null,kind:material.kind??'explicit-material'})),toolReads:(job?.metrics?.contextReads??[]).map(read=>({source:read.source??null,version:read.version??null,chars:read.chars??null,offset:read.offset??0}))};
+    details.diagnostics={providerFailures:(s.diagnostics?.providerFailures??[]).slice(-32).map(row=>({code:row.code,category:row.category??'provider-runtime',count:row.count,lastAt:row.lastAt,target:row.target}))};
+    return details;
   }
   async sessionCommand(target,{ownerId,command,requestKey,jobId}){
     if(!['compact','reload','interrupt'].includes(command)||typeof requestKey!=='string'||!/^[a-zA-Z0-9:_-]{8,160}$/.test(requestKey))throw Object.assign(Error('无效的会话操作'),{code:'INVALID_PAYLOAD'});
@@ -1366,7 +1441,24 @@ export class Controller extends EventEmitter {
     session.viewOwnerId??=randomUUID();
     session.on?.('diagnostic',message=>{if(this.sessions.get(target)===session)this.emit('diagnostic',`${target}: ${message}`);});
     session.on?.('change',()=>{if(this.sessions.get(target)===session)this.changed();});
-    session.on?.('model-changed',()=>{if(this.sessions.get(target)===session)this.changed();});
+    session.on?.('model-changed',()=>{
+      if(this.sessions.get(target)!==session)return;
+      // A native model/thinking change must also reach the persisted resident
+      // row (`managed:residents`): startup reconciliation and any state reader
+      // would otherwise keep claiming the pre-switch model until the next
+      // session start, long after the native session already switched.
+      const effective=session.effective??{model:session.model,effort:session.effort};
+      if(['frontdesk','orchestrator'].includes(target)){
+        const resident=this.store.state.residents[target];
+        if(resident?.threadId===session.threadId&&(resident.model!==(effective.model??null)||resident.effort!==(effective.effort??null))){
+          void this.store.mutate(()=>{
+            const row=this.store.state.residents[target];
+            if(row?.threadId===session.threadId){row.model=effective.model??null;row.effort=effective.effort??null;}
+          }).then(()=>{if(this.sessions.get(target)===session)this.changed();},error=>this.emit('diagnostic',`${target}: resident model metadata persistence failed: ${error.message}`));
+        }
+      }
+      this.changed();
+    });
     session.on?.('interaction',()=>{if(this.sessions.get(target)===session)this.changed();});
     session.on?.('native-draft',hasText=>{
       if(this.sessions.get(target)!==session)return;
@@ -1392,7 +1484,7 @@ export class Controller extends EventEmitter {
     }
     const home=role==='worker'?this.store.agentHome(target):path.join(this.store.root,'agents',`resident-${role}-pi`);
     const cwd=role==='worker'&&this.execution?(await this.maintenanceTransaction(this.current.get(target),'input-preparation',()=>this.execution.prepare(target)),this.execution.directory(target)):this.store.content;
-    const tools=role==='frontdesk'?[tool('nozeli_handoff','Escalate the remaining original-task work to background execution with a concise reason. Ordinary reasons dispatch straight to the background under the original user request (no extra prompt); if the user explicitly chose to stay in the frontdesk, declined background earlier, or a decision is still pending, the host asks the user instead. @read reads and @new/@continue select discussion context only. This handoff never grants cross-project access, shell or credentials.',{reason:text})]:role==='orchestrator'?[tool('nozeli_inspect_work','Read named Work or readRef. @memory:keywords searches Plan Tree; @conversation reads dialogue; @state returns open works. Read-only.',{workName:text}),tool('nozeli_dispatch','Create a named Worker for a brand-new independent task. This is the required terminal decision when an explicit user task has no matching open Work.',{name:text,brief:text}),tool('nozeli_manage','Route this intake to exactly ONE terminal decision: continue an EXISTING open Work by its exact name, or clarify genuine ambiguity. status is a read-only query — it NEVER completes an intake turn: inspect/status first if needed, then always finish the turn with continue, clarify, or nozeli_dispatch. workName must be the exact name of an existing open Work — never the current request text; with no open Work at all, a continue is treated as the first background run of this new task. Ending a background intake after only status/inspect leaves the task unexecuted and violates the contract. User end decisions belong to user controls.',{action:{type:'string',enum:['continue','status','clarify']},workName:text,text})]:[tool('nozeli_publish','Publish the final result as one complete self-contained static HTML document, or a problem/question as concise Markdown text. Include every created/modified artifact in files. For result require html and forbid text; for problem require text and forbid html. Host validates the exact kind/body pairing. Work remains open; finish the turn after success.',{kind:{type:'string',enum:['problem','result']},html:{type:'string',description:'Self-contained static HTML result document; kind "result" only'},text:{type:'string',description:'Concise Markdown problem or question body; kind "problem" only'},files:{type:'array',items:{type:'string'},maxItems:256}},['kind','files']),tool('nozeli_diagram','Render an offline validated Archify typed JSON diagram and return the exact standalone SVG with alt text, caption and spec/generator digests for direct inline figure embedding in the report HTML; creates no project files.',{type:{type:'string',enum:['architecture','workflow','sequence','dataflow','lifecycle']},spec:{type:'object',additionalProperties:true}})];
+    const tools=role==='frontdesk'?[tool('nozeli_handoff','Escalate the remaining original-task work to background execution with a concise reason. Ordinary reasons dispatch straight to the background under the original user request (no extra prompt); if the user explicitly chose to stay in the frontdesk, declined background earlier, or a decision is still pending, the host asks the user instead. @new/@continue only select discussion context; discussion-source reading uses nozeli_source_read, never this handoff. This handoff never grants cross-project access, shell or credentials.',{reason:text}),tool('nozeli_source_read','Read a frozen discussion source read-only and paged: file:<relative path> for a frozen file version, memory:<keywords> for the Plan Tree index, state for open works, report:<work name> for a frozen report. Returns exact text with nextSelector for continuation; complete=false only describes this page. Reading is bounded by the per-run host budget and never dispatches background work.',{selector:text})]:role==='orchestrator'?[tool('nozeli_inspect_work','Read named Work or readRef. @memory:keywords searches Plan Tree; @conversation reads dialogue; @state returns open works. Read-only.',{workName:text}),tool('nozeli_dispatch','Create a named Worker for a brand-new independent task. This is the required terminal decision when an explicit user task has no matching open Work.',{name:text,brief:text}),tool('nozeli_manage','Route this intake to exactly ONE terminal decision: continue an EXISTING open Work by its exact name, or clarify genuine ambiguity. status is a read-only query — it NEVER completes an intake turn: inspect/status first if needed, then always finish the turn with continue, clarify, or nozeli_dispatch. workName must be the exact name of an existing open Work — never the current request text; with no open Work at all, a continue is treated as the first background run of this new task. Ending a background intake after only status/inspect leaves the task unexecuted and violates the contract. User end decisions belong to user controls.',{action:{type:'string',enum:['continue','status','clarify']},workName:text,text})]:[tool('nozeli_publish','Publish the final result as one complete self-contained static HTML document, or a problem/question as concise Markdown text. Include every created/modified artifact in files. For result require html and forbid text; for problem require text and forbid html. Host validates the exact kind/body pairing. Work remains open; finish the turn after success.',{kind:{type:'string',enum:['problem','result']},html:{type:'string',description:'Self-contained static HTML result document; kind "result" only'},text:{type:'string',description:'Concise Markdown problem or question body; kind "problem" only'},files:{type:'array',items:{type:'string'},maxItems:256}},['kind','files']),tool('nozeli_diagram','Render an offline validated Archify typed JSON diagram and return the exact standalone SVG with alt text, caption and spec/generator digests for direct inline figure embedding in the report HTML; creates no project files.',{type:{type:'string',enum:['architecture','workflow','sequence','dataflow','lifecycle']},spec:{type:'object',additionalProperties:true}})];
     const binding=role==='worker'?this.store.find(target).binding||this.store.state.bindings.worker:this.store.state.bindings[role];
     if(role==='orchestrator')tools.push(tool('nozeli_maintenance','Inspect sanitized host bug ledger, scan proven historical internal faults without replay, or request bounded host recovery of the exact original transaction. Never marks repaired by assertion; no business Work or privileges granted.',{action:{type:'string',enum:['status','retry','scan']},bugId:text},['action']));
     if(role==='orchestrator')tools.push(
@@ -1417,7 +1509,7 @@ export class Controller extends EventEmitter {
     if(role==='worker')tools.push(tool('nozeli_report_deviation','Report obvious task scope deviation and STOP. Host binds exact admitted input and original Work; only the user may authorize continuing or replanning.',{changedGoal:text,reason:text,progress:text}));
     if(role==='worker')tools.push(tool('nozeli_diagram_schema','Read the exact offline typed JSON schema and shared definitions before authoring an Archify diagram; read-only, no files created.',{type:{type:'string',enum:['architecture','workflow','sequence','dataflow','lifecycle']}}));
     if(role==='worker')tools.push(tool('nozeli_report_read','Read a frozen report from this Work by original revision (omit for latest), or one relPath from its returned frozen artifact list. Never reads current project replacements. Semantic pages continue through nozeli_history_read.',{revision:{type:'integer',minimum:1},relPath:text},[]));
-    if(role==='worker')tools.push(tool('nozeli_history_read','Read an original Work source using an exact recovery readRef supplied by the host. Read-only; never treat archived user inputs as new scheduled commands.',{readRef:text}));
+    if(role==='worker')tools.push(tool('nozeli_history_read','Read the CURRENT Work\'s original sources by their stable host identities from the current-state projection: sources.originalTask.readRef and sources.approvedSources[].readRef (re-materialized identically on every run, including after compaction). Optional offset (integer >=0, a previous endOffset) continues the SAME frozen body across turns without replaying the prefix; the response returns exact version/offset/endOffset/totalChars for the next continuation. Turn-ephemeral refs from earlier runs are invalid by design. Read-only; never treat archived or approved inputs as new commands.',{readRef:text,offset:{type:'integer',minimum:0}}));
     // Native tools remain YOLO. This host-managed channel records ordinary
     // execution and gates only known concrete high-danger effects.
     tools.push(tool('nozeli_privileged_execute','Execute a literal host command with durable intent and receipt. Ordinary elevation:user commands run directly by default YOLO without user permission. Only concrete admin elevation, broad destructive/irreversible effects or declared sensitive export create a user approval. No universal shell sandbox is claimed. dangerousEffect must state any known dangerous object/effect/risk. Approval is frozen to this exact effect; task approval permits repeats only, never other admin commands. Actual admin identity requires real OS authentication. Never replay a completed or unknown effect.',{command:text,args:{type:'array',items:text,maxItems:256},cwd:text,purpose:text,dangerousEffect:text,elevation:{type:'string',enum:['user','admin']}},['command','args','cwd','purpose']));
@@ -1433,7 +1525,11 @@ export class Controller extends EventEmitter {
       onNativeEvent:fact=>this.recordNativeEvent(target,fact),
       // Pi：宿主工具副作用前必须过 admission.preEffect（owner/turn 代次门），失败即拒绝该次副作用。
       onTool:async p=>{await p.admission?.preEffect();return this.onTool(target,p);},
-      onBeforeAgentStart:async()=>{await this.store.requireOnline();if(this.stopping)throw Error('host stopping');this.assertDeviationReleased(target);const active=this.current.get(target);if(!active)throw Error('no admitted host job');if(role!=='worker')return {};const w=this.store.find(target);if(w.status!=='running'||active.revision!==w.revision)throw Error('stale Worker turn');active.reader??=new ContextReader();return {taskAnchor:workerTaskAnchor(w,active.reader)};},
+      onBeforeAgentStart:async()=>{await this.store.requireOnline();if(this.stopping)throw Error('host stopping');this.assertDeviationReleased(target);const active=this.current.get(target);if(!active)throw Error('no admitted host job');
+        // Admission gate only: the per-request projection and materials travel
+        // through the prompt() runtime contract, never through this hook.
+        if(role==='worker'){const w=this.store.find(target);if(w.status!=='running'||active.revision!==w.revision)throw Error('stale Worker turn');}
+        return {};},
       onSpawn:async pid=>{const stamp=await processStamp(pid);await this.store.mutate(()=>{this.store.state.providers[target]={pid,stamp,home,kind:'pi-node',ownerId:spec.nativeContext.ownerId};});}};
     // Pi 路线（host cutover）：角色会话 = host-owned Pi owner（PiSession，唯一进程/session owner）。
     // 模型/effort 由 Pi 会话独占，宿主只观察；同一角色不双 owner。
@@ -1513,6 +1609,27 @@ export class Controller extends EventEmitter {
         await session.assertToolsDigest(resident.toolsDigest);
       }
       if(workerHistory)await session.assertToolsDigest(workerExpected||toolsDigest);
+      // A default saved while this owner was dormant must still reach the
+      // resumed session: apply it here at the post-start idle boundary via the
+      // same native change path as a live save (new sessions already seed the
+      // defaults inside start(), so this stays a no-op for them). A saved
+      // native-default model with an explicit thinking level applies
+      // effort-only against the session's own current model; a session without
+      // any model selection cannot take an effort-only change. Failures never
+      // fail the resume itself; they stay visible as failed modelSync rows
+      // with allowlisted codes, including a defaults read error.
+      if(resumeId&&typeof session.applyDefaultModel==='function'&&this.piSource?.roleDefaultsFor){
+        const recordFailure=(error,intent)=>{
+          const failure={role,message:'Agent默认模型同步失败；配置已保存，可重试保存。',code:error?.code&&SAFE_MODEL_CHANGE_CODES.includes(error.code)?error.code:'PI_MODEL_CHANGE_FAILED'};
+          this.modelDefaultFailures??=new Map();this.modelDefaultFailures.set(target,{session,failure,intent});
+        };
+        const saved=await this.piSource.roleDefaultsFor(role).catch(error=>{recordFailure(error,null);return null;});
+        const selector=saved?.selector??session.model;
+        if(saved&&(saved.selector!=null||saved.effort!=null)&&selector&&selector.includes('/')&&(selector!==session.model||saved.effort!=null&&saved.effort!==session.effort)){
+          try{await session.applyDefaultModel({selector,...(saved.effort!=null?{effort:saved.effort}:{})});}
+          catch(error){recordFailure(error,{selector,effort:saved.effort??null});}
+        }
+      }
       await this.store.mutate(()=>{
         if(role==='worker'){const work=this.store.find(target);work.threadId=session.threadId;work.toolsDigest=session.toolsDigest??toolsDigest;if(work.zeroActivity!==false)work.zeroActivity=!session.hasPrompted&&!(session.agentEnds?.length>0);}
         else this.store.state.residents[target]={threadId:session.threadId,provider,model:session.model??spec.model??null,effort:session.effort??spec.effort??null,toolsDigest:session.toolsDigest??toolsDigest,zeroActivity:!session.hasPrompted&&!(session.agentEnds?.length>0),...(resident?.zeroActivity===false?{zeroActivity:false}:{}),...(resident?.generation!=null?{generation:resident.generation}:{}),...(resident?.handoff?{handoff:{...resident.handoff,status:'ready'}}:{})};
@@ -1569,15 +1686,33 @@ export class Controller extends EventEmitter {
     this.changed();this.kick();
     return projectionPending?{settlementPending:true,automaticReplay:false,...projectionPending}:{settled:true};
   }
+  // Host read tools share the run budget: the allowance check runs before the
+  // body is returned, keeping receipt space intact; oversized results are
+  // refused visibly instead of silently truncated (design §9).
   async onTool(target,p){
-    try{return await this.handleTool(target,p);}catch(error){
+    try{
+      if(this.contextBudget.run(target)&&['nozeli_document_read','nozeli_project_list','nozeli_project_search','nozeli_history_read','nozeli_report_read','nozeli_inspect_work','nozeli_skill_read','nozeli_diagram_schema','nozeli_diagram','nozeli_source_read'].includes(p.tool)){
+        const allowance=this.contextBudget.readAllowance(target);
+        // Denial is a typed host-control stop: no continueTurn, so the native
+        // loop ends the turn instead of retrying reads against the same cap.
+        if(allowance<=0)return {ok:false,hostControl:true,error:{code:'HOST_CONTEXT_BUDGET_EXHAUSTED',message:'本轮宿主文本预算已用尽（已保留执行回执空间）；停止继续读取并结束本回合，不自动重试。请基于已读内容继续；必需原文在新回合按同一版本身份续读。'}};
+        const value=await this.handleTool(target,p,{readAllowance:allowance});
+        const bytes=Buffer.byteLength(JSON.stringify(value??null),'utf8');
+        if(bytes>allowance)return {ok:false,hostControl:true,error:{code:'HOST_CONTEXT_BUDGET_EXHAUSTED',message:'本次读取结果 '+bytes+' 字节超过本轮剩余宿主预算 '+allowance+' 字节；未投递正文，也不静默截断，本回合停止读取。请在新回合按 readRef/nextSelector 分页或精确身份续读。'}};
+        this.contextBudget.charge(target,bytes,{kind:'tool-read',label:p.tool});
+        try{await this.#persistBudgetEpochs();}catch(error){return {ok:false,hostControl:true,error:{code:'HOST_BUDGET_PERSIST_FAILED',message:'宿主预算记账持久化失败；本次读取正文不予投递，也不静默截断（fail-closed），本回合停止读取。'}};}
+        return value;
+      }
+      return await this.handleTool(target,p);
+    }catch(error){
+      if(error.code==='HOST_CONTEXT_BUDGET_EXHAUSTED')return {ok:false,hostControl:true,error:{code:error.code,message:error.message}};
       if(maintenanceBoundary(error)||!/^INTERNAL_|^HOST_INTERNAL_/.test(String(error.code??'')))throw error;
       const job=this.current.get(target);if(!job||job.type==='maintenance')throw error;
       const bug=await this.maintenance.record({phase:'tool',jobId:job.id,workId:['frontdesk','orchestrator'].includes(target)?null:target,revision:job.revision??null,error});await this.maintenance.finish(bug.id,{outcome:'needs-version-fix'});
       await this.store.mutate(()=>{const saved=this.store.state.jobs.find(j=>j.id===job.id);if(saved)saved.maintenanceBugId=bug.id;const w=this.store.state.works.find(w=>w.id===target);if(w?.status==='running'){w.status='paused';w.maintenance={bugId:bug.id,status:'needs-version-fix',message:'系统工具故障待后台诊断，原任务与改动保留。'};}});await this.maintenanceEvent(bug);return {hostControl:true,maintenance:true,bugId:bug.id,workRemainsOpen:true};
     }
   }
-  async handleTool(target,p){
+  async handleTool(target,p,{readAllowance=null}={}){
     const job=this.current.get(target);if(!job)throw new Error('no active host job');
     if(job.type==='intake'&&['closing','ended'].includes(this.intakeBoundWork(job)?.status)&&['nozeli_dispatch','nozeli_manage'].includes(p.tool))return {cancelled:true,userEnded:true,message:'原工作已由用户结束，不再处理补充。'};
     if(this.stopping||(!['frontdesk','orchestrator'].includes(target)&&['closing','ended'].includes(this.store.find(target).status)))throw new Error('host or work closing');
@@ -1603,13 +1738,33 @@ export class Controller extends EventEmitter {
       const receipt=this.store.state.receipts.findLast(r=>r.workId===target&&(a.revision===undefined||r.revision===a.revision));if(!receipt)throw Error('No frozen report for this Work revision');
       if(a.relPath!==undefined)return managedArtifact({storage:this.store.storage,project:{id:this.projectId,root:this.store.content},runtime:this.store.root,controller:this,currentController:()=>this},{objectId:receipt.objectId,relPath:a.relPath});
       const bytes=await readStoredReport(this.store,receipt);job.reader??=new ContextReader();const readRef=job.reader.add(reportSemanticText(bytes,receipt.report),{title:receipt.report.title,source:'objects/'+receipt.objectId,kind:'frozen-report',objectId:receipt.objectId,revision:receipt.revision});
-      return {...job.reader.read(readRef),report:receipt.report,revision:receipt.revision,files:(receipt.snapshot?.files||[]).map(({relPath,digest,size})=>({relPath,digest,size})),readOnly:true,continueTurn:true};
+      return job.reader.read(readRef,{maxBytes:readAllowance??null,maxResultBytes:readAllowance??null,resultFields:{report:receipt.report,revision:receipt.revision,files:(receipt.snapshot?.files||[]).map(({relPath,digest,size})=>({relPath,digest,size})),readOnly:true,continueTurn:true}});
     }
     if(p.tool==='nozeli_diagram_schema'&&!['frontdesk','orchestrator'].includes(target)){
       if(!['architecture','workflow','sequence','dataflow','lifecycle'].includes(a.type))throw Error('Unknown diagram type');
       return {type:a.type,schema:JSON.parse(await fs.readFile(path.join(here,'archify-vendor','schemas',a.type+'.schema.json'),'utf8')),common:JSON.parse(await fs.readFile(path.join(here,'archify-vendor','schemas','common.schema.json'),'utf8')),readOnly:true,continueTurn:true};
     }
-    if(p.tool==='nozeli_history_read'&&!['frontdesk','orchestrator'].includes(target)){const reader=job.reader||this.workerRecoveryReaders?.get(target);if(!reader)throw Error('No explicit Worker recovery source is bound');return {...reader.read(a.readRef),readOnly:true};}
+    if(p.tool==='nozeli_history_read'&&!['frontdesk','orchestrator'].includes(target)){
+      const reader=job.reader||this.workerRecoveryReaders?.get(target);
+      if(!reader)throw Object.assign(new Error('当前 Work 尚无已登记的原件来源；请先经宿主投影获取稳定 readRef。'),{code:'READ_REF_EXPIRED'});
+      // Cross-turn continuation: a stable projection ref plus a previous
+      // endOffset resumes the SAME frozen body on a later run without
+      // replaying the prefix. The per-offset page entry is derived from the
+      // immutable base entry — the base ref and its next chain are never
+      // mutated, and the identity stays bound to this Work's source.
+      const continuationOffset=Number.isSafeInteger(a.offset)?a.offset:null;
+      if(continuationOffset!=null){
+        if(continuationOffset<0)throw Object.assign(new Error('offset 必须是不小于0的整数。'),{code:'INVALID_PAYLOAD'});
+        const base=reader.entries.get(a.readRef);
+        if(!base)throw Object.assign(new Error('读取引用已失效：请用宿主投影中的稳定 readRef，不用上一回合的临时引用。'),{code:'READ_REF_EXPIRED'});
+        if(continuationOffset>base.text.length)throw Object.assign(new Error('offset 超出原文长度（'+base.text.length+'）。'),{code:'INVALID_PAYLOAD'});
+        if(continuationOffset>0&&continuationOffset<base.text.length&&/[\uD800-\uDBFF]/.test(base.text[continuationOffset-1])&&/[\uDC00-\uDFFF]/.test(base.text[continuationOffset]))throw Object.assign(new Error('offset 位于代理对中间，请使用返回的 endOffset。'),{code:'INVALID_PAYLOAD'});
+        if(continuationOffset===0)return reader.read(a.readRef,{maxBytes:readAllowance??null,maxResultBytes:readAllowance??null,resultFields:{readOnly:true}});
+        const pageRef=reader.add(base.text,{title:base.title,source:base.source,kind:base.kind,offset:continuationOffset});
+        return reader.read(pageRef,{maxBytes:readAllowance??null,maxResultBytes:readAllowance??null,resultFields:{readOnly:true}});
+      }
+      return reader.read(a.readRef,{maxBytes:readAllowance??null,maxResultBytes:readAllowance??null,resultFields:{readOnly:true}});
+    }
     if(p.tool==='nozeli_diagram'&&!['frontdesk','orchestrator'].includes(target)){
       const isActive=()=>!this.stopping&&this.current.get(target)===job&&this.store.find(target).status==='running'&&this.store.find(target).revision===job.revision;
       if(!isActive())throw Object.assign(new Error('工作已停止'),{code:'WORK_STOPPED'});
@@ -1648,10 +1803,16 @@ export class Controller extends EventEmitter {
       if(value.ok&&p.tool==='nozeli_document_apply')this.emit('files-changed',{jobId:job.id,workId:target,reason:'managed-document-applied'});
       return value;
     }
+    // Direct read-only discussion-source contract: reading never borrows the
+    // handoff tool and never dispatches background work (design §8).
+    if(target==='frontdesk'&&p.tool==='nozeli_source_read'){
+      const selector=String(a.selector??'').trim();
+      if(!selector)throw Object.assign(new Error('需要具体读取选择器（file:/memory:/state/report:）'),{code:'INVALID_PAYLOAD'});
+      return this.frontRead(job,selector,p.callId);
+    }
     if(target==='frontdesk'&&p.tool==='nozeli_handoff'){
       const reason=typeof a.reason==='string'?a.reason.trim():'';
       if(this.transferFor(job))return {accepted:true,jobId:this.transferFor(job).id,readOnly:true,transferred:true,message:'此目标正在转交，停止前台操作。'};
-      if(reason.startsWith('@read '))return this.frontRead(job,reason.slice(6).trim(),p.callId);
       if(reason.startsWith('@new ')){
         await this.store.mutate(()=>{const saved=this.store.state.jobs.find(j=>j.id===job.id),prior=this.frontGoal(job);if(this.transferFor(job)||this.store.state.frontdeskRoutes?.some(r=>r.sourceJobId===job.id&&r.status==='pending'))throw Error('此来源等待用户决定或正在转交');if(saved.newGoal||prior?.reads.some(r=>r.jobId===job.id))throw Error('当前回合已选择或读取目标');if(prior?.rootJobId===job.id){saved.newGoal=true;return;}const goal={id:randomUUID(),rootJobId:job.id,jobIds:[job.id],reads:[],chars:0};this.store.state.frontGoals.push(goal);saved.context.frontGoalId=goal.id;job.context.frontGoalId=goal.id;this.store.state.activeFrontGoalId=goal.id;saved.newGoal=true;});return {readOnly:true,continueTurn:true,newGoal:true,transferred:false,action:'discussion-selected',message:'仅选择讨论目标，尚未交接或派工。'};
       }
@@ -1659,7 +1820,7 @@ export class Controller extends EventEmitter {
         let workEnded=false;
         await this.store.mutate(()=>{const saved=this.store.state.jobs.find(j=>j.id===job.id),goal=this.frontGoal(job);if(this.transferFor(job)||this.store.state.frontdeskRoutes?.some(r=>r.sourceJobId===job.id))throw Error('此来源等待用户决定或已停止');if(saved.goalBound||goal.rootJobId!==job.id)return;if(goal.reads.some(r=>r.jobId===job.id))throw Error('已开始读取，不能改变目标');const previous=this.store.state.jobs.findLast(j=>j.target==='frontdesk'&&j.id!==job.id&&j.context.frontGoalId&&j.context.frontGoalId!==goal.id),prior=this.store.state.frontGoals.find(g=>g.id===previous?.context.frontGoalId);if(!prior)throw Error('没有可延续的讨论');const original=this.store.state.jobs.find(j=>j.id===prior.intakeJobId),bound=original&&(this.intakeBoundWork(original)||this.store.state.works.find(w=>w.sourceJob===original.id));if(bound&&['closing','ended'].includes(bound.status)){workEnded=true;return;}if(!this.canReuseFrontGoal(job.text,prior))throw Error('此输入明确引用其他或不明确工作，交主控判断，不继承上一目标');saved.context.frontGoalId=prior.id;job.context.frontGoalId=prior.id;this.store.state.activeFrontGoalId=prior.id;saved.goalBound=true;if(!prior.jobIds.includes(job.id))prior.jobIds.push(job.id);});return workEnded?{readOnly:true,continueTurn:true,continued:false,workEnded:true,message:'原Work已结束或在收尾；保留当前讨论，不会重启原Work。'}:{readOnly:true,continueTurn:true,continued:true};
       }
-      if(!reason||reason.startsWith('@'))throw Error('交接需普通升级理由；@read/@new/@continue仅用于对应协议，不会作为交接执行');
+      if(!reason||reason.startsWith('@'))throw Error('交接需普通升级理由；@new/@continue仅用于讨论目标协议，不会作为交接执行；读取请用 nozeli_source_read');
       // Default background: an ordinary handoff of an explicitly submitted
       // original task dispatches directly under the original user request —
       // a handling decision, not a security authorization, and never a new
@@ -1788,7 +1949,7 @@ export class Controller extends EventEmitter {
         const current=this.store.find(w.id);if(['closing','ended'].includes(current.status))throw new Error('work already closing');
         this.appendWorkInput(current,job,source,a.text);
         const transferredToOriginal=job.context?.workHintId===w.id&&Boolean(job.context?.deviationId),held=this.deviationHeld(w.id)||transferredToOriginal;
-        if(current.status!=='queued'&&!held)this.queueJob(w.id,'supplement','用户对已有工作的补充/回答（保持原Work）：\n'+this.workerInputText(source.request,a.text),{key:`supplement:${job.id}`,context:{sourceJobId:job.id,imageAttachments:source.imageAttachments}});
+        if(current.status!=='queued'&&!held)this.queueJob(w.id,'supplement','补充输入（保持原Work；原任务不逐轮复述，经宿主投影与nozeli_history_read读取）：\n'+a.text,{key:`supplement:${job.id}`,context:{sourceJobId:job.id,imageAttachments:source.imageAttachments}});
         const receipt={action:a.action,workName:a.workName,at:new Date().toISOString(),workId:w.id,queued:!held,status:current.status,...(held?{requiresUserDecision:true,pendingRecommendation:true,deviationId:job.context?.deviationId||current.deviation?.id}:{})};
         this.store.state.jobs.find(j=>j.id===job.id).routing=receipt;this.resolveRoutingQuestion(job);return structuredClone(receipt);
       });this.changed();this.kick();return receipt;
@@ -1815,50 +1976,142 @@ export class Controller extends EventEmitter {
     const text='## 宿主交付诊断：Worker 尚未交付最终报告\n\n'+(error?'本轮执行失败：'+String(error.message??error).slice(0,1500):'本回合已结束，但没有当前版本的最终成果或问题报告。')+'\n\n任务没有完成，不能冒称已交付。原任务、线程与工作树仍保留。\n\n建议处理：同意处理后让原 Worker 核对已完成操作、实际执行回执与现有改动，只执行剩余步骤、完成验证并发布最终结果；如不同意，请拒绝并写明替代要求。结果未知或原进程未确认退出时，先走明确恢复决定，不能自动重放。';
     await this.store.publish(w.id,w.revision,'problem',text,'host-missing-delivery:'+job.id,{jobId:job.id,files:[],hostDiagnostic:true,isActive:()=>!this.stopping&&['running','paused'].includes(w.status)&&w.revision===job.revision});
   }
+  // Provider/runtime failures (refusal, auth, rate limit, model unavailable,
+  // network/transport, native runtime faults) have no deterministic host
+  // recovery: they are classified, deduped and counted locally. They never
+  // spawn maintenance or backstage model turns and never auto-resend.
+  providerRuntimeDiagnostic(error){
+    const code=String(error?.code??'');
+    return /^(OMP_|PI_|NATIVE_|HOST_INTERNAL_|ECONN|ETIMEDOUT|EPIPE|ENOTFOUND|EAI_AGAIN)/.test(code)||['EPIPE','ECONNRESET','ECONNABORTED','ETIMEDOUT','HOST_PROJECTION_OVER_BUDGET','HOST_TEXT_BUDGET_EXCEEDED','HOST_BUDGET_PERSIST_FAILED','HOST_CONTEXT_BUDGET_EXHAUSTED','HOST_MATERIAL_REFERENCE_INVALID'].includes(code)||error?.providerExit!=null;
+  }
+  async recordDiagnosticFailure(job,error){
+    const classification=runtimeFailureMessage(error),code=String(error?.code??'PROVIDER_RUNTIME_FAILURE').slice(0,80);
+    await this.store.mutate(()=>{
+      const s=this.store.state;s.diagnostics??={providerFailures:[]};
+      let row=s.diagnostics.providerFailures.find(row=>row.target===job.target&&row.code===code);
+      if(!row){s.diagnostics.providerFailures.push(row={target:job.target,code,category:classification.category,count:0,firstAt:new Date().toISOString(),lastAt:null,lastJobId:null});}
+      row.count++;row.lastAt=new Date().toISOString();row.lastJobId=job.id;
+      if(s.diagnostics.providerFailures.length>64)s.diagnostics.providerFailures.splice(0,s.diagnostics.providerFailures.length-64);
+      const saved=s.jobs.find(j=>j.id===job.id);if(saved)saved.diagnosticOnly=true;
+    });this.changed();
+  }
+  // Generation scope identity = project + native thread + confirmed
+  // compaction generation. The native thread (not the volatile owner) keeps
+  // the key stable across owner restarts; different roles/threads never share
+  // a 256 KiB scope, and a confirmed compaction or a new native session
+  // starts a fresh one.
+  contextEpochKey(target,session=this.sessions.get(target)){
+    return `${this.projectId}:${session?.threadId??'no-thread'}:${session?.contextEpoch??session?.contextGeneration??'0'}`;
+  }
+  async #onConfirmedCompaction(target){
+    const session=this.sessions.get(target);if(!session)return;
+    if(this.contextBudget.rotateEpoch(target,this.contextEpochKey(target,session)))await this.#persistBudgetEpochs();
+  }
+  async #persistBudgetEpochs(){
+    // Fail-closed durable accounting: callers await this BEFORE returning
+    // charged content or executing an effect; a persistence failure aborts
+    // the request instead of degrading to a diagnostic-only record.
+    await this.store.mutate(()=>{this.store.state.contextBudgetEpochs=this.contextBudget.persistedEpochs();});
+  }
   async runJob(inputJob){
     const job=structuredClone(inputJob);
-    let didStart=false;
+    let didStart=false,settledOk=false,pendingMaterialDelivery=null;
     const savedJob=()=>this.store.state.jobs.find(j=>j.id===job.id);
     try{
       const started=await this.store.mutate(()=>{if(savedJob().status!=='queued'||this.deviationHeld(job.target))return false;savedJob().status='running';savedJob().startedAt=new Date().toISOString();return true;});if(!started)return;didStart=true;this.current.set(job.target,job);this.changed();
       if(job.context?.pendingIntakeId){const parent=this.store.state.jobs.find(j=>j.id===job.context.pendingIntakeId),work=parent&&(this.intakeBoundWork(parent)||this.store.state.works.find(w=>w.sourceJob===parent.id));if(work)await this.store.mutate(()=>{const field=job.context.softWorkHint?'workHintId':'boundWorkId';job.context[field]=work.id;savedJob().context[field]=work.id;});else {const question=parent&&this.store.state.todos.findLast(q=>q.kind==='routing'&&q.sourceJobId===parent.id&&q.status==='open');if(!question)throw Error('原目标尚未明确处理结果，请先核对已有提交');await this.store.mutate(()=>{job.context.routingQuestionId=question.id;savedJob().context.routingQuestionId=question.id;});}}
       const isWork=!['frontdesk','orchestrator'].includes(job.target);
       if(isWork){const w=this.store.find(job.target);if(job.type!=='initial'&&w.status!=='running')await this.store.continue(w.id);job.revision=w.revision;await this.store.mutate(()=>{savedJob().revision=job.revision;});}
-      const session=await this.maintenanceTransaction(job,'session-start',()=>this.session(job.target),s=>Boolean(s&&!s.closed));let prompt=job.text,delivery;
+      const session=await this.maintenanceTransaction(job,'session-start',()=>this.session(job.target),s=>Boolean(s&&!s.closed));
+      // ── Context cutover delivery ─────────────────────────────────────
+      // The raw current user text becomes the single native user entry,
+      // verbatim (whitespace included), with no wrappers, no unseen-history
+      // backfill and no global fact dump. Explicit materials travel as
+      // same-run native material data re-read from frozen objects; the
+      // Worker's current state is one small rebuilt projection through the
+      // runtime `context` contract. Host-added bytes share one budget.
       this.tagMaterialDelivery??=new TagMaterialDelivery();
-      const materialDelivery=this.tagMaterialDelivery.prepare(session,job);
-      prompt=materialDelivery.text;
-      const event=job.target==='orchestrator'?await eventSkill('orchestrator',job.type,{skills:this.store.state.bindings.orchestrator.skills,boundWork:job.type==='intake'&&Boolean(this.intakeBoundWork(job)),routingQuestion:job.type==='intake'&&Boolean(job.context?.routingQuestionId)}):'';
-      if(isWork&&session.zeroActivityRestarted&&!session.hasPrompted&&job.type!=='initial'){const w=this.store.find(job.target);prompt='宿主已确认原线程尚未开始模型回合，已恢复同一Work的空线程。原任务要求：\n'+(w.originalBrief??w.brief)+'\n原始用户请求：\n'+w.request+'\n本次用户输入：\n'+prompt;}
-      if(isWork){const recovery=await this.workerRecoveryContext(this.store.find(job.target),job);if(recovery)prompt='User-confirmed context handoff sources:\n'+JSON.stringify(recovery)+'\nCurrent explicit input (only scheduled instruction):\n'+prompt;}
-      if(isWork){job.reader??=new ContextReader();prompt='当前任务锚点（原始任务不可变，只有列出的用户批准原文扩展范围）：\n'+workerTaskAnchor(this.store.find(job.target),job.reader)+'\n本轮明确输入：\n'+prompt;}
-      if(this.stopping||(isWork&&(this.deviationHeld(job.target)||['closing','ended'].includes(this.store.find(job.target).status)))||(job.type==='intake'&&['closing','ended'].includes(this.intakeBoundWork(job)?.status)))throw new Error('execution interrupted before prompt');
-      if(['front','intake'].includes(job.type)){
-        if(job.type==='front'){
-          await this.prepareFrontGoal(job);
-          if(this.transferFor(job)){await this.saveTransferredFront(job);return;}
-          if(this.frontGoal(job)?.intakeJobId){await this.handoffFront(job,'转交后的用户补充');await this.store.mutate(()=>{savedJob().status='completed';savedJob().finishedAt=new Date().toISOString();});return;}
-        }
-        const memory=job.type==='intake'?await this.memoryVersion.snapshot():null;
-        delivery=prepareDelivery(this.contextState(),{target:job.target,threadId:session.threadId,generation:session.contextGeneration||0,job,used:this.store.used(),...(memory?{memoryVersion:memory.version}:{})});
-        const parts=delivery.sections.map(([title,text])=>`${title}：\n${text}`);
-        if(job.type==='front'){const g=this.frontGoal(job);parts.push('讨论来源：'+JSON.stringify({previousGoal:g.rootJobId!==job.id,transferred:Boolean(g.intakeJobId),perReadPageChars:frontReadLimits.chars}));}
-        if(job.type==='intake'){
-          job.reader=new ContextReader();parts.unshift('主控入口');
-          if(this.intakeBoundWork(job)){const bound=this.intakeBoundWork(job);parts.push('程序已绑定原工作：'+bound.name+'；此输入为该工作的补充，只管理原Work，不新派工。');}
-          if(job.context.handoffIntent&&job.context.handoffIntent!==job.text)parts.push('前台交接意图：'+job.context.handoffIntent);
-        }
-        parts.push((job.type==='front'?'用户本次原文：':'原始请求:')+'\n'+materialDelivery.text);prompt=parts.join('\n');
+      const materialDelivery=this.tagMaterialDelivery.prepare(session,job);pendingMaterialDelivery=materialDelivery;
+      // Native user entry = the exact sender text. userInput.text is the raw
+      // composer text for material sends; job.text alone is used only where no
+      // separate user identity exists (host-built handoffs and supplements).
+      const rawUser=typeof job.context?.userInput?.text==='string'?job.context.userInput.text:job.type==='front'||job.type==='intake'?job.text:null;
+      let prompt=rawUser??job.text;
+      const epoch=this.contextEpochKey(job.target,session);
+      this.contextBudget.beginRun({target:job.target,runId:job.id+':'+(savedJob().collabAttempts?.length||0),epoch});
+      const hostSections=[];const omissions=[];let materials=[];let projection=null;let workerHandoffBytes=0;
+      if(job.type==='intake'){
+        job.reader=new ContextReader();
+        for(const fact of explicitHandoffFacts(this.store.state,job))hostSections.push(fact.label+'：\n'+fact.text);
       }
-      if(event)prompt='事件技能（仅本次宿主事件）：\n'+event+'\n\n'+prompt;
+      if(isWork){
+        job.reader??=new ContextReader();
+        const w=this.store.find(job.target);
+        if(job.type==='initial')prompt=workerInitialHandoff(w,job.reader,{brief:w.originalBrief??w.brief});
+        else if(session.zeroActivityRestarted&&!session.hasPrompted){
+          // Nothing was ever admitted on the restored thread, so a bounded
+          // one-time handoff re-delivery is safe; the current input stays raw.
+          const handoff=workerInitialHandoff(w,job.reader,{brief:w.originalBrief??w.brief});
+          workerHandoffBytes=Buffer.byteLength(handoff+'\n\n','utf8');prompt=handoff+'\n\n'+prompt;
+        }else if(w.contextHandoff){
+          const recovery=await this.workerRecoveryContext(w,job);
+          if(recovery){const packet='User-confirmed context handoff sources:\n'+JSON.stringify(recovery)+'\nCurrent explicit input (only scheduled instruction):\n';workerHandoffBytes=Buffer.byteLength(packet,'utf8');prompt=packet+prompt;}
+        }
+        if(job.type==='initial')workerHandoffBytes=Buffer.byteLength(prompt,'utf8');
+        // Rehydrate the stable per-Work source identities on THIS run's fresh
+        // reader: the immutable original request plus exactly the currently
+ // approved scope originals (keyed by sourceJobId). No body is injected
+        // into the prompt — only these small readRef/version identities are
+        // exposed for on-demand reads, and they expire with the turn's reader
+        // only to be re-materialized identically on the next run.
+        const originalTaskRef=job.reader.addStable(`work/${w.id}/request`,w.request,{title:'原始任务（不可改写）',source:`work:${w.id}:request`,kind:'task-scope'});
+        const refVersion=ref=>job.reader.entries.get(ref)?.version;
+        const originalVersion=refVersion(originalTaskRef)??createHash('sha256').update(w.request).digest('hex');
+        const approvedRefs=(w.approvedScopes||[]).filter(scope=>typeof scope.sourceText==='string').map(scope=>{const ref=job.reader.addStable(`work/${w.id}/approved/${scope.sourceJobId??scope.deviationId}`,scope.sourceText,{title:'用户明确批准的来源输入',source:`work:${w.id}:approved:${scope.deviationId}`,kind:'task-scope'});return {deviationId:scope.deviationId,sourceJobId:scope.sourceJobId??null,version:refVersion(ref)??createHash('sha256').update(scope.sourceText).digest('hex'),ref};});
+        const unknownEffects=this.store.state.todos.filter(t=>t.workId===job.target&&t.kind==='recovery'&&t.status==='open').map(t=>({kind:'recovery-decision',at:t.at??null,workRef:'@work:'+job.target,summary:t.text}));
+        projection=workerStateProjection(w,{unknownEffects,originalTaskRef,originalVersion,approvedRefs});
+        if(projection.bytes>PROJECTION_MAX_BYTES)throw Object.assign(new Error('宿主当前状态投影超出单请求上限（'+projection.bytes+' > '+PROJECTION_MAX_BYTES+' 字节）；已阻断本次模型请求，未发送任何内容。必要控制事实无法完整表达时不得截断后照发。'),{code:'HOST_PROJECTION_OVER_BUDGET'});
+      }
+      if(materialDelivery.mode==='full')materials=await deliveryMaterials(job,{readObject:version=>this.store.readObject(version)});
+      else if(materialDelivery.pointer)materials=[materialDelivery.pointer];
+      const handoffBytes=Buffer.byteLength(hostSections.join('\n'),'utf8');
+      const materialBytes=materials.reduce((sum,m)=>sum+Buffer.byteLength(m.text,'utf8'),0);
+      // Only host-added text consumes the shared budget: handoff sections,
+      // frozen material bodies and the one-time Worker handoff packet. The
+      // user's own raw text never counts against the host quota.
+      const hostTextBytes=handoffBytes+materialBytes+workerHandoffBytes;
+      // Ordinary chat adds zero host text: skip the charge AND its durability
+      // mutate entirely — persistence runs only when host-added bytes, a
+      // rotation or a receipt reservation actually changed the ledger.
+      if(hostTextBytes>0){
+        const charge=this.contextBudget.charge(job.target,hostTextBytes,{kind:'host-text',label:'handoff+materials'});
+        if(!charge.ok)throw Object.assign(new Error('本轮宿主文本预算不足（run剩余 '+charge.remainingRun+' B / 压缩代次剩余 '+charge.remainingGeneration+' B）；材料或交接未发送，不静默截断。请减少材料量、分页交付或在新原生会话/压缩代次后继续。'),{code:'HOST_TEXT_BUDGET_EXCEEDED',remainingRun:charge.remainingRun,remainingGeneration:charge.remainingGeneration});
+        try{await this.#persistBudgetEpochs();}catch(error){throw Object.assign(new Error('宿主预算记账持久化失败；已阻断本次模型请求，未发送任何内容（fail-closed）。'),{code:'HOST_BUDGET_PERSIST_FAILED',cause:error});}
+      }
+      if(this.stopping||(isWork&&(this.deviationHeld(job.target)||['closing','ended'].includes(this.store.find(job.target).status)))||(job.type==='intake'&&['closing','ended'].includes(this.intakeBoundWork(job)?.status)))throw new Error('execution interrupted before prompt');
+      if(job.type==='front'){
+        await this.prepareFrontGoal(job);
+        if(this.transferFor(job)){await this.saveTransferredFront(job);return;}
+        if(this.frontGoal(job)?.intakeJobId){await this.handoffFront(job,'转交后的用户补充');await this.store.mutate(()=>{savedJob().status='completed';savedJob().finishedAt=new Date().toISOString();});return;}
+      }
+      if(hostSections.length)prompt=hostSections.join('\n')+'\n\n'+prompt;
+      this.pendingContextDelivery.set(job.target,{...(projection?{projection:{text:projection.text,version:projection.version,sources:[{id:'work:'+job.target,version:String(this.store.find(job.target)?.revision??'')}],generation:epoch}}:{}),...(materials.length?{materials}:{})});
       const attachments=job.context?.imageAttachments||[];if(attachments.length>8)throw Error('图片超过8张');const images=[];let imageBytes=0;for(const ref of attachments){if(!/^[a-f0-9]{64}$/.test(ref.digest)||ref.mime!=='image/png'||ref.storage!=='project'||ref.projectId!==this.projectId)throw Error('图片附件引用无效');const bytes=await this.store.storage.readObject(this.projectId,ref.digest);imageBytes+=bytes.length;if(bytes.length>8*1024*1024||imageBytes>24*1024*1024)throw Error('图片附件超过大小上限');images.push('data:image/png;base64,'+bytes.toString('base64'));}
-      const requestContext={...(delivery?.stats||{}),eventChars:job.text.length,hostAddedChars:Math.max(0,prompt.length-job.text.length),instructionChars:session.instructions?.length||0,baseInstructionChars:session.baseInstructions?.length||0,dynamicToolChars:JSON.stringify(session.tools||[]).length,...(event?{eventSkill:{delivery:'message',chars:event.length,digest:createHash('sha256').update(event).digest('hex')}}:{})};
-      await this.store.mutate(()=>{savedJob().requestContext={promptChars:prompt.length,...requestContext};});
+      const hostSectionChars=hostSections.join('\n').length,materialChars=materials.reduce((sum,m)=>sum+m.text.length,0);
+      const hostAddedChars=hostSectionChars+materialChars+(rawUser!=null?Math.max(0,prompt.length-rawUser.length-(hostSectionChars?hostSectionChars+2:0)):0);
+      const requestContext={promptChars:prompt.length,userTextChars:rawUser!=null?rawUser.length:null,userTextDigest:rawUser!=null?createHash('sha256').update(rawUser).digest('hex'):null,rawUserDeliveredVerbatim:rawUser!=null&&prompt===rawUser,hostAddedTextBytes:hostTextBytes,hostAddedChars,hostAdded:{chars:hostAddedChars,sections:[...(handoffBytes?[{origin:'explicit-handoff',chars:hostSectionChars}]:[]),...(materialBytes?[{origin:'explicit-material',chars:materialChars}]:[]),...(workerHandoffBytes?[{origin:'explicit-handoff',bytes:workerHandoffBytes}]:[]),...(projection?[{origin:'data-projection',chars:projection.text.length}]:[])]},materials:materials.map(material=>({id:material.id,version:material.version,title:material.title??null,bytes:Buffer.byteLength(material.text,'utf8'),kind:job.context?.materials?.find(ref=>ref.id===material.id)?.kind??'explicit-material',mode:materialDelivery.mode})),...(projection?{projection:{label:projection.label,version:projection.version,bytes:projection.bytes}}:{projection:null}),omissions,instructionChars:session.instructions?.length||0,baseInstructionChars:session.baseInstructions?.length||0,dynamicToolChars:JSON.stringify(session.tools||[]).length,budget:this.contextBudget.snapshot(job.target)};
+      // One durable write per turn for the request record: fewer full-state
+      // persists keep the storage worker away from transaction timeouts on
+      // long multi-turn runs. (Transfer check stays between record and run.)
+      await this.store.mutate(()=>{savedJob().requestContext=requestContext;});
       if(job.type==='front'&&this.transferFor(job)){await this.saveTransferredFront(job);return;}
       await this.store.mutate(()=>{if(isWork)this.assertDeviationReleased(job.target);delete savedJob().resourceBlocked;savedJob().promptStartedAt=Date.now();const owner=isWork?this.store.find(job.target):this.store.state.residents[job.target];if(owner)owner.zeroActivity=false;});
-      const response=await session.prompt(prompt,{timeout:session.settleTimeoutMs??600000,images,job:{id:job.id,target:job.target,revision:job.revision??null,type:job.type}});
+      const response=await session.prompt(prompt,{timeout:session.settleTimeoutMs??600000,images,job:{id:job.id,target:job.target,revision:job.revision??null,type:job.type},...(materials.length?{materials}:{}),...(projection?{projection:{text:projection.text,version:projection.version,sources:[{id:'work:'+job.target,version:String(this.store.find(job.target)?.revision??'')}],generation:epoch}}:{})});
       if(await this.settleUserInterruption(job))return;
-      materialDelivery.commit();
+      // Delivery advancement uses the exact native entry barrier, never turn
+      // success: a failed turn after record confirmation has still delivered.
+      const recordConfirmed=response.delivery?.phase==='native-record-confirmed'||savedJob().collabAttempts?.some(attempt=>attempt.recordConfirmed===true);
+      materialDelivery.commit(recordConfirmed);
       if(job.type==='front'&&this.transferFor(job)){await this.saveTransferredFront(job,response);return;}
       if(this.stopping||(isWork&&['closing','ended'].includes(this.store.find(job.target).status))||(job.type==='intake'&&['closing','ended'].includes(this.intakeBoundWork(job)?.status)))throw new Error('execution interrupted after prompt');
       if(isWork&&response.files?.length)await this.recordArtifacts(job,response.files);
@@ -1870,8 +2123,7 @@ export class Controller extends EventEmitter {
       }
       const agentBody=response.completion==='host-control'||response.projectedNative?'':response.text;const body=agentBody||(!response.projectedNative&&job.type==='intake'?this.routingMessage(savedJob().routing):'');
       await this.store.mutate(()=>{
-        Object.assign(savedJob(),{status:'completed',finishedAt:new Date().toISOString(),threadId:response.threadId,turnId:response.turnId,providerStatus:response.providerStatus,completion:response.completion,metrics:response.metrics??null,...(response.effective?{effective:structuredClone(response.effective)}:{})});
-        if(delivery){this.store.state.contextDelivery??={};this.store.state.contextDelivery[job.target]=delivery.checkpoint;}
+        Object.assign(savedJob(),{status:'completed',finishedAt:new Date().toISOString(),threadId:response.threadId,turnId:response.turnId,providerStatus:response.providerStatus,completion:response.completion,metrics:response.metrics??null,...(response.effective?{effective:structuredClone(response.effective)}:{}),...(response.delivery?{delivery:structuredClone(response.delivery)}:{})});
         if(body)this.store.state.messages.push({id:randomUUID(),target:job.target,speaker:agentBody?'agent':'system',text:body,jobId:job.id,...(job.type==='intake'&&(job.context.frontJobId||job.context.manual||job.context.boundWorkId)?{audience:'frontdesk',sourceJobId:job.context.frontJobId||job.id}:{})});
         if(response.effective){this.store.state.modelObservations??={};this.store.state.modelObservations[`${response.effective.model}:${response.effective.effort}`]={status:'turn-completed',at:new Date().toISOString()};}
       });
@@ -1885,6 +2137,7 @@ export class Controller extends EventEmitter {
           for(const grant of ledger.grants??[])if(grant.permissionTaskId===permissionTaskId)this.privilegeBroker?.revoke?.({grantId:grant.id});
         }
       }
+      settledOk=true;
     }catch(e){
       if(await this.settleUserInterruption(job))return;
       if(e.code==='MAINTENANCE_PENDING'){await this.store.mutate(()=>{
@@ -1903,13 +2156,25 @@ export class Controller extends EventEmitter {
         await this.store.mutate(()=>{delete this.store.state.providers[job.target];});
         await this.saveTransferredFront(job,{text:e.partialText,metrics:e.metrics,turnId:e.turnId,threadId:e.threadId,providerStatus:'interrupted'});return;
       }
-      if(job.type!=='maintenance'&&/^OMP_|^PI_|^NATIVE_|^HOST_INTERNAL_/.test(String(e.code??''))){const bug=await this.maintenance.record({phase:savedJob()?.promptStartedAt?'started-turn':'startup-diagnosis',jobId:job.id,workId:ending?.id??null,revision:job.revision??null,error:e});await this.maintenance.finish(bug.id,{outcome:savedJob()?.promptStartedAt?'human-boundary':'needs-version-fix'});await this.maintenanceEvent(bug);}
+      // Provider/runtime diagnostic failures carry no actionable host recovery:
+          // classified and counted locally, never re-sent, never converted into
+          // maintenance/backstage model turns (design §10). Deterministic host
+          // transactions keep their own bounded recovery elsewhere.
+          const diagnostic=this.providerRuntimeDiagnostic(e);
+          if(diagnostic&&job.type!=='maintenance')await this.recordDiagnosticFailure(job,e);
       // Record the accepted input's failure before cleanup can reject or hang.
       // Native exit and durable turn failure are independent pieces of evidence.
       await this.store.mutate(()=>{
         const saved=savedJob(),w=this.store.state.works.find(w=>w.id===job.target);
         if(['cancelled','interrupted','completed'].includes(saved.status)||w&&['closing','ended'].includes(w.status))return;
         Object.assign(saved,{status:this.stopping?'interrupted':'failed',finishedAt:new Date().toISOString(),error:e.message});
+        // A failed turn may still have delivered: exact-entry evidence from
+        // the runtime error payload or the confirmed transport attempt is
+        // preserved — never re-derived from turn success.
+        if(!saved.delivery){
+          if(e.delivery&&e.delivery.phase==='native-record-confirmed')saved.delivery=structuredClone(e.delivery);
+          else{const confirmed=(saved.collabAttempts||[]).findLast(attempt=>attempt.recordConfirmed===true);if(confirmed)saved.delivery={phase:'native-record-confirmed',requestId:confirmed.requestId,text:{entryId:confirmed.nativeEntryId??null,nativeEntryDigest:confirmed.nativeEntryDigest??null}};}
+        }
         if(job.type==='backstage'){
           const entry=this.store.state.backstageEvents?.find(event=>event.key===job.context?.backstageEventKey);
           if(entry){entry.status='blocked';entry.failureCode=/^[A-Z][A-Z0-9_]{0,79}$/.test(String(e.code??''))?e.code:'BACKSTAGE_PROCESSING_FAILED';entry.reason='后台核对失败（'+entry.failureCode+'）；原问题、进展与会话已保留，未重放未知效果。';}
@@ -1917,8 +2182,17 @@ export class Controller extends EventEmitter {
         const binding=w?.binding||this.store.state.bindings[job.target];
         if(binding){this.store.state.modelObservations??={};this.store.state.modelObservations[`${binding.model}:${binding.effort}`]={status:'turn-failed',error:e.message,at:new Date().toISOString()};}
         this.store.state.messages.push({id:randomUUID(),target:job.target,speaker:'system',text:runtimeFailureMessage(e,{work:Boolean(ending)}).text,jobId:job.id,...(job.context?.frontJobId||job.context?.manual||job.context?.boundWorkId?{audience:'frontdesk'}:{})});
-        if(w?.status==='running')this.pauseState(w,e.message);else if(!w&&!['maintenance','backstage'].includes(job.type))this.store.state.todos.push({id:randomUUID(),kind:'system',status:'open',target:job.target,sourceJobId:job.id,text:e.message});
+        if(w?.status==='running')this.pauseState(w,e.message);else if(!w&&!diagnostic&&!['maintenance','backstage'].includes(job.type))this.store.state.todos.push({id:randomUUID(),kind:'system',status:'open',target:job.target,sourceJobId:job.id,text:e.message});
       });
+      // A failed turn may still have delivered exactly: commit the prepared
+      // material delivery ONLY on native record confirmation (runtime error
+      // payload or the confirmed transport attempt) — never on unknown, and
+      // before owner cleanup so the proof is not lost with the session.
+      {
+        const saved=savedJob();
+        const exactlyConfirmed=e.delivery?.phase==='native-record-confirmed'||(saved?.collabAttempts||[]).some(attempt=>attempt.recordConfirmed===true);
+        if(pendingMaterialDelivery&&exactlyConfirmed)pendingMaterialDelivery.commit(true);
+      }
       const owner=this.sessions.get(job.target),cleanupFailures=[];
       let exitReceipt;
       try{await this.terminals.get(job.target)?.close();}catch(error){cleanupFailures.push({stage:'terminal-close',error});}
@@ -1930,10 +2204,16 @@ export class Controller extends EventEmitter {
         if(this.sessions.get(job.target)===owner&&exitReceipt?.confirmationComplete===true)delete this.store.state.providers[job.target];
       });
       if(cleanupFailures.length)throw Object.assign(new AggregateError(cleanupFailures.map(({error})=>error),'native cleanup failed after turn failure'),{code:'PI_TURN_CLEANUP_FAILED',cause:e});
-      if(!['frontdesk','orchestrator'].includes(job.target))await this.ensureWorkerDelivery(job,e);
-    }finally{this.interruptions?.delete(job.id);if(!['frontdesk','orchestrator'].includes(job.target)){if(didStart&&this.store.find(job.target).deviation?.admittedJobId===job.id)await this.stopDeviationOwner(job.target);}await this.finalizeTransfers();
-      if(job.type==='backstage')await this.store.mutate(()=>{const entry=this.store.state.backstageEvents?.find(e=>e.key===job.context?.backstageEventKey);if(entry?.status==='queued'){entry.status='blocked';entry.reason='后台回合未提供可靠处理；原问题与进展保留，未编造回答或执行未知效果。';}});
-      await this.processBackstage();this.changed();if(didStart&&!this.stopping&&!['frontdesk','orchestrator'].includes(job.target))this.emit('files-changed',{jobId:job.id,workId:job.target,reason:'worker-turn-settled'});}
+      if(!['frontdesk','orchestrator'].includes(job.target)&&!diagnostic)await this.ensureWorkerDelivery(job,e);
+    }finally{
+      this.pendingContextDelivery.delete(job.target);this.contextBudget.endRun(job.target);
+      try{await this.#persistBudgetEpochs();}catch(error){if(settledOk)throw error;this.emit('diagnostic','context budget final persistence failed (primary failure preserved): '+error.message);}
+      this.interruptions?.delete(job.id);
+      if(!['frontdesk','orchestrator'].includes(job.target)&&didStart&&this.store.find(job.target).deviation?.admittedJobId===job.id)await this.stopDeviationOwner(job.target).catch(error=>this.emit('diagnostic','deviation owner cleanup failed: '+error.message));
+      await this.finalizeTransfers().catch(error=>this.emit('diagnostic','transfer finalization failed: '+error.message));
+      if(job.type==='backstage')await this.store.mutate(()=>{const entry=this.store.state.backstageEvents?.find(e=>e.key===job.context?.backstageEventKey);if(entry?.status==='queued'){entry.status='blocked';entry.reason='后台核对失败；原问题与进展保留，未编造回答或执行未知效果。';}});
+      await this.processBackstage();this.changed();if(didStart&&!this.stopping&&!['frontdesk','orchestrator'].includes(job.target))this.emit('files-changed',{jobId:job.id,workId:job.target,reason:'worker-turn-settled'});
+    }
   }
   async saveTransferredFront(job,response={}){
     await this.store.mutate(()=>{

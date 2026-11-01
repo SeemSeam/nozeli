@@ -3,7 +3,7 @@ import path from 'node:path';
 import {runGit,runGitStream,ensureGit} from './git-runtime.mjs';
 import {createHash} from 'node:crypto';
 import {Readable} from 'node:stream';
-import {withSafeFile} from './file-stream.mjs';
+import {withSafeFile,hookWouldExecute,defaultFilesystemAdapter} from './file-stream.mjs';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {optionalIsolatedLaunch} from './process-isolation.mjs';
@@ -24,7 +24,7 @@ export async function blobFiles(cwd,root,rels,known=new Map(),format='sha1'){
  const results=new Map(),opened=[];
  const capture=async at=>{if(at===rels.length){
    const changed=opened.filter(row=>row.oid!==known.get(row.rel)?.[2]);
-   if(changed.length){const ids=(await runGit(cwd,['hash-object','-w','--no-filters','--stdin-paths'],{env:gitEnv(),input:Readable.from(changed.map(row=>'/proc/'+process.pid+'/fd/'+row.file.handle.fd+'\n'))})).toString().trim().split('\n');
+   if(changed.length){const ids=(await runGit(cwd,['hash-object','-w','--no-filters','--stdin-paths'],{env:gitEnv(),input:Readable.from(changed.map(row=>row.file.fdSourcePath()+'\n'))})).toString().trim().split('\n');
     if(ids.length!==changed.length||ids.some((oid,i)=>oid!==changed[i].oid))fail('SOURCE_CHANGED','Git对象与文件流摘要不一致');}
    for(const {rel,file,digest,size,oid} of opened)results.set(rel,{oid,digest,size,mode:file.mode});return;
   }
@@ -33,9 +33,12 @@ export async function blobFiles(cwd,root,rels,known=new Map(),format='sha1'){
 }
 export async function blobFile(cwd,root,rel){return (await blobFiles(cwd,root,[rel],new Map(),await str(cwd,['rev-parse','--show-object-format']))).get(rel);}
 export async function updateIndexRows(cwd,index,rows){if(!rows.length)return;const format=await str(cwd,['rev-parse','--show-object-format']);const zero='0'.repeat(format==='sha256'?64:40);await gitStream(cwd,['update-index','-z','--index-info'],{input:Readable.from((function*(){for(const {rel,mode,oid} of rows)yield (oid?mode+' '+oid:'0 '+zero)+'\t'+rel+'\0';})())},{GIT_INDEX_FILE:index});}
-export async function acceptanceCommit(repo,tree,parent,message,directory,attempt={},persist=async()=>{}){
+export async function acceptanceCommit(repo,tree,parent,message,directory,attempt={},persist=async()=>{},{filesystem=defaultFilesystemAdapter}={}){
  const configured=await str(repo,['config','--get','core.hooksPath']).catch(()=>null),hooks=configured?path.resolve(repo,configured):path.resolve(repo,await str(repo,['rev-parse','--git-path','hooks']));
- let enabled=false;for(const name of ['pre-commit','prepare-commit-msg','commit-msg','post-commit']){const stat=await fs.stat(path.join(hooks,name)).catch(e=>{if(e.code==='ENOENT')return null;throw e;});if(stat&&(process.platform==='win32'||stat.mode&0o111))enabled=true;}
+ // Hook executability is a platform fact supplied by the file-safety
+ // boundary (Linux: exec bit; unverified platforms: assume present hooks
+ // run so acceptance stays on the verified shadow-commit path).
+ let enabled=false;for(const name of ['pre-commit','prepare-commit-msg','commit-msg','post-commit']){const stat=await fs.stat(path.join(hooks,name)).catch(e=>{if(e.code==='ENOENT')return null;throw e;});if(hookWouldExecute(stat,{filesystem}))enabled=true;}
  if(attempt.commit)return attempt.commit;
  if(!enabled&&!attempt.shadow){const commit=await commitTree(repo,tree,[parent],message,directory);attempt.commit=commit;await persist(attempt);return commit;}
  const shadow=attempt.shadow||path.join(directory,'hook-candidate-'+globalThis.crypto.randomUUID()),home=path.join(directory,'hook-home');

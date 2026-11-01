@@ -28,6 +28,6 @@ async function dispatch(frame){
 }
 createInterface({input:process.stdin,crlfDelay:Infinity}).on('line',line=>{
  let frame;try{frame=JSON.parse(line);}catch(error){console.error('Invalid owner JSONL');void stop();return;}
- void dispatch(frame).catch(error=>send({id:frame?.id,error:{code:error.code??'PI_RUNTIME_ERROR',message:error.message}}));
+ void dispatch(frame).catch(error=>send({id:frame?.id,error:{code:error.code??'PI_RUNTIME_ERROR',message:error.message,...(error.deliveryPhase?{deliveryPhase:error.deliveryPhase}:{})}}));
 }).on('close',()=>void stop());
 process.on('SIGTERM',()=>void stop());process.on('SIGINT',()=>void stop());

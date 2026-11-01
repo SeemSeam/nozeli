@@ -178,7 +178,7 @@ export function mountFileNavigator({invoke, projectId, open, toast=()=>{}, works
       const status=view.viewState?.documentStatus||{},review=view.documentSource&&view.documentSource.type!=='project'?view.documentSource:null;
       const origin=review?` · ${review.type==='review-version'?'冻结版本':'审核候选'} · ${review.workId} · ${review.objectId}`:'';
       b.dataset.documentSource=view.documentSource?.type||'project';
-      b.textContent=(view.relPath?.split('/').pop()||view.viewState?.title||({report:'报告',diff:'Diff',history:'历史'}[view.kind])||view.kind)+origin+(status.dirty?' ●':'')+((view.readOnly||status.readOnly)?' [只读]':'')+(status.missing&&!review?' [缺失]':'');
+      b.textContent=(view.relPath?.split('/').pop()||view.viewState?.title||({report:'报告',diff:'Diff',history:'历史','project-terminal':'终端'}[view.kind])||view.kind)+origin+(status.dirty?' ●':'')+((view.readOnly||status.readOnly)?' [只读]':'')+(status.missing&&!review?' [缺失]':'');
       b.title=(view.relPath||b.textContent)+origin+(status.dirty?' · 未保存':'');
       if(view.relPath?.includes('/')){const parent=document.createElement('small');parent.textContent=' · '+view.relPath.split('/').slice(0,-1).join('/');b.append(parent);}
       const hidden=isProjectDocument(view)&&Array.from(visibility().hidden||[]).some(p=>view.relPath===p||view.relPath?.startsWith(p+'/'));if(hidden)b.title+=' · 已隐藏';

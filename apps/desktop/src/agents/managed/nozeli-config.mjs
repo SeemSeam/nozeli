@@ -2,17 +2,12 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { realUserHome, resolveSystemOmpSource, sanitizeOmpConfig, OMP_CONFIG_FILES } from './omp-system-source.mjs';
+import {platformPersistence} from '../../platform/shared/persistence.mjs';
 
 const inside = (root, file) => { const rel = path.relative(root, file); return !rel.startsWith('..') && !path.isAbsolute(rel); };
 const present = file => fs.lstat(file).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
-async function atomic(file, bytes) {
-  const tmp = `${file}.${randomUUID()}.tmp`;
-  const handle = await fs.open(tmp, 'wx', 0o600);
-  try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
-  await fs.rename(tmp, file);
-  if (process.platform !== 'win32') { const dir = await fs.open(path.dirname(file), 'r'); try { await dir.sync(); } finally { await dir.close(); } }
-}
+async function atomic(file,bytes){await platformPersistence.writeAtomic(file,bytes);}
 async function json(file) { const stat = await present(file); if (!stat) return null; if (!stat.isFile() || stat.isSymbolicLink()) fail('CONFIG_UNSAFE', 'Configuration record must be an ordinary file: ' + file); return JSON.parse(await fs.readFile(file, 'utf8')); }
 async function safeDirectory(directory) {
   const parent = path.dirname(directory);

@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import {constants} from 'node:fs';
 import path from 'node:path';
 import {randomUUID,createHash} from 'node:crypto';
+import {platformPersistence} from '../platform/shared/persistence.mjs';
 
 export const digest=value=>createHash('sha256').update(value).digest('hex');
 export class OpenQueueError extends Error {
@@ -48,10 +49,12 @@ export class OpenQueueStorage {
   await this.syncDirectory();
  }
  async syncDirectory(){
-  await this.fault('directory-sync');if(process.platform==='win32')return;
-  const handle=await fs.open(this.dir,constants.O_RDONLY);try{await handle.sync();}finally{await handle.close();}
+  await this.fault('directory-sync');
+  // Shared persistence barrier: an unverified platform fails explicitly instead of silently skipping.
+  await platformPersistence.syncDirectory(this.dir);
  }
  async write(value,expectedHash,beforeRename=()=>{}){
+  platformPersistence.requireSupported();
   const bytes=Buffer.from(JSON.stringify(value));if(bytes.length>this.maxBytes)fail('OPEN_QUEUE_FULL','Queue serialization exceeds capacity.');
   await this.directories();const before=await this.read();if(before.hash!==expectedHash)fail('OPEN_QUEUE_CHANGED','Queue changed externally; refusing overwrite.');
   const dirStat=await fs.lstat(this.dir),tmp=path.join(this.dir,'.tmp-open-'+randomUUID());let handle;

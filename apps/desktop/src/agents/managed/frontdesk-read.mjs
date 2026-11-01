@@ -31,7 +31,7 @@ export async function frontSource(controller,selector,job){
   const memory=await controller.memoryVersion.snapshot(),reader=new ContextReader(),result=memoryContext(memory.root.text??'',query,reader,memory.topics);
   // Stable selectors, rather than ephemeral Orchestrator readRefs.
   const entry=row=>({title:row.title,source:row.source,kind:row.kind,...(row.preview!==undefined?{preview:row.preview}:{}),body:row.kind==='topic'?'memory-topic:'+row.source.slice('memory/plantree/topics/'.length)+':0':'memory-page:0'});
-  return {source:'memory#index',version:memory.version,text:JSON.stringify({matches:result.matches.map(entry),historyMatches:result.historyMatches.map(entry),totalChars:result.totalChars,note:'优先定位整理主题；historyMatches 是原Work历史，不能直接当作当前规则。主题也须核对来源、适用范围及未决冲突。需要正文时复制对应body到@read；主题不在根索引正文中。没有命中不代表没有历史。',body:'memory-page:0'})};
+  return {source:'memory#index',version:memory.version,text:JSON.stringify({matches:result.matches.map(entry),historyMatches:result.historyMatches.map(entry),totalChars:result.totalChars,note:'优先定位整理主题；historyMatches 是原Work历史，不能直接当作当前规则。主题也须核对来源、适用范围及未决冲突。需要正文时用 nozeli_source_read 读取对应body选择器；主题不在根索引正文中。没有命中不代表没有历史。',body:'memory-page:0'})};
  }
  if(selector.startsWith('memory-topic:')){
   const match=/^memory-topic:([A-Za-z0-9_-]+\.md):(\d+)$/.exec(selector);if(!match)throw Error('无效主题正文引用');

@@ -4,6 +4,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { validateFileLabel } from '../domain/file-label.mjs';
 import { FileTags } from '../domain/file-tags.mjs';
 import { FileChanges } from '../domain/file-changes.mjs';
+import {requireCapability} from '../platform/platform-capabilities.mjs';
 
 const fail = (message) => { throw new Error(message); };
 const exists = async p => { try { await fs.lstat(p); return true; } catch (e) { if (e.code === 'ENOENT') return false; throw e; } };
@@ -106,6 +107,7 @@ export class FileTreeOps {
     if (stat.isDirectory()) await walk(src);
   }
   async perform({ projectId, action, sourceProjectId, source = '', target = '', name }) {
+    requireCapability('safe-file-io');requireCapability('durable-persistence');
     if (sourceProjectId !== undefined && (typeof sourceProjectId !== 'string' || !sourceProjectId)) fail('跨项目源项目无效。');
     const project = await this.host.requireProject(projectId);
     if (sourceProjectId && sourceProjectId !== projectId) {
@@ -220,6 +222,7 @@ export class FileTreeOps {
   // identity: no tags, change ledgers, provenance, drafts or other source
   // session material is copied or referenced across projects.
   async performCross({ project, projectId, sourceProjectId, action, source, target }) {
+    requireCapability('safe-file-io');requireCapability('durable-persistence');
     const sourceProject = await this.host.requireProject(sourceProjectId);
     const src = await this.locate(sourceProject, source);
     const stat = await fs.lstat(src);

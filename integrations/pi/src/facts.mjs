@@ -105,6 +105,17 @@ export function createFactChannel({ send }) {
     send({ event: "native", eventData });
   }
 
+  // Host-authored delivery/compaction facts: metadata only (identities,
+  // digests, byte counts, phases). Never user text, material bodies, or
+  // projection envelopes — those stay inspectable at the host, not in logs.
+  function delivery(eventData) {
+    const frame = { event: "native", eventData: { ...eventData } };
+    frame.eventData.sessionId ??= turn?.sessionId ?? sessionSingletonId ?? undefined;
+    if (turn?.turnId) frame.eventData.turnId ??= turn.turnId;
+    if (turn?.requestId && frame.eventData.type !== 'nozeliCompaction') frame.eventData.requestId ??= turn.requestId;
+    send(frame);
+  }
+
   function onNativeSessionEvent(sessionRef, event) {
     const sessionId = sessionRef?.sessionId;
     sessionSingletonId ??= sessionId;
@@ -222,9 +233,30 @@ export function createFactChannel({ send }) {
         native(eventData);
         return;
       }
+      case "compaction_start": {
+        state.compactionActive = true;
+        const eventData = { type: "compactionStarted", reason: event.reason ?? null };
+        if (sessionId) eventData.sessionId = sessionId;
+        if (turnId) eventData.turnId = turnId;
+        native(eventData);
+        return;
+      }
+      case "compaction_end": {
+        state.compactionActive = false;
+        const eventData = {
+          type: "compactionEnded",
+          reason: event.reason ?? null,
+          aborted: event.aborted === true,
+          ...(event.errorMessage ? { errorMessage: event.errorMessage } : {}),
+        };
+        if (sessionId) eventData.sessionId = sessionId;
+        if (turnId) eventData.turnId = turnId;
+        native(eventData);
+        return;
+      }
       default: {
-        // compaction_start/end, thinking_level_changed, session_info_changed,
-        // auto_retry_*, summarization_retry_*, bash_execution_update,
+        // thinking_level_changed, session_info_changed, auto_retry_*,
+        // summarization_retry_*, bash_execution_update,
         // queue_update (never expected: the worker never steers or queues).
         const eventData = toJson(event);
         if (sessionId) eventData.sessionId = sessionId;
@@ -244,6 +276,7 @@ export function createFactChannel({ send }) {
     state.completion = null;
     state.admitted = false;
     state.runActive = false;
+    state.compactionActive = false;
   }
 
   function endTurn() {
@@ -258,10 +291,12 @@ export function createFactChannel({ send }) {
   return {
     setSessionId: value => { sessionSingletonId = value; },
     onNativeSessionEvent,
+    delivery,
     beginTurn,
     endTurn,
     failTurn,
     state,
+    isCompacting: () => state.compactionActive === true,
     currentSeq: () => seq,
     isRunActive: () => state.runActive,
   };

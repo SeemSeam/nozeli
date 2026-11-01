@@ -248,13 +248,25 @@ test('view positions are retained separately for each document', async t => {
   assert.equal(state.state.currentRelPath, 'other.pdf');
   assert.equal(state.files['file.txt'].scrollTop, 83);
   assert.equal(state.files['other.pdf'].pdfPage, 3);
-  assert.deepEqual(state.files['file.txt'].fileView,{...fileView,zoom:null});
+  assert.deepEqual(state.files['file.txt'].fileView,{...fileView,zoom:null,webMode:null});
   assert.deepEqual(state.files['other.pdf'].fileView.zoom,{scale:1.5,mode:'page'});
   for(const mode of ['fit','manual','width','page','actual']){
     await f.host.writeState(f.id,{currentRelPath:'other.pdf',fileView:{zoom:{scale:2,mode}}});
     assert.deepEqual((await new DesktopHost(f.userData).readState(f.id)).files['other.pdf'].fileView.zoom,{scale:2,mode});
   }
-  assert.deepEqual((await f.host.readState(f.id)).files['file.txt'].fileView,{...fileView,zoom:null});
+  assert.deepEqual((await f.host.readState(f.id)).files['file.txt'].fileView,{...fileView,zoom:null,webMode:null});
+});
+
+test('.htm and spaced Chinese HTML files list as editable text; webMode persists per document', async t => {
+  const f = await setup(t);
+  await fs.writeFile(path.join(f.project, '中文 页面.htm'), '<!doctype html><p>htm</p>');
+  await fs.writeFile(path.join(f.project, 'my file.html'), '<p>space</p>');
+  assert.equal((await f.host.readFile(f.id, '中文 页面.htm')).kind, 'text');
+  assert.equal((await f.host.readFile(f.id, 'my file.html')).kind, 'text');
+  await f.host.writeState(f.id, { currentRelPath: '中文 页面.htm', fileView: { webMode: 'split', textMode: 'edit' } });
+  assert.equal((await new DesktopHost(f.userData).readState(f.id)).files['中文 页面.htm'].fileView.webMode, 'split');
+  await f.host.writeState(f.id, { currentRelPath: '中文 页面.htm', fileView: { webMode: 'nope' } });
+  assert.equal((await f.host.readState(f.id)).files['中文 页面.htm'].fileView.webMode, null);
 });
 
 test('notes reject empty/out-of-range anchors and material borrowed from another file', async t => {

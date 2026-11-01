@@ -1,0 +1,377 @@
+{
+  "schema": 1,
+  "slice": "platform-process-boundary",
+  "scope": "Pi/OMP process ownership, Pi session process lifecycle, execution isolation — first-stage shared platform readiness (docs/plantree/plans/001-reader-product/topics/windows-cross-platform-architecture.md §6 exit gate)",
+  "capabilitySelector": {
+    "module": "apps/desktop/src/platform/platform-capabilities.mjs",
+    "ownedBy": "RuntimeContract",
+    "consumedCapabilities": [
+      "verified-process-ownership",
+      "execution-isolation",
+      "recovery-source-ownership"
+    ],
+    "contract": "selectCapability({capability, implementations:{linux}}) -> {state:'available'|'unavailable', capability, platform, implementation?, status?, reason?}"
+  },
+  "adapters": [
+    {
+      "path": "apps/desktop/src/platform/linux/process-ownership.mjs",
+      "platform": "linux",
+      "capability": "verified-process-ownership",
+      "statusByPlatform": {
+        "linux": "implemented",
+        "windows": "unsupported",
+        "macos": "unsupported"
+      },
+      "mechanisms": [
+        "/proc/<pid>/stat start-time stamp bound to /proc/sys/kernel/random/boot_id (zombie and missing PID => null)",
+        "owner discovery via /proc/<pid>/environ host env tags (CODEX_HOME / NOZELI_PI_OWNER_HOME+NOZELI_PI_OWNER_ID)",
+        "spawned process groups (detached leader) + kill(-pgid) group termination",
+        "/proc table scans with per-member identity re-stamping before every signal"
+      ],
+      "exports": [
+        "platform",
+        "mechanisms",
+        "bootId",
+        "processStamp",
+        "ownerAlive",
+        "signalProcessGroup",
+        "signalProcess",
+        "spawnGroupLeader",
+        "reapOwnedProcessGroup",
+        "recoverOwnedProcessGroupLeader",
+        "reapOwnerTaggedTree",
+        "recoverOwnerTaggedLeader"
+      ],
+      "engines": {
+        "reapOwnedProcessGroup/recoverOwnedProcessGroupLeader": "group-scoped verified reaping (OMP/Codex CODEX_HOME tag); 25 attempts, TERM<10 then KILL, empty-env rescan, transient EACCES/ENOENT/ESRCH retry",
+        "reapOwnerTaggedTree/recoverOwnerTaggedLeader": "whole-uid-table verified reaping (Pi owner tags; catches group-escaping native-tool descendants); 30 attempts TERM<15, leader recovery 40 attempts with KILL at 20, same-group untagged member blocks release"
+      },
+      "parameterization": "identity descriptor {member(env,record), leader(env,command,record), messages{groupReused,leaderReused,memberUnverified,leaderUnverified,leaderChanged?,leaderDidNotExit,descendantsDidNotExit}} supplied by the managed contracts; Linux mechanics stay here, business ownership markers and user-visible error text stay in managed/"
+    },
+    {
+      "path": "apps/desktop/src/platform/linux/bwrap-isolation.mjs",
+      "platform": "linux",
+      "capability": "execution-isolation",
+      "statusByPlatform": {
+        "linux": "implemented",
+        "windows": "unsupported",
+        "macos": "unsupported"
+      },
+      "mechanisms": [
+        "bubblewrap default-deny read domain",
+        "read-only system runtime domain (/usr,/bin,/sbin,/lib,/lib64,/etc + resolv.conf only)",
+        "private tmpfs /tmp, own /dev /proc, --unshare-pid/ipc/uts, --die-with-parent",
+        "explicit bind roots; whole-directory mounts rejected"
+      ],
+      "exports": [
+        "platform",
+        "mechanism",
+        "launch",
+        "available"
+      ],
+      "notes": "verbatim extraction of the previous process-isolation.mjs implementation incl. Chinese operator-facing error strings and bwrap availability probe caching"
+    },
+    {
+      "path": "apps/desktop/src/platform/linux/recovery-owner.mjs",
+      "platform": "linux",
+      "capability": "recovery-source-ownership (dedicated matrix row: linux implemented, win/darwin unsupported)",
+      "statusByPlatform": {
+        "linux": "implemented",
+        "windows": "unsupported",
+        "macos": "unsupported"
+      },
+      "mechanisms": [
+        "same-uid /proc enumeration excluding self",
+        "/proc/<pid>/cmdline argv with fixed desktop-service allowlist (systemd --user, ssh-agent -D, polkit-kde, powerdevil, 14-arg kwin_wayland, (sd-pam) with verified same-uid systemd --user parent via stat PPID)",
+        "/proc/self/exe + /proc/<pid>/exe readlink exact executable identity; Chromium argv-rewrite and --type= child exclusion",
+        "/proc/<pid>/fd scan + per-fd readlink: open catalog.sqlite ownership evidence, read-only node:sqlite inspection, dev/ino stability across the read",
+        "processStamp incarnation re-checks between every step; ENOENT/ESRCH skippable only when the stamp is gone"
+      ],
+      "exports": [
+        "assertRecoverySourceStopped"
+      ],
+      "notes": "verbatim extraction of main/project-recovery-owner.mjs algorithm (unchanged); conservative failure RECOVERY_OWNER_UNVERIFIED / RECOVERY_SOURCE_ACTIVE only"
+    }
+  ],
+  "contracts": [
+    {
+      "path": "apps/desktop/src/agents/managed/process-ownership.mjs",
+      "exports": [
+        "processIdentityCapability",
+        "processStamp",
+        "ownerAlive",
+        "recoverProvider",
+        "reapOwnedGroup",
+        "hostProcessTree"
+      ],
+      "unsupportedSemantics": {
+        "processStamp": "null (no fabricated identity)",
+        "ownerAlive": "throws PROCESS_OWNERSHIP_UNSUPPORTED (boolean API preserved): kill(pid,0) liveness is not identity proof and not descendant proof, so no verdict is issued on an unverified platform — callers keep the lock/budget/writer and surface the error",
+        "recoverProvider": "throws PROCESS_OWNERSHIP_UNSUPPORTED 'orphan identity recovery is verified on Linux only'",
+        "reapOwnedGroup": "{descendantsReaped:0, verified:false, platform, reason}",
+        "hostProcessTree": "{verified:false, spawn throws PROCESS_OWNERSHIP_UNSUPPORTED, stamp -> null (honest no-identity answer, not a success), terminateGroup throws PROCESS_OWNERS_UNSUPPORTED — no silent no-op; nothing signals}"
+      },
+      "ownerAlivePhase2Contract": "Unverified platforms refuse instead of answering. A phase2 adapter must provide a conservative identity distinction (verified same-incarnation death vs alive-but-unverified vs unknown) before any boolean answer is issued; only a verified same-incarnation death may release a historical lock, budget slot or writer, and no answer is descendant proof without the verified reaping engines.",
+      "testInjection": "every export accepts optional deps={selection} with a selectCapability-shaped result; default selection routes through platform-capabilities"
+    },
+    {
+      "path": "apps/desktop/src/agents/managed/pi-process-ownership.mjs",
+      "exports": [
+        "reapOwnedPiGroup",
+        "recoverPiProvider"
+      ],
+      "unsupportedSemantics": {
+        "reapOwnedPiGroup": "{verified:false, platform, descendantsReaped:0, reason} — budget slot retained",
+        "recoverPiProvider": "throws PI_PROCESS_OWNERSHIP_UNSUPPORTED 'Pi orphan recovery has not been verified on <platform>'; no signal is ever sent, registration retained"
+      },
+      "businessIdentityKeptHere": [
+        "ownerId UUID + stamp format validation",
+        "owner home containment under <root>/agents",
+        "bundled integrations/pi executable cmdline marker",
+        "Pi error strings"
+      ]
+    },
+    {
+      "path": "apps/desktop/src/agents/managed/process-isolation.mjs",
+      "exports": [
+        "isolationCapability",
+        "isolatedLaunch",
+        "isolationAvailable",
+        "optionalIsolatedLaunch"
+      ],
+      "unsupportedSemantics": "isolatedLaunch throws ISOLATION_UNSUPPORTED with the operator-facing message plus a structured capability payload; optionalIsolatedLaunch keeps the explicit probe opt-in — probe false stays honestly labelled isolated:false, probe true on an unsupported platform rejects instead of spawning unsandboxed"
+    },
+    {
+      "path": "apps/desktop/src/agents/managed/pi-session.mjs",
+      "changes": [
+        "constructor: this.processTree = spec.processTree ?? hostProcessTree() — injected platform service",
+        "start(): rejects PI_PLATFORM_UNSUPPORTED before mkdir/spawn when processTree.verified is false",
+        "spawn/ownerStamp/group-SIGTERM now go through the service; the removed lines were `detached:process.platform!=='win32'` and `process.platform==='win32'?this.child.kill():process.kill(-this.pid,'SIGTERM')`",
+        "transport/queue/request identity/admission/UNKNOWN/no-replay lifecycle unchanged (pi-session-admission.test.mjs, pi-lifecycle-live.mjs)",
+        "saveMetadata publishes through platformPersistence.writeAtomic (temp+fsync+rename+directory barrier; exact same JSON payload; home mkdir semantics in start() unchanged) — replaces the direct barrier-less atomic write"
+      ],
+      "sourceGuards": "pi-session.mjs contains no process.platform and no process.kill (asserted by tests/platform-process-boundary.test.mjs)"
+    },
+    {
+      "path": "apps/desktop/src/main/project-recovery-owner.mjs",
+      "exports": [
+        "assertRecoverySourceStopped(root, deps?)"
+      ],
+      "migration": "shared-selector wrapper over platform/linux/recovery-owner.mjs; capability named recovery-source-ownership, selected via the dedicated recovery-source-ownership matrix row (Linux-only); NO second proof path — unavailable selection throws the exact RECOVERY_OWNER_UNVERIFIED operator error with platform/status attached; sole caller ProjectStorage.initialize unchanged",
+      "testInjection": "optional deps={selection} for unsupported-platform regressions"
+    }
+  ],
+  "phase2AdapterSignatures": {
+    "verified-process-ownership adapter (windows/macos)": {
+      "file": "apps/desktop/src/platform/<platform>/process-ownership.mjs",
+      "mustExport": [
+        "platform",
+        "mechanisms",
+        "bootId (or equivalent incarnation identity)",
+        "processStamp(pid)",
+        "ownerAlive(owner)",
+        "signalProcessGroup(pid,signal)",
+        "signalProcess(pid,signal)",
+        "spawnGroupLeader({command,args,cwd,env,stdio,windowsHide})",
+        "reapOwnedProcessGroup(record,identity)",
+        "recoverOwnedProcessGroupLeader(record,root,identity)",
+        "reapOwnerTaggedTree(record,identity)",
+        "recoverOwnerTaggedLeader(record,identity)"
+      ],
+      "ownerAliveRequirement": "must provide a conservative identity distinction (verified same-incarnation death vs alive-but-unverified vs unknown); only the first may release a lock/budget slot/writer, and no answer may be treated as proof that descendants exited without the verified reaping engines",
+      "notes": "candidate Windows mechanism: Job Object assignment at spawn + verified descendant accounting; must keep the identity descriptor contract and every message/verified:false refusal semantic; matrix entry flips to implemented only after real-host verification (W2/M2)"
+    },
+    "PiSession host service": {
+      "shape": "{capability, platform, verified:boolean, mechanisms?, spawn({command,args,cwd,env,stdio,windowsHide}) -> ChildProcess, stamp(pid) -> Promise<string|null>, terminateGroup(pid, signal)}",
+      "injection": "new PiSession({...spec, processTree}) or spec.processTree; default hostProcessTree() from agents/managed/process-ownership.mjs",
+      "unavailableBehavior": "verified:false with spawn/terminateGroup throwing PROCESS_OWNERSHIP_UNSUPPORTED and stamp resolving null; there is intentionally no silent-success operation"
+    },
+    "execution-isolation adapter": {
+      "mustExport": [
+        "platform",
+        "mechanism",
+        "launch(spec) -> {command,args,env}",
+        "available() -> Promise<boolean>"
+      ],
+      "notes": "spec = {command,args,home,cwd,writable[],readOnly[],readable[]}; refusal to establish the domain must throw, never return a plain spawn"
+    }
+  },
+  "callerMigrations": [
+    {
+      "file": "apps/desktop/src/agents/managed/pi-session.mjs",
+      "symbols": [
+        "processStamp",
+        "spawn (direct)",
+        "process.kill group branch"
+      ],
+      "migration": "edited: injected processTree service (hostProcessTree default); no platform branch left in the session"
+    },
+    {
+      "file": "apps/desktop/src/agents/managed/controller.mjs",
+      "symbols": [
+        "PiSession",
+        "recoverPiProvider",
+        "recoverProvider",
+        "processStamp"
+      ],
+      "migration": "unchanged imports; now routed through the contracts — Pi sessions fail PI_PLATFORM_UNSUPPORTED before spawn on unverified platforms, recovery/reaping fail structured, budget/writer retained"
+    },
+    {
+      "file": "apps/desktop/src/agents/managed-projects.mjs",
+      "symbols": [
+        "recoverPiProvider",
+        "recoverProvider"
+      ],
+      "migration": "unchanged imports; same contract routing"
+    },
+    {
+      "file": "apps/desktop/src/agents/managed/workspace.mjs",
+      "symbols": [
+        "processStamp",
+        "ownerAlive"
+      ],
+      "migration": "unchanged imports; capability-routed; the stale-lock takeover now surfaces PROCESS_OWNERSHIP_UNSUPPORTED (lock retained) on unverified platforms instead of releasing on a kill-0 liveness guess"
+    },
+    {
+      "file": "apps/desktop/src/agents/managed/omp-process-ownership.mjs",
+      "symbols": [
+        "processStamp"
+      ],
+      "migration": "unchanged import; capability-routed"
+    },
+    {
+      "file": "apps/desktop/src/main/project-recovery-owner.mjs",
+      "symbols": [
+        "processStamp"
+      ],
+      "migration": "unchanged import; its own direct /proc reads remain a residual boundary (see residualBoundariesObserved)"
+    },
+    {
+      "file": "apps/desktop/src/agents/managed/git-service.mjs",
+      "symbols": [
+        "optionalIsolatedLaunch"
+      ],
+      "migration": "unchanged import; explicit-probe semantics preserved, unsupported platform rejects when isolation is requested"
+    },
+    {
+      "file": "apps/desktop/src/agents/managed/omp-tui-session.mjs",
+      "symbols": [
+        "optionalIsolatedLaunch"
+      ],
+      "migration": "unchanged import (legacy OMP backend)"
+    },
+    {
+      "file": "apps/desktop/tests/* (49 files importing process-ownership/process-isolation/pi-session)",
+      "symbols": [
+        "processStamp",
+        "ownerAlive",
+        "recoverProvider",
+        "isolatedLaunch",
+        "isolationAvailable",
+        "optionalIsolatedLaunch",
+        "PiSession"
+      ],
+      "migration": "unchanged import paths and result shapes; live Linux behavior byte-equivalent"
+    },
+    {
+      "file": "apps/desktop/src/main/project-recovery-owner.mjs",
+      "symbols": [
+        "assertRecoverySourceStopped"
+      ],
+      "migration": "rewritten as the shared-selector wrapper; /proc algorithm moved verbatim to platform/linux/recovery-owner.mjs; project-storage.mjs caller import unchanged"
+    }
+  ],
+  "tests": {
+    "new": [
+      "apps/desktop/tests/platform-process-boundary.test.mjs"
+    ],
+    "cases": [
+      "Linux process service spawns a verified group leader and terminates the whole group",
+      "platforms without a verified adapter never stamp, reap, recover or signal (incl. hostProcessTree spawn/terminateGroup refuse structured, never silent success)",
+      "unverified ownerAlive refuses a verdict instead of guessing liveness",
+      "a stale workspace lock is only releasable through a verified identity answer",
+      "recovery-source ownership has one Linux proof path and refuses elsewhere",
+      "an unverified Pi owner tree exit never closes the session or claims confirmation",
+      "PiSession refuses to start without a verified platform process service",
+      "execution isolation fails structured instead of spawning unsandboxed",
+      "Linux bwrap isolation stays reachable through the contract when installed",
+      "the shared PiSession keeps platform and group-kill assumptions out of its source"
+    ],
+    "existingCoverageReliedOn": [
+      "apps/desktop/tests/pi-process-ownership.test.mjs (live PID-reuse refusal, descendant reaping)",
+      "apps/desktop/tests/pi-session-admission.test.mjs (queue serialization, no failure conversion, no replay semantics)",
+      "apps/desktop/tests/pi-lifecycle-live.mjs (UNKNOWN/no-replay, detached native command reaped, exit confirmation)",
+      "apps/desktop/tests/omp-runtime-isolation.test.mjs + managed-worktree-isolation.test.mjs + process-launch-config.test.mjs (bwrap domain refusals and probe contract)"
+    ]
+  },
+  "residualBoundariesObserved": [
+    {
+      "id": "omp-tui-session-platform-default",
+      "file": "apps/desktop/src/agents/managed/omp-tui-session.mjs",
+      "note": "legacy OMP backend keeps a process.platform default reap receipt and PTY/terminal assumptions; new execution is Pi, left as legacy boundary"
+    },
+    {
+      "id": "controller-executable-discovery",
+      "file": "apps/desktop/src/agents/managed/controller.mjs",
+      "note": "PATHEXT/win32 exec-bit candidate resolution for provider executables; not part of this slice (controller owned by main agent)"
+    },
+    {
+      "id": "system-terminal-ticket-permissions",
+      "file": "apps/desktop/src/agents/system-terminal-client.mjs",
+      "note": "win32-branching ticket permission checks; system-terminal-attach capability boundary"
+    },
+    {
+      "id": "shadow-versions-devnull",
+      "file": "apps/desktop/src/agents/managed/shadow-versions.mjs",
+      "note": "NUL vs /dev/null redirection assumption"
+    },
+    {
+      "id": "git-service-hook-exec-bit",
+      "file": "apps/desktop/src/agents/managed/git-service.mjs",
+      "note": "win32 skips the hook executable-bit check; bundled-git capability boundary"
+    }
+  ],
+  "residualBoundariesShared": "authoritative machine-readable list: capabilitySnapshot().residualBoundaries in apps/desktop/src/platform/platform-capabilities.mjs (includes privilege-broker, force-quit, project storage atomics, tex-build/auto-update kill trees, runtime-audit /proc scan, packaging, electron surface)",
+  "verification": "node --check passed on all touched .mjs files after the final review round (ownerAlive structured refusal, recovery-source-ownership extraction, PiSession saveMetadata on the shared atomic publish); full test execution intentionally skipped mid-flight per main-agent instruction",
+  "boundedPersistenceMigration": {
+    "assignedBy": "Main (review follow-up slice)",
+    "contract": "platformPersistence.requireSupported() / platformPersistence.syncDirectory(dir) from apps/desktop/src/platform/shared/persistence.mjs (parent-owned adapter module, not modified by this slice)",
+    "consumers": [
+      {
+        "file": "apps/desktop/src/main/project-storage.mjs",
+        "change": "local syncDirectory delegates to platformPersistence.syncDirectory (was: silent skip on win32); initialize() preflights requireSupported before the transaction mutates anything",
+        "linuxBehavior": "unchanged: same open+fsync+close barrier per directory, same syncTree/transaction phase order"
+      },
+      {
+        "file": "apps/desktop/src/main/host.mjs",
+        "change": "syncDirectory() helper delegates to the shared barrier; writeAtomic/replaceFile/backupBaseline preflight requireSupported; agent delete path preflights before unlink",
+        "linuxBehavior": "unchanged; the two remaining process.platform uses are read-only-mode checks, not durability barriers"
+      },
+      {
+        "file": "apps/desktop/src/main/external-open-queue-storage.mjs",
+        "change": "syncDirectory() keeps the directory-sync fault hook first, then uses the shared barrier (was: win32 early return after the hook); write() preflights requireSupported before creating the temp file",
+        "linuxBehavior": "fault-hook order and OPEN_QUEUE_* transaction checks preserved"
+      },
+      {
+        "file": "apps/desktop/src/main/workspace-capture-store.mjs",
+        "change": "both win32-gated directory sync blocks (write publication, discard) replaced with the shared barrier; write() preflights requireSupported",
+        "linuxBehavior": "publication and fsync order preserved"
+      },
+      {
+        "file": "apps/desktop/src/agents/managed/workspace.mjs",
+        "change": "archive plan-tree directory sync replaced with the shared barrier; updateArchiveState preflights requireSupported after the no-report early return",
+        "linuxBehavior": "CAS recheck + rename order preserved"
+      },
+      {
+        "file": "apps/desktop/src/agents/managed/pi-session.mjs",
+        "change": "saveMetadata publishes session metadata via platformPersistence.writeAtomic (was: direct temp+fsync+rename without a directory barrier)",
+        "linuxBehavior": "same JSON payload and publish order, plus the directory durability barrier"
+      }
+    ],
+    "unsupportedSemantics": "PERSISTENCE_UNSUPPORTED before mutation where the wrapper allows it and from every directory barrier — never a silent win32 skip treated as success",
+    "sharedInventoryCorrection": {
+      "owner": "Main",
+      "note": "capabilitySnapshot().residualBoundaries entries project-storage-atomics, host-file-atomics, external-open-queue-storage, workspace-capture-store and managed-workspace-plan-atomics are now migrated onto platformPersistence.syncDirectory"
+    }
+  }
+}

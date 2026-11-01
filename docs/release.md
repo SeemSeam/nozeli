@@ -1,14 +1,16 @@
 # 发布说明与发行边界
 
-当前版本基线：**`0.1.0-alpha.3`**（见[CHANGELOG](../CHANGELOG.md)与package.json）。精确提交由同名tag及发行包RELEASE.json绑定；产品构建、测试和分发审计分别记录，不互相替代。
+当前版本基线：**`0.1.0-alpha.4`**（见[CHANGELOG](../CHANGELOG.md)与package.json）。精确提交由同名tag及发行包RELEASE.json绑定；产品构建、测试和分发审计分别记录，不互相替代。
 
 ## 版本状态
 
 - **Alpha预发行**：<https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.3>，包含Linux x64便携包、源码及SHA-256校验和。修复快速切换、系统文本复制、原生工具升级重连与失位标签操作，新增原生文件粘贴、折叠审核列表及强退；默认YOLO与后台主控恢复的权限边界见[用户指南](user-guide.md)。发布由仓库所有者本轮明确要求；**发布不是合规认证**，下述分发审计仍未完成。
+- **Alpha预发行候选**：`v0.1.0-alpha.4`尚未创建Git tag或GitHub Release；目标为本轮授权的公开 prerelease。发布前必须完成常规回归、便携包构建、实际解压启动与校验和核对；第三方对应源码、二进制通告及完整分发审计仍未签收。
 - 本版本为 **Alpha 审阅候选**：供源码审阅、跟进开发与 Linux 本机验证使用。
 - 验证状态：**Linux x64／Wayland 与 X11/XWayland 本机验证**通过（阅读、批注、编辑、后台协作工作流与本机安装循环；本次剪贴板与快速切换专项为X11/XWayland）。**Windows／macOS 为产品目标平台，未验证**；安装与打包工具当前仅实现 Linux。
 - 空工作台四项推荐功能引导（批注与选区讨论、任务闭环、分屏阅读、独立窗口）已包含在本版本中。
 - AI 能力需用户自行配置模型源与账号；发行物不含任何凭据、用户项目数据或个人会话。
+- alpha.4 本轮本机验证（2026-11-01）：默认回归完成，集成测试 1519/1519；renderer 与 Pi runtime 构建成功。真实用户级安装为 `2026-11-01T01-02-12-605Z`，previous 保留 `2026-10-31T11-17-44-818Z`。隔离合成项目真实 Electron/Wayland 验证打开文件、编辑写回磁盘及正常退出 0，原件 `/tmp/nozeli-alpha4-smoke-SRtdV4`；不是便携包解压验收。旧 `installed-open` 与 `installed-real-project-files` 驱动分别受旧单页面假设、启动页面竞态影响未通过，不计作通过。哈希检查通过；`--public` 仍因六项未签收义务失败，未声明合规或跨平台通过。
 
 ## 分发审计状态：未完成
 

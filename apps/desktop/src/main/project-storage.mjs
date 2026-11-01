@@ -5,6 +5,7 @@ import {AsyncLocalStorage} from 'node:async_hooks';
 import {StorageDatabase} from './storage-database.mjs';
 import {MaterialStore} from '../domain/material-store.mjs';
 import {assertRecoverySourceStopped} from './project-recovery-owner.mjs';
+import {platformPersistence} from '../platform/shared/persistence.mjs';
 const fail=(code,message)=>Object.assign(Error(message),{code});
 async function checkedClose(db,file){const outcome=await db.request(file,'close');if(outcome?.closed===false)throw Object.assign(fail('STORAGE_RESULT_UNKNOWN','存储线程停止未确认；禁止清理或移动数据库'),{file,operationIds:outcome.operationIds??[],commitUnknown:{file},closeOutcome:outcome});}
 const same=(a,b)=>a&&b&&a.dev===b.dev&&a.ino===b.ino;
@@ -14,7 +15,10 @@ async function checkedMetadata(directory,db){const stat=await present(directory)
 async function rejectLinks(directory){for(const entry of await fs.readdir(directory,{withFileTypes:true})){const full=path.join(directory,entry.name),stat=await fs.lstat(full);if(stat.isSymbolicLink()||(!stat.isDirectory()&&!stat.isFile()))throw fail('PROJECT_METADATA_CONFLICT','项目元数据包含链接或特殊文件');if(stat.isDirectory())await rejectLinks(full);}}
 async function durableJson(file,value){const handle=await fs.open(file,'w',0o600);try{await handle.writeFile(JSON.stringify(value));await handle.sync();}finally{await handle.close();}}
 async function syncTree(directory){for(const entry of await fs.readdir(directory,{withFileTypes:true})){const file=path.join(directory,entry.name);if(entry.isDirectory())await syncTree(file);else if(entry.isFile()){const handle=await fs.open(file,'r');try{await handle.sync();}finally{await handle.close();}}else throw fail('PROJECT_METADATA_CONFLICT','项目元数据包含链接或特殊文件');}await syncDirectory(directory);}
-async function syncDirectory(directory){if(process.platform!=='win32'){const handle=await fs.open(directory,'r');try{await handle.sync();}finally{await handle.close();}}}
+async function syncDirectory(directory){
+ // Shared persistence barrier: an unverified platform fails explicitly instead of silently skipping the directory sync.
+ await platformPersistence.syncDirectory(directory);
+}
 export class ProjectStorage {
  constructor(userDataDir){this.root=path.join(userDataDir,'nozeli','storage-v2');this.catalog=path.join(this.root,'catalog.sqlite');this.db=new StorageDatabase();this.bindings=new Map();this.initFlight=null;this.registrations=new Map();this.generations=new Map();this.unavailable=new Map();this.lifecycleHolds=new Map();}
  lifecycleOwner=new AsyncLocalStorage();
@@ -45,6 +49,7 @@ export class ProjectStorage {
  async requireOnline(id){this.assertActive(id);const p=await this.requireRegistered(id);this.assertActive(id);if(this.unavailable.has(id))throw this.unavailable.get(id);try{try{await directoryIdentity(p.root,p.identity);}catch(e){if(e.code==='ENOENT')throw fail('PROJECT_ROOT_MISSING','原项目目录不可用；草稿仍可保留在本机');throw e;}if(!p.metadataIdentity)throw fail('PROJECT_METADATA_CONFLICT','缺少已核验的元数据实体身份');try{await directoryIdentity(p.metadataRoot,p.metadataIdentity);}catch(e){if(e.code==='ENOENT')throw fail('PROJECT_METADATA_MISSING','项目元数据不可用，未自动重建');throw e;}const manifest=await checkedMetadata(p.metadataRoot,this.db);if(manifest.projectId!==p.id)throw fail('PROJECT_IDENTITY_CONFLICT','项目身份或格式不符');this.assertActive(id);return p;}catch(error){if(error.code==='PROJECT_LIFECYCLE_ACTIVE')throw error;this.generations.set(id,(this.generations.get(id)??0)+1);this.unavailable.set(id,error);this.onUnavailable?.(id,error);await this.db.invalidate(path.join(p.metadataRoot,'project.sqlite'));throw error;}}
  async register(input,options={}){const root=await fs.realpath(input),previous=this.registrations.get(root)??Promise.resolve();const run=previous.catch(()=>{}).then(()=>this.initialize(root,options));this.registrations.set(root,run);try{return await run;}finally{if(this.registrations.get(root)===run)this.registrations.delete(root);}}
  async initialize(input,{confirmRecovery}={}){
+  platformPersistence.requireSupported();
   await this.ready();const root=await fs.realpath(input),identity=await directoryIdentity(root),all=await this.list();
   let existing=all.filter(p=>p.root===root&&same(p.identity,identity)).sort((a,b)=>Number(a.removed)-Number(b.removed)||String(b.openedAt).localeCompare(String(a.openedAt)))[0];
   const key=createHash('sha256').update(JSON.stringify([root,identity.dev,identity.ino])).digest('hex'),metadataRoot=path.join(root,'.nozeli');

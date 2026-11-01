@@ -4,6 +4,7 @@ import {spawn} from 'node:child_process';
 import {createHash, randomUUID} from 'node:crypto';
 import {ensureGit} from './git-runtime.mjs';
 import {PassThrough} from 'node:stream';
+import {platformPersistence} from '../../platform/shared/persistence.mjs';
 
 // Only private evidence storage is writable. Git never receives renderer paths or refs.
 const MAX_OUTPUT = 64 * 1024 * 1024;
@@ -35,13 +36,7 @@ async function collect(proc, input, limit = MAX_OUTPUT) {
 const git = (cwd, args, input = '') => collect(child(cwd, args), input);
 const text = async (cwd, args) => (await git(cwd, args)).toString().trim();
 async function json(file) {try {return JSON.parse(await fs.readFile(file, 'utf8'));} catch (error) {if (error.code === 'ENOENT') return null; throw error;}}
-async function atomic(file, value) {
- await fs.mkdir(path.dirname(file), {recursive: true, mode: 0o700});
- const temp = file + '.' + randomUUID(); const handle = await fs.open(temp, 'wx', 0o600);
- try {await handle.writeFile(JSON.stringify(value)); await handle.sync();} finally {await handle.close();}
- await fs.rename(temp, file); const directory = await fs.open(path.dirname(file), 'r');
- try {await directory.sync();} finally {await directory.close();}
-}
+async function atomic(file,value){platformPersistence.requireSupported();await fs.mkdir(path.dirname(file),{recursive:true,mode:0o700});await platformPersistence.writeAtomic(file,JSON.stringify(value));}
 function integer(value, fallback, max, min = 0) {
  if (value === undefined) return fallback;
  if (!Number.isSafeInteger(value) || value < min || value > max) reject('CHANGES_ARGUMENT', 'Invalid bounded option');

@@ -22,7 +22,7 @@ test('named layouts persist arrangement and navigation without bodies, drafts, a
   const {storage,store,reopen} = await fixture(t);
   const layout = createLayout('project-a', {currentRelPath: 'src/example.txt'});
   const document = Object.values(layout.views).find(view => view.kind === 'document');
-  document.viewState = {pdfPage: 3, scrollTop: 240, fileView: {textMode: 'edit', selection: {start: 2, end: 5}}, workspace: {dock: 'right', fontSize: 18, draft: 'SECRET DRAFT', noteDrafts: [{text: 'SECRET NOTE'}]}, composerMaterials: [{body: 'SECRET ATTACHMENT'}], token: 'SECRET TOKEN', report: {id: 'report-id', body: 'SECRET BODY'}};
+  document.viewState = {pdfPage: 3, scrollTop: 240, fileView: {textMode: 'edit', webMode: 'split', selection: {start: 2, end: 5}}, workspace: {dock: 'right', fontSize: 18, draft: 'SECRET DRAFT', noteDrafts: [{text: 'SECRET NOTE'}]}, composerMaterials: [{body: 'SECRET ATTACHMENT'}], token: 'SECRET TOKEN', report: {id: 'report-id', body: 'SECRET BODY'}};
   document.body = 'SECRET BUFFER';
   layout.closedViews = [{view: {body: 'SECRET CLOSED'}}];
   layout.credentials = 'SECRET ROOT';
@@ -33,6 +33,7 @@ test('named layouts persist arrangement and navigation without bodies, drafts, a
   validateLayout(loaded);
   assert.equal(loaded.views[document.id].viewState.scrollTop, 240);
   assert.deepEqual(loaded.views[document.id].viewState.fileView.selection, {start: 2, end: 5});
+  assert.equal(loaded.views[document.id].viewState.fileView.webMode, 'split');
   assert.equal(loaded.views[document.id].viewState.workspace.dock, 'right');
   assert.equal(JSON.stringify(loaded).includes('SECRET'), false);
   assert.equal(loaded.closedViews, undefined);

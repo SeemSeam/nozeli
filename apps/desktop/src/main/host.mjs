@@ -1,4 +1,4 @@
-import {workPath,safeBytes} from '../agents/managed/execution-workspace.mjs';
+import {writablePath as workPath,safeBytes} from '../agents/managed/file-stream.mjs';
 import {validateDrawing} from '../domain/region-drawing.mjs';
 import { imageExtension, imageInfo } from './image-format.mjs';
 import {importLegacyWord} from './legacy-word.mjs';
@@ -21,6 +21,7 @@ import {rebaseDocumentEdits, documentChangesSince, resolveTextReplacements} from
 import { treeViewValue } from './file-tree-ops.mjs';
 import {ProjectStorage} from './project-storage.mjs';
 import {ensureProjectGit} from './project-git.mjs';
+import {platformPersistence} from '../platform/shared/persistence.mjs';
 import {ProjectAttachments,validateDrawingPng} from './project-attachments.mjs';
 
   const NOTE_KINDS = ['image-region','image-point','ppt-selection','ppt-region','ppt-point','word-region', 'word-selection', 'text-selection', 'text-point', 'pdf-page', 'pdf-point', 'pdf-selection', 'pdf-region'];
@@ -217,7 +218,7 @@ const MAX_TEXT_BYTES = 8 * 1024 * 1024;
 const MAX_NOTE = 4000;
 const MAX_REL = 1024;
 const TEXT_EXT = new Set([
-  '.md', '.markdown', '.txt', '.text', '.tex', '.js', '.mjs', '.cjs', '.json', '.css', '.html',
+  '.md', '.markdown', '.txt', '.text', '.tex', '.js', '.mjs', '.cjs', '.json', '.css', '.html', '.htm',
   '.py', '.yml', '.yaml', '.csv', '.xml', '.svg', '.ts', '.tsx', '.jsx', '.log',
   '.bib', '.sty', '.cls', '.toml', '.ini', '.sh',
 ]);
@@ -307,13 +308,9 @@ function classify(relPath, bytes) {
 }
 
 async function syncDirectory(dir) {
-  if (process.platform === 'win32') return;
-  const handle = await fs.open(dir, constants.O_RDONLY);
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
+  // Directory durability barrier through the shared persistence contract; an
+  // unverified platform fails explicitly instead of silently skipping.
+  await platformPersistence.syncDirectory(dir);
 }
 
 export class DesktopHost {
@@ -410,6 +407,7 @@ export class DesktopHost {
   }
 
   async writeAtomic(file, value) {
+    platformPersistence.requireSupported();
     await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
     const tmp = path.join(path.dirname(file), `.tmp-${randomUUID()}`);
     const payload = Buffer.from(JSON.stringify(value), 'utf8');
@@ -1117,7 +1115,7 @@ export class DesktopHost {
         const candidate=history?store.candidate(history,payload===null?'':new TextDecoder().decode(payload),op.afterDigest,textChangeSet(history.text,payload===null?'':new TextDecoder().decode(payload)),actor,{operationId,fingerprint:op.afterDigest||'delete',type:payload===null?'delete':disk===null?'create':'edit'}):null;
         if(candidate)await store.prepare(rel,history,candidate);
         const check=async()=>{beforeApply();const fresh=await safeBytes(project.root,rel);if((fresh===null?null:digestBytes(fresh))!==digest)throw new HostError('STALE_VERSION','文件在合入期间变化');};
-        if(payload===null){await check();await fs.unlink(located.abs);await syncDirectory(path.dirname(located.abs));}
+        if(payload===null){platformPersistence.requireSupported();await check();await fs.unlink(located.abs);await syncDirectory(path.dirname(located.abs));}
         else await this.replaceFile(located.abs,Buffer.from(payload),{createOnly:disk===null,mode:op.mode,beforeCommit:check});
         if(candidate)await store.finish(rel,candidate);
         this.onDocumentChange({projectId,relPath:rel,digest:op.afterDigest,actor});
@@ -1171,6 +1169,7 @@ export class DesktopHost {
   }
 
   async backupBaseline(projectId, relPath, bytes, digest) {
+    platformPersistence.requireSupported();
     const dir = path.join(this.projectDir(projectId), 'baselines');
     await fs.mkdir(dir, { recursive: true, mode: 0o700 });
     const file = path.join(dir, `${draftKey(relPath)}-${digest}.bin`);
@@ -1213,6 +1212,7 @@ export class DesktopHost {
   }
 
   async replaceFile(abs, payload, { mode = 0o600, beforeCommit = async () => {}, createOnly = false } = {}) {
+    platformPersistence.requireSupported();
     const dir = path.dirname(abs);
     const tmp = path.join(dir, `.nozeli-tmp-${randomUUID()}`);
     const handle = await fs.open(tmp, 'wx', 0o600);
@@ -1479,7 +1479,7 @@ export class DesktopHost {
     const projectSettingsIn = input.projectSettings && typeof input.projectSettings === 'object' ? input.projectSettings : {};
     const projectSettings = { focusMode: projectSettingsIn.focusMode === true };
     const v=input.fileView||{},selection=v.selection;
-    const fileView={textMode:['read','edit','split'].includes(v.textMode)?v.textMode:null,selection:selection&&Number.isInteger(selection.from)&&Number.isInteger(selection.to)&&selection.from>=0&&selection.to>=selection.from?{from:selection.from,to:selection.to,anchor:selection.anchor===selection.to?selection.to:selection.from,head:selection.head===selection.from?selection.from:selection.to}:null,zoom:v.zoom&&Number.isFinite(v.zoom.scale)?{scale:Math.max(.05,Math.min(8,v.zoom.scale)),mode:['fit','manual','width','page','actual'].includes(v.zoom.mode)?v.zoom.mode:'manual'}:null};
+    const fileView={textMode:['read','edit','split'].includes(v.textMode)?v.textMode:null,webMode:['web','source','split'].includes(v.webMode)?v.webMode:null,selection:selection&&Number.isInteger(selection.from)&&Number.isInteger(selection.to)&&selection.from>=0&&selection.to>=selection.from?{from:selection.from,to:selection.to,anchor:selection.anchor===selection.to?selection.to:selection.from,head:selection.head===selection.from?selection.from:selection.to}:null,zoom:v.zoom&&Number.isFinite(v.zoom.scale)?{scale:Math.max(.05,Math.min(8,v.zoom.scale)),mode:['fit','manual','width','page','actual'].includes(v.zoom.mode)?v.zoom.mode:'manual'}:null};
     if (v.markdownPreview && typeof v.markdownPreview === 'object') fileView.markdownPreview = {
       linked: v.markdownPreview.linked !== false,
       ratio: Number.isFinite(v.markdownPreview.ratio) ? Math.max(25, Math.min(75, v.markdownPreview.ratio)) : 50,

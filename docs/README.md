@@ -1,6 +1,6 @@
 # Nozeli 产品文档
 
-本目录面向产品使用与评估，概述 Nozeli 的方向、当前能力、协作原则与发布状态。开发构建、测试与安装命令见[桌面开发说明](../apps/desktop/README.md)；私有 OMP 运行时见[OMP 集成](../integrations/omp/README.md)。
+本目录面向产品使用与评估，概述 Nozeli 的方向、当前能力、协作原则与发布状态。开发构建、测试与安装命令见[桌面开发说明](../apps/desktop/README.md)；当前 Pi 运行时与验收见[Pi 整合记录](pi-integration-execution.md)。
 
 - [用户指南（Linux Alpha）](user-guide.md)——安装、校验、升级／回退／卸载、备份、AI 源配置、日常使用与故障排查。
 - [当前状态与能力边界](status.md)——功能、支持格式、平台验证状态与已知限制。
@@ -8,6 +8,9 @@
 - [发布说明与发行边界](release.md)——版本状态、公开分发前置条件与打包验证入口。
 - [后续路线与验收边界](roadmap.md)——依赖安全、第三方交付、更多 Linux 环境与跨平台资格，不承诺未实测能力。
 - [自动播放教学设计](tutorial-design.md)——先认识界面，再围绕Markdown完成阅读、批注、审核与布局学习。
+- [Windows 开发 Agent 执行指南](windows-agent-development-guide.md)——从真实 Windows W0 基线到 W1–W5 原生适配、验收证据与禁止误判；不以 Linux、WSL、Wine 或交叉打包替代 Windows 实测。
+- [三角色记忆与技能设计](role-memory-skills-design.md)——前台／主控／Worker 的最小角色契约、按需技能、用户批准项目知识、来源版本与撤销；设计提案，不代表原生技能迁移或长期知识功能已实现。
+- [主控长期多任务与 Plan Tree 设计](orchestrator-long-term-design.md)——当前宿主排队／进度事实与 skill 职责分析，以及分页任务板、稳定管理身份、压缩恢复和版本化知识的后续设计；未实施。
 
 ## 产品方向
 

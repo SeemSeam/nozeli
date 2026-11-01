@@ -208,8 +208,10 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     if ($('send-message').disabled) return reject($('send-message').title||'Agent 尚未就绪或当前内容只读');
     if (materialsApi?.blocked()) return reject('有材料未就绪（失败/读取中），请先移除或重新添加再发送');
     const snap = materialsApi?.snapshot();
-    const text = snap?.text || rawText;
-    if (!text.trim() && !(snap?.attachments?.length)) return;
+    const text = rawText;
+    const textMaterials = snap?.textMaterials || [];
+    if (!text.trim() && !snap?.attachments?.length && !textMaterials.length) return;
+    if (textMaterials.length > 20) return reject('文本材料超过 20 项上限');
     const externals = (snap?.attachments || []).filter(a => a.digest);
     const images = externals.filter(a => a.source === 'drawing' && a.storage === 'recovery' && a.mime === 'image/png');
     if (images.length !== externals.length) return reject('仅支持显式发送涂鸦 PNG，其他本地附件仍不受支持');
@@ -217,7 +219,9 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     const relPath = $('attach-file').checked ? attachment() : (snap?.attachments || []).find(a => a.relPath && a.source !== 'selection')?.relPath || null;
     const materialText = relPath && typeof window.__nozeliInput?.text === 'function' ? window.__nozeliInput.text() : null;
     const send=demo.active?demo.send:managed.send;
-    const result = await send(text.trim() ? text : '请查看附带的涂鸦截图。',{relPath,materialText,background,composerText:rawText,imageAttachments:images.map(a=>({digest:a.digest,mime:a.mime,source:a.source,storage:a.storage,projectId:a.projectId,instanceId:a.instanceId,deliveryId:a.deliveryId}))}).then(value=>({ok:true,value}),error=>({ok:false,error}));
+    const input = text.trim() ? text : images.length ? '请查看附带的涂鸦截图。' : '请查看附带的引用材料。';
+    if (!text.trim()) materialsApi?.statusNote('本次附材料发送提示：'+input);
+    const result = await send(input,{relPath,materialText,background,composerText:rawText,...(textMaterials.length?{textMaterials}:{}),imageAttachments:images.map(a=>({digest:a.digest,mime:a.mime,source:a.source,storage:a.storage,projectId:a.projectId,instanceId:a.instanceId,deliveryId:a.deliveryId}))}).then(value=>({ok:true,value}),error=>({ok:false,error}));
     if (!result.ok) return reject(result.error.message);
     if(demo.active&&projectId===id&&$('composer').value===rawText){$('composer').value='';$('composer').dispatchEvent(new Event('input',{bubbles:true}));}
     return result.value;

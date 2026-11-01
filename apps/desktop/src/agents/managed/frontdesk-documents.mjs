@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
-import {workPath} from './execution-workspace.mjs';
+import {writablePath as workPath} from './file-stream.mjs';
 
 
 const fail=(code,message,details)=>{const error=new Error(message);error.code=code;if(details)error.details=details;throw error;};

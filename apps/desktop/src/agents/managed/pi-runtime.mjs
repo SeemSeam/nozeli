@@ -2,18 +2,20 @@
 // standalone Node and the vendored integrations/pi tree; only unpackaged
 // development may fall back to the running Electron binary as Node. Ambient
 // system Pi/Bun/Node installs are never discovered.
+// Asset checks (regular-file identity, per-platform executable naming/access,
+// manifest platform/arch matching, streaming digests) live in the shared
+// platform/runtime-assets implementation so every bundled runtime resolver
+// verifies assets the same tested way.
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
 import { scrubProviderEnv } from './omp-credentials.mjs';
+import { assertBundledExecutable, manifestExecutable, sha256File, validateRuntimeManifest } from '../../platform/shared/runtime-assets.mjs';
 
-async function regularFile(file) {
-  const stat = await fs.lstat(file).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
-  if (!stat || stat.isSymbolicLink() || !stat.isFile()) throw new Error('Nozeli 私有 Pi 运行环境缺失或损坏：' + file);
-  return file;
-}
+const piAssetViolation = file => new Error('Nozeli 私有 Pi 运行环境缺失或损坏：' + file);
+// Entry/launch files are loaded data, not executed directly: regular-file
+// identity only, no executability requirement.
+const regularFile = file => assertBundledExecutable(file, { access: false, violation: piAssetViolation });
 
 // The bundled standalone Node ships as <appRoot>/runtime/node with a manifest
 // recording the exact distribution the package was built from.
@@ -23,13 +25,12 @@ async function readBundledNode(appRoot) {
   let manifest;
   try { manifest = JSON.parse(await fs.readFile(manifestFile, 'utf8')); }
   catch (error) { if (error.code === 'ENOENT') throw new Error('Bundled Node runtime missing: ' + manifestFile); throw error; }
-  if (manifest.schema !== 1 || manifest.platform !== process.platform || manifest.arch !== process.arch) throw new Error('Bundled Node runtime platform mismatch');
-  const executable = path.join(directory, manifest.executable || (process.platform === 'win32' ? 'node.exe' : 'bin/node'));
-  await regularFile(executable);
-  if (process.platform !== 'win32') await fs.access(executable, fs.constants.X_OK);
-  const hash = createHash('sha256');
-  for await (const chunk of createReadStream(executable)) hash.update(chunk);
-  if (manifest.sha256Executable && hash.digest('hex') !== manifest.sha256Executable) throw new Error('Bundled Node runtime integrity mismatch');
+  validateRuntimeManifest(manifest, { rejection: () => new Error('Bundled Node runtime platform mismatch') });
+  const executable = path.join(directory, manifestExecutable(manifest, process.platform, { win32: 'node.exe', posix: 'bin/node' }));
+  // The Node executable is launched directly: full bundled-executable check
+  // (regular file + per-platform F_OK/X_OK rule).
+  await assertBundledExecutable(executable, { violation: piAssetViolation });
+  if (manifest.sha256Executable && await sha256File(executable) !== manifest.sha256Executable) throw new Error('Bundled Node runtime integrity mismatch');
   return { executable, manifest };
 }
 

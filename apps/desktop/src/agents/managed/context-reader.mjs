@@ -10,14 +10,62 @@ export class ContextReader {
     this.references.set(identity,readRef);
     this.entries.set(readRef,{text:value,title,source,kind,offset,version});return readRef;
   }
-  read(readRef){
-    const entry=this.entries.get(readRef);if(!entry)throw new Error('unknown read reference');
-    let end=Math.min(entry.offset+10000,entry.text.length);
-    if(end<entry.text.length){const boundary=entry.text.lastIndexOf('\n',end-1);if(boundary>=entry.offset+7500)end=boundary+1;}
-    if(end<entry.text.length&&/[\uD800-\uDBFF]/.test(entry.text[end-1])&&/[\uDC00-\uDFFF]/.test(entry.text[end]))end--;
-    if(end<entry.text.length&&!entry.next){entry.next=`读取 ${this.scope}/${this.entries.size+1}：${String(entry.title||'记录').slice(0,80)}`;this.entries.set(entry.next,{...entry,offset:end,next:null});}
-    this.reads.push({kind:entry.kind,source:entry.source,version:entry.version,offset:entry.offset,endOffset:end,chars:end-entry.offset});
-    return {title:entry.title,source:entry.source,version:entry.version,text:entry.text.slice(entry.offset,end),offset:entry.offset,endOffset:end,totalChars:entry.text.length,complete:entry.offset===0&&end===entry.text.length,nextReadRef:entry.next||null};
+  read(readRef,{maxChars=null,maxBytes=null,maxResultBytes=null,resultFields={}}={}){
+    const entry=this.entries.get(readRef);
+    if(!entry)throw Object.assign(new Error('读取引用已失效：readRef 属于原回合，不能跨回合复用。请用版本化原件重新定位：当前 Work 用宿主投影中的稳定 readRef（work/<id>/request、work/<id>/approved/<来源>），报告用 nozeli_report_read，不以下一轮磁盘内容冒充冻结版本。'),{code:'READ_REF_EXPIRED'});
+    const byteBudget=Number.isSafeInteger(maxBytes)&&maxBytes>=0?maxBytes:null;
+    let end;
+    if(byteBudget!==null){
+      // Byte-exact paging: never let a page exceed the byte allowance (CJK is
+      // up to 3–4 bytes per char, so a char cap would overrun), never split a
+      // code point, and always make non-zero progress when the budget allows
+      // at least one character. Prefer a newline boundary within the tail.
+      let used=0;end=entry.offset;
+      while(end<entry.text.length){
+        const code=entry.text.codePointAt(end);
+        const width=code>0xffff?2:1;
+        const bytes=Buffer.byteLength(String.fromCodePoint(code),'utf8');
+        if(used+bytes>byteBudget)break;
+        used+=bytes;end+=width;
+      }
+      if(end<entry.text.length&&used>0){
+        const boundary=entry.text.lastIndexOf('\n',end-1);
+        if(boundary>entry.offset&&boundary>=entry.offset+Math.floor((end-entry.offset)*0.75))end=boundary+1;
+      }
+      if(end===entry.offset&&entry.text.length>entry.offset)throw Object.assign(new Error('本页字节额度不足以容纳下一个完整字符；未交付正文，原读取位置保留。'),{code:'HOST_CONTEXT_BUDGET_EXHAUSTED'});
+    }else{
+      const limit=Number.isSafeInteger(maxChars)&&maxChars>=0?Math.min(entry.offset+maxChars,entry.offset+10000):Math.min(entry.offset+10000,entry.text.length);
+      end=Math.min(limit,entry.text.length);
+      if(end<entry.text.length){const boundary=entry.text.lastIndexOf('\n',end-1);if(boundary>=entry.offset+Math.min(7500,Math.floor((end-entry.offset)*0.75)))end=boundary+1;}
+      if(end<entry.text.length&&/[\uD800-\uDBFF]/.test(entry.text[end-1])&&/[\uDC00-\uDFFF]/.test(entry.text[end]))end--;
+    }
+    const nextFor=boundary=>boundary<entry.text.length?(entry.next&&entry.nextOffset===boundary?entry.next:`读取 ${this.scope}/${this.entries.size+1}：${String(entry.title||'记录').slice(0,80)}`):null;
+    const pageAt=boundary=>({...resultFields,title:entry.title,source:entry.source,version:entry.version,text:entry.text.slice(entry.offset,boundary),offset:entry.offset,endOffset:boundary,totalChars:entry.text.length,complete:entry.offset===0&&boundary===entry.text.length,nextReadRef:nextFor(boundary)});
+    if(Number.isSafeInteger(maxResultBytes)&&maxResultBytes>=0){
+      const fits=boundary=>Buffer.byteLength(JSON.stringify(pageAt(boundary)),'utf8')<=maxResultBytes;
+      if(!fits(end)){
+        // Search valid code-point boundaries without recording a read or
+        // allocating continuation tickets for rejected candidate pages.
+        const boundaries=[entry.offset];
+        for(let at=entry.offset;at<end;){at+=entry.text.codePointAt(at)>0xffff?2:1;boundaries.push(at);}
+        let low=0,high=boundaries.length-1;
+        while(low<high){const middle=Math.ceil((low+high)/2);if(fits(boundaries[middle]))low=middle;else high=middle-1;}
+        end=boundaries[low];
+      }
+      if(!fits(end)||end===entry.offset&&end<entry.text.length)throw Object.assign(new Error('本轮额度不足以容纳完整分页响应及来源信息；未交付正文，原读取位置保留。'),{code:'HOST_CONTEXT_BUDGET_EXHAUSTED'});
+    }
+    if(end<entry.text.length&&(!entry.next||entry.nextOffset!==end)){entry.next=`读取 ${this.scope}/${this.entries.size+1}：${String(entry.title||'记录').slice(0,80)}`;entry.nextOffset=end;this.entries.set(entry.next,{...entry,offset:end,next:null,nextOffset:null});}
+    this.reads.push({kind:entry.kind,source:entry.source,version:entry.version,offset:entry.offset,endOffset:end,chars:end-entry.offset,bytes:Buffer.byteLength(entry.text.slice(entry.offset,end),'utf8')});
+    return pageAt(end);
+  }
+  // Stable cross-turn identity for one-time handoff sources (e.g. recovery
+  // dossiers). The key is the durable identity; the content stays immutable.
+  addStable(key,text,metadata={}){
+    const ref=`读取 稳定/${String(key).slice(0,120)}`;
+    if(this.entries.has(ref))return ref;
+    const value=String(text);
+    this.entries.set(ref,{text:value,offset:0,...metadata,version:createHash('sha256').update(value).digest('hex')});
+    return ref;
   }
 }
 const preview=(text,size)=>text?.length>size?text.slice(0,size)+'… [正文可按读取引用获取]':text||'';

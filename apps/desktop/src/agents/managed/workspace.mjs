@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { processStamp, ownerAlive } from './process-ownership.mjs';
+import {platformPersistence} from '../../platform/shared/persistence.mjs';
 import {artifactSnapshot,digest} from './report-review.mjs';
 import {reconcileTodos} from '../../domain/todo-management.mjs';
 import {mergeConsentRequirement,sameMergeConsentBinding,mergeConsentBindingFields,explicitNeverCommitStatement,mergeConstraintChoices} from '../../domain/work-disposition.mjs';
@@ -471,6 +472,7 @@ export class Workspace {
   }
   async updateArchiveState(w){
     const report=w.closure?.report;if(!report)return;
+    platformPersistence.requireSupported();
     await this.requireOnline();
     const directory=path.dirname(this.plan),metadataPath=`project.sqlite#managed_works:${w.id}`;
     const previous=await fs.readFile(this.plan,'utf8'),marker=`<!-- report:${w.id} -->`,end=`<!-- /report:${w.id} -->`;
@@ -480,7 +482,7 @@ export class Workspace {
     let next;const start=previous.indexOf(marker),close=start<0?-1:previous.indexOf(end,start);
     if(start<0)next=previous+'\n'+block+'\n';else if(close>=0)next=previous.slice(0,start)+block+previous.slice(close+end.length);else throw Error('Incomplete report index marker; preserve root for recovery');
     if(next!==previous){const temporary=`${this.plan}.${randomUUID()}.tmp`;const handle=await fs.open(temporary,'wx',0o600);try{await handle.writeFile(next);await handle.sync();}finally{await handle.close();}if(await fs.readFile(this.plan,'utf8')!==previous){await fs.rm(temporary,{force:true});throw Error('Plan Tree changed during archival; retry without overwriting user edits');}await fs.rename(temporary,this.plan);}
-    if(process.platform!=='win32'){const handle=await fs.open(directory,'r');try{await handle.sync();}finally{await handle.close();}}
+    await platformPersistence.syncDirectory(directory);
   }
   updateClosureArchive(id){return this.mutate(()=>this.updateArchiveState(this.find(id)));}
   async cleanupWorkerHome(id){

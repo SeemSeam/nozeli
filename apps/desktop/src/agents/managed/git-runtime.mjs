@@ -5,6 +5,7 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { pipeline } from 'node:stream/promises';
 import {Readable} from 'node:stream';
+import { assertBundledExecutable } from '../../platform/shared/runtime-assets.mjs';
 
 const exec = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -33,9 +34,10 @@ async function provision() {
   try {
     const dugite = require('dugite');
     const { gitLocation: command, env } = environment(dugite, process.env);
-    const stat = await fs.stat(command);
-    if (!stat.isFile()) throw Error('Bundled Git executable is not a file: ' + command);
-    await fs.access(command, process.platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK);
+    // Relocatable bundled layout: follow the resolved target, then apply the
+    // shared per-platform bundled-executable presence/executability rule
+    // (F_OK on Windows, executable bit elsewhere).
+    await assertBundledExecutable(command, { follow: true, violation: file => Error('Bundled Git executable is not a file: ' + file) });
     const options = { env, encoding: 'utf8', timeout: 15000, maxBuffer: 1024 * 1024, windowsHide: true };
     const version = (await exec(command, ['--version'], options)).stdout.trim();
     if (!/^git version \d+\.\d+/.test(version)) throw Error('Bundled executable did not identify itself as Git: ' + command);

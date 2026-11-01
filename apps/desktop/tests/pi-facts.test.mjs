@@ -17,3 +17,20 @@ test('durable entry identity prevents usage double counting and next turns reset
  facts.endTurn();facts.beginTurn({requestId:'second'});facts.onNativeSessionEvent(ref,assistant('three','New answer',{input:2,output:1}));assert.equal(facts.state.turnUsage.input,2);
  facts.failTurn('terminal storage failure');assert.equal(facts.state.turnErrorMessage,'terminal storage failure');
 });
+test('delivery facts carry redacted metadata only and bind to the active turn',()=>{
+ const frames=[];const facts=createFactChannel({send:frame=>frames.push(frame)});
+ facts.setSessionId('session');
+ facts.beginTurn({requestId:'request-delivery',turnId:'turn-delivery',sessionId:'session'});
+ facts.delivery({type:'nozeliDelivery',phase:'prepared',text:{bytes:5,sha256:'abc',entryId:null,verbatim:null},projection:{bytes:9,sha256:'def',llmCalls:0,persisted:false}});
+ facts.endTurn();
+ facts.delivery({type:'nozeliCompaction',contextEpoch:'compaction:1:e1',compactionEntryId:'e1'});
+ const delivery=frames.find(frame=>frame.eventData?.type==='nozeliDelivery');
+ assert.equal(delivery.eventData.phase,'prepared');
+ assert.equal(delivery.eventData.requestId,'request-delivery');
+ assert.equal(delivery.eventData.turnId,'turn-delivery');
+ assert.equal(delivery.eventData.sessionId,'session');
+ assert.equal(JSON.stringify(delivery.eventData).includes('user text'),false,'no user text may ride delivery facts');
+ const compaction=frames.find(frame=>frame.eventData?.type==='nozeliCompaction');
+ assert.equal(compaction.eventData.sessionId,'session');
+ assert.equal(compaction.eventData.requestId,undefined,'compaction facts are turn-independent');
+});

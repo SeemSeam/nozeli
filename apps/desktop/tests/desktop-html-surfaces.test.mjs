@@ -19,13 +19,15 @@ await mkdir(path.join(root,'.test-output'),{recursive:true});
 const output=await mkdtemp(path.join(root,'.test-output/html-surfaces-'));
 const profile=path.join(output,'profile'),project=path.join(output,'project');await mkdir(project);
 const sources={
-  'index.html':'<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="style.css"></head><body><h1>Real source preview</h1><p id="classic"></p><p id="module"></p><p id="json"></p><script src="classic.js"></script><script type="module" src="module.js"></script><button id="keyboard">Keyboard</button></body></html>',
+  'index.html':'<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="https://example.invalid/offline.css"></head><body><h1>Real source preview</h1><p id="classic"></p><p id="module"></p><p id="json"></p><img id="local-image" src="图 标.svg"><a id="external" href="https://example.invalid/offline">External link</a><a id="next" href="other.html">Local page</a><script src="classic.js"></script><script type="module" src="module.js"></script><button id="keyboard" onclick="this.textContent=\'Clicked locally\'">Keyboard</button></body></html>',
   'style.css':'body { color: rgb(20, 50, 80); }',
   'classic.js':'document.querySelector("#classic").textContent="CLASSIC_DISK";',
   'module.js':'import {value} from "./dependency.js"; document.querySelector("#module").textContent=value;fetch("./data.json").then(r=>r.json()).then(v=>document.querySelector("#json").textContent=v.value);',
   'dependency.js':'export const value="MODULE_DISK";',
   'data.json':'{"value":"JSON_DISK"}',
   'other.html':'<!doctype html><h1>Other entry</h1>',
+  '中文 页面.htm':'<!doctype html><meta charset="utf-8"><h1>中文 HTM 页面</h1><img src="图 标.svg"><button onclick="this.textContent=\'已点击\'">点击</button>',
+  '图 标.svg':'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><rect width="24" height="24" fill="blue"/></svg>',
 };
 for(const [name,text]of Object.entries(sources))await writeFile(path.join(project,name),text);
 const host=new DesktopHost(profile),projectId=(await host.pick(project)).project.id;
@@ -62,15 +64,30 @@ const call=(op,payload={})=>page.evaluate(({op,payload})=>nozeli.invoke(op,paylo
 async function isolatedPage(marker,exclude){if(exclude){const end=Date.now()+15000;for(;;){const pages=await browser.pages();const found=[];for(const p of pages){if(/^http:\/\/127\.0\.0\.1:/.test(p.url()))continue;try{if(p!==exclude&&await p.evaluate(marker=>document.body?.textContent.includes(marker),marker))found.push(p);}catch{}}if(found.length)return found[found.length-1];if(Date.now()>end)throw Error('no isolated page for marker: '+marker);await new Promise(r=>setTimeout(r,300));}}const target=await browser.waitForTarget(async target=>{if(target.type()!=='page'||/^http:\/\/127\.0\.0\.1:/.test(target.url()))return false;try{return await(await target.page()).evaluate(marker=>document.body?.textContent.includes(marker),marker);}catch{return false;}},{timeout:20000});return target.page();}
 async function assertNoSetupCover(){for(const candidate of new Set([page,rootPage]))if(candidate)await candidate.waitForFunction(()=>!document.querySelector('#configuration-setup[open]'),{timeout:5000});}
 async function open(name){await assertNoSetupCover();await rootPage.click('#file-tree button[data-path="'+name+'"]');const end=Date.now()+30000;for(;;){for(const candidate of await browser.pages()){try{if(await candidate.evaluate(name=>window.__workspaceScope?.kind==='document'&&window.__workspaceScope.relPath===name&&window.__nozeliInput&&document.querySelector('#file-path')?.textContent===name,name)){page=candidate;await page.waitForFunction(()=>window.__nozeliReady);await assertNoSetupCover();return;}}catch{}}if(Date.now()>end)throw Error('document surface did not open: '+name);await tick(200);}}
-const cleanEnv=Object.fromEntries(Object.entries(process.env).filter(([key])=>!/(?:NOZELI|CCB|API_KEY|AUTH|TOKEN|SECRET|PASSWORD|OPENAI|ANTHROPIC)/i.test(key)));
+const cleanEnv=Object.fromEntries(Object.entries(process.env).filter(([key])=>key==='XAUTHORITY'||!/(?:NOZELI|CCB|API_KEY|AUTH|TOKEN|SECRET|PASSWORD|OPENAI|ANTHROPIC)/i.test(key)));
 try{
-  child=spawn(createRequire(import.meta.url)('electron'),[path.join(root,'src/main/main.cjs'),'--ozone-platform=wayland'],{cwd:root,env:{...cleanEnv,WAYLAND_DISPLAY:process.env.WAYLAND_DISPLAY||'wayland-0',NOZELI_TEST_INSTANCE:'1',NOZELI_CONFIG_ROOT:output,NOZELI_USER_DATA:profile,NOZELI_DEBUG_PORT:String(port),NOZELI_SHOT_DIR:output},stdio:['ignore','pipe','pipe']});
+  child=spawn(createRequire(import.meta.url)('electron'),[path.join(root,'src/main/main.cjs'),'--ozone-platform='+(process.env.NOZELI_OZONE||'wayland')],{cwd:root,env:{...cleanEnv,WAYLAND_DISPLAY:process.env.WAYLAND_DISPLAY||'wayland-0',NOZELI_TEST_INSTANCE:'1',NOZELI_CONFIG_ROOT:output,NOZELI_USER_DATA:profile,NOZELI_DEBUG_PORT:String(port),NOZELI_SHOT_DIR:output},stdio:['ignore','pipe','pipe']});
   exited=new Promise(resolve=>child.once('exit',(code,signal)=>resolve({code,signal})));for(const stream of[child.stdout,child.stderr])stream.on('data',bytes=>log+=bytes);
   for(let n=0;n<120;n++){try{browser=await puppeteer.connect({browserURL:'http://127.0.0.1:'+port,defaultViewport:null,protocolTimeout:60000});break;}catch{await tick(100);}}
   assert(browser,log);rootPage=await waitForDesktopPage(browser);page=rootPage;await prepareReading(rootPage);
-  await open('index.html');await page.waitForSelector('#web-preview-toggle:not([hidden])');
+  await rootPage.waitForSelector('[data-project-id="'+projectId+'"]',{visible:true});
+  await rootPage.click('[data-project-id="'+projectId+'"]');
+  await rootPage.waitForFunction(async id=>(await nozeli.invoke('workspace.bootstrap')).value?.projectId===id,{},projectId);
+  await rootPage.waitForSelector('#file-tree button[data-path="index.html"]',{visible:true});
+  await open('index.html');await page.waitForSelector('#web-mode-web[aria-pressed="true"]');
   const editorBefore=await page.evaluate(()=>({text:__nozeliInput.text(),selection:__nozeliInput.selection?.()}));
-  await page.click('#web-preview-toggle');let preview=await isolatedPage('Real source preview');
+  assert.equal(await page.$eval('#text-host',node=>node.hidden),true,'HTML defaults to webpage without destroying editor');
+  let preview=await isolatedPage('Real source preview');
+  await preview.waitForFunction(()=>document.querySelector('#local-image').naturalWidth===24);
+  await preview.click('#keyboard');assert.equal(await preview.$eval('#keyboard',node=>node.textContent),'Clicked locally');
+  const localURL=preview.url();await preview.click('#external');assert.equal(preview.url(),localURL,'external link cannot navigate local surface');
+  await preview.click('#next');await preview.waitForFunction(()=>document.querySelector('h1')?.textContent==='Other entry');
+  assert.equal(new URL(preview.url()).origin,new URL(localURL).origin,'local link stays within captured offline origin');
+  await page.waitForFunction(()=>!document.querySelector('#web-preview-refresh').disabled);await page.click('#web-preview-refresh');
+  preview=await isolatedPage('Real source preview',preview);
+  report.checks.push('Native local HTML link opens captured other.html; explicit refresh returns current entry snapshot');
+  await page.click('#web-mode-split');
+  assert.equal(await page.$eval('#text-host',node=>node.hidden),false);
   await preview.waitForFunction(()=>document.querySelector('#classic').textContent==='CLASSIC_DISK'&&document.querySelector('#module').textContent==='MODULE_DISK'&&document.querySelector('#json').textContent==='JSON_DISK');
   assert.equal(await preview.evaluate(()=>typeof window.nozeli),'undefined');assert.equal(await preview.evaluate(()=>typeof process),'undefined');assert.equal(await preview.evaluate(()=>typeof require),'undefined');
   assert.equal(await preview.$eval('body',node=>getComputedStyle(node).color),'rgb(20, 50, 80)');
@@ -78,16 +95,25 @@ try{
   for(const scheme of ['light','dark']){await preview.emulateMediaFeatures([{name:'prefers-color-scheme',value:scheme}]);await preview.screenshot({path:path.join(output,'source-'+scheme+'.png')});}
   await preview.focus('#keyboard');await preview.keyboard.press('Tab');assert.equal(await page.evaluate(()=>__nozeliInput.text()),editorBefore.text);
   await call('session.resize',{width:760,height:900});await page.waitForFunction(()=>document.querySelector('#web-preview-pane').getBoundingClientRect().width>0);await page.screenshot({path:path.join(output,'source-narrow.png')});
+  await page.waitForFunction(()=>{const pane=document.querySelector('#text-host').getBoundingClientRect(),editor=document.querySelector('#text-host .monaco-editor').getBoundingClientRect();return editor.height>0&&editor.height<=pane.height+1;});
   await call('session.resize',{width:1440,height:1000});report.checks.push('Source mode light/dark/narrow actual surfaces and keyboard focus leave editor bytes intact');
   await preview.emulateMediaType('print');const previewKey=await page.$eval('#web-preview-pane .isolated-viewport',n=>n.dataset.previewKey);const previewSnapshot=await call('isolated-preview.snapshot',{key:previewKey});assert.equal(previewSnapshot.ok,true,'preview snapshot');const printed=await call('isolated-preview.print',{key:previewKey,generation:previewSnapshot.value.generation,silent:true});if(printed.ok)report.printCapable=true;else{assert.match(printed.error?.message||'',/Failed to enumerate printers|default printer/i,'host print must fail only on missing system printers');report.printCapable=false;report.printEnvironmentLimit='No CUPS default printer on this host; print media + layout still verified';}await preview.emulateMediaType('screen');await page.screenshot({path:path.join(output,'source-print-mode.png')});
   const entryPage=page;
   for(const [name,replacement]of Object.entries({'style.css':'body { color: rgb(90, 30, 70); }','classic.js':'document.querySelector("#classic").textContent="CLASSIC_BUFFER";','dependency.js':'export const value="MODULE_BUFFER";','data.json':'{"value":"JSON_BUFFER"}'})){
     await open(name);await page.evaluate(replacement=>window.__nozeliInput.replace(replacement),replacement);
   }
-  await open('index.html');await page.waitForSelector('#web-preview-toggle:not([hidden])');
-  await page.click('#web-preview-toggle');
-  await page.waitForSelector('#web-preview-refresh',{timeout:8000});
-  preview=await isolatedPage('Real source preview',preview);
+  await open('index.html');await page.waitForSelector('#web-preview-toolbar:not([hidden])');
+  await page.click('#web-mode-split');
+  await page.waitForFunction(()=>!document.querySelector('#web-preview-refresh').disabled);
+  const refreshKey=await page.$eval('#web-preview-pane .isolated-viewport',node=>node.dataset.previewKey);
+  const beforeRefresh=await call('isolated-preview.snapshot',{key:refreshKey});assert.equal(beforeRefresh.ok,true);
+  await page.click('#web-preview-refresh');
+  await page.waitForFunction(()=>!document.querySelector('#web-preview-refresh').disabled);
+  const completedRefresh=await call('isolated-preview.snapshot',{key:refreshKey});assert.equal(completedRefresh.ok,true);
+  assert(completedRefresh.value.generation>beforeRefresh.value.generation,'explicit refresh completes a newer snapshot before security probes');
+  const completedTarget=await browser.waitForTarget(target=>target.type()==='page'&&target.url().startsWith(completedRefresh.value.origin+'/'));
+  preview=await completedTarget.page();
+  report.probedSnapshot={key:refreshKey,generation:completedRefresh.value.generation,origin:completedRefresh.value.origin};
   await preview.waitForFunction(()=>document.querySelector('#classic').textContent==='CLASSIC_BUFFER'&&document.querySelector('#module').textContent==='MODULE_BUFFER'&&document.querySelector('#json').textContent==='JSON_BUFFER');
   assert.equal(await preview.$eval('body',node=>getComputedStyle(node).color),'rgb(90, 30, 70)');report.checks.push('Snapshot synchronizes actual CSS/classic JS/module/JSON editor owners before capture');
   const escape=await preview.evaluate(async()=>{const blocked=async url=>{try{await fetch(url);return false;}catch{return true;}};return {network:await blocked('https://example.invalid/nozeli-smoke'),loopback:await blocked('http://127.0.0.1:9/'),file:await blocked('file:///etc/passwd'),app:await blocked('http://127.0.0.1:'+location.port+'/'),worker:(()=>{try{new Worker('./classic.js');return false;}catch{return true;}})()};});
@@ -119,6 +145,19 @@ try{
   const resourceEvent=await page.evaluate(()=>window.__resourceError);report.resourceProbe={imageFailure,events:await page.evaluate(()=>window.__previewEvents)};assert(resourceEvent,'host must emit resource-error for missing snapshot resource');
   await page.waitForFunction(()=>document.querySelector('#web-preview-pane .isolated-status').dataset.state==='error');report.checks.push('Real resource failure reaches trusted preview diagnostics');
   // Modify the real editor through its normal input adapter, not preview DOM.
+  const beforeModeKey=await page.$eval('.isolated-viewport',node=>node.dataset.previewKey);
+  const beforeFailure=await call('isolated-preview.snapshot',{key:beforeModeKey});
+  await page.evaluate(()=>{const n=__nozeliInput.text().length;__nozeliInput.select(n,n);__nozeliInput.focus();__nozeliInput.insert('<script src="../outside-project.js"></script>');document.querySelector('#web-preview-refresh').click();});
+  await page.waitForFunction(()=>document.querySelector('.isolated-status').textContent.includes('上一版保留'));
+  assert.equal((await call('isolated-preview.snapshot',{key:beforeModeKey})).value.generation,beforeFailure.value.generation,'failed capture retains prior native snapshot');
+  await page.evaluate(()=>__nozeliInput.focus());await page.keyboard.down('Control');await page.keyboard.press('KeyZ');await page.keyboard.up('Control');
+  await page.waitForFunction(()=>!__nozeliInput.text().includes('outside-project.js'));
+  await page.click('#web-mode-source');
+  await page.waitForFunction(()=>!document.querySelector('#web-preview-pane'));
+  assert.equal((await call('isolated-preview.snapshot',{key:beforeModeKey})).ok,false,'source mode releases native preview');
+  assert.equal(await page.evaluate(()=>__nozeliInput.text()),editorBefore.text,'mode switch retains exact source');
+  await page.click('#web-mode-web');await page.click('#web-mode-split');
+  await page.waitForFunction(()=>!document.querySelector('#web-preview-refresh').disabled);
   await page.evaluate(()=>{const n=__nozeliInput.text().length;__nozeliInput.select(n,n);__nozeliInput.focus();__nozeliInput.insert('<p>UNSAVED_BUFFER</p>');document.querySelector('#web-preview-refresh').click();});
   assert.equal(await readFile(path.join(project,'index.html'),'utf8'),sources['index.html'],'Buffer capture begins while source is genuinely unsaved');
   preview=await isolatedPage('UNSAVED_BUFFER');
@@ -127,9 +166,18 @@ try{
   await page.click('#web-preview-auto');await page.evaluate(()=>__nozeliInput.focus());await page.keyboard.type('<p>AUTO_BUFFER</p>');await isolatedPage('AUTO_BUFFER');
   await page.keyboard.down('Control');await page.keyboard.press('KeyZ');await page.keyboard.up('Control');
   await page.waitForFunction(()=>!__nozeliInput.text().includes('AUTO_BUFFER'));report.checks.push('Real editor undo remains intact while isolated preview updates');
-  await page.click('#web-preview-auto');await page.click('#web-preview-toggle');await rootPage.evaluate(()=>nozeli.invoke('session.resize',{width:1920,height:1000}));await page.waitForFunction(()=>innerWidth>=920);
+  await page.click('#web-preview-auto');
+  const retained=await page.evaluate(()=>__nozeliInput.text());
+  await page.click('#web-mode-web');await page.click('#web-mode-source');
+  assert.equal(await page.evaluate(()=>__nozeliInput.text()),retained,'unsaved buffer survives webpage/source mode roundtrip');
+  await open('中文 页面.htm');await page.waitForSelector('#web-mode-web[aria-pressed="true"]');
+  const htm=await isolatedPage('中文 HTM 页面');await htm.waitForFunction(()=>document.querySelector('img').naturalWidth===24);await htm.click('button');assert.equal(await htm.$eval('button',node=>node.textContent),'已点击');
+  await page.click('#web-mode-source');
+  report.checks.push('Default webpage, source releases native surface, compare preserves editor; Chinese spaced .htm and image paths execute local DOM');
+  await rootPage.evaluate(()=>nozeli.invoke('session.resize',{width:1920,height:1000}));
+  if(!process.env.NOZELI_HTML_BROWSER_ONLY){
   page=rootPage;
-  const setTheme=async value=>{await rootPage.click('#open-settings');await rootPage.click('[data-settings-section="settings-appearance"]');await rootPage.select('[data-appearance="theme"]',value);await rootPage.click('#settings-close');await rootPage.waitForFunction(v=>document.documentElement.dataset.theme===v,{},value);};
+  const setTheme=async value=>{await rootPage.locator('#open-settings').click();await rootPage.locator('[data-settings-section="settings-appearance"]').click();await rootPage.select('[data-appearance="theme"]',value);await rootPage.locator('#settings-close').click();await rootPage.waitForFunction(v=>document.documentElement.dataset.theme===v,{},value);};
   await setTheme('light');
   const openStatic=async(key,objectId,marker)=>{const opened=await call('isolated-preview.open',{key,profile:'staticReport',projectId,objectId,generation:1,bounds:{x:20,y:80,width:600,height:600}});assert.equal(opened.ok,true,JSON.stringify(opened));const found=await isolatedPage(marker);assert.equal(await found.evaluate(()=>typeof window.nozeli),'undefined');return found;};
   const fitWidth=async(key,handle,width)=>{const boundsResult=await call('isolated-preview.bounds',{key,bounds:{x:20,y:80,width,height:600}});assert.equal(boundsResult.ok,true,JSON.stringify(boundsResult));const deadline=Date.now()+5000;let actual;do{actual=await handle.evaluate(()=>innerWidth);if(actual===width)break;await tick(100);}while(Date.now()<deadline);assert.equal(actual,width,'native static-report viewport width '+key+' '+width);};
@@ -142,7 +190,6 @@ try{
     return {body:one('p'),heading:one('h1'),caption:one('figcaption'),link:one('a')};
   });
   const noOverflow=async handle=>{const geo=await handle.evaluate(()=>({scroll:document.documentElement.scrollWidth,client:document.documentElement.clientWidth}));assert(geo.scroll<=geo.client+1,'page-level horizontal overflow '+JSON.stringify(geo));};
-  const darkBody='rgb(16, 21, 28)',lightBody='rgb(255, 255, 255)';
   const legacyPage=await openStatic('smoke-report',receipt.objectId,'Real frozen report');
   const shortPage=await openStatic('short-report',shortReceipt.objectId,'短报：登录提示文案已修订');
   const longPage=await openStatic('long-report',longReceipt.objectId,'长报：静态报告阅读排版实测');
@@ -150,15 +197,14 @@ try{
   for(const handle of[legacyPage,shortPage,longPage])assert(await handle.$eval('#nozeli-reader-style',node=>node instanceof HTMLStyleElement),'host reader style present');
   assert(!(await store.readObject(receipt.report.digest)).includes(styleOpen),'legacy frozen bytes stay pre-baseline on disk');
   const visualReport=[];
-  for(const[theme,background]of[['light',lightBody],['dark',darkBody]]){
+  for(const theme of ['light','dark']){
     // Real settings change: nativeTheme.themeSource makes every renderer,
     // including the isolated static reports, resolve the app theme natively.
     await setTheme(theme);
-    for(const handle of[legacyPage,shortPage,longPage])await handle.waitForFunction(color=>getComputedStyle(document.body).backgroundColor===color,{},background);
+    for(const handle of[legacyPage,shortPage,longPage])await handle.waitForFunction(theme=>matchMedia('(prefers-color-scheme: dark)').matches===(theme==='dark'),{},theme);
     for(const[key,handle]of[['smoke-report',legacyPage],['short-report',shortPage],['long-report',longPage]]){
       for(const width of[900,390]){
         await fitWidth(key,handle,width);
-        await handle.waitForFunction(color=>getComputedStyle(document.body).backgroundColor===color,{},background);
         const contrast=await contrastOf(handle);
         for(const[subject,value]of Object.entries(contrast))if(value!==null)assert(value>=4.5,theme+' '+key+' '+subject+' contrast '+value.toFixed(2));
         await noOverflow(handle);
@@ -188,7 +234,13 @@ try{
   assert.deepEqual(exportedBytes,longOriginal);assert(exportedBytes.includes(styleOpen),'exported report is the self-contained object');
   assert.deepEqual(await store.readObject(receipt.report.digest),original);assert.deepEqual(await store.readObject(shortReceipt.report.digest),shortOriginal);assert.deepEqual(await store.readObject(longReceipt.report.digest),longOriginal);
   report.checks.push('Print media behavior (host print bounded by system printers); real export equals frozen self-contained bytes');
-  for(const [index,attack]of ['<script>document.title="attack"</script>','<img src="https://example.invalid/attack">','<iframe src="file:///etc/passwd"></iframe>','<p onclick="alert(1)">attack</p>'].entries()){const attempt=await Workspace.open(path.join(output,'attack-runtime-'+index),project,{storage:host.storage,projectId});try{const rejected=await attempt.submit('attack-'+index,'Real invalid publication');await attempt.activate(rejected.id);await assert.rejects(()=>attempt.publish(rejected.id,1,'result','<!doctype html><html><body>'+attack+'</body></html>','attack-'+index,{files:[]}));}finally{await attempt.close();}}
+  const attackProject=path.join(output,'attack-project');await mkdir(attackProject);
+  const attackProjectId=(await host.pick(attackProject)).project.id;
+  const attempt=await Workspace.open(path.join(output,'attack-runtime'),attackProject,{storage:host.storage,projectId:attackProjectId});
+  try{
+    const rejected=await attempt.submit('attack-cases','Real invalid publications');await attempt.activate(rejected.id);
+    for(const [index,attack]of ['<script>document.title="attack"</script>','<img src="https://example.invalid/attack">','<iframe src="file:///etc/passwd"></iframe>','<p onclick="alert(1)">attack</p>'].entries())await assert.rejects(()=>attempt.publish(rejected.id,1,'result','<!doctype html><html><body>'+attack+'</body></html>','attack-'+index,{files:[]}));
+  }finally{await attempt.close();}
   assert.deepEqual(await store.readObject(receipt.report.digest),original);report.checks.push('Real publication rejects HTML script/network/file/event attacks and preserves frozen bytes');
   report.step='closing-static-slots';
   for(const key of['smoke-report','short-report','long-report'])await call('isolated-preview.close',{key});
@@ -208,12 +260,13 @@ try{
   // app theme live without reopening or rebuilding the frozen report.
   await setTheme('light');
   report.historyTheme={readerTheme:await readerPage.evaluate(()=>document.documentElement.dataset.theme).catch(error=>String(error)),reportBg:await actualReport.evaluate(()=>getComputedStyle(document.body).backgroundColor).catch(error=>String(error)),status:await readerPage.$eval('.isolated-status',node=>node.textContent).catch(()=>null)};
-  await actualReport.waitForFunction(color=>getComputedStyle(document.body).backgroundColor===color,{},lightBody);
+  await actualReport.waitForFunction(()=>!matchMedia('(prefers-color-scheme: dark)').matches);
   await shoot(actualReport,path.join(output,'report-from-history-light.png'));
   await setTheme('dark');
-  await actualReport.waitForFunction(color=>getComputedStyle(document.body).backgroundColor===color,{},darkBody);
+  await actualReport.waitForFunction(()=>matchMedia('(prefers-color-scheme: dark)').matches);
   assert.equal(await actualReport.$eval('h1',n=>n.textContent),'Real frozen report');
   report.checks.push('Real UI surface follows live app theme switches on the frozen report without reopening');
+  }
   await rootPage.evaluate(()=>nozeli.invoke('session.requestClose'));assert.equal((await Promise.race([exited,tick(15000).then(()=>({code:'timeout'}))])).code,0);report.ok=true;
 }catch(error){report.error=String(error.stack);report.pages=browser?await Promise.all((await browser.pages()).map(async p=>({url:p.url(),state:await p.evaluate(async()=>({scope:(await window.nozeli?.invoke('workspace.bootstrap'))?.value,text:document.body?.innerText.slice(-2500)})).catch(e=>({error:e.message}))}))):[];process.exitCode=1;}finally{
   if(child&&child.exitCode===null&&browser){try{const closer=rootPage||page;const response=await closer.evaluate(()=>nozeli.invoke('session.requestClose'));report.cleanupClose=response;const closed=await Promise.race([exited,tick(15000).then(()=>null)]);if(!closed)report.preservedProcess={pid:child.pid,reason:'Normal close did not complete; retained for diagnosis'};}catch(error){report.preservedProcess={pid:child.pid,reason:String(error)};}}

@@ -5,7 +5,7 @@ import {userTodoEligible} from '../domain/managed-work-records.mjs';
 import {SystemTerminalBridge} from './managed/system-terminal-bridge.mjs';
 import {fileURLToPath} from 'node:url';
 import {preferredRegionAssets} from '../domain/region-drawing.mjs';
-import {tagMaterialSnapshot} from './managed/tag-material-delivery.mjs';
+import {tagMaterialSnapshot,readableTagMaterial} from './managed/tag-material-delivery.mjs';
 import {createHash,randomUUID} from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -583,7 +583,7 @@ export class ManagedProjects {
   if(op==='managed.frontdesk.route.resolve'&&(!p||typeof p!=='object'||Array.isArray(p)))throw new HostError('INVALID_PAYLOAD','前台去向决定参数必须是对象。');
   const allowed={status:['projectId'],connect:['projectId'],enable:['projectId'],send:['projectId','target','text','relPath','materialText','tags','routingQuestionId','requestKey'],task:['projectId','text','relPath','materialText','tags','routingQuestionId','requestKey'],'intake.retry':['projectId','jobId','requestKey'],draft:['projectId','target','text'],end:['projectId','workId','revision','decision'],retry:['projectId','workId'],restart:['projectId','target'],binding:['projectId','role','skills'],limit:['projectId','limit'],'terminal.screen':['projectId','target'],'terminal.system':['projectId','target'],'terminal.return':['projectId','target'],'terminal.attach':['projectId','target'],'terminal.input':['projectId','target','terminalId','data'],'terminal.resize':['projectId','target','terminalId','cols','rows'],'terminal.close':['projectId','target','terminalId','detach']};
   allowed['terminal.attach']=['projectId','target','ownerId'];
-  allowed.send=[...allowed.send,'imageAttachments','drawingSources','preserveDraft'];allowed.task=[...allowed.task,'imageAttachments','drawingSources','preserveDraft'];
+  allowed.send=[...allowed.send,'imageAttachments','drawingSources','preserveDraft','textMaterials'];allowed.task=[...allowed.task,'imageAttachments','drawingSources','preserveDraft','textMaterials'];
   allowed.disposition=['projectId','workId'];allowed.end=['projectId','workId','revision','decision','binding','requestKey'];allowed.retry=['projectId','workId','binding','requestKey'];
   allowed['merge.constraint']=['projectId','workId','expectedVersion','decision','requestKey'];
   allowed['versions.list']=['projectId'];
@@ -746,16 +746,27 @@ export class ManagedProjects {
   if(action==='send'||action==='task'){
    if(p.requestKey!=null&&!(typeof p.requestKey==='string'&&/^[a-zA-Z0-9:_-]{8,160}$/.test(p.requestKey)))throw Error('invalid submission key');
    if(typeof p.text!=='string'||!p.text.trim())throw new Error('输入为空');
-   const submissionDigest=createHash('sha256').update(JSON.stringify([p.target||'frontdesk',p.text,p.relPath,p.materialText,p.tags,p.routingQuestionId,p.imageAttachments,p.drawingSources,...(sourceInput?[sourceInput]:[])])).digest('hex');
+   const submissionDigest=createHash('sha256').update(JSON.stringify([p.target||'frontdesk',p.text,p.relPath,p.materialText,p.tags,p.routingQuestionId,p.imageAttachments,p.drawingSources,p.textMaterials,...(sourceInput?[sourceInput]:[])])).digest('hex');
    const previous=p.requestKey&&c.store.state.jobs.find(j=>j.key===(action==='task'?'task:':'input:')+p.requestKey);
    if(previous){if(previous.context?.submissionDigest!==submissionDigest)throw Error('submission key collision');return {accepted:true,jobId:previous.id};}
-   let text=p.text;
-   if(p.relPath&&!p.tags?.length){const file=await this.host.readFile(p.projectId,p.relPath),material=p.materialText??file.draft?.text??file.text;if(typeof material!=='string')throw new Error('无法获取当前文本材料');text+='\n\n参考文件：'+file.relPath+'\n以下是用户附带的文本，可能包含尚未保存的编辑：\n\n'+material;}
+   // Raw user text stays verbatim; every explicit material is frozen into a
+   // versioned object at send time and travels as native material data in the
+   // same transaction — never spliced into the user's text string.
+   const text=p.text;const materials=[];const now=new Date().toISOString();
+   if(p.textMaterials!=null){
+    if(!Array.isArray(p.textMaterials)||p.textMaterials.length>20)throw new HostError('INVALID_PAYLOAD','显式文本材料最多20项。');
+    for(const [index,item]of p.textMaterials.entries()){
+     if(!item||typeof item!=='object'||Array.isArray(item)||Object.keys(item).some(key=>!['kind','text','title'].includes(key))||!['reply-quote','drawing-question'].includes(item.kind)||typeof item.text!=='string'||!item.text.trim()||Buffer.byteLength(item.text,'utf8')>256*1024||item.title!==undefined&&(typeof item.title!=='string'||item.title.length>200))throw new HostError('INVALID_PAYLOAD','显式文本材料的类型、正文或大小无效，未发送。');
+     const version=await c.store.putObject(Buffer.from(item.text,'utf8'));
+     materials.push({id:'text:'+index+':'+item.kind,version,title:item.title||'用户选择的文本材料',kind:item.kind,provenance:{source:'explicit-'+item.kind,versionLabel:'frozen-at-send',fetchedAt:now}});
+    }
+   }
+   if(p.relPath&&!p.tags?.length){const file=await this.host.readFile(p.projectId,p.relPath),material=p.materialText??file.draft?.text??file.text;if(typeof material!=='string')throw new Error('无法获取当前文本材料');const fromDraft=material===(file.draft?.text??null);const version=await c.store.putObject(Buffer.from(material,'utf8'));materials.push({id:'file:'+p.relPath,version,title:file.relPath,kind:'file-material',provenance:{source:file.relPath,versionLabel:fromDraft?'draft-at-send':'saved-at-send',fetchedAt:now}});}
    const packets=[];if(p.tags?.length){if(!Array.isArray(p.tags)||p.tags.length>20)throw Error('备注材料最多20项');for(const ref of p.tags)packets.push(await this.host.tagMaterial(p.projectId,ref));}
    const material=packets.length?tagMaterialSnapshot(packets):null;
    if(material){
     if(await c.store.putObject(Buffer.from(material.full))!==material.version)throw Error('冻结讨论材料摘要不一致');
-    text+='\n\n参考材料\n\n'+material.full;
+    for(const packet of packets){const readable=readableTagMaterial(packet),version=await c.store.putObject(Buffer.from(readable,'utf8'));materials.push({id:'tag:'+packet.tagId,version,title:packet.relPath,kind:'tag-material',changed:packet.resolution?.targetDigest!==packet.origin?.materialDigest,notePresent:Boolean(packet.note?.trim()),provenance:{source:packet.relPath,versionLabel:'frozen-selection',fetchedAt:now}});}
    }
    if(p.imageAttachments!=null&&(!Array.isArray(p.imageAttachments)||p.imageAttachments.length>8))throw Error('每次最多8张图片');
    const drawingImages=[],drawingSources=[];let imageBytes=0;
@@ -766,9 +777,11 @@ export class ManagedProjects {
    if(p.routingQuestionId&&!c.store.state.todos.some(t=>t.id===p.routingQuestionId&&t.kind==='routing'&&t.status==='open'))throw new Error('澄清问题已过期');
    const context={...(p.requestKey?{submissionDigest}:{}),...(p.routingQuestionId?{routingQuestionId:p.routingQuestionId}:{}),...(imageAttachments.length?{imageAttachments}:{})};
    if(material)context.tagMaterial={version:material.version,binding:material.binding,brief:material.brief,reusable:material.reusable};
+   if(drawingImages.length){context.drawingSources=drawingSources;const version=await c.store.putObject(Buffer.from(JSON.stringify(drawingSources),'utf8'));materials.push({id:'drawing-sources',version,title:'涂鸦截图来源（未锚定文件的画面仅作工作区素材）',kind:'drawing-sources',provenance:{source:'drawing-attachments',versionLabel:'frozen-at-send',fetchedAt:now}});}
+   if(materials.length)context.materials=materials;
+   if(p.tags?.length||p.textMaterials?.length)context.materialsExplicit=true;
    if(packets.length)context.userInput={text:p.text,sources:packets.map(packet=>({relPath:packet.relPath,annotationId:packet.tagId,materialDigest:packet.origin?.materialDigest,quote:packet.origin?.anchor?.quote||'',location:packet.information?.location?.label||'',changed:packet.resolution?.targetDigest!==packet.origin?.materialDigest}))};
    if(sourceInput)context.userInput=structuredClone(sourceInput);
-   if(drawingImages.length){context.drawingSources=drawingSources;text+='\n\n涂鸦截图来源（未锚定文件的画面仅作工作区素材）：\n'+JSON.stringify(context.drawingSources);}
    return action==='task'?c.submitTask(text,{requestKey:p.requestKey,context,draftText:p.text,preserveDraft:p.preserveDraft===true}):c.send(p.target||'frontdesk',text,{requestKey:p.requestKey,context,draftText:p.text,preserveDraft:p.preserveDraft===true});
   }
   if(action==='end'){if(!['accept','discard'].includes(p.decision))throw new HostError('INVALID_PAYLOAD','请选择接受或丢弃成果。');return c.endWork(p.workId,{revision:p.revision,decision:p.decision,binding:p.binding,requestKey:p.requestKey});}

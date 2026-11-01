@@ -16,7 +16,38 @@ test('HTML CSS modules and literal local JSON fetch form one bounded graph',()=>
   assert.deepEqual(new Set(previewDependencies('site/index.html','<link href="style.css" rel="stylesheet"><script src="app.js"></script><a href="next.html">Next</a><script type="module">import "./module.mjs"; fetch("data.json")</script>')),new Set(['site/style.css','site/app.js','site/next.html','site/module.mjs','site/data.json']));
   assert.deepEqual(previewDependencies('site/a.css','@import "b.css";a{background:url(../image.png)}'),['site/b.css','image.png']);
   assert.deepEqual(previewDependencies('site/a.mjs','import {a} from "./b.mjs"; export {x} from "./c.mjs"; fetch("data.json")'),['site/b.mjs','site/c.mjs','site/data.json']);
-  assert.throws(()=>previewDependencies('index.html','<img src="http://127.0.0.1:8000/a.png">'));
+  assert.deepEqual(previewDependencies('index.html','<img src="http://127.0.0.1:8000/a.png">'),[]);
+});
+test('external hyperlinks and remote resources stay inert instead of failing the snapshot',()=>{
+  const html='<!doctype html><html><head><link rel="stylesheet" href="https://cdn.invalid/reset.css"><script src="https://cdn.invalid/app.js"></script></head><body><a href="https://example.invalid/offline">External</a><a href="//cdn.invalid/mirror">Protocol</a><a href="mailto:x@example.invalid">Mail</a><a href="javascript:void(0)">Void</a><a href="?page=2">Query</a><a href="#top">Top</a><img src="https://cdn.invalid/logo.png" srcset="https://cdn.invalid/logo.png 2x, img/%E5%9B%BE%20%E6%A0%87.png 1x"><img src="/media/poster.png"><style>@import "https://cdn.invalid/font.css";a{background:url("//cdn.invalid/bg.png")}</style><script type="module">import "https://cdn.invalid/mod.mjs";fetch("http://127.0.0.1:9/data.json")</script></body></html>';
+  assert.deepEqual(new Set(previewDependencies('site/index.html',html)),new Set(['media/poster.png','site/img/图 标.png']));
+  for(const value of ['%2e%2e/x.png','a%2fb.png','bad%zz.png','weird%.png','x%252e.png'])assert.deepEqual(previewDependencies('index.html','<img src="'+value+'">'),[]);
+});
+test('srcset tokenization keeps embedded URL commas and treats separator commas browser-style',()=>{
+  assert.deepEqual(previewDependencies('index.html','<img srcset="https://cdn.invalid/a,b.png 1x">'),[]);
+  assert.deepEqual(previewDependencies('index.html','<img srcset="images/a,b.png 1x">'),['images/a,b.png']);
+  assert.deepEqual(previewDependencies('index.html','<img srcset="a.png 1x, images/b,c.png 2x, ,d.png">'),['a.png','images/b,c.png','d.png']);
+  assert.deepEqual(previewDependencies('index.html','<img srcset="a.png 1x,b.png 2x">'),['a.png','b.png']);
+  assert.deepEqual(previewDependencies('index.html','<img srcset="a.png 1x,">'),['a.png']);
+});
+test('navigable hrefs settle only on captured local HTML while resources may use any supported type',()=>{
+  const html='<a href="next.html">Page</a><a href="docs/manual.pdf">Manual</a><a href="https://example.invalid/">External</a><area href="map.html"><link href="style.css"><img src="logo.png">';
+  assert.deepEqual(new Set(previewDependencies('site/index.html',html)),new Set(['site/next.html','site/map.html','site/style.css','site/logo.png']));
+});
+test('traversal beyond the project root still rejects the whole capture',()=>{
+  assert.throws(()=>previewDependencies('index.html','<script src="../outside-project.js"></script>'),/逃逸/);
+  assert.throws(()=>previewDependencies('site/index.html','<link href="../../escape.css">'),/逃逸/);
+  assert.deepEqual(previewDependencies('site/index.html','<a href="../root.html">'),['root.html']);
+});
+test('spaces and Chinese filenames capture and round-trip URL encoding for .htm and .html',()=>{
+  assert.equal(previewPath('中文 页面.htm'),'中文 页面.htm');
+  assert.equal(previewPath('my file.html'),'my file.html');
+  assert.deepEqual(previewDependencies('中文 页面.htm','<img src="图 标.svg"><a href="下一 页.html">'),['图 标.svg','下一 页.html']);
+  const origin='https://preview.invalid';
+  for(const rel of ['中文 页面.htm','图 标.svg','my file.html']){
+    const files=new Map([[rel,{}]]),url=origin+'/'+rel.split('/').map(encodeURIComponent).join('/');
+    assert.equal(previewUrlMember(url,origin,files),rel);
+  }
 });
 test('dependency parsing ignores inert strings comments and decodes real escaped literals',()=>{
   const source=String.raw`// import "absent.mjs"; fetch("absent.json")
@@ -45,13 +76,13 @@ test('first-parser offline bootstrap permanently removes RTC STUN data-channel a
   for(const name of denied){assert.equal(vm.runInContext(`typeof ${name}`,context),'undefined');assert.equal(vm.runInContext(`Reflect.set(globalThis,${JSON.stringify(name)},function(){})`,context),false);assert.equal(vm.runInContext(`Reflect.deleteProperty(globalThis,${JSON.stringify(name)})`,context),false);}
   assert.equal(vm.runInContext('navigator.serviceWorker',context),undefined);
 });
-function harness({load}={}){
+function harness({load,host,workspace}={}){
   const calls=[],sessions=[],views=[];
   class View{constructor(options){this.options=options;this.visible=false;this.webContents=new EventEmitter();const wc=this.webContents;wc.id=900+views.length;wc.dead=false;wc.isDestroyed=()=>wc.dead;wc.forcefullyCrashRenderer=()=>{wc.crashed=true;};wc.close=()=>{wc.dead=true;};wc.setWebRTCIPHandlingPolicy=value=>calls.push(['rtc',value]);wc.setWindowOpenHandler=fn=>wc.popup=fn;wc.loadURL=async url=>{wc.url=url;return load?.(wc);};this.setBounds=b=>this.bounds=b;this.setVisible=b=>this.visible=b;views.push(this);}}
   const session={fromPartition(partition){const s=new EventEmitter();s.partition=partition;s.protocol={handle:(_scheme,fn)=>s.handler=fn,unhandle:()=>{}};s.webRequest={onBeforeRequest:fn=>s.request=fn};s.setPermissionRequestHandler=fn=>s.permission=fn;s.setPermissionCheckHandler=fn=>s.check=fn;s.setDevicePermissionHandler=fn=>s.device=fn;s.setDisplayMediaRequestHandler=fn=>s.display=fn;s.setProxy=async value=>s.proxy=value;s.setSpellCheckerEnabled=()=>{};sessions.push(s);return s;}};
   const scope={wc:{id:1,isDestroyed:()=>false,send:(...args)=>calls.push(args)},projectId:'p',generation:1,windowId:'main',role:'shell',win:{contentView:{addChildView:()=>{},removeChildView:()=>{}},getContentSize:()=>[800,600]}};
   let rejectRead=false;const source={report:{format:'html-static'},read:async()=>{if(rejectRead)throw Error('changed');return Buffer.from('<h1>Immutable</h1>');},readManifest:async()=>({references:[{id:'0',href:'old.txt'}]}),readReference:async()=>({kind:'artifact',bytes:Buffer.from('frozen'),mediaType:'text/plain',relPath:'old.txt'})};
-  const manager=new IsolatedPreviewManager({WebContentsView:View,session,workspace:{},host:{},managedAgents:{reportSource:async()=>source}});
+  const manager=new IsolatedPreviewManager({WebContentsView:View,session,workspace:workspace??{},host:host??{},managedAgents:{reportSource:async()=>source}});
   const payload={key:'report',projectId:'p',objectId:'object',profile:'staticReport',generation:1,bounds:{x:10,y:20,width:300,height:200}};
   return {manager,scope,payload,calls,sessions,views,reject:()=>rejectRead=true};
 }
@@ -107,6 +138,35 @@ test('authoritative buffer capture freezes multi-page CSS JS ESM and JSON withou
   workspace.buffers.get(workspace.resource('p','data.json')).text='{"current":false}';
   assert.equal(snapshot.files.get('data.json').bytes.toString(),'{"current":true}');
   await assert.rejects(capturePreview({host,workspace,projectId:'p',entryPath:'index.html',buffers:[{path:'data.json',version:6}]}));
+});
+
+test('offline development opens spaced Chinese .htm entries with external links, prints and gates guests',async()=>{
+  const texts=new Map([['中文 页面.htm','<!doctype html><p>页面</p><a href="https://example.invalid/offline">External</a><img src="图 标.svg">'],['图 标.svg','<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"/>' ]]);
+  const workspace={buffers:new Map(),projectRecords:()=>[...texts.keys()].map(relPath=>({relPath})),resource:(p,r)=>p+'\0'+r,syncDocument:async()=>()=>{}};
+  for(const [relPath,text]of texts)workspace.buffers.set(workspace.resource('p',relPath),{projectId:'p',relPath,text,revision:2,dirty:false});
+  const host={requireProject:async()=>({root:'/bounded-project'}),resolveFile:()=>{throw Error('Buffer preview must not save/read disk');}};
+  const h=harness({host,workspace});
+  const snapshot=await h.manager.invoke(h.scope,'isolated-preview.open',{key:'web',projectId:'p',profile:'offlineDevelopment',generation:1,entryPath:'中文 页面.htm',bounds:{x:0,y:0,width:400,height:300}});
+  assert.equal(snapshot.entryPath,'中文 页面.htm');
+  const wc=h.views[0].webContents,origin=new URL(wc.url).origin;
+  assert.equal(wc.url,origin+'/'+encodeURIComponent('中文 页面.htm'));
+  h.sessions[0].request({url:wc.url,method:'GET',resourceType:'mainFrame'},result=>assert.equal(result.cancel,false));
+  for(const details of [{url:'https://example.invalid/x',resourceType:'subFrame'},{url:origin+'/missing.png',resourceType:'image'},{url:'file:///etc/passwd',resourceType:'mainFrame'}])h.sessions[0].request(details,result=>assert.equal(result.cancel,true));
+  let prevented=0;wc.emit('will-navigate',{url:'https://example.invalid/offline',preventDefault(){prevented++;}});
+  wc.emit('will-navigate',{url:wc.url+'#anchor',preventDefault(){prevented++;}});
+  assert.equal(prevented,1,'external navigation is blocked, captured member HTML is not');
+  wc.print=(options,callback)=>{assert.equal(options.printBackground,true);callback(true,'ok');};
+  assert.deepEqual(await h.manager.invoke(h.scope,'isolated-preview.print',{key:'web',generation:1,silent:true}),{printed:true});
+});
+
+test('capture of a .htm graph rejects root escapes loudly while externals never fail it',async()=>{
+  const texts=new Map([['index.htm','<script src="../outside-project.js"></script>'],['中文 页面.htm','<p>页面</p>']]);
+  const workspace={buffers:new Map(),projectRecords:()=>[...texts.keys()].map(relPath=>({relPath})),resource:(p,r)=>p+'\0'+r,syncDocument:async()=>()=>{}};
+  for(const [relPath,text]of texts)workspace.buffers.set(workspace.resource('p',relPath),{projectId:'p',relPath,text,revision:1,dirty:false});
+  const host={requireProject:async()=>({root:'/bounded-project'}),resolveFile:()=>{throw Error('Buffer preview must not save/read disk');}};
+  await assert.rejects(capturePreview({host,workspace,projectId:'p',entryPath:'index.htm'}),/逃逸/);
+  const snapshot=await capturePreview({host,workspace,projectId:'p',entryPath:'中文 页面.htm'});
+  assert.deepEqual([...snapshot.files.keys()],['中文 页面.htm']);
 });
 
 test('owner destruction during async open fences late completion before session creation',async()=>{

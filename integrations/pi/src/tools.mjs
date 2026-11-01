@@ -125,7 +125,6 @@ export function createHostToolBridge({ send, onHostControl }) {
               frame.requestId = current.requestId;
               if (current.jobId !== undefined) frame.jobId = current.jobId;
             }
-            if (current.beforeAgentContext !== undefined) frame.beforeAgentContext = current.beforeAgentContext;
           }
           return new Promise((resolve) => {
             const abort = () => {

@@ -99,12 +99,18 @@ test('cold inventory counts unknown providers in every unconnected project befor
 test('cap two dispatch cycle reclaims idle residents without failing accepted queued work',async t=>{
  const f=await fixture(t,{limit:2}),c=await f.open('active'),m=new ManagedProjects({userDataDir:f.root,host:hostFor(c.store),legacy:{projects:new Map()}});m.processBudget=f.budget;m.controllers.set(c.projectId,c);m.activeProjectId=c.projectId;f.budget.reclaim=(id,target)=>m.reclaimInactive(id,{target});
  await c.start();const originalFront=c.store.state.residents.frontdesk.threadId;
- const orchestrator=c.sessions.get('orchestrator');orchestrator.prompt=async()=>{await orchestrator.onTool({tool:'nozeli_dispatch',arguments:{name:'Task',brief:'brief'},callId:'dispatch-fixture'});return {text:'dispatched',threadId:orchestrator.threadId,metrics:{}};};
+ const orchestrator=c.sessions.get('orchestrator');orchestrator.prompt=async(text,{job}={})=>{
+  // Orchestrator also answers host maintenance turns; a dispatch-only stub would fail
+  // that turn after any transient worktree-prep fault and surface as an unrelated
+  // failed job, masking the cap/reclaim behavior under test.
+  if(job?.type==='maintenance')return {text:'maintenance event reviewed',threadId:orchestrator.threadId,metrics:{},completion:'provider-completed'};
+  await orchestrator.onTool({tool:'nozeli_dispatch',arguments:{name:'Task',brief:'brief'},callId:'dispatch-fixture'});return {text:'dispatched',threadId:orchestrator.threadId,metrics:{}};
+ };
  await c.enqueue('orchestrator','intake','request');
  // Await the actual dispatcher; direct pump then gives a deterministic scheduler boundary.
  while(c.running.size||c.kicking)await new Promise(r=>setImmediate(r));await c.pump();
  while(c.running.size||c.kicking)await new Promise(r=>setImmediate(r));
- const work=c.store.state.works[0];assert(work);assert.equal(c.store.state.jobs.every(job=>job.status==='completed'),true);assert.equal(f.budget.used<=2,true);assert.equal(c.store.find(work.id).status,'paused');
+ const work=c.store.state.works[0];assert(work);assert.equal(c.store.state.jobs.every(job=>job.status==='completed'),true,JSON.stringify(c.store.state.jobs.map(({target,type,status,error})=>({target,type,status,error}))));assert.equal(f.budget.used<=2,true);assert.equal(c.store.find(work.id).status,'paused');
  const response=await c.send('frontdesk','next discussion');assert.equal(response.accepted,true);
  while(c.running.size||c.kicking)await new Promise(r=>setImmediate(r));
  assert.equal(c.sessions.get('frontdesk').threadId,originalFront);assert.equal(c.store.state.jobs.at(-1).status,'completed');

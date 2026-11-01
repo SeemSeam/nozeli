@@ -19,3 +19,15 @@
 .session-runtime-dialog textarea{min-height:150px;resize:vertical}
 .session-runtime-dialog :is(button,pre,textarea):focus-visible{outline:2px solid var(--ui-control-focus,var(--green));outline-offset:2px}
 @media(max-width:640px){.session-runtime-dialog{padding:12px}.session-runtime-actions button{min-height:44px}}
+.session-context-details{margin-block:16px;border-block:1px solid var(--line);min-width:0}
+.session-context-details summary{padding:12px 4px;min-height:44px;box-sizing:border-box;cursor:pointer;font-weight:600}
+.session-context-details summary:focus-visible{outline:2px solid var(--ui-control-focus,var(--green));outline-offset:2px}
+.session-context-body{padding:0 4px 12px;min-width:0}
+.session-context-body h3{font-size:14px;margin:16px 0 8px}
+.session-context-body dl{display:grid;grid-template-columns:minmax(80px,auto) minmax(0,1fr);gap:6px 12px;margin:8px 0;font-size:13px;line-height:1.6}
+.session-context-body dt{font-weight:600}
+.session-context-body dd{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.session-context-body ul{padding-inline-start:20px;overflow-wrap:anywhere}
+.session-context-body li{margin-block:8px}
+.session-context-body pre{margin-block:8px;tab-size:4}
+@media(max-width:400px){.session-context-body dl{grid-template-columns:minmax(0,1fr);gap:2px}.session-context-body dd{margin-bottom:8px}}

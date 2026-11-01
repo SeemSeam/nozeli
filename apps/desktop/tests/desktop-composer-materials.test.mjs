@@ -44,7 +44,7 @@ const port = await new Promise(resolve => { const s = net.createServer(); s.list
 const ozone = process.env.NOZELI_OZONE || 'wayland';
 const child = spawn(require('electron'), ['--ozone-platform=' + ozone, path.join(root, 'src/main/main.cjs')], {
   cwd: root,
-  env: { ...process.env, NOZELI_TEST_INSTANCE: '1', NOZELI_USER_DATA: path.join(output, 'profile'), NOZELI_TEST_PICK: project, NOZELI_SHOT_DIR: output, NOZELI_DEBUG_PORT: String(port), NOZELI_HIDDEN: ozone === 'headless' ? '1' : '0', NOZELI_OZONE: ozone },
+  env: { ...process.env, NOZELI_TEST_INSTANCE: '1', NOZELI_CONFIG_ROOT: path.join(output, '.Nozeli'), NOZELI_USER_DATA: path.join(output, '.Nozeli', 'desktop'), NOZELI_TEST_PICK: project, NOZELI_SHOT_DIR: output, NOZELI_DEBUG_PORT: String(port), NOZELI_HIDDEN: ozone === 'headless' ? '1' : '0', NOZELI_OZONE: ozone },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let log = '';

@@ -1,6 +1,5 @@
 import {createHash} from 'node:crypto';
-import {workPath} from './execution-workspace.mjs';
-import {inspectFile} from './file-stream.mjs';
+import {inspectFile,writablePath as workPath} from './file-stream.mjs';
 import {readStoredReport} from './report-descriptor.mjs';
 export const digest=bytes=>createHash('sha256').update(bytes).digest('hex');
 export async function artifactSnapshot(root,paths){

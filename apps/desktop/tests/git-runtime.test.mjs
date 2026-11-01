@@ -77,6 +77,8 @@ test('relocated unpacked installation carries Git, libraries and helpers', async
   const installedRuntime = path.join(root, 'src/agents/managed/git-runtime.mjs');
   await fs.mkdir(path.dirname(installedRuntime), { recursive: true });
   await fs.copyFile(fileURLToPath(runtime), installedRuntime);
+  await fs.mkdir(path.join(root,'src/platform/shared'),{recursive:true});
+  await fs.copyFile(new URL('../src/platform/shared/runtime-assets.mjs',import.meta.url),path.join(root,'src/platform/shared/runtime-assets.mjs'));
   const dugiteRoot = path.dirname(require.resolve('dugite/package.json'));
   // git-runtime uses dugite's environment exports only. Copy the installed
   // package whole, including its downloaded private git/ distribution.
@@ -98,8 +100,9 @@ test('relocated unpacked installation carries Git, libraries and helpers', async
 test('missing private dependency is an explicit broken provisioning error', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nozeli-missing-git-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const file = path.join(root, 'git-runtime.mjs');
-  await fs.copyFile(fileURLToPath(runtime), file);
+  const file = path.join(root, 'src/agents/managed/git-runtime.mjs');
+  await fs.mkdir(path.dirname(file),{recursive:true});await fs.copyFile(fileURLToPath(runtime), file);
+  await fs.mkdir(path.join(root,'src/platform/shared'),{recursive:true});await fs.copyFile(new URL('../src/platform/shared/runtime-assets.mjs',import.meta.url),path.join(root,'src/platform/shared/runtime-assets.mjs'));
   const code = `
     import assert from 'node:assert/strict';
     const {ensureGit}=await import(${JSON.stringify(pathToFileURL(file).href)});
