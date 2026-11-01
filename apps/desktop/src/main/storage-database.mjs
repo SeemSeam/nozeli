@@ -1,12 +1,17 @@
-import {Worker} from 'node:worker_threads';
+import {Worker,MessageChannel,receiveMessageOnPort} from 'node:worker_threads';
 import {randomUUID} from 'node:crypto';
 import fs from 'node:fs/promises';
 
 const unavailable=(code,message)=>Object.assign(Error(message),{code});
 const unknown=(file,operationIds,cause)=>Object.assign(Error('存储结果待核查；存储线程已隔离，禁止自动重投'),{code:'STORAGE_RESULT_UNKNOWN',cause,commitUnknown:{file},file,operationIds});
+function createWorker(){
+ const {port1,port2}=new MessageChannel();
+ try{const worker=new Worker(new URL('./storage-worker.mjs',import.meta.url),{workerData:{replyPort:port2},transferList:[port2]});worker.responsePort=port1;return worker;}
+ catch(error){port1.close();port2.close();throw error;}
+}
 
 export class StorageDatabase {
- constructor({timeoutMs=8000,workerFactory=()=>new Worker(new URL('./storage-worker.mjs',import.meta.url))}={}){this.timeoutMs=timeoutMs;this.workerFactory=workerFactory;this.sequence=0;this.channels=new Map();this.quarantined=new Map();this.reconciliations=new Set();this.closed=false;}
+ constructor({timeoutMs=8000,workerFactory=createWorker}={}){this.timeoutMs=timeoutMs;this.workerFactory=workerFactory;this.sequence=0;this.channels=new Map();this.quarantined=new Map();this.reconciliations=new Set();this.closed=false;}
  channel(file){
   if(this.closed)throw unavailable('STORAGE_CLOSED','存储已关闭');
   if(this.quarantined.has(file))throw this.quarantined.get(file);
@@ -14,9 +19,10 @@ export class StorageDatabase {
   let channel=this.channels.get(file);
   if(channel){if(channel.closing)throw unavailable('STORAGE_CLOSING','存储正在关闭');return channel;}
   const worker=this.workerFactory();channel={worker,pending:new Map(),closing:false,exited:false};this.channels.set(file,channel);worker.unref();
-  worker.on('message',m=>{if(channel.unknown)return;const p=channel.pending.get(m.id);if(!p)return;this.settle(channel,m.id,m.error?Object.assign(Error(m.error.message),{code:m.error.code,operationId:p.operationId,rollbackFailure:m.error.rollbackFailure,closeFailure:m.error.closeFailure}):null,m.value);});
+  channel.receive=m=>{if(channel.unknown)return;const p=channel.pending.get(m.id);if(!p)return;if(m.completedAt>p.deadline){void this.quarantine(file,channel,Error('deadline exceeded'));return;}this.settle(channel,m.id,m.error?Object.assign(Error(m.error.message),{code:m.error.code,operationId:p.operationId,rollbackFailure:m.error.rollbackFailure,closeFailure:m.error.closeFailure}):null,m.value);};
+  worker.responsePort.on('message',channel.receive);worker.responsePort.unref();
   worker.on('error',error=>{void this.quarantine(file,channel,error);});
-  worker.on('exit',code=>{channel.exited=true;if(!channel.stopping||channel.pending.size)void this.quarantine(file,channel,Error('存储线程退出: '+code));if(this.channels.get(file)===channel)this.channels.delete(file);});
+  worker.on('exit',code=>{channel.exited=true;worker.responsePort.close();if(!channel.stopping||channel.pending.size)void this.quarantine(file,channel,Error('存储线程退出: '+code));if(this.channels.get(file)===channel)this.channels.delete(file);});
   return channel;
  }
  settle(channel,id,error,value){const p=channel.pending.get(id);if(!p)return;channel.pending.delete(id);clearTimeout(p.timer);if(error)p.reject(error);else p.resolve(value);p.done();if(!channel.pending.size)channel.worker.unref();}
@@ -43,8 +49,14 @@ export class StorageDatabase {
   const id=++this.sequence,operationId=args.operationId??randomUUID();
   return new Promise((resolve,reject)=>{
    let done;const settled=new Promise(finish=>{done=finish;});
-   const timer=setTimeout(()=>void this.quarantine(file,channel,Error('deadline exceeded')),this.timeoutMs);
-   channel.pending.set(id,{resolve,reject,timer,operationId,done,settled});
+   const deadline=process.hrtime.bigint()+BigInt(Math.ceil(this.timeoutMs*1e6));
+   const timer=setTimeout(()=>{
+    // A main-thread stall can make timers run before already queued replies.
+    // Drain only worker-confirmed outcomes completed within the original deadline.
+    let queued;while(!channel.unknown&&(queued=receiveMessageOnPort(channel.worker.responsePort)))channel.receive(queued.message);
+    if(channel.pending.has(id))void this.quarantine(file,channel,Error('deadline exceeded'));
+   },this.timeoutMs);
+   channel.pending.set(id,{resolve,reject,timer,operationId,deadline,done,settled});
    try{channel.worker.ref();channel.worker.postMessage({id,file,op,args:{...args,operationId}});}catch(error){void this.quarantine(file,channel,error);}
   });
  }

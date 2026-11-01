@@ -14,5 +14,5 @@ test('named cancellation accepts trailing no-Git constraints but rejects questio
 test('cancellation prose never chooses accept or discard on the user behalf',async t=>{
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-cancel-scope-'));const c=await openTestController({runtimeRoot:path.join(root,'runtime'),contentRoot:path.join(root,'project')});t.after(async()=>{await c.stop();await fs.rm(root,{recursive:true,force:true});});
  const a=await c.store.submit('task A','brief',{name:'Alpha'});const accepted=await c.enqueue('orchestrator','intake','取消任务“Alpha”。保留未认可候选；不要Git提交。');const job=c.store.state.jobs.find(j=>j.id===accepted.jobId);
- await assert.rejects(c.manageIntake(job,{action:'cancel',workName:'Alpha',text:'user cancelled'}),/明确选择接受或丢弃/);assert.equal(c.store.find(a.id).status,'queued');assert.equal(c.store.find(a.id).outcome,undefined);
+ await assert.rejects(c.manageIntake(job,{action:'cancel',workId:a.id,text:'user cancelled'}),/明确选择接受或丢弃/);assert.equal(c.store.find(a.id).status,'queued');assert.equal(c.store.find(a.id).outcome,undefined);
 });

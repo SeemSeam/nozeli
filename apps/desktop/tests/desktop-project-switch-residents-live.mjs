@@ -36,7 +36,7 @@ const server=http.createServer((req,res)=>{let body='';req.on('data',b=>body+=b)
  const names=(input.tools||[]).map(t=>t.function?.name||t.name),role=names.includes('nozeli_dispatch')?'orchestrator':names.includes('nozeli_skill_read')?'worker':'frontdesk';
  const lastUser=[...(input.messages||[])].reverse().find(m=>m.role==='user'),nonce=nonceOf(lastUser?.content);
  let delta,finish='stop';
- if(role==='orchestrator'&&!nonce){delta=tool('nozeli_manage',{action:'status',workName:'@state',text:'Report current work status without starting a Worker.'},'b-status-seed');finish='tool_calls';}
+ if(role==='orchestrator'&&!nonce){delta=tool('nozeli_manage',{action:'status',text:'Report current work status without starting a Worker.'},'b-status-seed');finish='tool_calls';}
  else if(role==='frontdesk'||!nonce)delta={role:'assistant',content:'SWITCH_REPLY'};
  else{const round=rounds.get(nonce)??{orchestrator:0,worker:0};round[role]++;rounds.set(nonce,round); // counters are per role: orchestrator and worker share the nonce
   if(role==='orchestrator'){if(round.orchestrator===1){delta=tool('nozeli_dispatch',{name:nonce,brief:'Create '+nonce+'.txt with exact content '+nonce+' in this work, then finish.'},nonce+'-dispatch');finish='tool_calls';}else delta={role:'assistant',content:'Dispatched '+nonce};}

@@ -13,11 +13,11 @@ test('ending one Work retires only its exact actionable questions and recovery n
  const a=await c.store.submit('A request','brief',{name:'Alpha'}),b=await c.store.submit('B request','brief',{name:'Beta'});
  const ask=await c.enqueue('orchestrator','intake','Should Alpha be cancelled?');
  const source=c.store.state.jobs.find(j=>j.id===ask.jobId);
- await c.manageIntake(source,{action:'clarify',workName:'Alpha',text:'Cancel or retain Alpha?'});
+ await c.manageIntake(source,{action:'clarify',workId:a.id,expectedRevision:a.revision,text:'Cancel or retain Alpha?'});
  const question=c.store.state.todos.find(t=>t.kind==='routing'&&t.sourceJobId===source.id);
  assert.equal(question.workId,a.id);assert.equal(question.revision,0);
  const unrelated=await c.enqueue('orchestrator','intake','Which Work?');
- await c.manageIntake(c.store.state.jobs.find(j=>j.id===unrelated.jobId),{action:'clarify',workName:'',text:'Which one?'});
+ await c.manageIntake(c.store.state.jobs.find(j=>j.id===unrelated.jobId),{action:'clarify',text:'Which one?'});
  await c.store.mutate(()=>c.store.state.todos.push({id:'old-recovery',kind:'recovery',workId:a.id,revision:0,sourceJobId:'failed-original',status:'open',text:'original connection error'},{id:'other-recovery',kind:'recovery',workId:b.id,status:'open',text:'B remains open'}));
  const bBefore=structuredClone(c.store.find(b.id));
  await c.endWork(a.id,{revision:0,decision:'discard'});

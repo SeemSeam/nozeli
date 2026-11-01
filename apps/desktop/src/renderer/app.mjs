@@ -160,6 +160,19 @@ function enqueue(action, freeze = false) {
   let projectReady = false;
   const projectSwitches = createProjectSwitches({schedule:action=>enqueue(()=>holdProjectInput(action),true),transition:activateProjectNow,current:()=>ui.project?.id,ready:()=>projectReady&&!ui.viewBlocked,onPending:renderProjectPending,onError:error=>{showFailure(error);workspace.toast(error.message);setStatus('error',error.message);}});
   const activateProject = projectId => projectSwitches.request(projectId);
+  let projectNavigationHeldNodes=null;
+  function holdProjectNavigation(held){
+    if(held){
+      if(projectNavigationHeldNodes||ui.composing||managedReviewComposing())return;
+      const recent=$('recent'),rail=recent.parentElement;
+      const nodes=[...[...$('app').children].filter(node=>node!==rail),...[...rail.children].filter(node=>node!==recent)];
+      projectNavigationHeldNodes=nodes.map(node=>({node,inert:node.inert}));
+      for(const {node} of projectNavigationHeldNodes)node.inert=true;
+    }else if(projectNavigationHeldNodes){
+      for(const {node,inert} of projectNavigationHeldNodes)node.inert=inert;
+      projectNavigationHeldNodes=null;
+    }
+  }
   async function holdProjectInput(action){
     // Keep the rail responsive but close the source-input window between its
     // last retention receipt and the binding commit. Restore on every failure.
@@ -2872,7 +2885,10 @@ async function openBesideSnapshot(file, diff=false, left=null) {
       if(!ui.composing)ui.editor?.adapter.setReadOnly(documentReadOnly());
       setStatus(ui.dirty?'dirty':'saved',ui.dirty?'未保存输入仍保留':'已保存');return;
     }
-    if(event.type==='lifecycle-hold'){if(!ui.composing&&!managedReviewComposing()||!event.held)$('app').inert=Boolean(event.held);return;}
+    if(event.type==='lifecycle-hold'){
+      if(event.reason==='project-switch'&&workspaceScope.role==='shell'){holdProjectNavigation(Boolean(event.held));return;}
+      if(!ui.composing&&!managedReviewComposing()||!event.held)$('app').inert=Boolean(event.held);return;
+    }
     if(event.type==='project-closed'&&!isSurface){void clearProjectPage(event.projectId);return;}
     if(event.type==='project-unavailable'&&event.projectId===ui.project?.id){ui.project.available=false;ui.sourceMissing=true;window.clearTimeout(ui.timer);window.clearTimeout(ui.maxTimer);$('file-tree').replaceChildren();$('file-tree').textContent='项目目录不可用；未保存内容可保留在本机。';setStatus('error','项目不可用 · 可关闭或移除入口');return;}
     if(event.type === 'document-buffer') { applyMirrorBuffer(event); return; }

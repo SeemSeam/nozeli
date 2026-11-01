@@ -1,6 +1,6 @@
 import { inferTex } from './tex-inference.mjs';
 import fs from 'node:fs/promises';
-import { watch } from 'node:fs';
+import { TexSourceWatcher, ignoredTexEntry } from './tex-source-watcher.mjs';
 import path from 'node:path';
 import os from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
@@ -10,14 +10,12 @@ import { normalizedTexText, parseSynctexResults, syncSourcePath } from './tex-sy
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const engines = ['xelatex', 'pdflatex', 'lualatex', 'tectonic'];
-const skipped = new Set(['node_modules', 'target', 'dist', 'build', 'vendor']);
-const generated = /\.(?:aux|log|fls|fdb_latexmk|synctex(?:\.gz)?|xdv|toc|out|blg|bcf|run\.xml)$/i;
 const MAX_BYTES = 64 * 1024 * 1024;
 function relPath(value) { if (typeof value !== 'string' || !value || path.posix.isAbsolute(value) || value.includes('\\') || value.split('/').some(p => !p || p === '..' || p === '.' || p.startsWith('.')) || /[\x00-\x1f:]/.test(value)) throw fail('TEX_PATH', 'TeX 文件路径必须位于项目内，且不能是隐藏文件。'); return value; }
 
 async function walk(root, rel = '', result = [], discover = false) {
   for (const entry of await fs.readdir(path.join(root, rel), { withFileTypes: true })) {
-    if (entry.name.startsWith('.') || skipped.has(entry.name) || generated.test(entry.name)) continue;
+    if (ignoredTexEntry(entry.name)) continue;
     const file = rel ? rel + '/' + entry.name : entry.name;
     if (entry.isSymbolicLink() && discover) continue;
     if (entry.isSymbolicLink()) throw fail('TEX_SYMLINK', `编译快照不跟随符号链接：${file}`);
@@ -81,7 +79,7 @@ export function parseTexDiagnostics(log, files, cwdRel = '') {
   return diagnostics.slice(0, 100);
 }
 export class TexBuildManager {
-  constructor({ host, onEvent = () => {}, timeout = 120000, findSynctex = () => executable('synctex') } = {}) { this.host = host; this.onEvent = onEvent; this.slots = new Map(); this.watchers = new Map(); this.syncJobs = new Set(); this.timeout = timeout; this.stopping = false; this.findSynctex = findSynctex; }
+  constructor({ host, onEvent = () => {}, timeout = 120000, findSynctex = () => executable('synctex') } = {}) { this.host = host; this.onEvent = onEvent; this.slots = new Map(); this.watchers = new Map(); this.watchEpochs = new Map(); this.syncJobs = new Set(); this.timeout = timeout; this.stopping = false; this.findSynctex = findSynctex; }
   async dir(projectId) { return path.join(await this.host.storage.localDirectory(projectId), 'tex'); }
   async slot(projectId) {
     await this.host.storage.requireRegistered(projectId);
@@ -99,20 +97,13 @@ export class TexBuildManager {
     const value = { root: root || '', engine, automatic }; await this.host.storage.putProject(projectId, 'settings', 'tex', value); return value;
   }
   async inspect({ projectId, relPath: current }) {
+    const watchEpoch = this.watchEpochs.get(projectId);
     const project = await this.host.requireProject(projectId), config = await this.config(projectId);
-    if (!this.watchers.has(projectId)) {
-      try {
-        let timer;
-        const watcher = watch(project.root, { recursive: true }, (_event, filename) => {
-          if (!filename) return;
-          const rel = String(filename).replaceAll('\\', '/');
-          if (rel.split('/').some(p => p.startsWith('.') || skipped.has(p)) || generated.test(rel)) return;
-          clearTimeout(timer); timer = setTimeout(() => this.onEvent({ projectId, sourceChanged: true }), 200); timer.unref?.();
-        });
-        watcher.unref(); watcher.on('error', () => { watcher.close(); this.watchers.delete(projectId); });
-        this.watchers.set(projectId, { close() { clearTimeout(timer); watcher.close(); } });
-      } catch { /* Manual compilation and editor changes remain available without native watching. */ }
+    if (!this.stopping && this.watchEpochs.get(projectId) === watchEpoch && !this.watchers.has(projectId)) {
+      const watcher = new TexSourceWatcher(project.root, () => this.onEvent({ projectId, sourceChanged: true }));
+      this.watchers.set(projectId, watcher);
     }
+    await this.watchers.get(projectId)?.ready;
     const configuredRoot = config.root;
     const files = await walk(project.root, '', [], true), roots = [], texts = new Map();
     for (const rel of files.filter(p => /\.tex$/i.test(p))) {
@@ -309,6 +300,6 @@ export class TexBuildManager {
       return { buildId, relPath: null };
     } finally { this.syncJobs.delete(job); }
   }
-  async stopProject(projectId){this.watchers.get(projectId)?.close();this.watchers.delete(projectId);const pending=this.slots.get(projectId);if(pending){await this.cancel({projectId});await (await pending).running;}const jobs=[...this.syncJobs].filter(job=>job.projectId===projectId);for(const job of jobs){job.cancelled=true;terminate(job.child);}await Promise.allSettled(jobs.map(job=>job.completion));this.slots.delete(projectId);}
+  async stopProject(projectId){this.watchEpochs.set(projectId, Symbol());this.watchers.get(projectId)?.close();this.watchers.delete(projectId);const pending=this.slots.get(projectId);if(pending){await this.cancel({projectId});await (await pending).running;}const jobs=[...this.syncJobs].filter(job=>job.projectId===projectId);for(const job of jobs){job.cancelled=true;terminate(job.child);}await Promise.allSettled(jobs.map(job=>job.completion));this.slots.delete(projectId);}
   async stopAll() { this.stopping = true; const syncJobs = [...this.syncJobs]; for (const job of syncJobs) { job.cancelled = true; terminate(job.child); } for (const watcher of this.watchers.values()) watcher.close(); this.watchers.clear(); for (const [projectId] of this.slots) await this.cancel({ projectId }); await Promise.allSettled([...syncJobs.map(job => job.completion), ...[...this.slots.values()].map(async slot => (await slot).running)]); }
 }

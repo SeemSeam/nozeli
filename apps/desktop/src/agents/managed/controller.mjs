@@ -543,14 +543,41 @@ export class Controller extends EventEmitter {
     if(type==='intake'&&context.frontJobId){const source=this.store.state.messages.find(m=>m.jobId===context.frontJobId&&m.speaker==='user');if(source)source.taskRequestId=intakeLineage(this.store.state,job)[0].id;}
     return structuredClone(job);
   }
+  // 任务详情（P0 有界）：当前事实+原请求/来源、执行 jobs/owner、worktree/输入
+  // 基线、冻结 candidate/报告/回执/closure 关联。长原文（原请求/brief/补充
+  // 输入/批准范围/偏离详情/closure 错误）只给有界预览＋版本化 readRef 分页
+  // 入口，详情本身不再携带无界正文；null=账本未记录（unknown），不以模型
+  // 叙述补齐。回执快照里的 candidate 是不可变关联，独立于当前 w.execution。
+  static DETAIL_PREVIEW_CHARS=800;
   workContext(w,reader){
+    const clip=(value,label)=>{const text=typeof value==='string'?value:'';if(!text)return null;if(text.length<=Controller.DETAIL_PREVIEW_CHARS)return text;return text.slice(0,Controller.DETAIL_PREVIEW_CHARS)+`… [已截断：${label}；完整正文用 ${label}ReadRef 分页读取]`;};
+    const refFor=(value,meta)=>reader&&typeof value==='string'&&value.length>Controller.DETAIL_PREVIEW_CHARS?reader.add(value,{...meta,workId:w.id,revision:w.revision}):null;
     const latest=kind=>this.store.state.receipts.filter(r=>r.workId===w.id&&r.kind===kind).at(-1)?.report.excerpt;
     const closure=w.closure?{phase:w.closure.phase}:undefined;
     if(closure&&typeof w.closure.error==='string'){
-      if(w.closure.error.length>1200&&reader){closure.error=w.closure.error.slice(0,1200);closure.errorTruncated=true;closure.errorReadRef=reader.add(w.closure.error,{title:'Work closure error',source:`state.json#work:${w.id}/closure.error`,kind:'work-closure'});}
-      else closure.error=w.closure.error;
+      const errorPreview=clip(w.closure.error,'closure.error');
+      closure.error=errorPreview??'';
+      if(errorPreview&&errorPreview.includes('[已截断')){closure.errorTruncated=true;const errorRef=refFor(w.closure.error,{title:'Work closure error',source:`state.json#work:${w.id}/closure.error`,kind:'work-closure'});if(errorRef)closure.errorReadRef=errorRef;}
     }
-    return {name:w.name||w.request,status:w.status,revision:w.revision,outcome:w.outcome,closure,request:w.request,brief:w.brief,inputs:w.inputs||[],approvedScopes:w.approvedScopes||[],deviation:w.deviation,problem:latest('problem'),result:latest('result')};
+    const receipts=this.store.state.receipts.filter(r=>r.workId===w.id);
+    const jobs=(this.store.state.jobs||[]).filter(j=>j.target===w.id||j.context?.boundWorkId===w.id);
+    const owner=this.sessions.get(w.id);
+    const inputs=w.inputs||[],scopes=w.approvedScopes||[];
+    const deviation=w.deviation?(()=>{const d=w.deviation,body=d?[ '## 拟改变的目标\n'+String(d.changedGoal??''),'## 偏离原因\n'+String(d.reason??''),'## 已有进展与未执行部分\n'+String(d.progress??'')].join('\n\n'):'';return {id:d.id,status:d.status,version:d.version??null,changedGoal:clip(d.changedGoal,'deviation'),reason:clip(d.reason,'deviation'),progress:clip(d.progress,'deviation'),bodyReadRef:refFor(body,{title:'任务偏离详情',source:`state.json#work:${w.id}/deviation:${d.id}`,kind:'work-deviation'})};})():null;
+    return {workId:w.id,workRef:'@work:'+w.id,name:this.#taskboardLabel(w),status:w.status,revision:w.revision,outcome:w.outcome,closure,
+      request:clip(w.request,'request'),requestReadRef:refFor(w.request,{title:'Work 原始请求',source:`state.json#work:${w.id}/request`,kind:'work-request'}),
+      inputs:{total:inputs.length,recent:inputs.slice(-5).map(i=>({sourceJobId:i.sourceJobId,sourceInputJobIds:i.sourceInputJobIds??null,chars:typeof i.text==='string'?i.text.length:0,imageAttachments:(i.imageAttachments||[]).length,at:i.at??null,text:clip(i.text,'inputs'),textReadRef:refFor(i.text,{title:'Work 补充输入 '+String(i.sourceJobId??''),source:`state.json#work:${w.id}/inputs:${i.sourceJobId}`,kind:'work-input'}),brief:clip(i.brief,'inputs'),briefReadRef:refFor(i.brief,{title:'Work 补充输入说明 '+String(i.sourceJobId??''),source:`state.json#work:${w.id}/inputs:${i.sourceJobId}#brief`,kind:'work-input'})}))},
+      approvedScopes:{total:scopes.length,recent:scopes.slice(-5).map(s=>({deviationId:s.deviationId??null,sourceJobId:s.sourceJobId??null,at:s.at??null,sourceText:clip(s.sourceText,'approvedScopes'),sourceTextReadRef:refFor(s.sourceText,{title:'批准范围原文 '+String(s.deviationId??s.sourceJobId??''),source:`state.json#work:${w.id}/approvedScopes:${s.deviationId??s.sourceJobId}`,kind:'work-scope'})}))},
+      deviation,problem:latest('problem'),result:latest('result'),
+      baseline:{sourceJob:w.sourceJob??null,
+        worktree:w.execution?{repo:w.execution.repo??null,commonDir:w.execution.commonDir??null,directory:w.execution.directory??null,branchRef:w.execution.branchRef??null,baseCommit:w.execution.baseCommit??null,inputCommit:w.execution.inputCommit??null,targetRef:w.execution.targetRef??null,targetHead:w.execution.targetHead??null,candidate:w.execution.candidate?{commit:w.execution.candidate.commit,tree:w.execution.candidate.tree,jobId:w.execution.candidate.jobId??null}:null}:null},
+      execution:{jobs:{total:jobs.length,recent:jobs.slice(-5).map(j=>({id:j.id,type:j.type,status:j.status,revision:j.revision??null,at:j.at??null}))},
+        owner:owner&&!owner.closed?{live:true,kind:this.store.state.providers?.[w.id]?.kind??null}:null,threadId:w.threadId??null},
+      frozen:{result:w.result?{objectId:w.result.objectId,revision:w.result.revision,current:w.result.revision===w.revision}:null,
+        problem:w.problem?{objectId:w.problem.objectId,revision:w.problem.revision,current:w.problem.revision===w.revision}:null,
+        receipts:{total:receipts.length,result:receipts.filter(r=>r.kind==='result').length,problem:receipts.filter(r=>r.kind==='problem').length},
+        candidates:receipts.filter(r=>r.snapshot?.candidate).slice(-5).map(r=>({receiptId:r.id,revision:r.revision,kind:r.kind,commit:r.snapshot.candidate.commit??null,tree:r.snapshot.candidate.tree??null,jobId:r.snapshot.candidate.jobId??null})),
+        closure:w.closure?{phase:w.closure.phase,decision:w.closure.decision??null,stopped:w.closure.stopped===true,reportDigest:w.closure.report?.digest??null,gitStatus:w.closure.git?.status??null}:null}};
   }
   intakeBoundWork(job){if((job.context?.softWorkHint||job.context?.workHintId)&&!job.context?.boundWorkId)return undefined;const root=intakeLineage(this.store.state,job)[0].id;return this.store.state.works.find(w=>w.id===job.context?.boundWorkId||w.sourceJob!==job.id&&(w.sourceJob===root||w.sourceInputJobIds?.includes(root)));}
   intakeSource(job){
@@ -558,13 +585,85 @@ export class Controller extends EventEmitter {
     const inputs=job.context?.softWorkHint||job.context?.pendingIntakeId&&this.intakeBoundWork(job)?[job]:chain;
     return {request:inputs.filter((j,i)=>!j.context?.retryOf||j.text!==inputs[i-1]?.text).map((j,i)=>i?`用户澄清回答：\n${j.text}`:j.text).join('\n'),sourceInputJobIds:chain.map(j=>j.id),imageAttachments:[...new Map(chain.flatMap(j=>j.context?.imageAttachments||[]).map(ref=>[ref.digest,ref])).values()]};
   }
-  routingContext({role='orchestrator'}={}){
-    const preview=text=>typeof text==='string'?(text.length>480?text.slice(0,480)+'… [完整记录可用 nozeli_inspect_work 读取]':text):undefined;
-    return JSON.stringify({quota:{used:this.store.used(),limit:this.store.state.limit},works:this.store.state.works.filter(w=>w.status!=='ended').map(w=>{
-      const basic={name:w.name||w.request,status:w.status,revision:w.revision};
-      if(role==='frontdesk')return basic;
-      const detail=this.workContext(w);return {...basic,request:preview(detail.request),problem:preview(detail.problem),result:preview(detail.result)};
-    }),questions:this.store.state.todos.filter(t=>t.kind==='routing'&&t.status==='open').map(t=>t.text)});
+  // ── P0 有界任务板：宿主账本导出的分页视图（不是第二账本）──────────────
+  // 行只含稳定 Work ID/revision/状态/队列位/事实阻塞原因/冻结报告引用；
+  // cursor 由宿主生成的不透明令牌绑定 project+filter+状态指纹，并发变化显式
+  // 失效（resyncRequired），不混页、不漏项，也无事件总线或持久水位。
+  static TASKBOARD_LIMIT_DEFAULT=20;
+  static TASKBOARD_LIMIT_MAX=50;
+  // 显示名按UTF-8字节预算在码点边界截断并显式标注，保证最坏情况（历史超长
+  // name 或 32k 原请求回退）下每页 JSON 仍是有限固定上界。
+  static TASKBOARD_LABEL_MAX_BYTES=160;
+  #taskboardLabel(w){
+    const raw=typeof (w.name??w.request)==='string'?String(w.name||w.request):'';
+    const text=raw.replace(/\s+/g,' ').trim()||'工作';
+    const max=Controller.TASKBOARD_LABEL_MAX_BYTES;
+    if(Buffer.byteLength(text,'utf8')<=max)return text;
+    const buf=Buffer.from(text,'utf8').subarray(0,max-3);
+    let end=buf.length;
+    while(end>0&&(buf[end-1]&0xC0)===0x80)end--;
+    if(end>0&&(buf[end-1]&0x80)!==0)end--;
+    return buf.subarray(0,end).toString('utf8')+'…';
+  }
+  #taskboardSequence(){
+    let position=0;const queue=new Map();
+    for(const w of this.store.state.works)if(w.status==='queued')queue.set(w.id,++position);
+    return {works:this.store.state.works.filter(w=>w.status!=='ended'),queue};
+  }
+  #taskboardFingerprint(){
+    const {works}=this.#taskboardSequence();
+    // 指纹只覆盖分页序列本体（ID/状态/revision）；显示名可变，不影响分页一致性。
+    return createHash('sha256').update(JSON.stringify({schema:1,projectId:this.projectId,filter:'open',works:works.map(w=>[w.id,w.status,w.revision])})).digest('hex');
+  }
+  #encodeTaskboardCursor({fingerprint,offset}){
+    return Buffer.from(JSON.stringify({schema:1,filter:'open',fingerprint,offset}),'utf8').toString('base64url');
+  }
+  #decodeTaskboardCursor(cursor){
+    if(cursor==null)return {offset:0,fingerprint:null};
+    if(typeof cursor!=='string'||!cursor.trim())throw Object.assign(new Error('cursor 必须原样传回宿主返回的 nextCursor 字符串'),{code:'INVALID_CURSOR'});
+    let decoded;try{decoded=JSON.parse(Buffer.from(cursor,'base64url').toString('utf8'));}catch{throw Object.assign(new Error('cursor 无法解析；请不带 cursor 重新读取 @state 首页'),{code:'INVALID_CURSOR'});}
+    if(decoded?.schema!==1||decoded.filter!=='open'||typeof decoded.fingerprint!=='string'||!/^[a-f0-9]{64}$/.test(decoded.fingerprint)||!Number.isSafeInteger(decoded.offset)||decoded.offset<0)throw Object.assign(new Error('cursor 无效；请不带 cursor 重新读取 @state 首页'),{code:'INVALID_CURSOR'});
+    return decoded;
+  }
+  // 事实阻塞原因：只从账本可核验字段推导，缺证据即为 null（未知不伪造）。
+  workBlockReason(w){
+    if(['pending','replanned'].includes(w.deviation?.status))return {code:'DEVIATION_DECISION_REQUIRED'};
+    if(w.maintenance?.bugId)return {code:'HOST_MAINTENANCE',bugId:w.maintenance.bugId};
+    if(w.readOnly)return {code:'HISTORICAL_SESSION_READ_ONLY'};
+    const open=this.store.state.todos.filter(t=>t.workId===w.id&&t.status==='open');
+    for(const [kind,code] of [['problem','PROBLEM_AWAITING_DECISION'],['recovery','RECOVERY_VERIFICATION_REQUIRED'],['merge-constraint','MERGE_CONSTRAINT_CHOICE_REQUIRED'],['merge-consent','MERGE_CONSENT_REQUIRED'],['deviation','DEVIATION_DECISION_REQUIRED']])if(open.some(t=>t.kind===kind))return {code};
+    if(w.status==='review')return {code:'AWAITING_USER_REVIEW'};
+    if(w.status==='closing')return {code:'CLOSURE_IN_PROGRESS'};
+    if(w.status==='paused')return {code:'PAUSED_AWAITING_DECISION_OR_INPUT'};
+    if(w.status==='queued'&&this.coldQueued?.has(w.id))return {code:'COLD_RESTART_NO_REPLAY_HOLD'};
+    return null;
+  }
+  #taskboardRow(w,queue){
+    const report=kind=>this.store.state.receipts.findLast(r=>r.workId===w.id&&r.kind===kind);
+    const result=report('result'),problem=result?null:report('problem');
+    return {workId:w.id,workRef:'@work:'+w.id,name:this.#taskboardLabel(w),status:w.status,revision:w.revision,
+      ...(w.status==='queued'?{queuePosition:queue.get(w.id)??null}:{}),
+      blockReason:this.workBlockReason(w),
+      report:result?{kind:'result',revision:result.revision,current:result.revision===w.revision}:problem?{kind:'problem',revision:problem.revision,current:problem.revision===w.revision}:null};
+  }
+  taskboardPage({cursor=null,limit=null}={}){
+    const size=Math.min(Number.isSafeInteger(limit)&&limit>0?limit:Controller.TASKBOARD_LIMIT_DEFAULT,Controller.TASKBOARD_LIMIT_MAX);
+    const decoded=this.#decodeTaskboardCursor(cursor),fingerprint=this.#taskboardFingerprint();
+    const build=offset=>{
+      const {works,queue}=this.#taskboardSequence();
+      const rows=works.slice(offset,offset+size).map(w=>this.#taskboardRow(w,queue));
+      return {filter:'open',quota:{used:this.store.used(),limit:this.store.state.limit},total:works.length,offset,limit:size,rows,
+        nextCursor:offset+size<works.length?this.#encodeTaskboardCursor({fingerprint,offset:offset+size}):null};
+    };
+    if(decoded.fingerprint&&decoded.fingerprint!==fingerprint)return {resyncRequired:true,cursorInvalid:true,reason:'任务板在读取过程中已变化；此 cursor 失效，请从首页重新读取一致快照',...build(0)};
+    return build(decoded.offset);
+  }
+  // 前台 state 只读投影：同一任务板首页的有界文本（无全量状态返回路径）。
+  taskboardText({limit=40}={}){
+    const page=this.taskboardPage({limit});
+    const labels={queued:'排队中',running:'执行中',paused:'等待处理',review:'待审查',closing:'结束中'};
+    const lines=page.rows.map(r=>`${r.name} [@work:${r.workId}]：${labels[r.status]||r.status}（revision ${r.revision}${r.queuePosition!=null?`，队列第${r.queuePosition}位`:''}${r.blockReason?`，阻塞：${r.blockReason.code}`:''}）`);
+    return `开放任务 ${page.total} 个（工作名额 ${page.quota.used}/${page.quota.limit}）\n`+lines.join('\n')+(page.nextCursor?`\n（仅显示前 ${page.rows.length} 项；完整分页任务板由主控 nozeli_inspect_work @state 读取）`:'');
   }
   intakeHistory(frontJobId){
     const rows=this.store.state.messages.filter(m=>m.target==='frontdesk'||m.audience==='frontdesk');const at=rows.findIndex(m=>m.jobId===frontJobId);
@@ -573,7 +672,7 @@ export class Controller extends EventEmitter {
   routingMessage(route){
     const labels={queued:'排队中',running:'执行中',paused:'等待回答或处理',review:'结果待审查',closing:'正在结束归纳',ended:'已结束'};
     if(route.action==='clarify')return route.question||'需要明确任务，请查看待办。';
-    if(route.action==='status'){const rows=route.facts?.works||[route.facts];return rows.filter(Boolean).map(w=>`${w.name}：${labels[w.status]||w.status}`).join('\n')||'当前没有开放任务。';}
+    if(route.action==='status'){const rows=Array.isArray(route.facts?.works)?route.facts.works:route.facts&&typeof route.facts==='object'?[route.facts]:[];return rows.filter(Boolean).map(w=>`${w.name}：${labels[w.status]||w.status}`).join('\n')||'当前没有开放任务。';}
     const name=route.workName||route.name;
     if(route.action==='cancel')return `已接受撤销“${name}”，正在归纳与清理。`;
     if(route.action==='continue')return route.status==='queued'?`补充已保存到“${name}”，等待名额后由原工作 Agent 一并接收。`:`补充已交给“${name}”，继续使用原工作 Agent。`;
@@ -1484,7 +1583,7 @@ export class Controller extends EventEmitter {
     }
     const home=role==='worker'?this.store.agentHome(target):path.join(this.store.root,'agents',`resident-${role}-pi`);
     const cwd=role==='worker'&&this.execution?(await this.maintenanceTransaction(this.current.get(target),'input-preparation',()=>this.execution.prepare(target)),this.execution.directory(target)):this.store.content;
-    const tools=role==='frontdesk'?[tool('nozeli_handoff','Escalate the remaining original-task work to background execution with a concise reason. Ordinary reasons dispatch straight to the background under the original user request (no extra prompt); if the user explicitly chose to stay in the frontdesk, declined background earlier, or a decision is still pending, the host asks the user instead. @new/@continue only select discussion context; discussion-source reading uses nozeli_source_read, never this handoff. This handoff never grants cross-project access, shell or credentials.',{reason:text}),tool('nozeli_source_read','Read a frozen discussion source read-only and paged: file:<relative path> for a frozen file version, memory:<keywords> for the Plan Tree index, state for open works, report:<work name> for a frozen report. Returns exact text with nextSelector for continuation; complete=false only describes this page. Reading is bounded by the per-run host budget and never dispatches background work.',{selector:text})]:role==='orchestrator'?[tool('nozeli_inspect_work','Read named Work or readRef. @memory:keywords searches Plan Tree; @conversation reads dialogue; @state returns open works. Read-only.',{workName:text}),tool('nozeli_dispatch','Create a named Worker for a brand-new independent task. This is the required terminal decision when an explicit user task has no matching open Work.',{name:text,brief:text}),tool('nozeli_manage','Route this intake to exactly ONE terminal decision: continue an EXISTING open Work by its exact name, or clarify genuine ambiguity. status is a read-only query — it NEVER completes an intake turn: inspect/status first if needed, then always finish the turn with continue, clarify, or nozeli_dispatch. workName must be the exact name of an existing open Work — never the current request text; with no open Work at all, a continue is treated as the first background run of this new task. Ending a background intake after only status/inspect leaves the task unexecuted and violates the contract. User end decisions belong to user controls.',{action:{type:'string',enum:['continue','status','clarify']},workName:text,text})]:[tool('nozeli_publish','Publish the final result as one complete self-contained static HTML document, or a problem/question as concise Markdown text. Include every created/modified artifact in files. For result require html and forbid text; for problem require text and forbid html. Host validates the exact kind/body pairing. Work remains open; finish the turn after success.',{kind:{type:'string',enum:['problem','result']},html:{type:'string',description:'Self-contained static HTML result document; kind "result" only'},text:{type:'string',description:'Concise Markdown problem or question body; kind "problem" only'},files:{type:'array',items:{type:'string'},maxItems:256}},['kind','files']),tool('nozeli_diagram','Render an offline validated Archify typed JSON diagram and return the exact standalone SVG with alt text, caption and spec/generator digests for direct inline figure embedding in the report HTML; creates no project files.',{type:{type:'string',enum:['architecture','workflow','sequence','dataflow','lifecycle']},spec:{type:'object',additionalProperties:true}})];
+    const tools=role==='frontdesk'?[tool('nozeli_handoff','Escalate the remaining original-task work to background execution with a concise reason. Ordinary reasons dispatch straight to the background under the original user request (no extra prompt); if the user explicitly chose to stay in the frontdesk, declined background earlier, or a decision is still pending, the host asks the user instead. @new/@continue only select discussion context; discussion-source reading uses nozeli_source_read, never this handoff. This handoff never grants cross-project access, shell or credentials.',{reason:text}),tool('nozeli_source_read','Read a frozen discussion source read-only and paged: file:<relative path> for a frozen file version, memory:<keywords> for the Plan Tree index, state for open works, report:<work name> for a frozen report. Returns exact text with nextSelector for continuation; complete=false only describes this page. Reading is bounded by the per-run host budget and never dispatches background work.',{selector:text})]:role==='orchestrator'?[tool('nozeli_inspect_work','Bounded taskboard and Work facts. @state returns ONE bounded page of open works (stable workId, name, status, revision, queue position, factual block reason, frozen report reference) with quota facts and a host-generated nextCursor — pass it back verbatim to read the next page; if the ledger changed, the host returns resyncRequired with a fresh first page instead of silently mixing states. @work:<workId> returns bounded current facts (original request/brief/source job, execution jobs and live owner if known, input and worktree baseline, per-receipt frozen candidates, report/receipt/closure linkage; null means not recorded, i.e. unknown) where long originals, inputs, approved scopes, deviation details and closure errors appear as bounded previews plus paged readRefs — continue pages by passing the returned readRef/nextReadRef back as workName. Work names are accepted for search/display only. @memory:keywords searches Plan Tree; @conversation reads dialogue. Read-only.',{workName:text,cursor:text},['workName']),tool('nozeli_dispatch','Create a named Worker for a brand-new independent task (name is display/search only). This is the required terminal decision when an explicit user task has no matching open Work; continuing an existing Work always uses nozeli_manage with its stable workId and expectedRevision instead.',{name:text,brief:text}),tool('nozeli_manage','Route this intake to exactly ONE terminal decision. continue targets an EXISTING open Work by its stable workId plus the expectedRevision you read from the taskboard or @work detail — names never identify a mutation; a revision mismatch returns STALE_WORK_REVISION, so re-read and retry, never reinterpret. A continue that misses (unknown workId) is NEVER converted into a dispatch: use nozeli_dispatch explicitly for a brand-new task. clarify asks the user genuine ambiguity. status is a bounded read-only board query that NEVER completes an intake turn: inspect/status first if needed, then always finish the turn with continue, clarify, or nozeli_dispatch. User end decisions belong to user controls.',{action:{type:'string',enum:['continue','status','clarify']},workId:text,expectedRevision:{type:'integer',minimum:0},text},['action','text'])]:[tool('nozeli_publish','Publish the final result as one complete self-contained static HTML document, or a problem/question as concise Markdown text. Include every created/modified artifact in files. For result require html and forbid text; for problem require text and forbid html. Host validates the exact kind/body pairing. Work remains open; finish the turn after success.',{kind:{type:'string',enum:['problem','result']},html:{type:'string',description:'Self-contained static HTML result document; kind "result" only'},text:{type:'string',description:'Concise Markdown problem or question body; kind "problem" only'},files:{type:'array',items:{type:'string'},maxItems:256}},['kind','files']),tool('nozeli_diagram','Render an offline validated Archify typed JSON diagram and return the exact standalone SVG with alt text, caption and spec/generator digests for direct inline figure embedding in the report HTML; creates no project files.',{type:{type:'string',enum:['architecture','workflow','sequence','dataflow','lifecycle']},spec:{type:'object',additionalProperties:true}})];
     const binding=role==='worker'?this.store.find(target).binding||this.store.state.bindings.worker:this.store.state.bindings[role];
     if(role==='orchestrator')tools.push(tool('nozeli_maintenance','Inspect sanitized host bug ledger, scan proven historical internal faults without replay, or request bounded host recovery of the exact original transaction. Never marks repaired by assertion; no business Work or privileges granted.',{action:{type:'string',enum:['status','retry','scan']},bugId:text},['action']));
     if(role==='orchestrator')tools.push(
@@ -1834,17 +1933,42 @@ export class Controller extends EventEmitter {
       return {...result,autoBackground:true,authority:'original-request'};
     }
     if(target==='orchestrator'&&p.tool==='nozeli_inspect_work'){
-      if(job.type!=='intake')throw new Error('inspection requires an intake');
+      // P0 可达性：intake 全量只读；backstage/maintenance 事件获得同一任务板
+      // 与 Work 详情的项目/Work scoped 只读入口，不因此开放 dispatch/continue
+      // 或其它效果权限（下行 gate 只收窄选择器，不放宽工具）。
+      if(!['intake','backstage','maintenance'].includes(job.type))throw new Error('inspection requires an intake or scoped read-only host event');
       const read=value=>({...value,readOnly:true,continueTurn:true});
+      const detail=async w=>{
+        job.reader??=new ContextReader();
+        const value=this.workContext(w,job.reader);
+        for(const kind of ['problem','result']){const receipt=this.store.state.receipts.findLast(r=>r.workId===w.id&&r.kind===kind);if(receipt){const body=reportSemanticText(await readStoredReport(this.store,receipt),receipt.report);value[kind]={report:receipt.report,revision:receipt.revision,semanticText:body.slice(0,1200),readRef:job.reader.add(body,{title:receipt.report.title||kind,source:'objects/'+receipt.objectId+ (receipt.report.format==='html-static'?'.html':'.md'),kind:'report',objectId:receipt.objectId,revision:receipt.revision})};}}
+        return read({workId:w.id,workRef:'@work:'+w.id,...value});
+      };
+      if(job.type!=='intake'){
+        if(a.workName==='@state')return read({board:this.taskboardPage({cursor:a.cursor,limit:Number.isSafeInteger(a.limit)?a.limit:null}),scopedReadonly:true});
+        if(typeof a.workName==='string'&&a.workName.startsWith('@work:')){
+          const w=this.store.state.works.find(x=>x.id===a.workName.slice(6));
+          if(!w)throw Object.assign(new Error('unknown work; use @state board paging to locate the stable workId'),{code:'UNKNOWN_WORK'});
+          return {...await detail(w),scopedReadonly:true};
+        }
+        // 只允许消费本事件自身详情签发的 readRef（原请求/输入/批准范围/偏离/
+        // closure/报告正文分页）；@conversation/@memory 等入口选择器仍不开放。
+        if(typeof a.workName==='string'&&job.reader?.entries.has(a.workName))return read(job.reader.read(a.workName));
+        throw Object.assign(new Error('host-event inspection is read-only and scoped to @state paging, @work:<id> and refs issued for that Work detail'),{code:'INSPECT_SCOPE_READONLY'});
+      }
+      if(a.workName==='@state')return read({board:this.taskboardPage({cursor:a.cursor,limit:Number.isSafeInteger(a.limit)?a.limit:null})});
+      if(typeof a.workName==='string'&&a.workName.startsWith('@work:')){
+        const w=this.store.state.works.find(x=>x.id===a.workName.slice(6));
+        if(w)return await detail(w);
+      }
       if(typeof a.workName==='string'&&a.workName.startsWith('@frontdesk-source:')){const source=await frontSource(this,a.workName.slice(1),job);job.reader??=new ContextReader();return read(job.reader.read(job.reader.add(source.text,{title:'审批时冻结来源',source:source.source,kind:'frontdesk-transfer'})));}
       if(job.reader?.entries.has(a.workName))return read(job.reader.read(a.workName));
       const id=typeof a.workName==='string'&&a.workName.startsWith('@work:')?a.workName.slice(6):a.workName;
       const exact=this.store.state.works.find(w=>w.id===id),named=this.store.state.works.filter(w=>(w.name||w.request)===a.workName),open=named.filter(w=>w.status!=='ended');
       const matches=exact?[exact]:open.length?open:named;
-      if(!matches.length&&a.workName==='@state')return read(JSON.parse(this.routingContext({role:'frontdesk'})));
       if(!matches.length&&a.workName==='@conversation'){
         const text=this.store.state.messages.filter(m=>(m.target==='frontdesk'||m.audience==='frontdesk')&&m.text).map(m=>`${m.speaker}: ${m.text}`).join('\n');
-        let offset=Math.max(0,text.length-10000);if(/[\uDC00-\uDFFF]/.test(text[offset]||''))offset++;
+        let offset=Math.max(0,text.length-10000);if(/[\uD800-\uDBFF]/.test(text[offset]||''))offset++;
         const page=job.reader.read(job.reader.add(text,{title:'近期前台对话',source:'runtime/messages',kind:'conversation',offset}));
         return read({...page,...(offset?{earlierReadRef:job.reader.add(text,{title:'完整前台对话',source:'runtime/messages',kind:'conversation'})}:{})});
       }
@@ -1854,19 +1978,20 @@ export class Controller extends EventEmitter {
         const result=memoryContext(memory.root.text??'',query,job.reader,memory.topics);
         job.reader.reads.push({kind:'memory-index',source:'memory/plantree/index.md',chars:JSON.stringify(result).length});return read(result);
       }
-      if(matches.length!==1)throw new Error('work name or supplied reference must identify one Work');
-      job.reader??=new ContextReader();
-      const detail=this.workContext(matches[0],job.reader);
-      for(const kind of ['problem','result']){const receipt=this.store.state.receipts.findLast(r=>r.workId===matches[0].id&&r.kind===kind);if(receipt){const body=reportSemanticText(await readStoredReport(this.store,receipt),receipt.report);detail[kind]={report:receipt.report,revision:receipt.revision,semanticText:body.slice(0,1200),readRef:job.reader.add(body,{title:receipt.report.title||kind,source:'objects/'+receipt.objectId+ (receipt.report.format==='html-static'?'.html':'.md'),kind:'report',objectId:receipt.objectId,revision:receipt.revision})};}}
-      return read({workId:matches[0].id,workRef:'@work:'+matches[0].id,...detail});
+      if(matches.length!==1)throw new Error('work name or supplied reference must identify one Work; names are search/display only — mutations use workId');
+      return await detail(matches[0]);
     }
     if(target==='orchestrator'&&p.tool==='nozeli_dispatch'){
       if(job.type!=='intake')throw new Error('dispatch requires an intake');if(this.intakeBoundWork(job))throw Error('input belongs to existing Work; manage original Work');const source=this.intakeSource(job);
+      // 幂等身份：同一 intake 重复提交完全相同的派工意图时重放原回执；
+      // 意图不同（name/brief 改动）不得继承既有回执。
+      const intent=createHash('sha256').update(JSON.stringify({schema:1,tool:'nozeli_dispatch',name:a.name??null,brief:a.brief??null})).digest('hex');
       const receipt=await this.store.mutate(()=>{
-        const saved=this.store.state.jobs.find(j=>j.id===job.id);if(saved.routing){if(saved.routing.action!=='dispatch')throw Error('intake already routed');return saved.routing;}
+        const saved=this.store.state.jobs.find(j=>j.id===job.id);
+        if(saved.routing){if(saved.routing.intent===intent)return saved.routing;throw Object.assign(new Error('intake already routed with a different request'),{code:'INTENT_MISMATCH'});}
         const w=this.store.submitState(source.request,a.brief,{name:a.name,sourceJob:job.id});
         Object.assign(this.store.find(w.id),{imageAttachments:source.imageAttachments,sourceInputJobIds:source.sourceInputJobIds,...(job.context?.frontdeskRouteId?{frontdeskTransfer:{proposalId:job.context.frontdeskRouteId,completedOperations:structuredClone(job.context.completedOperations),currentSources:structuredClone(job.context.currentSources)}}:{})});
-        saved.routing={action:'dispatch',workId:w.id,name:w.name,at:new Date().toISOString()};this.resolveRoutingQuestion(job);return structuredClone(saved.routing);
+        saved.routing={action:'dispatch',intent,workId:w.id,name:w.name,at:new Date().toISOString()};this.resolveRoutingQuestion(job);return structuredClone(saved.routing);
       });
       this.changed();this.kick();return {...receipt,status:this.store.find(receipt.workId).status,quotaUsed:this.store.used(),quotaLimit:this.store.state.limit};
     }
@@ -1910,65 +2035,81 @@ export class Controller extends EventEmitter {
     const question=this.store.state.todos.find(t=>t.id===job.context?.routingQuestionId&&t.kind==='routing'&&t.status==='open');
     if(question)question.status='resolved';
   }
+  // ── P0 统一管理身份：continue 只按稳定 workId + expectedRevision 提交 ──────
+  // 名称仅用于检索/展示；continue 未命中绝不转成首次 dispatch（压缩后失忆
+  // 不是建任务的理由）。幂等按完整意图摘要（action/workId/expectedRevision/
+  // text）：完全相同的已完成请求重放原回执，意图变化不得继承旧回执；
+  // expectedRevision 在 store.mutate 序列化段内复核，而非仅在 await 前。
   async manageIntake(job,a){
     if(job.type!=='intake')throw new Error('management requires an intake');
-    // Accept the read-only state selector as an all-work status query too;
-    // never reinterpret it for mutation or when it names a real Work.
-    if(a.action==='status'&&a.workName==='@state'&&!this.store.state.works.some(w=>(w.name||w.request)==='@state'&&w.status!=='ended'))a={...a,workName:''};
-    // Routing dedupe entry: a repeated identical request returns its original
-    // receipt (including a first-run fallback recorded as dispatch); a
-    // different request on an already-routed intake is rejected.
-    const old=this.store.state.jobs.find(j=>j.id===job.id).routing;
-    if(old){if(old.requestedAction===a.action&&old.requestedWorkName===a.workName)return old;if(old.action!==a.action||old.workName!==a.workName)throw new Error('intake already routed');return old;}
-    if(!['continue','status','cancel','clarify'].includes(a.action)||typeof a.text!=='string')throw new Error('invalid management action');
-    const matches=this.store.state.works.filter(w=>(w.name||w.request)===a.workName&&w.status!=='ended');
-    // General routing decision: continue is only valid for an exactly matched
-    // existing open Work. A first-run fallback dispatch is allowed ONLY when
-    // NO open Work exists at all and this intake is not bound to an existing
-    // Work chain — it is then the first background execution of a brand-new
-    // user task. With any open Work unmatched by name, the orchestrator must
-    // clarify or explicitly dispatch; a third Work is never fabricated
-    // silently, and the task's natural language is never an existing Work name.
-    if(a.action==='continue'&&matches.length===0&&this.store.state.works.every(w=>w.status==='ended')&&!this.intakeBoundWork(job)&&!job.context?.workHintId&&!job.context?.pendingIntakeId){
-      const source=this.intakeSource(job);
-      const receipt=await this.store.mutate(()=>{
-        const saved=this.store.state.jobs.find(j=>j.id===job.id);
-        if(saved.routing){if(saved.routing.requestedAction==='continue'&&saved.routing.requestedWorkName===a.workName)return saved.routing;throw new Error('intake already routed');}
-        const created=this.store.submitState(source.request,source.request.slice(0,80),{name:source.request.slice(0,40),sourceJob:job.id});
-        Object.assign(this.store.find(created.id),{imageAttachments:source.imageAttachments,sourceInputJobIds:source.sourceInputJobIds,...(job.context?.frontdeskRouteId?{frontdeskTransfer:{proposalId:job.context.frontdeskRouteId,completedOperations:structuredClone(job.context.completedOperations),currentSources:structuredClone(job.context.currentSources)}}:{})});
-        saved.routing={action:'dispatch',requestedAction:'continue',requestedWorkName:a.workName,workId:created.id,name:created.name,at:new Date().toISOString(),firstRunFallback:true};this.resolveRoutingQuestion(job);return structuredClone(saved.routing);
-      });
-      this.changed();this.kick();return {...receipt,status:this.store.find(receipt.workId).status,quotaUsed:this.store.used(),quotaLimit:this.store.state.limit};
+    if(!['continue','status','cancel','clarify'].includes(a.action)||typeof a.text!=='string')throw Object.assign(new Error('invalid management action'),{code:'INVALID_PAYLOAD'});
+    if(a.action==='continue'||a.action==='clarify'&&a.workId!=null){
+      if(typeof a.workId!=='string'||!a.workId.trim())throw Object.assign(new Error('continue 需要任务板/详情返回的稳定 workId（名称不作为管理身份）'),{code:'INVALID_PAYLOAD'});
+      if(!Number.isSafeInteger(a.expectedRevision)||a.expectedRevision<0)throw Object.assign(new Error('continue 需要读取时获得的 expectedRevision（当前 revision 的 CAS 校验）'),{code:'INVALID_PAYLOAD'});
     }
-    if(a.action!=='clarify'&&!(a.action==='status'&&!a.workName)&&matches.length!==1)throw new Error('work name must uniquely identify an open Work; ask clarification');
-    const w=matches[0];if(this.intakeBoundWork(job)&&a.action!=='clarify'&&w?.id!==this.intakeBoundWork(job).id)throw Error('input belongs to the selected original Work');let detail={};
-    if(a.action==='continue'){
-      if(w.readOnly)throw Object.assign(new Error('Historical provider work requires explicit context recovery before continuation'),{code:'HISTORICAL_SESSION_READ_ONLY'});
-      const source=this.intakeSource(job);
-      const receipt=await this.store.mutate(()=>{
-        const current=this.store.find(w.id);if(['closing','ended'].includes(current.status))throw new Error('work already closing');
-        this.appendWorkInput(current,job,source,a.text);
-        const transferredToOriginal=job.context?.workHintId===w.id&&Boolean(job.context?.deviationId),held=this.deviationHeld(w.id)||transferredToOriginal;
-        if(current.status!=='queued'&&!held)this.queueJob(w.id,'supplement','补充输入（保持原Work；原任务不逐轮复述，经宿主投影与nozeli_history_read读取）：\n'+a.text,{key:`supplement:${job.id}`,context:{sourceJobId:job.id,imageAttachments:source.imageAttachments}});
-        const receipt={action:a.action,workName:a.workName,at:new Date().toISOString(),workId:w.id,queued:!held,status:current.status,...(held?{requiresUserDecision:true,pendingRecommendation:true,deviationId:job.context?.deviationId||current.deviation?.id}:{})};
-        this.store.state.jobs.find(j=>j.id===job.id).routing=receipt;this.resolveRoutingQuestion(job);return structuredClone(receipt);
-      });this.changed();this.kick();return receipt;
-    }else if(a.action==='cancel'){
-      if(!isExplicitWorkCancellation(job.text,a.workName))throw new Error('cancellation requires an explicit user request naming the Work');
+    const intent=createHash('sha256').update(JSON.stringify({schema:1,tool:'nozeli_manage',action:a.action,workId:a.workId??null,expectedRevision:a.expectedRevision??null,text:a.text})).digest('hex');
+    const savedJob=()=>this.store.state.jobs.find(j=>j.id===job.id);
+    // 先重放完全相同的已完成请求，再做任何 stale/校验拒绝；旧版无意图摘要的
+    // 历史回执不可核验文本，不允许继承（no replay of unverifiable intent）。
+    const prior=savedJob().routing;
+    if(prior){
+      if(prior.intent===intent)return prior;
+      throw Object.assign(new Error(prior.intent?'intake already routed with a different request':'intake already routed by a legacy receipt; identical intent cannot be verified, no replay'),{code:'INTENT_MISMATCH'});
+    }
+    if(a.action==='status'){
+      // status 是有界任务板首页的只读观察：不落路由决定、不完成 intake 回合
+      // （仍由 runJob 的路由守卫拒绝“只 status 就结束”）。
+      const board=this.taskboardPage({});
+      return {action:'status',at:new Date().toISOString(),facts:{works:board.rows.map(r=>({name:r.name,status:r.status,revision:r.revision}))},board,noWorkerTurn:true,continueTurn:true};
+    }
+    if(a.action==='cancel'){
+      // 结束工作始终是用户显式决定：显示名从账本按 workId 解析，仅用于核对
+      // 用户原文确实点名；本工具永不执行处置。
+      const target=typeof a.workId==='string'?this.store.state.works.find(w=>w.id===a.workId):null;
+      const name=target?target.name||target.request:'';
+      if(!target||!isExplicitWorkCancellation(job.text,name))throw new Error('cancellation requires an explicit user request naming the Work');
       throw Error('结束工作需要用户明确选择接受或丢弃；请在工作界面选择，不根据自然语言推断处置。');
-    }else if(a.action==='clarify'){
-      if(!a.text.trim())throw new Error('clarification question required');detail={needsAnswer:true,question:a.text};
-    }else{
-      // status is a read-only observation of current routing state: it never
-      // persists a routing decision and never completes the intake turn — the
-      // turn continues (document-tool pattern) until a terminal decision
-      // (dispatch / continue / clarify). Ending a turn after only status is
-      // rejected by runJob's routing guard as an explicit actionable failure.
-      const receipt={action:'status',workName:a.workName,at:new Date().toISOString(),facts:w?{name:w.name||w.request,status:w.status,revision:w.revision}:JSON.parse(this.routingContext()),noWorkerTurn:true,continueTurn:true};
-      return receipt;
     }
-    const receipt={action:a.action,workName:a.workName,at:new Date().toISOString(),...detail};
-    await this.store.mutate(()=>{if(a.action==='clarify'&&!this.store.state.todos.some(t=>t.sourceJobId===job.id))this.store.state.todos.push({id:randomUUID(),kind:'routing',target:'frontdesk',...(matches.length===1?{workId:w.id,revision:w.revision}:{}),status:'open',text:a.text,sourceJobId:job.id});this.store.state.jobs.find(j=>j.id===job.id).routing=receipt;if(a.action!=='clarify')this.resolveRoutingQuestion(job);});this.changed();this.kick();return receipt;
+    if(a.action==='clarify'){
+      if(!a.text.trim())throw Object.assign(new Error('clarification question required'),{code:'INVALID_PAYLOAD'});
+      let receipt={action:'clarify',at:new Date().toISOString(),intent,needsAnswer:true,question:a.text};
+      await this.store.mutate(()=>{
+        const prior=savedJob().routing;
+        if(prior){if(prior.intent===intent){receipt=structuredClone(prior);return;}throw Object.assign(new Error('intake already routed with a different request'),{code:'INTENT_MISMATCH'});}
+        let work;
+        if(a.workId!=null){
+          work=this.store.state.works.find(w=>w.id===a.workId);
+          if(!work)throw Object.assign(new Error('unknown work'),{code:'UNKNOWN_WORK'});
+          const bound=this.intakeBoundWork(job);
+          if(bound&&bound.id!==work.id)throw Object.assign(new Error('input belongs to the selected original Work'),{code:'BOUND_WORK_MISMATCH',boundWorkId:bound.id});
+          if(['closing','ended'].includes(work.status))throw Object.assign(new Error('work already closing'),{code:'WORK_ENDED',workId:work.id});
+          if(work.revision!==a.expectedRevision)throw Object.assign(new Error('stale work revision'),{code:'STALE_WORK_REVISION',workId:work.id,currentRevision:work.revision,workRef:'@work:'+work.id});
+          Object.assign(receipt,{workId:work.id,expectedRevision:work.revision});
+        }
+        if(!this.store.state.todos.some(t=>t.sourceJobId===job.id&&t.kind==='routing'&&t.status==='open'))this.store.state.todos.push({id:randomUUID(),kind:'routing',target:'frontdesk',...(work?{workId:work.id,revision:work.revision}:{}),status:'open',text:a.text,sourceJobId:job.id});
+        savedJob().routing=receipt;
+      });
+      this.changed();this.kick();return structuredClone(receipt);
+    }
+    // continue：绑定校验 + 序列化段内 revision CAS。
+    const bound=this.intakeBoundWork(job);
+    if(bound&&bound.id!==a.workId)throw Object.assign(new Error('input belongs to the selected original Work'),{code:'BOUND_WORK_MISMATCH',boundWorkId:bound.id});
+    const source=this.intakeSource(job);
+    const receipt=await this.store.mutate(()=>{
+      const saved=savedJob();
+      if(saved.routing){if(saved.routing.intent===intent)return saved.routing;throw Object.assign(new Error('intake already routed with a different request'),{code:'INTENT_MISMATCH'});}
+      const w=this.store.state.works.find(x=>x.id===a.workId);
+      if(!w)throw Object.assign(new Error('unknown work; read the @state taskboard or @work:<id> detail for the stable workId'),{code:'UNKNOWN_WORK'});
+      if(w.readOnly)throw Object.assign(new Error('Historical provider work requires explicit context recovery before continuation'),{code:'HISTORICAL_SESSION_READ_ONLY'});
+      if(['closing','ended'].includes(w.status))throw Object.assign(new Error('work already closing'),{code:'WORK_ENDED',workId:w.id});
+      if(w.revision!==a.expectedRevision)throw Object.assign(new Error(`stale work revision: expected ${a.expectedRevision}, current ${w.revision}; re-read the taskboard/detail and retry with the current revision`),{code:'STALE_WORK_REVISION',workId:w.id,currentRevision:w.revision,workRef:'@work:'+w.id});
+      this.appendWorkInput(w,job,source,a.text);
+      const transferredToOriginal=job.context?.workHintId===w.id&&Boolean(job.context?.deviationId),held=this.deviationHeld(w.id)||transferredToOriginal;
+      if(w.status!=='queued'&&!held)this.queueJob(w.id,'supplement','补充输入（保持原Work；原任务不逐轮复述，经宿主投影与nozeli_history_read读取）：\n'+a.text,{key:`supplement:${job.id}`,context:{sourceJobId:job.id,imageAttachments:source.imageAttachments}});
+      const receipt={action:'continue',workId:w.id,expectedRevision:w.revision,workName:this.#taskboardLabel(w),at:new Date().toISOString(),intent,queued:!held,status:w.status,...(held?{requiresUserDecision:true,pendingRecommendation:true,deviationId:job.context?.deviationId||w.deviation?.id}:{})};
+      saved.routing=receipt;this.resolveRoutingQuestion(job);return structuredClone(receipt);
+    });
+    this.changed();this.kick();return receipt;
   }
   async ensureWorkerDelivery(job,error=null){
     const w=this.store.find(job.target);

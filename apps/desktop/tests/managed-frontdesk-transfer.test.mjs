@@ -3,7 +3,7 @@ import test from 'node:test';import assert from 'node:assert/strict';import fs f
 import {Controller} from '../src/agents/managed/controller.mjs';import {managedWorkRecords} from '../src/domain/managed-work-records.mjs';
 const wait=async fn=>{const end=Date.now()+30000;while(Date.now()<end){if(fn())return;await new Promise(r=>setTimeout(r,5));}throw Error('condition timeout');};
 async function fixture(t){const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-transfer-'));let c,resolve,reject;const events=[];let failInterrupt=false,interrupts=0;
- class Session { async preflightToolsDigest() {} async assertToolsDigest() {} constructor(spec,target){Object.assign(this,spec,{target,busy:false,closed:false});}async start(id){this.threadId=id||randomUUID();return this;}async stop(){this.closed=true;reject?.(Error('stopped'));}async interrupt(){interrupts++;if(failInterrupt)throw Error('模拟中断请求失败');events.push('interrupt-requested');return {requested:true};}async prompt(){this.busy=true;const job=c.current.get(this.target);events.push(this.target+':start');try{if(this.target==='frontdesk')return await new Promise((r,j)=>{resolve=r;reject=j;});await this.onTool({tool:'nozeli_manage',arguments:{action:'clarify',workName:'',text:'后台任务已接收；请补充验收标准'},callId:randomUUID()});return {text:'',completion:'host-control',threadId:this.threadId};}finally{events.push(this.target+':settled');this.busy=false;}} }
+ class Session { async preflightToolsDigest() {} async assertToolsDigest() {} constructor(spec,target){Object.assign(this,spec,{target,busy:false,closed:false});}async start(id){this.threadId=id||randomUUID();return this;}async stop(){this.closed=true;reject?.(Error('stopped'));}async interrupt(){interrupts++;if(failInterrupt)throw Error('模拟中断请求失败');events.push('interrupt-requested');return {requested:true};}async prompt(){this.busy=true;const job=c.current.get(this.target);events.push(this.target+':start');try{if(this.target==='frontdesk')return await new Promise((r,j)=>{resolve=r;reject=j;});await this.onTool({tool:'nozeli_manage',arguments:{action:'clarify',text:'后台任务已接收；请补充验收标准'},callId:randomUUID()});return {text:'',completion:'host-control',threadId:this.threadId};}finally{events.push(this.target+':settled');this.busy=false;}}}
  const options={runtimeRoot:path.join(root,'runtime'),contentRoot:path.join(root,'project'),projectHome:home=>fs.mkdir(home,{recursive:true}),sessionFactory:(spec,target)=>new Session(spec,target)};c=await openTestController(options);await c.start();t.after(async()=>{await c.stop();await fs.rm(root,{recursive:true,force:true});});
  const r=await c.send('frontdesk','解释项目资料'),source=c.store.state.messages.find(m=>m.jobId===r.jobId);await wait(()=>c.sessions.get('frontdesk').busy);
  return {c,options,source,events,finish:()=>resolve({text:'尚未验证的部分解释',metrics:{tokens:null,tokenCompleteness:'unavailable'},threadId:c.sessions.get('frontdesk').threadId,completion:'user-transfer',providerStatus:'interrupted'}),fail:()=>{failInterrupt=true;},allow:()=>{failInterrupt=false;},interrupts:()=>interrupts};
@@ -51,30 +51,30 @@ test('an explicit user continue decision gates later auto-handoff back to a user
  const todo=c.snapshot().todos.find(todo=>todo.kind==='frontdesk-route'&&todo.status==='open');
  assert.equal(todo.destination.kind,'frontdesk-route');assert.equal(todo.destination.sourceJobId,resumed.id);
 });
-test('a continue naming no open Work dispatches the new task first-run instead of asking the user to choose',async t=>{
+test('a continue miss is never converted into a dispatch; explicit nozeli_dispatch remains the only new-Work path',async t=>{
  const {c}=await fixture(t);const front=c.current.get('frontdesk');
  const request='请修复calc并运行 node checks/verify.mjs 验证，检查脚本不可修改';
  const intake=await c.store.mutate(()=>c.queueJob('orchestrator','intake',request,{context:{frontJobId:front.id}}));
  c.current.set('orchestrator',intake);
  try{
-  const result=await c.onTool('orchestrator',{tool:'nozeli_manage',arguments:{action:'continue',workName:request,text:''},callId:'m-1'});
-  assert.equal(result.action,'dispatch');assert.equal(result.firstRunFallback,true);assert.ok(result.workId);
-  assert.equal(c.store.state.works.length,1);
-  assert.equal(c.snapshot().todos.filter(todo=>todo.kind==='routing'&&todo.status==='open').length,0);
-  const work=c.store.find(result.workId);assert.equal(work.request,request);assert.equal(work.sourceJob,intake.id);
-  // Repeating the same continue returns the original fallback receipt — same Work, no duplicate.
-  const repeat=await c.onTool('orchestrator',{tool:'nozeli_manage',arguments:{action:'continue',workName:request,text:''},callId:'m-1b'});
-  assert.equal(repeat.action,'dispatch');assert.equal(repeat.workId,result.workId);assert.equal(c.store.state.works.length,1);
-  // An intake already bound to an existing Work chain never fabricates a new Work.
-  const bound=await c.store.mutate(()=>c.queueJob('orchestrator','intake','补充：再跑一次验证',{context:{frontJobId:front.id,workHintId:result.workId}}));
+  // Unknown stable workId: rejected with UNKNOWN_WORK, no Work created, no fallback dispatch.
+  await assert.rejects(c.onTool('orchestrator',{tool:'nozeli_manage',arguments:{action:'continue',workId:'00000000-0000-4000-8000-000000000000',expectedRevision:0,text:''},callId:'m-1'}),error=>error.code==='UNKNOWN_WORK');
+  assert.equal(c.store.state.works.length,0);
+  // A continue without the stable identity contract is invalid before any lookup.
+  await assert.rejects(c.onTool('orchestrator',{tool:'nozeli_manage',arguments:{action:'continue',text:'name-only routing'},callId:'m-1a'}),error=>error.code==='INVALID_PAYLOAD');
+  assert.equal(c.store.state.works.length,0);
+  // The brand-new task is dispatched explicitly — same intake, one terminal decision.
+  const dispatched=await c.onTool('orchestrator',{tool:'nozeli_dispatch',arguments:{name:'Fix calc',brief:request},callId:'m-1b'});
+  assert.equal(dispatched.action,'dispatch');assert.ok(dispatched.workId);assert.equal(c.store.state.works.length,1);
+  const work=c.store.find(dispatched.workId);assert.equal(work.request,request);assert.equal(work.sourceJob,intake.id);
+  // An identical dispatch replay returns the original receipt; a different intent cannot inherit it.
+  const replay=await c.onTool('orchestrator',{tool:'nozeli_dispatch',arguments:{name:'Fix calc',brief:request},callId:'m-1c'});
+  assert.equal(replay.workId,dispatched.workId);assert.equal(c.store.state.works.length,1);
+  await assert.rejects(c.onTool('orchestrator',{tool:'nozeli_dispatch',arguments:{name:'Other',brief:request},callId:'m-1d'}),error=>error.code==='INTENT_MISMATCH');
+  // An intake bound to an existing Work chain never continues a different Work.
+  const bound=await c.store.mutate(()=>c.queueJob('orchestrator','intake','补充：再跑一次验证',{context:{frontJobId:front.id,workHintId:dispatched.workId}}));
   c.current.set('orchestrator',bound);
-  await assert.rejects(c.onTool('orchestrator',{tool:'nozeli_manage',arguments:{action:'continue',workName:'不存在的旧工作名',text:''},callId:'m-2'}),/work name must uniquely identify/);
-  assert.equal(c.store.state.works.length,1);
-  // With ANY open Work unmatched by name, an unbound intake must clarify or
-  // dispatch explicitly — never silently create a second Work.
-  const unbound=await c.store.mutate(()=>c.queueJob('orchestrator','intake','另一个全新任务：整理目录',{context:{frontJobId:front.id}}));
-  c.current.set('orchestrator',unbound);
-  await assert.rejects(c.onTool('orchestrator',{tool:'nozeli_manage',arguments:{action:'continue',workName:'另一个全新任务：整理目录',text:''},callId:'m-3'}),/work name must uniquely identify/);
+  await assert.rejects(c.onTool('orchestrator',{tool:'nozeli_manage',arguments:{action:'continue',workId:'00000000-0000-4000-8000-000000000000',expectedRevision:0,text:''},callId:'m-2'}),error=>error.code==='BOUND_WORK_MISMATCH'||error.code==='UNKNOWN_WORK');
   assert.equal(c.store.state.works.length,1);
  }finally{c.current.delete('orchestrator');}
 });
@@ -83,16 +83,16 @@ test('status never routes or completes an intake; a status-only turn fails expli
  const intake=await c.store.mutate(()=>c.queueJob('orchestrator','intake','全新的独立后台任务',{context:{frontJobId:front.id}}));
  c.current.set('orchestrator',intake);
  try{
-  const observed=await c.onTool('orchestrator',{tool:'nozeli_manage',arguments:{action:'status',workName:'',text:''},callId:'s-1'});
+  const observed=await c.onTool('orchestrator',{tool:'nozeli_manage',arguments:{action:'status',text:''},callId:'s-1'});
   assert.equal(observed.action,'status');assert.equal(observed.continueTurn,true);
   assert.equal(c.store.state.jobs.find(j=>j.id===intake.id).routing,undefined);
   // The same status query stays repeatable and still never routes.
-  const again=await c.onTool('orchestrator',{tool:'nozeli_manage',arguments:{action:'status',workName:'',text:''},callId:'s-2'});
+  const again=await c.onTool('orchestrator',{tool:'nozeli_manage',arguments:{action:'status',text:''},callId:'s-2'});
   assert.equal(again.continueTurn,true);assert.equal(c.store.state.jobs.find(j=>j.id===intake.id).routing,undefined);
   // Ending the turn after only status is an explicit actionable failure — never a silent completion.
   c.current.delete('orchestrator');
   const session=c.sessions.get('orchestrator'),originalPrompt=session.prompt.bind(session);
-  session.prompt=async()=>{await session.onTool({tool:'nozeli_manage',arguments:{action:'status',workName:'',text:''},callId:'s-3'});return {text:'',completion:'host-control',threadId:session.threadId};};
+  session.prompt=async()=>{await session.onTool({tool:'nozeli_manage',arguments:{action:'status',text:''},callId:'s-3'});return {text:'',completion:'host-control',threadId:session.threadId};};
   try{
    await c.store.mutate(()=>{Object.assign(c.store.state.jobs.find(j=>j.id===intake.id),{status:'queued'});});
    c.kick();

@@ -40,7 +40,7 @@ export async function frontSource(controller,selector,job){
   return {source:'memory/plantree/'+topic.path,text:topic.text,version:topic.digest,offset:Number(match[2])};
  }
  if(selector.startsWith('memory-page:')){const text=await fs.readFile(controller.store.plan,'utf8');return {source:'memory/plantree/index.md',text,version:versionOf(text),offset:Number(selector.slice(12))};}
- if(selector==='state')return {source:'runtime/work-state',text:controller.routingContext({role:'frontdesk'})};
+ if(selector==='state')return {source:'runtime/work-state',text:controller.taskboardText()};
  if(selector.startsWith('report:')){
   const name=selector.slice(7),w=controller.store.state.works.findLast(w=>(w.name||w.request)===name);
   const receipt=w&&controller.store.state.receipts.findLast(r=>r.workId===w.id&&r.kind==='result');if(!receipt)throw Error('未找到已发布结果');

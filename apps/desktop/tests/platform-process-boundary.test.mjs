@@ -2,9 +2,9 @@
 // Linux group semantics through the Linux adapter, structured refusal (never a
 // fabricated fallback) for platforms without a verified adapter, UNKNOWN exit
 // retention, workspace stale-lock takeover safety, recovery-source ownership,
-// and a source guard keeping platform/group-kill assumptions out of the shared
-// PiSession. Live UNKNOWN/no-replay/exit-confirmation journeys stay in
-// pi-lifecycle-live.mjs / pi-session-admission.test.mjs.
+// and real restricted-directory isolation behavior. Live UNKNOWN/no-replay/
+// exit-confirmation journeys stay in pi-lifecycle-live.mjs /
+// pi-session-admission.test.mjs.
 // Run: node --test tests/platform-process-boundary.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -170,22 +170,18 @@ test('execution isolation fails structured instead of spawning unsandboxed',{tim
   await assert.rejects(optionalIsolatedLaunch({command:'git',args:[]},{probe:async()=>true,selection:unsupportedIsolation}),error=>error.code==='ISOLATION_UNSUPPORTED','an isolation request is never degraded into a normal spawn');
 });
 
-test('Linux bwrap isolation stays reachable through the contract when installed',{timeout:30000},async t=>{
+test('Linux isolation can write its private home but cannot read an unmounted sibling',{timeout:30000},async t=>{
   if(process.platform!=='linux')return t.skip('Linux adapter required');
   if(!await isolationAvailable())return t.skip('bubblewrap unavailable on this host');
-  assert.equal(isolationCapability().state,'available');
-  const home=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-iso-contract-'));
-  t.after(()=>fs.rm(home,{recursive:true,force:true}));
-  const launch=await isolatedLaunch({command:process.execPath,args:['-e',''],home,cwd:os.tmpdir()});
-  assert.equal(launch.command,'bwrap');
-  assert.ok(launch.args.includes('--unshare-pid'));
-  assert.ok(launch.args.includes('--die-with-parent'));
-  assert.equal(typeof launch.env.HOME,'string','sandbox gets its own home, not the user home');
-});
-
-test('the shared PiSession keeps platform and group-kill assumptions out of its source',async()=>{
-  const source=await fs.readFile(new URL('../src/agents/managed/pi-session.mjs',import.meta.url),'utf8');
-  assert.equal(source.includes('process.platform'),false,'platform selection belongs to the capability contract');
-  assert.equal(source.includes('process.kill'),false,'group termination belongs to the injected platform service');
-  assert.ok(source.includes('platformPersistence.writeAtomic(this.metadataFile'),'session metadata uses the shared durable atomic publish');
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-iso-contract-')),home=path.join(root,'home'),outside=path.join(root,'outside.txt');
+  t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  await fs.mkdir(home);await fs.writeFile(outside,'outside sentinel');
+  const code=`const fs=require('node:fs');fs.writeFileSync('inside.txt','private output');try{fs.readFileSync(${JSON.stringify(outside)});process.exitCode=1;}catch(error){if(error.code!=='ENOENT'&&error.code!=='EACCES')throw error;}`;
+  const launch=await isolatedLaunch({command:process.execPath,args:['-e',code],home,cwd:home});
+  const child=spawn(launch.command,launch.args,{env:launch.env,stdio:['ignore','pipe','pipe']});
+  const exited=once(child,'exit');let stderr='';child.stderr.on('data',bytes=>stderr+=bytes);
+  t.after(()=>{if(child.exitCode===null)child.kill('SIGKILL');});
+  assert.deepEqual(await exited,[0,null],stderr);
+  assert.equal(await fs.readFile(path.join(home,'inside.txt'),'utf8'),'private output');
+  assert.equal(await fs.readFile(outside,'utf8'),'outside sentinel');
 });

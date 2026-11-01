@@ -52,7 +52,7 @@ async function fixture(t,{broker=null}={}){
   class Session { async preflightToolsDigest() {} async assertToolsDigest() {} constructor(spec,target){Object.assign(this,spec,{target,busy:false,closed:false});}async start(id){this.threadId=id||randomUUID();return this;}async stop(){this.closed=true;rejectTurn?.(Error('stopped'));}async interrupt(){return {requested:true};}
     async prompt(){this.busy=true;try{
       if(this.target==='frontdesk')return await new Promise((resolve,reject)=>{settle=()=>resolve({text:'回合结束',metrics:{tokens:null,tokenCompleteness:'unavailable'},threadId:this.threadId,completion:'user-transfer',providerStatus:'interrupted'});rejectTurn=reject;});
-      await this.onTool({tool:'nozeli_manage',arguments:{action:'clarify',workName:'',text:'后台任务已接收；请补充验收标准'},callId:randomUUID()});
+      await this.onTool({tool:'nozeli_manage',arguments:{action:'clarify',text:'后台任务已接收；请补充验收标准'},callId:randomUUID()});
       return {text:'',completion:'host-control',threadId:this.threadId};
     }finally{this.busy=false;}}}
   const options={storage:host.storage,projectId:A.id,runtimeRoot:path.join(dir,'runtime-a'),contentRoot:rootA,projectHome:home=>fs.mkdir(home,{recursive:true}),sessionFactory:(spec,target)=>new Session(spec,target),frontdeskDocuments:createFrontdeskDocuments({host,projectId:A.id,sync:async()=>()=>{}}),taskPermissions:permissions,resolveRegisteredProject,resolveProjectRoot,...(broker?{privilegeBroker:broker}:{})};

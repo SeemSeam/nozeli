@@ -1,8 +1,8 @@
 # Orchestrator 长期多任务与 Plan Tree 设计
 
 Date: 2026-11-01
-Status: 独立设计审阅通过；后续任务板／管理身份／Plan Tree 版本治理实施须单独批准；当前运行实现未改。
-Related: [上下文交付](context-delivery-design.md)、[三角色记忆与技能](role-memory-skills-design.md)。保留三角色和 Pi 原生会话权威。
+Status: 独立设计审阅通过；P0 最小实施已并入主仓（见 §4.1 实施状态）；Plan Tree 版本治理等后续项须单独批准。
+P0 实施边界：有界分页任务板、workId+expectedRevision 管理身份、事件 scoped 只读 inspect、continue-miss→dispatch fallback 移除。实施后尚未运行完整回归（见 §10）。
 ## 1. 核心判断
 
 当前不是“模型通过 skill 维护一张进度表”。**宿主持久任务账本负责排队和状态，Orchestrator 根据事件理解目标、查询事实、提出路由，skill 提供规则。** Plan Tree 是可检索的项目索引／历史资料，不是当前任务状态机，也还不是完整的版本化长期知识系统。
@@ -67,6 +67,14 @@ inspect 支持 `@work:<id>`，manage 当前主要按开放 Work 的精确名称�
 ### P1：事件只读入口的可达性
 
 inspect 当前 intake-only，也阻止 maintenance/backstage 使用同一个通用任务板入口。应按实际获准事件提供项目／Work scoped 只读查询；不能通过放宽一个 handler 条件顺带开放 dispatch、continue 或恢复效果权限。
+
+### 4.1 P0 实施状态（2026-11-01，源码事实）
+
+- **有界任务板**：`nozeli_inspect_work @state` 返回一页有界行（稳定 workId、显示名、状态、revision、队列位、事实阻塞原因、冻结报告引用）＋配额与宿主生成的不透明 `nextCursor`；`nozeli_manage status` 与前台 `state` 读取共用同一板。cursor 绑定 project+filter+账本状态指纹（ID/状态/revision 序列），并发变化显式返回 `resyncRequired`＋新首页，不混页。按审阅收敛采用**最小指纹失效**：未实现持久 snapshotRevision/watermark、事件总线或增量变化查询（§6 的变化查询合同仍属后续）。
+- **统一管理身份**：`nozeli_manage continue` 仅按 `workId`＋`expectedRevision` 提交，revision 在 store 序列化事务内复核；幂等按完整意图摘要（action/workId/expectedRevision/text），完全相同请求重放原回执，意图变化拒绝；`nozeli_dispatch` 同样按意图摘要去重。名称仅用于检索/展示，`continue` 未命中返回 `UNKNOWN_WORK`，**首次派工 fallback 已删除**（新任务必须显式 dispatch）。
+- **事件 scoped 只读**：backstage/maintenance 事件可经 `nozeli_inspect_work` 读取 `@state` 分页与 `@work:<id>` 详情（`scopedReadonly`）并续读**自身详情签发**的 readRef，不获得 dispatch/continue 或其它效果；@conversation/@memory/@frontdesk-source 等 intake 专属入口仍不开放。
+- **任务详情**：`@work:<id>` 增补原请求/brief/sourceJob、执行 jobs 摘要与 live owner（未知为 null）、输入与 worktree/candidate 基线（repo/commonDir/directory/branchRef/baseCommit/inputCommit/targetRef/targetHead，未记录为 null）、冻结 result/problem/回执计数/逐回执不可变 candidate 关联/closure 关联（含归档报告 digest）。详情本身有界：长原请求/补充输入/批准范围/偏离详情/closure 错误只给固定预览＋readRef 分页（scoped 事件只能续读自身详情签发的引用）；任务板行显示名按 UTF-8 字节预算截断，最坏页大小为固定上界。
+- **已运行验证**：`apps/desktop/tests/managed-taskboard.test.mjs` 九项通过，覆盖 120 任务分页、cursor 失效、改名安全 ID、stale 不产生新工作、冻结报告候选及归档关联、长多字节名称与详情分页、scoped 只读。真实 ProjectStorage／Workspace／Controller 隔离无模型冒烟的 15 项观察通过，modelCalls=0，临时驱动已移除。完整默认回归 unit541/541、integration1534/1535，唯一失败暴露已知 Work 的 clarify 待办丢失归属：已改为稳定 workId＋expectedRevision 绑定，并在事务内核验身份/版本，任务结束只关闭其自身问题。修后相关 task-flow/taskboard/todo-lifecycle 共25/25通过，renderer构建通过；未将先前失败的全量运行标为全绿。§10 冷恢复/回滚/真实大任务量 UI 矩阵未据此验收。P1 排队策略、知识/Plan Tree 版本治理、预算统计均未实施。
 
 ### P2：Plan Tree 历史分类与版本治理不完整
 
@@ -162,7 +170,7 @@ Work 并发上限和进程额度不是持久队列长度上限。当前审阅路
 4. 修正 report/work 历史标记分类，逐步接入批准知识版本与冲突／撤销；旧资料保持历史，不批量自动批准。
 5. 校准压缩／冷恢复／大任务量下的有界查询和 UI，删除旧名称执行／全量状态返回路径；不保留双权威。
 
-本轮仅设计，以下均为**待实施验收**，没有运行这些场景：
+P0 最小实施已并入源码，但下表场景**均未运行完整验收**（新增单元测试与无模型冒烟脚本见 §4.1；其余场景仍未执行）：
 
 | 场景 | 验收要求 |
 | --- | --- |
@@ -178,4 +186,4 @@ Work 并发上限和进程额度不是持久队列长度上限。当前审阅路
 | Plan Tree 新旧 report/work 标记、topics冲突 | 均是可追溯历史；当前知识批准版本与冲突明确 |
 | 无事件或只是查看任务板／记忆 | 零额外模型调用，零自动总结／上传 |
 
-reviewer 已从当前源码提出上述缺口与收敛方向，主代理核对并整理文档；独立设计审阅已通过，要求补齐 closure 归档顺序、rollback／changed-files 门、水位语义与 queue backpressure 边界后无设计阻断项。该文档是后续实施输入，不改变当前运行政策，不授权安装、重新执行旧任务、清空会话、知识自动学习或跨项目导入；分页任务板、Work ID 管理动作、事件作用域只读和版本化 Plan Tree 均尚未实施。
+reviewer 已从当前源码提出上述缺口与收敛方向，主代理核对并整理文档；独立设计审阅已通过，要求补齐 closure 归档顺序、rollback／changed-files 门、水位语义与 queue backpressure 边界后无设计阻断项。P0（有界分页任务板、workId+expectedRevision 管理动作、事件作用域只读、continue-miss fallback 移除）已实施并附单元/冒烟脚本但未跑完整回归；版本化 Plan Tree、持久水位与变化查询、P1 排队/知识/预算统计仍属后续待批实施。本文档不授权安装、重新执行旧任务、清空会话、知识自动学习或跨项目导入。
