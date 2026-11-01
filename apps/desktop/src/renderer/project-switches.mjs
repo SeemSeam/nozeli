@@ -14,14 +14,14 @@ export function createProjectSwitches({schedule,transition,current,ready,onPendi
       try {
         result=current()===running.id&&ready()?{ok:true,projectId:running.id}:await transition(running.id,{isCurrent:()=>desired===running.id});
         if(!result||typeof result.ok!=='boolean')throw Error('项目切换未返回完成状态');
-      } catch(error){result={ok:false,error:{code:error.code||'PROJECT_SWITCH_FAILED',message:error.message}};onError(result.error);}
+      } catch(error){result={ok:false,error:{code:error.code||'PROJECT_SWITCH_FAILED',message:error.message}};}
       settle(running,desired!==running.id?cancelled(running.id):result);
       active=null;
       // Failed retention/binding stops here. A later click must retry the source
       // barrier rather than silently continuing to the replacement destination.
       if(!result.ok&&result.error?.code!=='PROJECT_SWITCH_SUPERSEDED'){
         if(pending)settle(pending,result);
-        pending=null;desired=null;notify();return result;
+        pending=null;desired=null;notify();onError(result.error);return result;
       }
       if(pending){const next=pending;pending=null;start(next);}
       else {desired=null;notify();}

@@ -1,10 +1,11 @@
-import {parentPort} from 'node:worker_threads';
+import {parentPort,workerData} from 'node:worker_threads';
 import {DatabaseSync} from 'node:sqlite';
 import {createHash} from 'node:crypto';
 import fs from 'node:fs';
 import {pathToFileURL} from 'node:url';
 
 const databases=new Map(),identities=new Map();
+const reply=message=>workerData.replyPort.postMessage({...message,completedAt:process.hrtime.bigint()});
 const stamp=file=>{const s=fs.lstatSync(file);if(!s.isFile()||s.isSymbolicLink())throw Object.assign(Error('数据库实体无效'),{code:'PROJECT_METADATA_CONFLICT'});return String(s.dev)+':'+String(s.ino);};
 const conflict=()=>Object.assign(Error('STORAGE_CONFLICT'),{code:'STORAGE_CONFLICT'});
 const keyEncodings=new Map();
@@ -106,5 +107,5 @@ parentPort.on('message',({id,file,op,args})=>{try{const db=open(file,args);let v
    throw error;
   }
  }else throw Error('UNKNOWN_STORAGE_OP');
- parentPort.postMessage({id,value});
-}catch(error){parentPort.postMessage({id,error:{code:error.code??'STORAGE_FAILED',message:error.message,rollbackFailure:error.rollbackFailure,closeFailure:error.closeFailure}});}});
+ reply({id,value});
+}catch(error){reply({id,error:{code:error.code??'STORAGE_FAILED',message:error.message,rollbackFailure:error.rollbackFailure,closeFailure:error.closeFailure}});}});

@@ -463,3 +463,20 @@ provider／预算／无能力技术故障只本地分类与去重，不产生 ma
 本轮无个人账号／远端付费调用、无安装／提交／发布、无 Liuhuaiyu 会话或用户文件改写；不承诺消除其上游 content_policy 拒绝。仅 Linux x64／X11 实测，Windows/macOS、真实远端理解质量与完整跨屏矩阵未验。中间失败原件保留；旧 source-rewrite composer 脚本的自动向导／单根 editor 假设不作为本轮验收，相关新增快照检查已移到真实当前 conversation smoke，未改产品去迁就旧脚本。
 
 最终冻结源码默认门 `TMPDIR=/var/tmp NOZELI_TEST_CONCURRENCY=2 npm test`：unit **539/539**（62文件），integration **1519/1519**（146文件），零失败／跳过／取消；原件 `apps/desktop/.test-output/ci/{unit,integration}.tap`，本机完整输出 `artifact://12078`。独立 live 门 **34/34**（5文件）零失败／跳过，原件 `apps/desktop/.test-output/ci/live.tap`。最后两处旧断言已分别修正为来源类型真实保留及通过 Worker 实际读取批准原文／版本，不重新钉死已删除的 task-anchor 文案。最终真实 Electron11组、100轮压力、跨 run 原文完整并集与问题决定的27项均已通过；本段结果不沿用中间失败或未执行状态。
+
+## 实际项目卡顿与切换保留修复（2026-11-01，源码验证，未安装／推送）
+
+真实安装版与日常配置调查确认：首次进入项目 TeX 设置约7.95秒，同仓库原生 `fs.watch(root,{recursive:true})` 初始化7.39秒、10毫秒计时器零次执行；回调过滤依赖目录无法减少注册时的同步遍历。改为复用非递归 ProjectWatcher 的 TexSourceWatcher，异步枚举并在订阅前剪枝，保留嵌套资源／新目录变化、200毫秒合并、链接和关闭／并发检查守卫。同一真实源码仓库准备25.27毫秒，67个合格目录，隐藏／依赖／dist／vendor目录零订阅，计时器正常推进。
+
+存储独立实际文件复现证明：主线程在发送请求后阻塞8.5秒，原实现可能先执行deadline计时器，再消费已经排队的成功回执，导致事务及操作回执实际均已提交却误入UNKNOWN。现使用专用响应MessagePort，deadline触发时同步读取已排队的可信回执，并以Worker在操作／COMMIT完成后生成的跨线程单调时间戳校验原请求期限。原8秒期限不变；真正迟到／缺失、崩溃、关闭及代际不确定仍隔离，无自动重放。原日常实例第一次隔离的最初原因未由旧IPC回执暴露，不能追溯性声称该次事件必由TeX触发。
+
+深度真实项目验证另发现切换保留向shell发送普通lifecycle-hold，整个app.inert期间会丢掉导航输入；修前一轮20次快速输入仅17次到达项目按钮，其余命中BODY。项目切换hold现明确reason，只保留近期项目导航可交互，内容／项目操作仍保持原输入保护；关闭项目、升级等全局hold语义不变。返回失败与抛错统一显示原因，失败停止目标队列，不将被替代的选择当成故障，也不绕过源状态保留。
+
+定向存储／监听／项目切换75/75、原生进程与真实隔离9/9通过，renderer构建通过。TeX专项先遇工具／离线缓存不可见；使用本机已有TinyTeX工具PATH与Tectonic缓存后6/6通过，包含实际XeLaTeX／pdfLaTeX／Tectonic、取消、并发变更与历史PDF。原`/tmp`隔离夹具及源码字符串断言已替换／移除，改验真实私有目录可写与未挂载兄弟文件不可读，未放宽安全策略。
+
+真实Electron合成fixture烟测5项通过、正常退出和冷开exit0：以目标SQLite真实排他锁固定保留阶段，验证导航新可信选择仍送达、内容区仍受保护、编辑与冷恢复保持；原件 `apps/desktop/.test-output/ci/smoke-ka3lK7/report.json`。真实五项目（nozeli_git／nozeli／eos-plastic／agent_项目／Liuhuaiyu）源码Electron烟测原件 `/var/tmp/nozeli-lag-fixed-fngbww4v/report.json` ok=true、exit0：15次普通切换、20次快速可信点击全部到达并以末次选择收尾；TeX设置93毫秒；README阅读／编辑4次、滚动及真实文件搜索通过。实际Electron主进程故意阻塞8.5秒后，按时提交的真实SQLite写入仍返回revision1、持久回执一致、无误隔离；故意终止本轮复制UI库的Worker时切换保留原项目并显示真实错误，显式核查后才恢复。五个实际源文件SHA256前后相同，截图已查看。
+
+真实项目烟测使用只复制白名单view/layout/catalog的隔离本机状态，沿原项目实体身份读取现有目录，不重新登记或改写项目身份，不复制账号／provider／进程登记，不发送模型、不改论文正文／采用成果。旧日常隔离实例与高CPU旧headless验收进程均未强杀／强制重载；本轮不安装、不推送、不发布，不宣称Windows/macOS已验。完整默认回归结果另在本节后续补记，不能把以上定向集相加冒称全仓通过。
+
+完整当前混合工作树的磁盘临时目录回归：unit541/541、integration1534/1535，零跳过；唯一失败为并发未提交Orchestrator P0的`managed-work-todo-lifecycle.test.mjs`，按旧名称clarify后缺少Work归属，与本轮卡顿修复分开记录，不删除有效测试或混入P0代码。首轮`/tmp`曾报配额`-122`／SQLite I/O失败，日志保留于本机证据目录；修复候选需以“已提交基线＋仅本轮变更”独立运行完整集合后才提交，不能把混合工作树称为全绿。候选renderer构建及真实Electron5项（正常退出／冷重开均exit0）已通过：`/var/tmp/nozeli-lag-commit-check-20261101/apps/desktop/.test-output/ci/smoke-cqkizQ/report.json`。
+

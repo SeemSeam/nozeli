@@ -21,7 +21,7 @@ test('explicit supplement to paused A never inherits the latest queued Q goal',a
  const {c,a,q,goal,front}=await fixture(t),job=await front('补充原“人物计数”，不是新任务：人物是Mira。');
  assert.notEqual(c.frontGoal(job).id,goal.id);const accepted=await chooseBackground(c, job, 'existing named task'),intake=c.store.state.jobs.find(j=>j.id===accepted.jobId);
  assert.equal(intake.context.boundWorkId,undefined);assert.equal(intake.context.pendingIntakeId,undefined);assert(!intake.text.includes('queue request'));
- c.current.set('orchestrator',intake);await c.onTool('orchestrator',{tool:'nozeli_manage',arguments:{action:'continue',workName:'人物计数',text:'人物是Mira'}});c.current.delete('orchestrator');
+ c.current.set('orchestrator',intake);await c.onTool('orchestrator',{tool:'nozeli_manage',arguments:{action:'continue',workId:a.id,expectedRevision:c.store.find(a.id).revision,text:'人物是Mira'}});c.current.delete('orchestrator');
  assert(c.store.state.jobs.some(j=>j.target===a.id&&j.type==='supplement'));assert(!c.store.state.jobs.some(j=>j.context?.boundWorkId===q.id));assert.equal(c.store.find(q.id).status,'queued');assert.equal(c.store.used(),2);
 });
 

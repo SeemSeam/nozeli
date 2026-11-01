@@ -1,6 +1,7 @@
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs/promises';import path from 'node:path';import os from 'node:os';import {DatabaseSync} from 'node:sqlite';import {StorageDatabase} from '../src/main/storage-database.mjs';
 import {EventEmitter} from 'node:events';
 import {ProjectStorage} from '../src/main/project-storage.mjs';
+import {MessageChannel} from 'node:worker_threads';
 test('deadline fences the writer, preserves recovery, and requires explicit reconciled generation',async t=>{
  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'storage-timeout-')),file=path.join(dir,'project.sqlite'),local=path.join(dir,'recovery.sqlite'),storage=new StorageDatabase({timeoutMs:5000});
  t.after(async()=>{await storage.close();await fs.rm(dir,{recursive:true,force:true});});
@@ -18,12 +19,13 @@ test('an unlinked database cannot receive a cached-descriptor write or be recrea
 test('a first request requiring an existing database does not create a missing file',async t=>{const dir=await fs.mkdtemp(path.join(os.tmpdir(),'storage-existing-')),file=path.join(dir,'missing.sqlite'),storage=new StorageDatabase();t.after(async()=>{await storage.close();await fs.rm(dir,{recursive:true,force:true});});await assert.rejects(storage.request(file,'get',{collection:'x',id:'id',mustExist:true}));assert.deepEqual(await fs.readdir(dir),[]);});
 
 class ControlledWorker extends EventEmitter {
- constructor(){super();this.messages=[];this.terminations=0;this.references=0;}
+ constructor(){super();this.messages=[];this.terminations=0;this.references=0;const {port1,port2}=new MessageChannel();this.responsePort=port1;this.replyPort=port2;this.on('exit',()=>port2.close());}
  ref(){this.references++;}
  unref(){this.references--;}
  postMessage(message){if(this.postError)throw this.postError;this.messages.push(message);}
  terminate(){this.terminations++;return new Promise((resolve,reject)=>{this.finishTermination=()=>{this.emit('exit',0);resolve(0);};this.failTermination=reject;});}
- reply(index,value){this.emit('message',{id:this.messages[index].id,value});}
+ respond(message){this.responsePort.emit('message',{completedAt:process.hrtime.bigint(),...message});}
+ reply(index,value){this.respond({id:this.messages[index].id,value});}
 }
 const microtasks=async()=>{await Promise.resolve();await Promise.resolve();await Promise.resolve();};
 function controlled(t){
@@ -206,7 +208,7 @@ test('explicit reconciliation seals admission until its separate receipt reader 
 
 test('a worker failure reply received during close settles with its known operation error',async t=>{
  const {storage,workers,file}=controlled(t),request=storage.request(file,'put',{operationId:'conflicted'}),worker=workers[0],failure=assert.rejects(request,{code:'STORAGE_CONFLICT',operationId:'conflicted'}),closing=storage.closeFile(file);
- worker.emit('message',{id:worker.messages[0].id,error:{code:'STORAGE_CONFLICT',message:'revision changed'}});await failure;await microtasks();
+ worker.respond({id:worker.messages[0].id,error:{code:'STORAGE_CONFLICT',message:'revision changed'}});await failure;await microtasks();
  assert.equal(worker.terminations,1);assert.equal(storage.quarantined.has(file),false);worker.finishTermination();await closing;await storage.close();
 });
 
@@ -310,4 +312,36 @@ test('retry after a real quarantine still requires the faulted generation to exi
  assert.deepEqual(await storage.putProject(project.id,'x','after','written after recovery',{operationId:'post-recovery'}),{revision:1});
  assert.equal(await storage.getProject(project.id,'x','after'),'written after recovery');
  assert.deepEqual(await storage.retry(project.id),{available:true,projectId:project.id,operations:[]});
+});
+
+test('deadline drains queued timely outcomes before fencing the still-pending backlog',async t=>{
+ const {storage,workers,file}=controlled(t),committed=storage.request(file,'put',{operationId:'committed'}),conflicted=storage.request(file,'put',{operationId:'conflicted'}),pending=storage.request(file,'put',{operationId:'unfinished'}),worker=workers[0];
+ const conflict=assert.rejects(conflicted,{code:'STORAGE_CONFLICT',operationId:'conflicted'}),unknown=assert.rejects(pending,{code:'STORAGE_RESULT_UNKNOWN',operationId:'unfinished'});
+ worker.replyPort.postMessage({id:worker.messages[0].id,value:{revision:1},completedAt:process.hrtime.bigint()});
+ worker.replyPort.postMessage({id:worker.messages[1].id,error:{code:'STORAGE_CONFLICT',message:'revision changed'},completedAt:process.hrtime.bigint()});
+ t.mock.timers.tick(100);assert.deepEqual(await committed,{revision:1});await conflict;await unknown;await microtasks();
+ assert.deepEqual(storage.quarantined.get(file).operationIds,['unfinished']);assert.equal(worker.messages.length,3);worker.finishTermination();await storage.close();
+});
+
+for(const delivery of ['queued','event'])test(`a ${delivery} reply completed after its deadline still fences without replay`,async t=>{
+ const {storage,workers,file}=controlled(t),pending=storage.request(file,'put',{operationId:'too-late'}),worker=workers[0],failure=assert.rejects(pending,{code:'STORAGE_RESULT_UNKNOWN'});
+ const message={id:worker.messages[0].id,value:{revision:1},completedAt:storage.channels.get(file).pending.get(worker.messages[0].id).deadline+1n};
+ if(delivery==='queued'){worker.replyPort.postMessage(message);t.mock.timers.tick(100);}else worker.respond(message);
+ await failure;await microtasks();assert.equal(worker.messages.length,1);assert.equal(storage.quarantined.has(file),true);worker.finishTermination();await storage.close();
+});
+
+test('actual-file committed receipt survives a main-thread stall before timer dispatch',async t=>{
+ const {storage,file}=await receiptFixture(t);
+ await storage.request(file,'put',{collection:'x',id:'seed',value:'retained'});
+ storage.timeoutMs=1000;
+ let pending;
+ await new Promise(resolve=>setImmediate(()=>{
+  pending=storage.request(file,'put',{collection:'x',id:'committed',value:'retained',expectedRevision:0,operationId:'stalled-main'});
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,1300);resolve();
+ }));
+ assert.deepEqual(await pending,{revision:1});assert.equal(storage.quarantined.has(file),false);
+ storage.timeoutMs=8000;
+ assert.deepEqual(await storage.request(file,'receipt',{operationId:'stalled-main'}),{revision:1});
+ assert.deepEqual(await storage.request(file,'record',{collection:'x',id:'committed'}),{value:'retained',revision:1});
+ assert.deepEqual(await storage.request(file,'put',{collection:'x',id:'after',value:'usable'}),{revision:1});
 });

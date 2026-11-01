@@ -564,7 +564,7 @@ export class WorkspaceNative {
       if(owners.some(owner=>owner.previewRecoveryFailed))throw fail('TRANSFER_RECOVERY_REQUIRED','报告恢复未确认，原项目保持打开。');
       const originalSurfaces=new Set(this.surfaces.values()), originalWindows=new Set(this.windows.values());
       try{
-      for(const owner of owners)owner.wc.send('nozeli:workspace-control',{type:'lifecycle-hold',held:true});
+      for(const owner of owners)owner.wc.send('nozeli:workspace-control',{type:'lifecycle-hold',reason:'project-switch',held:true});
       // Each owner acknowledges only after its own durable retention completes.
       // Global host idleness also includes unrelated reads/imports/projects and
       // is neither a save receipt nor a navigation barrier.
@@ -616,7 +616,7 @@ export class WorkspaceNative {
         for(const [id,root] of this.windows)if(!originalWindows.has(root)){root.closing=true;root.win.destroy();this.windows.delete(id);}
         throw error;
       }finally{
-        for(const owner of owners)if(!owner.dead)try{owner.wc.send('nozeli:workspace-control',{type:'lifecycle-hold',held:false});}catch(error){this.onError(error);}
+        for(const owner of owners)if(!owner.dead)try{owner.wc.send('nozeli:workspace-control',{type:'lifecycle-hold',reason:'project-switch',held:false});}catch(error){this.onError(error);}
       }
     };
     const pending=(r.bindPending||Promise.resolve()).catch(()=>{}).then(work);r.bindPending=pending;

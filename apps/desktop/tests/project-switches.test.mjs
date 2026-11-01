@@ -5,9 +5,9 @@ import {createProjectSwitches,requireProjectSwitch} from '../src/renderer/projec
 const deferred=()=>{let resolve;const promise=new Promise(done=>{resolve=done;});return {promise,resolve};};
 function fixture(){
   let tail=Promise.resolve(),project='source',draft='source unsaved',ready=true;
-  const log=[],saved=new Map(),pending=[],gates=new Map(),started=new Map();
+  const log=[],saved=new Map(),pending=[],errors=[],gates=new Map(),started=new Map();
   const schedule=action=>{const result=tail.then(action);tail=result.catch(()=>{});return result;};
-  const switches=createProjectSwitches({schedule,current:()=>project,ready:()=>ready,onPending:id=>pending.push(id),
+  const switches=createProjectSwitches({schedule,current:()=>project,ready:()=>ready,onPending:id=>pending.push(id),onError:error=>errors.push(error),
     async transition(id,intent){
       log.push(['start',id,project]);started.get(id)?.resolve();
       const source=project,sourceDraft=draft;
@@ -18,7 +18,7 @@ function fixture(){
       project=id;draft=saved.get(id)||'';ready=true;
       log.push(['bind',id]);return {ok:true,projectId:id};
     }});
-  return {switches,log,saved,pending,schedule,
+  return {switches,log,saved,pending,errors,schedule,
     block(id,failure){const gate=deferred();gate.failure=failure;gates.set(id,gate);const entry=deferred();started.set(id,entry);return {entered:entry.promise,release:gate.resolve};},
     get project(){return project;},get draft(){return draft;},set draft(value){draft=value;},set ready(value){ready=value;}};
 }
@@ -139,4 +139,26 @@ test('successful committed receipt cannot replay delayed target tasks after a ne
   assert.equal(f.project,'A');assert.equal(f.switches.pending(),'B');
   hold.resolve();await consumer;await b;
   assert.deepEqual(tasks,[]);assert.equal(f.project,'B');
+});
+
+test('unknown storage outcome reports the source retention failure without switching or replaying pending work',async()=>{
+  const f=fixture(),failure={ok:false,error:{code:'STORAGE_RESULT_UNKNOWN',message:'storage outcome requires reconciliation'}},gate=f.block('A',failure);
+  const a=f.switches.request('A');await gate.entered;
+  const latest=f.switches.request('C');gate.release();
+  assert.equal((await a).error.code,'PROJECT_SWITCH_SUPERSEDED');
+  assert.deepEqual(await latest,failure);
+  assert.equal(f.project,'source');assert.equal(f.draft,'source unsaved');
+  assert.deepEqual(f.log,[['start','A','source']]);
+  assert.deepEqual(f.errors,[failure.error]);assert.equal(f.switches.pending(),null);
+});
+
+test('a thrown retention error is presented once and does not strand the next explicit switch',async()=>{
+  let project='source',fail=true;const errors=[];
+  const switches=createProjectSwitches({schedule:action=>Promise.resolve().then(action),current:()=>project,ready:()=>true,onError:error=>errors.push(error),transition:async id=>{
+    if(fail)throw Object.assign(Error('source cannot be retained'),{code:'FLUSH_FAILED'});
+    project=id;return {ok:true,projectId:id};
+  }});
+  assert.equal((await switches.request('A')).error.code,'FLUSH_FAILED');
+  assert.equal(project,'source');assert.equal(errors.length,1);assert.equal(switches.pending(),null);
+  fail=false;assert.equal((await switches.request('B')).ok,true);assert.equal(project,'B');assert.equal(errors.length,1);
 });

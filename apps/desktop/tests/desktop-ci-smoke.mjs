@@ -7,13 +7,17 @@ import {createRequire} from 'node:module';
 import assert from 'node:assert/strict';
 import puppeteer from 'puppeteer-core';
 import {DesktopHost} from '../src/main/host.mjs';
+import {DatabaseSync} from 'node:sqlite';
 
 const appRoot=path.resolve(import.meta.dirname,'..'),require=createRequire(import.meta.url);
 const outputRoot=path.join(appRoot,'.test-output','ci');await fs.mkdir(outputRoot,{recursive:true});
 const out=await fs.mkdtemp(path.join(outputRoot,'smoke-'));
 const config=path.join(out,'.Nozeli'),profile=path.join(config,'desktop'),project=path.join(out,'project');
 await fs.mkdir(project);await fs.writeFile(path.join(project,'reading.txt'),'Synthetic local document.\n');
-const host=new DesktopHost(profile),projectId=(await host.pick(project)).project.id;await host.storage.db.close();
+const host=new DesktopHost(profile),projectId=(await host.pick(project)).project.id;
+const otherProject=path.join(out,'other-project');await fs.mkdir(otherProject);await fs.writeFile(path.join(otherProject,'other.txt'),'Other synthetic project.\n');
+const otherId=(await host.pick(otherProject)).project.id;await host.storage.putLocal(otherId,'smoke:seed',true);
+const otherUi=path.join(await host.storage.localDirectory(otherId),'ui.sqlite');await host.storage.db.close();
 const result={ok:false,out,checks:[],errors:[],scope:'Actual Electron production host/native document, isolated synthetic project; no model calls or personal accounts'};
 const pause=ms=>new Promise(r=>setTimeout(r,ms));let child,browser,shell,exited,log='';
 async function until(fn,label,ms=30000){const deadline=Date.now()+ms;while(Date.now()<deadline){if(child?.exitCode!==null&&child?.exitCode!==undefined)throw Error('Application exited: '+log);const value=await fn();if(value)return value;await pause(80);}throw Error('Timed out: '+label);}
@@ -46,6 +50,26 @@ try{
  await doc.keyboard.down('Control');await doc.keyboard.press('s');await doc.keyboard.up('Control');
  await until(async()=>(await fs.readFile(path.join(project,'reading.txt'),'utf8')).includes('CI_SMOKE_EDIT'),'explicit source save');
  await doc.screenshot({path:path.join(out,'edited-document.png')});
+ // Keep native retention pending on a real target-database read. The rail must
+ // still receive a newer trusted selection while project-scoped controls freeze.
+ await shell.evaluate(()=>{
+   window.__ciSwitchHold=false;window.__ciRailClicks=[];
+   window.__ciUnsubscribe=window.nozeli.subscribe('workspace.control',event=>{if(event.type==='lifecycle-hold'&&event.reason==='project-switch')window.__ciSwitchHold=event.held;});
+   document.addEventListener('click',event=>{const button=event.target.closest('[data-project-id]');if(button)window.__ciRailClicks.push({id:button.dataset.projectId,trusted:event.isTrusted});},true);
+ });
+ const targetLock=new DatabaseSync(otherUi);targetLock.exec('BEGIN EXCLUSIVE');
+ try{
+   await shell.click('[data-project-id="'+otherId+'"]');
+   await shell.waitForFunction(()=>window.__ciSwitchHold,{polling:10,timeout:1000});
+   assert.equal(await shell.$eval('#reader',node=>node.inert),true,'source content stays held');
+   assert.equal(await shell.$eval('#recent',node=>!!node.closest('[inert]')),false,'navigation must remain interactive');
+   await shell.click('[data-project-id="'+projectId+'"]');
+ }finally{targetLock.exec('ROLLBACK');targetLock.close();}
+ await shell.waitForFunction(id=>window.__workspaceScope?.projectId===id&&!document.querySelector('[data-project-id][aria-busy="true"]'),{polling:10,timeout:10000},projectId);
+ assert.deepEqual(await shell.evaluate(()=>window.__ciRailClicks),[{id:otherId,trusted:true},{id:projectId,trusted:true}]);
+ assert((await doc.evaluate(()=>window.__nozeliInput.text())).includes('CI_SMOKE_EDIT'));
+ await shell.evaluate(()=>window.__ciUnsubscribe());
+ result.checks.push('real pending retention freezes source controls but accepts the newer trusted project selection and preserves the editor');
  result.firstExit=await close();assert((await fs.readFile(path.join(project,'reading.txt'),'utf8')).includes('CI_SMOKE_EDIT'));
  result.checks.push('explicit native save writes original source and normal close preserves it');
  await launch();if(await shell.$('[data-project-id="'+projectId+'"]'))await shell.click('[data-project-id="'+projectId+'"]');

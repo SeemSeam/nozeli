@@ -24,7 +24,7 @@ node tools/test-suites.mjs smoke --list    # 任一套件的文件清单
 
 - **unit**：成员以 `tools/test-suites.mjs` 显式清单为准；按实际导入与行为划入——不起被测子进程、不写真实项目文件、不驱动 Git、不加载 Electron。个别文件只读源码，因此不宣称无任何 fs 访问。出现真实写入／子进程／Git 即归 integration；`update-lifecycle.test.mjs` 验证未保存编辑／排队任务阻止更新及冻结释放。
 - **integration**：真实临时仓库、shadow版本、存储切换和宿主文件读写；成员清单以runner为准，Git身份由测试或产品层明确提供。TeX编译、语言服务和SyncTeX真实工具测试归入独立`toolchain`套件，不能因为开发机恰有工具就当作普通CI依赖；此前误将`tex-source-link.test.mjs`归入默认集，现已按实际外部依赖更正，测试本身完整保留。
-- **smoke**：当前清单为 `desktop-ci-smoke.mjs` 和 `desktop-ppt-pending-text-live.mjs`。前者实际启动 Electron，覆盖空工作台、合成项目浏览、键盘编辑、显式保存、正常退出与冷恢复；后者使用真实 PPTist，覆盖最后一次输入立即导出、外部原件冲突时原文件剪贴板拒绝及旧源草稿恢复。输出使用独立合成项目／profile、即时端口，不含模型或个人凭据。后者需要已构建 renderer／PPTist；各自结果不能互相替代。
+- **smoke**：当前清单为 `desktop-ci-smoke.mjs` 和 `desktop-ppt-pending-text-live.mjs`。前者实际启动 Electron，覆盖空工作台、合成项目浏览、键盘编辑、显式保存、正常退出与冷恢复；另以真实目标 SQLite 排他锁保持切换保留阶段，验证内容区受保护时项目导航仍接收新的可信点击，最终选择及原编辑内容不丢失。后者使用真实 PPTist，覆盖最后一次输入立即导出、外部原件冲突时原文件剪贴板拒绝及旧源草稿恢复。输出使用独立合成项目／profile、即时端口，不含模型或个人凭据。后者需要已构建 renderer／PPTist；各自结果不能互相替代。
 - **live**：Pi 分支由 `pi-native-tools-live.mjs`、`pi-lifecycle-live.mjs` 驱动实际独立 Node／Pi SDK owner；需准备固定私有 Pi 运行时，并用 `NOZELI_TEST_LIVE=1` 显式选择加入。使用回环合成 Provider，不读取真实账号。`pi-facts`、`pi-questions` 和真实付费模型任务分别记录；不恢复旧 OMP PTY 套件作为产品入口。
 
 ### 与 0.1.0-alpha.1 发布回归（“374 项”）的关系
@@ -50,6 +50,10 @@ GitHub Ubuntu临时runner限制无特权用户命名空间：workflow为隔离�
 `node --test` 套件默认以 `--test-concurrency=2` 运行（可用 `NOZELI_TEST_CONCURRENCY` 覆盖），避免 CI 上百文件同时 fork 与 SQLite 争用；并发数本身不影响集合内容。
 
 Runner 为每个套件创建独立 HOME/XDG 配置目录，禁用用户/系统 Git 配置和交互认证，并从子进程环境移除凭据、认证代理及模型工具配置变量。报告只上传 TAP、脱敏日志、合成截图与 smoke 摘要，不上传 profile、数据库或会话目录。此隔离不等于 OS 沙箱，专项脚本若绕过 runner 仍须遵循自身准入。
+
+默认集若因临时文件系统配额出现 `EDQUOT`／系统错误 `-122` 或伴随的 SQLite I/O 错误，应保留失败日志，在仓库外有足够空间的专用临时目录设置 `TMPDIR` 后重新执行完整集合；不延长存储期限、删除测试或吞掉 I/O 错误。TeX 专项另须让已安装工具链可被 PATH 找到；离线 Tectonic 还需要其已有资源缓存，不能把缺工具／缺缓存算产品通过。
+
+平台无关存储安全集 `storage-worker-safety.test.mjs` 覆盖原期限内已提交但主线程延迟消费回执、真正迟到／缺失回执、冲突、关闭与代际隔离；`tex-source-watcher.test.mjs` 覆盖剪枝、资源变化／新目录、链接替换和关闭期间初始化取消。两者进入默认 integration；不把 Linux 原生实测外推到 Windows/macOS。
 
 ## Node 与 Electron 的 ABI 区分
 
