@@ -493,3 +493,10 @@ provider／预算／无能力技术故障只本地分类与去重，不产生 ma
 
 完整默认unit542/542、integration1536/1536零失败／跳过，注册smoke3/3脚本、真实作者标记14组、七格式主窗／独立窗几何完整通过。5项目40文件同基线对照，两版各50次快速可信选择、原编辑器／跨项目撤销和正常退出通过；100次相同已确认bounds的原生setBounds由100降0、setVisible由400降0，48帧滚动的作者分组／标题计算各46降0。两版均保留20个surface／buffer，不声称内存下降或整体速度百分比。证据目录`/var/tmp/nozeli-responsive-smf7_u3_/`与上述方案逐项报告；截图已查看，原始默认TAP和smoke日志在`.test-output/ci/`。两个独立只读reviewer未发现阻断，运行证据由父级实际执行；工具／旧夹具中间失败与修正边界已记录。仅Linux本机、无真实账号／模型请求、未安装／推送或更改个人材料。
 
+
+## 流畅性优化提交与真实安装版验证（2026-11-01）
+
+用户追加授权commit及安装后，源码／测试／方案已提交`355f2e4`（perf: reduce repeated workspace presentation work）。既有install-local在真实用户HOME构建、打包、Pi／Node／Git校验并激活current=`2026-11-01T04-39-18-355Z`；previous=`2026-11-01T01-02-12-605Z`保留可回退，工具按原策略清理更早10-31快照。产品版本号仍`0.1.0-alpha.4`，本次是新的本机开发构建，不新打发布tag。未push、未签名／公开发行、未强关用户现有窗口；旧进程不热替换，正常退出重开后加载新版。
+
+源码与安装`resources/app`逐文件SHA256比较：src378、dist357、assets31，共766文件零差异。真实安装ELF（非源码Electron／启动wrapper）＋隔离profile合成材料完成七格式主窗／独立窗resize、最大化、全屏、恢复及回嵌，原生内容／owner／Office源字节与未保存代码保持；ok=true、exit0、errors空，截图已查看。原件`/var/tmp/nozeli-responsive-smf7_u3_/dynamic-geometry-live-7Ckjhr/result.json`。运行验收仅Linux，无个人材料／账号／模型请求；不把源码前轮多项目计数冒充安装版重新执行的同一项测量。
+
