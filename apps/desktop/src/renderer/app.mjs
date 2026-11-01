@@ -680,10 +680,12 @@ function escapeHtml(value) {
 
 function renderTextPreview(text) {
   const preview=$('text-preview');
+  const focusedAuthorship=preview.querySelector('.markdown-authorship')?.contains(document.activeElement)?document.activeElement:null;
   preview._markdownSourceText=text;
+  preview._markdownRenderVersion=(preview._markdownRenderVersion||0)+1;
   renderTagMarkdown(preview,text,{
     mapSource:true,filePaths:ui.filePaths,basePath:ui.file?.relPath,images:true,
-    retainNodes:[...preview.children].filter(node=>node.classList.contains('markdown-annotations')),
+    retainNodes:[...preview.children].filter(node=>node.classList.contains('markdown-annotations')||node.classList.contains('markdown-authorship')),
     onFile:target=>void openMarkdownTarget(target),
     onAnchor:fragment=>{try{preview.querySelector('#'+CSS.escape(decodeURIComponent(fragment)))?.scrollIntoView({block:'start'});}catch{}},
     onExternal:url=>invoke('links.openExternal',{url}).then(result=>{if(!result.ok)workspace.toast(result.error.message);}),
@@ -693,6 +695,7 @@ function renderTextPreview(text) {
   resolvePreviewImages(preview);
   projectPreviewTags();
   authorship.projectMarkdown();
+  if(focusedAuthorship?.isConnected&&document.activeElement===document.body)focusedAuthorship.focus({preventScroll:true});
 }
 function resolvePreviewImages(preview) {
   if (!ui.project?.id || !ui.file?.relPath) return;
@@ -2328,7 +2331,7 @@ function syncExecuteLinks() {
 }
 function updateExecuteStatuses(state, projectId) {
   ui.executeLinks ||= new Map();
-  if (!state || projectId !== ui.project?.id) return;
+  if (!state || projectId !== ui.project?.id || !ui.executeLinks.size) return;
   const records = managedWorkRecords(state);
   for (const [annotationId, link] of ui.executeLinks) {
     if (link.projectId !== ui.project?.id) continue;

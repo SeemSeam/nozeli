@@ -114,11 +114,13 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
  if(!scope||scope.role==='shell'||scope.role==='surface'&&scope.kind==='report')window.__workspaceOpenTodo=async id=>{await refresh();return openTodo(id);};
  if(scope?.role==='surface'&&scope.kind==='history')window.__workspaceOpenHistory=report=>report.artifactPath?openArtifact({objectId:report.objectId,relPath:report.artifactPath,sourceProject:report.projectId}):report.workerArchive?openWorkerArchive(report.workerArchive.work,report.workerArchive.archive):openHistory({objectId:report.objectId,revision:report.revision,workName:report.workName||report.title,kind:report.kind},report.version);
  const sessionStore=createSessionStore();let historyPage=false,pageError='',timelineContext=null,contextKey='',pageRequest=0;
+ let applyingTimeline=false;
+ function applyTimeline(frame){applyingTimeline=true;try{sessionStore.apply(projectId,frame,{replace:true});}finally{applyingTimeline=false;}}
  const timelineBox=document.createElement('section');timelineBox.id='managed-session-timeline';$('conversation').insertBefore(timelineBox,$('reading-inbox'));
  const navigationContainer=document.createElement('div');navigationContainer.className='session-navigation-slot';$('conversation-panel').insertBefore(navigationContainer,$('compose-form'));
  if(ownsConversation)$('conversation-panel').classList.add('session-surface');
  const timelineUI=mountSessionTimeline(timelineBox,{navigationContainer,initialScroll:scope?.viewState?.conversationScroll});
- async function readTimeline(cursor){const id=projectId,gen=generation,request=++pageRequest;try{const frame=await call('timeline.page',{...(cursor?{cursor}:{}),limit:100},id);if(id!==projectId||gen!==generation||request!==pageRequest)return;historyPage=Boolean(cursor);pageError='';sessionStore.apply(id,frame,{replace:true});paintTimeline();}catch(error){if(id===projectId&&gen===generation){pageError=error.message;paintTimeline();}}}
+ async function readTimeline(cursor){const id=projectId,gen=generation,request=++pageRequest;try{const frame=await call('timeline.page',{...(cursor?{cursor}:{}),limit:100},id);if(id!==projectId||gen!==generation||request!==pageRequest)return;historyPage=Boolean(cursor);pageError='';applyTimeline(frame);paintTimeline();}catch(error){if(id===projectId&&gen===generation){pageError=error.message;paintTimeline();}}}
  function paintTimeline(){if(!state)return;timelineBox.hidden=!active;const key=JSON.stringify([projectId,[...projectFilePaths]]);if(key!==contextKey){contextKey=key;timelineContext={filePaths:projectFilePaths,onFile:entry=>openProjectFile?.({projectId,...entry}),onExternal:openExternal,onError:error=>toast(error.message)};}timelineUI.render({store:sessionStore,state,context:timelineContext,call,openFrozenChange,projectId,historyPage,pageError,onPage:readTimeline,onLatest:()=>readTimeline(),onTask:entry=>{sourceMessage=entry.id;sourceBox.dataset.requestKey=crypto.randomUUID();sourceLabel.textContent='引用：'+entry.text.slice(0,160);sourceGoal.value='';sourceBox.hidden=false;sourceGoal.focus();}});const lifecycle=selectedSession();onConversation?.({count:sessionStore.getSnapshot().entries.length,state:lifecycle.state,label:lifecycle.reason||'统一会话'});}
  const identityReads=createIdentityHydration();
  const requestReads=new Map();
@@ -141,7 +143,7 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
    return result.entry||result;
   },
  };
- sessionStore.subscribe(()=>{if(active&&state){onMessages(timelineSource.getMessages(),timelineSource);paintTimeline();}});
+ sessionStore.subscribe(()=>{if(active&&state){onMessages(timelineSource.getMessages(),timelineSource);if(!applyingTimeline)paintTimeline();}});
  const agentDetails=document.createElement('dialog');agentDetails.id='managed-agent-details';agentDetails.setAttribute('role','dialog');agentDetails.setAttribute('aria-modal','true');agentDetails.setAttribute('aria-labelledby','managed-agent-details-title');
  const agentDetailsTitle=document.createElement('h2');agentDetailsTitle.id='managed-agent-details-title';agentDetailsTitle.textContent='连接与历史';
  const agentDetailsBody=document.createElement('div');agentDetailsBody.className='managed-agent-details-body';
@@ -457,7 +459,7 @@ async function openWorkReport(workId){
   historyReceiptSignature=receiptSignature;
   if(viewed?.routingQuestionId&&state.todos.find(q=>q.id===viewed.routingQuestionId)?.status!=='open')viewed=null;
   const records=managedWorkRecords(state);
-  if(state.timeline&&!historyPage)sessionStore.apply(projectId,state.timeline,{replace:true});
+ if(state.timeline&&!historyPage){if(ownsConversation)applyTimeline(state.timeline);else sessionStore.apply(projectId,state.timeline,{replace:true});}
   if(!ownsConversation&&target!=='frontdesk'&&target!=='orchestrator'&&!state.works.some(w=>w.id===target&&w.status!=='ended'))target='frontdesk';
   if(viewed?.workId&&state.works.find(w=>w.id===viewed.workId)?.status==='closing'){viewed.readOnly=true;}
   $('conversation-panel').dataset.managedConversation=target;

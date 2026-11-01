@@ -2,12 +2,13 @@ import {setIconButton} from './ui-icons.mjs';
 import { changeRecord, mapAttribution, userActor } from '../domain/document-changes.mjs';
 import { textChangeSet, anchorText } from '../domain/tag-anchors.mjs';
 import { sourceLeaves } from './markdown-source.mjs';
-import { groupAuthorship, groupScope, groupTitle } from '../domain/authorship-groups.mjs';
+import { groupAuthorship, groupScope, groupTitle, formatAuthorshipTime } from '../domain/authorship-groups.mjs';
 import { authorshipLayer } from './authorship-gutter.mjs';
 import './document-authorship.css';
 
 export function mountDocumentAuthorship({current,invoke,reload,toast,onCompare}) {
   let working=null,source='',confirmed=null,pendingChanges=null,visible=true,polling=false,historyToken=0,markdownLayer=null,returnFocus=null;
+  let markdownProjection=null;
   try {visible=localStorage.getItem('nozeli.authorship.visible')!=='false';}catch{}
   const dialog=document.createElement('dialog');dialog.id='document-change-history';dialog.className='document-change-history';
   const header=document.createElement('header'),heading=document.createElement('strong'),close=document.createElement('button');
@@ -45,23 +46,33 @@ export function mountDocumentAuthorship({current,invoke,reload,toast,onCompare})
   function render(){current()?.editor?.adapter.setAuthorship?.(working,{visible,source,onOpen:group=>void history(group)});projectMarkdown();}
   function projectMarkdown(){
     const preview=document.getElementById('text-preview');
-    if(!visible||!working||current()?.kind==='word'||preview.hidden){markdownLayer?.node.remove();return;}
+    if(!visible||!working||current()?.kind==='word'||preview.hidden||preview._markdownSourceText!==source){markdownLayer?.node.remove();return;}
     if(!markdownLayer)markdownLayer=authorshipLayer('markdown-authorship',group=>void history(group));
     if(markdownLayer.node.parentElement!==preview)preview.append(markdownLayer.node);
-    const blocks=new Map();
-    for(const leaf of sourceLeaves(preview)){
-      const block=leaf.closest('pre,td,th')||leaf.closest('p,h1,h2,h3,h4,h5,h6,li,blockquote')||leaf;
-      const from=Number(leaf.dataset.mdFrom),to=Number(leaf.dataset.mdTo);
-      if(!Number.isInteger(from)||!Number.isInteger(to)||from>=to)continue;
-      const unit=blocks.get(block);
-      if(unit){unit.from=Math.min(unit.from,from);unit.to=Math.max(unit.to,to);}
-      else {
-        const structural=block.matches('pre,td,th,h1,h2,h3,h4,h5,h6');
-        const container=structural?block:block.closest('li')?.parentElement||block.closest('blockquote')||block.parentElement;
-        blocks.set(block,{node:block,from,to,boundary:container});
+    // Only the current preview owns these nodes. A render revision changes even
+    // for same-text rebuilds; attribution identity changes on pending/save/load.
+    if(!markdownProjection||markdownProjection.preview!==preview||markdownProjection.version!==preview._markdownRenderVersion||markdownProjection.source!==preview._markdownSourceText){
+      const blocks=new Map();
+      for(const leaf of sourceLeaves(preview)){
+        const block=leaf.closest('pre,td,th')||leaf.closest('p,h1,h2,h3,h4,h5,h6,li,blockquote')||leaf;
+        const from=Number(leaf.dataset.mdFrom),to=Number(leaf.dataset.mdTo);
+        if(!Number.isInteger(from)||!Number.isInteger(to)||from>=to)continue;
+        const unit=blocks.get(block);
+        if(unit){unit.from=Math.min(unit.from,from);unit.to=Math.max(unit.to,to);}
+        else {
+          const structural=block.matches('pre,td,th,h1,h2,h3,h4,h5,h6');
+          const container=structural?block:block.closest('li')?.parentElement||block.closest('blockquote')||block.parentElement;
+          blocks.set(block,{node:block,from,to,boundary:container});
+        }
       }
+      markdownProjection={preview,version:preview._markdownRenderVersion,source:preview._markdownSourceText,
+        units:[...blocks.values()].sort((a,b)=>a.from-b.from),authorship:null,groups:[]};
     }
-    const units=[...blocks.values()].sort((a,b)=>a.from-b.from),groups=groupAuthorship(units,working);
+    if(markdownProjection.authorship!==working){
+      markdownProjection.authorship=working;
+      markdownProjection.groups=groupAuthorship(markdownProjection.units,working);
+    }
+    const groups=markdownProjection.groups;
     const base=preview.getBoundingClientRect(),viewport=(preview.closest('#markdown-preview-scroll')||document.getElementById('reader-scroll')).getBoundingClientRect();
     markdownLayer.node.style.setProperty('--authorship-width',Math.max(15,Math.min(23,parseFloat(getComputedStyle(preview).paddingLeft)-4))+'px');
     const top=Math.max(0,viewport.top-base.top),bottom=viewport.bottom-base.top;
@@ -89,7 +100,7 @@ export function mountDocumentAuthorship({current,invoke,reload,toast,onCompare})
     if(file?.draft&&working){const text=anchorText(file.draft.text);changed({before:source,text,changes:textChangeSet(source,text)});}
     if(file?.authorshipError)toast('修改来源暂不可用：'+file.authorshipError.message);
   }
-  function cleared(){working=confirmed=null;pendingChanges=null;source='';notice.hidden=true;if(dialog.open)dialog.close();historyToken++;markdownLayer?.node.remove();markdownLayer=null;}
+  function cleared(){working=confirmed=null;pendingChanges=null;source='';notice.hidden=true;if(dialog.open)dialog.close();historyToken++;markdownLayer?.node.remove();markdownLayer=null;markdownProjection=null;}
   async function history(selection=null){
     const file=current();if(!file||!file.editor)return toast('先打开文本或 Word 文件查看修改记录。');
     const token=++historyToken,identity=file.projectId+'\0'+file.relPath;
@@ -129,7 +140,7 @@ export function mountDocumentAuthorship({current,invoke,reload,toast,onCompare})
   function appendEvent(event,docId){
       const entry=document.createElement('article');entry.className='change-history-entry';entry.dataset.eventId=event.id;
       const summary=document.createElement('div');summary.className='change-history-summary';const actor=document.createElement('span');actor.className='authorship-'+event.actor.kind;actor.textContent=event.actor.name;
-      const time=document.createElement('time');time.dateTime=event.time;time.textContent=new Date(event.time).toLocaleString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})+(event.actor.kind==='external'?' · 检测时间':'');summary.append(actor,time);entry.append(summary);
+      const time=document.createElement('time');time.dateTime=event.time;time.textContent=formatAuthorshipTime(event.time)+(event.actor.kind==='external'?' · 检测时间':'');summary.append(actor,time);entry.append(summary);
       if(onCompare&&current()?.kind!=='word'){const compare=document.createElement('button');compare.type='button';compare.className='change-history-compare';compare.textContent=`对比v${event.revision}`;compare.title='与当前内容对比此批修改后的版本';compare.addEventListener('click',()=>{dialog.close();onCompare({docId,revision:event.revision,digest:event.afterDigest});});summary.append(compare);}
       for(const edit of event.edits){
         const location=document.createElement('small');location.textContent='当时第 '+(edit.line||1)+(current()?.kind==='word'?' 个正文段落/文本行':' 行');entry.append(location);

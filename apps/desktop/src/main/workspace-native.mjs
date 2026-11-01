@@ -7,6 +7,7 @@ import {normalizeOfficeRecovery} from './office-recovery.mjs';
 import {listManagedPending,readManagedObject} from '../agents/managed/managed-storage.mjs';
 import {ProjectTerminalHost} from './project-terminal.mjs';
 import {GuidedDemoControls} from './guided-demo-controls.mjs';
+import {applyViewGeometry} from './view-geometry.mjs';
 
 const fail = (code, message = code) => Object.assign(new Error(message), { code });
 const writes = new Set(['file.save','file.draft','file.retain','sheet.save','sheet.recover','word.save','word.import','document.image.put','annotation.add','annotation.update','annotation.remove','annotation.drawing','tag.put','tag.view','tag.reanchor','tag.material']);
@@ -1076,8 +1077,9 @@ export class WorkspaceNative {
         const [width, height] = r.win.getContentSize();
         const valid = rect && ['x','y','width','height'].every(k => Number.isFinite(rect[k])) && rect.x >= 0 && rect.y >= 0 && rect.width > 0 && rect.height > 0 && rect.x + rect.width <= width + 1 && rect.y + rect.height <= height + 1;
         const occluded=valid&&Array.isArray(p.overlayRects)&&p.overlayRects.map(nativeRect).some(b=>b&&['x','y','width','height'].every(k=>Number.isFinite(b[k]))&&b.width>0&&b.height>0&&b.x<rect.x+rect.width&&b.x+b.width>rect.x&&b.y<rect.y+rect.height&&b.y+b.height>rect.y);
-        if (valid) surface.view.setBounds(Object.fromEntries(Object.entries(rect).map(([k,v]) => [k,Math.round(v)])));
-        surface.view.setVisible(!!valid && !p.overlay && !occluded && (surface.ready || surface.contentFailed) && ![...this.drags.values()].some(d=>d.projectId===r.projectId&&!(d.source.role==='detached'&&d.source.windowId===r.windowId)));
+        const bounds=valid?Object.fromEntries(Object.entries(rect).map(([k,v])=>[k,Math.round(v)])):null;
+        const visible=!!valid && !p.overlay && !occluded && (surface.ready || surface.contentFailed) && ![...this.drags.values()].some(d=>d.projectId===r.projectId&&!(d.source.role==='detached'&&d.source.windowId===r.windowId));
+        applyViewGeometry(surface.view,bounds,visible);
         for(const slot of this.isolatedPreview?.slots.values()??[])if(slot.scope===surface)this.isolatedPreview.bounds(slot,slot.bounds);
         this.onlineBrowser?.refreshScope(surface);
         surface.returnFocus?.();

@@ -24,7 +24,7 @@ node tools/test-suites.mjs smoke --list    # 任一套件的文件清单
 
 - **unit**：成员以 `tools/test-suites.mjs` 显式清单为准；按实际导入与行为划入——不起被测子进程、不写真实项目文件、不驱动 Git、不加载 Electron。个别文件只读源码，因此不宣称无任何 fs 访问。出现真实写入／子进程／Git 即归 integration；`update-lifecycle.test.mjs` 验证未保存编辑／排队任务阻止更新及冻结释放。
 - **integration**：真实临时仓库、shadow版本、存储切换和宿主文件读写；成员清单以runner为准，Git身份由测试或产品层明确提供。TeX编译、语言服务和SyncTeX真实工具测试归入独立`toolchain`套件，不能因为开发机恰有工具就当作普通CI依赖；此前误将`tex-source-link.test.mjs`归入默认集，现已按实际外部依赖更正，测试本身完整保留。
-- **smoke**：当前清单为 `desktop-ci-smoke.mjs` 和 `desktop-ppt-pending-text-live.mjs`。前者实际启动 Electron，覆盖空工作台、合成项目浏览、键盘编辑、显式保存、正常退出与冷恢复；另以真实目标 SQLite 排他锁保持切换保留阶段，验证内容区受保护时项目导航仍接收新的可信点击，最终选择及原编辑内容不丢失。后者使用真实 PPTist，覆盖最后一次输入立即导出、外部原件冲突时原文件剪贴板拒绝及旧源草稿恢复。输出使用独立合成项目／profile、即时端口，不含模型或个人凭据。后者需要已构建 renderer／PPTist；各自结果不能互相替代。
+- **smoke**：当前清单为 `desktop-ci-smoke.mjs`、`desktop-ppt-pending-text-live.mjs` 和 `renderer-projection-coalescing.test.mjs`。第一项实际启动Electron，覆盖空工作台、合成项目浏览、键盘编辑、显式保存、正常退出与冷恢复；以真实目标SQLite排他锁固定切换保留阶段，验证内容区受保护时导航仍接收新可信选择。第二项使用真实PPTist，覆盖最后输入立即导出、外部原件冲突时剪贴板拒绝及旧源草稿恢复。第三项在真实Electron中挂载生产panel／navigator，以合成IPC和可控帧验证时间线单次绘制、立即消息交付、导航事件合并／读取单飞与代际迟到保护，不冒充真实模型或完整产品旅程。输出使用独立合成项目／profile、即时端口，不含模型或个人凭据；前两项需要已构建renderer／PPTist，各项不能互相替代。
 - **live**：Pi 分支由 `pi-native-tools-live.mjs`、`pi-lifecycle-live.mjs` 驱动实际独立 Node／Pi SDK owner；需准备固定私有 Pi 运行时，并用 `NOZELI_TEST_LIVE=1` 显式选择加入。使用回环合成 Provider，不读取真实账号。`pi-facts`、`pi-questions` 和真实付费模型任务分别记录；不恢复旧 OMP PTY 套件作为产品入口。
 
 ### 与 0.1.0-alpha.1 发布回归（“374 项”）的关系

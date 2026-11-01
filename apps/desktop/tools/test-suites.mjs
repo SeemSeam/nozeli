@@ -272,6 +272,7 @@ const SUITES = {
     files: [
       'desktop-ci-smoke.mjs',
       'desktop-ppt-pending-text-live.mjs',
+      'renderer-projection-coalescing.test.mjs',
     ],
     runner: 'script',
     preflight: [nodeVersionCheck, rendererBuildCheck, electronInstallCheck],

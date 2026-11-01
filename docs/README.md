@@ -11,6 +11,7 @@
 - [Windows 开发 Agent 执行指南](windows-agent-development-guide.md)——从真实 Windows W0 基线到 W1–W5 原生适配、验收证据与禁止误判；不以 Linux、WSL、Wine 或交叉打包替代 Windows 实测。
 - [三角色记忆与技能设计](role-memory-skills-design.md)——前台／主控／Worker 的最小角色契约、按需技能、用户批准项目知识、来源版本与撤销；设计提案，不代表原生技能迁移或长期知识功能已实现。
 - [主控长期多任务与 Plan Tree 设计](orchestrator-long-term-design.md)——当前宿主排队／进度事实与 skill 职责分析，以及分页任务板、稳定管理身份、压缩恢复和版本化知识的后续设计；未实施。
+- [多项目、多文件流畅性优化](responsiveness-optimization.md)——第一层局部展示优化、资源保留边界、同基线工作量对照和真实Electron验收；后台暂停及冷回收暂缓。
 
 ## 产品方向
 

@@ -18,7 +18,7 @@ class Contents extends EventEmitter {
   setWindowOpenHandler(){} send(channel,payload){this.sent.push({channel,payload});this.onSend?.(channel,payload);} async loadURL(){} close(){this.emit('destroyed');} isDestroyed(){return false;}
   setBackgroundThrottling(value){this.backgroundThrottling=value;}
 }
-class View { constructor(){this.webContents=new Contents();}setVisible(value){this.visible=value;}setBounds(value){this.bounds=value;}getBounds(){return this.bounds||{x:0,y:0,width:500,height:500};} }
+class View { constructor(){this.webContents=new Contents();}setVisible(value){this.visible=value;}getVisible(){return this.visible===true;}setBounds(value){this.bounds=value;}getBounds(){return this.bounds||{x:0,y:0,width:500,height:500};} }
 class Window extends EventEmitter {
  constructor(options={}){super();this.options=options;this.webContents=new Contents();this.children=[];this.contentView={addChildView:v=>this.children.push(v),removeChildView:v=>{this.children=this.children.filter(x=>x!==v);}};this.bounds={x:0,y:0,width:1000,height:760};}
  async loadURL(){}show(){}focus(){}getBounds(){return this.bounds;}getContentBounds(){return this.bounds;}getContentSize(){return [1000,760];}isAlwaysOnTop(){return false;}isDestroyed(){return !!this.destroyed;}destroy(){this.destroyed=true;this.webContents.emit('destroyed');this.emit('closed');}
@@ -765,6 +765,29 @@ test('pane bounds convert CSS pixels to native DIP without replacing owners or b
  assert.equal(native.surfaces.get(surface.viewId),surface);assert.equal((await native.invoke(surface,'workspace.document.snapshot',{projectId:'p',relPath:'geometry.md'})).text,'UNSAVED geometry draft');
  const stale=await native.invoke(root,'workspace.bounds',{projectId:'p',windowId:'main',sequence:2,viewport:{width:1000,height:760},groups:[]});assert.equal(stale.stale,true);assert.equal(surface.view.visible,true,'stale viewport cannot blank the last admitted surface');
  for(const event of ['resized','maximize','unmaximize','enter-full-screen','leave-full-screen','restore']){const before=root.wc.sent.length;root.win.emit(event);assert.equal(root.wc.sent.length,before+1);assert.equal(root.wc.sent.at(-1).payload.type,'viewport-changed');}
+});
+test('unchanged native geometry avoids repeated layout while readiness, occlusion and actual native changes still apply',async t=>{
+ const {native,root}=await fixture(t);
+ const layout=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'document',relPath:'retained.md'}});native.layouts.set('p',layout);await native.reconcile(layout);
+ const surface=[...native.surfaces.values()][0];native.bootstrap(surface);
+ await native.invoke(surface,'workspace.document.publish',{projectId:'p',relPath:'retained.md',text:'KEEP DRAFT',dirty:true});
+ const rect={x:200,y:60,width:700,height:600},payload={projectId:'p',windowId:'main',layoutRevision:layout.revision,groups:[{groupId:layout.mainRoot.id,viewId:surface.viewId,rect}]};
+ let boundsCalls=0,visibilityCalls=0;const setBounds=surface.view.setBounds.bind(surface.view),setVisible=surface.view.setVisible.bind(surface.view);
+ surface.view.setBounds=value=>{boundsCalls++;setBounds(value);};surface.view.setVisible=value=>{visibilityCalls++;setVisible(value);};
+ await native.invoke(root,'workspace.bounds',payload);assert.deepEqual(surface.view.getBounds(),rect);assert.equal(surface.view.getVisible(),false);
+ const initializedCalls=boundsCalls;
+ await native.invoke(surface,'workspace.ready',{contentReady:true});await native.invoke(root,'workspace.bounds',payload);assert.equal(surface.view.getVisible(),true);
+ const admittedVisibility=visibilityCalls;
+ for(let i=0;i<10;i++)await native.invoke(root,'workspace.bounds',payload);
+ assert.equal(boundsCalls,initializedCalls);assert.equal(visibilityCalls,admittedVisibility);
+ await native.invoke(root,'workspace.bounds',{...payload,overlayRects:[rect]});assert.equal(surface.view.getVisible(),false);
+ await native.invoke(root,'workspace.bounds',payload);assert.equal(surface.view.getVisible(),true);
+ // A reparent/restore can alter native state outside the ordinary bounds path.
+ setBounds({x:-1000,y:-760,width:1000,height:760});setVisible(false);
+ await native.invoke(root,'workspace.bounds',payload);assert.deepEqual(surface.view.getBounds(),rect);assert.equal(surface.view.getVisible(),true);
+ root.wc.getZoomFactor=()=>.5;await native.invoke(root,'workspace.bounds',payload);assert.deepEqual(surface.view.getBounds(),{x:100,y:30,width:350,height:300});
+ const visibleBounds=surface.view.getBounds();const refused=await native.invoke(root,'workspace.bounds',{...payload,layoutRevision:layout.revision+1});assert.equal(refused.stale,true);assert.deepEqual(surface.view.getBounds(),visibleBounds);
+ assert.equal((await native.invoke(surface,'workspace.document.snapshot',{projectId:'p',relPath:'retained.md'})).text,'KEEP DRAFT');assert.equal(native.surfaces.get(surface.viewId),surface);
 });
 test('window controls use native fullscreen and bounded content resize',async t=>{
  const {native,root}=await fixture(t);let full=false,size=null;

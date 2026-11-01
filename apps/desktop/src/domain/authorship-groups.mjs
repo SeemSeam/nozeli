@@ -1,3 +1,9 @@
+const timeFormatter = new Intl.DateTimeFormat('zh-CN', {year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+export function formatAuthorshipTime(time) {
+  const date=new Date(time);
+  return Number.isNaN(date.getTime())?'Invalid Date':timeFormatter.format(date);
+}
+
 // A view projection only. Exact spans and historical events stay unchanged.
 export function uniqueChanges(items) {
   return [...new Map(items.map(item => [item.eventId, item])).values()]
@@ -59,7 +65,7 @@ export function groupScope(group) {
 export function groupTitle(group) {
   const actors=[...new Map(group.items.map(item=>[item.actor.id,item.actor])).values()];
   const saved=group.items.filter(item=>!item.pending), times=[...new Set(saved.map(item=>item.time))].sort();
-  const format=time=>new Date(time).toLocaleString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+  const format=formatAuthorshipTime;
   const location=group.line?`第${group.line}${group.endLine!==group.line?'–'+group.endLine:''}行中有修改`:'当前段落中有修改';
   return [actors.map(actor=>actor.name).join('、'),group.kind==='deletion'?'删除位置':location,
     saved.length?`${saved.length}批 · ${times.length>1?'最早 '+format(times[0])+'，最新 ':''}${format(times.at(-1))}`:'',
