@@ -5,7 +5,7 @@
 ## 版本状态
 
 - **Alpha预发行**：<https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.3>，包含Linux x64便携包、源码及SHA-256校验和。修复快速切换、系统文本复制、原生工具升级重连与失位标签操作，新增原生文件粘贴、折叠审核列表及强退；默认YOLO与后台主控恢复的权限边界见[用户指南](user-guide.md)。发布由仓库所有者本轮明确要求；**发布不是合规认证**，下述分发审计仍未完成。
-- **Alpha预发行候选**：`v0.1.0-alpha.4`尚未创建Git tag或GitHub Release；目标为本轮授权的公开 prerelease。发布前必须完成常规回归、便携包构建、实际解压启动与校验和核对；第三方对应源码、二进制通告及完整分发审计仍未签收。
+- **Alpha预发行已发布**：[`v0.1.0-alpha.4`](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.4) 绑定 `4bbb32f64f7cdcfc2a597c02bf8eebe14a95add5`。本轮明确授权公开 prerelease，保留六项分发审计未签收及 `--public` 失败；不是稳定版或合规认证。精确提交 CI gate 通过；真实解压 Electron/X11 完成打开、键盘编辑保存、退出及冷重开；四附件上传后独立下载核对 SHA-256。证据目录：`/home/bfly/yunwei/release-output/alpha4-4bbb32f-20261101T103416`、`/home/bfly/yunwei/published-download-alpha4`。后续 Orchestrator P0 源码不包含在此冻结包内，不移动该 tag。
 - 本版本为 **Alpha 审阅候选**：供源码审阅、跟进开发与 Linux 本机验证使用。
 - 验证状态：**Linux x64／Wayland 与 X11/XWayland 本机验证**通过（阅读、批注、编辑、后台协作工作流与本机安装循环；本次剪贴板与快速切换专项为X11/XWayland）。**Windows／macOS 为产品目标平台，未验证**；安装与打包工具当前仅实现 Linux。
 - 空工作台四项推荐功能引导（批注与选区讨论、任务闭环、分屏阅读、独立窗口）已包含在本版本中。

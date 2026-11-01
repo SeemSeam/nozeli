@@ -70,8 +70,8 @@ Agent 交付得快，不代表人已经理解。Nozeli 希望让你看清成果�
 
 - 面向 Windows、macOS、Linux；当前验证为 **Linux x64／Wayland 与 X11/XWayland**，其他平台尚未通过。
 - 已有阅读、批注、编辑、真实文件与后台协作工作流；具体格式、版本和能力边界见[当前状态与能力边界](docs/status.md)。
-- **Alpha预发行候选 `v0.1.0-alpha.4`**（尚未发布）：本轮源码包含 Pi 原生账号与模型管理、上下文交付收敛、本地 HTML/HTM 网页视图、材料版本保护及存储写放大修复；Linux x64 已完成本机验证，Windows/macOS 未验证。目标发布与分发审计状态见[发布说明与发行边界](docs/release.md)。
-- Release：<https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.4>（公开 prerelease 目标，发布前仍需完成构建、安装与校验和核对）。
+- **Alpha预发行 `v0.1.0-alpha.4` 已发布**：Pi 原生账号与模型管理、上下文交付收敛、本地 HTML/HTM 网页视图、材料版本保护及存储写放大修复。Linux x64 已验证，Windows/macOS 未验证；分发审计未完成。
+- Release：<https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.4>。后续源码的 Orchestrator P0 任务板与身份治理不包含在该冻结发行包中，详见[发布说明](docs/release.md)。
 - 第三方源码与再分发审计未完成：公开 Alpha 仍需保留未完成义务和当前发布授权说明，不构成合规认证。
 
 ## 进一步了解
