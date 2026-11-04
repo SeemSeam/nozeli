@@ -212,6 +212,7 @@ provider 内容拒绝、鉴权、限流、模型不可用及网络失败：本�
 - Native prompt 合同为 `text + materials + projection + images + job`。原生 entry 确认包含精确文本／材料包核验，request tuple digest 与 native entry digest 分开；失败仍可已有记录确认，unknown 不自动重发。进程内 request fence 不代替持久宿主 `collabAttempts`；没有新增共享 runtime 交付数据库。
 - 当前 Work 原始请求与已批准原文在每 run 的新读取器中重新登记同身份／版本，只将 readRef 与版本放入投影。`nozeli_history_read` 可用当前稳定 readRef 与上一返回的 `endOffset` 作为 `offset` 跨 run 续读；过期随机引用和代理对中间 offset 拒绝，不回退当前磁盘。
 - 预算覆盖宿主文本材料、交接、来源／历史／skill／报告以及主要文档／搜索／列表读取；native Pi 自己的工具输出与压缩继续由 Pi 管理，不谎称这就是整个模型窗口的总 token 限制。JSON 分页按完整序列化响应（含来源、转义、续读及报告字段）挑选合法 Unicode 边界，未能容纳时不提交读记录或推进游标。所有已消费宿主计数在返回正文或执行效果前有持久屏障。
+- 2026-11-03 实际用户回合暴露 `nozeli_document_read` 返回全文及冗余文档账本导致序列化结果超过剩余 run 额度，旧 hostControl 让回合结束且没有正文／派工。当前源码改为冻结 DocumentReader 页：正文每页最多 12 KiB，并按完整 JSON（含 edit handle、版本、续读字段）的实际剩余额度取合法 Unicode 边界；版本与编辑句柄保持，续读仅提交当前回合的 nextReadRef，不再读取后来磁盘内容，不发送本地作者账本／变更历史作为文档正文。累计读取额度真正耗尽时给出 recoverable continueTurn，允许本轮依据已读内容回答或继续有证据支持的动作，明确未读范围；不自动重发用户输入／新建回合／绕过总额度。预算持久化失败与受保护效果回执仍 fail-closed，不把该恢复规则扩展为授权／写入门的绕过。
 - 上下文详情位于原会话管理的折叠区；只展示已有原文／来源与证据阶段，hook 执行次数不冒充完整请求捕获。provider 失败后保留同一个对话 renderer、历史、草稿和诊断，不自动销毁分区；发送仍受连接、权限与原生准入门控。
 - 长会话验证发现并修正本地持久化放大：不变业务快照不重复提交全量事务，本地计数／缓存只在必要时写入；原子提交、CAS、unknown 屏障和8秒存储 deadline 保留。SQLite 自动回滚时保留原始故障，不能用二次 ROLLBACK 错误掩盖它。没有删除用户历史或测试以伪造压力通过。
 

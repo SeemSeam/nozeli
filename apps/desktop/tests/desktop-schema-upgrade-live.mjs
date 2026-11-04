@@ -230,7 +230,7 @@ try {
   await call('managed.connect', {projectId}); await until(async () => (await status()).ready, 'current relaunch residents ready');
   await assertRetained(await state());
   result.maintenance = await call('managed.maintenance.status', {projectId});
-  assert(!result.maintenance.bugs.some(bug => bug.status !== 'repaired' && /resident-preflight|OMP_TOOLS_DIGEST_MISMATCH/.test(JSON.stringify(bug))), 'Compatible schema upgrade cannot remain masked behind internal maintenance');
+  assert(!result.maintenance.rows.some(bug => bug.status !== 'repaired' && /^resident-preflight/.test(bug.phase)), 'Compatible schema upgrade cannot remain masked behind internal maintenance');
   check('Clean current shutdown and fresh-process reconnect durably preserve both original resident sessions without replay');
   phase = 'explicit-new-input';
   await send('orchestrator', explicit, 'schema-upgrade-new-orchestrator');

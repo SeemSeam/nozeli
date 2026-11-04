@@ -178,3 +178,35 @@ test('host exit failures retain normal and unreadable evidence with an announced
     }
   }
 });
+
+const legacyTarget={projectId:'p',workId:'work',objectId:'publication',relPath:'report.html'};
+function legacyInvoke(calls,file={},versions={}){
+ return async(method,args)=>{
+  calls.push([method,args]);
+  if(method==='managed.review.read')return {ok:true,value:{workId:'work',objectId:'publication',files:[{relPath:'report.html',baselineDigest:'input-digest',candidateDigest:'published-digest',draft:{text:'HUMAN DRAFT MUST NOT APPEAR'},...file}]}};
+  if(method==='document.version'){
+   if(args.documentSource?.type!=='review'||args.documentSource?.workId!=='work'||args.documentSource?.objectId!=='publication')return {ok:true,value:{kind:'text',digest:'other-source',text:'OTHER SOURCE'}};
+   const kind=args.version.kind;
+   return {ok:true,value:versions[kind]||{kind:'text',digest:kind==='baseline'?'input-digest':'published-digest',text:kind==='baseline'?'INPUT FROZEN HTML':'PUBLISHED FROZEN HTML'}};
+  }
+  throw Error('Unexpected live file access: '+method);
+ };
+}
+test('legacy report opens document.version input and published candidate, never human draft or same-path project',async()=>{
+ const calls=[],f=fixture(legacyInvoke(calls));await f.reader.open(legacyTarget);
+ assert.equal(f.mounts.length,1);assert.equal(f.mounts[0].leftText,'INPUT FROZEN HTML');assert.equal(f.mounts[0].rightText,'PUBLISHED FROZEN HTML');
+ f.reader.restore();assert.equal(f.editor.buffer,'unsaved draft');
+});
+test('legacy missing baseline, binary and oversized material never produce fake empty diffs',async()=>{
+ for(const reason of ['baseline-unavailable','binary','size']){
+  const calls=[],file=reason==='baseline-unavailable'?{baselineUnavailable:true}:{},versions={baseline:{kind:'unsupported',digest:'input-digest',text:null,unavailable:reason}};
+  const f=fixture(legacyInvoke(calls,file,versions));await f.reader.open(legacyTarget);
+  assert.equal(f.mounts.length,0);assert.match(f.parent.children[2].children[1].children[0].textContent,/不会读取当前文件代替/);
+ }
+});
+test('legacy real added file alone permits an absent baseline; version identity mismatch stays unavailable',async()=>{
+ const calls=[],added=fixture(legacyInvoke(calls,{baselineDigest:null}));await added.reader.open(legacyTarget);
+ assert.equal(added.mounts[0].leftText,'');assert.equal(added.mounts[0].rightText,'PUBLISHED FROZEN HTML');
+ const mismatch=fixture(legacyInvoke([],{},{candidate:{kind:'text',digest:'wrong-publication',text:'WRONG'}}));await mismatch.reader.open(legacyTarget);
+ assert.equal(mismatch.mounts.length,0);
+});

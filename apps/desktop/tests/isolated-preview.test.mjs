@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {EventEmitter} from 'node:events';
 import {previewPath,previewDependencies,previewUrlMember,previewCsp,OFFLINE_BOOTSTRAP,IsolatedPreviewManager,capturePreview} from '../src/main/isolated-preview.mjs';
+import {createHash} from 'node:crypto';
+import {documentResourceId} from '../src/domain/document-source.mjs';
 import {WorkspaceNative} from '../src/main/workspace-native.mjs';
 
 test('manifest path authority rejects traversal, devices, alternate separators and encodings',()=>{
@@ -230,4 +232,98 @@ test('fully scrolled-out report hides without covering review controls',async()=
  const slot=[...h.manager.slots.values()][0];
  h.manager.bounds(slot,{x:10,y:-300,width:300,height:200});assert.equal(slot.view.visible,false);
  h.manager.bounds(slot,h.payload.bounds);assert.equal(slot.view.visible,true);
+});
+
+test('document-end links expose only frozen artifacts and explicit scoped review intent without changing source',async()=>{
+ const h=harness(),original='<html><body><p>Final paragraph</p></body></html>',relPath='source<&>.txt';
+ h.manager.managedAgents.reportSource=async()=>({report:{format:'html-static'},read:async()=>Buffer.from(original),readManifest:async()=>({references:[]}),listArtifacts:async()=>({files:[{relPath}]})});
+ await h.manager.invoke(h.scope,'isolated-preview.open',{...h.payload,endMatter:true});const slot=[...h.manager.slots.values()][0],wc=h.views[0].webContents;
+ const served=await(await h.sessions[0].handler({url:wc.url,method:'GET'})).text();assert(served.indexOf('Final paragraph')<served.indexOf('data-nozeli-report-endmatter'));assert(served.includes('source&lt;&amp;&gt;.txt'));assert.equal(slot.files.get('report.html').bytes.toString(),original);assert.equal(h.views[0].options.webPreferences.javascript,false);
+ const event={isMainFrame:true,preventDefault(){}};wc.emit('will-frame-navigate',event,slot.endBase+'review');wc.emit('will-frame-navigate',event,slot.endBase+'file/0');
+ assert.deepEqual(h.calls.filter(row=>row[1]?.type==='end-matter').map(row=>({action:row[1].action,relPath:row[1].relPath})),[{action:'review',relPath:undefined},{action:'file',relPath}]);
+ wc.emit('will-frame-navigate',event,slot.endBase+'file/1');wc.emit('will-frame-navigate',event,slot.origin+'/__nozeli_report_end__/forged/review');assert.equal(h.calls.filter(row=>row[1]?.type==='end-matter').length,2);
+});
+
+test('read-only end matter cannot expose review commands and ordinary previews have no footer',async()=>{
+ for(const endMatter of ['files',undefined]){const h=harness(),source=await h.manager.managedAgents.reportSource();source.listArtifacts=async()=>({files:[{relPath:'frozen.txt'}]});h.manager.managedAgents.reportSource=async()=>source;await h.manager.invoke(h.scope,'isolated-preview.open',{...h.payload,endMatter});const slot=[...h.manager.slots.values()][0],wc=h.views[0].webContents,served=await(await h.sessions[0].handler({url:wc.url,method:'GET'})).text();assert.equal(served.includes('data-nozeli-endmatter-action="review"'),false);wc.emit('will-frame-navigate',{isMainFrame:true,preventDefault(){}},slot.endBase+'review');assert.equal(h.calls.filter(row=>row[1]?.type==='end-matter').length,0);}
+});
+
+test('review document capture freezes the source-scoped buffer and frozen dependencies, never project disk',async()=>{
+ const sha=value=>createHash('sha256').update(value).digest('hex');
+ const reviewSource={type:'review',workId:'work-1',objectId:'object-1'};
+ const unsaved='<!doctype html><html><body><h1>UNSAVED_REVIEW_HTML</h1><script src="candidate.js"></script></body></html>';
+ const frozen='document.body.dataset.source="FROZEN_CANDIDATE";';
+ let drift=false,adapterUsed=false;
+ const adapter={
+   async read({relPath}){
+     if(relPath==='candidate.js')return {text:frozen,digest:sha(Buffer.from(frozen,'utf8'))};
+     if(relPath==='gone.css')return {text:null,bytes:null,unsupportedReason:'frozen-size'};
+     throw Object.assign(Error('此文件不在该发布的审校清单中；未读取项目源文件。'),{code:'NOT_FOUND'});},
+   async currentBytes({relPath}){return relPath==='candidate.js'?Buffer.from(drift?'DRIFTED':frozen,'utf8'):null;}
+ };
+ const workspace={buffers:new Map(),synced:[],projectRecords:()=>[{relPath:'candidate.html',documentSource:reviewSource},{relPath:'other.html',documentSource:reviewSource},{relPath:'candidate.html'}],resource:(project,rel,source)=>project+'\0'+documentResourceId(project,source,rel),syncDocument:async call=>{workspace.synced.push(call);return ()=>{};}};
+ workspace.buffers.set(workspace.resource('p','candidate.html',reviewSource),{projectId:'p',relPath:'candidate.html',documentSource:structuredClone(reviewSource),text:unsaved,revision:4,dirty:true});
+ workspace.buffers.set(workspace.resource('p','broken.html',reviewSource),{projectId:'p',relPath:'broken.html',documentSource:structuredClone(reviewSource),text:'<link href="gone.css">',revision:1,dirty:false});
+ workspace.buffers.set(workspace.resource('p','candidate.html'),{projectId:'p',relPath:'candidate.html',text:'PROJECT_SAME_PATH_MUST_NOT_PREVIEW',revision:9,dirty:true});
+ const host={requireProject:async()=>({root:'/bounded-project'}),requireReviewDocuments:()=>{adapterUsed=true;return adapter;},resolveFile:()=>{throw Error('review preview must never read project disk');}};
+ const snapshot=await capturePreview({host,workspace,projectId:'p',entryPath:'candidate.html',documentSource:reviewSource});
+ assert.equal(adapterUsed,true);
+ assert.equal(snapshot.files.get('candidate.html').bytes.toString(),unsaved);
+ assert.equal(snapshot.files.get('candidate.html').version,4);assert.equal(snapshot.files.get('candidate.html').dirty,true);
+ assert.equal(snapshot.files.get('candidate.js').bytes.toString(),frozen);assert.equal(snapshot.files.get('candidate.js').version,null);
+ assert.deepEqual(workspace.synced.map(call=>call.relPath+'@'+call.documentSource.workId),['candidate.html@work-1','other.html@work-1']);
+ await assert.rejects(capturePreview({host,workspace,projectId:'p',entryPath:'candidate.html',documentSource:reviewSource,buffers:[{path:'candidate.html',version:3}]}),/编辑缓冲版本/);
+ await assert.rejects(capturePreview({host,workspace,projectId:'p',entryPath:'broken.html',documentSource:reviewSource}),/预览依赖缺失：gone\.css（frozen-size）/);
+ await assert.rejects(capturePreview({host,workspace,projectId:'p',entryPath:'missing.html',documentSource:reviewSource}),/此文件不在该发布的审校清单中/);
+ drift=true;await assert.rejects(capturePreview({host,workspace,projectId:'p',entryPath:'candidate.html',documentSource:reviewSource}),/捕获期间审校文档已变化/);drift=false;
+ adapterUsed=false;
+ const projectPreview=await capturePreview({host,workspace,projectId:'p',entryPath:'candidate.html'});assert.equal(projectPreview.files.get('candidate.html').bytes.toString(),'PROJECT_SAME_PATH_MUST_NOT_PREVIEW');
+ assert.equal(adapterUsed,false);assert.deepEqual(workspace.synced.at(-1).documentSource,{type:'project'});
+});
+
+test('preview open binds to the owning surface document source and rejects foreign publication redirection',async()=>{
+ const reviewSource={type:'review',workId:'work-1',objectId:'object-1'};
+ const entry='<!doctype html><html><body><p>REVIEW_ONLY</p></body></html>';
+ const workspace={buffers:new Map(),projectRecords:()=>[{relPath:'candidate.html',documentSource:reviewSource}],resource:(project,rel,source)=>project+'\0'+documentResourceId(project,source,rel),syncDocument:async()=>()=>{}};
+ workspace.buffers.set(workspace.resource('p','candidate.html',reviewSource),{projectId:'p',relPath:'candidate.html',documentSource:structuredClone(reviewSource),text:entry,revision:2,dirty:false});
+ const host={requireProject:async()=>({root:'/bounded-project'}),requireReviewDocuments:()=>({read:async()=>{throw Error('unused');},currentBytes:async()=>Buffer.from(entry,'utf8')}),resolveFile:()=>{throw Error('no project read');}};
+ const h=harness({host,workspace});
+ h.scope.role='surface';h.scope.kind='document';h.scope.documentSource=reviewSource;h.scope.view={getBounds:()=>({x:0,y:0,width:800,height:600}),getVisible:()=>true};
+ h.scope.relPath='candidate.html';
+ const open={key:'web',projectId:'p',profile:'offlineDevelopment',generation:1,entryPath:'candidate.html',bounds:{x:0,y:0,width:400,height:300},documentSource:structuredClone(reviewSource)};
+ const snapshot=await h.manager.invoke(h.scope,'isolated-preview.open',open);
+ assert.equal(snapshot.unsaved,false);assert.equal(snapshot.files.find(file=>file.path==='candidate.html').version,2);
+ await assert.rejects(h.manager.invoke(h.scope,'isolated-preview.update',{...open,generation:2,documentSource:{type:'review',workId:'other-work',objectId:reviewSource.objectId}}),/预览来源与当前文档不一致/);
+ await assert.rejects(h.manager.invoke(h.scope,'isolated-preview.update',{...open,generation:3,documentSource:{type:'project'}}),/预览来源与当前文档不一致/);
+ await assert.rejects(h.manager.invoke(h.scope,'isolated-preview.update',{...open,generation:4,documentSource:{type:'review',workId:'work-1',objectId:'object-1',extra:1}}),/预览来源无效/);
+ assert.equal([...h.manager.slots.values()][0].generation,1);
+});
+
+test('baseline sibling grant stays within owning project publication side and entry',async()=>{
+ const owner={type:'review',workId:'work-1',objectId:'object-1'},baseline={...owner,type:'review-version',version:{kind:'baseline'}};
+ const bytes=Buffer.from('<h1>Frozen before</h1>');
+ const workspace={buffers:new Map(),projectRecords:()=>[],resource:(p,rel,source)=>documentResourceId(p,source,rel)};
+ const host={requireProject:async()=>({root:'/bounded'}),requireReviewDocuments:()=>({read:async()=>({text:bytes.toString()}),currentBytes:async()=>bytes})};
+ const h=harness({host,workspace});Object.assign(h.scope,{role:'surface',kind:'document',relPath:'candidate.html',documentSource:owner,view:{getBounds:()=>({x:0,y:0,width:800,height:600}),getVisible:()=>true}});
+ const open={key:'before',projectId:'p',profile:'offlineDevelopment',generation:1,entryPath:'candidate.html',documentSource:baseline,bounds:{x:0,y:0,width:300,height:200}};
+ await h.manager.invoke(h.scope,'isolated-preview.open',open);
+ const denied=[{projectId:'other-project'},{documentSource:{...baseline,workId:'foreign'}},{documentSource:{...baseline,objectId:'foreign'}},{documentSource:{...baseline,version:{kind:'candidate'}}},{documentSource:{...baseline,version:{kind:'draft',revision:1}}},{documentSource:{type:'project'}},{entryPath:'other.html'}];
+ for(const change of denied)await assert.rejects(h.manager.invoke(h.scope,'isolated-preview.update',{...open,generation:2,...change}),{code:'PREVIEW_DENIED'});
+ assert.equal(h.views.length,1);assert.equal(h.manager.slots.values().next().value.generation,1);
+ h.scope.documentSource={...baseline,version:{kind:'candidate'}};
+ await h.manager.invoke(h.scope,'isolated-preview.update',{...open,generation:2});
+ h.scope.documentSource=baseline;
+ await h.manager.invoke(h.scope,'isolated-preview.update',{...open,generation:3});
+ h.scope.documentSource={type:'project'};
+ await assert.rejects(h.manager.invoke(h.scope,'isolated-preview.update',{...open,generation:4}),{code:'PREVIEW_DENIED'});
+});
+
+test('capture tolerates identical source-buffer republish but refuses changed content during dependency loading',async()=>{
+ const source={type:'review',workId:'work-1',objectId:'object-1'},key='p-review-entry';let change=false;
+ const html='<script src="candidate.js"></script>',buffer={projectId:'p',text:html,revision:1,digest:'source-base'};
+ const workspace={buffers:new Map([[key,buffer]]),projectRecords:()=>[],resource:(_id,rel)=>rel==='entry.html'?key:rel};
+ const adapter={read:async()=>{const current=workspace.buffers.get(key);workspace.buffers.set(key,{...current,revision:current.revision+1,text:change?html+'changed':html});return {text:'const candidate=1;'};},currentBytes:async()=>Buffer.from('const candidate=1;')};
+ const host={requireProject:async()=>({root:'/source'}),requireReviewDocuments:()=>adapter};
+ assert.equal((await capturePreview({host,workspace,projectId:'p',entryPath:'entry.html',documentSource:source})).files.get('entry.html').bytes.toString(),html);
+ change=true;await assert.rejects(capturePreview({host,workspace,projectId:'p',entryPath:'entry.html',documentSource:source}),/编辑缓冲已变化/);
 });

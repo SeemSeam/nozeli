@@ -28,6 +28,7 @@ for(const decision of ['accept','discard'])test(`${decision} stores exact bindin
   await store.end(work.id,intent);
   const closure=structuredClone(store.find(work.id).closure),saved=await readTestState(store);
   assert.deepEqual(closure.binding,intent.binding);assert.equal(closure.requestKey,intent.requestKey);
+  assert.equal(work.status,'closing');assert.equal(work.endedAt,undefined);assert.equal(store.used(),1);
   assert.deepEqual(saved.works[0].closure,closure);
   assert.equal(store.state.todos.find(todo=>todo.id==='todo').status,'cancelled');assert.equal(store.state.jobs[0].status,'cancelled');
   assert.equal(store.state.drafts[work.id],'unsent text');
@@ -85,13 +86,13 @@ test('legacy decided closure never gains an inferred binding or request key',asy
   assert.deepEqual(store.state,before);
 });
 
-test('legacy unknown outcome requires explicit current binding and preserves end time',async t=>{
+test('legacy unknown outcome requires explicit current binding and does not retain a false end time',async t=>{
   const {store,work}=await fixture(t),at='2026-01-01T00:00:00.000Z';
   await store.mutate(()=>{work.status='ended';work.endedAt=at;work.closure={phase:'blocked',revision:1,at};});
   const intent=dispositionIntent(work);
   await assert.rejects(store.end(work.id,{by:'user',revision:1,decision:'discard'}),/binding/);
   await store.end(work.id,intent);
-  assert.equal(store.find(work.id).endedAt,at);assert.deepEqual(store.find(work.id).closure.binding,intent.binding);
+  assert.equal(store.find(work.id).status,'closing');assert.equal(store.find(work.id).endedAt,undefined);assert.deepEqual(store.find(work.id).closure.binding,intent.binding);
 });
 
 test('activateNext skips ineligible cold queued work and retains initialization',async t=>{

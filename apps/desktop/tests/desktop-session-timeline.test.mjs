@@ -74,6 +74,63 @@ try {
   page=await target.page();assert(page);
   await page.waitForFunction(()=>window.consumer);
   await page.evaluate(()=>{
+    const c=window.consumer;c.store.apply('project-consumer',{version:1,entries:[
+      {id:'model-history',target:'frontdesk',speaker:'agent',source:'native',sequence:1,text:'Historical answer',provider:'recorded-provider',model:'recorded-model',modelStatus:'recorded'},
+      {id:'unknown-history',target:'frontdesk',speaker:'agent',source:'legacy',sequence:2,text:'Old answer'},
+      {id:'user-history',target:'frontdesk',speaker:'user',source:'host',sequence:3,text:'User question'},
+    ],deltas:[]});
+  });
+  await page.waitForSelector('[data-message="model-history"] [data-history-model]');
+  assert.equal(await page.$eval('[data-message="model-history"] [data-history-model]',node=>node.textContent),'recorded-provider / recorded-model');
+  assert.equal(await page.$eval('[data-message="unknown-history"] [data-history-model]',node=>node.textContent),'模型未记录');
+  assert.equal(await page.$('[data-message="user-history"] [data-history-model]'),null);
+  await page.evaluate(()=>{window.consumer.state.model='different-live-model';window.consumer.render();});
+  assert.equal(await page.$eval('[data-message="model-history"] [data-history-model]',node=>node.textContent),'recorded-provider / recorded-model');
+  await page.evaluate(()=>{const c=window.consumer;c.store.reset('project-consumer');c.state.jobs=[{id:'before-output',target:'frontdesk',status:'queued'}];c.store.apply('project-consumer',{version:1,entries:[{id:'before-output-user',jobId:'before-output',target:'frontdesk',speaker:'user',source:'host',text:'核对轨道',sequence:1}],deltas:[]});c.render();});
+  await page.waitForSelector('[data-execution-state="queued"]');
+  assert.equal(await page.$('.session-message[data-role="user"] [role="status"]'),null);
+  assert.equal(await page.$('[data-message="host-turn:before-output"] .session-tool'),null,'status is not a fabricated process record');
+  assert.equal(await page.$('[data-message="host-turn:before-output"] [data-history-model]'),null,'no model is invented before an assistant record');
+  await page.screenshot({path:path.join(out,'execution-before-model-output.png'),fullPage:true});
+  await page.evaluate(()=>{window.consumer.state.jobs[0].status='starting';window.consumer.render();});
+  await page.waitForSelector('[data-execution-state="starting"]');
+  await page.evaluate(()=>{
+    const c=window.consumer;c.store.reset('project-consumer');
+    c.state.jobs=[{id:'echo-job',target:'frontdesk',status:'running'},{id:'halt-job',target:'frontdesk',status:'completed',completion:'host-control'}];
+    c.state.agents=[{target:'frontdesk',busy:true}];
+    c.store.apply('project-consumer',{version:1,entries:[
+      {id:'accepted-input',target:'frontdesk',speaker:'user',source:'host',jobId:'echo-job',sequence:1,text:'继续',streaming:true},
+      {id:'native-echo',target:'frontdesk',speaker:'user',source:'native',jobId:'echo-job',sessionId:'session',requestId:'request',entryId:'native-user',sequence:2,text:'继续',streaming:true},
+      {id:'another-input',target:'frontdesk',speaker:'user',source:'host',jobId:'another-job',sequence:3,text:'继续'},
+      {id:'thinking-call',target:'frontdesk',speaker:'agent',source:'native',jobId:'echo-job',sequence:4,text:'',provider:'turn-provider',model:'turn-model',toolCalls:[{id:'pending-read',name:'nozeli_document_read'}]},
+      {id:'last-tool',target:'frontdesk',speaker:'tool',source:'native',jobId:'echo-job',sequence:5,text:'',tool:{name:'other',status:'complete',toolCallId:'other'}},
+      {id:'halt-tool',target:'frontdesk',speaker:'tool',source:'native',jobId:'halt-job',sequence:6,text:'',tool:{name:'nozeli_document_read',status:'complete',output:JSON.stringify({ok:false,hostControl:true,error:{code:'HOST_CONTEXT_BUDGET_EXHAUSTED'}})}},
+    ]});c.render();
+  });
+  await page.waitForSelector('[data-message="last-tool"] [data-execution-state="toolrunning"]');
+  assert.equal(await page.$$eval('.session-message[data-role="user"]',nodes=>nodes.length),2,'identical text in different jobs stays separate');
+  assert.equal(await page.$('.session-message[data-role="user"] [role="status"]'),null,'user never displays output status, even if native streaming flag is set');
+  assert.equal(await page.$('[data-message="native-echo"]'),null,'accepted input suppresses its transient native echo');
+  assert.equal(await page.$eval('[data-message="last-tool"] [data-history-model]',node=>node.textContent),'turn-provider / turn-model','synthetic process row uses agent evidence from this turn');
+  assert.match(await page.$eval('[data-message="last-tool"]>.session-tool>summary',node=>node.textContent),/nozeli_document_read.*1 项待完成/);
+  assert.equal(await page.$('[data-message="halt-tool"] [data-execution-state="blocked"]')!==null,true,'actual failed host read is not task completion');
+  assert.equal(await page.evaluate(()=>document.querySelector('.session-timeline').textContent.includes('本轮尚无正文回复')),false,'no invented empty assistant reply');
+  await page.screenshot({path:path.join(out,'execution-running-and-blocked.png'),fullPage:true});
+  await page.setViewport({width:390,height:780});
+  await page.evaluate(()=>{document.documentElement.dataset.theme='dark';});
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'execution status and tool names fit narrow conversation');
+  await page.screenshot({path:path.join(out,'execution-narrow-dark.png'),fullPage:true});
+  await page.evaluate(()=>{window.consumer.state.jobs[0].status='waiting';window.consumer.render();});
+  await page.waitForSelector('[data-message="last-tool"] [data-execution-state="waiting"]');
+  await page.screenshot({path:path.join(out,'execution-waiting.png'),fullPage:true});
+  await page.setViewport({width:1440,height:1000});
+  await page.evaluate(()=>{document.documentElement.dataset.theme='light';});
+  await page.evaluate(()=>{const c=window.consumer;c.store.apply('project-consumer',{version:1,entries:[{...c.store.getSnapshot().entries.find(entry=>entry.id==='native-echo'),streaming:false,durable:true}]});c.state.jobs[0].status='completed';c.state.agents[0].starting=true;c.render();});
+  await page.waitForSelector('[data-message="last-tool"] [data-execution-state="completed"]');
+  assert.equal(await page.$$eval('.session-message[data-role="user"]',nodes=>nodes.length),2,'durable settlement does not restore duplicate echo');
+  await page.evaluate(()=>{window.consumer.state.jobs=[];window.consumer.state.agents=[];window.consumer.render();});
+  await page.evaluate(()=>window.consumer.store.reset('project-consumer'));
+  await page.evaluate(()=>{
     const base={target:'frontdesk',speaker:'agent',source:'native',jobId:'front-one'};
     window.consumer.store.apply('project-consumer',{version:1,entries:[
       {...base,id:'front-call',sequence:1,text:'',toolCalls:[{id:'read-one',name:'nozeli_document_read',input:{path:'paper.md'}}]},
@@ -106,6 +163,45 @@ try {
   assert.equal(await page.$$eval('.session-message',nodes=>nodes.length),2,'host failure detail belongs to the original task, not a second reply bubble');
   assert.equal(await page.$eval('[data-message="host-failure"]>header strong',node=>node.textContent),'Nozeli','program failure never impersonates the model');
   assert.equal(await page.$eval('[data-message="host-failure"]',node=>node.textContent.includes('HOST_FAILURE_VISIBLE')),true);
+  await page.evaluate(()=>{
+    const c=window.consumer;c.store.reset('project-consumer');
+    c.state.jobs=[{id:'published-job',target:'work-one',revision:1,status:'completed',completion:'host-control'}];
+    c.state.works=[{id:'work-one',name:'Native Worker',status:'review',revision:1,result:{objectId:'published-result',revision:1}}];
+    c.state.receipts=[{id:'published-receipt',kind:'result',workId:'work-one',jobId:'published-job',revision:1,objectId:'published-result'}];
+    const base={target:'work-one',workId:'work-one',jobId:'published-job',revision:1,source:'native'};
+    c.store.apply('project-consumer',{version:1,entries:[
+      {...base,id:'recovered-check',sequence:1,speaker:'tool',text:'check script failed before correction',tool:{name:'bash',status:'error'}},
+      {...base,id:'publish-call',sequence:2,speaker:'agent',text:'发布已核对的结果',complete:true,toolCalls:[{id:'publish',name:'nozeli_result_publish'}]},
+      {...base,id:'publication-saved',sequence:3,speaker:'system',source:'host',text:'RESULT SAVED'},
+      {id:'historical-plain',target:'frontdesk',speaker:'agent',source:'native',sequence:4,text:'Historical completed answer',complete:true},
+    ]});c.render();
+  });
+  const workerState='.session-worker-meta [data-execution-state]';
+  await page.waitForFunction(()=>document.querySelector('.session-worker-meta [data-execution-state="completed"]')?.textContent==='已交付 · 待审核');
+  assert.equal(await page.$eval('[data-message="historical-plain"] [data-execution-state]',node=>node.dataset.executionState),'completed');
+  assert.equal(await page.$eval('[data-message="publish-call"] [data-history-model]',node=>node.textContent),'模型未记录');
+  await page.click('[data-message="recovered-check"] .session-tool>summary');
+  assert.match(await page.$eval('[data-message="recovered-check"]',node=>node.textContent),/check script failed before correction/,'historical tool error remains inspectable');
+  await page.screenshot({path:path.join(out,'worker-delivered-after-tool-error.png'),fullPage:true});
+  for(const status of ['failed','interrupted','unknown']){
+    await page.evaluate(status=>{window.consumer.state.jobs[0].status=status;window.consumer.render();},status);
+    await page.waitForFunction(status=>document.querySelector('.session-worker-meta [data-execution-state]')?.dataset.executionState===status,{},status);
+  }
+  await page.evaluate(()=>{window.consumer.state.jobs[0].status='completed';window.consumer.state.receipts[0].jobId='stale-job';window.consumer.render();});
+  await page.waitForFunction(()=>document.querySelector('.session-worker-meta [data-execution-state]')?.dataset.executionState==='failed');
+  assert.equal(await page.$eval(workerState,node=>node.textContent),'失败','stale publication is not settlement proof');
+  await page.evaluate(()=>{window.consumer.state.receipts[0].jobId='published-job';window.consumer.state.receipts[0].objectId='wrong-result';window.consumer.render();});
+  await page.waitForFunction(()=>document.querySelector('.session-worker-meta [data-execution-state]')?.dataset.executionState==='failed');
+  await page.evaluate(()=>{
+    const c=window.consumer,receipt=c.state.receipts[0];receipt.objectId='published-result';receipt.report={objectId:'published-result',digest:'a'.repeat(64)};receipt.snapshot={reportDigest:'a'.repeat(64)};
+    c.state.works[0]={...c.state.works[0],revision:2,status:'running',result:null};
+    c.state.jobs.push({id:'continued-job',target:'work-one',revision:2,status:'running'});
+    c.store.apply('project-consumer',{version:1,entries:[{id:'continued-thinking',target:'work-one',workId:'work-one',jobId:'continued-job',revision:2,speaker:'agent',source:'native',sequence:5,reasoning:'继续执行',text:''}]});c.render();
+  });
+  await page.waitForFunction(()=>Array.from(document.querySelectorAll('.session-worker-meta [data-execution-state]')).map(node=>node.textContent).join('|')==='已交付|思考中');
+  await page.evaluate(()=>{window.consumer.state.works[0].status='review';window.consumer.state.works[0].result={objectId:'newer-result',revision:2};window.consumer.render();});
+  await page.waitForFunction(()=>document.querySelector('.session-worker-meta [data-execution-state]')?.textContent==='已交付');
+  await page.evaluate(()=>{const c=window.consumer;c.state.jobs=[];c.state.receipts=[];c.state.works=[{id:'work-one',name:'Native Worker'}];c.render();});
   await page.evaluate(()=>window.consumer.store.reset('project-consumer'));
   const fullOutput=Array.from({length:1200},(_,i)=>'native output line '+i+' — preserved').join('\n');
   await page.evaluate(fullOutput=>{
@@ -152,8 +248,10 @@ try {
   await page.$$eval('.session-tool summary',nodes=>nodes.find(node=>node.textContent.includes('read_file')).click());
   await page.waitForFunction(()=>document.querySelector('.session-worker-transcript').textContent.includes('src/space name.ts'));
   await page.evaluate(()=>window.consumer.store.apply('project-consumer',{version:1,entries:[{id:'tool-result',target:'worker',workId:'work-one',jobId:'job-one',revision:1,speaker:'tool',source:'native',sequence:1.5,text:'native tool output preserved',tool:{name:'read_file',status:'complete',output:'native tool output preserved'}}]}));
-  await page.waitForSelector('[data-message="tool-result"] summary');
-  await page.click('[data-message="tool-result"] summary');
+  await page.waitForSelector('.session-worker-transcript>.session-tool>summary');
+  await page.click('.session-worker-transcript>.session-tool>summary');
+  await page.waitForSelector('[data-process-entry="tool-result"] summary');
+  await page.click('[data-process-entry="tool-result"] summary');
   await page.waitForFunction(()=>document.querySelector('[data-message="tool-result"]').textContent.includes('native tool output preserved'));
   await page.click('.session-worker summary');
   await page.waitForFunction(()=>!document.querySelector('.session-worker details').open);
@@ -214,6 +312,19 @@ try {
   assert.equal(await page.$$eval('.session-timeline script,.session-timeline [onerror],.session-timeline a[href^="javascript:"]',nodes=>nodes.length),0);
   assert.equal(await page.evaluate(()=>window.consumerUnsafe===true),false);
   console.log('Synthetic-only styled surface screenshots: '+out);
+  await page.evaluate(()=>{const c=window.consumer;c.store.reset('project-consumer');c.state.receipts=[];const base={target:'worker',workId:'work-one',jobId:'density-round',revision:2,source:'native'};c.store.apply('project-consumer',{version:1,entries:[...Array.from({length:6},(_,i)=>({...base,id:'empty-'+i,speaker:i%2?'tool':'agent',sequence:i+1,text:''})),{...base,id:'useful-answer',speaker:'agent',sequence:7,text:'已完成关键核对，仍需你确认结果。'},{...base,id:'dense-tool',speaker:'tool',sequence:8,text:'TECHNICAL_OUTPUT_MARKER',tool:{name:'read_file',status:'complete',output:'TECHNICAL_OUTPUT_MARKER'}},{...base,id:'important-failure',speaker:'agent',sequence:9,text:'连接失败，已有修改保留。',status:'failed',failed:true}],deltas:[]});c.render();});
+  await page.waitForSelector('[data-message="important-failure"] [role="alert"]');
+  assert.equal(await page.$('.session-worker-transcript'),null,'failure stays visible before opening worker details');
+  await page.click('.session-worker>details>summary');await page.waitForSelector('[data-message="useful-answer"]');
+  assert.equal(await page.$$eval('.session-worker-transcript .session-message',nodes=>nodes.length),2,'only readable answer and failure create full message blocks');
+  assert.equal(await page.$('[data-message="empty-0"]'),null,'empty status records do not create empty messages or actions');
+  assert.equal(await page.$('[data-process-entry="dense-tool"]'),null,'opening worker detail does not expand raw tool records');
+  await page.click('.session-worker-transcript>.session-tool>summary');await page.waitForSelector('[data-process-entry="dense-tool"]');
+  assert.equal(await page.$('[data-process-entry="dense-tool"] .message-actions'),null);
+  assert.equal(await page.$('[data-process-entry="dense-tool"] .session-plain'),null,'technical body remains behind its own compact disclosure');
+  await page.screenshot({path:path.join(out,'compact-worker-details.png'),fullPage:true});
+  await page.click('[data-process-entry="dense-tool"] summary');await page.waitForFunction(()=>document.querySelector('[data-process-entry="dense-tool"]').textContent.includes('TECHNICAL_OUTPUT_MARKER'));
+  assert.equal(await page.evaluate(()=>consumer.store.getSnapshot().entries.length),9,'display filtering never deletes original records');
   const patch='diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-const value = 1;\n+const value = "<script>window.consumerUnsafe=true</script>";';
   await page.evaluate(patch=>{const c=window.consumer;c.store.reset('project-consumer');c.store.apply('project-consumer',{version:1,entries:[{id:'diff-output',target:'frontdesk',speaker:'agent',source:'native',sequence:1,text:'```diff\n'+patch+'\n```'}]});},patch);
   await page.waitForSelector('[data-message="diff-output"] code[data-highlighted=diff]');

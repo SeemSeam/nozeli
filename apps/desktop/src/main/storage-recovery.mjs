@@ -1,4 +1,5 @@
 import {createHash,randomUUID} from 'node:crypto';
+import {workSlotFacts} from '../agents/managed/workspace.mjs';
 
 const incarnations=new WeakMap();
 const fail=(code)=>Object.assign(Error(code),{code});
@@ -83,10 +84,32 @@ export function managedResourceSummary(db,{offline=false}={}){
  if(offline){
   const settings=`CASE WHEN json_valid(value) THEN value ELSE '{}' END`;
   const limit=db.prepare(`SELECT CASE WHEN json_type(${settings},'$.limit') IN ('integer','real') THEN json_extract(${settings},'$.limit') END AS n FROM records WHERE collection='ui' AND id='managed:cache:settings'`).get()?.n??1;
-  const used=db.prepare(`SELECT count(*) AS n FROM records r,json_each(${safe('r')}) w WHERE r.collection='ui' AND r.id='managed:cache:works' AND coalesce(json_extract(${safe('w')},'$.value.status'),'') NOT IN ('queued','ended') AND CAST(json_extract(${safe('w')},'$.value.revision') AS REAL)>0`).get().n;
-  return {limit,used};
+  // Quota derivation shares the single authority with the live Workspace
+  // (workSlotFacts): occupied until a completed closure, unknown closures
+  // stay pending verification instead of being silently released.
+  const rows=db.prepare(`SELECT w.value AS row FROM records r,json_each(CASE WHEN json_valid(r.value) AND json_type(r.value)='array' THEN r.value ELSE '[]' END) w WHERE r.collection='ui' AND r.id='managed:cache:works'`).all();
+  return summaryOf(limit,rows.map(row=>readWork(row.row)));
  }
  const limit=db.prepare("SELECT CASE WHEN json_type(CASE WHEN json_valid(value) THEN value ELSE 'null' END,'$') IN ('integer','real') THEN json_extract(value,'$') END AS n FROM records WHERE collection='managed_settings' AND id='limit'").get()?.n??1;
- const used=db.prepare(`SELECT count(*) AS n FROM records r WHERE collection='managed_works' AND coalesce(json_extract(${safe('r')},'$.status'),'') NOT IN ('queued','ended') AND CAST(json_extract(${safe('r')},'$.revision') AS REAL)>0`).get().n;
- return {limit,used};
+ return summaryOf(limit,db.prepare(`SELECT ${safe('r')} AS row FROM records r WHERE r.collection='managed_works'`).all().map(row=>readWork(row.row)));
+}
+function readWork(raw){
+ try{const parsed=JSON.parse(raw);return parsed&&typeof parsed==='object'&&parsed.value&&typeof parsed.value==='object'?parsed.value:parsed;}catch{return null;}
+}
+function summaryOf(limit,works){
+ const facts=workSlotFacts(works.filter(Boolean));
+ return {limit,used:facts.used,pendingVerification:facts.pendingVerification?.length??0};
+}
+
+// Startup selection only; Controller revalidates every execution/approval gate.
+// Extract booleans in the storage worker, never hydrate prompt or report bodies.
+export function managedExecutionSummary(db){
+ const works=`SELECT id,CASE WHEN json_valid(value) THEN value ELSE '{}' END AS body FROM records WHERE collection='managed_works'`;
+ const jobs=`SELECT id,CASE WHEN json_valid(value) THEN value ELSE '{}' END AS body FROM records WHERE collection='managed_jobs'`;
+ const paused=body=>`json_type(${body},'$.manualControl.pause') IS NOT NULL AND json_type(${body},'$.manualControl.pause')!='null'`;
+ const interrupted=`(json_extract(j.body,'$.status')='interrupted' AND (json_extract(j.body,'$.interruptionReason')='host-stopped' OR json_extract(j.body,'$.restartRecovery.kind')='needs-reconciliation' OR json_extract(j.body,'$.error') IN ('Cold start never replays accepted inputs','宿主退出，未自动重放')))`;
+ const row=db.prepare(`WITH works AS (${works}),jobs AS (${jobs}) SELECT
+  EXISTS(SELECT 1 FROM works w WHERE NOT (${paused('w.body')}) AND (json_extract(w.body,'$.status') IN ('queued','running','closing') OR (json_extract(w.body,'$.status')='ended' AND json_extract(w.body,'$.closure.decision') IN ('accept','discard') AND coalesce(json_extract(w.body,'$.closure.phase'),'')!='complete'))) AS unfinishedWork,
+  EXISTS(SELECT 1 FROM jobs j LEFT JOIN works w ON w.id=coalesce(json_extract(j.body,'$.context.boundWorkId'),json_extract(j.body,'$.context.workId'),json_extract(j.body,'$.target')) WHERE json_extract(j.body,'$.target')!='frontdesk' AND (json_extract(j.body,'$.status') IN ('queued','running') OR ${interrupted}) AND NOT (${paused('j.body')}) AND (w.id IS NULL OR (NOT (${paused('w.body')}) AND json_extract(w.body,'$.status') NOT IN ('review','closing','ended')))) AS unfinishedInput`).get();
+ return {pending:row.unfinishedWork===1||row.unfinishedInput===1};
 }

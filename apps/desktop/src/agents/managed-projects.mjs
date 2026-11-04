@@ -19,6 +19,7 @@ import {recordAdoption} from './managed/adoption-history.mjs';
 import {SessionIndex} from './managed/session-index.mjs';
 import {WorkChanges} from './managed/work-changes.mjs';
 import {THINKING_LEVELS} from './managed/provider-settings.mjs';
+import {TargetModelIntents} from './managed/target-model-intent.mjs';
 const MODEL_ERROR_MESSAGES={
  PI_NO_MODEL:'所选模型当前不可用或未配置；原会话保持原模型。',
  PI_BUSY:'当前回合执行中；模型设置将在回合结束后的空闲边界应用。',
@@ -45,24 +46,41 @@ import {recoverOmpProvider} from './managed/omp-process-ownership.mjs';
 import {recoverPiProvider} from './managed/pi-process-ownership.mjs';
 import {recoverProvider} from './managed/process-ownership.mjs';
 import {readManagedState,managedRuntime,readManagedObject} from './managed/managed-storage.mjs';
+import {migrateReviewLifecycle,confirmedDisposition} from './managed/review-lifecycle.mjs';
 import {boundedProjectWait} from '../domain/project-lifecycle-wait.mjs';
+import {collaborationProjection} from './managed/collaboration-status.mjs';
+import {maintenancePage,maintenanceLiveRevision,validateMaintenancePage} from './managed/maintenance-status.mjs';
+import {AgentIdleLifecycle} from './managed/agent-idle-lifecycle.mjs';
+import {ServiceFaults} from './managed/service-faults.mjs';
+import {workSlotFacts} from './managed/workspace.mjs';
+import {jobBoundWork} from './managed/work-control.mjs';
 export class ManagedProjects {
- constructor({userDataDir,host,legacy,beforeDocumentOperation,ompSystemSource=null,ompAuthBroker=null,ompCommand=null,piSource=null,piRuntime=null,piAuth=null,openController=Controller.open,attachTerminal=attachNativeTerminal,stopTimeoutMs=15000,privilegeBroker=null,modelCatalog=null}){
+ constructor({userDataDir,host,legacy,beforeDocumentOperation,ompSystemSource=null,ompAuthBroker=null,ompCommand=null,piSource=null,piRuntime=null,piAuth=null,openController=Controller.open,attachTerminal=attachNativeTerminal,stopTimeoutMs=15000,privilegeBroker=null,modelCatalog=null,idleTimeoutMs=300000,idleClock,serviceFaultBackoffMs}){
   // ompOptions 仅供旧 OMP 进程回收（只读历史）；新执行一律 Pi（piSource/piRuntime/piAuth）。
   Object.assign(this,{host,legacy,beforeDocumentOperation,openController,attachTerminal,stopTimeoutMs,privilegeBroker,modelCatalog,ompOptions:{ompSystemSource,ompCommand,ompAuthBroker},piSource,piRuntime,piAuth});
+  this.modelIntents=new TargetModelIntents(host.storage);
   this.attention=new AttentionLedger(host.storage);
   this.permissions=new TaskPermissions(host.storage);
   this.versions=new Map();   // ShadowVersions per project（connect 中 set 前必须初始化）
   this.connectionErrors=new Map();this.handoffFlights=new Map();
   this.root=path.join(userDataDir,'runtime','managed');this.controllers=new Map();this.flights=new Map();this.terminalFlights=new Map();this.listener=()=>{};this.stopping=false;const helper={command:process.execPath,args:[...(process.versions.electron&&process.platform==='linux'?['--ozone-platform=headless']:[]),...(!process.versions.electron||process.defaultApp?[fileURLToPath(new URL('../main/main.cjs',import.meta.url))]:[]),'--nozeli-terminal-client']};this.systemTerminals=new SystemTerminalBridge({root:path.join(this.root,'terminal-tickets'),helper});
   this.activeProjectId=null;this.projectActivity=new Map();this.resourceFlights=new Map();
+  this.serviceRoleModels=new Map();
   this.processBudget=new AgentProcessBudget({file:path.join(userDataDir,'agent-resources.json'),onAvailable:()=>{for(const c of this.controllers.values())c.kick?.();}});
   this.processBudget.reclaim=(id,target)=>this.reclaimInactive(id,{target});
+  // Service fault gateway: facts arrive only through the controller runJob
+  // failure hook; reads/aggregates never create a Controller or owner.
+  this.serviceFaults=new ServiceFaults({host,storage:host.storage,controllers:this.controllers,processBudget:this.processBudget,lifecycleHolds:id=>host.storage.lifecycleHolds?.get(id)===true,sourceRevisionOf:provider=>this.providerSourceRevision(provider),modelForTarget:(id,target)=>this.serviceModelForTarget(id,target),liveEvaluate:(projectId,fault)=>this.faultLiveEvaluate(projectId,fault),afterRelease:()=>{for(const controller of this.controllers.values())if(!controller.stopping)controller.kick();},retryExpired:(projectId,faultRef)=>this.faultRetryExpired(projectId,faultRef),backoffMs:serviceFaultBackoffMs,listener:event=>this.listener({projectId:null,kind:'managed-faults',...event})});
+  this.idleLifecycle=new AgentIdleLifecycle({controllers:this.controllers,idleTimeoutMs,clock:idleClock,onError:(projectId,error)=>this.listener({projectId,kind:'managed-error',text:'空闲 Agent 回收未确认，名额保留：'+error.message})});
   this.host.storage.onUnavailable=(id,reason)=>{const pending=this.markUnavailable(id,reason);pending.catch(()=>{});return pending;};
  }
  onEvent(fn){this.listener=fn;}
  applyModelDefaults(defaults){
   const next=structuredClone(defaults);
+  for(const [role,value] of Object.entries(next)){
+   const selector=typeof value==='string'?value:value?.model?.mode==='explicit'?value.model.selector:null;
+   if(selector)this.serviceRoleModels.set(role,selector);else this.serviceRoleModels.delete(role);
+  }
   const operation=(this.modelDefaultsFlight??Promise.resolve()).catch(()=>{}).then(async()=>{
    const sync={applied:0,pending:0,failed:[],sessions:[]};
    this.modelDefaultFailures=new Map();
@@ -85,9 +103,10 @@ export class ManagedProjects {
   }
   return sync;
  }
- async applyProviderUpdate(provider){
+ async applyProviderUpdate(provider,{revision}={}){
   const application={applied:0,pending:0,failed:[],sessions:[]};
   if(this.stopping||!provider)return application;
+  this.serviceFaults.updateSourceRevision(provider,Number.isSafeInteger(revision)?revision:await this.providerSourceRevision(provider));
   await Promise.all([...this.controllers.values()].map(async controller=>{
    if(controller.stopping||typeof controller.applyProviderUpdate!=='function')return;
    try{
@@ -118,15 +137,20 @@ export class ManagedProjects {
  validateResourceProject(id){if(id!==undefined&&id!==null&&(typeof id!=='string'||!id.trim()||id.trim()!==id||id.length>200))throw new HostError('INVALID_PAYLOAD','项目身份无效');}
  async resourceStatus(projectId){
   this.validateResourceProject(projectId);
-  await this.initializeResources();let projectLimit=null,projectUsed=0;
+  await this.initializeResources();let projectLimit=null,projectUsed=0,projectPendingVerification=0;
   if(projectId){
    await this.host.requireRegisteredProject(projectId);
    const state=this.controllers.get(projectId)?.store?.state;
-   if(state){projectLimit=state.limit??1;projectUsed=(state.works??[]).filter(w=>!['queued','ended'].includes(w.status)&&w.revision>0).length;}
+   if(state){
+    // Single quota authority (Workspace.workSlotFacts): activated non-ended
+    // works occupy; ended works release only on a completed closure; ended
+    // works without a recognizable closure stay pending verification.
+    projectLimit=state.limit??1;const slots=workSlotFacts(state.works??[]);projectUsed=slots.used;projectPendingVerification=slots.pendingVerification?.length??0;
+   }
    else {
     let offline=false;try{await this.host.storage.requireOnline(projectId);}catch{offline=true;}
     const summary=await this.host.storage.managedResourceSummary(projectId,{offline});
-    projectLimit=summary.limit;projectUsed=summary.used;
+    projectLimit=summary.limit;projectUsed=summary.used;projectPendingVerification=summary.pendingVerification??0;
    }
   }
   const agents=this.processBudget.agents();
@@ -136,7 +160,7 @@ export class ManagedProjects {
    else if(!slot)agents.push({projectId:id,target,state:'sleeping'});
   }}
   const projectNames=new Map();for(const agent of agents){if(!projectNames.has(agent.projectId)){try{const project=await this.host.requireProject(agent.projectId);projectNames.set(agent.projectId,project.name??project.title??null);}catch{projectNames.set(agent.projectId,null);}}agent.projectName=projectNames.get(agent.projectId);const work=this.controllers.get(agent.projectId)?.store?.state?.works?.find(w=>w.id===agent.target);if(work?.name)agent.workName=work.name;}
-  return {globalLimit:this.processBudget.limit,globalUsed:this.processBudget.used,projectLimit,projectUsed,agents};
+  return {globalLimit:this.processBudget.limit,globalUsed:this.processBudget.used,projectLimit,projectUsed,projectPendingVerification,agents};
  }
  async saveResourceLimits(payload={}){
   if(!payload||typeof payload!=='object'||Array.isArray(payload)||Object.keys(payload).some(key=>!['globalLimit','projectId','projectLimit'].includes(key)))throw new HostError('INVALID_PAYLOAD','Agent 设置参数无效');
@@ -354,11 +378,45 @@ export class ManagedProjects {
    if(!saved.todos.some(t=>t.status==='open'&&t.attentionKey==='connection:connection'&&t.destination?.kind==='settings'))continue;
    await this.attention.observe(project.id,'connection',[]);const status=await this.status(project.id);this.listener({projectId:project.id,kind:'managed-state',state:status.state});
   }
+  if(!this.stopping)await this.resumeUnfinishedProjects();
+ }
+ async resumeUnfinishedProjects({hostOnly=false}={}){
+  if(this.stopping)return {resumed:[],blocked:[]};
+  if(this.restartRecoveryFlight)return this.restartRecoveryFlight;
+  const operation=(async()=>{
+   const result={resumed:[],blocked:[]};
+   if(!hostOnly)await this.initializeResources();
+   for(const project of await this.host.storage.list()){
+    if(this.stopping)break;
+    if(this.guidedDemo?.isDemo(project.id))continue;
+    try{
+     if(!(await this.config(project.id)).enabled)continue;
+     if(!(await this.host.storage.managedExecutionSummary(project.id)).pending)continue;
+     if(this.stopping||this.projectStops?.has(project.id))continue;
+     if(hostOnly){
+      // Startup owns this recovery, not a status/report read. A local controller
+      // remains unstarted so closure kicks cannot admit queued business or Pi.
+      const state=this.controllers.get(project.id)?.store.state??(await this.projectionSource(project.id)).state;
+      const closing=state.works.filter(work=>work.status==='closing'&&!work.needsReconciliation&&work.closure?.phase!=='complete'&&confirmedDisposition(work));
+      if(!closing.length)continue;
+      const controller=await this.loadLocal(project.id);
+      for(const work of closing){if(this.stopping)break;await controller.advanceClosure(work.id);}
+     }else await this.connect(project.id);
+     result.resumed.push(project.id);
+    }catch(error){
+     result.blocked.push({projectId:project.id,code:error.code??'RESTART_RECOVERY_BLOCKED'});
+     if(!this.stopping)try{await this.reportConnectionError(project.id,error);}catch{}
+    }
+   }
+   return result;
+  })();
+  this.restartRecoveryFlight=operation;
+  try{return await operation;}finally{if(this.restartRecoveryFlight===operation)this.restartRecoveryFlight=null;}
  }
  async status(id){
   if(this.guidedDemo?.isDemo(id))return this.demoStatus(id);
   const binding=await this.config(id),controller=this.controllers.get(id),failure=this.connectionErrors.get(id);let state=controller?.snapshot()??null;
-  if(!state&&binding.enabled){const source=await this.projectionSource(id);const timeline=await source.index.page();const {sessionIndex,messages,...business}=source.state;state={jobs:[],works:[],todos:[],receipts:[],drafts:{},limit:1,...business,messages:source.index.messages(),timeline,agents:[],quotaUsed:(business.works??[]).filter(w=>!['queued','ended'].includes(w.status)).length,configuringTargets:[],externalTerminalTargets:[],nativeDraftTargets:[],busyTargets:[],stopping:false};}
+  if(!state&&binding.enabled){const source=await this.projectionSource(id);const timeline=await source.index.page();const {sessionIndex,messages,...business}=source.state;state={jobs:[],works:[],todos:[],receipts:[],drafts:{},limit:1,...business,messages:source.index.messages(),timeline,agents:[],quotaUsed:workSlotFacts(business.works??[]).used,configuringTargets:[],externalTerminalTargets:[],nativeDraftTargets:[],busyTargets:[],stopping:false};}
   state=await this.attentionState(id,state,{connected:!!controller});
   return {enabled:binding.enabled===true,ready:controller?.started===true,runtimeRoot:await managedRuntime(this.host.storage,id),state,connectionError:failure?.error??null,handoff:failure?.handoff??null};
  }
@@ -369,6 +427,130 @@ export class ManagedProjects {
   const sessionState=c?.starting?.has(workId)?'starting':session&&!session.closed?'ready':failure?'failed':work.threadId?'sleeping':'notStarted';
   return workDisposition(state,work,{localState:this.flights.has(id)?'loading':c?'available':'unloaded',sessionState});
  }
+ async collaborationStatus(id,{cursor=null,limit=24}={}){
+  const project=await this.host.requireRegisteredProject(id),controller=this.controllers.get(id),storage=this.host.storage;
+  const binding=(await storage.getLocalRecord(id,'managed:binding'))?.value??{enabled:false};
+  let wrapper=null;if(cursor){try{if(typeof cursor!=='string'||cursor.length>8192)throw Error();wrapper=JSON.parse(Buffer.from(cursor,'base64url').toString());}catch{throw new HostError('COLLABORATION_CURSOR_STALE','状态游标无效，请刷新。');}}
+  if(wrapper&&wrapper.mode!==(controller?'live':'recorded'))throw new HostError('COLLABORATION_CURSOR_STALE','项目运行归属已改变，请刷新。');
+  const cached=await storage.managedAgentPage(id,{limit,cursor:!controller?wrapper?.inner:null});
+  if(controller&&wrapper?.metadataRevision!==undefined&&wrapper.metadataRevision!==cached.revision)throw new HostError('COLLABORATION_CURSOR_STALE','本机状态已变化，请刷新。');
+  const base={projectId:id,instanceId:project.instanceId,controller,recorded:controller?null:cached,slots:[...this.processBudget.slots],capacityAvailable:this.resourceReady?this.processBudget.available:null,enabled:binding.enabled===true,connecting:this.flights.has(id),connectionError:this.connectionErrors.get(id)?.error,limit,cursor:controller?wrapper?.inner:null};
+  const initial=collaborationProjection(base),modelOptions=new Map();
+  for(const row of initial.agents){const details=await this.modelIntents.snapshot(id,row.target,controller?.sessions?.get(row.target),row.model.lastEffective);modelOptions.set(row.target,details);}
+  if(this.controllers.get(id)!==controller)throw new HostError('COLLABORATION_CURSOR_STALE','项目归属已改变，请刷新。');
+  const result=collaborationProjection({...base,modelOptions});
+  const next=controller?result.nextCursor:cached.nextCursor;
+  result.nextCursor=next?Buffer.from(JSON.stringify({mode:controller?'live':'recorded',metadataRevision:cached.revision,inner:next})).toString('base64url'):null;
+  result.revision=createHash('sha256').update(result.revision+cached.revision).digest('hex');
+  return result;
+ }
+ async maintenanceStatus(id,options={}){
+  const {limit,cursor}=validateMaintenancePage(options),project=await this.host.requireRegisteredProject(id),controller=this.controllers.get(id),liveRevision=maintenanceLiveRevision(controller);
+  let wrapper=null;if(cursor){try{wrapper=JSON.parse(Buffer.from(cursor,'base64url').toString());if(wrapper.projectId!==id||wrapper.instanceId!==project.instanceId||wrapper.liveRevision!==liveRevision||typeof wrapper.inner!=='string')throw Error();}catch{throw new HostError('MAINTENANCE_CURSOR_STALE','状态已变化，请刷新。');}}
+  const facts=await this.host.storage.managedMaintenancePage(id,{limit,cursor:wrapper?.inner??null,liveFlights:controller&&!controller.stopping?[...(controller.maintenanceFlights?.keys?.()??[])]:[]});
+  if(this.controllers.get(id)!==controller||maintenanceLiveRevision(controller)!==liveRevision)throw new HostError('MAINTENANCE_CURSOR_STALE','项目运行状态已变化，请刷新。');
+  const revision=createHash('sha256').update(JSON.stringify([id,project.instanceId,facts.revision,liveRevision])).digest('hex');
+  const nextCursor=facts.nextCursor?Buffer.from(JSON.stringify({projectId:id,instanceId:project.instanceId,liveRevision,inner:facts.nextCursor})).toString('base64url'):null;
+  return maintenancePage({projectId:id,facts,controller,revision,nextCursor});
+ }
+ // Live per-project release evaluation. Reads controller PUBLIC state only:
+ // no prompt synthesis, no owner creation, no re-send. Jobs whose input ever
+ // reached the native side are reconciliation-only; only genuinely
+ // unadmitted, non-cold, un-held queued work may resume through the ordinary
+ // queue pump after the fault gate clears.
+ async faultLiveEvaluate(projectId,{fault,batchRef=null,assertCurrent=async()=>true}){
+  const controller=this.controllers.get(projectId);
+  if(!controller||controller.stopping)return {outcome:'project-disconnected',reason:'项目未连接；未执行任何动作。',detail:[]};
+  const rows=[];
+  for(const affected of fault.affected??[]){
+   const job=controller.store.state.jobs.find(row=>row.id===affected.jobId);
+   const work=job?jobBoundWork(controller.store.state,job):null;
+   const row={jobId:affected.jobId,...(work?{workId:work.id}:{})};
+   if(!job){rows.push({...row,outcome:'stale',reason:'原输入不存在。'});continue;}
+   if(!await assertCurrent()||this.controllers.get(projectId)!==controller||controller.stopping){rows.push({...row,outcome:'stale',reason:'项目或故障绑定已变化。'});continue;}
+   if(affected.admitted||affected.recordConfirmed){rows.push({...row,outcome:'needs-reconciliation',reason:'原输入已准入；保留原会话和回执，未重放。'});continue;}
+   try{
+    const receipt=await controller.resumeServiceFaultInput({jobId:job.id,binding:{jobId:job.id,workId:work?.id??null,revision:job.revision??null},faultRef:fault.faultRef,generation:fault.generation,retryKey:batchRef});
+    if(receipt.accepted){
+     const owner=controller.sessions.get(job.target);
+     rows.push({...row,outcome:(!owner||owner.closed)&&!this.processBudget.available?'waiting-capacity':'accepted'});
+    }else{
+     const outcome=receipt.reason==='cold-input'?'unsupported-cold-recovery':receipt.reason==='manual-held'?'manual-hold':receipt.reason==='fault-held'?'other-fault':receipt.reason==='work-ended'?'ended':'needs-reconciliation';
+     rows.push({...row,outcome,reason:receipt.reason});
+    }
+   }catch(error){rows.push({...row,outcome:error.code==='STALE_SERVICE_FAULT_BINDING'?'stale':'needs-reconciliation',reason:error.code??'recovery-unavailable'});}
+  }
+  const accepted=rows.filter(row=>row.outcome==='accepted'),waiting=rows.filter(row=>row.outcome==='waiting-capacity');
+  const first=accepted[0]??waiting[0]??rows[0]??{outcome:'ended',reason:'没有仍需恢复的输入。'};
+  return {...first,acceptedJobs:[...accepted,...waiting].map(row=>row.jobId),detail:rows};
+ }
+
+ // Bounded safe-retry executor bridge: the controller transactionally requeues
+ // precisely-proven unadmitted failed jobs (delivery identity preserved) and
+ // records the attempt receipt; the gateway only schedules and reports.
+ // ONE deadline wake per backoff window (event, never polling): expired
+ // windows trigger the safe requeue executor + an ordinary pump kick.
+ async faultRetryExpired(projectId,faultRef){
+  const controller=this.controllers.get(projectId);
+  if(!controller||controller.stopping)return;
+  return this.serviceFaults.claimRetry(projectId,faultRef,async (generation,token)=>{
+   const {record}=await this.serviceFaults.read(projectId);
+   const fault=record.faults.find(row=>row.faultRef===faultRef&&row.generation===generation);
+   if(!fault)throw new HostError('FAULT_VERSION_STALE','故障恢复代次已变化。');
+   const jobIds=fault.retryClaim?.jobIds??[];
+   if(!jobIds.length)throw new HostError('FAULT_NO_SAFE_INPUT','没有可安全恢复的原输入。');
+   const refused=[];let retried=0;
+   for(const jobId of jobIds){
+    if(this.controllers.get(projectId)!==controller||controller.stopping)throw new HostError('PROJECT_STOPPING','项目已停止。');
+    const job=controller.store.state.jobs.find(row=>row.id===jobId),work=job?jobBoundWork(controller.store.state,job):null;
+    if(!job){refused.push({jobId,reason:'job-missing'});continue;}
+    const receipt=await controller.resumeServiceFaultInput({jobId,binding:{jobId,workId:work?.id??null,revision:job.revision??null},faultRef,generation,retryKey:token});
+    if(receipt.accepted)retried++;else refused.push({jobId,reason:receipt.reason});
+   }
+   if(!retried)throw new HostError('FAULT_RECOVERY_REFUSED','原输入不能安全重发，需核对。');
+   controller.kick();
+   return {retried,refused};
+  });
+ }
+ // Credential-free account-config identity input: the nozeli source-config
+ // revision per provider (bumped on every credential/config save) from the
+ // SHARED private Pi config; key material is never read.
+ async providerSourceRevision(provider){
+  if(!provider||!this.piSource?.agentDir)return null;
+  let raw;
+  try{raw=JSON.parse(await fs.readFile(path.join(this.piSource.agentDir,'nozeli-source-revisions.json'),'utf8'));}
+  catch(error){if(error.code==='ENOENT')return null;throw new HostError('SERVICE_SOURCE_INVALID','服务配置版本无法核实。');}
+  if(raw?.schema!==1||!raw.sources||typeof raw.sources!=='object'||Array.isArray(raw.sources))throw new HostError('SERVICE_SOURCE_INVALID','服务配置版本结构无法核实。');
+  const revision=raw.sources[provider]?.revision;
+  if(revision===undefined)return null;
+  if(!Number.isSafeInteger(revision)||revision<0)throw new HostError('SERVICE_SOURCE_INVALID','服务配置版本无效。');
+  return revision;
+ }
+ serviceModelForTarget(projectId,target){
+  const choice=this.modelIntents.sourceSelections.get(projectId+':'+target);
+  const role=['frontdesk','orchestrator'].includes(target)?target:'worker';
+  return choice?.selected??this.serviceRoleModels.get(role)??choice?.recorded??null;
+ }
+ async prepareServiceSource(projectId,job){
+  if(typeof job?.target!=='string')return;
+  if(!this.modelIntents.sourceSelections.has(projectId+':'+job.target))await this.modelIntents.read(projectId,job.target);
+  const model=this.serviceModelForTarget(projectId,job.target);
+  if(typeof model==='string'&&model.includes('/')){
+   const provider=model.slice(0,model.indexOf('/'));
+   this.serviceFaults.updateSourceRevision(provider,await this.providerSourceRevision(provider));
+  }
+ }
+ async primeServiceSources(){
+  for(const role of ['frontdesk','orchestrator','worker']){
+   const value=await this.piSource?.roleDefaultsFor?.(role);
+   const selector=value?.selector??await this.piSource?.modelFor?.(role);
+   if(typeof selector==='string'&&selector.includes('/')){
+    this.serviceRoleModels.set(role,selector);
+    const provider=selector.slice(0,selector.indexOf('/'));
+    this.serviceFaults.updateSourceRevision(provider,await this.providerSourceRevision(provider));
+   }
+  }
+ }
  async saveLocalDraft(id,target,value){
   if(typeof value!=='string'||value.length>32000||typeof target!=='string')throw new HostError('INVALID_PAYLOAD','本地草稿无效');
   if(this.stopping)throw new HostError('APP_CLOSING','应用正在关闭，草稿未覆盖');
@@ -378,7 +560,7 @@ export class ManagedProjects {
   const operation=prior.catch(()=>{}).then(async()=>{
     if(connecting){await connecting;const connected=this.controllers.get(id);if(connected)return connected.setDraft(target,value);}
     await this.host.requireRegisteredProject(id);const state=(await this.projectionSource(id)).state;
-    if(!['frontdesk','orchestrator'].includes(target)&&!state.works.some(work=>work.id===target&&work.status!=='ended'))throw new HostError('INVALID_PAYLOAD','草稿所属工作无效');const drafts=await this.host.storage.getRecovery(id,'managed:drafts')??{};drafts[target]=value;await this.host.storage.putRecovery(id,'managed:drafts',drafts);
+    if(!['frontdesk','orchestrator'].includes(target)&&!state.works.some(work=>work.id===target&&!['closing','ended'].includes(work.status)))throw new HostError('INVALID_PAYLOAD','草稿所属工作无效');const drafts=await this.host.storage.getRecovery(id,'managed:drafts')??{};drafts[target]=value;await this.host.storage.putRecovery(id,'managed:drafts',drafts);
   }).finally(()=>{if(this.draftFlights.get(id)===operation)this.draftFlights.delete(id);});this.draftFlights.set(id,operation);return operation;
   });
  }
@@ -427,16 +609,35 @@ export class ManagedProjects {
      finally{checkpointInFlight.delete(requestId);}
    };
    const frontdeskDocuments=createFrontdeskDocuments({host:this.host,projectId:id,sync:this.beforeDocumentOperation});
-   const controller=await this.openController({storage:this.host.storage,offline,localOnly:true,projectId:id,processBudget:this.processBudget,runtimeRoot:await managedRuntime(this.host.storage,id),contentRoot:project.root,piSource:this.piSource,piRuntime:this.piRuntime,piAuth:this.piAuth,...this.ompOptions,taskPermissions:this.permissions,privilegeBroker:this.privilegeBroker,resolveRegisteredProject:value=>this.resolveRegisteredProject(id,value),resolveProjectRoot:value=>this.resolveProjectRoot(value),frontdeskDocuments,afterAdoption:(work,receipt)=>recordAdoption({host:this.host,projectId:id,work,receipt}),beforeAccept:async(work,admittedPaths)=>{const paths=Array.isArray(admittedPaths)&&admittedPaths.length?admittedPaths:work.execution?.candidate?.files||[];for(const relPath of paths){const release=await this.beforeDocumentOperation?.({projectId:id,relPath,hold:false});release?.();const draft=await this.host.readDraftRecord(id,relPath);if(draft?.draftError||draft&&draft.status!=='saved')throw new HostError('DRAFT_CONFLICT','成果合入受阻：请先保存或明确处理原项目草稿 '+relPath);}},isolateProcesses:false,readProjectText:async rel=>{const file=await this.host.readFile(id,rel);if(file.draftError)throw new HostError(file.draftError.code||'DRAFT_CONFLICT',file.draftError.message||'项目草稿无法读取。');const draft=file.draft&&file.draft.status!=='saved'?file.draft:null;return {text:draft?.text??file.text,buffer:Boolean(draft),diskVersion:file.digest};}});
+   const controller=await this.openController({storage:this.host.storage,offline,localOnly:true,projectId:id,modelIntents:this.modelIntents,processBudget:this.processBudget,runtimeRoot:await managedRuntime(this.host.storage,id),contentRoot:project.root,piSource:this.piSource,piRuntime:this.piRuntime,piAuth:this.piAuth,...this.ompOptions,taskPermissions:this.permissions,privilegeBroker:this.privilegeBroker,resolveRegisteredProject:value=>this.resolveRegisteredProject(id,value),resolveProjectRoot:value=>this.resolveProjectRoot(value),frontdeskDocuments,afterAdoption:(work,receipt)=>recordAdoption({host:this.host,projectId:id,work,receipt}),beforeAccept:async(work,admittedPaths)=>{const paths=Array.isArray(admittedPaths)&&admittedPaths.length?admittedPaths:work.execution?.candidate?.files||[];for(const relPath of paths){const release=await this.beforeDocumentOperation?.({projectId:id,relPath,hold:false});release?.();const draft=await this.host.readDraftRecord(id,relPath);if(draft?.draftError||draft&&draft.status!=='saved')throw new HostError('DRAFT_CONFLICT','成果合入受阻：请先保存或明确处理原项目草稿 '+relPath);}},isolateProcesses:false,readProjectText:async rel=>{const file=await this.host.readFile(id,rel);if(file.draftError)throw new HostError(file.draftError.code||'DRAFT_CONFLICT',file.draftError.message||'项目草稿无法读取。');const draft=file.draft&&file.draft.status!=='saved'?file.draft:null;return {text:draft?.text??file.text,buffer:Boolean(draft),diskVersion:file.digest};},
+    // Service-fault integration (single authority: faults module). The hook
+    // is fire-and-forget on the controller side; observation failures are
+    // surfaced, never thrown into the failing run.
+    onServiceFault:fact=>this.serviceFaults.observe(id,fact).catch(error=>{this.serviceFaults.markUnknown(id);this.listener({projectId:id,kind:'managed-error',text:'服务故障记账失败；新任务准入已保守阻断：'+error.message});}),
+    serviceFaultGate:job=>this.serviceFaults.gateFor(id,job)});
    try{this.host.storage.assertActive(id);if(this.projectStops?.has(id))throw new HostError('PROJECT_STOPPING','项目正在停用。');}catch(error){controller.stopping=true;await boundedProjectWait(controller.stop(),{timeoutMs:this.stopTimeoutMs});throw error;}
    controller.on('state',state=>{const pending=(this.attentionPublish?.get(id)??Promise.resolve()).catch(()=>{}).then(async()=>{if(this.controllers.get(id)!==controller)return;const merged=await this.attentionState(id,state,{connected:true});this.listener({projectId:id,kind:'managed-state',state:merged});});this.attentionPublish??=new Map();this.attentionPublish.set(id,pending);pending.catch(error=>this.listener({projectId:id,kind:'managed-error',text:'待办持久化失败：'+error.message}));for(const other of this.controllers.values())if(other!==controller&&other.store.state.jobs.some(job=>job.status==='queued'&&(!other.sessions.get(job.target)||other.sessions.get(job.target).closed)))other.kick();});controller.on('diagnostic',text=>this.listener({projectId:id,kind:'managed-error',text}));
    controller.on('timeline',timeline=>this.listener({projectId:id,kind:'managed-timeline',timeline}));
+   controller.on('activity',event=>{if(this.controllers.get(id)===controller)this.listener({projectId:id,kind:'managed-activity',revision:event.revision});});
    controller.on('files-changed',event=>{this.adoptionCheckpoints??=new Set();const pending=checkpointAdopted(event);this.adoptionCheckpoints.add(pending);void pending.finally(()=>this.adoptionCheckpoints.delete(pending));this.listener({...event,projectId:id,kind:'managed-files-changed'});});
    controller.on('native-terminal-event',event=>{const {target,screen,method,...payload}=event,terminalId=controller.terminals.get(target)?.terminalId,key=id+':'+target;if(screen)this.listener({projectId:id,kind:'managed-terminal-screen',target,terminalId,...screen});else if(method)this.listener({projectId:id,kind:'managed-terminal-diagnostic',target,terminalId,method});else{if(payload.ended)void this.systemTerminals.close(key);else this.systemTerminals.output(key,payload.data,payload.seq);this.listener({projectId:id,kind:'managed-terminal',target,terminalId,...payload});}});
    this.controllers.set(id,controller);
+   // Collaboration aggregate reads the fault gate synchronously (Core-owned
+   // DTO field serviceFault); the summary is served from the fault cache.
+   controller.serviceFaultSummary=()=>this.serviceFaults.summaryFor(id);
+   controller.serviceSourcePrepare=job=>this.prepareServiceSource(id,job);
+   controller.serviceRetryRecord=fact=>this.serviceFaults.recordNativeRetry(id,fact).catch(error=>{this.serviceFaults.markUnknown(id);this.listener({projectId:id,kind:'managed-error',text:'原生恢复记录未确认：'+error.message});});
+   // Prime the synchronous admission gate from durable state BEFORE any
+   // pump can admit (controller.start() runs later in this same flight).
+   try{await this.primeServiceSources();await this.serviceFaults.prime(id);}
+   catch(error){this.serviceFaults.markUnknown(id);this.listener({projectId:id,kind:'managed-error',text:'故障门状态未能读取；新任务准入已保守阻断：'+error.message});}
+   controller.on('state',state=>{if(this.controllers.get(id)===controller){this.serviceFaults.noteProjectState(id,state);this.idleLifecycle.observe();}});
+   controller.on('lifecycle',({target})=>{if(this.controllers.get(id)===controller)this.idleLifecycle.observeTarget(id,controller,target);});
+   this.idleLifecycle.observe();
    if(localOnly)return this.status(id);
    try{
     if(startResidents)await controller.start();
+    this.idleLifecycle.observe();
     // 不再独立发现模型：配置和选择全部由正在运行的原生 Agent 负责。
      if(controller.store?.state?.bindings){
        const roles=controller.store.state.bindings;
@@ -450,7 +651,7 @@ export class ManagedProjects {
      let handoff=null,blocked=null;try{handoff=await controller.prepareResidentHandoff(e.target);}catch(error){blocked={code:error.code??'HANDOFF_UNSAFE',message:error.message};}
      this.connectionErrors.set(id,{error:{code:e.code,message:e.message,role:e.target??null,blocked},handoff});
      this.listener({projectId:id,kind:'managed-error',text:'Pi工具协议已变化，原会话保留；需要用户确认新会话接手。'});throw e;
-    }if(e.code==='AGENT_PROCESS_LIMIT'){this.connectionErrors.set(id,{error:{code:e.code,message:e.message},handoff:null});throw e;}this.controllers.delete(id);await controller.stop().catch(()=>{});throw e;}
+    }if(e.code==='AGENT_PROCESS_LIMIT'){this.connectionErrors.set(id,{error:{code:e.code,message:e.message},handoff:null});throw e;}this.controllers.delete(id);this.idleLifecycle.forget(id);await controller.stop().catch(()=>{});throw e;}
   })().finally(()=>this.flights.delete(id));this.flights.set(id,flight);return flight;
  }
  async handoffResident(id,p){
@@ -533,6 +734,7 @@ export class ManagedProjects {
   if(controller)return {controller,store:controller.store,state:controller.store.state,index:controller.timeline,changes:controller.changes};
   let offline=false;try{await storage.requireOnline(id);}catch{offline=true;}
   const state=decodeReportState(await readManagedState(storage,id,{offline})),store={root:runtime,state,storage,projectId:id,offline,readObject:digest=>readManagedObject(storage,id,digest)};
+  migrateReviewLifecycle(state);
   const index=new SessionIndex(store);return {store,state,index,changes:new WorkChanges({runtimeRoot:runtime,storage,projectId:id,readState:()=>state})};
  }
  async timelineQuery(id,action,p){
@@ -575,6 +777,7 @@ export class ManagedProjects {
  async stopProject(id,{lifecycleHold}={}){
   this.projectStops??=new Map();if(this.projectStops.has(id))return boundedProjectWait(this.projectStops.get(id),{timeoutMs:this.stopTimeoutMs});
   const current=this.controllers.get(id);if(current){current.started=false;current.stopping=true;}
+  this.idleLifecycle.forget(id);this.serviceFaults?.forget(id);
   const earlyStop=current?.stop({lifecycleHold});earlyStop?.catch(()=>{});
   const operation=(async()=>{
    const flights=await Promise.allSettled([this.flights.get(id),this.draftFlights?.get(id),this.resourceFlights.get(id)]);
@@ -598,7 +801,7 @@ export class ManagedProjects {
  }
  busy(){return this.flights.size>0||[...this.controllers.values()].some(c=>c.running.size>0||c.closures.size>0);}
  stopVersionsGc(){for(const state of Object.values(this.versionGcState??{})){if(state.timer){clearTimeout(state.timer);state.timer=null;}}}
- async stop(){this.stopping=true;this.stopVersionsGc();await this.systemTerminals.stop();await Promise.allSettled([...this.flights.values()]);const drafts=await Promise.allSettled([...(this.draftFlights?.values()??[])]);const results=await Promise.allSettled([...this.controllers.values()].map(c=>c.stop()));await Promise.allSettled([...this.terminalFlights.values()]);await Promise.allSettled([...(this.adoptionCheckpoints??[])]);const reminders=await Promise.allSettled([...(this.attentionPublish?.values()??[]),...this.attention.flights.values()]);this.stopVersionsGc();this.controllers.clear();const error=[...drafts,...results,...reminders].find(r=>r.status==='rejected');if(error)throw error.reason;}
+ async stop(){this.stopping=true;this.idleLifecycle.stop();await this.serviceFaults.stop();this.stopVersionsGc();await this.systemTerminals.stop();await Promise.allSettled([...this.flights.values()]);const drafts=await Promise.allSettled([...(this.draftFlights?.values()??[])]);const results=await Promise.allSettled([...this.controllers.values()].map(c=>c.stop()));await Promise.allSettled([...this.terminalFlights.values()]);await Promise.allSettled([...(this.adoptionCheckpoints??[])]);const reminders=await Promise.allSettled([...(this.attentionPublish?.values()??[]),...this.attention.flights.values()]);this.stopVersionsGc();this.controllers.clear();const error=[...drafts,...results,...reminders].find(r=>r.status==='rejected');if(error)throw error.reason;}
  async invoke(op,p,sourceInput=null){
   if(this.guidedDemo?.isDemo(p?.projectId))return this.guidedDemo.managed(op,p);
   if(op==='managed.frontdesk.route.resolve'&&(!p||typeof p!=='object'||Array.isArray(p)))throw new HostError('INVALID_PAYLOAD','前台去向决定参数必须是对象。');
@@ -638,9 +841,18 @@ export class ManagedProjects {
   allowed['review.instruction.read']=['projectId','workId','objectId'];
   allowed['review.instruction.save']=['projectId','workId','objectId','text','expectedRevision'];
   allowed['merge.consent']=['projectId','workId','requestId','expectedVersion','decision','requestKey','binding'];
-  allowed['maintenance.status']=['projectId'];allowed['maintenance.retry']=['projectId','bugId'];allowed['maintenance.scan']=['projectId'];
-  allowed['model.options']=['projectId','target'];
-  allowed['model.set']=['projectId','target','ownerId','model','effort','requestKey'];
+  allowed['collaboration.status']=['projectId','cursor','limit'];
+  allowed['maintenance.status']=['projectId','cursor','limit'];allowed['maintenance.retry']=['projectId','bugId','binding','expectedRetryMode'];allowed['maintenance.scan']=['projectId'];
+  // Service faults + manual work control (fault release is app-level and
+  // carries its own project membership snapshot; status may scope to one
+  // project or aggregate read-only).
+  allowed['fault.status']=['projectId','cursor','limit'];
+  allowed['fault.release']=['faultRef','expectedVersion','scopeSnapshot','requestKey'];
+  allowed['fault.results']=['batchRef','cursor','limit'];
+  allowed['work.control']=['projectId','workId','jobId','action','expectedControlVersion','expectedWorkRevision','requestKey','ownerId','ownerGeneration','currentJobId','expectedProjectInstanceId'];
+  allowed['work.control.status']=['projectId','workId','jobId'];
+  allowed['model.options']=['projectId','target','cursor','limit'];
+  allowed['model.set']=['projectId','target','ownerId','model','effort','requestKey','expectedRevision','action','workRevision'];
   allowed['session.options']=['projectId','target','ownerId'];
   allowed['session.command']=['projectId','target','ownerId','command','requestKey','jobId'];
   const action=op.slice('managed.'.length);
@@ -658,15 +870,79 @@ export class ManagedProjects {
   if(action==='problem.resolve'&&(!p||typeof p!=='object'||Array.isArray(p)||Object.keys(p).some(k=>!allowed[action].includes(k))||!['projectId','workId','objectId'].every(k=>typeof p[k]==='string'&&p[k].trim()===p[k]&&p[k].length>0&&p[k].length<=200)||!Number.isSafeInteger(p.revision)||p.revision<1||!['approve','reject'].includes(p.action)||(p.text!==undefined&&(typeof p.text!=='string'||p.text.length>32000))||(p.action==='reject'&&!(typeof p.text==='string'&&p.text.trim()))||typeof p.requestKey!=='string'||!/^[a-zA-Z0-9:_-]{8,160}$/.test(p.requestKey)))throw new HostError('INVALID_PAYLOAD','问题决定的项目、工作、报告、版本、反馈或动作无效。');
   if((action==='history.list'||action==='history.read')&&Object.keys(p).some(k=>!allowed[action].includes(k)))throw new HostError('INVALID_PAYLOAD','历史报告查询参数无效。');
   if(!allowed[action]||Object.keys(p).some(k=>!allowed[action].includes(k)))throw new Error('invalid managed payload');
-  if(['draft','status','maintenance.status','attention.ack','todo.manage','timeline.page','timeline.read','timeline.request','resident.history','worker.history','disposition','history.list','history.read','artifact.read','artifact.list','changes.list','changes.read','review.read','review.save','review.continue','review.accept','review.instruction.read','review.instruction.save','merge.consent','merge.constraint'].includes(action))await this.host.requireRegisteredProject(p.projectId);else await this.host.requireProject(p.projectId);
+  // Fault reads aggregate app-level (bounded, cold, zero Controller/owner);
+  // release executes one bounded generation with durable per-project facts.
+  if(action==='fault.status'){
+   if(p.projectId!==undefined&&typeof p.projectId!=='string')throw new HostError('INVALID_PAYLOAD','故障状态范围无效。');
+   if(p.projectId)await this.host.requireRegisteredProject(p.projectId);
+   return this.serviceFaults.status(p);
+  }
+  if(action==='fault.release')return this.serviceFaults.release(p);
+  if(action==='fault.results')return this.serviceFaults.results(p);
+  if(action==='work.control'||action==='work.control.status'){
+   // Manual work control delegates to the Core controller integration;
+   // cold pure-pause never opens a Controller here.
+   const {dispatchWorkControl,workControlCapabilitiesFromState}=await import('./managed/work-control.mjs');
+   const project=await this.host.requireRegisteredProject(p.projectId);
+   if(action==='work.control'){
+    if((p.workId===undefined)===(p.jobId===undefined))throw new HostError('INVALID_PAYLOAD','需要 workId 或 jobId 之一。');
+    if(!['pause','stop-current','resume'].includes(p.action))throw new HostError('INVALID_PAYLOAD','人工控制动作无效。');
+    if(typeof p.requestKey!=='string'||!/^[a-zA-Z0-9:_-]{8,160}$/.test(p.requestKey))throw new HostError('INVALID_PAYLOAD','人工控制请求键无效。');
+    // Control CAS version is ALWAYS required (first version is 0); the work
+    // revision is required whenever the target names an existing Work.
+    if(!Number.isSafeInteger(p.expectedControlVersion)||p.expectedControlVersion<0)throw new HostError('INVALID_PAYLOAD','人工控制版本无效。');
+    // Conditional revision CAS: workId targets REQUIRE a nonnegative int
+    // (0 = queued Work before first activation); jobId targets must OMIT it
+    // — the transactional resolver decides bound-Work vs receiving-job.
+    if(p.workId!==undefined&&(!Number.isSafeInteger(p.expectedWorkRevision)||p.expectedWorkRevision<0))throw new HostError('INVALID_PAYLOAD','工作修订版本无效。');
+    if(p.workId===undefined&&p.expectedWorkRevision!==undefined&&(!Number.isSafeInteger(p.expectedWorkRevision)||p.expectedWorkRevision<0))throw new HostError('INVALID_PAYLOAD','工作修订版本无效。');
+    // Frame binding: a mutating control MUST carry the project instance the
+    // user saw (exact spelling expectedProjectInstanceId). Verified BEFORE
+    // the transaction and re-verified after the await, so a re-registered
+    // project never receives a stale frame's control decision.
+    if(typeof p.expectedProjectInstanceId!=='string'||!p.expectedProjectInstanceId||p.expectedProjectInstanceId.length>128)throw new HostError('WORK_CONTROL_INVALID','人工控制需要项目实例绑定。');
+    if(p.expectedProjectInstanceId!==project.instanceId)throw new HostError('WORK_CONTROL_INSTANCE_STALE','项目实例已变化，请刷新后重试。');
+    const result=await dispatchWorkControl(this,p);
+    const current=(await this.host.requireRegisteredProject(p.projectId)).instanceId;
+    if(current!==project.instanceId)throw new HostError('WORK_CONTROL_INSTANCE_STALE','项目实例在执行中变化；请核对当前状态。');
+    return {...result,projectInstanceId:project.instanceId,workRevision:result?.workRevision??null};
+   }
+   if(p.workId===undefined&&p.jobId===undefined)throw new HostError('INVALID_PAYLOAD','需要 workId 或 jobId。');
+   const target=p.workId!==undefined?{workId:p.workId}:{jobId:p.jobId},controller=this.controllers.get(p.projectId);
+   // Live: the controller resolves exact owner/job bindings (async since the
+   // instance-binding addendum). Cold: the pure projection helper only — no
+   // Controller or owner is ever created for a status read.
+   if(controller&&!controller.stopping){
+    const capabilities=await controller.workControlCapabilities(target);
+    return {...capabilities,schema:capabilities?.schema??1,projectId:p.projectId,projectInstanceId:project.instanceId,workRevision:capabilities?.workRevision??null};
+   }
+   const source=await this.projectionSource(p.projectId),record=source.state.works?.find(w=>w.id===(p.workId??p.jobId))??null;
+   const capabilities=workControlCapabilitiesFromState({works:source.state.works??[],jobs:source.state.jobs??[]},target,{live:false,bindingProvider:record?.binding?.provider??record?.provider??null,projectInstanceId:project.instanceId});
+   return {...capabilities,schema:capabilities?.schema??1,projectId:p.projectId,projectInstanceId:project.instanceId,workRevision:capabilities?.workRevision??null};
+  }
+  if(['collaboration.status','model.options','model.set','draft','status','maintenance.status','attention.ack','todo.manage','timeline.page','timeline.read','timeline.request','resident.history','worker.history','disposition','history.list','history.read','artifact.read','artifact.list','changes.list','changes.read','review.read','review.save','review.continue','review.accept','review.instruction.read','review.instruction.save','merge.consent','merge.constraint'].includes(action))await this.host.requireRegisteredProject(p.projectId);else await this.host.requireProject(p.projectId);
   if(action==='draft')return this.saveLocalDraft(p.projectId,p.target,p.text);
-  if(action==='maintenance.status'){const c=this.controllers.get(p.projectId);if(c&&!c.stopping)return c.maintenanceStatus();const ledger=await new (await import('./managed/maintenance-ledger.mjs')).MaintenanceLedger(this.host.storage,p.projectId).read();for(const bug of ledger.bugs)if(bug.status==='repairing'){bug.status='needs-version-fix';bug.recoveryUnavailable='interrupted-host-attempt';}return ledger;}
-  if(action==='maintenance.retry'||action==='maintenance.scan'){const controller=this.controllers.get(p.projectId);if(!controller||controller.stopping)throw new HostError('MAINTENANCE_OWNER_UNAVAILABLE','项目尚未连接；不会恢复或重放旧任务。');return action==='maintenance.scan'?controller.maintenanceScan():controller.maintenanceRetry(p.bugId);}
+  if(action==='maintenance.status')return this.maintenanceStatus(p.projectId,p);
+  if(action==='maintenance.retry'||action==='maintenance.scan'){
+   const controller=this.controllers.get(p.projectId);if(!controller||controller.stopping)throw new HostError('MAINTENANCE_OWNER_UNAVAILABLE','项目尚未连接；不会恢复或重放旧任务。');
+   if(action==='maintenance.retry'){
+    const keys=['projectId','bugId','fingerprint','phase','jobId','workId','revision'],binding=p.binding;
+    if(typeof p.bugId!=='string'||!p.bugId||p.bugId.length>256||!binding||typeof binding!=='object'||Array.isArray(binding)||Object.keys(binding).length!==keys.length||Object.keys(binding).some(key=>!keys.includes(key))||binding.projectId!==p.projectId||binding.bugId!==p.bugId||keys.filter(key=>key!=='revision').some(key=>binding[key]!==null&&(typeof binding[key]!=='string'||binding[key].length>256))||binding.revision!==null&&!Number.isSafeInteger(binding.revision))throw new HostError('MAINTENANCE_BINDING_INVALID','修复身份无效，请刷新状态。');
+    // The expected mode only ever NARROWS what the button claimed: the host
+    // still derives the real mode live and rejects drift (no capability is
+    // granted by the expectation itself).
+    if(p.expectedRetryMode!==undefined&&!['repair','finalize'].includes(p.expectedRetryMode))throw new HostError('INVALID_PAYLOAD','期望修复模式无效。');
+    try{await controller.maintenanceRetry(p.bugId,{binding,...(p.expectedRetryMode!==undefined?{expectedRetryMode:p.expectedRetryMode}:{})});}
+    catch(error){if(error?.code==='MAINTENANCE_RETRY_MODE_STALE')throw new HostError('MAINTENANCE_RETRY_MODE_STALE','修复模式已变化（repair/finalize），请刷新状态后重试。');throw error;}
+   }else await controller.maintenanceScan();
+   return this.maintenanceStatus(p.projectId);
+  }
   if(action==='attention.ack'){if(!Array.isArray(p.ids)||p.ids.length>100||p.ids.some(id=>typeof id!=='string'||id.length>160))throw new HostError('INVALID_PAYLOAD','待办通知标识无效');if(p.occurrences!==undefined&&(!Array.isArray(p.occurrences)||p.occurrences.length>100||p.occurrences.some(item=>!item||typeof item!=='object'||typeof item.id!=='string'||item.id.length>160||typeof item.interrupted!=='boolean')))throw new HostError('INVALID_PAYLOAD','待办通知阶段无效');if(p.occurrences===undefined)return this.attention.acknowledge(p.projectId,p.ids);const source=this.controllers.get(p.projectId)?.store?.state??(await this.projectionSource(p.projectId)).state;try{return await this.attention.acknowledge(p.projectId,{ids:p.ids,occurrences:p.occurrences},(source?.todos??[]).map(todo=>({id:todo.id,status:todo.status,interrupted:todo.interrupted})));}catch(error){if(error?.code==='ATTENTION_STALE')throw new HostError('ATTENTION_STALE',error.message);throw error;}}
   if(action==='effect.response'){const q={...p};q.attentionKind=q.attentionKind??'effect-permission';return this.respondAttention(p.projectId,q);}
   if(action==='attention.respond')return this.respondAttention(p.projectId,p);
   if(action==='attention.draft.read'||action==='attention.draft.write')return this.attentionDraft(p.projectId,p,action==='attention.draft.write');
   if(action==='todo.manage'&&(await this.attention.read(p.projectId)).todos.some(t=>t.id===p.todoId)){const source=this.controllers.get(p.projectId)?.store?.state??(await this.projectionSource(p.projectId)).state;return this.attention.manage(p.projectId,p,source);}
+  if(action==='collaboration.status')return this.collaborationStatus(p.projectId,p);
   if(action==='status')return this.status(p.projectId);if(action==='enable'||action==='connect')return this.connect(p.projectId,{enable:action==='enable'});
   if(action==='timeline.page'||action==='timeline.read'||action==='timeline.request')return this.timelineQuery(p.projectId,action,p);
   if(action==='changes.list'||action==='changes.read')return this.changesQuery(p.projectId,action,p);
@@ -734,25 +1010,42 @@ export class ManagedProjects {
     if(action==='review.continue')return c.reviewContinue(p);
     return c.reviewAccept(p);
   }
+  if(action==='model.options'||action==='model.set'){
+   if(typeof p.target!=='string'||!p.target.trim()||p.target.length>200)throw new HostError('INVALID_PAYLOAD','需要原角色或工作身份');
+   const controller=this.controllers.get(p.projectId),session=controller?.sessions?.get(p.target);
+   const page=await this.host.storage.managedAgentPage(p.projectId,{limit:1,target:p.target});
+   const targetKnown=['frontdesk','orchestrator'].includes(p.target)||(page.works??[]).some(w=>(w.target??w.id)===p.target);
+   if(!['frontdesk','orchestrator'].includes(p.target)&&!controller?.store?.state?.works?.some(work=>work.id===p.target)&&!targetKnown)throw new HostError('MODEL_TARGET_UNKNOWN','目标Agent不存在；不会创建新工作');
+   const record=controller?.store?.state?.works?.find(work=>work.id===p.target)??(page.works??[]).find(w=>(w.target??w.id)===p.target),resident=page.residents?.[p.target];
+   const intent=await this.modelIntents.snapshot(p.projectId,p.target,session,resident?{model:resident.model??null,effort:resident.effort??null}:null);
+   if(action==='model.options'){
+    const catalog=this.modelCatalog?await this.modelCatalog():null;
+    return {models:catalog??[],...intent,ownerId:session&&!session.closed?session.viewOwnerId:null,ownerGeneration:session&&!session.closed?session.epoch:null,workRevision:record?.revision??null,workName:record?.name??null,pending:['saved','pending','submitted'].includes(intent.state)?intent.desired:null,modelError:modelErrorDTO(session?.modelError),thinkingLevels:session?.thinkingLevels??null,available:!record?.readOnly&&!record?.contextRecovery&&(!record?.provider||record.provider==='pi')&&(!record?.binding?.provider||record.binding.provider==='pi')&&!['ended','closing'].includes(record?.status)&&session?.activitySnapshot?.().known!==false&&!controller?.stopping&&!controller?.store?.commitUnknown&&!controller?.store?.nativeCommitUnknown&&!['submitted','unknown'].includes(intent.state)&&!((!session||session.closed)&&(page.providers??[]).some(value=>value.target===p.target)),ownerAvailable:Boolean(session&&!session.closed)};
+   }
+   if(typeof p.requestKey!=='string'||!/^[a-zA-Z0-9:_-]{8,160}$/.test(p.requestKey)||!Number.isSafeInteger(p.expectedRevision)||p.expectedRevision<0)throw new HostError('INVALID_PAYLOAD','模型选择需要请求键和配置版本');
+   if(p.model!==undefined&&(typeof p.model!=='string'||!p.model.includes('/'))||p.effort!==undefined&&!THINKING_LEVELS.includes(p.effort))throw new HostError('INVALID_PAYLOAD','模型或思考档位选择无效');
+   const actionName=p.action??'set';
+   if(!['set','inherit','cancel'].includes(actionName)||(actionName==='set'&&p.model===undefined&&p.effort===undefined))throw new HostError('INVALID_PAYLOAD','模型动作无效');
+   if(record?.readOnly||record?.contextRecovery||record?.provider&&record.provider!=='pi'||record?.binding?.provider&&record.binding.provider!=='pi'||['closing','ended'].includes(record?.status))throw new HostError('HISTORICAL_SESSION_READ_ONLY','历史会话仅可查看，不能覆盖模型');
+   if(session&&!session.closed&&p.ownerId!==session.viewOwnerId)throw new HostError('INTERACTION_STALE','需要当前原生owner确认，请刷新模型菜单。');
+   if(session&&!session.closed&&session.activitySnapshot?.().known===false)throw new HostError('PI_ACTIVITY_UNKNOWN','原生状态待核实，未覆盖模型。');
+   if(controller?.store?.commitUnknown||controller?.store?.nativeCommitUnknown)throw new HostError('STORAGE_RESULT_UNKNOWN','宿主提交结果待核实，模型保持不变。');
+   if((!session||session.closed)&&(page.providers??[]).some(value=>value.target===p.target)||[...this.processBudget.slots].some(value=>value.projectId===p.projectId&&value.target===p.target&&value.state==='unconfirmed'))throw new HostError('PI_OWNER_UNCONFIRMED','原执行进程尚未核实，未覆盖模型。');
+   if(!['frontdesk','orchestrator'].includes(p.target)&&(!Number.isSafeInteger(p.workRevision)||p.workRevision!==record?.revision))throw new HostError('MODEL_TARGET_STALE','需要当前工作修订，模型选择未保存。');
+   const role=['frontdesk','orchestrator'].includes(p.target)?p.target:'worker',defaults=actionName==='inherit'?await this.piSource?.roleDefaultsFor?.(role):null;
+   const selected=actionName==='inherit'?(defaults?.selector?{model:defaults.selector,effort:defaults.effort??null}:null):{model:p.model??intent.desired?.model??intent.effective?.model??resident?.model,effort:p.effort??intent.desired?.effort??resident?.effort??null};
+   if(actionName==='set'&&(!selected?.model||!selected.model.includes('/')))throw new HostError('INVALID_PAYLOAD','缺少模型选择');
+   if(actionName==='set'&&this.modelCatalog){const catalog=await this.modelCatalog();if(!catalog.some(model=>model.selector===selected.model||model.provider+'/'+model.id===selected.model))throw new HostError('PI_MODEL_UNAVAILABLE','模型不在当前可用目录中，未保存选择。');}
+   const assertCurrent=()=>{const latestController=this.controllers.get(p.projectId),latest=latestController?.sessions?.get(p.target);if(latestController?.stopping||this.host.storage.lifecycleHolds?.has(p.projectId))throw new HostError('PROJECT_STOPPING','项目正在停用，未修改模型。');if(latest&&!latest.closed&&p.ownerId!==latest.viewOwnerId||p.ownerId!==undefined&&(!latest||latest.closed||latest.viewOwnerId!==p.ownerId))throw new HostError('INTERACTION_STALE','模型菜单所属会话已变化');const latestWork=latestController?.store?.state?.works?.find(w=>w.id===p.target)??record;if(latestWork?.readOnly||latestWork?.contextRecovery||['ended','closing'].includes(latestWork?.status)||p.workRevision!=null&&latestWork?.revision!==p.workRevision)throw new HostError('MODEL_TARGET_STALE','目标工作已变化，请刷新。');};
+   const result=await this.modelIntents.request(p.projectId,p.target,{...p,action:actionName},{session:session&&!session.closed?session:null,selection:selected,assertCurrent});
+   controller?.changed?.();return result;
+  }
   if(action==='terminal.screen'&&!this.controllers.has(p.projectId))return {available:false,reason:'Worker 终端尚未就绪或已断开；预览不会启动新会话。'};
   const localAction=['end','retry','merge.consent','merge.constraint','deviation.resolve','problem.resolve'].includes(action);
   if(localAction&&((['end','retry'].includes(action)&&!p.binding)||typeof p.requestKey!=='string'||!/^[a-zA-Z0-9:_-]{8,160}$/.test(p.requestKey)))throw new HostError('INVALID_PAYLOAD','需要当前处置绑定和确认身份');
   const c=localAction?(this.controllers.get(p.projectId)??await this.loadLocal(p.projectId,p.workId)):this.controller(p.projectId);
   if(action==='session.options')return c.sessionOptions(p.target,p.ownerId);
   if(action==='session.command')return c.sessionCommand(p.target,p);
-  if(action==='model.options'||action==='model.set'){
-   if(typeof p.target!=='string'||!p.target.trim())throw new HostError('INVALID_PAYLOAD','需要原角色或工作身份');
-   const session=c.sessions.get(p.target);
-   if(!session||session.closed)throw new HostError('PI_OWNER_UNAVAILABLE','原会话尚未连接；不会为设置启动新工作');
-   if(action==='model.options'){
-    const catalog=this.modelCatalog?await this.modelCatalog():null;
-    return {models:catalog??[],effective:session.effective??{model:session.model,effort:session.effort},pending:session.pendingModel?{model:session.desiredModel,effort:session.pendingModel.effort??session.effort}:null,modelError:modelErrorDTO(session.modelError),thinkingLevels:session.thinkingLevels??null};
-   }
-   if(typeof p.ownerId!=='string'||p.ownerId!==session.viewOwnerId)throw new HostError('INTERACTION_STALE','原模型菜单所属会话已变化；未修改新会话');
-   if(typeof p.requestKey!=='string'||!/^[a-zA-Z0-9:_-]{8,160}$/.test(p.requestKey)||p.model!==undefined&&(typeof p.model!=='string'||!p.model.includes('/'))||p.effort!==undefined&&!THINKING_LEVELS.includes(p.effort)||p.model===undefined&&p.effort===undefined)throw new HostError('INVALID_PAYLOAD','模型或思考档位选择无效');
-   const result=await session.applyDefaultModel({selector:p.model??session.desiredModel??session.model,effort:p.effort??session.effort});
-   c.changed();return {accepted:true,appliedAtTurnEnd:result.state==='pending',...(result.state?{state:result.state}:{}),...(result.requested?{requested:result.requested}:{}),...(result.effective?{effective:result.effective}:{}),...(result.clamped?{clamped:result.clamped}:{}),...(result.thinkingLevels?{thinkingLevels:result.thinkingLevels}:{})};
-  }
   if(action==='deviation.resolve')return c.resolveDeviation(p);
   if(action==='problem.resolve')return c.resolveProblem(p);
   if(action==='frontdesk.route.resolve')return c.resolveFrontdeskRoute(p);

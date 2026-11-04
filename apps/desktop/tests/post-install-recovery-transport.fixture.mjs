@@ -42,7 +42,7 @@ class TransportSession extends EventEmitter {
     const relPath=name+'.txt',read=await call('nozeli_document_read',{relPath});if(!read.ok)throw Error(read.error.message);
     const value=read.value,apply=await call('nozeli_document_apply',{readHandle:value.readHandle,replacements:[{oldText:value.text,newText:name+' result from real Host apply\n'}]});
     if(!apply.ok)throw Error(apply.error.message);
-    await call('nozeli_publish',{kind:'result',html:staticReport('# '+name+'\nHost document apply succeeded; recovery transport, not a real model.'),files:[relPath]});
+    await call('nozeli_publish',{kind:'result',content:staticReport('# '+name+'\nHost document apply succeeded; recovery transport, not a real model.'),files:[relPath]});
    }else throw Error('frontdesk model input not required by this harness');
    return {completion:'host-control',threadId:this.threadId,turnId:randomUUID(),providerStatus:'completed',text:''};
   }finally{this.busy=false;}

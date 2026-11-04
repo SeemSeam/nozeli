@@ -1,4 +1,4 @@
-const phases={queued:'等待工作名额',running:'执行中',paused:'等待回答或处理',review:'等待结果审查',closing:'历史结束待处理'};
+const phases={queued:'等待工作名额',running:'执行中',paused:'等待回答或处理',review:'等待结果审查',closing:'审核已决定 · 收尾未完成'};
 export function managedProgress(state,target='frontdesk'){
   const jobs=state.jobs||[],works=(state.works||[]).filter(w=>w.status!=='ended'),draft=t=>Boolean(state.drafts?.[t]||state.nativeDraftTargets?.includes(t));
   const requests=jobs.filter(j=>['queued','running','transferring'].includes(j.status)&&(j.target===target||(target==='frontdesk'&&j.type==='intake'&&j.context?.frontJobId))).map(j=>{

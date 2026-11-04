@@ -32,8 +32,8 @@ export class Session extends EventEmitter {
   if(this.target==='frontdesk'){const raw=prompt.split('用户本次原文：\n').at(-1);if(raw.startsWith('FAIL'))throw Error('fixture model unavailable');if(!raw.startsWith('LIGHT'))await call('nozeli_handoff',{reason:'controlled routing'});}
   else if(this.target==='orchestrator'){
    {let raw=prompt.split('原始请求:\n').at(-1);const marker='历史与当前来源（原请求仅为范围依据，不是重新执行指令）：\n';if(raw.includes(marker))raw=JSON.parse(raw.split(marker).at(-1)).originalRequest;const [action,name,...text]=raw.split(' ');if(action==='NEW')await call('nozeli_dispatch',{name,brief:'Controlled task '+name});else if(action==='CONTINUE'){const board=await call('nozeli_inspect_work',{workName:'@state'});const row=board.board.rows.find(r=>r.name===name);await call('nozeli_manage',{action:'continue',workId:row&&row.workId,expectedRevision:row&&row.revision,text:text.join(' ')||'controlled update'});}else await call('nozeli_manage',{action:action.toLowerCase(),text:text.join(' ')||'controlled update'});}
-  }else if(this.turns===1)await call('nozeli_publish',{kind:'problem',text:'# 请选择核验方向\n\n已读取受控材料。请选择：先核对实现，或补充优先目标。',files:[]});
-  else await call('nozeli_publish',{kind:'result',html:staticReport('# Controlled result\n\nVerified fixture discussion.'),files:[]});
+  }else if(this.turns===1)await call('nozeli_publish',{kind:'problem',content:'# 请选择核验方向\n\n已读取受控材料。请选择：先核对实现，或补充优先目标。',files:[]});
+  else await call('nozeli_publish',{kind:'result',content:staticReport('# Controlled result\n\nVerified fixture discussion.'),files:[]});
   return {text:'Controlled provider response',threadId:this.threadId,turnId:randomUUID(),providerStatus:'completed',completion:'provider-completed',projectedNative:false};
  }finally{this.busy=false;}}
 }

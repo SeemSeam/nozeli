@@ -56,3 +56,14 @@ test('durable originals exceeding page or pin budgets retain readable success me
  assert.equal(failure.availability,'read-required');assert.equal(failure.failed,true);assert.equal(failure.status,'failed');
  store.dispose();
 });
+
+test('history model evidence survives page clipping and pinned lookup independently of live state',()=>{
+ const store=createSessionStore();store.reset('p');
+ const original=entry('historical',{provider:'provider-a',model:'model-a',modelStatus:'recorded',text:'x'.repeat(3*1024*1024)});
+ store.apply('p',{version:1,entries:[original]});store.pin(original);
+ const state={model:'current-model',jobs:[]};
+ assert.equal(sessionMessages(store.getSnapshot(),state)[0].model,'model-a');assert.equal(store.getSnapshot().entries[0].provider,'provider-a');
+ store.apply('p',{version:1,entries:[entry('new',{sequence:2,provider:'provider-b',model:'model-b',modelStatus:'recorded'})]},{replace:true});
+ const pinned=sessionMessages(store.getLookupSnapshot(),state).find(e=>e.id==='historical');assert.equal(pinned.model,'model-a');assert.equal(pinned.provider,'provider-a');assert.equal(pinned.availability,'read-required');
+ assert.equal(original.text.length,3*1024*1024);store.dispose();
+});

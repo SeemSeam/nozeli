@@ -200,3 +200,32 @@ test('closed records bound to active Work expose a disabled remove capability wi
  const capability=todoCapabilities(f.store.state,f.todo());assert.equal(capability.remove,false);assert(capability.reason.trim());
  await rejectsCode(f.manage(request('remove')),'TODO_BLOCKED');assert.equal(f.todo().status,'closed');
 });
+
+test('reopened ended result can be deleted directly while exact source report and task survive restart',async t=>{
+ const f=await fixture(t),objectId='00000000-0000-4000-8000-000000000002',bytes=Buffer.from(staticReport('Original frozen report'));
+ await f.seed([reminder({kind:'result',workId:'ended',objectId,revision:1,reopenedAt:'2026-11-02T12:00:00Z'})],[{id:'ended',status:'ended',revision:1,outcome:'discard',result:{objectId,revision:1}}]);
+ await f.store.putObject(bytes);await f.store.mutate(()=>{f.store.state.receipts=[{objectId,workId:'ended',kind:'result',revision:1,report:reportDescriptor(bytes,{format:'html-static',objectId})}];});
+ const original=structuredClone({works:f.store.state.works,receipts:f.store.state.receipts});
+ await f.manage(request('remove'));assert.equal(f.todo(),undefined);await f.restart();assert.equal(f.todo(),undefined);
+ assert.deepEqual({works:f.store.state.works,receipts:f.store.state.receipts},original);assert.equal(f.store.state.todoTombstones[0].sourceIdentity.objectId,objectId);assert.deepEqual(await f.store.readObject(original.receipts[0].report.digest),bytes);
+});
+
+test('an ended Work does not authorize deleting or closing an unresolved approval',()=>{
+ const permission=reminder({workId:'ended',kind:'effect-permission',destination:{kind:'effect-permission'}}),s={works:[{id:'ended',status:'ended'}],todos:[permission],jobs:[]};
+ assert.equal(todoCapabilities(s,permission).close,false);assert.equal(todoCapabilities(s,permission).remove,false);
+ for(const action of ['close','remove'])assert.throws(()=>manageTodoState(s,request(action)),{code:'TODO_BLOCKED'});
+ assert.equal(permission.status,'open');
+});
+
+test('an old result reminder can be deleted without removing the current review obligation',()=>{
+ const old=reminder({kind:'result',workId:'live',objectId:'old',revision:1,status:'iterating'}),current=reminder({id:'current',kind:'result',workId:'live',objectId:'new',revision:2});
+ const s={works:[{id:'live',status:'review',revision:2,result:{objectId:'new',revision:2}}],todos:[old,current],jobs:[]};
+ assert.equal(todoCapabilities(s,old).remove,true);assert.equal(todoCapabilities(s,current).remove,false);
+ manageTodoState(s,request('remove'));assert.deepEqual(s.todos,[current]);assert.equal(s.works[0].result.objectId,'new');
+});
+
+test('queued supplement never authorizes tombstoning the current open result',()=>{
+ const current=reminder({kind:'result',workId:'live',objectId:'current',revision:2});
+ const s={works:[{id:'live',status:'review',revision:2,result:{objectId:'current',revision:2}}],todos:[current],jobs:[{id:'queued-supplement',target:'orchestrator',status:'queued',context:{boundWorkId:'live'}}]};
+ assert.equal(todoCapabilities(s,current).remove,false);assert.throws(()=>manageTodoState(s,request('remove')),{code:'TODO_BLOCKED'});assert.equal(s.todos[0],current);assert.equal(s.todoTombstones,undefined);
+});

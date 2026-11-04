@@ -253,7 +253,7 @@ test('explicit never-commit input blocks the merge pending a one-time version-bo
   assert.equal(outcome.merge.commit,null);
   assert.equal(await fs.readFile(path.join(content,'reading.md'),'utf8'),BASELINE_MD);
   const done=c.store.find(w.id);
-  assert.equal(done.status,'ended');
+  assert.equal(done.status,'closing');assert.equal(done.endedAt,undefined);assert.equal(c.store.used(),1);
   assert.equal(done.closure.mergeAuthorization.consentRequired,true);
   assert.equal(done.closure.mergeAuthorization.candidateCommit,w.execution.candidate.commit);
   assert.ok(done.closure.mergeAuthorization.request,'覆盖请求已暴露');
@@ -295,7 +295,7 @@ test('merge orchestrator record is durable and re-driven after host restart',asy
   const c2=await openTestController({runtimeRoot:path.join(root,'runtime'),contentRoot:content});
   t.after(async()=>{if(!c2.store.closed)await c2.stop().catch(()=>{});});
   const w2=c2.store.find(w.id);
-  assert.equal(w2.status,'ended');
+  assert.equal(w2.status,'closing');assert.equal(w2.endedAt,undefined);assert.equal(c2.store.used(),1);
   assert.equal(w2.closure.merge.status,'blocked');
   assert.equal(w2.closure.merge.blockedCode,'MERGE_CONSENT_REQUIRED');
   assert.ok(w2.closure.merge.attempts.length>firstAttempts,'重启后宿主续驱合入协调，尝试数递增');
@@ -307,6 +307,7 @@ test('merge orchestrator record is durable and re-driven after host restart',asy
   assert.equal(dto.merge.status,'blocked');
   assert.equal(dto.merge.blockedCode,'MERGE_CONSENT_REQUIRED');
   assert.equal(dto.capabilities.canSave,false);
+  assert.equal(dto.reviewVersion,fresh.reviewVersion);assert.equal(dto.capabilities.canContinue,false);assert.equal(dto.capabilities.canAccept,false);
   assert.equal(await fs.readFile(path.join(content,'reading.md'),'utf8'),BASELINE_MD);
   assert.equal(dto.mergeConsent.status,'pending');
   assert.equal(dto.mergeConsent.reasonCode,'NO_COMMIT_EXPLICIT');
@@ -569,10 +570,15 @@ test('accepted projection binds to its own publication: accepting B never pollut
   const archivedB=await c.reviewRead({objectId:receipt2.objectId});
   assert.equal(archivedB.reviewVersion,bRead.reviewVersion);
   assert.equal(archivedB.accepted.reviewVersion,bRead.reviewVersion);
+  assert.equal(archivedB.revision,2);assert.equal(archivedB.workRevision,2);
+  assert.equal(archivedB.merge.status,'merged');assert.equal(archivedB.continuation,undefined);
   assert.equal(archivedB.files.find(f=>f.relPath==='reading.md').draft.text,humanB);
   // A：历史读取绝不投B的人工稿/B的接受令牌——回到A自身candidate字节与重算令牌。
   const oldA=await c.reviewRead({objectId});
   assert.equal(oldA.accepted,undefined);
+  assert.equal(oldA.revision,1);assert.equal(oldA.workRevision,2);
+  assert.equal(oldA.merge,null);assert.equal(oldA.mergeConsent,null);
+  assert.equal(oldA.continuation.jobId,c.store.state.jobs.find(j=>j.key==='review-continue:cont-accept-b-1').id);
   assert.notEqual(oldA.reviewVersion,bRead.reviewVersion);
   const oldAReading=oldA.files.find(f=>f.relPath==='reading.md');
   assert.equal(oldAReading.draft,null);
@@ -600,4 +606,20 @@ test('managed.invoke review.accept dispatches the real orchestrator drain with a
   assert.equal(row.executor,'host');
   assert.equal(c.store.find(w.id).closure.merge.actor,'orchestrator');
   assert.equal(await fs.readFile(path.join(content,'reading.md'),'utf8'),human);
+});
+
+for(const kind of ['untracked','modified'])test('human review draft accepts '+kind+' frozen input against older Git base',async t=>{
+  const input='# Frozen user input\n',human='# Human-approved final\n';
+  const {c,w,objectId,content}=await fixture(t,{seed:async root=>{
+    await run('git',['init','--initial-branch=main'],{cwd:root});
+    await run('git',['add',...(kind==='untracked'?['notes.md']:['.'])],{cwd:root});
+    await run('git',['-c','user.name=Test','-c','user.email=test@example.invalid','-c','commit.gpgSign=false','commit','-m','older task base'],{cwd:root});
+    await fs.writeFile(path.join(root,'reading.md'),input);
+  }});
+  const before=await c.reviewRead({objectId});assert.equal(before.files.find(f=>f.relPath==='reading.md').baselineText,input);
+  await c.reviewSave({objectId,relPath:'reading.md',text:human,expectedDraftRevision:0});
+  const fresh=await c.reviewRead({objectId});const outcome=await c.reviewAccept({objectId,reviewVersion:fresh.reviewVersion,requestKey:'accept-input-'+kind});
+  assert.equal(outcome.merge.status,'merged');assert.equal(await fs.readFile(path.join(content,'reading.md'),'utf8'),human);
+  assert.equal((await run('git',['show',':reading.md'],{cwd:content})).stdout,human);assert.equal((await run('git',['show','HEAD:reading.md'],{cwd:content})).stdout,human);
+  assert.equal(c.store.find(w.id).closure.git.operations.find(f=>f.relPath==='reading.md').beforeDigest,sha256(Buffer.from(input)));
 });

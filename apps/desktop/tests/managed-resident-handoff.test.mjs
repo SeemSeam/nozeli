@@ -110,6 +110,26 @@ for(const scenario of ['missing','empty','native-message','unknown-entry','admit
  if(before!==null)assert.equal(await readFile(oldFile,'utf8'),before);
 });
 
+for(const scenario of ['empty','current-admission','unbound-job','current-message','wrong-journal','native-message','mixed-binding','unconfirmed'])test(`schema upgrade after handoff preserves archived history: ${scenario}`,async t=>{
+ const {c,oldFile,calls}=await fixture(t);
+ await c.store.mutate(()=>{c.store.state.jobs.push({id:'archived-job',target:'frontdesk',status:'completed',promptStartedAt:1,threadId:'old-frontdesk',collabAttempts:[{sessionId:'old-frontdesk',everAdmitted:true,status:'settled'}]});c.store.state.messages.push({id:'archived-message',target:'frontdesk',speaker:'user',jobId:'archived-job',text:'retained old input'});c.store.state.drafts.frontdesk='unsent draft retained';});
+ await c.confirmResidentHandoff(await c.prepareResidentHandoff('frontdesk'));
+ const resident=c.store.state.residents.frontdesk,currentThread=resident.threadId,currentFile=c.sessions.get('frontdesk').sessionFile;
+ await c.sessions.get('frontdesk').stop();c.sessions.delete('frontdesk');
+ await writeFile(currentFile,JSON.stringify({type:'session',id:scenario==='wrong-journal'?'another-thread':currentThread})+'\n'+(scenario==='native-message'?JSON.stringify({type:'message',message:{role:'user',content:'current input'}})+'\n':''));
+ await c.store.mutate(()=>{resident.toolsDigest='schema-before-upgrade';
+  if(scenario==='current-admission')c.store.state.jobs.push({id:'current-job',target:'frontdesk',status:'failed',promptStartedAt:2,collabAttempts:[{sessionId:currentThread,status:'unknown'}]});
+  if(scenario==='unbound-job')c.store.state.jobs.push({id:'unbound',target:'frontdesk',status:'failed',promptStartedAt:2});
+  if(scenario==='current-message')c.store.state.messages.push({id:'current-message',target:'frontdesk',sessionId:currentThread,text:'must not be discarded'});
+  if(scenario==='mixed-binding')c.store.state.jobs[0].collabAttempts.push({sessionId:currentThread,status:'unknown'});
+  if(scenario==='unconfirmed')resident.handoff.status='start-failed';
+ });
+ const before=structuredClone({jobs:c.store.state.jobs,messages:c.store.state.messages,drafts:c.store.state.drafts,archives:c.store.state.residentArchive}),journal=await readFile(currentFile),old=await readFile(oldFile),starts=calls.length;
+ if(scenario==='empty'){const session=await c.session('frontdesk');assert.equal(session.closed,false);assert.equal(c.store.state.residents.frontdesk.toolsDigest,session.toolsDigest);assert.equal(calls.length,starts+1);}
+ else{await assert.rejects(c.session('frontdesk'),{code:'PI_TOOLS_DIGEST_MISMATCH'});assert.equal(calls.length,starts);assert.equal(c.store.state.residents.frontdesk.threadId,currentThread);}
+ assert.deepEqual({jobs:c.store.state.jobs,messages:c.store.state.messages,drafts:c.store.state.drafts,archives:c.store.state.residentArchive},before);assert.deepEqual(await readFile(currentFile),journal);assert.deepEqual(await readFile(oldFile),old);
+});
+
 test('frontdesk clear creates only a fresh frontdesk owner and preserves all source ledgers',async t=>{
  const {c,calls,oldFile}=await fixture(t);await c.session('orchestrator');const orchestrator=c.sessions.get('orchestrator');
  await c.store.mutate(()=>{c.store.state.drafts.frontdesk='retained GUI draft';c.store.state.jobs.push({id:'old-front',target:'frontdesk',type:'front',text:'OLD_SENTINEL',status:'completed',context:{}});c.store.state.messages.push({id:'old-message',target:'frontdesk',speaker:'user',jobId:'old-front',text:'OLD_SENTINEL'});});

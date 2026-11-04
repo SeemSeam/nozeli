@@ -22,7 +22,7 @@ export function mountFrozenChangeReader({ parent, invoke, mountDiff, currentProj
     focus = null;
   }
 
-  async function open({ projectId, changeSetId, fileId }) {
+  async function open({ projectId, changeSetId, fileId, workId, objectId, relPath }) {
     if (projectId !== currentProjectId()) return { ok: false, error: { message: '项目已切换，原变更未打开。' } };
     if (!overlay) {
       focus = document.activeElement;
@@ -78,7 +78,9 @@ export function mountFrozenChangeReader({ parent, invoke, mountDiff, currentProj
     const status = document.createElement('p'); status.setAttribute('role', 'status'); status.textContent = '正在读取冻结版本…';
     body.append(status); overlay.append(head, body); back.focus({ preventScroll: true });
     let result;
-    try { result = await invoke('managed.changes.read', { projectId, changeSetId, fileId }); }
+    try { result = changeSetId && fileId
+      ? await invoke('managed.changes.read', { projectId, changeSetId, fileId })
+      : await readFrozenReviewComparison(invoke,{projectId,workId,objectId,relPath}); }
     catch (error) { result = { ok: false, error: { message: error.message } }; }
     if (token !== generation || projectId !== currentProjectId()) return { ok: false, stale: true };
     if (!result.ok) { status.textContent = '暂时无法读取冻结版本，原文件未被替代。可以关闭对比后重试。';const details=document.createElement('details'),summary=document.createElement('summary'),diagnostic=document.createElement('pre');summary.textContent='读取失败详情';diagnostic.textContent=result.error?.message||'读取失败';details.append(summary,diagnostic);body.append(details);return result; }
@@ -116,9 +118,36 @@ export function frozenChangePresentation(value) {
     'byte-budget': '冻结文件超过文本大小限制，未截断或加载正文。',
     'line-budget': '冻结文件超过文本行数限制，未截断或加载正文。',
   };
+  reasons['baseline-unavailable']='输入基线未冻结，无法显示差异。';
+  reasons.size='冻结文件超过文本大小限制，未截断或加载正文。';
+  reasons.unavailable='冻结正文缺失，无法显示差异。';
   if (value.availability !== 'available') return { ...identity, text: false, reason: (reasons[value.reason] || value.reason || '冻结版本不可用。') + ' 不会读取当前文件代替。' };
   if (![value.before, value.after].every(side => side === null || typeof side?.text === 'string')) {
     return { ...identity, text: false, reason: '冻结文本不完整，无法显示差异。不会读取当前文件代替。' };
   }
   return { ...identity, text: true, before: value.before === null ? '' : value.before.text, after: value.after === null ? '' : value.after.text };
+}
+
+// Legacy publications still use the established review document version adapter.
+// Neither side is the editable human draft or a same-path project document.
+export async function readFrozenReviewComparison(invoke,{projectId,workId,objectId,relPath}){
+ if(!workId||!objectId||!relPath)return {ok:false,error:{message:'冻结报告文件身份不完整；未读取项目文件。'}};
+ const review=await invoke('managed.review.read',{projectId,workId,objectId});if(!review.ok)return review;
+ const file=review.value.files?.find(entry=>entry.relPath===relPath);
+ if(!file||review.value.workId!==workId||review.value.objectId!==objectId)return {ok:false,error:{message:'冻结报告文件身份不匹配；未读取项目文件。'}};
+ const value={file:{path:relPath,oldPath:file.oldPath||undefined},availability:'unsupported',before:null,after:null};
+ if(file.baselineUnavailable)return {ok:true,value:{...value,reason:'baseline-unavailable'}};
+ const payload={projectId,relPath,documentSource:{type:'review',workId,objectId}};
+ const sides=[];
+ for(const kind of ['baseline','candidate']){
+  const digest=file[kind+'Digest'];
+  if(digest===null){sides.push(null);continue;}
+  if(typeof digest!=='string')return {ok:true,value:{...value,reason:kind+'-identity-unavailable'}};
+  const result=await invoke('document.version',{...payload,version:{kind}});if(!result.ok)return result;
+  const side=result.value;
+  if(side.digest!==digest)return {ok:false,error:{message:'冻结版本摘要不匹配；未显示替代文本。'}};
+  if(side.kind!=='text'||typeof side.text!=='string')return {ok:true,value:{...value,reason:side.unavailable||side.unsupportedReason||(side.kind==='unsupported'?'unavailable':'binary')}};
+  sides.push({text:side.text});
+ }
+ return {ok:true,value:{...value,availability:'available',before:sides[0],after:sides[1]}};
 }

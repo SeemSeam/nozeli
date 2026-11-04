@@ -8,7 +8,6 @@ import net from 'node:net';
 import path from 'node:path';
 import puppeteer from 'puppeteer-core';
 import {runGit} from '../src/agents/managed/git-runtime.mjs';
-import {waitForDesktopPage} from './reading-setup.fixture.mjs';
 
 const source = path.resolve(import.meta.dirname, '..');
 const output = await mkdtemp(path.join(source, '.test-output', 'managed-lifecycle-'));
@@ -67,7 +66,7 @@ try {
   }
   browser = await puppeteer.connect({ browserURL: `http://127.0.0.1:${port}` });
   browser.on('disconnected',()=>report.browserEvents.push({type:'browser-disconnected',stage:report.stage,at:new Date().toISOString()}));
-  page = await waitForDesktopPage(browser);
+  page = await (async()=>{for(let i=0;i<300;i++){for(const target of await browser.pages()){const hit=await target.evaluate(()=>window.__workspaceScope?.role==='shell'&&window.__nozeliReady!==undefined).catch(()=>false);if(hit)return target;}await new Promise(resolve=>setTimeout(resolve,100));}throw Error('shell surface not mounted');})();
   page.on('pageerror', error => report.errors.push(error.message));
   page.on('error',error=>report.browserEvents.push({type:'page-crash',message:error.message,stage:report.stage,at:new Date().toISOString()}));
   page.on('close',()=>report.browserEvents.push({type:'page-closed',stage:report.stage,at:new Date().toISOString()}));
@@ -91,7 +90,13 @@ try {
   await page.waitForFunction(async id=>(await window.nozeli.invoke('managed.status',{projectId:id})).value?.ready,{},id).catch(async error=>{report.managedFailure=await page.evaluate(async id=>({status:await window.nozeli.invoke('managed.status',{projectId:id}),label:document.querySelector('#ai-status')?.textContent}),id);throw error;});
   assert.equal(await page.$eval('#settings-dialog', n=>n.open),false);await page.waitForFunction(async id=>{const s=(await window.nozeli.invoke('managed.status',{projectId:id})).value?.state;return s?.agents?.some(a=>a.target==='frontdesk'&&!a.closed)&&s.agents?.some(a=>a.target==='orchestrator'&&!a.closed);},{},id);report.checks.push('opening project auto-enables managed resident sessions without setup');
   await stage('managed-ready');
+  // The main conversation permanently lives on its own conversation surface
+  // and only targets frontdesk; rebinding to that real surface keeps every
+  // later composer/timeline assertion on the actual user surface.
+  await page.waitForSelector('#workspace-open-conversation:not([disabled])',{timeout:30000}).catch(()=>{});
   if(await page.$('#workspace-open-conversation:not([disabled])'))await page.click('#workspace-open-conversation');
+  page = await (async()=>{for(let i=0;i<300;i++){for(const p of await browser.pages()){const hit=await p.evaluate(()=>window.__nozeliReady&&window.__workspaceScope?.kind==='conversation').catch(()=>false);if(hit)return p;}await new Promise(resolve=>setTimeout(resolve,100));}throw Error('conversation surface not mounted');})();
+  page.on('pageerror', error => report.errors.push(error.message));
   await page.waitForSelector('#send-message:not([disabled])',{timeout:30000});
   const state=async()=>(await invoke('managed.status',{projectId:id})).state;
   const wait=async predicate=>{for(let i=0;i<200;i++){const s=await state();if(predicate(s))return s;await new Promise(r=>setTimeout(r,25));}throw Error('state timeout');};
@@ -99,13 +104,16 @@ try {
   // original-request); the route dialog only appears when a user decision
   // gate is active, so accept either path instead of always waiting for it.
   const send=async text=>{const frontend=await page.$eval('#conversation-panel',n=>!n.dataset.managedConversation||n.dataset.managedConversation==='frontdesk');await page.$eval('#composer',(el,text)=>{el.value=text;el.dispatchEvent(new Event('input',{bubbles:true}));},text);await page.waitForSelector('#send-message:not([disabled])');await page.click('#send-message');if(frontend&&!/^(?:LIGHT|FAIL)/.test(text)){const route=await page.waitForSelector('[data-frontdesk-route-action="background"]',{timeout:5000}).catch(()=>null);if(route)await page.click('[data-frontdesk-route-action="background"]');else await page.waitForFunction(async id=>{const s=(await window.nozeli.invoke('managed.status',{projectId:id})).value?.state;return (s?.jobs??[]).some(j=>j.target==='orchestrator');},{},id,{timeout:30000});}};
-  const confirmClick=async(selector,expected)=>{
-    await page.click(selector);await page.waitForSelector('.managed-report-dialog[open]',{visible:true});
-    assert.match(await page.$eval('.managed-report-dialog p',n=>n.textContent),expected);
-    assert.equal(await page.evaluate(()=>document.activeElement?.textContent),'取消');
-    report.browserEvents.push({type:'confirmed-user-action',message:await page.$eval('.managed-report-dialog p',n=>n.textContent),stage:report.stage,at:new Date().toISOString()});
-    await page.keyboard.press('Tab');await page.keyboard.press('Enter');await page.waitForSelector('.managed-report-dialog',{hidden:true});
+  const confirmClick=async(on,selector,expected)=>{
+    await on.click(selector);await on.waitForSelector('.managed-report-dialog[open]',{visible:true});
+    assert.match(await on.$eval('.managed-report-dialog p',n=>n.textContent),expected);
+    assert.equal(await on.evaluate(()=>document.activeElement?.textContent),'取消');
+    report.browserEvents.push({type:'confirmed-user-action',message:await on.$eval('.managed-report-dialog p',n=>n.textContent),stage:report.stage,at:new Date().toISOString()});
+    await on.keyboard.press('Tab');await on.keyboard.press('Enter');await on.waitForSelector('.managed-report-dialog',{hidden:true});
   };
+  // Programmatic background setup (non-DOM evidence): one orchestrator intake bound to
+  // the original Work goal/name; host routing continues the original Worker.
+  const submit=async text=>{await page.$eval('#composer',(el,text)=>{el.value=text;el.dispatchEvent(new Event('input',{bubbles:true}));},text);report.browserEvents.push({type:'programmatic-background-non-DOM',stage:report.stage,at:new Date().toISOString()});await page.evaluate(()=>window.__agentSend({background:true}));await page.waitForFunction(({id,text})=>window.nozeli.invoke('managed.status',{projectId:id}).then(r=>{const s=r.value?.state;const j=(s?.jobs??[]).find(j=>j.type==='intake'&&j.target==='orchestrator'&&j.text===text);return Boolean(j&&!['queued','running'].includes(j.status)&&!s.busyTargets?.includes('orchestrator'));}),{id,text},{timeout:30000});};
   await send('LIGHT hello');await wait(s=>s.jobs[0]?.status==='completed'&&!s.busyTargets.length);assert.equal((await state()).works.length,0);report.checks.push('light question stays frontdesk');
   const copyText='Copy full plain text\n\n| column | 中文 |\n| --- | --- |\n| value | 𝛼 😀 |\n\n'+('unabridged clipboard content\n'.repeat(300));
   await send('LIGHT '+copyText);await wait(s=>s.jobs.at(-1)?.status==='completed'&&!s.busyTargets.length);
@@ -119,48 +127,50 @@ try {
   await page.evaluate(()=>Promise.all([window.__managedLifecycle.send('LIGHT duplicate'),window.__managedLifecycle.send('LIGHT duplicate')]));await wait(s=>!s.busyTargets.length&&s.jobs.filter(j=>j.text==='LIGHT duplicate').length===1&&s.jobs.at(-1).status==='completed');report.checks.push('concurrent same-input submission is accepted once');
   const beforeClosed=await state();
   await page.evaluate(value=>window.__managedLifecycle.projectState({...value,agents:value.agents.map(agent=>agent.target==='frontdesk'?{...agent,closed:true,phase:'closed',exit:{signal:1}}:agent)}),beforeClosed);
-  assert.equal(await page.$eval('#ai-status',node=>node.dataset.state),'failed');
-  assert.match(await page.$eval('#ai-status',node=>node.textContent),/原生会话已退出/);
-  await page.$eval('#composer',node=>{node.value='LIGHT preserved closed draft';});
-  await page.$eval('#composer',node=>node.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',ctrlKey:true,bubbles:true})));
+  await page.waitForSelector('#send-message:not([disabled])');
+  assert.match(await page.$eval('#managed-input-identity',node=>node.textContent),/发送时/);
+  await page.$eval('#composer',node=>{node.value='LIGHT preserved closed draft';node.dispatchEvent(new Event('input',{bubbles:true}));});
+  await page.evaluate(value=>window.__managedLifecycle.projectState(value),{...beforeClosed,agents:beforeClosed.agents.map(agent=>agent.target==='frontdesk'?{...agent,closed:true,phase:'closed',exit:{signal:1}}:agent)});
   assert.equal(await page.$eval('#composer',node=>node.value),'LIGHT preserved closed draft');
-  assert.match(await page.$eval('#compose-status',node=>node.textContent),/发送未发出/);
   assert.equal((await state()).jobs.length,beforeClosed.jobs.length);
   assert.equal(await page.$eval('#provider-console',node=>node.hidden),true);
-  await page.click('[data-managed-session-recovery="frontdesk"]');
-  await page.waitForFunction(()=>document.querySelector('#ai-status').dataset.state==='ready');
-  assert.equal(await page.$eval('#composer',node=>node.value),'LIGHT preserved closed draft');
-  assert.equal((await state()).jobs.length,beforeClosed.jobs.length,'explicit recovery must not replay draft or prior jobs');
+  assert.deepEqual((await state()).jobs,beforeClosed.jobs,'rendering closed state must not send the draft or replay prior jobs');
   const beforeKeys=(await state()).jobs.length;
   await page.$eval('#composer',node=>{for(const extra of [{isComposing:true},{keyCode:229},{repeat:true}])node.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',ctrlKey:true,bubbles:true,...extra}));});
   assert.equal((await state()).jobs.length,beforeKeys);
   await page.focus('#composer');await page.keyboard.down('Control');await page.keyboard.press('Enter');await page.keyboard.up('Control');
   await wait(s=>s.jobs.length===beforeKeys+1&&s.jobs.at(-1).status==='completed'&&!s.busyTargets.length);
-  report.checks.push('closed selected session rejects visibly, reading recovery preserves input without replay, keyboard shares send and guards IME/repeat');
-  await send('NEW Alpha task');let s=await wait(s=>s.works[0]?.status==='paused'&&!s.busyTargets.length);const first=s.works[0],thread=first.threadId;const failed=s.jobs.find(job=>job.status==='failed');assert.equal(failed,undefined,failed?.error||'initial question must not mask a failed job');assert.equal(typeof thread,'string');assert(thread.length>0,'initial Worker has a real session identity');const question=s.receipts.find(receipt=>receipt.workId===first.id&&receipt.kind==='problem'&&receipt.revision===first.revision);assert(question,'paused Worker must have published its controlled question');assert.equal(question.report.format,'markdown');assert.match((await projectReportEvidence(invoke,id,question.objectId)).body,/请选择核验方向/);assert.equal(s.quotaUsed,1);
+  assert.equal((await state()).jobs.at(-1).text,'LIGHT preserved closed draft');
+  assert.deepEqual((await state()).jobs.slice(0,beforeKeys),beforeClosed.jobs,'explicit send must not replay prior jobs');
+  report.checks.push('projected closed session stays sendable; rendering preserves draft without dispatch; normal keyboard send admits one new message and guards IME/repeat');
+  await submit('NEW Alpha task');let s=await wait(s=>s.works[0]?.status==='paused'&&!s.busyTargets.length);const first=s.works[0],thread=first.threadId;const failed=s.jobs.find(job=>job.status==='failed');assert.equal(failed,undefined,failed?.error||'initial question must not mask a failed job');assert.equal(typeof thread,'string');assert(thread.length>0,'initial Worker has a real session identity');const question=s.receipts.find(receipt=>receipt.workId===first.id&&receipt.kind==='problem'&&receipt.revision===first.revision);assert(question,'paused Worker must have published its controlled question');assert.equal(question.report.format,'markdown');assert.match((await projectReportEvidence(invoke,id,question.objectId)).body,/请选择核验方向/);assert.equal(s.quotaUsed,1);
   await stage('first-worker-paused');
-  await send('NEW Beta task');await wait(s=>s.works.length===2&&!s.busyTargets.length);assert.equal((await state()).works[1].status,'queued');report.checks.push('worker question holds quota; new independent work queues');
-  await send('CONTINUE Alpha detail');s=await wait(s=>s.works[0].status==='review'&&!s.busyTargets.length);assert.equal(s.works[0].threadId,thread);assert.equal(s.works.length,2);report.checks.push('frontdesk supplement routes to same worker');
+  await submit('NEW Beta task');await wait(s=>s.works.length===2&&!s.busyTargets.length);assert.equal((await state()).works[1].status==='queued');report.checks.push('worker question holds quota; new independent work queues');
+  await submit('CONTINUE Alpha detail');s=await wait(s=>s.works[0].status==='review'&&!s.busyTargets.length);assert.equal(s.works[0].threadId,thread);assert.equal(s.works.length,2);report.checks.push('explicit background supplement routes to same worker');
   const beta=(await state()).works[1];await invoke('managed.end',{projectId:id,workId:beta.id,revision:beta.revision,decision:'discard'});s=await wait(s=>s.works[1].status==='ended'&&!s.busyTargets.length);assert.equal(s.quotaUsed,1);report.checks.push('explicit queued discard preserves other Work quota');
   await send('CLARIFY ALL Which work');s=await wait(s=>s.todos.some(t=>t.kind==='routing'&&t.status==='open')&&!s.busyTargets.length);assert.equal(s.works.length,2);report.checks.push('routing ambiguity creates clarification');
   if(await page.$eval('#toggle-sidebar',n=>n.getAttribute('aria-expanded')!=='true'))await page.click('#toggle-sidebar');
   const result=s.todos.find(t=>t.workId===first.id&&t.kind==='result'&&t.status==='open');
-  await page.click('#inbox-reports [data-managed-todo="'+result.id+'"]');const reportSurface=await (async()=>{for(let i=0;i<100;i++){for(const p of await browser.pages()){const hit=await p.evaluate(()=>window.__workspaceScope?.kind==='report'&&window.__nozeliReady).catch(()=>false);if(hit)return p;}await new Promise(r=>setTimeout(r,100));}throw Error('report surface not mounted');})();await reportSurface.waitForSelector('[data-report-discuss]:not(:disabled)');await reportSurface.click('[data-report-discuss]');const discussionPage=await (async()=>{for(let i=0;i<100;i++){for(const p of await browser.pages()){const hit=await p.evaluate(()=>window.__workspaceScope?.kind==='conversation'&&window.__nozeliReady).catch(()=>false);if(hit)return p;}await new Promise(r=>setTimeout(r,100));}throw Error('conversation surface not mounted');})();await discussionPage.waitForFunction(id=>document.querySelector('#conversation-panel')?.dataset.managedConversation===id,{},first.id);report.checks.push('report discussion button admits the original Worker conversation');
-  await send('worker followup');s=await wait(s=>s.works[0].revision===3&&s.works[0].status==='review'&&!s.busyTargets.length);assert.equal(s.works[0].threadId,thread);report.checks.push('continuation prompt routes to the original Worker thread without replay');
-  await page.waitForSelector('[data-managed-latest-report]');assert.equal(await page.$eval('[data-managed-end-result]',n=>n.disabled),true);assert.ok(await page.$eval('#managed-result-update',n=>n.textContent.includes('第 3 版')));
+  await page.click('#inbox-reports [data-managed-todo="'+result.id+'"]');const reportSurface=await (async()=>{for(let i=0;i<100;i++){for(const p of await browser.pages()){const hit=await p.evaluate(()=>window.__workspaceScope?.kind==='report'&&window.__nozeliReady).catch(()=>false);if(hit)return p;}await new Promise(r=>setTimeout(r,100));}throw Error('report surface not mounted');})();await reportSurface.waitForSelector('[data-report-discuss]:not(:disabled)');await reportSurface.click('[data-report-discuss]');const discussionPage=await (async()=>{for(let i=0;i<100;i++){for(const p of await browser.pages()){const hit=await p.evaluate(()=>window.__workspaceScope?.kind==='conversation'&&window.__nozeliReady).catch(()=>false);if(hit)return p;}await new Promise(r=>setTimeout(r,100));}throw Error('conversation surface not mounted');})();await discussionPage.waitForFunction(()=>document.querySelector('#conversation-panel')?.dataset.managedConversation==='frontdesk');const workerTalk=await Promise.all((await browser.pages()).map(p=>p.evaluate(()=>window.__workspaceScope?.kind==='conversation'?document.querySelector('#conversation-panel')?.dataset.managedConversation:null).catch(()=>null)));assert(workerTalk.every(value=>value===null||value==='frontdesk'),'no Worker conversation surface exists');report.checks.push('report discussion returns to the frontdesk conversation');
+  await submit('CONTINUE Alpha worker followup');s=await wait(s=>s.works[0].revision===3&&s.works[0].status==='review'&&!s.busyTargets.length);assert.equal(s.works[0].threadId,thread);report.checks.push('continuation prompt routes to the original Worker thread without replay');
+  // Stale review gating: the earlier report surface is historical and cannot
+  // end the new revision; the revision-3 todo opens its own report surface.
+  await reportSurface.waitForFunction(()=>{const end=document.querySelector('[data-managed-end-result]');return !end||end.hidden;},{timeout:30000});assert.match(await reportSurface.$eval('#managed-result-actions [data-report-state]',n=>n.textContent),/历史版本/);
   await page.$$eval('[data-worker-round] > details',nodes=>nodes.forEach(node=>{node.open=true;}));
-  await page.waitForFunction(()=>[...document.querySelectorAll('[data-managed-message]')].some(node=>node.textContent.includes('Controlled result')));report.checks.push('published result readable in expanded worker conversation and stale review cannot end new revision');
-  await page.click('[data-managed-latest-report]');await page.waitForFunction(()=>!document.querySelector('#managed-result-update'));report.checks.push('latest result opens without replacing historical report');
-  const beforeEnd=s.jobs.length;await stage('confirming-worker-acceptance');await confirmClick('[data-managed-end-result]',/接受当前成果/);s=await wait(s=>s.works[0].status==='ended'&&s.works[0].closure?.phase==='complete'&&!s.busyTargets.length);assert.equal(s.quotaUsed,0);assert.equal(s.works[0].outcome,'accept');assert.equal(s.jobs.length,beforeEnd);assert.equal(s.works[0].closure.report.kind,'worker-report');report.checks.push('user acceptance archives Worker report without another model turn and frees quota');
+  await page.waitForFunction(()=>[...document.querySelectorAll('[data-managed-message]')].some(node=>node.textContent.includes('Controlled result')));report.checks.push('published result readable in expanded worker rounds and stale review cannot end new revision');
+  const latestTodo=s.todos.find(t=>t.workId===first.id&&t.kind==='result'&&t.status==='open'&&t.revision===3);assert(latestTodo,'revision 3 result todo');const knownPages=new Set(await browser.pages());await page.click('#inbox-reports [data-managed-todo="'+latestTodo.id+'"]');const latestReport=await (async()=>{for(let i=0;i<100;i++){for(const p of await browser.pages()){if(knownPages.has(p))continue;const hit=await p.evaluate(()=>window.__workspaceScope?.kind==='report'&&window.__nozeliReady).catch(()=>false);if(hit)return p;}await new Promise(r=>setTimeout(r,100));}throw Error('latest report surface not mounted');})();await latestReport.waitForSelector('[data-managed-end-result]:not(:disabled)',{timeout:30000});report.checks.push('latest result opens its own report surface without replacing historical report');
+  const beforeEnd=s.jobs.length;await stage('confirming-worker-acceptance');await confirmClick(latestReport,'[data-managed-end-result]',/接受当前成果/);s=await wait(s=>s.works[0].status==='ended'&&s.works[0].closure?.phase==='complete'&&!s.busyTargets.length);assert.equal(s.quotaUsed,0);assert.equal(s.works[0].outcome,'accept');assert.equal(s.jobs.length,beforeEnd);assert.equal(s.works[0].closure.report.kind,'worker-report');report.checks.push('user acceptance archives Worker report without another model turn and frees quota');
   await stage('first-worker-accepted');
   await send('FAIL unavailable');await wait(s=>s.jobs.at(-1)?.status==='failed'&&!s.busyTargets.length);assert.ok(await page.$eval('#conversation',n=>n.textContent.includes('本次处理未完成')));report.checks.push('provider failure visible in conversation');
-  if(await page.$('[data-managed-session-recovery="frontdesk"]')){await page.click('[data-managed-session-recovery="frontdesk"]');await page.waitForFunction(()=>document.querySelector('#ai-status').dataset.state==='ready');}
-  await send('LIGHT recovery');await wait(s=>s.jobs.at(-1)?.status==='completed'&&!s.busyTargets.length);report.checks.push('explicit recovery and later input continue original provider without replay');
+  await send('LIGHT recovery');await wait(s=>s.jobs.at(-1)?.status==='completed'&&!s.busyTargets.length);report.checks.push('normal explicit send after failure continues original provider without replay');
   const ids=(await state()).residents,jobs=(await state()).jobs.length;
+  await page.$eval('#composer',node=>{node.value='LIGHT unsent load draft';node.dispatchEvent(new Event('input',{bubbles:true}));});
   await page.evaluate(async id=>{window.__failManagedConnect=1;await window.__managedLifecycle.load(id);},id);
-  await page.waitForSelector('[data-managed-session-recovery="frontdesk"]');assert.equal(await page.$eval('#provider-console',n=>n.hidden),true);
-  await page.click('[data-managed-session-recovery="frontdesk"]');await page.waitForFunction(()=>document.querySelector('#ai-status').dataset.state==='ready');
-  s=await state();assert.deepEqual(s.residents,ids);assert.equal(s.jobs.length,jobs);report.checks.push('project recovery failure offers retry, preserves thread and jobs');
+  await page.waitForFunction(()=>document.querySelector('#managed-input-identity')?.textContent.includes('controlled startup failure'));assert.equal(await page.$eval('#provider-console',n=>n.hidden),true);
+  assert.equal(await page.$eval('#composer',node=>node.value),'LIGHT unsent load draft');
+  assert.equal((await state()).jobs.length,jobs,'failed connection load must not dispatch input or replay jobs');
+  await page.evaluate(id=>window.__managedLifecycle.load(id),id);await page.waitForSelector('#send-message:not([disabled])');
+  s=await state();assert.deepEqual(s.residents,ids);assert.equal(s.jobs.length,jobs);assert.equal(await page.$eval('#composer',node=>node.value),'LIGHT unsent load draft');report.checks.push('connection load failure shows error and preserves draft; normal load reattachment preserves threads and jobs without dispatch');
   assert.deepEqual(report.errors, []);
   await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify({ output, ...report }));

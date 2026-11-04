@@ -36,8 +36,8 @@ const server=http.createServer((req,res)=>{let body='';req.on('data',chunk=>body
     assert(lastTool,'native document read reply required');const reply=typeof lastTool.content==='string'?JSON.parse(lastTool.content):lastTool.content;
     const read=reply.value??reply;assert.equal(read.relPath,'reading.md');
     if(workerTurn===1){assert.equal(read.text,baseline);delta=tool('nozeli_document_apply',{readHandle:read.readHandle,replacements:[{oldText:baseline,newText:first}]},'edit-first');workerStage=2;}
-    else{assert.equal(read.text,humanText,'same Worker must read latest human candidate, not the old published version');result.checks.push('native Worker continuation read the exact saved human candidate');delta=tool('nozeli_publish',{kind:'result',html:reportHtml('Human changes retained in the same Work.'),files:['reading.md']},'publish-'+workerTurn);workerStage=0;}
-   }else{delta=tool('nozeli_publish',{kind:'result',html:reportHtml('First Worker proposal.'),files:['reading.md']},'publish-'+workerTurn);workerStage=0;}
+    else{assert.equal(read.text,humanText,'same Worker must read latest human candidate, not the old published version');result.checks.push('native Worker continuation read the exact saved human candidate');delta=tool('nozeli_publish',{kind:'result',content:reportHtml('Human changes retained in the same Work.'),files:['reading.md']},'publish-'+workerTurn);workerStage=0;}
+   }else{delta=tool('nozeli_publish',{kind:'result',content:reportHtml('First Worker proposal.'),files:['reading.md']},'publish-'+workerTurn);workerStage=0;}
   }
   result.modelRequests.push({role:orchestrator?'orchestrator':'worker',tool:delta.tool_calls?.[0]?.function?.name,turn:workerTurn});
   res.writeHead(200,{'content-type':'text/event-stream'});for(const [part,end]of [[delta,null],[{},finish]])res.write('data: '+JSON.stringify({id:'collaboration-'+result.modelRequests.length,object:'chat.completion.chunk',choices:[{index:0,delta:part,finish_reason:end}]})+'\n\n');res.end('data: [DONE]\n\n');

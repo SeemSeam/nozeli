@@ -78,9 +78,9 @@ try{
  // 5. thinking feedback: request high on a non-reasoning model must report the native clamp
  const agents=(await call(conversation,'managed.status',{projectId:project.id})).state.agents;
  const frontdesk=agents.find(row=>row.target==='frontdesk');
- const set=await call(conversation,'managed.model.set',{projectId:project.id,target:'frontdesk',ownerId:frontdesk.ownerId,effort:'high',requestKey:'model-mgmt-live-thinking'});
- assert.equal(set.accepted,true);
- result.checks.push('managed.model.set accepts thinking-only change; requested/effective/clamped feedback: '+JSON.stringify(set.requested??null)+' → '+JSON.stringify(set.effective??null)+(set.clamped?' (clamped)':''));
+ const set=await call(conversation,'managed.model.set',{projectId:project.id,target:'frontdesk',ownerId:frontdesk.ownerId,effort:'high',expectedRevision:options.revision,requestKey:'model-mgmt-live-thinking'});
+ assert.equal(set.accepted,true);assert.equal(set.persisted,true);assert.equal(set.preference.effort,'high');assert.equal(typeof set.recorded?.model,'string');if(set.clamped){assert.equal(set.clamped.requested,'high');assert.equal(set.clamped.effective,set.recorded.effort);}else assert.equal(set.recorded.effort,'high');
+ result.checks.push('durable target model selection retains requested effort and confirmed native clamp: '+JSON.stringify(set.preference)+' → '+JSON.stringify(set.recorded));
  const beforeIdentity={ownerId:frontdesk.ownerId,threadId:frontdesk.threadId};
  await conversation.type('#composer','Before rotation');await conversation.click('#send-message');
  await until(async()=>{const state=(await call(conversation,'managed.status',{projectId:project.id})).state;const job=state.jobs.find(row=>row.text==='Before rotation');if(job?.status==='failed')throw Error(JSON.stringify(job));return job?.status==='completed';},'pre-rotation Pi response');
@@ -101,7 +101,7 @@ try{
  assert.equal(chatRequests().length,2,'one request per explicit input, no replay');
  assert.equal(listRequests().every(request=>request.authorization!=='Bearer local-nonsecret-v2'),true,'listing used the pre-rotation key as saved at that revision');
  assert.deepEqual(provider.errors,[]);assert.deepEqual(errors,[]);
- await call(shell,'session.requestClose');result.exit=await Promise.race([exited,pause(15000).then(()=>null)]);assert.deepEqual(result.exit,{code:0,signal:null});result.ok=true;
+ await call(shell,'session.requestClose');await until(async()=>child.exitCode!==null||await shell.$eval('#quit-choice',node=>node.open).catch(()=>false),'native close or explicit cancellation confirmation');if(child.exitCode===null)await shell.click('#quit-cancel');result.exit=await Promise.race([exited,pause(15000).then(()=>null)]);assert.deepEqual(result.exit,{code:0,signal:null});result.ok=true;
 }catch(error){result.error=error.stack;process.exitCode=1;if(browser)for(const page of await browser.pages())await Promise.race([page.screenshot({path:path.join(out,'failure-'+page.target()._targetId+'.png')}).catch(()=>{}),pause(2000)]);}
 finally{
  await browser?.disconnect();if(child&&child.exitCode===null){child.kill('SIGTERM');await Promise.race([exited,pause(3000)]);if(child.exitCode===null)child.kill('SIGKILL');}

@@ -1,3 +1,4 @@
+import {hasReadableText,isImportantEntry,isProcessEntry,hasProcessPayload,processLabel,turnPresentation,replyPresentation,processSummary} from './session-presentation.mjs';
 import React,{memo,useLayoutEffect,useMemo,useRef,useState,useSyncExternalStore} from 'react';
 import {createPortal} from 'react-dom';
 import {createRoot} from 'react-dom/client';
@@ -48,6 +49,10 @@ function ToolCalls({calls,context}){
 function NativeBody({entry,context}){
  return h(React.Fragment,null,entry.reasoning&&h(Fold,{label:'推理'},h(Content,{value:entry.reasoning,context})),entry.toolCalls?.length>0&&h(Fold,{label:'工具调用 · '+entry.toolCalls.length},h(ToolCalls,{calls:entry.toolCalls,context})),entry.tool?h(Fold,{label:h(React.Fragment,null,h('span',{className:'session-tool-name'},entry.tool.name||'工具'),' · ',h('span',{className:'session-tool-status','data-status':entry.tool.status||(entry.streaming?'running':'record')},entry.tool.status||(entry.streaming?'执行中':'记录')))},entry.tool.input!=null&&h(Content,{value:entry.tool.input,context,plain:true}),h(Content,{value:entry.tool.output??entry.text,context})):h(Content,{value:entry.text,context,settled:!entry.streaming}));
 }
+function ProcessRecords({entries,context,call}){
+ const meaningful=entries.filter(hasProcessPayload),empty=entries.length-meaningful.length;
+ return h('div',{className:'session-process-records'},meaningful.map(item=>h('section',{key:item.id,'data-process-entry':item.id,'data-message':item.id},h(Fold,{label:processLabel(item)},h(HistoricalModel,{entry:item}),item.availability==='read-required'?h(ReadOriginal,{entry:item,call}):item.tool?h(React.Fragment,null,item.tool.input!=null&&h(Content,{value:item.tool.input,context,plain:true}),h(Content,{value:item.tool.output??item.text,context,plain:true})):h(NativeBody,{entry:item,context})))),empty>0&&h('small',{className:'session-empty-records'},empty+' 条无正文状态记录已省略；未删除原始历史。'));
+}
 function ReadOriginal({entry,call}){
  const [state,setState]=useState({read:null,page:null,history:[],loading:false,error:''}),request=useRef(0);
  useLayoutEffect(()=>{setState({read:null,page:null,history:[],loading:false,error:''});return()=>{request.current++;};},[entry.id]);
@@ -70,9 +75,13 @@ function ReadOriginal({entry,call}){
  const labels={text:'正文',reasoning:'推理 / Reasoning','tool.input':'工具输入','tool.output':'工具输出',toolCalls:'工具调用（JSON）'};
  return h('section',{className:'session-original'},h('p',null,entry.reason||'此消息需单独读取原文。'),entry.read?.originalExport&&h(React.Fragment,null,h('p',null,'原始JSON可能包含工具原文和内部路径；仅导出到可信本地位置。'),h('button',{type:'button',disabled:state.loading,onClick:exportOriginal},'导出完整原始记录')),state.loading&&h('p',{role:'status'},'读取原文…'),state.error&&h('p',{role:'alert'},state.error),state.read?h(React.Fragment,null,h('button',{type:'button',onClick:close},'关闭原文并释放缓存'),h('nav',{'aria-label':'原文字段'},state.read.fields.map(({field})=>h('button',{key:field,type:'button',disabled:state.loading,'aria-pressed':state.page?.field===field,onClick:()=>load(state.read,field)},labels[field]||field))),state.page&&h('section',{className:'session-content'},h('nav',{'aria-label':'原文分段'},h('span',null,`${state.page.offset}–${state.page.nextOffset??state.page.totalBytes} / ${state.page.totalBytes} UTF-8 字节 · 纯文本安全阅读`),h('button',{type:'button',disabled:state.loading||!state.history.length,onClick:()=>load(state.read,state.page.field,state.history.at(-1),state.history.slice(0,-1))},'上一段'),h('button',{type:'button',disabled:state.loading||state.page.nextOffset==null,onClick:()=>load(state.read,state.page.field,state.page.nextOffset,[...state.history,state.page.offset])},'下一段')),h('pre',{className:'session-plain'},state.page.content)),state.error&&h('button',{type:'button',disabled:state.loading,onClick:()=>load(state.read,state.page?.field||state.read.fields[0].field,state.page?.offset||0,state.history)},'重试读取')):h('button',{type:'button',disabled:state.loading,onClick:open},'读取原文（分段）'));
 }
-const Message=memo(function Message({entry,entries,context,onTask,call}){
- const process=entries?.filter(item=>item!==entry)||[];
- const streaming=entries?entries.some(item=>item.streaming):entry.streaming;
+function HistoricalModel({entry}){
+ if(entry.speaker!=='agent'||entry.hostTurnStatus)return null;
+ return h('small',{'data-history-model':entry.model?'recorded':'not-recorded'},entry.model?(entry.provider||'来源未记录')+' / '+entry.model:'模型未记录');
+}
+const Message=memo(function Message({entry,entries,state,context,onTask,call}){
+ const process=entries?.filter(item=>item!==entry&&!item.hostTurnStatus)||[];
+ const execution=entry.speaker==='user'?null:turnPresentation(entries||[entry],state);
  const role=entry.speaker==='user'?'user':['system','tool'].includes(entry.speaker)?'system':entry.target==='frontdesk'?'frontdesk':entry.target==='orchestrator'?'orchestrator':'worker';
  const name=role==='user'?'你':role==='system'?(entry.speaker==='tool'?'工具':'Nozeli'):role==='frontdesk'?'前台':role==='orchestrator'?'主控':'Worker';
  const [copyState,setCopyState]=useState('idle');
@@ -82,21 +91,20 @@ const Message=memo(function Message({entry,entries,context,onTask,call}){
   try{const result=await window.nozeli.invoke('document.clipboard',{action:'write',text:entry.text||''});if(!result.ok)throw Error(result.error?.message||'复制失败');setCopyState('copied');}
   catch(error){setCopyState('failed');context?.onError?.(error);}
  };
+ if(isProcessEntry(entry)&&!entries)return hasProcessPayload(entry)?h('div',{className:'session-process-only','data-message':entry.id},h(ProcessRecords,{entries:[entry],context,call})):null;
  return h('article',{className:'session-message','data-message':entry.id,'data-managed-message':entry.id,'data-source':entry.source,'data-role':role,'aria-label':name+'的消息'},
-  h('header',null,h('strong',null,name),streaming&&h('span',{role:'status'},'输出中'),entry.source==='legacy'&&h('small',null,'只读历史'),entry.source==='demo-fixture'&&h('small',{'data-demo-badge':true},'演示内容 · 离线固定回复'),entry.at&&h('time',{dateTime:entry.at,title:new Date(entry.at).toLocaleString()},new Date(entry.at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}))),
+  h('header',null,h('strong',null,name),h(HistoricalModel,{entry}),execution&&h('span',{className:'session-execution-state','data-execution-state':execution.status,role:'status'},execution.label),entry.source==='legacy'&&h('small',null,'只读历史'),entry.source==='demo-fixture'&&h('small',{'data-demo-badge':true},'演示内容 · 离线固定回复'),entry.at&&h('time',{dateTime:entry.at,title:new Date(entry.at).toLocaleString()},new Date(entry.at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}))),
   entry.speaker==='agent'&&(entry.failed||entry.status==='failed')&&h('p',{role:'alert','data-reply-state':'failed'},'本次回复失败，原输入和记录已保留；不会自动重发。'),
+  entry.speaker==='tool'&&isImportantEntry(entry)&&h('p',{role:'alert'},'工具执行受阻；原始诊断保留在下方详情中。'),
   entry.attachments?.length>0&&h('div',{className:'message-attachments'},entry.attachments.map((attachment,index)=>h('button',{key:attachment.digest||index,type:'button',className:'cm-chip cm-chip-main','data-digest':attachment.digest,title:'发送时冻结的材料 · '+attachment.name,onClick:()=>attachment.digest&&window.__openMaterialAttachment?.(attachment)},h(FileIcon,{path:attachment.name||'image.png'}),h('span',null,attachment.name||'图片材料')))),
   entry.materialSources?.length>0&&h(Fold,{label:(entry.materialSources.every(source=>source.kind==='web')?'网页材料':'选区来源')+' · '+entry.materialSources.length},entry.materialSources.map((source,index)=>h('section',{key:source.annotationId||index},h('p',null,source.kind==='web'?(source.title||source.url):h(React.Fragment,null,h('span',{className:'session-file-path'},source.relPath),(source.location?' · '+source.location:'')+(source.changed?' · 原版选区，当前版本已变化':''))),source.kind==='web'&&h('p',null,source.url),h('blockquote',null,source.quote),h('small',null,'版本 '+source.materialDigest)))),
   entry.drawingSources?.length>0&&h(Fold,{label:'涂鸦截图来源'},entry.drawingSources.map((image,index)=>h('section',{key:image.digest||index},image.sources?.length?image.sources.map((source,i)=>h('p',{key:source.sourceId||i},source.relPath?h('span',{className:'session-file-path'},source.relPath):'工作区画面',' · '+(source.locationStatus||'viewport-only')+(source.bufferDigest?' · 版本 '+source.bufferDigest:''))):h('p',null,'工作区截图，未锚定文件')))),
-  process.length>0&&h(Fold,{label:'执行过程 · '+process.length+' 条记录'},process.map(item=>h('section',{key:item.id,'data-process-entry':item.id},item.availability==='read-required'?h(ReadOriginal,{entry:item,call}):h(NativeBody,{entry:item,context})))),
+  process.length>0&&h(Fold,{label:processSummary(process,execution)},h(ProcessRecords,{entries:process,context,call})),
   entry.availability==='read-required'?h(ReadOriginal,{entry,context,call}):h(NativeBody,{entry,context}),
-  entry.availability!=='read-required'&&(!entries||entries.includes(entry))&&!(entry.speaker==='agent'&&(entry.failed||entry.status==='failed')&&!entry.text)&&h('div',{className:'message-actions'},h('button',{type:'button',onClick:()=>window.__composerMaterials?.setQuote({role:entry.speaker,text:entry.text||'',time:entry.at||''})},'引用'),h('button',{type:'button',onClick:copy,disabled:copyState==='pending','data-message-copy':copyState,'aria-live':'polite'},copyState==='pending'?'正在复制…':copyState==='copied'?'已复制纯文本':copyState==='failed'?'复制失败，重试':'复制纯文本'),onTask&&entry.source!=='legacy'&&h('button',{type:'button',onClick:()=>onTask(entry)},'转为后台任务')));
+  entry.availability!=='read-required'&&hasReadableText(entry)&&!isProcessEntry(entry)&&(!entries||entries.includes(entry))&&h('div',{className:'message-actions'},h('button',{type:'button',onClick:()=>window.__composerMaterials?.setQuote({role:entry.speaker,text:entry.text,time:entry.at||''})},'引用'),h('button',{type:'button',onClick:copy,disabled:copyState==='pending','data-message-copy':copyState,'aria-live':'polite'},copyState==='pending'?'正在复制…':copyState==='copied'?'已复制纯文本':copyState==='failed'?'复制失败，重试':'复制纯文本'),onTask&&entry.source!=='legacy'&&h('button',{type:'button',onClick:()=>onTask(entry)},'转为后台任务')));
 });
 function Reply({row,...props}){
- let answer=null;
- for(let i=row.entries.length-1;i>=0;i--){const item=row.entries[i];if(item.speaker==='system'&&item.text||item.speaker==='agent'&&(item.failed||item.status==='failed'||!item.tool&&!item.toolCalls?.length&&(item.text||item.availability==='read-required'))){answer=item;break;}}
- const last=row.entries[row.entries.length-1];
- const entry=answer||{...last,speaker:'agent',text:'本轮尚无正文回复。',availability:'available',tool:null,toolCalls:[],reasoning:null};
+ const {answer,entry}=replyPresentation(row.entries,props.state);
  return h(Message,{...props,onTask:answer?.speaker==='agent'?props.onTask:null,entry,entries:row.entries});
 }
 function FrozenFiles({receipt,call,openFrozenChange,projectId}){
@@ -108,17 +116,24 @@ function FrozenFiles({receipt,call,openFrozenChange,projectId}){
   try{const page=await call('changes.list',{changeSetId,offset,limit:100});if(token!==request.current)return;setState({files:page.files.slice(0,100),loading:false,error:null,nextOffset:page.nextOffset,total:page.total,offset,requestOffset:offset});}
   catch(error){if(token===request.current)setState(old=>({...old,loading:false,error:error.message}));}
  };
+ const openMaterial=async(file)=>{
+  const token=request.current;
+  try{const documentSource=!file.after&&file.before?{type:'review-version',workId:receipt.workId,objectId:receipt.objectId,version:{kind:'baseline'}}:{type:'review',workId:receipt.workId,objectId:receipt.objectId};const result=await window.nozeli.invoke('workspace.control',{type:'open-file',projectId,relPath:file.path,documentSource});if(!result.ok)throw Error(result.error?.message||'冻结成果无法打开');}
+  catch(error){if(token===request.current)setState(old=>({...old,error:error.message}));}
+ };
  useLayoutEffect(()=>{setState({files:[],loading:true,error:null,nextOffset:null,total:null,offset:0,requestOffset:0});if(changeSetId)void load();return()=>{request.current++;};},[changeSetId,projectId]);
  if(!changeSetId)return h('section',{className:'session-frozen-files'},'冻结变更不可用：此轮没有已绑定的变更集；未用模型清单或当前文件替代。');
  return h('section',{className:'session-frozen-files','data-change-set':changeSetId,'aria-label':'本轮冻结变更文件'},
   h('h4',null,'冻结变更',state.total==null?' · 文件数量未知':' · '+state.total+' 个文件'),h(Fold,{label:'版本依据'},'相对本次工作输入的冻结版本，不以当前文件代替。'),
-  h('ul',null,state.files.map(file=>{const path=file.path,label=file.oldPath&&file.oldPath!==path?file.oldPath+' → '+path:path;return h('li',{key:file.fileId},h('button',{type:'button','data-frozen-file':file.fileId,onClick:()=>Promise.resolve(openFrozenChange?.({projectId,changeSetId,fileId:file.fileId})).catch(error=>setState(old=>({...old,error:error.message})))},h(FileIcon,{path}),h('span',{className:'session-file-path'},label),h('small',{className:'session-file-status'},h('span',{'data-file-status':file.status},file.status),file.added!=null&&h('span',{className:'session-file-added'},' +'+file.added),file.deleted!=null&&h('span',{className:'session-file-deleted'},' −'+file.deleted))));})),
+  h('ul',null,state.files.map(file=>{const path=file.path,label=file.oldPath&&file.oldPath!==path?file.oldPath+' → '+path:path,hasMaterial=receipt.workId&&receipt.objectId&&(file.after||file.before),openDiff=()=>Promise.resolve(openFrozenChange?.({projectId,changeSetId,fileId:file.fileId})).catch(error=>setState(old=>({...old,error:error.message})));return h('li',{key:file.fileId},h('button',{type:'button','data-frozen-file':file.fileId,title:hasMaterial?'查看本轮成果内容与实际效果；已删除文件显示修改前':'查看本轮冻结差异；此记录没有可打开的成果版本',onClick:()=>hasMaterial?void openMaterial(file):void openDiff()},h(FileIcon,{path}),h('span',{className:'session-file-path'},label),h('small',{className:'session-file-status'},h('span',{'data-file-status':file.status},file.status),file.added!=null&&h('span',{className:'session-file-added'},' +'+file.added),file.deleted!=null&&h('span',{className:'session-file-deleted'},' −'+file.deleted))),hasMaterial&&h('button',{type:'button',className:'session-result-material','data-frozen-diff':file.fileId,title:'查看输入基线与发布冻结候选的只读代码差异',onClick:()=>void openDiff()},'代码差异'));})),
   state.loading&&h('p',{role:'status'},'读取冻结清单…'),state.error&&h('p',{role:'alert'},state.error,h('button',{type:'button',disabled:state.loading,onClick:()=>load(state.requestOffset)},'重试读取')),h('nav',{'aria-label':'冻结文件分页'},h('span',null,state.total?'第 '+(state.offset+1)+'–'+(state.offset+state.files.length)+' / '+state.total+' 个文件':''),state.offset>0&&h('button',{type:'button',disabled:state.loading,onClick:()=>load(Math.max(0,state.offset-100))},'上一页变更文件'),state.nextOffset!=null&&h('button',{type:'button',disabled:state.loading,onClick:()=>load(state.nextOffset)},'更多变更文件')));
 }
 function Worker({row,state,context,call,openFrozenChange,projectId}){
- const [open,setOpen]=useState(false),work=state.works.find(work=>work.id===row.workId),running=row.entries.some(entry=>entry.streaming);
+ const [open,setOpen]=useState(false),work=state.works.find(work=>work.id===row.workId),execution=turnPresentation(row.entries,state);
+ const important=row.entries.filter(entry=>isImportantEntry(entry)||!open&&!isProcessEntry(entry)&&hasReadableText(entry));
  return h('article',{className:'session-worker','data-worker-round':row.id,'data-role':'worker'},
-  h('details',{open},h('summary',{onClick:event=>{event.preventDefault();setOpen(value=>!value);},'aria-expanded':open},h('span',{className:'session-worker-identity'},h('strong',null,'Worker'),h('span',{className:'session-worker-task'},work?.name||'未命名任务')),h('span',{className:'session-worker-meta'},'第 '+(row.revision??'?')+' 轮'+(running?' · 输出中':'')),h('span',{className:'session-worker-disclosure','aria-hidden':true},open?'收起记录':'展开记录')),open&&h('div',{className:'session-worker-transcript'},h('p',null,row.entries.length+' 条原始记录'),row.entries.map(entry=>h(Message,{key:entry.id,entry,context,call})))),
+  h('details',{open},h('summary',{onClick:event=>{event.preventDefault();setOpen(value=>!value);},'aria-expanded':open},h('span',{className:'session-worker-identity'},h('strong',null,'Worker'),h('span',{className:'session-worker-task'},work?.name||'未命名任务')),h('span',{className:'session-worker-meta'},'第 '+(row.revision??'?')+' 轮 · ',h('span',{'data-execution-state':execution.status},execution.label)),h('span',{className:'session-worker-disclosure','aria-hidden':true},open?'收起详情':'展开详情')),open&&h('div',{className:'session-worker-transcript'},row.entries.filter(entry=>!isProcessEntry(entry)).map(entry=>h(Message,{key:entry.id,entry,state,context,call})),row.entries.some(isProcessEntry)&&h(Fold,{label:processSummary(row.entries.filter(isProcessEntry),execution)},h(ProcessRecords,{entries:row.entries.filter(isProcessEntry),context,call})))),
+  !open&&important.length>0&&h('div',{className:'session-important'},important.map(entry=>h(Message,{key:entry.id,entry,state,context,call}))),
   row.receipts.map(receipt=>h(FrozenFiles,{key:receipt.id||receipt.objectId,receipt,call,openFrozenChange,projectId})),
   !row.receipts.length&&h('p',{className:'session-freeze-pending'},'尚未冻结变更；完整输出可展开查阅。'));
 }
@@ -143,9 +158,9 @@ function Timeline({store,state,context,call,openFrozenChange,projectId,onTask,on
  },[]);
  useLayoutEffect(()=>{restoreTail.current?.();},[snapshot,state.receipts]);
  const latest=()=>{restoration.current=null;latestRequested.current=true;lock.current.current=true;if(historyPage)onLatest();else{restoreTail.current?.();setAtBottom(true);}};
- const rows=groupSession(snapshot,state.receipts);
+ const rows=groupSession(snapshot,state.receipts,state);
  return h(React.Fragment,null,h('div',{ref,className:'session-timeline','data-session-version':'1',onToggleCapture:()=>{lock.current.current=false;}},h('nav',{'aria-label':'会话历史'},snapshot.hasMore&&h('button',{type:'button',onClick:()=>{lock.current.current=false;onPage(snapshot.nextCursor);}},'读取更早一页'),pageError&&h('p',{role:'alert'},pageError)),
-  !rows.length&&h('p',{className:'session-empty'},'会话记录将在这里显示。输入和材料不会自动发送。'),rows.map(row=>row.kind==='worker'?h(Worker,{key:row.id,row,state,context,call,openFrozenChange,projectId}):row.kind==='reply'?h(Reply,{key:row.id,row,context,onTask,call}):row.kind==='delta'?h('article',{key:row.id,className:'session-host-delta','data-host-delta':row.delta.id},h('strong',null,'Nozeli · '+row.delta.kind),h(Content,{value:row.delta.text,context})):h(Message,{key:row.id,entry:row.entry,context,onTask,call}))),
+  !rows.length&&h('p',{className:'session-empty'},'会话记录将在这里显示。输入和材料不会自动发送。'),rows.map(row=>row.kind==='worker'?h(Worker,{key:row.id,row,state,context,call,openFrozenChange,projectId}):row.kind==='reply'?h(Reply,{key:row.id,row,state,context,onTask,call}):row.kind==='delta'?h('article',{key:row.id,className:'session-host-delta','data-host-delta':row.delta.id},h('strong',null,'Nozeli · '+row.delta.kind),h(Content,{value:row.delta.text,context})):h(Message,{key:row.id,entry:row.entry,state,context,onTask,call}))),
   createPortal((historyPage||!atBottom)?h('button',{type:'button',className:'session-jump-latest',onClick:latest},h('span',{'aria-hidden':true},'↓ '),historyPage?'返回最新消息':'回到最新'):null,navigationContainer));
 }
 export function mountSessionTimeline(container,props){const root=createRoot(container);return {render(next){const merged={...props,...next};root.render(h(Timeline,{...merged,key:merged.projectId}));},destroy(){root.unmount();}};}

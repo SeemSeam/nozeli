@@ -1,6 +1,6 @@
 {
   "name": "nozeli-desktop",
-  "version": "0.1.0-alpha.4",
+  "version": "0.1.0-alpha.5",
   "private": true,
   "license": "AGPL-3.0-only",
   "type": "module",
@@ -35,6 +35,8 @@
     "test:integration": "node tools/test-suites.mjs integration",
     "test:smoke": "node tools/test-suites.mjs smoke",
     "test:live": "node tools/test-suites.mjs live",
+    "test:agent-control": "node tools/test-suites.mjs agent-control",
+    "test:agent-control:live": "node tools/test-suites.mjs agent-control-live",
     "test:toolchain": "node tools/test-suites.mjs toolchain",
     "test:document-diff": "npm run build:renderer && node tests/desktop-document-diff.test.mjs",
     "test:code-electron": "npm run build:renderer && node tests/desktop-code-file.test.mjs",

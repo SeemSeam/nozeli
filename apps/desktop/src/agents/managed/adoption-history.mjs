@@ -36,6 +36,8 @@ async function blob(root, commit, rel, env) {
 /** Record already-integrated bytes, never write/merge/reset original content. */
 export async function recordAdoption({ host, projectId, work, receipt }) {
   if (receipt?.status !== 'merged' || !/^[a-f0-9]{40,64}$/.test(receipt.commit || '') || !Array.isArray(receipt.operations) || !work?.id) fail('ADOPTION_RECEIPT_INVALID', 'A completed integration receipt is required for attribution');
+  const candidateCommit=work.execution?.candidate?.commit;
+  if(!/^[a-f0-9]{40,64}$/.test(candidateCommit||''))fail('ADOPTION_RECEIPT_INVALID','A frozen candidate is required to verify the accepted input baseline');
   const project = await host.requireProject(projectId), root = project.root;
   if (work.execution?.repo && await fs.realpath(work.execution.repo) !== await fs.realpath(root)) fail('ADOPTION_IDENTITY_CHANGED', 'Adoption repository does not match the project');
   const store = new FileChanges({root,storage:host.storage,projectId}), env = gitEnv();
@@ -51,7 +53,9 @@ export async function recordAdoption({ host, projectId, work, receipt }) {
     if (op.commit !== receipt.commit || op.workId !== work.id) fail('ADOPTION_RECEIPT_INVALID', 'Adoption operation identity mismatch: ' + rel);
     const operationId = digest(Buffer.from(JSON.stringify(['adoption', work.id, receipt.commit, rel])));
     const humanOperationId = digest(Buffer.from(JSON.stringify(['adoption-human', work.id, receipt.commit, rel])));
-    const before = await blob(root, receipt.commit + '^', rel, env), after = await blob(root, receipt.commit, rel, env);
+    // Candidate's parent is the frozen user input; integration's parent may
+    // predate uncommitted input and is not the accepted edit preimage.
+    const before = await blob(root, candidateCommit + '^', rel, env), after = await blob(root, receipt.commit, rel, env);
     const reconciled=reconciliation?.rows?.find(row=>row.relPath===rel&&row.targetDigest===op.beforeDigest&&row.digest===op.afterDigest);
     if ((!reconciled&&digest(before)!==op.beforeDigest)||digest(after)!==op.afterDigest) fail('ADOPTION_RECEIPT_INVALID', 'Adoption blob digests do not match the integration receipt: ' + rel);
     // Human fact: a draft revision whose final digest differs from the worker candidate;

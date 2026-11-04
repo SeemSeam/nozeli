@@ -282,18 +282,21 @@ export class ExecutionWorkspace {
    const files=[],base=await gitEntries(m.repo,['ls-tree','-r','-z',m.baseCommit]),input=await gitEntries(m.repo,['ls-tree','-r','-z',m.inputCommit]),candidate=await gitEntries(m.repo,['ls-tree','-r','-z',m.candidate.commit]),staged=await gitEntries(m.repo,['ls-files','--stage','-z']);
    for(const rel of [...new Set([...m.candidate.files,...(reviewedFiles?[...reviewedFiles.keys()]:[])])]){workPath(rel);const b=base.get(rel),i=input.get(rel),c=candidate.get(rel),s=staged.get(rel);
     const attrs=names(await git(m.repo,['check-attr','-z','filter','working-tree-encoding','text','eol','--',rel]));for(let at=2;at<attrs.length;at+=3)if(!['unspecified','unset',''].includes(attrs[at]))fail('FILTER_UNSUPPORTED','受管文件有转换属性：'+rel);
-    const disk=await fs.lstat(path.join(m.repo,rel)).catch(e=>{if(e.code==='ENOENT')return null;throw e;});if(b&&disk&&((disk.mode&0o111?'100755':'100644')!==b[0]))fail('USER_DIRTY','Worker文件权限有用户修改：'+rel);
     const reconciliation=reviewed?.reconciliation?.find(row=>row.relPath===rel);
     const approvedReconciliation=reconciliation&&reconciliation.candidateCommit===m.candidate.commit&&reconciliation.inputCommit===m.inputCommit&&reconciliation.targetHead===m.targetHead&&reviewedFiles?.has(rel);
-    if(JSON.stringify(b)!==JSON.stringify(i)&&!approvedReconciliation)fail('INPUT_OVERLAP','Worker修改了含用户输入覆盖的文件，需用户核对：'+rel);
+    // Exact authorization above approves input -> candidate, not base -> candidate
+    // or new disk edits. The real index must still match base; disk must match
+    // frozen input (or the explicitly reconciled target) including its mode.
     if((s?.[0]??null)!==(b?.[0]??null)||(s?.[1]??null)!==(b?.[2]??null)||s&&s[2]!=='0')fail('USER_STAGED','Worker文件有用户暂存：'+rel);
-    const captured=await this.files.inspectFile(m.repo,rel),before=approvedReconciliation?(captured?.digest??null):await blobDigest(m.repo,b?.[2]),after=await blobDigest(m.repo,c?.[2]);
+    const captured=await this.files.inspectFile(m.repo,rel),before=approvedReconciliation?(captured?.digest??null):await blobDigest(m.repo,i?.[2]),after=await blobDigest(m.repo,c?.[2]);
+    const beforeMode=approvedReconciliation?(captured?.mode??null):(i?.[0]??null);
+    if((captured?.mode??null)!==beforeMode)fail('USER_DIRTY','Worker文件权限有用户修改：'+rel);
     if(approvedReconciliation&&before!==reconciliation.targetDigest)fail('USER_DIRTY','用户核对后的目标正文再次变化：'+rel);
     if((captured?.digest??null)!==before)fail('USER_DIRTY','Worker文件有用户修改：'+rel);
-    if(c&&!['100644','100755'].includes(c[0])||b&&!['100644','100755'].includes(b[0]))fail('PATH_REJECTED','受管文件不是普通Git文件：'+rel);
+    if([b,i,c].some(row=>row&&!['100644','100755'].includes(row[0])))fail('PATH_REJECTED','受管文件不是普通Git文件：'+rel);
     const reviewedEntry=reviewedFiles?.get(rel)||null;
     const reconciledBlob=approvedReconciliation?await blobFile(m.repo,m.repo,rel):null;if(approvedReconciliation&&(reconciledBlob?.digest??null)!==before)fail('USER_DIRTY','用户核对后的目标正文再次变化：'+rel);
-    files.push({rel,before,after:reviewedEntry?reviewedEntry.digest:after,beforeMode:b?.[0]||null,beforeOid:approvedReconciliation?(reconciledBlob?.oid??null):(b?.[2]||null),mode:reviewedEntry?(reviewedEntry.mode??(c?.[0]||b?.[0])):(c?.[0]||b?.[0]),oid:reviewedEntry?reviewedEntry.oid:c?.[2]||null});
+    files.push({rel,before,after:reviewedEntry?reviewedEntry.digest:after,beforeMode,beforeOid:approvedReconciliation?(reconciledBlob?.oid??null):(i?.[2]??null),mode:reviewedEntry?(reviewedEntry.mode??(c?.[0]||beforeMode)):(c?.[0]||beforeMode),oid:reviewedEntry?reviewedEntry.oid:c?.[2]||null});
    }
    const directory=path.join(this.store.root,'evidence','integration-'+work.id);await fs.mkdir(directory,{recursive:true});const beforeIndex=path.join(directory,'before.index');await fs.copyFile(m.index,beforeIndex);
    const index=path.join(directory,'tree.index'),env={GIT_INDEX_FILE:index};await git(m.repo,['read-tree',m.targetHead],env);

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import {ExecutionWorkspace} from '../src/agents/managed/execution-workspace.mjs';
+import {ExecutionWorkspace,byteDigest} from '../src/agents/managed/execution-workspace.mjs';
 import {git,str} from '../src/agents/managed/git-service.mjs';
 import {withSafeFile} from '../src/agents/managed/file-stream.mjs';
 import {openTestWorkspace} from './project-storage.fixture.mjs';
@@ -40,9 +40,31 @@ test('accept integrates only Worker delta and preserves unrelated staged dirty u
  const receipt=await finish(f);assert.equal(receipt.status,'merged');assert.equal(await f.read('worker.txt'),'worker result\n');assert.equal(await f.read('user.txt'),'user dirty after staging\n');assert.equal(await str(f.project,['show',':user.txt']),'user staged');assert.equal(await str(f.project,['show','HEAD:user.txt']),'user base');assert.equal(await f.read('untracked.txt'),'user input\n');await assert.rejects(str(f.project,['show','HEAD:untracked.txt']));await assert.rejects(fs.stat(f.execution.directory(f.work.id)));assert.deepEqual(receipt.operations.map(o=>o.relPath),['worker.txt']);
  const count=await str(f.project,['rev-list','--count','HEAD']);assert.deepEqual(await new ExecutionWorkspace(f.store).finish(f.work,{decision:'accept',reportPersisted:true}),receipt);assert.equal(await str(f.project,['rev-list','--count','HEAD']),count);
 });
-test('blocks same-file user input overlays and later staging without changing target or deleting candidate',async t=>{
- const f=await fixture(t);await f.write('worker.txt','user overlay\n');await candidate(f);await assert.rejects(finish(f),{code:'INPUT_OVERLAP'});assert.equal(await f.read('worker.txt'),'user overlay\n');assert(await fs.stat(f.execution.directory(f.work.id)));
+test('same-file frozen input requires exact authorization and later staging still blocks',async t=>{
+ const f=await fixture(t);await f.write('worker.txt','user overlay\n');await candidate(f);await assert.rejects(finish(f,'accept',{mergeAuthorization:null}),{code:'MERGE_AUTHORIZATION_REQUIRED'});assert.equal(await f.read('worker.txt'),'user overlay\n');assert(await fs.stat(f.execution.directory(f.work.id)));await finish(f);assert.equal(await f.read('worker.txt'),'worker result\n');
  const g=await fixture(t);await candidate(g);await g.write('worker.txt','new staged user\n');await git(g.project,['add','worker.txt']);await assert.rejects(finish(g),{code:'USER_STAGED'});assert.equal(await g.read('worker.txt'),'new staged user\n');
+});
+
+for(const kind of ['untracked','modified'])test('exact acceptance adopts '+kind+' frozen input, preserving unrelated disk and staging',async t=>{
+ const f=await fixture(t),rel=kind==='untracked'?'report.html':'worker.txt',input='<!doctype html><p>frozen input</p>\n',output='<!doctype html><p>accepted candidate</p>\n';
+ await f.write(rel,input);await fs.chmod(path.join(f.project,rel),0o755);await f.write('user.txt','unrelated staged\n');await git(f.project,['add','user.txt']);await f.write('user.txt','unrelated dirty\n');await f.write('scratch.txt','unrelated untracked\n');
+ const m=await f.execution.prepare(f.work.id);await fs.writeFile(path.join(m.directory,rel),output);await fs.chmod(path.join(m.directory,rel),0o644);await f.execution.publish(f.work,{id:'input-overlap'});
+ const receipt=await finish(f);assert.equal(receipt.status,'merged');assert.equal(await f.read(rel),output);assert.equal(await str(f.project,['show',':'+rel]),output.trim());assert.equal(await str(f.project,['show','HEAD:'+rel]),output.trim());assert.match(await str(f.project,['ls-tree','HEAD',rel]),/^100644 /);assert.equal(receipt.operations[0].beforeDigest,byteDigest(Buffer.from(input)));
+ assert.equal(await f.read('user.txt'),'unrelated dirty\n');assert.equal(await str(f.project,['show',':user.txt']),'unrelated staged');assert.equal(await str(f.project,['show','HEAD:user.txt']),'user base');assert.equal(await f.read('scratch.txt'),'unrelated untracked\n');
+});
+
+for(const kind of ['untracked','modified'])for(const drift of ['disk','stage','mode'])test(kind+' frozen input rejects concurrent '+drift+' changes',async t=>{
+ const f=await fixture(t),rel=kind==='untracked'?'report.html':'worker.txt';await f.write(rel,'frozen input\n');const m=await f.execution.prepare(f.work.id);await fs.writeFile(path.join(m.directory,rel),'candidate\n');await f.execution.publish(f.work,{id:'input-drift'});const head=await str(f.project,['rev-parse','HEAD']);
+ if(drift==='mode')await fs.chmod(path.join(f.project,rel),0o755);else await f.write(rel,'new disk input\n');if(drift==='stage')await git(f.project,['add',rel]);const index=await fs.readFile(m.index);
+ await assert.rejects(finish(f),{code:drift==='stage'?'USER_STAGED':'USER_DIRTY'});assert.equal(await str(f.project,['rev-parse','HEAD']),head);assert.deepEqual(await fs.readFile(m.index),index);assert.equal(await f.read(rel),drift==='mode'?'frozen input\n':'new disk input\n');assert(await fs.stat(m.directory));
+});
+
+for(const kind of ['untracked','modified'])test('failed publication restores '+kind+' frozen input bytes mode and exact index',async t=>{
+ const f=await fixture(t),rel=kind==='untracked'?'report.html':'worker.txt',input='frozen rollback input\n';await f.write(rel,input);await fs.chmod(path.join(f.project,rel),0o755);await f.write('user.txt','unrelated staged\n');await git(f.project,['add','user.txt']);await f.write('user.txt','unrelated dirty\n');const m=await f.execution.prepare(f.work.id);await fs.writeFile(path.join(m.directory,rel),'candidate\n');await fs.chmod(path.join(m.directory,rel),0o644);await f.execution.publish(f.work,{id:'input-rollback'});
+ const index=await fs.readFile(m.index),head=await str(f.project,['rev-parse','HEAD']),save=f.execution.save.bind(f.execution);let failed=false;
+ f.execution.save=async manifest=>{await save(manifest);if(!failed&&manifest.finishIntent?.status==='files-installed'){failed=true;assert.equal(await str(f.project,['show',':'+rel]),'candidate');throw Error('input publication interrupted');}};
+ await assert.rejects(finish(f),/input publication interrupted/);assert.equal(await f.read(rel),input);assert.equal((await fs.stat(path.join(f.project,rel))).mode&0o111,0o111);assert.deepEqual(await fs.readFile(m.index),index);assert.equal(await str(f.project,['rev-parse','HEAD']),head);assert.equal(await f.read('user.txt'),'unrelated dirty\n');const intent=(await f.execution.readManifest(f.work.id)).finishIntent;assert.equal(intent.status,'prepared');assert.equal(intent.files[0].beforeMode,'100755');assert.equal(await str(f.project,['cat-file','blob',intent.files[0].beforeOid]),input.trim());
+ f.execution=new ExecutionWorkspace(f.store);await finish(f);assert.equal(await f.read(rel),'candidate\n');assert.equal(await str(f.project,['show',':'+rel]),'candidate');
 });
 test('blocks external HEAD drift and dirty files without guessing current target',async t=>{
  const f=await fixture(t);await candidate(f);await f.write('user.txt','external commit');await git(f.project,['add','user.txt']);await git(f.project,['-c','user.name=Test','-c','user.email=test@example.invalid','commit','-m','external']);await assert.rejects(finish(f),{code:'HEAD_DRIFT'});assert.equal(await f.read('worker.txt'),'base\n');

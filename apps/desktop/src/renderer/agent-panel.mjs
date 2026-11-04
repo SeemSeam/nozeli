@@ -87,6 +87,7 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
         if(id!==projectId||gen!==generation)return;
         managed.observeFixture(id,demo.state);
         $('composer').readOnly=false;$('send-message').disabled=false;$('send-message').title='发送到离线演示源，不使用模型';
+        if(ownsConversation){$('submit-background').disabled=false;$('submit-background').title='提交到离线演示源，不使用模型。';}
         $('selection-explain').disabled=false;$('selection-explain').title='演示选区解释 · 固定回复';
         setAi('离线演示 · 非原生 Agent','demo');return;
       }
@@ -161,6 +162,7 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     settingsPanel.projectChanged();
     restoredInput = input;
     $('send-message').disabled = true;
+    $('submit-background').disabled=true;
     $('selection-discuss').disabled = false;
     $('selection-explain').disabled = true;
     $('selection-explain').title = '请先完成配置并连接前台 Agent';
@@ -196,13 +198,14 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     if (!result.ok) { toast(result.error.message); return false; }
     return { ...result.value, requestId: result.value.requestId ?? result.value.jobId };
   };
+  let lastSubmissionNotice='';
   window.__agentSend = async ({background=false}={}) => {
     if(!ownsConversation)return false;
     delete $('compose-status').dataset.draftSaving;
     const id = projectId;
     const materialsApi = window.__composerMaterials;
     const rawText = $('composer').value;
-    const reject = reason => { $('compose-status').textContent='发送未发出：'+reason+'；草稿与材料仍保留';toast($('compose-status').textContent);return false; };
+    const reject = reason => { lastSubmissionNotice='发送未发出：'+reason+'；草稿与材料仍保留';$('compose-status').textContent=lastSubmissionNotice;toast(lastSubmissionNotice);return false; };
     if (!id) return reject('尚未打开项目');
     if (!managed.active&&!demo.active) return reject('Agent 尚未启用或连接，请完成配置并重试连接');
     if ($('send-message').disabled) return reject($('send-message').title||'Agent 尚未就绪或当前内容只读');
@@ -221,6 +224,8 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     const send=demo.active?demo.send:managed.send;
     const input = text.trim() ? text : images.length ? '请查看附带的涂鸦截图。' : '请查看附带的引用材料。';
     if (!text.trim()) materialsApi?.statusNote('本次附材料发送提示：'+input);
+    if(lastSubmissionNotice&&$('toast').textContent===lastSubmissionNotice)$('toast').hidden=true;
+    lastSubmissionNotice='';
     const result = await send(input,{relPath,materialText,background,composerText:rawText,...(textMaterials.length?{textMaterials}:{}),imageAttachments:images.map(a=>({digest:a.digest,mime:a.mime,source:a.source,storage:a.storage,projectId:a.projectId,instanceId:a.instanceId,deliveryId:a.deliveryId}))}).then(value=>({ok:true,value}),error=>({ok:false,error}));
     if (!result.ok) return reject(result.error.message);
     if(demo.active&&projectId===id&&$('composer').value===rawText){$('composer').value='';$('composer').dispatchEvent(new Event('input',{bubbles:true}));}

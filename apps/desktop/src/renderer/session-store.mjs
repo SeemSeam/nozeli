@@ -8,7 +8,7 @@ function weight(value,limit=SESSION_LIMITS.characters){
  if(!value||typeof value!=='object')return 0;
  let size=0;for(const child of Object.values(value)){size+=weight(child,limit-size);if(size>limit)break;}return size;
 }
-function boundedEntry(entry,limit){return weight(entry,limit)>limit?{id:entry.id,sequence:entry.sequence,target:entry.target,speaker:entry.speaker,source:entry.source,sessionId:entry.sessionId,entryId:entry.entryId,requestId:entry.requestId,workId:entry.workId,jobId:entry.jobId,revision:entry.revision,at:entry.at,streaming:Boolean(entry.streaming),durable:entry.durable,complete:entry.complete,status:entry.status,failed:entry.failed===true,read:entry.read,text:'',availability:'read-required',reason:'消息超过缓存预算；请单独读取原文'}:entry;}
+function boundedEntry(entry,limit){return weight(entry,limit)>limit?{id:entry.id,sequence:entry.sequence,target:entry.target,speaker:entry.speaker,source:entry.source,sessionId:entry.sessionId,entryId:entry.entryId,requestId:entry.requestId,workId:entry.workId,jobId:entry.jobId,revision:entry.revision,at:entry.at,...(entry.speaker==='agent'?{provider:entry.provider,model:entry.model,modelStatus:entry.modelStatus}:{}),streaming:Boolean(entry.streaming),durable:entry.durable,complete:entry.complete,status:entry.status,failed:entry.failed===true,read:entry.read,text:'',availability:'read-required',reason:'消息超过缓存预算；请单独读取原文'}:entry;}
 function windowRows(rows,count,budget){const result=[];let size=0;for(const row of rows.sort(order).reverse()){const next=boundedEntry(row,budget);const cost=weight(next);if(result.length>=count||size+cost>budget)break;result.push(next);size+=cost;}return result.reverse();}
 export function createSessionStore({schedule = callback => {
   if(typeof requestAnimationFrame==='function'){const id=requestAnimationFrame(callback);return()=>cancelAnimationFrame(id);}
@@ -59,12 +59,27 @@ function order(a,b){return (a.sequence??0)-(b.sequence??0)||a.id.localeCompare(b
 export function sessionMessages(snapshot,state){
  const jobs=new Map((state?.jobs||[]).map(job=>[job.id,job.status]));
  return snapshot.entries.filter(entry=>entry.target==='frontdesk'&&entry.speaker==='agent').map(entry=>({
+  provider:entry.provider,model:entry.model,modelStatus:entry.modelStatus,
   id:entry.id,role:'qa',requestId:entry.jobId||entry.requestId,sequence:entry.sequence,jobStatus:jobs.get(entry.jobId),text:entry.text||'',streaming:Boolean(entry.streaming),source:entry.source,availability:entry.availability,reason:entry.reason,durable:entry.durable,complete:entry.complete,status:entry.status,failed:entry.failed===true||entry.status==='failed',read:entry.read,
  }));
 }
-export function groupSession(snapshot,receipts=[]){
+// Only accepted host input suppresses its exact native echo; originals stay readable.
+export function visibleSessionEntries(entries,state){
+ const accepted=entries.filter(entry=>entry.speaker==='user'&&entry.source==='host'&&entry.jobId);
+ return entries.filter(entry=>{
+  if(entry.speaker!=='user'||entry.source!=='native')return true;
+  return !accepted.some(host=>{
+   if(host.target!==entry.target)return false;
+   for(const key of ['jobId','requestId','sessionId','entryId'])if(host[key]&&entry[key]&&host[key]!==entry[key])return false;
+   const job=state?.jobs?.find(job=>job.id===host.jobId);
+   if(entry.jobId)return entry.jobId===host.jobId;
+   return Boolean(entry.requestId&&entry.sessionId&&entry.entryId&&job?.collabAttempts?.some(attempt=>attempt.requestId===entry.requestId&&attempt.sessionId===entry.sessionId&&attempt.nativeEntryId===entry.entryId));
+  });
+ });
+}
+export function groupSession(snapshot,receipts=[],state){
  const rows=[],workers=new Map(),frontdesk=new Map();
- for(const entry of snapshot.entries){
+ for(const entry of visibleSessionEntries(snapshot.entries,state)){
   if(entry.target==='orchestrator'&&!entry.error&&!entry.question)continue;
   if(entry.target==='frontdesk'&&['agent','tool','system'].includes(entry.speaker)&&(entry.jobId||entry.requestId)){
    const key=JSON.stringify(['frontdesk',entry.jobId||entry.requestId]);
@@ -77,6 +92,14 @@ export function groupSession(snapshot,receipts=[]){
   let group=workers.get(key);
   if(!group){group={kind:'worker',id:key,sequence:entry.sequence,workId:entry.workId||entry.target,jobId:entry.jobId,revision:entry.revision,entries:[],receipts:[]};workers.set(key,group);rows.push(group);}
   group.entries.push(entry);
+ }
+ for(const entry of snapshot.entries){
+  if(entry.speaker!=='user'||entry.source!=='host'||entry.target!=='frontdesk'||!entry.jobId)continue;
+  const job=state?.jobs?.find(job=>job.id===entry.jobId&&job.target==='frontdesk');
+  if(!job||!['queued','starting','running','waiting','transferring','failed','blocked','interrupted','cancelled'].includes(job.status))continue;
+  const key=JSON.stringify(['frontdesk',job.id]);if(frontdesk.has(key))continue;
+  const group={kind:'reply',id:key,sequence:entry.sequence+0.5,entries:[{id:'host-turn:'+job.id,target:'frontdesk',jobId:job.id,speaker:'agent',source:'host',hostTurnStatus:true,text:'',at:job.startedAt||entry.at}]};
+  frontdesk.set(key,group);rows.push(group);
  }
  for(const receipt of receipts){
   const jobId=receipt.jobId||receipt.sourceJobId;

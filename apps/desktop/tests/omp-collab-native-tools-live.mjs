@@ -198,7 +198,7 @@ test('actual Controller recovers same Worker after reviewed publication and revi
       else {
         firstRequests++;
         if (firstRequests === 1) delta = { role: 'assistant', tool_calls: [{ index: 0, id: 'controller-first-bash', type: 'function', function: { name: 'bash', arguments: JSON.stringify({ command: 'printf reviewed > reviewed.txt; cat reviewed.txt' }) } }] };
-        else if (firstRequests === 2) delta = { role: 'assistant', tool_calls: [{ index: 0, id: 'controller-publish', type: 'function', function: { name: 'nozeli_publish', arguments: JSON.stringify({ kind: 'result', text: 'Native reviewed result', files: ['reviewed.txt'] }) } }] };
+        else if (firstRequests === 2) delta = { role: 'assistant', tool_calls: [{ index: 0, id: 'controller-publish', type: 'function', function: { name: 'nozeli_publish', arguments: JSON.stringify({ kind: 'result', content: 'Native reviewed result', files: ['reviewed.txt'] }) } }] };
         else { delta = { role: 'assistant', content: 'Reviewed result published.' }; finish = 'stop'; }
       }
       res.writeHead(200, { 'content-type': 'text/event-stream' });

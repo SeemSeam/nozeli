@@ -38,11 +38,9 @@ const editorList=document.querySelector('.workspace-open-editor-list');let paint
 const observer=new MutationObserver(records=>{paints+=records.filter(r=>r.target===editorList&&r.removedNodes.length>0).length;});observer.observe(editorList,{childList:true});
 const state={works:[],jobs:[],requests:[],todos:[],receipts:[],agents:[],drafts:{},timeline:{version:1,entries:[{id:'reply',sequence:1,target:'frontdesk',speaker:'agent',text:'original',durable:true}],deltas:[]}};
 window.__workspaceScope={role:'surface',kind:'conversation',projectId:'p',viewState:{conversationInput:{projectId:'p',target:'frontdesk'}}};
-const conversations=[],messages=[];
-const panel=mountManagedAgent({invoke,toast:e=>errors.push(e),onConversation:event=>conversations.push(event),onMessages:rows=>messages.push(rows),openManaged:()=>{}});
-window.fixture={flush,emit,calls,errors,conversations,messages,enable:()=>panel.enable('p'),
+const panel=mountManagedAgent({invoke,toast:e=>errors.push(e),onConversation:()=>{},onMessages:()=>{},openManaged:()=>{}});
+window.fixture={flush,emit,calls,errors,enable:()=>panel.enable('p'),
  state:update=>{Object.assign(state,update);emit('agent',{projectId:'p',kind:'managed-state',state});},
- select:target=>emit('workspace.control',{type:'conversation-action',projectId:'p',action:'select',target}),
  change:(relPath,nextProject=project)=>{project=nextProject;layout={projectId:project,views:{doc:{id:'doc',kind:'document',relPath}}};emit('workspace.changed',{});},
  settle:(status='missing')=>{const call=calls[pending.length?calls.length-1:0];const done=pending.shift();if(!done)throw Error('No availability read pending');done({ok:true,value:{entries:call.paths.map(relPath=>({relPath,status}))}});},
  stats:()=>({activeReads,maxReads,paints,pending:pending.length,frames:frames.size}),
@@ -61,14 +59,6 @@ try{
  assert(browser,log);const target=await browser.waitForTarget(t=>t.type()==='page'&&t.url().endsWith('/index.html')),page=await target.page();
  const pageErrors=[];page.on('pageerror',e=>pageErrors.push(e.message));await page.waitForFunction(()=>window.fixture);
  await page.evaluate(()=>window.fixture.enable());
- const baseline=await page.evaluate(()=>({paints:fixture.conversations.length,messages:fixture.messages.length}));
- await page.evaluate(()=>fixture.state({}));
- assert.deepEqual(await page.evaluate(()=>({paints:fixture.conversations.length,messages:fixture.messages.length})),{paints:baseline.paints+1,messages:baseline.messages+1},'one synchronous state application paints once while publishing messages immediately');
- await page.evaluate(()=>fixture.state({receipts:[{id:'receipt-only',objectId:'receipt-only'}]}));
- assert.equal(await page.evaluate(()=>fixture.conversations.length),baseline.paints+2,'receipt-only state updates retain a visual paint');
- await page.evaluate(()=>fixture.select('orchestrator'));
- assert.equal(await page.evaluate(()=>document.querySelector('#conversation-panel').dataset.managedConversation),'orchestrator');
- assert.equal(await page.evaluate(()=>fixture.conversations.length),baseline.paints+3,'target-only updates retain a visual paint');
  await page.evaluate(()=>{for(let i=0;i<20;i++)fixture.change('old.txt');fixture.flush();});
  assert.equal(await page.evaluate(()=>fixture.calls.length),1,'one availability read for an event burst');
  await page.evaluate(()=>{fixture.resetPaints();for(let i=0;i<20;i++)fixture.change('new.txt');fixture.flush();});

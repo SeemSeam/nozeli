@@ -11,6 +11,12 @@ export function intakeLineage(state,job){
 }
 export const recordExcerpt=(value,size=120)=>String(value||'').replace(/\s+/g,' ').trim().slice(0,size);
 const reviewExcerpt=value=>recordExcerpt(String(value||'').replace(/```[\s\S]*?```/g,' ').replace(/!?(\[([^\]]+)\])\([^)]*\)/g,'$2').replace(/^\s{0,3}#{1,6}\s+/gm,'').replace(/[*_`>]/g,''),180);
+// The protocol envelope is execution evidence, not the user's request title.
+export function intakeRequestText(state,job){
+ const original=intakeLineage(state,job)[0],source=(state.messages||[]).find(message=>message.id===original.context?.sourceMessageId);
+ return original.context?.userGoal||source?.text||original.text||'';
+}
+export const intakeSystemFault=job=>Boolean(job?.maintenanceBugId||job?.maintenanceFault);
 const todoPhases={'frontdesk-route':'前台去向 · 等待用户决定',deviation:'任务偏离 · 等待用户决定',result:'报告待审查',problem:'等待回答',routing:'需要明确目标',recovery:'执行待恢复',git:'Git 待处理',closure:'收尾待处理','merge-constraint':'合并策略 · 等待用户决定',system:'系统异常待处理'};
 // A publication and its round's settlement are independent durable facts.
 // Only the exact current Work/receipt/job binding can expose this exception.
@@ -56,9 +62,40 @@ export function managedReviewTodos(state){
   return {...todo,title:todo.title||[work?.name||recordExcerpt(work?.request,56),label,todo.revision!=null?'第 '+todo.revision+' 版':''].filter(Boolean).join(' · '),excerpt:receipt?.report?.excerpt||reviewExcerpt(todo.text),phase:settlementIssue?'结果已保存 · 完成状态待核查':todoPhases[todo.kind]||'待处理',actionableKind:todo.kind,...(settlementIssue?{settlementIssue}:{})};
  });
 }
+export function historicalResultReminder(state,todo){
+ if(todo?.kind!=='result')return false;
+ const work=(state.works||[]).find(work=>work.id===todo.workId);
+ if(!work)return todo.status!=='open'||Boolean(todo.reopenedAt);
+ return work.status==='ended'||work.revision!=null&&todo.revision!=null&&work.revision!==todo.revision||Boolean(work.result?.objectId&&work.result.objectId!==todo.objectId)||['iterating','superseded'].includes(todo.status);
+}
+// Reminder history and current user duties share the same audience boundary.
+// Reopening a reminder never revives an ended Work or makes its report current.
+export function managedInboxTodos(state){
+ const current=new Map(managedReviewTodos(state).map(todo=>[todo.id,todo]));
+ const works=new Map((state.works||[]).map(work=>[work.id,work]));
+ const receipts=new Map((state.receipts||[]).map(receipt=>[receipt.objectId,receipt]));
+ return (state.todos||[]).filter(userTodoEligible).map(todo=>{
+  const work=works.get(todo.workId),receipt=receipts.get(todo.objectId),live=current.get(todo.id),pending=Boolean(live);
+  const report=todo.kind==='result',hasReport=Boolean(todo.objectId),ended=work?.status==='ended';
+  const finalizing=report&&work?.status==='closing'&&work.revision===todo.revision&&(work.result?.objectId===todo.objectId||work.closure?.binding?.objectId===todo.objectId);
+  const historical=!pending&&!finalizing&&(report?historicalResultReminder(state,todo)||todo.status!=='open':true);
+  const finalPublication=ended&&(work.result?.objectId===todo.objectId||work.closure?.binding?.objectId===todo.objectId);
+  let statusLabel;
+  if(pending)statusLabel=report?(live.settlementIssue?'结果已保存 · 状态待核查':'待审阅'):'待授权';
+  else if(finalizing)statusLabel=(work.outcome==='discard'?'已丢弃':work.outcome==='accept'?'已接受':'审核决定已记录')+(work.closure?.phase==='blocked'?' · 收尾受阻，尚未结束':' · 收尾未完成');
+  else if(report&&todo.status==='iterating')statusLabel='已续改 · 原结果保留';
+  else if(report&&todo.status==='superseded')statusLabel='已被新版替代';
+  else if(report&&finalPublication)statusLabel=work.outcome==='accept'?'已接受并结束':work.outcome==='discard'?'已丢弃并结束':'任务已结束';
+  else statusLabel=({closed:'提醒已关闭',resolved:'已处理',cancelled:'事项已取消'})[todo.status]||(historical?'历史结果':'处理中 · 结果已保存');
+  if(todo.status==='closed'&&finalPublication)statusLabel+=' · 提醒已关闭';
+  if(historical&&todo.status==='open'&&todo.reopenedAt)statusLabel+=' · 历史提醒已重开';
+  const actionLabel=report?(hasReport?'查看报告':'报告暂不可读取'):pending?'查看授权详情':'查看处理记录';
+  return {...todo,title:report?(work?.name||receipt?.report?.title||todo.title||'结果报告'):(todo.title||live?.title||'操作授权'),excerpt:receipt?.report?.excerpt||reviewExcerpt(todo.text),pending,historical,statusLabel,actionLabel,versionLabel:report&&todo.revision!=null?'第 '+todo.revision+' 版':'',icon:report?'file-text':pending?'shield-check':'archive',hasReport};
+ });
+}
 // Host-authored merge-constraint decision todos gate ended-Work closure retry.
 export const openMergeConstraintTodo=(state,workId)=>(state?.todos||[]).findLast(todo=>todo.kind==='merge-constraint'&&todo.workId===workId&&todo.status==='open');
-const phases={queued:'排队中',running:'执行中',paused:'后台处理中 · 进展已保留',review:'结果待审查',closing:'历史结束待处理',ended:'已结束'};
+const phases={queued:'排队中',running:'执行中',paused:'后台处理中 · 进展已保留',review:'结果待审查',closing:'决定已记录 · 等待收尾',ended:'已结束'};
 export function managedWorkRecords(state){
  const jobs=state.jobs||[],works=state.works||[],todos=state.todos||[],receipts=state.receipts||[],records=new Map(),roots=new Map();
  const reviewTodos=managedReviewTodos(state);
@@ -78,7 +115,7 @@ export function managedWorkRecords(state){
   if(!record){
    // Read-only status requests are not independent work after management decides.
    if(job.routing?.action==='status')continue;
-   record={id:'request:'+rootId,name:recordExcerpt(intakeLineage(state,job)[0].text,56)||'待安排请求',status:'pending',phase:'等待主控安排',events:[],jobIds:[]};roots.set(rootId,record);records.set(record.id,record);
+   record={id:'request:'+rootId,name:recordExcerpt(intakeRequestText(state,job),56)||'待安排请求',request:intakeRequestText(state,job),status:'pending',phase:'等待主控安排',events:[],jobIds:[]};roots.set(rootId,record);records.set(record.id,record);
   }
   record.jobIds.push(job.id);record.events.push({id:job.id+':accepted',at:job.at,text:job.context?.retryOf?'已接受重试':job.context?.routingQuestionId?'已收到澄清回答':job.routing?.action==='continue'?'已接收任务补充':'已接收后台请求'});
   if(job.transfer?.settledAt)record.events.push({id:job.id+':settled',at:job.transfer.settledAt,text:'前台已停稳，转交主控'});
@@ -86,18 +123,32 @@ export function managedWorkRecords(state){
   if(job.routing)record.events.push({id:job.id+':routed',at:job.routing.at,text:{dispatch:'已安排工作',continue:'补充已交给原工作',clarify:'主控请求澄清',cancel:'已接受用户撤销',status:'已查询状态'}[job.routing.action]});
   if(['failed','interrupted'].includes(job.status))record.events.push({id:job.id+':failed',at:job.finishedAt,text:job.status==='interrupted'?'主控处理被中断，未自动重放':'主控处理失败',detail:recordExcerpt(job.error)});
   if(!record.workId){
+   // Native host-control settlement is not business routing or task completion.
+   if(!job.routing&&intakeSystemFault(job)){
+    const repair=job.maintenanceBugId&&jobs.findLast(candidate=>candidate.type==='maintenance'&&candidate.context?.bugId===job.maintenanceBugId);
+    record.status=['failed','interrupted','unknown'].includes(job.status)?job.status:'blocked';
+    record.maintenance={bugId:job.maintenanceBugId,status:repair?.status||'pending'};
+    record.phase=['queued','running'].includes(repair?.status)?'系统正在处理运行问题 · 原请求已保留':'系统问题待处理 · 原请求已保留';
+    record.description=recordExcerpt(record.request);delete record.todoId;delete record.retryJobId;
+    record.events.push({id:job.id+':maintenance',at:job.finishedAt,text:'内部运行问题已交由系统处理',detail:recordExcerpt(job.error||job.maintenanceFault?.symptom)});continue;
+   }
    const waiting=job.status==='transferring'?job:jobs.find(j=>j.id===job.context?.pendingIntakeId&&j.status==='transferring');
    if(waiting){record.status='transferring';record.phase=waiting.transfer?.error?'转交待处理，前台尚未停稳':'正在转交，等待前台停稳';record.description=recordExcerpt(waiting.transfer?.error||job.context?.userGoal||job.text);if(waiting.transfer?.error)record.retryJobId=waiting.id;continue;}
    const q=todos.find(t=>t.sourceJobId===job.id&&t.kind==='routing'&&t.status==='open');
    const pending=jobs.some(j=>j.type==='intake'&&j.context?.routingQuestionId===q?.id&&['queued','running'].includes(j.status));
    if(q&&!pending){record.status='blocked';record.phase='后台核对中 · 原请求已保留';record.description=recordExcerpt(q.text);delete record.todoId;delete record.retryJobId;}
-   else if(['failed','interrupted'].includes(job.status)&&!job.routing){record.status=job.status;record.phase=job.status==='failed'?'主控处理失败':'处理被中断';record.description=recordExcerpt(job.error);record.retryJobId=job.id;}
-   else if(['queued','running'].includes(job.status)){record.status='pending';record.phase=job.status==='running'?'主控正在整理':state.drafts?.orchestrator||state.nativeDraftTargets?.includes('orchestrator')?'等待主控未发送草稿处理':'等待主控安排';record.description=recordExcerpt(job.text);delete record.retryJobId;delete record.todoId;}
+   else if(['failed','interrupted','unknown'].includes(job.status)&&!job.routing){
+    record.status=job.status;record.description=recordExcerpt(record.request);delete record.todoId;delete record.retryJobId;
+    record.phase=job.status==='failed'?'处理受阻 · 原请求已保留':job.status==='unknown'?'执行状态待核查 · 原请求已保留':'处理被中断 · 原请求已保留';
+   }
+   else if(['queued','running'].includes(job.status)){record.status='pending';record.phase=job.status==='running'?'主控正在整理':state.drafts?.orchestrator||state.nativeDraftTargets?.includes('orchestrator')?'等待主控未发送草稿处理':'等待主控安排';record.description=recordExcerpt(record.request);delete record.maintenance;delete record.retryJobId;delete record.todoId;}
   }
  }
  const queued=works.filter(w=>w.status==='queued');
  for(const record of records.values()){
   const w=works.find(w=>w.id===record.workId);if(!w)continue;
+  // Older rounds remain evidence, but cannot become this round's live fault.
+  record.supersededJobIds=jobs.filter(j=>(j.target===w.id||j.context?.boundWorkId===w.id)&&Number.isInteger(w.revision)&&Number.isInteger(j.revision)&&j.revision<w.revision).map(j=>j.id);
   for(const j of jobs.filter(j=>j.target===w.id)){
    if(j.type!=='initial')record.events.push({id:j.id+':accepted',at:j.at,text:'已接收补充/回答'});
    if(j.startedAt)record.events.push({id:j.id+':started',at:j.startedAt,text:j.type==='initial'?'Worker 开始执行':'Worker 开始处理补充'});
@@ -108,20 +159,21 @@ export function managedWorkRecords(state){
   if(w.status==='queued')record.phase=`排队第 ${queued.findIndex(q=>q.id===w.id)+1} 位`;
   const pending=jobs.findLast(j=>(j.target===w.id&&j.type!=='initial'||j.context?.boundWorkId===w.id)&&['queued','running'].includes(j.status));
   if(pending)record.phase=pending.type==='intake'?'补充已接收，主控整理中':'补充已接收，等待执行';
-  const latestWorkerJob=jobs.findLast(j=>j.target===w.id);
+  const latestWorkerJob=jobs.findLast(j=>j.target===w.id&&!record.supersededJobIds.includes(j.id));
   if(w.status==='paused'&&!pending&&latestWorkerJob?.interruptionReason==='user-interrupted')record.phase='本轮已停止 · 等待明确补充';
   const settlementIssue=resultSettlementIssue(state,w);
   if(settlementIssue){record.settlementIssue=settlementIssue;if(!pending&&!jobs.some(j=>j.target===w.id&&['queued','running'].includes(j.status)))record.phase='结果已保存 · 完成状态待核查';}
-  const failedIntake=jobs.findLast(j=>j.context?.boundWorkId===w.id&&['failed','interrupted'].includes(j.status)&&!j.routing);if(failedIntake&&!['closing','ended'].includes(w.status)&&!pending&&!jobs.some(j=>j.context?.retryOf===failedIntake.id&&j.routing)){record.retryJobId=failedIntake.id;record.phase='补充处理失败，待重试';}
+  const failedIntake=jobs.findLast(j=>j.context?.boundWorkId===w.id&&!record.supersededJobIds.includes(j.id)&&['failed','interrupted'].includes(j.status)&&!j.routing);if(failedIntake&&!['closing','ended'].includes(w.status)&&!pending&&!jobs.some(j=>j.context?.retryOf===failedIntake.id&&j.routing)){record.retryJobId=failedIntake.id;record.phase='补充处理失败，待重试';}
   if(deviationHeld(w)){record.phase='后台核对任务范围 · 进展已保留';record.deviation=w.deviation;delete record.todoId;delete record.retryJobId;}
- if(w.status==='ended'){
+ if(['closing','ended'].includes(w.status)){
   const closure=w.closure||{},decision=w.outcome||closure.decision;
   record.outcome=decision;record.closurePhase=closure.phase;
+  record.needsReconciliation=w.needsReconciliation??null;
   // An ended Work is never presented as complete unless the host recorded a
   // finished closure; a pending merge-constraint strategy is the live gate.
   const constraintTodo=todos.findLast(t=>t.workId===w.id&&t.kind==='merge-constraint'&&t.status==='open');
   const strategy=constraintTodo?' · 待选择合并策略':closure.phase==='blocked'?' · 技术收尾受阻':closure.phase==='complete'?' · 技术收尾完成':['stopping','integrating','cleanup'].includes(closure.phase)?' · 技术收尾中':' · 技术收尾未完成';
-  record.phase=(decision==='accept'?'已接受并结束':decision==='discard'?'已丢弃并结束':'已结束')+strategy;
+  record.phase=w.needsReconciliation?'历史处置待核查':(decision==='accept'?'已接受':decision==='discard'?'已丢弃':'处置待核查')+(w.status==='ended'?'并结束':' · 等待收尾')+strategy;
   const failure=closure.error?.message||closure.error;if(failure)record.closureError=recordExcerpt(failure);
   const closureTodo=todos.findLast(t=>t.workId===w.id&&t.kind==='closure'&&t.status==='open');
   if(constraintTodo){record.todoId=constraintTodo.id;record.mergeConstraintTodoId=constraintTodo.id;}
@@ -136,11 +188,11 @@ export function managedWorkRecords(state){
  }
  for(const record of records.values()){
   const work=works.find(work=>work.id===record.workId);
-  const event=state.backstageEvents?.findLast(event=>event.status==='blocked'&&(event.revision==null||!work||event.revision===work.revision)&&(event.workId===record.workId&&record.workId||event.target===record.workId&&record.workId||event.sourceJobId&&record.jobIds.includes(event.sourceJobId)));
+  const event=state.backstageEvents?.findLast(event=>event.status==='blocked'&&!record.supersededJobIds?.includes(event.sourceJobId)&&(event.revision==null||!work||event.revision===work.revision)&&(event.workId===record.workId&&record.workId||event.target===record.workId&&record.workId||event.sourceJobId&&record.jobIds.includes(event.sourceJobId)));
   if(!event)continue;
   record.backstage={status:event.status,kind:event.kind,reason:event.reason,sourceJobId:event.sourceJobId};
   if(!work||work.status==='paused'){
-   record.phase='后台受阻 · 进展已保留';record.description=recordExcerpt(event.reason)||record.description;delete record.retryJobId;
+   record.phase=record.maintenance&&!work?record.phase:'后台受阻 · 进展已保留';record.description=!work?recordExcerpt(record.request):recordExcerpt(event.reason)||record.description;delete record.retryJobId;
   }
  }
  for(const record of records.values()){if(record.todoId&&!userTodoEligible(todos.find(todo=>todo.id===record.todoId)))delete record.todoId;let prior='';record.events=record.events.map((event,index)=>{prior=event.at||prior;return {event,index,time:prior};}).sort((a,b)=>a.time.localeCompare(b.time)||a.index-b.index).map(row=>row.event);record.at=record.events.find(e=>e.at)?.at;}

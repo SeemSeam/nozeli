@@ -233,6 +233,13 @@ test('explicit drawing preparation connects frontdesk without moving content or 
  assert.equal(result.ready,true);assert.equal(admissions,1);
  assert.equal(view.viewState.draftOnly,false);assert.equal(view.viewState.workspace.draft,'KEEP MAIN DRAFT');
  assert.equal(native.surfaces.size,0,'preparation does not activate or create a content surface');
+ // Stale worker/orchestrator targets persisted by an older frame are refused
+ // before any target-specific startup: no admission, no worker wake, and the
+ // retained draft-only scene stays untouched.
+ for(const action of ['prepare','select','open'])
+  await assert.rejects(native.invoke(root,'workspace.control',{projectId:'p',type:'conversation-action',action,target:'ended-work-1'}),{code:'CONVERSATION_TARGET_REJECTED'});
+ assert.equal(admissions,1,'a rejected stale worker target never reaches conversation admission or worker startup');
+ assert.equal(view.viewState.draftOnly,false);assert.equal(view.viewState.workspace.draft,'KEEP MAIN DRAFT');assert.equal(native.surfaces.size,0);
 });
 test('refused drawing admission preserves draft-only state and allows explicit retry',async t=>{
  const {native,root}=await fixture(t);
@@ -572,13 +579,28 @@ test('conversation admission failure leaves the current document intact and crea
  assert.deepEqual(native.layouts.get('p'),l);assert.equal(native.surfaces.size,1);assert.equal(native.surfaces.get(original.viewId),original);assert(root.wc.sent.some(e=>e.payload.type==='conversation-unavailable'));
 });
 test('a disconnected admitted conversation retains its renderer, history and draft without replay',async t=>{
- const {native}=await fixture(t);native.ensureConversation=async()=>{};
+ const {native,root}=await fixture(t);native.ensureConversation=async()=>{};
  const layout=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'conversation',viewState:{draft:'keep me',messages:['history']}}});native.layouts.set('p',layout);await native.reconcile(layout);
  const chat=[...native.surfaces.values()].find(s=>s.kind==='conversation');receipt(native,chat);const metadata=structuredClone(layout.views[chat.viewId]);
  native.command=()=>assert.fail('provider disconnection must not close admitted content');
  for(let i=0;i<2;i++)await native.conversationState('p',{agents:[{target:'frontdesk',closed:true,phase:'closed'}]});
  assert.equal(native.surfaces.get(chat.viewId),chat);assert.equal(chat.dead,false);assert.equal(native.layouts.get('p').mainRoot.activeViewId,chat.viewId);assert.deepEqual(native.layouts.get('p').views[chat.viewId],metadata);
  const notices=chat.wc.sent.filter(event=>event.payload?.type==='conversation-unavailable');assert.equal(notices.length,1);assert.equal(notices[0].payload.retained,true);assert.equal(chat.conversationBlocked,undefined);
+ await native.conversationState('p',{agents:[{target:'frontdesk',closed:false,phase:'idle'}]});assert.equal(chat.conversationDisconnected,false);
+ // A stale worker target left on an older surface record never steers the
+ // disconnect handling: frontdesk liveness stays the single signal even while
+ // the stale id sits in configuringTargets.
+ chat.conversationTarget='ended-work-1';
+ await native.conversationState('p',{configuringTargets:['ended-work-1'],agents:[{target:'frontdesk',closed:true,phase:'closed'}]});
+ assert.equal(chat.conversationDisconnected,true);assert.equal(chat.wc.sent.filter(event=>event.payload?.type==='conversation-unavailable').length,2);
+ // Ordinary managed.send from a native conversation addresses frontdesk only;
+ // explicit background submits (managed.task) keep their own entry.
+ const chatEvent={sender:chat.wc,senderFrame:chat.wc.mainFrame},shellEvent={sender:root.wc,senderFrame:root.wc.mainFrame};
+ assert.equal(native.authorize(chatEvent,'managed.send',{projectId:'p',target:'frontdesk',text:'hi'}),chat);
+ assert.equal(native.authorize(chatEvent,'managed.send',{projectId:'p',text:'default stays frontdesk'}),chat);
+ assert.equal(native.authorize(chatEvent,'managed.task',{projectId:'p',requestKey:'explicit-background',text:'background submit'}),chat);
+ assert.throws(()=>native.authorize(chatEvent,'managed.send',{projectId:'p',target:'ended-work-1',text:'hi'}),{code:'CONVERSATION_TARGET_REJECTED'},'a native conversation surface cannot address a Worker session');
+ assert.equal(native.authorize(shellEvent,'managed.send',{projectId:'p',target:'ended-work-1',text:'hi'}),root,'the main-window shell keeps the internal provider-control channel');
  await native.conversationState('p',{agents:[{target:'frontdesk',closed:false,phase:'idle'}]});assert.equal(chat.conversationDisconnected,false);
 });
 

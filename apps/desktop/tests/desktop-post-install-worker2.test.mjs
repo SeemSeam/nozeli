@@ -159,7 +159,7 @@ try {
   assert.match(await page.$eval('#composer',n=>n.value),/keyboard/);
   await page.screenshot({path:path.join(output,'composer-390.png')});
   const geometry=await page.evaluate(()=>{
-    const ids=['composer','send-message','managed-submit-task'];
+    const ids=['composer','send-message'];
     return ids.map(id=>{const n=document.getElementById(id),r=n.getBoundingClientRect();return {id,left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height,visible:document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)?.closest('#'+id)!==null};});
   });
   report.geometry=geometry;

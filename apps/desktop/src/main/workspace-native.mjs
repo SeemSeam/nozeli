@@ -84,8 +84,10 @@ export class WorkspaceNative {
     // background project's session event must not close content through the
     // shell that now belongs to another project.
     if(!root||root.projectHidden||root.projectId!==projectId)return;
-    if(state?.configuringTargets?.includes(owner.conversationTarget||'frontdesk'))return;
-    const agent=state?.agents?.find(a=>a.target===(owner.conversationTarget||'frontdesk'));
+    // The main chat is frontdesk-only: a stale worker target left on an older
+    // surface record must never steer disconnect handling.
+    if(state?.configuringTargets?.includes('frontdesk'))return;
+    const agent=state?.agents?.find(a=>a.target==='frontdesk');
     if(agent?.starting)return;
     if(agent&&!agent.closed&&!agent.restarting&&['ready','idle','prompt-inflight','reloading','compacting'].includes(agent.phase)){owner.conversationDisconnected=false;return;}
     // Provider liveness gates execution, not access to admitted history,
@@ -201,7 +203,7 @@ export class WorkspaceNative {
     if (typeof op !== 'string') throw fail('UNKNOWN_OP');
     if(r.role==='demo-controls'){if(!this.demoControls.owns(r)||!this.demoControls.allowed(op))throw fail('IPC_DENIED');return r;}
     if(r.role==='demo-hint'){if(!this.demoControls.hintOwns(r)||!this.demoControls.hintAllowed(op))throw fail('IPC_DENIED');return r;}
-    if (payload.projectId && payload.projectId !== r.projectId && !(r.role === 'shell' && (['demo.state','demo.exit','managed.status','managed.attention.ack','workspace.project','workspace.closeProject','workspace.recovery.detail','workspace.recovery.export','workspace.recovery.object','workspace.recovery.settle','project.open','project.remove','project.retry','project.lifecycle.preview','project.lifecycle.reconcile'].includes(op)||op==='demo.transition'&&payload.action==='stop'))) throw fail('PROJECT_SCOPE_DENIED');
+    if (payload.projectId && payload.projectId !== r.projectId && !(r.role === 'shell' && (['demo.state','demo.exit','managed.status','managed.attention.ack','managed.fault.status','managed.work.control.status','managed.work.control','workspace.project','workspace.closeProject','workspace.recovery.detail','workspace.recovery.export','workspace.recovery.object','workspace.recovery.settle','project.open','project.remove','project.retry','project.lifecycle.preview','project.lifecycle.reconcile'].includes(op)||op==='demo.transition'&&payload.action==='stop'))) throw fail('PROJECT_SCOPE_DENIED');
     if(op.startsWith('demo.')){if(op==='demo.result'){if(!['surface','shell','detached'].includes(r.role))throw fail('IPC_DENIED');}else if(!['demo.state','demo.send','demo.interrupt'].includes(op)&&r.role!=='shell')throw fail('IPC_DENIED');return r;}
     if(r.role==='surface'&&r.kind==='terminal'&&op.startsWith('managed.')&&(op!=='managed.terminal.screen'||payload.target!==this.layouts.get(r.projectId)?.views[r.viewId]?.viewState?.workId))throw fail('IPC_DENIED');
     if(op.startsWith('project-terminal.')){
@@ -217,6 +219,12 @@ export class WorkspaceNative {
     if(op==='report.copySource'&&!(r.role==='shell'||r.role==='surface'&&['report','history'].includes(r.kind)))throw fail('IPC_DENIED');
     if(op.startsWith('isolated-preview.')&&r.role==='surface'&&(!['report','document','history'].includes(r.kind)||r.kind==='history'&&['isolated-preview.open','isolated-preview.update'].includes(op)&&payload.profile!=='staticReport'))throw fail('IPC_DENIED');
     if (r.role !== 'shell' && !op.startsWith('workspace.') && !op.startsWith('isolated-preview.') && !surfaceOps.test(op)) throw fail('IPC_DENIED');
+    // Ordinary chat from a user-facing scope addresses frontdesk only. The
+    // shell stays the internal provider-control channel (host-scripted
+    // continuation/restart of Workers); Worker execution behind the backend
+    // controller (explicit managed.task submits, workspace.review.decide) is
+    // never reachable via managed.send from a conversation surface.
+    if (r.role !== 'shell' && op === 'managed.send' && payload.target !== undefined && payload.target !== 'frontdesk') throw fail('CONVERSATION_TARGET_REJECTED','主对话只发送给前台；后台执行请使用明确的任务提交或审校决定入口。');
     if (r.role === 'detached' && !op.startsWith('workspace.') && !['project.open','project.list','project.children','project.search','config.status','settings.appearance.read','session.flushed','session.requestClose','session.quitChoice','state.read','view.authorship','managed.status','managed.timeline.request','managed.timeline.read'].includes(op) && !(op==='managed.send'&&payload.target==='frontdesk'&&r.drawingConversationProject===r.projectId)) throw fail('IPC_DENIED');
     if (writes.has(op) && !isProjectDocumentSource(this.payloadSource(payload)) && !(r.role === 'surface' && sameDocumentSource(this.payloadSource(payload), r.documentSource))) throw fail('EDIT_LEASE_DENIED','审校文档写入只能来自持有该文档来源的内容面。');
     if (r.role === 'surface' && (writes.has(op) || op === 'ppt.export' || op === 'ppt.draft' && payload.model !== undefined)) {
@@ -227,9 +235,10 @@ export class WorkspaceNative {
     if (writes.has(op) && r.role !== 'surface' && typeof payload.relPath === 'string' && payload.relPath && this.leases.has(this.resource(r.projectId,payload.relPath,this.payloadSource(payload)))) throw fail('EDIT_LEASE_DENIED');
     const mutatesDocument=writes.has(op)||op==='ppt.export'||op==='ppt.draft'&&payload.model!==undefined;
     if ((r.held||r.recoveryHeld||r.syncHolds?.size) && mutatesDocument) throw fail('TRANSFER_HELD');
-    if (r.held && op.startsWith('managed.') && !['managed.status','managed.session.options','managed.history.list','managed.history.read','managed.artifact.read','managed.artifact.list','managed.timeline.page','managed.timeline.read','managed.disposition','managed.review.read'].includes(op)) throw fail('TRANSFER_HELD');
+    if (r.held && op.startsWith('managed.') && !['managed.collaboration.status','managed.model.options','managed.status','managed.session.options','managed.history.list','managed.history.read','managed.artifact.read','managed.artifact.list','managed.timeline.page','managed.timeline.read','managed.disposition','managed.review.read'].includes(op)) throw fail('TRANSFER_HELD');
     if (r.role === 'surface' && op === 'managed.draft' && r.kind !== 'conversation') throw fail('CONVERSATION_OWNER_REQUIRED');
     if(op==='managed.frontdesk.context.clear'&&r.role!=='shell'&&!(r.role==='surface'&&r.kind==='conversation'&&payload.projectId===r.projectId))throw fail('CONVERSATION_OWNER_REQUIRED');
+    if(op==='managed.model.set'&&r.role!=='shell'&&!(r.role==='surface'&&r.kind==='conversation'&&payload.projectId===r.projectId))throw fail('CONVERSATION_OWNER_REQUIRED');
     if(op==='managed.session.command'&&r.role!=='shell'&&!(r.role==='surface'&&r.kind==='conversation'&&payload.projectId===r.projectId))throw fail('CONVERSATION_OWNER_REQUIRED');
     if (r.role !== 'shell' && op === 'managed.enable') throw fail('IPC_DENIED');
     return r;
@@ -1145,8 +1154,11 @@ export class WorkspaceNative {
       if(p.type==='focus-document-owner'){if(r.role==='surface'&&p.relPath!==r.relPath)throw fail('PROJECT_SCOPE_DENIED');const focusSource=this.payloadSource(p);if(r.role==='surface'&&!sameDocumentSource(focusSource,r.documentSource))throw fail('PROJECT_SCOPE_DENIED');const lease=this.leases.get(this.resource(r.projectId,p.relPath,focusSource)),owner=lease&&this.surfaces.get(lease.viewId);if(!owner)throw fail('NO_ACTIVE_VIEW');const root=this.windows.get(owner.windowId);if(!root)throw fail('NO_ROOT');await this.command(root,{projectId:r.projectId,expectedRevision:layout.revision,requestKey:randomUUID(),command:{type:'activate',viewId:owner.viewId}});owner.win.show();owner.win.focus();owner.wc.focus();owner.wc.send('nozeli:workspace-control',{type:'focus-content'});return {};}
       if(p.type==='conversation-action'){
         const projectId=r.projectId,generation=r.generation;
-        if(p.action==='prepare'&&p.target!=='frontdesk')throw fail('INVALID_COMMAND');
-        await this.requireConversation(projectId,p.target||'frontdesk',{notify:p.action!=='prepare'});
+        // Frontdesk-only boundary: stale worker/orchestrator targets carried
+        // from an older frame are refused before any target-specific startup
+        // (no worker wake, no layout mutation); history and drafts stay put.
+        if(p.target!==undefined&&p.target!=='frontdesk')throw fail('CONVERSATION_TARGET_REJECTED','主对话只连接前台；原 Worker 会话入口已关闭，历史与草稿保留在原处。');
+        await this.requireConversation(projectId,'frontdesk',{notify:p.action!=='prepare'});
         if(r.dead||r.projectId!==projectId||r.generation!==generation)throw fail('PROJECT_SCOPE_DENIED');
         const current=await this.layout(projectId);
         const conversation=Object.values(current.views).find(v=>v.kind==='conversation');
@@ -1161,7 +1173,7 @@ export class WorkspaceNative {
         const action=conversation?(p.groupId&&found&&found.group.id!==target.id?{type:'move',viewId:conversation.id,targetGroupId:target.id}:{type:'activate',viewId:conversation.id,groupId:target.id}):{type:'open',groupId:target.id,view:{kind:'conversation'}};
         const result=await this.command(root,{projectId:r.projectId,expectedRevision:layout.revision,requestKey:randomUUID(),command:action});
         const owner=this.surfaces.get(Object.values(result.layout.views).find(v=>v.kind==='conversation').id);if(!owner)throw fail('NO_ACTIVE_VIEW');
-        owner.conversationAdmitted=true;owner.conversationDisconnected=false;owner.conversationTarget=p.target||'frontdesk';
+        owner.conversationAdmitted=true;owner.conversationDisconnected=false;owner.conversationTarget='frontdesk';
         if(owner.ready)owner.wc.send('nozeli:workspace-control',p);else(owner.pendingControls??=[]).push(p);owner.win.show();owner.win.focus();return {};
       }
       if(r.role==='surface'){

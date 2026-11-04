@@ -15,7 +15,7 @@ async function fixture(t,{automatic=true}={}){const root=await fs.mkdtemp(path.j
  // Raw-verbatim prompt contract: frontdesk/front and intake prompts carry the exact
  // sender text (host handoff facts may only PREFIX an intake prompt), so the fake
  // routes on the raw tail and reports transport facts through the runtime contract.
- class FakeSession{constructor(spec,target){Object.assign(this,spec,{target,closed:false,busy:false,interactions:[],contextEpoch:'compaction:0:root',hasPrompted:false,phase:'idle',toolsDigest:'fixture-native-schema'});}async preflightToolsDigest(){}async assertToolsDigest(){}async start(id){if(id&&dropEmpty)throw Object.assign(new Error('PI_SESSION_FILE_NOT_FOUND'),{code:'PI_SESSION_FILE_NOT_FOUND'});this.threadId=id||randomUUID();calls.push({type:'start',target:this.target,threadId:this.threadId});return this;}async prompt(text,opts={}){this.hasPrompted=true;this.busy=true;this.phase='prompting';calls.push({type:'prompt',target:this.target,text});const requestId=randomUUID(),contentDigest=createHash('sha256').update(text,'utf8').digest('hex');const transport=status=>this.onTransportFact?.({status,kind:'prompt',sessionId:this.threadId,epoch:this.contextEpoch,requestId,jobId:opts.job?.id,attempt:1,contentDigest});try{await transport('prepared');await new Promise(r=>setTimeout(r,15));const tool=(name,args)=>this.onTool({tool:name,arguments:args,threadId:this.threadId,callId:randomUUID()});if(this.target==='frontdesk'&&!text.startsWith('light'))await tool('nozeli_handoff',{reason:'specialist'});else if(this.target==='orchestrator'&&opts.job?.type!=='backstage'){const input=text.split('\n\n').at(-1);if(input.startsWith('light manual answer'))await tool('nozeli_manage',{action:'clarify',text:'fixture routing clarification'});else await tool('nozeli_dispatch',{name:'worker '+randomUUID().slice(0,4),brief:text});}else if(!['frontdesk','orchestrator'].includes(this.target))await tool('nozeli_publish',{kind:'result',html:staticReport('Verified fixture report'),files:[]});await transport('native-record-confirmed');await transport('settled');return {text:'fixture response',threadId:this.threadId,turnId:randomUUID()};}finally{this.busy=false;this.phase='idle';}}async stop(){this.closed=true;return {confirmationComplete:true};}}
+ class FakeSession{constructor(spec,target){Object.assign(this,spec,{target,closed:false,busy:false,interactions:[],contextEpoch:'compaction:0:root',hasPrompted:false,phase:'idle',toolsDigest:'fixture-native-schema'});}async preflightToolsDigest(){}async assertToolsDigest(){}async start(id){if(id&&dropEmpty)throw Object.assign(new Error('PI_SESSION_FILE_NOT_FOUND'),{code:'PI_SESSION_FILE_NOT_FOUND'});this.threadId=id||randomUUID();calls.push({type:'start',target:this.target,threadId:this.threadId});return this;}async prompt(text,opts={}){this.hasPrompted=true;this.busy=true;this.phase='prompting';calls.push({type:'prompt',target:this.target,text});const requestId=randomUUID(),contentDigest=createHash('sha256').update(text,'utf8').digest('hex');const transport=status=>this.onTransportFact?.({status,kind:'prompt',sessionId:this.threadId,epoch:this.contextEpoch,requestId,jobId:opts.job?.id,attempt:1,contentDigest});try{await transport('prepared');await new Promise(r=>setTimeout(r,15));const tool=(name,args)=>this.onTool({tool:name,arguments:args,threadId:this.threadId,callId:randomUUID()});if(this.target==='frontdesk'&&!text.startsWith('light'))await tool('nozeli_handoff',{reason:'specialist'});else if(this.target==='orchestrator'&&opts.job?.type!=='backstage'){const input=text.split('\n\n').at(-1);if(input.startsWith('light manual answer'))await tool('nozeli_manage',{action:'clarify',text:'fixture routing clarification'});else await tool('nozeli_dispatch',{name:'worker '+randomUUID().slice(0,4),brief:text});}else if(!['frontdesk','orchestrator'].includes(this.target))await tool('nozeli_publish',{kind:'result',content:staticReport('Verified fixture report'),files:[]});await transport('native-record-confirmed');await transport('settled');return {text:'fixture response',threadId:this.threadId,turnId:randomUUID()};}finally{this.busy=false;this.phase='idle';}}async stop(){this.closed=true;return {confirmationComplete:true};}}
  const options={runtimeRoot:path.join(root,'data'),contentRoot:path.join(root,'content'),sessionFactory:(spec,target)=>new FakeSession(spec,target)};const c=await openTestController(options);all.push(c);await c.start();await wait(()=>!c.kicking);c.started=automatic;t.after(async()=>{await Promise.all(all.map(c=>c.stop()));await fs.rm(root,{recursive:true,force:true});});return {c,root,calls,loseEmptyThreads:()=>{dropEmpty=true;},reopen:async()=>{const n=await openTestController(options);all.push(n);await n.start();return n;}};}
 test('automatic queue releases quota on user end while preserving prior Worker history',async t=>{const {c,calls}=await fixture(t);await submitBackground(c, 'task A');await submitBackground(c, 'task B');await wait(()=>c.store.state.works.length===2&&c.store.state.works[0].status==='review');const [a,b]=c.store.state.works;assert.equal(b.status,'queued');assert.equal(c.store.used(),1);assert.equal(calls.filter(x=>x.type==='start'&&!['frontdesk','orchestrator'].includes(x.target)).length,1);await wait(()=>!c.running.has(a.id));await c.endWork(a.id,{revision:a.revision,decision:'accept'});await wait(()=>c.store.find(b.id).status==='review');assert.equal(c.store.find(a.id).status,'ended');assert.notEqual(c.store.find(a.id).threadId,c.store.find(b.id).threadId);assert.equal(c.store.used(),1);assert((await fs.stat(c.store.find(a.id).closure.workerHome.historyPath)).isDirectory());});
 test('manual draft holds automatic intake until released without losing original request',async t=>{const {c}=await fixture(t);await c.setDraft('orchestrator','unsent manual draft');await submitBackground(c, 'task original');await wait(()=>c.store.state.jobs.some(j=>j.target==='orchestrator'));assert.equal(c.store.state.works.length,0);assert.equal(c.store.state.drafts.orchestrator,'unsent manual draft');await c.setDraft('orchestrator','');await wait(()=>c.store.state.works[0]?.status==='review');assert.equal(c.store.state.works[0].request,'task original');});
@@ -190,33 +190,39 @@ test('late cancelled input remains cancelled while failed cleanup evidence is re
   } finally { session.stop = originalStop; }
 });
 ;
-test('nozeli_publish 字段由 kind 决定：problem 收 Markdown text，result 收 html，互斥不嗅探',async t=>{
+test('nozeli_publish uses one content body and kind binds its format without legacy aliases',async t=>{
  const {c,root}=await fixture(t,{automatic:false});
  const work=await c.store.submit('publish field contract','bound original material');
  await c.store.activate(work.id);
  const session=await c.session(work.id);
  await admitHostJob(c,work.id,'first original input');
  const publish=(arguments_,callId)=>c.onTool(work.id,{tool:'nozeli_publish',arguments:arguments_,callId});
- await assert.rejects(publish({kind:'problem',html:staticReport('html question'),files:[]},'reject-problem-html'),/publication requires kind/);
- await assert.rejects(publish({kind:'result',text:'# markdown result',files:[]},'reject-result-text'),/publication requires kind/);
- await assert.rejects(publish({kind:'problem',text:'选择？',html:staticReport('both fields'),files:[]},'reject-both-fields'),/publication requires kind/);
- await assert.rejects(publish({kind:'notice',text:'body',files:[]},'reject-kind'),/invalid publication kind/);
- await assert.rejects(publish({kind:'problem',text:'q',files:[],unexpected:true},'reject-extra-key'),/publication requires kind/);
+ for(const [arguments_,callId] of [
+  [{kind:'problem',text:'legacy body',files:[]},'reject-legacy-text'],
+  [{kind:'result',content:staticReport('valid HTML'),text:'',files:[]},'reject-extra-empty-text'],
+  [{kind:'problem',content:'选择？',html:staticReport('legacy field'),files:[]},'reject-extra-html'],
+  [{kind:'notice',content:'body',files:[]},'reject-kind'],
+  [{kind:'problem',content:'q',files:[],unexpected:true},'reject-extra-key'],
+  [{kind:'result',content:'',files:[]},'reject-empty-body'],
+ ]){
+  await assert.rejects(publish(arguments_,callId),{code:'PUBLICATION_ARGUMENTS_INVALID'});
+  assert.equal(c.store.state.receipts.some(receipt=>receipt.id===callId),false,'invalid arguments never publish');
+ }
  assert.deepEqual(c.store.state.receipts.filter(r=>r.workId===work.id),[]);
  const question='# 请选择数据源\n\n已完成基础核对。继续用 notes.txt 还是改为数据库？\n';
- const published=await publish({kind:'problem',text:question,files:[]},'problem-text-receipt');
+ const published=await publish({kind:'problem',content:question,files:[]},'problem-text-receipt');
  assert.equal(published.saved,true);assert.equal(published.kind,'problem');assert.equal(published.duplicate,undefined);
  const receipt=c.store.state.receipts.find(r=>r.id==='problem-text-receipt');
  assert.equal(receipt.report.format,'markdown');assert.equal(receipt.report.manifestDigest,null);
  assert.equal((await c.store.readObject(receipt.report.digest).then(bytes=>bytes.toString('utf8'))),question);
- const replay=await publish({kind:'problem',text:question,files:[]},'problem-text-receipt');
+ const replay=await publish({kind:'problem',content:question,files:[]},'problem-text-receipt');
  assert.equal(replay.duplicate,true);assert.equal(replay.object,receipt.objectId);
- await assert.rejects(publish({kind:'problem',text:question+'\n改动后的重放',files:[]},'problem-text-receipt'),/receipt collision/);
+ await assert.rejects(publish({kind:'problem',content:question+'\n改动后的重放',files:[]},'problem-text-receipt'),/receipt collision/);
  await c.store.settle(work.id);c.current.delete(work.id);
  assert.equal(c.store.find(work.id).status,'paused');
  await c.store.continue(work.id);
  await admitHostJob(c,work.id,'user answer');
- const result=await publish({kind:'result',html:staticReport('最终结论已核对'),files:[]},'result-html-receipt');
+ const result=await publish({kind:'result',content:staticReport('最终结论已核对'),files:[]},'result-html-receipt');
  assert.equal(result.saved,true);
  const resultReceipt=c.store.state.receipts.find(r=>r.id==='result-html-receipt');
  assert.equal(resultReceipt.report.format,'html-static');

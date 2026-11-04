@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Nozeli · 协作对话状态 Demo</title><link rel="stylesheet" href="style.css"><script defer src="app.mjs"></script></head>
+<body>
+<div class="demo-banner"><span><b>NOZELI / DESIGN LAB</b> 对话区 · Agent 状态与模型</span><span>离线交互演示 · 不连接模型、不读项目、不执行任务</span></div>
+<div class="app-shell">
+<aside class="rail" aria-label="工作区导航示意"><div class="brand">N<span></span></div><div class="rail-line"></div><span class="rail-icon">⌘</span><span class="rail-icon selected" title="项目对话">☷</span><span class="rail-icon">▤</span><div class="rail-bottom">01</div></aside>
+<main>
+<header class="project-header"><div><div class="eyebrow">论文阅读与写作 / 当前项目</div><h1>塑性本构研究 <span class="slash">/</span> <span class="heading-light">协作对话</span></h1></div><button id="theme" class="quiet" aria-label="切换深浅主题">深色外观</button></header>
+<p><a href="task-repair.html">任务、Agent 休眠与自动修复协同演示 →</a></p>
+<section class="collaboration" aria-label="项目协作状态">
+<div class="collaboration-heading"><div class="project-state"><span id="project-dot" class="dot"></span><strong id="project-state"></strong><span id="project-note"></span></div><button id="all-agents" class="text-button">全部 Agent <span id="agent-count">4</span> ↗</button></div>
+<div id="agents" class="agent-grid"></div>
+<div class="strip-foot"><span>点选 Agent 可定位对话；点击模型名，仅修改该 Agent 的后续回合。</span><button id="technical" class="text-button muted">技术详情</button></div>
+</section>
+<section class="conversation" aria-label="项目共享对话"><div class="day-divider"><span>今天</span><small>示例材料与回复</small></div>
+<article class="message user-message"><header><span class="avatar user-avatar">你</span><strong>你</strong><time>10:42</time></header><div class="body"><p>帮我核对论文里的屈服条件与推导。先定位符号不一致的地方，再整理一份修改建议，不要直接覆盖原文。</p><span class="material">▤ constitutive-model.tex <span>§ 3.2 · 冻结选区</span></span></div></article>
+<article class="message"><header><span class="avatar frontdesk">前</span><strong>前台</strong><span class="historic-model">GPT-6.1 · 发送时模型</span><time>10:42</time></header><div class="body"><p>我会保留原文和批注。符号核对与推导检查交给两个工作 Agent 并行推进，结果仍会回到这里。</p></div></article>
+<div class="handoff"><span class="connector"></span><span>主控已分配</span><span>符号一致性 → 工作 Agent 01</span><span>推导核对 → 工作 Agent 02</span></div>
+<article class="message" id="worker-message"><header><span class="avatar worker">01</span><strong>工作 Agent 01</strong><span class="work-title">符号一致性</span><span class="historic-model">GPT-6.1 · 发送时模型</span><time>10:44</time></header><div class="body"><p>已发现两处需要核对的表达：</p><ol><li>式 (12) 中的 <span class="math">σ<sub>y</sub></span> 与式 (15) 的 <span class="math">σ<sub>0</sub></span> 指向相同参数，但记号不同。</li><li>附录 B 的塑性乘子定义少了非负条件，建议补上对应假设。</li></ol><p class="subtle">当前只形成候选建议，原始文件未改写。</p></div></article>
+<div id="live-region" class="live-region"></div>
+<div id="local-messages"></div>
+</section>
+<section class="composer-zone" aria-label="对话输入"><div class="composer-top"><div><span class="mini-label">发送给</span> <button id="target" class="target-button">前台 ▾</button><span id="target-description"></span></div><button id="composer-model" class="model-link"></button></div><form id="composer"><label class="sr-only" for="draft">继续讨论或直接提出修改要求</label><textarea id="draft" rows="2" placeholder="继续讨论，也可以直接提出修改要求…"></textarea><div class="composer-bottom"><span class="composer-hint">同一对话 · 不必切换问答 / 任务模式</span><button type="submit" class="send" id="send">发送 <span>↵</span></button></div></form><p id="draft-note" class="draft-note">查看状态或切换模型，不会发送草稿。</p></section>
+<footer class="demo-controls"><div><span class="lab-tag">DEMO</span><label for="scene">场景</label><select id="scene"><option value="parallel">并行工作</option><option value="capacity">等待运行名额</option><option value="question">需要你的决定</option><option value="review">结果待审阅</option><option value="compaction">压缩与原生重试</option><option value="settlement">准备与结果保存</option><option value="failure">连接失败与未知状态</option><option value="idle">项目待命 / Agent 休眠</option></select></div><div><button id="many" class="quiet">展示 12 个 Agent</button><button id="advance" class="quiet">推进演示一步</button></div><p>以下控制只切换本地演示事实，不代表真实调度已接入。</p></footer>
+</main></div>
+<dialog id="model-dialog" aria-labelledby="model-title"><div class="dialog-heading"><div><div class="eyebrow">当前 Agent · 后续回合</div><h2 id="model-title"></h2></div><button class="close" data-close="model-dialog" aria-label="关闭模型选择">×</button></div><p id="model-context" class="context-note"></p><div id="model-facts" class="model-facts"></div><label class="search-label" for="model-search">查找可用模型</label><input id="model-search" type="search" placeholder="模型或来源名称" autocomplete="off"><div id="model-options" role="group" aria-label="可用模型"></div><label class="context-note"><input id="simulate-model-failure" type="checkbox"> Demo：模拟配置保存失败</label><p id="model-result" role="status" class="model-result"></p><div class="dialog-footer"><button id="cancel-pending" class="text-button" hidden>撤销待切换</button><button class="quiet" data-close="model-dialog">取消</button><button id="confirm-model" class="primary">确认切换</button></div></dialog>
+<dialog id="agent-dialog" aria-labelledby="agent-title"><div class="dialog-heading"><div><div class="eyebrow">当前项目 · 可见状态</div><h2 id="agent-title">全部 Agent</h2></div><button class="close" data-close="agent-dialog" aria-label="关闭 Agent 列表">×</button></div><p class="context-note">休眠不代表任务结束；项目协作保持时，相关 Agent 仍可由已接受输入或依赖事件按需唤醒。</p><div id="agent-list"></div></dialog>
+<dialog id="technical-dialog" aria-labelledby="technical-title"><div class="dialog-heading"><div><div class="eyebrow">只读 · 演示数据</div><h2 id="technical-title">运行事实与展示边界</h2></div><button class="close" data-close="technical-dialog" aria-label="关闭技术详情">×</button></div><p class="context-note">这些信息用于核查，不作为对话状态标签。打开此面板不唤醒 Agent。</p><div id="technical-body"></div></dialog>
+<div id="toast" role="status" aria-live="polite"></div>
+</body></html>

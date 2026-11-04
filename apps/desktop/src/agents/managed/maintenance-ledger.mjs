@@ -3,10 +3,12 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 const {version}=JSON.parse(await fs.readFile(new URL('../../../package.json',import.meta.url),'utf8'));
 const now=()=>new Date().toISOString();
-export function maintenanceBoundary(error){
+export function maintenanceBoundary(error,{phase}={}){
  const code=String(error?.code??'');
  if(['OMP_TOOLS_DIGEST_MISMATCH','PI_TOOLS_DIGEST_MISMATCH','WORKER_CONTEXT_RECOVERY_REQUIRED'].includes(code))return true;
- const guarded=new Set(['USER_DIRTY','INPUT_OVERLAP','TARGET_OVERLAP','HEAD_DRIFT','USER_STAGED','INDEX_CHANGED','SOURCE_CHANGED','IDENTITY_CHANGED','UNPUBLISHED_CHANGES','GIT_BUSY','GIT_LOCKED','WORK_BUSY','MISSING_THREAD','OMP_SESSION_FILE_NOT_FOUND','PI_SESSION_FILE_NOT_FOUND','ENOENT','ENOTDIR','EISDIR','EINVAL','ELOOP','ENOSPC','EROFS']);
+ // Host closure filesystem faults are not new user decisions.
+ if(code==='GIT_LOCKED'||phase==='closure'&&['ENOENT','ENOTDIR','EISDIR','EINVAL','ELOOP','ENOSPC','EROFS'].includes(code))return false;
+ const guarded=new Set(['USER_DIRTY','INPUT_OVERLAP','TARGET_OVERLAP','HEAD_DRIFT','USER_STAGED','INDEX_CHANGED','SOURCE_CHANGED','IDENTITY_CHANGED','UNPUBLISHED_CHANGES','GIT_BUSY','WORK_BUSY','MISSING_THREAD','OMP_SESSION_FILE_NOT_FOUND','PI_SESSION_FILE_NOT_FOUND','ENOENT','ENOTDIR','EISDIR','EINVAL','ELOOP','ENOSPC','EROFS']);
  return guarded.has(code)||/PERMISSION|EACCES|EPERM|CONFLICT|STALE|CONSENT|AUTHORIZATION|DENIED|DEVIATION|DRAFT|PROCESS_LIMIT|STOPPED|STOPPING|EFFECT_|COLLAB_HOLD|EXIT_UNCONFIRMED|COMMIT|^PROJECT_|^STORAGE_|^REPORT_|^HTML_|^INVALID_|^UNSUPPORTED_/.test(code)||/invalid publication|invalid report|report resource|report image must|成果引用无法核验|missing.*resource|stale or inactive run/i.test(String(error?.message??''));
 }
 // Error messages can contain entire user documents, commands and credentials.
@@ -22,6 +24,6 @@ export class MaintenanceLedger{
  async read(){return structuredClone(await this.storage.getLocal(this.projectId,'managed:maintenance')??{schema:1,bugs:[]});}
  mutate(fn){const flight=this.serial.catch(()=>{}).then(async()=>{const state=await this.read();const value=await fn(state);await this.storage.putLocal(this.projectId,'managed:maintenance',state);return structuredClone(value);});this.serial=flight;return flight;}
  record({phase,jobId=null,workId=null,revision=null,error,capability=null}){const context=maintenanceError(error),fingerprint=createHash('sha256').update(JSON.stringify({phase,jobId,workId,revision,...context})).digest('hex');return this.mutate(s=>{let bug=s.bugs.find(b=>b.fingerprint===fingerprint);if(!bug){bug={id:'bug:'+fingerprint,projectId:this.projectId,fingerprint,phase,jobId,workId,revision,error:context,version,platform:os.platform()+'/'+os.arch(),firstSeen:now(),occurrences:0,attempts:[],status:'detected',capability};s.bugs.push(bug);}bug.occurrences++;bug.lastSeen=now();return bug;});}
- attempt(id){return this.mutate(s=>{const b=s.bugs.find(b=>b.id===id);if(!b||b.projectId!==this.projectId||b.status==='repaired'||b.attempts.length>=2||b.attempts.some(a=>a.status==='started'))return null;const a={number:b.attempts.length+1,at:now(),status:'started'};b.attempts.push(a);b.status='repairing';return b;});}
- finish(id,{verified=false,outcome='needs-version-fix'}={}){return this.mutate(s=>{const b=s.bugs.find(b=>b.id===id);if(!b)return null;const a=b.attempts.at(-1);if(a?.status==='started'){a.status=verified?'verified':'unverified';a.finishedAt=now();a.outcome=outcome;}b.status=verified?'repaired':outcome;b.lastOutcome={verified,outcome,at:now()};return b;});}
+ attempt(id){return this.mutate(s=>{const b=s.bugs.find(b=>b.id===id);if(!b||b.projectId!==this.projectId||['repaired','finalizing','cancelled','human-boundary'].includes(b.status)||maintenanceBoundary(b.error,{phase:b.phase})||b.attempts.length>=2||b.attempts.some(a=>a.status==='started'))return null;const a={number:b.attempts.length+1,at:now(),status:'started'};b.attempts.push(a);b.status='repairing';return b;});}
+ finish(id,{verified=false,outcome='needs-version-fix',finalizationPending=false}={}){return this.mutate(s=>{const b=s.bugs.find(b=>b.id===id&&b.projectId===this.projectId);if(!b||b.status==='repaired')return b??null;const a=b.attempts.at(-1);if(a?.status==='started'){a.status=verified?'verified':'unverified';a.finishedAt=now();a.outcome=outcome;}b.status=verified?(finalizationPending?'finalizing':'repaired'):outcome;b.finalizationPending=verified&&finalizationPending;b.lastOutcome={verified,outcome,at:now()};return b;});}
 }

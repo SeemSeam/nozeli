@@ -53,7 +53,7 @@ async function compose(text,background=false){
   const before=new Set((await state()).jobs.map(j=>j.id));
   await click('#composer');await page.keyboard.down('Control');await page.keyboard.press('KeyA');await page.keyboard.up('Control');
   await page.keyboard.sendCharacter(text);
-  if(background)await click('#managed-submit-task');else{await page.keyboard.down('Control');await page.keyboard.press('Enter');await page.keyboard.up('Control');}
+  if(background){operations.push({kind:'programmatic-background',driver:'__agentSend',at:Date.now()});await page.evaluate(()=>window.__agentSend({background:true}));}else{await page.keyboard.down('Control');await page.keyboard.press('Enter');await page.keyboard.up('Control');}
   return wait(async()=>{const s=await state();return s.jobs.find(j=>!before.has(j.id)&&(j.text===text||j.text.startsWith(text+'\n\n')));},'exact input admitted',30000);
 }
 async function selectWork(work){
@@ -110,8 +110,8 @@ try{
   browser=await puppeteer.connect({browserURL:'http://127.0.0.1:'+port,defaultViewport:null});
   page=await(await browser.waitForTarget(t=>t.url().startsWith('http://127.0.0.1:'))).page();await page.waitForFunction(()=>window.__nozeliReady);
   observer=await MainObserver.connect(inspector);
-  // Observe the real GUI IPC response without issuing a second restart or changing
-  // its result. Capture only the bounded evidence explicitly exposed by production.
+  // Observe the real programmatic diagnostic IPC response without issuing a
+  // second restart or changing its result. This is not recovery-button evidence.
   await observer.evaluate(`(()=>{const ipc=process.mainModule.require('electron').ipcMain;const original=ipc._invokeHandlers.get('nozeli:invoke');if(typeof original!=='function')throw Error('IPC observer unavailable');globalThis.__nativeCrashRestartEvidence=[];globalThis.__nativeCrashOriginalInvoke=original;ipc._invokeHandlers.set('nozeli:invoke',async function(event,op,payload){const response=await original.call(this,event,op,payload);if(op==='managed.restart')__nativeCrashRestartEvidence.push({ok:response.ok,cleanupEvidence:response.error?.details?.cleanupEvidence??null,code:response.error?.code??null});return response;});return true;})()`);
   await page.waitForSelector('#configuration-setup[open]');await click('#configuration-api-keys');await click('#configuration-import');
   await page.waitForFunction(()=>!document.querySelector('#configuration-setup').open);
@@ -156,13 +156,14 @@ try{
   await save('after-native-crash-state.json',failed);
   check('partial file and exact accepted input survive',await fs.readFile(file,'utf8')==='NATIVE_CRASH_STARTED\n'&&failed.jobs.find(j=>j.id===accepted.id).text===accepted.text);
   const admissions=Object.keys(collector.snapshot().attempts).length,jobs=failed.jobs.length;
-  await selectWork(failed.works.find(w=>w.id===work.id));stage='reading-mode-restart';
-  await click('[data-managed-session-recovery="'+work.id+'"]');
+  await selectWork(failed.works.find(w=>w.id===work.id));stage='programmatic-diagnostic-restart';
+  operations.push({kind:'programmatic-diagnostic-restart',op:'managed.restart',target:work.id,at:Date.now()});
+  await invoke('managed.restart',{projectId:id,target:work.id});
   await wait(async()=>{
     const responses=await observer.evaluate('__nativeCrashRestartEvidence');
-    if(responses.some(r=>!r.ok)){await save('restart-response.json',responses);throw Error('Actual reading-mode restart failed; inspect restart-response.json');}
+    if(responses.some(r=>!r.ok)){await save('restart-response.json',responses);throw Error('Programmatic diagnostic restart failed; inspect restart-response.json');}
     const s=await state(),agent=s.agents.find(a=>a.target===work.id);return agent&&!agent.closed&&!agent.restarting?agent:null;
-  },'reading-mode explicit restart');
+  },'programmatic diagnostic restart');
   await pause(2000);const restored=await state();await save('restart-response.json',await observer.evaluate('__nativeCrashRestartEvidence'));
   check('restart preserves original Work/thread/directory and zero replay',restored.jobs.length===jobs&&Object.keys(collector.snapshot().attempts).length===admissions&&restored.agents.find(a=>a.target===work.id).threadId===thread&&restored.works.find(w=>w.id===work.id).execution.directory===directory);
   assert.equal(await fs.readFile(file,'utf8'),'NATIVE_CRASH_STARTED\n');
@@ -192,7 +193,7 @@ try{
     await fs.rm(path.join(privateRoot,'omp'),{recursive:true,force:true});
   }
   await fs.writeFile(path.join(root,'electron.log'),log,{mode:0o600});await save('operations.json',operations);
-  await save('result.json',{pass:!failure,stage,error:failure?.stack,checks,release,root,runtime,ownedKeysRemoved:reaped,ledger:collector?.snapshot(),scope:'Focused actual installed paid-model native SIGKILL after r1 publication/r2 partial file; real reading-mode restart, same-thread zero replay, explicit continuation and discard. Not full workflow acceptance. Restart response observation does not change IPC result.'});
+  await save('result.json',{pass:!failure,stage,error:failure?.stack,checks,release,root,runtime,ownedKeysRemoved:reaped,ledger:collector?.snapshot(),scope:'Focused actual installed paid-model native SIGKILL after r1 publication/r2 partial file; programmatic managed.restart diagnostic, same-thread zero replay, explicit continuation and discard. Background setup uses __agentSend, not a DOM task button. Not recovery-control or full workflow acceptance. Restart response observation does not change IPC result.'});
   await collector?.close();
 }
 console.log(JSON.stringify({pass:!failure,stage,checks:checks.length,root}));process.exitCode=failure?1:0;

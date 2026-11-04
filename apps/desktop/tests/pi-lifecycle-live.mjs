@@ -7,6 +7,36 @@ import {PiSettingsWorker} from '../src/agents/managed/pi-auth.mjs';
 import {ProviderSettings} from '../src/agents/managed/provider-settings.mjs';
 import {serve,prepare} from './pi-provider.fixture.mjs';
 
+
+for(const outcome of ['finish','exit'])test('real native admitted prompt survives acknowledgement deadline: '+outcome,{timeout:90000},async t=>{
+ let release,admitted;
+ const gate=new Promise(resolve=>{release=resolve;}),admission=new Promise(resolve=>{admitted=resolve;});
+ const provider=await serve(async()=>{await gate;return {text:'Delayed private loopback result.'};});
+ const dirs=await prepare(provider.url),facts=[];
+ const session=new PiSession({...dirs,role:'worker',piRuntime:{agentDir:dirs.agentDir},model:'local-fixture/scripted',tools:[],onTransportFact:fact=>{facts.push(fact);if(fact.status==='admitted')admitted();}});
+ t.after(async()=>{release();try{await session.stop();}finally{await provider.close();await fs.rm(dirs.root,{recursive:true,force:true});}});
+ await session.start();
+ let settled=false;
+ const turn=session.prompt('Wait for the private scripted provider.',{timeout:1000,job:{id:'admission-deadline-'+outcome}});
+ turn.then(()=>{settled=true;},()=>{settled=true;});
+ // Race against failure too: a missing native admission must fail, not hang.
+ await Promise.race([admission,turn.then(()=>assert.fail('completed before provider release'))]);
+ await new Promise(resolve=>setTimeout(resolve,1200));
+ assert.equal(settled,false,'native admission removed the old 1000ms acknowledgement limit');
+ const pending=[...session.pending.values()].find(value=>value.method==='prompt');
+ assert.equal(pending.timer,null,'genuine private runtime admission clears the timer');
+ if(outcome==='finish'){
+  release();assert.equal((await turn).text,'Delayed private loopback result.');
+  assert.deepEqual(facts.map(fact=>fact.status),['prepared','submitted','admitted','native-record-confirmed','settled']);
+ }else{
+  const failure=assert.rejects(turn,{code:'PI_RUNTIME_EXITED'});
+  session.child.kill('SIGKILL');await failure;
+  assert.equal(session.pending.size,0,'owner exit rejects and clears even a timer-free pending prompt');
+  assert.equal(facts.at(-1).status,'unknown','exit is not settlement or replay permission');
+ }
+ assert.equal(provider.requests.length,1,'one native dispatch, no replay');
+ t.diagnostic('Real private native '+outcome+': admitted; pending beyond 1000ms; '+(outcome==='finish'?'settled after release':'rejected PI_RUNTIME_EXITED with empty pending map'));
+});
 const png='data:image/png;base64,'+(await fs.readFile(new URL('../assets/brand/nozeli-small-icon.png',import.meta.url))).toString('base64');
 
 test('Pi image transport and exact session resume retain original journal without model replay',{timeout:90000},async t=>{

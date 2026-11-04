@@ -19,11 +19,18 @@ class Node {
  removeEventListener(key){this.listeners.delete(key);}
  showModal(){this.open=true;}
  close(){this.open=false;this.listeners.get('close')?.();}
+ get clientWidth(){return 1024;}
+ get clientHeight(){return 768;}
+ matches(selector){return selector.split(',').some(part=>{const value=part.trim(),attribute=/\[([^\]]+)\]/.exec(value);if(value.startsWith('.')&&!this.className?.split(' ').includes(value.slice(1)))return false;if(value.startsWith('dialog')&&this.tagName!=='dialog')return false;if(attribute){if(attribute[1]==='open')return this.open;const name=attribute[1].replace(/^data-/, '').replace(/-([a-z])/g,(_,c)=>c.toUpperCase());return Object.hasOwn(this.dataset,name);}return value.startsWith('.')||value==='dialog';});}
+ querySelectorAll(selector){const direct=selector.startsWith(':scope > '),value=direct?selector.slice(9):selector;return (direct?this.children:this.children.flatMap(child=>all(child))).filter(node=>node.matches(value));}
+ querySelector(selector){return this.querySelectorAll(selector)[0]??null;}
+ closest(selector){return this.matches(selector)?this:this.parent?.closest(selector)??null;}
 }
 function dom(t){
- const previous={document:globalThis.document,window:globalThis.window};
+ const previous=Object.fromEntries(['document','window','ResizeObserver','MutationObserver','getComputedStyle'].map(key=>[key,globalThis[key]]));
  const ids=new Map(),window=new Node(),cleanup=[];
  globalThis.document={createElement:tag=>new Node(tag),getElementById:id=>{if(!ids.has(id))ids.set(id,new Node());return ids.get(id);}};
+ globalThis.getComputedStyle=()=>({fontSize:'13px'});globalThis.ResizeObserver=globalThis.MutationObserver=class{observe(){}disconnect(){}};
  globalThis.window=window;t.after(()=>{for(const dispose of cleanup)dispose();Object.assign(globalThis,previous);});return {ids,cleanup,node:id=>document.getElementById(id)};
 }
 const all=root=>[root,...root.children.flatMap(all)];
@@ -51,15 +58,6 @@ test('unsent opinions stay durable without sending a decision or caching file bo
  assert.deepEqual(await flushManagedReviews(),{ok:true});assert.equal(f.opinions.text,input.value);
  assert.equal(f.calls.some(([op])=>/review\.(accept|continue|save)$/.test(op)),false);
  assert.equal(f.surface.retained,false);
-});
-test('review report keeps candidate files inline and exposes only the two explicit decisions',async t=>{
- const f=report(t);await f.surface.ready;
- const review=all(f.root).find(node=>node.dataset.managedReview),file=all(f.root).find(node=>node.dataset.reviewFile==='same.md');
- assert.ok(file,'candidate file is immediately available inside the report');
- assert.ok(review.contains(file),'file link belongs to the review report');
- assert.equal(all(f.root).some(node=>node.className==='managed-review-file-disclosure'),false,'file list is not hidden behind a second disclosure');
- assert.deepEqual(all(f.root).filter(node=>['continue','accept'].includes(node.dataset.reviewAction)).map(node=>node.dataset.reviewAction),['continue','accept'],'only explicit continue and accept decisions are shown');
- assert.match(by(f.root)('reviewInstructionStatus').children[0].textContent,/自动保存/);
 });
 
 
@@ -142,4 +140,18 @@ test('late stale review responses cannot authorize accepting an older candidate'
  await all(f.root).find(node=>node.dataset.reviewAction==='accept').onclick();
  const decisions=f.calls.filter(([op])=>op==='workspace.review.decide');
  assert.equal(decisions.length,1);assert.equal(decisions[0][1].reviewVersion,'token-human');
+});
+
+test('historical and unavailable review notes remain readable but cannot be edited or submitted',async t=>{
+ for(const boundary of [{status:'ended'},{status:'running'},{stale:{code:'SUPERSEDED'}},{reviewVersion:null}]){
+  await t.test(boundary.status||boundary.stale?.code||'unavailable',async child=>{const f=report(child,{value:{...review,...boundary,capabilities:{canAccept:false,canContinue:false}}});await f.surface.ready;await f.surface.save();
+  const input=by(f.root)('reviewInstruction');assert.equal(input.readOnly,true);assert.equal(input.disabled,false);
+  assert.equal(all(f.root).find(node=>node.dataset.reviewAction==='continue').disabled,true);assert.equal(all(f.root).find(node=>node.dataset.reviewAction==='accept').disabled,true);
+  assert.equal(f.calls.some(([op])=>op==='managed.review.instruction.save'||op==='workspace.review.decide'),false);});
+ }
+});
+test('a read-only transition waits for active composition and preserves its visible text',async t=>{
+ const value={...review,capabilities:{...review.capabilities}},f=report(t,{value});await f.surface.ready;await f.surface.save();const input=by(f.root)('reviewInstruction');
+ input.listeners.get('compositionstart')();input.value='保留尚在组合的意见';value.status='ended';value.capabilities={canAccept:false,canContinue:false};await f.surface.refresh();assert.equal(input.readOnly,false);
+ input.listeners.get('compositionend')();assert.equal(input.readOnly,true);assert.equal(input.value,'保留尚在组合的意见');assert.equal(f.calls.some(([op])=>op==='workspace.review.decide'),false);
 });

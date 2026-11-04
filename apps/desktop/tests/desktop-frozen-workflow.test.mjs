@@ -27,9 +27,9 @@ async function clickProject(id){
 }
 async function back(){await page.$eval('.frozen-change-reader .document-diff-head button',node=>node.click());await page.waitForFunction(()=>!document.querySelector('.frozen-change-reader'));}
 async function openDiff(){
-  await page.waitForSelector(`[data-frozen-file="${fixture.fileId}"]`);
-  await page.$eval(`[data-frozen-file="${fixture.fileId}"]`,node=>node.scrollIntoView({block:'center'}));
-  await page.click(`[data-frozen-file="${fixture.fileId}"]`);
+  await page.waitForSelector(`[data-frozen-diff="${fixture.fileId}"]`);
+  await page.$eval(`[data-frozen-diff="${fixture.fileId}"]`,node=>node.scrollIntoView({block:'center'}));
+  await page.click(`[data-frozen-diff="${fixture.fileId}"]`);
   await page.waitForSelector('.frozen-change-reader .cm-mergeView',{visible:true});
 }
 async function retainedState(){return page.evaluate(()=>({same:window.__frozenWorkflowEditor===document.querySelector('#text-host .cm-editor'),text:window.__nozeliInput.text(),selection:window.__nozeliInput.selection(),scroll:document.querySelector('#text-host .cm-scroller').scrollTop,draft:document.querySelector('#composer').value}));}
@@ -101,7 +101,7 @@ try {
   stage='cross-project pending read isolation';
   // Queue a real click/read immediately before project navigation. No transport
   // interception or artificial delayed/fabricated IPC response is installed.
-  await page.$eval(`[data-frozen-file="${fixture.fileId}"]`,node=>node.click());
+  await page.$eval(`[data-frozen-diff="${fixture.fileId}"]`,node=>node.click());
   await clickProject(fixture.b.id);
   await page.waitForSelector('#file-tree button[data-path="other.txt"]');
   await page.click('#file-tree button[data-path="other.txt"]');

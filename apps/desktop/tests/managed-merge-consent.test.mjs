@@ -101,6 +101,7 @@ test('approveonce: one exact-candidate approval merges once; duplicates are idem
   const replay=await c.resolveMergeConsent(w.id,{requestId:done.closure.mergeAuthorization.request.id,expectedVersion:done.closure.mergeAuthorization.request.version,action:'approve',requestKey:'consent-approve-1',binding:consentBindingOf(done)});
   assert.equal(replay.duplicate,true);
   assert.equal(replay.status,'approved');
+  await assert.rejects(c.resolveMergeConsent(w.id,{requestId:done.closure.mergeAuthorization.request.id,expectedVersion:done.closure.mergeAuthorization.request.version,action:'approve',requestKey:'consent-approve-1',binding:{...consentBindingOf(done),objectId:'stale-result'}}),error=>error.code==='STALE_APPROVAL');
   // 已决定后的另一确认身份：拒绝（已完成决定不可换身份重做）。
   await assert.rejects(c.resolveMergeConsent(w.id,{requestId:done.closure.mergeAuthorization.request.id,expectedVersion:done.closure.mergeAuthorization.request.version,action:'approve',requestKey:'consent-approve-2',binding:consentBindingOf(done)}),error=>error.code==='REVIEW_REQUEST_COLLISION');
   const countAfter=(await run('git',['rev-list','--count','HEAD'],{cwd:content})).stdout.trim();
@@ -219,17 +220,17 @@ test('tamperedauth: tampered targetHead/objectId/review token reject with zero w
   assert.equal(await head(),beforeHead,'targetHead篡改零写入');
   // 篡改objectId后重试收尾：拒绝。
   await c.store.mutate(()=>{const a=c.store.find(w.id).closure.mergeAuthorization;a.targetHead=base.targetHead;a.objectId='tampered-object';});
-  await c.retryClosure(w.id,{requestKey:'accept-tamper-1'});
+  await c.retryClosure(w.id,{requestKey:'tamper-retry-object-id'});
   assert.equal(mergeState().blockedCode,'MERGE_AUTHORIZATION_STALE');
   assert.equal(await head(),beforeHead,'objectId篡改零写入');
   // 篡改审校版本令牌后重试收尾：拒绝。
   await c.store.mutate(()=>{const a=c.store.find(w.id).closure.mergeAuthorization;a.objectId=base.objectId;a.reviewVersion='f'.repeat(64);});
-  await c.retryClosure(w.id,{requestKey:'accept-tamper-1'});
+  await c.retryClosure(w.id,{requestKey:'tamper-retry-review-token'});
   assert.equal(mergeState().blockedCode,'MERGE_AUTHORIZATION_STALE');
   assert.equal(await head(),beforeHead,'审校令牌篡改零写入');
   // 恢复真实值后重试：按原队列正常合入（恢复路径完好）。
   await c.store.mutate(()=>{const a=c.store.find(w.id).closure.mergeAuthorization;a.reviewVersion=base.reviewVersion;});
-  await c.retryClosure(w.id,{requestKey:'accept-tamper-1'});
+  await c.retryClosure(w.id,{requestKey:'tamper-retry-restored-authorization'});
   assert.equal(mergeState().status,'merged');
   assert.equal((await run('git',['show','HEAD:reading.md'],{cwd:content})).stdout,human);
 });

@@ -1,4 +1,4 @@
-// Actual Electron UI + real IPC/Workspace files. Provider-only fixture; no paid model.
+// Real Electron, real storage/IPC/frozen reports; no provider mocks or model calls.
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -6,72 +6,83 @@ import path from 'node:path';
 import net from 'node:net';
 import {spawn} from 'node:child_process';
 import {createRequire} from 'node:module';
-import {createHash} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import puppeteer from 'puppeteer-core';
+import {DesktopHost} from '../src/main/host.mjs';
+import {Workspace} from '../src/agents/managed/workspace.mjs';
+import {managedRuntime} from '../src/agents/managed/managed-storage.mjs';
+import {reportDescriptor} from '../src/agents/managed/report-descriptor.mjs';
 const app=path.resolve(import.meta.dirname,'..'),require=createRequire(import.meta.url),pause=ms=>new Promise(r=>setTimeout(r,ms));
-const out=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-todo-gui-')),project=path.join(out,'project'),profile=path.join(out,'profile'),home=path.join(out,'home');
-await fs.mkdir(project);await fs.mkdir(home);await fs.writeFile(path.join(project,'paper.md'),'# 合成用户文档\n正文必须保留。\n');
-const checks=[],errors=[];let child,browser,page,projectId,runtime,log='';
+const out=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-readable-inbox-')),profile=path.join(out,'config/desktop'),home=path.join(out,'home'),sample=path.join(out,'sample');
+await fs.mkdir(home);await fs.mkdir(sample);await fs.writeFile(path.join(sample,'paper.md'),'# 删除提醒不能改动这份文档\n');
+const realSource=process.env.NOZELI_READABILITY_PROJECT?await fs.realpath(process.env.NOZELI_READABILITY_PROJECT):null;
+const realRoot=realSource?path.join(out,'real-project-snapshot'):null;
 const hash=x=>createHash('sha256').update(typeof x==='string'?x:JSON.stringify(x)).digest('hex');
-const invoke=async(op,p={})=>{const r=await page.evaluate(({op,p})=>nozeli.invoke(op,p),{op,p});assert.equal(r.ok,true,op+': '+JSON.stringify(r.error));return r.value;};
-const snapshot=async()=> (await invoke('managed.status',{projectId})).state;
-const check=(label,condition)=>{assert.ok(condition,label);checks.push(label);};
-async function launch(){
- const port=await new Promise(resolve=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>resolve(p));});});
- const env={...process.env,HOME:home,NOZELI_USER_DATA:profile,NOZELI_TEST_PICK:project,NOZELI_TEST_INSTANCE:'1',NOZELI_HIDDEN:'0',NOZELI_DEBUG_PORT:String(port)};delete env.ELECTRON_RUN_AS_NODE;delete env.NOZELI_AGENT_FIXTURE;
- child=spawn(require('electron'),['--ozone-platform=wayland',path.join(app,'tests/todo-management-entry.cjs')],{cwd:app,env,stdio:['ignore','pipe','pipe']});child.stdout.on('data',d=>log+=d);child.stderr.on('data',d=>log+=d);
- for(let i=0;i<300;i++){if(child.exitCode!==null)throw Error(log);try{browser=await puppeteer.connect({browserURL:`http://127.0.0.1:${port}`,defaultViewport:{width:1300,height:900}});break;}catch{}await pause(100);}
- assert.ok(browser,'Electron attached');page=(await browser.pages()).find(p=>p.url().includes('127.0.0.1'));page.on('pageerror',e=>errors.push(e.stack));
- await page.waitForFunction(()=>window.__nozeliReady,{timeout:30000});
- if(!projectId){await page.click('#pick-project');await page.waitForSelector('#file-tree button');projectId=(await invoke('project.recent')).projects[0].id;}
- await invoke('managed.enable',{projectId});runtime=(await invoke('managed.status',{projectId})).runtimeRoot;
- await page.reload();await page.waitForFunction(()=>window.__nozeliReady);await page.waitForSelector('#managed-todo-filters:not([hidden])',{timeout:30000});
- if(await page.$eval('#toggle-sidebar',n=>n.getAttribute('aria-expanded')!=='true'))await page.click('#toggle-sidebar');
+const sourceFiles=['README.md','.nozeli/project.json','.nozeli/project.sqlite'];
+const sourceHashes=async()=>Object.fromEntries(await Promise.all(sourceFiles.map(async name=>[name,hash(await fs.readFile(path.join(realSource,name)))])));
+const sourceBefore=realSource?await sourceHashes():null;
+if(realSource){await fs.mkdir(realRoot);for(const name of ['README.md','apps/desktop/src','docs/manual-task-control-repair-design.md'])await fs.cp(path.join(realSource,name),path.join(realRoot,name),{recursive:true});}
+const report={out,ok:false,checks:[],screenshots:[],scope:'Real Electron and local storage/report IPC; synthetic reminder history; real repository content copied read-only to an isolated project snapshot. No model calls.',realSource,realRoot,sourceBefore};
+const host=new DesktopHost(profile),ids={},objects={};
+const realEntries=realRoot?(await fs.readdir(realRoot)).sort():[];
+const samplePaper=hash(await fs.readFile(path.join(sample,'paper.md'),'utf8'));
+async function seed(root,label){
+ const project=(await host.pick(root)).project;ids[label]=project.id;
+ const store=await Workspace.open(await managedRuntime(host.storage,project.id),root,{storage:host.storage,projectId:project.id});
+ const receipts=[],works=[],todos=[];
+ const variants=[['discard',1,'cancelled'],['accept',2,'resolved'],['reopened',3,'open'],['current',4,'open'],['missing',5,'cancelled']];
+ for(const [name,revision,status] of variants){
+  const workId=randomUUID(),objectId=name==='missing'?null:randomUUID(),todoId=label+'-'+name;
+  const title=label==='real'?'Nozeli 真实项目目录核对与阅读界面可读性说明':'论文参考文献核对与引用来源补充';
+  works.push({id:workId,name:title,status:name==='current'?'review':'ended',revision,outcome:name==='accept'?'accept':'discard',result:objectId?{objectId,revision}:undefined,closure:name==='current'?undefined:{phase:'complete',decision:name==='accept'?'accept':'discard'}});
+  todos.push({id:todoId,kind:'result',status,workId,objectId,revision,createdAt:'2026-11-02T10:00:00.000Z',...(name==='reopened'?{reopenedAt:'2026-11-02T11:00:00.000Z'}:{})});
+  if(objectId){const bytes=Buffer.from(`<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>${title} · 第 ${revision} 版</title></head><body><main><h1>${title}</h1><p>冻结报告 ${label}-${name}：本报告仅供阅读，不重新执行任务。</p><p>依据：${label==='real'?'真实项目顶层目录，共 '+realEntries.length+' 项。':'隔离样本文档，原始论文内容保持不变。'}</p><p>结论：原报告与提醒生命周期独立，删除提醒不删除报告。</p></main></body></html>`);await store.putObject(bytes);receipts.push({id:randomUUID(),objectId,workId,revision,kind:'result',at:'2026-11-02T10:00:00.000Z',report:reportDescriptor(bytes,{format:'html-static',objectId})});objects[todoId]=objectId;}
+ }
+ for(const kind of ['system','recovery','attention','queue'])for(const status of ['open','resolved','closed'])todos.push({id:label+'-internal-'+kind+status,kind,status,title:'连接与恢复待处理',text:'INTERNAL_PROTOCOL_DIAGNOSTIC',userActionable:false});
+ await store.mutate(()=>Object.assign(store.state,{works,todos,receipts,jobs:[],messages:[],drafts:{frontdesk:'未发送草稿应保留'},limit:4}));
+ await store.close();await host.storage.putLocal(project.id,'managed:binding',{schema:1,enabled:true,roles:{frontdesk:{provider:'pi'},orchestrator:{provider:'pi'},worker:{provider:'pi'}}});
 }
-async function close(){if(!child||child.exitCode!==null)return;const exit=new Promise(resolve=>child.once('exit',resolve));await invoke('session.requestClose');await Promise.race([exit,pause(15000).then(()=>{throw Error('owned app close timeout');})]);await browser.disconnect();browser=null;}
-const filter=async value=>{await page.click(`[data-todo-filter="${value}"]`);};
-const row=id=>`[data-todo-row="${id}"]`;
-const menuAction=async id=>{await page.waitForSelector('#managed-todo-menu:not([hidden])');const b=await page.$eval(`#managed-todo-menu [data-command="${id}"]`,n=>n.getBoundingClientRect().toJSON());assert.ok(b.width&&b.height,'menu item visible');await page.mouse.click(b.x+b.width/2,b.y+b.height/2);};
+await seed(sample,'sample');if(realRoot)await seed(realRoot,'real');await host.storage.db.close();
+let child,browser,shell,exit,log='';const errors=[];
+async function until(fn,label,ms=30000){const end=Date.now()+ms;while(Date.now()<end){if(child?.exitCode!==null)throw Error('App exited: '+log);const result=await fn();if(result)return result;await pause(70);}throw Error('Timeout '+label);}
+async function invoke(op,p={}){const r=await shell.evaluate(({op,p})=>window.nozeli.invoke(op,p),{op,p});assert(r.ok,op+': '+JSON.stringify(r.error));return r.value;}
+async function state(id){return (await invoke('managed.status',{projectId:id})).state;}
+async function launch(){
+ const server=net.createServer();await new Promise(r=>server.listen(0,'127.0.0.1',r));const port=server.address().port;await new Promise(r=>server.close(r));
+ const env={...process.env};for(const k of Object.keys(env))if(/^(NOZELI_|CCB_|OMP_|PI_|CODEX_)/.test(k)||/AUTH|TOKEN|SECRET|PASSWORD|CREDENTIAL|API_?KEY/i.test(k)||k==='ELECTRON_RUN_AS_NODE')delete env[k];
+ Object.assign(env,{HOME:home,NOZELI_CONFIG_ROOT:path.join(out,'config'),NOZELI_USER_DATA:profile,NOZELI_TEST_INSTANCE:'1',NOZELI_DEBUG_PORT:String(port),NOZELI_HIDDEN:'0'});
+ child=spawn(require('electron'),[path.join(app,'src/main/main.cjs'),'--ozone-platform='+ (process.env.NOZELI_OZONE||'wayland')],{cwd:app,env,stdio:['ignore','pipe','pipe']});exit=new Promise(r=>child.once('exit',(code,signal)=>r({code,signal})));for(const stream of [child.stdout,child.stderr])stream.on('data',v=>log+=v);
+ browser=await until(()=>puppeteer.connect({browserURL:'http://127.0.0.1:'+port,defaultViewport:null}).catch(()=>null),'CDP');
+ shell=await until(async()=>{for(const p of await browser.pages())if(await p.evaluate(()=>window.__nozeliReady&&window.__workspaceScope?.role==='shell').catch(()=>false))return p;},'shell');
+ for(const p of await browser.pages())p.on('pageerror',e=>errors.push(e.message));browser.on('targetcreated',async t=>(await t.page().catch(()=>null))?.on('pageerror',e=>errors.push(e.message)));
+}
+async function select(label){await shell.click('#recent [data-project-id="'+ids[label]+'"]');await until(()=>shell.evaluate(id=>window.__workspaceGroups?.snapshot()?.projectId===id,ids[label]),'select '+label);await shell.waitForSelector('#managed-todo-filters:not([hidden])');if(await shell.$eval('#toggle-sidebar',n=>n.getAttribute('aria-expanded')!=='true'))await shell.click('#toggle-sidebar');}
+async function menuAction(id){const selector='#managed-todo-menu:not([hidden]) [data-command="'+id+'"]';await shell.waitForSelector(selector,{visible:true});await shell.click(selector);}
+async function filter(name){if(['closed','all'].includes(name)){await shell.click('#managed-todo-filter-more');await menuAction(name);}else await shell.click('[data-todo-filter="'+name+'"]');}
+async function surface(todoId){return until(async()=>{for(const p of await browser.pages())if(await p.evaluate(id=>window.__nozeliReady&&window.__workspaceScope?.resourceId===id,todoId).catch(()=>false))return p;},'report surface '+todoId);}
+async function shot(page,name){const file=path.join(out,name+'.png');await page.screenshot({path:file});report.screenshots.push(file);}
+async function reportBody(todoId,expected){await shell.click('[data-managed-todo="'+todoId+'"]');const page=await surface(todoId);const preview=await until(async()=>{for(const p of await browser.pages())if(await p.evaluate(text=>document.body?.innerText.includes(text),expected).catch(()=>false))return p;},'frozen HTML body');await shot(preview,todoId+'-actual-report');return page;}
+async function close(){await invoke('session.requestClose');assert.deepEqual(await Promise.race([exit,pause(20000).then(()=>null)]),{code:0,signal:null});await browser.disconnect();browser=null;child=null;}
 try{
- await launch();const initial=await snapshot(),system=initial.todos.find(t=>t.kind==='system'),problem=initial.todos.find(t=>t.kind==='problem'),completed=initial.todos.find(t=>t.kind==='result');assert.ok(system&&problem&&completed);
- const sources=hash({messages:initial.messages,receipts:initial.receipts,works:initial.works,jobs:initial.jobs,git:initial.gitRecovery}),paper=hash(await fs.readFile(path.join(project,'paper.md'),'utf8'));
- check('默认待处理，徽标仅计系统/旧提醒/待回答',await page.$eval('[data-todo-filter="open"]',n=>n.getAttribute('aria-pressed'))==='true'&&await page.$eval('#inbox-count',n=>Number(n.textContent))===3);
- const beforePath=await page.$eval('#file-path',n=>n.textContent);
- await page.click(row(system.id),{button:'right'});await page.waitForSelector('#managed-todo-menu:not([hidden])');
- check('鼠标右键作用于该条且不打开阅读面',await page.$eval('#file-path',n=>n.textContent)===beforePath);
- await menuAction('copy');await pause(200);check('复制走真实系统剪贴板',String(await invoke('document.clipboard',{action:'read'})).includes(system.text));
- await page.click(row(system.id),{button:'right'});await menuAction('close');await page.waitForFunction(id=>!document.querySelector(`[data-todo-row="${id}"]`),{},system.id);
- let s=await snapshot();check('关闭持久化并减徽标，不改业务源或额度',s.todos.find(t=>t.id===system.id).status==='closed'&&s.quotaUsed===initial.quotaUsed&&hash({messages:s.messages,receipts:s.receipts,works:s.works,jobs:s.jobs,git:s.gitRecovery})===sources&&await page.$eval('#inbox-count',n=>Number(n.textContent))===2);
- await filter('closed');await page.waitForSelector(row(system.id));
- await page.focus(`${row(system.id)} [data-managed-todo]`);await page.keyboard.down('Shift');await page.keyboard.press('F10');await page.keyboard.up('Shift');await menuAction('reopen');
- await filter('open');await page.waitForSelector(row(system.id));s=await snapshot();check('Shift+F10 重开仅提醒，没有新 job/Git/额度变化',s.todos.find(t=>t.id===system.id).status==='open'&&hash({messages:s.messages,receipts:s.receipts,works:s.works,jobs:s.jobs,git:s.gitRecovery})===sources);
- await page.click(`${row(system.id)} [data-todo-more]`);await menuAction('detail');await page.waitForSelector(`[data-todo-detail="${system.id}"]`);
- await page.click(`[data-todo-detail="${system.id}"] [data-todo-action="close"]`);await filter('closed');await page.waitForSelector(row(system.id));
- check('详情有同源关闭操作',(await snapshot()).todos.find(t=>t.id===system.id).status==='closed');
- await page.click(`${row(system.id)} [data-todo-more]`);await menuAction('remove');await page.waitForSelector('#managed-todo-confirm[open]');
- check('二次确认明确不可恢复与非级联',await page.$eval('#managed-todo-confirm',n=>n.textContent.includes('无法恢复')&&n.textContent.includes('原任务')));
- await page.click('[data-todo-cancel]');check('取消彻底移除保留原记录',(await snapshot()).todos.some(t=>t.id===system.id));
- await page.click(`${row(system.id)} [data-todo-more]`);await menuAction('remove');await page.click('[data-todo-confirm]');await page.waitForFunction(id=>!document.querySelector(`[data-todo-row="${id}"]`),{},system.id);
- const disk=JSON.parse(await fs.readFile(path.join(runtime,'state.json'),'utf8')),tombstone=disk.todoTombstones.find(t=>t.todoId===system.id);
- check('确认移除正文及私有历史消失，仅留无正文墓碑',!disk.todos.some(t=>t.id===system.id)&&tombstone&&!('text'in tombstone)&&!('reason'in tombstone)&&!JSON.stringify(tombstone).includes(system.text)&&!(disk.todoManagementActions||[]).some(a=>a.todoId===system.id));
- check('移除后当前详情不残留待办正文',!await page.$eval('#managed-doc',n=>n.textContent.includes('隔离测试：真实持久系统异常')));
- check('源报告/对话/任务/Git和论文不级联删除',hash({messages:disk.messages,receipts:disk.receipts,works:disk.works,jobs:disk.jobs,git:disk.gitRecovery})===sources&&hash(await fs.readFile(path.join(project,'paper.md'),'utf8'))===paper);
- await filter('completed');check('历史首屏有界为50条',await page.$$eval('[data-todo-row]',nodes=>nodes.length)===50);await page.click('#managed-todo-more');check('加载更多显示剩余历史',await page.$$eval('[data-todo-row]',nodes=>nodes.length)===56);await page.waitForSelector(row(completed.id));
- await page.click(`${row(completed.id)} [data-todo-more]`);await menuAction('work');check('已结束任务可查看但不会重放',(await snapshot()).jobs.length===initial.jobs.length);
- await filter('open');await page.click(row(problem.id),{button:'right'});await page.waitForSelector('#managed-todo-menu:not([hidden])');
- check('活跃待回答不提供关闭/删除绕过',!await page.$('#managed-todo-menu [data-command="close"]')&&!await page.$('#managed-todo-menu [data-command="remove"]'));
- const blocked=await page.evaluate(p=>nozeli.invoke('managed.todo.manage',p),{projectId,todoId:problem.id,expectedRevision:problem.managementRevision||0,requestKey:'gui-active-protection',action:'remove'});
- check('宿主拦截活跃关键条目删除',blocked.ok===false&&(await snapshot()).works.find(w=>w.id===problem.workId).status==='paused');
- await page.keyboard.press('Escape');
- // Legacy source-less anomaly can close, then remove, without a fabricated source.
- await page.click(row('legacy-no-source'),{button:'right'});await menuAction('close');await filter('closed');await page.waitForSelector(row('legacy-no-source'));
- await page.click(`${row('legacy-no-source')} [data-todo-more]`);await menuAction('remove');await page.click('[data-todo-confirm]');await page.waitForFunction(()=>!document.querySelector('[data-todo-row="legacy-no-source"]'));
- check('无来源旧提醒可关闭并彻底移除，不伪造 revision/sourceJobId',!(await snapshot()).todos.some(t=>t.id==='legacy-no-source'));
- await filter('all');await page.screenshot({path:path.join(out,'todos-wide.png')});
- await page.setViewport({width:480,height:800});if(await page.$eval('#toggle-sidebar',n=>n.getAttribute('aria-expanded')!=='true'))await page.click('#toggle-sidebar');await page.screenshot({path:path.join(out,'todos-narrow.png')});
- await close();await launch();const restored=await snapshot();
- check('真实重启不复活被删提醒，完成历史仍保留',!restored.todos.some(t=>t.id===system.id||t.id==='legacy-no-source')&&restored.todos.some(t=>t.id===completed.id&&t.status==='resolved')&&restored.jobs.length===initial.jobs.length);
- assert.deepEqual(errors,[]);await close();
- await fs.writeFile(path.join(out,'result.json'),JSON.stringify({passed:true,checks,out,scope:'Linux Wayland real Electron; provider lifecycle fixture, no models'},null,2));console.log(JSON.stringify({passed:true,checks,out},null,2));
-}catch(error){if(page){await fs.writeFile(path.join(out,'page-error.json'),JSON.stringify(await page.evaluate(()=>({errors:[],menu:document.querySelector('#managed-todo-menu')?.outerHTML,box:document.querySelector('#managed-todo-menu')?.getBoundingClientRect().toJSON(),viewport:[innerWidth,innerHeight]})).catch(()=>({})),null,2));await page.screenshot({path:path.join(out,'failure.png')}).catch(()=>{});}await fs.writeFile(path.join(out,'failure.txt'),String(error.stack));throw error;}
-finally{await fs.writeFile(path.join(out,'electron.log'),log);if(browser)await browser.disconnect().catch(()=>{});if(child&&child.exitCode===null){child.kill('SIGTERM');await pause(1000);if(child.exitCode===null)child.kill('SIGKILL');}}
+ await launch();await select('sample');const before=await state(ids.sample),source=hash({works:before.works,receipts:before.receipts,jobs:before.jobs,drafts:before.drafts,messages:before.messages});
+ assert.deepEqual(await shell.$$eval('[data-todo-row]',ns=>ns.map(n=>n.dataset.todoRow)),['sample-current']);
+ for(const view of ['completed','closed','all','open']){await filter(view);assert.equal(await shell.$$eval('[data-todo-row]',ns=>ns.some(n=>n.innerText.includes('连接与恢复')||n.dataset.todoRow.includes('internal'))),false);}
+ report.checks.push('All user filters exclude internal connection/recovery/system/queue records; only current review obligation is pending');
+ await filter('completed');assert(await shell.$('[data-todo-row="sample-reopened"]'));const versions=await shell.$$eval('.managed-todo-secondary',ns=>ns.map(n=>n.innerText));assert(versions.some(t=>t.includes('第 1 版')&&t.includes('已丢弃')));assert(versions.some(t=>t.includes('历史提醒已重开')));await shot(shell,'history-light');
+ const page=await reportBody('sample-discard','冻结报告 sample-discard');assert.equal(await page.$$eval('[data-managed-end-result],[data-report-discuss]',ns=>ns.filter(n=>n.checkVisibility()).length),0);await shot(page,'historical-report');report.checks.push('Discarded history opens its exact frozen report, version and outcome read-only without routing through metadata-only record');
+ await shell.click('#managed-todo-filters');await shell.focus('[data-todo-row="sample-discard"] [data-managed-todo]');await shell.keyboard.down('Shift');await shell.keyboard.press('F10');await shell.keyboard.up('Shift');await menuAction('remove');await shell.waitForSelector('#managed-todo-confirm[open]');assert(await shell.$eval('[data-todo-cancel]',n=>document.activeElement===n));await shell.click('[data-todo-cancel]');assert((await state(ids.sample)).todos.some(t=>t.id==='sample-discard'));
+ await shell.click('[data-todo-row="sample-discard"] [data-todo-more]');await menuAction('remove');await shell.waitForSelector('#managed-todo-confirm[open]');await shell.click('[data-todo-confirm]');await until(async()=>!(await state(ids.sample)).todos.some(t=>t.id==='sample-discard'),'reminder deletion');
+ const after=await state(ids.sample);assert.equal(hash({works:after.works,receipts:after.receipts,jobs:after.jobs,drafts:after.drafts,messages:after.messages}),source);assert((await invoke('managed.history.read',{projectId:ids.sample,objectId:objects['sample-discard']})).report);assert.equal(hash(await fs.readFile(path.join(sample,'paper.md'),'utf8')),samplePaper);
+ assert(await until(async()=>{for(const p of await browser.pages())if(await p.evaluate(()=>document.body?.innerText.includes('冻结报告 sample-discard')).catch(()=>false))return true;},'report remains visible after reminder deletion'));
+ report.checks.push('Keyboard menu removal supports cancel and confirm; only reminder disappears, report/drafts/task/file source remains unchanged and visible');
+ await reportBody('sample-reopened','冻结报告 sample-reopened');await shell.click('[data-todo-row="sample-reopened"] [data-todo-more]');await menuAction('remove');await shell.waitForSelector('#managed-todo-confirm[open]');await shell.click('[data-todo-confirm]');await until(async()=>!(await state(ids.sample)).todos.some(t=>t.id==='sample-reopened'),'reopened history removed');
+ await filter('open');await shell.click('[data-todo-row="sample-current"] [data-todo-more]');await shell.waitForSelector('#managed-todo-menu:not([hidden])');assert.equal(await shell.$('#managed-todo-menu [data-command="remove"]'),null);await shell.keyboard.press('Escape');
+ const denied=await shell.evaluate(p=>window.nozeli.invoke('managed.todo.manage',p),{projectId:ids.sample,todoId:'sample-current',expectedRevision:0,action:'remove',requestKey:'deny-current-obligation'});assert.equal(denied.ok,false);report.checks.push('Reopened ended reminder stays historical and removable; active review cannot be deleted from UI or host API');
+ await filter('completed');await shell.click('[data-managed-todo="sample-missing"]');const missing=await surface('sample-missing');await missing.waitForFunction(()=>document.querySelector('#managed-doc')?.innerText.includes('报告暂不可读取'));report.checks.push('Missing report displays explicit unreadable reason instead of an empty record');
+ if(realRoot){await select('real');await filter('completed');await shot(shell,'real-project-history-light');await reportBody('real-accept','冻结报告 real-accept');report.checks.push('A read-only copy of real repository content is opened as an isolated project; history report renders snapshot inventory context');}
+ for(const theme of ['dark','light']){await shell.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);await filter('completed');await shot(shell,'sidebar-'+theme);}
+ await shell.setViewport({width:390,height:844});await shell.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));if(await shell.$eval('#toggle-sidebar',n=>n.getAttribute('aria-expanded')!=='true'))await shell.click('#toggle-sidebar');await shell.waitForSelector('#managed-todo-filter-more',{visible:true});await until(()=>shell.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'390px no document overflow');await shot(shell,'sidebar-390');await shell.click('#managed-todo-filter-more');await shell.waitForSelector('#managed-todo-menu:not([hidden])');await shell.keyboard.press('Escape');assert(await shell.$eval('#managed-todo-filter-more',n=>document.activeElement===n&&n.getAttribute('aria-expanded')==='false'));await shell.keyboard.press('Enter');await shell.waitForSelector('#managed-todo-menu:not([hidden])');await shell.keyboard.press('Escape');report.checks.push('Dark/light and 390px screenshots captured; overflow menu is keyboard-operable and Escape restores focus');
+ await close();await launch();await select('sample');await filter('completed');const restored=await state(ids.sample);assert(!restored.todos.some(t=>['sample-discard','sample-reopened'].includes(t.id)));assert((await invoke('managed.history.read',{projectId:ids.sample,objectId:objects['sample-discard']})).report);assert.equal(restored.jobs.length,0);assert.equal(restored.agents.length,0);await close();
+ if(realSource){assert.deepEqual(await sourceHashes(),sourceBefore);report.sourceAfter=await sourceHashes();}assert.deepEqual(errors,[]);report.checks.push('Normal restart does not resurrect deleted reminders; preserved report still reads; zero jobs/native agents; original README and project metadata digests unchanged');report.ok=true;
+}catch(error){report.error=error.stack;process.exitCode=1;await shell?.screenshot({path:path.join(out,'failure.png')}).catch(()=>{});}
+finally{if(child&&child.exitCode===null){try{await close();}catch{child?.kill('SIGTERM');}}await browser?.disconnect().catch(()=>{});await fs.writeFile(path.join(out,'report.json'),JSON.stringify(report,null,2));await fs.writeFile(path.join(out,'electron.log'),log);console.log(JSON.stringify(report,null,2));}

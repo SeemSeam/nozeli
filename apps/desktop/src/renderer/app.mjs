@@ -560,7 +560,7 @@ $('composer').disabled = true;
 const beside = { editor: null, pdf: null, file: null, diff: null, diffHost: null };
 const texWorkspace = mountTexWorkspace({ getContext: () => ui, beside, closeBeside, openFile, toast: message => workspace.toast(message) });
 const markdownWorkspace = mountMarkdownWorkspace({ getContext: () => ui, render: renderTextPreview, project: projectPreviewTags, saveView: writeView, layout: () => window.dispatchEvent(new Event('nozeli-layout-change')) });
-const webWorkspace = mountWebWorkspace({getContext:()=>ui,invoke,saveView:writeView,whenReady:()=>actions,layout:()=>window.dispatchEvent(new Event('nozeli-layout-change'))});
+const webWorkspace = mountWebWorkspace({getContext:()=>ui,invoke,mountDiff:mountDocumentDiff,saveView:writeView,whenReady:()=>actions,layout:()=>window.dispatchEvent(new Event('nozeli-layout-change')),documentSource:()=>documentSource,documentReadOnly:()=>documentReadOnly()});
 const comparison = mountDocumentComparison({current:()=>ui.project?{projectId:ui.project.id,relPath:ui.file?.relPath,documentSource,documentKey:workspaceScope.documentKey,kind:ui.file?.kind,dirty:ui.dirty||ui.composing}:null,invoke,openSnapshot:(file,diff,owner,left)=>enqueue(()=>{if(ui.project?.id===owner.projectId&&ui.file?.relPath===owner.relPath&&owner.documentKey===workspaceScope.documentKey)return openBesideSnapshot(file,diff,left);},true),toast:message=>workspace.toast(message)});
 const frozenChangeReader = mountFrozenChangeReader({parent:$('documents'),invoke,mountDiff:mountDocumentDiff,currentProjectId:()=>ui.project?.id,...(isSurface&&workspaceScope.kind==='diff'?{onExit:async()=>{const result=await invoke('workspace.control',{type:'workspace-action',projectId:workspaceScope.projectId,viewId:workspaceScope.viewId,command:{type:'closeContent',viewId:workspaceScope.viewId}});if(!result.ok)throw Error(result.error?.message||'关闭对比失败，内容仍保留。');}}:{})});
 const openFrozenChange = target => (!isSurface || workspaceScope.kind!=='diff')
@@ -1343,7 +1343,7 @@ async function refreshNotes() {
     // Markdown opens as a rendered reading surface; editing remains an explicit choice.
     markdownWorkspace.restore(view?.fileView?.markdownPreview);
     setTextMode(!isCodePath(file.relPath) && view?.fileView?.textMode ? view.fileView.textMode : /\.(?:md|markdown)$/i.test(file.relPath) ? 'read' : 'edit');
-    if(!isReviewDocument)webWorkspace.opened(view?.fileView?.webMode);
+    webWorkspace.opened(view?.fileView?.webMode);
     authorship.opened(file);
     const selection=view?.fileView?.selection;if(selection&&(!isReviewDocument||view.fileView.materialDigest===file.materialDigest)){const length=ui.editor.adapter.getText().length;ui.editor.adapter.setSelection(Math.min(selection.anchor??selection.from,length),Math.min(selection.head??selection.to,length));}
     ui.compositionDispose = ui.editor.adapter.onComposition({
@@ -1393,7 +1393,9 @@ async function refreshNotes() {
     }
     if (savedScrollTop !== null) adapter.setScrollTop(savedScrollTop);
     $('note-label').textContent = '给选中文字添加备注';
-    if(!isReviewDocument)void texWorkspace.enter();else if(/\.(tex|html?)$/i.test(file.relPath))$('code-status').textContent='冻结审核文档 · 原生编辑、批注与版本比较可用；项目编译和网页预览不适用。';
+    if(!isReviewDocument)void texWorkspace.enter();
+    else if(/\.html?$/i.test(file.relPath))$('code-status').textContent=documentReadOnly()?(documentSource.type==='review-version'?'冻结审核版本':'只读审校内容')+' · 网页预览为只读离线快照，不读取、不保存项目源文件；批注与版本比较可用。':(file.review?.draftRevision>0?'人工审核稿':'Worker 冻结候选')+' · 网页预览基于当前编辑缓冲（含未保存修改），不保存文件、不读取项目源文件；原生编辑与批注可用。';
+    else if(/\.tex$/i.test(file.relPath))$('code-status').textContent='冻结审核文档 · 原生编辑、批注与版本比较可用；项目编译和网页预览不适用。';
   } else if(file.kind==='ppt'){
     $('reader').classList.add('document-word');$('text-mode-toggle').hidden=true;$('note-form').hidden=true;
     setStatus('loading','正在打开 PPTX');
@@ -3087,7 +3089,7 @@ async function openBesideSnapshot(file, diff=false, left=null) {
   conversationFailure.append(connectionTitle,connectionReason,retryConversation,connectionDetails,closeConnection);document.body.append(conversationFailure);
   closeConnection.onclick=()=>conversationFailure.close();retryConversation.onclick=()=>{conversationFailure.close();$('workspace-open-conversation').click();};connectionDetails.onclick=()=>{conversationFailure.close();window.dispatchEvent(new Event('nozeli-agent-details'));};
   function showConversationFailure(error){if(workspaceScope.role!=='shell')return;connectionReason.textContent=error?.message||'会话连接不可用，草稿保留。';if(!conversationFailure.open)conversationFailure.showModal();}
-  window.nozeli.subscribe('workspace.control',event=>{if(event.type==='conversation-unavailable'){conversationErrors.set(event.projectId,event.error);if(event.projectId===ui.project?.id){refreshConversationLauncher();if(isConversation){if(!event.retained)$('composer').disabled=true;$('send-message').disabled=true;}else if(!event.retained)showConversationFailure(event.error);}}});
+  window.nozeli.subscribe('workspace.control',event=>{if(event.type==='conversation-unavailable'){conversationErrors.set(event.projectId,event.error);if(event.projectId===ui.project?.id){refreshConversationLauncher();if(isConversation&&!event.retained){$('composer').disabled=true;$('send-message').disabled=true;}else if(!isConversation&&!event.retained)showConversationFailure(event.error);}}});
   $('workspace-open-conversation').addEventListener('click',async()=>{const projectId=ui.project?.id;if(!projectId)return;const button=$('workspace-open-conversation');button.disabled=true;try{const result=await invoke('workspace.control',{type:'conversation-action',projectId,action:'open',groupId:workspaceGroups.activeGroup()});if(!result.ok)showConversationFailure(result.error);else conversationErrors.delete(projectId);}catch(error){showConversationFailure(error);}finally{refreshConversationLauncher();}});
       let openingExternal=false, externalAgain=false;
       async function drainExternalOpen(){

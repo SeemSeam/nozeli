@@ -40,7 +40,7 @@ export class ContextReader {
       if(end<entry.text.length&&/[\uD800-\uDBFF]/.test(entry.text[end-1])&&/[\uDC00-\uDFFF]/.test(entry.text[end]))end--;
     }
     const nextFor=boundary=>boundary<entry.text.length?(entry.next&&entry.nextOffset===boundary?entry.next:`读取 ${this.scope}/${this.entries.size+1}：${String(entry.title||'记录').slice(0,80)}`):null;
-    const pageAt=boundary=>({...resultFields,title:entry.title,source:entry.source,version:entry.version,text:entry.text.slice(entry.offset,boundary),offset:entry.offset,endOffset:boundary,totalChars:entry.text.length,complete:entry.offset===0&&boundary===entry.text.length,nextReadRef:nextFor(boundary)});
+    const pageAt=boundary=>({title:entry.title,source:entry.source,version:entry.version,...resultFields,text:entry.text.slice(entry.offset,boundary),offset:entry.offset,endOffset:boundary,totalChars:entry.text.length,complete:entry.offset===0&&boundary===entry.text.length,nextReadRef:nextFor(boundary)});
     if(Number.isSafeInteger(maxResultBytes)&&maxResultBytes>=0){
       const fits=boundary=>Buffer.byteLength(JSON.stringify(pageAt(boundary)),'utf8')<=maxResultBytes;
       if(!fits(end)){

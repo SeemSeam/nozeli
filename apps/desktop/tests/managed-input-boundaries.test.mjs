@@ -19,7 +19,7 @@ async function fixture(t,{holdWorker=false}={}){
   async prompt(text){this.busy=true;prompts.push({target:this.target,text});try{const job=c.current.get(this.target);
    if(!['frontdesk','orchestrator'].includes(this.target)){
     if(holdWorker)await new Promise((_,reject)=>this.rejectTurn=reject);
-    await this.onTool({tool:'nozeli_publish',arguments:{kind: 'result', html: staticReport('Fixture report'), files: []},callId:randomUUID()});
+    await this.onTool({tool:'nozeli_publish',arguments:{kind: 'result', content: staticReport('Fixture report'), files: []},callId:randomUUID()});
    }
    return {threadId:this.threadId,turnId:randomUUID(),text:'fixture'};
   }finally{this.busy=false;}}
@@ -93,7 +93,7 @@ test('priority input cannot overtake a persisted initial job',async t=>{
 test('late publication after user end is rejected without a new receipt',async t=>{
  const {c}=await fixture(t);c.started=false;const w=await c.store.submit('original','brief',{name:'Alpha'});await c.store.activate(w.id);
  c.current.set(w.id,{target:w.id,revision:1,id:'late-job'});await c.store.end(w.id,dispositionIntent(c.store.find(w.id)));
- await assert.rejects(c.onTool(w.id,{tool:'nozeli_publish',arguments:{kind: 'result', html: staticReport('Late report'), files: []},callId:'late-call'}),/closing/);assert.equal(c.store.state.receipts.length,0);c.current.delete(w.id);
+ await assert.rejects(c.onTool(w.id,{tool:'nozeli_publish',arguments:{kind: 'result', content: staticReport('Late report'), files: []},callId:'late-call'}),/closing/);assert.equal(c.store.state.receipts.length,0);c.current.delete(w.id);
 });
 ;
 test('user-input limit still rejects oversized input without erasing its draft',async t=>{

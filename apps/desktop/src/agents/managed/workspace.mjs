@@ -21,6 +21,30 @@ function mergeAuthorizationRecord(w,reviewVersion){
   const requirement=mergeConsentRequirement(w);
   return {schema:1,workId:w.id,revision:w.revision,objectId:w.result?.objectId??null,candidateCommit:w.execution?.candidate?.commit??null,reviewVersion:reviewVersion??null,repo:w.execution?.repo??null,commonDir:w.execution?.commonDir??null,targetRef:w.execution?.targetRef??null,targetHead:w.execution?.targetHead??null,basis:'user-accept',consentRequired:requirement.required,consentOrigin:requirement.required?requirement.origin:null,at:new Date().toISOString()};
 }
+// Work 占槽的统一推导（§9）：从“已激活身份 + 有效 closure 完成事实”派生，
+// live 与离线 summary 共用同一函数。人工/审阅/未知收尾保留槽位；已确认
+// 完整 closure（归档+清理全部durable完成，closure.phase==='complete'）才释放。
+// 缺证据的历史 ended 记录不伪造已释放：进入 pendingVerification，阻止新增
+// 激活直到核对（fail-closed），并单独暴露用于“待核查资源”展示。
+const CLOSURE_COMPLETE=closure=>closure?.phase==='complete';
+export function workSlotFacts(works=[]){
+  const facts={used:0,held:[],pendingVerification:[],released:0,verificationRequired:false,blocked:false};
+  for(const w of works){
+    if(!w||typeof w!=='object')continue;
+    if(w.status!=='ended'){
+      if(w.status!=='queued'&&Number(w.revision)>0){facts.used++;facts.held.push(w.id);}
+      continue;
+    }
+    if(CLOSURE_COMPLETE(w.closure)){facts.released++;continue;}
+    // 已验证的 revision=0 取消从未激活，不凭收尾中的标记新分配槽位。
+    if(w.revision===0&&w.closure?.binding?.revision===0&&w.closure.binding.workId===w.id&&!w.threadId&&!w.execution)continue;
+    if(w.closure&&typeof w.closure.phase==='string'&&w.closure.phase){facts.used++;facts.held.push(w.id);continue;}
+    if(Number(w.revision)>0)facts.pendingVerification.push(w.id);
+  }
+  facts.verificationRequired=facts.pendingVerification.length>0;
+  facts.blocked=facts.verificationRequired;
+  return facts;
+}
 export class Workspace {
   static async open(runtimeRoot,contentRoot,{recoverStale=false,checkpoint=async()=>{},storage,projectId,offline=false}={}){
     if(!storage||!projectId)throw Error('Project storage binding required');
@@ -111,7 +135,8 @@ export class Workspace {
   async readObject(digest,options){return readManagedObject(this.storage,this.projectId,digest,options);}
   async requireOnline(){if(this.commitUnknown)throw Object.assign(Error('Workspace commit outcome requires explicit reconciliation'),{code:'STORAGE_RESULT_UNKNOWN',commitUnknown:this.commitUnknown});await this.storage.requireOnline(this.projectId);this.offline=false;}
   async close(){if(this.closed)return;this.closing=true;await this.serial;await this.draftSerial;if(await fs.readFile(this.lock,'utf8')!==this.owner)throw new Error('workspace owner changed');await fs.unlink(this.lock);this.closed=true;}
-  used(){return this.state.works.filter(w=>w.status!=='queued'&&w.status!=='ended'&&w.revision>0).length;}
+  used(){return workSlotFacts(this.state.works).used;}
+  workSlotFacts(){return workSlotFacts(this.state.works);}
   find(id){const w=this.state.works.find(w=>w.id===id);if(!w)throw new Error('unknown work');return w;}
   deviationHeld(id){const w=this.find(id);return ['pending','replanned'].includes(w.deviation?.status);}
   async reportDeviation(id,job,{changedGoal,reason,progress},receipt){return this.mutate(async tx=>{
@@ -175,7 +200,13 @@ export class Workspace {
     if(!request?.trim()||!brief?.trim())throw new Error('task requires original request and brief');
     const previous=sourceJob&&this.state.works.find(w=>w.sourceJob===sourceJob);if(previous)return structuredClone(previous);
     const w={id:randomUUID(),agentId:randomUUID(),request,brief,status:'queued',revision:0};
-    if(sourceJob)w.sourceJob=sourceJob;
+    if(sourceJob){
+      w.sourceJob=sourceJob;
+      // 接收 job 上的人工暂停门在同一事务内由生成的 Work 继承（§4.1）；
+      // 不复制回执历史（回执仍属原操作键），只继承当前门事实。
+      const receiving=this.state.jobs.find(j=>j.id===sourceJob);
+      if(receiving?.manualControl?.pause)w.manualControl={version:receiving.manualControl.version??0,pause:{...receiving.manualControl.pause},stop:null,receipts:[]};
+    }
     if(name!=null){const base=String(name).trim().slice(0,110)||'工作';let unique=base,index=2;while(this.state.works.some(other=>other.status!=='ended'&&other.name===unique))unique=base+' · '+index++;w.name=unique;}
     this.state.works.push(w);this.state.todos.push({id:randomUUID(),workId:w.id,kind:'queue',status:'open'});
     // 明确永久“永不提交”的原文表述进入版本绑定约束待办（用户显式选择/撤回），
@@ -184,7 +215,14 @@ export class Workspace {
     return structuredClone(w);
   }
   async activateState(w,{initialize}={}){
-    if(this.deviationHeld(w.id))throw Object.assign(Error('user deviation decision required'),{code:'DEVIATION_HELD'});if(w.status!=='queued')throw new Error('work not queued');if(this.used()>=this.state.limit)throw new Error('quota full');
+    if(this.deviationHeld(w.id))throw Object.assign(Error('user deviation decision required'),{code:'DEVIATION_HELD'});if(w.status!=='queued')throw new Error('work not queued');
+    // 人工暂停门（含接收 job 上的门，继承前）阻止激活（P1）：已暂停的排队
+    // Work 不消耗槽位、不生成 initial 输入；事务内复核。
+    const receiving=this.state.jobs?.find(j=>j.id===w.sourceJob);
+    if(w.manualControl?.pause!=null||receiving?.manualControl?.pause!=null)throw Object.assign(Error('人工暂停生效中，不激活新任务'),{code:'WORK_CONTROL_HELD'});
+    const facts=workSlotFacts(this.state.works);
+    if(facts.verificationRequired)throw Object.assign(Error('存在待核查的历史结束工作资源；先核对后再激活新任务，不伪造已释放槽位'),{code:'RESOURCE_VERIFICATION_REQUIRED',pendingVerification:facts.pendingVerification});
+    if(facts.used>=this.state.limit)throw new Error('quota full');
     await fs.mkdir(this.agentHome(w.id),{recursive:true,mode:0o700});w.status='running';w.revision++;
     for(const t of this.state.todos)if(t.workId===w.id&&t.kind==='queue')t.status='resolved';
     initialize?.(w);return structuredClone(w);
@@ -268,7 +306,7 @@ export class Workspace {
       if(!binding||typeof binding!=='object'||Array.isArray(binding)||Object.keys(binding).length!==fields.length||fields.some(key=>!Object.hasOwn(binding,key)||binding[key]!==current[key]))throw Error('stale or invalid disposition binding');
       if(typeof requestKey!=='string'||!/^[a-zA-Z0-9:_-]{8,160}$/.test(requestKey))throw Error('invalid disposition request key');
       if(this.state.works.some(other=>other.id!==id&&other.closure?.requestKey===requestKey))throw Error('disposition request key collision');
-      if(w.status==='ended'){
+      if(['closing','ended'].includes(w.status)){
         const closure=w.closure;
         if(w.outcome||closure?.decision){
           if(w.outcome!==decision||closure?.decision!==decision)throw Error('work already ended with another decision');
@@ -278,11 +316,11 @@ export class Workspace {
           return;
         }
         if(closure?.git?.complete||closure?.workerHome?.cleaned||closure?.phase==='complete')throw Error('legacy resources already disposed; preserve historical outcome');
-        validateAdmission?.();
-        w.outcome=decision;w.closure??={revision:w.revision,at:w.endedAt};if(decision==='accept')w.closure.mergeAuthorization=mergeAuthorizationRecord(w,null);Object.assign(w.closure,{decision,binding:{...current},requestKey,phase:'requested',dispositionAt:new Date().toISOString()});return;
+        w.legacyClosure??=structuredClone(closure??null);
       }
       validateAdmission?.();
-      const at=new Date().toISOString();w.status='ended';w.endedBy='user';w.endedAt=at;w.outcome=decision;w.closure={decision,binding:{...current},requestKey,phase:'requested',at,revision:w.revision};if(decision==='accept')w.closure.mergeAuthorization=mergeAuthorizationRecord(w,reviewed?.reviewVersion??null);
+      delete w.needsReconciliation;
+      const at=new Date().toISOString();w.status='closing';w.endedBy='user';delete w.endedAt;w.outcome=decision;w.closure={decision,binding:{...current},requestKey,phase:'requested',at,dispositionAt:at,revision:w.revision};if(decision==='accept')w.closure.mergeAuthorization=mergeAuthorizationRecord(w,reviewed?.reviewVersion??null);
       // 人工审校接受（P1原子性）：决定、人工版本绑定与Orchestrator合入队列
       // 入账同一durable事务——两事务间崩溃会把已接受的Work按旧候选合入，丢人工修改。
       if(reviewed){
@@ -322,15 +360,15 @@ export class Workspace {
   resolveMergeConsentState(id,{requestId,expectedVersion,action,requestKey,binding}){
     return this.mutate(()=>{
       const w=this.find(id),authorization=w.closure?.mergeAuthorization;
-      if(w.status!=='ended'||w.closure?.decision!=='accept'||!authorization?.consentRequired)throw Object.assign(Error('此工作没有待人工覆盖的合入同意'),{code:'NO_MERGE_CONSENT_REQUIRED'});
+      if(w.status!=='closing'&&!(w.status==='ended'&&authorization?.consent)||w.closure?.decision!=='accept'||!authorization?.consentRequired)throw Object.assign(Error('此工作没有待人工覆盖的合入同意'),{code:'NO_MERGE_CONSENT_REQUIRED'});
       if(authorization.request?.id!==requestId||authorization.request?.version!==expectedVersion)throw Object.assign(Error('合入同意请求已过期，请刷新核对'),{code:'STALE_ATTENTION'});
+      if(!binding||typeof binding!=='object'||Array.isArray(binding)||Object.keys(binding).length!==mergeConsentBindingFields.length||!sameMergeConsentBinding(binding,Object.fromEntries(mergeConsentBindingFields.map(key=>[key,authorization[key]??null]))))throw Object.assign(Error('批准绑定与落账的合入授权不一致；未合入，请按当前候选刷新后确认'),{code:'STALE_APPROVAL'});
       const consent=authorization.consent;
       if(consent){
         if(consent.requestKey!==requestKey)throw Object.assign(Error('此合入同意已按另一确认身份处理'),{code:'REVIEW_REQUEST_COLLISION'});
         if(consent.status!==(action==='approve'?'approved':'denied'))throw Object.assign(Error('已完成的合入同意决定不可更改'),{code:'DECISION_CHANGED'});
         return {duplicate:true,status:consent.status,at:consent.at};
       }
-      if(!binding||typeof binding!=='object'||Array.isArray(binding)||Object.keys(binding).length!==mergeConsentBindingFields.length||!sameMergeConsentBinding(binding,Object.fromEntries(mergeConsentBindingFields.map(key=>[key,authorization[key]??null]))))throw Object.assign(Error('批准绑定与落账的合入授权不一致；未合入，请按当前候选刷新后确认'),{code:'STALE_APPROVAL'});
       const at=new Date().toISOString(),status=action==='approve'?'approved':'denied';
       authorization.consent={status,requestKey,at,by:'user'};
       authorization.request={...authorization.request,version:authorization.request.version+1,pending:false,decidedAt:at,status};
@@ -369,7 +407,7 @@ export class Workspace {
       const at=new Date().toISOString();
       constraint.version+=1;constraint.mode=choice;constraint.resolvedAt=at;constraint.resolvedRequestKey=requestKey;if(choice==='never-commit')constraint.confirmedAt=at;
       const authorization=w.closure?.mergeAuthorization;
-      if(w.status==='ended'&&w.closure?.decision==='accept'&&authorization){
+      if(w.status==='closing'&&w.closure?.decision==='accept'&&authorization){
         if(choice==='never-commit'){authorization.consentRequired=true;authorization.consentOrigin=authorization.consentOrigin??'structured';}
         else{
           authorization.consentRequired=false;authorization.consentOrigin=null;
@@ -389,7 +427,7 @@ export class Workspace {
   reviewSaveState(id,{objectId,relPath,textDigest,expectedDraftRevision}){
     return this.mutate(()=>{
       const w=this.find(id);
-      if(w.status==='ended')throw Object.assign(Error('工作已结束；审稿不再修改'),{code:'WORK_ENDED'});
+      if(['closing','ended'].includes(w.status))throw Object.assign(Error('决定已记录；审稿不再修改'),{code:'WORK_ENDED'});
       if(w.readOnly)throw Object.assign(Error('历史执行资源只读'),{code:'HISTORICAL_SESSION_READ_ONLY'});
       const candidateCommit=w.execution?.candidate?.commit??null;
       if(objectId!==(w.result?.objectId??null)||!candidateCommit)throw Object.assign(Error('此报告不是当前待审候选；草稿只属于最新发布'),{code:'REVIEW_CANDIDATE_STALE'});
@@ -423,7 +461,7 @@ export class Workspace {
       const record=w.review?.continuations?.find(c=>c.requestKey===requestKey);
       if(!record)throw Object.assign(Error('续作意图不存在'),{code:'REVIEW_CONTINUE_UNKNOWN'});
       if(record.state==='queued')return {duplicate:true,jobId:record.jobId,revision:record.revision};
-      if(w.status==='ended'){record.state='abandoned';record.error??={code:'WORK_ENDED',message:'工作已结束；续作意图保留为历史'};return {abandoned:true};}
+      if(['closing','ended'].includes(w.status)){record.state='abandoned';record.error??={code:'WORK_ENDED',message:'决定已记录；续作意图保留为历史'};return {abandoned:true};}
       if(!['applying','blocked'].includes(record.state))throw Object.assign(Error('续作意图状态无效'),{code:'REVIEW_CONTINUE_STATE'});
       if(!['paused','review'].includes(w.status))throw Object.assign(Error(w.status==='running'?'工作正在执行；不能同时续作':'当前状态不能续作'),{code:w.status==='running'?'WORK_BUSY':'WORK_STATE'});
       if((this.state.jobs||[]).some(j=>(j.target===id||j.context?.boundWorkId===id)&&['queued','running'].includes(j.status)))throw Object.assign(Error('此工作有待执行输入；不能同时续作'),{code:'WORK_BUSY'});
@@ -443,7 +481,7 @@ export class Workspace {
   reviewInstructionState(id,{objectId,textDigest,expectedRevision}){
     return this.mutate(()=>{
       const w=this.find(id);
-      if(w.status==='ended')throw Object.assign(Error('工作已结束；续作指令不再修改'),{code:'WORK_ENDED'});
+      if(['closing','ended'].includes(w.status))throw Object.assign(Error('决定已记录；续作指令不再修改'),{code:'WORK_ENDED'});
       if(w.readOnly)throw Object.assign(Error('历史执行资源只读'),{code:'HISTORICAL_SESSION_READ_ONLY'});
       if(objectId!==(w.result?.objectId??null))throw Object.assign(Error('此报告不是当前待审候选'),{code:'REVIEW_CANDIDATE_STALE'});
       w.review??={drafts:{},history:{},continuations:[]};w.review.instruction??={};
@@ -455,7 +493,7 @@ export class Workspace {
       return {revision,savedAt:at};
     });
   }
-  async markStopped(id,receipt){await this.mutate(()=>{const w=this.find(id);if(w.status!=='ended')throw Error('work not ended');w.closure.stopped=true;w.closure.stopReceipt=receipt||{at:new Date().toISOString(),confirmed:true};w.closure.phase='report';});await this.checkpoint('stopped-state',{workId:id});}
+  async markStopped(id,receipt){await this.mutate(()=>{const w=this.find(id);if(w.status!=='closing')throw Error('work not closing');w.closure.stopped=true;w.closure.stopReceipt=receipt||{at:new Date().toISOString(),confirmed:true};w.closure.phase='report';});await this.checkpoint('stopped-state',{workId:id});}
   async archiveReport(id){
     return this.mutate(async()=>{
       const w=this.find(id),closure=w.closure;if(!closure?.stopped)throw Error('provider stop must be confirmed before archival');

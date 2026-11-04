@@ -10,6 +10,8 @@ import { userActor } from '../src/domain/document-changes.mjs';
 import { textChangeSet } from '../src/domain/tag-anchors.mjs';
 import { runGit } from '../src/agents/managed/git-runtime.mjs';
 import { recordAdoption } from '../src/agents/managed/adoption-history.mjs';
+import {Controller} from '../src/agents/managed/controller.mjs';
+import {staticReport} from './static-report.fixture.mjs';
 
 const hash = bytes => bytes === null ? null : createHash('sha256').update(bytes).digest('hex');
 async function fixture(t) {
@@ -34,7 +36,7 @@ async function fixture(t) {
   await git(['add', '--', ...Object.keys(after)]); await git(['commit', '-qm', 'Accepted worker change']);
   const commit = (await git(['rev-parse', 'HEAD'])).toString().trim();
   await git(['switch', '-q', 'main']); await git(['merge', '--ff-only', 'worker']);
-  const work = { id: 'work-adoption', name: 'Writing Worker', threadId: 'thread-adoption', execution: { repo: root } };
+  const work = { id: 'work-adoption', name: 'Writing Worker', threadId: 'thread-adoption', execution: { repo: root, candidate:{commit} } };
   const receipt = { status: 'merged', commit, operations: Object.keys(after).map(relPath => ({ relPath, beforeDigest: hash(before[relPath] ?? null), afterDigest: hash(after[relPath]), commit, workId: work.id })) };
   return { host, projectId, root, store, work, receipt, before, after, notifications, call: () => recordAdoption({ host, projectId, work, receipt }) };
 }
@@ -168,4 +170,30 @@ test('reviewed merges attribute worker, user and mixed provenance without relabe
   const replay = await call();
   assert.deepEqual(replay.files.map(file => file.status), ['duplicate', 'duplicate', 'duplicate']);
   assert.equal((await store.read('edit.md')).events.length, 2);
+});
+for(const kind of ['untracked','modified'])test('reviewed '+kind+' input completes real adoption provenance against its frozen baseline',async t=>{
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-adoption-input-')),root=path.join(dir,'project');await fs.mkdir(root);
+ const git=args=>runGit(root,['-c','user.name=Adoption Fixture','-c','user.email=fixture@example.invalid',...args]);
+ await fs.writeFile(path.join(root,'untouched.txt'),'retain user material\n');
+ await git(['init','--initial-branch=main']);await git(['add','untouched.txt']);
+ if(kind==='modified'){await fs.writeFile(path.join(root,'result.md'),'older committed text\n');await git(['add','result.md']);}
+ await git(['commit','-m','older Git base']);
+ const input='uncommitted user input\n',candidate='worker candidate\n',human='worker candidate\nhuman polish\n';
+ await fs.writeFile(path.join(root,'result.md'),input);
+ const host=new DesktopHost(path.join(dir,'profile')),projectId=(await host.pick(root)).project.id;
+ const c=await Controller.open({storage:host.storage,projectId,runtimeRoot:path.join(dir,'runtime'),contentRoot:root,afterAdoption:(work,receipt)=>recordAdoption({host,projectId,work,receipt}),sessionFactory:()=>{throw Error('No model may run');}});
+ t.after(async()=>{await c.stop();await host.storage.db.close();await fs.rm(dir,{recursive:true,force:true});});
+ const submission=await c.store.submit('Review frozen input','real Git fixture');await c.store.activate(submission.id);const work=c.store.find(submission.id),jobId='adoption-input-job';
+ await c.execution.prepare(work.id);await fs.writeFile(path.join(c.execution.directory(work.id),'result.md'),candidate);
+ await c.execution.publish(work,{id:jobId},()=>true);
+ const receipt=await c.store.publish(work.id,work.revision,'result',staticReport('Input adoption provenance'),'input-adoption-result',{jobId,files:[{relPath:'result.md'}]});
+ await c.store.settle(work.id);await c.store.mutate(()=>c.store.state.jobs.push({id:jobId,target:work.id,revision:work.revision,type:'initial',status:'completed'}));
+ await c.reviewSave({objectId:receipt.objectId,relPath:'result.md',text:human,expectedDraftRevision:0});
+ const review=await c.reviewRead({objectId:receipt.objectId});await c.reviewAccept({objectId:receipt.objectId,reviewVersion:review.reviewVersion,requestKey:'accept-frozen-input-'+kind});
+ assert.equal(work.status,'ended',JSON.stringify(work.closure));assert.equal(work.closure.phase,'complete');assert.equal(work.closure.provenance.complete,true);
+ assert.equal(await fs.readFile(path.join(root,'result.md'),'utf8'),human);assert.equal(await fs.readFile(path.join(root,'untouched.txt'),'utf8'),'retain user material\n');
+ const store=new FileChanges({root,storage:host.storage,projectId}),ledger=await store.read('result.md');
+ assert.equal(ledger.events[0].beforeDigest,hash(Buffer.from(input)));assert.equal(ledger.events[0].afterDigest,hash(Buffer.from(candidate)));assert.equal(ledger.events[0].actor.kind,'agent2');
+ assert.equal(ledger.events[1].beforeDigest,hash(Buffer.from(candidate)));assert.equal(ledger.events[1].afterDigest,hash(Buffer.from(human)));assert.equal(ledger.events[1].actor.kind,'user');
+ const head=(await git(['rev-parse','HEAD'])).toString();await c.retryClosure(work.id,{binding:work.closure.binding,requestKey:'duplicate-completed-input-'+kind});assert.equal((await git(['rev-parse','HEAD'])).toString(),head);assert.equal(c.store.state.jobs.length,1);assert.equal(c.sessions.size,0);
 });

@@ -212,7 +212,7 @@ try {
   };
   const openTodo = async todoId => {
     await sidebar();
-    await page.click(`#inbox-reports [data-managed-todo="${todoId}"]`);
+    await page.click(`[data-managed-todo="${todoId}"]`);
     reportView = await scoped(s => s.role === 'surface' && s.kind === 'report' && s.viewState?.report?.todoId === todoId);
     await reportView.waitForFunction(() => innerWidth > 0 && innerHeight > 0);
     await seedView(reportView);
@@ -220,7 +220,7 @@ try {
     const text = state.receipts.find(r => r.objectId && r.objectId === todo.objectId)?.body || todo.text;
     const needle = text.split('\n')[0].replace(/^#+\s*/, '');
     await reportView.waitForFunction(needle => !document.querySelector('#managed-doc').hidden &&
-      document.querySelector('#managed-doc').textContent.includes(needle) && document.querySelector('#managed-result-actions'), {}, needle);
+      document.querySelector('#managed-doc').textContent.includes(needle) && (document.querySelector('#managed-result-actions')||document.querySelector('#managed-doc [data-managed-review]')), {}, needle);
     return reportView;
   };
   let conversationPage=page;
@@ -279,20 +279,27 @@ try {
     assert.equal(await page.$eval(selector+' .managed-work-open',node=>node.disabled),false);
     assert.match(await page.$eval(selector,n=>n.textContent),new RegExp(state.works.find(w=>w.id===workId).name));
   }
-  assert.equal(await page.$$eval('#work-items [data-managed-work="closure-c"]', nodes=>nodes.length),0);
-  assert.match(await page.$eval('#managed-closure-progress',node=>node.textContent),/技术收尾/);
+  assert.equal(await page.$$eval('#work-items [data-managed-work="closure-c"]', nodes=>nodes.length),1,'legacy ended+blocked work retains its unfinished closure entry');
+  assert.equal(await page.$$eval('#managed-closure-progress [data-managed-closure-progress-retry]',nodes=>nodes.length),0);
   assert.deepEqual({ file: await readFileCaption(),
       target: await page.$eval('#conversation-panel', n => n.dataset.managedConversation), draft: await page.$eval('#composer', n => n.value) }, before);
   check('compact multiwork listing preserves open file, conversation target and unsent draft');
-  assert.equal(await page.$eval('#work-count', n => Number(n.textContent)), 3);
-  assert.equal(await page.$$eval('#work-items [data-managed-work="ended-d"]', ns => ns.length), 0);
+  assert.deepEqual(await page.$$eval('#work-items [data-managed-work]',nodes=>nodes.map(node=>node.dataset.managedWork).filter(id=>['review-a','problem-b','closure-c'].includes(id)).sort()),['closure-c','problem-b','review-a']);
+  assert.equal(await page.$eval('#work-items [data-managed-work="ended-d"] .managed-work-open',node=>node.disabled),false);
   assert.equal(await page.$$eval('#inbox-reports [data-managed-todo="report-a-v1"]', ns => ns.length), 0);
   assert.equal(await page.$$eval('#inbox-reports [data-managed-todo="report-a-v2"]', ns => ns.length), 1);
-  check('active works exclude ended work and current report collapses old open result');
+  check('unfinished closure and retained history stay inspectable while current report collapses old open result');
+  await page.evaluate(()=>window.__workspaceOpenTodo('report-a-v1'));
+  const oldReportView=await scoped(s=>s.role==='surface'&&s.kind==='report'&&s.viewState?.report?.todoId==='report-a-v1');await seedView(oldReportView);
+  await oldReportView.waitForSelector('[data-latest-review="report-a-v2"]',{visible:true});assert.match(await oldReportView.$eval('#managed-doc>.managed-report-state',n=>n.textContent),/第 1 版.*历史报告只读/);
+  assert.equal(await oldReportView.$$eval('[data-review-action="accept"]:not(:disabled),[data-review-action="continue"]:not(:disabled)',nodes=>nodes.length),0);assert.equal(await oldReportView.$eval('[data-latest-review]',n=>n.dataset.latestReviewObject),'00000000-0000-4000-8000-000000000002');
+  await oldReportView.click('[data-latest-review="report-a-v2"]');const latestReportView=await scoped(s=>s.role==='surface'&&s.kind==='report'&&s.viewState?.report?.todoId==='report-a-v2');await seedView(latestReportView);await latestReportView.waitForSelector('[data-managed-review="00000000-0000-4000-8000-000000000002"]');
+  assert.equal(await latestReportView.evaluate(()=>window.__workspaceScope.resourceId),'report-a-v2');assert.equal(await oldReportView.evaluate(()=>window.__workspaceScope.resourceId),'report-a-v1');
+  check('Superseded result has a conspicuous read-only version notice and an exact-object link to current review without enabling old decisions');
   await openTodo('report-a-v2');
   await reportView.waitForFunction(() => document.querySelector('#managed-doc').textContent.includes('当前正式报告 v2'));
   assert.match(await reportView.$eval('#managed-todo-context', n => n.textContent), /多工作长标题：核对当前成果与第二轮报告/);
-  assert.equal(await reportView.$$eval('#managed-result-actions button', ns => ns.some(n=>n.textContent.includes('继续讨论'))),true);
+  assert.equal(await reportView.$$eval('#managed-doc [data-review-action="accept"]:not(:disabled)',nodes=>nodes.length),1);
   assert.equal(await reportView.evaluate(() => window.__reviewState.todos.find(t => t.id === 'report-a-v2').status), 'open');
   assert.equal(await reportView.evaluate(() => window.__reviewCalls.filter(c => /resolve|artifact\.read|(^|\.)end/.test(c.op)).length), 0);
   check('reading current report binds original worker and does not approve or resolve it');
@@ -305,9 +312,6 @@ try {
   check('report candidate entry opens the unified review document tab with frozen bytes; the same-path project file is never touched');
   await reportView.waitForSelector('#managed-doc [data-review-action="accept"]');
  await reportView.waitForSelector('#managed-doc [data-review-file-heading]');
- const reviewControls=await reportView.evaluate(()=>{const section=document.querySelector('#managed-doc [data-review-file-heading]')?.parentElement,review=document.querySelector('#managed-doc [data-managed-review]');return {filesVisible:Boolean(section&&!section.hidden),reviewPresent:Boolean(review),nestedFileDisclosure:document.querySelectorAll('#managed-doc .managed-review-file-disclosure').length,actions:[...document.querySelectorAll('#managed-doc [data-review-action]')].map(button=>button.dataset.reviewAction).filter(action=>['continue','accept'].includes(action)),manualUtilities:['save','refresh','recover-instruction'].filter(action=>document.querySelector('#managed-doc [data-review-action="'+action+'"]')),frozenArtifactDuplicates:document.querySelectorAll('#managed-doc [data-frozen-artifacts]').length};});
- assert.equal(reviewControls.filesVisible,true);assert.equal(reviewControls.reviewPresent,true);assert.equal(reviewControls.nestedFileDisclosure,0);assert.deepEqual(reviewControls.actions,['continue','accept']);assert.deepEqual(reviewControls.manualUtilities,[]);assert.equal(reviewControls.frozenArtifactDuplicates,0);
- check('report shows candidate files inline with only version-bound continue and accept actions');
   for (const width of [800, 390]) {
     await page.evaluate(width => nozeli.invoke('session.resize', { width, height: 800 }), width);
     await page.waitForFunction(width => innerWidth === width, {}, width);
@@ -322,7 +326,7 @@ try {
     assert(bounds.scrollWidth <= bounds.clientWidth + 1, JSON.stringify(bounds));
     assert.match(await reportView.$eval('#managed-doc', n => n.textContent), /依据 70/);
     assert.equal(await reportView.$eval('#managed-doc [data-review-action="accept"]',node=>!node.disabled&&node.getClientRects().length>0),true);
-    assert.equal(await reportView.$eval('#managed-result-actions [data-report-discuss]',node=>!node.disabled&&node.getClientRects().length>0),true);
+    assert.equal(await reportView.$$eval('[data-managed-closure-retry], [data-managed-git-locks]',nodes=>nodes.length),0);
     check(`${width}px long report fits reader and retains full body`);
   }
   await page.evaluate(() => nozeli.invoke('session.resize', { width: 1440, height: 900 }));
@@ -330,18 +334,14 @@ try {
   await page.waitForFunction(() => !document.querySelector('#app').classList.contains('narrow-layout'));
   const bumpRevision=revision=>page.evaluate(({id,revision})=>{const state=window.__reviewState;state.works.find(work=>work.id==='review-a').revision=revision;window.__reviewSnapshot(state,id);return {state,id};},{id,revision});
   await reportView.evaluate(({state,id})=>{window.__reviewStaleReview=true;window.__reviewSnapshot(state,id);},await bumpRevision(3));
-  await reportView.waitForFunction(()=>document.querySelector('#managed-doc [data-review-action="accept"]')?.disabled===true&&document.querySelector('[data-managed-end-result]')?.hidden===true);
+  await reportView.waitForFunction(()=>document.querySelector('#managed-doc [data-review-action="accept"]')?.disabled===true&&!document.querySelector('[data-managed-end-result]:not([hidden])'));
   assert.equal(await reportView.evaluate(()=>window.__reviewCalls.filter(call=>call.op==='end').length),0);
   await reportView.evaluate(({state,id})=>{window.__reviewStaleReview=false;window.__reviewSnapshot(state,id);},await bumpRevision(2));
   await reportView.waitForFunction(()=>document.querySelector('#managed-doc [data-review-action="accept"]')?.disabled!==true);
   check('stale publication cannot accept or discard; the current publication regains review actions');
-  // Synthetic UI fixture admission; no provider/model is created.
-  await reportView.$$eval('#managed-result-actions button', ns => ns.find(n => n.textContent.includes('继续讨论')).click());
-  conversationPage=await scoped(s=>s.role==='surface'&&s.kind==='conversation');
-  await conversationPage.waitForFunction(()=>document.querySelector('#conversation-panel').dataset.managedConversation==='review-a');
-  await setDraft('拒绝结束后必须保留的修改草稿');
-  await conversationPage.waitForFunction(()=>window.__reviewState.drafts['review-a']==='拒绝结束后必须保留的修改草稿');
-  await page.evaluate(async state=>window.__reviewSnapshot(state,(await nozeli.invoke('workspace.bootstrap')).value.projectId),await conversationPage.evaluate(()=>window.__reviewState));
+  // A retained Worker draft is synthetic host state; the user composer stays
+  // on the frontdesk rather than opening a forbidden Worker conversation.
+  await page.evaluate(id=>{window.__reviewState.drafts['review-a']='拒绝结束后必须保留的修改草稿';window.__reviewSnapshot(window.__reviewState,id);},id);
   await openTodo('report-a-v2');
   await reportView.waitForSelector('#managed-doc [data-review-action="accept"]:not(:disabled)');
   await reportView.click('#managed-doc [data-review-action="accept"]');
@@ -353,12 +353,7 @@ try {
   assert.equal(await reportView.evaluate(() => window.__reviewCalls.some(c => c.op === 'send' || c.op === 'end')), false);
   assert.equal(await reportView.evaluate(() => window.__reviewState.works.find(w => w.id === 'review-a').status), 'review');
   check('decision draft-guard rejection preserves the unsent Worker draft and the report');
-  await reportView.$$eval('#managed-result-actions button',ns=>ns.find(n=>n.textContent.includes('继续讨论')).click());
-  conversationPage=await scoped(s=>s.role==='surface'&&s.kind==='conversation');
-  await conversationPage.waitForFunction(()=>document.querySelector('#conversation-panel').dataset.managedConversation==='review-a');
-  await setDraft('');
-  await conversationPage.waitForFunction(() => window.__reviewState.drafts['review-a'] === '');
-  await page.evaluate(async state=>window.__reviewSnapshot(state,(await nozeli.invoke('workspace.bootstrap')).value.projectId),await conversationPage.evaluate(()=>window.__reviewState));
+  await page.evaluate(id=>{window.__reviewState.drafts['review-a']='';window.__reviewSnapshot(window.__reviewState,id);},id);
   await openTodo('report-a-v2');
   await reportView.evaluate(()=>{window.__reviewEndError='成果版本已变化，请重新核对后再确认';});
   await reportView.waitForSelector('#managed-doc [data-review-action="accept"]:not(:disabled)');
@@ -369,40 +364,15 @@ try {
   const decision = await reportView.evaluate(() => window.__reviewDecideCalls.at(-1));
   assert.equal(decision.workId,'review-a');assert.equal(decision.objectId,'00000000-0000-4000-8000-000000000002');assert.equal(decision.action,'accept');assert.equal(decision.reviewVersion,'f'.repeat(64));
   check('token-changed decision rejection retains the report without claiming ended');
-  await openTodo('question-b');
-  assert.match(await reportView.$eval('#managed-doc', n => n.textContent), /请选择业务方案甲或乙/);
-  assert.match(await reportView.$eval('#managed-todo-context', n => n.textContent), /等待原 Worker 回答的工作/);
-  assert.equal(await reportView.evaluate(() => window.__reviewState.todos.find(t => t.id === 'question-b').status), 'open');
-  assert.equal(await reportView.$eval('#managed-result-actions [data-managed-end-result]',node=>node.hidden),true);
-  check('business question body remains readable and bound to original worker');
-  await openTodo('routing-question');
-  assert.match(await reportView.$eval('#managed-doc', n => n.textContent), /这项请求应交给哪个工作/);
-  assert.equal(await reportView.$eval('#conversation-panel', n => n.dataset.managedConversation), 'frontdesk');
-  assert.equal(await reportView.evaluate(() => window.__reviewState.todos.find(t => t.id === 'routing-question').status), 'open');
-  assert.equal(await reportView.$$eval('#managed-result-actions [data-managed-end-result]',nodes=>nodes.length),0);
-  check('routing clarification opens persistent body and binds frontdesk');
-  await openTodo('closure-fault');
-  assert.match(await reportView.$eval('#managed-doc', n => n.textContent), /Git hook 拒绝提交/);
-  const faultBinding = await reportView.evaluate(() => ({ target: document.querySelector('#conversation-panel').dataset.managedConversation,
-    disabled: document.querySelector('#composer').disabled || document.querySelector('#send-message').disabled }));
-  assert(faultBinding.target !== 'closure-c' || faultBinding.disabled, 'closure fault must not offer worker business discussion');
-  // Without a host-verified disposition the technical-closure retry must stay
-  // disabled: action authority comes from the host disposition, not the button.
-  assert.equal(await reportView.$eval('[data-managed-closure-retry]',node=>node.hidden===false&&node.disabled===true),true);
-  await reportView.$eval('[data-managed-closure-retry]',node=>node.click());
-  assert.equal(await reportView.evaluate(()=>window.__reviewCalls.some(c=>c.op==='retry'||c.op==='send')),false);
+  for(const todoId of ['question-b','routing-question','closure-fault','recovery-fault','git-fault']){
+    assert.equal(await page.$$eval(`[data-managed-todo="${todoId}"]`,nodes=>nodes.length),0,'backstage records must not become user decisions');
+    await page.evaluate(todoId=>window.__workspaceOpenTodo(todoId),todoId);
+    assert.equal(await page.evaluate(todoId=>window.__reviewState.todos.find(todo=>todo.id===todoId).status,todoId),'open','diagnostic facts remain durable');
+  }
+  assert.equal(await reportView.$$eval('[data-managed-closure-retry], [data-managed-git-locks]',nodes=>nodes.length),0,'technical recovery entrypoints are absent, not hidden or disabled');
+  assert.equal(await reportView.evaluate(()=>window.__reviewCalls.some(c=>['retry','git.locks.inspect','git.locks.quarantine','send'].includes(c.op))),false);
   assert.equal(await reportView.evaluate(()=>window.__reviewState.works.find(w=>w.id==='closure-c').status),'ended');
-  check('technical closure retry requires host disposition authority and never dispatches Worker');
-  await openTodo('recovery-fault');
-  await reportView.waitForFunction(() => document.querySelector('#managed-doc').textContent.includes('执行上下文恢复失败'));
-  assert.equal(await reportView.$eval('#conversation-panel', n => n.dataset.managedConversation), 'frontdesk');
-  assert.equal(await reportView.$eval('#composer', n => n.disabled), true);
-  check('historical recovery fault remains readable and read-only without automatic replay');
-  await openTodo('git-fault');
-  assert.match(await reportView.$eval('#managed-doc', n => n.textContent), /Git 检查点未完成/);
-  assert.equal(await reportView.$eval('#composer', n => n.disabled), true);
-  assert.equal(await reportView.evaluate(() => window.__reviewState.todos.find(t => t.id === 'git-fault').status), 'open');
-  check('historical Git fault remains open and read-only without automatic submission');
+  check('backstage questions and technical faults stay durable without user recovery entrypoints or Worker dispatch');
   await sidebar();
   await page.evaluate(() => window.dispatchEvent(new Event('nozeli-agent-details')));
   await page.waitForSelector('#managed-agent-details[open]');

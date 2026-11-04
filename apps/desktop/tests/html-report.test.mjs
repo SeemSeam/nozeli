@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { prepareHtmlReport, readHtmlReportText, HTML_REPORT_LIMITS, HTML_REPORT_OBJECT_MAX_BYTES } from '../src/agents/managed/html-report.mjs';
+import { REPORT_VIEWPORT_META, reportReaderStyleTag, withReportReaderStyle, upgradeReportReaderStyle } from '../src/agents/managed/report-reader-style.mjs';
 
 const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="80" viewBox="0 0 120 80" role="img" lang="en"><title>Architecture</title><desc>Reader connects to host</desc><defs><marker id="arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 Z" fill="currentColor"/></marker></defs><style>:root{--ink:#234;color:var(--ink)}@media(prefers-color-scheme:dark){text{fill:#eee}}</style><rect x="1" y="1" width="118" height="78" rx="4" fill="none" stroke="currentColor"/><path d="M10 40 L100 40" marker-end="url(#arrow)" stroke="currentColor"/><text x="10" y="20" font-family="sans-serif">Reader → host</text></svg>';
 const bytes = Buffer.from(svg);
@@ -135,4 +136,28 @@ test('inline SVG identities obey document-global namespace including HTML nodes'
 test('CSS URL casing cannot escape the validated SVG-local fragment scope', async () => {
   const first = '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><defs><linearGradient id="paint"><stop offset="0" stop-color="red"/></linearGradient></defs><rect width="100" height="100" fill="url(#paint)"/></svg>';
   for (const source of ['<rect width="100" height="100" style="fill:URL(#paint)"/>', '<style>rect{fill:URL(#paint)}</style><rect width="100" height="100"/>', '<rect width="100" height="100" fill="UrL(#paint)"/>']) await assert.rejects(prepareHtmlReport(`<p>Independent diagrams</p>${first}<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">${source}</svg>`), /missing SVG fragment reference/);
+});
+
+test('served legacy baselines preserve content, author styles and SVG across repeated display upgrades', () => {
+  const author = '<style>body{max-width:80ch}h2{color:purple}</style>';
+  const content = `<main><h1>Frozen conclusion</h1><p>No invented evidence.</p><figure>${svg}<figcaption>Original diagram</figcaption></figure></main>`;
+  for (const baseline of ['', '<style id="nozeli-reader-style">body{line-height:1.5}</style>', '<style id="nozeli-reader-style">/* nozeli-reader-baseline v2 */body{line-height:1.6}</style>', '<style id="nozeli-reader-style">/* nozeli-reader-baseline v3 */body{max-width:74ch}</style>', reportReaderStyleTag()]) {
+    const frozen = `<!doctype html><html><head>${REPORT_VIEWPORT_META}${baseline}${author}</head><body>${content}</body></html>`;
+    const served = upgradeReportReaderStyle(withReportReaderStyle(frozen));
+    assert.ok(served.includes(content), 'semantic content and author SVG remain byte-for-byte intact');
+    assert.ok(served.includes(author));
+    assert.ok(served.indexOf(reportReaderStyleTag()) < served.indexOf(author));
+    assert.equal(served.split('id="nozeli-reader-style"').length - 1, 1);
+    assert.equal(served.split(REPORT_VIEWPORT_META).length - 1, 1);
+    assert.equal(upgradeReportReaderStyle(withReportReaderStyle(served)), served, 'current baseline is idempotent');
+  }
+});
+
+test('semantic reading hooks publish under the unchanged static report policy', async () => {
+  const result = await prepareHtmlReport('<!doctype html><html lang="en"><head><title>Evidence fixture</title></head><body><main><h1>Candidate ready</h1><section class="report-conclusion"><h2>Conclusion</h2><p class="report-lead">Candidate only; not adopted.</p></section><h2>Verified comparison</h2><table tabindex="0" aria-label="Synthetic comparison"><caption>Synthetic fixture values, not product measurements</caption><thead><tr><th scope="col">Sample</th><th scope="col" class="report-number">Count</th></tr></thead><tbody><tr><th scope="row">Fixture</th><td class="report-number">12</td></tr></tbody></table><p>Visual inspection was not performed.</p><details><summary>Method and supplementary log</summary><pre tabindex="0" aria-label="Fixture log">Synthetic log only</pre></details></main></body></html>');
+  for (const hook of ['report-conclusion', 'report-lead', 'report-number']) assert.ok(result.html.includes(`class="${hook}"`));
+  assert.match(result.html, /tabindex="0"/);
+  assert.match(result.html, /scope="row"/);
+  assert.match(result.manifest.semanticText, /Candidate only; not adopted/);
+  assert.match(result.manifest.semanticText, /Visual inspection was not performed/);
 });

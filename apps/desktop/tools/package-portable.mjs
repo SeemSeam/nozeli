@@ -42,7 +42,7 @@ try {
 
 需要 Linux x86_64/glibc 桌面、Wayland 或 X11，以及 Electron 所需的系统图形/音频/NSS 等动态库。仅本机 Linux/Wayland 验证，非所有发行版/Windows/macOS支持声明。普通用户运行，不要以root运行或用 --no-sandbox 绕过安全限制；若系统禁止无特权用户命名空间，由管理员按发行版策略配置 Chromium sandbox，本包不自动提权。
 
-首次可“稍后设置，继续阅读”。AI使用随包私有OMP，但需自行配置服务/模型/账号；不附带开发者密钥、OAuth或个人数据。Linux受管Agent默认以当前用户运行；当前普通执行不自动启用bubblewrap隔离，也不声明沙箱保护。仅显式启用隔离时需要bubblewrap与可用namespace，隔离失败不冒充隔离成功。单条命令特权执行仅在用户逐项批准后经系统机制（pkexec）完成：每次执行各自经 OS 提权机制启动、由 OS 决定是否提示；本包不安装任何提权组件、不以root运行应用、不提权运行用户可写的运行时文件。
+首次可“稍后设置，继续阅读”。AI使用随包私有 Pi 会话运行时，但需自行配置服务/模型/账号；不附带开发者密钥、OAuth或个人数据，也不依赖系统 OMP/CCB。Linux受管Agent默认以当前用户运行；当前普通执行不自动启用bubblewrap隔离，也不声明沙箱保护。仅显式启用隔离时需要bubblewrap与可用namespace，隔离失败不冒充隔离成功。单条命令特权执行仅在用户逐项批准后经系统机制（pkexec）完成：每次执行各自经 OS 提权机制启动、由 OS 决定是否提示；本包不安装任何提权组件、不以root运行应用、不提权运行用户可写的运行时文件。
 
 可选能力：JS/TS语言服务仍需系统Node（或NOZELI_LSP_NODE指定），没有时普通代码编辑与内置格式化仍可用；TeX编译、TexLab、SyncTeX需外部工具，不随包提供。
 
@@ -56,9 +56,9 @@ Nozeli源码：Nozeli-${manifest.version}-source.tar.gz（仅Git管理源码，�
 
 ## 许可与交付边界
 
-Nozeli自有代码采用AGPL-3.0-only，正文见NOZELI-LICENSE。根LICENSE为Electron许可；第三方组件保留原许可证，声明位于LICENSES.chromium.html、resources/app/SOURCES.md、resources/app/assets/licenses、resources/app/runtime/omp及依赖目录内，PPTist许可单独保留。
+Nozeli自有代码采用AGPL-3.0-only，正文见NOZELI-LICENSE。根LICENSE为Electron许可；第三方组件保留原许可证，声明位于LICENSES.chromium.html、resources/app/SOURCES.md、resources/app/assets/licenses、resources/app/integrations/pi及依赖目录内，PPTist许可单独保留。
 
-这是供本机使用的Alpha构建。向他人拷贝或公开上传均可能触发GPL/AGPL等义务；Git及原生发行的完整对应源码、SuperDoc/PPTist源码提供与传递依赖审计尚待补齐，未完成前不将此包作为对外发行。Nozeli源码归档和上游链接不能代替这些要求，未改变许可证或授予额外权限。
+本包为 Alpha 构建，不是稳定版本或合规认证。向他人拷贝或公开上传均可能触发GPL/AGPL等义务；Git及原生发行的完整对应源码、SuperDoc/PPTist源码提供、Pi闭包和传递依赖审计等义务仍未签收。Nozeli源码归档和上游链接不能代替这些要求。公开预发行须有仓库所有者对该次发行的明确授权，并在发行说明披露未完成义务；一般发布门仍保持阻塞，授权不改变许可证、不代表审计通过。
 `;
   await fs.writeFile(path.join(release, '使用说明.md'), instructions);
   await fs.writeFile(path.join(output, '使用说明.md'), instructions);
