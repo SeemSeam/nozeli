@@ -344,3 +344,6 @@ postinstall 用 `electron-rebuild` 针对 Electron 重建 `node-pty`。该依赖
 - 版本元数据统一为0.1.0-alpha.5；Pi/PPTist/renderer构建通过。首轮完整unit632项通过；随后将遗漏的collaboration-timing与managed-work-directory行为回归登记默认unit，最终数量以本轮完整结果为准，不相加旧专项计数。
 - 完整smoke初次在renderer-projection-coalescing的旧“主输入切换orchestrator”断言失败，和当前前台唯一主对话契约冲突。删除已废弃目标切换断言及内部paint次数接线断言，保留实际导航并发／过时响应不污染当前文件的行为检查；该真实Electron消费者单独通过。没有为测试恢复任意Agent主输入能力。
 - 候选检查workflow改用现有build:pi和Node22.22.2，保留公开审计失败门；便携包说明改为真实Pi会话运行时和当前Alpha授权／未签收义务，不再将本版描述为运行依赖系统OMP。审核内原Worker只读连续问答仍仅为设计，未加入本次实现声明。
+
+- 最终登记后的unit **643/643**、smoke **5/5脚本**通过。完整integration早期与远端合并重叠的运行含临时冲突标记，不计通过；干净合并后的1705项中9项失败均保留。修正旧恢复夹具：never-admitted排队恢复恰一次、admitted-unknown保留原生续作、缺原执行证据保持needs-reconciliation；未将旧“全部interrupted”契约恢复到产品。补齐直接构造Controller读工具测试的真实jobs账本，资源摘要明确验证unknown工作pendingVerification；相关聚焦30、10、21、7、10、1项分别通过，集合有重叠不累计。
+- opt-in原生资格库初跑暴露两处过时UI路径，不计整体通过：discard完的Work已离开进行中列表，测试改走真实“历史”分类再打开原概览；紧凑栏维修入口已在“…”模态窗口内，测试改为实际点击该入口后展开。两脚本修后各一次通过：`nozeli-agent-control-ui-a7XLXW/report.json`（真实Pi/文件副作用、9个检查、7次回环请求、exit0）与`/tmp/nozeli-pi-maintenance-ui-gJOB3l/report.json`（真实Git锁、同Work维修及4个检查、exit0），未改产品行为、删除用例或使用真实模型账号。最终完整integration与精确提交CI及便携包验证结果以GitHub该版本发布记录为准，不预先宣称成功。

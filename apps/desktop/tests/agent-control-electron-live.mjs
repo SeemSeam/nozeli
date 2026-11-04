@@ -147,8 +147,9 @@ try{
   assert.match(await shell.$eval('[data-confirmation-dialog]',node=>node.textContent),/Work UI-LONG/);
   await shell.click('[data-confirmation-confirm]');
   await until(async()=>(await state()).works.find(work=>work.id===longWork.id)?.closure?.phase==='complete','task menu discard persists the exact decision and completes cleanup');
-  const ended=(await state()).works.find(work=>work.id===longWork.id);
+  const afterDiscard=await state(),ended=afterDiscard.works.find(work=>work.id===longWork.id);
   assert.equal(ended.outcome,'discard');
+  assert.equal(afterDiscard.quotaUsed,0,'complete discard cleanup releases the occupied quota before the Work becomes history');
   assert.equal(uiSteps.get('ui-long'),1,'ending a stopped task never replays its tool-running input');
   checks.push('task menu forwards the explicit discard decision, confirms it and releases quota only after complete cleanup');
   const workFilters=await shell.$$eval('.managed-work-categories>button',nodes=>nodes.filter(node=>node.checkVisibility()).map(node=>node.getBoundingClientRect().top));
@@ -164,6 +165,12 @@ try{
   await shell.keyboard.press('Escape');
 
   const callsBeforeOverview=provider.requests.length;
+  // The discarded Work is history: the active list correctly drops it, so the
+  // real user path to its read-only overview is the shipped 历史 category.
+  await until(async()=>!(await shell.$('[data-managed-work="'+longWork.id+'"]')),'ended work leaves the active work list');
+  result.stage='open ended work overview';
+  await shell.click('[data-managed-category="ended"]');
+  await shell.waitForSelector('[data-managed-work="'+longWork.id+'"] .managed-work-open',{visible:true});
   await shell.click('[data-managed-work="'+longWork.id+'"] .managed-work-open');
   await shell.waitForSelector('#managed-agent-details[data-mode="work"][open] .managed-work-overview',{visible:true});
   assert.equal(await shell.$eval('.managed-work-overview-title',node=>node.textContent),longWork.name);
