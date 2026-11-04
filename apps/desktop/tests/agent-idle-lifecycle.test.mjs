@@ -105,7 +105,7 @@ test('automatic expiry retains active Controller and busy peer; accepted queue w
  assert.equal(opens.length,1,'idle expiry and wake retain the original project service');
 });
 
-test('cold input is not replayed when new explicit demand resumes a reopened Controller',async t=>{
+test('never-admitted cold input resumes exactly once when explicit demand reopens a Controller',async t=>{
  const {manager:m,clock,project,prompts}=await realFixture(t),id=project.id,c=m.controllers.get(id);
  await clock.advance(100,m.idleLifecycle);assert.equal(c.sessions.size,0);
  while(c.kicking||c.running.size)await new Promise(resolve=>setImmediate(resolve));
@@ -114,8 +114,8 @@ test('cold input is not replayed when new explicit demand resumes a reopened Con
  assert.equal(c.store.state.jobs.find(j=>j.id===accepted.jobId)?.status,'queued');
  await m.stopProject(id);await m.connect(id,{enable:true});
  const reopened=m.controllers.get(id);assert.notEqual(reopened,c);
- const fresh=await reopened.send('frontdesk','new explicit input after cold reopen',{requestKey:'fresh-idle-2'});while(reopened.kicking||reopened.running.size)await new Promise(resolve=>setImmediate(resolve));assert.equal(reopened.store.state.jobs.find(j=>j.id===fresh.jobId)?.status,'completed');assert.equal(prompts.filter(p=>p.text==='new explicit input after cold reopen').length,1);
- assert.equal(prompts.filter(p=>p.text==='cold input must not replay').length,0);
+ const fresh=await reopened.send('frontdesk','new explicit input after cold reopen',{requestKey:'fresh-idle-2'});while(reopened.kicking||reopened.running.size)await new Promise(resolve=>setImmediate(resolve));assert.equal(reopened.store.state.jobs.find(j=>j.id===fresh.jobId)?.status,'completed');assert.equal(reopened.store.state.jobs.find(j=>j.id===accepted.jobId)?.status,'completed');assert.equal(prompts.filter(p=>p.text==='new explicit input after cold reopen').length,1);
+ assert.equal(prompts.filter(p=>p.text==='cold input must not replay').length,1);
 });
 
 test('automatic stop failure preserves the original owner and budget without retry spam',async t=>{

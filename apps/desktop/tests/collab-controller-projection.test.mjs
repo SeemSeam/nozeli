@@ -33,7 +33,7 @@ test('unknown delivery preserves its admission facts and forbids a new request I
  await c.stop();
  const recovered=await openTestController(options);controllers.push(recovered);
  const job=recovered.store.state.jobs.find(j=>j.id==='accepted-job');
- assert.equal(job.status,'interrupted');assert.equal(job.collabAttempts[0].status,'unknown');assert.equal(job.collabAttempts[0].everAdmitted,true);
+assert.equal(job.restartRecovery?.kind,'native-continuation');assert.equal(job.collabAttempts[0].status,'unknown');assert.equal(job.collabAttempts[0].everAdmitted,true);
  await assert.rejects(recovered.recordTransport('frontdesk',transport('prepared',{requestId:'second-request-02',attempt:2})),/cannot be dispatched again/);
  assert.equal(job.collabAttempts.length,1);
 });

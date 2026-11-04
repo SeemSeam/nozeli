@@ -72,7 +72,11 @@ test('resource summaries count online records/offline row-value cache without ma
   const works=[{id:'a',status:'running',revision:1},{id:'b',status:'queued',revision:1},{id:'c',status:'ended',revision:2},{id:'d',status:'unknown',revision:3},{id:'e',status:'running',revision:0}];
   put(f.db,'limit',4,'managed_settings');for(const work of works)put(f.db,work.id,work,'managed_works');
   put(f.db,'managed:cache:settings',{limit:4},'ui');put(f.db,'managed:cache:works',works.map(value=>({id:value.id,value})),'ui');
-  assert.deepEqual(managedResourceSummary(f.db),{limit:4,used:2});assert.deepEqual(managedResourceSummary(f.db,{offline:true}),{limit:4,used:2});
+  for(const options of [{},{offline:true}]){
+   const summary=managedResourceSummary(f.db,options);
+   assert.equal(summary.limit,4);assert.equal(summary.used,2);
+   assert.equal(summary.pendingVerification,1,'unknown Work remains protected instead of being presented as free capacity');
+  }
  }finally{f.close();}
 });
 
