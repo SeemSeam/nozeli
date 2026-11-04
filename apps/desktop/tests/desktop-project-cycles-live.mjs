@@ -27,7 +27,7 @@ const server=http.createServer((req,res)=>{let body='';req.on('data',b=>body+=b)
   let delta,finish='tool_calls';
   if(controller){if(ordinal===1)delta=tool('nozeli_dispatch',{name:round.nonce,brief:'Create '+round.filename+' with exact content '+round.nonce+' and publish the verified file.'},round.nonce+'-dispatch');else{delta={role:'assistant',content:'Dispatched '+round.nonce};finish='stop';}}
   else if(ordinal===1)delta=tool('bash',{command:'printf '+round.nonce+' > '+round.filename+(round.interrupt?' ; sleep 30':' ; cat '+round.filename)},round.nonce+'-write');
-  else if(ordinal===2)delta=tool('nozeli_publish',{kind:'result',html:'<!doctype html><html><head><meta charset="utf-8"><title>Verified result</title></head><body><h1>'+round.nonce+'</h1><p>Real native tool created the candidate.</p></body></html>',files:[round.filename]},round.nonce+'-publish');
+  else if(ordinal===2)delta=tool('nozeli_publish',{kind:'result',content:'<!doctype html><html><head><meta charset="utf-8"><title>Verified result</title></head><body><h1>'+round.nonce+'</h1><p>Real native tool created the candidate.</p></body></html>',files:[round.filename]},round.nonce+'-publish');
   else{delta={role:'assistant',content:'Verified '+round.nonce};finish='stop';}
   report.modelRequests.push({nonce:round.nonce,role:controller?'orchestrator':'worker',ordinal,tool:delta.tool_calls?.[0].function.name??null});
   res.writeHead(200,{'content-type':'text/event-stream'});

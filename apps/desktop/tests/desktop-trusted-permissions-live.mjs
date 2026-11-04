@@ -48,7 +48,7 @@ const server=realModel?null:http.createServer((req,res)=>{
           if(workerStep++===0)delta=tool('bash',{command:nativeCommand('worker-ordinary.txt')},'worker-native');
           else delta=tool('nozeli_privileged_execute',effect('worker-approved.txt'),'worker-pending');
         }else if(workerResumeStep++===0)delta=tool('nozeli_privileged_execute',effect('worker-approved.txt'),'worker-approved');
-        else delta=tool('nozeli_publish',{kind:'result',html:staticReport('Verified native ordinary execution and approved sensitive command exactly once. Only synthetic external markers were changed.'),files:[]},'worker-publish');
+        else delta=tool('nozeli_publish',{kind:'result',content:staticReport('Verified native ordinary execution and approved sensitive command exactly once. Only synthetic external markers were changed.'),files:[]},'worker-publish');
       }else if(turn===5&&names.includes('nozeli_dispatch')){
         role='orchestrator';
         if(orchestratorStep++===0)delta=tool('bash',{command:nativeCommand('orchestrator-ordinary.txt')},'orchestrator-native');

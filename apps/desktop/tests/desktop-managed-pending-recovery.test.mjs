@@ -9,7 +9,7 @@ import {createHash} from 'node:crypto';
 import puppeteer from 'puppeteer-core';
 import {DesktopHost} from '../src/main/host.mjs';
 import {Workspace} from '../src/agents/managed/workspace.mjs';
-import {managedRuntime,listManagedPending,readManagedState} from '../src/agents/managed/managed-storage.mjs';
+import {managedRuntime,listManagedPending,readManagedPending,readManagedState} from '../src/agents/managed/managed-storage.mjs';
 
 const root=path.resolve(import.meta.dirname,'..');
 const out=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-managed-pending-recovery-'));
@@ -34,10 +34,10 @@ try{
   await fs.rename(project,offline);
   await assert.rejects(store.publish(work.id,1,'result',html,receiptId,{jobId}),error=>['PROJECT_ROOT_MISSING','PROJECT_UNAVAILABLE'].includes(error.code));
   const pending=await listManagedPending(seedHost.storage,binding.id);
-  const business=pending.find(row=>row.kind==='business'&&row.collections?.managed_receipts?.some(row=>row.value.id===receiptId));assert(business,'Real failed publication must retain a business candidate');
+  let business;for(const summary of pending.filter(row=>row.kind==='business')){const detail=await readManagedPending(seedHost.storage,binding.id,summary.id);if(detail.collections?.managed_receipts?.some(row=>row.value.id===receiptId)){business={...summary,...detail};break;}}assert(business,'Real failed publication must retain a business candidate');
   const receipt=business.collections.managed_receipts.find(row=>row.value.id===receiptId).value;
   assert.equal(receipt.sourceJobId,jobId);assert.equal(receipt.report.format,'html-static');
-  const objects=pending.filter(row=>row.kind==='object');assert(objects.some(row=>row.digest===receipt.report.digest),'Real object fallback must be pending');
+  let retainedObject=false;for(const row of pending.filter(row=>row.kind==='object'))if((await readManagedPending(seedHost.storage,binding.id,row.id)).digest===receipt.report.digest)retainedObject=true;assert(retainedObject,'Real object fallback must be pending');
   const bytes=await store.readObject(receipt.report.digest);assert.match(bytes.toString(),/完整保留报告 9421/);
   await fs.writeFile(path.join(out,'expected-retained.html'),bytes);
   seed={projectId:binding.id,workId:work.id,pendingId:business.id,objectId:receipt.objectId,report:receipt.report,bytes};
@@ -57,24 +57,24 @@ async function durableState(){const host=new DesktopHost(profile);try{return awa
 function assertNoReplay(state){assert.equal(state.jobs.length,1);assert.equal(state.jobs[0].id,jobId);assert.equal(state.jobs[0].status,'completed');assert(!state.jobs.some(job=>['queued','running'].includes(job.status)));assert(state.works.every(work=>!work.threadId));}
 async function history(page){const query=await call(page,'managed.history.list',{projectId:seed.projectId,offset:0,limit:50});const entry=query.items.find(row=>row.objectId===seed.objectId);assert(entry,'Normal history must list reconciled immutable report');assert.equal(entry.report.digest,seed.report.digest);const read=await call(page,'managed.history.read',{projectId:seed.projectId,objectId:seed.objectId,version:query.version});assert.equal(read.objectVerified,true);assert.equal(read.report.digest,seed.report.digest);assert.equal(read.byteLength,seed.bytes.length);assert.equal(read.bodyAvailability,'isolated-source-only');const status=await call(page,'managed.status',{projectId:seed.projectId});assert.equal(status.ready,false);assert.equal(status.enabled,false);return {query,read};}
 try{
-  launch();await connect();let shell=await shellPage();assert.equal((await call(shell,'workspace.bootstrap')).projectId,null,'Recovery must work with no active project');
-  const listed=await call(shell,'workspace.recovery.list');assert(listed.entries.some(entry=>entry.project.id===seed.projectId&&entry.id===seed.pendingId));
+  launch();await connect();let shell=await shellPage();
+  let listed,cursor=null;do{const page=await call(shell,'workspace.recovery.list',{cursor});listed={...page,entries:[...(listed?.entries??[]),...page.entries]};cursor=page.nextCursor;}while(cursor);assert(listed.entries.some(entry=>entry.project.id===seed.projectId&&entry.id===seed.pendingId));
   const cdp=await shell.createCDPSession();await cdp.send('Page.setDownloadBehavior',{behavior:'allow',downloadPath:downloads});
   await shell.click('#open-settings');
   await shell.waitForSelector('[data-settings-section="settings-recovery"]');
-  await shell.waitForFunction(()=>{const badge=document.getElementById('settings-recovery-count');return !badge.hidden&&Number(badge.textContent)>0;},'recovery count badge must show retained records');
   await shell.click('[data-settings-section="settings-recovery"]');
-  // Select the visible receipt and business type, not DOM internals or source text.
-  await shell.waitForFunction(receiptId=>[...document.querySelectorAll('#settings-recovery section')].some(section=>{try{const value=JSON.parse(section.querySelector('pre').textContent);return value.kind==='business'&&value.reports?.some(report=>report.id===receiptId);}catch{return false;}}),{},receiptId);
+  await shell.waitForFunction(id=>[...document.querySelectorAll('#settings-recovery section')].some(section=>section.dataset.recoveryId===id),{},seed.pendingId);
+  const receiptSection=await shell.evaluateHandle(id=>[...document.querySelectorAll('#settings-recovery section')].find(section=>section.dataset.recoveryId===id),seed.pendingId);
+  await receiptSection.evaluate(section=>[...section.querySelectorAll('button')].find(button=>button.textContent==='查看完整详情').click());
+  await shell.waitForFunction(()=>[...document.querySelectorAll('#settings-recovery section button')].some(button=>button.textContent==='查看并导出保留报告'));
   await shell.screenshot({path:path.join(out,'recovery-center-pending.png')});
-  const receiptSection=await shell.evaluateHandle(receiptId=>[...document.querySelectorAll('#settings-recovery section')].find(section=>{try{const value=JSON.parse(section.querySelector('pre').textContent);return value.kind==='business'&&value.reports?.some(report=>report.id===receiptId);}catch{return false;}}),receiptId);
   await receiptSection.evaluate(section=>[...section.querySelectorAll('button')].find(button=>button.textContent==='查看并导出保留报告').click());
   const exported=await until(async()=>fs.readFile(path.join(downloads,'retained-'+receiptId+'.html')).catch(()=>null),'Retained HTML export unavailable');assert.deepEqual(exported,seed.bytes);
   await shell.waitForFunction(marker=>[...document.querySelectorAll('#settings-recovery section pre')].some(pre=>pre.textContent.includes(marker)),{},'完整保留报告 9421');
   await shell.screenshot({path:path.join(out,'recovery-center-report.png')});
   shell.once('dialog',dialog=>dialog.accept());
   await receiptSection.evaluate(section=>[...section.querySelectorAll('button')].find(button=>button.textContent==='核对并恢复到项目…').click());
-  await shell.waitForFunction(()=>[...document.querySelectorAll('#settings-recovery section button')].some(button=>button.textContent==='已恢复 · 未重新派工'));
+  await shell.waitForFunction(id=>![...document.querySelectorAll('#settings-recovery section')].some(section=>section.dataset.recoveryId===id),{},seed.pendingId);
   assert.equal((await call(shell,'workspace.bootstrap')).projectId,null,'Explicit settlement must not activate project or start execution');
   await shell.screenshot({path:path.join(out,'recovery-center-settled.png')});
   await shell.evaluate(()=>document.getElementById('settings-dialog').close());

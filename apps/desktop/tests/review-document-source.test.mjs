@@ -13,6 +13,7 @@ import { createReviewDocumentAdapter, runReviewDecision } from '../src/main/revi
 import { WorkspaceNative } from '../src/main/workspace-native.mjs';
 import { testStorageOptions } from './project-storage.fixture.mjs';
 import { digestBytes } from '../src/domain/material-store.mjs';
+import { capturePreview } from '../src/main/isolated-preview.mjs';
 
 const reviewSource = { type: 'review', workId: 'work-1', objectId: 'object-1' };
 const otherWorkSource = { type: 'review', workId: 'work-2', objectId: 'object-2' };
@@ -146,6 +147,51 @@ const textFile = (overrides = {}) => ({
   relPath: 'docs/a.md', change: 'modified', status: 'modified', added: 3, deleted: 1, binary: false, referenced: true, humanEdited: false,
   baselineText: 'baseline', candidateText: 'candidate body', baselineDigest: 'd'.repeat(64), candidateDigest: 'c'.repeat(64), editable: true,
   draft: null, history: [], versions: [], ...overrides,
+});
+
+test('review HTML before and after capture transitive frozen CSS JS and image objects without worktree substitution', async t => {
+  const png = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c6300010000050001', 'hex');
+  const graph = {
+    'index.html': ['<link href="style.css"><script src="app.js"></script><h1>Before</h1>', '<link href="style.css"><script src="app.js"></script><h1>After</h1>'],
+    'style.css': ['@import "colors.css";body{background:url(image.png)}', '@import "colors.css";body{background:url(image.png);color:blue}'],
+    'colors.css': ['body{color:red}', 'body{color:green}'],
+    'app.js': ['import "./module.mjs";document.title="before";', 'import "./module.mjs";document.title="after";'],
+    'module.mjs': ['export const value="before";', 'export const value="after";'],
+    'image.png': [png, Buffer.concat([png, Buffer.from('after')])],
+  };
+  const files = Object.entries(graph).map(([relPath, sides]) => {
+    const [before, after] = sides.map(value => Buffer.from(value));
+    const binary = relPath.endsWith('.png');
+    return textFile({relPath, baselineText:binary?null:before.toString(), candidateText:binary?null:after.toString(), baselineDigest:digestBytes(before), candidateDigest:digestBytes(after), binary, material:{baseline:{digest:digestBytes(before),available:!binary,reason:binary?'binary':null}}});
+  });
+  const {host,projectId,adapter,state} = await adapterFixture(t,{files});
+  state.candidate.files=[];
+  for(const [relPath,sides] of Object.entries(graph)){
+    for(const side of sides)await host.storage.putObject(projectId,Buffer.from(side));
+    const digest=digestBytes(Buffer.from(sides[1]));state.candidate.files.push({relPath,digest,objectDigest:digest});
+  }
+  host.reviewDocuments=adapter;
+  host.resolveFile=()=>{throw Error('frozen preview must never resolve the worktree');};
+  const workspace={buffers:new Map(),projectRecords:()=>[],resource:(p,rel,source)=>documentResourceId(p,source,rel)};
+  const baseline=versionSource('baseline');
+  // Even a cached baseline surface cannot replace authoritative frozen bytes.
+  workspace.buffers.set(workspace.resource(projectId,'index.html',baseline),{projectId,text:'<p>stale cached surface</p>',revision:1,dirty:true});
+  const capture=source=>capturePreview({host,workspace,projectId,entryPath:'index.html',documentSource:source});
+  const before=await capture(baseline),after=await capture(reviewSource);
+  for(const [relPath,sides] of Object.entries(graph)){
+    assert.deepEqual(before.files.get(relPath).bytes,Buffer.from(sides[0]));
+    assert.deepEqual(after.files.get(relPath).bytes,Buffer.from(sides[1]));
+  }
+  assert.equal(before.files.get('index.html').dirty,false);
+  state.files.find(file=>file.relPath==='colors.css').baselineDigest='a'.repeat(64);
+  await assert.rejects(capture(baseline),/摘要不一致/);
+  state.files=state.files.filter(file=>file.relPath!=='colors.css');
+  await assert.rejects(capture(baseline),{code:'NOT_FOUND'});
+  state.files.push(files.find(file=>file.relPath==='colors.css'));
+  state.files.find(file=>file.relPath==='colors.css').baselineDigest=digestBytes(Buffer.from(graph['colors.css'][0]));
+  const originalCurrent=adapter.currentBytes.bind(adapter);
+  adapter.currentBytes=async payload=>payload.relPath==='module.mjs'?Buffer.from('changed during capture'):originalCurrent(payload);
+  await assert.rejects(capture(baseline),/捕获期间审校文档已变化/);
 });
 
 test('adapter read: draft-first body, native DTO, explicit omission, never project disk', async t => {

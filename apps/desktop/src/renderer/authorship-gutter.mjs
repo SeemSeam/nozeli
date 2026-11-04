@@ -3,26 +3,35 @@ import { gutter, GutterMarker, ViewPlugin } from '@codemirror/view';
 import { lineAuthorship, groupTitle } from '../domain/authorship-groups.mjs';
 
 export function authorshipButton(group, onOpen) {
-  let current=group;
+  let current=null,baseLabel='',baseTitle='',lastContinuation=null;
   const button=document.createElement('button');button.type='button';
   const tracks=document.createElement('span'),label=document.createElement('span');
   tracks.className='authorship-tracks';label.className='authorship-label';button.append(tracks,label);
   button.setGroup=(next,continuation=false)=>{
-    current=next;
-    const actors=[...new Map(next.items.map(item=>[item.actor.id,item.actor])).values()];
-    const className='authorship-mark authorship-'+actors[0].kind+(actors.length>1?' authorship-mixed':'')
-      +(next.pending?' authorship-pending':'')+(next.kind==='deletion'?' authorship-deletion':'');
-    if(button.className!==className)button.className=className;
-    const trackKey=actors.map(actor=>actor.kind).join(',');
-    if(tracks.dataset.kinds!==trackKey){tracks.replaceChildren(...actors.map(actor=>{
-      const track=document.createElement('i');track.className='authorship-'+actor.kind;return track;
-    }));tracks.dataset.kinds=trackKey;}
-    const text=(next.kind==='deletion'?'−':actors.length>1?'混':actors[0].mark)+(continuation?'↥':'');
+    // Group objects belong to one attribution projection. Geometry-only draws
+    // retain that object, while edits/saves replace it even when its id is equal.
+    if(current!==next){
+      current=next;
+      const actors=[...new Map(next.items.map(item=>[item.actor.id,item.actor])).values()];
+      const className='authorship-mark authorship-'+actors[0].kind+(actors.length>1?' authorship-mixed':'')
+        +(next.pending?' authorship-pending':'')+(next.kind==='deletion'?' authorship-deletion':'');
+      if(button.className!==className)button.className=className;
+      const trackKey=actors.map(actor=>actor.kind).join(',');
+      if(tracks.dataset.kinds!==trackKey){tracks.replaceChildren(...actors.map(actor=>{
+        const track=document.createElement('i');track.className='authorship-'+actor.kind;return track;
+      }));tracks.dataset.kinds=trackKey;}
+      baseLabel=next.kind==='deletion'?'−':actors.length>1?'混':actors[0].mark;
+      baseTitle=groupTitle(next);
+      button.dataset.groupId=next.id;button.dataset.eventId=next.items[0].eventId;
+      button.dataset.from=next.from;button.dataset.to=next.to;button.dataset.batchCount=next.items.filter(item=>!item.pending).length;
+      lastContinuation=null;
+    }
+    if(lastContinuation===continuation)return;
+    lastContinuation=continuation;
+    const text=baseLabel+(continuation?'↥':'');
     if(label.textContent!==text)label.textContent=text;
-    const title=groupTitle(next)+(continuation?' · 续段':'');
+    const title=baseTitle+(continuation?' · 续段':'');
     if(button.title!==title){button.title=title;button.setAttribute('aria-label',title+'；查看各批修改时间和差异');}
-    button.dataset.groupId=next.id;button.dataset.eventId=next.items[0].eventId;
-    button.dataset.from=next.from;button.dataset.to=next.to;button.dataset.batchCount=next.items.filter(item=>!item.pending).length;
     button.dataset.continuation=String(continuation);
   };
   button.setGroup(group);
@@ -71,10 +80,13 @@ export function authorshipFragments(groups,lines,top=0,bottom=Infinity) {
 export function authorshipGutter(onOpen) {
   const set=StateEffect.define();
   const field=StateField.define({
-    create:()=>({visible:false,groups:[]}),
+    create:()=>({visible:false,groups:[],authorship:null,doc:null}),
     update(value,transaction){
-      for(const effect of transaction.effects)if(effect.is(set))return {visible:effect.value.visible,
-        groups:effect.value.visible?lineAuthorship(transaction.newDoc.toString(),effect.value.authorship):[]};
+      for(const effect of transaction.effects)if(effect.is(set)){
+        const {visible,authorship}=effect.value,doc=transaction.newDoc;
+        if(value.visible===visible&&value.authorship===authorship&&value.doc===doc)return value;
+        return {visible,authorship,doc,groups:visible?lineAuthorship(doc.toString(),authorship):[]};
+      }
       return value;
     },
   });

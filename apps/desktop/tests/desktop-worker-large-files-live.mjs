@@ -111,7 +111,7 @@ const server = http.createServer((req, res) => {
           assert(!/nozeli host rejected|isError":true/.test(toolReply||''),'Worker tool failed: '+toolReply);
           assert(workerStep<=2,'Unexpected Worker publication replay: '+toolReply);
           if (workerStep === 2) result.workerCommandReply = last?.content;
-          delta = tool('nozeli_publish', {kind: 'result', html: reportHtml, files: ['small.txt', 'generated.bin']}, 'large-worker-publish');
+          delta = tool('nozeli_publish', {kind: 'result', content: reportHtml, files: ['small.txt', 'generated.bin']}, 'large-worker-publish');
         }
       } else {delta = {role: 'assistant', content: 'The synthetic result is published for explicit user acceptance.'}; finish = 'stop';}
       result.requests.push({tool: delta.tool_calls?.[0]?.function.name || 'final', at: new Date().toISOString()});

@@ -275,7 +275,7 @@ export class GuidedDemo {
   const {row}=await this.verify(projectId);
   if(!Object.hasOwn(row.reports??{},objectId))throw fail('DEMO_REPORT_MISSING','此报告不是本项目登记的冻结演示材料。');
   const report=row.reports[objectId];
-  return {report:{objectId,format:'html-static',mime:'text/html',title:report.title,source,demo:true,digest:report.digest,byteLength:report.byteLength},read:()=>this.host.storage.readObject(projectId,report.digest),readManifest:async()=>({references:[]})};
+  return {report:{objectId,format:'html-static',mime:'text/html',title:report.title,source,demo:true,digest:report.digest,byteLength:report.byteLength},read:()=>this.host.storage.readObject(projectId,report.digest),readManifest:async()=>({references:[]}),listArtifacts:async()=>({projectId,objectId,files:[],readOnly:true})};
  }
  async managed(op,payload){
   const {row}=await this.verify(payload.projectId),action=op.replace(/^managed\./,'');

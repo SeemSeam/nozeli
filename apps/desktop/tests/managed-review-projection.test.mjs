@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {managedReviewTodos,managedWorkRecords} from '../src/domain/managed-work-records.mjs';
+import {managedReviewTodos,managedInboxTodos,managedWorkRecords} from '../src/domain/managed-work-records.mjs';
 
 const state=()=>({works:[],todos:[],jobs:[],receipts:[]});
 const work=(id='w',extra={})=>({id,name:'核对文献',request:'核对引用并补全来源',status:'review',revision:2,...extra});
@@ -102,4 +102,35 @@ test('saved failed report does not expose review during new active input or over
  s.jobs.pop();s.jobs[0].status='completed';assert.deepEqual(managedReviewTodos(s),[]);
  s.jobs[0].status='interrupted';assert.equal(managedReviewTodos(s)[0].settlementIssue.status,'interrupted');
  s.works[0].status='ended';assert.deepEqual(managedReviewTodos(s),[]);assert.equal(managedWorkRecords(s)[0].status,'ended');
+});
+
+test('all user inbox views exclude internal records and keep reopened ended results as readable history',()=>{
+ const s=state();s.works.push(work('ended',{status:'ended',outcome:'discard',revision:2,result:{objectId:'report-object',revision:2}}));
+ s.todos.push(todo('report',{workId:'ended',status:'open',reopenedAt:'2026-11-02T12:00:00Z'}));
+ for(const kind of ['system','recovery','queue','routing','attention'])for(const status of ['open','resolved','cancelled','closed'])s.todos.push({id:kind+status,kind,status,title:'Internal record',userActionable:false});
+ s.receipts.push({objectId:'report-object',report:{title:'Original report',excerpt:'Preserved content'}});
+ const before=structuredClone(s),rows=managedInboxTodos(s);
+ assert.deepEqual(rows.map(t=>t.id),['report']);assert.equal(rows[0].pending,false);assert.equal(rows[0].historical,true);
+ assert.equal(rows[0].objectId,'report-object');assert.equal(rows[0].revision,2);assert.equal(rows[0].hasReport,true);
+ assert.match(rows[0].statusLabel,/已丢弃/);assert.match(rows[0].statusLabel,/历史提醒已重开/);assert.equal(rows[0].excerpt,'Preserved content');assert.deepEqual(s,before);
+});
+
+test('current reports, old versions and closed reminders retain distinct obligations and version identities',()=>{
+ const s=state();s.works.push(work('w',{result:{objectId:'current-object',revision:2}}));
+ s.todos.push(todo('old',{revision:1,status:'iterating'}),todo('current'),todo('closed',{revision:0,status:'closed'}));
+ const rows=managedInboxTodos(s),pending=rows.filter(t=>t.pending),history=rows.filter(t=>t.historical);
+ assert.deepEqual(pending.map(t=>t.id),['current']);assert.deepEqual(history.map(t=>t.id),['old','closed']);
+ assert.deepEqual(history.map(t=>t.versionLabel),['第 1 版','第 0 版']);assert.match(history[0].statusLabel,/续改/);assert.match(history[1].statusLabel,/关闭/);
+ assert.equal(history[0].objectId,'old-object');assert.equal(rows[1].objectId,'current-object');
+});
+
+test('queued supplement temporarily suppresses current review without turning it into removable history',()=>{
+ const s=state();s.works.push(work('w',{result:{objectId:'current-object',revision:2}}));s.todos.push(todo('current'));s.jobs.push({id:'supplement',target:'orchestrator',status:'queued',context:{boundWorkId:'w'}});
+ const row=managedInboxTodos(s)[0];assert.equal(row.pending,false);assert.equal(row.historical,false);assert.match(row.statusLabel,/处理中/);
+ s.jobs[0].status='failed';const restored=managedInboxTodos(s)[0];assert.equal(restored.pending,true);assert.equal(restored.historical,false);
+});
+
+test('accepting the latest publication never labels an iterated older report as accepted',()=>{
+ const s=state();s.works.push(work('w',{status:'ended',outcome:'accept',result:{objectId:'new-object',revision:2}}));s.todos.push(todo('old',{revision:1,status:'iterating'}),todo('new',{status:'cancelled'}));
+ const rows=managedInboxTodos(s);assert.match(rows[0].statusLabel,/续改/);assert.doesNotMatch(rows[0].statusLabel,/已接受/);assert.match(rows[1].statusLabel,/已接受/);
 });

@@ -37,6 +37,44 @@ function messageText(message) {
     .map((block) => block.text)
     .join("");
 }
+// Bounded sanitized scalar helpers for structured failure evidence. Never
+// message-text classification: the host consumes these FIELDS; the display
+// string stays separate.
+const scalar = (value, max) => (typeof value === "string" && value.length <= max ? value : null);
+const boundedText = (value, max) => (typeof value === "string" ? value.slice(0, max) : null);
+// Bounded non-negative integer for native retry counters (attempt counts,
+// attempt ceilings, delays). Never invented or coerced from other shapes.
+const boundedCount = value =>
+  Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000 ? value : null;
+
+// Structured per-attempt evidence extracted from the JOURNALED failed
+// assistant message: provider/model/api identities, stop reasons and
+// diagnostic codes. The provider error text is already a display string
+// composed by pi-ai; classification must not depend on it.
+function providerFailureOf(message) {
+  if (!message || message.role !== "assistant" || message.stopReason !== "error") {
+    return null;
+  }
+  const diagnostics = Array.isArray(message.diagnostics) ? message.diagnostics : [];
+  const diagnosticCodes = [];
+  for (const diagnostic of diagnostics) {
+    const code = diagnostic?.error?.code;
+    if ((typeof code === "number" && Number.isInteger(code)) || (typeof code === "string" && /^[A-Za-z0-9_. -]{1,64}$/.test(code))) {
+      diagnosticCodes.push(code);
+    }
+    if (diagnosticCodes.length >= 8) break;
+  }
+  return {
+    stopReason: scalar(message.stopReason, 32),
+    ...(scalar(message.rawStopReason, 64) ? { rawStopReason: scalar(message.rawStopReason, 64) } : {}),
+    ...(scalar(message.provider, 64) ? { provider: scalar(message.provider, 64) } : {}),
+    ...(scalar(message.model, 200) ? { model: scalar(message.model, 200) } : {}),
+    ...(scalar(message.api, 64) ? { api: scalar(message.api, 64) } : {}),
+    ...(diagnosticCodes.length ? { diagnosticCodes } : {}),
+    ...(boundedText(message.errorMessage, 512) ? { errorMessage: boundedText(message.errorMessage, 512) } : {}),
+    at: new Date().toISOString(),
+  };
+}
 
 const MESSAGE_EVENT_NAMES = {
   message_start: "message_start",
@@ -56,6 +94,18 @@ export function createFactChannel({ send }) {
     completion: null,
     admitted: false,
     runActive: false,
+    // Structured evidence of the latest JOURNALED failed assistant attempt
+    // in this turn (null until one lands, reset per turn). Classification
+    // downstream reads these fields, never the composed error text.
+    turnProviderFailure: null,
+    // Actual native SDK auto-retry evidence for this turn, mirrored ONLY
+    // from the SDK's own auto_retry_start/auto_retry_end events (bounded
+    // counters; error text is dropped at the boundary). Null until the
+    // native loop actually retries.
+    turnAutoRetry: null,
+    // Native agent-loop intent to retry the failed run itself (agent_end
+    // willRetry). A host must not classify a will-retry attempt as settled.
+    willRetry: false,
   };
 
   function trackEntry(entry) {
@@ -82,6 +132,11 @@ export function createFactChannel({ send }) {
       }
       // A successful native retry supersedes its failed assistant attempt.
       state.turnErrorMessage = typeof message.errorMessage === 'string' ? message.errorMessage : message.stopReason === 'error' ? 'Pi provider ended with an error' : null;
+      if (message.stopReason === "error") {
+        state.turnProviderFailure = providerFailureOf(message);
+      } else if (message.stopReason === "stop" || message.stopReason === "toolUse") {
+        state.turnProviderFailure = null;
+      }
     }
   }
 
@@ -118,6 +173,7 @@ export function createFactChannel({ send }) {
 
   function onNativeSessionEvent(sessionRef, event) {
     const sessionId = sessionRef?.sessionId;
+    if (sessionSingletonId && sessionId && sessionSingletonId !== sessionId) return;
     sessionSingletonId ??= sessionId;
     const turnId = turn?.turnId;
     switch (event?.type) {
@@ -212,6 +268,8 @@ export function createFactChannel({ send }) {
       case "agent_end": {
         const eventData = { type: "agent_end", messages: toJson(event.messages ?? []) };
         if (event.willRetry !== undefined) eventData.willRetry = event.willRetry;
+        if (event.willRetry !== undefined) state.willRetry = event.willRetry === true;
+
         if (sessionId) eventData.sessionId = sessionId;
         if (turnId) eventData.turnId = turnId;
         native(eventData);
@@ -254,10 +312,43 @@ export function createFactChannel({ send }) {
         native(eventData);
         return;
       }
+      case "auto_retry_start":
+      case "auto_retry_end": {
+        // Typed native SDK auto-retry facts, sanitized for the host's
+        // recordNativeRetry pipeline: the NATIVE typed event name is
+        // forwarded UNCHANGED (auto_retry_start / auto_retry_end) and the
+        // payload is bounded counters ONLY (attempt/maxAttempts/delayMs/
+        // success) — the SDK's errorMessage/finalError display strings and
+        // anything else on the event never cross this boundary. Bound to the
+        // EXACT current turn identity (requestId/jobId) so the host can
+        // attribute the retry to its owning job without guessing from timing.
+        const attempt = boundedCount(event.attempt);
+        if (attempt === null) return;
+        const started = event.type === "auto_retry_start";
+        const maxAttempts = boundedCount(event.maxAttempts);
+        const delayMs = boundedCount(event.delayMs);
+        const eventData = started
+          ? { type: "auto_retry_start", attempt, ...(maxAttempts !== null ? { maxAttempts } : {}), ...(delayMs !== null ? { delayMs } : {}) }
+          : { type: "auto_retry_end", attempt, success: event.success === true };
+        if (sessionId) eventData.sessionId = sessionId;
+        if (turnId) eventData.turnId = turnId;
+        if (turn?.requestId) {
+          eventData.requestId = turn.requestId;
+          if (turn.jobId !== undefined) eventData.jobId = turn.jobId;
+        }
+        state.turnAutoRetry = {
+          attempt,
+          ...(maxAttempts !== null ? { maxAttempts } : {}),
+          ...(delayMs !== null ? { delayMs } : {}),
+          ...(!started ? { success: event.success === true } : {}),
+        };
+        native(eventData);
+        return;
+      }
       default: {
-        // thinking_level_changed, session_info_changed, auto_retry_*,
-        // summarization_retry_*, bash_execution_update,
-        // queue_update (never expected: the worker never steers or queues).
+        // thinking_level_changed, session_info_changed, summarization_retry_*,
+        // bash_execution_update, queue_update (never expected: the worker
+        // never steers or queues). auto_retry_* are handled above, typed.
         const eventData = toJson(event);
         if (sessionId) eventData.sessionId = sessionId;
         if (turnId) eventData.turnId = turnId;
@@ -273,6 +364,9 @@ export function createFactChannel({ send }) {
     state.lastAssistantText = "";
     state.turnUsage = null;
     state.turnErrorMessage = null;
+    state.turnProviderFailure = null;
+    state.turnAutoRetry = null;
+    state.willRetry = false;
     state.completion = null;
     state.admitted = false;
     state.runActive = false;

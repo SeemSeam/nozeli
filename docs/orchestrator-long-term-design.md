@@ -146,7 +146,56 @@ Work revision、collection CAS、原生 session sequence 各有不同语义；�
 
 不能在 native compaction 的摘要里寄希望完整保留所有任务。固定短角色／工具契约使恢复入口可发现，当前数据使用有界查询或必要事件投影。预算沿现有上下文合同；必要控制无法完整容纳时阻断整个请求，不能丢掉控制事实继续执行。
 
-## 9. skill 在这里负责什么
+## 9. 多项目 Agent 守护、空闲休眠与依赖唤醒（2026-11-01 分析）
+
+本节是机制分析，不改变当前执行顺序、配额或 no-replay 合同。当前实现中的“free Agent”应拆成三种事实：
+
+1. **空闲 owner**：Pi 进程仍存活、没有当前回合／工具／终端／原生草稿／排队输入，可被宿主安全回收；不是“免费名额”。
+2. **sleeping slot**：进程已回收，但项目、角色、threadId、draft、Work 与队列仍在持久状态中；唤醒必须是显式连接或已准入任务的宿主调度，不是模型自行轮询。
+3. **available capacity**：全局 process budget 尚有可同步预留的 native owner 名额；它与项目 Work quota、任务队列和 token budget 分离。
+
+### 当前事实
+
+- `AgentProcessBudget.reserve()` 同步占用 slot，`bind()` 只有确认整个 Pi 进程树退出后才释放；未知退出、未确认 descendant 或平台能力未知时保留 slot。跨项目并发 start 不会双占同一名额。
+- `ManagedProjects.reclaimInactive()` 先回收非当前项目、非请求项目的最旧 controller，再在请求项目内回收非目标 idle role。`Controller.canReclaimIdle()` 拒绝 running/current/starting/restarting/configuring、busy、tool call、native draft、external terminal、queued/running job；普通内置 terminal 也保护，只有隐藏 terminal 回收显式允许关闭。
+- 当前实现**不是按时间自动休眠**。切换项目且有容量时保留 idle owner；达到容量压力才回收。项目激活本身不唤醒 sleeping role；显式 `connect()` 或 accepted queued job 的 `pump()` 才会尝试 `startSession()`。唤醒不重放已完成输入；cold `queued/running` 仍转 interrupted 并建恢复待办。
+- `Controller.pump()` 只在项目已 started、存储 online、Work quota 有余量时消费 queued Work；无 owner 且全局满时先请求回收安全 idle owner，失败则保留队列。`ManagedProjects` 的 controller state 事件会 kick 其他 controller 中“已有 queued job 且没有 live owner”的调度器，已有真实测试证明背景完成释放容量后另一项目 queued input 可执行一次。
+- Pi `prompt()` 以 admission tail 串行化同 owner；`stopIdle()` 只在无 busy/tool call 时进入 `stopOwner()`。停止先请求 runtime stop、flush、等待退出，再验证 owner-tagged process tree；失败保留 slot。原始 Pi runtime 的 lease/heartbeat保护同一会话写者，但 Nozeli 的跨项目唤醒权仍由 Host 持有。
+
+### 分情况行为与风险
+
+| 场景 | 当前行为 | 主要风险 | 推荐策略 |
+| --- | --- | --- | --- |
+| 项目A空闲，项目B有空闲名额 | A owner保持存活 | 常驻进程和内存成本，但切换低延迟 | 保持当前策略；增加可见“驻留/可回收”事实，不用定时杀进程 |
+| B已准入且执行中，A请求新任务 | 不回收B运行 owner；回收安全 idle owner，必要时A任务排队 | 若全部 owner忙，A等待但没有优先级公平 | 引入项目级等待队列和事件触发唤醒；不抢占运行回合 |
+| A有未发送原生草稿／终端 | owner受保护 | 长时间占用 capacity | UI显示阻塞原因，提供用户明确“保存/放弃并回收”，禁止后台静默丢输入 |
+| Worker完成报告待审 | owner通常保留，Work仍占项目 quota | “完成”被误当“可结束”或自动续跑 | 报告进入 review；只回收 owner，不结束 Work；继续/接受由用户或显式事件触发 |
+| Worker依赖主控／后台待办 | `kick()`和后台事件可唤醒 orchestrator | 依赖拓扑不显式时可能队列互等或无效唤醒 | 增加 durable dependency facts：blockedBy、sourceJob、expectedRevision、wake event；只唤醒能解除阻塞的 target |
+| 空闲 owner回收失败或进程树未知 | slot继续占用 | 容量长期泄漏，但安全优先 | 保留 slot并显示“退出未核实”；提供人工核查／重试，不强杀未知PID |
+| host崩溃后旧 queued/running | cold recovery中断，不自动重放 | 用户感觉“Agent没醒” | 恢复中心显示“未执行/效果未知/需核对”；仅用户显式继续或有未来单独批准的确定性未准入恢复 |
+| 项目切换到 sleeping role | activation不自动唤醒 | 用户以为切项目即恢复全部 Agent | UI区分 sleeping 与 connected；显式打开对话、提交新任务或依赖事件才唤醒 |
+| 多项目同时请求 capacity | 目前主要按 inactive activity LRU，缺乏公平／优先级合同 | 活跃项目或老项目可能饥饿 | 未来用有界 admission queue：project／target／priority／enqueueAt／reason；公平只作用于未开始任务，不改变已接受任务 |
+| provider／model配置刷新 | 在线 owner在安全 idle boundary应用；running round不切换 | 多项目状态显示可能暂时不一致 | 每个 owner显示 requested/effective/pending；配置事件只触发受影响项目，不广播唤醒全部 Agent |
+
+### 推荐的管理模型（后续实现，不是本次提交）
+
+1. **Host-owned lease table**：每个 project/target 一条 owner 状态，包含 `state=running|idle|sleeping|starting|stopping|unconfirmed`、threadId、ownerId、generation、lastActivity、blockedReason、workId、dependency keys、wakeReason。它是派工事实，不由模型填写。
+2. **事件驱动 wake broker**：事件类型限于 `capacity-released`、`job-accepted`、`dependency-settled`、`user-opened`、`provider-ready`、`recovery-confirmed`。事件按 project/target 过滤、幂等合并、有界重试；无事件零模型调用。一个项目有运行 Agent 时，可以唤醒同项目另一个 sleeping Agent，但必须先满足 dependency/owner/slot 门，不能因为“同项目”而全量唤醒。
+3. **两阶段 admission**：先在宿主事务中保留 job 与依赖快照，再同步 reserve slot；spawn 后写 owner receipt；启动失败只释放未产生 owner 的 reservation，未知结果转 `unconfirmed`。唤醒不是重新提交原 prompt；它只恢复 thread，新的模型输入必须有新的 durable job 或明确 continuation receipt。
+4. **依赖优先而非项目全醒**：前台提交→主控路由→Worker执行→报告审核是有向链。只有 predecessor 的 confirmed fact 满足 successor 的 `blockedBy`，才创建 wake intent。依赖冲突、版本过期、权限或用户问题保持 blocked，不通过唤醒绕过。
+5. **回收策略分层**：默认不设固定 idle TTL；先回收跨项目且无依赖、无草稿、无终端、无队列的 idle owner；高内存压力可提出回收建议但仍走同一安全准入。长期 sleeping 只保留小型状态，不保留Pi进程；日志/原文按现有持久化与分段读取。
+6. **公平与可观测性**：显示每个项目的 `running/idle/sleeping/queued/blocked`、占用与等待原因、预计触发事件；记录 `wakeRequested/wakeGranted/wakeDeferred/wakeDenied`。指标只解释事实，不让模型通过自填状态改变调度。
+
+### 明确不推荐
+
+- 不要因为一个项目有运行 Agent 就自动唤醒该项目全部 Agent；会造成模型空转、额度消耗和依赖环放大。
+- 不要用定时器周期唤醒模型检查进展；用宿主事件和持久队列。
+- 不要抢占 running prompt、带工具调用或未发送原生输入的 owner；停止结果未核实不得释放 slot。
+- 不要把 sleeping 当 completed、把 free 当 no-owner、把 queued 当 safe-to-replay；三者分别是资源事实、进程事实和业务准入事实。
+
+本次源码证据与隔离实测：`managed-projects.mjs:165-170`只在容量需求时按非当前／非请求项目的活动顺序回收，`controller.mjs:3122-3133`定义安全 idle predicate 与退出确认；`agent-process-budget.mjs:11-33`在 owner tree 未核实前保留 slot。真实 Pi／loopback smoke `/var/tmp/nozeli-pi-real-IcwI0E/lifecycle-analysis.json`验证两个 owner 满额时 busy Worker不可休眠、idle peer可释放、同项目/其他角色可取得新 slot、唤醒不产生模型请求、原 thread/journal恢复且仅显式新输入产生一次请求。该 smoke不覆盖完整 Controller 依赖公平或跨项目饥饿证明。
+
+## 10. skill 在这里负责什么
 
 skill 说明“遇到某类事件应如何查事实与管理”，不是进度表、调度器或永久记忆。
 ### 7.1 队列长度与背压边界

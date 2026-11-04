@@ -91,8 +91,11 @@ export function createReviewDocumentAdapter({ host, managed }) {
       const kind = source.version.kind;
       if (kind === 'baseline') {
         if (typeof file.baselineText === 'string') return { value, file, text: file.baselineText, digest: file.baselineDigest, origin: 'baseline' };
-        if (file.material?.baseline?.available === true) {
-          const bytes = await objectBytes(projectId, file.material.baseline.digest);
+        // Binary preview omission is not absence: the publication's baseline
+        // digest still authorizes its frozen object (including image assets).
+        // Never substitute a candidate object or a worktree dependency.
+        if (!file.baselineUnavailable && file.baselineDigest && file.material?.baseline?.digest === file.baselineDigest) {
+          const bytes = await objectBytes(projectId, file.baselineDigest);
           if (bytes) return { value, file, text: null, digest: file.baselineDigest, bytes, origin: 'baseline' };
         }
         return { value, file, text: null, digest: file.baselineDigest ?? null, origin: 'baseline', unavailable: file.material?.baseline?.reason || 'baseline-unavailable' };
@@ -133,7 +136,7 @@ export function createReviewDocumentAdapter({ host, managed }) {
     if (source.type !== 'review') return false;
     // The whole-work continuation record persists after apply; per-file
     // editable + stale + capabilities decide editability for THIS publication.
-    return file.editable === true && !value.stale && value.status !== 'ended' && value.capabilities?.canSave !== false;
+    return file.editable === true && !value.stale && !['closing','ended'].includes(value.status) && value.capabilities?.canSave !== false;
   }
   function reviewMeta(source, resolved) {
     const { value, file, digest, origin, revision, unavailable, bytes } = resolved;

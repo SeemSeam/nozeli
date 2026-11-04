@@ -11,6 +11,10 @@
 - [Windows 开发 Agent 执行指南](windows-agent-development-guide.md)——从真实 Windows W0 基线到 W1–W5 原生适配、验收证据与禁止误判；不以 Linux、WSL、Wine 或交叉打包替代 Windows 实测。
 - [三角色记忆与技能设计](role-memory-skills-design.md)——前台／主控／Worker 的最小角色契约、按需技能、用户批准项目知识、来源版本与撤销；设计提案，不代表原生技能迁移或长期知识功能已实现。
 - [主控长期多任务与 Plan Tree 设计](orchestrator-long-term-design.md)——当前宿主排队／进度事实与 skill 职责分析，以及分页任务板、稳定管理身份、压缩恢复和版本化知识的后续设计；未实施。
+- [多项目、多文件流畅性优化](responsiveness-optimization.md)——第一层局部展示优化、资源保留边界、同基线工作量对照和真实Electron验收；后台暂停及冷回收暂缓。
+- [对话区 Agent 状态、模型与动态管理](agent-conversation-status-demo.md)——离线设计与生产接入：有界状态、原生活动、逐Agent模型、真实历史模型，以及项目推进常驻／安全空闲自动卸载／原线程按需恢复；接入与动态管理证据见§10–11，Linux限定、未安装。
+- [Agent、任务与自动修复协同合同](agent-task-repair-lifecycle-design.md)——设计／Demo与生产接入分别记录：宿主先修复、能力及确切绑定、未准入技术事件结算、只补维修收尾、动态回收保护和冷恢复边界；源码与深度验收见§7，Linux限定、未安装。
+- [人工修复与任务控制协同设计](manual-task-control-repair-design.md)——基于已验收状态／维修／owner生命周期，定义任务人工暂停／停止／恢复、工作区关键故障及跨项目一键继续；设计提案，未接入生产。
 
 ## 产品方向
 

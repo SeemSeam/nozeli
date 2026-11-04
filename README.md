@@ -60,7 +60,7 @@ Agent 交付得快，不代表人已经理解。Nozeli 希望让你看清成果�
 ## 开始使用
 
 1. 打开本地项目目录和需要阅读、编辑的材料。
-2. 本独立 `nozeli_pi` 分支使用 Pi 会话内核；在设置中配置 AI 源与前台／主控／Worker 默认模型。已发布 Nozeli tag 不因本分支改变，当前整合不替换已安装版本。
+2. Nozeli 使用 Pi 会话内核；在设置中配置 AI 源与前台／主控／Worker 默认模型。
 3. 直接交流，或从选区发起讨论；普通文件操作与当前用户命令可直接执行，持续后台工作沿原任务交接。敏感／管理员执行从同项目待办明确授权，系统提权仍由真实 OS 认证完成；角色分工不会把已授权能力变成“没有权限”。
 4. 从待办查看问题与成果，继续修改，或明确接受／丢弃并结束。
 
@@ -70,8 +70,8 @@ Agent 交付得快，不代表人已经理解。Nozeli 希望让你看清成果�
 
 - 面向 Windows、macOS、Linux；当前验证为 **Linux x64／Wayland 与 X11/XWayland**，其他平台尚未通过。
 - 已有阅读、批注、编辑、真实文件与后台协作工作流；具体格式、版本和能力边界见[当前状态与能力边界](docs/status.md)。
-- **Alpha预发行 `v0.1.0-alpha.4` 已发布**：Pi 原生账号与模型管理、上下文交付收敛、本地 HTML/HTM 网页视图、材料版本保护及存储写放大修复。Linux x64 已验证，Windows/macOS 未验证；分发审计未完成。
-- Release：<https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.4>。后续源码的 Orchestrator P0 任务板与身份治理不包含在该冻结发行包中，详见[发布说明](docs/release.md)。
+- **Alpha预发行版本 `v0.1.0-alpha.5`**（发行状态与附件以[GitHub 发布页](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.5)为准）：本轮源码在前一版基础上包含前台唯一主对话与显式“提交后台”入口、紧凑 F/O/W 协作状态行、有界文档读取、主控内部故障归系统处理、版本绑定的审核历史、空交接连接恢复，以及有界任务板与空闲原生 Agent 回收；Linux x64 已完成本机安装与专项实测，完整回归与发行包核验随发布流程进行，Windows/macOS 未验证。目标发布与分发审计状态见[发布说明与发行边界](docs/release.md)。
+- 已发布：<https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.4>（2026-11-01 公开 prerelease）；<https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.5>（2026-11-04 所有者授权公开 prerelease，常规回归、便携包构建、解压冒烟与校验和核对通过后发布）。
 - 第三方源码与再分发审计未完成：公开 Alpha 仍需保留未完成义务和当前发布授权说明，不构成合规认证。
 
 ## 进一步了解

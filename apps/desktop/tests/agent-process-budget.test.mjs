@@ -62,6 +62,79 @@ test('failed idle reclamation cannot donate its slot',async t=>{
  const f=await fixture(t),a=await f.open('a'),s=await a.session('frontdesk');s.failStop=true;await assert.rejects(a.reclaimIdle('frontdesk'));assert.equal(f.budget.used,1);assert.equal(a.sessions.get('frontdesk'),s);
 });
 
+test('idle reclaim requires affirmative quiet Pi activity, not just an idle host',async t=>{
+ const f=await fixture(t),c=await f.open('a'),s=await c.session('frontdesk');
+ let activity={known:true,busy:false};s.activitySnapshot=()=>activity;
+ assert.equal(c.canReclaimIdle('frontdesk',s),true);
+ for(const unsafe of [null,{}, {known:false},{freshness:'unknown'},{busy:true},{hostBusy:true},{runActive:true},{promptPreparing:true},{compaction:true},{retry:true},{toolCount:1},{hostToolCount:1},{tools:[{}]},{interactionCount:1},{interactions:[{}]},{settling:true},{nativeDrainPending:1},{configuration:true},{command:'reload'}]){
+  activity=unsafe===null?null:{known:true,busy:false,...unsafe};if(unsafe&&Object.keys(unsafe).length===0)activity={};
+  assert.equal(await c.reclaimIdle('frontdesk'),false,JSON.stringify(unsafe));assert.equal(f.budget.used,1);assert.equal(s.closed,false);
+ }
+ s.activitySnapshot=()=>{throw Error('activity unavailable');};assert.equal(await c.reclaimIdle('frontdesk'),false);
+ activity={known:true,busy:false};s.activitySnapshot=()=>activity;assert.equal(await c.reclaimIdle('frontdesk'),true);assert.equal(f.budget.used,0);
+});
+
+test('idle reclaim protects host uncertainty, lifecycle transitions and accepted manual work',async t=>{
+ const f=await fixture(t),c=await f.open('a'),s=await c.session('frontdesk');
+ for(const key of ['commitUnknown','nativeCommitUnknown']){c.store[key]=true;assert.equal(await c.reclaimIdle('frontdesk'),false,key);c.store[key]=false;}
+ for(const key of ['bindingTransitions','handoffPreparing','residentHandoffs','handoffConfirmations']){c[key]=new Set(['frontdesk']);assert.equal(await c.reclaimIdle('frontdesk'),false,key);c[key].clear();}
+ for(const key of ['modelDefaultsApplying','frontdeskContextClear']){c[key]=true;assert.equal(await c.reclaimIdle('frontdesk'),false,key);c[key]=false;}
+ for(const key of ['closures','pendingEnds','publicationSerial']){c[key].set?c[key].set('frontdesk',Promise.resolve()):c[key].add('frontdesk');assert.equal(await c.reclaimIdle('frontdesk'),false,key);c[key].delete('frontdesk');}
+ for(const job of [{target:'frontdesk',status:'transferring'},{target:'orchestrator',context:{boundWorkId:'frontdesk'},status:'queued'},{target:'frontdesk',status:'failed',manual:true}]){
+  c.store.state.jobs.push(job);assert.equal(await c.reclaimIdle('frontdesk'),false,JSON.stringify(job));c.store.state.jobs.pop();
+ }
+ const slot=[...f.budget.slots][0];slot.state='unconfirmed';assert.equal(await c.reclaimIdle('frontdesk'),false);slot.state='live';
+ assert.equal(c.canReclaimIdle('frontdesk',{...s}),false);assert.equal(await c.reclaimIdle('frontdesk'),true);
+});
+
+test('hidden terminal close rechecks native activity, accepted input and exact owner before stopping',async t=>{
+ const f=await fixture(t),c=await f.open('a'),s=await c.session('frontdesk');let activity={known:true};s.activitySnapshot=()=>activity;
+ for(const change of ['native','input','owner']){
+  let entered,release;const ready=new Promise(r=>entered=r),gate=new Promise(r=>release=r);
+  c.terminals.set('frontdesk',{close:async()=>{entered();await gate;c.terminals.delete('frontdesk');}});
+  const reclaim=c.reclaimIdle('frontdesk',{hiddenTerminal:true});await ready;
+  if(change==='native')activity={known:true,retry:true};
+  if(change==='input')await c.enqueue('frontdesk','front','accepted during terminal close');
+  const replacement={...s};if(change==='owner')c.sessions.set('frontdesk',replacement);
+  release();assert.equal(await reclaim,false,change);assert.equal(s.closed,false);assert.equal(f.budget.used,1);assert.equal(c.reclaiming.size,0);
+  if(change==='owner'){assert.equal(c.sessions.get('frontdesk'),replacement);c.sessions.set('frontdesk',s);}
+  activity={known:true};c.store.state.jobs=[];
+ }
+ assert.equal(await c.reclaimIdle('frontdesk'),true,'own reclaim fence must not prevent safe unload');
+});
+
+test('unconfirmed idle stop retains both provider registration and process slot',async t=>{
+ const f=await fixture(t),c=await f.open('a'),s=await c.session('frontdesk'),provider=c.store.state.providers.frontdesk;
+ s.stopIdle=async()=>({confirmationComplete:false});await assert.rejects(c.reclaimIdle('frontdesk'),{code:'PI_EXIT_UNCONFIRMED'});
+ assert.equal(c.sessions.get('frontdesk'),s);assert.equal(c.store.state.providers.frontdesk,provider);assert.equal(f.budget.used,1);assert.equal(c.reclaiming.size,0);
+});
+
+test('input accepted during unload resumes original thread once after the reclaim fence clears',async t=>{
+ let starts=0;const f=await fixture(t,{onStarting:()=>starts++}),c=await f.open('a'),s=await c.session('frontdesk'),thread=s.threadId;
+ let entered,release;const ready=new Promise(r=>entered=r),gate=new Promise(r=>release=r);s.stopIdle=async()=>{entered();await gate;return s.stop();};
+ const reclaim=c.reclaimIdle('frontdesk');await ready;c.started=true;
+ const input=await c.enqueue('frontdesk','front','legitimate input during unload');
+ // Drain the kick that sees the fence; unload finalization must supply the next one.
+ while(c.kicking)await new Promise(r=>setImmediate(r));
+ assert.equal(c.store.state.jobs.find(job=>job.id===input.jobId).status,'queued');
+ let completed;const done=new Promise(r=>completed=r);const observe=()=>{if(c.store.state.jobs.find(job=>job.id===input.jobId)?.status==='completed')completed();};c.on('state',observe);t.after(()=>c.off('state',observe));
+ const resumed=[c.session('frontdesk'),c.session('frontdesk')];release();assert.equal(await reclaim,true);const [first,second]=await Promise.all(resumed);await done;
+ assert.equal(first,second);assert.equal(first.threadId,thread);assert.equal(c.sessions.get('frontdesk'),first);assert.equal(starts,2);assert.equal(c.store.state.jobs.length,1);assert.equal(c.reclaiming.size,0);assert.equal(f.budget.used,1);
+});
+
+test('idle reclaim never removes a replacement owner or its provider registration',async t=>{
+ const f=await fixture(t),c=await f.open('a'),s=await c.session('frontdesk'),replacement={threadId:'replacement-thread'},provider={pid:999,ownerId:'replacement-owner'};
+ s.stopIdle=async()=>{const receipt=await s.stop();c.sessions.set('frontdesk',replacement);c.store.state.providers.frontdesk=provider;return receipt;};
+ try{assert.equal(await c.reclaimIdle('frontdesk'),true);assert.equal(c.sessions.get('frontdesk'),replacement);assert.equal(c.store.state.providers.frontdesk,provider);assert.equal(f.budget.used,0);}
+ finally{c.sessions.set('frontdesk',s);}
+});
+
+test('startup fence release notifies observers when the exact owner becomes idle eligible',async t=>{
+ const f=await fixture(t),c=await f.open('a');let eligibleOwner;
+ c.on('state',()=>{const owner=c.sessions.get('frontdesk');if(owner&&c.canReclaimIdle('frontdesk',owner))eligibleOwner=owner;});
+ const owner=await c.session('frontdesk');assert.equal(eligibleOwner,owner);assert.equal(c.starting.size,0);
+});
+
 test('resource limits persist only after disk succeeds and reject a reduction below occupancy',async t=>{
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-budget-disk-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));const file=path.join(root,'agent-resources.json'),b=new AgentProcessBudget({file});
  await b.save(4);const reloaded=new AgentProcessBudget({file});await reloaded.load();assert.equal(reloaded.limit,4);for(let n=0;n<3;n++)b.reserve('a','target-'+n);await assert.rejects(b.save(2),{code:'AGENT_LIMIT_IN_USE'});assert.equal(b.limit,4);
@@ -139,4 +212,15 @@ test('preflight that starts a native owner consumes capacity and stops before re
  await c.store.mutate(()=>{c.store.state.residents.frontdesk={threadId:'historical',toolsDigest:'test-schema',zeroActivity:false};});
  c.sessionFactory=spec=>({toolsDigest:'test-schema',preflightToolsDigest:async function(){this.pid=55;during=f.budget.used;},stop:async function(){stops++;return {confirmationComplete:true};}});
  const result=await c.makeSession('frontdesk',{preflightOnly:true});assert.equal(result.preflight,true);assert.equal(during,1);assert.equal(stops,1);assert.equal(f.budget.used,0);assert.equal(c.sessions.size,0);
+});
+test('collaboration status is a bounded pure read and does not create an owner or mutate state',async t=>{
+ const f=await fixture(t),a=await f.open('a'),manager=new ManagedProjects({userDataDir:f.root,host:hostFor(a.store),legacy:{projects:new Map()}});manager.processBudget=f.budget;manager.controllers.set(a.projectId,a);const before=structuredClone(a.store.state),result=await manager.invoke('managed.collaboration.status',{projectId:a.projectId});
+ assert.equal(result.schema,1);assert.equal(result.projectId,a.projectId);assert.equal(result.freshness,'live');assert.equal(result.agents.filter(row=>row.target==='frontdesk').length,1);assert.equal(a.sessions.size,0);assert.deepEqual(a.store.state,before);
+});
+
+test('host original and repair operations protect owners without consuming Work or process quota',async t=>{
+ const f=await fixture(t),c=await f.open('host-only'),owner=await c.session('frontdesk'),used=f.budget.used,works=c.store.state.works.length;
+ const finish=c.beginHostOperation('frontdesk','publication'),repair=c.beginHostOperation('frontdesk','repair:publication','bug:quota');
+ assert.equal(c.hostOperations.size,2);assert.equal(f.budget.used,used);assert.equal(c.store.state.works.length,works);assert.equal(await c.reclaimIdle('frontdesk'),false);assert.equal(c.sessions.get('frontdesk'),owner);
+ finish();assert.equal(await c.reclaimIdle('frontdesk'),false);repair();assert.equal(await c.reclaimIdle('frontdesk'),true);assert.equal(f.budget.used,0);assert.equal(c.store.state.works.length,works);
 });

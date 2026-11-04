@@ -139,7 +139,7 @@ test('worker long task stays bounded: handoff once, projection per run, budget-g
   // First model call publishes a problem report through the real host tool
   // contract so the worker turn genuinely completes via host control.
   const provider=await serve(request=>hasTool(request,'nozeli_publish')
-    ?{tool:'nozeli_publish',id:'publish-1',args:{kind:'problem',text:'长文已按分页读取并核对已读区间并集；本回合先交付问题报告说明剩余步骤。',files:[]}}
+    ?{tool:'nozeli_publish',id:'publish-1',args:{kind:'problem',content:'长文已按分页读取并核对已读区间并集；本回合先交付问题报告说明剩余步骤。',files:[]}}
     :{text:'worker ack'});
   t.after(()=>provider.close());
   const {c,dirs}=await openHost(t,provider);

@@ -71,7 +71,8 @@ async function writeSnapshot(label){
 async function sidebar(){if(await page.$eval('#toggle-sidebar',n=>n.getAttribute('aria-expanded')!=='true'))await page.click('#toggle-sidebar');}
 async function openTodo(todo){await sidebar();await page.click('#inbox-reports [data-managed-todo="'+todo.id+'"]');await page.waitForSelector('#managed-result-actions');await page.waitForFunction(text=>document.querySelector('#managed-doc').textContent.includes(text),{},todo.text.slice(0,20));}
 async function draft(text){await page.$eval('#composer',(n,text)=>{n.value=text;n.dispatchEvent(new Event('input',{bubbles:true}));},text);}
-async function submit(name){await draft(name);await page.click('#managed-submit-task');const s=await settled(s=>s.works.some(w=>w.name===name&&['review','paused'].includes(w.status)));return s.works.find(w=>w.name===name);}
+// Programmatic background setup; not evidence of a composer task button.
+async function submit(name){await draft(name);await page.evaluate(()=>window.__agentSend({background:true}));const s=await settled(s=>s.works.some(w=>w.name===name&&['review','paused'].includes(w.status)));return s.works.find(w=>w.name===name);}
 const todo=(s,w,kind)=>s.todos.findLast(t=>t.workId===w.id&&t.kind===kind&&t.status==='open');
 const check=(name,data={})=>{report.checks.push({name,...data});console.log('PASS '+name);};
 

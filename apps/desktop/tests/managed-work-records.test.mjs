@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {managedWorkRecords,intakeLineage} from '../src/domain/managed-work-records.mjs';
+import {managedWorkRecords,intakeLineage,managedInboxTodos} from '../src/domain/managed-work-records.mjs';
 const base=()=>({jobs:[],works:[],todos:[],receipts:[],drafts:{}});
 const intake=(id,extra={})=>({id,target:'orchestrator',type:'intake',text:'做一项工作',status:'queued',context:{},at:'2026-10-12T08:00:00Z',...extra});
 test('accepted request survives clarification and dispatch as one record',()=>{
@@ -16,8 +16,8 @@ test('same-text separate requests stay distinct; routed supplements merge into o
 test('status after clarification disappears instead of leaving a fake open task',()=>{
  const s=base();s.jobs.push(intake('one',{status:'completed',routing:{action:'clarify'}}));s.todos.push({id:'q',sourceJobId:'one',kind:'routing',status:'resolved'});s.jobs.push(intake('answer',{status:'completed',context:{routingQuestionId:'q'},routing:{action:'status'}}));assert.deepEqual(managedWorkRecords(s),[]);
 });
-test('explicit retry keeps root, clears stale retry and is compatible with missing historic dates',()=>{
- const s=base();s.jobs.push(intake('one',{status:'interrupted',error:'restart'}));assert.equal(managedWorkRecords(s)[0].retryJobId,'one');
+test('historic explicit retry lineage keeps root without offering new technical retries',()=>{
+ const s=base();s.jobs.push(intake('one',{status:'interrupted',error:'restart'}));assert.equal(managedWorkRecords(s)[0].retryJobId,undefined);
  s.jobs.push(intake('retry',{at:undefined,context:{retryOf:'one'}}));const r=managedWorkRecords(s)[0];assert.equal(r.id,'request:one');assert.equal(r.retryJobId,undefined);assert.equal(r.status,'pending');assert.ok(r.events.length);assert.equal(intakeLineage(s,s.jobs[1])[0].id,'one');
 });
 test('review occupies quota, pending supplements and closure failures remain understandable',()=>{
@@ -32,4 +32,51 @@ test('internal maintenance is not waiting for user answer and preserves accepted
  w.maintenance.status='needs-version-fix';record=managedWorkRecords(s)[0];assert.equal(record.phase,'系统问题待修复，进展已保留');
  w.status='ended';w.outcome='accept';w.closure={phase:'blocked',decision:'accept'};record=managedWorkRecords(s)[0];assert.equal(record.outcome,'accept');assert.equal(record.phase,'已接受 · 系统问题待修复，进展已保留');
  w.closure.phase='complete';assert.equal(managedWorkRecords(s)[0].phase,'已接受并结束 · 技术收尾完成');
+});
+test('review revision four retains old failures only as history, without mutating durable facts',()=>{
+ const s=base();s.works=[{id:'w',name:'Current report',status:'review',revision:4,result:{objectId:'result4',revision:4}}];
+ s.jobs=[{id:'old429',target:'w',type:'initial',status:'failed',revision:1,error:'429'}, {id:'done2',target:'w',type:'supplement',status:'completed',revision:2}, {id:'oldAck',target:'w',type:'supplement',status:'failed',revision:3,error:'ack timeout'}, {id:'done4',target:'w',type:'supplement',status:'completed',revision:4}];
+ s.receipts=[{id:'receipt4',kind:'result',workId:'w',objectId:'result4',revision:4,jobId:'done4'}];s.todos=[{id:'todo4',kind:'result',workId:'w',objectId:'result4',revision:4,status:'open'}];
+ s.backstageEvents=[{workId:'w',sourceJobId:'oldAck',status:'blocked',kind:'native',reason:'old diagnostic'}];
+ const before=structuredClone(s),record=managedWorkRecords(s)[0];
+ assert.equal(record.status,'review');assert.equal(record.phase,'结果待审查');assert.equal(record.todoId,'todo4');assert.equal(record.settlementIssue,undefined);assert.equal(record.backstage,undefined);assert.deepEqual(record.supersededJobIds,['old429','done2','oldAck']);assert.deepEqual(s,before);
+ s.jobs[3].status='failed';s.jobs[3].error='current settlement failed';const current=managedWorkRecords(s)[0];
+ assert.equal(current.settlementIssue.jobId,'done4');assert.equal(current.settlementIssue.error,'current settlement failed');assert.equal(current.phase,'结果已保存 · 完成状态待核查');assert.equal(current.todoId,'todo4');
+});
+test('only proven older input failures and stops lose live precedence',()=>{
+ const s=base();s.works=[{id:'w',status:'paused',revision:4}];s.jobs=[intake('old',{status:'failed',revision:3,context:{boundWorkId:'w'}}),{id:'oldStop',target:'w',revision:3,status:'interrupted',interruptionReason:'user-interrupted'}];
+ let record=managedWorkRecords(s)[0];assert.equal(record.retryJobId,undefined);assert.equal(record.phase,'后台处理中 · 进展已保留');
+ s.jobs[0].revision=4;record=managedWorkRecords(s)[0];assert.equal(record.retryJobId,'old');assert.equal(record.phase,'补充处理失败，待重试');
+ delete s.jobs[0].revision;assert.equal(managedWorkRecords(s)[0].retryJobId,'old','unknown input version must not be silently discarded');
+ s.jobs.shift();s.jobs[0].revision=4;assert.equal(managedWorkRecords(s)[0].phase,'本轮已停止 · 等待明确补充');
+});
+
+test('approved current publication is not historical merely because its old reminder was cancelled',()=>{
+ const s=base();s.works.push({id:'w',revision:9,status:'closing',outcome:'accept',result:{objectId:'r9'},closure:{phase:'blocked',binding:{objectId:'r9'}}});
+ s.todos.push({id:'current',workId:'w',kind:'result',revision:9,objectId:'r9',status:'cancelled'},{id:'older',workId:'w',kind:'result',revision:8,objectId:'r8',status:'superseded'});
+ const records=managedInboxTodos(s);assert.equal(records.find(r=>r.id==='current').historical,false);assert.equal(records.find(r=>r.id==='current').pending,false);assert.equal(records.find(r=>r.id==='older').historical,true);
+ s.works[0].status='ended';s.works[0].closure.phase='complete';assert.equal(managedInboxTodos(s).find(r=>r.id==='current').historical,true);
+});
+
+test('unrouted internal failure preserves exact user goal and diagnostics without offering repair',()=>{
+ const s=base();s.jobs.push(intake('failed',{text:'[protocol wrapper] nozeli_inspect_work @state cursor=""',context:{userGoal:'开始落盘',sourceMessageId:'source'},status:'failed',error:'INVALID_CURSOR stack',maintenanceBugId:'bug-runtime',maintenanceFault:{phase:'runtime',code:'INVALID_CURSOR'}}));
+ s.backstageEvents=[{sourceJobId:'failed',status:'blocked',kind:'runtime',reason:'INVALID_CURSOR stack'}];
+ const before=structuredClone(s),record=managedWorkRecords(s)[0];
+ assert.equal(record.name,'开始落盘');assert.equal(record.request,'开始落盘');assert.equal(record.description,'开始落盘');assert.equal(record.status,'failed');assert.equal(record.phase,'系统问题待处理 · 原请求已保留');
+ assert.equal(record.maintenance.bugId,'bug-runtime');assert.equal(record.retryJobId,undefined);assert.equal(record.todoId,undefined);assert.equal(record.workId,undefined);assert.equal(record.events.at(-1).detail,'INVALID_CURSOR stack');assert.deepEqual(s,before);
+ s.jobs.push({id:'repair',type:'maintenance',status:'running',context:{bugId:'bug-runtime'}});assert.equal(managedWorkRecords(s)[0].phase,'系统正在处理运行问题 · 原请求已保留');
+ s.jobs[1].status='failed';assert.equal(managedWorkRecords(s)[0].phase,'系统问题待处理 · 原请求已保留');
+});
+
+test('source identity supplies request name and provider failures never claim automatic repair',()=>{
+ const s=base();s.messages=[{id:'source',text:'原始引用材料'}];s.jobs.push(intake('provider',{text:'[protocol wrapper]',context:{sourceMessageId:'source'},status:'failed',diagnosticOnly:true,error:'provider refused'}));
+ const record=managedWorkRecords(s)[0];assert.equal(record.name,'原始引用材料');assert.equal(record.description,'原始引用材料');assert.equal(record.maintenance,undefined);assert.equal(record.retryJobId,undefined);assert.doesNotMatch(record.phase,/系统正在|修复|完成/);
+});
+
+test('settled host-control turn with an unresolved internal fault is not a completed business request',()=>{
+ const s=base();s.jobs.push(intake('settled',{status:'completed',completion:'host-control',context:{userGoal:'开始落盘'},maintenanceBugId:'bug-tool',maintenanceFault:{phase:'tool',code:'HOST_INTERNAL_FAILURE'}}));
+ const before=structuredClone(s),record=managedWorkRecords(s)[0];
+ assert.equal(record.name,'开始落盘');assert.equal(record.status,'blocked');assert.equal(record.maintenance.bugId,'bug-tool');assert.equal(record.retryJobId,undefined);assert.equal(record.workId,undefined);assert.deepEqual(s,before);
+ s.jobs.push({id:'repair',type:'maintenance',status:'queued',context:{bugId:'bug-tool'}});
+ assert.equal(managedWorkRecords(s)[0].maintenance.status,'queued');assert.equal(s.jobs[0].status,'completed');
 });

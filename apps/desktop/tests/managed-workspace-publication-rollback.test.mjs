@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import {readManagedState} from '../src/agents/managed/managed-storage.mjs';
+import {readManagedState,readManagedPending} from '../src/agents/managed/managed-storage.mjs';
 import {staticReport} from './static-report.fixture.mjs';
 
 async function fixture(t,{job=false}={}){
@@ -20,7 +20,7 @@ const durable=store=>readManagedState(store.storage,store.projectId,{offline:fal
 const receipt=(store,id)=>store.storage.getProject(store.projectId,'managed_receipts',id);
 async function failedTransaction(store,id){
   const rows=await store.listPending();
-  const pending=rows.find(row=>row.kind==='business'&&row.collections.managed_receipts?.some(row=>row.id===id));
+  let pending;for(const row of rows.filter(row=>row.kind==='business')){const detail=await readManagedPending(store.storage,store.projectId,row.id);if(detail.collections?.managed_receipts?.some(row=>row.id===id)){pending={...row,...detail};break;}}
   assert.ok(pending,'failed transaction retains its complete candidate collections');
   assert.equal(pending.status,'pending');
   assert.equal(pending.automaticReplay,false);

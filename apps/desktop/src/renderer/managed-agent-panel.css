@@ -40,26 +40,30 @@ body[data-managed-agents=true] #managed-doc{overflow-wrap:anywhere;line-height:1
 #work-items .managed-work-open:hover:not(:disabled){background:var(--surface)}
 .managed-work-highlight{background:var(--surface,#eaf2eb);outline:1px solid var(--accent)}
 .managed-task-reference{border:0;background:transparent;color:var(--muted);font-size:11px;text-align:left;padding:6px 0;white-space:normal;overflow-wrap:anywhere}
-#managed-submit-task{font-size:11px;white-space:normal;max-width:108px;flex-shrink:0;padding:5px 8px}
-#managed-submit-task[hidden],.managed-work-entry [hidden]{display:none!important}
+.managed-work-entry [hidden]{display:none!important}
 /* The session surface owns its input layout, independent of legacy chat chrome. */
-#conversation-panel.session-surface{padding:0 clamp(8px,1.6vw,16px) 12px;border:0;overflow:hidden;background:var(--chat-canvas);color:var(--chat-ink)}
+#conversation-panel.session-surface{padding:0 clamp(6px,1.2vw,12px) 4px;border:0;overflow:hidden;background:var(--chat-canvas);color:var(--chat-ink)}
 .session-surface #conversation{flex:1 1 auto;min-height:0;max-height:none;padding:0;overflow:auto;scrollbar-gutter:stable both-edges;scrollbar-width:thin}
-.session-surface #compose-form{flex:0 0 auto;align-self:center;width:min(100%,var(--chat-column));min-height:0;max-height:48%;box-sizing:border-box;margin:0;padding:12px 14px;border:1px solid var(--chat-line);border-radius:12px;background:var(--chat-surface);display:flex;flex-direction:column;gap:6px;overflow:auto}
-.session-surface #context-bar{font-family:var(--chrome-font-family,system-ui,sans-serif);font-size:max(12px,calc(var(--chat-ui-font) - 1px));color:var(--chat-muted);line-height:1.5}
-.session-surface #composer{flex:0 0 auto;box-sizing:border-box;width:100%;min-height:3.6em;height:3.6em;max-height:min(180px,max(108px,24vh));padding:3px 0;border:0;border-radius:0;background:transparent;color:var(--chat-ink);font:inherit;font-size:var(--conversation-font,14px);line-height:1.8;overflow:auto;resize:none}
+.session-surface #managed-input-identity{box-sizing:border-box;width:min(100%,var(--chat-column));margin:12px auto;padding:8px 14px;border-inline-start:2px solid var(--chat-line);color:var(--chat-muted);font:inherit;line-height:1.6;overflow-wrap:anywhere}
+.session-surface #managed-input-identity p{margin:0}
+.session-surface #managed-input-identity textarea{box-sizing:border-box;width:100%;color:var(--chat-ink);background:var(--chat-surface);font:inherit}
+.session-surface #compose-form{flex:0 0 auto;align-self:center;width:min(100%,var(--chat-column));min-height:0;max-height:52%;box-sizing:border-box;margin:0;padding:7px 10px;border:1px solid var(--chat-line);border-radius:10px;background:var(--chat-surface);display:flex;flex-direction:column;gap:3px;overflow:auto}
+.session-surface #context-bar{font-family:var(--chrome-font-family,system-ui,sans-serif);font-size:11px;color:var(--chat-muted);line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.session-surface #composer{flex:0 0 auto;box-sizing:border-box;width:100%;min-height:2.8em;height:2.8em;max-height:min(180px,max(84px,24vh));padding:2px 0;border:0;border-radius:0;background:transparent;color:var(--chat-ink);font:inherit;font-size:var(--conversation-font,14px);line-height:1.4;overflow:auto;resize:none}
 .session-surface #composer::placeholder{color:var(--chat-muted);opacity:1}
-.session-surface .composer-footer{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-start;gap:6px 10px;padding:0;color:var(--chat-muted);font-family:var(--chrome-font-family,system-ui,sans-serif);font-size:var(--chat-ui-font);line-height:1.5}
-.session-surface #compose-status{flex:1 0 100%;order:-1;min-width:0;color:var(--chat-muted);font:inherit}
+.session-surface .composer-footer{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-start;gap:4px 7px;padding:0;color:var(--chat-muted);font-family:var(--chrome-font-family,system-ui,sans-serif);font-size:var(--chat-ui-font);line-height:1.4}
+.session-surface #compose-status{flex:1 1 60px;min-width:0;color:var(--chat-muted);font:inherit;overflow-wrap:anywhere}
 .session-surface .composer-footer :is(button,label){flex:0 0 auto;white-space:nowrap}
 .session-surface .composer-footer .cm-add{width:auto;min-width:max-content;margin:0;padding:4px 7px;border:1px solid var(--chat-line);border-radius:6px;background:none;color:var(--chat-muted);font:inherit}
-.session-surface .composer-footer .attach-file{display:flex;align-items:center;gap:4px;margin-inline-end:auto;max-width:none;color:var(--chat-muted)}
-.session-surface #managed-submit-task{max-width:none;padding:5px 8px;border:1px solid var(--chat-line);border-radius:6px;background:none;color:var(--chat-muted);font:inherit}
-.session-surface #send-message{min-width:64px;padding:5px 10px;border:1px solid var(--chat-action);border-radius:6px;background:var(--chat-action);color:var(--chat-action-ink);font:inherit}
+.session-surface .composer-footer .attach-file{display:flex;align-items:center;gap:3px;max-width:none;color:var(--chat-muted);font-size:11px}
+.session-surface #submit-background{min-width:0;padding:4px 7px;border:1px solid var(--chat-line);border-radius:6px;background:none;color:var(--chat-ink);font:inherit}
+.session-surface #submit-background:disabled{color:var(--chat-muted);background:var(--chat-line);cursor:default}
+.session-surface #submit-background:hover:not(:disabled){border-color:var(--chat-action);color:var(--chat-action)}
+.session-surface #send-message{min-width:0;padding:4px 8px;border:1px solid var(--chat-action);border-radius:6px;background:var(--chat-action);color:var(--chat-action-ink);font:inherit}
 .session-surface #send-message:disabled{opacity:1;background:var(--chat-line);border-color:var(--chat-line);color:var(--chat-muted)}
 .session-surface #send-message:hover:not(:disabled){background:var(--chat-action)}
 .session-surface :is(button,input,textarea):focus-visible{outline:2px solid var(--chat-action);outline-offset:2px}
-@container session (max-width:600px){.session-surface #compose-form{padding:10px;max-height:52%}.session-surface .composer-footer{gap:6px 8px}.session-surface .composer-footer .attach-file{margin-inline-end:0}.session-surface #managed-submit-task{margin-inline-start:auto}}
+@container session (max-width:420px){.session-surface #compose-form{padding:6px 8px;max-height:58%}.session-surface .composer-footer{gap:3px 5px}.session-surface #compose-status{flex-basis:100%;font-size:11px}.session-surface #send-message{margin-inline-start:auto}}
 .managed-work-description:empty{display:none}
 #managed-source-task { margin: 6px 0; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); flex: 0 0 auto; }
 #managed-source-task[hidden] { display: none; }
@@ -74,16 +78,34 @@ body[data-managed-agents=true] #managed-doc{overflow-wrap:anywhere;line-height:1
 .managed-work-entry button:disabled{color:var(--muted);cursor:default}
 .managed-work-entry button:focus-visible{outline:2px solid var(--ui-control-focus);outline-offset:2px}
 #managed-current-work .managed-work-versions{margin-top:12px}
+.workflow-panel>h2{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+#work-count{font-weight:400;font-size:11px;color:var(--muted)}
+.managed-work-categories{align-items:center;min-width:0}
+.managed-work-categories>button{flex:0 0 auto;white-space:nowrap}
+#managed-work-category-more{margin-inline-start:auto;min-width:32px;max-width:48%;overflow:hidden;text-overflow:ellipsis}
+#managed-work-filter-menu{max-width:min(300px,calc(100vw - 16px))}
+#managed-work-filter-menu .panel-menu-notice{max-width:260px;white-space:normal;overflow-wrap:anywhere;line-height:1.5;font-size:11px}
+#managed-agent-details[data-mode=work]{width:min(680px,calc(100vw - 32px));max-width:calc(100vw - 32px);max-height:88dvh;box-sizing:border-box;padding:24px;overflow:auto}
+#managed-agent-details[data-mode=work]>h2{font:600 16px/1.5 var(--chrome-font-family,system-ui,sans-serif);color:var(--muted);margin:0 0 16px}
+#managed-agent-details[data-mode=work] .managed-agent-details-body>:not(#managed-current-work){display:none!important}
+#managed-agent-details[data-mode=work] #managed-current-work{margin:0;padding:0;min-width:0;border:0;border-radius:0;background:transparent;font-size:inherit;line-height:inherit}
+#managed-agent-details[data-mode=work]>button{display:block;margin:18px 0 0 auto;min-height:36px}
+@media(max-width:479px){#managed-agent-details[data-mode=work]{padding:16px;width:calc(100vw - 24px);max-width:calc(100vw - 24px)}}
 #managed-work-menu [data-command=discard]{color:var(--red)}
 #managed-work-archive{border-top:1px solid var(--line);margin-top:12px;padding-top:8px;font-size:12px}
 #managed-work-archive>summary{cursor:pointer;color:var(--muted)}
 #managed-work-archive button{display:block;width:100%;border:0;background:transparent;text-align:left;padding:7px 0;white-space:normal;overflow-wrap:anywhere}
 #managed-review-error{color:var(--red);white-space:normal;overflow-wrap:anywhere}
 #managed-doc{overflow-wrap:anywhere;min-width:0;box-sizing:border-box;padding:0 16px 16px;container-type:inline-size}
-#managed-doc:not([hidden]):has(>.isolated-report){display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden}
-#managed-doc>.isolated-report{height:auto;min-height:0;flex:1 1 0}
-#managed-doc>.isolated-report>.isolated-viewport{min-height:0}
-#managed-doc:has(>.isolated-report)>#managed-result-actions{flex:none}
+#reader-scroll:has(>#managed-doc:not([hidden])>.managed-report-body){display:flex;overflow:hidden}
+#managed-doc:not([hidden]):has(>.managed-report-body){display:flex;flex-direction:column;flex:1;min-height:0;height:100%;overflow:hidden;padding-block:0}
+#managed-doc>.managed-report-body{flex:1 1 0;min-height:0;min-width:0;overflow:auto}
+#managed-doc>.managed-report-body:has(>.isolated-report){display:flex;overflow:hidden}
+#managed-doc .managed-report-body>.isolated-report{flex:1;min-height:0;min-width:0}
+#managed-doc .managed-report-body .isolated-viewport{min-height:0}
+#managed-doc:has(>.managed-report-body)>:not(.managed-report-body){flex:none}
+#managed-doc>.managed-report-state{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0;padding:4px 8px;border-bottom:1px solid var(--line);font-family:var(--chrome-font-family);font-size:var(--chrome-font-size,13px)}
+#managed-doc>.managed-report-state button{max-width:100%;white-space:normal;overflow-wrap:anywhere}
 @media(max-width:479px){#managed-doc{padding-inline:12px}}
 #managed-result-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:16px;padding-top:12px;border-top:1px solid var(--line);font-family:var(--chrome-font-family);font-size:var(--chrome-font-size,13px);white-space:normal}
 #managed-result-actions .managed-report-state{flex:1 1 auto;margin:0;min-width:0}
@@ -114,11 +136,9 @@ body[data-managed-agents=true] #managed-doc{overflow-wrap:anywhere;line-height:1
  body[data-managed-agents=true] .compact-composer .composer-wrap #composer{flex:none;box-sizing:border-box;width:100%;min-width:0;height:44px;min-height:44px;max-height:96px}
  body[data-managed-agents=true] .compact-composer .composer-footer{display:grid;grid-template-columns:minmax(0,1fr) minmax(56px,1fr);align-self:stretch;align-items:center;gap:4px;min-width:0}
  body[data-managed-agents=true] #conversation-panel.compact-composer .composer-footer .cm-add,
- body[data-managed-agents=true] #conversation-panel.compact-composer .composer-footer #managed-submit-task,
  body[data-managed-agents=true] #conversation-panel.compact-composer .composer-footer #send-message{box-sizing:border-box;min-width:0;width:100%;max-width:100%;flex:0 1 auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
  body[data-managed-agents=true] #conversation-panel.compact-composer .composer-footer .cm-add{grid-column:1/-1;grid-row:1;padding:3px 4px;font-size:10px}
  body[data-managed-agents=true] #conversation-panel.compact-composer .composer-footer .attach-file{grid-column:1/-1;grid-row:2;max-width:100%;margin:0;white-space:nowrap}
- body[data-managed-agents=true] #conversation-panel.compact-composer .composer-footer #managed-submit-task{grid-column:1;grid-row:3;padding:3px 2px;font-size:9px}
  body[data-managed-agents=true] #conversation-panel.compact-composer .composer-footer #send-message{grid-column:2;grid-row:3;min-width:0;padding:3px 2px;font-size:10px}
  body[data-managed-agents=true] #conversation-panel.compact-composer .composer-footer #compose-status{display:none!important}
 }
@@ -128,7 +148,7 @@ body[data-managed-agents=true] #managed-doc{overflow-wrap:anywhere;line-height:1
 .managed-history-actions{display:flex;flex-wrap:wrap;gap:8px}
 #managed-work-archive .managed-history-actions button{width:auto;border:1px solid var(--line);border-radius:6px;padding:4px 8px}
 #managed-work-archive p{font-size:11px;line-height:1.5;color:var(--muted);overflow-wrap:anywhere}
-body[data-managed-history=true] #send-message,body[data-managed-history=true] #managed-submit-task{display:none!important}
+body[data-managed-history=true] #send-message{display:none!important}
 
 #managed-recovery-receipt{padding:10px 12px;border-left:2px solid var(--accent);background:var(--surface);overflow-wrap:anywhere;white-space:normal}
 #managed-recovery-receipt[hidden],[data-managed-recovery-note][hidden]{display:none}

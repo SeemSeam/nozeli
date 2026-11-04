@@ -24,6 +24,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { createMemoryCatalogStorage, seedResumeSession } from "./catalog-memory.mjs";
 import { createFactChannel } from "./facts.mjs";
+import { createActivityState } from "./activity.mjs";
 import {
   CONTEXT_BUDGET_DEFAULTS,
   normalizeMaterials,
@@ -39,6 +40,12 @@ import {
   normalizeHostTools,
 } from "./tools.mjs";
 import { nozeliZaiCodingPlanExtension } from "./zai-coding-plan.mjs";
+import {
+  installProviderHttpObserver,
+  providerHttpObservations,
+  providerHttpObserverSeq,
+  runWithHttpCorrelation,
+} from "./http-observer.mjs";
 
 const VENDOR_DRIVER_ENTRY = fileURLToPath(
   new URL("../dist/vendor/pi-gui/packages/pi-sdk-driver/index.js", import.meta.url),
@@ -134,6 +141,7 @@ function workspaceRefFor(cwd) {
 }
 
 function mapError(error, fallbackCode = "PI_INTERNAL") {
+  if(error?.failureOrigin==='host')return Object.assign(new Error(error?.message??String(error)),{code:error?.code??fallbackCode,failureOrigin:'host',...(typeof error?.hostToolCode==='string'&&/^[A-Z][A-Z0-9_]{0,79}$/.test(error.hostToolCode)?{hostToolCode:error.hostToolCode}:{})});
   if (error?.code?.startsWith("PI_")) {
     return error;
   }
@@ -154,6 +162,122 @@ function mapError(error, fallbackCode = "PI_INTERNAL") {
     return Object.assign(new Error(message), { code: "PI_AUTH_UNSUPPORTED" });
   }
   return Object.assign(new Error(message), { code: error?.code ?? fallbackCode });
+}
+// HTTP status probe in the same SDK-field order pi-ai uses
+// (utils/error-body.js). Only a real numeric 4xx/5xx on the thrown SDK error
+// counts — never parsed out of message text.
+function httpStatusOf(error) {
+  for (const value of [error?.statusCode, error?.status, error?.$metadata?.httpStatusCode, error?.$response?.statusCode]) {
+    if (typeof value === "number" && Number.isInteger(value) && value >= 400 && value <= 599) return value;
+  }
+  return null;
+}
+
+// Inference path suffix per native pi-ai API family — the exact path each
+// chat client appends to the model's baseUrl. Mirrors the vendored SDK's own
+// request URL construction; nothing is guessed from observer rows.
+const INFERENCE_PATH_SUFFIX = {
+  "openai-completions": "/chat/completions",
+  "openai-responses": "/responses",
+  "anthropic-messages": "/v1/messages",
+};
+
+const pathMatches = (observed, expected) =>
+  observed === expected || observed === `${expected}/`;
+
+// The ACTUAL native session model authority (Runtime.session.model): the
+// live provider/modelId/api/baseUrl the SDK would send inference traffic to,
+// read from the session itself — never from the host's request parameters.
+export function nativeModelAuthority(nativeRuntime) {
+  const model = nativeRuntime?.session?.model;
+  if (!model || typeof model !== "object") return null;
+  const api = typeof model.api === "string" && model.api ? model.api : null;
+  let baseUrl = null;
+  if (typeof model.baseUrl === "string" && model.baseUrl) {
+    try {
+      const url = new URL(model.baseUrl);
+      // Origin + path only: embedded credentials, query and fragment never
+      // ride the authority object (query can carry provider key material).
+      if (["http:", "https:"].includes(url.protocol)) baseUrl = url.origin + url.pathname;
+    } catch {
+      baseUrl = null;
+    }
+  }
+  return {
+    ...(typeof model.provider === "string" && model.provider ? { provider: model.provider } : {}),
+    ...(typeof model.id === "string" && model.id ? { modelId: model.id } : {}),
+    ...(api ? { api } : {}),
+    ...(baseUrl ? { baseUrl } : {}),
+  };
+}
+
+// Expected inference endpoint (origin + exact pathname) for the native model
+// authority, or null when the live model carries no baseUrl/api (built-in
+// providers without a resolvable endpoint never loosen attribution).
+export function inferenceEndpointOf(authority) {
+  if (!authority?.baseUrl || !authority?.api) return null;
+  const suffix = INFERENCE_PATH_SUFFIX[authority.api];
+  if (!suffix) return null;
+  try {
+    const url = new URL(authority.baseUrl);
+    return { origin: url.origin, pathname: `${url.pathname.replace(/\/+$/, "")}${suffix}` };
+  } catch {
+    return null;
+  }
+}
+
+// Attach a bounded, sanitized, STRUCTURED provider-failure evidence object to
+// a thrown owner error. Fields are picked explicitly; stacks, raw bodies and
+// credential-bearing material never ride along. The host classifies from
+// these fields only — never from the display message.
+//
+// Attribution (review P1): rows are selected by IDENTITY, never by "any
+// failed POST" and never by clustering an origin after the fact.
+//  1. correlationId — the per-turn AsyncLocalStorage scope around the native
+//     inference request: only rows observed INSIDE this turn's scope qualify;
+//     concurrent traffic of any other source (title generation, OAuth token
+//     refresh, another owner process's turn in the same ring) is excluded.
+//  2. endpoint — derived from the ACTUAL native Runtime.session.model
+//     provider/baseUrl/api BEFORE any terminal status is chosen: a row must
+//     hit the exact inference origin+path (base path + per-API suffix), so a
+//     concurrent POST to another endpoint, another source, or the same origin
+//     under a different path can never become this fault's terminal evidence.
+// The terminal failing row is chosen LAST, among the already-attributed rows
+// only; when nothing qualifies, no http evidence is attached at all.
+export function attachProviderFailure(error, { phase, rawError = null, factsState, http, deliveryPhase, correlationId = null, endpoint = null }) {
+  if (!error || typeof error !== "object") return error;
+  const failure = factsState?.turnProviderFailure ?? null;
+  // Inference traffic only: the ring is process-global, so the window is
+  // filtered to POSTs (model traffic); discovery/listing GETs never become
+  // fault evidence.
+  let attributed = (Array.isArray(http) ? http : []).filter(row => row && row.method === "POST");
+  if (correlationId) attributed = attributed.filter(row => row.context === correlationId);
+  if (endpoint) {
+    attributed = attributed.filter(row => row.origin === endpoint.origin && pathMatches(row.pathname, endpoint.pathname));
+  }
+  const failingRow = [...attributed].reverse().find(row => row.networkCode || row.status >= 400) ?? null;
+  const httpStatus = rawError ? httpStatusOf(rawError) : null;
+  const networkCode = failingRow?.networkCode ?? null;
+  const evidence = {
+    schema: 1,
+    phase,
+    ...(Number.isInteger(httpStatus) ? { httpStatus } : Number.isInteger(failingRow?.status) && failingRow.status >= 400 ? { httpStatus: failingRow.status } : {}),
+    ...(networkCode ? { networkCode } : {}),
+    ...(failure?.provider ? { provider: failure.provider } : {}),
+    ...(failure?.model ? { model: failure.model } : {}),
+    ...(failure?.api ? { api: failure.api } : {}),
+    ...(failure?.stopReason ? { stopReason: failure.stopReason } : {}),
+    ...(failure?.rawStopReason ? { rawStopReason: failure.rawStopReason } : {}),
+    ...(Array.isArray(failure?.diagnosticCodes) && failure.diagnosticCodes.length ? { diagnosticCodes: failure.diagnosticCodes } : {}),
+    ...(typeof factsState?.willRetry === "boolean" ? { willRetry: factsState.willRetry } : {}),
+    // Actual native SDK retry evidence for THIS turn (bounded counters only;
+    // the SDK's retry error text never rides the evidence).
+    ...(factsState?.turnAutoRetry && typeof factsState.turnAutoRetry === "object" ? { autoRetry: factsState.turnAutoRetry } : {}),
+    ...(typeof deliveryPhase === "string" && deliveryPhase ? { deliveryPhase } : {}),
+    ...(attributed.length ? { http: attributed } : {}),
+  };
+  Object.assign(error, { providerFailure: evidence });
+  return error;
 }
 
 function safeOrigin(value) {
@@ -348,7 +472,7 @@ function toJsonShallow(record) {
   return JSON.parse(JSON.stringify(record));
 }
 
-function runContextExtension({ getTurn, instructions, isRunActive }) {
+function runContextExtension({ getTurn, instructions, isRunActive, persistRunEntries }) {
   return {
     name: "nozeli-owner-run-context",
     hidden: true,
@@ -369,6 +493,10 @@ function runContextExtension({ getTurn, instructions, isRunActive }) {
       });
       pi.on("context", async (event) => {
         const turn = getTurn();
+        // The native context hook is awaited after journal append and before
+        // provider dispatch. Publish fsync-backed entry identities while the
+        // original request/job binding is still live, not only after the run.
+        if (turn && !turn.settled) await persistRunEntries();
         const projection = turn?.projection;
         if (!projection || turn.settled || !isRunActive()) {
           return undefined;
@@ -406,8 +534,27 @@ function countStats(entries) {
 
 export class OwnerRuntime {
   constructor({ send }) {
-    this.send = send;
+    // Sanitized provider HTTP observation is process-wide in the owner: one
+    // bounded ring, installed before any provider transport can run.
+    installProviderHttpObserver();
+    this.activityState = createActivityState();
+    const transportSend = send;
+    this.send = frame => transportSend(this.activityState.observe(frame));
+    send = this.send;
     this.facts = createFactChannel({ send });
+    // These operations are already owner-local; their protected lifetime includes
+    // preparation and flush, not just the native run's agent_end notification.
+    for (const method of ['start', 'prompt', 'recover', 'model', 'reload', 'compact', 'flush']) {
+      const execute = this[method].bind(this);
+      this[method] = async (...args) => {
+        this.activityState.begin(method);
+        this.send({event:'activity'});
+        let failure;
+        try { return await execute(...args); }
+        catch (error) { failure = error; throw error; }
+        finally { this.activityState.end(method, failure); this.send({event:'activity'}); }
+      };
+    }
     this.tools = createHostToolBridge({ send, onHostControl: (reason = {}) => {
       const turn = this.promptInFlight;
       if (!turn || turn.settled) return;
@@ -486,6 +633,7 @@ export class OwnerRuntime {
             ...(options.resourceLoaderOptions?.extensionFactories ?? []),
             runContextExtension({
               getTurn: () => this.promptInFlight,
+              persistRunEntries: () => this.flush(),
               instructions: config.instructions,
               // Native compaction model calls (auto/manual/overflow) are Pi's
               // own summarization, never a host projection carrier.
@@ -537,18 +685,32 @@ export class OwnerRuntime {
     return `compaction:${this.compactionCount}:${this.lastCompactionEntryId ?? "root"}`;
   }
 
+  // The effective selection is read from the LIVE native session model (the
+  // actual SDK authority — Runtime.session.model), falling back to the
+  // snapshot config only while no native session exists. api/baseUrl expose
+  // the real inference transport identity (origin+path, credential-free) so
+  // the host can reconcile a fault's endpoint against the model that owns it.
   effectiveNow() {
     const config = this.snapshot?.config ?? {};
     const session = this.nativeRuntime?.session;
     const provider = session?.model?.provider ?? config.provider;
     const modelId = session?.model?.id ?? config.modelId;
     const effort = session?.thinkingLevel ?? config.thinkingLevel ?? null;
+    const authority = nativeModelAuthority(this.nativeRuntime);
     return {
       ...(provider && modelId
         ? { model: `${provider}/${modelId}`, provider, modelId }
         : {}),
       ...(effort ? { effort } : {}),
+      ...(authority?.api ? { api: authority.api } : {}),
+      ...(authority?.baseUrl ? { baseUrl: authority.baseUrl } : {}),
     };
+  }
+
+  // Exact inference endpoint the native session's model would hit right now,
+  // or null when the live model carries no resolvable baseUrl/api.
+  nativeInferenceEndpoint() {
+    return inferenceEndpointOf(nativeModelAuthority(this.nativeRuntime));
   }
 
   async applyProviderConfig({ cwd, model }) {
@@ -679,6 +841,7 @@ export class OwnerRuntime {
     this.sessionRef = { workspaceId: workspace.workspaceId, sessionId };
     this.snapshot = snapshot;
     this.facts.setSessionId(sessionId);
+    this.activityState.setSessionId(sessionId);
     this.unsubscribeDriver?.();
     this.unsubscribeDriver = this.driver.subscribe(this.sessionRef, (event) =>
       this.onDriverEvent(event),
@@ -711,6 +874,85 @@ export class OwnerRuntime {
       contextDelivery: { budget: { ...this.contextBudget }, contextEpoch: this.contextEpoch() },
       ...(resume ? { entries } : {}),
     };
+  }
+
+  async inspectRecovery(params = {}) {
+    if (!this.sessionRef || this.promptInFlight) throw Object.assign(new Error('Recovery requires an idle native session'), {code:'PI_RECOVERY_BUSY'});
+    for (const key of ['sessionId', 'requestId', 'jobId', 'userEntryId']) {
+      if (typeof params[key] !== 'string' || !params[key]) throw Object.assign(new Error(`Recovery requires ${key}`), {code:'PI_RECOVERY_IDENTITY'});
+    }
+    if (params.sessionId !== this.sessionRef.sessionId) throw Object.assign(new Error('Recovery session mismatch'), {code:'PI_RECOVERY_IDENTITY'});
+    await this.flush();
+    const file = await this.resolvedSessionFile();
+    const manager = (await loadVendor()).SessionManager.open(file);
+    const leafId = manager.getLeafId();
+    if (manager.getSessionId() !== params.sessionId || params.expectedLeafId && params.expectedLeafId !== leafId || this.nativeRuntime.session.sessionManager.getLeafId() !== leafId) throw Object.assign(new Error('Recovery journal leaf changed'), {code:'PI_RECOVERY_STALE_LEAF'});
+    const branch = manager.getBranch();
+    const index = branch.findIndex(entry => entry.id === params.userEntryId && entry.type === 'message' && entry.message?.role === 'user');
+    if (index < 0 || branch.slice(index + 1).some(entry => entry.type === 'message' && entry.message?.role === 'user')) throw Object.assign(new Error('Recovery user entry is not the current request'), {code:'PI_RECOVERY_IDENTITY'});
+    const messages = branch.slice(index).filter(entry => entry.type === 'message').map(entry => entry.message);
+    const calls = new Map();
+    const settledToolCalls = [];
+    for (const message of messages) {
+      if (message.role === 'assistant') for (const block of message.content ?? []) if (block.type === 'toolCall') calls.set(block.id, {callId:block.id,tool:block.name});
+      if (message.role === 'toolResult') {
+        if (!calls.has(message.toolCallId)) throw Object.assign(new Error('Unbound tool result'), {code:'PI_RECOVERY_IDENTITY'});
+        settledToolCalls.push(calls.get(message.toolCallId));calls.delete(message.toolCallId);
+      }
+    }
+    const pendingToolCalls = [...calls.values()];
+    const tail = messages.at(-1);
+    const completed = tail?.role === 'assistant' && ['stop', 'length'].includes(tail.stopReason);
+    const resumable = tail?.role === 'user' || tail?.role === 'toolResult' || tail?.role === 'assistant' && tail.stopReason === 'aborted';
+    const intentFile = `${file}.recovery-${createHash('sha256').update(String(leafId)).digest('hex')}.json`;
+    const fenced = existsSync(intentFile);
+    return {sessionId:params.sessionId,requestId:params.requestId,jobId:params.jobId,userEntryId:params.userEntryId,leafId,
+      state:pendingToolCalls.length || fenced || !completed && !resumable ? 'needs-reconciliation' : completed ? 'completed' : 'resumable',
+      reason:pendingToolCalls.length ? 'pending-tool-effect-unknown' : fenced ? 'recovery-intent-already-dispatched' : !completed && !resumable ? 'unsupported-journal-tail' : null,
+      pendingToolCalls,settledToolCalls,userEntryCount:branch.filter(entry => entry.type === 'message' && entry.message?.role === 'user').length};
+  }
+
+  async recover(params = {}) {
+    if (!params.expectedLeafId || !params.recoveryAttemptId || params.job?.id !== params.jobId) throw Object.assign(new Error('Recovery requires exact leaf, attempt and durable job'), {code:'PI_RECOVERY_IDENTITY'});
+    const inspection = await this.inspectRecovery(params);
+    if (inspection.state === 'needs-reconciliation') throw Object.assign(new Error(inspection.reason), {code:'PI_RECOVERY_RECONCILIATION'});
+    const recovery = {...inspection,recoveryAttemptId:params.recoveryAttemptId,nativeAdmitted:false};
+    if (inspection.state === 'completed') {
+      const branch = this.nativeRuntime.session.sessionManager.getBranch();
+      const message = branch.filter(entry => entry.type === 'message').at(-1)?.message;
+      return {text:(message?.content ?? []).filter(block => block.type === 'text').map(block => block.text).join(''),completion:'provider-completed',recovery,entries:[],settlement:{observed:true,persisted:true},effective:this.effectiveNow(),contextEpoch:this.contextEpoch()};
+    }
+    const file = await this.resolvedSessionFile();
+    const intentFile = `${file}.recovery-${createHash('sha256').update(String(inspection.leafId)).digest('hex')}.json`;
+    const handle = await open(intentFile,'wx',0o600);
+    try {await handle.writeFile(JSON.stringify(recovery));await handle.sync();} finally {await handle.close();}
+    const directory = await open(path.dirname(file),'r');try {await directory.sync();} finally {await directory.close();}
+    // This intent deliberately remains after errors/crashes: an uncertain model
+    // dispatch cannot be replayed at the same leaf by another owner.
+    const before = new Set(this.nativeRuntime.session.sessionManager.getEntries().map(entry => entry.id));
+    const turn = {turnId:params.recoveryAttemptId,requestId:params.requestId,jobId:params.jobId,sessionId:params.sessionId,settled:false,aborted:false};
+    this.promptInFlight = turn;this.facts.beginTurn(turn);this.tools.setTurn(turn);this.questions.setTurn(turn);
+    try {
+      await runWithHttpCorrelation(turn.turnId, () => this.driver.continueSession(this.sessionRef, async () => {
+        await this.flush();
+        const preparedLeafId = this.nativeRuntime.session.sessionManager.getLeafId();
+        if (preparedLeafId !== inspection.leafId) {
+          const preparedIntent = `${file}.recovery-${createHash('sha256').update(String(preparedLeafId)).digest('hex')}.json`;
+          const preparedHandle = await open(preparedIntent,'wx',0o600);
+          try {await preparedHandle.writeFile(JSON.stringify({...recovery,preparedLeafId}));await preparedHandle.sync();} finally {await preparedHandle.close();}
+          const dir = await open(path.dirname(file),'r');try {await dir.sync();} finally {await dir.close();}
+        }
+      }));
+      if (!turn.settled) throw Object.assign(new Error('Native recovery settlement not observed'), {code:'PI_SETTLEMENT_UNKNOWN'});
+      await this.flush();
+      if (turn.hostToolError) throw Object.assign(new Error(turn.hostToolError.message), {code:'PI_HOST_TOOL_FAILED',failureOrigin:'host',...(typeof turn.hostToolError.code==='string'&&/^[A-Z][A-Z0-9_]{0,79}$/.test(turn.hostToolError.code)?{hostToolCode:turn.hostToolError.code}:{})});
+      if (this.facts.state.turnErrorMessage && !turn.aborted) throw Object.assign(new Error(this.facts.state.turnErrorMessage), {code:'PI_PROVIDER_FAILED'});
+      recovery.nativeAdmitted = this.facts.state.admitted === true;
+      return {text:this.facts.state.lastAssistantText ?? '',completion:turn.hostControl?'host-control':turn.aborted?'aborted':'provider-completed',effective:this.effectiveNow(),contextEpoch:this.contextEpoch(),recovery,
+        entries:this.nativeRuntime.session.sessionManager.getEntries().filter(entry => !before.has(entry.id)),settlement:{observed:true,persisted:true}};
+    } finally {
+      if (turn.settled) {this.promptInFlight=null;this.facts.endTurn();this.tools.setTurn(null);this.questions.setTurn(null);}
+    }
   }
 
   async prompt(params) {
@@ -903,12 +1145,29 @@ export class OwnerRuntime {
     // the same requestId can never be replayed through this owner, whatever
     // happens next. No disk ledger — the durable cold guard is host-side.
     if (requestId) this.deliveryRecords.set(requestId, toJsonShallow(record));
+    // Windowed real-transport evidence for this turn: sanitized provider HTTP
+    // observations captured by the owner-process fetch observer. Attribution
+    // inputs are fixed BEFORE the native send: the opaque per-turn
+    // correlation id (AsyncLocalStorage scope around the whole inference
+    // request, so every fetch of the run — including the SDK's own bounded
+    // auto-retry re-fetches — is tagged with it) and the exact inference
+    // endpoint derived from the LIVE native session model. Rows that miss
+    // either identity never become this turn's evidence.
+    const observerStart = providerHttpObserverSeq();
+    const turnHttp = () => providerHttpObservations({ sinceSeq: observerStart, max: 4 });
+    const turnCorrelation = turn.turnId;
+    const turnEndpoint = this.nativeInferenceEndpoint();
     try {
       try {
-        await this.driver.sendUserMessage(this.sessionRef, {
-          text: params.text,
-          ...(attachments.length > 0 ? { attachments } : {}),
-        });
+        // The whole native run — submission, streaming and any SDK-internal
+        // bounded auto-retry — executes inside this turn's correlation scope,
+        // so the observer tags exactly this turn's inference fetches.
+        await runWithHttpCorrelation(turnCorrelation, () =>
+          this.driver.sendUserMessage(this.sessionRef, {
+            text: params.text,
+            ...(attachments.length > 0 ? { attachments } : {}),
+          }),
+        );
         record.phase = "submitted";
         emitDelivery();
         if (!turn.settled) {
@@ -922,7 +1181,13 @@ export class OwnerRuntime {
         // entry: verify instead of guessing, then report unknown if absent.
         await this.flush().catch(() => {});
         if (!confirmRecordedEntry()) markUnknown(error?.code ?? error?.message ?? "submit-failed");
-        throw mapError(error, "PI_PROMPT_FAILED");
+        const mapped = mapError(error, "PI_PROMPT_FAILED");
+        // Structured evidence for the host: real HTTP status from the thrown
+        // SDK error (when present) plus the journaled failed-attempt fields.
+        // The delivery phase tells the host whether this can ever be treated
+        // as a definitive pre-admission rejection.
+        attachProviderFailure(mapped, { phase: "pre-admission", rawError: error, factsState: this.facts.state, http: turnHttp(), deliveryPhase: record.phase, correlationId: turnCorrelation, endpoint: turnEndpoint });
+        throw mapped;
       }
       if (!turn.settled) {
         markUnknown("settlement-not-observed");
@@ -936,8 +1201,16 @@ export class OwnerRuntime {
       try {
         await this.flush();
         confirmRecordedEntry();
-        if (turn.hostToolError) throw Object.assign(new Error(turn.hostToolError.message ?? String(turn.hostToolError)), {code:'PI_HOST_TOOL_FAILED',cause:turn.hostToolError});
-        if (this.facts.state.turnErrorMessage && !aborted) throw Object.assign(new Error(this.facts.state.turnErrorMessage), { code: 'PI_PROVIDER_FAILED' });
+        if (turn.hostToolError) throw Object.assign(new Error(turn.hostToolError.message ?? String(turn.hostToolError)), {code:'PI_HOST_TOOL_FAILED',failureOrigin:'host',...(typeof turn.hostToolError.code==='string'&&/^[A-Z][A-Z0-9_]{0,79}$/.test(turn.hostToolError.code)?{hostToolCode:turn.hostToolError.code}:{}),cause:turn.hostToolError});
+        if (this.facts.state.turnErrorMessage && !aborted) {
+          // Post-entry provider failure: the native entry is already
+          // journaled, so this is NEVER a definitive rejection. Evidence
+          // carries the journaled failed-attempt fields plus the sanitized
+          // real-transport observations of this turn.
+          const failure = Object.assign(new Error(this.facts.state.turnErrorMessage), { code: 'PI_PROVIDER_FAILED' });
+          attachProviderFailure(failure, { phase: "post-entry", factsState: this.facts.state, http: turnHttp(), deliveryPhase: record.phase, correlationId: turnCorrelation, endpoint: turnEndpoint });
+          throw failure;
+        }
       } catch (error) {
         if (record.phase !== "native-record-confirmed") {
           markUnknown(error?.code ?? error?.message ?? "post-submission-unconfirmed");
@@ -1173,6 +1446,10 @@ export class OwnerRuntime {
       sha256File: digest,
       contextEpoch: this.contextEpoch(),
     };
+  }
+
+  activity() {
+    return this.activityState.snapshot();
   }
 
   async status() {

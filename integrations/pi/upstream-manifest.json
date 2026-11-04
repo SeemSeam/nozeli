@@ -177,7 +177,7 @@
       "path": "vendor/pi-gui/packages/pi-sdk-driver/pi-sdk-driver.ts",
       "upstreamPath": "packages/pi-sdk-driver/src/pi-sdk-driver.ts",
       "upstreamSha256": "5db94a648e87456567d96d10739fe30e9a7343b9120d5dadfc7527941a3e967f",
-      "sha256": "c6b4780176830a603b427f5e36b37a33f865f91181a1be9988859bfc56884e8b",
+      "sha256": "89f99d98a9bf0f548e5a047a8a4ff99402bb7511567547093411a64cf905199d",
       "modified": true
     },
     {
@@ -226,7 +226,7 @@
       "path": "vendor/pi-gui/packages/pi-sdk-driver/session-supervisor.ts",
       "upstreamPath": "packages/pi-sdk-driver/src/session-supervisor.ts",
       "upstreamSha256": "d76f3d6f6458ac8526564744521fe4995c446e7e695cd75f6761e35e64bfe6bb",
-      "sha256": "4afa18e905ef131bdee24e445f4fad635e89f700b2e8cb45c5fd1a508fc8b15d",
+      "sha256": "e24cd3a0dfb1ae5d7dbd642a298718affc8ede893186afa0936c9a6476d122a9",
       "modified": true
     },
     {
@@ -331,6 +331,7 @@
   "patches": {
     "0001-nozeli-owner-observer.patch": "Observe raw native session events; preserve upstream session owner and export runtime factory.",
     "0002-nozeli-custom-provider-api.patch": "Preserve existing Nozeli API protocols and provider ID syntax in the upstream custom source store.",
-    "0003-private-atomic-files.patch": "Exclusive 0600 files and 0700 directories for models.json credentials and leases."
+    "0003-private-atomic-files.patch": "Exclusive 0600 files and 0700 directories for models.json credentials and leases.",
+    "0005-native-journal-continuation.patch": "Host-only exact journal continuation through the pinned SDK post-run/settlement lifecycle; no new user message."
   }
 }

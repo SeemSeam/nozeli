@@ -6,12 +6,12 @@ import net from 'node:net';
 import path from 'node:path';
 import puppeteer from 'puppeteer-core';
 
-// Behavior coverage for the managed work directory in the git repo build: every
-// lifecycle phase stays visible by default, an ended+blocked Work (including
-// the error-only legacy shape) never hides and never claims completion, the
+// Behavior coverage for the managed work directory in the git repo build: ongoing
+// work precedes history, all remains available in overflow, an ended+blocked Work
+// (including the error-only legacy shape) never hides and never claims completion;
 // merge-constraint card submits a version-bound three-way host decision, the
-// work detail exposes the exact closure error / retained candidate / sole host
-// retry, and every interaction remains a projection (no spawn, no draft loss).
+// overview retains the real report and necessary decision while keeping internal
+// diagnostics collapsed; interactions never spawn work or lose the input draft.
 const source = path.resolve(import.meta.dirname, '..');
 const output = await mkdtemp(path.join(source, '.test-output', 'work-directory-'));
 const root = path.join(output, 'app');
@@ -51,6 +51,7 @@ child.stdout.on('data', chunk => { log += chunk; });
 child.stderr.on('data', chunk => { log += chunk; });
 const report = { checks: [], errors: [] };
 const check = name => { report.checks.push(name); console.log(JSON.stringify({ check: name })); };
+const selectAll=async()=>{await page.$eval('#managed-work-category-more',node=>node.click());await page.waitForFunction(()=>!document.querySelector('#managed-work-filter-menu').hidden);await page.$eval('#managed-work-filter-menu [data-command="filter-all"]',node=>node.click());};
 try {
   const deadline = Date.now() + 60000;
   for (;;) {
@@ -74,8 +75,8 @@ try {
       { id: 'w-paused', name: '图标工作', request: '图标任务目标', status: 'paused', revision: 1 },
       { id: 'w-review', name: '审查工作', request: '审查任务目标', status: 'review', revision: 2, result: { objectId: 'obj-review', revision: 2 } },
       { id: 'w-closing', name: '结束中工作', request: '结束中任务目标', status: 'closing', revision: 1 },
-      { id: 'w-readme', name: 'README 工作', request: 'README 任务目标', status: 'ended', outcome: 'accept', revision: 3, endedAt: now, result: { objectId: 'obj-readme', revision: 3 }, closure: { phase: 'blocked', error: '此工作明确要求不提交Git；请先明确更新这一约束，再选择接受' } },
-      { id: 'w-strategy', name: '策略工作', request: '策略任务目标', status: 'ended', outcome: 'accept', revision: 2, endedAt: now, result: { objectId: 'obj-strategy', revision: 2 }, closure: { phase: 'blocked', error: 'Legacy merge strategy required' } },
+      { id: 'w-readme', name: 'README 工作', request: 'README 任务目标', status: 'closing', outcome: 'accept', revision: 3, result: { objectId: 'obj-readme', revision: 3 }, closure: { phase: 'blocked', error: '此工作明确要求不提交Git；请先明确更新这一约束，再选择接受' } },
+      { id: 'w-strategy', name: '策略工作', request: '策略任务目标', status: 'closing', outcome: 'accept', revision: 2, result: { objectId: 'obj-strategy', revision: 2 }, closure: { phase: 'blocked', error: 'Legacy merge strategy required' } },
       { id: 'w-done', name: '完成工作', request: '完成任务目标', status: 'ended', outcome: 'discard', revision: 1, endedAt: now, closure: { phase: 'complete', decision: 'discard', completedAt: now } },
     ],
     jobs: [], messages: [], frontdeskRoutes: [],
@@ -98,112 +99,108 @@ try {
     window.__errs = []; window.addEventListener('error', event => window.__errs.push(String(event.message))); window.addEventListener('unhandledrejection', event => window.__errs.push('rej:' + String(event.reason?.message || event.reason)));
     const realInvoke = window.nozeli.invoke;
     window.nozeli.invoke = (op, payload) => {
-      if (op === 'managed.history.read') return Promise.resolve({ ok: true, value: { projectId: 'dir-project', version: 1, mode: 'offline', report: { format: 'markdown' }, body: (payload?.objectId || '') + ' 原报告正文（冻结候选保留）。' } });
+      if (op === 'managed.history.read') return Promise.resolve({ ok: true, value: { projectId: 'dir-project', objectId: payload.objectId, version: 'a'.repeat(64), mode: 'offline', report: { format: 'markdown' }, body: (payload?.objectId || '') + ' 原报告正文（冻结候选保留）。' } });
       return realInvoke(op, payload);
     };
   }, state);
 
-  const rows = await page.evaluate(() => [...document.querySelectorAll('#work-items .managed-work-entry')].map(row => [row.dataset.managedWork, row.querySelector('.managed-work-status').textContent]));
-  const statusOf = id => rows.find(entry => entry[0] === id)?.[1] || '';
-  assert.equal(rows.length, 7, 'directory rows: ' + JSON.stringify(rows));
-  assert.equal(await page.$eval('[data-managed-work="w-done"]', () => true).catch(() => false), false);
-  assert.match(statusOf('w-queued'), /排队第 1 位/);
-  assert.match(statusOf('w-running'), /执行中/);
-  assert.match(statusOf('w-paused'), /待回答\/处理/);
-  assert.match(statusOf('w-review'), /结果待审查/);
-  assert.match(statusOf('w-closing'), /历史结束待处理/);
-  assert.match(statusOf('w-readme'), /已接受并结束 · 技术收尾受阻/);
-  assert.doesNotMatch(statusOf('w-readme'), /技术收尾完成/);
-  assert.match(statusOf('w-strategy'), /已接受并结束 · 待选择合并策略/);
-  assert.equal(await page.$eval('#work-count', node => node.textContent), '5');
-  check('default directory tracks every phase, hides only fully closed work, never claims completion');
+  await page.$eval('[data-managed-category="ended"]',node=>node.click());
+  const endedRows=await page.$$eval('#work-items [data-managed-work]',nodes=>nodes.map(node=>node.dataset.managedWork).sort());
+  assert.deepEqual(endedRows,['w-done']);
+  await page.$eval('#managed-work-category-more',node=>node.click());
+  await page.waitForFunction(()=>!document.querySelector('#managed-work-filter-menu').hidden);
+  await page.$eval('#managed-work-filter-menu [data-command="filter-closing"]',node=>node.click());
+  const unfinishedRows=await page.$$eval('#work-items [data-managed-work]',nodes=>nodes.map(node=>node.dataset.managedWork).sort());
+  assert.deepEqual(unfinishedRows,['w-closing','w-readme','w-strategy']);
+  await selectAll();
+  await page.$eval('[data-managed-category="active"]',node=>node.click());
+  const ongoingRows=await page.$$eval('#work-items [data-managed-work]',nodes=>nodes.map(node=>node.dataset.managedWork).sort());
+  assert.deepEqual(ongoingRows,['w-closing','w-paused','w-queued','w-readme','w-review','w-running','w-strategy']);
+  await selectAll();
+  const allOrder=await page.$$eval('#work-items [data-managed-work]',nodes=>nodes.map(node=>node.dataset.managedWork));
+  assert.equal(allOrder.at(-1),'w-done','completed history follows ongoing and unfinished closure work');
+  check('directory category navigation retains finished and blocked work without counting them as active tasks');
 
   await page.evaluate(() => { const composer = document.querySelector('#composer'); composer.value = '草稿保留检查'; });
-  await page.$eval('[data-managed-work="w-readme"] .managed-work-open', node => node.click());
+  await page.$eval('[data-managed-work="w-readme"]',node=>node.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true})));
+  await page.waitForFunction(()=>!document.querySelector('#managed-work-menu').hidden);
+  await page.$eval('#managed-work-menu [data-command="details"]',node=>node.click());
   await page.waitForFunction(() => document.querySelector('#managed-agent-details')?.open === true, { timeout: 20000, polling: 250 });
-  const readmeDialog = await page.$eval('#managed-current-work', node => node.textContent);
-  assert.match(readmeDialog, /此工作明确要求不提交Git；请先明确更新这一约束，再选择接受/);
-  assert.match(readmeDialog, /查看保留候选（只读原报告）/);
-  assert.match(readmeDialog, /重试技术收尾（不重开工作）/);
-  assert.doesNotMatch(readmeDialog, /技术收尾已完成/);
-  assert.equal(await page.$$eval('#managed-current-work [data-managed-work-closure-retry]', nodes => nodes.length), 1);
+  assert.equal(await page.$eval('#managed-current-work [data-managed-work-report]',node=>node.dataset.managedWorkReport),'w-readme');
+  assert.equal(await page.$eval('#managed-current-work',node=>node.textContent.includes(window.__dirState.works.find(work=>work.id==='w-readme').closure.error)),false,'technical faults must not become user recovery instructions');
+  assert.equal(await page.$eval('[data-work-overview-technical]',node=>node.open),false);
+  assert.equal(await page.$eval('[data-work-overview-technical] [data-managed-work-lifecycle]',node=>node.checkVisibility()),false,'detailed host errors remain hidden until explicitly requested');
+  assert.equal(await page.$$eval('#managed-current-work [data-managed-work-closure-retry]', nodes => nodes.length), 0);
   assert.equal(await page.$eval('#composer', node => node.value), '草稿保留检查');
   assert.equal(await page.$eval('#composer', node => node.disabled), false);
   assert.equal(await page.$eval('#conversation-panel', node => node.dataset.managedConversation), 'frontdesk');
-  check('ended+blocked detail shows the exact host error, retained candidate, sole host retry; draft and target survive');
+  check('blocked closure retains report, draft and target without offering technical recovery');
+  await page.screenshot({path:path.join(output,'overview-with-report.png')});
 
-  await page.$eval('#managed-current-work [data-managed-work-closure-retry]', node => node.click());
-  await page.waitForFunction(() => window.__uiCalls.some(call => call.op === 'retry'), { timeout: 20000, polling: 250 });
-  const retryCalls = await page.evaluate(() => window.__uiCalls.filter(call => call.op === 'retry'));
-  assert.equal(retryCalls.length, 1);
-  assert.equal(retryCalls[0].p.workId, 'w-readme');
-  assert.equal(retryCalls[0].p.binding.revision, 3);
-  check('closure retry reuses the single disposition-guarded managed.retry binding');
 
   await page.$eval('#managed-current-work [data-managed-work-report]', node => node.click());
-  const reportOpen = await page.evaluate(() => window.__wgOpens.filter(view => view.viewState?.report?.objectId === 'obj-readme').at(-1));
-  assert.ok(reportOpen, 'no candidate report open captured');
-  assert.equal(reportOpen.kind, 'history');
-  check('retained candidate opens the original frozen report read-only');
+  await page.waitForFunction(()=>!document.querySelector('#managed-agent-details').open);
+  check('the report action exits the overview without changing the composer target');
 
   await page.evaluate(() => document.querySelector('#managed-agent-details').close());
   // localOnly metadata mode: natives are not ready, yet the host-authored
   // strategy decision must stay submittable (only the host CAS gates it).
   await page.evaluate(() => { window.__dirReady = false; window.__dirTest(window.__dirState, false); });
-  await page.$eval('[data-managed-work="w-strategy"] .managed-work-open', node => node.click());
+  await page.$eval('[data-managed-work="w-strategy"]',node=>node.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true})));
+  await page.waitForFunction(()=>!document.querySelector('#managed-work-menu').hidden);
+  await page.$eval('#managed-work-menu [data-command="details"]',node=>node.click());
   await page.waitForFunction(() => document.querySelector('#managed-agent-details')?.open === true, { timeout: 20000, polling: 250 });
   const choices = await page.$$eval('#managed-current-work [data-merge-choice]', nodes => nodes.map(node => [node.dataset.mergeChoice, node.disabled, node.getAttribute('aria-pressed')]));
   assert.deepEqual(choices.map(entry => entry[0]), ['never-commit', 'hold', 'none']);
   assert.ok(choices.every(entry => entry[1] === false && entry[2] === null));
   assert.equal(await page.$$eval('#managed-current-work [data-managed-work-closure-retry]', nodes => nodes.length), 0);
-  check('strategy card stays fully usable while natives are not ready, with no default and retry gated');
+  check('strategy card stays fully usable while natives are not ready, with no default or technical retry');
   await page.$eval('#managed-current-work [data-merge-choice="hold"]', node => node.click());
   assert.equal(await page.evaluate(() => window.__confirms), 0);
-  const constraintCalls = await page.evaluate(() => window.__uiCalls.filter(call => call.op === 'merge.constraint'));
-  assert.equal(constraintCalls.length, 1);
-  assert.equal(constraintCalls[0].p.workId, 'w-strategy');
-  assert.equal(constraintCalls[0].p.expectedVersion, 7);
-  assert.equal(constraintCalls[0].p.decision, 'hold');
-  assert.equal(typeof constraintCalls[0].p.requestKey, 'string');
-  const holdReceipt = await page.evaluate(() => window.__constraintReceipts.at(-1));
-  assert.deepEqual(holdReceipt, { workId: 'w-strategy', status: 'hold', version: 9 });
-  assert.equal('accepted' in holdReceipt, false);
   await page.waitForFunction(() => ![...document.querySelectorAll('#managed-current-work [data-merge-choice]')].some(node => node.disabled), { timeout: 20000, polling: 250 });
   assert.equal(await page.$$eval('#managed-current-work [data-merge-constraint-gate] [role=alert]', nodes => nodes.length), 0);
-  check('hold submits a version-bound decision in localOnly mode; real {workId,status,version} receipt consumes without error');
+  check('a locally recorded strategy choice restores usable controls without an error surface');
   await page.$eval('#managed-current-work [data-merge-choice="never-commit"]', node => node.click());
   assert.equal(await page.evaluate(() => window.__confirms), 1);
   check('never-commit requires exactly one explicit confirmation');
-  await page.waitForFunction(() => document.querySelector('[data-managed-work="w-strategy"] .managed-work-status').textContent.includes('技术收尾受阻'), { timeout: 20000, polling: 250 });
+  await page.waitForFunction(() => !document.querySelector('#managed-current-work [data-merge-constraint-gate]'), { timeout: 20000, polling: 250 });
   assert.equal(await page.$$eval('#managed-current-work [data-merge-constraint-gate] [role=alert]', nodes => nodes.length), 0);
   await page.evaluate(() => { window.__dirReady = true; window.__dirTest(window.__dirState, true); });
   await page.evaluate(() => { const dialog = document.querySelector('#managed-agent-details'); if (dialog?.open) dialog.close(); delete document.querySelector('#managed-current-work')?.dataset.signature; });
-  await page.$eval('[data-managed-work="w-strategy"] .managed-work-open', node => node.click());
-  await page.waitForFunction(() => document.querySelectorAll('#managed-current-work [data-managed-work-closure-retry]:not([disabled])').length === 1, { timeout: 20000, polling: 250 });
-  check('resolved strategy unblocks the sole host retry path without any error surface');
+  await page.$eval('[data-managed-work="w-strategy"]',node=>node.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true})));
+  await page.waitForFunction(()=>!document.querySelector('#managed-work-menu').hidden);
+  await page.$eval('#managed-work-menu [data-command="details"]',node=>node.click());
+  await page.waitForFunction(() => document.querySelector('#managed-agent-details')?.open === true);
+  assert.equal(await page.$$eval('#managed-current-work [data-managed-work-closure-retry]',nodes=>nodes.length),0);
+  assert.equal(await page.$$eval('#managed-work-menu [data-command="retry"]',nodes=>nodes.length),0);
+  assert.equal(await page.evaluate(()=>window.__uiCalls.some(call=>['retry','git.locks.inspect','git.locks.quarantine'].includes(call.op))),false);
+  check('resolved strategy remains system-owned with no recovery action or dispatch');
 
   await page.evaluate(() => document.querySelector('#managed-agent-details').close());
   await page.$eval('[data-managed-work="w-review"]', node => node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })));
   await page.waitForFunction(() => !document.querySelector('#managed-work-menu').hidden, { timeout: 20000, polling: 250 });
-  await page.evaluate(() => [...document.querySelectorAll('#managed-work-menu button')].find(button => button.textContent === '查看工作详情')?.click());
+  await page.$eval('#managed-work-menu [data-command="details"]',node=>node.click());
   await page.waitForFunction(() => document.querySelector('#managed-agent-details')?.open === true, { timeout: 20000, polling: 250 });
-  assert.match(await page.$eval('#managed-current-work', node => node.textContent), /审核候选文件（在工作区打开原报告）/);
+  assert.equal(await page.$$eval('#managed-current-work [data-work-control-details]',nodes=>nodes.length),1,'real Work retains pause/stop/resume entry');
+  assert.equal(await page.$$eval('#managed-current-work [data-managed-work-end]',nodes=>nodes.length),1,'real Work retains explicit business cancellation');
+  assert.equal(await page.$eval('[data-managed-work-report]',node=>node.dataset.managedWorkReport),'w-review');
   assert.equal(await page.$eval('#composer', node => node.value), '草稿保留检查');
   await page.evaluate(() => document.querySelector('#managed-agent-details').close());
   check('review detail carries the explicit candidate-review entry without touching the composer draft');
 
   await page.$eval('[data-managed-work="w-readme"]', node => node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })));
   await page.waitForFunction(() => !document.querySelector('#managed-work-menu').hidden, { timeout: 20000, polling: 250 });
-  assert.match(await page.$eval('#managed-work-menu', node => node.textContent), /查看保留候选（只读原报告）[\s\S]*重试技术收尾（不重开工作）/);
+  assert.equal(await page.$eval('#managed-work-menu [data-command="report"]',node=>node.disabled),false);
+  assert.equal(await page.$$eval('#managed-work-menu [data-command="retry"]',nodes=>nodes.length),0);
   await page.evaluate(() => document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })));
   await page.waitForFunction(() => document.querySelector('#managed-work-menu').hidden, { timeout: 20000, polling: 250 });
   await page.$eval('[data-managed-work="w-strategy"] .managed-work-open', node => { node.focus(); node.dispatchEvent(new KeyboardEvent('keydown', { key: 'F10', shiftKey: true, bubbles: true, cancelable: true })); });
   await page.waitForFunction(() => !document.querySelector('#managed-work-menu').hidden, { timeout: 20000, polling: 250 });
-  assert.match(await page.$eval('#managed-work-menu', node => node.textContent), /重试技术收尾（不重开工作）/);
+  assert.equal(await page.$$eval('#managed-work-menu [data-command="retry"]',nodes=>nodes.length),0);
   await page.evaluate(() => document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })));
-  check('row context menu and keyboard menu expose candidate and gated retry entries');
+  check('row context menu and keyboard menu retain candidate access without technical retry entries');
 
-  const spawnOps = await page.evaluate(() => window.__uiCalls.filter(call => ['send', 'task', 'connect', 'restart', 'enable', 'end', 'intake.retry', 'git.retry', 'recovery.resolve', 'worker.handoff', 'resident.handoff', 'todo.manage'].includes(call.op)).map(call => call.op));
+  const spawnOps = await page.evaluate(() => window.__uiCalls.filter(call => ['send', 'task', 'connect', 'restart', 'enable', 'end', 'retry', 'git.locks.inspect', 'git.locks.quarantine', 'intake.retry', 'git.retry', 'recovery.resolve', 'worker.handoff', 'resident.handoff', 'todo.manage'].includes(call.op)).map(call => call.op));
   assert.deepEqual(spawnOps, []);
   assert.equal(await page.evaluate(() => document.querySelector('#composer').value), '草稿保留检查');
   assert.deepEqual(report.errors, []);

@@ -8,19 +8,27 @@ export function appendReviewFileIdentity(entry,relPath,description){
  const names=document.createElement('span');names.className='managed-review-file-path';names.append(name,directory);entry.append(createFileIcon(relPath),names);
 }
 
+export function reviewDiffUnavailable(file){
+ const reason=file.baselineUnavailable?'baseline-unavailable':file.binary?'binary':file.unsupportedReason&&file.unsupportedReason!=='change-set-unavailable'?file.unsupportedReason:file.textOmitted||file.baselineOmitted||file.candidateOmitted;
+ return ({binary:'二进制文件，不能显示文本差异',size:'文件列表未载入完整正文；可打开只读 Diff 核对可用范围','byte-budget':'冻结文件超过文本大小限制','line-budget':'冻结文件超过文本行数限制','non-utf8':'文件不是 UTF-8 文本','special-file':'特殊文件不能显示文本差异','baseline-unavailable':'输入基线未冻结，无法比较'})[reason]||(reason?'冻结差异不可用：'+reason:'');
+}
+
 // Keyed rows keep keyboard focus across host observations.
-export function mountReviewFiles(parent,{openFile,onError}){
+export function mountReviewFiles(parent,{openFile,openMaterial,onError}){
  const rows=new Map();
  function create(file){
   const root=document.createElement('section');root.className='managed-review-file';root.dataset.reviewFileRow=file.relPath;
   const header=document.createElement('div');header.className='managed-review-file-header';
   const entry=document.createElement('button');entry.type='button';entry.dataset.reviewAction='file';entry.dataset.reviewFile=file.relPath;entry.className='managed-review-file-name';
-  appendReviewFileIdentity(entry,file.relPath,'在文档工作区查看审核版本与差异');
+  appendReviewFileIdentity(entry,file.relPath,openMaterial?'查看成果内容与实际效果':'查看输入基线 → 发布冻结候选的只读差异');
   const meta=document.createElement('span');meta.className='managed-review-file-meta';meta.dataset.reviewFileStatus='';
   const counts=document.createElement('span');counts.className='managed-review-file-counts';counts.dataset.reviewCounts='';counts.title='输入基线 → Worker 冻结候选；不含人工稿';
-  header.append(entry,meta,counts);root.append(header);
-  const row={root,entry,meta,counts,file};
-  entry.onclick=()=>Promise.resolve(openFile(row.file)).catch(onError);
+  const comparison=document.createElement('button');comparison.type='button';comparison.dataset.reviewAction='diff';comparison.dataset.reviewDiff=file.relPath;comparison.className='managed-review-material';comparison.textContent='代码差异';comparison.hidden=!openMaterial;
+  const reason=document.createElement('p');reason.className='managed-review-diff-unavailable';reason.dataset.reviewDiffUnavailable='';
+  header.append(entry,meta,counts,comparison);root.append(header,reason);
+  const row={root,entry,meta,counts,comparison,reason,file};
+  entry.onclick=()=>Promise.resolve((openMaterial||openFile)(row.file)).catch(onError);
+  comparison.onclick=()=>Promise.resolve(openFile(row.file)).catch(onError);
   return row;
  }
  return {
@@ -35,8 +43,12 @@ export function mountReviewFiles(parent,{openFile,onError}){
     row.meta.textContent=({added:'新增',removed:'删除',deleted:'删除',modified:'修改',unchanged:'引用',renamed:'重命名',copied:'复制','type-changed':'类型变化',unknown:'未知'}[file.status||file.change]||'未知');
     row.meta.title=(file.oldPath?'原路径：'+file.oldPath+' · ':'')+(file.draft?'有已保存人工稿；计数不含人工稿':'Worker 冻结候选');
     row.meta.dataset.humanDraft=String(Boolean(file.draft));
+    row.reason.textContent=reviewDiffUnavailable(file);row.reason.hidden=!row.reason.textContent;
+    row.counts.title='只读 Diff · 输入基线 → 发布冻结候选；不含人工稿';
+    row.comparison.title='只读代码差异：输入基线 → Worker 冻结候选；不含人工稿。HTML 的前后效果可在成果工作面切换。';
     row.counts.replaceChildren();
     const change=file.status||file.change,binary=file.binary===true||file.unsupportedReason==='binary'||file.candidateOmitted==='binary'||file.baselineOmitted==='binary';
+    row.comparison.textContent=binary?'版本信息':'代码差异';
     row.counts.removeAttribute('aria-label');
     if(binary){row.counts.textContent='二进制';row.counts.setAttribute('aria-label','二进制材料，不显示文本增删行数');}
     else if(change==='unchanged'){row.counts.textContent='未修改';}

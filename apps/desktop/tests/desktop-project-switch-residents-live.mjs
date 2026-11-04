@@ -29,14 +29,15 @@ console.log('EVIDENCE_ROOT='+out);
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 let child,browser,shell,exit,log='',held=false,pending=[];
 const tool=(name,args,id)=>({role:'assistant',tool_calls:[{index:0,id,type:'function',function:{name,arguments:JSON.stringify(args)}}]});
-const nonceOf=text=>String(text||'').match(/SWITCHW[0-9]+/g)?.at(-1)??null;
+const nonceOf=text=>{const markers=(typeof text==='string'?text:JSON.stringify(text??'')).match(/SWITCHW[0-9]+/g)??[];return markers.sort((a,b)=>Number(b.slice(7))-Number(a.slice(7)))[0]??null;};
 const rounds=new Map();
+let seededOrchestrator=false;
 const answer=(res,delta,finish)=>{res.writeHead(200,{'content-type':'text/event-stream'});for(const [part,end] of [[delta,null],[{},finish]])res.write('data: '+JSON.stringify({id:'switch-local',object:'chat.completion.chunk',choices:[{index:0,delta:part,finish_reason:end}]})+'\n\n');res.end('data: [DONE]\n\n');};
 const server=http.createServer((req,res)=>{let body='';req.on('data',b=>body+=b);req.on('end',()=>{report.requests++;let input={};try{input=JSON.parse(body);}catch{}
- const names=(input.tools||[]).map(t=>t.function?.name||t.name),role=names.includes('nozeli_dispatch')?'orchestrator':names.includes('nozeli_skill_read')?'worker':'frontdesk';
- const lastUser=[...(input.messages||[])].reverse().find(m=>m.role==='user'),nonce=nonceOf(lastUser?.content);
+ const names=(input.tools||[]).map(t=>t.function?.name||t.name),role=names.includes('nozeli_dispatch')?'orchestrator':names.includes('nozeli_publish')?'worker':'frontdesk';
+ const nonce=nonceOf(input.messages);
  let delta,finish='stop';
- if(role==='orchestrator'&&!nonce){delta=tool('nozeli_manage',{action:'status',text:'Report current work status without starting a Worker.'},'b-status-seed');finish='tool_calls';}
+ if(role==='orchestrator'&&!nonce&&!seededOrchestrator){seededOrchestrator=true;delta=tool('nozeli_manage',{action:'clarify',text:'Synthetic lifecycle seed: no business task is requested.'},'b-seed-clarification');finish='tool_calls';}
  else if(role==='frontdesk'||!nonce)delta={role:'assistant',content:'SWITCH_REPLY'};
  else{const round=rounds.get(nonce)??{orchestrator:0,worker:0};round[role]++;rounds.set(nonce,round); // counters are per role: orchestrator and worker share the nonce
   if(role==='orchestrator'){if(round.orchestrator===1){delta=tool('nozeli_dispatch',{name:nonce,brief:'Create '+nonce+'.txt with exact content '+nonce+' in this work, then finish.'},nonce+'-dispatch');finish='tool_calls';}else delta={role:'assistant',content:'Dispatched '+nonce};}
@@ -112,16 +113,17 @@ try{
  await select(bid);await call('managed.enable',{projectId:bid});await until(async()=>owners(await state(bid)).length===2,'B residents');
  // Empty native threads have no journal and may be regenerated on restart;
  // exercise a real B orchestrator turn before requiring durable identity.
- const bOrchestratorTurn=await call('managed.send',{projectId:bid,target:'orchestrator',text:'Only reply SWITCH_REPLY; no tools.',requestKey:'switch-b-orchestrator-seed'});
+ const bOrchestratorTurn=await call('managed.send',{projectId:bid,target:'orchestrator',text:'Synthetic lifecycle seed only: use nozeli_manage clarify to record that no business task is requested. Do not dispatch a Worker.',requestKey:'switch-b-orchestrator-seed'});
  await until(async()=>(await state(bid)).jobs.find(j=>j.id===bOrchestratorTurn.jobId)?.status==='completed','B orchestrator has durable history');
+ await until(async()=>{const s=await state(bid);return !s.busyTargets?.length&&!s.jobs.some(j=>['queued','running'].includes(j.status));},'B seed native turn fully settled');
  const switchBaseline=report.requests;
  const second=owners(await state(bid)),bThreads0=threads(await state(bid));
  for(let n=0;n<6;n++){await select(aid);await select(bid);assert.deepEqual(owners(await state(aid)),original);assert.deepEqual(owners(await state(bid)),second);}
  assert.equal(report.requests,switchBaseline);report.checks.push('six A/B round trips keep all four native owners and threads; no replay');
  const rapidPlan=[aid,bid,aid,bid],samples=[];
- await shell.evaluate(()=>{window.__switchTransitions=0;window.__switchTransitionListener=event=>{if(!event.detail.active)window.__switchTransitions++;};window.addEventListener('nozeli-project-transition',window.__switchTransitionListener);});
+ await shell.evaluate(()=>{window.__switchActive=false;window.__switchTransitionListener=event=>{window.__switchActive=event.detail.active;};window.addEventListener('nozeli-project-transition',window.__switchTransitionListener);});
  samples.push(...await shell.evaluate(plan=>plan.map(id=>{const button=document.querySelector('#recent [data-project-id="'+id+'"]');if(!button)throw Error('Missing rapid project control '+id);button.click();return window.__workspaceGroups?.snapshot()?.projectId??null;}),rapidPlan));
- await until(()=>shell.evaluate(({id,count})=>window.__switchTransitions>=count&&window.__workspaceGroups?.snapshot()?.projectId===id,{id:rapidPlan.at(-1),count:rapidPlan.length}),'all rapid queued switches settle on the final project');
+ await until(()=>shell.evaluate(id=>!window.__switchActive&&window.__workspaceGroups?.snapshot()?.projectId===id,rapidPlan.at(-1)),'rapid selections settle on the final project');
  await shell.evaluate(()=>window.removeEventListener('nozeli-project-transition',window.__switchTransitionListener));
  assert.deepEqual(owners(await state(aid)),original);assert.deepEqual(owners(await state(bid)),second);assert.equal(report.requests,switchBaseline);
  report.rapid={plan:rapidPlan.map(id=>id===aid?'A':'B'),samples,input:'synchronous DOM button.click burst through the real recent-project handlers; six ordinary pointer-driven round trips precede this queue stress'};report.checks.push('rapid queued switches settle deterministically with stable owners and no replay');

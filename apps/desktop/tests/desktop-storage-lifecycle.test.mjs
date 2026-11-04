@@ -28,7 +28,7 @@ let child, exited, browser, log = '';
 const checks = [];
 function launch() {
   child = spawn(process.env.NOZELI_TEST_BINARY || createRequire(import.meta.url)('electron'), [
-    ...(process.env.NOZELI_TEST_BINARY ? [] : [path.join(appRoot, 'src/main/main.cjs')]), '--ozone-platform=wayland',
+    ...(process.env.NOZELI_TEST_BINARY ? [] : [path.join(appRoot, 'src/main/main.cjs')]), '--ozone-platform='+(process.env.NOZELI_OZONE||'wayland'),'--inspect=0',
   ], {cwd:appRoot, env:{...process.env, NOZELI_TEST_INSTANCE:'1', NOZELI_CONFIG_ROOT:configRoot,
     NOZELI_USER_DATA:path.join(configRoot,'desktop'), NOZELI_TEST_PICK:[first,second].join('\n'),
     NOZELI_DEBUG_PORT:String(port), NOZELI_SHOT_DIR:out, NOZELI_HIDDEN:'0'}, stdio:['ignore','pipe','pipe']});
@@ -38,6 +38,17 @@ function launch() {
 async function waitFor(check, message) {
   for (let attempt=0; attempt<200; attempt++) {if(await check())return;await pause(50);}
   throw Error(message || 'Condition timed out');
+}
+async function selectNativeSave(filePath){
+  // Replace only the OS chooser in this isolated process; UI, authenticated IPC,
+  // exact source reads, filesystem publication and failure handling stay real.
+  const endpoint=[...log.matchAll(/Debugger listening on (ws:\/\/127\.0\.0\.1:\d+\/[^\s]+)/g)].at(-1)?.[1];assert(endpoint,'owned main inspector unavailable');
+  const socket=new WebSocket(endpoint);await new Promise((resolve,reject)=>{socket.addEventListener('open',resolve,{once:true});socket.addEventListener('error',reject,{once:true});});
+  try{
+    const result=new Promise((resolve,reject)=>{socket.addEventListener('message',event=>{const value=JSON.parse(String(event.data));if(value.id===1)value.error?reject(Error(JSON.stringify(value.error))):resolve(value.result);});});
+    const expression=`(()=>{const dialog=process.getBuiltinModule('module').createRequire(${JSON.stringify(path.join(appRoot,'package.json'))})('electron').dialog;const original=dialog.showSaveDialog;dialog.showSaveDialog=async()=>{dialog.showSaveDialog=original;return {canceled:false,filePath:${JSON.stringify(filePath)}};};})()`;
+    socket.send(JSON.stringify({id:1,method:'Runtime.evaluate',params:{expression}}));const evaluated=await result;if(evaluated.exceptionDetails)throw Error(JSON.stringify(evaluated.exceptionDetails));
+  }finally{socket.close();}
 }
 async function connect() {
   await waitFor(async()=>{try{browser=await puppeteer.connect({browserURL:`http://127.0.0.1:${port}`,defaultViewport:null});return true;}catch{return false;}},'Electron debug endpoint unavailable');
@@ -106,8 +117,8 @@ try {
   assert.equal(document.page.isClosed(),true);
   let recovery=await call(shell,'workspace.recovery.list');
   const retained=recovery.entries.filter(entry=>entry.project.id===project.id && entry.value.relPath==='sample.txt');
-  assert.equal(retained.length,1);assert.equal(retained[0].value.candidate.text,candidate);
-  assert.equal(retained[0].value.generation,1,'Concurrent close must flush the document owner only once');
+  assert.equal(retained.length,1);const detail=await call(shell,'workspace.recovery.detail',{projectId:project.id,id:retained[0].id,revision:retained[0].revision,version:retained[0].version});
+  assert.equal(detail.value.candidate.text,candidate);assert.equal(detail.value.generation,1,'Concurrent close must flush the document owner only once');
   await assertOriginalPreserved();
   checks.push(`${lossMode} loss closes once, retains full text, reaches empty page, and never recreates lost storage`);
 
@@ -116,13 +127,15 @@ try {
   await shell.click('#open-settings');
   await shell.waitForSelector('[data-settings-section="settings-recovery"]');
   await shell.click('[data-settings-section="settings-recovery"]');
-  await shell.waitForFunction(()=>[...document.querySelectorAll('#settings-recovery section')].some(section=>section.querySelector('h3')?.textContent.includes(' · sample.txt · ')&&[...section.querySelectorAll('button')].some(node=>node.textContent==='导出文本副本')));
-  await shell.evaluate(()=>{const section=[...document.querySelectorAll('#settings-recovery section')].find(section=>section.querySelector('h3')?.textContent.includes(' · sample.txt · '));[...section.querySelectorAll('button')].find(node=>node.textContent==='导出文本副本').click();});
+  await shell.waitForFunction(id=>[...document.querySelectorAll('#settings-recovery section')].some(section=>section.dataset.recoveryId===id),{},retained[0].id);
+  await shell.evaluate(id=>{const section=[...document.querySelectorAll('#settings-recovery section')].find(section=>section.dataset.recoveryId===id);[...section.querySelectorAll('button')].find(node=>node.textContent==='查看完整详情').click();},retained[0].id);
+  await shell.waitForFunction(()=>[...document.querySelectorAll('#settings-recovery section button')].some(node=>node.textContent==='导出文本副本'));
+  await shell.evaluate(()=>[...document.querySelectorAll('#settings-recovery section button')].find(node=>node.textContent==='导出文本副本').click());
   const exported=path.join(downloads,'sample.txt');
   await waitFor(async()=>fs.readFile(exported,'utf8').then(text=>text===candidate,()=>false),'Recovery export missing full candidate');
-  await shell.evaluate(()=>{const section=[...document.querySelectorAll('#settings-recovery section')].find(section=>section.querySelector('h3')?.textContent.includes(' · sample.txt · '));[...section.querySelectorAll('button')].find(node=>node.textContent==='导出完整恢复记录').click();});
-  const exportedRecord=path.join(downloads,`nozeli-recovery-${project.id}.json`);
-  await waitFor(async()=>fs.readFile(exportedRecord,'utf8').then(text=>{const entry=JSON.parse(text);assert.equal(entry.project.id,project.id);assert.equal(entry.value.relPath,'sample.txt');assert.equal(entry.value.candidate.text,candidate);return true;},()=>false),'Complete recovery export missing');
+  const exportedRecord=path.join(downloads,'complete-recovery.json');await selectNativeSave(exportedRecord);
+  await shell.evaluate(id=>{const section=[...document.querySelectorAll('#settings-recovery section')].find(section=>section.dataset.recoveryId===id);[...section.querySelectorAll('button')].find(node=>node.textContent==='导出完整恢复记录').click();},retained[0].id);
+  await waitFor(async()=>fs.readFile(exportedRecord,'utf8').then(text=>{const raw=JSON.parse(text);assert.equal(raw.relPath,'sample.txt');assert.equal(raw.candidate.text,candidate);return true;},()=>false),'Complete raw recovery export missing');
   await shell.screenshot({path:path.join(out,'offline-recovery-center.png')});
   await shell.evaluate(()=>document.getElementById('settings-dialog').close());
   checks.push('empty-page recovery center previews and exports full candidate without original root');
@@ -136,7 +149,7 @@ try {
   await empty(shell);
   assert(!(await call(shell,'project.recent')).projects.some(item=>item.id===project.id));
   recovery=await call(shell,'workspace.recovery.list');
-  assert(recovery.entries.some(entry=>entry.project.id===project.id&&entry.project.removed&&entry.value.candidate?.text===candidate));
+  const cold=recovery.entries.find(entry=>entry.project.id===project.id&&entry.project.removed&&entry.id===retained[0].id);assert(cold);const coldDetail=await call(shell,'workspace.recovery.detail',{projectId:project.id,id:cold.id,revision:cold.revision,version:cold.version});assert.equal(coldDetail.value.candidate.text,candidate);
   await assertOriginalPreserved();
   checks.push('removed tombstone and complete recovery survive cold restart without automatic reconnect');
 

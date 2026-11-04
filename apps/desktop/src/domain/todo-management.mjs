@@ -1,3 +1,4 @@
+import {managedReviewTodos,historicalResultReminder} from './managed-work-records.mjs';
 // Local reminder administration only: source Work, publication and Git facts are never changed.
 const sourceFields=['kind','workId','revision','sourceJobId','gitIntentId','objectId','reviewCycle','closureHistoryId'];
 const anomalyKinds=new Set(['system','recovery','git','closure','attention']);
@@ -25,10 +26,12 @@ function reviewDuty(state,todo){
 export function todoCapabilities(state,todo){
  if(!todo||todo.kind==='queue')return {close:false,reopen:false,remove:false,reason:'排队事项不支持待办管理。'};
  const works=associatedWorks(state,todo),live=works.some(w=>w.status!=='ended');
- if(todo.status!=='open')return {close:false,reopen:true,remove:!live,reason:live?'关联工作尚未结束，不能删除记录。':''};
+ const duty=reviewDuty(state,todo),current=managedReviewTodos(state).some(row=>row.id===todo.id);
+ const historicalPublication=historicalResultReminder(state,todo)&&!duty;
+ if(todo.status!=='open')return {close:false,reopen:true,remove:!current&&(!live||historicalPublication),reason:current?'当前事项仍需通过原流程处理。':live&&!historicalPublication?'关联工作尚未结束，不能删除记录。':''};
  const historical=!live&&(Boolean(todo.workId)||works.length>0);
- const close=historical||!reviewDuty(state,todo)&&anomalyKinds.has(todo.kind);
- return {close,reopen:false,remove:false,reason:close?'':reviewDuty(state,todo)?'请回原工作显式核查，并在新报告获认可后解决。':'请通过原工作流程处理当前事项。'};
+ const close=historical||!duty&&anomalyKinds.has(todo.kind);
+ return {close:close&&!current,reopen:false,remove:historicalPublication,reason:historicalPublication||close&&!current?'':duty?'请回原工作显式核查，并在新报告获认可后解决。':'请通过原工作流程处理当前事项。'};
 }
 function comparable(todo){
  const {managementRevision,createdAt,updatedAt,settledAt,...body}=todo;

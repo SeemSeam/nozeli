@@ -24,7 +24,7 @@ async function fixture(t,{readApproved=false}={}){
    const source=readApproved&&projection?.sources?.approvedSources?.[0];
    const approvedSource=source?await this.onTool({tool:'nozeli_history_read',arguments:{readRef:source.readRef},callId:'approved-read:'+randomUUID()}):null;
    calls.push({target:this.target,text,projection,approvedSource});
-   await this.onTool({tool:'nozeli_publish',arguments:{kind:'problem',text:PROBLEM_TEXT,files:[]},callId:'problem:'+randomUUID()});
+   await this.onTool({tool:'nozeli_publish',arguments:{kind:'problem',content:PROBLEM_TEXT,files:[]},callId:'problem:'+randomUUID()});
    return {completion:'host-control',threadId:this.threadId};
   }
  }

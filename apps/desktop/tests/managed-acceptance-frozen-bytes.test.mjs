@@ -43,7 +43,7 @@ test('modified frozen snapshot bytes block adoption without current-file fallbac
   const {c,w,content,artifact}=await fixture(t);
   for(const file of artifact('result.txt'))await fs.writeFile(file,'tampered bytes');
   await c.endWork(w.id,{revision:1,decision:'accept'});
-  assert.equal(w.status,'ended');assert.equal(w.closure.phase,'blocked');
+  assert.equal(w.status,'closing');assert.equal(w.closure.phase,'blocked');
   assert.equal(await fs.readFile(path.join(content,'result.txt'),'utf8'),'original bytes');
   await assert.rejects(fs.stat(path.join(content,'notes.txt')),{code:'ENOENT'});
   assert.equal(await fs.readFile(path.join(w.execution.directory,'result.txt'),'utf8'),'candidate bytes');

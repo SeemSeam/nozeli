@@ -65,9 +65,8 @@
  .compact-composer .composer-footer{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-self:stretch;align-items:center;gap:4px;min-width:0}
  .compact-composer .composer-footer .cm-add{grid-column:1/-1;grid-row:1;min-width:0}
  .compact-composer .composer-footer .attach-file{grid-column:1/-1;grid-row:2;min-width:0;white-space:nowrap}
- .compact-composer .composer-footer #managed-submit-task{grid-column:1;grid-row:3}
  .compact-composer .composer-footer #send-message{grid-column:2;grid-row:3;min-width:0}
- #conversation-panel.compact-composer .composer-footer :is(.cm-add,#managed-submit-task,#send-message){box-sizing:border-box;min-width:0;width:100%;max-width:100%;flex:0 1 auto;padding:3px 4px;font-size:10px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ #conversation-panel.compact-composer .composer-footer :is(.cm-add,#send-message){box-sizing:border-box;min-width:0;width:100%;max-width:100%;flex:0 1 auto;padding:3px 4px;font-size:10px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 }
 
 .compact-composer .attach-file input { width:12px;height:12px; }
@@ -143,7 +142,7 @@ form.note-form.annotation-composer { gap:7px;padding:10px 12px 12px;background:v
 .narrow-layout:not(.focus-mode) > #side { position:relative;grid-column:3;grid-row:2;width:32px;height:auto;min-height:0;max-height:none;overflow:visible;background:none;border:0;box-shadow:none; }
 .narrow-layout:not(.focus-mode) #sidebar-body { display:none!important; }
 .narrow-layout.drawer-side-open:not(.focus-mode) > #side { position:fixed;z-index:60;top:44px;right:8px;bottom:8px;width:min(288px,calc(100vw - 76px));padding:0;background:var(--paper);border:1px solid var(--line);border-radius:8px;box-shadow:0 12px 40px #26393224; }
-.narrow-layout.drawer-side-open #sidebar-body { display:grid!important;height:100%;max-height:none;grid-template-rows:minmax(0,var(--work-ratio,53.5fr)) minmax(0,var(--inbox-ratio,46.5fr)); }
+.narrow-layout.drawer-side-open #sidebar-body { display:flex!important;flex-direction:column;height:100%;max-height:none; }
 #app.narrow-layout #toggle-sidebar { position:absolute;top:50%;left:5px;right:auto; }
 .narrow-layout #reader.document-header-unified > .desk-header { padding-inline:8px;gap:4px; }
 .narrow-layout #text-preview { padding:24px 22px 48px; }

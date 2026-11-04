@@ -177,7 +177,9 @@ export class FileTreeOps {
     }
     try {
       if (action !== 'copy') {
-        for (const { id, value } of await this.host.storage.listRecovery(projectId)) {
+        const drafts=[];
+        for await(const row of this.host.storage.recoveryRecords(projectId,{prefixes:['draft:']}))if(row.value?.relPath&&inside(row.value.relPath,source))drafts.push(row);
+        for (const { id, value } of drafts) {
           if (!id.startsWith('draft:') || !value?.relPath || !inside(value.relPath, source)) continue;
           const rel = destination + value.relPath.slice(source.length), next = 'draft:' + key(rel);
           if (await this.host.storage.getRecovery(projectId,next)) fail('目标位置保留有草稿，请使用其他名称。');
@@ -243,7 +245,7 @@ export class FileTreeOps {
     if ((await srcChanges.all()).some(s => inside(s.relPath, source) && s.pending)) fail('文档有待恢复的修改批次，请先重新打开文档后操作。');
     // A durable unsaved draft means the disk bytes are not the user's content:
     // refuse instead of snapshotting stale bytes.
-    for (const { id, value } of await this.host.storage.listRecovery(sourceProjectId))
+    for await (const { id, value } of this.host.storage.recoveryRecords(sourceProjectId,{prefixes:['draft:']}))
       if (id.startsWith('draft:') && value?.relPath && inside(value.relPath, source) && value.status !== 'saved') fail('源文件存在未保存的草稿，请先打开并保存后再跨项目操作。');
     let destinationCreated = false, sourceRemoved = false, copyComplete = false;
     try {

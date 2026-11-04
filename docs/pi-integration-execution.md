@@ -478,5 +478,71 @@ provider／预算／无能力技术故障只本地分类与去重，不产生 ma
 
 真实项目烟测使用只复制白名单view/layout/catalog的隔离本机状态，沿原项目实体身份读取现有目录，不重新登记或改写项目身份，不复制账号／provider／进程登记，不发送模型、不改论文正文／采用成果。旧日常隔离实例与高CPU旧headless验收进程均未强杀／强制重载；本轮不安装、不推送、不发布，不宣称Windows/macOS已验。完整默认回归结果另在本节后续补记，不能把以上定向集相加冒称全仓通过。
 
-完整当前混合工作树的磁盘临时目录回归：unit541/541、integration1534/1535，零跳过；唯一失败为并发未提交Orchestrator P0的`managed-work-todo-lifecycle.test.mjs`，按旧名称clarify后缺少Work归属，与本轮卡顿修复分开记录，不删除有效测试或混入P0代码。首轮`/tmp`曾报配额`-122`／SQLite I/O失败，日志保留于本机证据目录；修复候选需以“已提交基线＋仅本轮变更”独立运行完整集合后才提交，不能把混合工作树称为全绿。候选renderer构建及真实Electron5项（正常退出／冷重开均exit0）已通过：`/var/tmp/nozeli-lag-commit-check-20261101/apps/desktop/.test-output/ci/smoke-cqkizQ/report.json`。
+当时的完整混合工作树磁盘临时目录回归：unit541/541、integration1534/1535，零跳过；唯一失败为并发P0尚未迁移的`managed-work-todo-lifecycle.test.mjs`，按旧名称clarify后缺少Work归属，与本轮卡顿修复分开记录，不删除有效测试。首轮`/tmp`曾报配额`-122`／SQLite I/O失败，日志保留于本机证据目录；该次混合工作树运行不记为全绿。候选renderer构建及真实Electron5项（正常退出／冷重开均exit0）已通过，原件已保留为`/var/tmp/nozeli-lag-fixed-fngbww4v/candidate-ci/smoke-cqkizQ/report.json`。
 
+独立只读复审：存储期限／端口／代际与监听／导航保留两个切片均判定correct，无已证实的阻断项；复审未独立重跑测试，不作为运行证据。存储真实文件回归使用较短期限验证调度次序，极端调度或磁盘延迟仍可能影响该测试；生产默认8秒未调整。
+
+最终仅含本轮修复的独立候选（已提交基线`cd05653`＋本轮源码／回归，不含并发P0及其测试迁移）完整执行默认集合：unit **541/541**（62文件）、integration **1526/1526**（147文件），零失败／跳过／取消，整条`npm test`退出0；使用仓库外磁盘临时目录，未删减候选注册集合。原始TAP已保留于`/var/tmp/nozeli-lag-fixed-fngbww4v/candidate-ci/{unit,integration}.tap`。候选仅复用既有本地依赖与PPTist构建产物，不安装／下载工具、不复制个人账号。此处完整全绿结论仅覆盖该独立候选，不自动覆盖并发P0。
+
+提交前索引核验发现，并发操作已创建`05ff3cb51c4b3db0a95df092810ac225e78f111f`（Add bounded taskboard and stable Work revision management），其中同时包含了本轮已暂存的源码／回归与P0。未reset／amend／重写该提交，后续仅单独补充本验收记录。该并发提交也已将上述生命周期调用迁移为稳定workId／revision；父级在更新后实际重跑`managed-work-todo-lifecycle.test.mjs`，1/1通过。没有把此单文件通过改称混合提交已重新完整跑绿；源码修复所在提交与独立候选的全量证据分别保留。
+
+
+## 多项目／多文件第一层展示优化（2026-11-01，源码落地与完整验证，未提交／安装）
+
+按[保守优化方案与证据](responsiveness-optimization.md)完成日期格式器／当前Markdown作者投影复用、时间线重复绘制消除、文件导航帧内合并及可用性单飞、无执行链接快路、实际原生View尺寸／可见性去重。未加入后台暂停、冷驱逐或Agent／存储进程回收，不改变IPC及严格几何确认、版本／草稿／撤销／会话生命周期。
+
+完整默认unit542/542、integration1536/1536零失败／跳过，注册smoke3/3脚本、真实作者标记14组、七格式主窗／独立窗几何完整通过。5项目40文件同基线对照，两版各50次快速可信选择、原编辑器／跨项目撤销和正常退出通过；100次相同已确认bounds的原生setBounds由100降0、setVisible由400降0，48帧滚动的作者分组／标题计算各46降0。两版均保留20个surface／buffer，不声称内存下降或整体速度百分比。证据目录`/var/tmp/nozeli-responsive-smf7_u3_/`与上述方案逐项报告；截图已查看，原始默认TAP和smoke日志在`.test-output/ci/`。两个独立只读reviewer未发现阻断，运行证据由父级实际执行；工具／旧夹具中间失败与修正边界已记录。仅Linux本机、无真实账号／模型请求、未安装／推送或更改个人材料。
+
+
+## 流畅性优化提交与真实安装版验证（2026-11-01）
+
+用户追加授权commit及安装后，源码／测试／方案已提交`355f2e4`（perf: reduce repeated workspace presentation work）。既有install-local在真实用户HOME构建、打包、Pi／Node／Git校验并激活current=`2026-11-01T04-39-18-355Z`；previous=`2026-11-01T01-02-12-605Z`保留可回退，工具按原策略清理更早10-31快照。产品版本号仍`0.1.0-alpha.4`，本次是新的本机开发构建，不新打发布tag。未push、未签名／公开发行、未强关用户现有窗口；旧进程不热替换，正常退出重开后加载新版。
+
+源码与安装`resources/app`逐文件SHA256比较：src378、dist357、assets31，共766文件零差异。真实安装ELF（非源码Electron／启动wrapper）＋隔离profile合成材料完成七格式主窗／独立窗resize、最大化、全屏、恢复及回嵌，原生内容／owner／Office源字节与未保存代码保持；ok=true、exit0、errors空，截图已查看。原件`/var/tmp/nozeli-responsive-smf7_u3_/dynamic-geometry-live-7Ckjhr/result.json`。运行验收仅Linux，无个人材料／账号／模型请求；不把源码前轮多项目计数冒充安装版重新执行的同一项测量。
+
+
+## 安装版启动OOM故障与恢复评审（2026-11-01，未修复）
+
+真实安装版`2026-11-01T04-39-18-355Z/nozeli`使用日常profile启动到`NOZELI_DESKTOP_READY`后重复SIGABRT；stderr明确为`FATAL ERROR: Scavenger: semi-space copy Allocation failed - JavaScript heap out of memory`，V8 heap约320–358MB。三次新旧安装形态均出现，非正常窗口关闭或单纯GPU提示。证据为`journalctl --user`与`coredumpctl info`，未清理profile、未删除恢复数据、未强杀旧遗留headless进程。
+
+现场profile约8.1GiB，`storage-v2`约4.5GiB；最大recovery库约234MiB（611行／JSON约212.6MiB），另有约179/84/63/23MiB库。最大记录包含`workspace:view-*`图片快照约1.5–1.9MiB及`managed:pending:*`约0.8MiB。磁盘大小本身不能证明单一触发路径，但当前storage worker全量`list`会SQL `.all()`、逐行JSON.parse后经MessagePort复制；managed pending再次扫描并clone；Controller/Workspace还有整状态clone、sessionIndex对象读取与状态hydrate，均有明确峰值放大风险。
+
+独立plan-reviewer结论：直接OOM置信度高；全量物化／跨线程复制／整状态clone造成放大置信度高；具体最后耗尽的是recovery列表、managed hydration、timeline或重叠仍未确认。特别纠正：当前`managed-projects.mjs:421`通过`openController({localOnly:true})`，`Controller.open:57-60`此分支执行timeline.initialize/migrateLocalClosures而非完整`restore:208-241`；不能把完整restore无条件宣称为当前冷启必经。`listManagedPending`与recovery面板读取的具体冷启触发边界也仍待确认。
+
+建议修复顺序（尚未实施）：
+
+1. storage worker提供按collection／namespace／稳定cursor的有界摘要查询，条数＋字节双预算；workspace recovery概览不返回candidate正文、图片model或全部managed collections，详情／完整导出／报告正文由明确动作按记录归属读取。settled receipt/message去重语义必须在存储侧保留，未知kind/status/schema显示保留待核查，不隐身、不当空。
+2. resourceStatus等轻量状态不再调用完整projectionSource/readManagedState；sessionIndex保留身份与顺序，正文读取改为受字节预算及并发限制的按需页面，不能通过把CACHE_BYTES调小掩盖并发预取峰值。
+3. reader工作面与managed可执行恢复分开：阅读先可用，恢复未完成／执行受阻明确显示；不得提前启动queued/running输入，ownership、UNKNOWN、CAS、回执与显式确认仍是执行门。无变化的initialize/migration不进入整状态mutate。
+4. 只有以上完成并测得峰值仍超限，才评估更深的collections/per-work增量reconciliation；不引入全局调度器、Worker池、跨项目驱逐、自动删库或提高heap上限作为永久修复。
+
+必须通过的回归：合成200–300MiB recovery JSON（图片workspace、managed candidate、未知记录）、多项目分布、单条超预算／坏JSON、巨大sessionIndex、draft／未保存model／frozen material字节与身份、prepared/pending/committed/reconciled去重、CAS冲突／UNKNOWN、queued/running/admitted owner不重放、切项目／关闭期间迟到结果、详情／完整导出／reconcile不把OOM推迟到首次点击。实际profile验证需先明确真实启动写入边界；`NOZELI_DESKTOP_READY`不能作为OOM安全通过，必须观察主进程／Worker heap与稳定退出。
+
+以上为修复前的评审快照：当时未修改源码、未重装、未推送。后续实施与证据见下节；恢复数据始终不得通过删除或截断“修复”。
+
+## 有界恢复读取实施（2026-11-01，源码验证，未安装／提交／推送）
+
+落实上节第一阶段窄读取，不迁移磁盘格式，不清库、不提高堆上限，也不把全部业务状态拆成新的存储架构：
+
+- storage worker 在 SQLite 内筛选 namespace、提取标量摘要及 settled receipt/message 依据；概览同时限制条数和编码字节。游标绑定数据库连接代际、变更版本、project／instance／purpose 与筛选条件；变化明确报错，不混页或伪装空集合。未知 kind/status 和坏 JSON 保留为需核查记录。
+- 本机恢复每次仅返回一个登记项目的有界页面（最多30条、worker摘要48KiB），不携带 candidate、model 或 collections。详情由用户明确选择，8MiB解析上限；界面只保留一条活动详情，读取单飞且只保留最后待选项，正文分段展示，关闭释放预览。超预算或坏正文保留原始完整导出入口，不把失败解释为成功恢复。
+- 完整原始记录／保留对象／原生历史经宿主64KiB分块写入用户另存位置，最终重新校验来源及身份，再排他发布；已有目标不覆盖，失败不发布半份文件。文件与目录持久化分别确认；发布后目录同步失败保留已提交结果并标记不确定。报告／对象 digest 从确切恢复记录解析，renderer不能指定任意对象读取权限。
+- 资源栏直接查询 limit 与有效 work 占用，不再为计数调用完整 managed hydration。既有 sessionIndex 初始化不再无变化写回或预取最后200条正文；普通历史每条预览256KiB、单批2MiB、串行读取，缓存准入前检查体积。明确原文解析上限8MiB，更大的原件仍可流式完整导出。按请求恢复讨论保留大回复并通过有界读取识别角色，不把工具日志当回复。
+- 保留生命周期 hold、实例／owner、CAS、UNKNOWN、原请求身份与显式确认；查看、导出、冷启动均不自动派工。跨项目恢复入口仍限可信主窗和已登记项目，文档／网页面不得借新IPC越权。
+- 独立复核发现并修复三条访问回归：可信主窗跨当前项目查看／导出被旧scope allowlist误拒；延迟加载的大回复被request lookup忽略；剪贴板碰撞检查误读无关超大记录。前两条保留角色和权限门，后一条在SQLite按完整相对路径／子目录边界筛选，导入只看匹配摘要，导出只读取所选路径的正文；不用显示用截断路径判断碰撞。相关真实临时文件／冷讨论回归通过，存储reviewer复核路径筛选无新增blocking finding。
+
+已观察的隔离验证：定向存储／历史／生命周期145项通过，随后109项权限／讨论／写入回滚回归通过；真实Electron静态报告在根目录失联后保留、查看、确切字节导出、显式结算、冷开历史及不重放通过（`/var/tmp/nozeli-managed-pending-recovery-VSa51k/report.json`）。Word／Sheet／PPT真实引擎失联编辑、包校验、冷开及确切候选字节导出通过（`/var/tmp/nozeli-office-recovery-zl5DfS/report.json`）；截图已查看的报告与大库工作面不作为付费模型或其他平台证据。
+
+其余受影响的现有GUI消费者也已迁移并实跑：原生Markdown／Unicode选区批注／明确保存／未保存文本冷恢复通过（`/var/tmp/nozeli-reading-native-FYzLq1/report.json`）；根目录丢失与仅元数据丢失两种生命周期场景通过（`/var/tmp/nozeli-storage-lifecycle-n1ajF2/report.json`、`/var/tmp/nozeli-storage-lifecycle-YAPES2/report.json`），覆盖并发关闭仅保留一次、真实UI查看及文本／完整原始记录导出、removed tombstone冷开、另一项目正常读取与仅隔离新项目的实际OS trash。完整原始记录通过真实UI／IPC／文件发布，只有系统目标路径选择使用一次性的main inspector测试适配；不把它计作系统选择器操作通过。截图已查看，临时烟测／X11／accessibility驱动脚本已移除，原始报告保留。
+
+大库真实表面：`/var/tmp/nozeli-bounded-cold-Q3GlmR/report.json`，221条原始记录共231,022,097字节（含220条可见草稿），两轮真实Electron冷启动，各8页读取全部220条摘要、明确查看一条正文、关闭释放预览并正常exit0；主进程采样heap约21–23MiB，未提高heap限制。前后原始记录内容／revision摘要相同，源文件未改。它证明固定合成库的已执行路径，不等同原故障真实profile或安装包已验收，更不证明唯一根因已定位。
+
+既有故障profile隔离副本的存储只读烟测：`/var/tmp/nozeli-fault-copy-read-kNsjN7/report.json`。以SQLite readOnly打开其中恢复库，611条记录共232,214,031字节；全部指定namespace摘要554条／19页，pending视图107条／4页，单页最大14,318字节，Node heap采样最大7,123,880字节；`total_changes()=0`，数据库SHA256前后相同。未打印或改写论文／凭据／正文；这只证明该副本的有界查询，不冒充真实profile整应用启动或安装验收。
+
+最终默认 `npm test` 退出0：unit **542/542**、integration **1546/1546**，失败／跳过／取消均0。原始TAP为`apps/desktop/.test-output/ci/{unit,integration}.tap`；本轮使用`TMPDIR=/var/tmp`。最新45项定向回归全过，含超过8MiB原文的确切导出、大回复／大工具日志角色区分和无关超大恢复不阻断剪贴板；与完整默认集重叠，不累加总数。早期`/tmp` SQLite I/O失败、接口迁移期间测试读取旧完整value／错误候选层级／选错导出记录的失败均未计通过；过时全量运行在源码复核后取消，以此最终完整运行作准。
+
+超过解析预算的真实宿主导出：`/var/tmp/nozeli-native-export-irq9XJ/report.json`。9,437,265字节原始JSON的详情读取明确返回`RECOVERY_RECORD_TOO_LARGE`，同一空工作台通过真实跨项目IPC、storage worker分块及宿主文件发布导出，逐字节与SQLite原始value一致，正常exit0。仅系统目标路径选择在受控main inspector中固定；数据、权限、版本检查和文件系统未替代，不冒充模型或系统对话框操作通过。
+
+原生系统另存为窗口已实际弹出并查看截图，但此桌面缺少xdotool，X11事件未使GTK字段变化，AT-SPI未暴露该自有进程的可操作节点；这些自动化尝试未计作通过。正式代码未加入测试路径后门、GTK强制参数或调试端口；上述受控路径选择只存在于验收脚本／测试，系统选择器人工操作仍未验收。
+
+范围仍为Linux源码；Windows/macOS、真实付费模型、日常安装及原故障profile原地启动未验。正常启动可能写本地状态，不冒称严格只读；本轮真实启动均为隔离合成目录。

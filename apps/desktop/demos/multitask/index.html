@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nozeli · 多任务工作面演示</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">nozeli <span class="brand-divider">/</span> <span>研究工作台</span></div>
+    <span class="demo-badge">模拟</span>
+    <a href="#work-panel" class="tracking-link">工作</a>
+    <details id="demo-controls" class="demo-toolbar">
+      <summary>演示</summary>
+      <div class="demo-controls-body">
+        <div class="demo-buttons"><label class="manual-control"><input id="manual-mode" type="checkbox">手动推进</label><button id="next-step" type="button" disabled>下一步</button></div>
+        <div class="demo-buttons"><button id="batch10" type="button">加入 10 项</button><button id="batch100" type="button">加入 100 项</button><button id="restart" type="button">模拟重启</button><button id="reset" type="button">重置演示</button></div>
+        <div class="demo-buttons"><button id="inject-transient" type="button">短暂连接故障（自动修复）</button><button id="inject-network" type="button">持续连接故障（升级提醒）</button><button id="inject-balance" type="button">余额不足</button></div>
+        <details><summary>故障日志 · 模拟</summary><ol id="fault-logs" class="events" tabindex="0" aria-label="结构化故障日志"></ol></details>
+        <details><summary>事件记录</summary><ol id="events" class="events" tabindex="0" aria-label="演示事件记录"></ol></details>
+        <details class="setup"><summary>帮助与边界</summary><p>仅本地模拟，不连接模型、不修改项目、不探测真实网络或余额。默认每 1.5 秒推进；手动模式使用「下一步」。报告不会自动完成或接受。</p><p>短暂故障由 Orchestrator 自动恢复并记入故障日志。只有无法自动解决的严重故障显示在工作区顶部；处理外部原因后，点击一次「故障解除，继续」即可重新检查并恢复相关原工作，无需逐项确认。再次失败会重新提醒；故障详情与日志随状态刷新，恢复结果可收起。</p><p>右侧待办仅包含待决定与待审阅。恢复仍保留手动暂停、未知运行、其他阻塞和离线项目的安全限制。点击名称或 W 标记看详情；每项目最多 2 个槽位。⋯、右键或 Shift+F10 打开操作。点击状态分类筛选，搜索支持名称与 ID。</p><p>重启后的未知运行须先核实停止，再明确恢复。重置只清空演示任务和导航，保留草稿及推进模式。所有故障日志均为结构化模拟记录，不包含工作正文或原始错误。</p><p>静态服务：<code>python3 -m http.server 8000</code>，访问 <code>/apps/desktop/demos/multitask/</code>。</p></details>
+      </div>
+    </details>
+  </header>
+  <div class="workspace">
+    <section id="workspace-notices" class="workspace-notices" aria-label="工作区故障提醒" hidden><div id="incident-alerts"></div><p id="recovery-result" class="recovery-summary" role="status" hidden></p></section>
+    <nav class="rail" aria-label="演示项目"><span class="project-mark" title="研究工作台">研</span><span class="rail-line"></span></nav>
+    <aside class="files" aria-label="示例材料"><h2>项目文件</h2><div class="folder">⌄ 研究工作台</div><div class="file-selected">研究计划.md</div><p class="file-item">文献摘录.md</p><p class="file-item">章节提纲.md</p></aside>
+    <main class="reader">
+      <header class="desk-header"><h1>研究计划.md</h1><span class="quiet">只读示例</span></header>
+      <section class="document" aria-labelledby="document-title"><article><p class="eyebrow">研究笔记 / 01</p><h2 id="document-title">本轮研究计划</h2><p>围绕研究问题，整理文献与章节之间的联系。</p><ol><li>整理文献中的核心问题</li><li>核对章节论据与引用</li><li>汇总待补充的材料</li></ol></article></section>
+      <section class="conversation-panel" aria-labelledby="conversation-title">
+        <header class="section-heading"><h2 id="conversation-title">对话</h2></header>
+        <div id="conversation" class="conversation" tabindex="0" aria-label="对话记录"><article class="message assistant"><span>助手 · 模拟</span><p>先整理文献，再核对提纲。你可以继续补充要求。</p></article><div id="messages"></div></div>
+        <form id="compose-form" class="composer"><label class="sr-only" for="composer">交代一项新工作</label><textarea id="composer" rows="2" maxlength="4000" placeholder="交代一项工作…" required></textarea><div class="composer-footer"><span>Ctrl / ⌘ + Enter</span><button type="submit" class="primary">发送 ↑</button></div></form>
+      </section>
+    </main>
+    <aside id="work-panel" class="side" aria-label="工作" tabindex="-1">
+      <section class="todo-panel" aria-labelledby="todo-title"><header class="section-heading"><h2 id="todo-title">待办</h2><small id="todo-count"></small></header><div id="todo-list" class="todo-list" tabindex="0" aria-label="待办列表"></div><p id="todo-empty" class="empty">暂无待办</p></section>
+      <header class="section-heading"><h2>开展的工作</h2><small id="work-count" aria-label="当前项目已占用工作槽位">0/2</small></header>
+      <nav id="work-categories" class="work-categories" aria-label="工作状态分类"></nav>
+      <button id="search-toggle" class="search-toggle" type="button" aria-expanded="false" aria-controls="search-controls">搜索</button>
+      <div id="search-controls" class="task-search" hidden><label class="sr-only" for="task-search">按工作名称或 ID 搜索</label><input id="task-search" type="search" placeholder="名称 / ID" autocomplete="off"><button id="clear-search" type="button" hidden>清除</button></div>
+      <div id="task-list" class="task-list" tabindex="0" aria-label="工作列表"></div>
+      <p id="tasks-empty" class="empty">从对话开始一项工作。</p>
+    </aside>
+  </div>
+  <dialog id="task-menu" class="task-menu" aria-labelledby="menu-title"><header class="dialog-heading"><h2 id="menu-title">工作操作</h2><button type="button" data-close="task-menu" aria-label="关闭工作操作">×</button></header><div id="menu-actions" class="action-stack"></div></dialog>
+  <dialog id="task-detail" class="task-detail" aria-labelledby="detail-title">
+    <header class="dialog-heading"><h2 id="detail-title"></h2><button type="button" data-close="task-detail" aria-label="关闭工作详情">×</button></header>
+    <p id="detail-status" class="detail-status"></p><p id="detail-request" class="detail-request"></p>
+    <div id="detail-actions" class="detail-actions"></div>
+    <section id="report-section" hidden><h3>报告</h3><pre id="detail-report"></pre></section>
+    <section id="closure-section" hidden><h3>收尾</h3><ol id="closure-steps"><li>归档决定</li><li>清理候选与工作目录</li><li>释放槽位</li></ol></section>
+    <details id="detail-records"><summary>关联与记录</summary>
+      <button id="source-message" type="button">定位来源消息</button><button id="recent-task" type="button" hidden>最近查看</button>
+      <section id="original-source" hidden><h3>原始来源</h3><p class="quiet">消息已移出对话，保留冻结原文。</p><p id="original-source-text" class="detail-request"></p></section>
+      <dl id="detail-meta"></dl><h3>最近事件 · 整个演示</h3><ol id="detail-events" class="events" tabindex="0" aria-label="最近演示事件"></ol>
+    </details>
+  </dialog>
+  <dialog id="incident-detail" aria-labelledby="incident-title"><header class="dialog-heading"><h2 id="incident-title"></h2><button type="button" data-close="incident-detail" aria-label="关闭故障详情">×</button></header><p id="incident-status" class="detail-status"></p><p class="simulation-note">仅模拟：请先处理连接或余额原因，再点击「故障解除，继续」。不会连接真实服务、探测网络或扣费。</p><div id="incident-actions" class="detail-actions"></div><p id="incident-result" role="status"></p><h3>受影响的原工作</h3><ul id="incident-tasks" class="incident-tasks"></ul><details><summary>故障日志 · 自动步骤与结果</summary><ol id="incident-logs" class="events" tabindex="0" aria-label="当前故障日志"></ol></details><details class="setup"><summary>模拟控制</summary><button id="incident-fail-again" type="button">再次失败</button><p class="quiet">让下一次恢复检查失败；不会访问真实服务。</p></details></dialog>
+  <dialog id="confirmation" class="confirmation" aria-labelledby="confirm-title" aria-describedby="confirm-text"><h2 id="confirm-title"></h2><p id="confirm-text"></p><div class="dialog-actions"><button id="confirm-cancel" type="button" autofocus>取消</button><button id="confirm-proceed" type="button" class="danger">确认</button></div></dialog>
+  <p id="announcement" class="sr-only" role="status" aria-live="polite"></p>
+  <script type="module" src="./app.mjs"></script>
+</body>
+</html>

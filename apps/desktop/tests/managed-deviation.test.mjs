@@ -19,7 +19,7 @@ async function fixture(t){
   this.insideTool=true;
   try{
    if(text.includes('TRIGGER_SCOPE'))await this.onTool({tool:'nozeli_report_deviation',arguments:{changedGoal:'Different proposed goal',reason:'Original task does not authorize the trigger',progress:'Original evidence retained; trigger not executed'},callId:'deviation:'+this.target});
-   else await this.onTool({tool:'nozeli_publish',arguments:{kind: 'problem', text: '原始任务已恢复；来源已核对。', files: []},callId:randomUUID()});
+   else await this.onTool({tool:'nozeli_publish',arguments:{kind: 'problem', content: '原始任务已恢复；来源已核对。', files: []},callId:randomUUID()});
   }finally{this.insideTool=false;}
   return {completion:'host-control',threadId:this.threadId};
  } }
@@ -63,7 +63,7 @@ test('replan dispatch is unbound and later continue resumes original without re-
 
 test('cold restore retains held gate, todo, request history and never replays queued inputs or replan',async t=>{
  const {c,run,id,open}=await fixture(t),w=await run();await c.resolveDeviation(decision(w,'replan'));await c.send(id,'saved while held');const d=structuredClone(c.store.find(id).deviation),thread=c.store.find(id).threadId;await c.stop();
- const next=await open();assert.deepEqual(next.store.find(id).deviation,d);assert.equal(next.store.find(id).threadId,thread);assert.equal(next.store.state.todos.filter(row=>row.id===d.todoId).length,1);assert.equal(next.store.state.jobs.filter(j=>j.status==='queued'||j.status==='running').length,0);assert.equal(next.deviationHeld(id),true);
+ const next=await open();assert.deepEqual(next.store.find(id).deviation,d);assert.equal(next.store.find(id).threadId,thread);assert.equal(next.store.state.todos.filter(row=>row.id===d.todoId).length,1);const durable=next.store.state.jobs.filter(j=>['queued','running'].includes(j.status));assert.equal(durable.length,3);assert.equal(durable.filter(j=>j.status==='running').length,0);assert(durable.every(j=>j.restartRecovery?.kind==='never-admitted'));assert(durable.some(j=>j.key==='deviation-replan:'+d.id));assert(durable.some(j=>j.type==='manual'&&j.text==='saved while held'));assert(durable.some(j=>j.type==='backstage'&&j.key==='backstage:problem:'+w.problem.objectId));assert(!durable.some(j=>j.type==='supplement'));assert.equal(next.deviationHeld(id),true);
  const retry=await next.resolveDeviation({...decision(next.store.find(id),'replan'),expectedVersion:1,requestKey:'decision-request-1'});assert.equal(retry.status,'replanned');assert.equal(next.store.state.jobs.filter(j=>j.key==='deviation-replan:'+d.id).length,1);
 });
 

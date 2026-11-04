@@ -40,7 +40,7 @@ test('real three-role Pi handoff publishes a frozen candidate and user discard p
   calls.push('worker');
   if(!request.messages.some(message=>message.tool_call_id==='candidate-write-1'))return {tool:'write',id:'candidate-write-1',args:{path:'candidate.txt',content:'Pi candidate artifact\n'}};
   if(last.role==='tool'&&last.tool_call_id==='publish-1')throw Error('Host-controlled publication must not call the model again');
-  return {tool:'nozeli_publish',id:'publish-1',args:{kind:'result',html:staticReport('Candidate verified and ready for explicit user review.'),files:['candidate.txt']}};
+ return {tool:'nozeli_publish',id:'publish-1',args:{kind:'result',content:staticReport('Candidate verified and ready for explicit user review.'),files:['candidate.txt']}};
  });
  t.after(()=>provider.close());
  const dirs=await prepare(provider.url),host=new DesktopHost(path.join(dirs.root,'profile'));
@@ -187,3 +187,53 @@ test('GUI session stop binds one real job and queued explicit input continues on
 });
 
 export {serve,prepare};
+
+test('near-budget 100KB HTML read continues the original native turn through frozen pagination to an answer',{timeout:120000},async t=>{
+ let controller,first,second;
+ const provider=await serve((request,round)=>{
+  if(round===1)return {tool:'nozeli_document_read',id:'large-read',args:{relPath:'binary-stars.html'}};
+  first=JSON.parse(request.messages.find(message=>message.tool_call_id==='large-read').content);
+  assert.equal(first.ok,true);assert.equal(first.continueTurn,true);assert.equal(first.hostControl,undefined);
+  assert.ok(first.value.nextReadRef);assert.equal(first.value.offset,0);assert.ok(first.value.text.includes('orbit-evidence'));
+  if(round===2)return {tool:'nozeli_document_read',id:'large-next',args:{readRef:first.value.nextReadRef}};
+  assert.equal(round,3);
+  second=JSON.parse(request.messages.find(message=>message.tool_call_id==='large-next').content);
+  assert.equal(second.ok,true);assert.equal(second.value.offset,first.value.endOffset);
+  assert.deepEqual(second.value.version,first.value.version);assert.equal(second.value.readHandle,first.value.readHandle);
+  return {text:'Orbit evidence checked in the first two frozen pages; the remaining HTML was not read.'};
+ });
+ const dirs=await prepare(provider.url),host=new DesktopHost(path.join(dirs.root,'profile'));
+ const html='<!doctype html><title>orbit-evidence</title>\n'+('<!-- orbit content -->\n').repeat(4600);
+ await fs.writeFile(path.join(dirs.cwd,'binary-stars.html'),html);
+ const project=(await host.pick(dirs.cwd)).project;
+ controller=await Controller.open({storage:host.storage,projectId:project.id,runtimeRoot:path.join(dirs.root,'runtime'),contentRoot:dirs.cwd,frontdeskDocuments:createFrontdeskDocuments({host,projectId:project.id,sync:async()=>()=>{}}),piSource:{agentDir:dirs.agentDir,modelFor:async()=>'local-fixture/scripted'},piRuntime:{agentDir:dirs.agentDir}});
+ t.after(async()=>{await controller.stop();await provider.close();await host.storage.db.close();});
+ const onTool=controller.onTool.bind(controller);let seeded=false;
+ controller.onTool=async(target,p)=>{
+  if(!seeded&&p.tool==='nozeli_document_read'){
+   seeded=true;const allowance=controller.contextBudget.readAllowance(target);
+   assert.equal(controller.contextBudget.charge(target,allowance-62350,{kind:'tool-read',label:'earlier project listing'}).ok,true);
+   assert.equal(controller.contextBudget.readAllowance(target),62350);
+  }
+  return onTool(target,p);
+ };
+ await controller.start();const accepted=await controller.send('frontdesk','Check the orbit evidence.',{requestKey:'near-budget-original-input'});
+ const deadline=Date.now()+45000;
+ while(Date.now()<deadline&&!['completed','failed'].includes(controller.store.state.jobs.find(job=>job.id===accepted.jobId)?.status))await new Promise(resolve=>setTimeout(resolve,25));
+ const job=controller.store.state.jobs.find(job=>job.id===accepted.jobId);
+ assert.equal(job.status,'completed',job.error);assert.equal(job.completion,'provider-completed');assert.equal(provider.requests.length,3);
+ assert.equal(first.value.totalChars,html.length);assert.equal(first.value.text+second.value.text,html.slice(0,second.value.endOffset));
+ assert.ok(controller.contextBudget.run('frontdesk').usedBytes<65536-2048);
+ const journal=(await fs.readFile(controller.sessions.get('frontdesk').sessionFile,'utf8')).split('\n').filter(Boolean).map(line=>JSON.parse(line));
+ assert.equal(journal.filter(row=>row.message?.role==='user').length,1,'one original user entry, no injected prompt or resend');
+ assert.equal(controller.store.state.works.length,0);assert.deepEqual(provider.errors,[]);
+});
+
+for(const control of [{ok:false,hostControl:true,error:{code:'HOST_BUDGET_PERSIST_FAILED',message:'ledger unavailable'}},{hostControl:true}])test('fatal or unknown native host control preserves a failure receipt',{timeout:90000},async t=>{
+ const provider=await serve((request,round)=>{assert.equal(round,1);return {tool:'stop_host',id:'fatal-host-control',args:{}};});
+ const dirs=await prepare(provider.url);
+ const session=new PiSession({...dirs,role:'frontdesk',model:'local-fixture/scripted',piRuntime:{agentDir:dirs.agentDir},finishOnHostControl:true,tools:[{name:'stop_host',description:'Stop at host boundary',parameters:{type:'object',properties:{},additionalProperties:false}}],onTool:async()=>control});
+ t.after(async()=>{await session.stop();await provider.close();});await session.start();
+ const result=await session.prompt('Inspect host status.',{job:{id:'fatal-control',target:'frontdesk',type:'front'}});
+ assert.equal(result.completion,'host-control');assert.equal(result.hostControlError.code,control.error?.code??'HOST_CONTROL_UNCLASSIFIED');assert.equal(provider.requests.length,1);
+});

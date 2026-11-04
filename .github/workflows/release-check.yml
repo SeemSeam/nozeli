@@ -32,7 +32,7 @@ jobs:
           ref: refs/tags/${{ inputs.tag }}
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: '22.22.0'
+          node-version: '22.22.2'
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -46,7 +46,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y xvfb libgtk-3-0 libnss3 libasound2t64 libgbm1 bubblewrap && sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Install and test
         working-directory: apps/desktop
-        run: npm ci --no-audit --no-fund && npm test
+        run: npm ci --no-audit --no-fund && npm ci --prefix ../../integrations/pi --no-audit --no-fund && npm test
       - name: Configure Electron sandbox on this ephemeral runner
         working-directory: apps/desktop
         run: |
@@ -55,7 +55,7 @@ jobs:
           sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
       - name: Build pinned application inputs
         working-directory: apps/desktop
-        run: npm run build:pptist && npm run build:omp && npm run build:renderer
+        run: npm run build:pptist && npm run build:pi && npm run build:renderer
       - name: Check repository and exercise Electron
         working-directory: apps/desktop
         run: node ../../tools/check-repository.mjs && xvfb-run -a npm run test:smoke

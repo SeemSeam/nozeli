@@ -1,3 +1,4 @@
+import {applyViewGeometry} from './view-geometry.mjs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {webPageCaptureScript} from './web-page-capture.mjs';
@@ -221,8 +222,7 @@ export class OnlineBrowserManager {
       const parent = scope.view.getBounds(), zoom = scope.wc.getZoomFactor?.() ?? 1, b = slot.bounds;
       const x = Math.min(parent.width, Math.max(0, Math.round(b.x * zoom))), y = Math.min(parent.height, Math.max(0, Math.round(b.y * zoom)));
       const width = Math.max(0, Math.min(Math.round(b.width * zoom), parent.width - x)), height = Math.max(0, Math.min(Math.round(b.height * zoom), parent.height - y));
-      slot.view.setBounds({x:parent.x+x,y:parent.y+y,width,height});
-      slot.view.setVisible(this.alive(slot) && !scope.transferring && !scope.recoveryHeld && !scope.previewRecoveryFailed && !slot.overlay && scope.view.getVisible() && width > 0 && height > 0);
+      applyViewGeometry(slot.view,{x:parent.x+x,y:parent.y+y,width,height},this.alive(slot) && !scope.transferring && !scope.recoveryHeld && !scope.previewRecoveryFailed && !slot.overlay && scope.view.getVisible() && width > 0 && height > 0);
     }
   }
   release(slot) {

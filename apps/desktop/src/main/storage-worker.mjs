@@ -3,6 +3,9 @@ import {DatabaseSync} from 'node:sqlite';
 import {createHash} from 'node:crypto';
 import fs from 'node:fs';
 import {pathToFileURL} from 'node:url';
+import {recoveryRead,managedResourceSummary,managedExecutionSummary} from './storage-recovery.mjs';
+import {collaborationFacts} from './storage-collaboration.mjs';
+import {maintenanceFacts} from './storage-maintenance.mjs';
 
 const databases=new Map(),identities=new Map();
 const reply=message=>workerData.replyPort.postMessage({...message,completedAt:process.hrtime.bigint()});
@@ -49,7 +52,13 @@ function open(file,{mustExist=false}={}){
  }catch(error){db.close();throw error;}
 }
 parentPort.on('message',({id,file,op,args})=>{try{const db=open(file,args);let value;
- if(op==='get')value=JSON.parse(db.prepare('SELECT value FROM records WHERE collection=? AND id=?').get(args.collection,args.id)?.value??'null');
+ if(['recoveryPage','recoveryRecord','recoveryChunk'].includes(op))value=recoveryRead(db,identities.get(file),op,args);
+ else if(op==='managedResourceSummary')value=managedResourceSummary(db,args);
+ else if(op==='managedExecutionSummary')value=managedExecutionSummary(db);
+ else if(op==='managedAgentPage')value=collaborationFacts(db,identities.get(file),args);
+ else if(op==='managedMaintenancePage')value=maintenanceFacts(db,identities.get(file),args);
+ else if(op==='boundedRecord'){const row=db.prepare('SELECT revision,length(CAST(value AS BLOB)) bytes FROM records WHERE collection=? AND id=?').get(args.collection,args.id);if(row&&row.bytes>(args.maxBytes??131072))throw Object.assign(Error('本机记录超过读取预算'),{code:'LOCAL_RECORD_TOO_LARGE'});value=row?{revision:row.revision,value:JSON.parse(db.prepare('SELECT value FROM records WHERE collection=? AND id=?').get(args.collection,args.id).value)}:null;}
+ else if(op==='get')value=JSON.parse(db.prepare('SELECT value FROM records WHERE collection=? AND id=?').get(args.collection,args.id)?.value??'null');
  else if(op==='record'){const r=db.prepare('SELECT value,revision FROM records WHERE collection=? AND id=?').get(args.collection,args.id);value=r?{value:JSON.parse(r.value),revision:r.revision}:null;}
  else if(op==='list')value=db.prepare('SELECT id,value,revision FROM records WHERE collection=? ORDER BY id').all(args.collection).map(r=>({...r,value:JSON.parse(r.value)}));
  else if(op==='all')value=db.prepare('SELECT collection,id,value,revision FROM records ORDER BY collection,id').all().map(r=>({...r,value:JSON.parse(r.value)}));

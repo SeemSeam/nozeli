@@ -19,41 +19,53 @@ export const reportAccentCss = (palette, mode) => {
   return `:root{--nozeli-paper:${set.paper};--nozeli-ink:${set.ink};--nozeli-link:${set.link}}`;
 };
 export const REPORT_READER_STYLE = `/* Nozeli host baseline reading style; later author styles may override it. */
-/* nozeli-reader-baseline v3 */
+/* nozeli-reader-baseline v4 */
 :root{color-scheme:light dark}
 html{background:var(--nozeli-paper,light-dark(#ffffff,#10151c))}
-body{max-width:74ch;margin:0 auto;padding:clamp(1.25rem,4vw,2.75rem);font-family:system-ui,-apple-system,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC","Source Han Sans SC",sans-serif;font-size:1.0625rem;line-height:1.75;color:var(--nozeli-ink,light-dark(#212934,#d9e0e8));background:var(--nozeli-paper,light-dark(#ffffff,#10151c));overflow-wrap:break-word}
-h1,h2,h3,h4,h5,h6{font-weight:700;line-height:1.3;margin:1.9em 0 .65em}
-h1{font-size:1.85em;margin-top:0}
-h2{font-size:1.4em}
-h3{font-size:1.18em}
+body{max-width:72ch;margin:0 auto;padding:clamp(1.25rem,4vw,3rem);font-family:system-ui,-apple-system,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC","Source Han Sans SC",sans-serif;font-size:1.0625rem;line-height:1.75;color:var(--nozeli-ink,light-dark(#212934,#d9e0e8));background:var(--nozeli-paper,light-dark(#ffffff,#10151c));overflow-wrap:break-word}
+h1,h2,h3,h4,h5,h6{font-weight:700;line-height:1.35;margin:2em 0 .65em;break-after:avoid}
+h1{font-size:1.9em;margin-top:0;margin-bottom:.65em}
+h2{font-size:1.4em;padding-bottom:.35em;border-bottom:1px solid light-dark(#c9d3de,#465365)}
+h3{font-size:1.15em}
 h4,h5,h6{font-size:1em}
-p,ul,ol,dl,blockquote,figure,pre,table,details,hr{margin:0 0 1.05em}
-li{margin:.3em 0}
-li>ul,li>ol{margin:.3em 0}
-dt{font-weight:700;margin-top:.7em}
+h1+p,.report-lead{font-size:1.12em;line-height:1.65;margin-bottom:1.4em}
+.report-conclusion{margin:1.4em 0 1.8em;padding:.9em 1.15em;border-left:3px solid var(--nozeli-link,light-dark(#0a5cd3,#86b6ff));background:light-dark(#f2f5f9,#18202a)}
+.report-conclusion>h2:first-child,.report-conclusion>h3:first-child{margin-top:0;padding-bottom:0;border:0}
+.report-conclusion>:last-child{margin-bottom:0}
+p,ul,ol,dl,blockquote,figure,pre,table,details,hr{margin:0 0 1.1em}
+p{orphans:3;widows:3}
+li{margin:.35em 0}
+li>ul,li>ol{margin:.35em 0}
+dt{font-weight:700;margin-top:.8em}
 dd{margin-inline-start:1.5em}
-hr{border:0;border-top:1px solid light-dark(#c9d3de,#333f4d);margin:2.2em 0}
+hr{border:0;border-top:1px solid light-dark(#c9d3de,#465365);margin:2.2em 0}
 a{color:var(--nozeli-link,light-dark(#0a5cd3,#86b6ff))}
-a:focus-visible,summary:focus-visible{outline:2px solid var(--nozeli-link,light-dark(#0a5cd3,#86b6ff));outline-offset:2px}
+a:focus-visible,summary:focus-visible,table:focus-visible,pre:focus-visible{outline:2px solid var(--nozeli-link,light-dark(#0a5cd3,#86b6ff));outline-offset:3px}
 ul,ol{padding-inline-start:1.6em}
 blockquote{padding:.35em 1.2em;border-left:3px solid light-dark(#c9d3de,#333f4d)}
 code,kbd,samp{font-family:ui-monospace,"Cascadia Code",Menlo,Consolas,"Liberation Mono","Noto Sans Mono CJK SC",monospace;font-size:.92em}
 :not(pre)>code{background:light-dark(#eef2f7,#1a2330);border-radius:.3em;padding:.12em .38em}
 kbd{background:light-dark(#f4f6fa,#1a2330);border:1px solid light-dark(#b6c1cd,#46556a);border-bottom:2px solid light-dark(#b6c1cd,#46556a);border-radius:.3em;padding:.1em .45em;font-size:.85em}
 pre{overflow-x:auto;padding:1em 1.15em;border-radius:.45em;background:light-dark(#f2f5f9,#18202a);line-height:1.55}
-table{border-collapse:collapse;display:block;width:max-content;max-width:100%;overflow-x:auto}
-caption{caption-side:top;text-align:start;padding:.5em 0;font-size:.92em;color:light-dark(#4f5b6b,#a3b0bf)}
-th,td{border:1px solid light-dark(#c9d3de,#333f4d);padding:.45em .7em;text-align:start;vertical-align:top}
+table{border-collapse:collapse;display:block;width:100%;max-width:100%;overflow-x:auto;font-size:.94em;line-height:1.55;margin:1.4em 0}
+caption{caption-side:top;text-align:start;min-width:min(48ch,calc(100vw - 4rem));padding:0 0 .65em;font-weight:600;color:light-dark(#4f5b6b,#b4bfce)}
+th,td{border-bottom:1px solid light-dark(#c9d3de,#465365);padding:.55em .8em;text-align:start;vertical-align:top}
 th{background:light-dark(#f2f5f9,#18202a);font-weight:700}
-figure{margin:1.6em 0}
+thead th{border-bottom:2px solid light-dark(#9eacbc,#748398)}
+th.report-number,td.report-number{text-align:end;font-variant-numeric:tabular-nums;white-space:nowrap}
+tfoot{font-weight:600}
+figure{margin:1.8em 0;padding:1em 0;border-block:1px solid light-dark(#c9d3de,#465365)}
 img{max-width:100%;height:auto}
+figure>img,figure>svg{display:block;margin-inline:auto;max-width:100%;height:auto}
 figure svg{max-width:100%;height:auto}
-figcaption{margin-top:.6em;font-size:.92em;line-height:1.6;color:light-dark(#4f5b6b,#a3b0bf)}
-summary{cursor:pointer;font-weight:700;margin:.2em 0 .5em}
-details[open]>summary{margin-bottom:.65em}
-@media (max-width:30rem){body{font-size:1rem;padding:1.2rem 1.1rem 2.5rem}h1{font-size:1.55em}h2{font-size:1.28em}}
-@media print{html{background:#ffffff}body{max-width:none;padding:0;font-size:11pt;color:#000000;background:#ffffff}a{color:#000000}:root{color-scheme:light;--nozeli-paper:#ffffff;--nozeli-ink:#000000;--nozeli-link:#000000}pre,th{background:#f2f5f9;color:#000000}:not(pre)>code,kbd{background:#f4f6fa;color:#000000}hr,th,td{border-color:#c9d3de}caption,figcaption{color:#4f5b6b}pre{overflow:visible;white-space:pre-wrap}table{overflow:visible}blockquote,figure,pre,tr{break-inside:avoid}}`;
+figcaption{margin-top:.8em;font-size:.92em;line-height:1.6;color:light-dark(#4f5b6b,#b4bfce)}
+details{padding:.65em 0;border-block:1px solid light-dark(#c9d3de,#465365)}
+summary{cursor:pointer;font-weight:600;padding:.35em .2em;line-height:1.6}
+summary:hover{color:var(--nozeli-link,light-dark(#0a5cd3,#86b6ff))}
+details[open]>summary{margin-bottom:.8em}
+details>:last-child{margin-bottom:0}
+@media (max-width:30rem){body{font-size:1rem;padding:1.25rem 1rem 2.5rem}h1{font-size:1.6em}h2{font-size:1.28em}h1+p,.report-lead{font-size:1.06em}.report-conclusion{padding:.75em .9em}th,td{padding:.5em .6em}}
+@media print{html{background:#ffffff}body{max-width:none;padding:0;font-size:11pt;color:#000000;background:#ffffff}a{color:#000000}:root{color-scheme:light;--nozeli-paper:#ffffff;--nozeli-ink:#000000;--nozeli-link:#000000}pre,th,.report-conclusion{background:#f2f5f9;color:#000000}:not(pre)>code,kbd{background:#f4f6fa;color:#000000}hr,h2,th,td,thead th,figure,details,.report-conclusion{border-color:#9eacbc}caption,figcaption{color:#4f5b6b}pre{overflow:visible;white-space:pre-wrap}table{display:table;width:100%;overflow:visible;font-size:.9em}th,td{overflow-wrap:anywhere}th.report-number,td.report-number{white-space:normal}blockquote,figure,tr{break-inside:avoid}details{border:0}summary{font-weight:700}}`;
 
 export const reportReaderStyleTag = () => `<style id="${REPORT_READER_STYLE_ID}">${REPORT_READER_STYLE}</style>`;
 const hasViewport = html => /<meta[^>]+name=["']viewport["']/i.test(html);
@@ -77,7 +89,7 @@ export function upgradeReportReaderStyle(html) {
   const pattern = new RegExp(`<style id="${REPORT_READER_STYLE_ID}">([\\s\\S]*?)</style>`);
   const existing = pattern.exec(html);
   if (!existing) return html;
-  if (existing[1].includes('nozeli-reader-baseline v3')) return html;
+  if (existing[1].includes('nozeli-reader-baseline v4')) return html;
   return html.slice(0, existing.index) + reportReaderStyleTag() + html.slice(existing.index + existing[0].length);
 }
 

@@ -1,5 +1,5 @@
 import { contentToolForPage } from './native-content-tools.fixture.mjs';
-import {prepareReading, waitForDesktopPage} from './reading-setup.fixture.mjs';
+import {prepareReading} from './reading-setup.fixture.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import net from 'node:net';
@@ -19,6 +19,7 @@ await fs.writeFile(path.join(project,'segments.cc'),'// unknown header\n'+code+'
 await fs.writeFile(path.join(project,'segments.txt'),'unknown header\n'+code+'unknown separator\n'+tail);
 await fs.writeFile(path.join(project,'reading.md'),'# 分段阅读\n\n第一段原说明。\n\n第二段原说明，含公式 $E=mc^2$。\n\n未知正文打断署名。\n\n第四段原说明。\n\n## 结构边界\n\n第五段原说明。\n\n- 列表第一项原说明。\n- 列表第二项原说明。\n\n```cpp\nint old = 0;\n```\n');
 await fs.writeFile(path.join(project,'history.md'),'# 旧批次分页\n\n'+'_'.repeat(105)+'\n\n未知正文打断范围。\n\nx');
+await fs.writeFile(path.join(project,'crlf.md'),'# CRLF attribution\r\n\r\nOriginal paragraph.\r\n');
 const fold='void example() {\n'+Array.from({length:8},(_,i)=>`  int old_${i} = 0;\n`).join('')+'}\nint old_after = 0;\n';
 for(const file of ['fold-unknown.cc','fold-group.cc'])await fs.writeFile(path.join(project,file),fold);
 await fs.writeFile(path.join(project,'mixed.cc'),'aaXXbbYYcc\ndelete-this\nunknown\n');
@@ -30,7 +31,8 @@ async function edit(rel,from,to,insert,role='qa'){
     await host.applyDocument(projectId,actor,{readHandle:snapshot.readHandle,edits:[{from,to,insert}],operationId:randomBytes(32).toString('hex')});
   }else{const read=await host.readFile(projectId,rel),text=read.text.slice(0,from)+insert+read.text.slice(to);await host.save(projectId,rel,read.digest,text,{anchorChanges:ChangeSet.of({from,to,insert},read.text.length).toJSON()});}
 }
-async function replace(rel,find,insert,role='qa'){const read=await host.readFile(projectId,rel),from=read.text.indexOf(find);assert(from>=0);await edit(rel,from,from+find.length,insert,role);}
+async function replace(rel,find,insert,role='qa'){const read=await host.readFile(projectId,rel),text=role?read.text.replace(/\r\n?/g,'\n'):read.text,from=text.indexOf(find);assert(from>=0);await edit(rel,from,from+find.length,insert,role);}
+await replace('crlf.md','Original paragraph.','Attributed paragraph.');
 for(const rel of ['segments.cc','segments.txt']){
   const read=await host.readFile(projectId,rel),from=read.text.indexOf('int old_0'),part=code.split('\n').slice(0,100).join('\n')+'\n';
   await edit(rel,from,from+part.length,part.replaceAll('old_','new_').replaceAll('= 0','= 1'));
@@ -48,29 +50,54 @@ for(const file of ['wrapped.cc','wrapped.txt'])await replace(file,wrapped,wrappe
 
 const port=await new Promise(resolve=>{const server=net.createServer();server.listen(0,'127.0.0.1',()=>{const value=server.address().port;server.close(()=>resolve(value));});});
 const launch=()=>spawn(createRequire(import.meta.url)('electron'),[path.join(root,'src/main/main.cjs'),'--ozone-platform=wayland'],{cwd:root,env:{...process.env,WAYLAND_DISPLAY:'wayland-0',XDG_RUNTIME_DIR:'/run/user/1000',NOZELI_TEST_INSTANCE:'1',NOZELI_USER_DATA:profile,NOZELI_DEBUG_PORT:String(port),NOZELI_SHOT_DIR:out,NOZELI_AGENT_FIXTURE:'1'},stdio:['ignore','pipe','pipe']});
-let child=launch(),browser,page,log='';const report={out,project,checks:[],errors:[],metrics:{}};
+let child=launch(),browser,shell,page,log='';const report={out,project,checks:[],errors:[],metrics:{}};
 const attach=process=>{for(const stream of [process.stdout,process.stderr])stream.on('data',chunk=>log+=chunk);return new Promise(resolve=>process.once('exit',(code,signal)=>resolve({code,signal})));};let exited=attach(child);
-const invoke=(op,payload={})=>page.evaluate(({op,payload})=>nozeli.invoke(op,payload),{op,payload});
+const invoke=(op,payload={})=>shell.evaluate(({op,payload})=>nozeli.invoke(op,payload),{op,payload});
 // Return the CDP evaluation before shutdown destroys its execution context;
 // otherwise an unanswered Runtime.callFunctionOn can retain protocol timers.
-const requestClose=()=>page.evaluate(()=>{setTimeout(()=>{void window.nozeli.invoke('session.requestClose').catch(()=>{});},0);});
+const requestClose=()=>shell.evaluate(()=>{setTimeout(()=>{void window.nozeli.invoke('session.requestClose').catch(()=>{});},0);});
 async function resize(width){
   await invoke('session.resize',{width,height:900});
-  await page.waitForFunction(width=>innerWidth===width,{},width);
-  await page.waitForFunction(()=>document.querySelector('#app').classList.contains('narrow-layout')===(innerWidth<=1000));
+  await shell.waitForFunction(width=>innerWidth===width,{},width);
+  await shell.waitForFunction(()=>document.querySelector('#app').classList.contains('narrow-layout')===(innerWidth<=1000));
+  if(page&&page!==shell)await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
 }
-async function connect(){for(let i=0;i<120;i++){try{browser=await puppeteer.connect({browserURL:'http://127.0.0.1:'+port,defaultViewport:null});break;}catch{}await tick(100);}assert(browser,log);page=await waitForDesktopPage(browser);page.on('pageerror',error=>report.errors.push(error.stack));await page.waitForFunction(()=>window.__nozeliReady);}
+async function nativePage(role,relPath=null){
+  for(let attempt=0;attempt<300;attempt++){
+    for(const candidate of await browser.pages()){
+      const matches=await candidate.evaluate(({role,relPath,projectId})=>{
+        const scope=window.__workspaceScope;
+        return window.__nozeliReady&&scope?.role===role&&(!relPath||scope.kind==='document'&&scope.projectId===projectId&&scope.relPath===relPath&&(!scope.documentSource||scope.documentSource.type==='project'));
+      },{role,relPath,projectId}).catch(()=>false);
+      if(matches)return candidate;
+    }
+    await tick(100);
+  }
+  throw Error('Native '+role+' page not ready: '+(relPath||'shell'));
+}
+async function connect(){
+  for(let i=0;i<120;i++){try{browser=await puppeteer.connect({browserURL:'http://127.0.0.1:'+port,defaultViewport:null});break;}catch{}await tick(100);}
+  assert(browser,log);
+  const listen=target=>{if(target.type()==='page')void target.page().then(candidate=>candidate?.on('pageerror',error=>report.errors.push(error.stack))).catch(()=>{});};
+  browser.on('targetcreated',listen);for(const target of browser.targets())listen(target);
+  shell=await nativePage('shell');page=shell;
+}
 async function open(rel){
-  await page.waitForFunction(()=>document.querySelector('#app').classList.contains('narrow-layout')===(innerWidth<=1000));
-  if(await page.$eval('#app',node=>node.classList.contains('narrow-layout')?!node.classList.contains('drawer-files-open'):node.classList.contains('files-collapsed')))await page.click('#file-toggle');
-  await page.waitForFunction(rel=>document.querySelector('#file-tree button[data-path="'+rel+'"]')?.getBoundingClientRect().height>0,{},rel);
-  await page.click('#file-tree button[data-path="'+rel+'"]');await page.waitForFunction(rel=>document.querySelector('#file-path').textContent===rel,{},rel);await tick(180);
-  if(await page.$eval('#app',node=>node.classList.contains('drawer-files-open')))await page.click('#file-toggle');
+  await shell.waitForFunction(()=>document.querySelector('#app').classList.contains('narrow-layout')===(innerWidth<=1000));
+  if(await shell.$eval('#app',node=>node.classList.contains('narrow-layout')?!node.classList.contains('drawer-files-open'):node.classList.contains('files-collapsed')))await shell.click('#file-toggle');
+  await shell.waitForFunction(rel=>document.querySelector('#file-tree button[data-path="'+rel+'"]')?.getBoundingClientRect().height>0,{},rel);
+  await shell.click('#file-tree button[data-path="'+rel+'"]');
+  page=await nativePage('surface',rel);
+  await page.waitForFunction(rel=>document.querySelector('#file-path').textContent===rel,{},rel);
+  if(await shell.$eval('#app',node=>node.classList.contains('drawer-files-open')))await shell.click('#file-toggle');
+  await page.waitForFunction(()=>innerWidth>0&&document.querySelector('#documents').getBoundingClientRect().height>0);
+  await tick(180);
 }
 const marks=selector=>page.$$eval(selector,nodes=>nodes.map(node=>({text:node.textContent,title:node.title,from:Number(node.dataset.from),to:Number(node.dataset.to),continuation:node.dataset.continuation,rect:{top:node.getBoundingClientRect().top,left:node.getBoundingClientRect().left,height:node.getBoundingClientRect().height,width:node.getBoundingClientRect().width}})));
 async function foldAtStart(){await page.evaluate(()=>{__nozeliInput.focus();__nozeliInput.select(0);});await page.keyboard.down('Control');await page.keyboard.down('Shift');await page.keyboard.press('BracketLeft');await page.keyboard.up('Shift');await page.keyboard.up('Control');await tick(300);}
 try{
   await connect();await prepareReading(page);
+  await shell.click('[data-project-id="'+projectId+'"]');await shell.waitForFunction(id=>window.__workspaceScope?.projectId===id&&!document.querySelector('[data-project-id][aria-busy="true"]'),{},projectId);
   await resize(1440);await open('segments.cc');await page.waitForSelector('.monaco-authorship .authorship-mark');
   let initial=await marks('.monaco-authorship .authorship-mark');assert.equal(initial.length,1);assert.match(initial[0].title,/2批/);assert.equal(initial[0].text,'A1');
   await page.screenshot({path:path.join(out,'01-monaco-group.png')});
@@ -96,14 +123,44 @@ try{
   }
   report.checks.push('native Alt+Z soft wrap in both real editors expands one continuous bar using actual row heights, survives 960/600 resizing and leaves source unchanged');
   await resize(1440);
+  await open('crlf.md');await page.waitForSelector('.markdown-authorship .authorship-mark');
+  assert.match(await page.$eval('.markdown-authorship .authorship-mark',node=>node.title),/Agent1/);
+  assert(await page.evaluate(()=>!document.querySelector('#text-preview')._markdownSourceText.includes('\r')));
+  await page.click('.markdown-authorship .authorship-mark');await page.waitForSelector('#document-change-history[open] .change-inserted');
+  assert.match(await page.$eval('#document-change-history',node=>node.innerText),/Attributed paragraph/);await page.keyboard.press('Escape');
+  report.checks.push('CRLF disk content projects normalized editor coordinates with visible authorship and exact history');
   await open('reading.md');await page.waitForSelector('.markdown-authorship .authorship-mark');const reading=await marks('.markdown-authorship .authorship-mark');assert.equal(reading.length,4);assert.match(reading[0].title,/2批/);assert(await page.$('#text-preview .katex'));await page.screenshot({path:path.join(out,'06-markdown-groups.png')});
   const sourceBefore=await fs.readFile(path.join(project,'reading.md'));
   for(const width of [960,600,1440]){await resize(width);await tick(220);const alignment=await page.evaluate(()=>{
     const mark=document.querySelector('.markdown-authorship .authorship-mark'),paragraph=[...document.querySelectorAll('#text-preview p')].find(p=>p.textContent.startsWith('第一段'));
     return {gap:Math.abs(mark.getBoundingClientRect().top-paragraph.getBoundingClientRect().top-2),overlap:mark.getBoundingClientRect().right>paragraph.getBoundingClientRect().left};});assert(alignment.gap<2);assert(!alignment.overlap);if(width===600)await page.screenshot({path:path.join(out,'07-narrow-reading.png')});}
   await contentToolForPage(page, ['view', 'document-font']);await page.click('.nozeli-submenu [data-command="document-font-18"]');await tick(150);await page.click('.markdown-authorship .authorship-mark');await page.waitForSelector('.change-history-entry');assert.equal(await page.$$eval('.change-history-entry',nodes=>nodes.length),2);await page.keyboard.press('Escape');assert.deepEqual(await fs.readFile(path.join(project,'reading.md')),sourceBefore);report.checks.push('Markdown merges adjacent paragraphs/list items, splits at unknown/heading boundaries, preserves math and precise geometry at 1440/960/600 widths and changed font');
+  // The same mixed-author range survives pending -> confirmed attribution.
+  // Its id is unchanged, so metadata must not be cached by id alone.
+  await contentToolForPage(page,['view','text-mode']);
+  await page.waitForFunction(()=>document.querySelector('#reader-scroll').classList.contains('markdown-split'));
+  await page.evaluate(()=>{const text=__nozeliInput.text(),at=text.indexOf('第一段：')+'第一段：'.length;__nozeliInput.select(at,at);__nozeliInput.focus();});
+  await page.keyboard.type('DRAFT_ATTRIBUTION');
+  await page.waitForFunction(()=>document.querySelector('#text-preview').textContent.includes('DRAFT_ATTRIBUTION')&&document.querySelector('.markdown-authorship .authorship-pending'));
+  const pendingId=await page.$eval('.markdown-authorship .authorship-pending',node=>{window.__pendingAuthorshipButton=node;node.focus({preventScroll:true});return node.dataset.groupId;});
+  assert.match(await page.$eval('.markdown-authorship .authorship-pending',node=>node.getAttribute('aria-label')),/尚无确认时间/);
+  await page.waitForFunction(id=>document.querySelector('#save-status').dataset.state==='saved'&&document.querySelector('.markdown-authorship [data-group-id="'+CSS.escape(id)+'"]')&&!document.querySelector('.markdown-authorship [data-group-id="'+CSS.escape(id)+'"]').classList.contains('authorship-pending'),{},pendingId);
+  assert(await page.evaluate(()=>window.__pendingAuthorshipButton.isConnected&&document.activeElement===window.__pendingAuthorshipButton));
+  assert.doesNotMatch(await page.evaluate(()=>window.__pendingAuthorshipButton.title),/尚无确认时间/);
+  await page.click('.markdown-authorship [data-group-id="'+pendingId+'"]');await page.waitForSelector('#document-change-history[open] .change-history-entry');
+  assert.match(await page.$eval('#document-change-history',node=>node.innerText),/DRAFT_ATTRIBUTION/);await page.keyboard.press('Escape');
+  await page.evaluate(()=>__nozeliInput.focus());await page.keyboard.down('Control');await page.keyboard.press('z');await page.keyboard.up('Control');
+  await page.waitForFunction(()=>!document.querySelector('#text-preview').textContent.includes('DRAFT_ATTRIBUTION')&&document.querySelector('#save-status').dataset.state==='saved');
+  await contentToolForPage(page,['view','text-mode']);await page.waitForFunction(()=>document.querySelector('#text-host').hidden);
+  await page.waitForFunction(()=>{
+    const paragraph=[...document.querySelectorAll('#text-preview p')].find(node=>node.textContent.startsWith('第一段')),
+      mark=document.querySelector('.markdown-authorship .authorship-mark');
+    return paragraph&&mark&&Math.abs(mark.getBoundingClientRect().top-paragraph.getBoundingClientRect().top-2)<2;
+  });
+  assert.deepEqual(await fs.readFile(path.join(project,'reading.md')),sourceBefore);
+  report.checks.push('current preview DOM remaps on source edits/undo; same-id pending -> saved groups refresh accessible metadata and history without replacing the focused button');
   await open('history.md');await page.waitForSelector('.markdown-authorship .authorship-mark');const old=await marks('.markdown-authorship .authorship-mark');assert.match(old[0].title,/105批/);await page.click('.markdown-authorship .authorship-mark');await page.waitForFunction(()=>document.querySelectorAll('.change-history-entry').length===50);await page.click('.change-history-more');await page.waitForFunction(()=>document.querySelectorAll('.change-history-entry').length===100);await page.click('.change-history-more');await page.waitForFunction(()=>document.querySelectorAll('.change-history-entry').length===105);assert.equal(await page.$$eval('.change-history-entry time',nodes=>nodes.length),105);assert.equal(await page.$$eval('.change-history-more',nodes=>nodes.length),0);await page.screenshot({path:path.join(out,'08-old-history.png')});await page.keyboard.press('Escape');report.checks.push('105 current-group batches older than file latest100 remain visible through all UI pages, with complete local timestamps');
   const beforeRestart=await marks('.markdown-authorship .authorship-mark');assert.deepEqual(report.errors,[]);await requestClose();assert.deepEqual(await Promise.race([exited,tick(12000).then(()=>null)]),{code:0,signal:null});await browser.disconnect();browser=null;
-  child=launch();exited=attach(child);await connect();await page.waitForSelector('.markdown-authorship .authorship-mark');assert.deepEqual((await marks('.markdown-authorship .authorship-mark')).map(m=>[m.title,m.from,m.to]),beforeRestart.map(m=>[m.title,m.from,m.to]));await requestClose();assert.deepEqual(await Promise.race([exited,tick(12000).then(()=>null)]),{code:0,signal:null});await browser.disconnect();browser=null;report.checks.push('full process restart restores identical group identity, original batch times and ranges; both normal closes exit cleanly');report.ok=true;
+  child=launch();exited=attach(child);await connect();await shell.click('[data-project-id="'+projectId+'"]');await shell.waitForFunction(id=>window.__workspaceScope?.projectId===id&&!document.querySelector('[data-project-id][aria-busy="true"]'),{},projectId);page=await nativePage('surface','history.md');await page.waitForSelector('.markdown-authorship .authorship-mark');assert.deepEqual((await marks('.markdown-authorship .authorship-mark')).map(m=>[m.title,m.from,m.to]),beforeRestart.map(m=>[m.title,m.from,m.to]));await requestClose();assert.deepEqual(await Promise.race([exited,tick(12000).then(()=>null)]),{code:0,signal:null});await browser.disconnect();browser=null;report.checks.push('full process restart restores identical group identity, original batch times and ranges; both normal closes exit cleanly');report.ok=true;
 }catch(error){report.ok=false;report.error=error.stack;if(page&&!page.isClosed())await page.screenshot({path:path.join(out,'failure.png')}).catch(()=>{});}
 finally{await browser?.disconnect().catch(()=>{});if(child.exitCode===null&&child.signalCode===null){child.kill('SIGTERM');await tick(500);if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');}await fs.writeFile(path.join(out,'main.log'),log);await fs.writeFile(path.join(out,'report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));process.exitCode=report.ok?0:1;}

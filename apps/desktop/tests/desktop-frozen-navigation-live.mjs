@@ -86,7 +86,7 @@ async function retained() {
 }
 async function openFile(file) {
   await visible(chat.scope.viewId);
-  const selector = '[data-frozen-file="' + file.fileId + '"]';
+  const selector = '[data-frozen-diff="' + file.fileId + '"]';
   await chat.page.waitForSelector(selector, {visible:true});
   const beforeClick = await chat.page.evaluate(()=>({top:document.querySelector('#conversation').scrollTop,height:document.querySelector('#conversation').scrollHeight,client:document.querySelector('#conversation').clientHeight}));
   report.checks.push({name:'immediate before click',...beforeClick});

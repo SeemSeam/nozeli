@@ -1,8 +1,11 @@
 import {dispositionBinding,sameDispositionBinding,workDisposition,mergeConsentState,explicitNeverCommitStatement,mergeConstraintChoices} from '../../domain/work-disposition.mjs';
+import {migrateReviewLifecycle,confirmedDisposition} from './review-lifecycle.mjs';
+import {restoreExecutionIntents,neverAdmitted} from './restart-recovery.mjs';
 import {deviationHeld} from '../../domain/work-deviation.mjs';
 import {ExecutionWorkspace} from './execution-workspace.mjs';
 import {safeBytes} from './file-stream.mjs';
 import {intakeLineage} from '../../domain/managed-work-records.mjs';
+import {targetModelMatches} from './target-model-intent.mjs';
 import {runtimeFailureMessage} from '../../domain/runtime-failure-message.mjs';
 import {manageTodoState} from '../../domain/todo-management.mjs';
 import {verifyProjectArtifacts} from './artifacts.mjs';
@@ -19,6 +22,7 @@ import { recoverPiProvider } from './pi-process-ownership.mjs';
 import { roles, rolePrompt, readRoleSkill, here } from './runtime.mjs';
 import { processStamp, recoverProvider } from './process-ownership.mjs';
 import {ContextReader,memoryContext} from './context-reader.mjs';
+import {DocumentReader} from './document-reader.mjs';
 import {contextInstructions,residentBaseInstructions,explicitHandoffFacts,workerStateProjection,workerInitialHandoff,deliveryMaterials,PROJECTION_MAX_BYTES} from './context-delivery.mjs';
 import {HostContextBudget} from './context-budget.mjs';
 import {frontSource,frontReadLimits,readPage} from './frontdesk-read.mjs';
@@ -34,6 +38,7 @@ import {prepareHtmlReport} from './html-report.mjs';
 import {activeDrafts,computeReviewVersion,decodeInline,draftTextFor,hasActiveDrafts,normalizeReviewText,readDraftRecord,reviewDraftBytes,reviewMergeProjection,writeDraftRecord,appendDraftEntry,REVIEW_HISTORY_LIMIT,REVIEW_REQUEST_KEY} from './review-candidate.mjs';
 import {managedArtifact,managedReportSource} from '../managed-report-source.mjs';
 import {MaintenanceLedger,maintenanceBoundary} from './maintenance-ledger.mjs';
+import {validateWorkControlPayload,resolveWorkControlTarget,workControlTargetDescriptor,jobBoundWork,workControlCapabilitiesFromState,applyWorkControlState,findControlReceipt,attachControlResponse,recordControlFinal,processResumeRequeueState,buildControlResponse,receiptResponse,heldNeverAdmitted,assertProjectInstance} from './work-control.mjs';
 
 // Provider-compatible object schemas; kind-dependent invariants stay host-enforced.
 const tool=(name,description,properties,required=Object.keys(properties))=>({type:'function',name,description,inputSchema:{type:'object',properties,required,additionalProperties:false}});
@@ -54,13 +59,16 @@ export function isExplicitWorkCancellation(value,name){
 const SAFE_MODEL_CHANGE_CODES=['PI_NO_MODEL','PI_BUSY','PI_PROVIDER_CONFLICT','PI_CREDENTIAL_ORIGIN_CHANGE','PI_CREDENTIAL_KEEP_UNAVAILABLE','PI_SESSION_LEASED','PI_RUNTIME_EXITED','PI_RUNTIME_UNAVAILABLE','PI_INVALID_PARAMS','PI_MODEL_CHANGE_FAILED'];
 
 export class Controller extends EventEmitter {
-  static async open({storage,offline=false,localOnly=false,projectId=null,runtimeRoot,contentRoot,sessionFactory,readProjectText,frontdeskDocuments,beforeAccept,afterAdoption,isolateProcesses=false,checkpoint=async()=>{},piSource=null,piRuntime=null,piAuth=null,processBudget,taskPermissions=null,resolveRegisteredProject=null,resolveProjectRoot=null,privilegeBroker=null}={}){
+  static async open({storage,offline=false,localOnly=false,projectId=null,runtimeRoot,contentRoot,sessionFactory,readProjectText,frontdeskDocuments,beforeAccept,afterAdoption,isolateProcesses=false,checkpoint=async()=>{},piSource=null,piRuntime=null,piAuth=null,processBudget,taskPermissions=null,resolveRegisteredProject=null,resolveProjectRoot=null,privilegeBroker=null,modelIntents=null,serviceFaultGate=null,onServiceFault=null}={}){
     const store=await Workspace.open(runtimeRoot,contentRoot,{recoverStale:true,checkpoint,storage,projectId,offline});
-    const controller=new Controller(store,{projectId,sessionFactory,readProjectText,frontdeskDocuments,beforeAccept,afterAdoption,isolateProcesses,checkpoint,piSource,piRuntime,piAuth,processBudget,taskPermissions,resolveRegisteredProject,resolveProjectRoot,privilegeBroker});
-    try{await controller.timeline.initialize();const s=store.state;s.jobs??=[];s.messages??=[];s.drafts??={};s.residents??={};s.providers??={};s.frontdeskRoutes??=[];s.recoveryEvents??=[];controller.coldQueued=new Set(s.works.filter(w=>w.status==='queued').map(w=>w.id));controller.coldJobs=new Set(s.jobs.filter(j=>['queued','running'].includes(j.status)).map(j=>j.id));controller.localOnly=localOnly;if(localOnly){if(!offline)await controller.migrateLocalClosures();}else await controller.restore();return controller;}catch(e){await store.close();throw e;}
+    const controller=new Controller(store,{projectId,sessionFactory,readProjectText,frontdeskDocuments,beforeAccept,afterAdoption,isolateProcesses,checkpoint,piSource,piRuntime,piAuth,processBudget,taskPermissions,resolveRegisteredProject,resolveProjectRoot,privilegeBroker,modelIntents,serviceFaultGate,onServiceFault});
+    try{await controller.timeline.initialize();const s=store.state;s.jobs??=[];s.messages??=[];s.drafts??={};s.residents??={};s.providers??={};s.frontdeskRoutes??=[];s.recoveryEvents??=[];controller.coldQueued=new Set();controller.coldJobs=new Set(s.jobs.filter(j=>['queued','running'].includes(j.status)&&!neverAdmitted(j)).map(j=>j.id));controller.localOnly=localOnly;
+      if(!offline)for(const job of s.jobs)if(job.status==='completed'&&job.readProtocolFaults?.some(fault=>fault.status==='awaiting-correction'))await controller.settleRoutedReadProtocolFaults(job);
+      if(localOnly){if(!offline)await controller.migrateLocalClosures();}else await controller.restore();return controller;
+    }catch(e){await store.close();throw e;}
   }
-  constructor(store,{projectId=null,frontdeskDocuments,sessionFactory,readProjectText,beforeAccept,afterAdoption,isolateProcesses=false,checkpoint=async()=>{},piSource=null,piRuntime=null,piAuth=null,processBudget,taskPermissions=null,resolveRegisteredProject=null,resolveProjectRoot=null,privilegeBroker=null}={}){
-    super();Object.assign(this,{frontdeskDocuments,store,sessionFactory,readProjectText,beforeAccept,afterAdoption,isolateProcesses,checkpoint,piSource,piRuntime,piAuth,processBudget,taskPermissions,resolveRegisteredProject,resolveProjectRoot,privilegeBroker});this.execution=new ExecutionWorkspace(store);this.sessions=new Map();this.starting=new Map();this.running=new Map();this.current=new Map();this.pendingEnds=new Set();this.publicationSerial=new Map();this.intakeSerial=new Map();this.stopping=false;this.started=false;this.closures=new Map();this.configuring=new Set();this.nativeDraftTargets=new Set();this.externalTerminalTargets=new Set();this.terminals=new Map();
+  constructor(store,{projectId=null,frontdeskDocuments,sessionFactory,readProjectText,beforeAccept,afterAdoption,isolateProcesses=false,checkpoint=async()=>{},piSource=null,piRuntime=null,piAuth=null,processBudget,taskPermissions=null,resolveRegisteredProject=null,resolveProjectRoot=null,privilegeBroker=null,modelIntents=null,serviceFaultGate=null,onServiceFault=null}={}){
+    super();Object.assign(this,{frontdeskDocuments,store,sessionFactory,readProjectText,beforeAccept,afterAdoption,isolateProcesses,checkpoint,piSource,piRuntime,piAuth,processBudget,taskPermissions,resolveRegisteredProject,resolveProjectRoot,privilegeBroker,modelIntents,serviceFaultGate,onServiceFault});this.execution=new ExecutionWorkspace(store);this.sessions=new Map();this.starting=new Map();this.running=new Map();this.current=new Map();this.pendingEnds=new Set();this.publicationSerial=new Map();this.intakeSerial=new Map();this.stopping=false;this.started=false;this.closures=new Map();this.configuring=new Set();this.nativeDraftTargets=new Set();this.externalTerminalTargets=new Set();this.terminals=new Map();
     // Context cutover: pending per-request {materials,projection} for the
     // runtime contract, and the shared host budget ledger (run + compaction
     // generation scopes, hydrated from durable epoch usage).
@@ -69,28 +77,121 @@ export class Controller extends EventEmitter {
     this.memoryVersion=new MemoryVersion(path.dirname(store.plan));
     this.projectId=projectId??store.state.workspaceId;
     this.maintenance=new MaintenanceLedger(store.storage,this.projectId);this.maintenanceActions=new Map();this.maintenanceFlights=new Map();
+    this.hostOperations=new Map();this.hostOperationFlights=new Map();
     this.processBudget=processBudget;this.reclaiming=new Map();this.mergeDrain=null;
     this.timeline=new SessionIndex(store);
     this.changes=new WorkChanges({runtimeRoot:store.root,storage:store.storage,projectId:store.projectId,readState:()=>store.state});
   }
-  async maintenanceEvent(bug){
-    await this.store.mutate(()=>{if(this.store.state.jobs.some(j=>j.type==='maintenance'&&j.context?.bugId===bug.id))return;this.store.state.jobs.unshift({id:randomUUID(),target:'orchestrator',type:'maintenance',status:'queued',text:'宿主自动维修事件。仅核对本机故障并调用 nozeli_maintenance；不得派业务Work、询问用户如何维修或重放原任务。bugId='+bug.id,context:{bugId:bug.id},createdAt:new Date().toISOString()});});this.changed();this.kick();
+  beginHostOperation(target,phase,bugId){
+    this.hostOperations??=new Map();this.hostOperationFlights??=new Map();
+    const key=Symbol(phase);let release;this.hostOperationFlights.set(key,new Promise(resolve=>{release=resolve;}));
+    this.hostOperations.set(key,{target,phase,...(bugId?{bugId}:{})});this.emit?.('lifecycle',{target});this.emit?.('activity',{revision:this.activitySequence=(this.activitySequence??0)+1});
+    return ()=>{this.hostOperations.delete(key);this.hostOperationFlights.delete(key);release();this.emit?.('lifecycle',{target});this.emit?.('activity',{revision:this.activitySequence=(this.activitySequence??0)+1});};
+  }
+  maintenanceBinding(bug){return {projectId:bug.projectId??null,bugId:bug.id??null,fingerprint:bug.fingerprint??null,phase:bug.phase??null,jobId:bug.jobId??null,workId:bug.workId??null,revision:bug.revision??null};}
+  maintenanceHasVerifiedAction(bug){const action=this.maintenanceActions.get(bug.id);return !!action&&this.maintenanceVerified?.get(bug.id)===action;}
+  maintenanceClosureMatches(bug,work){
+    const recovery=this.maintenanceActions.get(bug.id)?.closureRecovery;
+    return bug.phase==='closure'&&['closing','ended'].includes(work?.status)&&work.revision===bug.revision&&recovery&&work.closure?.decision===recovery.decision&&work.closure.requestKey===recovery.requestKey&&sameDispositionBinding(work.closure.binding,recovery.binding)&&sameDispositionBinding(dispositionBinding(work),recovery.binding);
+  }
+  maintenanceCapability(bug,{ignoreFlight=false}={}){
+    const deny=retryReason=>({retry:false,retryReason,retryMode:null});
+    if(!bug||bug.projectId!==this.projectId)return deny('unknown-bug');
+    if(bug.status==='repaired')return deny('already-repaired');
+    if(!ignoreFlight&&this.maintenanceFlights.has(bug.id))return deny('repair-in-flight');
+    const finalizing=this.maintenanceHasVerifiedAction(bug);
+    if(!finalizing&&bug.attempts?.some(a=>a.status==='started'))return deny('interrupted-host-attempt');
+    if(!finalizing&&(bug.attempts?.length??0)>=2)return deny('attempt-limit');
+    if(maintenanceBoundary(bug.error,{phase:bug.phase})||['human-boundary','cancelled'].includes(bug.status))return deny('human-boundary');
+    if(this.stopping||this.store.closed||this.store.lifecycleHold)return deny('lifecycle-held');
+    if(this.store.commitUnknown||this.store.nativeCommitUnknown)return deny('storage-result-unknown');
+    try{this.store.storage?.assertActive?.(this.projectId);}catch{return deny('lifecycle-held');}
+    if(!this.maintenanceActions.has(bug.id))return deny('original-action-unavailable');
+    if(this.maintenanceVerified?.has(bug.id)&&this.maintenanceVerified.get(bug.id)!==this.maintenanceActions.get(bug.id))return deny('original-action-changed');
+    const job=this.store.state.jobs.find(j=>j.id===bug.jobId),work=this.store.state.works.find(w=>w.id===bug.workId),target=job?.target??bug.workId;
+    if(bug.jobId&&(!job||(job.revision??null)!==bug.revision||job.status==='cancelled'))return deny('original-job-changed');
+    if(this.coldJobs?.has(bug.jobId)||job?.collabAttempts?.some(a=>['unknown','transport-unknown','unresolved'].includes(a.status)))return deny('original-effect-unknown');
+    if(['session-start','input-preparation'].includes(bug.phase)&&(job?.promptStartedAt!=null||job?.collabAttempts?.some(a=>a.everAdmitted||!a.definitiveRejection)))return deny('original-effect-unknown');
+    if(bug.workId&&(!work||work.revision!==bug.revision||['closing','ended'].includes(work.status)&&!this.maintenanceClosureMatches(bug,work)))return deny('original-work-changed');
+    if(work&&(work.readOnly||deviationHeld(work)||(this.store.state.todos??[]).some(t=>t.workId===work.id&&t.status==='open'&&['problem','recovery','merge-constraint','merge-consent','deviation','permission'].includes(t.kind))))return deny('human-decision-required');
+    // 人工暂停门（§6.3）：未开始的维修效果等待；已验证的 finalize-only 补结算不受阻。
+    if(!finalizing&&(work?.manualControl?.pause!=null||this.workExecutionHeld(job)))return deny('manual-control-held');
+    if(this.pendingEnds?.has(target)||this.reclaiming?.has(target)||this.restarting?.has(target)||this.configuring?.has(target)||this.configuring?.has('worker')||this.bindingTransitions?.has(target)||this.bindingTransitions?.has('worker')||this.handoffPreparing?.size||this.handoffConfirmations?.size||this.residentHandoffs?.size)return deny('lifecycle-held');
+    return {retry:true,retryReason:null,retryMode:finalizing?'finalize':'repair'};
+  }
+  async settleMaintenanceEvents(bug,completion='host-outcome-verified'){
+    await this.store.mutate(()=>{for(const job of this.store.state.jobs){
+      if(job.type!=='maintenance'||job.context?.bugId!==bug.id||job.status!=='queued'||job.promptStartedAt!=null||this.coldJobs?.has(job.id)||this.current?.get(job.target)?.id===job.id||job.collabAttempts?.some(a=>a.everAdmitted||!a.definitiveRejection))continue;
+      Object.assign(job,{status:'completed',hostResolved:true,completion,finishedAt:new Date().toISOString()});
+    }});
+  }
+  async maintenanceEvent(bug,{schedule=true}={}){
+    await this.store.mutate(()=>{if(this.store.state.jobs.some(j=>j.type==='maintenance'&&j.context?.bugId===bug.id))return;this.store.state.jobs.unshift({id:randomUUID(),target:'orchestrator',type:'maintenance',status:'queued',text:'宿主自动维修事件。仅核对本机故障并调用 nozeli_maintenance；不得派业务Work、询问用户如何维修或重放原任务。bugId='+bug.id,context:{bugId:bug.id},createdAt:new Date().toISOString()});});this.changed();if(schedule)this.kick();
   }
   async maintenanceStatus(){
     const state=await this.maintenance.read();for(const bug of state.bugs)if(bug.status==='repairing'&&!this.maintenanceFlights.has(bug.id)){bug.status='needs-version-fix';bug.recoveryUnavailable='interrupted-host-attempt';}return state;
   }
-  async maintenanceRetry(bugId){
+  async maintenanceRetry(bugId,{binding,expectedRetryMode}={}){
+    const bug=(await this.maintenance.read()).bugs.find(b=>b.id===bugId&&b.projectId===this.projectId);if(!bug)throw Error('unknown maintenance bug');
+    if(binding!==undefined){const expected=this.maintenanceBinding(bug);if(!binding||Object.keys(binding).length!==Object.keys(expected).length||Object.keys(expected).some(key=>binding[key]!==expected[key]))throw Object.assign(Error('Maintenance binding changed'),{code:'STALE_MAINTENANCE_BINDING'});}
     if(this.maintenanceFlights.has(bugId))return this.maintenanceFlights.get(bugId);
-    const flight=(async()=>{const bug=(await this.maintenance.read()).bugs.find(b=>b.id===bugId&&b.projectId===this.projectId);if(!bug)throw Error('unknown maintenance bug');
-      if(bug.status==='repaired')return bug;
-      const action=this.maintenanceActions.get(bugId);if(!action){if(['cancelled','human-boundary'].includes(bug.status))return bug;return this.maintenance.finish(bugId,{outcome:'needs-version-fix'});}
+    const capability=this.maintenanceCapability(bug);
+    if(!capability.retry){if(['original-job-changed','original-work-changed'].includes(capability.retryReason))return this.maintenance.finish(bugId,{outcome:'cancelled'});return bug;}
+    // expectedRetryMode 只能收窄（§6.2）：宿主实时推导模式，期望与当前不一致则
+    // stale拒绝，未执行任何效果；不接受客户端指定模式。
+    if(expectedRetryMode!==undefined&&expectedRetryMode!==null){
+      if(!['repair','finalize'].includes(expectedRetryMode))throw Object.assign(Error('维修重试模式无效'),{code:'MAINTENANCE_RETRY_MODE_INVALID'});
+      if(expectedRetryMode!==capability.retryMode)throw Object.assign(Error('维修重试模式已变化（当前 '+capability.retryMode+'）；未执行任何效果，请按当前能力刷新'),{code:'MAINTENANCE_RETRY_MODE_STALE'});
+    }
+    const flight=(async()=>{
+      const finalizing=this.maintenanceHasVerifiedAction(bug);
+      if(!finalizing&&!await this.maintenance.attempt(bugId))return (await this.maintenance.read()).bugs.find(b=>b.id===bugId);
+      const admitted=this.maintenanceCapability(bug,{ignoreFlight:true});
+      if(!admitted.retry)return this.maintenance.finish(bugId,{outcome:['original-job-changed','original-work-changed'].includes(admitted.retryReason)?'cancelled':'needs-version-fix'});
       const live=this.store.state.jobs.find(j=>j.id===bug.jobId),work=this.store.state.works.find(w=>w.id===bug.workId);
-      if(this.stopping||work&&(work.revision!==bug.revision||['closing','ended'].includes(work.status))&&bug.phase!=='closure'||live?.status==='cancelled')return this.maintenance.finish(bugId,{outcome:'cancelled'});
-      if(!await this.maintenance.attempt(bugId))return (await this.maintenance.read()).bugs.find(b=>b.id===bugId);
-      try{const verified=await action();const result=await this.maintenance.finish(bugId,{verified:verified===true,outcome:verified===true?'host-outcome-verified':'needs-version-fix'});if(verified&&work?.maintenance?.bugId===bugId){await this.store.mutate(()=>{delete work.maintenance;if(bug.phase==='publication'&&['paused','running'].includes(work.status)&&work.result?.revision===bug.revision)work.status='review';else if(['session-start','input-preparation'].includes(bug.phase)&&live?.status==='failed'&&!live.promptStartedAt&&!live.collabAttempts?.some(a=>a.everAdmitted)){live.status='queued';delete live.maintenanceBugId;work.status='running';}});this.kick();}return result;}catch(error){if(work?.maintenance?.bugId===bugId)await this.store.mutate(()=>{if(work.status==='running')work.status='paused';});return this.maintenance.finish(bugId,{outcome:maintenanceBoundary(error)?'human-boundary':'needs-version-fix'});}
-    })();this.maintenanceFlights.set(bugId,flight);try{return await flight;}finally{this.maintenanceFlights.delete(bugId);const state=await this.maintenance.read();await this.store.mutate(()=>{for(const w of this.store.state.works){const bug=state.bugs.find(b=>b.id===w.maintenance?.bugId);if(bug)w.maintenance.status=bug.status;}});this.changed();}
+      const end=this.beginHostOperation(live?.target??bug.workId??'orchestrator','repair:'+bug.phase,bugId);
+      const repairOwner=this.current?.get('orchestrator');
+      const endOwner=repairOwner?.type==='maintenance'&&repairOwner.context?.bugId===bugId&&live?.target!=='orchestrator'?this.beginHostOperation('orchestrator','repair:'+bug.phase,bugId):null;
+      try{
+        if(!finalizing){
+          const action=this.maintenanceActions.get(bugId);let verified;
+          try{verified=await action();}catch(error){const result=await this.maintenance.finish(bugId,{outcome:maintenanceBoundary(error,{phase:bug.phase})||error.exitUnconfirmed?'human-boundary':'needs-version-fix'});if(work?.maintenance?.bugId===bugId)await this.store.mutate(()=>{const w=this.store.state.works.find(w=>w.id===bug.workId);if(w?.maintenance?.bugId===bugId&&w.status==='running')w.status='paused';});return result;}
+          if(verified!==true)return this.maintenance.finish(bugId,{outcome:'needs-version-fix'});
+          // Fence the executed effect even if saving its durable verification fails.
+          this.maintenanceVerified??=new Map();this.maintenanceVerified.set(bugId,action);
+        }
+        const currentWork=this.store.state.works.find(w=>w.id===bug.workId),currentJob=this.store.state.jobs.find(j=>j.id===bug.jobId);
+        const obsolete=currentWork&&(currentWork.revision!==bug.revision||['closing','ended'].includes(currentWork.status)&&!this.maintenanceClosureMatches(bug,currentWork))||currentJob?.status==='cancelled';
+        if(obsolete)return this.maintenance.finish(bugId,{outcome:'cancelled'});
+        if(this.stopping||this.store.commitUnknown||this.store.nativeCommitUnknown||this.store.lifecycleHold)throw Object.assign(Error('Verified host repair awaits safe finalization'),{code:'MAINTENANCE_FINALIZATION_PENDING'});
+        // Verification is durable BEFORE any fallible business restoration. A retry
+        // only finalizes this exact action; it never reruns the repaired effect.
+        await this.maintenance.finish(bugId,{verified:true,outcome:'host-outcome-verified',finalizationPending:true});
+        await this.store.mutate(()=>{
+          const w=this.store.state.works.find(w=>w.id===bug.workId),j=this.store.state.jobs.find(j=>j.id===bug.jobId);
+          if(w?.maintenance?.bugId===bugId){
+            if(w.revision!==bug.revision||['closing','ended'].includes(w.status)&&!this.maintenanceClosureMatches(bug,w))throw Object.assign(Error('Original Work changed'),{code:'STALE_MAINTENANCE_BINDING'});
+            if(bug.phase==='publication'&&['paused','running'].includes(w.status)&&w.result?.revision===bug.revision)w.status='review';
+            else if(['session-start','input-preparation'].includes(bug.phase)&&j?.status==='failed'&&!j.promptStartedAt&&!this.coldJobs?.has(j.id)&&!j.collabAttempts?.some(a=>a.everAdmitted||!a.definitiveRejection)){
+              // 维修成功不把人工暂停的job自行置回可执行（§6.3.3）：只落
+              // resumeRequeue 标记，用户显式恢复时按原身份重新准入一次。
+              if(this.workExecutionHeld(j)||w?.manualControl?.pause!=null)j.resumeRequeue={bugId:bug.id,at:new Date().toISOString(),workRevision:w.revision};
+              else{j.status='queued';delete j.maintenanceBugId;w.status='running';}
+            }
+            delete w.maintenance;
+          }
+        });
+        await this.settleMaintenanceEvents(bug);
+        const result=await this.maintenance.finish(bugId,{verified:true,outcome:'host-outcome-verified'});
+        this.maintenanceActions.delete(bugId);this.maintenanceVerified?.delete(bugId);this.kick();return result;
+      }finally{endOwner?.();end();}
+    })();
+    this.maintenanceFlights.set(bugId,flight);
+    try{return await flight;}finally{this.maintenanceFlights.delete(bugId);const state=await this.maintenance.read();await this.store.mutate(()=>{for(const w of this.store.state.works){const saved=state.bugs.find(b=>b.id===w.maintenance?.bugId);if(saved)w.maintenance.status=saved.status;}});this.changed();}
   }
   async maintenanceTransaction(job,phase,run,verify=()=>true){
+    const end=this.beginHostOperation(job?.target??(/^resident-.*-(frontdesk|orchestrator)$/.exec(phase)?.[1])??'orchestrator',phase);
+    try{
     try{return await run();}catch(error){if(maintenanceBoundary(error)||error.exitUnconfirmed||error.code==='MAINTENANCE_PENDING')throw error;
       try{this.store.storage?.assertActive?.(this.projectId);}catch{throw error;}
       const bug=await this.maintenance.record({phase,jobId:job?.id??null,workId:job&&!['frontdesk','orchestrator'].includes(job.target)?job.target:null,revision:job?.revision??null,error,capability:phase});
@@ -98,14 +199,31 @@ export class Controller extends EventEmitter {
       // fault record, but never queue a repair that needs this same controller.
       if(!job&&!this.started&&/^resident-(preflight|start)-/.test(phase)){await this.maintenance.finish(bug.id,{outcome:'needs-version-fix'});throw error;}
       if(job?.type==='maintenance'){await this.maintenance.finish(bug.id,{outcome:'needs-version-fix'});throw Object.assign(Error('Maintenance provider unavailable'),{code:'MAINTENANCE_PENDING',bugId:bug.id});}
-      let value;this.maintenanceActions.set(bug.id,async()=>{value=await run();return await verify(value);});await this.maintenanceEvent(bug);
-      const result=await this.maintenanceRetry(bug.id);if(result.lastOutcome?.verified)return value;
-      if(job)await this.store.mutate(()=>{const saved=this.store.state.jobs.find(j=>j.id===job.id);if(saved){saved.maintenanceBugId=bug.id;saved.maintenanceFault={phase,code:bug.error.code,symptom:bug.error.symptom};}const w=this.store.state.works.find(w=>w.id===job.target);if(w&&w.status==='running'){w.status='paused';w.maintenance={bugId:bug.id,status:result.status,message:'系统故障已记录，原任务与改动保留；后台维修中，不重放已开始操作。'};}});
-      throw Object.assign(Error('Internal maintenance pending'),{code:'MAINTENANCE_PENDING',bugId:bug.id});
+      let value;this.maintenanceActions.set(bug.id,async()=>{value=await run();return await verify(value);});
+      const pending=()=>Object.assign(Error('Internal maintenance pending'),{code:'MAINTENANCE_PENDING',bugId:bug.id,maintenanceBinding:this.maintenanceBinding(bug),maintenanceFault:{phase,code:bug.error.code,symptom:bug.error.symptom},maintenanceStatus:this.maintenanceVerified?.has(bug.id)?'finalizing':'needs-version-fix'});
+      let result;
+      try{result=await this.maintenanceRetry(bug.id);}catch(error){
+        // A verified effect with fallible receipt/bookkeeping is still host
+        // maintenance, never an ordinary business failure or consent request.
+        if(!this.maintenanceVerified?.has(bug.id))throw error;
+        result={...bug,status:'finalizing'};
+      }
+      if(result.status==='repaired')return value;
+      try{
+        if(job)await this.store.mutate(()=>{const saved=this.store.state.jobs.find(j=>j.id===job.id);if(saved){saved.maintenanceBugId=bug.id;saved.maintenanceFault={phase,code:bug.error.code,symptom:bug.error.symptom};}const w=this.store.state.works.find(w=>w.id===job.target);if(w&&w.status==='running'){w.status='paused';w.maintenance={bugId:bug.id,status:result.status,message:'系统故障已记录，原任务与改动保留；后台维修中，不重放已开始操作。'};}});
+        await this.maintenanceEvent(result);
+      }catch(error){if(this.maintenanceVerified?.has(bug.id))throw pending();throw error;}
+      throw pending();
     }
+    }finally{end();}
   }
   async maintenanceScan(){
     const adopted=[];for(const job of this.store.state.jobs.filter(j=>['failed','interrupted'].includes(j.status)&&!j.maintenanceBugId&&j.error)){
+      if(this.internalRuntimeFailure({code:job.errorCode,failureOrigin:job.failureOrigin,hostToolCode:job.hostToolCode})){
+        const bug=await this.recordInternalFailure(job,{code:job.errorCode,hostToolCode:job.hostToolCode});
+        await this.store.mutate(()=>{for(const todo of this.store.state.todos)if(todo.sourceJobId===job.id&&['system','recovery'].includes(todo.kind)&&todo.status==='open')todo.status='resolved';});
+        if(job.type!=='maintenance')await this.maintenanceEvent(bug);adopted.push(bug.id);continue;
+      }
       if(!job.maintenanceFault||!['input-preparation','publication','session-start'].includes(job.maintenanceFault.phase))continue;
       const bug=await this.maintenance.record({phase:job.maintenanceFault.phase,jobId:job.id,workId:job.target,revision:job.revision,error:{code:job.maintenanceFault.code}});
       await this.maintenance.finish(bug.id,{outcome:'needs-version-fix'});await this.store.mutate(()=>{job.maintenanceBugId=bug.id;for(const todo of this.store.state.todos)if(todo.sourceJobId===job.id&&['system','recovery'].includes(todo.kind))todo.status='resolved';});await this.maintenanceEvent(bug);adopted.push(bug.id);
@@ -135,7 +253,7 @@ export class Controller extends EventEmitter {
       // The immutable transport identity tuple (request digest + session
       // epoch) is never mutated; nativeEntryDigest/entryId ride along as
       // evidence fields only.
-      if(fact.status==='native-record-confirmed'){attempt.everAdmitted=true;attempt.recordConfirmed=true;if(receipt.entryId)attempt.nativeEntryId=receipt.entryId;if(receipt.nativeEntryDigest)attempt.nativeEntryDigest=receipt.nativeEntryDigest;}
+      if(fact.status==='native-record-confirmed'){if(receipt.entryId&&attempt.nativeEntryId&&attempt.nativeEntryId!==receipt.entryId)throw Error('Native user entry confirmation identity changed');attempt.everAdmitted=true;attempt.recordConfirmed=true;if(receipt.entryId)attempt.nativeEntryId=receipt.entryId;if(receipt.nativeEntryDigest)attempt.nativeEntryDigest=receipt.nativeEntryDigest;}
       if(fact.status==='rejected'&&!attempt.everAdmitted)attempt.definitiveRejection=true;
       if(fact.status==='native-record-confirmed'&&!['frontdesk','orchestrator'].includes(target)){
         const work=this.store.state.works.find(w=>w.id===target);
@@ -155,6 +273,12 @@ export class Controller extends EventEmitter {
     // case-insensitively: rotate the generation scope and persist BEFORE the
     // next native fact is processed, inside the serialized native drain.
     if(type==='nozeliCompaction'||/compaction|branch/i.test(type)){this.tagMaterialDelivery?.invalidate(this.sessions.get(target));await this.#onConfirmedCompaction(target);}
+    if(['auto_retry_start','auto_retry_end'].includes(type)&&this.serviceRetryRecord){
+      const owner=this.sessions.get(target),job=this.current.get(target),event=fact.event??fact;
+      if(owner&&job&&fact.epoch===owner.epoch&&fact.ownerId===owner.viewOwnerId&&fact.jobId===job.id){
+        await this.serviceRetryRecord({type,target,jobId:job.id,ownerId:owner.viewOwnerId,ownerGeneration:owner.epoch,attempt:event.attempt,...(type==='auto_retry_start'?{maxAttempts:event.maxAttempts,delayMs:event.delayMs}:{success:event.success})});
+      }
+    }
     this.timeline.event(fact,target);this.publishTimeline();
   }
   publishTimeline(){
@@ -170,9 +294,10 @@ export class Controller extends EventEmitter {
     await this.store.mutate(()=>{
       this.migrateClosureState(s);
     });
-    for(const w of s.works)if(w.status==='ended'&&w.mergeConstraint?.mode==='unresolved'&&!w.closure?.git?.complete)await this.#ensureMergeConstraintTodo(w.id,w);
+    for(const w of s.works)if(w.status==='closing'&&w.mergeConstraint?.mode==='unresolved'&&!w.closure?.git?.complete)await this.#ensureMergeConstraintTodo(w.id,w);
   }
   migrateClosureState(s){
+      migrateReviewLifecycle(s);
       // 合入同意迁移（幂等，逐work自守卫，无一次性全局门）：旧版按原始请求
       // 文本扫描形成的永久veto已废除。只把既有的USER_NO_COMMIT阻断重新归类
       // 为可解析的合入同意/策略待办：不解除阻断、不静默授权任何旧禁止；
@@ -182,7 +307,7 @@ export class Controller extends EventEmitter {
           let merge=w.closure?.merge;
           // Pre-review releases persisted this exact host error without a merge record.
           // Recognize the historical record, never scan user prose into authority.
-          const legacyError=w.status==='ended'&&w.closure?.decision==='accept'&&w.closure.phase==='blocked'&&!w.closure.git?.complete&&w.closure.error==='此工作明确要求不提交Git；请先明确更新这一约束，再选择接受';
+          const legacyError=w.status==='closing'&&w.closure?.decision==='accept'&&w.closure.phase==='blocked'&&!w.closure.git?.complete&&w.closure.error==='此工作明确要求不提交Git；请先明确更新这一约束，再选择接受';
           if(legacyError&&!merge)merge=w.closure.merge={status:'blocked',blockedCode:'USER_NO_COMMIT',targetRef:w.execution?.targetRef??null,attempts:[]};
           if(merge?.blockedCode==='USER_NO_COMMIT'||legacyError){
             merge.blockedCode='MERGE_CONSENT_REQUIRED';
@@ -199,7 +324,7 @@ export class Controller extends EventEmitter {
           // legacy-unresolved一次性策略待办：不把明确永久禁令静默当作临时，
           // 也不改写原文；已完整合入的历史不复核。
           if(!w.mergeConstraint&&!(w.status==='ended'&&w.closure?.phase==='complete')&&(explicitNeverCommitStatement(w.request||'')||(w.inputs||[]).some(i=>explicitNeverCommitStatement(i?.text||''))))w.mergeConstraint={schema:1,version:1,mode:'unresolved',origin:'legacy-unresolved',detectedAt:new Date().toISOString()};
-          if(w.status==='ended'&&w.closure?.decision==='accept'&&!w.closure.mergeAuthorization&&!w.closure.git?.complete){
+          if(w.status==='closing'&&!w.needsReconciliation&&w.closure?.decision==='accept'&&!w.closure.mergeAuthorization&&!w.closure.git?.complete){
             const constraintRequired=w.mergeConstraint?.mode==='unresolved'||w.mergeConstraint?.mode==='never-commit';
             w.closure.mergeAuthorization={schema:1,workId:w.id,revision:w.closure.revision??w.revision,objectId:w.closure.binding?.objectId??null,candidateCommit:w.closure.binding?.candidateCommit??null,reviewVersion:w.closure.reviewedVersion?.reviewVersion??null,repo:w.execution?.repo??null,commonDir:w.execution?.commonDir??null,targetRef:w.execution?.targetRef??merge?.targetRef??null,targetHead:w.execution?.targetHead??null,basis:'user-accept',consentRequired:merge?.blockedCode==='MERGE_CONSENT_REQUIRED'||constraintRequired,consentOrigin:(merge?.blockedCode==='MERGE_CONSENT_REQUIRED'||constraintRequired)?(merge?.consentOrigin??w.mergeConstraint?.origin??'legacy-untrusted'):null,at:w.closure.at??w.endedAt??new Date().toISOString(),migrated:true};
           }
@@ -218,31 +343,20 @@ export class Controller extends EventEmitter {
       s.jobs??=[];s.messages??=[];s.drafts??={};s.residents??={};s.providers={};s.recoveryEvents??=[];
       s.frontdeskRoutes??=[];
       for(const receipt of s.receipts)this.store.projectReceipt(receipt,{jobId:s.jobs.find(j=>j.target===receipt.workId&&j.revision===receipt.revision)?.id});
-      if(s.workOutcomeCutover!==2){
-        for(const w of s.works)if(w.status==='closing'||w.status==='ended'&&!w.closure?.decision){
-          const historical=w.legacyClosure??w.closure;
-          if(w.status==='ended'&&historical?.phase==='ended'&&historical.stopped===true&&historical.git?.complete===true&&w.curated===true){
-            w.legacyClosure??=structuredClone(historical);w.closure={...structuredClone(historical),phase:'complete',historical:true,legacyOutcomeUnknown:true,completedAt:historical.completedAt||w.endedAt};
-            s.memoryPending=s.memoryPending.filter(id=>id!==w.id);for(const todo of s.todos)if(todo.workId===w.id&&todo.kind==='closure'&&todo.status==='open'){todo.status='resolved';todo.resolution={status:'historical-closure-complete',at:new Date().toISOString()};}
-          }else{w.legacyClosure??=structuredClone(w.closure||null);if(w.status==='closing'){w.status='ended';w.endedBy='user';w.endedAt??=w.closure?.at||new Date().toISOString();}w.closure={phase:'blocked',at:w.endedAt,revision:w.revision,error:'Legacy outcome requires explicit user disposition; no automatic deletion'};}
-        }
-        s.workOutcomeCutover=2;
-      }
-      for(const job of s.jobs)if(job.status==='queued'){job.status='interrupted';job.error='Cold start never replays accepted inputs';const work=s.works.find(w=>w.id===job.target||w.id===job.context?.boundWorkId);if(work?.status!=='ended'&&!['git','curate'].includes(job.type)&&!s.todos.some(t=>t.sourceJobId===job.id&&t.status==='open'))s.todos.push({id:randomUUID(),...(work?{workId:work.id,revision:work.revision}:{}),kind:work?'recovery':'system',status:'open',sourceJobId:job.id,text:'宿主恢复时保留了未执行输入；请核对原记录后显式继续，不自动重放。'});}
+      restoreExecutionIntents(s);
       for(const job of s.jobs)if(['git','curate'].includes(job.type)&&['queued','running','interrupted'].includes(job.status)){job.status='cancelled';job.interruptionReason='work-outcome-cutover';}
-      for(const job of s.jobs)if(job.status==='running'){job.status='interrupted';job.error='宿主退出，未自动重放';const w=s.works.find(w=>w.id===job.target);if(w?.status==='running')this.pauseState(w,'执行被中断；请核对文件后继续。');}
-      for(const w of s.works)if(w.status==='running'&&!s.jobs.some(j=>j.target===w.id&&j.status==='queued'))this.pauseState(w,'执行状态待核对，未自动重放。');
       s.recoveryEvents.push({at:new Date().toISOString(),type:'host-opened',providers:recovered});
     });
+    this.coldJobs.clear();
     if(this.execution)await this.execution.recoverOperations();
     await this.resumeReviewContinuations();
     await this.finalizeTransfers({restoring:true});
-    for(const w of this.store.state.works)if(w.status==='ended'&&w.closure?.phase!=='complete')await this.advanceClosure(w.id);
+    for(const w of this.store.state.works)if(w.status==='closing'&&!w.needsReconciliation&&w.closure?.phase!=='complete')await this.advanceClosure(w.id);
     await this.drainMergeQueue();
   }
   async prepareOnline(){
     if(!this.localOnly)return;
-    if(!this.onlinePreparation)this.onlinePreparation=this.initializeBindings().then(()=>{this.localOnly=false;}).catch(error=>{this.onlinePreparation=null;throw error;});
+    if(!this.onlinePreparation)this.onlinePreparation=this.restore().then(()=>{this.localOnly=false;}).catch(error=>{this.onlinePreparation=null;throw error;});
     await this.onlinePreparation;
   }
   async reconcileResidentSchemaMaintenance(previousThreads){
@@ -254,10 +368,9 @@ export class Controller extends EventEmitter {
       if(!match||!['OMP_TOOLS_DIGEST_MISMATCH','PI_TOOLS_DIGEST_MISMATCH'].includes(bug.error?.code)||bug.status==='repaired'||bug.jobId||bug.workId)continue;
       const target=match[1];if(!previousThreads[target]||this.sessions.get(target).threadId!==previousThreads[target])continue;
       const related=this.store.state.jobs.filter(job=>job.type==='maintenance'&&job.context?.bugId===bug.id);
-      if(related.some(job=>job.status==='running'||job.promptStartedAt!=null||job.collabAttempts?.some(attempt=>attempt.everAdmitted)))continue;
-      // Only never-admitted repair events settle; business input and unknown
-      // effects stay intact. Save before the ledger receipt for idempotence.
-      await this.store.mutate(()=>{for(const job of related)if(job.status==='queued')Object.assign(job,{status:'completed',hostResolved:true,completion:'current-schema-resumed',finishedAt:new Date().toISOString()});});
+      if(related.some(job=>job.status==='running'||job.promptStartedAt!=null||this.coldJobs?.has(job.id)||job.collabAttempts?.some(attempt=>attempt.everAdmitted||!attempt.definitiveRejection)))continue;
+      // Save only exact never-admitted events before the ledger receipt.
+      await this.settleMaintenanceEvents(bug,'current-schema-resumed');
       await this.maintenance.finish(bug.id,{verified:true,outcome:'current-schema-resumed'});
       this.maintenanceActions.delete(bug.id);
     }
@@ -294,6 +407,8 @@ export class Controller extends EventEmitter {
         const explicitModel=entry.model?.mode==='explicit'?entry.model.selector:null;
         const explicitThinking=entry.thinking?.mode==='explicit'?entry.thinking.level:null;
         const row={projectId:this.projectId,target,ownerId:session.viewOwnerId,sessionId:session.threadId??null};
+        const targetIntent=this.modelIntents?await this.modelIntents.snapshot(this.projectId,target,session):null;
+        if(targetIntent?.override){sync.sessions.push({...row,state:'unchanged',override:targetIntent.override,effective:targetIntent.effective??session.effective??{model:session.model,effort:session.effort}});return;}
         if(!explicitModel&&explicitThinking==null){
           // Both native-default: cancel queued overrides, claim no native change.
           // A failure here is an explicit row like any other — it must never
@@ -1246,17 +1361,29 @@ export class Controller extends EventEmitter {
   kick(){if(this.stopping||!this.started||this.store.commitUnknown)return;if(this.kicking){this.again=true;return;}this.kicking=true;queueMicrotask(async()=>{try{do{this.again=false;await this.pump();}while(this.again&&!this.stopping&&!this.store.commitUnknown);}catch(e){this.emit('diagnostic',e.message);}finally{this.kicking=false;}});}
   async pump(){
     await this.store.requireOnline();
-    while(!this.stopping && this.store.used()<this.store.state.limit){
-      if(!this.store.state.works.some(w=>w.status==='queued'&&!this.coldQueued?.has(w.id)))break;
-      const activated=await this.store.activateNext({isEligible:w=>!this.coldQueued?.has(w.id),initialize:w=>{w.binding=structuredClone(this.store.state.bindings.worker);this.queueJob(w.id,'initial',this.initialWorkerText(w),{key:`initial:${w.id}`,context:{sourceInputJobIds:[...new Set([...(w.sourceInputJobIds||[]),...(w.inputs||[]).flatMap(i=>i.sourceInputJobIds||[i.sourceJobId])])],imageAttachments:w.imageAttachments||this.store.state.jobs.find(j=>j.id===w.sourceJob)?.context?.imageAttachments}});}});
+    // 占槽从已激活身份+closure完成事实统一推导（§9）：历史ended缺证据者
+    // fail-closed，阻止新激活直到核对；超limit不激活，不触碰已激活任务。
+    while(!this.stopping){
+      const facts=this.store.workSlotFacts();
+      if(facts.verificationRequired)break;
+      if(this.store.used()>=this.store.state.limit)break;
+      let candidate=null;
+      for(const work of this.store.state.works){
+        if(work.status!=='queued'||this.coldQueued?.has(work.id)||this.workExecutionHeld(work.id))continue;
+        await this.serviceSourcePrepare?.({target:work.id,type:'initial'});
+        if(!this.#activationHeld(work)){candidate=work;break;}
+      }
+      if(!candidate)break;
+      const activated=await this.store.activateNext({isEligible:w=>w.id===candidate.id&&!this.coldQueued?.has(w.id)&&!this.#activationHeld(w),initialize:w=>{w.binding=structuredClone(this.store.state.bindings.worker);this.queueJob(w.id,'initial',this.initialWorkerText(w),{key:`initial:${w.id}`,context:{sourceInputJobIds:[...new Set([...(w.sourceInputJobIds||[]),...(w.inputs||[]).flatMap(i=>i.sourceInputJobIds||[i.sourceJobId])])],imageAttachments:w.imageAttachments||this.store.state.jobs.find(j=>j.id===w.sourceJob)?.context?.imageAttachments}});}});
       if(!activated)break;this.changed();
     }
     for(const job of this.store.state.jobs){if(this.stopping)break;if(job.status!=='queued'||this.restarting?.has(job.target)||this.configuring.has(job.target)||this.running.has(job.target)||this.nativeDraftTargets.has(job.target)||(this.store.state.drafts[job.target]&&job.explicitInput!==true))continue;
       if(this.current.has(job.target))continue;
       if(this.coldJobs?.has(job.id))continue;
       if(this.reclaiming.has(job.target))continue;
+      await this.serviceSourcePrepare?.(job);
       if(this.processBudget&&(!this.sessions.get(job.target)||this.sessions.get(job.target).closed)&&!this.starting.has(job.target)&&!this.processBudget.available){await this.processBudget.reclaim?.(this.projectId,job.target);if(!this.processBudget.available)continue;}
-      if(this.deviationHeld(job.target))continue;
+      if(this.deviationHeld(job.target)||this.#admissionHold(job))continue;
       if(job.context?.pendingIntakeId&&['transferring','queued','running'].includes(this.store.state.jobs.find(j=>j.id===job.context.pendingIntakeId)?.status))continue;
       const target=job.target;const promise=this.runJob(job).catch(e=>this.emit('diagnostic',e.message)).finally(()=>{this.running.delete(target);this.current.delete(target);this.changed();this.kick();});this.running.set(target,promise);
     }
@@ -1280,7 +1407,7 @@ export class Controller extends EventEmitter {
     if(this.getResidentHandoff(target)&&!this.handoffAdmitting?.has(target))return Promise.reject(this.residentHandoffError('PI_HANDOFF_CONFIRMATION_REQUIRED',target,'explicit resident handoff confirmation required'));
     if(this.starting.has(target))return this.starting.get(target);
     const existing=this.sessions.get(target);if(existing&&!existing.closed)return Promise.resolve(existing);
-    const promise=(async()=>{if(existing){const receipt=await existing.stop();await existing.controllerExitCleanup;if(receipt?.confirmationComplete===false&&existing.pid)throw new Error('old native owner exit unconfirmed');if(this.sessions.get(target)===existing)this.sessions.delete(target);}return this.makeSession(target);})().finally(()=>{if(this.starting.get(target)===promise)this.starting.delete(target);});
+    const promise=(async()=>{if(existing){const receipt=await existing.stop();await existing.controllerExitCleanup;if(receipt?.confirmationComplete===false&&existing.pid)throw new Error('old native owner exit unconfirmed');if(this.sessions.get(target)===existing)this.sessions.delete(target);}return this.makeSession(target);})().finally(()=>{if(this.starting.get(target)===promise){this.starting.delete(target);this.changed();this.kick();}});
     this.starting.set(target,promise);return promise;
   }
   restart(target){
@@ -1540,6 +1667,10 @@ export class Controller extends EventEmitter {
     session.viewOwnerId??=randomUUID();
     session.on?.('diagnostic',message=>{if(this.sessions.get(target)===session)this.emit('diagnostic',`${target}: ${message}`);});
     session.on?.('change',()=>{if(this.sessions.get(target)===session)this.changed();});
+    session.on?.('activity',()=>{if(this.sessions.get(target)!==session||this.stopping)return;this.emit('lifecycle',{target});if(this.activityTimer)return;this.activityTimer=setTimeout(()=>{this.activityTimer=null;if(!this.stopping)this.emit('activity',{revision:this.activitySequence=(this.activitySequence??0)+1});},32);this.activityTimer.unref?.();});
+    session.on?.('model-changed',()=>{if(!this.modelIntents||this.sessions.get(target)!==session)return;void this.modelIntents.remember(this.projectId,target,session.effective??{model:session.model,effort:session.effort},()=>this.sessions.get(target)===session&&!session.closed).catch(error=>this.emit('diagnostic','模型事实保存受阻：'+error.message));});
+    session.on?.('model-changed',result=>{if(!this.modelIntents||this.sessions.get(target)!==session||!result?.operationId||!Number.isSafeInteger(result.intentRevision))return;void this.modelIntents.mark(this.projectId,target,{revision:result.intentRevision,operationId:result.operationId,ownerId:session.viewOwnerId},'applied',{recorded:result.effective??session.effective??{model:session.model,effort:session.effort},clamped:result.clamped??null}).then(()=>this.changed(),error=>this.emit('diagnostic','模型回执保存受阻：'+error.message));});
+    session.on?.('model-error',error=>{if(this.sessions.get(target)!==session)return;if(this.modelIntents&&error?.operationId&&Number.isSafeInteger(error.intentRevision))void this.modelIntents.read(this.projectId,target).then(intent=>this.modelIntents.mark(this.projectId,target,{revision:error.intentRevision,operationId:error.operationId,ownerId:session.viewOwnerId},intent.state==='submitted'?'unknown':'failed',{error:{code:'PI_MODEL_CHANGE_FAILED'}})).then(()=>this.changed(),failure=>this.emit('diagnostic','模型失败回执保存受阻：'+failure.message));this.changed();});
     session.on?.('model-changed',()=>{
       if(this.sessions.get(target)!==session)return;
       // A native model/thinking change must also reach the persisted resident
@@ -1583,7 +1714,7 @@ export class Controller extends EventEmitter {
     }
     const home=role==='worker'?this.store.agentHome(target):path.join(this.store.root,'agents',`resident-${role}-pi`);
     const cwd=role==='worker'&&this.execution?(await this.maintenanceTransaction(this.current.get(target),'input-preparation',()=>this.execution.prepare(target)),this.execution.directory(target)):this.store.content;
-    const tools=role==='frontdesk'?[tool('nozeli_handoff','Escalate the remaining original-task work to background execution with a concise reason. Ordinary reasons dispatch straight to the background under the original user request (no extra prompt); if the user explicitly chose to stay in the frontdesk, declined background earlier, or a decision is still pending, the host asks the user instead. @new/@continue only select discussion context; discussion-source reading uses nozeli_source_read, never this handoff. This handoff never grants cross-project access, shell or credentials.',{reason:text}),tool('nozeli_source_read','Read a frozen discussion source read-only and paged: file:<relative path> for a frozen file version, memory:<keywords> for the Plan Tree index, state for open works, report:<work name> for a frozen report. Returns exact text with nextSelector for continuation; complete=false only describes this page. Reading is bounded by the per-run host budget and never dispatches background work.',{selector:text})]:role==='orchestrator'?[tool('nozeli_inspect_work','Bounded taskboard and Work facts. @state returns ONE bounded page of open works (stable workId, name, status, revision, queue position, factual block reason, frozen report reference) with quota facts and a host-generated nextCursor — pass it back verbatim to read the next page; if the ledger changed, the host returns resyncRequired with a fresh first page instead of silently mixing states. @work:<workId> returns bounded current facts (original request/brief/source job, execution jobs and live owner if known, input and worktree baseline, per-receipt frozen candidates, report/receipt/closure linkage; null means not recorded, i.e. unknown) where long originals, inputs, approved scopes, deviation details and closure errors appear as bounded previews plus paged readRefs — continue pages by passing the returned readRef/nextReadRef back as workName. Work names are accepted for search/display only. @memory:keywords searches Plan Tree; @conversation reads dialogue. Read-only.',{workName:text,cursor:text},['workName']),tool('nozeli_dispatch','Create a named Worker for a brand-new independent task (name is display/search only). This is the required terminal decision when an explicit user task has no matching open Work; continuing an existing Work always uses nozeli_manage with its stable workId and expectedRevision instead.',{name:text,brief:text}),tool('nozeli_manage','Route this intake to exactly ONE terminal decision. continue targets an EXISTING open Work by its stable workId plus the expectedRevision you read from the taskboard or @work detail — names never identify a mutation; a revision mismatch returns STALE_WORK_REVISION, so re-read and retry, never reinterpret. A continue that misses (unknown workId) is NEVER converted into a dispatch: use nozeli_dispatch explicitly for a brand-new task. clarify asks the user genuine ambiguity. status is a bounded read-only board query that NEVER completes an intake turn: inspect/status first if needed, then always finish the turn with continue, clarify, or nozeli_dispatch. User end decisions belong to user controls.',{action:{type:'string',enum:['continue','status','clarify']},workId:text,expectedRevision:{type:'integer',minimum:0},text},['action','text'])]:[tool('nozeli_publish','Publish the final result as one complete self-contained static HTML document, or a problem/question as concise Markdown text. Include every created/modified artifact in files. For result require html and forbid text; for problem require text and forbid html. Host validates the exact kind/body pairing. Work remains open; finish the turn after success.',{kind:{type:'string',enum:['problem','result']},html:{type:'string',description:'Self-contained static HTML result document; kind "result" only'},text:{type:'string',description:'Concise Markdown problem or question body; kind "problem" only'},files:{type:'array',items:{type:'string'},maxItems:256}},['kind','files']),tool('nozeli_diagram','Render an offline validated Archify typed JSON diagram and return the exact standalone SVG with alt text, caption and spec/generator digests for direct inline figure embedding in the report HTML; creates no project files.',{type:{type:'string',enum:['architecture','workflow','sequence','dataflow','lifecycle']},spec:{type:'object',additionalProperties:true}})];
+    const tools=role==='frontdesk'?[tool('nozeli_handoff','Escalate the remaining original-task work to background execution with a concise reason. Ordinary reasons dispatch straight to the background under the original user request (no extra prompt); if the user explicitly chose to stay in the frontdesk, declined background earlier, or a decision is still pending, the host asks the user instead. @new/@continue only select discussion context; discussion-source reading uses nozeli_source_read, never this handoff. This handoff never grants cross-project access, shell or credentials.',{reason:text}),tool('nozeli_source_read','Read a frozen discussion source read-only and paged: file:<relative path> for a frozen file version, memory:<keywords> for the Plan Tree index, state for open works, report:<work name> for a frozen report. Returns exact text with nextSelector for continuation; complete=false only describes this page. Reading is bounded by the per-run host budget and never dispatches background work.',{selector:text})]:role==='orchestrator'?[tool('nozeli_inspect_work','Bounded taskboard and Work facts. @state returns ONE bounded page of open works (stable workId, name, status, revision, queue position, factual block reason, frozen report reference) with quota facts and a host-generated nextCursor — pass it back verbatim to read the next page; if the ledger changed, the host returns resyncRequired with a fresh first page instead of silently mixing states. @work:<workId> returns bounded current facts (original request/brief/source job, execution jobs and live owner if known, input and worktree baseline, per-receipt frozen candidates, report/receipt/closure linkage; null means not recorded, i.e. unknown) where long originals, inputs, approved scopes, deviation details and closure errors appear as bounded previews plus paged readRefs — continue pages by passing the returned readRef/nextReadRef back as workName. Work names are accepted for search/display only. @memory:keywords searches Plan Tree; @conversation reads dialogue. Read-only.',{workName:text,cursor:text},['workName']),tool('nozeli_dispatch','Create a named Worker for a brand-new independent task (name is display/search only). This is the required terminal decision when an explicit user task has no matching open Work; continuing an existing Work always uses nozeli_manage with its stable workId and expectedRevision instead.',{name:text,brief:text}),tool('nozeli_manage','Route this intake to exactly ONE terminal decision. continue targets an EXISTING open Work by its stable workId plus the expectedRevision you read from the taskboard or @work detail — names never identify a mutation; a revision mismatch returns STALE_WORK_REVISION, so re-read and retry, never reinterpret. A continue that misses (unknown workId) is NEVER converted into a dispatch: use nozeli_dispatch explicitly for a brand-new task. clarify asks the user genuine ambiguity. status is a bounded read-only board query that NEVER completes an intake turn: inspect/status first if needed, then always finish the turn with continue, clarify, or nozeli_dispatch. User end decisions belong to user controls.',{action:{type:'string',enum:['continue','status','clarify']},workId:text,expectedRevision:{type:'integer',minimum:0},text},['action','text'])]:[tool('nozeli_publish','Publish one final self-contained static HTML result or concise Markdown problem. Put the entire report in content: HTML when kind=result, Markdown when kind=problem. Always send exactly kind, content and files. List every created or modified artifact in files, or [] for no-file work. Work remains open; finish the turn after success.',{kind:{type:'string',enum:['problem','result']},content:{type:'string',minLength:1,description:'The complete report body: self-contained static HTML for result, concise Markdown for problem.'},files:{type:'array',items:{type:'string'},maxItems:256}},['kind','content','files']),tool('nozeli_diagram','Render an offline validated Archify typed JSON diagram and return the exact standalone SVG with alt text, caption and spec/generator digests for direct inline figure embedding in the report HTML; creates no project files.',{type:{type:'string',enum:['architecture','workflow','sequence','dataflow','lifecycle']},spec:{type:'object',additionalProperties:true}})];
     const binding=role==='worker'?this.store.find(target).binding||this.store.state.bindings.worker:this.store.state.bindings[role];
     if(role==='orchestrator')tools.push(tool('nozeli_maintenance','Inspect sanitized host bug ledger, scan proven historical internal faults without replay, or request bounded host recovery of the exact original transaction. Never marks repaired by assertion; no business Work or privileges granted.',{action:{type:'string',enum:['status','retry','scan']},bugId:text},['action']));
     if(role==='orchestrator')tools.push(
@@ -1591,13 +1722,13 @@ export class Controller extends EventEmitter {
       tool('nozeli_backstage_respond','Resolve the current host-bound backstage native question from existing evidence, or explicitly preserve neutral blocked state when facts are missing. Never answer permission approval or invent business facts.',{answer:{anyOf:[text,{type:'boolean'},{type:'object'}]},blocked:{type:'boolean'},reason:text},[]));
     if(role==='worker')tools.push(tool('nozeli_report_bug','Report a suspected Nozeli program fault for host diagnosis, not a business question. No recovery is claimed from model text; preserves original Work and never replays effects.',{code:{type:'string',enum:['WORKER_SNAPSHOT_FAILED','PUBLICATION_FAILED','HOST_INTERNAL_FAILURE','UNKNOWN_PRODUCT_BUG']}}));
     if(role==='frontdesk'||role==='orchestrator')tools.push(
-      tool('nozeli_document_read','Read a UTF-8 host document and obtain a session-bound version handle. Optional projectPath selects a registered id/root or any unregistered absolute directory; absolute relPath also works. Ordinary access requires no authorization or registration. Registered targets preserve unsaved drafts. Quote replacements from returned text; apply target follows its handle.',{relPath:text,projectPath:text,access:{type:'string',enum:['read','edit']}},['relPath']),
+      tool('nozeli_document_read','Read a bounded frozen UTF-8 document page with an exact session-bound edit handle and version. Initially supply relPath (optional projectPath selects registered or ordinary external directory). To continue the SAME snapshot, supply only readRef copied from nextReadRef. offset/endOffset locate this page; totalChars describes the snapshot; never assume a page is the whole document. Registered targets preserve unsaved drafts. Quote replacements only from returned text.',{relPath:text,readRef:text,projectPath:text,access:{type:'string',enum:['read','edit']}},[]),
       tool('nozeli_document_apply','Replace exact text in a document read this session. The host locates each oldText inside the read snapshot — never send offsets or line numbers. Each oldText must match exactly one place: quote more surrounding text, or add contextBefore/contextAfter (exact neighbouring text from the read) when it occurs several times. newText uses LF newlines; CRLF is normalized. Concurrent edits, unsaved user drafts and authorship stay host-protected.',{readHandle:text,replacements:{type:'array',minItems:1,maxItems:1000,items:{type:'object',properties:{oldText:text,newText:text,contextBefore:text,contextAfter:text},required:['oldText','newText'],additionalProperties:false}}},['readHandle','replacements']),
       tool('nozeli_document_create','Create a host text document without overwriting files or drafts. Optional projectPath: registered id/root or ordinary unregistered directory; absolute relPath accepted.',{relPath:text,text,projectPath:text},['relPath','text']),
       tool('nozeli_project_list','List a host directory; empty relPath is the root. Follow nextOffset. Optional projectPath accepts registered ids/roots or unregistered directories; absolute relPath accepted.',{relPath:text,offset:{type:'integer',minimum:0},limit:{type:'integer',minimum:1,maximum:500},projectPath:text},['relPath']),
       tool('nozeli_project_search','Search literal host text. Omit cursor initially; reuse the returned cursor unchanged. Optional projectPath accepts registered ids/roots or unregistered directories; absolute relPath accepted.',{query:text,relPath:text,projectPath:text,cursor:{anyOf:[{type:'object',properties:{scope:text,query:text,relPath:text,offset:{type:'integer',minimum:0}},required:['scope','query','relPath','offset'],additionalProperties:false},{type:'null'}]}},['query','relPath']));
     if(role==='worker'&&this.execution)tools.push(
-      tool('nozeli_document_read','Read candidate text by relative path; absolute relPath or projectPath selects an ordinary external/registered live document with its own host CAS handle. External writes are direct, not candidate adoption.',{relPath:text,projectPath:text},['relPath']),
+      tool('nozeli_document_read','Read a bounded frozen candidate text page with its exact edit handle/version. Initially supply relPath; absolute relPath or projectPath selects an ordinary live document. Continue the SAME snapshot by supplying only readRef from nextReadRef. offset/endOffset and totalChars identify page coverage; never treat a page as the full document.',{relPath:text,readRef:text,projectPath:text},[]),
       tool('nozeli_document_apply','Apply exact-text replacements against the text returned by nozeli_document_read. The host derives positions from oldText (must match exactly one place, or be disambiguated by contextBefore/contextAfter exact neighbouring text); never send offsets. newText uses LF; CRLF is normalized. After failure re-read and reconsider or publish a problem. This write continues the turn for verification/reporting. Never overwrite a stale candidate with shell.',{readHandle:text,replacements:{type:'array',minItems:1,maxItems:1000,items:{type:'object',properties:{oldText:text,newText:text,contextBefore:text,contextAfter:text},required:['oldText','newText'],additionalProperties:false}}},['readHandle','replacements']));
     if(role==='worker')tools.push(
       tool('nozeli_document_create','Create a live host document, optional projectPath or absolute relPath; this is not a Worker candidate artifact. For candidate files use native tools in your worktree.',{relPath:text,text,projectPath:text},['relPath','text']),
@@ -1628,6 +1759,7 @@ export class Controller extends EventEmitter {
         // Admission gate only: the per-request projection and materials travel
         // through the prompt() runtime contract, never through this hook.
         if(role==='worker'){const w=this.store.find(target);if(w.status!=='running'||active.revision!==w.revision)throw Error('stale Worker turn');}
+        if(this.modelIntents){await this.modelIntents.flights.get(this.projectId+':'+target);const intent=await this.modelIntents.read(this.projectId,target);if(['submitted','unknown','failed','saved','pending'].includes(intent.state))throw Object.assign(Error('模型选择尚未确认生效，未发送本轮输入。'),{code:'MODEL_APPLY_UNKNOWN'});}
         return {};},
       onSpawn:async pid=>{const stamp=await processStamp(pid);await this.store.mutate(()=>{this.store.state.providers[target]={pid,stamp,home,kind:'pi-node',ownerId:spec.nativeContext.ownerId};});}};
     // Pi 路线（host cutover）：角色会话 = host-owned Pi owner（PiSession，唯一进程/session owner）。
@@ -1653,18 +1785,30 @@ export class Controller extends EventEmitter {
         if(typeof session.preflightToolsDigest!=='function')throw Object.assign(new Error('Pi historical schema preflight unavailable'),{code:'PI_TOOLS_DIGEST_MISMATCH'});
         try{await session.preflightToolsDigest(resident.toolsDigest);}
         catch(error){
-          const attempted=this.store.state.jobs.some(j=>j.target===target&&(j.manual===true||j.promptStartedAt!=null));
-          const messages=this.store.state.messages.some(m=>m.target===target);
-          let empty=resident.zeroActivity===true&&!attempted&&!messages&&!resident.handoff&&typeof session.sessionFile==='string';
+          const archives=this.store.state.residentArchive?.[target]?.handoffs??[];
+          const handedOff=resident.handoff?.status==='ready'&&archives.some(archive=>archive.id===resident.handoff.archiveId&&archive.oldThreadId===resident.handoff.oldThreadId);
+          const archivedThreads=new Set(handedOff?archives.flatMap(archive=>[archive.threadId,archive.oldThreadId]).filter(id=>typeof id==='string'&&id!==resumeId):[]);
+          const archivedJobs=new Set(handedOff?this.store.state.jobs.filter(job=>{
+            if(job.target!==target||!['completed','failed','cancelled','interrupted'].includes(job.status)||job.manual===true&&!['completed','cancelled'].includes(job.status))return false;
+            const identities=[...(job.threadId?[job.threadId]:[]),...(job.collabAttempts??[]).map(attempt=>attempt.sessionId),...(job.restartRecovery?.threadId?[job.restartRecovery.threadId]:[])];
+            return identities.length>0&&identities.every(id=>archivedThreads.has(id));
+          }).map(job=>job.id):[]);
+          const attempted=this.store.state.jobs.some(job=>job.target===target&&(['queued','running','transferring'].includes(job.status)||((job.manual===true||job.promptStartedAt!=null)&&!archivedJobs.has(job.id))));
+          const messages=this.store.state.messages.some(message=>message.target===target&&!(message.sessionId?archivedThreads.has(message.sessionId)&&(!message.jobId||archivedJobs.has(message.jobId)):archivedJobs.has(message.jobId)));
+          let empty=resident.zeroActivity===true&&!attempted&&!messages&&(!resident.handoff||handedOff)&&typeof session.sessionFile==='string';
+          let journalIdentity=!resident.handoff;
           if(empty){
             try{
               const stat=await fs.lstat(session.sessionFile);
               if(!stat.isFile()||stat.isSymbolicLink()||stat.size>1024*1024)empty=false;
               else for(const line of (await fs.readFile(session.sessionFile,'utf8')).split('\n')){
                 if(!line.trim())continue;
-                if(!['session','model_change','thinking_level_change','session_info','title'].includes(JSON.parse(line).type)){empty=false;break;}
+                const entry=JSON.parse(line);
+                if(!['session','model_change','thinking_level_change','session_info','title'].includes(entry.type)||entry.type==='session'&&entry.id!==resumeId){empty=false;break;}
+                if(entry.type==='session')journalIdentity=true;
               }
-            }catch(error){if(error.code!=='ENOENT')empty=false;}
+            }catch(error){if(error.code!=='ENOENT'||resident.handoff)empty=false;}
+            if(!journalIdentity)empty=false;
           }
           if(error.code!=='PI_TOOLS_DIGEST_MISMATCH'||!empty)throw error;
           // No accepted input or native message exists. Keep the old identity as
@@ -1717,18 +1861,27 @@ export class Controller extends EventEmitter {
       // any model selection cannot take an effort-only change. Failures never
       // fail the resume itself; they stay visible as failed modelSync rows
       // with allowlisted codes, including a defaults read error.
-      if(resumeId&&typeof session.applyDefaultModel==='function'&&this.piSource?.roleDefaultsFor){
+      const targetIntent=this.modelIntents?await this.modelIntents.snapshot(this.projectId,target,session):null;
+      if(typeof session.applyDefaultModel==='function'&&(targetIntent?.override||resumeId&&this.piSource?.roleDefaultsFor)){
         const recordFailure=(error,intent)=>{
           const failure={role,message:'Agent默认模型同步失败；配置已保存，可重试保存。',code:error?.code&&SAFE_MODEL_CHANGE_CODES.includes(error.code)?error.code:'PI_MODEL_CHANGE_FAILED'};
           this.modelDefaultFailures??=new Map();this.modelDefaultFailures.set(target,{session,failure,intent});
         };
+        if(targetIntent?.override){
+          try{let intent=targetIntent;const uncertain=['submitted','unknown'].includes(intent.state);if(uncertain&&intent.ownerId!==session.viewOwnerId){const matches=targetModelMatches(session,intent);intent=await this.modelIntents.mark(this.projectId,target,intent,matches?'applied':'failed',{ownerId:session.viewOwnerId,recorded:session.effective??{model:session.model,effort:session.effort},error:matches?null:{code:'MODEL_RESUME_MISMATCH'}});}if(!uncertain&&(['saved','pending','failed'].includes(intent.state)||!targetModelMatches(session,intent))){const result=await this.modelIntents.apply(this.projectId,target,intent,session);if(['failed','unknown'].includes(result.state))recordFailure(Object.assign(new Error('target model intent not confirmed'),{code:result.error?.code}),intent.override);}}catch(error){recordFailure(error,targetIntent.override);}
+        }else{
         const saved=await this.piSource.roleDefaultsFor(role).catch(error=>{recordFailure(error,null);return null;});
         const selector=saved?.selector??session.model;
-        if(saved&&(saved.selector!=null||saved.effort!=null)&&selector&&selector.includes('/')&&(selector!==session.model||saved.effort!=null&&saved.effort!==session.effort)){
+        const latestTarget=this.modelIntents?await this.modelIntents.snapshot(this.projectId,target,session):null;
+        if(latestTarget?.override){if(!['submitted','unknown'].includes(latestTarget.state)&&!targetModelMatches(session,latestTarget))await this.modelIntents.apply(this.projectId,target,latestTarget,session);}
+        else if(saved&&(saved.selector!=null||saved.effort!=null)&&selector&&selector.includes('/')&&(selector!==session.model||saved.effort!=null&&saved.effort!==session.effort)){
           try{await session.applyDefaultModel({selector,...(saved.effort!=null?{effort:saved.effort}:{})});}
           catch(error){recordFailure(error,{selector,effort:saved.effort??null});}
         }
+        }
       }
+      if(this.modelIntents&&targetIntent?.operationId&&!targetIntent.override&&!this.modelDefaultFailures?.has(target))await this.modelIntents.mark(this.projectId,target,targetIntent,'applied',{ownerId:session.viewOwnerId,recorded:session.effective??{model:session.model,effort:session.effort},desired:null});
+      if(this.modelIntents)await this.modelIntents.remember(this.projectId,target,session.effective??{model:session.model,effort:session.effort},()=>this.sessions.get(target)===session&&!session.closed&&!this.stopping);
       await this.store.mutate(()=>{
         if(role==='worker'){const work=this.store.find(target);work.threadId=session.threadId;work.toolsDigest=session.toolsDigest??toolsDigest;if(work.zeroActivity!==false)work.zeroActivity=!session.hasPrompted&&!(session.agentEnds?.length>0);}
         else this.store.state.residents[target]={threadId:session.threadId,provider,model:session.model??spec.model??null,effort:session.effort??spec.effort??null,toolsDigest:session.toolsDigest??toolsDigest,zeroActivity:!session.hasPrompted&&!(session.agentEnds?.length>0),...(resident?.zeroActivity===false?{zeroActivity:false}:{}),...(resident?.generation!=null?{generation:resident.generation}:{}),...(resident?.handoff?{handoff:{...resident.handoff,status:'ready'}}:{})};
@@ -1785,31 +1938,102 @@ export class Controller extends EventEmitter {
     this.changed();this.kick();
     return projectionPending?{settlementPending:true,automaticReplay:false,...projectionPending}:{settled:true};
   }
-  // Host read tools share the run budget: the allowance check runs before the
-  // body is returned, keeping receipt space intact; oversized results are
-  // refused visibly instead of silently truncated (design §9).
+  // Host read tools share one run budget, including serialized page metadata.
+  // A denied read is recoverable in the current native turn: answering and
+  // non-read actions remain available, without replaying the user's input.
   async onTool(target,p){
+    const readTool=['nozeli_document_read','nozeli_project_list','nozeli_project_search','nozeli_history_read','nozeli_report_read','nozeli_inspect_work','nozeli_skill_read','nozeli_diagram_schema','nozeli_diagram','nozeli_source_read'].includes(p.tool);
     try{
-      if(this.contextBudget.run(target)&&['nozeli_document_read','nozeli_project_list','nozeli_project_search','nozeli_history_read','nozeli_report_read','nozeli_inspect_work','nozeli_skill_read','nozeli_diagram_schema','nozeli_diagram','nozeli_source_read'].includes(p.tool)){
+      if(this.contextBudget.run(target)&&readTool){
         const allowance=this.contextBudget.readAllowance(target);
-        // Denial is a typed host-control stop: no continueTurn, so the native
-        // loop ends the turn instead of retrying reads against the same cap.
-        if(allowance<=0)return {ok:false,hostControl:true,error:{code:'HOST_CONTEXT_BUDGET_EXHAUSTED',message:'本轮宿主文本预算已用尽（已保留执行回执空间）；停止继续读取并结束本回合，不自动重试。请基于已读内容继续；必需原文在新回合按同一版本身份续读。'}};
-        const value=await this.handleTool(target,p,{readAllowance:allowance});
+        if(allowance<=0)return this.readBudgetDenied(target);
+        const value=p.tool==='nozeli_document_read'?await this.documentPage(target,p,allowance):await this.handleTool(target,p,{readAllowance:allowance});
         const bytes=Buffer.byteLength(JSON.stringify(value??null),'utf8');
-        if(bytes>allowance)return {ok:false,hostControl:true,error:{code:'HOST_CONTEXT_BUDGET_EXHAUSTED',message:'本次读取结果 '+bytes+' 字节超过本轮剩余宿主预算 '+allowance+' 字节；未投递正文，也不静默截断，本回合停止读取。请在新回合按 readRef/nextSelector 分页或精确身份续读。'}};
+        if(bytes>allowance)return this.readBudgetDenied(target);
         this.contextBudget.charge(target,bytes,{kind:'tool-read',label:p.tool});
         try{await this.#persistBudgetEpochs();}catch(error){return {ok:false,hostControl:true,error:{code:'HOST_BUDGET_PERSIST_FAILED',message:'宿主预算记账持久化失败；本次读取正文不予投递，也不静默截断（fail-closed），本回合停止读取。'}};}
+        await this.settleReadProtocolFaults(target,p.tool,value);
         return value;
       }
-      return await this.handleTool(target,p);
+      const value=p.tool==='nozeli_document_read'?await this.documentPage(target,p):await this.handleTool(target,p);
+      if(readTool)await this.settleReadProtocolFaults(target,p.tool,value);
+      else await this.settleRoutedReadProtocolFaults(this.current.get(target));
+      return value;
     }catch(error){
-      if(error.code==='HOST_CONTEXT_BUDGET_EXHAUSTED')return {ok:false,hostControl:true,error:{code:error.code,message:error.message}};
+      if(error&&typeof error==='object')error.failureOrigin='host';
+      if(error.code==='HOST_CONTEXT_BUDGET_EXHAUSTED')return this.readBudgetDenied(target);
+      if(readTool&&['INVALID_CURSOR','STALE_CURSOR','INVALID_SELECTOR','INVALID_PAYLOAD'].includes(error.code))return this.readProtocolFault(target,p.tool,error);
+      if(error.code==='READ_REF_EXPIRED'&&p.tool==='nozeli_document_read')return {ok:false,continueTurn:true,error:{code:error.code,message:error.message}};
       if(maintenanceBoundary(error)||!/^INTERNAL_|^HOST_INTERNAL_/.test(String(error.code??'')))throw error;
       const job=this.current.get(target);if(!job||job.type==='maintenance')throw error;
       const bug=await this.maintenance.record({phase:'tool',jobId:job.id,workId:['frontdesk','orchestrator'].includes(target)?null:target,revision:job.revision??null,error});await this.maintenance.finish(bug.id,{outcome:'needs-version-fix'});
       await this.store.mutate(()=>{const saved=this.store.state.jobs.find(j=>j.id===job.id);if(saved)saved.maintenanceBugId=bug.id;const w=this.store.state.works.find(w=>w.id===target);if(w?.status==='running'){w.status='paused';w.maintenance={bugId:bug.id,status:'needs-version-fix',message:'系统工具故障待后台诊断，原任务与改动保留。'};}});await this.maintenanceEvent(bug);return {hostControl:true,maintenance:true,bugId:bug.id,workRemainsOpen:true};
     }
+  }
+  async readProtocolFault(target,tool,error){
+    const job=this.current.get(target);
+    if(!job)throw error;
+    const bug=await this.maintenance.record({phase:'tool-protocol',jobId:job.id,workId:['frontdesk','orchestrator'].includes(target)?null:target,revision:job.revision??null,error,capability:'same-turn-read-correction'});
+    await this.store.mutate(()=>{
+      const saved=this.store.state.jobs.find(item=>item.id===job.id);if(!saved)return;
+      saved.readProtocolFaults??=[];
+      if(!saved.readProtocolFaults.some(fault=>fault.bugId===bug.id))saved.readProtocolFaults.push({bugId:bug.id,tool,code:error.code,status:'awaiting-correction'});
+    });
+    const instruction=['INVALID_CURSOR','STALE_CURSOR'].includes(error.code)?'本轮省略 cursor 重新读取首页；后续只原样传回 nextCursor 字符串，不传空字符串或自行构造游标。':'按工具 schema 和宿主返回的确切来源身份在本轮纠正参数，不猜测目标或版本。';
+    return {ok:false,continueTurn:true,error:{code:error.code,message:'读取参数不符合宿主协议，未执行写入。'+instruction+'这是内部工具调用纠正，不需要用户操作，也不要重发原用户输入。'}};
+  }
+  async settleReadProtocolFaults(target,tool,result){
+    if(result?.ok===false||result?.hostControl)return;
+    const job=this.current.get(target),saved=job&&this.store.state.jobs.find(item=>item.id===job.id);
+    const faults=saved?.readProtocolFaults?.filter(fault=>fault.tool===tool&&fault.status==='awaiting-correction');if(!faults?.length)return;
+    for(const fault of faults)await this.maintenance.finish(fault.bugId,{verified:true,outcome:'same-turn-read-corrected'});
+    if(this.current.get(target)?.id!==job.id)return;
+    await this.store.mutate(()=>{
+      const current=this.store.state.jobs.find(item=>item.id===job.id);
+      for(const fault of current?.readProtocolFaults??[])if(faults.some(prior=>prior.bugId===fault.bugId))fault.status='repaired';
+    });
+  }
+  async settleRoutedReadProtocolFaults(job){
+    const saved=job&&this.store.state.jobs.find(item=>item.id===job.id),routing=saved?.routing;
+    if(saved?.type!=='intake'||!routing?.intent||!['dispatch','continue','status','clarify','cancel'].includes(routing.action))return;
+    if(saved.status!=='completed'&&this.current.get(saved.target)?.id!==saved.id)return;
+    if(saved.collabAttempts?.some(attempt=>['unknown','transport-unknown','unresolved'].includes(attempt.status)))return;
+    if(routing.action==='dispatch'&&!this.store.state.works.some(work=>work.id===routing.workId&&work.sourceJob===saved.id))return;
+    const faults=saved.readProtocolFaults?.filter(fault=>fault.status==='awaiting-correction');if(!faults?.length)return;
+    // A committed route can legitimately make a rejected read unnecessary.
+    // This is receipt finalization only: no tool, prompt or effect is replayed.
+    try{
+      const ledger=await this.maintenance.read(),resolved=[];
+      for(const fault of faults){
+        const bug=ledger.bugs.find(bug=>bug.id===fault.bugId&&bug.projectId===this.projectId&&bug.jobId===saved.id&&bug.phase==='tool-protocol'&&bug.error?.code===fault.code);
+        if(!bug)continue;
+        if(bug.status!=='repaired')await this.maintenance.finish(bug.id,{verified:true,outcome:'routing-confirmed-read-obsolete'});
+        resolved.push(bug.id);
+      }
+      if(resolved.length)await this.store.mutate(()=>{
+        const current=this.store.state.jobs.find(item=>item.id===saved.id);if(current?.routing?.intent!==routing.intent)return;
+        for(const fault of current.readProtocolFaults??[])if(resolved.includes(fault.bugId))fault.status='repaired';
+      });
+    }catch(error){this.emit('diagnostic','Read protocol receipt finalization pending: '+String(error.code??'INTERNAL_FAILURE'));}
+  }
+  async readBudgetDenied(target){
+    const job=this.current.get(target);
+    if(job)await this.store.mutate(()=>{const saved=this.store.state.jobs.find(item=>item.id===job.id);if(saved)saved.readBudget={status:'exhausted',code:'HOST_CONTEXT_BUDGET_EXHAUSTED'};});
+    return {ok:false,continueTurn:true,error:{code:'HOST_CONTEXT_BUDGET_EXHAUSTED',message:'本轮读取额度不足；未交付新正文，也未截断来源。不要在同一额度下重试读取；基于已读页面继续回答或执行已有证据支持的动作，明确未读范围，不要求用户重发输入。'}};
+  }
+  async documentPage(target,p,allowance=null){
+    const job=this.current.get(target);if(!job)throw new Error('no active host job');
+    const args=p.arguments??{};
+    if(args.readRef!==undefined){
+      if(Object.keys(args).some(key=>key!=='readRef'))return {ok:false,continueTurn:true,error:{code:'INVALID_PAYLOAD',message:'续读仅提交 nextReadRef 对应的 readRef，不混入其他文件路径。'}};
+      if(!job.documentReader)return {ok:false,continueTurn:true,error:{code:'READ_REF_EXPIRED',message:'当前回合没有此文档分页引用。'}};
+      return job.documentReader.read(args.readRef,allowance);
+    }
+    if(typeof args.relPath!=='string'||!args.relPath.trim())return {ok:false,continueTurn:true,error:{code:'INVALID_PAYLOAD',message:'初次读取需要具体 relPath；续读使用 readRef。'}};
+    const result=await this.handleTool(target,p);
+    if(!result.ok||typeof result.value?.text!=='string')return result;
+    job.documentReader??=new DocumentReader();
+    return job.documentReader.read(job.documentReader.add(result.value),allowance);
   }
   async handleTool(target,p,{readAllowance=null}={}){
     const job=this.current.get(target);if(!job)throw new Error('no active host job');
@@ -1997,11 +2221,11 @@ export class Controller extends EventEmitter {
     }
     if(target==='orchestrator'&&p.tool==='nozeli_manage')return this.manageIntake(job,a);
     if(p.tool==='nozeli_publish'&&!['frontdesk','orchestrator'].includes(target)){
-      // kind 显式决定正文字段：result 只接受 html，problem 只接受 text；互斥，不做正文嗅探。
-      const field=a.kind==='result'?'html':a.kind==='problem'?'text':null;
-      if(!field||Object.keys(a).some(key=>!['kind',field,'files'].includes(key))||typeof a[field]!=='string'||!Array.isArray(a.files))throw Error(field?'publication requires kind with exactly its matching html/text field and files':'invalid publication kind');
-      const kind=a.kind,body=a[field];
-      const publicationInputDigest=createHash('sha256').update(JSON.stringify({kind,[field]:body,files:a.files})).digest('hex'),existing=this.store.state.receipts.find(row=>row.id===p.callId);
+      // A single required body avoids mutually exclusive optional keys in
+      // provider schemas; kind determines interpretation, never content sniffing.
+      const kind=a.kind,body=a.content;
+      if(!['result','problem'].includes(kind)||Object.keys(a).some(key=>!['kind','content','files'].includes(key))||typeof body!=='string'||!body.trim()||!Array.isArray(a.files))throw Object.assign(Error('publication requires exactly kind, non-empty content and files'),{code:'PUBLICATION_ARGUMENTS_INVALID'});
+      const publicationInputDigest=createHash('sha256').update(JSON.stringify({kind,content:body,files:a.files})).digest('hex'),existing=this.store.state.receipts.find(row=>row.id===p.callId);
       if(existing){if(existing.workId!==target||existing.revision!==job.revision||existing.publicationInputDigest!==publicationInputDigest)throw Error('receipt collision');return {saved:true,kind,object:existing.objectId,report:existing.report,files:(existing.snapshot?.files||[]).map(({relPath,size})=>({relPath,size})),rejectedFiles:[],duplicate:true,workRemainsOpen:true};}
       let frozen,receipt;
       const isActive=()=>!this.stopping&&(this.current.get(target)===job||this.store.state.jobs.find(j=>j.id===job.id)?.maintenanceBugId)&&['running','paused'].includes(this.store.find(target).status)&&this.store.find(target).revision===job.revision&&(!this.store.state.jobs.find(j=>j.id===job.id)?.maintenanceBugId||!this.store.state.jobs.some(j=>j.id!==job.id&&j.target===target&&['queued','running'].includes(j.status)));
@@ -2121,11 +2345,17 @@ export class Controller extends EventEmitter {
   // network/transport, native runtime faults) have no deterministic host
   // recovery: they are classified, deduped and counted locally. They never
   // spawn maintenance or backstage model turns and never auto-resend.
+  internalRuntimeFailure(error){
+    const code=String(error?.hostToolCode??error?.code??'');
+    return /^(HOST_INTERNAL_|INTERNAL_)/.test(code)||code==='HOST_BUDGET_PERSIST_FAILED'||(error?.failureOrigin==='host'||error?.code==='PI_HOST_TOOL_FAILED')&&!maintenanceBoundary({code,message:error?.message});
+  }
   providerRuntimeDiagnostic(error){
     const code=String(error?.code??'');
-    return /^(OMP_|PI_|NATIVE_|HOST_INTERNAL_|ECONN|ETIMEDOUT|EPIPE|ENOTFOUND|EAI_AGAIN)/.test(code)||['EPIPE','ECONNRESET','ECONNABORTED','ETIMEDOUT','HOST_PROJECTION_OVER_BUDGET','HOST_TEXT_BUDGET_EXCEEDED','HOST_BUDGET_PERSIST_FAILED','HOST_CONTEXT_BUDGET_EXHAUSTED','HOST_MATERIAL_REFERENCE_INVALID'].includes(code)||error?.providerExit!=null;
+    if(error?.failureOrigin==='host'||code==='PI_HOST_TOOL_FAILED'||this.internalRuntimeFailure(error))return false;
+    return /^(OMP_|PI_|NATIVE_|ECONN|ETIMEDOUT|EPIPE|ENOTFOUND|EAI_AGAIN)/.test(code)||['EPIPE','ECONNRESET','ECONNABORTED','ETIMEDOUT','HOST_PROJECTION_OVER_BUDGET','HOST_TEXT_BUDGET_EXCEEDED','HOST_CONTEXT_BUDGET_EXHAUSTED','HOST_MATERIAL_REFERENCE_INVALID'].includes(code)||error?.providerExit!=null;
   }
   async recordDiagnosticFailure(job,error){
+    if(!this.providerRuntimeDiagnostic(error))return;
     const classification=runtimeFailureMessage(error),code=String(error?.code??'PROVIDER_RUNTIME_FAILURE').slice(0,80);
     await this.store.mutate(()=>{
       const s=this.store.state;s.diagnostics??={providerFailures:[]};
@@ -2135,6 +2365,20 @@ export class Controller extends EventEmitter {
       if(s.diagnostics.providerFailures.length>64)s.diagnostics.providerFailures.splice(0,s.diagnostics.providerFailures.length-64);
       const saved=s.jobs.find(j=>j.id===job.id);if(saved)saved.diagnosticOnly=true;
     });this.changed();
+  }
+  async recordInternalFailure(job,error){
+    const saved=this.store.state.jobs.find(j=>j.id===job.id);
+    const existing=saved?.maintenanceBugId&&(await this.maintenance.read()).bugs.find(b=>b.id===saved.maintenanceBugId);
+    const bug=existing??await this.maintenance.record({phase:'runtime',jobId:job.id,workId:this.store.state.works.some(w=>w.id===job.target)?job.target:null,revision:job.revision??null,error:error.hostToolCode?{code:error.hostToolCode,message:error.message,stack:error.stack}:error});
+    // No captured action means no repair capability: retain evidence rather
+    // than reconstructing a prompt or replaying admitted/unknown effects.
+    if(!existing)await this.maintenance.finish(bug.id,{outcome:'needs-version-fix'});
+    await this.store.mutate(()=>{
+      const saved=this.store.state.jobs.find(j=>j.id===job.id),work=this.store.state.works.find(w=>w.id===job.target);
+      if(saved){saved.maintenanceBugId=bug.id;saved.maintenanceFault={phase:bug.phase,code:bug.error.code,symptom:bug.error.symptom};delete saved.diagnosticOnly;}
+      if(work?.status==='running'){work.status='paused';work.maintenance={bugId:bug.id,status:existing?.status??'needs-version-fix',message:'系统故障已记录，原任务与改动保留；后台处理，不重放已开始操作。'};}
+    });
+    return bug;
   }
   // Generation scope identity = project + native thread + confirmed
   // compaction generation. The native thread (not the volatile owner) keeps
@@ -2159,10 +2403,10 @@ export class Controller extends EventEmitter {
     let didStart=false,settledOk=false,pendingMaterialDelivery=null;
     const savedJob=()=>this.store.state.jobs.find(j=>j.id===job.id);
     try{
-      const started=await this.store.mutate(()=>{if(savedJob().status!=='queued'||this.deviationHeld(job.target))return false;savedJob().status='running';savedJob().startedAt=new Date().toISOString();return true;});if(!started)return;didStart=true;this.current.set(job.target,job);this.changed();
+      const started=await this.store.mutate(()=>{if(savedJob().status!=='queued'||this.deviationHeld(job.target)||this.#admissionHold(job))return false;savedJob().status='running';if(job.restartRecovery?.kind!=='native-continuation')savedJob().startedAt=new Date().toISOString();return true;});if(!started)return;didStart=true;this.current.set(job.target,job);this.changed();
       if(job.context?.pendingIntakeId){const parent=this.store.state.jobs.find(j=>j.id===job.context.pendingIntakeId),work=parent&&(this.intakeBoundWork(parent)||this.store.state.works.find(w=>w.sourceJob===parent.id));if(work)await this.store.mutate(()=>{const field=job.context.softWorkHint?'workHintId':'boundWorkId';job.context[field]=work.id;savedJob().context[field]=work.id;});else {const question=parent&&this.store.state.todos.findLast(q=>q.kind==='routing'&&q.sourceJobId===parent.id&&q.status==='open');if(!question)throw Error('原目标尚未明确处理结果，请先核对已有提交');await this.store.mutate(()=>{job.context.routingQuestionId=question.id;savedJob().context.routingQuestionId=question.id;});}}
       const isWork=!['frontdesk','orchestrator'].includes(job.target);
-      if(isWork){const w=this.store.find(job.target);if(job.type!=='initial'&&w.status!=='running')await this.store.continue(w.id);job.revision=w.revision;await this.store.mutate(()=>{savedJob().revision=job.revision;});}
+      if(isWork){const w=this.store.find(job.target);if(job.restartRecovery?.kind==='native-continuation'&&(w.revision!==job.revision||w.status!=='running'))throw Object.assign(Error('Original Work revision or execution state changed; native turn not replayed'),{code:'RESTART_RECONCILIATION_REQUIRED'});if(job.type!=='initial'&&w.status!=='running')await this.store.continue(w.id);job.revision=w.revision;await this.store.mutate(()=>{savedJob().revision=job.revision;});}
       const session=await this.maintenanceTransaction(job,'session-start',()=>this.session(job.target),s=>Boolean(s&&!s.closed));
       // ── Context cutover delivery ─────────────────────────────────────
       // The raw current user text becomes the single native user entry,
@@ -2229,7 +2473,7 @@ export class Controller extends EventEmitter {
         if(!charge.ok)throw Object.assign(new Error('本轮宿主文本预算不足（run剩余 '+charge.remainingRun+' B / 压缩代次剩余 '+charge.remainingGeneration+' B）；材料或交接未发送，不静默截断。请减少材料量、分页交付或在新原生会话/压缩代次后继续。'),{code:'HOST_TEXT_BUDGET_EXCEEDED',remainingRun:charge.remainingRun,remainingGeneration:charge.remainingGeneration});
         try{await this.#persistBudgetEpochs();}catch(error){throw Object.assign(new Error('宿主预算记账持久化失败；已阻断本次模型请求，未发送任何内容（fail-closed）。'),{code:'HOST_BUDGET_PERSIST_FAILED',cause:error});}
       }
-      if(this.stopping||(isWork&&(this.deviationHeld(job.target)||['closing','ended'].includes(this.store.find(job.target).status)))||(job.type==='intake'&&['closing','ended'].includes(this.intakeBoundWork(job)?.status)))throw new Error('execution interrupted before prompt');
+      {const hold=this.#admissionHold(job);if(this.stopping||hold||(isWork&&(this.deviationHeld(job.target)||['closing','ended'].includes(this.store.find(job.target).status)))||(job.type==='intake'&&['closing','ended'].includes(this.intakeBoundWork(job)?.status)))throw Object.assign(new Error('execution interrupted before prompt'),{code:hold??'EXECUTION_INTERRUPTED'});}
       if(job.type==='front'){
         await this.prepareFrontGoal(job);
         if(this.transferFor(job)){await this.saveTransferredFront(job);return;}
@@ -2244,15 +2488,29 @@ export class Controller extends EventEmitter {
       // One durable write per turn for the request record: fewer full-state
       // persists keep the storage worker away from transaction timeouts on
       // long multi-turn runs. (Transfer check stays between record and run.)
-      await this.store.mutate(()=>{savedJob().requestContext=requestContext;});
+      if(job.restartRecovery?.kind!=='native-continuation')await this.store.mutate(()=>{savedJob().requestContext=requestContext;});
       if(job.type==='front'&&this.transferFor(job)){await this.saveTransferredFront(job);return;}
-      await this.store.mutate(()=>{if(isWork)this.assertDeviationReleased(job.target);delete savedJob().resourceBlocked;savedJob().promptStartedAt=Date.now();const owner=isWork?this.store.find(job.target):this.store.state.residents[job.target];if(owner)owner.zeroActivity=false;});
-      const response=await session.prompt(prompt,{timeout:session.settleTimeoutMs??600000,images,job:{id:job.id,target:job.target,revision:job.revision??null,type:job.type},...(materials.length?{materials}:{}),...(projection?{projection:{text:projection.text,version:projection.version,sources:[{id:'work:'+job.target,version:String(this.store.find(job.target)?.revision??'')}],generation:epoch}}:{})});
+      await this.store.mutate(()=>{if(isWork)this.assertDeviationReleased(job.target);const hold=this.#admissionHold(job);if(hold)throw Object.assign(new Error('人工/故障门已暂停准入；输入保留在队列'),{code:hold});const source=this.serviceFaultGate?.(savedJob())?.source;if(source)savedJob().serviceSource=structuredClone(source);delete savedJob().resourceBlocked;if(job.restartRecovery?.kind!=='native-continuation')savedJob().promptStartedAt=Date.now();const owner=isWork?this.store.find(job.target):this.store.state.residents[job.target];if(owner)owner.zeroActivity=false;});
+      // 最终核验（§7：真正提交prompt前再核门）：事务提交后到prompt发送前的
+      // 窗口内门生效则撤回准入（未发送任何内容，promptStartedAt 无副作用回退）。
+      if(this.#admissionHold(job)){await this.store.mutate(()=>{const saved=savedJob();if(saved&&saved.status==='running'){saved.status='queued';if(job.restartRecovery?.kind!=='native-continuation')delete saved.promptStartedAt;delete saved.startedAt;}});return;}
+      let response;
+      if(job.restartRecovery?.kind==='native-continuation'){
+        const attempt=savedJob().collabAttempts?.findLast(a=>a.kind==='prompt'&&!a.definitiveRejection);
+        if(!attempt?.sessionId||!attempt.requestId||!attempt.nativeEntryId||attempt.nativeEntryConflict||attempt.sessionId!==job.restartRecovery.threadId||typeof session.inspectRecovery!=='function'||typeof session.recover!=='function')throw Object.assign(Error('Exact original native journal identity is unavailable; turn retained without replay'),{code:'RESTART_RECONCILIATION_REQUIRED'});
+        const identity={sessionId:attempt.sessionId,requestId:attempt.requestId,jobId:job.id,userEntryId:attempt.nativeEntryId};
+        const inspection=await session.inspectRecovery(identity);
+        if(!['completed','resumable'].includes(inspection?.state)||!inspection.leafId)throw Object.assign(Error(inspection?.reason??'Native effects require reconciliation before continuation'),{code:'RESTART_RECONCILIATION_REQUIRED'});
+        await this.store.mutate(()=>{const saved=savedJob();saved.restartRecovery={...saved.restartRecovery,requestId:identity.requestId,userEntryId:identity.userEntryId,originalEpoch:attempt.epoch,ownerEpoch:session.epoch,ownerId:session.viewOwnerId,expectedLeafId:inspection.leafId,recoveryAttemptId:saved.restartRecovery?.expectedLeafId===inspection.leafId?saved.restartRecovery.recoveryAttemptId??randomUUID():randomUUID()};});
+        response=await session.recover({...identity,expectedLeafId:inspection.leafId,recoveryAttemptId:savedJob().restartRecovery.recoveryAttemptId,job:{id:job.id,target:job.target,revision:job.revision??null,type:job.type},admissionCheck:()=>this.sessions.get(job.target)!==session||this.stopping?'WORK_CONTROL_HELD':this.#admissionHold(job)});
+        if(response?.settlement?.observed!==true||response.settlement.persisted!==true||response.recovery?.sessionId!==identity.sessionId||response.recovery.requestId!==identity.requestId||response.recovery.jobId!==identity.jobId||response.recovery.userEntryId!==identity.userEntryId||response.recovery.leafId!==inspection.leafId||response.recovery.recoveryAttemptId!==savedJob().restartRecovery.recoveryAttemptId)throw Object.assign(Error('Native recovery settlement identity was not confirmed'),{code:'RESTART_RECONCILIATION_REQUIRED'});
+      }else response=await session.prompt(prompt,{timeout:session.settleTimeoutMs??600000,images,admissionCheck:()=>this.sessions.get(job.target)!==session||this.stopping?'WORK_CONTROL_HELD':this.#admissionHold(job),job:{id:job.id,target:job.target,revision:job.revision??null,type:job.type},...(materials.length?{materials}:{}),...(projection?{projection:{text:projection.text,version:projection.version,sources:[{id:'work:'+job.target,version:String(this.store.find(job.target)?.revision??'')}],generation:epoch}}:{})});
       if(await this.settleUserInterruption(job))return;
       // Delivery advancement uses the exact native entry barrier, never turn
       // success: a failed turn after record confirmation has still delivered.
       const recordConfirmed=response.delivery?.phase==='native-record-confirmed'||savedJob().collabAttempts?.some(attempt=>attempt.recordConfirmed===true);
       materialDelivery.commit(recordConfirmed);
+      if(response.hostControlError)throw Object.assign(new Error(response.hostControlError.message),{code:response.hostControlError.code,completion:'host-control',delivery:response.delivery,threadId:response.threadId,turnId:response.turnId});
       if(job.type==='front'&&this.transferFor(job)){await this.saveTransferredFront(job,response);return;}
       if(this.stopping||(isWork&&['closing','ended'].includes(this.store.find(job.target).status))||(job.type==='intake'&&['closing','ended'].includes(this.intakeBoundWork(job)?.status)))throw new Error('execution interrupted after prompt');
       if(isWork&&response.files?.length)await this.recordArtifacts(job,response.files);
@@ -2265,10 +2523,12 @@ export class Controller extends EventEmitter {
       const agentBody=response.completion==='host-control'||response.projectedNative?'':response.text;const body=agentBody||(!response.projectedNative&&job.type==='intake'?this.routingMessage(savedJob().routing):'');
       await this.store.mutate(()=>{
         Object.assign(savedJob(),{status:'completed',finishedAt:new Date().toISOString(),threadId:response.threadId,turnId:response.turnId,providerStatus:response.providerStatus,completion:response.completion,metrics:response.metrics??null,...(response.effective?{effective:structuredClone(response.effective)}:{}),...(response.delivery?{delivery:structuredClone(response.delivery)}:{})});
+        if(response.recovery){const original=savedJob().collabAttempts.find(a=>a.requestId===response.recovery.requestId);original.status='settled';original.recovery={...response.recovery,settlement:response.settlement};}
+        delete savedJob().restartRecovery;const recoveredWork=this.store.state.works.find(w=>w.id===job.target);if(recoveredWork)delete recoveredWork.restartRecovery;
         if(body)this.store.state.messages.push({id:randomUUID(),target:job.target,speaker:agentBody?'agent':'system',text:body,jobId:job.id,...(job.type==='intake'&&(job.context.frontJobId||job.context.manual||job.context.boundWorkId)?{audience:'frontdesk',sourceJobId:job.context.frontJobId||job.id}:{})});
         if(response.effective){this.store.state.modelObservations??={};this.store.state.modelObservations[`${response.effective.model}:${response.effective.effort}`]={status:'turn-completed',at:new Date().toISOString()};}
       });
-      if(isWork&&this.store.find(job.target).status==='running'){await this.ensureWorkerDelivery(job);await this.store.settle(job.target);}
+      if(isWork&&this.store.find(job.target).status==='running'&&!(savedJob()?.maintenanceBugId&&this.store.find(job.target).maintenance?.bugId===savedJob().maintenanceBugId)){await this.ensureWorkerDelivery(job);await this.store.settle(job.target);}
       if(this.taskPermissions&&!await this.taskPermissions.heldFor(this.projectId,job)){
         const permissionTaskId=job.context?.permissionTaskId??job.id;
         const continuing=this.store.state.jobs.some(next=>next.id!==job.id&&['queued','running'].includes(next.status)&&(next.context?.permissionTaskId??next.id)===permissionTaskId);
@@ -2280,11 +2540,22 @@ export class Controller extends EventEmitter {
       }
       settledOk=true;
     }catch(e){
+      if(e.code==='RESTART_RECONCILIATION_REQUIRED'){
+        await this.store.mutate(()=>{const saved=savedJob();saved.status='interrupted';saved.restartRecovery={...saved.restartRecovery,kind:'needs-reconciliation',reason:e.message};const work=this.store.state.works.find(w=>w.id===job.target);if(work)work.restartRecovery={sourceJobId:job.id,...saved.restartRecovery};});
+        return;
+      }
+      if(e.code==='WORK_CONTROL_HELD'||e.code==='SERVICE_FAULT_HELD'){
+        // 人工/故障门在准入前拦下：输入按原身份回到队列，不产生业务失败、
+        // recovery待办或owner清理（已准入回合不受影响，§5）。
+        await this.store.mutate(()=>{const saved=savedJob();if(saved&&!['cancelled','interrupted','completed'].includes(saved.status)){saved.status='queued';if(job.restartRecovery?.kind!=='native-continuation')delete saved.promptStartedAt;delete saved.startedAt;}});
+        return;
+      }
       if(await this.settleUserInterruption(job))return;
       if(e.code==='MAINTENANCE_PENDING'){await this.store.mutate(()=>{
-        const saved=savedJob();if(saved&&!['cancelled','interrupted'].includes(saved.status)){saved.status='failed';saved.maintenanceBugId=e.bugId;}
+        const saved=savedJob();if(saved&&!['cancelled','interrupted'].includes(saved.status)){saved.status='failed';saved.maintenanceBugId=e.bugId;if(e.maintenanceFault)saved.maintenanceFault=e.maintenanceFault;}
+        const work=this.store.state.works.find(w=>w.id===job.target);if(work&&work.revision===job.revision&&work.status==='running'){work.status='paused';work.maintenance={bugId:e.bugId,status:e.maintenanceStatus??'needs-version-fix',message:'系统维修待收尾，原任务与改动保留；不重放已开始操作。'};}
         if(job.type==='backstage'){const entry=this.store.state.backstageEvents?.find(event=>event.key===job.context?.backstageEventKey),code=saved?.maintenanceFault?.code??e.code;if(entry){entry.status='blocked';entry.failureCode=/^[A-Z][A-Z0-9_]{0,79}$/.test(String(code))?code:'BACKSTAGE_PROCESSING_FAILED';entry.reason='后台核对失败（'+entry.failureCode+'）；原问题、进展与会话已保留，未重放未知效果。';}}
-      });return;}
+      });if(e.maintenanceFault&&job.type!=='maintenance')await this.maintenanceEvent({id:e.bugId});return;}
       if(e.code==='AGENT_PROCESS_LIMIT'&&!savedJob()?.promptStartedAt){await this.store.mutate(()=>{savedJob().status='queued';savedJob().resourceBlocked=true;delete savedJob().startedAt;});return;}
       if(e.metrics)await this.store.mutate(()=>{savedJob().metrics={...e.metrics,context:savedJob().requestContext||null};});
       const ending=this.store.state.works.find(w=>w.id===job.target)||(job.type==='intake'?this.intakeBoundWork(job):null);
@@ -2297,18 +2568,17 @@ export class Controller extends EventEmitter {
         await this.store.mutate(()=>{delete this.store.state.providers[job.target];});
         await this.saveTransferredFront(job,{text:e.partialText,metrics:e.metrics,turnId:e.turnId,threadId:e.threadId,providerStatus:'interrupted'});return;
       }
-      // Provider/runtime diagnostic failures carry no actionable host recovery:
-          // classified and counted locally, never re-sent, never converted into
-          // maintenance/backstage model turns (design §10). Deterministic host
-          // transactions keep their own bounded recovery elsewhere.
-          const diagnostic=this.providerRuntimeDiagnostic(e);
-          if(diagnostic&&job.type!=='maintenance')await this.recordDiagnosticFailure(job,e);
+      const internal=this.internalRuntimeFailure(e),diagnostic=this.providerRuntimeDiagnostic(e);
+      const internalBug=internal?await this.recordInternalFailure(job,e):null;
+      if(diagnostic&&job.type!=='maintenance')await this.recordDiagnosticFailure(job,e);
       // Record the accepted input's failure before cleanup can reject or hang.
       // Native exit and durable turn failure are independent pieces of evidence.
       await this.store.mutate(()=>{
         const saved=savedJob(),w=this.store.state.works.find(w=>w.id===job.target);
         if(['cancelled','interrupted','completed'].includes(saved.status)||w&&['closing','ended'].includes(w.status))return;
-        Object.assign(saved,{status:this.stopping?'interrupted':'failed',finishedAt:new Date().toISOString(),error:e.message});
+        Object.assign(saved,{status:this.stopping?'interrupted':'failed',finishedAt:new Date().toISOString(),error:e.message,...(e.code?{errorCode:e.code}:{}),...(e.completion?{completion:e.completion,threadId:e.threadId,turnId:e.turnId}:{})});
+        if(['host','provider','runtime'].includes(e.failureOrigin))saved.failureOrigin=e.failureOrigin;
+        if(typeof e.hostToolCode==='string'&&/^[A-Z][A-Z0-9_]{0,79}$/.test(e.hostToolCode))saved.hostToolCode=e.hostToolCode;
         // A failed turn may still have delivered: exact-entry evidence from
         // the runtime error payload or the confirmed transport attempt is
         // preserved — never re-derived from turn success.
@@ -2322,9 +2592,20 @@ export class Controller extends EventEmitter {
         }
         const binding=w?.binding||this.store.state.bindings[job.target];
         if(binding){this.store.state.modelObservations??={};this.store.state.modelObservations[`${binding.model}:${binding.effort}`]={status:'turn-failed',error:e.message,at:new Date().toISOString()};}
-        this.store.state.messages.push({id:randomUUID(),target:job.target,speaker:'system',text:runtimeFailureMessage(e,{work:Boolean(ending)}).text,jobId:job.id,...(job.context?.frontJobId||job.context?.manual||job.context?.boundWorkId?{audience:'frontdesk'}:{})});
-        if(w?.status==='running')this.pauseState(w,e.message);else if(!w&&!diagnostic&&!['maintenance','backstage'].includes(job.type))this.store.state.todos.push({id:randomUUID(),kind:'system',status:'open',target:job.target,sourceJobId:job.id,text:e.message});
+        this.store.state.messages.push({id:randomUUID(),target:job.target,speaker:'system',text:internalBug?'系统已接管此运行问题，原请求和已保存内容保留；无需重复提交。':runtimeFailureMessage(e,{work:Boolean(ending)}).text,jobId:job.id,...(job.context?.frontJobId||job.context?.manual||job.context?.boundWorkId?{audience:'frontdesk'}:{})});
+        if(w?.status==='running')this.pauseState(w,e.message);else if(!w&&!diagnostic&&!internalBug&&!['maintenance','backstage'].includes(job.type))this.store.state.todos.push({id:randomUUID(),kind:'system',status:'open',target:job.target,sourceJobId:job.id,text:e.message});
       });
+      if(internalBug&&job.type!=='maintenance')await this.maintenanceEvent(internalBug,{schedule:false});
+      // 真实管线的服务故障事实出口（§4.2）：只从实际 run 失败发出。等待
+      // 消费方完成持久化再继续（后续 pump/清理不得先于故障事实落盘）；
+      // 消费方异常不改变本回合结算。
+      if(this.onServiceFault&&!this.stopping&&!['WORK_CONTROL_HELD','SERVICE_FAULT_HELD','AGENT_PROCESS_LIMIT','MAINTENANCE_PENDING','EXECUTION_INTERRUPTED'].includes(e.code)){
+        try{
+          const saved=savedJob(),work=(this.store.state.works??[]).find(w=>w.id===job.target),binding=work?.binding??this.store.state.bindings?.[job.target]??null;
+          const fact={job:{id:job.id,target:job.target,type:job.type,revision:job.revision??null,context:structuredClone(job.context??null)},source:saved?.serviceSource??null,error:e,evidence:e.providerFailureEvidence??null,delivery:e.delivery?.phase??saved?.delivery?.phase??null,admitted:(saved?.collabAttempts??[]).some(a=>a.everAdmitted)??false,recordConfirmed:(saved?.collabAttempts??[]).some(a=>a.recordConfirmed)??false,provider:e.providerFailureEvidence?.provider??binding?.provider??null,model:e.providerFailureEvidence?.model??binding?.model??null};
+          await this.onServiceFault(fact);
+        }catch{/*故障出口永不影响原失败路径*/}
+      }
       // A failed turn may still have delivered exactly: commit the prepared
       // material delivery ONLY on native record confirmation (runtime error
       // payload or the confirmed transport attempt) — never on unknown, and
@@ -2411,7 +2692,7 @@ export class Controller extends EventEmitter {
     return fallback?.repo&&fallback.candidate?.commit?{repo:fallback.repo,directory:fallback.directory,targetRef:fallback.targetRef,candidate:fallback.candidate}:null;
   }
   #reviewStale(work,receipt){
-    if(work.status==='ended')return null;
+    if(['closing','ended'].includes(work.status))return null;
     if(receipt.stale)return {code:receipt.stale.code||'SUPERSEDED',detail:receipt.stale};
     if((work.result?.objectId??null)!==receipt.objectId)return {code:'SUPERSEDED',detail:{reason:'newer-publication'}};
     if(work.status==='running')return {code:'RUNNING',detail:{reason:'worker-turn-active'}};
@@ -2419,7 +2700,7 @@ export class Controller extends EventEmitter {
   }
   #reviewCapabilities(work,receipt,stale){
     const reasons=[];
-    if(work.status==='ended')reasons.push({code:'WORK_ENDED',message:'工作已结束；报告仅供查阅，版本不可再修改'});
+    if(['closing','ended'].includes(work.status))reasons.push({code:'WORK_ENDED',message:'决定已记录；报告仅供查阅，版本不可再修改'});
     if(stale)reasons.push(stale.code==='RUNNING'?{code:'RUNNING',message:'工作正在执行；请等回合结束后再审校或决定'}:{code:stale.code,message:'此报告已被更新的发布取代；草稿与决定只针对最新候选'});
     const disposition=workDisposition(this.store.state,work);
     const candidateBound=Boolean(receipt.snapshot?.candidate?.commit&&receipt.snapshot.candidate.commit===(work.execution?.candidate?.commit??null));
@@ -2435,7 +2716,7 @@ export class Controller extends EventEmitter {
     // 历史读取（已结束/对象可能被回收）用冻结证据：候选=回执冻结对象，
     // 基线=WorkChanges.before；缺基线证据时显式标缺失，绝不伪造空基线。
     let snapshot;
-    if(work.status==='ended'){
+    if(['closing','ended'].includes(work.status)){
       try{snapshot=await this.#frozenReviewSnapshot(work,receipt);}catch{snapshot=null;}
       if(!snapshot||!snapshot.files.length){try{snapshot=await this.execution.reviewSnapshot(m,receipt);}catch{snapshot=null;}}
     }else snapshot=await this.execution.reviewSnapshot(m,receipt);
@@ -2444,7 +2725,7 @@ export class Controller extends EventEmitter {
     const files=snapshot.files.map(f=>{const d=drafts[f.relPath]&&drafts[f.relPath].objectId===receipt.objectId?drafts[f.relPath]:null;return {relPath:f.relPath,candidateDigest:f.candidateDigest,draftRevision:d?.revision??0,draftDigest:d?.textDigest??null};});
     // 已按人工审校接受结束的Work：whole-work令牌以接受绑定精确保留，但只对
     // 接受所绑定的publication返回；同Work旧发布按自身文件集重算，绝不投新稿。
-    const reviewedEnded=work.status==='ended'?work.closure?.reviewedVersion:null;
+    const reviewedEnded=['closing','ended'].includes(work.status)?work.closure?.reviewedVersion:null;
     const acceptedToken=reviewedEnded&&reviewedEnded.objectId===receipt.objectId&&typeof reviewedEnded.reviewVersion==='string'?reviewedEnded.reviewVersion:null;
     return {version:acceptedToken??computeReviewVersion({workId:work.id,revision:work.revision,candidateCommit:snapshot.candidateCommit,objectId:receipt.objectId,files}),snapshot,m,receipt};
   }
@@ -2519,10 +2800,10 @@ export class Controller extends EventEmitter {
     const drafts=activeDrafts(work);
     const record=await readDraftRecord(this.store.storage,this.store.projectId,work.id);
     const stale=this.#reviewStale(work,receipt);
-    const editable=!stale&&work.status!=='ended';
+    const editable=!stale&&!['closing','ended'].includes(work.status);
     // 接受投影只属于接受绑定的publication：同Work旧发布不得显示新发布的
     // 人工稿/接受绑定——历史读取回到自身candidate与重算令牌。
-    const reviewedEnded=work.status==='ended'?work.closure?.reviewedVersion:null;
+    const reviewedEnded=['closing','ended'].includes(work.status)?work.closure?.reviewedVersion:null;
     const acceptedBinding=reviewedEnded&&reviewedEnded.objectId===receipt.objectId?reviewedEnded:null;
     const acceptedFiles=acceptedBinding?new Map((acceptedBinding.files||[]).map(f=>[f.relPath,f])):null;
     const files=[];
@@ -2620,9 +2901,10 @@ export class Controller extends EventEmitter {
         });
       }
     }
-    const lastContinuation=(work.review?.continuations||[]).at(-1)??null;
+    const lastContinuation=(work.review?.continuations||[]).findLast(item=>item.objectId===receipt.objectId)??null;
+    const closureMatches=work.closure?.binding?.objectId===receipt.objectId&&work.closure.binding.revision===receipt.revision;
     return {
-      workId:work.id,objectId:receipt.objectId,status:work.status,revision:work.revision,
+      workId:work.id,objectId:receipt.objectId,status:work.status,revision:receipt.revision,workRevision:work.revision,
       candidate:{
         commit:current?.snapshot.candidateCommit??work.execution?.candidate?.commit??null,
         jobId:receipt.snapshot?.candidate?.jobId??null,
@@ -2635,8 +2917,8 @@ export class Controller extends EventEmitter {
       changeSetId:receipt.changeSetId??null,
       stale,files,reviewVersion:current?.version??null,
       ...(acceptedBinding?{accepted:{reviewVersion:acceptedBinding.reviewVersion,at:acceptedBinding.at??null,files:(acceptedBinding.files||[]).map(f=>({relPath:f.relPath,candidateDigest:f.candidateDigest??null,reviewedDigest:f.reviewedDigest??null,draftRevision:f.draftRevision??null}))}}:{}),
-      merge:reviewMergeProjection(work.closure),
-      mergeConsent:mergeConsentState(work),
+      merge:closureMatches?reviewMergeProjection(work.closure):null,
+      mergeConsent:receipt.revision===work.revision&&(work.result?.objectId===receipt.objectId||work.problem?.objectId===receipt.objectId)?mergeConsentState(work):null,
       ...(lastContinuation?{continuation:{state:lastContinuation.state,at:lastContinuation.at??null,revision:lastContinuation.revision??null,jobId:lastContinuation.jobId??null,...(lastContinuation.error?{error:{code:lastContinuation.error.code??null,message:lastContinuation.error.message??null}}:{})}}:{}),
       capabilities:this.#reviewCapabilities(work,receipt,stale),
     };
@@ -2653,7 +2935,7 @@ export class Controller extends EventEmitter {
     return this.workLocked(work.id,async()=>{
       const w=this.store.find(work.id);
       const receipt=this.#reviewReceipt(w,p.objectId);
-      if(w.status==='ended')throw Object.assign(Error('工作已结束；审校草稿不再修改'),{code:'WORK_ENDED'});
+      if(['closing','ended'].includes(w.status))throw Object.assign(Error('决定已记录；审校草稿不再修改'),{code:'WORK_ENDED'});
       if(w.readOnly)throw Object.assign(Error('历史执行资源只读'),{code:'HISTORICAL_SESSION_READ_ONLY'});
       if(p.objectId!==(w.result?.objectId??null)||receipt.stale)throw Object.assign(Error('此报告不是当前待审候选；草稿只属于最新发布'),{code:'REVIEW_CANDIDATE_STALE'});
       const current=await this.#reviewVersionNow(w,receipt);
@@ -2692,7 +2974,7 @@ export class Controller extends EventEmitter {
     const work=this.#reviewWork(p.objectId,p.workId);
     return this.workLocked(work.id,async()=>{
       const w=this.store.find(work.id);
-      if(w.status==='ended')throw Object.assign(Error('工作已结束；不能续作'),{code:'WORK_ENDED'});
+      if(['closing','ended'].includes(w.status))throw Object.assign(Error('决定已记录；不能续作'),{code:'WORK_ENDED'});
       if(w.readOnly)throw Object.assign(Error('历史执行资源只读'),{code:'HISTORICAL_SESSION_READ_ONLY'});
       // 幂等重放优先：已收口的requestKey直接回执，不因后续stale标记被拒。
       const payloadDigest=createHash('sha256').update(JSON.stringify({objectId:p.objectId,reviewVersion:p.reviewVersion,instruction:p.instruction??null})).digest('hex');
@@ -2750,7 +3032,7 @@ export class Controller extends EventEmitter {
     return this.workLocked(work.id,async()=>{
       let w=this.store.find(work.id);
       const receipt=this.#reviewReceipt(w,p.objectId);
-      if(w.status==='ended'){
+      if(['closing','ended'].includes(w.status)){
         if(w.closure?.decision==='accept'&&w.closure.reviewedVersion){
           if(w.closure.reviewedVersion.reviewVersion!==p.reviewVersion)throw Object.assign(Error('此工作已按另一审校版本接受'),{code:'REVIEW_VERSION_STALE'});
           if(w.closure.requestKey!==p.requestKey)throw Object.assign(Error('此工作已按另一确认身份接受'),{code:'REVIEW_REQUEST_COLLISION'});
@@ -2782,7 +3064,7 @@ export class Controller extends EventEmitter {
   }
   async reconcileAcceptedFiles(id,{files,requestKey}={}){return this.workLocked(id,async()=>{
     const w=this.store.find(id),m=await this.execution.readManifest(id);
-    if(w.status!=='ended'||w.closure?.decision!=='accept'||w.closure.git?.complete||!m?.candidate||m.finishIntent||m.acceptancePreparation||typeof requestKey!=='string'||!REVIEW_REQUEST_KEY.test(requestKey)||!Array.isArray(files)||!files.length||new Set(files.map(f=>f?.relPath)).size!==files.length)throw Error('明确接受的未合入候选与核对文件不可缺失，进行中的Git事务不得改写');
+    if(w.status!=='closing'||w.needsReconciliation||w.closure?.decision!=='accept'||w.closure.git?.complete||!m?.candidate||m.finishIntent||m.acceptancePreparation||typeof requestKey!=='string'||!REVIEW_REQUEST_KEY.test(requestKey)||!Array.isArray(files)||!files.length||new Set(files.map(f=>f?.relPath)).size!==files.length)throw Error('明确接受的未合入候选与核对文件不可缺失，进行中的Git事务不得改写');
     await this.execution.identity(m);
     if(w.closure.reviewedVersion)throw Error('已有人工审校版本；不能由目标核对覆盖');
     const rows=[];
@@ -2830,7 +3112,7 @@ export class Controller extends EventEmitter {
         const w=this.store.find(snapshot.id);
         for(const record of (w.review?.continuations||[]).filter(c=>['applying','blocked'].includes(c.state))){
           try{
-            if(w.status==='ended'){await this.store.mutate(()=>{record.state='abandoned';record.error??={code:'WORK_ENDED',message:'工作已结束；续作意图保留为历史'};});continue;}
+            if(['closing','ended'].includes(w.status)){await this.store.mutate(()=>{record.state='abandoned';record.error??={code:'WORK_ENDED',message:'决定已记录；续作意图保留为历史'};});continue;}
             if(!['paused','review'].includes(w.status))continue;
             const m=await this.execution.prepare(w.id);
             // 恢复前核对plan与账本草稿仍一致：新保存/轮换后的旧意图不自动
@@ -2869,16 +3151,35 @@ export class Controller extends EventEmitter {
     const w=this.store.find(id);binding??=dispositionBinding(w);requestKey??=`internal:${id}:${revision}:${decision}`;
     if(!sameDispositionBinding(binding,dispositionBinding(w))||revision!==w.revision)throw Error('stale disposition binding');
     // 旧路径接受必须检测人工草稿：有人工审校版本时拒绝，避免漏合入（staleaccept）。
-    if(decision==='accept'&&w.status!=='ended'&&hasActiveDrafts(w))throw Object.assign(Error('此工作有人工审校草稿；请在报告审校中接受以合入人工版本，或先续作后再决定'),{code:'REVIEW_DRAFT_EXISTS'});
-    if(w.status!=='ended'){
+    if(decision==='accept'&&!['closing','ended'].includes(w.status)&&hasActiveDrafts(w))throw Object.assign(Error('此工作有人工审校草稿；请在报告审校中接受以合入人工版本，或先续作后再决定'),{code:'REVIEW_DRAFT_EXISTS'});
+    if(!['closing','ended'].includes(w.status)||w.needsReconciliation&&!w.closure?.decision){
       const capability=workDisposition(this.store.state,w)[decision];if(!capability?.allowed)throw Error(capability?.message??'explicit decision required');
       await this.validateLocalIdentity(id);
     }
-    if(w.status==='ended'&&!w.closure?.decision)await this.validateLocalIdentity(id);
-    await this.store.end(id,{by:'user',revision,decision,binding,requestKey,validateAdmission:()=>{const current=this.store.find(id);if(current.status==='ended'&&!current.closure?.decision&&decision==='discard')return;const capability=workDisposition(this.store.state,current)[decision];if(!capability?.allowed)throw Error(capability?.message??'explicit decision required');}});this.changed();
-    await this.advanceClosure(id);return {accepted:true,status:'ended',outcome:w.outcome,closure:structuredClone(w.closure)};
+    await this.store.end(id,{by:'user',revision,decision,binding,requestKey,validateAdmission:()=>{const current=this.store.find(id);const capability=workDisposition(this.store.state,current)[decision];if(!capability?.allowed)throw Error(capability?.message??'explicit decision required');}});this.changed();
+    await this.advanceClosure(id);const current=this.store.find(id);return {accepted:true,status:current.status,outcome:current.outcome,closure:structuredClone(current.closure)};
   });}
-  async retryClosure(id,{binding,requestKey}={}){return this.workLocked(id,async()=>{const w=this.store.find(id);binding??=dispositionBinding(w);requestKey??=w.closure?.requestKey;if(w.status!=='ended'||!['accept','discard'].includes(w.closure?.decision)||!w.closure.binding||!sameDispositionBinding(binding,w.closure.binding)||!sameDispositionBinding(binding,dispositionBinding(w))||typeof requestKey!=='string')throw Error('work has no matching immutable closure confirmation');await this.store.mutate(()=>{const row=(this.store.state.mergeQueue||[]).find(e=>e.workId===id);if(row&&row.status==='blocked'){row.status='pending';row.retriedAt=new Date().toISOString();}});await this.advanceClosure(id);return true;}).then(async()=>{await this.drainMergeQueue();return {accepted:true,status:'ended',closure:structuredClone(this.store.find(id).closure)};});}
+  async retryClosure(id,{binding,requestKey=randomUUID()}={}){
+    const duplicate=await this.workLocked(id,async()=>{
+      const w=this.store.find(id);binding??=dispositionBinding(w);
+      if(!['closing','ended'].includes(w.status)||w.status==='ended'&&w.closure?.phase!=='complete'||w.needsReconciliation||!confirmedDisposition(w)||!sameDispositionBinding(binding,w.closure.binding)||!sameDispositionBinding(binding,dispositionBinding(w))||typeof requestKey!=='string'||!REVIEW_REQUEST_KEY.test(requestKey))throw Error('work has no matching immutable closure confirmation');
+      const collision=this.store.state.works.some(other=>other.id!==id&&other.closure?.retryRequests?.some(r=>r.requestKey===requestKey));
+      if(collision)throw Error('closure retry request key collision');
+      const prior=w.closure.retryRequests?.find(r=>r.requestKey===requestKey);
+      if(prior){if(prior.authorizationRequestKey!==w.closure.requestKey||!sameDispositionBinding(prior.binding,binding))throw Error('closure retry request identity changed');return true;}
+      await this.store.mutate(()=>{
+        w.closure.retryRequests??=[];
+        w.closure.retryRequests.push({requestKey,authorizationRequestKey:w.closure.requestKey,binding:{...binding},status:'requested',at:new Date().toISOString()});
+        const row=(this.store.state.mergeQueue||[]).find(e=>e.workId===id);if(row&&row.status==='blocked'){row.status='pending';row.retriedAt=new Date().toISOString();}
+      });
+      await this.advanceClosure(id);return false;
+    });
+    if(!duplicate){
+      await this.drainMergeQueue();
+      await this.workLocked(id,()=>this.store.mutate(()=>{const w=this.store.find(id),receipt=w.closure.retryRequests.find(r=>r.requestKey===requestKey);receipt.status='settled';receipt.result={status:w.status,phase:w.closure.phase,outcome:w.outcome};receipt.settledAt=new Date().toISOString();}));
+    }
+    const w=this.store.find(id);return {accepted:true,status:w.status,closure:structuredClone(w.closure),...(duplicate?{duplicate:true}:{})};
+  }
   // Orchestrator合入协调器（P1）：持久mergeQueue的宿主驱动器。接受在
   // store.end 内原子登记exact reviewVersion；本方法串行、幂等地把队列交给
   // 既有host closure/Git整合（无模型批准门），冷启动与每次登记后重驱。
@@ -2894,7 +3195,7 @@ export class Controller extends EventEmitter {
             const w=this.store.find(entry.workId);
             const row=(this.store.state.mergeQueue||[]).find(e=>e.workId===entry.workId);
             if(!row||row.status!=='pending')return;
-            if(w.status!=='ended'||!w.closure?.reviewedVersion){await this.store.mutate(()=>{row.status='blocked';row.lastError='工作未按人工审校接受结束；队列保留待核对';});progressed=true;return;}
+            if(!['closing','ended'].includes(w.status)||w.needsReconciliation||!w.closure?.reviewedVersion||row.requestKey!==w.closure.requestKey||row.reviewVersion!==w.closure.reviewedVersion.reviewVersion){await this.store.mutate(()=>{row.status='blocked';row.lastError='原始人工审校确认身份未核实；队列保留待核对';});progressed=true;return;}
             if(w.closure.git?.complete||w.closure.merge?.status==='merged'){await this.store.mutate(()=>{Object.assign(row,{status:'done',actor:'orchestrator',executor:'host',drainedAt:new Date().toISOString()});});progressed=true;return;}
             // 合入同意前置检查：明确never-commit未获一次性人工覆盖时不驱动
             // 整合（零写入），直接保留可解析的阻断行；覆盖请求确保已暴露。
@@ -2965,7 +3266,7 @@ export class Controller extends EventEmitter {
     const work=this.#reviewWork(p.objectId,p.workId);
     return this.workLocked(work.id,async()=>{
       const w=this.store.find(work.id);
-      if(w.status==='ended')throw Object.assign(Error('工作已结束；指令草稿不再修改'),{code:'WORK_ENDED'});
+      if(['closing','ended'].includes(w.status))throw Object.assign(Error('决定已记录；指令草稿不再修改'),{code:'WORK_ENDED'});
       if(w.readOnly)throw Object.assign(Error('历史执行资源只读'),{code:'HISTORICAL_SESSION_READ_ONLY'});
       // 只绑定该Work当前结果发布；忙碌回合与旧发布都不接受（防串写/伪装）。
       if(p.objectId!==(w.result?.objectId??null))throw Object.assign(Error('指令草稿只属于当前待审发布'),{code:'REVIEW_CANDIDATE_STALE'});
@@ -2985,23 +3286,34 @@ export class Controller extends EventEmitter {
   }
   advanceClosure(id){
     if(this.closures.has(id))return this.closures.get(id);
-    const promise=this.finishClosure(id).finally(()=>this.closures.delete(id));this.closures.set(id,promise);return promise;
+    const end=this.beginHostOperation(id,'closure');const promise=Promise.resolve().then(()=>this.finishClosure(id)).finally(()=>{this.closures.delete(id);end();});this.closures.set(id,promise);return promise;
   }
   async blockClosure(id,message){await this.store.mutate(()=>{const w=this.store.find(id);w.closure.phase='blocked';w.closure.error=message;const old=this.store.state.todos.find(t=>t.workId===id&&t.kind==='closure'&&t.status==='open');if(old)old.text=message;else this.store.state.todos.push({id:randomUUID(),workId:id,kind:'closure',status:'open',text:message});});try{await this.store.updateClosureArchive(id);}catch(error){this.emit('diagnostic','Closure metadata retained for retry: '+error.message);}this.changed();}
-  async finishClosure(id){
-    const w=this.store.find(id);if(w.status!=='ended'||!w.closure||w.closure.phase==='complete')return;
+  async settleCompletedClosureMaintenance(w){
+    if(w.status!=='ended'||w.closure?.phase!=='complete'||!confirmedDisposition(w)||!w.maintenance?.bugId)return;
+    const bug=(await this.maintenance.read()).bugs.find(b=>b.id===w.maintenance.bugId&&b.projectId===this.projectId&&b.workId===w.id&&b.revision===w.revision&&b.phase==='closure');
+    if(!bug)return;
+    await this.maintenance.finish(bug.id,{verified:true,outcome:'original-closure-complete',finalizationPending:true});
+    await this.settleMaintenanceEvents(bug,'original-closure-complete');
+    await this.maintenance.finish(bug.id,{verified:true,outcome:'original-closure-complete'});
+    await this.store.mutate(()=>{if(w.maintenance?.bugId===bug.id)delete w.maintenance;});
+    this.maintenanceActions.delete(bug.id);this.maintenanceVerified?.delete(bug.id);
+  }
+  async finishClosure(id,{repair=false}={}){
+    const w=this.store.find(id);if(w.closure?.phase==='complete'){if(!repair)await this.settleCompletedClosureMaintenance(w);return;}if(w.status!=='closing'||!w.closure||w.needsReconciliation)return;
+    if(!repair&&w.maintenance?.bugId&&this.maintenanceActions.has(w.maintenance.bugId)){await this.maintenanceRetry(w.maintenance.bugId);return;}
     try{
-      if(!w.closure.binding||!sameDispositionBinding(w.closure.binding,dispositionBinding(w)))throw Error('Closure confirmation binding missing or changed; resources retained');
+      if(!confirmedDisposition(w))throw Object.assign(Error('Closure confirmation binding missing or changed; resources retained'),{code:'MERGE_AUTHORIZATION_STALE'});
       if(!w.closure.stopped){
         await this.store.mutate(()=>{w.closure.phase='stopping';});
         await this.terminals.get(id)?.close();if(this.starting.has(id))await this.starting.get(id).catch(()=>{});
         const session=this.sessions.get(id),record=this.store.state.providers?.[id],slots=[...(this.processBudget?.slots??[])].filter(slot=>slot.projectId===this.projectId&&slot.target===id);
         let receipt;
-        if(session){receipt=await session.stop();if((session.pid||session.groupRecord?.pid||record||slots.length)&&receipt?.confirmationComplete!==true)throw Error('Worker process exit is not confirmed; resources retained');}
-        else if(record){const recovery=await (record.kind==='pi-node'?recoverPiProvider(record,this.store.root):['omp-rpc','omp-tui'].includes(record.kind)?recoverOmpProvider(record,this.store.root):recoverProvider(record,this.store.root));if(recovery.verified!==true)throw Error('Persisted Worker owner exit is not confirmed');receipt={confirmationComplete:true,recovery};}
-        else if(slots.length)throw Error('Process budget owner lacks verifiable provider identity; resources retained');
+        if(session){receipt=await session.stop();if((session.pid||session.groupRecord?.pid||record||slots.length)&&receipt?.confirmationComplete!==true)throw Object.assign(Error('Worker process exit is not confirmed; resources retained'),{code:'EXIT_UNCONFIRMED'});}
+        else if(record){const recovery=await (record.kind==='pi-node'?recoverPiProvider(record,this.store.root):['omp-rpc','omp-tui'].includes(record.kind)?recoverOmpProvider(record,this.store.root):recoverProvider(record,this.store.root));if(recovery.verified!==true)throw Object.assign(Error('Persisted Worker owner exit is not confirmed'),{code:'EXIT_UNCONFIRMED'});receipt={confirmationComplete:true,recovery};}
+        else if(slots.length)throw Object.assign(Error('Process budget owner lacks verifiable provider identity; resources retained'),{code:'EXIT_UNCONFIRMED'});
         if(this.running.has(id))await this.running.get(id);
-        if(this.starting.has(id)||this.current.has(id)||this.sessions.get(id)?.busy)throw Error('Worker execution remains in flight');
+        if(this.starting.has(id)||this.current.has(id)||this.sessions.get(id)?.busy)throw Object.assign(Error('Worker execution remains in flight'),{code:'WORK_BUSY'});
         await this.checkpoint('provider-stopped',{workId:id});
         await this.store.mutate(()=>{delete this.store.state.providers[id];});
         for(const slot of slots)this.processBudget?.release(slot);
@@ -3040,19 +3352,33 @@ export class Controller extends EventEmitter {
         this.emit('files-changed',{workId:id,reason:'accepted-integration',files:w.closure.git.files||[],operations:w.closure.git.operations||[],revision:w.revision});
       }
       await this.store.cleanupWorkerHome(id);
-      await this.store.mutate(()=>{w.closure.phase='complete';w.closure.completedAt=new Date().toISOString();delete w.closure.error;this.store.state.memoryPending=this.store.state.memoryPending.filter(x=>x!==id);for(const t of this.store.state.todos)if(t.workId===id&&t.kind==='closure'&&t.status==='open')t.status='resolved';});await this.store.updateClosureArchive(id);this.changed();this.kick();
+      // 归档持久化先于槽位释放事实（P1审核项）：updateClosureArchive 未durable
+      // 完成前 phase 不得 complete，另一pump不能在此await期间激活后继任务。
+      await this.store.updateClosureArchive(id);
+      await this.store.mutate(()=>{const at=new Date().toISOString();w.closure.phase='complete';w.closure.completedAt=at;w.status='ended';w.endedAt=at;delete w.closure.error;this.store.state.memoryPending=this.store.state.memoryPending.filter(x=>x!==id);for(const t of this.store.state.todos)if(t.workId===id&&t.kind==='closure'&&t.status==='open')t.status='resolved';});this.changed();this.kick();
     }catch(error){
       // 审校合入协调记录：失败可观测、可重试；绝不静默改口，绝不覆盖决定。
       try{await this.store.mutate(()=>{
         const work=this.store.find(id),merge=work.closure?.merge;
-        if(merge&&merge.status!=='merged'){merge.status='blocked';merge.blockedCode=error.code||'CLOSURE_BLOCKED';const noConstraintHint=['MERGE_CONSENT_REQUIRED','MERGE_CONSENT_DENIED','MERGE_AUTHORIZATION_REQUIRED','MERGE_AUTHORIZATION_STALE'].includes(error.code);merge.message=String(error.message).slice(0,600)+(noConstraintHint?'':(work.closure.reviewedVersion?'（人工审校版本与候选已完整保留；未做任何Git合入，可在明确更新约束后重试）':''));merge.attempts.push({at:new Date().toISOString(),phase:'integration',code:error.code||null,error:String(error.message).slice(0,400)});}
+        if(merge&&merge.status!=='merged'){merge.status='blocked';merge.blockedCode=error.code||'CLOSURE_BLOCKED';merge.message=String(error.message).slice(0,600)+(work.closure.reviewedVersion?'（人工审校版本与候选已完整保留；系统记录收尾状态，技术故障由后台处理，人工边界不会自动覆盖）':'');merge.attempts.push({at:new Date().toISOString(),phase:'integration',code:error.code||null,error:String(error.message).slice(0,400)});}
       });}catch(recordError){this.emit('diagnostic','Merge record retention failed: '+recordError.message);}
-      if(maintenanceBoundary(error)){await this.blockClosure(id,error.message);return;}
+      // Failed Workspace mutations restore state snapshots: never persist fault
+      // status through the Work reference captured before the failed mutation.
+      if(repair){await this.store.mutate(()=>{this.store.find(id).closure.phase='blocked';});throw error;}
+      if(maintenanceBoundary(error,{phase:'closure'})||error.exitUnconfirmed){await this.blockClosure(id,error.message);return;}
+      const w=this.store.find(id);
       const bug=await this.maintenance.record({phase:'closure',workId:id,revision:w.revision,error,capability:'closure'});
       const recoveryBinding=structuredClone(w.closure.binding),recoveryRequestKey=w.closure.requestKey;
-      this.maintenanceActions.set(bug.id,async()=>{await this.retryClosure(id,{binding:recoveryBinding,requestKey:recoveryRequestKey});return this.store.find(id).closure?.phase==='complete';});
-      await this.store.mutate(()=>{w.closure.phase='blocked';w.maintenance={bugId:bug.id,status:'detected',message:'技术收尾故障已交后台维修；原接受／丢弃决定保持。'};});await this.maintenanceEvent(bug);
+      // Continue the authorized host transaction without reentering work locks,
+      // manufacturing user retry requests, or replaying Worker/model input.
+      const action=async()=>{await this.finishClosure(id,{repair:true});return this.store.find(id).closure?.phase==='complete';};
+      action.closureRecovery={binding:recoveryBinding,requestKey:recoveryRequestKey,decision:w.closure.decision};this.maintenanceActions.set(bug.id,action);
+      await this.store.mutate(()=>{const current=this.store.find(id);current.closure.phase='blocked';current.maintenance={bugId:bug.id,status:'detected',message:'技术收尾故障已交后台维修；原接受／丢弃决定保持。'};});
+      await this.maintenanceEvent(bug,{schedule:false});
+      try{await this.maintenanceRetry(bug.id);}catch(error){this.emit('diagnostic','Closure maintenance finalization pending: '+String(error.code??'INTERNAL_FAILURE'));}
+      this.kick();
     }
+    if(!repair)await this.settleCompletedClosureMaintenance(this.store.find(id));
   }
   // 合入同意的一次性人工覆盖：待办暴露在workspace todos（kind 'merge-consent'），
   // 注意力/审计镜像进TaskPermissions效果台账（effectType 'merge-override'，
@@ -3119,18 +3445,378 @@ export class Controller extends EventEmitter {
     const w=this.store.find(id);
     return {...result,workId:id,merge:reviewMergeProjection(w.closure),mergeConsent:mergeConsentState(w)};
   }
-  canReclaimIdle(target,session,{hiddenTerminal=false}={}){
-    return !this.stopping&&this.sessions.get(target)===session&&!this.running.has(target)&&!this.current.has(target)&&!this.starting.has(target)&&!this.restarting?.has(target)&&!this.configuring.has(target)&&!this.configuring.has('worker')&&!this.reclaiming.has(target)&&!this.nativeDraftTargets.has(target)&&!this.externalTerminalTargets.has(target)&&(hiddenTerminal||!this.terminals.has(target))&&!session.busy&&!session.currentTicket&&!session.blockedTicket&&!session.inFlightToolCalls?.size&&!this.store.state.jobs.some(job=>job.target===target&&['queued','running'].includes(job.status));
+  // ── 人工任务控制（§4-§6、§8）────────────────────────────────────────
+  // 独立持久 manualControl 事实：CAS 版本不随业务 revision 冒增；暂停只设
+  // 执行门；恢复只解门，不合成续作输入；停止先落门再精确取消当前run并确认
+  // 原生退出，未确认保留 owner 额度、不结束 Work、不误造缺报告。
+  workExecutionHeld(targetOrJob){
+    if(targetOrJob==null)return false;
+    const works=this.store.state.works??[],jobs=this.store.state.jobs??[];
+    if(typeof targetOrJob==='string'){
+      const work=works.find(w=>w.id===targetOrJob);
+      if(work)return work.manualControl?.pause!=null;
+      const job=jobs.find(j=>j.id===targetOrJob);
+      return job?this.workExecutionHeld(job):false;
+    }
+    if(works.includes(targetOrJob))return targetOrJob.manualControl?.pause!=null;
+    if(targetOrJob.manualControl?.pause!=null)return true;
+    // 维修technical事件跟随其bug绑定的Work门（§6.3.1：暂停期间不启动新的
+    // 业务修复效果）；finalize-only结算不经此路径。
+    const bound=jobBoundWork(this.store.state,targetOrJob)??this.#maintenanceBugWork(targetOrJob);
+    return bound?.manualControl?.pause!=null;
+  }
+  #maintenanceBugWork(job){
+    if(job?.type!=='maintenance'||!job.context?.bugId)return null;
+    const works=this.store.state.works??[];
+    const byWork=works.find(w=>w.maintenance?.bugId===job.context.bugId);
+    if(byWork)return byWork;
+    const bugId=job.context.bugId;
+    return works.find(w=>(this.store.state.jobs??[]).some(j=>j.id!==job.id&&j.maintenanceBugId===bugId&&(j.target===w.id||j.context?.boundWorkId===w.id)))??null;
+  }
+  #admissionHold(jobOrId){
+    // 以保存的 job 记录为准（runJob 的 job 是克隆，控制事实可能晚于克隆落账）；
+    // 目标上已有单target退出flight（停止栅栏/idle回收）时不准入新run（P1）。
+    const job=typeof jobOrId==='string'?(this.store.state.jobs??[]).find(j=>j.id===jobOrId):jobOrId;
+    const saved=(job&&(this.store.state.jobs??[]).find(j=>j.id===job.id))??job;
+    if((this.store.state.jobs??[]).some(other=>other.target===saved?.target&&other.id!==saved?.id&&other.restartRecovery?.kind==='needs-reconciliation')||saved?.restartRecovery?.kind==='needs-reconciliation')return 'RESTART_RECONCILIATION_REQUIRED';
+    if(this.workExecutionHeld(saved))return 'WORK_CONTROL_HELD';
+    if(this.serviceFaultGate?.(saved)?.held===true)return 'SERVICE_FAULT_HELD';
+    if(saved&&this.reclaiming.has(saved.target))return 'WORK_CONTROL_HELD';
+    return null;
+  }
+  async #controlProjectInstanceId(){
+    const storage=this.store.storage;
+    if(typeof storage?.requireRegistered!=='function')return null;
+    try{return (await storage.requireRegistered(this.projectId))?.instanceId??null;}catch{return null;}
+  }
+  // 激活资格（P1审核项）：除 cold 外，人工门（含接收 job 上的门）与故障门
+  // 都阻止新激活；isEligible 在 activateNext 的 mutate 内执行=事务内复核。
+  #activationHeld(work){
+    if(!work)return false;
+    if(work.manualControl?.pause!=null)return true;
+    const source=(this.store.state.jobs??[]).find(j=>j.id===work.sourceJob);
+    if(source&&this.workExecutionHeld(source))return true;
+    if(this.serviceFaultGate?.({id:'initial:'+work.id,target:work.id,type:'initial',context:{boundWorkId:work.id},status:'queued'})?.held===true)return true;
+    return false;
+  }
+  async workControlCapabilities(workOrJob){
+    const state=this.store.state;
+    // 描述符 {workId}|{jobId}、字符串 id 或已存记录统一走一条解析路径；
+    // job 身份保留（不折叠成 Work）。
+    const descriptor=workControlTargetDescriptor(state,workOrJob);
+    const resolved=resolveWorkControlTarget(state,descriptor);
+    const ownerTarget=resolved.work?.id??null,session=ownerTarget?this.sessions.get(ownerTarget):null;
+    const ownerBinding=session&&!session.closed?{ownerId:session.viewOwnerId,ownerGeneration:session.epoch,currentJobId:this.current.get(ownerTarget)?.id??null,workRevision:resolved.work?.revision??null}:null;
+    return workControlCapabilitiesFromState(state,descriptor,{projectId:this.projectId,projectInstanceId:await this.#controlProjectInstanceId(),live:!this.stopping&&!!session&&!session.closed&&!!ownerTarget,storageUnknown:!!this.store.commitUnknown||!!this.store.nativeCommitUnknown,lifecycleHeld:this.stopping||!!this.store.lifecycleHold,ownerBinding});
+  }
+  async workControl(payload){
+    const intent=validateWorkControlPayload(payload);
+    // 同键并发（P2审核项）：在途请求共享同一flight结果；异意图立即冲突。
+    this.workControlFlights??=new Map();
+    const inFlight=this.workControlFlights.get(intent.requestKey);
+    if(inFlight){
+      if(inFlight.intentDigest!==intent.intentDigest)throw Object.assign(Error('此控制请求键已按另一意图处理'),{code:'WORK_CONTROL_REQUEST_CONFLICT'});
+      return inFlight.promise;
+    }
+    const operation=this.#workControlExecution(intent).finally(()=>{
+      const held=this.workControlFlights.get(intent.requestKey);
+      if(held&&held.promise===operation)this.workControlFlights.delete(intent.requestKey);
+    });
+    this.workControlFlights.set(intent.requestKey,{intentDigest:intent.intentDigest,promise:operation});
+    return operation;
+  }
+  async #workControlExecution(intent){
+    // 实例闸门（P1）：变更/重放前核当前登记实例；停止等 await 之后、最终
+    // 回执落账前再核一次，晚到替换零追加变更。
+    assertProjectInstance(intent.expectedProjectInstanceId,await this.#controlProjectInstanceId());
+    const replay=this.#workControlReplay(intent);
+    if(replay)return replay;
+    resolveWorkControlTarget(this.store.state,intent); // 目标存在性（不存在即拒）
+    let applied;
+    const holderKey=intent.workId!==undefined?{workId:intent.workId}:{jobId:intent.jobId};
+    // holder按id在每个事务内重新解析（P2）：mutate回滚会替换state对象，
+    // 旧引用脱离当前状态后写入会静默丢失。
+    const holderNow=()=>{const resolved=resolveWorkControlTarget(this.store.state,holderKey);return resolved.work??resolved.job;};
+    await this.store.mutate(()=>{
+      applied=applyWorkControlState(this.store.state,intent);
+      if(applied.deduped)return;
+      if(intent.action==='resume')applied.requeued=processResumeRequeueState(this.store.state,applied.target.work);
+    });
+    if(applied.deduped)return applied.deduped.response??receiptResponse(applied.deduped,intent);
+    const work=applied.target.work;
+    let stop=null,disposition;
+    if(intent.action==='pause')disposition=this.#controlDisposition(work,applied.target.job,'pause');
+    else if(intent.action==='resume'){
+      disposition=this.#controlDisposition(work,applied.target.job,'resume');
+      // 解除人工门后唤醒常规泵；业务输入与既有技术事件各自重新核验准入。
+      this.kick();
+    }else ({stop,disposition}=await this.#stopCurrentExecution(intent,applied));
+    assertProjectInstance(intent.expectedProjectInstanceId,await this.#controlProjectInstanceId());
+    const workNow=holderNow();
+    const response=buildControlResponse(intent,applied,stop,disposition,workNow&&'revision'in workNow?workNow:work);
+    await this.store.mutate(()=>{
+      const holder=holderNow();
+      attachControlResponse(this.store.state,holder,intent.requestKey,response);
+      // 墓碑级最终事实（stop 的终态由 recordStop 携带证据写入）：
+      if(intent.action!=='stop-current')recordControlFinal(this.store.state,holder,intent.requestKey,{kind:disposition.kind,reason:disposition.reason??null,jobId:disposition.jobId??null});
+    });
+    this.changed();
+    return response;
+  }
+  #workControlReplay(intent){
+    const receipt=findControlReceipt(this.store.state,intent.requestKey);
+    if(!receipt)return null;
+    if(receipt.intentDigest!==intent.intentDigest)throw Object.assign(Error('此控制请求键已按另一意图处理'),{code:'WORK_CONTROL_REQUEST_CONFLICT'});
+    return receipt.response??receiptResponse(receipt,intent);
+  }
+  async #stopCurrentExecution(intent,applied){
+    const work=applied.target.work,targetId=work?.id??null;
+    const stopBase=applied.stop??{};
+    const holderKey=intent.workId!==undefined?{workId:intent.workId}:{jobId:intent.jobId};
+    // P2：holder按id在每个事务内重新解析（mutate回滚会替换state对象）。
+    const recordStop=async (state,exit,final)=>{
+      await this.store.mutate(()=>{
+        const holder=(resolveWorkControlTarget(this.store.state,holderKey).work)??(resolveWorkControlTarget(this.store.state,holderKey).job);
+        const stop=holder?.manualControl?.stop;
+        if(stop&&stop.requestKey===intent.requestKey){stop.state=state;if(exit)stop.exit=structuredClone(exit);}
+        // 终态同时写回回执/墓碑（P2）：同键重放按真实最终结果重建。
+        if(final)recordControlFinal(this.store.state,holder,intent.requestKey,final);
+      }).catch(error=>this.emit('diagnostic','停止回执落账失败（保留原结果）：'+error.message));
+    };
+    const staleOwner=async reason=>{await recordStop('stale-owner',null,{kind:'stale',reason,jobId:null,stopRef:intent.requestKey});return {stop:{...stopBase,state:'stale-owner',exit:null},disposition:{kind:'stale',reason,jobId:null}};};
+    if(!targetId)return staleOwner('owner-unavailable');
+    const session=this.sessions.get(targetId);
+    if(!session||session.closed){
+      // 无owner的stop只持久确认人工暂停（§8）：不创建owner再停止。
+      await recordStop('requested',null,{kind:'stale',reason:'owner-unavailable',jobId:null,stopRef:intent.requestKey});
+      return {stop:{...stopBase,state:'requested',exit:null},disposition:{kind:'stale',reason:'owner-unavailable',jobId:null}};
+    }
+    // live owner 存在时绑定必须精确（无通配）：缺失或不匹配一律 stale-owner，
+    // hold保留、owner不动，直接调用者无法借此停止别人的owner。
+    if(intent.ownerId!==session.viewOwnerId||intent.ownerGeneration!==session.epoch)return staleOwner('owner-changed');
+    if(session.busy&&this.current.get(targetId)&&intent.currentJobId!==this.current.get(targetId).id){
+      const runChangedJob=this.current.get(targetId)?.id??null;
+      await recordStop('requested',null,{kind:'stale',reason:'run-changed',jobId:runChangedJob,stopRef:intent.requestKey});
+      return {stop:{...stopBase,state:'requested',exit:null},disposition:{kind:'stale',reason:'run-changed',jobId:runChangedJob}};
+    }
+    if(this.stopping||this.store.commitUnknown||this.store.nativeCommitUnknown)return {stop:{...stopBase,state:'requested',exit:null},disposition:{kind:'stale',reason:'lifecycle-held',jobId:null}};
+    // 停止栅栏（P1）：在第一个 await 前登记单target退出flight（与idle回收共用
+    // reclaiming），覆盖 interrupt→相关事务等待→退出确认全程；期间调度器/
+    // #admissionHold 不准入该target的新run，新的resume只清门，处置报告
+    // stop-in-flight；栅栏内再次核验原owner/run，替换即stale，不杀新owner。
+    const fence=(async()=>{
+      const prior=this.reclaiming.get(targetId);
+      if(prior)await prior.catch(()=>{});
+      if(this.sessions.get(targetId)!==session)return {staleOwner:true};
+      await recordStop('confirming');
+      const current=this.current.get(targetId);
+      if(session.busy&&current){
+        const jobId=intent.currentJobId??current.id;
+        if(current.id!==jobId){
+          await recordStop('requested',null,{kind:'stale',reason:'run-changed',jobId:current.id,stopRef:intent.requestKey});
+          return {runChanged:current.id};
+        }
+        try{await this.sessionCommand(targetId,{ownerId:session.viewOwnerId,command:'interrupt',requestKey:intent.requestKey,jobId});}
+        catch(error){
+          if(error.code==='INTERACTION_STALE'){
+            await recordStop('requested',null,{kind:'stale',reason:'run-changed',jobId:null,stopRef:intent.requestKey});
+            return {runChanged:null};
+          }
+          await recordStop('unknown',{confirmed:false,pid:session.pid??null,error:{code:error.code??null,message:String(error.message).slice(0,200)}},{kind:'stopped-unconfirmed',reason:'interrupt-failed',jobId,stopRef:intent.requestKey,stop:{state:'unknown',jobId,ownerId:intent.ownerId??null,ownerGeneration:intent.ownerGeneration??null,at:new Date().toISOString(),exit:{confirmed:false,pid:session.pid??null}}});
+          return {stop:{...stopBase,state:'unknown',exit:{confirmed:false,pid:session.pid??null}},disposition:{kind:'stopped-unconfirmed',reason:'interrupt-failed',jobId}};
+        }
+        await this.running.get(targetId)?.catch(()=>{});
+      }
+      // 只等待该target/绑定job/Work的写入、发布、维修flight与closure（§6.3.4）；
+      // 无关B的宿主操作不能阻止A停稳。
+      await this.#awaitRelatedTargetOps(targetId,work);
+      // 退出前再核验原owner（P1）：被替换即stale，不停止新owner。
+      if(this.sessions.get(targetId)!==session)return {staleOwner:true};
+      const exit=await this.#exitOwnerForStop(targetId,session);
+      const exitState=exit.confirmed?'confirmed':'unknown',exitKind=exit.confirmed?'held':'stopped-unconfirmed',exitReason=exit.confirmed?'manual-gate':'exit-unconfirmed';
+      await recordStop(exitState,exit.receipt,{kind:exitKind,reason:exitReason,jobId:null,stopRef:intent.requestKey,stop:{state:exitState,jobId:intent.currentJobId??null,ownerId:intent.ownerId??null,ownerGeneration:intent.ownerGeneration??null,at:new Date().toISOString(),exit:exit.receipt}});
+      return {stop:{...stopBase,state:exitState,exit:exit.receipt},disposition:{kind:exitKind,reason:exitReason,jobId:null}};
+    })();
+    this.reclaiming.set(targetId,fence);
+    let outcome;
+    try{outcome=await fence;}
+    finally{if(this.reclaiming.get(targetId)===fence)this.reclaiming.delete(targetId);this.changed();this.kick();}
+    if(outcome.staleOwner)return staleOwner('owner-changed');
+    if(outcome.runChanged!==undefined){
+      return {stop:{...stopBase,state:'requested',exit:null},disposition:{kind:'stale',reason:'run-changed',jobId:outcome.runChanged}};
+    }
+    return outcome;
+  }
+  async #awaitRelatedTargetOps(targetId,work){
+    const bugs=new Set();
+    for(const j of this.store.state.jobs??[])if((j.target===targetId||j.context?.boundWorkId===targetId)&&j.maintenanceBugId)bugs.add(j.maintenanceBugId);
+    if(work?.maintenance?.bugId)bugs.add(work.maintenance.bugId);
+    const flights=[];
+    for(const [key,flight] of this.maintenanceFlights??[])if(bugs.has(key))flights.push(Promise.resolve(flight).catch(()=>{}));
+    for(const [key,flight] of this.hostOperationFlights??new Map()){
+      const operation=this.hostOperations.get(key);
+      if(operation&&(operation.target===targetId||operation.bugId&&bugs.has(operation.bugId)))flights.push(Promise.resolve(flight).catch(()=>{}));
+    }
+    if(this.publicationSerial.has(targetId))flights.push(Promise.resolve(this.publicationSerial.get(targetId)).catch(()=>{}));
+    if(this.closures.has(targetId))flights.push(Promise.resolve(this.closures.get(targetId)).catch(()=>{}));
+    if(this.running.has(targetId))flights.push(Promise.resolve(this.running.get(targetId)).catch(()=>{}));
+    await Promise.all(flights);
+  }
+  async #exitOwnerForStop(targetId,session){
+    // 调用方（停止栅栏或idle回收）已登记 reclaiming flight；此处只执行退出。
+    try{await this.terminals.get(targetId)?.close();}catch{/*终端关闭失败不阻断退出核验*/}
+    let receipt;
+    try{receipt=await session.stop();}
+    catch(error){return {confirmed:false,receipt:{confirmed:false,pid:session.pid??session.groupRecord?.pid??null,error:{code:error.code??null,message:String(error.message).slice(0,200)}}};}
+    try{await session.controllerExitCleanup;}catch{/*退出清理各自尽力*/}
+    const pid=session.pid??session.groupRecord?.pid??null,confirmed=receipt?.confirmationComplete===true;
+    if(confirmed){
+      await this.store.mutate(()=>{if(this.sessions.get(targetId)===session){this.sessions.delete(targetId);delete this.store.state.providers[targetId];}});
+      await this.store.storage.putLocal(this.projectId,'managed:providers',this.store.state.providers??{}).catch(()=>{});
+    }
+    return {confirmed,receipt:{confirmed,pid}};
+  }
+  #controlDisposition(work,job,action){
+    if(work&&['closing','ended'].includes(work.status))return {kind:'ended',reason:work.status,jobId:null};
+    if(this.store.commitUnknown||this.store.nativeCommitUnknown)return {kind:'needs-reconciliation',reason:'storage-unknown',jobId:null};
+    if(action!=='resume')return {kind:'held',reason:'manual-gate',jobId:null};
+    // 停止栅栏在途（P1）：resume只清门；栅栏完成前无可执行处置。
+    if(work&&this.reclaiming.has(work.id))return {kind:'stale',reason:'stop-in-flight',jobId:null};
+    if(work&&this.deviationHeld(work.id))return {kind:'needs-decision',reason:'deviation',jobId:null};
+    if(work&&(this.store.state.todos??[]).some(t=>t.workId===work.id&&t.status==='open'&&['problem','permission','merge-constraint','merge-consent'].includes(t.kind)))return {kind:'needs-decision',reason:'open-decision',jobId:null};
+    // 可执行来源1：从未激活的排队 Work 本身（initial job 在激活时才创建）。
+    if(work&&work.status==='queued'){
+      if(this.coldQueued?.has(work.id))return {kind:'unsupported-cold-recovery',reason:'cold-work',jobId:null};
+      if(this.#activationHeld(work))return {kind:'needs-decision',reason:'service-fault-held',jobId:null};
+      const facts=this.store.workSlotFacts();
+      if(facts.verificationRequired)return {kind:'needs-reconciliation',reason:'resource-verification-required',jobId:null};
+      if(this.store.used()>=this.store.state.limit)return {kind:'waiting-capacity',reason:'quota-full',jobId:null};
+      return {kind:'eligible',reason:'work-activation',jobId:null};
+    }
+    // 可执行来源2：已绑定 Work 的排队输入；目标是无 Work 的接收 job 时，
+    // 该 job 本身就是可执行来源（含在解析目标里传入，P1审核项）。
+    const jobs=work?(this.store.state.jobs??[]).filter(j=>(j.target===work.id||j.context?.boundWorkId===work.id)&&j.status==='queued'):job&&job.status==='queued'?[job]:[];
+    const admissible=jobs.filter(j=>!this.coldJobs?.has(j.id)&&!this.workExecutionHeld(j)&&this.serviceFaultGate?.(j)?.held!==true);
+    if(!admissible.length){
+      if(jobs.length&&jobs.every(j=>this.coldJobs?.has(j.id)))return {kind:'unsupported-cold-recovery',reason:'cold-input',jobId:jobs[0].id};
+      if(jobs.length&&jobs.every(j=>this.serviceFaultGate?.(j)?.held===true))return {kind:'needs-decision',reason:'service-fault-held',jobId:jobs[0].id};
+      if(work?.status==='review'&&!jobs.length)return {kind:'review',reason:'work-review',jobId:null};
+      return {kind:'no-pending-input',reason:'no-admissible-input',jobId:null};
+    }
+    // Work 配额只拦“新激活”：已激活 Work 的补充输入不占新槽；无 Work 的
+    // 接收 job 由常规调度器/owner 额度执行，不经 Work 激活配额（P2审核项）。
+    const activeWork=!work||work.status!=='queued'&&Number(work.revision)>0;
+    if(!activeWork){
+      const facts=this.store.workSlotFacts();
+      if(facts.verificationRequired)return {kind:'needs-reconciliation',reason:'resource-verification-required',jobId:null};
+      if(this.store.used()>=this.store.state.limit)return {kind:'waiting-capacity',reason:'quota-full',jobId:admissible[0].id};
+    }
+    return {kind:'eligible',reason:null,jobId:admissible[0].id};
+  }
+  // 故障解除批次的逐job资格评估（§7.2/§7.3）：只读，不派工、不入队、不重放。
+  serviceFaultReleaseEvaluate({jobIds}={}){
+    if(!Array.isArray(jobIds)||!jobIds.length||jobIds.length>64||!jobIds.every(id=>typeof id==='string'&&/^[A-Za-z0-9-]{6,64}$/.test(id)))throw Object.assign(Error('恢复评估输入无效'),{code:'WORK_CONTROL_INVALID'});
+    return jobIds.map(id=>{
+      const job=(this.store.state.jobs??[]).find(j=>j.id===id);
+      if(!job)return {jobId:id,outcome:'unknown',reason:'job-missing'};
+      const work=jobBoundWork(this.store.state,job)??(this.store.state.works??[]).find(w=>w.id===job.target)??null;
+      if(work&&['closing','ended'].includes(work.status))return {jobId:id,outcome:'ended',reason:'work-'+work.status};
+      if(this.coldJobs?.has(id))return {jobId:id,outcome:'unsupported-cold-recovery',reason:'cold-input'};
+      if(this.store.commitUnknown||this.store.nativeCommitUnknown)return {jobId:id,outcome:'needs-reconciliation',reason:'storage-unknown'};
+      if(this.workExecutionHeld(job))return {jobId:id,outcome:'held-manual',reason:'manual-gate'};
+      if(work&&this.deviationHeld(work.id))return {jobId:id,outcome:'needs-decision',reason:'deviation'};
+      if(this.serviceFaultGate?.(job)?.held===true)return {jobId:id,outcome:'fault-held',reason:'service-fault-gate'};
+      if(['running','transferring'].includes(job.status))return {jobId:id,outcome:'busy',reason:'admitted-or-transferring'};
+      if(job.status!=='queued')return {jobId:id,outcome:'needs-decision',reason:'job-'+job.status};
+      // Work 配额只拦新激活；已激活 Work 的输入执行走 owner/进程额度；
+      // 无 Work 绑定的接收 job 不经 Work 激活配额。
+      const activeWork=!work||work.status!=='queued'&&Number(work.revision)>0;
+      if(!activeWork){
+        const facts=this.store.workSlotFacts();
+        if(facts.verificationRequired)return {jobId:id,outcome:'needs-reconciliation',reason:'resource-verification-required'};
+        if(this.store.used()>=this.store.state.limit)return {jobId:id,outcome:'waiting-capacity',reason:'quota-full'};
+      }
+      return {jobId:id,outcome:'eligible',reason:null};
+    });
+  }
+  // 故障解除/自动恢复的“未准入原输入”一次性安全再入队（§7.3，与FaultGateway
+  // 单一协议）：仅限 live、非cold、从未准入且全部传输尝试确定性被拒（无任何
+  // 原生条目证据）的 failed job。不放宽 no-repeat-entry：promptStartedAt 一旦
+  // 设置即视为无法证明“无原生条目”，拒绝（entry-prepared，走人工对账）。
+  // 原提交身份（job.key/context）保持不变：不新建请求键、不合成prompt；
+  // retryKey 绑定一次人工批次或自动退避 claim；重复调用不重复入队。
+  async resumeServiceFaultInput({jobId,binding,faultRef=null,generation=null,retryKey=null}={}){
+    if(typeof jobId!=='string'||!/^[A-Za-z0-9-]{6,64}$/.test(jobId)
+      ||faultRef!==null&&(typeof faultRef!=='string'||!faultRef.trim()||faultRef.length>256)
+      ||retryKey!==null&&(typeof retryKey!=='string'||!retryKey.length||retryKey.length>160)
+      ||generation!==null&&(!Number.isSafeInteger(generation)||generation<1))throw Object.assign(Error('恢复输入身份无效'),{code:'WORK_CONTROL_INVALID'});
+    const result=await this.store.mutate(()=>{
+      const job=(this.store.state.jobs??[]).find(j=>j.id===jobId);
+      if(!job)throw Object.assign(Error('目标输入不存在'),{code:'WORK_CONTROL_TARGET_UNKNOWN'});
+      const work=jobBoundWork(this.store.state,job)??(this.store.state.works??[]).find(w=>w.id===job.target)??null;
+      const expected={jobId,workId:work?.id??null,revision:job.revision??null};
+      if(binding!==undefined&&binding!==null&&JSON.stringify({jobId:binding.jobId??null,workId:binding.workId??null,revision:Number.isSafeInteger(binding.revision)?binding.revision:null})!==JSON.stringify(expected))throw Object.assign(Error('恢复绑定已变化，未再入队'),{code:'STALE_SERVICE_FAULT_BINDING',expected});
+      const refuse=reason=>({accepted:false,jobId,workId:expected.workId,reason});
+      if(this.coldJobs?.has(jobId))return refuse('cold-input');
+      if(job.promptStartedAt!=null)return refuse('entry-prepared');
+      if((job.collabAttempts??[]).some(a=>a.everAdmitted||a.recordConfirmed||!a.definitiveRejection))return refuse('effect-unknown');
+      if(this.stopping||this.store.closed||this.store.lifecycleHold||this.reclaiming.has(job.target))return refuse('lifecycle-held');
+      if(work&&job.target===work.id&&job.revision!==work.revision)return refuse('work-revision-changed');
+      if(work&&['closing','ended'].includes(work.status))return refuse('work-ended');
+      if(work&&work.status==='review'&&job.status!=='queued')return refuse('work-review');
+      if(this.workExecutionHeld(job))return refuse('manual-held');
+      if(this.serviceFaultGate?.(job)?.held===true)return refuse('fault-held');
+      if(this.store.commitUnknown||this.store.nativeCommitUnknown)return refuse('storage-unknown');
+      const retries=job.serviceFaultRetries??=[];
+      if(faultRef!=null&&generation!=null&&retries.some(r=>r.faultRef===faultRef&&r.generation===generation&&(r.retryKey??null)===retryKey))
+        return job.status==='queued'?{accepted:true,alreadyQueued:true,jobId,workId:expected.workId}:refuse('generation-retried');
+      if(job.status==='queued')return {accepted:true,alreadyQueued:true,jobId,workId:expected.workId};
+      if(job.status!=='failed')return refuse('job-'+job.status);
+      if(retries.length>=256)return refuse('recovery-receipts-full');
+      job.serviceFaultRetries=[...retries,...(faultRef!=null&&generation!=null?[{kind:'service-fault-retry',faultRef,generation,retryKey,at:new Date().toISOString()}]:[])];
+      job.status='queued';delete job.error;job.requeuedAt=new Date().toISOString();
+      if(work&&work.status==='paused'&&!this.deviationHeld(work.id))work.status='running';
+      for(const todo of this.store.state.todos??[])if(todo.sourceJobId===jobId&&['recovery','system'].includes(todo.kind)&&todo.status==='open'){todo.status='resolved';todo.resolution={status:'service-fault-released',at:new Date().toISOString()};}
+      return {accepted:true,jobId,workId:expected.workId,revision:expected.revision};
+    });
+    if(result.accepted&&!result.alreadyQueued)this.kick(); // 常规队列泵按原身份准入，至多一次
+    this.changed();
+    return result;
+  }
+  canReclaimIdle(target,session,options={}){
+    return this.#canReclaimIdle(target,session,options);
+  }
+  #canReclaimIdle(target,session,{hiddenTerminal=false}={},fence){
+    if(!session||session.closed||session.stopping||this.stopping||this.store.commitUnknown||this.store.nativeCommitUnknown||this.sessions.get(target)!==session)return false;
+    if(this.running.has(target)||this.current.has(target)||this.starting.has(target)||this.restarting?.has(target)||this.configuring.has(target)||this.configuring.has('worker')||this.bindingTransitions?.has(target)||this.bindingTransitions?.has('worker')||this.modelDefaultsApplying||target==='frontdesk'&&this.frontdeskContextClear)return false;
+    if(this.closures.has(target)||this.pendingEnds.has(target)||this.publicationSerial.has(target))return false;
+    for(const operation of this.hostOperations?.values()??[])if(operation.target===target)return false;
+    if(this.reclaiming.has(target)&&this.reclaiming.get(target)!==fence||this.handoffPreparing?.size||this.residentHandoffs?.size||this.handoffConfirmations?.size)return false;
+    if(this.nativeDraftTargets.has(target)||this.externalTerminalTargets.has(target)||!hiddenTerminal&&this.terminals.has(target))return false;
+    if(session.busy||session.currentTicket||session.blockedTicket||session.inFlightToolCalls?.size||session.unsettledPromptError||session.interactions?.length||session.pendingModel||session.modelSubmission||session.nativePending>0||session.phase?.includes('unsettled')||session.phase?.includes('unresolved'))return false;
+    // 人工hold且从未准入的 queued/manual job 保留身份与队列，但不单独阻止
+    // 安全闲置回收（§9）；running/transferring、已准入或效果未知仍保护owner。
+    if((this.store.state.jobs??[]).some(job=>(job.target===target||job.context?.boundWorkId===target)&&(['running','transferring'].includes(job.status)||job.status==='queued'&&!heldNeverAdmitted(this.store.state,job)||job.manual===true&&!['completed','cancelled'].includes(job.status)&&!heldNeverAdmitted(this.store.state,job))))return false;
+    for(const slot of this.processBudget?.slots??[])if(slot.projectId===this.projectId&&slot.target===target&&slot.state==='unconfirmed')return false;
+    // Real Pi owners must supply affirmative native knowledge. Legacy test and
+    // external session adapters without this contract retain their host guards.
+    if(typeof session.activitySnapshot==='function'){
+      let activity;try{activity=session.activitySnapshot();}catch{return false;}
+      if(activity?.known!==true||activity.freshness==='unknown'||activity.busy||activity.hostBusy||activity.runActive||activity.promptPreparing||activity.compaction||activity.retry||activity.configuration||activity.command||activity.settling||activity.nativeDrainPending>0||activity.toolCount>0||activity.hostToolCount>0||activity.interactionCount>0||activity.tools?.length||activity.interactions?.length)return false;
+    }
+    return true;
   }
   reclaimIdle(target,options){
-    const session=this.sessions.get(target);if(!session||!this.canReclaimIdle(target,session,options))return Promise.resolve(false);
+    const session=this.sessions.get(target);if(!this.canReclaimIdle(target,session,options))return Promise.resolve(false);
     const operation=(async()=>{
       await this.terminals.get(target)?.close();
+      // Closing a hidden terminal yields: accepted input or a new owner may
+      // have arrived. Ignore only this operation's own admission fence.
+      if(!this.#canReclaimIdle(target,session,options,operation))return false;
       const receipt=await (session.stopIdle?session.stopIdle():session.stop());await session.controllerExitCleanup;
-      if(session.pid&&receipt?.confirmationComplete!==true)throw Object.assign(Error('空闲 Agent 退出尚未确认，名额保留'),{code:'PI_EXIT_UNCONFIRMED'});
-      if(this.sessions.get(target)===session)this.sessions.delete(target);
-      await this.store.mutate(()=>{delete this.store.state.providers[target];});this.changed();return true;
-    })().finally(()=>this.reclaiming.delete(target));this.reclaiming.set(target,operation);return operation;
+      if((session.pid||session.groupRecord?.pid)&&receipt?.confirmationComplete!==true)throw Object.assign(Error('空闲 Agent 退出尚未确认，名额保留'),{code:'PI_EXIT_UNCONFIRMED'});
+      await this.store.mutate(()=>{if(this.sessions.get(target)===session){this.sessions.delete(target);delete this.store.state.providers[target];}});return true;
+    })().finally(()=>{if(this.reclaiming.get(target)===operation)this.reclaiming.delete(target);this.changed();this.kick();});this.reclaiming.set(target,operation);return operation;
   }
   async stop({lifecycleHold}={}){
     if(lifecycleHold){
@@ -3140,9 +3826,12 @@ export class Controller extends EventEmitter {
     if(this.stopPromise)return this.stopPromise;
     this.stopping=true;this.changed();
     clearTimeout(this.timelineTimer);this.timelineTimer=null;
+    clearTimeout(this.activityTimer);this.activityTimer=null;
     const settled=async promises=>{const results=await Promise.allSettled(promises),failed=results.find(result=>result.status==='rejected');if(failed)throw failed.reason;};
     const operation=(async()=>{
-      if(this.taskPermissions){const ledger=await this.taskPermissions.read(this.projectId);for(const grant of ledger.grants??[])this.privilegeBroker?.revoke?.({grantId:grant.id});for(const taskId of new Set((ledger.grants??[]).map(grant=>grant.permissionTaskId)))await this.taskPermissions.endTask(this.projectId,taskId);}
+      if(this.taskPermissions){const ledger=await this.taskPermissions.read(this.projectId);for(const grant of ledger.grants??[])this.privilegeBroker?.revoke?.({grantId:grant.id});}
+      // Host filesystem/publication transactions must settle before their owner is stopped.
+      await settled([...this.hostOperationFlights.values()]);
       const stopped=new Set(),stopOwners=async()=>settled([...this.sessions.entries()].filter(([target])=>!stopped.has(target)).map(async([target,s])=>{const receipt=await s.stop();await s.controllerExitCleanup;if((s.pid||s.groupRecord?.pid)&&receipt?.confirmationComplete!==true)throw Object.assign(Error('Agent exit unconfirmed; provider ownership retained'),{code:'PI_EXIT_UNCONFIRMED',target});stopped.add(target);}));
       await settled([stopOwners(),settled([...this.terminals.values()].map(t=>t.close())),Promise.allSettled([...this.starting.values()]),settled([...this.reclaiming.values()])]);
       await stopOwners();

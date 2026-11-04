@@ -53,22 +53,22 @@ try{
   await pages.word.waitForFunction(()=>document.querySelector('#save-status').textContent!=='');
   await pause(150); // Deliver actual engine change notifications before close capture.
   await call(shell,'workspace.closeProject',{projectId,operationId:'office-offline-close'});
-  const before=await call(shell,'workspace.recovery.list');
-  const retained=Object.fromEntries(Object.entries(fixtures).map(([kind,[name]])=>[kind,before.entries.find(entry=>entry.project.id===projectId&&entry.value.relPath===name)]));
-  for(const [kind,entry] of Object.entries(retained)){assert(entry,kind+' recovery missing');await normalizeOfficeRecovery(kind,entry.value.candidate);assert.match(entry.value.baseDigest||entry.value.sourceDigest,/^[a-f0-9]{64}$/);assert.deepEqual(await fs.readFile(path.join(offline,fixtures[kind][0])),originals[kind]);}
+  let before,cursor=null;do{const page=await call(shell,'workspace.recovery.list',{cursor});before={...page,entries:[...(before?.entries??[]),...page.entries]};cursor=page.nextCursor;}while(cursor);
+  const retained={};
+  for(const [kind,[name]] of Object.entries(fixtures)){const summary=before.entries.find(entry=>entry.project.id===projectId&&entry.value.relPath===name);assert(summary,kind+' recovery missing');const detail=await call(shell,'workspace.recovery.detail',{projectId,id:summary.id,revision:summary.revision,version:summary.version});retained[kind]={...summary,value:detail.value};await normalizeOfficeRecovery(kind,detail.value.candidate);assert.match(detail.value.baseDigest||detail.value.sourceDigest,/^[a-f0-9]{64}$/);assert.deepEqual(await fs.readFile(path.join(offline,fixtures[kind][0])),originals[kind]);}
   assert.match(JSON.stringify(retained.ppt.value.candidate.model),new RegExp(markers.ppt));
   await stop();launch();await connect();shell=await scope(state=>state.role==='shell');await dismiss(shell);
-  const after=await call(shell,'workspace.recovery.list');
-  for(const [kind,[name]] of Object.entries(fixtures)){
-    const entry=after.entries.find(entry=>entry.project.id===projectId&&entry.value.relPath===name);assert(entry);
-    assert.deepEqual(entry.value.candidate,retained[kind].value.candidate,'Cold-open candidate changed');
-  }
+  let after,coldCursor=null;do{const page=await call(shell,'workspace.recovery.list',{cursor:coldCursor});after={...page,entries:[...(after?.entries??[]),...page.entries]};coldCursor=page.nextCursor;}while(coldCursor);
+  for(const [kind,[name]] of Object.entries(fixtures)){const summary=after.entries.find(entry=>entry.project.id===projectId&&entry.value.relPath===name);assert(summary,kind+' cold recovery missing');const detail=await call(shell,'workspace.recovery.detail',{projectId,id:summary.id,revision:summary.revision,version:summary.version});assert.deepEqual(detail.value.candidate,retained[kind].value.candidate,'Cold-open candidate changed');}
   const cdp=await shell.createCDPSession();await cdp.send('Page.setDownloadBehavior',{behavior:'allow',downloadPath:downloads});
-  await shell.evaluate(()=>[...document.querySelectorAll('button')].find(button=>button.textContent==='本机恢复').click());
+  await shell.click('#open-settings');await shell.click('[data-settings-section="settings-recovery"]');
   for(const [kind,[name]] of Object.entries(fixtures)){
-    await shell.waitForFunction(name=>[...document.querySelectorAll('dialog[open] section')].some(section=>section.querySelector('h3')?.textContent.includes(' · '+name+' · ')),{},name);
+    const id=after.entries.find(entry=>entry.project.id===projectId&&entry.value.relPath===name).id;
+    await shell.waitForFunction(id=>[...document.querySelectorAll('#settings-recovery section')].some(section=>section.dataset.recoveryId===id),{},id);
+    await shell.evaluate(id=>{const section=[...document.querySelectorAll('#settings-recovery section')].find(section=>section.dataset.recoveryId===id);[...section.querySelectorAll('button')].find(button=>button.textContent==='查看完整详情').click();},id);
+    await shell.waitForFunction(id=>[...document.querySelectorAll('#settings-recovery section')].find(section=>section.dataset.recoveryId===id)?.textContent.includes('导出文档副本'),{},id);
     await shell.screenshot({path:path.join(out,`recovery-${kind}.png`)});
-    await shell.evaluate(name=>{const section=[...document.querySelectorAll('dialog[open] section')].find(section=>section.querySelector('h3')?.textContent.includes(' · '+name+' · '));const button=[...section.querySelectorAll('button')].find(button=>button.textContent==='导出文档副本');if(!button)throw Error('No Office export action');button.click();},name);
+    await shell.evaluate(id=>{const section=[...document.querySelectorAll('#settings-recovery section')].find(section=>section.dataset.recoveryId===id);[...section.querySelectorAll('button')].find(button=>button.textContent==='导出文档副本').click();},id);
     const bytes=await until(async()=>fs.readFile(path.join(downloads,name)).catch(()=>null),'Office export missing');
     assert.deepEqual(bytes,Buffer.from(decodeRecoveryBytes(retained[kind].value.candidate.bytes)),'Export must preserve exact retained package');
     const zip=await JSZip.loadAsync(bytes),members=Object.values(zip.files).filter(file=>!file.dir&&(kind==='word'?file.name==='word/document.xml':kind==='sheet'?/^xl\/(worksheets|sharedStrings)/.test(file.name):/^ppt\/slides\/slide\d+\.xml$/.test(file.name)));

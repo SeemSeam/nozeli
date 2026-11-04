@@ -58,6 +58,18 @@ async function fixture(t){
   const run=async(names,target='')=>importClipboardFiles(ops,await Promise.all(names.map(item)),{projectId:project.id,target});
   return {base,root,external,host,project,ops,item,run};
 }
+test('unrelated oversized recovery does not block file import while exact nested recovery still protects targets',async t=>{
+ const f=await fixture(t);await fs.writeFile(path.join(f.external,'safe.txt'),'Exact incoming bytes');
+ await f.host.storage.putRecovery(f.project.id,'managed:pending:large',{kind:'business',status:'reconciled',collections:{retained:'x'.repeat(9*1024*1024)}});
+ await f.host.storage.putRecovery(f.project.id,'workspace:unrelated',{kind:'draft',status:'retained',relPath:'other.txt',candidate:{text:'x'.repeat(9*1024*1024)}});
+ await f.run(['safe.txt']);assert.equal(await fs.readFile(path.join(f.root,'safe.txt'),'utf8'),'Exact incoming bytes');
+ const clip=fakeNative();await exportClipboardFiles(f.ops,clip.native,{owner:10,projectId:f.project.id,paths:['safe.txt'],guard:async()=>{}});
+ assert.deepEqual(parseFileClipboard((await clip.native.snapshot()).entries),[path.join(f.root,'safe.txt')]);
+ const nested='界'.repeat(80)+'/child.txt';await f.host.storage.putRecovery(f.project.id,'workspace:nested',{kind:'draft',status:'retained',relPath:nested,candidate:{text:'Exact unsaved draft'}});
+ const page=await f.host.storage.recoveryPage(f.project.id,{relPaths:['界'.repeat(80)]});assert.deepEqual(page.entries.map(row=>row.id),['workspace:nested']);
+ await fs.writeFile(path.join(f.external,'blocked.txt'),'Do not publish');await f.host.storage.putRecovery(f.project.id,'workspace:blocked',{kind:'draft',status:'retained',relPath:'blocked.txt',candidate:{text:'x'.repeat(9*1024*1024)}});
+ const blocked=await f.run(['blocked.txt']);assert.equal(blocked.items[0].ok,false);assert.match(blocked.items[0].error,/草稿恢复/);await assert.rejects(fs.access(path.join(f.root,'blocked.txt')),{code:'ENOENT'});
+});
 test('native tickets bind sender/project/snapshot and stay host-only',async t=>{
   const f=await fixture(t);await fs.writeFile(path.join(f.external,'a b.txt'),'original');
   const raw=format=>`electron application/osclipboard;format="${format}"`;

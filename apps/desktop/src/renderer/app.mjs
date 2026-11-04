@@ -560,7 +560,7 @@ $('composer').disabled = true;
 const beside = { editor: null, pdf: null, file: null, diff: null, diffHost: null };
 const texWorkspace = mountTexWorkspace({ getContext: () => ui, beside, closeBeside, openFile, toast: message => workspace.toast(message) });
 const markdownWorkspace = mountMarkdownWorkspace({ getContext: () => ui, render: renderTextPreview, project: projectPreviewTags, saveView: writeView, layout: () => window.dispatchEvent(new Event('nozeli-layout-change')) });
-const webWorkspace = mountWebWorkspace({getContext:()=>ui,invoke,saveView:writeView,whenReady:()=>actions,layout:()=>window.dispatchEvent(new Event('nozeli-layout-change'))});
+const webWorkspace = mountWebWorkspace({getContext:()=>ui,invoke,mountDiff:mountDocumentDiff,saveView:writeView,whenReady:()=>actions,layout:()=>window.dispatchEvent(new Event('nozeli-layout-change')),documentSource:()=>documentSource,documentReadOnly:()=>documentReadOnly()});
 const comparison = mountDocumentComparison({current:()=>ui.project?{projectId:ui.project.id,relPath:ui.file?.relPath,documentSource,documentKey:workspaceScope.documentKey,kind:ui.file?.kind,dirty:ui.dirty||ui.composing}:null,invoke,openSnapshot:(file,diff,owner,left)=>enqueue(()=>{if(ui.project?.id===owner.projectId&&ui.file?.relPath===owner.relPath&&owner.documentKey===workspaceScope.documentKey)return openBesideSnapshot(file,diff,left);},true),toast:message=>workspace.toast(message)});
 const frozenChangeReader = mountFrozenChangeReader({parent:$('documents'),invoke,mountDiff:mountDocumentDiff,currentProjectId:()=>ui.project?.id,...(isSurface&&workspaceScope.kind==='diff'?{onExit:async()=>{const result=await invoke('workspace.control',{type:'workspace-action',projectId:workspaceScope.projectId,viewId:workspaceScope.viewId,command:{type:'closeContent',viewId:workspaceScope.viewId}});if(!result.ok)throw Error(result.error?.message||'关闭对比失败，内容仍保留。');}}:{})});
 const openFrozenChange = target => (!isSurface || workspaceScope.kind!=='diff')
@@ -680,10 +680,12 @@ function escapeHtml(value) {
 
 function renderTextPreview(text) {
   const preview=$('text-preview');
+  const focusedAuthorship=preview.querySelector('.markdown-authorship')?.contains(document.activeElement)?document.activeElement:null;
   preview._markdownSourceText=text;
+  preview._markdownRenderVersion=(preview._markdownRenderVersion||0)+1;
   renderTagMarkdown(preview,text,{
     mapSource:true,filePaths:ui.filePaths,basePath:ui.file?.relPath,images:true,
-    retainNodes:[...preview.children].filter(node=>node.classList.contains('markdown-annotations')),
+    retainNodes:[...preview.children].filter(node=>node.classList.contains('markdown-annotations')||node.classList.contains('markdown-authorship')),
     onFile:target=>void openMarkdownTarget(target),
     onAnchor:fragment=>{try{preview.querySelector('#'+CSS.escape(decodeURIComponent(fragment)))?.scrollIntoView({block:'start'});}catch{}},
     onExternal:url=>invoke('links.openExternal',{url}).then(result=>{if(!result.ok)workspace.toast(result.error.message);}),
@@ -693,6 +695,7 @@ function renderTextPreview(text) {
   resolvePreviewImages(preview);
   projectPreviewTags();
   authorship.projectMarkdown();
+  if(focusedAuthorship?.isConnected&&document.activeElement===document.body)focusedAuthorship.focus({preventScroll:true});
 }
 function resolvePreviewImages(preview) {
   if (!ui.project?.id || !ui.file?.relPath) return;
@@ -1340,7 +1343,7 @@ async function refreshNotes() {
     // Markdown opens as a rendered reading surface; editing remains an explicit choice.
     markdownWorkspace.restore(view?.fileView?.markdownPreview);
     setTextMode(!isCodePath(file.relPath) && view?.fileView?.textMode ? view.fileView.textMode : /\.(?:md|markdown)$/i.test(file.relPath) ? 'read' : 'edit');
-    if(!isReviewDocument)webWorkspace.opened(view?.fileView?.webMode);
+    webWorkspace.opened(view?.fileView?.webMode);
     authorship.opened(file);
     const selection=view?.fileView?.selection;if(selection&&(!isReviewDocument||view.fileView.materialDigest===file.materialDigest)){const length=ui.editor.adapter.getText().length;ui.editor.adapter.setSelection(Math.min(selection.anchor??selection.from,length),Math.min(selection.head??selection.to,length));}
     ui.compositionDispose = ui.editor.adapter.onComposition({
@@ -1390,7 +1393,9 @@ async function refreshNotes() {
     }
     if (savedScrollTop !== null) adapter.setScrollTop(savedScrollTop);
     $('note-label').textContent = '给选中文字添加备注';
-    if(!isReviewDocument)void texWorkspace.enter();else if(/\.(tex|html?)$/i.test(file.relPath))$('code-status').textContent='冻结审核文档 · 原生编辑、批注与版本比较可用；项目编译和网页预览不适用。';
+    if(!isReviewDocument)void texWorkspace.enter();
+    else if(/\.html?$/i.test(file.relPath))$('code-status').textContent=documentReadOnly()?(documentSource.type==='review-version'?'冻结审核版本':'只读审校内容')+' · 网页预览为只读离线快照，不读取、不保存项目源文件；批注与版本比较可用。':(file.review?.draftRevision>0?'人工审核稿':'Worker 冻结候选')+' · 网页预览基于当前编辑缓冲（含未保存修改），不保存文件、不读取项目源文件；原生编辑与批注可用。';
+    else if(/\.tex$/i.test(file.relPath))$('code-status').textContent='冻结审核文档 · 原生编辑、批注与版本比较可用；项目编译和网页预览不适用。';
   } else if(file.kind==='ppt'){
     $('reader').classList.add('document-word');$('text-mode-toggle').hidden=true;$('note-form').hidden=true;
     setStatus('loading','正在打开 PPTX');
@@ -1855,45 +1860,77 @@ if (workspaceScope.role === 'shell') {
   // Local recovery lives inside the settings dialog: no persistent toolbar
   // button; the nav entry carries a count badge while records are retained.
   const recoveryNav=document.querySelector('[data-settings-section="settings-recovery"]'),recoverySection=$('settings-recovery'),recoveryList=$('settings-recovery-list'),recoveryCount=$('settings-recovery-count');
-  const download = (name, bytes, type) => {const url=URL.createObjectURL(new Blob([bytes],{type})),link=document.createElement('a');link.href=url;link.download=name;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
-  const renderRecovery = async () => {
-    recoveryList.replaceChildren();
-    const result = await invoke('workspace.recovery.list');
-    if (!result.ok) {recoveryList.textContent='恢复记录读取失败：'+result.error.message;return;}
-    recoveryCount.textContent=String(result.value.entries.length);recoveryCount.hidden=!result.value.entries.length;
-    recoveryNav.title=result.value.entries.length?`有 ${result.value.entries.length} 条未写回项目的本机记录`:'查看及导出未写回项目的内容，不访问原目录';
-    if (!result.value.entries.length) {recoveryList.textContent='没有本机恢复记录。';return;}
-    for (const entry of result.value.entries) {
-      const value=entry.value, section=document.createElement('section'), heading=document.createElement('h3'), preview=document.createElement('pre');
-      heading.textContent=`${entry.project.name || entry.project.id}${entry.project.removed?'（已移除）':''} · ${value.relPath || '输入与备注'} · ${value.retainedAt || ''}`;
-      preview.textContent=value.candidate?.text ?? JSON.stringify({model:value.candidate?.model,workspace:value.workspace,frozenNote:value.frozenNote},null,2);
-      preview.style.maxHeight='40vh';preview.style.overflow='auto';preview.style.whiteSpace='pre-wrap';
-      const exportAll=document.createElement('button');exportAll.type='button';exportAll.textContent='导出完整恢复记录';exportAll.onclick=()=>download('nozeli-recovery-'+value.projectId+'.json',JSON.stringify(entry,null,2),'application/json');
-      section.append(heading,preview,exportAll);
-      if(value.recoveryKind==='managed'){
-        heading.textContent=`${entry.project.name || entry.project.id} · 待结算成果 · ${value.status || 'pending'}`;
-        const receipts=value.collections?.managed_receipts?.map(row=>row.value)??(value.report?[{id:value.receiptId??value.objectId,report:value.report}]:[]);
-        preview.textContent=JSON.stringify({kind:value.kind,status:value.status,error:value.error,reports:receipts.map(receipt=>({id:receipt.id,title:receipt.report?.title,revision:receipt.revision})),automaticReplay:false},null,2);
-        const settle=document.createElement('button');settle.type='button';settle.textContent='核对并恢复到项目…';
-        const requestKey=crypto.randomUUID();
-        settle.onclick=async()=>{if(!window.confirm('将先保留输入、停止该项目执行并关闭视图，再核对并恢复此成果；不会重新运行模型。是否继续？'))return;settle.disabled=true;const result=await invoke('workspace.recovery.settle',{projectId:entry.project.id,pendingId:entry.id,requestKey,confirmed:true});settle.disabled=false;if(!result.ok){workspace.toast(result.error.message);return;}if(!result.value.accepted){preview.textContent=JSON.stringify(result.value,null,2);return;}settle.disabled=true;settle.textContent='已恢复 · 未重新派工';const count=Number(recoveryCount.textContent)-1;recoveryCount.textContent=String(Math.max(0,count));recoveryCount.hidden=count<=0;};section.append(settle);
-        for(const receipt of receipts){const digest=receipt.report?.digest;if(!digest)continue;const view=document.createElement('button');view.type='button';view.textContent='查看并导出保留报告';view.onclick=async()=>{const result=await invoke('workspace.recovery.object',{projectId:entry.project.id,digest});if(!result.ok)return workspace.toast(result.error.message);try{const bytes=decodeRecoveryBytes(result.value.bytes);preview.textContent=new TextDecoder().decode(bytes);download('retained-'+receipt.id+(receipt.report?.format==='html-static'?'.html':'.md'),bytes,'application/octet-stream');}catch(error){workspace.toast(error.message);}};section.append(view);}
-        const messages=value.collections?.managed_messages?.map(row=>row.value).filter(message=>typeof message.text==='string')??[];
-        if(messages.length){const view=document.createElement('button');view.type='button';view.textContent='查看保留对话';view.onclick=()=>{preview.textContent=messages.map(message=>`${message.speaker || message.target || '消息'}\n${message.text}`).join('\n\n');};section.append(view);}
-        if(value.kind==='object'&&value.digest){const exportObject=document.createElement('button');exportObject.type='button';exportObject.textContent='导出保留对象';exportObject.onclick=async()=>{const result=await invoke('workspace.recovery.object',{projectId:entry.project.id,digest:value.digest});if(!result.ok)return workspace.toast(result.error.message);try{download('retained-'+value.digest,decodeRecoveryBytes(result.value.bytes),'application/octet-stream');}catch(error){workspace.toast(error.message);}};section.append(exportObject);}
-      }
-      if(value.recoveryKind==='lifecycle'){
-        heading.textContent=`${entry.project.name || entry.project.id} · 停稳待核查`;
-        preview.textContent=JSON.stringify(value,null,2);
-        const inspect=document.createElement('button');inspect.type='button';inspect.textContent='核查停稳状态';inspect.onclick=async()=>{inspect.disabled=true;const result=await invoke('project.lifecycle.reconcile',{projectId:entry.project.id,operationId:value.operationId});preview.textContent=JSON.stringify(result.ok?result.value:result.error,null,2);inspect.disabled=false;};section.append(inspect);
-      }
-      if (value.candidate?.bytes) {const file=document.createElement('button');file.type='button';file.textContent='导出文档副本';file.onclick=()=>{try{download((value.relPath||'recovery-document').split('/').pop(),decodeRecoveryBytes(value.candidate.bytes),'application/octet-stream');}catch(error){workspace.toast(error.message);}};section.append(file);}
-      if (typeof value.candidate?.text === 'string') {const file=document.createElement('button');file.type='button';file.textContent='导出文本副本';file.onclick=()=>download((value.relPath||'recovery.txt').split('/').pop(),value.candidate.text,'text/plain;charset=utf-8');section.append(file);}
-      recoveryList.append(section);
-    }
+  let recoveryGeneration=0,recoveryCursor=null,recoveryLoading=false,recoveryLoaded=0,recoveryRefresh=false,recoveryDetail=null,recoveryDetailToken=0;
+  let recoveryDetailFlight=null,recoveryDetailPending=null;
+  const download=(name,bytes,type)=>{const url=URL.createObjectURL(new Blob([bytes],{type})),link=document.createElement('a');link.href=url;link.download=name;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
+  const binding=entry=>({projectId:entry.project.id,id:entry.id,revision:entry.revision,version:entry.version});
+  const addButton=(parent,label,run)=>{const button=document.createElement('button');button.type='button';button.textContent=label;button.onclick=async()=>{button.disabled=true;try{await run();}catch(error){workspace.toast(error.message);}finally{button.disabled=false;}};parent.append(button);return button;};
+  const checked=async(op,payload)=>{const result=await invoke(op,payload);if(!result.ok)throw Error(result.error.message);return result.value;};
+  const showText=(parent,text)=>{
+    const pre=document.createElement('pre'),controls=document.createElement('nav');pre.style.cssText='max-height:40vh;overflow:auto;white-space:pre-wrap';let offset=0,history=[];
+    const paint=()=>{let end=Math.min(text.length,offset+16384);if(end<text.length&&/[\uD800-\uDBFF]/.test(text[end-1]))end--;pre.textContent=text.slice(offset,end);controls.replaceChildren();if(history.length)addButton(controls,'上一段预览',()=>{offset=history.pop();paint();});if(end<text.length)addButton(controls,'下一段预览',()=>{history.push(offset);offset=end;paint();});};
+    parent.replaceChildren(pre,controls);paint();
   };
-  $('settings-dialog').addEventListener('toggle',()=>{if($('settings-dialog').open)void renderRecovery();});
+  const readDetails=async(entry,parent,generation,token)=>{
+    if(generation!==recoveryGeneration||token!==recoveryDetailToken)return;
+    const got=await checked('workspace.recovery.detail',binding(entry));
+    if(generation!==recoveryGeneration||token!==recoveryDetailToken||!parent.isConnected)return;
+    const value=got.value,body=document.createElement('div'),actions=document.createElement('div');parent.replaceChildren(body,actions);
+    if(typeof value?.candidate?.text==='string')showText(body,value.candidate.text);
+    else body.textContent=JSON.stringify({kind:value?.kind,status:value?.status,relPath:value?.relPath,sourceDigest:value?.sourceDigest,retainedAt:value?.retainedAt,byteLength:got.byteLength,hasModel:!!value?.candidate?.model},null,2);
+    if(value?.candidate?.bytes)addButton(actions,'导出文档副本',()=>download((value.relPath||'recovery-document').split('/').pop(),decodeRecoveryBytes(value.candidate.bytes),'application/octet-stream'));
+    if(typeof value?.candidate?.text==='string')addButton(actions,'导出文本副本',()=>download((value.relPath||'recovery.txt').split('/').pop(),value.candidate.text,'text/plain;charset=utf-8'));
+    const reports=value?.collections?.managed_receipts?.map(row=>({id:row.id,report:row.value?.report,reference:'receipt'}))??[];
+    if(value?.report)reports.push({id:value.receiptId,report:value.report,reference:'report'});
+    for(const receipt of reports){
+      if(!receipt.report?.digest)continue;
+      const payload={...binding(entry),reference:receipt.reference,receiptId:receipt.id};
+      addButton(actions,'查看并导出保留报告',async()=>{const result=await checked('workspace.recovery.object',payload);if(token!==recoveryDetailToken||generation!==recoveryGeneration)return;const bytes=decodeRecoveryBytes(result.bytes);showText(body,new TextDecoder().decode(bytes));download('retained-'+(receipt.id||'report')+(receipt.report.format==='html-static'?'.html':'.md'),bytes,'application/octet-stream');});
+      addButton(actions,'完整导出保留报告',()=>checked('workspace.recovery.export',payload));
+    }
+    const messages=value?.collections?.managed_messages?.map(row=>row.value).filter(message=>typeof message.text==='string')??[];
+    if(messages.length)addButton(actions,'查看保留对话',()=>showText(body,messages.map(message=>`${message.speaker||message.target||'消息'}\n${message.text}`).join('\n\n')));
+    if(value?.kind==='object'&&value.digest)addButton(actions,'导出保留对象',()=>checked('workspace.recovery.export',{...binding(entry),reference:'object'}));
+  };
+  const showDetails=(entry,parent)=>{
+    if(recoveryDetail)recoveryDetail.replaceChildren();recoveryDetail=parent;parent.textContent='读取所选记录…';
+    recoveryDetailPending={entry,parent,generation:recoveryGeneration,token:++recoveryDetailToken};
+    if(!recoveryDetailFlight)recoveryDetailFlight=(async()=>{while(recoveryDetailPending){const item=recoveryDetailPending;recoveryDetailPending=null;try{await readDetails(item.entry,item.parent,item.generation,item.token);}catch(error){if(item.token===recoveryDetailToken){item.parent.textContent='未读取正文：'+error.message+'；原始记录保留，可完整导出。';workspace.toast(error.message);}}}})().finally(()=>{recoveryDetailFlight=null;if(recoveryDetailPending){const item=recoveryDetailPending;recoveryDetailPending=null;return showDetails(item.entry,item.parent);}});
+    return recoveryDetailFlight;
+  };
+  const renderRecovery=async({reset=true}={})=>{
+    if(recoveryLoading){if(reset){recoveryRefresh=true;recoveryGeneration++;}return;}
+    recoveryLoading=true;const generation=++recoveryGeneration;
+    recoveryDetailToken++;recoveryDetailPending=null;recoveryDetail?.replaceChildren();recoveryDetail=null;
+    if(reset){recoveryCursor=null;recoveryLoaded=0;recoveryList.replaceChildren();}
+    try{
+      const result=await checked('workspace.recovery.list',{cursor:recoveryCursor});if(generation!==recoveryGeneration)return;
+      recoveryCursor=result.nextCursor;recoveryLoaded+=result.entries.length;recoveryCount.textContent=String(recoveryLoaded)+(recoveryCursor?'…':'');recoveryCount.hidden=!recoveryLoaded;
+      recoveryNav.title=recoveryLoaded?`已读取 ${recoveryLoaded} 条本机记录${recoveryCursor?'，还有更多':''}`:'查看及导出本机恢复记录';
+      if(!recoveryLoaded&&!recoveryCursor){recoveryList.textContent='没有本机恢复记录。';return;}
+      for(const entry of result.entries){
+        const value=entry.value??{},section=document.createElement('section'),heading=document.createElement('h3'),preview=document.createElement('p'),detailBody=document.createElement('div');
+        section.dataset.recoveryId=entry.id;
+        heading.textContent=`${entry.project.name||entry.project.id}${entry.project.removed?'（已移除）':''} · ${value.relPath||value.kind||value.recoveryKind||'恢复记录'}${value.relPathTruncated?'（路径预览）':''}`;
+        preview.textContent=value.needsCheck?'原始记录保留，状态或格式需核查；较大记录可直接完整导出。':`${value.status||'本机保留'} · ${entry.byteLength??0} 字节 · 不自动重放`;
+        section.append(heading,preview,detailBody);
+        if(value.recoveryKind==='lifecycle')addButton(section,'核查停稳状态',async()=>{const result=await checked('project.lifecycle.reconcile',{projectId:entry.project.id,operationId:value.operationId});showText(detailBody,JSON.stringify(result,null,2));});
+        else{
+          addButton(section,'查看完整详情',()=>showDetails(entry,detailBody));
+          addButton(section,'导出完整恢复记录',()=>checked('workspace.recovery.export',binding(entry)));
+          if(entry.id.startsWith('managed:')&&!value.needsCheck){
+            const requestKey=crypto.randomUUID();
+            addButton(section,'核对并恢复到项目…',async()=>{if(!window.confirm('先保留输入并停止该项目执行，再核对并恢复成果；不会重跑模型。是否继续？'))return;const result=await checked('workspace.recovery.settle',{projectId:entry.project.id,pendingId:entry.id,requestKey,confirmed:true});if(result.accepted)await renderRecovery();else showText(detailBody,JSON.stringify(result,null,2));});
+          }
+        }
+        recoveryList.append(section);
+      }
+      if(recoveryCursor){const more=addButton(recoveryList,'加载更多',async()=>{more.remove();await renderRecovery({reset:false});});}
+    }catch(error){if(generation===recoveryGeneration)workspace.toast('恢复记录读取失败：'+error.message);}
+    finally{recoveryLoading=false;if(recoveryRefresh){recoveryRefresh=false;if($('settings-dialog').open&&!recoverySection.hidden)void renderRecovery();}}
+  };
   recoveryNav.addEventListener('click',()=>void renderRecovery());
+  $('settings-dialog').addEventListener('close',()=>{recoveryGeneration++;recoveryDetailToken++;recoveryDetailPending=null;recoveryDetail?.replaceChildren();recoveryDetail=null;recoveryRefresh=false;});
 } else { for(const section of ['settings-recovery','settings-update']){document.querySelector('[data-settings-section="'+section+'"]')?.setAttribute('hidden','');$(section)?.setAttribute('hidden','');} }
 window.__nozeliUpdateState=async()=>{
   const queued=actions;await queued;
@@ -2328,7 +2365,7 @@ function syncExecuteLinks() {
 }
 function updateExecuteStatuses(state, projectId) {
   ui.executeLinks ||= new Map();
-  if (!state || projectId !== ui.project?.id) return;
+  if (!state || projectId !== ui.project?.id || !ui.executeLinks.size) return;
   const records = managedWorkRecords(state);
   for (const [annotationId, link] of ui.executeLinks) {
     if (link.projectId !== ui.project?.id) continue;
@@ -3052,7 +3089,7 @@ async function openBesideSnapshot(file, diff=false, left=null) {
   conversationFailure.append(connectionTitle,connectionReason,retryConversation,connectionDetails,closeConnection);document.body.append(conversationFailure);
   closeConnection.onclick=()=>conversationFailure.close();retryConversation.onclick=()=>{conversationFailure.close();$('workspace-open-conversation').click();};connectionDetails.onclick=()=>{conversationFailure.close();window.dispatchEvent(new Event('nozeli-agent-details'));};
   function showConversationFailure(error){if(workspaceScope.role!=='shell')return;connectionReason.textContent=error?.message||'会话连接不可用，草稿保留。';if(!conversationFailure.open)conversationFailure.showModal();}
-  window.nozeli.subscribe('workspace.control',event=>{if(event.type==='conversation-unavailable'){conversationErrors.set(event.projectId,event.error);if(event.projectId===ui.project?.id){refreshConversationLauncher();if(isConversation){if(!event.retained)$('composer').disabled=true;$('send-message').disabled=true;}else if(!event.retained)showConversationFailure(event.error);}}});
+  window.nozeli.subscribe('workspace.control',event=>{if(event.type==='conversation-unavailable'){conversationErrors.set(event.projectId,event.error);if(event.projectId===ui.project?.id){refreshConversationLauncher();if(isConversation&&!event.retained){$('composer').disabled=true;$('send-message').disabled=true;}else if(!isConversation&&!event.retained)showConversationFailure(event.error);}}});
   $('workspace-open-conversation').addEventListener('click',async()=>{const projectId=ui.project?.id;if(!projectId)return;const button=$('workspace-open-conversation');button.disabled=true;try{const result=await invoke('workspace.control',{type:'conversation-action',projectId,action:'open',groupId:workspaceGroups.activeGroup()});if(!result.ok)showConversationFailure(result.error);else conversationErrors.delete(projectId);}catch(error){showConversationFailure(error);}finally{refreshConversationLauncher();}});
       let openingExternal=false, externalAgain=false;
       async function drainExternalOpen(){

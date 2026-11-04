@@ -217,12 +217,13 @@ test('refused effect stays refused: no retry, receipt preserved, no model fanout
   assert.equal(result.ok,false);assert.equal(result.error.code,'PERMISSION_DENIED');
   assert.equal(result.continueTurn,true,'denial returns control without executing');
   assert(!c.store.state.jobs.some(j=>j.type==='maintenance'||j.type==='backstage'));
-  // Receipt-space reservation refusal stops the turn instead of executing.
+  // A read cannot consume the reserved receipt space or terminate the user's turn.
   c.contextBudget.beginRun({target:'frontdesk',runId:'r-full',epoch:'e'});
   c.contextBudget.charge('frontdesk',c.contextBudget.limits.runHostTextMaxBytes-c.contextBudget.limits.receiptReserveBytes+1,{kind:'host-text'});
   const refused=await c.onTool('frontdesk',{tool:'nozeli_history_read',arguments:{readRef:'x'},callId:'call-2'});
-  assert.equal(refused.hostControl,true,'typed host-control stop, no read loop');
-  assert.equal(refused.continueTurn,undefined);
+  assert.equal(refused.ok,false);assert.equal(refused.error.code,'HOST_CONTEXT_BUDGET_EXHAUSTED');
+  assert.equal(refused.continueTurn,true);assert.equal(refused.hostControl,undefined);
+  assert.equal(c.store.state.jobs.filter(j=>j.type==='maintenance'||j.type==='backstage').length,0);
   c.current.delete('frontdesk');
 });
 
@@ -400,13 +401,13 @@ test('long paper: run-cap pause is typed, and a new run continues the same froze
   await c.store.activate(work.id);
   const stableRefFor=reader=>reader.addStable(`work/${work.id}/request`,original,{title:'原始任务（不可改写）',source:`work:${work.id}:request`,kind:'task-scope'});
   const admit=()=>{const job={id:randomUUID(),target:work.id,type:'supplement',text:'读取全文',context:{},revision:1};job.reader=new ContextReader();const ref=stableRefFor(job.reader);c.current.set(work.id,job);return {job,ref};};
-  // Run 1: page until the run budget pauses with a typed host-control stop.
+  // Run 1: page until the read budget denies more text without aborting the native turn.
   let {ref}=admit();
   c.contextBudget.beginRun({target:work.id,runId:'run-1',epoch:c.contextEpochKey(work.id)});
   let joined='',lastEnd=0,paused=false;
   for(let page=0;;page++){
     const value=await c.onTool(work.id,{tool:'nozeli_history_read',arguments:{readRef:ref,offset:lastEnd||undefined},callId:'p1-'+page});
-    if(value.ok===false){assert.equal(value.error.code,'HOST_CONTEXT_BUDGET_EXHAUSTED');assert.equal(value.hostControl,true,'typed pause, not silent truncation');paused=true;break;}
+    if(value.ok===false){assert.equal(value.error.code,'HOST_CONTEXT_BUDGET_EXHAUSTED');assert.equal(value.continueTurn,true,'recoverable denial, not silent truncation');assert.equal(value.hostControl,undefined);paused=true;break;}
     joined+=value.text;lastEnd=value.endOffset;assert.equal(value.version,createHash('sha256').update(original).digest('hex'),'same frozen version on every page');
     if(value.endOffset>=value.totalChars)break;
   }
@@ -542,13 +543,14 @@ test('every host read tool shares the budget: per-tool charge, typed exhaustion 
     assert.ok(c.contextBudget.run('frontdesk').usedBytes>usedAfterDoc,tool+' charged against the same budget');
     assert.notEqual(value?.error?.code,'HOST_CONTEXT_BUDGET_EXHAUSTED');
   }
-  // 3) Exhaust the run budget: the NEXT read is denied with typed hostControl
+  // 3) Exhaust the run budget: the NEXT read is recoverably denied,
   //    and the executor is never called (no body produced at all).
   c.contextBudget.charge('frontdesk',c.contextBudget.limits.runHostTextMaxBytes-c.contextBudget.run('frontdesk').usedBytes,{kind:'host-text'});
   const readsBefore=calls.reads;
   const denied=await c.onTool('frontdesk',{tool:'nozeli_document_read',arguments:{relPath:'doc.md'},callId:'doc-2'});
   assert.equal(denied.ok,false);assert.equal(denied.error.code,'HOST_CONTEXT_BUDGET_EXHAUSTED');
-  assert.equal(denied.hostControl,true,'typed stop, no continueTurn loop');
+  assert.equal(denied.continueTurn,true,'current native turn can still answer or perform non-read actions');assert.equal(denied.hostControl,undefined);
+  assert.deepEqual(c.store.state.jobs.find(saved=>saved.id===job.id).readBudget,{status:'exhausted',code:'HOST_CONTEXT_BUDGET_EXHAUSTED'});
   assert.equal(calls.reads,readsBefore,'zero executor calls after exhaustion');
   // 4) Writes are NOT read-gated: apply still routes to the executor.
   const write=await c.onTool('frontdesk',{tool:'nozeli_document_apply',arguments:{relPath:'doc.md',replacements:[]},callId:'apply-1'});
@@ -636,4 +638,27 @@ test('local context provenance remains readable without waking an owner, while s
  assert.equal(details.contextDetails.lastRequest.userText.exact,'原始输入\n  保留空白 ');
  assert.equal(c.sessions.size,0);assert.equal(native.calls.length,0);
  assert.throws(()=>c.sessionOptions('frontdesk','retired-owner'),{code:'INTERACTION_STALE'});
+});
+
+test('oversized document metadata yields frozen pages and an answer in one admitted user turn',async t=>{
+ let controller,file,readCalls=0;const text=('<p>轨道🙂 &quot;source&quot;</p>\n').repeat(500),version=createHash('sha256').update(text).digest('hex');
+ const {c,native}=await open(t,async(userText)=>{
+  assert.equal(userText,'核对冻结文档，不要重发我的输入。');
+  let response=await controller.onTool('frontdesk',{tool:'nozeli_document_read',arguments:{relPath:'orbit.html'},callId:'document-first'}),joined='',offset=0,pages=0;
+  while(response.ok){
+   const page=response.value;assert.equal(page.offset,offset);assert.equal(page.version,version);assert.equal(page.readHandle,'document-edit-identity');assert.equal(response.hostControl,undefined);
+   assert.ok(Buffer.byteLength(JSON.stringify(response))<16000);joined+=page.text;offset=page.endOffset;pages++;
+   if(!page.nextReadRef)break;
+   if(pages===1)await fs.writeFile(file,'NEW DISK CONTENT MUST NOT REPLACE FROZEN PAGES');
+   response=await controller.onTool('frontdesk',{tool:'nozeli_document_read',arguments:{readRef:page.nextReadRef},callId:'document-page-'+pages});
+  }
+  assert.equal(response.ok,true);assert.equal(joined,text);assert.equal(offset,text.length);assert.ok(pages>1);assert.equal(readCalls,1);
+  return {text:'已完成冻结文档核对；读取期间的磁盘修改未混入结论。'};
+ });controller=c;file=path.join(c.store.content,'orbit.html');await fs.writeFile(file,text);
+ c.frontdeskDocuments=async({op})=>{assert.equal(op,'read');readCalls++;return {ok:true,value:{relPath:'orbit.html',text:await fs.readFile(file,'utf8'),version,readHandle:'document-edit-identity',authorship:{largeLocalLedger:'not-document-body'.repeat(10000)}}};};
+ await c.start();const accepted=await c.send('frontdesk','核对冻结文档，不要重发我的输入。',{requestKey:'bounded-document-same-turn'});
+ const job=await waitFor(()=>c.store.state.jobs.find(job=>job.id===accepted.jobId&&job.status==='completed'),'bounded read final answer');
+ assert.equal(native.calls.length,1);assert.equal(job.completion,'provider-completed');assert.equal(job.text,'核对冻结文档，不要重发我的输入。');
+ assert.equal(c.store.state.jobs.filter(job=>job.target==='frontdesk').length,1);assert.equal(c.store.state.messages.filter(message=>message.speaker==='user').length,1);
+ assert.equal(await fs.readFile(file,'utf8'),'NEW DISK CONTENT MUST NOT REPLACE FROZEN PAGES');
 });

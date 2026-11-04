@@ -38,8 +38,11 @@ test('discussion history discovers every native assistant segment after cold ope
  const c=await Controller.open({runtimeRoot:runtime,contentRoot:project,projectHome:async()=>{},storage:host.storage,projectId:p.id});t.after(async()=>{await c.stop();await host.storage.db.close();await fs.rm(root,{recursive:true,force:true});});
  await c.store.mutate(()=>{c.store.state.jobs=[{id:'history-job',target:'frontdesk',status:'completed',context:{},collabAttempts:[{requestId:'native-request',sessionId:'s',epoch:'s#0'}]}];});
  const fact=(id,role,text)=>({sessionId:'s',epoch:'s#0',requestId:'native-request',jobId:'history-job',entry:{id,type:'message',parentId:null,message:{role,content:[{type:'text',text}]}}});
- await c.timeline.recordBatch([fact('input','user','Do not duplicate this input'),fact('first','assistant','First segment'),fact('tool','toolResult','Tool log'),fact('last','assistant','Last segment')],'frontdesk');
- const expected=c.timeline.frame().entries.filter(e=>e.speaker==='agent').map(e=>e.id);assert.equal(expected.length,2);await c.stop();
+ const large='Retained assistant body '.repeat(20000),largeTool='Tool log '.repeat(40000);
+ await c.timeline.recordBatch([fact('input','user','Do not duplicate this input'),fact('first','assistant','First segment'),fact('tool','toolResult',largeTool),fact('large','assistant',large),fact('last','assistant','Last segment')],'frontdesk');
+ const expected=c.timeline.records().filter(e=>['first','large','last'].includes(e.entryId)).map(e=>e.id);await c.stop();
  const result=await manager.invoke('managed.timeline.request',{projectId:p.id,requestId:'history-job'});assert.deepEqual(result.ids,expected);assert.equal(result.nextOffset,null);assert.equal(manager.controllers.size,0);
+ const restored=await manager.invoke('managed.timeline.read',{projectId:p.id,id:expected[1]});assert.equal(restored.entry.speaker,'agent');assert.equal(restored.entry.availability,'read-required');
+ const chunk=await manager.invoke('managed.timeline.read',{projectId:p.id,id:expected[1],version:restored.entry.read.version,field:'text',offset:0,limit:16384});assert.equal(chunk.entry.content,large.slice(0,chunk.entry.content.length));
  assert.deepEqual((await manager.invoke('managed.timeline.request',{projectId:p.id,requestId:'foreign-job'})).ids,[]);await assert.rejects(manager.invoke('managed.timeline.request',{projectId:p.id,requestId:'history-job',offset:-1}));assert.equal(await fs.readFile(path.join(project,'a.md'),'utf8'),'Unchanged source');
 });

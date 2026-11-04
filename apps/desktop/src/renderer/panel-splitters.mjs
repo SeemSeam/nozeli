@@ -1,6 +1,6 @@
 const $ = id => document.getElementById(id);
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(Math.max(lo, hi), v));
-const initial = { filesWidth:174, sideWidth:288, workRatio:53.5 };
+const initial = { filesWidth:174, sideWidth:288 };
 
 // Handles live above document/iframe content; pointer capture keeps drags continuous.
 export function mountPanelSplitters({ state, render, save }) {
@@ -21,14 +21,11 @@ export function mountPanelSplitters({ state, render, save }) {
   const widthRange=key=>{const s=state(),other=key==='filesWidth'?(s.sideCollapsed?38:rect('side').width):(s.filesCollapsed?38:rect('files').width);return [key==='filesWidth'?140:180,Math.min(650,innerWidth-other-44-62-280)];};
   make('files-divider','调整文件栏宽度','x','filesWidth',()=>{if(!reading()||innerWidth<=1000||state().filesCollapsed)return null;const r=rect('files');return {left:r.right,top:r.top,width:10,height:r.height};},()=>widthRange('filesWidth'),d=>d);
   make('side-divider','调整工作栏宽度','x','sideWidth',()=>{if(!reading()||innerWidth<=1000||state().sideCollapsed)return null;const r=rect('side');return {left:r.left-10,top:r.top,width:10,height:r.height};},()=>widthRange('sideWidth'),d=>-d);
-  const workflow=()=>document.querySelector('.workflow-panel').getBoundingClientRect();
-  make('work-divider','调整工作与待办高度','y','workRatio',()=>{if(!reading()||(innerWidth<=1000?!state().drawerSideOpen:state().sideCollapsed))return null;const r=workflow();return {left:r.left,top:r.bottom,width:r.width,height:10};},()=>{const h=$('sidebar-body').clientHeight-10;const min=Math.min(45,140/Math.max(1,h)*100);return[min,100-min];},d=>d/Math.max(1,$('sidebar-body').clientHeight-10)*100);
   function layout(){
     frame=0;const s=state();let fw=s.filesWidth??initial.filesWidth,sw=s.sideWidth??initial.sideWidth;
     const budget=Math.max(320,innerWidth-44-62-280),total=(s.filesCollapsed?38:fw)+(s.sideCollapsed?38:sw);
     if(total>budget){const ratio=budget/total;fw=Math.max(140,fw*ratio);sw=Math.max(180,sw*ratio);}
     $('app').style.setProperty('--files',s.filesCollapsed?'38px':fw+'px');$('app').style.setProperty('--side',s.sideCollapsed?'38px':sw+'px');
-    $('sidebar-body').style.setProperty('--work-ratio',(s.workRatio??initial.workRatio)+'fr');$('sidebar-body').style.setProperty('--inbox-ratio',(100-(s.workRatio??initial.workRatio))+'fr');
     for(const {node,key,geometry,range} of handles){const r=geometry();node.hidden=!r;if(!r)continue;for(const [k,v]of Object.entries(r))node.style[k]=v+'px';const [lo,hi]=range();node.setAttribute('aria-valuemin',Math.round(lo));node.setAttribute('aria-valuemax',Math.round(hi));node.setAttribute('aria-valuenow',Math.round(s[key]??initial[key]));}
   }
   function refresh(){if(!frame)frame=requestAnimationFrame(layout);}

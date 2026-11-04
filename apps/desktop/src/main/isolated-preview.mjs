@@ -1,3 +1,4 @@
+import {applyViewGeometry} from './view-geometry.mjs';
 import {randomUUID, createHash} from 'node:crypto';
 import fs from 'node:fs/promises';
 import {constants} from 'node:fs';
@@ -6,6 +7,7 @@ import {parser as htmlParser} from '@lezer/html';
 import {parser as javascriptParser} from '@lezer/javascript';
 import {parser as cssParser} from '@lezer/css';
 import { withReportReaderStyle, upgradeReportReaderStyle, reportAccentCss } from '../agents/managed/report-reader-style.mjs';
+import {validateDocumentSource,sameDocumentSource} from '../domain/document-source.mjs';
 
 export const PREVIEW_LIMITS=Object.freeze({files:128,fileBytes:8*1024*1024,totalBytes:32*1024*1024});
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
@@ -125,16 +127,30 @@ async function diskRead(host,project,rel){
   const handle=await fs.open(located.abs,constants.O_RDONLY|(constants.O_NOFOLLOW||0)|(constants.O_NONBLOCK||0));
   try{const before=await handle.stat({bigint:true});if(before.ino!==entry.ino||before.dev!==entry.dev||before.size!==entry.size)throw fail('预览资源已变化。');const bytes=Buffer.alloc(Number(before.size)+1);let count=0;while(count<bytes.length){const r=await handle.read(bytes,count,bytes.length-count,count);if(!r.bytesRead)break;count+=r.bytesRead;}const after=await handle.stat({bigint:true}),current=await fs.lstat(located.abs,{bigint:true});if(count!==Number(before.size)||['dev','ino','size','mtimeNs','ctimeNs','nlink'].some(k=>before[k]!==after[k]||after[k]!==current[k]))throw fail('预览资源已变化。');await host.resolveFile(project,rel);return bytes.subarray(0,count);}finally{await handle.close();}
 }
-export async function capturePreview({host,workspace,projectId,entryPath,buffers=[]}){
-  const project=await host.requireProject(projectId),entry=previewPath(entryPath);if(!/\.html?$/i.test(entry))throw fail('请选择 HTML 入口。');
+export async function capturePreview({host,workspace,projectId,entryPath,buffers=[],documentSource}){
+  let source={type:'project'};try{source=validateDocumentSource(documentSource);}catch(error){throw fail('预览来源无效：'+error.message);}
+  const review=source.type!=='project',project=await host.requireProject(projectId),entry=previewPath(entryPath);if(!/\.html?$/i.test(entry))throw fail('请选择 HTML 入口。');
+  // Review captures read every body through the review adapter — the exact
+  // frozen candidate, saved human draft or pinned version this publication
+  // presents — keyed by the source-scoped buffer. The same-path project file
+  // is never read and never a fallback.
+  const reviewDocuments=review?host.requireReviewDocuments():null;
+  const reviewBytes=async rel=>{
+    const record=await reviewDocuments.read({projectId,source,relPath:rel});
+    const bytes=record.text!=null?Buffer.from(record.text,'utf8'):record.bytes??await reviewDocuments.currentBytes({projectId,source,relPath:rel});
+    if(bytes==null)throw fail('预览依赖缺失：'+rel+(record.unsupportedReason?'（'+record.unsupportedReason+'）':''));
+    if(record.digest&&record.digest!==hash(bytes))throw fail('审校文档内容与登记摘要不一致：'+rel);
+    return bytes;
+  };
   const releases=[];
   try{
-    for(const owner of workspace.projectRecords(projectId).filter(r=>!r.dead&&r.relPath&&types[path.posix.extname(r.relPath).toLowerCase()]))releases.push(await workspace.syncDocument({projectId,relPath:owner.relPath,hold:true,captureBuffer:true}));
-    const saved=new Map([...workspace.buffers].filter(([,v])=>v.projectId===projectId).map(([k,v])=>[k,{...v}]));
-    for(const assertion of buffers){const value=saved.get(workspace.resource(projectId,assertion.path));if(!value||value.revision!==assertion.version)throw fail('编辑缓冲版本已变化。');}
+    const frozenBaseline=source.type==='review-version'&&source.version.kind==='baseline';
+    if(!frozenBaseline)for(const owner of workspace.projectRecords(projectId).filter(r=>!r.dead&&r.relPath&&types[path.posix.extname(r.relPath).toLowerCase()]&&sameDocumentSource(source,r.documentSource)))releases.push(await workspace.syncDocument({projectId,relPath:owner.relPath,documentSource:source,hold:true,captureBuffer:true}));
+    const saved=new Map(frozenBaseline?[]:[...workspace.buffers].filter(([,v])=>v.projectId===projectId).map(([k,v])=>[k,{...v}]));
+    for(const assertion of buffers){const value=saved.get(workspace.resource(projectId,assertion.path,source));if(!value||value.revision!==assertion.version)throw fail('编辑缓冲版本已变化。');}
     const files=new Map(),pending=[entry];let total=0;
-    while(pending.length){const rel=pending.shift();if(files.has(rel))continue;if(files.size>=PREVIEW_LIMITS.files)throw fail('预览依赖超过 128 项。');const buffer=saved.get(workspace.resource(projectId,rel));if(buffer?.missing)throw fail('预览依赖已删除：'+rel);const bytes=typeof buffer?.text==='string'?Buffer.from(buffer.text):await diskRead(host,project,rel);total+=bytes.length;if(bytes.length>PREVIEW_LIMITS.fileBytes||total>PREVIEW_LIMITS.totalBytes)throw fail('预览快照超过资源预算。');const mediaType=types[path.posix.extname(rel).toLowerCase()];files.set(rel,{bytes,mediaType,digest:hash(bytes),version:buffer?.revision??null,dirty:buffer?.dirty===true});if(/\.(html?|css|m?js)$/i.test(rel))pending.push(...previewDependencies(rel,bytes.toString('utf8')));}
-    for(const [rel,file]of files){const current=workspace.buffers.get(workspace.resource(projectId,rel)),savedValue=saved.get(workspace.resource(projectId,rel));if(current?.revision!==savedValue?.revision)throw fail('捕获期间编辑缓冲已变化。');if(file.version===null&&hash(await diskRead(host,project,rel))!==file.digest)throw fail('捕获期间磁盘依赖已变化。');}
+    while(pending.length){const rel=pending.shift();if(files.has(rel))continue;if(files.size>=PREVIEW_LIMITS.files)throw fail('预览依赖超过 128 项。');const buffer=saved.get(workspace.resource(projectId,rel,source));if(buffer?.missing)throw fail('预览依赖已删除：'+rel);const bytes=typeof buffer?.text==='string'?Buffer.from(buffer.text):review?await reviewBytes(rel):await diskRead(host,project,rel);total+=bytes.length;if(bytes.length>PREVIEW_LIMITS.fileBytes||total>PREVIEW_LIMITS.totalBytes)throw fail('预览快照超过资源预算。');const mediaType=types[path.posix.extname(rel).toLowerCase()];files.set(rel,{bytes,mediaType,digest:hash(bytes),version:buffer?.revision??null,dirty:buffer?.dirty===true});if(/\.(html?|css|m?js)$/i.test(rel))pending.push(...previewDependencies(rel,bytes.toString('utf8')));}
+    for(const [rel,file]of files){const current=frozenBaseline?undefined:workspace.buffers.get(workspace.resource(projectId,rel,source)),savedValue=saved.get(workspace.resource(projectId,rel,source));if(current?.revision!==savedValue?.revision&&(current?.text!==savedValue?.text||current?.missing!==savedValue?.missing||current?.digest!==savedValue?.digest))throw fail('捕获期间编辑缓冲已变化。');if(file.version===null){const fresh=review?await reviewDocuments.currentBytes({projectId,source,relPath:rel}):await diskRead(host,project,rel);if(fresh===null||hash(fresh)!==file.digest)throw fail(review?'捕获期间审校文档已变化。':'捕获期间磁盘依赖已变化。');}}
     if((await host.requireProject(projectId)).root!==project.root)throw fail('项目目录已变化。');return {entry,files,projectId};
   }finally{for(const release of releases.reverse())release();}
 }
@@ -145,6 +161,21 @@ export function previewCsp(profile,origin="'self'"){const development=profile===
 // be synchronously borrowed to recover constructors. CORS is snapshot-only.
 export const OFFLINE_BOOTSTRAP=`(()=>{'use strict';for(const name of ['RTCPeerConnection','webkitRTCPeerConnection','RTCDataChannel','WebSocket','WebTransport','Worker','SharedWorker','open','alert','confirm','prompt','showOpenFilePicker','showSaveFilePicker','showDirectoryPicker'])Object.defineProperty(globalThis,name,{value:undefined,writable:false,configurable:false});Object.defineProperty(Navigator.prototype,'serviceWorker',{value:undefined,writable:false,configurable:false});})();`;
 export function previewUrlMember(raw,origin,files){try{const url=new URL(raw);if(url.origin!==origin||url.username||url.password||url.search||/%(?:2e|2f|5c|25)/i.test(url.pathname))return null;const rel=previewPath(decodeURIComponent(url.pathname.slice(1)));return files.has(rel)?rel:null;}catch{return null;}}
+// Served-only host end matter: a fixed, script-free footer at the report's true
+// content bottom. Anchors are per-slot unguessable same-origin URLs that never
+// load — will-navigate intercepts them and routes one explicit event to the
+// owning scope. No decisions live in the guest; frozen object bytes stay intact.
+const endMatterEscape=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const END_MATTER_STYLE='<style id="nozeli-end-style">.nozeli-end{margin-top:2.4em;padding-top:1em;border-top:1px solid light-dark(#c9d3de,#333f4d);display:flex;flex-wrap:wrap;gap:.6em 1.2em;align-items:baseline;font-size:.88em}.nozeli-end-review{font-weight:700}.nozeli-end-files{margin:0}.nozeli-end-files summary{margin:0}.nozeli-end-files ul{margin:.5em 0 0;padding-inline-start:1.4em}.nozeli-end-files li{margin:.2em 0;overflow-wrap:anywhere}@media print{.nozeli-end-review{display:none}.nozeli-end-files a{color:inherit}}</style>';
+function appendReportEndMatter(text,slot){
+  const items=slot.endFiles.map((relPath,index)=>'<li><a data-nozeli-endmatter-action="file" href="'+slot.endBase+'file/'+index+'">'+endMatterEscape(relPath)+'</a></li>').join('');
+  const review=slot.endMatter==='review'?'<a class="nozeli-end-review" data-nozeli-endmatter-action="review" href="'+slot.endBase+'review">成果与审核</a>':'';
+  const files=items?'<details class="nozeli-end-files"><summary>成果文件（'+slot.endFiles.length+'）</summary><ul>'+items+'</ul></details>':'';
+  if(!review&&!files)return text;
+  const section='<section class="nozeli-end" data-nozeli-report-endmatter aria-label="报告成果">'+END_MATTER_STYLE+review+files+'</section>';
+  const at=text.toLowerCase().lastIndexOf('</body>');
+  return at<0?text+section:text.slice(0,at)+section+text.slice(at);
+}
 
 export class IsolatedPreviewManager{
   constructor({WebContentsView,session,workspace,host,managedAgents,dialog}){Object.assign(this,{WebContentsView,session,workspace,host,managedAgents,dialog});this.slots=new Map();this.pending=new Map();this.generations=new Map();this.recoveryScopes=new Set();}
@@ -195,8 +226,7 @@ export class IsolatedPreviewManager{
     slot.bounds={x:bounds.x,y:bounds.y,width:bounds.width,height:bounds.height};
     const parent=slot.scope.role==='surface'?slot.scope.view.getBounds():{x:0,y:0,width:slot.scope.win.getContentSize()[0],height:slot.scope.win.getContentSize()[1]};
     const x=Math.max(0,Math.round(bounds.x)),y=Math.max(0,Math.round(bounds.y)),width=Math.max(0,Math.min(Math.round(bounds.x+bounds.width),parent.width)-x),height=Math.max(0,Math.min(Math.round(bounds.y+bounds.height),parent.height)-y);
-    slot.view.setBounds({x:parent.x+x,y:parent.y+y,width,height});
-    slot.view.setVisible(!slot.scope.transferring&&!slot.scope.previewRecoveryFailed&&width>0&&height>0&&(slot.scope.role!=='surface'||slot.scope.view.getVisible()));
+    applyViewGeometry(slot.view,{x:parent.x+x,y:parent.y+y,width,height},!slot.scope.transferring&&!slot.scope.previewRecoveryFailed&&width>0&&height>0&&(slot.scope.role!=='surface'||slot.scope.view.getVisible()));
   }
   snapshot(slot){const unsaved=[...slot.files.values()].some(f=>f.dirty);return {key:slot.key,generation:slot.generation,profile:slot.profile,projectId:slot.projectId,entryPath:slot.entry,origin:slot.origin,files:[...slot.files].map(([path,f])=>({path,digest:f.digest,version:f.version,dirty:f.dirty})),dirty:unsaved,unsaved};}
   // Enum-only appearance injection for live static reports: values come from the
@@ -224,6 +254,7 @@ export class IsolatedPreviewManager{
     if(!['isolated-preview.open','isolated-preview.update'].includes(op)){
       if(!old||p.generation!==undefined&&p.generation!==old.generation)throw fail('预览版本已失效。');
       if(op==='isolated-preview.bounds'){this.bounds(old,p.bounds);return {updated:true};}
+      if(op==='isolated-preview.focus'){if(old.closed||old.scope.dead||!old.view.getVisible?.())throw fail('报告当前不可聚焦。');old.view.webContents.focus();return {focused:true};}
       if(op==='isolated-preview.snapshot')return this.snapshot(old);
       if(op==='isolated-preview.reference.save'){
         const reference=old.manifest?.references?.find(ref=>String(ref.id)===String(p.referenceId));
@@ -246,17 +277,31 @@ export class IsolatedPreviewManager{
       if(op==='isolated-preview.print'){if(old.profile==='offlineDevelopment'&&!/\.html?$/i.test(old.entry))throw fail('仅 HTML 预览支持打印。');return new Promise((resolve,reject)=>old.view.webContents.print({silent:p.silent===true,printBackground:true},(ok,reason)=>ok?resolve({printed:true}):reject(fail(reason))));}
       throw fail('未知预览操作。');
     }
-    if(p.projectId!==scope.projectId||!['staticReport','offlineDevelopment'].includes(p.profile)||!Number.isSafeInteger(p.generation)||p.generation<1||p.generation<=(this.generations.get(id)||0))throw fail('预览项目、配置或版本无效。');
+    if(p.projectId!==scope.projectId||!['staticReport','offlineDevelopment'].includes(p.profile)||!Number.isSafeInteger(p.generation)||p.generation<1||p.generation<=(this.generations.get(id)||0)||(p.endMatter!==undefined&&p.endMatter!==true&&p.endMatter!=='files'))throw fail('预览项目、配置或版本无效。');
+    // Preserve exact-source capture; the only additional grant is the frozen
+    // baseline sibling of this review publication's owning HTML entry.
+    const ownerSource=scope.role==='surface'&&scope.kind==='document'?validateDocumentSource(scope.documentSource):{type:'project'};
+    let documentSource=ownerSource;
+    if(p.documentSource!==undefined){
+      let proposed;try{proposed=validateDocumentSource(p.documentSource);}catch(error){throw fail('预览来源无效：'+error.message);}
+      const baselineSibling=ownerSource.type!=='project'&&proposed.type==='review-version'&&proposed.version.kind==='baseline'&&proposed.workId===ownerSource.workId&&proposed.objectId===ownerSource.objectId&&p.profile==='offlineDevelopment'&&p.entryPath===scope.relPath;
+      if(!sameDocumentSource(proposed,ownerSource)&&!baselineSibling)throw fail('预览来源与当前文档不一致。');
+      documentSource=proposed;
+    }
+    if(p.profile==='offlineDevelopment'&&ownerSource.type!=='project'&&p.entryPath!==scope.relPath)throw fail('预览入口与当前审校文档不一致。');
     const generation=p.generation;this.generations.set(id,generation);const ownerGeneration=scope.generation;
     const previousPending=this.pending.get(id);if(previousPending)this.close(previousPending);
     const alive=()=>!scope.dead&&scope.generation===ownerGeneration&&scope.projectId===p.projectId&&this.generations.get(id)===generation;
     let snapshot,source,manifest;
     try{
       if(p.profile==='staticReport'){source=await this.managedAgents.reportSource(p.projectId,p.objectId);if(source.report?.format!=='html-static')throw fail('此报告不是静态 HTML。');const bytes=await source.read();manifest=await source.readManifest();snapshot={entry:'report.html',projectId:p.projectId,files:new Map([['report.html',{bytes,mediaType:'text/html',digest:hash(bytes),version:null,dirty:false}]])};}
-      else snapshot=await capturePreview({host:this.host,workspace:this.workspace,projectId:p.projectId,entryPath:p.entryPath,buffers:p.buffers});
+      else snapshot=await capturePreview({host:this.host,workspace:this.workspace,projectId:p.projectId,entryPath:p.entryPath,buffers:p.buffers,documentSource});
       if(!alive())throw fail('预览请求已过期。');
       const ses=this.session.fromPartition('isolated-preview-'+randomUUID(),{cache:false}),origin='https://'+randomUUID()+'.invalid',nonce=randomUUID().replaceAll('-','');
-      const slot={...snapshot,id,key:p.key,profile:p.profile,generation,scope,session:ses,origin,nonce,source,manifest};
+      const endMatter=p.profile==='staticReport'?(p.endMatter===true?'review':p.endMatter==='files'?'files':null):null;
+      const endFiles=endMatter?(await source.listArtifacts()).files.map(file=>file.relPath):[];
+      if(!alive())throw fail('预览请求已过期。');
+      const slot={...snapshot,id,key:p.key,profile:p.profile,generation,scope,session:ses,origin,nonce,source,manifest,endMatter,endFiles,endBase:endMatter?origin+'/__nozeli_report_end__/'+nonce+'/':null};
       const referenceTargets=new Map((manifest?.references||[]).map(ref=>[origin+'/__nozeli_report_reference__/'+encodeURIComponent(ref.id),ref]));
       slot.cancelled=new Promise(resolve=>slot.cancel=resolve);this.pending.set(id,slot);
       const cancellable=operation=>Promise.race([operation,slot.cancelled.then(error=>{throw error;})]);
@@ -276,6 +321,7 @@ export class IsolatedPreviewManager{
           // not a custom external protocol blocked by CSP sandbox.
           let text=upgradeReportReaderStyle(withReportReaderStyle(bytes.toString('utf8')));
           for(const [target,ref]of referenceTargets)text=text.replaceAll('href="nozeli-report-ref:'+ref.id+'"','href="'+target+'"');
+          if(slot.endMatter)text=appendReportEndMatter(text,slot);
           bytes=Buffer.from(text);
         }
         return new Response(request.method==='HEAD'?null:bytes,{headers:{'content-type':file.mediaType+'; charset=utf-8','content-security-policy':previewCsp(slot.profile,origin),'x-content-type-options':'nosniff','cache-control':'no-store','cross-origin-resource-policy':'cross-origin','access-control-allow-origin':'*','permissions-policy':'camera=(), microphone=(), geolocation=(), display-capture=(), usb=(), serial=(), bluetooth=(), payment=()'}});
@@ -289,7 +335,8 @@ export class IsolatedPreviewManager{
         // previews keep their original explicit pin.
         if(slot.profile==='offlineDevelopment'&&['light','dark'].includes(p.theme))wc.on('did-finish-load',()=>{void wc.insertCSS(':root{color-scheme:'+p.theme+'!important}',{cssOrigin:'user'}).catch(error=>this.emit(slot,'error',{message:error.message}));});
         if(slot.profile==='staticReport')wc.on('did-finish-load',()=>{void this.injectReportAppearance(slot);});
-        const navigation=(event,url)=>{const target=typeof url==='string'?url:url?.url??event.url;if(slot.profile==='offlineDevelopment'&&member(target)&&slot.files.get(member(target)).mediaType==='text/html')return;if(slot.profile==='staticReport'&&target?.startsWith(origin+'/report.html#'))return;event.preventDefault();if(slot.profile==='staticReport'){const ref=referenceTargets.get(target);if(ref)this.emit(slot,'reference',{reference:ref,referenceId:String(ref.id),objectId:p.objectId});}};
+        const navigation=(event,url)=>{const target=typeof url==='string'?url:url?.url??event.url;if(slot.profile==='offlineDevelopment'&&member(target)&&slot.files.get(member(target)).mediaType==='text/html')return;if(slot.profile==='staticReport'&&target?.startsWith(origin+'/report.html#'))return;event.preventDefault();if(slot.profile==='staticReport'){const ref=referenceTargets.get(target);if(ref){this.emit(slot,'reference',{reference:ref,referenceId:String(ref.id),objectId:p.objectId});return;}
+          if(slot.endBase&&target?.startsWith(slot.endBase)){const action=target.slice(slot.endBase.length);if(action==='review'&&slot.endMatter==='review')this.emit(slot,'end-matter',{action:'review'});else{const file=/^file\/(\d{1,4})$/.exec(action),relPath=file?slot.endFiles[Number(file[1])]:null;if(relPath)this.emit(slot,'end-matter',{action:'file',relPath});}}}};
         wc.on('will-navigate',navigation);wc.on('will-frame-navigate',(event,url,_inPlace,legacyMainFrame)=>{const mainFrame=event.isMainFrame??legacyMainFrame;if(!mainFrame)event.preventDefault();else navigation(event,url??event.url);});
         wc.on('console-message',(_event,details,...legacy)=>this.emit(slot,'console',{level:details?.level??details,message:String(details?.message??legacy[0]??'').slice(0,2000)}));wc.on('render-process-gone',(_e,details)=>this.emit(slot,'error',{message:'预览进程已退出：'+details.reason}));wc.on('unresponsive',()=>this.emit(slot,'error',{message:'预览无响应；可关闭或刷新，编辑缓冲保留。'}));
         await cancellable(wc.loadURL(origin+'/'+slot.entry.split('/').map(encodeURIComponent).join('/')));if(!alive()||slot.closed)throw fail('预览请求已过期。');slot.parentWindow=scope.previewWindow??scope.win;slot.parentWindow.contentView.addChildView(slot.view);this.bounds(slot,p.bounds??old?.bounds??{x:0,y:0,width:0,height:0});this.workspace.demoControls?.raise();this.pending.delete(id);this.slots.set(id,slot);if(old)this.close(old);this.emit(slot,'ready',this.snapshot(slot));return this.snapshot(slot);

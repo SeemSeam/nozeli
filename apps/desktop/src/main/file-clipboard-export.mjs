@@ -20,8 +20,8 @@ async function durableGuard(ops,project,paths){
   const host=ops.host;
   const changes=await new FileChanges({storage:host.storage,projectId:project.id,root:project.root}).all();
   if(changes.some(row=>row.pending&&paths.some(rel=>under(row.relPath,rel))))fail('源文件有待恢复的修改批次，请先恢复后再复制。');
-  const recovery=await host.storage.listRecovery(project.id),cleanCanonical=new Map();
-  for(const {id,value} of recovery){
+  const cleanCanonical=new Map();
+  for await(const {id,value} of host.storage.recoveryRecords(project.id,{prefixes:['workspace:'],relPaths:paths})){
     if(!id.startsWith('workspace:')||id.includes(':retained:')||!value?.relPath||
       !paths.some(rel=>under(value.relPath,rel))||value.documentSource&&value.documentSource.type!=='project')continue;
     const retainedAt=Date.parse(value.retainedAt);
@@ -29,7 +29,7 @@ async function durableGuard(ops,project,paths){
     const source=await ops.locate(project,value.relPath);
     if(cleanOfficeCapture(value,await fs.readFile(source)))cleanCanonical.set(value.relPath,Math.max(cleanCanonical.get(value.relPath)??-Infinity,retainedAt));
   }
-  for(const {id,value} of recovery){
+  for await(const {id,value} of host.storage.recoveryRecords(project.id,{prefixes:['draft:','workspace:'],relPaths:paths})){
     if(!value?.relPath||!paths.some(rel=>under(value.relPath,rel)))continue;
     // Provenance and other journals are not drafts. Workspace capture also
     // runs for clean readers, so status absence is not evidence of dirty input.

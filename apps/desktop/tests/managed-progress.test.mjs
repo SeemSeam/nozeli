@@ -15,3 +15,9 @@ test('ended work never occupies the open progress queue even with blocked techni
 test('accepted follow-up cannot appear as idle review while it waits for a draft',()=>{
  const s=state();s.jobs=[{id:'j',target:'b',type:'manual',status:'queued'}];s.drafts.b='draft';const p=managedProgress(s,'b');assert.match(p.works[0].text,/补充已接收.*草稿/);assert.match(p.requests[0].text,/草稿/);assert.equal(p.works.length,1);
 });
+test('completed current review outranks historical worker failures without changing history',()=>{
+ const s=state();s.works=[{id:'w',name:'Report',status:'review',revision:4,result:{objectId:'r4',revision:4}}];
+ s.jobs=[{id:'j1',target:'w',revision:1,status:'failed',error:'429'},{id:'j3',target:'w',revision:3,status:'failed',error:'ack timeout'},{id:'j4',target:'w',revision:4,status:'completed'}];
+ s.todos=[{id:'t4',workId:'w',kind:'result',objectId:'r4',revision:4,status:'open'}];const before=structuredClone(s);
+ const progress=managedProgress(s,'w');assert.equal(progress.works[0].status,'review');assert.match(progress.works[0].text,/等待结果审查/);assert.equal(progress.requests.length,0);assert.deepEqual(s,before);
+});

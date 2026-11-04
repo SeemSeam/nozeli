@@ -10,7 +10,7 @@ async function fixture(t){const root=await fs.mkdtemp(path.join(os.tmpdir(),'noz
   if(this.target==='frontdesk'){if(!job.text.startsWith('LIGHT'))await tool('nozeli_handoff',{reason:'fixture handoff'});}
   else if(this.target==='orchestrator'){
    if(job.type==='intake'){const [action,name,...words]=job.text.split(' ');if(action==='NEW')await tool('nozeli_dispatch',{name,brief:words.join(' ')});else if(action==='CONTINUE'||action==='STATUS'&&name!=='ALL'){const work=c.store.state.works.find(w=>(w.name||w.request)===name&&w.status!=='ended');await tool('nozeli_manage',{action:action.toLowerCase(),workId:work?.id,expectedRevision:work?.revision,text:words.join(' ')||'fixture detail'});}else await tool('nozeli_manage',{action:action.toLowerCase(),text:words.join(' ')||'fixture detail'});}
-  }else{await new Promise(r=>setTimeout(r,30));await tool('nozeli_publish',{kind: 'result', html: staticReport('Fixture verified result'), files: []});}
+  }else{await new Promise(r=>setTimeout(r,30));await tool('nozeli_publish',{kind: 'result', content: staticReport('Fixture verified result'), files: []});}
   return {threadId:this.threadId,turnId:randomUUID(),text:'Fixture reply'};
  }finally{this.busy=false;}} }
  const options={runtimeRoot:path.join(root,'data'),contentRoot:path.join(root,'content'),projectHome:async home=>fs.mkdir(home,{recursive:true}),sessionFactory:(spec,target)=>new Session(spec,target)};c=await openTestController(options);await c.store.mutate(()=>{for(const binding of Object.values(c.store.state.bindings))binding.provider='pi';});await c.start();t.after(async()=>{await c.stop();await fs.rm(root,{recursive:true,force:true});});return {c,turns,reopen:async()=>{await c.stop();c=await openTestController(options);await c.start();return c;}};}

@@ -48,7 +48,7 @@ function syntheticServer() {
       const toolRound = state.mode === 'scripted' && !text.includes('"role":"tool"');
       if (toolRound) {
         sendSSE([
-          { id: 's1', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index: 0, id: 'call_s1', type: 'function', function: { name: 'nozeli_publish', arguments: JSON.stringify({ kind: 'result', text: 'synthetic tool-driven result', files: [] }) } }] }, finish_reason: null }] },
+          { id: 's1', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index: 0, id: 'call_s1', type: 'function', function: { name: 'nozeli_publish', arguments: JSON.stringify({ kind: 'result', content: 'synthetic tool-driven result', files: [] }) } }] }, finish_reason: null }] },
           { id: 's1', object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] },
         ]);
         state.mode = 'final';

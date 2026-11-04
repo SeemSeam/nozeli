@@ -1,3 +1,4 @@
+import {bindNativeUserEntries} from './restart-recovery.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
@@ -9,6 +10,11 @@ const PAGE_BYTES = 2 * 1024 * 1024;
 const CACHE_BYTES = 32 * 1024 * 1024;
 const READ_BYTES = 64 * 1024;
 const RESPONSE_BYTES = 128 * 1024;
+// Ordinary history pages never allocate a whole large immutable journal object.
+const HYDRATE_ENTRY_BYTES = 256 * 1024;
+const HYDRATE_BYTES = 2 * 1024 * 1024;
+// JSON.parse and public projection can transiently multiply archive size.
+const EXPLICIT_PARSE_BYTES = 8 * 1024 * 1024;
 const privateKey = key => /(?:readhandle|writehandle|capabilit|credential|password|secret|token|authorization|transport|roomkey|writekey|providerkey|apikey|socket|endpoint|sessionfile|runtimeroot|commondir)|^(?:auth|headers|cookie|cookies)$/i.test(key.replace(/[_-]/g,''));
 const publicValue = value => {
   if (Array.isArray(value)) return value.map(publicValue);
@@ -17,13 +23,21 @@ const publicValue = value => {
   try { const parsed=JSON.parse(value); if(parsed && typeof parsed==='object')return JSON.stringify(publicValue(parsed)); } catch {}
   return value.replace(/(?:\b[A-Za-z]:[\\/]|(?<![\w:/])\/(?!\/))[^\s"'<>`,;\]}]+/g,'[internal path]').replace(/\b(readHandle|capability|credentials?|password|secret|(?:access|refresh|write|room|api)[_-]?(?:token|key)|authorization)\s*[:=]\s*(?:"[^"\n]*"|'[^'\n]*'|[^\s,;}]+)/gi,'$1: [redacted]');
 };
+// Message or exact completed-turn evidence, never current session configuration.
+const historicalModel = (message, assistant = message?.role === 'assistant') => {
+  if (!assistant) return {};
+  const field = value => identity(value) ? publicValue(value) : null;
+  const provider = field(message?.provider), model = field(message?.model);
+  return {provider, model, modelStatus:model ? 'recorded' : 'not-recorded'};
+};
 const readFields = dto => Object.fromEntries([['text',dto.text],['reasoning',dto.reasoning],['tool.input',dto.tool?.input],['tool.output',dto.tool?.output],['toolCalls',dto.toolCalls]].filter(([,v]) => v != null).map(([key,value]) => [key,typeof value==='string'?value:JSON.stringify(value)]));
 const readDescriptor = dto => ({version:sha(JSON.stringify(dto)),fields:Object.entries(readFields(dto)).map(([field,value])=>({field,totalBytes:Buffer.byteLength(value)})),maxBytes:READ_BYTES});
 const boundedDTO = dto => {
   if (!dto) return dto;
+  if (dto.availability === 'read-required' && dto.read?.discoveryRequired) return dto;
   const read=readDescriptor(dto);
   if(Buffer.byteLength(JSON.stringify({entry:{...dto,read}}))<=RESPONSE_BYTES)return {...dto,read};
-  const metadata=Object.fromEntries(['id','sessionId','entryId','requestId','jobId','target','workId','revision','speaker','at','sequence','source','ownership','replacesId','durable','complete','status','failed'].filter(key=>dto[key]!=null).map(key=>[key,dto[key]]));
+  const metadata=Object.fromEntries(['id','sessionId','entryId','requestId','jobId','target','workId','revision','speaker','at','sequence','source','ownership','replacesId','durable','complete','status','failed','provider','model','modelStatus'].filter(key=>dto[key]!=null).map(key=>[key,dto[key]]));
   return {...metadata,text:'',availability:'read-required',reason:'消息超过单页预算；请分段读取原文',read};
 };
 const own = (value, key) => Object.hasOwn(value, key);
@@ -73,29 +87,50 @@ export class SessionIndex {
     this.cacheBytes = 0;
     this.streams = new Map();
     this.serial = Promise.resolve();
+    this.hydration = Promise.resolve();
+    this.deferred = new Map();
   }
   async initialize() {
     await fs.mkdir(this.root, {recursive:true, mode:0o700});
-    await this.store.mutateNative(() => { timelineState(this.store.state); });
-    await this.hydrate(this.records().slice(-200));
+    if (!this.store.state.sessionIndex) await this.store.mutateNative(() => { timelineState(this.store.state); });
+    else timelineState(this.store.state);
   }
   records() { return this.store.state.sessionIndex?.entries ?? []; }
   cacheEntry(key, value, bytes) {
+    if (bytes > HYDRATE_ENTRY_BYTES) {
+      this.deferred.set(key, true);
+      return;
+    }
     const old = this.cache.get(key);
     if (old) this.cacheBytes -= old.bytes;
     this.cache.delete(key); this.cache.set(key, {value, bytes}); this.cacheBytes += bytes;
-    while (this.cache.size > 512 || this.cacheBytes > CACHE_BYTES && this.cache.size > 1) {
+    while (this.cache.size > 512 || this.cacheBytes > CACHE_BYTES) {
       const [id, removed] = this.cache.entries().next().value;
       this.cache.delete(id); this.cacheBytes -= removed.bytes;
     }
   }
-  async object(record) {
+  async object(record, {maxBytes = EXPLICIT_PARSE_BYTES} = {}) {
     if (this.cache.has(record.id)&&!this.cache.get(record.id).value.unavailable) return this.cache.get(record.id).value;
     if (!/^[a-f0-9]{64}$/.test(record.objectId)) fail('TIMELINE_OBJECT', 'Invalid immutable journal reference');
     const file = path.join(this.root, record.objectId + '.json');
     const stat = await fs.lstat(file);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_ENTRY_BYTES) fail('TIMELINE_OBJECT', 'Unsafe or oversized native entry');
-    const bytes = await fs.readFile(file);
+    if (stat.size > maxBytes) fail('TIMELINE_BUDGET', 'Native entry requires explicit original reading');
+    const handle = await fs.open(file, 'r');
+    let bytes;
+    try {
+      const opened = await handle.stat();
+      if (!opened.isFile() || opened.size !== stat.size || opened.ino !== stat.ino || opened.dev !== stat.dev) fail('TIMELINE_OBJECT', 'Native journal archive changed during read');
+      const buffer = Buffer.allocUnsafe(stat.size + 1);
+      let length = 0;
+      while (length < buffer.length) {
+        const {bytesRead} = await handle.read(buffer, length, buffer.length - length, length);
+        if (!bytesRead) break;
+        length += bytesRead;
+      }
+      if (length !== stat.size) fail('TIMELINE_OBJECT', 'Native journal archive changed during read');
+      bytes = buffer.subarray(0, length);
+    } finally { await handle.close(); }
     if (sha(bytes) !== record.objectId) fail('TIMELINE_CORRUPT', 'Native journal archive digest mismatch');
     const value = JSON.parse(bytes);
     if (value.id !== record.entryId) fail('TIMELINE_CORRUPT', 'Native journal archive identity mismatch');
@@ -103,10 +138,26 @@ export class SessionIndex {
     return value;
   }
   async hydrate(records) {
-    await Promise.all(records.filter(r => r.objectId).map(async record => {
-      try { await this.object(record); }
-      catch (error) { this.cacheEntry(record.id, {unavailable:true, reason:error.code || error.message}, 128); }
-    }));
+    const operation = this.hydration.then(async () => {
+      let remaining = HYDRATE_BYTES;
+      for (const record of records) {
+        if (!record.objectId || this.cache.get(record.id)?.value && !this.cache.get(record.id).value.unavailable) continue;
+        try {
+          if (!/^[a-f0-9]{64}$/.test(record.objectId)) fail('TIMELINE_OBJECT', 'Invalid immutable journal reference');
+          const stat = await fs.lstat(path.join(this.root, record.objectId + '.json'));
+          if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_ENTRY_BYTES) fail('TIMELINE_OBJECT', 'Unsafe or oversized native entry');
+          if (stat.size > HYDRATE_ENTRY_BYTES || stat.size > remaining) {
+            this.deferred.set(record.id, record.objectId);
+            continue;
+          }
+          remaining -= stat.size;
+          await this.object(record, {maxBytes:HYDRATE_ENTRY_BYTES});
+          this.deferred.delete(record.id);
+        } catch (error) { this.cacheEntry(record.id, {unavailable:true, reason:error.code || error.message}, 128); }
+      }
+    });
+    this.hydration = operation.catch(() => {});
+    await operation;
   }
   recordBatch(facts, target) {
     const operation = this.serial.then(() => this.ingest(facts, target));
@@ -118,10 +169,13 @@ export class SessionIndex {
     const job=this.store.state.jobs?.find(j=>j.id===fact.jobId && j.target===target);
     if (!job || !identity(fact.requestId) || !identity(fact.epoch)) fail('TIMELINE_OWNER','Incomplete native job binding');
     const matches = row => row.jobId===job.id && row.requestId===fact.requestId && row.sessionId===fact.sessionId && row.epoch===fact.epoch;
-    const bound = job.manual
+    const recovery=job.restartRecovery;
+    const recovered=fact.recoveryAttemptId!=null;
+    const recoveryBound=recovered&&recovery?.kind==='native-continuation'&&recovery.sourceJobId===job.id&&recovery.recoveryAttemptId===fact.recoveryAttemptId&&identity(recovery.expectedLeafId)&&recovery.threadId===fact.sessionId&&recovery.requestId===fact.requestId&&recovery.ownerEpoch===fact.epoch&&recovery.ownerId===fact.ownerId&&job.collabAttempts?.some(a=>a.kind==='prompt'&&a.requestId===fact.requestId&&a.sessionId===fact.sessionId&&a.epoch===recovery.originalEpoch&&a.nativeEntryId===recovery.userEntryId&&!a.nativeEntryConflict);
+    const bound=recovered?recoveryBound:job.manual
       ? job.manualPromptId===fact.requestId && [...Object.values(this.store.state.sessionIndex?.manualAssociations??{}),...bindings].some(matches)
       : job.collabAttempts?.some(a=>a.requestId===fact.requestId && a.sessionId===fact.sessionId && a.epoch===fact.epoch);
-    if (!bound) fail('TIMELINE_OWNER','Native entry does not match a durable attempt');
+    if (!bound) fail('TIMELINE_OWNER','Native entry does not match a durable original or recovery attempt');
     return job;
   }
   async ingest(facts, target) {
@@ -159,6 +213,9 @@ export class SessionIndex {
         continue;
       }
       const record = {id, sessionId:fact.sessionId, entryId:entry.id, parentId:entry.parentId ?? null, epoch:fact.epoch ?? null, requestId:boundFact.requestId ?? null, jobId:job?.id ?? null, ownership:job?'verified':'unknown', target, revision:job?.revision ?? null, workId:!['frontdesk','orchestrator'].includes(target) ? target : null, objectId, at:entry.timestamp ?? null,...(identity(fact.streamId)?{replacesId:streamKey(fact.sessionId,fact.streamId)}:{})};
+      if(job&&identity(fact.recoveryAttemptId))record.recoveryAttemptId=fact.recoveryAttemptId;
+      const role = entry.type === 'message' ? entry.message?.role : null;
+      if (['assistant','user','toolResult','tool'].includes(role)) Object.assign(record, {speaker:role === 'assistant' ? 'agent' : role === 'user' ? 'user' : 'tool'}, historicalModel(entry.message));
       try {
         const handle = await fs.open(path.join(this.root, objectId + '.json'), 'wx', 0o600);
         try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
@@ -176,7 +233,7 @@ export class SessionIndex {
       if(!message||!['assistant','user'].includes(message.role)||message.role==='user'&&record.jobId)continue;
       const text=textOf(message.content);if(!text)continue;
       const objectDigest=await this.store.putObject(Buffer.from(text));
-      portable.push({id:record.id,target:record.target,speaker:message.role==='assistant'?'agent':'user',text,objectDigest,jobId:record.jobId,revision:record.revision,at:record.at,status:message.isError||['error','aborted'].includes(message.stopReason)?'failed':'completed',nativeEntryDigest:record.objectId});
+      portable.push({id:record.id,target:record.target,speaker:message.role==='assistant'?'agent':'user',...historicalModel(message),text,objectDigest,jobId:record.jobId,revision:record.revision,at:record.at,status:message.isError||['error','aborted'].includes(message.stopReason)?'failed':'completed',nativeEntryDigest:record.objectId});
     }
     await this.store.mutateNative(() => {
       const index = timelineState(this.store.state);index.portableMessages??=[];
@@ -184,6 +241,7 @@ export class SessionIndex {
       for (const {record} of prepared) { record.sequence = ++index.sequence; index.entries.push(record); }
       for(const update of updates){const record=index.entries.find(r=>r.id===update.id);if(record)Object.assign(record,update);}
       for(const binding of manualBindings){index.manualAssociations??={};index.manualAssociations[binding.id]=binding;const record=index.entries.find(r=>r.id===binding.id);if(record){if(record.jobId&&record.jobId!==binding.jobId)fail('TIMELINE_OWNER','Manual entry ownership changed');if(record.epoch!==binding.epoch||record.sessionId!==binding.sessionId)fail('TIMELINE_OWNER','Manual input epoch mismatch');Object.assign(record,{jobId:binding.jobId,requestId:binding.requestId,revision:binding.revision,ownership:'verified'});}}
+      bindNativeUserEntries(this.store.state,[...prepared.map(({record})=>record),...updates.map(update=>index.entries.find(record=>record.id===update.id)).filter(Boolean)]);
       index.portableMessages=index.portableMessages.filter(message=>!(message.speaker==='user'&&index.entries.some(record=>record.id===message.id&&record.jobId)));
     });
     for (const item of prepared) this.cacheEntry(item.record.id, item.entry, item.bytes);
@@ -191,10 +249,12 @@ export class SessionIndex {
       for (const [id, stream] of this.streams) if (stream.sessionId===record.sessionId&&stream.epoch===record.epoch&&stream.requestId===record.requestId&&stream.jobId===record.jobId&&(id===record.replacesId||stream.entryId===record.entryId)) this.streams.delete(id);
     }
   }
-  nativeDTO(record) {
-    const entry = this.cache.get(record.id)?.value;
-    if (!entry) return {...record, source:'native', speaker:'system', text:'', availability:'not-loaded'};
-    if (entry.unavailable) return {...record, source:'native', speaker:'system', text:'原生历史暂不可读取', availability:'unavailable', reason:entry.reason};
+  nativeDTO(record, loaded) {
+    const entry = loaded ?? this.cache.get(record.id)?.value;
+    const metadata = {...record, ...(record.speaker === 'agent' ? historicalModel(record, true) : {})};
+    if (!entry && this.deferred.has(record.id)) return {...metadata, source:'native', speaker:record.speaker ?? 'system', text:'', availability:'read-required', reason:'消息超过预览预算；可按需读取，较大原始记录请导出到可信本地位置', read:{version:record.objectId,fields:[],maxBytes:READ_BYTES,discoveryRequired:true,originalExport:{version:record.objectId}}};
+    if (!entry) return {...metadata, source:'native', speaker:record.speaker ?? 'system', text:'', availability:'not-loaded'};
+    if (entry.unavailable) return {...metadata, source:'native', speaker:record.speaker ?? 'system', text:'原生历史暂不可读取', availability:'unavailable', reason:entry.reason};
     const message = entry.type === 'message' ? entry.message : entry.type === 'custom_message' ? entry : null;
     if (!message) return null;
     const role = entry.type === 'custom_message' ? 'user' : message.role;
@@ -204,10 +264,16 @@ export class SessionIndex {
     if (!['user','assistant','toolResult','tool'].includes(role)) return null;
     const isTool=role==='toolResult'||role==='tool', content = isTool?publicValue(message.content):message.content, blocks = Array.isArray(content) ? content : [];
     const failed=message.isError===true||['error','aborted'].includes(message.stopReason);const completion={durable:true,complete:true,status:failed?'failed':'completed',failed};
+    Object.assign(completion, historicalModel(message));
     return {...record,...completion,source:'native',speaker:role==='assistant'?'agent':role==='user'?'user':'tool',text:textOf(content),availability:'available',...(isTool?{tool:{name:publicValue(message.toolName||message.name||'tool'),status:failed?'error':'complete',output:textOf(content),toolCallId:message.toolCallId}}:{}),...(blocks.some(b=>b.type==='thinking')?{reasoning:blocks.filter(b=>b.type==='thinking').map(b=>b.thinking??b.text??'').join('\n')}:{}),...(blocks.some(b=>b.type==='toolCall')?{toolCalls:blocks.filter(b=>b.type==='toolCall').map(b=>({id:b.id,name:publicValue(b.name),input:publicValue(b.arguments)}))}:{})};
   }
   legacyDTO(message) {
     const state = this.store.state, job = state.jobs?.find(j => j.id === message.jobId), receipt = message.objectId && state.receipts?.find(r => r.objectId === message.objectId);
+    // Host publication projections lack native message metadata; their settled
+    // source job still retains the observed model, even after owner reclamation.
+    const observed=message.speaker==='agent'&&job?.status==='completed'&&job.target===message.target&&(message.revision==null||message.revision===job.revision)&&identity(job.effective?.provider)&&identity(job.effective?.modelId)?job.effective:null;
+    const modelEvidence=message.model!=null||!observed||message.provider&&message.provider!==observed.provider?message:{provider:observed.provider,model:observed.modelId};
+    message = {...message, ...historicalModel(modelEvidence, message.speaker === 'agent')};
     const attachments=message.attachments??(message.speaker==='user'?(job?.context?.imageAttachments??[]).map((ref,i)=>({...ref,name:ref.name||'区域图片 '+(i+1)})):[]);
     const userInput=message.speaker==='user'&&job?.context?.userInput;
     return {...message, text:userInput?.text ?? message.text ?? receipt?.report?.excerpt ?? '',...(receipt?{report:receipt.report}:{}),...(userInput?{materialSources:userInput.sources}:{}),...(message.speaker==='user'&&job?.context?.drawingSources?{drawingSources:job.context.drawingSources}:{}), sequence:state.sessionIndex?.messageSequences?.[message.id] ?? 0, source:message.nativeEntryDigest?'portable':message.speaker === 'system' || message.publication || userInput || job ? 'host' : 'legacy', jobId:message.jobId ?? receipt?.sourceJobId ?? null, revision:message.revision ?? receipt?.revision ?? job?.revision ?? null, workId:!['frontdesk','orchestrator'].includes(message.target) ? message.target : null, attachments,...(receipt?.changeSetId ? {changeSetId:receipt.changeSetId} : {})};
@@ -259,7 +325,12 @@ export class SessionIndex {
     if (!identity(id)) fail('TIMELINE_IDENTITY', 'Invalid message identity');
     const record = this.records().find(row => row.id === id);
     let dto;
-    if(record){await this.object(record);dto=this.nativeDTO(record);}
+    if(record){
+      let entry;
+      try{entry=await this.object(record,{maxBytes:EXPLICIT_PARSE_BYTES});}
+      catch(error){if(error.code!=='TIMELINE_BUDGET')throw error;this.deferred.set(record.id,record.objectId);return this.nativeDTO(record);}
+      dto=this.nativeDTO(record,entry);
+    }
     else {
       const legacy=this.store.state.messages?.find(message=>message.id===id);
       if(!legacy)fail('TIMELINE_MISSING','Message is not in this project history');
@@ -293,12 +364,16 @@ export class SessionIndex {
     const entryId = fact.entryId;
     if (!identity(entryId)&&!identity(fact.streamId)) return;
     const id = identity(entryId)?nativeId(fact.sessionId, entryId):streamKey(fact.sessionId,fact.streamId);
+    // The accepted host input is already canonical. Native user events confirm
+    // admission; unlike assistant output they must never become a live bubble.
+    if(message?.role==='user'){this.streams.delete(id);return;}
     const previous=this.streams.get(id);if(previous&&(previous.epoch!==fact.epoch||previous.requestId!==fact.requestId||previous.jobId!==job.id))return;
     if (this.records().some(row => row.id === id)) return;
     const isTool=message?.role==='toolResult'||message?.role==='tool';
+    if (!['assistant','user','toolResult','tool'].includes(message?.role)) return;
     const text = textOf(isTool?publicValue(message.content):message?.content);
     if (Buffer.byteLength(text) > PAGE_BYTES) return;
-    this.streams.set(id, {id, entryId, sessionId:fact.sessionId, epoch:fact.epoch, requestId:fact.requestId, jobId:job.id, target, revision:job.revision, workId:!['frontdesk','orchestrator'].includes(target) ? target : null, speaker:'agent', text, source:'native', streaming:true, sequence:Number.MAX_SAFE_INTEGER});
+    this.streams.set(id, {id, entryId, sessionId:fact.sessionId, epoch:fact.epoch, requestId:fact.requestId, jobId:job.id, target, revision:job.revision, workId:!['frontdesk','orchestrator'].includes(target) ? target : null, speaker:isTool?'tool':message.role==='user'?'user':'agent', ...historicalModel(message), text, source:'native', streaming:true, sequence:Number.MAX_SAFE_INTEGER});
     while (this.streams.size > 16) this.streams.delete(this.streams.keys().next().value);
   }
   messages() {

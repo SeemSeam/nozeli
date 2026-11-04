@@ -1,0 +1,95 @@
+diff --git a/integrations/pi/vendor/pi-gui/packages/pi-sdk-driver/pi-sdk-driver.ts b/integrations/pi/vendor/pi-gui/packages/pi-sdk-driver/pi-sdk-driver.ts
+index 4e4250b..72b932c 100644
+--- a/integrations/pi/vendor/pi-gui/packages/pi-sdk-driver/pi-sdk-driver.ts
++++ b/integrations/pi/vendor/pi-gui/packages/pi-sdk-driver/pi-sdk-driver.ts
+@@ -82,6 +82,10 @@ export class PiSdkDriver implements SessionDriver {
+     return this.supervisor.sendUserMessage(sessionRef, input);
+   }
+ 
++  continueSession(sessionRef: SessionRef, beforeDispatch: () => Promise<void>): Promise<void> {
++    return this.supervisor.continueSession(sessionRef, beforeDispatch);
++  }
++
+   replaceQueuedMessages(
+     sessionRef: SessionRef,
+     messages: readonly SessionQueuedMessage[],
+diff --git a/integrations/pi/vendor/pi-gui/packages/pi-sdk-driver/session-supervisor.ts b/integrations/pi/vendor/pi-gui/packages/pi-sdk-driver/session-supervisor.ts
+index 7902ee7..2dcee73 100644
+--- a/integrations/pi/vendor/pi-gui/packages/pi-sdk-driver/session-supervisor.ts
++++ b/integrations/pi/vendor/pi-gui/packages/pi-sdk-driver/session-supervisor.ts
+@@ -962,6 +962,75 @@ export class SessionSupervisor {
+     await this.updateArchivedState(sessionRef, undefined);
+   }
+ 
++  /** Host-only cold continuation; never appends an initiating message. */
++  async continueSession(sessionRef: SessionRef, beforeDispatch: () => Promise<void>): Promise<void> {
++    const record = await this.ensureRecord(sessionRef);
++    await this.settleReloadsBeforeSend(record);
++    const session = this.requireSession(record);
++    if (session.isStreaming || record.promptStarting) throw new Error("Session is busy");
++    // Pinned pi-coding-agent 1.4.0: the public Agent.continue is wrapped in
++    // exactly AgentSession._startRun's post-run/settlement contract. Do not
++    // call _startRun: it prepares and appends a NEW initiating message.
++    const native = session as unknown as Record<string, any>;
++    for (const name of ["_prepareRun", "_omitRecoveryAttempt", "_handlePostAgentRun", "_runBeforeSettleBoundary", "_finishCancelledRetry", "_flushPendingBashMessages", "_flushPendingCustomMessages", "_emitAgentSettled"]) {
++      if (typeof native[name] !== "function") throw new Error(`Unsupported native continuation contract: ${name}`);
++    }
++    record.promptStarting = true;
++    record.cancellationRequested = false;
++    record.abortOnRunStart = false;
++    record.runningRunId = crypto.randomUUID();
++    record.status = "running";
++    record.updatedAt = nowIso();
++    try {
++      await this.persistSnapshot(record);
++      await this.emit(record, sessionUpdatedEvent(record));
++      native._isAgentRunActive = true;
++      native._agentRunAbortRequested = record.cancellationRequested;
++      try {
++        // Use the SDK's real before-agent-start/compaction/loadout preparation,
++        // but discard the initiating marker. It is a lifecycle trigger only:
++        // neither it nor an old user prompt enters the conversation again.
++        const marker = { role: "custom", customType: "nozeli-recovery", content: [], display: false, timestamp: Date.now() };
++        const prepared = await native._prepareRun({ messageType: "custom", message: marker });
++        for (const message of prepared) {
++          if (message === marker) continue;
++          session.sessionManager.appendMessage(message);
++          session.agent.appendMessage(message);
++        }
++        const last = session.agent.state.messages.at(-1);
++        if (last?.role === "assistant" && last.stopReason === "aborted") {
++          // SDK-native context edit: retain raw failed history, omit only the
++          // aborted attempt from model projection. Inspection fenced all tools.
++          native._omitRecoveryAttempt(last);
++        }
++        native._failedResponse = undefined;
++        await beforeDispatch();
++        if (!native._agentRunAbortRequested) await session.agent.continue();
++        while (!native._agentRunAbortRequested) {
++          if (await native._handlePostAgentRun()) {
++            if (native._agentRunAbortRequested) break;
++            await session.agent.continue();
++            continue;
++          }
++          if (native._agentRunAbortRequested || !(await native._runBeforeSettleBoundary())) break;
++          if (native._agentRunAbortRequested) break;
++          await session.agent.continue();
++        }
++      } finally {
++        if (native._agentRunAbortRequested) native._finishCancelledRetry();
++        native._failedResponse = undefined;
++        native._runSystemPromptOptions = undefined;
++        native._flushPendingBashMessages();
++        native._flushPendingCustomMessages();
++        await native._emitAgentSettled();
++      }
++    } finally {
++      record.promptStarting = false;
++      record.abortOnRunStart = false;
++      this.whenIdle(record);
++    }
++  }
++
+   async sendUserMessage(sessionRef: SessionRef, input: SessionMessageInput): Promise<void> {
+     const record = await this.ensureRecord(sessionRef);
+     await this.settleReloadsBeforeSend(record);

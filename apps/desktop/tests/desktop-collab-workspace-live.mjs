@@ -36,7 +36,7 @@ const project = path.join(root, 'project'), run = promisify(execFile);
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const checks = [], operations = [], observations = {streams: [], deviations: []}, owners = new Map();
 const expectedFaults = new Set();
-let collector, child, exit, browser, page, id, runtime, failure, inspectorURL, log = '';
+let collector, child, exit, browser, page, shellPage, id, runtime, failure, inspectorURL, log = '';
 const save = (name, value) => fs.writeFile(path.join(root, name), JSON.stringify(value, null, 2), {mode: 0o600});
 function check(name, value, evidence) {
   assert(value, name); checks.push({name, at: new Date().toISOString(), evidence});
@@ -44,6 +44,14 @@ function check(name, value, evidence) {
 async function invoke(op, payload = {}) {
   operations.push({layer: 'production-ipc', op, payload, at: Date.now()});
   const response = await page.evaluate(({op, payload}) => window.nozeli.invoke(op, payload), {op, payload});
+  if (!response.ok) throw Object.assign(Error(op + ': ' + response.error?.message), {response});
+  return response.value;
+}
+// Internal backend control channel from the main-window shell (never a user
+// conversation surface): trusted test/runtime control only.
+async function shellInvoke(op, payload = {}) {
+  operations.push({layer: 'production-ipc-shell-control', op, payload, at: Date.now()});
+  const response = await shellPage.evaluate(({op, payload}) => window.nozeli.invoke(op, payload), {op, payload});
   if (!response.ok) throw Object.assign(Error(op + ': ' + response.error?.message), {response});
   return response.value;
 }
@@ -66,17 +74,53 @@ async function click(selector) {
   await page.waitForSelector(selector, {visible: true});
   await page.locator(selector).setTimeout(15000).click();
 }
+// The main conversation permanently lives on its own conversation surface and
+// only targets frontdesk. All user input goes through that real composer.
+async function conversation() {
+  let found = null;
+  for (const p of await browser.pages()) {
+    if (await p.evaluate(() => window.__nozeliReady && window.__workspaceScope?.kind === 'conversation').catch(() => false)) { found = p; break; }
+  }
+  if (!found) {
+    await shellPage.waitForSelector('#workspace-open-conversation:not([disabled])', {timeout: 30000});
+    await shellPage.click('#workspace-open-conversation');
+    found = await wait(async () => {
+      for (const p of await browser.pages()) {
+        if (await p.evaluate(() => window.__nozeliReady && window.__workspaceScope?.kind === 'conversation').catch(() => false)) return p;
+      }
+      return false;
+    }, 'conversation surface');
+  }
+  if (!found.__collabObserved) {
+    found.__collabObserved = true;
+    // Observe actual renderer projections, not state.messages. No prompt interception.
+    await found.evaluate(() => {
+      window.__collabLiveObservations = {frames: [], domSamples: []};
+      new MutationObserver(() => {
+        const nodes = [...document.querySelectorAll('[data-message]')];
+        const ids = nodes.map(n => n.dataset.message);
+        const sample = {at: Date.now(), ids, native: nodes.filter(n => n.dataset.source === 'native').map(n => n.dataset.message), duplicate: new Set(ids).size !== ids.length};
+        if (sample.duplicate || nodes.some(n => n.querySelector('[role="status"]'))) window.__collabLiveObservations.domSamples.push(sample);
+      }).observe(document.querySelector('#conversation'), {childList: true, subtree: true, characterData: true});
+      window.nozeli.subscribe('agent', e => {
+        if (e.kind === 'managed-timeline') window.__collabLiveObservations.frames.push(e);
+      });
+    });
+  }
+  return found;
+}
 // A physical keypress returns before async draft persistence/admission completes.
 // Never treat a momentarily empty queue as this input's completed result.
 async function compose(text, background = false) {
+  const chat = await conversation();
   const previousJobs=new Set((await state()).jobs.map(job=>job.id));
-  await click('#composer');
-  await page.waitForFunction(()=>document.activeElement===document.querySelector('#composer'),{timeout:5000});
-  await page.keyboard.down('Control'); await page.keyboard.press('KeyA'); await page.keyboard.up('Control');
-  await page.keyboard.sendCharacter(text);
-  assert.equal(await page.$eval('#composer',node=>node.value),text,'Physical task input must remain in composer before dispatch');
-  if(background)await click('#managed-submit-task');
-  else {operations.push({layer:'real-dom-keyboard',key:'Control+Enter',at:Date.now()});await page.keyboard.down('Control');await page.keyboard.press('Enter');await page.keyboard.up('Control');}
+  await chat.click('#composer');
+  await chat.waitForFunction(()=>document.activeElement===document.querySelector('#composer'),{timeout:5000});
+  await chat.keyboard.down('Control'); await chat.keyboard.press('KeyA'); await chat.keyboard.up('Control');
+  await chat.keyboard.sendCharacter(text);
+  assert.equal(await chat.$eval('#composer',node=>node.value),text,'Physical task input must remain in composer before dispatch');
+  if(background){operations.push({layer:'programmatic-background',driver:'__agentSend',at:Date.now()});await chat.evaluate(()=>window.__agentSend({background:true}));}
+  else {operations.push({layer:'real-dom-keyboard',key:'Control+Enter',at:Date.now()});await chat.keyboard.down('Control');await chat.keyboard.press('Enter');await chat.keyboard.up('Control');}
   return wait(async()=>{const s=await state();return s.jobs.find(job=>!previousJobs.has(job.id)&&(job.text===text||job.text.startsWith(text+'\n\n')));},'exact input durable admission',30000);
 }
 async function timeline() {
@@ -144,26 +188,23 @@ async function launch() {
   await wait(async () => {try {return (await fetch('http://127.0.0.1:' + port + '/json/version')).ok;} catch {return false;}}, 'Electron debugging endpoint', 45000);
   inspectorURL=await wait(()=>log.slice(logOffset).match(/Debugger listening on (ws:\/\/127\.0\.0\.1:\d+\/\S+)/)?.[1],'owned main Inspector',15000);
   browser = await puppeteer.connect({browserURL: 'http://127.0.0.1:' + port, defaultViewport: null});
-  const target = await browser.waitForTarget(t => t.url().startsWith('http://127.0.0.1:'));
-  page = await target.page(); await page.waitForFunction(() => window.__nozeliReady);
-  // Observe actual renderer projections, not state.messages. No prompt interception.
-  await page.evaluate(() => {
-    window.__collabLiveObservations = {frames: [], domSamples: []};
-    new MutationObserver(() => {
-      const nodes = [...document.querySelectorAll('[data-message]')];
-      const ids = nodes.map(n => n.dataset.message);
-      const sample = {at: Date.now(), ids, native: nodes.filter(n => n.dataset.source === 'native').map(n => n.dataset.message), duplicate: new Set(ids).size !== ids.length};
-      if (sample.duplicate || nodes.some(n => n.querySelector('[role="status"]'))) window.__collabLiveObservations.domSamples.push(sample);
-    }).observe(document.querySelector('#conversation'), {childList: true, subtree: true, characterData: true});
-    window.nozeli.subscribe('agent', e => {
-      if (e.kind === 'managed-timeline') window.__collabLiveObservations.frames.push(e);
-    });
-  });
+  page = await wait(async () => {
+    for (const p of await browser.pages()) {
+      if (await p.evaluate(() => window.__workspaceScope?.role === 'shell' && window.__nozeliReady !== undefined).catch(() => false)) return p;
+    }
+    return false;
+  }, 'shell surface');
+  shellPage = page; await page.waitForFunction(() => window.__nozeliReady);
 }
 async function collectFrames() {
-  if (!page) return;
-  observations.streams.push(...await page.evaluate(() => window.__collabLiveObservations.frames.splice(0)));
-  observations.domSamples = [...(observations.domSamples || []), ...await page.evaluate(() => window.__collabLiveObservations.domSamples.splice(0))];
+  if (!browser) return;
+  let chat = null;
+  for (const p of await browser.pages()) {
+    if (await p.evaluate(() => window.__collabLiveObservations !== undefined).catch(() => false)) { chat = p; break; }
+  }
+  if (!chat) return;
+  observations.streams.push(...await chat.evaluate(() => window.__collabLiveObservations.frames.splice(0)));
+  observations.domSamples = [...(observations.domSamples || []), ...await chat.evaluate(() => window.__collabLiveObservations.domSamples.splice(0))];
 }
 async function close() {
   if (!page || !child || child.exitCode !== null || child.signalCode) return;
@@ -171,15 +212,35 @@ async function close() {
   assert.deepEqual(await Promise.race([exit, pause(90000).then(() => null)]), {code: 0, signal: null}, 'Normal app exit');
   await browser.disconnect(); browser = null; page = null;
 }
-async function selectWork(work) {
+// Work rows open the overview dialog or the frozen report surface — never a
+// Worker conversation. The conversation surface stays frontdesk throughout.
+async function openWorkView(work) {
+  const chat = await conversation();
   const row = '[data-managed-work="' + work.id + '"]';
-  if (await page.$eval('#toggle-sidebar', node => node.getAttribute('aria-expanded') !== 'true')) await click('#toggle-sidebar');
-  await page.waitForSelector(row);
-  await click(row + ' .managed-work-open');
-  await page.waitForFunction(target => document.querySelector('#conversation-panel').dataset.managedConversation === target, {}, work.id);
+  if (await chat.$eval('#toggle-sidebar', node => node.getAttribute('aria-expanded') !== 'true')) await chat.click('#toggle-sidebar');
+  await chat.waitForSelector(row);
+  const known = new Set(await browser.pages());
+  const dialogBefore = await chat.$('#managed-agent-details[open]');
+  await chat.click(row + ' .managed-work-open');
+  const opened = await wait(async () => {
+    if (!dialogBefore && await chat.$('#managed-agent-details[open]')) return 'overview';
+    for (const p of await browser.pages()) {
+      if (known.has(p)) continue;
+      if (await p.evaluate(() => window.__nozeliReady && window.__workspaceScope?.kind === 'report').catch(() => false)) return 'report';
+    }
+    return false;
+  }, 'work opens overview or frozen report: ' + (work.name || work.id));
+  check('Work row opens overview/frozen report and never a Worker conversation: ' + (work.name || work.id),
+    opened === 'overview' || opened === 'report');
+  assert.equal(await chat.$eval('#conversation-panel', node => node.dataset.managedConversation), 'frontdesk', 'conversation stays frontdesk');
+  if (opened === 'overview') {
+    await chat.keyboard.press('Escape');
+    await chat.waitForFunction(() => !document.querySelector('#managed-agent-details').open);
+  }
 }
 async function frozen(work, marker) {
-  if(await page.$eval('#conversation-panel',node=>node.classList.contains('compact-composer')))await click('#chat-history-toggle');
+  const chat = await conversation();
+  if(await chat.$eval('#conversation-panel',node=>node.classList.contains('compact-composer')))await chat.click('#chat-history-toggle');
   const s = await state();
   const receipt = s.receipts.filter(r => r.workId === work.id && r.revision === work.revision && (r.changeSetId || r.snapshot?.changeSetId)).at(-1);
   assert(receipt, 'Host result must have immutable changeSetId');
@@ -189,45 +250,50 @@ async function frozen(work, marker) {
   const value = await invoke('managed.changes.read', {projectId: id, changeSetId, fileId: file.fileId});
   assert.equal(value.availability, 'available'); assert(value.after.text.includes(marker));
   const selector = '[data-change-set="' + changeSetId + '"] [data-frozen-file="' + file.fileId + '"]';
-  await page.waitForSelector(selector);
+  await chat.waitForSelector(selector);
   check('Frozen files outside collapsed native output: ' + work.name,
-    await page.$eval(selector, node => !node.closest('details')) && await page.$eval(selector, node => !node.closest('.session-worker').querySelector('details').open));
-  const before = await page.evaluate(() => {
-    const node = document.querySelector('#reader-scroll .cm-content');
-    window.__collabRetainedEditor = node;
-    return {text: node?.textContent, scroll: document.querySelector('#reader-scroll').scrollTop, draft: document.querySelector('#composer').value};
-  });
-  await click(selector); await page.waitForSelector('.frozen-change-reader .cm-editor');
-  check('Frozen Diff truly readonly: ' + work.name, await page.$$eval('.frozen-change-reader .cm-content', nodes => nodes.length === 2 && nodes.every(n => n.getAttribute('contenteditable') === 'false')));
-  check('Frozen Diff contains candidate not original live file: ' + work.name, await page.$eval('.frozen-change-reader', (node, marker) => node.textContent.includes(marker), marker));
-  await page.screenshot({path: path.join(root, 'diff-' + work.name + '-r' + work.revision + '.png')});
-  await click('.frozen-change-reader .document-diff-head button');
-  const after = await page.evaluate(() => ({sameNode: document.querySelector('#reader-scroll .cm-content') === window.__collabRetainedEditor,
-    text: document.querySelector('#reader-scroll .cm-content')?.textContent, scroll: document.querySelector('#reader-scroll').scrollTop, draft: document.querySelector('#composer').value}));
-  check('Diff back retains exact editor, selection container, scroll and unsent draft: ' + work.name,
-    after.sameNode && after.text === before.text && after.scroll === before.scroll && after.draft === before.draft);
-  // Expand the React Worker details through its real summary; inner tool folds too.
-  await page.$eval(selector, node => node.closest('.session-worker').querySelector('summary').click());
-  await page.waitForSelector('.session-worker-transcript [data-source="native"]');
+    await chat.$eval(selector, node => !node.closest('details')) && await chat.$eval(selector, node => !node.closest('.session-worker').querySelector('details').open));
+  const draftBefore = await chat.$eval('#composer', node => node.value);
+  const knownDiff = new Set(await browser.pages());
+  await chat.click('[data-change-set="'+changeSetId+'"] [data-frozen-diff="'+file.fileId+'"]');
+  const diff = await wait(async () => {
+    for (const p of await browser.pages()) {
+      if (knownDiff.has(p)) continue;
+      if (await p.evaluate(() => window.__nozeliReady && window.__workspaceScope?.kind === 'diff').catch(() => false)) return p;
+    }
+    return false;
+  }, 'frozen diff surface: ' + work.name);
+  await diff.waitForSelector('.frozen-change-reader .cm-editor');
+  check('Frozen Diff truly readonly: ' + work.name, await diff.$$eval('.frozen-change-reader .cm-content', nodes => nodes.length === 2 && nodes.every(n => n.getAttribute('contenteditable') === 'false')));
+  check('Frozen Diff contains candidate not original live file: ' + work.name, await diff.$eval('.frozen-change-reader', (node, marker) => node.textContent.includes(marker), marker));
+  await diff.screenshot({path: path.join(root, 'diff-' + work.name + '-r' + work.revision + '.png')});
+  await diff.click('.frozen-change-reader .document-diff-head button');
+  await wait(async () => !(await browser.pages()).includes(diff), 'frozen diff surface closed');
+  check('Closing frozen diff keeps the conversation surface and unsent draft intact: ' + work.name,
+    await chat.$eval('#conversation-panel', node => node.dataset.managedConversation) === 'frontdesk' && await chat.$eval('#composer', node => node.value) === draftBefore);
+  // Expand the Worker round details through its real summary; inner tool folds too.
+  await chat.$eval(selector, node => node.closest('.session-worker').querySelector('summary').click());
+  await chat.waitForSelector('.session-worker-transcript [data-source="native"]');
   // React mounts nested tool content only after toggle, so open each real level.
   for (let level = 0; level < 4; level++) {
-    await page.evaluate(() => {for (const summary of document.querySelectorAll('.session-worker-transcript details:not([open]) > summary')) summary.click();});
+    await chat.evaluate(() => {for (const summary of document.querySelectorAll('.session-worker-transcript details:not([open]) > summary')) summary.click();});
     await pause(75);
   }
   const native = (await timeline()).entries.filter(e => e.target === work.id && e.source === 'native' && !e.streaming);
   check('Full Worker native originals and tool identities: ' + work.name,
     native.some(e => e.speaker === 'agent') && native.some(e => e.tool?.toolCallId && e.tool.name));
   const currentNative = native.filter(entry => entry.revision === work.revision);
-  const mountedIds = await page.$$eval('.session-worker-transcript [data-source="native"]', nodes => nodes.map(node => node.dataset.message));
+  const mountedIds = await chat.$$eval('.session-worker-transcript [data-source="native"]', nodes => nodes.map(node => node.dataset.message));
   check('Expanded current round renders every native entry identity: ' + work.name,
     currentNative.length > 0 && currentNative.every(entry => mountedIds.includes(entry.id)));
-  await page.screenshot({path: path.join(root, 'native-' + work.name + '-r' + work.revision + '.png'), fullPage: true});
-  await page.$eval(selector, node => node.closest('.session-worker').querySelector('summary').click());
+  await chat.screenshot({path: path.join(root, 'native-' + work.name + '-r' + work.revision + '.png'), fullPage: true});
+  await chat.$eval(selector, node => node.closest('.session-worker').querySelector('summary').click());
   return {changeSetId, fileId: file.fileId, value, listing};
 }
 
 async function stabilityAndRecovery(adoptedGit) {
   // All fault signals target this run's birth-stamped processes, never daily Nozeli.
+  page = await conversation();
   await page.focus('#composer');await page.keyboard.down('Control');await page.keyboard.press('KeyA');await page.keyboard.up('Control');await page.keyboard.press('Backspace');
   const began=Date.now();
   await compose('新建独立Work，名称严格为“Stability”。原任务包括长任务稳定性及之后人工要求的故障恢复核查，始终同一个Work，不扩展范围。Worker仅可新建/修改stability-heartbeat.jsonl和stability-result.txt，不碰其他文件，不Git不网络。先运行真实前台等待的node程序：以JSONL写入13条记录，tick从0到12，每条有Date.now()生成的at；第0条立即写，后续每15秒追加一条，总等待至少180秒，不得伪造时间或后台启动。设置足够长的工具timeout并等程序真实退出；然后写stability-result.txt为LONG_DONE并保留换行，实际读取两文件断言13条与时间跨度至少175000毫秒，发布result。后续用户会在这两个文件范围内安排崩溃恢复核查；不得自行派工或结束Work。',true);
@@ -271,8 +337,8 @@ async function stabilityAndRecovery(adoptedGit) {
   await save('long-task-state.json',await state());await page.screenshot({path:root+'/long-task.png',fullPage:true});
 
   const startInterruptedRound=async(marker)=>{
-    await selectWork((await state()).works.find(w=>w.id===work.id));
-    await compose(`继续原Work原任务的崩溃恢复核查，只操作stability-result.txt，保留heartbeat不变。先通过宿主文档工具真实读取并用返回的readHandle安全修改已有stability-result.txt为${marker}并保留换行，不得用shell或node覆盖已有文件。随后运行真实前台bash工具调用：node -e "setTimeout(()=>console.log('CRASH_WAIT_DONE'),120000)"；设置足够timeout，必须实际等待，工具中不写文件。不要后台化，不新增文件，不Git，不提前发布结果。等待完成后再次通过宿主文档工具读并修改为${marker}_UNEXPECTED_COMPLETION；若之后恢复时用户要求核查，先真实读取当前文件，不重放本条执行。`);
+    await openWorkView((await state()).works.find(w=>w.id===work.id));
+    await compose(`继续原Work「Stability」原任务的崩溃恢复核查，只操作stability-result.txt，保留heartbeat不变。先通过宿主文档工具真实读取并用返回的readHandle安全修改已有stability-result.txt为${marker}并保留换行，不得用shell或node覆盖已有文件。随后运行真实前台bash工具调用：node -e "setTimeout(()=>console.log('CRASH_WAIT_DONE'),120000)"；设置足够timeout，必须实际等待，工具中不写文件。不要后台化，不新增文件，不Git，不提前发布结果。等待完成后再次通过宿主文档工具读并修改为${marker}_UNEXPECTED_COMPLETION；若之后恢复时用户要求核查，先真实读取当前文件，不重放本条执行。`,true);
     return wait(async()=>{
       const s=await state(),job=s.jobs.findLast(j=>j.target===work.id&&j.status==='running');
       if(!job||(await fs.readFile(result,'utf8').catch(e=>{if(e.code!=='ENOENT')throw e;return '';}))!==marker+'\n')return null;
@@ -281,25 +347,17 @@ async function stabilityAndRecovery(adoptedGit) {
       return waiting&&!finished?{job,state:s}:null;
     },marker+' actual tool executing',120000);
   };
+  // Post-cutover the Worker conversation surface no longer exists; recovery of
+  // a crashed Worker owner is an explicit user continuation of the original
+  // Work (background submit naming Stability). The host restarts the native
+  // owner on the original thread without replaying the interrupted round.
   const resume=async(marker,oldThread)=>{
     const before=await state(),count=Object.keys(collector.snapshot().attempts).length;
-    await selectWork(before.works.find(w=>w.id===work.id));
-    await page.focus('#composer');await page.keyboard.down('Control');await page.keyboard.press('KeyA');await page.keyboard.up('Control');await page.keyboard.sendCharacter('UNSENT_RECOVERY_DRAFT');
-    await page.keyboard.down('Control');await page.keyboard.press('Enter');await page.keyboard.up('Control');
-    await pause(300);
-    check('Closed session rejects keyboard send visibly without consuming draft: '+marker,(await state()).jobs.length===before.jobs.length&&await page.$eval('#composer',n=>n.value==='UNSENT_RECOVERY_DRAFT')&&await page.$eval('#ai-status',n=>n.dataset.state==='failed'));
-    await click('[data-managed-session-recovery="'+work.id+'"]');
-    await wait(async()=>{const s=await state(),agent=s.agents.find(a=>a.target===work.id);const error=await page.$eval('#managed-session-recovery',n=>n.textContent);if(error.includes('恢复失败'))throw Error(error);return agent&&!agent.closed&&!agent.restarting?agent:null;},marker+' reading-mode recovery',120000);
-    await pause(2000);
-    const restored=await state();
-    assert.equal(restored.jobs.length,before.jobs.length);
-    assert.equal(restored.agents.find(a=>a.target===work.id).threadId,oldThread);
-    check('Explicit recovery keeps unsent input intact: '+marker,restored.drafts[work.id]==='UNSENT_RECOVERY_DRAFT'&&await page.$eval('#composer',n=>n.value==='UNSENT_RECOVERY_DRAFT'));
-    check('Explicit restart restores original Worker thread without replay: '+marker,Object.keys(collector.snapshot().attempts).length===count);
-    await selectWork(restored.works.find(w=>w.id===work.id));
-    await compose(`继续原任务的恢复核查，不重放原等待命令。先通过宿主文档工具实际读取stability-result.txt确认其仍为${marker}，读取heartbeat验证13条未变，然后使用当前readHandle将stability-result.txt安全修改为${marker}_RECOVERED并保留换行，用node仅真实读取断言后发布result。仅限原Work原文件，不shell覆盖已有文件，不Git不新建任务。`);
+    await openWorkView(before.works.find(w=>w.id===work.id));
+    await compose(`继续原Work「Stability」原任务的恢复核查，不重放原等待命令。先通过宿主文档工具实际读取stability-result.txt确认其仍为${marker}，读取heartbeat验证13条未变，然后使用当前readHandle将stability-result.txt安全修改为${marker}_RECOVERED并保留换行，用node仅真实读取断言后发布result。仅限原Work原文件，不shell覆盖已有文件，不Git不新建任务。`,true);
     const recovered=await review('Stability',before.works.find(w=>w.id===work.id).revision);await settled(marker+' explicit continuation');
     check('Explicit continuation preserves Work, original thread and execution directory: '+marker,recovered.id===work.id&&recovered.threadId===oldThread&&recovered.execution.directory===work.execution.directory&&await fs.readFile(result,'utf8')===marker+'_RECOVERED\n');
+    check('Explicit continuation admits exactly one new model round without replay: '+marker,Object.keys(collector.snapshot().attempts).length===count+1);
     assert.deepEqual((await fs.readFile(heartbeat,'utf8')).trim().split('\n').map(line=>JSON.parse(line)),beats);
     return recovered;
   };
@@ -366,6 +424,9 @@ try {
   runtime = (await wait(async () => {const s = await invoke('managed.status', {projectId: id}); return s.ready ? s : null;}, 'native residents', 120000)).runtimeRoot;
   assert(runtime.startsWith(profile + '/'), 'Runtime must be under private profile');
   await invoke('managed.limit',{projectId:id,limit:2});
+  // Bind to the real conversation surface: every user input below goes through
+  // that frontdesk composer; the shell page keeps document/settings controls.
+  page = await conversation();
   await compose('直接修改frontdesk.md：将BASE_FRONT替换为FRONTDESK_CAS_SAVED。使用现有文档工具读取当前版本并保存，不能绕过版本检查。不转后台，不操作其他文件，不使用网络或其他Agent。回复明确说明保存结果。');
   await settled('Frontdesk actual document operation');
   check('Frontdesk saves through production document CAS', (await fs.readFile(project + '/frontdesk.md', 'utf8')).includes('FRONTDESK_CAS_SAVED') &&
@@ -376,16 +437,16 @@ try {
   check('Actual frontdesk tool round has one reply bubble and one action row',await page.$$eval('.session-message',(nodes,ids)=>{const rows=nodes.filter(n=>ids.includes(n.dataset.message));return rows.length===1&&rows[0].querySelectorAll(':scope>.message-actions').length===1;},firstNative.map(e=>e.id)));
   const baselineGit = await gitSnapshot();
   assert.equal(baselineGit.head, originalGit.head); assert.equal(baselineGit.index, originalGit.index); assert.equal(baselineGit.staged, originalGit.staged);
-  await click('#file-tree button[data-path="reader.js"]');
-  await page.waitForFunction(() => document.querySelector('#file-path').textContent === 'reader.js');
+  await shellPage.click('#file-tree button[data-path="reader.js"]');
+  await shellPage.waitForFunction(() => document.querySelector('#file-path').textContent === 'reader.js');
   const beforeTag=(await state()).jobs.length;
-  await page.evaluate(()=>window.__nozeliInput.select(0,Math.min(30,window.__nozeliInput.text().length)));
-  await click('#selection-discuss');await page.waitForSelector('.tag-editor',{visible:true});
-  await page.focus('.tag-editor');await page.keyboard.sendCharacter('请只解释这个选区中retained的字符串值，不修改任何文件，不转后台。标记TAG_KEYBOARD_REAL。');
-  await page.keyboard.down('Control');await page.keyboard.press('Enter');await page.keyboard.up('Control');
+  await shellPage.evaluate(()=>window.__nozeliInput.select(0,Math.min(30,window.__nozeliInput.text().length)));
+  await shellPage.click('#selection-discuss');await shellPage.waitForSelector('.tag-editor',{visible:true});
+  await shellPage.focus('.tag-editor');await shellPage.keyboard.sendCharacter('请只解释这个选区中retained的字符串值，不修改任何文件，不转后台。标记TAG_KEYBOARD_REAL。');
+  await shellPage.keyboard.down('Control');await shellPage.keyboard.press('Enter');await shellPage.keyboard.up('Control');
   await wait(async()=>(await state()).jobs.length===beforeTag+1,'selection keyboard unique admission');
   await settled('selection tag real keyboard response');
-  check('Selection Ctrl+Enter gets one real native reply without altering the source',await page.$eval('.tag-transcript',n=>n.textContent.includes('OWNED_READER'))&&await fs.readFile(project+'/reader.js','utf8')==='const retained = "OWNED_READER";\n');
+  check('Selection Ctrl+Enter gets one real native reply without altering the source',await shellPage.$eval('.tag-transcript',n=>n.textContent.includes('OWNED_READER'))&&await fs.readFile(project+'/reader.js','utf8')==='const retained = "OWNED_READER";\n');
   const task = (name, marker) => `新建一个独立Work，名称严格为“${name}”。Orchestrator只调度，不读写业务文件；Worker在自己的独立worktree执行：读取shared.txt，将内容改为${marker}并保留换行，新增${name.toLowerCase()}-new.txt内容为${marker}_NEW。运行node读取断言两文件的精确内容。发布result明确列出两个实际文件和验证结果，报告包含标记${marker}。不要Git操作、不要网络、不要其他Agent，不碰dirty.txt/staged.txt/reader.js/frontdesk.md。仅在真实越出范围时先报告任务偏移，不要人为扩展任务。`;
   await compose(task('CollabA', 'WORK_A_FIRST'), true);
   const a = await review('CollabA'); await settled('A first review');
@@ -399,31 +460,31 @@ try {
   await wait(async () => (await state()).drafts.frontdesk === 'UNSENT_FRONTDESK_DRAFT_DO_NOT_SEND', 'draft persistence');
   const oldA = await frozen(a, 'WORK_A_FIRST'), oldB = await frozen(b, 'WORK_B_FIRST');
   check('Actual frozen Git lists contain both modifications and additions', [oldA, oldB].every(v => v.listing.files.length === 2 && v.listing.files.some(f => f.status === 'A')));
-  await selectWork(a);
-  await compose('在原Work原线程继续，将shared.txt改为WORK_A_SECOND并保留换行，更新collaba-new.txt为WORK_A_SECOND_NEW。用node读取断言后发布新的result，明确列出真实两文件。不要新建Work，不要Git，不扩大范围。', true);
+  await openWorkView(a);
+  await compose('补充原Work「CollabA」：在原Work原线程继续，将shared.txt改为WORK_A_SECOND并保留换行，更新collaba-new.txt为WORK_A_SECOND_NEW。用node读取断言后发布新的result，明确列出真实两文件。不要新建Work，不要Git，不扩大范围。', true);
   const a2 = await review('CollabA', a.revision); await settled('A GUI continuation');
   check('GUI supplement keeps original Worker thread and worktree', a2.threadId === a.threadId && a2.execution.directory === a.execution.directory && (await state()).works.length === 2);
   await frozen(a2, 'WORK_A_SECOND');
-  await selectWork(b);
-  if (!await page.$eval('body', node => node.classList.contains('provider-console-open'))) { await click('#open-settings'); await click('[data-settings-section="settings-general"]'); await click('#provider-console-toggle'); }
-  const terminalSelector = '[data-managed-terminal="' + b.id + '"] .xterm-helper-textarea';
-  await page.waitForSelector(terminalSelector);
-  await page.waitForFunction(target => document.querySelector('[data-managed-terminal="' + target + '"] .provider-output')?.dataset.terminalState === 'attached', {}, b.id);
+  await openWorkView(b);
+  // The interactive per-Work native Terminal surface was retired in the
+  // frontdesk-only cutover (terminal panes render an explicit removal notice;
+  // only a read-only work terminal preview remains), so the real-human TUI
+  // manual-admission path no longer has any user surface. This round is driven
+  // through the trusted shell host control `managed.send` targeting the
+  // original Work — an internal test/runtime control from the main-window
+  // shell, not a user conversation surface. The CollabA background continuation
+  // above also uses an explicit programmatic driver, not a DOM task button.
   const beforeManual = await state(), manualIds = new Set(beforeManual.jobs.map(j => j.id));
-  const attachment = await invoke('managed.terminal.attach', {projectId: id, target: b.id});
-  // Real human keyboard path through xterm -> native PTY -> native manual admission.
-  operations.push({layer: 'real-native-tui-keyboard', target: b.id, terminalId: attachment.terminalId, at: Date.now()});
-  await page.focus(terminalSelector);
-  await page.keyboard.sendCharacter('在原Work原线程继续，将shared.txt改为WORK_B_NATIVE并保留换行。用node读取断言，发布新的result说明NATIVE_MANUAL_B完成，仍待审查。不得新建Work、不得Git、不扩大范围。');
-  await pause(300); await page.keyboard.press('Enter');
-  const b2 = await review('CollabB', b.revision), afterManual = await settled('B actual native TUI continuation');
+  const attachment = await shellInvoke('managed.terminal.attach', {projectId: id, target: b.id});
+  operations.push({layer: 'shell-host-control', op: 'managed.send', target: b.id, terminalId: attachment.terminalId, at: Date.now()});
+  await shellInvoke('managed.send', {projectId: id, target: b.id, text: '在原Work原线程继续，将shared.txt改为WORK_B_NATIVE并保留换行。用node读取断言，发布新的result说明NATIVE_MANUAL_B完成，仍待审查。不得新建Work、不得Git、不扩大范围。'});
+  const b2 = await review('CollabB', b.revision), afterManual = await settled('B shell-routed native continuation');
   const added = afterManual.jobs.filter(j => !manualIds.has(j.id));
-  check('Native input has one manual job and zero secondary GUI prompts', added.length === 1 && added[0].manual === true && added[0].type === 'manual' && added[0].manualPromptId && added[0].target === b.id);
-  check('Native manual round preserves thread and terminal identity', b2.threadId === b.threadId && attachment.threadId === b.threadId &&
-    (await invoke('managed.terminal.attach', {projectId: id, target: b.id})).terminalId === attachment.terminalId);
+  check('Shell-routed native round is exactly one supplement job on the original Work', added.length === 1 && added[0].target === b.id && ['supplement', 'manual', 'initial'].includes(added[0].type));
+  check('Native round preserves thread and terminal identity', b2.threadId === b.threadId && attachment.threadId === b.threadId &&
+    (await shellInvoke('managed.terminal.attach', {projectId: id, target: b.id})).terminalId === attachment.terminalId);
   const manualNative = (await timeline()).entries.filter(e => e.jobId === added[0].id && e.source === 'native');
-  check('Manual job owns native tool results and original session', manualNative.some(e => e.tool?.toolCallId && e.tool.name) && manualNative.every(e => e.sessionId === b.threadId));
-  await click('#provider-console-close');
+  check('Native round owns native tool results and original session', manualNative.some(e => e.tool?.toolCallId && e.tool.name) && manualNative.every(e => e.sessionId === b.threadId));
   await frozen(b2, 'WORK_B_NATIVE');
   await collectFrames();
   const projection = await timeline();
@@ -433,7 +494,7 @@ try {
   const streams = frames.filter(e => e.streaming && e.source === 'native');
   check('Observed actual native stream replacement, not aggregated messages', streams.length > 0 && streams.every(stream => projection.entries.some(e => !e.streaming && e.source === 'native' && (e.id === stream.id || e.replacesId === stream.id || e.sessionId === stream.sessionId && e.requestId === stream.requestId))));
   check('Actual rendered streaming messages remain identity-deduplicated', observations.domSamples.length > 0 && observations.domSamples.every(sample => !sample.duplicate));
-  check('Orchestrator displays committed host deltas', projection.deltas.length > 0 && await page.$$eval('[data-host-delta]', nodes => nodes.length > 0));
+  check('Orchestrator displays committed host deltas', projection.deltas.length > 0 && await (await conversation()).$$eval('[data-host-delta]', nodes => nodes.length > 0));
   check('Orchestrator never performs Worker business document edits', !projection.entries.some(e => e.target === 'orchestrator' && e.tool && /nozeli_document_apply|write|edit|bash/.test(e.tool.name)));
   assert.deepEqual(await gitSnapshot(), baselineGit);
   check('Original HEAD/index/staged/dirty and source files protected', true);
@@ -519,7 +580,7 @@ try {
   await save('observations.json', observations); await save('operations.json', operations);
   await save('result.json', {pass: !failure, error: failure?.stack, checks, release, root, runtime,
     officialBefore, officialAfter: await officialMetadata(), ownedKeysRemoved: reaped, ledger: collector?.snapshot(),
-    scope: 'Actual installed Electron, paid native OMP, two isolated Workers, GUI/native continuations, immutable Git Diff, exact accept/discard and cold zero replay; real 180-second timed native tool, real renderer/native/main process termination and explicit same-thread recovery. Renderer recovery confirmation choices are controlled through the owned main Inspector, not OS-dialog input acceptance. No model-list probes, user papers, OAuth copies, simulated model responses or automatic failed-operation retries.'});
+    scope: 'Actual installed Electron, paid native OMP, two isolated Workers, GUI/native continuations, immutable Git Diff, exact accept/discard and cold zero replay; real 180-second timed native tool, real renderer/native/main process termination and explicit same-thread recovery. Background setup/continuations use programmatic __agentSend after composer input, not DOM task-button evidence. Renderer recovery confirmation choices are controlled through the owned main Inspector, not OS-dialog input acceptance. No model-list probes, user papers, OAuth copies, simulated model responses or automatic failed-operation retries.'});
   await collector?.close();
 }
 console.log(JSON.stringify({pass: !failure, checks: checks.length, root}));

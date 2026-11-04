@@ -8,14 +8,16 @@
   "sdk": "@earendil-works/pi-coding-agent@1.4.0",
   "entry": "src/owner.mjs",
   "files": {
-    "src/owner.mjs": "d4cd00a324f36894e915081a53755b2d2be37ab1a93213eede186ecb2a910795",
-    "src/bridge.mjs": "75314b6a978dc5a67d123891a37d7e1503694939ad0fcf66535e71b0f411dbb6",
+    "src/owner.mjs": "c803a67966e52096b6a89795d055a98beaf18c6a6b583ecfe072cf023a498222",
+    "src/bridge.mjs": "031187cd7d11f4e50da6fcf3a6db8ed040d90deb42f2eec6bdd9bc985b69bcc9",
+    "src/activity.mjs": "57d0669ad412479a88a960f5c6c1a9d0a7ebf5efd763f50a676dfdc8404d1e45",
+    "src/http-observer.mjs": "43bd80ce6635e3ef56108ea4bfcd985ac0fd086e403803b570049ac94c974263",
     "src/zai-coding-plan.mjs": "012f48b68017b1ece936caf828d60b9ddbd1f7e79942e262dbf16d0ed2994404",
-    "src/facts.mjs": "1eeca86a0b0ef1add19e14c30181fd9c64339b1d354d1b182c8260a7ea3c4aa1",
+    "src/facts.mjs": "a0d2253c5326e73a13ea39376dd206c8b4cdcd75d094c6fe403d5586496c9029",
     "src/tools.mjs": "55f797d59a1b4f7ab52957a8e984982febf8963233b168af22f738786206d3b6",
     "src/questions.mjs": "84b45d9008d20def0f53f5582d9bb4a02763aeeb3b3b4865c950f214f0a6c0d8",
     "src/catalog-memory.mjs": "32894625049686253231ba3de106a07a4607a929674dcef9d8d91ea3ecd647e4",
-    "dist/vendor/pi-gui/packages/pi-sdk-driver/index.js": "7b7ce898a049f0ce686854a57cc86580211186d6f785ff632b3f0ceaac79d4d6",
+    "dist/vendor/pi-gui/packages/pi-sdk-driver/index.js": "e61ce11b5c557dd8b0496dfadc84f8a330b5cd0cd563d08d161380216a1e294d",
     "package-lock.json": "d524a6760b40882e4ff74e3c3abb001eefffba2278dfbdd5169d3d4bd2a71dd9"
   }
 }

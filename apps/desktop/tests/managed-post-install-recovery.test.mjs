@@ -5,9 +5,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {execFileSync} from 'node:child_process';
+import {execFileSync,spawn} from 'node:child_process';
 import {randomUUID,createHash} from 'node:crypto';
 import {ManagedProjects} from '../src/agents/managed-projects.mjs';
+import {once} from 'node:events';
+import {DesktopHost} from '../src/main/host.mjs';
 const audit=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-post-install-recovery-'));
 console.log('RECOVERY_AUDIT_ROOT='+audit);
 const hash=b=>createHash('sha256').update(b).digest('hex');
@@ -29,7 +31,7 @@ async function fixture(t,{failWorker=false,checkpoint=async()=>{}}={}){
   async prompt(){
    this.hasPrompted=true;const job=c.current.get(this.target);calls.push({jobId:job.id,type:job.type,target:this.target});const call=(tool,arguments_)=>this.onTool({tool,arguments:arguments_,callId:randomUUID()});
    if(job.type==='intake')await call('nozeli_dispatch',{name:job.text,brief:'Change named file'});
-   else {if(failWorker)throw Error('fixture interrupted after observable file write risk');const w=c.store.find(this.target),file=w.name+'.txt';const read=await call('nozeli_document_read',{relPath:file});assert.equal(read.ok,true);const edited=await call('nozeli_document_apply',{readHandle:read.value.readHandle,replacements:[{oldText:read.value.text,newText:w.name+' result\n'}]});assert.equal(edited.ok,true);await call('nozeli_publish',{kind: 'result', html: staticReport('Verified fixture '+w.name+' result'), files: [file]});}
+   else {if(failWorker)throw Error('fixture interrupted after observable file write risk');const w=c.store.find(this.target),file=w.name+'.txt';const read=await call('nozeli_document_read',{relPath:file});assert.equal(read.ok,true);const edited=await call('nozeli_document_apply',{readHandle:read.value.readHandle,replacements:[{oldText:read.value.text,newText:w.name+' result\n'}]});assert.equal(edited.ok,true);await call('nozeli_publish',{kind: 'result', content: staticReport('Verified fixture '+w.name+' result'), files: [file]});}
    return {completion:'host-control',threadId:this.threadId};
   }
  }
@@ -87,8 +89,9 @@ test('repaired acceptance hook retries once without business replay or changing 
  // not aborted by concurrent maintenance job bookkeeping mutating the workspace snapshot.
  await wait(f.c,()=>!f.c.store.state.jobs.some(j=>['queued','running'].includes(j.status)));
  const retry={projectId:f.projectId,workId:w.id,binding,requestKey:'retry-'+randomUUID()};
- const [a,b]=await Promise.all([f.manager.invoke('managed.retry',retry),f.manager.invoke('managed.retry',retry)]);
- assert.equal(a.closure.phase,'complete');assert.deepEqual(a,b);const oid=a.closure.git.commit;assert.equal(git(f.project,'rev-parse','HEAD'),oid);assert.equal(git(f.project,'show','HEAD:A.txt'),'A result');assert.equal(git(f.project,'rev-list','--count','HEAD'),'2');
+ await Promise.all([f.manager.invoke('managed.retry',retry),f.manager.invoke('managed.retry',retry)]);
+ await wait(f.c,()=>f.c.store.find(w.id).closure.phase==='complete');
+ const complete=f.c.store.find(w.id).closure;assert.equal(complete.decision,'accept');const oid=complete.git.commit;assert.equal(git(f.project,'rev-parse','HEAD'),oid);assert.equal(git(f.project,'show','HEAD:A.txt'),'A result');assert.equal(git(f.project,'rev-list','--count','HEAD'),'2');
  assert.equal(jobHistory(f.c.store.state.jobs),jobs);assert.equal(reportHistory(f.c.store.state.receipts),reports);await f.reopen();assert.equal((await f.c.retryClosure(w.id)).closure.git.commit,oid);assert.equal(git(f.project,'rev-list','--count','HEAD'),'2');assert.equal(jobHistory(f.c.store.state.jobs),jobs);assert.equal(reportHistory(f.c.store.state.receipts),reports);
 });
 
@@ -108,4 +111,51 @@ test('interrupted acceptance hook stays uncertain and is never replayed on resta
  const save=f.c.execution.save.bind(f.c.execution);let interrupted=false;f.c.execution.save=async m=>{await save(m);if(!interrupted&&m.acceptancePreparation?.status==='running'){interrupted=true;throw Error('fixture interrupted before hook completion evidence');}};
  await f.c.endWork(w.id,{revision:w.revision,decision:'accept'});assert.equal(f.c.store.find(w.id).closure.phase,'blocked');assert.equal((await f.c.execution.readManifest(w.id)).acceptancePreparation.status,'running');await f.reopen();
  assert.equal(f.c.store.find(w.id).closure.phase,'blocked');assert.equal((await f.c.execution.readManifest(w.id)).acceptancePreparation.status,'running');await assert.rejects(fs.stat(marker),{code:'ENOENT'});assert.equal(git(f.project,'rev-list','--count','HEAD'),'1');assert.equal(await fs.readFile(path.join(f.c.execution.directory(w.id),'A.txt'),'utf8'),'A result\n');
+});
+
+test('normal startup repairs confirmed local closure without AI setup, resources, reads or business admission',opts,async t=>{
+ const root=await fs.mkdtemp(path.join(audit,'host-only-')),project=path.join(root,'project'),profile=path.join(root,'profile');
+ await fs.mkdir(project);await fs.writeFile(path.join(project,'result.txt'),'original\n');
+ git(project,'init','-q');git(project,'config','user.name','Host-only recovery');git(project,'config','user.email','host-only@example.invalid');git(project,'add','.');git(project,'commit','-qm','baseline');
+ const host=new DesktopHost(profile),projectId=(await host.pick(project)).project.id;
+ let manager,owner;
+ const makeManager=()=>{
+  const value=new ManagedProjects({userDataDir:profile,host,legacy:{projects:new Map()}});
+  value.initializeResources=async()=>{assert.fail('host-only startup must not initialize model/process resources');};
+  return value;
+ };
+ t.after(async()=>{if(owner?.connected){const exited=once(owner,'exit');owner.send('release');await exited;}await manager?.stop();await host.storage.db.close();});
+ manager=makeManager();const c=await manager.loadLocal(projectId);
+ // Enabled local binding is independent of provider/model initialization.
+ await host.storage.putLocal(projectId,'managed:binding',{schema:1,enabled:true,roles:{}});
+ const submitted=await c.store.submit('Original accepted request','Synthetic delivery',{name:'Host closure'});
+ await c.store.activate(submitted.id);await c.execution.prepare(submitted.id);
+ await fs.writeFile(path.join(c.execution.directory(submitted.id),'result.txt'),'candidate\n');
+ await c.execution.publish(c.store.find(submitted.id),{id:'original-result-job'},()=>true);
+ await c.store.publish(submitted.id,1,'result',staticReport('Exact synthetic delivery'),'host-only-report',{jobId:'original-result-job',files:[{relPath:'result.txt'}]});
+ await c.store.settle(submitted.id);
+ await c.store.mutate(()=>c.store.state.jobs.push({id:'original-result-job',target:submitted.id,revision:1,status:'completed',type:'initial'}));
+ const queued=await c.store.submit('Unsent queued business must stay queued','Never start a Worker',{name:'Unstarted'});
+ const manifest=await c.execution.readManifest(submitted.id),lock=manifest.index+'.lock';
+ owner=spawn(process.execPath,['-e',`const fs=require('fs');const p=process.argv[1],fd=fs.openSync(p,'wx');fs.writeSync(fd,'child-owned');process.send('ready');process.on('message',()=>{fs.closeSync(fd);fs.unlinkSync(p);process.exit(0);});`,lock],{stdio:['ignore','ignore','pipe','ipc']});
+ const [ready]=await once(owner,'message');assert.equal(ready,'ready');
+ await c.endWork(submitted.id,{revision:1,decision:'accept',requestKey:'host-only-original-accept'});
+ const blocked=c.store.find(submitted.id),authority=structuredClone({binding:blocked.closure.binding,mergeAuthorization:blocked.closure.mergeAuthorization,requestKey:blocked.closure.requestKey});
+ assert.equal(blocked.closure.phase,'blocked');const bug=(await c.maintenance.read()).bugs[0];assert.equal(bug.error.code,'GIT_LOCKED');assert.equal(bug.status,'needs-version-fix');
+ await manager.stop();const exited=once(owner,'exit');owner.send('release');await exited;
+ manager=makeManager();
+ // Projection/status reads must not perform recovery or create a controller.
+ assert.equal((await manager.status(projectId)).state.works.find(work=>work.id===submitted.id).closure.phase,'blocked');
+ assert.equal(manager.controllers.size,0);assert.equal(git(project,'rev-list','--count','HEAD'),'1');
+ // Same startup entry called by main.cjs when AI setup/runtime is unavailable.
+ const recovery=await manager.resumeUnfinishedProjects({hostOnly:true});assert.deepEqual(recovery,{resumed:[projectId],blocked:[]});
+ const reopened=manager.controllers.get(projectId),ended=reopened.store.find(submitted.id);
+ assert.equal(reopened.localOnly,true);assert.notEqual(reopened.started,true);assert.equal(reopened.sessions.size,0);assert.equal(reopened.running.size,0);assert.equal(manager.resourceReady,undefined);
+ assert.equal(ended.status,'ended');assert.equal(ended.closure.phase,'complete');assert.equal(ended.closure.retryRequests,undefined);
+ assert.deepEqual({binding:ended.closure.binding,mergeAuthorization:ended.closure.mergeAuthorization,requestKey:ended.closure.requestKey},authority);
+ assert.equal(await fs.readFile(path.join(project,'result.txt'),'utf8'),'candidate\n');assert.equal(git(project,'rev-list','--count','HEAD'),'2');
+ assert.equal(reopened.store.find(queued.id).status,'queued');assert.equal(reopened.store.state.jobs.filter(job=>job.target===queued.id).length,0);
+ assert.equal((await reopened.maintenance.read()).bugs.find(row=>row.id===bug.id).status,'repaired');
+ const event=reopened.store.state.jobs.find(job=>job.type==='maintenance'&&job.context?.bugId===bug.id);assert.equal(event.status,'completed');assert.equal(event.hostResolved,true);
+ const head=git(project,'rev-parse','HEAD');await manager.resumeUnfinishedProjects({hostOnly:true});assert.equal(git(project,'rev-parse','HEAD'),head);assert.equal(reopened.store.state.jobs.filter(job=>job.target===submitted.id).length,1);
 });

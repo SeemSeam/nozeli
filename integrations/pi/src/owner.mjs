@@ -4,7 +4,7 @@ import {OwnerRuntime} from './bridge.mjs';
 const send=value=>process.stdout.write(JSON.stringify(value)+'\n');
 console.log=(...args)=>console.error(...args);
 const runtime=new OwnerRuntime({send});
-const methods={start:'start',prompt:'prompt',cancel:'cancel',respond:'respond',model:'model',reload:'reload',compact:'compact',flush:'flush',status:'status',models:'modelsList',providerList:'providerList',providerUpsert:'providerUpsert',providerRemove:'providerRemove',providerDiscover:'providerDiscoverModels',authSetKey:'authSetKey',authDisable:'authDisable',authList:'authList',authLogin:'authLogin'};
+const methods={inspectRecovery:'inspectRecovery',recover:'recover',start:'start',prompt:'prompt',cancel:'cancel',respond:'respond',model:'model',reload:'reload',compact:'compact',flush:'flush',status:'status',activity:'activity',models:'modelsList',providerList:'providerList',providerUpsert:'providerUpsert',providerRemove:'providerRemove',providerDiscover:'providerDiscoverModels',authSetKey:'authSetKey',authDisable:'authDisable',authList:'authList',authLogin:'authLogin'};
 let stopping=false;
 async function stop(){
  if(stopping)return;stopping=true;
@@ -28,6 +28,8 @@ async function dispatch(frame){
 }
 createInterface({input:process.stdin,crlfDelay:Infinity}).on('line',line=>{
  let frame;try{frame=JSON.parse(line);}catch(error){console.error('Invalid owner JSONL');void stop();return;}
- void dispatch(frame).catch(error=>send({id:frame?.id,error:{code:error.code??'PI_RUNTIME_ERROR',message:error.message,...(error.deliveryPhase?{deliveryPhase:error.deliveryPhase}:{})}}));
+ // Error frames keep the bounded structured provider-failure evidence
+ // (sanitized picklist) beside code/message; never stacks or raw bodies.
+ void dispatch(frame).catch(error=>send({id:frame?.id,error:{code:error.code??'PI_RUNTIME_ERROR',message:error.message,...(['host','provider','runtime'].includes(error.failureOrigin)?{failureOrigin:error.failureOrigin}:{}),...(typeof error.hostToolCode==='string'&&/^[A-Z][A-Z0-9_]{0,79}$/.test(error.hostToolCode)?{hostToolCode:error.hostToolCode}:{}),...(error.deliveryPhase?{deliveryPhase:error.deliveryPhase}:{}),...(error.providerFailure&&typeof error.providerFailure==='object'?{providerFailure:error.providerFailure}:{})}}));
 }).on('close',()=>void stop());
 process.on('SIGTERM',()=>void stop());process.on('SIGINT',()=>void stop());

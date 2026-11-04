@@ -49,7 +49,7 @@ export async function managedReportSource({project,storage,runtime,objectId,cont
     const bytes=await readManagedObject(storage,project.id,report.digest,{maxBytes:report.byteLength});
     if(bytes.length!==report.byteLength||createHash('sha256').update(bytes).digest('hex')!==report.digest||currentController()!==controller)throw changed();
     return bytes;
-  },readManifest:async()=>{
+  },listArtifacts:async()=>managedArtifact({project,storage,runtime,controller,currentController},{objectId}),readManifest:async()=>{
     await source.read();
     if(report.manifestDigest===null)return {version:1,assets:[],references:[]};
     const bytes=await readManagedObject(storage,project.id,report.manifestDigest);

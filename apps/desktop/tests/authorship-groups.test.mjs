@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {lineAuthorship,groupAuthorship,groupTitle,groupScope} from '../src/domain/authorship-groups.mjs';
+import {lineAuthorship,groupAuthorship,groupTitle,groupScope,formatAuthorshipTime} from '../src/domain/authorship-groups.mjs';
 import {userActor,agentActor} from '../src/domain/document-changes.mjs';
 
 const a1=agentActor('project','qa',{provider:'codex'}),a2=agentActor('project','task',{provider:'codex'});
@@ -43,4 +43,11 @@ test('pending input has no confirmed time; saved batches retain full dates and U
   const [group]=lineAuthorship('😀abcd',value);
   assert.equal(group.pending,true);assert.equal(group.items.length,2);
   assert.match(groupTitle(group),/1批.*2026/);assert.match(groupTitle(group),/尚无确认时间/);assert.doesNotMatch(groupTitle(group),/2099/);
+});
+
+test('reused timestamp formatter preserves full local zh-CN dates and options',()=>{
+  const options={year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false};
+  for(const time of ['2026-01-01T00:00:00Z','2026-10-31T23:59:59Z','2026-11-01T12:03:04+08:00','not-a-date']){
+    assert.equal(formatAuthorshipTime(time),new Date(time).toLocaleString('zh-CN',options));
+  }
 });

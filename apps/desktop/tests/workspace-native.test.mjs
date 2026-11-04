@@ -18,7 +18,7 @@ class Contents extends EventEmitter {
   setWindowOpenHandler(){} send(channel,payload){this.sent.push({channel,payload});this.onSend?.(channel,payload);} async loadURL(){} close(){this.emit('destroyed');} isDestroyed(){return false;}
   setBackgroundThrottling(value){this.backgroundThrottling=value;}
 }
-class View { constructor(){this.webContents=new Contents();}setVisible(value){this.visible=value;}setBounds(value){this.bounds=value;}getBounds(){return this.bounds||{x:0,y:0,width:500,height:500};} }
+class View { constructor(){this.webContents=new Contents();}setVisible(value){this.visible=value;}getVisible(){return this.visible===true;}setBounds(value){this.bounds=value;}getBounds(){return this.bounds||{x:0,y:0,width:500,height:500};} }
 class Window extends EventEmitter {
  constructor(options={}){super();this.options=options;this.webContents=new Contents();this.children=[];this.contentView={addChildView:v=>this.children.push(v),removeChildView:v=>{this.children=this.children.filter(x=>x!==v);}};this.bounds={x:0,y:0,width:1000,height:760};}
  async loadURL(){}show(){}focus(){}getBounds(){return this.bounds;}getContentBounds(){return this.bounds;}getContentSize(){return [1000,760];}isAlwaysOnTop(){return false;}isDestroyed(){return !!this.destroyed;}destroy(){this.destroyed=true;this.webContents.emit('destroyed');this.emit('closed');}
@@ -31,6 +31,17 @@ host.storage=new Proxy(storage,{get(target,key){const value=Reflect.get(target,k
 const stateHost=new DesktopHost(directory);stateHost.storage=host.storage;stateHost.requireRegisteredProject=id=>host.requireRegisteredProject(id);host.readState=id=>stateHost.readState(id);
 const native=new WorkspaceNative({BrowserWindow:Window,WebContentsView:View,screen:{getDisplayMatching:()=>({workArea:{x:-1920,y:0,width:1920,height:1080}})},origin:'http://127.0.0.1:9000/',userDataDir:directory,host});const root=native.registerShell(new Window());root.projectId='p';root.ready=true;native.layouts.set('p',createLayout('p',{workspace:{minimized:true}}));return {native,root};}
 function receipt(native,r,ok=true){r.ready=true;r.wc.onSend=(channel,payload)=>{if(channel==='nozeli:flush')queueMicrotask(()=>native.acknowledge(r,{requestId:payload,ok}));};}
+test('shell can inspect another registered project recovery while document surfaces cannot',async t=>{
+ const {native,root}=await fixture(t),directory=await mkdtemp(path.join(os.tmpdir(),'cross-recovery-'));t.after(()=>rm(directory,{recursive:true,force:true}));
+ const project=await native.host.storage.register(directory);native.host.requireRegisteredProject=id=>native.host.storage.requireRegistered(id);
+ await native.host.storage.putRecovery(project.id,'workspace:other',{kind:'draft',status:'retained',candidate:{text:'Exact other-project draft'}});
+ const page=await native.host.storage.recoveryPage(project.id,{purpose:'recovery-ui'}),row=page.entries[0],payload={projectId:project.id,id:row.id,revision:row.revision,version:page.version};
+ const event={sender:root.wc,senderFrame:root.wc.mainFrame};
+ const owner=native.authorize(event,'workspace.recovery.detail',payload),detail=await native.invoke(owner,'workspace.recovery.detail',payload);assert.equal(detail.value.candidate.text,'Exact other-project draft');
+ assert.equal(native.authorize(event,'workspace.recovery.export',payload),root);
+ const surface=native.register(new Contents(),{role:'surface',projectId:'p',kind:'document'});
+ for(const op of ['workspace.recovery.detail','workspace.recovery.export'])assert.throws(()=>native.authorize({sender:surface.wc,senderFrame:surface.wc.mainFrame},op,payload),{code:'PROJECT_SCOPE_DENIED'});
+});
 test('native text commands target only the focused live shell, surface or isolated preview', async t => {
  const {native,root}=await fixture(t),calls=[];
  const surface=native.register(new Contents(),{role:'surface',projectId:'p',windowId:'main',viewId:'selection',kind:'document'});
@@ -222,6 +233,13 @@ test('explicit drawing preparation connects frontdesk without moving content or 
  assert.equal(result.ready,true);assert.equal(admissions,1);
  assert.equal(view.viewState.draftOnly,false);assert.equal(view.viewState.workspace.draft,'KEEP MAIN DRAFT');
  assert.equal(native.surfaces.size,0,'preparation does not activate or create a content surface');
+ // Stale worker/orchestrator targets persisted by an older frame are refused
+ // before any target-specific startup: no admission, no worker wake, and the
+ // retained draft-only scene stays untouched.
+ for(const action of ['prepare','select','open'])
+  await assert.rejects(native.invoke(root,'workspace.control',{projectId:'p',type:'conversation-action',action,target:'ended-work-1'}),{code:'CONVERSATION_TARGET_REJECTED'});
+ assert.equal(admissions,1,'a rejected stale worker target never reaches conversation admission or worker startup');
+ assert.equal(view.viewState.draftOnly,false);assert.equal(view.viewState.workspace.draft,'KEEP MAIN DRAFT');assert.equal(native.surfaces.size,0);
 });
 test('refused drawing admission preserves draft-only state and allows explicit retry',async t=>{
  const {native,root}=await fixture(t);
@@ -561,13 +579,28 @@ test('conversation admission failure leaves the current document intact and crea
  assert.deepEqual(native.layouts.get('p'),l);assert.equal(native.surfaces.size,1);assert.equal(native.surfaces.get(original.viewId),original);assert(root.wc.sent.some(e=>e.payload.type==='conversation-unavailable'));
 });
 test('a disconnected admitted conversation retains its renderer, history and draft without replay',async t=>{
- const {native}=await fixture(t);native.ensureConversation=async()=>{};
+ const {native,root}=await fixture(t);native.ensureConversation=async()=>{};
  const layout=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'conversation',viewState:{draft:'keep me',messages:['history']}}});native.layouts.set('p',layout);await native.reconcile(layout);
  const chat=[...native.surfaces.values()].find(s=>s.kind==='conversation');receipt(native,chat);const metadata=structuredClone(layout.views[chat.viewId]);
  native.command=()=>assert.fail('provider disconnection must not close admitted content');
  for(let i=0;i<2;i++)await native.conversationState('p',{agents:[{target:'frontdesk',closed:true,phase:'closed'}]});
  assert.equal(native.surfaces.get(chat.viewId),chat);assert.equal(chat.dead,false);assert.equal(native.layouts.get('p').mainRoot.activeViewId,chat.viewId);assert.deepEqual(native.layouts.get('p').views[chat.viewId],metadata);
  const notices=chat.wc.sent.filter(event=>event.payload?.type==='conversation-unavailable');assert.equal(notices.length,1);assert.equal(notices[0].payload.retained,true);assert.equal(chat.conversationBlocked,undefined);
+ await native.conversationState('p',{agents:[{target:'frontdesk',closed:false,phase:'idle'}]});assert.equal(chat.conversationDisconnected,false);
+ // A stale worker target left on an older surface record never steers the
+ // disconnect handling: frontdesk liveness stays the single signal even while
+ // the stale id sits in configuringTargets.
+ chat.conversationTarget='ended-work-1';
+ await native.conversationState('p',{configuringTargets:['ended-work-1'],agents:[{target:'frontdesk',closed:true,phase:'closed'}]});
+ assert.equal(chat.conversationDisconnected,true);assert.equal(chat.wc.sent.filter(event=>event.payload?.type==='conversation-unavailable').length,2);
+ // Ordinary managed.send from a native conversation addresses frontdesk only;
+ // explicit background submits (managed.task) keep their own entry.
+ const chatEvent={sender:chat.wc,senderFrame:chat.wc.mainFrame},shellEvent={sender:root.wc,senderFrame:root.wc.mainFrame};
+ assert.equal(native.authorize(chatEvent,'managed.send',{projectId:'p',target:'frontdesk',text:'hi'}),chat);
+ assert.equal(native.authorize(chatEvent,'managed.send',{projectId:'p',text:'default stays frontdesk'}),chat);
+ assert.equal(native.authorize(chatEvent,'managed.task',{projectId:'p',requestKey:'explicit-background',text:'background submit'}),chat);
+ assert.throws(()=>native.authorize(chatEvent,'managed.send',{projectId:'p',target:'ended-work-1',text:'hi'}),{code:'CONVERSATION_TARGET_REJECTED'},'a native conversation surface cannot address a Worker session');
+ assert.equal(native.authorize(shellEvent,'managed.send',{projectId:'p',target:'ended-work-1',text:'hi'}),root,'the main-window shell keeps the internal provider-control channel');
  await native.conversationState('p',{agents:[{target:'frontdesk',closed:false,phase:'idle'}]});assert.equal(chat.conversationDisconnected,false);
 });
 
@@ -765,6 +798,29 @@ test('pane bounds convert CSS pixels to native DIP without replacing owners or b
  assert.equal(native.surfaces.get(surface.viewId),surface);assert.equal((await native.invoke(surface,'workspace.document.snapshot',{projectId:'p',relPath:'geometry.md'})).text,'UNSAVED geometry draft');
  const stale=await native.invoke(root,'workspace.bounds',{projectId:'p',windowId:'main',sequence:2,viewport:{width:1000,height:760},groups:[]});assert.equal(stale.stale,true);assert.equal(surface.view.visible,true,'stale viewport cannot blank the last admitted surface');
  for(const event of ['resized','maximize','unmaximize','enter-full-screen','leave-full-screen','restore']){const before=root.wc.sent.length;root.win.emit(event);assert.equal(root.wc.sent.length,before+1);assert.equal(root.wc.sent.at(-1).payload.type,'viewport-changed');}
+});
+test('unchanged native geometry avoids repeated layout while readiness, occlusion and actual native changes still apply',async t=>{
+ const {native,root}=await fixture(t);
+ const layout=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'document',relPath:'retained.md'}});native.layouts.set('p',layout);await native.reconcile(layout);
+ const surface=[...native.surfaces.values()][0];native.bootstrap(surface);
+ await native.invoke(surface,'workspace.document.publish',{projectId:'p',relPath:'retained.md',text:'KEEP DRAFT',dirty:true});
+ const rect={x:200,y:60,width:700,height:600},payload={projectId:'p',windowId:'main',layoutRevision:layout.revision,groups:[{groupId:layout.mainRoot.id,viewId:surface.viewId,rect}]};
+ let boundsCalls=0,visibilityCalls=0;const setBounds=surface.view.setBounds.bind(surface.view),setVisible=surface.view.setVisible.bind(surface.view);
+ surface.view.setBounds=value=>{boundsCalls++;setBounds(value);};surface.view.setVisible=value=>{visibilityCalls++;setVisible(value);};
+ await native.invoke(root,'workspace.bounds',payload);assert.deepEqual(surface.view.getBounds(),rect);assert.equal(surface.view.getVisible(),false);
+ const initializedCalls=boundsCalls;
+ await native.invoke(surface,'workspace.ready',{contentReady:true});await native.invoke(root,'workspace.bounds',payload);assert.equal(surface.view.getVisible(),true);
+ const admittedVisibility=visibilityCalls;
+ for(let i=0;i<10;i++)await native.invoke(root,'workspace.bounds',payload);
+ assert.equal(boundsCalls,initializedCalls);assert.equal(visibilityCalls,admittedVisibility);
+ await native.invoke(root,'workspace.bounds',{...payload,overlayRects:[rect]});assert.equal(surface.view.getVisible(),false);
+ await native.invoke(root,'workspace.bounds',payload);assert.equal(surface.view.getVisible(),true);
+ // A reparent/restore can alter native state outside the ordinary bounds path.
+ setBounds({x:-1000,y:-760,width:1000,height:760});setVisible(false);
+ await native.invoke(root,'workspace.bounds',payload);assert.deepEqual(surface.view.getBounds(),rect);assert.equal(surface.view.getVisible(),true);
+ root.wc.getZoomFactor=()=>.5;await native.invoke(root,'workspace.bounds',payload);assert.deepEqual(surface.view.getBounds(),{x:100,y:30,width:350,height:300});
+ const visibleBounds=surface.view.getBounds();const refused=await native.invoke(root,'workspace.bounds',{...payload,layoutRevision:layout.revision+1});assert.equal(refused.stale,true);assert.deepEqual(surface.view.getBounds(),visibleBounds);
+ assert.equal((await native.invoke(surface,'workspace.document.snapshot',{projectId:'p',relPath:'retained.md'})).text,'KEEP DRAFT');assert.equal(native.surfaces.get(surface.viewId),surface);
 });
 test('window controls use native fullscreen and bounded content resize',async t=>{
  const {native,root}=await fixture(t);let full=false,size=null;
