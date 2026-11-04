@@ -100,7 +100,6 @@ NOZELI_TEST_LIVE=1 NOZELI_OZONE=x11 npm run test:agent-control:live
 
 Liuhuaiyu 实际模型联测发现旧发布契约同时暴露 `html`／`text`，实际模型会给 result 补上 `text:""`，导致严格校验拒绝。曾尝试同回合返回纠错：合成烟测通过，但真实模型仍反复生成相同空字段，已停止对应 QA owner 并撤回此方案，不能用合成通过代替真实账号通过。最终 `nozeli_publish` 只接受 **`{kind,content,files}`**：`content` 是唯一必填正文，result 为完整静态 HTML、problem 为 Markdown；旧 html/text 参数、额外字段及空正文均拒绝，不做自动参数重试或输入重放。Worker 指令及全部有效测试调用同步迁移，历史线程工具摘要保护保留。另修复任务菜单漏传 `'discard'` 的接线错误，真实 Electron 回归已覆盖菜单确认、持久决定、完整收尾后释放配额及不重放原 Worker。最终真实项目复测与安装版本以专项记录为准。
 
-
 ## Node 与 Electron 的 ABI 区分
 
 postinstall 用 `electron-rebuild` 针对 Electron 重建 `node-pty`。该依赖基于 node-addon-api（N-API），二进制在 Node 与 Electron 间 ABI 稳定，因此纯 Node 的 live 测试仍可直接加载。runner 在 live 前实际探测 `node -e "require('node-pty')"`：一旦某次重建产出仅 Electron ABI 的二进制，立即给出明确前置说明（重装依赖），而不是让测试逐个崩溃或被裁剪。依赖 Electron GUI 的 `desktop-*` 测试不属于任何纯 Node 套件。
