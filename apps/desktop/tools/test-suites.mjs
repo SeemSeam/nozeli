@@ -54,6 +54,7 @@ const SUITES = {
       'capture-sources.test.mjs',
       'code-file-support.test.mjs',
       'collaboration-timing.test.mjs',
+      'close-flush-retention.test.mjs',
       'complex-routing-evidence.test.mjs',
       'configuration-notice.test.mjs',
       'conversation-input-state.test.mjs',

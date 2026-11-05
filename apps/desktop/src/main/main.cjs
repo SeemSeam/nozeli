@@ -118,6 +118,7 @@ let projectWatcher;
 let allowClose = false;
 let quitting = false;
 let quitPending=false;
+function forceQuitApplication(){forceQuitting=true;quitting=true;forceQuit();}
 let origin = '';
 async function syncDocument(payload) {
   if (!workspaceNative) throw new HostError('NOT_READY','编辑界面尚未就绪。');
@@ -216,18 +217,19 @@ async function createWindow(server) {
   });
   win.webContents.on('will-attach-webview', (event) => event.preventDefault());
   const recovery=new WindowRecovery(win,{
+    prepareClose:()=>finishDrawing(),
     dialog,settle:async()=>{await workspaceNative.flush([...workspaceNative.senders.values()].filter(r=>r.role==='surface'));await host.settled();},busy:()=>agents?.busy()||managedAgents?.busy(),
     stop:async()=>{await closeOnlineBrowsers();await managedAgents?.stop();await agents?.stopIdle?.();},
+    forceQuit:forceQuitApplication,
     reveal:()=>revealWindow(win),onClose:()=>{allowClose=true;quitting=true;for(const s of [...workspaceNative.surfaces.values()])workspaceNative.destroySurface(s);for(const r of workspaceNative.windows.values()){r.closing=true;r.win.close();}},
   });
   win.webContents.on('did-start-navigation',(_event,_url,_inPlace,isMainFrame)=>{if(isMainFrame)recovery.navigation();});
   win.webContents.on('render-process-gone',(_event,details)=>{console.error('renderer gone',details);recovery.rendererGone(details);});
   win.on('closed',()=>recovery.destroyed());
   win.on('close',event=>{
-    if(workspaceCapture?.active?.windowId===scope.windowId){event.preventDefault();void finishDrawing({windowId:scope.windowId}).then(()=>win.close()).catch(error=>console.error('drawing close failed',error));return;}
     if(allowClose||quitting||scope.closing)return;
     event.preventDefault();
-    if(workspaceNative.currentWindowCount()>1)void workspaceNative.closeWindow(scope).catch(error=>console.error('window close failed',error));
+    if(workspaceNative.currentWindowCount()>1)void finishDrawing({windowId:scope.windowId}).then(()=>workspaceNative.closeWindow(scope)).catch(error=>{console.error('window close failed',error);recovery.offer('save-failed',error,true);});
     else recovery.requestClose();
   });
   win.webContents.on('did-finish-load', () => {
@@ -370,7 +372,7 @@ async function main() {
     }catch(error){await managedAgents.reportConnectionError(projectId,error);throw error;}
   };
   workspaceNative.setupWindow=r=>{
-    const recovery=new WindowRecovery(r.win,{dialog,settle:async()=>{await workspaceNative.flush([...workspaceNative.surfaces.values()]);await host.settled();},busy:()=>agents?.busy()||managedAgents?.busy(),stop:async()=>{await closeOnlineBrowsers();await managedAgents?.stop();await agents?.stopIdle?.();},reveal:()=>revealWindow(r.win),onClose:()=>{allowClose=true;quitting=true;for(const s of [...workspaceNative.surfaces.values()])workspaceNative.destroySurface(s);for(const w of workspaceNative.windows.values()){w.closing=true;w.win.close();}}});
+    const recovery=new WindowRecovery(r.win,{dialog,prepareClose:()=>finishDrawing(),settle:async()=>{await workspaceNative.flush([...workspaceNative.surfaces.values()]);await host.settled();},busy:()=>agents?.busy()||managedAgents?.busy(),stop:async()=>{await closeOnlineBrowsers();await managedAgents?.stop();await agents?.stopIdle?.();},forceQuit:forceQuitApplication,reveal:()=>revealWindow(r.win),onClose:()=>{allowClose=true;quitting=true;for(const s of [...workspaceNative.surfaces.values()])workspaceNative.destroySurface(s);for(const w of workspaceNative.windows.values()){w.closing=true;w.win.close();}}});
     r.wc.on('did-start-navigation',(_e,_url,_inPlace,isMain)=>{if(isMain)recovery.navigation();});
     r.wc.on('did-finish-load',()=>recovery.loaded());r.wc.on('render-process-gone',(_e,details)=>recovery.rendererGone(details));r.win.on('closed',()=>recovery.destroyed());
   };
@@ -383,7 +385,9 @@ async function main() {
     if(quitting)return;event.preventDefault();if(quitPending)return;quitPending=true;
     const r=workspaceNative.windows.get('main')||workspaceNative.windows.values().next().value;
     if(!r){quitPending=false;return;}
-    void workspaceNative.flush([...workspaceNative.senders.values()]).then(()=>finishDrawing()).then(()=>{const recovery=windowRecovery(r.win);if(recovery)recovery.requestClose();else return workspaceNative.onClose(r);}).catch(error=>console.error('quit flush failed',error)).finally(()=>{quitPending=false;});
+    const recovery=windowRecovery(r.win);
+    if(recovery){recovery.requestClose();quitPending=false;return;}
+    void workspaceNative.onClose(r).catch(error=>console.error('quit failed',error)).finally(()=>{quitPending=false;});
   });
   const {AutoUpdater,acknowledgeUpdateHealth:health}=await import('./auto-update.mjs');acknowledgeUpdateHealth=health;
   const {createUpdateLifecycle}=await import('./update-lifecycle.mjs');
@@ -402,9 +406,7 @@ async function main() {
       // must remain reachable while another quit invocation awaits flush/stop.
       if (op === 'session.quitChoice' && payload?.choice === 'force') {
         trusted(event, op, payload);
-        forceQuitting = true;
-        quitting = true;
-        forceQuit();
+        forceQuitApplication();
         return {ok:true,value:{closing:true,forced:true}};
       }
       payload=await workspaceNative.resolvePayload(scope,op,payload??{});
@@ -581,7 +583,6 @@ async function main() {
       }
       if (op === 'session.takeOpen') { const file=externalFiles.shift();return {ok:true,value:file?await externalTarget(host,file):null}; }
       if (op === 'session.requestClose') {
-        await finishDrawing({windowId:scope.windowId});
         scope.win.close();
         return { ok: true, value: { closing: true } };
       }

@@ -41,6 +41,8 @@
     "test:document-diff": "npm run build:renderer && node tests/desktop-document-diff.test.mjs",
     "test:code-electron": "npm run build:renderer && node tests/desktop-code-file.test.mjs",
     "test:close": "npm run build:renderer && node tests/desktop-close.test.mjs",
+    "test:close-retention": "npm run build:renderer && node tests/desktop-close-retention-live.mjs",
+    "test:close-recovery-native": "npm run build:renderer && node tests/desktop-close-recovery-live.mjs",
     "test:tag-stability": "node --test tests/tag-stability.test.mjs && npm run build:renderer && node tests/desktop-tag-stability.test.mjs",
     "test:agent-send": "node --test tests/omp-only-cutover.test.mjs tests/managed-submission.test.mjs",
     "test:editor-e0": "node tools/test-editor-e0.mjs",

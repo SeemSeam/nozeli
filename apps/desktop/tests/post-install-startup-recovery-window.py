@@ -5,6 +5,7 @@ from dbus.mainloop.glib import DBusGMainLoop
 from gi.repository import GLib
 DBusGMainLoop(set_as_default=True)
 pid, target_dir, mode = int(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3]
+caption = sys.argv[4] if len(sys.argv)>4 else '工作区恢复'
 assert target_dir.is_dir()
 bus = dbus.SessionBus(); loop = GLib.MainLoop()
 service = 'org.nozeli.StartupAudit' + uuid.uuid4().hex
@@ -21,7 +22,7 @@ script = target_dir / (plugin + '.js')
 # No focus/activate/keyboard calls. Only this exact PID and recovery caption qualify.
 script.write_text("const rows=[];for(const w of workspace.windowList()){if(w.pid!=="+str(pid)+")continue;"
     "rows.push({pid:w.pid,caption:w.caption,id:String(w.internalId),dialog:w.dialog});"
-    + ("if(w.caption==='工作区恢复')w.closeWindow();" if mode == 'cancel' else '')
+    + ("if(w.caption==="+json.dumps(caption)+")w.closeWindow();" if mode == 'cancel' else '')
     + "}callDBus("+json.dumps(service)+",'/Audit','org.nozeli.StartupAudit','Report',JSON.stringify(rows));")
 scripting = dbus.Interface(bus.get_object('org.kde.KWin', '/Scripting'), 'org.kde.kwin.Scripting')
 script_id = bus.call_blocking('org.kde.KWin', '/Scripting', 'org.kde.kwin.Scripting', 'loadScript', 'ss', (str(script), plugin))
@@ -32,7 +33,7 @@ try:
 finally:
     scripting.unloadScript(plugin)
 assert result is not None, 'Own KWin observation timeout'
-dialogs = [w for w in result if w['pid']==pid and w['caption']=='工作区恢复']
+dialogs = [w for w in result if w['pid']==pid and w['caption']==caption]
 output = dict(pid=pid, windows=result, action=mode)
 assert len(dialogs)==1, 'Expected one exact owned native recovery dialog'
 if mode == 'capture':

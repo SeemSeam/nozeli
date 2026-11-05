@@ -489,3 +489,33 @@ postinstall 用 `electron-rebuild` 针对 Electron 重建 `node-pty`。该依赖
 本轮仅授权“安装一下我要测试”，未授权提交／推送／发布。经既有build-renderer、package-candidate冻结为`approval-ux-batch4-20261105-local-01`，405源码与354构建文件SHA-256一致，记录`~/.local/state/nozeli-runtime-tests/approval-ux-batch4-install-20261105/integrity.json`；这是完整开发工作树快照，非纯净提交发行物。实际冻结ELF、包内Pi/Git运行审批问答／排队／真实候选发布／明确采用至ended与退出通过（`/tmp/nozeli-approval-discussion-wbiUV8/report.json`），真实失效引用后的平实首屏／展开诊断／暂停报告／查看复制不新增执行亦通过（`/tmp/nozeli-retained-progress-XMnOmp/report.json`）；分别9、5次本地脚本响应，零付费模型。
 
 固定800人工采用脚本两次取证AjKFkY、DUEEE7均因窗口过程中变为最大化而失败，不计通过，不将气泡外框／尺寸断言直接等同于读者看不到正文，也没有为此改产品布局；此安装不新增完整窄窗、历史或恢复签收。随后既有install-local --existing-release成功激活current第四轮、previous第二轮，原首批由既有受管保留策略清理；不强退运行窗口、不操作用户业务。安装原件为同目录installed.json，用户正常退出旧窗口后重开桌面入口测试。
+## 2026-11-05 退出卡住与原生强制退出（源码修复与本机安装验收）
+
+设计约束见[退出与工作区恢复](principles.md#退出与工作区恢复)。原次用户退出没有留下具体保存错误日志，不能从泛化截图唯一认定是哪份材料／输入失败；以下区分源码因果、实际运行与测试夹具。
+
+### 已修复的确定链路
+
+- 旧 `WindowRecovery` 超时先清空 `pending`，使“继续等待”之后原保存回执也无法继续关闭。现保留请求ID／页面代次，原生选择未决时暂存晚到结果；继续等待后仍执行真正的Host结算，不把晚到页面确认直接当作全部保存完成。旧确认不能关闭新页面。
+- 准备涂鸦关闭、`app.before-quit` 的独立前置flush，以及stop／重载结算曾可能在恢复监督之外等待。应用退出现在统一进入受监督准备→flush→结算→清理；重载结算也受监督。真实失败显示原error.message，不再丢成“工作区未确认保存”。单独关闭非最后窗口仍沿既有多窗口保留流程，不将其普通收窗改成全应用退出。
+- 页面先排干已启动的自动保存，再捕获保留快照，避免摘要／dirty状态在保留过程中被另一保存翻转。未自动保存的项目文本同时经既有 `file.retain` 保存到正常重开读取的草稿权威，不改磁盘源、不绕过读取基线验证；此前0ms退出虽已有恢复记录，正常重开编辑器却未恢复该缓冲。IME仍真实拒收，不吞掉失败。
+- preload必须保持自包含：Electron生产窗口是sandbox:true，不能require新增本地CommonJS文件。flush聚合保留在原preload内部，VM测试执行真实preload并只允许electron require；缺少返回值具名为NO_FLUSH_RESULT，回执失败最多补报一次，避免拒收细节消失或无限回执。
+- 恢复框有宿主原生“强制退出…”及默认取消的二次确认；确认后复用原 `createForceQuit`，不等保存／正常stop。Linux只按已捕获的进程出生身份／uid清理当前实例后代，不按进程名或进程组扫杀。
+
+### 实际运行证据
+
+- `node tests/desktop-close-retention-live.mjs`／`npm run test:close-retention`：真实native文本编辑器物理键盘输入，0/600/705/715/730/750/770/1200ms八个时点正常退出，逐轮冷重开核对上轮新增文字，最后再冷重开一次。9次exit均code0；原件 `/tmp/nozeli-close-retention-Lr0eRI/report.json`。无模型、无用户文件。
+- `node tests/desktop-close-recovery-live.mjs`／`npm run test:close-recovery-native`：Linux KDE KWin＋X11/XWayland＋Python dbus/gi及ImageMagick的显式专用smoke，不混入普通live套件。真实renderer阻塞12s后，原生取消/继续等待能自然退出；永久阻塞renderer、注入保存错误、stop挂起、prepare挂起、重载结算挂起共6场景均退出code0，确认取消保持实例存活，源文件和已确认草稿保持。最终原件 `/tmp/nozeli-close-recovery-iatLpc/report.json`，原生恢复/确认截图按场景分目录；强退分支观察约396–459ms完成（包括驱动开销），独立进程测试另验2500ms清理deadline。
+- **原生UI边界**：对话框确由Electron真实显示，截图只捕获匹配自有PID＋出生时间＋XID的窗口，取消由窗口管理器真实执行。当前桌面的键盘／AT-SPI自动驱动未可靠命中按钮，失败尝试不记作通过。非取消选择通过隔离Inspector夹具控制原生返回值后继续真实控制器与app.exit，report中逐项标注 `explicit-fixture-return-after-native-dismissal`；不能据此声称已自动完成强退按钮的物理点击。没有替换业务保存、进程清理或任务结果。
+- 正常PPT＋工作面涂鸦收尾复验：`node tests/desktop-label-windows-live.mjs`，13项通过且正常退出；原件 `/tmp/nozeli-label-windows-fO1uHk/report.json`。
+- 最终聚焦回归：`node --test tests/main-startup-recovery.test.mjs tests/close-flush-retention.test.mjs tests/force-quit.test.mjs tests/force-quit-process.test.mjs`，60/60通过，含迟到回执、导航／销毁、原生确认取消／幂等、reload挂起、真实自有后代与无关sentinel隔离。删除只固定按钮文案的断言，保留行为和默认取消保护。
+
+上轮源码验证时未执行安装、提交、推送或发布；下节记录本次明确授权后的安装验收。先前current指针由其他操作更新，不作为冻结候选验收。Windows/macOS、纯原生Wayland、系统级主进程冻结与全部历史退出故障未验，不宣称所有I/O失败都可无损退出。
+
+### 本轮明确授权后的安装验收与提交范围
+
+- 用户授权顺序为“修正后安装测试，通过再commit”；未授权推送或发布。以此前current `2026-11-05T14-41-14-131Z` 为安装基线，核对408个运行源码、354个构建文件：安装基线与工作树的运行源码差异仅 `main/window-recovery.cjs`，构建文件无差异，package差异仅本轮新增测试脚本。由既有package-candidate/install-local冻结并激活 `exit-recovery-20261105-verified-01`，previous保留原current，不热替换／强杀旧实例。
+- 冻结候选的408源码＋354构建与交付输入逐字节摘要一致，零差异；清单 `/home/bfly/.cache/nozeli-smokes/exit-delivery-krYqzo/candidate-inputs.json`。安装继承原基线已有功能，不将其他未提交工作夹带入本轮commit，也不把该局部commit宣称为整棵安装快照的全部来源。
+- 实际程序：`/home/bfly/.local/opt/nozeli/releases/exit-recovery-20261105-verified-01/nozeli`，实际app root为同目录 `resources/app`；通过 `NOZELI_TEST_BINARY` 与 `NOZELI_TEST_APP_ROOT` 交给真实测试，非源码Electron替代。
+- 安装版恢复测试：`desktop-close-recovery-live.mjs` 六场景全部exit0，原件 `/tmp/nozeli-close-recovery-v3AWQr/report.json`；强退响应分支约404–433ms结束。保留本节前述原生UI边界：非取消返回由夹具明确控制，不声称物理点击通过。
+- 安装版正常退出：`desktop-close-retention-live.mjs` 八个自动保存时点、冷重开验证、PPT涂鸦讨论打开时退出，共10次exit0。原件 `/tmp/nozeli-close-retention-CTWCnz/report.json`（含实际binary/appRoot）与同目录 `ppt-drawing-before-exit.png`；保存问题/笔迹完整且原PPT字节不变。只使用隔离合成资料，无模型请求，不打开用户论文或日常profile。
+- 交付元数据prepare检查为0技术失败；六项公共再分发审计仍pending，本机安装/本地commit不构成公开发布许可或审计签收。

@@ -24,7 +24,8 @@ def prop(w,name):
     finally:lib.XFree(data)
 r=C.c_ulong();parent=C.c_ulong();children=C.POINTER(C.c_ulong)();n=C.c_uint()
 lib.XQueryTree(display,root,C.byref(r),C.byref(parent),C.byref(children),C.byref(n))
-caption='确认重新加载' if label in ('取消','确认重新加载') else '工作区恢复'
+caption = sys.argv[5] if len(sys.argv) > 5 else ('确认重新加载' if label in ('取消','确认重新加载') else '工作区恢复')
+assert 0 < len(caption) <= 100
 matches=[]
 try:
     for wid in (prop(root,'_NET_CLIENT_LIST') or [children[i] for i in range(n.value)]):
@@ -33,8 +34,16 @@ finally:lib.XFree(children)
 assert len(matches)==1, 'Expected one exact own native XWayland recovery dialog'
 wid=matches[0];assert stamp()==expected_start
 # ImageMagick reads this window only; never active window, screen, selection or clipboard.
-shot=target_dir/('native-'+('confirmation' if caption=='确认重新加载' else 'recovery')+'.png')
+shot=target_dir/('native-'+('recovery' if caption=='工作区恢复' else 'confirmation')+'.png')
 subprocess.run(['/usr/bin/import','-window',hex(wid),str(shot)],check=True,timeout=8)
+assert stamp()==expected_start and prop(wid,'_NET_WM_PID')==[pid]
+if len(sys.argv)>6 and sys.argv[6]=='dismiss':
+    driver=pathlib.Path(__file__).with_name('post-install-startup-recovery-window.py')
+    action=subprocess.run(['/usr/bin/python3',str(driver),str(pid),str(target_dir),'cancel',caption],capture_output=True,text=True,timeout=8)
+    if action.returncode:raise RuntimeError(action.stdout+action.stderr)
+    native=json.loads(action.stdout)
+    print(json.dumps(dict(pid=pid,start=expected_start,xid=hex(wid),caption=caption,label=label,mode='native-exact-owned-WM-dismissal',screenshot=str(shot),action=native),ensure_ascii=False))
+    sys.exit(0)
 class Key(C.Structure):
     _fields_=[('type',C.c_int),('serial',C.c_ulong),('send_event',C.c_int),('display',C.c_void_p),('window',C.c_ulong),('root',C.c_ulong),('subwindow',C.c_ulong),('time',C.c_ulong),('x',C.c_int),('y',C.c_int),('x_root',C.c_int),('y_root',C.c_int),('state',C.c_uint),('keycode',C.c_uint),('same_screen',C.c_int)]
 class Event(C.Union):_fields_=[('key',Key),('pad',C.c_long*24)]

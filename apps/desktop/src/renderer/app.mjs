@@ -28,6 +28,7 @@ import { mountDocumentContextMenu, formatEditor, findInReadingSurface } from './
 import './context-menu.css';
 import { mountDocumentDiff } from './document-diff.mjs';
 import { flushManagedReviews, applyManagedReviewBarrier, managedReviewComposing } from './managed-review.mjs';
+import { createSaveDrain } from './save-drain.mjs';
 import './managed-review.css';
 import { mountFrozenChangeReader } from './frozen-change-reader.mjs';
 import { createTagSessionProjection } from './tag-session-projection.mjs';
@@ -163,7 +164,9 @@ function enqueue(action, freeze = false) {
   let projectNavigationHeldNodes=null;
   function holdProjectNavigation(held){
     if(held){
-      if(projectNavigationHeldNodes||ui.composing||managedReviewComposing())return;
+      // Inert-izing mid-IME strands compositionend; a stuck composition then
+      // refuses every later save/close of this renderer as COMPOSING.
+      if(projectNavigationHeldNodes||projectComposing()||managedReviewComposing())return;
       const recent=$('recent'),rail=recent.parentElement;
       const nodes=[...[...$('app').children].filter(node=>node!==rail),...[...rail.children].filter(node=>node!==recent)];
       projectNavigationHeldNodes=nodes.map(node=>({node,inert:node.inert}));
@@ -897,8 +900,12 @@ async function retainWorkspace() {
       : file?.kind === 'ppt' && ui.word ? {model:recoveryPptModel(ui.word.snapshot()),bytes:encodeRecoveryBytes(await ui.word.export())}
       : ['word','sheet'].includes(file?.kind) && ui.word ? {bytes:encodeRecoveryBytes(await ui.word.export())}
       : file?.bytes ? {bytes:encodeRecoveryBytes(new Uint8Array(file.bytes))} : null;
+    if(file?.kind==='text'&&ui.editor&&documentSource.type==='project'&&(ui.dirty||candidate.text!==baselineText)){
+      const retained=await invoke('file.retain',{projectId:project.id,relPath:file.relPath,baseDigest,text:candidate.text});
+      if(!retained.ok){showFailure(retained.error);return retained;}
+    }
   } catch (error) {
-    const result = {ok:false,error:{code:error.code || 'OFFICE_RECOVERY_FAILED',message:error.message}};
+    const result = {ok:false,error:{code:error.code || (file?.kind==='text'?'TEXT_RETENTION_FAILED':'OFFICE_RECOVERY_FAILED'),message:error.message}};
     showFailure(result.error); return result;
   }
   if (project !== ui.project || file !== ui.file || revision !== ui.wordRevision || baseDigest !== ui.baseDigest || sourceDigest !== file?.digest || projectComposing()) return {ok:false,error:{code:'RECOVERY_CHANGED',message:'保存期间内容已变化，请重试；窗口仍保留。'}};
@@ -919,7 +926,7 @@ async function retainWorkspace() {
   return result;
 }
 
-  async function flushNow(confirmOverwrite = false, resolvingNoteEdit = false) {
+  async function performFlushNow(confirmOverwrite = false, resolvingNoteEdit = false) {
     const drafts=await flushConversationDrafts();if(!drafts.ok)return drafts;
     const reviewed=await flushManagedReviews();if(!reviewed.ok)return reviewed;
     if (documentReadOnly()) return {ok:true};
@@ -1016,7 +1023,16 @@ async function retainWorkspace() {
   await refreshNotes();
   return saved;
   }
-}
+  }
+
+  // Every save this renderer starts is tracked so a close-time retention can
+  // drain in-flight saves first: racing them flips digests/dirty flags during
+  // retention, reads as RECOVERY_CHANGED, and blocks exit behind a save that
+  // actually succeeded.
+  const saveDrain = createSaveDrain();
+  function flushNow(confirmOverwrite = false, resolvingNoteEdit = false) {
+    return saveDrain.track(performFlushNow(confirmOverwrite, resolvingNoteEdit));
+  }
 
 function scheduleSave() {
   if (documentReadOnly()) return;
@@ -2900,8 +2916,14 @@ async function openBesideSnapshot(file, diff=false, left=null) {
     // Detached roots own layout chrome only; their content surfaces flush separately.
     if(workspaceScope.role==='detached')return Promise.resolve({ok:true});
     if(projectComposing())return Promise.resolve({ok:false,composing:true,error:{code:'COMPOSING',message:'输入法组合尚未结束，未移动工作面。'}});
-    // Host callbacks must not wait behind an action awaiting that same host's
-    // flush receipt (binding, layout commands and lifecycle operations alike).
+    // A close/barrier flush must not race a debounced save that already fired:
+    // its digest/dirty transitions read as RECOVERY_CHANGED and fail the close
+    // behind a save that actually succeeded. Stop new autosaves, then drain
+    // this renderer's own in-flight save chain before retention. Only
+    // renderer-started save promises are awaited — never a host flush receipt
+    // of this surface — so barrier and lifecycle flows cannot self-wait.
+    window.clearTimeout(ui.timer);window.clearTimeout(ui.maxTimer);ui.maxTimer=0;
+    await saveDrain.drain();
     // Retention captures and validates its source identity across every await.
     rememberCurrentNote();
     if(isReviewDocument){const saved=await flushNow();if(!saved.ok)return saved;}
@@ -2935,7 +2957,8 @@ async function openBesideSnapshot(file, diff=false, left=null) {
     }
     if(event.type==='lifecycle-hold'){
       if(event.reason==='project-switch'&&workspaceScope.role==='shell'){holdProjectNavigation(Boolean(event.held));return;}
-      if(!ui.composing&&!managedReviewComposing()||!event.held)$('app').inert=Boolean(event.held);return;
+      // Composer/note compositions strand the same way an editor one does.
+      if(!projectComposing()&&!managedReviewComposing()||!event.held)$('app').inert=Boolean(event.held);return;
     }
     if(event.type==='project-closed'&&!isSurface){void clearProjectPage(event.projectId);return;}
     if(event.type==='project-unavailable'&&event.projectId===ui.project?.id){ui.project.available=false;ui.sourceMissing=true;window.clearTimeout(ui.timer);window.clearTimeout(ui.maxTimer);$('file-tree').replaceChildren();$('file-tree').textContent='项目目录不可用；未保存内容可保留在本机。';setStatus('error','项目不可用 · 可关闭或移除入口');return;}
@@ -2962,7 +2985,7 @@ async function openBesideSnapshot(file, diff=false, left=null) {
       if(ui.file&&from){ui.file.relPath=event.relPath;openFilesState.paths=openFilesState.paths.map(path=>path===from?event.relPath:path);workspace.remapFiles(from,event.relPath);if(ui.frozenNote?.relPath===from)ui.frozenNote.relPath=event.relPath;$('file-path').textContent=event.relPath;$('subject-title').textContent=event.relPath.split('/').pop();document.title=event.relPath;renderFileTabs();}
     }
     if(event.type==='transfer-hold'){
-      if(event.held && (ui.composing||managedReviewComposing()))return;
+      if(event.held && (projectComposing()||managedReviewComposing()))return;
       $('app').inert=Boolean(event.held)&&!ui.sourceMissing;
       if(ui.sourceMissing)$('documents').inert=true;else $('documents').inert=false;
     }
