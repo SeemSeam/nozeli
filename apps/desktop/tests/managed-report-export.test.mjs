@@ -200,3 +200,20 @@ test('single-object history read pins receipt identity, not whole-state hash; ve
   // controller身份变化（如重启换实例）仍必须拒绝，绝不跨实例返回正文。
   await assert.rejects(managedHistory({...opts(),currentController:()=>({store:s.store})},{objectId}),error=>error.code==='REPORT_CHANGED');
 });
+
+test('history items keep exact-object publication ordinals for same-revision republication',async t=>{
+  const s=await setup(t,{html:true});
+  const workId=s.store.state.works[0].id;
+  // 同一 Work 修订内的第二次结果发布：账本序号区分两份报告，修订事实不改写。
+  await s.store.mutate(()=>{s.store.find(workId).status='running';});
+  const second=await s.store.publish(workId,1,'result',staticReport('Second publication within the same revision'),'receipt-2',{files:[]});
+  await s.store.settle(workId);
+  const project=await s.store.storage.requireRegistered(s.projectId);
+  const controller={store:s.store};
+  const opts=()=>({project,storage:s.store.storage,runtime:s.store.root,controller,currentController:()=>controller});
+  const list=await managedHistory(opts(),{offset:0,limit:10});
+  const first=list.items.find(item=>item.objectId===s.receipt.objectId);
+  const secondItem=list.items.find(item=>item.objectId===second.objectId);
+  assert.equal(first.revision,1);assert.equal(first.publicationNumber,1);
+  assert.equal(secondItem.revision,1);assert.equal(secondItem.publicationNumber,2);
+});

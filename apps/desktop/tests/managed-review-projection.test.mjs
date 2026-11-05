@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {managedReviewTodos,managedInboxTodos,managedWorkRecords} from '../src/domain/managed-work-records.mjs';
+import {managedReviewTodos,managedInboxTodos,managedWorkRecords,publicationOrdinal,publicationVersionLabel,publicationIsCurrent} from '../src/domain/managed-work-records.mjs';
 
 const state=()=>({works:[],todos:[],jobs:[],receipts:[]});
 const work=(id='w',extra={})=>({id,name:'核对文献',request:'核对引用并补全来源',status:'review',revision:2,...extra});
@@ -133,4 +133,43 @@ test('queued supplement temporarily suppresses current review without turning it
 test('accepting the latest publication never labels an iterated older report as accepted',()=>{
  const s=state();s.works.push(work('w',{status:'ended',outcome:'accept',result:{objectId:'new-object',revision:2}}));s.todos.push(todo('old',{revision:1,status:'iterating'}),todo('new',{status:'cancelled'}));
  const rows=managedInboxTodos(s);assert.match(rows[0].statusLabel,/续改/);assert.doesNotMatch(rows[0].statusLabel,/已接受/);assert.match(rows[1].statusLabel,/已接受/);
+});
+
+test('same-revision republication numbers current and old entries by exact object on every surface',()=>{
+ const s=state();
+ s.works.push(work('w',{revision:1,result:{objectId:'v2-object',revision:1}}));
+ s.receipts.push(
+  {id:'r1',workId:'w',kind:'result',objectId:'v1-object',revision:1,at:'2026-11-05T09:00:00.000Z',report:{excerpt:'第一版结论'},snapshot:{files:[{relPath:'reading.md',digest:'digest-frozen'}]}},
+  {id:'p1',workId:'w',kind:'problem',objectId:'p1-object',revision:1,at:'2026-11-05T09:02:00.000Z',report:{excerpt:'中途问题'}},
+  {id:'r2',workId:'w',kind:'result',objectId:'v2-object',revision:1,at:'2026-11-05T09:05:00.000Z',report:{excerpt:'第二版结论'},snapshot:{files:[{relPath:'reading.md',digest:'digest-frozen'}]}});
+ s.todos.push(todo('v1',{objectId:'v1-object',revision:1,status:'superseded'}),todo('v2',{objectId:'v2-object',revision:1}));
+ const before=structuredClone(s);
+ // 编号按同Work同kind的发布账本与确切objectId映射：问题与结果各自计数。
+ assert.equal(publicationOrdinal(s,'w','v1-object','result'),1);
+ // 当前/历史按确切objectId判定：同修订的旧对象是历史，指针不明时不是当前。
+ assert.equal(publicationIsCurrent(s,'w','v2-object','result'),true);
+ assert.equal(publicationIsCurrent(s,'w','v1-object','result'),false);
+ assert.equal(publicationIsCurrent(s,'w','p1-object','problem'),false);
+ assert.equal(publicationIsCurrent(s,'w','unknown-object','result'),false);
+ assert.equal(publicationOrdinal(s,'w','v2-object','result'),2);
+ assert.equal(publicationOrdinal(s,'w','p1-object','problem'),1);
+ assert.equal(publicationOrdinal(s,'w','p1-object','result'),null);
+ assert.equal(publicationOrdinal(s,'w','unknown-object','result'),null);
+ // 账本缺项=历史不完整：不发明序号，保留已记录的修订事实。
+ assert.equal(publicationVersionLabel(s,todo('orphan',{objectId:'orphan-object',revision:3,status:'closed'})),'第 3 版');
+ assert.equal(publicationVersionLabel(s,{id:'x',workId:'w',kind:'routing',revision:3}),'第 3 版');
+ const review=managedReviewTodos(s);
+ assert.deepEqual(review.map(t=>t.id),['v2']);
+ assert.match(review[0].title,/第 2 版/);assert.equal(review[0].publicationVersion,2);assert.equal(review[0].publicationLabel,'第 2 版');
+ const inbox=managedInboxTodos(s),current=inbox.find(t=>t.id==='v2'),old=inbox.find(t=>t.id==='v1');
+ assert.equal(current.versionLabel,'第 2 版');assert.equal(current.publicationVersion,2);assert.equal(current.humanEdited,false);assert.equal(current.editLabel,'');
+ assert.equal(old.versionLabel,'第 1 版');assert.equal(old.statusLabel,'已被新版替代');
+ assert.deepEqual(s,before);
+ // 人工改稿只标记绑定同一objectId的当前入口；与冻结候选一致的内容不算修改。
+ s.works[0].review={drafts:{'reading.md':{revision:1,textDigest:'digest-human',savedAt:'2026-11-05T10:00:00.000Z',objectId:'v2-object'}}};
+ const edited=managedInboxTodos(s);
+ assert.equal(edited.find(t=>t.id==='v2').editLabel,'已保存人工改稿');
+ assert.equal(edited.find(t=>t.id==='v1').editLabel,'');
+ s.works[0].review.drafts['reading.md'].textDigest='digest-frozen';
+ assert.equal(managedInboxTodos(s).find(t=>t.id==='v2').editLabel,'');
 });

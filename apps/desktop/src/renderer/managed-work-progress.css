@@ -1,0 +1,61 @@
+/* M3 查看保留进展：只读事实呈现。沿用面板既有令牌（--muted/--accent/--line），
+   任务信息优先，窄栏可读；不隐藏关键信息来容纳控件。 */
+.managed-work-progress { display: grid; gap: 14px; min-width: 0; }
+.managed-work-progress :is(h3, h4, p, ul, ol, dl, dd) { margin: 0; }
+.managed-work-progress h4 { font-size: 1em; font-weight: 600; }
+.managed-work-progress ul, .managed-work-progress ol { padding-left: 1.2em; display: grid; gap: 4px; }
+
+.managed-work-progress-header { display: grid; gap: 5px; min-width: 0; }
+.managed-work-progress-title { font-size: 1.1em; }
+.managed-work-progress-status { color: var(--muted); font-size: .95em; }
+.managed-work-progress-summary { max-width: 64ch; }
+
+.managed-work-progress-request,
+.managed-work-progress-publications,
+.managed-work-progress-supplements,
+.managed-work-progress-unverified,
+.managed-work-progress-next { display: grid; gap: 8px; min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
+.managed-work-progress-request-text { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 72ch; }
+
+.managed-work-progress-note { color: var(--muted); font-size: .92em; max-width: 64ch; }
+
+.managed-work-progress-publication { display: grid; gap: 4px; padding: 8px 0; border-top: 1px solid var(--line); min-width: 0; }
+.managed-work-progress-publication:first-of-type { border-top: 0; padding-top: 0; }
+.managed-work-progress-publication-title { font-weight: 600; }
+.managed-work-progress-publication-name { color: var(--muted); }
+.managed-work-progress-publication-excerpt { color: var(--muted); max-width: 64ch; }
+.managed-work-progress-now { display: grid; gap: 8px; min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
+.managed-work-progress-notices li { max-width: 64ch; }
+.managed-work-progress-now-actions { gap: 8px; }
+.managed-work-progress .managed-work-progress-return { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.managed-work-progress-diagnostics > summary { cursor: pointer; color: var(--muted); font-size: .92em; }
+.managed-work-progress-diagnostics dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; padding-top: 6px; margin: 0; min-width: 0; }
+.managed-work-progress-diagnostics dt { color: var(--muted); white-space: nowrap; }
+.managed-work-progress-diagnostics dd { margin: 0; min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+
+.managed-work-progress-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }
+.managed-work-progress .managed-work-progress-action { font: inherit; padding: 3px 10px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; cursor: pointer; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.managed-work-progress .managed-work-progress-action:hover { border-color: var(--accent); }
+.managed-work-progress .managed-work-progress-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.managed-work-progress-file { font-size: .9em; }
+.managed-work-progress-file-name { color: var(--muted); font-size: .9em; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.managed-work-progress-copy-done { color: var(--accent); font-size: .9em; }
+.managed-work-progress-copy-error { color: #a33; font-size: .9em; }
+
+.managed-work-progress-supplement { display: grid; gap: 4px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; min-width: 0; }
+.managed-work-progress-supplement-failure { border-color: #c66; }
+.managed-work-progress-supplement-unconfirmed { border-style: dashed; }
+.managed-work-progress-supplement-status { font-weight: 600; }
+.managed-work-progress-supplement-failure > .managed-work-progress-supplement-status { color: #a33; }
+.managed-work-progress-supplement-text { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 72ch; }
+.managed-work-progress-supplement-error { color: #a33; font-size: .95em; overflow-wrap: anywhere; }
+
+.managed-work-progress-advanced > summary { cursor: pointer; color: var(--muted); }
+.managed-work-progress-advanced-body { display: grid; gap: 8px; padding-top: 8px; }
+.managed-work-progress-advanced dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; min-width: 0; }
+.managed-work-progress-advanced dt { color: var(--muted); white-space: nowrap; }
+.managed-work-progress-advanced dd { overflow-wrap: anywhere; min-width: 0; }
+
+@media (max-width: 479px) {
+  .managed-work-progress-advanced dl { grid-template-columns: 1fr; }
+}

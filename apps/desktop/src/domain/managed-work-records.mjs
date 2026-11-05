@@ -27,6 +27,56 @@ export function resultSettlementIssue(state,work){
  if(!job||!['failed','interrupted','unknown'].includes(job.status))return null;
  return {objectId:receipt.objectId,jobId:job.id,status:job.status,error:typeof job.error==='string'?job.error:''};
 }
+// Read-only publication numbering identity: one published report's ordinal
+// among its Work's same-kind publication receipts, mapped by the exact
+// objectId. Receipts are the durable publication ledger, so successive
+// same-revision publications each keep their own number and nothing here
+// rewrites persisted todos, objects, refs, raw report bytes or Work revision.
+// A receipt absent from the ledger means incomplete history: no ordinal is
+// invented and callers keep their recorded revision facts instead.
+export function publicationOrdinal(state,workId,objectId,kind='result'){
+ if(kind!=='result'&&kind!=='problem')return null;
+ if(typeof workId!=='string'||typeof objectId!=='string'||!objectId)return null;
+ const rows=(state?.receipts||[]).filter(row=>row?.workId===workId&&row.kind===kind);
+ const index=rows.findIndex(row=>row.objectId===objectId);
+ return index>=0?index+1:null;
+}
+// Human edits saved for this exact publication: review drafts bound to the
+// same objectId and differing from its frozen candidate digest, mirroring the
+// review surface's own outdated detection. Read-only like the numbering.
+export function publicationHumanEdited(state,todo){
+ if(todo?.kind!=='result'||typeof todo.objectId!=='string'||!todo.objectId)return false;
+ const work=(state?.works||[]).find(work=>work.id===todo.workId);
+ const drafts=work?.review?.drafts?Object.entries(work.review.drafts):[];
+ if(!drafts.length)return false;
+ const receipt=(state?.receipts||[]).find(row=>row?.objectId===todo.objectId&&row.kind==='result'&&row.workId===todo.workId);
+ const files=new Map((receipt?.snapshot?.files||[]).map(file=>[file.relPath,file.digest??null]));
+ return drafts.some(([relPath,draft])=>draft?.objectId===todo.objectId&&draft.textDigest!==files.get(relPath));
+}
+// One numbering identity for every entry surface (review DTO, review todos,
+// inbox, notifications, immutable history labels). Result/problem publications
+// carry their exact-object publication ordinal; other kinds keep the persisted
+// Work revision round. Incomplete history keeps the recorded revision label
+// rather than an invented ordinal.
+export function publicationVersionLabel(state,todo){
+ if(todo?.kind==='result'||todo?.kind==='problem'){
+  const ordinal=publicationOrdinal(state,todo.workId,todo.objectId,todo.kind);
+  return ordinal?'第 '+ordinal+' 版':todo.revision!=null?'第 '+todo.revision+' 版':'';
+ }
+ return todo?.revision!=null?'第 '+todo.revision+' 版':'';
+}
+// Current-publication identity, shared by every read-only surface: a report
+// object is current only when the Work's active publication pointer names that
+// exact objectId at the Work's current revision. Anything else — including an
+// older object republished within the same revision — is history.
+export function publicationIsCurrent(state,workId,objectId,kind='result'){
+ if(kind!=='result'&&kind!=='problem')return false;
+ if(typeof workId!=='string'||typeof objectId!=='string'||!objectId)return false;
+ const work=(state?.works||[]).find(work=>work.id===workId);
+ if(!work||!Number.isInteger(work.revision))return false;
+ const publication=work[kind];
+ return publication?.revision===work.revision&&publication.objectId===objectId;
+}
 // One eligibility boundary for list, badge, notifications and opening actions.
 // Backstage records remain durable, but are not questions for the reader.
 export function userTodoEligible(todo){
@@ -59,7 +109,8 @@ export function managedReviewTodos(state){
  }).map(todo=>{
   const work=works.find(w=>w.id===todo.workId),receipt=receipts.find(r=>r.objectId===todo.objectId&&todo.objectId),settlementIssue=todo.kind==='result'?resultSettlementIssue(state,work):null;
   const label=settlementIssue?'已保存结果 · 完成状态待核查':todo.kind==='frontdesk-route'?'前台去向决定':todo.kind==='deviation'?'任务偏离决定':todo.kind==='result'?'完成报告':todo.kind==='problem'?'待回答问题':todo.kind==='routing'?'主控澄清':todo.kind==='git'?'Git 事项':todo.kind==='closure'?'收尾异常':todo.kind==='merge-constraint'?'合入策略决定':todo.kind==='recovery'?'执行恢复':'系统异常';
-  return {...todo,title:todo.title||[work?.name||recordExcerpt(work?.request,56),label,todo.revision!=null?'第 '+todo.revision+' 版':''].filter(Boolean).join(' · '),excerpt:receipt?.report?.excerpt||reviewExcerpt(todo.text),phase:settlementIssue?'结果已保存 · 完成状态待核查':todoPhases[todo.kind]||'待处理',actionableKind:todo.kind,...(settlementIssue?{settlementIssue}:{})};
+ const publicationLabel=publicationVersionLabel(state,todo);
+ return {...todo,title:todo.title||[work?.name||recordExcerpt(work?.request,56),label,publicationLabel].filter(Boolean).join(' · '),excerpt:receipt?.report?.excerpt||reviewExcerpt(todo.text),phase:settlementIssue?'结果已保存 · 完成状态待核查':todoPhases[todo.kind]||'待处理',actionableKind:todo.kind,publicationVersion:todo.kind==='result'||todo.kind==='problem'?publicationOrdinal(state,todo.workId,todo.objectId,todo.kind):null,publicationLabel,humanEdited:publicationHumanEdited(state,todo),...(settlementIssue?{settlementIssue}:{})};
  });
 }
 export function historicalResultReminder(state,todo){
@@ -90,7 +141,8 @@ export function managedInboxTodos(state){
   if(todo.status==='closed'&&finalPublication)statusLabel+=' · 提醒已关闭';
   if(historical&&todo.status==='open'&&todo.reopenedAt)statusLabel+=' · 历史提醒已重开';
   const actionLabel=report?(hasReport?'查看报告':'报告暂不可读取'):pending?'查看授权详情':'查看处理记录';
-  return {...todo,title:report?(work?.name||receipt?.report?.title||todo.title||'结果报告'):(todo.title||live?.title||'操作授权'),excerpt:receipt?.report?.excerpt||reviewExcerpt(todo.text),pending,historical,statusLabel,actionLabel,versionLabel:report&&todo.revision!=null?'第 '+todo.revision+' 版':'',icon:report?'file-text':pending?'shield-check':'archive',hasReport};
+ const humanEdited=report&&publicationHumanEdited(state,todo);
+ return {...todo,title:report?(work?.name||receipt?.report?.title||todo.title||'结果报告'):(todo.title||live?.title||'操作授权'),excerpt:receipt?.report?.excerpt||reviewExcerpt(todo.text),pending,historical,statusLabel,actionLabel,versionLabel:report?publicationVersionLabel(state,todo):'',publicationVersion:report?publicationOrdinal(state,todo.workId,todo.objectId,'result'):null,publicationLabel:report?publicationVersionLabel(state,todo):'',humanEdited,editLabel:humanEdited?'已保存人工改稿':'',icon:report?'file-text':pending?'shield-check':'archive',hasReport};
  });
 }
 // Host-authored merge-constraint decision todos gate ended-Work closure retry.

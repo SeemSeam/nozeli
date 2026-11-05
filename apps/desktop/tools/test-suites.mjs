@@ -199,6 +199,7 @@ const SUITES = {
       'managed-todo-management.test.mjs',
       'managed-token-usage-checkpoint.test.mjs',
       'managed-work-outcomes.test.mjs',
+      'managed-work-progress.test.mjs',
       'managed-work-todo-lifecycle.test.mjs',
       'managed-worker-delivery.test.mjs',
       'managed-workspace-disposition.test.mjs',

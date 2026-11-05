@@ -2,6 +2,7 @@ import {AttentionLedger} from './managed/attention-ledger.mjs';
 import {TaskPermissions} from './managed/task-permissions.mjs';
 import {workDisposition} from '../domain/work-disposition.mjs';
 import {userTodoEligible} from '../domain/managed-work-records.mjs';
+import {workProgressFacts} from '../domain/work-progress.mjs';
 import {SystemTerminalBridge} from './managed/system-terminal-bridge.mjs';
 import {fileURLToPath} from 'node:url';
 import {preferredRegionAssets} from '../domain/region-drawing.mjs';
@@ -426,6 +427,16 @@ export class ManagedProjects {
   const session=c?.sessions?.get(workId),failure=this.connectionErrors.get(id);
   const sessionState=c?.starting?.has(workId)?'starting':session&&!session.closed?'ready':failure?'failed':work.threadId?'sleeping':'notStarted';
   return workDisposition(state,work,{localState:this.flights.has(id)?'loading':c?'available':'unloaded',sessionState});
+ }
+ // M3 查看保留进展：冷读账本的只读事实投影（disposition 同款边界）。绝不
+ // 为读取创建 Controller/Provider——打开视图不启动模型、不恢复、不重放。
+ async workProgressRead(id,workId){
+  await this.host.requireRegisteredProject(id);
+  if(typeof workId!=='string'||!workId.trim()||workId.trim()!==workId||workId.length>200)throw new HostError('INVALID_PAYLOAD','工作身份无效。');
+  const c=this.controllers.get(id),state=c&&!c.stopping?c.store.state:(await this.projectionSource(id)).state;
+  const work=state.works?.find(w=>w.id===workId);
+  if(!work)throw new HostError('WORK_NOT_FOUND','工作不存在');
+  return workProgressFacts(state,work,{projectId:id});
  }
  async collaborationStatus(id,{cursor=null,limit=24}={}){
   const project=await this.host.requireRegisteredProject(id),controller=this.controllers.get(id),storage=this.host.storage;
@@ -863,6 +874,7 @@ export class ManagedProjects {
   allowed['work.control']=['projectId','workId','jobId','action','expectedControlVersion','expectedWorkRevision','requestKey','ownerId','ownerGeneration','currentJobId','expectedProjectInstanceId'];
   allowed['work.control.status']=['projectId','workId','jobId'];
   allowed['model.options']=['projectId','target','cursor','limit'];
+  allowed['work.progress.read']=['projectId','workId'];
   allowed['model.set']=['projectId','target','ownerId','model','effort','requestKey','expectedRevision','action','workRevision'];
   allowed['session.options']=['projectId','target','ownerId'];
   allowed['session.command']=['projectId','target','ownerId','command','requestKey','jobId'];
@@ -931,8 +943,8 @@ export class ManagedProjects {
    const capabilities=workControlCapabilitiesFromState({works:source.state.works??[],jobs:source.state.jobs??[]},target,{live:false,bindingProvider:record?.binding?.provider??record?.provider??null,projectInstanceId:project.instanceId});
    return {...capabilities,schema:capabilities?.schema??1,projectId:p.projectId,projectInstanceId:project.instanceId,workRevision:capabilities?.workRevision??null};
   }
-  if(['collaboration.status','model.options','model.set','draft','status','maintenance.status','attention.ack','todo.manage','timeline.page','timeline.read','timeline.request','resident.history','worker.history','disposition','history.list','history.read','artifact.read','artifact.list','changes.list','changes.read','review.read','review.save','review.continue','review.accept','review.instruction.read','review.instruction.save','review.discussion.read','merge.consent','merge.constraint'].includes(action))await this.host.requireRegisteredProject(p.projectId);else await this.host.requireProject(p.projectId);
   if(action==='draft')return this.saveLocalDraft(p.projectId,p.target,p.text);
+  if(['collaboration.status','model.options','model.set','draft','status','maintenance.status','attention.ack','todo.manage','timeline.page','timeline.read','timeline.request','resident.history','worker.history','disposition','work.progress.read','history.list','history.read','artifact.read','artifact.list','changes.list','changes.read','review.read','review.save','review.continue','review.accept','review.instruction.read','review.instruction.save','review.discussion.read','merge.consent','merge.constraint'].includes(action))await this.host.requireRegisteredProject(p.projectId);else await this.host.requireProject(p.projectId);
   if(action==='maintenance.status')return this.maintenanceStatus(p.projectId,p);
   if(action==='maintenance.retry'||action==='maintenance.scan'){
    const controller=this.controllers.get(p.projectId);if(!controller||controller.stopping)throw new HostError('MAINTENANCE_OWNER_UNAVAILABLE','项目尚未连接；不会恢复或重放旧任务。');
@@ -1006,6 +1018,7 @@ export class ManagedProjects {
     try{return await store.mutate(()=>manageTodoState(store.state,p));}finally{await store.close();}
   }
   if(action==='disposition')return this.disposition(p.projectId,p.workId);
+  if(action==='work.progress.read')return this.workProgressRead(p.projectId,p.workId);
   if(action==='review.instruction.read'||action==='review.instruction.save'){
     // 指令草稿必须在review.*前匹配：否则坠入reviewAccept的令牌校验
     // （'审校版本令牌无效'），专用分支成为死代码。

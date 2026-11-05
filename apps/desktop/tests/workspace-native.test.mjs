@@ -877,12 +877,19 @@ test('approval discussion stays bound to its report and cannot open general Work
  const report=native.register(new Contents(),{role:'surface',projectId:'p',viewId:descriptor.id,kind:'report'});
  const conversation=native.register(new Contents(),{role:'surface',projectId:'p',kind:'conversation'});
  const document=native.register(new Contents(),{role:'surface',projectId:'p',kind:'document'});
+ const historyLayout=reduceLayout(layout,{type:'open',view:{kind:'history',resourceId:'history:earlier-publication-a',viewState:{report:{objectId:'earlier-publication-a',workId:'work-a'}}}});
+ native.layouts.set('p',historyLayout);
+ const historyDescriptor=Object.values(historyLayout.views).find(view=>view.kind==='history');
+ const history=native.register(new Contents(),{role:'surface',projectId:'p',viewId:historyDescriptor.id,kind:'history'});
  const event=record=>({sender:record.wc,senderFrame:record.wc.mainFrame});
  for(const op of ['managed.review.discussion.read','managed.review.discussion.send']){
   assert.equal(native.authorize(event(report),op,{projectId:'p',workId:'work-a',objectId:'publication-a'}),report);
   assert.equal(native.authorize(event(report),op,{projectId:'p',workId:'work-a',objectId:'earlier-publication-a'}),report,'same-Work receipt access survives a publication change; controller checks exact identity');
   assert.throws(()=>native.authorize(event(report),op,{projectId:'p',workId:'work-b',objectId:'publication-b'}),{code:'REVIEW_SCOPE_DENIED'});
   for(const record of [conversation,document])assert.throws(()=>native.authorize(event(record),op,{projectId:'p',workId:'work-a',objectId:'publication-a'}),{code:'REVIEW_SCOPE_DENIED'});
+  if(op==='managed.review.discussion.read')assert.equal(native.authorize(event(history),op,{projectId:'p',workId:'work-a',objectId:'earlier-publication-a'}),history);
+  else assert.throws(()=>native.authorize(event(history),op,{projectId:'p',workId:'work-a',objectId:'earlier-publication-a'}),{code:'REVIEW_SCOPE_DENIED'});
+  assert.throws(()=>native.authorize(event(history),op,{projectId:'p',workId:'work-b',objectId:'publication-b'}),{code:'REVIEW_SCOPE_DENIED'});
  }
  assert.throws(()=>native.authorize(event(conversation),'managed.send',{projectId:'p',target:'work-a',text:'not a review input'}),{code:'CONVERSATION_TARGET_REJECTED'});
  native.lifecycle.set('p',{});

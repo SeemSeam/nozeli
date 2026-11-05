@@ -35,7 +35,7 @@ export function mountManagedTodos({ document, invoke, openTodo, viewWork, recove
   cancel.onclick=()=>finish(false);confirm.oncancel=e=>{e.preventDefault();finish(false);};accept.onclick=()=>finish(true);
   function confirmRemove(){if(confirmResolve)return Promise.resolve(false);return new Promise(resolve=>{confirmResolve=resolve;confirm.showModal();cancel.focus();});}
   function rows(){return managedInboxTodos(state||{});}
-  function text(todo){const work=state?.works?.find(w=>w.id===todo.workId);return [todo.title,todo.versionLabel,todo.statusLabel,'类型：'+(kindNames[todo.kind]||todo.kind),'关联任务：'+(work?.name||todo.workId||'无'),'时间：'+(todo.closedAt||todo.settledAt||todo.updatedAt||todo.createdAt||'旧记录未记录'),todo.excerpt,todo.reason?'关闭原因：'+todo.reason:''].filter(Boolean).join('\n');}
+  function text(todo){const work=state?.works?.find(w=>w.id===todo.workId);return [todo.title,todo.versionLabel,todo.editLabel,todo.statusLabel,'类型：'+(kindNames[todo.kind]||todo.kind),'关联任务：'+(work?.name||todo.workId||'无'),'时间：'+(todo.closedAt||todo.settledAt||todo.updatedAt||todo.createdAt||'旧记录未记录'),todo.excerpt,todo.reason?'关闭原因：'+todo.reason:''].filter(Boolean).join('\n');}
   async function act(action,todo,source=projectId){
     const key=source+':'+todo.id, token=epoch;
     if(source!==projectId||pending.has(key))return;
@@ -94,7 +94,7 @@ export function mountManagedTodos({ document, invoke, openTodo, viewWork, recove
     if(todo.managementHistory?.length){const history=document.createElement('details'),summary=document.createElement('summary');summary.textContent='待办处理历史';history.append(summary);for(const event of todo.managementHistory){const p=document.createElement('p');p.textContent=[event.at,event.action==='close'?'用户关闭提醒':'用户重开提醒',event.reason||''].filter(Boolean).join(' · ');history.append(p);}container.append(history);}
   }
   function paint(){
-    const signature=JSON.stringify([projectId,filter,count,state?.todos,state?.receipts?.map(r=>[r.objectId,r.report,r.text]),state?.works?.map(w=>[w.id,w.status,w.revision,w.name,w.request,w.outcome,w.result,w.closure?.binding,w.closureHistory,w.readOnly]),state?.jobs?.map(j=>[j.id,j.status,j.target,j.context?.boundWorkId]),[...pending]]);
+    const signature=JSON.stringify([projectId,filter,count,state?.todos,state?.receipts?.map(r=>[r.objectId,r.report,r.text]),state?.works?.map(w=>[w.id,w.status,w.revision,w.name,w.request,w.outcome,w.result,w.review?.drafts,w.closure?.binding,w.closureHistory,w.readOnly]),state?.jobs?.map(j=>[j.id,j.status,j.target,j.context?.boundWorkId]),[...pending]]);
     if(signature===paintSignature)return;
     paintSignature=signature;
     if(!state||!projectId){filters.hidden=true;summary.hidden=true;return;}
@@ -127,7 +127,7 @@ export function mountManagedTodos({ document, invoke, openTodo, viewWork, recove
       row.dataset.category=todo.historical?'history':todo.kind==='result'?'read':'answer';
       const marker=row.querySelector('.managed-todo-marker'),icon={'file-text':'book-open','shield-check':'message-square',archive:'sticky-note'}[todo.icon];
       if(marker.firstElementChild?.dataset.icon!==icon)marker.replaceChildren(uiIcon(icon));
-      const secondary=[todo.versionLabel,todo.statusLabel,todo.actionLabel].filter(Boolean).join(' · ');
+      const secondary=[todo.versionLabel,todo.editLabel,todo.statusLabel,todo.actionLabel].filter(Boolean).join(' · ');
       row.querySelector('.managed-todo-secondary').textContent=secondary;
       open.setAttribute('aria-label',title+' · '+secondary);
       const more=row.querySelector('[data-todo-more]');more.setAttribute('aria-label','更多操作：'+[title,todo.versionLabel].filter(Boolean).join(' · '));more.disabled=open.disabled;more.onclick=()=>showMenu(todo,null,more);

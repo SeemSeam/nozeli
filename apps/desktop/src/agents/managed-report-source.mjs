@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import {HostError} from '../main/host.mjs';
 import {decodeReportState,validReportDescriptor} from './managed/report-descriptor.mjs';
 import {readManagedState,readManagedObject,verifyManagedObject} from './managed/managed-storage.mjs';
-
+import {publicationOrdinal} from '../domain/managed-work-records.mjs';
 const STATE_LIMIT=32*1024*1024;
 const fail=(code,message)=>new HostError(code,message+'，未另存。');
 const unavailable=()=>fail('REPORT_UNAVAILABLE','报告来源缺失、过大或不是安全的普通文件');
@@ -134,13 +134,16 @@ export async function managedHistory(options,{objectId,version,offset=0,limit=50
     // 严格复验，不再以全state哈希拒绝窗口内无关的后台状态变化（runtime/review等）。
     // 显式version分页仍保持严格CAS：任何state变化都要求调用方重载。
     if(version!==undefined&&(await historySnapshot(options)).version!==snapshot.version)throw changed();
-    return {projectId:options.project.id,objectId,mode,version:snapshot.version,report:source.report,byteLength:bytes.length,objectVerified:true,...(source.report.format==='markdown'?{bodyAvailability:'inline',body:bytes.toString('utf8')}:{bodyAvailability:'isolated-source-only'})};
+    const receiptRow=(snapshot.state?.receipts||[]).find(row=>row.objectId===objectId);
+    return {projectId:options.project.id,objectId,mode,version:snapshot.version,report:source.report,byteLength:bytes.length,objectVerified:true,...(receiptRow?{revision:receiptRow.revision,publicationNumber:publicationOrdinal(snapshot.state,receiptRow.workId,objectId,receiptRow.kind)}:{}),...(source.report.format==='markdown'?{bodyAvailability:'inline',body:bytes.toString('utf8')}:{bodyAvailability:'isolated-source-only'})};
   }
   const rows=[...(snapshot.state?.receipts||[])].sort((a,b)=>Date.parse(b.at)-Date.parse(a.at)||(a.objectId<b.objectId?-1:a.objectId>b.objectId?1:0));
   if(offset>rows.length)throw payloadError();
   const items=rows.slice(offset,offset+limit).map(row=>{
     const work=snapshot.works.get(row.workId);
-    return {objectId:row.objectId,workId:row.workId,workName:typeof work.name==='string'?work.name.slice(0,110):'工作',revision:row.revision,kind:row.kind,at:row.at,workStatus:work.status.slice(0,64),report:row.report,excerpt:row.report.excerpt,objectVerified:false};
+    // Immutable history keeps each publication's exact-object ordinal; the
+    // persisted revision stays alongside so old labels never get rewritten.
+    return {objectId:row.objectId,workId:row.workId,workName:typeof work.name==='string'?work.name.slice(0,110):'工作',revision:row.revision,publicationNumber:publicationOrdinal(snapshot.state,row.workId,row.objectId,row.kind),kind:row.kind,at:row.at,workStatus:work.status.slice(0,64),report:row.report,excerpt:row.report.excerpt,objectVerified:false};
   });
   return {projectId:options.project.id,mode,version:snapshot.version,offset,limit,total:rows.length,nextOffset:offset+items.length<rows.length?offset+items.length:null,items};
 }

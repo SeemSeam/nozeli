@@ -63,9 +63,25 @@
 .managed-review-discussion .tag-editor{box-sizing:border-box;width:100%;min-width:0;max-height:120px;resize:vertical;border:1px solid var(--line);border-radius:5px;background:var(--paper);color:var(--ink);font:inherit;padding:6px}
 .managed-review-discussion .tag-delivery,.managed-review-discussion .managed-review-instruction-status{margin:0;padding:4px 8px;font-size:11px;overflow-wrap:anywhere;flex-shrink:0}
 .managed-review-discussion .tag-delivery:empty{display:none}
+ .managed-review-discussion .managed-review-current-state{margin:0;padding:6px 9px;border-left:3px solid var(--amber);border-radius:0 4px 4px 0;background:color-mix(in srgb,var(--amber) 12%,transparent);font-size:12px;overflow-wrap:anywhere;flex-shrink:0}
 .managed-review-discussion button:disabled{opacity:.55;cursor:not-allowed}
 .managed-review-discussion .tag-send{background:var(--green-soft);color:var(--ink);border:1px solid var(--green);border-radius:5px}
 @media(max-width:420px){.managed-review-discussion .tag-composer{grid-template-columns:1fr 1fr}.managed-review-discussion .tag-editor{grid-column:1/-1}}
 .managed-review{container-type:normal}
 .managed-review-file-section[open]{max-height:30dvh;overflow:auto}
 .managed-review-versions[open]{max-height:25dvh;overflow:auto}
+
+/* Default placement follows the actual reading pane, not whole-window width.
+   Free-floating remains explicit; collapsing returns all space to the report. */
+#managed-doc:has(>.managed-review[data-review-layout=aside] [data-review-discussion]:not([hidden]))>.managed-report-body{margin-right:calc(var(--review-side-width,320px) + 16px)}
+.managed-review[data-review-layout=aside]:has([data-review-discussion]:not([hidden])){box-sizing:border-box;padding-right:calc(var(--review-side-width,320px) + 16px)}
+.managed-review[data-review-layout=aside] .managed-review-discussion{left:var(--review-side-left)!important;top:var(--review-side-top)!important;right:auto!important;bottom:auto!important;width:var(--review-side-width)!important;height:var(--review-side-height)!important;resize:none}
+.managed-review[data-review-layout=stack] .managed-review-discussion{position:relative;left:auto!important;top:auto!important;right:auto!important;bottom:auto!important;width:100%!important;min-width:0;max-width:none;height:var(--review-stack-height,240px)!important;min-height:190px;max-height:none;resize:none;box-shadow:none;grid-column:1/-1}
+.managed-review:is([data-review-layout=aside],[data-review-layout=stack]) .tag-head{cursor:default}
+.managed-review[data-review-layout=stack]{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:4px 8px}
+.managed-review[data-review-layout=stack]>.managed-review-file-section{grid-column:auto}
+.managed-review[data-review-layout=stack]>.managed-review-heading{grid-column:1/-1}
+.managed-review[data-review-layout=stack] .managed-review-instruction-status{padding-block:2px}
+.managed-review[data-review-layout=stack] .tag-composer{padding-block:5px}
+.managed-review[data-review-layout=stack] .tag-head>button{min-height:28px;padding:2px 6px;font-size:11px}
+.managed-review-versions pre{white-space:pre-wrap;overflow-wrap:anywhere}

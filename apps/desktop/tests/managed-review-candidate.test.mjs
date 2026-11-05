@@ -1,4 +1,5 @@
 import {openTestController} from './project-storage.fixture.mjs';
+import {managedReviewTodos,managedInboxTodos} from '../src/domain/managed-work-records.mjs';
 import {ManagedProjects} from '../src/agents/managed-projects.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -618,4 +619,29 @@ for(const kind of ['untracked','modified'])test('human review draft accepts '+ki
   assert.equal(outcome.merge.status,'merged');assert.equal(await fs.readFile(path.join(content,'reading.md'),'utf8'),human);
   assert.equal((await run('git',['show',':reading.md'],{cwd:content})).stdout,human);assert.equal((await run('git',['show','HEAD:reading.md'],{cwd:content})).stdout,human);
   assert.equal(c.store.find(w.id).closure.git.operations.find(f=>f.relPath==='reading.md').beforeDigest,sha256(Buffer.from(input)));
+});
+
+test('same-revision republication keeps one publication identity across review DTO and every entry',async t=>{
+  // 讨论 republish 路径：同一 Work 修订内发布第二份结果（V1→V2），修订保持 1。
+  const {c,w,objectId}=await fixture(t);
+  await c.store.mutate(()=>{c.store.find(w.id).status='running';});
+  const second=await c.store.publish(w.id,1,'result',page('Candidate v2 within the same revision'),'report-2',{jobId:'report-job-2',files:[{relPath:'reading.md'},{relPath:'notes.md'}]});
+  await c.store.settle(w.id);
+  assert.equal(c.store.find(w.id).revision,1);assert.equal(c.store.find(w.id).status,'review');
+  const dto=await c.reviewRead({objectId:second.objectId});
+  assert.equal(dto.revision,1);assert.equal(dto.workRevision,1);assert.equal(dto.publicationNumber,2);
+  const oldDto=await c.reviewRead({objectId});
+  assert.equal(oldDto.publicationNumber,1);
+  const review=managedReviewTodos(c.store.state);
+  assert.deepEqual(review.map(todo=>todo.objectId),[second.objectId]);
+  assert.match(review[0].title,/第 2 版/);
+  const inbox=managedInboxTodos(c.store.state),current=inbox.find(todo=>todo.objectId===second.objectId),old=inbox.find(todo=>todo.objectId===objectId);
+  assert.equal(current.versionLabel,'第 2 版');assert.equal(current.editLabel,'');
+  assert.equal(old.versionLabel,'第 1 版');assert.match(old.statusLabel,/已被新版替代/);
+  // 人工改稿只标记绑定当前发布的入口，旧报告身份不变。
+  await c.reviewSave({objectId:second.objectId,relPath:'reading.md',text:'# 阅读\n\n人工修订正文。\n',expectedDraftRevision:0});
+  const edited=managedInboxTodos(c.store.state);
+  assert.equal(edited.find(todo=>todo.objectId===second.objectId).editLabel,'已保存人工改稿');
+  assert.equal(edited.find(todo=>todo.objectId===objectId).editLabel,'');
+  assert.equal(edited.find(todo=>todo.objectId===objectId).versionLabel,'第 1 版');
 });

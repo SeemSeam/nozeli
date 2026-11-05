@@ -465,3 +465,27 @@ postinstall 用 `electron-rebuild` 针对 Electron 重建 `node-pty`。该依赖
 本地commit按相关文件与hunk选择，保留文件附件、会话投影／角色气泡、Agent栏等其他在途修改；安装快照按已实测完整工作树冻结，因此不宣称安装物等于纯净单一commit。未push／release。此前“未安装”是当时状态，本节为新授权后的事实。
 
 另从Git暂存索引独立导出完整源码树（不带未暂存的附件／会话／Agent栏改动），独立构建Renderer并跑真实中文人工采用旅程通过，原件`/tmp/nozeli-ux-batch2-zh-JEMdnA/report.json`，确认本次选择性提交不依赖那些在途改动。导出树只复用既有npm/vendor/Pi构建依赖，不替换被测源码；首次缺少私有Pi dist的环境前置失败保留为零业务调用，不算产品故障。独立源码构建与安装快照分别取证，不将其摘要混称一致。
+
+## 第三轮 U2-01/U2-02/U2-03 与 M3（2026-11-05，源码候选未安装）
+
+- 版本统一按同类发布账本的确切 objectId 推导序号，不把同修订的多次发布都写为 V1；当前／旧版（历史只读）／人工稿分别标识。Work revision、冻结正文及原审批屏障不改。当前入口和人工稿返回的实际窗口为 V2，工作修订仍为1；同修订旧发布与原生历史读取／禁止发送由行为回归覆盖。
+- 默认并读不缩小报告字号：1440×900左右、800×650上下，报告独立滚动；显式“自由摆放”保留移动、收起展开和恢复并读。合成中文真实 Pi／Git／Electron 全程 `/tmp/nozeli-ux-batch2-zh-tAe563/report.json`：6次本地脚本响应，人工 Ctrl+S 后项目原件未改，返回／取消保留未发意见，明确采用后项目字节逐字等于人工稿，原 Work／线程、ended/complete 与 exit0 均成立。
+- U2-03勘误：第二轮原 after/04与03、after/06-800与05分别相同，已撤回“展开／返回”标签，原PNG/JSON不改。第三轮截图同时核实 DOM、原生可见内容面与实际窗口几何，并以自有X11窗口的无损FFV1短记录提取原帧；不截根桌面、不拼接guest。后版800的03→04差136704像素、05→06差261329像素，实际查看了展开与人工稿返回画面。脚本保留像素差异门，拒绝同图冒充切换。
+- 前版为确切已安装第二轮ELF的视觉取消确认运行 `/tmp/nozeli-ux-batch2-zh-lvnpTz`，不冒充人工采用通过。只将实测800×650／1440×900的01图用于前后比较；该次前版03／04／00虽文件名含800，采集JSON实为最大化1707×928，已在复审页明确排除其窄窗证明资格。
+- M3：`node tests/desktop-retained-progress-live.mjs` 原件 `/tmp/nozeli-retained-progress-feAxYE/report.json`。真实 Pi `nozeli_history_read`失效readRef＋offset=0造成补充failed，原请求、冻结报告／候选、原线程保持。等待既有维护回合结算后，目录单击“保留进展”→复制原文→打开冻结报告／文件，没有新增Provider请求、job或重放，原项目仍无候选文件。只读入口没有无依据的继续／恢复／重试执行按钮，不声明READ_REF_EXPIRED根因或自动恢复已修复。
+- 构建通过。定向六文件首次其余164项通过、进展测试因CSS直导入失败；改用既有bundle模式并修正漏失报告区声明／冻结引用后，`managed-work-progress.test.mjs`最终12/12；新增历史只读授权边界定向1/1（与前164重叠，不累加）。删去模板拷贝、mock转发与提交摘要长度的偶然断言。未重跑unit/integration全集合；真实UI烟测不是由这些测试数量替代。
+- 失败尝试保留：HA8RRT为fixture HTML缺head，UFWcji为fixture漏必需offset导致原生工具校验循环，tQ3HIK为维护回合尚未稳定就统计模型次数；均不计通过。截图首轮420色度编码不支持奇数原生窗口高度，改为保留完整尺寸／像素的FFV1，不裁切／缩放以迎合编码器。
+- 统一入口：`~/.local/state/nozeli-runtime-tests/ux-review-20261105-batch3/gallery.html`及`REVIEW.md`；13张展示图片在真实Chromium加载通过。仅Linux/X11、合成项目与本地脚本Provider；付费模型质量、Windows/macOS、R01/R02、未知效果恢复及同文件合入冲突解决未据此验收。本轮未安装／提交／推送／发布；current经readlink仍为`approval-ux-batch2-20261105-local-01`，此前本地commit为93265f6。
+
+## U3-01／U3-02 小批收尾（2026-11-05，源码未安装）
+
+- U3-01先用已有能力，不改布局／字号：`/tmp/nozeli-ux-batch2-zh-iDdfW2/report.json`，同份V1在800×650、zoom1默认上下并读中，将结论短段与完整助手解释同屏，真实输入意见、收起／展开。实际滚动2次、额外布局调整0次、再锚定0次；草稿保留，原文scrollY=140，对话scrollTop 308.67→316，完整解释仍可见。不将约7.33px偏移说成精确位置保持；另一次新版待审提醒条的更拥挤路径讨论框64.63px不足整气泡70.67px，失败原件fmEjYa保留，不外推该路径通过。旧第三轮01/02同图勘误已补，PNG／JSON不变。
+- U3-02真实失败原件`/tmp/nozeli-retained-progress-oLXeOZ/report.json`：首屏说明补充未完成、报告文件保留、当前暂不能继续且不会自动恢复，并就近查看／复制／返回阅读；技术原文、传输与时间默认折叠，实际展开滚到完整诊断可见处。打开原报告显示当前暂停、发送／采用不可用，历史系统消息不改写。原维护回合稳定后的复制、查看、返回、冻结文件打开无新增请求／job／重放／项目写入。全场景5次本地响应，不冒称全程零模型。
+- 两条命令：`node tests/desktop-review-human-adoption-live.mjs`、`node tests/desktop-retained-progress-live.mjs`。自有X11窗口无损FFV1帧取证；U3-01沙箱内JS帧回调的初次证据脚本失败改为等宿主帧，不放宽报告沙箱。构建及定向回归辅助通过，未重跑全集合。复制模板／摘要长度／mock转发及文案钉死断言删除，不为新措辞重新固定。
+- 本批入口`~/.local/state/nozeli-runtime-tests/ux-review-20261105-batch4/gallery.html`与REVIEW.md，只展示两项前后画面及操作。历史完整导航、根因、自动恢复、R01/R02、未知效果恢复、跨平台及真实模型质量仍未验。全部隔离合成项目／本地脚本Provider，不追加付费模型。候选标识`0.1.0-alpha.5-source-ux-batch4`；本轮未安装／提交／推送／发布，HEAD实查93265f6，current第二轮、previous首批不变。
+
+## 第四轮用户授权本机安装（2026-11-05）
+
+本轮仅授权“安装一下我要测试”，未授权提交／推送／发布。经既有build-renderer、package-candidate冻结为`approval-ux-batch4-20261105-local-01`，405源码与354构建文件SHA-256一致，记录`~/.local/state/nozeli-runtime-tests/approval-ux-batch4-install-20261105/integrity.json`；这是完整开发工作树快照，非纯净提交发行物。实际冻结ELF、包内Pi/Git运行审批问答／排队／真实候选发布／明确采用至ended与退出通过（`/tmp/nozeli-approval-discussion-wbiUV8/report.json`），真实失效引用后的平实首屏／展开诊断／暂停报告／查看复制不新增执行亦通过（`/tmp/nozeli-retained-progress-XMnOmp/report.json`）；分别9、5次本地脚本响应，零付费模型。
+
+固定800人工采用脚本两次取证AjKFkY、DUEEE7均因窗口过程中变为最大化而失败，不计通过，不将气泡外框／尺寸断言直接等同于读者看不到正文，也没有为此改产品布局；此安装不新增完整窄窗、历史或恢复签收。随后既有install-local --existing-release成功激活current第四轮、previous第二轮，原首批由既有受管保留策略清理；不强退运行窗口、不操作用户业务。安装原件为同目录installed.json，用户正常退出旧窗口后重开桌面入口测试。

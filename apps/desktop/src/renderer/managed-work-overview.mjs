@@ -26,6 +26,7 @@ export function renderWorkOverview({
   onReport,
   onControl,
   onEnd,
+  onProgress,
   requiredSection,
   technicalSections = [],
   phase = null,
@@ -139,6 +140,7 @@ export function renderWorkOverview({
   }
 
   const actions = make('div', 'managed-work-overview-actions');
+  if (typeof onProgress === 'function') actions.append(button('查看保留进展', onProgress, 'workRetainedProgress', true));
   if (typeof onControl === 'function') actions.append(button('执行控制…', onControl, 'workControlDetails'));
   if (typeof onEnd === 'function') actions.append(button(work.status === 'queued' ? '取消排队…' : '结束任务…', onEnd, 'managedWorkEnd'));
   if (actions.childNodes.length) root.append(actions);

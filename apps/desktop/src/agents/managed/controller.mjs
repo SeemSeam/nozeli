@@ -4,7 +4,7 @@ import {restoreExecutionIntents,neverAdmitted} from './restart-recovery.mjs';
 import {deviationHeld} from '../../domain/work-deviation.mjs';
 import {ExecutionWorkspace} from './execution-workspace.mjs';
 import {safeBytes} from './file-stream.mjs';
-import {intakeLineage} from '../../domain/managed-work-records.mjs';
+import {intakeLineage,publicationOrdinal} from '../../domain/managed-work-records.mjs';
 import {targetModelMatches} from './target-model-intent.mjs';
 import {runtimeFailureMessage} from '../../domain/runtime-failure-message.mjs';
 import {manageTodoState} from '../../domain/todo-management.mjs';
@@ -2935,7 +2935,7 @@ export class Controller extends EventEmitter {
     const closureMatches=work.closure?.binding?.objectId===receipt.objectId&&work.closure.binding.revision===receipt.revision;
     return {
       workId:work.id,objectId:receipt.objectId,status:work.status,revision:receipt.revision,workRevision:work.revision,
-      publicationNumber:this.store.state.receipts.filter(row=>row.workId===work.id&&row.kind==='result').findIndex(row=>row.objectId===receipt.objectId)+1,
+      publicationNumber:publicationOrdinal(this.store.state,work.id,receipt.objectId,'result'),
       candidate:{
         commit:current?.snapshot.candidateCommit??work.execution?.candidate?.commit??null,
         jobId:receipt.snapshot?.candidate?.jobId??null,
