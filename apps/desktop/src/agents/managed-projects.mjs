@@ -591,7 +591,18 @@ export class ManagedProjects {
   }
  async connect(id,options={}){
   return this.host.storage.withProjectOperation(id,async()=>{
-   try{const result=await this.connectAttempt(id,options);if(result.ready)await this.attention.observe(id,'connection',[]);return {...result,state:await this.attentionState(id,result.state,{connected:!!this.controllers.get(id)})};}
+   try{
+    const result=await this.connectAttempt(id,options);
+    if(result.ready){
+     await this.attention.observe(id,'connection',[]);
+     const controller=this.controllers.get(id);
+     if(options.enable===true&&typeof controller?.reactivateModelUnavailableDebug==='function'){
+      await controller.reactivateModelUnavailableDebug(null,{explicitReconnect:true});
+      result.state=controller.snapshot();
+     }
+    }
+    return {...result,state:await this.attentionState(id,result.state,{connected:!!this.controllers.get(id)})};
+   }
    catch(error){await this.reportConnectionError(id,error);throw error;}
   });
  }

@@ -38,6 +38,7 @@ import {prepareHtmlReport} from './html-report.mjs';
 import {activeDrafts,computeReviewVersion,decodeInline,draftTextFor,hasActiveDrafts,normalizeReviewText,readDraftRecord,reviewDraftBytes,reviewMergeProjection,writeDraftRecord,appendDraftEntry,REVIEW_HISTORY_LIMIT,REVIEW_REQUEST_KEY} from './review-candidate.mjs';
 import {managedArtifact,managedReportSource} from '../managed-report-source.mjs';
 import {MaintenanceLedger,maintenanceBoundary} from './maintenance-ledger.mjs';
+import {DebugProtocol,debugInstructions,debugToolProperties} from './debug-protocol.mjs';
 import {validateWorkControlPayload,resolveWorkControlTarget,workControlTargetDescriptor,jobBoundWork,workControlCapabilitiesFromState,applyWorkControlState,findControlReceipt,attachControlResponse,recordControlFinal,processResumeRequeueState,buildControlResponse,receiptResponse,heldNeverAdmitted,assertProjectInstance} from './work-control.mjs';
 
 // Provider-compatible object schemas; kind-dependent invariants stay host-enforced.
@@ -63,7 +64,8 @@ export class Controller extends EventEmitter {
     const store=await Workspace.open(runtimeRoot,contentRoot,{recoverStale:true,checkpoint,storage,projectId,offline});
     const controller=new Controller(store,{projectId,sessionFactory,readProjectText,frontdeskDocuments,beforeAccept,afterAdoption,isolateProcesses,checkpoint,piSource,piRuntime,piAuth,processBudget,taskPermissions,resolveRegisteredProject,resolveProjectRoot,privilegeBroker,modelIntents,serviceFaultGate,onServiceFault});
     try{await controller.timeline.initialize();const s=store.state;s.jobs??=[];s.messages??=[];s.drafts??={};s.residents??={};s.providers??={};s.frontdeskRoutes??=[];s.recoveryEvents??=[];controller.coldQueued=new Set();controller.coldJobs=new Set(s.jobs.filter(j=>['queued','running'].includes(j.status)&&!neverAdmitted(j)).map(j=>j.id));controller.localOnly=localOnly;
-      if(!offline)for(const job of s.jobs)if(job.status==='completed'&&job.readProtocolFaults?.some(fault=>fault.status==='awaiting-correction'))await controller.settleRoutedReadProtocolFaults(job);
+      if(!offline)await controller.debugProtocol.reconcile();
+      if(!offline)for(const job of s.jobs)await controller.finalizeReadProtocolReceipts(job);
       if(localOnly){if(!offline)await controller.migrateLocalClosures();}else await controller.restore();return controller;
     }catch(e){await store.close();throw e;}
   }
@@ -77,6 +79,7 @@ export class Controller extends EventEmitter {
     this.memoryVersion=new MemoryVersion(path.dirname(store.plan));
     this.projectId=projectId??store.state.workspaceId;
     this.maintenance=new MaintenanceLedger(store.storage,this.projectId);this.maintenanceActions=new Map();this.maintenanceFlights=new Map();
+    this.debugProtocol=new DebugProtocol(this);
     this.hostOperations=new Map();this.hostOperationFlights=new Map();
     this.processBudget=processBudget;this.reclaiming=new Map();this.mergeDrain=null;
     this.timeline=new SessionIndex(store);
@@ -125,8 +128,29 @@ export class Controller extends EventEmitter {
       Object.assign(job,{status:'completed',hostResolved:true,completion,finishedAt:new Date().toISOString()});
     }});
   }
-  async maintenanceEvent(bug,{schedule=true}={}){
-    await this.store.mutate(()=>{if(this.store.state.jobs.some(j=>j.type==='maintenance'&&j.context?.bugId===bug.id))return;this.store.state.jobs.unshift({id:randomUUID(),target:'orchestrator',type:'maintenance',status:'queued',text:'宿主自动维修事件。仅核对本机故障并调用 nozeli_maintenance；不得派业务Work、询问用户如何维修或重放原任务。bugId='+bug.id,context:{bugId:bug.id},createdAt:new Date().toISOString()});});this.changed();if(schedule)this.kick();
+  async maintenanceEvent(bug,{schedule=true,reactivate=false}={}){
+    const current=(await this.maintenance.read()).bugs.find(item=>item.id===bug.id&&item.projectId===this.projectId);if(!current||['repaired','cancelled','human-boundary'].includes(current.status))return;
+    let eventJobId;
+    await this.store.mutate(()=>{
+      const events=this.store.state.jobs.filter(j=>j.type==='maintenance'&&j.context?.bugId===current.id);
+      const live=events.find(j=>['queued','running'].includes(j.status));if(live){eventJobId=live.id;return;}
+      const previous=events.find(j=>j.id===current.debug?.eventJobId)??events[0];
+      if(previous&&!(reactivate&&['failed','interrupted'].includes(previous.status)&&['pending','model-unavailable'].includes(current.debug?.state)&&!current.debug?.report))return;
+      eventJobId=randomUUID();this.store.state.jobs.unshift({id:eventJobId,target:'orchestrator',type:'maintenance',status:'queued',text:debugInstructions+' bugId='+current.id,context:{bugId:current.id},createdAt:new Date().toISOString()});
+    });
+    if(!eventJobId)return;
+    await this.debugProtocol.queued(current.id,eventJobId);this.changed();if(schedule)this.kick();
+    return {eventJobId,automaticReplay:false};
+  }
+  async reactivateModelUnavailableDebug(provider,{explicitReconnect=false}={}){
+    if(this.stopping||(!provider&&!explicitReconnect))return;
+    for(const bug of (await this.maintenance.read()).bugs){
+      if(bug.debug?.state!=='model-unavailable'||bug.debug.report)continue;
+      const event=this.store.state.jobs.find(job=>job.id===bug.debug.eventJobId&&job.type==='maintenance'&&job.context?.bugId===bug.id);
+      const model=event?.effective?.model??this.store.state.bindings?.orchestrator?.model;
+      const affected=explicitReconnect||(event?.serviceSource?.provider?event.serviceSource.provider===provider:typeof model==='string'&&model.startsWith(provider+'/'));
+      if(affected)await this.maintenanceEvent(bug,{reactivate:true});
+    }
   }
   async maintenanceStatus(){
     const state=await this.maintenance.read();for(const bug of state.bugs)if(bug.status==='repairing'&&!this.maintenanceFlights.has(bug.id)){bug.status='needs-version-fix';bug.recoveryUnavailable='interrupted-host-attempt';}return state;
@@ -506,6 +530,7 @@ export class Controller extends EventEmitter {
         application.sessions.push({...row,state:'failed',effective:session.effective??{model:session.model,effort:session.effort},error:{code:failure.code,message:failure.message}});
       }
     }));
+    if(application.sessions.some(row=>row.target==='orchestrator'&&row.state==='applied'))await this.reactivateModelUnavailableDebug(provider);
     this.changed();
     return application;
   }
@@ -1716,7 +1741,7 @@ export class Controller extends EventEmitter {
     const cwd=role==='worker'&&this.execution?(await this.maintenanceTransaction(this.current.get(target),'input-preparation',()=>this.execution.prepare(target)),this.execution.directory(target)):this.store.content;
     const tools=role==='frontdesk'?[tool('nozeli_handoff','Escalate the remaining original-task work to background execution with a concise reason. Ordinary reasons dispatch straight to the background under the original user request (no extra prompt); if the user explicitly chose to stay in the frontdesk, declined background earlier, or a decision is still pending, the host asks the user instead. @new/@continue only select discussion context; discussion-source reading uses nozeli_source_read, never this handoff. This handoff never grants cross-project access, shell or credentials.',{reason:text}),tool('nozeli_source_read','Read a frozen discussion source read-only and paged: file:<relative path> for a frozen file version, memory:<keywords> for the Plan Tree index, state for open works, report:<work name> for a frozen report. Returns exact text with nextSelector for continuation; complete=false only describes this page. Reading is bounded by the per-run host budget and never dispatches background work.',{selector:text})]:role==='orchestrator'?[tool('nozeli_inspect_work','Bounded taskboard and Work facts. @state returns ONE bounded page of open works (stable workId, name, status, revision, queue position, factual block reason, frozen report reference) with quota facts and a host-generated nextCursor — pass it back verbatim to read the next page; if the ledger changed, the host returns resyncRequired with a fresh first page instead of silently mixing states. @work:<workId> returns bounded current facts (original request/brief/source job, execution jobs and live owner if known, input and worktree baseline, per-receipt frozen candidates, report/receipt/closure linkage; null means not recorded, i.e. unknown) where long originals, inputs, approved scopes, deviation details and closure errors appear as bounded previews plus paged readRefs — continue pages by passing the returned readRef/nextReadRef back as workName. Work names are accepted for search/display only. @memory:keywords searches Plan Tree; @conversation reads dialogue. Read-only.',{workName:text,cursor:text},['workName']),tool('nozeli_dispatch','Create a named Worker for a brand-new independent task (name is display/search only). This is the required terminal decision when an explicit user task has no matching open Work; continuing an existing Work always uses nozeli_manage with its stable workId and expectedRevision instead.',{name:text,brief:text}),tool('nozeli_manage','Route this intake to exactly ONE terminal decision. continue targets an EXISTING open Work by its stable workId plus the expectedRevision you read from the taskboard or @work detail — names never identify a mutation; a revision mismatch returns STALE_WORK_REVISION, so re-read and retry, never reinterpret. A continue that misses (unknown workId) is NEVER converted into a dispatch: use nozeli_dispatch explicitly for a brand-new task. clarify asks the user genuine ambiguity. status is a bounded read-only board query that NEVER completes an intake turn: inspect/status first if needed, then always finish the turn with continue, clarify, or nozeli_dispatch. User end decisions belong to user controls.',{action:{type:'string',enum:['continue','status','clarify']},workId:text,expectedRevision:{type:'integer',minimum:0},text},['action','text'])]:[tool('nozeli_publish','Publish one final self-contained static HTML result or concise Markdown problem. Put the entire report in content: HTML when kind=result, Markdown when kind=problem. Always send exactly kind, content and files. List every created or modified artifact in files, or [] for no-file work. Work remains open; finish the turn after success.',{kind:{type:'string',enum:['problem','result']},content:{type:'string',minLength:1,description:'The complete report body: self-contained static HTML for result, concise Markdown for problem.'},files:{type:'array',items:{type:'string'},maxItems:256}},['kind','content','files']),tool('nozeli_diagram','Render an offline validated Archify typed JSON diagram and return the exact standalone SVG with alt text, caption and spec/generator digests for direct inline figure embedding in the report HTML; creates no project files.',{type:{type:'string',enum:['architecture','workflow','sequence','dataflow','lifecycle']},spec:{type:'object',additionalProperties:true}})];
     const binding=role==='worker'?this.store.find(target).binding||this.store.state.bindings.worker:this.store.state.bindings[role];
-    if(role==='orchestrator')tools.push(tool('nozeli_maintenance','Inspect sanitized host bug ledger, scan proven historical internal faults without replay, or request bounded host recovery of the exact original transaction. Never marks repaired by assertion; no business Work or privileges granted.',{action:{type:'string',enum:['status','retry','scan']},bugId:text},['action']));
+    if(role==='orchestrator')tools.push(tool('nozeli_maintenance','Inspect sanitized host bugs or activate scoped DEBUG. For each maintenance event call debug, read debug.inspect source evidence, then submit debug.report diagnosis/rootCause/fixPlan (source facts only, no private user text). Reports are model interpretation, never verified repairs or permission to replay. Retry only exact host-authorized recovery.',debugToolProperties,['action']));
     if(role==='orchestrator')tools.push(
       tool('nozeli_problem_continue','Continue the exact original Work from context.backstageProblem after inspecting its frozen problem and receipts. Supply only remaining reversible steps; never replay unknown effects or infer new authorization.',{workId:text,revision:{type:'integer',minimum:1},objectId:text,text},['workId','revision','objectId','text']),
       tool('nozeli_backstage_respond','Resolve the current host-bound backstage native question from existing evidence, or explicitly preserve neutral blocked state when facts are missing. Never answer permission approval or invent business facts.',{answer:{anyOf:[text,{type:'boolean'},{type:'object'}]},blocked:{type:'boolean'},reason:text},[]));
@@ -1948,72 +1973,97 @@ export class Controller extends EventEmitter {
         const allowance=this.contextBudget.readAllowance(target);
         if(allowance<=0)return this.readBudgetDenied(target);
         const value=p.tool==='nozeli_document_read'?await this.documentPage(target,p,allowance):await this.handleTool(target,p,{readAllowance:allowance});
+        if(value?.ok===false&&this.isReadProtocolError(value.error))return this.readProtocolFault(target,p,value.error);
         const bytes=Buffer.byteLength(JSON.stringify(value??null),'utf8');
         if(bytes>allowance)return this.readBudgetDenied(target);
         this.contextBudget.charge(target,bytes,{kind:'tool-read',label:p.tool});
         try{await this.#persistBudgetEpochs();}catch(error){return {ok:false,hostControl:true,error:{code:'HOST_BUDGET_PERSIST_FAILED',message:'宿主预算记账持久化失败；本次读取正文不予投递，也不静默截断（fail-closed），本回合停止读取。'}};}
-        await this.settleReadProtocolFaults(target,p.tool,value);
+        await this.settleReadProtocolFaults(target,p,value);
         return value;
       }
       const value=p.tool==='nozeli_document_read'?await this.documentPage(target,p):await this.handleTool(target,p);
-      if(readTool)await this.settleReadProtocolFaults(target,p.tool,value);
-      else await this.settleRoutedReadProtocolFaults(this.current.get(target));
+      if(readTool&&value?.ok===false&&this.isReadProtocolError(value.error))return this.readProtocolFault(target,p,value.error);
+      if(readTool)await this.settleReadProtocolFaults(target,p,value);
       return value;
     }catch(error){
       if(error&&typeof error==='object')error.failureOrigin='host';
       if(error.code==='HOST_CONTEXT_BUDGET_EXHAUSTED')return this.readBudgetDenied(target);
-      if(readTool&&['INVALID_CURSOR','STALE_CURSOR','INVALID_SELECTOR','INVALID_PAYLOAD'].includes(error.code))return this.readProtocolFault(target,p.tool,error);
-      if(error.code==='READ_REF_EXPIRED'&&p.tool==='nozeli_document_read')return {ok:false,continueTurn:true,error:{code:error.code,message:error.message}};
+      if(readTool&&this.isReadProtocolError(error))return this.readProtocolFault(target,p,error);
       if(maintenanceBoundary(error)||!/^INTERNAL_|^HOST_INTERNAL_/.test(String(error.code??'')))throw error;
       const job=this.current.get(target);if(!job||job.type==='maintenance')throw error;
       const bug=await this.maintenance.record({phase:'tool',jobId:job.id,workId:['frontdesk','orchestrator'].includes(target)?null:target,revision:job.revision??null,error});await this.maintenance.finish(bug.id,{outcome:'needs-version-fix'});
       await this.store.mutate(()=>{const saved=this.store.state.jobs.find(j=>j.id===job.id);if(saved)saved.maintenanceBugId=bug.id;const w=this.store.state.works.find(w=>w.id===target);if(w?.status==='running'){w.status='paused';w.maintenance={bugId:bug.id,status:'needs-version-fix',message:'系统工具故障待后台诊断，原任务与改动保留。'};}});await this.maintenanceEvent(bug);return {hostControl:true,maintenance:true,bugId:bug.id,workRemainsOpen:true};
     }
   }
-  async readProtocolFault(target,tool,error){
-    const job=this.current.get(target);
-    if(!job)throw error;
-    const bug=await this.maintenance.record({phase:'tool-protocol',jobId:job.id,workId:['frontdesk','orchestrator'].includes(target)?null:target,revision:job.revision??null,error,capability:'same-turn-read-correction'});
+  isReadProtocolError(error){return ['INVALID_CURSOR','STALE_CURSOR','INVALID_SELECTOR','INVALID_PAYLOAD','READ_REF_EXPIRED','READ_TOOL_MISMATCH'].includes(error?.code);}
+  readCorrectionIdentity(tool,args={}){
+    // Keep bounded hashes only: refs can contain private file titles and selectors.
+    const keys=tool==='nozeli_inspect_work'?['workName','cursor','limit']:args.readRef!==undefined?['readRef','offset']:['revision','objectId','relPath','selector','query','pattern','name','skill','type','projectPath','projectId','access','path','startLine','endLine','limit'];
+    const selection={};for(const key of keys){const value=args[key];if(value!==undefined)selection[key]=value===null||['string','number','boolean'].includes(typeof value)?value:{invalidType:typeof value};}
+    return createHash('sha256').update(JSON.stringify([tool,selection])).digest('hex');
+  }
+  async readProtocolFault(target,p,error){
+    const job=this.current.get(target);if(!job)throw error;
+    this.readProtocolFlights??=new Map();
+    const flight=(this.readProtocolFlights.get(job.id)??Promise.resolve()).catch(()=>{}).then(()=>{if(this.current.get(target)?.id!==job.id)throw error;return this.recordReadProtocolFault(target,p,error);});
+    this.readProtocolFlights.set(job.id,flight);
+    try{return await flight;}finally{if(this.readProtocolFlights.get(job.id)===flight)this.readProtocolFlights.delete(job.id);}
+  }
+  async recordReadProtocolFault(target,p,error){
+    const job=this.current.get(target);if(!job)throw error;
+    const args=p.arguments??{},ref=args.readRef??args.workName;
+    const documentMismatch=typeof ref==='string'&&p.tool!=='nozeli_document_read'&&job.documentReader?.metadata.has(ref)&&['READ_REF_EXPIRED','INVALID_SELECTOR','READ_TOOL_MISMATCH'].includes(error.code);
+    const code=documentMismatch?'READ_TOOL_MISMATCH':error.code;
+    const correctionTool=documentMismatch?'nozeli_document_read':p.tool;
+    const correctionArgs=documentMismatch?{readRef:ref}:p.tool==='nozeli_inspect_work'&&code==='INVALID_SELECTOR'?{workName:'@state'}:['INVALID_CURSOR','STALE_CURSOR'].includes(code)?Object.fromEntries(Object.entries(args).filter(([key])=>key!=='cursor')):args;
+    const correction=this.readCorrectionIdentity(correctionTool,correctionArgs);
+    const identity=createHash('sha256').update(JSON.stringify([p.tool,code,this.readCorrectionIdentity(p.tool,args)])).digest('hex');
+    const saved=this.store.state.jobs.find(item=>item.id===job.id),faults=saved?.readProtocolFaults??[];
+    if(faults.length>=16&&!faults.some(fault=>fault.identity===identity)){
+      // Keep all unresolved evidence. The native failure path records one bounded overflow bug.
+      if(saved?.maintenanceBugId){const prior=(await this.maintenance.read()).bugs.find(bug=>bug.id===saved.maintenanceBugId);if(prior?.status==='repaired')await this.store.mutate(()=>{const current=this.store.state.jobs.find(item=>item.id===job.id);if(current?.maintenanceBugId===prior.id)delete current.maintenanceBugId;});}
+      throw Object.assign(Error('Read protocol distinct fault limit reached; original input and saved progress retained.'),{code:'INTERNAL_READ_PROTOCOL_LIMIT',failureOrigin:'host'});
+    }
+    const bug=await this.maintenance.record({phase:'tool-protocol',jobId:job.id,workId:['frontdesk','orchestrator'].includes(target)?null:target,revision:job.revision??null,error:{code},capability:'same-turn-read-correction',identity});
     await this.store.mutate(()=>{
       const saved=this.store.state.jobs.find(item=>item.id===job.id);if(!saved)return;
       saved.readProtocolFaults??=[];
-      if(!saved.readProtocolFaults.some(fault=>fault.bugId===bug.id))saved.readProtocolFaults.push({bugId:bug.id,tool,code:error.code,status:'awaiting-correction'});
+      const prior=saved.readProtocolFaults.find(fault=>fault.bugId===bug.id);
+      if(prior){prior.identity=identity;prior.rejections=prior.status==='awaiting-correction'?(prior.rejections??1)+1:1;prior.status='awaiting-correction';delete prior.correctionReceipt;}
+      else saved.readProtocolFaults.push({bugId:bug.id,identity,tool:p.tool,code,correctionTool,correction,rejections:1,status:'awaiting-correction'});
+      if(job.type!=='maintenance'&&saved.readProtocolFaults.find(fault=>fault.bugId===bug.id)?.rejections>3)saved.maintenanceBugId=bug.id;
     });
-    const instruction=['INVALID_CURSOR','STALE_CURSOR'].includes(error.code)?'本轮省略 cursor 重新读取首页；后续只原样传回 nextCursor 字符串，不传空字符串或自行构造游标。':'按工具 schema 和宿主返回的确切来源身份在本轮纠正参数，不猜测目标或版本。';
-    return {ok:false,continueTurn:true,error:{code:error.code,message:'读取参数不符合宿主协议，未执行写入。'+instruction+'这是内部工具调用纠正，不需要用户操作，也不要重发原用户输入。'}};
+    const fault=this.store.state.jobs.find(item=>item.id===job.id)?.readProtocolFaults?.find(item=>item.bugId===bug.id);
+    if(fault?.rejections>3)throw Object.assign(Error('Repeated read protocol correction exhausted; original input and saved progress retained.'),{code:'INTERNAL_READ_CORRECTION_EXHAUSTED',failureOrigin:'host'});
+    const instruction=documentMismatch?'此引用属于当前回合的文档分页；请在本轮用 nextTool 和 readRef 原样续读。':['INVALID_CURSOR','STALE_CURSOR'].includes(code)?'本轮省略 cursor 重新读取同一选择器首页；后续只原样传回 nextCursor 字符串。':code==='READ_REF_EXPIRED'?'引用未在当前读取来源登记；重新从宿主投影或版本化原件定位，不猜测引用，不跨 Work 借用。':code==='INVALID_SELECTOR'&&p.tool==='nozeli_inspect_work'?'先用 workName="@state" 定位稳定 Work 身份，再使用宿主签发的选择器。':code==='INVALID_SELECTOR'&&p.tool==='nozeli_report_read'?'按当前 Work 的宿主报告投影使用确切 objectId 或 revision；没有已发布冻结报告时保留未读事实，不借用其他 Work 的报告。':'按工具 schema 和宿主返回的确切来源身份在本轮纠正参数，不猜测目标或版本。';
+    return {ok:false,continueTurn:true,error:{code,message:'读取参数不符合宿主协议，未执行写入。'+instruction+'这是内部工具调用纠正，不需要用户操作，也不要重发原用户输入。',...(documentMismatch?{nextTool:correctionTool,readRef:ref}:{})}};
   }
-  async settleReadProtocolFaults(target,tool,result){
-    if(result?.ok===false||result?.hostControl)return;
+  async settleReadProtocolFaults(target,p,result){
+    if(!result||typeof result!=='object'||result.ok===false||result.hostControl)return;
+    if(p.tool==='nozeli_document_read'&&!(result.ok===true&&typeof result.value?.text==='string'))return;
+    if(p.tool==='nozeli_history_read'&&typeof result.text!=='string')return;
+    if(p.tool==='nozeli_inspect_work'&&!(result.readOnly===true&&(typeof result.text==='string'||result.board||result.workId||result.matches)))return;
     const job=this.current.get(target),saved=job&&this.store.state.jobs.find(item=>item.id===job.id);
-    const faults=saved?.readProtocolFaults?.filter(fault=>fault.tool===tool&&fault.status==='awaiting-correction');if(!faults?.length)return;
-    for(const fault of faults)await this.maintenance.finish(fault.bugId,{verified:true,outcome:'same-turn-read-corrected'});
-    if(this.current.get(target)?.id!==job.id)return;
-    await this.store.mutate(()=>{
-      const current=this.store.state.jobs.find(item=>item.id===job.id);
-      for(const fault of current?.readProtocolFaults??[])if(faults.some(prior=>prior.bugId===fault.bugId))fault.status='repaired';
-    });
+    const identity=this.readCorrectionIdentity(p.tool,p.arguments??{});
+    const faults=saved?.readProtocolFaults?.filter(fault=>fault.correctionTool===p.tool&&fault.correction===identity&&fault.status==='awaiting-correction');if(!faults?.length)return;
+    // Save host-observed read success before diagnostic finalization. Never replay it.
+    try{
+      await this.store.mutate(()=>{const current=this.store.state.jobs.find(item=>item.id===job.id);for(const fault of current?.readProtocolFaults??[])if(faults.some(prior=>prior.bugId===fault.bugId))fault.correctionReceipt={verified:true,identity};});
+      await this.finalizeReadProtocolReceipts(saved);
+    }catch(error){this.emit('diagnostic','Read protocol receipt finalization pending: '+String(error.code??'INTERNAL_FAILURE'));}
   }
-  async settleRoutedReadProtocolFaults(job){
-    const saved=job&&this.store.state.jobs.find(item=>item.id===job.id),routing=saved?.routing;
-    if(saved?.type!=='intake'||!routing?.intent||!['dispatch','continue','status','clarify','cancel'].includes(routing.action))return;
-    if(saved.status!=='completed'&&this.current.get(saved.target)?.id!==saved.id)return;
-    if(saved.collabAttempts?.some(attempt=>['unknown','transport-unknown','unresolved'].includes(attempt.status)))return;
-    if(routing.action==='dispatch'&&!this.store.state.works.some(work=>work.id===routing.workId&&work.sourceJob===saved.id))return;
-    const faults=saved.readProtocolFaults?.filter(fault=>fault.status==='awaiting-correction');if(!faults?.length)return;
-    // A committed route can legitimately make a rejected read unnecessary.
-    // This is receipt finalization only: no tool, prompt or effect is replayed.
+  async finalizeReadProtocolReceipts(job){
+    const saved=job&&this.store.state.jobs.find(item=>item.id===job.id);
+    const faults=saved?.readProtocolFaults?.filter(fault=>fault.status==='awaiting-correction'&&fault.correctionReceipt?.verified&&fault.correctionReceipt.identity===fault.correction)??[];
+    if(!faults.length)return;
     try{
       const ledger=await this.maintenance.read(),resolved=[];
       for(const fault of faults){
-        const bug=ledger.bugs.find(bug=>bug.id===fault.bugId&&bug.projectId===this.projectId&&bug.jobId===saved.id&&bug.phase==='tool-protocol'&&bug.error?.code===fault.code);
+        const bug=ledger.bugs.find(bug=>bug.id===fault.bugId&&bug.jobId===saved.id&&bug.projectId===this.projectId&&bug.phase==='tool-protocol'&&bug.capability==='same-turn-read-correction'&&bug.error?.code===fault.code);
         if(!bug)continue;
-        if(bug.status!=='repaired')await this.maintenance.finish(bug.id,{verified:true,outcome:'routing-confirmed-read-obsolete'});
-        resolved.push(bug.id);
+        await this.maintenance.finish(bug.id,{verified:true,outcome:'same-turn-read-corrected'});resolved.push(bug.id);
       }
-      if(resolved.length)await this.store.mutate(()=>{
-        const current=this.store.state.jobs.find(item=>item.id===saved.id);if(current?.routing?.intent!==routing.intent)return;
-        for(const fault of current.readProtocolFaults??[])if(resolved.includes(fault.bugId))fault.status='repaired';
-      });
+      if(resolved.length)await this.store.mutate(()=>{const current=this.store.state.jobs.find(item=>item.id===saved.id);for(const fault of current?.readProtocolFaults??[])if(resolved.includes(fault.bugId))fault.status='repaired';});
     }catch(error){this.emit('diagnostic','Read protocol receipt finalization pending: '+String(error.code??'INTERNAL_FAILURE'));}
   }
   async readBudgetDenied(target){
@@ -2046,7 +2096,13 @@ export class Controller extends EventEmitter {
     if(target==='orchestrator'&&p.tool==='nozeli_backstage_respond')return this.respondBackstage(job,a);
     if(p.tool==='nozeli_report_bug'&&maintenanceBoundary({code:a.code}))return {ok:false,continueTurn:true,error:{code:'MAINTENANCE_HUMAN_BOUNDARY',message:'权限、冲突或未知效果不属于静默维修；保留原生决定与待办。'}};
     if(p.tool==='nozeli_report_bug'&&!['WORKER_SNAPSHOT_FAILED','PUBLICATION_FAILED','HOST_INTERNAL_FAILURE','UNKNOWN_PRODUCT_BUG'].includes(a.code))return {ok:false,continueTurn:true,error:{code:'INVALID_BUG_CATEGORY',message:'仅使用程序故障类别，不提交凭据、命令或用户全文。'}};
-    if(target==='orchestrator'&&p.tool==='nozeli_maintenance'){if(a.action==='status')return {...await this.maintenanceStatus(),readOnly:true,continueTurn:true};if(a.action==='scan')return {...await this.maintenanceScan(),continueTurn:true};if(a.action==='retry')return {...await this.maintenanceRetry(a.bugId),continueTurn:true};throw Error('invalid maintenance action');}
+    if(target==='orchestrator'&&p.tool==='nozeli_maintenance'){
+      if(a.action==='status')return {...await this.maintenanceStatus(),readOnly:true,continueTurn:true};
+      if(a.action==='scan')return {...await this.maintenanceScan(),continueTurn:true};
+      if(a.action==='retry')return {...await this.maintenanceRetry(a.bugId),continueTurn:true};
+      if(['debug','debug.inspect','debug.report'].includes(a.action)){try{return await this.debugProtocol.action(job,a);}catch(error){if(/^DEBUG_/.test(error.code??''))return {ok:false,continueTurn:true,error:{code:error.code,message:error.code}};throw error;}}
+      throw Error('invalid maintenance action');
+    }
     if(p.tool==='nozeli_report_bug'&&!['frontdesk','orchestrator'].includes(target)){const bug=await this.maintenance.record({phase:'diagnosis',jobId:job.id,workId:target,revision:job.revision,error:{code:a.code}});await this.maintenance.finish(bug.id,{outcome:'needs-version-fix'});await this.store.mutate(()=>{const saved=this.store.state.jobs.find(j=>j.id===job.id);saved.maintenanceBugId=bug.id;const w=this.store.find(target);if(w.status==='running'){w.status='paused';w.maintenance={bugId:bug.id,status:'needs-version-fix',message:'程序故障待后台诊断；原任务与改动保留。'};}});await this.maintenanceEvent(bug);return {maintenance:true,hostControl:true,bugId:bug.id,workRemainsOpen:true};}
     if(p.tool==='nozeli_report_deviation'&&!['frontdesk','orchestrator'].includes(target)){
       const event=await this.store.reportDeviation(target,job,a,p.callId);this.changed();return {saved:true,hostControl:true,deviationId:event.id,version:event.version,status:event.status,workRemainsOpen:true,userDecisionRequired:true};
@@ -2057,15 +2113,15 @@ export class Controller extends EventEmitter {
     // exists — and the side effect is gated host-side before any broker call.
     if(p.tool==='nozeli_privileged_execute')return this.privilegedExecute(job,target,p);
     if(p.tool==='nozeli_report_read'&&!['frontdesk','orchestrator'].includes(target)){
-      if(a.revision!==undefined&&(!Number.isInteger(a.revision)||a.revision<1))throw Error('Invalid report revision');
-      if(a.objectId!==undefined&&(typeof a.objectId!=='string'||!a.objectId))throw Error('Invalid report objectId');
+      if(a.revision!==undefined&&(!Number.isInteger(a.revision)||a.revision<1))throw Object.assign(Error('Invalid report revision'),{code:'INVALID_SELECTOR'});
+      if(a.objectId!==undefined&&(typeof a.objectId!=='string'||!a.objectId))throw Object.assign(Error('Invalid report objectId'),{code:'INVALID_SELECTOR'});
       // 同一Work revision可有多次发布（讨论回合内的连续发布）：revision解析为
       // 该revision的最新发布，省略revision=当前最新；objectId精确寻址任一
       // 冻结对象。返回值始终带实际objectId与latest标记，可区分同修订的
       // 连续报告。
       const workReceipts=this.store.state.receipts.filter(r=>r.workId===target);
       const receipt=a.objectId?workReceipts.findLast(r=>r.objectId===a.objectId):workReceipts.findLast(r=>a.revision===undefined||r.revision===a.revision);
-      if(!receipt)throw Error('No frozen report for this Work revision');
+      if(!receipt)throw Object.assign(Error('No frozen report for this Work revision'),{code:'INVALID_SELECTOR'});
       if(a.relPath!==undefined)return managedArtifact({storage:this.store.storage,project:{id:this.projectId,root:this.store.content},runtime:this.store.root,controller:this,currentController:()=>this},{objectId:receipt.objectId,relPath:a.relPath});
       const bytes=await readStoredReport(this.store,receipt);job.reader??=new ContextReader();const readRef=job.reader.add(reportSemanticText(bytes,receipt.report),{title:receipt.report.title,source:'objects/'+receipt.objectId,kind:'frozen-report',objectId:receipt.objectId,revision:receipt.revision});
       return job.reader.read(readRef,{maxBytes:readAllowance??null,maxResultBytes:readAllowance??null,resultFields:{report:receipt.report,revision:receipt.revision,objectId:receipt.objectId,latest:workReceipts.at(-1)?.objectId===receipt.objectId,files:(receipt.snapshot?.files||[]).map(({relPath,digest,size})=>({relPath,digest,size})),readOnly:true,continueTurn:true}});
@@ -2168,6 +2224,8 @@ export class Controller extends EventEmitter {
       // 与 Work 详情的项目/Work scoped 只读入口，不因此开放 dispatch/continue
       // 或其它效果权限（下行 gate 只收窄选择器，不放宽工具）。
       if(!['intake','backstage','maintenance'].includes(job.type))throw new Error('inspection requires an intake or scoped read-only host event');
+      if(typeof a.workName!=='string'||!a.workName.trim())throw Object.assign(new Error('workName selector required; use @state'),{code:'INVALID_SELECTOR'});
+      job.reader??=new ContextReader();
       const read=value=>({...value,readOnly:true,continueTurn:true});
       const detail=async w=>{
         job.reader??=new ContextReader();
@@ -2204,12 +2262,12 @@ export class Controller extends EventEmitter {
         return read({...page,...(offset?{earlierReadRef:job.reader.add(text,{title:'完整前台对话',source:'runtime/messages',kind:'conversation'})}:{})});
       }
       if(!matches.length&&typeof a.workName==='string'&&a.workName.startsWith('@memory:')){
-        const query=a.workName.slice(8).trim();if(!query)throw Error('memory search query required');
+        const query=a.workName.slice(8).trim();if(!query)throw Object.assign(Error('memory search query required'),{code:'INVALID_SELECTOR'});
         const memory=await this.memoryVersion.snapshot();
         const result=memoryContext(memory.root.text??'',query,job.reader,memory.topics);
         job.reader.reads.push({kind:'memory-index',source:'memory/plantree/index.md',chars:JSON.stringify(result).length});return read(result);
       }
-      if(matches.length!==1)throw new Error('work name or supplied reference must identify one Work; names are search/display only — mutations use workId');
+      if(matches.length!==1)throw Object.assign(new Error('work selector must identify one Work; use @state'),{code:a.workName.startsWith('读取 ')?'READ_REF_EXPIRED':'INVALID_SELECTOR'});
       return await detail(matches[0]);
     }
     if(target==='orchestrator'&&p.tool==='nozeli_dispatch'){
@@ -2348,13 +2406,18 @@ export class Controller extends EventEmitter {
     const text='## 宿主交付诊断：Worker 尚未交付最终报告\n\n'+(error?'本轮执行失败：'+String(error.message??error).slice(0,1500):'本回合已结束，但没有当前版本的最终成果或问题报告。')+'\n\n任务没有完成，不能冒称已交付。原任务、线程与工作树仍保留。\n\n建议处理：同意处理后让原 Worker 核对已完成操作、实际执行回执与现有改动，只执行剩余步骤、完成验证并发布最终结果；如不同意，请拒绝并写明替代要求。结果未知或原进程未确认退出时，先走明确恢复决定，不能自动重放。';
     await this.store.publish(w.id,w.revision,'problem',text,'host-missing-delivery:'+job.id,{jobId:job.id,files:[],hostDiagnostic:true,isActive:()=>!this.stopping&&['running','paused'].includes(w.status)&&w.revision===job.revision});
   }
-  // Provider/runtime failures (refusal, auth, rate limit, model unavailable,
-  // network/transport, native runtime faults) have no deterministic host
-  // recovery: they are classified, deduped and counted locally. They never
-  // spawn maintenance or backstage model turns and never auto-resend.
+  // Model/provider unavailability cannot invoke the same unavailable model.
+  // Other internal failures enter DEBUG without reconstructing original effects.
   internalRuntimeFailure(error){
     const code=String(error?.hostToolCode??error?.code??'');
-    return /^(HOST_INTERNAL_|INTERNAL_)/.test(code)||code==='HOST_BUDGET_PERSIST_FAILED'||(error?.failureOrigin==='host'||error?.code==='PI_HOST_TOOL_FAILED')&&!maintenanceBoundary({code,message:error?.message});
+    if(maintenanceBoundary({code,message:error?.message})||error?.exitUnconfirmed||['WORK_CONTROL_HELD','SERVICE_FAULT_HELD','EXECUTION_INTERRUPTED','RESTART_RECONCILIATION_REQUIRED','MAINTENANCE_PENDING'].includes(code))return false;
+    if(error?.failureOrigin==='host'||error?.code==='PI_HOST_TOOL_FAILED'||/^(HOST_INTERNAL_|INTERNAL_)/.test(code))return true;
+    return !this.debugModelUnavailable(error);
+  }
+  debugModelUnavailable(error){
+    if(error?.failureOrigin==='host'||error?.code==='PI_HOST_TOOL_FAILED')return false;
+    const code=String(error?.code??'');
+    return error?.failureOrigin==='provider'||!!error?.providerFailureEvidence||error?.providerExit!=null||/^(?:ECONN|ETIMEDOUT|EPIPE|ENOTFOUND|EAI_AGAIN)/.test(code)||/^(?:PI|OMP|NATIVE)_(?:MODEL_|AUTH_|PROVIDER_|RATE_LIMIT|PROMPT_FAILED|REQUEST_TIMEOUT|PROCESS_EXIT|START_FAILED)/.test(code);
   }
   providerRuntimeDiagnostic(error){
     const code=String(error?.code??'');
@@ -2522,6 +2585,9 @@ export class Controller extends EventEmitter {
       if(this.stopping||(isWork&&['closing','ended'].includes(this.store.find(job.target).status))||(job.type==='intake'&&['closing','ended'].includes(this.intakeBoundWork(job)?.status)))throw new Error('execution interrupted after prompt');
       if(isWork&&response.files?.length)await this.recordArtifacts(job,response.files);
       if(job.type==='intake'&&!savedJob().routing)throw new Error('orchestrator turn ended without a routing decision');
+      if(job.type==='maintenance'&&!await this.debugProtocol.completed(job)){
+        await this.debugProtocol.stopped(job);await this.store.mutate(()=>{Object.assign(savedJob(),{status:'failed',completion:'debug-pending',errorCode:'DEBUG_REPORT_REQUIRED',finishedAt:new Date().toISOString()});});return;
+      }
       if(response.metrics){
         if(job.reader)response.metrics.contextReads=job.reader.reads;
         if(job.type==='front')response.metrics.contextReads=(savedJob().readReceipts||[]).map(r=>({source:r.value.source,version:r.value.version,chars:r.value.text.length,offset:r.value.offset}));
@@ -2579,7 +2645,8 @@ export class Controller extends EventEmitter {
         await this.store.mutate(()=>{delete this.store.state.providers[job.target];});
         await this.saveTransferredFront(job,{text:e.partialText,metrics:e.metrics,turnId:e.turnId,threadId:e.threadId,providerStatus:'interrupted'});return;
       }
-      const internal=this.internalRuntimeFailure(e),diagnostic=this.providerRuntimeDiagnostic(e);
+      const internal=job.type!=='maintenance'&&this.internalRuntimeFailure(e),diagnostic=this.providerRuntimeDiagnostic(e);
+      if(job.type==='maintenance')await this.debugProtocol.stopped(job,{modelUnavailable:this.debugModelUnavailable(e)});
       const internalBug=internal?await this.recordInternalFailure(job,e):null;
       if(diagnostic&&job.type!=='maintenance')await this.recordDiagnosticFailure(job,e);
       // Record the accepted input's failure before cleanup can reject or hang.
@@ -2603,7 +2670,7 @@ export class Controller extends EventEmitter {
         }
         const binding=w?.binding||this.store.state.bindings[job.target];
         if(binding){this.store.state.modelObservations??={};this.store.state.modelObservations[`${binding.model}:${binding.effort}`]={status:'turn-failed',error:e.message,at:new Date().toISOString()};}
-        this.store.state.messages.push({id:randomUUID(),target:job.target,speaker:'system',text:internalBug?'系统已接管此运行问题，原请求和已保存内容保留；无需重复提交。':runtimeFailureMessage(e,{work:Boolean(ending)}).text,jobId:job.id,...(job.context?.frontJobId||job.context?.manual||job.context?.boundWorkId?{audience:'frontdesk'}:{})});
+        this.store.state.messages.push({id:randomUUID(),target:job.target,speaker:'system',text:internalBug?'系统正在诊断处理，原请求与已保存进展保留；无需重复提交。':job.type==='maintenance'?(this.debugModelUnavailable(e)?'系统诊断因模型服务暂不可用而停止，故障与原进展保留；未重放原任务。':'系统诊断证据待补全，故障与原进展保留；无需用户技术维修或重复提交。'):runtimeFailureMessage(e,{work:Boolean(ending)}).text,jobId:job.id,...(job.context?.frontJobId||job.context?.manual||job.context?.boundWorkId?{audience:'frontdesk'}:{})});
         if(w?.status==='running')this.pauseState(w,e.message);else if(!w&&!diagnostic&&!internalBug&&!['maintenance','backstage'].includes(job.type))this.store.state.todos.push({id:randomUUID(),kind:'system',status:'open',target:job.target,sourceJobId:job.id,text:e.message});
       });
       if(internalBug&&job.type!=='maintenance')await this.maintenanceEvent(internalBug,{schedule:false});

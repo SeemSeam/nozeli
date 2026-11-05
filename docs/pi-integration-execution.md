@@ -546,3 +546,33 @@ provider／预算／无能力技术故障只本地分类与去重，不产生 ma
 原生系统另存为窗口已实际弹出并查看截图，但此桌面缺少xdotool，X11事件未使GTK字段变化，AT-SPI未暴露该自有进程的可操作节点；这些自动化尝试未计作通过。正式代码未加入测试路径后门、GTK强制参数或调试端口；上述受控路径选择只存在于验收脚本／测试，系统选择器人工操作仍未验收。
 
 范围仍为Linux源码；Windows/macOS、真实付费模型、日常安装及原故障profile原地启动未验。正常启动可能写本地状态，不冒称严格只读；本轮真实启动均为隔离合成目录。
+
+## 先验证自动 DEBUG，再修复读取协议（2026-11-05，Linux 源码）
+
+严格按用户要求分阶段执行，没有先修复原始阻断再用替代故障冒充第一阶段证据：
+
+1. **保留真实原故障验证 DEBUG**：`/var/tmp/nozeli-pi-debug-activation-live-cpBg2C/report.json`。原 `nozeli_history_read(document.nextReadRef, offset)` 仍实际产生致命 `READ_REF_EXPIRED` 时，真实私有 Pi 主控自动进入同项目、原 job／Work／revision 绑定的诊断，读取两份宿主限定的源码分页，再提交 diagnosis／rootCause／fixPlan。直接以只读 SQLite 查询核对 `ui` collection 的 `managed:maintenance`，确认报告、attempt／event 身份、源码 digest 与检查回执已经落盘；状态为 `awaiting-fix`，`verifiedFix=false`，原故障尚未修复。该目录另保留当时的 producer 与原故障源码快照，不随后续修复改写。
+2. **然后修复真实读取路径**：`/var/tmp/nozeli-pi-read-correction-live-v6K2WF/report.json`，7 项真实 Pi／文件／Git 检查通过。错用 history reader 的当前文档引用返回 `READ_TOOL_MISMATCH`、准确的 `nextTool/readRef` 和 `continueTurn`；同一原生输入、原 Worker／thread 内显式纠正，完整读取冻结正文、确切编辑并发布一次实际候选。无关读取不能标记修复；越 Work／过期引用拒绝且不泄露正文或可用外部引用，显式按路径重新定位后仍能完成。两个 Work 使用公开资源配置与独立原生操作身份；只有显式接受才合入原项目，owner 退出与名额释放已观察。
+3. **永久通用 DEBUG 回归不再要求已修复的产品错误继续失败**：`tests/pi-debug-activation-live.mjs` 在隔离测试 Controller 的一个确切原生调用边界显式注入宿主故障；这不是原产品错误的复现，也没有生产后门。`/var/tmp/nozeli-pi-debug-activation-live-D9mXCD/report.json` 7 项通过：真实 HTTP401 使首次诊断停为 `model-unavailable`，普通 connect 不重试；关闭原诊断 owner 后显式重新启用才产生新技术事件，随后真实源码检查与版本化报告完成。原业务输入、Worker／Work 只有一份，不重放、不开替代任务，不以诊断解释冒充修复。
+
+当前合同：
+
+- DEBUG 的项目、原 job、Work revision、event／attempt 由宿主绑定；源码入口由宿主给出，分页最多 80 行／12KiB、检查回执最多 32 条。其他项目、旧 attempt、已变化的原 Work 绑定不得提交报告；closure 同 revision 的历史诊断不获得任何效果权限。
+- 报告只保存模型解释，明确 `verifiedFix=false`。单纯模型结束或查询 status 不完成诊断；缺证据为 `pending`，模型不可用为 `model-unavailable`。诊断故障不递归创建业务维修，不要求用户排查内部工具引用，也不自动改源码、安装或重放未知效果。权限、冲突与未确认效果保留原屏障。
+- 相同报告重试会重新投影已持久状态，竞争报告不能覆盖不同解释；冷开只恢复已持久元数据与精确读取回执，不启动模型或再次执行读取。只有实际匹配的成功读回执才能把读取故障记为修复；dispatch／continue／clarify 等无关路由绝不能替代此证据。找不到／重名 Work 可按宿主明确提示先读 `@state`，坏 cursor 按同选择器无 cursor 首页纠正；报告 selector 未获得可证明的替代目标时保持未修复。
+- 同一未纠正故障最多返回 3 次纠错响应，第 4 次转入系统 DEBUG；每个原 job 最多登记 16 个不同协议故障，第 17 个在写入新故障前阻断并记录有界 overflow 事实，不驱逐未解决证据。不同参数顺序使用稳定的已知字段身份，不把私密正文、原始 capability 引用或任意深层参数作为诊断内容保存。
+- 仅明确允许的只读协议错误进入同回合纠错；存储／真实来源读取失败、权限、冲突与未知效果不伪装成可忽略的参数错误。读取成功后诊断最终落盘失败会保留确切成功回执，冷开可结算，不重读、不重放业务。
+
+最终定向回归 **128/128**、失败／跳过／取消均 0；包含重复／变参／并发故障上限、跨 Work 拒绝、报告绑定与竞争、投影失败恢复、真正成功读取后的冷结算、未经纠正直接派工不得标记修复。renderer 构建通过。真实 Electron 的有界重复读取错误→单次后台 DEBUG→诊断不完整仍 pending／failed→保留原请求、冻结报告和候选入口可读已通过（最新 `/var/tmp/nozeli-retained-progress-efWJvN/report.json`；前轮 `/var/tmp/nozeli-retained-progress-BUOwcg/report.json`）；已查看首屏与实际候选截图。报告入口的 DOM／隔离内容 ready 已观察，但 X11 的第二张图仍保留上一帧进展弹层，不把该帧冒称为无遮挡报告截图。模型服务为确定性 loopback，不是付费模型能力验收。
+
+早期 native producer 的 SDK offset 缺失、错误回执层级、非 HTML 报告、双 Work 配额与复用操作身份问题均未计通过，已按实际合同修正；独立审查发现的路由假修复、日志无界增长、报告投影／并发与停止诊断无法再激活问题均已纳入修复和针对性回归。原有 `desktop-retained-progress-live.mjs` 在进入本次变更路径前，因未打开现行独立讨论入口而等待旧的可见输入失败；未计通过，未改写该用户已有探针，实际表面用一次性 current-UI 烟测另验。
+
+为保证只提交本轮变更，用任务前工作区快照进行三方合并，构造 `HEAD + 本轮改动` 的独立源码树，不混入原有未提交功能。独立树仅复用既有开发依赖及生成的私有 Pi runtime／第三方 SDK 产物；最终源码实际执行两条永久 native producer 均通过：读取纠正与显式接受 `/var/tmp/nozeli-pi-read-correction-live-G8EOfc/report.json`、自动 DEBUG／HTTP401／停止 owner 后显式恢复 `/var/tmp/nozeli-pi-debug-activation-live-kEFBHH/report.json`。这验证了拟提交源码自身的路径，不要求提交其他用户改动；首次缺少生成 SDK 产物的隔离树启动失败未计通过。一次性 GUI 烟测脚本已移除，原始报告与截图保留。
+
+附加完整默认门禁实际结果：unit **671/671**，integration **1788/1803、15 失败**，因此不宣称默认全量通过。随后修复了 connect 直接读取注入 Controller 私有 ledger 的接口耦合，改用与既有可选 Controller 能力一致的公开诊断恢复入口；迁移了因新合同过时的消费者期望：技术回合缺少真实报告不能“完成”、内部故障不得制造用户维修待办、模型失败夹具须有真实类型／来源而不是凭字符串猜测。原输入／owner 退出／不重放／跨作用域／未保存草稿和效果屏障断言保留，原始用户消息的措辞断言删除。相关连接文件 **27/27**、控制／交付／恢复消费者 **75/75** 分别通过；这些定向结果不外推为再次完整运行通过。
+
+最终 `HEAD + 本轮改动` 独立源码树再跑上述 8 个连接／控制／交付／恢复消费者文件，**102/102** 通过，失败／跳过／取消均 0；与工作区的 27／75 项重叠，不累加为额外样本。拟提交树的两条真实 Pi 验证使用该最终公开恢复能力接口，均已实跑通过。
+
+另外 3 项 draft 失败已在**精确任务前源码快照**中独立实跑得到相同错误，非本轮引入：`collab-controller-projection.test.mjs:67` 的离线 `managed.draft` 请求报“项目三角色尚未就绪”，`managed-submission.test.mjs:4,13` 报 `TERMINAL_STALE`。任务前快照 `/var/tmp/nozeli-debug-read-commit-mxiihk5y/pre-task-source`，运行这两个文件共 8 项、5 通过／3 失败。上述旧 draft 路径及其测试保持未改，不通过跳过、删安全断言或回退用户已有代码伪造全绿。
+
+验证范围仅 Linux 源码和隔离合成项目。未修改日常安装、用户项目或凭据；未推送、发布，未取得 Windows/macOS 或通用自主代码修复资格。

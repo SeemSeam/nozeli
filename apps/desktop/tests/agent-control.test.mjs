@@ -392,7 +392,11 @@ test('resume wakes an existing bug-bound technical event without replaying faile
   const technical=c.store.state.jobs.find(row=>row.type==='maintenance'&&row.context?.bugId);
   assert.equal(technical.status,'queued','manual hold defers the existing technical event');
   await controlApi.controllerControl(c,{workId:A.id,action:'resume',requestKey:'ctl-tech-resume-1'});
-  await spin(()=>technical.status==='completed','technical event after resume');
+  await spin(()=>technical.status==='failed'&&technical.completion==='debug-pending','incomplete technical event after resume');
+  const bug=(await c.maintenance.read()).bugs.find(row=>row.id===technical.context.bugId);
+  assert.equal(bug.debug.state,'pending','status-only fixture does not fabricate completed diagnosis');
+  assert.equal(bug.debug.report,undefined);
+  assert.notEqual(bug.status,'repaired');
   assert.equal(f.prompts.filter(prompt=>prompt.jobId===technical.id).length,1);
   assert.equal(f.prompts.filter(prompt=>prompt.target===A.id).length,1,'failed business input is not reissued');
 });

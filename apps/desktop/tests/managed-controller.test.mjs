@@ -148,7 +148,7 @@ test('accepted input failure persists before failed native stop and retains unco
   let release, entered;
   const waiting = new Promise(resolve => { entered = resolve; });
   const gate = new Promise(resolve => { release = resolve; });
-  session.prompt = async () => { throw Object.assign(Error('provider 502 Upstream access forbidden'), { code: 'OMP_TURN_ERROR' }); };
+  session.prompt = async () => { throw Object.assign(Error('provider 502 Upstream access forbidden'), { code: 'PI_PROVIDER_REQUEST_FAILED', failureOrigin: 'provider' }); };
   session.stop = async () => { entered(); await gate; throw hold; };
   try {
     const accepted = await c.send('frontdesk', 'light preserve exact accepted input');
@@ -158,7 +158,8 @@ test('accepted input failure persists before failed native stop and retains unco
     assert.equal(saved.status, 'failed');
     assert.equal(saved.text, 'light preserve exact accepted input');
     assert.equal(saved.error, 'provider 502 Upstream access forbidden');
-    assert.ok(c.store.state.messages.some(message => message.jobId === saved.id && message.speaker === 'system' && message.text.includes('Upstream access forbidden')));
+    assert.equal(saved.failureOrigin, 'provider');
+    assert.equal(saved.maintenanceBugId, undefined);
     const owner = structuredClone(c.store.state.providers.frontdesk);
     release();
     await wait(() => !c.running.size && Boolean(c.store.state.jobs.find(job => job.id === accepted.jobId)?.cleanupFailure));

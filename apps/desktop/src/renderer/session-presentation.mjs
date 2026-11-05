@@ -10,7 +10,7 @@ export function processLabel(entry){
 }
 
 const terminal=new Set(['completed','complete','failed','cancelled','canceled','aborted','interrupted','blocked']);
-export const executionLabels=Object.freeze({queued:'排队中',starting:'启动中',thinking:'思考中',toolrunning:'工具执行中',waiting:'等待中',output:'输出中',completed:'已完成',failed:'失败',interrupted:'已中断',unknown:'状态未知',blocked:'受阻'});
+export const executionLabels=Object.freeze({queued:'排队中',starting:'启动中',thinking:'思考中',toolrunning:'工具执行中',waiting:'等待中',output:'输出中',completed:'已完成',failed:'失败',interrupted:'已中断',unknown:'状态未知',blocked:'受阻',debugging:'系统处理中',modelUnavailable:'模型不可用'});
 export function pendingTools(entries){
  const settled=new Set(entries.filter(entry=>entry.tool&&!['running','pending'].includes(entry.tool.status)).map(entry=>entry.tool.toolCallId).filter(Boolean));
  const calls=new Map();
@@ -47,6 +47,8 @@ export function turnPresentation(entries,state){
  let status='unknown';
  const deliveredWork=deliveredResultWork(first,job,state);
  const answered=job?.status==='completed'&&entries.some(entry=>entry.speaker==='agent'&&!entry.failed&&entry.status!=='failed'&&!entry.toolCalls?.length&&entry.complete&&hasReadableText(entry));
+ const systemDebug=job?.maintenanceBugId&&job?.debugEventJobId&&['queued','running','awaiting-fix','pending','model-unavailable'].includes(job.debugState)&&!['cancelled','canceled','aborted','interrupted'].includes(job.status);
+ if(systemDebug)return {status:job.debugState==='model-unavailable'?'modelUnavailable':'debugging',label:executionLabels[job.debugState==='model-unavailable'?'modelUnavailable':'debugging'],terminal:job.debugState==='model-unavailable',pending:[]};
  if(job?.status==='failed')status='failed';
  else if(['cancelled','canceled','aborted','interrupted'].includes(job?.status))status='interrupted';
  else if(job?.status==='unknown')status='unknown';

@@ -46,6 +46,17 @@ test('terminal old turns never inherit current agent activity or stale streaming
  assert.equal(turnPresentation(entries,state('running')).status,'output');
  assert.equal(turnPresentation([{...base,id:'x',text:''}],{}).status,'unknown');
 });
+
+test('system-owned debug keeps internal failures out of user-blocking states without claiming repaired',()=>{
+ const entries=[{...base,id:'read-fault',failed:true,tool:{name:'nozeli_history_read',status:'error'}}];
+ for(const debugState of ['queued','running','awaiting-fix','pending']){
+  const s=state('failed',{maintenanceBugId:'bug-1',debugEventJobId:'debug-1',debugState});
+  const view=turnPresentation(entries,s);assert.equal(view.status,'debugging');assert.equal(view.terminal,false);assert.deepEqual(view.pending,[]);assert.equal(s.jobs[0].status,'failed');
+ }
+ assert.equal(turnPresentation(entries,state('failed',{maintenanceBugId:'bug-1',debugEventJobId:'debug-1',debugState:'model-unavailable'})).status,'modelUnavailable');
+ assert.equal(turnPresentation(entries,state('failed',{debugState:'running'})).status,'failed','unbound model prose cannot authorize a debug state');
+ assert.equal(turnPresentation(entries,state('interrupted',{maintenanceBugId:'bug-1',debugEventJobId:'debug-1',debugState:'running'})).status,'interrupted','explicit cancellation remains authoritative');
+});
 test('actual read denial is visible but successful host-control handoffs are not mislabeled blocked',()=>{
  assert.equal(turnPresentation([{...base,id:'failed',failed:true}],state('completed')).status,'failed');
  const denied={...base,id:'tool',speaker:'tool',tool:{name:'read',status:'complete',output:JSON.stringify({ok:false,hostControl:true,error:{code:'HOST_CONTEXT_BUDGET_EXHAUSTED'}})},text:''};

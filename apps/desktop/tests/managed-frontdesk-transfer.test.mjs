@@ -78,7 +78,7 @@ test('a continue miss is never converted into a dispatch; explicit nozeli_dispat
   assert.equal(c.store.state.works.length,1);
  }finally{c.current.delete('orchestrator');}
 });
-test('status never routes or completes an intake; a status-only turn fails explicitly instead of silent success',async t=>{
+test('status never routes an intake; ending without routing retains input and activates technical DEBUG',async t=>{
  const {c}=await fixture(t);const front=c.current.get('frontdesk');
  const intake=await c.store.mutate(()=>c.queueJob('orchestrator','intake','全新的独立后台任务',{context:{frontJobId:front.id}}));
  c.current.set('orchestrator',intake);
@@ -89,17 +89,19 @@ test('status never routes or completes an intake; a status-only turn fails expli
   // The same status query stays repeatable and still never routes.
   const again=await c.onTool('orchestrator',{tool:'nozeli_manage',arguments:{action:'status',text:''},callId:'s-2'});
   assert.equal(again.continueTurn,true);assert.equal(c.store.state.jobs.find(j=>j.id===intake.id).routing,undefined);
-  // Ending the turn after only status is an explicit actionable failure — never a silent completion.
+  // A missing routing decision is an internal fault, not a user technical-repair todo.
   c.current.delete('orchestrator');
   const session=c.sessions.get('orchestrator'),originalPrompt=session.prompt.bind(session);
   session.prompt=async()=>{await session.onTool({tool:'nozeli_manage',arguments:{action:'status',text:''},callId:'s-3'});return {text:'',completion:'host-control',threadId:session.threadId};};
   try{
    await c.store.mutate(()=>{Object.assign(c.store.state.jobs.find(j=>j.id===intake.id),{status:'queued'});});
    c.kick();
-   await wait(()=>['failed','completed'].includes(c.store.state.jobs.find(j=>j.id===intake.id).status));
+   await wait(()=>{const saved=c.store.state.jobs.find(j=>j.id===intake.id);return saved?.status==='failed'&&saved.maintenanceBugId&&c.store.state.jobs.some(job=>job.type==='maintenance'&&job.context?.bugId===saved.maintenanceBugId);});
    const saved=c.store.state.jobs.find(j=>j.id===intake.id);
-   assert.equal(saved.status,'failed');assert.match(saved.error,/without a routing decision/);
-   assert.ok(c.snapshot().todos.some(todo=>todo.kind==='system'&&todo.status==='open'&&/routing decision/.test(todo.text)));
+   assert.equal(saved.status,'failed');assert.equal(saved.text,'全新的独立后台任务');assert.equal(saved.routing,undefined);assert.equal(c.store.state.works.length,0);
+   const bug=(await c.maintenance.read()).bugs.find(bug=>bug.id===saved.maintenanceBugId);assert.ok(bug);assert.equal(bug.jobId,saved.id);assert.equal(bug.phase,'runtime');assert.notEqual(bug.status,'repaired');
+   assert.equal(c.store.state.jobs.filter(job=>job.type==='maintenance'&&job.context?.bugId===bug.id).length,1);assert.equal(c.store.state.jobs.filter(job=>job.type==='intake').length,1);
+   assert.equal(c.snapshot().todos.some(todo=>todo.sourceJobId===saved.id&&['system','recovery'].includes(todo.kind)&&todo.status==='open'),false);
   }finally{session.prompt=originalPrompt;}
  }finally{c.current.delete('orchestrator');}
 });

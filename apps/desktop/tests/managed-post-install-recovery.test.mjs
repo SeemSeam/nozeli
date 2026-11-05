@@ -31,7 +31,7 @@ async function fixture(t,{failWorker=false,checkpoint=async()=>{}}={}){
   async prompt(){
    this.hasPrompted=true;const job=c.current.get(this.target);calls.push({jobId:job.id,type:job.type,target:this.target});const call=(tool,arguments_)=>this.onTool({tool,arguments:arguments_,callId:randomUUID()});
    if(job.type==='intake')await call('nozeli_dispatch',{name:job.text,brief:'Change named file'});
-   else {if(failWorker)throw Error('fixture interrupted after observable file write risk');const w=c.store.find(this.target),file=w.name+'.txt';const read=await call('nozeli_document_read',{relPath:file});assert.equal(read.ok,true);const edited=await call('nozeli_document_apply',{readHandle:read.value.readHandle,replacements:[{oldText:read.value.text,newText:w.name+' result\n'}]});assert.equal(edited.ok,true);await call('nozeli_publish',{kind: 'result', content: staticReport('Verified fixture '+w.name+' result'), files: [file]});}
+   else {if(failWorker)throw Object.assign(Error('Fixture model provider unavailable after original input admission'),{code:'PI_PROVIDER_UNAVAILABLE',failureOrigin:'provider'});const w=c.store.find(this.target),file=w.name+'.txt';const read=await call('nozeli_document_read',{relPath:file});assert.equal(read.ok,true);const edited=await call('nozeli_document_apply',{readHandle:read.value.readHandle,replacements:[{oldText:read.value.text,newText:w.name+' result\n'}]});assert.equal(edited.ok,true);await call('nozeli_publish',{kind: 'result', content: staticReport('Verified fixture '+w.name+' result'), files: [file]});}
    return {completion:'host-control',threadId:this.threadId};
   }
  }
@@ -55,6 +55,9 @@ async function hook(f){await fs.writeFile(path.join(f.project,'.git/hooks/pre-co
 test('recovery is explicit original-thread inspection, never replays original provider input',opts,async t=>{const f=await fixture(t,{failWorker:true}),w=await f.work(),todo=f.todo(w,'recovery'),p=f.payload(w,todo),before=f.calls.filter(x=>x.type==='initial').length;const result=await f.invoke('recovery',p);assert.equal(result.status,'inspection-required');assert.equal(result.threadId,w.threadId);assert.equal(result.automaticReplay,false);assert.equal(result.requiresExplicitSupplement,true);await f.reopen();assert.deepEqual(await f.invoke('recovery',p),result);assert.equal(f.calls.filter(x=>x.type==='initial').length,before);assert.equal(f.c.store.find(w.id).status,'paused');});
 test('stale cross-project cross-Work missing-source closing ended busy draft and pending supplement refuse',opts,async t=>{
  const f=await fixture(t,{failWorker:true}),w=await f.work(),todo=f.todo(w,'recovery'),base=f.payload(w,todo);
+ const failed=f.c.store.state.jobs.find(row=>row.id===todo.sourceJobId);
+ assert.equal(failed.errorCode,'PI_PROVIDER_UNAVAILABLE');assert.equal(failed.failureOrigin,'provider');assert.equal(failed.maintenanceBugId,undefined,'model outage does not recursively activate unavailable-model DEBUG');
+ assert.equal((await f.c.maintenance.read()).bugs.length,0,'explicit original-thread recovery is a provider boundary, not a program-repair request');
  await assert.rejects(f.invoke('recovery',{...base,projectId:'other'}),/unknown project/);
  for(const patch of [{workId:'other'},{revision:0},{sourceJob:'missing'}])assert.equal((await f.invoke('recovery',{...base,...patch,requestKey:randomUUID()})).accepted,false);
  for(const status of ['closing','ended','running']){

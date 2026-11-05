@@ -432,7 +432,8 @@ test('long paper: run-cap pause is typed, and a new run continues the same froze
   assert.equal(native.calls.length,beforeCalls,'no model request was spawned by the continuation');
   // Random per-turn refs from an older reader are never consumable.
   const staleReader=new ContextReader();const stale=staleReader.add(original,{title:'原始长文',source:`work:${work.id}:request`,kind:'task-scope'});
-  await assert.rejects(c.onTool(work.id,{tool:'nozeli_history_read',arguments:{readRef:stale},callId:'stale-1'}),/READ_REF_EXPIRED|已失效/,'expired ephemeral refs are rejected — only stable refs + offset cross turns');
+  const staleResult=await c.onTool(work.id,{tool:'nozeli_history_read',arguments:{readRef:stale},callId:'stale-1'});
+  assert.equal(staleResult.ok,false);assert.equal(staleResult.continueTurn,true);assert.equal(staleResult.error.code,'READ_REF_EXPIRED');assert.equal(staleResult.text,undefined);assert.equal(staleResult.value,undefined);
   c.current.delete(work.id);
 });
 
@@ -472,8 +473,10 @@ test('next-turn reader: ephemeral handoff refs expire, stable projection refs re
   assert.equal(approvedPage.text,approvedText,'approved scope reads its exact sourceText');
   assert.equal(approvedPage.version,approved.version);
   // Arbitrary/unapproved identities and OTHER Works' refs are never bound.
-  await assert.rejects(c.onTool(work.id,{tool:'nozeli_history_read',arguments:{readRef:'读取 稳定/work/'+work.id+'/approved/not-approved'},callId:'stable-3'}),/READ_REF_EXPIRED|已失效/);
-  await assert.rejects(c.onTool(work.id,{tool:'nozeli_history_read',arguments:{readRef:'读取 稳定/work/other-work/request'},callId:'stable-4'}),/READ_REF_EXPIRED|已失效/,'other Works\' stable refs never leak into this reader');
+  for(const readRef of ['读取 稳定/work/'+work.id+'/approved/not-approved','读取 稳定/work/other-work/request']){
+    const rejected=await c.onTool(work.id,{tool:'nozeli_history_read',arguments:{readRef},callId:'stable-rejected'});
+    assert.equal(rejected.ok,false);assert.equal(rejected.continueTurn,true);assert.equal(rejected.error.code,'READ_REF_EXPIRED');assert.equal(rejected.text,undefined);assert.equal(rejected.value,undefined);assert.equal(rejected.error.readRef,undefined);
+  }
   c.current.delete(work.id);
 });
 

@@ -15,7 +15,7 @@ export class DocumentReader {
     if(!metadata)throw Object.assign(new Error('文档分页引用不属于当前回合；不能借用其他文件或会话的读取身份。'),{code:'READ_REF_EXPIRED'});
     const envelope={ok:true,readOnly:true,continueTurn:true,value:null};
     const overhead=Buffer.byteLength(JSON.stringify(envelope),'utf8')-4;
-    const page=this.reader.read(readRef,{maxBytes:Math.min(12000,allowance??12000),maxResultBytes:allowance===null?null:Math.max(0,allowance-overhead),resultFields:metadata});
+    const page=this.reader.read(readRef,{maxBytes:Math.min(12000,allowance??12000),maxResultBytes:allowance===null?null:Math.max(0,allowance-overhead),resultFields:{...metadata,nextTool:'nozeli_document_read'}});
     if(page.nextReadRef)this.metadata.set(page.nextReadRef,metadata);
     return {...envelope,value:page};
   }

@@ -24,7 +24,9 @@ export function maintenancePage({projectId,facts,controller=null,revision=facts.
   const retryMode=retry?(capability.retryMode==='finalize'?'finalize':'repair'):null;
   const retryReason=retry?null:scalar(capability?.retryReason)??(!controller?'owner-unavailable':controller.stopping?'owner-stopping':'unknown-maintenance-state');
   const inFlight=complete&&controller&&!controller.stopping&&controller.maintenanceFlights?.has(bug.id);
-  return {id:binding.bugId,projectId,workId:binding.workId,workRevision:binding.revision,jobId:binding.jobId,phase:binding.phase,status,stateLabel:status==='repaired'?'已修复':inFlight?'系统正在处理运行问题':status==='repairing'?'原修复结果待核对':status==='detected'||status==='queued'?'等待系统处理':'系统问题待修复，进展已保留',reason:status==='repaired'?null:retryReason,attemptCount:bug.attemptCount??bug.attempts?.length??0,maxAttempts:2,binding,capabilities:{retry,retryReason,retryMode}};
+  const debugState=complete&&['queued','running','awaiting-fix','model-unavailable','pending'].includes(bug.debugState)?bug.debugState:null;
+  const debugLabel={'queued':'已交主控debug','running':'主控正在debug','awaiting-fix':'debug诊断已保存，系统待修复','model-unavailable':'debug模型不可用','pending':'系统debug待继续'};
+  return {id:binding.bugId,projectId,workId:binding.workId,workRevision:binding.revision,jobId:binding.jobId,phase:binding.phase,status,stateLabel:status==='repaired'?'已修复':debugState?debugLabel[debugState]:inFlight?'系统正在处理运行问题':status==='repairing'?'原修复结果待核对':status==='detected'||status==='queued'?'等待系统处理':'系统问题待修复，进展已保留',reason:status==='repaired'?null:retryReason,attemptCount:bug.attemptCount??bug.attempts?.length??0,maxAttempts:2,binding,debug:debugState?{state:debugState,eventJobId:scalar(bug.debugEventJobId),attemptId:scalar(bug.debugAttemptId),verifiedFix:false}:null,capabilities:{retry,retryReason,retryMode}};
  });
  const summary={...facts.summary};
  if(!controller||controller.stopping){summary.blocked+=summary.inFlight+summary.queued;summary.inFlight=0;summary.queued=0;}

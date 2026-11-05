@@ -264,19 +264,21 @@ test('invalid read-only cursor is repaired in the same intake without a user ret
  c.current.delete('orchestrator');
 });
 
-test('a verified dispatch resolves an unnecessary rejected read without requiring another read',async t=>{
- const c=await fixture(t),job=await intakeFor(c,'开始落盘');
- await inspect(c,{workName:'@state',cursor:''});const fault=(await c.maintenance.read()).bugs[0];
- const routed=await c.onTool('orchestrator',{tool:'nozeli_dispatch',arguments:{name:'原目标',brief:'保留原目标'},callId:randomUUID()});
+test('dispatch without a corrected read never verifies or repairs the rejected read',async t=>{
+ const c=await fixture(t),job=await intakeFor(c,'保留原任务');
+ const rejected=await inspect(c,{workName:'@state',cursor:''});assert.equal(rejected.error.code,'INVALID_CURSOR');
+ const bugId=(await c.maintenance.read()).bugs[0].id;
+ const routed=await c.onTool('orchestrator',{tool:'nozeli_dispatch',arguments:{name:'原目标',brief:'仅派发原目标'},callId:randomUUID()});
  assert.equal(routed.action,'dispatch');assert.equal(c.store.state.works.length,1);assert.equal(c.store.state.works[0].sourceJob,job.id);
- const resolved=(await c.maintenance.read()).bugs.find(bug=>bug.id===fault.id);assert.equal(resolved.status,'repaired');assert.equal(resolved.lastOutcome.outcome,'routing-confirmed-read-obsolete');
- assert.equal(c.store.state.jobs.find(saved=>saved.id===job.id).readProtocolFaults[0].status,'repaired');assert.equal(c.store.state.jobs.filter(saved=>saved.type==='intake').length,1);c.current.delete('orchestrator');
+ const bug=(await c.maintenance.read()).bugs.find(bug=>bug.id===bugId),fault=c.store.state.jobs.find(saved=>saved.id===job.id).readProtocolFaults[0];
+ assert.equal(bug.status,'detected');assert.notEqual(bug.lastOutcome?.verified,true);assert.equal(fault.status,'awaiting-correction');assert.equal(fault.correctionReceipt,undefined);c.current.delete('orchestrator');
 });
 
-test('protocol receipt save failure never drops a committed dispatch and cold open only finalizes its diagnostics',async t=>{
+test('verified read receipt save failure preserves committed dispatch and cold open only finalizes the exact read diagnostics',async t=>{
  const c=await fixture(t),job=await intakeFor(c,'开始落盘');
  await inspect(c,{workName:'@state',cursor:''});const bugId=(await c.maintenance.read()).bugs[0].id;
  c.maintenance.finish=async()=>{throw Object.assign(Error('synthetic diagnostic receipt failure'),{code:'EIO'});};
+ const fixed=await inspect(c,{workName:'@state'});assert.ok(fixed.board);assert.equal(c.store.state.jobs.find(saved=>saved.id===job.id).readProtocolFaults[0].correctionReceipt.verified,true);
  const routed=await c.onTool('orchestrator',{tool:'nozeli_dispatch',arguments:{name:'已派工原目标',brief:'保留原目标'},callId:randomUUID()});
  assert.equal(routed.action,'dispatch');assert.equal(c.store.state.works.length,1);assert.equal((await c.maintenance.read()).bugs[0].status,'detected');
  await c.store.mutate(()=>{c.store.state.jobs.find(saved=>saved.id===job.id).status='completed';});c.current.delete('orchestrator');
@@ -288,16 +290,15 @@ test('protocol receipt save failure never drops a committed dispatch and cold op
  }finally{await cold.stop();}
 });
 
-test('a claimed dispatch without its original host-created Work cannot finalize a read fault',async t=>{
- const c=await fixture(t),job=await intakeFor(c,'原目标');await inspect(c,{workName:'@state',cursor:''});
- await c.store.mutate(()=>{c.store.state.jobs.find(saved=>saved.id===job.id).routing={action:'dispatch',workId:'missing',intent:'unproven'};});
- await c.settleRoutedReadProtocolFaults(job);assert.equal((await c.maintenance.read()).bugs[0].status,'detected');assert.equal(c.store.state.works.length,0);c.current.delete('orchestrator');
-});
 
-test('unresolved native delivery is never finalized merely because a dispatch receipt exists',async t=>{
- const c=await fixture(t),job=await intakeFor(c,'原目标');await inspect(c,{workName:'@state',cursor:''});
- const finish=c.maintenance.finish.bind(c.maintenance);c.maintenance.finish=async()=>{throw Object.assign(Error('synthetic diagnostic receipt failure'),{code:'EIO'});};
- const routed=await c.onTool('orchestrator',{tool:'nozeli_dispatch',arguments:{name:'原目标',brief:'保留原目标'},callId:randomUUID()});assert.equal(routed.action,'dispatch');
- c.maintenance.finish=finish;await c.store.mutate(()=>{const saved=c.store.state.jobs.find(saved=>saved.id===job.id);saved.status='completed';saved.collabAttempts=[{status:'unknown',everAdmitted:false}];});
- await c.settleRoutedReadProtocolFaults(job);assert.equal((await c.maintenance.read()).bugs[0].status,'detected');assert.equal(c.store.state.jobs.find(saved=>saved.id===job.id).readProtocolFaults[0].status,'awaiting-correction');assert.equal(c.store.state.works.length,1);c.current.delete('orchestrator');
+test('missing and ambiguous inspect names correct through the board without dispatch',async t=>{
+ const c=await fixture(t),job=await intakeFor(c,'查看工作');
+ await c.store.submit('one','brief',{name:'duplicate'});await c.store.submit('two','brief',{name:'duplicate'});
+ // Normal submission uniquifies names; historical state can still contain collisions.
+ await c.store.mutate(()=>{for(const work of c.store.state.works)work.name='duplicate';});
+ for(const args of [{},{workName:''},{workName:'duplicate'}]){
+  const rejected=await inspect(c,args);assert.equal(rejected.ok,false);assert.equal(rejected.continueTurn,true);assert.equal(rejected.error.code,'INVALID_SELECTOR');assert.equal(rejected.hostControl,undefined);
+ }
+ const bugs=(await c.maintenance.read()).bugs;assert.equal(bugs.length,3);assert.ok(bugs.every(bug=>bug.status==='detected'&&bug.capability==='same-turn-read-correction'));
+ const board=await inspect(c,{workName:'@state'});assert.equal(board.board.rows.length,2);assert.ok((await c.maintenance.read()).bugs.every(bug=>bug.status==='repaired'));assert.equal(c.store.state.jobs.length,1);assert.equal(c.store.state.jobs[0].id,job.id);assert.equal(c.sessions.size,0);c.current.delete('orchestrator');
 });
