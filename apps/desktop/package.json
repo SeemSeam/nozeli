@@ -116,6 +116,6 @@
     "@electron/rebuild": "^4.2.1",
     "electron": "44.9.1",
     "esbuild": "0.25.10",
-    "puppeteer-core": "25.11.0"
+    "puppeteer-core": "25.16.0"
   }
 }
