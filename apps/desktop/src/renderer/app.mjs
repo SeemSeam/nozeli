@@ -842,7 +842,18 @@ function showFailure(error) {
   const box = $('save-failure');
   box.hidden = false;
   $('recover-sheet-close').hidden = ui.file?.kind !== 'sheet';
-  $('save-error').textContent = error?.message || '保存失败，草稿仍在。';
+  const conflict = error?.code === 'CONFLICT', office = ['word','sheet'].includes(ui.file?.kind);
+  $('save-error').textContent = conflict
+    ? '原文件已被其他操作修改，本次未覆盖原文件。你的编辑仍保留在当前工作区。' + (office ? '请先保留恢复副本，再核对原文件。' : '可先“导出草稿”保留副本，再核对原文件；确认要替换时才选“仍用草稿写入”。')
+    : error?.message || '保存失败，草稿仍在。';
+  let detail = $('save-error-detail');
+  if (!detail) {
+    detail = document.createElement('details');detail.id = 'save-error-detail';
+    const summary = document.createElement('summary');summary.textContent = '技术详情';
+    detail.append(summary,document.createElement('pre'));box.append(detail);
+  }
+  detail.hidden = !conflict;
+  detail.lastElementChild.textContent = [error?.code,error?.message].filter(Boolean).join('\n');
   if (['word','sheet'].includes(ui.file?.kind) && error?.details?.recoveryPath) $('save-error').textContent += ` 恢复副本：${error.details.recoveryPath}`;
   $('export-draft').hidden = ['word','sheet'].includes(ui.file?.kind);
   $('overwrite-draft').hidden = ['word','sheet'].includes(ui.file?.kind) || !(error?.code === 'CONFLICT' || error?.code === 'DELETED');

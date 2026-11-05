@@ -76,6 +76,8 @@ panel = panel.replace(callAnchor, `
       const stale=window.__reviewStaleReview===true;
       return {ok:true,value:{workId:receipt.workId,objectId:receipt.objectId,revision:receipt.revision,reviewVersion:'f'.repeat(64),status:'waiting',...(stale?{stale:{code:'SUPERSEDED'}}:{}),files:snapshotFiles.map(f=>({relPath:f.relPath,change:'modified',status:'modified',candidateText:'WORKTREE_CANDIDATE_NOT_ORIGINAL',baselineText:'',candidateDigest:f.digest,baselineDigest:'0'.repeat(64),added:1,deleted:0,draft:null,editable:!stale})),capabilities:stale?{canAccept:false,canContinue:false,canSave:false}:{canAccept:true,canContinue:true,canSave:true}}};
     }
+    if(op==='managed.review.discussion.read')return {ok:true,value:{entries:[],nextCursor:null,workId:payload.workId,objectId:payload.objectId,latestObjectId:receipt?.objectId,active:false,queued:0,canSend:Boolean(snapshotFiles.length)&&window.__reviewStaleReview!==true,reasons:[]}};
+    if(op==='managed.review.discussion.send'){window.__reviewDiscussionCalls??=[];window.__reviewDiscussionCalls.push({...payload});return {ok:true,value:{accepted:true,jobId:'fixture-discussion',workId:payload.workId,revision:receipt?.revision}};}
     if(op==='managed.review.instruction.read')return {ok:true,value:{text:'',revision:0}};
     if(op==='managed.review.instruction.save')return {ok:true,value:{text:payload.text??'',revision:(payload.expectedRevision??0)+1}};
     if(op==='workspace.control')return {ok:true,value:{ready:true}};
@@ -292,7 +294,7 @@ try {
   await page.evaluate(()=>window.__workspaceOpenTodo('report-a-v1'));
   const oldReportView=await scoped(s=>s.role==='surface'&&s.kind==='report'&&s.viewState?.report?.todoId==='report-a-v1');await seedView(oldReportView);
   await oldReportView.waitForSelector('[data-latest-review="report-a-v2"]',{visible:true});assert.match(await oldReportView.$eval('#managed-doc>.managed-report-state',n=>n.textContent),/第 1 版.*历史报告只读/);
-  assert.equal(await oldReportView.$$eval('[data-review-action="accept"]:not(:disabled),[data-review-action="continue"]:not(:disabled)',nodes=>nodes.length),0);assert.equal(await oldReportView.$eval('[data-latest-review]',n=>n.dataset.latestReviewObject),'00000000-0000-4000-8000-000000000002');
+  assert.equal(await oldReportView.$$eval('[data-review-action="accept"]:not(:disabled),[data-review-action="send"]:not(:disabled)',nodes=>nodes.length),0);assert.equal(await oldReportView.$eval('[data-latest-review]',n=>n.dataset.latestReviewObject),'00000000-0000-4000-8000-000000000002');
   await oldReportView.click('[data-latest-review="report-a-v2"]');const latestReportView=await scoped(s=>s.role==='surface'&&s.kind==='report'&&s.viewState?.report?.todoId==='report-a-v2');await seedView(latestReportView);await latestReportView.waitForSelector('[data-managed-review="00000000-0000-4000-8000-000000000002"]');
   assert.equal(await latestReportView.evaluate(()=>window.__workspaceScope.resourceId),'report-a-v2');assert.equal(await oldReportView.evaluate(()=>window.__workspaceScope.resourceId),'report-a-v1');
   check('Superseded result has a conspicuous read-only version notice and an exact-object link to current review without enabling old decisions');

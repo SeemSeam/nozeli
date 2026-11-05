@@ -95,7 +95,16 @@ export function managedInboxTodos(state){
 }
 // Host-authored merge-constraint decision todos gate ended-Work closure retry.
 export const openMergeConstraintTodo=(state,workId)=>(state?.todos||[]).findLast(todo=>todo.kind==='merge-constraint'&&todo.workId===workId&&todo.status==='open');
-const phases={queued:'排队中',running:'执行中',paused:'后台处理中 · 进展已保留',review:'结果待审查',closing:'决定已记录 · 等待收尾',ended:'已结束'};
+const phases={queued:'排队中',running:'执行中',paused:'已暂停 · 进展已保留',review:'结果待审查',closing:'决定已记录 · 等待收尾',ended:'已结束'};
+// Same occupancy rule as agents/managed/workspace.mjs workSlotFacts: this only
+// explains why a queued Work waits; it never changes quota or release facts.
+const slotHeld=work=>{if(!work)return false;
+ if(work.status!=='ended')return work.status!=='queued'&&Number(work.revision)>0;
+ if(work.closure?.phase==='complete')return false;
+ if(work.revision===0&&work.closure?.binding?.revision===0&&work.closure.binding.workId===work.id&&!work.threadId&&!work.execution)return false;
+ if(work.closure&&typeof work.closure.phase==='string'&&work.closure.phase)return true;
+ return Number(work.revision)>0;};
+const slotLabels={running:'执行中',paused:'暂停',review:'待审',closing:'收尾未完成','unverified-ended':'结束待核查','unverified-running':'执行待核查'};
 export function managedWorkRecords(state){
  const jobs=state.jobs||[],works=state.works||[],todos=state.todos||[],receipts=state.receipts||[],records=new Map(),roots=new Map();
  const reviewTodos=managedReviewTodos(state);
@@ -156,11 +165,34 @@ export function managedWorkRecords(state){
   for(const r of receipts.filter(r=>r.workId===w.id)){record.events.push({id:r.id+':published',at:r.at,text:r.kind==='deviation'?'已发布偏离问题报告；未完成任务':r.kind==='problem'?'已发布待回答问题':'已发布结果，等待用户审查'});}
   if(w.endedAt)record.events.push({id:w.id+':ended',at:w.endedAt,text:w.outcome==='accept'?'用户接受成果并结束，已释放名额':w.outcome==='discard'?'用户丢弃成果并结束，已释放名额':'工作已结束，成果处置见历史记录'});
   if(w.closure?.completedAt)record.events.push({id:w.id+':cleanup',at:w.closure.completedAt,text:'技术收尾已完成'});
-  if(w.status==='queued')record.phase=`排队第 ${queued.findIndex(q=>q.id===w.id)+1} 位`;
-  const pending=jobs.findLast(j=>(j.target===w.id&&j.type!=='initial'||j.context?.boundWorkId===w.id)&&['queued','running'].includes(j.status));
-  if(pending)record.phase=pending.type==='intake'?'补充已接收，主控整理中':'补充已接收，等待执行';
-  const latestWorkerJob=jobs.findLast(j=>j.target===w.id&&!record.supersededJobIds.includes(j.id));
-  if(w.status==='paused'&&!pending&&latestWorkerJob?.interruptionReason==='user-interrupted')record.phase='本轮已停止 · 等待明确补充';
+ if(w.status==='queued'){
+  const position=`排队第 ${queued.findIndex(q=>q.id===w.id)+1} 位`;
+  const holders=works.filter(other=>other.id!==w.id&&slotHeld(other)).map(other=>({workId:other.id,name:other.name||recordExcerpt(other.request),status:other.status==='ended'?(other.closure?'closing':'unverified-ended'):other.status==='running'&&!jobs.some(job=>job.target===other.id&&job.status==='running'&&(job.revision==null||job.revision===other.revision))?'unverified-running':other.status}));
+  const counts=new Map();for(const holder of holders)counts.set(holder.status,(counts.get(holder.status)||0)+1);
+  const waiting=[...counts].map(([status,count])=>(slotLabels[status]||status)+' '+count+' 项').join('、');
+  record.waitingOn=holders;
+  record.phase=w.manualControl?.pause!=null?position+' · 已暂停调度，等待恢复':position+(waiting?' · 等待名额：'+waiting:' · 等待工作名额');
+ }
+ // “执行中”只来自当前修订确切的在册 job；没有执行依据时按待核查保守呈现。
+ const liveJobs=jobs.filter(j=>j.target===w.id&&!record.supersededJobIds.includes(j.id)&&['queued','running'].includes(j.status));
+ const executing=liveJobs.some(j=>j.status==='running');
+ const pending=jobs.findLast(j=>(j.target===w.id&&j.type!=='initial'||j.context?.boundWorkId===w.id)&&['queued','running'].includes(j.status));
+ if(pending){
+  if(pending.target===w.id&&pending.status==='running')record.phase='正在处理补充';
+  else if(w.status==='running'&&!liveJobs.length)record.phase='执行状态待核查 · 原请求与已保存内容保留';
+  else if(executing)record.phase='执行中 · 补充已保存，本轮结束后处理';
+  else if(w.status==='queued')record.phase=record.phase.split(' · ')[0]+' · '+(pending.type==='intake'?'补充已接收，等待主控整理':'补充已接收，等待执行');
+  else if(w.status==='running')record.phase='已接收，等待开始执行 · 补充已保存';
+  else record.phase=pending.type==='intake'?'补充已接收，等待主控整理':'补充已接收，等待执行';
+ }else if(w.status==='running'){
+  if(!liveJobs.length)record.phase='执行状态待核查 · 原请求与已保存内容保留';
+  else if(!executing)record.phase=liveJobs.some(j=>j.type==='initial')?'已接收，等待开始执行':'等待继续执行 · 进展已保留';
+ }
+ const latestWorkerJob=jobs.findLast(j=>j.target===w.id&&!record.supersededJobIds.includes(j.id));
+ if(w.status==='paused'&&!pending){
+  if(jobs.some(j=>j.target===w.id&&j.resumeRequeue&&j.resumeRequeue.workRevision===w.revision))record.phase='系统修复已完成 · 等待恢复执行，进展已保留';
+  else if(latestWorkerJob?.interruptionReason==='user-interrupted')record.phase='本轮已停止 · 等待明确补充';
+ }
   const settlementIssue=resultSettlementIssue(state,w);
   if(settlementIssue){record.settlementIssue=settlementIssue;if(!pending&&!jobs.some(j=>j.target===w.id&&['queued','running'].includes(j.status)))record.phase='结果已保存 · 完成状态待核查';}
   const failedIntake=jobs.findLast(j=>j.context?.boundWorkId===w.id&&!record.supersededJobIds.includes(j.id)&&['failed','interrupted'].includes(j.status)&&!j.routing);if(failedIntake&&!['closing','ended'].includes(w.status)&&!pending&&!jobs.some(j=>j.context?.retryOf===failedIntake.id&&j.routing)){record.retryJobId=failedIntake.id;record.phase='补充处理失败，待重试';}
@@ -181,8 +213,10 @@ export function managedWorkRecords(state){
  }
  if(w.maintenance&&!deviationHeld(w)&&w.maintenance.status!=='repaired'&&w.closure?.phase!=='complete'){
   record.maintenance={status:w.maintenance.status,message:w.maintenance.message};
-  const waiting=['needs-version-fix','interrupted','cancelled'].includes(w.maintenance.status);
-  record.phase=(w.status==='ended'?(w.outcome==='accept'?'已接受 · ':'已结束 · '):'')+(waiting?'系统问题待修复，进展已保留':'系统正在处理运行问题');
+ // 只在有确切在册维修 job 时声称系统正在处理；其余按事实保留故障与进展。
+ const repairLive=jobs.some(j=>j.type==='maintenance'&&j.context?.bugId===w.maintenance.bugId&&['queued','running'].includes(j.status));
+ const label=repairLive?'系统正在处理运行问题，进展已保留':w.maintenance.status==='finalizing'?'维修已验证 · 收尾待完成，进展已保留':w.maintenance.status==='human-boundary'?'系统无法自动修复 · 需人工核对，进展已保留':w.maintenance.status==='cancelled'?'系统维修已取消 · 等待你的下一步，进展已保留':'系统问题待修复，进展已保留';
+ record.phase=(w.status==='ended'?(w.outcome==='accept'?'已接受 · ':'已结束 · '):'')+label;
   record.description=w.maintenance.message||'已有进展保留，无需回答内部技术问题。';delete record.retryJobId;
  }
  }

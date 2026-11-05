@@ -569,6 +569,15 @@ export class ManagedProjects {
   const state=(await this.projectionSource(id)).state;if(workId!==undefined&&!state.works.some(work=>work.id===workId))throw new HostError('WORK_NOT_FOUND','本地工作账本身份无效');
   await this.connect(id,{enable:true,startResidents:false,localOnly:true});const c=this.controllers.get(id);if(!c)throw new HostError('MANAGED_UNAVAILABLE','项目本地账本不可用');return c;
  }
+  // 报告讨论幂等回执（宿主runReviewDecision屏障专用，非公开IPC操作）：
+  // 已durable接受的输入按精确摘要返回原回执，未知键null，同键不同载荷抛
+  // 碰撞。只读本地账本（controllers.get ?? loadLocal），绝不启动provider。
+  async reviewDiscussionReceipt(p){
+    if(this.guidedDemo?.isDemo(p?.projectId))return null;
+    if(!p||typeof p!=='object'||Array.isArray(p)||typeof p.projectId!=='string'||!p.projectId||typeof p.workId!=='string'||!p.workId)throw new HostError('INVALID_PAYLOAD','报告讨论回执查询参数无效。');
+    const c=this.controllers.get(p.projectId)??await this.loadLocal(p.projectId,p.workId);
+    return c.reviewDiscussionReceipt(p);
+  }
  async connect(id,options={}){
   return this.host.storage.withProjectOperation(id,async()=>{
    try{const result=await this.connectAttempt(id,options);if(result.ready)await this.attention.observe(id,'connection',[]);return {...result,state:await this.attentionState(id,result.state,{connected:!!this.controllers.get(id)})};}
@@ -840,6 +849,8 @@ export class ManagedProjects {
   allowed['review.accept']=['projectId','workId','objectId','reviewVersion','requestKey'];
   allowed['review.instruction.read']=['projectId','workId','objectId'];
   allowed['review.instruction.save']=['projectId','workId','objectId','text','expectedRevision'];
+  allowed['review.discussion.read']=['projectId','workId','objectId','cursor','limit'];
+  allowed['review.discussion.send']=['projectId','workId','objectId','reviewVersion','requestKey','text'];
   allowed['merge.consent']=['projectId','workId','requestId','expectedVersion','decision','requestKey','binding'];
   allowed['collaboration.status']=['projectId','cursor','limit'];
   allowed['maintenance.status']=['projectId','cursor','limit'];allowed['maintenance.retry']=['projectId','bugId','binding','expectedRetryMode'];allowed['maintenance.scan']=['projectId'];
@@ -920,7 +931,7 @@ export class ManagedProjects {
    const capabilities=workControlCapabilitiesFromState({works:source.state.works??[],jobs:source.state.jobs??[]},target,{live:false,bindingProvider:record?.binding?.provider??record?.provider??null,projectInstanceId:project.instanceId});
    return {...capabilities,schema:capabilities?.schema??1,projectId:p.projectId,projectInstanceId:project.instanceId,workRevision:capabilities?.workRevision??null};
   }
-  if(['collaboration.status','model.options','model.set','draft','status','maintenance.status','attention.ack','todo.manage','timeline.page','timeline.read','timeline.request','resident.history','worker.history','disposition','history.list','history.read','artifact.read','artifact.list','changes.list','changes.read','review.read','review.save','review.continue','review.accept','review.instruction.read','review.instruction.save','merge.consent','merge.constraint'].includes(action))await this.host.requireRegisteredProject(p.projectId);else await this.host.requireProject(p.projectId);
+  if(['collaboration.status','model.options','model.set','draft','status','maintenance.status','attention.ack','todo.manage','timeline.page','timeline.read','timeline.request','resident.history','worker.history','disposition','history.list','history.read','artifact.read','artifact.list','changes.list','changes.read','review.read','review.save','review.continue','review.accept','review.instruction.read','review.instruction.save','review.discussion.read','merge.consent','merge.constraint'].includes(action))await this.host.requireRegisteredProject(p.projectId);else await this.host.requireProject(p.projectId);
   if(action==='draft')return this.saveLocalDraft(p.projectId,p.target,p.text);
   if(action==='maintenance.status')return this.maintenanceStatus(p.projectId,p);
   if(action==='maintenance.retry'||action==='maintenance.scan'){
@@ -1000,6 +1011,13 @@ export class ManagedProjects {
     // （'审校版本令牌无效'），专用分支成为死代码。
     const c=this.controllers.get(p.projectId)??await this.loadLocal(p.projectId,p.workId);
     return action==='review.instruction.read'?c.reviewInstructionRead(p):c.reviewInstructionSave(p);
+  }
+  if(action==='review.discussion.read'||action==='review.discussion.send'){
+    // 报告讨论：读取=纯历史本地（loadLocal，绝不启动provider）；发送=与
+    // 续作/接受同级的本地决定（宿主runReviewDecision屏障先行），job由宿主
+    // 调度到原Worker线程。
+    const c=this.controllers.get(p.projectId)??await this.loadLocal(p.projectId,p.workId);
+    return action==='review.discussion.read'?c.reviewDiscussionRead(p):c.reviewDiscussionSend(p);
   }
   if(action.startsWith('review.')){
     // 审校四操作都走本地账本：读取/保存随时可用；续作/接受与 managed.end

@@ -36,7 +36,7 @@ body[data-managed-agents=true] #managed-doc{overflow-wrap:anywhere;line-height:1
 
 /* One stable item from intake through Worker completion. */
 .managed-work-entry{display:block;margin:0 8px;padding:0;border:0;min-width:0;font-family:var(--chrome-font-family);font-size:var(--chrome-font-size,13px);color:var(--ink)}
-#work-items .managed-work-open{display:flex;align-items:baseline;gap:8px;width:100%;min-width:0;min-height:32px;padding:7px 4px;border:0;border-radius:4px;background:transparent;color:var(--ink);font:inherit;text-align:start;box-sizing:border-box}
+#work-items .managed-work-open{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;width:100%;min-width:0;min-height:32px;padding:7px 4px;border:0;border-radius:4px;background:transparent;color:var(--ink);font:inherit;text-align:start;box-sizing:border-box}
 #work-items .managed-work-open:hover:not(:disabled){background:var(--surface)}
 .managed-work-highlight{background:var(--surface,#eaf2eb);outline:1px solid var(--accent)}
 .managed-task-reference{border:0;background:transparent;color:var(--muted);font-size:11px;text-align:left;padding:6px 0;white-space:normal;overflow-wrap:anywhere}
@@ -73,8 +73,10 @@ body[data-managed-agents=true] #managed-doc{overflow-wrap:anywhere;line-height:1
 .managed-message-task { margin-top: 8px; padding: 2px 6px; font-size: 12px; opacity: .75; }
 .managed-message-task:hover, .managed-message-task:focus-visible { opacity: 1; }
 
-.managed-work-name{flex:1;min-width:0;font-size:1em;font-weight:550;line-height:1.5;overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
-.managed-work-status{flex:none;max-width:48%;margin:0;padding:0;border:0;background:transparent;color:var(--muted);font-size:max(12px,calc(var(--chrome-font-size,13px) - 1px));font-weight:400;line-height:1.5;overflow-wrap:anywhere}
+.managed-work-name{flex:1;min-width:0;font-size:1em;font-weight:550;line-height:1.5;overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:1;overflow:hidden}
+.managed-work-status{flex:none;max-width:48%;margin:0;padding:0;border:0;background:transparent;color:var(--muted);font-size:max(12px,calc(var(--chrome-font-size,13px) - 1px));font-weight:400;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.managed-work-detail{flex:1 1 100%;min-width:0;margin:0;color:var(--muted);font-size:max(11px,calc(var(--chrome-font-size,13px) - 2px));font-weight:400;line-height:1.4;overflow-wrap:anywhere}
+.managed-work-detail:empty{display:none}
 .managed-work-entry button:disabled{color:var(--muted);cursor:default}
 .managed-work-entry button:focus-visible{outline:2px solid var(--ui-control-focus);outline-offset:2px}
 #managed-current-work .managed-work-versions{margin-top:12px}

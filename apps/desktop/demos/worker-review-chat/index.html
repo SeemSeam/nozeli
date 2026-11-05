@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>审阅与 Worker 对话 · Nozeli 离线演示</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.mjs"></script>
+</head>
+<body>
+  <header class="app-header">
+    <a class="brand" href="#workspace" aria-label="跳到审阅工作区"><span class="brand-mark" aria-hidden="true">n</span>Nozeli <span class="brand-divider">/</span> 研究工作台</a>
+    <button id="theme-toggle" type="button" aria-pressed="false">切换深色</button>
+  </header>
+  <section class="demo-bar" aria-label="离线演示设置">
+    <div><strong>离线演示</strong><span>合成任务 · 刷新重置</span></div>
+    <details id="demo-settings"><summary>演示设置</summary><p>DEMO ONLY · 无模型、无网络或项目读写。</p><div class="demo-controls">
+      <label for="scenario">演示场景</label>
+      <select id="scenario">
+        <option value="ready">报告待审阅</option>
+        <option value="queued">处理中 + 已排队</option>
+        <option value="published">已按对话更新</option>
+        <option value="ended">已结束 · 只读</option>
+      </select>
+      <button id="reset-demo" type="button">重置演示</button>
+    </div></details>
+  </section>
+  <main id="workspace">
+    <section id="task-list" aria-labelledby="task-list-title">
+      <p class="eyebrow">项目对话 / 非线性动力学</p><h1 id="task-list-title">与 Agent 一起研究</h1>
+      <p class="subtitle">任务仍在主对话里。展开任务标签，继续看、继续聊。</p>
+      <article class="task-row"><div><p class="eyebrow">任务 block · 研究 Worker</p><h2>理解 Lorenz 系统中的混沌</h2><p>你：整理一份面向本科生的混沌研究笔记，保留依据与证据边界。</p><p id="task-summary">待审阅 · 报告 V1 · 0 轮对话</p></div><button id="open-task" class="primary" type="button" aria-controls="task-detail" aria-expanded="false">展开任务标签</button></article>
+      <p class="task-list-note">一个任务，一份上下文。悬浮标签是此 block 的展开形态，不创建第二个会话。合成示例，刷新重置。</p>
+    </section>
+    <section id="task-detail" role="region" aria-label="任务标签悬浮窗" aria-labelledby="work-title" hidden>
+    <header id="float-handle" class="float-heading" tabindex="0" aria-label="移动任务标签，方向键移动，Home复位"><div class="float-title"><span class="eyebrow">任务 · W1</span><h2 id="work-title">理解 Lorenz 系统中的混沌</h2></div><div class="float-actions"><button id="maximize-task" type="button" aria-pressed="false">放大</button><button id="back-to-tasks" type="button" aria-label="收起任务标签，保留上下文">收起</button></div></header>
+    <nav class="task-navigation" aria-label="任务内容"><div><button id="open-task-chat" type="button" aria-pressed="true">任务与讨论</button><button id="open-task-report" type="button" aria-pressed="false">报告与版本</button></div><span id="review-state">待审阅</span></nav>
+    <div class="activity-strip"><div><span class="status-dot" aria-hidden="true"></span><strong id="activity-status">空闲</strong><span id="turn-count">0 轮</span></div><details class="activity-controls"><summary>处理控制</summary><div class="activity-actions"><button id="pause-worker" type="button">暂停后续</button><button id="stop-worker" type="button" disabled>停止当前</button></div></details></div>
+    <div class="advance-strip" id="advance-strip" hidden><span>离线脚本 · 手动结算本轮</span><button id="advance-turn" type="button">推进当前轮</button></div>
+    <div class="workspace-grid" data-mobile-view="report">
+      <section class="report-panel" id="report-panel" aria-labelledby="report-label">
+        <header class="panel-heading"><div><p class="eyebrow">报告</p><h2 id="report-label">研究摘要</h2></div><label class="version-control" for="report-version">查看版本 <select id="report-version"></select></label></header>
+        <div class="report-meta"><span id="report-provenance"></span><button id="quote-selection" type="button">引用选中文字</button></div>
+        <div id="selection-help" class="selection-help">选中报告正文后点击引用，或用段落下的“引用此段”。引用始终绑定原版本。</div>
+        <article id="report-body" tabindex="0" aria-label="报告正文"></article>
+        <footer class="report-footer">合成研究示例 · 非真实实验结果 · 历史版本不可改写</footer>
+      </section>
+      <section class="chat-panel" id="chat-panel" aria-labelledby="chat-title">
+        <h2 id="chat-title" class="sr-only">完整任务记录与讨论</h2>
+        <div id="queue-panel" class="queue-panel" hidden><h3 id="queue-title">待处理输入</h3><ol id="queue-list" aria-labelledby="queue-title"></ol></div>
+        <div id="conversation" class="conversation" role="log" aria-label="完整任务上下文：原始要求、主控交接、执行、报告与讨论" aria-live="polite" aria-relevant="additions text"></div>
+        <details class="script-disclosure"><summary>离线脚本与任务身份</summary><p>同一任务：Work demo-lorenz-01 · Worker worker-research-01 · Thread thread-review-01。悬浮、收起、放大只改变呈现，不复制历史、不启动 Worker。完整记录不等于每次把所有历史原文塞进模型输入；生产应由宿主绑定材料与可分页原件。</p><p>无模型、无网络或项目读写。每轮按关键词脚本判断是否更新报告，无需发送发布命令；点击“推进当前轮”才结算。问题可先澄清一次；补充信息原样保留在报告上下文；精简结论使用预设修改。可继续讨论并按需更新版本，不支持任意智能编辑，也未连接生产标签组件或真实 CLI。</p></details>
+      </section>
+    </div>
+    <form id="composer-form" class="composer">
+      <div id="quote-preview" class="quote-preview" hidden><div><strong id="quote-label"></strong><p id="quote-text"></p></div><button id="remove-quote" type="button" aria-label="移除引用">移除</button></div>
+      <label for="message-input" class="sr-only">继续与原 Worker 对话</label><textarea id="message-input" rows="2" placeholder="提问、补充信息，或说说想改哪里……" aria-describedby="composer-help"></textarea>
+      <div class="composer-bottom"><small id="composer-help">Ctrl / ⌘ + Enter 发送</small><div class="composer-actions"><button id="send-message" class="primary" type="submit">发送</button><button id="accept-report" type="button" aria-describedby="accept-help">接受并结束工作</button></div></div>
+      <small id="accept-help">当前报告 V1 · 接受前可继续讨论</small>
+      <p id="ended-note" hidden>本工作已结束，只读保留报告和会话。使用“重置演示”可重新体验。</p>
+    </form>
+    </section>
+    <button id="task-tag" type="button" hidden aria-controls="task-detail" aria-expanded="false">W1 · 任务标签</button>
+    <p id="announcement" class="announcement" role="status" aria-live="polite"></p>
+  </main>
+  <dialog id="confirm-dialog" aria-labelledby="dialog-title" aria-describedby="dialog-copy"><form method="dialog"><p class="eyebrow">请确认</p><h2 id="dialog-title"></h2><p id="dialog-copy"></p><div class="dialog-actions"><button id="dialog-cancel" value="cancel" autofocus>取消</button><button id="dialog-confirm" class="primary" value="confirm">确认</button></div></form></dialog>
+</body>
+</html>

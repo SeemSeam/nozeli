@@ -148,3 +148,13 @@ test('legacy fallback reply still renders one bubble and hands over to canonical
   assert.equal(readerRoots(bubble).length,0,'the fallback reader leaves with its segment');
   assert.match(bubble.textContent,/权威回复/);
 });
+
+test('approval records retain their real speaker and source without relabeling Worker as frontdesk',()=>{
+  const node=transcript(),render=mount(node);
+  render([{requestId:'original',question:'Original task',questionLabel:'用户 · 原始工作请求'},{requestId:'worker-round',reply:'Worker explanation',replyLabel:'原 Worker · 审批讨论'}]);
+  assert.equal(users(node)[0].children[0].textContent,'用户 · 原始工作请求');
+  assert.equal(assistants(node)[0].children[0].textContent,'原 Worker · 审批讨论');
+  const original=assistants(node)[0];
+  render([{requestId:'original',question:'Original task',questionLabel:'用户 · 原始工作请求'},{requestId:'worker-round',reply:'Worker explanation updated',replyLabel:'原 Worker · 审批讨论'}]);
+  assert.equal(assistants(node)[0],original);
+});

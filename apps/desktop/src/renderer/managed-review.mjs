@@ -1,7 +1,9 @@
 import {createReviewDraft} from './managed-review-draft.mjs';
 import {reviewVersionAvailable,reviewStaleMessage,reviewReportOutdated} from './managed-review-availability.mjs';
 import {mountReviewFiles} from './managed-review-files.mjs';
+import {mountThreadTranscript} from './discussion-thread.mjs';
 
+const discussionReasons={WORK_ENDED:'工作已结束',HISTORICAL_SESSION_READ_ONLY:'历史会话只读',REVIEW_CANDIDATE_STALE:'当前显示旧报告，请查看最新报告',REVIEW_CONTINUE_PENDING:'人工稿正在交回AI助手核对',WORK_BUSY:'工作处理中，请等待当前回合',WORK_STATE:'当前工作状态不可发送',WORK_DEVIATION_HELD:'工作偏离问题尚待处理',RECOVERY_REQUIRED:'原会话需要恢复',WORK_CONTROL_HELD:'工作已暂停或正在控制操作',CANDIDATE_REQUIRED:'冻结候选尚不可用'};
 const surfaces=new Set();
 export async function flushManagedReviews(){
  try{for(const surface of surfaces)await surface.save();return {ok:true};}
@@ -10,8 +12,14 @@ export async function flushManagedReviews(){
 export function applyManagedReviewBarrier(event){for(const surface of surfaces)surface.barrier(event);}
 export function managedReviewComposing(){return [...surfaces].some(surface=>surface.composing);}
 
-// Keep detail nodes mounted: closing a dialog never discards selection or drafts.
-export function mountReviewDetail(parent,title){
+export function mountReviewDetail(parent,title,{inline=false}={}){
+ if(inline){
+  const detail=document.createElement('details');detail.className='managed-review-file-section';
+  const trigger=document.createElement('summary');trigger.textContent=title;
+  const body=document.createElement('div');body.className='managed-review-files';
+  detail.append(trigger,body);parent.append(detail);
+  return {trigger,body,open(){detail.open=true;}};
+ }
  const trigger=document.createElement('button');trigger.type='button';trigger.textContent=title;
  const dialog=document.createElement('dialog');dialog.className='managed-review-detail';dialog.setAttribute('aria-label',title);
  const close=document.createElement('button');close.type='button';close.textContent='关闭';
@@ -22,159 +30,201 @@ export function mountReviewDetail(parent,title){
  return {trigger,dialog,body,open(){if(!dialog.open)dialog.showModal();}};
 }
 
-// The report owns its candidate list, unsent continuation note and two explicit
-// version-bound decisions. Document workspaces remain the editing/diff surface.
-export function mountManagedReview(parent,{invoke,projectId,workId,objectId,current=()=>true,confirm,onChanged=()=>{},onAvailability=()=>{},onOpenFile,onOpenMaterial}){
- const root=document.createElement('section');root.className='managed-review';root.dataset.managedReview=objectId;
- const heading=document.createElement('header');heading.className='managed-review-heading';
- const title=document.createElement('h3');title.textContent='审核成果 · 决定下一步';
- const status=document.createElement('p');status.className='managed-review-status';status.dataset.reviewStatus='';status.setAttribute('role','status');
- heading.append(title,status);
- const versions=mountReviewDetail(heading,'版本详情');versions.trigger.dataset.reviewVersions='';
- const versionText=document.createElement('p');versions.body.append(versionText);
- const warning=document.createElement('p');warning.className='managed-review-warning';warning.dataset.reviewWarning='';warning.setAttribute('role','alert');
- const outdated=document.createElement('p');outdated.className='managed-review-warning';outdated.dataset.reviewReportOutdated='';outdated.setAttribute('role','status');outdated.hidden=true;
- const filesSection=document.createElement('div');filesSection.className='managed-review-file-section';
- const fileDetail=mountReviewDetail(filesSection,'成果文件与差异'),fileHeading=fileDetail.trigger;fileHeading.dataset.reviewFileHeading='';
- const files=document.createElement('div');files.className='managed-review-files';files.tabIndex=-1;files.setAttribute('role','group');files.setAttribute('aria-label','成果文件；点击文件名查看内容或实际效果，使用差异入口查看版本差异');
- fileDetail.body.append(files);
- const instructionSection=document.createElement('div');instructionSection.className='managed-review-instructions';instructionSection.id='managed-review-instructions-'+crypto.randomUUID();instructionSection.hidden=true;instructionSection.tabIndex=-1;
- const instructionHeading=document.createElement('h4');instructionHeading.textContent='讨论问题与修改要求';instructionSection.append(instructionHeading);
- const label=document.createElement('label');label.className='managed-review-instruction-label';label.textContent='给原 Worker 的问题或修改要求（可选）';
- const instruction=document.createElement('textarea');instruction.dataset.reviewInstruction='';instruction.maxLength=8000;instruction.disabled=true;instruction.setAttribute('aria-label','给原 Worker 的问题或修改要求');instruction.placeholder='写下需要解释的问题或希望调整的内容；输入只保存本地意见';
- const instructionStatus=document.createElement('p');instructionStatus.className='managed-review-instruction-status';instructionStatus.dataset.reviewInstructionStatus='';instructionStatus.setAttribute('role','status');label.append(instruction,instructionStatus);
- const actions=document.createElement('div');actions.className='managed-review-actions';
- const button=(text,key,action)=>{const node=document.createElement('button');node.type='button';node.textContent=text;node.dataset.reviewAction=key;node.onclick=()=>action().catch(fail);return node;};
- const resume=button('发送给原 Worker 继续处理','continue',()=>decide('continue'));
- const accept=button('接受并收尾','accept',()=>decide('accept'));
- const instructionDetail=mountReviewDetail(root,'讨论问题与修改要求');instructionDetail.trigger.remove();instructionDetail.body.append(instructionSection);
- const discuss=button('继续讨论 / 修改','open-instruction',async()=>{revealInstruction();instructionDetail.open();(instruction.disabled?instructionSection:instruction).focus();});discuss.setAttribute('aria-haspopup','dialog');discuss.setAttribute('aria-controls',instructionSection.id);
- const continueChoice=document.createElement('div');continueChoice.className='managed-review-choice';
- const continueHint=document.createElement('p');continueHint.textContent='先写问题或修改意见，不会立即派工。';continueChoice.append(discuss);instructionSection.append(continueHint);
- const acceptChoice=document.createElement('div');acceptChoice.className='managed-review-choice';
- const acceptHint=document.createElement('p');acceptHint.textContent='确认确切版本；主控完成全部收尾后才结束。';acceptChoice.append(accept);
- const retryInstruction=button('重试保存意见','retry-instruction',async()=>{if(draft){await draft.retry();return;}instructionReady=loadInstruction();await instructionReady;});retryInstruction.hidden=true;
- const instructionActions=document.createElement('div');instructionActions.className='managed-review-actions';instructionActions.append(resume);
- const sendHint=document.createElement('p');sendHint.className='managed-review-send-hint';sendHint.textContent='发送前仍需确认：已保存人工稿与意见将交回原 Worker 继续处理，可能修改候选成果；不是只读聊天。';
- instructionSection.append(label,sendHint,instructionActions);actions.append(continueChoice,acceptChoice);actions.setAttribute('role','group');actions.setAttribute('aria-label','审核决定');
- const detail=mountReviewDetail(heading,'审核状态详情');detail.body.append(acceptHint,warning,outdated);
- root.append(heading,actions,filesSection);parent.append(root);
- const compactDetail=mountReviewDetail(root,'详情');compactDetail.trigger.className='managed-review-compact-detail';compactDetail.trigger.hidden=true;
- const fullStatus=document.createElement('p');compactDetail.body.append(fullStatus);
- // Dialogs stay at their original mounted root even when their launchers move.
- root.append(fileDetail.dialog);
- const fileList=mountReviewFiles(files,{openFile,openMaterial:openMaterial,onError:fail});
- let data=null,busy=false,held=false,decisionState=null,disposed=false,composing=false,timer=null,draft=null,observing=false,observeAgain=false,readGeneration=0;
- const keys=new Map();
- let compact=false;
- const compactSlots=new Map(),pane=parent.closest('#reader-scroll')||parent;
- function syncCompact(){
-  if(disposed||!root.isConnected||root.querySelector('dialog[open]'))return;
-  const font=parseFloat(getComputedStyle(root).fontSize)||13;
-  const next=pane.clientWidth<22*font||pane.clientHeight<30*font;
-  const changed=compact!==next;compact=next;root.dataset.compact=String(compact);compactDetail.trigger.hidden=!compact;
-  const closing=data?.status==='closing';compactDetail.trigger.textContent=closing?'恢复':warning.textContent||!outdated.hidden?'提示':'详情';compactDetail.trigger.setAttribute('aria-label',closing?'查看收尾状态与安全恢复操作':'查看审核状态、版本与成果文件');
-  const secondary=[title,versions.trigger,detail.trigger,filesSection,root.querySelector('[data-review-closure]'),...root.querySelectorAll(':scope > [data-frozen-artifacts]'),...parent.querySelectorAll(':scope > .managed-report-state'),...[...compactSlots.keys()].filter(node=>node.matches('.managed-report-state,[data-frozen-artifacts]'))];
-  if(closing)secondary.push(actions);
-  const wanted=new Set(compact?secondary.filter(Boolean):[]);
-  const focused=document.activeElement;
-  for(const [node,marker] of compactSlots)if(!wanted.has(node)){marker.replaceWith(node);compactSlots.delete(node);}
-  for(const node of wanted)if(!compactSlots.has(node)){const marker=document.createComment('review-detail-slot');node.before(marker);compactSlots.set(node,marker);compactDetail.body.append(node);}
-  if(focused&&focused!==document.body&&focused.isConnected&&document.activeElement!==focused){if(compactDetail.body.contains(focused))compactDetail.trigger.focus({preventScroll:true});else focused.focus({preventScroll:true});}
-  if(changed)paint();
+// Report/files stay in the workspace. Only the Work discussion floats; hiding it
+// retains its DOM, selection, draft, scroll position and durable queue identity.
+export function mountManagedReview(parent,{invoke,projectId,workId,objectId,workName='',current=()=>true,confirm,onChanged=()=>{},onAvailability=()=>{},onOpenLatest,onOpenFile,onOpenMaterial}){
+ const node=(tag,cls,text)=>{const el=document.createElement(tag);if(cls)el.className=cls;if(text)el.textContent=text;return el;};
+ const root=node('section','managed-review');root.dataset.managedReview=objectId;
+ const heading=node('header','managed-review-heading');
+ const taskName=workName||'当前工作';
+ const title=node('h3','',taskName);
+ const status=node('p','managed-review-status');status.dataset.reviewStatus='';status.setAttribute('role','status');
+ const warning=node('p','managed-review-warning');warning.dataset.reviewWarning='';warning.setAttribute('role','alert');
+ const button=(text,key,action)=>{const el=node('button','',text);el.type='button';el.dataset.reviewAction=key;el.onclick=()=>Promise.resolve().then(action).catch(fail);return el;};
+ const reopen=button('讨论修改','open-discussion',()=>show());
+ const latest=button('查看最新报告','latest',()=>onOpenLatest?.());latest.hidden=true;
+ heading.append(title,status,reopen,latest);
+ const outdated=node('p','managed-review-warning');outdated.dataset.reviewReportOutdated='';outdated.hidden=true;root.append(outdated);
+ const versions=node('details','managed-review-versions');versions.dataset.reviewVersions='';versions.append(node('summary','','版本与审核状态'));
+ const versionText=node('p');versions.append(versionText);
+ const originalDetails=node('details'),originalLabel=node('summary','','原始任务安排与发布身份');
+ const originalText=node('pre');originalDetails.append(originalLabel,originalText);versions.append(originalDetails);
+ const files=node('div','managed-review-files');files.setAttribute('role','group');files.setAttribute('aria-label','成果文件与版本差异');
+ const fileDetail=node('details','managed-review-file-section'),fileHeading=node('summary','','成果文件与差异');fileHeading.dataset.reviewFileHeading='';fileDetail.append(fileHeading,files);
+ root.append(heading,warning,versions,fileDetail);parent.append(root);
+ const floating=node('section','note-card managed-review-discussion');floating.dataset.reviewDiscussion='';floating.setAttribute('role','region');floating.setAttribute('aria-label',taskName+' · 讨论修改');
+ const head=node('header','tag-head');head.tabIndex=0;head.setAttribute('aria-label','讨论修改窗口；方向键移动');
+ const caption=node('span','tag-window-title',taskName+' · 讨论修改');caption.title=caption.textContent;
+ const close=button('收起','hide-discussion',()=>hide());close.className='tag-close';head.append(caption,close);
+ const latestChat=button('查看最新报告','latest-discussion',()=>onOpenLatest?.());latestChat.hidden=true;head.insertBefore(latestChat,close);
+ const queue=node('p','tag-delivery');queue.setAttribute('role','status');queue.dataset.reviewQueue='';
+ const transcript=node('div','tag-transcript');transcript.setAttribute('role','log');transcript.setAttribute('aria-label','原始工作上下文与AI助手对话');
+ transcript.dataset.reviewDiscussionHistory='';
+ const more=button('加载更多原始记录','history-more',()=>loadDiscussion(true));more.hidden=true;
+ const composer=node('div','tag-composer');
+ const instruction=node('textarea','tag-editor');instruction.rows=2;instruction.maxLength=8000;instruction.dataset.reviewInstruction='';instruction.setAttribute('aria-label','给AI助手的问题或修改要求');instruction.placeholder='询问或提出修改；仅发送时交给AI助手';
+ const send=button('发送','send',sendDiscussion);send.className='tag-send';
+ const accept=button('采用并结束','accept',acceptReview);accept.className='tag-execute';accept.title='将当前文件应用到项目，后台处理完成后结束工作';
+ const instructionStatus=node('p','managed-review-instruction-status');instructionStatus.setAttribute('role','status');instructionStatus.dataset.reviewInstructionStatus='';
+ const retry=button('重试保存','retry-instruction',async()=>{if(draft)await draft.retry();else {instructionReady=loadInstruction();await instructionReady;}});retry.hidden=true;
+ composer.append(instruction,send,accept);floating.append(head,queue,transcript,more,composer,instructionStatus,retry);root.append(floating);
+ const closingHint=node('p','managed-review-instruction-status','采用当前文件并应用到项目，后台处理完成后结束工作。');floating.append(closingHint);
+ const renderThread=mountThreadTranscript(transcript);
+ const fileList=mountReviewFiles(files,{openFile:async file=>{await saveAll();return onOpenFile?.(file,{workId,objectId});},openMaterial:async file=>{await saveAll();return onOpenMaterial?.(file,{workId,objectId});},onError:fail});
+ let data=null,discussion=null,draft=null,disposed=false,busy=false,held=false,composing=false,timer=null,observing=false,observeAgain=false,readGeneration=0,discussionGeneration=0,loadingHistory=false;
+ let entries=new Map(),cursor=null,tailCursor=null,hidden=false,position=null,drag=null;
+ let accepted=false;
+ const idleWaiters=new Set();
+ const pendingKey='nozeli:review-discussion-send:'+projectId+':'+workId;
+ let pendingSend=null,persistenceError=null;
+ try{pendingSend=JSON.parse(window.localStorage?.getItem(pendingKey)||'null');}catch(error){persistenceError=error;}
+ async function persistSend(envelope){
+  // Work-scoped local persistence survives report replacement, tab closure
+  // and restart; layout navigation state intentionally strips payload fields.
+  if(envelope)window.localStorage?.setItem(pendingKey,JSON.stringify(envelope));else window.localStorage?.removeItem(pendingKey);
+  pendingSend=envelope;
  }
- const compactObserver=new ResizeObserver(syncCompact);compactObserver.observe(pane);compactObserver.observe(root);
- const compactChildren=new MutationObserver(syncCompact);compactChildren.observe(root,{childList:true});compactChildren.observe(parent,{childList:true});
- root.addEventListener('close',syncCompact,true);
+ const keys=new Map();
  const live=()=>!disposed&&current();
  async function call(method,args={}){const result=await invoke('managed.review.'+method,{projectId,workId,objectId,...args});if(!result.ok)throw Object.assign(Error(result.error?.message||'审核请求失败'),{code:result.error?.code});return result.value;}
- function fail(error){if(live()){warning.textContent=error.message+'；原报告和未发送意见仍保留。';if(!data)onAvailability(false,root);paint();}}
- function target(){return (data?.merge?.targetRef||data?.candidate?.targetRef||'工作绑定目标分支').replace(/^refs\/heads\//,'');}
+ function fail(error){if(live()){warning.textContent=error.message+'；原报告和未发送意见保留。';paint();}}
+ function show(){hidden=false;floating.hidden=!live();reopen.setAttribute('aria-expanded','true');}
+ function hide(){hidden=true;floating.hidden=true;reopen.setAttribute('aria-expanded','false');if(floating.contains(document.activeElement))reopen.focus({preventScroll:true});}
  function paint(){
   const state=draft?.snapshot(),unavailable=!reviewVersionAvailable(data);
- const historical=Number.isInteger(data?.workRevision)&&data.workRevision!==data.revision;
- resume.disabled=busy||held||Boolean(decisionState)||['closing','ended'].includes(data?.status)||!draft||Boolean(state?.error)||unavailable||!data?.capabilities?.canContinue;
- accept.disabled=busy||held||Boolean(decisionState)||['closing','ended'].includes(data?.status)||!draft||Boolean(state?.error)||unavailable||!data?.capabilities?.canAccept;
- discuss.disabled=busy||held;
- const notesReadOnly=unavailable||Boolean(data?.stale)||Boolean(decisionState)||data?.accepted||['running','closing','ended'].includes(data?.status)||(!data?.capabilities?.canContinue&&!data?.capabilities?.canAccept);
-  instruction.readOnly=Boolean(notesReadOnly)&&!composing;
- discuss.textContent=notesReadOnly?(compact?'意见':'查看审核意见'):(compact?'修改':'继续讨论 / 修改');discuss.setAttribute('aria-label',notesReadOnly?'查看审核意见':'继续讨论 / 修改');accept.textContent=compact?'接受':'接受并收尾';accept.setAttribute('aria-label','接受确切审核版本并交由主控收尾');
-  continueHint.textContent=notesReadOnly?'当前版本不可继续；仍可查看和复制保留的意见。':'先写问题或修改意见，不会立即派工。';
-  sendHint.textContent=notesReadOnly?'当前版本只读，不能编辑或发送意见；已有文字仍保留，可选择复制。':!data?.capabilities?.canContinue?'当前不能发送给原 Worker；可先保存本地意见，具体原因见上方状态。':'发送前仍需确认：已保存人工稿与意见将交回原 Worker 继续处理，可能修改候选成果；不是只读聊天。';
-  instruction.disabled=(busy||held)&&!composing||!draft;
-  retryInstruction.disabled=busy||held||state?.pending||composing;
-  outdated.hidden=!reviewReportOutdated(data?.files||[]);outdated.textContent='人工候选已修改：原报告尚未针对这些修改重新验证。保存不会派工；可交回原 Worker 检查，或接受当前确切版本。';
-  const merge=data?.merge;
-  const outcome=merge?.status==='merged'?'已合入 '+target():merge?.status==='blocked'?'合入受阻：'+(merge.message||merge.blockedCode):merge?.status==='pending'||merge?.status==='queued'?'接受已记录 · 等待宿主合入 '+target():merge?.status==='merging'?'接受已记录 · 正在合入 '+target():decisionState==='accepted'||data?.accepted?'接受已记录 · 尚未确认合入成功':data?.status==='running'?'原 Worker 正在继续修改':decisionState==='continued'?'继续已记录 · 已交回原 Worker 队列':data?.continuation?.state==='blocked'?'继续修改受阻：'+(data.continuation.error?.message||'需核对执行目录'):data?.stale?'旧候选，只读 · 不可继续或接受':!data?.capabilities?.canAccept&&!data?.capabilities?.canContinue?'只读 · 当前不可继续或接受':'';
- status.textContent=held?'正在保存审核文档与意见，并核对确切版本…':!data?'正在读取冻结候选…':historical?`第 ${data.revision} 版 · 历史只读（当前工作第 ${data.workRevision} 版）`:data.status==='closing'?`第 ${data.revision} 版 · 审核已决定，收尾未完成`:unavailable?'冻结候选或审核版本不可用，不能继续或接受；原报告仍保留。':`第 ${data.revision} 版 · ${outcome||'待审核'}`;
- fullStatus.textContent=status.textContent;
- if(compact)status.textContent=held?'正在核对版本…':!data?'正在读取…':`第 ${data.revision} 版 · ${historical?'历史只读':data.status==='closing'?'收尾未完成':data.status==='ended'?'已结束':data.stale?'历史只读':data.status==='review'?'待审核':'状态详情'}`;
- versions.trigger.hidden=!data;versionText.textContent=data?`审核版本：${data.reviewVersion||'不可用'}${merge?.commit?'\n合入提交：'+merge.commit:''}\n计数为输入基线与 Worker 冻结候选的差异，不含人工稿。`:'';
- detail.trigger.textContent=warning.textContent||!outdated.hidden?'审核提示 · 查看详情':'审核状态详情';
-  root.dataset.reviewState=merge?.status||(!data?.capabilities?.canAccept&&!data?.capabilities?.canContinue?'readonly':'review');
-  syncCompact();
+  const differentLatest=Boolean(discussion?.latestObjectId&&discussion.latestObjectId!==objectId);
+  const staleCode=data?.stale?.code||data?.stale?.reason||data?.stale?.detail?.reason;
+  const historical=differentLatest||staleCode==='SUPERSEDED'||(Number.isInteger(data?.workRevision)&&data.workRevision!==data.revision);
+  const closed=accepted||['closing','ended'].includes(data?.status)||data?.accepted;
+  send.disabled=Boolean(persistenceError)||busy||held||composing||!draft||Boolean(state?.error)||(!pendingSend&&(unavailable||historical||closed||!discussion?.canSend||!instruction.value.trim()));
+  accept.disabled=Boolean(persistenceError||pendingSend)||busy||held||composing||!draft||Boolean(state?.error)||unavailable||historical||closed||!data?.capabilities?.canAccept||!discussion||discussion.active||discussion.queued>0;
+  instruction.disabled=(!draft||busy||held)&&!composing;instruction.readOnly=Boolean(pendingSend||historical||closed||unavailable||discussion&&!discussion.canSend)&&!composing;
+  latest.hidden=latestChat.hidden=!differentLatest||!onOpenLatest;
+  status.textContent=!data?'正在读取审核版本…':data.merge?.status==='merged'?'已应用到项目 · '+(data.merge.targetRef||'工作绑定分支'):data.merge?.status==='blocked'?'应用受阻 · '+(data.merge.message||data.merge.blockedCode||'请查看后台处理状态'):accepted?'采用已记录 · 尚未确认应用成功':`报告 V${data.publicationNumber||data.revision} · ${historical?'历史只读':closed?'审核已决定':discussion?.active?'AI助手处理中':'待审核'}`;
+  versionText.textContent=data?`报告 V${data.publicationNumber||data.revision} · 工作修订 ${data.revision}\n审核版本：${data.reviewVersion||'不可用'}\n目标引用：${data.candidate?.targetRef||'项目目标分支'}\n文件差异基于冻结候选；人工稿保留在文档工作区。\nAI助手：原 Worker（原工作线程）；任务安排：主控交接。采用后由主控完成合入与收尾。`:'';
+  queue.textContent=discussion?[discussion.active?'AI助手正在处理':'',discussion.queued?`已排队 ${discussion.queued} 条`:'',...(discussion.reasons||[]).map(reason=>typeof reason==='string'?(discussionReasons[reason]||reason):reason.message)].filter(Boolean).join(' · '):'正在读取原始工作记录…';
+  if(reviewReportOutdated(data?.files||[]))queue.textContent+=' · 已保存人工改稿；可直接采用，也可先发送意见请AI助手核对。';
+  outdated.hidden=!reviewReportOutdated(data?.files||[]);outdated.textContent=outdated.hidden?'':'已保存人工改稿，采用时将使用人工稿。原报告未包含这些修改；如需AI助手核对，请先发送意见。';
+  if(pendingSend)queue.textContent+=' · 上次发送回执待核对；重试只核对同一请求，不另派新任务。';
+  if(persistenceError)queue.textContent+=' · 发送凭据无法读取；为避免重复派工，已暂停发送与接受。';
+  send.textContent=pendingSend?'核对 / 重试发送':discussion?.active||discussion?.queued?'排队发送':'发送';
+  more.hidden=!cursor;more.disabled=loadingHistory;
+  floating.hidden=hidden||!live();
+  if(!busy&&!held&&!composing){for(const resolve of idleWaiters)resolve();idleWaiters.clear();}
  }
- function loadInstruction(){return call('instruction.read').then(saved=>{
-  if(disposed)return;instruction.value=saved.text;
-  draft=createReviewDraft({text:saved.text,revision:saved.revision,save:({text,revision})=>call('instruction.save',{text,expectedRevision:revision}),onState:state=>{showInstructionState(state.error?'意见保存失败，输入仍保留':state.pending?'正在保存意见…':state.dirty?'意见尚未保存':'意见已保存（未发送）',Boolean(state.error));if(live())paint();}});
-  showInstructionState(saved.text?'已恢复未发送意见':'可选；输入后自动保存，不会自动发送');if(saved.text)revealInstruction();paint();
- }).catch(error=>{showInstructionState('意见读取失败：'+error.message,true);throw error;});}
- function revealInstruction(){instructionSection.hidden=false;}
- function showInstructionState(message,canRetry=false){const text=document.createElement('span');text.textContent=message;instructionStatus.replaceChildren(text);if(canRetry){instructionStatus.append(retryInstruction);revealInstruction();}retryInstruction.hidden=!canRetry;instructionHeading.textContent=canRetry?'讨论与修改 · 意见需处理':instruction.value?'讨论与修改 · 有未发送意见':'讨论问题与修改要求';}
- let instructionReady=loadInstruction();void instructionReady.catch(fail);
- instruction.addEventListener('compositionstart',()=>{composing=true;});instruction.addEventListener('compositionend',()=>{composing=false;paint();});
- instruction.addEventListener('input',()=>{draft?.setText(instruction.value);clearTimeout(timer);timer=setTimeout(()=>void saveAll().catch(fail),600);});
- async function saveAll(){
-  try{await instructionReady;}catch(error){if(draft||instruction.value)throw error;}
-  if(composing)throw Object.assign(Error('修改意见输入法组合尚未结束。'),{code:'COMPOSING'});
-  clearTimeout(timer);if(draft)await draft.flush();
- }
- async function openFile(file){
-  await saveAll();if(!live())return;
-  if(!onOpenFile)throw Error('冻结差异入口不可用；未打开同名项目文件。');
-  return onOpenFile(file,{changeSetId:data?.changeSetId,workId,objectId});
- }
- async function openMaterial(file){
-  await saveAll();if(!live())return;
-  if(onOpenMaterial)return onOpenMaterial(file);
-  const result=await invoke('workspace.control',{type:'open-file',projectId,relPath:file.relPath,documentSource:{type:'review',workId,objectId}});
-  if(!result.ok)throw Error(result.error?.message||'审核材料打开失败');
- }
- async function refresh(){
-  const request=++readGeneration,next=await call('read');if(!live()||request!==readGeneration)return;data=next;
-  warning.textContent=[reviewStaleMessage(data.stale),...(data.capabilities?.reasons||[]).map(reason=>typeof reason.message==='string'?reason.message:'审核条件尚不满足')].filter(Boolean).join('\n');
-  const fileCount=data.files?.length||0;fileHeading.textContent=`成果文件${fileCount?' · '+fileCount:''} · 查看文件与差异`;filesSection.hidden=!fileCount;fileList.update(data.files||[]);
-  onAvailability(Boolean(fileCount),root);
+ async function loadInstruction(){
+  const saved=await call('instruction.read');if(disposed)return;
+  instruction.value=saved.text||pendingSend?.text||'';
+  draft=createReviewDraft({text:saved.text,revision:saved.revision,save:({text,revision})=>call('instruction.save',{text,expectedRevision:revision}),onState:state=>{instructionStatus.textContent=state.error?'草稿保存失败，输入保留':state.pending?'正在保存草稿…':state.dirty?'草稿尚未保存':'草稿已保存（未发送）';retry.hidden=!state.error;paint();}});
   paint();
  }
- async function decide(action){
- if(busy||held||decisionState||['closing','ended'].includes(data?.status)||!data?.capabilities?.[action==='accept'?'canAccept':'canContinue']||!reviewVersionAvailable(data))return;busy=true;paint();
+ let instructionReady=loadInstruction().catch(error=>{retry.hidden=false;fail(error);throw error;});void instructionReady.catch(()=>{});
+ instruction.addEventListener('compositionstart',()=>{composing=true;paint();});instruction.addEventListener('compositionend',()=>{composing=false;paint();});
+ instruction.addEventListener('input',()=>{draft?.setText(instruction.value);paint();clearTimeout(timer);timer=setTimeout(()=>void saveAll().catch(fail),600);});
+ async function saveAll(){await instructionReady;if(composing)throw Object.assign(Error('请先完成输入法组合。'),{code:'COMPOSING'});clearTimeout(timer);await draft?.flush();}
+ async function loadDiscussion(append=false){
+  if(append&&(!cursor||loadingHistory))return;
+  const generation=++discussionGeneration;loadingHistory=true;paint();
+  try{
+   const pageCursor=append?cursor:tailCursor;
+   const next=await call('discussion.read',{limit:100,...(pageCursor?{cursor:pageCursor}:{})});if(!live()||generation!==discussionGeneration)return;
+   discussion=next;tailCursor=pageCursor;cursor=next.nextCursor;
+   const merge=page=>{for(const [index,entry]of (page.entries||[]).entries())entries.set(entry.id,{...entry,order:entry.seq??((page.pageStart||0)+index)});};
+   merge(next);
+   // One contiguous history page plus at most one latest page per event.
+   // Intermediate records remain explicitly reachable, never silently omitted.
+   if(next.latestCursor&&next.latestCursor!==pageCursor){
+    const recent=await call('discussion.read',{limit:100,cursor:next.latestCursor});if(!live()||generation!==discussionGeneration)return;
+    discussion=recent;merge(recent);
+   }
+   if(Number.isInteger(discussion.total)&&entries.size>=discussion.total)cursor=null;
+   more.textContent=cursor?'加载下一页原始记录（中间记录尚未全部展开）':'原始记录已全部展开';
+   originalText.textContent=[...entries.values()].filter(entry=>entry.source==='publication'||entry.speaker==='orchestrator'&&entry.source==='user-input').map(entry=>[entry.id,entry.objectId,entry.text].filter(Boolean).join('\n')).join('\n\n');
+   renderThread([...entries.values()].sort((a,b)=>a.order-b.order).map(entry=>{
+     const speaker=entry.source==='work-handoff'?'任务安排':({user:'用户',agent:'AI助手',worker:'AI助手',orchestrator:'任务安排',system:'系统'}[entry.speaker]||entry.speaker);
+     const arranged=entry.speaker==='orchestrator'&&entry.source==='user-input';
+     const source={'work-request':'原始工作请求','work-handoff':'原始交接','user-input':arranged?'已交接':'原始用户输入','worker-reply':'原始回复',system:'系统原始记录',publication:'发布记录','review-discussion':'讨论修改'}[entry.source]||entry.source;
+     const label=[speaker,source].filter(Boolean).join(' · '),text=arranged?'本任务要求与材料已交给AI助手；原始安排可在版本详情查看。':entry.text??(entry.source==='publication'?'报告已保存，可在主工作区查看。':'');
+     return entry.speaker==='user'&&entry.source!=='work-handoff'?{requestId:entry.id,question:text,questionLabel:label}:{requestId:entry.id,reply:text,replyLabel:label,messageId:entry.id};
+   }));
+   if(cursor===pageCursor&&cursor)throw Error('原始记录分页游标未前进');
+  }finally{if(generation===discussionGeneration){loadingHistory=false;paint();}}
+ }
+ async function refresh(){
+  const generation=++readGeneration,next=await call('read');if(!live()||generation!==readGeneration)return;
+  if(!data)fileDetail.open=next.files?.length===1;
+  data=next;const staleCode=data.stale?.code||data.stale?.reason||data.stale?.detail?.reason;
+  warning.textContent=[['WORK_BUSY','WORK_RUNNING'].includes(staleCode)?'当前回合正在处理；接受须等待完成，讨论发送以队列状态为准。':reviewStaleMessage(data.stale),...(data.capabilities?.reasons||[]).map(reason=>typeof reason==='string'?reason:reason.message)].filter(Boolean).join('\n');
+  fileList.update(data.files||[]);onAvailability(Boolean(data.files?.length),root);paint();await loadDiscussion();
+ }
+ async function sendDiscussion(){
+  if(send.disabled)return;busy=true;paint();let received=false;
   try{
    await saveAll();
-   const reviewed=data.reviewVersion;
-   const message=action==='accept'?`接受审核版本 ${reviewed} 的确切内容。${reviewReportOutdated(data.files||[])?'人工修改尚未经原 Worker 重新验证。':''}宿主将安全合入 ${target()}；原用户授权和确切审核版本会被保留，遇到新的并发变化则展示差异供明确决定。`:`本次不接受审核版本 ${reviewed}；将已保存人工稿和问题或修改要求交回原 Worker 继续处理，可能修改候选成果，并非只读聊天。保留同任务、线程和发布历史，不丢弃成果或结束工作。`;
-   if(!await confirm(message,action==='accept'?'接受确切审核版本':'发送给原 Worker')||!live())return;
-   const key=action+':'+reviewed,requestKey=keys.get(key)||crypto.randomUUID();keys.set(key,requestKey);
-   const response=await invoke('workspace.review.decide',{projectId,workId,objectId,action,reviewVersion:reviewed,requestKey,...(action==='continue'?{instruction:instruction.value}:{})});
-   if(!response.ok){
-    if(response.error?.code==='REVIEW_TOKEN_CHANGED'){
-     await refresh();throw Object.assign(Error('跨文档保存后审核版本已变化。已显示最新状态，请重新核对文档并再次确认；本次未继续或接受。'),{code:'REVIEW_TOKEN_CHANGED'});
-    }
-    throw Object.assign(Error(response.error?.message||'审核决定未完成'),{code:response.error?.code});
+   if(!pendingSend){
+    const text=instruction.value,reviewVersion=data.reviewVersion,draftRevision=draft.snapshot().revision;
+    const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify([projectId,workId,objectId,reviewVersion,text,draftRevision])));
+    const requestKey='review-discussion:'+Array.from(new Uint8Array(digest),byte=>byte.toString(16).padStart(2,'0')).join('');
+    await persistSend({projectId,workId,objectId,reviewVersion,requestKey,text,draftRevision});
    }
-   keys.delete(key);decisionState=action==='continue'?'continued':'accepted';
- if(!live())return;data={...data,...response.value,capabilities:{canContinue:false,canAccept:false}};await onChanged();await refresh();
-  }finally{busy=false;if(live())paint();}
+   const {objectId:sentObjectId,reviewVersion,requestKey,text}=pendingSend;
+   await call('discussion.send',{objectId:sentObjectId,reviewVersion,requestKey,text});
+   received=true;
+   ++discussionGeneration;discussion=null;loadingHistory=false;
+   // Clear only the accepted text, not a later IME/input draft.
+   if(instruction.value===text){
+    const saved=draft.snapshot();
+    if(saved.revision===pendingSend.draftRevision){draft.setText('');await draft.flush();instruction.value='';}
+    else if(saved.text==='')instruction.value='';
+   }
+   await persistSend(null);
+   busy=false;paint();await onChanged();await refresh();
+  }catch(error){
+   const stale=['REVIEW_TOKEN_CHANGED','REVIEW_VERSION_STALE','REVIEW_CANDIDATE_STALE'].includes(error.code);
+   const rejected=stale||/^(INVALID_|BAD_|WORK_BUSY$|WORK_STATE$|WORK_ENDED$|CANDIDATE_REQUIRED$|IPC_DENIED$)/.test(error.code||'')||/_DENIED$|_PAUSED$/.test(error.code||'');
+   if(!received&&rejected){await persistSend(null);await refresh();if(stale)throw Object.assign(Error('审核版本已变化，请重新核对最新报告与人工稿后再次发送；本次未自动重发。'),{code:error.code});}
+   throw error;
+  }
+  finally{busy=false;paint();}
+ }
+ async function acceptReview(){
+  if(accept.disabled)return;busy=true;paint();
+  try{
+   await saveAll();const reviewVersion=data.reviewVersion;
+   const fileCount=data.files?.length||0,target=(data.candidate?.targetRef||'项目目标分支').replace(/^refs\/heads\//,'');
+   const summary=[taskName,`报告 V${data.publicationNumber||data.revision}`,`${fileCount} 个文件`].join(' · ');
+   const paths=(data.files||[]).map(file=>`${file.relPath}${file.draft&&file.draft.textDigest!==file.candidateDigest?'（采用人工改稿）':''}`).join('\n');
+   const unsent=instruction.value.trim()?'\n将采用当前文件；你尚未发送的意见不会交给AI，也不会用于修改本次采用的文件。':'';
+   if(!await confirm(`${summary}\n${paths}${unsent}\n将当前审核稿写入项目（${target}），并结束这项工作。应用和后台清理完成后才显示已结束；完整审核版本可在“版本与审核状态”查看。`,taskName+' · 采用并结束',{cancelLabel:'返回审阅',confirmLabel:'采用并结束'})||!live())return;
+   const key='accept:'+reviewVersion,requestKey=keys.get(key)||crypto.randomUUID();keys.set(key,requestKey);
+   const response=await invoke('workspace.review.decide',{projectId,workId,objectId,action:'accept',reviewVersion,requestKey});
+   if(!response.ok){if(response.error?.code==='REVIEW_TOKEN_CHANGED'){await refresh();throw Object.assign(Error('跨文档保存后审核版本已变化，请重新核对文档并再次确认。'),{code:response.error.code});}throw Object.assign(Error(response.error?.message||'审核决定失败'),{code:response.error?.code});}
+   accepted=true;keys.delete(key);await onChanged();await refresh();
+  }finally{busy=false;paint();}
  }
  async function observe(){
-  if(busy||!live()||!root.isConnected)return;
-  if(observing){observeAgain=true;return;}
-  observing=true;
-  try{do{observeAgain=false;await refresh();}while(observeAgain&&!busy&&live()&&root.isConnected);}
-  catch(error){fail(error);}finally{observing=false;}
+  if(!live()||!root.isConnected)return;
+  if(observing||busy){observeAgain=true;return;}observing=true;
+  try{do{observeAgain=false;await refresh();}while(observeAgain&&!busy&&live());}catch(error){fail(error);}finally{observing=false;}
  }
+ async function bind(nextObjectId){
+  if(nextObjectId===objectId)return;
+  await saveAll();if(!live())return;
+  ++readGeneration;++discussionGeneration;objectId=nextObjectId;root.dataset.managedReview=objectId;accepted=false;data=null;discussion=null;paint();await refresh();
+ }
+ function place(x,y){const rect=floating.getBoundingClientRect();position=[Math.max(0,Math.min(x,window.innerWidth-rect.width)),Math.max(0,Math.min(y,window.innerHeight-rect.height))];floating.style.left=position[0]+'px';floating.style.top=position[1]+'px';floating.style.right='auto';floating.style.bottom='auto';}
+ head.addEventListener('pointerdown',event=>{if(event.button!==0||event.target.closest('button'))return;const rect=floating.getBoundingClientRect();drag={id:event.pointerId,x:event.clientX,y:event.clientY,left:rect.left,top:rect.top};head.setPointerCapture(event.pointerId);});
+ head.addEventListener('pointermove',event=>{if(drag?.id===event.pointerId)place(drag.left+event.clientX-drag.x,drag.top+event.clientY-drag.y);});
+ const stopDrag=()=>{drag=null;};head.addEventListener('pointerup',stopDrag);head.addEventListener('pointercancel',stopDrag);
+ head.addEventListener('keydown',event=>{if(event.target!==head)return;const offset={ArrowLeft:[-16,0],ArrowRight:[16,0],ArrowUp:[0,-16],ArrowDown:[0,16]}[event.key];if(offset){event.preventDefault();const rect=floating.getBoundingClientRect();place(rect.left+offset[0],rect.top+offset[1]);}});
+ floating.addEventListener('keydown',event=>{if(event.key==='Escape'&&!composing){event.stopPropagation();hide();}});
+ const onResize=()=>{if(position)place(...position);};window.addEventListener('resize',onResize);
  const onFocus=()=>void observe();window.addEventListener('focus',onFocus);
  const beforeUnload=event=>{if(composing||draft?.snapshot().dirty||draft?.snapshot().pending){void saveAll().catch(fail);event.preventDefault();event.returnValue='';}};window.addEventListener('beforeunload',beforeUnload);
+ const unsubscribe=window.nozeli?.subscribe('agent',event=>{if(event.projectId===projectId&&['managed-state','managed-timeline'].includes(event.kind))void observe();});
+ const onStorage=event=>{if(event.key!==pendingKey)return;try{pendingSend=JSON.parse(event.newValue||'null');persistenceError=null;}catch(error){persistenceError=error;}paint();};window.addEventListener('storage',onStorage);
  const ready=refresh().catch(fail);
- const surface={root,ready,save:saveAll,observe,refresh,get composing(){return composing;},barrier(event){if(event.projectId!==projectId||event.workId!==workId||event.objectId!==objectId)return;held=event.held===true;paint();},get retained(){return busy||held||composing||draft?.snapshot().dirty||draft?.snapshot().pending;},destroy(){if(surface.retained)return false;disposed=true;compactObserver.disconnect();compactChildren.disconnect();root.removeEventListener('close',syncCompact,true);clearTimeout(timer);fileList.destroy();surfaces.delete(surface);window.removeEventListener('focus',onFocus);window.removeEventListener('beforeunload',beforeUnload);root.remove();return true;}};surfaces.add(surface);return surface;
+ const surface={root,ready,save:saveAll,observe,refresh,show,hide,bind,get composing(){return composing;},get processing(){return busy||held||composing;},barrier(event){if(event.projectId!==projectId||event.workId!==workId||event.objectId!==objectId)return;held=event.held===true;paint();},get retained(){return busy||held||composing||draft?.snapshot().dirty||draft?.snapshot().pending;},destroy(){if(surface.retained)return false;disposed=true;unsubscribe?.();clearTimeout(timer);fileList.destroy();renderThread.disposeOriginalReaders();surfaces.delete(surface);window.removeEventListener('storage',onStorage);window.removeEventListener('resize',onResize);window.removeEventListener('focus',onFocus);window.removeEventListener('beforeunload',beforeUnload);root.remove();return true;}};
+ surface.whenIdle=()=>{if(!surface.processing)return Promise.resolve();queue.textContent+=' · 已记录查看最新报告，将在当前保存完成后切换。';return new Promise(resolve=>idleWaiters.add(resolve));};
+ surfaces.add(surface);show();return surface;
 }

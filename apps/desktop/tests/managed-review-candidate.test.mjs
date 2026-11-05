@@ -407,14 +407,10 @@ test('second publication rotates the review namespace and keeps old receipts imm
   const oldInstruction=await c.reviewInstructionRead({objectId});
   assert.equal(oldInstruction.text,'第一轮指令草稿。');
   assert.equal(oldInstruction.revision,1);
-  const newInstruction=await c.reviewInstructionRead({objectId:receipt2.objectId});
-  assert.equal(newInstruction.revision,0);
-  assert.equal(newInstruction.text,'');
-  const secondRound=await c.reviewInstructionSave({objectId:receipt2.objectId,text:'第二轮指令草稿。',expectedRevision:0});
-  assert.equal(secondRound.revision,1);
+  // 指令草稿现为Work作用域：跨发布保留（第一轮正文/版本继续可见），
+  // 不再按发布重置；旧发布的保存不再以候选stale拒绝，统一走Work CAS。
   const record=await c.store.storage.getRecovery(c.store.projectId,'managed:review-drafts:'+w.id);
   assert.equal(record.files['reading.md'].history.find(entry=>entry.revision===1).text,round1);
-  await assert.rejects(c.reviewInstructionSave({objectId,text:'x',expectedRevision:0}),error=>error.code==='REVIEW_CANDIDATE_STALE');
 });
 
 test('human edits to an unchanged file pass through beforeAccept sync and are blocked on unsaved editor changes',async t=>{

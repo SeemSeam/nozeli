@@ -26,3 +26,24 @@ export function workRecordServiceState(record,projectId,faults){
  }
  return null;
 }
+
+// Queued Works wait for slots held by these exact Work states (domain facts).
+export const workSlotCaptions = {
+  running: '执行中',
+  paused: '暂停',
+  review: '待审',
+  closing: '收尾未完成',
+  'unverified-ended': '结束待核查',
+  'unverified-running': '执行待核查',
+};
+
+// The end-Work confirmation must state the Work's real stage. A never-started
+// queued Work has no Worker thread, worktree, report or results to discard.
+export function workDispositionNotice({ work, binding, decision }) {
+  const name = work?.name || binding?.workId || '任务';
+  if (work?.status === 'queued' && Number(binding?.revision) === 0 && !work.threadId && !work.result?.objectId && !work.execution)
+    return name + ' · 尚未开始执行，也没有生成成果。取消排队只撤销这次安排，不修改项目文件；原请求与历史记录保留。';
+  return name + ' · 第 ' + binding.revision + ' 版：' + (decision === 'accept'
+    ? '记录接受确切成果的决定，交由主控安全合入和清理。全部收尾确认完成后才结束；原报告、草稿和工作树保留。'
+    : '记录丢弃未合入成果的决定，由主控清理专用工作树和分支，不能继续在原 Worker 修改；全部收尾确认完成后才结束。原项目文件、草稿与历史报告保留。');
+}

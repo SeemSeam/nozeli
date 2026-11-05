@@ -24,13 +24,17 @@ test('review occupies quota, pending supplements and closure failures remain und
  const s=base();s.works.push({id:'w',name:'核对',status:'review'});assert.equal(managedWorkRecords(s)[0].phase,'结果待审查');s.jobs.push({id:'m',target:'w',type:'manual',status:'queued',text:'补充'});assert.equal(managedWorkRecords(s)[0].phase,'补充已接收，等待执行');s.works[0].status='ended';s.works[0].outcome='accept';s.works[0].closure={phase:'blocked',error:'CAS conflict'};s.jobs[0].status='cancelled';const record=managedWorkRecords(s)[0];assert.equal(record.status,'ended');assert.equal(record.closurePhase,'blocked');assert.equal(record.closureError,'CAS conflict');
 });
 test('lineage cycle fails explicitly',()=>{const s=base();s.jobs.push(intake('a',{context:{retryOf:'b'}}),intake('b',{context:{retryOf:'a'}}));assert.throws(()=>managedWorkRecords(s),/cycle/);});
-test('known queued Work supplement merges before management decision',()=>{const s=base();s.works.push({id:'w',name:'Queued',status:'queued'});s.jobs.push(intake('supplement',{context:{boundWorkId:'w'}}));const r=managedWorkRecords(s);assert.equal(r.length,1);assert.equal(r[0].workId,'w');assert.equal(r[0].phase,'补充已接收，主控整理中');});
+test('known queued Work supplement merges before management decision',()=>{const s=base();s.works.push({id:'w',name:'Queued',status:'queued'});s.jobs.push(intake('supplement',{context:{boundWorkId:'w'}}));const r=managedWorkRecords(s);assert.equal(r.length,1);assert.equal(r[0].workId,'w');assert.match(r[0].phase,/排队第 1 位/);assert.match(r[0].phase,/补充/);});
 test('historic failure without timestamp follows its accepted event',()=>{const s=base();s.jobs.push(intake('old',{status:'failed',error:'old error'}));assert.deepEqual(managedWorkRecords(s)[0].events.map(e=>e.id),['old:accepted','old:failed']);});
-test('internal maintenance is not waiting for user answer and preserves accepted outcome',()=>{
- const s=base(),w={id:'w',name:'核对',status:'paused',revision:1,maintenance:{status:'repairing',message:'进展保留'}};s.works.push(w);
- let record=managedWorkRecords(s)[0];assert.equal(record.status,'paused');assert.equal(record.phase,'系统正在处理运行问题');assert.equal(record.todoId,undefined);
- w.maintenance.status='needs-version-fix';record=managedWorkRecords(s)[0];assert.equal(record.phase,'系统问题待修复，进展已保留');
- w.status='ended';w.outcome='accept';w.closure={phase:'blocked',decision:'accept'};record=managedWorkRecords(s)[0];assert.equal(record.outcome,'accept');assert.equal(record.phase,'已接受 · 系统问题待修复，进展已保留');
+test('internal maintenance claims active fixing only from a live repair job',()=>{
+ const s=base(),w={id:'w',name:'核对',status:'paused',revision:1,maintenance:{bugId:'bug1',status:'repairing',message:'进展保留'}};s.works.push(w);
+ let record=managedWorkRecords(s)[0];assert.equal(record.status,'paused');assert.equal(record.todoId,undefined);assert.equal(record.description,'进展保留');
+ assert.doesNotMatch(record.phase,/正在处理/,'durable repairing without a live repair job must not claim active fixing');
+ s.jobs.push({id:'repair',type:'maintenance',target:'orchestrator',status:'running',context:{bugId:'bug1'}});
+ record=managedWorkRecords(s)[0];assert.match(record.phase,/正在处理/);
+ s.jobs.pop();w.maintenance.status='needs-version-fix';record=managedWorkRecords(s)[0];assert.doesNotMatch(record.phase,/正在处理/);assert.equal(record.maintenance.message,'进展保留');
+ w.maintenance.status='human-boundary';record=managedWorkRecords(s)[0];assert.doesNotMatch(record.phase,/正在处理/);assert.match(record.phase,/人工核对/);
+ w.status='ended';w.outcome='accept';w.closure={phase:'blocked',decision:'accept'};record=managedWorkRecords(s)[0];assert.equal(record.outcome,'accept');assert.match(record.phase,/已接受/);assert.doesNotMatch(record.phase,/正在处理/);
  w.closure.phase='complete';assert.equal(managedWorkRecords(s)[0].phase,'已接受并结束 · 技术收尾完成');
 });
 test('review revision four retains old failures only as history, without mutating durable facts',()=>{
@@ -45,7 +49,7 @@ test('review revision four retains old failures only as history, without mutatin
 });
 test('only proven older input failures and stops lose live precedence',()=>{
  const s=base();s.works=[{id:'w',status:'paused',revision:4}];s.jobs=[intake('old',{status:'failed',revision:3,context:{boundWorkId:'w'}}),{id:'oldStop',target:'w',revision:3,status:'interrupted',interruptionReason:'user-interrupted'}];
- let record=managedWorkRecords(s)[0];assert.equal(record.retryJobId,undefined);assert.equal(record.phase,'后台处理中 · 进展已保留');
+ let record=managedWorkRecords(s)[0];assert.equal(record.retryJobId,undefined);assert.doesNotMatch(record.phase,/处理中|执行中/);
  s.jobs[0].revision=4;record=managedWorkRecords(s)[0];assert.equal(record.retryJobId,'old');assert.equal(record.phase,'补充处理失败，待重试');
  delete s.jobs[0].revision;assert.equal(managedWorkRecords(s)[0].retryJobId,'old','unknown input version must not be silently discarded');
  s.jobs.shift();s.jobs[0].revision=4;assert.equal(managedWorkRecords(s)[0].phase,'本轮已停止 · 等待明确补充');
@@ -79,4 +83,56 @@ test('settled host-control turn with an unresolved internal fault is not a compl
  assert.equal(record.name,'开始落盘');assert.equal(record.status,'blocked');assert.equal(record.maintenance.bugId,'bug-tool');assert.equal(record.retryJobId,undefined);assert.equal(record.workId,undefined);assert.deepEqual(s,before);
  s.jobs.push({id:'repair',type:'maintenance',status:'queued',context:{bugId:'bug-tool'}});
  assert.equal(managedWorkRecords(s)[0].maintenance.status,'queued');assert.equal(s.jobs[0].status,'completed');
+});
+
+test('running claims require a live current job; interrupted rounds stay conservative',()=>{
+ const s=base();s.works=[{id:'w',name:'汇总',status:'running',revision:2,request:'原始请求',result:{objectId:'r1',revision:1}}];
+ s.jobs=[{id:'old',target:'w',type:'initial',status:'interrupted',revision:2,error:'宿主退出，未自动重放'}];
+ let record=managedWorkRecords(s)[0];
+ assert.doesNotMatch(record.phase,/执行中/,'interrupted round without a live job must not claim execution');
+ assert.match(record.phase,/待核查/);assert.equal(record.description,'原始请求');
+ s.jobs.push({id:'live',target:'w',type:'initial',status:'running',revision:2,startedAt:'2026-11-05T00:00:00Z'});
+ assert.match(managedWorkRecords(s)[0].phase,/执行中/);
+ s.jobs[1].status='completed';s.jobs.push({id:'next',target:'w',type:'supplement',status:'queued'});
+ const waiting=managedWorkRecords(s)[0];assert.doesNotMatch(waiting.phase,/执行中/);assert.match(waiting.phase,/等待开始执行/);assert.match(waiting.phase,/补充/);
+});
+
+test('a running round keeps execution visible beside a queued supplement',()=>{
+ const s=base();s.works=[{id:'w',name:'访谈',status:'running',revision:1}];
+ s.jobs=[{id:'run',target:'w',type:'initial',status:'running',revision:1},intake('sup',{context:{boundWorkId:'w'}})];
+ const record=managedWorkRecords(s)[0];
+ assert.match(record.phase,/执行中/);assert.match(record.phase,/补充/);
+ s.jobs[0].status='completed';s.jobs.push({id:'sup2',target:'w',type:'supplement',status:'running',revision:1});
+ assert.match(managedWorkRecords(s)[0].phase,/正在处理补充/);
+});
+
+test('queued Work names the exact slot holders without changing quota facts',()=>{
+ const s=base();s.works=[
+  {id:'run',name:'执行中的任务',status:'running',revision:1},
+  {id:'rev',name:'待审的任务',status:'review',revision:1},
+  {id:'pa',name:'暂停的任务',status:'paused',revision:1},
+  {id:'q',name:'排队的任务',status:'queued',revision:0,request:'排队请求'}];
+ s.jobs.push({id:'live',target:'run',revision:1,status:'running'});
+ const before=structuredClone(s),record=managedWorkRecords(s).find(r=>r.workId==='q');
+ assert.deepEqual(record.waitingOn.map(h=>h.workId).sort(),['pa','rev','run']);
+ assert.deepEqual(record.waitingOn.map(h=>h.status).sort(),['paused','review','running']);
+ assert.deepEqual(s,before);
+});
+
+test('manually paused scheduling explains the queued Work is held, not forgotten',()=>{
+ const s=base();s.works=[{id:'q',status:'queued',revision:0,manualControl:{pause:2}}];
+ const record=managedWorkRecords(s)[0];assert.match(record.phase,/排队第 1 位/);assert.match(record.phase,/已暂停调度/);
+});
+
+test('finished repair under manual pause waits for explicit resume without replay claims',()=>{
+ const s=base();s.works=[{id:'w',status:'paused',revision:1}];s.jobs=[{id:'j',target:'w',type:'initial',status:'failed',revision:1,resumeRequeue:{workRevision:1}}];
+ const record=managedWorkRecords(s)[0];assert.match(record.phase,/修复已完成/);assert.match(record.phase,/恢复/);assert.doesNotMatch(record.phase,/正在处理/);
+});
+
+test('an interrupted slot holder remains retained but is never described as executing',()=>{
+ const s=base();s.works=[{id:'held',name:'旧轮待核对',revision:1,status:'running'},{id:'queue',name:'下一项',revision:0,status:'queued'}];s.jobs=[{id:'stopped',target:'held',revision:1,status:'interrupted'}];
+ const before=structuredClone(s),record=managedWorkRecords(s).find(row=>row.workId==='queue');
+ assert.deepEqual(record.waitingOn,[{workId:'held',name:'旧轮待核对',status:'unverified-running'}]);assert.deepEqual(s,before);
+ s.jobs.push({id:'current',target:'held',revision:1,status:'running'});
+ assert.equal(managedWorkRecords(s).find(row=>row.workId==='queue').waitingOn[0].status,'running');
 });

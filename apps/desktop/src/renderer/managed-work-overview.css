@@ -111,6 +111,35 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.managed-work-overview-waiting { display: grid; gap: 6px; min-width: 0; }
+.managed-work-overview-waiting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+.managed-work-overview-waiting-row > span {
+  min-width: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.managed-work-overview .managed-work-overview-waiting-open {
+  flex: none;
+  font: inherit;
+  color: var(--ink);
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px 12px;
+  cursor: pointer;
+}
+.managed-work-overview .managed-work-overview-waiting-open:hover:not(:disabled) { border-color: var(--accent); }
+.managed-work-overview .managed-work-overview-waiting-open:disabled { opacity: .55; cursor: default; }
+.managed-work-overview .managed-work-overview-waiting-open:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 @media (max-width: 479px) {
   .managed-work-overview { gap: 14px; }
   .managed-work-overview-result { padding: 12px; }

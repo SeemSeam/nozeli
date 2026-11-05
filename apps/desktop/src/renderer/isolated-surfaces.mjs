@@ -24,6 +24,15 @@ function surface(parent, {invoke, profile, projectId, objectId, entryPath, onRef
       if(style.overflowX!=='visible'){x=Math.max(x,clip.left);right=Math.min(right,clip.right);}
       if(style.overflowY!=='visible'){y=Math.max(y,clip.top);bottom=Math.min(bottom,clip.bottom);}
     }
+    // Native previews cannot be covered by DOM. Keep the largest unobstructed
+    // report rectangle beside the nonmodal approval discussion.
+    for(const overlay of document.querySelectorAll('[data-review-discussion]:not([hidden])')){
+      const rect=overlay.getBoundingClientRect();
+      if(rect.right<=x||rect.left>=right||rect.bottom<=y||rect.top>=bottom)continue;
+      const areas=[[x,y,Math.max(x,rect.left),bottom],[Math.min(right,rect.right),y,right,bottom],[x,y,right,Math.max(y,rect.top)],[x,Math.min(bottom,rect.bottom),right,bottom]];
+      areas.sort((a,b)=>(b[2]-b[0])*(b[3]-b[1])-(a[2]-a[0])*(a[3]-a[1]));
+      [x,y,right,bottom]=areas[0];
+    }
     return {x,y,width:Math.max(0,right-x),height:Math.max(0,bottom-y)}; };
   const layout = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(() => { if(opened && !disposed) void invoke('isolated-preview.bounds',{key:id,bounds:bounds()}); }); };
   const syncLayout = async () => {

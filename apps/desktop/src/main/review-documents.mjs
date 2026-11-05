@@ -301,11 +301,16 @@ export function createReviewDocumentAdapter({ host, managed }) {
 // token. A changed token aborts for explicit re-confirmation — never adopted.
 export async function runReviewDecision({ workspace, managed, host, payload }) {
   const { projectId, workId, objectId, action, reviewVersion, requestKey } = payload ?? {};
-  if (!['accept', 'continue'].includes(action)) throw new HostError('INVALID_PAYLOAD', '审核决定只能是接受或继续。');
+  if (!['accept', 'continue', 'discuss'].includes(action)) throw new HostError('INVALID_PAYLOAD', '审核操作只能是接受、续改或讨论。');
   if (typeof reviewVersion !== 'string' || !/^[a-f0-9]{64}$/.test(reviewVersion)) throw new HostError('INVALID_PAYLOAD', '审校版本令牌无效。');
   if (typeof requestKey !== 'string' || !REVIEW_REQUEST_KEY.test(requestKey)) throw new HostError('INVALID_PAYLOAD', '决定确认身份无效。');
   if (action === 'continue' && payload.instruction != null && (typeof payload.instruction !== 'string' || payload.instruction.length > 4000)) throw new HostError('INVALID_PAYLOAD', '续作补充要求无效。');
+  if (action === 'discuss' && (typeof payload.text !== 'string' || !payload.text.trim() || payload.text.length > 8000)) throw new HostError('INVALID_PAYLOAD', '审批讨论需要有效正文，最多8000字。');
   await host.requireRegisteredProject(projectId);
+  if (action === 'discuss') {
+    const receipt = await managed.reviewDiscussionReceipt({ projectId, workId, objectId, reviewVersion, requestKey, text: payload.text });
+    if (receipt) return { ...receipt, action, reviewVersion };
+  }
   const initial = await managed.invoke('managed.review.read', { projectId, workId, objectId });
   if (!initial.reviewVersion) throw new HostError('REVIEW_UNAVAILABLE', '冻结候选或审核版本不可用，不能决定。');
   const paths = (initial.files || []).map(file => file.relPath);
@@ -325,10 +330,11 @@ export async function runReviewDecision({ workspace, managed, host, payload }) {
         files: (current.files || []).map(file => ({ relPath: file.relPath, status: file.status ?? null, draftRevision: file.draft?.revision ?? 0 })),
       });
     }
-    const result = await managed.invoke('managed.review.' + action, { projectId, workId, objectId, reviewVersion, requestKey, ...(action === 'continue' ? { instruction: payload.instruction ?? null } : {}) });
+    const operation = action === 'discuss' ? 'discussion.send' : action;
+    const result = await managed.invoke('managed.review.' + operation, { projectId, workId, objectId, reviewVersion, requestKey, ...(action === 'continue' ? { instruction: payload.instruction ?? null } : action === 'discuss' ? { text: payload.text } : {}) });
     return { ...result, action, reviewVersion };
   });
-  workspace.emitReviewDocumentState(projectId, workId, { readOnly: true, reason: 'decided' });
+  if (action !== 'discuss') workspace.emitReviewDocumentState(projectId, workId, { readOnly: true, reason: 'decided' });
   return decision;
 }
 

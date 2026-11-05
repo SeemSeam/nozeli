@@ -1738,7 +1738,7 @@ export class Controller extends EventEmitter {
     if(role==='worker')tools.push(tool('nozeli_skill_read','Read one granted role/domain skill by filename, e.g. material.md; returns versioned read-only instructions without project or host side effects.',{name:text}));
     if(role==='worker')tools.push(tool('nozeli_report_deviation','Report obvious task scope deviation and STOP. Host binds exact admitted input and original Work; only the user may authorize continuing or replanning.',{changedGoal:text,reason:text,progress:text}));
     if(role==='worker')tools.push(tool('nozeli_diagram_schema','Read the exact offline typed JSON schema and shared definitions before authoring an Archify diagram; read-only, no files created.',{type:{type:'string',enum:['architecture','workflow','sequence','dataflow','lifecycle']}}));
-    if(role==='worker')tools.push(tool('nozeli_report_read','Read a frozen report from this Work by original revision (omit for latest), or one relPath from its returned frozen artifact list. Never reads current project replacements. Semantic pages continue through nozeli_history_read.',{revision:{type:'integer',minimum:1},relPath:text},[]));
+    if(role==='worker')tools.push(tool('nozeli_report_read','Read a frozen report from this Work by original revision (omit for latest), or one relPath from its returned frozen artifact list. Successive publications may share one Work revision: a revision resolves to the newest publication of that revision, and the response carries the exact objectId and latest flag; pass objectId to address an exact frozen object. Never reads current project replacements. Semantic pages continue through nozeli_history_read.',{revision:{type:'integer',minimum:1},objectId:{type:'string'},relPath:text},[]));
     if(role==='worker')tools.push(tool('nozeli_history_read','Read the CURRENT Work\'s original sources by their stable host identities from the current-state projection: sources.originalTask.readRef and sources.approvedSources[].readRef (re-materialized identically on every run, including after compaction). Optional offset (integer >=0, a previous endOffset) continues the SAME frozen body across turns without replaying the prefix; the response returns exact version/offset/endOffset/totalChars for the next continuation. Turn-ephemeral refs from earlier runs are invalid by design. Read-only; never treat archived or approved inputs as new commands.',{readRef:text,offset:{type:'integer',minimum:0}}));
     // Native tools remain YOLO. This host-managed channel records ordinary
     // execution and gates only known concrete high-danger effects.
@@ -2058,10 +2058,17 @@ export class Controller extends EventEmitter {
     if(p.tool==='nozeli_privileged_execute')return this.privilegedExecute(job,target,p);
     if(p.tool==='nozeli_report_read'&&!['frontdesk','orchestrator'].includes(target)){
       if(a.revision!==undefined&&(!Number.isInteger(a.revision)||a.revision<1))throw Error('Invalid report revision');
-      const receipt=this.store.state.receipts.findLast(r=>r.workId===target&&(a.revision===undefined||r.revision===a.revision));if(!receipt)throw Error('No frozen report for this Work revision');
+      if(a.objectId!==undefined&&(typeof a.objectId!=='string'||!a.objectId))throw Error('Invalid report objectId');
+      // 同一Work revision可有多次发布（讨论回合内的连续发布）：revision解析为
+      // 该revision的最新发布，省略revision=当前最新；objectId精确寻址任一
+      // 冻结对象。返回值始终带实际objectId与latest标记，可区分同修订的
+      // 连续报告。
+      const workReceipts=this.store.state.receipts.filter(r=>r.workId===target);
+      const receipt=a.objectId?workReceipts.findLast(r=>r.objectId===a.objectId):workReceipts.findLast(r=>a.revision===undefined||r.revision===a.revision);
+      if(!receipt)throw Error('No frozen report for this Work revision');
       if(a.relPath!==undefined)return managedArtifact({storage:this.store.storage,project:{id:this.projectId,root:this.store.content},runtime:this.store.root,controller:this,currentController:()=>this},{objectId:receipt.objectId,relPath:a.relPath});
       const bytes=await readStoredReport(this.store,receipt);job.reader??=new ContextReader();const readRef=job.reader.add(reportSemanticText(bytes,receipt.report),{title:receipt.report.title,source:'objects/'+receipt.objectId,kind:'frozen-report',objectId:receipt.objectId,revision:receipt.revision});
-      return job.reader.read(readRef,{maxBytes:readAllowance??null,maxResultBytes:readAllowance??null,resultFields:{report:receipt.report,revision:receipt.revision,files:(receipt.snapshot?.files||[]).map(({relPath,digest,size})=>({relPath,digest,size})),readOnly:true,continueTurn:true}});
+      return job.reader.read(readRef,{maxBytes:readAllowance??null,maxResultBytes:readAllowance??null,resultFields:{report:receipt.report,revision:receipt.revision,objectId:receipt.objectId,latest:workReceipts.at(-1)?.objectId===receipt.objectId,files:(receipt.snapshot?.files||[]).map(({relPath,digest,size})=>({relPath,digest,size})),readOnly:true,continueTurn:true}});
     }
     if(p.tool==='nozeli_diagram_schema'&&!['frontdesk','orchestrator'].includes(target)){
       if(!['architecture','workflow','sequence','dataflow','lifecycle'].includes(a.type))throw Error('Unknown diagram type');
@@ -2528,7 +2535,11 @@ export class Controller extends EventEmitter {
         if(body)this.store.state.messages.push({id:randomUUID(),target:job.target,speaker:agentBody?'agent':'system',text:body,jobId:job.id,...(job.type==='intake'&&(job.context.frontJobId||job.context.manual||job.context.boundWorkId)?{audience:'frontdesk',sourceJobId:job.context.frontJobId||job.id}:{})});
         if(response.effective){this.store.state.modelObservations??={};this.store.state.modelObservations[`${response.effective.model}:${response.effective.effort}`]={status:'turn-completed',at:new Date().toISOString()};}
       });
-      if(isWork&&this.store.find(job.target).status==='running'&&!(savedJob()?.maintenanceBugId&&this.store.find(job.target).maintenance?.bugId===savedJob().maintenanceBugId)){await this.ensureWorkerDelivery(job);await this.store.settle(job.target);}
+      // 讨论串行队列：同修订还有排队的讨论回合时，本回合不结算也不强制交
+      // 付报告——状态保持running，队列FIFO逐回合执行，最后一回合才统一
+      // ensureWorkerDelivery+settle（中途发布由Worker自行决定，最终回合必须
+      // 留下与worktree匹配的当前发布）。
+      if(isWork&&!this.discussionQueuedBehind(job)&&this.store.find(job.target).status==='running'&&!(savedJob()?.maintenanceBugId&&this.store.find(job.target).maintenance?.bugId===savedJob().maintenanceBugId)){await this.ensureWorkerDelivery(job);await this.store.settle(job.target);}
       if(this.taskPermissions&&!await this.taskPermissions.heldFor(this.projectId,job)){
         const permissionTaskId=job.context?.permissionTaskId??job.id;
         const continuing=this.store.state.jobs.some(next=>next.id!==job.id&&['queued','running'].includes(next.status)&&(next.context?.permissionTaskId??next.id)===permissionTaskId);
@@ -2698,7 +2709,7 @@ export class Controller extends EventEmitter {
     if(work.status==='running')return {code:'RUNNING',detail:{reason:'worker-turn-active'}};
     return null;
   }
-  #reviewCapabilities(work,receipt,stale){
+  #reviewCapabilities(work,receipt,stale,{discussionActive=false,candidateDrift=false}={}){
     const reasons=[];
     if(['closing','ended'].includes(work.status))reasons.push({code:'WORK_ENDED',message:'决定已记录；报告仅供查阅，版本不可再修改'});
     if(stale)reasons.push(stale.code==='RUNNING'?{code:'RUNNING',message:'工作正在执行；请等回合结束后再审校或决定'}:{code:stale.code,message:'此报告已被更新的发布取代；草稿与决定只针对最新候选'});
@@ -2706,8 +2717,27 @@ export class Controller extends EventEmitter {
     const candidateBound=Boolean(receipt.snapshot?.candidate?.commit&&receipt.snapshot.candidate.commit===(work.execution?.candidate?.commit??null));
     if(!candidateBound&&work.status!=='ended')reasons.push({code:'RESULT_BINDING_REQUIRED',message:disposition.accept.message||'需要当前版本与冻结候选一致的结果报告'});
     if(this.#reviewBusy(work.id)&&work.status!=='ended')reasons.push({code:'WORK_BUSY',message:'此工作有待执行的输入；请等待当前回合结算'});
-    const blocked=reasons.length>0;
-    return {canSave:!blocked,canContinue:!blocked,canAccept:!blocked&&disposition.accept.allowed===true,reasons};
+    // 只收紧接受，不阻断草稿/续作：讨论进行中或实际改动未发布时，接受保持
+    // 阻断直到回合结算/发布匹配新快照。
+    if(discussionActive)reasons.push({code:'DISCUSSION_ACTIVE',message:'报告讨论进行中；请等本轮讨论结束后再决定'});
+    if(candidateDrift)reasons.push({code:'CANDIDATE_DRIFT',message:'实际改动与最新发布快照不一致；需要新的匹配发布后才能接受'});
+    const blocked=reasons.some(reason=>!['DISCUSSION_ACTIVE','CANDIDATE_DRIFT'].includes(reason.code));
+    const extra=reasons.filter(reason=>['DISCUSSION_ACTIVE','CANDIDATE_DRIFT'].includes(reason.code));
+    return {canSave:!blocked,canContinue:!blocked,canAccept:!blocked&&extra.length===0&&disposition.accept.allowed===true,reasons:[...reasons.filter(reason=>!['DISCUSSION_ACTIVE','CANDIDATE_DRIFT'].includes(reason.code)),...extra]};
+  }
+  // 未发布改动检测（接受门）：当前执行目录全量树 vs 最新结果发布冻结的候选
+  // 树。讨论回合中 Worker 实际改动（新增/删除/改名/内容）而未发布、或外部
+  // 改写 worktree，都让接受保持阻断——绝不把未发布改动静默丢弃或冒充已审
+  // 版本合入。回执有候选树但执行身份不可核对（或检查失败）时同样阻断
+  // （fail-closed：未核实≠干净）；closing/ended 历史只读面由既有原因约束。
+  async #reviewCandidateDrift(w,receipt){
+    if(['closing','ended'].includes(w.status))return false;
+    const candidateTree=receipt?.snapshot?.candidate?.tree;
+    if(!candidateTree)return false;
+    let verdict;
+    try{verdict=await this.execution.reviewDrift(w,candidateTree);}
+    catch{return true;}
+    return verdict!==false;
   }
   async #reviewVersionNow(work,receipt){
     const m=await this.#reviewManifest(work);
@@ -2905,6 +2935,7 @@ export class Controller extends EventEmitter {
     const closureMatches=work.closure?.binding?.objectId===receipt.objectId&&work.closure.binding.revision===receipt.revision;
     return {
       workId:work.id,objectId:receipt.objectId,status:work.status,revision:receipt.revision,workRevision:work.revision,
+      publicationNumber:this.store.state.receipts.filter(row=>row.workId===work.id&&row.kind==='result').findIndex(row=>row.objectId===receipt.objectId)+1,
       candidate:{
         commit:current?.snapshot.candidateCommit??work.execution?.candidate?.commit??null,
         jobId:receipt.snapshot?.candidate?.jobId??null,
@@ -2920,7 +2951,7 @@ export class Controller extends EventEmitter {
       merge:closureMatches?reviewMergeProjection(work.closure):null,
       mergeConsent:receipt.revision===work.revision&&(work.result?.objectId===receipt.objectId||work.problem?.objectId===receipt.objectId)?mergeConsentState(work):null,
       ...(lastContinuation?{continuation:{state:lastContinuation.state,at:lastContinuation.at??null,revision:lastContinuation.revision??null,jobId:lastContinuation.jobId??null,...(lastContinuation.error?{error:{code:lastContinuation.error.code??null,message:lastContinuation.error.message??null}}:{})}}:{}),
-      capabilities:this.#reviewCapabilities(work,receipt,stale),
+      capabilities:this.#reviewCapabilities(work,receipt,stale,{discussionActive:this.#discussionInFlight(work.id).length>0,candidateDrift:await this.#reviewCandidateDrift(work,receipt)}),
     };
   }
   async reviewSave(p={}){
@@ -3023,6 +3054,216 @@ export class Controller extends EventEmitter {
       return {accepted:true,workId:work.id,revision:result.revision,jobId:result.jobId,...(result.duplicate?{duplicate:true}:{})};
     });
   }
+  // ── 报告审校讨论（managed.review.discussion.*）────────────────────────────
+  // 讨论线程=原Work/原线程上的有界对话。读取只出自真实宿主记录（原始请求/
+  // 交接brief/worker回合/发布行/讨论消息），无虚构完成或摘要；纯答复不强制
+  // 重新发布；带人工草稿的发送走既有续作机器（字节级应用、旧发布全stale、
+  // 必须发布匹配新快照，否则接受保持阻断）。
+  #discussionPayloadDigest(p){
+    return createHash('sha256').update(JSON.stringify({objectId:p.objectId,reviewVersion:p.reviewVersion,text:p.text})).digest('hex');
+  }
+  #discussionRecords(w){return w.review?.discussions??[];}
+  #discussionJobs(id){
+    return (this.store.state.jobs||[]).filter(j=>(j.target===id||j.context?.boundWorkId===id)&&j.context?.reviewDiscussion);
+  }
+  #discussionInFlight(id){return this.#discussionJobs(id).filter(j=>['queued','running'].includes(j.status));}
+  #reviewBusyExceptDiscussion(id){
+    return (this.store.state.jobs||[]).some(j=>(j.target===id||j.context?.boundWorkId===id)&&!j.context?.reviewDiscussion&&['queued','running'].includes(j.status));
+  }
+  // 幂等回执查询（宿主决策屏障专用，非公开IPC）：durable接受记录按精确
+  // 摘要回执原job，未知键返回null，同键不同载荷抛碰撞。
+  reviewDiscussionReceipt(p={}){
+    if(!p||typeof p!=='object'||Array.isArray(p))throw Object.assign(Error('讨论回执参数无效'),{code:'INVALID_PAYLOAD'});
+    if(typeof p.workId!=='string'||!p.workId)throw Object.assign(Error('需要工作标识'),{code:'INVALID_PAYLOAD'});
+    if(typeof p.requestKey!=='string'||!REVIEW_REQUEST_KEY.test(p.requestKey))throw Object.assign(Error('讨论确认身份无效'),{code:'INVALID_PAYLOAD'});
+    if(typeof p.objectId!=='string'||!p.objectId||typeof p.reviewVersion!=='string'||!/^[a-f0-9]{64}$/.test(p.reviewVersion)||typeof p.text!=='string')throw Object.assign(Error('讨论回执身份无效'),{code:'INVALID_PAYLOAD'});
+    const work=this.#reviewWork(p.objectId,p.workId);
+    const w=this.store.find(work.id);
+    const record=this.#discussionRecords(w).find(d=>d.requestKey===p.requestKey)??(w.review?.continuations||[]).find(c=>c.requestKey===p.requestKey&&c.discussion===true);
+    if(!record)return null;
+    if(record.payloadDigest!==this.#discussionPayloadDigest(p))throw Object.assign(Error('同一讨论确认身份已用于不同请求'),{code:'REVIEW_REQUEST_COLLISION'});
+    return {accepted:true,jobId:record.jobId,workId:work.id,revision:record.revision,duplicate:true};
+  }
+  // 条目=真实记录投影：Work原始请求/交接brief锚点 + 宿主账本消息行（用户
+  // 输入/发布/系统）+ 原生timeline已接受可见回复（sessionIndex.portableMessages，
+  // 精确原文/原ID/原状态；工具与元数据行已在timeline会话投影侧过滤）。
+  // 按timeline序号统一排序；去重只认同一原生身份（相同id或相同
+  // nativeEntryDigest），绝不按正文折叠重复的真实回复。说话人分类与
+  // session-presentation.messageRole 同判（宿主代发 initial/supplement 显示为
+  // 主控，agent按目标显示为worker），只改展示分类，不改写原始记录。
+  // 流式回复暂不投影（等待canonical替换身份；本读取只反映durable已接受事实）。
+  #discussionEntries(w){
+    const jobs=new Map((this.store.state.jobs||[]).filter(j=>j.target===w.id||j.context?.boundWorkId===w.id).map(j=>[j.id,j]));
+    const native=this.store.state.sessionIndex;
+    const seqMap=new Map((native?.entries||[]).map(r=>[r.id,r.sequence??0]));
+    const msgSeq=native?.messageSequences??{};
+    const keyOf=row=>seqMap.get(row.id)??msgSeq[row.id]??Number.MAX_SAFE_INTEGER;
+    // messageRole 同判：Work上的宿主代发（initial/supplement交接/补充）＝主控。
+    const roleOf=(m,job)=>m.speaker==='user'&&job&&job.target===w.id&&['initial','supplement'].includes(job.type)?'orchestrator':m.speaker==='agent'?'worker':m.speaker;
+    const rows=[];
+    const seenIds=new Set(),seenDigests=new Set();
+    const admit=row=>{
+      if(seenIds.has(row.id))return;
+      if(row.nativeEntryDigest&&seenDigests.has(row.nativeEntryDigest))return;
+      seenIds.add(row.id);if(row.nativeEntryDigest)seenDigests.add(row.nativeEntryDigest);
+      rows.push(row);
+    };
+    for(const m of (this.store.state.messages||[])){
+      if(m.target!==w.id)continue;
+      const job=m.jobId?jobs.get(m.jobId):null;
+      const discussion=Boolean(job?.context?.reviewDiscussion||m.reviewDiscussion);
+      const source=discussion?'review-discussion':m.publication||m.objectId?'publication':m.speaker==='user'?'user-input':m.speaker==='agent'?'worker-reply':'system';
+      admit({id:m.id,speaker:roleOf(m,job),text:m.text??null,jobId:m.jobId??null,source,...(m.objectId?{objectId:m.objectId}:{}),...(m.publication?{publication:m.publication}:{}),...(m.jobId&&job?{status:job.status}:{}),key:keyOf(m)});
+    }
+    // 原生已接受可见回复（真实Pi Worker正文）：durable已确认事实。
+    for(const m of (native?.portableMessages||[])){
+      if(m.target!==w.id||m.speaker!=='agent'||typeof m.text!=='string'||!m.text.trim())continue;
+      admit({id:m.id,speaker:'worker',text:m.text,jobId:m.jobId??null,status:m.status??null,source:null,...(m.nativeEntryDigest?{nativeEntryDigest:m.nativeEntryDigest}:{}),...(m.at?{at:m.at}:{}),key:keyOf(m)});
+    }
+    const projected=rows.sort((a,b)=>a.key-b.key).map(({key,...row})=>{
+      const job=row.jobId?jobs.get(row.jobId):null;
+      return {id:row.id,speaker:row.speaker,target:w.id,text:row.text,jobId:row.jobId,source:row.source??(job?.context?.reviewDiscussion?'review-discussion':row.speaker==='worker'?'worker-reply':'system'),...(row.status?{status:row.status}:{}),...(row.objectId?{objectId:row.objectId}:{}),...(row.publication?{publication:row.publication}:{}),...(row.nativeEntryDigest?{nativeEntryDigest:row.nativeEntryDigest}:{}),...(row.at?{at:row.at}:{})};
+    });
+    return [
+      {id:'work-request:'+w.id,speaker:'user',target:w.id,text:w.request,source:'work-request'},
+      ...(typeof w.brief==='string'&&w.brief.trim()?[{id:'work-handoff:'+w.id,speaker:'orchestrator',target:w.id,text:w.brief,source:'work-handoff'}]:[]),
+      ...projected,
+    ];
+  }
+  // 同修订讨论队列是否还有排队回合（runJob结算面用：队列未清空前不结算、
+  // 不强制交付，最后一回合统一ensureWorkerDelivery+settle收口）。
+  discussionQueuedBehind(job){
+    return (this.store.state.jobs||[]).some(next=>next.id!==job.id&&next.target===job.target&&next.status==='queued'&&next.context?.reviewDiscussion&&(next.revision??null)===(job.revision??null));
+  }
+  async reviewDiscussionRead(p={}){
+    if(!p||typeof p!=='object'||Array.isArray(p))throw Object.assign(Error('讨论读取参数无效'),{code:'INVALID_PAYLOAD'});
+    if(p.cursor!==undefined&&p.cursor!==null&&(typeof p.cursor!=='string'||!/^([0-9]|[1-9][0-9]*)$/.test(p.cursor)))throw Object.assign(Error('讨论分页游标无效'),{code:'INVALID_PAYLOAD'});
+    if(p.limit!==undefined&&p.limit!==null&&(!Number.isSafeInteger(p.limit)||p.limit<1||p.limit>200))throw Object.assign(Error('讨论分页数量无效'),{code:'INVALID_PAYLOAD'});
+    const work=this.#reviewWork(p.objectId,p.workId);
+    const w=this.store.find(work.id);
+    const objectId=typeof p.objectId==='string'&&p.objectId?p.objectId:(w.result?.objectId??null);
+    const receipt=objectId?this.#reviewReceipt(w,objectId):null;
+    const limit=p.limit??50;
+    const all=this.#discussionEntries(w);
+    const start=p.cursor?Math.min(Number(p.cursor),all.length):0;
+    const page=all.slice(start,start+limit);
+    const nextCursor=start+page.length<all.length?String(start+page.length):null;
+    const latestStart=Math.max(0,all.length-limit);
+    const latestCursor=latestStart>0?String(latestStart):null;
+    const inflight=this.#discussionInFlight(w.id);
+    const reasons=[];
+    if(['closing','ended'].includes(w.status))reasons.push('WORK_ENDED');
+    else{
+      if(w.readOnly)reasons.push('HISTORICAL_SESSION_READ_ONLY');
+      if(!receipt||!w.result||w.result.objectId!==objectId||(w.result.revision??null)!==w.revision||receipt.stale)reasons.push('REVIEW_CANDIDATE_STALE');
+      if((w.review?.continuations||[]).some(c=>['applying','blocked'].includes(c.state)))reasons.push('REVIEW_CONTINUE_PENDING');
+      // 排队发送：仅当在飞输入全部是同Work、同当前修订、同当前对象的讨论
+      // 回合时可继续排队（durable串行队列）；任何其他在飞输入（initial/续作/
+      // 恢复等）或非讨论running都阻断。
+      const nonDiscussionBusy=this.#reviewBusyExceptDiscussion(w.id);
+      if(nonDiscussionBusy||w.status==='running'&&!inflight.length)reasons.push('WORK_BUSY');
+      else if(w.status!=='review'&&w.status!=='running')reasons.push('WORK_STATE');
+      else if(inflight.some(j=>(j.revision??null)!==w.revision||j.context.reviewDiscussion.objectId!==(w.result?.objectId??null)))reasons.push('REVIEW_CANDIDATE_STALE');
+      if(deviationHeld(w))reasons.push('WORK_DEVIATION_HELD');
+      if((this.store.state.todos||[]).some(t=>t.workId===w.id&&t.kind==='recovery'&&t.status==='open'))reasons.push('RECOVERY_REQUIRED');
+      if(w.manualControl?.pause!=null)reasons.push('WORK_CONTROL_HELD');
+      if(!receipt?.snapshot)reasons.push('CANDIDATE_REQUIRED');
+    }
+    return {
+      entries:page.map((entry,offset)=>({...entry,seq:start+offset})),
+      nextCursor,pageStart:start,latestCursor,total:all.length,
+      workId:w.id,objectId,latestObjectId:w.result?.objectId??null,
+      active:inflight.some(j=>j.status==='running'),queued:inflight.filter(j=>j.status==='queued').length,
+      canSend:reasons.length===0,reasons:[...new Set(reasons)],
+    };
+  }
+  async reviewDiscussionSend(p={}){
+    if(!p||typeof p!=='object'||Array.isArray(p))throw Object.assign(Error('讨论发送参数无效'),{code:'INVALID_PAYLOAD'});
+    if(typeof p.objectId!=='string'||!p.objectId)throw Object.assign(Error('需要当前报告标识'),{code:'INVALID_PAYLOAD'});
+    if(typeof p.reviewVersion!=='string'||!/^[a-f0-9]{64}$/.test(p.reviewVersion))throw Object.assign(Error('审校版本令牌无效'),{code:'INVALID_PAYLOAD'});
+    if(typeof p.requestKey!=='string'||!REVIEW_REQUEST_KEY.test(p.requestKey))throw Object.assign(Error('讨论确认身份无效'),{code:'INVALID_PAYLOAD'});
+    if(typeof p.text!=='string'||!p.text.trim()||p.text.length>32000)throw Object.assign(Error('讨论正文必须是≤32000字符的非空文本'),{code:'INVALID_PAYLOAD'});
+    const work=this.#reviewWork(p.objectId,p.workId);
+    return this.workLocked(work.id,async()=>{
+      const w=this.store.find(work.id);
+      if(['closing','ended'].includes(w.status))throw Object.assign(Error('决定已记录；不能发起报告讨论'),{code:'WORK_ENDED'});
+      if(w.readOnly)throw Object.assign(Error('历史执行资源只读'),{code:'HISTORICAL_SESSION_READ_ONLY'});
+      // 幂等重放优先：已durable接受的输入直接回执原job（含带草稿的讨论
+      // 续作），不因后续发布/stale标记被拒。
+      const payloadDigest=this.#discussionPayloadDigest(p);
+      const prior=this.#discussionRecords(w).find(d=>d.requestKey===p.requestKey)??(w.review?.continuations||[]).find(c=>c.requestKey===p.requestKey&&c.discussion===true);
+      if(prior){
+        if(prior.payloadDigest!==payloadDigest)throw Object.assign(Error('同一讨论确认身份已用于不同请求'),{code:'REVIEW_REQUEST_COLLISION'});
+        return {accepted:true,workId:work.id,revision:prior.revision,jobId:prior.jobId,duplicate:true};
+      }
+      const receipt=this.#reviewReceipt(w,p.objectId);
+      if(receipt.kind!=='result'||p.objectId!==(w.result?.objectId??null)||receipt.stale)throw Object.assign(Error('此报告已被取代；请在最新发布上讨论'),{code:'REVIEW_CANDIDATE_STALE'});
+      const current=await this.#reviewVersionNow(w,receipt);
+      if(!current?.snapshot)throw Object.assign(Error('缺少冻结候选，不能讨论'),{code:'CANDIDATE_REQUIRED'});
+      if(p.reviewVersion!==current.version)throw Object.assign(Error('审校版本已变化（草稿或候选已更新）；请重新读取'),{code:'REVIEW_VERSION_STALE'});
+      // 排队发送准入：只有当前在飞输入全部是同Work、同当前修订、同当前对象
+      // 的讨论回合时，才允许把新消息排进durable串行队列（FIFO、单owner、
+      // 逐回合结算）；任何其他在飞输入（initial/续作/恢复/其他manual）都阻断。
+      // 讨论回合中途发布新对象（同修订）后，新消息必须刷新到最新对象再排队。
+      const inflightDiscussion=this.#discussionInFlight(work.id);
+      if(this.#reviewBusyExceptDiscussion(work.id))throw Object.assign(Error('此工作有待执行的其他输入；不能同时讨论'),{code:'WORK_BUSY'});
+      if(inflightDiscussion.length){
+        if(w.status!=='running')throw Object.assign(Error('当前状态不能排队讨论'),{code:'WORK_STATE'});
+        if(inflightDiscussion.some(j=>(j.revision??null)!==w.revision||j.context.reviewDiscussion.objectId!==p.objectId))throw Object.assign(Error('讨论回合已产生新发布；请刷新到最新报告后再继续'),{code:'REVIEW_CANDIDATE_STALE'});
+      }else if(w.status!=='review')throw Object.assign(Error(w.status==='running'?'工作正在执行；等待回合结束后再讨论':'当前状态不能讨论'),{code:w.status==='running'?'WORK_BUSY':'WORK_STATE'});
+      if((w.review?.continuations||[]).some(c=>['applying','blocked'].includes(c.state)))throw Object.assign(Error('存在未完成的续作意图；请先处理后再讨论'),{code:'REVIEW_CONTINUE_PENDING'});
+      if(deviationHeld(w))throw Object.assign(Error('任务偏离待用户决定；不能讨论'),{code:'WORK_DEVIATION_HELD'});
+      if((this.store.state.todos||[]).some(t=>t.workId===work.id&&t.kind==='recovery'&&t.status==='open'))throw Object.assign(Error('存在未处理的恢复决定；先核对未知效果'),{code:'RECOVERY_REQUIRED'});
+      if(w.manualControl?.pause!=null)throw Object.assign(Error('人工暂停生效中；先恢复后再讨论'),{code:'WORK_CONTROL_HELD'});
+      // 草稿基线由reviewVersion绑定：草稿在读取后变化即拒绝，绝不静默忽略
+      // 或覆盖；发送本身不修改任何草稿（纯讨论）或按续作机器显式应用（下）。
+      const drafts=activeDrafts(w),record=await readDraftRecord(this.store.storage,this.store.projectId,work.id);
+      const plan=[];
+      for(const [relPath,draft] of Object.entries(drafts)){
+        if(draft.objectId!==p.objectId)continue;
+        const entry=current.snapshot.files.find(f=>f.relPath===relPath);
+        if(!entry)throw Object.assign(Error('草稿文件不在当前候选中：'+relPath),{code:'REVIEW_CANDIDATE_STALE'});
+        if(draft.textDigest===entry.candidateDigest)continue;
+        const text=draftTextFor(record,relPath,draft.revision);
+        if(text===null)throw Object.assign(Error('草稿正文缺失；请重新保存草稿后再发'),{code:'REVIEW_DRAFT_RECOVERY'});
+        const {bytes,digest}=reviewDraftBytes(text);
+        if(digest!==draft.textDigest)throw Object.assign(Error('草稿正文与账本摘要不一致；请重新保存草稿'),{code:'REVIEW_DRAFT_RECOVERY'});
+        plan.push({relPath,fromDigest:entry.candidateDigest,toDigest:digest,draftRevision:draft.revision,bytes});
+      }
+      // 排队中不接受新的草稿应用计划：并发apply会破坏摘要幂等与worktree边界。
+      // 带人工修改的发送需等当前讨论队列结算（显式安全边界），纯文本可直接排队。
+      if(plan.length&&inflightDiscussion.length)throw Object.assign(Error('讨论回合进行中；带人工草稿修改的发送需等本轮结束后排队'),{code:'WORK_BUSY'});
+      if(!plan.length){
+        // 纯讨论：同Work、同revision聊天回合（review→running→settle回review）。
+        // 无改动纯答复不强制发布；实际改动未发布则接受被CANDIDATE_DRIFT阻断。
+        const textDigest=createHash('sha256').update(Buffer.from(p.text,'utf8')).digest('hex');
+        const result=await this.store.reviewDiscussionSendState(work.id,{requestKey:p.requestKey,objectId:p.objectId,reviewVersion:p.reviewVersion,payloadDigest,textDigest,jobText:p.text});
+        this.changed();this.kick();
+        return {accepted:true,workId:work.id,revision:result.revision,jobId:result.jobId,...(result.duplicate?{duplicate:true}:{})};
+      }
+      // 带人工草稿：显式走既有续作机器——摘要幂等字节级应用、旧发布全stale、
+      // revision++、同Work同线程manual job（原生用户条目=用户讨论原文，投影
+      // 附带已应用文件事实）。实际已变更，必须发布匹配新快照，接受在此之前
+      // 保持阻断；崩溃由resumeReviewContinuations幂等恢复。
+      const filesList=plan.map(f=>'- '+f.relPath+'（人工审校后 sha256 '+f.toDigest+'）').join('\n');
+      const instruction='用户在报告审校中发来讨论消息，并要求按人工确认版本继续。\n宿主已把下列人工确认版本准确写入执行目录（字节级一致）；请以此为当前事实继续原任务，核对这些文件的最终状态。本轮已有实际变更，完成后必须发布新的结果报告：\n'+filesList+'\n用户讨论消息（原文）：\n'+p.text;
+      await this.store.mutate(()=>{
+        const w2=this.store.find(work.id);
+        w2.review??={drafts:{},history:{},continuations:[]};
+        if(!w2.review.continuations.some(c=>c.requestKey===p.requestKey))w2.review.continuations.push({requestKey:p.requestKey,at:new Date().toISOString(),reviewVersion:p.reviewVersion,objectId:p.objectId,payloadDigest,discussion:true,userText:p.text,state:'applying',instruction,files:plan.map(({bytes:dropped,...rest})=>rest)});
+      });
+      const m=await this.execution.prepare(work.id);
+      try{await this.execution.applyReviewedFiles(m,plan);}
+      catch(error){
+        await this.store.mutate(()=>{const c=this.store.find(work.id).review?.continuations?.find(x=>x.requestKey===p.requestKey);if(c&&c.state==='applying'){c.state='blocked';c.error={code:error.code||null,message:error.message};}});
+        throw error;
+      }
+      const result=await this.store.reviewContinueState(work.id,{requestKey:p.requestKey,discussion:{text:p.text}});
+      if(result.abandoned)throw Object.assign(Error('工作已结束；讨论未执行'),{code:'WORK_ENDED'});
+      this.changed();this.kick();
+      return {accepted:true,workId:work.id,revision:result.revision,jobId:result.jobId,...(result.duplicate?{duplicate:true}:{})};
+    });
+  }
   async reviewAccept(p={}){
     if(!p||typeof p!=='object'||Array.isArray(p))throw Object.assign(Error('审校接受参数无效'),{code:'INVALID_PAYLOAD'});
     if(typeof p.objectId!=='string'||!p.objectId)throw Object.assign(Error('需要当前报告标识'),{code:'INVALID_PAYLOAD'});
@@ -3045,6 +3286,11 @@ export class Controller extends EventEmitter {
       const current=await this.#reviewVersionNow(w,receipt);
       if(!current?.snapshot)throw Object.assign(Error('缺少冻结候选，不能接受'),{code:'CANDIDATE_REQUIRED'});
       if(p.reviewVersion!==current.version)throw Object.assign(Error('审校版本已变化（草稿或候选已更新）；请重新读取后确认'),{code:'REVIEW_VERSION_STALE'});
+      // 报告讨论未结算回合与未发布改动都阻断接受（先于泛化回合门，给出精确
+      // 原因）：讨论回合可能仍在改写候选；worktree与最新发布快照不一致时
+      // 绝不把未发布改动静默丢弃合入。
+      if(this.#discussionInFlight(work.id).length)throw Object.assign(Error('报告讨论尚有未结算回合；请等本轮讨论结束后再决定'),{code:'DISCUSSION_ACTIVE'});
+      if(await this.#reviewCandidateDrift(w,receipt))throw Object.assign(Error('工作区实际改动与最新发布快照不一致；请让 Worker 发布匹配的新结果报告后再接受'),{code:'CANDIDATE_DRIFT'});
       const capability=workDisposition(this.store.state,w).accept;
       if(!capability.allowed)throw Object.assign(Error(capability.message||'当前不可接受'),{code:capability.reasonCode||'ACCEPT_UNAVAILABLE'});
       await this.validateLocalIdentity(work.id);
@@ -3129,7 +3375,7 @@ export class Controller extends EventEmitter {
               plan.push({relPath:f.relPath,fromDigest:f.fromDigest,toDigest:f.toDigest,draftRevision:f.draftRevision,bytes:Buffer.from(text,'utf8')});
             }
             await this.execution.applyReviewedFiles(m,plan);
-            const result=await this.store.reviewContinueState(w.id,{requestKey:record.requestKey});
+            const result=await this.store.reviewContinueState(w.id,{requestKey:record.requestKey,...(record.discussion===true&&typeof record.userText==='string'?{discussion:{text:record.userText}}:{})});
             if(!result.duplicate&&!result.abandoned){this.changed();this.kick();}
           }catch(error){
             await this.store.mutate(()=>{record.state='blocked';record.error={code:error.code||null,message:error.message};});
@@ -3238,9 +3484,9 @@ export class Controller extends EventEmitter {
     this.mergeDrain=operation;
     return operation;
   }
-  // 续作指令草稿（UI独立durable存储）：按objectId命名空间读取/CAS——新发布
-  // 未写过就返回revision 0/空串（绝不把旧发布指令静默带给新报告）；旧发布
-  // 自己的指令仍可读。正文按版本append进recovery记录，账本CAS失败不丢旧文。
+  // 续作/讨论指令草稿（UI独立durable存储）：Work作用域——同一Work单调
+  // revision，跨发布轮换保留正文（不因新publication被拒/清空）；objectId
+  // 仅作写入来源标记。正文按版本append进recovery记录，账本CAS失败不丢旧文。
   async #instructionRecord(workId){
     const record=await this.store.storage.getRecovery(this.store.projectId,'managed:review-instruction:'+workId);
     return record&&Array.isArray(record.entries)?record:{schema:1,workId,entries:[]};
@@ -3251,16 +3497,14 @@ export class Controller extends EventEmitter {
     const mirror=w.review?.instruction;
     const requested=p.objectId??(w.result?.objectId??null);
     const record=await this.#instructionRecord(work.id);
-    if(mirror&&mirror.objectId===requested){
-      const hit=record.entries.find(e=>e.objectId===requested&&e.revision===mirror.revision);
+    if(mirror&&Number.isSafeInteger(mirror.revision)&&mirror.revision>0){
+      const hit=[...record.entries].reverse().find(e=>e.revision===mirror.revision&&e.textDigest===mirror.textDigest);
       return {workId:work.id,objectId:requested,revision:mirror.revision,text:hit?.text??'',savedAt:mirror.savedAt??null};
     }
-    // 非当前命名空间：返回该发布自己的最新可见版本；从未写过则为空。
-    const seen=[...record.entries].reverse().find(e=>e.objectId===requested);
-    return {workId:work.id,objectId:requested,revision:seen?.revision??0,text:seen?.text??'',savedAt:seen?.savedAt??null};
+    return {workId:work.id,objectId:requested,revision:0,text:'',savedAt:null};
   }
   async reviewInstructionSave(p={}){
-    if(typeof p.objectId!=='string'||!p.objectId)throw Object.assign(Error('需要当前报告标识'),{code:'INVALID_PAYLOAD'});
+    if(p.objectId!==undefined&&p.objectId!==null&&typeof p.objectId!=='string')throw Object.assign(Error('报告标识无效'),{code:'INVALID_PAYLOAD'});
     if(typeof p.text!=='string'||p.text.length>8000)throw Object.assign(Error('指令草稿必须是≤8000字符的文本'),{code:'INVALID_PAYLOAD'});
     if(!Number.isSafeInteger(p.expectedRevision)||p.expectedRevision<0)throw Object.assign(Error('指令草稿版本号无效'),{code:'INVALID_PAYLOAD'});
     const work=this.#reviewWork(p.objectId,p.workId);
@@ -3268,20 +3512,22 @@ export class Controller extends EventEmitter {
       const w=this.store.find(work.id);
       if(['closing','ended'].includes(w.status))throw Object.assign(Error('决定已记录；指令草稿不再修改'),{code:'WORK_ENDED'});
       if(w.readOnly)throw Object.assign(Error('历史执行资源只读'),{code:'HISTORICAL_SESSION_READ_ONLY'});
-      // 只绑定该Work当前结果发布；忙碌回合与旧发布都不接受（防串写/伪装）。
-      if(p.objectId!==(w.result?.objectId??null))throw Object.assign(Error('指令草稿只属于当前待审发布'),{code:'REVIEW_CANDIDATE_STALE'});
-      if(w.status==='running'||this.#reviewBusy(work.id))throw Object.assign(Error('工作正在执行；请等回合结束后再保存续作指令'),{code:'WORK_BUSY'});
+      // 讨论回合进行中允许保存（UI据此在发送后清理作曲框）；指令只在
+      // review.continue 提交时消费，届时另行做非忙碌校验。其他忙碌回合
+      // （worker/续作执行中）仍拒绝，防串写。
+      const discussionInFlight=this.#discussionInFlight(work.id).length>0;
+      if(this.#reviewBusyExceptDiscussion(work.id)||w.status==='running'&&!discussionInFlight)throw Object.assign(Error('工作正在执行；请等回合结束后再保存续作指令'),{code:'WORK_BUSY'});
       const mirror=w.review?.instruction;
-      const current=mirror&&mirror.objectId===p.objectId?mirror.revision:0;
+      const current=mirror?.revision??0;
       if(p.expectedRevision!==current)throw Object.assign(Error('指令草稿版本已变化，请重新读取'),{code:'REVIEW_INSTRUCTION_STALE',currentRevision:current});
       const {digest}=reviewDraftBytes(p.text),at=new Date().toISOString();
       // 字节先落：按版本append（上限40条），账本事务内CAS复核。
       const record=await this.#instructionRecord(work.id);
-      record.entries.push({objectId:p.objectId,revision:current+1,text:p.text,textDigest:digest,savedAt:at});
+      record.entries.push({objectId:p.objectId??(w.result?.objectId??null),revision:current+1,text:p.text,textDigest:digest,savedAt:at});
       await this.store.storage.putRecovery(this.store.projectId,'managed:review-instruction:'+work.id,{schema:1,workId:work.id,entries:record.entries.slice(-40)});
-      const saved=await this.store.reviewInstructionState(work.id,{objectId:p.objectId,textDigest:digest,expectedRevision:current});
+      const saved=await this.store.reviewInstructionState(work.id,{objectId:p.objectId??null,textDigest:digest,expectedRevision:current});
       this.changed();
-      return {accepted:true,workId:work.id,objectId:p.objectId,revision:saved.revision,savedAt:saved.savedAt};
+      return {accepted:true,workId:work.id,objectId:p.objectId??(w.result?.objectId??null),revision:saved.revision,savedAt:saved.savedAt};
     });
   }
   advanceClosure(id){

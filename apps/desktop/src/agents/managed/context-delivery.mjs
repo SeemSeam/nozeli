@@ -55,6 +55,7 @@ export function workerStateProjection(work,{unknownEffects=[],originalTaskRef=nu
     name:work.name||null,
     scope:{approvedDeviationIds:(work.approvedScopes||[]).map(s=>s.deviationId),approvedSourceJobIds:(work.approvedScopes||[]).map(s=>s.sourceJobId)},
     ...(work.deviation?.status&&['pending','replanned'].includes(work.deviation.status)?{deviationHeld:true}:{}),
+    ...((()=>{const pending=(work.review?.continuations||[]).findLast(c=>c.discussion===true&&['applying','blocked','queued'].includes(c.state));return pending?{review:{discussion:{state:pending.state,appliedFiles:(pending.files||[]).slice(0,16).map(f=>({relPath:f.relPath,toDigest:f.toDigest?String(f.toDigest).slice(0,12):null})),instruction:'人工确认版本已由宿主字节级写入执行目录；以此为当前事实核对并完成剩余工作。本轮已有实际变更：完成后必须发布新的结果报告，未发布前用户不能接受。'}}}:{};})()),
     ...(work.maintenance?.bugId?{hostRecoveryBugId:work.maintenance.bugId}:{}),
     effects:{
       completedOperations:(work.fileOperations?.length??0)+(work.documentOperations?.length??0),

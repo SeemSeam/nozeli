@@ -488,6 +488,7 @@ async function main() {
       }
       if(op==='workspace.review.decide'){
         if(scope.role!=='shell'&&!(scope.role==='surface'&&['report','history'].includes(scope.kind)))throw new HostError('IPC_DENIED','只有报告面或主窗口能执行审核决定。');
+        if(!['accept','continue'].includes(payload?.action))throw new HostError('INVALID_PAYLOAD','审核决定只能是接受或继续；讨论使用审批专用入口。');
         return {ok:true,value:await runReviewDecision({workspace:workspaceNative,managed:managedAgents,host,payload:payload??{}})};
       }
       // Review documents fail closed for services that are not source-aware:
@@ -789,7 +790,7 @@ async function main() {
         return {ok:true,value:await exportTimelineOriginal({managed:managedAgents,dialog,scope,...payload})};
       }
       if(typeof op==='string'&&op.startsWith('managed.')){
-        const historyOnly=['managed.collaboration.status','managed.model.options','managed.status','managed.maintenance.status','managed.fault.status','managed.fault.results','managed.work.control.status','managed.history.list','managed.history.read','managed.artifact.read','managed.artifact.list','managed.timeline.page','managed.timeline.read','managed.timeline.request','managed.changes.list','managed.changes.read','managed.worker.history','managed.resident.history','managed.draft','managed.disposition','managed.terminal.screen','managed.review.read','managed.review.instruction.read'].includes(op);
+        const historyOnly=['managed.collaboration.status','managed.model.options','managed.status','managed.maintenance.status','managed.fault.status','managed.fault.results','managed.work.control.status','managed.history.list','managed.history.read','managed.artifact.read','managed.artifact.list','managed.timeline.page','managed.timeline.read','managed.timeline.request','managed.changes.list','managed.changes.read','managed.worker.history','managed.resident.history','managed.draft','managed.disposition','managed.terminal.screen','managed.review.read','managed.review.instruction.read','managed.review.discussion.read'].includes(op);
         // Local disposition still passes sender/project/mutation authorization above.
         const localDisposition=['managed.end','managed.retry','managed.merge.consent','managed.merge.constraint','managed.deviation.resolve','managed.problem.resolve','managed.effect.response','managed.todo.manage','managed.attention.ack','managed.attention.respond','managed.attention.draft.read','managed.attention.draft.write','managed.review.save','managed.review.accept','managed.review.instruction.save'].includes(op);
         let blocked=piRuntimeError&&!historyOnly&&!localDisposition?piRuntimeError:null;
@@ -798,6 +799,7 @@ async function main() {
         // One cross-project release action per click: main window only, so a
         // stray surface cannot act across project boundaries.
         if(op==='managed.fault.release'&&scope.role!=='shell')throw new HostError('IPC_DENIED','跨项目故障解除仅允许主窗口。');
+        if(op==='managed.review.discussion.send')return {ok:true,value:await runReviewDecision({workspace:workspaceNative,managed:managedAgents,host,payload:{...businessPayload,action:'discuss'}})};
         return {ok:true,value:await managedAgents.invoke(op,businessPayload)};
       }
       if (Object.hasOwn(agentHandlers, op)) return { ok: true, value: await agentHandlers[op](businessPayload) };

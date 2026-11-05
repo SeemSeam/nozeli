@@ -54,15 +54,34 @@ export class ExecutionWorkspace {
   }return repo;
  }
  async blob(cwd,bytes){return (await runGit(cwd,['hash-object','-w','--no-filters','--stdin'],{env:gitEnv(),input:Readable.from([bytes])})).toString().trim();}
- async snapshot(m,root,parent,label,explicitFiles=[]){
+ // 全量树捕获（已跟踪∪未忽略未跟踪∪显式声明）：只写临时索引与树对象，
+ // 不建提交、不动任何ref。快照/漂移检测共用。
+ async captureTree(m,root,parent,explicitFiles=[]){
   const index=path.join(this.store.root,'evidence','index-'+randomUUID()),env={GIT_INDEX_FILE:index};await fs.mkdir(path.dirname(index),{recursive:true});
   try{
    await git(m.repo,['read-tree',parent],env);
    const tracked=await gitEntries(m.repo,['ls-tree','-r','-z',parent]),explicit=new Set(explicitFiles.map(rel=>workPath(rel))),selected=new Set([...tracked.keys(),...await gitRecords(root,['ls-files','-co','--exclude-standard','-z']),...explicit]),files={},batch=[],rows=[],format=await str(m.repo,['rev-parse','--show-object-format']);
    const flush=async()=>{if(!batch.length)return;const captured=await blobFiles(m.repo,root,batch,tracked,format);for(const rel of batch){const file=captured.get(rel);if(file){files[rel]=file;const old=tracked.get(rel);if(old?.[0]===file.mode&&old?.[2]===file.oid)continue;rows.push({rel,...file});}else if(tracked.has(rel))rows.push({rel,oid:null});}batch.length=0;};
    for(const rel of [...selected].sort()){try{if(explicit.has(rel))workPath(rel);else capturePath(rel);}catch{continue;}if(explicit.has(rel)&&!tracked.has(rel)&&!await this.files.inspectFile(root,rel))fail('ARTIFACT_UNAVAILABLE','声明的交付文件不存在：'+rel);batch.push(rel);if(batch.length===16)await flush();}await flush();await updateIndexRows(m.repo,index,rows);
-   const tree=await str(m.repo,['write-tree'],env),commit=await commitTree(m.repo,tree,[parent],label,path.dirname(this.manifest(m.workId)));return {tree,commit,files};
+   const tree=await str(m.repo,['write-tree'],env);return {tree,files};
   }finally{await fs.rm(index,{force:true});}
+ }
+ async snapshot(m,root,parent,label,explicitFiles=[]){
+  const {tree,files}=await this.captureTree(m,root,parent,explicitFiles);
+  const commit=await commitTree(m.repo,tree,[parent],label,path.dirname(this.manifest(m.workId)));
+  return {tree,commit,files};
+ }
+ // 审校漂移检测（接受门）：当前执行目录全量树 vs 冻结候选树。新增/删除/
+ // 改名/内容变化/未发布提交都判为漂移。回执有候选树但执行身份不可核对时
+ // 返回null（fail-closed由调用方处理），绝不把未核实当作干净。
+ async reviewDrift(work,candidateTree){
+  if(!candidateTree)return null;
+  return this.locked(work.id,async()=>{
+   const m=await this.readManifest(work.id);
+   if(!m?.repo||!m.directory||!m.inputCommit)return null;
+   const {tree}=await this.captureTree(m,m.directory,m.inputCommit,m.candidate?.explicitFiles||[]);
+   return tree!==candidateTree;
+  });
  }
  async prepare(id){return this.locked(id,()=>this.repositoryLocked(()=>this.prepareInner(id)));}
  async initializeRepository(){

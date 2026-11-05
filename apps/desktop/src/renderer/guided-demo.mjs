@@ -3,9 +3,9 @@ import {demoChapters,demoIdentity,unwrapDemo,createDemoActions} from '../domain/
 const flow=demoChapters[0];
 export function createStartPage({project,start,browse,compact=false}){
   const root=document.createElement('section');root.className='guided-start'+(project?' guided-start-project':' guided-start-welcome')+(compact?' guided-start-compact':'');if(!compact)root.id='start-page';
-  const eyebrow=document.createElement('p');eyebrow.className='guided-start-eyebrow';eyebrow.textContent=project?'推荐功能 / 从当前项目开始':'NOZELI / 阅读、批注与 AGENT 协作';
-  const heading=document.createElement('h2');heading.textContent=project?(compact?'从这里继续':'选一份材料，试试这些功能'):'不止打开文件，\n让工作真正连起来。';
-  const description=document.createElement('p');description.className='guided-start-description';description.textContent=project?(browse?'从左侧选择文件，开始批注、讨论或并排阅读；后台任务的成果可以随时回来审核。':'在主窗口选择材料，或将此分区返回主工作区，再继续阅读与协作。'):'在原文上留下想法，让 Agent 继续工作，再回到报告与文件差异中审阅结果。先从下面四个功能开始。';
+  const eyebrow=document.createElement('p');eyebrow.className='guided-start-eyebrow';eyebrow.textContent=project?'从当前项目开始':'NOZELI / 阅读与写作工作空间';
+  const heading=document.createElement('h2');heading.textContent=project?(compact?'从这里继续':'选一份材料，开始自己的工作'):'以阅读和写作为中心，\nAI 在旁协作。';
+  const description=document.createElement('p');description.className='guided-start-description';description.textContent=project?(browse?'从左侧打开文件，阅读、写作或留下批注；需要帮助时再发起讨论，成果可以稍后审阅。':'在主窗口选择材料，或将此分区返回主工作区，再继续阅读与协作。'):'先打开自己的材料，阅读、写草稿、留下想法。需要时请 AI 协作，等待时继续工作，回来核对并采用成果。';
   root.append(eyebrow,heading,description);
   const actions=document.createElement('div');actions.className='guided-start-actions';root.append(actions);
   const button=(text,run,id,primary=false)=>{const b=document.createElement('button');b.type='button';b.textContent=text;if(id)b.id=id;if(primary)b.className='guided-start-primary';b.onclick=run;actions.append(b);return b;};

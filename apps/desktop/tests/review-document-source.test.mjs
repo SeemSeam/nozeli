@@ -788,3 +788,29 @@ test('review status never probes a same-path project file or reports human revie
  await fs.unlink(file);const after=await host.documentStatus(projectId,'docs/a.md',reviewSource);assert.equal(after.deleted,false);assert.equal(after.authorship,null);assert.equal(after.readOnly,false);
  const live=await host.documentStatus(projectId,'docs/a.md');assert.equal(live.deleted,true);
 });
+
+test('approval discussion flushes all candidate windows, rejects changed versions and leaves them editable',async t=>{
+ const {native,projectId,host}=await nativeFixture(t);
+ const candidate=surfaceOf(native,reviewSource),report=[...native.surfaces.values()].find(record=>record.kind==='report');
+ let version='a'.repeat(64),sent=0,flushed=0;
+ for(const record of native.projectRecords(projectId)){
+  record.wc.onSend=(channel,payload)=>{
+   if(channel!=='nozeli:flush')return;
+   flushed++;version='b'.repeat(64);
+   queueMicrotask(()=>native.acknowledge(record,{requestId:typeof payload==='string'?payload:payload.requestId,ok:true}));
+  };
+ }
+ const managed={reviewDiscussionReceipt:async()=>null,invoke:async(op,payload)=>{
+  if(op==='managed.review.read')return {reviewVersion:version,files:[{relPath:'docs/a.md'},{relPath:'docs/b.md'}]};
+  assert.equal(op,'managed.review.discussion.send');
+  assert.equal(payload.text,'  请解释这里，不需要重新派工\n');
+  assert.equal(candidate.held,true);assert.equal(report.held,true);assert(flushed>=3);
+  sent++;return {accepted:true,jobId:'discussion-job'};
+ }};
+ const payload={projectId,workId:'work-1',objectId:'object-1',action:'discuss',reviewVersion:'a'.repeat(64),requestKey:'discussion-cas-0001',text:'  请解释这里，不需要重新派工\n'};
+ await assert.rejects(runReviewDecision({workspace:native,managed,host,payload}),{code:'REVIEW_TOKEN_CHANGED'});
+ assert.equal(sent,0);
+ const result=await runReviewDecision({workspace:native,managed,host,payload:{...payload,reviewVersion:version,requestKey:'discussion-cas-0002'}});
+ assert.equal(result.accepted,true);assert.equal(sent,1);assert.equal(native.reviewBarriers.size,0);assert.equal(candidate.held,false);
+ assert.equal(candidate.wc.sent.some(entry=>entry.payload?.type==='review-document-state'&&entry.payload.readOnly),false,'a discussion is not an acceptance/read-only decision');
+});

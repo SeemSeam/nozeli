@@ -2,7 +2,11 @@
 
 状态基线：`0.1.0-alpha.5`（Alpha预发行，发行状态以[发布说明与发行边界](release.md)及 GitHub 发布页为准；`v0.1.0-alpha.4` 已于 2026-11-01 公开发布）。能力以Linux x64/Wayland、X11/XWayland及GitHub Ubuntu/X11实际验证为准；Windows/macOS尚未验证，安装与打包工具仅实现Linux。
 
+2026-11-05 用户追加授权“安装和commit”：第二轮`approval-ux-batch2-20261105-local-01`已激活，previous保留首批`approval-ux-batch1-20261105-local-01`。M1/M2/M4/M5已包含：人工审阅稿可直接采用，同层确认列文件路径／人工稿／未发送意见处置，任务命名与窄栏简化。真实冻结ELF＋包内Pi/Git在中文X11同帧旅程完成原线程讨论、人工改稿、采用前原件保护、实际合入及ended/complete，正常退出。原件`/tmp/nozeli-ux-batch2-zh-G7r6ZE/report.json`；未推送或发布。本页历史“未安装”描述各自当时阶段，不代表当前安装指针。
+
 ## 已具备的主要能力（Linux 实测）
+
+- **审批对话（2026-11-05 源码接入，未安装）**：待办打开主工作区报告／版本，同时显示标签样式审批悬浮窗；原任务请求、主控交接、已确认原生 Worker 回复及发布记录同源呈现。底部发送与接受结束分别绑定原Work／线程和确切报告；逐轮按需修订、忙时持久串行排队、未发布改动阻止接受、跨文档保存与token核验、Work草稿及丢回执重试保留。真实Electron＋私有Pi＋本地脚本Provider＋Git文件已跑通问答、排队、候选修改、新报告、确认接受及ended/complete收尾；不等于真实模型自主质量或Windows/macOS验收。主对话与Agent状态直接接Worker仍未开放。详见[接入决策与证据](worker-review-chat-demo.md#生产接入决策本轮优先)。
 
 - **阅读**：PDF（大纲、搜索、缩放、文本层）；文本／Markdown／TeX／BibTeX；代码文件（Monaco）；图片（PNG/JPEG/WebP）；DOCX；XLSX；PPTX（内嵌 PPTist 编辑，草稿独立保存，导出副本不覆盖原文件）。
 - **批注与讨论**：文字选区、PDF 页／选区／区域、图片区域、文档位置右键点锚与画面涂鸦均可就地备注或发起讨论；讨论锚定发起时的版本与位置。保存本地备注不派工，显式发送才交给 Agent。

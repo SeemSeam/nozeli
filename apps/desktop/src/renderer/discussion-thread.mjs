@@ -23,9 +23,10 @@ export function mountThreadTranscript(transcript,{welcome=null}={}){
   function render(entries){
     const atTail=transcript.scrollHeight-transcript.clientHeight-transcript.scrollTop<32,scrollTop=transcript.scrollTop;
     const retained=new Set();let position=0;
-    const bubble=(key,role,requestId)=>{
+    const bubble=(key,role,requestId,labelText)=>{
       retained.add(key);let row=rows.get(key);
-      if(!row){const node=document.createElement('span'),label=document.createElement('strong');node.className='tag-message tag-message-'+role;label.textContent=role==='user'?'你':'前台';node.append(label);row={node,body:null,segments:new Map()};rows.set(key,row);}
+      if(!row){const node=document.createElement('span'),label=document.createElement('strong');node.className='tag-message tag-message-'+role;node.append(label);row={node,label,body:null,segments:new Map()};rows.set(key,row);}
+      row.label.textContent=labelText||(role==='user'?'你':'前台');
       if(requestId)row.node.dataset.requestId=requestId;else delete row.node.dataset.requestId;
       if(transcript.children[position]!==row.node)transcript.insertBefore(row.node,transcript.children[position]||null);position++;
       return row;
@@ -58,9 +59,9 @@ export function mountThreadTranscript(transcript,{welcome=null}={}){
     };
     entries.forEach((entry,index)=>{
       const key=entry.requestId||'round-'+index;
-      if(entry.question)text(bubble(key+':question','user',entry.requestId),entry.question);
-      if(entry.replyEntries?.length)reply(bubble(key+':reply','assistant',entry.requestId),entry.replyEntries);
-      else if(entry.reply||entry.readReply)reply(bubble(key+':reply','assistant',entry.requestId),[{id:entry.messageId??'reply',text:entry.reply||'',availability:entry.replyAvailability,readReply:entry.readReply}]);
+      if(entry.question)text(bubble(key+':question','user',entry.requestId,entry.questionLabel),entry.question);
+      if(entry.replyEntries?.length)reply(bubble(key+':reply','assistant',entry.requestId,entry.replyLabel),entry.replyEntries);
+      else if(entry.reply||entry.readReply)reply(bubble(key+':reply','assistant',entry.requestId,entry.replyLabel),[{id:entry.messageId??'reply',text:entry.reply||'',availability:entry.replyAvailability,readReply:entry.readReply}]);
     });
     if(!entries.length&&welcome)text(bubble('welcome','assistant'),welcome);
     for(const [key,row]of rows)if(!retained.has(key)){for(const segment of row.segments.values())if(segment.reader){readers.delete(segment.reader);segment.reader.dispose?.();segment.reader.remove();}row.node.remove();rows.delete(key);}

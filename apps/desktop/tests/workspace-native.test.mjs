@@ -868,3 +868,24 @@ test('project-terminal ops bind rail registration to the shell and runtime to th
  native.lifecycle.delete('p');
  assert.throws(()=>native.authorize(surfaceEvent,'project-terminal.bogus',{projectId:'p',viewId:'term-view'}),{code:'IPC_DENIED'});
 });
+
+test('approval discussion stays bound to its report and cannot open general Worker chat',async t=>{
+ const {native}=await fixture(t);
+ const layout=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'report',resourceId:'todo-a',viewState:{report:{objectId:'publication-a',workId:'work-a'}}}});
+ native.layouts.set('p',layout);
+ const descriptor=Object.values(layout.views).find(view=>view.kind==='report');
+ const report=native.register(new Contents(),{role:'surface',projectId:'p',viewId:descriptor.id,kind:'report'});
+ const conversation=native.register(new Contents(),{role:'surface',projectId:'p',kind:'conversation'});
+ const document=native.register(new Contents(),{role:'surface',projectId:'p',kind:'document'});
+ const event=record=>({sender:record.wc,senderFrame:record.wc.mainFrame});
+ for(const op of ['managed.review.discussion.read','managed.review.discussion.send']){
+  assert.equal(native.authorize(event(report),op,{projectId:'p',workId:'work-a',objectId:'publication-a'}),report);
+  assert.equal(native.authorize(event(report),op,{projectId:'p',workId:'work-a',objectId:'earlier-publication-a'}),report,'same-Work receipt access survives a publication change; controller checks exact identity');
+  assert.throws(()=>native.authorize(event(report),op,{projectId:'p',workId:'work-b',objectId:'publication-b'}),{code:'REVIEW_SCOPE_DENIED'});
+  for(const record of [conversation,document])assert.throws(()=>native.authorize(event(record),op,{projectId:'p',workId:'work-a',objectId:'publication-a'}),{code:'REVIEW_SCOPE_DENIED'});
+ }
+ assert.throws(()=>native.authorize(event(conversation),'managed.send',{projectId:'p',target:'work-a',text:'not a review input'}),{code:'CONVERSATION_TARGET_REJECTED'});
+ native.lifecycle.set('p',{});
+ assert.equal(native.authorize(event(report),'managed.review.discussion.read',{projectId:'p',workId:'work-a',objectId:'publication-a'}),report);
+ assert.throws(()=>native.authorize(event(report),'managed.review.discussion.send',{projectId:'p',workId:'work-a',objectId:'publication-a'}),{code:'PROJECT_LIFECYCLE_ACTIVE'});
+});

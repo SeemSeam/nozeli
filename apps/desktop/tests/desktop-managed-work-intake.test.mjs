@@ -61,7 +61,8 @@ try{
  await page.evaluate(()=>document.querySelector('#managed-agent-details').close());check('dispatch preserves the same request row and genuine Work execution/cancellation controls');
  await page.evaluate(()=>{const s=window.__intakeState;s.jobs.push({id:'failed',target:'orchestrator',type:'intake',text:'[protocol wrapper] nozeli_inspect_work @state cursor=""',status:'failed',context:{userGoal:'开始落盘'},error:'INVALID_CURSOR internal stack',maintenanceBugId:'bug-intake',maintenanceFault:{phase:'runtime',code:'INVALID_CURSOR'}});s.todos.push({id:'internal-todo',kind:'system',sourceJobId:'failed',status:'open',text:'INVALID_CURSOR'});window.__previewTest(s);window.__faultCallStart=window.__uiCalls.length;});
  assert.equal(await page.$eval('[data-managed-request="request:failed"] .managed-work-name',n=>n.textContent),'开始落盘');
- assert.match(await page.$eval('[data-managed-request="request:failed"] .managed-work-status',n=>n.textContent),/系统问题待处理.*原请求已保留/);
+ assert.equal(await page.$eval('[data-managed-request="request:failed"] .managed-work-status',n=>n.textContent),'系统问题待处理');
+ assert.match(await page.$eval('[data-managed-request="request:failed"] .managed-work-detail',n=>n.textContent),/原请求已保留/);
  await page.$eval('[data-managed-request="request:failed"] .managed-work-open',n=>n.click());await page.waitForFunction(()=>document.querySelector('#managed-agent-details').open);
  assert.equal(await page.$$eval('#managed-current-request button',ns=>ns.length),0);assert.equal(await page.$eval('[data-request-diagnostics]',n=>n.open),false);
  assert.equal(await page.$eval('[data-request-diagnostics] pre',n=>n.checkVisibility()),false);assert.match(await page.$eval('#managed-current-request',n=>n.textContent),/尚未创建后台工作/);

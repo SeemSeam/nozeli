@@ -109,7 +109,12 @@ form.note-form.annotation-composer { gap:7px;padding:10px 12px 12px;background:v
 #text-preview .tag-table-scroll { display:block;overflow:auto;margin:1em 0; }
 #text-preview table { border-collapse:collapse;min-width:50%; }
 #text-preview td,#text-preview th { border:1px solid var(--line);padding:6px 12px; }
-#text-preview th { background:#edf2e8;text-align:left;font-weight:600; }
+#text-preview th { background:var(--green-soft);color:var(--ink);text-align:left;font-weight:600; }
+#save-failure { background:var(--paper);color:var(--ink);border-color:var(--red); }
+#save-failure button { background:var(--paper);color:var(--ink);border-color:var(--line); }
+#save-failure details { width:100%;min-width:0;overflow-wrap:anywhere; }
+#save-failure summary { cursor:pointer; }
+#save-failure pre { white-space:pre-wrap;overflow-wrap:anywhere; }
 .conversation-math { display:inline-block;max-width:100%;vertical-align:middle; }
 .conversation-math-display { display:block;overflow-x:auto;overflow-y:hidden;margin:.9em 0;padding:8px 0;text-align:center; }
 .conversation-math .katex { font-size:1.05em; }

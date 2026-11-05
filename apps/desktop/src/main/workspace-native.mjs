@@ -215,7 +215,15 @@ export class WorkspaceNative {
       return r;
     }
     if(r.role==='surface'&&r.kind==='web'&&op.startsWith('web.'))return r;
-    if (this.lifecycle.has(r.projectId) && !this.lifecycleFlushOwner(r,payload.flushRequestId,op) && (writes.has(op) || op === 'managed.send' || ['managed.session.command','managed.attention.respond','managed.attention.draft.write','managed.review.save','managed.review.instruction.save','managed.review.continue','managed.review.accept','workspace.review.decide'].includes(op) || op === 'workspace.project' || op === 'workspace.command'&&payload.command?.type!=='restoreViewState')) throw fail('PROJECT_LIFECYCLE_ACTIVE', '项目正在保留并关闭，请等待操作结果。');
+    if (op === 'managed.review.discussion.read' || op === 'managed.review.discussion.send') {
+      const boundWork = this.layouts.get(r.projectId)?.views[r.viewId]?.viewState?.report?.workId;
+      // A new publication can replace the displayed object before an accepted
+      // send's reply arrives. Its exact receipt may still be read/replayed in
+      // the same Work; the controller refuses fresh stale publication inputs.
+      const ownsWork = typeof boundWork === 'string' && boundWork && boundWork === payload.workId;
+      if (r.role !== 'shell' && !(r.role === 'surface' && r.kind === 'report' && (ownsWork || this.reviewReportOwns(r, payload.objectId)))) throw fail('REVIEW_SCOPE_DENIED', '审批讨论只能从此报告所属的审批内容面进入。');
+    }
+    if (this.lifecycle.has(r.projectId) && !this.lifecycleFlushOwner(r,payload.flushRequestId,op) && (writes.has(op) || op === 'managed.send' || ['managed.session.command','managed.attention.respond','managed.attention.draft.write','managed.review.save','managed.review.instruction.save','managed.review.continue','managed.review.accept','managed.review.discussion.send','workspace.review.decide'].includes(op) || op === 'workspace.project' || op === 'workspace.command'&&payload.command?.type!=='restoreViewState')) throw fail('PROJECT_LIFECYCLE_ACTIVE', '项目正在保留并关闭，请等待操作结果。');
     if(op==='report.copySource'&&!(r.role==='shell'||r.role==='surface'&&['report','history'].includes(r.kind)))throw fail('IPC_DENIED');
     if(op.startsWith('isolated-preview.')&&r.role==='surface'&&(!['report','document','history'].includes(r.kind)||r.kind==='history'&&['isolated-preview.open','isolated-preview.update'].includes(op)&&payload.profile!=='staticReport'))throw fail('IPC_DENIED');
     if (r.role !== 'shell' && !op.startsWith('workspace.') && !op.startsWith('isolated-preview.') && !surfaceOps.test(op)) throw fail('IPC_DENIED');

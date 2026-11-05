@@ -348,3 +348,120 @@ postinstall 用 `electron-rebuild` 针对 Electron 重建 `node-pty`。该依赖
 - 最终登记后的unit **643/643**、smoke **5/5脚本**通过。完整integration早期与远端合并重叠的运行含临时冲突标记，不计通过；干净合并后的1705项中9项失败均保留。修正旧恢复夹具：never-admitted排队恢复恰一次、admitted-unknown保留原生续作、缺原执行证据保持needs-reconciliation；未将旧“全部interrupted”契约恢复到产品。补齐直接构造Controller读工具测试的真实jobs账本，资源摘要明确验证unknown工作pendingVerification；相关聚焦30、10、21、7、10、1项分别通过，集合有重叠不累计。
 - opt-in原生资格库初跑暴露两处过时UI路径，不计整体通过：discard完的Work已离开进行中列表，测试改走真实“历史”分类再打开原概览；紧凑栏维修入口已在“…”模态窗口内，测试改为实际点击该入口后展开。两脚本修后各一次通过：`nozeli-agent-control-ui-a7XLXW/report.json`（真实Pi/文件副作用、9个检查、7次回环请求、exit0）与`/tmp/nozeli-pi-maintenance-ui-gJOB3l/report.json`（真实Git锁、同Work维修及4个检查、exit0），未改产品行为、删除用例或使用真实模型账号。最终完整integration与精确提交CI及便携包验证结果以GitHub该版本发布记录为准，不预先宣称成功。
 - 随后本机最终完整integration **1705/1705**、opt-in agent-control-live **13/13（5文件）**通过，失败／跳过／取消均0，原始TAP保留于`.test-output/ci/`。精确提交1f2918a的GitHub run41769773826，unit与clean-build/smoke成功，但integration作业25m19s后conclusion=cancelled，CI gate失败，未用本机通过覆盖它。仅把CI tests作业时限25→45分钟，保留156文件全集合、相同断言／concurrency=2及失败传播；不改产品保存或原生准入超时，等待新精确提交的完整门禁。
+
+## 普通引用文件发送修复（2026-11-04，未安装／未发布）
+
+- 用户引用HTML后点击“提交后台”，出现“仅支持显式发送涂鸦PNG”。以真实Electron文件列表选中约28KiB合成`binary-stars.html`，旧renderer复现相同错误，0 jobs／0模型请求，草稿及附件保留：`/home/bfly/.cache/nozeli-file-handoff-60odIx/report.json`与`surface.png`。
+- 修复普通文本附件独立`fileAttachments`通道：renderer仅传登记身份；宿主复用ProjectAttachments验证项目／实例／摘要及冻结副本，按登记文件名验证UTF-8/NUL与声明二进制格式，最多20项、单项8MiB、总24MiB；涂鸦图片仍经原通道核验。通过原`context.materials`和版本对象进入native请求，不改写用户原文。Worker初始交接／补充输入以及前台交接按绑定来源job重建材料，已发文件保留在历史消息并可打开冻结只读副本。
+- `npm run build:renderer`通过。实际Electron＋随包私有Pi＋localhost scripted Provider跑通：文件列表真实冻结HTML→修改磁盘源→点击提交后台→恰好1个主控intake→真实Worker写入隔离worktree并发布报告；HTTP请求核对主控和Worker均包含完整冻结HTML（不只是文件名／简述），不含突变后的正文。普通前台发送也通过，回执后清草稿／待发材料，已发HTML从历史只读打开正常，应用exit0。原件：`/home/bfly/.cache/nozeli-file-handoff-yIyRZA/report.json`、`surface.png`；已查看修前／修后截图。无真实模型账号／付费调用，不修改用户项目或安装版，不声明Windows/macOS通过。
+- 定向回归分批结果：原5文件（context cutover／session index／drawing image／tag delivery／task flow）76/76通过；新增`file-attachments-host.test.mjs`6/6通过并登记到integration。初轮总82项中，唯一失败为测试把`sourceManifest`对象误断言成字符串，修为校验`digest`与`byteLength`后宿主6项通过；保留初轮失败，不冒充初轮全绿。宿主测试覆盖多文件冻结正文、send/task唯一准入、损坏／跨项目／伪造／二进制拒绝、涂鸦隔离和20项／24MiB边界。
+- 真实原生选择入口脚本`desktop-material-native-pick-live.mjs --app-root ...`最终15项检查通过，2次明确发送→2个模型请求、3份选中冻结原文送达、后续普通发送只新增一份用户输入并保留原生历史、exit0：`/tmp/nozeli-material-native-pick-VBpEhk/report.json`。首轮X11启动因测试清除`XAUTHORITY`失败，已只保留显示服务器认证；第二轮把整份HTTP原生历史误当新附件重发，改核对最新用户entry不重复附件后通过，未修改产品历史保留。OS文件选择窗口由dialog fixture应答，只实测真实入口／IPC／宿主冻结，不声称OS窗口本体通过。
+- 补跑旧`desktop-composer-materials.test.mjs`停在旧启动夹具等待`#configuration-setup[open]`超时，未到达发送断言，不计通过；本轮不迁移整份旧嵌入式工作面夹具。普通文件收发、失败保留由上面的宿主／Controller回归、原生选择脚本及实际HTML后台／前台运行验证覆盖。普通`node tools/check-repository.mjs --verify-hashes`0失败，六项既有分发审计仍pending；未提交／安装／发布。
+
+## 已发送消息区分前台／后台（2026-11-04，未安装／未发布）
+
+- 用户指出明确“提交后台”后，气泡仍只有“你”和“转为后台任务”，看不出实际归属。复用宿主已持久化`taskRequestId`／后台目标，在发送者旁展示“后台任务”；普通前台输入展示“前台对话”。已后台消息不再给“转为后台任务”，引用／复制保留；前台消息仍可明确转交，原气泡按真实绑定更新，不改原文。标识是提交归属，不表示已执行或完成；不引入发送协议、改调度或迁移历史正文。
+- `boundedDTO`和renderer缓存裁剪保留`taskRequestId`，避免长消息／固定历史被误判前台。新增直接后台、前台转交后重开持久库、原前台消息不串归属、超长消息／pinned历史保留绑定回归；`node --test --test-concurrency=2 tests/session-index.test.mjs tests/session-store.test.mjs tests/session-execution-presentation.test.mjs` **44/44**通过；`npm run build:renderer`通过。
+- 真实Electron＋native Pi＋回环Provider验收：点击直接后台立即出现后台标识、无重复转换入口，真实Worker在隔离worktree完成报告；普通前台保留前台标识及转换入口；实际点击转换后原消息ID／正文不变，后台工作排队时已经正确标识后台；刷新会话三种消息归属保持且0新jobs。实际489px暗色内容面各标识可读、无横向溢出，应用exit0。原件`/home/bfly/.cache/nozeli-input-route-gxzWHH/report.json`、`routes-dark-narrow.png`、`background-dark-narrow.png`，已看截图。初跑曾误等第二个Work立刻执行，实际第一个待审报告占用名额、第二个合法排队；仅纠正验收预期，未放宽产品名额或伪造执行状态。
+- 限于Linux源码真实窗口、私有Pi和localhost scripted Provider；无个人数据／真实模型账号，不声明Windows/macOS通过。未提交、未安装、未重新发布。
+- 更新已登记live套件中的`desktop-direct-background-live.mjs`，实际点击后台后检查气泡“后台任务”及无重复转换入口。完整脚本通过5项检查，覆盖失败草稿保留、重复点击唯一准入、真实Worker隔离发布，以及1440/980/590窗口、divider拖动、独立窗口往返保留输入／选区／同一DOM，exit0；原件`/tmp/nozeli-direct-background-gaShhb/report.json`。本轮未改执行调度或后台名额。
+
+## 主控处理与 Worker 交接流程可见（2026-11-04，未安装／未发布）
+
+- 用户指出对话只有Worker、没有主控处理过程。根因为`groupSession`直接过滤正常orchestrator记录；现在按已接受输入／当前页原生记录的精确intake job身份显示主控卡，保留原用户气泡及后台标识，默认不灌入无关backstage／maintenance。主控卡给出处理状态、真实操作详情及宿主路由回执；Worker显示在相应主控交接之后，包含迟到原生日志及原工作补充输入的父子排序。只在同页主控卡已表达同一回执时去重work-created／routing事实，不注入历史页未出现的当前作业。
+- 交接只认`job.routing`，模型散文不算派工。主控成功、失败与Worker当前状态分开：已交接但尚无名额仍显示排队；Work缺失显示未知；澄清问题按已加载记录给出待补充／已处理／未加载，不假称用户已经回答。正文／工具原件通过既有折叠和分页读取；未生成思维过程、未改变调度、名额、原生历史或发送协议。提交回执同步指向对话中的处理／交接进展，不再只提示右侧；删除旧脚本对此文案逐字匹配的偶然断言，未删除唯一准入和真实派工检查。
+- `npm run build:renderer`通过。`session-store`、`session-execution-presentation`、`session-index`三文件定向回归 **55/55**，失败／跳过／取消0；覆盖接收后无原生输出的主控卡、原输入保留、准确父子顺序、分页不回填、已确认交接、排队不冒充执行、失败与交接并存、缺失澄清状态不冒充已解决。
+- 真实Electron＋私有Pi＋localhost Provider分阶段验收 **8项通过**：门控第一条模型回复前已显示主控处理中且无Worker；真实`nozeli_inspect_work`操作在派工前可展开；真实dispatch回执显示在实际Worker轮之前，Worker写隔离文件并发布HTML报告；第二Work排队而无伪造Worker执行轮；真实clarify回执及问题可见；注入Provider400后主控失败可见且无交接／新Work；刷新保留4个业务主控卡及事实、0新增jobs，489px暗色无横向溢出；通过真实退出确认取消合成测试工作后exit0。原件`/home/bfly/.cache/nozeli-orchestrator-flow-C6rVGy/report.json`及三张截图，已查看pending／inspect／交接截图。首轮已通过所有展示场景，但夹具未应答后台核对并漏处理退出确认，导致退出断言失败；只补回环Provider的真实blocked工具响应及正常退出选择后全程通过，未绕过产品退出保护。
+- 已登记`desktop-direct-background-live.mjs`增加主控真实回执、工作名称与主控先于Worker的实际DOM顺序核验。最终 **6项检查通过**，保留原失败草稿／重复点击唯一准入／真实隔离发布／分屏及独立窗口往返的草稿、选区和DOM保护，exit0：`/tmp/nozeli-direct-background-lm5OaY/report.json`。
+- Linux源码真实窗口／native Pi实测，不含真实模型推理能力或Windows/macOS签收；未提交、未安装、未重新发布。已有未发布的普通引用文件发送和前后台气泡标识修复均保留。
+
+## 本地安装对话与主控流程修复（2026-11-04）
+
+- 用户明确授权“安装”。以现有`package-candidate.mjs`冻结`conversation-flow-20261104-local-01`，不修改正在运行的旧目录；通过`install-local.mjs --existing-release`激活，current／previous实链分别核实为该包和`2026-11-04T00-46-19-337Z`，桌面／CLI入口同步。安装器按既有保留策略清理更早非活跃版本，保留原current可回退；用户配置和项目未被安装器覆盖。
+- 安装前用该候选的真实`nozeli` ELF、捆绑私有Pi和Git、独立合成profile运行5项综合验收：约28KiB本地HTML引用冻结后改源，后台原消息带正确标识且主控在Worker之前可见；主控与Worker的实际HTTP请求包含完整原冻结HTML、不含后来修改；Worker在隔离worktree写文件并发布报告；普通前台发送、历史附件只读打开、刷新0重复jobs；暗色489px内容面不横向溢出，exit0。756个src/dist输入文件SHA-256均与最终源码／构建一致，原件`/home/bfly/.cache/nozeli-conversation-installed-kDkPv2/report.json`、`frozen-inputs.json`、`frozen-installed-flow.png`，已查看实际截图。回环scripted Provider，不冒充真实模型推理。
+- 最初旧日常进程1263023仍在运行，未对其发消息、强退或取消任务；遗留DevTools端口19773已拒绝连接，未尝试绕过。激活后旧进程已不再运行；通过清除测试／调试profile覆盖的正常`~/.local/bin/nozeli`入口打开新版。主进程1794288真实exe指向新release，启动日志`NOZELI_DESKTOP_READY http://127.0.0.1:33087/ hidden=false debugPort=none`，服务`nozeli-conversation-installed-20261104`保留窗口供用户使用。此为正常日常profile启动，不是代操作业务项目的验收，未代发用户消息、接受／丢弃成果或取消用户任务。
+- 本次仅本机Linux安装，未Git提交／推送／打tag／改GitHub附件；六项分发审计状态不因本地安装改变，Windows/macOS未验证。前面三节“未安装”均为安装授权前的历史证据。
+
+## 协作栏全部 Agent 与彩色状态（2026-11-04，未安装）
+
+- 用户要求去掉“…”、直接列出所有工作Agent，并修正空心状态圆与字母O混淆。源码去掉4项截断与手动Agent分页，沿原只读status接口自动读完同revision分页（重复cursor拒绝，失败保留前一完整快照）；保留每Worker稳定编号与模型入口。角色用“前台／主控／Wn”，彩色实心方块＋可见状态文字，执行绿、排队／等待黄、失败红、待命／休眠灰，过期虚线及“待核实”；暗色使用较亮语义色。列表自然换行而非隐藏，状态详情只承载原计时／修复功能，不启动Agent或改变输入目标。
+- 生产组件真实Electron脚本`desktop-collaboration-status.test.mjs`通过7组检查：3页62个Agent全部直接出现、后页模型控件焦点保持、不同状态实际计算色互异及状态文字正确、模型保存时草稿保留、旧项目晚到回执隔离、320px全部按钮在宽度内自然换行、过期／读取错误保留可核查入口。原件`/tmp/nozeli-collaboration-ui-SrMQw3/report.json`、`all-agents-light.png`、`all-agents-dark-320.png`，已查看截图。此为真实组件＋合成gateway，不冒充62个真实Pi进程。
+- 维修consumer脚本通过9项检查，390px无溢出，原精确绑定／次数／只读／未知／晚到项目回执保护保持：`/tmp/nozeli-repair-consumer-uvh4r2/report.json`。两个维修入口调用方同步改为明确“状态详情”，不保留旧ellipsis别名。renderer构建通过；不改当前安装或项目数据，不声明Windows/macOS验收。
+- 真实源码Electron＋私有Pi＋回环Provider完整后台脚本通过6项检查，单次主控→Worker隔离发布、后台气泡／交接顺序、原草稿失败保留、宽窄窗口／divider拖动／独立窗口返回均保持，exit0：`/tmp/nozeli-direct-background-l8IrQN/report.json`。仅状态栏呈现和只读分页调整，未改变模型发送、任务生命周期或运行用户项目。
+
+## 对话内工作收尾进度（2026-11-04，未安装）
+
+- 用户指出Worker“已交付”和冻结文件后不再显示收尾。新增同工作／当前版本的“工作收尾”区，待审查与已接受／已丢弃分开，列出原决定入账、Worker退出确认、冻结报告归档、本地合入或候选丢弃、资源清理、最终归档；只有`status=ended`与`phase=complete`及原确切审核绑定验证通过才表达收尾完成。旧版／未知决定保持待核实，旧报告不附新版本收尾；当前页多个同版本回合只在最后一轮展示一次。尚未启动Worker的revision0丢弃可绑定当前页原intake展示，不注入未加载历史。
+- Controller仅在既有收尾阶段持久化成功后发送原state事件，补足stopping／report／integrating／cleanup中间阶段的可见更新；未改变停止、归档、合入、名额、超时、维修或准入协议。受阻原因按需展开；对话不新增接受／丢弃／重试按钮，不代用户决策、不自动覆盖冲突。
+- 构建通过；`node --test --test-concurrency=2 tests/session-store.test.mjs tests/session-execution-presentation.test.mjs tests/managed-review-lifecycle.test.mjs` **38/38**，零失败／跳过／取消。回归覆盖待审不自动结束、逐阶段事实、blocked不标complete、最终归档前不释放、discard不声称合入、binding失配、历史版本与分页隔离、同版多回合去重、revision0及持久阶段通知。
+- 已登记真实Electron＋native Pi＋Git后台脚本增加实际discard IPC决定→同Work退出／归档／清理完成→对话收尾全确认→刷新保持0模型重放及草稿不丢，合成项目源目录不产生被丢弃文件。最终7项检查通过、exit0，账本`ended/complete`：`/tmp/nozeli-direct-background-FZVoqG/report.json`及`discard-closeout-conversation.png`。截图采用真实鼠标滚动确保收尾卡实际在内容视口，不将DOM存在冒充可见；已查看。
+- 另以真实合成接受流程创建并发人工文件，实际accept记录决定后进入closing/blocked；对话正确显示“已接受 · 收尾受阻”，停止／报告完成，合入受阻，最终归档待处理；原人工字节保留，刷新状态与原jobs保持。只移除夹具自己创建的冲突后，使用原binding明确调用现有retry IPC，原候选合入一次、无Worker模型重放，真实账本ended/complete。初验原件`/tmp/nozeli-direct-background-3Sstzm/report.json`、`accepted-blocked-closeout.png`，受阻截图已查看；这不是用户业务成果接受或模型推理质量验收。
+- Linux源码实际窗口，回环scripted Provider／隔离合成数据；未安装、未公开发布、未处理用户截图中的真实工作，Windows/macOS未验。上一轮全部Agent彩色状态条改动保持。
+- 最终接受路径再以实际滚轮将完成卡滚入489px暗色视口，卡片六阶段均已确认且原Work账本`ended/complete`，exit0：`/tmp/nozeli-direct-background-6FFsIA/report.json`、`accepted-blocked-closeout.png`、`accepted-complete-closeout.png`，已查看最终完成截图；3次业务HTTP（主控1、Worker2）前后不增。初轮只凭`scrollIntoView`截到上方旧阅读位置，没有拿那张图冒充完成卡视觉证据；修正仅限验收滚动。临时接受驱动已清理，持久回归留在已登记后台脚本及上述Node测试。
+- 用户进一步确认“收尾是orchestrator”。已将收尾从Worker卡内部移出，作为其交付之后独立的`data-role=orchestrator`记录，标题“主控 · 工作收尾”，绑定工作名称／当前版本；原阶段清单和受阻原因保留。注明“主控协调 · 程序执行并核验合入、归档与清理”，不伪造主控新模型回合。31/31分组／呈现回归、renderer构建通过；真实Electron/Pi/Git脚本明确核验收尾为timeline直接子article、不位于Worker内，真实丢弃结束／刷新／草稿保护与7项验收通过、exit0，模型请求仍主控1＋Worker2：`/tmp/nozeli-direct-background-I3HuYd/report.json`及`discard-closeout-conversation.png`。此次覆盖前述“挂在Worker下”的初始设计；未安装。
+
+## 全部Agent与主控收尾安装测试（2026-11-04）
+
+- 用户明确授权“安装测试”。构建后以既有package-candidate冻结`orchestrator-closeout-20261104-local-02`；756个src/dist文件SHA-256全部与最终源码／构建一致，保存`frozen-files.json`。所有包级流程启动该候选的真实ELF、包内host及私有Pi/Git，非源码Electron入口；只使用独立合成项目／profile和回环Provider，无真实账号调用。
+- 真实包discard路径8项检查通过、exit0：接单前材料失败保留、恰好1个intake及1个Worker、实际3角色全部可见无ellipsis／角色名不混淆、真实隔离文件和报告、主控交接先于Worker、分屏／拖动／独立窗往返的输入和选区保持、独立`主控 · 工作收尾`卡不嵌在Worker内、真正discard后ended/complete及刷新0模型重放。原件`/tmp/nozeli-direct-background-S5kB9S/report.json`、`frozen-files.json`、`discard-closeout-conversation.png`。
+- 同一实际包accept路径8项检查通过、exit0（与前条重复项不累计）：夹具创建并发人工文件，真实接受决定后closing/blocked，主控收尾卡保留原接受决定、显示受阻且人工字节不变；刷新jobs及blocked保持。仅移除夹具自己的冲突文件、明确调用原binding retry后，原候选合入一次，主控独立卡ended/complete、六阶段确认，Worker不重跑、业务HTTP仍主控1＋Worker2。暗色489px真实滚轮把完整主控卡置于内容视口；原件`/tmp/nozeli-direct-background-haTNV9/report.json`、`installed-accepted-blocked.png`、`installed-accepted-complete.png`。已查看实际包丢弃／接受完成截图。
+- 包内renderer原组件用真实Electron和合成只读gateway补验62个Agent跨3页完整直接呈现、不同状态颜色与文字、320px换行、模型／草稿／后页焦点保持及过期／失败／旧项目回执隔离，7组检查通过：`/tmp/nozeli-collaboration-ui-VqpXKA/report.json`。这条是包内组件，不声称62个真实Pi进程或真实Provider推理。
+- 日常旧主进程743984通过原生WM_DELETE_WINDOW正常退出，pidfd确认退出，未强杀或选择取消任务。install-local --existing-release按验证包切换current，previous保留`conversation-flow-20261104-local-01`，桌面／CLI入口同步。标准`~/.local/bin/nozeli`正常启动新进程1360530，实际exe为新release，日志`NOZELI_DESKTOP_READY http://127.0.0.1:37971/ hidden=false debugPort=none`，原生窗口存在；服务`nozeli-orchestrator-closeout-installed`持久保留供用户使用。
+- 用户真实项目／成果未被接受、丢弃、重置或代发模型消息。Linux本地安装限定，未Git提交／推送／tag／改GitHub附件，Windows/macOS未验。前两节“未安装”仅描述授权安装前的阶段；临时安装驱动清理，证据保留。
+
+## 额外 Worker 根因修复与统一任务 block（2026-11-04，未安装）
+
+- 用户确认不是隐藏尾部卡片，而是修复“为何主控收尾后出现Worker”。实际Liuhuaiyu“混沌演示优化分析”Work `3466a5db-1adb-4645-b0ea-1038c7b0e66a`只有一个initial job／revision1／一次原生提交，已ended/complete。原安装版冷frame把未分类model_change、thinking_level_change、session_info投影成无job/revision的system/not-loaded，再按sessionId误建Worker卡；收尾又按真实Worker组起点672加0.125插入，错误排到元数据675–677前。修前只读实证`/home/bfly/.cache/nozeli-phantom-worker-investigation-kaiKCe/report.json`。
+- 原生索引新增entryType/recordKind附加证据；新记录入账即分类，旧记录在既有有界hydrate／重放时补分类，不改原生对象字节、ID、顺序和版本。会话配置及正常原生system指令是metadata，不是执行；未知种类明确unclassified、可读／导出原件，不能凭target构造Worker；真实未绑定消息／系统错误继续可核查，真实已绑定消息不因revision缺失被删除。绑定用户echo在未水合时同样按身份抑制。无写接口的只读投影不发写请求；有写接口的分类持久化失败按原错误传播，不吞STORAGE_RESULT_UNKNOWN。
+- groupSession保留低层行接口，groupSessionWorkflows用canonical intakeLineage及Work/sourceJob/sourceInputJobIds/显式boundWorkId组合外层任务block。主控安排→Worker真实多轮／补充主控→主控收尾共用稳定原intake身份；澄清／retry／pendingIntake派工前后不换DOM。普通前台气泡留在外面；不按工作名或相邻位置猜归属。closeout在同任务全部已绑定Worker与主控记录之后，旧报告／分页不附带新版本收尾；真实Worker输入留在原回合，原用户输入不复制。
+- 最终83/83定向回归通过（session-index、session-store、session-execution-presentation、tag-input-presentation、managed-review-lifecycle），零失败／跳过／取消；另managed-projects宿主接线24/24通过，renderer构建通过。新增覆盖索引冷开／缓存清除、元数据原始分页读取／字节导出、旧分类补填及只读重放、真实错误可见／用户echo唯一、失败持久化不吞、同任务多轮／同名异任务／源链／历史隔离。
+- 真实用户旧记录以readOnly SQLite adapter＋不可变日志复放，未initialize／mutate／启动owner或调用Provider：同一数据原安装代码出现1张假Worker，新代码0张，真实Worker仍1轮；同一block内顺序为orchestrator/worker/closeout，原job ID／completed／revision1／attempt1不变。原件`/home/bfly/.cache/nozeli-root-fix-replay-aPyfUa/report.json`。没有删除旧记录或重跑用户任务。
+- 真实React/Electron生产组件消费合成多轮数据通过：同一block含主控→Worker1→补充主控→Worker2→主控收尾，派工前后原block节点保持，配置记录不生成第3Worker，独立前台问答不进block；390px明暗主题无横向溢出，原件`/tmp/nozeli-session-consumer-mGhhZM/unified-workflow-{light,dark}.png`与日志，完整截图已查看。这条是生产组件，不冒充合成两轮数据为真实模型执行。
+- 已登记native后台脚本完成8项真实Pi／文件／Git验收：唯一intake/Worker、同block角色顺序、实际丢弃归档收尾、草稿及分屏／独立窗口保护；正常退出后重新启动整个Electron主进程，再开原项目，仍为同一任务block／一条真实Worker／收尾complete，job IDs不变，模型HTTP仍主控1＋Worker2，两个正常退出均exit0。原件`/tmp/nozeli-direct-background-PqP9Xs/report.json`、`cold-workflow-block.png`、`discard-closeout-conversation.png`，已查看。最初`B3De2q`脚本在收尾可见位置断言失败，保留失败：发现原生正常system指令也应归metadata，补语义分类同时保留显式system错误，再用真实滚轮解除旧阅读位置保护并居中验证，不放宽产品或伪造窗口可见性。
+- Linux源码／回环Provider验收，不包含真实模型推理或Windows/macOS通过；未Git提交、未安装、未改公开附件，日常版本仍为`orchestrator-closeout-20261104-local-02`。临时只读复放驱动清理，原件保留。
+
+## 主控到 Worker 的交接消息署名（2026-11-04，未安装）
+
+- 用户指出Worker区域的“原始用户请求／主控任务说明”消息被显示为“你”。原因为渲染直接采用LLM协议speaker=user，没有区分宿主生成的Worker initial／supplement交接输入。新增纯呈现messageRole，只有source=host、jobId可核实、job.target与消息目标精确一致且job.type为initial／supplement时署名主控；原用户提交intake／前台输入、真实manual历史输入、缺失／错位／native来源不改写为主控。不修改持久speaker、原文或原生prompt，不改执行流程。
+- 主控交接不再附“后台任务”人类提交徽标；引用携带orchestrator署名，compose引用预览、持久草稿恢复与显式文本材料标题均为“回复 主控”，而原用户输入仍显示“你”。未把所有Worker区域消息一律换角色，未按正文猜测来源。
+- message presentation＋session store回归40/40通过，renderer构建通过。已登记真实Electron＋native Pi＋回环Provider脚本9项检查通过：实际主控派工生成的Worker输入显示主控，点击引用后预览／材料标题均为回复主控；原用户气泡仍为你、原文保持；原后台唯一准入、同任务block、实际丢弃收尾、完整主进程冷启动、job IDs／草稿／模型请求次数保护保持，两个正常退出均exit0。原件`/tmp/nozeli-direct-background-VBdV70/report.json`、`button-after.png`（已查看署名实际截图）。
+- 只在合成项目操作引用与工作流程，未改用户业务数据或原生历史；Linux源码限定，不冒充真实模型推理或Windows/macOS验收。未安装、未提交、未重新发布。
+
+## 审批接入原 Worker 对话（2026-11-05，源码未安装）
+
+- 入口：待办→主工作区报告与版本，同时打开标签样式非模态审批对话；不开放普通主输入／Agent状态点击接Worker。
+- 命令：`npm run build:renderer`、`node tests/desktop-review-discussion-live.mjs`。脚本已注册显式live集合；新增`managed-review-discussion.test.mjs`注册integration，`native-review-renderer.test.mjs`因打包真实CSS/Renderer到临时目录改归integration，不冒充纯unit。
+- 最终真实运行：`/tmp/nozeli-approval-discussion-Pmf9ld/report.json`，7场景、9次回环脚本Provider调用，真实Electron／私有Pi owners／Git worktree，最终`ended`与`closure.complete`，原候选文件按确切接受结果合入，正常退出，Renderer错误0。场景覆盖原线程纯问答不重发布、运行中FIFO排队无原生重叠、实际write＋publish新报告、主工作区显式换版、草稿收起保留、取消／确认接受、不发送未提交草稿，以及654×1150／390×844／390×480实际窗口底部操作。
+- 原生报告guest和DOM审批窗分别截图取证；DOM截图不包含原生child view不能据此声称报告空白。已实际查看`REVIEW_REPORT_V2.png`、`approval-updated.png`及短窗截图。
+- 定向9文件首轮192/196暴露4处问题，已修：过时按发布清空草稿断言、同步throw断言使用方式、FIFO测试未推进真实状态、Renderer导入CSS须采用既有bundle测试惯例。修后相关3文件56/56；最终身份投影＋Renderer两文件31/31。重复覆盖不累计总数。
+- 实际GUI进一步暴露并修复：原生回复只存在portableMessages而非state.messages；running临时stale误当历史禁止排队；显式最新导航在发送／保存屏障中丢失。讨论仅投影durable确认原生身份，拒绝按正文去重；丢回执保留原请求信封重试。
+- 跨文档保存、IME组合、人工稿CAS、发送／接受竞态、未发布全树漂移、结束门和普通Worker聊天拒绝有回归覆盖。不把本地脚本Provider当成真实模型自主判断质量；Windows/macOS、用户profile／论文和物理多屏未验。无安装／提交／发布。
+
+- 默认`npm test`完整通过：unit 673/673、integration 1734/1734（0失败／取消／跳过）；原件`.test-output/ci/unit.tap`与`integration.tap`。运行时注册表加载在`native-review-renderer`归类调整前，故该次日志仍将其计入unit；最终注册改归integration只调整边界，不改变default成员。构建与最终7场景Electron/Pi实测另列，不与定向重复用例合计。
+
+## 阅读优先UX首批（2026-11-05，待使用者审查，未安装）
+
+- 审查页：`/home/bfly/.local/state/nozeli-runtime-tests/ux-review-20261105-batch1/gallery.html`，原件与操作记录随页保存。源码规划及未完成清单见外部Plan的`topics/user-experience-optimization.md`§9。
+- 优化前阅读／任务／实际外部冲突：`ux-before-AtjYfo`；优化后最终：`ux-after-e7QU3k`；真实Pi审批前后：`/tmp/nozeli-approval-discussion-VibPCP`、`/tmp/nozeli-approval-discussion-79sVFb`。全部合成材料；真实Pi使用本地脚本Provider，不追加既有真实模型六次输入授权。无安装、提交、发布。
+- 实测草木深色表头1.088→7.854:1，浅色10.640:1；外部修改提示条深色7.854:1。1440×900／800×650、浅／深实际截图，磁盘改动与人工输入分别保持。中断／排队使用明确标注的持久快照，只证明保守状态呈现和精确占位导航，不是实际崩溃恢复实测。
+- 实际审批前后均真实Pi原线程、串行补充、write/publish与确切接受后真实合入ended；后批新增单文件直接原生打开且返回无遗留modal的行为检查。完整hash退出主确认文案但仍留版本详情与API token；冲突/IME/CAS保护不变。
+- `npm run build:renderer`通过；最终定向`managed-work-records`、`managed-work-directory`、`native-review-renderer`55/55。`npm run test:unit`660/660在最后slot-holder细修前，细修由最终定向覆盖。未重跑integration全集合，不借此前审批全套数量冒充本批全量。
+- 早期合成overview漏传technicalOpen使实际页面无法打开，已恢复参数并补有界原生Renderer行为回归；错误文案钉死测试删除而非重新固定句子。两次截图驱动截止原件保留，不计成功。R01/R02、完整合入冲突解决、离线对话首用、短备注/PPT布局、岩蓝主题矩阵与真实模型内容质量仍待后批。
+
+
+## M1/M2/M4/M5复审迭代及首批授权安装（2026-11-05）
+
+- 用户直接“安装一下”已按原package-candidate→install-local --existing-release激活`approval-ux-batch1-20261105-local-01`，previous=`orchestrator-closeout-20261104-local-02`。756个冻结src/dist摘要及激活记录`~/.local/state/nozeli-runtime-tests/approval-ux-batch1-install-20261105/`；实际包ELF审批8场景通过`/tmp/nozeli-approval-discussion-LFjxmw`。未强退日常应用、未代发用户业务；后续第二轮源码没有再次安装。
+- 真实中文／人工采用脚本：`node tests/desktop-review-human-adoption-live.mjs`，要求DISPLAY、X11/XWayland与ImageMagick import，只读取自有BaseWindow原生handle窗口像素（含HTML child views），不截根桌面／用户其他窗口，不改生产运行时。主进程Inspector仅测试观察窗口身份，不注入业务或假状态；确认用真实UI动作，人工输入经原生编辑器保存。
+- 最终前：`/tmp/nozeli-ux-batch2-zh-fHE7u5`为确切已安装首批ELF，显式`NOZELI_REVIEW_VISUAL_ONLY=1`只取消确认、未声称人工采用成功。后：`/tmp/nozeli-ux-batch2-zh-JMIl3P`为源码全流程。前后各6次本地脚本Provider，不产生付费模型调用。后版真实人工候选Ctrl+S→项目文件仍不存在→返回／取消确认保留未发意见→明确采用→项目字节逐字等于人工稿、原材料不变、原Work／线程不变、无未发意见job、ended/complete、exit0；原生日志／截图／JSON保留。脚本不默认加入无X11的live集合。
+- 同帧中文报告＋讨论截图800×650、1440×900，收起正文恢复、展开草稿保留；采用确认列实际路径、人工稿和不发给AI说明。M2默认任务／AI助手／任务安排，原始协议与发布ID留版本详情；M4前后目录与取消按钮在`ux-after-e7QU3k`→`ux-after-nYmZSq`，后者不改名额，快照仅显示资格。
+- 构建通过；候选／Renderer／目录63/63；最终状态／Renderer58/58；unit661/661（重叠不累计）。未重跑integration全集合／其他live脚本，不用此轮替代全主题、Windows/macOS或真实模型理解验收。
+- 统一复审页`~/.local/state/nozeli-runtime-tests/ux-review-20261105-batch2/gallery.html`与REVIEW.md。M3/R01/R02/同文件合入冲突实际恢复仍未完成，不增加无效继续按钮或自动重放。初次主进程截图观察器误用BrowserWindow导致零业务失败，随后改用实际BaseWindow；原生绘制帧未稳定的早期截图不作为最终视觉证据。
+
+## 第二轮授权安装与本地提交（2026-11-05）
+
+用户明确“安装和commit”。冻结包`approval-ux-batch2-20261105-local-01`的实际ELF经`NOZELI_TEST_BINARY=<release>/nozeli node tests/desktop-review-human-adoption-live.mjs`通过完整中文／人工采用链，6次本地回环响应，原Work／线程保持，采用文件逐字等于人工稿，未发送意见零job，真实ended/complete，exit0；原件`/tmp/nozeli-ux-batch2-zh-G7r6ZE/report.json`及9张实际X11窗口截图。随后`HOME=/home/bfly node tools/install-local.mjs --existing-release ...`激活，previous为首批`approval-ux-batch1-20261105-local-01`。原日常窗口不强退，配置／项目不由安装器覆盖。prepare元数据检查0技术失败，分发审计警告仍未签收，不据此发布。
+
+本地commit按相关文件与hunk选择，保留文件附件、会话投影／角色气泡、Agent栏等其他在途修改；安装快照按已实测完整工作树冻结，因此不宣称安装物等于纯净单一commit。未push／release。此前“未安装”是当时状态，本节为新授权后的事实。
+
+另从Git暂存索引独立导出完整源码树（不带未暂存的附件／会话／Agent栏改动），独立构建Renderer并跑真实中文人工采用旅程通过，原件`/tmp/nozeli-ux-batch2-zh-JEMdnA/report.json`，确认本次选择性提交不依赖那些在途改动。导出树只复用既有npm/vendor/Pi构建依赖，不替换被测源码；首次缺少私有Pi dist的环境前置失败保留为零业务调用，不算产品故障。独立源码构建与安装快照分别取证，不将其摘要混称一致。

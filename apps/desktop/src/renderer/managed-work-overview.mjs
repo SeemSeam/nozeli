@@ -1,12 +1,13 @@
 import './managed-work-overview.css';
+import { workSlotCaptions } from './managed-work-directory.mjs';
 
 const statusLabels = {
-  queued: '等待执行',
+  queued: '已接收，等待开始',
   running: '执行中',
   working: '执行中',
   review: '等待审阅',
-  paused: '等待处理',
- closing: '审核已决定 · 收尾未完成',
+  paused: '已暂停',
+  closing: '审核已决定 · 收尾未完成',
   ended: '已结束',
   failed: '执行失败',
   cancelled: '已取消',
@@ -27,6 +28,9 @@ export function renderWorkOverview({
   onEnd,
   requiredSection,
   technicalSections = [],
+  phase = null,
+  waitingOn = null,
+  onInspectWork = null,
   technicalOpen = false,
   disabled = false,
 }) {
@@ -49,8 +53,8 @@ export function renderWorkOverview({
 
   const header = make('header', 'managed-work-overview-header');
   header.append(make('h3', 'managed-work-overview-title', work.name || '任务'));
-  let status = statusLabels[work.status] || '状态待确认';
-  if (work.manualControl?.pause != null && !ended && work.status !== 'closing') status = work.status === 'running' ? '执行中 · 后续已暂停' : '已暂停';
+  let status = phase || statusLabels[work.status] || '状态待确认';
+  if (work.manualControl?.pause != null && !ended && work.status !== 'closing') status = work.status === 'running' ? status + ' · 后续已暂停' : /已暂停|停止|待核查/.test(status) ? status : '已暂停';
   header.append(make('p', 'managed-work-overview-status', status));
   root.append(header);
 
@@ -75,12 +79,20 @@ export function renderWorkOverview({
       ? '这项任务在交付前结束，没有生成最终成果报告。'
       : work.status === 'review'
         ? '成果报告暂不可用，请稍后重新查看。'
-        : '尚未收到最终成果报告；已有进展会保留。';
+        : work.status === 'queued'
+          ? '尚未开始执行；原请求已保留，开始后按排队顺序进行。'
+          : '尚未收到最终成果报告；已有进展会保留。';
   }
   result.append(make('h4', 'managed-work-overview-result-title', resultTitle));
   result.append(make('p', 'managed-work-overview-explanation', explanation));
   if (incompleteClosure) {
-    result.append(make('p','managed-work-overview-notice',work.closure?.phase==='blocked'?'系统已记录收尾故障，正在后台处理；原决定、结果与记录保留。':'审核决定已保存，系统正在完成收尾；无需再次操作。'));
+    const closureFailure = work.closure?.error?.message || work.closure?.error;
+    const closureNotice = work.closure?.phase === 'blocked'
+      ? '技术收尾受阻：' + (closureFailure ? String(closureFailure) : '故障已记录') + '。原决定、结果与记录保留；处理后可重试收尾，不会重放任务。'
+      : ['requested', 'stopping', 'integrating', 'cleanup'].includes(work.closure?.phase)
+        ? '审核决定已保存，技术收尾进行中；原决定与结果保留，无需重复操作。'
+        : '审核决定已保存，技术收尾未完成；原决定、结果与记录保留。';
+    result.append(make('p', 'managed-work-overview-notice', closureNotice));
   }
 
   const button = (label, callback, dataKey, primary = false) => {
@@ -104,9 +116,31 @@ export function renderWorkOverview({
     root.append(required);
   }
 
+  // A queued Work names the exact Works holding its slots; opening them uses
+  // the existing task overview only, with no new permission or replay path.
+  const waiting = (Array.isArray(waitingOn) ? waitingOn : []).slice(0, 8);
+  if (waiting.length) {
+    const waitSection = make('section', 'managed-work-overview-waiting');
+    waitSection.append(make('h4', '', '等待名额释放'));
+    for (const holder of waiting) {
+      const row = make('div', 'managed-work-overview-waiting-row');
+      row.append(make('span', '', holder.name + ' · ' + (workSlotCaptions[holder.status] || holder.status)));
+      if (typeof onInspectWork === 'function' && holder.workId) {
+        const open = make('button', 'managed-work-overview-waiting-open', '查看');
+        open.type = 'button';
+        open.dataset.workWaitingOpen = holder.workId;
+        open.disabled = disabled;
+        open.addEventListener('click', () => { if (!open.disabled) onInspectWork(holder.workId); });
+        row.append(open);
+      }
+      waitSection.append(row);
+    }
+    root.append(waitSection);
+  }
+
   const actions = make('div', 'managed-work-overview-actions');
   if (typeof onControl === 'function') actions.append(button('执行控制…', onControl, 'workControlDetails'));
-  if (typeof onEnd === 'function') actions.append(button(work.status === 'queued' ? '取消任务…' : '结束任务…', onEnd, 'managedWorkEnd'));
+  if (typeof onEnd === 'function') actions.append(button(work.status === 'queued' ? '取消排队…' : '结束任务…', onEnd, 'managedWorkEnd'));
   if (actions.childNodes.length) root.append(actions);
 
   if (typeof work.request === 'string' && work.request.trim()) {

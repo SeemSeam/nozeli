@@ -23,7 +23,7 @@
 .word-authorship { position:absolute;inset:0;overflow:hidden;pointer-events:none;z-index:4; }
 .word-authorship .authorship-mark { width:23px; }
 .word-authorship .authorship-deletion { left:auto!important;transform:translateX(12px);width:11px; }
-.document-new-version { display:flex;align-items:center;gap:10px;padding:5px 12px;font-size:11px;background:#eef4ec;border-bottom:1px solid var(--line); }
+.document-new-version { display:flex;align-items:center;gap:10px;padding:5px 12px;font-size:11px;background:var(--green-soft);color:var(--ink);border-bottom:1px solid var(--line); }
 .document-new-version[hidden] { display:none; }
 .document-new-version span { flex:1; }
 .document-new-version button { min-height:24px;padding:3px 7px;font-size:11px;border:0;background:transparent;color:var(--green); }

@@ -455,7 +455,11 @@ export class Workspace {
   // 续作意图先落账（state:'applying'）再写worktree；本方法是幂等收口：标记旧
   // 报告stale、continueState（running+revision++）、同Work建manual job、消费已
   // 应用草稿——单事务完成；apply按摘要幂等，崩溃恢复不会 double-apply。
-  reviewContinueState(id,{requestKey}){
+  // discussion 变体：同一续作收口机器（stale全部发布、revision++、消费已应用
+  // 草稿、同Work同线程manual job），但 job 的原生用户条目是用户讨论原文
+  // （context.userInput.text），持久user消息也是原文——作者身份正确绑定用户，
+  // 不是宿主交接。宿主指令保留在 record.instruction 供恢复重放。
+  reviewContinueState(id,{requestKey,discussion=null}){
     return this.mutate(()=>{
       const w=this.find(id);
       const record=w.review?.continuations?.find(c=>c.requestKey===requestKey);
@@ -468,28 +472,68 @@ export class Workspace {
       const at=new Date().toISOString(),plan=record.files||[];
       for(const r of this.state.receipts)if(r.workId===id&&!r.stale)r.stale={code:'SUPERSEDED',at,requestKey};
       const revision=this.continueState(id);
-      const job={id:randomUUID(),key:'review-continue:'+requestKey,target:id,type:'manual',text:record.instruction,context:{boundWorkId:id,manual:true,permissionTaskId:randomUUID(),reviewContinuation:{requestKey,reviewVersion:record.reviewVersion,at,files:plan.map(f=>({relPath:f.relPath,fromDigest:f.fromDigest,toDigest:f.toDigest,draftRevision:f.draftRevision}))}},status:'queued',promptStartedAt:null,at,revision};
+      const job=discussion
+        ?{id:randomUUID(),key:'review-discussion:'+requestKey,target:id,type:'manual',text:record.instruction,context:{boundWorkId:id,manual:true,permissionTaskId:randomUUID(),userInput:{text:discussion.text},reviewDiscussion:{requestKey,objectId:record.objectId,reviewVersion:record.reviewVersion,at},reviewContinuation:{requestKey,reviewVersion:record.reviewVersion,at,files:plan.map(f=>({relPath:f.relPath,fromDigest:f.fromDigest,toDigest:f.toDigest,draftRevision:f.draftRevision}))}},status:'queued',promptStartedAt:null,at,revision,explicitInput:true}
+        :{id:randomUUID(),key:'review-continue:'+requestKey,target:id,type:'manual',text:record.instruction,context:{boundWorkId:id,manual:true,permissionTaskId:randomUUID(),reviewContinuation:{requestKey,reviewVersion:record.reviewVersion,at,files:plan.map(f=>({relPath:f.relPath,fromDigest:f.fromDigest,toDigest:f.toDigest,draftRevision:f.draftRevision}))}},status:'queued',promptStartedAt:null,at,revision};
       this.state.jobs.push(job);
-      this.state.messages.push({id:randomUUID(),target:id,speaker:'user',text:record.instruction,jobId:job.id});
+      this.state.messages.push({id:randomUUID(),target:id,speaker:'user',text:discussion?discussion.text:record.instruction,jobId:job.id,...(discussion?{reviewDiscussion:requestKey}:{})});
       for(const f of plan){const held=w.review.drafts[f.relPath];if(held){w.review.revisionCursor??={};w.review.revisionCursor[f.relPath]=Math.max(w.review.revisionCursor[f.relPath]??0,held.revision);delete w.review.drafts[f.relPath];}}
       Object.assign(record,{state:'queued',jobId:job.id,revision,queuedAt:at});delete record.error;
       return {jobId:job.id,revision};
     });
   }
+  // ── 报告审校讨论（managed.review.discussion.*）────────────────────────────
+  // 纯讨论回合（无草稿变更）：同一Work、同一revision，status review→running，
+  // 不stale任何发布、不新建Work；Worker 纯文本回答无需重新发布，实际改动则
+  // 必须发布新快照（否则接受被 CANDIDATE_DRIFT 阻断）。接受输入幂等落账：
+  // 同requestKey+同摘要重放回执，不同摘要即碰撞拒绝。
+  reviewDiscussionSendState(id,{requestKey,objectId,reviewVersion,payloadDigest,textDigest,jobText}){
+    return this.mutate(()=>{
+      const w=this.find(id);
+      if(['closing','ended'].includes(w.status))throw Object.assign(Error('决定已记录；不能发起报告讨论'),{code:'WORK_ENDED'});
+      if(w.readOnly)throw Object.assign(Error('历史执行资源只读'),{code:'HISTORICAL_SESSION_READ_ONLY'});
+      const existing=(w.review?.discussions||[]).find(d=>d.requestKey===requestKey);
+      if(existing){
+        if(existing.payloadDigest!==payloadDigest)throw Object.assign(Error('同一讨论确认身份已用于不同请求'),{code:'REVIEW_REQUEST_COLLISION'});
+        return {duplicate:true,jobId:existing.jobId,revision:existing.revision};
+      }
+      // 排队发送：仅当在飞输入全部是同修订、同当前对象的讨论回合时允许在
+      // running状态继续入队（durable串行队列，FIFO逐回合执行）；其他在飞
+      // 输入或状态变化仍拒绝。
+      const busy=(this.state.jobs||[]).filter(j=>(j.target===id||j.context?.boundWorkId===id)&&['queued','running'].includes(j.status));
+      const discussionBusy=busy.filter(j=>j.context?.reviewDiscussion);
+      // 事务内复核当前发布绑定：入队消息必须仍绑定最新结果对象与修订。
+      if((w.result?.objectId??null)!==objectId||w.result?.revision!==w.revision)throw Object.assign(Error('此报告已被取代；请在最新发布上讨论'),{code:'REVIEW_CANDIDATE_STALE'});
+      if(w.status==='running'){
+        if(busy.length!==discussionBusy.length)throw Object.assign(Error('此工作有待执行的其他输入；不能同时讨论'),{code:'WORK_BUSY'});
+        if(discussionBusy.some(j=>(j.revision??null)!==w.revision||j.context.reviewDiscussion.objectId!==objectId))throw Object.assign(Error('讨论回合已产生新发布；请刷新到最新报告后再继续排队'),{code:'REVIEW_CANDIDATE_STALE'});
+      }else if(w.status!=='review')throw Object.assign(Error('当前状态不能发起报告讨论'),{code:'WORK_STATE'});
+      const at=new Date().toISOString();
+      w.review??={drafts:{},history:{},continuations:[]};
+      w.review.discussions??=[];
+      // 原生用户条目=用户原文（context.userInput.text，逐字），非宿主交接。
+      const job={id:randomUUID(),key:'review-discussion:'+requestKey,target:id,type:'manual',text:jobText,context:{boundWorkId:id,manual:true,permissionTaskId:randomUUID(),userInput:{text:jobText},reviewDiscussion:{requestKey,objectId,reviewVersion,at}},status:'queued',promptStartedAt:null,at,revision:w.revision,explicitInput:true};
+      this.state.jobs.push(job);
+      w.status='running';
+      this.state.messages.push({id:randomUUID(),target:id,speaker:'user',text:jobText,jobId:job.id,reviewDiscussion:requestKey});
+      w.review.discussions.push({requestKey,at,objectId,reviewVersion,payloadDigest,textDigest,jobId:job.id,revision:w.revision});
+      return {jobId:job.id,revision:w.revision};
+    });
+  }
   // 审校续作指令草稿（UI作曲框独立durable存储，不与主对话草稿混用）：
-  // 按(objectId)命名空间CAS；正文存recovery库，账本只留摘要。
-  reviewInstructionState(id,{objectId,textDigest,expectedRevision}){
+  // Work作用域CAS——同一Work内单调revision，跨发布轮换保留正文，不因新
+  // publication被拒/清空；正文存recovery库，账本只留摘要。objectId仅作
+  // 写入时来源标记，不参与过期/轮换判定。
+  reviewInstructionState(id,{objectId=null,textDigest,expectedRevision}){
     return this.mutate(()=>{
       const w=this.find(id);
       if(['closing','ended'].includes(w.status))throw Object.assign(Error('决定已记录；续作指令不再修改'),{code:'WORK_ENDED'});
       if(w.readOnly)throw Object.assign(Error('历史执行资源只读'),{code:'HISTORICAL_SESSION_READ_ONLY'});
-      if(objectId!==(w.result?.objectId??null))throw Object.assign(Error('此报告不是当前待审候选'),{code:'REVIEW_CANDIDATE_STALE'});
       w.review??={drafts:{},history:{},continuations:[]};w.review.instruction??={};
-      const held=w.review.instruction.objectId===objectId?w.review.instruction:null;
-      const current=held?.revision??0;
+      const current=w.review.instruction.revision??0;
       if(expectedRevision!==current)throw Object.assign(Error('指令草稿版本已变化，请重新读取'),{code:'REVIEW_INSTRUCTION_STALE',currentRevision:current});
       const revision=current+1,at=new Date().toISOString();
-      w.review.instruction={revision,textDigest,savedAt:at,objectId};
+      w.review.instruction={revision,textDigest,savedAt:at,...(objectId?{objectId}:{})};
       return {revision,savedAt:at};
     });
   }

@@ -16,6 +16,14 @@
 - 用户随后明确授权“安装后用复杂任务重新测试”：最终 current 为 `2026-11-03T12-56-26-197Z`，previous 为 `2026-11-03T12-41-53-640Z`。首装包的真实复杂 GUI 验收发现“未初始化 AI 时重启不自动完成已确认收尾”，已补宿主独立启动恢复、真实回归通过后重新冻结安装。最终包正常冷启动在打开项目之前即完成原故障 Work，零模型初始化、零技术重试；五文件／人工稿／无关暂存保护、故障 repaired/event completed 实测通过。真实 GLM-5.3 多模块 CLI 两轮实现与独立 oracle 在首装包通过；两包 src 差异仅 startup 的 main.cjs、managed-projects.mjs，最终包再验证该真实任务历史／原生 guest、ended/complete、无重放。最终包六类复杂宿主故障／并发矩阵 6/6。详细版本、模拟边界及原件见[复杂安装验收](testing.md#安装后复杂真实任务与故障验收2026-11-03)。未发布／提交／推送，不声称完整默认或跨平台验收。
 - 2026-11-03/04 本机安装链（用户授权安装与实测，均未发布）：current `2026-11-03T17-14-57-747Z` 完成真实模型系统验收——90,023 字节需求文档两次有界读取并明示未读全文、GLM-5.3 两轮数值 CLI 与独立 oracle 69/69＋4/4、离线预约 Web 应用两轮独立判卷（47／70项）、六类原生宿主故障矩阵 6/6；current `2026-11-04T00-46-19-337Z` 为已接手空线程连接修复安装，原日常 profile 实窗验证连接 ready、无业务重放，非空旧线程仍需真实协议接手。紧凑 F/O/W 状态栏改版仍为源码，未包含于安装版。2026-11-04 的所有者授权只覆盖 alpha.5 公开发布，不构成新的本机安装授权；详见[测试边界](testing.md)。
 
+- 2026-11-04 用户在普通引用文件／前后台气泡／主控交接流程修复后明确要求“安装”：本机 current 已切到 `conversation-flow-20261104-local-01`，previous 为 `2026-11-04T00-46-19-337Z`。这是本地开发快照，包含前述三轮修复及紧凑协作状态；未提交、推送或重新发布。独立冻结包756个src/dist文件与已验证源码逐字节摘要一致；实际ELF＋捆绑Pi／Git在隔离profile完成5项综合验收、exit0。安装期间未强退原日常进程、未取消用户任务；原进程随后已退出，再通过正常`~/.local/bin/nozeli`启动新版，真实exe及`NOZELI_DESKTOP_READY ... hidden=false debugPort=none`确认，未代发消息或操作业务成果。安装与验证原件见[测试记录](testing.md#本地安装对话与主控流程修复2026-11-04)。旧段“未安装”为当时源码阶段，不描述本次安装后的状态。
+
+- 2026-11-04 用户在“全部Agent直接列出＋彩色状态”和“主控独立收尾”修正后要求“安装测试”：current已激活`orchestrator-closeout-20261104-local-02`，previous为`conversation-flow-20261104-local-01`。756个src/dist冻结输入SHA-256与最终源码构建一致。实际候选ELF＋包内Pi/Git的丢弃收尾、接受冲突保留人工文件→原绑定重试完成合入两条完整流程各8项检查通过、exit0（集合重叠不累计）；另包内组件62个Agent全列表／颜色／320px检查通过。旧日常窗口走原生正常关闭，无force或用户任务取消；新版通过标准CLI入口启动，实际exe及可见窗口核实，debugPort=none。未提交／推送／公开发布，见[安装测试](testing.md#全部agent与主控收尾安装测试2026-11-04)。
+
+- 2026-11-05 用户明确要求“安装一下”：已激活`approval-ux-batch1-20261105-local-01`，previous保留`orchestrator-closeout-20261104-local-02`；CLI／桌面入口经原installer同步。该冻结包为首批已验审批对话＋阅读状态UX，不含后续agent1复审M1/M2/M4/M5迭代。实际冻结ELF＋包内Pi/Git在隔离项目8场景通过、9次本地脚本Provider、正常exit0，原件`/tmp/nozeli-approval-discussion-LFjxmw/report.json`；756个src/dist摘要与current/previous记录在`~/.local/state/nozeli-runtime-tests/approval-ux-batch1-install-20261105/`。未强退日常进程或代发用户业务，未提交／发布；后续源码仍需独立复审／安装授权。
+
+- 2026-11-05 用户追加要求“记得安装和commit”：已按既有冻结／激活流程安装`approval-ux-batch2-20261105-local-01`，previous保留`approval-ux-batch1-20261105-local-01`。实际该候选ELF通过中文X11正文＋讨论同帧、收起重开草稿、人工直接编辑保存→采用→精确合入／ended，6次回环脚本Provider、零付费模型、正常exit0，原件`/tmp/nozeli-ux-batch2-zh-G7r6ZE/report.json`。本地提交只覆盖审批与UX相关改动，其他在途改动保留；不push、不打tag或公开发布。没有强退日常窗口或操作用户业务。
+
 ## 分发审计状态：未完成
 
 分发审计状态：未完成。已公开的预发布不因附件 `使用说明.md` 中的“供本机使用”声明或本页免责说明而解除下列义务；免责声明不构成义务履行。逐项状态以 [compliance-inventory.json](../apps/desktop/compliance-inventory.json) 为准（含 pinned 版本、哈希与证据路径）；本页与其不一致时，先修正文档再发布。签收必须是具名人工记录（审核人、日期、结论、证据），不能用状态标记或脚本输出替代。

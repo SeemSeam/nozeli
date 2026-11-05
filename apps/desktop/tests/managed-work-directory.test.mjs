@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {managedWorkRecords} from '../src/domain/managed-work-records.mjs';
-import {workRecordCategory,workRecordServiceState,workRecordControlTarget} from '../src/renderer/managed-work-directory.mjs';
+import {workRecordCategory,workRecordServiceState,workRecordControlTarget,workDispositionNotice,workSlotCaptions} from '../src/renderer/managed-work-directory.mjs';
 
 const fixture=()=>({works:[{id:'w',status:'review',revision:4,result:{objectId:'r4',revision:4}}],jobs:[
  {id:'j1',target:'w',revision:1,status:'failed',error:'429'},
@@ -59,4 +59,21 @@ test('unrouted technical failures are read-only while genuine Work controls rema
   assert.deepEqual(workRecordControlTarget({...record,workId:'w',maintenance:{status:'needs-version-fix'}},state),{workId:'w',name:'开始落盘'});
  }
  const state={jobs:[{id:'queued',status:'queued'}]};assert.deepEqual(workRecordControlTarget({name:'待安排',jobIds:['queued']},state),{jobId:'queued',name:'待安排'});
+});
+
+test('cancelling a never-started queued Work states queue facts, not discard or cleanup',()=>{
+ const notice=workDispositionNotice({work:{id:'w',name:'访谈摘要',status:'queued',revision:0},binding:{workId:'w',revision:0,objectId:null,candidateCommit:null},decision:'discard'});
+ assert.match(notice,/访谈摘要/);assert.match(notice,/尚未开始执行/);assert.match(notice,/取消排队/);assert.match(notice,/原请求与历史记录保留/);
+ assert.doesNotMatch(notice,/丢弃|第 0 版/);
+});
+
+test('started Works keep the exact-version discard danger confirmation',()=>{
+ const notice=workDispositionNotice({work:{id:'w',name:'访谈摘要',status:'paused',revision:2,threadId:'t',execution:{}},binding:{workId:'w',revision:2,objectId:'o',candidateCommit:null},decision:'discard'});
+ assert.match(notice,/第 2 版/);assert.match(notice,/丢弃未合入/);assert.match(notice,/工作树和分支/);
+ const accept=workDispositionNotice({work:{id:'w',name:'访谈摘要',status:'review',revision:3,threadId:'t'},binding:{workId:'w',revision:3,objectId:'o',candidateCommit:null},decision:'accept'});
+ assert.match(accept,/第 3 版/);assert.match(accept,/安全合入/);
+});
+
+test('slot captions cover every holder status the domain can report',()=>{
+ for(const status of ['running','paused','review','closing','unverified-ended'])assert.equal(typeof workSlotCaptions[status],'string',status);
 });
