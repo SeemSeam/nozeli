@@ -576,3 +576,25 @@ provider／预算／无能力技术故障只本地分类与去重，不产生 ma
 另外 3 项 draft 失败已在**精确任务前源码快照**中独立实跑得到相同错误，非本轮引入：`collab-controller-projection.test.mjs:67` 的离线 `managed.draft` 请求报“项目三角色尚未就绪”，`managed-submission.test.mjs:4,13` 报 `TERMINAL_STALE`。任务前快照 `/var/tmp/nozeli-debug-read-commit-mxiihk5y/pre-task-source`，运行这两个文件共 8 项、5 通过／3 失败。上述旧 draft 路径及其测试保持未改，不通过跳过、删安全断言或回退用户已有代码伪造全绿。
 
 验证范围仅 Linux 源码和隔离合成项目。未修改日常安装、用户项目或凭据；未推送、发布，未取得 Windows/macOS 或通用自主代码修复资格。
+
+## 两项修复分别安装复测（2026-11-05，用户授权）
+
+用户明确要求“安装复测通过后 commit”，并要求两个修复分别测试。通过既有 installer 激活实际账户 `/home/bfly/.local/opt/nozeli/releases/2026-11-05T10-28-25-750Z`；previous 保留 `approval-ux-batch4-20261105-local-01`，CLI／桌面入口同步。冻结时 761 个 src/dist 文件与本次构建摘要一致；两个场景均启动该安装 ELF，无源码 main 参数，使用包内 Node／Pi／Git、独立合成项目与 profile。没有关闭日常窗口、重放用户任务或改写安装文件。
+
+### A. 自动 DEBUG 与持久日志：独立通过
+
+- 命令：`HOME=/home/bfly TMPDIR=/var/tmp NODE_NO_WARNINGS=1 node tests/installed-debug-activation-live.mjs`，退出 0；6 项检查。
+- 原件：`/var/tmp/nozeli-installed-debug-activation-y0xkE7/report.json`。
+- 对实际安装主进程的一个确切 native history_read 调用进行明确标记的单次宿主故障注入，绑定当前项目／job／Work revision／prompt／readRef／offset；这是通用 DEBUG 回归，不冒充已修复原缺陷仍会失败。其余调用委托原宿主，结束还原包装，安装字节未改。
+- 自动主控经真实 Pi 激活 debug、检查两份安装源码分页（正文及 SHA-256 与实际安装文件一致）、提交绑定报告。关闭后直接只读 SQLite 核对原 job／Work／attempt／event／检查回执与报告，状态 `awaiting-fix`、`verifiedFix=false`；没有额外 Worker／Work／发布、用户技术维修待办或原输入重放。实际 UI 截图已查看，自有应用正常退出 0。本次安装场景不覆盖 HTTP401 分支，先前源码证据不混作本次安装验收。
+
+### B. 同回合读取协议纠正：独立通过
+
+- 命令：`HOME=/home/bfly TMPDIR=/var/tmp NODE_NO_WARNINGS=1 node tests/installed-read-protocol-live.mjs`，退出 0；6 项检查、7 次本地脚本 Provider 请求。
+- 原件：`/var/tmp/nozeli-installed-read-protocol-correction-dIpKZV/report.json`。
+- 一个显式 task／intake／Worker／native 输入：真实 document_read → history_read(签发的文档引用及 offset) 返回 `READ_TOOL_MISMATCH` 与准确工具／引用 → 无关读取不修复 → 同一原生输入显式 document_read 纠正，匹配成功回执自动标记 repaired，没有 maintenance／DEBUG 调用。
+- 完整冻结页面拼接与原文一致，真实 document_apply 精确替换、一次有效 HTML 发布、冻结候选及报告验证；明确接受前原项目／Git 不变。实际隔离 HTML guest 验证唯一内容标记、打开原生候选文档、回到原报告页脚确认 `paper.txt`，随后原项目与 `HEAD:paper.txt` 均逐字节等于候选，真实 merge commit、`ended/accept/closure.complete`、执行目录清理完成，没有业务重放。
+- 正常退出 0 后直接只读 SQLite 核对脱敏日志的 `same-turn-read-corrected` 成功回执、零 effect-replay attempts、无 debug 条目；安装字节不变。报告 guest、候选和接受确认截图已检查。
+
+初期驱动的注册子进程不退出、Inspector 缺少 import callback、同步 SQLite catch、旧 current job 快照、把工具目录误当实际调用、原始 HTML 与规范化对象混淆、跨进程扫描混入旧安装及隔离 guest／旧文案假设均未计通过；只修测试驱动，未为通过修改安装包或产品安全边界。两条永久独立入口共享安装启动／身份／清理 fixture，不用一个总通过结论代替分别验收。仅 Linux x64 确定性本地模型链路；不声明付费模型、Windows/macOS、全量默认套件或公开发布通过。
+

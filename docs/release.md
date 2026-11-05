@@ -24,6 +24,8 @@
 
 - 2026-11-05 用户追加要求“记得安装和commit”：已按既有冻结／激活流程安装`approval-ux-batch2-20261105-local-01`，previous保留`approval-ux-batch1-20261105-local-01`。实际该候选ELF通过中文X11正文＋讨论同帧、收起重开草稿、人工直接编辑保存→采用→精确合入／ended，6次回环脚本Provider、零付费模型、正常exit0，原件`/tmp/nozeli-ux-batch2-zh-G7r6ZE/report.json`。本地提交只覆盖审批与UX相关改动，其他在途改动保留；不push、不打tag或公开发布。没有强退日常窗口或操作用户业务。
 
+- 2026-11-05 用户要求“安装复测通过后commit，两个修复分别测试”：current 激活 `2026-11-05T10-28-25-750Z`，previous 保留 `approval-ux-batch4-20261105-local-01`。761 个 src/dist 冻结摘要一致；实际安装 ELF＋包内 Node/Pi/Git 的自动 DEBUG／持久报告和同回合读取纠正／真实候选发布／明确接受合入分别 6 项通过、各自正常 exit0，证据分别为 `/var/tmp/nozeli-installed-debug-activation-y0xkE7/report.json`、`/var/tmp/nozeli-installed-read-protocol-correction-dIpKZV/report.json`。DEBUG 使用明确标记的单次宿主故障注入，读取纠正为真实工具路径；无日常项目操作、安装字节热改或业务重放。见[分项安装验收](pi-integration-execution.md#两项修复分别安装复测2026-11-05用户授权)。未推送／公开发布或取得跨平台资格。
+
 ## 分发审计状态：未完成
 
 分发审计状态：未完成。已公开的预发布不因附件 `使用说明.md` 中的“供本机使用”声明或本页免责说明而解除下列义务；免责声明不构成义务履行。逐项状态以 [compliance-inventory.json](../apps/desktop/compliance-inventory.json) 为准（含 pinned 版本、哈希与证据路径）；本页与其不一致时，先修正文档再发布。签收必须是具名人工记录（审核人、日期、结论、证据），不能用状态标记或脚本输出替代。
