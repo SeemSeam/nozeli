@@ -26,6 +26,8 @@
 
 - 2026-11-05 用户要求“安装复测通过后commit，两个修复分别测试”：current 激活 `2026-11-05T10-28-25-750Z`，previous 保留 `approval-ux-batch4-20261105-local-01`。761 个 src/dist 冻结摘要一致；实际安装 ELF＋包内 Node/Pi/Git 的自动 DEBUG／持久报告和同回合读取纠正／真实候选发布／明确接受合入分别 6 项通过、各自正常 exit0，证据分别为 `/var/tmp/nozeli-installed-debug-activation-y0xkE7/report.json`、`/var/tmp/nozeli-installed-read-protocol-correction-dIpKZV/report.json`。DEBUG 使用明确标记的单次宿主故障注入，读取纠正为真实工具路径；无日常项目操作、安装字节热改或业务重放。见[分项安装验收](pi-integration-execution.md#两项修复分别安装复测2026-11-05用户授权)。未推送／公开发布或取得跨平台资格。
 
+- 2026-11-05 用户要求真实安装测试批准及其他停顿场景，并裁决权限请求只提醒、回原对话授权，不写权限报告。最终 current `2026-11-05T14-24-44-086Z`、previous `2026-11-05T14-11-04-047Z`；762 个 src/dist 输入一致。实际安装 ELF 的对话授权／管理员拒绝／带未发送草稿继续／Worker 暂停后批准及恢复（6 项）和冷重开方案反馈／旧版本拒绝／暂停续作／明确接受合入（12 项）分别通过、正常 exit0。安装验收发现的草稿阻断已批准续作已修复、重新安装实跑通过。证据和模拟边界见[安装版授权与停顿场景](pi-integration-execution.md#安装版授权与停顿场景2026-11-05按用户最新权限交互验收)。未提交／推送／公开发布，无真实 root 或付费模型验收。
+
 ## 分发审计状态：未完成
 
 分发审计状态：未完成。已公开的预发布不因附件 `使用说明.md` 中的“供本机使用”声明或本页免责说明而解除下列义务；免责声明不构成义务履行。逐项状态以 [compliance-inventory.json](../apps/desktop/compliance-inventory.json) 为准（含 pinned 版本、哈希与证据路径）；本页与其不一致时，先修正文档再发布。签收必须是具名人工记录（审核人、日期、结论、证据），不能用状态标记或脚本输出替代。

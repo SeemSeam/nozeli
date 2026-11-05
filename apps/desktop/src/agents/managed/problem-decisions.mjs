@@ -76,6 +76,9 @@ export async function resolveProblemDecision(controller,payload){
       ?'用户已在待办中批准问题报告提出的处理方案，继续同一Work按该方案执行剩余步骤。\n'+approveNote+'\n本决定不是成果接受，Work 不会因此结束；已完成操作不得重放。\n'+(text.trim()?`用户批准说明（原文）：\n${text}\n`:'')+'\n用户批准的处理方案原文（与任务锚点“用户明确批准的来源输入”一致，在本任务内按此执行）：\n'+problemText
       :'用户已在待办中拒绝问题报告提出的处理方案并给出反馈；不得按原方案执行，也不得重放已完成操作，按反馈继续同一Work。\n'+rejectNote+'\n本决定不是成果接受，Work 不会因此结束；用户反馈是本轮唯一新增授权来源。\n\n用户反馈（原文）：\n'+text+'\n\n问题报告原文（仅对照，未被批准）：\n'+problemText;
     const job=controller.queueJob(workId,'problem-resume',body,{key:`problem-resume:${objectId}:${revision}`,context:{problemObjectId:objectId,problemRevision:revision,problemDecisionAction:action,sourceJobId,...(sourceJob.context?.permissionTaskId?{permissionTaskId:sourceJob.context.permissionTaskId}:{})},priority:true});
+    // 续作 job 在同一事务内绑定决定产生的 Work 新版本：此后 Work 再前进
+    // （新决定/人工处置）即可判定该排队续作已被取代，不按本决定唤醒。
+    controller.store.state.jobs.find(j=>j.id===job.id).revision=newRevision;
     // approvedScopes keeps the explicit approval identity (deviationId/
     // sourceJobId/sourceText/at/revision): the Worker projection exposes the
     // approval ids, and the full frozen original stays readable by version.

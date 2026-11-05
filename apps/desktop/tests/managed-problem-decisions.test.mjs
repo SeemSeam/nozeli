@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {randomUUID} from 'node:crypto';
+import {randomUUID,createHash} from 'node:crypto';
+import {EventEmitter} from 'node:events';
 import {Controller} from '../src/agents/managed/controller.mjs';
 import {ManagedProjects} from '../src/agents/managed-projects.mjs';
 import {DesktopHost} from '../src/main/host.mjs';
@@ -182,6 +183,10 @@ test('cold local decision persists before any model connect and replays across r
  await seed.stop();service.controllers.delete(projectId);
  const first=await service.invoke('managed.problem.resolve',p);
  assert.equal(first.accepted,true);
+ assert.equal(first.executionDisposition.kind,'connection-required');
+ assert.equal(first.executionDisposition.reason,'CONNECT_FAILED');
+ assert.match(first.executionDisposition.connection.message,/global resources forbidden/);
+ assert.equal(first.executionDisposition.jobId,first.jobId);
  const restored=service.controllers.get(projectId);
  assert.equal(restored.sessions.size,0);assert.equal(restored.started,false);
  assert.equal(restored.store.state.jobs.filter(j=>j.type==='problem-resume').length,1);assert.equal(typeof restored.store.state.jobs.find(j=>j.id===first.jobId).context.permissionTaskId,'string','来源无权限身份时生成新任务身份');
@@ -197,7 +202,102 @@ test('cold local decision persists before any model connect and replays across r
  const reloaded=service.controllers.get(projectId);
  assert.equal(reloaded.store.state.jobs.filter(j=>j.type==='problem-resume').length,1);
  assert.equal(reloaded.store.state.problemActions.length,1);
+ assert.equal(reloaded.started,false);assert.equal(reloaded.sessions.size,0);
+ await reloaded.store.mutate(()=>{reloaded.store.state.jobs.find(j=>j.id===first.jobId).collabAttempts=[{requestId:'cold-wake-transport',kind:'prompt',status:'unknown',everAdmitted:true}];});
+ const unknown=await service.invoke('managed.problem.resolve',p);
+ assert.equal(unknown.accepted,true);
+ assert.equal(unknown.executionDisposition.kind,'needs-reconciliation');
+ assert.equal(unknown.executionDisposition.reason,'settlement-unknown');
+ assert.equal(unknown.executionDisposition.recovery.op,'managed.recovery.resolve');
+ assert.equal(unknown.executionDisposition.recovery.sourceJob,first.jobId);
+ assert.equal(unknown.executionDisposition.recovery.workId,workId);
+ assert.equal(reloaded.started,false,'结算未知不启动任何会话或连接');
+ assert.equal(reloaded.sessions.size,0);
+ assert.equal(reloaded.store.state.jobs.filter(j=>j.type==='problem-resume').length,1);
+ assert.equal(reloaded.store.find(workId).status,'running');
  await assert.rejects(service.invoke('managed.problem.resolve',{...p,text:'不同说明',requestKey:'cold-problem-0002'}),e=>e.code==='STALE_PROBLEM');
+});
+
+test('cold explicit decision wakes the exact continuation online through the explicit connect channel',async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-problem-wake-')),content=path.join(root,'project');await fs.mkdir(content);
+ const host=new DesktopHost(root),projectId=(await host.pick(content)).project.id,storage=host.storage;
+ const prompts=[],sessions=[];
+ class Session extends EventEmitter{
+  async preflightToolsDigest(expected){return {expectedDigest:expected,toolsDigest:this.toolsDigest,compatible:true};}async assertToolsDigest(){}
+  constructor(spec,target){super();Object.assign(this,spec,{target,closed:false});sessions.push(target);this.toolsDigest=createHash('sha256').update(JSON.stringify(this.tools??[])).digest('hex');}
+  async start(thread){this.threadId=thread||randomUUID();return this;}
+  async stop(){this.closed=true;return {confirmationComplete:true};}
+  async prompt(text){
+   prompts.push({target:this.target,text});
+   const call=(tool,args)=>this.onTool({tool,arguments:args,callId:randomUUID()});
+   if(this.target!=='frontdesk'&&this.target!=='orchestrator'){
+    await call('nozeli_publish',{kind:'result',content:'<!doctype html><html><head><meta charset="utf-8"><title>Continuation verified</title></head><body><main><h1>Continuation verified</h1><p>The exact approved remaining work completed in the original Work.</p></main></body></html>',files:[]});
+    return {completion:'host-control',threadId:this.threadId};
+   }
+   const active=service.controllers.get(projectId)?.current.get(this.target);
+   if(this.target==='orchestrator'&&active?.type==='backstage'){await call('nozeli_backstage_respond',{blocked:true,reason:'Preserve the original proposal for the explicit user decision.'});return {completion:'host-control',threadId:this.threadId};}
+   throw Error('A completed original business input must not be replayed');
+  }
+ }
+ const service=new ManagedProjects({userDataDir:root,host,legacy:{projects:new Map()}});
+ service.openController=async options=>Controller.open({...options,sessionFactory:(spec,target)=>new Session(spec,target),projectHome:async home=>{await fs.mkdir(home,{recursive:true});}});
+ t.after(async()=>{await service.stop();await storage.db.close();await fs.rm(root,{recursive:true,force:true});});
+ await storage.putLocal(projectId,'managed:binding',{enabled:true});
+ const seed=await service.loadLocal(projectId);
+ const workId=(await seed.store.submit('冷唤醒原任务','brief')).id;
+ await seed.store.activate(workId);
+ await seed.store.publish(workId,seed.store.find(workId).revision,'problem','冷唤醒问题：建议在本任务内安装构建依赖并重跑验证','wake-problem-call',{jobId:'wake-source-job'});
+ await seed.store.mutate(()=>seed.store.state.jobs.push({id:'wake-source-job',target:workId,revision:seed.store.find(workId).revision,type:'manual',status:'completed',text:'源回合',context:{}}));
+ await seed.store.settle(workId);
+ assert.equal(seed.store.find(workId).status,'paused');
+ const p={projectId,workId,objectId:seed.store.find(workId).problem.objectId,revision:seed.store.find(workId).revision,action:'approve',text:'',requestKey:'wake-problem-0001'};
+ await seed.stop();service.controllers.delete(projectId);
+ const first=await service.invoke('managed.problem.resolve',p);
+ assert.equal(first.accepted,true);
+ assert.ok(['eligible','running','completed'].includes(first.executionDisposition.kind));
+ assert.equal(first.executionDisposition.jobId,first.jobId);
+ const controller=service.controllers.get(projectId);
+ const until=async(check,label)=>{const end=Date.now()+5000;for(;;){const value=await check();if(value)return value;if(Date.now()>end)throw Error('Timed out: '+label+' '+JSON.stringify({prompts,started:controller.started,kicking:controller.kicking,works:controller.store.state.works.map(({id,status,revision})=>({id,status,revision})),jobs:controller.store.state.jobs.map(({id,target,type,status,error})=>({id,target,type,status,error}))}));await new Promise(resolve=>setTimeout(resolve,20));}};
+ await until(()=>controller.started===true&&!controller.running.size&&!controller.kicking&&controller.store.state.jobs.find(j=>j.id===first.jobId)?.status==='completed'&&controller.store.find(workId).status==='review','冷决定后的唯一续作实际完成并发布成果');
+ assert.equal(controller.localOnly,false,'prepareOnline 已将冷控制器转入在线');
+ assert.ok(sessions.includes('frontdesk')&&sessions.includes('orchestrator'),'显式连接启动居民会话');
+ assert.equal(prompts.filter(row=>row.target===workId).length,1,'只投递批准的唯一 Worker 续作，不重放原任务');
+ assert.ok(prompts.find(row=>row.target===workId).text.includes('冷唤醒问题'));
+ assert.equal(controller.store.state.jobs.filter(j=>j.type==='problem-resume').length,1);
+ const jobsBefore=controller.store.state.jobs.length;
+ const replay=await service.invoke('managed.problem.resolve',p);
+ assert.equal(replay.accepted,true);assert.equal(replay.jobId,first.jobId);
+ assert.equal(replay.executionDisposition.kind,'completed','完成后的同键回放不再唤醒任何会话或模型回合');
+ assert.equal(controller.store.state.jobs.length,jobsBefore);
+ assert.equal(prompts.filter(row=>row.target===workId).length,1);
+});
+
+test('manual pause gate survives a cold decision: saved but never started, no sessions',async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-problem-held-')),content=path.join(root,'project');await fs.mkdir(content);
+ const host=new DesktopHost(root),projectId=(await host.pick(content)).project.id,storage=host.storage;
+ let sessionAttempts=0;
+ const service=new ManagedProjects({userDataDir:root,host,legacy:{projects:new Map()}});
+ service.initializeResources=async()=>{};
+ service.openController=async options=>{const c=await Controller.open({...options,sessionFactory:()=>{sessionAttempts++;throw Error('native session forbidden');}});c.execution=null;return c;};
+ t.after(async()=>{await service.stop();await storage.db.close();await fs.rm(root,{recursive:true,force:true});});
+ await storage.putLocal(projectId,'managed:binding',{enabled:true});
+ const seed=await service.loadLocal(projectId);
+ const workId=(await seed.store.submit('人工暂停下的原任务','brief')).id;
+ await seed.store.activate(workId);
+ await seed.store.publish(workId,seed.store.find(workId).revision,'problem','人工暂停下的问题报告：建议的本任务处理方案。','held-problem-call',{jobId:'held-source-job'});
+ await seed.store.mutate(()=>{seed.store.state.jobs.push({id:'held-source-job',target:workId,revision:seed.store.find(workId).revision,type:'manual',status:'completed',text:'源回合',context:{}});seed.store.find(workId).manualControl={version:1,pause:{requestKey:'user-pause-0001',at:new Date().toISOString()},receipts:[],retired:[]};});
+ await seed.store.settle(workId);
+ const p={projectId,workId,objectId:seed.store.find(workId).problem.objectId,revision:seed.store.find(workId).revision,action:'approve',text:'',requestKey:'held-problem-0001'};
+ await seed.stop();service.controllers.delete(projectId);
+ const first=await service.invoke('managed.problem.resolve',p);
+ assert.equal(first.accepted,true);
+ assert.deepEqual(first.executionDisposition,{kind:'manual-held',reason:'manual-gate',jobId:first.jobId});
+ assert.equal(sessionAttempts,0,'人工门阻止任何唤醒：未创建任何会话');
+ const held=service.controllers.get(projectId);
+ assert.equal(held.started,false);assert.equal(held.sessions.size,0);
+ assert.equal(held.store.state.jobs.filter(j=>j.type==='problem-resume').length,1);
+ assert.equal(held.store.state.problemActions.length,1);
+ assert.equal(held.store.find(workId).status,'running');
 });
 
 test('problem resolve IPC validates exact payload before controller admission',async()=>{
@@ -214,4 +314,16 @@ test('problem resolve IPC validates exact payload before controller admission',a
  for(const malformed of [undefined,null,[],42,'choice'])await assert.rejects(manager.invoke('managed.problem.resolve',malformed),e=>e.code==='INVALID_PAYLOAD');
  await assert.rejects(manager.invoke('managed.problem.resolve',{...p(),projectId:'other'}),/unknown project/);
  assert.equal(calls.length,2);
+});
+
+test('a superseded queued proposal never executes on a newer Work revision',async t=>{
+ const {c,run,id,calls}=await fixture(t),{work}=await run();
+ const accepted=await c.resolveProblem(decision(work,'approve','problem-stale-admission'));
+ const queued=c.store.state.jobs.find(job=>job.id===accepted.jobId),before=calls.length;
+ await c.store.mutate(()=>{c.store.find(id).revision++;});
+ await c.runJob(queued);
+ const saved=c.store.state.jobs.find(job=>job.id===accepted.jobId);
+ assert.equal(saved.status,'interrupted');assert.equal(saved.restartRecovery.kind,'needs-reconciliation');
+ assert.equal(calls.length,before,'superseded plan never reaches the model or tools');
+ assert.equal(c.store.state.jobs.filter(job=>job.type==='problem-resume').length,1);
 });

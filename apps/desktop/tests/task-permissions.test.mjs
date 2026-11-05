@@ -184,6 +184,21 @@ test('settling the original task expires authority before a new input can append
   assert.equal(next.error.code,'PERMISSION_REQUIRED');
   assert.equal(await fs.readFile(marker,'utf8'),'once\n');
 });
+
+test('explicit effect approval executes while a separate unsent GUI draft stays untouched',async t=>{
+  const {c,rootA,openTurn,endTurn,runApproved}=await fixture(t,{broker:createPrivilegeBroker({interpreter:process.execPath})});
+  const marker=path.join(rootA,'approved-with-draft.txt'),args=['-e',`require('node:fs').appendFileSync(${JSON.stringify(marker)},'once\\n')`];
+  await openTurn('Append this isolated marker only after approval');
+  const pending=await c.onTool('frontdesk',execTool(REAL,args,rootA,'synthetic isolated marker'));
+  await c.store.mutate(()=>{c.store.state.drafts.frontdesk='PRIVATE_UNSENT_USER_DRAFT';});
+  const accepted=await c.resolveEffectRequest({requestId:pending.error.requestId,expectedVersion:1,action:'approve-once',requestKey:'draft-approval:'+pending.error.requestId});
+  await runApproved(accepted);
+  const executed=await c.onTool('frontdesk',execTool(REAL,args,rootA,'synthetic isolated marker'));
+  assert.equal(executed.ok,true);assert.equal(await fs.readFile(marker,'utf8'),'once\n');
+  assert.equal(c.store.state.drafts.frontdesk,'PRIVATE_UNSENT_USER_DRAFT');
+  assert.equal(c.store.state.jobs.filter(job=>job.context?.effectRequestId===pending.error.requestId).length,1);
+  await endTurn();
+});
 test('stale version, tampered hash, task end and restart generation all fail closed',async t=>{
   const {broker}=brokerFixture();
   const {c,A,B,host,openTurn,runApproved,permissions}=await fixture(t,{broker});
@@ -224,6 +239,149 @@ test('decision replay with the same key is idempotent and queues exactly one con
   assert.equal((await permissions.read(A.id)).requests.filter(r=>r.id===requestId).length,1);
   // A different action under the same key is a collision, not a re-decision.
   await assert.rejects(c.resolveEffectRequest({requestId,expectedVersion:1,action:'deny',requestKey:'attention:'+requestId+':1:approve-once'}),/冲突/);
+});
+test('concurrent approvals decide once and converge on exactly one continuation',async t=>{
+  const {c,A,openTurn,permissions}=await fixture(t,{broker:brokerFixture().broker});
+  await openTurn('并发批准同一敏感执行');
+  const blocked=await c.onTool('frontdesk',execTool(REAL,['--concurrent'],A.rootDisplay,'原任务要求执行'));
+  const requestId=blocked.error.requestId,sourceJobId=blocked.error.attention.sourceJobId;
+  const args={requestId,expectedVersion:1,action:'approve-once',requestKey:'attention:'+requestId+':1:approve-once'};
+  const [a,b]=await Promise.all([c.resolveEffectRequest({...args}),c.resolveEffectRequest({...args})]);
+  assert.equal(a.accepted,true);assert.equal(b.accepted,true);
+  assert.equal([a,b].filter(r=>r.duplicate===true).length,1);
+  assert.equal(a.jobId,b.jobId);assert.equal(a.continued,true);assert.equal(b.continued,true);
+  assert.equal(c.store.state.jobs.filter(j=>j.key==='effect-permission:'+requestId).length,1);
+  const ledger=await permissions.read(A.id);
+  assert.equal(ledger.requests.filter(r=>r.id===requestId).length,1);
+  assert.equal(ledger.grants.filter(g=>g.requestId===requestId).length,1);
+  // The single continuation binds the exact source job, grant, frozen request
+  // hash and decided version — never a re-derived or stale identity.
+  const job=c.store.state.jobs.find(j=>j.key==='effect-permission:'+requestId);
+  assert.equal(job.context.effectRequestId,requestId);
+  assert.equal(job.context.effectSourceJobId,sourceJobId);
+  assert.equal(job.context.effectGrantId,a.grantId);
+  assert.equal(job.context.effectRequestHash,ledger.requests.find(r=>r.id===requestId).effectHash);
+  assert.equal(job.context.effectDecisionVersion,2);
+});
+test('duplicate approval wakes a stalled queued continuation and never re-runs a finished one',async t=>{
+  const fx=brokerFixture();
+  const {c,A,openTurn,endTurn,runApproved}=await fixture(t,{broker:fx.broker});
+  await openTurn('批准后继续原任务');
+  const blocked=await c.onTool('frontdesk',execTool(REAL,['--wake'],A.rootDisplay,'原任务要求执行'));
+  const requestId=blocked.error.requestId;
+  const args={requestId,expectedVersion:1,action:'approve-once',requestKey:'attention:'+requestId+':1:approve-once'};
+  await endTurn();
+  // Lost wake in the crash window after the durable queue: the decision and
+  // the continuation job commit, but nothing dispatches the queued job.
+  const kick=c.kick.bind(c);c.kick=()=>{throw Error('lost wake');};
+  await assert.rejects(c.resolveEffectRequest({...args}),/lost wake/);
+  c.kick=kick;
+  const job=c.store.state.jobs.find(j=>j.key==='effect-permission:'+requestId);
+  assert.equal(job.status,'queued');
+  // The idempotent duplicate wakes the eligible queued continuation: the
+  // authorized operation proceeds on the original task, not a stored stall.
+  const replay=await c.resolveEffectRequest({...args});
+  assert.equal(replay.duplicate,true);assert.equal(replay.repaired,true);assert.equal(replay.continued,true);assert.equal(replay.jobId,job.id);
+  assert.deepEqual(replay.executionDisposition,{kind:'eligible',reason:null,jobId:job.id});
+  await runApproved(replay);
+  const run=await c.onTool('frontdesk',execTool(REAL,['--wake'],A.rootDisplay,'原任务要求执行'));
+  assert.equal(run.ok,true,JSON.stringify(run.error));
+  await endTurn();
+  await wait(()=>c.store.state.jobs.find(j=>j.id===job.id).status==='completed');
+  // A duplicate after completion reports the same finished job — never a
+  // re-queue, a re-run or an original-prompt replay.
+  const settled=await c.resolveEffectRequest({...args});
+  assert.equal(settled.duplicate,true);assert.equal(settled.jobId,job.id);assert.equal(settled.repaired,false);
+  assert.equal(settled.continued,true);assert.deepEqual(settled.executionDisposition,{kind:'completed',reason:'job-completed',jobId:job.id});
+  assert.equal(c.store.state.jobs.filter(j=>j.key==='effect-permission:'+requestId).length,1);
+  assert.equal(fx.calls.execute.length,1);
+});
+test('ended Work cannot grant or queue; a live Work continuation pins its exact revision',async t=>{
+  const {c,A,permissions}=await fixture(t,{broker:brokerFixture().broker});
+  const frozen=normalizeExecutionEffect({command:REAL,args:['--install','/etc/marker.conf'],cwd:A.rootDisplay,elevation:'admin'});
+  const seed=(workId,jobId,taskId,status,revision)=>c.store.mutate(()=>{const s=c.store.state;s.works??=[];s.jobs??=[];s.works.push({id:workId,agentId:'a',request:'原任务要求安装该配置',brief:'b',status,revision});s.jobs.push({id:jobId,key:'fixture-'+jobId,target:workId,type:'supplement',text:'原任务要求安装该配置',context:{permissionTaskId:taskId},status:'completed',at:new Date().toISOString()});});
+  const prepare=(taskId,jobId)=>permissions.prepareEffect(A.id,{sourceJobId:jobId,permissionTaskId:taskId,role:'worker',effectType:'host-exec',frozenEffect:frozen,originalText:'原任务要求安装该配置',reason:'系统管理员提权'}).then(gate=>gate.request);
+  // Ended Work: the user decision closes superseded — no grant, no queue.
+  await seed('w-ended','job-ended','pt-ended','ended',3);
+  const endedRequest=await prepare('pt-ended','job-ended');
+  const ended=await c.resolveEffectRequest({requestId:endedRequest.id,expectedVersion:1,action:'approve-once',requestKey:'attention:'+endedRequest.id+':1:approve-once'});
+  assert.equal(ended.accepted,true);assert.equal(ended.action,'superseded');assert.equal(ended.continued,false);assert.equal(ended.grantId,null);
+  assert.deepEqual(ended.executionDisposition,{kind:'stale',reason:'superseded',jobId:null});
+  assert.equal((await permissions.read(A.id)).grants.filter(g=>g.requestId===endedRequest.id).length,0);
+  assert.equal(c.store.state.jobs.filter(j=>j.key==='effect-permission:'+endedRequest.id).length,0);
+  // A nonresident source whose Work record is gone is never current either:
+  // superseded, no grant, no continuation.
+  await c.store.mutate(()=>{const s=c.store.state;s.jobs??=[];s.jobs.push({id:'job-gone',key:'fixture-job-gone',target:'w-gone',type:'supplement',text:'原任务要求安装该配置',context:{permissionTaskId:'pt-gone'},status:'completed',at:new Date().toISOString()});});
+  const goneRequest=await prepare('pt-gone','job-gone');
+  const gone=await c.resolveEffectRequest({requestId:goneRequest.id,expectedVersion:1,action:'approve-once',requestKey:'attention:'+goneRequest.id+':1:approve-once'});
+  assert.equal(gone.action,'superseded');assert.equal(gone.grantId,null);assert.equal(gone.continued,false);
+  assert.equal((await permissions.read(A.id)).grants.filter(g=>g.requestId===goneRequest.id).length,0);
+  assert.equal(c.store.state.jobs.filter(j=>j.key==='effect-permission:'+goneRequest.id).length,0);
+  // Live Work: exactly one continuation bound to the Work revision at queue.
+  await seed('w-live','job-live','pt-live','running',7);
+  const liveRequest=await prepare('pt-live','job-live');
+  const live=await c.resolveEffectRequest({requestId:liveRequest.id,expectedVersion:1,action:'approve-once',requestKey:'attention:'+liveRequest.id+':1:approve-once'});
+  assert.equal(live.continued,true);assert.ok(live.jobId);
+  const job=c.store.state.jobs.find(j=>j.key==='effect-permission:'+liveRequest.id);
+  assert.equal(job.context.effectWorkRevision,7);assert.equal(job.context.effectSourceJobId,'job-live');assert.equal(job.context.effectGrantId,live.grantId);
+  // The Work ends before a duplicate arrives: the stale binding is reported,
+  // never woken, never re-queued and never replayed.
+  await c.store.mutate(()=>{c.store.state.works.find(w=>w.id==='w-live').status='ended';});
+  const stale=await c.resolveEffectRequest({requestId:liveRequest.id,expectedVersion:1,action:'approve-once',requestKey:'attention:'+liveRequest.id+':1:approve-once'});
+  assert.equal(stale.duplicate,true);assert.equal(stale.continued,false);assert.notEqual(stale.executionDisposition.kind,'eligible');assert.notEqual(stale.executionDisposition.kind,'running');
+  assert.equal(c.store.state.jobs.filter(j=>j.key==='effect-permission:'+liveRequest.id).length,1);
+});
+test('a queued Work cannot grant; a fresh explicit authorization continues once admitted',async t=>{
+  const {c,A,permissions}=await fixture(t,{broker:brokerFixture().broker});
+  await wait(()=>!c.kicking&&!c.running.size);c.kick=()=>{};
+  const frozen=normalizeExecutionEffect({command:REAL,args:['--install','/etc/marker.conf'],cwd:A.rootDisplay,elevation:'admin'});
+  await c.store.mutate(()=>{const s=c.store.state;s.works??=[];s.jobs??=[];s.works.push({id:'w-wait',agentId:'a',request:'原任务要求安装该配置',brief:'b',status:'queued',revision:1});s.jobs.push({id:'job-wait',key:'fixture-job-wait',target:'w-wait',type:'supplement',text:'原任务要求安装该配置',context:{permissionTaskId:'pt-wait'},status:'completed',at:new Date().toISOString()});});
+  const request=await permissions.prepareEffect(A.id,{sourceJobId:'job-wait',permissionTaskId:'pt-wait',role:'worker',effectType:'host-exec',frozenEffect:frozen,originalText:'原任务要求安装该配置',reason:'系统管理员提权'}).then(gate=>gate.request);
+  // The Work was never admitted: approval closes superseded — no grant, no
+  // continuation, and no deferred authority waiting inside a queued task.
+  const refused=await c.resolveEffectRequest({requestId:request.id,expectedVersion:1,action:'approve-once',requestKey:'attention:'+request.id+':1:approve-once'});
+  assert.equal(refused.accepted,true);assert.equal(refused.action,'superseded');assert.equal(refused.grantId,null);assert.equal(refused.continued,false);
+  assert.deepEqual(refused.executionDisposition,{kind:'stale',reason:'superseded',jobId:null});
+  assert.equal((await permissions.read(A.id)).grants.filter(g=>g.requestId===request.id).length,0);
+  assert.equal(c.store.state.jobs.filter(j=>j.key==='effect-permission:'+request.id).length,0);
+  // Once admitted, only a fresh explicit authorization continues the task.
+  await c.store.mutate(()=>{c.store.state.works.find(w=>w.id==='w-wait').status='running';});
+  const fresh=await permissions.prepareEffect(A.id,{sourceJobId:'job-wait',permissionTaskId:'pt-wait',role:'worker',effectType:'host-exec',frozenEffect:frozen,originalText:'原任务要求安装该配置',reason:'系统管理员提权'}).then(gate=>gate.request);
+  assert.notEqual(fresh.id,request.id);
+  const decision=await c.resolveEffectRequest({requestId:fresh.id,expectedVersion:1,action:'approve-once',requestKey:'attention:'+fresh.id+':1:approve-once'});
+  assert.equal(decision.accepted,true);assert.equal(decision.continued,true);assert.ok(decision.grantId);
+  const job=c.store.state.jobs.find(j=>j.key==='effect-permission:'+fresh.id);
+  assert.ok(job);assert.equal(job.context.effectWorkRevision,1);assert.equal(job.context.effectGrantId,decision.grantId);
+  assert.equal(c.store.state.jobs.filter(j=>j.key==='effect-permission:'+fresh.id).length,1);
+});
+test('a Work revision change while the continuation is queued never admits the stale binding',async t=>{
+  const fx=brokerFixture();
+  const {c,A,permissions}=await fixture(t,{broker:fx.broker});
+  const frozen=normalizeExecutionEffect({command:REAL,args:['--install','/etc/marker.conf'],cwd:A.rootDisplay,elevation:'admin'});
+  await c.store.mutate(()=>{const s=c.store.state;s.works??=[];s.jobs??=[];s.works.push({id:'w-rev',agentId:'a',request:'原任务要求安装该配置',brief:'b',status:'running',revision:7});s.jobs.push({id:'job-rev',key:'fixture-job-rev',target:'w-rev',type:'supplement',text:'原任务要求安装该配置',context:{permissionTaskId:'pt-rev'},status:'completed',at:new Date().toISOString()});});
+  const request=await permissions.prepareEffect(A.id,{sourceJobId:'job-rev',permissionTaskId:'pt-rev',role:'worker',effectType:'host-exec',frozenEffect:frozen,originalText:'原任务要求安装该配置',reason:'系统管理员提权'}).then(gate=>gate.request);
+  const args={requestId:request.id,expectedVersion:1,action:'approve-once',requestKey:'attention:'+request.id+':1:approve-once'};
+  // The decision and the pinned continuation commit; the wake is lost so the
+  // job is still queued when the Work advances (a user supplement lands).
+  const kick=c.kick.bind(c);c.kick=()=>{throw Error('lost wake');};
+  await assert.rejects(c.resolveEffectRequest({...args}),/lost wake/);
+  c.kick=kick;
+  const job=c.store.state.jobs.find(j=>j.key==='effect-permission:'+request.id);
+  assert.equal(job.status,'queued');assert.equal(job.context.effectWorkRevision,7);
+  await c.store.mutate(()=>{c.store.state.works.find(w=>w.id==='w-rev').revision=8;});
+  // The duplicate approval reports the stale binding and refuses to wake it.
+  const stale=await c.resolveEffectRequest({...args});
+  assert.equal(stale.duplicate,true);assert.equal(stale.repaired,false);assert.equal(stale.continued,false);
+  assert.deepEqual(stale.executionDisposition,{kind:'needs-reconciliation',reason:'effect-binding-stale',jobId:job.id});
+  // Even once pumped, admission re-verifies the pinned revision before the
+  // job revision rewrite: interrupted for reconciliation, never executed,
+  // never re-queued, no internal retry.
+  c.kick();
+  await wait(()=>c.store.state.jobs.find(j=>j.id===job.id).status==='interrupted');
+  const after=c.store.state.jobs.find(j=>j.id===job.id);
+  assert.equal(after.status,'interrupted');assert.equal(after.restartRecovery?.kind,'needs-reconciliation');
+  assert.equal(c.store.state.jobs.filter(j=>j.key==='effect-permission:'+request.id).length,1);
+  assert.equal(fx.calls.execute.length,0);
 });
 test('unknown execution result is durable and never replayed automatically',async t=>{
   const {calls,broker}=brokerFixture({execute:async()=>({executionId:'fx-unknown',status:'unknown',reason:'control channel lost'})});

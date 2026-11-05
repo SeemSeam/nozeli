@@ -598,3 +598,49 @@ provider／预算／无能力技术故障只本地分类与去重，不产生 ma
 
 初期驱动的注册子进程不退出、Inspector 缺少 import callback、同步 SQLite catch、旧 current job 快照、把工具目录误当实际调用、原始 HTML 与规范化对象混淆、跨进程扫描混入旧安装及隔离 guest／旧文案假设均未计通过；只修测试驱动，未为通过修改安装包或产品安全边界。两条永久独立入口共享安装启动／身份／清理 fixture，不用一个总通过结论代替分别验收。仅 Linux x64 确定性本地模型链路；不声明付费模型、Windows/macOS、全量默认套件或公开发布通过。
 
+
+## 用户授权／采纳建议后实际继续（2026-11-05，源码，未安装／提交）
+
+用户要求授权或采纳建议后能进一步操作，而不是只保存决定卡住。已核对并修复两条现有链，不引入第二恢复系统，也不声称通用自主改源码修复：
+
+- `managed.problem.resolve` 先在原事务中保存精确报告／反馈授权、单一 `problem-resume`、新修订；宿主随后核验该续作资格，冷项目沿现有显式连接启动原 Work 的必要会话，不要求用户再连接或重发原输入。回执附带 `executionDisposition`：排队可准入、已执行、已完成、人工暂停、资源等待、模型连接需要处理或未知效果待核对；连接失败不撤回已保存决定，完成回放不启动新模型请求。过期 Work／revision、偏离、已准入未定回合不被批准绕过。
+- 敏感效果授权的决定重复回放不再提前返回而漏掉唤醒；查找与创建 continuation 在同一序列化事务，竞争批准收敛为一条续作，原冻结命令／grant／来源保持绑定。Work 修订在实际准入前核对，改变后中断等待核查；已经执行／未知效果不重放。排队未准入／已结束／缺失 Work 不获得新授权。
+- 用户界面不再无条件追加第二次 connect。显式从“任务概览 → 查看保留进展 → 打开报告”可以读取当前保留的问题报告并明确批准方案或拒绝＋反馈；原 inbox 排除后台技术问题的政策不变，打开内容不派工，点击决定才产生授权续作。该入口此前会因报告不是用户待办而拒绝，实际 UI 验收已定位并修复；旧版／状态改变仍不展示可执行决定。
+
+修复前真实 Pi：`/var/tmp/nozeli-decision-continuation-live-uny6Vx/report.json` 中冷批准返回 accepted／running／jobId，但 60 秒内原续作始终 queued，没有后续操作。另原授权 handler 的隔离重现确认：重复批准已有 durable 队列时零状态通知／无唤醒、竞争批准发生 submission-key collision；不以最终效果未验证的诊断文字代替执行证据。
+
+修复后真实 `ManagedProjects`／私有 Pi／文件／真实当前用户 broker：最终 `/var/tmp/nozeli-decision-continuation-live-ITKSzQ/report.json`，3 条完整场景通过、11 次确定性 loopback 请求。两次关闭／新建 manager 后，批准方案实际写入原候选，拒绝＋精确反馈保留已完成文件再写新文件、发布一次最终成果；同一 Work／thread／目录、原业务 dispatch 仅一次。真实敏感入口在授权前零文件效果，并发批准及重复决定后 marker 只追加一次，唯一 continuation、无 root 提权或真实危险操作。
+
+实际 Electron／Pi 图形界面：`/var/tmp/nozeli-problem-decision-bzSslo/report.json`，4 条流程通过、exit0。从实际工作列表进入概览、保留进展、当前问题报告，拒绝空反馈不执行；填写反馈后原 Worker 完成真实依赖加载／文件追加，再明确批准剩余方案，保留 `INITIAL → REJECT_FEEDBACK → APPROVED` 三段各一次。最终结果另经页脚接受确认才合入原项目并清理；批准方案不冒充成果接受。批准与拒绝界面截图已查看。报告旧 scope 字符串沿用 OMP 文案，但实际运行使用当前 Pi 主线，不把旧字段当独立运行时证据。
+
+最终定向 `task-permissions`、`managed-problem-decisions`、`managed-projects`、`agent-control` 共 **77/77** 通过，失败／跳过／取消均 0；renderer 构建通过。覆盖人工暂停、冷决定先落账／连接失败保留、完成回放不唤醒、批准并发去重／丢失唤醒恢复、任务已结束／未准入／Work 缺失不得授权、修订变化在实际准入前转核查、未知效果不重复执行。独立同行评审发现的“只在唤醒检查建议版本、实际 pump 准入未检查”已补同一入场栅栏及零模型／工具执行回归；重复批准保留旧续作身份，owner 回收／忙碌不冒称用户暂停或当前 job 已执行，复核无剩余发现。永久新增 `tests/pi-decision-continuation-live.mjs` 并登记现有 live 分组，证明真实内容和命令执行，不仅检查回执字段；额外 GUI 驱动已移除，原始报告／截图保留。
+
+早期显示授权、旧私人 todo 导航、缺 XAUTHORITY、工具目录误判后台角色及不匹配的 stub 生命周期失败均未计通过；只按实际合同修驱动／夹具，不跳过真实执行、不改原生日志或权限结果。图形驱动为一次性烟测，完成后移除。当前轮不重新安装或提交；此前安装的两个 debug／read 修复验收不覆盖这里新增的决定后续作能力。仅 Linux 合成项目与本地确定性模型，不外推真实付费模型、Windows/macOS或完整默认套件通过。
+
+## 安装版授权与停顿场景（2026-11-05，按用户最新权限交互验收）
+
+用户要求真实安装验收，随后明确权限申请不要写报告：待办仅提醒，回到原对话授权，简洁说明权限与风险。本轮最终 current 为 `2026-11-05T14-24-44-086Z`，previous 为 `2026-11-05T14-11-04-047Z`。既有 installer 更新实际账户 CLI／桌面入口，保留回退；复测后 762 个 src/dist 文件与构建输入 SHA-256 一致，ELF SHA-256 为 `3ba9114b7fbaafaf548f72c5d1bc86b7dc81098a85361784359c2c1199625bfc`。仅操作隔离合成项目及 profile，没有强退日常应用、提交、推送或公开发布。
+
+### 权限申请 → 原对话明确决定 → 实际效果
+
+实际运行 `tests/installed-approval-continuation-live.mjs`，最终原件 `/var/tmp/nozeli-installed-approval-continuation-0txVB5/report.json`，6 项检查、exit0，包内 Pi／Node／Git，真实当前用户 broker。点击待办实际打开既有 conversation 的 `[data-conversation-permission]`，没有新建报告视图或 publication；卡片展示权限、范围、原因和风险，完整命令及技术绑定折叠，无默认批准。打开提醒无模型输入，非空未发送草稿及选区保留，批准不会把草稿发送给模型。
+
+- 前台敏感执行：批准前 marker 不存在；对话明确单次批准后实际 uid/euid=1000 执行一次。相同决定与发送键回放，零新增模型请求／job，marker 仍只有一行。
+- 管理员请求：对话明确拒绝，未进入操作系统认证；关闭后只读 SQLite 核对 request=denied、grant=0、execution=0，marker 不存在。不执行真实提权或危险系统命令。
+- Worker：原线程先完成普通可逆步骤，在敏感请求处停下；用户实际暂停调度，再于对话批准，grant 已保存、唯一 continuation queued 且未准入，零 marker。明确恢复后原 Worker／thread／工作树执行一次、发布一个真正 HTML 成果，原项目与 Git 在接受前不变。
+- 权限申请本身不产生问题／成果报告；Worker 后续正常交付仍可发布成果，不能误把“禁止权限报告”解释为禁止正常成果。
+
+安装验收实际发现并修复：非空 GUI 草稿使 effect continuation 被普通后台 draft fence 一直阻断。`#effectContinuation` 仅把已获确切显式批准的新续作标为既有 `explicitInput`，保留原稿、不发送原稿，不放宽 native 草稿、人工暂停、grant／revision 或未知效果屏障。永久回归 `explicit effect approval executes while a separate unsent GUI draft stays untouched` 已观察修复前超时、修复后实际文件写入通过；重新构建安装后上述完整场景通过。旧 14-11 包的已批准仍排队失败不计通过。
+
+### 方案反馈、冷启动、暂停与旧决定
+
+同一最终安装版运行 `tests/installed-proposal-continuation-live.mjs`，原件 `/var/tmp/nozeli-installed-proposal-continuation-QXgYQk/report.json`，12 项检查、两次正常 exit0、9 次本地脚本 Provider 请求。该测试是业务方案报告，不是权限申请：
+
+- 实际工作列表 → 概览 → 保留进展 → 当前方案。拒绝却未填写反馈：零 job／模型请求／revision 变化。
+- 正常退出自有安装进程，保持同一隔离 profile 重开；`readyBeforeDecision=false`，只读打开保留方案后仍 false、零模型请求。明确拒绝并提供反馈后该决定自行连接，原 Work／thread／候选执行一次，保留 INITIAL 并追加 FEEDBACK，发布下一阶段方案。
+- 对旧问题／旧 revision 再作决定：`STALE_PROBLEM`，零额外效果／job／模型回合。
+- 用户实际暂停，批准新方案：决定已持久化，原唯一续作保持 queued，零执行。明确恢复后追加 APPROVED 一次、发布最终成果；已完成决定重复请求只回原回执，不重跑。
+- 原项目直到最终报告页脚明确接受才改变；接受后文件与 `HEAD:progress.txt` 字节精确一致、真实 merge commit、`ended/accept/closure.complete`、执行目录清理。
+
+71 项定向 attention／权限回归全部通过，失败／跳过／取消均 0；新安装两组原始报告与截图分别保留，权限对话及暂停控制截图已查看。前期驱动把 host projection 当用户正文、误把合法 backstage 当重复派工、缺失请求计数 helper、旧 CDP guest 的无界探测超时均不计通过，按实际 job／工作面身份修正，不修改安装字节伪造运行结果。原生 `method=approve` 也改为对话卡片并保留原生回答协议，但本轮安装场景实际覆盖宿主 effect 权限，不冒称已实测所有原生提供方批准事件。模型响应为确定性 loopback；真实权限、进程、命令、文件、Git 与持久化走生产实现。未运行真实 root 操作、付费模型或 Windows/macOS，也不宣称完整默认套件通过。
+

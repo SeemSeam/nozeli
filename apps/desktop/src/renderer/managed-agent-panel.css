@@ -228,6 +228,18 @@ body[data-managed-history=true] #send-message{display:none!important}
 .attention-more .ui-action{margin:0 12px 12px}
 @container (max-width:479px){.managed-attention-header h2{font-size:15px}.managed-attention-names,.managed-attention-dialogue [data-attention-status]{font-size:11px}}
 @container (max-width:300px){.managed-attention-actions .ui-action{flex:1 1 100%;width:100%}}
+/* Permission decisions belong to the existing conversation, not a report. */
+[data-conversation-permission]{width:100%;max-width:var(--chat-column,860px);min-width:0;margin:12px auto;box-sizing:border-box;border:1px solid var(--line);border-radius:8px;background:var(--paper);font-family:var(--chrome-font-family);font-size:var(--chrome-font-size,13px);color:var(--ink)}
+[data-conversation-permission] .managed-attention-dialogue{padding:12px}
+[data-conversation-permission] [data-attention-permission-detail]{margin:6px 0}
+[data-conversation-permission] [data-attention-permission-detail] h3{display:inline;font:inherit;font-weight:600;margin:0 8px 0 0}
+[data-conversation-permission] [data-attention-permission-detail] p{display:inline;margin:0;white-space:pre-wrap}
+[data-conversation-permission] [data-attention-permission-technical]{margin:8px 0}
+[data-conversation-permission] summary{cursor:pointer;padding:4px 0}
+[data-conversation-permission] :is(summary,button):focus-visible{outline:2px solid var(--ui-control-focus);outline-offset:2px}
+[data-conversation-permission] .attention-choice{margin:4px 0}
+[data-conversation-permission] .attention-choice>label{padding:8px 10px;min-height:24px}
+[data-conversation-permission] .managed-attention-actions{margin-top:8px;padding-top:8px}
 /* Ended Works the host has not finished closing stay tracked: closure facts,
    retained-candidate entry, host-only retry and the merge-strategy card live
    inside the read-only work detail, never as live-task controls. */

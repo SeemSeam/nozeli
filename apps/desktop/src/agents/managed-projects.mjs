@@ -54,7 +54,8 @@ import {maintenancePage,maintenanceLiveRevision,validateMaintenancePage} from '.
 import {AgentIdleLifecycle} from './managed/agent-idle-lifecycle.mjs';
 import {ServiceFaults} from './managed/service-faults.mjs';
 import {workSlotFacts} from './managed/workspace.mjs';
-import {jobBoundWork} from './managed/work-control.mjs';
+import {jobBoundWork,workControlHeldFor} from './managed/work-control.mjs';
+import {neverAdmitted} from './managed/restart-recovery.mjs';
 export class ManagedProjects {
  constructor({userDataDir,host,legacy,beforeDocumentOperation,ompSystemSource=null,ompAuthBroker=null,ompCommand=null,piSource=null,piRuntime=null,piAuth=null,openController=Controller.open,attachTerminal=attachNativeTerminal,stopTimeoutMs=15000,privilegeBroker=null,modelCatalog=null,idleTimeoutMs=300000,idleClock,serviceFaultBackoffMs}){
   // ompOptions 仅供旧 OMP 进程回收（只读历史）；新执行一律 Pi（piSource/piRuntime/piAuth）。
@@ -589,6 +590,78 @@ export class ManagedProjects {
     const c=this.controllers.get(p.projectId)??await this.loadLocal(p.projectId,p.workId);
     return c.reviewDiscussionReceipt(p);
   }
+ // 问题决定回执后的续作处置：只读既有事实（job 状态、绑定Work版本、人工
+ // 门、偏离、故障门、结算未知、会话生死），沿用 Work 控制既有的
+ // {kind,reason,jobId} 词汇；不派工、不入队、不建 owner。
+ problemContinuationDisposition(projectId,jobId,decisionRevision=null){
+  const controller=this.controllers.get(projectId);
+  if(!controller)return {kind:'stale',reason:'controller-missing',jobId};
+  if(controller.stopping)return {kind:'connection-required',reason:'PROJECT_STOPPING',jobId};
+  const state=controller.store.state;
+  const job=(state.jobs??[]).find(j=>j.id===jobId);
+  if(!job)return {kind:'stale',reason:'continuation-missing',jobId};
+  if(['running','transferring'].includes(job.status))return {kind:'running',reason:'admitted',jobId};
+  if(job.status==='completed')return {kind:'completed',reason:'job-completed',jobId};
+  if(job.status!=='queued')return {kind:'needs-decision',reason:'job-'+job.status,jobId};
+  const work=(state.works??[]).find(w=>w.id===job.target||w.id===job.context?.boundWorkId)??null;
+  if(!work)return {kind:'stale',reason:'work-missing',jobId};
+  if(['ended','closing'].includes(work.status))return {kind:'needs-decision',reason:'work-'+work.status,jobId};
+  // 决定回执绑定的Work版本必须仍是当前版本：工作已前进（新决定、新续作或
+  // 人工处置）即被取代，本决定不再唤醒该排队续作。
+  const bound=Number.isSafeInteger(job.revision)?job.revision:Number.isSafeInteger(decisionRevision)?decisionRevision:null;
+  if(bound!=null&&work.revision!==bound)return {kind:'stale',reason:'decision-binding-stale',jobId};
+  if(workControlHeldFor(state,job))return {kind:'manual-held',reason:'manual-gate',jobId};
+  if(controller.deviationHeld?.(job.target))return {kind:'needs-decision',reason:'deviation',jobId};
+  // 已准入或结算未定的排队回合不得由决定唤醒自动续跑：只给出显式核对入口。
+  const attempts=job.collabAttempts??[];
+  const unsettled=attempts.some(a=>['unknown','transport-unknown','unresolved','submitted','admitted'].includes(a.status));
+  if(unsettled||!neverAdmitted(job)){
+   const recovery={op:'managed.recovery.resolve',workId:job.target,revision:job.revision??bound,sourceJob:jobId,todoId:(state.todos??[]).find(t=>t.kind==='recovery'&&t.sourceJobId===jobId&&t.status==='open')?.id??null,inspectOp:'managed.worker.history'};
+   return {kind:'needs-reconciliation',reason:unsettled?'settlement-unknown':'admitted-requeue',jobId,recovery};
+  }
+  // 单job资格以控制器既有的公开评估为准（人工门、故障门、偏离、容量、
+  // 存储未知、忙碌）；冷job（重启后从未准入）由唤醒连接的 restore 按原
+  // 身份一次性处理，其余结果如实映射。
+  let evaluation=null;
+  try{evaluation=typeof controller.serviceFaultReleaseEvaluate==='function'?(controller.serviceFaultReleaseEvaluate({jobIds:[jobId]})[0]??null):null;}
+  catch{/*评估失败不阻断回执；实际准入仍以泵的既有门为准 */}
+  if(evaluation)switch(evaluation.outcome){
+   case 'eligible':
+   case 'unsupported-cold-recovery':return {kind:'eligible',reason:null,jobId};
+   case 'held-manual':return {kind:'manual-held',reason:'manual-gate',jobId};
+   case 'fault-held':return {kind:'needs-decision',reason:'service-fault-held',jobId};
+   case 'deviation':return {kind:'needs-decision',reason:'deviation',jobId};
+   case 'ended':return {kind:'needs-decision',reason:evaluation.reason??'work-ended',jobId};
+   case 'busy':return {kind:'waiting-capacity',reason:'owner-busy',jobId};
+   case 'waiting-capacity':return {kind:'waiting-capacity',reason:evaluation.reason??'quota-full',jobId};
+   case 'needs-reconciliation':return {kind:'needs-reconciliation',reason:evaluation.reason??'storage-unknown',jobId};
+   default:return {kind:'needs-decision',reason:evaluation.reason??evaluation.outcome,jobId};
+  }
+  return {kind:'eligible',reason:null,jobId};
+ }
+ // 用户对问题报告的显式决定（approve / reject+反馈原文）就是一次显式在线续作
+ // 触发：resolveProblem 已在单事务内先落本地 durable CAS 与唯一续作 job（不
+ // 依赖任何 provider 或会话）。随后仅当该精确 job 可准入而项目尚未在线时，
+ // 走与用户手动连接完全相同的 connect 通道（enable 显式语义：居民启动、
+ // prepareOnline 冷转在线、当前模型配置重激活）。不新增任何冷恢复自动唤
+ // 醒：完成回放、冷读、无效决定不触发连接、不建 owner、不重放已准入业务；
+ // 人工暂停门、结算未知、故障门一律不启动会话。启动/模型/离线失败不丢已
+ // 存决定，也不谎报执行中：处置如实报告，后续显式连接按原身份只执行一次。
+ async resolveProblemContinuation(p,c){
+  const result=await c.resolveProblem(p);
+  if(!result||result.accepted!==true||typeof result.jobId!=='string')return result;
+  const cold=this.controllers.get(p.projectId)!==c||c.started!==true||c.stopping===true;
+  const decisionRevision=Number.isSafeInteger(result.revision)?result.revision:null;
+  let executionDisposition=this.problemContinuationDisposition(p.projectId,result.jobId,decisionRevision);
+  if(cold&&executionDisposition.kind==='eligible'){
+   if(this.stopping)return {...result,executionDisposition:{kind:'connection-required',reason:'APP_CLOSING',jobId:result.jobId}};
+   try{await this.connect(p.projectId,{enable:true});}
+   catch(error){return {...result,executionDisposition:{kind:'connection-required',reason:error.code??'CONNECT_FAILED',jobId:result.jobId,connection:{code:error.code??'CONNECT_FAILED',message:String(error.message).slice(0,300),target:typeof error.target==='string'?error.target:null}}};}
+   const online=this.controllers.get(p.projectId);
+   executionDisposition=online?.started===true?this.problemContinuationDisposition(p.projectId,result.jobId,decisionRevision):{kind:'connection-required',reason:'CONNECT_NOT_READY',jobId:result.jobId};
+  }
+  return {...result,executionDisposition};
+ }
  async connect(id,options={}){
   return this.host.storage.withProjectOperation(id,async()=>{
    try{
@@ -1089,7 +1162,7 @@ export class ManagedProjects {
   if(action==='session.options')return c.sessionOptions(p.target,p.ownerId);
   if(action==='session.command')return c.sessionCommand(p.target,p);
   if(action==='deviation.resolve')return c.resolveDeviation(p);
-  if(action==='problem.resolve')return c.resolveProblem(p);
+  if(action==='problem.resolve')return this.resolveProblemContinuation(p,c);
   if(action==='frontdesk.route.resolve')return c.resolveFrontdeskRoute(p);
   const assertNotHeld=()=>{const work=c.store.state.works.find(w=>w.id===p.target);if(work?.status!=='ended'&&['pending','replanned'].includes(work?.deviation?.status))throw new HostError('WORK_DEVIATION_HELD','此工作因任务偏离暂停；请使用任务偏离决定按钮明确授权。普通输入、重启或终端不能恢复执行。');};
   if(['restart','terminal.system','terminal.attach','terminal.input'].includes(action))assertNotHeld();

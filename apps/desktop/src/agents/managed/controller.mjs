@@ -1109,36 +1109,98 @@ export class Controller extends EventEmitter {
     if(!request||request.kind!=='effect')throw Object.assign(new Error('效果授权请求不存在，请刷新核对。'),{code:'STALE_ATTENTION'});
     const s=this.store.state,job=s.jobs.find(j=>j.id===request.sourceJobId);
     const goal=job&&this.frontGoal(job);
-    // An approval may only grant while the source task is still current;
-    // otherwise the decision closes as superseded — never a grant, never a
-    // continuation for an ended task.
-    const taskCurrent=Boolean(job&&job.status!=='cancelled'&&!goal?.intakeJobId);
+    const resident=job?['frontdesk','orchestrator'].includes(job.target):true;
+    const work=job&&!resident?(s.works??[]).find(w=>w.id===job.target)??null:null;
+    // An approval may only grant while the original task is still current: the
+    // source job live, no intake handoff, and — for worker tasks — the bound
+    // Work present, admitted and not ended or closing (a missing or
+    // never-admitted Work is never current). Otherwise the decision closes as
+    // superseded: never a grant, never a continuation, and no deferred
+    // authority waiting inside an unadmitted task.
+    const taskCurrent=Boolean(job&&job.status!=='cancelled'&&!goal?.intakeJobId&&(resident||Boolean(work))&&(!work||!['queued','closing','ended'].includes(work.status)));
     const decided=await this.taskPermissions.decideEffect(this.projectId,{requestId,expectedVersion,action,requestKey,binding:{sourceJobId:request.sourceJobId,taskCurrent}});
-    if(decided.duplicate){
-      const repair=decided.result.action.startsWith('approve')&&taskCurrent?await this.#effectContinuation(request,{grantId:decided.result.grantId,repair:true}):null;
-      return {...decided.result,duplicate:true,...(repair?{jobId:repair.jobId,continued:true,repaired:repair.repaired}:{continued:false})};
-    }
-    let continuation=null;
-    if(decided.result.action.startsWith('approve')&&taskCurrent)continuation=await this.#effectContinuation(request,{grantId:decided.result.grantId});
-    this.changed();this.kick();
-    return {...decided.result,...(continuation?{jobId:continuation.jobId,continued:true}:{continued:false})};
+    const approve=decided.result.action.startsWith('approve');
+    // One deterministic continuation per approved request: the ledger decision
+    // is the single writer and the serialized store transaction is the single
+    // queue point. Every decided path — duplicates included — reports the
+    // concrete continuation disposition and wakes an eligible queued job, so a
+    // stored approval never stalls silently behind a lost wake.
+    const continuation=approve&&(taskCurrent||decided.duplicate)?await this.#effectContinuation(request,{grantId:decided.result.grantId,decisionAction:decided.result.action,decisionVersion:decided.result.version,repair:decided.duplicate===true}):null;
+    const report=this.#effectContinuationReport(decided.result.action,continuation);
+    this.changed();
+    if(!decided.duplicate||continuation?.wake)this.kick();
+    const base={...decided.result,...report};
+    return decided.duplicate?{...base,duplicate:true,repaired:continuation?continuation.repaired===true:false}:base;
   }
-  // Durable, deterministic approve-continuation: the queued job persists like
-  // every other continuation; the key makes replay return the same job
-  // instead of duplicating work. Only remaining steps continue — completed
-  // operations are never replayed.
-  async #effectContinuation(request,{grantId=null,repair=false}={}){
-    const s=this.store.state,job=s.jobs.find(j=>j.id===request.sourceJobId);
-    if(!job)return null;
-    const frozen=request.frozenEffect;
-    const text='用户已批准'+(frozen.action==='admin'?'提权（root/管理员）':'高危')+'执行：'+frozen.command+' '+(frozen.args||[]).map(v=>JSON.stringify(v)).join(' ')+'（cwd: '+frozen.cwd+'）。\n'+(request.decision?.action==='approve-task'?'仅该原任务可再次执行同一冻结效果，不覆盖其他命令、对象或目录。':'仅允许本次冻结效果一次。')+'授权可撤销、到期、任务结束或重启失效。仅继续原任务未完成部分，已完成操作不重放。';
+  // Durable, deterministic approve-continuation: exactly one queued job per
+  // approved request. Lookup and queue run inside ONE serialized store
+  // transaction, so concurrent approvals converge on the same job instead of
+  // racing a non-transactional lookup into duplicates or key collisions. The
+  // context binds the exact source job, grant, frozen request hash/version
+  // and Work revision. Duplicates only WAKE a still-queued, never-admitted
+  // continuation — admitted, finished or cancelled continuations and the
+  // original prompt are never re-queued or replayed; ended, closing or
+  // not-yet-admitted Works never queue. Manual pause is never bypassed here:
+  // the pump's own admission gates decide when a woken job may actually start.
+  async #effectContinuation(request,{grantId=null,decisionAction=null,decisionVersion=null,repair=false}={}){
     const key='effect-permission:'+request.id;
-    const existing=s.jobs.find(j=>j.key===key);
-    if(existing)return {jobId:existing.id,repaired:false};
-    const type=job.target==='frontdesk'?'front':job.target==='orchestrator'?(job.type==='backstage'?'backstage':'intake'):'supplement';
-    const queued=await this.store.mutate(()=>this.queueJob(job.target,type,text,{key,context:{...job.context,permissionTaskId:request.permissionTaskId??job.context?.permissionTaskId,effectRequestId:request.id,...(grantId?{effectGrantId:grantId}:{})}}));
-    this.kick();
-    return {jobId:queued.id,repaired:repair};
+    return this.store.mutate(()=>{
+      const s=this.store.state,job=s.jobs.find(j=>j.id===request.sourceJobId);
+      const existing=s.jobs.find(j=>j.key===key);
+      if(!job||job.status==='cancelled')return {jobId:existing?.id??null,queued:false,wake:false,repaired:false,state:'source-gone'};
+      if(this.frontGoal(job)?.intakeJobId)return {jobId:existing?.id??null,queued:false,wake:false,repaired:false,state:'handed-off'};
+      const resident=['frontdesk','orchestrator'].includes(job.target);
+      const work=resident?null:(s.works??[]).find(w=>w.id===job.target)??null;
+      if(!resident&&!work)return {jobId:existing?.id??null,queued:false,wake:false,repaired:false,state:'work-missing'};
+      if(work&&['queued','closing','ended'].includes(work.status))return {jobId:existing?.id??null,queued:false,wake:false,repaired:false,state:'work-ended'};
+      if(existing){
+        // Wake only a queued, never-admitted continuation whose pinned Work
+        // revision still matches the approval binding; anything already
+        // admitted, finished, cancelled or revision-stale is reported as-is
+        // and never re-run.
+        const pinned=existing.context?.effectWorkRevision;
+        if(work&&pinned!=null&&work.revision!==pinned)return {jobId:existing.id,queued:true,wake:false,repaired:false,state:'binding-stale'};
+        const wake=existing.status==='queued'&&!existing.promptStartedAt;
+        return {jobId:existing.id,queued:true,wake,repaired:repair&&wake,state:existing.status};
+      }
+      const frozen=request.frozenEffect;
+      const text='用户已批准'+(frozen.action==='admin'?'提权（root/管理员）':'高危')+'执行：'+frozen.command+' '+(frozen.args||[]).map(v=>JSON.stringify(v)).join(' ')+'（cwd: '+frozen.cwd+'）。\n'+(decisionAction==='approve-task'?'仅该原任务可再次执行同一冻结效果，不覆盖其他命令、对象或目录。':'仅允许本次冻结效果一次。')+'授权可撤销、到期、任务结束或重启失效。仅继续原任务未完成部分，已完成操作不重放。';
+      const type=job.target==='frontdesk'?'front':job.target==='orchestrator'?(job.type==='backstage'?'backstage':'intake'):'supplement';
+      const queued=this.queueJob(job.target,type,text,{key,context:{...job.context,permissionTaskId:request.permissionTaskId??job.context?.permissionTaskId,effectRequestId:request.id,effectSourceJobId:request.sourceJobId,effectRequestHash:request.effectHash??null,...(decisionVersion!=null?{effectDecisionVersion:decisionVersion}:{}),...(grantId?{effectGrantId:grantId}:{}),...(work?{effectWorkRevision:work.revision}:{})}});
+      s.jobs.find(saved=>saved.id===queued.id).explicitInput=true;
+      return {jobId:queued.id,queued:true,wake:true,repaired:repair,state:'queued'};
+    });
+  }
+  // Concrete, point-in-time continuation disposition on the decision response,
+  // in the same shape as every other decision continuation field
+  // (executionDisposition: {kind,reason,jobId}). Facts only: the kind names the
+  // live state of the single continuation job (or why none may queue), the
+  // reason carries the canonical detail, and admission gates such as manual
+  // pause are reported — never bypassed; the pump still enforces them.
+  #effectContinuationReport(action,continuation){
+    // A superseded decision still owes the user the concrete why: the task
+    // was no longer current, so nothing granted and nothing continues.
+    if(action==='superseded')return {continued:false,executionDisposition:{kind:'stale',reason:'superseded',jobId:null}};
+    if(!action.startsWith('approve'))return {continued:false};
+    if(!continuation)return {continued:false,executionDisposition:{kind:'stale',reason:'superseded',jobId:null}};
+    const saved=continuation.jobId?(this.store.state.jobs??[]).find(j=>j.id===continuation.jobId):null;
+    let executionDisposition;
+    if(continuation.state==='binding-stale')executionDisposition={kind:'needs-reconciliation',reason:'effect-binding-stale',jobId:continuation.jobId};
+    else if(!continuation.queued)executionDisposition=continuation.state==='work-ended'
+      ?{kind:'needs-decision',reason:continuation.state,jobId:continuation.jobId}
+      :{kind:'stale',reason:continuation.state,jobId:continuation.jobId};
+    else if(!saved)executionDisposition={kind:'stale',reason:'continuation-missing',jobId:continuation.jobId};
+    else if(saved.status==='queued'){
+      const hold=this.#admissionHold(saved);
+      executionDisposition=this.reclaiming.has(saved.target)?{kind:'waiting-capacity',reason:'owner-reclaim',jobId:saved.id}:hold==='WORK_CONTROL_HELD'?{kind:'manual-held',reason:'manual-gate',jobId:saved.id}
+        :hold==='SERVICE_FAULT_HELD'?{kind:'needs-decision',reason:'service-fault-held',jobId:saved.id}
+        :hold==='RESTART_RECONCILIATION_REQUIRED'?{kind:'needs-reconciliation',reason:'settlement-unknown',jobId:saved.id}
+        :{kind:'eligible',reason:null,jobId:saved.id};
+    }
+    else if(saved.status==='running')executionDisposition={kind:'running',reason:'admitted',jobId:saved.id};
+    else if(saved.status==='completed')executionDisposition={kind:'completed',reason:'job-completed',jobId:saved.id};
+    else executionDisposition={kind:'needs-decision',reason:'job-'+saved.status,jobId:saved.id};
+    return {continued:continuation.queued===true&&continuation.state!=='binding-stale',...(continuation.jobId?{jobId:continuation.jobId}:{}),executionDisposition};
   }
   // Precise, provable worker read scope: the worktree's git common dir (for
   // worktree Git) plus an already-existing node_modules dependency directory.
@@ -2476,7 +2538,15 @@ export class Controller extends EventEmitter {
       const started=await this.store.mutate(()=>{if(savedJob().status!=='queued'||this.deviationHeld(job.target)||this.#admissionHold(job))return false;savedJob().status='running';if(job.restartRecovery?.kind!=='native-continuation')savedJob().startedAt=new Date().toISOString();return true;});if(!started)return;didStart=true;this.current.set(job.target,job);this.changed();
       if(job.context?.pendingIntakeId){const parent=this.store.state.jobs.find(j=>j.id===job.context.pendingIntakeId),work=parent&&(this.intakeBoundWork(parent)||this.store.state.works.find(w=>w.sourceJob===parent.id));if(work)await this.store.mutate(()=>{const field=job.context.softWorkHint?'workHintId':'boundWorkId';job.context[field]=work.id;savedJob().context[field]=work.id;});else {const question=parent&&this.store.state.todos.findLast(q=>q.kind==='routing'&&q.sourceJobId===parent.id&&q.status==='open');if(!question)throw Error('原目标尚未明确处理结果，请先核对已有提交');await this.store.mutate(()=>{job.context.routingQuestionId=question.id;savedJob().context.routingQuestionId=question.id;});}}
       const isWork=!['frontdesk','orchestrator'].includes(job.target);
-      if(isWork){const w=this.store.find(job.target);if(job.restartRecovery?.kind==='native-continuation'&&(w.revision!==job.revision||w.status!=='running'))throw Object.assign(Error('Original Work revision or execution state changed; native turn not replayed'),{code:'RESTART_RECONCILIATION_REQUIRED'});if(job.type!=='initial'&&w.status!=='running')await this.store.continue(w.id);job.revision=w.revision;await this.store.mutate(()=>{savedJob().revision=job.revision;});}
+      if(isWork){const w=this.store.find(job.target);
+        // An approved effect continuation admits only against the exact Work
+        // revision pinned at approval, checked BEFORE continue() can advance
+        // the revision or job.revision is rewritten: a later revision change
+        // never rides the stored grant — the job stops for reconciliation
+        // instead of replaying, with no internal retry.
+        if(job.context?.effectWorkRevision!=null&&job.context.effectWorkRevision!==w.revision)throw Object.assign(Error('Effect approval Work binding changed; approved effect is not replayed automatically'),{code:'RESTART_RECONCILIATION_REQUIRED'});
+        if(job.type==='problem-resume'&&job.revision!=null&&job.revision!==w.revision)throw Object.assign(Error('Problem decision Work binding changed; superseded proposal is not executed'),{code:'RESTART_RECONCILIATION_REQUIRED'});
+        if(job.restartRecovery?.kind==='native-continuation'&&(w.revision!==job.revision||w.status!=='running'))throw Object.assign(Error('Original Work revision or execution state changed; native turn not replayed'),{code:'RESTART_RECONCILIATION_REQUIRED'});if(job.type!=='initial'&&w.status!=='running')await this.store.continue(w.id);job.revision=w.revision;await this.store.mutate(()=>{savedJob().revision=job.revision;});}
       const session=await this.maintenanceTransaction(job,'session-start',()=>this.session(job.target),s=>Boolean(s&&!s.closed));
       // ── Context cutover delivery ─────────────────────────────────────
       // The raw current user text becomes the single native user entry,

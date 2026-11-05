@@ -1,7 +1,7 @@
 import {deviationHeld} from '../domain/work-deviation.mjs';
 
 // Problem approval is a continuation decision, never final result acceptance.
-export function mountProblemDecision(container,{document,projectId,work,publication,invoke,connect,refresh,current,discard,drafts}){
+export function mountProblemDecision(container,{document,projectId,work,publication,invoke,refresh,current,discard,drafts}){
  const key=JSON.stringify([projectId,work.id,publication.objectId,publication.revision]),storageKey='nozeli-problem-feedback:'+key;
  let pending=false,settled=false;
  const requests=new Map();
@@ -32,8 +32,15 @@ export function mountProblemDecision(container,{document,projectId,work,publicat
    const r=await invoke('managed.problem.resolve',{workId:work.id,objectId:publication.objectId,revision:publication.revision,action,text,requestKey});
    if(!r.ok)throw Error(r.error?.message||'决定未确认，问题与输入保留');
    if(r.value?.accepted!==true||typeof r.value.jobId!=='string')throw Error('宿主未返回原任务续作回执');
-   settled=true;drafts.delete(key);try{globalThis.localStorage?.removeItem(storageKey);}catch{}status.textContent='决定已保存，已排入原 Worker 续作；不重放已完成操作。';
-   try{await connect();await refresh();}catch(error){status.textContent='决定已保存、原任务续作已排队，但连接尚未完成：'+error.message+'。请恢复连接，勿重复提交决定。';}
+   settled=true;drafts.delete(key);try{globalThis.localStorage?.removeItem(storageKey);}catch{}
+   const execution=r.value.executionDisposition;
+   if(execution?.kind==='connection-required')status.textContent='决定已保存，原任务续作保留；模型连接尚未就绪，请处理连接提示后继续，无需重复提交决定。';
+   else if(execution?.kind==='manual-held')status.textContent='决定已保存；你此前的暂停仍生效，恢复任务后执行这条续作。';
+   else if(execution?.kind==='needs-reconciliation')status.textContent='决定已保存；原回合效果仍待核对，核对前不会重放操作。';
+   else if(execution?.kind==='needs-decision'||execution?.kind==='stale')status.textContent='决定已保存；原任务仍有阻断，请查看当前任务状态，未重放原输入。';
+   else if(execution?.kind==='completed')status.textContent='这条决定对应的续作已完成，未重复执行。';
+   else status.textContent='决定已保存，正在推进原 Worker 的剩余步骤；已完成操作不会重放。';
+   try{await refresh();}catch{status.textContent+=' 状态刷新暂未完成；决定与续作回执已保留。';}
   }catch(error){status.textContent=error.message;}
   finally{pending=false;paint();}
  }

@@ -320,6 +320,7 @@ const SUITES = {
       'pi-repair-lifecycle-live.mjs',
       'pi-debug-activation-live.mjs',
       'pi-read-protocol-correction-live.mjs',
+      'pi-decision-continuation-live.mjs',
       'pi-zai-coding-plan-live.mjs',
     ],
     runner: 'node-test',

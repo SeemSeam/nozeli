@@ -2,6 +2,7 @@ import {appendFrontdeskRouteContext} from './frontdesk-routes.mjs';
 // Native answers stay bound to one source interaction, separate from conversation input.
 export function mountAttentionDialogue(container,{document,projectId,todo,invoke,current,onRefresh,openSettings,recover,drafts,confirm:confirmDialog,meta={}}){
  const destination=todo.destination||{},question=destination.question,isRoute=destination.kind==='frontdesk-route',isPermission=destination.kind==='effect-permission',isGrantRevoke=destination.kind==='effect-grant',isMergeConsent=destination.kind==='merge-consent',isDecision=isRoute||isPermission||isGrantRevoke||isMergeConsent,attentionId=isRoute?destination.proposalId:destination.requestId??destination.grantId;
+ const isNativeApproval=destination.kind==='conversation'&&question?.method==='approve';
  const binding=entry=>{const d=entry?.destination||{},q=d.question||{};return JSON.stringify([projectId,entry?.id,d.target,d.ownerId,d.threadId,d.interactionId,...(['frontdesk-route','effect-permission','effect-grant','merge-consent'].includes(d.kind)?[d.kind,d.proposalId??d.requestId??d.grantId,d.expectedVersion,d.sourceJobId]:[]),...(d.kind==='effect-permission'?[q.command,q.args,q.cwd,q.elevation,q.effectHash]:[]),...(d.kind==='effect-grant'?[q.command,q.effectHash,q.grantedAt,q.expiresAt]:[]),...(d.kind==='merge-consent'?[q.effectHash,q.candidateCommit,q.reviewVersion,q.repo,q.targetRef]:[])]);};
  const identity=binding(todo);
  const storageKey='nozeli-attention:'+identity;
@@ -15,7 +16,7 @@ export function mountAttentionDialogue(container,{document,projectId,todo,invoke
  // Compact header: the question title appears once; live status sits beside it; raw
  // identities collapse behind human names that are only shown when actually known.
  const header=node('header');header.className='managed-attention-header';header.dataset.attentionHeader='';
- const heading=node('h2',isRoute?'处理方式决定':isPermission?'提权/敏感执行授权':isGrantRevoke?'任务执行授权（可撤销）':isMergeConsent?'一次性本地合入批准':question?.method==='askDialog'?'待回答':(question?.title||todo.title||'待办对话'));heading.dataset.attentionTitle='';
+ const heading=node('h2',isRoute?'处理方式决定':isPermission?'提权/敏感执行授权':isGrantRevoke?'任务执行授权（可撤销）':isMergeConsent?'一次性本地合入批准':isNativeApproval?'原生操作授权':question?.method==='askDialog'?'待回答':(question?.title||todo.title||'待办对话'));heading.dataset.attentionTitle='';
  const status=node('p');status.dataset.attentionStatus='';status.setAttribute('role','status');
  const names=[meta.projectName,meta.sourceName].filter(value=>typeof value==='string'&&value.trim());
  header.append(heading);
@@ -26,7 +27,7 @@ export function mountAttentionDialogue(container,{document,projectId,todo,invoke
  const idsLine=node('p',ids);idsLine.className='managed-attention-ids';
  source.append(node('summary','来源详情'),idsLine);header.append(source);
  const explanation=node('p');explanation.className='managed-attention-explanation';
- explanation.textContent=isDecision?'':destination.kind==='conversation'&&question?[question.detail].filter(value=>typeof value==='string'&&value).join('\n'):(todo.text||'');
+ explanation.textContent=isDecision||isNativeApproval?'':destination.kind==='conversation'&&question?[question.detail].filter(value=>typeof value==='string'&&value).join('\n'):(todo.text||'');
  const form=node('form'),fields=node('fieldset'),actions=node('div');actions.className='managed-attention-actions';
  form.append(fields,actions);section.append(header,...(explanation.textContent?[explanation]:[]),form);container.append(section);
  const retain=()=>{drafts.set(identity,saved);try{sessionStorage.setItem(storageKey,JSON.stringify(saved));}catch{}};
@@ -67,37 +68,46 @@ export function mountAttentionDialogue(container,{document,projectId,todo,invoke
   readAnswer=()=>{const option=options.find(option=>option.label===read());if(!option)throw Error('请明确选择处理方式。');return option.action;};
  }else if(isPermission){
   allowCancel=false;
-  const detail=(key,label,text)=>{const block=node('section');block.dataset.attentionPermissionDetail=key;block.append(node('h3',label),node('p',text||'未提供'));fields.append(block);};
-  detail('original','原任务',question?.originalText);
-  const args=(Array.isArray(question?.args)?question.args:[]).map(value=>JSON.stringify(String(value))).join(' ');
-  detail('command','将执行的命令',(question?.elevation==='admin'?'[提权 root/管理员] ':'[当前用户·敏感] ')+String(question?.command??'')+' '+args);
-  detail('cwd','工作目录',question?.cwd);
-  detail('purpose','申请原因',question?.purpose);
-  detail('risk','范围与风险',question?.risk);
-  if(question?.remainingActions)detail('remaining','批准后继续的剩余动作',question.remainingActions);
-  if(question?.completedOperations?.length){const receipts=node('details');receipts.dataset.attentionPermissionDetail='receipts';receipts.append(node('summary','已完成操作回执（保留，不重放）'),node('pre',JSON.stringify(question.completedOperations,null,2)));fields.append(receipts);}
-  const hash=node('details');hash.dataset.attentionPermissionDetail='hash';hash.append(node('summary','冻结效果哈希（防篡改绑定）'),node('pre',String(question?.effectHash??'')));fields.append(hash);
+  const technical=node('details');technical.dataset.attentionPermissionTechnical='';technical.append(node('summary','核对完整命令与原任务'));
+  const detail=(key,label,text,{collapsed=false}={})=>{const block=node('section');block.dataset.attentionPermissionDetail=key;block.append(node('h3',label),node('p',text||'未提供'));(collapsed?technical:fields).append(block);};
   const elevated=question?.elevation==='admin';
-  paragraph('单次授权仅执行上方冻结命令一次；本任务授权仅允许原任务再次执行完全相同的冻结命令，不覆盖其他命令、参数或工作目录。可随时撤销，重启后失效。');
-  paragraph(elevated?'root/管理员具有系统最高权限；工作目录检查不是文件访问沙箱，命令参数仍可影响目录以外乃至全盘，不能保证可回滚。系统认证仍逐次交给操作系统。':'当前用户范围执行；仍按显式批准执行并留回执，不扩大到其他任务。');
-  paragraph('批准前零执行；拒绝或暂不授权不自动重试。系统认证（pkexec/UAC/系统授权）取消或失败不会伪造成功；执行结果未知时不自动重放。');
+  detail('type','申请权限',elevated?'root / 管理员执行':'当前用户敏感执行');
+  detail('scope','操作与范围',String(question?.command??'')+' · '+String(question?.cwd??'')+'；仅原任务、此冻结命令及参数');
+  detail('purpose','申请原因',question?.purpose);
+  detail('risk','具体风险',question?.risk||(elevated?'管理员命令可能影响系统与目录外文件，不能保证可回滚。':'命令可影响当前用户可访问的文件与资源，不能保证可回滚。'));
+  detail('original','原任务',question?.originalText,{collapsed:true});
+  const args=(Array.isArray(question?.args)?question.args:[]).map(value=>JSON.stringify(String(value))).join(' ');
+  detail('command','完整命令',String(question?.command??'')+' '+args,{collapsed:true});
+  detail('cwd','工作目录',question?.cwd,{collapsed:true});
+  if(question?.remainingActions)detail('remaining','批准后继续的剩余动作',question.remainingActions,{collapsed:true});
+  if(question?.completedOperations?.length){const receipts=node('section');receipts.dataset.attentionPermissionDetail='receipts';receipts.append(node('h3','已完成操作回执（保留，不重放）'),node('pre',JSON.stringify(question.completedOperations,null,2)));technical.append(receipts);}
+  detail('hash','冻结效果哈希',String(question?.effectHash??''),{collapsed:true});
+  technical.append(node('p',elevated?'工作目录不是文件访问沙箱。提权仍须逐次系统认证；认证取消、失败或执行结果未知，不自动重放。':'仅按明确决定执行并留回执，不扩大到其他任务。'));
+  fields.append(technical);
   // The host normalized and validated the frozen DTO (OS-absolute cwd per
   // platform); the renderer only checks shape, never POSIX-only patterns that
   // would strand Windows paths without authorization controls.
   const valid=typeof question?.command==='string'&&question.command.trim()&&typeof question?.cwd==='string'&&question.cwd.trim()&&typeof question?.effectHash==='string'&&/^[a-f0-9]{64}$/.test(question.effectHash)&&Array.isArray(question.args)&&question.args.every(v=>typeof v==='string');
   if(valid){
-   const options=[{label:'仅允许执行这一次',action:'approve-once',description:'执行上方冻结命令一次；之后需重新申请。'},{label:'本任务内允许该冻结命令',action:'approve-task',description:'仅原任务可再次执行完全相同的冻结命令、参数和工作目录；不覆盖其他管理命令。撤销、到期、任务结束或重启后失效；提权仍需真实系统认证。'},{label:'拒绝此执行',action:'deny',description:'不执行该命令，不自动重试；继续原范围内其他工作需模型自行安排。'},{label:'暂不授权',action:'cancel',description:'暂停本次申请，保留现有进度；之后可重新申请。'}];
+   const options=[{label:'仅允许执行这一次',action:'approve-once'},{label:'本任务内允许该冻结命令',action:'approve-task',description:'仅相同命令、参数和目录；撤销、到期、任务结束或重启失效。'},{label:'拒绝此执行',action:'deny'},{label:'暂不授权',action:'cancel'}];
    const read=choice('permission',(elevated?'请选择提权执行授权决定':'请选择敏感执行授权决定'),options);
    for(const input of fields.querySelectorAll('input')){const option=options.find(option=>option.label===input.value);if(option)input.dataset.attentionPermissionAction=option.action;}
    readAnswer=()=>{const option=options.find(option=>option.label===read());if(!option)throw Error('请明确选择授权决定。');return option.action;};
   }else paragraph('请求未提供可核对的命令、工作目录或冻结哈希；请刷新核对，不会默认授权。');
  }else if(isGrantRevoke){
   allowCancel=false;
-  const detail=(key,label,text)=>{const block=node('section');block.dataset.attentionPermissionDetail=key;block.append(node('h3',label),node('p',text||'未提供'));fields.append(block);};
-  detail('command','已授权的冻结命令',String(question?.command??''));
-  detail('cwd','工作目录',question?.cwd);
-  detail('window','授权窗口','自 '+String(question?.grantedAt??'')+(question?.expiresAt?' 至 '+question.expiresAt:'（无固定到期，任务结束或重启失效）'));
-  paragraph('撤销仅关闭未来准入，不承诺逆转已执行的命令效果；结果未知的执行仍需单独核对。');
+  const technical=node('details');technical.dataset.attentionPermissionTechnical='';technical.append(node('summary','核对授权命令与有效期'));
+  const detail=(key,label,text,{collapsed=false}={})=>{const block=node('section');block.dataset.attentionPermissionDetail=key;block.append(node('h3',label),node('p',text||'未提供'));(collapsed?technical:fields).append(block);};
+  detail('type','授权类型','本任务冻结命令执行授权');
+  detail('scope','操作与范围',String(question?.command??'')+' · '+String(question?.cwd??'')+'；仅原任务，不覆盖其他命令');
+  detail('risk','具体风险',question?.risk||'保留后可继续准入同一冻结命令；撤销不逆转已执行效果，结果未知的执行需单独核对。');
+  detail('command','已授权的冻结命令',String(question?.command??'')+' '+(question?.args||[]).map(value=>JSON.stringify(String(value))).join(' '),{collapsed:true});
+  detail('cwd','工作目录',question?.cwd,{collapsed:true});
+  detail('window','授权窗口','自 '+String(question?.grantedAt??'')+(question?.expiresAt?' 至 '+question.expiresAt:'（任务结束或重启失效）'),{collapsed:true});
+  detail('hash','冻结效果哈希',String(question?.effectHash??''),{collapsed:true});
+  if(question?.originalText)detail('original','原任务',question.originalText,{collapsed:true});
+  if(question?.completedOperations?.length){const receipts=node('section');receipts.dataset.attentionPermissionDetail='receipts';receipts.append(node('h3','已完成操作回执'),node('pre',JSON.stringify(question.completedOperations,null,2)));technical.append(receipts);}
+  fields.append(technical);
   const options=[{label:'撤销本任务的执行授权',action:'revoke',description:'之后同一冻结命令需重新申请；已执行效果不受影响。'},{label:'保留授权',action:'keep',description:'不撤销；此待办可稍后再看。'}];
   const read=choice('grant','请选择',options);
   for(const input of fields.querySelectorAll('input')){const option=options.find(option=>option.label===input.value);if(option)input.dataset.attentionGrantAction=option.action;}
@@ -131,7 +141,11 @@ export function mountAttentionDialogue(container,{document,projectId,todo,invoke
    const readers=question.questions.map((q,index)=>{if(q.header)paragraph(q.header);const recommended=q.recommended!=null&&q.recommended!==false?q.recommended:null;const selected=choice('question:'+index,q.question||q.id,q.options||[],{multi:q.multi===true,recommended});const custom=collapsible('custom:'+index,'其他回答（可选）',{multiline:true}),note=collapsible('note:'+index,'备注（可选）');return ()=>({id:q.id,selectedOptions:q.multi?selected():(selected()===undefined?[]:[selected()]),...(custom.value?{customInput:custom.value}:{}),...(note.value?{note:note.value}:{})});});
    readAnswer=()=>({kind:'submit',results:readers.map(read=>read())});
   }else if(method==='approve'){
-   if(question.prompt?.full)paragraph(question.prompt.full);else if(question.prompt?.compact)paragraph(question.prompt.compact);
+   const detail=(key,label,text)=>{const block=node('section');block.dataset.attentionPermissionDetail=key;block.append(node('h3',label),node('p',text));fields.append(block);};
+   detail('type','申请权限','原生会话操作授权');
+   detail('scope','操作与范围',question.prompt?.compact||question.title||'来源未提供简要操作范围，请展开原始请求核对。');
+   detail('risk','风险说明',question.risk||question.detail||'来源未提供具体风险说明；请核对原始请求，不能据此认定操作安全。');
+   if(question.prompt?.full){const technical=node('details');technical.dataset.attentionPermissionTechnical='';technical.append(node('summary','核对原始授权请求'),node('pre',question.prompt.full));fields.append(technical);}
    const options=[{label:'仅允许本次',value:'once'},{label:'拒绝',value:'deny'}];if(question.prompt?.session)options.push({label:'允许本会话',value:'session'});
    for(const grant of question.prompt?.grants||[])if(['folder','target'].includes(grant.scope)){options.push({label:grant.label,value:{grant:grant.scope,always:false}});options.push({label:grant.alwaysLabel,value:{grant:grant.scope,always:true}});}
    const read=choice('approval','授权决定',options);readAnswer=()=>{const label=read(),selected=label===undefined?null:options.find(option=>option.label===label);if(!selected)throw Error('请选择授权决定。');return selected.value;};
@@ -187,7 +201,7 @@ export function mountAttentionDialogue(container,{document,projectId,todo,invoke
  if(recoverButton)actions.append(recoverButton);
  const refresh=control('刷新状态',onRefresh);refresh.dataset.attentionRefresh='';actions.append(refresh);
  form.onsubmit=event=>{event.preventDefault();if(!readAnswer)return;try{void respond(readAnswer()).catch(error=>{setStatus(error.message,'error');});}catch(error){setStatus(error.message,'error');}};
- setStatus(isRoute?'等待明确选择；此决定不授予额外安全权限。':isPermission?'请逐字核对待执行命令、参数与工作目录后明确决定；批准前零执行，没有默认授权。':isGrantRevoke?'此授权生效中；可撤销未来准入或保留。':isMergeConsent?'请核对候选提交与审校版本后明确决定；这是本地 Git 合入授权，不是提权执行授权。':destination.kind==='conversation'?(readAnswer?'等待明确回答；选择或输入不会自动提交。':'此原生交互不支持在工作区结构化回答。'):destination.kind==='native-draft'?'先读取来源原生草稿，再明确保存；不会自动发送。':destination.kind==='settings'?'打开相关设置完成配置后刷新核对。':destination.kind==='connection'?'查看并恢复原会话后刷新核对。':destination.kind==='terminal'?'原生会话被外部占用；等待释放后刷新核对。':'请核对来源状态后刷新。');
+ setStatus(isRoute?'等待明确选择；此决定不授予额外安全权限。':isPermission?'等待明确决定；批准前不执行，拒绝或暂不授权不自动重试。':isGrantRevoke?'此授权生效中；可撤销未来准入或保留。':isMergeConsent?'请核对候选提交与审校版本后明确决定；这是本地 Git 合入授权，不是提权执行授权。':destination.kind==='conversation'?(readAnswer?'等待明确回答；选择或输入不会自动提交。':'此原生交互不支持在工作区结构化回答。'):destination.kind==='native-draft'?'先读取来源原生草稿，再明确保存；不会自动发送。':destination.kind==='settings'?'打开相关设置完成配置后刷新核对。':destination.kind==='connection'?'查看并恢复原会话后刷新核对。':destination.kind==='terminal'?'原生会话被外部占用；等待释放后刷新核对。':'请核对来源状态后刷新。');
  function update(next){latest=next;const available=same(),settled=phase!=='answering';fields.disabled=pending||!available||settled;for(const b of actions.querySelectorAll('button'))b.disabled=pending||b!==refresh&&(!available||settled);if(pending)return;if(settled)return;if(!available)setStatus('原待办已结束或来源已变化；未发送的回答仍保留，不会交给其他会话。','stale');}
  update(todo);return {update};
 }
