@@ -2,6 +2,8 @@
 
 状态基线：`0.1.0-alpha.5`（Alpha预发行，发行状态以[发布说明与发行边界](release.md)及 GitHub 发布页为准；`v0.1.0-alpha.4` 已于 2026-11-01 公开发布）。能力以Linux x64/Wayland、X11/XWayland及GitHub Ubuntu/X11实际验证为准；Windows/macOS尚未验证，安装与打包工具仅实现Linux。
 
+2026-11-06 **用户授权 commit 并与 `e4dd289` 一起安装新版，已完成**：窗口／管理界面及相关 UI 接线提交 `a772582`（父提交即 `e4dd289`）；实际用户目录 current=`2026-11-06T06-50-32-215Z`，previous=`2026-11-06T03-38-28-248Z`。安装冻结当前完整运行源码，415个src、354个dist文件与工作树逐字节一致；其他既有后端未提交修改仍保留，不把安装快照冒充纯提交树。实际安装ELF的PPT标签／涂鸦拖动、键盘、取消、窗口夹取、本地恢复13项全过；`e4dd289` 的原中文请求＋空cursor×3＋空brief再次通过，唯一Work／Worker、真实HTML发布、零维护job／新Bug，两次均正常exit0。记录 `/tmp/nozeli-unified-install-88KARQ/installed.json`，测试原件 `/tmp/nozeli-label-windows-cUP4Yb/report.json`、`/tmp/nozeli-installed-recorded-bug-fixed-HgjW12/report.json`。不强退旧窗口、不操作日常项目、不推送／发布；正常退出全部旧窗口后重开桌面入口加载新版。以下“未安装”文字为源码取证阶段历史，不覆盖此安装记录。
+
 2026-11-06 **共用局部窗口与简洁管理页已在源码实施，未安装**：标签／备注、冻结位置、审核及网页讨论共用几何、手势、尺寸与独立展示 CAS；来源、笔迹、线程及审核决定保持原路径。Agent 状态改紧凑行，会话诊断按需、资源与默认模型分行，故障页同层返回。188/188 定向回归、真实设置30项、深浅主题PPT／涂鸦各13项及原生报告讨论→人工稿采用通过；网页父View裁剪实证保持完整guest视口、段落换行与草稿／URL归属。Linux隔离合成项目限定，网页菜单选择用明确回调fixture，实际拖动用真实指针；不外推物理菜单、全格式／硬件或跨平台。详见[实施证据](testing.md#2026-11-06-共用局部窗口与简洁管理页源码未安装)。本轮未执行安装、提交、推送或发布，以下安装记录仍为各自历史阶段。
 
 2026-11-06 **依据 Bug 台账完成参数合同源码修复，安装后同场景通过**：`INVALID_CURSOR` 的空／null／省略游标统一首页；`brief` 可选，空／null／省略由宿主用冻结原请求，其他类型可纠正拒绝，非空说明保留，等价派工幂等。旧普通派工故障制造分支已删除，历史 Debug 安全恢复事实仍可读。144/144 定向回归、通用 Debug／真实读取纠错均通过。current=`2026-11-06T03-38-28-248Z`，previous=`2026-11-06T02-14-18-377Z`；实际安装版用同中文请求、空 cursor×3、空 brief 正常生成唯一 Work／Worker，HTML 已发布待审核（review、Worker completed），维护任务与持久 Bug 记录均0，无需 Debug 兜底，正常 exit0。证据 `/var/tmp/nozeli-installed-recorded-bug-fixed-LlZZ5D/report.json`，原生与实际工件截图已检查。本地受控 provider，不外推远端模型质量／跨平台；不重试旧任务、不改旧 Bug、不自动合入，未提交／推送。

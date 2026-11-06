@@ -520,6 +520,14 @@ postinstall 用 `electron-rebuild` 针对 Electron 重建 `node-pty`。该依赖
 - 最终支持路径回归：`node --no-warnings --test tests/desktop-session-timeline.test.mjs tests/renderer-projection-coalescing.test.mjs tests/workspace-layout.test.mjs tests/workspace-native.test.mjs`，110/110通过。`NOZELI_OZONE=x11 node tests/desktop-ci-smoke.mjs` 的五项真实启动／文件／项目切换／退出／冷恢复检查通过、两次正常退出code0、无pageerror；原件 `apps/desktop/.test-output/ci/smoke-j7w9zF/report.json`。`node tools/test-suites.mjs live --list` 确认新增对话回归已登记。
 - 本轮只在 Linux X11／XWayland 验证；Windows/macOS、纯原生 Wayland、物理多屏和实际商业模型未验。未安装、提交、推送或发布，未操作用户论文或日常 profile。
 
+## 2026-11-06 用户授权合并安装验证
+
+代码提交 `a772582` 的父提交为 `e4dd289`，无需重复 cherry-pick；实际本机安装 current=`2026-11-06T06-50-32-215Z`，previous=`2026-11-06T03-38-28-248Z`。415个src、354个dist文件与冻结工作树逐字节一致；安装包括保留的其他既有后端工作树修改，不声称安装包只来自干净commit。记录 `/tmp/nozeli-unified-install-88KARQ/installed.json`。
+
+- 从已验证的标签／涂鸦live脚本创建临时驱动，明确改用 `/home/bfly/.local/opt/nozeli/current/nozeli` ELF 和安装目录 `DesktopHost`；隔离合成PPT/profile，不运行源码main。实际拖动／键盘、touch cancel、800px夹取恢复、关闭重开、返回笔迹、本地保存恢复13项通过，exit0、原PPT与笔迹保持、无新增job；原件 `/tmp/nozeli-label-windows-cUP4Yb/report.json`。首轮仅驱动puppeteer导入路径错误，修正后再验，不算产品失败或通过。临时驱动已删除。
+- `HOME=/home/bfly node tests/installed-recorded-bug-fixed-live.mjs`：`/tmp/nozeli-installed-recorded-bug-fixed-HgjW12/report.json`，真实安装ELF／捆绑Pi和Node、受控本地Provider、同中文输入及空cursor×3、空brief正常派工，唯一原请求／Work／Worker，HTML实际生成并发布待审，零维护job和持久新Bug；真实工件模拟／暂停／调参通过，正常exit0，安装字节未变，不自动采用／合入。
+- 安装器首次受开发工具隔离HOME影响只更新了工具自身沙盒安装；已显式 `HOME=/home/bfly` 在真实用户目录重新打包／激活，以上两项均验证真实用户current，不能拿沙盒激活冒充用户安装成功。不强退用户旧窗口、不读取日常项目／凭据、不推送／发布；Linux限定。
+
 ## 2026-11-06 共用局部窗口与简洁管理页（源码，未安装）
 
 - **回归**：`npm run build:renderer` 通过；集中 `node --no-warnings --test --test-concurrency=2 --test-reporter=spec` 运行 `local-window`、`management-presentation`、`managed-progress`、`session-controls`、`web-discussion-panel`、`settings-agents-ui`、`provider-settings`、`managed-work-progress`、`native-review-renderer`、`snapshot-card-view`、`web-window-clip`、`online-browser`、`online-browser-clip`、`workspace-native` 对应的 `.test.mjs`：188/188，零失败／跳过。覆盖展示 CAS／实例及 surface 归属、迁移、队列／审核保护、输入保留与原生裁剪；测试清单已登记。
