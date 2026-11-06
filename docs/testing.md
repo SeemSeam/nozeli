@@ -533,3 +533,28 @@ postinstall 用 `electron-rebuild` 针对 Electron 重建 `node-pty`。该依赖
 - `HOME=/home/bfly node tools/install-local.mjs` 构建、校验并激活 current=`2026-11-06T00-54-32-789Z`，previous=`2026-11-06T00-00-59-494Z` 保留可回退。
 - 使用实际安装 ELF（不是源码 Electron 或 wrapper）与隔离 profile／合成项目，核验 `/proc/<pid>/exe` 与已安装 binary 一致；真实项目右键“重置为新项目”→确认→新身份自动加载，旧元数据副本身份正确、原文未变、新项目实际打开并显示原文、旧项目不再出现在入口，正常 exit0。X11 截图按 class＋PID 归属捕获并检查，原件 `/var/tmp/nozeli-reset-installed-68kJNB/report.json`、`main.log`、`installed-reset.png`。
 - 无付费调用、不修改日常项目、不强关原有窗口。本机安装冻结当前工作树；本轮提交只选项目重置代码、回归与文档，不包含其他既有改动。未推送／发布，不外推 Windows/macOS。一次性安装验收驱动已移除。
+
+## Debug 临时运行时续行（2026-11-06，源码与重新安装验收）
+
+- 定向：`HOME=/home/bfly TMPDIR=/var/tmp NODE_NO_WARNINGS=1 node --test tests/managed-debug-protocol.test.mjs tests/session-execution-presentation.test.mjs tests/managed-work-records.test.mjs tests/maintenance-status-page.test.mjs tests/maintenance-runtime.test.mjs tests/pi-session-admission.test.mjs`，128/128 通过、零失败／跳过。覆盖原 guard 拒绝与真实首次派工、原请求／sourceJob 不变、并发重复与冷恢复只读回执、报告未完成／错 scope／attempt／原 revision、权限与停止／取消、未知提交与回滚失败、双投影失败的 `projectionPending`，以及真实维护事件和新旧 Work 状态投影。纯状态夹具采用真实 Controller 与 Workspace.submitState，禁止无关存储 I/O，不以未执行的 stub 假装生产成功；真实持久化／CLI 链路由下面独立 live 证明。
+- 原生：`HOME=/home/bfly TMPDIR=/var/tmp NODE_NO_WARNINGS=1 node tests/pi-debug-runtime-continuation-live.mjs`。同原文、同空参数序列触发真实失败；真实私有 Pi Orchestrator 主动 Debug／inspect／report／continue，重复 continue 回同 Work；一个 Worker 原生 write 真实生成 HTML，Git 冻结一份候选并发布，原项目／HEAD 不变，资源释放。原件 `/var/tmp/nozeli-debug-runtime-live-6XeZDf/report.json`。
+- 安装：`HOME=/home/bfly node tools/install-local.mjs` 激活 `2026-11-06T02-14-18-377Z`，保留上一版 `2026-11-06T00-54-32-789Z`。运行 `HOME=/home/bfly TMPDIR=/var/tmp DISPLAY=:0 XAUTHORITY=/run/user/1000/xauth_yFzhYe NODE_NO_WARNINGS=1 node tests/installed-debug-runtime-continuation-live.mjs`：实际安装 ELF／main／私有 Pi／捆绑 Git、隔离新项目，同一请求真实失败后续行并交付待审核；对话真实徽标 `continued`，无 `debugging`，不把原故障当作已修复或最终任务完成。安装字节不变、正常 exit0，无额外模型请求。原件 `/var/tmp/nozeli-installed-debug-runtime-continuation-0CrFqx/report.json`、`electron.log`、原生主窗口与实际 HTML 工件截图均已查看。
+- 工件 HTML 由真实 Worker 写入，额外自有沙箱 Electron 窗口只加载这份实际字节，验证模拟推进、暂停冻结和调参重置，不代替真实产品／CLI 验收。首轮安装链路已成功至交付与 UI，但工件查看的 `Target.createTarget` 为 Electron 不支持而停止；修正驱动使用自有 BrowserWindow 后整轮通过，失败报告 `/var/tmp/nozeli-installed-debug-runtime-continuation-xHdHXy/report.json` 保留，不计通过。
+- `debug-runtime-continuation.fixture.mjs` 仅脚本化本机 provider 的输出，不篡改 host、无故障 monkeypatch／内部数据库注入。未调用日常账号或付费远端模型，不证明具体 GLM/GPT 的自主工具选择质量；Linux 限定、未重跑全仓默认套件。未重放用户现有失败任务、未自动接受候选、未提交／推送。
+
+## 根据 Bug 台账修复参数合同并在安装后复测（2026-11-06）
+
+- 对照前轮安装台账 `INVALID_CURSOR`×3、`DISPATCH_BRIEF_EMPTY`×1，修复源码默认参数合同而不是继续制造已修复错误再调用 Debug。首次 cursor 省略／null／空白均为真实首页；坏非空 token 仍拒绝。brief 缺省／null／空白使用冻结原请求，非空原样保留，其他类型可纠正零写入；有效意图归一化后幂等。历史已捕获拒绝证据与恢复回执保留，但新派工不再写旧拒绝记录。
+- 命令：`HOME=/home/bfly TMPDIR=/var/tmp NODE_NO_WARNINGS=1 node --test tests/managed-debug-protocol.test.mjs tests/managed-taskboard.test.mjs tests/session-execution-presentation.test.mjs tests/managed-work-records.test.mjs tests/maintenance-status-page.test.mjs tests/maintenance-runtime.test.mjs tests/pi-session-admission.test.mjs`。最终144/144通过，零失败／跳过；默认等价参数、分页与损坏token、错误brief类型／零写入、意图冲突、历史恢复／未知效果／权限／停止均覆盖。初轮唯一失败为新测试错误假定附件同摘要重名选择，已移除无关转发细节断言，生产附件代码未改。
+- `node tests/pi-recorded-bug-fixed-live.mjs`：实际 Manager／Controller／私有 Pi／文件／Git，保留同原文和 `cursor:""` 三次→status→dispatch `brief:""` 参数序列，正常首页读取与派工，唯一原请求／Work／Worker，真实 native write HTML 后冻结发布；无维护事件／新 Bug／临时恢复。原件 `/var/tmp/nozeli-recorded-bug-fixed-live-zjg5Df/report.json`。
+- `node tests/pi-debug-activation-live.mjs` 与 `node tests/pi-read-protocol-correction-live.mjs` 均通过。前者是明确标注的宿主边界故障注入回归，后者保留坏 token 的原回合纠错（测试坏 token 改为非空 `not-a-cursor`，不再将合法空 cursor 当错误）；原件分别 `/var/tmp/nozeli-pi-debug-activation-live-Dvd3qE/report.json`、`/var/tmp/nozeli-pi-read-correction-live-qZFSIg/report.json`。原生产保护未放宽。
+- 用户明确要求安装后复测。`HOME=/home/bfly node tools/install-local.mjs` 激活 `2026-11-06T03-38-28-248Z`，previous=`2026-11-06T02-14-18-377Z`。随后 `HOME=/home/bfly TMPDIR=/var/tmp DISPLAY=:0 XAUTHORITY=/run/user/1000/xauth_yFzhYe NODE_NO_WARNINGS=1 node tests/installed-recorded-bug-fixed-live.mjs`：实际安装 ELF/main／私有 Pi／捆绑 Git／隔离新项目复演相同输入和原空参数，最终唯一 Work 为 review，原 intake／Worker 已 completed，真实对话仅正常完成／交付徽标；生产维护查询 total=0，正常 exit0 后原始持久 SQLite Bug 数仍0；源文件／Git和安装字节未变。Worker 实际产出的 HTML 在自有沙箱窗口验证模拟、暂停／继续和调参，未自动接受。最终 `/var/tmp/nozeli-installed-recorded-bug-fixed-LlZZ5D/report.json`、`electron.log`、`source-fixed-delivered.png`、`actual-worker-chaos-demo.png` 已检查。
+- 中间驱动报告保留：`/var/tmp/nozeli-installed-recorded-bug-fixed-ThftRn/report.json` 外部读活跃 SQLite 遇到锁，改为程序运行时走生产只读 API、退出后读库；`...-EGJO91/report.json` 采样早于完整 Work／Worker 结算，最终门已收紧，不据此提前签收。迁移旧场景导出／文件／live注册，无兼容别名；旧命令仅作前轮历史证据，当前入口为 recorded-bug-fixed。
+- 未调用日常远端账号，provider 仅本地脚本化模型输出；不篡改宿主、无内部状态注入，核心行为是实际程序／CLI／文件／Git。Linux 限定、不声称全仓默认套件或 Windows/macOS 通过。未改日常项目／旧 Bug 台账，未重发旧请求、未自动合入、未提交／推送。
+
+### 本轮用户授权 commit 后的独立暂存快照检查
+
+- 用户确认提交后，按差异块分离本轮参数修复、历史 Debug 恢复／状态投影的直接依赖、对应测试及证据文档；未混入账号、报告审核、窗口布局、原生会话升级等其他既有改动，未推送。
+- 导出暂存树在 `/var/tmp/nozeli-source-fix-index-zjul4y15` 独立检查，发现 Debug 状态投影依赖的 `storage-maintenance.mjs` 三个 SQLite 字段（debugState／debugEventJobId／debugAttemptId）未纳入，已补入精确的一行查询差异，不改其他存储逻辑。
+- 补齐后的独立树 `/var/tmp/nozeli-source-fix-index-final-c4nd28u9` 采用串行文件检查且不放宽程序期限：77项中76通过，包含全部新增参数、历史 Debug 续行及状态展示测试；`large cold ledger is worker-paged metadata with global counts and no starts` 仍以 `STORAGE_RESULT_UNKNOWN` 超时失败。该压力项原因未在本轮定位，不将这轮快照检查计作全绿，也未通过延长生产超时或吞掉异常伪造通过。
+- 上述额外失败不回写为此前工作树144/144或实际安装版同场景失败；两组既有运行结果及其输入、安装版本和证据仍分别保留。当前确认范围仅是已复现的空游标／空 brief 参数缺陷修复，不代表全仓或所有负载边界无问题。

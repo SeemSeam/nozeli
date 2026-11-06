@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createSessionStore,groupSession} from '../src/renderer/session-store.mjs';
-import {replyPresentation,turnPresentation,processSummary} from '../src/renderer/session-presentation.mjs';
+import {replyPresentation,turnPresentation,processSummary,orchestratorPresentation} from '../src/renderer/session-presentation.mjs';
 const base={target:'frontdesk',jobId:'one',sessionId:'session',requestId:'request',speaker:'agent',source:'native'};
 const state=(status,extra={})=>({jobs:[{id:'one',target:'frontdesk',status,...extra}],agents:[]});
 test('accepted input hides transient and durable native echoes by exact job, never repeated text',()=>{
@@ -47,15 +47,59 @@ test('terminal old turns never inherit current agent activity or stale streaming
  assert.equal(turnPresentation([{...base,id:'x',text:''}],{}).status,'unknown');
 });
 
-test('system-owned debug keeps internal failures out of user-blocking states without claiming repaired',()=>{
+test('system debug keeps internal faults out of user-blocking states; active processing needs the live registered event job',()=>{
  const entries=[{...base,id:'read-fault',failed:true,tool:{name:'nozeli_history_read',status:'error'}}];
- for(const debugState of ['queued','running','awaiting-fix','pending']){
-  const s=state('failed',{maintenanceBugId:'bug-1',debugEventJobId:'debug-1',debugState});
-  const view=turnPresentation(entries,s);assert.equal(view.status,'debugging');assert.equal(view.terminal,false);assert.deepEqual(view.pending,[]);assert.equal(s.jobs[0].status,'failed');
- }
- assert.equal(turnPresentation(entries,state('failed',{maintenanceBugId:'bug-1',debugEventJobId:'debug-1',debugState:'model-unavailable'})).status,'modelUnavailable');
+ const debugState=(state,eventStatus)=>({jobs:[{id:'one',target:'frontdesk',status:'failed',maintenanceBugId:'bug-1',debugEventJobId:'debug-1',debugState:state},...(eventStatus?[{id:'debug-1',type:'maintenance',target:'orchestrator',status:eventStatus,context:{bugId:'bug-1'}}]:[])],agents:[]});
+ let view=turnPresentation(entries,debugState('running','running'));
+ assert.equal(view.status,'debugging');assert.equal(view.terminal,false);assert.deepEqual(view.pending,[]);
+ // Diagnosis saved settles the turn: waiting for the source repair, not "processing".
+ view=turnPresentation(entries,debugState('awaiting-fix','completed'));
+ assert.equal(view.status,'awaitingFix');assert.equal(view.terminal,true);assert.match(view.label,/等待系统修复/);
+ // A stopped or cold event job never claims active debugging, whatever the ledger said.
+ for(const setup of [['running','completed'],['queued','completed'],['pending','completed'],['queued'],['running']])
+  assert.equal(turnPresentation(entries,debugState(...setup)).status,'debugPending','setup '+setup);
+ assert.equal(turnPresentation(entries,debugState('model-unavailable','completed')).status,'modelUnavailable');
  assert.equal(turnPresentation(entries,state('failed',{debugState:'running'})).status,'failed','unbound model prose cannot authorize a debug state');
  assert.equal(turnPresentation(entries,state('interrupted',{maintenanceBugId:'bug-1',debugEventJobId:'debug-1',debugState:'running'})).status,'interrupted','explicit cancellation remains authoritative');
+});
+test('runtime continuation follows the durable host receipt, never model prose or the historical failure',()=>{
+ const entries=[{...base,id:'empty-brief',failed:true,tool:{name:'nozeli_dispatch',status:'error'}},{...base,id:'host-fact',speaker:'system',source:'host',text:'宿主已确认临时续行回执'}];
+ const routing={action:'dispatch',intent:'i',workId:'work-1',name:'混沌系统 HTML 演示',at:'2026-01-01T00:00:00.000Z',hostContinuation:{kind:'dispatch-empty-brief',bugId:'bug-1',attemptId:'attempt-1',originalIntent:'i'}};
+ const continued=(jobStatus='completed')=>({jobs:[{id:'one',target:'orchestrator',type:'intake',status:jobStatus,maintenanceBugId:'bug-1',debugEventJobId:'debug-1',debugState:'continued-with-known-fault',routing:structuredClone(routing)},{id:'debug-1',type:'maintenance',target:'orchestrator',status:'completed',context:{bugId:'bug-1'}}],works:[{id:'work-1',sourceJob:'one',status:'running'}],agents:[]});
+ let view=turnPresentation(entries,continued());
+ assert.equal(view.status,'continued');assert.equal(view.terminal,true);assert.match(view.label,/临时恢复/);assert.doesNotMatch(view.label,/已完成/);
+ // The still-failed original job and its historical error entries never crush a real receipt.
+ assert.equal(turnPresentation(entries,continued('failed')).status,'continued');
+ // Without the exact host receipt the continuation claim is not made.
+ const noReceipt=continued();delete noReceipt.jobs[0].routing.hostContinuation;
+ assert.equal(turnPresentation(entries,noReceipt).status,'awaitingFix');
+ const foreignReceipt=continued();foreignReceipt.jobs[0].routing.hostContinuation.bugId='bug-other';
+ assert.equal(turnPresentation(entries,foreignReceipt).status,'awaitingFix');
+ // Explicit user cancellation stays authoritative over any recovery display.
+ assert.equal(turnPresentation(entries,continued('interrupted')).status,'interrupted');
+ // Model prose alone cannot claim a continuation.
+ assert.equal(turnPresentation(entries,state('failed',{debugState:'continued-with-known-fault'})).status,'failed');
+ // continuing: temporary recovery executing only while the event job is genuinely running.
+ const continuing=(eventStatus,receipt=false)=>{const s=continued('failed');s.jobs[0].debugState='continuing';s.jobs[0].status='failed';if(!receipt)delete s.jobs[0].routing.hostContinuation;s.jobs[1].status=eventStatus;return s;};
+ assert.equal(turnPresentation(entries,continuing('running')).status,'continuing');
+ assert.equal(turnPresentation(entries,continuing('running')).terminal,false);
+ assert.equal(turnPresentation(entries,continuing('completed')).status,'awaitingFix','stopped recovery without a receipt is not executing');
+ assert.equal(turnPresentation(entries,continuing('completed',true)).status,'continued','a committed receipt outlives an interrupted recovery turn');
+});
+test('orchestrator continuation is not task completion and reports the routed Work state',()=>{
+ const entries=[{...base,id:'ask',target:'orchestrator',type:'intake',jobId:'one',speaker:'user',source:'host',text:'我需要制作一个混沌系统的html演示'},{...base,id:'fault',target:'orchestrator',jobId:'one',speaker:'tool',tool:{name:'nozeli_dispatch',status:'error'}}];
+ const routing={action:'dispatch',intent:'i',workId:'work-1',name:'混沌系统 HTML 演示',at:'2026-01-01T00:00:00.000Z',hostContinuation:{kind:'dispatch-empty-brief',bugId:'bug-1',attemptId:'attempt-1',originalIntent:'i'}};
+ const stateFor=(work,jobStatus='completed')=>({jobs:[{id:'one',target:'orchestrator',type:'intake',status:jobStatus,maintenanceBugId:'bug-1',debugEventJobId:'debug-1',debugState:'continued-with-known-fault',routing},{id:'debug-1',type:'maintenance',target:'orchestrator',status:'completed',context:{bugId:'bug-1'}}],works:work?[{id:'work-1',sourceJob:'one',status:work}]:[],todos:[],agents:[]});
+ for(const work of ['queued','running','review']){
+  const view=orchestratorPresentation(entries,stateFor(work));
+  assert.equal(view.execution.status,'continued','work '+work);
+  assert.doesNotMatch(view.activity,/失败/);assert.match(view.activity,/临时恢复/);assert.match(view.activity,/待修复/);
+  assert.equal(view.handoff.action,'dispatch');assert.equal(view.handoff.workId,'work-1');assert.equal(view.handoff.status,work);
+  assert.match(view.handoff.text,/临时恢复/);
+ }
+ assert.equal(orchestratorPresentation(entries,stateFor(null)).handoff.status,'unknown','missing Work is never assumed started');
+ const failedOriginal=orchestratorPresentation(entries,stateFor('running','failed'));
+ assert.equal(failedOriginal.execution.status,'continued');assert.doesNotMatch(failedOriginal.activity,/失败/,'a real receipt is not crushed back to permanent failure');
 });
 test('actual read denial is visible but successful host-control handoffs are not mislabeled blocked',()=>{
  assert.equal(turnPresentation([{...base,id:'failed',failed:true}],state('completed')).status,'failed');

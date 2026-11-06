@@ -165,7 +165,7 @@ const provider=await serve(async request=>{
  }
  const job=controller&&[...controller.current.values()].find(row=>row.target==='orchestrator');
  if(job?.type==='intake'){
-  if(scenario.inspectStage===0){scenario.inspectStage++;return call('bad-board-cursor','nozeli_inspect_work',{workName:'@state',cursor:''});}
+  if(scenario.inspectStage===0){scenario.inspectStage++;return call('bad-board-cursor','nozeli_inspect_work',{workName:'@state',cursor:'not-a-cursor'});}
   if(scenario.inspectStage===1){refusal(request,'bad-board-cursor','INVALID_CURSOR');scenario.cursorBugId=(await bugFor('INVALID_CURSOR',job.id)).id;scenario.inspectStage++;return call('missing-work-name','nozeli_inspect_work',{workName:'No such synthetic Work 7c9e'});}
   if(scenario.inspectStage===2){refusal(request,'missing-work-name','INVALID_SELECTOR');const bug=await bugFor('INVALID_SELECTOR',job.id);scenario.selectorBugId=bug.id;assert.notEqual(bug.status,'repaired');scenario.inspectStage++;return call('corrected-taskboard','nozeli_inspect_work',{workName:'@state'});}
   if(scenario.inspectStage===3){const board=success(request,'corrected-taskboard');assert(Array.isArray(board.board.rows));for(const id of [scenario.cursorBugId,scenario.selectorBugId])assert.equal((await controller.maintenanceStatus()).bugs.find(bug=>bug.id===id).lastOutcome.outcome,'same-turn-read-corrected','exact host-issued board correction repairs before dispatch');scenario.inspectStage++;}

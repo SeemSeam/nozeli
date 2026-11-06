@@ -72,6 +72,30 @@ test('unrouted internal failure preserves exact user goal and diagnostics withou
  s.jobs[1].status='failed';assert.equal(managedWorkRecords(s)[0].phase,'系统问题待处理 · 原请求已保留');
 });
 
+test('saved diagnosis states waiting-for-repair and live recovery says so, without inventing active fixing',()=>{
+ const s=base();s.jobs.push(intake('faulted',{status:'failed',error:'task requires original request and brief',maintenanceBugId:'bug1',debugEventJobId:'debug-1',debugState:'awaiting-fix'}),{id:'debug-1',type:'maintenance',target:'orchestrator',status:'completed',context:{bugId:'bug1'},at:'2026-01-01T00:00:00Z'});
+ let record=managedWorkRecords(s)[0];
+ assert.equal(record.status,'failed');assert.doesNotMatch(record.phase,/正在处理/);assert.match(record.phase,/诊断已保存/);assert.match(record.phase,/等待修复/);
+ s.jobs[1].status='running';s.jobs[0].debugState='continuing';
+ assert.match(managedWorkRecords(s)[0].phase,/临时恢复/);
+ s.jobs[0].debugState='running';
+ assert.equal(managedWorkRecords(s)[0].phase,'系统正在处理运行问题 · 原请求已保留');
+});
+test('debug continuation routes the original request into its single Work while the fault stays unrepaired',()=>{
+ const s=base();
+ s.jobs.push(intake('one',{status:'completed',error:'task requires original request and brief',maintenanceBugId:'bug1',debugEventJobId:'debug-1',debugState:'continued-with-known-fault',routing:{action:'dispatch',intent:'i',workId:'w',name:'混沌系统 HTML 演示',at:'2026-01-02T00:00:00Z',hostContinuation:{kind:'dispatch-empty-brief',bugId:'bug1',attemptId:'a1',originalIntent:'i'}}}),{id:'debug-1',type:'maintenance',target:'orchestrator',status:'completed',context:{bugId:'bug1'},at:'2026-01-01T00:00:00Z'},{id:'initial',target:'w',type:'initial',status:'running',at:'2026-01-02T00:00:00Z'});
+ s.works.push({id:'w',sourceJob:'one',name:'混沌系统 HTML 演示',status:'running',revision:0,request:'我需要制作一个混沌系统的html演示'});
+ const records=managedWorkRecords(s);
+ assert.equal(records.length,1,'one request, one recovered Work, no second task');
+ const record=records[0];
+ assert.equal(record.workId,'w');assert.equal(record.status,'running');assert.equal(record.phase,'执行中');
+ const texts=record.events.map(event=>event.text).join('|');
+ assert.match(texts,/临时恢复/);assert.match(texts,/待修复/);assert.equal(record.maintenance,undefined);
+ // Queue and report phases keep deriving from the actual routed Work, never from the old failure.
+ s.works[0].status='queued';assert.match(managedWorkRecords(s)[0].phase,/排队/);
+ s.works[0].status='review';assert.equal(managedWorkRecords(s)[0].phase,'结果待审查');
+});
+
 test('source identity supplies request name and provider failures never claim automatic repair',()=>{
  const s=base();s.messages=[{id:'source',text:'原始引用材料'}];s.jobs.push(intake('provider',{text:'[protocol wrapper]',context:{sourceMessageId:'source'},status:'failed',diagnosticOnly:true,error:'provider refused'}));
  const record=managedWorkRecords(s)[0];assert.equal(record.name,'原始引用材料');assert.equal(record.description,'原始引用材料');assert.equal(record.maintenance,undefined);assert.equal(record.retryJobId,undefined);assert.doesNotMatch(record.phase,/系统正在|修复|完成/);

@@ -2,6 +2,10 @@
 
 状态基线：`0.1.0-alpha.5`（Alpha预发行，发行状态以[发布说明与发行边界](release.md)及 GitHub 发布页为准；`v0.1.0-alpha.4` 已于 2026-11-01 公开发布）。能力以Linux x64/Wayland、X11/XWayland及GitHub Ubuntu/X11实际验证为准；Windows/macOS尚未验证，安装与打包工具仅实现Linux。
 
+2026-11-06 **依据 Bug 台账完成参数合同源码修复，安装后同场景通过**：`INVALID_CURSOR` 的空／null／省略游标统一首页；`brief` 可选，空／null／省略由宿主用冻结原请求，其他类型可纠正拒绝，非空说明保留，等价派工幂等。旧普通派工故障制造分支已删除，历史 Debug 安全恢复事实仍可读。144/144 定向回归、通用 Debug／真实读取纠错均通过。current=`2026-11-06T03-38-28-248Z`，previous=`2026-11-06T02-14-18-377Z`；实际安装版用同中文请求、空 cursor×3、空 brief 正常生成唯一 Work／Worker，HTML 已发布待审核（review、Worker completed），维护任务与持久 Bug 记录均0，无需 Debug 兜底，正常 exit0。证据 `/var/tmp/nozeli-installed-recorded-bug-fixed-LlZZ5D/report.json`，原生与实际工件截图已检查。本地受控 provider，不外推远端模型质量／跨平台；不重试旧任务、不改旧 Bug、不自动合入，未提交／推送。
+
+2026-11-06 **Debug 临时运行时续行已落盘、重新安装并同场景通过**：主控对宿主已证明写入前拒绝的空 brief 派工，在诊断／检查源码／保存报告后主动 `debug.continue`；保持原 intake／请求／sourceJob，只创建唯一 Work，重复或冷恢复只认原回执。未知效果、权限／人工暂停／取消及身份／版本冲突仍阻断，不改源码／安装、不重放原 prompt，临时成功仍 `verifiedFix:false`。128/128 定向回归、真实私有 Pi 与实际安装 ELF 的“同中文输入＋三次空 cursor＋空 brief 失败→Debug→续行→Worker 真写 HTML→发布待审”通过；界面不再永久显示处理中，HTML 模拟／暂停／调参实测通过。current=`2026-11-06T02-14-18-377Z`，previous=`2026-11-06T00-54-32-789Z`；正常退出后重开加载新程序。安装证据 `/var/tmp/nozeli-installed-debug-runtime-continuation-0CrFqx/report.json`，详见 [Debug 实施记录](debug-read-protocol-fix-20261105.md)。本地确定性 provider，不外推远端模型质量／跨平台；未重试日常失败请求、未自动合入、未提交／推送。
+
 2026-11-06 项目右键新增“重置为新项目…”（源码与本机安装已验收）：明确确认后沿保存／草稿保留、进程停稳与在途写入屏障归档旧元数据，旧实例与恢复区原位封存，保持 worktree／原生会话路径；同一目录以新项目和实例身份自动加载，不继承旧批注、会话、任务、草稿或布局。原文件、Git、全局账号／API／模型设置保留；未知停稳、保存失败、身份变化与发布中断不强制清空、不自动重放。63/63 定向回归通过；真实 Linux X11 Electron 右键取消／确认、新身份原文与空批注、旧未保存稿跨分页恢复读取、其他项目及冷启动通过，正常退出；原生窗口截图已检查。源码证据 `/var/tmp/nozeli-project-reset-gui-mu4EPW/attempt-ahR70s/report.json`。Windows/macOS 未验。
 
 同轮用户授权“安装了吗 commit”后，本机 current 更新为 `2026-11-06T00-54-32-789Z`，previous 保留 `2026-11-06T00-00-59-494Z`。实际安装 ELF＋隔离 profile／合成项目经真实右键重置，自动加载新项目身份、保留原文并正确归档旧元数据，正常 exit0；自有 PID 原生截图已检查，证据 `/var/tmp/nozeli-reset-installed-68kJNB/report.json`。不强关原有窗口、不操作日常项目；已打开的旧程序须正常退出后重新从桌面入口启动才能加载新版。安装冻结当前工作树，存在其他既有未提交改动；本轮 Git 提交仅纳入项目重置相关差异，不代提交其他改动，不推送／发布。

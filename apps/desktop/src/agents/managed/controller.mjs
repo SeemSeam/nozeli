@@ -759,8 +759,11 @@ export class Controller extends EventEmitter {
     return Buffer.from(JSON.stringify({schema:1,filter:'open',fingerprint,offset}),'utf8').toString('base64url');
   }
   #decodeTaskboardCursor(cursor){
-    if(cursor==null)return {offset:0,fingerprint:null};
-    if(typeof cursor!=='string'||!cursor.trim())throw Object.assign(new Error('cursor 必须原样传回宿主返回的 nextCursor 字符串'),{code:'INVALID_CURSOR'});
+    // 可选空表示统一为首页读取：省略/null/空串/纯空白 cursor 都从第一页
+    // 开始；非空 cursor 必须原样校验，伪造/坏 token 显式拒绝，绝不静默
+    // 重置首页吞错。
+    if(cursor==null||(typeof cursor==='string'&&!cursor.trim()))return {offset:0,fingerprint:null};
+    if(typeof cursor!=='string')throw Object.assign(new Error('cursor 必须原样传回宿主返回的 nextCursor 字符串'),{code:'INVALID_CURSOR'});
     let decoded;try{decoded=JSON.parse(Buffer.from(cursor,'base64url').toString('utf8'));}catch{throw Object.assign(new Error('cursor 无法解析；请不带 cursor 重新读取 @state 首页'),{code:'INVALID_CURSOR'});}
     if(decoded?.schema!==1||decoded.filter!=='open'||typeof decoded.fingerprint!=='string'||!/^[a-f0-9]{64}$/.test(decoded.fingerprint)||!Number.isSafeInteger(decoded.offset)||decoded.offset<0)throw Object.assign(new Error('cursor 无效；请不带 cursor 重新读取 @state 首页'),{code:'INVALID_CURSOR'});
     return decoded;
@@ -1801,9 +1804,9 @@ export class Controller extends EventEmitter {
     }
     const home=role==='worker'?this.store.agentHome(target):path.join(this.store.root,'agents',`resident-${role}-pi`);
     const cwd=role==='worker'&&this.execution?(await this.maintenanceTransaction(this.current.get(target),'input-preparation',()=>this.execution.prepare(target)),this.execution.directory(target)):this.store.content;
-    const tools=role==='frontdesk'?[tool('nozeli_handoff','Escalate the remaining original-task work to background execution with a concise reason. Ordinary reasons dispatch straight to the background under the original user request (no extra prompt); if the user explicitly chose to stay in the frontdesk, declined background earlier, or a decision is still pending, the host asks the user instead. @new/@continue only select discussion context; discussion-source reading uses nozeli_source_read, never this handoff. This handoff never grants cross-project access, shell or credentials.',{reason:text}),tool('nozeli_source_read','Read a frozen discussion source read-only and paged: file:<relative path> for a frozen file version, memory:<keywords> for the Plan Tree index, state for open works, report:<work name> for a frozen report. Returns exact text with nextSelector for continuation; complete=false only describes this page. Reading is bounded by the per-run host budget and never dispatches background work.',{selector:text})]:role==='orchestrator'?[tool('nozeli_inspect_work','Bounded taskboard and Work facts. @state returns ONE bounded page of open works (stable workId, name, status, revision, queue position, factual block reason, frozen report reference) with quota facts and a host-generated nextCursor — pass it back verbatim to read the next page; if the ledger changed, the host returns resyncRequired with a fresh first page instead of silently mixing states. @work:<workId> returns bounded current facts (original request/brief/source job, execution jobs and live owner if known, input and worktree baseline, per-receipt frozen candidates, report/receipt/closure linkage; null means not recorded, i.e. unknown) where long originals, inputs, approved scopes, deviation details and closure errors appear as bounded previews plus paged readRefs — continue pages by passing the returned readRef/nextReadRef back as workName. Work names are accepted for search/display only. @memory:keywords searches Plan Tree; @conversation reads dialogue. Read-only.',{workName:text,cursor:text},['workName']),tool('nozeli_dispatch','Create a named Worker for a brand-new independent task (name is display/search only). This is the required terminal decision when an explicit user task has no matching open Work; continuing an existing Work always uses nozeli_manage with its stable workId and expectedRevision instead.',{name:text,brief:text}),tool('nozeli_manage','Route this intake to exactly ONE terminal decision. continue targets an EXISTING open Work by its stable workId plus the expectedRevision you read from the taskboard or @work detail — names never identify a mutation; a revision mismatch returns STALE_WORK_REVISION, so re-read and retry, never reinterpret. A continue that misses (unknown workId) is NEVER converted into a dispatch: use nozeli_dispatch explicitly for a brand-new task. clarify asks the user genuine ambiguity. status is a bounded read-only board query that NEVER completes an intake turn: inspect/status first if needed, then always finish the turn with continue, clarify, or nozeli_dispatch. User end decisions belong to user controls.',{action:{type:'string',enum:['continue','status','clarify']},workId:text,expectedRevision:{type:'integer',minimum:0},text},['action','text'])]:[tool('nozeli_publish','Publish one final self-contained static HTML result or concise Markdown problem. Put the entire report in content: HTML when kind=result, Markdown when kind=problem. Always send exactly kind, content and files. List every created or modified artifact in files, or [] for no-file work. Work remains open; finish the turn after success.',{kind:{type:'string',enum:['problem','result']},content:{type:'string',minLength:1,description:'The complete report body: self-contained static HTML for result, concise Markdown for problem.'},files:{type:'array',items:{type:'string'},maxItems:256}},['kind','content','files']),tool('nozeli_diagram','Render an offline validated Archify typed JSON diagram and return the exact standalone SVG with alt text, caption and spec/generator digests for direct inline figure embedding in the report HTML; creates no project files.',{type:{type:'string',enum:['architecture','workflow','sequence','dataflow','lifecycle']},spec:{type:'object',additionalProperties:true}})];
+    const tools=role==='frontdesk'?[tool('nozeli_handoff','Escalate the remaining original-task work to background execution with a concise reason. Ordinary reasons dispatch straight to the background under the original user request (no extra prompt); if the user explicitly chose to stay in the frontdesk, declined background earlier, or a decision is still pending, the host asks the user instead. @new/@continue only select discussion context; discussion-source reading uses nozeli_source_read, never this handoff. This handoff never grants cross-project access, shell or credentials.',{reason:text}),tool('nozeli_source_read','Read a frozen discussion source read-only and paged: file:<relative path> for a frozen file version, memory:<keywords> for the Plan Tree index, state for open works, report:<work name> for a frozen report. Returns exact text with nextSelector for continuation; complete=false only describes this page. Reading is bounded by the per-run host budget and never dispatches background work.',{selector:text})]:role==='orchestrator'?[tool('nozeli_inspect_work','Bounded taskboard and Work facts. @state returns ONE bounded page of open works (stable workId, name, status, revision, queue position, factual block reason, frozen report reference) with quota facts and a host-generated nextCursor — cursor is optional: omit it (or null/blank) to read the first page; otherwise pass the returned nextCursor string back verbatim to continue paging, and if the ledger changed, the host returns resyncRequired with a fresh first page instead of silently mixing states. @work:<workId> returns bounded current facts (original request/brief/source job, execution jobs and live owner if known, input and worktree baseline, per-receipt frozen candidates, report/receipt/closure linkage; null means not recorded, i.e. unknown) where long originals, inputs, approved scopes, deviation details and closure errors appear as bounded previews plus paged readRefs — continue pages by passing the returned readRef/nextReadRef back as workName. Work names are accepted for search/display only. @memory:keywords searches Plan Tree; @conversation reads dialogue. Read-only.',{workName:text,cursor:{anyOf:[text,{type:'null'}],description:'Omit (or null/blank) to read the first page; otherwise the exact nextCursor string previously returned by the host.'}},['workName']),tool('nozeli_dispatch','Create a named Worker for a brand-new independent task (name is display/search only). brief is an optional additional execution note: omit it and the host runs the Work under the frozen original user request — never copy the user text into brief; supply a non-empty brief only for genuinely additional execution instructions. This is the required terminal decision when an explicit user task has no matching open Work; continuing an existing Work always uses nozeli_manage with its stable workId and expectedRevision instead.',{name:text,brief:{anyOf:[text,{type:'null'}],description:'Optional additional execution note; omitted/null/blank runs under the frozen original user request.'}},['name']),tool('nozeli_manage','Route this intake to exactly ONE terminal decision. continue targets an EXISTING open Work by its stable workId plus the expectedRevision you read from the taskboard or @work detail — names never identify a mutation; a revision mismatch returns STALE_WORK_REVISION, so re-read and retry, never reinterpret. A continue that misses (unknown workId) is NEVER converted into a dispatch: use nozeli_dispatch explicitly for a brand-new task. clarify asks the user genuine ambiguity. status is a bounded read-only board query that NEVER completes an intake turn: inspect/status first if needed, then always finish the turn with continue, clarify, or nozeli_dispatch. User end decisions belong to user controls.',{action:{type:'string',enum:['continue','status','clarify']},workId:text,expectedRevision:{type:'integer',minimum:0},text},['action','text'])]:[tool('nozeli_publish','Publish one final self-contained static HTML result or concise Markdown problem. Put the entire report in content: HTML when kind=result, Markdown when kind=problem. Always send exactly kind, content and files. List every created or modified artifact in files, or [] for no-file work. Work remains open; finish the turn after success.',{kind:{type:'string',enum:['result','problem']},content:{type:'string',minLength:1,description:'The complete report body: self-contained static HTML for result, concise Markdown for problem.'},files:{type:'array',items:{type:'string'},maxItems:256}},['kind','content','files']),tool('nozeli_diagram','Render an offline validated Archify typed JSON diagram and return the exact standalone SVG with alt text, caption and spec/generator digests for direct inline figure embedding in the report HTML; creates no project files.',{type:{type:'string',enum:['architecture','workflow','sequence','dataflow','lifecycle']},spec:{type:'object',additionalProperties:true}})];
     const binding=role==='worker'?this.store.find(target).binding||this.store.state.bindings.worker:this.store.state.bindings[role];
-    if(role==='orchestrator')tools.push(tool('nozeli_maintenance','Inspect sanitized host bugs or activate scoped DEBUG. For each maintenance event call debug, read debug.inspect source evidence, then submit debug.report diagnosis/rootCause/fixPlan (source facts only, no private user text). Reports are model interpretation, never verified repairs or permission to replay. Retry only exact host-authorized recovery.',debugToolProperties,['action']));
+    if(role==='orchestrator')tools.push(tool('nozeli_maintenance','Inspect sanitized host bugs or activate scoped DEBUG. For each maintenance event call debug, read debug.inspect source evidence, then submit debug.report diagnosis/rootCause/fixPlan (source facts only, no private user text). Reports are model interpretation, never verified repairs or permission to replay. When the response exposes hostContinuation, actively call debug.continue with the same bugId/attemptId: the host performs the only proven pre-effect temporary continuation (original request retained); verifiedFix stays false. Retry only exact host-authorized recovery.',debugToolProperties,['action']));
     if(role==='orchestrator')tools.push(
       tool('nozeli_problem_continue','Continue the exact original Work from context.backstageProblem after inspecting its frozen problem and receipts. Supply only remaining reversible steps; never replay unknown effects or infer new authorization.',{workId:text,revision:{type:'integer',minimum:1},objectId:text,text},['workId','revision','objectId','text']),
       tool('nozeli_backstage_respond','Resolve the current host-bound backstage native question from existing evidence, or explicitly preserve neutral blocked state when facts are missing. Never answer permission approval or invent business facts.',{answer:{anyOf:[text,{type:'boolean'},{type:'object'}]},blocked:{type:'boolean'},reason:text},[]));
@@ -2162,7 +2165,7 @@ export class Controller extends EventEmitter {
       if(a.action==='status')return {...await this.maintenanceStatus(),readOnly:true,continueTurn:true};
       if(a.action==='scan')return {...await this.maintenanceScan(),continueTurn:true};
       if(a.action==='retry')return {...await this.maintenanceRetry(a.bugId),continueTurn:true};
-      if(['debug','debug.inspect','debug.report'].includes(a.action)){try{return await this.debugProtocol.action(job,a);}catch(error){if(/^DEBUG_/.test(error.code??''))return {ok:false,continueTurn:true,error:{code:error.code,message:error.code}};throw error;}}
+      if(['debug','debug.inspect','debug.report','debug.continue'].includes(a.action)){try{return await this.debugProtocol.action(job,a);}catch(error){if(/^DEBUG_/.test(error.code??''))return {ok:false,continueTurn:true,error:{code:error.code,message:error.code}};throw error;}}
       throw Error('invalid maintenance action');
     }
     if(p.tool==='nozeli_report_bug'&&!['frontdesk','orchestrator'].includes(target)){const bug=await this.maintenance.record({phase:'diagnosis',jobId:job.id,workId:target,revision:job.revision,error:{code:a.code}});await this.maintenance.finish(bug.id,{outcome:'needs-version-fix'});await this.store.mutate(()=>{const saved=this.store.state.jobs.find(j=>j.id===job.id);saved.maintenanceBugId=bug.id;const w=this.store.find(target);if(w.status==='running'){w.status='paused';w.maintenance={bugId:bug.id,status:'needs-version-fix',message:'程序故障待后台诊断；原任务与改动保留。'};}});await this.maintenanceEvent(bug);return {maintenance:true,hostControl:true,bugId:bug.id,workRemainsOpen:true};}
@@ -2334,13 +2337,19 @@ export class Controller extends EventEmitter {
     }
     if(target==='orchestrator'&&p.tool==='nozeli_dispatch'){
       if(job.type!=='intake')throw new Error('dispatch requires an intake');if(this.intakeBoundWork(job))throw Error('input belongs to existing Work; manage original Work');const source=this.intakeSource(job);
-      // 幂等身份：同一 intake 重复提交完全相同的派工意图时重放原回执；
-      // 意图不同（name/brief 改动）不得继承既有回执。
-      const intent=createHash('sha256').update(JSON.stringify({schema:1,tool:'nozeli_dispatch',name:a.name??null,brief:a.brief??null})).digest('hex');
+      // brief 是可选附加执行说明：省略/null/空白一律由宿主以冻结的原请求
+      // 作为任务 brief（原 request 不改写，模型无需复述用户原文）；非空
+      // brief 原样保留；其他类型是可纠正的参数错误，零写入、不升级 fatal。
+      if(a.brief!==undefined&&a.brief!==null&&typeof a.brief!=='string')
+        return {ok:false,continueTurn:true,error:{code:'INVALID_PAYLOAD',message:'brief 必须是字符串或省略：省略时宿主自动以冻结的原请求作为任务说明。本轮未创建任何 Work；这是内部工具调用纠正，请用正确参数重新派工，不需要用户操作，也不要重发原用户输入。'}};
+      const brief=typeof a.brief==='string'&&a.brief.trim()?a.brief:source.request;
+      // 幂等身份按归一化有效 brief 计算：空/省略/显式原请求互为等价重复，
+      // 重放原回执；意图不同（name/有效 brief 改动）不得继承既有回执。
+      const intent=createHash('sha256').update(JSON.stringify({schema:1,tool:'nozeli_dispatch',name:a.name??null,brief})).digest('hex');
       const receipt=await this.store.mutate(()=>{
         const saved=this.store.state.jobs.find(j=>j.id===job.id);
         if(saved.routing){if(saved.routing.intent===intent)return saved.routing;throw Object.assign(new Error('intake already routed with a different request'),{code:'INTENT_MISMATCH'});}
-        const w=this.store.submitState(source.request,a.brief,{name:a.name,sourceJob:job.id});
+        const w=this.store.submitState(source.request,brief,{name:a.name,sourceJob:job.id});
         Object.assign(this.store.find(w.id),{imageAttachments:source.imageAttachments,sourceInputJobIds:source.sourceInputJobIds,...(job.context?.frontdeskRouteId?{frontdeskTransfer:{proposalId:job.context.frontdeskRouteId,completedOperations:structuredClone(job.context.completedOperations),currentSources:structuredClone(job.context.currentSources)}}:{})});
         saved.routing={action:'dispatch',intent,workId:w.id,name:w.name,at:new Date().toISOString()};this.resolveRoutingQuestion(job);return structuredClone(saved.routing);
       });
@@ -2385,6 +2394,78 @@ export class Controller extends EventEmitter {
   resolveRoutingQuestion(job){
     const question=this.store.state.todos.find(t=>t.id===job.context?.routingQuestionId&&t.kind==='routing'&&t.status==='open');
     if(question)question.status='resolved';
+  }
+  // ── DEBUG 临时运行时续行（共享合同；首个能力=dispatch-empty-brief）─────
+  // 能力只来自宿主在拒绝现场落盘的 dispatchRejections：结构证明“Work 创建
+  // 前拒绝”（原子事务回滚+无 routing+无 Work）。绝不从泛化 HOST_TOOL_ERROR
+  // 文本推断安全；没有明确证据的历史 failure 不自动放行。
+  // 源码已把 brief 修为可选（空/省略=原请求），普通派工不再产生新的拒绝
+  // 行；这里只消费修复前历史现场持久化的 dispatchRejections/hostContinuation
+  // 事实：旧账保留可读、幂等，不删除，也不因源码修复伪标 bug repaired。
+  // 能力行必须自洽：记录的 intent 与其自身 name/brief 摘要完全一致，
+  // 防止任意同 kind 的历史行被借作安全证据。
+  #dispatchRejectionEvidence(original){
+    for(const rejection of [...(original.dispatchRejections??[])].reverse()){
+      if(rejection?.kind!=='dispatch-empty-brief'||typeof rejection.intent!=='string')continue;
+      if(typeof rejection.brief!=='string'||rejection.brief.trim())continue;
+      const intent=createHash('sha256').update(JSON.stringify({schema:1,tool:'nozeli_dispatch',name:rejection.name??null,brief:rejection.brief})).digest('hex');
+      if(intent===rejection.intent)return rejection;
+    }
+    return null;
+  }
+  async debugContinuationCapability(bug){
+    const original=this.store.state.jobs.find(j=>j.id===bug?.jobId);
+    if(!original||original.type!=='intake'||original.target!=='orchestrator')return null;
+    if(original.status!=='failed'||original.routing||(original.revision??null)!==(bug.revision??null))return null;
+    if(original.status==='cancelled'||original.manualControl?.pause!=null||this.coldJobs?.has(original.id))return null;
+    if(this.store.state.works.some(w=>w.sourceJob===original.id))return null;
+    if(this.stopping||this.store.closed||this.store.lifecycleHold||this.store.commitUnknown||this.store.nativeCommitUnknown)return null;
+    if(this.taskPermissions&&await this.taskPermissions.heldFor(this.projectId,original))return null;
+    if(bug.error?.code!=='DISPATCH_BRIEF_EMPTY')return null;
+    const rejection=this.#dispatchRejectionEvidence(original);
+    if(!rejection||typeof original.text!=='string'||!original.text.trim())return null;
+    return {kind:'dispatch-empty-brief',name:rejection.name??null,intent:rejection.intent};
+  }
+  // 原 intake routing 上的 hostContinuation 回执是唯一权威事实：重复/并发/
+  // 冷恢复只读回执，绝不重复派工。
+  durableContinuationReceipt(bug){
+    const original=this.store.state.jobs.find(j=>j.id===bug?.jobId);
+    const routing=original?.routing,continuation=routing?.hostContinuation;
+    if(!original||original.type!=='intake'||!continuation||continuation.bugId!==bug.id)return null;
+    return {kind:continuation.kind,sourceJobId:original.id,workId:routing.workId,workName:routing.name??null,routingIntent:routing.intent,originalIntent:continuation.originalIntent??null,attemptId:continuation.attemptId??null,at:routing.at??null,verifiedFix:false,sourceRepairRequired:true};
+  }
+  async debugContinuation(bugId,attemptId,capability){
+    const bug=(await this.maintenance.read()).bugs.find(b=>b.id===bugId&&b.projectId===this.projectId);
+    if(!bug)throw Object.assign(new Error('continuation binding stale'),{code:'DEBUG_CONTINUE_STALE'});
+    const receipt=await this.store.mutate(async()=>{
+      const saved=this.store.state.jobs.find(j=>j.id===bug.jobId);
+      if(!saved)throw Object.assign(new Error('continuation binding stale'),{code:'DEBUG_CONTINUE_STALE'});
+      if(saved.routing?.hostContinuation?.bugId===bugId)return this.durableContinuationReceipt(bug);
+      // 事务内复核全部围栏（能力检查后可能已变化）：失败态、无 routing、
+      // 无既有 Work、版本一致、无人工暂停/停止/存储未知/权限hold、且能力
+      // 绑定的确切拒绝证据行仍在场。
+      const permissionHeld=this.taskPermissions&&await this.taskPermissions.heldFor(this.projectId,saved);
+      const rejection=(saved.dispatchRejections??[]).find(r=>r.kind==='dispatch-empty-brief'&&r.intent===capability.intent);
+      const fenced=saved.status==='failed'&&!saved.routing&&(saved.revision??null)===(bug.revision??null)&&saved.manualControl?.pause==null&&!this.stopping&&!this.store.closed&&!this.store.lifecycleHold&&!this.store.commitUnknown&&!this.store.nativeCommitUnknown&&Boolean(rejection)&&!this.store.state.works.some(w=>w.sourceJob===saved.id);
+      if(!fenced||permissionHeld)throw Object.assign(new Error('continuation safety evidence missing'),{code:'DEBUG_CONTINUE_UNAVAILABLE'});
+      const source=this.intakeSource(saved);
+      if(typeof source.request!=='string'||!source.request.trim())throw Object.assign(new Error('continuation safety evidence missing'),{code:'DEBUG_CONTINUE_UNAVAILABLE'});
+      const intent=createHash('sha256').update(JSON.stringify({schema:1,tool:'nozeli_dispatch',name:capability.name??null,brief:source.request,hostContinuation:capability.kind})).digest('hex');
+      // 临时 brief=原请求原文（不让模型另编用户需求）；原 request 不改写，
+      // 沿普通 dispatch 的 source/附件/幂等/配额合同与原 sourceJob。
+      const w=this.store.submitState(source.request,source.request,{name:capability.name??null,sourceJob:saved.id});
+      Object.assign(this.store.find(w.id),{imageAttachments:source.imageAttachments,sourceInputJobIds:source.sourceInputJobIds,...(saved.context?.frontdeskRouteId?{frontdeskTransfer:{proposalId:saved.context.frontdeskRouteId,completedOperations:structuredClone(saved.context.completedOperations),currentSources:structuredClone(saved.context.currentSources)}}:{})});
+      const at=new Date().toISOString();
+      saved.routing={action:'dispatch',intent,workId:w.id,name:w.name,at,hostContinuation:{kind:capability.kind,bugId,attemptId,originalIntent:capability.intent,verifiedFix:false,sourceRepairRequired:true}};
+      // 原失败 intake 的路由决定已由宿主完成：置 completed；失败与诊断历史
+      // 字段保留不改写，仅追加续行事实消息。
+      Object.assign(saved,{status:'completed',continuedAt:at});
+      this.resolveRoutingQuestion(saved);
+      (this.store.state.messages??=[]).push({id:randomUUID(),target:'orchestrator',speaker:'system',jobId:saved.id,continuation:{kind:capability.kind,bugId,workId:w.id,attemptId,at},text:'宿主临时续行：已核实空 brief 派工在创建任何 Work 前被拒绝，未改写原请求；已按原派工名建立唯一后台 Work（'+(w.name??w.id)+'）。程序缺陷仍未修复；原任务继续不代表成果已完成。'});
+      return {kind:capability.kind,sourceJobId:saved.id,workId:w.id,workName:w.name??null,routingIntent:intent,originalIntent:capability.intent,attemptId,at,verifiedFix:false,sourceRepairRequired:true};
+    });
+    this.changed();this.kick(); // 维护回合仍在进行也必须正常 pump 起 Worker，不能止步于仅创建 Work
+    return receipt;
   }
   // ── P0 统一管理身份：continue 只按稳定 workId + expectedRevision 提交 ──────
   // 名称仅用于检索/展示；continue 未命中绝不转成首次 dispatch（压缩后失忆

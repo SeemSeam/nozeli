@@ -320,6 +320,7 @@ const SUITES = {
       'pi-context-delivery-live.mjs',
       'pi-host-cutover-live.mjs',
       'pi-repair-lifecycle-live.mjs',
+      'pi-recorded-bug-fixed-live.mjs',
       'pi-debug-activation-live.mjs',
       'pi-read-protocol-correction-live.mjs',
       'pi-decision-continuation-live.mjs',

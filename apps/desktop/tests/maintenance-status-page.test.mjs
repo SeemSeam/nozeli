@@ -56,3 +56,31 @@ test('finalization receipts retain exact safe attempt facts without exposing att
  assert.equal(facts.bugs[0].metadataUnknown,false);assert.deepEqual(facts.bugs[0].attempts,[{status:'unverified'},{status:'verified'}]);assert.equal(facts.bugs[0].finalizationPending,true);assert.deepEqual(facts.bugs[0].lastOutcome,{verified:true});assert(!JSON.stringify(facts).includes('private'));
  const page=await f.manager.invoke('managed.maintenance.status',{projectId:f.id});assert.equal(page.rows[0].status,'finalizing');assert.deepEqual(page.summary,{inFlight:0,queued:0,blocked:1,repaired:0});assert.equal(page.rows[0].capabilities.retry,false);
 });
+test('debug continuation labels follow ledger facts and never claim active processing cold',async t=>{
+ const f=await fixture(t),bugs=[
+  {...bug(f.id,0),debug:{schema:1,state:'continued-with-known-fault',eventJobId:'event-0',attemptId:'a0'}},
+  {...bug(f.id,1),debug:{schema:1,state:'running',eventJobId:'event-1',attemptId:'a1'}},
+  {...bug(f.id,2),debug:{schema:1,state:'awaiting-fix',eventJobId:'event-2',attemptId:'a2'}},
+  {...bug(f.id,3),debug:{schema:1,state:'continuing',eventJobId:'event-3',attemptId:'a3'}},
+  {...bug(f.id,4),debug:{schema:1,state:'model-unavailable',eventJobId:'event-4',attemptId:'a4'}}
+ ];
+ await f.host.storage.putLocal(f.id,'managed:maintenance',{schema:1,bugs});
+ const labelMap=page=>Object.fromEntries(page.rows.map(row=>[row.id,row.stateLabel]));
+ // Cold read: only settled ledger facts; stopped/cold events never show active work.
+ const cold=labelMap(await f.manager.invoke('managed.maintenance.status',{projectId:f.id}));
+ assert.match(cold['bug:0'],/临时恢复/);assert.match(cold['bug:0'],/待修复/);
+ assert.doesNotMatch(cold['bug:1'],/正在/,'cold controller cannot claim active debugging');
+ assert.match(cold['bug:2'],/待修复/);
+ assert.doesNotMatch(cold['bug:3'],/执行中|正在/);
+ assert.match(cold['bug:4'],/模型不可用/);
+ // A live owner with the exact registered event job queued/running is the only active claim.
+ const c={store:{state:{works:[],jobs:[{id:'event-1',type:'maintenance',target:'orchestrator',status:'running'},{id:'event-3',type:'maintenance',target:'orchestrator',status:'queued'}]}},maintenanceActions:new Map(),maintenanceFlights:new Map(),hostOperations:new Map(),maintenanceCapability(){return {retry:false,retryReason:'test-no-action'};}};
+ f.manager.controllers.set(f.id,c);
+ const live=labelMap(await f.manager.invoke('managed.maintenance.status',{projectId:f.id}));
+ assert.match(live['bug:1'],/正在debug/);
+ assert.match(live['bug:3'],/临时恢复执行中/);
+ // The stopped event on the live owner still reads as waiting, and no row ever claims a verified fix.
+ const rows=(await f.manager.invoke('managed.maintenance.status',{projectId:f.id})).rows;
+ assert.equal(rows.every(row=>!row.debug||row.debug.verifiedFix===false),true);
+ for(const row of rows)if(['bug:0','bug:2','bug:4'].includes(row.id))assert.equal(row.debug.active,false,row.id);
+});

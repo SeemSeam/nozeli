@@ -3,6 +3,7 @@ const fail=code=>Object.assign(Error(code),{code});
 const controllerIncarnations=new WeakMap();
 const scalar=value=>typeof value==='string'&&value.length<=256?value:null;
 const statuses=new Set(['detected','repairing','finalizing','repaired','needs-version-fix','interrupted','cancelled','queued','human-boundary']);
+const debugStates=new Set(['queued','running','awaiting-fix','model-unavailable','pending','continuing','continued-with-known-fault']);
 export function validateMaintenancePage({limit=24,cursor=null}={}){
  if(!Number.isSafeInteger(limit)||limit<1||limit>50||cursor!==null&&(typeof cursor!=='string'||!cursor||cursor.length>8192))throw fail('MAINTENANCE_PAGE_INVALID');
  return {limit,cursor};
@@ -24,9 +25,13 @@ export function maintenancePage({projectId,facts,controller=null,revision=facts.
   const retryMode=retry?(capability.retryMode==='finalize'?'finalize':'repair'):null;
   const retryReason=retry?null:scalar(capability?.retryReason)??(!controller?'owner-unavailable':controller.stopping?'owner-stopping':'unknown-maintenance-state');
   const inFlight=complete&&controller&&!controller.stopping&&controller.maintenanceFlights?.has(bug.id);
-  const debugState=complete&&['queued','running','awaiting-fix','model-unavailable','pending'].includes(bug.debugState)?bug.debugState:null;
-  const debugLabel={'queued':'已交主控debug','running':'主控正在debug','awaiting-fix':'debug诊断已保存，系统待修复','model-unavailable':'debug模型不可用','pending':'系统debug待继续'};
-  return {id:binding.bugId,projectId,workId:binding.workId,workRevision:binding.revision,jobId:binding.jobId,phase:binding.phase,status,stateLabel:status==='repaired'?'已修复':debugState?debugLabel[debugState]:inFlight?'系统正在处理运行问题':status==='repairing'?'原修复结果待核对':status==='detected'||status==='queued'?'等待系统处理':'系统问题待修复，进展已保留',reason:status==='repaired'?null:retryReason,attemptCount:bug.attemptCount??bug.attempts?.length??0,maxAttempts:2,binding,debug:debugState?{state:debugState,eventJobId:scalar(bug.debugEventJobId),attemptId:scalar(bug.debugAttemptId),verifiedFix:false}:null,capabilities:{retry,retryReason,retryMode}};
+ // Active-processing claims come only from the exact registered debug event job
+ // being queued/running on a live owner; stopped or cold events never show active.
+ const debugState=complete&&debugStates.has(bug.debugState)?bug.debugState:null;
+ const debugEventActive=debugState&&controller&&!controller.stopping&&(controller.store?.state?.jobs??[]).some(job=>job.id===bug.debugEventJobId&&job.type==='maintenance'&&['queued','running'].includes(job.status))===true;
+ const debugLabels={'queued':'已交主控debug','running':'主控正在debug','awaiting-fix':'debug诊断已保存，系统待修复','model-unavailable':'debug模型不可用','pending':'系统debug待继续','continuing':'系统临时恢复执行中','continued-with-known-fault':'已临时恢复 · 原任务继续，源码问题待修复'};
+ const debugStateLabel=debugState?['queued','running','continuing'].includes(debugState)?debugEventActive?debugLabels[debugState]:'系统debug待继续':debugLabels[debugState]:null;
+ return {id:binding.bugId,projectId,workId:binding.workId,workRevision:binding.revision,jobId:binding.jobId,phase:binding.phase,status,stateLabel:status==='repaired'?'已修复':debugStateLabel??(inFlight?'系统正在处理运行问题':status==='repairing'?'原修复结果待核对':status==='detected'||status==='queued'?'等待系统处理':'系统问题待修复，进展已保留'),reason:status==='repaired'?null:retryReason,attemptCount:bug.attemptCount??bug.attempts?.length??0,maxAttempts:2,binding,debug:debugState?{state:debugState,eventJobId:scalar(bug.debugEventJobId),attemptId:scalar(bug.debugAttemptId),verifiedFix:false,active:debugEventActive}:null,capabilities:{retry,retryReason,retryMode}};
  });
  const summary={...facts.summary};
  if(!controller||controller.stopping){summary.blocked+=summary.inFlight+summary.queued;summary.inFlight=0;summary.queued=0;}

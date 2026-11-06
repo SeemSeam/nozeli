@@ -84,6 +84,30 @@ test('cursor invalidates explicitly on ledger change; renames never break ID pag
  c.current.delete('orchestrator');
 });
 
+test('omitted, null, empty and blank cursors are equivalent first-page reads; forged tokens stay rejected',async t=>{
+ const c=await fixture(t);
+ const submitted=[];
+ for(let i=0;i<25;i++)submitted.push(await c.store.submit('首页请求 '+i,'brief '+i,{name:'W'+i}));
+ await intakeFor(c,'查看任务板');
+ const omitted=(await inspect(c,{workName:'@state'})).board;
+ assert.equal(omitted.offset,0);assert.equal(omitted.rows.length,20);
+ for(const cursor of [null,'','   ','\t\n']){
+  const page=(await inspect(c,{workName:'@state',cursor})).board;
+  assert.equal(page.offset,0);assert.equal(page.resyncRequired,undefined);
+  assert.deepEqual(page.rows.map(r=>r.workId),omitted.rows.map(r=>r.workId),'every empty cursor representation reads the same first page');
+ }
+ // 真实续页沿宿主 nextCursor 原样翻完整板：不丢项、不重复、保序。
+ const seen=[];let cursor=null;
+ for(;;){const board=await boardPage(c,cursor);seen.push(...board.rows.map(r=>r.workId));if(!board.nextCursor)break;cursor=board.nextCursor;}
+ assert.deepEqual(seen,submitted.map(w=>w.id),'full paging keeps ledger order without loss or duplication');
+ // 非空坏/伪造 token 仍显式拒绝为可纠正读取错误，绝不静默重置首页吞错。
+ for(const bad of ['not-a-cursor',JSON.stringify({schema:1,filter:'open',fingerprint:'0'.repeat(64),offset:5}),7,{offset:20}]){
+  const rejected=await inspect(c,{workName:'@state',cursor:bad});
+  assert.equal(rejected.ok,false);assert.equal(rejected.error.code,'INVALID_CURSOR');assert.equal(rejected.continueTurn,true);
+ }
+ c.current.delete('orchestrator');
+});
+
 test('manage continue binds workId+expectedRevision: stale creates nothing, replay is idempotent, rename-safe',async t=>{
  const c=await fixture(t);
  const w=await c.store.submit('original request','brief',{name:'Alpha'});
@@ -250,7 +274,7 @@ test('detail keeps long originals/inputs behind paged readRefs; scoped events co
 
 test('invalid read-only cursor is repaired in the same intake without a user retry or extra model job',async t=>{
  const c=await fixture(t),job=await intakeFor(c,'执行原用户已明确提交的任务');
- const rejected=await inspect(c,{workName:'@state',cursor:''});
+ const rejected=await inspect(c,{workName:'@state',cursor:'not-a-cursor'});
  assert.equal(rejected.ok,false);assert.equal(rejected.continueTurn,true);assert.equal(rejected.hostControl,undefined);assert.equal(rejected.error.code,'INVALID_CURSOR');
  assert.equal(c.store.state.works.length,0);assert.equal(c.store.state.jobs.length,1);assert.equal(c.store.state.jobs[0].id,job.id);
  const fault=(await c.maintenance.read()).bugs[0];assert.equal(fault.phase,'tool-protocol');assert.equal(fault.jobId,job.id);assert.notEqual(fault.status,'repaired');
@@ -266,7 +290,7 @@ test('invalid read-only cursor is repaired in the same intake without a user ret
 
 test('dispatch without a corrected read never verifies or repairs the rejected read',async t=>{
  const c=await fixture(t),job=await intakeFor(c,'保留原任务');
- const rejected=await inspect(c,{workName:'@state',cursor:''});assert.equal(rejected.error.code,'INVALID_CURSOR');
+ const rejected=await inspect(c,{workName:'@state',cursor:'not-a-cursor'});assert.equal(rejected.error.code,'INVALID_CURSOR');
  const bugId=(await c.maintenance.read()).bugs[0].id;
  const routed=await c.onTool('orchestrator',{tool:'nozeli_dispatch',arguments:{name:'原目标',brief:'仅派发原目标'},callId:randomUUID()});
  assert.equal(routed.action,'dispatch');assert.equal(c.store.state.works.length,1);assert.equal(c.store.state.works[0].sourceJob,job.id);
@@ -276,7 +300,7 @@ test('dispatch without a corrected read never verifies or repairs the rejected r
 
 test('verified read receipt save failure preserves committed dispatch and cold open only finalizes the exact read diagnostics',async t=>{
  const c=await fixture(t),job=await intakeFor(c,'开始落盘');
- await inspect(c,{workName:'@state',cursor:''});const bugId=(await c.maintenance.read()).bugs[0].id;
+ await inspect(c,{workName:'@state',cursor:'not-a-cursor'});const bugId=(await c.maintenance.read()).bugs[0].id;
  c.maintenance.finish=async()=>{throw Object.assign(Error('synthetic diagnostic receipt failure'),{code:'EIO'});};
  const fixed=await inspect(c,{workName:'@state'});assert.ok(fixed.board);assert.equal(c.store.state.jobs.find(saved=>saved.id===job.id).readProtocolFaults[0].correctionReceipt.verified,true);
  const routed=await c.onTool('orchestrator',{tool:'nozeli_dispatch',arguments:{name:'已派工原目标',brief:'保留原目标'},callId:randomUUID()});

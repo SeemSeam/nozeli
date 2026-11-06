@@ -181,7 +181,7 @@ export function managedWorkRecords(state){
   record.jobIds.push(job.id);record.events.push({id:job.id+':accepted',at:job.at,text:job.context?.retryOf?'已接受重试':job.context?.routingQuestionId?'已收到澄清回答':job.routing?.action==='continue'?'已接收任务补充':'已接收后台请求'});
   if(job.transfer?.settledAt)record.events.push({id:job.id+':settled',at:job.transfer.settledAt,text:'前台已停稳，转交主控'});
   if(job.startedAt)record.events.push({id:job.id+':started',at:job.startedAt,text:'主控开始整理'});
-  if(job.routing)record.events.push({id:job.id+':routed',at:job.routing.at,text:{dispatch:'已安排工作',continue:'补充已交给原工作',clarify:'主控请求澄清',cancel:'已接受用户撤销',status:'已查询状态'}[job.routing.action]});
+  if(job.routing)record.events.push({id:job.id+':routed',at:job.routing.at,text:{dispatch:job.routing.hostContinuation?.bugId&&job.routing.hostContinuation.bugId===job.maintenanceBugId?'已安排工作 · 系统临时恢复，源码问题仍待修复':'已安排工作',continue:'补充已交给原工作',clarify:'主控请求澄清',cancel:'已接受用户撤销',status:'已查询状态'}[job.routing.action]});
   if(['failed','interrupted'].includes(job.status))record.events.push({id:job.id+':failed',at:job.finishedAt,text:job.status==='interrupted'?'主控处理被中断，未自动重放':'主控处理失败',detail:recordExcerpt(job.error)});
   if(!record.workId){
    // Native host-control settlement is not business routing or task completion.
@@ -189,7 +189,9 @@ export function managedWorkRecords(state){
     const repair=job.maintenanceBugId&&jobs.findLast(candidate=>candidate.type==='maintenance'&&candidate.context?.bugId===job.maintenanceBugId);
     record.status=['failed','interrupted','unknown'].includes(job.status)?job.status:'blocked';
     record.maintenance={bugId:job.maintenanceBugId,status:repair?.status||'pending'};
-    record.phase=['queued','running'].includes(repair?.status)?'系统正在处理运行问题 · 原请求已保留':'系统问题待处理 · 原请求已保留';
+   // Diagnosis/recovery facts come from the bound debug ledger; only a live
+   // registered maintenance job may claim active processing.
+   record.phase=['queued','running'].includes(repair?.status)?job.debugState==='continuing'?'系统正在临时恢复原任务 · 原请求已保留':'系统正在处理运行问题 · 原请求已保留':['awaiting-fix','continuing','continued-with-known-fault'].includes(job.debugState)?'系统诊断已保存 · 等待修复 · 原请求已保留':'系统问题待处理 · 原请求已保留';
     record.description=recordExcerpt(record.request);delete record.todoId;delete record.retryJobId;
     record.events.push({id:job.id+':maintenance',at:job.finishedAt,text:'内部运行问题已交由系统处理',detail:recordExcerpt(job.error||job.maintenanceFault?.symptom)});continue;
    }
@@ -267,7 +269,7 @@ export function managedWorkRecords(state){
   record.maintenance={status:w.maintenance.status,message:w.maintenance.message};
  // 只在有确切在册维修 job 时声称系统正在处理；其余按事实保留故障与进展。
  const repairLive=jobs.some(j=>j.type==='maintenance'&&j.context?.bugId===w.maintenance.bugId&&['queued','running'].includes(j.status));
- const label=repairLive?'系统正在处理运行问题，进展已保留':w.maintenance.status==='finalizing'?'维修已验证 · 收尾待完成，进展已保留':w.maintenance.status==='human-boundary'?'系统无法自动修复 · 需人工核对，进展已保留':w.maintenance.status==='cancelled'?'系统维修已取消 · 等待你的下一步，进展已保留':'系统问题待修复，进展已保留';
+ const label=repairLive?w.maintenance.debugState==='continuing'?'系统正在临时恢复，进展已保留':'系统正在处理运行问题，进展已保留':['awaiting-fix','continuing','continued-with-known-fault'].includes(w.maintenance.debugState)?'系统诊断已保存 · 等待修复，进展已保留':w.maintenance.status==='finalizing'?'维修已验证 · 收尾待完成，进展已保留':w.maintenance.status==='human-boundary'?'系统无法自动修复 · 需人工核对，进展已保留':w.maintenance.status==='cancelled'?'系统维修已取消 · 等待你的下一步，进展已保留':'系统问题待修复，进展已保留';
  record.phase=(w.status==='ended'?(w.outcome==='accept'?'已接受 · ':'已结束 · '):'')+label;
   record.description=w.maintenance.message||'已有进展保留，无需回答内部技术问题。';delete record.retryJobId;
  }
