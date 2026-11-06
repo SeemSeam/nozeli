@@ -230,6 +230,7 @@ const SUITES = {
       'project-git.test.mjs',
       'project-lifecycle-admission.test.mjs',
       'project-lifecycle-stale-remove-hold.test.mjs',
+      'project-lifecycle-reset.test.mjs',
       'project-lifecycle.test.mjs',
       'project-navigation.test.mjs',
       'project-reload.test.mjs',

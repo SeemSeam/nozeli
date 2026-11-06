@@ -50,19 +50,49 @@ export class ProjectLifecycle {
     if(manifest.schema!==1 || manifest.projectId!==project.id)throw fail('PROJECT_IDENTITY_CONFLICT','项目身份清单不匹配。');
     return {root,identity:current,manifestDigest:createHash('sha256').update(bytes).digest('hex')};
   }
+  // Reset never deletes source files: it verifies the exact registered root
+  // and metadata entities so only the confirmed project can be re-identified.
+  async checkReset(project) {
+    const root=path.resolve(project.root);
+    if(root!==project.root || root===path.parse(root).root)throw fail('PROJECT_RESET_PROTECTED','禁止重置文件系统根目录。');
+    const metadata=path.join(root,'.nozeli');
+    // Reset replaces only this project's metadata tree and never deletes
+    // source files, so the whole-directory delete bans on home or development
+    // folders do not apply. It must still never publish or archive inside
+    // application data, protected install/config roots, or the project itself.
+    const storageRoot=path.resolve(this.host.storage.root);
+    for(const protectedRoot of this.protectedRoots){
+      if(protectedRoot===path.resolve(os.homedir()))continue;
+      if(inside(metadata,protectedRoot)||inside(protectedRoot,metadata))throw fail('PROJECT_RESET_PROTECTED','重置元数据与应用数据或受保护目录重叠。');
+    }
+    if(inside(storageRoot,root)||inside(root,storageRoot))throw fail('PROJECT_RESET_PROTECTED','应用数据目录与项目目录重叠，不能重置。');
+    const current=await directorySnapshot(root);
+    if(!current)throw fail('PROJECT_ROOT_MISSING','原项目目录不可用；无法核验重置范围。');
+    if(!same(current,project.identity))throw fail('PROJECT_IDENTITY_CONFLICT','原路径已出现不同目录，不能重置。');
+    if(!project.metadataIdentity)throw fail('PROJECT_METADATA_CONFLICT','项目元数据身份不可核验，不能重置。');
+    const metadataStat=await directorySnapshot(metadata);
+    if(!metadataStat)throw fail('PROJECT_METADATA_MISSING','项目元数据不可用，不能核验重置范围。');
+    if(!same(metadataStat,project.metadataIdentity))throw fail('PROJECT_IDENTITY_CONFLICT','项目元数据实体已变化，不能重置。');
+    const manifestPath=path.join(metadata,'project.json'),manifestStat=await fs.lstat(manifestPath);
+    if(!manifestStat.isFile() || manifestStat.isSymbolicLink())throw fail('PROJECT_IDENTITY_CONFLICT','项目身份清单不是普通文件。');
+    const bytes=await fs.readFile(manifestPath),manifest=JSON.parse(bytes.toString('utf8'));
+    if(manifest.schema!==1 || manifest.projectId!==project.id)throw fail('PROJECT_IDENTITY_CONFLICT','项目身份清单不匹配。');
+    return {root,identity:current,metadataRoot:metadata,metadataIdentity:metadataStat,manifestDigest:createHash('sha256').update(bytes).digest('hex')};
+  }
   async preview({projectId,action}) {
-    if(!['clean-local','delete-project'].includes(action))throw fail('INVALID_LIFECYCLE_ACTION','未知项目清理操作。');
+    if(!['clean-local','delete-project','reset-project'].includes(action))throw fail('INVALID_LIFECYCLE_ACTION','未知项目清理操作。');
     if(this.operations.has(projectId))throw fail('PROJECT_LIFECYCLE_ACTIVE','该项目已有生命周期操作。');
     this.host.storage.assertActive(projectId);
     const project=await this.host.requireRegisteredProject(projectId),local=await this.localScope(project);
     const demoChanges=this.host.guidedDemo?.isDemo(projectId)?await this.host.guidedDemo.guardLifecycle(projectId,{allowChanged:true}):null;
-    const source=action==='delete-project'?await this.checkDelete(project):null;
+    const source=action==='delete-project'?await this.checkDelete(project):action==='reset-project'?await this.checkReset(project):null;
     const token=randomUUID(),operationId=randomUUID(),expiresAt=Date.now()+300000;
     const confirmation={token,operationId,projectId,instanceId:project.instanceId,action,root:project.root,
       identity:source?.identity??project.identity,source,local,expiresAt,
-      removeDirectories:action==='clean-local'?[]:[project.root],
+      removeDirectories:action==='delete-project'?[project.root]:[],
       removeFiles:[],removeRecords:action==='clean-local'?local.records:[],
-      recoveryRetained:true,sessionsRetained:true,permanentDelete:false,accountsAffected:false};
+      recoveryRetained:true,sessionsRetained:true,permanentDelete:false,accountsAffected:false,
+      ...(action==='reset-project'?{newInstance:true,archivesMetadata:true,backupPath:path.join(this.host.storage.root,'recovery',project.instanceId,'reset',operationId)}:{})};
     if(demoChanges){confirmation.demoChanges=demoChanges;confirmation.demoChangesDigest=demoChangesDigest(demoChanges);confirmation.preserveByDefault=demoChanges.length>0;}
     this.tokens.set(token,confirmation);
     return structuredClone(confirmation);
@@ -144,6 +174,7 @@ export class ProjectLifecycle {
         }
       }
       if(action==='delete-project')this.matchSource(confirmation.source,await this.checkDelete(project));
+      if(action==='reset-project')this.matchSource(confirmation.source,await this.checkReset(project));
       hold.needsStopCheck=true;
       const auxiliary=stage(Promise.resolve().then(()=>this.beforeStop(projectId)));
       const native=stage(Promise.resolve().then(()=>this.managed.stopProject(projectId,{lifecycleHold:hold})));
@@ -167,6 +198,22 @@ export class ProjectLifecycle {
         const cleanedResult={operationId,projectId,action,complete:true,recoveryRetained:true,...cleaned};
         await this.host.guidedDemo?.recordLifecycle(projectId,{operationId,projectId,action,complete:true,removed:false});
         return cleanedResult;
+      }
+      if(action==='reset-project') {
+        const local=await this.localScope(project);
+        if(local.directory!==confirmation.local.directory || !sameNullable(local.identity,confirmation.local.identity) || !sameNullable(local.parentIdentity,confirmation.local.parentIdentity))throw fail('PROJECT_IDENTITY_CONFLICT','本机实例目录实体已变化。');
+        await checkpoint({phase:'reset-prepared'});
+        await this.host.storage.closeProjectHandles(projectId);
+        let result;
+        try{result=await this.host.storage.resetProject(projectId,{operationId,expected:{root:confirmation.root,identity:confirmation.source.identity,metadataRoot:confirmation.source.metadataRoot,metadataIdentity:confirmation.source.metadataIdentity,manifestDigest:confirmation.source.manifestDigest}});}
+        // Once anything moved at the root the fence stays up across cold
+        // restarts (persisted hold + needs-attention journal + reset facts)
+        // until an explicit reconcile verifies the observed end state.
+        catch(error){if(error.resetPublished)hold.needsStopCheck=true;throw error;}
+        this.workspace.layouts?.delete(projectId);
+        await checkpoint({phase:'complete',reset:{newProjectId:result.newProjectId,backupPath:result.backupPath}});
+        await this.host.guidedDemo?.recordLifecycle(projectId,{operationId,projectId,action,complete:true,removed:false,reset:true,newProjectId:result.newProjectId});
+        return result;
       }
       await this.host.storage.closeProjectHandles(projectId);
       const source=await this.checkDelete(project);this.matchSource(confirmation.source,source);
@@ -220,6 +267,14 @@ export class ProjectLifecycle {
         observation=!current?'gone':sameNullable(current,record.source.identity)?'original-present':'identity-conflict';
       } else if(record.action==='remove') {
         observation=project.removed?'removed':'registered';
+      } else if(record.action==='reset-project') {
+        // Observation only: never republish, re-archive or retire again. The
+        // durable reset facts record exactly how far the operation got.
+        const metadata=path.join(record.root,'.nozeli');
+        const current=await statOrMissing(metadata);
+        const retained=await statOrMissing(path.join(record.root,'.nozeli-source-'+operationId));
+        const facts=await this.host.storage.getRecovery(projectId,'lifecycle:reset-facts:'+operationId);
+        observation={metadata:!current?'missing':current.isSymbolicLink()||!current.isDirectory()?'invalid':record.source?.metadataIdentity?(sameNullable(identity(current),record.source.metadataIdentity)?'original':'replaced'):'unknown',retainedSource:Boolean(retained),registration:project.removed?'retired':'registered',facts:facts??null};
       } else {
         const current=await this.localScope(project);
         if(!sameNullable(current.identity,record.local.identity))observation='identity-conflict';

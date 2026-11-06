@@ -456,7 +456,14 @@ async function main() {
       // validated by ProjectLifecycle.removeProject's conservative guard;
       // ordinary writes stay blocked while any hold exists.
       if(admissionProject&&!['managed.collaboration.status','managed.model.options','managed.fault.status','managed.fault.results','managed.work.control.status','workspace.recovery','workspace.recovery.list','workspace.recovery.detail','workspace.recovery.object','workspace.recovery.export','session.flushed','workspace.bootstrap','project.lifecycle.reconcile','project.remove'].includes(op)&&!workspaceNative.lifecycleFlushOwner(scope,payload?.flushRequestId,op))host.storage.assertActive(admissionProject);
-      if(['project.lifecycle.preview','project.lifecycle.execute','project.lifecycle.reconcile'].includes(op)){if(scope.role!=='shell')throw new HostError('IPC_DENIED','只能在主窗口管理项目');await finishDrawing({projectId:payload.projectId});if(op.endsWith('preview'))return {ok:true,value:await projectLifecycle.preview(payload)};if(op.endsWith('reconcile'))return {ok:true,value:await projectLifecycle.reconcile(payload)};return {ok:true,value:await projectLifecycle.execute(payload)};}
+      if(['project.lifecycle.preview','project.lifecycle.execute','project.lifecycle.reconcile'].includes(op)){
+        if(scope.role!=='shell')throw new HostError('IPC_DENIED','只能在主窗口管理项目');
+        const projectId=op==='project.lifecycle.execute'?projectLifecycle.tokens.get(payload.token)?.projectId:payload.projectId;
+        if(projectId)await finishDrawing({projectId});
+        if(op.endsWith('preview'))return {ok:true,value:await projectLifecycle.preview(payload)};
+        if(op.endsWith('reconcile'))return {ok:true,value:await projectLifecycle.reconcile(payload)};
+        return {ok:true,value:await projectLifecycle.execute(payload)};
+      }
       if(op==='project.retry'){if(scope.role!=='shell')throw new HostError('IPC_DENIED','仅主窗可重试项目');await managedAgents.stopProject(payload.projectId);const value=await host.storage.retry(payload.projectId);workspaceNative.unavailableProjects?.delete(payload.projectId);return {ok:true,value};}
       if(op==='workspace.recovery.settle'){if(scope.role!=='shell')throw new HostError('IPC_DENIED','仅主窗可明确结算保留成果');return {ok:true,value:await projectLifecycle.settleManaged(payload)};}
       if(op==='workspace.recovery.export'){

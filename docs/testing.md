@@ -519,3 +519,17 @@ postinstall 用 `electron-rebuild` 针对 Electron 重建 `node-pty`。该依赖
 - 安装版恢复测试：`desktop-close-recovery-live.mjs` 六场景全部exit0，原件 `/tmp/nozeli-close-recovery-v3AWQr/report.json`；强退响应分支约404–433ms结束。保留本节前述原生UI边界：非取消返回由夹具明确控制，不声称物理点击通过。
 - 安装版正常退出：`desktop-close-retention-live.mjs` 八个自动保存时点、冷重开验证、PPT涂鸦讨论打开时退出，共10次exit0。原件 `/tmp/nozeli-close-retention-CTWCnz/report.json`（含实际binary/appRoot）与同目录 `ppt-drawing-before-exit.png`；保存问题/笔迹完整且原PPT字节不变。只使用隔离合成资料，无模型请求，不打开用户论文或日常profile。
 - 交付元数据prepare检查为0技术失败；六项公共再分发审计仍pending，本机安装/本地commit不构成公开发布许可或审计签收。
+
+## 项目右键重置为新项目（2026-11-06，源码已验，未安装）
+
+- 定向命令：`HOME=/home/bfly TMPDIR=/var/tmp NODE_NO_WARNINGS=1 node --test tests/project-lifecycle-reset.test.mjs tests/project-lifecycle.test.mjs tests/project-lifecycle-admission.test.mjs tests/project-lifecycle-stale-remove-hold.test.mjs tests/project-storage-initialization.test.mjs tests/lifecycle-flush-capability.test.mjs`，63/63 通过、0 failed/skipped/cancelled。新增 reset 用例已注册 integration；本轮未重跑全仓默认套件。
+- 真实文件／SQLite／Git 验证新 projectId 与 instanceId、旧元数据备份与原位实例／worktree、其他项目隔离、符号链接／身份变更／未知停止拒绝、同操作残留不覆盖、失败阶段事实不回写、catalog 提交前后中断与跨冷启动根目录围栏。中断后旧未保存稿仍可读；无已提交新登记时不暗中新建，有已提交登记时仅显式核验后允许重新打开。
+- renderer 构建通过。隔离真实 Electron＋X11＋合成项目经生产右键菜单执行取消和确认，保留旧稿后加载新身份；实际源文件和 Git 逐字节未变，新项目无旧批注／未保存稿，旧稿经正式恢复 API 完整分页可读，其他项目仍可用，正常退出后冷启动不复活旧状态。最终原件 `/var/tmp/nozeli-project-reset-gui-mu4EPW/attempt-ahR70s/report.json`、`main.log`；`reset-confirmation.png`／`new-project-loaded.png`／`cold-new-project.png` 从核验 PID 的原生 X11 窗口截取并检查，不用主 shell 截图中的空白替代原生文档画面。
+- 中间失败保留：初次 smoke 的 `tag.put` 缺少合法 projection；随后截图按 DOM 标题查 WM 标题未匹配，已改为 class＋PID；恢复列表首屏可能为空但仍有 nextCursor，驱动改为消费全部分页。回归首轮发现退役提交后内存缓存仍指旧状态，已在每次 catalog 提交后同步对应缓存；再次覆盖新登记后初始化中断，确保同根旧 hold 仍阻断冷注册。未关闭原有保存／属主保护来通过验证。
+- 本轮不安装、不提交、不调用付费模型、不操作日常项目；Windows/macOS 未运行，不外推通过。一次性 GUI 驱动验收后删除，证据保留。
+
+### 项目重置安装版验收（同轮用户追加授权）
+
+- `HOME=/home/bfly node tools/install-local.mjs` 构建、校验并激活 current=`2026-11-06T00-54-32-789Z`，previous=`2026-11-06T00-00-59-494Z` 保留可回退。
+- 使用实际安装 ELF（不是源码 Electron 或 wrapper）与隔离 profile／合成项目，核验 `/proc/<pid>/exe` 与已安装 binary 一致；真实项目右键“重置为新项目”→确认→新身份自动加载，旧元数据副本身份正确、原文未变、新项目实际打开并显示原文、旧项目不再出现在入口，正常 exit0。X11 截图按 class＋PID 归属捕获并检查，原件 `/var/tmp/nozeli-reset-installed-68kJNB/report.json`、`main.log`、`installed-reset.png`。
+- 无付费调用、不修改日常项目、不强关原有窗口。本机安装冻结当前工作树；本轮提交只选项目重置代码、回归与文档，不包含其他既有改动。未推送／发布，不外推 Windows/macOS。一次性安装验收驱动已移除。

@@ -51,13 +51,14 @@ export class ProjectStorage {
  async initialize(input,{confirmRecovery}={}){
   platformPersistence.requireSupported();
   await this.ready();const root=await fs.realpath(input),identity=await directoryIdentity(root),all=await this.list();
+  for(const prior of all)if(prior.root===root&&same(prior.identity,identity))this.assertActive(prior.id);
   let existing=all.filter(p=>p.root===root&&same(p.identity,identity)).sort((a,b)=>Number(a.removed)-Number(b.removed)||String(b.openedAt).localeCompare(String(a.openedAt)))[0];
   const key=createHash('sha256').update(JSON.stringify([root,identity.dev,identity.ino])).digest('hex'),metadataRoot=path.join(root,'.nozeli');
   let intent=await this.db.request(this.catalog,'get',{collection:'initializations',id:key});
   let recoverySource=null;
   if(existing&&(!intent||intent.phase==='complete')){
    this.assertActive(existing.id);
-   const actual=await directoryIdentity(metadataRoot);
+  let actual=null;try{actual=await directoryIdentity(metadataRoot);}catch(error){if(error.code!=='ENOENT')throw error;}
    if(existing.removed){
     if(!same(actual,existing.metadataIdentity))await assertRecoverySourceStopped(root);
     await checkedClose(this.db,path.join(metadataRoot,'project.sqlite'));
@@ -173,6 +174,126 @@ export class ProjectStorage {
   return {removedRecords:removed.map(row=>row.id)};
  }
  async remove(id,{operationId}={}){const p=await this.requireRegistered(id),key=operationId?'lifecycle:remove:'+operationId:null;if(key){const receipt=await this.getRecovery(id,key);if(receipt?.complete)return receipt.result;}const next={...p,removed:true};await this.db.request(this.catalog,'put',{collection:'instances',id,value:next,operationId});this.bindings.set(id,next);const result={removed:true,projectId:id,operationId};if(key)await this.putRecovery(id,key,{complete:true,result});return result;}
+ // Reset retires one verified registration and publishes a fresh identity at
+ // the same root. Only the metadata tree is replaced; the local instance
+ // directory (with its Git worktrees and native sessions) and the recovery
+ // area keep their original absolute paths, so retained state stays readable
+ // under the retired id. A verified durable copy precedes any move, renames
+ // stay inside the project root, and every step journals recoverable evidence.
+ async resetProject(id,{operationId,expected={}}={}){
+  platformPersistence.requireSupported();
+  if(typeof operationId!=='string'||!/^[a-zA-Z0-9:_-]{8,160}$/.test(operationId))throw fail('INVALID_OPERATION_ID');
+  const key='lifecycle:reset-project:'+operationId;
+  const p=await this.requireRegistered(id);
+  const receipt=await this.getRecovery(id,key);
+  if(receipt?.complete)return receipt.result;
+  if(await this.getRecovery(id,'lifecycle:reset-facts:'+operationId))throw fail('PROJECT_RESET_PENDING','原重置已有持久阶段记录，需先核验；未重放或覆盖原记录。');
+  if(p.removed)throw fail('PROJECT_LIFECYCLE_ACTIVE','项目登记已退役；原状态保留在恢复区，需先核验。');
+  const root=p.root,metadataRoot=p.metadataRoot,archive=path.join(this.root,'recovery',p.instanceId,'reset',operationId),metadataArchive=path.join(archive,'metadata');
+  // Verified scope: only the exact registered entities confirmed by the user
+  // are archived. Symlinks, entity swaps or foreign roots refuse.
+  await directoryIdentity(root,p.identity);
+  await directoryIdentity(metadataRoot,p.metadataIdentity);
+  if(expected.root!==root||!same(expected.identity,p.identity)||expected.metadataRoot!==metadataRoot||!same(expected.metadataIdentity,p.metadataIdentity))throw fail('PROJECT_IDENTITY_CONFLICT','项目路径或元数据实体与确认不符。');
+  const manifestBytes=await fs.readFile(path.join(metadataRoot,'project.json'));
+  if(createHash('sha256').update(manifestBytes).digest('hex')!==expected.manifestDigest)throw fail('PROJECT_IDENTITY_CONFLICT','项目身份清单已变化，原确认已失效。');
+  if(JSON.parse(manifestBytes.toString('utf8')).projectId!==id)throw fail('PROJECT_IDENTITY_CONFLICT','项目身份清单与登记不符。');
+  await rejectLinks(metadataRoot);
+  for(const suffix of ['-journal','-wal','-shm'])if(await present(path.join(metadataRoot,'project.sqlite'+suffix)))throw fail('PROJECT_METADATA_CONFLICT','项目数据库尚有事务文件，需停稳后重试。');
+  const instanceDirectory=path.join(this.root,'instances',p.instanceId),recoveryDirectory=path.join(this.root,'recovery',p.instanceId);
+  // Durable phase facts: every mutation step journals what actually happened,
+  // so a partial failure leaves verifiable evidence instead of replay guesses.
+  let facts={schema:1,operationId,projectId:id,instanceId:p.instanceId,root,phase:'verified',paths:{metadataArchive,instanceDirectory,recoveryDirectory}};
+  const note=async patch=>{facts={...facts,...patch,updatedAt:new Date().toISOString()};await this.putRecovery(id,'lifecycle:reset-facts:'+operationId,facts);};
+  await note({});
+  // Existing artifacts of this operation without a completion receipt are
+  // kept exactly as they are and demand explicit verification; a foreign or
+  // unverifiable artifact refuses. Nothing here is ever deleted or rebuilt.
+  if(await present(archive)){
+   let marker=null;try{marker=JSON.parse(await fs.readFile(path.join(archive,'reset.json'),'utf8'));}catch{}
+   if(!marker||marker.schema!==1||marker.operationId!==operationId||marker.projectId!==id||marker.instanceId!==p.instanceId)throw fail('PROJECT_RESET_CONFLICT','归档目录属于其他操作或不可核验，保留原状。');
+   throw fail('PROJECT_RESET_PENDING','上次重置的归档已存在且未完成，需先在恢复中心核验；未覆盖任何备份。');
+  }
+  const now=new Date().toISOString();
+  await fs.mkdir(archive,{recursive:true,mode:0o700});await syncDirectory(path.dirname(archive));
+  await durableJson(path.join(archive,'reset.json'),{schema:1,operationId,projectId:id,instanceId:p.instanceId,root,phase:'archiving',startedAt:now,paths:{metadataArchive,instanceDirectory,recoveryDirectory}});
+  // Durable copy first: nothing at the project root moves before the archive
+  // exists and is verified, so any failure here leaves the project untouched.
+  await checkedClose(this.db,path.join(metadataRoot,'project.sqlite'));
+  await fs.cp(metadataRoot,metadataArchive,{recursive:true,force:false,errorOnExist:true});
+  const archived=await checkedMetadata(metadataArchive,this.db);
+  if(archived.projectId!==id)throw fail('PROJECT_RESET_CONFLICT','归档副本身份不符，原项目保持原状。');
+  await checkedClose(this.db,path.join(metadataArchive,'project.sqlite'));
+  await rejectLinks(metadataArchive);
+  await syncTree(metadataArchive);await syncDirectory(archive);await note({phase:'archived'});
+  // Stage the fresh identity beside the live metadata; staging never touches
+  // the live tree, so an interrupted stage leaves the old project online.
+  const staging=path.join(root,'.nozeli-reset-'+operationId);
+  if(await present(staging)){
+   let marker=null;try{marker=JSON.parse(await fs.readFile(path.join(staging,'initialization.json'),'utf8'));}catch{}
+   if(marker&&marker.schema===1&&marker.kind==='reset'&&marker.operationId===operationId)throw fail('PROJECT_RESET_PENDING','上次重置的临时元数据仍存在，需先在恢复中心核验；未删除任何内容。');
+   throw fail('PROJECT_RESET_CONFLICT','临时元数据归属未知，需要明确恢复。');
+  }
+  const newProjectId=randomUUID(),newInstanceId=randomUUID();
+  await fs.mkdir(staging,{mode:0o700});
+  await durableJson(path.join(staging,'initialization.json'),{schema:1,kind:'reset',operationId});
+  await fs.mkdir(path.join(staging,'objects','sha256'),{recursive:true});
+  await fs.mkdir(path.join(staging,'memory','plantree'),{recursive:true});
+  await fs.writeFile(path.join(staging,'memory','plantree','index.md'),'# Plan Tree\n',{flag:'wx'}).catch(error=>{if(error.code!=='EEXIST')throw error;});
+  await this.db.request(path.join(staging,'project.sqlite'),'put',{collection:'identity',id:'project',value:{projectId:newProjectId,schema:1}});
+  await durableJson(path.join(staging,'project.json'),{schema:1,projectId:newProjectId,operationId,lineage:null});
+  const staged=await checkedMetadata(staging,this.db);
+  if(staged.projectId!==newProjectId||staged.operationId!==operationId)throw fail('PROJECT_RESET_CONFLICT','新项目身份核验失败，原项目保持原状。');
+  await checkedClose(this.db,path.join(staging,'project.sqlite'));
+  await rejectLinks(staging);await syncTree(staging);await syncDirectory(root);
+  const newMetadataIdentity=await directoryIdentity(staging);
+  await note({phase:'staged',newProjectId,newInstanceId,staging,metadataIdentity:newMetadataIdentity});
+  // Re-verify right before publishing: the copy and staging phases contain
+  // awaits, so a swapped directory or changed manifest aborts here instead of
+  // being renamed over as a replacement entity.
+  await directoryIdentity(root,p.identity);
+  await directoryIdentity(metadataRoot,p.metadataIdentity);
+  if(createHash('sha256').update(await fs.readFile(path.join(metadataRoot,'project.json'))).digest('hex')!==expected.manifestDigest)throw fail('PROJECT_IDENTITY_CONFLICT','发布前项目身份清单已变化，原确认已失效。');
+  const swap=path.join(root,'.nozeli-source-'+operationId);
+  if(await present(swap))throw fail('PROJECT_RESET_PENDING','原目录仍保留上次重置的来源元数据，需先在恢复中心核验。');
+  // Same-directory renames only. From the first rename on, any failure keeps
+  // the lifecycle fence up: the error is marked published with the durable
+  // facts so cold starts stay blocked until explicit verification.
+  let published=false;
+  try{
+   await fs.rename(metadataRoot,swap);published=true;
+   try{await fs.rename(staging,metadataRoot);}
+   catch(error){await fs.rename(swap,metadataRoot).catch(()=>{});throw error;}
+   await syncDirectory(root);
+   if(!same(await directoryIdentity(metadataRoot),newMetadataIdentity))throw fail('PROJECT_IDENTITY_CONFLICT','发布后的新元数据实体不符。');
+   await note({phase:'published',swap});
+   const retired={...p,removed:true,reset:{operationId,newProjectId,archive,resetAt:now}};
+   const fresh={id:newProjectId,instanceId:newInstanceId,root,metadataRoot,identity:p.identity,metadataIdentity:newMetadataIdentity,lineage:null,name:p.name??path.basename(root),openedAt:now,lastOpenedAt:now,removed:false};
+   await this.db.request(this.catalog,'put',{collection:'instances',id:retired.id,value:retired,operationId:operationId+':retire'});
+   this.bindings.set(id,retired);
+   await note({phase:'retired'});
+   await this.db.request(this.catalog,'put',{collection:'instances',id:fresh.id,value:fresh,operationId:operationId+':register'});
+   this.bindings.set(newProjectId,fresh);
+   await note({phase:'registered'});
+   const initKey=createHash('sha256').update(JSON.stringify([root,p.identity.dev,p.identity.ino])).digest('hex');
+   await this.db.request(this.catalog,'put',{collection:'initializations',id:initKey,value:{version:1,key:initKey,root,identity:p.identity,id:newProjectId,instanceId:newInstanceId,operationId,now,source:null,recoverySource:null,phase:'complete',reset:{operationId,previousProjectId:id}},operationId:operationId+':initialization'});
+   this.generations.delete(id);this.unavailable.delete(id);
+   this.unavailable.set(id,fail('PROJECT_IDENTITY_CONFLICT','项目已重置为新身份 '+newProjectId+'；旧登记已退役，恢复内容保留。'));
+   await note({phase:'initialized'});
+   const result={operationId,projectId:id,action:'reset-project',complete:true,newProjectId,backupPath:archive,archive:{metadata:metadataArchive,instanceDirectory,recoveryDirectory},recoveryRetained:true};
+   await durableJson(path.join(archive,'reset.json'),{schema:1,operationId,projectId:id,instanceId:p.instanceId,root,phase:'complete',newProjectId,newInstanceId,paths:{metadataArchive,instanceDirectory,recoveryDirectory},completedAt:new Date().toISOString()});
+   await this.putRecovery(id,key,{complete:true,result});
+   await note({phase:'complete'});
+   // The swap directory duplicates the verified archive; remove it only after
+   // the receipt exists and keep it, with evidence, when removal fails.
+   try{await fs.rm(swap,{recursive:true});await syncDirectory(root);}
+   catch(error){await this.putRecovery(id,'lifecycle:reset-cleanup:'+operationId,{operationId,retained:swap,error:{code:error.code||'ERROR',message:error.message},note:'归档已核验完成；原位保留目录待人工确认后清理。'}).catch(()=>{});}
+   return result;
+  }catch(error){
+   if(published)Object.assign(error,{resetPublished:true,resetFacts:facts});
+   throw error;
+  }
+ }
  async objects(id){return new MaterialStore(path.join(await this.projectDirectory(id),'objects','sha256'),{createDirectory:false});}
  async listProject(id,collection){return this.projectRequest(id,'list',{collection});}
  async replaceProjectCollections(id,collections,{expectedCollections}={}){return this.projectRequest(id,'replace',{collections,expectedCollections});}

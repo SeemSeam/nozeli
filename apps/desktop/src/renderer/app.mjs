@@ -1729,16 +1729,25 @@ async function removeProjectEntry(projectId) {
   attentionNotifications?.dropProject?.(projectId); await clearProjectPage(projectId); await renderRecent();
 }
 async function manageProjectStorage(project,action){
+  const reset=action==='reset-project';
   const preview=await invoke('project.lifecycle.preview',{projectId:project.id,action});if(!preview.ok)return workspace.toast(preview.error.message);
   const value=preview.value,dialog=document.createElement('dialog'),title=document.createElement('h2'),detail=document.createElement('pre'),cancel=document.createElement('button'),accept=document.createElement('button'),error=document.createElement('p');
   dialog.id='project-lifecycle-dialog';error.setAttribute('role','alert');
-  title.textContent=action==='delete-project'?'将整个项目移到回收站？':'重置本机项目视图？';
+  title.textContent=reset?'将此项目重置为新项目？':action==='delete-project'?'将整个项目移到回收站？':'重置本机项目视图？';
   const kinds={added:'新增文件','added-directory':'新增目录',modified:'已修改',missing:'已移除',link:'符号链接',special:'特殊文件',uninspected:'未完整核验'};
   const changes=value.demoChanges??[];
-  detail.textContent=['项目：'+project.name,'原目录：'+value.root,...value.removeDirectories.map(p=>'目录：'+p),...value.removeFiles.map(p=>'文件：'+p),...(value.removeRecords??[]).map(key=>'视图记录：'+key),...changes.map(change=>(kinds[change.kind]||change.kind)+'：'+change.path),'将先停止该项目运行并关闭视图；保留恢复区、账号配置。',action==='delete-project'?'包含目录内原文件、批注、草稿与.nozeli；未保存内容先沿正常关闭协议保留。不会退回永久删除。':'仅重置列出的视图记录；先保留完整快照，不删除原文件、原生会话、执行关联或命名布局。'].join('\n');
+  detail.textContent=reset?[
+    '项目：'+project.name,'目录：'+value.root,
+    '保留：项目实际文件、Git、全局账号、API 源和模型设置。',
+    '归档：该项目的批注、讨论、会话、任务、草稿、布局与本机执行状态。',
+    '先保留未保存编辑并停止该项目的任务与终端；保存或停稳未确认时不会重置。',
+    '随后在同一目录创建并加载全新的 Nozeli 项目，不继承旧状态，也不重放旧任务。',
+    '未保存草稿保留在旧恢复记录中，不会自动写入原文件或带入新项目。',
+    ...(value.backupPath?['旧数据归档位置：'+value.backupPath]:[]),
+  ].join('\n'):['项目：'+project.name,'原目录：'+value.root,...value.removeDirectories.map(p=>'目录：'+p),...value.removeFiles.map(p=>'文件：'+p),...(value.removeRecords??[]).map(key=>'视图记录：'+key),...changes.map(change=>(kinds[change.kind]||change.kind)+'：'+change.path),'将先停止该项目运行并关闭视图；保留恢复区、账号配置。',action==='delete-project'?'包含目录内原文件、批注、草稿与.nozeli；未保存内容先沿正常关闭协议保留。不会退回永久删除。':'仅重置列出的视图记录；先保留完整快照，不删除原文件、原生会话、执行关联或命名布局。'].join('\n');
   detail.style.whiteSpace='pre-wrap';detail.style.maxHeight='40vh';detail.style.overflow='auto';
-  let consent=null;
-  cancel.textContent='取消';accept.textContent=action==='delete-project'?'移到回收站':'重置本机视图';dialog.append(title,detail,error);
+  let consent=null,executing=false;
+  cancel.textContent='取消';accept.textContent=reset?'归档并重置为新项目':action==='delete-project'?'移到回收站':'重置本机视图';dialog.append(title,detail,error);
   if(action==='delete-project'&&Array.isArray(value.demoChanges)){
     const label=document.createElement('label');consent=document.createElement('input');consent.type='checkbox';consent.id='demo-delete-consent';
     label.append(consent,'我已核对整个演示目录，包括上述变更、未发送草稿与批注，仍要移到回收站。');dialog.append(label);accept.disabled=true;
@@ -1748,12 +1757,21 @@ async function manageProjectStorage(project,action){
   cancel.onclick=()=>{dialog.close();dialog.remove();};
   accept.onclick=async event=>{
     if(consent&&(!event.isTrusted||!consent.checked)){error.textContent='请亲自核对范围并确认；演示脚本不能代点。';return;}
-    accept.disabled=cancel.disabled=true;
-    const result=await invoke('project.lifecycle.execute',{token:value.token,allowDemoChanges:Boolean(consent?.checked)});
-    if(!result.ok){error.textContent=result.error.message;cancel.disabled=false;return;}
-    dialog.close();dialog.remove();await clearProjectPage(project.id);await renderRecent();
+    executing=true;accept.disabled=cancel.disabled=true;
+    try{
+      const result=await invoke('project.lifecycle.execute',{token:value.token,allowDemoChanges:Boolean(consent?.checked)});
+      if(!result.ok){error.textContent=result.error.message+'；请关闭此窗口，核对后重新操作。';return;}
+      dialog.close();dialog.remove();
+      attentionNotifications?.dropProject?.(project.id);
+      await clearProjectPage(project.id);await renderRecent();
+      if(reset){
+        const loaded=await activateProject(result.value.newProjectId);
+        if(loaded.ok)workspace.toast('已重置为新项目。旧数据归档：'+result.value.backupPath);
+      }
+    }catch(failure){error.textContent=failure.message;}
+    finally{executing=false;cancel.disabled=false;}
   };
-  dialog.addEventListener('cancel',()=>dialog.remove());dialog.showModal();cancel.focus();
+  dialog.addEventListener('cancel',event=>{if(executing)event.preventDefault();else dialog.remove();});dialog.showModal();cancel.focus();
 }
   const attentionProjectNames = new Map();
 let recentSequence=0;
@@ -1770,7 +1788,7 @@ async function renderRecent() {
     if(!button){
       button=document.createElement('button');
       button.type='button';button.dataset.projectId=project.id;
-      button.addEventListener('contextmenu', event => {const project=button._project;event.preventDefault();projectMenu.open([{id:'retry',label:'重试原位置',hint:'只核验一次，不自动重连Agent'},{id:'close',label:'关闭项目',hint:'保留项目与本机恢复内容'},{id:'remove',label:'从 Nozeli 移除项目',hint:'保留磁盘文件、草稿及工作记录'},{id:'clean-local',label:'清理本机项目数据…',hint:'不删除原文件，保留恢复区'},{id:'delete-project',label:'删除磁盘项目…',hint:'整个目录移到回收站，需再次确认'}],{x:event.clientX,y:event.clientY,focus:button,run:async action=>{if(action==='retry'){const result=await invoke('project.retry',{projectId:project.id});if(!result.ok)return workspace.toast(result.error.message);await renderRecent();}else if(action==='close'){const result=await invoke('workspace.closeProject',{projectId:project.id,operationId:crypto.randomUUID()});if(!result.ok)return workspace.toast(result.error.message);await clearProjectPage(project.id);}else if(action==='remove')await removeProjectEntry(project.id);else await manageProjectStorage(project,action);}});});
+      button.addEventListener('contextmenu', event => {const project=button._project;event.preventDefault();projectMenu.open([{id:'retry',label:'重试原位置',hint:'只核验一次，不自动重连Agent'},{id:'close',label:'关闭项目',hint:'保留项目与本机恢复内容'},{id:'remove',label:'从 Nozeli 移除项目',hint:'保留磁盘文件、草稿及工作记录'},{id:'reset-project',label:'重置为新项目…',hint:'保留文件和 Git，归档旧状态后重新加载'},{id:'clean-local',label:'清理本机项目数据…',hint:'不删除原文件，保留恢复区'},{id:'delete-project',label:'删除磁盘项目…',hint:'整个目录移到回收站，需再次确认'}],{x:event.clientX,y:event.clientY,focus:button,run:async action=>{if(action==='retry'){const result=await invoke('project.retry',{projectId:project.id});if(!result.ok)return workspace.toast(result.error.message);await renderRecent();}else if(action==='close'){const result=await invoke('workspace.closeProject',{projectId:project.id,operationId:crypto.randomUUID()});if(!result.ok)return workspace.toast(result.error.message);await clearProjectPage(project.id);}else if(action==='remove')await removeProjectEntry(project.id);else await manageProjectStorage(project,action);}});});
       button.addEventListener('click',()=>{const project=button._project;return project.available?activateProject(project.id):workspace.toast('项目目录不可用，可右键移除入口。');});
     }
     button._project=project;
