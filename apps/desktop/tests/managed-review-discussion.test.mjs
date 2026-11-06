@@ -86,6 +86,8 @@ test('discussion read projects real native worker replies with identity-only ded
   assert.equal(reply.speaker,'worker');assert.equal(reply.text,'已核对：第二节引用与冻结证据一致。');
   assert.equal(reply.source,'review-discussion');assert.equal(reply.status,'completed');
   assert.equal(reply.nativeEntryDigest,'feedbeef');assert.equal(reply.jobId,job.id);
+  assert.equal(reply.sessionId,'thread-1','read markers use the exact native session, not current Work identity');
+  assert.equal(dto.entries.find(e=>e.id==='native-repeat-text').sessionId,undefined,'missing native ownership must not fabricate a read identity');
   assert.equal(dto.entries.some(e=>e.id==='native-abc-replay'),false,'same native identity (digest) collapses');
   const repeat=dto.entries.find(e=>e.id==='native-repeat-text');
   assert.ok(repeat,'same text with a different native identity stays a real separate reply');

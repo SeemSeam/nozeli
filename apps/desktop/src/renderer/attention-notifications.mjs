@@ -35,13 +35,13 @@ export function mountAttentionNotifications({invoke,subscribe,openTodo,onError,p
   const feedbackLine=node('p','attention-feedback');
   feedbackLine.dataset.attentionFeedback='';feedbackLine.setAttribute('role','status');feedbackLine.hidden=true;
   const feedbackText=node('span','attention-feedback-text');
-  feedbackLine.append(uiIcon('check'),feedbackText);
+  feedbackLine.append(uiIcon('sticky-note'),feedbackText);
   document.getElementById('workspace-groups').prepend(box,feedbackLine);
 
   let selectedKey=null,expanded=false,busy=false;const timers=new Map();
   const describe=row=>{
     const name=projectName(row.projectId);
-    return (typeof name==='string'&&name.trim()?name+' · ':'')+row.todo.title+' — '+notificationAction(row.todo);
+    return (typeof name==='string'&&name.trim()?name:'项目 '+row.projectId)+' · '+row.todo.title+' — '+notificationAction(row.todo);
   };
   function paintChip(chip,todo){
     const category=notificationCategory(todo),meta=attentionCategoryMeta[category];
@@ -61,6 +61,7 @@ export function mountAttentionNotifications({invoke,subscribe,openTodo,onError,p
   }
   function paintItem(item,row){
     item.setAttribute('aria-current',String(row.key===selectedKey));
+    item.dataset.attentionCategory=notificationCategory(row.todo);
     paintChip(item.children[0],row.todo);
     item.children[1].textContent=describe(row);
     item.children[2].textContent=row.todo.phase||'';
@@ -96,16 +97,17 @@ export function mountAttentionNotifications({invoke,subscribe,openTodo,onError,p
   }
 
   function render(announce=[]){
-    const rows=model.rows;
+    const rows=model.rows,hadFocus=box.contains(document.activeElement);
     box.hidden=rows.length===0;
     if(rows.length===0){
-      if(document.activeElement&&box.contains(document.activeElement))document.activeElement.blur();
-      list.replaceChildren();
+      list.replaceChildren();live.textContent='';
+      if(hadFocus){const fallback=[...document.querySelectorAll('#sidebar-rail-toggle,#toggle-sidebar,#toggle-inbox,#composer')].find(element=>!element.disabled&&element.getClientRects().length);if(fallback)fallback.focus({preventScroll:true});else{const host=document.getElementById('workspace-groups');host.tabIndex=-1;host.focus({preventScroll:true});}}
       return;
     }
     if(!rows.some(r=>r.key===selectedKey))selectedKey=model.currentKey;
     const row=rows.find(r=>r.key===selectedKey)??rows[0];
     paintChip(kind,row.todo);
+    box.dataset.attentionCategory=notificationCategory(row.todo);
     text.textContent=describe(row);text.title=describe(row);
     const meta=attentionCategoryMeta[notificationCategory(row.todo)];
     if(open.dataset.attentionCategory!==meta.openLabel){open.textContent=meta.openLabel;open.dataset.attentionCategory=meta.openLabel;}
@@ -115,6 +117,7 @@ export function mountAttentionNotifications({invoke,subscribe,openTodo,onError,p
     expand.setAttribute('aria-expanded',String(expanded&&rows.length>1));
     list.hidden=!expanded||rows.length<2;
     renderList(rows);
+    if(hadFocus&&(document.activeElement===document.body||document.activeElement?.closest('[hidden]')))open.focus({preventScroll:true});
     if(announce.length)live.textContent=announce.join('；')+(rows.length>1?'（共 '+rows.length+' 项待处理）':'');
   }
 

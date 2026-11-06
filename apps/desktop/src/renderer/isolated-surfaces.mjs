@@ -1,5 +1,6 @@
 import './isolated-surfaces.css';
 import {localWindowOcclusions,subscribeLocalWindowOcclusions} from './local-window.mjs';
+import {createGeometryQueue} from './isolated-geometry.mjs';
 
 const surfaces = new Set();
 const key = () => crypto.randomUUID();
@@ -11,7 +12,7 @@ function surface(parent, {invoke, profile, projectId, objectId, entryPath, onRef
   viewport.className = 'isolated-viewport'; viewport.setAttribute('aria-label', profile === 'staticReport' ? '隔离的静态 HTML 报告' : '隔离的离线网页预览');
   status.className = 'isolated-status'; status.setAttribute('role', 'status');
   parent.append(status, viewport);
-  let generation = 0, acceptedGeneration = 0, opened = false, disposed = false, frame = 0, boundsSequence = 0;
+  let generation = 0, acceptedGeneration = 0, opened = false, disposed = false, frame = 0;
   // The served footer only exists when a host handler consumes its events, so
   // reports opened without onEndMatter never show dead links.
   const endMatterParam = onEndMatter ? (endMatter === 'files' ? 'files' : true) : undefined;
@@ -34,24 +35,38 @@ function surface(parent, {invoke, profile, projectId, objectId, entryPath, onRef
       [x,y,right,bottom]=areas[0];
     }
     return {...full,clip:{x,y,width:Math.max(0,right-x),height:Math.max(0,bottom-y)}}; };
-  const boundsPayload=(value=bounds())=>({key:id,windowId:window.__workspaceScope?.windowId,surfaceGeneration:window.__workspaceScope?.generation,boundsSequence:++boundsSequence,bounds:value});
-  const layout = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(() => { if(opened && !disposed) void invoke('isolated-preview.bounds',boundsPayload()).then(result=>{if(!result.ok&&!disposed){status.textContent='窗口避让未应用：'+(result.error?.message||'布局更新失败');status.dataset.state='error';}}).catch(error=>{if(!disposed){status.textContent='窗口避让未应用：'+error.message;status.dataset.state='error';}}); }); };
-  const syncLayout = async () => {
-    cancelAnimationFrame(frame);
-    if(disposed||!opened||!isCurrent())throw Error('预览已关闭或来源已变化');
-    const result=await invoke('isolated-preview.bounds',boundsPayload());
-    if(disposed||!isCurrent())throw Error('预览已关闭或来源已变化');
-    if(!result.ok)throw Error(result.error?.message||'预览区域尚未更新');
+  const geometry = createGeometryQueue({
+    current:()=>({key:id,generation:acceptedGeneration,windowId:window.__workspaceScope?.windowId,surfaceGeneration:window.__workspaceScope?.generation}),
+    send:payload=>invoke('isolated-preview.bounds',payload),
+    onError:error=>{if(!disposed){status.textContent='预览布局未应用：'+error.message;status.dataset.state='error';}}
+  });
+  const syncLayout = () => {
+    cancelAnimationFrame(frame);frame=0;
+    if(disposed||!opened||!isCurrent())return Promise.reject(Error('预览已关闭或来源已变化'));
+    return geometry.request(bounds());
   };
+  const layout = () => { if(frame)return;frame=requestAnimationFrame(()=>{frame=0;if(opened&&!disposed&&isCurrent())void syncLayout().catch(()=>{});}); };
+  // Native review discussions are separate windows, not DOM occlusion rows.
+  // Other local-window users (tags/web) still need their existing clipping.
   const stopOcclusion=subscribeLocalWindowOcclusions(document,()=>opened&&!disposed&&isCurrent()?syncLayout():Promise.resolve());
   const observer = new ResizeObserver(layout); observer.observe(viewport);
+  // Observe real containing geometry, including header/footer-driven resizing;
+  // never observe status text or style writes across the entire body.
+  for(let node=viewport.parentElement;node&&node!==document.body;node=node.parentElement)observer.observe(node);
   window.addEventListener('resize', layout); window.addEventListener('nozeli-layout-change', layout); document.addEventListener('scroll',layout,true);
   document.addEventListener('visibilitychange',layout);
-  const modals=new MutationObserver(layout);modals.observe(document.body,{subtree:true,attributes:true,attributeFilter:['open','hidden','class','style'],childList:true});
+  const modals=new MutationObserver(layout),watchedModals=new WeakSet();
+  const watchModals=()=>{for(const node of document.querySelectorAll('dialog,.nozeli-context-menu'))if(!watchedModals.has(node)){watchedModals.add(node);modals.observe(node,{attributes:true,attributeFilter:['open','hidden']});}layout();};
+  watchModals();
+  document.addEventListener('toggle',watchModals,true);document.addEventListener('close',watchModals,true);
+  window.addEventListener('nozeli-context-menu-open',watchModals);
   const unsubscribe = window.nozeli.subscribe('isolated-preview', event => {
     if(disposed || event.key !== id || ![generation,acceptedGeneration].includes(event.generation)) return;
-    if(event.type === 'reference') void openReference(event);
-    if(event.type === 'end-matter' && onEndMatter) onEndMatter({action: event.action, relPath: event.relPath});
+    if(event.type === 'reference') void openReference(event).catch(error=>{if(!disposed){status.textContent='冻结引用未打开：'+error.message;status.dataset.state='error';}});
+    if(event.type === 'end-matter' && onEndMatter) {
+      if(!['file','diff','details'].includes(event.action)||(event.action!=='details'&&typeof event.relPath!=='string')){status.textContent='报告内容入口无效。';status.dataset.state='error';return;}
+      void Promise.resolve().then(()=>onEndMatter({action:event.action,...(event.action==='details'?{}:{relPath:event.relPath})})).catch(error=>{if(!disposed){status.textContent='报告内容入口未打开：'+error.message;status.dataset.state='error';}});
+    }
     if(event.type === 'buffers-changed') onBuffersChanged?.();
     if(['console','resource-error','error','load-failed','terminated'].includes(event.type)) {
       status.textContent = '预览诊断：' + (event.message || event.error?.message || event.type); status.dataset.state = 'error';
@@ -75,7 +90,7 @@ function surface(parent, {invoke, profile, projectId, objectId, entryPath, onRef
     const save=document.createElement('button');save.type='button';save.textContent='另存完整冻结工件';
     save.onclick=async()=>{save.disabled=true;try{const result=await invoke('isolated-preview.reference.save',{key:id,generation:event.generation,referenceId:event.referenceId});if(!result.ok)throw Error(result.error?.message||'另存失败');if(result.value?.saved)save.textContent='完整工件已另存';}catch(error){status.textContent='冻结工件另存失败：'+error.message;}finally{save.disabled=false;}};
     dialog.append(save);
-    document.body.append(dialog);await invoke('isolated-preview.bounds',boundsPayload({x:0,y:0,width:0,height:0}));const finish=()=>{dialog.close();dialog.remove();layout();};close.onclick=finish;dialog.addEventListener('cancel',event=>{event.preventDefault();finish();});dialog.showModal();
+    document.body.append(dialog);const finish=()=>{dialog.close();dialog.remove();layout();};close.onclick=finish;dialog.addEventListener('cancel',event=>{event.preventDefault();finish();});dialog.showModal();await syncLayout();
     const line=Number(/:(\d+)(?::\d+)?$/.exec(reference.href||'')?.[1]);if(sourceText&&line>0)requestAnimationFrame(()=>{sourceText.scrollTop=(line-1)*parseFloat(getComputedStyle(sourceText).lineHeight);});
   }
   async function refresh(extra = {}) {
@@ -87,17 +102,21 @@ function surface(parent, {invoke, profile, projectId, objectId, entryPath, onRef
     const own = documentSource?.(), source = own && own.type !== 'project' ? own : null, note = source ? snapshotNote?.() : null;
     status.textContent = '正在冻结当前内容…'; status.dataset.state = 'loading';
     try {
-      const result = await invoke(opened ? 'isolated-preview.update' : 'isolated-preview.open', {key:id,profile,projectId,objectId,entryPath,generation:current,bounds:bounds(),theme:document.documentElement.dataset.theme,endMatter:endMatterParam,...(source?{documentSource:source}:{}),...extra});
+      const openingBounds=bounds();
+      const result = await invoke(opened ? 'isolated-preview.update' : 'isolated-preview.open', {key:id,profile,projectId,objectId,entryPath,generation:current,bounds:openingBounds,theme:document.documentElement.dataset.theme,endMatter:endMatterParam,...(source?{documentSource:source}:{}),...extra});
       if(disposed || current !== generation) return;
       if(!isCurrent()){dispose();return;}
       if(!result.ok) throw Error(result.error?.message || '预览失败');
-      opened = true; acceptedGeneration = current; status.dataset.state = 'ready';
+      opened = true; acceptedGeneration = current; geometry.reset(openingBounds); status.dataset.state = 'ready';
       status.textContent = profile === 'staticReport' ? '' : `快照 ${current}${result.value?.unsaved || extra.buffers?.some(buffer=>buffer.dirty) ? ' · 含未保存编辑' : ''}${note ? ' · ' + note : ''} · 离线 · 刷新不保存文件`;
       layout();
     } catch(error) { if(!disposed && current === generation) {status.dataset.state='error';status.textContent=(profile==='staticReport'?'冻结报告读取失败；原件保留。':source?'当前审校内容未成功预览；上一版保留，可切换源码。':'当前编辑未成功预览；上一版保留。')+error.message;} }
   }
   function dispose() {
     if(disposed) return; disposed=true; ++generation; cancelAnimationFrame(frame);observer.disconnect();modals.disconnect();
+    geometry.dispose();
+    document.removeEventListener('toggle',watchModals,true);document.removeEventListener('close',watchModals,true);
+    window.removeEventListener('nozeli-context-menu-open',watchModals);
     stopOcclusion();
     window.removeEventListener('resize',layout);window.removeEventListener('nozeli-layout-change',layout);document.removeEventListener('scroll',layout,true);unsubscribe?.();
     document.removeEventListener('visibilitychange',layout);

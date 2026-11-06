@@ -1,11 +1,11 @@
-// Pure projection for the workspace attention prompt.
+// nzl: Pure projection for the workspace attention prompt.
 // Authoritative facts stay in managed state and the attention ledger; this
 // model only decides what the inline prompt shows and never settles todos.
 import {managedReviewTodos,userTodoEligible} from './managed-work-records.mjs';
 
 export const attentionCategoryMeta={
   answer:{rank:0,icon:'message-square',label:'待授权',openLabel:'审核权限'},
-  review:{rank:1,icon:'check',label:'待审查',openLabel:'审阅成果'},
+  review:{rank:1,icon:'book-open',label:'待审阅',openLabel:'审阅成果'},
   blocker:{rank:2,icon:'triangle-alert',label:'受阻',openLabel:'处理阻断'}
 };
 const kindActions={problem:'需要你的回答',routing:'需要明确目标','frontdesk-route':'需要去向决定',deviation:'需要偏离决定',result:'请审查完成报告',recovery:'需要恢复执行',git:'需要处理 Git 事项',closure:'需要处理收尾异常',system:'需要处理系统异常'};

@@ -5,6 +5,8 @@ import {HostError} from '../main/host.mjs';
 import {decodeReportState,validReportDescriptor} from './managed/report-descriptor.mjs';
 import {readManagedState,readManagedObject,verifyManagedObject} from './managed/managed-storage.mjs';
 import {publicationOrdinal} from '../domain/managed-work-records.mjs';
+import {WorkChanges} from './managed/work-changes.mjs';
+import {activeDrafts,readDraftRecord,draftTextFor} from './managed/review-candidate.mjs';
 const STATE_LIMIT=32*1024*1024;
 const fail=(code,message)=>new HostError(code,message+'，未另存。');
 const unavailable=()=>fail('REPORT_UNAVAILABLE','报告来源缺失、过大或不是安全的普通文件');
@@ -49,7 +51,44 @@ export async function managedReportSource({project,storage,runtime,objectId,cont
     const bytes=await readManagedObject(storage,project.id,report.digest,{maxBytes:report.byteLength});
     if(bytes.length!==report.byteLength||createHash('sha256').update(bytes).digest('hex')!==report.digest||currentController()!==controller)throw changed();
     return bytes;
-  },listArtifacts:async()=>managedArtifact({project,storage,runtime,controller,currentController},{objectId}),readManifest:async()=>{
+  },listArtifacts:async()=>managedArtifact({project,storage,runtime,controller,currentController},{objectId}),readEndMatter:async()=>{
+    const manifest=await source.readManifest();
+    const snapshot=structuredClone(state()),row=receiptFor(snapshot,project,objectId),work=snapshot.works.find(work=>work.id===row.workId);
+    const result={projectId:project.id,workId:row.workId,objectId,generatedAt:new Date().toISOString(),revision:row.revision,publicationNumber:publicationOrdinal(snapshot,row.workId,objectId,row.kind),historical:work.revision!==row.revision||(work.result?.objectId!==objectId&&work.problem?.objectId!==objectId),references:structuredClone(manifest.references||[]),files:[],metadataState:'unverified'};
+    // Only immutable change manifests are needed here. reviewRead also checks
+    // live worktree drift for decisions; rendering never needs that scan,
+    // a controller startup, git execution, or a Worker/model call.
+    const files=new Map((row.snapshot?.files||[]).map(file=>[file.relPath,{relPath:file.relPath,candidateDigest:file.digest,change:'unknown'}]));
+    if(row.changeSetId){
+      try{
+        const changes=new WorkChanges({runtimeRoot:runtime,storage,projectId:project.id,readState:()=>snapshot});
+        const expectedBinding={projectId:project.id,workId:row.workId,revision:row.revision,jobId:row.sourceJobId,receiptId:row.id};
+        const frozen=[];let offset=0;
+        for(;;){const batch=await changes.list({changeSetId:row.changeSetId,offset,limit:200,expectedBinding});frozen.push(...batch.files);if(batch.nextOffset===null)break;offset=batch.nextOffset;}
+        for(const file of files.values()){file.change='unchanged';file.baselineDigest=file.candidateDigest;}
+        for(const file of frozen){
+          const baselineDigest=file.before?.object?.digest??null,candidateDigest=file.after?.object?.digest??null,baselineUnavailable=!file.before&&file.status!=='A';
+          files.set(file.path,{relPath:file.path,baselineDigest,candidateDigest,baselineUnavailable,binary:file.binary===true,availability:file.availability,reason:file.reason,change:baselineUnavailable?'unknown':({A:'added',D:'removed',R:'renamed',C:'copied',T:'type-changed',M:'modified'}[file.status]||'unknown')});
+        }
+        result.metadataState='verified';
+      }catch(error){result.metadataError=error.message;}
+    }
+    const accepted=['closing','ended'].includes(work.status)&&work.closure?.reviewedVersion?.objectId===objectId?work.closure.reviewedVersion:null;
+    const drafts=accepted?new Map((accepted.files||[]).filter(file=>file.draftRevision!=null).map(file=>[file.relPath,{revision:file.draftRevision,textDigest:file.reviewedDigest}])):new Map(Object.entries(activeDrafts(work)).filter(([,draft])=>draft.objectId===objectId));
+    if(drafts.size){
+      try{
+        const record=await readDraftRecord(storage,project.id,work.id);
+        for(const [relPath,draft]of drafts){
+          const file=files.get(relPath),text=draftTextFor(record,relPath,draft.revision);
+          if(!file)continue;
+          if(text===null||createHash('sha256').update(text,'utf8').digest('hex')!==draft.textDigest){result.metadataError='人工稿正文缺失或摘要未核实；未显示人工稿标识。';continue;}
+          file.draftRevision=draft.revision;file.draftDigest=draft.textDigest;
+        }
+      }catch(error){result.metadataError=error.message;}
+    }
+    result.files=[...files.values()];
+    await source.read();return result;
+  },readManifest:async()=>{
     await source.read();
     if(report.manifestDigest===null)return {version:1,assets:[],references:[]};
     const bytes=await readManagedObject(storage,project.id,report.manifestDigest);

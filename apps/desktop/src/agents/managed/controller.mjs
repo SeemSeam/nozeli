@@ -3383,6 +3383,7 @@ export class Controller extends EventEmitter {
       const job=row.jobId?jobs.get(row.jobId):null;
       return {id:row.id,speaker:row.speaker,target:w.id,text:row.text,jobId:row.jobId,source:row.source??(job?.context?.reviewDiscussion?'review-discussion':row.speaker==='worker'?'worker-reply':row.speaker==='tool'?'native-tool':'system'),
         workId:row.workId,requestId:row.requestId,revision:row.revision,sequence:row.sequence,
+        ...(nativeRecords.get(row.id)?.sessionId?{sessionId:nativeRecords.get(row.id).sessionId}:{}),
         ...(row.status?{status:row.status}:{}),...(row.objectId?{objectId:row.objectId}:{}),...(row.publication?{publication:row.publication}:{}),...(row.nativeEntryDigest?{nativeEntryDigest:row.nativeEntryDigest}:{}),...(row.taskRequestId?{taskRequestId:row.taskRequestId}:{}),...(row.publicationNumber!=null?{publicationNumber:row.publicationNumber}:{}),...(row.at?{at:row.at}:{}),...(row.availability?{availability:row.availability}:{}),...(row.reason?{reason:row.reason}:{})};
     });
     return [
@@ -3837,7 +3838,7 @@ export class Controller extends EventEmitter {
     try{
       if(!confirmedDisposition(w))throw Object.assign(Error('Closure confirmation binding missing or changed; resources retained'),{code:'MERGE_AUTHORIZATION_STALE'});
       if(!w.closure.stopped){
-        await this.store.mutate(()=>{w.closure.phase='stopping';});
+        await this.store.mutate(()=>{w.closure.phase='stopping';});this.changed();
         await this.terminals.get(id)?.close();if(this.starting.has(id))await this.starting.get(id).catch(()=>{});
         const session=this.sessions.get(id),record=this.store.state.providers?.[id],slots=[...(this.processBudget?.slots??[])].filter(slot=>slot.projectId===this.projectId&&slot.target===id);
         let receipt;
@@ -3849,15 +3850,15 @@ export class Controller extends EventEmitter {
         await this.checkpoint('provider-stopped',{workId:id});
         await this.store.mutate(()=>{delete this.store.state.providers[id];});
         for(const slot of slots)this.processBudget?.release(slot);
-        await this.store.markStopped(id,{at:new Date().toISOString(),...(receipt?{confirmed:true,provider:receipt}:{ownership:'no-recorded-native-owner'})});this.sessions.delete(id);
+        await this.store.markStopped(id,{at:new Date().toISOString(),...(receipt?{confirmed:true,provider:receipt}:{ownership:'no-recorded-native-owner'})});this.sessions.delete(id);this.changed();
       }
       if(w.closure.decision==='accept')try{await this.validateAcceptSource(id);}catch(error){throw Error('Acceptance requires intact frozen report bytes; no current-file fallback ('+error.message+'); resources retained');}
-      await this.store.archiveReport(id);await this.checkpoint('report-archived',{workId:id});
+      await this.store.archiveReport(id);this.changed();await this.checkpoint('report-archived',{workId:id});
       await this.timeline.drain();
       for(const receipt of this.store.state.receipts.filter(r=>r.workId===id&&r.changeSetId))await this.changes.verify(receipt.changeSetId);
       if(!['accept','discard'].includes(w.closure.decision))throw Error('Legacy outcome is uncertain; explicit user disposition is required. Resources preserved.');
       if(!w.closure.git?.complete){
-        await this.store.mutate(()=>{w.closure.phase='integrating';});
+        await this.store.mutate(()=>{w.closure.phase='integrating';});this.changed();
         // 结构化合入同意门（仅接受路径；丢弃不受影响）：明确never-commit在
         // 一次性人工覆盖批准前零写入阻断；未决策略（detected/legacy）以一次
         // 性约束选择待办为可解析出口，绝不误导“更新约束后再接受”。
@@ -3877,6 +3878,7 @@ export class Controller extends EventEmitter {
         const result=await this.execution.finish(w,{decision:w.closure.decision,reportPersisted:true,validateAcceptance:this.beforeAccept,isActive:()=>this.running.has(id)||this.starting.has(id)||this.sessions.has(id),...(reviewed?{reviewed}:{}),mergeAuthorization:w.closure?.mergeAuthorization??null});
         if(!result.cleaned)throw Error('Execution cleanup is incomplete; resources retained');
         await this.store.mutate(()=>{w.closure.git={...result,complete:true,at:new Date().toISOString()};w.closure.phase='cleanup';if(w.closure.merge&&w.closure.merge.status!=='merged'){w.closure.merge.status='merged';w.closure.merge.commit=result.commit??null;w.closure.merge.completedAt=new Date().toISOString();delete w.closure.merge.blockedCode;delete w.closure.merge.message;}});
+        this.changed();
       }
       if(w.closure.git?.status==='merged'&&!w.closure.provenance){
         const receipt=await this.afterAdoption?.(w,w.closure.git);
@@ -3884,6 +3886,7 @@ export class Controller extends EventEmitter {
         this.emit('files-changed',{workId:id,reason:'accepted-integration',files:w.closure.git.files||[],operations:w.closure.git.operations||[],revision:w.revision});
       }
       await this.store.cleanupWorkerHome(id);
+      this.changed();
       // 归档持久化先于槽位释放事实（P1审核项）：updateClosureArchive 未durable
       // 完成前 phase 不得 complete，另一pump不能在此await期间激活后继任务。
       await this.store.updateClosureArchive(id);

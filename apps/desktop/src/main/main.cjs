@@ -8,7 +8,7 @@ if (process.argv.includes('--nozeli-document')) {
   require('../agents/document-entry.cjs');
   return;
 }
-const { app, BaseWindow, View, WebContentsView, webContents, screen, ipcMain, Menu, shell, clipboard, ClipboardItem, nativeTheme, powerMonitor } = require('electron');
+const { app, BrowserWindow, BaseWindow, View, WebContentsView, webContents, screen, ipcMain, Menu, shell, clipboard, ClipboardItem, nativeTheme, powerMonitor } = require('electron');
 if (process.platform === 'linux') app.setDesktopName('io.nozeli.Nozeli.desktop');
 const {WorkspaceWindow} = require('./workspace-window.cjs');
 let dialog, session;
@@ -336,6 +336,8 @@ async function main() {
   workspaceNative=new WorkspaceNative({BrowserWindow:WorkspaceWindow,WebContentsView,screen,origin,preload:path.join(APP_ROOT,'src/preload/preload.cjs'),icon:path.join(APP_ROOT,'assets/nozeli.png'),userDataDir:app.getPath('userData'),host,hidden:HIDDEN,onClose:async r=>{const recovery=windowRecovery(r.win);if(recovery){recovery.requestClose();return;}await workspaceNative.flush([...workspaceNative.senders.values()]);if(agents?.busy()||managedAgents?.busy()){r.wc.send('nozeli:quit-confirm');return;}await managedAgents?.stop();await agents?.stopIdle?.();r.closing=true;for(const s of workspaceNative.projectRecords(r.projectId,r.windowId))workspaceNative.destroySurface(s);r.win.close();}});
   const {IsolatedPreviewManager}=await import('./isolated-preview.mjs');
   isolatedPreview=new IsolatedPreviewManager({View,WebContentsView,session,workspace:workspaceNative,host,managedAgents,dialog});
+  const {NativeReviewDiscussionManager,runReviewDiscard}=await import('./native-review-discussion.mjs');
+  workspaceNative.reviewDiscussions=new NativeReviewDiscussionManager({workspace:workspaceNative,BrowserWindow,preload:path.join(APP_ROOT,'src/preload/review-discussion.cjs'),managed:managedAgents});
   try{const saved=JSON.parse(await fs.readFile(path.join(app.getPath('userData'),'appearance.json'),'utf8'));if(['light','dark'].includes(saved.theme))nativeTheme.themeSource=saved.theme;isolatedPreview.setAppearance({palette:saved.palette,mode:nativeTheme.shouldUseDarkColors?'dark':'light'});}catch{}
   nativeTheme.on('updated',()=>{isolatedPreview.setAppearance({palette:isolatedPreview.appearance?.palette??'sage',mode:nativeTheme.shouldUseDarkColors?'dark':'light'});});
   workspaceNative.isolatedPreview=isolatedPreview;
@@ -410,6 +412,19 @@ async function main() {
         return {ok:true,value:{closing:true,forced:true}};
       }
       payload=await workspaceNative.resolvePayload(scope,op,payload??{});
+      if(op==='workspace.attention.presented'){
+        trusted(event,op,payload);
+        const generation=scope.generation,projectId=scope.projectId;
+        const present=()=>!scope.dead&&scope.generation===generation&&scope.projectId===projectId&&scope.wc.isFocused()&&scope.win.isVisible()&&!scope.win.isMinimized()&&(scope.role==='review-discussion'?workspaceNative.reviewDiscussions.visible(scope.discussionRow):scope.role==='surface'&&scope.kind==='conversation'&&scope.view.getVisible());
+        if(!present()||typeof payload.messageId!=='string'||typeof (payload.sessionId||payload.threadId)!=='string'||payload.projectId!==projectId)throw new HostError('PRESENTATION_SCOPE_DENIED','消息尚未在所属前台工作面呈现。');
+        const {entry}=await managedAgents.timelineQuery(projectId,'timeline.read',{id:payload.messageId});
+        if(!present()||!entry||entry.id!==payload.messageId||entry.sessionId!==(payload.sessionId||payload.threadId)||entry.speaker!=='agent'||entry.streaming||entry.availability==='read-required'||typeof entry.text!=='string'||!entry.text.trim())throw new HostError('PRESENTATION_IDENTITY_DENIED','消息身份或完整内容尚未确认。');
+        if(scope.role==='review-discussion'&&!scope.discussionRow.originalIds?.has(entry.id))throw new HostError('PRESENTATION_SCOPE_DENIED','消息不属于当前讨论。');
+        if(scope.role==='surface'&&entry.target!=='frontdesk')throw new HostError('PRESENTATION_SCOPE_DENIED','消息不属于当前主对话。');
+        const shell=workspaceNative.shell;
+        if(shell&&!shell.dead&&shell.projectId===projectId)shell.wc.send('nozeli:workspace-control',{type:'attention-presented',projectId,sessionId:entry.sessionId,threadId:entry.sessionId,messageId:entry.id,revision:entry.revision,objectId:scope.role==='review-discussion'?scope.discussionRow.objectId:entry.objectId});
+        return {ok:true,value:{presented:true}};
+      }
       if(op.startsWith('update.')){
         if(scope.role!=='shell')throw new HostError('IPC_DENIED','更新操作只允许来自主窗口设置。');
         if(op==='update.preferences'){if(!payload||Object.keys(payload).some(k=>k!=='enabled')||typeof payload.enabled!=='boolean')throw new HostError('INVALID_PAYLOAD','自动更新设置无效。');return {ok:true,value:await autoUpdater.setEnabled(payload.enabled)};}
@@ -495,6 +510,7 @@ async function main() {
         isolatedPreview?.setAppearance({palette:payload.palette,mode:nativeTheme.shouldUseDarkColors?'dark':'light'});
         return {ok:true,value:payload};
       }
+      if(['workspace.review.prepareDiscard','workspace.review.discard'].includes(op))return {ok:true,value:await runReviewDiscard({workspace:workspaceNative,managed:managedAgents,scope,payload:payload??{},prepare:op==='workspace.review.prepareDiscard'})};
       if(op==='workspace.review.decide'){
         if(scope.role!=='shell'&&!(scope.role==='surface'&&['report','history'].includes(scope.kind)))throw new HostError('IPC_DENIED','只有报告面或主窗口能执行审核决定。');
         if(!['accept','continue'].includes(payload?.action))throw new HostError('INVALID_PAYLOAD','审核决定只能是接受或继续；讨论使用审批专用入口。');
@@ -798,7 +814,7 @@ async function main() {
         return {ok:true,value:await exportTimelineOriginal({managed:managedAgents,dialog,scope,...payload})};
       }
       if(typeof op==='string'&&op.startsWith('managed.')){
-        const historyOnly=['managed.collaboration.status','managed.model.options','managed.status','managed.maintenance.status','managed.fault.status','managed.fault.results','managed.work.control.status','managed.history.list','managed.history.read','managed.artifact.read','managed.artifact.list','managed.timeline.page','managed.timeline.read','managed.timeline.request','managed.changes.list','managed.changes.read','managed.worker.history','managed.resident.history','managed.draft','managed.disposition','managed.terminal.screen','managed.review.read','managed.review.instruction.read','managed.review.discussion.read'].includes(op);
+        const historyOnly=['managed.collaboration.status','managed.model.options','managed.status','managed.maintenance.status','managed.fault.status','managed.fault.results','managed.work.control.status','managed.work.progress.read','managed.history.list','managed.history.read','managed.artifact.read','managed.artifact.list','managed.timeline.page','managed.timeline.read','managed.timeline.request','managed.changes.list','managed.changes.read','managed.worker.history','managed.resident.history','managed.draft','managed.disposition','managed.terminal.screen','managed.review.read','managed.review.instruction.read','managed.review.discussion.read'].includes(op);
         // Local disposition still passes sender/project/mutation authorization above.
         const localDisposition=['managed.end','managed.retry','managed.merge.consent','managed.merge.constraint','managed.deviation.resolve','managed.problem.resolve','managed.effect.response','managed.todo.manage','managed.attention.ack','managed.attention.respond','managed.attention.draft.read','managed.attention.draft.write','managed.review.save','managed.review.accept','managed.review.instruction.save'].includes(op);
         let blocked=piRuntimeError&&!historyOnly&&!localDisposition?piRuntimeError:null;
@@ -808,7 +824,7 @@ async function main() {
         // stray surface cannot act across project boundaries.
         if(op==='managed.fault.release'&&scope.role!=='shell')throw new HostError('IPC_DENIED','跨项目故障解除仅允许主窗口。');
         if(op==='managed.review.discussion.send')return {ok:true,value:await runReviewDecision({workspace:workspaceNative,managed:managedAgents,host,payload:{...businessPayload,action:'discuss'}})};
-        return {ok:true,value:await managedAgents.invoke(op,businessPayload)};
+        const value=await managedAgents.invoke(op,businessPayload);workspaceNative.reviewDiscussions?.capture(scope,op,value);return {ok:true,value};
       }
       if (Object.hasOwn(agentHandlers, op)) return { ok: true, value: await agentHandlers[op](businessPayload) };
       const handler = Object.hasOwn(ops, op) ? ops[op] : null;

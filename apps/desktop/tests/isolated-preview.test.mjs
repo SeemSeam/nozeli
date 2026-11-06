@@ -6,6 +6,7 @@ import {previewPath,previewDependencies,previewUrlMember,previewCsp,OFFLINE_BOOT
 import {createHash} from 'node:crypto';
 import {documentResourceId} from '../src/domain/document-source.mjs';
 import {WorkspaceNative} from '../src/main/workspace-native.mjs';
+import {createGeometryQueue} from '../src/renderer/isolated-geometry.mjs';
 
 test('manifest path authority rejects traversal, devices, alternate separators and encodings',()=>{
   for(const value of ['../x.html','/x.html','a/../x.html','a\\x.html','x.html:stream','%2e%2e/x.html','a//b.html','CON.html','.nozeli/x.html','a./x.html','http://localhost/x.html'])assert.throws(()=>previewPath(value));
@@ -258,18 +259,34 @@ test('fully scrolled-out report hides without covering review controls',async()=
  h.manager.bounds(slot,h.payload.bounds);assert.equal(slot.view.visible,true);
 });
 
-test('document-end links expose only frozen artifacts and explicit scoped review intent without changing source',async()=>{
- const h=harness(),original='<html><body><p>Final paragraph</p></body></html>',relPath='source<&>.txt';
- h.manager.managedAgents.reportSource=async()=>({report:{format:'html-static'},read:async()=>Buffer.from(original),readManifest:async()=>({references:[]}),listArtifacts:async()=>({files:[{relPath}]})});
+test('document-end appendix is expanded and routes frozen file/diff/details without changing original bytes',async()=>{
+ const h=harness(),original='<html><body><p>Final paragraph</p></body></html>',relPath='source<&>.txt',digest='a'.repeat(64);
+ h.manager.managedAgents.reportSource=async()=>({report:{format:'html-static'},read:async()=>Buffer.from(original),readManifest:async()=>({references:[{id:'0',href:'method.csv',kind:'artifact',relPath:'method.csv'}]}),listArtifacts:async()=>({files:[{relPath,digest}]}),readEndMatter:async()=>({projectId:'p',objectId:'object',generatedAt:'2026-11-06T12:00:00.000Z',publicationNumber:3,historical:true,metadataState:'verified',files:[{relPath,candidateDigest:digest,change:'modified',draftRevision:2,draftDigest:'b'.repeat(64)}]})});
  await h.manager.invoke(h.scope,'isolated-preview.open',{...h.payload,endMatter:true});const slot=[...h.manager.slots.values()][0],wc=h.views[0].webContents;
  const served=await(await h.sessions[0].handler({url:wc.url,method:'GET'})).text();assert(served.indexOf('Final paragraph')<served.indexOf('data-nozeli-report-endmatter'));assert(served.includes('source&lt;&amp;&gt;.txt'));assert.equal(slot.files.get('report.html').bytes.toString(),original);assert.equal(h.views[0].options.webPreferences.javascript,false);
- const event={isMainFrame:true,preventDefault(){}};wc.emit('will-frame-navigate',event,slot.endBase+'review');wc.emit('will-frame-navigate',event,slot.endBase+'file/0');
- assert.deepEqual(h.calls.filter(row=>row[1]?.type==='end-matter').map(row=>({action:row[1].action,relPath:row[1].relPath})),[{action:'review',relPath:undefined},{action:'file',relPath}]);
- wc.emit('will-frame-navigate',event,slot.endBase+'file/1');wc.emit('will-frame-navigate',event,slot.origin+'/__nozeli_report_end__/forged/review');assert.equal(h.calls.filter(row=>row[1]?.type==='end-matter').length,2);
+ for(const content of ['成果文件（1）','冻结交付 Diff','有已保存人工稿','未单独提供方法材料','未单独提供数据材料','报告已有冻结引用（未分类）','报告 V3 · 历史版本','打开时的冻结清单／人工稿核验快照','2026-11-06T12:00:00.000Z','当前未保存等风险见审核栏'])assert.ok(served.includes(content),content);
+ assert.equal(served.includes('<details'),false);assert.equal(served.includes('action="review"'),false);
+ const event={isMainFrame:true,preventDefault(){}};for(const action of ['file/0','diff/0','details'])wc.emit('will-frame-navigate',event,slot.endBase+action);
+ assert.deepEqual(h.calls.filter(row=>row[1]?.type==='end-matter').map(row=>({action:row[1].action,...(row[1].relPath?{relPath:row[1].relPath}:{})})),[{action:'file',relPath},{action:'diff',relPath},{action:'details'}]);
+ for(const target of ['file/1','diff/-1','file/00','file/0?x=1','file/0#x','review','accept'])wc.emit('will-frame-navigate',event,slot.endBase+target);
+ wc.emit('will-frame-navigate',event,slot.origin+'/__nozeli_report_end__/forged/details');
+ wc.emit('will-frame-navigate',{...event,isMainFrame:false},slot.endBase+'details');
+ assert.equal(h.calls.filter(row=>row[1]?.type==='end-matter').length,3);assert.ok(h.calls.some(row=>row[1]?.type==='error'&&/入口无效/.test(row[1].message)));
+ await h.manager.invoke(h.scope,'isolated-preview.update',{...h.payload,generation:2,endMatter:true});
+ wc.emit('will-frame-navigate',event,slot.endBase+'file/0');
+ const current=[...h.manager.slots.values()][0];current.view.webContents.emit('will-frame-navigate',event,slot.endBase+'details');
+ assert.equal(h.calls.filter(row=>row[1]?.type==='end-matter').length,3);assert.ok(h.calls.some(row=>row[1]?.generation===2&&/已过期/.test(row[1].message||'')));
 });
 
-test('read-only end matter cannot expose review commands and ordinary previews have no footer',async()=>{
- for(const endMatter of ['files',undefined]){const h=harness(),source=await h.manager.managedAgents.reportSource();source.listArtifacts=async()=>({files:[{relPath:'frozen.txt'}]});h.manager.managedAgents.reportSource=async()=>source;await h.manager.invoke(h.scope,'isolated-preview.open',{...h.payload,endMatter});const slot=[...h.manager.slots.values()][0],wc=h.views[0].webContents,served=await(await h.sessions[0].handler({url:wc.url,method:'GET'})).text();assert.equal(served.includes('data-nozeli-endmatter-action="review"'),false);wc.emit('will-frame-navigate',{isMainFrame:true,preventDefault(){}},slot.endBase+'review');assert.equal(h.calls.filter(row=>row[1]?.type==='end-matter').length,0);}
+test('read-only appendices expose no decisions and handler-free reports have no dead links',async()=>{
+ for(const endMatter of ['files',undefined]){const h=harness(),source=await h.manager.managedAgents.reportSource();source.listArtifacts=async()=>({files:[{relPath:'frozen.txt'}]});h.manager.managedAgents.reportSource=async()=>source;await h.manager.invoke(h.scope,'isolated-preview.open',{...h.payload,endMatter});const slot=[...h.manager.slots.values()][0],wc=h.views[0].webContents,served=await(await h.sessions[0].handler({url:wc.url,method:'GET'})).text();assert.equal(served.includes('data-nozeli-endmatter-action="review"'),false);assert.equal(served.includes('data-nozeli-report-endmatter'),endMatter==='files');wc.emit('will-frame-navigate',{isMainFrame:true,preventDefault(){}},slot.endBase+'review');assert.equal(h.calls.filter(row=>row[1]?.type==='end-matter').length,0);}
+});
+
+test('appendix refuses cross-object metadata and never infers classification or human drafts from filenames',async()=>{
+ const h=harness(),source=await h.manager.managedAgents.reportSource();source.listArtifacts=async()=>({files:[{relPath:'method.csv',digest:'a'.repeat(64)}]});source.readEndMatter=async()=>({projectId:'p',objectId:'other',files:[]});
+ await assert.rejects(h.manager.invoke(h.scope,'isolated-preview.open',{...h.payload,endMatter:true}),/附录来源/);
+ source.readEndMatter=async()=>({projectId:'p',objectId:'object',metadataState:'verified',files:[{relPath:'method.csv',candidateDigest:'wrong',draftRevision:1,draftDigest:'b'.repeat(64),change:'added'}]});
+ await h.manager.invoke(h.scope,'isolated-preview.open',{...h.payload,generation:2,endMatter:true});const wc=h.views[0].webContents,served=await(await h.sessions.at(-1).handler({url:wc.url,method:'GET'})).text();assert.ok(served.includes('修改类型未核实'));assert.ok(served.includes('未单独提供方法材料'));assert.equal(served.includes('有已保存人工稿'),false);
 });
 
 test('review document capture freezes the source-scoped buffer and frozen dependencies, never project disk',async()=>{
@@ -303,6 +320,38 @@ test('review document capture freezes the source-scoped buffer and frozen depend
  adapterUsed=false;
  const projectPreview=await capturePreview({host,workspace,projectId:'p',entryPath:'candidate.html'});assert.equal(projectPreview.files.get('candidate.html').bytes.toString(),'PROJECT_SAME_PATH_MUST_NOT_PREVIEW');
  assert.equal(adapterUsed,false);assert.deepEqual(workspace.synced.at(-1).documentSource,{type:'project'});
+});
+
+test('geometry queue has one in flight and one latest rectangle, then sends nothing while stationary',async()=>{
+ const sent=[],replies=[],errors=[],owner={key:'report',generation:1,windowId:'main',surfaceGeneration:1};
+ const queue=createGeometryQueue({current:()=>owner,send:payload=>{sent.push(payload);return new Promise(resolve=>replies.push(()=>resolve({ok:true,value:{applied:true,boundsSequence:payload.boundsSequence,windowId:payload.windowId,surfaceGeneration:payload.surfaceGeneration}})));},onError:error=>errors.push(error)});
+ const rect=x=>({x,y:0,width:300,height:200});queue.reset(rect(0));await queue.request(rect(0));assert.equal(sent.length,0);
+ const first=queue.request(rect(1)),middle=queue.request(rect(2)),latest=queue.request(rect(3));assert.equal(sent.length,1);
+ replies.shift()();await Promise.resolve();await Promise.resolve();assert.equal(sent.length,2);assert.equal(sent[1].bounds.x,3);
+ replies.shift()();await Promise.all([first,middle,latest]);
+ for(let i=0;i<50;i++)await queue.request(rect(3));assert.equal(sent.length,2);assert.deepEqual(errors,[]);queue.dispose();
+});
+
+test('layout stale sequences and changed owner epochs reject visibly rather than reporting applied',async()=>{
+ const errors=[];let owner={key:'r',windowId:'first',surfaceGeneration:1};let reply;
+ const queue=createGeometryQueue({current:()=>owner,send:()=>new Promise(resolve=>reply=resolve),onError:error=>errors.push(error.message)});
+ const old=queue.request({x:0});owner={...owner,windowId:'second',surfaceGeneration:2};reply({ok:true,value:{applied:true,boundsSequence:1,windowId:'first',surfaceGeneration:1}});await assert.rejects(old,/归属已变化/);
+ const stale=queue.request({x:1});reply({ok:true,value:{stale:true,boundsSequence:1}});await assert.rejects(stale,/过期或序号/);assert.equal(errors.length,2);queue.dispose();
+});
+
+test('appendix includes unreferenced added modified deleted and binary targets from verified frozen review metadata',async()=>{
+ const h=harness(),source=await h.manager.managedAgents.reportSource();source.listArtifacts=async()=>({files:[]});
+ source.readEndMatter=async()=>({projectId:'p',objectId:'object',metadataState:'verified',files:[
+  {relPath:'新增.txt',change:'added',candidateDigest:'a'.repeat(64)},
+  {relPath:'changed.txt',change:'modified',candidateDigest:'b'.repeat(64),baselineUnavailable:true},
+  {relPath:'deleted.txt',change:'removed',candidateDigest:null,baselineDigest:'c'.repeat(64)},
+  {relPath:'binary.bin',change:'modified',candidateDigest:'d'.repeat(64),binary:true}
+ ]});
+ await h.manager.invoke(h.scope,'isolated-preview.open',{...h.payload,endMatter:true});const slot=[...h.manager.slots.values()][0],wc=h.views[0].webContents;
+ const served=await(await h.sessions[0].handler({url:wc.url,method:'GET'})).text();
+ for(const label of ['成果文件（4）','新增.txt','删除 · 查看成果显示冻结基线','冻结基线不可用','二进制，不支持文本比较'])assert.ok(served.includes(label),label);
+ wc.emit('will-frame-navigate',{isMainFrame:true,preventDefault(){}},slot.endBase+'diff/2');
+ assert.equal(h.calls.find(row=>row[1]?.type==='end-matter')[1].relPath,'deleted.txt');
 });
 
 test('preview open binds to the owning surface document source and rejects foreign publication redirection',async()=>{

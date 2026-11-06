@@ -29,14 +29,14 @@ export function localWindowRect(state, measured) {
 export function mountLocalWindow({layer,key,title,body,actions,state=defaultLocalWindowView(),environment=viewportWindowEnvironment(layer),commitView,beforeHide,onError=()=>{}}) {
   const doc = layer.ownerDocument, win = doc.defaultView, reg = registry(doc), token = Symbol(), cleanups = [];
   let view = validLocalWindowView(state) ? structuredClone(state) : defaultLocalWindowView(), durable = structuredClone(view), measured, rect, confirmed = null;
-  let gesture = null, frame = 0, sequence = 0, disposed = false, composing = false, entry = null, dirty = false, conflict = null, failure = null, keyboardTimer = 0;
-  let saves = Promise.resolve(), publications = Promise.resolve();
+  let gesture = null, frame = 0, sequence = 0, disposed = false, composing = false, entry = null, dirty = false, conflict = null, failure = null, operationFailure = null, keyboardTimer = 0;
+  let saves = Promise.resolve(), publications = Promise.resolve(), visibility = Promise.resolve();
   const node = doc.createElement('section'); node.className = 'local-window'; node.dataset.localWindow = JSON.stringify(key); node.setAttribute('aria-label',typeof title === 'string' ? title : '局部窗口');
   node.dataset.localWindowOwnerKind=key.ownerKind;node.dataset.localWindowOwnerId=key.ownerId;node.dataset.localWindowSurfaceId=key.surfaceId;
   const header = doc.createElement('div'); header.className = 'local-window-header'; header.tabIndex = 0; header.setAttribute('aria-label','移动窗口：方向键移动，Shift微调，Home恢复默认位置');
   header.dataset.localWindowHeader='';
   const caption = doc.createElement('span'); caption.className = 'local-window-title'; if (typeof title === 'string') caption.textContent = title; else if (title) caption.append(title);
-  const button = (label,action) => { const b=doc.createElement('button'); b.type='button'; b.textContent=label; b.addEventListener('click',()=>{void Promise.resolve(action()).catch(report);}); return b; };
+  const button = (label,action) => { const b=doc.createElement('button'); b.type='button'; b.textContent=label; b.addEventListener('click',()=>{void Promise.resolve().then(action).catch(reportOperation);}); return b; };
   const fold = button('收起',()=>api.collapse(!view.collapsed)), close = button('关闭',()=>api.hide());
   fold.dataset.localWindowCollapse='';close.dataset.localWindowHide='';
   header.append(caption,fold,close);
@@ -46,23 +46,26 @@ export function mountLocalWindow({layer,key,title,body,actions,state=defaultLoca
   const resize=doc.createElement('button'); resize.type='button'; resize.className='local-window-resize'; resize.setAttribute('aria-label','调整窗口大小：方向键，Shift微调');
   resize.dataset.localWindowResize='';
   node.append(header,content,notice,resize); layer.append(node);
-  function report(error) { failure=error; errorText.textContent=error?.message || '窗口位置尚未保存；内容已保留。'; notice.hidden=false; reload.hidden=!conflict; onError(error); }
-  function publish() {
-    const current=++sequence, epoch=measured.epoch, row={key,epoch,sequence:current,rect:{...rect}};
+  function paintNotice() {const error=failure||operationFailure;notice.hidden=!error;errorText.textContent=error?.message||'';reload.hidden=!conflict;retry.hidden=!failure;}
+  function report(error) {failure=error;paintNotice();onError(error);}
+  function reportOperation(error) {if(error===failure||error===operationFailure)return;operationFailure=error;paintNotice();onError(error);}
+  function paintRect(value) {const painted=environment.paintRect?.(value,measured)??value;Object.assign(node.style,{left:painted.x+'px',top:painted.y+'px',width:painted.width+'px',height:painted.height+'px'});}
+  function publish(geometryRetries=0) {
+    const current=++sequence, frame=measured, epoch=frame.epoch, row={key,epoch,sequence:current,rect:{...rect}};
     const visible=!view.hidden&&!disposed&&node.isConnected&&win.getComputedStyle(node).visibility!=='hidden'&&node.getClientRects().length>0;
     if(!visible)reg.rows.delete(token);else reg.rows.set(token,row);
     const rows=localWindowOcclusions(doc);
-    const run=Promise.all([...reg.listeners].map(listener=>Promise.resolve().then(()=>listener(rows))).concat(environment.publishOcclusion ? [Promise.resolve().then(()=>environment.publishOcclusion({...row,visible}))] : []));
-    publications=run.then(()=>{if(current===sequence&&!disposed&&epoch===measured.epoch)confirmed={rect:{...row.rect},hidden:view.hidden};},error=>{if(current!==sequence||disposed||epoch!==measured.epoch)return;cancel(false);if(confirmed){rect={...confirmed.rect};Object.assign(node.style,{left:rect.x+'px',top:rect.y+'px',width:rect.width+'px',height:rect.height+'px'});node.hidden=confirmed.hidden;if(confirmed.hidden)reg.rows.delete(token);else reg.rows.set(token,{...row,rect:{...rect}});}report(error);throw error;});
+    const run=Promise.all([...reg.listeners].map(listener=>Promise.resolve().then(()=>listener(rows))).concat(environment.publishOcclusion ? [Promise.resolve().then(()=>environment.publishOcclusion({...row,visible},frame))] : []));
+    publications=run.then(()=>{if(current===sequence&&!disposed&&epoch===measured.epoch)confirmed={rect:{...row.rect},hidden:view.hidden};},error=>{if(disposed)return;if(current!==sequence||epoch!==measured.epoch)return publications;if(error.code==='REVIEW_GEOMETRY_STALE'&&geometryRetries===0&&environment.measure().epoch>epoch)return paint(1);cancel(false);if(confirmed){rect={...confirmed.rect};paintRect(rect);node.hidden=confirmed.hidden;if(confirmed.hidden)reg.rows.delete(token);else reg.rows.set(token,{...row,rect:{...rect}});}report(error);throw error;});
     publications.catch(()=>{}); return publications;
   }
-  function paint() {
+  function paint(geometryRetries=0) {
     if(disposed)return; const next=environment.measure();
     if(gesture && measured && next.epoch!==measured.epoch)cancel(false);
     measured=next;rect=localWindowRect(view,measured);
-    Object.assign(node.style,{left:rect.x+'px',top:rect.y+'px',width:rect.width+'px',height:rect.height+'px'});
+    paintRect(rect);
     node.hidden=view.hidden;node.classList.toggle('is-collapsed',view.collapsed);content.hidden=view.collapsed;resize.hidden=view.collapsed;fold.textContent=view.collapsed?'展开':'收起';fold.setAttribute('aria-expanded',String(!view.collapsed));
-    return publish();
+    return publish(geometryRetries);
   }
   function schedule() { if(!frame)frame=win.requestAnimationFrame(()=>{frame=0;paint();}); }
   function persist(reason) {
@@ -78,7 +81,7 @@ export function mountLocalWindow({layer,key,title,body,actions,state=defaultLoca
       if(!Number.isSafeInteger(revision))throw Error('窗口位置保存未获确认。');
       durable={...next,revision};view.revision=revision;
       if(JSON.stringify({...view,revision})===JSON.stringify(durable))dirty=false;
-      failure=null;notice.hidden=true;return revision;
+      failure=null;paintNotice();return revision;
     }).catch(error=>{report(error);throw error;});
     saves=run;run.catch(()=>{});return run;
   }
@@ -87,10 +90,10 @@ export function mountLocalWindow({layer,key,title,body,actions,state=defaultLoca
   function down(event,mode) {
     if(gesture||event.button!==0||event.isPrimary===false||composing)return;
     if(mode==='move'&&event.composedPath().some(el=>el!==header&&el!==caption&&el.matches?.('button,input,textarea,select,a,summary,[contenteditable]:not([contenteditable="false"]),[role="button"],[role="textbox"],[role="menuitem"],[data-no-drag]')))return;
-    const start=environment.toLocal(event.clientX,event.clientY); gesture={id:event.pointerId,target:event.currentTarget,mode,start,rect:{...rect},original:structuredClone(view),moved:false};
+    const start=environment.toLocal(event.clientX,event.clientY,event); gesture={id:event.pointerId,target:event.currentTarget,mode,start,rect:{...rect},original:structuredClone(view),moved:false};
     event.currentTarget.setPointerCapture(event.pointerId);node.style.zIndex=String(++reg.z);event.preventDefault();
   }
-  function moving(event) { const g=gesture;if(!g||g.id!==event.pointerId)return;const point=environment.toLocal(event.clientX,event.clientY),dx=point.x-g.start.x,dy=point.y-g.start.y;if(!g.moved&&Math.hypot(dx,dy)<3)return;g.moved=true;if(g.mode==='move')view.placement={mode:'manual',x:g.rect.x+dx,y:g.rect.y+dy};else view.size={width:Math.max(160,g.rect.width+dx),height:Math.max(100,g.rect.height+dy)};schedule();event.preventDefault(); }
+  function moving(event) { const g=gesture;if(!g||g.id!==event.pointerId)return;const point=environment.toLocal(event.clientX,event.clientY,event),dx=point.x-g.start.x,dy=point.y-g.start.y;if(!g.moved&&Math.hypot(dx,dy)<3)return;g.moved=true;if(g.mode==='move')view.placement={mode:'manual',x:g.rect.x+dx,y:g.rect.y+dy};else view.size={width:Math.max(160,g.rect.width+dx),height:Math.max(100,g.rect.height+dy)};schedule();event.preventDefault(); }
   function up(event) { if(!gesture||event.pointerId!==gesture.id)return;const {moved,mode}=gesture;release();if(frame){win.cancelAnimationFrame(frame);frame=0;}if(moved){paint();void persist(mode).catch(()=>{});} }
   function keys(event,mode) { if(event.target!==event.currentTarget||event.isComposing||composing)return;if(event.key==='Home'){event.preventDefault();void api.reset().catch(()=>{});return;}if(!event.key.startsWith('Arrow'))return;event.preventDefault();const step=event.shiftKey?1:10,dx=event.key==='ArrowLeft'?-step:event.key==='ArrowRight'?step:0,dy=event.key==='ArrowUp'?-step:event.key==='ArrowDown'?step:0;if(mode==='move')view.placement={mode:'manual',x:rect.x+dx,y:rect.y+dy};else view.size={width:Math.max(160,rect.width+dx),height:Math.max(100,rect.height+dy)};paint();dirty=true;clearTimeout(keyboardTimer);keyboardTimer=setTimeout(()=>{keyboardTimer=0;void persist(mode).catch(()=>{});},180); }
   function listen(target,type,fn,options) { target.addEventListener(type,fn,options);cleanups.push(()=>target.removeEventListener(type,fn,options)); }
@@ -100,13 +103,15 @@ export function mountLocalWindow({layer,key,title,body,actions,state=defaultLoca
   listen(node,'keydown',event=>{if(event.key!=='Escape'||event.isComposing||composing||event.defaultPrevented)return;if(gesture){event.preventDefault();event.stopPropagation();cancel();return;}if([...doc.querySelectorAll('dialog[open],[aria-modal="true"]:not([hidden]),.nozeli-context-menu:not([hidden])')].some(overlay=>overlay.getClientRects().length&&!overlay.contains(node)))return;event.preventDefault();event.stopPropagation();void api.hide().catch(()=>{});});
   listen(node,'pointerdown',()=>{node.style.zIndex=String(++reg.z);});
   let unsubscribe=environment.subscribe?.(schedule);
+  function transition(run) {const next=visibility.catch(()=>{}).then(run);visibility=next;return next;}
+  async function flushStable() {cancel();if(keyboardTimer){clearTimeout(keyboardTimer);keyboardTimer=0;await persist('move');}await saves;await publications;if(failure)throw failure;}
   const api={node,header,snapshot:()=>structuredClone(view),
-    async show(opener) {entry=opener?.focus?opener:doc.activeElement;view.hidden=false;view.collapsed=false;await paint();return persist('hide');},
+    show(opener) {return transition(async()=>{entry=opener?.focus?opener:doc.activeElement;view.hidden=false;view.collapsed=false;await paint();return persist('hide');});},
     async collapse(value=true) {cancel();view.collapsed=value;await paint();return persist('collapse');},
-    async hide() {if(composing)throw Error('请先完成输入法组合，草稿仍保留。');await beforeHide?.();await api.flush();cancel();view.hidden=true;await paint();try{await persist('hide');}catch(error){view.hidden=false;paint();throw error;}entry?.focus?.({preventScroll:true});},
+    hide() {return transition(async()=>{try{if(composing)throw Error('请先完成输入法组合，草稿仍保留。');await beforeHide?.();}catch(error){reportOperation(error);throw error;}operationFailure=null;paintNotice();await flushStable();cancel();view.hidden=true;await paint();try{await persist('hide');}catch(error){view.hidden=false;paint();throw error;}entry?.focus?.({preventScroll:true});});},
     async reset() {cancel();view.placement={mode:'auto'};view.size=null;await paint();return persist('reset');},
     update(value={}) {if(value.title!==undefined){caption.replaceChildren();if(typeof value.title==='string')caption.textContent=value.title;else caption.append(value.title);}if(value.state&&validLocalWindowView(value.state)&&!gesture&&!dirty){view=structuredClone(value.state);durable=structuredClone(view);}if(value.environment){cancel();unsubscribe?.();environment=value.environment;unsubscribe=environment.subscribe?.(schedule);}if(value.error)report(value.error);paint();},
-    async flush() {cancel();if(keyboardTimer){clearTimeout(keyboardTimer);keyboardTimer=0;await persist('move');}await saves;await publications;if(failure)throw failure;},
+    async flush() {await visibility.catch(()=>{});await flushStable();},
     async dispose() {await api.flush();cancel(false);const previousHidden=view.hidden;view.hidden=true;try{await paint();}catch(error){view.hidden=previousHidden;throw error;}disposed=true;if(frame)win.cancelAnimationFrame(frame);clearTimeout(keyboardTimer);unsubscribe?.();cleanups.forEach(fn=>fn());reg.rows.delete(token);node.remove();}
   };
   node.localWindow=api;

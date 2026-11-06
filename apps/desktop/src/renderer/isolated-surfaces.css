@@ -1,7 +1,9 @@
-.isolated-report { display:flex;flex-direction:column;min-height:0;flex:1 1 0; }
+.isolated-report { display:flex;flex-direction:column;min-height:0;min-width:0;flex:1 1 0;overflow:hidden; }
+.isolated-report>.isolated-viewport { min-height:0;min-width:0; }
 .isolated-controls { display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px;flex:none; }
 .isolated-controls label { display:flex;align-items:center;gap:4px; }
-.isolated-status { font-size:12px;padding:6px 10px;margin:0;flex:none;overflow-wrap:anywhere; }
+.isolated-status { font-size:13px;line-height:1.5;padding:6px 10px;margin:0;flex:none;overflow-wrap:anywhere; }
+.isolated-status:empty { display:none; }
 .isolated-status[data-state="error"] { border-inline-start:3px solid #bf642d; }
 .isolated-viewport { flex:1;min-height:180px;position:relative;background:Canvas;color:CanvasText; }
 .web-preview-toolbar { border-bottom:1px solid var(--border,#8886);padding:4px 8px;gap:8px; }

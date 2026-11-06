@@ -65,7 +65,10 @@ const workspaceScope = workspaceBootstrap.value;
 window.__workspaceScope = workspaceScope;
 document.documentElement.dataset.workspaceRole = workspaceScope.role;
 document.documentElement.dataset.workspaceKind = workspaceScope.kind || '';
-if(workspaceScope.role==='surface'&&workspaceScope.kind==='terminal'){
+if(workspaceScope.role==='review-discussion'){
+ const {mountNativeReviewDiscussion}=await import('./review-discussion.mjs');
+ await mountNativeReviewDiscussion({root:document.getElementById('app'),scope:workspaceScope,invoke:window.nozeli.invoke,subscribe:window.nozeli.subscribe});
+}else if(workspaceScope.role==='surface'&&workspaceScope.kind==='terminal'){
   // Retired terminal panes remain explicit instead of showing a fabricated view.
   // Keep the ready handshake so native window lifecycle remains observable.
   const root=document.createElement('section');root.className='work-terminal-removed';root.setAttribute('aria-label','终端工作面已移除');

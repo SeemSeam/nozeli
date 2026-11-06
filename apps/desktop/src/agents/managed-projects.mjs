@@ -790,7 +790,16 @@ export class ManagedProjects {
  controller(id){const c=this.controllers.get(id);if(!c?.started||this.stopping)throw new Error('项目三角色尚未就绪');return c;}
  async artifactList(id,objectId){
   const project=await this.host.requireRegisteredProject(id),controller=this.controllers.get(id);
-  return managedArtifact({storage:this.host.storage,project,runtime:await managedRuntime(this.host.storage,id),controller,currentController:()=>this.controllers.get(id)},{objectId});
+  const options={storage:this.host.storage,project,runtime:await managedRuntime(this.host.storage,id),controller,currentController:()=>this.controllers.get(id)};
+  const result=await managedArtifact(options,{objectId});
+  // Listing frozen artifacts must remain available even when this object's
+  // report body/manifest cannot support a verified presentation appendix.
+  try{
+    const source=await managedReportSource({...options,objectId});
+    return {...result,endMatter:await source.readEndMatter()};
+  }catch(error){
+    return {...result,endMatter:{projectId:id,objectId,metadataState:'unverified',metadataError:error.message,files:result.files.map(file=>({relPath:file.relPath,candidateDigest:file.digest,change:'unknown'}))}};
+  }
  }
  async artifactRead(id,{objectId,relPath}){
   const project=await this.host.requireRegisteredProject(id),controller=this.controllers.get(id);

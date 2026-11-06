@@ -20,20 +20,36 @@ import {sessionMessages} from './session-store.mjs';
  * inside it — never one bubble per message, never merged rounds. */
 export function mountThreadTranscript(transcript,{welcome=null,scrollContainer=transcript}={}){
   const rows=new Map(),readers=new Set();
+  const seenIds=new Set();let initialized=false,composing=false,lastEntries=[];
+  const newMessages=document.createElement('button');newMessages.type='button';newMessages.className='tag-new-messages';newMessages.textContent='有新消息 · 查看';newMessages.hidden=true;
+  newMessages.onclick=()=>{newMessages.hidden=true;scrollContainer.scrollTop=scrollContainer.scrollHeight;};
+  const selectionHeld=node=>{const selection=document.getSelection?.();return Boolean(selection&&!selection.isCollapsed&&(!node||node.contains?.(selection.anchorNode)||node.contains?.(selection.focusNode)||selection.containsNode?.(node,true)));};
+  const onScroll=()=>{if(scrollContainer.scrollHeight-scrollContainer.clientHeight-scrollContainer.scrollTop<32&&!selectionHeld())newMessages.hidden=true;};
+  const onCompositionStart=()=>{composing=true;},onCompositionEnd=()=>{composing=false;};
+  const surface=scrollContainer.closest?.('.tag-chat-window')||scrollContainer;
+  surface.addEventListener('compositionstart',onCompositionStart);surface.addEventListener('compositionend',onCompositionEnd);scrollContainer.addEventListener('scroll',onScroll);
+  const onSelectionChange=()=>{if(!selectionHeld()&&!composing)render(lastEntries);};
+  document.addEventListener?.('selectionchange',onSelectionChange);
   function render(entries){
-    const atTail=scrollContainer.scrollHeight-scrollContainer.clientHeight-scrollContainer.scrollTop<32,scrollTop=scrollContainer.scrollTop;
+    lastEntries=entries;
+    const active=document.activeElement,editing=Boolean(active&&surface.contains?.(active)&&(/^(TEXTAREA|INPUT)$/.test(active.tagName)||active.isContentEditable));
+    const atTail=scrollContainer.scrollHeight-scrollContainer.clientHeight-scrollContainer.scrollTop<32&&!selectionHeld()&&!composing&&!editing,scrollTop=scrollContainer.scrollTop;
+    const top=scrollContainer.getBoundingClientRect?.().top??0;
+    let anchor=null,added=false;
+    for(const row of rows.values())for(const segment of row.segments.values()){const rect=segment.node.getBoundingClientRect?.();if(!anchor&&rect&&rect.bottom>top&&segment.node.getClientRects?.().length)anchor={node:segment.node,offset:rect.top-top};}
+    const observeId=id=>{if(id==null)return;const key=String(id);if(initialized&&!seenIds.has(key))added=true;seenIds.add(key);};
     const retained=new Set();let position=0;
     const bubble=(key,role,requestId,labelText)=>{
       retained.add(key);let row=rows.get(key);
       if(!row){const node=document.createElement('span'),label=document.createElement('strong');node.className='tag-message tag-message-'+role;node.append(label);row={node,label,body:null,segments:new Map()};rows.set(key,row);}
-      row.label.textContent=labelText||(role==='user'?'你':'前台');
+      const label=labelText||(role==='user'?'你':'前台');if(row.label.textContent!==label&&!selectionHeld(row.label))row.label.textContent=label;
       if(requestId)row.node.dataset.requestId=requestId;else delete row.node.dataset.requestId;
       if(transcript.children[position]!==row.node)transcript.insertBefore(row.node,transcript.children[position]||null);position++;
       return row;
     };
     const text=(row,value)=>{
       if(!row.body){const node=document.createElement('span');node.className='tag-markdown';row.node.append(node);row.body={node,value:null};}
-      if(row.body.value!==value){renderTagMarkdown(row.body.node,value);row.body.value=value;}
+      if(row.body.value!==value&&!selectionHeld(row.body.node)){renderTagMarkdown(row.body.node,value);row.body.value=value;}
     };
     /** Keyed message segments inside one round bubble. Identity is the host
      * message id (streaming→durable replacement swaps exactly one segment,
@@ -46,22 +62,24 @@ export function mountThreadTranscript(transcript,{welcome=null,scrollContainer=t
       const seat=node=>{const at=host.children[slot];if(at!==node)host.insertBefore(node,at||null);slot++;};
       for(const message of messages){
         const key=String(message.id);kept.add(key);
+        observeId(message.id);
         let segment=row.segments.get(key);
         if(!segment){const node=document.createElement('span');node.className='tag-markdown';node.dataset.messageId=key;segment={node,value:null,reader:null,held:false};row.segments.set(key,segment);}
         const value=message.text||'',hold=message.availability==='read-required';
         segment.held=hold;
-        if(segment.value!==value&&!(segment.held&&segment.value)){renderTagMarkdown(segment.node,value);segment.value=value;}
+        if(segment.value!==value&&!(segment.held&&segment.value)&&!selectionHeld(segment.node)){renderTagMarkdown(segment.node,value);segment.value=value;}
         seat(segment.node);
         if(hold&&message.readReply&&!segment.reader){segment.reader=makeOriginalReplyReader(message.readReply);readers.add(segment.reader);}
         if(segment.reader){seat(segment.reader);segment.reader.attach?.();}
       }
-      for(const [key,segment]of row.segments)if(!kept.has(key)){if(segment.reader){readers.delete(segment.reader);segment.reader.dispose?.();segment.reader.remove();}segment.node.remove();row.segments.delete(key);}
+      for(const [key,segment]of row.segments)if(!kept.has(key)&&!selectionHeld(segment.node)){if(segment.reader){readers.delete(segment.reader);segment.reader.dispose?.();segment.reader.remove();}segment.node.remove();row.segments.delete(key);}
     };
     entries.forEach((entry,index)=>{
       const key=entry.key||entry.requestId||'round-'+index;
       if(entry.event){
         const event=entry.event,row=bubble(key+':event','event',entry.requestId,event.label);
         row.node.dataset.messageId=event.id;
+        observeId(event.id);
         if(event.objectId)row.node.dataset.objectId=event.objectId;
         text(row,[event.publicationNumber?`V${event.publicationNumber}`:'',event.text].filter(Boolean).join(' · '));
         return;
@@ -70,18 +88,22 @@ export function mountThreadTranscript(transcript,{welcome=null,scrollContainer=t
       if(entry.processEntries?.length){
         const row=bubble(key+':process','process',entry.requestId,'执行过程');
         if(!row.process){const detail=document.createElement('details'),summary=document.createElement('summary'),body=document.createElement('span');body.className='tag-process-body';detail.append(summary,body);row.node.append(detail);row.label.hidden=true;row.process={detail,summary};row.segmentHost=body;}
-        row.process.summary.textContent='执行过程 · '+entry.processEntries.length+' 条记录';reply(row,entry.processEntries);
+        const summary='执行过程 · '+entry.processEntries.length+' 条记录';if(row.process.summary.textContent!==summary&&!selectionHeld(row.process.summary))row.process.summary.textContent=summary;reply(row,entry.processEntries);
       }
       if(entry.replyEntries?.length)reply(bubble(key+':reply','assistant',entry.requestId,entry.replyLabel),entry.replyEntries);
       else if(entry.reply||entry.readReply)reply(bubble(key+':reply','assistant',entry.requestId,entry.replyLabel),[{id:entry.messageId??'reply',text:entry.reply||'',availability:entry.replyAvailability,readReply:entry.readReply}]);
     });
     if(!entries.length&&welcome)text(bubble('welcome','assistant'),welcome);
-    for(const [key,row]of rows)if(!retained.has(key)){for(const segment of row.segments.values())if(segment.reader){readers.delete(segment.reader);segment.reader.dispose?.();segment.reader.remove();}row.node.remove();rows.delete(key);}
-    scrollContainer.scrollTop=atTail?scrollContainer.scrollHeight:scrollTop;
+    for(const [key,row]of rows)if(!retained.has(key)&&!selectionHeld(row.node)){for(const segment of row.segments.values())if(segment.reader){readers.delete(segment.reader);segment.reader.dispose?.();segment.reader.remove();}row.node.remove();rows.delete(key);}
+    if(added&&!atTail){newMessages.hidden=false;transcript.append(newMessages);}
+    if(atTail){newMessages.hidden=true;scrollContainer.scrollTop=scrollContainer.scrollHeight;}
+    else if(anchor&&anchor.node.isConnected)scrollContainer.scrollTop=scrollTop+(anchor.node.getBoundingClientRect().top-top-anchor.offset);
+    else scrollContainer.scrollTop=scrollTop;
+    initialized=true;
   };
   // Card teardown hook: the owning card's dispose path stops every live
   // original reader (observers, in-flight reads) instead of waiting for GC.
-  render.disposeOriginalReaders=()=>{for(const reader of readers)reader.dispose?.();readers.clear();};
+  render.disposeOriginalReaders=()=>{for(const reader of readers)reader.dispose?.();readers.clear();document.removeEventListener?.('selectionchange',onSelectionChange);surface.removeEventListener?.('compositionstart',onCompositionStart);surface.removeEventListener?.('compositionend',onCompositionEnd);scrollContainer.removeEventListener?.('scroll',onScroll);newMessages.remove();};
   // Explicit DOM-ready hook: the owning card calls this once connected so
   // readers seated while the card was still detached gain their observers.
   render.attachOriginalReaders=()=>{for(const reader of readers)reader.attach?.();};

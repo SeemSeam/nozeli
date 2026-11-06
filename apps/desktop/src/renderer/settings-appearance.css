@@ -5,6 +5,14 @@ html:root {
   --chrome-font-size:13px;
   --ui-action-bg:#456654;--ui-action-ink:#fff;--ui-danger-bg:#a14335;--ui-danger-ink:#fff;
   --surface:var(--paper);--border:var(--line);--accent:var(--green);
+  --status-review-ink:#855b19;--status-review-bg:#f7eedb;--status-review-border:#855b19;
+  --status-decision-ink:#68419a;--status-decision-bg:#f1eaf8;--status-decision-border:#68419a;
+  --status-running-ink:#246343;--status-running-bg:#e7f2ea;--status-running-border:#246343;
+  --status-queued-ink:#855b19;--status-queued-bg:#f7eedb;--status-queued-border:#855b19;
+  --status-paused-ink:#685185;--status-paused-bg:#f0ecf5;--status-paused-border:#685185;
+  --status-unknown-ink:#586b7e;--status-unknown-bg:#edf1f5;--status-unknown-border:#586b7e;
+  --status-danger-ink:#a03936;--status-danger-bg:#fae9e7;--status-danger-border:#a03936;
+  --attention-unread-ink:#245b9b;--attention-unread-bg:#e5effb;
 }
 html:root[data-theme="light"] {
   color-scheme:light;
@@ -20,6 +28,14 @@ html:root[data-theme="dark"] {
   --red:#f2a698;--annotation-red:#f2a698;
   --ui-control-ink:#c0d0c3;--ui-control-hover:#34493a;--ui-control-active:#405a48;--ui-control-focus:#a6cba9;
   --ui-action-bg:#a6cba9;--ui-action-ink:#17251b;--ui-danger-bg:#f2a698;--ui-danger-ink:#321913;
+  --status-review-ink:#e4bf7d;--status-review-bg:#443a28;--status-review-border:#e4bf7d;
+  --status-decision-ink:#d7b8fa;--status-decision-bg:#382c48;--status-decision-border:#d7b8fa;
+  --status-running-ink:#a1d5b4;--status-running-bg:#263c30;--status-running-border:#a1d5b4;
+  --status-queued-ink:#e4bf7d;--status-queued-bg:#443a28;--status-queued-border:#e4bf7d;
+  --status-paused-ink:#cdbbdd;--status-paused-bg:#352f40;--status-paused-border:#cdbbdd;
+  --status-unknown-ink:#acbdcf;--status-unknown-bg:#2b3542;--status-unknown-border:#acbdcf;
+  --status-danger-ink:#f1aaa3;--status-danger-bg:#4c3032;--status-danger-border:#f1aaa3;
+  --attention-unread-ink:#9ac8ff;--attention-unread-bg:#263c55;
 }
 /* Palette is independent of luminance. Sage above remains the historical default;
    only Nozeli-owned surfaces opt into these semantic slate colors. */

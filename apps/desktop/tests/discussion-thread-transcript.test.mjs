@@ -158,3 +158,44 @@ test('approval records retain their real speaker and source without relabeling W
   render([{requestId:'original',question:'Original task',questionLabel:'用户 · 原始工作请求'},{requestId:'worker-round',reply:'Worker explanation updated',replyLabel:'原 Worker · 审批讨论'}]);
   assert.equal(assistants(node)[0],original);
 });
+
+test('only newly observed message IDs expose the view-new-messages action while reading above the tail',()=>{
+  const node=transcript(),render=mount(node);
+  render([{requestId:'r',replyEntries:[message('m1','原文')]}]);
+  render([{requestId:'r',replyEntries:[message('m1','同一条更新')]}]);
+  assert.equal(node.children.some(child=>child.className==='tag-new-messages'&&!child.hidden),false);
+  render([{requestId:'r',replyEntries:[message('m1','同一条更新'),message('m2','新增原文')]}]);
+  const action=node.children.find(child=>child.className==='tag-new-messages');
+  assert.equal(action.hidden,false);assert.equal(node.scrollTop,0);
+  action.click();assert.equal(action.hidden,true);assert.equal(node.scrollTop,node.scrollHeight);
+  render.disposeOriginalReaders();assert.equal(node.children.includes(action),false);
+});
+
+test('selected text is not replaced by streaming updates and open process disclosure survives new IDs',()=>{
+  const node=transcript(),render=mount(node);
+  const entries=text=>[{requestId:'r',processEntries:[message('p1','过程')],replyEntries:[message('m1',text)]}];
+  render(entries('原文'));const bubble=assistants(node)[0],segment=segments(bubble)[0];
+  const process=node.children.find(child=>child.className==='tag-message tag-message-process'),detail=process.children[1];detail.open=true;
+  document.getSelection=()=>({isCollapsed:false,containsNode:target=>target===segment});
+  node.scrollTop=50;render(entries('更新原文'));assert.match(segment.textContent,/^原文$/);assert.equal(node.scrollTop,50);
+  document.getSelection=()=>null;render(entries('更新原文'));assert.match(segment.textContent,/更新原文/);assert.equal(detail.open,true);
+  render.disposeOriginalReaders();delete document.getSelection;
+});
+
+test('reading anchor follows the same message when earlier content changes height',()=>{
+  const node=transcript(),render=mount(node);node.clientHeight=300;__geometry.set(node,{top:0});
+  render([{requestId:'r',replyEntries:[message('m1','原文')]}]);
+  const segment=segments(assistants(node)[0])[0];let measurements=0;
+  segment.getBoundingClientRect=()=>({top:measurements++<2?10:40,bottom:60});
+  node.scrollTop=20;render([{requestId:'r',replyEntries:[message('m1','更长原文')]}]);
+  assert.equal(node.scrollTop,50);render.disposeOriginalReaders();
+});
+
+test('tail following is suppressed during IME composition without changing the active input',()=>{
+  const node=transcript(),render=mount(node);node.scrollTop=50;
+  render([{requestId:'r',replyEntries:[message('m1','原文')]}]);assert.equal(node.scrollTop,1000);
+  node.scrollTop=50;for(const handler of node.handlers.compositionstart)handler();
+  render([{requestId:'r',replyEntries:[message('m1','原文'),message('m2','新消息')]}]);
+  assert.equal(node.scrollTop,50);assert.equal(node.children.find(child=>child.className==='tag-new-messages').hidden,false);
+  for(const handler of node.handlers.compositionend)handler();render.disposeOriginalReaders();
+});

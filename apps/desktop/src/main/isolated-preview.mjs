@@ -166,13 +166,22 @@ export function previewUrlMember(raw,origin,files){try{const url=new URL(raw);if
 // load — will-navigate intercepts them and routes one explicit event to the
 // owning scope. No decisions live in the guest; frozen object bytes stay intact.
 const endMatterEscape=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const END_MATTER_STYLE='<style id="nozeli-end-style">.nozeli-end{margin-top:2.4em;padding-top:1em;border-top:1px solid light-dark(#c9d3de,#333f4d);display:flex;flex-wrap:wrap;gap:.6em 1.2em;align-items:baseline;font-size:.88em}.nozeli-end-review{font-weight:700}.nozeli-end-files{margin:0}.nozeli-end-files summary{margin:0}.nozeli-end-files ul{margin:.5em 0 0;padding-inline-start:1.4em}.nozeli-end-files li{margin:.2em 0;overflow-wrap:anywhere}@media print{.nozeli-end-review{display:none}.nozeli-end-files a{color:inherit}}</style>';
+const END_MATTER_STYLE='<style id="nozeli-end-style">.nozeli-end{display:block;margin:2.4em 0 0;padding:1.2em 0;border-top:1px solid light-dark(#c9d3de,#465363);font:14px/1.65 system-ui;color:CanvasText;overflow-wrap:anywhere}.nozeli-end h2{font-size:1.3em}.nozeli-end h3{font-size:1.05em;margin:1.3em 0 .5em}.nozeli-end p{margin:.45em 0}.nozeli-end ul{padding-inline-start:1.4em}.nozeli-end-files li{margin:1em 0}.nozeli-end-path{display:block;white-space:normal;font:inherit}.nozeli-end-links{display:flex;flex-wrap:wrap;gap:.4em 1.2em}.nozeli-end a{display:inline-block;text-decoration:underline;text-underline-offset:.18em}.nozeli-end small{font:inherit;opacity:.85}@media(max-width:480px){.nozeli-end a{padding:.5em 0;min-height:24px}.nozeli-end ul{padding-inline-start:1.1em}}@media print{.nozeli-end a{color:inherit}}</style>';
 function appendReportEndMatter(text,slot){
-  const items=slot.endFiles.map((relPath,index)=>'<li><a data-nozeli-endmatter-action="file" href="'+slot.endBase+'file/'+index+'">'+endMatterEscape(relPath)+'</a></li>').join('');
-  const review=slot.endMatter==='review'?'<a class="nozeli-end-review" data-nozeli-endmatter-action="review" href="'+slot.endBase+'review">成果与审核</a>':'';
-  const files=items?'<details class="nozeli-end-files"><summary>成果文件（'+slot.endFiles.length+'）</summary><ul>'+items+'</ul></details>':'';
-  if(!review&&!files)return text;
-  const section='<section class="nozeli-end" data-nozeli-report-endmatter aria-label="报告成果">'+END_MATTER_STYLE+review+files+'</section>';
+  const link=(action,index,label)=>'<a data-nozeli-endmatter-action="'+action+'" href="'+slot.endBase+action+(index===undefined?'':'/'+index)+'">'+label+'</a>';
+  const items=slot.endFiles.map((file,index)=>{
+    const known=slot.endMetadata.files?.find(row=>row.relPath===file.relPath&&row.candidateDigest===file.digest);
+    const change={added:'增加',modified:'修改',removed:'删除',renamed:'重命名',copied:'复制', 'type-changed':'类型变化',unchanged:'未修改',unknown:'修改类型未核实'}[known?.change]||'修改类型未核实';
+    const human=known?.draftRevision>0&&known.draftDigest?' · 有已保存人工稿（不含在冻结交付 Diff 中）':'';
+    const unavailable=(known?.baselineUnavailable?' · 冻结基线不可用':'')+(known?.binary?' · 二进制，不支持文本比较':'')+(known?.availability&&known.availability!=='available'?' · 预览不可用：'+endMatterEscape(known.reason||known.availability):'');
+    return '<li data-nozeli-endmatter-change="'+endMatterEscape(known?.change||'unknown')+'"><code class="nozeli-end-path">'+endMatterEscape(file.relPath)+'</code><small>'+change+human+unavailable+(known?.change==='removed'?' · 查看成果显示冻结基线':'')+'</small><div class="nozeli-end-links">'+link('file',index,'查看成果')+link('diff',index,'冻结交付 Diff')+'</div></li>';
+  }).join('');
+  const references=(slot.manifest?.references||[]).map(ref=>'<li><a href="'+slot.origin+'/__nozeli_report_reference__/'+encodeURIComponent(ref.id)+'">'+endMatterEscape(ref.href||ref.relPath||ref.url||ref.id)+'</a></li>').join('');
+  const metadata=slot.endMetadata;
+  const version=Number.isSafeInteger(metadata.publicationNumber)?'报告 V'+metadata.publicationNumber+(metadata.historical?' · 历史版本':' · 本次打开时为当前版本'):'';
+  const snapshotNote='<p>打开时的冻结清单／人工稿核验快照'+(metadata.generatedAt?'（'+endMatterEscape(metadata.generatedAt)+'）':'')+'；后续版本及人工稿变化不会自动刷新，当前未保存等风险见审核栏。</p>';
+  const warning=snapshotNote+(metadata.metadataState!=='verified'||metadata.metadataError?'<p>文件修改类型或人工稿状态未完全核实'+(metadata.metadataError?'：'+endMatterEscape(metadata.metadataError):'（当前仅有冻结成果清单）')+'。</p>':'');
+  const section='<section class="nozeli-end" data-nozeli-report-endmatter aria-label="成果与依据">'+END_MATTER_STYLE+'<h2>成果与依据</h2><p>应用附录 · 仅服务呈现，不修改报告原件。</p><h3>成果文件（'+slot.endFiles.length+'）</h3>'+warning+(items?'<ul class="nozeli-end-files">'+items+'</ul>':'<p>本报告未提供独立成果文件。</p>')+'<p>冻结交付 Diff：冻结输入 → 本次发布候选，不含人工稿。缺基线不以空文本替代。</p><h3>相关方法</h3><p>未单独提供方法材料；请参阅原报告正文。</p><h3>相关数据</h3><p>未单独提供数据材料；请参阅原报告正文。</p>'+(references?'<h3>报告已有冻结引用（未分类）</h3><ul>'+references+'</ul>':'')+'<p>'+endMatterEscape(version)+'</p><p>'+link('details',undefined,'版本与技术详情')+'</p></section>';
   const at=text.toLowerCase().lastIndexOf('</body>');
   return at<0?text+section:text.slice(0,at)+section+text.slice(at);
 }
@@ -313,10 +322,21 @@ export class IsolatedPreviewManager{
       else snapshot=await capturePreview({host:this.host,workspace:this.workspace,projectId:p.projectId,entryPath:p.entryPath,buffers:p.buffers,documentSource});
       if(!alive())throw fail('预览请求已过期。');
       const ses=this.session.fromPartition('isolated-preview-'+randomUUID(),{cache:false}),origin='https://'+randomUUID()+'.invalid',nonce=randomUUID().replaceAll('-','');
-      const endMatter=p.profile==='staticReport'?(p.endMatter===true?'review':p.endMatter==='files'?'files':null):null;
-      const endFiles=endMatter?(await source.listArtifacts()).files.map(file=>file.relPath):[];
+      const endMatter=p.profile==='staticReport'?(p.endMatter===true?'contents':p.endMatter==='files'?'files':null):null;
+      const endFiles=endMatter?(await source.listArtifacts()).files.map(file=>Object.freeze({...file})):[];
+      const endMetadata=endMatter&&typeof source.readEndMatter==='function'?await source.readEndMatter():{metadataState:'unverified',files:[]};
+      if(endMetadata.objectId!==undefined&&(endMetadata.objectId!==p.objectId||endMetadata.projectId!==p.projectId))throw fail('报告附录来源不一致。');
+      // Artifact snapshots contain explicit report references; review metadata
+      // also contains unreferenced additions/modifications/deletions. Keep the
+      // full frozen union rather than narrowing delivery to report hyperlinks.
+      if(endMetadata.metadataState==='verified'){
+        const seen=new Set(endFiles.map(file=>file.relPath));
+        for(const file of endMetadata.files||[])if(!seen.has(file.relPath)){endFiles.push(Object.freeze({relPath:file.relPath,digest:file.candidateDigest}));seen.add(file.relPath);}
+      }
       if(!alive())throw fail('预览请求已过期。');
-      const slot={...snapshot,id,key:p.key,profile:p.profile,generation,scope,session:ses,origin,nonce,source,manifest,endMatter,endFiles,endBase:endMatter?origin+'/__nozeli_report_end__/'+nonce+'/':null};
+      const slot={...snapshot,id,key:p.key,profile:p.profile,generation,scope,session:ses,origin,nonce,source,manifest,endMatter,endFiles:Object.freeze(endFiles),endMetadata,endBase:endMatter?origin+'/__nozeli_report_end__/'+nonce+'/':null};
+      const endTargets=new Map();
+      if(endMatter){endTargets.set(slot.endBase+'details',Object.freeze({action:'details'}));for(const [index,file]of endFiles.entries())for(const action of ['file','diff'])endTargets.set(slot.endBase+action+'/'+index,Object.freeze({action,relPath:file.relPath}));}
       const referenceTargets=new Map((manifest?.references||[]).map(ref=>[origin+'/__nozeli_report_reference__/'+encodeURIComponent(ref.id),ref]));
       slot.cancelled=new Promise(resolve=>slot.cancel=resolve);this.pending.set(id,slot);
       const cancellable=operation=>Promise.race([operation,slot.cancelled.then(error=>{throw error;})]);
@@ -351,8 +371,19 @@ export class IsolatedPreviewManager{
         // previews keep their original explicit pin.
         if(slot.profile==='offlineDevelopment'&&['light','dark'].includes(p.theme))wc.on('did-finish-load',()=>{void wc.insertCSS(':root{color-scheme:'+p.theme+'!important}',{cssOrigin:'user'}).catch(error=>this.emit(slot,'error',{message:error.message}));});
         if(slot.profile==='staticReport')wc.on('did-finish-load',()=>{void this.injectReportAppearance(slot);});
-        const navigation=(event,url)=>{const target=typeof url==='string'?url:url?.url??event.url;if(slot.profile==='offlineDevelopment'&&member(target)&&slot.files.get(member(target)).mediaType==='text/html')return;if(slot.profile==='staticReport'&&target?.startsWith(origin+'/report.html#'))return;event.preventDefault();if(slot.profile==='staticReport'){const ref=referenceTargets.get(target);if(ref){this.emit(slot,'reference',{reference:ref,referenceId:String(ref.id),objectId:p.objectId});return;}
-          if(slot.endBase&&target?.startsWith(slot.endBase)){const action=target.slice(slot.endBase.length);if(action==='review'&&slot.endMatter==='review')this.emit(slot,'end-matter',{action:'review'});else{const file=/^file\/(\d{1,4})$/.exec(action),relPath=file?slot.endFiles[Number(file[1])]:null;if(relPath)this.emit(slot,'end-matter',{action:'file',relPath});}}}};
+        const navigation=(event,url)=>{
+          const target=typeof url==='string'?url:url?.url??event.url;
+          if(slot.profile==='offlineDevelopment'&&member(target)&&slot.files.get(member(target)).mediaType==='text/html')return;
+          if(slot.profile==='staticReport'&&target?.startsWith(origin+'/report.html#'))return;
+          event.preventDefault();
+          if(slot.profile!=='staticReport')return;
+          const current=this.slots.get(id),valid=alive()&&!slot.closed&&current===slot&&slot.scope.projectId===p.projectId;
+          if(!valid){if(current)this.emit(current,'error',{message:'报告内容入口已过期；请在当前报告重试。'});return;}
+          const ref=referenceTargets.get(target);if(ref){this.emit(slot,'reference',{reference:ref,referenceId:String(ref.id),objectId:p.objectId});return;}
+          const content=endTargets.get(target);
+          if(content){this.emit(slot,'end-matter',content);return;}
+          if(typeof target==='string'&&target.includes('/__nozeli_report_end__/'))this.emit(slot,'error',{message:'报告内容入口无效、越界或已过期。'});
+        };
         wc.on('will-navigate',navigation);wc.on('will-frame-navigate',(event,url,_inPlace,legacyMainFrame)=>{const mainFrame=event.isMainFrame??legacyMainFrame;if(!mainFrame)event.preventDefault();else navigation(event,url??event.url);});
         wc.on('console-message',(_event,details,...legacy)=>this.emit(slot,'console',{level:details?.level??details,message:String(details?.message??legacy[0]??'').slice(0,2000)}));wc.on('render-process-gone',(_e,details)=>this.emit(slot,'error',{message:'预览进程已退出：'+details.reason}));wc.on('unresponsive',()=>this.emit(slot,'error',{message:'预览无响应；可关闭或刷新，编辑缓冲保留。'}));
         await cancellable(wc.loadURL(origin+'/'+slot.entry.split('/').map(encodeURIComponent).join('/')));if(!alive()||slot.closed)throw fail('预览请求已过期。');slot.parentWindow=scope.previewWindow??scope.win;slot.parentWindow.contentView.addChildView(slot.container);this.bounds(slot,p.bounds??old?.bounds??{x:0,y:0,width:0,height:0});this.workspace.demoControls?.raise();this.pending.delete(id);this.slots.set(id,slot);if(old)this.close(old);this.emit(slot,'ready',this.snapshot(slot));return this.snapshot(slot);

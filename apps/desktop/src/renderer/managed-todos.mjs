@@ -1,7 +1,9 @@
 import { mountContextMenu } from './context-menu.mjs';
 import { uiIcon } from './ui-icons.mjs';
-import { managedInboxTodos, userTodoEligible } from '../domain/managed-work-records.mjs';
+import { managedInboxTodos, userTodoEligible, resultSettlementIssue } from '../domain/managed-work-records.mjs';
 import { todoCapabilities } from '../domain/todo-management.mjs';
+import { occurrenceKey } from '../domain/attention-notifications.mjs';
+import { createMessageAttentionPresentation } from '../domain/attention-presentation.mjs';
 import './managed-todos.css';
 
 const kindNames = { attention:'后台待处理', 'frontdesk-route':'处理方式决定', 'cross-project-permission':'跨项目访问授权', 'effect-permission':'提权/敏感执行授权', 'effect-grant':'执行授权·可撤销', 'merge-consent':'一次性合入批准', 'merge-constraint':'合并策略', 'cross-project-migrated':'授权迁移通知', deviation:'任务偏离决定', result:'结果', problem:'待回答', routing:'澄清', recovery:'恢复', git:'Git', closure:'收尾', system:'系统' };
@@ -9,8 +11,26 @@ export function mountManagedTodos({ document, invoke, openTodo, viewWork, recove
   const $ = id => document.getElementById(id);
   let state = null, projectId = null, filter = 'open', count = 50, epoch = 0, paintSignature = '';
   const pending = new Set(), requests = new Map();
+  const readOccurrences = new Set();
+  const messageAttention=createMessageAttentionPresentation();
+  const detailSignatures=new WeakMap();
+  let selectedId = null, loading = false, stale = false, attentionSignature = '';
+  const unread = todo => todo.pending && !readOccurrences.has(occurrenceKey(projectId,todo));
+  const severityOf = todo => todo.kind==='result'&&resultSettlementIssue(state,state?.works?.find(work=>work.id===todo.workId)) ? 'unknown' : todo.interrupted || ['recovery','git','closure','system'].includes(todo.kind) ? 'danger' : todo.kind === 'result' ? 'review' : 'decision';
+  function publishAttention(current = rows().filter(todo=>todo.pending)) {
+    const severity = ['danger','unknown','decision','review'].find(value=>current.some(todo=>severityOf(todo)===value)) || (loading||stale?'unknown':'none');
+    const todoUnread=current.some(unread),messageUnread=messageAttention.hasUnread(projectId);
+    const detail = {projectId,pendingCount:current.length,severity,hasUnread:todoUnread||messageUnread,unreadKind:todoUnread&&messageUnread?'both':messageUnread?'message':todoUnread?'todo':null,loading,stale};
+    const signature = JSON.stringify(detail);
+    if(signature!==attentionSignature){attentionSignature=signature;if(!window.__workspaceScope||window.__workspaceScope.role==='shell')document.dispatchEvent(new CustomEvent('nozeli-sidebar-attention',{detail}));}
+  }
+  const presented=event=>{if(messageAttention.presented({...event.detail,threadId:event.detail?.threadId||event.detail?.sessionId})){paintSignature='';paint();document.dispatchEvent(new CustomEvent('nozeli-attention-read-change',{detail:{projectId}}));}};
+  document.addEventListener('nozeli-attention-presented',presented);
+  window.addEventListener('nozeli-attention-presented',presented);
   const filters = document.createElement('nav'); filters.id = 'managed-todo-filters'; filters.setAttribute('aria-label','待办状态'); filters.hidden = true;
   const list = $('inbox-reports'); list.before(filters);
+  const header = list.closest('.inbox-panel')?.querySelector('h2');
+  if(header)header.append(filters);
   const summary=document.createElement('p');summary.id='managed-todo-summary';summary.hidden=true;list.before(summary);
   const fullName=document.createElement('div');fullName.id='managed-todo-full-name';fullName.role='tooltip';fullName.hidden=true;document.body.append(fullName);
   const hideName=()=>{fullName.hidden=true;};
@@ -65,6 +85,7 @@ export function mountManagedTodos({ document, invoke, openTodo, viewWork, recove
   function actions(todo){
     const source=projectId,cap=todoCapabilities(state,todo),work=state.works?.find(w=>w.id===todo.workId);
     const items=[{id:'detail',label:'查看详情',run:()=>openTodo(todo.id)},{id:'copy',label:'复制待办内容',run:async()=>{const r=await invoke('document.clipboard',{action:'write',text:text(todo)});if(!r.ok)throw Error(r.error?.message||'复制失败');}}];
+    if(unread(todo))items.push({id:'read',label:'标记此事项已读（仍未处理）',run:()=>{if(source!==projectId)return;readOccurrences.add(occurrenceKey(source,todo));paintSignature='';paint();}});
     if(work)items.push({id:'work',label:work.status==='ended'?'查看关联任务历史':'查看关联任务',run:()=>viewWork(work.id)});
     if(!userTodoEligible(todo))return items.filter(item=>item.id!=='detail');
     if(todo.status==='open'&&todo.kind==='merge-constraint')items.push({id:'choose-merge',label:'选择合并策略（never-commit / hold / none）',run:()=>openTodo(todo.id)});
@@ -83,8 +104,11 @@ export function mountManagedTodos({ document, invoke, openTodo, viewWork, recove
     requestAnimationFrame(()=>{if(source===projectId&&token===epoch)menu.open(items.map(({run,...item})=>item),{x:event?.clientX??b.left,y:event?.clientY??b.bottom,run:id=>items.find(item=>item.id===id)?.run()});});
   }
   function details(container,id){
-    container.replaceChildren();container.dataset.todoDetail=id;
-    const todo=rows().find(t=>t.id===id);if(!todo){container.textContent='该待办记录已移除。';return;}
+    const todo=rows().find(t=>t.id===id),signature=JSON.stringify([projectId,id,todo,todo&&todoCapabilities(state,todo),todo&&unread(todo),pending.has(projectId+':'+id)]);
+    if(container.firstChild&&detailSignatures.get(container)===signature)return;
+    const focused=container.contains(document.activeElement)?document.activeElement:null,action=focused?.dataset?.todoAction;
+    detailSignatures.set(container,signature);container.replaceChildren();container.dataset.todoDetail=id;
+    if(!todo){container.textContent='该待办记录已移除。';if(focused){container.tabIndex=-1;container.focus({preventScroll:true});}return;}
     const rawTime=todo.closedAt||todo.settledAt||todo.updatedAt||todo.createdAt;
     const info=document.createElement('p');info.className='managed-todo-meta';info.textContent=[todo.versionLabel,todo.statusLabel,rawTime?new Date(rawTime).toLocaleString(undefined,{timeZoneName:'short'}):'旧记录未记录时间',todo.reason||'',todo.reopenedAt?'重开仅恢复提醒，不自动执行':''].filter(Boolean).join(' · ');container.append(info);
     if(todo.source==='demo-fixture'){const notice=document.createElement('p');notice.dataset.demoBadge='true';notice.textContent='演示内容：决定仅更新本地固定样本；不写入论文、不启动真实工作。';container.append(notice);}
@@ -92,9 +116,10 @@ export function mountManagedTodos({ document, invoke, openTodo, viewWork, recove
     for(const item of actions(todo).filter(i=>i.id!=='detail')){const b=document.createElement('button');b.type='button';b.textContent=item.label;b.dataset.todoAction=item.id;b.disabled=item.enabled===false||pending.has(projectId+':'+id);b.onclick=()=>Promise.resolve(item.run()).catch(e=>toast(e.message));container.append(b);}
     const cap=todoCapabilities(state,todo);if(cap.reason){const note=document.createElement('p');note.textContent=cap.reason;container.append(note);}
     if(todo.managementHistory?.length){const history=document.createElement('details'),summary=document.createElement('summary');summary.textContent='待办处理历史';history.append(summary);for(const event of todo.managementHistory){const p=document.createElement('p');p.textContent=[event.at,event.action==='close'?'用户关闭提醒':'用户重开提醒',event.reason||''].filter(Boolean).join(' · ');history.append(p);}container.append(history);}
+    if(focused&&!focused.isConnected){const next=[...container.querySelectorAll('button:not(:disabled)')].find(button=>button.dataset.todoAction===action)||container.querySelector('button:not(:disabled)');if(next)next.focus({preventScroll:true});else{container.tabIndex=-1;container.focus({preventScroll:true});}}
   }
   function paint(){
-    const signature=JSON.stringify([projectId,filter,count,state?.todos,state?.receipts?.map(r=>[r.objectId,r.report,r.text]),state?.works?.map(w=>[w.id,w.status,w.revision,w.name,w.request,w.outcome,w.result,w.review?.drafts,w.closure?.binding,w.closureHistory,w.readOnly]),state?.jobs?.map(j=>[j.id,j.status,j.target,j.context?.boundWorkId]),[...pending]]);
+    const signature=JSON.stringify([projectId,filter,count,selectedId,loading,stale,[...readOccurrences],state?.todos,state?.receipts?.map(r=>[r.objectId,r.report,r.text]),state?.works?.map(w=>[w.id,w.status,w.revision,w.name,w.request,w.outcome,w.result,w.review?.drafts,w.closure?.binding,w.closureHistory,w.readOnly]),state?.jobs?.map(j=>[j.id,j.status,j.target,j.context?.boundWorkId]),[...pending]]);
     if(signature===paintSignature)return;
     paintSignature=signature;
     if(!state||!projectId){filters.hidden=true;summary.hidden=true;return;}
@@ -103,7 +128,8 @@ export function mountManagedTodos({ document, invoke, openTodo, viewWork, recove
     const viewLabel={open:'待处理',completed:'历史',closed:'已关闭',all:'全部'}[filter];
     filterMore.replaceChildren(uiIcon('ellipsis'));filterMore.title='更多待办视图，当前：'+viewLabel;filterMore.setAttribute('aria-label',filterMore.title);filterMore.setAttribute('aria-pressed',String(filter==='closed'||filter==='all'));
     const all=rows(),current=all.filter(t=>t.pending),visible=all.filter(t=>filter==='all'||filter==='open'&&t.pending||filter==='closed'&&t.historical&&t.status==='closed'||filter==='completed'&&t.historical).reverse();
-    summary.textContent=filter==='open'?(current.length?current.length+' 项需要你审阅或决定':'暂无需要处理的事项'):filter==='completed'?'包含已关闭提醒；删除提醒不会删除原报告。':filter==='closed'?'已关闭的提醒；原任务和报告仍保留。':'仅显示用户事项，不包含后台运行日志。';
+    summary.hidden=filter==='open'&&!loading&&!stale;
+    summary.textContent=stale?'待办暂不可用'+(state?'；保留上次状态，请重试。':'，请重试。'):loading?'正在读取待办…':filter==='completed'?'包含已关闭提醒；删除提醒不会删除原报告。':filter==='closed'?'已关闭的提醒；原任务和报告仍保留。':'仅显示用户事项，不包含后台运行日志。';
     const scroll=list.scrollTop,focused=document.activeElement,focusedRow=focused?.closest?.('[data-todo-row]'),focusedMore=focused?.id==='managed-todo-more',focusedIndex=[...list.children].indexOf(focusedRow||focused),existing=new Map([...list.querySelectorAll('[data-todo-row]')].map(row=>[row.dataset.todoRow,row])),moreButton=list.querySelector('#managed-todo-more');hideName();
     const shown=visible.slice(0,count),shownIds=new Set(shown.map(todo=>todo.id));
     for(const [id,row] of existing)if(!shownIds.has(id))row.remove();
@@ -115,21 +141,28 @@ export function mountManagedTodos({ document, invoke, openTodo, viewWork, recove
         const marker=document.createElement('span');marker.className='managed-todo-marker';marker.setAttribute('aria-hidden','true');
         const content=document.createElement('span');content.className='managed-todo-content';
         const title=document.createElement('strong');title.className='managed-todo-title';
-        const secondary=document.createElement('span');secondary.className='managed-todo-secondary';content.append(title,secondary);open.append(marker,content);
+        const dot=document.createElement('span');dot.className='managed-todo-unread';dot.textContent='新事项';
+        const secondary=document.createElement('span');secondary.className='managed-todo-secondary';
+        const version=document.createElement('span'),chip=document.createElement('span'),action=document.createElement('span');version.className='managed-todo-version';chip.className='managed-todo-chip';action.className='managed-todo-action';secondary.append(version,chip,action);content.append(title,dot,secondary);open.append(marker,content);
         open.onpointerenter=()=>showName(open);open.onfocus=()=>showName(open);open.onpointerleave=hideName;open.onblur=hideName;
         const more=document.createElement('button');more.type='button';more.append(uiIcon('ellipsis'));more.dataset.todoMore=todo.id;more.setAttribute('aria-haspopup','menu');
         row.append(open,more);
       }
       row.dataset.state=todo.status;row.dataset.kind=todo.kind;
-      const open=row.querySelector('[data-managed-todo]');open.dataset.todoKind=todo.kind;open.disabled=pending.has(projectId+':'+todo.id);open.onclick=()=>openTodo(todo.id);
+      const open=row.querySelector('[data-managed-todo]');open.dataset.todoKind=todo.kind;open.disabled=pending.has(projectId+':'+todo.id);open.onclick=()=>{selectedId=todo.id;paint();return openTodo(todo.id);};
+      open.setAttribute('aria-current',String(selectedId===todo.id));
+      row.dataset.severity=todo.pending?severityOf(todo):'none';
+      const messageUnread=todo.workId&&messageAttention.forWork(projectId,todo.workId),dot=row.querySelector('.managed-todo-unread');dot.hidden=!unread(todo)&&!messageUnread;dot.textContent=messageUnread?'新消息':'新事项';
       const title=todo.title;
       row.querySelector('.managed-todo-title').textContent=title;
       row.dataset.category=todo.historical?'history':todo.kind==='result'?'read':'answer';
       const marker=row.querySelector('.managed-todo-marker'),icon={'file-text':'book-open','shield-check':'message-square',archive:'sticky-note'}[todo.icon];
       if(marker.firstElementChild?.dataset.icon!==icon)marker.replaceChildren(uiIcon(icon));
       const secondary=[todo.versionLabel,todo.editLabel,todo.statusLabel,todo.actionLabel].filter(Boolean).join(' · ');
-      row.querySelector('.managed-todo-secondary').textContent=secondary;
-      open.setAttribute('aria-label',title+' · '+secondary);
+      row.querySelector('.managed-todo-version').textContent=[todo.versionLabel,todo.editLabel].filter(Boolean).join(' · ');
+      row.querySelector('.managed-todo-chip').textContent=todo.statusLabel;
+      row.querySelector('.managed-todo-action').textContent=todo.actionLabel;
+      open.setAttribute('aria-label',title+' · '+secondary+(messageUnread?' · 有新消息':'')+(unread(todo)?' · 新事项，未读':''));
       const more=row.querySelector('[data-todo-more]');more.setAttribute('aria-label','更多操作：'+[title,todo.versionLabel].filter(Boolean).join(' · '));more.disabled=open.disabled;more.onclick=()=>showMenu(todo,null,more);
       row.oncontextmenu=e=>showMenu(todo,e,e.target.closest('button')||open);row.onkeydown=e=>{if(e.key==='ContextMenu'||e.key==='Menu'||e.shiftKey&&e.key==='F10'){e.preventDefault();showMenu(todo,null,e.target.closest('button')||open);}};
       if(list.children[position]!==row)list.insertBefore(row,list.children[position]||null);
@@ -137,11 +170,15 @@ export function mountManagedTodos({ document, invoke, openTodo, viewWork, recove
     if(visible.length>count){const more=moreButton||document.createElement('button');more.id='managed-todo-more';more.type='button';more.textContent='加载更多（'+(visible.length-count)+'）';more.onclick=()=>{count+=50;paint();};list.append(more);}else moreButton?.remove();
     list.scrollTop=scroll;
     if((focusedRow||focusedMore)&&!focused?.isConnected){const next=list.children[Math.min(Math.max(0,focusedIndex),list.children.length-1)]?.querySelector('button')||filters.querySelector('[aria-pressed="true"]');next?.focus({preventScroll:true});}
-    $('inbox-empty').hidden=visible.length>0;$('inbox-empty').textContent=filter==='open'?'新的报告或授权决定会出现在这里。':filter==='closed'?'没有已关闭的提醒。':filter==='completed'?'暂无历史提醒。已结束的事项会保留在这里供查阅。':'暂无用户事项。';$('inbox-count').textContent=String(current.length);
-    const badge=$('sidebar-badge');if(badge){badge.textContent=String(current.length);badge.hidden=!current.length;}
-    $('toggle-sidebar').dataset.badgeCount=String(current.length);
+    $('inbox-empty').hidden=visible.length>0||loading||stale;$('inbox-empty').textContent=filter==='open'?'暂无待处理事项':filter==='closed'?'没有已关闭的提醒。':filter==='completed'?'暂无历史提醒。已结束的事项会保留在这里供查阅。':'暂无用户事项。';$('inbox-count').textContent=loading||stale?'待核对':String(current.length);
+    publishAttention(current);
     $('reading-inbox').replaceChildren();$('reading-inbox').hidden=true;
     for(const detail of document.querySelectorAll('[data-todo-detail]'))details(detail,detail.dataset.todoDetail);
   }
-  return { render(next,id){if(projectId!==id){epoch++;filter='open';count=50;finish(false);menu.close();}state=next;projectId=id;paint();},details,clear(){epoch++;state=null;projectId=null;filters.hidden=true;summary.hidden=true;hideName();finish(false);menu.close();} };
+  return { render(next,id){if(projectId!==id){epoch++;filter='open';count=50;selectedId=null;finish(false);menu.close();}const version=messageAttention.version;state=next;projectId=id;loading=false;stale=false;messageAttention.observe(id,next?.timeline?.entries);if(version!==messageAttention.version)paintSignature='';paint();},details,
+    messages(entries,id){if(id!==projectId)return;const version=messageAttention.version;messageAttention.observe(id,entries);if(version!==messageAttention.version){paintSignature='';paint();}else publishAttention();},
+    workUnread(workId){return messageAttention.forWork(projectId,workId);},
+    loading(id){if(projectId!==id){state=null;selectedId=null;list.replaceChildren();}projectId=id;loading=true;stale=false;filters.hidden=false;summary.hidden=false;summary.textContent='正在读取待办…';$('inbox-empty').hidden=true;$('inbox-count').textContent='读取中';publishAttention();},
+    unavailable(id){if(id!==projectId)return;loading=false;stale=true;filters.hidden=false;summary.hidden=false;summary.textContent='待办暂不可用'+(state?'；保留上次状态，请重试。':'，请重试。');$('inbox-count').textContent='待核对';$('inbox-empty').hidden=true;publishAttention();},
+    clear(){epoch++;state=null;projectId=null;selectedId=null;loading=false;stale=false;paintSignature='';filters.hidden=true;summary.hidden=true;list.replaceChildren();$('inbox-count').textContent='';publishAttention([]);hideName();finish(false);menu.close();} };
 }

@@ -12,6 +12,7 @@ import {managedReportSource,managedHistory} from '../src/agents/managed-report-s
 import {readStoredReport,reportSemanticText,reportDescriptor} from '../src/agents/managed/report-descriptor.mjs';
 import {prepareHtmlReport} from '../src/agents/managed/html-report.mjs';
 import {staticReport,historicalMarkdownState} from './static-report.fixture.mjs';
+import {writeDraftRecord} from '../src/agents/managed/review-candidate.mjs';
 async function fixture(t){const base=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-html-lifecycle-')),content=path.join(base,'project'),runtime=path.join(base,'runtime');const store=await openTestWorkspace(runtime,content);t.after(async()=>{if(!store.closed)await store.close();await fs.rm(base,{recursive:true,force:true});});const work=await store.submit('task','brief');await store.activate(work.id);const controller={store},project=await store.storage.requireRegistered(store.projectId);return {store,work:store.find(work.id),options:{project,storage:store.storage,runtime,controller,currentController:()=>controller}};}
 const page=(body)=>'<!doctype html><html><head><title>Complete report</title></head><body><h1>Complete report</h1>'+body+'</body></html>';
 test('HTML publication has one immutable body, host index and idempotent receipt identity',async t=>{const {store,work,options}=await fixture(t),call=randomUUID(),html=staticReport('Complete evidence');const row=await store.publish(work.id,work.revision,'result',html,call);assert.equal('text'in row,false);assert.equal(row.report.format,'html-static');assert.equal(row.report.title,'Fixture report');assert.equal((await store.publish(work.id,work.revision,'result',html,call)).objectId,row.objectId);await assert.rejects(store.publish(work.id,work.revision,'result',staticReport('Different'),call),/collision/);const source=await managedReportSource({...options,objectId:row.objectId}),bytes=await source.read();assert.equal(bytes.length,row.report.byteLength);const detail=await managedHistory(options,{objectId:row.objectId});assert.equal(Object.hasOwn(detail,'body'),false);assert.equal(detail.bodyAvailability,'isolated-source-only');assert.equal(detail.report.digest,row.report.digest);assert.equal((await managedHistory(options)).items[0].report.digest,row.report.digest);});
@@ -82,4 +83,35 @@ test('large linked binary publishes immutable streamed evidence without embedded
  assert.equal(hash.digest('hex'),artifact.digest);
  await assert.rejects(source.copyReference('0',destination),{code:'EEXIST'});
  assert.equal((await fs.stat(destination)).size,artifact.size);
+});
+
+test('end matter uses frozen receipts without live review scans or starting workers',async t=>{
+ const {store,work,options}=await fixture(t);
+ await fs.writeFile(path.join(store.content,'source.txt'),'frozen evidence');
+ const row=await store.publish(work.id,work.revision,'result',page('<p>Report</p><a href="source.txt">Source</a>'),randomUUID());
+ const cold=await managedReportSource({...options,objectId:row.objectId});
+ const coldMetadata=await cold.readEndMatter();
+ assert.equal(coldMetadata.metadataState,'unverified');assert.equal(coldMetadata.objectId,row.objectId);assert.equal(coldMetadata.workId,work.id);assert.equal(coldMetadata.publicationNumber,1);assert.equal(coldMetadata.files[0].change,'unknown');
+ const controller=new Controller(store,{projectId:store.projectId});
+ controller.reviewRead=async()=>{throw Error('Appendix must not inspect live worktree drift');};
+ const active=await managedReportSource({...options,objectId:row.objectId,controller,currentController:()=>controller});
+ const before=structuredClone(store.state);
+ const metadata=await active.readEndMatter();
+ assert.equal(metadata.metadataState,'unverified');assert.equal(metadata.revision,row.revision);assert.equal(metadata.files.find(file=>file.relPath==='source.txt').draftRevision,undefined);assert.deepEqual(store.state,before);assert.equal(controller.current.size,0);assert.equal(controller.sessions.size,0);assert.equal(controller.starting.size,0);
+ const rebound=await managedReportSource({...options,objectId:row.objectId,controller,currentController:()=>null});
+ await assert.rejects(rebound.readEndMatter(),{code:'REPORT_CHANGED'});
+});
+
+test('appendix human draft markers require exact publication and recoverable digest-verified bytes',async t=>{
+ const {store,work,options}=await fixture(t);await fs.writeFile(path.join(store.content,'source.txt'),'frozen evidence');
+ const row=await store.publish(work.id,work.revision,'result',page('<p>Report</p><a href="source.txt">Source</a>'),randomUUID());
+ const text='saved human revision',textDigest=createHash('sha256').update(text).digest('hex');
+ await writeDraftRecord(store.storage,store.projectId,work.id,{schema:1,workId:work.id,files:{'source.txt':{revision:1,text,textDigest}}});
+ await store.mutate(()=>{store.find(work.id).review={drafts:{'source.txt':{objectId:row.objectId,revision:1,textDigest}}};});
+ const source=await managedReportSource({...options,objectId:row.objectId});
+ assert.equal((await source.readEndMatter()).files[0].draftDigest,textDigest);
+ await writeDraftRecord(store.storage,store.projectId,work.id,{schema:1,workId:work.id,files:{'source.txt':{revision:1,text:'corrupt replacement',textDigest}}});
+ const corrupt=await source.readEndMatter();assert.equal(corrupt.files[0].draftRevision,undefined);assert.match(corrupt.metadataError,/摘要未核实/);
+ await store.mutate(()=>{store.find(work.id).review.drafts['source.txt'].objectId=randomUUID();});
+ assert.equal((await source.readEndMatter()).files[0].draftRevision,undefined);
 });

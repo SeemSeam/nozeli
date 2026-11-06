@@ -163,7 +163,7 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},op
    return result.entry||result;
   },
  };
- sessionStore.subscribe(()=>{if(active&&state){onMessages(timelineSource.getMessages(),timelineSource);if(!applyingTimeline)paintTimeline();}});
+ sessionStore.subscribe(()=>{if(active&&state){todoUI.messages(sessionStore.getSnapshot().entries,projectId);onMessages(timelineSource.getMessages(),timelineSource);if(!applyingTimeline)paintTimeline();}});
  const agentDetails=document.createElement('dialog');agentDetails.id='managed-agent-details';agentDetails.setAttribute('role','dialog');agentDetails.setAttribute('aria-modal','true');agentDetails.setAttribute('aria-labelledby','managed-agent-details-title');
  agentDetails.dataset.mode='connection';
  const agentDetailsTitle=document.createElement('h2');agentDetailsTitle.id='managed-agent-details-title';agentDetailsTitle.textContent='连接与历史';
@@ -365,6 +365,37 @@ async function openWorkReport(workId){
   viewWork:id=>inspectWork(id),
   recover:async(todo,id)=>{const gen=generation;if(id!==projectId)return;const w=state.works.find(w=>w.id===todo.workId),reason=recoveryReason(todo,w);if(reason)throw Error(reason);const result=await call(todo.kind==='git'?'git.retry':'recovery.resolve',{todoId:todo.id,workId:w.id,revision:todo.revision,sourceJob:todo.sourceJobId,requestKey:crypto.randomUUID()},id);if(!result.accepted)throw Error(result.error?.message||'恢复未受理');if(id!==projectId||gen!==generation)return;await refresh();if(id!==projectId||gen!==generation)return;if(todo.kind==='recovery'){inspectWork(w.id);toast('已打开任务概览核查，未接入Worker对话、未重放执行。');}}
  });
+ document.addEventListener('nozeli-attention-read-change',event=>{if(event.detail?.projectId===projectId&&active&&state)render();});
+ const relayedPresentations=new Set();
+ document.addEventListener('nozeli-attention-presented',event=>{
+  if(scope?.role!=='surface'||!['conversation','report'].includes(scope.kind))return;
+  const detail=event.detail||{},sessionId=detail.sessionId||detail.threadId;
+  if(detail.projectId!==projectId||!sessionId||!detail.messageId)return;
+  const key=JSON.stringify([projectId,sessionId,detail.messageId,detail.objectId,detail.revision]);
+  if(relayedPresentations.has(key))return;relayedPresentations.add(key);
+  void invoke('workspace.attention.presented',{...detail,sessionId}).then(result=>{if(!result?.ok)relayedPresentations.delete(key);}).catch(()=>relayedPresentations.delete(key));
+ });
+ window.nozeli.subscribe('workspace.control',event=>{if(event.type==='attention-presented'&&(!scope||scope.role==='shell')&&event.projectId===projectId)document.dispatchEvent(new CustomEvent('nozeli-attention-presented',{detail:event}));});
+ let presentationFrame=0;
+ function schedulePresentedReplies(){
+  if(presentationFrame)return;
+  presentationFrame=requestAnimationFrame(()=>{
+   presentationFrame=0;
+   if(!ownsConversation||!active||document.visibilityState!=='visible'||!document.hasFocus()||timelineBox.hidden)return;
+   const viewport=$('conversation').getBoundingClientRect();
+   for(const entry of sessionStore.getSnapshot().entries){
+    if(entry.speaker!=='agent'||entry.streaming||entry.availability==='read-required'||!entry.text||!(entry.sessionId||entry.threadId))continue;
+    const message=timelineBox.querySelector('.session-message[data-message="'+CSS.escape(entry.id)+'"],.session-orchestrator-reply[data-message="'+CSS.escape(entry.id)+'"]');
+    if(!message||!message.getClientRects().length)continue;
+    const rect=message.getBoundingClientRect();
+    if(rect.top<viewport.top||rect.bottom>viewport.bottom||rect.left<viewport.left||rect.right>viewport.right)continue;
+    document.dispatchEvent(new CustomEvent('nozeli-attention-presented',{detail:{projectId,threadId:entry.sessionId||entry.threadId,messageId:entry.id,objectId:entry.objectId,revision:entry.revision}}));
+   }
+  });
+ }
+ new MutationObserver(schedulePresentedReplies).observe(timelineBox,{childList:true,subtree:true,characterData:true});
+ $('conversation').addEventListener('scroll',schedulePresentedReplies,{passive:true});
+ window.addEventListener('focus',schedulePresentedReplies);document.addEventListener('visibilitychange',schedulePresentedReplies);
  const exportDialog=document.createElement('dialog');exportDialog.id='managed-report-export';
  exportDialog.innerHTML='<form><h2>另存到项目目录</h2><p data-export-description></p><label>文件名 <input name="filename" required maxlength="200" aria-label="报告副本文件名"></label><p role="status" class="managed-export-status"></p><button type="submit">另存副本</button><button type="button" data-export-cancel>取消</button></form>';document.body.append(exportDialog);
  let exportSource=null,exportPending=false;
@@ -385,10 +416,8 @@ async function openWorkReport(workId){
  const reviewSurfaces=new Map();
  function retireReviews(){
   for(const [key,surface]of reviewSurfaces){
-   surface.hide();
-   if(surface.destroy()){reviewSurfaces.delete(key);continue;}
    const lease=surface.lease;
-   void surface.save().then(()=>{if(reviewSurfaces.get(key)===surface&&surface.lease===lease&&surface.destroy())reviewSurfaces.delete(key);}).catch(error=>toast('审核草稿尚未保存，仍保留原窗口内容：'+error.message));
+   void surface.hide().then(()=>surface.save()).then(()=>{if(reviewSurfaces.get(key)===surface&&surface.lease===lease&&surface.destroy())reviewSurfaces.delete(key);}).catch(error=>toast('审核草稿尚未保存，仍保留原窗口内容：'+error.message));
   }
  }
  window.addEventListener('pagehide',()=>{for(const surface of reviewSurfaces.values())void surface.save().then(()=>surface.destroy()).catch(()=>{});});
@@ -396,8 +425,18 @@ async function openWorkReport(workId){
   const body=document.createElement('div');body.className='managed-report-body';parent.append(body);return body;
  }
  function mountReport(parent,options){
-  // Native guest is the reading scroller; host decisions always remain outside it.
-  return mountStaticReport(parent,options);
+  const doc=reportDocument;
+  return mountStaticReport(parent,{...options,onEndMatter:event=>void reportEndAction(doc,event).catch(error=>reportFailure(error.message))});
+ }
+ async function reportEndAction(doc,event){
+  if(!doc||reportDocument!==doc||projectId!==doc.projectId)throw Error('报告归属已变化，请从原报告重新打开成果。');
+  if(event.action==='file')return openArtifact({objectId:doc.objectId,relPath:event.relPath,sourceProject:doc.projectId});
+  if(event.action==='diff')return openArtifactDiff({objectId:doc.objectId,relPath:event.relPath,sourceProject:doc.projectId});
+  if(event.action==='details'){
+   if(doc.review)return doc.review.openDetails();
+   return reportDialog('版本与技术详情',body=>{const facts=document.createElement('p');facts.textContent=[doc.title||'报告',doc.publicationNumber?'报告 V'+doc.publicationNumber:'工作修订 '+doc.revision,doc.historical?'历史只读':'当前报告',doc.objectId?'冻结对象：'+doc.objectId:'冻结对象不可用'].join('\n');facts.style.whiteSpace='pre-wrap';body.append(facts);});
+  }
+  throw Error('报告内容入口无效，未执行任何操作。');
  }
  let reportLabelWrite=null;
  async function syncReportPresentation(doc){
@@ -418,10 +457,10 @@ async function openWorkReport(workId){
  try{await syncReportPresentation(doc);}catch(error){const blocked=document.createElement('p');blocked.setAttribute('role','alert');blocked.textContent='讨论修改不可用：报告归属未确认。'+error.message;parent.append(blocked);return;}
  if(projectId!==doc.projectId||reportDocument!==doc)return;
  const key=JSON.stringify([doc.projectId,doc.workId]);
- for(const [otherKey,other]of reviewSurfaces)if(otherKey!==key)other.hide();
+ for(const [otherKey,other]of reviewSurfaces)if(otherKey!==key)await other.hide();
  let surface=reviewSurfaces.get(key);
- if(!surface){surface=mountManagedReview(parent,{invoke,projectId:doc.projectId,workId:doc.workId,objectId:doc.objectId,workName:state?.works.find(work=>work.id===doc.workId)?.name||doc.title||'当前任务',current:()=>projectId===doc.projectId,confirm:confirmDecision,onChanged:refresh,onOpenLatest:()=>refreshReviewPublication(true),onOpenFile:(file,binding)=>openArtifactDiff({objectId:binding.objectId,relPath:file.relPath,sourceProject:doc.projectId}),onOpenMaterial:(file,binding)=>openArtifact({objectId:binding.objectId,relPath:file.relPath,sourceProject:doc.projectId}),onAvailability:(available,root)=>{const fallback=root.querySelector('[data-frozen-artifacts]');if(available)fallback?.remove();else if(!fallback)void appendFrozenArtifacts(root,root.dataset.managedReview,doc.projectId,()=>root.isConnected&&projectId===doc.projectId);}});reviewSurfaces.set(key,surface);}
- else {surface.hide();parent.append(surface.root);void surface.bind(doc.objectId).then(()=>surface.observe()).catch(error=>toast(error.message));}
+ if(!surface){surface=mountManagedReview(parent,{invoke,projectId:doc.projectId,workId:doc.workId,objectId:doc.objectId,workName:state?.works.find(work=>work.id===doc.workId)?.name||doc.title||'当前任务',current:()=>projectId===doc.projectId&&reportDocument?.workId===doc.workId,confirm:confirmDecision,onChanged:refresh,onOpenLatest:()=>refreshReviewPublication(true),getDiscardState:()=>({allowed:!dispositionPending&&Boolean(disposition?.discard?.allowed)&&disposition?.binding?.objectId===reportDocument?.objectId,message:dispositionError||disposition?.discard?.message||'正在核实放弃条件…'}),onDiscard:()=>{const current=reportDocument;if(current?.workId!==doc.workId||current.projectId!==doc.projectId)throw Error('报告归属已变化，未放弃工作。');return disposeWork(doc.workId,'discard',current);}});reviewSurfaces.set(key,surface);}
+ else {await surface.hide();parent.append(surface.root);await surface.bind(doc.objectId);await surface.observe();}
   surface.lease=(surface.lease||0)+1;
   doc.review=surface;
  appendClosureAccess(surface.root,doc);
@@ -429,12 +468,11 @@ async function openWorkReport(workId){
  }
  function appendClosureAccess(parent,doc){
   if(parent.querySelector('[data-review-closure]'))return;
-  const box=document.createElement('div');box.className='managed-review-closure';box.dataset.reviewClosure='';box.hidden=true;
+  const box=document.createElement('section');box.className='managed-review-closure';box.dataset.reviewClosure='';box.hidden=true;
   const status=document.createElement('p');status.setAttribute('role','status');status.dataset.closureState='';
- const inspect=button('查看收尾状态',()=>{if(projectId===doc.projectId)inspectWork(doc.workId);});
- const gate=button('处理收尾待办',()=>{if(projectId!==doc.projectId)return;const todo=state?.todos.find(todo=>todo.workId===doc.workId&&todo.status==='open'&&['merge-consent','merge-constraint'].includes(todo.kind));if(todo)return openTodo(todo.id);return queryDisposition();});gate.dataset.closureGate='';gate.hidden=true;
- const detail=mountReviewDetail(box,'收尾状态详情');detail.body.dataset.closureDetail='';
- box.prepend(status,inspect,gate);parent.append(box);
+  const link=(label,run)=>{const a=document.createElement('a');a.href='#review-closure';a.textContent=label;a.onclick=event=>{event.preventDefault();if(projectId===doc.projectId)void Promise.resolve().then(run).catch(error=>reportFailure(error.message));};return a;};
+  const inspect=link('收尾状态',()=>inspectWork(doc.workId)),gate=link('处理收尾待办',()=>{const todo=state?.todos.find(todo=>todo.workId===doc.workId&&todo.status==='open'&&['merge-consent','merge-constraint'].includes(todo.kind));return todo?openTodo(todo.id):queryDisposition();});gate.dataset.closureGate='';gate.hidden=true;
+  const detail=document.createElement('details'),summary=document.createElement('summary'),body=document.createElement('p');summary.textContent='收尾说明';body.dataset.closureDetail='';detail.append(summary,body);box.append(status,inspect,gate,detail);parent.append(box);
  }
  function appendLatestReview(parent,doc,current){
   const latest=managedReviewTodos(state??{}).find(todo=>todo.kind==='result'&&todo.workId===doc.workId&&todo.objectId!==doc.objectId);
@@ -452,20 +490,27 @@ async function openWorkReport(workId){
  }
  async function appendFrozenArtifacts(parent,objectId,sourceProject,current){
   if(!objectId)return;
- const section=document.createElement('section');section.className='managed-frozen-artifacts';section.dataset.frozenArtifacts='';parent.append(section);
- const detail=mountReviewDetail(section,'成果文件',{inline:true}),title=detail.trigger;
-  try{const result=await call('artifact.list',{objectId},sourceProject);if(!current()||!section.isConnected)return;
-   if(!result.files?.length){section.hidden=true;section.replaceChildren();return;}
-   title.textContent='成果文件 · '+result.files.length+' · 内容与发布版差异';
-   let review=null;try{review=await call('review.read',{objectId},sourceProject);}catch{}if(!current()||!section.isConnected)return;
-   for(const file of result.files){
-    const row=document.createElement('div');row.className='managed-review-file-header';
-    const link=button('',()=>openArtifact({objectId,relPath:file.relPath,sourceProject}));link.dataset.frozenArtifact=file.relPath;link.dataset.reviewFile=file.relPath;link.className='managed-review-file-name';appendReviewFileIdentity(link,file.relPath,'查看本报告绑定的成果内容与实际效果');
-    const identity=review?.files?.find(entry=>entry.relPath===file.relPath),counts=document.createElement('span');counts.className='managed-review-file-counts';counts.dataset.reviewCounts='';counts.textContent=identity&&Number.isInteger(identity.added)&&Number.isInteger(identity.deleted)?'Diff +'+identity.added+' / −'+identity.deleted:'Diff · 计数不可用';
- const comparison=button(identity?.binary?'版本信息':'代码差异',()=>openArtifactDiff({objectId,relPath:file.relPath,sourceProject}));comparison.dataset.reviewDiff=file.relPath;comparison.className='managed-review-material';row.append(link,counts,comparison);detail.body.append(row);
- const reason=identity?reviewDiffUnavailable(identity):'冻结审核清单不可用，无法确认输入基线与差异；可尝试单独打开材料。';if(reason){const note=document.createElement('p');note.dataset.reviewDiffUnavailable='';note.textContent=reason;detail.body.append(note);}
+  const doc=reportDocument;
+  const section=document.createElement('section');section.className='managed-frozen-artifacts';section.dataset.frozenArtifacts='';const heading=document.createElement('h3');heading.textContent='成果与依据';section.append(heading);parent.append(section);
+  const note=text=>{const p=document.createElement('p');p.textContent=text;section.append(p);return p;};
+  try{
+   const result=await call('artifact.list',{objectId},sourceProject);if(!current()||!section.isConnected)return;
+   const metadata=result.endMatter;
+   note('打开时的冻结清单／人工稿核验快照'+(metadata?.generatedAt?'（'+metadata.generatedAt+'）':'')+'；后续变化不会自动刷新，当前未保存等风险见审核栏。');
+   const files=new Map((result.files||[]).map(file=>[file.relPath,file]));for(const file of metadata?.files||[])files.set(file.relPath,{...files.get(file.relPath),...file});
+   if(metadata?.metadataState!=='verified'||metadata.metadataError)note('文件修改类型或人工稿状态未完全核实'+(metadata?.metadataError?'：'+metadata.metadataError:'；不会以当前项目文件替代。'));
+   if(!files.size)note('本报告没有单独交付成果文件。');
+   for(const file of files.values()){
+    const row=document.createElement('div');row.className='managed-review-file-header';const name=document.createElement('strong');name.textContent=file.relPath;row.append(name);
+    const detail=document.createElement('span');detail.textContent=[{added:'新增',modified:'修改',removed:'删除',renamed:'重命名',copied:'复制','type-changed':'类型变化',unchanged:'未修改',unknown:'修改类型未核实'}[file.change]||'修改类型未核实',file.draftRevision>0&&file.draftDigest?'有已保存人工稿（不含在冻结交付 Diff 中）':''].filter(Boolean).join(' · ');row.append(detail);
+    const contentLink=(label,action)=>{const a=document.createElement('a');a.href='#report-artifact';a.textContent=label;a.onclick=event=>{event.preventDefault();if(current())void reportEndAction(doc,{action,relPath:file.relPath}).catch(error=>reportFailure(error.message));};return a;};
+    row.append(contentLink('查看成果','file'),contentLink(file.binary?'冻结版本信息':'冻结交付 Diff','diff'));section.append(row);
+    if(file.baselineUnavailable)note('冻结基线不可用，不以当前项目文件或空文本替代。');if(file.binary)note('二进制文件不支持文本比较，可查看冻结版本信息。');if(file.availability&&file.availability!=='available')note('预览不可用：'+(file.reason||file.availability));
    }
- }catch(error){if(current())detail.body.append(Object.assign(document.createElement('p'),{textContent:'冻结成果列表不可用：'+error.message}));}
+   note('相关方法：未单独提供已分类的方法材料；以报告原文及冻结引用为准。');note('相关数据：未单独提供已分类的数据材料；以报告原文及冻结引用为准。');note('冻结交付 Diff 为冻结输入 → 本次发布候选，不包含人工改稿。');
+   if(metadata?.references?.length){const label=document.createElement('h4');label.textContent='报告已有冻结引用（未分类）';section.append(label);for(const ref of metadata.references)note(ref.href||ref.relPath||ref.url||ref.id);}
+   const details=document.createElement('a');details.href='#report-details';details.textContent='版本与技术详情';details.onclick=event=>{event.preventDefault();if(current())void reportEndAction(doc,{action:'details'}).catch(error=>reportFailure(error.message));};section.append(details);
+  }catch(error){if(current())note('冻结成果列表不可用：'+error.message+'；报告原文保留。');}
  }
  const workRows=new Map();
  let workQuotaText='处理名额待核对';
@@ -553,12 +598,13 @@ async function openWorkReport(workId){
   const opened=await openManaged({id:'history:'+item.objectId,projectId:id,objectId:item.objectId,title,text:result.ok&&result.value.report.format==='html-static'?'静态 HTML 报告':text,revision:item.revision,publicationNumber:item.publicationNumber,workName:item.workName,kind:item.kind,version:resolvedVersion,report:result.ok?result.value.report:null,history:true,historyMode:result.ok?result.value.mode:historyMode,historyError:!result.ok,isCurrent:current});if(opened?.ok===false||!current()||scope?.kind!=='history')return;
  if(agentDetails.open)agentDetails.close();viewed={history:true,readOnly:true,historyLabel:title};lockHistory();$('managed-doc').replaceChildren();
   let artifactFiles=[];if(result.ok){try{const listed=await call('artifact.list',{objectId:item.objectId},id);if(!current())return;artifactFiles=listed.files;}catch(error){toast('成果快照列表不可用：'+error.message);}}
-  reportDocument={projectId:id,objectId:item.objectId,revision:item.revision,publicationNumber:item.publicationNumber,workId:item.workId,version:resolvedVersion,report:result.value?.report,verified:result.ok,historical:true,kind:item.kind,error:result.error?.message};disposition=null;
+  reportDocument={projectId:id,objectId:item.objectId,title,revision:item.revision,publicationNumber:item.publicationNumber,workId:item.workId,version:resolvedVersion,report:result.value?.report,verified:result.ok,historical:true,kind:item.kind,error:result.error?.message};disposition=null;
  const body=reportBody($('managed-doc'));
  if(result.ok&&result.value.report.format==='html-static')reportDocument.view=mountReport(body,{invoke,projectId:id,objectId:item.objectId,onReference:t=>openArtifact({objectId:item.objectId,...t,sourceProject:id})});
  else renderTagMarkdown(body,text,{filePaths:new Set(artifactFiles.map(f=>f.relPath)),onFile:t=>openArtifact({objectId:item.objectId,...t,sourceProject:id}),onExternal:url=>openExternal?.(url)});
   if(reportDocument.view){await reportDocument.view.ready;if(!current())return;}
-  if(!(result.ok&&item.kind==='result'&&await appendReview($('managed-doc'),reportDocument)))void appendFrozenArtifacts($('managed-doc'),item.objectId,id,current);
+  if(result.ok&&!reportDocument.view)await appendFrozenArtifacts(body,item.objectId,id,current);
+  if(result.ok&&item.kind==='result')await appendReview($('managed-doc'),reportDocument);
  if(!reportDocument.review){const footer=document.createElement('div');footer.id='managed-result-actions';const status=document.createElement('p');status.dataset.reportState='';status.textContent='历史版本 · '+(item.publicationNumber?'报告 V'+item.publicationNumber:'工作修订 '+item.revision);footer.append(status);$('managed-doc').append(footer);}
   if(item.kind==='result'){const notice=document.createElement('p');notice.className='managed-report-state';notice.dataset.reportState='';notice.textContent='历史阅读 · '+(item.publicationNumber?'报告 V'+item.publicationNumber:'工作修订 '+item.revision);appendLatestReview(notice,reportDocument,current);$('managed-doc').prepend(notice);}
  if(reportDocument.review)void queryDisposition();
@@ -616,6 +662,7 @@ async function openWorkReport(workId){
  for(const record of records){const ongoing=record.status!=='ended'||Boolean(record.workId)&&record.closurePhase!=='complete';if(ongoing)activeCount++;if(category==='all'||category==='active'&&ongoing||category!=='active'&&workRecordCategory(record,state,serviceFaults.recordState(record,projectId))===category)(ongoing?ongoingRecords:historicalRecords).push(record);}
  const orderedRecords=ongoingRecords.reverse().concat(historicalRecords.reverse());
  const works=$('work-items'),recordIds=new Set(orderedRecords.map(record=>record.id));
+ const pendingTodos=managedInboxTodos(state).filter(todo=>todo.pending);
  for(const filter of document.querySelectorAll('[data-managed-category]'))filter.setAttribute('aria-pressed',String(filter.dataset.managedCategory===category));
  const extraCategory=extraCategories.find(item=>item.id===category);categoryMore.textContent='…';categoryMore.classList.toggle('active',Boolean(extraCategory));categoryMore.title=extraCategory?'更多工作分类，当前：'+extraCategory.label:'更多工作分类';categoryMore.setAttribute('aria-label',categoryMore.title);
   for(const [id,row] of workRows)if(!recordIds.has(id)){row.remove();workRows.delete(id);}
@@ -624,7 +671,7 @@ async function openWorkReport(workId){
    if(!row){row=document.createElement('div');row.className='managed-work-entry';row.dataset.managedRequest=record.id;
     const open=button('',async()=>{const current=managedWorkRecords(state).find(r=>r.id===row.dataset.managedRequest);if(current?.workId){const work=state.works.find(w=>w.id===current.workId);if(hasFailedCurrentInput(work))return inspectRetainedProgress(work.id);if(work&&['review','ended'].includes(work.status)&&workResultPublication(work))return openWorkReport(work.id);if(work)inspectWork(work.id);}else if(current?.todoId)await openTodo(current.todoId);else if(current){const controlTarget=workRecordControlTarget(current,state);if(controlTarget)workControl.open(controlTarget);else inspectRequest(current);}});open.className='managed-work-open';
     const workName=document.createElement('span'),workStatus=document.createElement('span'),workDetail=document.createElement('span');workName.className='managed-work-name';workStatus.className='managed-work-status';workDetail.className='managed-work-detail';open.append(workName,workStatus,workDetail);row.append(open);workRows.set(record.id,row);
-    row.addEventListener('contextmenu',event=>openWorkMenu(row,event));open.addEventListener('keydown',event=>{if(event.shiftKey&&event.key==='F10')openWorkMenu(row,event);});
+    row.addEventListener('contextmenu',event=>openWorkMenu(row,event));open.addEventListener('keydown',event=>{if(event.key==='ContextMenu'||event.key==='Menu'||event.shiftKey&&event.key==='F10')openWorkMenu(row,event);});
    }
    if(record.workId)row.dataset.managedWork=record.workId;else delete row.dataset.managedWork;
    row.dataset.state=record.status;
@@ -632,8 +679,11 @@ async function openWorkReport(workId){
    const controlTarget=workRecordControlTarget(record,state),controlRecord=controlTarget?.workId?state.works.find(w=>w.id===controlTarget.workId):state.jobs?.find(j=>j.id===controlTarget?.jobId),held=controlRecord?.status!=='ended'&&controlRecord?.manualControl?.pause!=null;
  // 可扫描短状态 + 次级等待说明同排显示；完整状态事实仍保留在标题/无障碍名称里。
  const statusText=controlRecord?.status==='ended'?'已结束':controlRecord?.status==='closing'?closureProcessingStatus(controlRecord):(held?'已暂停后续 · ':'')+(serviceFaults.recordState(record,projectId)||record.phase||record.status),split=statusText.indexOf(' · '),status=row.querySelector('.managed-work-status');status.textContent=split<0?statusText:statusText.slice(0,split);status.dataset.state=record.status;
- row.querySelector('.managed-work-detail').textContent=split<0?'':statusText.slice(split+3);
-   const open=row.querySelector('.managed-work-open');open.title=record.name+' · '+statusText+(controlRecord?.status==='ended'?' · 点击查看结果':'');open.setAttribute('aria-label',open.title);open.disabled=!record.workId&&!record.todoId&&!record.jobIds?.length;
+ const linked=record.workId?pendingTodos.filter(todo=>todo.workId===record.workId):[];
+ row.dataset.linkedTodos=String(linked.length);
+ const messageUnread=!linked.length&&record.workId&&todoUI.workUnread(record.workId);
+ row.querySelector('.managed-work-detail').textContent=[split<0?'':statusText.slice(split+3),linked.length===1?'关联上方待办':linked.length>1?'关联 '+linked.length+' 项待办':'',messageUnread?'● 新消息':''].filter(Boolean).join(' · ');
+   const open=row.querySelector('.managed-work-open');open.title=record.name+' · '+statusText+(linked.length?' · 关联 '+linked.length+' 项待办':'')+(messageUnread?' · 有新消息':'')+(controlRecord?.status==='ended'?' · 点击查看结果':'');open.setAttribute('aria-label',open.title);open.disabled=!record.workId&&!record.todoId&&!record.jobIds?.length;
    if(works.children[position]!==row)works.insertBefore(row,works.children[position]||null);
   }
   const selectedRequest=records.find(record=>record.id===requestInfo.dataset.requestId&&!record.workId);requestInfo.hidden=agentDetails.dataset.mode!=='request'||!selectedRequest;
@@ -744,15 +794,22 @@ async function openWorkReport(workId){
   const source=projectId,gen=generation;dispositionPending=true;updateReviewActions();
   try{
    await draftWriter.settled();
-   const capability=await call('disposition',{workId},source),binding=structuredClone(capability.binding),permission=capability[decision];
+   if(documentIdentity?.review)await documentIdentity.review.save();
+   const reportDiscard=decision==='discard'&&Boolean(documentIdentity?.review);
+   const prepared=reportDiscard?await invoke('workspace.review.prepareDiscard',{projectId:source,workId,objectId:documentIdentity.objectId,revision:documentIdentity.revision}):null;
+   if(prepared&&!prepared.ok)throw Error(prepared.error?.message||'关联人工稿尚未完整保存，未放弃工作。');
+   const capability=prepared?prepared.value:await call('disposition',{workId},source),binding=structuredClone(capability.binding),permission=capability[decision];
    if(source!==projectId||gen!==generation||documentIdentity&&documentIdentity!==reportDocument)return;
    if(documentIdentity&&(binding.revision!==documentIdentity.revision||binding.objectId!==documentIdentity.objectId))throw Error('报告版本已变化，请查看最新成果后决定。');
    if(!permission?.allowed)throw Error(permission?.message||'宿主不允许此操作。');
    const w=state.works.find(w=>w.id===workId),queueCancel=w?.status==='queued'&&binding.revision===0;
-   if(!await confirmDecision(workDispositionNotice({work:w,binding,decision}),queueCancel?'取消这项排队工作？':'确认成果决定',queueCancel?{cancelLabel:'保留排队',confirmLabel:'取消排队'}:null))return;
+   const discard=decision==='discard'&&!queueCancel;
+   const notice=workDispositionNotice({work:w,binding,decision})+(discard?'\n不把候选合入项目，不删除项目文件。已有报告、冻结成果、人工稿和未发送意见保留为只读历史；意见不会自动发送。':'');
+   if(!await confirmDecision(notice,queueCancel?'取消这项排队工作？':discard?'放弃并结束':'确认成果决定',queueCancel?{cancelLabel:'保留排队',confirmLabel:'取消排队'}:discard?{cancelLabel:'返回审阅',confirmLabel:'放弃并结束'}:null))return;
    if(source!==projectId||gen!==generation||documentIdentity&&documentIdentity!==reportDocument)return;
    const identity=JSON.stringify([source,decision,binding]),requestKey=dispositionKeys.get(identity)||crypto.randomUUID();dispositionKeys.set(identity,requestKey);
-   await call('end',{workId,binding,requestKey,revision:binding.revision,decision},source);
+   if(reportDiscard){const result=await invoke('workspace.review.discard',{projectId:source,workId,objectId:documentIdentity.objectId,binding,requestKey});if(!result.ok)throw Error(result.error?.message||'放弃决定尚未确认，原成果保留。');}
+   else await call('end',{workId,binding,requestKey,revision:binding.revision,decision},source);
    dispositionKeys.delete(identity);
    if(source===projectId&&gen===generation)await refresh();
   }catch(error){if(source===projectId&&gen===generation)reportFailure(error.message);}
@@ -768,11 +825,6 @@ async function openWorkReport(workId){
   items.push({separator:true});
   if(doc.workId)add('work','查看关联任务概览',()=>inspectWork(doc.workId));
   if(doc.todoId)add('todo','查看待办详情',()=>todoDetails(doc.todoId));
-  const w=state?.works.find(w=>w.id===doc.workId);
-  if(w&&!['ended','closing'].includes(w.status)&&!doc.historical){
-   items.push({separator:true});add('discard','丢弃成果并结束…',()=>disposeWork(doc.workId,'discard',doc),Boolean(disposition?.discard?.allowed)&&!dispositionPending);
-   if(disposition?.discard?.message&&!disposition.discard.allowed)items.push({notice:disposition.discard.message});
-  }
   reportMenu.open(items,{x:reportMenuAnchor.x,y:reportMenuAnchor.y,run:id=>actions.get(id)?.()});
  }
  window.nozeli.subscribe('workspace.control',event=>{if(event.type==='content-command'&&event.command==='report-tools'&&event.projectId===projectId&&event.viewId===scope?.viewId){reportMenuAnchor={x:Math.max(6,event.anchor?.x||0),y:Math.max(6,event.anchor?.y||0)};openReportTools();}});
@@ -781,6 +833,7 @@ async function openWorkReport(workId){
   void refreshReviewPublication().catch(error=>toast('最新报告未切换；当前报告与草稿保留：'+error.message));
   const footer=$('managed-result-actions'),doc=reportDocument;if(!doc)return;
   void syncReportPresentation(doc).catch(error=>toast('报告标题未更新，原件保留：'+error.message));
+  doc.review?.updateAvailability();
  if(doc.review){const work=state?.works.find(work=>work.id===doc.workId),signature=JSON.stringify([work?.status,work?.revision,work?.closure,work?.result?.objectId,work?.review?.drafts]);if(doc.reviewSignature!==signature){doc.reviewSignature=signature;void doc.review.observe();if(work?.status==='closing')void queryDisposition();}}
  const closure=doc.review?.root.querySelector('[data-review-closure]'),work=state?.works.find(work=>work.id===doc.workId);
  const closureMatches=Boolean(work?.closure?.binding&&work.closure.binding.objectId===doc.objectId&&work.closure.binding.revision===doc.revision);
@@ -845,7 +898,7 @@ async function openWorkReport(workId){
    const scroll=$('reader-scroll'),top=scroll?.scrollTop;
    doc.view?.dispose();body.replaceChildren();doc.objectId=objectId;doc.revision=revision;doc.publicationNumber=publicationNumber;doc.report=report;doc.historical=false;doc.verified=true;
    if(report.format==='html-static')doc.view=mountReport(body,{invoke,projectId:sourceProject,objectId,onReference:t=>openArtifact({objectId,...t,sourceProject})});
-   else {doc.view=null;renderTagMarkdown(body,result.value.body||'',{onFile:t=>openArtifact({objectId,...t,sourceProject}),onExternal:url=>openExternal?.(url)});}
+   else {doc.view=null;renderTagMarkdown(body,result.value.body||'',{onFile:t=>openArtifact({objectId,...t,sourceProject}),onExternal:url=>openExternal?.(url)});await appendFrozenArtifacts(body,objectId,sourceProject,()=>projectId===sourceProject&&reportDocument===doc&&doc.objectId===objectId);}
    await doc.review.bind(objectId);if(scroll&&top!==undefined)scroll.scrollTop=top;
    disposition=null;void queryDisposition();
   })();
@@ -960,13 +1013,14 @@ async function openWorkReport(workId){
    const current=document.createElement('p');current.id='managed-recovery-receipt';current.setAttribute('role','status');current.hidden=true;body.append(current);
    const original=document.createElement('details'),label=document.createElement('summary'),originalBody=document.createElement('div');original.id='managed-original-issue';label.textContent='原事项正文（历史记录，不代表当前处理结果）';original.open=!todo.resolution?.accepted;original.append(label,originalBody);body.append(original);body=originalBody;updateGitReceipt(todo);
   }
-  reportDocument={projectId:sourceProject,objectId:todo.objectId??null,revision:todo.revision,publicationNumber:source?.value?.publicationNumber??presented?.publicationVersion,workId:w?.id,todoId:todo.id,kind:todo.kind,report:descriptor,verified:Boolean(source?.ok),historical:readOnlyResult||!w||w.revision!==todo.revision,error:source?.error?.message};disposition=null;dispositionError='';
+  reportDocument={projectId:sourceProject,objectId:todo.objectId??null,title,revision:todo.revision,publicationNumber:source?.value?.publicationNumber??presented?.publicationVersion,workId:w?.id,todoId:todo.id,kind:todo.kind,report:descriptor,verified:Boolean(source?.ok),historical:readOnlyResult||!w||w.revision!==todo.revision,error:source?.error?.message};disposition=null;dispositionError='';
   if(source?.ok&&descriptor?.format==='html-static')reportDocument.view=mountReport(body,{invoke,projectId:sourceProject,objectId:todo.objectId,onReference:t=>openArtifact({objectId:todo.objectId,...t,sourceProject})});
   else renderTagMarkdown(body,text.replaceAll(']('+state.contentRoot+'/',']('),{filePaths,onFile:t=>readOnlyResult||receipt?.snapshot?.files?.some(f=>f.relPath===t.relPath)?openArtifact({objectId:todo.objectId,...t,sourceProject}):openProjectFile?.({projectId:sourceProject,...t}),onExternal:url=>openExternal?.(url)});
   // Freeze the report source before review reads may attach a local controller.
   // refresh catches preview errors, so failed previews still expose review controls.
   if(reportDocument.view){await reportDocument.view.ready;if(!stillCurrent())return;}
- if(source?.ok&&!(todo.kind==='result'&&await appendReview($('managed-doc'),reportDocument)))void appendFrozenArtifacts($('managed-doc'),todo.objectId,sourceProject,stillCurrent);
+ if(source?.ok&&!reportDocument.view&&['result','problem'].includes(todo.kind))await appendFrozenArtifacts(body,todo.objectId,sourceProject,stillCurrent);
+ if(source?.ok&&todo.kind==='result')await appendReview($('managed-doc'),reportDocument);
   if(readOnlyResult){
    const summary=document.createElement('p');summary.className='managed-report-state';summary.dataset.reportState='';summary.textContent=[presented.versionLabel,presented.statusLabel,presented.historical?'历史报告只读 · 此版不能接受或交回修改':w?.status==='closing'?closureProcessingStatus(w):'本轮尚在处理 · 暂不接受审阅决定'].filter(Boolean).join(' · ');appendLatestReview(summary,reportDocument,stillCurrent);$('managed-doc').prepend(summary);
    viewed={todoId:todo.id,workId:w?.id,revision:todo.revision,kind:todo.kind,readOnly:true};render();
@@ -1016,7 +1070,7 @@ async function openWorkReport(workId){
   const status=document.createElement('p');status.dataset.reportState='';status.className='managed-report-state';footer.prepend(status);const reason=document.createElement('p');reason.id='managed-report-reason';reason.dataset.reportReason='';reason.setAttribute('role','status');footer.append(reason);const error=document.createElement('p');error.id='managed-review-error';error.setAttribute('role','alert');error.hidden=true;footer.append(error);
   $('managed-doc').append(footer);if(fixtureMode)updateReviewActions();else void queryDisposition();
  }
- async function refresh(){const id=projectId,gen=generation,version=++refreshing;if(!id)return;const s=await call('status',{},id);if(id!==projectId||gen!==generation||version!==refreshing)return;state=s.state;if(fixtureMode){render();return;}ready=Boolean(s.ready);if(ready&&state?.agents?.some(a=>a.target==='frontdesk'&&!a.closed))sessionRecoveryError='';if(!active&&s.enabled)show(true);renderResidentRecovery(s);if(state)render();}
+ async function refresh(){const id=projectId,gen=generation,version=++refreshing;if(!id)return;let s;try{s=await call('status',{},id);}catch(error){if(id===projectId&&gen===generation&&version===refreshing)todoUI.unavailable(id);throw error;}if(id!==projectId||gen!==generation||version!==refreshing)return;state=s.state;if(!state){todoUI.unavailable(id);return;}if(fixtureMode){render();return;}ready=Boolean(s.ready);if(ready&&state?.agents?.some(a=>a.target==='frontdesk'&&!a.closed))sessionRecoveryError='';if(!active&&s.enabled)show(true);renderResidentRecovery(s);if(state)render();}
  const resetSession=()=>{workMenu.close();categoryMenu.close();delete workInfo.dataset.workId;requestReads.clear();clear();};
  window.addEventListener('nozeli-project-change',()=>{permissionView=null;if(permissionSlot){permissionSlot.hidden=true;permissionSlot.replaceChildren();delete permissionSlot.dataset.conversationPermission;}});
  window.addEventListener('nozeli-project-change',()=>{reportMenu.close();workMenu.close();categoryMenu.close();reportDocument=null;disposition=null;++dispositionRequest;});
@@ -1030,12 +1084,13 @@ async function openWorkReport(workId){
   if(input&&!reloading&&input.projectId!==id)frame={...frame,conversationInput:{projectId:input.projectId,target:frame.conversationInput?.target}};
   const oldHistory=id===projectId&&viewed?.history?viewed:null,oldTarget=target,oldDraft=$('composer').value;
   resetSession();projectId=id;sessionStore.reset(id);inputEpoch++;inputIdentityReason='正在核对输入归属…';if(ownsConversation){target=null;$('composer').readOnly=true;$('send-message').disabled=true;}
+  if(id)todoUI.loading(id);
   updateBackgroundSubmit();
   workControl.clear();serviceFaults.clear();void serviceFaults.refresh();
   if(!id)return false;if(oldHistory){viewed=oldHistory;target=oldTarget;$('composer').value=oldDraft;lockHistory();}
   void refreshProjectFiles().catch(error=>toast('文件链接列表读取失败：'+error.message));residentStatus=null;residentRecovery.hidden=true;residentRecovery.replaceChildren();void loadHistory();
-  const gen=generation,status=await call('status',{},id);if(gen!==generation||id!==projectId)return false;
-  state=status.state;if(ownsConversation&&!oldHistory)restoreInput(frame);
+  const gen=generation;let status;try{status=await call('status',{},id);}catch(error){if(gen===generation&&id===projectId)todoUI.unavailable(id);throw error;}if(gen!==generation||id!==projectId)return false;
+  state=status.state;if(!state)todoUI.unavailable(id);if(ownsConversation&&!oldHistory)restoreInput(frame);
   if(pendingConversation&&pendingConversation.projectId===projectId){const event=pendingConversation;pendingConversation=null;if(event.action==='select')select(event.target);if(event.action==='todo')await openTodo(event.todoId);}
   if(!status.enabled){show(true);ready=false;if(state)render();else if(ownsConversation){renderInputIdentity();$('composer').disabled=false;$('send-message').disabled=true;}return false;}
   updateBackgroundSubmit();

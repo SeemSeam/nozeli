@@ -176,6 +176,7 @@ try{
   assert.equal(state.kind,'answer');assert.ok(state.kindIcon,'category chip carries an icon, never color alone');
   assert.match(state.kindText,/待/,'category chip keeps its text label');
   assert.ok(state.text.includes('NOTIFY_T1 路线待定'));
+  assert.ok(state.text.includes('项目 p1'),'unresolved project names retain explicit source scope');
   assert.equal(state.count,null,'single pending row has no count');
   assert.equal(state.firstOfIsOpen,true);assert.equal(state.lastOfIsDefer,true,'first/last button semantics stay stable for installed acceptance');
   assert.equal(state.openButtonCount,1,'exactly one open action regardless of category');
@@ -402,6 +403,7 @@ try{
   await page.click('[data-attention-defer]');
   await until(async()=>(await fixtureLog()).invoke.at(-1)?.occurrences?.some(occurrence=>occurrence.id==='t21'&&occurrence.interrupted===true),'the interrupted occurrence is then acknowledged with its own phase');
   await until(async()=>!(await dom()).visible,'race scenario closes');
+  assert.equal(await page.evaluate(()=>document.activeElement?.id),'workspace-groups','disappearing focused prompt restores a reachable workspace entry rather than blurring to body');
   scene('late acknowledgement reply never drops the interrupted reminder');
   // 18. removing a project clears its rows and its queued feedback only.
   const dropRow=ask('t22',{title:'NOTIFY_T22 项目移除'}),keepRow=ask('u3',{title:'NOTIFY_U3 保留项目'});

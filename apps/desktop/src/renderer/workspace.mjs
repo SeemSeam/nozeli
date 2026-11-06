@@ -3,16 +3,34 @@ import { mountPanelSplitters } from './panel-splitters.mjs';
 import { mountConversationControls } from './workspace-conversation-controls.mjs';
 import { mountDocumentHeader } from './document-header.mjs';
 import { mountActionConfirmation } from './action-confirmation.mjs';
+import {createSidebarVisit} from './sidebar-visit.mjs';
 
 const $ = id => document.getElementById(id);
 const clamp = (n, min, max) => Math.min(Math.max(n, min), max);
-const defaults = () => ({ filesCollapsed: false, sideCollapsed: true, drawerFilesOpen:false, drawerSideOpen:false, fontSize: 14, conversationFontSize:14, readingWidth:72, split: 50, draft: '', noteOffsets: {}, noteDrafts: [], retainedNoteDrafts: [], confirmationSkips: {} });
+const defaults = () => ({ filesCollapsed: false, drawerFilesOpen:false, fontSize: 14, conversationFontSize:14, readingWidth:72, split: 50, draft: '', noteOffsets: {}, noteDrafts: [], retainedNoteDrafts: [], confirmationSkips: {} });
 
 // The same composer node survives every layout change. All persisted state is project-scoped.
 export function mountWorkspace({ save, saveProjectSettings, openProject, addNote, send }) {
   mountDocumentHeader();
   const ownsConversation=window.__workspaceScope?.role==='surface'&&window.__workspaceScope.kind==='conversation';
   let state = defaults(), toastTimer;
+  const sidebarVisit=createSidebarVisit();
+  let sidebarAttention={projectId:null,pendingCount:0,severity:'none',hasUnread:false};
+  const toggleSidebar=$('toggle-sidebar');
+  const railLabel=document.createElement('span');railLabel.className='sidebar-rail-label';railLabel.textContent='待办';
+  const railUnread=document.createElement('span');railUnread.className='sidebar-unread';railUnread.hidden=true;railUnread.setAttribute('aria-hidden','true');
+  const railCount=$('sidebar-badge')||document.createElement('span');railCount.id='sidebar-badge';railCount.className='sidebar-pending-count';railCount.hidden=true;
+  toggleSidebar.append(railLabel,railCount,railUnread);
+  function renderSidebarAttention(){
+    const scopeId=window.__workspaceScope?.projectId||null,info=sidebarAttention.projectId===scopeId?sidebarAttention:{pendingCount:0,severity:'none',hasUnread:false};
+    const count=Number.isSafeInteger(info.pendingCount)&&info.pendingCount>=0?info.pendingCount:0;
+    railCount.textContent=String(count);railCount.hidden=!count;railUnread.hidden=!info.hasUnread;
+    toggleSidebar.dataset.badgeCount=String(count);toggleSidebar.dataset.severity=info.stale?'unknown':info.severity||'none';toggleSidebar.dataset.unread=String(Boolean(info.hasUnread));
+    const unread=info.unreadKind==='todo'?'，有新事项':info.unreadKind==='both'?'，有新事项及未读消息':'，有未读消息';
+    const base=sidebarVisit.open?'收起工作与待办':'展开工作与待办',label=base+(info.loading?'，待办正在读取':info.stale?'，待办状态待核实':count?'，'+count+'项未处理':'')+(info.hasUnread?unread:'');
+    toggleSidebar.title=label;toggleSidebar.setAttribute('aria-label',label);
+  }
+  document.addEventListener('nozeli-sidebar-attention',event=>{const info=event.detail;if(!info||info.projectId!==(window.__workspaceScope?.projectId||null))return;sidebarAttention={...info};renderSidebarAttention();});
   const confirmation = mountActionConfirmation({
     scope: () => state,
     preferences: () => state.confirmationSkips,
@@ -51,7 +69,8 @@ export function mountWorkspace({ save, saveProjectSettings, openProject, addNote
   function render() {
     confirmation.refresh();
     $('app').classList.toggle('files-collapsed', state.filesCollapsed);
-    $('app').classList.toggle('side-collapsed', state.sideCollapsed);
+    state.sideCollapsed=!sidebarVisit.open;state.drawerSideOpen=sidebarVisit.open;
+    $('app').classList.toggle('side-collapsed', !sidebarVisit.open);
     const narrow=innerWidth<=1000;
     $('app').classList.toggle('narrow-layout',narrow);
     $('app').classList.toggle('drawer-files-open',narrow && state.drawerFilesOpen);
@@ -69,8 +88,7 @@ export function mountWorkspace({ save, saveProjectSettings, openProject, addNote
       $('toggle-sidebar').title=state.drawerSideOpen?'收起工作与待办':'展开工作与待办';
       $('file-toggle').setAttribute('aria-label',$('file-toggle').title);$('toggle-sidebar').setAttribute('aria-label',$('toggle-sidebar').title);
     }
-    const badgeCount=Number($('toggle-sidebar').dataset.badgeCount||0);
-    if(badgeCount)$('toggle-sidebar').setAttribute('aria-label',$('toggle-sidebar').getAttribute('aria-label')+'，'+badgeCount+' 项未处理');
+    renderSidebarAttention();
     const conversationSurface = window.__workspaceScope?.role === 'surface' && window.__workspaceScope.kind === 'conversation';
     $('conversation-panel').hidden = !conversationSurface;
     $('app').style.setProperty('--reader-font', state.fontSize + 'px');
@@ -99,8 +117,8 @@ export function mountWorkspace({ save, saveProjectSettings, openProject, addNote
   }
   function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('toast').hidden = true; }, 4000); }
   $('file-toggle').addEventListener('click', () => {if(innerWidth<=1000)state.drawerFilesOpen=!state.drawerFilesOpen;else state.filesCollapsed = !state.filesCollapsed; changed(); });
-  document.addEventListener('nozeli-reveal-work-sidebar',()=>{if(innerWidth<=1000)state.drawerSideOpen=true;else state.sideCollapsed=false;changed();});
-  $('toggle-sidebar').addEventListener('click', () => {if(innerWidth<=1000)state.drawerSideOpen=!state.drawerSideOpen;else state.sideCollapsed = !state.sideCollapsed; changed(); });
+  document.addEventListener('nozeli-reveal-work-sidebar',()=>{sidebarVisit.set(true);changed();});
+  toggleSidebar.addEventListener('click',()=>{sidebarVisit.set(!sidebarVisit.open);changed();});
   if(ownsConversation){
     $('composer').addEventListener('input', () => { fitComposer(); state.draft = $('composer').value; $('compose-status').dataset.draftSaving = 'true'; $('compose-status').textContent = '正在保存本地草稿…'; save(); });
     $('compose-form').addEventListener('submit', event => { event.preventDefault(); if (send) send(); else toast('AI 尚未接通，草稿保留在本机，未发送。'); });
@@ -186,10 +204,10 @@ export function mountWorkspace({ save, saveProjectSettings, openProject, addNote
     if(innerWidth>1000)return;
     let touched=false;
     if(state.drawerFilesOpen && !event.target.closest('#files,#file-tree-dialog,#file-label-dialog,#file-tree-menu')){state.drawerFilesOpen=false;touched=true;}
-    if(state.drawerSideOpen && !event.target.closest('#side')){state.drawerSideOpen=false;touched=true;}
+    if(sidebarVisit.open && !event.target.closest('#side')){sidebarVisit.set(false);touched=true;}
     if(touched)changed();
   });
-  document.addEventListener('keydown',event=>{if(event.key==='Escape' && innerWidth<=1000 && (state.drawerFilesOpen || state.drawerSideOpen)){state.drawerFilesOpen=false;state.drawerSideOpen=false;changed();}});
+  document.addEventListener('keydown',event=>{if(event.key==='Escape' && innerWidth<=1000 && (state.drawerFilesOpen || sidebarVisit.open)){state.drawerFilesOpen=false;sidebarVisit.set(false);changed();}});
   render();
   function noteKey(draft) { return [draft.projectId, draft.annotationId || '', draft.relPath, draft.materialDigest, JSON.stringify(draft.anchor ?? null)].join('\0'); }
   render();
@@ -215,9 +233,10 @@ export function mountWorkspace({ save, saveProjectSettings, openProject, addNote
       if (overflowEdits.get(key) === draft) overflowEdits.delete(key);
       state.noteDrafts = (state.noteDrafts || []).filter(item => item !== draft);
     },
-    revealContent() { controls.close(); }, legacyTagView: id => Object.hasOwn(state.noteOffsets || {}, id) ? {noteOffset:state.noteOffsets[id]} : null, remapFiles(from, to) { state.noteDrafts = (state.noteDrafts || []).map(d => d.relPath === from || d.relPath.startsWith(from + '/') ? { ...d, relPath: to + d.relPath.slice(from.length) } : d); }, snapshot: () => ({ ...state, draft: $('composer').value, noteDrafts: state.noteDrafts || [], retainedNoteDrafts: state.retainedNoteDrafts || [] }),
+    revealContent() { controls.close(); }, legacyTagView: id => Object.hasOwn(state.noteOffsets || {}, id) ? {noteOffset:state.noteOffsets[id]} : null, remapFiles(from, to) { state.noteDrafts = (state.noteDrafts || []).map(d => d.relPath === from || d.relPath.startsWith(from + '/') ? { ...d, relPath: to + d.relPath.slice(from.length) } : d); }, snapshot: () => {const {sideCollapsed,drawerSideOpen,...persisted}=state;return {...persisted,draft:$('composer').value,noteDrafts:state.noteDrafts||[],retainedNoteDrafts:state.retainedNoteDrafts||[]};},
     restore(value, settings) {
       conversationFont.close();
+      sidebarVisit.enter(window.__workspaceScope?.projectId||null);
       const initial = defaults();
       // Native workspace layout owns geometry; restore only content and sidebar preferences.
       for (const key of [...Object.keys(initial), 'projectView', 'filesWidth', 'sideWidth', 'workRatio']) {

@@ -35,7 +35,7 @@ body[data-managed-agents=true] #managed-doc{overflow-wrap:anywhere;line-height:1
 /* One stable item from intake through Worker completion. */
 .managed-work-entry{display:block;margin:0 8px;padding:0;border:0;min-width:0;font-family:var(--chrome-font-family);font-size:var(--chrome-font-size,13px);color:var(--ink)}
 #work-items .managed-work-open{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;width:100%;min-width:0;min-height:32px;padding:7px 4px;border:0;border-radius:4px;background:transparent;color:var(--ink);font:inherit;text-align:start;box-sizing:border-box}
-#work-items .managed-work-open:hover:not(:disabled){background:var(--surface)}
+#work-items .managed-work-open:hover:not(:disabled){background:var(--ui-control-hover)}
 .managed-work-highlight{background:var(--surface,#eaf2eb);outline:1px solid var(--accent)}
 .managed-task-reference{border:0;background:transparent;color:var(--muted);font-size:11px;text-align:left;padding:6px 0;white-space:normal;overflow-wrap:anywhere}
 .managed-work-entry [hidden]{display:none!important}
@@ -71,12 +71,15 @@ body[data-managed-agents=true] #managed-doc{overflow-wrap:anywhere;line-height:1
 .managed-message-task { margin-top: 8px; padding: 2px 6px; font-size: 12px; opacity: .75; }
 .managed-message-task:hover, .managed-message-task:focus-visible { opacity: 1; }
 
-.managed-work-name{flex:1;min-width:0;font-size:1em;font-weight:550;line-height:1.5;overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:1;overflow:hidden}
+.managed-work-name{flex:1;min-width:0;font-size:1em;font-weight:500;line-height:1.5;overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
 .managed-work-status{flex:none;max-width:48%;margin:0;padding:0;border:0;background:transparent;color:var(--muted);font-size:max(12px,calc(var(--chrome-font-size,13px) - 1px));font-weight:400;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .managed-work-detail{flex:1 1 100%;min-width:0;margin:0;color:var(--muted);font-size:max(11px,calc(var(--chrome-font-size,13px) - 2px));font-weight:400;line-height:1.4;overflow-wrap:anywhere}
 .managed-work-detail:empty{display:none}
 .managed-work-entry button:disabled{color:var(--muted);cursor:default}
 .managed-work-entry button:focus-visible{outline:2px solid var(--ui-control-focus);outline-offset:2px}
+.managed-work-entry[data-linked-todos]:not([data-linked-todos="0"]) .managed-work-status{color:var(--muted);background:transparent;border:0}
+.managed-work-entry[data-state=unknown] .managed-work-status{color:var(--status-unknown-ink);text-decoration:underline dotted;text-underline-offset:3px}
+@media(pointer:coarse){#work-items .managed-work-open,.managed-work-categories>button{min-height:44px}}
 #managed-current-work .managed-work-versions{margin-top:12px}
 .workflow-panel>h2{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
 #work-count{font-weight:400;font-size:11px;color:var(--muted)}
@@ -96,7 +99,7 @@ body[data-managed-agents=true] #managed-doc{overflow-wrap:anywhere;line-height:1
 #managed-work-archive>summary{cursor:pointer;color:var(--muted)}
 #managed-work-archive button{display:block;width:100%;border:0;background:transparent;text-align:left;padding:7px 0;white-space:normal;overflow-wrap:anywhere}
 #managed-review-error{color:var(--red);white-space:normal;overflow-wrap:anywhere}
-#managed-doc{overflow-wrap:anywhere;min-width:0;box-sizing:border-box;padding:0 16px 16px;container-type:inline-size}
+#managed-doc{overflow-wrap:anywhere;min-width:0;box-sizing:border-box;padding:0;container-type:inline-size}
 #reader-scroll:has(>#managed-doc:not([hidden])>.managed-report-body){display:flex;overflow:hidden}
 #managed-doc:not([hidden]):has(>.managed-report-body){display:flex;flex-direction:column;flex:1;min-height:0;height:100%;overflow:hidden;padding-block:0}
 #managed-doc>.managed-report-body{flex:1 1 0;min-height:0;min-width:0;overflow:auto}
@@ -106,7 +109,17 @@ body[data-managed-agents=true] #managed-doc{overflow-wrap:anywhere;line-height:1
 #managed-doc:has(>.managed-report-body)>:not(.managed-report-body){flex:none}
 #managed-doc>.managed-report-state{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0;padding:4px 8px;border-bottom:1px solid var(--line);font-family:var(--chrome-font-family);font-size:var(--chrome-font-size,13px)}
 #managed-doc>.managed-report-state button{max-width:100%;white-space:normal;overflow-wrap:anywhere}
-@media(max-width:479px){#managed-doc{padding-inline:12px}}
+@media(max-width:479px){#managed-doc{padding-inline:0}}
+#managed-doc>.managed-report-body:not(:has(>.isolated-report)){padding:24px clamp(16px,4vw,48px);font-size:var(--reader-font,16px);line-height:1.85;scroll-padding-bottom:24px}
+#managed-doc .managed-frozen-artifacts{margin:32px 0 8px;padding:20px 0 0;border-top:1px solid var(--line);font:14px/1.7 var(--chrome-font-family,system-ui,sans-serif)}
+#managed-doc .managed-frozen-artifacts h3{font-size:17px;margin:0 0 14px}
+#managed-doc .managed-frozen-artifacts .managed-review-file-header{display:flex;flex-wrap:wrap;gap:6px 16px;align-items:baseline;padding:12px 0;border-bottom:1px solid var(--line)}
+#managed-doc .managed-frozen-artifacts .managed-review-file-header strong{flex-basis:100%;overflow-wrap:anywhere;font-size:14px}
+#managed-doc .managed-frozen-artifacts p{margin:8px 0;overflow-wrap:anywhere}
+#managed-doc .managed-frozen-artifacts a,#managed-doc .managed-review-closure a{color:var(--accent);text-decoration:underline;text-underline-offset:3px;cursor:pointer}
+#managed-doc .managed-review-closure{padding:8px 12px;font:13px/1.6 var(--chrome-font-family,system-ui,sans-serif)}
+#managed-doc .managed-review-closure a{display:inline-block;margin:4px 16px 4px 0}
+@container (max-width:479px){#managed-doc>.managed-report-body:not(:has(>.isolated-report)){padding:16px}#managed-doc .managed-frozen-artifacts a{min-height:44px;display:inline-flex;align-items:center}}
 #managed-result-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:16px;padding-top:12px;border-top:1px solid var(--line);font-family:var(--chrome-font-family);font-size:var(--chrome-font-size,13px);white-space:normal}
 #managed-result-actions .managed-report-state{flex:1 1 auto;margin:0;min-width:0}
 #managed-result-actions [data-report-reason],#managed-result-actions [role=alert]{flex:1 1 100%;min-width:0;margin:0;overflow-wrap:anywhere;font-size:max(12px,1em)}
