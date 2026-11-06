@@ -197,7 +197,7 @@ async function menuOpenState(role){
   const pseudo=await shell.evaluate(role=>{const select=document.querySelector(`[data-default-role="${role}"]`);try{return select.matches(':open');}catch{return null;}},role);
   if(pseudo!==null)return {open:pseudo,via:':open'};
   const cdp=await shell.createCDPSession();await cdp.send('Accessibility.enable');const tree=await cdp.send('Accessibility.getFullAXTree');await cdp.detach();
-  const labels={frontdesk:'前台',orchestrator:'编排',worker:'Worker'};
+  const labels={frontdesk:'前台',orchestrator:'主控',worker:'工作助手'};
   const node=tree.nodes.find(candidate=>candidate.role?.value==='combobox'&&String(candidate.name?.value??'').includes(labels[role]));
   return {open:node?node.properties?.find(property=>property.name==='expanded')?.value?.value===true:null,via:'ax-expanded'};
 }

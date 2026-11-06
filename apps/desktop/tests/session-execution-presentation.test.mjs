@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createSessionStore,groupSession} from '../src/renderer/session-store.mjs';
-import {replyPresentation,turnPresentation,processSummary,orchestratorPresentation} from '../src/renderer/session-presentation.mjs';
+import {createSessionStore,groupSession,groupSessionWorkflows} from '../src/renderer/session-store.mjs';
+import {replyPresentation,turnPresentation,processSummary,orchestratorPresentation,closeoutPresentation,messageRole} from '../src/renderer/session-presentation.mjs';
 const base={target:'frontdesk',jobId:'one',sessionId:'session',requestId:'request',speaker:'agent',source:'native'};
 const state=(status,extra={})=>({jobs:[{id:'one',target:'frontdesk',status,...extra}],agents:[]});
 test('accepted input hides transient and durable native echoes by exact job, never repeated text',()=>{
@@ -147,4 +147,124 @@ test('current host result plus successful job settlement supersedes earlier tool
  assert.equal(turnPresentation(plain,{}).status,'completed');
  assert.equal(turnPresentation(plain,{storageBlocked:true}).status,'completed','unrelated storage state does not rewrite historical answers');
  assert.equal(turnPresentation(plain,state('unknown')).status,'unknown');
+});
+
+const intake=(id,extra={})=>({id,target:'orchestrator',type:'intake',...extra});
+const intakeEntry=(id,extra={})=>({id,target:'orchestrator',jobId:'intake-1',sequence:1,speaker:'agent',source:'native',...extra});
+const accepted={id:'ask',target:'orchestrator',jobId:'intake-1',sequence:1,speaker:'user',source:'host',text:'修复站点'};
+const settledAnswer={id:'answer',target:'orchestrator',jobId:'intake-1',sequence:2,speaker:'agent',source:'host',text:'已建立工作“站点修复”',complete:true};
+test('handoff comes only from the host routing receipt, never from narration prose',()=>{
+ const routed={jobs:[intake('intake-1',{status:'completed',routing:{action:'dispatch',intent:'i',workId:'work',name:'站点修复',at:'2026-01-01T00:00:00.000Z'}})],works:[{id:'work',sourceJob:'intake-1',status:'running'}],todos:[]};
+ const view=orchestratorPresentation([accepted,settledAnswer],routed);
+ assert.equal(view.execution.status,'completed');assert.deepEqual(view.execution.pending,[]);
+ assert.equal(view.handoff.action,'dispatch');assert.equal(view.handoff.workId,'work');assert.equal(view.handoff.name,'站点修复');
+ assert.equal(view.handoff.status,'running');assert.equal(view.handoff.statusLabel,'执行中');
+ const prose={jobs:[intake('intake-1',{status:'completed'})],works:[]};
+ const proseView=orchestratorPresentation([accepted,{...settledAnswer,text:'我已经派工给 Worker 并完成了。'}],prose);
+ assert.equal(proseView.handoff,null,'completed without a host route is not dispatch completion');
+ assert.equal(proseView.execution.status,'completed');
+ const statusOnly={jobs:[intake('intake-1',{status:'completed',routing:{action:'status',intent:'i',at:'2026-01-01T00:00:00.000Z',facts:{works:[]}}})],works:[]};
+ const statusView=orchestratorPresentation([accepted,settledAnswer],statusOnly);
+ assert.equal(statusView.handoff.action,'status');assert.equal(statusView.handoff.workId,null);assert.equal(statusView.handoff.status,'unknown');assert.match(statusView.handoff.text,/状态查询/);
+});
+test('continue handoff reports the current Work state: queued stays queued, missing stays unknown',()=>{
+ const entries=[accepted,settledAnswer];
+ const queued={jobs:[intake('intake-1',{status:'completed',routing:{action:'continue',intent:'i',workId:'work',workName:'原任务',queued:true,status:'queued',at:'2026-01-01T00:00:00.000Z'}})],works:[{id:'work',sourceJob:'older',status:'queued'}],todos:[]};
+ const view=orchestratorPresentation(entries,queued);
+ assert.equal(view.handoff.action,'continue');assert.equal(view.handoff.status,'queued');assert.equal(view.handoff.statusLabel,'排队中');assert.equal(view.handoff.name,'原任务');
+ const missing=orchestratorPresentation(entries,{...queued,works:[]});
+ assert.equal(missing.handoff.status,'unknown');assert.equal(missing.handoff.statusLabel,'状态未知','missing Work is never assumed started');
+ const live=orchestratorPresentation(entries,{...queued,works:[{id:'work',status:'running'}]});
+ assert.equal(live.handoff.status,'running');assert.equal(live.handoff.statusLabel,'执行中');
+});
+test('failed orchestrator stays failed beside a successful handoff; clarify stops waiting once answered',()=>{
+ const failedEntries=[accepted,intakeEntry('fail',{sequence:2,speaker:'system',source:'host',error:true,text:'routing failed'})];
+ const failed={jobs:[intake('intake-1',{status:'failed',routing:{action:'dispatch',intent:'i',workId:'work',name:'站点修复',at:'2026-01-01T00:00:00.000Z'}})],works:[{id:'work',status:'running'}],todos:[]};
+ const failedView=orchestratorPresentation(failedEntries,failed);
+ assert.equal(failedView.execution.status,'failed');assert.equal(failedView.execution.terminal,true);
+ assert.equal(failedView.handoff.action,'dispatch');assert.equal(failedView.handoff.status,'running','confirmed handoff preserved without overwriting the failure');
+ const clarify={action:'clarify',intent:'i',needsAnswer:true,question:'要修复哪个站点？',at:'2026-01-01T00:00:00.000Z'};
+ const askEntries=[accepted,{...settledAnswer,text:'要修复哪个站点？'}];
+ const open=orchestratorPresentation(askEntries,{jobs:[intake('intake-1',{status:'completed',routing:clarify})],todos:[{kind:'routing',sourceJobId:'intake-1',status:'open'}]});
+ assert.equal(open.handoff.action,'clarify');assert.equal(open.handoff.workId,null);assert.match(open.handoff.text,/要修复哪个站点？/);
+ const resolved=orchestratorPresentation(askEntries,{jobs:[intake('intake-1',{status:'completed',routing:clarify})],todos:[{kind:'routing',sourceJobId:'intake-1',status:'resolved'}]});
+ assert.notEqual(resolved.handoff.text,open.handoff.text,'resolving the question changes the visible disposition without changing its original question');assert.match(resolved.handoff.text,/要修复哪个站点？/);
+});
+test('activity reports pending tools from records and never invents running work',()=>{
+ const call={id:'call',target:'orchestrator',jobId:'intake-1',sequence:2,speaker:'agent',source:'native',text:'',toolCalls:[{id:'t1',name:'nozeli_document_read'}]};
+ const running=orchestratorPresentation([accepted,call],{jobs:[intake('intake-1',{status:'running'})],works:[]});
+ assert.equal(running.execution.status,'toolrunning');assert.match(running.activity,/nozeli_document_read/);
+ const queued=orchestratorPresentation([accepted],{jobs:[intake('intake-1',{status:'queued'})],works:[]});
+ assert.equal(queued.execution.status,'queued');assert.equal(queued.handoff,null);
+ const noJob=orchestratorPresentation([accepted,call],{});
+ assert.equal(noJob.execution.status,'unknown');assert.equal(noJob.handoff,null);
+});
+
+test('an unloaded clarification answer state never claims the question has been handled',()=>{
+ const view=orchestratorPresentation([accepted],{jobs:[intake('intake-1',{status:'completed',routing:{action:'clarify',question:'请明确页面范围'}})]});
+ assert.equal(view.handoff.action,'clarify');
+ assert.doesNotMatch(view.handoff.text,/已有后续处理|不再等待回答/);
+ assert.match(view.handoff.text,/请明确页面范围/);
+});
+
+test('closeout distinguishes delivery, accepted progress, blocked effects and verified end',()=>{
+ const work={id:'work',revision:2,status:'review',result:{objectId:'result-2'},execution:{candidate:{commit:'candidate-2'}}};
+ assert.equal(closeoutPresentation(work,2).status,'review');assert.equal(closeoutPresentation(work,1),null);
+ work.status='closing';work.outcome='accept';work.closure={revision:2,decision:'accept',requestKey:'accepted-review-2',binding:{workId:'work',revision:2,objectId:'result-2',candidateCommit:'candidate-2'},phase:'requested'};
+ const pending=closeoutPresentation(work,2);assert.equal(pending.status,'closing');assert.deepEqual(pending.steps.map(step=>step.status),['complete','current','pending','pending','pending','pending']);
+ Object.assign(work.closure,{phase:'integrating',stopped:true,report:{digest:'a'.repeat(64)}});
+ const merging=closeoutPresentation(work,2);assert.equal(merging.steps.find(s=>s.id==='integration').status,'current');assert.equal(merging.steps.find(s=>s.id==='stop').status,'complete');
+ Object.assign(work.closure,{phase:'blocked',error:'原文件已由用户修改'});
+ const blocked=closeoutPresentation(work,2);assert.equal(blocked.status,'blocked');assert.equal(blocked.reason,'原文件已由用户修改');assert.equal(blocked.steps.find(s=>s.id==='integration').status,'blocked');assert.equal(blocked.steps.at(-1).status,'pending');
+ Object.assign(work.closure,{phase:'cleanup',git:{complete:true,status:'merged'},workerHome:{cleaned:true}});
+ assert.equal(closeoutPresentation(work,2).steps.at(-1).status,'current','resource cleanup alone does not prove archive finalization');
+ work.closure.phase='complete';assert.equal(closeoutPresentation(work,2).status,'unknown','closing is not ended even if an inconsistent phase says complete');
+ work.status='ended';assert.equal(closeoutPresentation(work,2).status,'complete');assert(closeoutPresentation(work,2).steps.every(s=>s.status==='complete'));
+ work.closure.binding.objectId='result-1';assert.equal(closeoutPresentation(work,2).status,'unknown','another published version cannot authorize this closeout');
+});
+
+test('discard closeout never claims that the candidate was accepted or merged',()=>{
+ const work={id:'work',revision:0,status:'closing',outcome:'discard',closure:{revision:0,decision:'discard',requestKey:'discard-queued-work',phase:'integrating',binding:{workId:'work',revision:0,objectId:null,candidateCommit:null}}};
+ const view=closeoutPresentation(work,0);assert.equal(view.status,'closing');assert.match(view.steps.find(s=>s.id==='integration').label,/不合入/);assert.doesNotMatch(view.label,/已接受/);
+ work.needsReconciliation={message:'binding unknown'};assert.equal(closeoutPresentation(work,0).status,'unknown');
+});
+
+test('Orchestrator closeout follows the latest current Worker round as a separate record, never an older report',()=>{
+ const entries=[{...base,id:'old',target:'work',workId:'work',jobId:'old',revision:1,sequence:1},{...base,id:'new',target:'work',workId:'work',jobId:'new',revision:2,sequence:2},{...base,id:'later',target:'work',workId:'work',jobId:'later',revision:2,sequence:3}];
+ const s={works:[{id:'work',status:'closing',revision:2}],jobs:[]};
+ const rows=groupSession({entries,deltas:[]},[],s),cards=rows.filter(r=>r.kind==='closeout');assert.equal(cards.length,1);assert.equal(cards[0].sourceRoundId,rows.find(r=>r.jobId==='later').id);assert(rows.indexOf(cards[0])>rows.findIndex(r=>r.jobId==='later'));assert.equal(cards[0].revision,2);
+ assert(!groupSession({entries:[entries[0]],deltas:[]},[],s).some(r=>r.kind==='closeout'),'history page cannot attach the new revision closeout to an old round');
+ const queued={works:[{id:'queued',revision:0,status:'closing',sourceJob:'intake',closure:{decision:'discard'}}],jobs:[{id:'intake',target:'orchestrator',type:'intake',status:'completed'}]};
+ const accepted={...base,id:'accepted',target:'frontdesk',speaker:'user',source:'host',jobId:'intake',sequence:1};
+ assert.equal(groupSession({entries:[accepted],deltas:[]},[],queued).filter(r=>r.kind==='closeout').length,1);
+ assert.equal(groupSession({entries:[],deltas:[]},[],queued).length,0);
+});
+
+test('closeout is the last workflow stage after every bound execution record, including late old-round tools',()=>{
+ const entries=[
+  {...base,id:'plan',target:'orchestrator',jobId:'intake',sequence:1},
+  {...base,id:'first',target:'work',jobId:'first',revision:1,sequence:2},
+  {...base,id:'second',target:'work',jobId:'second',revision:2,sequence:3},
+  {...base,id:'late-old-tool',target:'work',jobId:'first',revision:1,sequence:50,speaker:'tool',tool:{status:'complete',output:'fixture'}},
+  {...base,id:'final',target:'work',jobId:'second',revision:2,sequence:40},
+ ];
+ const state={jobs:[{id:'intake',target:'orchestrator',type:'intake'}],works:[{id:'work',sourceJob:'intake',status:'ended',revision:2,closure:{decision:'accept'}}]};
+ const rows=groupSessionWorkflows({entries,deltas:[]},[],state);
+ assert.equal(rows.length,1);assert.equal(rows[0].kind,'workflow');
+ assert.deepEqual(rows[0].rows.map(row=>row.kind),['orchestrator','worker','worker','closeout']);
+ assert(rows[0].rows.at(-1).sequence>Math.max(...entries.map(entry=>entry.sequence)));
+ assert.equal(rows[0].rows.at(-1).revision,2);
+});
+
+test('host-generated initial and supplemental Worker handoffs belong to Orchestrator, not the user',()=>{
+ const handoff={id:'handoff',speaker:'user',source:'host',target:'work',workId:'work',jobId:'worker-initial',text:'原始用户请求：保留用户原文。主控任务说明：核对冻结材料。'};
+ const original=structuredClone(handoff),s={jobs:[{id:'worker-initial',target:'work',type:'initial'},{id:'worker-supplement',target:'work',type:'supplement'},{id:'manual-input',target:'work',type:'manual'},{id:'user-intake',target:'orchestrator',type:'intake'},{id:'front-input',target:'frontdesk',type:'front'}]};
+ assert.equal(messageRole(handoff,s),'orchestrator');assert.equal(messageRole({...handoff,jobId:'worker-supplement'},s),'orchestrator');
+ assert.equal(messageRole({...handoff,jobId:'manual-input'},s),'user','an actual historical manual user input stays human-authored');
+ assert.equal(messageRole({...handoff,target:'frontdesk',jobId:'user-intake'},s),'user','the original explicit background submission remains the user');
+ assert.equal(messageRole({...handoff,target:'frontdesk',jobId:'front-input'},s),'user');
+ assert.equal(messageRole({...handoff,jobId:'missing'},s),'user','no author is inferred from prompt wording');
+ assert.equal(messageRole({...handoff,source:'native'},s),'user','unbound native input is not a host handoff');
+ assert.equal(messageRole({...handoff,target:'other-work'},s),'user','another Work cannot borrow this sender binding');
+ assert.deepEqual(handoff,original,'presentation never rewrites the original stored speaker or text');
 });

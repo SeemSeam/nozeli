@@ -6,7 +6,6 @@
 .managed-work-progress ul, .managed-work-progress ol { padding-left: 1.2em; display: grid; gap: 4px; }
 
 .managed-work-progress-header { display: grid; gap: 5px; min-width: 0; }
-.managed-work-progress-title { font-size: 1.1em; }
 .managed-work-progress-status { color: var(--muted); font-size: .95em; }
 .managed-work-progress-summary { max-width: 64ch; }
 

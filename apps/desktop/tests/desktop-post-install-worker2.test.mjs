@@ -167,12 +167,6 @@ try {
   assert(geometry[0].bottom<=geometry[1].top||geometry[0].right<=geometry[1].left,'composer overlaps send');
   assert(geometry[0].width>=180,'narrow composer must retain typing width');
   check('390px compact input and actions are visible, nonoverlapping and usable');
-  await page.click('#chat-history-toggle');
-  const expanded=await page.$eval('#composer',n=>{const r=n.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height,visible:document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)?.closest('#composer')!==null};});
-  assert(expanded.width>=180&&expanded.left>=0&&expanded.right<=390&&expanded.bottom<=844&&expanded.visible,JSON.stringify(expanded));
-  assert.match(await page.$eval('#composer',n=>n.value),/keyboard/);report.expandedGeometry=expanded;
-  await page.screenshot({path:path.join(output,'composer-expanded-390.png')});
-  check('390px expanded transcript preserves typed draft and unobstructed input');
   await page.setViewport({width:1440,height:900});
   await page.waitForFunction(()=>!document.querySelector('#app').classList.contains('narrow-layout'));
   await openTodo('closure-fault');

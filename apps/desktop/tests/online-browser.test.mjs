@@ -44,6 +44,18 @@ function harness() {
       views.push(this);
     }
   }
+  // Plain clip-parent containers (the moving mask), separate from WCV guests.
+  const containers = [];
+  class Container {
+    constructor() { this.visible = false; this.children = new Set(); this.rect = null; containers.push(this); }
+    setBorderRadius() {}
+    addChildView(child) { this.children.add(child); }
+    removeChildView(child) { this.children.delete(child); }
+    setBounds(rect) { this.rect = rect; }
+    getBounds() { return this.rect; }
+    setVisible(visible) { this.visible = visible; }
+    getVisible() { return this.visible; }
+  }
   const session = {fromPartition(partition) {
     const ses = new EventEmitter(); ses.partition = partition;
     ses.setPermissionRequestHandler = fn => ses.permission = fn;
@@ -57,9 +69,9 @@ function harness() {
   const descriptor = {kind:'web', url:'https://example.org/'};
   const workspace = {origin:'http://127.0.0.1:31415/', layouts:new Map([['p',{views:{'web-1':descriptor}}]]), senders:new Map()};
   const dialog = {response:0, showMessageBoxSync() { return this.response; }};
-  const manager = new OnlineBrowserManager({WebContentsView:View, session, workspace, dialog, onNavigate:(_scope,state) => navigated.push(state)});
+  const manager = new OnlineBrowserManager({View:Container, WebContentsView:View, session, workspace, dialog, onNavigate:(_scope,state) => navigated.push(state)});
   const payload = {viewId:scope.viewId, key:'nonce-1', generation:1, url:'https://untrusted-argument.example/', rect:{x:10,y:20,width:300,height:200}};
-  return {manager,scope,payload,views,events,sessions,workspace,descriptor,dialog,navigated,window};
+  return {manager,scope,payload,views,containers,events,sessions,workspace,descriptor,dialog,navigated,window};
 }
 
 test('real manager creates an isolated persistent unprivileged browser from host descriptor', () => {
@@ -118,15 +130,23 @@ test('committed browser URLs persist without website IPC and stale events cannot
 });
 
 test('geometry uses wrapper zoom, occlusion and reversible parent transfer without orphan guests', async () => {
-  const h = harness(); h.manager.open(h.scope,h.payload); const view = h.views[0], original = h.scope.win, destination = h.window();
-  assert.deepEqual(view.rect,{x:115,y:80,width:450,height:300}); assert.equal(view.visible,true);
-  h.manager.bounds(h.scope,{...h.payload,rect:h.payload.rect,overlay:true}); assert.equal(view.visible,false);
-  h.manager.bounds(h.scope,{...h.payload,rect:h.payload.rect,overlay:false});
-  h.manager.reparentScope(h.scope,destination); assert.equal(original.children.size,0); assert.equal(destination.children.has(view),true); assert.equal(view.visible,false);
+  const h = harness(); h.manager.open(h.scope,h.payload); const view = h.views[0], container = h.containers[0], original = h.scope.win, destination = h.window();
+  // Clip-parent model: the CONTAINER carries the zoomed placement; the guest
+  // WCV itself keeps the FULL viewport at a container-relative offset — the
+  // real guest setBounds never shrinks to the clip.
+  assert.deepEqual(container.rect,{x:115,y:80,width:450,height:300}); assert.equal(view.visible,true);
+  assert.deepEqual(view.rect,{x:0,y:0,width:450,height:300});
+  assert.equal(container.children.has(view),true);
+  h.manager.bounds(h.scope,{...h.payload,sequence:1,rect:h.payload.rect,clip:{x:10,y:20,width:150,height:200},overlay:true}); assert.equal(view.visible,false); assert.equal(container.visible,false);
+  h.manager.bounds(h.scope,{...h.payload,sequence:2,rect:h.payload.rect,clip:{x:10,y:20,width:150,height:200},overlay:false});
+  assert.deepEqual(container.rect,{x:115,y:80,width:225,height:300});
+  // Clipping NEVER resizes the guest: identical full bounds, mask only.
+  assert.deepEqual(view.rect,{x:0,y:0,width:450,height:300}); assert.equal(view.visible,true);
+  h.manager.reparentScope(h.scope,destination); assert.equal(original.children.size,0); assert.equal(destination.children.has(container),true); assert.equal(container.visible,false);
   h.manager.refreshScope(h.scope); assert.equal(view.visible,true);
   const broken = {contentView:{addChildView() { throw Error('attach failed'); },removeChildView() {}}};
-  assert.throws(() => h.manager.reparentScope(h.scope,broken),/attach failed/); assert.equal(destination.children.has(view),true);
-  h.manager.holdScope(h.scope,[original,destination]); assert.equal(view.visible,false); assert.equal(h.manager.holdsWindow(destination),true);
+  assert.throws(() => h.manager.reparentScope(h.scope,broken),/attach failed/); assert.equal(destination.children.has(container),true);
+  h.manager.holdScope(h.scope,[original,destination]); assert.equal(container.visible,false); assert.equal(h.manager.holdsWindow(destination),true);
   h.scope.dead = true; await h.manager.closeScope(h.scope); assert.equal(destination.children.size,0); assert.equal(view.webContents.dead,true); assert.equal(h.manager.holdsWindow(destination),false);
 });
 

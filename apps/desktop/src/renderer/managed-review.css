@@ -1,4 +1,4 @@
-.managed-review{display:grid;grid-template-columns:minmax(0,1fr);gap:6px;margin:0;padding:8px 0;border-top:1px solid var(--line);background:var(--surface,var(--paper));min-width:0;color:var(--ink);font-family:var(--chrome-font-family,system-ui,sans-serif);font-size:13px;line-height:1.55;container-type:inline-size}
+.managed-review{display:grid;grid-template-columns:minmax(0,1fr);gap:6px;margin:0;padding:8px 0;border-top:1px solid var(--line);background:var(--surface,var(--paper));min-width:0;color:var(--ink);font-family:var(--chrome-font-family,system-ui,sans-serif);font-size:13px;line-height:1.55}
  .managed-review-heading{grid-column:1/-1;display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 12px;min-width:0}
  .managed-review h3{margin:0;font-size:15px;font-weight:650}
  .managed-review-status{flex:1 1 140px;margin:0;color:var(--ink);font-size:12px;overflow-wrap:anywhere}
@@ -52,36 +52,23 @@
 .managed-review-closure p{margin:0;flex:1;min-width:0;font-size:12px}
 .managed-review-versions{min-width:0;font-size:12px}
 .managed-review-versions p{white-space:pre-wrap;overflow-wrap:anywhere}
-.managed-review .managed-review-discussion{position:fixed;z-index:80;right:12px;bottom:12px;display:flex;flex-direction:column;box-sizing:border-box;width:min(420px,calc(100vw - 24px));height:min(540px,70dvh);min-width:min(280px,calc(100vw - 24px));min-height:220px;max-width:calc(100vw - 12px);max-height:calc(100dvh - 12px);resize:both;overflow:hidden;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--ink);box-shadow:0 6px 24px #0002;font:13px/1.55 var(--chrome-font-family,system-ui,sans-serif)}
-.managed-review-discussion .tag-head{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:32px;padding:2px 8px;border-bottom:1px solid var(--line);cursor:move;touch-action:none;flex-shrink:0}
-.managed-review-discussion .tag-window-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.managed-review-discussion .tag-head>button{flex-shrink:0}
-.managed-review-discussion .tag-transcript{display:flex;flex:1;min-height:0;overflow:auto;flex-direction:column;padding:8px;gap:8px;overscroll-behavior:contain}
-.managed-review-discussion .tag-message{display:block;min-width:0;overflow-wrap:anywhere}
-.managed-review-discussion .tag-message>strong{display:block;font-size:11px;color:var(--muted)}
-.managed-review-discussion .tag-composer{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:end;gap:6px;padding:8px;border-top:1px solid var(--line);flex-shrink:0}
-.managed-review-discussion .tag-editor{box-sizing:border-box;width:100%;min-width:0;max-height:120px;resize:vertical;border:1px solid var(--line);border-radius:5px;background:var(--paper);color:var(--ink);font:inherit;padding:6px}
-.managed-review-discussion .tag-delivery,.managed-review-discussion .managed-review-instruction-status{margin:0;padding:4px 8px;font-size:11px;overflow-wrap:anywhere;flex-shrink:0}
+/* Review owns only placement; tag transcript and composer retain their shared visual contract. */
+.managed-review-files{container-type:inline-size}
+.managed-review>[data-review-files-panel],.managed-review>[data-review-diff-panel]{max-height:30dvh;overflow:auto;overscroll-behavior:contain}
+/* The discussion is a shared local-window body (shell owns geometry/drag);
+   only content layout and tag visual tokens remain here. */
+.local-window .managed-review-discussion{overflow:hidden;--tag-window-bg:var(--paper);--tag-window-ink:var(--ink);--tag-window-border:var(--line);--tag-window-accent:var(--green)}
+.managed-review-discussion>.managed-review-latest{flex:none;align-self:flex-start;margin:8px 12px 0;min-height:30px;font-size:12px}
+.managed-review-discussion>.tag-transcript{flex:1 1 auto;min-height:0;overflow:auto;overscroll-behavior:contain;padding:10px 12px}
+.managed-review-rounds{display:flex;flex-direction:column;gap:10px;min-width:0}
+.managed-review-context{font-size:12px;flex:none}
+.managed-review-context pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}
+.managed-review-discussion .tag-message-event,.managed-review-discussion .tag-message-process{border-left:2px solid var(--line);border-radius:0;background:transparent;font-size:12px}
+.managed-review-discussion>.tag-composer{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:6px;margin:0;padding:8px 12px;border-top:1px solid var(--line);flex-shrink:0}
+.managed-review-discussion .tag-composer .tag-editor{max-height:80px;resize:none}
+.managed-review-discussion>.tag-delivery,.managed-review-discussion .managed-review-instruction-status{margin:0;padding:4px 12px;font-size:11px;overflow-wrap:anywhere;flex-shrink:0}
 .managed-review-discussion .tag-delivery:empty{display:none}
- .managed-review-discussion .managed-review-current-state{margin:0;padding:6px 9px;border-left:3px solid var(--amber);border-radius:0 4px 4px 0;background:color-mix(in srgb,var(--amber) 12%,transparent);font-size:12px;overflow-wrap:anywhere;flex-shrink:0}
+.managed-review>.managed-review-current-state{margin:0;padding:6px 9px;border-left:3px solid var(--amber);background:var(--green-soft);font-size:12px;overflow-wrap:anywhere}
+.managed-review-discussion .tag-process-body{display:flex;flex-direction:column;gap:6px;margin-top:6px}
 .managed-review-discussion button:disabled{opacity:.55;cursor:not-allowed}
-.managed-review-discussion .tag-send{background:var(--green-soft);color:var(--ink);border:1px solid var(--green);border-radius:5px}
-@media(max-width:420px){.managed-review-discussion .tag-composer{grid-template-columns:1fr 1fr}.managed-review-discussion .tag-editor{grid-column:1/-1}}
-.managed-review{container-type:normal}
-.managed-review-file-section[open]{max-height:30dvh;overflow:auto}
-.managed-review-versions[open]{max-height:25dvh;overflow:auto}
-
-/* Default placement follows the actual reading pane, not whole-window width.
-   Free-floating remains explicit; collapsing returns all space to the report. */
-#managed-doc:has(>.managed-review[data-review-layout=aside] [data-review-discussion]:not([hidden]))>.managed-report-body{margin-right:calc(var(--review-side-width,320px) + 16px)}
-.managed-review[data-review-layout=aside]:has([data-review-discussion]:not([hidden])){box-sizing:border-box;padding-right:calc(var(--review-side-width,320px) + 16px)}
-.managed-review[data-review-layout=aside] .managed-review-discussion{left:var(--review-side-left)!important;top:var(--review-side-top)!important;right:auto!important;bottom:auto!important;width:var(--review-side-width)!important;height:var(--review-side-height)!important;resize:none}
-.managed-review[data-review-layout=stack] .managed-review-discussion{position:relative;left:auto!important;top:auto!important;right:auto!important;bottom:auto!important;width:100%!important;min-width:0;max-width:none;height:var(--review-stack-height,240px)!important;min-height:190px;max-height:none;resize:none;box-shadow:none;grid-column:1/-1}
-.managed-review:is([data-review-layout=aside],[data-review-layout=stack]) .tag-head{cursor:default}
-.managed-review[data-review-layout=stack]{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:4px 8px}
-.managed-review[data-review-layout=stack]>.managed-review-file-section{grid-column:auto}
-.managed-review[data-review-layout=stack]>.managed-review-heading{grid-column:1/-1}
-.managed-review[data-review-layout=stack] .managed-review-instruction-status{padding-block:2px}
-.managed-review[data-review-layout=stack] .tag-composer{padding-block:5px}
-.managed-review[data-review-layout=stack] .tag-head>button{min-height:28px;padding:2px 6px;font-size:11px}
 .managed-review-versions pre{white-space:pre-wrap;overflow-wrap:anywhere}

@@ -89,6 +89,8 @@ html:root[data-palette="sage"][data-theme="dark"] { --diff-added:#26322b;--diff-
 .settings-appearance .appearance-field { display:grid;grid-template-columns:minmax(110px,1fr) minmax(150px,1fr);align-items:center;gap:16px;margin:0 0 16px; }
 .settings-appearance .appearance-field select { margin:0;width:100%;min-height:34px;background:var(--paper);color:var(--ink);border:1px solid var(--line);font:inherit; }
 .settings-appearance .appearance-help { margin:10px 0;color:var(--muted);line-height:1.7; }
+.settings-appearance .appearance-scope { margin:4px 0 10px; }
+.settings-appearance .appearance-scope > summary { cursor:pointer;min-height:32px;box-sizing:border-box;padding:6px 0;color:var(--muted);overflow-wrap:anywhere; }
 .settings-appearance .appearance-save-status { min-height:1.6em;color:var(--muted);margin:10px 0; }
 /* Existing hard-coded light chrome surfaces must not turn white in dark mode.
    Physical document canvases, authored content and terminal colors stay independent. */

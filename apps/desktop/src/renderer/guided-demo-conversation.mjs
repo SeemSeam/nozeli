@@ -3,7 +3,7 @@ import {createSessionStore,sessionMessages} from './session-store.mjs';
 import {mountSessionTimeline} from './session-timeline.mjs';
 
 // A distinct fixture source, never a native managed session or Work.
-export function mountDemoConversation({invoke,getProjectId,onMessages,onConversation,subscribe}){
+export function mountDemoConversation({invoke,getProjectId,onMessages,subscribe}){
   let session=null,generation=0,historyPage=false,state={works:[],receipts:[],jobs:[]};
   const store=createSessionStore();
   const container=document.createElement('section');container.id='demo-session-timeline';container.hidden=true;
@@ -31,7 +31,7 @@ export function mountDemoConversation({invoke,getProjectId,onMessages,onConversa
     if(!session)return;
     container.hidden=false;navigationContainer.hidden=false;
     timeline.render({store,state,projectId:session.projectId,call,historyPage,onPage:loadPage,onLatest:()=>loadPage()});
-    onMessages(messages(),source);onConversation({state:'demo',label:'离线演示 · 非原生 Agent'});
+    onMessages(messages(),source);
   }
   async function loadPage(cursor){
     const projectId=session?.projectId,seq=generation,page=await call('timeline.page',{...(cursor?{cursor}:{}),limit:100},projectId);

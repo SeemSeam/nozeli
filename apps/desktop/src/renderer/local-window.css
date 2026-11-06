@@ -1,0 +1,16 @@
+.local-window-layer { position:fixed;inset:0;pointer-events:none;z-index:80;-webkit-app-region:no-drag; }
+.local-window { position:absolute;box-sizing:border-box;display:flex;flex-direction:column;min-width:0;min-height:0;pointer-events:auto;overflow:hidden;background:var(--paper,#fff);color:var(--ink,#222);border:1px solid var(--line,#999);border-radius:8px;box-shadow:0 6px 24px #0002;-webkit-app-region:no-drag; }
+.local-window[hidden],.local-window [hidden] { display:none!important; }
+.local-window:focus-within { border-color:var(--ui-control-focus,#5479a5); }
+.local-window-header { display:flex;align-items:center;gap:6px;min-height:36px;flex:none;padding:0 6px;cursor:move;touch-action:none;user-select:none;-webkit-app-region:no-drag; }
+.local-window-title { display:flex;flex:1;align-items:center;min-width:0;overflow:hidden; }
+.local-window-header button { flex:none;min-height:28px; }
+.local-window-header:focus-visible,.local-window-resize:focus-visible { outline:2px solid var(--ui-control-focus,#5479a5);outline-offset:-2px; }
+.local-window-body { display:flex;flex:1;flex-direction:column;overflow:auto;min-height:0;min-width:0; }
+.local-window-resize { position:absolute;right:0;bottom:0;width:24px;height:24px;border:0;background:linear-gradient(135deg,transparent 55%,var(--muted,#777) 56%,transparent 62%,transparent 72%,var(--muted,#777) 73%,transparent 80%);cursor:nwse-resize;touch-action:none;-webkit-app-region:no-drag; }
+.local-window-error { flex:none;font-size:12px;padding:6px 26px 6px 8px;color:var(--danger,#a32929);max-height:40%;overflow:auto; }
+.local-window-error button { margin:3px; }
+.local-window .note-projection { position:static!important;transform:none!important;display:flex;width:100%!important;height:100%!important;min-width:0!important;max-width:none!important;max-height:none!important;border:0;box-shadow:none;resize:none!important; }
+.local-window .note-projection-head { min-width:0;flex:1;cursor:inherit;-webkit-app-region:no-drag; }
+.local-window .tag-transcript { min-height:0;overflow:auto; }
+.local-window .tag-composer { flex:none;padding-right:22px; }

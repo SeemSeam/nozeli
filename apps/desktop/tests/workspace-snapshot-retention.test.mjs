@@ -48,6 +48,7 @@ const descriptor=()=>({captureId:'cap-'+state.beginCount,windowId:'win-1',width:
  tiles:[{x:0,y:0,width:8,height:8,windowBounds:{x:0,y:0,width:8,height:8},layers:[{dataUrl:PNG,bounds:{x:0,y:0,width:8,height:8}}]}],
  recoverable:[...state.recoverable]});
 const drawingSchema='nozeli.region-drawing-v1';
+const displayViews=new Map();
 const invoke=async(op,p={})=>{
  calls.push({op,p});
  if(op==='workspace.capture.begin'){state.beginCount++;return {ok:true,value:descriptor()};}
@@ -103,6 +104,10 @@ const invoke=async(op,p={})=>{
   const draft=state.lastGoodSave||{drawing:{schema:drawingSchema,width:8,height:8,strokes:[]},target:{regionImage:{dataUrl:PNG}}};
   return {ok:true,value:{...descriptor(),captureId:'cap-fork-'+(state.recoverForks),drawingDraft:{drawing:draft.drawing,target:{...draft.target}}}};
  }
+ if(op==='workspace.displayView.read'){const id=p.projectId+':'+JSON.stringify(p.key);return {ok:true,value:{key:p.key,state:displayViews.get(id)??null}};}
+ if(op==='workspace.displayView.write'){const id=p.projectId+':'+JSON.stringify(p.key),current=displayViews.get(id);
+  if(current&&current.revision!==p.expectedRevision)return {ok:true,value:{conflict:true,current}};
+  const next={...p.next,revision:(current?.revision??-1)+1};displayViews.set(id,next);return {ok:true,value:{revision:next.revision}};}
  if(op==='workspace.capture.discard')return {ok:true,value:{}};
  return {ok:false,error:{message:'fixture 未实现的操作 '+op}};
 };
@@ -126,8 +131,9 @@ window.snapshotFixture={
  editorVisible:()=>{const area=document.querySelector('#snapshot-drawing .drawing-area');return !!area&&area.getClientRects().length>0;},
  areaBox:()=>{const area=document.querySelector('#snapshot-drawing .drawing-area');const b=area.getBoundingClientRect();return {x:b.x,y:b.y,width:b.width,height:b.height};},
  card:()=>{const buttons=[...dialog().querySelectorAll('.snapshot-card-actions button')].map(node=>({label:node.textContent,disabled:node.disabled,hidden:node.hidden}));return {open:!!(card()&&!card().hidden),value:cardText()?cardText().value:null,readOnly:cardText()?cardText().readOnly:null,primary:buttons[0]?.label??null,buttons,
-  thread:[...document.querySelectorAll('[aria-label="位置讨论卡"] .tag-message')].map(node=>node.textContent.trim())};},
+  thread:[...document.querySelectorAll('.snapshot-card-thread .tag-message')].map(node=>node.textContent.trim())};},
  statusLine:()=>document.querySelector('.snapshot-card-status')?.textContent||'',
+ windowInfo:()=>{const el=document.querySelector('.local-window');return el?{hidden:el.hidden,left:el.style.left,top:el.style.top,inputs:el.querySelectorAll('[aria-label="讨论说明"]').length,aria:el.getAttribute('aria-label')}:null;},
  sends:()=>[...sends],setSendMode:mode=>{state.sendMode=mode;},setAgentReady:value=>{state.agentReady=value;},
  setFinalizeMode:mode=>{state.finalizeMode=mode;},messages:()=>state.messages.length,
  stagePendingRecovery:()=>{const pending=[...state.directReceipts.entries()].reverse().find(([,receipt])=>receipt.state==='pending-delivery');if(!pending)throw Error('fixture 没有待恢复的直发回执');const [,info]=pending;const thread=state.lastGoodSave?.target?.card?.thread||[];state.directReceipts.set('cap-recover:direct1',{attachment:info.attachment,question:info.question,state:'pending-delivery',thread:[]});state.recoverable=[{id:'rec-pending',state:'pending-delivery',createdAt:new Date().toISOString()}];state.recoverScripted={'rec-pending':{...descriptor(),captureId:'cap-recover',recoverable:[],receipt:{id:'cap-recover:direct1',attachment:info.attachment,state:'pending-delivery',card:{message:info.question,thread:[]}},drawingDraft:{drawing:state.lastGoodSave.drawing,target:structuredClone(state.lastGoodSave.target)}}};},
@@ -167,11 +173,12 @@ try{
  const target=await browser.waitForTarget(t=>t.type()==='page'&&t.url().endsWith('/index.html'));page=await target.page();
  const pageErrors=[];
  page.on('pageerror',error=>pageErrors.push(error.stack));
+ page.on('console',message=>{if(message.type()==='error')pageErrors.push('console: '+message.text());});
  const fixture=(fn,...args)=>page.evaluate((code,args)=>{const f=new Function('return ('+code+')')();return f(window.snapshotFixture,...args);},fn.toString(),args);
  // Hidden fixture windows never produce frames, so the default rAF polling
  // stalls after the first synchronous evaluation; poll on a timer instead.
  // puppeteer-core 25: waitForFunction(pageFunction, options, ...args).
- const waitFixture=(source,label,timeout=8000)=>page.waitForFunction(new Function('return ('+source.replace(/\bfx\b/g,'window.snapshotFixture')+')'),{polling:50,timeout}).then(()=>{},async error=>{throw Error(label+' timeout · status='+JSON.stringify(await fixture(fx=>fx.status()))+' · statusLine='+JSON.stringify(await fixture(fx=>fx.statusLine()))+' · thread='+JSON.stringify(await fixture(fx=>fx.card().thread))+' · pageErrors='+JSON.stringify(pageErrors)+' · saves='+JSON.stringify(await fixture(fx=>fx.saveCalls()))+' · toasts='+JSON.stringify(await fixture(fx=>fx.toasts())));});
+ const waitFixture=(source,label,timeout=8000)=>page.waitForFunction(new Function('return ('+source.replace(/\bfx\b/g,'window.snapshotFixture')+')'),{polling:50,timeout}).then(()=>{},async error=>{throw Error(label+' timeout · status='+JSON.stringify(await fixture(fx=>fx.status()))+' · statusLine='+JSON.stringify(await fixture(fx=>fx.statusLine()))+' · window='+JSON.stringify(await fixture(fx=>fx.windowInfo()))+' · thread='+JSON.stringify(await fixture(fx=>fx.card().thread))+' · pageErrors='+JSON.stringify(pageErrors)+' · saves='+JSON.stringify(await fixture(fx=>fx.saveCalls()))+' · toasts='+JSON.stringify(await fixture(fx=>fx.toasts())));});
 
  // ── Scene A: a superseded write stays dirty; the newest revision still reaches the store.
  await fixture(fx=>fx.setSaveMode('hold'));
@@ -198,7 +205,7 @@ try{
  // ── Scene B: same ink, newer card text — the held older write must not
  // acknowledge the newer message typed while it is still in flight.
  await fixture(fx=>fx.clickFinish());
- await waitFixture('fx.card().open&&!fx.card().readOnly','discussion card opened editable');
+ await waitFixture('fx.card().open&&fx.card().value!==null&&!fx.card().readOnly','discussion card opened editable');
  await fixture(fx=>fx.setSaveMode('hold'));
  await fixture(fx=>fx.typeCard('第一版问题'));
  await waitFixture('fx.saveCalls().length===3&&fx.pendingSaves()===1','first-question write held in flight');
@@ -211,7 +218,7 @@ try{
  saves=await fixture(fx=>fx.saveCalls());
  assert.equal(saves[2].message,'第一版问题','the held write carried the older card text');
  assert.equal(saves[3].message,'第二版问题','the newer same-ink card text stayed dirty and was persisted afterwards');
- await waitFixture('fx.card().open&&!fx.card().readOnly','card stays editable');
+ await waitFixture('fx.card().open&&fx.card().value!==null&&!fx.card().readOnly','card stays editable');
  report.scenes.push('newer-card-text-stays-dirty');
 
  // ── Scene C: 返回笔迹 folds the newest card text into the retained target.
@@ -242,7 +249,7 @@ try{
  assert.ok(cardState.buttons.filter(b=>!b.hidden).length>=4&&cardState.buttons.filter(b=>!b.hidden).every(b=>b.disabled),'card buttons are disabled while the commit is in flight');
  assert.equal(await fixture(fx=>fx.dialogOpen()),true,'the dialog stays open during the commit');
  await fixture(fx=>fx.settleCommits('fixture 提交失败'));
- await waitFixture('fx.card().open&&!fx.card().readOnly','failed commit restores the editable card');
+ await waitFixture('fx.card().open&&fx.card().value!==null&&!fx.card().readOnly','failed commit restores the editable card');
  cardState=await fixture(fx=>fx.card());
  assert.ok(cardState.buttons.filter(b=>!b.hidden).every(b=>!b.disabled),'failed commit re-enables the card');
  await fixture(fx=>fx.setCommitMode('ok'));
@@ -367,7 +374,7 @@ try{
  await waitFixture('fx.dialogOpen()&&fx.editorVisible()','direct-send session opened');
  await stroke(page,.3,.3,.6,.6);
  await fixture(fx=>fx.clickFinish());
- await waitFixture('fx.card().open&&!fx.card().readOnly','card opened for direct send');
+ await waitFixture('fx.card().open&&fx.card().value!==null&&!fx.card().readOnly','card opened for direct send');
  await fixture(fx=>fx.typeCard('直发的问题'));
  const toastBaselineI=(await fixture(fx=>fx.toasts())).length;
  await fixture(fx=>fx.clickButton('发送讨论'));
@@ -421,7 +428,7 @@ try{
  const finBaselineJ=(await fixture(fx=>fx.ops('workspace.capture.commit'))).filter(c=>c.direct&&c.requestId).length;
  const sendBaselineJ=(await fixture(fx=>fx.sends())).length;
  await fixture(fx=>fx.clickButton('发送讨论'));
- await waitFixture('fx.statusLine().includes("发送失败")&&fx.card().open&&!fx.card().readOnly','send failure surfaced while keeping the editable card');
+ await waitFixture('fx.statusLine().includes("发送失败")&&fx.card().open&&fx.card().value!==null&&!fx.card().readOnly','send failure surfaced while keeping the editable card');
  assert.equal((await fixture(fx=>fx.ops('workspace.capture.commit'))).filter(c=>c.direct&&!c.requestId).length,materialBaseline+1,'the material was committed exactly once before the failed send');
  assert.equal((await fixture(fx=>fx.sends())).length,sendBaselineJ+1,'the failed attempt was dispatched once');
  assert.equal((await fixture(fx=>fx.card())).value,'会失败的问题','the refused input stays in the card');
@@ -511,6 +518,43 @@ try{
  assert.equal(typeof recoveredReceipt.requestId,'string','the recovered receipt keeps its newest requestId association');
  assert.ok(recoveredReceipt.thread.every(round=>round.requestId),'every persisted round on the recovered receipt keeps its requestId');
  report.scenes.push('recovery-reopens-thread-followup-persists');
+
+ // ── Scene M (live regression): a dragged card position survives
+ // 仅保存本地 → 恢复本地记录(capture fork) → 完成. The window identity is the
+ // record-carried card.windowOwnerId lineage, not the captureId, so the fork
+ // resolves the same stored view — the exact live failure (position reset).
+ await fixture(fx=>fx.clickButton('完成讨论'));
+ await waitFixture('!fx.dialogOpen()','scene L closed');
+ await fixture(fx=>fx.open());
+ await waitFixture('fx.dialogOpen()&&fx.editorVisible()','position-regression session opened');
+ await stroke(page,.35,.4,.6,.6);
+ await fixture(fx=>fx.clickFinish());
+ await waitFixture('fx.card().open','card opened for the position regression');
+ const windowAt=async()=>page.evaluate(()=>{const el=document.querySelector('.local-window');if(!el)return null;const r=el.getBoundingClientRect();return {x:r.x,y:r.y};});
+ const headerBox=async()=>page.evaluate(()=>{const el=document.querySelector('.local-window-header');const r=el.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height};});
+ const header=await headerBox();
+ await page.mouse.move(header.x+header.width/2,header.y+10);await page.mouse.down();
+ await page.mouse.move(header.x+header.width/2-120,header.y+10+66,{steps:6});
+ await page.mouse.up();
+ await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+ const dragged=await windowAt();
+ assert.ok(dragged&&Math.abs(dragged.x-(header.x-120))<3&&Math.abs(dragged.y-(header.y+66))<3,'shell header drag moved the discussion window ('+JSON.stringify(dragged)+')');
+ await fixture(fx=>fx.typeCard('位置回归草稿'));
+ await fixture(fx=>fx.clickButton('仅保存本地'));
+ await waitFixture('!fx.dialogOpen()','仅保存本地 closed the session and kept the record');
+ // Reopen and recover the local record: the fixture forks a NEW captureId
+ // carrying the same frozen background and card draft.
+ await fixture(fx=>fx.setRecoverable([{id:'rec-pos',state:'local',createdAt:new Date().toISOString()}]));
+ await fixture(fx=>fx.open());
+ await waitFixture('fx.dialogOpen()&&fx.editorVisible()','reopened after local save');
+ await waitFixture('fx.recoverOptions().length===1','local record listed for recovery');
+ await fixture(fx=>fx.selectRecover('rec-pos'));
+ await waitFixture('fx.strokesInEditor()===1','forked record reopened with its stroke');
+ await fixture(fx=>fx.clickFinish());
+ await waitFixture('fx.card().open&&fx.card().value==="位置回归草稿"','card reopened after the recovery fork with its draft');
+ const reopened=await windowAt();
+ assert.ok(reopened&&Math.abs(reopened.x-dragged.x)<3&&Math.abs(reopened.y-dragged.y)<3,'the dragged position survived the recovery fork: dragged='+JSON.stringify(dragged)+' reopened='+JSON.stringify(reopened));
+ report.scenes.push('local-save-fork-keeps-dragged-position');
 
  assert.deepEqual(pageErrors,[],'no renderer errors across all retention scenes');
  report.ok=true;

@@ -240,7 +240,6 @@ async function openWorkView(work) {
 }
 async function frozen(work, marker) {
   const chat = await conversation();
-  if(await chat.$eval('#conversation-panel',node=>node.classList.contains('compact-composer')))await chat.click('#chat-history-toggle');
   const s = await state();
   const receipt = s.receipts.filter(r => r.workId === work.id && r.revision === work.revision && (r.changeSetId || r.snapshot?.changeSetId)).at(-1);
   assert(receipt, 'Host result must have immutable changeSetId');

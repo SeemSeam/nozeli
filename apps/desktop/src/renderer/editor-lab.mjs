@@ -49,17 +49,18 @@ const lab = {
     marks = [{ id: 'lab-note', anchor, note: '无侵入代码标签', locationStatus: 'exact', contentStatus: 'unchanged' }]; monaco.setProjections(marks);
     return result;
   },
-  projectionProbe() {
+  async projectionProbe() {
     monaco.setProjections(marks);
     const first = $('monaco').querySelector('.note-anchor');
     if (!first) return { mounted: false };
-    const card = first.querySelector('.note-projection');
+    const controller=first.localWindow;
+    if(!controller)throw Error('标签窗口控制器尚未挂载');
     const before = first;
-    first.querySelector('.note-projection-head')?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
-    const collapsed = card?.classList.contains('is-collapsed') || false;
+    await controller.collapse(true);
+    const collapsed = controller.snapshot().collapsed;
     monaco.setProjections(marks);
     const after = $('monaco').querySelector('.note-anchor');
-    return { mounted: true, collapsed, reused: before === after, summary: first.querySelector('.note-projection-content')?.textContent || '' };
+    return { mounted: true, collapsed, reused: before === after };
   },
   marks: () => structuredClone(marks),
   lifecycleProbe() {

@@ -1,4 +1,3 @@
-import {setIconButton} from './ui-icons.mjs';
 import { mountConversationFont } from './conversation-font.mjs';
 import { mountPanelSplitters } from './panel-splitters.mjs';
 import { mountConversationControls } from './workspace-conversation-controls.mjs';
@@ -7,20 +6,13 @@ import { mountActionConfirmation } from './action-confirmation.mjs';
 
 const $ = id => document.getElementById(id);
 const clamp = (n, min, max) => Math.min(Math.max(n, min), max);
-const defaults = () => ({ filesCollapsed: false, sideCollapsed: true, drawerFilesOpen:false, drawerSideOpen:false, chatCompact:false, chatLayoutExplicit:false, fontSize: 14, conversationFontSize:14, readingWidth:72, split: 50, draft: '', noteOffsets: {}, noteDrafts: [], retainedNoteDrafts: [], confirmationSkips: {} });
+const defaults = () => ({ filesCollapsed: false, sideCollapsed: true, drawerFilesOpen:false, drawerSideOpen:false, fontSize: 14, conversationFontSize:14, readingWidth:72, split: 50, draft: '', noteOffsets: {}, noteDrafts: [], retainedNoteDrafts: [], confirmationSkips: {} });
 
 // The same composer node survives every layout change. All persisted state is project-scoped.
 export function mountWorkspace({ save, saveProjectSettings, openProject, addNote, send }) {
   mountDocumentHeader();
   const ownsConversation=window.__workspaceScope?.role==='surface'&&window.__workspaceScope.kind==='conversation';
-  let state = defaults(), toastTimer, chatSizes = new Map();
-  let conversationInitialized=false,messageCount=0;
-  const historyToggle=document.createElement('button');historyToggle.id='chat-history-toggle';historyToggle.type='button';historyToggle.textContent='⌃';
-  const chatStatus=document.createElement('span');chatStatus.id='chat-compact-status';chatStatus.textContent='本地草稿';chatStatus.title='草稿仅保存在当前项目';
-  $('conversation-head').insertBefore(chatStatus,$('conversation-head').querySelector('.conversation-controls'));
-  $('conversation-head').querySelector('.conversation-controls').prepend(historyToggle);
-  const compact=()=>state.chatCompact;
-  historyToggle.addEventListener('click',()=>{state.chatCompact=!state.chatCompact;state.chatLayoutExplicit=true;changed();});
+  let state = defaults(), toastTimer;
   const confirmation = mountActionConfirmation({
     scope: () => state,
     preferences: () => state.confirmationSkips,
@@ -52,7 +44,7 @@ export function mountWorkspace({ save, saveProjectSettings, openProject, addNote
     const panelLimit = Math.min(180, Math.max(108, innerHeight * 0.24));
     composer.style.height = '0px';
     const contentHeight = composer.value ? composer.scrollHeight : 0;
-    const height = clamp(contentHeight, compact()?28:42, panelLimit);
+    const height = clamp(contentHeight, 42, panelLimit);
     composer.style.height = height + 'px';
     composer.style.overflowY = contentHeight > panelLimit ? 'auto' : 'hidden';
   }
@@ -81,12 +73,6 @@ export function mountWorkspace({ save, saveProjectSettings, openProject, addNote
     if(badgeCount)$('toggle-sidebar').setAttribute('aria-label',$('toggle-sidebar').getAttribute('aria-label')+'，'+badgeCount+' 项未处理');
     const conversationSurface = window.__workspaceScope?.role === 'surface' && window.__workspaceScope.kind === 'conversation';
     $('conversation-panel').hidden = !conversationSurface;
-    const panel = $('conversation-panel');
-    panel.classList.toggle('compact-composer',compact());
-    historyToggle.hidden = !conversationSurface;
-    setIconButton(historyToggle,state.chatCompact?'chevron-up':'chevron-down');
-    historyToggle.title=(state.chatCompact?'展开完整对话':'收为紧凑输入')+(messageCount?' · '+messageCount+' 条消息':'');
-    historyToggle.setAttribute('aria-label',historyToggle.title);historyToggle.setAttribute('aria-expanded',String(!state.chatCompact));
     $('app').style.setProperty('--reader-font', state.fontSize + 'px');
     document.documentElement.style.setProperty('--conversation-font', state.conversationFontSize + 'px');
     conversationFont.render();
@@ -229,16 +215,9 @@ export function mountWorkspace({ save, saveProjectSettings, openProject, addNote
       if (overflowEdits.get(key) === draft) overflowEdits.delete(key);
       state.noteDrafts = (state.noteDrafts || []).filter(item => item !== draft);
     },
-    conversationContent(info) {
-    if(info?.state){chatStatus.textContent=info.state==='ready'?'前台已连接':info.state==='failed'?'连接失败':'未接入 Agent · 本地草稿';chatStatus.title=info.label||chatStatus.textContent;}
-    if(Number.isInteger(info?.count)){
-      messageCount=info.count;
-      if(!conversationInitialized){conversationInitialized=true;if(messageCount && !state.chatLayoutExplicit && state.chatCompact){state.chatCompact=false;render();}}
-      historyToggle.title=(state.chatCompact?'展开完整对话':'收为紧凑输入')+(messageCount?' · '+messageCount+' 条消息':'');historyToggle.setAttribute('aria-label',historyToggle.title);
-    }
-  }, revealContent() { controls.close(); }, offset: id => state.noteOffsets[id] || [0,0], moveNote(id, delta) { state.noteOffsets = {...state.noteOffsets, [id]: delta}; save(); }, chatSize: id => chatSizes.get(id) || null, resizeChat(id, size) { if (!id || !size) return; chatSizes.set(id, { width: Math.round(size.width), height: Math.round(size.height) }); }, remapFiles(from, to) { state.noteDrafts = (state.noteDrafts || []).map(d => d.relPath === from || d.relPath.startsWith(from + '/') ? { ...d, relPath: to + d.relPath.slice(from.length) } : d); }, snapshot: () => ({ ...state, draft: $('composer').value, noteDrafts: state.noteDrafts || [], retainedNoteDrafts: state.retainedNoteDrafts || [] }),
+    revealContent() { controls.close(); }, legacyTagView: id => Object.hasOwn(state.noteOffsets || {}, id) ? {noteOffset:state.noteOffsets[id]} : null, remapFiles(from, to) { state.noteDrafts = (state.noteDrafts || []).map(d => d.relPath === from || d.relPath.startsWith(from + '/') ? { ...d, relPath: to + d.relPath.slice(from.length) } : d); }, snapshot: () => ({ ...state, draft: $('composer').value, noteDrafts: state.noteDrafts || [], retainedNoteDrafts: state.retainedNoteDrafts || [] }),
     restore(value, settings) {
-      conversationFont.close(); conversationInitialized=false; messageCount=0;
+      conversationFont.close();
       const initial = defaults();
       // Native workspace layout owns geometry; restore only content and sidebar preferences.
       for (const key of [...Object.keys(initial), 'projectView', 'filesWidth', 'sideWidth', 'workRatio']) {

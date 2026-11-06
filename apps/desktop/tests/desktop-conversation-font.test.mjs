@@ -27,7 +27,6 @@ try{
  assert((await call('session.resize',{width:1440,height:950})).ok);await page.click('#file-tree button[data-path="read.md"]');await page.waitForSelector('#text-preview:not([hidden])');
  const reader=await font('#text-preview');assert.equal(await font('#composer'),14);
  await page.type('#composer','对话字号验收 **加粗文字**\n\n公式 $E=mc^2$\n\n```cpp\nint main() { return 0; }\n```\n\n| 项目 | 状态 |\n| --- | --- |\n| 字号 | 可调整 |');await page.click('#send-message');await page.waitForSelector('.agent-message-body .katex');await page.waitForSelector('.agent-message-body pre code');
- if(await page.$eval('#conversation-panel',n=>n.classList.contains('compact-composer')))await page.click('#chat-history-toggle');
  await size(20);assert.equal(await font('.agent-message-body'),20);assert.equal(await font('#text-preview'),reader);assert(Math.abs(await font('.agent-message-body pre code')-18.4)<.1);assert(Math.abs(await font('.agent-message-body .katex')-21)<.1);mark('real conversation Markdown/code/math/composer scale independently of document');
  await page.type('#composer','保留草稿 abc');await page.focus('#composer');await page.keyboard.down('Control');await page.keyboard.press('KeyA');await page.keyboard.up('Control');
  await menu('#composer',false);await page.click('#conversation-context-menu [data-command="copy"]');assert.equal((await call('document.clipboard',{action:'read'})).value,'保留草稿 abc');

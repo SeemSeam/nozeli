@@ -46,7 +46,6 @@ check('candidate links refresh while original tree remains unchanged',!await fs.
 const historicalReceipt=(await state()).receipts.find(r=>r.workId===w.id&&r.kind==='result'&&r.snapshot?.files?.some(f=>f.relPath==='generated/summary.md'));
 assert(historicalReceipt);const oldArtifact=await invoke('managed.artifact.read',{projectId,objectId:historicalReceipt.objectId,relPath:'generated/summary.md'});
 check('historical file survives move in immutable receipt',oldArtifact.readOnly&&oldArtifact.text.length>0&&!await fs.stat(path.join(w.execution.directory,'generated/summary.md')).then(()=>true,()=>false));
-if(await page.$eval('#chat-history-toggle',n=>!n.hidden&&n.getAttribute('aria-expanded')==='false'))await page.click('#chat-history-toggle');
 await page.click('#managed-file-bubbles [data-managed-file="generated/summary.md"]');await page.waitForFunction(()=>document.querySelector('#subject-title').textContent.includes('summary.md')&&document.querySelector('#managed-doc').textContent.includes('成果快照'));
 check('historical link opens frozen bytes rather than missing original',(await page.$eval('#managed-doc',n=>n.textContent)).includes(oldArtifact.text));
 check('opening historical artifact does not recreate source or moved candidate',!await fs.stat(path.join(project,'generated/summary.md')).then(()=>true,()=>false)&&!await fs.stat(path.join(w.execution.directory,'generated/summary.md')).then(()=>true,()=>false));

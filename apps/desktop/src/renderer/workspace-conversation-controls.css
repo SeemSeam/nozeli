@@ -1,21 +1,21 @@
-.conversation-head .chat-window-controls{flex-wrap:nowrap;gap:3px}
-.conversation-head .chat-window-controls .chat-tool{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;flex:0 0 28px;width:28px;height:28px;min-height:28px;padding:5px;border:0;border-radius:5px;color:var(--ink,#2e3931)}
+.conversation-head .chat-window-controls{gap:3px}
+.conversation-head .chat-window-controls .chat-tool{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;flex:0 0 28px;width:28px;min-width:28px;height:28px;min-height:28px;padding:5px;border:0;border-radius:5px;color:var(--workspace-header-ink,var(--ink))}
 .chat-tool svg{flex:0 0 17px;width:17px;height:17px}
-.chat-tool:focus-visible{outline:2px solid #456654;outline-offset:2px}
-.conversation-head{flex-wrap:nowrap!important;min-width:0;height:34px;min-height:34px;box-sizing:border-box;flex:none;gap:6px;padding:0 8px;border-bottom:1px solid var(--workspace-seam);background:var(--workspace-header-paper);color:var(--workspace-header-ink);font:500 13px/20px var(--chrome-font-family,system-ui,sans-serif)}
+.chat-tool:focus-visible{outline:2px solid var(--ui-control-focus,var(--green));outline-offset:2px}
+.conversation-head{flex-wrap:nowrap!important;min-width:0;min-height:34px;box-sizing:border-box;flex:none;gap:6px;padding:3px 8px;border-bottom:1px solid var(--workspace-seam);background:var(--workspace-header-paper);color:var(--workspace-header-ink);font:500 13px/20px var(--chrome-font-family,system-ui,sans-serif)}
 .conversation-head>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:inherit}
-.conversation-head .conversation-controls{flex:none;flex-wrap:nowrap!important}
+.conversation-head .conversation-controls{flex:0 1 auto;min-width:0;max-width:100%;flex-wrap:wrap;margin-left:auto}
+/* Presentation only: hidden/disabled remain owned by the real action's availability gates. */
+.conversation-head .conversation-controls>.chat-menu-action{display:none}
 .conversation-head .panel-font{width:auto!important;flex:none!important;padding:3px 6px!important}
-.conversation-head.panel-narrow #chat-compact-status{display:none}
-.conversation-head.conversation-head-detached .conversation-controls,.conversation-head.conversation-head-detached #chat-compact-status{display:none!important}
 .rail .workspace-conversation-launcher.conversation-minimized{color:var(--green);border-color:var(--green);background:var(--green-soft)}
 .rail .workspace-conversation-launcher[data-state="error"]{color:var(--red);border-color:var(--red)}
-.session-runtime-dialog{box-sizing:border-box;width:min(720px,calc(100vw - 24px));max-height:calc(100vh - 24px);overflow:auto;background:var(--paper);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:20px}
-.session-runtime-dialog h2{margin:0 0 12px;font-size:18px}
+.session-runtime-dialog{box-sizing:border-box;width:min(560px,calc(100vw - 24px));max-height:calc(100dvh - 24px);overflow:auto;background:var(--paper);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:20px;font-size:inherit}
+.session-runtime-dialog h2{margin:0 0 12px;font-size:1.25em}
 .session-runtime-dialog p{white-space:pre-wrap;overflow-wrap:anywhere}
 .session-runtime-actions{display:flex;flex-wrap:wrap;gap:8px}
-.session-runtime-actions button{min-height:40px;white-space:normal}
-.session-runtime-dialog pre,.session-runtime-dialog textarea{box-sizing:border-box;width:100%;max-height:32vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--paper);color:var(--ink);border:1px solid var(--line);padding:10px;font:13px/1.6 ui-monospace,monospace}
+.session-runtime-actions button{min-height:32px;white-space:normal;font:inherit;overflow-wrap:anywhere}.session-runtime-dialog [hidden]{display:none!important}.session-runtime-dialog p:empty{display:none}
+.session-runtime-dialog pre,.session-runtime-dialog textarea{box-sizing:border-box;width:100%;max-height:32vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--paper);color:var(--ink);border:1px solid var(--line);padding:10px;font:inherit;font-family:ui-monospace,monospace}
 .session-runtime-dialog textarea{min-height:150px;resize:vertical}
 .session-runtime-dialog :is(button,pre,textarea):focus-visible{outline:2px solid var(--ui-control-focus,var(--green));outline-offset:2px}
 @media(max-width:640px){.session-runtime-dialog{padding:12px}.session-runtime-actions button{min-height:44px}}
@@ -23,8 +23,8 @@
 .session-context-details summary{padding:12px 4px;min-height:44px;box-sizing:border-box;cursor:pointer;font-weight:600}
 .session-context-details summary:focus-visible{outline:2px solid var(--ui-control-focus,var(--green));outline-offset:2px}
 .session-context-body{padding:0 4px 12px;min-width:0}
-.session-context-body h3{font-size:14px;margin:16px 0 8px}
-.session-context-body dl{display:grid;grid-template-columns:minmax(80px,auto) minmax(0,1fr);gap:6px 12px;margin:8px 0;font-size:13px;line-height:1.6}
+.session-context-body h3{font-size:1.1em;margin:16px 0 8px}
+.session-context-body dl{display:grid;grid-template-columns:minmax(80px,auto) minmax(0,1fr);gap:6px 12px;margin:8px 0;font-size:inherit;line-height:1.6}
 .session-context-body dt{font-weight:600}
 .session-context-body dd{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
 .session-context-body ul{padding-inline-start:20px;overflow-wrap:anywhere}

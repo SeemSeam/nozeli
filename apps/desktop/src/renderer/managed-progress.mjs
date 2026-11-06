@@ -14,6 +14,7 @@ export function managedProgress(state,target='frontdesk'){
     else if(jobs.some(j=>j.target===w.id&&j.status==='queued'&&j.type!=='initial'))phase=draft(w.id)?'补充已接收，等待未发送草稿处理':w.status==='running'?'执行中，补充已排队':'补充已接收，等待执行';
     return {id:w.id,text:`${w.name||'工作'} · ${phase}${occupies?' · 占用名额':''}`,status:w.status};
   });
-  const summary=`工作名额 ${state.quotaUsed}/${state.limit}${queue.length?` · 排队 ${queue.length} 项`:''}${state.quotaUsed>=state.limit?' · 新任务将排队':''}`;
+  const knownQuota=Number.isFinite(state.quotaUsed)&&Number.isFinite(state.limit);
+  const summary=`${knownQuota?`工作名额 ${state.quotaUsed}/${state.limit}`:'工作名额未确认'}${queue.length?` · 排队 ${queue.length} 项`:''}${knownQuota&&state.quotaUsed>=state.limit?' · 新任务将排队':''}`;
   return {summary,requests,works:rows};
 }

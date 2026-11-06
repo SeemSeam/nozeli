@@ -1,3 +1,18 @@
+import {mountLocalWindow,ensureLocalWindowLayer,viewportWindowEnvironment,defaultLocalWindowView} from './local-window.mjs';
+import {createLocalWindowView} from './local-window-view.mjs';
+const tagWindows = new Set();
+const tagSessions = new Map();
+const tagMounts = new Set();
+function sourceMarker(key, fallback) { const session=tagSessions.get(key);return session?.marker?.isConnected?session.marker:[...(session?.markers || [])].find(marker=>marker.isConnected) || session?.marker || fallback; }
+export async function disposeTagWindows(annotationId) {
+  await Promise.all([...tagMounts]);
+  for (const [key, session] of tagSessions) {
+    if (annotationId && session.id !== annotationId) continue;
+    await session.root.localWindow?.dispose();
+    session.dispose();tagSessions.delete(key);
+  }
+}
+export async function flushTagWindows() { await Promise.all([...tagMounts]); await Promise.all([...tagWindows].map(window => window.flush())); }
 import {setIconButton} from './ui-icons.mjs';
 import { renderTagMarkdown, tagMarkdownSummary } from './tag-markdown.mjs';
 import { mountAnnotationComposer, describeAnnotationSource } from './annotation-composer.mjs';
@@ -12,62 +27,6 @@ import { mountContextMenu } from './context-menu.mjs';
 // secondary actions (including removal behind confirmation) in the more menu.
 const mountedTagCleanups = new Map();
 let tagRemovalObserver = null;
-// Demo cards share one readable slot per pane. This is presentation only:
-// anchors, open state, dimensions, offsets and unsent text remain untouched.
-const demoTagPanes = new Map();
-let demoObstacles = [];
-let demoActiveAnnotation = null;
-globalThis.window?.addEventListener('nozeli-demo-active-tag', event => {
-  if (typeof event.detail?.annotationId !== 'string') return;
-  demoActiveAnnotation = event.detail.annotationId;
-  for (const group of demoTagPanes.values()) scheduleDemoTags(group);
-});
-globalThis.window?.addEventListener('nozeli-demo-obstacles', event => {
-  demoObstacles = Array.isArray(event.detail?.rects) ? event.detail.rects : [];
-  for (const group of demoTagPanes.values()) group.active?.fit();
-});
-globalThis.window?.nozeli?.subscribe('workspace.control', event => {
-  if (event.type !== 'demo-obstacles') return;
-  demoObstacles = event.rects;
-  for (const group of demoTagPanes.values()) group.active?.fit();
-});
-function scheduleDemoTags(group) {
-  if (group.frame) return;
-  group.frame = requestAnimationFrame(() => {
-    group.frame = 0;
-    const entries = [...group.entries.values()].filter(entry => entry.root.isConnected);
-    const requested = entries.find(entry => entry.root.dataset.annotation === demoActiveAnnotation);
-    if (requested) group.active = requested;
-    else if (!entries.includes(group.active)) group.active = entries.at(-1);
-    for (const entry of entries) {
-      entry.card.classList.toggle('demo-tag-parked', entry !== group.active);
-      entry.card.classList.add('demo-tag-current');
-      entry.select.hidden = entries.length < 2;
-      const signature = entries.map(item => item.root.dataset.annotation + ':' + item.label()).join('|');
-      if (entry.select.dataset.options !== signature) {
-        entry.select.replaceChildren(...entries.map(item => {
-          const option = document.createElement('option');
-          option.value = item.root.dataset.annotation; option.textContent = item.label(); return option;
-        }));
-        entry.select.dataset.options = signature;
-      }
-      entry.select.value = group.active?.root.dataset.annotation || '';
-    }
-    group.active?.fit();
-  });
-}
-function demoCardRegion(region) {
-  let spaces = [region];
-  for (const obstacle of demoObstacles) {
-    const x = obstacle.x - 8, y = obstacle.y - 8, right = obstacle.x + obstacle.width + 8, bottom = obstacle.y + obstacle.height + 8;
-    spaces = spaces.flatMap(box => {
-      if (x >= box.right || right <= box.left || y >= box.bottom || bottom <= box.top) return [box];
-      return [{...box,right:Math.min(box.right,x)},{...box,left:Math.max(box.left,right)},{...box,bottom:Math.min(box.bottom,y)},{...box,top:Math.max(box.top,bottom)}].filter(part => part.right > part.left && part.bottom > part.top);
-    });
-  }
-  spaces.sort((a,b) => (Math.min(420,b.right-b.left)*(b.bottom-b.top))-(Math.min(420,a.right-a.left)*(a.bottom-a.top)));
-  return spaces.find(box => box.right-box.left >= Math.min(240,region.right-region.left) && box.bottom-box.top >= 100) || spaces[0] || region;
-}
 function watchTagRemoval(root, cleanup) {
   if (typeof MutationObserver !== 'function' || !document.body) return;
   mountedTagCleanups.set(root, cleanup);
@@ -103,7 +62,22 @@ function tagCardMenu(doc = globalThis.document) {
 let tagSourceSeq = 0;
 
 
-export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAvailability, readReply, replyEntries = [], status = '', open = true, anchorDrift = false, resolution, history = [], draftText = '', anchor = {}, material = {}, relPath = '', displayLocation, information, executeStatus = '', anchorKind = '' }, { draw, filePath = () => '', sourceText = () => '', remove, save, execute = null, offset = () => [0, 0], move = () => {}, size = () => null, resize = () => {}, onDraft, onOpen, autoEdit = () => false, inline = false, readOnly = false } = {}) {
+export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAvailability, readReply, replyEntries = [], status = '', open = true, anchorDrift = false, resolution, history = [], draftText = '', anchor = {}, material = {}, relPath = '', displayLocation, information, executeStatus = '', anchorKind = '' }, { draw, filePath = () => '', sourceText = () => '', remove, save, execute = null, legacyView = () => null, onDraft, onOpen, autoEdit = () => false, inline = false, readOnly = false } = {}) {
+  const sessionKey = JSON.stringify([window.__workspaceScope?.projectId,window.__workspaceScope?.viewId,relPath || filePath(),id]);
+  const existing = !inline && tagSessions.get(sessionKey);
+  if (existing) {
+    existing.root.updateReadOnly(readOnly);
+    const marker = document.createElement('span');marker.className=existing.root.className;marker.dataset.annotation=id;
+    if(existing.root.dataset.anchorKind)marker.dataset.anchorKind=existing.root.dataset.anchorKind;
+    const button=document.createElement('button');button.type='button';button.className='note-index';button.textContent=String(ordinal);button.setAttribute('aria-label',`打开标签 ${ordinal}`);
+    button.addEventListener('click',()=>{existing.marker=marker;existing.root.openWindow(button);});marker.append(button);existing.marker=marker;
+    existing.markers = new Set([...existing.markers].filter(node=>node.isConnected));existing.markers.add(marker);
+    for (const method of ['updateAnchor','updateConversation','relayout','fitConversation','updateExecuteStatus','refreshNote']) marker[method]=(...args)=>existing.root[method]?.(...args);
+    marker.setOrdinal=value=>{button.textContent=String(value);existing.root.setOrdinal(value);};
+    Object.defineProperty(marker,'localWindow',{get:()=>existing.root.localWindow});
+    if(kind!=='note')existing.root.updateConversation?.({text,replyText,replyAvailability,readReply,replyEntries,status,history,anchor,material,anchorKind,resolution,anchorDrift});
+    return marker;
+  }
   const conversation = kind !== 'note';
   let pending = status === 'pending' || status === 'accepted-awaiting-reply';
   const root = document.createElement('span');
@@ -116,30 +90,15 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   index.setAttribute('aria-label', `打开${kind === 'note' ? '备注' : '对话'} ${ordinal}`);
   const card = document.createElement('span'); card.className = 'note-projection'; card.hidden = false;
   card.classList.add('tag-chat-window');
-  const savedSize = size(id);
-  if (savedSize) {
-    card.style.width = `${savedSize.width}px`;
-    card.style.height = `${savedSize.height}px`;
-  }
-  let delta = offset(id), collapsed = !open, paneObserver = null, cardObserver = null;
+  let collapsed = !open, controller = null, layoutDisposed = false, requestedOpen = false;
   let composer = null;
-  let boundPane = null, layoutMounted = false, layoutDisposed = false, layoutFrame = null;
-  let demoGroup = null, demoEntry = null;
-  const layoutTimers = [];
+  const scope = globalThis.window?.__workspaceScope || {};
+  const key = {projectId:scope.projectId,projectInstanceId:scope.projectId,ownerKind:'annotation',ownerId:JSON.stringify({id,relPath:relPath || filePath(),documentSource:scope.documentSource || {type:'project'}}),surfaceId:scope.viewId || scope.windowId || scope.role || 'shell'};
+  const oldView = legacyView(id);
   card.classList.toggle('is-collapsed', collapsed);
   index.setAttribute('aria-expanded', String(open));
-  const head = document.createElement('span'); head.className = 'note-projection-head'; head.tabIndex = 0;
+  const head = document.createElement('span'); head.className = 'note-projection-head';
   const disposeHeader = observePanelWidth(head);
-  const demoSelect = document.createElement('select'); demoSelect.className = 'demo-tag-selector'; demoSelect.hidden = true;
-  demoSelect.setAttribute('aria-label', '切换本页演示标签');
-  demoSelect.addEventListener('pointerdown', event => event.stopPropagation());
-  demoSelect.addEventListener('keydown', event => event.stopPropagation());
-  demoSelect.addEventListener('click', event => event.stopPropagation());
-  demoSelect.addEventListener('change', () => {
-    const entry = [...demoGroup.entries.values()].find(item => item.root.dataset.annotation === demoSelect.value);
-    if (entry) { demoActiveAnnotation = entry.root.dataset.annotation; demoGroup.active = entry; scheduleDemoTags(demoGroup); requestAnimationFrame(() => entry.select.focus()); }
-  });
-  head.setAttribute('aria-label', '拖动或方向键移动，双击打开或关闭');
   const initialDraft = kind === 'note' && status && typeof status === 'object' ? status.value : conversation && status !== 'draft' ? draftText : text || '';
   // The header number doubles as the source disclosure: material identity and
   // the frozen quote live behind it in a <details>, never a persistent row.
@@ -173,105 +132,12 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
     const scope = root.closest('.cm-scroller, #markdown-preview-scroll, .reader-scroll, .monaco-editor') || root.parentElement;
     scope?.querySelectorAll('.note-anchor.is-focused').forEach(node => node.classList.remove('is-focused'));
     root.classList.add('is-focused');
-    if (demoGroup && demoGroup.active !== demoEntry) { demoGroup.active = demoEntry; scheduleDemoTags(demoGroup); }
   };
-  const position = () => { card.style.transform = `translate(${delta[0]}px,${delta[1]}px)`; fitConversation(); };
-  const ancestorScroll = event => { if (event.target !== boundPane && event.target?.contains?.(root)) fitConversation(); };
   const disposeLayout = () => {
-    renderThread?.disposeOriginalReaders?.();
-    composer?.dispose();
-    layoutDisposed = true;
-    if (demoGroup) {
-      demoGroup.entries.delete(root);
-      if (demoGroup.entries.size) scheduleDemoTags(demoGroup);
-      else { if (demoGroup.frame) cancelAnimationFrame(demoGroup.frame); demoTagPanes.delete(boundPane); }
-    }
-    paneObserver?.disconnect();
-    cardObserver?.disconnect();
-    boundPane?.removeEventListener('scroll', fitConversation);
-    window.removeEventListener('resize', fitConversation);
-    document.removeEventListener('scroll', ancestorScroll, true);
-    if (layoutFrame !== null) cancelAnimationFrame(layoutFrame);
-    layoutTimers.forEach(clearTimeout);
+    if (layoutDisposed) return;
+    layoutDisposed = true; renderThread?.disposeOriginalReaders?.(); composer?.dispose(); disposeHeader(); tagWindows.delete(controller);
   };
-  const fitConversation = () => {
-    if (layoutDisposed || !root.isConnected) return;
-    if (inline) { autoGrow(); return; }
-    autoGrow();
-    const paneNode = root.closest('.cm-scroller, #markdown-preview-scroll, .reader-scroll, .monaco-editor');
-    const pane = paneNode?.getBoundingClientRect();
-    if (!pane || pane.width < 1 || pane.height < 1) { card.style.visibility = 'hidden'; return; }
-    if (boundPane !== paneNode) {
-      boundPane?.removeEventListener('scroll', fitConversation);
-      paneObserver?.disconnect();
-      boundPane = paneNode;
-      boundPane.addEventListener('scroll', fitConversation, { passive: true });
-      if (typeof ResizeObserver === 'function') {
-        paneObserver = new ResizeObserver(fitConversation);
-        paneObserver.observe(boundPane);
-      }
-    }
-    if (!layoutMounted) {
-      layoutMounted = true;
-      window.addEventListener('resize', fitConversation);
-      document.addEventListener('scroll', ancestorScroll, true);
-      watchTagRemoval(root, disposeLayout);
-    }
-    if (!demoGroup && document.querySelector('.guided-demo-content-badge:not([hidden])')) {
-      demoGroup = demoTagPanes.get(paneNode);
-      if (!demoGroup) { demoGroup = {entries:new Map(),active:null,frame:0}; demoTagPanes.set(paneNode,demoGroup); }
-      demoEntry = {root,card,select:demoSelect,fit:fitConversation,label:() => `${kind === 'note' ? '备注' : '讨论'} ${ordinal}`};
-      demoGroup.entries.set(root,demoEntry);
-      if (!demoActiveAnnotation || demoActiveAnnotation === id) demoGroup.active = demoEntry;
-      scheduleDemoTags(demoGroup);
-    }
-    if (demoGroup && demoGroup.active !== demoEntry) return;
-    const markdownPane=root.closest('#markdown-preview-scroll');
-    const overlay = root.closest('.word-note-overlay');
-    const viewport = document.documentElement;
-    const paneLeft = pane.left + paneNode.clientLeft, paneTop = pane.top + paneNode.clientTop;
-    let left = Math.max(0, paneLeft), top = Math.max(0, paneTop);
-    let right = Math.min(viewport.clientWidth, paneLeft + paneNode.clientWidth);
-    let bottom = Math.min(viewport.clientHeight, paneTop + paneNode.clientHeight);
-    // CodeMirror's sticky line-number gutter covers content even while the
-    // scroller itself is visible. Fit cards beside it, not underneath it.
-    const gutter = paneNode.matches('.cm-scroller') ? paneNode.querySelector(':scope > .cm-gutters')?.getBoundingClientRect() : null;
-    if (gutter && gutter.right > left && gutter.left <= left) left = Math.min(right, gutter.right);
-    if (overlay) {
-      const box = overlay.getBoundingClientRect();
-      left = Math.max(left, box.left); right = Math.min(right, box.right);
-      top = Math.max(top, box.top + Number(overlay.dataset.clipTop || 0)); bottom = Math.min(bottom, box.bottom);
-    }
-    // Visibility follows the source marker, not the translated/clamped card.
-    // A card's own geometry must never keep an offscreen source on screen.
-    for (let parent = paneNode.parentElement; parent; parent = parent.parentElement) {
-      const style = getComputedStyle(parent);
-      if (/(auto|scroll|hidden|clip)/.test(style.overflowY)) {
-        const box = parent.getBoundingClientRect();
-        top = Math.max(top, box.top + parent.clientTop);
-        bottom = Math.min(bottom, box.top + parent.clientTop + parent.clientHeight);
-      }
-    }
-    const marker = index.getBoundingClientRect();
-    const sourceVisible = right > left && bottom > top && marker.bottom > top && marker.top < bottom;
-    card.style.visibility = sourceVisible ? '' : 'hidden';
-    if (!sourceVisible) return;
-    const insetX = Math.min(8, (right - left) / 2), insetY = Math.min(8, (bottom - top) / 2);
-    left += insetX; right -= insetX; top += insetY; bottom -= insetY;
-    if (demoGroup && demoObstacles.length) ({left,right,top,bottom} = demoCardRegion({left,right,top,bottom}));
-    card.style.minWidth = '0px';
-    card.style.maxWidth = Math.max(0, right - left) + 'px';
-    const anchorBox = root.getBoundingClientRect();
-    const below = bottom - (anchorBox.top + delta[1] + 8);
-    const limitBelow = (overlay || markdownPane || root.closest('.image-page')) && delta[0] === 0 && delta[1] === 0 && below >= 180;
-    card.style.maxHeight = Math.max(0, Math.min(bottom - top, limitBelow ? below : Infinity)) + 'px';
-    // Measure the translated natural origin, including the anchor's containing block.
-    // The ordinal gutter is preferred, never a lower bound that defeats edge clamping.
-    card.style.left = '0px'; card.style.top = '0px';
-    const bounds = card.getBoundingClientRect();
-    card.style.left = (Math.max(left, Math.min(bounds.left + 18, right - bounds.width)) - bounds.left) + 'px';
-    card.style.top = (Math.max(top, Math.min(bounds.top + 8, bottom - bounds.height)) - bounds.top) + 'px';
-  };
+  const fitConversation = () => { if (!layoutDisposed) { autoGrow(); controller?.update(); } };
   // Content-sized composer: empty is one ~32px row, real multiline text grows
   // the textarea (bounded by CSS at ~4 lines, then it scrolls). Height follows
   // only actual content, so an async reply re-render never shrinks a draft.
@@ -287,7 +153,7 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
     if (!conversation) renderTagMarkdown(noteBody, draftValue || '（无文字）');
     onDraft?.(id, draftValue);
   });
-  const focusEditor = () => { if (root.isConnected) editor.focus(); else queueMicrotask(() => { if (root.isConnected && editing) editor.focus(); }); };
+  const focusEditor = () => { if (editor.isConnected) editor.focus(); else queueMicrotask(() => { if (editor.isConnected && editing) editor.focus(); }); };
   const canFollowup = conversation && status !== 'draft';
   const composerRow = document.createElement('span'); composerRow.className = 'tag-composer';
   const submit = document.createElement('button'); submit.type = 'button'; submit.className = 'tag-send';
@@ -383,7 +249,8 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
     syncSource();
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(fitConversation);
   });
-  const setOpen = (next, notify = true) => {
+  const setOpen = (next, notify = true, opener = index) => {
+    if (notify) requestedOpen = Boolean(next);
     open = Boolean(next);
     collapsed = !open;
     card.classList.toggle('is-collapsed', collapsed);
@@ -403,8 +270,10 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
     close.title = close.getAttribute('aria-label');
     index.setAttribute('aria-expanded', String(open));
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(fitConversation);
+    if (notify && controller) void (open ? controller.show(opener) : controller.collapse(true)).catch(error => setDelivery(error.message));
     if (notify && !readOnly) onOpen?.(id, open);
   };
+  root.openWindow = opener => setOpen(true, true, opener);
   const toggle = () => setOpen(!open);
   const edit = () => {
     if (readOnly) return;
@@ -449,17 +318,17 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   });
   const more = panelButton(); more.dataset.tagMore = '';
   const cardMenuItems = () => {
-    const items = [];
+    const items = [], isCollapsed = controller?.snapshot().collapsed ?? collapsed;
     if (execute && !readOnly && !conversation) items.push({ id: 'card-execute', label: '提交任务', enabled: !executeButton.disabled });
     if (drawingButton && !readOnly) items.push({ id: 'card-drawing', label: '编辑涂鸦' });
     if (!conversation && !readOnly) items.push({ id: 'card-edit', label: '编辑备注', enabled: !editing });
-    items.push({ id: 'card-source', label: source.open ? '收起来源' : '查看来源', enabled: !collapsed });
-    items.push({ id: 'card-collapse', label: collapsed ? `展开${conversation ? '对话' : '备注'}` : `折叠${conversation ? '对话' : '备注'}` });
+    items.push({ id: 'card-source', label: source.open ? '收起来源' : '查看来源', enabled: !isCollapsed });
+    items.push({ id: 'card-collapse', label: isCollapsed ? `展开${conversation ? '对话' : '备注'}` : `折叠${conversation ? '对话' : '备注'}` });
     if (remove && !readOnly) items.push({ separator: true }, { id: 'card-remove', label: conversation ? '移除标签，保留对话历史…' : '删除备注…' });
     return items;
   };
   const runCardMenu = command => {
-    if (command === 'card-collapse') return toggle();
+    if (command === 'card-collapse') return controller ? controller.collapse(!controller.snapshot().collapsed).catch(error=>setDelivery(error.message)) : toggle();
     if (command === 'card-source') return toggleSource();
     // Removal clicks the retained button so the shared destructive-action
     // confirmation (#action-confirmation) intercepts and validates it.
@@ -475,64 +344,7 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   });
   head.addEventListener('click', () => focusCard());
   close.addEventListener('click', event => { event.stopPropagation(); toggle(); });
-  let indexClickOpen;
-  index.addEventListener('click', event => {
-    event.preventDefault(); event.stopPropagation(); focusCard();
-    if (event.detail === 1) indexClickOpen = open;
-    if (demoGroup) { demoActiveAnnotation = id; setOpen(true); scheduleDemoTags(demoGroup); return; }
-    const pane = root.closest('.cm-scroller, #markdown-preview-scroll, .reader-scroll, .monaco-editor')?.getBoundingClientRect();
-    const current = pane ? card.getBoundingClientRect() : null;
-    const outside = pane && (current.left < pane.left + 8 || current.right > pane.right - 8 || current.top < pane.top + 8 || current.bottom > pane.bottom - 8);
-    setOpen(true);
-    if (!pane || !outside) return;
-    const box = card.getBoundingClientRect();
-    const dx = box.left < pane.left + 8 ? pane.left + 8 - box.left : box.right > pane.right - 8 ? pane.right - 8 - box.right : 0;
-    const dy = box.top < pane.top + 8 ? pane.top + 8 - box.top : box.bottom > pane.bottom - 8 ? pane.bottom - 8 - box.bottom : 0;
-    if (dx || dy) { delta = [delta[0] + dx, delta[1] + dy]; position(); move(id, delta); }
-  });
-  index.addEventListener('dblclick', event => {
-    event.preventDefault(); event.stopPropagation(); setOpen(!(indexClickOpen ?? open)); indexClickOpen = undefined;
-  });
-  head.addEventListener('dblclick', event => {
-    if (dragged || event.target.closest?.('button,textarea,input')) return;
-    event.preventDefault(); event.stopPropagation();
-    focusCard();
-    toggle();
-  });
-  head.addEventListener('keydown', event => {
-    focusCard();
-    if (event.target !== head) return;
-    if (['Enter', ' '].includes(event.key)) { event.preventDefault(); toggle(); return; }
-    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home'].includes(event.key)) return;
-    event.preventDefault(); event.stopPropagation();
-    delta = event.key === 'Home' ? [0, 0] : [delta[0] + (event.key === 'ArrowLeft' ? -10 : event.key === 'ArrowRight' ? 10 : 0), delta[1] + (event.key === 'ArrowUp' ? -10 : event.key === 'ArrowDown' ? 10 : 0)];
-    position(); move(id, delta);
-  });
-  let dragged = false;
-  head.addEventListener('pointerdown', event => {
-    if (inline || event.button !== 0 || event.target.closest('button,textarea,input')) return;
-    dragged = false;
-    focusCard();
-    event.stopPropagation();
-    const scroller = root.closest('.cm-scroller, #markdown-preview-scroll, .reader-scroll, .monaco-editor');
-    const start = [event.clientX, event.clientY, scroller?.scrollLeft || 0, scroller?.scrollTop || 0], original = [...delta];
-    let dragging = false;
-    const moving = e => {
-      if (e.pointerId !== event.pointerId) return;
-      if (!dragging && Math.hypot(e.clientX - start[0], e.clientY - start[1]) < 3) return;
-      if (!dragging) { dragging = true; dragged = true; head.setPointerCapture(e.pointerId); }
-      delta = [original[0] + e.clientX - start[0] + (scroller?.scrollLeft || 0) - start[2], original[1] + e.clientY - start[1] + (scroller?.scrollTop || 0) - start[3]];
-      position();
-    };
-    const end = e => {
-      if (e.pointerId !== event.pointerId) return;
-      document.removeEventListener('pointermove', moving); document.removeEventListener('pointerup', end); document.removeEventListener('pointercancel', end);
-      if (e.type === 'pointercancel') { delta = original; position(); }
-      else if (dragging && (delta[0] !== original[0] || delta[1] !== original[1])) move(id, delta);
-      if (dragging) setTimeout(() => { dragged = false; }, 0);
-    };
-    document.addEventListener('pointermove', moving); document.addEventListener('pointerup', end); document.addEventListener('pointercancel', end);
-  });
+  index.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); focusCard(); setOpen(true); });
   const isPoint = () => Boolean(material.point || anchor.point);
   const title = document.createElement('span'); title.className = 'tag-window-title';
   const renderTitle = () => { title.textContent = anchorKind==='file'?'文件讨论':!conversation ? (isPoint() ? '位置备注' : '本地备注') : isPoint() ? '位置讨论' : '选区对话'; };
@@ -550,7 +362,8 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   }
   const noteBody = document.createElement('span'); noteBody.className = 'tag-markdown tag-note-body';
   if (!conversation) { renderTagMarkdown(noteBody, initialDraft || '（无文字）'); transcript.append(noteBody); editor.placeholder = '用 Markdown 记录你的理解…'; }
-  head.append(cardNumber, title, content, sourceChange, more, close, demoSelect);
+  head.append(cardNumber, title, content, sourceChange, more);
+  if (inline) head.append(close);
   card.append(head, source, transcript, composerRow, delivery, executeStatusLine, menuActions);
   if (inline) {
     if (conversation) { removeButton.classList.remove('ui-icon-button'); removeButton.textContent = '移除标签（保留历史）'; }
@@ -569,32 +382,58 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
     if (tabs) composerRow.before(tabs);
     if (previewBody) composerRow.after(previewBody);
   }
-  root.append(index, card); position();
+  root.append(index, card);
   setOpen(open, false);
-  queueMicrotask(() => {
-    if (!root.isConnected || layoutDisposed) return;
-    // Card is in the document now: original readers seated while detached
-    // gain their observers (explicit attach; readers manage their own guards).
+  const mounting = Promise.resolve().then(async () => {
+    if (layoutDisposed || !sourceMarker(sessionKey,root).isConnected) return;
     renderThread.attachOriginalReaders?.();
     if (inline) { watchTagRemoval(root, disposeLayout); autoGrow(); return; }
-    fitConversation();
-    autoGrow();
-    if (typeof requestAnimationFrame === 'function') layoutFrame = requestAnimationFrame(fitConversation);
-    layoutTimers.push(setTimeout(fitConversation, 0), setTimeout(fitConversation, 80));
-    if (typeof ResizeObserver === 'function') {
-      let observedWidth = card.style.width, observedHeight = card.style.height;
-      cardObserver = new ResizeObserver(() => {
-        if (!root.isConnected) return;
-        const changed = observedWidth !== card.style.width || observedHeight !== card.style.height;
-        observedWidth = card.style.width; observedHeight = card.style.height;
-        const bounds = card.getBoundingClientRect();
-        if (changed && !card.classList.contains('is-collapsed') && bounds.width >= 250 && bounds.height >= 100) resize(id, bounds);
-        autoGrow();
-        fitConversation();
-      });
-      cardObserver.observe(card);
+    const initial = {...defaultLocalWindowView(),hidden:!open};
+    const offset = oldView?.noteOffset, marker = index.getBoundingClientRect();
+    const pane = root.closest('.cm-scroller, #markdown-preview-scroll, .reader-scroll, .monaco-editor');
+    const paneRect = pane?.getBoundingClientRect();
+    // A one-shot legacy measurement, never a second positioning listener. Hidden,
+    // clipped Office overlays and missing sources retain their original migration record.
+    const measurable = open && paneRect?.width > 0 && paneRect.height > 0 && !root.closest('[data-tag-layout="viewport"],.word-note-overlay') && marker.width > 0 && marker.bottom > paneRect.top && marker.top < paneRect.bottom;
+    if (Array.isArray(offset) && offset.length === 2 && offset.every(Number.isFinite) && measurable) {
+      let left=Math.max(0,paneRect.left+pane.clientLeft),top=Math.max(0,paneRect.top+pane.clientTop),right=Math.min(document.documentElement.clientWidth,paneRect.left+pane.clientLeft+pane.clientWidth),bottom=Math.min(document.documentElement.clientHeight,paneRect.top+pane.clientTop+pane.clientHeight);
+      const gutter=pane.querySelector(':scope > .cm-gutters')?.getBoundingClientRect();if(gutter&&gutter.left<=left)left=Math.max(left,gutter.right);
+      for(let ancestor=pane.parentElement;ancestor;ancestor=ancestor.parentElement){if(/(auto|scroll|hidden|clip)/.test(getComputedStyle(ancestor).overflowY)){const box=ancestor.getBoundingClientRect();top=Math.max(top,box.top+ancestor.clientTop);bottom=Math.min(bottom,box.top+ancestor.clientTop+ancestor.clientHeight);}}
+      left+=8;right-=8;top+=8;bottom-=8;
+      if(right>left&&bottom>top){
+        Object.assign(card.style,{position:'relative',left:'0px',top:'0px',width:'420px',height:'430px',maxWidth:`${right-left}px`,maxHeight:`${bottom-top}px`,transform:`translate(${offset[0]}px,${offset[1]}px)`});
+        const oldRect=card.getBoundingClientRect();
+        if(oldRect.width>0&&oldRect.height>0)initial.placement={mode:'manual',x:Math.max(left,Math.min(oldRect.x+18,right-oldRect.width)),y:Math.max(top,Math.min(oldRect.y+8,bottom-oldRect.height))};
+        card.removeAttribute('style');
+      }
     }
+    card.hidden=true;
+    const store = createLocalWindowView({invoke:(...args)=>window.nozeli.invoke(...args),key,initial,legacy:oldView});
+    const parent = sourceMarker(sessionKey,root).closest('#documents') || document.body;
+    const layer = ensureLocalWindowLayer(parent);
+    const environment = viewportWindowEnvironment(layer, {epoch:()=>scope.generation || 0,defaultRect:()=>{
+      const marker = sourceMarker(sessionKey,root).querySelector('.note-index').getBoundingClientRect();
+      const visible = marker.width > 0 && marker.bottom > 0 && marker.top < document.documentElement.clientHeight;
+      return {x:visible ? marker.right+8 : 24,y:visible ? marker.top : 24,width:380,height:380};
+    }});
+    let state = initial, loadError = null;
+    try { state = await store.load(); } catch (error) { loadError = error; setDelivery(error.message); }
+    if (layoutDisposed) return;
+    if (requestedOpen) state = {...state,hidden:false,collapsed:false};
+    setOpen(!state.collapsed, false);
+    card.hidden=false;
+    controller = mountLocalWindow({layer,key,title:head,body:card,state,environment,commitView:store.commitView,beforeHide:async()=>{if(readOnly||!conversation&&!editing)return;const result=await onDraft?.(id,draftValue);if(result?.ok===false)throw Error(result.error?.message || '草稿尚未保存，窗口保留。');},onError:error=>setDelivery(error.message)});
+    controller.node.dataset.annotation = id;
+    controller.node.classList.add(`tag-${kind}`);
+    card.localWindow = controller;
+    controller.node.classList.add('tag-chat-window');
+    if (loadError) controller.update({error:loadError});
+    tagWindows.add(controller);
+    root.localWindow = controller;
+    autoGrow();
   });
+  tagMounts.add(mounting);
+  mounting.finally(()=>tagMounts.delete(mounting)).catch(error=>setDelivery(error.message));
   root.updateAnchor = value => {
     anchor = value || {};
     renderSource();
@@ -626,8 +465,12 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   };
   root.fitConversation = fitConversation;
   root.updateExecuteStatus = value => { executeStatusLine.textContent=value||'';executeStatusLine.hidden=!executeStatusLine.textContent;executeButton.disabled=readOnly||executing; };
+  root.updateReadOnly = value => { readOnly=Boolean(value);editor.readOnly=readOnly;submit.disabled=readOnly||pending;executeButton.disabled=readOnly||executing;removeButton.disabled=readOnly;editButton.disabled=readOnly;if(drawingButton)drawingButton.disabled=readOnly; };
+  root.updateReadOnly(readOnly);
+  root.acceptNoteProjection = value => { if(conversation||editing||status&&typeof status==='object')return false;draftValue=value.note||'';editor.value=draftValue;content.textContent=tagMarkdownSummary(draftValue||'（无文字）');renderTagMarkdown(noteBody,draftValue||'（无文字）');anchor=value.anchor||anchor;renderSource();return true; };
   executeStatusLine.textContent = executeStatus || '';
   if (((kind === 'discuss' && status === 'draft') || (kind === 'note' && typeof status === 'object')) && autoEdit(id)) openEdit();
+  if (!inline) tagSessions.set(sessionKey,{id,root,marker:root,markers:new Set([root]),dispose:disposeLayout});
   return root;
 }
 
@@ -640,5 +483,7 @@ export function makeNoteTag(note, actions = {}) {
     if (saved) note = saved;
     return saved;
   };
-  return makeAnchorTag({ id: note.id, ordinal: note.ordinal, kind: 'note', relPath: note.relPath, displayLocation: note.displayLocation,information:note.information,resolution:note.resolution, anchorKind: note.anchor?.anchorKind || note.anchorKind || note.kind || '', text: note.note, status: actions.draft?.(note.id) ?? '', open: actions.open?.(note.id) ?? true, anchor: note.anchor || {}, material: { imageDataUrl: note.anchor?.imageDataUrl || '', point: Boolean(note.anchor?.point), pointLabel: note.anchor?.pointLabel || '', pointContext: note.anchor?.pointContext || null }, executeStatus: note.execute?.jobId ? (note.execute.status || '已提交 · 见工作与待办') : '' }, { ...actions, onDraft: (id, text) => actions.onDraft?.(id, text, note), save, execute: (id, text) => actions.execute?.(note, text) });
+  const tag = makeAnchorTag({ id: note.id, ordinal: note.ordinal, kind: 'note', relPath: note.relPath, displayLocation: note.displayLocation,information:note.information,resolution:note.resolution, anchorKind: note.anchor?.anchorKind || note.anchorKind || note.kind || '', text: note.note, status: actions.draft?.(note.id) ?? '', open: actions.open?.(note.id) ?? true, anchor: note.anchor || {}, material: { imageDataUrl: note.anchor?.imageDataUrl || '', point: Boolean(note.anchor?.point), pointLabel: note.anchor?.pointLabel || '', pointContext: note.anchor?.pointContext || null }, executeStatus: note.execute?.jobId ? (note.execute.status || '已提交 · 见工作与待办') : '' }, { ...actions, onDraft: (id, text) => actions.onDraft?.(id, text, note), save, execute: (id, text) => actions.execute?.(note, text) });
+  if(tag.refreshNote)tag.refreshNote(note);else tag.refreshNote=value=>{if(tag.acceptNoteProjection(value))note=value;};
+  return tag;
 }

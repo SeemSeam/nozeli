@@ -313,7 +313,7 @@ export class WorkspaceNative {
     // Only the ops a pending lifecycle flush itself persists are admitted,
     // and only for the record that owns the open receipt under the current
     // hold — never a blanket lifecycle exemption.
-    if(!['workspace.recovery','file.draft','file.save','file.retain','managed.review.instruction.save','managed.review.save'].includes(op))return null;
+    if(!['workspace.displayView.write','workspace.recovery','file.draft','file.save','file.retain','managed.review.instruction.save','managed.review.save'].includes(op))return null;
     const receipt=this.receipts.get(requestId);
     if(!receipt||receipt.record!==record||receipt.generation!==record.generation||record.dead||!receipt.lifecycleHold||this.host.storage.lifecycleHolds.get(record.projectId)!==receipt.lifecycleHold&&this.lifecycle.get(record.projectId)!==receipt.lifecycleHold)return null;
     return receipt.lifecycleHold;
@@ -613,7 +613,7 @@ export class WorkspaceNative {
       // Returning to A must reuse its unsaved editor, not reopen only disk bytes.
       for(const surface of this.surfaces.values())if(surface.windowId==='main'){
         surface.view.setVisible(false);
-        for(const slot of this.isolatedPreview?.slots.values()??[])if(slot.scope===surface)slot.view.setVisible(false);
+        for(const slot of this.isolatedPreview?.slots.values()??[])if(slot.scope===surface){slot.view.setVisible(false);slot.container.setVisible(false);}
         for(const slot of this.onlineBrowser?.slots.values()??[])if(slot.scope===surface)slot.view.setVisible(false);
       }
       if(previousProjectId!==projectId)this.isolatedPreview?.closeScope(r);
@@ -1072,6 +1072,31 @@ export class WorkspaceNative {
       const projectId=layout.projectId,deadline=Date.now()+15000;
       const focus=()=>{if(Date.now()>deadline){surface.returnFocus=null;return;}if(!surface.dead&&surface.ready&&surface.view.getVisible()&&findView(this.layouts.get(projectId),surface.viewId)?.group.activeViewId===surface.viewId){surface.returnFocus=null;surface.wc.focus();surface.wc.send('nozeli:workspace-control',{type:'focus-content'});}};
       surface.returnFocus=focus;focus();return {};
+    }
+    if (op === 'workspace.displayView.read' || op === 'workspace.displayView.write') {
+      if (!r.projectId || p.projectId !== r.projectId) throw fail('PROJECT_SCOPE_DENIED');
+      const projectId=r.projectId, project = await this.host.storage.requireRegistered(projectId), input = p.key;
+      if (!input || !['annotation','snapshot','review','web'].includes(input.ownerKind) || typeof input.ownerId !== 'string' || !input.ownerId || input.ownerId.length > 16384 || typeof input.surfaceId !== 'string' || input.surfaceId !== (r.viewId || r.windowId || r.role)) throw fail('INVALID_DISPLAY_KEY');
+      const key = {projectInstanceId:project.instanceId,ownerKind:input.ownerKind,ownerId:input.ownerId,surfaceId:input.surfaceId};
+      const storageKey = 'display-view:' + JSON.stringify(key);
+      this.displayViewWrites ||= new Map();
+      const previous = this.displayViewWrites.get(storageKey) || Promise.resolve();
+      const flight = previous.catch(() => {}).then(async () => {
+        if(r.dead || r.projectId !== projectId)throw fail('PROJECT_SCOPE_DENIED');
+        const record = await this.host.storage.getLocal(projectId, storageKey);
+        const current = record ? record.state ?? record : null;
+        if (op === 'workspace.displayView.read') return {key,state:current};
+        const next = p.next;
+        if (!next || next.schema !== 1 || !Number.isSafeInteger(p.expectedRevision) || p.expectedRevision < 0 || !['auto','manual'].includes(next.placement?.mode) || next.placement.mode === 'manual' && ![next.placement.x,next.placement.y].every(Number.isFinite) || next.size !== null && (!next.size || ![next.size.width,next.size.height].every(n => Number.isFinite(n) && n > 0)) || typeof next.collapsed !== 'boolean' || typeof next.hidden !== 'boolean') throw fail('INVALID_DISPLAY_VIEW');
+        if (current && (current.schema !== 1 || !Number.isSafeInteger(current.revision) || current.revision < 0 || !['auto','manual'].includes(current.placement?.mode) || current.placement.mode === 'manual' && ![current.placement.x,current.placement.y].every(Number.isFinite) || current.size !== null && (!current.size || ![current.size.width,current.size.height].every(n => Number.isFinite(n) && n > 0)) || typeof current.collapsed !== 'boolean' || typeof current.hidden !== 'boolean')) throw fail('DISPLAY_SCHEMA_UNKNOWN','展示记录版本未知或损坏，原记录已保留。');
+        if ((current?.revision || 0) !== p.expectedRevision) return {conflict:true,current};
+        const state = {schema:1,revision:p.expectedRevision+1,placement:next.placement,size:next.size,collapsed:next.collapsed,hidden:next.hidden};
+        if(r.dead || r.projectId !== projectId)throw fail('PROJECT_SCOPE_DENIED');
+        await this.host.storage.putLocal(projectId, storageKey, {key,state,legacy:record?.legacy ?? p.legacy ?? null});
+        return {revision:state.revision};
+      });
+      this.displayViewWrites.set(storageKey, flight);
+      try { return await flight; } finally { if (this.displayViewWrites.get(storageKey) === flight) this.displayViewWrites.delete(storageKey); }
     }
     if (op === 'workspace.project') return this.bindProject(r, p.projectId);
     if (op === 'workspace.snapshot') return { layout: await this.layout(p.projectId), windowId: r.windowId };

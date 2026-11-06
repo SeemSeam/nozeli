@@ -38,6 +38,8 @@
   border-inline-start: 2px solid var(--accent);
 }
 .managed-work-overview-required { display: grid; gap: 10px; min-width: 0; }
+.managed-work-overview-unsent { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 8px; }
+.managed-work-overview-unsent p { font-weight: 500; }
 .managed-work-overview-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .managed-work-overview .managed-work-overview-action {
   box-sizing: border-box;

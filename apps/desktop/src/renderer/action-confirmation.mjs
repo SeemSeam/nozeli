@@ -3,8 +3,8 @@ import './action-confirmation.css';
 const actions = [
   { selector: '#close-subject', key: 'closeDocument', title: '关闭当前文件？', command: '关闭文件', description: '文件内容会保留，可从文件列表重新打开。', name: () => document.getElementById('subject-title').textContent },
   { selector: '#secondary-close', key: 'closeCompare', title: '关闭对照文件？', command: '关闭对照', description: '只关闭右侧对照，文件内容会保留。', name: () => document.getElementById('secondary-path').textContent },
-  { selector: '.tag-remove', key: 'removeTag', title: '移除对话标签？', command: '移除标签', description: '对话历史会保留，标签中未发送的输入会被丢弃。', name: node => '对话标签 ' + (node.closest('.note-anchor')?.querySelector('.tag-ordinal')?.textContent || '') },
-  { selector: '.tag-delete', key: 'deleteNote', title: '删除这条备注？', command: '删除备注', description: '备注会被删除，原文件内容保持不变。', name: node => '备注 ' + (node.closest('.note-anchor')?.querySelector('.tag-ordinal')?.textContent || '') },
+  { selector: '.tag-remove', key: 'removeTag', title: '移除对话标签？', command: '移除标签', description: '对话历史会保留，标签中未发送的输入会被丢弃。', name: node => '对话标签 ' + (node.closest('.local-window')?.querySelector('.tag-ordinal')?.textContent || '') },
+  { selector: '.tag-delete', key: 'deleteNote', title: '删除这条备注？', command: '删除备注', description: '备注会被删除，原文件内容保持不变。', name: node => '备注 ' + (node.closest('.local-window')?.querySelector('.tag-ordinal')?.textContent || '') },
   { selector: '#chat-clear-frontdesk-context', key: 'clearFrontdeskContext', title: '清空前台 Agent 上下文？', command: '清空前台上下文', description: '仅开启新的前台会话。主控和 Worker 不受影响；原对话历史、报告、项目文件及未发送草稿保留。', name: () => '当前项目的前台 Agent', alwaysConfirm: true },
 ];
 

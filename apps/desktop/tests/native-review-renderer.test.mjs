@@ -20,7 +20,8 @@ await build({absWorkingDir:rendererRoot,entryPoints:[path.join(rendererRoot,'man
 const {renderWorkOverview}=await import(pathToFileURL(overviewPath).href);
 
 class Node {
- constructor(tag='div'){this.tagName=tag;this.children=[];this.dataset={};this.listeners=new Map();this.attributes=new Map();this.value='';this.isConnected=true;this.open=false;this.style={setProperty(){}};}
+ constructor(tag='div'){this.tagName=tag;this.children=[];this.dataset={};this.listeners=new Map();this.attributes=new Map();this.value='';this.isConnected=true;this.open=false;this.style={setProperty(){}};this.hidden=false;this.className='';this.tabIndex=-1;
+  this.classList={contains:name=>String(this.className).split(/\s+/).includes(name),add:name=>{if(!this.classList.contains(name))this.className=(this.className+' '+name).trim();},remove:name=>{this.className=String(this.className).split(/\s+/).filter(part=>part!==name).join(' ');},toggle:(name,force)=>{const on=force===undefined?!String(this.className).split(/\s+/).includes(name):force;this.classList[on?'add':'remove'](name);return on;}};}
  append(...nodes){for(const node of nodes){if(node.parent)node.parent.children=node.parent.children.filter(child=>child!==node);node.parent=this;this.children.push(node);}}
  replaceChildren(...nodes){for(const node of this.children)node.parent=null;this.children=[];this.value='';this.append(...nodes);}
  insertBefore(node,before){if(node===before)return;if(node.parent)node.parent.children=node.parent.children.filter(child=>child!==node);const index=before?this.children.indexOf(before):this.children.length;node.parent=this;this.children.splice(index,0,node);}
@@ -33,12 +34,18 @@ class Node {
  setAttribute(key,value){this.attributes.set(key,value);}
  removeAttribute(key){this.attributes.delete(key);}
  addEventListener(key,listener){this.listeners.set(key,listener);}
- removeEventListener(key){this.listeners.delete(key);}
+ removeEventListener(key,listener){this.listeners.delete(key);}
  showModal(){this.open=true;}
  close(){this.open=false;this.listeners.get('close')?.();}
- get clientWidth(){return 1024;}
- get clientHeight(){return 768;}
- matches(selector){return selector.split(',').some(part=>{const value=part.trim(),attribute=/\[([^\]]+)\]/.exec(value);if(value.startsWith('.')&&!this.className?.split(' ').includes(value.slice(1)))return false;if(value.startsWith('dialog')&&this.tagName!=='dialog')return false;if(attribute){if(attribute[1]==='open')return this.open;const name=attribute[1].replace(/^data-/, '').replace(/-([a-z])/g,(_,c)=>c.toUpperCase());return Object.hasOwn(this.dataset,name);}return value.startsWith('.')||value==='dialog';});}
+ focus(){document.activeElement=this;}
+ setSelectionRange(start,end){this.selectionStart=start;this.selectionEnd=end;}
+ setPointerCapture(id){this.pointerId=id;}
+ releasePointerCapture(){this.pointerId=null;}
+ hasPointerCapture(){return this.pointerId!=null;}
+ getClientRects(){return this.isConnected?[{}]:[];}
+ get clientWidth(){return globalThis.window?.innerWidth??1024;}
+ get clientHeight(){return globalThis.window?.innerHeight??768;}
+ matches(selector){return selector.split(',').some(part=>{const value=part.trim(),attribute=/\[([^\]]+)\]/.exec(value);if(value==='button')return this.tagName==='button';if(value.startsWith('.')&&!this.className?.split(' ').includes(value.slice(1)))return false;if(value.startsWith('dialog')&&this.tagName!=='dialog')return false;if(attribute){if(attribute[1]==='open')return this.open;const name=attribute[1].replace(/^data-/,'').replace(/-([a-z])/g,(_,c)=>c.toUpperCase());return Object.hasOwn(this.dataset,name);}return value.startsWith('.')||value==='dialog';});}
  querySelectorAll(selector){const direct=selector.startsWith(':scope > '),value=direct?selector.slice(9):selector;return (direct?this.children:this.children.flatMap(child=>all(child))).filter(node=>node.matches(value));}
  querySelector(selector){return this.querySelectorAll(selector)[0]??null;}
  closest(selector){return this.matches(selector)?this:this.parent?.closest(selector)??null;}
@@ -46,21 +53,40 @@ class Node {
 function dom(t){
  const previous=Object.fromEntries(['document','window','ResizeObserver','MutationObserver','getComputedStyle'].map(key=>[key,globalThis[key]]));
  const ids=new Map(),window=new Node(),cleanup=[];
- globalThis.document={createElement:tag=>new Node(tag),getElementById:id=>{if(!ids.has(id))ids.set(id,new Node());return ids.get(id);}};
+ window.innerWidth=1024;window.innerHeight=768;
+ window.requestAnimationFrame=callback=>{queueMicrotask(()=>callback());return 1;};
+ window.getComputedStyle=()=>({visibility:'visible'});
+ const documentState={activeElement:null};
+ const doc={createElement:tag=>{const node=new Node(tag);node.ownerDocument=doc;return node;},getElementById:id=>{if(!ids.has(id))ids.set(id,new Node());return ids.get(id);},
+  body:new Node(),documentElement:new Node(),defaultView:window,head:new Node(),
+  addEventListener(type,listener){(doc.listeners??=(doc.listeners=new Map())).set(type,listener);},
+  removeEventListener(type){doc.listeners?.delete(type);},
+  querySelector(){return null;},querySelectorAll(){return [];},
+  get activeElement(){return documentState.activeElement;},set activeElement(value){documentState.activeElement=value;}};
+ doc.body.ownerDocument=doc;doc.documentElement.ownerDocument=doc;doc.head.ownerDocument=doc;doc.body.className='';
+ globalThis.document=doc;
  globalThis.getComputedStyle=()=>({fontSize:'13px'});globalThis.ResizeObserver=globalThis.MutationObserver=class{observe(){}disconnect(){}};
- globalThis.window=window;t.after(()=>{for(const dispose of cleanup)dispose();Object.assign(globalThis,previous);});return {ids,cleanup,node:id=>document.getElementById(id)};
+ globalThis.window=window;t.after(()=>{for(const dispose of cleanup)dispose();Object.assign(globalThis,previous);});return {ids,cleanup,node:id=>doc.getElementById(id)};
 }
+const tick=()=>new Promise(resolve=>setTimeout(resolve,0));
 const all=root=>[root,...root.children.flatMap(all)];
 const by=root=>key=>all(root).find(node=>Object.hasOwn(node.dataset,key));
 const file={relPath:'same.md',change:'modified',candidateText:'worker',baselineText:'source',candidateDigest:'candidate',baselineDigest:'baseline',added:2,deleted:1,draft:null};
 const review={workId:'work-a',objectId:'publication-a',revision:1,reviewVersion:'token-a',status:'waiting',files:[file],capabilities:{canAccept:true,canContinue:true},candidate:{targetRef:'refs/heads/topic'}};
 function report(t,{value=review,handle,options={}}={}){
  const d=dom(t),calls=[],root=new Node(),opinions={text:'',revision:0};
+ // Minimal display-view host: in-memory CAS per window key, matching the
+ // workspace.displayView.read/write contract the shell persists through.
+ const views=new Map();
  const invoke=async(op,payload)=>{calls.push([op,payload]);if(handle){const result=await handle(op,payload);if(result)return result;}
   if(op==='managed.review.read')return {ok:true,value};
   if(op==='managed.review.discussion.read')return {ok:true,value:{entries:[],nextCursor:null,latestObjectId:payload.objectId,active:false,queued:0,canSend:!['running','ended'].includes(value.status)&&!value.stale&&Boolean(value.reviewVersion),reasons:[]}};
   if(op==='managed.review.instruction.read')return {ok:true,value:{...opinions}};
   if(op==='managed.review.instruction.save'){assert.equal(payload.expectedRevision,opinions.revision);opinions.text=payload.text;opinions.revision++;return {ok:true,value:{...opinions}};}
+  if(op==='workspace.displayView.read'){const id=payload.projectId+':'+JSON.stringify(payload.key);return {ok:true,value:{key:payload.key,state:views.get(id)??null}};}
+  if(op==='workspace.displayView.write'){const id=payload.projectId+':'+JSON.stringify(payload.key),current=views.get(id);
+   if(current&&current.revision!==payload.expectedRevision)return {ok:true,value:{conflict:true,current}};
+   const next={...payload.next,revision:(current?.revision??-1)+1};views.set(id,next);return {ok:true,value:{revision:next.revision}};}
   if(op==='workspace.control')return {ok:true,value:{ready:true}};
   throw Error('unexpected '+op);
  };
@@ -175,10 +201,43 @@ test('a read-only transition waits for active composition and preserves its visi
  input.listeners.get('compositionend')();assert.equal(input.readOnly,true);assert.equal(input.value,'保留尚在组合的意见');assert.equal(f.calls.some(([op])=>op==='workspace.review.decide'),false);
 });
 
-test('nonmodal collapse preserves unsent draft and reopen does not send',async t=>{
- const f=report(t);await f.surface.ready;await f.surface.save();const input=by(f.root)('reviewInstruction');input.value='Retain locally';input.listeners.get('input')();await f.surface.save();
- const floating=by(f.root)('reviewDiscussion');f.surface.hide();assert.equal(floating.hidden,true);f.surface.show();assert.equal(floating.hidden,false);assert.equal(input.value,'Retain locally');assert.equal(all(f.root).some(node=>node.tagName==='dialog'),false);
- assert.equal(f.calls.some(([op])=>op==='managed.review.discussion.send'),false);
+test('discussion opens only explicitly and retains nodes draft selection and scroll across hide refresh and bind',async t=>{
+ const f=report(t);await f.surface.ready;await f.surface.save();const input=by(f.root)('reviewInstruction');
+ // The shell mounts lazily on first explicit show; a cold surface has no
+ // window at all, so refresh/rebind can never auto-open it.
+ assert.equal(f.surface.localWindow,null);await f.surface.refresh();await f.surface.bind('publication-next');assert.equal(f.surface.localWindow,null);
+ const open=all(f.root).find(node=>node.dataset.reviewAction==='open-discussion');await open.onclick();await tick();
+ const floating=f.surface.localWindow.node;assert.equal(floating.hidden,false);
+  input.value='Retain locally';input.selectionStart=3;input.selectionEnd=6;input.listeners.get('input')();await f.surface.save();
+ const history=all(floating).find(node=>node.className==='managed-review-history tag-transcript');history.scrollTop=41;history.scrollHeight=1200;
+ // Escape never hides during IME composition; afterwards it hides and the
+ // focus returns to the explicit entry button.
+ input.focus();input.listeners.get('compositionstart')();
+ floating.listeners.get('keydown')({key:'Escape',isComposing:true,stopPropagation(){},preventDefault(){},defaultPrevented:false});assert.equal(floating.hidden,false);
+ input.listeners.get('compositionend')();
+ floating.listeners.get('keydown')({key:'Escape',isComposing:false,stopPropagation(){},preventDefault(){},defaultPrevented:false});await tick();assert.equal(floating.hidden,true);assert.equal(document.activeElement,open);
+ await f.surface.refresh();assert.equal(floating.hidden,true);await open.onclick();await tick();assert.equal(f.surface.localWindow.node,floating);assert.equal(all(floating).find(node=>Object.hasOwn(node.dataset,'reviewInstruction')),input);assert.equal(input.value,'Retain locally');assert.equal(input.selectionStart,3);assert.equal(input.selectionEnd,6);assert.equal(history.scrollTop,41);
+ assert.equal(all(f.root).some(node=>node.tagName==='dialog'),false);assert.equal(f.calls.some(([op])=>op==='managed.review.discussion.send'),false);
+ // Every view persist flows through the display-view host, never localStorage.
+ assert.equal(f.calls.some(([op])=>op==='workspace.displayView.write'),true);
+});
+
+test('discussion shell header directly supports drag keyboard Home and viewport clamping',async t=>{
+ const f=report(t);await f.surface.ready;await f.surface.save();await f.surface.show();await tick();
+ const win=f.surface.localWindow,floating=win.node,head=win.header;
+ assert.equal(floating.style.left,'592px');assert.equal(floating.style.top,'276px');
+ head.listeners.get('pointerdown')({button:0,isPrimary:true,target:head,currentTarget:head,pointerId:1,clientX:20,clientY:20,composedPath:()=>[head],preventDefault(){}});
+ document.listeners.get('pointermove')({pointerId:1,clientX:80,clientY:90,preventDefault(){}});
+ await tick();assert.equal(floating.style.left,'604px');assert.equal(floating.style.top,'288px');
+ document.listeners.get('pointerup')({pointerId:1});await tick();
+ head.listeners.get('keydown')({target:head,currentTarget:head,key:'ArrowLeft',preventDefault(){},stopPropagation(){}});
+ await tick();assert.equal(floating.style.left,'594px');
+ head.listeners.get('keydown')({target:head,currentTarget:head,key:'Home',preventDefault(){},stopPropagation(){}});
+ await tick();assert.equal(floating.style.left,'592px');assert.equal(floating.style.top,'276px');
+ // A manual placement survives a smaller viewport by clamping, never resetting.
+ head.listeners.get('keydown')({target:head,currentTarget:head,key:'ArrowRight',preventDefault(){},stopPropagation(){}});
+ await tick();window.innerWidth=500;window.innerHeight=320;window.listeners.get('resize')();await tick();
+ assert.equal(floating.style.left,'80px');assert.equal(floating.style.top,'24px');
 });
 
 test('active durable queue permits sending but blocks acceptance',async t=>{
@@ -230,16 +289,17 @@ test('running review WORK_BUSY staleness does not override durable discussion qu
  await send.onclick();assert.equal(f.calls.filter(([op])=>op==='managed.review.discussion.send').length,1);
 });
 
-test('single-file review exposes native content and diff without a modal and respects collapse',async t=>{
- const opened=[],f=report(t,{options:{onOpenMaterial:(file,binding)=>opened.push(['content',file.relPath,binding]),onOpenFile:(file,binding)=>opened.push(['diff',file.relPath,binding])}});
- await f.surface.ready;
- const section=by(f.root)('reviewFileHeading').parent;
- assert.equal(section.open,true);
- await all(f.root).find(node=>node.dataset.reviewAction==='file').onclick();
- await all(f.root).find(node=>node.dataset.reviewAction==='diff').onclick();
- assert.deepEqual(opened,[['content','same.md',{workId:'work-a',objectId:'publication-a'}],['diff','same.md',{workId:'work-a',objectId:'publication-a'}]]);
- assert.equal(all(f.root).some(node=>node.tagName==='dialog'),false);
- section.open=false;await f.surface.refresh();assert.equal(section.open,false);
+test('footer exposes adoption and separate real multi-file content and frozen Diff lists',async t=>{
+ const opened=[],files=[file,{...file,relPath:'removed.txt',change:'removed'},{...file,relPath:'image.png',binary:true}],f=report(t,{value:{...review,files},options:{onOpenMaterial:(file,binding)=>opened.push(['content',file.relPath,binding]),onOpenFile:(file,binding)=>opened.push(['diff',file.relPath,binding])}});
+ await f.surface.ready;const action=key=>all(f.root).find(node=>node.dataset.reviewAction===key),discussion=all(f.root).find(node=>node.className==='note-projection tag-chat-window managed-review-discussion');
+ assert.equal(action('files').textContent,'成果文件 3');assert.equal(all(f.root).filter(node=>node.dataset.reviewAction==='open-discussion').length,1);assert.equal(discussion.contains(action('accept')),false);assert.equal(discussion.hidden,true);
+ await action('files').onclick();const lists=all(f.root).filter(node=>node.className==='managed-review-file-section');assert.equal(lists[0].hidden,false);
+ for(const row of all(lists[0]).filter(node=>node.dataset.reviewAction==='file'))await row.onclick();
+ await action('deliverable-diff').onclick();assert.equal(lists[1].hidden,false);
+ for(const row of all(lists[1]).filter(node=>node.dataset.reviewAction==='file'))await row.onclick();
+ assert.deepEqual(opened,files.map(file=>['content',file.relPath,{workId:'work-a',objectId:'publication-a'}]).concat(files.map(file=>['diff',file.relPath,{workId:'work-a',objectId:'publication-a'}])));
+ assert.ok(all(lists[1]).some(node=>node.dataset.reviewFileStatus!==undefined&&node.textContent==='删除'));assert.ok(all(lists[1]).some(node=>node.dataset.reviewDiffUnavailable!==undefined&&node.textContent?.includes('二进制')));
+ assert.equal(lists[0].hidden,true);await action('deliverable-diff').onclick();await f.surface.refresh();assert.equal(lists[1].hidden,true);assert.equal(discussion.hidden,true);
 });
 
 test('accept confirmation identifies task files report and target while sending the full exact token',async t=>{
@@ -277,18 +337,18 @@ test('unpublished worker drift blocks adoption even when a saved human draft is 
  assert.equal(confirmations,0);assert.equal(f.calls.some(([op])=>op==='workspace.review.decide'),false);
 });
 
-test('business labels preserve user and handoff provenance and retain technical role details',async t=>{
- const entries=[{id:'request',speaker:'user',source:'work-request',text:'请整理访谈'},{id:'handoff',speaker:'user',source:'work-handoff',text:'整理为短报告'},{id:'reply',speaker:'worker',source:'worker-reply',text:'已整理三项结论'}];
- const f=report(t,{options:{workName:'访谈摘要'},handle:async op=>op==='managed.review.discussion.read'?{ok:true,value:{entries,total:3,nextCursor:null,latestObjectId:'publication-a',active:false,queued:0,canSend:true,reasons:[]}}:null});
- await f.surface.ready;
- const transcript=by(f.root)('reviewDiscussionHistory'),rows=transcript.children;
- const user=rows.find(row=>row.dataset.requestId==='request'),handoff=rows.find(row=>row.dataset.requestId==='handoff'),reply=rows.find(row=>row.dataset.requestId==='reply');
- assert.match(user.className,/tag-message-user/);assert.match(user.children[0].textContent,/用户.*原始工作请求/);
- assert.match(handoff.className,/tag-message-assistant/);assert.match(handoff.children[0].textContent,/任务安排.*交接/);
- assert.match(reply.children[0].textContent,/AI助手/);
- assert.ok(by(f.root)('reviewDiscussion').attributes.get('aria-label').includes('访谈摘要'));
- assert.ok(all(f.root).some(node=>node.tagName==='h3'&&node.textContent==='访谈摘要'));
- const technical=all(by(f.root)('reviewVersions')).map(node=>node.textContent||'').join('\n');assert.match(technical,/Worker/);assert.match(technical,/主控/);assert.match(technical,/token-a/);
+test('real rounds retain same-text message identities while original context and publication stay distinct',async t=>{
+ const identity={workId:'work-a',jobId:'job-a',revision:1},entries=[{id:'request',speaker:'user',source:'work-request',text:'请整理访谈'},{id:'handoff',speaker:'user',source:'work-handoff',text:'整理为短报告'},{...identity,id:'reply-a',speaker:'worker',source:'worker-reply',text:'已整理三项结论'},{...identity,id:'reply-b',speaker:'worker',source:'worker-reply',text:'已整理三项结论'},{id:'publication',speaker:'system',source:'publication',objectId:'publication-a',publicationNumber:1,text:'发布完成'}];
+ const f=report(t,{options:{workName:'访谈摘要'},handle:async op=>op==='managed.review.discussion.read'?{ok:true,value:{entries,total:entries.length,nextCursor:null,latestObjectId:'publication-a',active:false,queued:0,canSend:true,reasons:[]}}:null});
+ await f.surface.ready;const transcript=by(f.root)('reviewDiscussionHistory'),replies=all(transcript).filter(row=>row.className==='tag-message tag-message-assistant');assert.equal(replies.length,1);
+ assert.deepEqual(replies[0].children.filter(node=>node.dataset.messageId).map(node=>node.dataset.messageId),['reply-a','reply-b']);
+ const context=by(f.root)('reviewContext');assert.notEqual(context.open,true);
+ assert.equal(all(transcript).filter(row=>row.className==='tag-message tag-message-event').length,1);
+ const first=replies[0];await f.surface.refresh();assert.equal(all(transcript).find(row=>row.className==='tag-message tag-message-assistant'),first);
+ // The shell mounts lazily: its accessible name carries the Work identity
+ // only after the explicit open, so open it before asserting.
+ const open=all(f.root).find(node=>node.dataset.reviewAction==='open-discussion');await open.onclick();await tick();
+ assert.ok(f.surface.localWindow.node.attributes.get('aria-label').includes('访谈摘要'));
 });
 
 test('inline file index opens without an overlay while other review details retain modal behavior',t=>{

@@ -313,7 +313,6 @@ async function sendTag(question, label, duringOutput) {
   const reply = entries.findLast(e => e.speaker === 'agent' && !e.tool && !e.toolCalls?.length && e.text);
   check(label + ': actual native reply', Boolean(reply && admissionCount() > 0), {jobId: job.id, replyId: reply?.id, entries: entries.map(e => ({id: e.id, speaker: e.speaker, tool: e.tool?.name}))});
   await wait(async () => (await annotations()).find(n => n.id === discussionId)?.projection?.history?.some(h => h.messageId === reply.id), label + ' tag shared native identity');
-  if (await page.$eval('#conversation-panel', el => el.classList.contains('compact-composer'))) await click('#chat-history-toggle');
   await wait(() => page.$$eval('#conversation .session-message', (nodes, ids) => nodes.filter(n => ids.includes(n.dataset.message)).length === 1, entries.map(e => e.id)), label + ' one task reply bubble');
   check(label + ': tag/main share exact persisted reply identity', true, {jobId: job.id, replyId: reply.id});
   await save(label + '-timeline.json', entries);
@@ -449,7 +448,9 @@ try {
   check('Actual reading questions caused real tool execution', [...explained.entries, ...readable.entries].some(e => e.tool || e.toolCalls?.length), {entries: [...explained.entries, ...readable.entries].map(e => e.id)});
   const process = replySelector + ' details.session-tool';
   await click(process + ' summary'); check('Actual process fold opens', await page.$eval(process, el => el.open)); await click(process + ' summary'); check('Actual process fold closes', !await page.$eval(process, el => el.open));
-  await click(replySelector + ' .message-actions button:nth-child(2)');
+  await click(replySelector + ' .message-actions>summary');
+  await page.waitForSelector(replySelector + ' .message-actions[open]', {visible: true});
+  await click(replySelector + ' .message-actions [data-message-action="copy"]');
   await page.waitForSelector(replySelector+' [data-message-copy="copied"]');
   check('Copy pure text copies the actual unabridged native reply', await invoke('document.clipboard', {action: 'read'}) === readable.reply.text);
   for (const width of [1440,800,390]) {

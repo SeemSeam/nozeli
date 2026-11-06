@@ -3304,18 +3304,39 @@ export class Controller extends EventEmitter {
   }
   // 条目=真实记录投影：Work原始请求/交接brief锚点 + 宿主账本消息行（用户
   // 输入/发布/系统）+ 原生timeline已接受可见回复（sessionIndex.portableMessages，
-  // 精确原文/原ID/原状态；工具与元数据行已在timeline会话投影侧过滤）。
-  // 按timeline序号统一排序；去重只认同一原生身份（相同id或相同
-  // nativeEntryDigest），绝不按正文折叠重复的真实回复。说话人分类与
-  // session-presentation.messageRole 同判（宿主代发 initial/supplement 显示为
-  // 主控，agent按目标显示为worker），只改展示分类，不改写原始记录。
+  // 精确原文/原ID/原状态）+ 原生工具/过程记录（conversation tool行：真实执行
+  // 痕迹折进回合作process记录，正文由读取按页有界hydration补充，超限保留
+  // read-required与原id分页入口）。按timeline统一序号排序；去重只认同一
+  // 原生身份（相同id或相同nativeEntryDigest），绝不按正文折叠重复的真实
+  // 回复。说话人分类与 session-presentation.messageRole 同判（宿主代发
+  // initial/supplement 显示为主控，agent按目标显示为worker），只改展示分类，
+  // 不改写原始记录。回合分组所需的实际身份字段随行透传（workId/jobId/
+  // requestId/revision/sequence）：全部取该行自身已证实事实（原生verified
+  // 输入绑定、manual prompt身份、行上/回执记录的任务修订、canonical
+  // timeline序号），绝不把当前报告修订或当前Work修订补到旧记录上。
   // 流式回复暂不投影（等待canonical替换身份；本读取只反映durable已接受事实）。
   #discussionEntries(w){
     const jobs=new Map((this.store.state.jobs||[]).filter(j=>j.target===w.id||j.context?.boundWorkId===w.id).map(j=>[j.id,j]));
     const native=this.store.state.sessionIndex;
+    const nativeRecords=new Map((native?.entries||[]).map(r=>[r.id,r]));
     const seqMap=new Map((native?.entries||[]).map(r=>[r.id,r.sequence??0]));
     const msgSeq=native?.messageSequences??{};
     const keyOf=row=>seqMap.get(row.id)??msgSeq[row.id]??Number.MAX_SAFE_INTEGER;
+    // 每job已证实的原生请求身份：verified user记录=canonical echo抑制证据
+    // （session-index ingest/owner 同判），多epoch取timeline序号最高的一条。
+    const nativeRequest=new Map();
+    for(const record of (native?.entries||[])){
+      if(!jobs.has(record.jobId)||record.ownership!=='verified'||record.speaker!=='user'||typeof record.requestId!=='string'||!record.requestId)continue;
+      const prior=nativeRequest.get(record.jobId);
+      if(!prior||(record.sequence??0)>=(prior.sequence??0))nativeRequest.set(record.jobId,record);
+    }
+    const requestIdOf=(m,job)=>{
+      if(typeof m.reviewDiscussion==='string'&&m.reviewDiscussion)return m.reviewDiscussion;
+      const bound=nativeRequest.get(m.jobId)?.requestId;
+      if(bound)return bound;
+      if(job?.manual&&typeof job.manualPromptId==='string'&&job.manualPromptId)return job.manualPromptId;
+      return null;
+    };
     // messageRole 同判：Work上的宿主代发（initial/supplement交接/补充）＝主控。
     const roleOf=(m,job)=>m.speaker==='user'&&job&&job.target===w.id&&['initial','supplement'].includes(job.type)?'orchestrator':m.speaker==='agent'?'worker':m.speaker;
     const rows=[];
@@ -3331,22 +3352,68 @@ export class Controller extends EventEmitter {
       const job=m.jobId?jobs.get(m.jobId):null;
       const discussion=Boolean(job?.context?.reviewDiscussion||m.reviewDiscussion);
       const source=discussion?'review-discussion':m.publication||m.objectId?'publication':m.speaker==='user'?'user-input':m.speaker==='agent'?'worker-reply':'system';
-      admit({id:m.id,speaker:roleOf(m,job),text:m.text??null,jobId:m.jobId??null,source,...(m.objectId?{objectId:m.objectId}:{}),...(m.publication?{publication:m.publication}:{}),...(m.jobId&&job?{status:job.status}:{}),key:keyOf(m)});
+      const receipt=m.objectId?(this.store.state.receipts||[]).find(r=>r.objectId===m.objectId):null;
+      const key=keyOf(m);
+      admit({id:m.id,speaker:roleOf(m,job),text:m.text??null,jobId:m.jobId??null,source,...(m.objectId?{objectId:m.objectId}:{}),...(m.publication?{publication:m.publication}:{}),...(m.nativeEntryDigest?{nativeEntryDigest:m.nativeEntryDigest}:{}),...(m.taskRequestId?{taskRequestId:m.taskRequestId}:{}),...(m.jobId&&job?{status:job.status}:{}),key,
+        workId:w.id,
+        requestId:source==='publication'?null:requestIdOf(m,job),
+        revision:m.revision??receipt?.revision??job?.revision??null,
+        sequence:key===Number.MAX_SAFE_INTEGER?null:key,
+        // 发布行的版次来自该回执自身（publicationOrdinal 按真实回执计数），
+        // 不用当前报告修订补值；正文保持 null，原文在冻结报告对象里。
+        ...(source==='publication'&&receipt?{publicationNumber:publicationOrdinal(this.store.state,w.id,m.objectId,receipt.kind)}:{})});
     }
-    // 原生已接受可见回复（真实Pi Worker正文）：durable已确认事实。
+    // 原生已接受可见回复（真实Pi Worker正文）：durable已确认事实；requestId/
+    // revision 取canonical原生记录的已证实字段（无记录时不猜）。
     for(const m of (native?.portableMessages||[])){
       if(m.target!==w.id||m.speaker!=='agent'||typeof m.text!=='string'||!m.text.trim())continue;
-      admit({id:m.id,speaker:'worker',text:m.text,jobId:m.jobId??null,status:m.status??null,source:null,...(m.nativeEntryDigest?{nativeEntryDigest:m.nativeEntryDigest}:{}),...(m.at?{at:m.at}:{}),key:keyOf(m)});
+      const record=nativeRecords.get(m.id),key=keyOf(m);
+      admit({id:m.id,speaker:'worker',text:m.text,jobId:m.jobId??null,status:m.status??null,source:null,...(m.nativeEntryDigest?{nativeEntryDigest:m.nativeEntryDigest}:{}),...(m.at?{at:m.at}:{}),key,
+        workId:w.id,requestId:record?.requestId??null,revision:record?.revision??m.revision??null,sequence:key===Number.MAX_SAFE_INTEGER?null:key});
+    }
+    // 原生工具/过程记录（真实执行痕迹）：以process记录进入回合折叠，绝不成
+    // 为AI答复；正文按页有界装载（#discussionProcessText）。
+    for(const record of (native?.entries||[])){
+      if((record.workId??record.target)!==w.id||record.recordKind!=='conversation'||record.speaker!=='tool')continue;
+      admit({id:record.id,speaker:'tool',text:null,jobId:record.jobId??null,source:'native-tool',key:record.sequence??keyOf(record),
+        workId:w.id,requestId:record.requestId??null,revision:record.revision??null,sequence:record.sequence??null,
+        ...(record.at?{at:record.at}:{}),availability:'read-required'});
     }
     const projected=rows.sort((a,b)=>a.key-b.key).map(({key,...row})=>{
       const job=row.jobId?jobs.get(row.jobId):null;
-      return {id:row.id,speaker:row.speaker,target:w.id,text:row.text,jobId:row.jobId,source:row.source??(job?.context?.reviewDiscussion?'review-discussion':row.speaker==='worker'?'worker-reply':'system'),...(row.status?{status:row.status}:{}),...(row.objectId?{objectId:row.objectId}:{}),...(row.publication?{publication:row.publication}:{}),...(row.nativeEntryDigest?{nativeEntryDigest:row.nativeEntryDigest}:{}),...(row.at?{at:row.at}:{})};
+      return {id:row.id,speaker:row.speaker,target:w.id,text:row.text,jobId:row.jobId,source:row.source??(job?.context?.reviewDiscussion?'review-discussion':row.speaker==='worker'?'worker-reply':row.speaker==='tool'?'native-tool':'system'),
+        workId:row.workId,requestId:row.requestId,revision:row.revision,sequence:row.sequence,
+        ...(row.status?{status:row.status}:{}),...(row.objectId?{objectId:row.objectId}:{}),...(row.publication?{publication:row.publication}:{}),...(row.nativeEntryDigest?{nativeEntryDigest:row.nativeEntryDigest}:{}),...(row.taskRequestId?{taskRequestId:row.taskRequestId}:{}),...(row.publicationNumber!=null?{publicationNumber:row.publicationNumber}:{}),...(row.at?{at:row.at}:{}),...(row.availability?{availability:row.availability}:{}),...(row.reason?{reason:row.reason}:{})};
     });
     return [
-      {id:'work-request:'+w.id,speaker:'user',target:w.id,text:w.request,source:'work-request'},
-      ...(typeof w.brief==='string'&&w.brief.trim()?[{id:'work-handoff:'+w.id,speaker:'orchestrator',target:w.id,text:w.brief,source:'work-handoff'}]:[]),
+      {id:'work-request:'+w.id,speaker:'user',target:w.id,text:w.request,source:'work-request',workId:w.id,requestId:null,revision:null,sequence:null},
+      ...(typeof w.brief==='string'&&w.brief.trim()?[{id:'work-handoff:'+w.id,speaker:'orchestrator',target:w.id,text:w.brief,source:'work-handoff',workId:w.id,requestId:null,revision:null,sequence:null}]:[]),
       ...projected,
     ];
+  }
+  // 过程/工具记录按页有界装载：复用timeline hydration预算与nativeDTO投影
+  // （canonical正文/身份）；超预算或暂不可读的行保留read-required与真实原
+  // 因，原文仍可按原id经 managed.timeline.read 分页读取——不用替换文本伪
+  // 装，也不把这些记录升级为AI答复。
+  async #discussionProcessText(page){
+    const wanted=page.filter(row=>row.source==='native-tool');
+    if(!wanted.length)return;
+    const byId=new Map(this.timeline.records().map(record=>[record.id,record]));
+    const records=wanted.map(row=>byId.get(row.id)).filter(Boolean);
+    if(records.length){try{await this.timeline.hydrate(records);}catch{/* 读取保持只读事实：装载失败即保留原文分页入口 */}}
+    for(const row of wanted){
+      const record=byId.get(row.id);
+      if(!record)continue;
+      let dto;
+      try{dto=this.timeline.nativeDTO(record);}catch{continue;}
+      if(!dto||dto.availability!=='available'){if(dto?.reason)row.reason=dto.reason;continue;}
+      const text=typeof dto.text==='string'?dto.text:'';
+      const tool=dto.tool?{name:dto.tool.name??null,status:dto.tool.status??null}:null;
+      if(Buffer.byteLength(JSON.stringify({entry:{...row,text,...(tool?{tool}:{})}}))<=128*1024){
+        row.text=text;delete row.availability;delete row.reason;
+        if(tool)row.tool=tool;
+      }else row.reason='工具输出超过单页预算；请按原记录分页读取原文';
+    }
   }
   // 同修订讨论队列是否还有排队回合（runJob结算面用：队列未清空前不结算、
   // 不强制交付，最后一回合统一ensureWorkerDelivery+settle收口）。
@@ -3365,6 +3432,7 @@ export class Controller extends EventEmitter {
     const all=this.#discussionEntries(w);
     const start=p.cursor?Math.min(Number(p.cursor),all.length):0;
     const page=all.slice(start,start+limit);
+    await this.#discussionProcessText(page); // 过程/工具正文按页有界装载；分页/游标语义不变
     const nextCursor=start+page.length<all.length?String(start+page.length):null;
     const latestStart=Math.max(0,all.length-limit);
     const latestCursor=latestStart>0?String(latestStart):null;

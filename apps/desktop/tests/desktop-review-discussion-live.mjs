@@ -90,10 +90,10 @@ try{
  if(await shell.$eval('#toggle-sidebar',node=>node.getAttribute('aria-expanded')!=='true').catch(()=>false))await shell.click('#toggle-sidebar');
  await shell.waitForSelector('[data-managed-todo="'+todo.id+'"]',{visible:true});await shell.click('[data-managed-todo="'+todo.id+'"]');
  reviewPage=await until(async()=>{for(const p of await browser.pages())if(await p.evaluate(()=>window.__nozeliReady&&window.__workspaceScope?.kind==='report').catch(()=>false))return p;},'native report workspace');
- await reviewPage.waitForSelector('[data-review-discussion]',{visible:true});await reviewPage.waitForSelector('[data-review-instruction]:not([disabled])',{visible:true});
+ await reviewPage.waitForSelector('.managed-review');assert.equal(await reviewPage.$eval('[data-review-discussion]',node=>node.hidden),true);await reviewPage.click('[data-review-action="open-discussion"]');await reviewPage.waitForSelector('[data-review-discussion]',{visible:true});await reviewPage.waitForSelector('[data-review-instruction]:not([disabled])',{visible:true});
  assert(await reviewPage.$('.managed-report-body'));assert.equal(await reviewPage.$eval('[data-review-discussion]',node=>Boolean(node.querySelector('.managed-report-body'))),false);
  await visibleReport('REVIEW_REPORT_V1');
- check('Todo opens the real report workspace and a separate nonmodal approval discussion; report body is not inside the float');await shot('approval-open');
+ check('Todo opens the original report first; only its bottom button opens the separate nonmodal Work discussion');await shot('approval-open');
  await send('DISCUSS_QUESTION');await reviewPage.waitForFunction(()=>document.querySelector('[data-review-discussion-history]')?.textContent.includes('REVIEW_ANSWER_ORIGINAL_THREAD'));
  let current=await state();assert.equal(current.works.length,1);assert.equal(current.works[0].threadId,originalThread);assert.equal(current.receipts.filter(r=>r.workId===work.id&&r.kind==='result').length,1);assert.equal(current.works[0].status,'review');
  assert.equal(await fs.readFile(path.join(projectRoot,'candidate.txt'),'utf8'),sourceBefore);
@@ -124,14 +124,15 @@ try{
  await visibleReport('REVIEW_REPORT_V2');
  assert.equal(await fs.readFile(path.join(projectRoot,'candidate.txt'),'utf8'),sourceBefore);
  check('Direct approval discussion modifies the real candidate, publishes a new immutable report and refreshes the main report without another Work');await shot('approval-updated');
- await reviewPage.waitForSelector('[data-review-file="candidate.txt"]',{visible:true});
- await reviewPage.click('[data-review-file="candidate.txt"]');
+ await reviewPage.click('[data-review-action="hide-discussion"]');await reviewPage.click('[data-review-action="files"]');await reviewPage.waitForSelector('[data-review-files-panel] [data-review-file="candidate.txt"][data-review-action="file"]',{visible:true});
+ await reviewPage.click('[data-review-files-panel] [data-review-file="candidate.txt"][data-review-action="file"]');
  const candidatePage=await until(async()=>{for(const p of await browser.pages())if(await p.evaluate(objectId=>window.__nozeliReady&&window.__workspaceScope?.kind==='document'&&window.__workspaceScope?.relPath==='candidate.txt'&&window.__workspaceScope.documentSource?.objectId===objectId,updated.objectId).catch(()=>false))return p;},'single candidate native document');
  await candidatePage.waitForFunction(()=>window.__nozeliInput?.text().includes('updated candidate from approval discussion'));
  assert.equal(await reviewPage.$('dialog[open]'),null,'opening the candidate leaves no modal over the review');
  const reportViewId=await reviewPage.evaluate(()=>window.__workspaceScope.viewId),layout=await shell.evaluate(()=>window.__workspaceGroups.snapshot());
  await invoke(shell,'workspace.command',{projectId:project.id,expectedRevision:layout.revision,requestKey:'approval-smoke-return-report',command:{type:'activate',viewId:reportViewId}});
  check('Single-file review directly opens the exact native candidate and returns without a leftover modal or project overwrite');
+ assert.equal(await reviewPage.$eval('[data-review-discussion]',node=>node.hidden),true);await reviewPage.click('[data-review-action="open-discussion"]');
  await send('DISCUSS_AFTER');await reviewPage.waitForFunction(()=>document.querySelector('[data-review-discussion-history]')?.textContent.includes('REVIEW_ANSWER_AFTER_UPDATE'));
  await reviewPage.$eval('[data-review-instruction]',node=>{node.value='UNSENT_APPROVAL_DRAFT';node.dispatchEvent(new Event('input',{bubbles:true}));});
  await reviewPage.click('[data-review-action="hide-discussion"]');await reviewPage.click('[data-review-action="open-discussion"]');
@@ -147,13 +148,14 @@ try{
  for(const size of [{width:654,height:1150},{width:390,height:844},{width:390,height:480}]){
   await invoke(shell,'workspace.control',{type:'window-control',action:'resize',...size});
   await reviewPage.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
-  const geometry=await reviewPage.evaluate(()=>{const float=document.querySelector('[data-review-discussion]').getBoundingClientRect(),accept=document.querySelector('[data-review-action="accept"]').getBoundingClientRect();return {left:float.left,right:float.right,bottom:float.bottom,actionBottom:accept.bottom,width:innerWidth,height:innerHeight};});
-  assert(geometry.left>=-1&&geometry.right<=geometry.width+1&&geometry.bottom<=geometry.height+1&&geometry.actionBottom<=geometry.height+1,'approval controls fit actual narrow surface: '+JSON.stringify(geometry));
+  const geometry=await until(async()=>{const g=await reviewPage.evaluate(()=>{const float=document.querySelector('[data-review-discussion]').getBoundingClientRect(),send=document.querySelector('[data-review-action="send"]').getBoundingClientRect();return {left:float.left,right:float.right,bottom:float.bottom,sendBottom:send.bottom,width:innerWidth,height:innerHeight};});return g.left>=-1&&g.right<=g.width+1&&g.bottom<=g.height+1&&g.sendBottom<=g.height+1?g:null;},'tag discussion follows actual native resize',3000);
+  (report.windowGeometry??=[]).push({requested:size,actual:geometry});
   await shot('approval-'+size.width+'x'+size.height);
  }
  await invoke(shell,'workspace.control',{type:'window-control',action:'resize',width:1280,height:900});
- check('Actual narrow and short native report surfaces retain the approval window and visible footer controls');
+ check('Actual narrow/short native surfaces retain the movable discussion and reachable input; adoption belongs to the report footer');
  check('Latest report discussion remains in the original thread, and collapsing/reopening retains the Work-scoped unsent draft');
+ await reviewPage.click('[data-review-action="hide-discussion"]');
  await reviewPage.waitForSelector('[data-review-action="accept"]:not([disabled])',{visible:true});await reviewPage.click('[data-review-action="accept"]');await reviewPage.waitForSelector('[data-confirmation-dialog][open]');report.acceptConfirmation=await reviewPage.$eval('[data-confirmation-dialog]',node=>node.innerText);await shot('approval-accept-confirmation');await reviewPage.click('[data-confirmation-cancel]');
  assert.equal((await state()).works[0].status,'review');
  await reviewPage.click('[data-review-action="accept"]');await reviewPage.waitForSelector('[data-confirmation-dialog][open]');await reviewPage.click('[data-confirmation-confirm]');

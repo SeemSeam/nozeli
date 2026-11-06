@@ -308,7 +308,6 @@ try{
     assert.equal(added.filter(job=>job.target===work2.id&&job.type==='initial').length,1,'one original Worker input');
     assert.equal(s.works.filter(work=>work.name==='FRONTW2').length,1,'no duplicate Work');
     assert.equal(report.requestsLog.slice(start).filter(row=>row.tool==='nozeli_dispatch').length,1,'background routing is not replayed');
-    assert((await chat.evaluate(()=>globalThis.__statusLog)).includes('已提交后台，进展见右侧'),'submit receipt shown: '+JSON.stringify(await chat.evaluate(()=>globalThis.__statusLog)));
     assert(['review','ended'].includes(work2.status),'FRONTW2 awaits review');
   });
 

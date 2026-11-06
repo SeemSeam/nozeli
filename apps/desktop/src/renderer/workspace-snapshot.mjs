@@ -1,20 +1,29 @@
 // In-page workspace snapshot drawing (2026-10-24 rework, 2026-10-25 discussion
-// alignment). The dialog lives in the initiating root renderer and joins the
-// workspace-groups overlay protocol automatically: a body-child dialog[open] is
-// reported as an overlay rect via workspace.bounds, so native views beneath stay
-// hidden until it closes. No mode chooser, no crop handles: the whole frozen
-// window is the canvas, and 完成 opens a screenshot-bound discussion card at
-// the drawn position. The card is a tag-style discussion thread card sharing
-// the generic layer with file tags (discussion-thread.mjs): one explicit
+// alignment, 2026-11-06 unified local-window shell). The dialog lives in the
+// initiating root renderer and joins the workspace-groups overlay protocol
+// automatically: a body-child dialog[open] is reported as an overlay rect via
+// workspace.bounds, so native views beneath stay hidden until it closes. No
+// mode chooser, no crop handles: the whole frozen window is the canvas, and
+// 完成 opens a screenshot-bound discussion card at the drawn position. The
+// card is a tag-style discussion thread card whose panel is a shared
+// local-window body (local-window.mjs owns geometry/drag/keyboard/persistence
+// keyed by capture session); the stroke rect stays the anchor and layoutCard
+// only derives the stroke-anchored natural default rect. A legacy card.offset
+// record is converted once, when measurable, into a manual placement — the
+// stored record itself is never rewritten or destroyed. One explicit
 // 发送讨论 click commits the frozen evidence and sends through the managed
 // image-attachment chain — replies project back into the card by requestId and
 // 续问 reuses the committed digest. Nothing is ever auto-sent: 加入对话草稿,
 // 仅保存本地 and 返回笔迹 stay, and the anchor is presented as 冻结来源 +
 // 笔迹位置, never a file anchor.
+import './local-window.css';
 import {mountDrawingEditor,drawingSvg} from './region-drawing.mjs';
 import {uiIcon} from './ui-icons.mjs';
 import {CAPTURE_PIXELS} from '../domain/workspace-capture.mjs';
 import {createDiscussionTransport,createDiscussionThread,createThreadMessageSource,mountThreadTranscript,plainThreadRounds} from './discussion-thread.mjs';
+import {mountLocalWindow,ensureLocalWindowLayer,viewportWindowEnvironment} from './local-window.mjs';
+import {createLocalWindowView} from './local-window-view.mjs';
+import {migrateLegacyCardOffset,consumableLegacyCardOffset,cardWindowOwnerId} from './snapshot-card-view.mjs';
 
 export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openConversation=null,subscribe=null}){
   let dialog=null,editor=null,statusEl=null,recoverRow=null,recoverSelect=null,recoverClean=null;
@@ -26,8 +35,9 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
   // text/anchor change bumps it, so a completed store write may acknowledge
   // only the revision it actually captured.
   let saveTimer=null,writeChain=Promise.resolve(),saveError=null,lastDrawing=null,lastDrawingDirty=false,changeSeq=0;
-  let card=null,cardBox=null,cardImage=null,cardOverlay=null,cardPanel=null,cardHint=null,cardText=null,cardSend=null,cardLocal=null,cardBack=null,cardDraft=null,cardOpen=null,cardDone=null,cardThreadEl=null,cardStatusLine=null;
+  let card=null,cardBox=null,cardImage=null,cardOverlay=null,cardPanel=null,cardHint=null,cardText=null,cardSend=null,cardLocal=null,cardBack=null,cardDraft=null,cardOpen=null,cardDone=null,cardThreadEl=null,cardStatusLine=null,cardReopen=null;
   let cardState=null,cardMessageDraft='',cardSavedText=null,cardSavedRect=null;
+  let cardWindow=null,cardWindowKey=null,cardEpoch=0,cardTitle=null,cardWindowObserver=null;
   // Discussion thread state: one thread per dialog session, shared layer with
   // file tags. `delivery` (on cardState) holds the committed receipt identity
   // (deliveryId + attachment ref) once 发送讨论 committed the evidence;
@@ -74,9 +84,16 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
     };
     recoverRow.append(recoverSelect,recoverClean);
     const bar=document.createElement('div');bar.className='snapshot-corner';
+    // Shared-hide re-entry: closing/Escape on the card window only HIDES it;
+    // this chip reopens the same window node with its draft, thread and
+    // selection — hiding is never completion and never loses the question.
+    cardReopen=document.createElement('button');cardReopen.type='button';cardReopen.className='snapshot-card-reopen';cardReopen.textContent='位置讨论';cardReopen.title='重新打开位置讨论卡（隐藏的窗口保留草稿与讨论）';
+    cardReopen.setAttribute('aria-label','重新打开位置讨论卡');
+    cardReopen.hidden=true;
+    cardReopen.onclick=()=>{if(cardWindow)void cardWindow.show().catch(()=>{});};
     const exit=document.createElement('button');exit.type='button';exit.className='snapshot-exit';exit.textContent='退出';exit.prepend(uiIcon('close'));
     exit.onclick=()=>void exitDialog();
-    bar.append(recoverRow,exit);dialog.append(statusEl,bar);document.body.append(dialog);
+    bar.append(recoverRow,cardReopen,exit);dialog.append(statusEl,bar);document.body.append(dialog);
     dialog.addEventListener('cancel',event=>{event.preventDefault();if(cardState&&cardMode()==='compose')void backToDrawing();else void exitDialog();});
     // The session can be ended behind our back (committed elsewhere, shutdown,
     // superseded); the host tells us and the dialog must close without fighting it.
@@ -106,7 +123,7 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
       },
       // 完成 composes the PNG and opens the discussion card in this dialog;
       // the editor suspends itself once this resolves. No main-draft routing.
-      onFinish:(t,drawing,png)=>{openCard(t,drawing,png);return Promise.resolve();},
+      onFinish:(t,drawing,png)=>openCard(t,drawing,png),
       onCancel:()=>exitDialog(),
       onError:message=>toast(message)
     });
@@ -126,7 +143,13 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
   function cardInfo(state,text){
     const previous=state.target.card||{};
     const rounds=discussion?.thread?.history?.length?plainThreadRounds(discussion.thread.history):previous.thread||[];
-    return {...previous,message:text,rect:state.rect||previous.rect||null,thread:rounds};
+    // Live window geometry lives in the shared view store. card.windowOwnerId
+    // is the record-carried display lineage: written once when minted, then
+    // carried verbatim (never re-minted) so recovery forks keep the identity.
+    // The legacy card.offset displacement rides through unchanged too — never
+    // rewritten by drags, never applied twice — so an unconsumed migration
+    // record survives forks untouched; rect stays the only anchor.
+    return {...previous,message:text,rect:state.rect||previous.rect||null,thread:rounds,offset:state.legacyOffset??null,windowOwnerId:state.windowOwnerId??previous.windowOwnerId??null};
   }
   async function writeDrawing(){
     if(!session||saveError)return;
@@ -311,6 +334,8 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
     const pad=0.015,left=Math.max(0,minX-pad),top=Math.max(0,minY-pad);
     return [left,top,Math.min(1,maxX+pad)-left,Math.min(1,maxY+pad)-top];
   }
+  // (Legacy card.offset migration happens once in openCard, where the natural
+  // position is measurable; the stored record itself is never rewritten.)
   function ensureDiscussion(){
     if(discussion)return discussion;
     const source=createThreadMessageSource({invoke,getProjectId});
@@ -368,10 +393,13 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
     cardOverlay=document.createElement('div');Object.assign(cardOverlay.style,{position:'absolute',inset:'0',pointerEvents:'none'});
     // Visual language lives in region-drawing.css (snapshot-card-*): paper
     // panel, red marker title, frozen-source caption, tag-style transcript,
-    // hint chip, pill actions. Only the computed position stays inline —
-    // layoutCard() sets left/top per stroke rect.
+    // hint chip, pill actions. The panel itself is a shared local-window body:
+    // local-window.mjs owns drag/resize/keyboard/persistence; layoutCard only
+    // derives the stroke-anchored natural default rect for auto placement.
     cardPanel=document.createElement('div');cardPanel.className='snapshot-card-panel';
+    // The title node is the shell header caption — display only, no listeners.
     const title=document.createElement('strong');title.textContent='位置讨论';title.className='snapshot-card-title';
+    cardTitle=title;
     cardHint=document.createElement('span');cardHint.className='snapshot-card-hint';
     cardThreadEl=document.createElement('span');cardThreadEl.className='tag-transcript snapshot-card-thread';cardThreadEl.setAttribute('role','log');cardThreadEl.setAttribute('aria-label','此涂鸦的完整讨论');
     renderTranscript=mountThreadTranscript(cardThreadEl,{welcome:'围绕这处冻结截图继续讨论。输入问题后发送，回复会留在这里和对话时间线。'});
@@ -391,10 +419,12 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
     cardSend.onclick=()=>void sendDiscussion();cardDraft.onclick=()=>void finishCard(false);cardLocal.onclick=()=>void finishCard(true);cardBack.onclick=()=>void backToDrawing();
     cardOpen.onclick=()=>void enterConversation();cardDone.onclick=()=>void exitDialog();
     row.append(cardSend,cardDraft,cardLocal,cardBack,cardOpen,cardDone);
-    cardPanel.append(title,cardHint,cardThreadEl,cardText,cardStatusLine,row);
+    cardPanel.append(cardHint,cardThreadEl,cardText,cardStatusLine,row);
     cardBox.append(cardImage,cardOverlay);
-    card.append(cardBox,cardPanel);
+    card.append(cardBox);
     dialog.append(card);
+    // Frozen-box relayout on viewport changes: re-derive the stroke-anchored
+    // natural rect; the shell's own resize subscription re-clamps the window.
     window.addEventListener('resize',()=>{if(cardState&&!card.hidden)layoutCard();});
   }
   function layoutCard(){
@@ -412,10 +442,78 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
       if(py<margin)py=margin;
     }
     px=Math.min(Math.max(px,margin),Math.max(margin,innerWidth-panelWidth-margin));
-    Object.assign(cardPanel.style,{left:px+'px',top:py+'px'});
+    // The stroke-anchored position is the shell's auto default; a manual
+    // placement is an absolute view-store position, so relayout only
+    // re-derives where the strokes sit (auto follows, manual clamps).
+    cardState.panelNatural=[px,py];
+    cardEpoch++;
   }
-  function openCard(t,drawing,png){
-    cardState={target:t,drawing,png,rect:strokeRect(drawing),delivery:null,finalized:false,finalizeFailed:false};
+  // The card panel's shared local-window shell, mounted inside this fullscreen
+  // dialog (trusted, non-scrolling, above the frozen image). Keyed by the live
+  // capture session; the legacy card.offset is migrated exactly once — only
+  // when no stored view exists for the session and the natural rect is
+  // measurable — into a manual placement, with the original record handed to
+  // the store for the same atomic first write. The record itself is never
+  // rewritten: unconsumed offsets survive forks for a later migration.
+  function disposeCardWindow(){
+    if(!cardWindow)return;
+    const previous=cardWindow;cardWindow=null;cardWindowKey=null;
+    cardWindowObserver?.disconnect();cardWindowObserver=null;
+    void previous.dispose().catch(()=>{});
+  }
+  function paintCardReopen(){if(cardReopen)cardReopen.hidden=!(cardState&&cardWindow&&cardWindow.node.hidden);}
+  async function ensureCardWindow(){
+    if(!dialog||!cardState||!session)return;
+    const scopeView=(dialog.ownerDocument?.defaultView||window).__workspaceScope;
+    // The window identity is the record-carried display lineage
+    // (card.windowOwnerId), NOT the capture session id: recovery forks mint a
+    // new captureId, and the dragged placement must survive that fork exactly
+    // like the draft does — while two independent doodles never share it.
+    const ownerId=cardState.windowOwnerId||cardWindowOwnerId(cardState.target.card,session.captureId);
+    const key={projectId:getProjectId()||'',ownerKind:'snapshot',ownerId,surfaceId:scopeView?.viewId||scopeView?.windowId||scopeView?.role||'shell'};
+    if(cardWindow&&cardWindowKey?.ownerId===key.ownerId){await cardWindow.show().catch(()=>{});return;}
+    disposeCardWindow();
+    cardWindowKey=key;
+    // The layer must sit inside the dialog so the window renders above the
+    // frozen image while staying under the dialog's own modal semantics.
+    const layer=ensureLocalWindowLayer(dialog);layer.style.zIndex='1300';
+    // The legacy displacement is handed to the store only when it would be
+    // applied (measurable natural rect, fresh view) so it is never consumed
+    // by an auto placement; the host saves {state,legacy} atomically once.
+    const legacy=consumableLegacyCardOffset(cardState.legacyOffset,cardState.panelNatural);
+    const initial={schema:1,revision:0,placement:{mode:'auto'},size:null,collapsed:false,hidden:false};
+    const store=createLocalWindowView({invoke,key,initial,legacy});
+    let state=initial;
+    try{state=await store.load();}catch(error){toast(error.message);}
+    // The IPC round-trip may reopen the card for a different record: only the
+    // call that still owns this window lineage may mount.
+    if(!cardState||!session||(cardState.windowOwnerId||cardWindowOwnerId(cardState.target.card,session.captureId))!==ownerId)return;
+    // Fresh view only (revision 0 auto = never committed): convert the legacy
+    // displacement into an absolute manual placement while it is measurable.
+    state=migrateLegacyCardOffset(state,cardState.legacyOffset,cardState.panelNatural);
+    cardWindow=mountLocalWindow({layer,key,title:cardTitle,body:cardPanel,state,
+      environment:viewportWindowEnvironment(layer,{defaultRect:()=>cardState?.panelNatural?{x:cardState.panelNatural[0],y:cardState.panelNatural[1],width:Math.min(360,Math.max(220,innerWidth-48)),height:Math.min(420,Math.max(160,innerHeight-48))}:{x:24,y:24,width:Math.min(360,Math.max(220,innerWidth-48)),height:Math.min(420,Math.max(160,innerHeight-48))},epoch:()=>cardEpoch}),
+      commitView:store.commitView,beforeHide:()=>{},onError:error=>toast(error.message)});
+    cardWindow.node.setAttribute('role','region');
+    cardWindow.node.setAttribute('aria-label','位置讨论');
+    cardPanel.localWindow=cardWindow;cardWindow.node.localWindow=cardWindow;
+    // Chip visibility follows the real window hidden attribute — hide may be
+    // reverted by a failed view persist, and the observer keeps the chip honest.
+    if(typeof MutationObserver==='function'){cardWindowObserver=new MutationObserver(()=>paintCardReopen());cardWindowObserver.observe(cardWindow.node,{attributes:true,attributeFilter:['hidden']});}
+    paintCardReopen();
+    await cardWindow.show().catch(()=>{});
+    // Re-derive the natural rect now that the panel has a real measured size.
+    layoutCard();cardWindow.update();
+  }
+  async function openCard(t,drawing,png){
+    // A persisted legacy placement (card.offset, a px displacement from the
+    // stroke-anchored natural position) is kept on cardState.legacyOffset and
+    // converted once in ensureCardWindow — never applied or rewritten here.
+    const saved=t.card?.offset;
+    const legacyOffset=Array.isArray(saved)&&saved.length===2&&saved.every(v=>Number.isFinite(v))?[Math.round(saved[0]),Math.round(saved[1])]:null;
+    // Mint the display lineage once: a recovered record reuses its carried
+    // card.windowOwnerId; a first open mints from this capture session.
+    cardState={target:t,drawing,png,rect:strokeRect(drawing),legacyOffset,windowOwnerId:cardWindowOwnerId(t.card,session?.captureId),delivery:null,finalized:false,finalizeFailed:false};
     ensureCard();ensureDiscussion();
     // A recovered receipt (failed direct send, or a pending delivery from an
     // earlier dialog) reopens the card with its thread state: the committed
@@ -451,6 +549,8 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
     cardHint.textContent='冻结来源 · '+(t.sourceSummary||'工作区截图 · 视口来源，非精确文件选区')+(position?` · 笔迹位置 ${Math.round(position[0]*100)}%,${Math.round(position[1]*100)}%（占画面 ${Math.round(position[2]*100)}%×${Math.round(position[3]*100)}%）`:' · 未画笔迹');
     recoverRow.hidden=true;
     card.hidden=false;layoutCard();
+    // A failed view load/persist keeps the card open with the shell's notice.
+    await ensureCardWindow().catch(()=>{});
     status(cardState.delivery?'完成 · 讨论已交接；回复会显示在卡片与对话':'完成 · 可发送讨论，或补充说明后加入对话草稿');
     renderThreadCard();
     cardText.focus();
@@ -551,7 +651,7 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
       // crash/local recovery reopens the card intact; nothing auto-sends.
       await call('workspace.capture.commit',{captureId:active.captureId,png:state.png,drawing:state.drawing,target:{...structuredClone(state.target),card:cardInfo(state,message)},local:Boolean(local)});
       if(session!==active||cardState!==state)return;
-      session=null;cardState=null;lastDrawing=null;lastDrawingDirty=false;saveError=null;cardMessageDraft='';cardSavedText=null;cardSavedRect=null;
+      session=null;cardState=null;lastDrawing=null;lastDrawingDirty=false;saveError=null;cardMessageDraft='';cardSavedText=null;cardSavedRect=null;disposeCardWindow();
       hideCard();editor.suspend?.();closeDialogEl();status('');
       toast(local?'涂鸦与讨论卡已保存为本机记录，可稍后从恢复选择器打开':'涂鸦图片已加入对话草稿，发送仍需在对话中确认');
     }catch(e){
@@ -573,17 +673,18 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
     target=retained;lastDrawingDirty=true;changeSeq++;
     clearTimeout(saveTimer);saveTimer=setTimeout(()=>void enqueueWrite(),200);
     cardState=null;hideCard();
+    if(cardWindow)void cardWindow.hide().catch(()=>{});
     try{
       await editor.start({...retained,drawing:state.drawing});
       lastDrawing=editor.snapshot()?.drawing||state.drawing;
       renderRecoverable();
       status('已返回笔迹编辑');
     }catch(e){
-      cardState=state;card.hidden=false;layoutCard();
+      cardState=state;card.hidden=false;layoutCard();if(cardWindow)void cardWindow.show().catch(()=>{});
       toast('返回笔迹失败：'+e.message);
     }
   }
-  function hideCard(){if(card)card.hidden=true;}
+  function hideCard(){if(card)card.hidden=true;paintCardReopen();}
 
   async function exitDialog(){
     if(exiting)return false;
@@ -607,7 +708,7 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
     }finally{exiting=false;}
   }
   function teardown(){
-    session=null;target=null;cardState=null;lastDrawing=null;lastDrawingDirty=false;saveError=null;changeSeq=0;cardMessageDraft='';cardSavedText=null;cardSavedRect=null;sessionReceipt=null;
+    session=null;target=null;cardState=null;lastDrawing=null;lastDrawingDirty=false;saveError=null;changeSeq=0;cardMessageDraft='';cardSavedText=null;cardSavedRect=null;sessionReceipt=null;disposeCardWindow();
     clearTimeout(saveTimer);
     resetDiscussion();
     hideCard();editor?.suspend?.();closeDialogEl();status('');

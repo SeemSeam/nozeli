@@ -31,6 +31,9 @@ await build({
     const store=createSessionStore();store.reset('project-consumer');
     const state={works:[{id:'work-one',name:'Native Worker'}],receipts:[]};
     const calls=[],opened=[];
+    window.__consumerTasks=[];window.__quoteSink=[];
+    window.nozeli={invoke:async(op,payload)=>op==='document.clipboard'&&payload?.action==='write'?{ok:true}:{ok:false,error:{message:'consumer stub: '+op}}};
+    window.__composerMaterials={setQuote:quote=>window.__quoteSink.push(quote)};
     const pages=new Map(),originals=new Map();
     const props={store,state,projectId:'project-consumer',context:{filePaths:new Set(),onFile(){},onExternal(){},onError(error){throw error;}},
       call:async(op,args)=>{calls.push({op,args});if(op==='timeline.read'){
@@ -42,7 +45,7 @@ await build({
         const bytes=new TextEncoder().encode(fields.find(value=>value.field===args.field).content);let end=Math.min(bytes.length,args.offset+args.limit);while(end<bytes.length&&(bytes[end]&192)===128)end--;
         return {entry:{id:args.id,version,field:args.field,offset:args.offset,nextOffset:end<bytes.length?end:null,totalBytes:bytes.length,content:new TextDecoder('utf-8',{fatal:true}).decode(bytes.slice(args.offset,end)),availability:'available'}};
       }if(op!=='changes.list')throw Error('Unexpected consumer IPC: '+op);const page=pages.get(args.changeSetId+':'+args.offset);if(!page)throw Error('Missing bounded page');return page;},
-      openFrozenChange:args=>{opened.push(args);},onTask(){},onPage(){},onLatest(){}};
+      openFrozenChange:args=>{opened.push(args);},onPage(){},onLatest(){},onTask:entry=>window.__consumerTasks.push(entry)};
     const navigationContainer=document.createElement('div');navigationContainer.className='session-navigation-slot';document.querySelector('#conversation').after(navigationContainer);props.navigationContainer=navigationContainer;
     const view=mountSessionTimeline(document.querySelector('#timeline'),props);
     view.render({});
@@ -54,13 +57,13 @@ await build({
   bundle: true, format: 'iife', platform: 'browser', outfile: path.join(out, 'consumer.js'),
   loader: {'.css': 'css','.ttf':'file','.woff':'file','.woff2':'file'},
 });
-await fs.writeFile(path.join(out, 'index.html'), '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="consumer.css"><style>html,body{margin:0;min-width:0}#conversation{height:100vh;overflow:auto;box-sizing:border-box;padding:16px;width:100%}</style><div id="conversation"><div id="timeline"></div></div><script src="consumer.js"></script>');
+await fs.writeFile(path.join(out, 'index.html'), '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="consumer.css"><style>html,body{margin:0;min-width:0}#conversation{height:100vh;overflow:auto;box-sizing:border-box;padding:16px;width:100%;container:session / inline-size}</style><div id="conversation"><div id="timeline"></div></div><script src="consumer.js"></script>');
 await fs.writeFile(path.join(out, 'main.cjs'), `
   const {app,BrowserWindow}=require('electron');
-  app.whenReady().then(()=>{const win=new BrowserWindow({show:process.env.NOZELI_TEST_VISIBLE==='1',width:1440,height:1000,webPreferences:{contextIsolation:true,nodeIntegration:false}});win.loadFile(${JSON.stringify(path.join(out, 'index.html'))});});
+  app.whenReady().then(()=>{const win=new BrowserWindow({show:true,width:1440,height:1000,webPreferences:{contextIsolation:true,nodeIntegration:false}});win.loadFile(${JSON.stringify(path.join(out, 'index.html'))});});
   app.on('window-all-closed',()=>app.quit());
 `);
-const child = spawn(createRequire(import.meta.url)('electron'), [path.join(out, 'main.cjs'), '--remote-debugging-port='+port, '--ozone-platform='+(process.env.NOZELI_OZONE||(process.env.NOZELI_TEST_VISIBLE==='1'?'x11':'headless')), '--user-data-dir='+path.join(out,'profile')], {cwd:root,env:{...process.env},stdio:['ignore','pipe','pipe']});
+const child = spawn(createRequire(import.meta.url)('electron'), [path.join(out, 'main.cjs'), '--remote-debugging-port='+port, '--ozone-platform='+(process.env.NOZELI_OZONE||(process.env.DISPLAY?'x11':'headless')), '--user-data-dir='+path.join(out,'profile')], {cwd:root,env:{...process.env},stdio:['ignore','pipe','pipe']});
 let log='', browser, page;
 for (const stream of [child.stdout,child.stderr]) stream.on('data', chunk => {log+=chunk;});
 const exited = new Promise(resolve => child.once('exit', resolve));
@@ -72,12 +75,14 @@ try {
   assert(browser, 'Electron debug endpoint did not start: '+log);
   const target=await browser.waitForTarget(target=>target.type()==='page'&&target.url().endsWith('/index.html'),{timeout:30000});
   page=await target.page();assert(page);
+  await page.setViewport({width:800,height:1000});
   await page.waitForFunction(()=>window.consumer);
   await page.evaluate(()=>{
     const c=window.consumer;c.store.apply('project-consumer',{version:1,entries:[
       {id:'model-history',target:'frontdesk',speaker:'agent',source:'native',sequence:1,text:'Historical answer',provider:'recorded-provider',model:'recorded-model',modelStatus:'recorded'},
       {id:'unknown-history',target:'frontdesk',speaker:'agent',source:'legacy',sequence:2,text:'Old answer'},
       {id:'user-history',target:'frontdesk',speaker:'user',source:'host',sequence:3,text:'User question'},
+      {id:'bg-history',target:'frontdesk',speaker:'user',source:'host',jobId:'bg-job',taskRequestId:'bg-job',sequence:4,text:'Background request'},
     ],deltas:[]});
   });
   await page.waitForSelector('[data-message="model-history"] [data-history-model]');
@@ -86,6 +91,27 @@ try {
   assert.equal(await page.$('[data-message="user-history"] [data-history-model]'),null);
   await page.evaluate(()=>{window.consumer.state.model='different-live-model';window.consumer.render();});
   assert.equal(await page.$eval('[data-message="model-history"] [data-history-model]',node=>node.textContent),'recorded-provider / recorded-model');
+  // Route redundancy: default foreground input carries no badge; genuine background keeps provenance.
+  assert.equal(await page.$('[data-message="user-history"] [data-input-route]'),null,'ordinary foreground input stays implicit');
+  await page.waitForSelector('[data-message="bg-history"] [data-input-route="background"]');
+  // Per-message actions stay available on demand, keyboard- and touch-reachable, with live copy status.
+  await page.waitForSelector('[data-message="model-history"] .message-actions[data-message-actions-menu]');
+  assert.equal(await page.$eval('[data-message="model-history"] .message-actions>summary',node=>node.getAttribute('aria-expanded')),'false','actions start collapsed');
+  await page.focus('[data-message="model-history"] .message-actions>summary');await page.keyboard.press('Enter');
+  await page.waitForSelector('[data-message="model-history"] .message-actions[open] [data-message-action="copy"]');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(()=>!document.querySelector('[data-message="model-history"] .message-actions[open]'));
+  await page.click('[data-message="model-history"] .message-actions>summary');
+  await page.click('[data-message="model-history"] [data-message-action="copy"]');
+  await page.waitForSelector('[data-message="model-history"] [data-message-copy="copied"]');
+  assert.equal(await page.$eval('[data-message="model-history"] [data-message-action="copy"]',node=>node.textContent),'已复制纯文本','copy result stays visible in the open menu');
+  await page.click('[data-message="model-history"] [data-message-action="quote"]');
+  await page.waitForFunction(()=>!document.querySelector('[data-message="model-history"] .message-actions[open]'));
+  assert.deepEqual(await page.evaluate(()=>window.__quoteSink.map(quote=>quote.text)),['Historical answer'],'quote dispatches the existing composer callback');
+  await page.click('[data-message="model-history"] .message-actions>summary');
+  await page.click('[data-message="model-history"] [data-message-action="task"]');
+  assert.deepEqual(await page.evaluate(()=>window.__consumerTasks.map(entry=>entry.id)),['model-history'],'transfer-to-background dispatches the existing onTask callback');
+  await page.waitForFunction(()=>!document.querySelector('[data-message="model-history"] .message-actions[open]'));
   await page.evaluate(()=>{const c=window.consumer;c.store.reset('project-consumer');c.state.jobs=[{id:'before-output',target:'frontdesk',status:'queued'}];c.store.apply('project-consumer',{version:1,entries:[{id:'before-output-user',jobId:'before-output',target:'frontdesk',speaker:'user',source:'host',text:'核对轨道',sequence:1}],deltas:[]});c.render();});
   await page.waitForSelector('[data-execution-state="queued"]');
   assert.equal(await page.$('.session-message[data-role="user"] [role="status"]'),null);
@@ -337,6 +363,25 @@ try {
     assert.notEqual(colors.added.paper,colors.deleted.paper,'addition and deletion papers differ in '+theme);
   }
   assert.equal(await page.evaluate(()=>window.consumerUnsafe===true),false);
+  await page.evaluate(()=>{
+    const c=window.consumer;c.store.reset('project-consumer');c.state.receipts=[];c.state.todos=[];c.state.agents=[];c.state.works=[];
+    c.state.jobs=[{id:'flow-root',target:'orchestrator',type:'intake',status:'queued',context:{manual:true}}];
+    c.store.apply('project-consumer',{version:1,entries:[{id:'flow-user',target:'frontdesk',speaker:'user',source:'host',jobId:'flow-root',taskRequestId:'flow-root',sequence:1,text:'按同一任务连续核对页面。'}],deltas:[]},{replace:true});c.render();
+  });
+  await page.waitForSelector('[data-workflow-id]');await page.evaluate(()=>window.__originalWorkflowBlock=document.querySelector('[data-workflow-id]'));
+  await page.evaluate(()=>{
+    const c=window.consumer,w={id:'flow-work',name:'同一任务 · 多轮核对',revision:2,status:'ended',sourceJob:'flow-root',sourceInputJobIds:['flow-root','flow-supplement'],outcome:'discard',closure:{decision:'discard',revision:2,requestKey:'flow-discard-confirmed',binding:{workId:'flow-work',revision:2,objectId:null,candidateCommit:null},phase:'complete',stopped:true,report:{digest:'a'.repeat(64)},git:{complete:true,status:'discarded'},workerHome:{cleaned:true}}};c.state.works=[w];
+    c.state.jobs=[{id:'flow-root',target:'orchestrator',type:'intake',status:'completed',routing:{action:'dispatch',workId:w.id,name:w.name},context:{manual:true}},{id:'flow-first',target:w.id,type:'initial',status:'completed',revision:1,context:{sourceInputJobIds:['flow-root']}},{id:'flow-supplement',target:'orchestrator',type:'intake',status:'completed',routing:{action:'continue',workId:w.id,workName:w.name},context:{boundWorkId:w.id}},{id:'flow-second',target:w.id,type:'supplement',status:'completed',revision:2,context:{sourceJobId:'flow-supplement'}}];
+    const native=(id,target,jobId,revision,sequence,text)=>({id,target,jobId,revision,sequence,text,speaker:'agent',source:'native',recordKind:'conversation',complete:true});
+    c.store.apply('project-consumer',{version:1,entries:[{id:'flow-user',target:'frontdesk',speaker:'user',source:'host',jobId:'flow-root',taskRequestId:'flow-root',sequence:1,text:'按同一任务连续核对页面。'},native('flow-arrange','orchestrator','flow-root',null,2,'已安排原任务。'),native('flow-answer-one',w.id,'flow-first',1,3,'第一轮：核对完成。'),native('flow-continue','orchestrator','flow-supplement',null,4,'补充已交给原Worker。'),native('flow-answer-two',w.id,'flow-second',2,5,'第二轮：修改完成。'),{id:'flow-configuration',target:w.id,source:'native',speaker:'system',recordKind:'metadata',entryType:'model_change',sequence:6,text:''},{id:'ordinary-outside-flow',target:'frontdesk',speaker:'user',source:'host',sequence:7,text:'这是独立的普通前台问答。'}],deltas:[]},{replace:true});c.render();
+  });
+  await page.waitForSelector('[data-workflow-work="flow-work"] [data-work-closeout="flow-work"]');
+  assert.equal(await page.evaluate(()=>document.querySelector('[data-workflow-work="flow-work"]')===window.__originalWorkflowBlock),true,'receiving a Work identity must retain the original intake block DOM');
+  assert.equal(await page.$$eval('[data-workflow-work="flow-work"] [data-worker-round]',nodes=>nodes.length),2,'one real card per actual Worker round, never a third metadata round');
+  const flow=await page.$eval('[data-workflow-work="flow-work"]',node=>({order:[...node.querySelectorAll('[data-orchestrator-job],[data-worker-round],[data-work-closeout]')].map(n=>n.hasAttribute('data-work-closeout')?'closeout':n.hasAttribute('data-worker-round')?'worker':'orchestrator'),outside:!node.contains(document.querySelector('[data-message="ordinary-outside-flow"]'))}));
+  assert.deepEqual(flow.order,['orchestrator','worker','orchestrator','worker','closeout']);assert.equal(flow.outside,true,'unrelated foreground conversation must stay outside this task');
+  for(const theme of ['light','dark']){await page.setViewport({width:390,height:2300});await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);await page.screenshot({path:path.join(out,'unified-workflow-'+theme+'.png'),fullPage:true});}
+  console.log('Unified intake -> Worker multi-round -> Orchestrator closeout block verified');
   await page.evaluate(()=>window.consumer.destroy());
   console.log('Session timeline React/Electron consumer contracts passed');
 } catch(error) {

@@ -7,6 +7,12 @@ node tools/test-suites.mjs --list          # 默认套件（unit+integration）�
 node tools/test-suites.mjs smoke --list    # 任一套件的文件清单
 ```
 
+## 2026-11-06 状态与管理页信息设计复核（未实施）
+
+父任务以实际安装版 `2026-11-06T00-54-32-789Z`、隔离合成 profile／项目和本机脚本源浏览十处：全部 Agent、单 Agent 模型、会话管理、连接与历史、服务故障、设置外观、默认模型、Agent 资源、AI 连接、本机恢复。原记录 `/tmp/nozeli-status-design-FV7Dip/audit.md` 与同目录 `01-all-agents.png` 至 `10-local-recovery.png`。浏览仅覆盖空闲双角色、单模型／单源、空故障／空恢复；父任务报告未发送问题、最终 jobs=[]、正常 exit0，不据此声明操作或动态分支通过。
+
+Reviewer 本轮读取完整记录、查看十图并静态审查相关代码，更新[信息设计与验收契约](agent-conversation-status-demo.md#简洁状态与管理页设计2026-11-06未实施)，没有另行运行产品、修改实现或安装。用户原图的 local URI 在 reviewer 会话不可读，搜索未找到，执行中主控反馈保留为用户事实而非 reviewer 图像观察。任务详情、保留进展、非空故障／修复／恢复、历史只读、过期、很多 Worker／大目录均只有源码复核；浅色／窄窗、动态行为和其他平台待真实场景补验。文档设计稿不作生产 After 截图，静态组件或合成 DTO 不冒充真实会话行为。
+
 ## 套件总览
 
 | 套件 | 命令 | 内容 | 额外前置 |
@@ -489,6 +495,58 @@ postinstall 用 `electron-rebuild` 针对 Electron 重建 `node-pty`。该依赖
 本轮仅授权“安装一下我要测试”，未授权提交／推送／发布。经既有build-renderer、package-candidate冻结为`approval-ux-batch4-20261105-local-01`，405源码与354构建文件SHA-256一致，记录`~/.local/state/nozeli-runtime-tests/approval-ux-batch4-install-20261105/integrity.json`；这是完整开发工作树快照，非纯净提交发行物。实际冻结ELF、包内Pi/Git运行审批问答／排队／真实候选发布／明确采用至ended与退出通过（`/tmp/nozeli-approval-discussion-wbiUV8/report.json`），真实失效引用后的平实首屏／展开诊断／暂停报告／查看复制不新增执行亦通过（`/tmp/nozeli-retained-progress-XMnOmp/report.json`）；分别9、5次本地脚本响应，零付费模型。
 
 固定800人工采用脚本两次取证AjKFkY、DUEEE7均因窗口过程中变为最大化而失败，不计通过，不将气泡外框／尺寸断言直接等同于读者看不到正文，也没有为此改产品布局；此安装不新增完整窄窗、历史或恢复签收。随后既有install-local --existing-release成功激活current第四轮、previous第二轮，原首批由既有受管保留策略清理；不强退运行窗口、不操作用户业务。安装原件为同目录installed.json，用户正常退出旧窗口后重开桌面入口测试。
+
+## 报告审核工作面重做（2026-11-05）
+
+用户实际安装反馈推翻当前浮窗呈现，Reviewer先设计复核再看实际窗口；以26b39d6加聊天前的报告展示职责为基线恢复，不整体回滚业务链。新默认无讨论，底部唯一“审核讨论”显式开可直接移动的标签窗；文件/独立交付物Diff/采用在报告底部。真实Work/job/request/原修订分组，原请求与主控原文/过程折叠，发布是事件；旧历史及消息ID不改，发送和采用仍走原屏障。
+
+- `desktop-review-human-adoption-live.mjs`最终36EMxf（`/tmp/nozeli-ux-batch2-zh-36EMxf/report.json`）：实际主对话同Work两条native ID/正文逐条相等且同一AI组，完整当前解释三行在真实讨论视口内；一轮真实滚动建立原文120、标题直接移动(-100,-70)，讨论236.67、草稿及选区收展保持。人工编辑保存前原项目无候选，返回报告/取消确认保留意见，最终明确采用后项目字节等于人工稿，原线程、ended/complete、exit0；6次本地脚本Provider。原生确认画面相对返回报告差1369120像素，拒绝同图冒充。
+- 原生报告：旧Vk3Roh 02/03虽然DOM reportBox不变，实际HTML viewport被最大无挡矩形缩窄而重排成竖列，原件不计通过。现为原生View父容器裁切/子WebContentsView保持完整viewport，截图捕获递归并裁切可见区域，迁移/回滚/隐藏/关闭一并迁移资源所有权。最终原生打开前后667×413，问答结束后拖动前/后/关闭667×453；原文scrollY120与标题/正文行Rect逐项保持，不能概括为全程高度不变。3CPcPc为Reviewer独立复核原件，认为限定场景不再有竖列重排阻断。
+- `desktop-review-html-preview-live.mjs`最终c3kf7o：从待办/底部清单实际打开冻结HTML/JS并点击计算，源码＋效果读取人工作业缓冲；删除文本可看输入基线，HTML/删除文本/二进制逐文件进入冻结Diff。原项目四份文件字节/PNG摘要、jobs与Work状态不改，0模型。该删除PNG保持冻结基线绑定并明确提示非可编辑文本，二进制Diff只提供版本/不支持文本说明，未宣称图像预览或所有格式可浏览；返回报告走实际“已打开”控制，等待真实native surface可见，而非对后台DOM操作后宣称画面通过。
+- `desktop-review-discussion-live.mjs`最终fnjcN2：原线程问答/持久FIFO/无重叠/在途阻止采用、真实新报告与候选、原生文件返回、未发稿保留、取消后明确采用至ended/complete；9次本地响应。窄/短内容面实际几何单列，requested654×1150受工作区限制，真实内容面553×843；390×480对应内容面289×395，不能以requested冒充实际尺寸。
+- `desktop-retained-progress-live.mjs`最终y7ZEdE：真实READ_REF_EXPIRED事实在并行开发的读取纠正包装后以durable fault.code确认（4次拒绝，最终failed），不钉最终错误句子/不声称本批修复根因。当前暂停首屏、就近复制/打开原报告和文件、诊断折叠、聊天关闭后报告当前暂停且发送/采用不可用、原历史身份/正文/说话人/发布绑定不变；已有维护回合稳定后无新增请求/job/重放/项目写入。8次本地响应包含原任务及读纠正，不称全场景零模型。
+- 构建通过；共享标签/回合定向46项、native裁切/捕获/迁移定向131项通过（含可见切片捕获与冻结provenance、原生迁移失败逐项恢复与父窗保护）。另有旧业务讨论/导出定向检查通过，未重跑全量CI，不用数量代替使用者签收。旧模式/自动show调用及假文案/模板断言清理；真实UI输入与嵌套native绘制就绪/焦点、原生完整窗口差异门分别验证，不注入业务状态或放宽静态报告沙箱。
+
+统一图集：`~/.local/state/nozeli-runtime-tests/report-review-restoration-20261105-flj7xh/gallery.html`，包括用户原图、最终After、自有窗口无损记录和原JSON。所有失败尝试保留不计通过，旧重复确认帧/旧竖列图不进入After；不以几何框失败直接推断文字不可读。**剩余限制：浮窗仍会遮挡/裁切原生报告且范围可能大于窗体；不宣称打开后同时完整无遮挡阅读，关闭恢复。** 复杂历史导航、恢复/冲突、模型内容可靠性、真实多屏及跨平台仍未验。
+
+本轮仅源码/隔离合成材料/真实Electron、私有Pi、Git与文件、本地脚本Provider；零付费模型，不操作用户项目。未执行本轮安装/提交/推送。末次观察current已另行切为`2026-11-05T10-28-25-750Z`、previous第四轮；407源码和354构建静态匹配，原件`installation-observed.json`在同图集目录。这不等于本轮运行过已安装ELF，也不沿用旧安装授权。
+
+## 2026-11-05 对话收起、窄窗正文与按需操作（源码，未安装）
+
+- `node tests/desktop-conversation-collapse-live.mjs`（已登记 live）：真实 Electron／私有 Pi／本地脚本 Provider，在隔离合成项目由真实发送按钮提交两轮中文输入；深浅主题与三档原生窗口宽度检查正文边界，再实际点击收起／底部入口恢复三次，验证历史原文、未发草稿和滚动位置保留，打开“更多 → 会话管理”可达，期间没有新增请求、job 或原文文件写入。清理诊断探针后的通过原件：`/tmp/nozeli-conversation-collapse-1Z6ijN/report.json`，截图同目录。脚本 Provider 不代表商业模型可靠性验收。
+- 修前真实复现：草稿 action 缺少专用分支，发送前落入终端处理并报 `TERMINAL_STALE`；恢复本地草稿分支后，两轮原生输入均完成。随后复现滚动返回错误：收起前实际 `scrollTop=0`，重建 guest 却恢复旧值约390.67；仅保存 recovery 不会进入该次布局事务的 `pendingViewState`。保留阶段捕获当前阅读／材料状态，并沿既有 `writeView` 提交转移屏障后，原生重建恢复0；失败原件 `/tmp/nozeli-conversation-collapse-jyK8B5`、`TWMXhG` 与通过原件 `/tmp/nozeli-conversation-collapse-KWUmt2` 保留用于定位，不放宽保存失败准入。
+- 消息菜单与投影回归：`node --test tests/desktop-session-timeline.test.mjs tests/renderer-projection-coalescing.test.mjs`。消费测试设置明确 viewport；有 DISPLAY 时默认 X11，使用可绘制窗口检查真实键盘／指针操作、Escape、复制状态及引用。纯 Ozone headless 未验收，不把隐藏窗口截图超时当成产品通过。
+- 删除未登记、无文档入口的 `desktop-empty-workspace.test.mjs` 旧 Demo 脚本：它依赖已废弃的内嵌 launcher、compact-composer、四方向停靠及 OMP/Claude 模拟报告，不能验证现行原生工作面。空工作台／真实文件／冷启动由已登记 `desktop-ci-smoke.mjs` 覆盖，布局／保存失败／窗口归属由现有 workspace-layout/native 回归覆盖，真实对话收起由新增 live 脚本覆盖；不为旧脚本恢复兼容 DOM 或模拟 Agent。
+- 最终支持路径回归：`node --no-warnings --test tests/desktop-session-timeline.test.mjs tests/renderer-projection-coalescing.test.mjs tests/workspace-layout.test.mjs tests/workspace-native.test.mjs`，110/110通过。`NOZELI_OZONE=x11 node tests/desktop-ci-smoke.mjs` 的五项真实启动／文件／项目切换／退出／冷恢复检查通过、两次正常退出code0、无pageerror；原件 `apps/desktop/.test-output/ci/smoke-j7w9zF/report.json`。`node tools/test-suites.mjs live --list` 确认新增对话回归已登记。
+- 本轮只在 Linux X11／XWayland 验证；Windows/macOS、纯原生 Wayland、物理多屏和实际商业模型未验。未安装、提交、推送或发布，未操作用户论文或日常 profile。
+
+## 2026-11-06 共用局部窗口与简洁管理页（源码，未安装）
+
+- **回归**：`npm run build:renderer` 通过；集中 `node --no-warnings --test --test-concurrency=2 --test-reporter=spec` 运行 `local-window`、`management-presentation`、`managed-progress`、`session-controls`、`web-discussion-panel`、`settings-agents-ui`、`provider-settings`、`managed-work-progress`、`native-review-renderer`、`snapshot-card-view`、`web-window-clip`、`online-browser`、`online-browser-clip`、`workspace-native` 对应的 `.test.mjs`：188/188，零失败／跳过。覆盖展示 CAS／实例及 surface 归属、迁移、队列／审核保护、输入保留与原生裁剪；测试清单已登记。
+- **标签与冻结涂鸦**：`node tests/desktop-label-windows-live.mjs` 在真实 PPT 上检查直接标题拖动、键盘、touch cancel、800px 临时夹取及恢复、原生关闭重开、返回笔迹、本地保存后 fork 恢复；不改原 PPT／笔迹／锚点、不新增 job。收紧同角色不同原生窗口的展示身份后，最终浅色 `/tmp/nozeli-label-windows-HFItSs/report.json` 通过；`NOZELI_LABEL_THEME=dark` 深色 `/tmp/nozeli-label-windows-bi1FYe/report.json` 通过，各13项、正常退出。跨 fork 的窗口身份由记录内 `card.windowOwnerId` 传递，独立涂鸦不按相同背景图片合并。
+- **审核讨论与真实采用**：`node tests/desktop-review-human-adoption-live.mjs` 通过，原件 `/tmp/nozeli-ux-batch2-zh-0PI0O7/report.json`。真实私有 Pi／本地确定性 Provider、原生 HTML／文件、6次本地模型请求，核对同 Work 原文、真实讨论回复、标题拖动、不重排正文／不抢原阅读位置、未发送意见／选区保留、人工编辑保存及确切版本采用到项目，正常退出。不是远端模型理解能力签收。
+- **管理界面**：真实双角色 Agent 对话窗、展开详情后刷新仍复用节点、两额度及保存回执、三角色模型及空目录、会话上下文／技术诊断初始折叠、空故障无空选择器及 Escape 返回原连接页并恢复焦点，见 `/tmp/nozeli-unified-ui-live-2wQRxL/report.json` 与同目录 `agent-status.webp`、`resource-settings.webp`。`NOZELI_OZONE=x11 NOZELI_TEST_VISIBLE=1 node tests/desktop-settings.test.mjs` 30项通过，原件目录 `/tmp/nozeli-settings-ui-de9J0W`。脚本默认隐藏 headless 的首次尝试在 ready 等待超时，未算通过；本轮签收是可见 X11。
+- **真实原生网页**：修前已直接测到浮窗使 guest `innerWidth` 871→519、段落宽840→488并重排，拖动出现意外 lostpointercapture。修后父 View 裁剪，guest 实际保持871×725，段落840×653.33、滚动与表单值不变；真实标题位移−240/+70，继续移动−170使裁剪区域换边，OS窗口仍在原位，关闭／恢复同输入和选区。导航到新 URL 不继承旧草稿，返回确切原 URL 恢复旧草稿及位置。实际 native tree 为裁剪容器422×725、guest负偏移且仍871×725，原件及原生合成图 `final-native-web.png` 均在上述 unified-ui 目录。网页仍无 `window.nozeli/require/process`。右键确实触发 native menu，但菜单选择用原菜单回调 fixture；不声称物理菜单点击通过。
+- **生命周期及限制**：隔离 Markdown 文件摘要未变，无意外 job，三个自有运行阶段均正常 exit0，临时观察器与取证脚本已清理。只签 Linux X11／XWayland、上述格式和场景；不等于当前安装版、所有 Word／PDF／表格锚点、所有异常模型状态、IME／输入硬件／DPI／物理多屏矩阵或 Windows/macOS 全通过。深浅主题仅上述标签／涂鸦专项，不泛化全应用矩阵；最大无挡矩形仍可能裁掉窗体外页面。没有安装、提交、推送或发布，不操作用户论文／日常 profile。
+
+## 2026-11-06 全部局部讨论拖动：设计复核，未实施／未运行验收
+
+用户当前报告标签讨论都无法拖动，并明确包括审查／审核讨论。下方 2026-11-05 标签／涂鸦专项、审核 `36EMxf` 等均仅保留其原构建与场景边界，不能否定反馈，也不证明所有调用方、实际安装程序及输入硬件通过。本轮只核对源码和调整权威设计，没有复验旧 smoke、启动日常 profile 或安装程序。
+
+已记录[共用窗口契约及验收矩阵](worker-review-chat-demo.md#统一局部窗口契约2026-11-06设计未实施)：覆盖本地备注、文件、选区／位置、真正未定位、冻结位置、审核及网页局部讨论；分别取实际标题 hit target、可信 pointer／capture、真实局部位移、原生 WCV bounds／clip、OS 窗口不动及业务身份／输入保持的证据。dispatchEvent、直接改 style／调用移动函数、body 非空或单独几何断言均不能签收拖动。当前根因未证实，平台／触控／DPI／多屏矩阵尚未执行；此处不增加任何通过声明。
+
+## 2026-11-05 标签系统收拢：文件讨论漂移与涂鸦小窗无法移动（源码，未安装）
+
+设计约束收拢于[标签与局部讨论](principles.md#标签与局部讨论)：共用可拖标题、键盘移动及保留输入规则，区分来源锚点与窗口展示位置。文件讨论不冒充未定位标签；冻结画面的视口来源不冒充精确文件选区。
+
+- **修前复现**：`/tmp/nozeli-label-windows-3cWUgg/report.json`。真实合成 PPT 上文件卡宽1082／内容视口1139，拖动坐标完全不变；冻结涂鸦卡同样无法拖动。文件卡被 `renderUnlocatedTags` 强制 inline/no-op move；snapshot 卡则只有自然定位、没有拖动手势。
+- **文件标签**：`app.mjs` 的独立非布局层复用 `note-tag.mjs` 的移动、尺寸、折叠和草稿回调，以annotation ID保留输入节点；不挤压 PPT iframe。真正未定位的目录保留原引用、共享菜单删除与显式重定位。新增视口层标记使无有效源标记的小窗不再随目录滚出视口而隐藏；普通带锚点的标签仍沿原源标记可见性规则。Word重定位后的实测曾抓到隐藏窗口的点击落在目录上，修复后共享菜单及删除通过；临时命中探针已清理。
+- **涂鸦标签**：`workspace-snapshot.mjs` 沿现有 `target.card.offset` 保存显示偏移；`rect`仍仅表示笔迹区域。3px阈值、pointer capture、取消恢复、标题方向键10px／Home回到笔迹旁；窗口变化只重新夹取显示范围，旧记录无offset时沿原自动定位。来源、笔迹、图片和发送身份不随移动改变，不增加模式或模型调用。
+- **真实端到端**：`node tests/desktop-label-windows-live.mjs`（已登记live），13项通过。浅色原件 `/tmp/nozeli-label-windows-18nCiW/`；深色命令 `NOZELI_LABEL_THEME=dark node tests/desktop-label-windows-live.mjs`，原件 `/tmp/nozeli-label-windows-3zU9OM/`。覆盖实际标题拖动／方向键、原生PPT guest关闭重建、未发草稿及历史问题、取消触控拖动、窄窗标题可达、恢复窗口大小、返回笔迹再完成、仅保存本地再恢复；逐项核对原PPT SHA、笔迹向量、笔迹区域和job列表不变，正常退出code0，无pageerror。触控由CDP受信输入验证，不代表触控硬件或其他平台实测。
+- **失效锚点回归**：清理探针后的 `NOZELI_OZONE=x11 node tests/desktop-unlocated-tags-live.mjs` 通过；覆盖 Word/text/PDF/image/PPT 真实窗口、共享菜单删除持久化，以及Word/text明确重定位后原引用／备注／历史不被改写。原件 `unlocated-tags-live-q0qhvv` 在隔离测试缓存目录，先前通过原件 `unlocated-tags-live-lPdDrD` 保留定位过程。
+- **最终确定性回归**：`node --no-warnings --test tests/workspace-capture-store.test.mjs tests/desktop-workspace-capture-session.test.mjs tests/region-drawing.test.mjs tests/tag-stability.test.mjs tests/tag-session-identity.test.mjs tests/renderer-tag-draft.test.mjs tests/discussion-thread-transcript.test.mjs`，90/90通过。
+- 边界：仅Linux X11／XWayland及合成材料；未操作用户论文／日常profile，无Provider配置或模型调用。Windows/macOS、纯原生Wayland、物理多屏和触控硬件未验；未安装、提交、推送或发布。
+
 ## 2026-11-05 退出卡住与原生强制退出（源码修复与本机安装验收）
 
 设计约束见[退出与工作区恢复](principles.md#退出与工作区恢复)。原次用户退出没有留下具体保存错误日志，不能从泛化截图唯一认定是哪份材料／输入失败；以下区分源码因果、实际运行与测试夹具。

@@ -1,4 +1,5 @@
 import {applyViewGeometry} from './view-geometry.mjs';
+import {intersectRect} from '../domain/web-window-clip.mjs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {webPageCaptureScript} from './web-page-capture.mjs';
@@ -8,8 +9,8 @@ const denied = message => Object.assign(new Error(message), {code:'WEB_BROWSER_D
 const identity = value => typeof value === 'string' && value.length > 0 && value.length <= 256 && !/[\x00-\x20\x7f]/.test(value);
 
 export class OnlineBrowserManager {
-  constructor({WebContentsView, session, workspace, dialog, hostdialog, onNavigate, downloadDirectory, Menu, discussion}) {
-    Object.assign(this, {WebContentsView, session, workspace, dialog:dialog ?? hostdialog, onNavigate, downloadDirectory, Menu, discussion});
+  constructor({View, WebContentsView, session, workspace, dialog, hostdialog, onNavigate, downloadDirectory, Menu, discussion}) {
+    Object.assign(this, {View, WebContentsView, session, workspace, dialog:dialog ?? hostdialog, onNavigate, downloadDirectory, Menu, discussion});
     this.slots = new Map();
     this.generations = new Map();
     this.recoveryScopes = new Set();
@@ -109,7 +110,7 @@ export class OnlineBrowserManager {
     const url = normalizeWebUrl(this.workspace.layouts.get(scope.projectId).views[scope.viewId].url);
     if (!this.allowed(url)) throw denied('不能在网站页面中打开 Nozeli 内部地址。');
     const view = new this.WebContentsView({webPreferences:{session:this.browserSession(), sandbox:true, contextIsolation:true, javascript:true, nodeIntegration:false, nodeIntegrationInWorker:false, nodeIntegrationInSubFrames:false, webviewTag:false, webSecurity:true, allowRunningInsecureContent:false, devTools:false, navigateOnDragDrop:false, safeDialogs:true}});
-    const slot = {id, scope, key:payload.key, generation:payload.generation, ownerGeneration:scope.generation, projectId:scope.projectId, url, title:webTitle(url), view, bounds:{x:0,y:0,width:0,height:0}, parentWindow:scope.previewWindow ?? scope.win};
+    const slot = {id, scope, key:payload.key, generation:payload.generation, ownerGeneration:scope.generation, projectId:scope.projectId, url, title:webTitle(url), view, container:null, bounds:{x:0,y:0,width:0,height:0}, boundsSequence:-1, clip:null, parentWindow:scope.previewWindow ?? scope.win};
     this.generations.set(id, payload.generation);
     this.slots.set(id, slot);
     const wc = view.webContents;
@@ -156,8 +157,16 @@ export class OnlineBrowserManager {
     wc.on('render-process-gone', (_event, detail) => { slot.error = '网站进程已退出：' + detail.reason; this.emit(slot); });
     wc.once('destroyed', () => this.release(slot));
     try {
-      slot.parentWindow.contentView.addChildView(view);
-      this.bounds(scope, {...payload, rect:payload.rect ?? payload.bounds ?? slot.bounds});
+      // Clip-parent model (isolated-preview pattern): the container View is
+      // the moving clip mask; the guest WCV lives INSIDE it at full-viewport
+      // bounds with a negative offset. The guest's real setBounds then never
+      // changes when the mask moves — no guest reflow, no innerWidth jump and
+      // no mid-drag capture loss from the renderer resizing under the pointer.
+      slot.container = new this.View();
+      slot.container.setBorderRadius?.(0);
+      slot.container.addChildView(view);
+      slot.parentWindow.contentView.addChildView(slot.container);
+      this.bounds(scope, {...payload, rect:payload.rect ?? payload.bounds ?? slot.bounds, sequence:0});
       this.load(slot, url);
       return this.snapshot(slot);
     } catch (error) { this.dispose(slot); throw error; }
@@ -212,7 +221,16 @@ export class OnlineBrowserManager {
   bounds(scope, payload) {
     const slot = this.require(scope, payload), rect = payload.rect ?? payload.bounds;
     if (!rect || !['x','y','width','height'].every(k => Number.isFinite(rect[k])) || rect.width < 0 || rect.height < 0) throw denied('网站区域无效。');
-    slot.bounds = {...rect}; slot.overlay = !!payload.overlay;
+    // Monotonic layout sequence: a late occlusion/bounds receipt from a previous
+    // layout of this same live guest must never move or reclip the new one.
+    if (!Number.isSafeInteger(payload.sequence) || payload.sequence <= slot.boundsSequence) throw denied('网站区域布局已过期。');
+    // clip is the largest unobstructed portion of the SAME full-viewport rect
+    // (CSS px, same space as rect). The guest's layout viewport stays `rect`;
+    // only the painted/hit region is clipped, so dragging a discussion window
+    // never reflows the page or shrinks the guest bounds.
+    const clip = payload.clip ?? null;
+    if (clip && (!['x','y','width','height'].every(k => Number.isFinite(clip[k])) || clip.width < 0 || clip.height < 0)) throw denied('网站区域裁切无效。');
+    slot.bounds = {...rect}; slot.clip = clip ? {...clip} : null; slot.overlay = !!payload.overlay; slot.boundsSequence = payload.sequence;
     this.refreshScope(scope);
     return {updated:true};
   }
@@ -220,15 +238,24 @@ export class OnlineBrowserManager {
     for (const slot of this.slots.values()) {
       if (slot.scope !== scope || slot.closed) continue;
       const parent = scope.view.getBounds(), zoom = scope.wc.getZoomFactor?.() ?? 1, b = slot.bounds;
-      const x = Math.min(parent.width, Math.max(0, Math.round(b.x * zoom))), y = Math.min(parent.height, Math.max(0, Math.round(b.y * zoom)));
-      const width = Math.max(0, Math.min(Math.round(b.width * zoom), parent.width - x)), height = Math.max(0, Math.min(Math.round(b.height * zoom), parent.height - y));
-      applyViewGeometry(slot.view,{x:parent.x+x,y:parent.y+y,width,height},this.alive(slot) && !scope.transferring && !scope.recoveryHeld && !scope.previewRecoveryFailed && !slot.overlay && scope.view.getVisible() && width > 0 && height > 0);
+      // Isolated-preview clip pattern: the CONTAINER is the moving mask; the
+      // guest WCV keeps its full-viewport bounds at a negative offset, so the
+      // page layout/innerWidth never change and the guest's real setBounds
+      // never happens under a live pointer drag (no capture loss, no reflow).
+      const region = slot.clip ? intersectRect(b, slot.clip) : b;
+      const x = Math.min(parent.width, Math.max(0, Math.round(region.x * zoom))), y = Math.min(parent.height, Math.max(0, Math.round(region.y * zoom)));
+      const width = Math.max(0, Math.min(Math.round(region.width * zoom), parent.width - x)), height = Math.max(0, Math.min(Math.round(region.height * zoom), parent.height - y));
+      const visible = this.alive(slot) && !scope.transferring && !scope.recoveryHeld && !scope.previewRecoveryFailed && !slot.overlay && scope.view.getVisible() && width > 0 && height > 0;
+      const fullWidth = Math.round(b.width * zoom), fullHeight = Math.round(b.height * zoom);
+      if (fullWidth > 0 && fullHeight > 0) applyViewGeometry(slot.view,{x:Math.round(b.x*zoom)-x,y:Math.round(b.y*zoom)-y,width:fullWidth,height:fullHeight},visible);
+      else slot.view.setVisible(false);
+      applyViewGeometry(slot.container,{x:parent.x+x,y:parent.y+y,width,height},visible);
     }
   }
   release(slot) {
     if (slot.closed) return;
     slot.closed = true;
-    try { slot.parentWindow?.contentView.removeChildView(slot.view); } catch {}
+    try { slot.parentWindow?.contentView.removeChildView(slot.container);slot.container?.removeChildView(slot.view); } catch {}
     if (this.slots.get(slot.id) === slot) this.slots.delete(slot.id);
     slot.closeResolve?.({closed:true}); slot.closeResolve = null;
   }
@@ -273,16 +300,16 @@ export class OnlineBrowserManager {
       for (const slot of this.slots.values()) {
         if (slot.scope !== scope || slot.closed || slot.parentWindow === destination) continue;
         const source = slot.parentWindow;
-        slot.view.setVisible(false);
-        source.contentView.removeChildView(slot.view); slot.parentWindow = null;
+        slot.container?.setVisible(false);
+        source.contentView.removeChildView(slot.container); slot.parentWindow = null;
         moved.push({slot,source});
-        destination.contentView.addChildView(slot.view); slot.parentWindow = destination;
+        destination.contentView.addChildView(slot.container); slot.parentWindow = destination;
       }
     } catch (error) {
       const failures = [];
       for (const {slot,source} of moved.reverse()) try {
-        slot.parentWindow?.contentView.removeChildView(slot.view); slot.parentWindow = null;
-        source.contentView.addChildView(slot.view); slot.parentWindow = source;
+        slot.parentWindow?.contentView.removeChildView(slot.container); slot.parentWindow = null;
+        source.contentView.addChildView(slot.container); slot.parentWindow = source;
       } catch (failure) { failures.push(failure); }
       if (failures.length) { this.holdScope(scope, [destination,...moved.map(m => m.source)]); throw Object.assign(new AggregateError([error,...failures], '网站迁移回滚失败；已保留窗口。'), {previewRollbackFailed:true}); }
       throw error;
@@ -294,7 +321,7 @@ export class OnlineBrowserManager {
     scope.previewRecoveryParents ??= new Set();
     for (const parent of parents) if (parent) scope.previewRecoveryParents.add(parent);
     this.recoveryScopes.add(scope);
-    for (const slot of this.slots.values()) if (slot.scope === scope) slot.view.setVisible(false);
+    for (const slot of this.slots.values()) if (slot.scope === scope) slot.container?.setVisible(false);
   }
   holdsWindow(win) {
     return [...this.recoveryScopes].some(scope => scope.previewRecoveryParents.has(win));

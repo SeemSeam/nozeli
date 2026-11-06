@@ -12,13 +12,13 @@ export function mountDemoSurface({invoke,subscribe,scope,getCurrent,setTextMode,
   const selectDemoTag=annotationId=>window.dispatchEvent(new CustomEvent('nozeli-demo-active-tag',{detail:{annotationId}}));
   async function showDemoTag(annotationId,request){
     selectDemoTag(annotationId);
-    const find=()=>[...document.querySelectorAll('[data-annotation]')].find(node=>node.dataset.annotation===annotationId);
+    const find=()=>[...document.querySelectorAll('.note-anchor[data-annotation]')].find(node=>node.dataset.annotation===annotationId);
     const root=await wait(find,request,15000,true);
     const index=root.querySelector('.note-index');if(!index)throw Error('演示标签没有可用的打开入口');
     index.click();
     await wait(()=>{
-      const current=find(),card=current?.querySelector('.note-projection'),box=card?.getBoundingClientRect();
-      return box&&box.width>0&&box.height>0&&!card.classList.contains('demo-tag-parked')&&!card.classList.contains('is-collapsed')&&getComputedStyle(card).visibility!=='hidden';
+      const current=find(),controller=current?.localWindow,card=controller?.node,box=card?.getBoundingClientRect(),view=controller?.snapshot();
+      return box&&box.width>0&&box.height>0&&!view.hidden&&!view.collapsed&&getComputedStyle(card).visibility!=='hidden';
     },request,15000,true);
   }
   async function selectText(request){const c=check(request);if(!c.editor)throw Error('文本编辑器未就绪');setTextMode('edit');const text=c.editor.adapter.getText(),start=text.indexOf('方法');const from=start>=0?start:0,to=Math.min(text.length,from+28);if(from===to)throw Error('示例原文为空');c.editor.adapter.revealRange(from,to);c.editor.adapter.focus();return {relPath:c.file.relPath,kind:'text-selection',anchor:{start:from,end:to,quote:text.slice(from,to)},excerpt:text.slice(from,to),materialText:text};}

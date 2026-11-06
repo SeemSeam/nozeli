@@ -1,15 +1,17 @@
 import './workspace-conversation-controls.css';
+import {setIconButton} from './ui-icons.mjs';
+import {panelButton} from './panel-menu.mjs';
 export {uiIcon as workspaceIcon} from './ui-icons.mjs';
 
 // Window geometry belongs to the native workspace, never to conversation preferences.
 export function mountConversationControls({close}) {
   const controls = document.querySelector('#conversation-head .conversation-controls');
-  for(const [id,label]of [['chat-workspace-detach','独立窗口'],['chat-workspace-close','−']]){
-    const button=document.createElement('button');button.type='button';button.dataset.chatWindowAction=id;button.textContent=label;
-    button.title=id==='chat-workspace-close'?'收起到底部，保留对话与草稿':label;
-    button.setAttribute('aria-label',id==='chat-workspace-close'?'收起对话到底部':label);
+  for(const [id,label,icon]of [['chat-workspace-detach','独立窗口','floating'],['chat-workspace-close','收起对话到底部，保留对话与草稿','chevron-down']]){
+    const button=document.createElement('button');button.type='button';button.id=id;button.dataset.chatWindowAction=id;button.className='chat-tool';
+    setIconButton(button,icon,{label});
     button.onclick=()=>void run(id);controls.append(button);
   }
+  const more=panelButton('chat-more');more.dataset.chatMore='';more.classList.add('chat-tool');controls.append(more);
   const header=document.getElementById('conversation-head');
   const detached = () => Boolean(window.__workspaceScope?.windowId && window.__workspaceScope.windowId !== 'main');
   const updateChrome = () => {
@@ -31,20 +33,18 @@ export function mountConversationControls({close}) {
   ];
   function commands() {
     const entries = actions.filter(item => item.command.type !== 'dock' || detached()).map(({id,label}) => ({id,label}));
-    entries.push({id:'chat-session-runtime',label:'会话管理：压缩、重载与诊断…'});
+    const runtime = document.getElementById('chat-session-runtime');
+    if (runtime && !runtime.hidden) entries.push({id:'chat-session-runtime',label:'会话管理：压缩、重载与诊断…',enabled:!runtime.disabled});
     entries.push({id:'chat-agent-details',label:'连接与历史…'});
     if (detached()) entries.push(...windowActions.map(({id,label}) => ({id,label})));
-    const history = document.getElementById('chat-history-toggle');
-    if (history) entries.push({id:'chat-history-toggle',label:header.closest('.compact-composer')?'展开对话历史':'收起对话历史',enabled:!history.disabled});
     const clear = document.getElementById('chat-clear-frontdesk-context');
     if (clear && !clear.hidden) entries.push({id:'chat-clear-frontdesk-context',label:clear.textContent,enabled:!clear.disabled});
     return entries;
   }
   async function run(id) {
     if(id==='chat-agent-details')return window.dispatchEvent(new Event('nozeli-agent-details'));
-    if(id==='chat-session-runtime'){const button=document.getElementById(id);if(button&&!button.hidden&&!button.disabled)button.click();return;}
     if(id==='chat-window-close')return run('chat-workspace-close');
-    if (id === 'chat-clear-frontdesk-context' || id === 'chat-history-toggle') {
+    if (id === 'chat-clear-frontdesk-context' || id === 'chat-session-runtime') {
       const button = document.getElementById(id);
       if (button && !button.hidden && !button.disabled) button.click();
       return;

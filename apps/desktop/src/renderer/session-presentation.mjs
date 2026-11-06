@@ -1,4 +1,13 @@
+import {confirmedDisposition} from '../agents/managed/review-lifecycle.mjs';
 // Display classification only: original records stay in the session store/read API.
+export function messageRole(entry,state,{unbound=false}={}){
+ if(entry.speaker==='user'){
+  const job=entry.jobId&&state?.jobs?.find(job=>job.id===entry.jobId);
+  const handoff=entry.source==='host'&&job&&job.target===entry.target&&!['frontdesk','orchestrator'].includes(job.target)&&['initial','supplement'].includes(job.type);
+  return handoff?'orchestrator':'user';
+ }
+ return unbound||['system','tool'].includes(entry.speaker)?'system':entry.target==='frontdesk'?'frontdesk':entry.target==='orchestrator'?'orchestrator':'worker';
+}
 export const hasReadableText=entry=>typeof entry?.text==='string'&&entry.text.trim().length>0;
 export const isImportantEntry=entry=>Boolean(entry?.failed||entry?.error||entry?.question||entry?.status==='failed'||['error','failed'].includes(entry?.tool?.status));
 export const isProcessEntry=entry=>!isImportantEntry(entry)&&(entry?.speaker==='tool'||Boolean(entry?.tool)||!hasReadableText(entry)&&entry?.availability!=='read-required'&&!entry?.attachments?.length);
@@ -139,4 +148,29 @@ export function orchestratorPresentation(entries,state){
   handoff={action:route.action,workId:route.workId??null,name,text,status,statusLabel};
  }
  return {execution,activity,handoff};
+}
+
+export function closeoutPresentation(work,revision){
+ if(!work||!Number.isInteger(revision)||revision!==work.revision)return null;
+ const closure=work.closure;
+ if(!closure){
+  if(work.status!=='review')return null;
+  return {status:'review',label:'报告已交付 · 等待审查',summary:'尚未接受或丢弃；收尾未开始，工作仍保留。',steps:[]};
+ }
+ if(!['closing','ended'].includes(work.status))return null;
+ if(!confirmedDisposition(work)||work.needsReconciliation)return {status:'unknown',label:'收尾状态待核实',summary:'历史决定或版本绑定尚未核实；不认定工作已结束。',steps:[]};
+ const complete=work.status==='ended'&&closure.phase==='complete';
+ const blocked=closure.phase==='blocked';
+ const decision=closure.decision==='accept'?'已接受':'已丢弃';
+ const phases={requested:'决定已记录 · 准备收尾',stopping:'正在停止 Worker',report:'正在归档报告',integrating:closure.decision==='accept'?'正在核验并本地合入':'正在处置未采用候选',cleanup:'正在清理资源并持久化归档',blocked:'收尾受阻',complete:'收尾记录待核实'};
+ const rows=[
+  {id:'decision',label:'用户决定已记录：'+decision,done:true},
+  {id:'stop',label:'停止 Worker 并核实退出',done:closure.stopped===true},
+  {id:'report',label:'归档冻结报告',done:Boolean(closure.report?.digest)},
+  {id:'integration',label:closure.decision==='accept'?'本地合入与候选处置':'丢弃候选，不合入用户文件',done:closure.git?.complete===true},
+  {id:'cleanup',label:'清理工作资源',done:closure.workerHome?.cleaned===true},
+  {id:'archive',label:'持久化收尾归档并结束工作',done:complete},
+ ];
+ const next=rows.find(row=>!row.done)?.id;
+ return {status:complete?'complete':blocked?'blocked':closure.phase==='complete'?'unknown':'closing',label:complete?decision+' · 收尾已完成':decision+' · '+(phases[closure.phase]||'收尾状态待核实'),summary:complete?'报告与决定已归档，工作已结束。':blocked?'原决定与成果保留；收尾尚未完成，不会因此重跑 Worker。':'用户决定已记录；系统继续原工作的收尾，不代表整项工作已结束。',reason:typeof closure.error==='string'?closure.error:null,steps:rows.map(row=>({id:row.id,label:row.label,status:row.done?'complete':row.id===next?(blocked?'blocked':'current'):'pending'}))};
 }

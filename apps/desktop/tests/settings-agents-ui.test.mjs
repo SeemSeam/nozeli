@@ -1,9 +1,29 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mountAgentSettings} from '../src/renderer/settings-agents.mjs';
+
+// 最小 DOM 桩：仅支撑 mountAgentSettings 的真实 DOM 构建与查询；
+// 行为断言与原版一致（事务、迟到保存、项目切换保护）。
+const el=(tag)=>{
+  const node={tag,nodeType:1,tagLower:tag.toLowerCase(),children:[],parent:null,attributes:{},listeners:{},dataset:{},className:'',hidden:false,disabled:false,value:'',id:'',htmlFor:'',open:false,text:''};
+  node.append=(...kids)=>{for(const kid of kids){kid.parent=node;node.children.push(kid);}};
+  node.replaceChildren=(...kids)=>{for(const kid of node.children)kid.parent=null;node.children=[...kids];for(const kid of kids)kid.parent=node;};
+  node.setAttribute=(key,value)=>{node.attributes[key]=String(value);};
+  node.getAttribute=key=>Object.hasOwn(node.attributes,key)?node.attributes[key]:null;
+  node.addEventListener=(type,handler)=>{node.listeners[type]=handler;};
+  node.reportValidity=()=>true;
+  node.remove=()=>{if(node.parent)node.parent.children=node.parent.children.filter(kid=>kid!==node);node.parent=null;};
+  Object.defineProperty(node,'textContent',{get(){return node.text||node.children.map(kid=>kid.textContent).join('');},set(value){node.text=String(value);}});
+  Object.defineProperty(node,'childNodes',{get(){return node.children;}});
+  node.matches=selector=>selector.split(',').some(part=>{const clause=part.trim();const attr=/^\[([^~=|^$*]+?)\]$/.exec(clause);if(attr)return Object.hasOwn(node.attributes,attr[1]);return clause===node.tagLower;});
+  node.querySelector=selector=>{for(const kid of node.children){if(kid.matches?.(selector))return kid;const hit=kid.querySelector?.(selector);if(hit)return hit;}return null;};
+  return node;
+};
+globalThis.document={createElement:el,getElementById:()=>null};
+
+const {mountAgentSettings}=await import('../src/renderer/settings-agents.mjs');
+
 function fixture(invoke,getProjectId=()=>null){
- const nodes=new Map();
- const container={innerHTML:'',querySelector(selector){if(!nodes.has(selector))nodes.set(selector,{value:'',disabled:false,textContent:'',listeners:{},addEventListener(name,fn){this.listeners[name]=fn;},reportValidity:()=>true});return nodes.get(selector);}};
+ const container=el('section');
  const panel=mountAgentSettings({invoke,container,getProjectId});
  return {panel,container,node:selector=>container.querySelector(`[data-agent-${selector}]`),submit:()=>container.querySelector('[data-agent-limits-form]').listeners.submit({preventDefault(){}})};
 }

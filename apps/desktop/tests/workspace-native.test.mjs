@@ -19,6 +19,8 @@ class Contents extends EventEmitter {
   setBackgroundThrottling(value){this.backgroundThrottling=value;}
 }
 class View { constructor(){this.webContents=new Contents();}setVisible(value){this.visible=value;}getVisible(){return this.visible===true;}setBounds(value){this.bounds=value;}getBounds(){return this.bounds||{x:0,y:0,width:500,height:500};} }
+class PreviewContainer {constructor(view){this.children=[view];this.visible=view.getVisible();}addChildView(view){this.children.push(view);}removeChildView(view){this.children=this.children.filter(child=>child!==view);}setVisible(value){this.visible=value;}getVisible(){return this.visible;}setBounds(bounds){this.bounds=bounds;}getBounds(){return this.bounds||{x:0,y:0,width:500,height:500};}}
+function previewSlot(view,scope,parentWindow,id){const container=new PreviewContainer(view);parentWindow.contentView.addChildView(container);return {id,scope,view,container,parentWindow,files:new Map()};}
 class Window extends EventEmitter {
  constructor(options={}){super();this.options=options;this.webContents=new Contents();this.children=[];this.contentView={addChildView:v=>this.children.push(v),removeChildView:v=>{this.children=this.children.filter(x=>x!==v);}};this.bounds={x:0,y:0,width:1000,height:760};}
  async loadURL(){}show(){}focus(){}getBounds(){return this.bounds;}getContentBounds(){return this.bounds;}getContentSize(){return [1000,760];}isAlwaysOnTop(){return false;}isDestroyed(){return !!this.destroyed;}destroy(){this.destroyed=true;this.webContents.emit('destroyed');this.emit('closed');}
@@ -31,6 +33,39 @@ host.storage=new Proxy(storage,{get(target,key){const value=Reflect.get(target,k
 const stateHost=new DesktopHost(directory);stateHost.storage=host.storage;stateHost.requireRegisteredProject=id=>host.requireRegisteredProject(id);host.readState=id=>stateHost.readState(id);
 const native=new WorkspaceNative({BrowserWindow:Window,WebContentsView:View,screen:{getDisplayMatching:()=>({workArea:{x:-1920,y:0,width:1920,height:1080}})},origin:'http://127.0.0.1:9000/',userDataDir:directory,host});const root=native.registerShell(new Window());root.projectId='p';root.ready=true;native.layouts.set('p',createLayout('p',{workspace:{minimized:true}}));return {native,root};}
 function receipt(native,r,ok=true){r.ready=true;r.wc.onSend=(channel,payload)=>{if(channel==='nozeli:flush')queueMicrotask(()=>native.acknowledge(r,{requestId:payload,ok}));};}
+test('display views bind to the registered instance and preserve the losing revision and legacy record',async t=>{
+ const {native,root}=await fixture(t);
+ const key={projectInstanceId:'not-an-instance',ownerKind:'annotation',ownerId:'annotation-with-source',surfaceId:root.windowId};
+ const read=await native.invoke(root,'workspace.displayView.read',{projectId:'p',key});
+ assert.notEqual(read.key.projectInstanceId,key.projectInstanceId);
+ const next={schema:1,revision:0,placement:{mode:'manual',x:130,y:70},size:null,collapsed:false,hidden:false};
+ const legacy={noteOffset:[30,20]};
+ const payload={projectId:'p',key:read.key,expectedRevision:0,next,legacy};
+ const results=await Promise.all([native.invoke(root,'workspace.displayView.write',payload),native.invoke(root,'workspace.displayView.write',{...payload,next:{...next,placement:{mode:'manual',x:200,y:90}}})]);
+ assert.equal(results.filter(result=>result.revision===1).length,1);
+ assert.equal(results.filter(result=>result.conflict===true).length,1);
+ const winner=await native.invoke(root,'workspace.displayView.read',{projectId:'p',key:read.key});
+ assert.deepEqual(results.find(result=>result.conflict).current,winner.state);
+ const record=await native.host.storage.getLocal('p','display-view:'+JSON.stringify(read.key));
+ assert.deepEqual(record.legacy,legacy);
+ await assert.rejects(native.invoke(root,'workspace.displayView.write',{...payload,key:{...key,surfaceId:'foreign'}}),{code:'INVALID_DISPLAY_KEY'});
+ await assert.rejects(native.invoke(root,'workspace.displayView.write',{...payload,expectedRevision:1,next:{...next,placement:{mode:'manual',x:NaN,y:20}}}),{code:'INVALID_DISPLAY_VIEW'});
+ assert.deepEqual((await native.invoke(root,'workspace.displayView.read',{projectId:'p',key:read.key})).state,winner.state);
+ const makeDetached=id=>{const win=new Window();return native.register(win.webContents,{role:'detached',windowId:id,projectId:'p',win});};
+ const left=makeDetached('window-left'),right=makeDetached('window-right'),leftKey={ownerKind:'snapshot',ownerId:'same-frozen-record',surfaceId:left.windowId};
+ await native.invoke(left,'workspace.displayView.write',{projectId:'p',key:leftKey,expectedRevision:0,next});
+ assert.equal((await native.invoke(right,'workspace.displayView.read',{projectId:'p',key:{...leftKey,surfaceId:right.windowId}})).state,null);
+ await assert.rejects(native.invoke(right,'workspace.displayView.read',{projectId:'p',key:leftKey}),{code:'INVALID_DISPLAY_KEY'});
+ assert.deepEqual((await native.invoke(left,'workspace.displayView.read',{projectId:'p',key:leftKey})).state.placement,next.placement);
+});
+test('unknown display schema is retained rather than replaced',async t=>{
+ const {native,root}=await fixture(t),key={projectInstanceId:'p',ownerKind:'review',ownerId:'work-1',surfaceId:root.windowId};
+ const bound=(await native.invoke(root,'workspace.displayView.read',{projectId:'p',key})).key;
+ const original={key:bound,state:{schema:9,revision:4},legacy:{position:[12,90]}};
+ await native.host.storage.putLocal('p','display-view:'+JSON.stringify(bound),original);
+ await assert.rejects(native.invoke(root,'workspace.displayView.write',{projectId:'p',key:bound,expectedRevision:4,next:{schema:1,placement:{mode:'auto'},size:null,collapsed:false,hidden:true}}),{code:'DISPLAY_SCHEMA_UNKNOWN'});
+ assert.deepEqual(await native.host.storage.getLocal('p','display-view:'+JSON.stringify(bound)),original);
+});
 test('shell can inspect another registered project recovery while document surfaces cannot',async t=>{
  const {native,root}=await fixture(t),directory=await mkdtemp(path.join(os.tmpdir(),'cross-recovery-'));t.after(()=>rm(directory,{recursive:true,force:true}));
  const project=await native.host.storage.register(directory);native.host.requireRegisteredProject=id=>native.host.storage.requireRegistered(id);
@@ -86,7 +121,7 @@ for(const failure of ['shell-save','surface-save','attachment','none'])test(`pro
  await native.reconcile(source);const original=[...native.surfaces.values()][0];original.view.setVisible(true);
  native.bootstrap(original);await native.invoke(original,'workspace.document.publish',{projectId:'p',relPath:'unsaved.txt',text:'UNSAVED DOCUMENT',dirty:true});
  const preview=new IsolatedPreviewManager({workspace:native});native.isolatedPreview=preview;
- const guest=new View();guest.setVisible(true);root.win.contentView.addChildView(guest);preview.slots.set('source-guest',{id:'source-guest',scope:original,view:guest,parentWindow:root.win,files:new Map()});
+ const guest=new View();guest.setVisible(true);const sourceGuest=previewSlot(guest,original,root.win,'source-guest');preview.slots.set(sourceGuest.id,sourceGuest);
  const captures=[];
  for(const owner of [root,original]){
   owner.ready=true;owner.wc.onSend=(channel,requestId)=>{
@@ -184,11 +219,11 @@ test('binding rejects stale resident target parents without moving its guest or 
  const targetWin=new Window(),view=new View(),viewId=layout.mainRoot.activeViewId;
  const targetRoot=native.register(targetWin.webContents,{role:'detached',projectId:target.id,windowId:'resident-window',win:targetWin});targetRoot.projectHidden=true;native.windows.set(targetRoot.windowId,targetRoot);
  const resident=native.register(view.webContents,{role:'surface',projectId:target.id,viewId,windowId:targetRoot.windowId,win:targetWin,view});native.surfaces.set(viewId,resident);targetWin.contentView.addChildView(view);view.setVisible(false);
- const preview=new IsolatedPreviewManager({workspace:native});native.isolatedPreview=preview;const guest=new View();targetWin.contentView.addChildView(guest);const slot={id:'resident-guest',scope:resident,view:guest,parentWindow:targetWin,files:new Map()};preview.slots.set(slot.id,slot);
+ const preview=new IsolatedPreviewManager({workspace:native});native.isolatedPreview=preview;const guest=new View(),slot=previewSlot(guest,resident,targetWin,'resident-guest');preview.slots.set(slot.id,slot);
  await assert.rejects(native.bindProject(root,target.id),{code:'SURFACE_LOCATION_CHANGED'});
  assert.equal(root.projectId,'p');assert.equal(native.activeProjectId,'p');assert.equal(sourceSurface.view.visible,true);assert.equal(sourceSurface.dead,false);
  assert.equal(resident.win,targetWin);assert.equal(resident.windowId,'resident-window');assert.equal(resident.view.visible,false);assert.equal(targetRoot.projectHidden,true);assert.equal(targetWin.isDestroyed(),false);
- assert.equal(preview.slots.get(slot.id),slot);assert.equal(slot.parentWindow,targetWin);assert(targetWin.children.includes(guest));assert(targetWin.children.includes(view));
+ assert.equal(preview.slots.get(slot.id),slot);assert.equal(slot.parentWindow,targetWin);assert(targetWin.children.includes(slot.container));assert(targetWin.children.includes(view));
 });
 test('a failed hold send releases every owner already held and preserves source admission',async t=>{
  const {native,root}=await fixture(t);
@@ -295,31 +330,30 @@ for(const failure of ['attachment','persistence'])test(`failed report ${failure}
  native.layouts.set('p',layout);await native.reconcile(layout);
  const surface=[...native.surfaces.values()][0];receipt(native,surface);
  const preview=new IsolatedPreviewManager({workspace:native});native.isolatedPreview=preview;
- const guest=new View();root.win.contentView.addChildView(guest);
- const slot={id:'guest',scope:surface,view:guest,parentWindow:root.win,files:new Map()};preview.slots.set('guest',slot);
- native.detached=async(_layout,item)=>{const r=native.register(new Contents(),{role:'detached',windowId:item.id,projectId:'p',win:new Window()});r.ready=true;native.windows.set(item.id,r);if(failure==='attachment'){const add=r.win.contentView.addChildView;r.win.contentView.addChildView=view=>{if(view===guest)throw Error('controlled guest attachment failure');add(view);};}return r;};
+ const guest=new View(),slot=previewSlot(guest,surface,root.win,'guest');preview.slots.set(slot.id,slot);
+ native.detached=async(_layout,item)=>{const r=native.register(new Contents(),{role:'detached',windowId:item.id,projectId:'p',win:new Window()});r.ready=true;native.windows.set(item.id,r);if(failure==='attachment'){const add=r.win.contentView.addChildView;r.win.contentView.addChildView=view=>{if(view===slot.container)throw Error('controlled guest attachment failure');add(view);};}return r;};
  if(failure==='persistence')native.persist=async()=>{assert.notEqual(slot.parentWindow,root.win,'guest was staged into destination before persistence');throw Error('controlled persistence failure');};
  await assert.rejects(native.command(root,{projectId:'p',expectedRevision:layout.revision,requestKey:'report-transfer-rollback',command:{type:'detach',viewId:surface.viewId}}),/controlled .*failure/);
  assert.equal(native.layouts.get('p'),layout);assert.equal(preview.slots.get('guest'),slot);assert.equal(slot.closed,undefined);
- assert.equal(slot.parentWindow,root.win);assert.equal(surface.win,root.win);assert(root.win.children.includes(guest));assert(root.win.children.includes(surface.view));assert.equal(surface.dead,false);
+ assert.equal(slot.parentWindow,root.win);assert.equal(surface.win,root.win);assert(root.win.children.includes(slot.container));assert(slot.container.children.includes(guest));assert(root.win.children.includes(surface.view));assert.equal(surface.dead,false);
 });
 for(const rollbackFailure of ['source-add','target-remove','outer-source-add'])test(`multi-guest ${rollbackFailure} rollback failure holds native parents and still restores other guests`,async t=>{
  const {native,root}=await fixture(t),layout=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'report',resourceId:'frozen-multi-report'}});
  native.layouts.set('p',layout);await native.reconcile(layout);const surface=[...native.surfaces.values()][0];receipt(native,surface);
  const preview=new IsolatedPreviewManager({workspace:native});native.isolatedPreview=preview;
- const guests=[new View(),new View()],slots=guests.map((view,index)=>{root.win.contentView.addChildView(view);const slot={id:'guest-'+index,scope:surface,view,parentWindow:root.win,files:new Map()};preview.slots.set(slot.id,slot);return slot;});
+ const guests=[new View(),new View()],slots=guests.map((view,index)=>{const slot=previewSlot(view,surface,root.win,'guest-'+index);preview.slots.set(slot.id,slot);return slot;});
  let target;
- native.detached=async(_layout,item)=>{target=native.register(new Contents(),{role:'detached',windowId:item.id,projectId:'p',win:new Window()});target.ready=true;native.windows.set(item.id,target);const add=target.win.contentView.addChildView,remove=target.win.contentView.removeChildView;target.win.contentView.addChildView=view=>{if(rollbackFailure!=='outer-source-add'&&view===guests[1])throw Error('second guest attach fails');add(view);};target.win.contentView.removeChildView=view=>{if(rollbackFailure==='target-remove'&&view===guests[0])throw Error('guest rollback remove fails');remove(view);};return target;};
- const addSource=root.win.contentView.addChildView;root.win.contentView.addChildView=view=>{if(rollbackFailure!=='target-remove'&&view===guests[1])throw Error('guest rollback add fails');addSource(view);};
+ native.detached=async(_layout,item)=>{target=native.register(new Contents(),{role:'detached',windowId:item.id,projectId:'p',win:new Window()});target.ready=true;native.windows.set(item.id,target);const add=target.win.contentView.addChildView,remove=target.win.contentView.removeChildView;target.win.contentView.addChildView=view=>{if(rollbackFailure!=='outer-source-add'&&view===slots[1].container)throw Error('second guest attach fails');add(view);};target.win.contentView.removeChildView=view=>{if(rollbackFailure==='target-remove'&&view===slots[0].container)throw Error('guest rollback remove fails');remove(view);};return target;};
+ const addSource=root.win.contentView.addChildView;root.win.contentView.addChildView=view=>{if(rollbackFailure!=='target-remove'&&view===slots[1].container)throw Error('guest rollback add fails');addSource(view);};
  native.persist=async()=>{if(rollbackFailure==='outer-source-add')throw Error('controlled persistence failure');assert.fail('failed attachment must not commit');};
  await assert.rejects(native.command(root,{projectId:'p',expectedRevision:layout.revision,requestKey:'multi-guest-rollback',command:{type:'detach',viewId:surface.viewId}}),rollbackFailure==='outer-source-add'?/controlled persistence failure/:{code:'PREVIEW_ROLLBACK_FAILED'});
  assert.equal(native.layouts.get('p'),layout);assert.equal(surface.win,root.win);assert(root.win.children.includes(surface.view));
  assert.equal(surface.recoveryHeld,true);assert.equal(surface.held,true);assert.equal(surface.previewRecoveryFailed,true);
  assert.equal(target.win.destroyed,undefined);assert.equal(native.windows.get(target.windowId),target);
  assert.equal(preview.slots.size,2);assert(slots.every(slot=>!slot.closed));
- if(rollbackFailure==='source-add'){assert.equal(slots[0].parentWindow,root.win);assert(root.win.children.includes(guests[0]));assert.equal(slots[1].parentWindow,null);}
- else if(rollbackFailure==='target-remove'){assert.equal(slots[1].parentWindow,root.win);assert(root.win.children.includes(guests[1]));assert.equal(slots[0].parentWindow,target.win);assert(target.win.children.includes(guests[0]));}
- else {for(const slot of slots){assert.equal(slot.parentWindow,target.win);assert(target.win.children.includes(slot.view));}}
+ if(rollbackFailure==='source-add'){assert.equal(slots[0].parentWindow,root.win);assert(root.win.children.includes(slots[0].container));assert.equal(slots[1].parentWindow,null);}
+ else if(rollbackFailure==='target-remove'){assert.equal(slots[1].parentWindow,root.win);assert(root.win.children.includes(slots[1].container));assert.equal(slots[0].parentWindow,target.win);assert(target.win.children.includes(slots[0].container));}
+ else {for(const slot of slots){assert.equal(slot.parentWindow,target.win);assert(target.win.children.includes(slot.container));}}
  assert(preview.holdsWindow(target.win));await native.reconcile(layout);assert.equal(target.win.destroyed,undefined,'later reconciliation must also retain an unconfirmed guest parent');
  await assert.rejects(native.closeWindow(target),{code:'TRANSFER_RECOVERY_REQUIRED'});
  await assert.rejects(native.command(root,{projectId:'p',expectedRevision:layout.revision,requestKey:'must-not-retransfer',command:{type:'detach',viewId:surface.viewId}}),{code:'TRANSFER_RECOVERY_REQUIRED'});
@@ -338,8 +372,8 @@ for(const failure of ['attachment','persistence'])test(`acknowledged pending sta
  const {native,root}=await fixture(t),layout=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'report',resourceId:'pending-state-report'}});
  native.layouts.set('p',layout);await native.reconcile(layout);const surface=[...native.surfaces.values()][0];receipt(native,surface);
  const first={scrollTop:180,readingSelection:'preserve acknowledged selection'};let writes=0;
- const preview=new IsolatedPreviewManager({workspace:native});native.isolatedPreview=preview;const guest=new View();root.win.contentView.addChildView(guest);preview.slots.set('guest',{scope:surface,view:guest,parentWindow:root.win,files:new Map()});
- native.detached=async(_layout,item)=>{const r=native.register(new Contents(),{role:'detached',windowId:item.id,projectId:'p',win:new Window()});r.ready=true;native.windows.set(item.id,r);await native.invoke(surface,'workspace.command',{projectId:'p',command:{type:'restoreViewState',viewId:surface.viewId,viewState:first}});if(failure==='attachment'){const add=r.win.contentView.addChildView;r.win.contentView.addChildView=view=>{if(view===guest)throw Error('controlled attachment failure');add(view);};}return r;};
+ const preview=new IsolatedPreviewManager({workspace:native});native.isolatedPreview=preview;const guest=new View(),slot=previewSlot(guest,surface,root.win,'guest');preview.slots.set(slot.id,slot);
+ native.detached=async(_layout,item)=>{const r=native.register(new Contents(),{role:'detached',windowId:item.id,projectId:'p',win:new Window()});r.ready=true;native.windows.set(item.id,r);await native.invoke(surface,'workspace.command',{projectId:'p',command:{type:'restoreViewState',viewId:surface.viewId,viewState:first}});if(failure==='attachment'){const add=r.win.contentView.addChildView;r.win.contentView.addChildView=view=>{if(view===slot.container)throw Error('controlled attachment failure');add(view);};}return r;};
  native.persist=async()=>{writes++;if(failure==='persistence'&&writes===1)throw Error('controlled persistence failure');};
  await assert.rejects(native.command(root,{projectId:'p',expectedRevision:layout.revision,requestKey:'pending-state-failure',command:{type:'detach',viewId:surface.viewId}}),/controlled .*failure/);
  await surface.pendingStateFlight;

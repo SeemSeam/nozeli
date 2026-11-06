@@ -1,4 +1,5 @@
 import './isolated-surfaces.css';
+import {localWindowOcclusions,subscribeLocalWindowOcclusions} from './local-window.mjs';
 
 const surfaces = new Set();
 const key = () => crypto.randomUUID();
@@ -10,38 +11,39 @@ function surface(parent, {invoke, profile, projectId, objectId, entryPath, onRef
   viewport.className = 'isolated-viewport'; viewport.setAttribute('aria-label', profile === 'staticReport' ? '隔离的静态 HTML 报告' : '隔离的离线网页预览');
   status.className = 'isolated-status'; status.setAttribute('role', 'status');
   parent.append(status, viewport);
-  let generation = 0, acceptedGeneration = 0, opened = false, disposed = false, frame = 0;
+  let generation = 0, acceptedGeneration = 0, opened = false, disposed = false, frame = 0, boundsSequence = 0;
   // The served footer only exists when a host handler consumes its events, so
   // reports opened without onEndMatter never show dead links.
   const endMatterParam = onEndMatter ? (endMatter === 'files' ? 'files' : true) : undefined;
-  const bounds = () => { if(document.hidden || !viewport.isConnected || document.querySelector('dialog[open], .nozeli-context-menu:not([hidden])'))return {x:0,y:0,width:0,height:0};const r = viewport.getBoundingClientRect();
-    // A native child view always paints above renderer DOM, so report the rect
-    // already clipped to every clipping ancestor: a report scrolled out of its
-    // scrollport hands that area back instead of covering host chrome.
+  const bounds = () => {const r=viewport.getBoundingClientRect(),full={x:r.left,y:r.top,width:r.width,height:r.height};if(document.hidden || !viewport.isConnected || document.querySelector('dialog[open], .nozeli-context-menu:not([hidden])'))return {...full,clip:{x:0,y:0,width:0,height:0}};
+    // Preserve the HTML viewport. Ancestors and overlays only change its native
+    // clipping parent; moving a discussion must not reflow the report text.
     let x=r.left,y=r.top,right=r.right,bottom=r.bottom;
     for(let node=viewport.parentElement;node&&node!==document.documentElement&&right>x&&bottom>y;node=node.parentElement){
       const style=getComputedStyle(node),clip=node.getBoundingClientRect();
       if(style.overflowX!=='visible'){x=Math.max(x,clip.left);right=Math.min(right,clip.right);}
       if(style.overflowY!=='visible'){y=Math.max(y,clip.top);bottom=Math.min(bottom,clip.bottom);}
     }
-    // Native previews cannot be covered by DOM. Keep the largest unobstructed
-    // report rectangle beside the nonmodal approval discussion.
-    for(const overlay of document.querySelectorAll('[data-review-discussion]:not([hidden])')){
-      const rect=overlay.getBoundingClientRect();
-      if(rect.right<=x||rect.left>=right||rect.bottom<=y||rect.top>=bottom)continue;
-      const areas=[[x,y,Math.max(x,rect.left),bottom],[Math.min(right,rect.right),y,right,bottom],[x,y,right,Math.max(y,rect.top)],[x,Math.min(bottom,rect.bottom),right,bottom]];
+    // Native previews paint above DOM: expose the largest unobstructed portion
+    // of the unchanged viewport without shrinking its page layout.
+    for(const {rect} of localWindowOcclusions(document)){
+      const ox=rect.x,oy=rect.y,or=ox+rect.width,ob=oy+rect.height;
+      if(or<=x||ox>=right||ob<=y||oy>=bottom)continue;
+      const areas=[[x,y,Math.max(x,ox),bottom],[Math.min(right,or),y,right,bottom],[x,y,right,Math.max(y,oy)],[x,Math.min(bottom,ob),right,bottom]];
       areas.sort((a,b)=>(b[2]-b[0])*(b[3]-b[1])-(a[2]-a[0])*(a[3]-a[1]));
       [x,y,right,bottom]=areas[0];
     }
-    return {x,y,width:Math.max(0,right-x),height:Math.max(0,bottom-y)}; };
-  const layout = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(() => { if(opened && !disposed) void invoke('isolated-preview.bounds',{key:id,bounds:bounds()}); }); };
+    return {...full,clip:{x,y,width:Math.max(0,right-x),height:Math.max(0,bottom-y)}}; };
+  const boundsPayload=(value=bounds())=>({key:id,windowId:window.__workspaceScope?.windowId,surfaceGeneration:window.__workspaceScope?.generation,boundsSequence:++boundsSequence,bounds:value});
+  const layout = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(() => { if(opened && !disposed) void invoke('isolated-preview.bounds',boundsPayload()).then(result=>{if(!result.ok&&!disposed){status.textContent='窗口避让未应用：'+(result.error?.message||'布局更新失败');status.dataset.state='error';}}).catch(error=>{if(!disposed){status.textContent='窗口避让未应用：'+error.message;status.dataset.state='error';}}); }); };
   const syncLayout = async () => {
     cancelAnimationFrame(frame);
     if(disposed||!opened||!isCurrent())throw Error('预览已关闭或来源已变化');
-    const result=await invoke('isolated-preview.bounds',{key:id,bounds:bounds()});
+    const result=await invoke('isolated-preview.bounds',boundsPayload());
     if(disposed||!isCurrent())throw Error('预览已关闭或来源已变化');
     if(!result.ok)throw Error(result.error?.message||'预览区域尚未更新');
   };
+  const stopOcclusion=subscribeLocalWindowOcclusions(document,()=>opened&&!disposed&&isCurrent()?syncLayout():Promise.resolve());
   const observer = new ResizeObserver(layout); observer.observe(viewport);
   window.addEventListener('resize', layout); window.addEventListener('nozeli-layout-change', layout); document.addEventListener('scroll',layout,true);
   document.addEventListener('visibilitychange',layout);
@@ -73,7 +75,7 @@ function surface(parent, {invoke, profile, projectId, objectId, entryPath, onRef
     const save=document.createElement('button');save.type='button';save.textContent='另存完整冻结工件';
     save.onclick=async()=>{save.disabled=true;try{const result=await invoke('isolated-preview.reference.save',{key:id,generation:event.generation,referenceId:event.referenceId});if(!result.ok)throw Error(result.error?.message||'另存失败');if(result.value?.saved)save.textContent='完整工件已另存';}catch(error){status.textContent='冻结工件另存失败：'+error.message;}finally{save.disabled=false;}};
     dialog.append(save);
-    document.body.append(dialog);await invoke('isolated-preview.bounds',{key:id,bounds:{x:0,y:0,width:0,height:0}});const finish=()=>{dialog.close();dialog.remove();layout();};close.onclick=finish;dialog.addEventListener('cancel',event=>{event.preventDefault();finish();});dialog.showModal();
+    document.body.append(dialog);await invoke('isolated-preview.bounds',boundsPayload({x:0,y:0,width:0,height:0}));const finish=()=>{dialog.close();dialog.remove();layout();};close.onclick=finish;dialog.addEventListener('cancel',event=>{event.preventDefault();finish();});dialog.showModal();
     const line=Number(/:(\d+)(?::\d+)?$/.exec(reference.href||'')?.[1]);if(sourceText&&line>0)requestAnimationFrame(()=>{sourceText.scrollTop=(line-1)*parseFloat(getComputedStyle(sourceText).lineHeight);});
   }
   async function refresh(extra = {}) {
@@ -96,6 +98,7 @@ function surface(parent, {invoke, profile, projectId, objectId, entryPath, onRef
   }
   function dispose() {
     if(disposed) return; disposed=true; ++generation; cancelAnimationFrame(frame);observer.disconnect();modals.disconnect();
+    stopOcclusion();
     window.removeEventListener('resize',layout);window.removeEventListener('nozeli-layout-change',layout);document.removeEventListener('scroll',layout,true);unsubscribe?.();
     document.removeEventListener('visibilitychange',layout);
     void invoke('isolated-preview.close',{key:id}); surfaces.delete(api); parent.remove();

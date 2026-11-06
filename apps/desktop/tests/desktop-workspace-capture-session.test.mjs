@@ -22,9 +22,8 @@ function makeView({dip=[100,50],scale=2,hang=null}={}){
   const [w,h]=dip;
   // Electron NativeImage subset production uses: isEmpty() and toPNG(). The PNG
   // IHDR carries the authoritative device-pixel dimensions.
-  const png=()=>{const b=Buffer.alloc(33);PNG_SIG.copy(b,0);b.writeUInt32BE(Math.round(w*scale),16);b.writeUInt32BE(Math.round(h*scale),20);return b;};
-  // Property must be named webContents — that is what production reads.
-  const webContents={id:'wc-view-'+(++wcSeq),isDestroyed:()=>false,capturePage:async()=>{if(hang)await hang.promise;return {isEmpty:()=>false,toPNG:png};}};
+  const png=rect=>{const b=Buffer.alloc(33);PNG_SIG.copy(b,0);b.writeUInt32BE(Math.round((rect?.width??w)*scale),16);b.writeUInt32BE(Math.round((rect?.height??h)*scale),20);return b;};
+  const webContents={id:'wc-view-'+(++wcSeq),isDestroyed:()=>false,capturePage:async rect=>{if(hang)await hang.promise;return {isEmpty:()=>false,toPNG:()=>png(rect)};}};
   return {visible:true,bounds:{x:0,y:0,width:w,height:h},webContents,
     getVisible(){return this.visible;},getBounds(){return this.bounds;}};
 }
@@ -36,7 +35,7 @@ function makeRoot({projectId='p1',windowId='main',views,contentSize=[100,50]}){
 async function makeCapture({root,isolatedPreview=null,attachCalls=[],deliveries=[],timeout=10000}){
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-capture-test-'));
   const workspace={windows:new Map([[root.windowId,root]]),senders:new Map([[root.wc.id,root]]),screen:{getDisplayMatching:()=>({id:42,scaleFactor:2,bounds:{x:0,y:0,width:root.win.getBounds().width,height:root.win.getBounds().height}})},projectRecords:()=>[],layout:async()=>({revision:1}),isolatedPreview};
-  for(const view of root.win.contentView.children)if(view.webContents.senderScope)workspace.senders.set(view.webContents.id,view.webContents.senderScope);
+  for(const view of root.win.contentView.children)if(view.webContents?.senderScope)workspace.senders.set(view.webContents.id,view.webContents.senderScope);
   const host={storage:{async recoveryDirectory(id){return path.join(directory,'recovery',id);}},async attachMaterial(input){attachCalls.push(input);return {digest:'a'.repeat(64),mime:'image/png',size:input.size,kind:'image'};}};
   const capture=new WorkspaceCapture({workspace,host,deliver:async(session,event)=>{deliveries.push({session,event});},prepareTimeoutMs:timeout});
   return {capture,workspace,host,attachCalls,deliveries,directory,
@@ -72,6 +71,18 @@ test('begin freezes the initiating window and describes the full contract',async
   // Re-entry from the same owner generation is idempotent.
   const again=await capture.begin(owner(),{});
   assert.equal(again.captureId,described.captureId);
+});
+
+test('nested report mask captures only the visible slice and retains frozen report provenance',async t=>{
+  const view=makeView();view.bounds={x:-20,y:0,width:100,height:50};
+  const container={children:[view],getVisible:()=>true,getBounds:()=>({x:10,y:5,width:40,height:30})};
+  const scope=surfaceScope(view,{kind:'report',viewId:'report-masked'}),digest='c'.repeat(64);
+  const slot={view,container,scope,profile:'staticReport',entry:'report.html',files:new Map([['report.html',{digest}]]),source:{objectId:'frozen-report'}};
+  const root=makeRoot({views:[container]}),{capture,owner,cleanup}=await makeCapture({root,isolatedPreview:{slots:new Map([['report',slot]])}});t.after(cleanup);
+  const result=await capture.begin(owner(),{}),layer=result.tiles[0].layers[0];
+  assert.deepEqual(layer.bounds,{x:10,y:5,width:40,height:30});
+  const bytes=Buffer.from(layer.dataUrl.split(',')[1],'base64');assert.equal(bytes.readUInt32BE(16),80);assert.equal(bytes.readUInt32BE(20),60);
+  assert.equal(layer.source.identity.resource.objectId,'frozen-report');assert.equal(layer.source.identity.resource.digest,digest);
 });
 
 test('window pre-check rejects an oversized window on device pixels without capturing',async t=>{

@@ -18,10 +18,10 @@ import {sessionMessages} from './session-store.mjs';
  * the session timeline's grouping rule (session-store groupSession): ONE
  * bubble per round requestId, with one keyed markdown segment per message id
  * inside it — never one bubble per message, never merged rounds. */
-export function mountThreadTranscript(transcript,{welcome=null}={}){
+export function mountThreadTranscript(transcript,{welcome=null,scrollContainer=transcript}={}){
   const rows=new Map(),readers=new Set();
   function render(entries){
-    const atTail=transcript.scrollHeight-transcript.clientHeight-transcript.scrollTop<32,scrollTop=transcript.scrollTop;
+    const atTail=scrollContainer.scrollHeight-scrollContainer.clientHeight-scrollContainer.scrollTop<32,scrollTop=scrollContainer.scrollTop;
     const retained=new Set();let position=0;
     const bubble=(key,role,requestId,labelText)=>{
       retained.add(key);let row=rows.get(key);
@@ -42,8 +42,8 @@ export function mountThreadTranscript(transcript,{welcome=null}={}){
      * without disturbing open readers. A read-required segment holds its first
      * shown text like the previous single-bubble renderer did. */
     const reply=(row,messages)=>{
-      const kept=new Set();let slot=1;
-      const seat=node=>{const at=row.node.children[slot];if(at!==node)row.node.insertBefore(node,at||null);slot++;};
+      const host=row.segmentHost||row.node,kept=new Set();let slot=row.segmentHost?0:1;
+      const seat=node=>{const at=host.children[slot];if(at!==node)host.insertBefore(node,at||null);slot++;};
       for(const message of messages){
         const key=String(message.id);kept.add(key);
         let segment=row.segments.get(key);
@@ -58,14 +58,26 @@ export function mountThreadTranscript(transcript,{welcome=null}={}){
       for(const [key,segment]of row.segments)if(!kept.has(key)){if(segment.reader){readers.delete(segment.reader);segment.reader.dispose?.();segment.reader.remove();}segment.node.remove();row.segments.delete(key);}
     };
     entries.forEach((entry,index)=>{
-      const key=entry.requestId||'round-'+index;
+      const key=entry.key||entry.requestId||'round-'+index;
+      if(entry.event){
+        const event=entry.event,row=bubble(key+':event','event',entry.requestId,event.label);
+        row.node.dataset.messageId=event.id;
+        if(event.objectId)row.node.dataset.objectId=event.objectId;
+        text(row,[event.publicationNumber?`V${event.publicationNumber}`:'',event.text].filter(Boolean).join(' · '));
+        return;
+      }
       if(entry.question)text(bubble(key+':question','user',entry.requestId,entry.questionLabel),entry.question);
+      if(entry.processEntries?.length){
+        const row=bubble(key+':process','process',entry.requestId,'执行过程');
+        if(!row.process){const detail=document.createElement('details'),summary=document.createElement('summary'),body=document.createElement('span');body.className='tag-process-body';detail.append(summary,body);row.node.append(detail);row.label.hidden=true;row.process={detail,summary};row.segmentHost=body;}
+        row.process.summary.textContent='执行过程 · '+entry.processEntries.length+' 条记录';reply(row,entry.processEntries);
+      }
       if(entry.replyEntries?.length)reply(bubble(key+':reply','assistant',entry.requestId,entry.replyLabel),entry.replyEntries);
       else if(entry.reply||entry.readReply)reply(bubble(key+':reply','assistant',entry.requestId,entry.replyLabel),[{id:entry.messageId??'reply',text:entry.reply||'',availability:entry.replyAvailability,readReply:entry.readReply}]);
     });
     if(!entries.length&&welcome)text(bubble('welcome','assistant'),welcome);
     for(const [key,row]of rows)if(!retained.has(key)){for(const segment of row.segments.values())if(segment.reader){readers.delete(segment.reader);segment.reader.dispose?.();segment.reader.remove();}row.node.remove();rows.delete(key);}
-    transcript.scrollTop=atTail?transcript.scrollHeight:scrollTop;
+    scrollContainer.scrollTop=atTail?scrollContainer.scrollHeight:scrollTop;
   };
   // Card teardown hook: the owning card's dispose path stops every live
   // original reader (observers, in-flight reads) instead of waiting for GC.

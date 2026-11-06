@@ -27,8 +27,9 @@ export function mountConversationFont({ getSize, setSize, scope, toast, views = 
         { separator: true }, { id: 'chat-font-reset', label: '恢复默认 · 14px' },
     ];
     const tag = surface.matches('.tag-chat-window');
+    const localWindow=surface.localWindow||surface.closest('.local-window')?.localWindow;
     const settings = tag ? [
-      {id:'tag-collapse',label:surface.classList.contains('is-collapsed')?'展开标签':'折叠标签',checked:!surface.classList.contains('is-collapsed')},
+      ...(localWindow?[{id:'tag-collapse',label:localWindow.snapshot().collapsed?'展开标签':'折叠标签',checked:!localWindow.snapshot().collapsed}]:[]),
       ...(surface.closest('.tag-note')&&surface.querySelector('.tag-edit') ? [{id:'tag-edit',label:'编辑备注',enabled:!surface.querySelector('.tag-edit').hidden}] : []),
       ...(surface.querySelector('.tag-remove,.tag-delete')?[{separator:true},{id:'tag-remove',label:surface.querySelector('.tag-remove')?'移除标签，保留对话历史':'删除本地备注…'}]:[]),
     ] : views();
@@ -47,7 +48,8 @@ export function mountConversationFont({ getSize, setSize, scope, toast, views = 
         const next = command === 'chat-font-larger' ? size + 1 : command === 'chat-font-smaller' ? size - 1 : command === 'chat-font-reset' ? 14 : Number(command.slice(10));
         return setSize(Math.min(24, Math.max(11, next)));
       }
-      if (command.startsWith('tag-')) return surface.querySelector(command==='tag-collapse'?'.tag-close':command==='tag-edit'?'.tag-edit':'.tag-remove,.tag-delete')?.click();
+      if (command==='tag-collapse'&&localWindow)return localWindow.collapse(!localWindow.snapshot().collapsed);
+      if (command.startsWith('tag-')) return surface.querySelector(command==='tag-edit'?'.tag-edit':'.tag-remove,.tag-delete')?.click();
       if (command.startsWith('chat-')) return runView(command);
       if (command === 'select-all') { input.focus({ preventScroll: true }); input.select(); return; }
       if (command === 'copy' || command === 'cut') {
@@ -77,7 +79,7 @@ export function mountConversationFont({ getSize, setSize, scope, toast, views = 
   }, true);
   document.addEventListener('click', event => { const trigger=event.target.closest('[data-chat-font],[data-chat-more]'); if(trigger)open(event,false,trigger); });
   const render = () => { for(const button of document.querySelectorAll('[data-chat-font]')) { setFontButton(button,getSize()); button.setAttribute('aria-label','对话字号 · '+getSize()+'px'); } };
-  const observer = new MutationObserver(records => { if(records.some(record=>Array.from(record.addedNodes).some(node=>node.nodeType===1 && (node.matches?.('.note-anchor') || node.querySelector?.('[data-chat-font]')))))render(); });
+  const observer = new MutationObserver(records => { if(records.some(record=>Array.from(record.addedNodes).some(node=>node.nodeType===1 && (node.matches?.('.note-anchor,.local-window') || node.querySelector?.('[data-chat-font]')))))render(); });
   observer.observe(document.body,{childList:true,subtree:true});
   render();
   return { close: () => menu.close(), render }; 

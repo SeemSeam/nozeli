@@ -120,8 +120,8 @@ export function renderWorkProgress({document,progress,onOpenReport=null,onOpenFi
     return node;
   };
 
+  // 外层弹窗已带“保留进展”标题；这里不再重复标题，只保留状态与摘要。
   const header=make('header','managed-work-progress-header');
-  header.append(make('h3','managed-work-progress-title','保留的进展'));
   header.append(make('p','managed-work-progress-status',(progress.work?.statusLabel||'状态待确认')+(progress.work?.readOnly?' · 历史只读':'')));
   header.append(make('p','managed-work-progress-summary',progress.next?.summary||''));
   root.append(header);
@@ -154,9 +154,7 @@ export function renderWorkProgress({document,progress,onOpenReport=null,onOpenFi
     nowActions.append(fileButton);
   }
   if(focus?.files&&focus.files.total>3)nowActions.append(make('span','managed-work-progress-note','其余文件见下方“已保留的报告”'));
-  const copyTarget=supplements.find(supplement=>supplement.kind==='failed')||supplements[0]||null;
-  if(copyTarget?.text)nowActions.append(copyButton('复制补充原文',copyTarget.text,'补充原文','supplement:'+copyTarget.jobId));
-  if(progress.request?.text)nowActions.append(copyButton('复制原始请求',progress.request.text,'原始请求','request'));
+  // 复制按钮只保留原文所在区块内的一份，首屏动作区不重复。
   if(typeof onReturnReading==='function'){
     const back=actionButton('返回阅读',()=>onReturnReading());
     back.setAttribute('data-progress-return-reading','');

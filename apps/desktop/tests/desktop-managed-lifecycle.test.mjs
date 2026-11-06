@@ -117,7 +117,6 @@ try {
   await send('LIGHT hello');await wait(s=>s.jobs[0]?.status==='completed'&&!s.busyTargets.length);assert.equal((await state()).works.length,0);report.checks.push('light question stays frontdesk');
   const copyText='Copy full plain text\n\n| column | 中文 |\n| --- | --- |\n| value | 𝛼 😀 |\n\n'+('unabridged clipboard content\n'.repeat(300));
   await send('LIGHT '+copyText);await wait(s=>s.jobs.at(-1)?.status==='completed'&&!s.busyTargets.length);
-  if(await page.$eval('#conversation-panel',node=>node.classList.contains('compact-composer')))await page.click('#chat-history-toggle');
   await page.waitForFunction(()=>[...document.querySelectorAll('[data-managed-message].agent-message-user')].some(node=>node.textContent.includes('unabridged clipboard content')&&node.querySelector('[data-message-copy]')));
   const copyId=await page.$$eval('[data-managed-message].agent-message-user',nodes=>nodes.find(node=>node.textContent.includes('unabridged clipboard content'))?.dataset.managedMessage);
   assert(copyId,'submitted full text must render a copy action');

@@ -1,4 +1,5 @@
 import './settings-panel.css';
+import './management-presentation.css';
 import {setIconButton} from './ui-icons.mjs';
 import {mountProviderSettings} from './provider-settings.mjs';
 import {mountAppearanceSettings} from './settings-appearance.mjs';
@@ -22,7 +23,7 @@ export function mountSettingsPanel({invoke,onInitialize,getProjectId=()=>null}) 
   const provider=mountProviderSettings({invoke,providers:$('settings-provider'),models:$('settings-models')});
   const projectSettings=mountProjectSettings({invoke,getProjectId});
   let selected='settings-appearance';
-  const display=$('settings-reading-display');display.innerHTML='<h3>阅读显示 · 所有项目共享</h3><label><input type="checkbox" data-authorship-visible>显示修改者</label><p>影响支持来源标记的文本与 Word，不改变文档内容。</p><p role="status"></p>';
+  const display=$('settings-reading-display');display.innerHTML='<h3>阅读显示</h3><label><input type="checkbox" data-authorship-visible>显示修改者</label><p>影响支持来源标记的文本与 Word，不改变文档内容。</p><p role="status"></p>';
   const authorship=display.querySelector('input'),displayStatus=display.querySelector('[role="status"]');
   let authorshipRequest=0;authorship.disabled=true;
   authorship.onchange=async()=>{const request=++authorshipRequest;authorship.disabled=true;displayStatus.textContent='正在保存…';try{const result=await invoke('view.authorship',{visible:authorship.checked});if(request!==authorshipRequest)return;displayStatus.textContent=result.ok?'已保存，所有窗口生效。':result.error.message;}catch(error){if(request===authorshipRequest)displayStatus.textContent=error.message;}finally{if(request===authorshipRequest)authorship.disabled=false;}};

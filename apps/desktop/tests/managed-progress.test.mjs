@@ -21,3 +21,6 @@ test('completed current review outranks historical worker failures without chang
  s.todos=[{id:'t4',workId:'w',kind:'result',objectId:'r4',revision:4,status:'open'}];const before=structuredClone(s);
  const progress=managedProgress(s,'w');assert.equal(progress.works[0].status,'review');assert.match(progress.works[0].text,/等待结果审查/);assert.equal(progress.requests.length,0);assert.deepEqual(s,before);
 });
+test('missing capacity is unconfirmed rather than fabricated as zero or undefined',()=>{
+ const s=state();delete s.limit;delete s.quotaUsed;const result=managedProgress(s);assert.match(result.summary,/未确认/);assert.doesNotMatch(result.summary,/undefined|0\/0|新任务将排队/);assert.equal(result.works.find(w=>w.id==='c').status,'queued');
+});

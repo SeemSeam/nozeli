@@ -178,7 +178,7 @@ function appendReportEndMatter(text,slot){
 }
 
 export class IsolatedPreviewManager{
-  constructor({WebContentsView,session,workspace,host,managedAgents,dialog}){Object.assign(this,{WebContentsView,session,workspace,host,managedAgents,dialog});this.slots=new Map();this.pending=new Map();this.generations=new Map();this.recoveryScopes=new Set();}
+  constructor({View,WebContentsView,session,workspace,host,managedAgents,dialog}){Object.assign(this,{View,WebContentsView,session,workspace,host,managedAgents,dialog});this.slots=new Map();this.pending=new Map();this.generations=new Map();this.recoveryScopes=new Set();}
   id(scope,key){if(typeof key!=='string'||key.length<1||key.length>256||/[\x00-\x1f\x7f]/.test(key))throw fail('预览身份无效。');return `${scope.wc.id}:${key}`;}
   emit(slot,type,detail={}){if(slot.closed||slot.scope.dead||slot.scope.wc.isDestroyed())return;slot.scope.wc.send('nozeli:isolated-preview',{key:slot.key,generation:slot.generation,type,...detail});}
   closeScope(scope){for(const slot of new Set([...this.slots.values(),...this.pending.values()]))if(slot.scope===scope)this.close(slot);this.recoveryScopes.delete(scope);for(const key of this.generations.keys())if(key.startsWith(scope.wc.id+':'))this.generations.set(key,this.generations.get(key)+1);}
@@ -190,9 +190,9 @@ export class IsolatedPreviewManager{
         if (slot.scope !== scope || slot.closed || !slot.view || !slot.parentWindow || slot.parentWindow===destination) continue;
         const entry = {slot, source:slot.parentWindow};
         moved.push(entry);
-        slot.view.setVisible(false);
-        entry.source.contentView.removeChildView(slot.view);slot.parentWindow=null;
-        destination.contentView.addChildView(slot.view);slot.parentWindow=destination;
+        slot.view.setVisible(false);slot.container.setVisible(false);
+        entry.source.contentView.removeChildView(slot.container);slot.parentWindow=null;
+        destination.contentView.addChildView(slot.container);slot.parentWindow=destination;
       }
       scope.previewWindow=destination;
     } catch (error) {
@@ -200,8 +200,8 @@ export class IsolatedPreviewManager{
       for (const entry of moved.reverse()) {
         try {
           if(entry.slot.parentWindow===entry.source)continue;
-          if(entry.slot.parentWindow){entry.slot.parentWindow.contentView.removeChildView(entry.slot.view);entry.slot.parentWindow=null;}
-          entry.source.contentView.addChildView(entry.slot.view);entry.slot.parentWindow=entry.source;
+          if(entry.slot.parentWindow){entry.slot.parentWindow.contentView.removeChildView(entry.slot.container);entry.slot.parentWindow=null;}
+          entry.source.contentView.addChildView(entry.slot.container);entry.slot.parentWindow=entry.source;
         } catch (rollbackError) {
           failures.push(rollbackError);
         }
@@ -216,17 +216,23 @@ export class IsolatedPreviewManager{
   close(slot){
     if(slot.closed)return;slot.closed=true;slot.cancel?.(fail('预览请求已取消。'));
     if(this.slots.get(slot.id)===slot)this.slots.delete(slot.id);if(this.pending.get(slot.id)===slot)this.pending.delete(slot.id);
-    if(slot.view){try{(slot.parentWindow??slot.scope.previewWindow??slot.scope.win).contentView.removeChildView(slot.view);}catch{}const wc=slot.view.webContents;if(!wc.isDestroyed())wc.close({waitForBeforeUnload:false});}
+    if(slot.container){try{slot.parentWindow?.contentView.removeChildView(slot.container);if(slot.view)slot.container.removeChildView(slot.view);}catch{}}
+    if(slot.view){const wc=slot.view.webContents;if(!wc.isDestroyed())wc.close({waitForBeforeUnload:false});}
     if(slot.protocolHandled)slot.session.protocol.unhandle('https');slot.files.clear();
   }
   bounds(slot,bounds){
-    if(!bounds||!['x','y','width','height'].every(k=>Number.isFinite(bounds[k])))throw fail('预览区域无效。');
-    // Retain the renderer's requested rectangle, not the temporary clipping
-    // against a hidden/initially zero-sized owner. Native layout reuses it.
-    slot.bounds={x:bounds.x,y:bounds.y,width:bounds.width,height:bounds.height};
+    const rectangle=value=>value&&['x','y','width','height'].every(key=>Number.isFinite(value[key]));
+    if(!rectangle(bounds)||bounds.clip!==undefined&&!rectangle(bounds.clip))throw fail('预览区域无效。');
+    slot.bounds={x:bounds.x,y:bounds.y,width:bounds.width,height:bounds.height,...(bounds.clip?{clip:{...bounds.clip}}:{})};
     const parent=slot.scope.role==='surface'?slot.scope.view.getBounds():{x:0,y:0,width:slot.scope.win.getContentSize()[0],height:slot.scope.win.getContentSize()[1]};
-    const x=Math.max(0,Math.round(bounds.x)),y=Math.max(0,Math.round(bounds.y)),width=Math.max(0,Math.min(Math.round(bounds.x+bounds.width),parent.width)-x),height=Math.max(0,Math.min(Math.round(bounds.y+bounds.height),parent.height)-y);
-    applyViewGeometry(slot.view,{x:parent.x+x,y:parent.y+y,width,height},!slot.scope.transferring&&!slot.scope.previewRecoveryFailed&&width>0&&height>0&&(slot.scope.role!=='surface'||slot.scope.view.getVisible()));
+    const [windowWidth,windowHeight]=(slot.parentWindow??slot.scope.previewWindow??slot.scope.win).getContentSize();
+    const full={x:Math.round(bounds.x),y:Math.round(bounds.y),width:Math.max(0,Math.min(Math.round(bounds.width),windowWidth)),height:Math.max(0,Math.min(Math.round(bounds.height),windowHeight))},clip=bounds.clip??bounds;
+    const x=Math.max(0,full.x,Math.round(clip.x)),y=Math.max(0,full.y,Math.round(clip.y)),width=Math.max(0,Math.min(full.x+full.width,Math.round(clip.x+clip.width),parent.width)-x),height=Math.max(0,Math.min(full.y+full.height,Math.round(clip.y+clip.height),parent.height)-y);
+    const visible=!slot.scope.transferring&&!slot.scope.previewRecoveryFailed&&width>0&&height>0&&(slot.scope.role!=='surface'||slot.scope.view.getVisible());
+    // The parent clips; the actual HTML viewport keeps its full reading width.
+    // A negative child offset preserves page coordinates while the mask moves.
+    if(full.width>0&&full.height>0)applyViewGeometry(slot.view,{x:full.x-x,y:full.y-y,width:full.width,height:full.height},visible);else slot.view.setVisible(false);
+    applyViewGeometry(slot.container,{x:parent.x+x,y:parent.y+y,width,height},visible);
   }
   snapshot(slot){const unsaved=[...slot.files.values()].some(f=>f.dirty);return {key:slot.key,generation:slot.generation,profile:slot.profile,projectId:slot.projectId,entryPath:slot.entry,origin:slot.origin,files:[...slot.files].map(([path,f])=>({path,digest:f.digest,version:f.version,dirty:f.dirty})),dirty:unsaved,unsaved};}
   // Enum-only appearance injection for live static reports: values come from the
@@ -253,7 +259,16 @@ export class IsolatedPreviewManager{
     if(op==='isolated-preview.close'){this.generations.set(id,(this.generations.get(id)||0)+1);const pending=this.pending.get(id);if(pending)this.close(pending);if(old)this.close(old);return {closed:true};}
     if(!['isolated-preview.open','isolated-preview.update'].includes(op)){
       if(!old||p.generation!==undefined&&p.generation!==old.generation)throw fail('预览版本已失效。');
-      if(op==='isolated-preview.bounds'){this.bounds(old,p.bounds);return {updated:true};}
+      if(op==='isolated-preview.bounds'){
+        const epoch=String(scope.generation??0)+':'+String(scope.windowId??'main');
+        if(p.windowId!==undefined&&p.windowId!==scope.windowId||p.surfaceGeneration!==undefined&&p.surfaceGeneration!==scope.generation)return {updated:false,stale:true};
+        if(p.boundsSequence!==undefined){
+          if(!Number.isSafeInteger(p.boundsSequence)||p.boundsSequence<1)throw fail('预览布局序号无效。');
+          if(old.boundsEpoch===epoch&&p.boundsSequence<=old.boundsSequence)return {updated:false,stale:true,boundsSequence:old.boundsSequence};
+        }
+        this.bounds(old,p.bounds);old.boundsEpoch=epoch;old.boundsSequence=p.boundsSequence??0;
+        return {updated:true,applied:true,windowId:scope.windowId,surfaceGeneration:scope.generation,boundsSequence:old.boundsSequence};
+      }
       if(op==='isolated-preview.focus'){if(old.closed||old.scope.dead||!old.view.getVisible?.())throw fail('报告当前不可聚焦。');old.view.webContents.focus();return {focused:true};}
       if(op==='isolated-preview.snapshot')return this.snapshot(old);
       if(op==='isolated-preview.reference.save'){
@@ -328,6 +343,7 @@ export class IsolatedPreviewManager{
       });
       slot.protocolHandled=true;
         slot.view=new this.WebContentsView({webPreferences:{session:ses,javascript:p.profile==='offlineDevelopment',nodeIntegration:false,nodeIntegrationInWorker:false,nodeIntegrationInSubFrames:false,contextIsolation:true,sandbox:true,webSecurity:true,allowRunningInsecureContent:false,webviewTag:false,disableDialogs:true,safeDialogs:true,devTools:false,navigateOnDragDrop:false}});
+        slot.container=new this.View();slot.container.setBorderRadius(0);slot.container.addChildView(slot.view);
         const wc=slot.view.webContents;wc.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');wc.setWindowOpenHandler(()=>({action:'deny'}));wc.on('will-attach-webview',e=>e.preventDefault());wc.on('will-redirect',e=>e.preventDefault());
         // Static reports follow the app theme natively: nativeTheme.themeSource
         // drives prefers-color-scheme and the host baseline declares
@@ -339,7 +355,7 @@ export class IsolatedPreviewManager{
           if(slot.endBase&&target?.startsWith(slot.endBase)){const action=target.slice(slot.endBase.length);if(action==='review'&&slot.endMatter==='review')this.emit(slot,'end-matter',{action:'review'});else{const file=/^file\/(\d{1,4})$/.exec(action),relPath=file?slot.endFiles[Number(file[1])]:null;if(relPath)this.emit(slot,'end-matter',{action:'file',relPath});}}}};
         wc.on('will-navigate',navigation);wc.on('will-frame-navigate',(event,url,_inPlace,legacyMainFrame)=>{const mainFrame=event.isMainFrame??legacyMainFrame;if(!mainFrame)event.preventDefault();else navigation(event,url??event.url);});
         wc.on('console-message',(_event,details,...legacy)=>this.emit(slot,'console',{level:details?.level??details,message:String(details?.message??legacy[0]??'').slice(0,2000)}));wc.on('render-process-gone',(_e,details)=>this.emit(slot,'error',{message:'预览进程已退出：'+details.reason}));wc.on('unresponsive',()=>this.emit(slot,'error',{message:'预览无响应；可关闭或刷新，编辑缓冲保留。'}));
-        await cancellable(wc.loadURL(origin+'/'+slot.entry.split('/').map(encodeURIComponent).join('/')));if(!alive()||slot.closed)throw fail('预览请求已过期。');slot.parentWindow=scope.previewWindow??scope.win;slot.parentWindow.contentView.addChildView(slot.view);this.bounds(slot,p.bounds??old?.bounds??{x:0,y:0,width:0,height:0});this.workspace.demoControls?.raise();this.pending.delete(id);this.slots.set(id,slot);if(old)this.close(old);this.emit(slot,'ready',this.snapshot(slot));return this.snapshot(slot);
+        await cancellable(wc.loadURL(origin+'/'+slot.entry.split('/').map(encodeURIComponent).join('/')));if(!alive()||slot.closed)throw fail('预览请求已过期。');slot.parentWindow=scope.previewWindow??scope.win;slot.parentWindow.contentView.addChildView(slot.container);this.bounds(slot,p.bounds??old?.bounds??{x:0,y:0,width:0,height:0});this.workspace.demoControls?.raise();this.pending.delete(id);this.slots.set(id,slot);if(old)this.close(old);this.emit(slot,'ready',this.snapshot(slot));return this.snapshot(slot);
       }catch(error){this.close(slot);throw error;}
     }catch(error){if(alive())scope.wc.send('nozeli:isolated-preview',{key:p.key,generation,type:'error',message:error.message,previousPreserved:!!old});throw error;}
   }

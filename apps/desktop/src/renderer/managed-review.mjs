@@ -1,7 +1,11 @@
+import './local-window.css';
 import {createReviewDraft} from './managed-review-draft.mjs';
 import {reviewVersionAvailable,reviewStaleMessage,reviewReportOutdated} from './managed-review-availability.mjs';
 import {mountReviewFiles} from './managed-review-files.mjs';
 import {mountThreadTranscript} from './discussion-thread.mjs';
+import {projectReviewConversation} from '../domain/review-conversation.mjs';
+import {mountLocalWindow,ensureLocalWindowLayer,viewportWindowEnvironment} from './local-window.mjs';
+import {createLocalWindowView} from './local-window-view.mjs';
 
 const discussionReasons={WORK_ENDED:'工作已结束',HISTORICAL_SESSION_READ_ONLY:'历史会话只读',REVIEW_CANDIDATE_STALE:'当前显示旧报告，请查看最新报告',REVIEW_CONTINUE_PENDING:'人工稿正在交回AI助手核对',WORK_BUSY:'工作处理中，请等待当前回合',WORK_STATE:'当前工作状态不可发送',WORK_DEVIATION_HELD:'工作偏离问题尚待处理',RECOVERY_REQUIRED:'原会话需要恢复',WORK_CONTROL_HELD:'工作已暂停或正在控制操作',CANDIDATE_REQUIRED:'冻结候选尚不可用'};
 const surfaces=new Set();
@@ -41,64 +45,49 @@ export function mountManagedReview(parent,{invoke,projectId,workId,objectId,work
  const status=node('p','managed-review-status');status.dataset.reviewStatus='';status.setAttribute('role','status');
  const warning=node('p','managed-review-warning');warning.dataset.reviewWarning='';warning.setAttribute('role','alert');
  const button=(text,key,action)=>{const el=node('button','',text);el.type='button';el.dataset.reviewAction=key;el.onclick=()=>Promise.resolve().then(action).catch(fail);return el;};
- const reopen=button('讨论修改','open-discussion',()=>show());
+ const reopen=button('审核讨论','open-discussion',()=>show());reopen.setAttribute('aria-expanded','false');
  const latest=button('查看最新报告','latest',()=>onOpenLatest?.());latest.hidden=true;
- heading.append(title,status,reopen,latest);
+ heading.append(title,status,latest);
  const outdated=node('p','managed-review-warning');outdated.dataset.reviewReportOutdated='';outdated.hidden=true;root.append(outdated);
  const versions=node('details','managed-review-versions');versions.dataset.reviewVersions='';versions.append(node('summary','','版本与审核状态'));
  const versionText=node('p');versions.append(versionText);
- const originalDetails=node('details'),originalLabel=node('summary','','原始任务安排与发布身份');
- const originalText=node('pre');originalDetails.append(originalLabel,originalText);versions.append(originalDetails);
- const files=node('div','managed-review-files');files.setAttribute('role','group');files.setAttribute('aria-label','成果文件与版本差异');
- const fileDetail=node('details','managed-review-file-section'),fileHeading=node('summary','','成果文件与差异');fileHeading.dataset.reviewFileHeading='';fileDetail.append(fileHeading,files);
- root.append(heading,warning,versions,fileDetail);parent.append(root);
- const floating=node('section','note-card managed-review-discussion');floating.dataset.reviewDiscussion='';floating.setAttribute('role','region');floating.setAttribute('aria-label',taskName+' · 讨论修改');
- const head=node('header','tag-head');head.tabIndex=0;head.setAttribute('aria-label','讨论修改窗口；方向键移动');
- const caption=node('span','tag-window-title',taskName+' · 讨论修改');caption.title=caption.textContent;
- const close=button('收起','hide-discussion',()=>hide());close.className='tag-close';head.append(caption,close);
- const layoutButton=button('自由摆放','discussion-layout',()=>{freeLayout=!freeLayout;syncReadingLayout();});
- layoutButton.title='默认保留阅读空间；也可自由拖动和调整讨论窗';head.insertBefore(layoutButton,close);
- const latestChat=button('查看最新报告','latest-discussion',()=>onOpenLatest?.());latestChat.hidden=true;head.insertBefore(latestChat,close);
+ const actions=node('div','managed-review-actions');
+ const files=node('div','managed-review-files');files.setAttribute('role','group');files.setAttribute('aria-label','成果文件');
+ const fileDetail=node('section','managed-review-file-section');fileDetail.dataset.reviewFilesPanel='';fileDetail.hidden=true;fileDetail.append(files);
+ const diffFiles=node('div','managed-review-files');
+ const diffDetail=node('section','managed-review-file-section');diffDetail.dataset.reviewDiffPanel='';diffDetail.hidden=true;diffDetail.append(node('p','','输入冻结基线 → 发布冻结候选，不含人工稿。请选择具体文件；二进制文件查看版本信息。'),diffFiles);
+ const toggleDetail=(detail,trigger)=>{const opening=detail.hidden;fileDetail.hidden=diffDetail.hidden=true;filesButton.setAttribute('aria-expanded','false');diffButton.setAttribute('aria-expanded','false');detail.hidden=!opening;trigger.setAttribute('aria-expanded',String(opening));};
+ const filesButton=button('成果文件 0','files',()=>toggleDetail(fileDetail,filesButton));filesButton.setAttribute('aria-expanded','false');
+ const diffButton=button('交付物Diff','deliverable-diff',()=>toggleDetail(diffDetail,diffButton));diffButton.setAttribute('aria-expanded','false');
+ root.append(heading,warning,versions,actions,fileDetail,diffDetail);parent.append(root);
+ // The Work discussion is a shared local-window floating body: geometry, drag,
+ // keyboard, collapse and view persistence live in local-window.mjs; this
+ // module keeps transcript, draft, queue and receipt business only.
+ const discussionBody=node('div','note-projection tag-chat-window managed-review-discussion');
+ const caption=node('span','tag-window-title',taskName+' · 审核讨论');caption.title=caption.textContent;
+ const latestChat=button('查看最新报告','latest-discussion',()=>onOpenLatest?.());latestChat.hidden=true;latestChat.className='managed-review-latest';
  const queue=node('p','tag-delivery');queue.setAttribute('role','status');queue.dataset.reviewQueue='';
  // U3-02：当前状态区。历史消息（如“系统已接管…无需重复提交”）不改写；
  // 这里按真实的 canSend/canAccept 补一条当前的暂停/不可继续说明。
  const currentState=node('p','managed-review-current-state');currentState.setAttribute('role','status');currentState.dataset.reviewCurrentState='';currentState.hidden=true;
  const transcript=node('div','tag-transcript');transcript.setAttribute('role','log');transcript.setAttribute('aria-label','原始工作上下文与AI助手对话');
- transcript.dataset.reviewDiscussionHistory='';
  const more=button('加载更多原始记录','history-more',()=>loadDiscussion(true));more.hidden=true;
+ const context=node('details','managed-review-context');context.dataset.reviewContext='';context.append(node('summary','','原始任务与主控交接'));
+ const contextText=node('pre');context.append(contextText);
+ const history=node('div','managed-review-history tag-transcript');history.dataset.reviewDiscussionHistory='';history.append(context,transcript,more);transcript.className='managed-review-rounds';
  const composer=node('div','tag-composer');
  const instruction=node('textarea','tag-editor');instruction.rows=2;instruction.maxLength=8000;instruction.dataset.reviewInstruction='';instruction.setAttribute('aria-label','给AI助手的问题或修改要求');instruction.placeholder='询问或提出修改；仅发送时交给AI助手';
  const send=button('发送','send',sendDiscussion);send.className='tag-send';
  const accept=button('采用并结束','accept',acceptReview);accept.className='tag-execute';accept.title='将当前文件应用到项目，后台处理完成后结束工作';
  const instructionStatus=node('p','managed-review-instruction-status');instructionStatus.setAttribute('role','status');instructionStatus.dataset.reviewInstructionStatus='';
  const retry=button('重试保存','retry-instruction',async()=>{if(draft)await draft.retry();else {instructionReady=loadInstruction();await instructionReady;}});retry.hidden=true;
- composer.append(instruction,send,accept);floating.append(head,queue,currentState,transcript,more,composer,instructionStatus,retry);root.append(floating);
- const closingHint=node('p','managed-review-instruction-status','采用当前文件并应用到项目，后台处理完成后结束工作。');floating.append(closingHint);
- const renderThread=mountThreadTranscript(transcript);
+ composer.append(instruction,send);discussionBody.append(latestChat,queue,history,composer,instructionStatus,retry);discussionBody.hidden=true;root.insertBefore(currentState,versions);root.append(discussionBody);
+ actions.append(filesButton,diffButton,reopen,accept);
+ const renderThread=mountThreadTranscript(transcript,{scrollContainer:history});
  const fileList=mountReviewFiles(files,{openFile:async file=>{await saveAll();return onOpenFile?.(file,{workId,objectId});},openMaterial:async file=>{await saveAll();return onOpenMaterial?.(file,{workId,objectId});},onError:fail});
+ const diffList=mountReviewFiles(diffFiles,{openFile:async file=>{await saveAll();return onOpenFile?.(file,{workId,objectId});},onError:fail});
  let data=null,discussion=null,draft=null,disposed=false,busy=false,held=false,composing=false,timer=null,observing=false,observeAgain=false,readGeneration=0,discussionGeneration=0,loadingHistory=false;
- let entries=new Map(),cursor=null,tailCursor=null,hidden=false,position=null,drag=null;
- const readingPane=parent.closest?.('#managed-doc')||parent;
- let freeLayout=false;
- function syncReadingLayout(){
-  if(disposed||typeof readingPane.getBoundingClientRect!=='function')return;
-  const rect=readingPane.getBoundingClientRect();
-  const mode=freeLayout?'floating':rect.width>=760?'aside':'stack';
-  root.dataset.reviewLayout=mode;
-  layoutButton.textContent=freeLayout?'恢复并读':'自由摆放';
-  layoutButton.setAttribute('aria-pressed',String(freeLayout));
-  if(mode==='aside'){
-   const width=Math.min(360,Math.max(300,Math.round(rect.width*.32)));
-   readingPane.style.setProperty('--review-side-width',width+'px');
-   root.style.setProperty('--review-side-width',width+'px');
-   root.style.setProperty('--review-side-left',Math.max(8,rect.right-width-8)+'px');
-   root.style.setProperty('--review-side-top',Math.max(8,rect.top+8)+'px');
-   root.style.setProperty('--review-side-height',Math.max(220,rect.height-16)+'px');
-  }else if(mode==='stack')root.style.setProperty('--review-stack-height',Math.max(190,Math.min(280,Math.round(rect.height*.42)))+'px');
-  if(freeLayout&&position)place(...position);
-  window.dispatchEvent?.(new Event('nozeli-layout-change'));
- }
- const readingObserver=new ResizeObserver(syncReadingLayout);readingObserver.observe(readingPane);
+ let entries=new Map(),cursor=null,tailCursor=null,retainedView=null,reviewWindow=null,reviewWindowReady=null;
  let accepted=false;
  const idleWaiters=new Set();
  const pendingKey='nozeli:review-discussion-send:'+projectId+':'+workId;
@@ -114,8 +103,48 @@ export function mountManagedReview(parent,{invoke,projectId,workId,objectId,work
  const live=()=>!disposed&&current();
  async function call(method,args={}){const result=await invoke('managed.review.'+method,{projectId,workId,objectId,...args});if(!result.ok)throw Object.assign(Error(result.error?.message||'审核请求失败'),{code:result.error?.code});return result.value;}
  function fail(error){if(live()){warning.textContent=error.message+'；原报告和未发送意见保留。';paint();}}
- function show(){hidden=false;floating.hidden=!live();reopen.setAttribute('aria-expanded','true');syncReadingLayout();}
- function hide(){hidden=true;floating.hidden=true;reopen.setAttribute('aria-expanded','false');syncReadingLayout();if(floating.contains(document.activeElement))reopen.focus({preventScroll:true});}
+ // Lazy shell mount: the window is created on first show so an unopened review
+ // costs no display-view read; cold restore stays hidden per contract. The
+ // same body node keeps transcript, draft and selection identity across
+ // show/hide/collapse — only geometry ever changes.
+ function ensureDiscussionWindow(){
+  if(reviewWindow)return reviewWindowReady;
+  const layer=ensureLocalWindowLayer();
+  const windowKey={projectId,ownerKind:'review',ownerId:workId,surfaceId:window.__workspaceScope?.viewId||window.__workspaceScope?.windowId||window.__workspaceScope?.role||'shell'};
+  const initial={schema:1,revision:0,placement:{mode:'auto'},size:null,collapsed:false,hidden:true};
+  const store=createLocalWindowView({invoke,key:windowKey,initial});
+  reviewWindowReady=(async()=>{
+   let state=initial;
+   try{state=await store.load();}catch(error){fail(error);}
+   if(disposed)return null;
+   const win=mountLocalWindow({layer,key:windowKey,title:caption,body:discussionBody,state,environment:viewportWindowEnvironment(layer,{defaultRect:()=>{const width=Math.min(420,Math.max(220,window.innerWidth-24)),height=Math.min(480,Math.max(160,window.innerHeight-24));return {x:Math.max(12,window.innerWidth-width-12),y:Math.max(12,window.innerHeight-height-12),width,height};},epoch:()=>0}),commitView:store.commitView,beforeHide:()=>{retainedView={scrollTop:history.scrollTop,text:instruction.value,start:instruction.selectionStart,end:instruction.selectionEnd};},onError:fail});
+   win.node.setAttribute('data-review-discussion','');
+   win.node.setAttribute('role','region');
+   win.node.setAttribute('aria-label',caption.textContent);
+   discussionBody.localWindow=win;win.node.localWindow=win;
+   discussionBody.hidden=false;
+   reviewWindow=win;
+   return win;
+  })();
+  return reviewWindowReady;
+ }
+ async function show(){
+  let win=null;
+  try{win=await ensureDiscussionWindow();}catch(error){fail(error);}
+  if(!live()||!win)return;
+  reopen.setAttribute('aria-expanded','true');
+  await win.show(reopen).catch(fail);
+  history.scrollTop=retainedView?retainedView.scrollTop:history.scrollHeight;
+  if(retainedView&&!composing&&instruction.value===retainedView.text)instruction.setSelectionRange(retainedView.start,retainedView.end);
+  win.header.focus({preventScroll:true});
+ }
+ function hide(){
+  reopen.setAttribute('aria-expanded','false');
+  const win=reviewWindow;
+  if(!win)return;
+  // Composing or a failed view persist keeps the window open with its input.
+  void win.hide().catch(()=>reopen.setAttribute('aria-expanded','true'));
+ }
  function paint(){
   const state=draft?.snapshot(),unavailable=!reviewVersionAvailable(data);
   const differentLatest=Boolean(discussion?.latestObjectId&&discussion.latestObjectId!==objectId);
@@ -127,9 +156,10 @@ export function mountManagedReview(parent,{invoke,projectId,workId,objectId,work
   instruction.disabled=(!draft||busy||held)&&!composing;instruction.readOnly=Boolean(pendingSend||historical||closed||unavailable||discussion&&!discussion.canSend)&&!composing;
   latest.hidden=latestChat.hidden=!differentLatest||!onOpenLatest;
   status.textContent=!data?'正在读取审核版本…':data.merge?.status==='merged'?'已应用到项目 · '+(data.merge.targetRef||'工作绑定分支'):data.merge?.status==='blocked'?'应用受阻 · '+(data.merge.message||data.merge.blockedCode||'请查看后台处理状态'):accepted?'采用已记录 · 尚未确认应用成功':`报告 V${data.publicationNumber||data.revision} · ${historical?'历史只读':closed?'审核已决定':discussion?.active?'AI助手处理中':'待审核'}`;
+  caption.textContent=taskName+' · 审核讨论'+(data?` · V${data.publicationNumber||data.revision}${historical?' · 历史只读':''}`:'');caption.title=caption.textContent;if(reviewWindow)reviewWindow.node.setAttribute('aria-label',caption.textContent);
   versionText.textContent=data?`报告 V${data.publicationNumber||data.revision} · 工作修订 ${data.revision}\n审核版本：${data.reviewVersion||'不可用'}\n目标引用：${data.candidate?.targetRef||'项目目标分支'}\n文件差异基于冻结候选；人工稿保留在文档工作区。\nAI助手：原 Worker（原工作线程）；任务安排：主控交接。采用后由主控完成合入与收尾。`:'';
   queue.textContent=discussion?[discussion.active?'AI助手正在处理':'',discussion.queued?`已排队 ${discussion.queued} 条`:'',...(discussion.reasons||[]).map(reason=>typeof reason==='string'?(discussionReasons[reason]||reason):reason.message)].filter(Boolean).join(' · '):'正在读取原始工作记录…';
-  if(reviewReportOutdated(data?.files||[]))queue.textContent+=' · 已保存人工改稿；可直接采用，也可先发送意见请AI助手核对。';
+  if(reviewReportOutdated(data?.files||[]))queue.textContent+=' · 已保存人工改稿；原报告未包含这些修改。';
   outdated.hidden=!reviewReportOutdated(data?.files||[]);outdated.textContent=outdated.hidden?'':'已保存人工改稿，采用时将使用人工稿。原报告未包含这些修改；如需AI助手核对，请先发送意见。';
   if(pendingSend)queue.textContent+=' · 上次发送回执待核对；重试只核对同一请求，不另派新任务。';
   if(persistenceError)queue.textContent+=' · 发送凭据无法读取；为避免重复派工，已暂停发送与接受。';
@@ -139,7 +169,6 @@ export function mountManagedReview(parent,{invoke,projectId,workId,objectId,work
   const heldCode=(discussion?.reasons||[]).map(reason=>typeof reason==='string'?reason:reason?.code).find(code=>Object.prototype.hasOwnProperty.call(heldCauses,code));
   const heldNotice=Boolean(discussion&&heldCode&&!pendingSend&&!persistenceError&&!historical&&!closed&&!unavailable&&!discussion.active&&!discussion.queued);
   currentState.hidden=!heldNotice;
-  closingHint.hidden=heldNotice;
   if(heldNotice){
     status.textContent=`报告 V${data.publicationNumber||data.revision} · 当前任务已暂停`;
     const blocked=[!discussion.canSend&&'发送',!data?.capabilities?.canAccept&&'采用'].filter(Boolean);
@@ -147,8 +176,6 @@ export function mountManagedReview(parent,{invoke,projectId,workId,objectId,work
   }
   send.textContent=pendingSend?'核对 / 重试发送':discussion?.active||discussion?.queued?'排队发送':'发送';
   more.hidden=!cursor;more.disabled=loadingHistory;
-  floating.hidden=hidden||!live();
-  syncReadingLayout();
   if(!busy&&!held&&!composing){for(const resolve of idleWaiters)resolve();idleWaiters.clear();}
  }
  async function loadInstruction(){
@@ -168,7 +195,17 @@ export function mountManagedReview(parent,{invoke,projectId,workId,objectId,work
    const pageCursor=append?cursor:tailCursor;
    const next=await call('discussion.read',{limit:100,...(pageCursor?{cursor:pageCursor}:{})});if(!live()||generation!==discussionGeneration)return;
    discussion=next;tailCursor=pageCursor;cursor=next.nextCursor;
-   const merge=page=>{for(const [index,entry]of (page.entries||[]).entries())entries.set(entry.id,{...entry,order:entry.seq??((page.pageStart||0)+index)});};
+   const merge=page=>{for(const [index,entry]of (page.entries||[]).entries()){
+    const row={...entry,order:entry.seq??((page.pageStart||0)+index)};
+    if(entry.availability==='read-required')row.readReply=async options=>{
+     if(!live())throw Error('审核工作面已切换');
+     const result=await invoke('managed.timeline.read',{...options,projectId,id:entry.id});
+     if(!live())throw Error('审核工作面已切换');
+     if(!result.ok)throw Error(result.error?.message||'原始记录暂时不可读');
+     return result.value?.entry??result.value;
+    };
+    entries.set(entry.id,row);
+   }};
    merge(next);
    // One contiguous history page plus at most one latest page per event.
    // Intermediate records remain explicitly reachable, never silently omitted.
@@ -178,23 +215,18 @@ export function mountManagedReview(parent,{invoke,projectId,workId,objectId,work
    }
    if(Number.isInteger(discussion.total)&&entries.size>=discussion.total)cursor=null;
    more.textContent=cursor?'加载下一页原始记录（中间记录尚未全部展开）':'原始记录已全部展开';
-   originalText.textContent=[...entries.values()].filter(entry=>entry.source==='publication'||entry.speaker==='orchestrator'&&entry.source==='user-input').map(entry=>[entry.id,entry.objectId,entry.text].filter(Boolean).join('\n')).join('\n\n');
-   renderThread([...entries.values()].sort((a,b)=>a.order-b.order).map(entry=>{
-     const speaker=entry.source==='work-handoff'?'任务安排':({user:'用户',agent:'AI助手',worker:'AI助手',orchestrator:'任务安排',system:'系统'}[entry.speaker]||entry.speaker);
-     const arranged=entry.speaker==='orchestrator'&&entry.source==='user-input';
-     const source={'work-request':'原始工作请求','work-handoff':'原始交接','user-input':arranged?'已交接':'原始用户输入','worker-reply':'原始回复',system:'系统原始记录',publication:'发布记录','review-discussion':'讨论修改'}[entry.source]||entry.source;
-     const label=[speaker,source].filter(Boolean).join(' · '),text=arranged?'本任务要求与材料已交给AI助手；原始安排可在版本详情查看。':entry.text??(entry.source==='publication'?'报告已保存，可在主工作区查看。':'');
-     return entry.speaker==='user'&&entry.source!=='work-handoff'?{requestId:entry.id,question:text,questionLabel:label}:{requestId:entry.id,reply:text,replyLabel:label,messageId:entry.id};
-   }));
+   const projection=projectReviewConversation([...entries.values()].sort((a,b)=>a.order-b.order));
+   context.hidden=!projection.context.length;
+   contextText.textContent=projection.context.map(entry=>[entry.label,entry.text].filter(Boolean).join('\n')).join('\n\n');
+   renderThread(projection.entries);
    if(cursor===pageCursor&&cursor)throw Error('原始记录分页游标未前进');
   }finally{if(generation===discussionGeneration){loadingHistory=false;paint();}}
  }
  async function refresh(){
   const generation=++readGeneration,next=await call('read');if(!live()||generation!==readGeneration)return;
-  if(!data)fileDetail.open=next.files?.length===1;
   data=next;const staleCode=data.stale?.code||data.stale?.reason||data.stale?.detail?.reason;
   warning.textContent=[['WORK_BUSY','WORK_RUNNING'].includes(staleCode)?'当前回合正在处理；接受须等待完成，讨论发送以队列状态为准。':reviewStaleMessage(data.stale),...(data.capabilities?.reasons||[]).map(reason=>typeof reason==='string'?reason:reason.message)].filter(Boolean).join('\n');
-  fileList.update(data.files||[]);onAvailability(Boolean(data.files?.length),root);paint();await loadDiscussion();
+  fileList.update(data.files||[]);diffList.update(data.files||[]);filesButton.textContent='成果文件 '+(data.files?.length||0);filesButton.disabled=diffButton.disabled=!data.files?.length;onAvailability(Boolean(data.files?.length),root);paint();await loadDiscussion();
  }
  async function sendDiscussion(){
   if(send.disabled)return;busy=true;paint();let received=false;
@@ -251,19 +283,12 @@ export function mountManagedReview(parent,{invoke,projectId,workId,objectId,work
   await saveAll();if(!live())return;
   ++readGeneration;++discussionGeneration;objectId=nextObjectId;root.dataset.managedReview=objectId;accepted=false;data=null;discussion=null;paint();await refresh();
  }
- function place(x,y){const rect=floating.getBoundingClientRect();position=[Math.max(0,Math.min(x,window.innerWidth-rect.width)),Math.max(0,Math.min(y,window.innerHeight-rect.height))];floating.style.left=position[0]+'px';floating.style.top=position[1]+'px';floating.style.right='auto';floating.style.bottom='auto';}
- head.addEventListener('pointerdown',event=>{if(!freeLayout||event.button!==0||event.target.closest('button'))return;const rect=floating.getBoundingClientRect();drag={id:event.pointerId,x:event.clientX,y:event.clientY,left:rect.left,top:rect.top};head.setPointerCapture(event.pointerId);});
- head.addEventListener('pointermove',event=>{if(drag?.id===event.pointerId)place(drag.left+event.clientX-drag.x,drag.top+event.clientY-drag.y);});
- const stopDrag=()=>{drag=null;};head.addEventListener('pointerup',stopDrag);head.addEventListener('pointercancel',stopDrag);
- head.addEventListener('keydown',event=>{if(!freeLayout||event.target!==head)return;const offset={ArrowLeft:[-16,0],ArrowRight:[16,0],ArrowUp:[0,-16],ArrowDown:[0,16]}[event.key];if(offset){event.preventDefault();const rect=floating.getBoundingClientRect();place(rect.left+offset[0],rect.top+offset[1]);}});
- floating.addEventListener('keydown',event=>{if(event.key==='Escape'&&!composing){event.stopPropagation();hide();}});
- const onResize=()=>{syncReadingLayout();if(freeLayout&&position)place(...position);};window.addEventListener('resize',onResize);
  const onFocus=()=>void observe();window.addEventListener('focus',onFocus);
  const beforeUnload=event=>{if(composing||draft?.snapshot().dirty||draft?.snapshot().pending){void saveAll().catch(fail);event.preventDefault();event.returnValue='';}};window.addEventListener('beforeunload',beforeUnload);
  const unsubscribe=window.nozeli?.subscribe('agent',event=>{if(event.projectId===projectId&&['managed-state','managed-timeline'].includes(event.kind))void observe();});
  const onStorage=event=>{if(event.key!==pendingKey)return;try{pendingSend=JSON.parse(event.newValue||'null');persistenceError=null;}catch(error){persistenceError=error;}paint();};window.addEventListener('storage',onStorage);
  const ready=refresh().catch(fail);
- const surface={root,ready,save:saveAll,observe,refresh,show,hide,bind,get composing(){return composing;},get processing(){return busy||held||composing;},barrier(event){if(event.projectId!==projectId||event.workId!==workId||event.objectId!==objectId)return;held=event.held===true;paint();},get retained(){return busy||held||composing||draft?.snapshot().dirty||draft?.snapshot().pending;},destroy(){if(surface.retained)return false;disposed=true;readingObserver.disconnect();unsubscribe?.();clearTimeout(timer);fileList.destroy();renderThread.disposeOriginalReaders();surfaces.delete(surface);window.removeEventListener('storage',onStorage);window.removeEventListener('resize',onResize);window.removeEventListener('focus',onFocus);window.removeEventListener('beforeunload',beforeUnload);root.remove();return true;}};
+ const surface={root,ready,save:saveAll,observe,refresh,show,hide,bind,get composing(){return composing;},get processing(){return busy||held||composing;},get localWindow(){return reviewWindow;},barrier(event){if(event.projectId!==projectId||event.workId!==workId||event.objectId!==objectId)return;held=event.held===true;paint();},get retained(){return busy||held||composing||draft?.snapshot().dirty||draft?.snapshot().pending;},destroy(){if(surface.retained)return false;disposed=true;if(reviewWindow)void reviewWindow.dispose().catch(()=>{});unsubscribe?.();clearTimeout(timer);fileList.destroy();diffList.destroy();renderThread.disposeOriginalReaders();surfaces.delete(surface);window.removeEventListener('storage',onStorage);window.removeEventListener('focus',onFocus);window.removeEventListener('beforeunload',beforeUnload);root.remove();return true;}};
  surface.whenIdle=()=>{if(!surface.processing)return Promise.resolve();queue.textContent+=' · 已记录查看最新报告，将在当前保存完成后切换。';return new Promise(resolve=>idleWaiters.add(resolve));};
- surfaces.add(surface);show();return surface;
+ surfaces.add(surface);return surface;
 }

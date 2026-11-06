@@ -71,7 +71,7 @@ let app;try{
  await openModels();await until(async()=>!(await modelStatus()).includes('待当前'),'pending state refresh');const appliedStatus=await assertCurrentUiLabelsGlm('applied');assert.match(appliedStatus,/GLM-5\.3-Flash/,'settings status presents GLM as the current model');await page.click('#settings-close');
  // Read-only session facts (会话管理) must report the live model, not the
  // pre-switch one, without waking or mutating the session.
- await chat.click('#chat-session-runtime');await chat.waitForSelector('.session-runtime-dialog[open]');
+ await chat.click('#chat-more');await chat.click('#conversation-context-menu:not([hidden]) [data-command="chat-session-runtime"]');await chat.waitForSelector('.session-runtime-dialog[open]');
  await until(async()=>(await chat.$eval('.session-runtime-dialog pre',e=>e.textContent)).includes(GLM),'session facts report the GLM model');
  const facts=await chat.$eval('.session-runtime-dialog pre',e=>e.textContent);assert.ok(!facts.includes(GPT),'session facts must not report the stale GPT model');await chat.screenshot({path:path.join(root,'session-runtime-model-facts.png')});
  await chat.$$eval('.session-runtime-actions button',bs=>bs.find(b=>b.textContent==='关闭')?.click());await chat.waitForFunction(()=>!document.querySelector('.session-runtime-dialog')?.open);

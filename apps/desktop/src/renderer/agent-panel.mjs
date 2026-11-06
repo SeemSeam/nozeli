@@ -7,14 +7,14 @@ const $ = (id) => document.getElementById(id);
 
 
 import {mountSettingsPanel} from './settings-panel.mjs';
-export function mountAgent({ invoke, toast, attachment, getProjectId, openManaged, openProjectFile, openExternal, openFrozenChange, onMessages = () => {}, onConversation = () => {}, subscribe = window.nozeli.subscribe }) {
-  const managed = mountManagedAgent({invoke,toast,onMessages,openManaged,onConversation,openProjectFile,openExternal,openFrozenChange});
+export function mountAgent({ invoke, toast, attachment, getProjectId, openManaged, openProjectFile, openExternal, openFrozenChange, onMessages = () => {}, subscribe = window.nozeli.subscribe }) {
+  const managed = mountManagedAgent({invoke,toast,onMessages,openManaged,openProjectFile,openExternal,openFrozenChange});
   const scope=window.__workspaceScope;
   const ownsConversation=!scope||(scope.role==='surface'&&scope.kind==='conversation');
   let projectId = null;
   let generation = 0;
   let restoredInput;
-  const demo=mountDemoConversation({invoke,getProjectId:()=>projectId,onMessages,onConversation,subscribe});
+  const demo=mountDemoConversation({invoke,getProjectId:()=>projectId,onMessages,subscribe});
   let filePaths = new Set();
   const legacyArchive = document.createElement('details');
   legacyArchive.id = 'legacy-conversation-history';
@@ -52,7 +52,6 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     const node = $('ai-status');
     node.dataset.state = state;
     node.textContent = text;
-    onConversation({state,label:text});
   }
 
 
@@ -216,17 +215,27 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     if (!text.trim() && !snap?.attachments?.length && !textMaterials.length) return;
     if (textMaterials.length > 20) return reject('文本材料超过 20 项上限');
     const externals = (snap?.attachments || []).filter(a => a.digest);
-    const images = externals.filter(a => a.source === 'drawing' && a.storage === 'recovery' && a.mime === 'image/png');
-    if (images.length !== externals.length) return reject('仅支持显式发送涂鸦 PNG，其他本地附件仍不受支持');
+    // Registered digest refs split into two host-verified classes: explicit
+    // drawing PNGs (unchanged contract) and ordinary local files, which travel
+    // as fileAttachments for host-side UTF-8 verification and native delivery.
+    const drawings = externals.filter(a => a.source === 'drawing');
+    const images = drawings.filter(a => a.storage === 'recovery' && a.mime === 'image/png');
+    if (images.length !== drawings.length) return reject('涂鸦材料仅支持显式发送的 PNG 截图');
+    const files = externals.filter(a => a.source !== 'drawing');
+    if (files.length > 20) return reject('文件材料超过 20 项上限');
+    if (files.some(a => a.size > 8 * 1024 * 1024)) return reject('单个文件材料超过 8 MiB 上限');
+    if (files.reduce((sum, a) => sum + a.size, 0) > 24 * 1024 * 1024) return reject('文件材料合计超过 24 MiB 上限');
     if (images.length > 8 || images.reduce((sum, a) => sum + a.size, 0) > 24 * 1024 * 1024) return reject('图片超过 8 张或 24 MiB 上限');
-    const relPath = $('attach-file').checked ? attachment() : (snap?.attachments || []).find(a => a.relPath && a.source !== 'selection')?.relPath || null;
+    // Digest-carrying refs ride fileAttachments with their frozen bytes; the
+    // legacy live file-material path stays reserved for digest-less references.
+    const relPath = $('attach-file').checked ? attachment() : (snap?.attachments || []).find(a => a.relPath && !a.digest && a.source !== 'selection')?.relPath || null;
     const materialText = relPath && typeof window.__nozeliInput?.text === 'function' ? window.__nozeliInput.text() : null;
     const send=demo.active?demo.send:managed.send;
     const input = text.trim() ? text : images.length ? '请查看附带的涂鸦截图。' : '请查看附带的引用材料。';
     if (!text.trim()) materialsApi?.statusNote('本次附材料发送提示：'+input);
     if(lastSubmissionNotice&&$('toast').textContent===lastSubmissionNotice)$('toast').hidden=true;
     lastSubmissionNotice='';
-    const result = await send(input,{relPath,materialText,background,composerText:rawText,...(textMaterials.length?{textMaterials}:{}),imageAttachments:images.map(a=>({digest:a.digest,mime:a.mime,source:a.source,storage:a.storage,projectId:a.projectId,instanceId:a.instanceId,deliveryId:a.deliveryId}))}).then(value=>({ok:true,value}),error=>({ok:false,error}));
+    const result = await send(input,{relPath,materialText,background,composerText:rawText,...(textMaterials.length?{textMaterials}:{}),imageAttachments:images.map(a=>({digest:a.digest,mime:a.mime,source:a.source,storage:a.storage,projectId:a.projectId,instanceId:a.instanceId,deliveryId:a.deliveryId})),fileAttachments:files.map(a=>({digest:a.digest,mime:a.mime,source:a.source,storage:a.storage,projectId:a.projectId,instanceId:a.instanceId}))}).then(value=>({ok:true,value}),error=>({ok:false,error}));
     if (!result.ok) return reject(result.error.message);
     if(demo.active&&projectId===id&&$('composer').value===rawText){$('composer').value='';$('composer').dispatchEvent(new Event('input',{bubbles:true}));}
     return result.value;

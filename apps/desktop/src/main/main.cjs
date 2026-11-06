@@ -8,7 +8,7 @@ if (process.argv.includes('--nozeli-document')) {
   require('../agents/document-entry.cjs');
   return;
 }
-const { app, BaseWindow, WebContentsView, webContents, screen, ipcMain, Menu, shell, clipboard, ClipboardItem, nativeTheme, powerMonitor } = require('electron');
+const { app, BaseWindow, View, WebContentsView, webContents, screen, ipcMain, Menu, shell, clipboard, ClipboardItem, nativeTheme, powerMonitor } = require('electron');
 if (process.platform === 'linux') app.setDesktopName('io.nozeli.Nozeli.desktop');
 const {WorkspaceWindow} = require('./workspace-window.cjs');
 let dialog, session;
@@ -22,7 +22,7 @@ const {createForceQuit} = require('./force-quit.cjs');
 let forceQuitting = false;
 const forceQuit = createForceQuit({app});
 let autoUpdater, acknowledgeUpdateHealth, updateLifecycle, updateFrozen=false, exportClipboardFiles;
-const updateFlushWrites=new Set(['workspace.recovery','file.draft','file.save','file.retain','managed.review.instruction.save','managed.review.save']);
+const updateFlushWrites=new Set(['workspace.displayView.write','workspace.recovery','file.draft','file.save','file.retain','managed.review.instruction.save','managed.review.save']);
 let onlineBrowser;
 async function closeOnlineBrowsers(){for(const scope of new Set([...onlineBrowser?.slots.values()||[]].map(slot=>slot.scope))){const result=await onlineBrowser.closeScope(scope);if(result?.cancelled||result?.closed===false)throw Object.assign(Error('网站仍有未提交输入，已保留窗口。'),{code:'WEB_CLOSE_CANCELLED'});}}
 
@@ -335,7 +335,7 @@ async function main() {
   const address=server.address();origin=`http://127.0.0.1:${address.port}/`;
   workspaceNative=new WorkspaceNative({BrowserWindow:WorkspaceWindow,WebContentsView,screen,origin,preload:path.join(APP_ROOT,'src/preload/preload.cjs'),icon:path.join(APP_ROOT,'assets/nozeli.png'),userDataDir:app.getPath('userData'),host,hidden:HIDDEN,onClose:async r=>{const recovery=windowRecovery(r.win);if(recovery){recovery.requestClose();return;}await workspaceNative.flush([...workspaceNative.senders.values()]);if(agents?.busy()||managedAgents?.busy()){r.wc.send('nozeli:quit-confirm');return;}await managedAgents?.stop();await agents?.stopIdle?.();r.closing=true;for(const s of workspaceNative.projectRecords(r.projectId,r.windowId))workspaceNative.destroySurface(s);r.win.close();}});
   const {IsolatedPreviewManager}=await import('./isolated-preview.mjs');
-  isolatedPreview=new IsolatedPreviewManager({WebContentsView,session,workspace:workspaceNative,host,managedAgents,dialog});
+  isolatedPreview=new IsolatedPreviewManager({View,WebContentsView,session,workspace:workspaceNative,host,managedAgents,dialog});
   try{const saved=JSON.parse(await fs.readFile(path.join(app.getPath('userData'),'appearance.json'),'utf8'));if(['light','dark'].includes(saved.theme))nativeTheme.themeSource=saved.theme;isolatedPreview.setAppearance({palette:saved.palette,mode:nativeTheme.shouldUseDarkColors?'dark':'light'});}catch{}
   nativeTheme.on('updated',()=>{isolatedPreview.setAppearance({palette:isolatedPreview.appearance?.palette??'sage',mode:nativeTheme.shouldUseDarkColors?'dark':'light'});});
   workspaceNative.isolatedPreview=isolatedPreview;
@@ -343,7 +343,7 @@ async function main() {
   const {WebDiscussions}=await import('./web-discussion.mjs');
   const webDiscussions=new WebDiscussions({host,managedAgents});
   const {reduceLayout}=await import('../domain/workspace-layout.mjs');
-  onlineBrowser=new OnlineBrowserManager({WebContentsView,session,workspace:workspaceNative,dialog,Menu,discussion:(projectId,request)=>webDiscussions.invoke(projectId,request),downloadDirectory:app.getPath('downloads'),onNavigate:async(scope,update)=>{await workspaceNative.serial(scope.projectId,async()=>{if(scope.dead||workspaceNative.senders.get(scope.wc.id)!==scope)return;const layout=await workspaceNative.layout(scope.projectId);if(layout.views[scope.viewId]?.kind!=='web')return;const next=reduceLayout(layout,{type:'webNavigate',viewId:scope.viewId,url:update.url,title:update.title});await workspaceNative.persist(next);workspaceNative.layouts.set(scope.projectId,next);scope.resourceId=next.views[scope.viewId].resourceId;workspaceNative.changed(next);});}});
+  onlineBrowser=new OnlineBrowserManager({View,WebContentsView,session,workspace:workspaceNative,dialog,Menu,discussion:(projectId,request)=>webDiscussions.invoke(projectId,request),downloadDirectory:app.getPath('downloads'),onNavigate:async(scope,update)=>{await workspaceNative.serial(scope.projectId,async()=>{if(scope.dead||workspaceNative.senders.get(scope.wc.id)!==scope)return;const layout=await workspaceNative.layout(scope.projectId);if(layout.views[scope.viewId]?.kind!=='web')return;const next=reduceLayout(layout,{type:'webNavigate',viewId:scope.viewId,url:update.url,title:update.title});await workspaceNative.persist(next);workspaceNative.layouts.set(scope.projectId,next);scope.resourceId=next.views[scope.viewId].resourceId;workspaceNative.changed(next);});}});
   workspaceNative.onlineBrowser=onlineBrowser;
   const {WorkspaceCapture}=await import('./workspace-capture.mjs');
   workspaceCapture=new WorkspaceCapture({workspace:workspaceNative,host,deliver:async(session,event)=>{await workspaceNative.deliverDrawing(session,event);}});

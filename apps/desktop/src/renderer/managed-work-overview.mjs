@@ -2,7 +2,7 @@ import './managed-work-overview.css';
 import { workSlotCaptions } from './managed-work-directory.mjs';
 
 const statusLabels = {
-  queued: '已接收，等待开始',
+  queued: '排队中',
   running: '执行中',
   working: '执行中',
   review: '等待审阅',
@@ -34,6 +34,7 @@ export function renderWorkOverview({
   onInspectWork = null,
   technicalOpen = false,
   disabled = false,
+  unsentDraft = null,
 }) {
   const make = (tag, className, text) => {
     const node = document.createElement(tag);
@@ -77,12 +78,12 @@ export function renderWorkOverview({
   } else {
     resultTitle = ended ? '没有最终报告' : '尚无成果报告';
     explanation = ended
-      ? '这项任务在交付前结束，没有生成最终成果报告。'
+      ? '这项任务在交付前结束。'
       : work.status === 'review'
         ? '成果报告暂不可用，请稍后重新查看。'
         : work.status === 'queued'
           ? '尚未开始执行；原请求已保留，开始后按排队顺序进行。'
-          : '尚未收到最终成果报告；已有进展会保留。';
+          : '已有进展会保留。';
   }
   result.append(make('h4', 'managed-work-overview-result-title', resultTitle));
   result.append(make('p', 'managed-work-overview-explanation', explanation));
@@ -106,9 +107,22 @@ export function renderWorkOverview({
     return node;
   };
   if (hasReport && typeof onReport === 'function') {
-    result.append(button(historical ? '查看历史报告' : '查看成果报告', onReport, 'managedWorkReport', true));
+    result.append(button(historical ? '查看历史报告' : '查看成果报告', onReport, 'managedWorkReport', !historical));
   }
   root.append(result);
+
+  // 只读未发送后台稿不能藏在诊断里：首屏只报事实与入口，正文仍在技术区按需查看。
+  if (unsentDraft) {
+    const unsent = make('section', 'managed-work-overview-unsent');
+    unsent.dataset.workUnsent = work.id;
+    unsent.append(make('p', '', '有未发送内容'));
+    const view = make('button', 'managed-work-overview-action', '查看');
+    view.type = 'button';
+    view.dataset.workUnsentView = work.id;
+    view.addEventListener('click', () => { if (!view.disabled) unsentDraft.onOpen?.(); });
+    unsent.append(view);
+    root.append(unsent);
+  }
 
   // Decision gates must never be placed inside a collapsed disclosure.
   if (requiredSection) {
@@ -119,11 +133,12 @@ export function renderWorkOverview({
 
   // A queued Work names the exact Works holding its slots; opening them uses
   // the existing task overview only, with no new permission or replay path.
-  const waiting = (Array.isArray(waitingOn) ? waitingOn : []).slice(0, 8);
+  // 全量列出等待占位，绝不截断冒充完整清单。
+  const waiting = Array.isArray(waitingOn) ? waitingOn : [];
   if (waiting.length) {
     const waitSection = make('section', 'managed-work-overview-waiting');
-    waitSection.append(make('h4', '', '等待名额释放'));
-    for (const holder of waiting) {
+    waitSection.append(make('h4', '', `等待名额 · ${waiting.length} 项`));
+    for(const holder of waiting){
       const row = make('div', 'managed-work-overview-waiting-row');
       row.append(make('span', '', holder.name + ' · ' + (workSlotCaptions[holder.status] || holder.status)));
       if (typeof onInspectWork === 'function' && holder.workId) {
@@ -140,7 +155,9 @@ export function renderWorkOverview({
   }
 
   const actions = make('div', 'managed-work-overview-actions');
-  if (typeof onProgress === 'function') actions.append(button('查看保留进展', onProgress, 'workRetainedProgress', true));
+  // 有可用当前报告时主动作是查看报告；失败／未交付时主动作是查看进展。
+  if (typeof onProgress === 'function') actions.append(button('查看保留进展', onProgress, 'workRetainedProgress', !hasReport || historical));
+
   if (typeof onControl === 'function') actions.append(button('执行控制…', onControl, 'workControlDetails'));
   if (typeof onEnd === 'function') actions.append(button(work.status === 'queued' ? '取消排队…' : '结束任务…', onEnd, 'managedWorkEnd'));
   if (actions.childNodes.length) root.append(actions);

@@ -38,7 +38,7 @@ try{
  for(let i=0;i<150;i++){try{browser=await puppeteer.connect({browserURL:'http://127.0.0.1:'+port,defaultViewport:null});break;}catch{if(child.exitCode!==null)throw Error(log);await new Promise(resolve=>setTimeout(resolve,100));}}
  assert(browser,log);const target=await browser.waitForTarget(t=>t.type()==='page'&&t.url().endsWith('index.html')),page=await target.page(),errors=[];page.on('pageerror',error=>errors.push(error.message));
  await page.waitForSelector('.collaboration-repair[data-bug-id="retryable"]');
- await page.click('.collaboration-overflow');
+ await page.click('.collaboration-details');
  assert.equal(await page.$eval('.collaboration-repairs>summary',node=>node.textContent.includes('进行中 1')),true);
  assert.equal(await page.$eval('[data-agent-target="frontdesk"] .collaboration-state',node=>node.textContent),'休眠');
  assert.equal(await page.$eval('[data-agent-target="decision"] .collaboration-state',node=>node.textContent),'等待用户决策');
@@ -54,7 +54,7 @@ try{
  await page.keyboard.press('Escape');await page.focus('#draft');await page.keyboard.press('End');await page.type('#draft',' kept');
  await page.evaluate(()=>fixture.refresh());
  assert.equal(await page.evaluate(()=>document.activeElement.id),'draft');
- await page.click('.collaboration-overflow');
+ await page.click('.collaboration-details');
  assert.equal(await page.$$eval('.collaboration-repair',nodes=>nodes.length),6,'refresh retains loaded page depth');
  assert.equal(await page.$eval('[data-bug-id="retryable"]',node=>node.open),true,'expanded facts preserved');
  // Inconsistent versions retain the prior complete snapshot, never a partial merge.
@@ -92,7 +92,7 @@ try{
  await page.waitForFunction(()=>document.querySelector('[data-bug-id="retryable"] .collaboration-repair-facts')?.textContent.includes('"projectId":"p2"'));
  assert.equal(await page.$eval('.collaboration-repairs',node=>node.textContent.includes('"projectId":"p1"')),false);
  const newProjectReads=await page.evaluate(()=>fixture.reads());await page.evaluate(async()=>{fixture.ack();await new Promise(resolve=>setTimeout(resolve,0));});assert.equal(await page.evaluate(()=>fixture.reads()),newProjectReads,'late old-project acknowledgement cannot refresh new project');
- await page.click('.collaboration-overflow');await page.click('.collaboration-repairs>summary');await page.click('[data-bug-id="retryable"]>summary');
+ await page.click('.collaboration-details');await page.click('.collaboration-repairs>summary');await page.click('[data-bug-id="retryable"]>summary');
  await page.setViewport({width:390,height:844});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
  assert.equal(await page.$eval('#draft',node=>node.value),'Original unsent draft kept');assert.equal(await page.$eval('#history',node=>node.textContent),'Original thread history');
  assert.deepEqual(errors,[]);await page.screenshot({path:path.join(out,'repair-narrow.png'),fullPage:true});

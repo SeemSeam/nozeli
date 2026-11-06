@@ -75,15 +75,24 @@ export class WorkspaceCapture {
   // report digest. Same-project churn in OTHER windows (layout revision bumps,
   // read-state, moves elsewhere) must never abort this freeze; no file-version
   // atomicity is claimed for the captured layers.
+  nativeLayers(children,offset={x:0,y:0},clip=null,layers=[]){
+    for(const view of children){
+      if(!view.getVisible())continue;
+      const local=view.getBounds(),full={x:offset.x+local.x,y:offset.y+local.y,width:local.width,height:local.height};
+      const left=Math.max(full.x,clip?.x??full.x),top=Math.max(full.y,clip?.y??full.y),right=Math.min(full.x+full.width,clip?clip.x+clip.width:full.x+full.width),bottom=Math.min(full.y+full.height,clip?clip.y+clip.height:full.y+full.height);
+      const bounds={x:left,y:top,width:Math.max(0,right-left),height:Math.max(0,bottom-top)};if(!bounds.width||!bounds.height)continue;
+      if(view.webContents&&!view.webContents.isDestroyed())layers.push({view,local,bounds,crop:bounds.x===full.x&&bounds.y===full.y&&bounds.width===full.width&&bounds.height===full.height?undefined:{x:bounds.x-full.x,y:bounds.y-full.y,width:bounds.width,height:bounds.height}});
+      if(view.children?.length)this.nativeLayers(view.children,{x:full.x,y:full.y},bounds,layers);
+    }
+    return layers;
+  }
   layerStack(children){
     const parts=[];
-    for(const view of children){
-      if(!view.getVisible()||!view.webContents||view.webContents.isDestroyed())continue;
-      const bounds=view.getBounds();
+    for(const {view,local,bounds} of this.nativeLayers(children)){
       const scope=this.workspace.senders.get(view.webContents.id);
       const slot=[...(this.workspace.isolatedPreview?.slots.values()??[])].find(s=>s.view===view);
       const surface=scope?.role==='surface'?scope:slot?.scope;
-      parts.push(`${view.webContents.id}:${bounds.x},${bounds.y},${bounds.width},${bounds.height}:${surface?surface.viewId+'@'+surface.generation:'-'}:${slot?(slot.profile??'slot')+'@'+(slot.files?.get?.(slot.entry)?.digest??''):'-'}`);
+      parts.push(`${view.webContents.id}:${bounds.x},${bounds.y},${bounds.width},${bounds.height}:${local.x},${local.y},${local.width},${local.height}:${surface?surface.viewId+'@'+surface.generation:'-'}:${slot?(slot.profile??'slot')+'@'+(slot.files?.get?.(slot.entry)?.digest??''):'-'}`);
     }
     return parts.join('|');
   }
@@ -134,10 +143,8 @@ export class WorkspaceCapture {
     const before=this.layerStack(root.win.contentView.children);
     this.step(token);
     const layers=[];let pixels=0;
-    for(const view of [...root.win.contentView.children]){
+    for(const {view,local,bounds,crop} of this.nativeLayers(root.win.contentView.children)){
       this.step(token);
-      if(!view.getVisible()||!view.webContents||view.webContents.isDestroyed())continue;
-      const bounds=view.getBounds();if(bounds.width<=0||bounds.height<=0)continue;
       const scope=this.workspace.senders.get(view.webContents.id);
       const slot=[...(this.workspace.isolatedPreview?.slots.values()??[])].find(s=>s.view===view);
       const surface=scope?.role==='surface'?scope:slot?.scope;
@@ -152,7 +159,7 @@ export class WorkspaceCapture {
           source.summary='冻结报告 · '+digest;
         }else source.summary=surface.relPath?'文档视图 · '+surface.relPath+' · 版本未核验':'工作面视图';
       }
-      const image=await view.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true});
+      const image=await view.webContents.capturePage(crop,{stayHidden:true,stayAwake:true});
       this.step(token);
       if(image.isEmpty())throw Error('窗口图像不可读取，未生成不完整截图');
       // One PNG buffer is the single source of truth: its IHDR carries the
@@ -168,7 +175,7 @@ export class WorkspaceCapture {
       // after each layer: a reloaded, resized, hidden or moved-on window must
       // abort the whole freeze instead of mixing evidence.
       const currentSize=root.win.getContentSize();
-      if(root.dead||root.generation!==generation||root.projectId!==snap.projectId||!root.win.isVisible()||!view.getVisible()||view.webContents.isDestroyed()||JSON.stringify(view.getBounds())!==JSON.stringify(bounds)||currentSize[0]!==dipWidth||currentSize[1]!==dipHeight||String(this.workspace.screen.getDisplayMatching(root.win.getBounds()).id)!==String(display.id)||this.layerStack(root.win.contentView.children)!==before)throw Object.assign(new Error('捕获期间本窗口内容改变，请重试'),{code:'CAPTURE_CONTENT_CHANGED'});
+      if(root.dead||root.generation!==generation||root.projectId!==snap.projectId||!root.win.isVisible()||!view.getVisible()||view.webContents.isDestroyed()||JSON.stringify(view.getBounds())!==JSON.stringify(local)||currentSize[0]!==dipWidth||currentSize[1]!==dipHeight||String(this.workspace.screen.getDisplayMatching(root.win.getBounds()).id)!==String(display.id)||this.layerStack(root.win.contentView.children)!==before)throw Object.assign(new Error('捕获期间本窗口内容改变，请重试'),{code:'CAPTURE_CONTENT_CHANGED'});
       layers.push({bounds,dataUrl:'data:image/png;base64,'+png.toString('base64'),source});
     }
     if(!layers.length)throw Error('发起窗口没有可捕获的可见内容');

@@ -1,3 +1,4 @@
+import {fieldRow, disclosure} from './management-presentation.mjs';
 export function mountProviderSettings({invoke,providers=document.getElementById('settings-provider'),models=document.getElementById('settings-models')}) {
  const call=async(op,payload={})=>{const response=await invoke(op,payload);if(response?.ok===false)throw Error(response.error?.message||'设置操作未完成');return response?.ok===true?response.value:response;};
  const node=(tag,text,attrs={})=>{const el=document.createElement(tag);if(text)el.textContent=text;for(const [key,value]of Object.entries(attrs))el.setAttribute(key,value);return el;};
@@ -37,16 +38,23 @@ nativeKeyWrap.append(nativeKeyInput);nativeKeyProvider.append(node('option','正
  const discoveryArea=node('div',null,{'data-provider-discovery':''});providers.append(discoveryArea);
  const refreshButton=node('button','刷新源和模型',{type:'button','data-provider-refresh':''});const toolbar=node('div',null,{class:'settings-actions provider-toolbar'});toolbar.append(refreshButton);list.before(toolbar);
  const safety=node('details',null,{class:'provider-help'});safety.append(node('summary','凭据与模型说明'),node('p','密钥不会回传界面；编辑时留空保存即保留原密钥。目录刷新不发送对话或模型请求；发现模型只调用模型列表接口，不证明推理授权。'));providers.append(safety);
- models.append(node('h2','默认模型'),node('p','为前台、主控和 Worker 分别配置默认模型与思考档位。保存后同步同角色在线会话；执行中的回合结束后应用，休眠会话恢复时应用。清除选择即恢复会话原生默认并取消排队中的切换。'));
+ models.append(node('h2','默认模型'),node('p','为前台、主控、工作助手配置默认模型与思考档位。所有项目；运行中的回合不变。'),disclosure({key:'model-defaults-effect',label:'生效细则',content:[
+  node('p','保存后同步同角色在线会话；执行中的回合结束后应用，休眠会话恢复时应用。'),
+  node('p','清除选择即恢复会话原生默认，并取消排队中的切换；不覆盖会话内已做的选择。'),
+ ]}));
  const modelForm=node('form',null,{'data-role-model-form':''}),selects={},thinkingSelects={};
- for(const [role,label]of [['frontdesk','前台 · 最快'],['orchestrator','编排 · 强模型'],['worker','Worker · 中等及以上']]){
-  const wrap=node('label',label),select=node('select',null,{'data-default-role':role,name:role});selects[role]=select;wrap.append(select);
-  const thinkWrap=node('label',label.split(' · ')[0]+' · 思考档位'),think=node('select',null,{'data-default-thinking':role,name:role+'-thinking'});thinkingSelects[role]=think;thinkWrap.append(think);
-  modelForm.append(wrap,thinkWrap);
+ for(const [role,label]of [['frontdesk','前台'],['orchestrator','主控'],['worker','工作助手']]){
+  const row=node('div',null,{class:'role-default-row','data-role-default-row':role});
+  const select=node('select',null,{'data-default-role':role,name:role});selects[role]=select;
+  const think=node('select',null,{'data-default-thinking':role,name:role+'-thinking'});thinkingSelects[role]=think;
+  const thinkWrap=node('label','思考档位');thinkWrap.append(think);
+  row.append(fieldRow({label,control:select}),thinkWrap);
+  modelForm.append(row);
  }
- modelForm.append(node('button','保存三角色默认',{type:'submit',class:'ui-action','data-ui-action':'primary'}));models.append(modelForm);
+ modelForm.append(node('button','保存默认模型',{type:'submit',class:'ui-action','data-ui-action':'primary'}));models.append(modelForm);
+ const modelSyncBody=node('div',null,{'data-model-sync-details-body':''}),modelSync=disclosure({key:'model-sync-details',label:'保存结果明细',content:modelSyncBody});modelSync.hidden=true;models.append(modelSync);
  const catalogMessage=node('p','正在读取目录模型…',{role:'status','aria-live':'polite','data-model-catalog-status':''});
- const modelRefresh=node('button','刷新模型列表',{type:'button','data-model-refresh':''}),configureSource=node('button','配置 Pi 源',{type:'button','data-model-configure-source':''});
+ const modelRefresh=node('button','刷新模型列表',{type:'button','data-model-refresh':''}),configureSource=node('button','管理连接',{type:'button','data-model-configure-source':''});
  const modelActions=node('div',null,{class:'settings-actions'});modelActions.append(modelRefresh,configureSource);modelForm.before(catalogMessage,modelActions);
  const modelSave=modelForm.querySelector('button[type="submit"]');let catalogReady=false,refreshFlight=null,editing=null,lastSources=[],lastCatalog=[],storedDefaultsExist=false;
  for(const select of Object.values(selects)){select.disabled=true;select.append(node('option','正在读取模型…',{value:''}));}modelSave.disabled=true;
@@ -83,21 +91,25 @@ nativeKeyWrap.append(nativeKeyInput);nativeKeyProvider.append(node('option','正
  const writeModel=m=>({id:m.id,...(text200(m.name)?{name:m.name}:{}),...(m.reasoning===true?{reasoning:true}:{})});
  const text200=v=>typeof v==='string'&&v.trim()&&v.length<=200&&v.trim()===v?v:null;
  const formatModelLines=modelsList=>(modelsList??[]).map(m=>m.id+(m.reasoning===true?' [thinking]':'')).join('\n');
+ // 摘要行只报已保存／待生效／失败计数；逐项结果收进默认折叠的明细披露。
  function renderSync(sync,{saved=false}={}){
-  if(!sync){if(saved)modelMessage.textContent='默认模型已保存。';return;}
-  const parts=[saved?'默认模型已保存。':''];
-  if(sync.applied)parts.push(`已切换 ${sync.applied} 个 Agent。`);
-  if(sync.pending)parts.push(`${sync.pending} 个 Agent 待当前回合结束后切换。`);
-  if(sync.failed?.length)parts.push(`${sync.failed.length} 个 Agent 切换未完成：`+sync.failed.map(item=>item.message||'请检查源配置后重新保存。').join('；'));
-  const details=(sync.sessions??[]).filter(row=>row.state&&row.state!=='unchanged').map(row=>{
-   const name=row.target==='frontdesk'?'前台':row.target==='orchestrator'?'主控':'Worker '+(row.target.slice(0,6));
-   const desired=row.desired?.model?row.desired.model+(row.desired.effort?'·'+row.desired.effort:''):'原生默认';
-   const effective=row.effective?.model?`${row.effective.model}${row.effective.effort?'·'+row.effective.effort:''}`:'未配置';
-   return `${name}→${desired}（当前生效 ${effective}，${row.state==='applied'?'已应用':row.state==='pending'?'待回合结束':row.state==='failed'?'失败':'未变化'}${row.clamped?`，原生收窄为 ${row.clamped.effective}`:''}）`;
-  });
-  if(details.length)parts.push(details.join('；')+'。');
-  if(saved&&!sync.applied&&!sync.pending&&!sync.failed?.length&&!details.length)parts.push('休眠及尚未启动的 Agent 将在恢复时应用。');
-  modelMessage.textContent=parts.join('');
+  const summary=[],details=[];
+  if(saved)summary.push('已保存');
+  if(sync){
+   if(sync.applied)summary.push(`${sync.applied} 个已切换`);
+   if(sync.pending)summary.push(`${sync.pending} 个待当前回合结束后切换`);
+   if(sync.failed?.length)summary.push(`${sync.failed.length} 个失败：`+sync.failed.map(item=>item.message||'请检查源配置后重新保存。').join('；'));
+   for(const row of (sync.sessions??[]).filter(row=>row.state&&row.state!=='unchanged')){
+    const name=row.target==='frontdesk'?'前台':row.target==='orchestrator'?'主控':'工作助手 '+row.target.slice(0,6);
+    const desired=row.desired?.model?row.desired.model+(row.desired.effort?'·'+row.desired.effort:''):'原生默认';
+    const effective=row.effective?.model?`${row.effective.model}${row.effective.effort?'·'+row.effective.effort:''}`:'未配置';
+    details.push(`${name}→${desired}（当前生效 ${effective}，${row.state==='applied'?'已应用':row.state==='pending'?'待回合结束':row.state==='failed'?'失败':'未变化'}${row.clamped?`，原生收窄为 ${row.clamped.effective}`:''}）`);
+   }
+   if(saved&&!sync.applied&&!sync.pending&&!sync.failed?.length&&!details.length)summary.push('休眠及尚未启动的 Agent 将在恢复时应用');
+  }
+  modelMessage.textContent=summary.join('；')+(summary.length?'。':'');
+  modelSync.hidden=!details.length;
+  modelSyncBody.replaceChildren(...details.map(line=>node('p',line)));
  }
  function syncModelControls(){const disabled=busy||!catalogReady;for(const select of Object.values(selects))if(select.disabled!==disabled)select.disabled=disabled;modelSave.disabled=busy||(!catalogReady&&!storedDefaultsExist);modelRefresh.disabled=refreshButton.disabled=busy||!!refreshFlight;for(const think of Object.values(thinkingSelects))think.disabled=busy;}
  async function run(action){if(busy)return;busy=true;const inputs=[...providers.querySelectorAll('input,select,textarea')].map(input=>[input,input.disabled]);for(const [input]of inputs)input.disabled=true;for(const b of [...providers.querySelectorAll('button'),...models.querySelectorAll('button')])b.disabled=true;syncModelControls();try{await refreshFlight;await action();}catch(e){report(e);}finally{busy=false;for(const [input,disabled]of inputs)input.disabled=disabled;for(const b of [...providers.querySelectorAll('button'),...models.querySelectorAll('button')])b.disabled=false;syncModelControls();loginStart.disabled=!loginProvider.value||loginProvider.disabled;const nativeSubmit=nativeKeyForm.querySelector('button[type="submit"]');if(nativeSubmit)nativeSubmit.disabled=!nativeKeyProvider.value||nativeKeyProvider.disabled;}}
@@ -151,7 +163,7 @@ nativeKeyWrap.append(nativeKeyInput);nativeKeyProvider.append(node('option','正
  function renderThinkingChoices(think,savedLevel,levels){
   const selected=think.dataset.dirty==='true'?think.value:savedLevel;
   const known=Array.isArray(levels)&&levels.length;
-  const choices=[['',known?'会话原生默认':'会话原生默认（此模型档位未知，保存后以原生生效为准）'],...(known?levels.map(level=>[level,level+'（原生档位）']):[])];
+  const choices=[['',known?'会话原生默认':'会话原生默认（此模型档位能力待核实，保存后以原生生效为准）'],...(known?levels.map(level=>[level,level+'（原生档位）']):[])];
   if(selected&&selected!==''&&!choices.some(([value])=>value===selected))choices.push([selected,selected+'（当前选择模型未列出该档位，保留原设置；不可重新选择）','disabled']);
   if(think.options.length!==choices.length||choices.some(([value,text],index)=>think.options[index].value!==value||think.options[index].textContent!==text))think.replaceChildren(...choices.map(([value,text,disabled])=>{const option=node('option',text,{value});if(disabled)option.disabled=true;return option;}));
   if(think.value!==selected)think.value=selected;

@@ -2,16 +2,20 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mountSessionRuntimeControls} from '../src/renderer/session-model-controls.mjs';
 class Node{
- constructor(tag){this.tag=tag;this.children=[];this.listeners={};this.attributes={};this.dataset={};this.style={};}
- append(...nodes){this.children.push(...nodes);}
- replaceChildren(...nodes){this.children=nodes;}
+ constructor(tag){this.tag=tag;this.children=[];this.listeners={};this.attributes={};this.dataset={};this.style={};this.value='';this.selectionStart=this.selectionEnd=0;}
+ get childNodes(){return this.children;}
+ append(...nodes){for(const node of nodes){node.remove();node.parent=this;this.children.push(node);}}
+ replaceChildren(...nodes){for(const node of this.children)node.parent=null;this.children=[];this.append(...nodes);}
+ insertBefore(node,before){node.remove();node.parent=this;this.children.splice(before?this.children.indexOf(before):this.children.length,0,node);}
+ setSelectionRange(start,end){this.selectionStart=start;this.selectionEnd=end;}
  setAttribute(key,value){this.attributes[key]=String(value);}
  addEventListener(type,fn){(this.listeners[type]??=[]).push(fn);}
- remove(){} hidePopover(){this.open=false;} showPopover(){this.open=true;} showModal(){this.open=true;} close(){this.open=false;}
+ remove(){if(this.parent){this.parent.children=this.parent.children.filter(node=>node!==this);this.parent=null;}} hidePopover(){this.open=false;} showPopover(){this.open=true;} showModal(){this.open=true;} close(){this.open=false;}
  matches(){return this.open===true;} getBoundingClientRect(){return {right:200,bottom:40,width:200,height:100};}
  querySelector(){return null;} focus(){}
  click(){if(this.disabled)return;this.onclick?.();for(const fn of this.listeners.click??[])fn({preventDefault(){}});}
 }
+const descendants=node=>[node,...node.children.flatMap(descendants)];
 const settle=async()=>{for(let i=0;i<5;i++)await new Promise(resolve=>setImmediate(resolve));};
 function environment(){globalThis.document={createElement:tag=>new Node(tag),body:new Node('body')};globalThis.window={addEventListener(){},dispatchEvent(){},confirm:()=>true};globalThis.CustomEvent=class{};globalThis.innerWidth=1000;globalThis.innerHeight=800;}
 const owner=(projectId='p',ownerId='owner')=>({projectId,target:'frontdesk',agent:{ownerId}});
@@ -22,7 +26,7 @@ test('runtime options are read-only and busy commands do not dispatch',async()=>
  ui.update(visible);ui.button.click();await settle();
  const dialog=document.body.children[0],actions=dialog.children.find(node=>node.className==='session-runtime-actions'),compact=actions.children[0];
  assert.equal(calls[0].op,'session.options');assert.equal(calls[0].p.ownerId,'owner');assert.equal(compact.disabled,true);compact.click();await settle();assert.equal(calls.length,1);
- assert.equal(dialog.children.find(node=>node.tag==='textarea').readOnly,true);
+ assert.equal(descendants(dialog).find(node=>node.tag==='textarea').readOnly,true);
  busy=false;ui.button.click();await settle();assert.equal(compact.disabled,false);
  ctx=owner('p','replacement');compact.click();await settle();assert.equal(calls.filter(c=>c.op==='session.command').length,0);
 });
@@ -60,6 +64,6 @@ test('failed snapshot refresh clears old context without starting a diagnostic r
  environment();let fail=false;const calls=[];
  const ui=mountSessionRuntimeControls({current:()=>owner(),call:async(op)=>{calls.push(op);if(fail)throw Error('local read failed');return {contextDetails:contextFixture()};}});
  ui.button.click();await settle();const dialog=document.body.children[0],disclosure=dialog.children.find(node=>node.tag==='details');toggle(disclosure,true);fail=true;
- dialog.children.find(node=>node.className==='session-runtime-actions').children.find(node=>node.textContent==='刷新状态与诊断').click();await settle();
+ dialog.children.find(node=>node.className==='session-runtime-actions').children[3].click();await settle();
  assert.equal(disclosure.children[1].children.length,0);assert.deepEqual(calls,['session.options','session.options']);assert.ok(allText(dialog).includes('读取失败：local read failed'));
 });

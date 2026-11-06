@@ -11,11 +11,11 @@ html[data-workspace-role=surface][data-workspace-kind=web] #app.app>.online-brow
 .online-browser-viewport{flex:1;min-width:0;min-height:0;position:relative;background:#fff}
 @media(max-width:420px){.online-browser-toolbar{gap:3px;padding:5px}.online-browser-toolbar button{padding:4px}.online-browser-toolbar input{padding:4px}}
 .online-browser-content{display:flex;flex:1;min-width:0;min-height:0;position:relative;overflow:hidden}
-/* Native guests cannot be covered by renderer z-index. Reserve the panel's
-   actual rectangle so its controls always remain above/outside guest hit tests. */
-.web-discussion{position:relative;z-index:10;flex:none;box-sizing:border-box;width:340px;min-width:min(260px,85%);max-width:85%;height:100%;resize:horizontal;overflow:auto;display:flex;flex-direction:column;gap:8px;padding:12px;border-left:1px solid var(--border,#cbd4cb);box-shadow:-4px 0 15px #0002;background:var(--panel-bg,#fff)}
-.web-discussion[hidden]{display:none!important}
-.web-discussion header,.web-discussion footer{display:flex;align-items:center;justify-content:space-between;gap:8px;flex:none}
+/* Discussion body inside the shared local-window shell: content styles only.
+   The shell owns geometry/drag/resize; the guest keeps the full viewport and is
+   natively clipped around the floating window (no flex reservation). */
+.web-discussion{display:flex;flex-direction:column;gap:8px;min-width:0;min-height:0;padding:12px;font-size:12px}
+.web-discussion footer{display:flex;align-items:center;justify-content:space-between;gap:8px;flex:none}
 .web-discussion button{padding:5px 10px;min-height:30px;cursor:pointer}
 .web-discussion p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
 .web-discussion-url,.web-discussion-notice,.web-discussion small{font-size:11px;color:var(--muted,#606d60)}

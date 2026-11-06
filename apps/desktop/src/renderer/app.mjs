@@ -43,7 +43,8 @@ import { openSearchPanel } from '@codemirror/search';
 import { anchorText,anchorAdvisory,textChangeSet } from '../domain/tag-anchors.mjs';
 import { mountWorkspace } from './workspace.mjs';
 import { mountAgent } from './agent-panel.mjs';
-import { makeAnchorTag, makeNoteTag } from './note-tag.mjs';
+import { makeAnchorTag, makeNoteTag, flushTagWindows, disposeTagWindows } from './note-tag.mjs';
+import './local-window.css';
 import { managedWorkRecords } from '../domain/managed-work-records.mjs';
 import {renderTagMarkdown} from './tag-markdown.mjs';
 import {markdownSelection,markdownRange,markdownPoint,markdownPointRange} from './markdown-source.mjs';
@@ -222,28 +223,54 @@ function enqueue(action, freeze = false) {
   let relocationPoint = null;
   function rememberRelocationPoint(target) { relocationPoint = {...target, file: ui.file, revision: ui.wordRevision, text: ui.editor?.adapter.getText()}; return target; }
   function renderUnlocatedTags() {
-    let panel = $('unlocated-tags');
-    if (!panel) { panel = document.createElement('details'); panel.id = 'unlocated-tags'; panel.open = true; $('reader-scroll').prepend(panel); }
+    let layer = $('reader-discussion-tags');
+    if (!layer) { layer = document.createElement('div'); layer.id = 'reader-discussion-tags'; layer.dataset.tagLayout = 'viewport'; $('reader-scroll').append(layer); }
     const notes = (ui.annotations || []).filter(note => !note.projection?.removed && !ui.threads.get(note.id)?.removed && (note.kind === 'file' || !note.resolution?.anchor));
-    panel.hidden = !notes.length; panel.replaceChildren();
-    const fileCount=notes.filter(note=>note.kind==='file').length,unlocatedCount=notes.length-fileCount;
-    const summary=document.createElement('summary');summary.textContent=[fileCount?`文件讨论 · ${fileCount}`:'',unlocatedCount?`未定位标签 · ${unlocatedCount}（可继续讨论）`:''].filter(Boolean).join('　');panel.append(summary);
+    // A newly opened file discussion has no persisted annotation until its first
+    // draft/view change. Project that same thread immediately, never a second one.
+    const ids = new Set(notes.map(note => note.id));
+    for (const thread of ui.threads.values()) {
+      if (thread.anchorKind === 'file' && !thread.removed && thread.projectId === ui.project?.id && thread.relPath === ui.file?.relPath && !ids.has(thread.id)) {
+        notes.push({ ...thread, kind: 'file', projection: true }); ids.add(thread.id);
+      }
+    }
+    const unlocated = notes.filter(note => note.kind !== 'file');
+    let panel = $('unlocated-tags');
+    if (!panel && unlocated.length) { panel = document.createElement('details'); panel.id = 'unlocated-tags'; panel.open = true; $('reader-scroll').prepend(panel); }
+    if (panel) {
+      panel.hidden = !unlocated.length; panel.replaceChildren();
+      const summary = document.createElement('summary'); summary.textContent = `未定位标签 · ${unlocated.length}（原文与历史保留，可继续讨论）`; panel.append(summary);
+    }
+    const previous = new Map(Array.from(layer.children, node => [node.dataset.annotation, node]));
+    const readOnly = documentReadOnly() || isReviewDocument;
     for (const note of notes) {
-      const entry = document.createElement('div'); entry.className = 'unlocated-tag';
-      const label = document.createElement('p'); label.textContent = `#${ui.noteDisplayOrdinals.get(note.id) || note.ordinal} · ${note.kind === 'file' ? '文件讨论' : '原位置未找到'}`;
-      const quote = document.createElement('blockquote'); quote.textContent = note.kind === 'file' ? note.relPath : note.anchor.quote || (note.kind.endsWith('-point') ? '文档位置（原文与备注保留）' : '原页面/区域');
-      const listLayout = { inline: true, readOnly: documentReadOnly() || isReviewDocument, size: () => null, resize: () => {}, offset: () => [0, 0], move: () => {} };
-      const displayNote = {...note, ordinal: ui.noteDisplayOrdinals.get(note.id) || note.ordinal};
-      const thread = ui.threads.get(note.id);
-      entry.append(label, quote, note.projection && thread ? makeAnchorTag(thread, { ...tagActions, ...listLayout, ...(note.kind === 'file' ? { autoEdit: id => consumeInitialTagEdit(id, 'file') } : {}) }) : makeNoteTag(displayNote, { ...noteActions(ui.project.id), ...listLayout })); panel.append(entry);
+      const thread = note.projection && ui.threads.get(note.id);
+      const data = thread || { ...note, ordinal: ui.noteDisplayOrdinals.get(note.id) || note.ordinal };
+      const version = tagProjectionContent(data);
+      let root = previous.get(note.id);
+      if (root && root._readOnly === readOnly && root._projectionVersion !== version && thread && root.updateConversation?.(thread)) root._projectionVersion = version;
+      if (!root || root._readOnly !== readOnly || root._projectionVersion !== version) {
+        root?.remove();
+        root = thread ? makeAnchorTag(thread, { ...tagActions, readOnly, autoEdit: id => consumeInitialTagEdit(id, 'file') }) : makeNoteTag(data, { ...noteActions(ui.project.id), readOnly });
+        root._projectionVersion = version; root._readOnly = readOnly;
+        layer.append(root);
+      }
+      root.setOrdinal?.(ui.noteDisplayOrdinals.get(note.id) || note.ordinal);
+      root.relayout?.(); previous.delete(note.id);
       if (note.kind === 'file') continue;
+      const entry = document.createElement('div'); entry.className = 'unlocated-tag'; entry.dataset.annotation = note.id;
+      const label = document.createElement('button'); label.type = 'button'; label.className = 'tag-open-unlocated'; label.textContent = `打开 #${ui.noteDisplayOrdinals.get(note.id) || note.ordinal} · 原位置未找到`;
+      label.addEventListener('click', () => { root.querySelector('.note-index')?.click(); root.localWindow?.header.focus({preventScroll:true}); });
+      const quote = document.createElement('blockquote'); quote.textContent = note.anchor?.quote || (note.kind.endsWith('-point') ? '文档位置（原文与备注保留）' : '原页面/区域');
       const relocate = document.createElement('button'); relocate.type = 'button'; relocate.className = 'tag-relocate'; relocate.textContent = note.kind.endsWith('-point') ? '重新定位（可选）到当前文档位置' : '重新定位（可选）到当前选区';
-      relocate.disabled = documentReadOnly() || isReviewDocument;
+      relocate.disabled = readOnly;
       let captured = null;
       relocate.addEventListener('pointerdown', event => { if (event.button === 0) { captured = captureRelocation(note); event.preventDefault(); } });
       relocate.addEventListener('click', () => { const selection = captured || captureRelocation(note); captured = null; reanchorNote(note, selection); });
-      entry.append(relocate);
+      entry.append(label, quote, relocate); panel.append(entry);
     }
+    for (const root of previous.values()) root.remove();
+    layer.hidden = !notes.length;
   }
   function captureRelocation(note) {
     if (!ui.project || !ui.file || ui.file.sourceChanged) return null;
@@ -428,7 +455,14 @@ function enqueue(action, freeze = false) {
       if (action === 'discuss') {
         const existing = (ui.annotations || []).find(note => note.kind === 'file' && note.projection && !note.projection.removed && !ui.threads.get(note.id)?.removed);
         const thread = existing && ui.threads.get(existing.id) || [...ui.threads.values()].find(tag => tag.anchorKind === 'file' && !tag.removed && tag.projectId === ui.project.id && tag.relPath === ui.file.relPath && tag.material?.documentSource && JSON.stringify(tag.material.documentSource) === JSON.stringify(documentSource));
-        if (thread) { thread.open = true; projectTags(); renderUnlocatedTags(); return thread; }
+        if (thread) {
+          projectTags();
+          const root = [...$('reader-discussion-tags').children].find(node => node.dataset.annotation === thread.id);
+          const index = root?.querySelector('.note-index');
+          index?.click();
+          (root?.localWindow?.node || root)?.querySelector('.tag-editor')?.focus({ preventScroll: true });
+          return thread;
+        }
         if (!ui.file || ui.file.sourceChanged || !ui.materialDigest) { workspace.toast('来源已变化，请重新打开当前文件后创建文件讨论。'); return null; }
         return addTag({ relPath: ui.file.relPath, documentSource, kind: 'file', anchor: { scope: 'file' }, excerpt: '', file: true, ...(ui.file.kind === 'text' ? { materialText: ui.editor?.adapter?.getText() || '' } : {}) }, { text: '', persist: false });
       }
@@ -527,9 +561,10 @@ function renderTagPathNotices(){
   const file=ui.file,entry=file&&openFilesState.availability?.get(file.relPath);
   const caption=entry?.status==='missing'?'原路径不存在，可能已移动或删除。原标签与引文保留，未改绑新文件。':entry?.status==='unavailable'?'原路径暂不可用。原标签与引文保留。':file?.diskPresent===false?'当前标签仍对应保留副本，未绑定到重建的磁盘正文。':'';
   for(const node of document.querySelectorAll('#reader-scroll .note-anchor')){
-    let notice=node.querySelector('.tag-path-notice');
+    const projection = node.localWindow?.node || node;
+    let notice=projection.querySelector('.tag-path-notice');
     if(!caption){notice?.remove();continue;}
-    if(!notice){notice=document.createElement('span');notice.className='tag-path-notice';notice.setAttribute('role','status');const card=node.querySelector('.note-projection');if(card){const head=card.querySelector('.note-projection-head');head?head.after(notice):card.prepend(notice);}else node.append(notice);}
+    if(!notice){notice=document.createElement('span');notice.className='tag-path-notice';notice.setAttribute('role','status');const card=projection.querySelector('.note-projection');if(card)card.prepend(notice);else node.append(notice);}
     notice.textContent=caption;
   }
 }
@@ -871,7 +906,7 @@ function clearFailure() {
 let recoveryGeneration = 0;
 let agentPanel;
 async function flushConversationDrafts(){
- try{await agentPanel?.flushDrafts();return {ok:true};}
+ try{await flushTagWindows();await agentPanel?.flushDrafts();return {ok:true};}
  catch(error){return {ok:false,error:{code:error.code||'CONVERSATION_DRAFT_FAILED',message:'对话草稿未能持久化；原输入保留，请重试。'}};}
 }
 async function retainWorkspace() {
@@ -892,6 +927,7 @@ async function retainWorkspace() {
   const revision = ui.wordRevision, baseDigest = ui.baseDigest, sourceDigest = file?.digest, baselineText = ui.lastSavedText;
   const captureStatus=()=>({dirty:Boolean(ui.dirty||ui.wordDirty),composing:projectComposing(),conflict:Boolean(ui.conflict),missing:Boolean(ui.sourceMissing||ui.file?.diskPresent===false),readOnly:documentReadOnly()});
   const capturedDocumentStatus=captureStatus();
+  rememberConversationView();
   const workspaceSnapshot = workspace.snapshot(), materialsSnapshot = window.__composerMaterials?.snapshotPersist();
   const inputIdentity = JSON.stringify([workspaceSnapshot,materialsSnapshot,ui.frozenNote]);
   let candidate;
@@ -923,7 +959,7 @@ async function retainWorkspace() {
   if (inputIdentity !== JSON.stringify([workspace.snapshot(),window.__composerMaterials?.snapshotPersist(),ui.frozenNote])) return {ok:false,error:{code:'RECOVERY_CHANGED',message:'有更新的输入尚未保留，请重试关闭。'}};
   if (project !== ui.project || file !== ui.file || revision !== ui.wordRevision || baseDigest !== ui.baseDigest || sourceDigest !== file?.digest || candidate?.text !== undefined && candidate.text !== ui.editor?.adapter.getText() || projectComposing()) return {ok:false,error:{code:'RECOVERY_CHANGED',message:'有更新的编辑尚未保留，请重试关闭。'}};
   setStatus(isReviewDocument&&!ui.dirty?'saved':'dirty','已保留在本机 · 未写回项目');
-  return result;
+  return isConversation ? writeView() : result;
 }
 
   async function performFlushNow(confirmOverwrite = false, resolvingNoteEdit = false) {
@@ -1058,6 +1094,10 @@ function fireDeadlineSave() {
   flushCurrent().then(settled, settled);
 }
 
+function rememberConversationView(){
+  if(isConversation){const materials=window.__composerMaterials?.snapshotPersist(),identity=workspaceScope.viewState?.conversationInput;workspaceScope.viewState={...workspaceScope.viewState,conversationScroll:{top:$('conversation').scrollTop,tail:$('conversation').scrollHeight-$('conversation').scrollTop-$('conversation').clientHeight<=40},...(identity?.projectId===ui.project.id&&identity.target?{conversationMaterials:{...workspaceScope.viewState?.conversationMaterials,[identity.target]:materials}}:{})};}
+}
+
 async function writeView(extra = {}) {
   if (ui.viewBlocked) return { ok: false, error: { code: 'VIEW_UNREADABLE', message: '视图未能读取，未写回已保存的工作区。' } };
   if (!ui.project) return { ok: true };
@@ -1065,7 +1105,7 @@ async function writeView(extra = {}) {
     const shared=workspace.snapshot(),settings={fontSize:shared.fontSize,conversationFontSize:shared.conversationFontSize,readingWidth:shared.readingWidth};
     const settingsKey=JSON.stringify([settings,extra.projectSettings??ui.projectSettings]);
     if(workspaceScope.settingsKey!==settingsKey){const saved=await invoke('workspace.settings',{projectId:ui.project.id,workspace:settings,projectSettings:extra.projectSettings??ui.projectSettings});if(!saved.ok)return saved;workspaceScope.settingsKey=settingsKey;}
-    if(isConversation){const materials=window.__composerMaterials?.snapshotPersist(),identity=workspaceScope.viewState?.conversationInput;workspaceScope.viewState={...workspaceScope.viewState,conversationScroll:{top:$('conversation').scrollTop,tail:$('conversation').scrollHeight-$('conversation').scrollTop-$('conversation').clientHeight<=40},...(identity?.projectId===ui.project.id&&identity.target?{conversationMaterials:{...workspaceScope.viewState?.conversationMaterials,[identity.target]:materials}}:{})};}
+    rememberConversationView();
     const viewState={...workspaceScope.viewState,documentStatus:documentStatus(),pdfPage:ui.pdf?.current()||1,scrollTop:ui.editor?.adapter.getScrollTop?.()??$('reader-scroll').scrollTop,fileView:{textMode:ui.textMode,selection:ui.editor?.adapter.getSelection?.(),materialDigest:ui.materialDigest,zoom:ui.pdf?.viewState?.(),...(ui.file&&isMarkdownPath(ui.file.relPath)?{markdownPreview:markdownWorkspace.snapshot()}:{}),...(webWorkspace.active()?{webMode:webWorkspace.snapshot()}:{})},workspace:workspace.snapshot(),composerMaterials:window.__composerMaterials?.snapshotPersist()};
     workspaceScope.viewState=viewState;
     const result = await invoke('workspace.command', {projectId:ui.project.id,requestKey:crypto.randomUUID(),command:{type:'restoreViewState',viewId:workspaceScope.viewId,viewState}});
@@ -1110,7 +1150,8 @@ async function retryViewRead() {
   window.__composerMaterials?.restore(state.value.state?.composerMaterials);
   showRetained(state.value.state?.workspace);
 }
-    function destroySurface() {
+    async function destroySurface() {
+      await disposeTagWindows();
       webWorkspace.leave(); closeIsolatedSurfaces();
       frozenChangeReader.restore({focus:false});
       $('file-path-notice').hidden=true;
@@ -1158,6 +1199,7 @@ async function retryViewRead() {
     $('note-form').hidden = true;
     $('unsupported').hidden = true;
     $('unlocated-tags')?.remove();
+    $('reader-discussion-tags')?.remove();
     ui.pdfSelection = null;
     $('pdf-region').setAttribute('aria-pressed', 'false');
     $('selection-menu').hidden = true;
@@ -1244,7 +1286,7 @@ async function refreshNotes() {
     ui.pdfSelection = null;
     ui.selectionRect = null;
     $('selection-menu').hidden = true;
-    destroySurface();
+    await destroySurface();
     $('reader-scroll').scrollTop = $('reader-scroll').scrollLeft = 0;
     const file = result.value;
     ui.file = file;
@@ -1651,7 +1693,7 @@ const treeActions = mountFileTreeActions({
       }
     }
     if (affected(current)) {
-      destroySurface(); ui.file = null; ui.dirty = false;
+      await destroySurface(); ui.file = null; ui.dirty = false;
       if (from) { $('note-form').hidden = true; await openFileNow(relPath + current.slice(from.length)); }
       else {
         renderEmptyState();
@@ -1710,7 +1752,7 @@ async function clearProjectPage(projectId) {
   ui.project = null; workspaceScope.projectId = null; ui.file = null; ui.sourceMissing = false;
   workspaceGroups?.clear();
   openFilesState = {paths:[],active:null,dirty:false,collapsed:false};
-  closeBeside(); destroySurface(); workspace.restore({});
+  closeBeside(); await destroySurface(); workspace.restore({});
   window.__composerMaterials?.setProject(null);
   await fileNavigator.render();
   $('project-name').textContent = 'Nozeli'; $('project-name').title = '';
@@ -1849,7 +1891,7 @@ async function renderRecent() {
   // No await between the host binding receipt and replacing source-owned input.
   // A host flush must never label the previous project's draft as the target.
   projectReady = false;
-  closeBeside();destroySurface();
+  closeBeside();await destroySurface();
   ui.project = opened.value.project;workspaceScope.projectId=projectId;
   ui.file=null;ui.dirty=false;ui.sourceMissing=false;
   ui.baseDigest=null;ui.materialDigest=null;ui.lastSavedText=null;
@@ -1922,7 +1964,7 @@ if (workspaceScope.role === 'shell') {
     if(generation!==recoveryGeneration||token!==recoveryDetailToken||!parent.isConnected)return;
     const value=got.value,body=document.createElement('div'),actions=document.createElement('div');parent.replaceChildren(body,actions);
     if(typeof value?.candidate?.text==='string')showText(body,value.candidate.text);
-    else body.textContent=JSON.stringify({kind:value?.kind,status:value?.status,relPath:value?.relPath,sourceDigest:value?.sourceDigest,retainedAt:value?.retainedAt,byteLength:got.byteLength,hasModel:!!value?.candidate?.model},null,2);
+    else {const technical=document.createElement('details'),summary=document.createElement('summary'),raw=document.createElement('pre');summary.textContent='技术详情';raw.textContent=JSON.stringify({kind:value?.kind,status:value?.status,relPath:value?.relPath,sourceDigest:value?.sourceDigest,retainedAt:value?.retainedAt,byteLength:got.byteLength,hasModel:!!value?.candidate?.model},null,2);technical.append(summary,raw);body.append(technical);}
     if(value?.candidate?.bytes)addButton(actions,'导出文档副本',()=>download((value.relPath||'recovery-document').split('/').pop(),decodeRecoveryBytes(value.candidate.bytes),'application/octet-stream'));
     if(typeof value?.candidate?.text==='string')addButton(actions,'导出文本副本',()=>download((value.relPath||'recovery.txt').split('/').pop(),value.candidate.text,'text/plain;charset=utf-8'));
     const reports=value?.collections?.managed_receipts?.map(row=>({id:row.id,report:row.value?.report,reference:'receipt'}))??[];
@@ -1957,7 +1999,7 @@ if (workspaceScope.role === 'shell') {
         const value=entry.value??{},section=document.createElement('section'),heading=document.createElement('h3'),preview=document.createElement('p'),detailBody=document.createElement('div');
         section.dataset.recoveryId=entry.id;
         heading.textContent=`${entry.project.name||entry.project.id}${entry.project.removed?'（已移除）':''} · ${value.relPath||value.kind||value.recoveryKind||'恢复记录'}${value.relPathTruncated?'（路径预览）':''}`;
-        preview.textContent=value.needsCheck?'原始记录保留，状态或格式需核查；较大记录可直接完整导出。':`${value.status||'本机保留'} · ${entry.byteLength??0} 字节 · 不自动重放`;
+        preview.textContent=value.needsCheck?'原始记录保留，状态或格式需核查；较大记录可直接完整导出。':`${value.status||'仅本机保留'} · ${entry.byteLength??0} 字节${value.retainedAt?' · 保留于 '+new Date(value.retainedAt).toLocaleString():''}`;
         section.append(heading,preview,detailBody);
         if(value.recoveryKind==='lifecycle')addButton(section,'核查停稳状态',async()=>{const result=await checked('project.lifecycle.reconcile',{projectId:entry.project.id,operationId:value.operationId});showText(detailBody,JSON.stringify(result,null,2));});
         else{
@@ -2100,8 +2142,7 @@ function noteActions(projectId) {
   return {
     filePath: () => ui.file?.relPath || '', sourceText: () => ui.editor?.adapter.getText() || '',
     draw: id => editSavedDrawing(id),
-    size: workspace.chatSize, resize: workspace.resizeChat,
-    offset: workspace.offset,
+    legacyView: workspace.legacyTagView,
     draft: id => { const draft = ui.project?.id === projectId && workspace.editDraft(projectId, id); return draft ? { value: draft.text } : null; },
     onDraft: (id, text, origin) => {
       if (ui.project?.id !== projectId || !origin || origin.id !== id || ui.file?.relPath !== origin.relPath) return;
@@ -2109,19 +2150,10 @@ function noteActions(projectId) {
       const draft = previous || { projectId, annotationId: id, baselineUpdatedAt: origin.updatedAt, relPath: origin.relPath, materialDigest: origin.materialDigest, kind: origin.kind, anchor: structuredClone(origin.anchor) };
       const retained = workspace.rememberEdit({ ...draft, text, updatedAt: Date.now() });
       if (!retained) workspace.toast('备注编辑草稿未持久化：已有 40 条草稿；输入仍保留在内存。请明确保存或删除此备注编辑，切换和关闭已阻止。');
-      void writeView().then(result => { if (!result.ok) workspace.toast(`备注编辑草稿未持久化，输入仍保留在内存；请勿关闭并处理保存错误：${result.error?.message || '工作区无法写入'}`); });
+      return writeView().then(result => { if (!result.ok) workspace.toast(`备注编辑草稿未持久化，输入仍保留在内存；请勿关闭并处理保存错误：${result.error?.message || '工作区无法写入'}`);return retained?result:{ok:false,error:{code:'NOTE_DRAFT_OVERFLOW',message:'备注草稿尚未持久化，请先保存或删除此备注编辑。'}}; });
     },
     open: id => ui.noteOpenStates.get(`${projectId}:${id}`) ?? true,
-    onOpen: (id, open) => {
-      const note = (ui.annotations || []).find(note => note.id === id && !note.projection);
-      if (ui.project?.id !== projectId || !note) return;
-      ui.noteOpenStates.set(`${projectId}:${id}`, open);
-      const payload = {projectId, relPath:note.relPath, annotationId:id, collapsed:!open};
-      void enqueue(async () => {
-        const result = await invoke('tag.view', payload);
-        if (!result.ok) workspace.toast(`备注显示状态未能保存：${result.error.message}`);
-      });
-    },
+    onOpen: (id, open) => { ui.noteOpenStates.set(`${projectId}:${id}`, open); },
     execute: (note, text) => enqueue(async () => {
       if (ui.project?.id !== projectId || ui.file?.relPath !== note.relPath) { workspace.toast('来源已变化，未执行；备注仍保留。'); return; }
     if (note.execute?.jobId || (ui.executeSent || new Set()).has(note.id)) { setExecuteDisplay(note.id, '已提交 · 见工作与待办'); workspace.toast('这条备注已发送过执行，状态见标签与工作栏。'); return; }
@@ -2168,7 +2200,6 @@ function noteActions(projectId) {
       await refreshNotes();
       return { ...saved, text: saved.note ?? text };
     }, true),
-    move: workspace.moveNote,
     remove: id => {
       const file = ui.file;
       return enqueue(async () => {
@@ -2178,6 +2209,7 @@ function noteActions(projectId) {
         if (ui.project?.id !== projectId || ui.file !== file) return;
         const result = await invoke('annotation.remove', {projectId,annotationId:id});
         if (!result.ok) return workspace.toast(result.error.message);
+        await disposeTagWindows(id);
         if (editDraft && workspace.editDraft(projectId, id) === editDraft) { workspace.clearEdit(editDraft); await writeView(); }
         ui.noteOpenStates.delete(`${projectId}:${id}`);
         if (ui.project?.id === projectId && ui.file === file) await refreshNotes();
@@ -2210,9 +2242,8 @@ function updateDisplayedOrdinals() {
 function projectTags() {
   renumberTags();
   const focused = document.activeElement;
-  const editingId = focused?.classList?.contains('tag-editor') ? focused.closest('.note-anchor')?.dataset.annotation : null;
+  const editingId = focused?.classList?.contains('tag-editor') ? focused.closest('[data-annotation]')?.dataset.annotation : null;
   const selection = editingId ? [focused.selectionStart, focused.selectionEnd] : null;
-  const editingSurface = focused?.closest('#text-preview,#text-host,#pdf-host,#word-host,#image-host') || $('text-host');
   const tags = activeTags();
   ui.editor?.setTags?.(tags.filter(tag => ['text-selection','text-point'].includes(tag.anchorKind)).map(tag => ({ ...tag.anchor, tag, point: tag.anchorKind === 'text-point', locationStatus: tag.resolution.locationStatus, contentStatus: tag.resolution.contentStatus })));
   ui.pdf?.setTags?.(tags.filter(tag => ['pdf-selection','pdf-point','pdf-region','image-region','image-point'].includes(tag.anchorKind)));
@@ -2220,8 +2251,9 @@ function projectTags() {
   if (!$('text-preview').hidden && ui.file?.kind === 'text') projectPreviewTags();
   updateDisplayedOrdinals();
   renderTagPathNotices();
+  renderUnlocatedTags();
   if (editingId) {
-    const editor = [...editingSurface.querySelectorAll('.note-anchor')].find(node => node.dataset.annotation === editingId)?.querySelector('.tag-editor');
+    const editor = [...document.querySelectorAll('.local-window[data-annotation]')].find(node => node.dataset.annotation === editingId)?.querySelector('.tag-editor') || (focused?.isConnected ? focused : null);
     if (editor && !editor.hidden) { editor.focus({ preventScroll: true }); editor.setSelectionRange(...selection); }
   }
 }
@@ -2300,8 +2332,7 @@ const tagTaskSubmissions = new Map();
 const tagActions = {
   draw: id => editSavedDrawing(id),
   filePath: () => ui.file?.relPath || '', sourceText: () => ui.editor?.adapter.getText() || '',
-  offset: workspace.offset, move: workspace.moveNote,
-  size: workspace.chatSize, resize: workspace.resizeChat,
+  legacyView: workspace.legacyTagView,
   remove: async id => {
     const tag = ui.threads.get(id), file = ui.file, project = ui.project;
     if (documentReadOnly() || isReviewDocument || !tag || tag.projectId !== project?.id || tag.relPath !== file?.relPath) return;
@@ -2309,19 +2340,19 @@ const tagActions = {
     // The original request, frozen material and transcript remain untouched.
     const result = await persistTag({...tag, removed: true});
     if (!result?.ok) return;
+    await disposeTagWindows(id);
     tag.removed = true;
     discussionDrafts.delete(tag.projectId,id);
     if (ui.project !== project || ui.file !== file || ui.threads.get(id) !== tag) return;
     if (ui.initialTagId === id) { ui.initialTagId = null; ui.initialTagSurface = null; }
     projectTags(); renderUnlocatedTags();
   },
-  onOpen: (id, open) => { const tag = ui.threads.get(id); if (tag) { tag.open = open; persistTag(tag); } },
   onDraft: (id, text) => {
     const tag = ui.threads.get(id);
     if (!tag || tag.projectId !== ui.project?.id) return;
     const previous = discussionDrafts.get(tag.projectId,id) || { version: 0, text: '' };
     discussionDrafts.set(tag.projectId,id, { ...previous, version: previous.version + 1, text });
-    if (tag) { tag.draftText = text; if (tag.status === 'draft') tag.text = text; persistTag(tag); }
+    if (tag) { tag.draftText = text; if (tag.status === 'draft') tag.text = text; return persistTag(tag); }
   },
   save: async (id, text) => {
     const tag = ui.threads.get(id);
@@ -2526,7 +2557,7 @@ $('selection-explain').addEventListener('click', async () => {
 });
 document.addEventListener('pointerdown', event => {
   if (event.button === 2 && event.target.closest('#documents')) return;
-  if (event.target.closest('#unlocated-tags,.nozeli-context-menu,#selection-menu,#note-form,#region-drawing,.textLayer,.region-selecting,#text-host')) return;
+  if (event.target.closest('#unlocated-tags,#reader-discussion-tags,.nozeli-context-menu,#selection-menu,#note-form,#region-drawing,.textLayer,.region-selecting,#text-host')) return;
   $('selection-menu').hidden = true;
   if ($('note-form').hidden) { ui.pdfSelection = null; ui.pdf?.clearSelection(); }
 });
@@ -2815,7 +2846,7 @@ async function closeCurrentSubject(preserveDraft=false) {
   }else if (!(await flushNow()).ok) return false;
   const viewed = await writeView();
   if (!viewed.ok) return false;
-  destroySurface(); closeBeside(); ui.file = null; ui.dirty = false;
+  await destroySurface(); closeBeside(); ui.file = null; ui.dirty = false;
   clearFailure();
   window.dispatchEvent(new Event('nozeli-content-closed'));
   ui.managedReport = null;
@@ -3077,7 +3108,7 @@ async function openBesideSnapshot(file, diff=false, left=null) {
       const flushed = await flushNow();
       if (!flushed.ok) return flushed;
       if(report.projectId&&report.projectId!==ui.project?.id||report.isCurrent&&!report.isCurrent())return {ok:false};
-      destroySurface();
+      await destroySurface();
       ui.file = null;
       const {isCurrent,...material}=report;ui.managedReport = material;
       renderFileTabs();
@@ -3094,7 +3125,6 @@ async function openBesideSnapshot(file, diff=false, left=null) {
     });
   }
   if(workspaceScope.role!=='detached')agentPanel=mountAgent({invoke,getProjectId:()=>ui.project?.id??null,toast:text=>workspace.toast(text),attachment:()=>ui.managedReport || ui.file?.kind!=='text'?null:ui.file.relPath,openManaged,openFrozenChange,onMessages:applyAgentMessages,
-    onConversation:info=>workspace.conversationContent(info),
     openProjectFile:target=>target.projectId===ui.project?.id?openMarkdownTarget(target):null,
     openExternal:url=>invoke('links.openExternal',{url}).then(result=>{if(!result.ok)workspace.toast(result.error.message);}),
   });

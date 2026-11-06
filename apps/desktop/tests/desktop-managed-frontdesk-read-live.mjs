@@ -39,7 +39,6 @@ await finish(w);await wait(async()=>!(await state()).busyTargets.length,'first w
 await front('这是独立新问题：仅一句话解释什么是项目上手清单，不读取文件、不派工。');
 const old=(await state()).messages.findLast(m=>m.target==='frontdesk'&&m.speaker==='agent');
 await page.$eval('#composer',n=>{n.value='另一个未提交的草稿，必须保留。';n.dispatchEvent(new Event('input',{bubbles:true}));});await pause(200);
-if(await page.$eval('#conversation-panel',n=>n.classList.contains('compact-composer')))await page.click('#chat-history-toggle');
 await page.click('[data-managed-message="'+old.id+'"] .managed-message-task');
 await page.screenshot({path:path.join(out,'reference-entry.png')});
 check('old-message conversion opens separate reference and preserves draft',await page.$eval('#managed-source-task',n=>!n.hidden)&&await page.$eval('#composer',n=>n.value)==='另一个未提交的草稿，必须保留。');

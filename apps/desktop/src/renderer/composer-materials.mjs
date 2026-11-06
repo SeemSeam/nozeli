@@ -16,6 +16,7 @@ const TEXT_EXT = /^(txt|md|markdown|mdx|json|ya?ml|toml|ini|log|csv|js|mjs|cjs|t
 
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmtSize = n => n == null ? '' : n >= 1048576 ? (n / 1048576).toFixed(1) + ' MiB' : Math.max(1, Math.round(n / 1024)) + ' KiB';
+const quoteAuthor = role => role === 'orchestrator' ? '主控' : role === 'user' ? '你' : '前台';
 const classify = (name, mime) => {
   const ext = (name.split('.').pop() || '').toLowerCase();
   if ((mime || '').startsWith('image/')) return 'image';
@@ -477,7 +478,7 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
     quoteTo = message ? { role: message.role, time: message.createdAt || message.time || '', text: String(message.text || '') } : null;
     materialOwner.quote = quoteTo;
     quoteBar.hidden = !quoteTo;
-    if (quoteTo) quoteText.textContent = `回复 ${quoteTo.role === 'user' ? '你' : '前台'}${quoteTo.time ? ' ' + quoteTo.time : ''}：${quoteTo.text.replace(/\s+/g, ' ').slice(0, 60)}${quoteTo.text.length > 60 ? '…' : ''}`;
+    if (quoteTo) quoteText.textContent = `回复 ${quoteAuthor(quoteTo.role)}${quoteTo.time ? ' ' + quoteTo.time : ''}：${quoteTo.text.replace(/\s+/g, ' ').slice(0, 60)}${quoteTo.text.length > 60 ? '…' : ''}`;
     composerReady?.();
   }
 
@@ -580,7 +581,7 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
   /* ---------- send snapshot / confirm -------------------------------------- */
   function textMaterials() {
     const materials = [];
-    if (quoteTo && typeof quoteTo.text === 'string' && quoteTo.text.trim()) materials.push({ kind: 'reply-quote', text: quoteTo.text, title: `回复 ${quoteTo.role === 'user' ? '你' : '前台'}${quoteTo.time ? ' ' + quoteTo.time : ''}` });
+    if (quoteTo && typeof quoteTo.text === 'string' && quoteTo.text.trim()) materials.push({ kind: 'reply-quote', text: quoteTo.text, title: `回复 ${quoteAuthor(quoteTo.role)}${quoteTo.time ? ' ' + quoteTo.time : ''}` });
     for (const attachment of pending) if (attachment.source === 'drawing' && attachment.status === 'ok' && typeof attachment.frozenText === 'string' && attachment.frozenText.trim()) materials.push({ kind: 'drawing-question', text: attachment.frozenText, title: '涂鸦问题' });
     return materials;
   }
@@ -628,7 +629,7 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
       materialOwner = inFlight || { ...next, pending: Array.isArray(value?.pending) ? value.pending.filter(a => a && a.key).map(a => a.status === 'reading' ? { ...a, status: 'error', note: '上次读取未完成；材料已保留，请移除后重新添加。' } : a) : [], quote: value?.quote || null, deliveredDrawingIds: value?.deliveredDrawingIds || [], reads: 0 };
       pending = materialOwner.pending; quoteTo = materialOwner.quote;
       quoteBar.hidden = !quoteTo;
-      if (quoteTo) quoteText.textContent = `回复 ${quoteTo.role === 'user' ? '你' : '前台'}${quoteTo.time ? ' ' + quoteTo.time : ''}：${String(quoteTo.text || '').replace(/\s+/g, ' ').slice(0, 60)}`;
+      if (quoteTo) quoteText.textContent = `回复 ${quoteAuthor(quoteTo.role)}${quoteTo.time ? ' ' + quoteTo.time : ''}：${String(quoteTo.text || '').replace(/\s+/g, ' ').slice(0, 60)}`;
       renderChips();
     },
     snapshotPersist() { return persistedMaterials(materialOwner); },

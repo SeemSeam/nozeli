@@ -22,7 +22,6 @@ await wait(async()=>{const s=await state(),j=s.jobs.findLast(j=>j.type==='front'
 const active=(await state()).jobs.findLast(j=>j.type==='front'),source=(await state()).messages.find(m=>m.jobId===active.id&&m.speaker==='user');
 check('source is a real busy frontend goal',active.status==='running'&&active.readReceipts.length>0);
 await page.$eval('#composer',n=>{n.value='另一个没有提交的用户草稿';n.dispatchEvent(new Event('input',{bubbles:true}));});await pause(200);
-if(await page.$eval('#conversation-panel',n=>n.classList.contains('compact-composer')))await page.click('#chat-history-toggle');
 await page.click('[data-managed-message="'+source.id+'"] .managed-message-task');
 await page.$eval('#managed-source-task textarea',n=>n.value='正式后台任务，严格命名“活跃转交”。读取 requirements.md，创建 transfer-summary.md，写清三条核心要求并附来源。仅修改该文件，不提交Git、不联网。');
 const startTransfer=Date.now();await page.$$eval('#managed-source-task button',ns=>ns.find(n=>n.textContent==='提交此引用到后台').click());

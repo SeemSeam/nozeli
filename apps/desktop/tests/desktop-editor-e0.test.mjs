@@ -47,7 +47,7 @@ try {
   assert.equal(await readFile(path.join(project, 'main.js'), 'utf8'), expected + '// 续写😀\n'); record('real host save writes Monaco buffer');
   await page.evaluate(() => window.editorLab.tag(3,7));
   const sidecar = await new FileTags(project).read('main.js'); assert.equal(sidecar.tags.length, 1); assert.equal(sidecar.tags[0].anchor.quote, '中文😀'); record('real sidecar stores source tag without modifying source');
-  const projection = await page.evaluate(() => window.editorLab.projectionProbe()); assert.equal(projection.mounted, true); assert.equal(projection.collapsed, true); assert.equal(projection.reused, true); assert.match(projection.summary, /无侵入代码标签/); record('Monaco mounts reusable full annotation card with double-click collapse');
+  const projection = await page.evaluate(() => window.editorLab.projectionProbe()); assert.equal(projection.mounted, true); assert.equal(projection.collapsed, true); assert.equal(projection.reused, true); record('Monaco retains its annotation projection through the shared window collapse transition');
   await page.evaluate(directory => window.editorLab.open(directory), project); assert.equal((await page.evaluate(() => window.editorLab.marks())).length, 1); record('editor lab reload restores saved sidecar projections');
   await page.evaluate(() => window.editorLab.editor('monaco').applyEdit({ from: 0, insert: '//prefix\n' }));
   assert.equal(await page.evaluate(() => window.editorLab.marks()[0].anchor.start), 12); record('exact edit maps tag position');

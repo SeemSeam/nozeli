@@ -80,11 +80,12 @@ test('first-parser offline bootstrap permanently removes RTC STUN data-channel a
 });
 function harness({load,host,workspace}={}){
   const calls=[],sessions=[],views=[];
+  class ClipView{constructor(){this.children=[];this.visible=false;}addChildView(view){this.children.push(view);}removeChildView(view){this.children=this.children.filter(child=>child!==view);}setBorderRadius(){}setBounds(bounds){this.bounds=bounds;}getBounds(){return this.bounds;}setVisible(value){this.visible=value;}getVisible(){return this.visible;}}
   class View{constructor(options){this.options=options;this.visible=false;this.webContents=new EventEmitter();const wc=this.webContents;wc.id=900+views.length;wc.dead=false;wc.isDestroyed=()=>wc.dead;wc.forcefullyCrashRenderer=()=>{wc.crashed=true;};wc.close=()=>{wc.dead=true;};wc.setWebRTCIPHandlingPolicy=value=>calls.push(['rtc',value]);wc.setWindowOpenHandler=fn=>wc.popup=fn;wc.loadURL=async url=>{wc.url=url;return load?.(wc);};this.setBounds=b=>this.bounds=b;this.setVisible=b=>this.visible=b;views.push(this);}}
   const session={fromPartition(partition){const s=new EventEmitter();s.partition=partition;s.protocol={handle:(_scheme,fn)=>s.handler=fn,unhandle:()=>{}};s.webRequest={onBeforeRequest:fn=>s.request=fn};s.setPermissionRequestHandler=fn=>s.permission=fn;s.setPermissionCheckHandler=fn=>s.check=fn;s.setDevicePermissionHandler=fn=>s.device=fn;s.setDisplayMediaRequestHandler=fn=>s.display=fn;s.setProxy=async value=>s.proxy=value;s.setSpellCheckerEnabled=()=>{};sessions.push(s);return s;}};
   const scope={wc:{id:1,isDestroyed:()=>false,send:(...args)=>calls.push(args)},projectId:'p',generation:1,windowId:'main',role:'shell',win:{contentView:{addChildView:()=>{},removeChildView:()=>{}},getContentSize:()=>[800,600]}};
   let rejectRead=false;const source={report:{format:'html-static'},read:async()=>{if(rejectRead)throw Error('changed');return Buffer.from('<h1>Immutable</h1>');},readManifest:async()=>({references:[{id:'0',href:'old.txt'}]}),readReference:async()=>({kind:'artifact',bytes:Buffer.from('frozen'),mediaType:'text/plain',relPath:'old.txt'})};
-  const manager=new IsolatedPreviewManager({WebContentsView:View,session,workspace:workspace??{},host:host??{},managedAgents:{reportSource:async()=>source}});
+  const manager=new IsolatedPreviewManager({View:ClipView,WebContentsView:View,session,workspace:workspace??{},host:host??{},managedAgents:{reportSource:async()=>source}});
   const payload={key:'report',projectId:'p',objectId:'object',profile:'staticReport',generation:1,bounds:{x:10,y:20,width:300,height:200}};
   return {manager,scope,payload,calls,sessions,views,reject:()=>rejectRead=true};
 }
@@ -211,7 +212,7 @@ for(const outcome of ['commit','rollback','close'])test(`pending report load com
  if(outcome==='close'){h.manager.closeScope(h.scope);h.scope.dead=true;}
  h.scope.transferring=false;releaseLoad();
  if(outcome==='close'){await rejected;assert.equal(wc.dead,true);assert.equal(h.manager.slots.size,0);assert.equal(h.manager.pending.size,0);assert.equal(source.children.size,0);assert.equal(destination.children.size,0);}
- else {await opening;const slot=[...h.manager.slots.values()][0],owner=outcome==='commit'?destination:source,other=outcome==='commit'?source:destination;assert.equal(slot.view.webContents,wc);assert.equal(slot.parentWindow,owner);assert(owner.children.has(slot.view));assert.equal(other.children.size,0);assert.equal(wc.dead,false);assert.equal(h.manager.pending.size,0);}
+ else {await opening;const slot=[...h.manager.slots.values()][0],owner=outcome==='commit'?destination:source,other=outcome==='commit'?source:destination;assert.equal(slot.view.webContents,wc);assert.equal(slot.parentWindow,owner);assert(owner.children.has(slot.container));assert.equal(other.children.size,0);assert.equal(wc.dead,false);assert.equal(h.manager.pending.size,0);}
 });
 
 test('report requested bounds survive an initially zero-sized native surface and later shrink/grow',async()=>{
@@ -221,10 +222,33 @@ test('report requested bounds survive an initially zero-sized native surface and
  const slot=[...h.manager.slots.values()][0];
  assert.equal(slot.view.visible,false);assert.deepEqual(slot.bounds,h.payload.bounds);
  parent={x:20,y:30,width:800,height:600};h.manager.bounds(slot,slot.bounds);
- assert.equal(slot.view.visible,true);assert.deepEqual(slot.view.bounds,{x:30,y:50,width:300,height:200});
- parent.width=100;h.manager.bounds(slot,slot.bounds);assert.equal(slot.view.bounds.width,90);
+ assert.equal(slot.view.visible,true);assert.deepEqual(slot.container.bounds,{x:30,y:50,width:300,height:200});assert.deepEqual(slot.view.bounds,{x:0,y:0,width:300,height:200});
+ parent.width=100;h.manager.bounds(slot,slot.bounds);assert.equal(slot.container.bounds.width,90);assert.equal(slot.view.bounds.width,300);
  parent.width=800;h.manager.bounds(slot,slot.bounds);assert.equal(slot.view.bounds.width,300);
  assert.deepEqual(slot.bounds,h.payload.bounds);
+});
+
+test('moving the visible report mask never resizes or reloads its HTML viewport',async()=>{
+ const h=harness();await h.manager.invoke(h.scope,'isolated-preview.open',h.payload);const slot=[...h.manager.slots.values()][0],wc=slot.view.webContents;
+ h.manager.bounds(slot,{...h.payload.bounds,clip:{x:110,y:20,width:200,height:200}});
+ assert.deepEqual(slot.container.bounds,{x:110,y:20,width:200,height:200});assert.deepEqual(slot.view.bounds,{x:-100,y:0,width:300,height:200});
+ h.manager.bounds(slot,{...h.payload.bounds,clip:{x:10,y:20,width:70,height:200}});
+ assert.equal(slot.container.bounds.width,70);assert.equal(slot.view.bounds.width,300);assert.equal(slot.view.webContents,wc);
+ h.manager.bounds(slot,h.payload.bounds);assert.deepEqual(slot.view.bounds,{x:0,y:0,width:300,height:200});assert.equal(wc.dead,false);
+});
+
+test('late host-window and out-of-order clipping cannot uncover a local discussion',async()=>{
+ const h=harness();await h.manager.invoke(h.scope,'isolated-preview.open',h.payload);
+ const slot=[...h.manager.slots.values()][0],guest=slot.view.webContents;
+ const update=(windowId,boundsSequence,clip)=>h.manager.invoke(h.scope,'isolated-preview.bounds',{key:'report',generation:1,windowId,surfaceGeneration:1,boundsSequence,bounds:{...h.payload.bounds,clip}});
+ const first={x:110,y:20,width:200,height:200};await update('main',2,first);
+ await update('main',1,h.payload.bounds);assert.deepEqual(slot.container.bounds,first);
+ const destination={contentView:{addChildView(){},removeChildView(){}},getContentSize:()=>[800,600]};
+ h.manager.reparentScope(h.scope,destination);h.scope.win=destination;h.scope.windowId='detached';
+ const current={x:10,y:20,width:70,height:200};await update('detached',1,current);
+ await update('main',99,h.payload.bounds);assert.deepEqual(slot.container.bounds,current);
+ assert.equal(slot.view.bounds.width,300);assert.equal(slot.view.webContents,guest);
+ h.manager.closeScope(h.scope);
 });
 
 test('fully scrolled-out report hides without covering review controls',async()=>{

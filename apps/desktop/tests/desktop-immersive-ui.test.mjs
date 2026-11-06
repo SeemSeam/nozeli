@@ -50,7 +50,6 @@ try{
   assert.equal((await p.evaluate(()=>nozeli.invoke('document.clipboard',{action:'read'}))).value,'#include <iostream>\nint main() { return 0; }');
   checks.push('real Markdown tables, mixed inline/display math, C++ colors and clipboard');
   assert(await p.$eval('#side',el=>el.getBoundingClientRect().width<=40));
-  assert(await p.$eval('#conversation-panel',el=>el.classList.contains('compact-composer')&&el.getBoundingClientRect().height<=90));
   assert.equal(await p.$eval('#open-files .open-file-item',el=>el.dataset.path),'docs/阅读验收.md');
   await p.screenshot({path:path.join(out,'01-reading.png')});checks.push('empty sidebar and chat compact; left open-file list only');
   async function selectRepeat(prefix='第二处'){
@@ -107,7 +106,6 @@ try{
   await p.screenshot({path:path.join(out,'02-annotation-input.png')});
   await p.click(discussSelector+' .tag-window-title',{count:2});await p.waitForFunction(()=>document.querySelector('#text-preview .tag-discuss .note-projection').classList.contains('is-collapsed'));
   checks.push('conversation uses direct input without preview while preserving Markdown draft; note preview remains separate');
-  await p.click('#chat-history-toggle');assert(await p.$eval('#conversation-panel',el=>!el.classList.contains('compact-composer')));
   await p.type('#composer','项目草稿保持');await p.waitForFunction(()=>document.querySelector('#compose-status').textContent.includes('已保存'));
   await p.click('#toggle-sidebar');await tick(150);
   await p.click('#file-toggle');assert(await p.$eval('#side',el=>el.getBoundingClientRect().width>200));await p.click('#file-toggle');
@@ -115,11 +113,11 @@ try{
   await p.waitForFunction(()=>!document.querySelector('#side-divider').hidden);await drag('#side-divider',-30,0);
   const sideWidth=await p.$eval('#side',el=>el.getBoundingClientRect().width);
   await p.reload();await p.waitForFunction(()=>window.__nozeliReady);await p.waitForSelector(noteSelector);
-  assert.equal(await p.$eval('#composer',el=>el.value),'项目草稿保持');assert(await p.$eval('#conversation-panel',el=>!el.classList.contains('compact-composer')));
+  assert.equal(await p.$eval('#composer',el=>el.value),'项目草稿保持');
   assert(Math.abs(await p.$eval('#side',el=>el.getBoundingClientRect().width)-sideWidth)<2);
   assert(await p.$eval(discussSelector+' .note-projection',el=>el.classList.contains('is-collapsed')));
   checks.push('explicit full chat, manual sidebar size, note states and unsent draft persist across renderer restart');
-  await p.click('#toggle-sidebar');await p.click('#chat-history-toggle');
+  await p.click('#toggle-sidebar');
   await contentToolForPage(p, ['view', 'document-font']);await p.click('.nozeli-submenu [data-command="document-font-18"]');
   assert.equal(await p.$eval('#text-preview',el=>getComputedStyle(el).fontSize),'18px');
   await contentToolForPage(p, ['view', 'document-font']);await p.click('.nozeli-submenu [data-command="document-font-reset"]');

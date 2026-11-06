@@ -1,3 +1,4 @@
+import './management-presentation.css';
 import { appendDrawingMaterial } from '../domain/drawing-delivery.mjs';
 import {createSessionStore,sessionMessages} from './session-store.mjs';
 import {createIdentityHydration,createProjectFiles,bindComposerDrafts} from './surface-identity-state.mjs';
@@ -121,7 +122,7 @@ async function renderWorkVersions({box,record,projectId,call}){
   box.append(details);
  }
 }
-export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},onConversation,openProjectFile,openExternal,openFrozenChange}){
+export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},openProjectFile,openExternal,openFrozenChange}){
  let projectId=null,active=false,ready=false,state=null,target='frontdesk',generation=0,refreshing=0,fixtureMode=false;
  const scope=window.__workspaceScope;
  const ownsConversation=!scope||(scope.role==='surface'&&scope.kind==='conversation');
@@ -140,7 +141,7 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},on
  if(ownsConversation)$('conversation-panel').classList.add('session-surface');
  const timelineUI=mountSessionTimeline(timelineBox,{navigationContainer,initialScroll:scope?.viewState?.conversationScroll});
  async function readTimeline(cursor){const id=projectId,gen=generation,request=++pageRequest;try{const frame=await call('timeline.page',{...(cursor?{cursor}:{}),limit:100},id);if(id!==projectId||gen!==generation||request!==pageRequest)return;historyPage=Boolean(cursor);pageError='';applyTimeline(frame);paintTimeline();}catch(error){if(id===projectId&&gen===generation){pageError=error.message;paintTimeline();}}}
- function paintTimeline(){if(!state)return;timelineBox.hidden=!active;const key=JSON.stringify([projectId,[...projectFilePaths]]);if(key!==contextKey){contextKey=key;timelineContext={filePaths:projectFilePaths,onFile:entry=>openProjectFile?.({projectId,...entry}),onExternal:openExternal,onError:error=>toast(error.message)};}timelineUI.render({store:sessionStore,state,context:timelineContext,call,openFrozenChange,projectId,historyPage,pageError,onPage:readTimeline,onLatest:()=>readTimeline(),onTask:entry=>{sourceMessage=entry.id;sourceBox.dataset.requestKey=crypto.randomUUID();sourceLabel.textContent='引用：'+entry.text.slice(0,160);sourceGoal.value='';sourceBox.hidden=false;sourceGoal.focus();}});const lifecycle=selectedSession();onConversation?.({count:sessionStore.getSnapshot().entries.length,state:lifecycle.state,label:lifecycle.reason||'统一会话'});}
+ function paintTimeline(){if(!state)return;timelineBox.hidden=!active;const key=JSON.stringify([projectId,[...projectFilePaths]]);if(key!==contextKey){contextKey=key;timelineContext={filePaths:projectFilePaths,onFile:entry=>openProjectFile?.({projectId,...entry}),onExternal:openExternal,onError:error=>toast(error.message)};}timelineUI.render({store:sessionStore,state,context:timelineContext,call,openFrozenChange,projectId,historyPage,pageError,onPage:readTimeline,onLatest:()=>readTimeline(),onTask:entry=>{sourceMessage=entry.id;sourceBox.dataset.requestKey=crypto.randomUUID();sourceLabel.textContent='引用：'+entry.text.slice(0,160);sourceGoal.value='';sourceBox.hidden=false;sourceGoal.focus();}});}
  const identityReads=createIdentityHydration();
  const requestReads=new Map();
  const timelineSource={
@@ -250,7 +251,8 @@ async function openWorkReport(workId){
  const controlContext=()=>({projectId,generation});
  const workControl=mountWorkControl({call,current:controlContext,toast});
  const serviceFaults=mountServiceFaults({root:document.querySelector('.topbar'),invoke,current:()=>!scope||scope.role==='shell'?controlContext():null,onChange:()=>{if(active&&state)render();}});
- const faultDetails=button('服务故障与恢复记录',()=>serviceFaults.open());agentDetailsBody.append(faultDetails);
+ // 单层导航：从连接页进入故障页先关闭本模态；返回时恢复连接页与原入口焦点，不再叠两层管理模态。
+ const faultDetails=button('服务故障与记录',()=>{const fromConnection=agentDetails.open,id=projectId;if(fromConnection)agentDetails.close();serviceFaults.open({onClosed:fromConnection?()=>{if(id===projectId&&!agentDetails.open){agentDetails.showModal();faultDetails.focus();}}:null});});agentDetailsBody.append(faultDetails);
  let clearingFrontdesk=false;
  const clearFrontdeskContext=button('清空前台上下文',async()=>{
   if(!ownsConversation||target!=='frontdesk'||!projectId||clearingFrontdesk)return;
@@ -258,9 +260,10 @@ async function openWorkReport(workId){
   try{await draftWriter.settled();await call('frontdesk.context.clear',{},id);if(id!==projectId||gen!==generation)return;await refresh();await readTimeline();toast('前台上下文已清空；主控、工作和对话历史保持不变。');}
   finally{clearingFrontdesk=false;if(id===projectId&&gen===generation)render();}
  });
- clearFrontdeskContext.id='chat-clear-frontdesk-context';clearFrontdeskContext.className='chat-context-clear';clearFrontdeskContext.title='仅重开前台上下文，不清空主控或工作；原对话历史保留';clearFrontdeskContext.hidden=!ownsConversation;clearFrontdeskContext.disabled=true;$('conversation-head').querySelector('.conversation-controls').append(clearFrontdeskContext);
+ clearFrontdeskContext.id='chat-clear-frontdesk-context';clearFrontdeskContext.className='chat-context-clear chat-menu-action';clearFrontdeskContext.title='仅重开前台上下文，不清空主控或工作；原对话历史保留';clearFrontdeskContext.hidden=!ownsConversation;clearFrontdeskContext.disabled=true;$('conversation-head').querySelector('.conversation-controls').append(clearFrontdeskContext);
  const residentRecovery=document.createElement('section');residentRecovery.id='managed-resident-recovery';residentRecovery.hidden=true;residentRecovery.setAttribute('aria-label','常驻 Agent 会话恢复');agentDetailsBody.append(residentRecovery);
  const runtimeControls=mountSessionRuntimeControls({call,toast,current:()=>({projectId,target,agent:state?.agents?.find(a=>a.target===target)}),refresh});
+ runtimeControls.button.classList.add('chat-menu-action');
  $('conversation-head').querySelector('.conversation-controls').append(runtimeControls.button);
  let residentStatus=null,handoffPending=false;
  function inputReason(){return inputIdentityReason||conversationTargetReason(state,target);}
@@ -418,7 +421,7 @@ async function openWorkReport(workId){
  for(const [otherKey,other]of reviewSurfaces)if(otherKey!==key)other.hide();
  let surface=reviewSurfaces.get(key);
  if(!surface){surface=mountManagedReview(parent,{invoke,projectId:doc.projectId,workId:doc.workId,objectId:doc.objectId,workName:state?.works.find(work=>work.id===doc.workId)?.name||doc.title||'当前任务',current:()=>projectId===doc.projectId,confirm:confirmDecision,onChanged:refresh,onOpenLatest:()=>refreshReviewPublication(true),onOpenFile:(file,binding)=>openArtifactDiff({objectId:binding.objectId,relPath:file.relPath,sourceProject:doc.projectId}),onOpenMaterial:(file,binding)=>openArtifact({objectId:binding.objectId,relPath:file.relPath,sourceProject:doc.projectId}),onAvailability:(available,root)=>{const fallback=root.querySelector('[data-frozen-artifacts]');if(available)fallback?.remove();else if(!fallback)void appendFrozenArtifacts(root,root.dataset.managedReview,doc.projectId,()=>root.isConnected&&projectId===doc.projectId);}});reviewSurfaces.set(key,surface);}
- else {parent.append(surface.root);void surface.bind(doc.objectId).then(()=>surface.observe()).catch(error=>toast(error.message));surface.show();}
+ else {surface.hide();parent.append(surface.root);void surface.bind(doc.objectId).then(()=>surface.observe()).catch(error=>toast(error.message));}
   surface.lease=(surface.lease||0)+1;
   doc.review=surface;
  appendClosureAccess(surface.root,doc);
@@ -490,7 +493,7 @@ async function openWorkReport(workId){
   closeRetainedProgress();if(agentDetails.open)agentDetails.close();
   const source=projectId,gen=generation,dialog=document.createElement('dialog'),body=document.createElement('section'),title=document.createElement('h2');
   dialog.className='managed-report-dialog';dialog.dataset.retainedProgressDialog=workId;dialog.setAttribute('aria-label',(work.name||'任务')+' · 保留进展');title.textContent=(work.name||'任务')+' · 保留进展';
-  const close=button('返回阅读',()=>closeRetainedProgress());dialog.append(title,body,close);document.body.append(dialog);retainedDialog=dialog;
+  const close=button('关闭',()=>closeRetainedProgress());dialog.append(title,body,close);document.body.append(dialog);retainedDialog=dialog;
   const current=()=>source===projectId&&gen===generation&&retainedDialog===dialog;
   const route=async action=>{if(!current())return;closeRetainedProgress();try{await action();}catch(error){toast('保留内容未改变：'+error.message);}};
   retainedView=mountWorkProgress({root:body,document,loadProgress:async()=>{const value=await call('work.progress.read',{workId},source);if(!current())throw Error('项目已变化，请重新进入原任务');return value;},
@@ -652,7 +655,7 @@ async function openWorkReport(workId){
    if(deviationHeld(selectedWork))paintDeviation(required,selectedWork);
    if(constraintTodo){const card=document.createElement('section');paintMergeConstraint(card,selectedWork,constraintTodo);required.append(card);}
    const activeWork=!['ended','closing'].includes(selectedWork.status)&&!selectedWork.readOnly;
- const overview=renderWorkOverview({document,work:selectedWork,publication,phase:lineage?.phase,waitingOn:lineage?.waitingOn,onInspectWork:inspectWork,onProgress:()=>inspectRetainedProgress(selectedWork.id),onReport:publication?()=>openWorkReport(selectedWork.id).catch(error=>toast(error.message)):undefined,onControl:activeWork?()=>workControl.open({workId:selectedWork.id,name:selectedWork.name||'任务'}):undefined,onEnd:activeWork?()=>disposeWork(selectedWork.id,'discard'):undefined,requiredSection:required.childNodes.length?required:undefined,technicalSections,technicalOpen,disabled:dispositionPending});
+ const overview=renderWorkOverview({document,work:selectedWork,publication,phase:lineage?.phase,waitingOn:lineage?.waitingOn,onInspectWork:inspectWork,onProgress:()=>inspectRetainedProgress(selectedWork.id),onReport:publication?()=>openWorkReport(selectedWork.id).catch(error=>toast(error.message)):undefined,onControl:activeWork?()=>workControl.open({workId:selectedWork.id,name:selectedWork.name||'任务'}):undefined,onEnd:activeWork?()=>disposeWork(selectedWork.id,'discard'):undefined,requiredSection:required.childNodes.length?required:undefined,technicalSections,technicalOpen,disabled:dispositionPending,unsentDraft:state.drafts?.[selectedWork.id]?{onOpen:()=>{const technical=workInfo.querySelector('[data-work-overview-technical]');if(technical){technical.open=true;technical.querySelector('textarea')?.focus();}}}:null});
    workInfo.append(overview);
    const technical=overview.querySelector('[data-work-overview-technical]');technical?.addEventListener('toggle',()=>{if(technical.open)void renderWorkVersions({box:versions,record:{workId:selectedWork.id,status:selectedWork.status},projectId,call});});
   }
