@@ -1,3 +1,4 @@
+import {projectAttentionSummary} from './project-attention-summary.mjs';
 import {AttentionLedger} from './managed/attention-ledger.mjs';
 import {TaskPermissions} from './managed/task-permissions.mjs';
 import {workDisposition} from '../domain/work-disposition.mjs';
@@ -77,6 +78,7 @@ export class ManagedProjects {
   this.host.storage.onUnavailable=(id,reason)=>{const pending=this.markUnavailable(id,reason);pending.catch(()=>{});return pending;};
  }
  onEvent(fn){this.listener=fn;}
+ projectAttentionSummary(payload){return projectAttentionSummary(this,payload);}
  applyModelDefaults(defaults){
   const next=structuredClone(defaults);
   for(const [role,value] of Object.entries(next)){

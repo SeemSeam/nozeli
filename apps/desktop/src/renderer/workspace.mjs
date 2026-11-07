@@ -118,6 +118,12 @@ export function mountWorkspace({ save, saveProjectSettings, openProject, addNote
   function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('toast').hidden = true; }, 4000); }
   $('file-toggle').addEventListener('click', () => {if(innerWidth<=1000)state.drawerFilesOpen=!state.drawerFilesOpen;else state.filesCollapsed = !state.filesCollapsed; changed(); });
   document.addEventListener('nozeli-reveal-work-sidebar',()=>{sidebarVisit.set(true);changed();});
+  let projectTodoTrigger=null;
+  document.addEventListener('nozeli-reveal-project-todos',event=>{
+    if(event.detail?.projectId!==window.__workspaceScope?.projectId)return;
+    projectTodoTrigger=event.detail.trigger;
+    sidebarVisit.set(true);changed();
+  });
   toggleSidebar.addEventListener('click',()=>{sidebarVisit.set(!sidebarVisit.open);changed();});
   if(ownsConversation){
     $('composer').addEventListener('input', () => { fitComposer(); state.draft = $('composer').value; $('compose-status').dataset.draftSaving = 'true'; $('compose-status').textContent = '正在保存本地草稿…'; save(); });
@@ -180,6 +186,11 @@ export function mountWorkspace({ save, saveProjectSettings, openProject, addNote
     if (event.key !== 'Escape' || event.defaultPrevented || modalEscapes.has(event) || modalOpen()) return;
     // Leave native dialogs and popovers first; only an unclaimed Escape exits Zen.
     if (!$('selection-menu').hidden) { $('selection-menu').hidden = true; return; }
+    if(projectTodoTrigger&&sidebarVisit.open&&!$('app').classList.contains('focus-mode')){
+      event.preventDefault();sidebarVisit.set(false);changed();
+      if(projectTodoTrigger.isConnected)projectTodoTrigger.focus({preventScroll:true});
+      projectTodoTrigger=null;return;
+    }
     if ($('app').classList.contains('focus-mode')) { event.preventDefault(); void toggleFocus(false); }
   });
   $('show-note').addEventListener('click', addNote);

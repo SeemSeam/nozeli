@@ -412,6 +412,10 @@ async function main() {
         return {ok:true,value:{closing:true,forced:true}};
       }
       payload=await workspaceNative.resolvePayload(scope,op,payload??{});
+      if(op==='project.attention.summary'){
+        if(scope.role!=='shell')throw new HostError('IPC_DENIED','项目待办摘要仅允许主窗口读取。');
+        return {ok:true,value:await managedAgents.projectAttentionSummary(payload)};
+      }
       if(op==='workspace.attention.presented'){
         trusted(event,op,payload);
         const generation=scope.generation,projectId=scope.projectId;

@@ -12,13 +12,13 @@ const FEEDBACK_MS=8000;
 const cssEscape=value=>value.replace(/["\\]/g,'\\$&');
 const node=(tag,className)=>{const element=document.createElement(tag);if(className)element.className=className;return element;};
 
-export function mountAttentionNotifications({invoke,subscribe,openTodo,onError,projectName=()=>null}){
+export function mountAttentionNotifications({invoke,subscribe,openTodo,onError,projectName=()=>null,announceUpdates=true}){
   const model=createAttentionNotificationModel();
   const box=node('section','attention-prompt');
   box.dataset.attentionPrompt='';box.hidden=true;
   box.setAttribute('role','region');box.setAttribute('aria-label','后台待办提醒');
   const live=node('p','attention-live');
-  live.dataset.attentionLive='';live.setAttribute('role','status');live.setAttribute('aria-live','polite');
+  live.dataset.attentionLive='';if(announceUpdates){live.setAttribute('role','status');live.setAttribute('aria-live','polite');}
   const current=node('div','attention-current');
   const kind=node('span','attention-kind');kind.dataset.attentionKind='answer';
   const text=node('p','attention-current-text');
@@ -118,7 +118,7 @@ export function mountAttentionNotifications({invoke,subscribe,openTodo,onError,p
     list.hidden=!expanded||rows.length<2;
     renderList(rows);
     if(hadFocus&&(document.activeElement===document.body||document.activeElement?.closest('[hidden]')))open.focus({preventScroll:true});
-    if(announce.length)live.textContent=announce.join('；')+(rows.length>1?'（共 '+rows.length+' 项待处理）':'');
+    if(announceUpdates&&announce.length)live.textContent=announce.join('；')+(rows.length>1?'（共 '+rows.length+' 项待处理）':'');
   }
 
   const selectedRow=()=>model.rows.find(r=>r.key===selectedKey)??model.rows[0]??null;

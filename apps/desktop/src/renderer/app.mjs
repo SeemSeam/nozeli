@@ -58,6 +58,8 @@ import {mountGuidedDemo} from './guided-demo.mjs';
 import {createProjectSwitches,requireProjectSwitch} from './project-switches.mjs';
 import {mountDemoSurface} from './guided-demo-surface.mjs';
 import {mountAutoUpdate} from './auto-update-view.mjs';
+import {mountProjectAttention} from './project-attention.mjs';
+import './project-attention.css';
 
 const workspaceBootstrap = await window.nozeli.invoke('workspace.bootstrap', {});
 if (!workspaceBootstrap.ok) throw new Error(workspaceBootstrap.error?.message || '工作区身份无法读取');
@@ -193,11 +195,9 @@ function enqueue(action, freeze = false) {
     for(const button of $('recent').querySelectorAll('[data-project-id]')){
       const pending=button.dataset.projectId===projectId;
       button.setAttribute('aria-busy',String(pending));
-      button.dataset.projectLabel??=button.textContent;
-      button.dataset.projectTitle??=button.title;
-      button.textContent=pending?'…':button.dataset.projectLabel;
-      button.title=button.dataset.projectTitle+(pending?' · 正在保留当前项目并切换…':'');
-      button.setAttribute('aria-label',button.title);
+      const initial=button.querySelector('[data-project-initial]');
+      if(initial)initial.textContent=pending?'…':button.dataset.projectLabel;
+      projectAttention?.paint(button.dataset.projectId);
     }
   }
   let searchToken = 0;
@@ -1819,6 +1819,7 @@ async function manageProjectStorage(project,action){
   dialog.addEventListener('cancel',event=>{if(executing)event.preventDefault();else dialog.remove();});dialog.showModal();cancel.focus();
 }
   const attentionProjectNames = new Map();
+  const projectAttention=workspaceScope.role==='shell'?mountProjectAttention({document,window,invoke,subscribe:window.nozeli.subscribe,currentProject:()=>ui.project?.id}):null;
 let recentSequence=0;
 async function renderRecent() {
   const sequence=++recentSequence;
@@ -1833,8 +1834,10 @@ async function renderRecent() {
     if(!button){
       button=document.createElement('button');
       button.type='button';button.dataset.projectId=project.id;
+      if(projectAttention)projectAttention.decorate(button);
+      else {const initial=document.createElement('span');initial.dataset.projectInitial='';button.append(initial);}
       button.addEventListener('contextmenu', event => {const project=button._project;event.preventDefault();projectMenu.open([{id:'retry',label:'重试原位置',hint:'只核验一次，不自动重连Agent'},{id:'close',label:'关闭项目',hint:'保留项目与本机恢复内容'},{id:'remove',label:'从 Nozeli 移除项目',hint:'保留磁盘文件、草稿及工作记录'},{id:'reset-project',label:'重置为新项目…',hint:'保留文件和 Git，归档旧状态后重新加载'},{id:'clean-local',label:'清理本机项目数据…',hint:'不删除原文件，保留恢复区'},{id:'delete-project',label:'删除磁盘项目…',hint:'整个目录移到回收站，需再次确认'}],{x:event.clientX,y:event.clientY,focus:button,run:async action=>{if(action==='retry'){const result=await invoke('project.retry',{projectId:project.id});if(!result.ok)return workspace.toast(result.error.message);await renderRecent();}else if(action==='close'){const result=await invoke('workspace.closeProject',{projectId:project.id,operationId:crypto.randomUUID()});if(!result.ok)return workspace.toast(result.error.message);await clearProjectPage(project.id);}else if(action==='remove')await removeProjectEntry(project.id);else await manageProjectStorage(project,action);}});});
-      button.addEventListener('click',()=>{const project=button._project;return project.available?activateProject(project.id):workspace.toast('项目目录不可用，可右键移除入口。');});
+      button.addEventListener('click',()=>{const project=button._project;if(!project.available)return workspace.toast('项目目录不可用，可右键移除入口。');if(!projectSwitches.pending()&&projectAttention?.reveal(project.id,button))return;return activateProject(project.id);});
     }
     button._project=project;
     button.dataset.projectLabel=(project.name||'?').slice(0,1);
@@ -1844,7 +1847,13 @@ async function renderRecent() {
     if(host.children[index]!==button)host.insertBefore(button,host.children[index]||null);
     existing.delete(project.id);
   }
-  for(const button of existing.values())button.remove();
+  for(const button of existing.values()){
+    const focused=button===document.activeElement;
+    const neighbor=button.nextElementSibling||button.previousElementSibling;
+    button.remove();
+    if(focused)(neighbor?.isConnected?neighbor:$('pick-project')).focus({preventScroll:true});
+  }
+  projectAttention?.sync(projects);
   renderProjectPending();
 }
 
@@ -3136,7 +3145,7 @@ async function openBesideSnapshot(file, diff=false, left=null) {
     const {mountAttentionNotifications}=await import('./attention-notifications.mjs');
     const recent=await invoke('project.recent');
     for(const project of recent.value?.projects??[])if(!attentionProjectNames.has(project.id))attentionProjectNames.set(project.id,project.name||'');
-    const notifications=mountAttentionNotifications({invoke,subscribe:window.nozeli.subscribe,onError:message=>workspace.toast(message),projectName:id=>attentionProjectNames.get(id)??null,openTodo:async(projectId,todoId)=>{
+    const notifications=mountAttentionNotifications({invoke,subscribe:window.nozeli.subscribe,announceUpdates:false,onError:message=>workspace.toast(message),projectName:id=>attentionProjectNames.get(id)??null,openTodo:async(projectId,todoId)=>{
       await requireProjectSwitch(activateProject(projectId));
       return enqueue(async()=>{
         if(ui.project?.id!==projectId||projectSwitches.pending())return {ok:false,error:{code:'PROJECT_SWITCH_SUPERSEDED',message:'项目已切换，待办仍保留。'}};

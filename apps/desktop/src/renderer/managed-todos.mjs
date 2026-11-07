@@ -31,6 +31,12 @@ export function mountManagedTodos({ document, invoke, openTodo, viewWork, recove
   const list = $('inbox-reports'); list.before(filters);
   const header = list.closest('.inbox-panel')?.querySelector('h2');
   if(header)header.append(filters);
+  if(header){header.id='managed-todo-heading';header.tabIndex=-1;}
+  document.addEventListener('nozeli-reveal-project-todos',event=>{
+    if(event.detail?.projectId!==projectId)return;
+    filter='open';count=50;paintSignature='';paint();
+    if(header?.getClientRects().length)header.focus({preventScroll:true});
+  });
   const summary=document.createElement('p');summary.id='managed-todo-summary';summary.hidden=true;list.before(summary);
   const fullName=document.createElement('div');fullName.id='managed-todo-full-name';fullName.role='tooltip';fullName.hidden=true;document.body.append(fullName);
   const hideName=()=>{fullName.hidden=true;};
