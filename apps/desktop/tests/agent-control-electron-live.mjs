@@ -33,6 +33,14 @@ const result={ok:false,out,checks,scope:'Actual Electron production host/UI, rea
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function until(fn,label,timeout=90000){const end=Date.now()+timeout;while(Date.now()<end){if(provider.errors.length)throw provider.errors[0];const value=await fn();if(value)return value;if(child?.exitCode!==null&&child?.exitCode!==undefined)throw Error('Electron exited: '+log.slice(-1500));await pause(60);}throw Error('Timed out: '+label);}
 async function call(op,payload={},page=shell){const reply=await page.evaluate(({op,payload})=>nozeli.invoke(op,payload),{op,payload});assert.equal(reply.ok,true,op+': '+JSON.stringify(reply.error));return reply.value;}
+// Resize the actual BaseWindow/WebContentsViews. CDP setViewport only emulates
+// renderer metrics and can leave Electron's native drag hit regions at other
+// coordinates; restoring those metrics is not a native window resize.
+async function resizeShell(size){
+  await call('session.resize',size);
+  await shell.waitForFunction(({width,height})=>innerWidth===width&&innerHeight===height,{},size);
+  await shell.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+}
 const state=async()=>(await call('managed.status',{projectId},conversation)).state;
 const controlStatus=async workId=>call('managed.work.control.status',{projectId,workId},conversation);
 async function openControlDialog(page,workId,command){
@@ -178,10 +186,10 @@ try{
   assert.equal(await shell.$eval('[data-work-overview-technical]',node=>node.open),false,'internal diagnostics are not expanded by default');
   assert.equal(provider.requests.length,callsBeforeOverview,'opening task overview never wakes a model');
   const overviewViewport=await shell.evaluate(()=>({width:innerWidth,height:innerHeight}));
-  await shell.setViewport({width:390,height:844});
+  await resizeShell({width:390,height:844});
   assert.equal(await shell.$eval('#managed-agent-details',node=>node.scrollWidth<=node.clientWidth+1),true,'task overview fits the narrow viewport');
   await shell.screenshot({path:path.join(out,'work-overview-390.png'),fullPage:true});
-  await shell.setViewport(overviewViewport);
+  await resizeShell(overviewViewport);
   await shell.keyboard.press('Escape');
   checks.push('ended task without a result opens a truthful compact overview, keeps diagnostics collapsed and spends no model call');
 
@@ -191,7 +199,7 @@ try{
   const queued=await call('managed.task',{projectId,text:'UI-CONTROL UI-GATE: publish the safely queued original input.',requestKey:'ui-control-gate'},conversation);
   await until(async()=>(await call('managed.fault.status',{},conversation)).faults.some(fault=>fault.projects.some(member=>member.blockedJobs?.includes(queued.jobId))),'new input gated before native dispatch');
   await shell.waitForSelector('.managed-service-faults',{visible:true});
-  await until(async()=>/2项输入/.test(await shell.$eval('.managed-service-faults',node=>node.textContent)),'fault impact refreshes for the newly queued input');
+  await until(async()=>/1\s*项/.test(await shell.$eval('[data-fault-summary]',node=>node.textContent)),'one aggregated fault remains compact despite multiple affected inputs');
   await shell.click('#managed-work-category-more');
   await shell.waitForSelector('#managed-work-filter-menu:not([hidden])',{visible:true});
   await shell.click('#managed-work-filter-menu [data-command="filter-fault"]');
@@ -205,35 +213,45 @@ try{
   await shell.keyboard.press('Escape');
   assert.equal(await shell.$eval('#managed-work-category-more',node=>document.activeElement===node&&node.getAttribute('aria-expanded')==='false'),true,'overflow dismissal restores keyboard focus');
   const originalViewport=await shell.evaluate(()=>({width:innerWidth,height:innerHeight}));
-  await shell.setViewport({width:390,height:844});
+  await resizeShell({width:390,height:844});
   await until(()=>shell.evaluate(()=>{const filters=document.querySelector('.managed-work-categories'),r=filters.getBoundingClientRect(),buttons=[...filters.children].map(node=>node.getBoundingClientRect());return filters.scrollWidth<=filters.clientWidth+1&&r.right<=innerWidth+1&&Math.max(...buttons.map(box=>box.top))-Math.min(...buttons.map(box=>box.top))<2;}),'390px work filters fit on one row without horizontal overflow');
   await until(()=>shell.evaluate(()=>{const box=document.querySelector('.managed-service-faults').getBoundingClientRect();return box.left>=0&&box.right<=innerWidth+1&&document.documentElement.scrollWidth<=innerWidth+1;}),'390px fault banner fits the native renderer viewport');
   await shell.screenshot({path:path.join(out,'control-fault-390.png'),fullPage:true});
-  await shell.setViewport(originalViewport);
+  await resizeShell(originalViewport);
   checks.push('new gated input updates impact and fault classification; 390px Electron renderer has no horizontal overflow');
-  const banner=await shell.$('.managed-service-faults');
-  const box=await banner.boundingBox();
-  // Native drag of the top banner must not swallow the release affordance.
+  result.stage='native title drag then fault details';
+  // The fault banner is intentionally no-drag: dragging it selects text, not
+  // the native window. Exercise the actual title drag region instead.
+  assert.equal(await shell.$eval('.topbar',node=>getComputedStyle(node).webkitAppRegion),'drag');
+  assert.equal(await shell.$eval('[data-fault-overview-details]',node=>getComputedStyle(node).webkitAppRegion),'no-drag');
+  const title=await shell.$('.topbar .project-navigation');
+  const box=await title.boundingBox();
   await shell.mouse.move(box.x+box.width/2,box.y+box.height/2);
   await shell.mouse.down();
   await shell.mouse.move(box.x+box.width/2+180,box.y+box.height/2+12,{steps:8});
   await shell.mouse.up();
-  await shell.waitForSelector('[data-fault-release]',{visible:true});
-  await shell.click('[data-fault-details]');
-  const detailText=await shell.$eval('[aria-label="服务故障详情"]',node=>node.textContent);
+  await shell.waitForSelector('[data-fault-overview-details]',{visible:true});
+  assert.equal(await shell.$$eval('.managed-service-faults [data-fault-release],.managed-service-faults [data-fault-receipt]',nodes=>nodes.length),0,'top contains no release or receipt');
+  await shell.click('[data-fault-overview-details]');
+  result.stage='wait fault overview after trusted mouse click';
+  await shell.waitForSelector('dialog.managed-control-dialog[open] [data-fault-release]',{visible:true});
+  await shell.click('dialog.managed-control-dialog[open] [data-fault-details]');
+  const detailText=await shell.$eval('dialog.managed-control-dialog[open]',node=>node.textContent);
   assert.match(detailText,/来源|故障证据/);
-  await shell.keyboard.press('Escape');
+  assert.match(detailText,/2项输入/,'full impact belongs in details, not the compact top');
   failUiFault=false;
-  await shell.click('[data-fault-release]');
+  await shell.click('dialog.managed-control-dialog[open] [data-fault-release]');
   const recovered=await until(async()=>(await state()).works.find(work=>work.name==='Work UI-GATE'&&work.status==='review'),'original gated input resumes and publishes');
   await until(async()=>(await fs.readFile(path.join(recovered.execution.directory,'ui-recovered.txt'),'utf8').catch(()=>''))==='ui fault recovered\n','native recovery side effect real');
   const failed=(await state()).works.find(work=>work.name==='Work UI-FAULT');
   assert.notEqual(failed.status,'review','the admitted failed input was not replayed');
-  await shell.waitForSelector('[data-fault-receipt]',{visible:true});
-  await shell.locator('[data-fault-receipt] button').filter(button=>button.textContent==='查看批次详情').click();
-  await until(async()=>/已接受继续请求/.test(await shell.$eval('[aria-label="服务故障详情"]',node=>node.textContent)),'durable batch receipt read through shipped UI');
-  const receipt=await shell.$eval('[aria-label="服务故障详情"]',node=>node.textContent);
+  await shell.waitForSelector('dialog.managed-control-dialog[open] [data-fault-receipt]',{visible:true});
+  assert.equal(await shell.$$eval('.managed-service-faults [data-fault-receipt]',nodes=>nodes.length),0,'receipt never reappears at the top');
+  await shell.locator('dialog.managed-control-dialog[open] [data-fault-receipt] button').filter(button=>button.textContent==='查看批次详情').click();
+  await until(async()=>/已接受继续请求/.test(await shell.$eval('dialog.managed-control-dialog[open]',node=>node.textContent)),'durable batch receipt read through shipped UI');
+  const receipt=await shell.$eval('dialog.managed-control-dialog[open]',node=>node.textContent);
   assert.match(receipt,/原执行效果待核查/);
+  await until(()=>shell.$eval('.managed-service-faults',node=>node.hidden),'fully released fault hides top even while dialog receipt is visible');
   await shell.keyboard.press('Escape');
   assert.equal(await conversation.$eval('#composer',node=>node.value),'KEEP_UNSENT_CONTROL_DRAFT','draft preserved across fault release');
   checks.push('real 402 banner survives native drag; release executes only a frozen pre-prompt input, retains admitted failure for reconciliation and reads durable batch details');

@@ -6,23 +6,34 @@
 #app .rail > :not(#recent) { flex-shrink:0; }
 #app > .rail { min-height:0; gap:8px; }
 #app .rail #recent { min-height:0; flex:1 1 0; overflow:auto; overflow-x:hidden; padding:4px; box-sizing:border-box; gap:6px; scrollbar-width:thin; scroll-padding:4px; }
-#app #recent > button { position:relative; isolation:isolate; flex:0 0 auto; width:44px; height:44px; min-height:44px; padding:0; border:0; background:transparent; border-radius:8px; box-shadow:none; }
-#app #recent > button::before { content:''; position:absolute; z-index:-1; width:32px; height:32px; left:6px; top:6px; border:1px solid var(--line); border-radius:8px; background:var(--green-soft); box-sizing:border-box; }
-#app #recent > button[aria-current=true]::before { box-shadow:-3px 0 var(--green); }
-#app #recent > button:hover::before { background:var(--ui-control-hover,var(--green-soft)); }
-#app #recent > button:active::before { background:var(--ui-control-active,var(--green-soft)); }
-#app #recent > button:focus-visible { outline:2px solid var(--ui-control-focus,var(--green)); outline-offset:1px; }
-#app #recent [data-project-initial] { position:absolute; top:23px; left:0; width:100%; line-height:18px; font-size:16px; }
-#app #recent [data-project-attention-badge] { --project-attention-ink:#a03936; position:absolute; top:2px; right:2px; display:flex; align-items:center; justify-content:center; gap:2px; min-width:24px; height:18px; padding:0 3px; box-sizing:border-box; border:1px solid currentColor; border-radius:9px; background:var(--paper); color:var(--project-attention-ink); font-size:12px; font-weight:600; font-variant-numeric:tabular-nums; line-height:16px; pointer-events:none; white-space:nowrap; }
-html[data-theme=dark] #app #recent [data-project-attention-badge] { --project-attention-ink:#f1aaa3; }
-#app #recent [data-project-attention-badge][data-positive=false] { color:var(--status-unknown-ink,var(--muted)); }
-#app #recent [data-attention-state=stale] [data-project-attention-badge] { border-style:dashed; }
-.project-attention-dot { width:5px; height:5px; border-radius:50%; background:currentColor; flex:none; }
-[data-project-attention-badge][data-positive=false] .project-attention-dot { display:none; }
+/* Quiet theme neutrals: explicit paper-based fills keep small labels readable in every state. */
+#app #recent > button { position:relative; isolation:isolate; flex:0 0 auto; width:44px; height:44px; min-height:44px; padding:0; border:0; background:transparent; color:color-mix(in srgb,var(--ink) 80%,var(--paper)); border-radius:9px; box-shadow:none; outline:none; }
+#app #recent > button::before { content:''; position:absolute; z-index:-1; width:32px; height:32px; left:6px; top:6px; border:1px solid color-mix(in srgb,var(--ink) 16%,var(--paper)); border-radius:7px; background:color-mix(in srgb,var(--ink) 2%,var(--paper)); box-sizing:border-box; }
+#app #recent > button[aria-current=true]::before { background:color-mix(in srgb,var(--ink) 6%,var(--paper)); border-color:color-mix(in srgb,var(--ink) 32%,var(--paper)); }
+#app #recent > button[aria-current=true]::after { content:''; position:absolute; left:0; top:15px; width:3px; height:14px; border-left:3px solid currentColor; box-sizing:border-box; border-radius:2px; }
+#app #recent > button:hover::before { background:color-mix(in srgb,var(--ink) 8%,var(--paper)); border-width:2px; }
+#app #recent > button:active::before { background:color-mix(in srgb,var(--ink) 10%,var(--paper)); border-color:color-mix(in srgb,var(--ink) 40%,var(--paper)); border-width:2px; border-radius:4px; }
+#app #recent > button[aria-disabled=true]::before { border-style:dashed; }
+#app #recent > button:focus-visible { outline:2px dashed var(--ui-control-focus,var(--green)); outline-offset:-2px; }
+/* Optical sizes override chrome scaling; expanded uppercase/suffixed labels fit without clipping. */
+#app #recent [data-project-initial] { position:absolute; inset:6px; display:grid; place-items:center; line-height:1; font-size:var(--project-label-size,11px)!important; font-weight:500; letter-spacing:0; white-space:nowrap; }
+#app #recent > button:has([data-project-attention-badge]:not([hidden])) [data-project-initial] { top:16px; }
+#app #recent [data-project-attention-badge] { --project-attention-fill:#b4232d; --project-attention-ink:#fff; position:absolute; top:0; right:0; display:flex; align-items:center; justify-content:center; min-width:16px; height:16px; padding:0 3px; box-sizing:border-box; border:1px solid var(--project-attention-fill); border-radius:999px; background:var(--project-attention-fill); color:var(--project-attention-ink); font-size:10px!important; font-weight:700; font-variant-numeric:tabular-nums; line-height:14px; pointer-events:none; white-space:nowrap; }
+#app #pick-project { width:36px; height:36px; min-height:36px; border-radius:7px; }
+html[data-theme=dark] #app #recent [data-project-attention-badge] { --project-attention-fill:#ffaca6; --project-attention-ink:#461014; }
+#app #recent [data-project-attention-badge][hidden] { display:none; }
 .project-attention-description { position:absolute!important; width:1px!important; height:1px!important; padding:0!important; margin:-1px!important; overflow:hidden!important; clip-path:inset(50%); white-space:nowrap; border:0!important; }
 .project-attention-tooltip { position:fixed; z-index:10000; max-width:min(320px,calc(100vw - 16px)); padding:8px 10px; border:1px solid var(--line); border-radius:6px; background:var(--paper); color:var(--ink); font-size:13px; line-height:1.5; overflow-wrap:anywhere; pointer-events:none; }
 /* Reserve the narrow file toggle in the rail instead of covering a project midway. */
 #app.narrow-layout > .rail { padding-bottom:46px; position:relative; }
 #app.narrow-layout #file-toggle { top:auto; bottom:8px; left:8px; transform:none; width:36px; height:36px; min-height:36px; max-height:36px; }
 #managed-todo-heading:focus-visible { outline:2px solid var(--ui-control-focus,var(--green)); outline-offset:2px; }
-@media (forced-colors:active) { #app #recent [data-project-attention-badge] { color:CanvasText; background:Canvas; border-color:CanvasText; } .project-attention-dot { forced-color-adjust:none; background:CanvasText; } }
+@media (forced-colors:active) {
+  #app #recent > button { color:ButtonText; forced-color-adjust:auto; }
+  #app #recent > button::before { background:Canvas; border-color:ButtonBorder; }
+  #app #recent > button[aria-current=true]::before { border-color:Highlight; }
+  #app #recent > button[aria-current=true]::after { border-left-color:Highlight; }
+  #app #recent > button:is(:hover,:active)::before { background:Canvas; border-color:Highlight; }
+  #app #recent > button:focus-visible { outline-color:Highlight; }
+  #app #recent [data-project-attention-badge] { color:CanvasText; background:Canvas; border-color:CanvasText; }
+}

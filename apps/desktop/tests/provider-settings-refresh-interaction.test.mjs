@@ -1,4 +1,4 @@
-// Component-only browser regression (convention: tests/attention-notifications.test.mjs).
+// Component-only browser regression (convention: tests/frozen-files-state.test.mjs).
 // A real Electron window runs the production renderer module
 // src/renderer/provider-settings.mjs unchanged, against a scripted invoke double
 // whose settings.providers.status replies are caller-controlled promises and

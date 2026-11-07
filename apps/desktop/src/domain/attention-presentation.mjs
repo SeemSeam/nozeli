@@ -1,4 +1,6 @@
 // Presentation only: never acknowledges reminders or changes durable todo state.
+// Stable identity for local todo read presentation; never settles or acknowledges it.
+export const occurrenceKey=(projectId,todo)=>projectId+':'+todo.id+(todo.interrupted?':interrupted':'');
 export function createMessageAttentionPresentation(){
   const unread=new Map(),seen=new Set(),unboundProjects=new Set();
   let version=0;

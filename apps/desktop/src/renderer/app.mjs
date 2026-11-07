@@ -534,7 +534,7 @@ const ui = {
 const workspace = mountWorkspace({ save: () => writeView(), saveProjectSettings: settings => { if (!ui.project) return; ui.projectSettings = { focusMode: settings?.focusMode === true }; return writeView({ projectSettings: ui.projectSettings }); }, openProject: pickProject, addNote: options => beginNote(options), send: () => window.__agentSend?.() });
 if (!isSurface) workspaceGroups = mountWorkspaceGroups({invoke,scope:workspaceScope,toast:workspace.toast});
 if(workspaceScope.role==='shell'){
-  guidedDemo=mountGuidedDemo({invoke,subscribe:window.nozeli.subscribe,openProject:id=>requireProjectSwitch(activateProject(id)),openFile:relPath=>openFile(relPath),getProjectId:()=>ui.project?.id,captureReturn:async()=>{const retained=await retainWorkspace();if(!retained.ok)throw Error(retained.error?.message||'当前编辑尚未保留');await writeView();return {projectId:ui.project?.id};},restoreReturn:async saved=>{if(saved?.projectId)await requireProjectSwitch(activateProject(saved.projectId));else if(ui.project?.demo){const id=ui.project.id,result=await invoke('workspace.closeProject',{projectId:id});if(!result.ok)throw Error(result.error.message);await clearProjectPage(id);}},onExit:async projectId=>{attentionNotifications?.dropProject?.(projectId);await renderRecent();},onError:message=>workspace.toast(message)});
+  guidedDemo=mountGuidedDemo({invoke,subscribe:window.nozeli.subscribe,openProject:id=>requireProjectSwitch(activateProject(id)),openFile:relPath=>openFile(relPath),getProjectId:()=>ui.project?.id,captureReturn:async()=>{const retained=await retainWorkspace();if(!retained.ok)throw Error(retained.error?.message||'当前编辑尚未保留');await writeView();return {projectId:ui.project?.id};},restoreReturn:async saved=>{if(saved?.projectId)await requireProjectSwitch(activateProject(saved.projectId));else if(ui.project?.demo){const id=ui.project.id,result=await invoke('workspace.closeProject',{projectId:id});if(!result.ok)throw Error(result.error.message);await clearProjectPage(id);}},onExit:async()=>{await renderRecent();},onError:message=>workspace.toast(message)});
   window.addEventListener('nozeli-demo-start',()=>void guidedDemo.start().catch(error=>workspace.toast(error.message)));
   window.addEventListener('nozeli-demo-settings-close',()=>{const dialog=$('settings-dialog');if(dialog.open)dialog.close();});
 }
@@ -1771,7 +1771,7 @@ async function clearProjectPage(projectId) {
 async function removeProjectEntry(projectId) {
   const result = await invoke('project.remove', {projectId,operationId:crypto.randomUUID()});
   if (!result.ok) return workspace.toast(result.error.message);
-  attentionNotifications?.dropProject?.(projectId); await clearProjectPage(projectId); await renderRecent();
+  await clearProjectPage(projectId); await renderRecent();
 }
 async function manageProjectStorage(project,action){
   const reset=action==='reset-project';
@@ -1807,7 +1807,6 @@ async function manageProjectStorage(project,action){
       const result=await invoke('project.lifecycle.execute',{token:value.token,allowDemoChanges:Boolean(consent?.checked)});
       if(!result.ok){error.textContent=result.error.message+'；请关闭此窗口，核对后重新操作。';return;}
       dialog.close();dialog.remove();
-      attentionNotifications?.dropProject?.(project.id);
       await clearProjectPage(project.id);await renderRecent();
       if(reset){
         const loaded=await activateProject(result.value.newProjectId);
@@ -1818,7 +1817,6 @@ async function manageProjectStorage(project,action){
   };
   dialog.addEventListener('cancel',event=>{if(executing)event.preventDefault();else dialog.remove();});dialog.showModal();cancel.focus();
 }
-  const attentionProjectNames = new Map();
   const projectAttention=workspaceScope.role==='shell'?mountProjectAttention({document,window,invoke,subscribe:window.nozeli.subscribe,currentProject:()=>ui.project?.id}):null;
 let recentSequence=0;
 async function renderRecent() {
@@ -1828,7 +1826,17 @@ async function renderRecent() {
   if (sequence!==recentSequence||!result.ok) return;
   const existing=new Map([...host.querySelectorAll('[data-project-id]')].map(button=>[button.dataset.projectId,button]));
   const projects = [...result.value.projects].sort((a, b) => String(a.openedAt ?? '').localeCompare(String(b.openedAt ?? '')) || a.id.localeCompare(b.id));
-  attentionProjectNames.clear(); for (const project of projects) attentionProjectNames.set(project.id, project.name || '');
+  const segmenter = new Intl.Segmenter(undefined,{granularity:'grapheme'});
+  const glyphs = text => [...segmenter.segment(text)].map(part=>part.segment);
+  const labels = new Map(), usedLabels = new Set();
+  for (const project of [...projects].sort((a,b)=>a.id.localeCompare(b.id))) {
+    const words = (project.name || '').normalize('NFC').match(/[\p{L}\p{N}\p{M}]+/gu) || ['?'];
+    const letters = glyphs(words[0]);
+    const base = (letters[0] + (words.length>1 ? glyphs(words.at(-1))[0] : letters[1] || '')).toLocaleUpperCase();
+    let label=base, suffix=1;
+    while(usedLabels.has(label)) label=letters[0].toLocaleUpperCase()+suffix++;
+    labels.set(project.id,label); usedLabels.add(label);
+  }
   for (const [index,project] of projects.entries()) {
     let button=existing.get(project.id);
     if(!button){
@@ -1840,7 +1848,9 @@ async function renderRecent() {
       button.addEventListener('click',()=>{const project=button._project;if(!project.available)return workspace.toast('项目目录不可用，可右键移除入口。');if(!projectSwitches.pending()&&projectAttention?.reveal(project.id,button))return;return activateProject(project.id);});
     }
     button._project=project;
-    button.dataset.projectLabel=(project.name||'?').slice(0,1);
+    button.dataset.projectLabel=labels.get(project.id);
+    // Uppercasing can expand graphemes (ß → SS); collision suffixes can also exceed two glyphs.
+    button.style.setProperty('--project-label-size',Math.min(11,30/glyphs(button.dataset.projectLabel).length)+'px');
     button.dataset.projectTitle=project.available?project.name:`${project.name}（目录不可用）`;
     button.setAttribute('aria-disabled',String(!project.available));
     button.setAttribute('aria-current',String(project.id===ui.project?.id));
@@ -3140,22 +3150,6 @@ async function openBesideSnapshot(file, diff=false, left=null) {
     openProjectFile:target=>target.projectId===ui.project?.id?openMarkdownTarget(target):null,
     openExternal:url=>invoke('links.openExternal',{url}).then(result=>{if(!result.ok)workspace.toast(result.error.message);}),
   });
-  let attentionNotifications=null;
-  if(workspaceScope.role==='shell'){
-    const {mountAttentionNotifications}=await import('./attention-notifications.mjs');
-    const recent=await invoke('project.recent');
-    for(const project of recent.value?.projects??[])if(!attentionProjectNames.has(project.id))attentionProjectNames.set(project.id,project.name||'');
-    const notifications=mountAttentionNotifications({invoke,subscribe:window.nozeli.subscribe,announceUpdates:false,onError:message=>workspace.toast(message),projectName:id=>attentionProjectNames.get(id)??null,openTodo:async(projectId,todoId)=>{
-      await requireProjectSwitch(activateProject(projectId));
-      return enqueue(async()=>{
-        if(ui.project?.id!==projectId||projectSwitches.pending())return {ok:false,error:{code:'PROJECT_SWITCH_SUPERSEDED',message:'项目已切换，待办仍保留。'}};
-        document.dispatchEvent(new CustomEvent('nozeli-reveal-work-sidebar'));
-        return window.__workspaceOpenTodo?.(todoId);
-      });
-    }});
-    attentionNotifications=notifications;
-    for(const project of recent.value?.projects??[]){const result=await invoke('managed.status',{projectId:project.id});if(result.ok)notifications.receive({kind:'managed-state',projectId:project.id,state:result.value.state});}
-  }
   const conversationErrors=new Map();
   function refreshConversationLauncher(){const button=$('workspace-open-conversation'),error=conversationErrors.get(ui.project?.id);button.disabled=!ui.project?.id;button.dataset.state=error?'error':'';button.title=(error?'对话 · 连接异常：'+(error.message||''):(ui.project?.id?'打开当前项目对话':'请先打开项目'));button.setAttribute('aria-label',button.title);}
   const terminalButton=$('workspace-open-terminal');

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createMessageAttentionPresentation} from '../src/domain/attention-presentation.mjs';
+import {createMessageAttentionPresentation,occurrenceKey} from '../src/domain/attention-presentation.mjs';
 
 const reply=(overrides={})=>({id:'message-1',sessionId:'thread-1',speaker:'agent',target:'work-1',text:'真实回复',revision:2,objectId:'publication-2',...overrides});
 test('message attention uses exact project/thread/message/publication identity, never summary or todo ack',()=>{
@@ -28,4 +28,12 @@ test('missing canonical identity only yields a conservative message point, not a
   model.observe('a',[reply({id:null,sessionId:null})]);assert.equal(model.hasUnread('a'),true);
   assert.equal(model.presented({projectId:'a',messageId:'guessed'}),false);assert.equal(model.hasUnread('a'),true);
   const other=createMessageAttentionPresentation();other.observe('a',[reply({speaker:'user'}),reply({hostTurnStatus:true}),reply({text:''})]);assert.equal(other.hasUnread('a'),false);
+});
+test('right-todo local read identity stays scoped to project and interruption phase',()=>{
+ const todo={id:'permission',status:'open',interrupted:false},before=structuredClone(todo);
+ assert.equal(occurrenceKey('a',todo),'a:permission');
+ assert.equal(occurrenceKey('b',todo),'b:permission');
+ assert.equal(occurrenceKey('a',{...todo,interrupted:true}),'a:permission:interrupted');
+ assert.equal(occurrenceKey('a',{...todo,title:'Updated title'}),'a:permission');
+ assert.deepEqual(todo,before,'identity calculation cannot acknowledge or resolve a todo');
 });

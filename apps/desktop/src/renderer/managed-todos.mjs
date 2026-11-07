@@ -2,8 +2,7 @@ import { mountContextMenu } from './context-menu.mjs';
 import { uiIcon } from './ui-icons.mjs';
 import { managedInboxTodos, userTodoEligible, resultSettlementIssue } from '../domain/managed-work-records.mjs';
 import { todoCapabilities } from '../domain/todo-management.mjs';
-import { occurrenceKey } from '../domain/attention-notifications.mjs';
-import { createMessageAttentionPresentation } from '../domain/attention-presentation.mjs';
+import { createMessageAttentionPresentation, occurrenceKey } from '../domain/attention-presentation.mjs';
 import './managed-todos.css';
 
 const kindNames = { attention:'后台待处理', 'frontdesk-route':'处理方式决定', 'cross-project-permission':'跨项目访问授权', 'effect-permission':'提权/敏感执行授权', 'effect-grant':'执行授权·可撤销', 'merge-consent':'一次性合入批准', 'merge-constraint':'合并策略', 'cross-project-migrated':'授权迁移通知', deviation:'任务偏离决定', result:'结果', problem:'待回答', routing:'澄清', recovery:'恢复', git:'Git', closure:'收尾', system:'系统' };

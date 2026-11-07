@@ -3,14 +3,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {managedReviewTodos,managedWorkRecords,userTodoEligible} from '../src/domain/managed-work-records.mjs';
-import {createAttentionNotificationModel} from '../src/domain/attention-notifications.mjs';
+import {managedInboxTodos,managedReviewTodos,managedWorkRecords,userTodoEligible} from '../src/domain/managed-work-records.mjs';
 import {AttentionLedger} from '../src/agents/managed/attention-ledger.mjs';
 import {ManagedProjects} from '../src/agents/managed-projects.mjs';
 
 const permission={id:'approval',kind:'attention',status:'open',destination:{kind:'conversation',target:'frontdesk',ownerId:'original-owner',interactionId:'approval-1',question:{method:'approve'}}};
 
-test('one projection admits only results and real approval requests across notifications',()=>{
+test('right inbox admits only results and real approval requests without changing persistent facts',()=>{
  const kinds=['problem','routing','frontdesk-route','deviation','recovery','system','closure','git','merge-constraint'];
  const backstage=kinds.map(kind=>({id:kind,kind,status:'open'}));
  for(const method of ['select','input','ask','askDialog','confirm'])backstage.push({id:method,kind:'attention',status:'open',destination:{kind:'conversation',question:{method}}});
@@ -18,9 +17,9 @@ test('one projection admits only results and real approval requests across notif
  const result={id:'result',kind:'result',status:'open'},effect={id:'effect',kind:'attention',status:'open',destination:{kind:'effect-permission'}};
  const state={todos:[...backstage,result,permission,effect]};
  assert.deepEqual(managedReviewTodos(state).map(t=>t.id),['result','approval','effect']);
- const model=createAttentionNotificationModel();
- assert.deepEqual(model.applyManagedState('p',state).added.map(r=>r.todoId),['result','approval','effect']);
- assert.deepEqual(model.applyManagedState('p',{todos:backstage}).resolvedFeedback,[]);
+ const before=structuredClone(state);
+ assert.deepEqual(managedInboxTodos(state).map(t=>t.id),['result','approval','effect']);
+ assert.deepEqual(state,before,'read-only inbox projection never acknowledges or resolves obligations');
  assert.equal(userTodoEligible({kind:'merge-consent',permissionPurpose:'never-commit-override'}),true);
  assert.equal(userTodoEligible({kind:'merge-consent',permissionPurpose:'merge-conflict-override'}),true);
  assert.equal(userTodoEligible({kind:'merge-consent'}),false);
@@ -33,7 +32,7 @@ test('backstage native ledger persists one neutral record without duplicate remi
  const ledger=new AttentionLedger(storage),fact={key:'owner:question',title:'Missing external fact',destination:{kind:'conversation',ownerId:'owner',interactionId:'question',question:{method:'input'}}};
  await ledger.observe('p','native',[fact]);await ledger.observe('p','native',[fact]);
  const state=await ledger.read('p');assert.equal(state.todos.length,1);assert.equal(state.todos[0].backstageStatus,'blocked');assert.equal(state.todos[0].userActionable,false);
- assert.deepEqual(managedReviewTodos(state),[]);assert.deepEqual(createAttentionNotificationModel().applyManagedState('p',state).added,[]);
+ assert.deepEqual(managedReviewTodos(state),[]);assert.deepEqual(managedInboxTodos(state),[]);
 });
 
 test('attention refresh invokes actual controller backstage processing before taking its snapshot',async()=>{
