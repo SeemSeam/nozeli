@@ -1,0 +1,23 @@
+{
+  "status": "independent-demo-verified-not-integrated",
+  "date": "2026-11-07",
+  "scope": "Linux Node 22.22.1 real SQLite/files and Chrome, synthetic owned data, zero models, no Nozeli product integration",
+  "regression": {"passed": 13, "failed": 0, "evidence": "/tmp/plantree-lifecycle-tests-7pyYzt/observed.json", "realSigkillPhases": ["afterObject", "afterDb", "beforeArchiveCommit", "afterArchiveCommit", "beforeGcDelete", "afterGcDelete"]},
+  "beforeOptimization": "/tmp/plantree-lifecycle-growth-687YjY/report.json",
+  "afterOptimization": "/tmp/plantree-lifecycle-growth-YecxNe/report.json",
+  "growth": {"scales": [100,1000], "size1000": {"activeBefore":1000,"activeAfterArchive":200,"archived":800,"canonicalDocuments":1000,"historicalDocumentsRetrieved":1000,"sameDocumentEdits":20}, "timingNote": "Same synthetic workload on shared machine, no SLA. Query p95 uses 40 warm samples. Archive does not free retained historical versions."},
+  "fixedFailures": [
+    {"issue":"Cross-connection GC can delete object before publisher references it", "before":"/tmp/plantree-lifecycle-tests-Ge8Ei4", "observed":"ENOENT while reading committed document", "fix":"Node/role/CAS checks and putObject inside BEGIN IMMEDIATE with canonical publication", "after":"/tmp/plantree-lifecycle-tests-7pyYzt"},
+    {"issue":"UI archive refresh automatically reopens history tree", "before":"/tmp/plantree-browser-20261107/report.json", "fix":"Ordinary loadState preserves history toggle; explicit open can reveal history", "after":"/tmp/plantree-ui-smoke-KxUM8m/report.json"},
+    {"issue":"Clean cached draft masks second-client update", "finding":"TreeCleanupSafetyReview P2", "fix":"Only dirty drafts retain old baseline; clean drafts reload server content", "after":"/tmp/plantree-ui-smoke-KxUM8m/report.json"},
+    {"issue":"Missing button IDs stop create/reference UI handlers", "finding":"TreeCleanupSafetyReview P1", "fix":"Resolve existing ID or unique data-testid", "after":"/tmp/plantree-ui-smoke-KxUM8m/report.json"}
+  ],
+  "driverCorrections": ["Publication crash test initially omitted node ID; fixed driver and reran", "GC preview smoke waited for incidental word not emitted on zero-orphan state; replaced with response and canonical-content invariants", "Browser runtime stale import required running exact current source; final separate Node ui-smoke imports normally and passed"],
+  "browser": {"evidence":"/tmp/plantree-ui-smoke-KxUM8m/report.json", "independentInteractiveEvidence":"/tmp/plantree-browser-20261107-r5/report.json", "largeTree":"/tmp/plantree-large-browser.json", "largeTreeSamples":40,"largeTreeMaxVisible":1000,"largeTreeRenderP95Ms":8,"responsiveWidth":390},
+  "review": {"agent":"TreeCleanupSafetyReview", "verdict":"correct", "confidence":0.94,"scope":"Read-only static final review; original 3 findings closed, not Nozeli acceptance"},
+  "showcase": {"url":"http://127.0.0.1:40409/", "root":"/tmp/nozeli-plantree-lifecycle-showcase-20261107", "service":"plantree-lifecycle-demo", "lifetime":"current local service, not a persistent product endpoint"},
+  "unverified": ["Nozeli storage-worker/Pi integration", "Global unsaved-editor and writer leases", "Full knowledge approval/conflict/retraction model", "Real LLM generation and semantic consolidation", "All old revisions full-text retrieval", "Hardware power loss/disk-full/corrupt WAL", "Windows/macOS delivery", "Bounded retained archive bytes"],
+  "noProductSourceChanges": true,
+  "noDailyDataMigrationOrCleanup": true,
+  "noInstallCommitPush": true
+}

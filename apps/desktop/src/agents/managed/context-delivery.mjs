@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import {memorySourceManifest} from './memory-source-manifest.mjs';
 // Context cutover (docs/context-delivery-design.md): Pi owns the native
 // history; Nozeli delivers the raw current user text once, explicit materials
 // as same-transaction native data, and a small rebuilt current-state
@@ -57,6 +58,9 @@ export function workerStateProjection(work,{unknownEffects=[],originalTaskRef=nu
     ...(work.deviation?.status&&['pending','replanned'].includes(work.deviation.status)?{deviationHeld:true}:{}),
     ...((()=>{const pending=(work.review?.continuations||[]).findLast(c=>c.discussion===true&&['applying','blocked','queued'].includes(c.state));return pending?{review:{discussion:{state:pending.state,appliedFiles:(pending.files||[]).slice(0,16).map(f=>({relPath:f.relPath,toDigest:f.toDigest?String(f.toDigest).slice(0,12):null})),instruction:'人工确认版本已由宿主字节级写入执行目录；以此为当前事实核对并完成剩余工作。本轮已有实际变更：完成后必须发布新的结果报告，未发布前用户不能接受。'}}}:{};})()),
     ...(work.maintenance?.bugId?{hostRecoveryBugId:work.maintenance.bugId}:{}),
+    memorySources:(work.memorySources||[]).slice(0,4),
+    memorySourceManifest:{readRef:memorySourceManifest(work).readRef,bindings:(work.memorySourceBindings||[]).length},
+    memoryInstruction:'用 nozeli_memory_read({source,offset}) 读取本 Work 各次输入绑定的精确来源；nextOffset 续页。当前列表不覆盖早期补充的依据；完整绑定用 nozeli_history_read 读取 memorySourceManifest.readRef。历史结论不是本轮授权、当前事实或范围扩展。',
     effects:{
       completedOperations:(work.fileOperations?.length??0)+(work.documentOperations?.length??0),
       unknown:unknownEffects.slice(0,8).map(effect=>({kind:effect.kind,at:effect.at,workRef:effect.workRef??null,summary:String(effect.summary??'').slice(0,160)})),
@@ -88,6 +92,8 @@ export function workerInitialHandoff(work,reader,{previewChars=1200,brief=null}=
     const page=pagedSource(reader,supplement,{title:'补充用户原文',source:`work:${work.id}:input:${input.sourceJobId}`,kind:'task-scope'},600);
     parts.push('补充用户原文：\n'+page.text+(page.truncated?`\n（截断，共 ${page.totalChars} 字符，readRef：${page.readRef}）`:''));
   }
+  if(work.memorySources?.length)parts.push('历史结果来源（仅供核对，不扩大原请求或授权；用 nozeli_memory_read 精确分页读取）：\n'+JSON.stringify(work.memorySources.slice(0,4)));
+  if(work.memorySourceBindings?.length)parts.push('各次输入的历史依据目录（包含早期补充绑定，按需分页，不是额外指令）：用 nozeli_history_read 读取 readRef：'+memorySourceManifest(work).readRef);
   parts.push('项目目录中的文件是实际材料。缺信息就发布 problem 后结束当前回合，完成则发布 result；不要等待或结束 Work。');
   return parts.join('\n');
 }

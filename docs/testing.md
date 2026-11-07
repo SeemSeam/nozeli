@@ -7,6 +7,13 @@ node tools/test-suites.mjs --list          # 默认套件（unit+integration）�
 node tools/test-suites.mjs smoke --list    # 任一套件的文件清单
 ```
 
+## 稳定结果记忆定向验证（2026-11-07）
+
+源码首版与完整使用边界见[实现记录](result-memory-implementation.md)。`result-memory.test.mjs`为纯逻辑，`managed-result-memory-integration.test.mjs`与`managed-result-memory-binding.test.mjs`注册常规integration。额外运行`node tests/result-memory-live.mjs`以真实SQLite/对象验证100/1000报告分页、缓存及子进程SIGKILL恢复；可设`NOZELI_MEMORY_SMOKE_CACHE_BYTES=2097152`核对生产默认缓存预算。`node tests/desktop-result-memory-live.mjs`使用真实Electron/Pi与loopback确定性模型验证报告采用收尾、冷重启、主控查询、派发来源及Worker确切读取。它不使用个人凭据，不证明真实LLM选择/摘要质量；修改Pi桥后先在`integrations/pi`执行`npm run build`更新完整性清单。
+
+复杂多task追加：`node --test tests/managed-memory-multitask.test.mjs tests/memory-source-manifest.test.mjs tests/result-memory-concurrency.test.mjs`覆盖六task/额度2、冲突与丢弃历史来源、忙/排队补充、替换/清空导航但保留输入依据、冷重启、目录版本续读及缓存并发计费，已注册unit/integration。`node tests/result-memory-concurrency-live.mjs`以200份约5MB正文、默认2MiB缓存、124项混合读/解析/提交及独立冷进程验证性能/快照重试/完整性；`node tests/desktop-memory-multitask-live.mjs`启动实际Electron/Pi与确定性loopback，验证四task/额度2、排队补充去重、两次冷开及用户放弃释放原排队任务。只计实际运行结果，详见实现记录“复杂多task交错与记忆深测”。
+
+
 ## 2026-11-06 状态与管理页信息设计复核（未实施）
 
 父任务以实际安装版 `2026-11-06T00-54-32-789Z`、隔离合成 profile／项目和本机脚本源浏览十处：全部 Agent、单 Agent 模型、会话管理、连接与历史、服务故障、设置外观、默认模型、Agent 资源、AI 连接、本机恢复。原记录 `/tmp/nozeli-status-design-FV7Dip/audit.md` 与同目录 `01-all-agents.png` 至 `10-local-recovery.png`。浏览仅覆盖空闲双角色、单模型／单源、空故障／空恢复；父任务报告未发送问题、最终 jobs=[]、正常 exit0，不据此声明操作或动态分支通过。

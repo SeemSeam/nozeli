@@ -67,7 +67,9 @@ function resultToAgentToolResult(toolName, value) {
     return { content: [textBlock("null")] };
   }
   let content;
-  if (Array.isArray(value.content)) {
+  if (toolName === 'nozeli_memory_read' || toolName === 'nozeli_memory_search') {
+    content = [textBlock(JSON.stringify(value))];
+  } else if (Array.isArray(value.content)) {
     content = value.content.map(normalizeContentBlock);
   } else if (typeof value.text === "string") {
     content = [textBlock(value.text)];

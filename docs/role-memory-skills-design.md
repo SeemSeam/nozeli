@@ -4,6 +4,9 @@ Date: 2026-11-01
 Status: **独立设计审阅通过；后续记忆／原生 skill 系统实施须单独批准，不是已实施功能或运行验收结论。**
 Scope: 保留 frontdesk／orchestrator／Worker；仅设计本文件。当前 context cutover 可移除重复事件提示和旧诊断扇出，不因此授权实施整套知识管理／原生技能迁移。
 
+2026-11-07最新产品边界见[Plantree统一报告与稳定结果记忆](plantree-result-memory-design.md)：长期层默认只编目稳定文档版本和完整task结束结果，引用Plantree中的规范报告，不连续抽取聊天，不要求成果再做一次知识批准；报告作者主张不提升为系统真值或指令。原始研究见[评测报告](long-term-memory-evaluation.md)。本页通用批准知识/语义整理扩展暂缓，角色契约、来源/版本与权限分离、原生Pi历史边界继续成立；不因此授权技能迁移或生产实施。
+
+
 ## 1. 决策与不做什么
 
 以 [context-delivery-design.md](context-delivery-design.md) 为交付合同：Pi 独占原生历史、工具循环、压缩与恢复；Nozeli 管材料版本、Work、CAS、效果与准入。`memory.md` 是现有角色契约文件名，不是会话学习结果。三个角色不拥有各自不断增长的长期聊天记忆。知识是用户批准的项目来源，不是模型自行形成的权限或事实。

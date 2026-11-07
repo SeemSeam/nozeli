@@ -548,7 +548,7 @@ export class Workspace {
       else{kind='host-termination';sourceRef=`project.sqlite#managed_works:${id}`;bytes=Buffer.from(`# Host termination record\n\nWork: ${w.name||id}\nDecision: ${closure.decision||'unknown'}\nEnded: ${w.endedAt}\nProvider stopped: confirmed\nNo final Worker result report exists for revision ${w.revision}. This is not a successful completion report.\n`);}
       if(closure.report){await this.readObject(closure.report.digest);return closure.report;}
       const objectDigest=await this.putObject(bytes);relPath=`../../objects/sha256/${objectDigest}`;
-      closure.report={relPath,digest:objectDigest,kind,source:sourceRef,format:source?.report.format||'markdown',mediaType:source?.report.mediaType||'text/markdown',revision:w.revision,at:new Date().toISOString(),...(kind==='worker-report'?{summary:source.report.excerpt.slice(0,240)}:{})};
+      closure.report={relPath,digest:objectDigest,kind,source:sourceRef,...(source?{objectId:source.objectId,publicationRevision:source.revision}:{}),format:source?.report.format||'markdown',mediaType:source?.report.mediaType||'text/markdown',revision:w.revision,at:new Date().toISOString(),...(kind==='worker-report'?{summary:source.report.excerpt.slice(0,240)}:{})};
       await this.updateArchiveState(w);return structuredClone(closure.report);
     });
   }
