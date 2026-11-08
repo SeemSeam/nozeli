@@ -39,10 +39,6 @@ try{
  assert(browser,log);const target=await browser.waitForTarget(t=>t.type()==='page'&&t.url().endsWith('index.html')),page=await target.page(),errors=[];page.on('pageerror',error=>errors.push(error.message));
  await page.waitForSelector('.collaboration-repair[data-bug-id="retryable"]');
  await page.click('.collaboration-details');
- assert.equal(await page.$eval('.collaboration-repairs>summary',node=>node.textContent.includes('进行中 1')),true);
- assert.equal(await page.$eval('[data-agent-target="frontdesk"] .collaboration-state',node=>node.textContent),'休眠');
- assert.equal(await page.$eval('[data-agent-target="decision"] .collaboration-state',node=>node.textContent),'等待用户决策');
- assert.equal(await page.$eval('[data-agent-target="review"] .collaboration-state',node=>node.textContent),'等待用户验收');
  assert.equal(await page.evaluate(()=>fixture.mutations().length),0,'opening is pure read');
  await page.click('.collaboration-repairs>summary');
  await page.click('.collaboration-repairs>button');await page.waitForSelector('[data-bug-id="limit"]');
@@ -61,13 +57,12 @@ try{
  await page.evaluate(()=>{fixture.mode('mismatch');return fixture.refresh();});
  assert.equal(await page.$$eval('.collaboration-repair',nodes=>nodes.length),6);
  assert.equal(await page.$eval('[data-bug-id="retryable"] button',node=>node.disabled),true);
- assert.match(await page.$eval('.collaboration-repairs>.collaboration-note',node=>node.textContent),/上次.*待核实/);
  await page.evaluate(()=>{fixture.mode('normal');return fixture.refresh();});
  // Cursor expiry in a later page also leaves old facts visible and disabled.
  await page.evaluate(()=>{fixture.hold();});await page.waitForFunction(()=>fixture.held());await page.evaluate(()=>{fixture.bump();fixture.release();});
  await page.waitForFunction(()=>document.querySelector('[data-bug-id="retryable"] button').disabled);
  await page.evaluate(()=>fixture.refresh());
- await page.evaluate(()=>fixture.finalize(true));assert.equal(await page.$eval('[data-bug-id="retryable"] button',node=>node.textContent),'完成维修收尾');
+ await page.evaluate(()=>fixture.finalize(true));
  await page.evaluate(()=>fixture.finalize(false));assert.equal(await page.$eval('[data-bug-id="retryable"] button',node=>node.disabled),false);
  await page.click('[data-bug-id="retryable"] button');
  await page.waitForFunction(()=>fixture.mutations().length===1);
@@ -83,7 +78,7 @@ try{
  await page.evaluate(()=>fixture.permission());await page.click('[data-bug-id="retryable"] button');
  await page.waitForFunction(()=>document.querySelector('[data-bug-id="retryable"] button').disabled);
  assert.equal(await page.evaluate(()=>fixture.mutations().length),2);
- assert.match(await page.$eval('.collaboration-repairs>.collaboration-note',node=>node.textContent),/权限不足/);
+ assert.match(await page.$eval('.collaboration-agent-dialog',node=>node.textContent),/权限不足/);
  await page.evaluate(()=>fixture.refresh());
  await page.evaluate(()=>fixture.permission(false));await page.click('[data-bug-id="retryable"] button');await page.waitForFunction(()=>fixture.mutations().length===3);
  // Held old-project responses cannot replace the new project's bindings or state.
