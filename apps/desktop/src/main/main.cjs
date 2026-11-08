@@ -350,6 +350,7 @@ async function main() {
   workspaceNative.onlineBrowser=onlineBrowser;
   const {WorkspaceCapture}=await import('./workspace-capture.mjs');
   workspaceCapture=new WorkspaceCapture({workspace:workspaceNative,host,deliver:async(session,event)=>{await workspaceNative.deliverDrawing(session,event);}});
+  workspaceNative.discardProjectCapture=async projectId=>{if(workspaceCapture?.active?.projectId===projectId)await workspaceCapture.shutdown();};
   const {ProjectLifecycle}=await import('./project-lifecycle.mjs');
   const {reconcileManagedPending}=await import('../agents/managed/managed-storage.mjs');
   projectLifecycle=new ProjectLifecycle({host,workspace:workspaceNative,managed:managedAgents,reconcileManaged:(id,options)=>reconcileManagedPending(host.storage,id,options),trashItem:target=>shell.trashItem(target),beforeStop:async id=>{projectWatcher?.unwatchProject(id);await workspaceNative.projectTerminals.stopProject(id,'project-stop');await texManager?.stopProject(id);await texLanguage?.stopProject(id);await lspManager?.stopProject(id);},protectedRoots:[APP_ROOT,path.dirname(APP_ROOT),nozeliPaths.root]});
@@ -455,6 +456,10 @@ async function main() {
       }
       if(['material.attach','material.attachPath'].includes(op))payload={...payload,projectId:scope.projectId};
       if(op==='material.read'&&payload.projectId!==scope.projectId)throw new HostError('PROJECT_SCOPE_DENIED','附件不属于当前项目');
+      if(scope.role==='shell'&&['project.open','project.retry','workspace.project'].includes(op)&&payload?.projectId){
+        try{const available=await projectLifecycle.ensureProjectAvailable(payload.projectId);payload={...payload,projectId:available.projectId};}
+        catch(error){void managedAgents.diagnoseProject(payload.projectId,error).catch(()=>{});throw error;}
+      }
       const admissionProject=payload?.projectId??scope.projectId;
       const execute=async()=>{
       trusted(event,op,payload??{});
@@ -476,11 +481,13 @@ async function main() {
       // project.remove alone bypasses this blanket assertActive and is then
       // validated by ProjectLifecycle.removeProject's conservative guard;
       // ordinary writes stay blocked while any hold exists.
-      if(admissionProject&&!['managed.collaboration.status','managed.model.options','managed.fault.status','managed.fault.results','managed.work.control.status','workspace.recovery','workspace.recovery.list','workspace.recovery.detail','workspace.recovery.object','workspace.recovery.export','session.flushed','workspace.bootstrap','project.lifecycle.reconcile','project.remove'].includes(op)&&!workspaceNative.lifecycleFlushOwner(scope,payload?.flushRequestId,op))host.storage.assertActive(admissionProject);
+      if(admissionProject&&!['managed.collaboration.status','managed.model.options','managed.fault.status','managed.fault.results','managed.work.control.status','workspace.recovery','workspace.recovery.list','workspace.recovery.detail','workspace.recovery.object','workspace.recovery.export','session.flushed','workspace.bootstrap','project.lifecycle.preview','project.lifecycle.execute','project.lifecycle.reconcile','project.remove','project.open','project.retry'].includes(op)&&!workspaceNative.lifecycleFlushOwner(scope,payload?.flushRequestId,op,payload))host.storage.assertActive(admissionProject);
       if(['project.lifecycle.preview','project.lifecycle.execute','project.lifecycle.reconcile'].includes(op)){
         if(scope.role!=='shell')throw new HostError('IPC_DENIED','只能在主窗口管理项目');
         const projectId=op==='project.lifecycle.execute'?projectLifecycle.tokens.get(payload.token)?.projectId:payload.projectId;
-        if(projectId)await finishDrawing({projectId});
+        const reset=op.endsWith('preview')?payload.action==='reset-project':op.endsWith('execute')?projectLifecycle.tokens.get(payload.token)?.action==='reset-project':false;
+        if(reset&&op.endsWith('execute')&&workspaceCapture?.active?.projectId===projectId)await workspaceCapture.shutdown();
+        if(projectId&&!reset)await finishDrawing({projectId});
         if(op.endsWith('preview'))return {ok:true,value:await projectLifecycle.preview(payload)};
         if(op.endsWith('reconcile'))return {ok:true,value:await projectLifecycle.reconcile(payload)};
         return {ok:true,value:await projectLifecycle.execute(payload)};
@@ -536,6 +543,7 @@ async function main() {
           if(priorProject&&priorProject!==scope.projectId)projectWatcher?.unwatchProject(priorProject);
           const activatedProjectId=scope.projectId;
           if(!guidedDemo.isDemo(activatedProjectId))void managedAgents.setActiveProject(activatedProjectId).catch(error=>workspaceNative.broadcast('nozeli:agent',{projectId:activatedProjectId,kind:'managed-error',text:'Agent 资源状态未能更新，文件仍可打开：'+error.message},activatedProjectId));
+          if(activatedProjectId&&!guidedDemo.isDemo(activatedProjectId))void managedAgents.initializeProject(activatedProjectId).catch(error=>workspaceNative.broadcast('nozeli:agent',{projectId:activatedProjectId,kind:'initialization-status',text:'项目资料尚未整理：'+error.message},activatedProjectId));
         }
         return {ok:true,value};
       }
@@ -821,7 +829,7 @@ async function main() {
         return {ok:true,value:await exportTimelineOriginal({managed:managedAgents,dialog,scope,...payload})};
       }
       if(typeof op==='string'&&op.startsWith('managed.')){
-        const historyOnly=['managed.collaboration.status','managed.model.options','managed.status','managed.maintenance.status','managed.fault.status','managed.fault.results','managed.work.control.status','managed.work.progress.read','managed.history.list','managed.history.read','managed.artifact.read','managed.artifact.list','managed.timeline.page','managed.timeline.read','managed.timeline.request','managed.changes.list','managed.changes.read','managed.worker.history','managed.resident.history','managed.draft','managed.disposition','managed.terminal.screen','managed.review.read','managed.review.instruction.read','managed.review.discussion.read'].includes(op);
+        const historyOnly=['managed.initialization.status','managed.initialization.read','managed.initialization.cancel','managed.collaboration.status','managed.model.options','managed.status','managed.maintenance.status','managed.fault.status','managed.fault.results','managed.work.control.status','managed.work.progress.read','managed.history.list','managed.history.read','managed.artifact.read','managed.artifact.list','managed.timeline.page','managed.timeline.read','managed.timeline.request','managed.changes.list','managed.changes.read','managed.worker.history','managed.resident.history','managed.draft','managed.disposition','managed.terminal.screen','managed.review.read','managed.review.instruction.read','managed.review.discussion.read'].includes(op);
         // Local disposition still passes sender/project/mutation authorization above.
         const localDisposition=['managed.end','managed.retry','managed.merge.consent','managed.merge.constraint','managed.deviation.resolve','managed.problem.resolve','managed.effect.response','managed.todo.manage','managed.attention.ack','managed.attention.respond','managed.attention.draft.read','managed.attention.draft.write','managed.review.save','managed.review.accept','managed.review.instruction.save'].includes(op);
         let blocked=piRuntimeError&&!historyOnly&&!localDisposition?piRuntimeError:null;
@@ -841,7 +849,7 @@ async function main() {
       if(['file.save','word.save','sheet.save'].includes(op)&&guidedDemo.isDemo(payload.projectId))await guidedDemo.recordTutorialSave(scope,op,payload,value);
       return { ok: true, value };
       };
-      const flushOwner=workspaceNative.lifecycleFlushOwner(scope,payload?.flushRequestId,op);
+      const flushOwner=workspaceNative.lifecycleFlushOwner(scope,payload?.flushRequestId,op,payload);
       // Only a genuine registered storage hold enters withLifecycleOwner; a
       // workspace-close receipt owner was already authorized precisely above.
       if(flushOwner&&host.storage.lifecycleHolds.get(scope.projectId)===flushOwner)return await host.storage.withLifecycleOwner(scope.projectId,flushOwner,execute);

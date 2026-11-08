@@ -9,22 +9,48 @@ import {Controller} from '../src/agents/managed/controller.mjs';
 
 const historyBytes=id=>JSON.stringify({type:'session',id,version:3,timestamp:'2026-10-18T00:00:00.000Z',cwd:'/fixture'})+'\n'+JSON.stringify({type:'message',id:'historic-message',message:{role:'assistant',content:[{type:'text',text:'old immutable history'}]}})+'\n';
 // Zero-model fixture: never launches a provider, accesses credentials or sends input.
-async function fixture(t){
+async function fixture(t,{fault=true}={}){
  const root=await mkdtemp(path.join(os.tmpdir(),'resident-handoff-'));
  const calls=[];let nextId=0,failNew=false;
  const c=await openTestController({runtimeRoot:path.join(root,'runtime'),contentRoot:path.join(root,'content'),projectHome:async()=>{},sessionFactory:(spec,target)=>{
   const session=new EventEmitter();Object.assign(session,{toolsDigest:'current-schema',busy:false,closed:false,phase:'ready',sideEffectFacts:[],inFlightToolCalls:new Set()});
-  session.start=async resumeId=>{calls.push({target,resumeId});session.threadId=resumeId??`new-${++nextId}`;session.sessionFile=path.join(spec.home,'sessions',session.threadId+'.jsonl');await mkdir(path.dirname(session.sessionFile),{recursive:true});if(resumeId){try{await readFile(session.sessionFile);}catch(error){if(error.code==='ENOENT')throw Object.assign(Error('Pi original journal missing'),{code:'PI_SESSION_FILE_NOT_FOUND'});throw error;}}else await writeFile(session.sessionFile,historyBytes(session.threadId));if(failNew&&!resumeId){failNew=false;throw Error('startup after identity failed');}return session;};
-  session.assertToolsDigest=expected=>{if(expected!=='current-schema')throw Object.assign(Error('historical schema not equivalent'),{code:'PI_TOOLS_DIGEST_MISMATCH'});};
-  session.preflightToolsDigest=async expected=>{const id=c.store.state.residents?.[target]?.threadId;if(id)session.sessionFile=path.join(spec.home,'sessions',id+'.jsonl');session.assertToolsDigest(expected);return {expectedDigest:expected,toolsDigest:session.toolsDigest,compatible:true};};
+  session.start=async resumeId=>{if(resumeId&&session.pinnedThreadId&&session.pinnedThreadId!==resumeId)throw Object.assign(Error('Pi pinned session metadata names another thread'),{code:'PI_SESSION_IDENTITY'});calls.push({target,resumeId});session.threadId=resumeId??`new-${++nextId}`;session.sessionFile=path.join(spec.home,'sessions',session.threadId+'.jsonl');await mkdir(path.dirname(session.sessionFile),{recursive:true});if(resumeId){try{await readFile(session.sessionFile);}catch(error){if(error.code==='ENOENT')throw Object.assign(Error('Pi original journal missing'),{code:'PI_SESSION_FILE_NOT_FOUND'});throw error;}}else await writeFile(session.sessionFile,historyBytes(session.threadId));if(failNew&&!resumeId){failNew=false;throw Error('startup after identity failed');}return session;};
+  session.assertToolsDigest=expected=>{if(expected==null||expected===session.toolsDigest)return {equivalent:true,toolsDigest:session.toolsDigest};if(session.pinnedToolsDigest&&expected===session.pinnedToolsDigest)return {equivalent:false,resumedWithChangedTools:true,toolsDigest:session.toolsDigest,expectedToolsDigest:expected,pinnedToolsDigest:session.pinnedToolsDigest};throw Object.assign(Error('historical tools lineage mismatch'),{code:'PI_TOOLS_DIGEST_MISMATCH'});};
+  session.preflightToolsDigest=async expected=>{const resident=c.store.state.residents?.[target];if(resident?.threadId){session.sessionFile=path.join(spec.home,'sessions',resident.threadId+'.jsonl');session.pinnedThreadId=resident.threadId;}session.pinnedToolsDigest=typeof resident?.toolsDigest==='string'?resident.toolsDigest:null;return {equivalent:(expected==null||expected===session.toolsDigest)&&session.pinnedToolsDigest===session.toolsDigest,toolsDigest:session.toolsDigest,...(expected!=null&&expected!==session.toolsDigest?{expectedToolsDigest:expected}:{}),pinnedToolsDigest:session.pinnedToolsDigest};};
   session.stop=async()=>{session.closed=true;return {confirmationComplete:true,exited:true};};session.prompt=()=>{throw Error('no model calls permitted');};return session;
  }});
  t.after(()=>c.stop());
  const oldFile=path.join(c.store.root,'agents','resident-frontdesk-pi','sessions','old-frontdesk.jsonl');await mkdir(path.dirname(oldFile),{recursive:true});await writeFile(oldFile,historyBytes('old-frontdesk'));
  await c.store.mutate(()=>{c.store.state.residents.frontdesk={provider:'pi',threadId:'old-frontdesk',toolsDigest:'legacy-schema',zeroActivity:false};});
- await assert.rejects(c.session('frontdesk'),e=>e.code==='PI_TOOLS_DIGEST_MISMATCH'&&e.target==='frontdesk'&&e.expectedToolsDigest==='legacy-schema'&&e.actualToolsDigest==='current-schema');
+ // Explicit fixture fault mode (default): the challenge flow is reachable
+ // only through a genuine persisted fault, so seed residentHandoffFailures
+ // via the REAL controller path — one makeSession rejection with an injected
+ // lineage fault — never by hand-writing app state. Continuity tests opt out
+ // with {fault:false} and resume natively.
+ if(fault){
+  const original=c.sessionFactory;
+  c.sessionFactory=(spec,target)=>{const session=original(spec,target);if(target==='frontdesk'){const diagnostic=session.preflightToolsDigest;session.preflightToolsDigest=async expected=>{await diagnostic(expected);throw Object.assign(Error('injected persisted preflight fault'),{code:'PI_TOOLS_DIGEST_MISMATCH'});};}return session;};
+  await assert.rejects(c.makeSession('frontdesk'),e=>e.code==='PI_TOOLS_DIGEST_MISMATCH'&&e.target==='frontdesk'&&e.expectedToolsDigest==='legacy-schema'&&e.actualToolsDigest==='current-schema');
+  c.sessionFactory=original;
+ }
  return {c,calls,oldFile,failNext:()=>{failNew=true;}};
 }
+
+test('changed persisted tools digest resumes the exact original thread without fresh context',async t=>{
+ const {c,calls,oldFile}=await fixture(t,{fault:false});
+ const before=await readFile(oldFile);
+ const session=await c.session('frontdesk');
+ assert.equal(session.threadId,'old-frontdesk','a mere tool-schema digest change never forces a fresh context');
+ assert.deepEqual(calls,[{target:'frontdesk',resumeId:'old-frontdesk'}]);
+ assert.equal(c.store.state.residents.frontdesk.threadId,'old-frontdesk');
+ assert.equal(c.store.state.residents.frontdesk.toolsDigest,'current-schema','resident digest row advances to the running schema');
+ assert.equal(c.store.state.residentArchive?.frontdesk?.handoffs,undefined);
+ assert.deepEqual(await readFile(oldFile),before);
+ const lineage=session.assertToolsDigest('legacy-schema');
+ assert.equal(lineage.resumedWithChangedTools,true);
+ assert.throws(()=>session.assertToolsDigest('unknown-lineage'),{code:'PI_TOOLS_DIGEST_MISMATCH'});
+ await session.stop();
+});
 
 test('prepare stops idle owners but cancellation leaves old identity and history intact',async t=>{
  const {c,calls,oldFile}=await fixture(t);await c.session('orchestrator');const owner=c.sessions.get('orchestrator');
@@ -77,57 +103,71 @@ test('confirm rechecks safety after prepare and refuses newly queued input',asyn
  await assert.rejects(c.confirmResidentHandoff(challenge),{code:'PI_HANDOFF_BUSY'});assert.equal(c.store.state.residents.frontdesk.threadId,'old-frontdesk');
 });
 
-test('start waits for all resident startups before exposing mismatch',async t=>{
+test('start waits for all resident startups before exposing an injected preflight fault',async t=>{
  const {c}=await fixture(t);let release;const gate=new Promise(resolve=>{release=resolve;});const original=c.sessionFactory;
  await c.store.mutate(()=>{c.store.state.residents.orchestrator={provider:'pi',threadId:'old-orchestrator',toolsDigest:'current-schema',zeroActivity:false};});
- c.sessionFactory=(spec,target)=>{const session=original(spec,target);if(target==='orchestrator'){const preflight=session.preflightToolsDigest;session.preflightToolsDigest=async expected=>{await gate;return preflight(expected);};}return session;};
+ c.sessionFactory=(spec,target)=>{const session=original(spec,target);
+  if(target==='frontdesk')session.preflightToolsDigest=async()=>{throw Object.assign(Error('injected persisted preflight fault'),{code:'PI_TOOLS_DIGEST_MISMATCH'});};
+  if(target==='orchestrator'){const preflight=session.preflightToolsDigest;session.preflightToolsDigest=async expected=>{await gate;return preflight(expected);};}
+  return session;};
  let settled=false;const started=c.start().finally(()=>{settled=true;});const rejected=assert.rejects(started,{code:'PI_TOOLS_DIGEST_MISMATCH'});
  await new Promise(resolve=>setImmediate(resolve));assert.equal(settled,false);release();await rejected;assert.equal(c.starting.size,0);assert.equal(c.started,false);
 });
 
-test('schema preflight rejects before any resident spawn and preserves old history bytes',async t=>{
- const {c,calls,oldFile}=await fixture(t);const before=await readFile(oldFile);assert.equal(calls.length,0,'single-resident mismatch never resumed the old CLI');
+test('injected preflight fault rejects before any resident spawn and preserves old history bytes',async t=>{
+ const {c,calls,oldFile}=await fixture(t);const before=await readFile(oldFile);const original=c.sessionFactory;
+ c.sessionFactory=(spec,target)=>{const session=original(spec,target);if(target==='frontdesk')session.preflightToolsDigest=async()=>{throw Object.assign(Error('injected persisted preflight fault'),{code:'PI_TOOLS_DIGEST_MISMATCH'});};return session;};
  await assert.rejects(c.start(),e=>e.code==='PI_TOOLS_DIGEST_MISMATCH'&&e.expectedToolsDigest==='legacy-schema'&&e.actualToolsDigest==='current-schema');
- assert.equal(calls.length,0,'all-resident preflight prevents even compatible/new peers from spawning');assert.equal(c.sessions.size,0);assert.deepEqual(await readFile(oldFile),before);
+ assert.equal(calls.length,0,'a persisted fault never resumes or spawns the old CLI');assert.equal(c.sessions.size,0,'all-resident preflight prevents even compatible peers from spawning');assert.deepEqual(await readFile(oldFile),before);
  const challenge=await c.prepareResidentHandoff('frontdesk');assert.equal(challenge.oldThreadId,'old-frontdesk');assert.equal(c.store.state.residents.frontdesk.threadId,'old-frontdesk');assert.deepEqual(await readFile(oldFile),before);assert.equal(calls.length,0);
 });
 
-for(const scenario of ['missing','empty','native-message','unknown-entry','admitted'])test(`empty schema upgrade proves zero activity: ${scenario}`,async t=>{
- const {c,oldFile,calls}=await fixture(t);
+for(const scenario of ['missing','empty','native-message','admitted'])test(`changed tool schema keeps native continuity: ${scenario}`,async t=>{
+ const {c,oldFile,calls}=await fixture(t,{fault:false});
  await c.store.mutate(()=>{c.store.state.residents.frontdesk.zeroActivity=true;c.store.state.drafts.frontdesk='保留的未发送草稿';});
  if(scenario==='missing')await (await import('node:fs/promises')).unlink(oldFile);
  else if(scenario==='empty')await writeFile(oldFile,JSON.stringify({type:'session',id:'old-frontdesk'})+'\n');
- else if(scenario==='unknown-entry')await writeFile(oldFile,JSON.stringify({type:'session',id:'old-frontdesk'})+'\n'+JSON.stringify({type:'unknown-new-format'})+'\n');
+ else if(scenario==='native-message')await writeFile(oldFile,JSON.stringify({type:'session',id:'old-frontdesk'})+'\n'+JSON.stringify({type:'message',message:{role:'user',content:'current input'}})+'\n');
  if(scenario==='admitted')await c.store.mutate(()=>c.store.state.jobs.push({id:'attempted',target:'frontdesk',status:'failed',promptStartedAt:1}));
  const before=scenario==='missing'?null:await readFile(oldFile,'utf8');
- if(['missing','empty'].includes(scenario)){
-  const session=await c.session('frontdesk');assert.equal(session.threadId,'new-1');
+ if(scenario==='missing'){
+  const session=await c.session('frontdesk');assert.equal(session.threadId,'new-1','only a genuinely missing journal restarts, without replay');
   assert.equal(calls.filter(x=>x.resumeId==null).length,1);
   assert.equal(c.store.state.jobs.length,0);assert.equal(c.store.state.messages.length,0);
- }else await assert.rejects(c.session('frontdesk'),{code:'PI_TOOLS_DIGEST_MISMATCH'});
+ }else{
+  const session=await c.session('frontdesk');assert.equal(session.threadId,'old-frontdesk','a changed digest resumes the exact original thread, never a fresh context');
+  assert.deepEqual(calls.at(-1),{target:'frontdesk',resumeId:'old-frontdesk'});
+  assert.equal(c.store.state.residents.frontdesk.threadId,'old-frontdesk');
+  assert.equal(c.store.state.residents.frontdesk.toolsDigest,'current-schema');
+  if(scenario==='admitted'){const job=c.store.state.jobs.find(j=>j.id==='attempted');assert(job,'an attempted input row is retained, not replayed or discarded');assert.equal(job.status,'failed');assert.equal(job.promptStartedAt,1);}
+  else{assert.equal(c.store.state.jobs.length,0);assert.equal(c.store.state.messages.length,0);}
+ }
  assert.equal(c.store.state.drafts.frontdesk,'保留的未发送草稿');
  assert.equal(c.store.state.residentArchive?.frontdesk?.handoffs,undefined);
  if(before!==null)assert.equal(await readFile(oldFile,'utf8'),before);
 });
 
-for(const scenario of ['empty','current-admission','unbound-job','current-message','wrong-journal','native-message','mixed-binding','unconfirmed'])test(`schema upgrade after handoff preserves archived history: ${scenario}`,async t=>{
+for(const scenario of ['empty','current-admission','current-message','native-message','unconfirmed'])test(`schema upgrade after handoff resumes the same current thread: ${scenario}`,async t=>{
  const {c,oldFile,calls}=await fixture(t);
  await c.store.mutate(()=>{c.store.state.jobs.push({id:'archived-job',target:'frontdesk',status:'completed',promptStartedAt:1,threadId:'old-frontdesk',collabAttempts:[{sessionId:'old-frontdesk',everAdmitted:true,status:'settled'}]});c.store.state.messages.push({id:'archived-message',target:'frontdesk',speaker:'user',jobId:'archived-job',text:'retained old input'});c.store.state.drafts.frontdesk='unsent draft retained';});
  await c.confirmResidentHandoff(await c.prepareResidentHandoff('frontdesk'));
  const resident=c.store.state.residents.frontdesk,currentThread=resident.threadId,currentFile=c.sessions.get('frontdesk').sessionFile;
  await c.sessions.get('frontdesk').stop();c.sessions.delete('frontdesk');
- await writeFile(currentFile,JSON.stringify({type:'session',id:scenario==='wrong-journal'?'another-thread':currentThread})+'\n'+(scenario==='native-message'?JSON.stringify({type:'message',message:{role:'user',content:'current input'}})+'\n':''));
+ await writeFile(currentFile,JSON.stringify({type:'session',id:currentThread})+'\n'+(scenario==='native-message'?JSON.stringify({type:'message',message:{role:'user',content:'current input'}})+'\n':''));
  await c.store.mutate(()=>{resident.toolsDigest='schema-before-upgrade';
   if(scenario==='current-admission')c.store.state.jobs.push({id:'current-job',target:'frontdesk',status:'failed',promptStartedAt:2,collabAttempts:[{sessionId:currentThread,status:'unknown'}]});
-  if(scenario==='unbound-job')c.store.state.jobs.push({id:'unbound',target:'frontdesk',status:'failed',promptStartedAt:2});
   if(scenario==='current-message')c.store.state.messages.push({id:'current-message',target:'frontdesk',sessionId:currentThread,text:'must not be discarded'});
-  if(scenario==='mixed-binding')c.store.state.jobs[0].collabAttempts.push({sessionId:currentThread,status:'unknown'});
   if(scenario==='unconfirmed')resident.handoff.status='start-failed';
  });
  const before=structuredClone({jobs:c.store.state.jobs,messages:c.store.state.messages,drafts:c.store.state.drafts,archives:c.store.state.residentArchive}),journal=await readFile(currentFile),old=await readFile(oldFile),starts=calls.length;
- if(scenario==='empty'){const session=await c.session('frontdesk');assert.equal(session.closed,false);assert.equal(c.store.state.residents.frontdesk.toolsDigest,session.toolsDigest);assert.equal(calls.length,starts+1);}
- else{await assert.rejects(c.session('frontdesk'),{code:'PI_TOOLS_DIGEST_MISMATCH'});assert.equal(calls.length,starts);assert.equal(c.store.state.residents.frontdesk.threadId,currentThread);}
- assert.deepEqual({jobs:c.store.state.jobs,messages:c.store.state.messages,drafts:c.store.state.drafts,archives:c.store.state.residentArchive},before);assert.deepEqual(await readFile(currentFile),journal);assert.deepEqual(await readFile(oldFile),old);
+ const session=await c.session('frontdesk');
+ assert.equal(session.threadId,currentThread,'the upgraded schema resumes the exact current thread');
+ assert.equal(session.closed,false);
+ assert.equal(c.store.state.residents.frontdesk.threadId,currentThread);
+ assert.equal(c.store.state.residents.frontdesk.toolsDigest,session.toolsDigest);
+ assert.equal(calls.length,starts+1);assert.deepEqual(calls.at(-1),{target:'frontdesk',resumeId:currentThread});
+ assert.deepEqual({jobs:c.store.state.jobs,messages:c.store.state.messages,drafts:c.store.state.drafts,archives:c.store.state.residentArchive},before,'attempted input and visible rows are retained, never replayed or discarded');
+ assert.deepEqual(await readFile(currentFile),journal);assert.deepEqual(await readFile(oldFile),old);
 });
 
 test('frontdesk clear creates only a fresh frontdesk owner and preserves all source ledgers',async t=>{

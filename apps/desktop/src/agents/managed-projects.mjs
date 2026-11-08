@@ -57,6 +57,7 @@ import {ServiceFaults} from './managed/service-faults.mjs';
 import {workSlotFacts} from './managed/workspace.mjs';
 import {jobBoundWork,workControlHeldFor} from './managed/work-control.mjs';
 import {neverAdmitted} from './managed/restart-recovery.mjs';
+import {boundedMemoryFile} from './managed/project-initialization.mjs';
 export class ManagedProjects {
  constructor({userDataDir,host,legacy,beforeDocumentOperation,ompSystemSource=null,ompAuthBroker=null,ompCommand=null,piSource=null,piRuntime=null,piAuth=null,openController=Controller.open,attachTerminal=attachNativeTerminal,stopTimeoutMs=15000,privilegeBroker=null,modelCatalog=null,idleTimeoutMs=300000,idleClock,serviceFaultBackoffMs}){
   // ompOptions 仅供旧 OMP 进程回收（只读历史）；新执行一律 Pi（piSource/piRuntime/piAuth）。
@@ -125,7 +126,9 @@ export class ManagedProjects {
   const flight=(async()=>{
    await this.processBudget.load();const records=[];
    for(const project of await this.host.storage.list()){
-    const providers=await this.host.storage.getLocal(project.id,'managed:providers')??{};
+    // Retired instances retain provider ownership facts: reclaim only after
+    // verification, without opening their former business metadata or absent UI.
+    const providers=project.removed?(await this.host.storage.getLocalRecord(project.id,'managed:providers'))?.value??{}:await this.host.storage.getLocal(project.id,'managed:providers')??{};
     for(const [target,record] of Object.entries(providers)){
      const live=this.controllers.get(project.id)?.sessions?.get(target);if(live&&!live.closed)continue;
      const slot=[...this.processBudget.slots].find(slot=>slot.projectId===project.id&&slot.target===target)??this.processBudget.restoreSlot(project.id,target);
@@ -196,6 +199,40 @@ export class ManagedProjects {
    for(const [id,c] of candidates){for(const target of c.sessions?.keys()??[]){if(this.processBudget.available)return;try{await c.reclaimIdle?.(target,{hiddenTerminal:true});}catch(error){this.listener({projectId:id,kind:'managed-error',text:'空闲 Agent 回收未确认，名额保留：'+error.message});}}}
    if(!this.processBudget.available&&requestedTarget){const c=this.controllers.get(requestingId),targets=['orchestrator','frontdesk',...(c?.sessions?.keys()??[])];for(const target of new Set(targets)){if(this.processBudget.available)break;if(target===requestedTarget)continue;try{await c?.reclaimIdle?.(target);}catch(error){this.listener({projectId:requestingId,kind:'managed-error',text:'空闲 Agent 回收未确认，名额保留：'+error.message});}}}
   });this.reclaimFlight=operation;return operation;
+ }
+ async diagnoseProject(id,error){
+  const controller=this.controllers.get(id),code=error?.code;
+  if(!['PROJECT_FLUSH_FAILED','PROJECT_RECOVERY_UNSAFE','SURFACE_NOT_READY','FLUSH_TIMEOUT'].includes(code))return {diagnosis:'unavailable',reason:'external-or-unsupported'};
+  if(this.host.storage.lifecycleHolds?.has(id))return {diagnosis:'unavailable',reason:'project-held'};
+  if(!controller||controller.stopping||controller.store.closed||!controller.started)return {diagnosis:'unavailable',reason:'no-controller'};
+  try{this.host.storage.assertActive(id);}catch{return {diagnosis:'unavailable',reason:'project-held'};}
+  const previous=(await controller.maintenance.read()).bugs.find(bug=>bug.phase==='project-lifecycle'&&bug.error?.code===code);
+  if(previous)return {diagnosis:'recorded',bugId:previous.id,resetSuggested:previous.status!=='repaired'};
+  const bug=await controller.maintenance.record({phase:'project-lifecycle',error:{code},identity:code});
+  const queued=await controller.maintenanceEvent(bug);return {diagnosis:queued?'queued':'unavailable',bugId:bug.id,resetSuggested:true};
+ }
+ async initializationRead(id,{version,offset=0}={}){
+  if(version!==undefined&&typeof version!=='string'||!Number.isSafeInteger(offset)||offset<0)throw new HostError('INVALID_PAYLOAD','项目地图分页参数无效。');
+  const project=await this.host.requireRegisteredProject(id),map=await boundedMemoryFile(path.join(project.metadataRoot,'memory','plantree'),'topics/project-map.md');
+  if(map.text===null)throw new HostError('PROJECT_MAP_UNAVAILABLE','项目地图尚未生成。');
+  if(version!==undefined&&version!==map.digest)throw new HostError('PROJECT_INITIALIZATION_MAP_CONFLICT','项目地图已变化，请刷新。');
+  const endOffset=Math.min(map.text.length,offset+12000);return {text:map.text.slice(offset,endOffset),version:map.digest,offset,endOffset,nextOffset:endOffset<map.text.length?endOffset:null,totalChars:map.text.length};
+ }
+ async initializationStatus(id){
+  const project=await this.host.requireRegisteredProject(id),controller=this.controllers.get(id);
+  if(controller)return controller.initializationStatus();
+  const state=(await this.projectionSource(id)).state,job=state.jobs?.findLast(j=>j.type==='project-initialization'&&j.context?.projectInstanceId===project.instanceId);
+  return {schema:1,projectId:id,projectInstanceId:project.instanceId,status:job?.status??'pending',jobId:job?.id??null,map:job?.projectMap??null,errorCode:job?.errorCode??null};
+ }
+ async initializeProject(id,{retry=false,expectedProjectInstanceId}={}){
+  const project=await this.host.requireRegisteredProject(id);
+  if(expectedProjectInstanceId!==undefined&&project.instanceId!==expectedProjectInstanceId)throw new HostError('PROJECT_INITIALIZATION_STALE','项目实例已变化。');
+  if(!project.semanticInitializationEligible&&!retry||!(await this.config(id)).enabled||this.stopping)return this.initializationStatus(id);
+  if(!retry&&(await this.initializationStatus(id)).status!=='pending')return this.initializationStatus(id);
+  let controller=this.controllers.get(id);
+  if(!controller?.started){await this.connect(id);controller=this.controllers.get(id);}
+  if(!controller?.started)return this.initializationStatus(id);
+  return controller.initializeProject({retry,expectedProjectInstanceId:project.instanceId});
  }
  async config(id){await this.host.requireRegisteredProject(id);return await this.host.storage.getLocal(id,'managed:binding')??{enabled:false};}
  // Ordinary directory access does not register projects or create metadata.
@@ -378,10 +415,12 @@ export class ManagedProjects {
  }
  async configurationReady(){
   for(const project of await this.host.storage.list()){
+   if(project.removed)continue;
    const saved=await this.attention.read(project.id);
    if(!saved.todos.some(t=>t.status==='open'&&t.attentionKey==='connection:connection'&&t.destination?.kind==='settings'))continue;
    await this.attention.observe(project.id,'connection',[]);const status=await this.status(project.id);this.listener({projectId:project.id,kind:'managed-state',state:status.state});
   }
+  for(const project of await this.host.storage.list())if(!project.removed&&project.semanticInitializationEligible)void this.initializeProject(project.id).catch(()=>{});
   if(!this.stopping)await this.resumeUnfinishedProjects();
  }
  async resumeUnfinishedProjects({hostOnly=false}={}){
@@ -392,6 +431,9 @@ export class ManagedProjects {
    if(!hostOnly)await this.initializeResources();
    for(const project of await this.host.storage.list()){
     if(this.stopping)break;
+    // Removal preserves history, not authorization to resume business or report
+    // connection failures against a path that may now belong to a new instance.
+    if(project.removed)continue;
     if(this.guidedDemo?.isDemo(project.id))continue;
     try{
      if(!(await this.config(project.id)).enabled)continue;
@@ -671,6 +713,8 @@ export class ManagedProjects {
     if(result.ready){
      await this.attention.observe(id,'connection',[]);
      const controller=this.controllers.get(id);
+     const project=await this.host.requireRegisteredProject(id);
+     if(controller?.started&&project.semanticInitializationEligible&&(await this.config(id)).enabled)void controller.initializeProject({expectedProjectInstanceId:project.instanceId}).catch(error=>this.listener({projectId:id,kind:'managed-error',text:'项目整理未启动：'+error.message}));
      if(options.enable===true&&typeof controller?.reactivateModelUnavailableDebug==='function'){
       await controller.reactivateModelUnavailableDebug(null,{explicitReconnect:true});
       result.state=controller.snapshot();
@@ -738,6 +782,7 @@ export class ManagedProjects {
    try{await this.primeServiceSources();await this.serviceFaults.prime(id);}
    catch(error){this.serviceFaults.markUnknown(id);this.listener({projectId:id,kind:'managed-error',text:'故障门状态未能读取；新任务准入已保守阻断：'+error.message});}
    controller.on('state',state=>{if(this.controllers.get(id)===controller){this.serviceFaults.noteProjectState(id,state);this.idleLifecycle.observe();}});
+   controller.on('state',state=>{if(this.controllers.get(id)!==controller)return;const job=state.jobs?.findLast(j=>j.type==='project-initialization'&&j.context?.projectInstanceId===project.instanceId),key=JSON.stringify([job?.id,job?.status,job?.projectMap?.version]);if(controller.initializationEventKey===key)return;controller.initializationEventKey=key;this.listener({projectId:id,kind:'initialization-status',status:{schema:1,projectId:id,projectInstanceId:project.instanceId,status:job?.status??'pending',jobId:job?.id??null,map:job?.projectMap??null,errorCode:job?.errorCode??null}});});
    controller.on('lifecycle',({target})=>{if(this.controllers.get(id)===controller)this.idleLifecycle.observeTarget(id,controller,target);});
    this.idleLifecycle.observe();
    if(localOnly)return this.status(id);
@@ -889,19 +934,22 @@ export class ManagedProjects {
   this.connectionErrors.set(id,{error:{code:reason?.code??'PROJECT_UNAVAILABLE',message:reason?.message??'项目不可用；原生执行停止结果待核查'},handoff:null});
   try{return await this.stopProject(id);}catch(error){this.connectionErrors.set(id,{error:{code:error.code??'PI_EXIT_UNCONFIRMED',message:'项目不可用且原生停稳尚未确认：'+error.message},handoff:null});throw error;}
  }
- async stopProject(id,{lifecycleHold}={}){
+ async stopProject(id,{lifecycleHold,discardState=false}={}){
   this.projectStops??=new Map();if(this.projectStops.has(id))return boundedProjectWait(this.projectStops.get(id),{timeoutMs:this.stopTimeoutMs});
   const current=this.controllers.get(id);if(current){current.started=false;current.stopping=true;}
   this.idleLifecycle.forget(id);this.serviceFaults?.forget(id);
-  const earlyStop=current?.stop({lifecycleHold});earlyStop?.catch(()=>{});
+  const versionState=this.versionGcState?.[id];if(versionState?.timer){clearTimeout(versionState.timer);versionState.timer=null;}
+  const earlyStop=current?.stop({lifecycleHold,discardState});earlyStop?.catch(()=>{});
   const operation=(async()=>{
    const flights=await Promise.allSettled([this.flights.get(id),this.draftFlights?.get(id),this.resourceFlights.get(id)]);
-   const controller=this.controllers.get(id);if(controller){controller.started=false;const receipt=await (controller===current?earlyStop:controller.stop({lifecycleHold}));if(receipt?.confirmationComplete!==true)throw new HostError('PI_EXIT_UNCONFIRMED','项目进程停稳未确认；保留执行现场');}
+   const controller=this.controllers.get(id);if(controller){controller.started=false;const receipt=await (controller===current?earlyStop:controller.stop({lifecycleHold,discardState}));if(receipt?.confirmationComplete!==true)throw new HostError('PI_EXIT_UNCONFIRMED','项目进程停稳未确认；保留执行现场');}
    else{
-    const providers=await this.host.storage.getLocal(id,'managed:providers')??{},runtime=await managedRuntime(this.host.storage,id);
+    const providers=(discardState?(await this.host.storage.getLocalRecord(id,'managed:providers'))?.value:await this.host.storage.getLocal(id,'managed:providers'))??{};
+    const project=await this.host.requireRegisteredProject(id),runtime=discardState?path.join(this.host.storage.root,'instances',project.instanceId,'execution'):await managedRuntime(this.host.storage,id);
     for(const [target,record] of Object.entries(providers)){
      const receipt=await (record.kind==='pi-node'?recoverPiProvider(record,runtime):['omp-rpc','omp-tui'].includes(record.kind)?recoverOmpProvider(record,runtime):recoverProvider(record,runtime));
      if(receipt?.verified!==true)throw new HostError('PI_EXIT_UNCONFIRMED','本机进程所有权未核实；保留登记和执行现场');
+     for(const slot of this.processBudget.slots)if(slot.projectId===id&&slot.target===target)this.processBudget.release(slot);
      delete providers[target];await this.host.storage.putLocal(id,'managed:providers',providers);
     }
    }
@@ -909,7 +957,11 @@ export class ManagedProjects {
    const failed=flights.find(result=>result.status==='rejected'&&result.reason?.code!=='PROJECT_STOPPING');if(failed)throw failed.reason;
    await Promise.all([...this.terminalFlights.entries()].filter(([key])=>key.startsWith(id+':')).map(([,flight])=>flight));
    await Promise.all([...(controller?.sessions?.keys()??[])].map(target=>this.systemTerminals.close(id+':'+target)));
+   await Promise.all([this.attentionPublish?.get(id),this.attention.flights.get(id),...(this.adoptionCheckpoints??[])]);
+   await this.versions.get(id)?._serial;
+   if([...this.processBudget.slots].some(slot=>slot.projectId===id))throw new HostError('PI_EXIT_UNCONFIRMED','项目仍有未核验进程名额；保留隔离');
    if(this.controllers.get(id)===controller)this.controllers.delete(id);this.connectionErrors.delete(id);this.versions.delete(id);
+   this.projectActivity.delete(id);this.attentionPublish?.delete(id);if(this.versionGcState)delete this.versionGcState[id];
    if(this.activeProjectId===id)this.activeProjectId=null;return {projectId:id,confirmationComplete:true};
   })().finally(()=>{if(this.projectStops.get(id)===operation)this.projectStops.delete(id);});this.projectStops.set(id,operation);
   return boundedProjectWait(operation,{timeoutMs:this.stopTimeoutMs});
@@ -974,6 +1026,15 @@ export class ManagedProjects {
   allowed['session.options']=['projectId','target','ownerId'];
   allowed['session.command']=['projectId','target','ownerId','command','requestKey','jobId'];
   const action=op.slice('managed.'.length);
+  if(action.startsWith('initialization.')){
+   const command=action.slice('initialization.'.length),keys=command==='status'?['projectId']:command==='read'?['projectId','version','offset']:['projectId','expectedProjectInstanceId'];
+   if(!['status','read','retry','cancel'].includes(command)||!p||typeof p!=='object'||Array.isArray(p)||Object.keys(p).some(key=>!keys.includes(key))||typeof p.projectId!=='string'||['retry','cancel'].includes(command)&&typeof p.expectedProjectInstanceId!=='string')throw new HostError('INVALID_PAYLOAD','项目整理参数无效。');
+   if(command==='status')return this.initializationStatus(p.projectId);
+   if(command==='read')return this.initializationRead(p.projectId,p);
+   const project=await this.host.requireRegisteredProject(p.projectId);if(project.instanceId!==p.expectedProjectInstanceId)throw new HostError('PROJECT_INITIALIZATION_STALE','项目实例已变化。');
+   if(command==='retry')return this.initializeProject(p.projectId,{retry:true,expectedProjectInstanceId:p.expectedProjectInstanceId});
+   const controller=this.controllers.get(p.projectId)??await this.loadLocal(p.projectId);return controller.cancelInitialization(p.expectedProjectInstanceId);
+  }
   if(action==='frontdesk.context.clear'){
    if(!p||typeof p!=='object'||Array.isArray(p)||Object.keys(p).length!==1||typeof p.projectId!=='string'||!p.projectId.trim())throw new HostError('INVALID_PAYLOAD','清除前台上下文仅接受 projectId');
    await this.host.requireProject(p.projectId);
@@ -1038,8 +1099,8 @@ export class ManagedProjects {
    const capabilities=workControlCapabilitiesFromState({works:source.state.works??[],jobs:source.state.jobs??[]},target,{live:false,bindingProvider:record?.binding?.provider??record?.provider??null,projectInstanceId:project.instanceId});
    return {...capabilities,schema:capabilities?.schema??1,projectId:p.projectId,projectInstanceId:project.instanceId,workRevision:capabilities?.workRevision??null};
   }
-  if(action==='draft')return this.saveLocalDraft(p.projectId,p.target,p.text);
   if(['collaboration.status','model.options','model.set','draft','status','maintenance.status','attention.ack','todo.manage','timeline.page','timeline.read','timeline.request','resident.history','worker.history','disposition','work.progress.read','history.list','history.read','artifact.read','artifact.list','changes.list','changes.read','review.read','review.save','review.continue','review.accept','review.instruction.read','review.instruction.save','review.discussion.read','merge.consent','merge.constraint'].includes(action))await this.host.requireRegisteredProject(p.projectId);else await this.host.requireProject(p.projectId);
+  if(action==='draft')return this.saveLocalDraft(p.projectId,p.target,p.text);
   if(action==='maintenance.status')return this.maintenanceStatus(p.projectId,p);
   if(action==='maintenance.retry'||action==='maintenance.scan'){
    const controller=this.controllers.get(p.projectId);if(!controller||controller.stopping)throw new HostError('MAINTENANCE_OWNER_UNAVAILABLE','项目尚未连接；不会恢复或重放旧任务。');

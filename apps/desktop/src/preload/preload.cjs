@@ -4,7 +4,7 @@ let flushHandler = null;
 // Flush-scoped writes: exactly the ops a lifecycle/barrier flush itself must
 // persist. They carry the active flush receipt id so the host can admit them
 // against the real pending receipt instead of blanket-exempting lifecycle.
-const flushScopedWrites = new Set(['workspace.displayView.write','workspace.recovery', 'file.draft', 'file.save', 'file.retain', 'managed.review.instruction.save', 'managed.review.save']);
+const flushScopedWrites = new Set(['workspace.displayView.write','workspace.recovery','workspace.settings','state.write','managed.draft', 'file.draft', 'file.save', 'file.retain', 'managed.review.instruction.save', 'managed.review.save']);
 
 // Sandboxed Electron preloads cannot require local CommonJS modules.
 function createFlushQueue({ack,getHandler}) {
@@ -61,7 +61,7 @@ ipcRenderer.on('nozeli:quit-confirm', () => { for (const handler of push['quit.c
 contextBridge.exposeInMainWorld('nozeli', {
   invoke(op, payload) {
     const active = flushQueue.activeRequest();
-    const scoped = active && flushScopedWrites.has(op);
+    const scoped = active && (flushScopedWrites.has(op) || op==='workspace.command'&&payload?.command?.type==='restoreViewState');
     return ipcRenderer.invoke('nozeli:invoke', op, scoped ? {...payload, flushRequestId: active} : payload ?? {});
   },
   subscribe(event, handler) {

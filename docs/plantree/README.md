@@ -21,6 +21,7 @@ Role: 当前源码项目的设计注册与维护入口
 | CONTEXT-001 | Pi与Nozeli上下文交付边界 | [交付合同](../context-delivery-design.md) | [Pi整合记录](../pi-integration-execution.md)、[测试入口](../testing.md) | 只测试Nozeli来源/版本/输入接线；不复建Pi压缩、会话历史和恢复 |
 | ORCH-001 | 任务管理与主控 | [主控／Plan Tree设计](../orchestrator-long-term-design.md) | [稳定结果多task证据](../result-memory-implementation.md) | 宿主账本唯一权威；主控按需查询并选源，不扩大任务授权 |
 | ROLE-001 | 角色契约与技能 | [角色设计](../role-memory-skills-design.md) | 具体落地范围见原文 | 原生skill扩展与通用知识学习仍属独立范围，不借记忆完善自动启用 |
+| PROJECT-OPEN-001 | 简洁生命周期、自动恢复与项目初始化 | [重设计合同](../project-lifecycle-initialization-design.md) | [安装后异常验收](../project-lifecycle-initialization-design.md#9-用户授权安装后的异常验收2026-11-08)、[原现场根因](../project-open-failure-analysis.md) | 已授权本机安装；真实权限/SIGKILL/PTY/取消/并发/七格式窗口及Pi初始化故障验收通过，日常项目未重置，其他平台未验 |
 
 前期记忆候选研究：[研究记录](../long-term-memory-evaluation.md)；仅来源参考，不与MEMORY-001并列成为另一实施合同。
 
@@ -35,3 +36,5 @@ Role: 当前源码项目的设计注册与维护入口
 3. Orchestrator用当前模型按需检索、读原文并选择依据；不新设选源Agent。错误区分检索覆盖、交付协议与模型判断，不能默认增加架构。
 4. 压缩相关验收只关注Nozeli提供的版本引用、输入和恢复接口是否连续；不重做Pi自身完整测试或重复建设能力。
 5. 后续所有设计通过本Plan Tree维护在Nozeli项目文件内。聊天确认应回写对应主合同，临时证据可留本机，但树内须记录摘要、来源、结果和未验项，不提交用户正文、账号或凭据。
+
+6. 2026-11-08追加：固定模型工作流程优先Pi原生skill固化并按需读取，常驻提示最小化；事件事实不混入整份流程规则。初始化/项目地图、诊断/恢复方法按职责归并，避免每场景新增skill。宿主继续硬性负责身份、预算、停稳、删除和CAS；[技能合同](../role-memory-skills-design.md)与[生命周期实现证据](../project-lifecycle-initialization-design.md#8-源码实施与限定验收2026-11-08)同步维护。源码已接线，真实原生skill读取与受限工具验证通过，不等于模型理解质量或跨平台验收。

@@ -1,4 +1,5 @@
 import {encodeRecoveryBytes,decodeRecoveryBytes,recoveryPptModel} from '../domain/office-recovery.mjs';
+import {mountProjectInitialization} from './project-initialization.mjs';
 import { mountContextMenu } from './context-menu.mjs';
 import {createDiscussionDrafts,ownsDiscussionReceipt} from './surface-identity-state.mjs';
 import {mountRegionDrawing,compositeDrawing} from './region-drawing.mjs';
@@ -1781,22 +1782,27 @@ async function manageProjectStorage(project,action){
   const preview=await invoke('project.lifecycle.preview',{projectId:project.id,action});if(!preview.ok)return workspace.toast(preview.error.message);
   const value=preview.value,dialog=document.createElement('dialog'),title=document.createElement('h2'),detail=document.createElement('pre'),cancel=document.createElement('button'),accept=document.createElement('button'),error=document.createElement('p');
   dialog.id='project-lifecycle-dialog';error.setAttribute('role','alert');
-  title.textContent=reset?'将此项目重置为新项目？':action==='delete-project'?'将整个项目移到回收站？':'重置本机项目视图？';
+  title.textContent=reset?'永久清除 Nozeli 项目状态并重新打开？':action==='delete-project'?'将整个项目移到回收站？':'重置本机项目视图？';
   const kinds={added:'新增文件','added-directory':'新增目录',modified:'已修改',missing:'已移除',link:'符号链接',special:'特殊文件',uninspected:'未完整核验'};
   const changes=value.demoChanges??[];
   detail.textContent=reset?[
     '项目：'+project.name,'目录：'+value.root,
     '保留：项目实际文件、Git、全局账号、API 源和模型设置。',
-    '归档：该项目的批注、讨论、会话、任务、草稿、布局与本机执行状态。',
-    '先保留未保存编辑并停止该项目的任务与终端；保存或停稳未确认时不会重置。',
-    '随后在同一目录创建并加载全新的 Nozeli 项目，不继承旧状态，也不重放旧任务。',
-    '未保存草稿保留在旧恢复记录中，不会自动写入原文件或带入新项目。',
-    ...(value.backupPath?['旧数据归档位置：'+value.backupPath]:[]),
+    '永久删除：该目录关联的当前及历史 Nozeli 项目状态，包括批注、讨论、原生会话、任务、草稿、记忆、版本、布局、本机执行状态和以前的重置归档。',
+    '未保存编辑、未发送意见及尚未采纳的候选内容不会写入原文件；其 Nozeli 恢复副本也将删除。需要保留的内容请先导出或保存，再执行本操作。',
+    '程序先停止并核验所有关联项目的任务、终端和写入者；明确丢弃的草稿/视图不再要求保存。停稳、存储关闭或所有权不明时拒绝清除，不强删锁。',
+    '清除完成后在同一目录创建并打开全新的项目身份，不保留可恢复的旧项目副本、不继承会话、不重放任务。此操作不可撤销。',
+    ...((value.relatedProjectIds||[]).length?['清除的项目身份：'+value.relatedProjectIds.join('、')]:[]),
+    ...(value.removeDirectories||[]).map(directory=>'Nozeli 数据目录：'+directory),
   ].join('\n'):['项目：'+project.name,'原目录：'+value.root,...value.removeDirectories.map(p=>'目录：'+p),...value.removeFiles.map(p=>'文件：'+p),...(value.removeRecords??[]).map(key=>'视图记录：'+key),...changes.map(change=>(kinds[change.kind]||change.kind)+'：'+change.path),'将先停止该项目运行并关闭视图；保留恢复区、账号配置。',action==='delete-project'?'包含目录内原文件、批注、草稿与.nozeli；未保存内容先沿正常关闭协议保留。不会退回永久删除。':'仅重置列出的视图记录；先保留完整快照，不删除原文件、原生会话、执行关联或命名布局。'].join('\n');
   detail.style.whiteSpace='pre-wrap';detail.style.maxHeight='40vh';detail.style.overflow='auto';
   let consent=null,executing=false;
-  cancel.textContent='取消';accept.textContent=reset?'归档并重置为新项目':action==='delete-project'?'移到回收站':'重置本机视图';dialog.append(title,detail,error);
-  if(action==='delete-project'&&Array.isArray(value.demoChanges)){
+  cancel.textContent='取消';accept.textContent=reset?'永久清除并重新打开':action==='delete-project'?'移到回收站':'重置本机视图';dialog.append(title,detail,error);
+  if(reset){
+    const label=document.createElement('label');consent=document.createElement('input');consent.type='checkbox';consent.id='project-reset-consent';
+    label.append(consent,'我已导出需要保留的内容，确认永久删除上述全部 Nozeli 项目状态和恢复副本；保留实际文件、用户 Git 及全局账号配置。');dialog.append(label);accept.disabled=true;
+    consent.onchange=()=>{accept.disabled=!consent.checked;};
+  }else if(action==='delete-project'&&Array.isArray(value.demoChanges)){
     const label=document.createElement('label');consent=document.createElement('input');consent.type='checkbox';consent.id='demo-delete-consent';
     label.append(consent,'我已核对整个演示目录，包括上述变更、未发送草稿与批注，仍要移到回收站。');dialog.append(label);accept.disabled=true;
     consent.onchange=()=>{accept.disabled=!consent.checked;};
@@ -1804,16 +1810,16 @@ async function manageProjectStorage(project,action){
   dialog.append(cancel,accept);document.body.append(dialog);
   cancel.onclick=()=>{dialog.close();dialog.remove();};
   accept.onclick=async event=>{
-    if(consent&&(!event.isTrusted||!consent.checked)){error.textContent='请亲自核对范围并确认；演示脚本不能代点。';return;}
+    if(consent&&(!event.isTrusted||!consent.checked)){error.textContent='请亲自核对清除范围并勾选确认；脚本不能代为授权。';return;}
     executing=true;accept.disabled=cancel.disabled=true;
     try{
-      const result=await invoke('project.lifecycle.execute',{token:value.token,allowDemoChanges:Boolean(consent?.checked)});
+      const result=await invoke('project.lifecycle.execute',{token:value.token,allowDemoChanges:Boolean(!reset&&consent?.checked),...(reset?{confirmPermanentDelete:consent?.checked===true}:{})});
       if(!result.ok){error.textContent=result.error.message+'；请关闭此窗口，核对后重新操作。';return;}
       dialog.close();dialog.remove();
       await clearProjectPage(project.id);await renderRecent();
       if(reset){
         const loaded=await activateProject(result.value.newProjectId);
-        if(loaded.ok)workspace.toast('已重置为新项目。旧数据归档：'+result.value.backupPath);
+        if(loaded.ok)workspace.toast('已永久清除旧 Nozeli 项目状态，并作为全新项目打开；实际文件、Git 和全局账号配置保留。');
       }
     }catch(failure){error.textContent=failure.message;}
     finally{executing=false;cancel.disabled=false;}
@@ -1847,15 +1853,15 @@ async function renderRecent() {
       button.type='button';button.dataset.projectId=project.id;
       if(projectAttention)projectAttention.decorate(button);
       else {const initial=document.createElement('span');initial.dataset.projectInitial='';button.append(initial);}
-      button.addEventListener('contextmenu', event => {const project=button._project;event.preventDefault();projectMenu.open([{id:'retry',label:'重试原位置',hint:'只核验一次，不自动重连Agent'},{id:'close',label:'关闭项目',hint:'保留项目与本机恢复内容'},{id:'remove',label:'从 Nozeli 移除项目',hint:'保留磁盘文件、草稿及工作记录'},{id:'reset-project',label:'重置为新项目…',hint:'保留文件和 Git，归档旧状态后重新加载'},{id:'clean-local',label:'清理本机项目数据…',hint:'不删除原文件，保留恢复区'},{id:'delete-project',label:'删除磁盘项目…',hint:'整个目录移到回收站，需再次确认'}],{x:event.clientX,y:event.clientY,focus:button,run:async action=>{if(action==='retry'){const result=await invoke('project.retry',{projectId:project.id});if(!result.ok)return workspace.toast(result.error.message);await renderRecent();}else if(action==='close'){const result=await invoke('workspace.closeProject',{projectId:project.id,operationId:crypto.randomUUID()});if(!result.ok)return workspace.toast(result.error.message);await clearProjectPage(project.id);}else if(action==='remove')await removeProjectEntry(project.id);else await manageProjectStorage(project,action);}});});
-      button.addEventListener('click',()=>{const project=button._project;if(!project.available)return workspace.toast('项目目录不可用，可右键移除入口。');if(!projectSwitches.pending()&&projectAttention?.reveal(project.id,button))return;return activateProject(project.id);});
+      button.addEventListener('contextmenu', event => {const project=button._project;event.preventDefault();projectMenu.open([{id:'retry',label:'重试原位置',hint:'只核验一次，不自动重连Agent'},{id:'close',label:'关闭项目',hint:'保留项目与本机恢复内容'},{id:'remove',label:'从 Nozeli 移除项目',hint:'保留磁盘文件、草稿及工作记录'},{id:'reset-project',label:'永久清除状态并重新打开…',hint:'删除全部关联 Nozeli 状态和恢复副本；保留实际文件与 Git'},{id:'clean-local',label:'清理本机项目数据…',hint:'不删除原文件，保留恢复区'},{id:'delete-project',label:'删除磁盘项目…',hint:'整个目录移到回收站，需再次确认'}],{x:event.clientX,y:event.clientY,focus:button,run:async action=>{if(action==='retry'){const result=await invoke('project.retry',{projectId:project.id});if(!result.ok)return workspace.toast(result.error.message);await renderRecent();}else if(action==='close'){const result=await invoke('workspace.closeProject',{projectId:project.id,operationId:crypto.randomUUID()});if(!result.ok)return workspace.toast(result.error.message);await clearProjectPage(project.id);}else if(action==='remove')await removeProjectEntry(project.id);else await manageProjectStorage(project,action);}});});
+      button.addEventListener('click',()=>{const project=button._project;if(project.available&&!projectSwitches.pending()&&projectAttention?.reveal(project.id,button))return;return activateProject(project.id);});
     }
     button._project=project;
     button.dataset.projectLabel=labels.get(project.id);
     // Uppercasing can expand graphemes (ß → SS); collision suffixes can also exceed two glyphs.
     button.style.setProperty('--project-label-size',Math.min(11,30/glyphs(button.dataset.projectLabel).length)+'px');
-    button.dataset.projectTitle=project.available?project.name:`${project.name}（目录不可用）`;
-    button.setAttribute('aria-disabled',String(!project.available));
+    button.dataset.projectTitle=project.available?project.name:`${project.name}（点击自动核查；无法恢复可重置状态）`;
+    button.setAttribute('aria-disabled','false');
     button.setAttribute('aria-current',String(project.id===ui.project?.id));
     if(host.children[index]!==button)host.insertBefore(button,host.children[index]||null);
     existing.delete(project.id);
@@ -1892,6 +1898,7 @@ async function renderRecent() {
     try{
       opened=await invoke('project.open',{projectId});
       if(!opened.ok)throw Error(opened.error.message);
+      if(workspaceScope.role==='shell'&&opened.value.project.id!==projectId)projectId=opened.value.project.id;
       // Content/detached windows already own this immutable project scope.
       // Shell destination state is staged by the native binding transaction;
       // reading it here under the source scope would violate scope isolation.
@@ -1968,6 +1975,7 @@ async function pickProject() {
 
 $('pick-project').addEventListener('click', pickProject);
 if (workspaceScope.role === 'shell') {
+  mountProjectInitialization({anchor:$('project-name'),invoke,currentProject:()=>ui.project?.id,subscribe:(event,handler)=>window.nozeli.subscribe(event,handler)});
   mountAutoUpdate({root:$('settings-update'),invoke,subscribe:window.nozeli.subscribe});
   // Local recovery lives inside the settings dialog: no persistent toolbar
   // button; the nav entry carries a count badge while records are retained.

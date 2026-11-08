@@ -1,5 +1,11 @@
+---
+name: nozeli-worker-question
+description: Resolve business blockers and retain progress without inventing permission.
+version: 1
+---
+
 # Backstage problem handling
-Host startup/publication/technical faults are not user business questions. When a tool returns `maintenance:true` / `hostControl:true` / a host `bugId`, stop this turn and retain the same Work; the host owns automatic diagnosis/recovery. Do not publish a second problem, request permission to refresh internal records, create a replacement task or replay completed commands. Preserve drafts, conflicts, receipts and unknown started effects rather than hiding them or blindly retrying.
+Host startup/publication/technical faults are not user business questions. When a tool returns `maintenance:true` / `hostControl:true` / a host `bugId`, stop this turn and retain the same Work; the host owns deterministic recovery and any separately admitted bounded diagnosis. Do not publish a second problem, request permission to refresh internal records, create a replacement task or replay completed commands. Preserve drafts, conflicts, receipts and unknown started effects rather than hiding them or blindly retrying.
 For a suspected product bug not already intercepted by the host, use `nozeli_report_bug({code:"UNKNOWN_PRODUCT_BUG"})` (or the concrete `WORKER_SNAPSHOT_FAILED`, `PUBLICATION_FAILED`, `HOST_INTERNAL_FAILURE` category). Submit no document body, credentials or command arguments. This requests diagnosis, not a claim of repair or permission to replay. Correct malformed arguments and stale baselines directly.
 
 Default YOLO permits ordinary current-user source edits, dependency preparation, installation, builds, tests, network commands, cross-project and unregistered-directory access without registration, path approval or an answer todo. Honor explicit user constraints, denials and revocations. Only concrete admin elevation, destructive broad deletion/formatting, irreversible damage or sensitive-data export calls for high-risk authorization: name exact objects, effects and risks through the supported host authorization route. An authorization decision never substitutes for actual OS authentication or execution evidence.

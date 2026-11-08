@@ -9,6 +9,7 @@ import {reapOwnedPiGroup} from './pi-process-ownership.mjs';
 import {scrubProviderEnv} from './omp-credentials.mjs';
 import {isolatedLaunch} from './process-isolation.mjs';
 import {platformPersistence} from '../../platform/shared/persistence.mjs';
+import {here as roleRuntimeRoot,roleSkillCatalog} from './runtime.mjs';
 
 const defaultEntry=fileURLToPath(new URL('../../../../../integrations/pi/src/owner.mjs',import.meta.url));
 const fail=(code,message)=>Object.assign(Error(message),{code});
@@ -75,13 +76,34 @@ export class PiSession extends EventEmitter {
   this.capabilities={terminal:false,model:true,thinkingLevel:true,reload:true,compact:true,diagnostics:true};
  }
  get metadataFile(){return path.join(this.home,'nozeli-session-tools.json');}
+ // Admission policy for a resumed native conversation: host tools may gain
+ // definitions between runs, so a CHANGED tools digest is diagnostic
+ // evidence, never a refusal. This only loads the durable pinned record
+ // (threadId/sessionFile/last-run digest); it is republished by
+ // saveMetadata() after start() has re-verified the exact thread identity
+ // through the native owner. A record this host cannot interpret is a
+ // genuine persisted-metadata error and still refuses the resume.
  async preflightToolsDigest(expected){
   let saved;try{saved=JSON.parse(await fs.readFile(this.metadataFile,'utf8'));}catch(error){if(error.code!=='ENOENT')throw error;}
-  if(saved){this.sessionFile=saved.sessionFile;this.pinnedThreadId=saved.threadId;}
-  if(expected!==this.toolsDigest||saved&&saved.toolsDigest!==this.toolsDigest)throw fail('PI_TOOLS_DIGEST_MISMATCH','Pi session tool schema changed; explicit context handoff required');
-  return {equivalent:true,toolsDigest:this.toolsDigest};
+  if(saved){
+   if(saved.schema!==1||typeof saved.threadId!=='string'||!saved.threadId||saved.sessionFile!=null&&typeof saved.sessionFile!=='string')throw fail('PI_TOOLS_METADATA_SCHEMA','Pi session tools metadata is not an interpretable pinned record; refusing to resume from it');
+   this.sessionFile=saved.sessionFile;this.pinnedThreadId=saved.threadId;
+   this.pinnedToolsDigest=typeof saved.toolsDigest==='string'?saved.toolsDigest:null;
+  }
+  return {equivalent:(expected==null||expected===this.toolsDigest)&&(!saved||saved.toolsDigest===this.toolsDigest),toolsDigest:this.toolsDigest,
+   ...(expected!=null&&expected!==this.toolsDigest?{expectedToolsDigest:expected}:{}),...(saved?{pinnedToolsDigest:this.pinnedToolsDigest}:{})};
  }
- assertToolsDigest(expected){return this.preflightToolsDigest(expected);}
+ // Post-start lineage assertion. Pure in-memory: it never reads or repins
+ // metadata and never touches pending RPCs, so admission/tool paths can call
+ // it without disturbing the live owner's pending tool protocol. The running
+ // owner's spec cannot be hot-mutated: an expected digest that is neither
+ // the running schema nor the pinned historical schema of the resumed
+ // conversation is a genuine lineage error, not an ordinary tool upgrade.
+ assertToolsDigest(expected){
+  if(expected==null||expected===this.toolsDigest)return {equivalent:true,toolsDigest:this.toolsDigest};
+  if(this.pinnedToolsDigest&&expected===this.pinnedToolsDigest)return {equivalent:false,resumedWithChangedTools:true,toolsDigest:this.toolsDigest,expectedToolsDigest:expected,pinnedToolsDigest:this.pinnedToolsDigest};
+  throw fail('PI_TOOLS_DIGEST_MISMATCH',`Pi session tool lineage mismatch: expected ${expected}, running ${this.toolsDigest}, pinned ${this.pinnedToolsDigest??'none'}; explicit context handoff required`);
+ }
  async saveMetadata(){
   // Shared durable atomic publish (temp + fsync + rename + directory barrier);
   // the home directory itself is created by start() before this runs.
@@ -222,7 +244,12 @@ export class PiSession extends EventEmitter {
  }
  async start(resumeId){
   if(this.child)throw fail('PI_OWNER_EXISTS','Pi session already owns a process');
+  // The durable pinned record must name exactly the thread being resumed;
+  // the native owner then independently re-verifies the pinned file's own
+  // header identity during the same open. Refuse before any side effect.
+  if(resumeId&&this.pinnedThreadId&&this.pinnedThreadId!==resumeId)throw fail('PI_SESSION_IDENTITY',`Pi pinned session metadata names thread ${this.pinnedThreadId}, not the requested ${resumeId}`);
   if(!this.processTree.verified)throw fail('PI_PLATFORM_UNSUPPORTED',`Pi owner process ownership is not verified on ${this.processTree.platform}; refusing to start an unverified owner process`);
+  const skillCatalog=await roleSkillCatalog(this.role,{skills:this.spec.skills});
   await fs.mkdir(this.home,{recursive:true,mode:0o700});
   const runtime=this.spec.piRuntime??{};
   if(!resumeId){
@@ -252,7 +279,7 @@ export class PiSession extends EventEmitter {
   await new Promise((resolve,reject)=>{child.once('spawn',resolve);child.once('error',reject);});
   this.pid=child.pid;this.groupRecord={pid:this.pid,home:this.home,ownerId:this.viewOwnerId,stamp:await this.processTree.stamp(this.pid),kind:'pi-node'};
   await this.spec.onSpawn?.(this.pid);
-  const result=await this.request('start',{cwd:this.cwd,home:this.home,agentDir:env.PI_CODING_AGENT_DIR,instructions:[this.spec.baseInstructions,this.spec.instructions].filter(Boolean).join('\n'),tools:this.tools,sessionId:resumeId,sessionFile:this.sessionFile,model:this.model,effort:this.effort,role:this.role,...(this.spec.budget?{budget:this.spec.budget}:{})},60000);
+  const result=await this.request('start',{cwd:this.cwd,home:this.home,agentDir:env.PI_CODING_AGENT_DIR,instructions:[this.spec.baseInstructions,this.spec.instructions].filter(Boolean).join('\n'),tools:this.tools,rolePackageRoot:path.join(roleRuntimeRoot,'roles'),roleSkillCatalog:skillCatalog,sessionId:resumeId,sessionFile:this.sessionFile,model:this.model,effort:this.effort,role:this.role,...(this.spec.budget?{budget:this.spec.budget}:{})},60000);
   this.threadId=result.sessionId;this.sessionFile=result.sessionFile;
   if(!this.threadId||resumeId&&this.threadId!==resumeId)throw fail('PI_SESSION_IDENTITY','Pi owner did not confirm exact original session identity');
   this.model=modelSelector(result.model)??this.model;this.effort=result.effort??this.effort;this.effective=result.effective;this.thinkingLevels=result.thinkingLevels??this.thinkingLevels;this.hasPrompted=result.hasPrompted===true;
@@ -304,7 +331,7 @@ export class PiSession extends EventEmitter {
  }
  // timeout bounds native admission, not the admitted provider/tool turn.
  // Its RPC remains pending until the owner returns a result/error or exits.
- async prompt(text,{timeout=600000,images=[],materials,projection,job,admissionCheck}={}){
+ async prompt(text,{timeout=600000,images=[],materials,projection,job,admissionCheck,restrictedMode,tools,maxTurns,maxToolCalls}={}){
   if(this.busy||!job?.id)throw fail('PI_INPUT_ADMISSION','Pi prompt requires an idle owner and durable host job');
   if(this.nativeError)throw this.nativeError;
   const gate=this.beginAdmission();
@@ -323,7 +350,7 @@ export class PiSession extends EventEmitter {
      await this.transport('rejected',current,{reason:hold});
      const error=fail(hold,'Input held before native dispatch');error.definitiveNonDispatch=true;throw error;
     }
-    const result=await this.request('prompt',{text,images,requestId:current.requestId,job,...(materials?{materials}:{}),...(projection?{projection}:{})},timeout);
+    const result=await this.request('prompt',{text,images,requestId:current.requestId,job,restrictedMode:restrictedMode??job.context?.restrictedMode,tools,maxTurns,maxToolCalls,...(materials?{materials}:{}),...(projection?{projection}:{})},timeout);
     this.hasPrompted=true;this.phase='settling';this.activityChanged();await this.request('flush',{},30000);await this.nativeDrain;
     if(this.nativeError)throw this.nativeError;
     await Promise.all(this.inFlightToolCalls.values());
@@ -471,23 +498,33 @@ export class PiSession extends EventEmitter {
  compact(){return this.sessionCommand('compact');}
  async respondInteraction(id,answer,{cancel=false}={}){const result=await this.request('respond',{id,answer,cancel});this.interactions=this.interactions.filter(value=>value.id!==id);this.activityChanged();return result;}
  async stopIdle(){const activity=this.activitySnapshot();if(!activity.known||activity.busy||this.inFlightToolCalls.size)throw fail('PI_BUSY','Cannot reclaim a busy or unverified Pi owner');return this.stop();}
- stop(){if(this.stopPromise)return this.stopPromise;this.stopPromise=this.stopOwner();return this.stopPromise;}
- async stopOwner(){
+ stop({discardState=false}={}){
+  if(this.stopPromise)return discardState?this.stopPromise.catch(error=>{
+   if(error.code!=='PI_PERSISTENCE_UNCONFIRMED'||!this.closed||!this.lastExitReceipt?.confirmationComplete)throw error;
+   return {...this.lastExitReceipt,persistenceDiscarded:true};
+  }):this.stopPromise;
+  this.stopPromise=this.stopOwner({discardState});return this.stopPromise;
+ }
+ async stopOwner({discardState=false}={}){
   this.stopping=true;
   this.activityChanged();
   if(!this.child){this.closed=true;return this.lastExitReceipt={confirmationComplete:true,reason:'never-spawned'};}
   if(this.current)this.current.cancelled=true;
   let persistenceError;
   if(this.child.exitCode===null&&this.child.signalCode===null){
-   await this.request('stop',{},15000).catch(error=>{persistenceError=error;});
+   await this.request('stop',{discardState},15000).catch(error=>{persistenceError=error;});
    const exited=await Promise.race([this.exitPromise,new Promise(resolve=>{const timer=setTimeout(()=>resolve(null),3000);timer.unref();})]);
    if(!exited){try{this.processTree.terminateGroup(this.pid,'SIGTERM');}catch(error){if(error.code!=='ESRCH')throw error;}}
   }
   const result=await reapOwnedPiGroup(this.groupRecord);
-  await this.exitPromise;await Promise.allSettled(this.inFlightToolCalls.values());await this.nativeDrain;
+  await this.exitPromise;await Promise.allSettled(this.inFlightToolCalls.values());
+  await this.nativeDrain.catch(error=>{if(!discardState)throw error;persistenceError??=error;});
   this.lastExitReceipt={confirmationComplete:result.verified===true,exit:this.exit,...result};this.closed=result.verified===true;
   if(!this.closed)throw fail('PI_EXIT_UNCONFIRMED','Pi process-tree exit has not been verified on this platform');
-  if(persistenceError||this.nativeError||this.transportError)throw Object.assign(fail('PI_PERSISTENCE_UNCONFIRMED','Pi owner exited but journal/projection persistence was not confirmed'),{cause:persistenceError??this.nativeError??this.transportError,exitReceipt:this.lastExitReceipt});
+  if(persistenceError||this.nativeError||this.transportError){
+   if(!discardState)throw Object.assign(fail('PI_PERSISTENCE_UNCONFIRMED','Pi owner exited but journal/projection persistence was not confirmed'),{cause:persistenceError??this.nativeError??this.transportError,exitReceipt:this.lastExitReceipt});
+   this.lastExitReceipt.persistenceDiscarded=true;
+  }
   return this.lastExitReceipt;
  }
 }

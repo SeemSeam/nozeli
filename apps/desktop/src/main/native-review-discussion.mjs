@@ -51,7 +51,7 @@ export class NativeReviewDiscussionManager {
   if(op==='managed.timeline.read'&&(p.projectId!==row.projectId||!row.originalIds?.has(p.id)))throw denied();
   if(op==='workspace.attention.presented'&&(p.projectId!==row.projectId||p.objectId!==row.objectId||!row.originalIds?.has(p.messageId)||!this.visible(row)))throw denied();
   if(op.startsWith('workspace.displayView.')){if(p.projectId!==row.projectId||p.key?.ownerKind!=='review'||p.key?.ownerId!==row.workId||p.key?.surfaceId!==row.ownerSurfaceId)throw denied();}
-  if(this.workspace.lifecycle.has(row.projectId)&&['managed.review.instruction.save','workspace.displayView.write'].includes(op)&&!this.workspace.lifecycleFlushOwner(record,p.flushRequestId,op))throw denied();
+  if(this.workspace.lifecycle.has(row.projectId)&&['managed.review.instruction.save','workspace.displayView.write'].includes(op)&&!this.workspace.lifecycleFlushOwner(record,p.flushRequestId,op,p))throw denied();
   if((record.held||row.owner.held||row.owner.transferring||row.suspended||row.readOnly||this.workspace.lifecycle.has(row.projectId))&&op==='managed.review.discussion.send')throw denied();
   return record;
  }

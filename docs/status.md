@@ -1,5 +1,7 @@
 # 当前状态与能力边界
 
+2026-11-08 **简洁生命周期／自动恢复／项目初始化已按用户后续授权安装并完成Linux异常验收，未提交/发布**。current=`2026-11-08T08-52-12-275Z`，803份src/dist/Pi-src与源码构建一致，原日常版本仍保留。真实安装ELF八档自动保存时序/PPT退出保留、六种原生关闭故障、并发关闭/重置、PTY取消/清除、EACCES部分清除后SIGKILL冷恢复及真正替换实体拒绝删除通过；七格式独立窗口返回/resize/全屏通过，修复PDF双滚动尺寸反馈。初始化403故障门/显式解除原排队重试、取消晚到不发布、SIGKILL零静默重放、完成后冷开零推理通过。恢复定向回归59/59。日常项目未被破坏性测试，未强关原进程；Windows/macOS、真实断电/磁盘损坏/满盘及付费模型理解质量未验。[安装后证据](project-lifecycle-initialization-design.md#9-用户授权安装后的异常验收2026-11-08)。
+
 状态基线：`0.1.0-alpha.5`（Alpha预发行，发行状态以[发布说明与发行边界](release.md)及 GitHub 发布页为准；`v0.1.0-alpha.4` 已于 2026-11-01 公开发布）。能力以Linux x64/Wayland、X11/XWayland及GitHub Ubuntu/X11实际验证为准；Windows/macOS尚未验证，安装与打包工具仅实现Linux。
 
 2026-11-08 **用户授权commit／安装／重启／测试已完成**：功能提交 `9c28387`（12文件），current=`task-contained-20261108-local-01`、previous=`task-workspace-20261108-local-01`；786项src/dist与已验输入一致。实际安装ELF＋包内Pi／Git的独立双task／多轮／任务内原输入与讨论／原只读过程／草稿／长原文／正常冷恢复验收 `/tmp/nozeli-task-workspace-nFjRUN/report.json` ok=true。日常旧进程经正常窗口关闭退出，复用原会话核对4个本页task均为760px宽、零框外后台输入、无初始化错误；最终移除临时调试参数后正常重开本次ELF，PID1899563，原系统入口＋原profile＋原项目，debugPort=none，程序保持打开。两项目任务／工作／消息身份不变，5个源文件摘要不变；一条collectionOrder元数据重写及正常host-opened审计如实记录，不冒称元数据零写入。收据 `/tmp/nozeli-contained-install-HdAA4R/delivery.json`；截图仅本地。安装为累积工作树本地快照，本轮提交未夹带其他在途改动。未推送／发布；Windows/macOS、OS级IME、付费模型质量和此前590px旧缩放脚本限制未扩大签收。

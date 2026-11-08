@@ -40,6 +40,7 @@ import {
   normalizeHostTools,
 } from "./tools.mjs";
 import { nozeliZaiCodingPlanExtension } from "./zai-coding-plan.mjs";
+import {trustedRoleResources,nativeRoleExtension,restrictedPolicy,validateRestrictedTools,roleResourceSettings} from './native-skills.mjs';
 import {
   installProviderHttpObserver,
   providerHttpObservations,
@@ -477,11 +478,14 @@ function runContextExtension({ getTurn, instructions, isRunActive, persistRunEnt
     name: "nozeli-owner-run-context",
     hidden: true,
     factory: (pi) => {
-      pi.on("before_agent_start", async () => {
+      pi.on("before_agent_start", async (event) => {
         // Stable role rules only. Variable host facts never ride the system
         // prompt; they are data in the per-request projection below.
         const turn = getTurn();
-        const result = instructions !== undefined ? { systemPrompt: instructions } : {};
+        // Legacy result.systemPrompt bypasses Pi's complete prompt composer,
+        // including its native skills catalog. Replace only the preamble.
+        if(instructions!==undefined)event.systemPromptOptions.customPrompt=instructions;
+        const result = {};
         const materialsMessage = turn?.materialsMessage;
         if (materialsMessage) {
           // Exactly one materials message per explicit send transaction: the
@@ -613,6 +617,7 @@ export class OwnerRuntime {
       const runtimeImpl = async (options) => {
         const config = this.sessionConfig;
         const merged = { ...options };
+        if(config.resources)merged.settingsManager=roleResourceSettings(options.settingsManager,options.cwd??this.cwd,this.agentDir);
         if (config.definitions.length > 0) {
           merged.customTools = [...(options.customTools ?? []), ...config.definitions];
         }
@@ -629,8 +634,10 @@ export class OwnerRuntime {
         // per-turn taskAnchor and no variable host text in system authority.
         merged.resourceLoaderOptions = {
           ...(options.resourceLoaderOptions ?? {}),
+          ...config.resources?.options,
           extensionFactories: [
             ...(options.resourceLoaderOptions?.extensionFactories ?? []),
+            ...(config.resources?[nativeRoleExtension({cwd:this.cwd,resources:config.resources,getTurn:()=>this.promptInFlight,onApi:api=>{this.roleApi=api;}})]:[]),
             runContextExtension({
               getTurn: () => this.promptInFlight,
               persistRunEntries: () => this.flush(),
@@ -782,6 +789,7 @@ export class OwnerRuntime {
               )
             : undefined,
       instructions: typeof params.instructions === "string" ? params.instructions : undefined,
+      resources: params.role ? await trustedRoleResources(params.role,params.roleSkillCatalog,params.rolePackageRoot) : null,
     };
     this.contextBudget = parseContextBudget(params?.budget);
 
@@ -982,6 +990,9 @@ export class OwnerRuntime {
       }
     }
     const attachments = await normalizeImages(params.images);
+    const restricted=restrictedPolicy(params.restrictedMode??params.job?.context?.restrictedMode,params);
+    const supplied=restricted?validateRestrictedTools(restricted,normalizeHostTools(params.tools??[])):null;
+    const ordinaryTools=restricted?this.nativeRuntime.session.getActiveToolNames():null;
     const projection = normalizeProjection(params.projection, this.contextBudget.projectionMaxBytes);
     const materials = normalizeMaterials(params.materials, { requestId, jobId: params.job?.id });
     const textBytes = utf8Bytes(params.text);
@@ -1012,6 +1023,7 @@ export class OwnerRuntime {
       turnId: randomUUID(),
       requestId,
       jobId: record.jobId,
+      restricted,allowedTools:new Set(supplied?.map(tool=>tool.name)??[]),
       // The raw user text stays the ONLY user entry; materials ride one
       // journaled custom message, the projection never journals at all.
       rawText: params.text,
@@ -1158,6 +1170,11 @@ export class OwnerRuntime {
     const turnCorrelation = turn.turnId;
     const turnEndpoint = this.nativeInferenceEndpoint();
     try {
+    if(restricted){
+      if(!this.roleApi)throw Object.assign(Error('Restricted jobs require a trusted role resource boundary'),{code:'PI_INVALID_PARAMS'});
+      for(const definition of this.tools.definitionsFor(supplied))this.roleApi.registerTool(definition);
+      this.nativeRuntime.session.setActiveToolsByName(['read',...supplied.map(tool=>tool.name)]);
+    }
       try {
         // The whole native run — submission, streaming and any SDK-internal
         // bounded auto-retry — executes inside this turn's correlation scope,
@@ -1201,6 +1218,7 @@ export class OwnerRuntime {
       try {
         await this.flush();
         confirmRecordedEntry();
+        if(turn.limitError)throw turn.limitError;
         if (turn.hostToolError) throw Object.assign(new Error(turn.hostToolError.message ?? String(turn.hostToolError)), {code:'PI_HOST_TOOL_FAILED',failureOrigin:'host',...(typeof turn.hostToolError.code==='string'&&/^[A-Z][A-Z0-9_]{0,79}$/.test(turn.hostToolError.code)?{hostToolCode:turn.hostToolError.code}:{}),cause:turn.hostToolError});
         if (this.facts.state.turnErrorMessage && !aborted) {
           // Post-entry provider failure: the native entry is already
@@ -1237,6 +1255,7 @@ export class OwnerRuntime {
       // after settlement, and the reserved identity — not the slot — is what
       // blocks replay.
       if (turn.settled) {
+        if(restricted)this.nativeRuntime.session.setActiveToolsByName(ordinaryTools);
         this.promptInFlight = null;
         this.facts.endTurn();
         this.tools.setTurn(null);

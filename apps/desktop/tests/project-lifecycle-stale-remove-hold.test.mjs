@@ -238,7 +238,7 @@ test('a second remove click serializes behind the first instead of reconciling c
  assert.equal(f.manager.operations.has(f.project.id),true);
  gate.resolve();
  assert.equal((await first).removed,true);assert.equal((await second).removed,true);
- assert.deepEqual(f.closed,['remove-serial-first','remove-serial-second']);
+ assert.deepEqual(f.closed,['remove-serial-first']);
  assert.equal(f.storage.lifecycleHolds.has(f.project.id),false);
  assert.equal((await f.storage.getRecovery(f.project.id,'lifecycle:remove:remove-serial-first')).complete,true);
  assert.equal((await f.storage.getRecovery(f.project.id,'lifecycle:remove:remove-serial-second')).complete,true);

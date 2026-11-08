@@ -3,316 +3,74 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {createHash} from 'node:crypto';
+import {randomUUID} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {ProjectStorage} from '../src/main/project-storage.mjs';
 import {ProjectLifecycle} from '../src/main/project-lifecycle.mjs';
-
-// Real filesystem, real SQLite catalog/project databases and a real Git
-// repository with a retained worktree. Stop/close receipts are wiring doubles
-// exactly like project-lifecycle.test.mjs; trash must never run for a reset.
-async function setup(t) {
-  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-project-reset-'));
-  const root=path.join(directory,'project'),other=path.join(directory,'other');
-  await fs.mkdir(root);await fs.mkdir(other);
-  await fs.writeFile(path.join(root,'source.txt'),'original source\n');
-  const storage=new ProjectStorage(path.join(directory,'profile'));
-  const project=await storage.register(root);
-  const neighbor=await storage.register(other);
-  await storage.putLocal(project.id,'view',{scrollTop:42});
-  await storage.putLocal(project.id,'managed:works:worker-1',{threadId:'worker-1'});
-  await storage.putProject(project.id,'annotations','note-1',{text:'old annotation'});
-  await storage.putRecovery(project.id,'document:test',{candidate:{text:'unsaved complete candidate'}});
-  const run=promisify(execFile),git=async(...args)=>(await run('git',['-C',root,...args])).stdout;
-  await git('init');await git('add','source.txt');
-  await git('-c','user.name=Nozeli fixture','-c','user.email=fixture@nozeli.invalid','-c','core.hooksPath='+path.join(directory,'no-hooks'),'commit','-m','fixture baseline');
-  const instanceDirectory=path.join(storage.root,'instances',project.instanceId);
-  const worktree=path.join(instanceDirectory,'execution','worktrees','retained-worker');
-  await fs.mkdir(path.dirname(worktree),{recursive:true});
-  await git('worktree','add','--detach',worktree,'HEAD');
-  await fs.writeFile(path.join(worktree,'source.txt'),'uncommitted worker result\n');
-  const worktrees=await git('worktree','list','--porcelain'),status=await git('status','--porcelain');
-  const instanceIdentity=await fs.lstat(instanceDirectory);
-  const events=[];
-  const host={storage,requireRegisteredProject:id=>storage.requireRegistered(id)};
-  const workspace={layouts:new Map([[project.id,{projectId:project.id}]]),closeProject:async(id,{operationId})=>{events.push({kind:'close',id,operationId});return {closed:true,projectId:id,operationId};}};
-  const managed={stopProject:async id=>{events.push({kind:'stop',id});return {projectId:id,confirmationComplete:true};}};
-  const trashItem=async source=>{events.push({kind:'trash',source});throw Error('reset must never trash '+source);};
-  const manager=new ProjectLifecycle({host,workspace,managed,trashItem});
-  t.after(async()=>{await storage.db.close();await fs.rm(directory,{recursive:true,force:true});});
-  return {directory,root,other,storage,project,neighbor,git,worktrees,status,worktree,instanceDirectory,instanceIdentity,events,host,workspace,managed,manager};
+import {repository} from '../src/agents/managed/git-service.mjs';
+const exec=promisify(execFile);
+const exists=file=>fs.lstat(file).then(()=>true,e=>{if(e.code==='ENOENT')return false;throw e;});
+async function setup(t){
+ const directory=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-permanent-reset-')),root=path.join(directory,'project');await fs.mkdir(root);await fs.writeFile(path.join(root,'source.txt'),'user source\n');
+ const storage=new ProjectStorage(path.join(directory,'profile'));const project=await storage.register(root);const otherRoot=path.join(directory,'other');await fs.mkdir(otherRoot);const other=await storage.register(otherRoot);
+ const git=async(...args)=>(await exec('git',['-C',root,...args])).stdout;
+ await git('init');await git('add','source.txt');await git('-c','user.name=Fixture','-c','user.email=fixture@invalid','-c','core.hooksPath=/dev/null','commit','-m','user history');
+ await storage.putLocal(project.id,'draft',{text:'unsaved'});await storage.putLocal(project.id,'workspace:layout',{tabs:['old']});await storage.putProject(project.id,'sessions','old',{body:'session'});await storage.putObject(project.id,Buffer.from('old material'));await storage.putRecovery(project.id,'draft:old',{text:'recovery'});await storage.putLocal(other.id,'view',{scroll:7});
+ const global=path.join(directory,'profile','account.json');await fs.writeFile(global,'global-account-sentinel');
+ const events=[],workspace={layouts:new Map([[project.id,{}]]),closeProject:async id=>{events.push(['close',id]);return {closed:true};}},managed={stopProject:async id=>{events.push(['stop',id]);return {confirmationComplete:true};}};
+ const host={storage,requireRegisteredProject:id=>storage.requireRegistered(id)},manager=new ProjectLifecycle({host,workspace,managed,trashItem:async()=>{throw Error('must not trash');}});
+ t.after(async()=>{await storage.db.close();await fs.rm(directory,{recursive:true,force:true});});
+ return {directory,root,project,other,storage,git,global,events,workspace,managed,host,manager};
 }
-const exists=file=>fs.lstat(file).then(()=>true,error=>{if(error.code==='ENOENT')return false;throw error;});
-const identityOf=stat=>({dev:String(stat.dev),ino:String(stat.ino)});
-
-
-test('reset archives verified metadata, keeps instance and worktrees in place, and opens a fresh identity',async t=>{
-  const f=await setup(t);
-  await f.storage.putLocal(f.neighbor.id,'view',{scrollTop:7});
-  const preview=await f.manager.preview({projectId:f.project.id,action:'reset-project'});
-  const result=await f.manager.execute({token:preview.token});
-  assert.equal(result.projectId,f.project.id);assert.equal(result.action,'reset-project');assert.equal(result.complete,true);
-  assert.notEqual(result.newProjectId,f.project.id);
-  assert.equal(result.backupPath,path.join(f.storage.root,'recovery',f.project.instanceId,'reset',preview.operationId));
-  assert.equal(f.workspace.layouts.has(f.project.id),false);
-  // Fresh identity opens at the same root with empty state.
-  const opened=await f.storage.requireOnline(result.newProjectId);
-  assert.equal(opened.root,f.root);assert.notEqual(opened.instanceId,f.project.instanceId);
-  assert.equal(await f.storage.getLocal(result.newProjectId,'view'),null);
-  assert.equal(await f.storage.getProject(result.newProjectId,'annotations','note-1'),null);
-  const manifest=JSON.parse(await fs.readFile(path.join(f.root,'.nozeli','project.json'),'utf8'));
-  assert.equal(manifest.projectId,result.newProjectId);
-  // Old identity refuses; retained drafts and recovery stay readable under it.
-  await assert.rejects(f.storage.requireOnline(f.project.id),{code:'PROJECT_IDENTITY_CONFLICT'});
-  assert.equal((await f.storage.getRecovery(f.project.id,'document:test')).candidate.text,'unsaved complete candidate');
-  assert.equal((await f.storage.getLocal(f.project.id,'managed:works:worker-1')).threadId,'worker-1');
-  // Backup holds the complete old metadata; its manifest lists every retained path.
-  const marker=JSON.parse(await fs.readFile(path.join(result.backupPath,'reset.json'),'utf8'));
-  assert.equal(marker.phase,'complete');assert.equal(marker.projectId,f.project.id);assert.equal(marker.newProjectId,result.newProjectId);
-  assert.equal(marker.paths.metadataArchive,path.join(result.backupPath,'metadata'));
-  assert.equal(marker.paths.instanceDirectory,f.instanceDirectory);
-  assert.equal(marker.paths.recoveryDirectory,path.join(f.storage.root,'recovery',f.project.instanceId));
-  assert.equal(JSON.parse(await fs.readFile(path.join(result.backupPath,'metadata','project.json'),'utf8')).projectId,f.project.id);
-  const identityRow=await f.storage.db.request(path.join(result.backupPath,'metadata','project.sqlite'),'get',{collection:'identity',id:'project'});
-  assert.equal(identityRow.projectId,f.project.id);
-  // The old local instance directory and its Git worktrees never move.
-  assert.deepEqual(identityOf(await fs.lstat(f.instanceDirectory)),identityOf(f.instanceIdentity));
-  assert.equal(await f.git('worktree','list','--porcelain'),f.worktrees);
-  assert.equal(await fs.readFile(path.join(f.worktree,'source.txt'),'utf8'),'uncommitted worker result\n');
-  // Source files and Git history are untouched.
-  assert.equal(await fs.readFile(path.join(f.root,'source.txt'),'utf8'),'original source\n');
-  assert.equal((await f.git('log','-1','--pretty=%s')).trim(),'fixture baseline');
-  assert.equal(await f.git('status','--porcelain'),f.status);
-  assert.equal((await fs.readdir(f.root)).some(name=>name.startsWith('.nozeli-reset-')||name.startsWith('.nozeli-source-')),false);
-  // Other projects keep their own state.
-  assert.equal((await f.storage.requireOnline(f.neighbor.id)).id,f.neighbor.id);
-  assert.equal((await f.storage.getLocal(f.neighbor.id,'view')).scrollTop,7);
-  // Re-registering the same root returns the new identity, and the retired one is explicit.
-  assert.equal((await f.storage.register(f.root)).id,result.newProjectId);
-  assert.equal((await f.storage.requireRegistered(f.project.id)).removed,true);
-  // A cold restart opens the new identity and inherits nothing.
-  const cold=new ProjectStorage(path.join(f.directory,'profile'));t.after(()=>cold.db.close());
-  assert.equal((await cold.register(f.root)).id,result.newProjectId);
-  assert.equal(await cold.getLocal(result.newProjectId,'view'),null);
-  await assert.rejects(cold.requireOnline(f.project.id),{code:'PROJECT_IDENTITY_CONFLICT'});
+const preview=f=>f.manager.preview({projectId:f.project.id,action:'reset-project'});
+const execute=(f,p)=>f.manager.execute({token:p.token,confirmPermanentDelete:true});
+async function historical(f,next){
+ const id=randomUUID(),instanceId=randomUUID(),old={...f.project,id,instanceId,removed:true,reset:{newProjectId:next,operationId:randomUUID()}};
+ await f.storage.db.request(f.storage.catalog,'put',{collection:'instances',id,value:old});await f.storage.putLocal(id,'draft',{text:'historical draft'});await f.storage.putRecovery(id,'draft:old',{text:'historical recovery'});
+ const archive=path.join(await f.storage.recoveryDirectory(id),'reset',randomUUID(),'metadata');await fs.mkdir(archive,{recursive:true});await fs.writeFile(path.join(archive,'project.json'),JSON.stringify({schema:1,projectId:id}));await fs.writeFile(path.join(archive,'old-object'),'secret old object');return old;
+}
+async function worktree(f,owner=f.project){
+ const repo=await repository(f.root),workId='worker-'+randomUUID(),branchRef='refs/heads/nozeli/work-'+workId+'-'+randomUUID(),runtime=path.join(await f.storage.localDirectory(owner.id),'execution'),directory=path.join(runtime,'execution',workId);
+ await fs.mkdir(path.dirname(directory),{recursive:true});await f.git('worktree','add','-b',branchRef.slice(11),directory,'HEAD');await fs.writeFile(path.join(directory,'source.txt'),'worker candidate\n');
+ const workerGitDir=await fs.realpath((await exec('git',['-C',directory,'rev-parse','--absolute-git-dir'])).stdout.trim()),m={schema:2,workId,...repo,directory,branchRef,baseCommit:repo.targetHead,inputCommit:repo.targetHead,workerGitDir,gitPointer:await fs.readFile(path.join(directory,'.git'),'utf8')};await fs.mkdir(path.join(runtime,'evidence'),{recursive:true});await fs.writeFile(path.join(runtime,'evidence','execution-'+workId+'.json'),JSON.stringify(m));return m;
+}
+test('permanent reset removes all archived generations and owned Git resources, preserves source, global and neighbors',async t=>{
+ const f=await setup(t),old=await historical(f,f.project.id),older=await historical(f,old.id),m=await worktree(f,old);
+ const userTree=path.join(f.directory,'user-worktree');await f.git('worktree','add','--detach',userTree,'HEAD');await f.git('branch','user-kept');const head=(await f.git('rev-parse','HEAD')).trim();
+ const p=await preview(f);assert.equal(p.permanentDelete,true);assert.equal(p.recoveryRetained,false);assert.deepEqual(new Set(p.relatedProjectIds),new Set([f.project.id,old.id,older.id]));assert.equal(p.accountsAffected,false);
+ const result=await execute(f,p);assert.equal(result.complete,true);assert.notEqual(result.newProjectId,f.project.id);assert.notEqual(result.newInstanceId,f.project.instanceId);assert.equal(result.recoveryRetained,false);
+ for(const row of [f.project,old,older]){await assert.rejects(f.storage.requireRegistered(row.id),{code:'UNKNOWN_PROJECT'});assert.equal(await exists(path.join(f.storage.root,'instances',row.instanceId)),false);assert.equal(await exists(path.join(f.storage.root,'recovery',row.instanceId)),false);assert(f.events.some(([kind,id])=>kind==='stop'&&id===row.id));}
+ const fresh=await f.storage.requireOnline(result.newProjectId);assert.equal(fresh.lineage,null);assert.equal(await f.storage.getLocal(fresh.id,'draft'),null);assert.equal(await f.storage.getLocal(fresh.id,'workspace:layout'),null);assert.deepEqual(await f.storage.listProject(fresh.id,'sessions'),[]);assert.deepEqual(await fs.readdir(path.join(f.root,'.nozeli','objects','sha256')),[]);
+ assert.equal(await fs.readFile(path.join(f.root,'source.txt'),'utf8'),'user source\n');assert.equal((await f.git('rev-parse','HEAD')).trim(),head);assert.equal(await exists(userTree),true);assert.equal((await f.git('rev-parse','user-kept')).trim(),head);await assert.rejects(f.git('rev-parse','--verify',m.branchRef));assert(!(await f.git('worktree','list','--porcelain')).includes(m.directory));
+ assert.equal(await fs.readFile(f.global,'utf8'),'global-account-sentinel');assert.deepEqual(await f.storage.getLocal(f.other.id,'view'),{scroll:7});assert.equal((await f.storage.register(f.root)).id,fresh.id);
+ assert.deepEqual(await f.storage.resetProject(f.project.id,{operationId:p.operationId}),result);
+ const cold=new ProjectStorage(path.join(f.directory,'profile'));t.after(()=>cold.db.close());assert.equal((await cold.register(f.root)).id,fresh.id);await assert.rejects(cold.requireRegistered(old.id),{code:'UNKNOWN_PROJECT'});
 });
-
-test('preview alone never archives; the project keeps its identity until confirmation',async t=>{
-  const f=await setup(t);
-  const preview=await f.manager.preview({projectId:f.project.id,action:'reset-project'});
-  assert.equal((await f.storage.requireOnline(f.project.id)).id,f.project.id);
-  assert.equal((await f.storage.register(f.root)).id,f.project.id);
-  assert.equal(await exists(path.join(await f.storage.recoveryDirectory(f.project.id),'reset',preview.operationId)),false);
-  assert.equal((await f.storage.getProject(f.project.id,'annotations','note-1')).text,'old annotation');
-  assert.equal(f.events.length,0);
+test('explicit permanent consent is required and preview is non-destructive',async t=>{const f=await setup(t),p=await preview(f);await assert.rejects(f.manager.execute({token:p.token}),{code:'PERMANENT_DELETE_CONFIRMATION_REQUIRED'});assert.equal(f.events.length,0);assert.equal((await f.storage.getLocal(f.project.id,'draft')).text,'unsaved');await execute(f,p);});
+for(const kind of ['stop','save','close'])test(`${kind} failure retains project and persistent fence`,async t=>{const f=await setup(t);if(kind==='stop')f.managed.stopProject=async()=>({confirmationComplete:false});if(kind==='save')f.workspace.closeProject=async()=>{throw Object.assign(Error('save failed'),{code:'SAVE_FAILED'});};if(kind==='close')f.storage.closeProjectHandles=async()=>{throw Object.assign(Error('unknown close'),{code:'STORAGE_RESULT_UNKNOWN'});};const p=await preview(f);await assert.rejects(execute(f,p));assert.equal(await exists(path.join(f.root,'.nozeli')),true);assert(f.storage.lifecycleHolds.has(f.project.id));const receipt=await f.manager.reconcile({projectId:f.project.id,operationId:p.operationId});assert.equal(receipt.blocked,true);assert.equal(receipt.observationOnly,true);});
+test('metadata symlink refuses without deleting external files',async t=>{const f=await setup(t),external=path.join(f.directory,'external');await fs.mkdir(external);await fs.writeFile(path.join(external,'keep'),'keep');await fs.symlink(external,path.join(f.root,'.nozeli','link'));const p=await preview(f);await assert.rejects(execute(f,p),{code:'PROJECT_METADATA_CONFLICT'});assert.equal(await fs.readFile(path.join(external,'keep'),'utf8'),'keep');});
+test('confirmation binds history scope and root manifest',async t=>{const f=await setup(t),p=await preview(f);await historical(f,f.project.id);await assert.rejects(execute(f,p),{code:'PROJECT_RESET_SCOPE_CHANGED'});assert.equal((await f.storage.requireRegistered(f.project.id)).id,f.project.id);});
+test('manifest mutation after preview refuses before stop',async t=>{const f=await setup(t),p=await preview(f),file=path.join(f.root,'.nozeli','project.json'),m=JSON.parse(await fs.readFile(file,'utf8'));await fs.writeFile(file,JSON.stringify({...m,changed:true}));await assert.rejects(execute(f,p),{code:'PROJECT_IDENTITY_CONFLICT'});assert.equal(f.events.length,0);});
+test('unknown local worktree ownership refuses instead of removing user Git registration',async t=>{const f=await setup(t),directory=path.join(await f.storage.localDirectory(f.project.id),'foreign-worktree');await f.git('worktree','add','--detach',directory,'HEAD');const p=await preview(f);await assert.rejects(execute(f,p),{code:'PROJECT_RESET_CONFLICT'});assert.equal(await exists(directory),true);assert((await f.git('worktree','list','--porcelain')).includes(directory));});
+test('interrupted confirmed reset safely finishes its exact scope after cold restart without replaying business',async t=>{
+ const f=await setup(t),p=await preview(f),request=f.storage.db.request.bind(f.storage.db);let interrupted=false;
+ const head=(await f.git('rev-parse','HEAD')).trim();
+ f.storage.db.request=async(file,op,args)=>{
+  if(!interrupted&&file===f.storage.catalog&&op==='put'&&args?.collection==='permanent_resets'&&args.value.phase==='cleared'){interrupted=true;throw Object.assign(Error('phase persistence failure'),{code:'FIXTURE_PHASE_FAILURE'});}
+  return request(file,op,args);
+ };
+ await assert.rejects(execute(f,p),{code:'FIXTURE_PHASE_FAILURE'});f.storage.db.request=request;
+ const receipt=await f.manager.reconcile({projectId:f.project.id,operationId:p.operationId});assert.equal(receipt.blocked,true);
+ assert.equal(await exists(path.join(f.root,'.nozeli')),false);
+ await f.storage.db.close();
+ const cold=new ProjectStorage(path.join(f.directory,'profile'));t.after(()=>cold.db.close());await cold.ready();
+ assert(cold.lifecycleHolds.has(f.project.id));await assert.rejects(cold.register(f.root),{code:'PROJECT_LIFECYCLE_ACTIVE'});
+ const manager=new ProjectLifecycle({host:{storage:cold,requireRegisteredProject:id=>cold.requireRegistered(id)},workspace:f.workspace,managed:f.managed,trashItem:async()=>{throw Error('must not trash');}});
+ const available=await manager.ensureProjectAvailable(f.project.id);assert.equal(available.available,true);assert.notEqual(available.projectId,f.project.id);
+ const fresh=await cold.requireOnline(available.projectId);assert.equal(fresh.semanticInitializationEligible,true);
+ assert.equal(await cold.getLocal(fresh.id,'draft'),null);assert.deepEqual(await cold.listProject(fresh.id,'sessions'),[]);
+ assert.equal(await fs.readFile(path.join(f.root,'source.txt'),'utf8'),'user source\n');assert.equal((await f.git('rev-parse','HEAD')).trim(),head);
+ assert.deepEqual(await cold.getLocal(f.other.id,'view'),{scroll:7});assert.equal(cold.lifecycleHolds.size,0);
 });
-
-test('manifest change after preview invalidates confirmation without moving metadata',async t=>{
-  const f=await setup(t),preview=await f.manager.preview({projectId:f.project.id,action:'reset-project'});
-  const manifestPath=path.join(f.root,'.nozeli','project.json'),manifest=JSON.parse(await fs.readFile(manifestPath,'utf8'));
-  await fs.writeFile(manifestPath,JSON.stringify({...manifest,name:'changed after preview'}));
-  await assert.rejects(f.manager.execute({token:preview.token}),{code:'PROJECT_IDENTITY_CONFLICT'});
-  assert.equal(f.events.length,0);
-  assert.equal((await f.storage.requireOnline(f.project.id)).id,f.project.id);
-  assert.equal((await f.storage.getProject(f.project.id,'annotations','note-1')).text,'old annotation');
-  assert.equal(await exists(path.join(await f.storage.recoveryDirectory(f.project.id),'reset')),false);
-});
-
-test('unconfirmed stop keeps every old state and never archives',async t=>{
-  const f=await setup(t);
-  f.managed.stopProject=async id=>({projectId:id,confirmationComplete:false});
-  const preview=await f.manager.preview({projectId:f.project.id,action:'reset-project'});
-  await assert.rejects(f.manager.execute({token:preview.token}),{code:'PI_EXIT_UNCONFIRMED'});
-  await assert.rejects(f.storage.requireOnline(f.project.id),{code:'PROJECT_LIFECYCLE_ACTIVE'});
-  const journal=await f.storage.getRecovery(f.project.id,'lifecycle:'+preview.operationId);
-  assert.equal(journal.phase,'needs-attention');assert.equal(journal.error.code,'PI_EXIT_UNCONFIRMED');
-  f.managed.stopProject=async id=>{f.events.push({kind:'stop',id});return {projectId:id,confirmationComplete:true};};
-  const observed=await f.manager.reconcile({projectId:f.project.id,operationId:preview.operationId});
-  assert.deepEqual(observed.observation,{metadata:'original',retainedSource:false,registration:'registered',facts:null});
-  assert.equal((await f.storage.requireOnline(f.project.id)).id,f.project.id);
-  assert.equal((await f.storage.getLocal(f.project.id,'view')).scrollTop,42);
-  assert.equal((await f.storage.getProject(f.project.id,'annotations','note-1')).text,'old annotation');
-  assert.equal(await exists(path.join(await f.storage.recoveryDirectory(f.project.id),'reset')),false);
-  assert.equal(f.events.filter(event=>event.kind==='trash').length,0);
-});
-
-test('unknown storage close aborts before any move and a new confirmation still succeeds',async t=>{
-  const f=await setup(t);
-  const original=f.storage.closeProjectHandles.bind(f.storage);
-  f.storage.closeProjectHandles=async()=>{throw Object.assign(Error('存储线程停止未确认'),{code:'STORAGE_RESULT_UNKNOWN'});};
-  const blocked=await f.manager.preview({projectId:f.project.id,action:'reset-project'});
-  await assert.rejects(f.manager.execute({token:blocked.token}),{code:'STORAGE_RESULT_UNKNOWN'});
-  const journal=await f.storage.getRecovery(f.project.id,'lifecycle:'+blocked.operationId);
-  assert.equal(journal.phase,'needs-attention');assert.equal(journal.error.code,'STORAGE_RESULT_UNKNOWN');
-  await assert.rejects(f.storage.requireOnline(f.project.id),{code:'PROJECT_LIFECYCLE_ACTIVE'});
-  f.storage.closeProjectHandles=original;
-  await f.manager.reconcile({projectId:f.project.id,operationId:blocked.operationId});
-  assert.equal((await f.storage.requireOnline(f.project.id)).id,f.project.id);
-  assert.equal(await exists(path.join(await f.storage.recoveryDirectory(f.project.id),'reset',blocked.operationId)),false);
-  const next=await f.manager.preview({projectId:f.project.id,action:'reset-project'});
-  const result=await f.manager.execute({token:next.token});
-  assert.equal(result.complete,true);
-  assert.equal(await f.storage.getLocal(result.newProjectId,'view'),null);
-  assert.equal((await f.storage.requireOnline(f.project.id).catch(error=>error.code)),'PROJECT_IDENTITY_CONFLICT');
-});
-
-test('reset receipt replays the completed result without archiving twice',async t=>{
-  const f=await setup(t),preview=await f.manager.preview({projectId:f.project.id,action:'reset-project'});
-  const result=await f.manager.execute({token:preview.token});
-  const retired=await f.storage.requireRegistered(f.project.id);
-  const manifestDigest=createHash('sha256').update(await fs.readFile(path.join(result.backupPath,'metadata','project.json'))).digest('hex');
-  const replay=await f.storage.resetProject(f.project.id,{operationId:preview.operationId,expected:{root:retired.root,identity:retired.identity,metadataRoot:retired.metadataRoot,metadataIdentity:retired.metadataIdentity,manifestDigest}});
-  assert.deepEqual(replay,result);
-  assert.deepEqual((await fs.readdir(result.backupPath)).sort(),['metadata','reset.json']);
-});
-
-test('symlinked metadata entities refuse reset without touching targets',async t=>{
-  const f=await setup(t);
-  const external=path.join(f.directory,'external');await fs.mkdir(external);await fs.writeFile(path.join(external,'preserve'),'private');
-  await fs.symlink(external,path.join(f.root,'.nozeli','objects','sha256','link'));
-  const inner=await f.manager.preview({projectId:f.project.id,action:'reset-project'});
-  await assert.rejects(f.manager.execute({token:inner.token}),{code:'PROJECT_METADATA_CONFLICT'});
-  assert.equal(await fs.readFile(path.join(external,'preserve'),'utf8'),'private');
-  await f.manager.reconcile({projectId:f.project.id,operationId:inner.operationId});
-  assert.equal((await f.storage.requireOnline(f.project.id)).id,f.project.id);
-  assert.equal(await exists(path.join(await f.storage.recoveryDirectory(f.project.id),'reset')),false);
-  await f.storage.db.request(path.join(f.root,'.nozeli','project.sqlite'),'close');
-  await fs.rm(path.join(f.root,'.nozeli','objects','sha256','link'));
-  const moved=path.join(f.directory,'preserved-metadata');
-  await fs.rename(path.join(f.root,'.nozeli'),moved);
-  await fs.symlink(moved,path.join(f.root,'.nozeli'));
-  await assert.rejects(f.manager.preview({projectId:f.project.id,action:'reset-project'}),{code:'PROJECT_IDENTITY_CONFLICT'});
-  const preserved=JSON.parse(await fs.readFile(path.join(moved,'project.json'),'utf8'));
-  assert.equal(preserved.projectId,f.project.id);
-  assert.equal((await fs.lstat(path.join(f.root,'.nozeli'))).isSymbolicLink(),true);
-});
-
-test('registering a root whose metadata disappeared fails explicitly without recreating it',async t=>{
-  const f=await setup(t);
-  await f.storage.db.request(path.join(f.root,'.nozeli','project.sqlite'),'close');
-  await fs.rm(path.join(f.root,'.nozeli'),{recursive:true});
-  await assert.rejects(f.storage.register(f.root),{code:'PROJECT_METADATA_MISSING'});
-  assert.equal(await exists(path.join(f.root,'.nozeli')),false);
-  assert.equal((await f.storage.requireRegistered(f.project.id)).id,f.project.id);
-});
-
-test('in-flight reset fences project admission until the swap completes',async t=>{
-  const f=await setup(t);
-  let release,entered;const waiting=new Promise(resolve=>{entered=resolve;}),finish=new Promise(resolve=>{release=resolve;});
-  const original=f.storage.resetProject.bind(f.storage);
-  f.storage.resetProject=async(id,options)=>{entered();await finish;return original(id,options);};
-  const preview=await f.manager.preview({projectId:f.project.id,action:'reset-project'});
-  const operation=f.manager.execute({token:preview.token});await waiting;
-  await assert.rejects(f.storage.requireOnline(f.project.id),{code:'PROJECT_LIFECYCLE_ACTIVE'});
-  await assert.rejects(f.storage.putProject(f.project.id,'annotations','late','not admitted'),{code:'PROJECT_LIFECYCLE_ACTIVE'});
-  await assert.rejects(f.storage.putLocal(f.project.id,'late','not admitted'),{code:'PROJECT_LIFECYCLE_ACTIVE'});
-  release();const result=await operation;
-  assert.equal(result.complete,true);
-  assert.equal((await f.storage.requireOnline(result.newProjectId)).id,result.newProjectId);
-});
-
-test('reset keeps home-ancestor development projects eligible but refuses app-data overlap',async t=>{
-  const f=await setup(t);
-  const home=path.join(f.directory,'fake-home'),devRoot=path.join(home,'dev','nozeli-like');
-  await fs.mkdir(devRoot,{recursive:true});
-  const dev=await f.storage.register(devRoot);
-  const originalHomedir=os.homedir;
-  os.homedir=()=>home;
-  try{
-    const manager=new ProjectLifecycle({host:f.host,workspace:f.workspace,managed:f.managed,trashItem:f.trashItem});
-    const preview=await manager.preview({projectId:dev.id,action:'reset-project'});
-    assert.equal(preview.newInstance,true);
-    const strict=new ProjectLifecycle({host:f.host,workspace:f.workspace,managed:f.managed,trashItem:f.trashItem,protectedRoots:[f.directory]});
-    await assert.rejects(strict.preview({projectId:dev.id,action:'reset-project'}),{code:'PROJECT_RESET_PROTECTED'});
-    await assert.rejects(strict.preview({projectId:f.project.id,action:'reset-project'}),{code:'PROJECT_RESET_PROTECTED'});
-  }finally{os.homedir=originalHomedir;}
-  assert.equal((await f.storage.requireOnline(dev.id)).id,dev.id);
-  assert.equal(await exists(path.join(await f.storage.recoveryDirectory(dev.id),'reset')),false);
-});
-
-test('metadata replaced between staging and publish refuses without renaming over it',async t=>{
-  const f=await setup(t);
-  const request=f.storage.db.request.bind(f.storage.db);
-  const preview=await f.manager.preview({projectId:f.project.id,action:'reset-project'});
-  const metadataIdentity=identityOf(await fs.lstat(path.join(f.root,'.nozeli')));
-  f.storage.db.request=async(file,op,args={})=>{
-    const result=await request(file,op,args);
-    if(file.endsWith('project.sqlite')&&file.includes('.nozeli-reset-')&&op==='put'&&args.collection==='identity'){
-      const manifestPath=path.join(f.root,'.nozeli','project.json'),manifest=JSON.parse(await fs.readFile(manifestPath,'utf8'));
-      await fs.writeFile(manifestPath,JSON.stringify({...manifest,name:'swapped during copy'}));
-    }
-    return result;
-  };
-  await assert.rejects(f.manager.execute({token:preview.token}),{code:'PROJECT_IDENTITY_CONFLICT'});
-  f.storage.db.request=request;
-  const manifest=JSON.parse(await fs.readFile(path.join(f.root,'.nozeli','project.json'),'utf8'));
-  assert.equal(manifest.name,'swapped during copy');
-  assert.equal(manifest.projectId,f.project.id);
-  assert.deepEqual(identityOf(await fs.lstat(path.join(f.root,'.nozeli'))),metadataIdentity);
-  assert.equal((await f.storage.requireOnline(f.project.id)).id,f.project.id);
-  assert.equal(await exists(path.join(f.root,'.nozeli-reset-'+preview.operationId)),true);
-  const facts=await f.storage.getRecovery(f.project.id,'lifecycle:reset-facts:'+preview.operationId);
-  assert.equal(facts.phase,'staged');
-  await assert.rejects(f.storage.resetProject(f.project.id,{operationId:preview.operationId,expected:preview.source}),{code:'PROJECT_RESET_PENDING'});
-  assert.deepEqual(await f.storage.getRecovery(f.project.id,'lifecycle:reset-facts:'+preview.operationId),facts,'a repeated unfinished operation never overwrites its diagnostic stage');
-});
-
-test('an unfinished same-operation artifact is kept and demands verification, never rebuilt',async t=>{
-  const f=await setup(t);
-  const preview=await f.manager.preview({projectId:f.project.id,action:'reset-project'});
-  const staging=path.join(f.root,'.nozeli-reset-'+preview.operationId);
-  await fs.mkdir(staging);
-  await fs.writeFile(path.join(staging,'initialization.json'),JSON.stringify({schema:1,kind:'reset',operationId:preview.operationId}));
-  await fs.writeFile(path.join(staging,'witness'),'kept partial staging');
-  await assert.rejects(f.manager.execute({token:preview.token}),{code:'PROJECT_RESET_PENDING'});
-  assert.equal(await fs.readFile(path.join(staging,'witness'),'utf8'),'kept partial staging');
-  assert.equal(JSON.parse(await fs.readFile(path.join(staging,'initialization.json'),'utf8')).operationId,preview.operationId);
-  assert.equal(JSON.parse(await fs.readFile(path.join(f.root,'.nozeli','project.json'),'utf8')).projectId,f.project.id);
-  assert.equal((await f.storage.requireOnline(f.project.id)).id,f.project.id);
-  const archive=path.join(await f.storage.recoveryDirectory(f.project.id),'reset',preview.operationId);
-  assert.equal(await exists(path.join(archive,'metadata','project.json')),true);
-  const next=await f.manager.preview({projectId:f.project.id,action:'reset-project'});
-  const witness=path.join(await f.storage.recoveryDirectory(f.project.id),'reset',next.operationId,'witness');
-  await fs.mkdir(path.dirname(witness),{recursive:true});
-  await fs.writeFile(path.join(path.dirname(witness),'reset.json'),JSON.stringify({schema:1,operationId:next.operationId,projectId:f.project.id,instanceId:f.project.instanceId}));
-  await fs.writeFile(witness,'kept partial archive');
-  await assert.rejects(f.manager.execute({token:next.token}),{code:'PROJECT_RESET_PENDING'});
-  assert.equal(await fs.readFile(witness,'utf8'),'kept partial archive');
-  assert.equal((await f.storage.requireOnline(f.project.id)).id,f.project.id);
-  assert.equal((await f.storage.getRecovery(f.project.id,'lifecycle:reset-facts:'+next.operationId)).phase,'verified');
-});
-
-for(const stopAt of ['register','initialization'])test(`a failure before ${stopAt} keeps the project root fenced until explicit verification`,async t=>{
-  const f=await setup(t);
-  const request=f.storage.db.request.bind(f.storage.db);let failed=false;
-  f.storage.db.request=async(file,op,args={})=>{
-    if(!failed&&file===f.storage.catalog&&op==='put'&&String(args.operationId||'').endsWith(':'+stopAt)){failed=true;throw Error('simulated catalog interruption');}
-    return request(file,op,args);
-  };
-  const preview=await f.manager.preview({projectId:f.project.id,action:'reset-project'});
-  await assert.rejects(f.manager.execute({token:preview.token}),/simulated catalog interruption/);
-  f.storage.db.request=request;
-  const facts=await f.storage.getRecovery(f.project.id,'lifecycle:reset-facts:'+preview.operationId);
-  assert.equal(facts.phase,stopAt==='register'?'retired':'registered');assert.equal(typeof facts.newProjectId,'string');assert.equal(facts.swap,path.join(f.root,'.nozeli-source-'+preview.operationId));
-  assert.equal(JSON.parse(await fs.readFile(path.join(f.root,'.nozeli','project.json'),'utf8')).projectId,facts.newProjectId);
-  assert.equal(await exists(facts.swap),true);
-  await assert.rejects(f.storage.requireOnline(f.project.id),{code:'PROJECT_LIFECYCLE_ACTIVE'});
-  assert.equal((await f.storage.getRecovery(f.project.id,'document:test')).candidate.text,'unsaved complete candidate');
-  const cold=new ProjectStorage(path.join(f.directory,'profile'));t.after(()=>cold.db.close());
-  await assert.rejects(cold.requireOnline(f.project.id),{code:'PROJECT_LIFECYCLE_ACTIVE'});
-  await assert.rejects(cold.register(f.root),{code:'PROJECT_LIFECYCLE_ACTIVE'});
-  const observed=await f.manager.reconcile({projectId:f.project.id,operationId:preview.operationId});
-  assert.equal(observed.observation.facts.phase,facts.phase);
-  assert.equal((await f.storage.requireRegistered(f.project.id)).removed,true);
-  const coldTwo=new ProjectStorage(path.join(f.directory,'profile'));t.after(()=>coldTwo.db.close());
-  if(stopAt==='register'){
-    const registered=await coldTwo.list();
-    // Native owner inspection may refuse before reaching the confirmation;
-    // either refusal must leave the interrupted registration exactly intact.
-    await assert.rejects(coldTwo.register(f.root),error=>['PROJECT_RECOVERY_CANCELLED','RECOVERY_OWNER_UNVERIFIED','RECOVERY_SOURCE_ACTIVE'].includes(error.code));
-    assert.deepEqual(await coldTwo.list(),registered);
-  }
-  else assert.equal((await coldTwo.register(f.root)).id,facts.newProjectId,'explicit reconciliation may open the already committed fresh registration');
-  assert.equal(JSON.parse(await fs.readFile(path.join(f.root,'.nozeli','project.json'),'utf8')).projectId,facts.newProjectId);
-});
+test('a different root sharing an instance refuses preview without clearing either project',async t=>{const f=await setup(t);const shared={...f.other,instanceId:f.project.instanceId};await f.storage.db.request(f.storage.catalog,'put',{collection:'instances',id:shared.id,value:shared});await assert.rejects(preview(f),{code:'PROJECT_RESET_CONFLICT'});assert.equal((await f.storage.getLocal(f.project.id,'draft')).text,'unsaved');assert.equal(await exists(path.join(f.root,'.nozeli')),true);});

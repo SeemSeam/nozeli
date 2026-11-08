@@ -7,6 +7,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {PiSession} from '../src/agents/managed/pi-session.mjs';
 import {Writable} from 'node:stream';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 const spec=()=>({role:'worker',home:'/tmp/nozeli-admission-test',cwd:'/tmp',tools:[]});
 const session=()=>new PiSession(spec());
@@ -304,4 +307,62 @@ test('host tool error response carries origin without copying arbitrary exceptio
  s.spec.onTool=async()=>{throw Object.assign(Error('failed host operation'),{code:'HOST_INTERNAL_FAILURE',failureOrigin:'host',privateBody:'not a wire field'});};
  await s.handleTool({id:'tool',requestId:'request',tool:'host-tool'});
  assert.equal(frames.length,1);assert.equal(frames[0].error.failureOrigin,'host');assert.equal(frames[0].error.code,'HOST_INTERNAL_FAILURE');assert.equal(frames[0].error.privateBody,undefined);
+});
+
+// Tool-schema admission on a resumed native conversation: a changed digest
+// is diagnostic evidence (the native owner re-verifies identity during
+// start), the pinned durable metadata is kept untouched until a verified
+// start republishes it, and only genuine persisted-metadata or lineage
+// errors refuse. Pure unit scope: no Pi owner process is spawned.
+test('a changed historical tools digest never refuses and keeps the pinned metadata untouched',async t=>{
+ const home=await fs.mkdtemp(path.join(os.tmpdir(),'pi-session-admission-'));
+ t.after(()=>fs.rm(home,{recursive:true,force:true}));
+ const metadata={schema:1,threadId:'original-thread',sessionFile:path.join(home,'sessions','original.jsonl'),toolsDigest:'old-schema-digest'};
+ await fs.mkdir(path.dirname(metadata.sessionFile),{recursive:true});
+ await fs.writeFile(path.join(home,'nozeli-session-tools.json'),JSON.stringify(metadata));
+ const s=new PiSession({role:'orchestrator',home,cwd:'/tmp',tools:[{name:'nozeli_new_debug'}]});
+ await s.preflightToolsDigest('old-schema-digest');
+ assert.equal(s.sessionFile,metadata.sessionFile,'pinned native file stays loaded for the resume');
+ assert.equal(s.pinnedThreadId,'original-thread');
+ assert.deepEqual(JSON.parse(await fs.readFile(path.join(home,'nozeli-session-tools.json'),'utf8')),metadata,'preflight never writes or upgrades the pinned record; only a verified native start republishes it');
+});
+
+test('uninterpretable persisted tools metadata still refuses the resume',async t=>{
+ const home=await fs.mkdtemp(path.join(os.tmpdir(),'pi-session-admission-'));
+ t.after(()=>fs.rm(home,{recursive:true,force:true}));
+ const metadataFile=path.join(home,'nozeli-session-tools.json');
+ for(const [label,bytes] of [['future schema',JSON.stringify({schema:2,threadId:'t',sessionFile:'/t.jsonl',toolsDigest:'d'})],['missing thread identity',JSON.stringify({schema:1,sessionFile:'/t.jsonl',toolsDigest:'d'})],['non-string pinned file',JSON.stringify({schema:1,threadId:'t',sessionFile:7,toolsDigest:'d'})],['scalar record','123']]){
+  await fs.writeFile(metadataFile,bytes);
+  const s=new PiSession({role:'orchestrator',home,cwd:'/tmp',tools:[]});
+  await assert.rejects(s.preflightToolsDigest('d'),{code:'PI_TOOLS_METADATA_SCHEMA'},label);
+  assert.equal(s.sessionFile,undefined,label+' never pins metadata');
+ }
+ await fs.writeFile(metadataFile,'{not json');
+ await assert.rejects(new PiSession({role:'orchestrator',home,cwd:'/tmp',tools:[]}).preflightToolsDigest('d'),SyntaxError,'malformed metadata is a genuine persisted error, not a silent fresh session');
+});
+
+test('post-start lineage assertion refuses only an unknown digest',()=>{
+ const s=session();s.toolsDigest='new-schema';s.pinnedToolsDigest='old-schema';
+ s.assertToolsDigest('new-schema');
+ s.assertToolsDigest('old-schema');   // historical schema of the resumed conversation: an ordinary upgrade, not a handoff
+ assert.throws(()=>s.assertToolsDigest('unknown-schema'),{code:'PI_TOOLS_DIGEST_MISMATCH'});
+});
+
+test('lineage assertion stays pure and leaves the pending tool protocol untouched',()=>{
+ const s=session();s.toolsDigest='new-schema';s.pinnedToolsDigest='old-schema';
+ s.sessionFile='/pinned/original.jsonl';s.pinnedThreadId='original-thread';
+ const waiter={resolve(){},reject(){},timer:null,method:'prompt',requestId:'request'};
+ s.pending.set('live-rpc',waiter);
+ s.assertToolsDigest('old-schema');s.assertToolsDigest('new-schema');
+ assert.equal(s.pending.size,1);assert.equal(s.pending.get('live-rpc'),waiter,'no pending RPC is settled or dropped by the assertion');
+ assert.equal(s.sessionFile,'/pinned/original.jsonl');assert.equal(s.pinnedThreadId,'original-thread');assert.equal(s.pinnedToolsDigest,'old-schema','pinned state is never repinned in memory');
+ assert.throws(()=>s.assertToolsDigest('third-schema'),{code:'PI_TOOLS_DIGEST_MISMATCH'});
+ assert.equal(s.pending.size,1,'even the refusal leaves the pending protocol untouched');
+});
+
+test('start refuses a resume whose pinned metadata names another thread before any side effect',async()=>{
+ const s=session();s.pinnedThreadId='pinned-thread';s.sessionFile='/pinned/original.jsonl';
+ await assert.rejects(s.start('different-thread'),{code:'PI_SESSION_IDENTITY'});
+ assert.equal(s.child,undefined,'no owner process is spawned for a mismatched pinned identity');
+ assert.equal(s.phase,'new','no lifecycle state advances past the refusal');
 });

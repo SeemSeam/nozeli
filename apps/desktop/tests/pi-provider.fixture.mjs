@@ -15,7 +15,7 @@ export const serve=async(handler)=>{
    const request=JSON.parse(body);Object.defineProperty(request,'authorization',{value:req.headers.authorization||null,enumerable:false});requests.push(request);const response=await handler(request,requests.filter(row=>!row.listing).length);
    if(res.destroyed)return;
    if(response.error){res.writeHead(response.status??400,{'content-type':'application/json'});res.end(JSON.stringify({error:response.error}));return;}
-   const calls=response.tools??(response.tool?[response]:[]),delta=calls.length?{role:'assistant',tool_calls:calls.map((call,index)=>({index,id:call.id,type:'function',function:{name:call.tool,arguments:JSON.stringify(call.args)}}))}:{role:'assistant',content:response.text??''};
+   const calls=response.tools??(response.tool?[response]:[]),delta=calls.length?{role:'assistant',...(response.text?{content:response.text}:{}),tool_calls:calls.map((call,index)=>({index,id:call.id,type:'function',function:{name:call.tool,arguments:JSON.stringify(call.args)}}))}:{role:'assistant',content:response.text??''};
    res.writeHead(200,{'content-type':'text/event-stream'});
    const id='fixture-'+requests.length;
    for(const [part,finish]of [[delta,null],[{},calls.length?'tool_calls':'stop']])res.write('data: '+JSON.stringify({id,object:'chat.completion.chunk',choices:[{index:0,delta:part,finish_reason:finish}]})+'\n\n');

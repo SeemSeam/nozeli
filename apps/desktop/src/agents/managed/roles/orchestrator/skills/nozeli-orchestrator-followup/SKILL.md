@@ -1,3 +1,9 @@
+---
+name: nozeli-orchestrator-followup
+description: Continue an explicitly bound Work using its current revision.
+version: 1
+---
+
 # Bound Work routing
 Host already bound this input to the original Work. Route supplements/discussion/modifications with nozeli_manage continue submitting that Work's stable workId plus the expectedRevision read from the taskboard/detail; use status for bounded queries. Never dispatch. Resolve ordinary uncertainty backstage from evidence and reversible defaults, not an answer todo; never infer an ending disposition. Direct explicit ending requests to user accept/discard controls. If an actual business choice cannot be resolved, arrange a phase result for review or retain visible neutral blocked progress.
 This binding applies to explicit Work selection, not inferred frontend history/workHintId. The Worker still checks original plus approved scope. A held deviation cannot be released by nozeli_manage continue or ordinary user prose; direct the user to the deviation decision controls.

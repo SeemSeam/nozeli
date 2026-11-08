@@ -33,6 +33,13 @@ host.storage=new Proxy(storage,{get(target,key){const value=Reflect.get(target,k
 const stateHost=new DesktopHost(directory);stateHost.storage=host.storage;stateHost.requireRegisteredProject=id=>host.requireRegisteredProject(id);host.readState=id=>stateHost.readState(id);
 const native=new WorkspaceNative({BrowserWindow:Window,WebContentsView:View,screen:{getDisplayMatching:()=>({workArea:{x:-1920,y:0,width:1920,height:1080}})},origin:'http://127.0.0.1:9000/',userDataDir:directory,host});const root=native.registerShell(new Window());root.projectId='p';root.ready=true;native.layouts.set('p',createLayout('p',{workspace:{minimized:true}}));return {native,root};}
 function receipt(native,r,ok=true){r.ready=true;r.wc.onSend=(channel,payload)=>{if(channel==='nozeli:flush')queueMicrotask(()=>native.acknowledge(r,{requestId:payload,ok}));};}
+test('strict project close keeps live surfaces when interactive terminal cleanup is unconfirmed',async t=>{
+ const {native,root}=await fixture(t);receipt(native,root);
+ native.projectTerminals.stopProject=async()=>{throw Object.assign(Error('terminal exit not confirmed'),{code:'TERMINAL_CLEANUP_INCOMPLETE'});};
+ await assert.rejects(native.closeProject('p',{operationId:'permanent-reset-terminal-check',strictStop:true}),{code:'TERMINAL_CLEANUP_INCOMPLETE'});
+ assert.equal(root.projectId,'p');assert.equal(root.dead,false);
+ const saved=await native.host.storage.getRecovery('p','lifecycle:close:permanent-reset-terminal-check');assert.equal(saved.phase,'needs-attention');assert.equal(saved.error.code,'TERMINAL_CLEANUP_INCOMPLETE');
+});
 test('display views bind to the registered instance and preserve the losing revision and legacy record',async t=>{
  const {native,root}=await fixture(t);
  const key={projectInstanceId:'not-an-instance',ownerKind:'annotation',ownerId:'annotation-with-source',surfaceId:root.windowId};

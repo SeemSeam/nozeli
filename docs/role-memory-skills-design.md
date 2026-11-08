@@ -1,8 +1,8 @@
 # 三角色记忆与技能：来源治理、渐进披露和宿主边界
 
 Date: 2026-11-01
-Status: **独立设计审阅通过；后续记忆／原生 skill 系统实施须单独批准，不是已实施功能或运行验收结论。**
-Scope: 保留 frontdesk／orchestrator／Worker；仅设计本文件。当前 context cutover 可移除重复事件提示和旧诊断扇出，不因此授权实施整套知识管理／原生技能迁移。
+Status: **角色固定流程原生skill迁移已实施并按用户后续授权安装，Linux限定接线验收；通用知识批准／自动提炼系统仍未实施。**
+Scope: 保留 frontdesk／orchestrator／Worker；角色最小强制契约与原生按需技能分离。项目初始化及有界诊断实施范围见[生命周期证据](project-lifecycle-initialization-design.md#8-源码实施与限定验收2026-11-08)，不扩大为整套知识管理系统。
 
 2026-11-07最新产品边界见[Plantree统一报告与稳定结果记忆](plantree-result-memory-design.md)：长期层默认只编目稳定文档版本和完整task结束结果，引用Plantree中的规范报告，不连续抽取聊天，不要求成果再做一次知识批准；报告作者主张不提升为系统真值或指令。原始研究见[评测报告](long-term-memory-evaluation.md)。本页通用批准知识/语义整理扩展暂缓，角色契约、来源/版本与权限分离、原生Pi历史边界继续成立；不因此授权技能迁移或生产实施。
 
@@ -73,7 +73,9 @@ Scope: 保留 frontdesk／orchestrator／Worker；仅设计本文件。当前 co
 
 ## 5. 技能形式：原生 Pi 渐进披露，而不是第二加载器
 
-拟议迁移采用 Pi 的目录式 `SKILL.md`（name、description、相对引用资源），将上节十个实际文件逐一转为角色命名空间，例如 `nozeli-frontdesk-read-material`、`nozeli-orchestrator-followup`、`nozeli-worker-report`。这些是**拟议名称，不是当前已存在的技能**；迁移是一次清晰替换，不保留同一正文同时经 rolePrompt、eventSkill、native skill 三路加载。
+迁移已采用Pi目录式`SKILL.md`（name、description、相对引用资源），上节既有技能逐一转为角色命名空间，例如`nozeli-frontdesk-read-material`、`nozeli-orchestrator-followup`、`nozeli-worker-report`；新增初始化及诊断方法沿同一机制。技能清单、正文路径与授权按角色过滤，真实原生read按需读取，不保留相同正文经rolePrompt、eventSkill、native skill三路加载。历史非Pi绑定只读保留，Pi绑定迁移前归档。
+
+2026-11-08用户明确固定流程优先skill、尽量少提示词注入：项目初始化/地图维护与项目诊断方法已沿Pi原生skill按需接线，见[生命周期合同](project-lifecycle-initialization-design.md)。角色常驻只留最小职责/强制边界/工具及短目录，事件只传事实/身份/引用，不复制流程正文；同一规则禁止多路注入。身份/预算/停稳/删除/CAS仍由宿主执行，不能转成skill软保证。真实Electron/Pi初始化证明skill发现、read及受限工具顺序；不证明付费模型理解质量，尚未日常安装。
 
 兼容性已从固定版本源码／文档确认的部分：
 

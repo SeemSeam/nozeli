@@ -291,7 +291,7 @@ export class WorkspaceNative {
       const canReadHistory = op === 'managed.review.discussion.read' && r.kind === 'history';
       if (r.role !== 'shell' && !(r.role === 'surface' && (r.kind === 'report'||canReadHistory) && (ownsWork || this.reviewReportOwns(r, payload.objectId)))) throw fail('REVIEW_SCOPE_DENIED', '讨论只能从所属任务报告进入；历史只读，不发送给AI。');
     }
-    if (this.lifecycle.has(r.projectId) && !this.lifecycleFlushOwner(r,payload.flushRequestId,op) && (writes.has(op) || op === 'managed.send' || ['managed.session.command','managed.attention.respond','managed.attention.draft.write','managed.review.save','managed.review.instruction.save','managed.review.continue','managed.review.accept','managed.review.discussion.send','workspace.review.decide','workspace.review.prepareDiscard','workspace.review.discard'].includes(op) || op === 'workspace.project' || op === 'workspace.command'&&payload.command?.type!=='restoreViewState')) throw fail('PROJECT_LIFECYCLE_ACTIVE', '项目正在保留并关闭，请等待操作结果。');
+    if (this.lifecycle.has(r.projectId) && !this.lifecycleFlushOwner(r,payload.flushRequestId,op,payload) && (writes.has(op) || op === 'managed.send' || ['managed.session.command','managed.attention.respond','managed.attention.draft.write','managed.review.save','managed.review.instruction.save','managed.review.continue','managed.review.accept','managed.review.discussion.send','workspace.review.decide','workspace.review.prepareDiscard','workspace.review.discard'].includes(op) || op === 'workspace.project' || op === 'workspace.command'&&payload.command?.type!=='restoreViewState')) throw fail('PROJECT_LIFECYCLE_ACTIVE', '项目正在保留并关闭，请等待操作结果。');
     if(op==='report.copySource'&&!(r.role==='shell'||r.role==='surface'&&['report','history'].includes(r.kind)))throw fail('IPC_DENIED');
     if(op.startsWith('isolated-preview.')&&r.role==='surface'&&(!['report','document','history'].includes(r.kind)||r.kind==='history'&&['isolated-preview.open','isolated-preview.update'].includes(op)&&payload.profile!=='staticReport'))throw fail('IPC_DENIED');
     if (r.role !== 'shell' && !op.startsWith('workspace.') && !op.startsWith('isolated-preview.') && !surfaceOps.test(op)) throw fail('IPC_DENIED');
@@ -378,11 +378,19 @@ export class WorkspaceNative {
       catch (error) { this.receipts.get(requestId)?.reject(error); this.receipts.delete(requestId); }
     });
   }
-  lifecycleFlushOwner(record,requestId,op){
+  lifecycleFlushOwner(record,requestId,op,payload={}){
     // Only the ops a pending lifecycle flush itself persists are admitted,
     // and only for the record that owns the open receipt under the current
     // hold — never a blanket lifecycle exemption.
-    if(!['workspace.displayView.write','workspace.recovery','file.draft','file.save','file.retain','managed.review.instruction.save','managed.review.save'].includes(op))return null;
+    if(op==='workspace.command'){
+      if(payload.projectId!==record.projectId||record.role!=='surface'||payload.command?.type!=='restoreViewState'||payload.command.viewId!==record.viewId)return null;
+    }else if(op==='workspace.settings'){
+      if(payload.projectId!==record.projectId||record.role!=='surface')return null;
+    }else if(op==='state.write'){
+      if(payload.projectId!==record.projectId||record.role!=='shell')return null;
+    }else if(op==='managed.draft'){
+      if(payload.projectId!==record.projectId||record.kind!=='conversation'||payload.target!=='frontdesk')return null;
+    }else if(!['workspace.displayView.write','workspace.recovery','file.draft','file.save','file.retain','managed.review.instruction.save','managed.review.save'].includes(op))return null;
     const receipt=this.receipts.get(requestId);
     if(!receipt||receipt.record!==record||receipt.generation!==record.generation||record.dead||!receipt.lifecycleHold||this.host.storage.lifecycleHolds.get(record.projectId)!==receipt.lifecycleHold&&this.lifecycle.get(record.projectId)!==receipt.lifecycleHold)return null;
     return receipt.lifecycleHold;
@@ -422,7 +430,7 @@ export class WorkspaceNative {
     };
   }
   assertRecoveryAdmission(record,op,payload){
-    if(op==='workspace.recovery'&&this.host.storage.lifecycleHolds.has(record.projectId)&&!this.lifecycleFlushOwner(record,payload?.flushRequestId,op))throw fail('PROJECT_LIFECYCLE_ACTIVE','项目停稳期间仅接受当前保存回执的恢复内容。');
+    if(op==='workspace.recovery'&&this.host.storage.lifecycleHolds.has(record.projectId)&&!this.lifecycleFlushOwner(record,payload?.flushRequestId,op,payload))throw fail('PROJECT_LIFECYCLE_ACTIVE','项目停稳期间仅接受当前保存回执的恢复内容。');
   }
   acknowledge(record, payload, result = payload) {
     const p = this.receipts.get(payload?.requestId);
@@ -563,10 +571,12 @@ export class WorkspaceNative {
       finally { for (const s of affected) { s.transferring = false; s.held = !!s.recoveryHeld; if (!s.dead) s.wc.send('nozeli:workspace-control', { type: 'transfer-hold', held: s.held }); this.persistPendingViewState(s); } }
     }));
   }
-  async closeProject(projectId, {operationId = randomUUID()} = {}) {
+  async closeProject(projectId, {operationId = randomUUID(), strictStop = false, discardState = false} = {}) {
     if (typeof operationId !== 'string' || !operationId || operationId.length > 160) throw fail('INVALID_OPERATION_ID');
+    if(discardState){const hold=this.host.storage.lifecycleHolds.get(projectId);if(!hold||hold.action!=='reset-project'||hold.operationId!==operationId||this.host.storage.lifecycleOwner.getStore()!==hold)throw fail('RESET_DISCARD_DENIED','只有已确认重置的当前宿主令牌可丢弃项目状态。');}
+    if(discardState)await this.discardProjectCapture?.(projectId);
     await this.guidedDemo?.pauseProject(projectId,'演示项目正在关闭，已暂停自动动作。');
-    const input = JSON.stringify({action:'close-project',projectId,operationId});
+    const input = JSON.stringify({action:'close-project',projectId,operationId,...(strictStop?{strictStop:true}:{}),...(discardState?{discardState:true}:{})});
     const previous = this.lifecycle.get(projectId);
     if (previous) {
       if (previous.operationId !== operationId || previous.input !== input) throw fail('PROJECT_LIFECYCLE_ACTIVE', '该项目已有不同的生命周期操作。');
@@ -575,39 +585,42 @@ export class WorkspaceNative {
     const operation = {operationId,input};
     operation.promise = (async () => {
       await this.host.requireRegisteredProject(projectId);
-      for(const owner of this.projectRecords(projectId).filter(s=>s.kind==='web')){const result=await this.onlineBrowser?.closeScope(owner);if(result?.cancelled||result?.closed===false)throw fail('WEB_CLOSE_CANCELLED','网页仍有未提交输入，项目保持打开。');}
+      if(!discardState)for(const owner of this.projectRecords(projectId).filter(s=>s.kind==='web')){const result=await this.onlineBrowser?.closeScope(owner);if(result?.cancelled||result?.closed===false)throw fail('WEB_CLOSE_CANCELLED','网页仍有未提交输入，项目保持打开。');}
       const key = `lifecycle:close:${operationId}`;
-      const prior = await this.host.storage.getRecovery(projectId,key);
+      const storage=this.host.storage,closeKey=projectId+':'+operationId;
+      const readReceipt=()=>discardState?storage.db.request(storage.catalog,'get',{collection:'discard_closes',id:closeKey}):storage.getRecovery(projectId,key);
+      const saveReceipt=value=>discardState?storage.db.request(storage.catalog,'put',{collection:'discard_closes',id:closeKey,value}):storage.putRecovery(projectId,key,value);
+      const prior = await readReceipt();
       if (prior) {
         if (prior.input !== input) throw fail('OPERATION_ID_REUSED');
         if (prior.phase === 'complete') return prior.result;
         throw fail(prior.error?.code || 'PROJECT_CLOSE_PENDING', prior.error?.message || '已有关闭操作尚待核查；未重复冲刷。');
       }
-      await this.host.storage.putRecovery(projectId,key,{action:'close-project',projectId,operationId,input,phase:'preparing'});
+      await saveReceipt({action:'close-project',projectId,operationId,input,phase:'preparing'});
       const records = this.projectRecords(projectId);
-      if (records.some(record => record.previewRecoveryFailed)) throw fail('TRANSFER_RECOVERY_REQUIRED', '报告恢复未确认，不能关闭项目。');
+      if (!discardState&&records.some(record => record.previewRecoveryFailed)) throw fail('TRANSFER_RECOVERY_REQUIRED', '报告恢复未确认，不能关闭项目。');
       const shell = this.shell?.projectId === projectId ? this.shell : null;
       // Hold input while capturing; restore it if any owner cannot persist.
       for (const record of [...records, ...(shell ? [shell] : [])]) record.wc.send('nozeli:workspace-control', {type:'lifecycle-hold', held:true, operationId});
       try {
-        const results = await Promise.allSettled([...records, ...(shell ? [shell] : [])].map(record => this.flushOne(record)));
+        const results = discardState ? [] : await Promise.allSettled([...records, ...(shell ? [shell] : [])].map(record => this.flushOne(record)));
         const failures = results.flatMap((result, index) => result.status === 'rejected' ? [{viewId:records[index]?.viewId ?? 'shell', code:result.reason.code, message:result.reason.message}] : []);
-        if (failures.length) throw Object.assign(fail('PROJECT_FLUSH_FAILED', '部分内容未能保存到本机，项目保持打开。'), {failures});
+        if (failures.length) throw Object.assign(fail('PROJECT_FLUSH_FAILED', '部分内容未能保存到本机，项目保持打开。'), {details:{failures:failures.slice(0,32)}});
         await this.host.settled();
-        await this.host.storage.putRecovery(projectId,key,{action:'close-project',projectId,operationId,input,phase:'captured',receipts:results.map((result,index)=>({owner:records[index]?.viewId??'shell',result:result.value}))});
-        // Explicit project close reclaims the owned interactive shell before
-        // its surface goes away; cleanup failures surface honestly without
-        // stranding the close itself.
-        await this.projectTerminals.stopProject(projectId,'project-close').catch(error=>{this.onError(error);});
-        for (const record of records) this.destroySurface(record);
+        await saveReceipt({action:'close-project',projectId,operationId,input,phase:'captured',receipts:results.map((result,index)=>({owner:records[index]?.viewId??'shell',result:result.value}))});
+        // A permanent reset cannot delete an unconfirmed interactive owner.
+        if(strictStop)await this.projectTerminals.stopProject(projectId,'project-close');
+        else await this.projectTerminals.stopProject(projectId,'project-close').catch(error=>{this.onError(error);});
+        for (const record of records){const key=this.resourceOfRecord(record);this.destroySurface(record,{discardState});if(discardState&&key)this.buffers.delete(key);}
+        if(discardState){for(const cache of [this.buffers,this.leases])for(const key of cache.keys())if(key.startsWith(projectId+'\0'))cache.delete(key);this.unavailableProjects?.delete(projectId);}
         for (const [id, root] of this.windows) if (id !== 'main' && root.projectId === projectId) { root.closing = true; root.win.destroy(); this.windows.delete(id); }
         if (shell) { this.isolatedPreview?.closeScope(shell); shell.projectId = null; shell.wc.send('nozeli:workspace-control', {type:'project-closed', projectId, operationId}); }
         if (this.activeProjectId === projectId) this.activeProjectId = null;
         const result = {closed:true, projectId, operationId};
-        await this.host.storage.putRecovery(projectId,key,{action:'close-project',projectId,operationId,input,phase:'complete',result});
+        await saveReceipt({action:'close-project',projectId,operationId,input,phase:'complete',result});
         return result;
       } catch (error) {
-        await this.host.storage.putRecovery(projectId,key,{action:'close-project',projectId,operationId,input,phase:'needs-attention',error:{code:error.code||'ERROR',message:error.message}}).catch(()=>{});
+        await saveReceipt({action:'close-project',projectId,operationId,input,phase:'needs-attention',error:{code:error.code||'ERROR',message:error.message,details:error.details??{}}}).catch(()=>{});
         for (const record of [...records, ...(shell ? [shell] : [])]) if (!record.dead) record.wc.send('nozeli:workspace-control', {type:'lifecycle-hold', held:false, operationId});
         throw error;
       }
@@ -803,8 +816,8 @@ export class WorkspaceNative {
     for (const [id, r] of this.surfaces) if (r.projectId === layout.projectId && !r.previewRecoveryFailed && (!layout.views[id]||r.kind!=='web'&&!resident.has(id))) this.destroySurface(r);
     for (const [id, r] of this.windows) if (id !== 'main' && r.projectId === layout.projectId && !layout.detached.some(w => w.id === id) && !this.isolatedPreview?.holdsWindow(r.win)) { r.closing = true; r.win.destroy(); this.windows.delete(id); }
   }
-  destroySurface(r) {
-    if(r.previewRecoveryFailed)throw fail('TRANSFER_RECOVERY_REQUIRED','报告正文回滚未确认；不能销毁原生承载。');
+  destroySurface(r,{discardState=false}={}) {
+    if(r.previewRecoveryFailed&&!discardState)throw fail('TRANSFER_RECOVERY_REQUIRED','报告正文回滚未确认；不能销毁原生承载。');
     this.isolatedPreview?.closeScope(r);
     this.reviewDiscussions?.closeScope(r);
     this.onlineBrowser?.forceCloseScope(r);
@@ -1117,8 +1130,8 @@ export class WorkspaceNative {
       const skips=p.workspace.confirmationSkips;
       if(Object.entries(p.workspace).some(([key,value])=>key!=='confirmationSkips'&&!Number.isFinite(value))||skips!==undefined&&(!skips||typeof skips!=='object'||Array.isArray(skips)||Object.entries(skips).some(([key,value])=>!['closeDocument','closeCompare','removeTag','deleteNote'].includes(key)||typeof value!=='boolean'))||p.projectSettings!==undefined&&(!p.projectSettings||Object.keys(p.projectSettings).some(key=>key!=='focusMode')||typeof p.projectSettings.focusMode!=='boolean'))throw fail('INVALID_SETTINGS');
       const prior=(await this.host.readState(r.projectId)).state??{};
-      for(const record of this.projectRecords(r.projectId))if(record.kind==='task-process')record.taskWorkspace={conversationFontSize:value.state.workspace.conversationFontSize};
       const value=await this.host.writeState(r.projectId,{...prior,workspace:{...prior.workspace,...p.workspace},projectSettings:p.projectSettings??prior.projectSettings});
+      for(const record of this.projectRecords(r.projectId))if(record.kind==='task-process')record.taskWorkspace={conversationFontSize:value.state.workspace.conversationFontSize};
       this.broadcast('nozeli:workspace-control',{type:'settings',projectId:r.projectId,workspace:value.state.workspace,projectSettings:value.state.projectSettings},r.projectId);return value;
     });
     if (op === 'workspace.ready') {
@@ -1230,6 +1243,7 @@ export class WorkspaceNative {
       this.demoControls.raise();
       return {};
     }
+    if (op === 'workspace.control') {
       if(r.kind==='task-process'&&['open-file','report'].includes(p.type))return this.taskMaterial(r,p);
       if(p.type==='task-workspace'){
         if(!(r.role==='shell'||r.role==='surface'&&['conversation','task-process'].includes(r.kind)))throw fail('IPC_DENIED');
@@ -1259,7 +1273,6 @@ export class WorkspaceNative {
         if(owner.ready)owner.wc.send('nozeli:workspace-control',p);else(owner.pendingControls??=[]).push(p);
         owner.win.show();owner.win.focus();if(owner.ready)owner.wc.focus();return {routed:true};
       }
-    if (op === 'workspace.control') {
       if(p.type==='open-settings'){
         if(!['settings-appearance','settings-reading-display','settings-provider','settings-models','settings-agents','settings-recovery','settings-help'].includes(p.section))throw fail('INVALID_SETTINGS');
         if((!this.shell||this.shell.dead)&&this.restoreShell)await this.restoreShell();

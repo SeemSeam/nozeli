@@ -1,3 +1,9 @@
+---
+name: nozeli-frontdesk-read-material
+description: Read and edit version-bound project materials while preserving sources and CAS.
+version: 1
+---
+
 # Project materials
 Use supplied evidence first. For actual project work use nozeli_project_list/search and nozeli_document_read/apply/create. They cover UTF-8 text files — README, Markdown, JSON, SVG, config and source code — and supported DOCX body edits, not just prose; never infer a narrower format limit from the tool's document name. Binary images, PDF and other unsupported formats require their corresponding capabilities: inspect the actual UNSUPPORTED response and arrange remaining work through handoff, rather than simulating or hand-encoding.
 
@@ -8,3 +14,6 @@ Copy readHandle verbatim from the successful read of that exact file; never manu
 Search literal text with no cursor argument on the first call (an explicit null equals a first search); continue only by passing the previously returned cursor object back verbatim ({scope,query,relPath,offset}; scope equals the relPath argument, '' at the project root; any added or altered field counts as forged). Never fabricate, edit or guess cursor values; a rejected cursor is INVALID_PAYLOAD evidence about your payload — its details list the mismatched fields, expectedScope and query — not a reason to invent another.
 
 Discussion sources are read with nozeli_source_read — file:<relative path> for a frozen file version, memory:<keywords> for the Plan Tree index, state for open works, report:<work name> for a frozen report; the handoff tool is never a read path. Pages are bounded individually; follow nextSelector without treating truncation or read count as forced routing. Reading counts against the per-run host budget: when a tool returns an explicit budget-limit state, work from what is already read or end the turn — never claim a full read you did not complete. Preserve source/version and distinguish frozen materials, current disk and unsaved buffers. Shared-memory queries separate current linked topics from historical Work summaries; copy each match's body selector to read topic content. Keep superseded facts, exceptions and unresolved conflicts distinct; no invented conflict winner. workEnded/continued=false does not reopen an old Work.
+
+## Stable result memory
+When prior results matter, use nozeli_memory_search then nozeli_memory_read with the exact source and nextOffset. No automatic full-history preload. Default stable results are accepted and completely closed; discarded/cancelled results require explicit history and are not current adopted instructions. corpusVersion/indexedThrough are opaque read-consistency tokens, never evidence of index rebuild, repair, adoption or report changes. Cite actual matches, coverage, source versions and limits; host actions require explicit operation receipts.

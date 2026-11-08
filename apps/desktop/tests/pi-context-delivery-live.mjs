@@ -41,7 +41,7 @@ class OwnerClient{
     this.exited=new Promise(resolve=>this.child.once('exit',resolve));
     this.child.stdout.setEncoding('utf8');let buffer='';
     this.child.stdout.on('data',chunk=>{buffer+=chunk;let index;while((index=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,index);buffer=buffer.slice(index+1);if(!line)continue;const frame=JSON.parse(line);if(frame.event){this.events.push(frame);continue;}const waiting=this.pending.get(frame.id);if(!waiting)continue;this.pending.delete(frame.id);clearTimeout(waiting.timer);frame.error?waiting.reject(Object.assign(Error(frame.error.message),{code:frame.error.code,deliveryPhase:frame.error.deliveryPhase})):waiting.resolve(frame.result);}});
-    await this.request('start',{cwd:this.dirs.cwd,home:this.dirs.home,agentDir:this.dirs.agentDir,instructions:'Stable role rules only.',tools:[],role:'worker'},60000);
+    await this.request('start',{cwd:this.dirs.cwd,home:this.dirs.home,agentDir:this.dirs.agentDir,instructions:'Stable role rules only.',tools:[]},60000);
   }
   request(method,params={},timeout=60000){
     const id=randomUUID();

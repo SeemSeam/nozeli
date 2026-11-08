@@ -1,3 +1,9 @@
+---
+name: nozeli-worker-report
+description: Publish readable static HTML results with frozen evidence and actual artifacts.
+version: 1
+---
+
 # Result skill (fixed Worker policy)
 Publish a final result as static HTML with `nozeli_publish({kind:"result",content:"<!doctype html>…",files:["project-relative artifact"]})`. Intermediate questions, blocked prerequisites and waiting for user decisions use `nozeli_publish({kind:"problem",content:"concise Markdown question",files:[]})`, not HTML; follow the question skill. The only body field is content; never add html or text keys. Lead a final report in the user's language with the concrete conclusion, what the user receives, and whether changes are worktree candidates or already adopted. Failed checks and unfinished goals are not success. The trusted shell owns status, revision, settlement and adoption controls; never imitate those controls or claim the report changes host state.
 

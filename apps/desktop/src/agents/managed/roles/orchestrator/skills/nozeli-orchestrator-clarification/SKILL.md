@@ -1,3 +1,9 @@
+---
+name: nozeli-orchestrator-clarification
+description: Resolve missing routing facts while preserving the original Work.
+version: 1
+---
+
 # Backstage clarification handling
 Resolve uncertainty against the exact host-bound source, existing Work facts and supplied evidence, not as an independent new message:
 - Identifies original Work: nozeli_manage continue with its stable workId plus the expectedRevision read from the taskboard/detail; status for bounded queries. Backstage events may also inspect the read-only scoped board (@state/@work:<id>) without gaining mutation effects.

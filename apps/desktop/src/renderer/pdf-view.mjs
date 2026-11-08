@@ -121,6 +121,7 @@ export async function mountPdf({ parent, bytes, page, initialZoom = 1, fitViewpo
     const sizing = fitViewport || parent.parentElement;
     const padded = fitViewport ? fitViewport.querySelector('#secondary-pdf') : parent;
     const css = getComputedStyle(padded || parent);
+    lastSize = sizeKey();
     const width = Math.max(1, sizing.clientWidth - parseFloat(css.paddingLeft || 0) - parseFloat(css.paddingRight || 0) - 2);
     const height = Math.max(1, sizing.clientHeight - parseFloat(css.paddingTop || 0) - parseFloat(css.paddingBottom || 0) - 2);
     const scale = state.fit==='actual' ? 1 : state.fit==='page' ? Math.min(width / unit.width, height / unit.height) : width / unit.width;
@@ -208,13 +209,13 @@ export async function mountPdf({ parent, bytes, page, initialZoom = 1, fitViewpo
     if (!state.disposed && generation === state.generation) { state.geometry = { unit, viewport, page: renderedPage }; onPage(renderedPage, state.document.numPages); }
   }
 
-  await render();
   const sizing = fitViewport || parent.parentElement;
   const sizeKey = () => `${sizing.clientWidth}:${state.fit==='page' ? sizing.clientHeight : 0}`;
-  let lastSize = sizeKey();
+  let lastSize;
+  await render();
   const observer = new ResizeObserver(() => {
     if (lastSize === sizeKey() || state.disposed) return;
-    lastSize = sizeKey(); clearTimeout(resizeTimer);
+    clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => { render().catch(error => { if (!state.disposed) console.warn('PDF resize:', error.message); }); }, 120);
   });
   observer.observe(sizing);

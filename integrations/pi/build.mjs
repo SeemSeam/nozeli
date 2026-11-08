@@ -18,6 +18,6 @@ const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 for(const file of provenance.files)if(sha(await fs.readFile(path.join(root,file.path)))!==file.sha256)throw Error('Vendored source differs from reviewed patch manifest: '+file.path);
 await build({entryPoints:[path.join(packages,'pi-sdk-driver/index.ts')],outfile:path.join(root,'dist/vendor/pi-gui/packages/pi-sdk-driver/index.js'),bundle:true,platform:'node',format:'esm',target:'node22',packages:'external',alias:aliases,sourcemap:true});
 const files={};
-for(const file of ['src/owner.mjs','src/bridge.mjs','src/activity.mjs','src/http-observer.mjs','src/zai-coding-plan.mjs','src/facts.mjs','src/tools.mjs','src/questions.mjs','src/catalog-memory.mjs','dist/vendor/pi-gui/packages/pi-sdk-driver/index.js','package-lock.json'])files[file]=sha(await fs.readFile(path.join(root,file)));
+for(const file of ['src/owner.mjs','src/bridge.mjs','src/native-skills.mjs','src/activity.mjs','src/http-observer.mjs','src/zai-coding-plan.mjs','src/facts.mjs','src/tools.mjs','src/questions.mjs','src/catalog-memory.mjs','dist/vendor/pi-gui/packages/pi-sdk-driver/index.js','package-lock.json'])files[file]=sha(await fs.readFile(path.join(root,file)));
 await fs.writeFile(path.join(root,'runtime-manifest.json'),JSON.stringify({schema:1,upstream:{repository:provenance.repository,commit:provenance.commit,license:provenance.license},sdk:provenance.sdk,entry:'src/owner.mjs',files},null,2)+'\n');
 console.log('Pi driver built');

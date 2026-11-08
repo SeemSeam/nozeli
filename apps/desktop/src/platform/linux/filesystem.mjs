@@ -156,6 +156,7 @@ export const linuxFilesystemAdapter = {
       }
     },
     readdir: async directory => fs.readdir(pinnedPath(directory)),
+    opendir: async directory => fs.opendir(pinnedPath(directory)),
     lstat: async (directory, name) => fs.lstat(pinnedPath(directory) + '/' + anchoredName(name)),
     openDirectory: async (directory, name) => fs.open(pinnedPath(directory) + '/' + anchoredName(name), DIRECTORY_FLAGS),
     openFile: async (directory, name) => fs.open(pinnedPath(directory) + '/' + anchoredName(name), constants.O_RDONLY | constants.O_NOFOLLOW),

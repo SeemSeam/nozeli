@@ -6,6 +6,10 @@ import {reportDescriptor} from '../src/agents/managed/report-descriptor.mjs';
 import {managedRuntime} from '../src/agents/managed/managed-storage.mjs';
 async function storageHost(contentRoot,ids,extra={}){
  const {storage,projectId}=await testStorageOptions({contentRoot});
+ // These manager fixtures model existing projects; new-project initialization
+ // and its real Controller are exercised by project-semantic-initialization.
+ const existing=await storage.requireRegistered(projectId);existing.semanticInitializationEligible=false;
+ await storage.db.request(storage.catalog,'put',{collection:'instances',id:projectId,value:existing});
  const requireProject=async id=>{if(!ids.includes(id)&&id!==projectId)throw Error('unknown project');return storage.requireOnline(projectId);};
  const requireRegisteredProject=async id=>{if(!ids.includes(id)&&id!==projectId)throw Error('unknown project');return storage.requireRegistered(projectId);};
  const scoped=new Proxy(storage,{get(target,key){const value=Reflect.get(target,key);return typeof value==='function'?((id,...args)=>value.call(target,ids.includes(id)?projectId:id,...args)):value;}});
@@ -335,4 +339,73 @@ test('review instruction read/save route through ManagedProjects.invoke to the i
  const saved=await m.invoke('managed.review.instruction.save',{projectId:'project-1',workId:'w-1',objectId:'00000000-0000-4000-8000-000000000001',text:'续作指令草稿。',expectedRevision:0});
  assert.equal(saved.revision,1);
  assert.deepEqual(calls.map(entry=>entry[0]),['instruction.read','instruction.save']);
+});
+
+// Catalog history may share a content path with its replacement. Startup must
+// never use that historical identity for business reads, even if still enabled.
+async function retiredRecoveryFixture(t){
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'managed-retired-recovery-'));
+ const {storage,projectId}=await testStorageOptions({contentRoot:path.join(root,'project')});
+ const active=await storage.requireRegistered(projectId),retired={...active,id:'retired-instance',instanceId:'retired-local-instance',removed:true},absent={...retired,id:'retired-without-ui',instanceId:'absent-local-instance'};
+ for(const record of [retired,absent])await storage.db.request(storage.catalog,'put',{collection:'instances',id:record.id,value:record});
+ await storage.putLocal(retired.id,'managed:binding',{enabled:true});
+ await storage.putLocal(projectId,'managed:binding',{enabled:true});
+ const host={storage,requireRegisteredProject:id=>storage.requireRegistered(id),requireProject:id=>storage.requireOnline(id)};
+ const manager=new ManagedProjects({userDataDir:root,host,legacy:{projects:new Map()},openController:async()=>assert.fail('startup fixture must not start a provider')});
+ t.after(async()=>{await manager.stop();await storage.db.close();await fs.rm(root,{recursive:true,force:true});});
+ return {root,storage,projectId,retired,absent,manager};
+}
+for(const hostOnly of [false,true])test('startup ignores enabled retired instances before all business recovery, hostOnly='+hostOnly,async t=>{
+ const {storage,projectId,retired,absent,manager}=await retiredRecoveryFixture(t),calls=[];
+ const {dispositionBinding}=await import('../src/domain/work-disposition.mjs');
+ const work={id:'active-closing-work',revision:1,status:'closing',outcome:'discard'};
+ work.closure={decision:'discard',revision:1,requestKey:'confirmed-active-discard',phase:'blocked',binding:dispositionBinding(work)};
+ const originalConfig=manager.config.bind(manager);
+ manager.config=async id=>{assert.equal(id,projectId);calls.push('config');return originalConfig(id);};
+ storage.managedExecutionSummary=async id=>{assert.equal(id,projectId);calls.push('summary');return {pending:true};};
+ manager.projectionSource=async id=>{assert.equal(id,projectId);return {state:{works:[work]}};};
+ manager.loadLocal=async id=>{assert.equal(id,projectId);return {advanceClosure:async workId=>{assert.equal(workId,work.id);calls.push('closure');}};};
+ manager.connect=async id=>{assert.equal(id,projectId);calls.push('connect');};
+ manager.reportConnectionError=async()=>assert.fail('retired identities must not become connection errors');
+ if(hostOnly)manager.initializeResources=async()=>assert.fail('host-only recovery must not initialize providers');
+ assert.deepEqual(await manager.resumeUnfinishedProjects({hostOnly}),{resumed:[projectId],blocked:[]});
+ assert.deepEqual(calls,['config','summary',hostOnly?'closure':'connect']);
+ assert.equal((await storage.getLocalRecord(retired.id,'managed:binding')).value.enabled,true);
+ assert.equal((await storage.requireRegistered(retired.id)).removed,true);
+ await assert.rejects(fs.stat(path.join(storage.root,'instances',absent.instanceId)),{code:'ENOENT'});
+});
+test('configuration completion resolves only active settings attention and resumes only active unfinished work',async t=>{
+ const {storage,projectId,retired,absent,manager}=await retiredRecoveryFixture(t),events=[],connected=[];
+ const setupError={code:'CONFIG_SETUP_REQUIRED',message:'Synthetic setup required'};
+ for(const id of [projectId,retired.id])await manager.attention.observe(id,'connection',[{key:'connection',title:setupError.message,text:setupError.message,destination:{kind:'settings'}}]);
+ const historical=await storage.getLocalRecord(retired.id,'managed:attention');
+ const read=manager.attention.read.bind(manager.attention),observe=manager.attention.observe.bind(manager.attention);
+ manager.attention.read=async id=>{assert.equal(id,projectId);return read(id);};
+ manager.attention.observe=async(id,...args)=>{assert.equal(id,projectId);return observe(id,...args);};
+ manager.status=async id=>{assert.equal(id,projectId);return {state:{projectId:id}};};
+ manager.onEvent(event=>events.push(event));
+ storage.managedExecutionSummary=async id=>{assert.equal(id,projectId);return {pending:true};};
+ manager.connect=async id=>{assert.equal(id,projectId);connected.push(id);};
+ manager.reportConnectionError=async()=>assert.fail('configuration scan must not report retired connection errors');
+ await manager.configurationReady();
+ assert.deepEqual(connected,[projectId]);assert.deepEqual(events.map(event=>event.projectId),[projectId]);
+ assert.equal((await read(projectId)).todos.find(todo=>todo.attentionKey==='connection:connection').status,'resolved');
+ assert.equal((await read(retired.id)).todos.find(todo=>todo.attentionKey==='connection:connection').status,'open');
+ assert.deepEqual(await storage.getLocalRecord(retired.id,'managed:attention'),historical);
+ await assert.rejects(fs.stat(path.join(storage.root,'instances',absent.instanceId)),{code:'ENOENT'});
+});
+test('retired provider recovery preserves unverified ownership slots without scanning business or creating absent UI',async t=>{
+ const {storage,projectId,retired,absent,manager}=await retiredRecoveryFixture(t);
+ const providers={frontdesk:{kind:'legacy-provider',home:path.join(storage.root,'outside-owned-agents'),pid:123,stamp:null}};
+ await storage.putLocal(retired.id,'managed:providers',providers);
+ const historical=await storage.getLocalRecord(retired.id,'managed:providers');
+ storage.requireOnline=async()=>assert.fail('provider inventory must not open former business metadata');
+ manager.config=async()=>assert.fail('provider inventory must not inspect business binding');
+ await manager.initializeResources();
+ const slots=[...manager.processBudget.slots];
+ assert.equal(slots.length,1);assert.equal(slots[0].projectId,retired.id);assert.equal(slots[0].target,'frontdesk');assert.equal(slots[0].state,'unconfirmed');
+ assert.equal(manager.processBudget.used,1);
+ assert.deepEqual(await storage.getLocalRecord(retired.id,'managed:providers'),historical);
+ assert.equal((await storage.requireRegistered(projectId)).removed,false);
+ await assert.rejects(fs.stat(path.join(storage.root,'instances',absent.instanceId)),{code:'ENOENT'});
 });

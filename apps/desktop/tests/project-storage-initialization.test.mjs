@@ -81,3 +81,48 @@ for(const entry of ['.nozeli','project.json','project.sqlite']){
  });
 }
 test('cold open refuses replaced metadata tree even with the same logical project UUID',async t=>{const {base,root,storage}=await fixture(t),project=await storage.register(root);await storage.db.close();const replacement=path.join(base,'replacement');await fs.cp(project.metadataRoot,replacement,{recursive:true});await fs.rename(project.metadataRoot,path.join(base,'original-metadata'));await fs.rename(replacement,project.metadataRoot);const cold=new ProjectStorage(path.join(base,'app'));try{await assert.rejects(cold.requireOnline(project.id),{code:'PROJECT_IDENTITY_CONFLICT'});await assert.rejects(cold.retry(project.id),{code:'PROJECT_IDENTITY_CONFLICT'});}finally{await cold.db.close();}});
+
+for(const loss of ['root','metadata'])test(`readding a removed project after ${loss} returns preserves identity and retained state`,async t=>{
+ const {root,storage}=await fixture(t),project=await storage.register(root);
+ await storage.putProject(project.id,'annotations','original',{text:'original annotation'});
+ await storage.putLocal(project.id,'view',{draft:'retained unsent draft'});
+ await storage.putRecovery(project.id,'workspace:original',{candidate:{text:'retained unsaved text'}});
+ const source=loss==='root'?root:project.metadataRoot,moved=source+'-temporarily-moved';
+ await fs.rename(source,moved);
+ await assert.rejects(storage.requireOnline(project.id),{code:loss==='root'?'PROJECT_ROOT_MISSING':'PROJECT_METADATA_MISSING'});
+ await fs.rename(moved,source);await storage.remove(project.id);
+ const added=await storage.register(root);
+ assert.equal(added.id,project.id);assert.equal(added.instanceId,project.instanceId);assert.equal(added.removed,false);
+ assert.equal((await storage.getProject(added.id,'annotations','original')).text,'original annotation');
+ assert.equal((await storage.getLocal(added.id,'view')).draft,'retained unsent draft');
+ assert.equal((await storage.getRecovery(added.id,'workspace:original')).candidate.text,'retained unsaved text');
+ assert.equal((await storage.list()).length,1);
+});
+
+test('readding never releases an uncertain operation or a lifecycle hold',async t=>{
+ const {root,storage}=await fixture(t),project=await storage.register(root),file=path.join(project.metadataRoot,'project.sqlite');
+ await storage.remove(project.id);await storage.db.request(file,'close');
+ const uncertain=Object.assign(Error('unsettled prior write'),{code:'STORAGE_RESULT_UNKNOWN',operationIds:['unknown-write']});
+ storage.db.quarantined.set(file,uncertain);
+ await assert.rejects(storage.register(root),{code:'STORAGE_RESULT_UNKNOWN'});
+ assert.equal(storage.db.quarantined.get(file),uncertain);
+ assert.equal((await storage.requireRegistered(project.id)).removed,true);
+ const hold=storage.holdProject(project.id,{operationId:'pending-lifecycle',instanceId:project.instanceId,action:'remove'});
+ await assert.rejects(storage.register(root),{code:'PROJECT_LIFECYCLE_ACTIVE'});
+ assert.equal(storage.lifecycleHolds.get(project.id),hold);
+ assert.equal(storage.db.quarantined.get(file),uncertain);
+});
+
+test('readding refuses a replaced metadata entity even when its project UUID matches',async t=>{
+ const {root,storage}=await fixture(t),project=await storage.register(root);
+ const replacement=project.metadataRoot+'-replacement';
+ await storage.db.request(path.join(project.metadataRoot,'project.sqlite'),'close');
+ await fs.cp(project.metadataRoot,replacement,{recursive:true});
+ await fs.rename(project.metadataRoot,project.metadataRoot+'-original');
+ await assert.rejects(storage.requireOnline(project.id),{code:'PROJECT_METADATA_MISSING'});
+ await fs.rename(replacement,project.metadataRoot);await storage.remove(project.id);
+ await assert.rejects(storage.register(root));
+ assert.equal((await storage.requireRegistered(project.id)).removed,true);
+ assert.equal(storage.unavailable.has(project.id),true);
+ assert.equal((await storage.list()).length,1);
+});

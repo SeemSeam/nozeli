@@ -38,3 +38,24 @@ test('hold rejects receipt-less recovery, exact receipt succeeds, ordinary recov
  assert.doesNotThrow(()=>admit({flushRequestId:'request'}));
  scope.host.storage.lifecycleHolds.clear();assert.doesNotThrow(()=>admit({}));
 });
+
+test('lifecycle flush admits only the owner view restoration and never arbitrary layout commands',()=>{
+ const hold={},record={projectId:'p',role:'surface',kind:'web',viewId:'web-owned',generation:2};
+ const scope={receipts:new Map([['request',{record,generation:2,lifecycleHold:hold}]]),lifecycle:new Map(),host:{storage:{lifecycleHolds:new Map([['p',hold]])}}};
+ const check=(payload)=>WorkspaceNative.prototype.lifecycleFlushOwner.call(scope,record,'request','workspace.command',payload);
+ assert.equal(check({projectId:'p',command:{type:'restoreViewState',viewId:'web-owned',viewState:{addressDraft:'unsaved'}}}),hold);
+ for(const payload of [{projectId:'other',command:{type:'restoreViewState',viewId:'web-owned'}},{projectId:'p',command:{type:'restoreViewState',viewId:'another'}},{projectId:'p',command:{type:'close',viewId:'web-owned'}},{projectId:'p',command:{type:'open',view:{kind:'web'}}}])assert.equal(check(payload),null);
+ record.generation++;assert.equal(check({projectId:'p',command:{type:'restoreViewState',viewId:'web-owned'}}),null);
+});
+
+test('native flush envelope follows only restoreViewState, not other layout commands',async()=>{
+ const ipc=new EventEmitter(),calls=[];let bridge;
+ ipc.invoke=async(_channel,op,payload)=>{calls.push({op,payload});return {ok:true};};
+ const source=await fs.readFile(new URL('../src/preload/preload.cjs',import.meta.url),'utf8');
+ vm.runInNewContext(source,{require:()=>({ipcRenderer:ipc,contextBridge:{exposeInMainWorld:(_name,value)=>{bridge=value;}}})});
+ bridge.subscribe('session.flush',async()=>{await bridge.invoke('workspace.command',{projectId:'p',command:{type:'restoreViewState',viewId:'v'}});await bridge.invoke('workspace.command',{projectId:'p',command:{type:'close',viewId:'v'}});return {ok:true};});
+ ipc.emit('nozeli:flush',{},'restore-request');
+ for(let i=0;i<10&&!calls.some(c=>c.op==='session.flushed');i++)await new Promise(resolve=>setImmediate(resolve));
+ const restore=calls.find(c=>c.payload?.command?.type==='restoreViewState'),close=calls.find(c=>c.payload?.command?.type==='close');
+ assert.equal(restore.payload.flushRequestId,'restore-request');assert.equal(close.payload.flushRequestId,undefined);
+});
