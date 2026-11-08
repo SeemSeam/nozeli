@@ -142,7 +142,7 @@ test('a surface that never settles still refuses close with SURFACE_NOT_READY an
   const layout = native.layouts.get('p');
   receipt(native, root);
   await assert.rejects(native.closeProject('p'), error => error.code === 'PROJECT_FLUSH_FAILED'
-    && error.failures.some(failure => failure.viewId === surface.viewId && failure.code === 'SURFACE_NOT_READY'));
+    && error.details.failures.some(failure => failure.viewId === surface.viewId && failure.code === 'SURFACE_NOT_READY'));
   assert.equal(surface.dead, false, 'refusal keeps the surface and its potential drafts alive');
   assert.equal(native.surfaces.has(surface.viewId), true);
   assert.equal(native.layouts.get('p'), layout, 'refusal commits no layout change');
@@ -160,7 +160,7 @@ test('a real retention failure still refuses close even beside an honestly-settl
   receipt(native, broken, false);
   receipt(native, root);
   await assert.rejects(native.closeProject('p'), error => error.code === 'PROJECT_FLUSH_FAILED'
-    && error.failures.some(failure => failure.viewId === broken.viewId && failure.code === 'UNSAVED'));
+    && error.details.failures.some(failure => failure.viewId === broken.viewId && failure.code === 'UNSAVED'));
   assert.equal(failed.dead, false);
   assert.equal(broken.dead, false, 'the failing owner keeps its live host for recovery');
   assert.equal(native.surfaces.size, 2);

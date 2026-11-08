@@ -1,4 +1,4 @@
-import test,{after} from 'node:test';
+import test,{after,beforeEach} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -12,8 +12,8 @@ import { tagProjectionContent } from '../src/renderer/tag-projection-state.mjs';
 // Node cannot import directly. Bundle the production modules with esbuild
 // (convention: tests/discussion-thread-transcript.test.mjs) and import the
 // bundle BEFORE the DOM double is installed, so module-scope capability
-// probes (Codemirror) fall back to their no-document stubs exactly as the
-// previous direct imports did. Test bodies and the DOM double are unchanged.
+// probes (Codemirror) fall back to their no-document stubs. Each component
+// test then receives its own browser workspace identity below.
 const root=path.resolve(import.meta.dirname,'..'),bundleOut=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-tag-draft-'));
 await build({absWorkingDir:root,stdin:{resolveDir:root,contents:`
 import * as noteTag from './src/renderer/note-tag.mjs';
@@ -21,7 +21,13 @@ import * as textView from './src/renderer/text-view.mjs';
 export {noteTag,textView};
 `},bundle:true,format:'esm',platform:'browser',outfile:path.join(bundleOut,'entry.mjs'),loader:{'.css':'empty'},logLevel:'silent'});
 const rendererBundle=await import(pathToFileURL(path.join(bundleOut,'entry.mjs')).href);
-const noteTag=rendererBundle.noteTag,{projectTextAnchor}=rendererBundle.textView;
+const {projectTextAnchor}=rendererBundle.textView;
+// These synchronous component tests exercise the inline card, whose collapse
+// control belongs to its header. Floating-window placement/drag/resize is owned
+// by local-window.test.mjs and the native tag UI tests, not a detached DOM double.
+const noteTag = {
+  makeAnchorTag: (data, actions = {}) => rendererBundle.noteTag.makeAnchorTag(data, { inline: true, ...actions }),
+};
 after(async()=>{await fs.rm(bundleOut,{recursive:true,force:true});});
 class Element {
   constructor(tag = 'span') { this.tag = tag; this.children = []; this.handlers = {}; this.style = {}; this.dataset = {}; this.hidden = false; this.value = ''; this.textContent = ''; this.attributes = new Map(); const classes = new Set(); this.classList = { add: (...items) => items.forEach(item => classes.add(item)), remove: (...items) => items.forEach(item => classes.delete(item)), toggle: (item, force) => force === undefined ? (classes.has(item) ? (classes.delete(item), false) : (classes.add(item), true)) : (force ? classes.add(item) : classes.delete(item), force), contains: item => classes.has(item) }; }
@@ -46,6 +52,17 @@ class Element {
   }
 }
 globalThis.document = { createElement: tag => new Element(tag), createElementNS: (_namespace,tag) => new Element(tag), elementFromPoint: () => null };
+// A real renderer always has window and a workspace identity. Keep identities
+// separate between tests, since annotation sessions are keyed by project/view/id.
+const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+let workspaceSequence = 0;
+beforeEach(() => {
+  globalThis.window = { __workspaceScope: { projectId: 'tag-draft-project', viewId: `tag-draft-view-${++workspaceSequence}` } };
+});
+after(() => {
+  if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow);
+  else delete globalThis.window;
+});
 globalThis.ResizeObserver = class {
   constructor(callback) { this.callback=callback; this.targets=new Set(); }
   observe(target) { this.targets.add(target); this.callback([{target,contentRect:target.getBoundingClientRect()}],this); }
@@ -109,11 +126,11 @@ test('note and discussion drafts update summaries and survive collapse/re-expans
     editor.emit('input');
     assert.equal(draft, 'NEW_TYPED');
     assert.equal(summary.textContent, 'NEW_TYPED');
-    head.emit('keydown', { key: 'Enter' });
+    head.children.find(node => node.className === 'tag-close').emit('click');
     assert.equal(summary.hidden, false);
     assert.equal(summary.textContent, 'NEW_TYPED');
     assert.equal(editor.hidden, true);
-    head.emit('keydown', { key: 'Enter' });
+    head.children.find(node => node.className === 'tag-close').emit('click');
     assert.equal(summary.textContent, 'NEW_TYPED');
     assert.equal(editor.hidden, kind === 'note');
     if (kind === 'note') menuActionsOf(card).children.find(e => e.className === 'tag-edit').emit('click');
@@ -139,7 +156,7 @@ test('closing keeps tags visible as summaries and explicit opening restores the 
   }
 });
 
-test('header single clicks preserve geometry until double click toggles', () => {
+test('header gestures preserve collapse until an explicit collapse or index action', () => {
   for (const kind of ['note', 'discuss']) {
     const root = noteTag.makeAnchorTag({ id: kind, ordinal: 3, kind, text: 'CLICK_SUMMARY', status: kind === 'note' ? '' : 'completed', open: true });
     const index = root.children[0], card = root.children[1], head = card.children[0], summary = summaryOf(head), close = head.children.find(node=>node.className==='tag-close');
@@ -152,6 +169,8 @@ test('header single clicks preserve geometry until double click toggles', () => 
     head.emit('click', { detail: 2 });
     assert.equal(card.classList.contains('is-collapsed'), true);
     head.emit('dblclick');
+    assert.equal(card.classList.contains('is-collapsed'), true);
+    close.emit('click');
     assert.equal(card.classList.contains('is-collapsed'), false);
     index.emit('click');
     assert.equal(card.classList.contains('is-collapsed'), false);
@@ -170,10 +189,10 @@ test('text projections clamp stale note and discussion anchors without rewriting
     const index = root.children[0];
     const card = root.children[1];
     assert.equal(card.hidden, false);
-    card.children[0].emit('keydown', { key: 'Enter' });
+    card.children[0].children.find(node => node.className === 'tag-close').emit('click');
     assert.equal(card.hidden, false);
     assert.equal(index.getAttribute('aria-expanded'), 'true');
-    card.children[0].emit('keydown', { key: 'Enter' });
+    card.children[0].children.find(node => node.className === 'tag-close').emit('click');
     assert.equal(card.hidden, false);
     assert.equal(index.getAttribute('aria-expanded'), 'false');
     index.emit('click');
@@ -187,7 +206,7 @@ test('local note deletion is an explicit expanded-card action', () => {
   const card = root.children[1], close = card.children[0].children.find(node=>node.className==='tag-close');
   close.emit('click');
   assert.equal(removed, 0);
-  card.children[0].emit('dblclick');
+  close.emit('click');
   menuActionsOf(card).children.find(node => node.className === 'tag-delete').emit('click');
   assert.equal(removed, 1);
 });
@@ -209,41 +228,22 @@ test('conversation removal is available in both states and distinct from collaps
 });
 
 
-test('passive note and discussion remounts preserve long offsets without focus or moves', async () => {
-  const pane = { querySelectorAll: () => [], getBoundingClientRect: () => ({ left: 0, right: 800, top: 0, bottom: 600 }) };
-  let focused = 0;
-  const oldDocument = globalThis.document;
-  class GeometryElement extends Element {
-    closest(selector) { return selector.includes('word-note-overlay') || selector.includes('image-page') ? null : pane; }
-    getBoundingClientRect() { return { left: 180, right: 404, top: 4405, bottom: 4545 }; }
-    focus() { focused += 1; }
+test('floating annotation remounts reuse the live composer without erasing its draft', async () => {
+  for (const kind of ['note', 'discuss']) {
+    const data = { id: `remount-${kind}`, ordinal: 1, kind, text: 'original', status: kind === 'note' ? '' : 'draft' };
+    const first = rendererBundle.noteTag.makeAnchorTag(data);
+    const editor = editorOf(first.children[1]);
+    editor.value = 'unsent newer draft'; editor.emit('input');
+    const remount = rendererBundle.noteTag.makeAnchorTag({ ...data, text: 'stale projection' });
+    assert.notEqual(remount, first);
+    assert.equal(remount.children.length, 1, 'remount adds a source marker, not a second composer');
+    assert.equal(editorOf(first.children[1]), editor);
+    assert.equal(editor.value, 'unsent newer draft');
+    remount.setOrdinal(7);
+    assert.equal(first.children[0].textContent, '7');
+    assert.equal(remount.children[0].textContent, '7');
   }
-  globalThis.document = { ...oldDocument, createElement: () => new GeometryElement(), createElementNS: () => new GeometryElement() };
-  try {
-    for (const kind of ['note', 'discuss']) {
-      const moves = [];
-      const root = noteTag.makeAnchorTag({ id: kind, ordinal: 1, kind, text: 'draft', status: kind === 'note' ? { value: 'draft' } : 'draft' }, { offset: () => [180, 4405], move: (_id, delta) => moves.push(delta) });
-      await new Promise(resolve => queueMicrotask(resolve));
-      assert.deepEqual(moves, [], `${kind} passive remount changed offset`);
-    }
-    assert.equal(focused, 0, 'passive remount focused an editor');
-  } finally { globalThis.document = oldDocument; }
-});
-
-test('explicit index recovery still moves an offscreen card into the pane', () => {
-  const pane = { querySelectorAll: () => [], getBoundingClientRect: () => ({ left: 0, right: 800, top: 0, bottom: 600 }) };
-  const oldDocument = globalThis.document;
-  class GeometryElement extends Element {
-    closest(selector) { return selector.includes('word-note-overlay') || selector.includes('image-page') ? null : pane; }
-    getBoundingClientRect() { return { left: 180, right: 404, top: 4405, bottom: 4545 }; }
-  }
-  globalThis.document = { ...oldDocument, createElement: () => new GeometryElement(), createElementNS: () => new GeometryElement() };
-  try {
-    const moves = [];
-    const root = noteTag.makeAnchorTag({ id: 'recover', ordinal: 1, kind: 'note', text: 'draft', status: { value: 'draft' } }, { offset: () => [180, 4405], move: (_id, delta) => moves.push(delta) });
-    root.children[0].emit('click', { clientX: 180, clientY: 4405 });
-    assert.deepEqual(moves, [[180, 452]]);
-  } finally { globalThis.document = oldDocument; }
+  await rendererBundle.noteTag.flushTagWindows();
 });
 
 test('send acknowledgement preserves explicit collapse', async () => {
@@ -305,29 +305,22 @@ test('pending conversations retain their follow-up editor and legacy labels rema
   assert.equal(legacyExplain.children[0].textContent, '2');
 });
 
-test('conversation remount restores renderer-session dimensions', () => {
-  const sizes = new Map([['thread-1', { width: 345, height: 380 }]]);
-  const root = noteTag.makeAnchorTag({ id: 'thread-1', ordinal: 1, kind: 'discuss', status: 'completed', text: '问题' }, { size: id => sizes.get(id) });
-  assert.equal(root.children[1].style.width, '345px');
-  assert.equal(root.children[1].style.height, '380px');
-});
 
 
 
-test('both label types share the window shell, complete collapse, and size restoration', () => {
+test('inline label types share complete collapse behavior', () => {
   for (const kind of ['note', 'discuss', 'explain']) {
-    const root = noteTag.makeAnchorTag({ id: kind, ordinal: 3, kind, text: 'text', status: 'completed' }, { size: () => ({width:350,height:400}) });
+    const root = noteTag.makeAnchorTag({ id: kind, ordinal: 3, kind, text: 'text', status: 'completed' });
     const card=root.children[1],head=card.children[0];
     assert.ok(card.classList.contains('tag-chat-window'));
-    assert.equal(card.style.width,'350px'); assert.equal(card.style.height,'400px');
     for(let i=0;i<4;i++) {
       const before=card.classList.contains('is-collapsed');
       head.emit('click',{detail:1});head.emit('click',{detail:2});
       assert.equal(card.classList.contains('is-collapsed'),before);
-      head.emit('dblclick');assert.equal(card.classList.contains('is-collapsed'),!before);
+      head.children.find(node => node.className === 'tag-close').emit('click');
+      assert.equal(card.classList.contains('is-collapsed'),!before);
       if(!before) for(const child of card.children.slice(1)) if(child.className!=='tag-menu-actions') assert.equal(child.hidden,true,'collapsed hides '+child.className);
     }
-    assert.equal(card.style.width,'350px'); assert.equal(card.style.height,'400px');
   }
 });
 

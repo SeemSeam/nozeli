@@ -9,6 +9,7 @@ import {Workspace} from '../src/agents/managed/workspace.mjs';
 async function fixture({phase='runtime',workStatus='running'}={}){
  let local=null;
  const storage={getLocal:async()=>structuredClone(local),putLocal:async(_project,_key,value)=>{local=structuredClone(value);}};
+ storage.requireRegistered=async projectId=>{assert.equal(projectId,'project');return {id:'project',instanceId:'diagnostic-fixture-instance'};};
  const original={id:'original',target:'work',revision:3,type:'work',status:'failed',text:'PRIVATE_USER_REQUEST',errorCode:'PI_HOST_TOOL_FAILED',hostToolCode:'READ_REF_EXPIRED',failureOrigin:'host',collabAttempts:[{status:'unknown',everAdmitted:true}]};
  const work={id:'work',revision:3,status:workStatus,brief:'PRIVATE_WORK_BRIEF'};
  const host=Object.assign(Object.create(Controller.prototype),{projectId:'project',current:new Map(),maintenanceActions:new Map(),maintenanceFlights:new Map(),coldJobs:new Set(),changed(){},kick(){this.kicks=(this.kicks??0)+1;}});
@@ -182,6 +183,7 @@ test('provider activation fallback respects the diagnostic effective model and h
 async function runtimeHost(){
  let local=null;
  const storage={getLocal:async()=>structuredClone(local),putLocal:async(_project,_key,value)=>{local=structuredClone(value);}};
+ storage.requireRegistered=async projectId=>{assert.equal(projectId,'project');return {id:'project',instanceId:'runtime-recovery-fixture-instance'};};
  // Constructor dependencies are deliberately unavailable in this pure state
  // fixture; any unexpected artifact/project I/O must fail, not fake success.
  for(const method of ['putObject','readObject','getProject','putProject','listProject'])storage[method]=async()=>{throw Error('Unexpected '+method+' in in-memory runtime recovery fixture');};

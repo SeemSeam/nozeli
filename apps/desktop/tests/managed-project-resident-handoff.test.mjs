@@ -20,6 +20,9 @@ test('archived resident text is read-only and bound to current project role arch
 test('retry connection restarts retained unready controller without repeating handoff generation',async t=>{
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-retry-connection-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
  const {storage,projectId}=await testStorageOptions({contentRoot:path.join(root,'project')});
+ // Retained-controller retry is an existing-project handoff, not initialization.
+ const existing=await storage.requireRegistered(projectId);existing.semanticInitializationEligible=false;
+ await storage.db.request(storage.catalog,'put',{collection:'instances',id:projectId,value:existing});
  const host={storage,requireProject:id=>storage.requireOnline(id),requireRegisteredProject:id=>storage.requireRegistered(id)};
  const m=new ManagedProjects({userDataDir:root,host,legacy:{}});m.config=async()=>({enabled:true});m.connectionErrors.set(projectId,{error:{code:'HANDOFF_START_FAILED'},handoff:null});let starts=0;const c={started:false,start:async()=>{starts++;c.started=true;}};m.controllers.set(projectId,c);m.status=async()=>({ready:c.started});
  const [a,b]=await Promise.all([m.connect(projectId),m.connect(projectId)]);assert.equal(a.ready,true);assert.equal(b.ready,true);assert.equal(starts,1);assert.equal(m.connectionErrors.has(projectId),false);

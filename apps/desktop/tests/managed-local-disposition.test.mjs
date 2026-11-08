@@ -12,6 +12,9 @@ import {managedRuntime,readManagedState} from '../src/agents/managed/managed-sto
 async function fixture(t,{report=true}={}){
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'local-disposition-')),content=path.join(root,'project');await fs.mkdir(content);await fs.writeFile(path.join(content,'result.txt'),'original');
  const host=new DesktopHost(root),id=(await host.pick(content)).project.id,storage=host.storage;
+ // Cold Work disposition resumes an existing project without first-run inventory.
+ const existing=await storage.requireRegistered(id);existing.semanticInitializationEligible=false;
+ await storage.db.request(storage.catalog,'put',{collection:'instances',id,value:existing});
  const service=new ManagedProjects({userDataDir:root,host,legacy:{projects:new Map()}});const runtimeRoot=await managedRuntime(storage,id);
  const c=await Controller.open({runtimeRoot,contentRoot:content,storage,projectId:id});const submitted=await c.store.submit('isolated task','brief');await c.store.activate(submitted.id);const w=c.store.find(submitted.id);await c.execution.prepare(w.id);await fs.writeFile(path.join(c.execution.directory(w.id),'result.txt'),'candidate');
  if(report){await c.execution.publish(w,{id:'finished-job'},()=>true);await c.store.publish(w.id,w.revision,'result',staticReport('Frozen result'),'report',{jobId:'finished-job',files:[{relPath:'result.txt'}]});await c.store.settle(w.id);await c.store.mutate(()=>c.store.state.jobs.push({id:'finished-job',target:w.id,revision:w.revision,status:'completed',type:'initial'}));}

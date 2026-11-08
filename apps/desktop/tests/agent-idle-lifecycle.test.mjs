@@ -73,6 +73,9 @@ test('removal, unavailable project and teardown clear deadlines without stopping
 async function realFixture(t){
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-idle-')),content=path.join(root,'content');await fs.mkdir(content);
  const host=new DesktopHost(path.join(root,'profile')),{project}=await host.pick(content),clock=new Clock(),prompts=[],opens=[];let serial=0;
+ // Idle expiry covers existing residents, not first-run semantic inventory.
+ const existing=await host.storage.requireRegistered(project.id);existing.semanticInitializationEligible=false;
+ await host.storage.db.request(host.storage.catalog,'put',{collection:'instances',id:project.id,value:existing});
  class Session extends EventEmitter{
   constructor(spec,target){super();Object.assign(this,spec,{target,closed:false,busy:false,toolsDigest:'idle-test'});}
   async preflightToolsDigest(){}async assertToolsDigest(){}

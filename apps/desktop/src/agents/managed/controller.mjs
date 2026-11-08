@@ -2733,7 +2733,11 @@ export class Controller extends EventEmitter {
       if(isWork){
         job.reader??=new ContextReader();
         const w=this.store.find(job.target);
-        if(job.type==='initial')prompt=workerInitialHandoff(w,job.reader,{brief:w.originalBrief??w.brief});
+        if(job.type==='initial'){
+          const admitted=new Set(job.context?.sourceInputJobIds??[]);
+          const initial=Array.isArray(job.context?.sourceInputJobIds)?{...w,inputs:(w.inputs??[]).filter(input=>admitted.has(input.sourceJobId))}:w;
+          prompt=workerInitialHandoff(initial,job.reader,{brief:w.originalBrief??w.brief});
+        }
         else if(session.zeroActivityRestarted&&!session.hasPrompted){
           // Nothing was ever admitted on the restored thread, so a bounded
           // one-time handoff re-delivery is safe; the current input stays raw.

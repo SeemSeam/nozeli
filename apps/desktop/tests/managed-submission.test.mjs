@@ -4,6 +4,9 @@ import {DesktopHost} from '../src/main/host.mjs';
 test('host manual submission preserves explicit unsaved material and replays accepted key despite later changes',async t=>{
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-manual-host-')),content=path.join(root,'project');await fs.mkdir(content);let reads=0;
  const host=new DesktopHost(path.join(root,'profile')),projectId=(await host.pick(content)).project.id;host.readFile=async()=>{reads++;return {relPath:'notes.md',text:'DISK',draft:{text:'OTHER'}};};
+ // Admission contracts use an existing project; initialization is tested separately.
+ const existing=await host.storage.requireRegistered(projectId);existing.semanticInitializationEligible=false;
+ await host.storage.db.request(host.storage.catalog,'put',{collection:'instances',id:projectId,value:existing});
  class Session{constructor(spec){Object.assign(this,spec);}async start(id){this.threadId=id||randomUUID();return this;}async stop(){this.closed=true;}async prompt(){throw Error('test blocks main before execution');}}
  const m=new ManagedProjects({userDataDir:path.join(root,'profile'),host,legacy:{projects:new Map()},openController:args=>Controller.open({...args,projectHome:async home=>fs.mkdir(home,{recursive:true}),sessionFactory:spec=>new Session(spec)})});
  t.after(async()=>{await m.stop();await host.storage.db.close();await fs.rm(root,{recursive:true,force:true});});await m.connect(projectId,{enable:true});await m.invoke('managed.draft',{projectId,target:'orchestrator',text:'Block main'});await m.invoke('managed.draft',{projectId,target:'frontdesk',text:'核对'});
@@ -13,6 +16,8 @@ test('host manual submission preserves explicit unsaved material and replays acc
 test('local discussion and task submissions preserve identical main drafts and admit distinct task messages',async t=>{
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-local-submit-')),content=path.join(root,'project');await fs.mkdir(content);
  const host=new DesktopHost(path.join(root,'profile')),projectId=(await host.pick(content)).project.id;
+ const existing=await host.storage.requireRegistered(projectId);existing.semanticInitializationEligible=false;
+ await host.storage.db.request(host.storage.catalog,'put',{collection:'instances',id:projectId,value:existing});
  class Session{constructor(spec){Object.assign(this,spec);}async start(id){this.threadId=id||randomUUID();return this;}async stop(){this.closed=true;}async prompt(){throw Error('no inference in admission regression');}}
  const m=new ManagedProjects({userDataDir:path.join(root,'profile'),host,legacy:{projects:new Map()},openController:args=>Controller.open({...args,projectHome:async home=>fs.mkdir(home,{recursive:true}),sessionFactory:spec=>new Session(spec)})});
  t.after(async()=>{await m.stop();await host.storage.db.close();await fs.rm(root,{recursive:true,force:true});});await m.connect(projectId,{enable:true});
