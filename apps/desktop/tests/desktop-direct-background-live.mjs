@@ -68,8 +68,8 @@ try{
  report.checks.push('accepted background input carries its task badge and removes the duplicate conversion action');
  const taskCard='[data-workflow-work="'+work.id+'"].session-task-card';
  await chat.waitForSelector(taskCard);
- const cardGeometry=await chat.$eval(taskCard,node=>{window.__directTaskCard=node;const r=node.getBoundingClientRect();return {width:r.width,height:r.height,tone:node.dataset.taskTone};});
- assert.equal(cardGeometry.width,232);assert.equal(cardGeometry.height,208);assert(cardGeometry.tone);
+ const cardGeometry=await chat.$eval(taskCard,node=>{window.__directTaskCard=node;const r=node.getBoundingClientRect(),p=node.parentElement.getBoundingClientRect();return {width:r.width,available:p.width,tone:node.dataset.taskTone,inputInside:!!node.querySelector('[data-input-route="background"]')};});
+ assert(cardGeometry.width>=Math.min(560,cardGeometry.available)-2&&cardGeometry.width<=cardGeometry.available+1);assert(cardGeometry.tone);assert.equal(cardGeometry.inputInside,true);
  await chat.screenshot({path:path.join(out,'button-after.png')});
  await chat.locator('#composer').fill('WIDTH_DRAFT_KEEP: 输入和材料不能因调整布局而丢失。');
  await chat.evaluate(()=>{window.__widthComposer=document.querySelector('#composer');window.__widthTimeline=document.querySelector('.session-timeline');window.__widthComposer.setSelectionRange(6,18);window.__widthComposer.blur();const text=document.querySelector('.session-timeline .session-markdown p');const range=document.createRange();range.selectNodeContents(text);getSelection().removeAllRanges();getSelection().addRange(range);window.__widthSelectedText=getSelection().toString();});

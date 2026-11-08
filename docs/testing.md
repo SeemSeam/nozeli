@@ -647,3 +647,9 @@ postinstall 用 `electron-rebuild` 针对 Electron 重建 `node-pty`。该依赖
 
 - `task-workspace-20261108-local-01` 的实际ELF＋包内Pi／Git在独立profile／合成项目重走任务工作区主旅程，`/tmp/nozeli-task-workspace-JivxfM/report.json` ok=true、providerErrors=[]；786项src/dist输入一致，未触及日常项目、未发起付费模型请求。
 - 额外 `node tests/desktop-direct-background-live.mjs` 未通过：`/tmp/nozeli-direct-background-iEx83c/report.json` 首次在1440px尺寸等待超时；显式关闭新增分区后 `/tmp/nozeli-direct-background-xbIH3i/report.json` 在590px原生conversation resize等待超时；将新增过程旅程从该旧宽度旅程分离后，`/tmp/nozeli-direct-background-Jzun6V/report.json` 仍在590px同处超时。已观察直接提交／重复点击去重／真实Worker发布及任务标记通过，不能外推该脚本后续拖动、脱离、丢弃及冷恢复通过。独立完整任务分屏的实际安装主旅程通过不掩盖此失败；未因此修改产品或放宽宽度断言。
+
+## 任务框内含对话与动态宽度（2026-11-08，源码限定通过，未安装）
+
+- `node --test tests/session-store.test.mjs tests/session-execution-presentation.test.mjs tests/task-workspace-presentation.test.mjs`：51/51。覆盖派工前后身份不变、原输入与续聊仅归原任务、两个同名／并行任务不串联、原生回显去重、转换输入、明确绑定的诊断及未关联诊断、旧页不制造页外原输入。
+- `npm run build:renderer` 与 `node tests/desktop-session-timeline.test.mjs` 通过。最终消费者 `/tmp/nozeli-session-consumer-XgoGAn` 包含框内原输入／补充／Worker答复、框外仅普通前台消息、初始及补充内部交接不冒充重复输入、引用原文及1200／480／320浅深自适应边界；同时保留原文分页、历史、IME／选区与阅读位置消费者检查。该宽度检查是组件Electron表面，不冒称独立原生窗格生命周期或CLI验证。
+- `node tests/desktop-task-workspace-live.mjs`：最终真实Electron＋私有Pi＋回环确定性HTTP＋实际Git／文件，`/tmp/nozeli-task-workspace-HCp6is/report.json` ok=true、providerErrors=[]。原输入、原Worker问答和续改各一次呈现在确切原task框内，普通前台讨论留在框外；不同任务不串绑，原卡DOM／身份色／草稿、原只读过程、旧报告、长工具原文、正常退出与冷恢复零重放通过。未操作日常业务、未发起付费模型、未安装本次源码；Windows/macOS及系统IME候选窗未验。此前额外直接提交旧resize脚本的590px等待超时记录仍保留，本次不宣称修复该独立限制。

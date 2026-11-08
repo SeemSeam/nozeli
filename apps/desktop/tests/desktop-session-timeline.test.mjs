@@ -263,6 +263,35 @@ try {
     assert.notEqual(colors.added.paper,colors.deleted.paper,'addition and deletion papers differ in '+theme);
   }
   assert.equal(await page.evaluate(()=>window.consumerUnsafe===true),false);
+  await page.evaluate(()=>{
+    const c=consumer;c.store.reset('project-consumer');c.state.receipts=[];
+    c.state.works=[{id:'contained-work',sourceJob:'contained-intake',name:'宽任务框',revision:1,status:'review'}];
+    c.state.jobs=[{id:'contained-intake',target:'orchestrator',type:'intake',status:'completed'},{id:'contained-initial',target:'contained-work',type:'initial',status:'completed'},{id:'contained-discussion',target:'contained-work',type:'review-discussion',status:'completed'},{id:'contained-supplement',target:'contained-work',type:'supplement',status:'completed'},{id:'ordinary',target:'frontdesk',type:'front',status:'completed'}];
+    c.store.apply('project-consumer',{version:1,entries:[
+      {id:'contained-request',sequence:1,target:'frontdesk',jobId:'contained-intake',taskRequestId:'contained-intake',speaker:'user',source:'host',text:'原输入：优化 chaos-demo.html，增加3D感。'},
+      {id:'ordinary-input',sequence:2,target:'frontdesk',jobId:'ordinary',speaker:'user',source:'host',text:'前台普通讨论。'},
+      {id:'ordinary-answer',sequence:3,target:'frontdesk',jobId:'ordinary',speaker:'agent',source:'native',text:'前台回答。',complete:true},
+      {id:'contained-handoff',sequence:4,target:'contained-work',jobId:'contained-initial',speaker:'user',source:'host',originalTask:true,text:'INTERNAL_EXPANDED_HANDOFF'},
+      {id:'contained-internal-supplement',sequence:4.5,target:'contained-work',jobId:'contained-supplement',speaker:'user',source:'host',text:'INTERNAL_SUPPLEMENT_HANDOFF'},
+      {id:'contained-question',sequence:5,target:'contained-work',jobId:'contained-discussion',speaker:'user',source:'host',text:'后续讨论：为什么使用透视？'},
+      {id:'contained-answer',sequence:6,target:'contained-work',jobId:'contained-discussion',speaker:'agent',source:'native',text:'Worker解释：透视关系保留层级。',complete:true}
+    ],deltas:[]});c.render();
+  });
+  await page.waitForSelector('.session-task-card [data-message="contained-answer"]');
+  assert.deepEqual(await page.$$eval('.session-timeline>.session-message',nodes=>nodes.map(node=>node.dataset.message)),['ordinary-input','ordinary-answer']);
+  assert.deepEqual(await page.$$eval('.session-task-card .session-message',nodes=>nodes.map(node=>node.dataset.message)),['contained-request','contained-question','contained-answer']);
+  assert.equal(await page.$('[data-message="contained-handoff"],[data-message="contained-internal-supplement"]'),null,'programmatic handoffs remain process records, never repeated user-authored inputs');
+  await page.click('[data-message="contained-request"] [data-message-actions-toggle]');await page.click('[data-message="contained-request"] [data-message-action="quote"]');
+  assert.equal(await page.evaluate(()=>__quoteSink.at(-1).text),'原输入：优化 chaos-demo.html，增加3D感。','nested quote preserves the exact original input');
+  const widths=[];
+  for(const width of [1200,480,320]){
+    await page.setViewport({width,height:1000});await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    const bounds=await page.$eval('.session-task-card',node=>{const r=node.getBoundingClientRect(),p=node.parentElement.getBoundingClientRect();return {width:r.width,available:p.width,right:r.right,viewport:innerWidth};});
+    assert(bounds.width<=bounds.available+1&&bounds.right<=bounds.viewport+1,'task frame and nested messages stay inside their reading pane');widths.push(bounds.width);
+    for(const theme of ['light','dark']){await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);await page.screenshot({path:path.join(out,'task-contained-'+theme+'-'+width+'.png'),fullPage:true});}
+  }
+  assert(widths[0]>widths[1]&&widths[1]>widths[2],'task width grows with real available space rather than a fixed narrow slot');
+  await page.setViewport({width:1440,height:1000});
   // DOM composition events exercise the guard, not an OS IME candidate window.
   await page.evaluate(()=>{const c=consumer;c.store.reset('project-consumer');c.state.jobs=[];c.state.works=[];c.state.receipts=[];c.store.apply('project-consumer',{version:1,entries:Array.from({length:80},(_,i)=>({id:'reading-'+i,sequence:i,target:'frontdesk',speaker:'agent',source:'native',jobId:'reading-job-'+i,text:'Reading position '+i+'\\n'+('retained content '.repeat(20))})),deltas:[]});c.render();});
   await page.waitForSelector('[data-message="reading-79"]');

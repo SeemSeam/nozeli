@@ -10,7 +10,7 @@ import './session-timeline.css';
 import {taskIdentityKey,taskIdentityTone} from '../domain/task-identity.mjs';
 import {taskPresentation} from './task-presentation.mjs';
 import './task-identity.css';
-function TaskCard({row,state,projectId,onResult}){
+function TaskCard({row,state,projectId,onResult,context,call}){
  const view=taskPresentation(row,state),tone=taskIdentityTone(taskIdentityKey(projectId,state,row));
  const route=async action=>{const result=await window.nozeli.invoke('workspace.control',{type:'task-workspace',action,projectId,...(row.workId?{workId:row.workId}:{}),...(row.sourceJobId?{sourceJobId:row.sourceJobId}:{})});if(!result.ok)throw Error(result.error?.message||'任务未能打开');};
  const [baselineReturn]=useState(view.returnKey),[visible,setVisible]=useState(()=>document.visibilityState!=='hidden');
@@ -20,6 +20,7 @@ function TaskCard({row,state,projectId,onResult}){
   h('header',null,h('strong',{title:view.name},view.name)),h('p',{className:'session-task-status',role:'status',title:view.label},view.label.split(' · ')[0]),h('p',{className:'session-task-latest',title:view.latest},view.latest),
   h('div',{className:'session-task-flow','data-running':view.running&&visible,'aria-label':'请求、主控、执行、成果、审阅'},['请求','主控','执行','成果','审阅'].map((label,index)=>h('span',{key:label,'data-current':index===view.stage},label,index<4&&h('i',{'aria-hidden':true},'→')))),
   h('div',{className:'session-task-trail',key:view.returnKey||'initial','data-returning':view.returning&&visible&&view.returnKey!==baselineReturn},view.returnKey?'↶ 审阅 / 补充已回流':'原任务持续更新',h('small',null,view.trail.join(' · ')||'成果尚未发布')),
+  h(TaskConversation,{row,state,context,call}),
   h('nav',{'aria-label':'任务操作'},h('button',{type:'button','data-task-action':'process',onClick:()=>route('process').catch(error=>setError(error.message))},'查看过程'),h('button',{type:'button','data-task-action':view.publication?'result':'overview',onClick:()=>Promise.resolve(view.publication&&onResult?onResult(view.publication):route('overview')).catch(error=>setError(error.message))},view.publication?'查看成果':'任务概览')),error&&h('small',{role:'alert'},error));
 }
 const h=React.createElement;
@@ -132,6 +133,18 @@ function Reply({row,...props}){
  const {answer,entry}=replyPresentation(row.entries,props.state);
  return h(Message,{...props,onTask:answer?.speaker==='agent'?props.onTask:null,entry,entries:row.entries});
 }
+function TaskConversation({row,state,context,call}){
+ const seen=new Set(),messages=[];
+ for(const part of row.rows)for(const entry of part.entries||(part.entry?[part.entry]:[])){
+  if(seen.has(entry.id))continue;seen.add(entry.id);
+  // Programmatic Worker handoffs remain in process, not user-authored discussion.
+  if(entry.speaker==='user'&&entry.source==='host'&&(entry.originalTask||messageRole(entry,state)==='orchestrator'))continue;
+  const conversational=entry.speaker==='user'||entry.speaker==='agent'&&!entry.tool&&!entry.toolCalls?.length&&(hasReadableText(entry)||entry.availability==='read-required');
+  if(!entry.publication&&(conversational||part.unbound||isImportantEntry(entry)))messages.push({entry,unbound:part.unbound});
+ }
+ messages.sort((a,b)=>(a.entry.sequence??0)-(b.entry.sequence??0)||a.entry.id.localeCompare(b.entry.id));
+ return h('section',{className:'session-task-conversation','aria-label':'任务对话与讨论'},messages.map(({entry,unbound})=>h(Message,{key:entry.id,entry,unbound,state,context,call})),!messages.length&&h('p',{className:'session-task-history-note'},'此页没有任务对话；原输入和完整记录可在“查看过程”读取。'));
+}
 function FrozenFiles({receipt,call,openFrozenChange,projectId}){
  const changeSetId=receipt.changeSetId||receipt.snapshot?.changeSetId;
  const [state,setState]=useState({files:[],loading:true,error:null,nextOffset:null,total:null,offset:0,requestOffset:0});
@@ -155,7 +168,7 @@ function FrozenFiles({receipt,call,openFrozenChange,projectId}){
 }
 function TimelineRow({row,...props}){
  const {state,context,call,projectId,onTask}=props;
- if(row.kind==='workflow')return h(TaskCard,{row,state,projectId,onResult:props.onResult});
+ if(row.kind==='workflow')return h(TaskCard,{row,state,projectId,onResult:props.onResult,context,call});
  if(row.kind==='reply')return h(Reply,{row,state,context,onTask,call});
  if(row.kind==='delta')return h('article',{className:'session-host-delta','data-host-delta':row.delta.id},h('strong',null,'Nozeli · '+row.delta.kind),h(Content,{value:row.delta.text,context}));
  return h(Message,{entry:row.entry,unbound:row.unbound,state,context,onTask,call});

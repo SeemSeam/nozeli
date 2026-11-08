@@ -192,18 +192,32 @@ export function groupSessionWorkflows(snapshot,receipts=[],state){
   if(job.target==='orchestrator'&&job.type==='intake'&&works.has(job.context?.boundWorkId))bind(job.id,job.context.boundWorkId);
  }
  const result=[],blocks=new Map();
+ // groupSession retains accepted intake inputs beside their intake row for its
+ // other consumers. The task projection owns each exact message only once.
+ const nestedInputs=new Set();
+ for(const row of rows)if(['orchestrator','worker'].includes(row.kind))for(const entry of row.entries)if(entry.speaker==='user')nestedInputs.add(entry.id);
+ const anchors=new Map();
+ for(const entry of snapshot.entries){
+  if(entry.speaker!=='user'||entry.source!=='host')continue;
+  const id=entry.taskRequestId||entry.jobId;
+  if(!id||!entry.taskRequestId&&jobs.get(id)?.type!=='intake')continue;
+  const root=rootOf(id),sequence=entry.sequence??0;
+  anchors.set(root,Math.min(anchors.get(root)??Infinity,sequence));
+ }
  for(const row of rows){
-  if(row.kind==='orchestrator')for(const entry of row.entries)if(entry.speaker==='user'&&entry.source==='host'&&entry.target==='orchestrator')result.push({kind:'message',id:entry.id,sequence:entry.sequence,entry});
-  if(row.kind==='worker')for(const entry of row.entries){const job=jobs.get(entry.jobId),handoff=entry.originalTask||job?.type==='initial'&&job.target===row.workId;if(entry.speaker==='user'&&entry.source==='host'&&!handoff&&!result.some(item=>item.kind==='message'&&item.id===entry.id))result.push({kind:'message',id:entry.id,sequence:entry.sequence,entry});}
-  const workId=row.kind==='orchestrator'?intakeWorks.get(rootOf(row.jobId)):['worker','closeout'].includes(row.kind)?row.workId:null;
-  if(!workId&&row.kind!=='orchestrator'){result.push(row);continue;}
+  if(row.kind==='message'&&nestedInputs.has(row.entry.id))continue;
+  const entry=row.entry||row.delta,jobId=row.jobId||entry?.taskRequestId||entry?.jobId;
+  const intake=jobs.get(jobId)?.type==='intake'||entry?.taskRequestId?rootOf(jobId):null;
+  const explicitWork=row.workId||entry?.workId||(works.has(entry?.target)?entry.target:null);
+  const workId=explicitWork||(intake?intakeWorks.get(intake):null);
+  if(!workId&&!intake){result.push(row);continue;}
   const work=works.get(workId),sourceRoot=work?.sourceJob?rootOf(work.sourceJob):null;
-  const root=sourceRoot&&intakeWorks.get(sourceRoot)===workId?sourceRoot:row.kind==='orchestrator'&&!workId?rootOf(row.jobId):null;
+  const root=sourceRoot&&intakeWorks.get(sourceRoot)===workId?sourceRoot:intake;
   const id=root?'workflow:intake:'+root:'workflow:work:'+workId;
   let block=blocks.get(id);
-  const anchor=snapshot.entries.find(entry=>entry.jobId===root&&entry.speaker==='user'&&entry.source==='host');
-  if(!block){block={kind:'workflow',id,workId:workId||null,sourceJobId:root,sequence:anchor?(anchor.sequence??0)+0.25:row.sequence,rows:[]};blocks.set(id,block);result.push(block);}
-  block.rows.push(row);if(!anchor)block.sequence=Math.min(block.sequence,row.sequence);
+  const anchor=anchors.get(root);
+  if(!block){block={kind:'workflow',id,workId:workId||null,sourceJobId:root,sequence:anchor??row.sequence,rows:[]};blocks.set(id,block);result.push(block);}
+  block.rows.push(row);if(anchor===undefined)block.sequence=Math.min(block.sequence,row.sequence);
  }
  return result.sort(order);
 }

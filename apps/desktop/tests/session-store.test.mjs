@@ -150,10 +150,10 @@ test('workflow identity survives dispatch and preserves the original input exact
  const snapshot={entries:[input],deltas:[]};
  const before=groupSessionWorkflows(snapshot,[],{jobs:[job],works:[]});
  const after=groupSessionWorkflows(snapshot,[],{jobs:[{...job,routing:{action:'dispatch',workId:'work'}}],works:[{id:'work',sourceJob:'intake',revision:1,status:'queued'}]});
- assert.deepEqual(before.map(row=>row.kind),['message','workflow']);
- assert.equal(before[1].id,after[1].id);assert.equal(after[1].workId,'work');
- assert.equal(after[0].entry,input);assert.equal(after.filter(row=>row.id==='source').length,1);
- assert.equal(after[1].rows[0].entries[0],input,'the card retains its source evidence without creating a second rendered bubble');
+ assert.deepEqual(before.map(row=>row.kind),['workflow']);
+ assert.equal(before[0].id,after[0].id);assert.equal(after[0].workId,'work');
+ assert.equal(after[0].rows[0].entries[0],input,'the original is retained inside its task, not copied or rendered outside');
+ assert.equal(after[0].sequence,input.sequence);
 });
 
 test('one exact Work workflow contains original rounds and continuation before final closeout',()=>{
@@ -219,7 +219,8 @@ test('canonical clarification, pending intake and retry ancestry keep the predis
   assert.equal(after.filter(row=>row.kind==='workflow').length,1);
   assert.equal(block.id,before.find(row=>row.kind==='workflow').id);assert.equal(block.workId,'work');
   assert.deepEqual(block.rows.map(row=>row.jobId),['root','answer','worker']);
-  assert.deepEqual(after.filter(row=>row.kind==='message').map(row=>row.id),['original','clarified']);
+  assert.deepEqual(after.filter(row=>row.kind==='message'),[]);
+  assert.deepEqual(block.rows.flatMap(row=>row.entries||[]).filter(entry=>entry.speaker==='user').map(entry=>entry.id),['original','clarified']);
   const late=groupSessionWorkflows({entries:[entry('root-plan',{target:'orchestrator',jobId:'root',sequence:30}),entry('answer-plan',{target:'orchestrator',jobId:'answer',sequence:40}),entries[2]],deltas:[]},[],state);
   assert.deepEqual(late[0].rows.map(row=>row.jobId),['root','answer','worker'],'late journal projection still puts the ancestor arrangement before its clarification and Worker');
   const history=groupSessionWorkflows({entries:[entries[2]],deltas:[],hasMore:true},[],state);
@@ -245,14 +246,33 @@ test('host originalTask input bound to a real Worker remains inside its round, n
  assert.equal(rows[0].rows[0].kind,'worker');assert.deepEqual(rows[0].rows[0].entries,[initial,output]);
 });
 
-test('two tasks keep every human input at its original sequence while later A rounds update only A',()=>{
- const jobs=[{id:'a-root',target:'orchestrator',type:'intake'},{id:'b-root',target:'orchestrator',type:'intake'},{id:'a-next',target:'orchestrator',type:'intake',routing:{action:'continue',workId:'a'}},{id:'a-job',target:'a',type:'initial',revision:1},{id:'a-revise',target:'a',type:'supplement',revision:2},{id:'b-job',target:'b',type:'initial',revision:1}];
+test('two tasks contain their own human inputs while only ordinary frontdesk discussion remains outside',()=>{
+ const jobs=[{id:'a-root',target:'orchestrator',type:'intake'},{id:'b-root',target:'orchestrator',type:'intake'},{id:'a-next',target:'orchestrator',type:'intake',routing:{action:'continue',workId:'a'}},{id:'a-job',target:'a',type:'initial',revision:1},{id:'a-revise',target:'a',type:'supplement',revision:2},{id:'b-job',target:'b',type:'initial',revision:1},{id:'plain',target:'frontdesk',type:'front'}];
  const state={jobs,works:[{id:'a',sourceJob:'a-root',sourceInputJobIds:['a-root','a-next'],revision:2,status:'review'},{id:'b',sourceJob:'b-root',revision:1,status:'review'}]};
- const human=(id,sequence,jobId,text)=>entry(id,{sequence,jobId,speaker:'user',source:'host',taskRequestId:jobId,text,at:'2026-11-08T00:00:0'+sequence+'Z'});
+ const human=(id,sequence,jobId,text)=>entry(id,{sequence,jobId,speaker:'user',source:'host',...(jobId==='plain'?{}:{taskRequestId:jobId}),text,at:'2026-11-08T00:00:0'+sequence+'Z'});
  const inputs=[human('a-input',1,'a-root','First task'),human('plain-input',3,'plain','Ordinary discussion'),human('b-input',5,'b-root','Second task'),human('a-followup',7,'a-next','Modify original A')];
  const entries=[...inputs,entry('a-one',{target:'a',jobId:'a-job',revision:1,sequence:2}),entry('plain-answer',{jobId:'plain',sequence:4}),entry('b-one',{target:'b',jobId:'b-job',revision:1,sequence:6}),entry('a-two',{target:'a',jobId:'a-revise',revision:2,sequence:8})];
- const rows=groupSessionWorkflows({entries,deltas:[]},[],state),humanRows=rows.filter(row=>row.kind==='message'&&row.entry.speaker==='user');
- assert.deepEqual(humanRows.map(row=>[row.id,row.entry.sequence,row.entry.at,row.entry.text]),inputs.map(item=>[item.id,item.sequence,item.at,item.text]));
- const cards=rows.filter(row=>row.kind==='workflow');assert.deepEqual(cards.map(row=>row.workId),['a','b']);assert(cards[0].sequence<3&&cards[1].sequence>5&&cards[1].sequence<7);
+ const rows=groupSessionWorkflows({entries,deltas:[]},[],state),cards=rows.filter(row=>row.kind==='workflow');
+ assert.deepEqual(rows.map(row=>row.kind==='workflow'?row.workId:row.entry?.id||row.entries[0].id),['a','plain-input','plain-answer','b']);
+ assert.deepEqual(cards.map(row=>row.sequence),[1,5]);
+ const inside=cards.flatMap(card=>card.rows.flatMap(row=>row.entries||[row.entry]).filter(Boolean)).filter(entry=>entry.speaker==='user');
+ assert.deepEqual(inside.map(row=>[row.id,row.sequence,row.at,row.text]),[inputs[0],inputs[3],inputs[2]].map(row=>[row.id,row.sequence,row.at,row.text]));
  assert.deepEqual(cards[0].rows.filter(row=>row.kind==='worker').map(row=>row.revision),[1,2]);
+});
+
+test('converted input, Worker discussion and bound diagnostics stay in the exact task without claiming unknown ownership',()=>{
+ const original=entry('converted',{sequence:1,target:'frontdesk',speaker:'user',source:'host',jobId:'front',taskRequestId:'intake',text:'Original frozen request'});
+ const question=entry('question',{sequence:3,target:'work',workId:'work',jobId:'discussion',speaker:'user',source:'host',text:'Why this change?'});
+ const answer=entry('answer',{sequence:4,target:'work',workId:'work',jobId:'discussion',text:'The exact Worker explanation'});
+ const diagnostic=entry('diagnostic',{sequence:5,target:'work',workId:'work',jobId:null,speaker:'system',recordKind:'unclassified',availability:'read-required'});
+ const unknown=entry('unknown',{sequence:6,target:'orchestrator',jobId:null,speaker:'system',failed:true,text:'Unassociated diagnostic'});
+ const state={jobs:[{id:'front',target:'frontdesk',type:'front'},{id:'intake',target:'orchestrator',type:'intake'},{id:'discussion',target:'work',type:'review-discussion'}],works:[{id:'work',sourceJob:'intake',revision:1,status:'review'}]};
+ const rows=groupSessionWorkflows({entries:[original,question,answer,diagnostic,unknown],deltas:[{id:'bound-event',workId:'work',kind:'work-created',sequence:2,text:'Bound event'}]},[],state);
+ assert.deepEqual(rows.map(row=>row.kind),['workflow','message']);assert.equal(rows[1].entry,unknown);
+ const task=rows[0];assert.equal(task.workId,'work');assert.equal(task.sequence,1);
+ assert.deepEqual(task.rows.flatMap(row=>row.entries||[row.entry]).filter(Boolean).map(row=>row.id),['converted','question','answer','diagnostic']);
+ assert.equal(task.rows.find(row=>row.entry===diagnostic).unbound,true);
+ assert.equal(task.rows.find(row=>row.kind==='delta').delta.id,'bound-event');
+ const historical=groupSessionWorkflows({entries:[answer],deltas:[],hasMore:true},[],state);
+ assert.deepEqual(historical[0].rows.flatMap(row=>row.entries).map(row=>row.id),['answer'],'a history page cannot manufacture its missing original or later discussion');
 });
