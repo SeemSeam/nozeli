@@ -174,19 +174,30 @@ html[data-theme=dark] :is(.session-surface,.session-timeline){
 .session-closeout [data-step-state=current]{color:var(--chat-warning)}
 .session-closeout [data-step-state=blocked]{color:var(--chat-danger)}
 @container session (max-width:600px){.session-closeout{padding:10px 12px}.session-closeout li{flex-wrap:wrap;gap:2px 8px}}
-.session-task-card{box-sizing:border-box;width:min(100%,760px);min-width:0;margin:18px auto 24px;padding:clamp(12px,2cqi,20px);display:flex;flex-direction:column;gap:10px;border:1px solid var(--task-border);border-top:3px solid var(--task-accent);border-radius:12px;background:var(--task-wash);color:inherit;line-height:1.5;overflow-wrap:anywhere}
-.session-task-card>header{min-width:0}.session-task-card>header strong{font-size:1em;line-height:1.5;overflow-wrap:anywhere}
-.session-task-status,.session-task-latest{margin:0;font-size:12px;line-height:18px;overflow-wrap:anywhere}.session-task-card[data-state=error] .session-task-status{color:var(--chat-danger)}
-.session-task-conversation{display:grid;gap:12px;min-width:0;padding:12px 0;border-block:1px solid var(--task-border)}
-.session-task-conversation>.session-message{box-sizing:border-box;width:100%;max-width:100%;min-width:0;margin:0;padding:12px;border-radius:8px}
-.session-task-conversation>.session-message[data-role=user]{align-self:stretch}
-.session-task-history-note{margin:0;font-size:12px;color:var(--chat-muted)}
-.session-task-flow{display:flex;align-items:center;justify-content:space-between;gap:2px;font-size:10px;position:relative}.session-task-flow span{white-space:nowrap}.session-task-flow i{font-style:normal;opacity:.55;margin-left:2px}.session-task-flow [data-current=true]{font-weight:700;text-decoration:underline;text-underline-offset:4px}
-.session-task-flow:after{content:'';position:absolute;bottom:0;height:2px;width:7px;background:var(--task-accent);opacity:0}.session-task-flow[data-running=true]:after{animation:task-forward 2.8s linear infinite}
-.session-task-trail{font-size:11px;line-height:15px;position:relative;min-height:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.session-task-trail small{display:block;font:inherit;opacity:.85;overflow:hidden;text-overflow:ellipsis}.session-task-trail[data-returning=true]:after{content:'';position:absolute;bottom:0;width:7px;height:2px;background:var(--task-accent);animation:task-return .8s ease-out 1}
-.session-task-card>nav{display:flex;flex-wrap:wrap;gap:8px}.session-task-card>nav>button{flex:1 1 100px;min-height:36px;padding:6px 12px;font:inherit;font-size:12px;background:transparent;border:1px solid var(--task-border);border-radius:6px;color:inherit}.session-task-card>nav>button:hover{background:var(--chat-paper,transparent)}.session-task-card button:focus-visible{outline:2px solid var(--task-accent);outline-offset:3px}
+/* Task-contained discussion shares one neutral reading surface, not role-colored bubbles. */
+.session-task-card{box-sizing:border-box;width:min(100%,760px);min-width:0;margin:12px auto 18px;padding:clamp(12px,2cqi,20px);display:flex;flex-direction:column;gap:12px;border:1px solid var(--chat-line);border-inline-start:3px solid var(--task-accent);border-radius:10px;background:var(--chat-surface);color:var(--chat-ink);line-height:1.5;overflow-wrap:anywhere}
+.session-task-card .session-task-detail{margin:0;color:var(--chat-muted);font-family:var(--chrome-font-family,system-ui,sans-serif);font-size:var(--chat-ui-font);line-height:1.6;overflow-wrap:anywhere}
+.session-task-card:is([data-state=error],[data-state=failed]) .session-task-detail{color:var(--chat-danger)}
+.session-task-card>header{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 12px;min-width:0;font-family:var(--chrome-font-family,system-ui,sans-serif)}
+.session-task-card>header strong{flex:1 1 18ch;min-width:0;font-size:1em;line-height:1.5;font-weight:600;overflow-wrap:anywhere}
+.session-task-card .session-task-status{flex:0 1 auto;min-width:0;max-width:100%;padding:2px 7px;border:1px solid var(--chat-line);border-radius:5px;background:var(--chat-canvas);color:var(--chat-muted);font-size:var(--chat-ui-font);line-height:1.5;overflow-wrap:anywhere}
+.session-task-card:is([data-state=error],[data-state=failed]) .session-task-status{color:var(--chat-danger);border-color:currentColor}
+.session-task-card:is([data-state=blocked],[data-state=paused],[data-state=interrupted],[data-state=review],[data-state=closing]) .session-task-status{color:var(--chat-warning)}
+.session-task-card[data-state=ended] .session-task-status{color:var(--chat-success)}
+.session-task-card .session-task-conversation{display:grid;gap:0;min-width:0;border-top:1px solid var(--chat-line)}
+.session-task-card .session-task-conversation>.session-message{box-sizing:border-box;width:100%;max-width:100%;min-width:0;margin:0;padding:14px 0 10px;border:0;border-radius:0;background:none;align-self:stretch}
+.session-task-card .session-task-conversation>.session-message+.session-message{border-top:1px solid var(--chat-line)}
+.session-task-card .session-task-conversation>.session-message>header{margin-bottom:6px}
+.session-task-card .session-task-conversation .session-markdown{line-height:1.8}
+.session-task-card .session-task-conversation .message-actions{display:flex;justify-content:flex-end;margin-top:4px}
+.session-task-card .session-task-conversation .message-actions-list{top:100%}
+.session-task-card .session-task-history-note{margin:12px 0 0;font-size:var(--chat-ui-font);color:var(--chat-muted)}
+.session-task-card .session-task-trail{display:flex;flex-wrap:wrap;gap:4px 12px;min-width:0;color:var(--chat-muted);font-family:var(--chrome-font-family,system-ui,sans-serif);font-size:var(--chat-ui-font);line-height:1.5;overflow-wrap:anywhere}
+.session-task-card>nav{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0;padding-top:10px;border-top:1px solid var(--chat-line)}
+.session-task-card>nav>button{flex:0 1 auto;min-width:0;min-height:32px;padding:5px 10px;font-family:var(--chrome-font-family,system-ui,sans-serif);font-size:var(--chat-ui-font);line-height:1.5;background:transparent;border:1px solid transparent;border-radius:6px;color:var(--chat-muted);cursor:pointer}
+.session-task-card>nav>button:hover{background:var(--chat-canvas);color:var(--chat-ink)}
+.session-task-card>nav>button[data-task-action=result]{border-color:var(--chat-action);background:var(--chat-action);color:var(--chat-action-ink)}
+.session-task-card>nav>button[data-task-action=result]:hover{box-shadow:inset 0 0 0 1px currentColor}
+.session-task-card :is(button,summary):focus-visible{outline:2px solid var(--chat-action);outline-offset:3px}
+@media(forced-colors:active){.session-task-card{border-color:CanvasText}.session-task-card .session-task-status,.session-task-card>nav>button[data-task-action=result]{border-color:ButtonText}.session-task-card :is(button,summary):focus-visible{outline-color:Highlight}}
 .managed-work-entry[data-task-tone] .managed-work-name:before{content:'';display:inline-block;width:7px;height:7px;margin-right:6px;border-radius:50%;background:var(--task-accent)}
-@keyframes task-forward{0%{left:0;opacity:0}15%,85%{opacity:1}100%{left:calc(100% - 7px);opacity:0}}
-@keyframes task-return{0%{left:calc(100% - 7px);opacity:0}15%,85%{opacity:1}100%{left:0;opacity:0}}
-@media(prefers-reduced-motion:reduce){.session-task-flow:after,.session-task-trail:after{animation:none!important}}
-html[data-task-motion=paused] .session-task-flow:after,html[data-task-motion=paused] .session-task-trail:after{animation-play-state:paused}

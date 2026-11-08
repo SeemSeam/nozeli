@@ -12,16 +12,17 @@ import {taskPresentation} from './task-presentation.mjs';
 import './task-identity.css';
 function TaskCard({row,state,projectId,onResult,context,call}){
  const view=taskPresentation(row,state),tone=taskIdentityTone(taskIdentityKey(projectId,state,row));
+ // Published/review events repeat the status. Keep a distinct live action or host
+ // diagnostic when it helps explain work that is still active or held up.
+ const detail=(view.running||['running','error','blocked','failed','interrupted','unknown','closing','paused'].includes(view.status))&&view.latest&&view.latest!=='尚无新的宿主事件'&&!view.label.includes(view.latest)?view.latest:null;
  const route=async action=>{const result=await window.nozeli.invoke('workspace.control',{type:'task-workspace',action,projectId,...(row.workId?{workId:row.workId}:{}),...(row.sourceJobId?{sourceJobId:row.sourceJobId}:{})});if(!result.ok)throw Error(result.error?.message||'任务未能打开');};
- const [baselineReturn]=useState(view.returnKey),[visible,setVisible]=useState(()=>document.visibilityState!=='hidden');
- useEffect(()=>{const update=()=>setVisible(document.visibilityState!=='hidden');document.addEventListener('visibilitychange',update);return()=>document.removeEventListener('visibilitychange',update);},[]);
  const [error,setError]=useState('');
  return h('article',{className:'session-task-card','data-workflow-id':row.id,'data-workflow-work':row.workId||undefined,'data-task-tone':tone,'data-state':view.status,'aria-label':view.name+' · '+view.label},
-  h('header',null,h('strong',{title:view.name},view.name)),h('p',{className:'session-task-status',role:'status',title:view.label},view.label.split(' · ')[0]),h('p',{className:'session-task-latest',title:view.latest},view.latest),
-  h('div',{className:'session-task-flow','data-running':view.running&&visible,'aria-label':'请求、主控、执行、成果、审阅'},['请求','主控','执行','成果','审阅'].map((label,index)=>h('span',{key:label,'data-current':index===view.stage},label,index<4&&h('i',{'aria-hidden':true},'→')))),
-  h('div',{className:'session-task-trail',key:view.returnKey||'initial','data-returning':view.returning&&visible&&view.returnKey!==baselineReturn},view.returnKey?'↶ 审阅 / 补充已回流':'原任务持续更新',h('small',null,view.trail.join(' · ')||'成果尚未发布')),
+  h('header',null,h('strong',{title:view.name},view.name),h('span',{className:'session-task-status',role:'status'},view.label)),
+  detail&&h('p',{className:'session-task-detail'},detail),
+  (view.returnKey||view.revision>1&&view.trail.length>0)&&h('div',{className:'session-task-trail'},view.returnKey&&h('span',null,'审阅 / 补充已回流'),view.trail.length>0&&h('span',null,view.trail.join(' · '))),
   h(TaskConversation,{row,state,context,call}),
-  h('nav',{'aria-label':'任务操作'},h('button',{type:'button','data-task-action':'process',onClick:()=>route('process').catch(error=>setError(error.message))},'查看过程'),h('button',{type:'button','data-task-action':view.publication?'result':'overview',onClick:()=>Promise.resolve(view.publication&&onResult?onResult(view.publication):route('overview')).catch(error=>setError(error.message))},view.publication?'查看成果':'任务概览')),error&&h('small',{role:'alert'},error));
+  h('nav',{'aria-label':'任务操作'},view.publication&&h('button',{type:'button','data-task-action':'result',onClick:()=>Promise.resolve(onResult?onResult(view.publication):route('overview')).catch(error=>setError(error.message))},'查看成果'),h('button',{type:'button','data-task-action':'process',onClick:()=>route('process').catch(error=>setError(error.message))},'查看过程'),!view.publication&&h('button',{type:'button','data-task-action':'overview',onClick:()=>route('overview').catch(error=>setError(error.message))},'任务概览')),error&&h('small',{role:'alert'},error));
 }
 const h=React.createElement;
 const Markdown=memo(function Markdown({text,context,settled=false}){
