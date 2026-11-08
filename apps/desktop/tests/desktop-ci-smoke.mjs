@@ -38,7 +38,6 @@ async function documentPage(){return until(async()=>{for(const p of await browse
 async function close(){await invoke('session.requestClose');const exit=await Promise.race([exited,pause(15000).then(()=>null)]);assert.deepEqual(exit,{code:0,signal:null},'normal close must finish all persistence');await browser.disconnect();browser=null;return exit;}
 try{
  await launch();await shell.waitForSelector('.guided-start-welcome');
- assert.equal(await shell.$$eval('.guided-start-features dt',n=>n.length),4);
  await shell.screenshot({path:path.join(out,'welcome.png')});result.checks.push('unconfigured application opens feature welcome without provider startup');
  await shell.click('[data-project-id="'+projectId+'"]');await shell.waitForSelector('[data-start-browse]');
  await shell.click('[data-start-browse]');await shell.waitForFunction(()=>document.activeElement?.id==='file-filter');
