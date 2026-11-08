@@ -122,7 +122,7 @@ export class ResultMemory {
   maxBytes=limitBytes(maxBytes,12000);
   if(typeof query!=='string'||typeof includeHistory!=='boolean'||!Number.isSafeInteger(limit)||limit<1||limit>100)throw fail('RESULT_MEMORY_ARGUMENT','Invalid query, history filter or limit (1–100)');
   const snapshot=await this._start();this._current(snapshot);const version=snapshot.version,binding=hash(JSON.stringify([query,includeHistory]));
-  const result={matches:[],nextCursor:null,corpusVersion:version,totalMatches:0,coverage:{eligible:0,indexed:0,missing:0,corrupt:0,complete:false,issues:[],cachedBytes:this.cachedBytes,cacheMaxBytes:this.cacheMaxBytes}};
+  const result={matches:[],nextCursor:null,corpusVersion:version,versionSemantics:'opaque-read-consistency-token; change does not prove index rebuild, maintenance, adoption or report-content change',totalMatches:0,coverage:{eligible:0,indexed:0,missing:0,corrupt:0,complete:false,issues:[],cachedBytes:this.cachedBytes,cacheMaxBytes:this.cacheMaxBytes}};
   let start=0;
   if(cursor!==null){
    let decoded;try{decoded=JSON.parse(Buffer.from(cursor,'base64url').toString('utf8'));}catch{}

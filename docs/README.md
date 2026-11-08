@@ -2,6 +2,8 @@
 
 本目录面向产品使用与评估，概述 Nozeli 的方向、当前能力、协作原则与发布状态。开发构建、测试与安装命令见[桌面开发说明](../apps/desktop/README.md)；当前 Pi 运行时与验收见[Pi 整合记录](pi-integration-execution.md)。
 
+**设计统一入口：[Nozeli Plan Tree](plantree/README.md)。** 后续产品/技术设计、确认决定、实施路线及验收记录在本项目目录内按树登记；复用已有主题主合同，不仅留在聊天或分散生成重复方案。Pi负责原生压缩/会话恢复，Nozeli只维护产品来源、版本、任务事实与交接边界。
+
 - [用户指南（Linux Alpha）](user-guide.md)——安装、校验、升级／回退／卸载、备份、AI 源配置、日常使用与故障排查。
 - [当前状态与能力边界](status.md)——功能、支持格式、平台验证状态与已知限制。
 - [阅读与协作原则](principles.md)——产品交互与材料交接的既定原则。
@@ -9,7 +11,7 @@
 - [后续路线与验收边界](roadmap.md)——依赖安全、第三方交付、更多 Linux 环境与跨平台资格，不承诺未实测能力。
 - [自动播放教学设计](tutorial-design.md)——先认识界面，再围绕Markdown完成阅读、批注、审核与布局学习。
 - [Windows 开发 Agent 执行指南](windows-agent-development-guide.md)——从真实 Windows W0 基线到 W1–W5 原生适配、验收证据与禁止误判；不以 Linux、WSL、Wine 或交叉打包替代 Windows 实测。
-- [Plantree统一报告与稳定结果记忆](plantree-result-memory-design.md)——完整系统设计；首版稳定结果检索与交接已接源码，完整版本化目录与自动整理仍待实施。
+- [Plantree统一报告与稳定结果记忆](plantree-result-memory-design.md)——已固化整体主合同：职责与不变量、`fe24f1c`首版基线及差距、P0读取竞争/真实质量→P1统一目录→P2规模检索→P3可恢复整理路线和逐项验收门；尚未安装。
 - [稳定结果记忆首版实现](result-memory-implementation.md)——基于已有冻结报告的同项目检索、确切来源读取与新任务交接，缓存／预算／重启与隔离验证；源码接入，未安装。
 - [三角色记忆与技能设计](role-memory-skills-design.md)——前台／主控／Worker 的最小角色契约、按需技能、用户批准项目知识、来源版本与撤销；设计提案，不代表原生技能迁移或长期知识功能已实现。
 - [主控长期多任务与 Plan Tree 设计](orchestrator-long-term-design.md)——当前宿主排队／进度事实与 skill 职责分析，以及分页任务板、稳定管理身份、压缩恢复和版本化知识的后续设计；未实施。

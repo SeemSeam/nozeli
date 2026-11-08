@@ -212,6 +212,7 @@ const SUITES = {
       'managed-review-projection.test.mjs',
       'managed-role-skills.test.mjs',
       'managed-submission.test.mjs',
+      'managed-supplement-source-delivery.test.mjs',
       'managed-task-flow.test.mjs',
       'managed-taskboard.test.mjs',
       'managed-todo-ipc.test.mjs',

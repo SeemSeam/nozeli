@@ -240,3 +240,15 @@ test('legacy archive fallback chooses last problem only when no final-revision r
  assert.equal((await f.memory.search({includeHistory:true})).matches[0].source.objectId,problem.objectId);
  f.publish(a.work,'Final result');const mismatch=await f.memory.search({includeHistory:true});assert.equal(mismatch.matches.length,0);assert.equal(mismatch.coverage.corrupt,1);
 });
+
+test('unrelated pending task changes invalidate a cursor without changing stable report identities or adoption',async()=>{
+ const f=fixture();for(let i=0;i<3;i++)f.add('Stable evidence '+i);
+ const first=await f.memory.search({limit:1});assert(first.nextCursor);
+ const allBefore=await f.memory.search({limit:10});const pending=f.add('Pending unrelated draft',{status:'review',phase:'report'});
+ pending.work.revision=2;
+ const stale=await f.memory.search({limit:1,cursor:first.nextCursor});assert.equal(stale.resyncRequired,true);assert.equal(stale.matches.length,0);
+ const fresh=await f.memory.search({limit:10},{maxBytes:5000});assert.notEqual(fresh.corpusVersion,first.corpusVersion);
+ assert.deepEqual(fresh.matches,allBefore.matches);assert.equal(fresh.totalMatches,3);
+ assert.equal(fresh.coverage.indexedThrough,fresh.corpusVersion);assert(Buffer.byteLength(JSON.stringify(fresh))<=5000);
+ const page=await f.memory.read(fresh.matches[0].source,{maxBytes:900});assert(page.text.startsWith('Stable evidence'));assert.equal(page.source.digest,fresh.matches[0].source.digest);
+});

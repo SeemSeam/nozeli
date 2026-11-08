@@ -15,6 +15,13 @@ Scope: Pi 原生会话上的产品信息交付；不新增记忆引擎，不移�
 - 模型：理解、内容工作、按需查询；不靠读懂内部 JSON 维护任务账本或生成权限。
 - 不删除原生历史来“治好”上游拒绝，不切换源绕过安全策略，不把本设计承诺为特定 provider 错误的修复。
 
+### 当前补充输入不可被路由说明替代（2026-11-08）
+
+真实安装版暴露的反例：`nozeli_manage continue`保存了当前用户补充，却只将空`text`路由说明发送给Worker，造成缺少最终报告暂停。宿主应将`intakeSource(job).request`的确切当前用户原文交付一次；`continue.text`仅为可选、不同于原文的附加说明，省略/空白均不能丢失用户要求。复用`workerInputText`，与排队task初始交接使用相同约定；不逐轮重放原始Work、历史补充、未知效果或放松scope/版本/最终发布门。冻结材料继续由该source job链读取，冷开未准入回合保留为interrupted，不自动重放。
+
+回归入口：`tests/managed-supplement-source-delivery.test.mjs`经真实Controller/SQLite/native prompt边界验证空/空白/省略说明、非空说明、同Work线程、重复路由幂等、排队初始交接及冷开保留后明确新输入。安装与真实模型复测结果集中见[记忆实施记录](result-memory-implementation.md)，不能以确定性回归代替实际安装版签收。
+
+
 ## 2. 当前实现与案例依据
 
 以下源码路径相对仓库根；这是设计时观察，不表示新机制已上线。
