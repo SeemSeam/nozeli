@@ -78,3 +78,11 @@ renderer构建与797项默认unit通过；13项限定历史／固定scope／只�
 
 独立Reviewer完成源码及最终浅深/宽窄/菜单截图复核，无具体阻断，最终correct（0.92）；不代表用户美观签收。追加真实旅程`/tmp/nozeli-task-workspace-4tokfe/report.json`再次通过；完整应用200%仍因composer占满窗口而未提供可见卡片证据，明确不计为完整应用缩放可用性通过。另以实际Electron消费者`webContents.setZoomFactor(2)`核对卡片标题/完整长状态/三条消息/焦点/成果与过程按钮，`/tmp/nozeli-session-consumer-RtRwAb/task-queued-real-zoom200.png`已由Reviewer查看通过；组件证据不替代完整应用窗口分配验收。未安装/提交本次视觉，Windows/macOS、OS级IME及付费模型质量未验。
 
+## 任务卡视觉用户授权提交与安装（2026-11-08）
+
+用户随后明确授权commit并安装：功能提交`c295496`（7文件），current=`2026-11-08T10-14-53-685Z`，previous=`2026-11-08T08-52-12-275Z`。803份src/dist/Pi-src与已验工作树输入SHA256一致，清单`/tmp/nozeli-task-card-install-zzTK8q/manifest.json`。这是累积工作树本地安装，不冒称纯净提交构建；其他在途改动未随功能提交混入。
+
+实际安装ELF＋包内Pi/Git在隔离profile/合成项目重走双任务、多轮问答/续改/二次发布、精确成果与只读过程、原卡/草稿/长工具原文、浅深320/390/1280与正常退出冷开零重放，`/tmp/nozeli-task-workspace-cpUZ2m/report.json` ok=true、providerErrors=[]；安装版卡片截图已查看。此运行报告的scope仍为旧源码文案，真实ELF调用由父进程命令与交付收据绑定，后续脚本已修正按binary记录来源，未改写原报告。200%完整应用占屏限制保持，不冒称已解决。
+
+未强关/重启用户日常窗口、未修改日常项目；正常退出重开系统入口即可加载新视觉。未推送或发布，Windows/macOS/系统IME/付费模型质量未验。
+
