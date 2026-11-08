@@ -1,6 +1,6 @@
 # 正式任务工作区设计
 
-状态：2026-11-08追加的原始输入／续聊内含与自适应宽框已实现，通过Linux源码限定验收；本次尚未安装／提交。下文旧版安装证据保留其原时点范围，不作为本次安装记录。
+状态：2026-11-08任务内含输入／续聊与自适应宽框已实现，源码及实际安装程序限定验收通过；用户授权commit、安装、重启、测试，功能提交为 `9c28387`，本机 `task-contained-20261108-local-01` 已正常重启。未推送／发布。
 
 ## 时间线与任务身份
 
@@ -53,4 +53,14 @@ renderer构建与797项默认unit通过；13项限定历史／固定scope／只�
 2026-11-08：`session-store`、`session-execution-presentation`、`task-workspace-presentation` 三个定向文件共51项通过，renderer构建通过。最终真实Electron＋私有Pi＋回环确定性HTTP＋真实Git／文件 `/tmp/nozeli-task-workspace-HCp6is/report.json` ok=true、providerErrors=[]：两个分时task中穿插普通前台讨论；原输入、原Worker问题／解释、第二次修改各只出现在确切任务框内，原框DOM／身份色／位置和草稿保留，任务B不接收A的讨论；原只读过程、精确报告、长工具原文、正常退出和冷恢复零重放保留。过程／对话截图已逐面查看，不冒称OS合成全窗截图。
 
 最终React/Electron消费者 `/tmp/nozeli-session-consumer-XgoGAn` 通过框内输入／问答顺序、普通前台消息留在框外、初始和补充内部交接均不冒充用户再发一遍、框内引用保留原文，以及1200／480／320下任务宽度随可用空间真实增长且不溢出；浅深截图已查看。消费者同时通过有界原文读取、历史页不混未来成果、IME／选区／阅读位置保持；组件窗口宽度证据不替代真实CLI或跨平台验收。未新增发送链、未重放旧输入、未改旧消息正文或持久业务状态。本次未安装、未提交，Windows/macOS与系统IME候选窗仍未验。
+
+## 用户授权安装与正常重启
+
+功能提交 `9c28387`（12文件）仅覆盖本次任务框改动，共享文档按内容限定暂存，其他在途变更未提交。安装current=`task-contained-20261108-local-01`，previous=`task-workspace-20261108-local-01`；786项src/dist（432源码＋354构建）与已验输入逐字节一致，安装仍为累积工作树本地快照，不冒称纯净提交构建。
+
+实际安装ELF＋包内Pi／Git在独立profile、合成项目及回环确定性HTTP完成双task、多轮问答／续改、框内各一次呈现、原框身份／草稿、只读过程、长原文、正常退出／冷恢复，`/tmp/nozeli-task-workspace-nFjRUN/report.json` ok=true、providerErrors=[]，截图已查看。未在日常项目派发模型任务。
+
+日常程序经X11正常关闭协议退出旧PID1320393，使用原系统入口、原profile重开；验收进程1788993确认原会话view复用、4个本页任务框均宽760px且在窗格内、零框外后台输入、无初始化错误。随后再次正常退出验收进程，移除临时调试参数，最终PID1899563运行本次安装ELF，`NOZELI_DESKTOP_READY ... debugPort=none`，正常系统窗口和原项目目录入口已确认，程序保持打开。
+
+两个日常项目的job／Work身份与消息缓存保持不变，5个原文件摘要不变。核验时原243条项目记录中242条逐字节不变，唯一重写为 `managed_settings/collectionOrder`，五类主要业务顺序与重启前缓存一致；另新增一条正常 `host-opened` 审计，不冒称所有元数据零写入。证据 `/tmp/nozeli-contained-install-HdAA4R/delivery.json`、`daily-preservation.json` 和 `input-manifest.json`；真实窗口截图保留本地，未加入仓库。系统IME、Windows/macOS、付费模型质量及此前旧590px缩放脚本限制不因此签收。
 

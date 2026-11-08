@@ -653,3 +653,9 @@ postinstall 用 `electron-rebuild` 针对 Electron 重建 `node-pty`。该依赖
 - `node --test tests/session-store.test.mjs tests/session-execution-presentation.test.mjs tests/task-workspace-presentation.test.mjs`：51/51。覆盖派工前后身份不变、原输入与续聊仅归原任务、两个同名／并行任务不串联、原生回显去重、转换输入、明确绑定的诊断及未关联诊断、旧页不制造页外原输入。
 - `npm run build:renderer` 与 `node tests/desktop-session-timeline.test.mjs` 通过。最终消费者 `/tmp/nozeli-session-consumer-XgoGAn` 包含框内原输入／补充／Worker答复、框外仅普通前台消息、初始及补充内部交接不冒充重复输入、引用原文及1200／480／320浅深自适应边界；同时保留原文分页、历史、IME／选区与阅读位置消费者检查。该宽度检查是组件Electron表面，不冒称独立原生窗格生命周期或CLI验证。
 - `node tests/desktop-task-workspace-live.mjs`：最终真实Electron＋私有Pi＋回环确定性HTTP＋实际Git／文件，`/tmp/nozeli-task-workspace-HCp6is/report.json` ok=true、providerErrors=[]。原输入、原Worker问答和续改各一次呈现在确切原task框内，普通前台讨论留在框外；不同任务不串绑，原卡DOM／身份色／草稿、原只读过程、旧报告、长工具原文、正常退出与冷恢复零重放通过。未操作日常业务、未发起付费模型、未安装本次源码；Windows/macOS及系统IME候选窗未验。此前额外直接提交旧resize脚本的590px等待超时记录仍保留，本次不宣称修复该独立限制。
+
+### 用户授权的安装、日常重启与实际安装程序测试
+
+- 功能提交 `9c28387`；本机current=`task-contained-20261108-local-01`，previous=`task-workspace-20261108-local-01`。安装器验证并原子激活，786项源码／构建输入逐字节一致。实际安装ELF＋包内Pi／Git的独立双任务、多轮问答／续改、任务框归组、只读过程、原文、草稿、正常退出与冷恢复 `/tmp/nozeli-task-workspace-nFjRUN/report.json` ok=true、providerErrors=[]，截图已查看。
+- 日常旧PID1320393通过 `_NET_CLOSE_WINDOW` 正常退出，不发送kill／force，不选择取消任务；原入口／profile启动验收PID1788993，激活既有conversation view而非新建会话，验证4个本页任务框宽760px、零框外后台输入与零初始化错误。两个项目job／Work／消息身份不变，5个源文件摘要不变；243条原项目记录中242条不变，唯一重写为collectionOrder，另有正常host-opened审计。此差异先核实为排序／生命周期记录再限定通过，未抹去差异或修改产品兜底。
+- 验收进程再次正常退出后，使用相同系统入口和原项目目录参数重开，最终PID1899563运行本次ELF、`NOZELI_DESKTOP_READY ... debugPort=none`；无测试实例／profile覆盖，普通系统窗口保持打开。收据及隐私受限本地截图位于 `/tmp/nozeli-contained-install-HdAA4R`，不加入仓库。程序重启后再次核对两项目job与消息身份保持。此前590px旧resize等待超时仍单列，不外推本次全部旧脚本通过；其他平台、系统IME与付费模型质量未验。
