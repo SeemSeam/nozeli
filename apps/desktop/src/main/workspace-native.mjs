@@ -855,8 +855,8 @@ export class WorkspaceNative {
       const previous = this.requests.get(requestId);
       if (previous) { if (previous.input !== JSON.stringify(payload)) throw fail('REQUEST_KEY_REUSED'); return previous.result; }
       if (payload.expectedRevision !== layout.revision && !(r.role==='surface'&&payload.command?.type==='restoreViewState'&&payload.expectedRevision===undefined)) throw fail('LAYOUT_STALE');
-      if(command.type==='openTask'&&!taskOpen||command.type==='open'&&command.view?.kind==='task-process')throw fail('IPC_DENIED');
       const command = { ...payload.command };
+      if(command.type==='openTask'&&!taskOpen||command.type==='open'&&command.view?.kind==='task-process')throw fail('IPC_DENIED');
       if(command.type==='webNavigate')throw fail('IPC_DENIED','网页导航信息只由隔离浏览宿主写入。');
       if(command.type==='restoreViewState'&&layout.views[command.viewId]?.kind==='conversation'){
         const saved=layout.views[command.viewId].viewState??{},incoming=command.viewState??{};
@@ -885,8 +885,8 @@ export class WorkspaceNative {
         for(const view of Object.values(next.views))if(view.sourceViewId)view.sourceViewId=remapped.get(view.sourceViewId)??view.sourceViewId;
         next.closedViews=structuredClone(layout.closedViews??[]);
         next.revision=layout.revision+1;validateLayout(next);
-      for(const view of Object.values(next.views))if(view.kind==='task-process'&&!layout.views[view.id])await this.taskSource(next.projectId,view.viewState.taskScope);
       }else next=reduceLayout(layout, command);
+      for(const view of Object.values(next.views))if(view.kind==='task-process'&&!layout.views[view.id])await this.taskSource(next.projectId,view.viewState.taskScope);
       for(const owner of this.projectRecords(layout.projectId).filter(s=>s.kind==='web'&&!next.views[s.viewId])){const closed=await this.onlineBrowser?.closeScope(owner);if(closed?.cancelled||closed?.closed===false)throw fail('WEB_CLOSE_CANCELLED','网页仍有未提交输入，已保留。');}
       if(command.type==='restoreViewState')next.revision=layout.revision;
       for(const view of Object.values(next.views))if(view.kind==='conversation'&&!view.viewState?.draftOnly&&findView(next,view.id)&&!findView(layout,view.id))await this.requireConversation(next.projectId,'frontdesk');
