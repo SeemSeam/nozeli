@@ -23,7 +23,8 @@ const port = await new Promise(resolve => {
 await build({
   absWorkingDir: root,
   stdin: {resolveDir: root, sourcefile: 'session-consumer-entry.mjs', contents: `
-    import {mountSessionTimeline} from './src/renderer/session-timeline.mjs';
+    import {mountSessionTimeline,mountTaskProcess} from './src/renderer/session-timeline.mjs';
+    import {mountTaskWorkspace} from './src/renderer/task-workspace.mjs';
     import {createSessionStore,sessionMessages} from './src/renderer/session-store.mjs';
     import './src/renderer/styles.css';
     import './src/renderer/conversation-rendering.css';
@@ -50,6 +51,8 @@ await build({
     const view=mountSessionTimeline(document.querySelector('#timeline'),props);
     view.render({});
     window.consumer={store,calls,opened,pages,originals,state,
+      process(snapshot,processState){const container=document.querySelector('#task-process-fixture');window.__processView??=mountTaskProcess(container,{...props,onPage:cursor=>calls.push({op:'process.page',cursor}),onLatest:()=>calls.push({op:'process.latest'})});window.__processView.render({snapshot,state:processState});},
+      async workspace(frame,taskScope={sourceJobId:'budget-intake'}){window.__scopeFrame=frame;const previous=document.querySelector('#scope-workspace');if(previous){previous.id='scope-source-fixture';previous.hidden=true;}const root=document.createElement('section');root.id='scope-workspace';document.body.append(root);window.__scopeListeners={};await mountTaskWorkspace({root,scope:{projectId:props.projectId,viewId:taskScope.workId?'work-reader':'source-reader',kind:'task-process',readOnly:true,viewState:{taskScope,taskMode:'process'}},subscribe:(name,listener)=>{window.__scopeListeners[name]=listener;return()=>{};},invoke:async(op,args)=>{calls.push({op:op==='managed.timeline.page'?'timeline.page':op,args});if(op==='managed.timeline.page')return {ok:true,value:window.__scopeFrame};if(op==='managed.status')return {ok:true,value:{state}};if(op==='workspace.ready'||op==='workspace.command')return {ok:true,value:{}};if(op.startsWith('managed.'))return {ok:true,value:await props.call(op.slice(8),args)};throw Error('Unexpected native reader fixture IPC: '+op);}});},
       messages:()=>sessionMessages(store.getSnapshot()),
       render:()=>view.render({state:{...state}}),
       destroy:()=>{view.destroy();store.dispose();}};
@@ -57,14 +60,17 @@ await build({
   bundle: true, format: 'iife', platform: 'browser', outfile: path.join(out, 'consumer.js'),
   loader: {'.css': 'css','.ttf':'file','.woff':'file','.woff2':'file'},
 });
-await fs.writeFile(path.join(out, 'index.html'), '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="consumer.css"><style>html,body{margin:0;min-width:0}#conversation{height:100vh;overflow:auto;box-sizing:border-box;padding:16px;width:100%;container:session / inline-size}</style><div id="conversation"><div id="timeline"></div></div><script src="consumer.js"></script>');
+// Avoid id="process": browser named globals would shadow the optional Node
+// process global inspected by bundled syntax-highlighting dependencies.
+await fs.writeFile(path.join(out, 'index.html'), '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="consumer.css"><style>html,body{margin:0;min-width:0}#conversation{height:100vh;overflow:auto;box-sizing:border-box;padding:16px;width:100%;container:session / inline-size}</style><div id="conversation"><div id="timeline"></div></div><section id="task-process-fixture"></section><script>window.__consumerDiagnostics={errors:[],rejections:[]};addEventListener("error",event=>window.__consumerDiagnostics.errors.push({message:event.message,filename:event.filename,line:event.lineno,column:event.colno,stack:event.error?.stack}));addEventListener("unhandledrejection",event=>window.__consumerDiagnostics.rejections.push({message:String(event.reason),stack:event.reason?.stack}));</script><script src="consumer.js"></script>');
 await fs.writeFile(path.join(out, 'main.cjs'), `
   const {app,BrowserWindow}=require('electron');
-  app.whenReady().then(()=>{const win=new BrowserWindow({show:true,width:1440,height:1000,webPreferences:{contextIsolation:true,nodeIntegration:false}});win.loadFile(${JSON.stringify(path.join(out, 'index.html'))});});
+  app.whenReady().then(()=>{const win=new BrowserWindow({show:true,width:1440,height:1000,webPreferences:{contextIsolation:true,nodeIntegration:false}});win.webContents.on('console-message',(_event,...args)=>console.error('[consumer renderer console]',...args));win.loadFile(${JSON.stringify(path.join(out, 'index.html'))});});
   app.on('window-all-closed',()=>app.quit());
 `);
 const child = spawn(createRequire(import.meta.url)('electron'), [path.join(out, 'main.cjs'), '--remote-debugging-port='+port, '--ozone-platform='+(process.env.NOZELI_OZONE||(process.env.DISPLAY?'x11':'headless')), '--user-data-dir='+path.join(out,'profile')], {cwd:root,env:{...process.env},stdio:['ignore','pipe','pipe']});
 let log='', browser, page;
+const browserEvents=[];
 for (const stream of [child.stdout,child.stderr]) stream.on('data', chunk => {log+=chunk;});
 const exited = new Promise(resolve => child.once('exit', resolve));
 try {
@@ -75,6 +81,8 @@ try {
   assert(browser, 'Electron debug endpoint did not start: '+log);
   const target=await browser.waitForTarget(target=>target.type()==='page'&&target.url().endsWith('/index.html'),{timeout:30000});
   page=await target.page();assert(page);
+  page.on('pageerror',error=>browserEvents.push({type:'pageerror',message:error.message,stack:error.stack}));
+  page.on('console',message=>browserEvents.push({type:'console',level:message.type(),text:message.text(),location:message.location()}));
   await page.setViewport({width:800,height:1000});
   await page.waitForFunction(()=>window.consumer);
   await page.evaluate(()=>{
@@ -189,100 +197,7 @@ try {
   assert.equal(await page.$$eval('.session-message',nodes=>nodes.length),2,'host failure detail belongs to the original task, not a second reply bubble');
   assert.equal(await page.$eval('[data-message="host-failure"]>header strong',node=>node.textContent),'Nozeli','program failure never impersonates the model');
   assert.equal(await page.$eval('[data-message="host-failure"]',node=>node.textContent.includes('HOST_FAILURE_VISIBLE')),true);
-  await page.evaluate(()=>{
-    const c=window.consumer;c.store.reset('project-consumer');
-    c.state.jobs=[{id:'published-job',target:'work-one',revision:1,status:'completed',completion:'host-control'}];
-    c.state.works=[{id:'work-one',name:'Native Worker',status:'review',revision:1,result:{objectId:'published-result',revision:1}}];
-    c.state.receipts=[{id:'published-receipt',kind:'result',workId:'work-one',jobId:'published-job',revision:1,objectId:'published-result'}];
-    const base={target:'work-one',workId:'work-one',jobId:'published-job',revision:1,source:'native'};
-    c.store.apply('project-consumer',{version:1,entries:[
-      {...base,id:'recovered-check',sequence:1,speaker:'tool',text:'check script failed before correction',tool:{name:'bash',status:'error'}},
-      {...base,id:'publish-call',sequence:2,speaker:'agent',text:'发布已核对的结果',complete:true,toolCalls:[{id:'publish',name:'nozeli_result_publish'}]},
-      {...base,id:'publication-saved',sequence:3,speaker:'system',source:'host',text:'RESULT SAVED'},
-      {id:'historical-plain',target:'frontdesk',speaker:'agent',source:'native',sequence:4,text:'Historical completed answer',complete:true},
-    ]});c.render();
-  });
-  const workerState='.session-worker-meta [data-execution-state]';
-  await page.waitForFunction(()=>document.querySelector('.session-worker-meta [data-execution-state="completed"]')?.textContent==='已交付 · 待审核');
-  assert.equal(await page.$eval('[data-message="historical-plain"] [data-execution-state]',node=>node.dataset.executionState),'completed');
-  assert.equal(await page.$eval('[data-message="publish-call"] [data-history-model]',node=>node.textContent),'模型未记录');
-  await page.click('[data-message="recovered-check"] .session-tool>summary');
-  assert.match(await page.$eval('[data-message="recovered-check"]',node=>node.textContent),/check script failed before correction/,'historical tool error remains inspectable');
-  await page.screenshot({path:path.join(out,'worker-delivered-after-tool-error.png'),fullPage:true});
-  for(const status of ['failed','interrupted','unknown']){
-    await page.evaluate(status=>{window.consumer.state.jobs[0].status=status;window.consumer.render();},status);
-    await page.waitForFunction(status=>document.querySelector('.session-worker-meta [data-execution-state]')?.dataset.executionState===status,{},status);
-  }
-  await page.evaluate(()=>{window.consumer.state.jobs[0].status='completed';window.consumer.state.receipts[0].jobId='stale-job';window.consumer.render();});
-  await page.waitForFunction(()=>document.querySelector('.session-worker-meta [data-execution-state]')?.dataset.executionState==='failed');
-  assert.equal(await page.$eval(workerState,node=>node.textContent),'失败','stale publication is not settlement proof');
-  await page.evaluate(()=>{window.consumer.state.receipts[0].jobId='published-job';window.consumer.state.receipts[0].objectId='wrong-result';window.consumer.render();});
-  await page.waitForFunction(()=>document.querySelector('.session-worker-meta [data-execution-state]')?.dataset.executionState==='failed');
-  await page.evaluate(()=>{
-    const c=window.consumer,receipt=c.state.receipts[0];receipt.objectId='published-result';receipt.report={objectId:'published-result',digest:'a'.repeat(64)};receipt.snapshot={reportDigest:'a'.repeat(64)};
-    c.state.works[0]={...c.state.works[0],revision:2,status:'running',result:null};
-    c.state.jobs.push({id:'continued-job',target:'work-one',revision:2,status:'running'});
-    c.store.apply('project-consumer',{version:1,entries:[{id:'continued-thinking',target:'work-one',workId:'work-one',jobId:'continued-job',revision:2,speaker:'agent',source:'native',sequence:5,reasoning:'继续执行',text:''}]});c.render();
-  });
-  await page.waitForFunction(()=>Array.from(document.querySelectorAll('.session-worker-meta [data-execution-state]')).map(node=>node.textContent).join('|')==='已交付|思考中');
-  await page.evaluate(()=>{window.consumer.state.works[0].status='review';window.consumer.state.works[0].result={objectId:'newer-result',revision:2};window.consumer.render();});
-  await page.waitForFunction(()=>document.querySelector('.session-worker-meta [data-execution-state]')?.textContent==='已交付');
-  await page.evaluate(()=>{const c=window.consumer;c.state.jobs=[];c.state.receipts=[];c.state.works=[{id:'work-one',name:'Native Worker'}];c.render();});
-  await page.evaluate(()=>window.consumer.store.reset('project-consumer'));
-  const fullOutput=Array.from({length:1200},(_,i)=>'native output line '+i+' — preserved').join('\n');
-  await page.evaluate(fullOutput=>{
-    const c=window.consumer;
-    c.pages.set('changes-one:0',{changeSetId:'changes-one',binding:{projectId:'project-consumer',workId:'work-one',revision:1,jobId:'job-one',receiptId:'receipt-one',inputCommit:'a'.repeat(40),candidateCommit:'b'.repeat(40)},files:[{fileId:'file-one',path:'src/space name.ts',oldPath:'old/source.py',status:'R100',added:7,deleted:3,binary:false,availability:'available'}],total:2,nextOffset:1});
-    c.pages.set('changes-one:1',{changeSetId:'changes-one',binding:{projectId:'project-consumer',workId:'work-one',revision:1,jobId:'job-one',receiptId:'receipt-one'},files:[{fileId:'file-two',path:'assets/picture.png',oldPath:null,status:'A',added:null,deleted:null,binary:true,availability:'unsupported',reason:'binary'}],total:2,nextOffset:null});
-    c.state.receipts=[{id:'receipt-one',workId:'work-one',jobId:'job-one',revision:1,changeSetId:'changes-one',files:[{path:'MODEL-INVENTED.ts'}]}];
-    c.store.apply('project-consumer',{version:1,entries:[{id:'native-worker',target:'worker',workId:'work-one',jobId:'job-one',revision:1,speaker:'agent',source:'native',sequence:1,text:fullOutput,reasoning:'Private native reasoning <script>window.consumerUnsafe=true</script>',toolCalls:[{id:'call-1',name:'read_file',input:{path:'src/space name.ts',unsafe:'<img onerror="window.consumerUnsafe=true">'}}]}],deltas:[]});
-    c.render();
-  },fullOutput);
-  await page.waitForSelector('[data-frozen-file="file-one"]');
-  assert.equal(await page.$eval('.session-worker details',node=>node.open),false,'Worker is collapsed by default');
-  assert.equal(await page.$('.session-worker-transcript'),null,'collapsed output is not mounted');
-  await page.click('.session-worker>details>summary');
-  await page.waitForSelector('.session-worker-transcript');
-  await page.evaluate(()=>window.consumer.render());
-  assert.equal(await page.$eval('.session-worker>details',node=>node.open),true,'mouse disclosure survives state refresh');
-  await page.focus('.session-worker>details>summary');await page.keyboard.press('Space');
-  await page.waitForFunction(()=>!document.querySelector('.session-worker-transcript'));
-  assert.equal(await page.$eval('[data-frozen-file="file-one"]',node=>node.closest('details')===null),true,'frozen files stay outside collapsed output');
-  assert.match(await page.$eval('[data-frozen-file="file-one"]',node=>node.textContent),/src\/space name\.ts/);
-  assert.match(await page.$eval('[data-frozen-file="file-one"]',node=>node.textContent),/old\/source\.py → src\/space name\.ts/);
-  assert.match(await page.$eval('[data-frozen-file="file-one"]',node=>node.textContent),/\+7/);
-  assert.match(await page.$eval('[data-frozen-file="file-one"]',node=>node.textContent),/−3/);
-  assert.equal(await page.$$eval('.session-frozen-files button',nodes=>nodes.some(node=>node.textContent.includes('MODEL-INVENTED'))),false,'model-authored file lists are not frozen evidence');
-  await page.click('[data-frozen-file="file-one"]');
-  assert.deepEqual(await page.evaluate(()=>window.consumer.opened),[{projectId:'project-consumer',changeSetId:'changes-one',fileId:'file-one'}]);
-  await page.$eval('.session-frozen-files',node=>[...node.querySelectorAll('button')].find(button=>button.textContent==='更多变更文件').click());
-  await page.waitForSelector('[data-frozen-file="file-two"]');
-  assert.equal(await page.$('[data-frozen-file="file-one"]'),null,'file pages replace rather than append');
-  assert.deepEqual(await page.evaluate(()=>window.consumer.calls),[
-    {op:'changes.list',args:{changeSetId:'changes-one',offset:0,limit:100}},
-    {op:'changes.list',args:{changeSetId:'changes-one',offset:1,limit:100}},
-  ]);
-  await page.focus('.session-worker>details>summary');await page.keyboard.press('Enter');
-  await page.waitForSelector('.session-worker-transcript .session-plain');
-  let consumed='';
-  for(;;){consumed+=await page.$eval('.session-worker-transcript>.session-message>.session-content .session-plain',node=>node.textContent);const next=await page.$('.session-worker-transcript>.session-message>.session-content nav button:last-child');if(!next||await next.evaluate(node=>node.disabled))break;await next.click();}
-  assert.equal(consumed,fullOutput,'bounded pages retain every line of native output');
-  await page.focus('.session-worker-transcript .session-tool summary');await page.keyboard.press('Enter');
-  await page.waitForFunction(()=>document.querySelector('.session-worker-transcript').textContent.includes('Private native reasoning'));
-  await page.$$eval('.session-worker-transcript .session-tool summary',nodes=>nodes.find(node=>node.textContent.includes('工具调用')).click());
-  await page.waitForFunction(()=>[...document.querySelectorAll('.session-tool summary')].some(node=>node.textContent.includes('read_file')));
-  await page.$$eval('.session-tool summary',nodes=>nodes.find(node=>node.textContent.includes('read_file')).click());
-  await page.waitForFunction(()=>document.querySelector('.session-worker-transcript').textContent.includes('src/space name.ts'));
-  await page.evaluate(()=>window.consumer.store.apply('project-consumer',{version:1,entries:[{id:'tool-result',target:'worker',workId:'work-one',jobId:'job-one',revision:1,speaker:'tool',source:'native',sequence:1.5,text:'native tool output preserved',tool:{name:'read_file',status:'complete',output:'native tool output preserved'}}]}));
-  await page.waitForSelector('.session-worker-transcript>.session-tool>summary');
-  await page.click('.session-worker-transcript>.session-tool>summary');
-  await page.waitForSelector('[data-process-entry="tool-result"] summary');
-  await page.click('[data-process-entry="tool-result"] summary');
-  await page.waitForFunction(()=>document.querySelector('[data-message="tool-result"]').textContent.includes('native tool output preserved'));
-  await page.click('.session-worker summary');
-  await page.waitForFunction(()=>!document.querySelector('.session-worker details').open);
-  assert.equal(await page.$eval('[data-frozen-file="file-two"]',node=>node.closest('details')===null),true);
-
+  await page.evaluate(()=>{const c=window.consumer;c.store.reset('project-consumer');c.state.jobs=[];c.state.agents=[];});
   await page.evaluate(()=>window.consumer.store.apply('project-consumer',{version:1,entries:[{id:'stream-frontdesk',target:'frontdesk',speaker:'agent',source:'native',sequence:2,jobId:'job-frontdesk',streaming:true,text:'partial stream'}]}));
   await page.waitForSelector('[data-message="stream-frontdesk"]');
   assert.equal(await page.evaluate(()=>window.consumer.messages().find(message=>message.id==='stream-frontdesk').streaming),true);
@@ -326,8 +241,6 @@ try {
   assert(reads.length>10);assert(reads.slice(1).every(({args})=>args.limit===16384&&args.version==='a'.repeat(64)&&Number.isSafeInteger(args.offset)));
   await page.click('[data-message="large-original"] .session-original>button');
   assert.equal(await page.$('[data-message="large-original"] .session-plain'),null,'closing releases the retained original page');
-  await page.focus('.session-worker>details>summary');await page.keyboard.press('Enter');
-  await page.waitForSelector('.session-worker-transcript');
   for(const width of [1440,800,390])for(const font of [14,20]){
     await page.setViewport({width,height:1000});
     await page.evaluate(font=>document.documentElement.style.setProperty('--conversation-font',font+'px'),font);
@@ -338,19 +251,6 @@ try {
   assert.equal(await page.$$eval('.session-timeline script,.session-timeline [onerror],.session-timeline a[href^="javascript:"]',nodes=>nodes.length),0);
   assert.equal(await page.evaluate(()=>window.consumerUnsafe===true),false);
   console.log('Synthetic-only styled surface screenshots: '+out);
-  await page.evaluate(()=>{const c=window.consumer;c.store.reset('project-consumer');c.state.receipts=[];const base={target:'worker',workId:'work-one',jobId:'density-round',revision:2,source:'native'};c.store.apply('project-consumer',{version:1,entries:[...Array.from({length:6},(_,i)=>({...base,id:'empty-'+i,speaker:i%2?'tool':'agent',sequence:i+1,text:''})),{...base,id:'useful-answer',speaker:'agent',sequence:7,text:'已完成关键核对，仍需你确认结果。'},{...base,id:'dense-tool',speaker:'tool',sequence:8,text:'TECHNICAL_OUTPUT_MARKER',tool:{name:'read_file',status:'complete',output:'TECHNICAL_OUTPUT_MARKER'}},{...base,id:'important-failure',speaker:'agent',sequence:9,text:'连接失败，已有修改保留。',status:'failed',failed:true}],deltas:[]});c.render();});
-  await page.waitForSelector('[data-message="important-failure"] [role="alert"]');
-  assert.equal(await page.$('.session-worker-transcript'),null,'failure stays visible before opening worker details');
-  await page.click('.session-worker>details>summary');await page.waitForSelector('[data-message="useful-answer"]');
-  assert.equal(await page.$$eval('.session-worker-transcript .session-message',nodes=>nodes.length),2,'only readable answer and failure create full message blocks');
-  assert.equal(await page.$('[data-message="empty-0"]'),null,'empty status records do not create empty messages or actions');
-  assert.equal(await page.$('[data-process-entry="dense-tool"]'),null,'opening worker detail does not expand raw tool records');
-  await page.click('.session-worker-transcript>.session-tool>summary');await page.waitForSelector('[data-process-entry="dense-tool"]');
-  assert.equal(await page.$('[data-process-entry="dense-tool"] .message-actions'),null);
-  assert.equal(await page.$('[data-process-entry="dense-tool"] .session-plain'),null,'technical body remains behind its own compact disclosure');
-  await page.screenshot({path:path.join(out,'compact-worker-details.png'),fullPage:true});
-  await page.click('[data-process-entry="dense-tool"] summary');await page.waitForFunction(()=>document.querySelector('[data-process-entry="dense-tool"]').textContent.includes('TECHNICAL_OUTPUT_MARKER'));
-  assert.equal(await page.evaluate(()=>consumer.store.getSnapshot().entries.length),9,'display filtering never deletes original records');
   const patch='diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-const value = 1;\n+const value = "<script>window.consumerUnsafe=true</script>";';
   await page.evaluate(patch=>{const c=window.consumer;c.store.reset('project-consumer');c.store.apply('project-consumer',{version:1,entries:[{id:'diff-output',target:'frontdesk',speaker:'agent',source:'native',sequence:1,text:'```diff\n'+patch+'\n```'}]});},patch);
   await page.waitForSelector('[data-message="diff-output"] code[data-highlighted=diff]');
@@ -363,31 +263,86 @@ try {
     assert.notEqual(colors.added.paper,colors.deleted.paper,'addition and deletion papers differ in '+theme);
   }
   assert.equal(await page.evaluate(()=>window.consumerUnsafe===true),false);
+  // DOM composition events exercise the guard, not an OS IME candidate window.
+  await page.evaluate(()=>{const c=consumer;c.store.reset('project-consumer');c.state.jobs=[];c.state.works=[];c.state.receipts=[];c.store.apply('project-consumer',{version:1,entries:Array.from({length:80},(_,i)=>({id:'reading-'+i,sequence:i,target:'frontdesk',speaker:'agent',source:'native',jobId:'reading-job-'+i,text:'Reading position '+i+'\\n'+('retained content '.repeat(20))})),deltas:[]});c.render();});
+  await page.waitForSelector('[data-message="reading-79"]');
+  await page.evaluate(()=>{const scroll=document.querySelector('#conversation');scroll.scrollTop=100;scroll.dispatchEvent(new Event('scroll'));document.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true,data:'中'}));window.__readingTop=scroll.scrollTop;consumer.store.apply('project-consumer',{version:1,entries:[{id:'reading-stream',sequence:81,target:'frontdesk',speaker:'agent',source:'native',jobId:'reading-stream-job',text:'STREAM_DURING_COMPOSITION',streaming:true}],deltas:[]});});
+  await page.waitForSelector('[data-message="reading-stream"]');
+  assert.equal(await page.$eval('#conversation',node=>node.scrollTop),await page.evaluate(()=>window.__readingTop),'streaming never pulls an active reader/IME to tail');
+  await page.evaluate(()=>{document.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true,data:'中'}));const text=document.querySelector('[data-message="reading-2"] .session-markdown');const range=document.createRange();range.selectNodeContents(text);getSelection().removeAllRanges();getSelection().addRange(range);window.__selectedReadingText=getSelection().toString();document.dispatchEvent(new Event('selectionchange'));consumer.store.apply('project-consumer',{version:1,entries:[{id:'reading-stream',sequence:81,target:'frontdesk',speaker:'agent',source:'native',jobId:'reading-stream-job',text:'STREAM_WITH_SELECTION',streaming:true}],deltas:[]});});
+  await page.waitForFunction(()=>consumer.store.getSnapshot().entries.some(entry=>entry.id==='reading-stream'&&entry.text==='STREAM_WITH_SELECTION'));
+  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  const heldSelection=await page.evaluate(()=>({text:getSelection().toString(),expected:window.__selectedReadingText,collapsed:getSelection().isCollapsed}));
+  assert(heldSelection.expected.length>0,'the guard exercises actual selected Markdown text');
+  assert.equal(heldSelection.collapsed,false);assert.equal(heldSelection.text,heldSelection.expected,'incoming stream retains the exact selected original text');
+  assert.equal(await page.$eval('#conversation',node=>node.scrollTop),await page.evaluate(()=>window.__readingTop),'selection locks reading position across stream updates');
+  // Reading Markdown deliberately defers DOM replacement while any selection
+  // is active. Releasing it makes the already-received stream readable.
+  await page.evaluate(()=>{getSelection().removeAllRanges();document.dispatchEvent(new Event('selectionchange'));});
+  await page.waitForFunction(()=>document.querySelector('[data-message="reading-stream"]').textContent.includes('STREAM_WITH_SELECTION'));
+  assert.equal(await page.$eval('#conversation',node=>node.scrollTop),await page.evaluate(()=>window.__readingTop),'flushing deferred Markdown does not resume tail-following');
+  // Process history is a separate immutable page, not a projection of live chat.
   await page.evaluate(()=>{
-    const c=window.consumer;c.store.reset('project-consumer');c.state.receipts=[];c.state.todos=[];c.state.agents=[];c.state.works=[];
-    c.state.jobs=[{id:'flow-root',target:'orchestrator',type:'intake',status:'queued',context:{manual:true}}];
-    c.store.apply('project-consumer',{version:1,entries:[{id:'flow-user',target:'frontdesk',speaker:'user',source:'host',jobId:'flow-root',taskRequestId:'flow-root',sequence:1,text:'按同一任务连续核对页面。'}],deltas:[]},{replace:true});c.render();
+    const c=window.consumer;c.calls.length=0;
+    const snapshot={version:1,entries:[{id:'old-round-text',target:'history-work',workId:'history-work',jobId:'old-job',revision:1,speaker:'agent',source:'native',sequence:1,text:'ORIGINAL_OLD_PAGE'}],deltas:[],hasMore:true,nextCursor:'scope-owned-cursor'};
+    const state={works:[{id:'history-work',name:'History work',revision:1,status:'running'}],jobs:[{id:'old-job',target:'history-work',revision:1,type:'initial',status:'running'}],receipts:[]};
+    window.__oldProcessSnapshot=snapshot;window.__oldProcessState=state;c.process(snapshot,state);
   });
-  await page.waitForSelector('[data-workflow-id]');await page.evaluate(()=>window.__originalWorkflowBlock=document.querySelector('[data-workflow-id]'));
+  await page.waitForSelector('#task-process-fixture [data-process-entry="old-round-text"]');
   await page.evaluate(()=>{
-    const c=window.consumer,w={id:'flow-work',name:'同一任务 · 多轮核对',revision:2,status:'ended',sourceJob:'flow-root',sourceInputJobIds:['flow-root','flow-supplement'],outcome:'discard',closure:{decision:'discard',revision:2,requestKey:'flow-discard-confirmed',binding:{workId:'flow-work',revision:2,objectId:null,candidateCommit:null},phase:'complete',stopped:true,report:{digest:'a'.repeat(64)},git:{complete:true,status:'discarded'},workerHome:{cleaned:true}}};c.state.works=[w];
-    c.state.jobs=[{id:'flow-root',target:'orchestrator',type:'intake',status:'completed',routing:{action:'dispatch',workId:w.id,name:w.name},context:{manual:true}},{id:'flow-first',target:w.id,type:'initial',status:'completed',revision:1,context:{sourceInputJobIds:['flow-root']}},{id:'flow-supplement',target:'orchestrator',type:'intake',status:'completed',routing:{action:'continue',workId:w.id,workName:w.name},context:{boundWorkId:w.id}},{id:'flow-second',target:w.id,type:'supplement',status:'completed',revision:2,context:{sourceJobId:'flow-supplement'}}];
-    const native=(id,target,jobId,revision,sequence,text)=>({id,target,jobId,revision,sequence,text,speaker:'agent',source:'native',recordKind:'conversation',complete:true});
-    c.store.apply('project-consumer',{version:1,entries:[{id:'flow-user',target:'frontdesk',speaker:'user',source:'host',jobId:'flow-root',taskRequestId:'flow-root',sequence:1,text:'按同一任务连续核对页面。'},native('flow-arrange','orchestrator','flow-root',null,2,'已安排原任务。'),native('flow-answer-one',w.id,'flow-first',1,3,'第一轮：核对完成。'),native('flow-continue','orchestrator','flow-supplement',null,4,'补充已交给原Worker。'),native('flow-answer-two',w.id,'flow-second',2,5,'第二轮：修改完成。'),{id:'flow-configuration',target:w.id,source:'native',speaker:'system',recordKind:'metadata',entryType:'model_change',sequence:6,text:''},{id:'ordinary-outside-flow',target:'frontdesk',speaker:'user',source:'host',sequence:7,text:'这是独立的普通前台问答。'}],deltas:[]},{replace:true});c.render();
+    const c=window.consumer,state=window.__oldProcessState;
+    c.process(window.__oldProcessSnapshot,{...state,works:[{...state.works[0],status:'ended',outcome:'accept',revision:2}],receipts:[{id:'future-receipt',workId:'history-work',jobId:'future-job',revision:1,changeSetId:'FUTURE_SAME_REVISION_CHANGESET',objectId:'future-object'}]});
   });
-  await page.waitForSelector('[data-workflow-work="flow-work"] [data-work-closeout="flow-work"]');
-  assert.equal(await page.evaluate(()=>document.querySelector('[data-workflow-work="flow-work"]')===window.__originalWorkflowBlock),true,'receiving a Work identity must retain the original intake block DOM');
-  assert.equal(await page.$$eval('[data-workflow-work="flow-work"] [data-worker-round]',nodes=>nodes.length),2,'one real card per actual Worker round, never a third metadata round');
-  const flow=await page.$eval('[data-workflow-work="flow-work"]',node=>({order:[...node.querySelectorAll('[data-orchestrator-job],[data-worker-round],[data-work-closeout]')].map(n=>n.hasAttribute('data-work-closeout')?'closeout':n.hasAttribute('data-worker-round')?'worker':'orchestrator'),outside:!node.contains(document.querySelector('[data-message="ordinary-outside-flow"]'))}));
-  assert.deepEqual(flow.order,['orchestrator','worker','orchestrator','worker','closeout']);assert.equal(flow.outside,true,'unrelated foreground conversation must stay outside this task');
-  for(const theme of ['light','dark']){await page.setViewport({width:390,height:2300});await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);await page.screenshot({path:path.join(out,'unified-workflow-'+theme+'.png'),fullPage:true});}
-  console.log('Unified intake -> Worker multi-round -> Orchestrator closeout block verified');
+  await page.waitForFunction(()=>document.querySelector('#task-process-fixture').textContent.includes('ORIGINAL_OLD_PAGE'));
+  assert.equal(await page.$('#task-process-fixture [data-work-closeout]'),null,'later live closure never leaks into an old scoped page');
+  assert.equal(await page.$('#task-process-fixture [data-change-set="FUTURE_SAME_REVISION_CHANGESET"]'),null,'later receipt of the same revision is not evidence for this old job');
+  await page.click('#task-process-fixture [data-task-page="earlier"]');
+  assert.deepEqual(await page.evaluate(()=>consumer.calls.filter(c=>c.op==='process.page')),[{op:'process.page',cursor:'scope-owned-cursor'}]);
+  assert.equal(await page.$eval('#task-process-fixture [data-process-entry="old-round-text"]',node=>node.textContent.includes('ORIGINAL_OLD_PAGE')),true);
+  // A scoped process page larger than the chat-store budget keeps the host's
+  // exact scoped cursor; it must not manufacture a global chat cursor.
+  await page.evaluate(async()=>{
+    const entries=Array.from({length:450},(_,i)=>({id:'budget-'+i,target:'budget-work',workId:'budget-work',jobId:'budget-job',revision:1,sequence:i,speaker:'agent',source:'native',text:'bounded process row '+i}));
+    consumer.state.works=[{id:'budget-work',sourceJob:'budget-intake',revision:1,status:'running'}];consumer.state.jobs=[{id:'budget-intake',type:'intake',target:'orchestrator'},{id:'budget-job',target:'budget-work',type:'initial',revision:1,status:'running'}];
+    await consumer.workspace({version:1,entries,deltas:[],hasMore:true,nextCursor:'EXACT_HOST_SCOPE_CURSOR'});
+  });
+  await page.waitForSelector('#scope-workspace [data-task-page="earlier"]');
+  await page.click('#scope-workspace [data-task-page="earlier"]');
+  await page.waitForFunction(()=>consumer.calls.some(c=>c.op==='timeline.page'&&c.args.cursor==='EXACT_HOST_SCOPE_CURSOR'));
+  await page.evaluate(()=>consumer.workspace(window.__scopeFrame,{workId:'budget-work'}));
+  await page.waitForFunction(()=>consumer.calls.some(c=>c.op==='timeline.page'&&c.args.workId==='budget-work'));
+  const scopedCalls=await page.evaluate(()=>consumer.calls.filter(c=>c.op==='timeline.page'));
+  assert.equal(scopedCalls.at(-1).args.cursor,undefined,'a new immutable Work query identity never reuses the source-only cursor');
+  assert(scopedCalls.every(c=>c.args.sourceJobId==='budget-intake'||c.args.workId==='budget-work'));
+  const visibleScope='#scope-workspace .task-workspace-page:not([hidden])';
+  await page.waitForSelector(visibleScope+' [data-process-entry="budget-449"]');
+  await page.click(visibleScope+' [data-task-page="earlier"]');
+  await page.waitForFunction(selector=>!document.querySelector(selector+' [data-task-page="latest"]').disabled,{},visibleScope);
+  const oldPageCalls=await page.evaluate(()=>consumer.calls.filter(c=>c.op==='timeline.page').length);
+  await page.evaluate(()=>{window.__scopeFrame={version:1,entries:[{id:'live-scope-new-body',target:'budget-work',workId:'budget-work',jobId:'budget-job',revision:1,sequence:999,speaker:'agent',source:'native',text:'LIVE_SCOPE_BODY_NOT_HEADER'}],deltas:[],hasMore:false,nextCursor:null};window.__scopeListeners.agent({projectId:'project-consumer',kind:'managed-timeline'});});
+  assert.equal(await page.evaluate(()=>consumer.calls.filter(c=>c.op==='timeline.page').length),oldPageCalls,'old process page never automatically issues a latest query');
+  assert.equal(await page.$(visibleScope+' [data-process-entry="live-scope-new-body"]'),null,'new live body cannot replace an older page');
+  assert(await page.$(visibleScope+' [data-process-entry="budget-449"]'),'bounded old page content is retained');
+  await page.click(visibleScope+' [data-task-page="latest"]');
+  await page.waitForSelector(visibleScope+' [data-process-entry="live-scope-new-body"]');
+  assert.match(await page.$eval(visibleScope,node=>node.textContent),/LIVE_SCOPE_BODY_NOT_HEADER/,'explicit latest changes actual process body, not just header');
+  await page.evaluate(()=>{window.__retainedProcess=document.querySelector('#scope-workspace [data-task-process]');window.__scopeListeners['workspace.control']({type:'host',projectId:'project-consumer',viewId:'work-reader',kind:'task-process',readOnly:true,generation:1,viewState:{taskScope:{workId:'budget-work'},taskMode:'overview'}});});
+  await page.waitForFunction(()=>document.querySelector('#scope-workspace .task-workspace-page:not([hidden])').textContent.includes('只读任务概览'));
+  await page.evaluate(()=>window.__scopeListeners['workspace.control']({type:'host',projectId:'project-consumer',viewId:'work-reader',kind:'task-process',readOnly:true,generation:1,viewState:{taskScope:{workId:'foreign-task'},taskMode:'process'}}));
+  assert.match(await page.$eval(visibleScope,n=>n.textContent),/只读任务概览/,'foreign task scope cannot switch the bound reader');
+  await page.evaluate(()=>window.__scopeListeners['workspace.control']({type:'host',projectId:'project-consumer',viewId:'work-reader',kind:'task-process',readOnly:true,generation:1,viewState:{taskScope:{workId:'budget-work'},taskMode:'process'}}));
+  await page.waitForSelector(visibleScope+' [data-process-entry="live-scope-new-body"]');
+  assert.equal(await page.evaluate(()=>document.querySelector('#scope-workspace [data-task-process]')===window.__retainedProcess),true,'same-scope host mode switch retains the existing process DOM');
   await page.evaluate(()=>window.consumer.destroy());
   console.log('Session timeline React/Electron consumer contracts passed');
 } catch(error) {
+  const diagnostics=await page?.evaluate(()=>({url:location.href,readyState:document.readyState,consumerReady:Boolean(window.consumer),startup:window.__consumerDiagnostics})).catch(cause=>({unavailable:cause.message}));
+  await fs.writeFile(path.join(out,'browser-diagnostics.json'),JSON.stringify({diagnostics,events:browserEvents},null,2));
+  console.error('Browser initialization/runtime diagnostics: '+JSON.stringify({diagnostics,events:browserEvents},null,2));
   console.error('Session timeline consumer failure; artifacts: '+out+'\n'+log);
   throw error;
 } finally {
+  await fs.writeFile(path.join(out,'browser-events.json'),JSON.stringify(browserEvents,null,2));
   await browser?.disconnect();
   if(child.exitCode===null){child.kill('SIGTERM');await Promise.race([exited,pause(5000)]);if(child.exitCode===null){child.kill('SIGKILL');await exited;}}
   await fs.writeFile(path.join(out,'electron.log'),log);

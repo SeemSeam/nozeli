@@ -1,6 +1,6 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { validateDocumentSource, isProjectDocumentSource, sameDocumentSource, documentResourceId, reviewTagNamespace } from '../domain/document-source.mjs';
-import { createLayout, validateLayout, reduceLayout, singleContentLayout, layoutGroups, findView } from '../domain/workspace-layout.mjs';
+import { createLayout, validateLayout, reduceLayout, singleContentLayout, layoutGroups, findView, taskResourceId } from '../domain/workspace-layout.mjs';
 import {WorkspaceLayoutStore} from './workspace-layout-store.mjs';
 import {mergeDrawingMaterials} from '../domain/drawing-delivery.mjs';
 import {normalizeOfficeRecovery} from './office-recovery.mjs';
@@ -12,6 +12,8 @@ import {applyViewGeometry} from './view-geometry.mjs';
 const fail = (code, message = code) => Object.assign(new Error(message), { code });
 const writes = new Set(['file.save','file.draft','file.retain','sheet.save','sheet.recover','word.save','word.import','document.image.put','annotation.add','annotation.update','annotation.remove','annotation.drawing','tag.put','tag.view','tag.reanchor','tag.material']);
 const surfaceOps = /^(file\.|document\.|annotation\.|tag\.|material\.|word\.|sheet\.|ppt\.|formatter\.|lsp\.(sync|request|status)$|tex\.|managed\.|report\.|project\.(open|list|children|search)$|agents\.(messages|reports)$|config\.status$|settings\.appearance\.read$|links\.openExternal$|project-terminal\.|state\.(read|write)$|view\.authorship$|session\.(flushed|requestClose|capture|resize|quitChoice)$)/;
+const taskReads=new Set(['managed.status','managed.timeline.page','managed.timeline.read','managed.changes.list','managed.changes.read','managed.history.read','managed.artifact.list','managed.artifact.read']);
+const taskWorkspaceOps=new Set(['workspace.bootstrap','workspace.ready','workspace.command','workspace.control','workspace.displayView.read','workspace.displayView.write','managed.timeline.export','settings.appearance.read','session.flushed']);
 
 const topology=layout=>JSON.stringify({mainRoot:layout.mainRoot,detached:layout.detached.map(({id,root})=>({id,root})),views:Object.values(layout.views).map(({id,kind,resourceId,relPath})=>({id,kind,resourceId,relPath}))});
 export function restoreBounds(bounds, screen) {
@@ -188,6 +190,61 @@ export class WorkspaceNative {
   requireSameSource(record, payload){
     if(!sameDocumentSource(this.payloadSource(payload), record.documentSource)) throw fail('EDIT_LEASE_DENIED','写入只能作用于本内容面的文档来源。');
   }
+  async taskSource(projectId,taskScope){
+    const source=await this.managedAgents.projectionSource(projectId),scope=source.index.scope(taskScope);
+    if(!scope)throw fail('TIMELINE_SCOPE');
+    return {...source,scope};
+  }
+  async authorizeTaskExport(record,p){
+    if(p.projectId!==record.projectId)throw fail('PROJECT_SCOPE_DENIED');
+    const descriptor=this.layouts.get(record.projectId)?.views[record.viewId];
+    if(!descriptor?.viewState?.taskScope)throw fail('TIMELINE_SCOPE');
+    const {index,scope}=await this.taskSource(record.projectId,descriptor.viewState.taskScope),entry=index.records().find(row=>row.id===p.id);
+    if(!entry||!scope.matches(entry))throw fail('TIMELINE_SCOPE');
+    if(p.version!==entry.objectId)throw fail('TIMELINE_VERSION');
+  }
+  async taskManagedRead(record,op,p){
+    if(p.projectId!==record.projectId)throw fail('PROJECT_SCOPE_DENIED');
+    const descriptor=this.layouts.get(record.projectId)?.views[record.viewId],taskScope=descriptor?.viewState?.taskScope;
+    if(!taskScope||!taskReads.has(op))throw fail('IPC_DENIED');
+    const {state,index,scope}=await this.taskSource(record.projectId,taskScope),matches=scope.matches;
+    if(op==='managed.status')return {enabled:true,ready:false,state:{works:(state.works??[]).filter(row=>row.id===taskScope.workId),jobs:(state.jobs??[]).filter(row=>matches({jobId:row.id})),receipts:(state.receipts??[]).filter(matches),messages:[],todos:[]}};
+    if(op==='managed.timeline.page'){
+      if(p.workId!==taskScope.workId||p.sourceJobId!==taskScope.sourceJobId)throw fail('TIMELINE_SCOPE');
+    }else if(op==='managed.timeline.read'){
+      const row=index.ordered().find(row=>row.id===p.id);
+      if(!row||!matches(row.native??row.legacy??row.delta))throw fail('TIMELINE_SCOPE');
+    }else{
+      const receipt=(state.receipts??[]).find(row=>op.startsWith('managed.changes.')?row.changeSetId===p.changeSetId:row.objectId===p.objectId);
+      if(!receipt||!matches(receipt))throw fail('TIMELINE_SCOPE');
+    }
+    return this.managedAgents.invoke(op,p);
+  }
+  async taskMaterial(record,p){
+    if(p.projectId!==record.projectId)throw fail('PROJECT_SCOPE_DENIED');
+    const projectId=record.projectId,generation=record.generation;
+    const {state,scope}=await this.taskSource(projectId,this.layouts.get(projectId)?.views[record.viewId]?.viewState?.taskScope);
+    const assertSender=()=>{if(record.dead||record.projectId!==projectId||record.generation!==generation)throw fail('PROJECT_SCOPE_DENIED');};assertSender();
+    const root=this.windows.get(record.windowId)??this.shell;
+    if(!root||root.dead||root.projectId!==record.projectId)throw fail('NO_ROOT');
+    if(p.type==='report'){
+      if(p.report?.kind!=='diff'||p.report.target?.projectId!==record.projectId||Object.keys(p).some(key=>!['type','projectId','report'].includes(key)))throw fail('IPC_DENIED');
+      const target=p.report.target;
+      if(Object.keys(target).some(key=>!['projectId','changeSetId','fileId'].includes(key)))throw fail('IPC_DENIED');
+      await this.taskManagedRead(record,'managed.changes.read',target);
+      assertSender();if(root.dead||root.projectId!==projectId)throw fail('PROJECT_SCOPE_DENIED');
+      root.wc.send('nozeli:workspace-control',{type:'report',projectId:record.projectId,report:{kind:'diff',target:{projectId:record.projectId,changeSetId:target.changeSetId,fileId:target.fileId}}});return {routed:true};
+    }
+    const source=this.payloadSource(p),receipt=(state.receipts??[]).find(row=>row.objectId===source.objectId&&row.workId===source.workId);
+    if(Object.keys(p).some(key=>!['type','projectId','relPath','documentSource'].includes(key))||isProjectDocumentSource(source)||!receipt||!scope.matches(receipt)||typeof p.relPath!=='string'||!p.relPath||/[\\\x00-\x1f]/.test(p.relPath)||p.relPath.startsWith('/')||p.relPath.split('/').some(part=>!part||part==='.'||part==='..'))throw fail('TIMELINE_SCOPE');
+    let offset=0,found=false;
+    do{const page=await this.taskManagedRead(record,'managed.changes.list',{projectId:record.projectId,changeSetId:receipt.changeSetId,offset,limit:100});found=page.files.some(file=>file.path===p.relPath||file.oldPath===p.relPath);if(found||page.nextOffset===null)break;offset=page.nextOffset;}while(true);
+    if(!found)throw fail('TIMELINE_SCOPE');
+    assertSender();if(root.dead||root.projectId!==projectId)throw fail('PROJECT_SCOPE_DENIED');
+    const layout=await this.layout(record.projectId);
+    assertSender();if(root.dead||root.projectId!==projectId)throw fail('PROJECT_SCOPE_DENIED');
+    return this.command(root,{projectId:record.projectId,expectedRevision:layout.revision,requestKey:randomUUID(),command:{type:'open',view:{kind:'document',relPath:p.relPath,documentSource:source,readOnly:true}}});
+  }
   async resolvePayload(record,op,payload){
     if(record.role!=='surface'||!['annotation.remove','annotation.update'].includes(op))return payload;
     if(payload.projectId!==record.projectId)throw fail('PROJECT_SCOPE_DENIED');
@@ -207,6 +264,13 @@ export class WorkspaceNative {
     if(r.role==='demo-hint'){if(!this.demoControls.hintOwns(r)||!this.demoControls.hintAllowed(op))throw fail('IPC_DENIED');return r;}
     if(r.role==='review-discussion')return this.reviewDiscussions.authorize(r,op,payload);
     if (payload.projectId && payload.projectId !== r.projectId && !(r.role === 'shell' && (['demo.state','demo.exit','managed.status','managed.attention.ack','managed.fault.status','managed.work.control.status','managed.work.control','workspace.project','workspace.closeProject','workspace.recovery.detail','workspace.recovery.export','workspace.recovery.object','workspace.recovery.settle','project.open','project.remove','project.retry','project.lifecycle.preview','project.lifecycle.reconcile'].includes(op)||op==='demo.transition'&&payload.action==='stop'))) throw fail('PROJECT_SCOPE_DENIED');
+    if(r.role==='surface'&&r.kind==='task-process'){
+      if(!taskReads.has(op)&&!taskWorkspaceOps.has(op))throw fail('IPC_DENIED');
+      if(op==='workspace.command'&&(payload.command?.type!=='restoreViewState'||payload.command.viewId!==r.viewId))throw fail('IPC_DENIED');
+      if(op==='workspace.command'&&taskResourceId(r.projectId,payload.command.viewState?.taskScope)!==this.layouts.get(r.projectId)?.views[r.viewId]?.resourceId)throw fail('TIMELINE_SCOPE');
+      if(op==='workspace.control'&&!['task-workspace','pane-pointer','window-control','open-file','report'].includes(payload.type))throw fail('IPC_DENIED');
+      if(op.startsWith('workspace.displayView.')&&(payload.projectId!==r.projectId||payload.key?.surfaceId!==r.viewId||payload.key?.ownerKind!=='task-process'||payload.key?.ownerId!==this.layouts.get(r.projectId)?.views[r.viewId]?.resourceId))throw fail('IPC_DENIED');
+    }
     if(op.startsWith('demo.')){if(op==='demo.result'){if(!['surface','shell','detached'].includes(r.role))throw fail('IPC_DENIED');}else if(!['demo.state','demo.send','demo.interrupt'].includes(op)&&r.role!=='shell')throw fail('IPC_DENIED');return r;}
     if(r.role==='surface'&&r.kind==='terminal'&&op.startsWith('managed.')&&(op!=='managed.terminal.screen'||payload.target!==this.layouts.get(r.projectId)?.views[r.viewId]?.viewState?.workId))throw fail('IPC_DENIED');
     if(op.startsWith('project-terminal.')){
@@ -291,7 +355,7 @@ export class WorkspaceNative {
       r.readOnly = this.leases.get(key)?.viewId !== r.viewId;
     }else if(descriptor?.readOnly)r.readOnly=true;
     const viewState=this.layouts.get(r.projectId)?.views[r.viewId]?.viewState;
-    return { role: r.role, projectId: r.projectId, viewId: r.viewId, kind: r.kind, relPath: r.relPath, ...(r.kind==='web'?{url:descriptor?.url,title:descriptor?.title}:{}), ...(r.documentSource !== undefined ? { documentSource: structuredClone(r.documentSource) } : {}), resourceId: descriptor?.resourceId ?? null, documentKey: r.role === 'surface' && r.kind === 'document' ? this.resourceOfRecord(r) : null, windowId: r.windowId, generation: r.generation, readOnly: !!r.readOnly, draftOnly:viewState?.draftOnly===true, viewState, lease: r.relPath ? this.leases.get(this.resource(r.projectId, r.relPath, r.documentSource)) : null, contentFailed: !!r.contentFailed, initError: r.initError ?? null };
+    return { ...(r.kind==='task-process'?{workspace:r.taskWorkspace??{}}:{}), role: r.role, projectId: r.projectId, viewId: r.viewId, kind: r.kind, relPath: r.relPath, ...(r.kind==='web'?{url:descriptor?.url,title:descriptor?.title}:{}), ...(r.documentSource !== undefined ? { documentSource: structuredClone(r.documentSource) } : {}), resourceId: descriptor?.resourceId ?? null, documentKey: r.role === 'surface' && r.kind === 'document' ? this.resourceOfRecord(r) : null, windowId: r.windowId, generation: r.generation, readOnly: !!r.readOnly, draftOnly:viewState?.draftOnly===true, viewState, lease: r.relPath ? this.leases.get(this.resource(r.projectId, r.relPath, r.documentSource)) : null, contentFailed: !!r.contentFailed, initError: r.initError ?? null };
   }
   flush(records) { return Promise.all([...new Set(records)].filter(r => !r.dead&&!['demo-controls','demo-hint'].includes(r.role)).map(r => this.flushOne(r))).then(() => this.host.settled()); }
   async flushOne(record, channel = 'nozeli:flush', detail = {}) {
@@ -752,7 +816,7 @@ export class WorkspaceNative {
       if(!this.projectRecords(r.projectId).some(surface=>surface.relPath===r.relPath&&sameDocumentSource(surface.documentSource,r.documentSource))){const retained=this.buffers.get(key);if(!retained?.dirty)this.buffers.delete(key);}
     }
   }
-  async command(r, payload) {
+  async command(r, payload, {taskOpen=false}={}) {
     if (r.role === 'surface' && payload.command?.type !== 'restoreViewState') throw fail('IPC_DENIED');
     if (payload.projectId !== r.projectId || r.role === 'surface' && payload.command.viewId !== r.viewId) throw fail('PROJECT_SCOPE_DENIED');
     if(payload.command?.type==='dock'){
@@ -778,6 +842,7 @@ export class WorkspaceNative {
       const previous = this.requests.get(requestId);
       if (previous) { if (previous.input !== JSON.stringify(payload)) throw fail('REQUEST_KEY_REUSED'); return previous.result; }
       if (payload.expectedRevision !== layout.revision && !(r.role==='surface'&&payload.command?.type==='restoreViewState'&&payload.expectedRevision===undefined)) throw fail('LAYOUT_STALE');
+      if(command.type==='openTask'&&!taskOpen||command.type==='open'&&command.view?.kind==='task-process')throw fail('IPC_DENIED');
       const command = { ...payload.command };
       if(command.type==='webNavigate')throw fail('IPC_DENIED','网页导航信息只由隔离浏览宿主写入。');
       if(command.type==='restoreViewState'&&layout.views[command.viewId]?.kind==='conversation'){
@@ -787,7 +852,7 @@ export class WorkspaceNative {
       if(command.type==='open'&&command.view?.kind==='document'){
         let openSource;try{openSource=validateDocumentSource(command.view.documentSource);}catch(error){throw fail('INVALID_DOCUMENT_SOURCE',error.message);}
         if(openSource.type!=='project'&&this.reviewBarrierActive(payload.projectId,openSource))throw fail('REVIEW_BARRIER_ACTIVE','此审校文档正在决策屏障中；请稍后重试打开。');
-        const existing=Object.values(layout.views).find(v=>v.kind==='document'&&v.relPath===command.view.relPath&&sameDocumentSource(v.documentSource,openSource)&&!v.readOnly);
+        const existing=Object.values(layout.views).find(v=>v.kind==='document'&&v.relPath===command.view.relPath&&sameDocumentSource(v.documentSource,openSource)&&Boolean(v.readOnly)===Boolean(command.view.readOnly));
         if(existing){const target=command.groupId;for(const key of Object.keys(command))delete command[key];command.type='activate';command.viewId=existing.id;command.groupId=target;const owner=this.surfaces.get(existing.id);if(owner){owner.win.show();owner.win.focus();}}
       }
       if(command.type==='floatOpen')command.type='detach';
@@ -807,6 +872,7 @@ export class WorkspaceNative {
         for(const view of Object.values(next.views))if(view.sourceViewId)view.sourceViewId=remapped.get(view.sourceViewId)??view.sourceViewId;
         next.closedViews=structuredClone(layout.closedViews??[]);
         next.revision=layout.revision+1;validateLayout(next);
+      for(const view of Object.values(next.views))if(view.kind==='task-process'&&!layout.views[view.id])await this.taskSource(next.projectId,view.viewState.taskScope);
       }else next=reduceLayout(layout, command);
       for(const owner of this.projectRecords(layout.projectId).filter(s=>s.kind==='web'&&!next.views[s.viewId])){const closed=await this.onlineBrowser?.closeScope(owner);if(closed?.cancelled||closed?.closed===false)throw fail('WEB_CLOSE_CANCELLED','网页仍有未提交输入，已保留。');}
       if(command.type==='restoreViewState')next.revision=layout.revision;
@@ -981,7 +1047,10 @@ export class WorkspaceNative {
     if(op==='workspace.demoControls.update')return this.demoControls.update(r,p.model);
     if(op==='workspace.demoControls.readyForPlay')return this.demoControls.readyForPlay(r,p.sessionId);
     if(op==='workspace.demoHint.update')return this.demoControls.hintUpdate(r,p.hint);
-    if (op === 'workspace.bootstrap') return this.bootstrap(r);
+    if (op === 'workspace.bootstrap') {
+      if(r.kind==='task-process'){const workspace=(await this.host.readState(r.projectId)).state?.workspace;r.taskWorkspace={...(Number.isFinite(workspace?.conversationFontSize)?{conversationFontSize:workspace.conversationFontSize}:{})};}
+      return this.bootstrap(r);
+    }
     if (op === 'workspace.closeProject') {
       if (r.role !== 'shell') throw fail('IPC_DENIED');
       return this.closeProject(p.projectId, {operationId:p.operationId});
@@ -1048,6 +1117,7 @@ export class WorkspaceNative {
       const skips=p.workspace.confirmationSkips;
       if(Object.entries(p.workspace).some(([key,value])=>key!=='confirmationSkips'&&!Number.isFinite(value))||skips!==undefined&&(!skips||typeof skips!=='object'||Array.isArray(skips)||Object.entries(skips).some(([key,value])=>!['closeDocument','closeCompare','removeTag','deleteNote'].includes(key)||typeof value!=='boolean'))||p.projectSettings!==undefined&&(!p.projectSettings||Object.keys(p.projectSettings).some(key=>key!=='focusMode')||typeof p.projectSettings.focusMode!=='boolean'))throw fail('INVALID_SETTINGS');
       const prior=(await this.host.readState(r.projectId)).state??{};
+      for(const record of this.projectRecords(r.projectId))if(record.kind==='task-process')record.taskWorkspace={conversationFontSize:value.state.workspace.conversationFontSize};
       const value=await this.host.writeState(r.projectId,{...prior,workspace:{...prior.workspace,...p.workspace},projectSettings:p.projectSettings??prior.projectSettings});
       this.broadcast('nozeli:workspace-control',{type:'settings',projectId:r.projectId,workspace:value.state.workspace,projectSettings:value.state.projectSettings},r.projectId);return value;
     });
@@ -1086,7 +1156,7 @@ export class WorkspaceNative {
     if (op === 'workspace.displayView.read' || op === 'workspace.displayView.write') {
       if (!r.projectId || p.projectId !== r.projectId) throw fail('PROJECT_SCOPE_DENIED');
       const projectId=r.projectId, project = await this.host.storage.requireRegistered(projectId), input = p.key;
-      if (!input || !['annotation','snapshot','review','web'].includes(input.ownerKind) || typeof input.ownerId !== 'string' || !input.ownerId || input.ownerId.length > 16384 || typeof input.surfaceId !== 'string' || input.surfaceId !== (r.role==='review-discussion'?r.discussionRow.ownerSurfaceId:r.viewId || r.windowId || r.role)) throw fail('INVALID_DISPLAY_KEY');
+      if (!input || !['annotation','snapshot','review','web','task-process'].includes(input.ownerKind) || typeof input.ownerId !== 'string' || !input.ownerId || input.ownerId.length > 16384 || typeof input.surfaceId !== 'string' || input.surfaceId !== (r.role==='review-discussion'?r.discussionRow.ownerSurfaceId:r.viewId || r.windowId || r.role)) throw fail('INVALID_DISPLAY_KEY');
       const key = {projectInstanceId:project.instanceId,ownerKind:input.ownerKind,ownerId:input.ownerId,surfaceId:input.surfaceId};
       const storageKey = 'display-view:' + JSON.stringify(key);
       this.displayViewWrites ||= new Map();
@@ -1160,6 +1230,35 @@ export class WorkspaceNative {
       this.demoControls.raise();
       return {};
     }
+      if(r.kind==='task-process'&&['open-file','report'].includes(p.type))return this.taskMaterial(r,p);
+      if(p.type==='task-workspace'){
+        if(!(r.role==='shell'||r.role==='surface'&&['conversation','task-process'].includes(r.kind)))throw fail('IPC_DENIED');
+        const validId=id=>typeof id==='string'&&id.length>0&&id.length<=512&&!/[\x00-\x1f]/.test(id);
+        if(p.projectId!==r.projectId||!['process','overview','locate','inspect'].includes(p.action)||Object.keys(p).some(key=>!['type','action','projectId','workId','sourceJobId','section'].includes(key))||!validId(p.workId)&&!validId(p.sourceJobId)||p.workId!==undefined&&!validId(p.workId)||p.sourceJobId!==undefined&&!validId(p.sourceJobId)||p.action==='inspect'&&!['details','report','control','versions','request'].includes(p.section)||p.action!=='inspect'&&p.section!==undefined)throw fail('INVALID_COMMAND');
+        const projectId=r.projectId,generation=r.generation,taskScope={...(p.workId!==undefined?{workId:p.workId}:{}),...(p.sourceJobId!==undefined?{sourceJobId:p.sourceJobId}:{})};
+        if(r.kind==='task-process'&&taskResourceId(projectId,taskScope)!==this.layouts.get(projectId)?.views[r.viewId]?.resourceId)throw fail('TIMELINE_SCOPE');
+        await this.taskSource(projectId,taskScope);
+        const assertSender=()=>{if(r.dead||r.projectId!==projectId||r.generation!==generation)throw fail('PROJECT_SCOPE_DENIED');};assertSender();
+        if(['process','overview'].includes(p.action)){
+          const layout=await this.layout(projectId),root=this.windows.get(r.windowId)??this.shell;
+          if(!root||root.dead||root.projectId!==projectId)throw fail('MAIN_WINDOW_UNAVAILABLE');
+          const result=await this.command(root,{projectId,expectedRevision:layout.revision,requestKey:randomUUID(),command:{type:'openTask',scope:taskScope,mode:p.action}},{taskOpen:true});assertSender();
+          const descriptor=Object.values(result.layout.views).find(view=>view.kind==='task-process'&&view.resourceId===taskResourceId(projectId,taskScope)&&!view.sourceViewId),owner=this.surfaces.get(descriptor.id);
+          if(owner){owner.wc.send('nozeli:workspace-control',{type:'host',...this.bootstrap(owner)});owner.win.show();owner.win.focus();if(owner.ready)owner.wc.focus();}
+          return {routed:true,viewId:descriptor.id};
+        }
+        const owner=p.action==='locate'?this.projectRecords(projectId).find(row=>!row.dead&&row.kind==='conversation'):this.shell;
+        if(!owner)return {routed:false};
+        if(owner.dead||owner.projectId!==projectId)throw fail('PROJECT_SCOPE_DENIED');
+        if(p.action==='locate'){
+          const layout=await this.layout(projectId),root=this.windows.get(owner.windowId);
+          if(!layout.views[owner.viewId]||!root||root.dead)throw fail('NO_ACTIVE_VIEW');
+          await this.command(root,{projectId,expectedRevision:layout.revision,requestKey:randomUUID(),command:{type:'activate',viewId:owner.viewId}});
+        }
+        assertSender();if(owner.dead||owner.projectId!==projectId)throw fail('PROJECT_SCOPE_DENIED');
+        if(owner.ready)owner.wc.send('nozeli:workspace-control',p);else(owner.pendingControls??=[]).push(p);
+        owner.win.show();owner.win.focus();if(owner.ready)owner.wc.focus();return {routed:true};
+      }
     if (op === 'workspace.control') {
       if(p.type==='open-settings'){
         if(!['settings-appearance','settings-reading-display','settings-provider','settings-models','settings-agents','settings-recovery','settings-help'].includes(p.section))throw fail('INVALID_SETTINGS');

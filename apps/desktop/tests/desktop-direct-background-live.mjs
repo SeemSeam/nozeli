@@ -62,6 +62,14 @@ try{
  assert.equal(await fs.readFile(path.join(work.execution.directory,'result.txt'),'utf8'),'DIRECT_BACKGROUND');await assert.rejects(fs.stat(path.join(project,'result.txt')),{code:'ENOENT'});assert.equal(await fs.readFile(path.join(project,'input.txt'),'utf8'),'USER INPUT MUST REMAIN UNCHANGED\n');
  await chat.waitForFunction(()=>document.querySelector('#composer').value==='');report.events=await chat.evaluate(()=>window.__taskEvents);assert(report.events.some(event=>event.type==='click'&&event.trusted));report.checks.push('visible repeated clicks create one orchestrator intake and one real native Worker, never a foreground message');report.checks.push('accepted snapshot clears and actual Worker result stays isolated pending review');
  assert.equal(await chat.$eval('#toast',node=>node.hidden||!node.textContent.startsWith('发送未发出')),true,'a corrected accepted submission does not retain its obsolete failure notice');
+ const submitted=s.messages.find(message=>message.speaker==='user'&&message.taskRequestId===s.jobs.find(job=>job.type==='intake').id);
+ await chat.waitForSelector('[data-message="'+submitted.id+'"] [data-input-route="background"]');
+ assert.equal(await chat.$eval('[data-message="'+submitted.id+'"]',node=>node.querySelector('header').textContent.includes('后台任务')&&![...node.querySelectorAll('.message-actions button')].some(button=>button.textContent==='转为后台任务')),true,'accepted direct task is visibly background, never offered as an unsent conversation to convert again');
+ report.checks.push('accepted background input carries its task badge and removes the duplicate conversion action');
+ const taskCard='[data-workflow-work="'+work.id+'"].session-task-card';
+ await chat.waitForSelector(taskCard);
+ const cardGeometry=await chat.$eval(taskCard,node=>{window.__directTaskCard=node;const r=node.getBoundingClientRect();return {width:r.width,height:r.height,tone:node.dataset.taskTone};});
+ assert.equal(cardGeometry.width,232);assert.equal(cardGeometry.height,208);assert(cardGeometry.tone);
  await chat.screenshot({path:path.join(out,'button-after.png')});
  await chat.locator('#composer').fill('WIDTH_DRAFT_KEEP: 输入和材料不能因调整布局而丢失。');
  await chat.evaluate(()=>{window.__widthComposer=document.querySelector('#composer');window.__widthTimeline=document.querySelector('.session-timeline');window.__widthComposer.setSelectionRange(6,18);window.__widthComposer.blur();const text=document.querySelector('.session-timeline .session-markdown p');const range=document.createRange();range.selectNodeContents(text);getSelection().removeAllRanges();getSelection().addRange(range);window.__widthSelectedText=getSelection().toString();});
@@ -96,7 +104,26 @@ try{
  assert.equal(await chat.evaluate(()=>['submit-background','send-message'].every(id=>{const r=document.getElementById(id).getBoundingClientRect();return r.width>0&&r.height>0&&r.left>=0&&r.right<=innerWidth;})),true,'both direct submission actions stay visible in a narrow native surface');
  await chat.screenshot({path:path.join(out,'button-narrow.png')});
  const afterLayout=await state();assert.deepEqual(afterLayout.jobs.map(job=>job.id),s.jobs.map(job=>job.id));assert.deepEqual(requests,['orchestrator','worker','worker']);assert.equal(afterLayout.drafts.frontdesk,'WIDTH_DRAFT_KEEP: 输入和材料不能因调整布局而丢失。');
- report.work={id:work.id,status:work.status,revision:work.revision};report.jobs=s.jobs.map(j=>({id:j.id,type:j.type,target:j.target,status:j.status}));report.requests=requests;
- const exited=new Promise(resolve=>child.once('exit',(code,signal)=>resolve({code,signal})));await call(shell,'session.requestClose');report.exit=await Promise.race([exited,pause(30000).then(()=>null)]);assert.deepEqual(report.exit,{code:0,signal:null});report.ok=true;
+ assert.equal(await chat.$eval(taskCard,node=>node===window.__directTaskCard),true,'original card DOM survives layout actions');
+ assert.equal((await state()).works.find(row=>row.id===work.id).status,'review','delivery is not automatic acceptance');
+ const binding={workId:work.id,revision:work.revision,objectId:work.result.objectId,candidateCommit:work.execution.candidate.commit};
+ await call(shell,'managed.end',{projectId,workId:work.id,revision:work.revision,decision:'discard',binding,requestKey:'direct-visible-discard-closeout'});
+ await until(async()=>{const latest=(await state()).works.find(w=>w.id===work.id);return latest?.status==='ended'&&latest.closure?.phase==='complete';},'real discard closeout');
+ await until(()=>chat.$eval(taskCard,node=>node.dataset.state==='ended'),'original card reflects actual ended state');
+ await assert.rejects(fs.stat(path.join(project,'result.txt')),{code:'ENOENT'});assert.deepEqual(requests,['orchestrator','worker','worker'],'closeout never creates another model turn');
+ await chat.reload({waitUntil:'domcontentloaded'});await chat.waitForFunction(()=>window.__nozeliReady);await chat.waitForSelector(taskCard);
+ assert.equal(await chat.$eval('#composer',node=>node.value),'WIDTH_DRAFT_KEEP: 输入和材料不能因调整布局而丢失。');
+ await chat.$eval(taskCard,node=>node.scrollIntoView({block:'center'}));await chat.screenshot({path:path.join(out,'discard-task-card.png')});report.checks.push('actual discard closes original Work and survives reload without model replay or draft loss');
+ const settledWork=(await state()).works.find(w=>w.id===work.id);report.work={id:work.id,status:settledWork.status,revision:settledWork.revision,closurePhase:settledWork.closure.phase};report.jobs=s.jobs.map(j=>({id:j.id,type:j.type,target:j.target,status:j.status}));report.requests=requests;
+ const exited=new Promise(resolve=>child.once('exit',(code,signal)=>resolve({code,signal})));await call(shell,'session.requestClose');report.exit=await Promise.race([exited,pause(30000).then(()=>null)]);assert.deepEqual(report.exit,{code:0,signal:null});
+ await browser.disconnect();browser=null;
+ child=spawn(createRequire(import.meta.url)('electron'),[path.join(source,'src/main/main.cjs'),'--ozone-platform=x11'],{cwd:source,env,stdio:['ignore','pipe','pipe']});for(const stream of [child.stdout,child.stderr])stream.on('data',b=>log+=b);
+ await until(async()=>{try{browser=await puppeteer.connect({browserURL:'http://127.0.0.1:'+port,defaultViewport:null});return true;}catch{return false;}},'cold main-process CDP');shell=await scoped('shell');
+ await shell.click('[data-project-id="'+projectId+'"]');await shell.waitForFunction(id=>window.__workspaceScope?.projectId===id,{},projectId);await call(shell,'workspace.control',{type:'conversation-action',projectId,action:'open',target:'frontdesk'});chat=await scoped('conversation');
+ await chat.waitForSelector('[data-workflow-work="'+work.id+'"].session-task-card');
+ assert.equal(await chat.$$eval('[data-workflow-work="'+work.id+'"].session-task-card',nodes=>nodes.length),1,'cold process shows one original task card');
+ assert.deepEqual((await state()).jobs.map(job=>job.id),s.jobs.map(job=>job.id));assert.deepEqual(requests,['orchestrator','worker','worker']);
+ await chat.screenshot({path:path.join(out,'cold-task-card.png')});report.checks.push('cold restart preserves one original task card and exact jobs without model replay');
+ const coldExit=new Promise(resolve=>child.once('exit',(code,signal)=>resolve({code,signal})));await call(shell,'session.requestClose');report.coldExit=await Promise.race([coldExit,pause(30000).then(()=>null)]);assert.deepEqual(report.coldExit,{code:0,signal:null});report.ok=true;
 }catch(error){report.error=error.stack;report.ui=await chat?.evaluate(()=>({text:document.body.innerText.slice(-1500),events:window.__taskEvents,button:document.querySelector('#submit-background')?.outerHTML})).catch(()=>null);await chat?.screenshot({path:path.join(out,'failure.png')}).catch(()=>{});process.exitCode=1;}
 finally{await browser?.disconnect();if(child?.exitCode===null)child.kill('SIGTERM');await provider.close();await fs.writeFile(path.join(out,'report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));}

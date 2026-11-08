@@ -244,3 +244,15 @@ test('host originalTask input bound to a real Worker remains inside its round, n
  assert.equal(rows.length,1);assert.equal(rows[0].kind,'workflow');assert.equal(rows[0].rows.length,1);
  assert.equal(rows[0].rows[0].kind,'worker');assert.deepEqual(rows[0].rows[0].entries,[initial,output]);
 });
+
+test('two tasks keep every human input at its original sequence while later A rounds update only A',()=>{
+ const jobs=[{id:'a-root',target:'orchestrator',type:'intake'},{id:'b-root',target:'orchestrator',type:'intake'},{id:'a-next',target:'orchestrator',type:'intake',routing:{action:'continue',workId:'a'}},{id:'a-job',target:'a',type:'initial',revision:1},{id:'a-revise',target:'a',type:'supplement',revision:2},{id:'b-job',target:'b',type:'initial',revision:1}];
+ const state={jobs,works:[{id:'a',sourceJob:'a-root',sourceInputJobIds:['a-root','a-next'],revision:2,status:'review'},{id:'b',sourceJob:'b-root',revision:1,status:'review'}]};
+ const human=(id,sequence,jobId,text)=>entry(id,{sequence,jobId,speaker:'user',source:'host',taskRequestId:jobId,text,at:'2026-11-08T00:00:0'+sequence+'Z'});
+ const inputs=[human('a-input',1,'a-root','First task'),human('plain-input',3,'plain','Ordinary discussion'),human('b-input',5,'b-root','Second task'),human('a-followup',7,'a-next','Modify original A')];
+ const entries=[...inputs,entry('a-one',{target:'a',jobId:'a-job',revision:1,sequence:2}),entry('plain-answer',{jobId:'plain',sequence:4}),entry('b-one',{target:'b',jobId:'b-job',revision:1,sequence:6}),entry('a-two',{target:'a',jobId:'a-revise',revision:2,sequence:8})];
+ const rows=groupSessionWorkflows({entries,deltas:[]},[],state),humanRows=rows.filter(row=>row.kind==='message'&&row.entry.speaker==='user');
+ assert.deepEqual(humanRows.map(row=>[row.id,row.entry.sequence,row.entry.at,row.entry.text]),inputs.map(item=>[item.id,item.sequence,item.at,item.text]));
+ const cards=rows.filter(row=>row.kind==='workflow');assert.deepEqual(cards.map(row=>row.workId),['a','b']);assert(cards[0].sequence<3&&cards[1].sequence>5&&cards[1].sequence<7);
+ assert.deepEqual(cards[0].rows.filter(row=>row.kind==='worker').map(row=>row.revision),[1,2]);
+});

@@ -98,7 +98,10 @@
     </main>
     <aside class="side" id="side" aria-label="工作与待办">
       <button id="toggle-sidebar" class="sidebar-toggle edge-toggle" type="button" aria-expanded="true" aria-controls="sidebar-body" aria-label="收起工作与待办" title="收起工作与待办"></button>
-      <div id="sidebar-body"><section class="inbox-panel"><h2>待办 <small id="inbox-count">00</small></h2><nav class="filters" aria-label="待办筛选"><button class="active" data-inbox-filter="all">全部</button><button data-inbox-filter="read">阅读</button><button data-inbox-filter="answer">回答</button></nav><div id="inbox-reports"></div><p class="panel-empty" id="inbox-empty">没有待阅读或待回答的内容。</p></section><section class="workflow-panel"><h2>工作跟踪 <small id="work-count">暂无待完成任务</small></h2><nav class="filters managed-work-categories" aria-label="工作分类"><button type="button" data-managed-category="active" aria-pressed="true" title="尚需推进的任务，包括排队、执行、待审与未完成的结束处理">进行中</button><button type="button" data-managed-category="ended" aria-pressed="false" title="已结束且技术收尾完成的工作">历史</button><button id="managed-work-category-more" type="button" aria-label="更多工作分类" aria-haspopup="menu" aria-expanded="false">…</button></nav><div id="work-items"></div><p class="panel-empty" id="work-empty">还没有开展的工作。</p></section></div>
+      <div id="sidebar-body">
+        <section class="inbox-panel" aria-label="待你决定"><h2>待你决定</h2><div class="sidebar-list"><div id="inbox-reports"></div><p class="panel-empty" id="inbox-empty">暂无待处理事项。</p></div></section>
+        <section class="workflow-panel" aria-label="工作追踪"><h2>工作追踪</h2><nav class="filters managed-work-categories" aria-label="工作分类"><button type="button" data-managed-category="active" aria-pressed="true" title="尚需推进的任务，包括排队、执行、待审与未完成的结束处理">进行中</button><button type="button" data-managed-category="ended" aria-pressed="false" title="已结束且技术收尾完成的工作">历史</button><button id="managed-work-category-more" type="button" aria-label="更多工作分类" aria-haspopup="menu" aria-expanded="false">…</button></nav><div class="sidebar-list"><div id="work-items"></div><p class="panel-empty" id="work-empty">还没有开展的工作。</p></div></section>
+      </div>
     </aside>
   </div>
 

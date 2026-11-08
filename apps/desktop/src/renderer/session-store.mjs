@@ -194,14 +194,16 @@ export function groupSessionWorkflows(snapshot,receipts=[],state){
  const result=[],blocks=new Map();
  for(const row of rows){
   if(row.kind==='orchestrator')for(const entry of row.entries)if(entry.speaker==='user'&&entry.source==='host'&&entry.target==='orchestrator')result.push({kind:'message',id:entry.id,sequence:entry.sequence,entry});
+  if(row.kind==='worker')for(const entry of row.entries){const job=jobs.get(entry.jobId),handoff=entry.originalTask||job?.type==='initial'&&job.target===row.workId;if(entry.speaker==='user'&&entry.source==='host'&&!handoff&&!result.some(item=>item.kind==='message'&&item.id===entry.id))result.push({kind:'message',id:entry.id,sequence:entry.sequence,entry});}
   const workId=row.kind==='orchestrator'?intakeWorks.get(rootOf(row.jobId)):['worker','closeout'].includes(row.kind)?row.workId:null;
   if(!workId&&row.kind!=='orchestrator'){result.push(row);continue;}
   const work=works.get(workId),sourceRoot=work?.sourceJob?rootOf(work.sourceJob):null;
   const root=sourceRoot&&intakeWorks.get(sourceRoot)===workId?sourceRoot:row.kind==='orchestrator'&&!workId?rootOf(row.jobId):null;
   const id=root?'workflow:intake:'+root:'workflow:work:'+workId;
   let block=blocks.get(id);
-  if(!block){block={kind:'workflow',id,workId:workId||null,sourceJobId:root,sequence:row.sequence,rows:[]};blocks.set(id,block);result.push(block);}
-  block.rows.push(row);block.sequence=Math.min(block.sequence,row.sequence);
+  const anchor=snapshot.entries.find(entry=>entry.jobId===root&&entry.speaker==='user'&&entry.source==='host');
+  if(!block){block={kind:'workflow',id,workId:workId||null,sourceJobId:root,sequence:anchor?(anchor.sequence??0)+0.25:row.sequence,rows:[]};blocks.set(id,block);result.push(block);}
+  block.rows.push(row);if(!anchor)block.sequence=Math.min(block.sequence,row.sequence);
  }
  return result.sort(order);
 }

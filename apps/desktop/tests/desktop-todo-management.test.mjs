@@ -71,14 +71,14 @@ try{
  await until(()=>shell.evaluate(id=>window.__attentionEvents.some(event=>event.projectId===id&&!event.loading&&!event.stale&&event.pendingCount===1),ids.sample),'authoritative sidebar attention event');
  assert.equal(await shell.$eval('#managed-todo-summary',node=>node.hidden),true);
  assert.equal(await shell.$eval('[data-todo-row="sample-current"]',node=>node.dataset.severity),'review');
- assert.equal(await shell.$eval('[data-todo-row="sample-current"] .managed-todo-unread',node=>node.hidden),false);
+ assert.equal(await shell.$('.managed-todo-unread'),null,'unread decorations are not projected');
  await shell.click('[data-todo-row="sample-current"] [data-todo-more]');await menuAction('read');
- assert.equal(await shell.$eval('[data-todo-row="sample-current"] .managed-todo-unread',node=>node.hidden),true);
+ assert.equal(await shell.$('.managed-todo-unread'),null);
  assert.equal((await state(ids.sample)).todos.find(todo=>todo.id==='sample-current').status,'open');
  await invoke('managed.attention.ack',{projectId:ids.sample,ids:['sample-current'],occurrences:[{id:'sample-current',interrupted:false}]});
  assert.equal((await state(ids.sample)).todos.find(todo=>todo.id==='sample-current').status,'open');
- assert.equal(await shell.$eval('#inbox-count',node=>node.textContent),'1');
- report.checks.push('Semantic review chip, compact normal summary, exact occurrence mark-read and reminder acknowledgement keep the durable pending count at one');
+ assert.equal((await invoke('project.attention.summary',{projectIds:[ids.sample]})).projects[0].pendingCount,1);
+ report.checks.push('Explicit mark-read and reminder acknowledgement retain the authoritative pending obligation without numeric or unread sidebar UI');
  for(const view of ['completed','closed','all','open']){await filter(view);assert.equal(await shell.$$eval('[data-todo-row]',ns=>ns.some(n=>n.innerText.includes('连接与恢复')||n.dataset.todoRow.includes('internal'))),false);}
  report.checks.push('All user filters exclude internal connection/recovery/system/queue records; only current review obligation is pending');
  await filter('completed');assert(await shell.$('[data-todo-row="sample-reopened"]'));const versions=await shell.$$eval('.managed-todo-secondary',ns=>ns.map(n=>n.innerText));assert(versions.some(t=>t.includes('第 1 版')&&t.includes('已丢弃')));assert(versions.some(t=>t.includes('历史提醒已重开')));await shot(shell,'history-light');

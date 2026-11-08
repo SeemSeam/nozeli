@@ -380,17 +380,22 @@ form.note-form #note-input {
 .panel-splitter:hover::after,.panel-splitter:focus-visible::after,.panel-splitter.dragging::after{background:var(--green)}
 .panel-dragging,.panel-dragging *{user-select:none!important}
 .panel-dragging iframe{pointer-events:none!important}
-#sidebar-body{display:flex;flex-direction:column;gap:0;overflow:hidden;min-height:0;flex:1;padding:12px}
-#sidebar-body>section{min-height:0;overflow:hidden;border:0;border-radius:0;background:transparent;box-shadow:none;margin:0;padding:0}
-#sidebar-body>.inbox-panel{flex:0 1 auto;max-height:48%;padding-bottom:12px;border-bottom:1px solid var(--line)}
-#sidebar-body>.workflow-panel{flex:1;min-height:0;padding-top:12px}
-#sidebar-body .inbox-panel #inbox-reports{flex:0 1 auto;min-height:0;overflow:auto}
-#sidebar-body .managed-work-categories{display:flex;flex-wrap:nowrap;gap:6px;padding:6px 0}
+#sidebar-body{display:grid;grid-template-rows:var(--sidebar-top,minmax(0,1fr)) var(--sidebar-bottom,minmax(0,1fr));gap:0;overflow:hidden;min-height:0;flex:1;padding:0}
+#sidebar-body>section{display:flex;flex-direction:column;min-height:0;min-width:0;overflow:hidden;border:0;border-radius:0;background:transparent;box-shadow:none;margin:0;padding:12px;box-sizing:border-box}
+#sidebar-body>.inbox-panel{max-height:none;background:var(--todo-region-bg);border-bottom:1px solid var(--line)}
+#sidebar-body>.workflow-panel{background:var(--paper)}
+#sidebar-body .sidebar-list{flex:1;min-height:0;min-width:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
+#sidebar-body :is(#inbox-reports,#work-items){display:block;flex:none;min-height:0;overflow:visible;padding:0}
+#sidebar-body :is(h2,.filters){flex:none;min-width:0;margin:0}
+#sidebar-body>section>h2{padding:6px 0 10px}
+#sidebar-body .managed-work-categories{display:flex;flex-wrap:wrap;gap:6px;padding:6px 0}
+#sidebar-body.sidebar-short{overflow:auto;align-content:start}
+#sidebar-body.sidebar-short>section{overflow:visible}
+#sidebar-body.sidebar-short .sidebar-list{flex:none;overflow:visible;scrollbar-gutter:auto}
 .managed-work-categories button{min-height:32px;padding:4px 8px}
 .managed-work-categories button[aria-pressed=true]{background:var(--ui-control-active);color:var(--ink);font-weight:600}
 .managed-work-categories button:focus-visible{outline:2px solid var(--ui-control-focus,var(--green));outline-offset:2px}
 .pane-divider:hover{background:var(--ui-control-hover)}
-@media(max-height:600px){#sidebar-body{overflow:auto}#sidebar-body>.inbox-panel,#sidebar-body>.workflow-panel{flex:none;max-height:none;overflow:visible}#sidebar-body #inbox-reports,#sidebar-body #work-items{max-height:none;overflow:visible}}
 .open-file-item{display:flex;align-items:center;min-width:0;border-radius:5px 5px 0 0;border-bottom:2px solid transparent}
 .open-file-item[data-active=true]{background:var(--green-soft);border-bottom-color:var(--green)}
 .open-file-availability{display:block;font-size:10px;color:var(--red);white-space:normal}
@@ -424,21 +429,13 @@ html[data-workspace-role="surface"]:is([data-workspace-kind="document"],[data-wo
 html[data-workspace-role="surface"] #focus-exit{position:fixed}
 html[data-workspace-role="surface"]:not([data-workspace-kind="conversation"]) #reader>.desk-header,
 html[data-workspace-role="surface"] #primary-pane>#reader-bar{display:none!important}
-/* File rail stays 20px; the core work rail needs 44px for counts and unread state. */
+/* Both handles occupy the existing panel boundaries, never native content. */
 #app.files-collapsed{--files:20px!important}
-#app.side-collapsed{--side:44px!important}
-/* Core work rail remains legible while the current visit is collapsed. */
-#app #toggle-sidebar{--rail-ink:var(--muted);--rail-bg:var(--paper);box-sizing:border-box;width:40px;min-width:40px;min-height:44px;height:auto;max-height:none;padding:6px 2px;opacity:1;color:var(--rail-ink);background:var(--rail-bg);border:1px solid var(--line);border-radius:6px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;position:absolute;left:auto;right:8px;top:12px;z-index:75;transform:none}
-#app.side-collapsed #toggle-sidebar{left:2px;right:auto;top:16px;width:40px}
-#app #toggle-sidebar[data-severity=review]{--rail-ink:var(--status-review-ink);--rail-bg:var(--status-review-bg)}
-#app #toggle-sidebar[data-severity=decision]{--rail-ink:var(--status-decision-ink);--rail-bg:var(--status-decision-bg)}
-#app #toggle-sidebar[data-severity=danger]{--rail-ink:var(--status-danger-ink);--rail-bg:var(--status-danger-bg)}
-#app #toggle-sidebar[data-severity=unknown]{--rail-ink:var(--status-unknown-ink);--rail-bg:var(--status-unknown-bg)}
-#app #toggle-sidebar:hover{box-shadow:inset 0 0 0 1px currentColor}
-#app #toggle-sidebar:focus-visible{outline:2px solid var(--ui-control-focus);outline-offset:2px}
-#app #toggle-sidebar .sidebar-rail-label{display:block!important;font:600 11px/1.4 var(--chrome-font-family);white-space:nowrap}
-#app #toggle-sidebar #sidebar-badge{display:block;position:static;min-width:0;padding:0;background:transparent;color:inherit;border-radius:0;font:700 14px/1.3 var(--chrome-font-family)}
-#app #toggle-sidebar #sidebar-badge[hidden],#app #toggle-sidebar .sidebar-unread[hidden]{display:none!important}
-#app #toggle-sidebar .sidebar-unread{display:block!important;position:absolute;top:3px;right:3px;width:7px;height:7px;border:2px solid var(--paper);border-radius:50%;background:var(--attention-unread-ink)}
-#app:not(.side-collapsed):not(.narrow-layout) #toggle-sidebar .sidebar-rail-label,#app:not(.side-collapsed):not(.narrow-layout) #toggle-sidebar #sidebar-badge{display:none!important}
-#app:not(.narrow-layout) #sidebar-body>.inbox-panel>h2{padding-inline-end:44px;min-height:44px}
+#app.side-collapsed{--side:20px!important}
+#app #toggle-sidebar{box-sizing:border-box;position:absolute;left:0;right:auto;top:var(--sidebar-edge-y,50%);transform:translateY(-50%);z-index:75;display:grid;place-items:center;width:20px;min-width:20px;height:44px;min-height:44px;max-height:44px;padding:0;border:0;border-radius:4px;background:var(--paper);color:var(--muted);box-shadow:none;opacity:.75}
+#app #toggle-sidebar:hover,#app #toggle-sidebar:focus-visible{background:var(--ui-control-hover);opacity:1}
+#app #toggle-sidebar:focus-visible{outline:2px solid var(--ui-control-focus);outline-offset:-2px}
+#app.side-collapsed #toggle-sidebar{left:0;right:auto}
+#app.narrow-layout #toggle-sidebar,#app.narrow-layout.drawer-side-open #toggle-sidebar{left:0;right:auto;top:var(--sidebar-edge-y,50%)}
+#app.narrow-layout.drawer-side-open #sidebar-body{display:grid!important;padding-top:0}
+#app.narrow-layout.drawer-side-open #sidebar-body.sidebar-detail{display:flex!important}

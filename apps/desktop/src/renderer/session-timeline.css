@@ -174,3 +174,15 @@ html[data-theme=dark] :is(.session-surface,.session-timeline){
 .session-closeout [data-step-state=current]{color:var(--chat-warning)}
 .session-closeout [data-step-state=blocked]{color:var(--chat-danger)}
 @container session (max-width:600px){.session-closeout{padding:10px 12px}.session-closeout li{flex-wrap:wrap;gap:2px 8px}}
+.session-task-card{box-sizing:border-box;width:min(232px,100%);min-height:208px;margin:18px auto 24px;padding:13px 12px;display:grid;grid-template-rows:40px 18px 18px 18px 32px 32px;gap:4px;border:1px solid var(--task-border);border-top:3px solid var(--task-accent);border-radius:12px;background:var(--task-wash);color:inherit;font-size:13px;line-height:1.5;overflow-wrap:anywhere}
+.session-task-card header{min-height:0}.session-task-card header strong{font-size:14px;line-height:20px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.session-task-status,.session-task-latest{margin:0;font-size:12px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.session-task-card[data-state=error] .session-task-status{color:var(--chat-danger)}
+.session-task-flow{display:flex;align-items:center;justify-content:space-between;gap:2px;font-size:10px;position:relative}.session-task-flow span{white-space:nowrap}.session-task-flow i{font-style:normal;opacity:.55;margin-left:2px}.session-task-flow [data-current=true]{font-weight:700;text-decoration:underline;text-underline-offset:4px}
+.session-task-flow:after{content:'';position:absolute;bottom:0;height:2px;width:7px;background:var(--task-accent);opacity:0}.session-task-flow[data-running=true]:after{animation:task-forward 2.8s linear infinite}
+.session-task-trail{font-size:11px;line-height:15px;position:relative;min-height:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.session-task-trail small{display:block;font:inherit;opacity:.85;overflow:hidden;text-overflow:ellipsis}.session-task-trail[data-returning=true]:after{content:'';position:absolute;bottom:0;width:7px;height:2px;background:var(--task-accent);animation:task-return .8s ease-out 1}
+.session-task-card nav{display:flex;gap:6px}.session-task-card button{flex:1;min-height:32px;padding:4px;font:inherit;font-size:12px;background:transparent;border:1px solid var(--task-border);border-radius:6px;color:inherit}.session-task-card button:hover{background:var(--chat-paper,transparent)}.session-task-card button:focus-visible{outline:2px solid var(--task-accent);outline-offset:3px}
+.managed-work-entry[data-task-tone] .managed-work-name:before{content:'';display:inline-block;width:7px;height:7px;margin-right:6px;border-radius:50%;background:var(--task-accent)}
+@keyframes task-forward{0%{left:0;opacity:0}15%,85%{opacity:1}100%{left:calc(100% - 7px);opacity:0}}
+@keyframes task-return{0%{left:calc(100% - 7px);opacity:0}15%,85%{opacity:1}100%{left:0;opacity:0}}
+@media(prefers-reduced-motion:reduce){.session-task-flow:after,.session-task-trail:after{animation:none!important}}
+html[data-task-motion=paused] .session-task-flow:after,html[data-task-motion=paused] .session-task-trail:after{animation-play-state:paused}

@@ -874,7 +874,7 @@ export class ManagedProjects {
    const job=state.jobs?.find(row=>row.id===p.requestId);
    return {ids,nextOffset:offset+100<rows.length?offset+100:null,...(job?{job:{id:job.id,status:job.status,...(typeof job.error==='string'?{error:job.error.slice(0,4096)}:{})}}:{})};
   }
-  return index.page({cursor:p.cursor,limit:p.limit??100});
+  return index.page({cursor:p.cursor,limit:p.limit??100,workId:p.workId,sourceJobId:p.sourceJobId});
  }
  async changesQuery(id,action,p){
   if(typeof p.changeSetId!=='string')throw new HostError('INVALID_PAYLOAD','冻结差异身份无效');
@@ -942,7 +942,7 @@ export class ManagedProjects {
   allowed['deviation.resolve']=['projectId','workId','deviationId','expectedRevision','expectedVersion','action','requestKey'];
   allowed['problem.resolve']=['projectId','workId','objectId','revision','action','text','requestKey'];
   allowed['frontdesk.route.resolve']=['projectId','proposalId','expectedVersion','action','requestKey'];
-  allowed['timeline.page']=['projectId','cursor','limit'];allowed['timeline.read']=['projectId','id','version','field','offset','limit'];
+  allowed['timeline.page']=['projectId','cursor','limit','workId','sourceJobId'];allowed['timeline.read']=['projectId','id','version','field','offset','limit'];
   allowed['timeline.request']=['projectId','requestId','offset'];
   allowed['attention.ack']=['projectId','ids','occurrences'];
   allowed['attention.respond']=['projectId','todoId','answer','cancel','attentionKind','attentionId','expectedVersion','action','sourceJobId','requestKey'];

@@ -631,3 +631,19 @@ postinstall 用 `electron-rebuild` 针对 Electron 重建 `node-pty`。该依赖
 - 导出暂存树在 `/var/tmp/nozeli-source-fix-index-zjul4y15` 独立检查，发现 Debug 状态投影依赖的 `storage-maintenance.mjs` 三个 SQLite 字段（debugState／debugEventJobId／debugAttemptId）未纳入，已补入精确的一行查询差异，不改其他存储逻辑。
 - 补齐后的独立树 `/var/tmp/nozeli-source-fix-index-final-c4nd28u9` 采用串行文件检查且不放宽程序期限：77项中76通过，包含全部新增参数、历史 Debug 续行及状态展示测试；`large cold ledger is worker-paged metadata with global counts and no starts` 仍以 `STORAGE_RESULT_UNKNOWN` 超时失败。该压力项原因未在本轮定位，不将这轮快照检查计作全绿，也未通过延长生产超时或吞掉异常伪造通过。
 - 上述额外失败不回写为此前工作树144/144或实际安装版同场景失败；两组既有运行结果及其输入、安装版本和证据仍分别保留。当前确认范围仅是已复现的空游标／空 brief 参数缺陷修复，不代表全仓或所有负载边界无问题。
+
+## 任务标签、限定历史与只读原生分屏（2026-11-08，Linux源码限定通过）
+
+- 默认unit已登记 `task-workspace-presentation.test.mjs`，integration已登记 `task-timeline-scope.test.mjs`。集中实测：`npm run build:renderer`、`npm run test:unit`（797项）、`node --test tests/task-timeline-scope.test.mjs`（13项）、`node tests/desktop-session-timeline.test.mjs` 均通过。消费者覆盖真实React／Electron DOM与受控读取边界，不冒称真实调度或模型执行。
+- 原生workspace既有生命周期回归另行运行 `node --test tests/workspace-native.test.mjs`，78/78通过；未将它冒称全仓integration套件。
+- `managed.timeline.page` 接受可选 `workId` / `sourceJobId`，两者同时出现必须指向同一明确关系。Work 查询覆盖全部历史轮次、原始/续作主控和确切原输入；仅 source 查询覆盖同一 intake lineage。复用 domain `intakeLineage`，未知/歧义/不一致拒绝 `TIMELINE_SCOPE`，不按文本或当前任务猜归属。
+- 保留 `{version,entries,deltas,hasMore,nextCursor}`；cursor 绑定项目与完整 scope 参数，跨 scope、跨项目及全项目 cursor 混用拒绝 `TIMELINE_PAGE`。按 index metadata 过滤后只 hydrate 所选页，沿用现有正文/字节预算。限定历史不受前台清空边界裁剪，也不修改 Work/消息当前状态；`timeline.read` 原有不可变版本/UTF-8 字节协议不变。
+- 离线/无配置读取沿用 `projectionSource`，不 connect 或启动 Provider。固定 guided-demo 的限定查询明确报 `DEMO_SCOPE_UNAVAILABLE`，不将项目全量演示记录冒充任务过程。
+- `workspace.control/task-workspace` 在可信同项目shell／conversation／task-process之间做明确导航；process/overview打开固定scope、readOnly原生 `task-process` 分屏，不再向右侧状态栏投递过程；locate只导航已有conversation，不创建可发送替代会话或connect/send。task-process的原文、scope cursor、冻结材料、导出和阅读态保存均受固定范围校验；其他任务、项目文件写入、send和approve拒绝。大原始记录超过显式解析预算时，仍沿原可信dialog导出路径校验record ID、objectId/version、生命周期和最终SHA，不经普通managed invoke伪转发。
+- 真实Electron／私有Pi／回环确定性HTTP／Git与文件流程：`node tests/desktop-task-workspace-live.mjs`，最终 `/tmp/nozeli-task-workspace-q4xrmr/report.json` ok=true；真实持久100事项及右栏几何：`node tests/desktop-project-attention-live.mjs`，最终 `/tmp/nozeli-project-attention-Zm7Aww/report.json` ok=true。模式切换的host bootstrap消费、旧页不混未来成果、原选区和草稿、分屏复用／关闭、冷重启不重放、浅深窄窗与缩放已核验。图片逐原生面读取，不拼接冒充OS合成截图；系统IME候选窗、Windows/macOS和付费模型未验。保存／导出／权限夹具与真实native流程的边界见 `docs/task-workspace-design.md`。
+
+
+### 本机安装与追加验收（2026-11-08）
+
+- `task-workspace-20261108-local-01` 的实际ELF＋包内Pi／Git在独立profile／合成项目重走任务工作区主旅程，`/tmp/nozeli-task-workspace-JivxfM/report.json` ok=true、providerErrors=[]；786项src/dist输入一致，未触及日常项目、未发起付费模型请求。
+- 额外 `node tests/desktop-direct-background-live.mjs` 未通过：`/tmp/nozeli-direct-background-iEx83c/report.json` 首次在1440px尺寸等待超时；显式关闭新增分区后 `/tmp/nozeli-direct-background-xbIH3i/report.json` 在590px原生conversation resize等待超时；将新增过程旅程从该旧宽度旅程分离后，`/tmp/nozeli-direct-background-Jzun6V/report.json` 仍在590px同处超时。已观察直接提交／重复点击去重／真实Worker发布及任务标记通过，不能外推该脚本后续拖动、脱离、丢弃及冷恢复通过。独立完整任务分屏的实际安装主旅程通过不掩盖此失败；未因此修改产品或放宽宽度断言。

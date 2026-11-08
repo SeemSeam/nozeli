@@ -282,7 +282,10 @@ export class GuidedDemo {
   if(['status','connect','enable','project.active'].includes(action))return {enabled:true,ready:false,demo:true,source,state:this.projection(row),session:clone(row.session),connectionError:null,handoff:null};
   if(['send','task'].includes(action))return this.send(payload);
   if(action==='draft'){if(typeof payload.text!=='string'||payload.text.length>32000)throw fail('DEMO_INPUT_INVALID','草稿无效。');await this.mutate(()=>{row.projection.drafts[payload.target??'frontdesk']=payload.text;});return {saved:true,source,demo:true};}
-  if(action==='timeline.page')return this.page(row,payload);
+  if(action==='timeline.page'){
+   if(payload.workId!==undefined||payload.sourceJobId!==undefined)throw fail('DEMO_SCOPE_UNAVAILABLE','固定演示不提供真实任务过程历史。');
+   return this.page(row,payload);
+  }
   if(action==='timeline.request')return {ids:row.projection.messages.filter(m=>m.requestId===payload.requestId&&m.speaker==='agent').map(m=>m.id),nextOffset:null,source,demo:true};
   if(action==='timeline.read'){const entry=row.projection.messages.find(m=>m.id===payload.id);if(!entry)throw fail('DEMO_MESSAGE_MISSING','演示消息不存在。');return {entry:clone(entry),source,demo:true};}
   if(action==='history.list')return {items:[],nextOffset:null,version:1,source,demo:true};

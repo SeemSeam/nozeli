@@ -3,6 +3,8 @@ import { uiIcon } from './ui-icons.mjs';
 import { managedInboxTodos, userTodoEligible, resultSettlementIssue } from '../domain/managed-work-records.mjs';
 import { todoCapabilities } from '../domain/todo-management.mjs';
 import { createMessageAttentionPresentation, occurrenceKey } from '../domain/attention-presentation.mjs';
+import { taskIdentityKey, taskIdentityTone } from '../domain/task-identity.mjs';
+import './task-identity.css';
 import './managed-todos.css';
 
 const kindNames = { attention:'后台待处理', 'frontdesk-route':'处理方式决定', 'cross-project-permission':'跨项目访问授权', 'effect-permission':'提权/敏感执行授权', 'effect-grant':'执行授权·可撤销', 'merge-consent':'一次性合入批准', 'merge-constraint':'合并策略', 'cross-project-migrated':'授权迁移通知', deviation:'任务偏离决定', result:'结果', problem:'待回答', routing:'澄清', recovery:'恢复', git:'Git', closure:'收尾', system:'系统' };
@@ -146,9 +148,8 @@ export function mountManagedTodos({ document, invoke, openTodo, viewWork, recove
         const marker=document.createElement('span');marker.className='managed-todo-marker';marker.setAttribute('aria-hidden','true');
         const content=document.createElement('span');content.className='managed-todo-content';
         const title=document.createElement('strong');title.className='managed-todo-title';
-        const dot=document.createElement('span');dot.className='managed-todo-unread';dot.textContent='新事项';
         const secondary=document.createElement('span');secondary.className='managed-todo-secondary';
-        const version=document.createElement('span'),chip=document.createElement('span'),action=document.createElement('span');version.className='managed-todo-version';chip.className='managed-todo-chip';action.className='managed-todo-action';secondary.append(version,chip,action);content.append(title,dot,secondary);open.append(marker,content);
+        const version=document.createElement('span'),chip=document.createElement('span'),action=document.createElement('span');version.className='managed-todo-version';chip.className='managed-todo-chip';action.className='managed-todo-action';secondary.append(version,chip,action);content.append(title,secondary);open.append(marker,content);
         open.onpointerenter=()=>showName(open);open.onfocus=()=>showName(open);open.onpointerleave=hideName;open.onblur=hideName;
         const more=document.createElement('button');more.type='button';more.append(uiIcon('ellipsis'));more.dataset.todoMore=todo.id;more.setAttribute('aria-haspopup','menu');
         row.append(open,more);
@@ -157,25 +158,25 @@ export function mountManagedTodos({ document, invoke, openTodo, viewWork, recove
       const open=row.querySelector('[data-managed-todo]');open.dataset.todoKind=todo.kind;open.disabled=pending.has(projectId+':'+todo.id);open.onclick=()=>{selectedId=todo.id;paint();return openTodo(todo.id);};
       open.setAttribute('aria-current',String(selectedId===todo.id));
       row.dataset.severity=todo.pending?severityOf(todo):'none';
-      const messageUnread=todo.workId&&messageAttention.forWork(projectId,todo.workId),dot=row.querySelector('.managed-todo-unread');dot.hidden=!unread(todo)&&!messageUnread;dot.textContent=messageUnread?'新消息':'新事项';
+      const identity=todo.workId?taskIdentityKey(projectId,state,{workId:todo.workId,sourceJobId:todo.sourceJobId}):null;
+      if(identity)row.dataset.taskTone=taskIdentityTone(identity);else delete row.dataset.taskTone;
       const title=todo.title;
       row.querySelector('.managed-todo-title').textContent=title;
       row.dataset.category=todo.historical?'history':todo.kind==='result'?'read':'answer';
-      const marker=row.querySelector('.managed-todo-marker'),icon={'file-text':'book-open','shield-check':'message-square',archive:'sticky-note'}[todo.icon];
-      if(marker.firstElementChild?.dataset.icon!==icon)marker.replaceChildren(uiIcon(icon));
+      // Each obligation keeps its own row; only the associated task supplies tone.
       const secondary=[todo.versionLabel,todo.editLabel,todo.statusLabel,todo.actionLabel].filter(Boolean).join(' · ');
       row.querySelector('.managed-todo-version').textContent=[todo.versionLabel,todo.editLabel].filter(Boolean).join(' · ');
       row.querySelector('.managed-todo-chip').textContent=todo.statusLabel;
       row.querySelector('.managed-todo-action').textContent=todo.actionLabel;
-      open.setAttribute('aria-label',title+' · '+secondary+(messageUnread?' · 有新消息':'')+(unread(todo)?' · 新事项，未读':''));
+      open.setAttribute('aria-label',title+' · '+secondary);
       const more=row.querySelector('[data-todo-more]');more.setAttribute('aria-label','更多操作：'+[title,todo.versionLabel].filter(Boolean).join(' · '));more.disabled=open.disabled;more.onclick=()=>showMenu(todo,null,more);
       row.oncontextmenu=e=>showMenu(todo,e,e.target.closest('button')||open);row.onkeydown=e=>{if(e.key==='ContextMenu'||e.key==='Menu'||e.shiftKey&&e.key==='F10'){e.preventDefault();showMenu(todo,null,e.target.closest('button')||open);}};
       if(list.children[position]!==row)list.insertBefore(row,list.children[position]||null);
     }
-    if(visible.length>count){const more=moreButton||document.createElement('button');more.id='managed-todo-more';more.type='button';more.textContent='加载更多（'+(visible.length-count)+'）';more.onclick=()=>{count+=50;paint();};list.append(more);}else moreButton?.remove();
+    if(visible.length>count){const more=moreButton||document.createElement('button');more.id='managed-todo-more';more.type='button';more.textContent='加载更多';more.onclick=()=>{count+=50;paint();};list.append(more);}else moreButton?.remove();
     list.scrollTop=scroll;
     if((focusedRow||focusedMore)&&!focused?.isConnected){const next=list.children[Math.min(Math.max(0,focusedIndex),list.children.length-1)]?.querySelector('button')||filters.querySelector('[aria-pressed="true"]');next?.focus({preventScroll:true});}
-    $('inbox-empty').hidden=visible.length>0||loading||stale;$('inbox-empty').textContent=filter==='open'?'暂无待处理事项':filter==='closed'?'没有已关闭的提醒。':filter==='completed'?'暂无历史提醒。已结束的事项会保留在这里供查阅。':'暂无用户事项。';$('inbox-count').textContent=loading||stale?'待核对':String(current.length);
+    $('inbox-empty').hidden=visible.length>0||loading||stale;$('inbox-empty').textContent=filter==='open'?'暂无待处理事项':filter==='closed'?'没有已关闭的提醒。':filter==='completed'?'暂无历史提醒。已结束的事项会保留在这里供查阅。':'暂无用户事项。';
     publishAttention(current);
     $('reading-inbox').replaceChildren();$('reading-inbox').hidden=true;
     for(const detail of document.querySelectorAll('[data-todo-detail]'))details(detail,detail.dataset.todoDetail);
@@ -183,7 +184,7 @@ export function mountManagedTodos({ document, invoke, openTodo, viewWork, recove
   return { render(next,id){if(projectId!==id){epoch++;filter='open';count=50;selectedId=null;finish(false);menu.close();}const version=messageAttention.version;state=next;projectId=id;loading=false;stale=false;messageAttention.observe(id,next?.timeline?.entries);if(version!==messageAttention.version)paintSignature='';paint();},details,
     messages(entries,id){if(id!==projectId)return;const version=messageAttention.version;messageAttention.observe(id,entries);if(version!==messageAttention.version){paintSignature='';paint();}else publishAttention();},
     workUnread(workId){return messageAttention.forWork(projectId,workId);},
-    loading(id){if(projectId!==id){state=null;selectedId=null;list.replaceChildren();}projectId=id;loading=true;stale=false;filters.hidden=false;summary.hidden=false;summary.textContent='正在读取待办…';$('inbox-empty').hidden=true;$('inbox-count').textContent='读取中';publishAttention();},
-    unavailable(id){if(id!==projectId)return;loading=false;stale=true;filters.hidden=false;summary.hidden=false;summary.textContent='待办暂不可用'+(state?'；保留上次状态，请重试。':'，请重试。');$('inbox-count').textContent='待核对';$('inbox-empty').hidden=true;publishAttention();},
-    clear(){epoch++;state=null;projectId=null;selectedId=null;loading=false;stale=false;paintSignature='';filters.hidden=true;summary.hidden=true;list.replaceChildren();$('inbox-count').textContent='';publishAttention([]);hideName();finish(false);menu.close();} };
+    loading(id){if(projectId!==id){state=null;selectedId=null;list.replaceChildren();}projectId=id;loading=true;stale=false;filters.hidden=false;summary.hidden=false;summary.textContent='正在读取待办…';$('inbox-empty').hidden=true;publishAttention();},
+    unavailable(id){if(id!==projectId)return;loading=false;stale=true;filters.hidden=false;summary.hidden=false;summary.textContent='待办暂不可用'+(state?'；保留上次状态，请重试。':'，请重试。');$('inbox-empty').hidden=true;publishAttention();},
+    clear(){epoch++;state=null;projectId=null;selectedId=null;loading=false;stale=false;paintSignature='';filters.hidden=true;summary.hidden=true;list.replaceChildren();publishAttention([]);hideName();finish(false);menu.close();} };
 }

@@ -334,6 +334,7 @@ async function main() {
   projectWatcher=new ProjectWatcher({onChange:event=>workspaceNative?.broadcast('nozeli:workspace-control',{type:'file-tree-changed',...event},event.projectId),onError:error=>workspaceNative?.broadcast('nozeli:workspace-control',{type:'file-tree-watch-error',...error},error.projectId)});
   const address=server.address();origin=`http://127.0.0.1:${address.port}/`;
   workspaceNative=new WorkspaceNative({BrowserWindow:WorkspaceWindow,WebContentsView,screen,origin,preload:path.join(APP_ROOT,'src/preload/preload.cjs'),icon:path.join(APP_ROOT,'assets/nozeli.png'),userDataDir:app.getPath('userData'),host,hidden:HIDDEN,onClose:async r=>{const recovery=windowRecovery(r.win);if(recovery){recovery.requestClose();return;}await workspaceNative.flush([...workspaceNative.senders.values()]);if(agents?.busy()||managedAgents?.busy()){r.wc.send('nozeli:quit-confirm');return;}await managedAgents?.stop();await agents?.stopIdle?.();r.closing=true;for(const s of workspaceNative.projectRecords(r.projectId,r.windowId))workspaceNative.destroySurface(s);r.win.close();}});
+  workspaceNative.managedAgents=managedAgents;
   const {IsolatedPreviewManager}=await import('./isolated-preview.mjs');
   isolatedPreview=new IsolatedPreviewManager({View,WebContentsView,session,workspace:workspaceNative,host,managedAgents,dialog});
   const {NativeReviewDiscussionManager,runReviewDiscard}=await import('./native-review-discussion.mjs');
@@ -412,6 +413,7 @@ async function main() {
         return {ok:true,value:{closing:true,forced:true}};
       }
       payload=await workspaceNative.resolvePayload(scope,op,payload??{});
+      if(scope.role==='surface'&&scope.kind==='task-process'&&op.startsWith('managed.')&&op!=='managed.timeline.export')return {ok:true,value:await workspaceNative.taskManagedRead(scope,op,payload)};
       if(op==='project.attention.summary'){
         if(scope.role!=='shell')throw new HostError('IPC_DENIED','项目待办摘要仅允许主窗口读取。');
         return {ok:true,value:await managedAgents.projectAttentionSummary(payload)};
@@ -812,7 +814,8 @@ async function main() {
         return {ok:true,value:await new ManagedReportExporter({host,managedAgents,beforeOperation:syncDocument}).exportArtifact(payload??{})};
       }
       if(op==='managed.timeline.export'){
-        if(!payload||Object.keys(payload).some(key=>!['projectId','id','version'].includes(key))||payload.projectId!==scope.projectId||!['shell','surface'].includes(scope.role)||scope.role==='surface'&&scope.kind!=='conversation'||typeof payload.id!=='string'||payload.id.length>512||typeof payload.version!=='string'||! /^[a-f0-9]{64}$/.test(payload.version))throw new HostError('IPC_DENIED','原生历史导出不属于当前可信对话');
+        if(!payload||Object.keys(payload).some(key=>!['projectId','id','version'].includes(key))||payload.projectId!==scope.projectId||!['shell','surface'].includes(scope.role)||scope.role==='surface'&&!['conversation','task-process'].includes(scope.kind)||typeof payload.id!=='string'||payload.id.length>512||typeof payload.version!=='string'||! /^[a-f0-9]{64}$/.test(payload.version))throw new HostError('IPC_DENIED','原生历史导出不属于当前可信会话或任务');
+        if(scope.role==='surface'&&scope.kind==='task-process')await workspaceNative.authorizeTaskExport(scope,payload);
         await host.requireRegisteredProject(payload.projectId);
         const {exportTimelineOriginal}=await import('./timeline-export.mjs');
         return {ok:true,value:await exportTimelineOriginal({managed:managedAgents,dialog,scope,...payload})};

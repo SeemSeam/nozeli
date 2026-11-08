@@ -113,10 +113,10 @@ try{
  assert(todo&&originalReceipt);report.workId=work.id;report.threadId=originalThread;report.initialObjectId=originalReceipt.objectId;
  const sourceBefore=await fs.readFile(path.join(projectRoot,'candidate.txt'),'utf8');
  if(await shell.$eval('#toggle-sidebar',node=>node.getAttribute('aria-expanded')!=='true').catch(()=>false))await shell.click('#toggle-sidebar');
- await until(()=>shell.$eval('#toggle-sidebar',n=>Number(n.dataset.badgeCount)>0),'real pending count on rail');
- const pendingBeforeOpen=Number(await shell.$eval('#toggle-sidebar',n=>n.dataset.badgeCount));
- await shell.click('#toggle-sidebar');assert.equal(await shell.$eval('#sidebar-badge',n=>!n.hidden&&Number(n.textContent)>0),true);await shell.screenshot({path:path.join(out,'pending-collapsed-rail.png')});
- await shell.click('#toggle-sidebar');assert.equal(Number(await shell.$eval('#toggle-sidebar',n=>n.dataset.badgeCount)),pendingBeforeOpen,'opening never acknowledges pending todos');
+ const pendingBeforeOpen=(await state()).todos.filter(t=>t.status==='open').map(t=>t.id);
+ const notifiedBeforeOpen=(await state()).attentionNotified;
+ await shell.click('#toggle-sidebar');assert.equal(await shell.$('#sidebar-badge'),null);await shell.screenshot({path:path.join(out,'pending-collapsed-rail.png')});
+ await shell.click('#toggle-sidebar');assert.deepEqual((await state()).todos.filter(t=>t.status==='open').map(t=>t.id),pendingBeforeOpen);assert.deepEqual((await state()).attentionNotified,notifiedBeforeOpen,'opening never acknowledges pending obligations');
  await shell.waitForSelector('[data-managed-todo="'+todo.id+'"]',{visible:true});await shell.click('[data-managed-todo="'+todo.id+'"]');
  reviewPage=await until(async()=>{for(const p of await browser.pages())if(await p.evaluate(()=>window.__nozeliReady&&window.__workspaceScope?.kind==='report').catch(()=>false))return p;},'native report workspace');
  await reviewPage.waitForSelector('.managed-review');assert.equal(await reviewPage.$('[data-review-discussion]'),null);

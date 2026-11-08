@@ -1,0 +1,19 @@
+html[data-workspace-kind=task-process],html[data-workspace-kind=task-process] body,html[data-workspace-kind=task-process] #app{width:100%;height:100%;min-width:0;min-height:0;margin:0;overflow:hidden}
+html[data-workspace-role=surface][data-workspace-kind=task-process] #app.app>.task-workspace-surface:not(#reader){display:flex!important}
+.task-workspace-surface{display:flex;min-width:0;min-height:0;height:100%;color:var(--ink);background:var(--paper);font-size:var(--conversation-font,14px);line-height:1.65}
+.task-workspace-page{flex:1;min-width:0;min-height:0;box-sizing:border-box;overflow:auto;padding:12px;border-top:3px solid var(--task-accent);background:var(--task-wash);overflow-wrap:anywhere;scrollbar-gutter:stable}
+.task-workspace-page[hidden]{display:none!important}
+.task-workspace-page>nav{display:flex;flex-wrap:wrap;gap:6px;position:sticky;top:-12px;padding:8px 0;background:var(--task-wash);z-index:1}
+.task-workspace-page h2{font-size:16px;line-height:1.5}
+.task-workspace-page button{min-height:32px;max-width:100%;padding:5px 9px;border:1px solid var(--task-border);border-radius:6px;background:var(--paper);color:inherit;font:inherit;cursor:pointer}
+.task-workspace-page button:hover:not(:disabled){background:var(--task-wash)}
+.task-workspace-page button:disabled{opacity:.6;cursor:default}
+.task-workspace-page button:focus-visible,.task-workspace-page:focus-visible{outline:2px solid var(--task-accent);outline-offset:3px}
+.task-workspace-page pre{white-space:pre-wrap;overflow-wrap:anywhere}
+.task-workspace-page>div>button{margin:4px}
+.task-workspace-page [data-task-process] article{margin-inline:0;max-width:100%}
+.task-workspace-page [data-task-process]>nav{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+.task-workspace-page :is(.session-tool,.session-process-records,.session-process-records .session-content){font-size:var(--conversation-font,14px);line-height:1.8}
+.task-workspace-page :is(.session-tool pre,.session-process-records pre,.session-plain,.session-code-block pre){max-height:none;height:auto;overflow-x:auto;overflow-y:hidden}
+.task-workspace-page .session-code-block pre{white-space:pre;overflow-wrap:normal}
+.task-workspace-page .session-code-block pre.session-code-wrapped{white-space:pre-wrap;overflow-wrap:anywhere}

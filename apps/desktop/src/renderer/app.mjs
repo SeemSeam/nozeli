@@ -80,6 +80,9 @@ if(workspaceScope.role==='review-discussion'){
   await invoke('workspace.ready',{});
   const ready=await invoke('workspace.ready',{contentReady:true});if(!ready.ok)throw Error(ready.error.message);
   window.__nozeliReady=true;
+}else if(workspaceScope.role==='surface'&&workspaceScope.kind==='task-process'){
+  const {mountTaskWorkspace}=await import('./task-workspace.mjs');
+  await mountTaskWorkspace({root:document.getElementById('app'),scope:workspaceScope,invoke:window.nozeli.invoke,subscribe:window.nozeli.subscribe});
 }else if(workspaceScope.role==='surface'&&workspaceScope.kind==='project-terminal'){
   const {mountProjectTerminal}=await import('./project-terminal-view.mjs');
   await mountProjectTerminal({root:document.getElementById('app'),scope:workspaceScope,invoke:window.nozeli.invoke,subscribe:window.nozeli.subscribe});

@@ -330,3 +330,179 @@ test('host delivery history uses its settled native model after reopen, never cu
  await store.close();const restored=await openTestWorkspace(path.join(root,'runtime'),path.join(root,'project'));
  try{const cold=new SessionIndex(restored);await cold.initialize();const entry=(await cold.page()).entries.find(entry=>entry.id===message.id);assert.equal(entry.provider,'observed-provider');assert.equal(entry.model,'observed-model');assert.equal(entry.modelStatus,'recorded');}finally{await restored.close();}
 });
+
+test('direct background and converted foreground inputs keep their actual task binding after reopening',async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-input-route-')),runtimeRoot=path.join(root,'runtime'),contentRoot=path.join(root,'project');
+ const c=await openTestController({runtimeRoot,contentRoot});c.kick=()=>{};
+ t.after(async()=>{await c.stop();if(!c.store.closed)await c.store.close();await fs.rm(root,{recursive:true,force:true});});
+ await c.start();
+ const task=await c.submitTask('帮我继续美化一下 html界面',{requestKey:'direct-background-route'});
+ const front=await c.send('frontdesk','先讨论页面配色',{requestKey:'foreground-route'});
+ const ordinary=await c.send('frontdesk','这条仍只在前台讨论',{requestKey:'ordinary-foreground-route'});
+ const source=c.store.state.messages.find(message=>message.jobId===front.jobId&&message.speaker==='user');
+ const converted=await c.convertMessage(source.id,'把讨论中的页面调整交给后台',{requestKey:'convert-background-route'});
+ const before=c.timeline.frame().entries;
+ assert.equal(before.find(entry=>entry.jobId===task.jobId&&entry.speaker==='user').taskRequestId,task.jobId);
+ assert.equal(before.find(entry=>entry.id===source.id).taskRequestId,converted.jobId);
+ assert.equal(before.find(entry=>entry.jobId===ordinary.jobId&&entry.speaker==='user').taskRequestId,undefined);
+ assert.equal(before.find(entry=>entry.id===source.id).text,'先讨论页面配色');
+ await c.stop();await c.store.close();
+ const restored=await openTestWorkspace(runtimeRoot,contentRoot),index=new SessionIndex(restored);await index.initialize();
+ try{
+  const after=index.frame().entries;
+  assert.equal(after.find(entry=>entry.jobId===task.jobId&&entry.speaker==='user').taskRequestId,task.jobId);
+  assert.equal(after.find(entry=>entry.id===source.id).taskRequestId,converted.jobId);
+  assert.equal(after.find(entry=>entry.jobId===ordinary.jobId&&entry.speaker==='user').taskRequestId,undefined);
+ }finally{await restored.close();}
+});
+
+test('oversized background input remains task-bound when its body requires separate reading',async t=>{
+ const {store,index}=await fixture(t);
+ await store.mutate(()=>{Object.assign(store.state.messages[0],{taskRequestId:'accepted-background',text:'长篇HTML材料。'.repeat(20000)});});
+ const clipped=index.frame().entries.find(entry=>entry.id==='user-a');
+ assert.equal(clipped.availability,'read-required');assert.equal(clipped.taskRequestId,'accepted-background');
+ assert.equal(clipped.speaker,'user');assert.equal(clipped.target,'frontdesk');
+});
+
+test('ingested native metadata stays archived through cold reopen and cache eviction while originals remain readable',async t=>{
+ const {root,store,index}=await fixture(t);
+ const metaFact=(type,id,body)=>({sessionId:'native-session',entry:{type,id,...body}});
+ const modelChange=metaFact('model_change','meta-model',{model:'provider/model'});
+ const thinkingChange=metaFact('thinking_level_change','meta-thinking',{level:'high'});
+ const sessionInfo=metaFact('session_info','meta-info',{facts:['native session facts']});
+ await index.recordBatch([fact('classified-answer','Real worker answer'),modelChange,thinkingChange,sessionInfo],'frontdesk');
+ for(const [entryId,type] of [['meta-model','model_change'],['meta-thinking','thinking_level_change'],['meta-info','session_info']]){
+  const row=index.records().find(r=>r.entryId===entryId);
+  assert.equal(row.entryType,type);assert.equal(row.recordKind,'metadata');
+  assert.equal(row.jobId,null);assert.equal(row.speaker,undefined);
+ }
+ assert.equal(index.records().find(r=>r.entryId==='classified-answer').recordKind,'conversation');
+ assert.equal(index.frame().entries.some(e=>String(e.entryId||'').startsWith('meta-')),false);
+ const cold=new SessionIndex(store);await cold.initialize();
+ const page=await cold.page();
+ assert.equal(page.entries.some(e=>String(e.entryId||'').startsWith('meta-')),false,'cold metadata never becomes a system conversation row');
+ assert.equal(page.entries.find(e=>e.entryId==='classified-answer').text,'Real worker answer');
+ cold.cache.clear();cold.deferred.clear();
+ assert.equal(cold.frame().entries.some(e=>String(e.entryId||'').startsWith('meta-')),false,'persisted kinds survive cache eviction without hydration');
+ const metaRow=cold.records().find(r=>r.entryId==='meta-model');
+ assert.deepEqual(await cold.object(metaRow),modelChange.entry,'raw archive body is untouched');
+ const discovery=await cold.read(metaRow.id);
+ assert.equal(discovery.recordKind,'metadata');assert.equal(discovery.availability,'read-required');
+ assert.deepEqual(discovery.read.fields.map(f=>f.field),['text']);
+ const firstPage=await cold.read(metaRow.id,{version:discovery.read.version,field:'text',offset:0,limit:128});
+ assert.equal(firstPage.totalBytes,Buffer.byteLength(JSON.stringify(modelChange.entry)));
+ assert.equal(JSON.stringify(modelChange.entry).startsWith(firstPage.content),true);
+ const target=path.join(root,'exported-metadata.json'),scope={projectId:'synthetic-project',generation:1,dead:false};
+ await exportTimelineOriginal({managed:{projectionSource:async()=>({index:cold})},dialog:{showSaveDialog:async()=>({filePath:target})},scope,projectId:scope.projectId,id:metaRow.id,version:metaRow.objectId});
+ assert.deepEqual(await fs.readFile(target),Buffer.from(JSON.stringify(modelChange.entry)));
+});
+
+test('legacy records without an indexed kind classify bounded on read without changing identity or bodies',async t=>{
+ const {store,index}=await fixture(t);
+ const future={sessionId:'native-session',entry:{type:'future_control',id:'legacy-future',payload:'unclassified native fact'}};
+ await index.recordBatch([fact('legacy-answer','Legacy answer'),{sessionId:'native-session',entry:{type:'model_change',id:'legacy-meta',model:'provider/model'}},future],'frontdesk');
+ const before=index.records().map(r=>({id:r.id,entryId:r.entryId,sequence:r.sequence,objectId:r.objectId}));
+ const bodies=await Promise.all(before.map(r=>fs.readFile(path.join(index.root,r.objectId+'.json'))));
+ await store.mutate(()=>{for(const row of store.state.sessionIndex.entries){delete row.entryType;delete row.recordKind;}});
+ const replay=new SessionIndex(store);
+ const coldRows=replay.frame().entries.filter(e=>e.source==='native');
+ assert.equal(coldRows.find(e=>e.entryId==='legacy-answer').recordKind,'conversation','old speaker evidence still classifies conversation');
+ for(const entryId of ['legacy-meta','legacy-future']){
+  const row=coldRows.find(e=>e.entryId===entryId);
+  assert.equal(row.recordKind,'unclassified');assert.equal(row.speaker,'system');assert.equal(row.availability,'read-required');assert.equal(row.read.discoveryRequired,true);
+  assert.equal(row.status,undefined);assert.equal(row.complete,undefined,'unclassified is pending, never an invented execution');
+ }
+ const page=await replay.page();
+ assert.equal(page.entries.some(e=>e.entryId==='legacy-meta'),false,'known metadata classifies from its bounded body once hydrated');
+ const unknown=page.entries.find(e=>e.entryId==='legacy-future');
+ assert.equal(unknown.recordKind,'unclassified');assert.equal(unknown.availability,'read-required');
+ assert.equal(unknown.text.includes('unclassified native fact'),true,'unknown kinds stay readable with their own body');
+ assert.equal(page.entries.find(e=>e.entryId==='legacy-answer').text,'Legacy answer');
+ const after=replay.records().map(r=>({id:r.id,entryId:r.entryId,sequence:r.sequence,objectId:r.objectId}));
+ assert.deepEqual(after,before,'enrichment keeps the same entry identity');
+ assert.deepEqual(await Promise.all(after.map(r=>fs.readFile(path.join(replay.root,r.objectId+'.json')))),bodies,'immutable bodies are never rewritten');
+ for(const [entryId,kind] of [['legacy-answer','conversation'],['legacy-meta','metadata'],['legacy-future','unclassified']])assert.equal(replay.records().find(r=>r.entryId===entryId).recordKind,kind);
+ assert.equal(replay.messages().some(e=>e.entryId==='legacy-future'),false,'unclassified native rows never enter model context');
+ assert.equal(replay.messages().some(e=>e.text==='Legacy answer'),true);
+ replay.cache.clear();replay.deferred.clear();
+ assert.equal(replay.frame().entries.some(e=>e.entryId==='legacy-meta'),false,'enriched kinds survive eviction');
+});
+
+test('verified user echo suppression holds without hydration while genuine native input remains',async t=>{
+ const {store,index}=await fixture(t);
+ const bound={sessionId:'native-session',epoch:'native-session#0',requestId:'request-a',jobId:'job-a',entry:{type:'message',id:'echo-user',message:{role:'user',content:[{type:'text',text:'Original question'}]}}};
+ const free={sessionId:'native-session',entry:{type:'message',id:'free-user',message:{role:'user',content:[{type:'text',text:'Standalone native input'}]}}};
+ await index.recordBatch([bound,free],'frontdesk');
+ const cold=new SessionIndex(store);await cold.initialize();
+ cold.cache.clear();cold.deferred.clear();
+ const rows=cold.frame().entries;
+ assert.equal(rows.some(e=>e.entryId==='echo-user'),false,'a bound journal echo stays suppressed even unhydrated');
+ const freeRow=rows.find(e=>e.entryId==='free-user');
+ assert.equal(freeRow.speaker,'user');assert.equal(freeRow.recordKind,'conversation');assert.equal(freeRow.availability,'not-loaded');
+ const page=await cold.page();
+ assert.equal(page.entries.some(e=>e.entryId==='echo-user'),false);
+ assert.equal(page.entries.find(e=>e.entryId==='free-user').text,'Standalone native input');
+ assert.equal(page.entries.some(e=>e.id==='user-a'),true);
+});
+
+test('real native failure stays visible after cold reopen instead of being hidden with the metadata kinds',async t=>{
+ const {store,index}=await fixture(t);
+ const failure=fact('failed-answer','Partial work then error');failure.entry.message.isError=true;failure.entry.message.stopReason='error';
+ await index.recordBatch([failure],'frontdesk');
+ const cold=new SessionIndex(store);await cold.initialize();
+ const pending=cold.frame().entries.find(e=>e.entryId==='failed-answer');
+ assert.equal(pending.speaker,'agent');assert.equal(pending.recordKind,'conversation');
+ const row=(await cold.page()).entries.find(e=>e.entryId==='failed-answer');
+ assert.equal(row.status,'failed');assert.equal(row.failed,true);assert.equal(row.text,'Partial work then error');
+});
+
+test('re-ingesting a legacy row enriches its indexed kind without rewriting the immutable body',async t=>{
+ const {store,index}=await fixture(t);
+ const metadata={sessionId:'native-session',entry:{type:'session_info',id:'replay-meta',facts:['native session facts']}};
+ await index.recordBatch([fact('replay-answer','Replay answer'),metadata],'frontdesk');
+ const record=index.records().find(r=>r.entryId==='replay-meta'),file=path.join(index.root,record.objectId+'.json'),body=await fs.readFile(file);
+ await store.mutate(()=>{for(const row of store.state.sessionIndex.entries){delete row.entryType;delete row.recordKind;}});
+ await index.recordBatch([metadata],'frontdesk');
+ const enriched=index.records().find(r=>r.entryId==='replay-meta');
+ assert.equal(enriched.entryType,'session_info');assert.equal(enriched.recordKind,'metadata');
+ assert.equal(enriched.objectId,record.objectId);
+ assert.deepEqual(await fs.readFile(file),body);
+ assert.equal(index.records().filter(r=>r.entryId==='replay-meta').length,1);
+ assert.equal(index.frame().entries.some(e=>e.entryId==='replay-meta'),false);
+});
+
+test('read-only replay of legacy rows stays classified without any store writes',async t=>{
+ const {store}=await fixture(t);
+ const scratch=new SessionIndex(store);await scratch.initialize();
+ await scratch.recordBatch([fact('replay-answer','Replay answer'),{sessionId:'native-session',entry:{type:'model_change',id:'replay-meta',model:'provider/model'}}],'frontdesk');
+ await store.mutate(()=>{for(const row of store.state.sessionIndex.entries){delete row.entryType;delete row.recordKind;}});
+ const readOnly={root:store.root,state:structuredClone(store.state)};
+ const replay=new SessionIndex(readOnly);
+ const coldRows=replay.frame().entries.filter(e=>e.source==='native');
+ assert.equal(coldRows.find(e=>e.entryId==='replay-answer').recordKind,'conversation');
+ assert.equal(coldRows.find(e=>e.entryId==='replay-meta').recordKind,'unclassified','no ghost execution while cold');
+ const page=await replay.page();
+ assert.equal(page.entries.some(e=>e.entryId==='replay-meta'),false,'hydrated metadata disappears without a store write');
+ assert.equal(page.entries.find(e=>e.entryId==='replay-answer').text,'Replay answer');
+ assert.equal(readOnly.state.sessionIndex.entries.find(r=>r.entryId==='replay-meta').recordKind,undefined,'read-only classification does not mutate retained index state');
+ assert.equal(replay.records().find(r=>r.entryId==='replay-meta').recordKind,undefined);
+});
+
+test('legacy classification persistence failure remains visible instead of silently succeeding',async t=>{
+ const {store,index}=await fixture(t);
+ await index.recordBatch([{sessionId:'native-session',entry:{type:'model_change',id:'classify-write-failure',model:'synthetic/model'}}],'frontdesk');
+ await store.mutate(()=>{for(const row of store.state.sessionIndex.entries){delete row.entryType;delete row.recordKind;}});
+ const replay=new SessionIndex({root:store.root,state:structuredClone(store.state),mutateNative:async()=>{throw Object.assign(Error('classification persistence unavailable'),{code:'STORAGE_RESULT_UNKNOWN'});}});
+ await assert.rejects(replay.page(),{code:'STORAGE_RESULT_UNKNOWN'});
+});
+
+test('native system instructions are metadata while explicit native system errors remain inspectable',async t=>{
+ const {store,index}=await fixture(t);
+ const instruction={sessionId:'native-session',entry:{type:'message',id:'native-base-instructions',message:{role:'system',content:'Synthetic execution base instructions'}}};
+ const failure={sessionId:'native-session',entry:{type:'message',id:'native-system-error',message:{role:'system',content:'Synthetic real system failure',isError:true}}};
+ await index.recordBatch([instruction,failure],'frontdesk');
+ const cold=new SessionIndex(store);assert(!cold.frame().entries.some(e=>e.entryId==='native-base-instructions'));
+ const page=await cold.page();assert(!page.entries.some(e=>e.entryId==='native-base-instructions'));
+ const error=page.entries.find(e=>e.entryId==='native-system-error');assert.equal(error.recordKind,'unclassified');assert.equal(error.availability,'read-required');assert.match(error.text,/Synthetic real system failure/);
+ const raw=await cold.read(cold.records().find(r=>r.entryId==='native-base-instructions').id);assert.equal(raw.recordKind,'metadata');assert.match(raw.text,/Synthetic execution base instructions/);
+});

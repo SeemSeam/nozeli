@@ -1,4 +1,4 @@
-import {hasReadableText,isImportantEntry,isProcessEntry,hasProcessPayload,processLabel,turnPresentation,replyPresentation,processSummary,orchestratorPresentation,closeoutPresentation,messageRole} from './session-presentation.mjs';
+import {hasReadableText,isImportantEntry,isProcessEntry,hasProcessPayload,processLabel,turnPresentation,replyPresentation,processSummary,messageRole} from './session-presentation.mjs';
 import React,{memo,useEffect,useLayoutEffect,useMemo,useRef,useState,useSyncExternalStore} from 'react';
 import {createPortal} from 'react-dom';
 import {createRoot} from 'react-dom/client';
@@ -7,6 +7,21 @@ import {createFileIcon} from './file-icons.mjs';
 import {groupSessionWorkflows,followTranscriptTail,updateTranscriptTailLock} from './session-store.mjs';
 import {useReadingMarkdown} from './session-reading.mjs';
 import './session-timeline.css';
+import {taskIdentityKey,taskIdentityTone} from '../domain/task-identity.mjs';
+import {taskPresentation} from './task-presentation.mjs';
+import './task-identity.css';
+function TaskCard({row,state,projectId,onResult}){
+ const view=taskPresentation(row,state),tone=taskIdentityTone(taskIdentityKey(projectId,state,row));
+ const route=async action=>{const result=await window.nozeli.invoke('workspace.control',{type:'task-workspace',action,projectId,...(row.workId?{workId:row.workId}:{}),...(row.sourceJobId?{sourceJobId:row.sourceJobId}:{})});if(!result.ok)throw Error(result.error?.message||'任务未能打开');};
+ const [baselineReturn]=useState(view.returnKey),[visible,setVisible]=useState(()=>document.visibilityState!=='hidden');
+ useEffect(()=>{const update=()=>setVisible(document.visibilityState!=='hidden');document.addEventListener('visibilitychange',update);return()=>document.removeEventListener('visibilitychange',update);},[]);
+ const [error,setError]=useState('');
+ return h('article',{className:'session-task-card','data-workflow-id':row.id,'data-workflow-work':row.workId||undefined,'data-task-tone':tone,'data-state':view.status,'aria-label':view.name+' · '+view.label},
+  h('header',null,h('strong',{title:view.name},view.name)),h('p',{className:'session-task-status',role:'status',title:view.label},view.label.split(' · ')[0]),h('p',{className:'session-task-latest',title:view.latest},view.latest),
+  h('div',{className:'session-task-flow','data-running':view.running&&visible,'aria-label':'请求、主控、执行、成果、审阅'},['请求','主控','执行','成果','审阅'].map((label,index)=>h('span',{key:label,'data-current':index===view.stage},label,index<4&&h('i',{'aria-hidden':true},'→')))),
+  h('div',{className:'session-task-trail',key:view.returnKey||'initial','data-returning':view.returning&&visible&&view.returnKey!==baselineReturn},view.returnKey?'↶ 审阅 / 补充已回流':'原任务持续更新',h('small',null,view.trail.join(' · ')||'成果尚未发布')),
+  h('nav',{'aria-label':'任务操作'},h('button',{type:'button','data-task-action':'process',onClick:()=>route('process').catch(error=>setError(error.message))},'查看过程'),h('button',{type:'button','data-task-action':view.publication?'result':'overview',onClick:()=>Promise.resolve(view.publication&&onResult?onResult(view.publication):route('overview')).catch(error=>setError(error.message))},view.publication?'查看成果':'任务概览')),error&&h('small',{role:'alert'},error));
+}
 const h=React.createElement;
 const Markdown=memo(function Markdown({text,context,settled=false}){
  const ref=useRef(null),[wrapped]=useState(()=>new Set());
@@ -117,20 +132,6 @@ function Reply({row,...props}){
  const {answer,entry}=replyPresentation(row.entries,props.state);
  return h(Message,{...props,onTask:answer?.speaker==='agent'?props.onTask:null,entry,entries:row.entries});
 }
-function Orchestrator({row,state,context,call}){
- const {execution,activity,handoff}=orchestratorPresentation(row.entries,state);
- const records=row.entries.filter(entry=>entry.speaker!=='user'&&!entry.hostTurnStatus);
- const {answer}=replyPresentation(records,state),process=records.filter(entry=>entry!==answer);
- return h('article',{className:'session-orchestrator','data-orchestrator-round':row.id,'data-orchestrator-job':row.jobId,'data-role':'orchestrator','aria-label':'主控的处理记录'},
-  h('header',null,h('strong',null,'主控'),h('span',{className:'session-execution-state','data-execution-state':execution.status,role:'status'},execution.label)),
-  h('p',{className:'session-orchestrator-activity'},activity),
-  execution.status==='failed'&&h('p',{role:'alert'},'本次主控处理失败。'+(handoff?'已确认的路由结果不代表本次主控处理成功。':'')),
-  handoff&&h('section',{className:'session-orchestrator-handoff','data-orchestrator-handoff':handoff.action,'data-handoff-work':handoff.workId,'aria-label':'主控已确认的路由结果'},
-   h('p',null,h('span',{className:'session-orchestrator-arrow','aria-hidden':true},'→'),h('span',null,handoff.text)),
-   handoff.workId&&h('p',{className:'session-orchestrator-work'},h('strong',null,'Worker'),handoff.name&&h('span',null,handoff.name),h('span',{className:'session-orchestrator-work-state','data-work-state':handoff.status},'工作当前：'+handoff.statusLabel))),
-  answer&&h('section',{className:'session-orchestrator-reply','data-message':answer.id,'aria-label':'主控原始回复'},h(HistoricalModel,{entry:answer}),answer.availability==='read-required'?h(ReadOriginal,{entry:answer,call}):h(NativeBody,{entry:answer,context})),
-  process.length>0&&h(Fold,{label:processSummary(process,execution)},h(ProcessRecords,{entries:process,context,call})));
-}
 function FrozenFiles({receipt,call,openFrozenChange,projectId}){
  const changeSetId=receipt.changeSetId||receipt.snapshot?.changeSetId;
  const [state,setState]=useState({files:[],loading:true,error:null,nextOffset:null,total:null,offset:0,requestOffset:0});
@@ -152,36 +153,14 @@ function FrozenFiles({receipt,call,openFrozenChange,projectId}){
   h('ul',null,state.files.map(file=>{const path=file.path,label=file.oldPath&&file.oldPath!==path?file.oldPath+' → '+path:path,hasMaterial=receipt.workId&&receipt.objectId&&(file.after||file.before),openDiff=()=>Promise.resolve(openFrozenChange?.({projectId,changeSetId,fileId:file.fileId})).catch(error=>setState(old=>({...old,error:error.message})));return h('li',{key:file.fileId},h('button',{type:'button','data-frozen-file':file.fileId,title:hasMaterial?'查看本轮成果内容与实际效果；已删除文件显示修改前':'查看本轮冻结差异；此记录没有可打开的成果版本',onClick:()=>hasMaterial?void openMaterial(file):void openDiff()},h(FileIcon,{path}),h('span',{className:'session-file-path'},label),h('small',{className:'session-file-status'},h('span',{'data-file-status':file.status},file.status),file.added!=null&&h('span',{className:'session-file-added'},' +'+file.added),file.deleted!=null&&h('span',{className:'session-file-deleted'},' −'+file.deleted))),hasMaterial&&h('button',{type:'button',className:'session-result-material','data-frozen-diff':file.fileId,title:'查看输入基线与发布冻结候选的只读代码差异',onClick:()=>void openDiff()},'代码差异'));})),
   state.loading&&h('p',{role:'status'},'读取冻结清单…'),state.error&&h('p',{role:'alert'},state.error,h('button',{type:'button',disabled:state.loading,onClick:()=>load(state.requestOffset)},'重试读取')),h('nav',{'aria-label':'冻结文件分页'},h('span',null,state.total?'第 '+(state.offset+1)+'–'+(state.offset+state.files.length)+' / '+state.total+' 个文件':''),state.offset>0&&h('button',{type:'button',disabled:state.loading,onClick:()=>load(Math.max(0,state.offset-100))},'上一页变更文件'),state.nextOffset!=null&&h('button',{type:'button',disabled:state.loading,onClick:()=>load(state.nextOffset)},'更多变更文件')));
 }
-function Closeout({work,revision}){
- const view=closeoutPresentation(work,revision);if(!view)return null;
- const labels={complete:'已确认',current:'处理中',pending:'待处理',blocked:'受阻'};
- return h('article',{className:'session-closeout','data-role':'orchestrator','data-work-closeout':work.id,'data-closeout-revision':revision,'data-closeout-state':view.status,'aria-label':'主控收尾记录'},
-  h('header',null,h('strong',null,'主控 · 工作收尾'),h('span',{role:'status'},view.label)),
-  h('p',null,work.name||'原工作'),h('p',null,view.summary),
-  view.steps.length>0&&h('small',{className:'session-closeout-executor'},'主控协调 · 程序执行并核验合入、归档与清理'),
-  view.steps.length>0&&h('ol',null,view.steps.map(step=>h('li',{key:step.id,'data-closeout-step':step.id,'data-step-state':step.status},h('span',null,step.label),h('small',null,labels[step.status])))),
-  view.reason&&h(Fold,{label:'查看收尾受阻原因'},h(Content,{value:view.reason,plain:true})));
-}
-function Worker({row,state,context,call,openFrozenChange,projectId}){
- const [open,setOpen]=useState(false),work=state.works.find(work=>work.id===row.workId),execution=turnPresentation(row.entries,state);
- const important=row.entries.filter(entry=>isImportantEntry(entry)||!open&&!isProcessEntry(entry)&&hasReadableText(entry));
- return h('article',{className:'session-worker','data-worker-round':row.id,'data-role':'worker'},
-  h('details',{open},h('summary',{onClick:event=>{event.preventDefault();setOpen(value=>!value);},'aria-expanded':open},h('span',{className:'session-worker-identity'},h('strong',null,'Worker'),h('span',{className:'session-worker-task'},work?.name||'未命名任务')),h('span',{className:'session-worker-meta'},'第 '+(row.revision??'?')+' 轮 · ',h('span',{'data-execution-state':execution.status},execution.label)),h('span',{className:'session-worker-disclosure','aria-hidden':true},open?'收起详情':'展开详情')),open&&h('div',{className:'session-worker-transcript'},row.entries.filter(entry=>!isProcessEntry(entry)).map(entry=>h(Message,{key:entry.id,entry,state,context,call})),row.entries.some(isProcessEntry)&&h(Fold,{label:processSummary(row.entries.filter(isProcessEntry),execution)},h(ProcessRecords,{entries:row.entries.filter(isProcessEntry),context,call})))),
-  !open&&important.length>0&&h('div',{className:'session-important'},important.map(entry=>h(Message,{key:entry.id,entry,state,context,call}))),
-  row.receipts.map(receipt=>h(FrozenFiles,{key:receipt.id||receipt.objectId,receipt,call,openFrozenChange,projectId})),
-  !row.receipts.length&&h('p',{className:'session-freeze-pending'},'尚未冻结变更；完整输出可展开查阅。'));
-}
 function TimelineRow({row,...props}){
- const {state,context,call,openFrozenChange,projectId,onTask}=props;
- if(row.kind==='workflow')return h('section',{className:'session-workflow','data-workflow-id':row.id,'data-workflow-work':row.workId||undefined,'aria-label':'后台任务处理记录'},row.rows.map(child=>h(TimelineRow,{key:child.id,row:child,...props})));
- if(row.kind==='closeout')return h(Closeout,{work:state.works.find(work=>work.id===row.workId),revision:row.revision});
- if(row.kind==='orchestrator')return h(Orchestrator,{row,state,context,call});
- if(row.kind==='worker')return h(Worker,{row,state,context,call,openFrozenChange,projectId});
+ const {state,context,call,projectId,onTask}=props;
+ if(row.kind==='workflow')return h(TaskCard,{row,state,projectId,onResult:props.onResult});
  if(row.kind==='reply')return h(Reply,{row,state,context,onTask,call});
  if(row.kind==='delta')return h('article',{className:'session-host-delta','data-host-delta':row.delta.id},h('strong',null,'Nozeli · '+row.delta.kind),h(Content,{value:row.delta.text,context}));
  return h(Message,{entry:row.entry,unbound:row.unbound,state,context,onTask,call});
 }
-function Timeline({store,state,context,call,openFrozenChange,projectId,onTask,onPage,onLatest,historyPage,pageError,navigationContainer,initialScroll}){
+function Timeline({store,state,context,call,openFrozenChange,projectId,onTask,onResult,onPage,onLatest,historyPage,pageError,navigationContainer,initialScroll}){
  const snapshot=useSyncExternalStore(store.subscribe,store.getSnapshot,store.getSnapshot),ref=useRef(null),lock=useRef({current:true}),restoreTail=useRef(null),history=useRef(historyPage);
  const [atBottom,setAtBottom]=useState(true);history.current=historyPage;
  const restoration=useRef(initialScroll);
@@ -204,7 +183,21 @@ function Timeline({store,state,context,call,openFrozenChange,projectId,onTask,on
  const latest=()=>{restoration.current=null;latestRequested.current=true;lock.current.current=true;if(historyPage)onLatest();else{restoreTail.current?.();setAtBottom(true);}};
  const rows=groupSessionWorkflows(snapshot,state.receipts,state);
  return h(React.Fragment,null,h('div',{ref,className:'session-timeline','data-session-version':'1',onToggleCapture:()=>{lock.current.current=false;}},h('nav',{'aria-label':'会话历史'},snapshot.hasMore&&h('button',{type:'button',onClick:()=>{lock.current.current=false;onPage(snapshot.nextCursor);}},'读取更早一页'),pageError&&h('p',{role:'alert'},pageError)),
-  !rows.length&&h('p',{className:'session-empty'},'会话记录将在这里显示。输入和材料不会自动发送。'),rows.map(row=>h(TimelineRow,{key:row.id,row,state,context,call,openFrozenChange,projectId,onTask}))),
+  !rows.length&&h('p',{className:'session-empty'},'会话记录将在这里显示。输入和材料不会自动发送。'),rows.map(row=>h(TimelineRow,{key:row.id,row,state,context,call,openFrozenChange,projectId,onTask,onResult}))),
   createPortal((historyPage||!atBottom)?h('button',{type:'button',className:'session-jump-latest',onClick:latest},h('span',{'aria-hidden':true},'↓ '),historyPage?'返回最新消息':'回到最新'):null,navigationContainer));
 }
 export function mountSessionTimeline(container,props){const root=createRoot(container);return {render(next){const merged={...props,...next};root.render(h(Timeline,{...merged,key:merged.projectId}));},destroy(){root.unmount();}};}
+function TaskProcess({snapshot,state,context,call,openFrozenChange,projectId,onPage,onLatest,loading,error}){
+ const pageReceipts=(state.receipts||[]).filter(receipt=>snapshot.entries.some(entry=>Boolean(receipt.objectId)&&entry.objectId===receipt.objectId||Boolean(receipt.jobId||receipt.sourceJobId)&&entry.jobId===(receipt.jobId||receipt.sourceJobId)));
+ const records=[...snapshot.entries.map(entry=>({id:entry.id,sequence:entry.sequence,entry})),...(snapshot.deltas||[]).map(delta=>({id:delta.id,sequence:delta.sequence,delta}))].sort((a,b)=>(a.sequence??0)-(b.sequence??0)||a.id.localeCompare(b.id));
+ return h('div',{'data-task-process':true},
+  h('nav',{'aria-label':'任务过程分页'},snapshot.hasMore&&h('button',{type:'button','data-task-page':'earlier',disabled:loading,onClick:()=>onPage(snapshot.nextCursor)},'更早一页'),h('button',{type:'button','data-task-page':'latest',disabled:loading,onClick:onLatest},'读取最新')),
+  loading&&h('p',{role:'status'},'读取过程…'),error&&h('p',{role:'alert'},error),!records.length&&!loading&&h('p',null,'此页没有可读取记录。'),
+  records.map(({id,entry,delta})=>delta?h('article',{key:id,'data-host-delta':id},h('strong',null,'Nozeli · '+delta.kind),h(Content,{value:delta.text,context,plain:true})):h('article',{key:id,'data-process-entry':entry.id,'data-role':messageRole(entry,state),className:'session-process-record'},
+   h('header',null,h('strong',null,entry.speaker==='user'?'用户输入':entry.target==='orchestrator'?'主控':entry.target==='frontdesk'?'前台':'执行记录'),h('small',null,entry.at||'',entry.revision!=null?' · 修订 '+entry.revision:'')),
+   h(HistoricalModel,{entry}),entry.availability==='read-required'?h(ReadOriginal,{entry,call}):h(NativeBody,{entry,context}),
+   entry.attachments?.length>0&&h('div',{className:'message-attachments'},entry.attachments.map((attachment,index)=>h('button',{key:attachment.digest||index,type:'button',disabled:!attachment.digest||!window.__openMaterialAttachment,title:'发送时冻结的材料',onClick:()=>window.__openMaterialAttachment?.(attachment)},attachment.name||'冻结材料'))),
+   (entry.materialSources?.length>0||entry.drawingSources?.length>0)&&h(Fold,{label:'冻结选区与材料来源'},h(Content,{value:{materialSources:entry.materialSources,drawingSources:entry.drawingSources},context,plain:true})))),
+  pageReceipts.map(receipt=>h(FrozenFiles,{key:receipt.id||receipt.objectId,receipt,call,openFrozenChange,projectId})));
+}
+export function mountTaskProcess(container,props){const root=createRoot(container);return {render(next){root.render(h(TaskProcess,{...props,...next}));},destroy(){root.unmount();}};}

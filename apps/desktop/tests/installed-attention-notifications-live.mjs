@@ -121,7 +121,7 @@ try{
  // the actual project facts, then explicitly open the sidebar before hit tests.
  await until(async()=>{const status=await invoke('managed.status',{projectId:project.id});return status.state.works.some(w=>w.id===work.id&&w.status==='review')&&status.state.todos.some(t=>t.id===permission.id&&t.status==='open');},'selected project durable report and pending authorization');
  if(await shell.$eval('#toggle-sidebar',n=>n.getAttribute('aria-expanded')!=='true'))await shell.click('#toggle-sidebar');
- await until(()=>shell.$eval('#inbox-count',n=>n.textContent==='2'),'report plus permission right inbox');
+ await until(()=>shell.$$eval('[data-todo-row]',nodes=>nodes.length===2),'report and permission obligations rendered');
  await noGenericTop();
  assert.equal(await shell.$eval('.managed-service-faults',n=>n.hidden),true,'nonfault arrivals never create a top banner');
  await until(()=>shell.$eval('#recent [data-project-id="'+project.id+'"] [data-project-attention-badge]',n=>n.textContent==='2'),'independent project report plus permission count');
@@ -130,10 +130,10 @@ try{
   await shell.waitForSelector(selector,{visible:true});await shell.focus(selector);
   assert.equal(await shell.$eval(selector,n=>{const r=n.getBoundingClientRect();return !n.disabled&&document.activeElement===n&&n.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));}),true,'right todo remains keyboard/pointer reachable');
  }
- await until(()=>shell.$eval('[data-todo-row="'+resultTodo.id+'"] .managed-todo-unread',n=>!n.hidden&&n.textContent==='新消息'),'original message unread presentation');
- assert.match(await shell.$eval('#toggle-sidebar',n=>n.getAttribute('aria-label')),/未读消息/);
+ assert.equal(await shell.$('#sidebar-badge,#inbox-count,#work-count,.managed-todo-unread'),null,'right sidebar has no numeric or unread presentation');
+ assert.doesNotMatch(await shell.$eval('#toggle-sidebar',n=>n.getAttribute('aria-label')),/未读|\d/);
  await unchangedAttention();await shot('01-no-top-report-permission-message');
- mark('Report and permission remain reachable in the real right inbox; independent project count and message unread survive without generic top UI or acknowledgment');
+ mark('Report and permission remain reachable; left project count survives while right unread/count UI is absent and obligations are never acknowledged');
  await injectFault('fault-alpha');await reload();await countIs(1);await noGenericTop();
  await shot('02-single-fault');
  await injectFault('fault-beta');await reload();await countIs(2);

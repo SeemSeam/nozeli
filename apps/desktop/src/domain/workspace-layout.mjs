@@ -2,7 +2,7 @@ import {normalizeWebUrl} from './web-url.mjs';
 import { validateDocumentSource, documentResourceId, isProjectDocumentSource } from './document-source.mjs';
 const encoder=new TextEncoder();
 
-const kinds=new Set(['document','conversation','report','diff','history','terminal','web','project-terminal']);
+const kinds=new Set(['document','conversation','report','diff','history','terminal','web','project-terminal','task-process']);
 const invalid=(message,code='LAYOUT_INVALID')=>{throw Object.assign(new Error(message),{code});};
 const id=prefix=>prefix+'-'+globalThis.crypto.randomUUID();
 const historyLimit=5;
@@ -10,6 +10,10 @@ const group=()=>({kind:'group',id:id('group'),views:[],activeViewId:null,history
 const clone=value=>structuredClone(value);
 const relPath=value=>typeof value==='string'&&value.length>0&&value.length<=4096&&!/[\\\x00-\x1f]/.test(value)&&!value.startsWith('/')&&!value.split('/').some(part=>!part||part==='.'||part==='..');
 const identity=(value,max=200)=>typeof value==='string'&&value.length>0&&value.length<=max&&!/[\x00-\x1f]/.test(value)&&!['__proto__','constructor','prototype'].includes(value);
+export function taskResourceId(projectId,scope){
+ if(!scope||typeof scope!=='object'||Array.isArray(scope)||Object.keys(scope).some(key=>!['workId','sourceJobId'].includes(key))||!Object.keys(scope).length||Object.values(scope).some(value=>!identity(value,512)))invalid('任务阅读范围无效。');
+ return 'task-process:'+JSON.stringify([projectId,scope.workId??null,scope.sourceJobId??null]);
+}
 function roots(layout){return [{id:'main',root:layout.mainRoot},...layout.detached];}
 function walk(node,fn,parent=null,key=null){fn(node,parent,key);if(node.kind==='split'){walk(node.first,fn,node,'first');walk(node.second,fn,node,'second');}}
 export function layoutGroups(layout,windowId='main'){
@@ -77,6 +81,7 @@ export function validateLayout(layout){
    if(isProjectDocumentSource(view.documentSource)&&view.documentSource!==undefined)invalid('项目文档不携带文档来源。');
   }
   if(view.kind==='conversation'&&++conversation>1)invalid('项目主对话不能重复。');
+  if(view.kind==='task-process'&&(view.readOnly!==true||view.relPath!==undefined||view.resourceId!==taskResourceId(layout.projectId,view.viewState?.taskScope)||!['process','overview'].includes(view.viewState?.taskMode)))invalid('任务阅读面身份无效。');
   if(view.kind==='project-terminal'){
    // Host-owned ordinary shell view: one per project, fixed resource identity,
    // no renderer-supplied cwd/command/shell fields, size-only view state.
@@ -131,6 +136,17 @@ function split(layout,command){
 export function reduceLayout(previous,command){
  validateLayout(previous);if(!command||typeof command!=='object')invalid('工作区操作无效。');const layout=clone(previous);
  switch(command.type){
+  case 'openTask':{
+   const resourceId=taskResourceId(layout.projectId,command.scope),existing=Object.values(layout.views).find(view=>view.kind==='task-process'&&view.resourceId===resourceId&&!view.sourceViewId);
+   let target=existing&&findView(layout,existing.id)?.group;
+   if(!target){
+    const conversation=Object.values(layout.views).find(view=>view.kind==='conversation'),found=conversation&&findView(layout,conversation.id);
+    target=found?split(layout,{groupId:found.group.id,axis:'x',side:'after'}):checkedGroup(layout,command.groupId).group;
+   }
+   if(existing){existing.viewState.taskMode=command.mode;addToGroup(target,existing.id);}
+   else{const viewId=id('view');layout.views[viewId]={id:viewId,projectId:layout.projectId,kind:'task-process',resourceId,readOnly:true,viewState:{taskScope:clone(command.scope),taskMode:command.mode}};addToGroup(target,viewId);}
+   break;
+  }
   case 'open':{
    const target=checkedGroup(layout,command.groupId).group;let v=command.view;
    if(!v||!kinds.has(v.kind)||v.projectId!==undefined&&v.projectId!==layout.projectId)invalid('工作区内容属于另一个项目。');
@@ -193,7 +209,7 @@ export function reduceLayout(previous,command){
   case 'closeContent':{const view=layout.views[command.viewId];if(!view)invalid('已打开文件已变化。','LAYOUT_STALE');const found=findView(layout,command.viewId);if(found){detachFromGroup(layout,command.viewId);restoreDocument(layout,found.group);}break;}
   case 'closeGroup':{const {group:source}=checkedGroup(layout,command.groupId);for(const v of [...source.views])closeView(layout,v,{restore:false});removeNode(layout,source.id);break;}
   case 'windowBounds':{const window=layout.detached.find(w=>w.id===command.windowId);if(!window)invalid('独立窗口已变化。','LAYOUT_STALE');window.boundsDip=clone(command.boundsDip);if(command.alwaysOnTop!==undefined)window.alwaysOnTop=command.alwaysOnTop;break;}
-  case 'restoreViewState':{if(!layout.views[command.viewId])invalid('已打开文件不存在。');layout.views[command.viewId].viewState=clone(command.viewState);break;}
+  case 'restoreViewState':{const view=layout.views[command.viewId];if(!view)invalid('已打开文件不存在。');if(view.kind==='task-process'&&taskResourceId(layout.projectId,command.viewState?.taskScope)!==view.resourceId)invalid('不能更改任务阅读范围。');view.viewState=clone(command.viewState);break;}
   case 'webNavigate':{const view=layout.views[command.viewId];if(view?.kind!=='web')invalid('网页已变化。','LAYOUT_STALE');const url=normalizeWebUrl(command.url);view.url=url;view.resourceId='web:'+url;view.title=typeof command.title==='string'?command.title.replace(/[\x00-\x1f]/g,'').slice(0,512)||new URL(url).host:new URL(url).host;break;}
   case 'renameResource':{
    if(!relPath(command.from)||!relPath(command.to))invalid('资源重命名路径无效。');
