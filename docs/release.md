@@ -1,8 +1,10 @@
 # 发布说明与发行边界
 
-当前版本基线：**`0.1.0-alpha.5`**（见[CHANGELOG](../CHANGELOG.md)与package.json）。精确提交由同名tag及发行包RELEASE.json绑定；产品构建、测试和分发审计分别记录，不互相替代。
+当前版本基线：**`0.1.0-alpha.6`**（见[CHANGELOG](../CHANGELOG.md)与package.json）。精确提交由同名tag及发行包RELEASE.json绑定；产品构建、测试和分发审计分别记录，不互相替代。
 
 ## 版本状态
+
+- **alpha.6当前所有者授权**：2026-11-08用户获知六项分发义务未签收、`--public`失败后，明确授权alpha.6公开Alpha预发布例外。仅此版本有效，不构成合规认证，不宣称公开审计通过。需确切提交CI、干净源码打包、解压实际ELF冒烟及远端附件校验后才发布。候选包含稳定报告记忆、任务工作区与任务内对话、生命周期恢复/重置、原生技能初始化和初始页/网页栏精简；仅Linux资格，不外推Windows/macOS、200%完整应用可用性或真实磁盘硬件故障。
 
 - **Alpha预发行（已发布）**：<https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.4>（2026-11-01 公开 prerelease）：Linux x64便携包、源码及SHA-256校验和，包含 Pi 原生账号与模型管理、持久模型切换、紧凑源/API管理、本地 HTML/HTM 网页视图与收敛的上下文交付。发布由仓库所有者明确要求；**发布不是合规认证**，下述分发审计仍未完成（此前 alpha.3 见 CHANGELOG）。
 - **Alpha预发行 `v0.1.0-alpha.5`**：仓库所有者已于 2026-11-04 明确授权将其公开发布为 Alpha prerelease——这是针对下述六项未签收义务的当前所有者 Alpha 例外，不构成合规认证。本轮内容：前台唯一主对话＋显式“提交后台”入口、紧凑 F/O/W 协作状态、有界文档读取、主控内部故障归系统处理、版本绑定审核历史、空交接连接恢复，及有界任务板／空闲原生 Agent 回收（见[CHANGELOG](../CHANGELOG.md)）。授权的发布流程：常规回归与所需 CI 通过 → 便携包构建 → 解压产物实际启动冒烟 → 校验和核对 → 创建同名 tag 与 GitHub Release；最终发行状态与附件以 [GitHub 发布页](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.5)为准，未出现在该页面前不视为已发布。第三方对应源码、二进制通告及完整分发审计仍未签收。

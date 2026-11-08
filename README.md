@@ -70,8 +70,8 @@ Agent 交付得快，不代表人已经理解。Nozeli 希望让你看清成果�
 
 - 面向 Windows、macOS、Linux；当前验证为 **Linux x64／Wayland 与 X11/XWayland**，其他平台尚未通过。
 - 已有阅读、批注、编辑、真实文件与后台协作工作流；具体格式、版本和能力边界见[当前状态与能力边界](docs/status.md)。
-- **Alpha预发行版本 `v0.1.0-alpha.5`**（发行状态与附件以[GitHub 发布页](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.5)为准）：本轮源码在前一版基础上包含前台唯一主对话与显式“提交后台”入口、紧凑 F/O/W 协作状态行、有界文档读取、主控内部故障归系统处理、版本绑定的审核历史、空交接连接恢复，以及有界任务板与空闲原生 Agent 回收；Linux x64 已完成本机安装与专项实测，完整回归与发行包核验随发布流程进行，Windows/macOS 未验证。目标发布与分发审计状态见[发布说明与发行边界](docs/release.md)。
-- 已发布：<https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.4>（2026-11-01 公开 prerelease）；<https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.5>（2026-11-04 所有者授权公开 prerelease，常规回归、便携包构建、解压冒烟与校验和核对通过后发布）。
+- **Alpha预发行候选 `v0.1.0-alpha.6`**（实际发行状态及附件以[GitHub发布页](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.6)为准）：稳定报告记忆、任务内续聊与只读过程、项目恢复/明确重置、原生skill初始化、精简初始页和随主题配色的功能图片。仅Linux实测，Windows/macOS未验；完整应用200%缩放和真实断电/满盘/磁盘损坏不在签收范围。
+- 所有者于2026-11-08在获知六项分发审计仍未签收后，明确授权alpha.6公开Alpha预发布例外；不是合规认证，不把公开审计检查记作通过。此前[alpha.5](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.5)保留原发行记录。
 - 第三方源码与再分发审计未完成：公开 Alpha 仍需保留未完成义务和当前发布授权说明，不构成合规认证。
 
 ## 进一步了解

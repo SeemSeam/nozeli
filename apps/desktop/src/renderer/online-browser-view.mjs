@@ -21,18 +21,17 @@ export function mountOnlineBrowser({root,scope,invoke,subscribe}){
  const back=button('后退','back'),forward=button('前进','forward'),reload=button('刷新','reload');
  const address=doc.createElement('input');address.type='text';address.inputMode='url';address.autocomplete='off';address.spellcheck=false;address.maxLength=8192;address.setAttribute('aria-label','网站地址（HTTP 或 HTTPS）');toolbar.append(address);
  const go=doc.createElement('button');go.type='submit';go.textContent='前往';toolbar.append(go);
- const heading=doc.createElement('strong');heading.className='online-browser-title';
- const status=doc.createElement('p');status.className='online-browser-status';status.setAttribute('role','status');status.setAttribute('aria-live','polite');
+ const status=doc.createElement('p');status.className='online-browser-status';status.hidden=true;status.setAttribute('role','status');status.setAttribute('aria-live','polite');
  const viewport=doc.createElement('div');viewport.className='online-browser-viewport';viewport.setAttribute('aria-label','网站内容');
- const content=doc.createElement('div');content.className='online-browser-content';content.append(viewport);host.append(toolbar,heading,status,content);root.replaceChildren(host);
+ const content=doc.createElement('div');content.className='online-browser-content';content.append(viewport);host.append(toolbar,status,content);root.replaceChildren(host);
  let state={url:normalizeWebUrl(scope.url),title:new URL(scope.url).host,loading:false,canGoBack:false,canGoForward:false};
  let draft=typeof scope.viewState?.addressDraft==='string'?scope.viewState.addressDraft:state.url;
  let dirtyDraft=typeof scope.viewState?.addressDraft==='string',composing=false,held=false,opened=false,disposed=false,frame=0,timer=0,saveQueue=Promise.resolve();
  let discussion=null,discussionWindow=null,discussionUrl=null,discussionReady=Promise.resolve(),boundsSequence=0;
  address.value=draft;win.__nozeliReady=false;
  const call=async(op,payload={})=>{const result=await invoke(op,payload);if(!result?.ok)throw Object.assign(new Error(result.error?.message||'浏览器操作失败'),{code:result.error?.code});return result.value;};
- const fail=error=>{status.textContent=error.message;status.classList.add('is-error');};
- function paint(){heading.textContent=state.title||new URL(state.url).host;doc.title=heading.textContent;back.disabled=held||!opened||!state.canGoBack;forward.disabled=held||!opened||!state.canGoForward;reload.disabled=held||!opened;address.disabled=held;go.disabled=held||!opened;reload.textContent=state.loading?'停止':'刷新';reload.setAttribute('aria-label',reload.textContent);reload.dataset.browserAction=state.loading?'stop':'reload';status.classList.toggle('is-error',Boolean(state.error));status.textContent=state.error?(typeof state.error==='string'?state.error:state.error.message||'网站加载失败'):state.loading?'正在加载…':state.url;}
+ const fail=error=>{status.textContent=error.message;status.hidden=false;status.classList.add('is-error');scheduleBounds();};
+ function paint(){doc.title=state.title||new URL(state.url).host;back.disabled=held||!opened||!state.canGoBack;forward.disabled=held||!opened||!state.canGoForward;reload.disabled=held||!opened;address.disabled=held;go.disabled=held||!opened;reload.textContent=state.loading?'停止':'刷新';reload.setAttribute('aria-label',reload.textContent);reload.dataset.browserAction=state.loading?'stop':'reload';host.setAttribute('aria-busy',String(Boolean(state.loading)));status.classList.toggle('is-error',Boolean(state.error));status.textContent=state.error?(typeof state.error==='string'?state.error:state.error.message||'网站加载失败'):state.loading?'正在加载…':'';status.hidden=!status.textContent;}
  // One floating discussion window per committed URL: the same body node moves
  // into the new shell after the previous URL's draft is saved, so inputs,
  // thread DOM and selection identity are never rebuilt.

@@ -3,26 +3,34 @@ import {demoChapters,demoIdentity,unwrapDemo,createDemoActions} from '../domain/
 const flow=demoChapters[0];
 export function createStartPage({project,start,browse,compact=false}){
   const root=document.createElement('section');root.className='guided-start'+(project?' guided-start-project':' guided-start-welcome')+(compact?' guided-start-compact':'');if(!compact)root.id='start-page';
-  const eyebrow=document.createElement('p');eyebrow.className='guided-start-eyebrow';eyebrow.textContent=project?'从当前项目开始':'NOZELI / 阅读与写作工作空间';
-  const heading=document.createElement('h2');heading.textContent=project?(compact?'从这里继续':'选一份材料，开始自己的工作'):'以阅读和写作为中心，\nAI 在旁协作。';
-  const description=document.createElement('p');description.className='guided-start-description';description.textContent=project?(browse?'从左侧打开文件，阅读、写作或留下批注；需要帮助时再发起讨论，成果可以稍后审阅。':'在主窗口选择材料，或将此分区返回主工作区，再继续阅读与协作。'):'先打开自己的材料，阅读、写草稿、留下想法。需要时请 AI 协作，等待时继续工作，回来核对并采用成果。';
-  root.append(eyebrow,heading,description);
-  const actions=document.createElement('div');actions.className='guided-start-actions';root.append(actions);
+  const ideals=document.createElement('p');ideals.className='guided-start-ideals';ideals.textContent='直观 · 专注 · 控制';root.append(ideals);
+  if(project){
+    const heading=document.createElement('h2');heading.textContent=compact||!browse?'此分区暂无内容':'未打开文件';
+    const description=document.createElement('p');description.className='guided-start-description';description.textContent=browse?(compact?'选择项目文件，在此分区打开。':'从项目中选择文件，开始阅读或编辑。'):'从主窗口打开文件。';root.append(heading,description);
+  }
+  const actions=document.createElement('div');actions.className='guided-start-actions';
   const button=(text,run,id,primary=false)=>{const b=document.createElement('button');b.type='button';b.textContent=text;if(id)b.id=id;if(primary)b.className='guided-start-primary';b.onclick=run;actions.append(b);return b;};
   if(project){if(browse)button('浏览项目文件',browse,undefined,true).dataset.startBrowse='true';}
   else{button('打开本地项目',()=>document.getElementById('pick-project')?.click(),undefined,true);button('体验演示',start,compact?undefined:'start-demo-entry');}
-  if(!compact){
-    const features=document.createElement('dl');features.className='guided-start-features';
-    const items=[
-      ['01 / 批注与选区讨论','直接在“这里”留下想法',project?'打开文档后选中文字，或在支持的画面中框选区域，添加批注或发起讨论。批注先留在本地，明确发送才交给 Agent。':'打开材料，选中文字或框选区域，即可添加批注、围绕原文讨论；图片位置也能用涂鸦说明。保存批注不会自动派工。'],
-      ['02 / 任务闭环','把交付变成可审阅的成果',project?'将需要持续推进的工作交到后台。从右侧工作与待办查看问题、阅读报告和文件差异，再接受成果或交回原 Worker 修改。':'后台 Worker 交付报告与候选文件。你可以核对差异、反馈修改，再明确接受成果；不是只有一句“已完成”。'],
-      ['03 / 分屏阅读','把材料与对话摆在一起',project?'拖动标签到分区边缘拆分，或通过主窗口布局入口调整布局。并排放置材料、对话和报告，减少来回切换。':'文档、对话与报告可以分屏摆放。打开项目后，拖动标签拆分工作区，一边看材料，一边讨论或核对修改。'],
-      ['04 / 独立窗口','让工作面延伸到另一块屏幕',project?'从内容菜单将分区脱离为独立窗口，需要时再返回主工作区。移动的是原内容，未保存编辑和会话仍保留。':'将内容脱离为独立窗口，放到另一块屏幕；也可以再移回主工作区，不必复制文档或重新开始会话。']
-    ];
-    for(const [kicker,title,detail]of items){const item=document.createElement('div'),term=document.createElement('dt'),body=document.createElement('dd'),small=document.createElement('span');small.textContent=kicker;term.append(small,document.createTextNode(title));body.textContent=detail;item.append(term,body);features.append(item);}root.append(features);
-    const foot=document.createElement('p');foot.className='guided-start-footnote';foot.textContent=project?'打开文件不会自动启动 Agent；保存批注不会自动派工。':'先打开本地目录即可阅读与编辑。需要 AI 协作时，再到设置中配置模型。';root.append(foot);
+  if(actions.children.length)root.append(actions);
+  const viewer=document.createElement('dialog');viewer.className='guided-start-viewer';viewer.setAttribute('aria-label','功能图片');
+  const header=document.createElement('header'),title=document.createElement('strong'),close=document.createElement('button');close.type='button';close.textContent='×';close.setAttribute('aria-label','关闭图片');close.onclick=()=>viewer.close();header.append(title,close);
+  const zoom=document.createElement('nav'),scroll=document.createElement('div'),large=document.createElement('img');scroll.className='guided-start-image-scroll';scroll.tabIndex=0;scroll.setAttribute('aria-label','图片滚动区域');scroll.append(large);
+  for(const [label,mode]of [['适应窗口','fit'],['原始尺寸','original']]){const control=document.createElement('button');control.type='button';control.textContent=label;control.onclick=()=>{viewer.dataset.size=mode;};zoom.append(control);}
+  viewer.append(header,zoom,scroll);
+  const features=document.createElement('div');features.className='guided-start-features';
+  const items=[
+    ['01-annotation-closeup.png','批注与选区讨论','原处批注与讨论，明确发送才交给 Agent。'],
+    ['02-task-loop-closeup.png','任务闭环','后台交付报告与差异，由你接受或反馈修改。'],
+    ['03-split-reading-closeup.png','分屏阅读','材料、对话与报告并排查看。'],
+    ['04-detached-window-closeup.png','独立窗口','移到独立窗口或返回，编辑与会话保留。']
+  ];
+  for(const [file,label,text]of items){
+    const item=document.createElement('article'),picture=document.createElement('button'),image=document.createElement('img'),heading=document.createElement('h3'),description=document.createElement('p');
+    picture.type='button';picture.className='guided-start-picture';picture.setAttribute('aria-label','查看'+label+'图片');image.src=new URL('start-page/'+file,window.location.href).href;image.alt=label+'功能示意';image.width=1536;image.height=1024;picture.append(image);
+    picture.onclick=()=>{title.textContent=label;large.src=image.src;large.alt=image.alt;viewer.dataset.size='fit';viewer.showModal();scroll.scrollTo(0,0);};heading.textContent=label;description.textContent=text;item.append(picture,heading,description);features.append(item);
   }
-  return root;
+  root.append(features,viewer);return root;
 }
 
 export function mountGuidedDemo({invoke,subscribe,openProject,openFile,captureReturn,restoreReturn,onExit=async()=>{},getProjectId,onError=()=>{}}){
