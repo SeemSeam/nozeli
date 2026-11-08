@@ -156,7 +156,7 @@ FTS5 的编译／tokenizer 边界见 [SQLite 官方说明](https://sqlite.org/ft
 | 永久清除 | 清受管规范、对象、queue、派生、local recovery、旧 reset archive 和受管备份 | 全关联 owner 停稳／unknown 拒绝，最小技术 fence 禁旧写回 |
 | 新实例／重新添加同路径 | 先核验实体及历史登记 | path 相同不能继承旧 token；清除后全新 project/instance |
 
-永久清除沿 [principles](principles.md#永久清除项目状态后全新打开)，不用旧“归档并重置”语义替代。清除清单要纳入新知识表／outbox／cache／导出／sidecar目录与模型临时输入，清完验证无可恢复正文，先写最小 purge receipt 再允许创建新身份。只保留项目／实例不可逆标识、生命周期 epoch、阶段和技术回执，不留正文／可恢复 object backup。恢复入口先查 purge registry，拒绝自动恢复旧 project/instance；未知备份只读隔离。用户另存／外部备份和已发送给 provider 的内容不在本机可保证擦除范围，UI 必须明示。
+永久清除沿[当前生命周期合同](project-lifecycle-initialization-design.md)，不用旧“归档并重置”语义替代。清除清单要纳入新知识表／outbox／cache／导出／sidecar目录与模型临时输入，清完验证无可恢复正文，先写最小 purge receipt 再允许创建新身份。只保留项目／实例不可逆标识、生命周期 epoch、阶段和技术回执，不留正文／可恢复 object backup。恢复入口先查 purge registry，拒绝自动恢复旧 project/instance；未知备份只读隔离。用户另存／外部备份和已发送给 provider 的内容不在本机可保证擦除范围，UI 必须明示。
 
 知识是低信任数据，不放 system prompt；候选写入需宿主工具、绑定、CAS、批准。恶意“忽略限制／删文件”不能在记忆导入器执行，Markdown HTML 不带 Node／应用特权。但普通 Agent 是当前用户权限，不是恶意代码沙箱；不能凭标记承诺抵挡任意模型诱导工具调用。高危效果仍走既有用户授权门，知识批准永不授予删除／跨项目写权。历史 Pi 消息已含正文不能保证遗忘；撤销只约束未来宿主供给和效果。
 
@@ -208,7 +208,7 @@ Pi 只看短工具说明和有界数据。frontdesk 普通聊天仍零知识 pre
 
 ## 10. 官方候选核验、shortlist 与反证
 
-固定来源、完整commit、每份原始文件URL／SHA-256见 [audit/evidence.json](../evaluation/long-term-memory-20261107/audit/evidence.json)及 [audit/notes.md](../evaluation/long-term-memory-20261107/audit/notes.md)。已执行离线完整性检查：8组候选、223份官方材料，摘要全部匹配；这是来源完整性，不是8个运行通过。Basic Memory另有wheel／安装依赖／CLI实测证据。
+固定来源、完整commit、每份原始文件URL／SHA-256见本机研究原件`evaluation/long-term-memory-20261107/audit/evidence.json`及`audit/notes.md`；该研究目录未纳入本次发行源码，路径不是公开下载链接。已执行离线完整性检查：8组候选、223份官方材料，摘要全部匹配；这是来源完整性，不是8个运行通过。Basic Memory另有wheel／安装依赖／CLI实测证据。
 
 | 候选／固定版本 | 许可及OSS边界 | 实质依赖／与Nozeli不兼容点 | 决定 |
 | --- | --- | --- | --- |
@@ -236,7 +236,7 @@ Basic Memory安装清单是159个精确版本，`requirements.lock`及`evidence/
 
 ## 11. 同语料实际运行结果
 
-最终顺序运行原件：[`runs/final-validated/report.json`](../evaluation/long-term-memory-20261107/runs/final-validated/report.json)，每个命令stdout/stderr在同目录。两个候选的业务详情分别为 [`basic-memory/runs/final-validated/report.json`](../evaluation/long-term-memory-20261107/basic-memory/runs/final-validated/report.json) 和 [`embedded/runs/final-validated/report.json`](../evaluation/long-term-memory-20261107/embedded/runs/final-validated/report.json)；精简汇总 [`comparison.json`](../evaluation/long-term-memory-20261107/comparison.json)。四个执行入口均exit0，但Basic结果为**实验完成且存在漏召回**，不是业务门全部通过。
+最终顺序运行原件在本机研究目录`evaluation/long-term-memory-20261107/runs/final-validated/report.json`，每个命令stdout/stderr在同目录；两个候选详情分别为`basic-memory/runs/final-validated/report.json`、`embedded/runs/final-validated/report.json`，精简汇总`comparison.json`。这些未纳入本次发行源码，不提供失效的公开相对链接。四个执行入口均exit0，但Basic结果为**实验完成且存在漏召回**，不是业务门全部通过。
 
 环境：Linux x64，i5-13600K／20逻辑CPU／67,195,322,368 bytes RAM，共享工作站，非独占性能实验。Node22.22.1；Basic隔离Python3.12.13，embedded系统Python3.14.4，SQLite3.46.1。机器原始信息`machine.txt`。同一corpus SHA-256 `eab596d321cad3f1c74ef63ac49a2b020c2de33fb25ad303c6ada6b220ad0cdb`；1000条中alpha950、beta50，有无关负例、重复标题、繁简／英文独立表达、代码路径子集、六种状态和四种交付outcome；oracle独立人工规定预期IDs，不从被测normalizer反推。
 
