@@ -25,7 +25,7 @@ async function invoke(op,payload={},page=shell){const r=await page.evaluate(({op
 async function launch(){
  const port=await new Promise(r=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const port=s.address().port;s.close(()=>r(port));});});
  const env={...process.env};for(const key of Object.keys(env))if(key!=='XAUTHORITY'&&(/^(NOZELI_|CCB_|CODEX_|OMP_|PI_)/.test(key)||/AUTH|TOKEN|SECRET|PASSWORD|CREDENTIAL|API_?KEY/i.test(key)||['NODE_OPTIONS','ELECTRON_RUN_AS_NODE'].includes(key)))delete env[key];
- const ozone=process.env.NOZELI_OZONE||(process.env.WAYLAND_DISPLAY?'wayland':process.env.DISPLAY?'x11':'headless');
+ const ozone=process.platform==='linux'?(process.env.NOZELI_OZONE||(process.env.WAYLAND_DISPLAY?'wayland':process.env.DISPLAY?'x11':'headless')):'';
  Object.assign(env,{NOZELI_CONFIG_ROOT:config,NOZELI_USER_DATA:profile,NOZELI_TEST_INSTANCE:'1',NOZELI_DEBUG_PORT:String(port),NOZELI_HIDDEN:ozone==='headless'?'1':'0',NOZELI_OZONE:ozone});
  child=spawn(process.env.NOZELI_TEST_BINARY||require('electron'),[...(process.env.NOZELI_TEST_BINARY?[]:[path.join(appRoot,'src/main/main.cjs')]),...(process.platform==='linux'?['--ozone-platform='+ozone]:[])],{cwd:project,env,stdio:['ignore','pipe','pipe']});
  exited=new Promise(r=>child.once('exit',(code,signal)=>r({code,signal})));for(const stream of[child.stdout,child.stderr])stream.on('data',b=>log+=b);

@@ -805,3 +805,7 @@ mac候选须由macos-15 arm64工作流在精确提交真实构建并解压运行
 首个干净候选 `4ef2576` 的Linux实际解压包通过基础保存／冷恢复（`.test-output/ci/smoke-yQAY4y/report.json`），以及随包Pi多Task／同线程问答和第二次发布／43890字节原文／草稿与冷启动零重放／浅深320、390、1280和200%缩放真实旅程（`/var/tmp/nozeli-task-workspace-OUWUaT/report.json`，ok=true，providerErrors为空）。独立运行时复核未发现范围内P1/P2；发行复核发现Ubuntu解压包sandbox需单独配置root所有者及4755，CI已沿用既有正常sandbox策略补齐，不改分发归档或使用no-sandbox。
 
 mac首轮工作流 `42721116462` 的darwin arm64确认、锁定依赖、PPTist与Pi构建均成功，打包预检因Electron惰性下载尚未生成Electron.app而失败，尚未运行mac解压烟测。修正为调用锁定Electron包官方resolver准备二进制，开发者与发行打包共用该安装语义；不能把此首轮局部构建成功说成mac包通过，须以修正提交重新构建和运行。
+
+迁移后的完整Linux integration最终1889通过／4跳过／零失败（175文件，`.test-output/ci/integration.tap`）。候选 `5b9f446` Linux新包再次完成保存／正常退出／冷恢复（`smoke-yj9IQ8/report.json`），随包Pi真实Task旅程再次ok=true且无Provider错误（`/var/tmp/nozeli-task-workspace-IO52Zb/report.json`）；已查看最终深色320px截图。
+
+mac修正提交的工作流 `42721602963` 已通过原生构建、组装／ad-hoc签名、zip解压后的codesign／架构／包内Node和Git／plist／RELEASE绑定自检；未通过交互烟测：只完成首页截图，首次点击期间CDP调用超时，主日志明确 `hidden=true`。烟测误将无DISPLAY的darwin当作Linux headless，现将该判定限定为Linux，让Mac运行真实可见窗口；不延长超时、不跳过点击或宣称Mac交互已通过。失败截图／report／main.log保留 `/var/tmp/nozeli-beta1-mac-failure-5b9f446`，最终资格仍须修正后的mac工作流实测。
