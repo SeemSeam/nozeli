@@ -8,9 +8,9 @@
 // 优先，绝不创建指向可写源端的符号链接），经 .nozeli 下 marker（workId 精确
 // 匹配）门控的暂存目录 + 原子 rename 落盘。全程不运行 npm/钩子/网络、绝不
 // 改动源项目目录；目录链与全部暂存/清理写入都经平台文件边界
-// （platform/linux/filesystem.mjs chain.*，逐级 O_NOFOLLOW 固定；本模块不再
-// 自持 /proc fd 算法），复制前/后双重核对门文件与负载身份，任一变化即放弃
-// （不出现半成品可用假象）。源端 npm 符号链接一律实体化拷贝（允许并展开，
+// （platform/{linux,darwin}/filesystem.mjs chain.*，逐级 O_NOFOLLOW 固定；
+// 本模块不自持 fd 路径算法），复制前/后双重核对门文件与负载身份，任一变化
+// 即放弃（不出现半成品可用假象）。源端 npm 符号链接一律实体化拷贝（允许并
 // 绝不把链接装进执行树）。缺失或不匹配以“风险 + 可执行选项”记入
 // manifest.dependencies，绝不伪造可用，也不是永久 cannot。
 // node_modules 与 .nozeli 均被 workPath 排除，拷贝永远不会进入候选快照或合入
@@ -27,7 +27,6 @@ const STAGING_PREFIX='deps-';
 const STAGING_MARKER='staging.json';
 const MAX_MATERIALIZED=512;            // 病态符号链接扇出保护
 const MAX_RESOURCES=32;
-const FICLONE_FALLBACK=['EINVAL','ENOSYS','ENOTSUP','EOPNOTSUPP','ENOTTY','EPERM'];
 // 与 execution-workspace 的 workPath 排除集保持一致（那边无法直接复用：会形成
 // 循环依赖）；声明资源路径同样拒绝这些段。
 const EXCLUDED_SEGMENTS=new Set(['.git','.nozeli','.ccb','node_modules','.venv','venv','__pycache__']);
@@ -82,29 +81,31 @@ export function parsePreparedResources(text){
  return {resources};
 }
 
-async function copyReflink(source,destination){
- try{await fs.copyFile(source,destination,fs.constants.COPYFILE_FICLONE);}
- catch(error){if(!FICLONE_FALLBACK.includes(error.code))throw error;await fs.copyFile(source,destination);}
-}
-// 独立拷贝（源端，普通路径读）：符号链接一律实体化（拷贝内容，npm 允许并保留
-// 这一语义），绝不重建指向源端的链接；环/断链/特殊文件跳过并记录。
-// stack+materialized 双保护防符号链接无限展开。只读源端。
-async function copyTree(source,destination,rel,ctx){
+// 独立拷贝（源端普通路径读，目标端经 chain.destination 单组件驱动）：
+// 符号链接一律实体化（拷贝内容，npm 允许并保留这一语义），绝不重建指向
+// 源端的链接；环/断链/特殊文件跳过并记录。stack+materialized 双保护防
+// 符号链接无限展开。目标写入全部落在固定目录内（Linux 走 /proc 固定路径
+// FICLONE 优先，macOS 走 openat/clonefileat），组合路径永不逃逸锚。只读
+// 源端。
+async function copyTree(source,dest,rel,ctx,native){
  const stat=await fs.lstat(source);
  if(stat.isSymbolicLink()){
   let real;try{real=await fs.realpath(source);}catch{ctx.skipped.push({kind:'broken-symlink',rel});return;}
   const seen=(ctx.materialized.get(real)||0)+1;ctx.materialized.set(real,seen);
   if(seen>MAX_MATERIALIZED){const error=new Error('符号链接展开超出保护上限：'+rel);error.code='COPY_LIMIT';throw error;}
   if(ctx.stack.has(real)){ctx.skipped.push({kind:'symlink-cycle',rel});return;}
-  ctx.stack.add(real);try{await copyTree(real,destination,rel,ctx);}finally{ctx.stack.delete(real);}
+  ctx.stack.add(real);try{await copyTree(real,dest,rel,ctx,native);}finally{ctx.stack.delete(real);}
   return;
  }
  if(stat.isDirectory()){
-  await fs.mkdir(destination,{recursive:true});await fs.chmod(destination,stat.mode&0o777).catch(()=>{});
-  for(const name of (await fs.readdir(source)).sort())await copyTree(path.join(source,name),path.join(destination,name),rel?rel+'/'+name:name,ctx);
+  await dest.mkdir();await dest.chmod(stat.mode&0o777).catch(()=>{});
+  const inner=await dest.openDir();
+  try{
+   for(const name of (await fs.readdir(source)).sort())await copyTree(path.join(source,name),native.destination(inner,name),rel?rel+'/'+name:name,ctx,native);
+  }finally{await inner.close().catch(()=>{});}
   ctx.directories++;return;
  }
- if(stat.isFile()){await copyReflink(source,destination);ctx.files++;ctx.bytes+=stat.size;return;}
+ if(stat.isFile()){await dest.copyFile(source);ctx.files++;ctx.bytes+=stat.size;return;}
  ctx.skipped.push({kind:'special-file',rel});
 }
 
@@ -217,7 +218,7 @@ async function provisionPayload({workId,sourceRoot,worktreeRoot,frozenFiles,spec
    await native.mkdir(wrapper.handle,stagingName,0o755);
    staging=await native.openDirectory(wrapper.handle,stagingName);
    await native.writeExclusive(staging,STAGING_MARKER,JSON.stringify({workId,at:new Date().toISOString()})+'\n');
-   await copyTree(source.root,native.anchoredPath(staging,targetName),'',ctx);
+   await copyTree(source.root,native.destination(staging,targetName),'',ctx,native);
    const changed=async()=>{
     for(const gate of spec.gates)
      if(digest(await readBytes(toAbs(worktreeRoot,gate.rel)))!==state[gate.rel].frozen)return 'worker-'+gate.label;
@@ -309,7 +310,7 @@ async function preparedResourceEntries({workId,sourceRoot,worktreeRoot,frozenFil
 // 计算供给报告；与 previous 内容一致时原样返回 previous，保证重启/重复 prepare
 // 对清单零扰动。纯计算+文件系统操作，不写清单（由调用方落账）。
 export async function provisionWorktreeDependencies({workId,sourceRoot,worktreeRoot,frozenFiles,previous=null},{filesystem=defaultFilesystemAdapter}={}){
- if(filesystem.supported!==true)throw Object.assign(new Error('provisioning requires the Linux safe-open path'),{code:'DEPENDENCY_PLATFORM'});
+ if(filesystem.supported!==true)throw Object.assign(new Error('provisioning requires a verified native safe-open adapter'),{code:'DEPENDENCY_PLATFORM'});
  if(!path.isAbsolute(sourceRoot||'')||!path.isAbsolute(worktreeRoot||''))throw Object.assign(new Error('provisioning requires absolute roots'),{code:'DEPENDENCY_ROOT'});
  const report={version:DEPENDENCIES_VERSION,at:new Date().toISOString(),source:sourceRoot,entries:[]};
  for(const candidate of dependencyCandidates(frozenFiles))

@@ -195,7 +195,10 @@ export function mountWebWorkspace({getContext,invoke,layout,saveView,whenReady,d
       if(!current()||getContext().composing)return;
       const text=ui.editor.adapter.getText();
       // Publish the exact owning buffer, never save or replace its editor.
-      if(!(own && originFrozen())&&!removed()){
+      // A read-only view (split mirror, frozen version) holds no edit lease:
+      // main denies its publish, which used to leave the mirror pane's native
+      // preview forever unopened. Read-only previews capture the synced bytes.
+      if(documentReadOnly?.()!==true&&!(own && originFrozen())&&!removed()){
         const published=await invoke('workspace.document.publish',{projectId:project.id,relPath:file.relPath,kind:'text',text,dirty:ui.dirty,digest:file.digest,documentStatus:{dirty:ui.dirty},...(own?{documentSource:own}:{})});
         if(!current())return;
         if(!published.ok)throw Error(published.error?.message||'缓冲读取失败');

@@ -12,13 +12,13 @@ class WorkspaceWindow extends BaseWindow {
     this.contentView.addChildView(this.chromeView);
     const root = this.contentView, addChildView = root.addChildView.bind(root);
     root.addChildView = (view, index) => {
-      addChildView(view, index);
+      addChildView(view, index ?? root.children.length);
       if (view === this.chromeView) return;
-      // Reinsert chrome below all content siblings. Reordering alone leaves
-      // stale native compositor stacking after cross-widget reparenting.
+      // Keep chrome below content while preserving sibling insertion order.
+      // Re-adding every sibling without an explicit index can prepend guests
+      // below their opaque wrapper on macOS, making loaded pages look blank.
       root.removeChildView(this.chromeView);
       addChildView(this.chromeView, 0);
-      for (const child of root.children) if (child !== this.chromeView) addChildView(child);
     };
     let pendingResize=null;
     const resize = () => {

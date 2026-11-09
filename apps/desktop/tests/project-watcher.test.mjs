@@ -54,14 +54,28 @@ test('subscriptions are project isolated and nonrecursive until explicit directo
   await fs.mkdir(path.join(f.root, 'nested'));
   await f.watcher.watch('one', f.root);
   await f.watcher.watch('two', f.other);
-  await f.next(contains('two', '', 'only-two.txt'), () => fs.writeFile(path.join(f.other, 'only-two.txt'), 'two'));
+  // A subscription's first delivery may still carry backend history (macOS
+  // FSEvents replays pre-subscription changes such as the nested mkdir below),
+  // which surfaces as the subscription's establishment invalidation instead of
+  // file changes. Sentinel writes repeat until each subscription confirms a
+  // precise path, synchronizing past establishment without sleeps; only then is
+  // a quiet window meaningful evidence about nonrecursion.
+  const untilPrecise = (projectId, parentRelPath, relPath, write) => {
+    const attempt = () => f.next(event => event.projectId === projectId && event.parentRelPath === parentRelPath, write)
+      .then(event => event.paths.includes(relPath) ? event : attempt());
+    return attempt();
+  };
+  await untilPrecise('one', '', 'sync-one.txt', () => fs.writeFile(path.join(f.root, 'sync-one.txt'), 'sync one'));
+  f.events.length = 0;
+  await untilPrecise('two', '', 'only-two.txt', () => fs.writeFile(path.join(f.other, 'only-two.txt'), 'two'));
   assert.ok(f.events.every(event => event.projectId === 'two'));
   f.events.length = 0;
   await fs.writeFile(path.join(f.root, 'nested', 'not-followed.txt'), 'one');
   await pause(150);
   assert.equal(f.events.length, 0, 'root subscription must not recurse into a child directory');
+  assert.ok(f.events.every(event => !event.paths.includes('nested/not-followed.txt')), 'nested content changes must not be attributed to the root subscription');
   await f.watcher.watch('one', f.root, 'nested');
-  await f.next(contains('one', 'nested', 'nested/not-followed.txt'), () => fs.appendFile(path.join(f.root, 'nested', 'not-followed.txt'), ' updated'));
+  await untilPrecise('one', 'nested', 'nested/not-followed.txt', () => fs.appendFile(path.join(f.root, 'nested', 'not-followed.txt'), ' updated'));
   f.watcher.unwatchProject('one');
   f.events.length = 0;
   await fs.writeFile(path.join(f.root, 'after-unwatch.txt'), 'quiet');

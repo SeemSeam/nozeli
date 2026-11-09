@@ -47,7 +47,7 @@ export class WorkspaceCaptureStore {
   const operation=this.capacityFlight.catch(()=>{}).then(async()=>{
    await this.ensure();const target=this.file(id,suffix);await this.capacity(target,bytes,value.projectId);
    const temporary=path.join(this.directory,'.pending-'+randomUUID());let handle;
-   try{handle=await fs.open(temporary,'wx',0o600);await handle.writeFile(text);await handle.sync();await handle.close();handle=null;await fs.rename(temporary,target);await platformPersistence.syncDirectory(this.directory)}
+   try{handle=await fs.open(temporary,'wx',0o600);await handle.writeFile(text);await platformPersistence.syncFileHandle(handle);await handle.close();handle=null;await fs.rename(temporary,target);await platformPersistence.syncDirectory(this.directory)}
    finally{await handle?.close();await fs.unlink(temporary).catch(error=>{if(error.code!=='ENOENT')throw error;});}
   });this.capacityFlight=operation;return operation;
  }

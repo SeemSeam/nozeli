@@ -44,6 +44,13 @@
       "preconditions": "Linux x64; repository tree fully committed (script refuses otherwise)",
       "outputs": ["Nozeli-<version>-linux-x64.tar.gz", "Nozeli-<version>-source.tar.gz (git archive of the release commit; Nozeli-owned sources only)", "SHA256SUMS.txt"]
     },
+    "packageMacosLocal": {
+      "command": "npm --prefix apps/desktop run package:macos",
+      "script": "apps/desktop/tools/package-macos.mjs",
+      "preconditions": "macOS arm64; Xcode Command Line Tools and Node-API headers; desktop dependencies, pinned PPTist and Pi runtime built; new output directory",
+      "outputs": ["dist/macos/Nozeli.app"],
+      "notes": "Local developer build only, ad-hoc signed; no Developer ID, notarization, public redistribution audit completion or automatic-update qualification. Bundles Node 22.23.4 from SHA-256-pinned official darwin arm64 archive, Git 2.53.0 and Pi runtime. Existing public Linux release metadata is unchanged."
+    },
     "installLocal": {
       "command": "node apps/desktop/tools/install-local.mjs",
       "script": "apps/desktop/tools/install-local.mjs",

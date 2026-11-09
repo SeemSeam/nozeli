@@ -10,10 +10,10 @@ const REF = 'refs/heads/nozeli/versions';
 const META_PATH = '.nozeli-meta/checkpoint.json';
 const MAX_LIST_META = 20;
 const CAS_LOST = /Cannot lock ref|Cannot update|is at [0-9a-f]+ but expected|cannot lock ref|unable to resolve reference/i;
-
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
 const strictText = bytes => { try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { return null; } };
+async function pathExists(target) { try { await fs.access(target); return true; } catch { return false; } }
 
 // Shadow bare repo for user-visible document checkpoints. Completely separate
 // from the user's own Git repository: plumbing only, dedicated temp index,
@@ -29,6 +29,7 @@ export class ShadowVersions {
     this.requestsDir = null;
     this.identity = { name: actor?.name || 'Nozeli 影子版本', email: actor?.email || 'nozeli-versions@localhost' };
     this._serial = Promise.resolve();
+    this.adoptChecked = false;
   }
 
   // Isolated environment: drop every inherited GIT_* variable (index/common
@@ -55,16 +56,56 @@ export class ShadowVersions {
     return runGit(this.projectRoot, args, { env, maxBuffer: 64 * 1024 * 1024, timeout: 60000 });
   }
 
+  // Instances in separate processes (or several handles in one) race here on
+  // first use; `runExclusive` only serializes one instance. No cross-instance
+  // lock is used: every instance builds the complete repository in its own
+  // private staging directory and publishes with one atomic rename, so the
+  // published path only ever appears fully initialized (HEAD already on REF)
+  // and a crash mid-init leaves only an orphan staging directory. The rename
+  // itself arbitrates the race — the loser adopts the winner's repository and
+  // never overwrites it. Real initialization failures always propagate.
   async ensureRepo() {
     await this.storage.requireOnline(this.projectId);
     this.requestsDir = path.join(await this.storage.localDirectory(this.projectId), 'versions-staging');
     await ensureGit();
-    try { await fs.access(this.gitDir); return false; }
-    catch (e) { if (e.code !== 'ENOENT') throw e; }
+    if (await pathExists(this.gitDir)) return this.adoptExistingRepo();
     await fs.mkdir(path.dirname(this.gitDir), { recursive: true });
-    await runGit(this.projectRoot, ['init', '--bare', '-q', this.gitDir], { env: this.gitEnvForInit(), timeout: 60000 });
-    await this.git(['symbolic-ref', 'HEAD', REF]);
-    return true;
+    return await this.initializeRepo();
+  }
+
+  // Complete initialization in private staging, then publish atomically. A
+  // lost rename race only means another instance published first: that
+  // repository is adopted, never overwritten (same reconciliation rule as a
+  // lost ref CAS). Every other failure is real and propagates.
+  async initializeRepo() {
+    const staging = `${this.gitDir}.init-${randomUUID()}`;
+    let published = false;
+    try {
+      await runGit(this.projectRoot, ['init', '--bare', '-q', staging], { env: this.gitEnvForInit(), timeout: 60000 });
+      await this.git(['symbolic-ref', 'HEAD', REF], { extra: { GIT_DIR: staging } });
+      try { await fs.rename(staging, this.gitDir); published = true; }
+      catch (e) {
+        const taken = ['EEXIST', 'ENOTEMPTY'].includes(e.code) || (process.platform === 'win32' && e.code === 'EPERM');
+        if (!taken || !await pathExists(this.gitDir)) throw e;
+      }
+    } finally {
+      if (!published) await fs.rm(staging, { recursive: true, force: true });
+    }
+    return published || await this.adoptExistingRepo();
+  }
+
+  // An existing repository is never replaced, only adopted — and only after it
+  // proves to be the expected bare repository with HEAD on REF. A repository
+  // left by an interrupted legacy initialization (init done, HEAD pointer not
+  // yet moved) is completed idempotently here; checked once per instance.
+  async adoptExistingRepo() {
+    if (this.adoptChecked) return false;
+    const bare = await this.git(['rev-parse', '--is-bare-repository']).then(out => out.toString().trim(), () => null);
+    if (bare !== 'true') fail('SHADOW_REPO_INVALID', '影子版本位置不是可用的裸仓库，拒绝占用或覆盖：' + this.gitDir);
+    const head = await this.git(['symbolic-ref', 'HEAD']).then(out => out.toString().trim(), () => null);
+    if (head !== REF) await this.git(['symbolic-ref', 'HEAD', REF]);
+    this.adoptChecked = true;
+    return false;
   }
 
   gitEnvForInit() {
@@ -134,25 +175,27 @@ export class ShadowVersions {
   async persistRequest(requestId, record) { await this.storage.putProject(this.projectId, 'version_requests', requestId, record); }
 
   // Stage frozen bytes into the bare repo with a dedicated temp index and
-  // verify each staged blob against the frozen digest.
+  // verify each staged blob against the frozen digest. Every scratch name is
+  // unique per staging attempt: two instances resuming the same prepared
+  // request never write through one another's index or blob files.
   async stageEntries(requestId, entries, meta) {
     this.requestsDir = path.join(await this.storage.localDirectory(this.projectId), 'versions-staging');
-    const tmpIndex = path.join(this.requestsDir, `${requestId}.index`);
+    const token = randomUUID();
+    const tmpIndex = path.join(this.requestsDir, `${requestId}.${token}.index`);
     await fs.mkdir(path.dirname(tmpIndex), { recursive: true });
-    await fs.rm(tmpIndex, { force: true });
     const indexEnv = { GIT_INDEX_FILE: tmpIndex };
     try {
       for (const entry of entries) {
         const bytes = await this.storage.readObject(this.projectId, entry.digest);
         if (digest(bytes) !== entry.digest) fail('CHECKPOINT_DATA_LOST', '定格材料校验失败：' + entry.relPath);
-        const file = path.join(this.requestsDir, `${requestId}.${entry.digest}.blob.tmp`);
+        const file = path.join(this.requestsDir, `${requestId}.${token}.${entry.digest}.blob.tmp`);
         await fs.writeFile(file, bytes, { mode: 0o600 });
         let sha;
         try { sha = (await this.git(['hash-object', '-w', file], { extra: indexEnv })).toString().trim(); }
         finally { await fs.rm(file, { force: true }); }
         await this.git(['update-index', '--add', '--cacheinfo', `100644,${sha},${entry.relPath}`], { extra: indexEnv });
       }
-      const tmpMeta = path.join(this.requestsDir, `${requestId}.meta.json`);
+      const tmpMeta = path.join(this.requestsDir, `${requestId}.${token}.meta.json`);
       await fs.writeFile(tmpMeta, JSON.stringify(meta, null, 2));
       const metaSha = (await this.git(['hash-object', '-w', tmpMeta], { extra: indexEnv })).toString().trim();
       await fs.rm(tmpMeta, { force: true });

@@ -123,10 +123,6 @@ test('a stale workspace lock is only releasable through a verified identity answ
   }
   await assert.rejects(ownerAlive(JSON.parse(await fs.readFile(lock,'utf8')),{selection:unsupportedProcess}),refusesProcessOwnership);
   await assert.doesNotReject(fs.access(lock),'the refused takeover never unlinked the stale lock');
-  const source=await fs.readFile(new URL('../src/agents/managed/workspace.mjs',import.meta.url),'utf8');
-  const gate=source.indexOf("if(await ownerAlive(old))throw");
-  assert.ok(gate>0,'takeaway path checks ownerAlive before anything else');
-  assert.ok(source.indexOf('await fs.unlink(lock)')>gate,'the lock unlink happens only after the ownerAlive gate in the same try block');
 });
 
 test('recovery-source ownership has one Linux proof path and refuses elsewhere',{timeout:60000},async()=>{

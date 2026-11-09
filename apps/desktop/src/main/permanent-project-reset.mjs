@@ -3,6 +3,7 @@ import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {ExecutionWorkspace} from '../agents/managed/execution-workspace.mjs';
 import {str,gitRecords} from '../agents/managed/git-service.mjs';
+import {platformPersistence} from '../platform/shared/persistence.mjs';
 const fail=(code,message)=>Object.assign(Error(message),{code});
 const same=(a,b)=>a?.dev===b?.dev&&a?.ino===b?.ino;
 const inside=(a,b)=>b===a||b.startsWith(a+path.sep);
@@ -92,7 +93,11 @@ async function finishReset(storage,initial){
    let existing;try{const stat=await fs.lstat(manifest);if(!stat.isFile()||stat.isSymbolicLink())throw fail('PROJECT_IDENTITY_CONFLICT','新身份清单实体异常');existing=JSON.parse(await fs.readFile(manifest,'utf8'));}catch(error){if(error.code!=='ENOENT')throw error;}
    if(existing&&(existing.projectId!==newProjectId||existing.operationId!==operationId))throw fail('PROJECT_IDENTITY_CONFLICT','新身份清单归属不符');
    if(!existing)await fs.writeFile(manifest,JSON.stringify({schema:1,projectId:newProjectId,operationId,lineage:null}),{flag:'wx',mode:0o600});
-   const handle=await fs.open(manifest,'r');try{await handle.sync();}finally{await handle.close();}await storage.constructor.syncResetDirectory(p.metadataRoot);await storage.constructor.syncResetDirectory(p.root);
+   // The manifest's file-data barrier goes through the shared persistence
+   // contract: on macOS plain fsync is not a real drive barrier, so the
+   // F_FULLFSYNC helper is required (and refuses loudly when missing) instead
+   // of a silent weaker sync.
+   const handle=await fs.open(manifest,'r');try{await platformPersistence.syncFileHandle(handle);}finally{await handle.close();}await storage.constructor.syncResetDirectory(p.metadataRoot);await storage.constructor.syncResetDirectory(p.root);
    await note({phase:'publishing'});
   }
   await checkRoot();if(!same(await entity(p.metadataRoot),receipt.freshMetadataIdentity))throw fail('PROJECT_IDENTITY_CONFLICT','新元数据实体已变化');

@@ -28,8 +28,9 @@ import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { findView, layoutGroups, reduceLayout } from '../domain/workspace-layout.mjs';
 import { terminalEnvironment } from '../agents/terminal-environment.mjs';
-import { selectCapability, currentPlatform } from '../platform/platform-capabilities.mjs';
+import { selectCapability, capabilityStatus, currentPlatform } from '../platform/platform-capabilities.mjs';
 import * as linuxOwnership from '../platform/linux/process-ownership.mjs';
+import * as macosOwnership from '../platform/darwin/process-ownership.mjs';
 
 const fail = (code, message = code) => Object.assign(new Error(message), { code });
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -91,7 +92,7 @@ export class ProjectTerminalHost {
     // this module's own location so the real PTY loads in the packed app.
     this.nodeRequire = createRequire(import.meta.url);
     this.ptyLoader = ptyLoader ?? (() => this.nodeRequire('node-pty'));
-    this.ownership = ownership ?? (() => selectCapability({ capability: 'verified-process-ownership', implementations: { linux: linuxOwnership } }));
+    this.ownership = ownership ?? (() => selectCapability({ capability: 'verified-process-ownership', implementations: { linux: linuxOwnership, macos: macosOwnership } }));
     this.instances = new Map();   // projectId -> live instance record
     this.pendingStart = new Set(); // explicit rail/restart intent, host memory only
     this.spawnGates = new Map();  // projectId -> serialized spawn/attach chain
@@ -201,8 +202,14 @@ export class ProjectTerminalHost {
 
   async #spawn(projectId, viewId, { cols, rows }) {
     const selection = this.ownership();
-    if (this.platform !== 'linux' || selection.state !== 'available') {
-      const status = this.platform !== 'linux' ? '平台缺少已验证的原生终端进程归属实现' : (selection.status ?? selection.reason ?? 'verified process ownership unavailable');
+    // The gate is the capability matrix, not a platform literal: a platform
+    // declares verified native terminal ownership (and ships its adapter) or
+    // gets the same explicit refusal — never a fake terminal.
+    const declared = capabilityStatus('verified-process-ownership', { platform: this.platform });
+    if (declared.status !== 'implemented' || selection.state !== 'available') {
+      const status = declared.status !== 'implemented'
+        ? `Capability verified-process-ownership is ${declared.status} on ${declared.platformRaw}`
+        : (selection.status ?? selection.reason ?? 'verified process ownership unavailable');
       throw Object.assign(fail('UNSUPPORTED_PLATFORM', `项目终端仅在经过验证的平台提供：${currentPlatform(this.platform)}（${status}），不会伪造终端。`), { platform: currentPlatform(this.platform), status });
     }
     const ownership = selection.implementation;
@@ -214,7 +221,7 @@ export class ProjectTerminalHost {
     // Pre-spawn snapshot of uninspectable same-uid incarnations: only these
     // can be excluded later; anything uninspectable that appears afterwards is
     // an unknown the strict reaper refuses to certify or kill.
-    const baseline = await (this.captureBaseline ?? this.#captureBaseline).call(this, ownership);
+    const baseline = await (this.captureBaseline ?? (typeof ownership.captureUninspectableBaseline === 'function' ? ownership.captureUninspectableBaseline : this.#captureBaseline)).call(this);
     const instance = {
       instanceId: randomUUID(), projectId, viewId, pid: null, stamp: null, tag, baseline,
       cols, rows, cwd: root, shell, seq: 0, ring: [], ringBytes: 0,
@@ -300,7 +307,7 @@ export class ProjectTerminalHost {
   // adapter's verified verdict certifies cleanup; anything else fails closed.
   async #reapTree(instance) {
     const selection = this.ownership();
-    if (this.platform !== 'linux' || selection.state !== 'available') return { exited: true, descendantsConfirmed: false, cleanupComplete: false, reason: `verified reaping unavailable on ${this.platform}` };
+    if (capabilityStatus('verified-process-ownership', { platform: this.platform }).status !== 'implemented' || selection.state !== 'available') return { exited: true, descendantsConfirmed: false, cleanupComplete: false, reason: `verified reaping unavailable on ${this.platform}` };
     if (typeof instance.stamp !== 'string' || !instance.stamp) return { exited: true, descendantsConfirmed: false, cleanupComplete: false, reason: 'terminal process identity was never established' };
     const result = await selection.implementation.reapOwnerTaggedTree({ pid: instance.pid, stamp: instance.stamp, tag: instance.tag }, terminalOwnership, { strict: true, baseline: instance.baseline ?? null });
     return { exited: true, descendantsConfirmed: result?.verified === true, cleanupComplete: result?.verified === true, reaped: result?.descendantsReaped ?? 0 };

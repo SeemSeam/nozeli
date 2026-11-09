@@ -4,6 +4,7 @@ import os from 'node:os';
 import { Readable } from 'node:stream';
 import { runGit } from '../agents/managed/git-runtime.mjs';
 import {requireCapability} from '../platform/platform-capabilities.mjs';
+import {platformPersistence} from '../platform/shared/persistence.mjs';
 
 const NIL = process.platform === 'win32' ? 'NUL' : '/dev/null';
 const fail = (code, message) => Object.assign(new Error(message), { code });
@@ -134,7 +135,7 @@ export async function ensureProjectGit(root, { operationId, expectedIdentity, jo
         await fs.mkdir(ownGit);
         await fs.writeFile(marker, operationId, { flag: 'wx' });
         const handle = await fs.open(marker, 'r');
-        try { await handle.sync(); } finally { await handle.close(); }
+        try { await platformPersistence.syncFileHandle(handle); } finally { await handle.close(); }
       } else if (!dir.isDirectory() || dir.isSymbolicLink() || await fs.readFile(marker, 'utf8').catch(() => null) !== operationId) {
         throw fail('PROJECT_GIT_CONFLICT', 'Repository initialization ownership cannot be verified');
       }
@@ -225,7 +226,7 @@ export async function ensureProjectGit(root, { operationId, expectedIdentity, jo
         try {
           lockIdentity = await lockHandle.stat();
           await lockHandle.writeFile(await fs.readFile(baselineIndex));
-          await lockHandle.sync();
+          await platformPersistence.syncFileHandle(lockHandle);
           await verifyRoot();
           if (!await ownsLock(indexLock, lockIdentity)) throw fail('PROJECT_GIT_INDEX_CONFLICT', 'Index lock ownership changed');
           if (!await exists(path.join(ownGit, 'index'))) {
@@ -275,7 +276,7 @@ async function ensureIgnore(file, rule, effective, verifyRoot) {
     const separator = original.length && original[original.length - 1] !== 10 ? newline : '';
     await handle.writeFile(Buffer.concat([original, Buffer.from(separator + rule + newline)]));
     if (stat) await handle.chmod(stat.mode & 0o777);
-    await handle.sync();
+    await platformPersistence.syncFileHandle(handle);
     await verifyRoot();
     const now = await exists(file);
     if (Boolean(stat) !== Boolean(now) || (stat && (!sameIdentity(stat, now) || !original.equals(await fs.readFile(file))))) throw fail('PROJECT_GIT_IGNORE_CONFLICT', 'Git ignore file changed concurrently');

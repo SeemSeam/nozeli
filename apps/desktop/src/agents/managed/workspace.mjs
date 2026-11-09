@@ -13,7 +13,7 @@ import {decodeReportState,reportDescriptor,reportExtension,readStoredReport,MAX_
 import {readManagedState,saveManagedState,readManagedObject,listManagedPending,reconcileManagedPending,retainManagedNativeProjection} from './managed-storage.mjs';
 export async function atomicJson(file,value){
   const tmp=`${file}.${randomUUID()}.tmp`;const handle=await fs.open(tmp,'wx',0o600);
-  try{await handle.writeFile(JSON.stringify(value,null,2)+'\n');await handle.sync();}finally{await handle.close();}
+  try{await handle.writeFile(JSON.stringify(value,null,2)+'\n');await platformPersistence.syncFileHandle(handle);}finally{await handle.close();}
   try{await fs.rename(tmp,file);}catch(error){await fs.rm(tmp,{force:true});throw error;}
 }
 const inside=(a,b)=>a===b || (!path.relative(a,b).startsWith(`..${path.sep}`) && path.relative(a,b)!=='..' && !path.isAbsolute(path.relative(a,b)));
@@ -563,7 +563,7 @@ export class Workspace {
     const block=`${marker}\n- [${clean(w.name)||w.id}](${report.relPath}) — user ${w.outcome||'legacy outcome unknown'}; ${report.kind}; ${clean(fact)}. [Host facts](${metadataPath}); source: ${report.source}; revision ${w.revision}.${report.summary?' Worker report excerpt: '+clean(report.summary):''}\n${end}`;
     let next;const start=previous.indexOf(marker),close=start<0?-1:previous.indexOf(end,start);
     if(start<0)next=previous+'\n'+block+'\n';else if(close>=0)next=previous.slice(0,start)+block+previous.slice(close+end.length);else throw Error('Incomplete report index marker; preserve root for recovery');
-    if(next!==previous){const temporary=`${this.plan}.${randomUUID()}.tmp`;const handle=await fs.open(temporary,'wx',0o600);try{await handle.writeFile(next);await handle.sync();}finally{await handle.close();}if(await fs.readFile(this.plan,'utf8')!==previous){await fs.rm(temporary,{force:true});throw Error('Plan Tree changed during archival; retry without overwriting user edits');}await fs.rename(temporary,this.plan);}
+    if(next!==previous){const temporary=`${this.plan}.${randomUUID()}.tmp`;const handle=await fs.open(temporary,'wx',0o600);try{await handle.writeFile(next);await platformPersistence.syncFileHandle(handle);}finally{await handle.close();}if(await fs.readFile(this.plan,'utf8')!==previous){await fs.rm(temporary,{force:true});throw Error('Plan Tree changed during archival; retry without overwriting user edits');}await fs.rename(temporary,this.plan);}
     await platformPersistence.syncDirectory(directory);
   }
   updateClosureArchive(id){return this.mutate(()=>this.updateArchiveState(this.find(id)));}

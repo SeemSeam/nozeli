@@ -13,7 +13,10 @@ import {managedReportSource,managedArtifact,managedHistory} from '../src/agents/
 // Real Host registry/drafts/atomic writes and real Workspace publication/object.
 // The binding lookup has no Provider; this is file safety, not CLI acceptance.
 async function setup(t,{html=false}={}) {
-  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-report-export-'));
+  // Workspace pins store.root to the realpath; the runtime identity check in
+  // managed-report-source compares it verbatim, so the temp root must be
+  // canonical (macOS os.tmpdir() lives behind the /var -> /private/var link).
+  const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-report-export-')));
   const project=path.join(root,'project');await fs.mkdir(project);
   const host=new DesktopHost(path.join(root,'profile')),projectId=(await host.pick(project)).project.id,storage=host.storage,binding=await storage.requireRegistered(projectId),runtime=await managedRuntime(storage,projectId);
   let store=await Workspace.open(runtime,project,{storage,projectId});

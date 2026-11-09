@@ -11,7 +11,7 @@ import {dispositionIntent} from './disposition-intent.fixture.mjs';
 import {serve,prepare} from './pi-provider.fixture.mjs';
 
 
-test('real Pi owner executes native file write and durably projects original journal entries',{timeout:120000},async t=>{
+test('isolated real Pi owner executes native file write and durably projects original journal entries',{timeout:120000,skip:process.platform!=='linux'?'requires the Linux bubblewrap isolation adapter':false},async t=>{
  const provider=await serve((request,round)=>{
   if(round===1){assert.ok(request.tools.some(tool=>tool.function?.name==='write'));return {tool:'write',id:'write-native-1',args:{path:'native-proof.txt',content:'actual Pi native write\n'}};}
   assert.equal(round,2);assert.ok(request.messages.some(message=>message.role==='tool'&&message.tool_call_id==='write-native-1'));return {text:'Native write verified.'};

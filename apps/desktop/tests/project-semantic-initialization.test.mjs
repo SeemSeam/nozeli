@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import syncFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {ProjectInitialization,INITIALIZATION_LIMITS,initializationPath} from '../src/agents/managed/project-initialization.mjs';
+import {defaultFilesystemAdapter} from '../src/agents/managed/file-stream.mjs';
 import {MemoryVersion} from '../src/agents/managed/memory-version.mjs';
 import {Controller} from '../src/agents/managed/controller.mjs';
 import {ManagedProjects} from '../src/agents/managed-projects.mjs';
@@ -58,8 +58,13 @@ test('legacy and AI-disabled local opens do not connect or initialize',async()=>
 test('path exclusions reject known credential variants',()=>{for(const rel of ['.git/config','.nozeli/project.json','.env.local','x/secret.key','credentials.json','dist/app.js','vendor/module.js'])assert.throws(()=>initializationPath(rel));});
 test('partial publication never claims initialized or leaves an orphan; explicit retry completes the linked topic',async t=>{
  const {job,init,memory,controller}=await fixture(t),inventory=await init.tool(job,'nozeli_project_inventory');
- const rename=syncFs.renameSync;syncFs.renameSync=(from,to)=>{if(to.endsWith('/project-map.md'))throw Object.assign(Error('injected publication failure'),{code:'EIO'});return rename(from,to);};
- try{await assert.rejects(init.tool(job,'nozeli_project_map',{expectedVersion:inventory.map.expectedVersion,text:'First attempt'}),{code:'EIO'});}finally{syncFs.renameSync=rename;}
+ // The publication rename is a pinned chain operation (native renameat on
+ // macOS, /proc-pinned fs.rename on Linux); fs.renameSync is never on the
+ // path. The fault is injected at that contract seam and only for the topic
+ // publish itself — the link-first index rename, barriers, cleanup and retry
+ // keep their real behavior.
+ const chain=defaultFilesystemAdapter.chain,rename=chain.rename;chain.rename=async(fromDirectory,fromName,toDirectory,toName)=>{if(toName==='project-map.md')throw Object.assign(Error('injected publication failure'),{code:'EIO'});return rename(fromDirectory,fromName,toDirectory,toName);};
+ try{await assert.rejects(init.tool(job,'nozeli_project_map',{expectedVersion:inventory.map.expectedVersion,text:'First attempt'}),{code:'EIO'});}finally{chain.rename=rename;}
  assert.equal(job.projectMap,undefined);assert.equal(job.projectMapPublication.state,'prepared');assert.match(await fs.readFile(path.join(memory,'index.md'),'utf8'),/topics\/project-map\.md/);await assert.rejects(fs.stat(path.join(memory,'topics','project-map.md')),{code:'ENOENT'});
  const retry=new ProjectInitialization(controller),current=await retry.tool(job,'nozeli_project_inventory');await retry.tool(job,'nozeli_project_map',{expectedVersion:current.map.expectedVersion,text:'Retry completed'});
  assert.equal(job.projectMapPublication.state,'durable');const snapshot=await controller.memoryVersion.snapshot();assert.match(snapshot.topics[0].text,/Retry completed/);

@@ -10,7 +10,7 @@
 // rules, byte budgets, mode mapping and error codes; this adapter owns the
 // native mechanics only:
 //  - openAnchoredFile(root, rel): pin ancestors, open the entry, expose
-//    { stat, stream(), fdSourcePath(), verify(), close() }. Returns null
+//    { stat, stream(), verify(), close() }. Returns null
 //    exactly when the entry (or an ancestor) is missing. verify() compares
 //    dev/ino/size/mtimeNs/ctimeNs/nlink of the open inode and its directory
 //    entry plus dev/ino of every pinned ancestor, reporting which fact
@@ -20,12 +20,15 @@
 //    operations inside it: openExclusive/writeExclusive, renameOver,
 //    remove, close. A composed name can never escape the anchor.
 //  - chain.*: pinned directory-chain operations for provisioning-style
-//    consumers (readdir/lstat/openDirectory/openFile/mkdir/writeExclusive/
-//    rename/removeTree/removeDirectoryIfEmpty/realpath/anchoredPath) —
-//    consumers never compose native fd paths themselves.
+//    consumers (readdir/opendir/lstat/openDirectory/openFile/openExclusive/
+//    mkdir/writeExclusive/rename/removeTree/removeDirectoryIfEmpty/realpath/
+//    sync/destination) — openExclusive yields the pinned write handle
+//    (writeFile/sync/close) and sync() is the post-rename fsync namespace
+//    barrier through the pin; consumers never compose native fd paths
+//    themselves.
 //
-// fdSourcePath() feeds Git's hash-object with /proc/<pid>/fd/<fd> source
-// paths so Git reads the exact pinned inodes.
+// Git object ingestion feeds the pinned bytes through the consumer's
+// content stream (agents/managed/git-service.mjs), not fd source paths.
 //
 // Durability note: this adapter provides no fsync barrier; anchored edits
 // rely on the caller's durable intent manifest (reconcile on recovery).
@@ -51,12 +54,35 @@ const anchoredName = name => {
   return name;
 };
 
+const FICLONE_FALLBACK = ['EINVAL', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP', 'ENOTTY', 'EPERM'];
+
+// Single-component entry inside a pinned directory for bulk copies: mkdir /
+// chmod / FICLONE-preferring copy / open as a pinned directory, mirroring the
+// darwin adapter's clonefileat driver. No composed path escapes the pin.
+const destinationEntry = (directory, name) => {
+  const entryPath = () => pinnedPath(directory) + '/' + name;
+  return {
+    async mkdir() {
+      await fs.mkdir(entryPath()).catch(error => { if (error.code !== 'EEXIST') throw error; });
+    },
+    async chmod(mode) { await fs.chmod(entryPath(), mode); },
+    async copyFile(source) {
+      try { await fs.copyFile(source, entryPath(), constants.COPYFILE_FICLONE); }
+      catch (error) {
+        if (!FICLONE_FALLBACK.includes(error.code)) throw error;
+        await fs.copyFile(source, entryPath());
+      }
+    },
+    async openDir() { return fs.open(entryPath(), DIRECTORY_FLAGS); },
+  };
+};
+
 export const linuxFilesystemAdapter = {
   id: 'linux-proc-fd',
   platform: 'linux',
   supported: true,
-  capabilities: Object.freeze({ anchoredRead: true, anchoredWrite: true, gitFdSourcePaths: true, hooksExecuteRegardlessOfModeBits: false }),
-  evidence: 'Linux 实机回归：/proc/self/fd 逐级 O_DIRECTORY|O_NOFOLLOW 锚定打开与写父目录固定；fd 源路径喂给 git hash-object',
+  capabilities: Object.freeze({ anchoredRead: true, anchoredWrite: true, hooksExecuteRegardlessOfModeBits: false }),
+  evidence: 'Linux 实机回归：/proc/self/fd 逐级 O_DIRECTORY|O_NOFOLLOW 锚定打开与写父目录固定',
   async openAnchoredFile(root, rel) {
     const handles = [], ancestors = [];
     let file = null;
@@ -74,8 +100,10 @@ export const linuxFilesystemAdapter = {
       let closed = false;
       return {
         stat,
-        fdSourcePath: () => '/proc/' + process.pid + '/fd/' + file.fd,
-        stream: () => file.createReadStream({ start: 0, autoClose: false, highWaterMark: 256 * 1024 }),
+        // The stream thunk accepts createReadStream range options (e.g.
+        // {end} for bounded prefix reads) so a consumer can let the stream
+        // end naturally instead of breaking iteration mid-descriptor.
+        stream: ({ start = 0, end } = {}) => file.createReadStream({ start, ...(end === undefined ? {} : { end }), autoClose: false, highWaterMark: 256 * 1024 }),
         verify: async () => {
           try {
             if (!sameIdentity(await file.stat({ bigint: true }), stat)) return { stable: false, reason: 'file' };
@@ -160,6 +188,10 @@ export const linuxFilesystemAdapter = {
     lstat: async (directory, name) => fs.lstat(pinnedPath(directory) + '/' + anchoredName(name)),
     openDirectory: async (directory, name) => fs.open(pinnedPath(directory) + '/' + anchoredName(name), DIRECTORY_FLAGS),
     openFile: async (directory, name) => fs.open(pinnedPath(directory) + '/' + anchoredName(name), constants.O_RDONLY | constants.O_NOFOLLOW),
+    openExclusive: async (directory, name, { mode = 0o600 } = {}) => fs.open(pinnedPath(directory) + '/' + anchoredName(name), 'wx', mode),
+    // Namespace barrier through the pin itself: fsync on the pinned
+    // directory descriptor, a real storage barrier on Linux.
+    sync: async directory => directory.sync(),
     mkdir: async (directory, name, mode = 0o755) => fs.mkdir(pinnedPath(directory) + '/' + anchoredName(name), { mode }),
     writeExclusive: async (directory, name, data) => fs.writeFile(pinnedPath(directory) + '/' + anchoredName(name), data, { flag: 'wx' }),
     async rename(fromDirectory, fromName, toDirectory, toName) {
@@ -168,8 +200,8 @@ export const linuxFilesystemAdapter = {
     removeTree: async (directory, name) => fs.rm(pinnedPath(directory) + '/' + anchoredName(name), { recursive: true, force: true }),
     removeDirectoryIfEmpty: async (directory, name) => fs.rmdir(pinnedPath(directory) + '/' + anchoredName(name)),
     realpath: async directory => fs.realpath(pinnedPath(directory)),
-    // Adapter-issued anchored path token for bulk copy destinations; the
+    // Adapter-issued single-component entry for bulk copy destinations; the
     // consumer never constructs native fd paths itself.
-    anchoredPath: (directory, name) => pinnedPath(directory) + '/' + anchoredName(name),
+    destination: (directory, name) => destinationEntry(directory, anchoredName(name)),
   },
 };

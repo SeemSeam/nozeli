@@ -233,6 +233,7 @@ const SUITES = {
       'omp-bridge-endpoint.test.mjs',
       'omp-default-models.test.mjs',
       'omp-only-cutover.test.mjs',
+      'omp-api-import.test.mjs',
       'omp-system-inheritance.test.mjs',
       'omp-terminal-bridge.test.mjs',
       'omp-tui-session.test.mjs',

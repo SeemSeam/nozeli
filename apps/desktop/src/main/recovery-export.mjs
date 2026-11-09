@@ -34,7 +34,7 @@ export async function exportNativeChunks({dialog,scope,defaultName,readChunk,exp
       let written=0;while(written<bytes.length){const result=await output.write(bytes,written,bytes.length-written,null);if(!result.bytesWritten)throw changed();written+=result.bytesWritten;}
       offset=chunk.nextOffset;
     }
-    await finalize({total:expectedTotal,scope});await output.sync();await output.close();output=null;
+    await finalize({total:expectedTotal,scope});await platformPersistence.syncFileHandle(output);await output.close();output=null;
     const current=await fs.lstat(directory);
     if(!same(parent,current)||current.isSymbolicLink()||await fs.realpath(directory)!==directory||!alive())throw changed();
     await fs.link(temporary,target);

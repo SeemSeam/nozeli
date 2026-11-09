@@ -72,7 +72,7 @@ test('host readiness is mandatory and unsaved work never reaches shutdown', asyn
   const state = await updater.installIfIdle(); assert.equal(state.phase, 'waiting-idle'); assert.equal(state.message, 'unsaved edits'); assert.equal(prepared, 0);
   await updater.persist;
 });
-for (const kind of ['managed', 'portable']) for (const healthy of [true, false]) test(kind + ' promotion ' + (healthy ? 'health success' : 'startup rollback'), async t => {
+for (const kind of ['managed', 'portable']) for (const healthy of [true, false]) test(kind + ' promotion ' + (healthy ? 'health success' : 'startup rollback'), {skip:process.platform!=='linux'?'requires the Linux installation layout and /proc process identity; not Mac updater qualification':false}, async t => {
   const root = await temporary(t), base = kind === 'managed' ? path.join(root, 'releases') : root;
   await fs.mkdir(base, {recursive: true});
   const old = path.join(base, 'old'), candidate = path.join(base, 'candidate');
@@ -134,6 +134,11 @@ test('checksum-valid version-correct archive with wrong release tag commit is re
     return new Response(JSON.stringify([release('1.0.1')]));
   }}});
   const status = await updater.check();
+  if(process.platform!=='linux'){
+    assert.equal(status.phase,'unsupported');assert.equal(downloaded,false);assert.equal(quit,false);
+    assert.equal(await fs.realpath(path.join(installation,'current')),old);
+    await updater.persist;return;
+  }
   assert.equal(downloaded, true); assert.equal(quit, false);
   assert.equal(status.phase, 'error'); assert.match(status.message, /commit.*GitHub release tag/);
   assert.equal(await fs.realpath(path.join(installation, 'current')), old);
@@ -191,7 +196,13 @@ test('repeated checks revalidate and reuse identical staged version and tag comm
     if (url.endsWith('/archive')) { archives++; return new Response(bytes); }
     return new Response(JSON.stringify([release('1.0.1')]));
   }}});
-  assert.equal((await updater.check()).phase, 'waiting-idle');
+  const first=await updater.check();
+  if(process.platform!=='linux'){
+    assert.equal(first.phase,'unsupported');assert.equal(archives,0);assert.equal(manifests,0);
+    assert.equal(await fs.realpath(path.join(installation,'current')),old);
+    await updater.persist;return;
+  }
+  assert.equal(first.phase, 'waiting-idle');
   const candidate = updater.candidate.path;
   assert.equal((await updater.check()).phase, 'waiting-idle');
   assert.equal(updater.candidate.path, candidate); assert.equal(archives, 1); assert.equal(manifests, 1); assert.equal(tags, 2);

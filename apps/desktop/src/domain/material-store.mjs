@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { platformPersistence } from '../platform/shared/persistence.mjs';
 
 export class MaterialError extends Error {
   constructor(code, message, options) { super(message, options); this.name = 'MaterialError'; this.code = code; }
@@ -79,10 +80,10 @@ export class MaterialStore {
       handle=await fs.open(temporary,'wx',0o600);const hash=createHash('sha256');let byteLength=0;
       for await(const value of input){const chunk=Buffer.isBuffer(value)?value:Buffer.from(value);hash.update(chunk);byteLength+=chunk.length;if(!Number.isSafeInteger(byteLength))throw fail('MATERIAL_TOO_LARGE','Material size is not representable.');await handle.writeFile(chunk);}
       const digest=hash.digest('hex');if(expected!==undefined&&digest!==expected)throw fail('MATERIAL_CORRUPT','Imported material digest mismatch.');
-      await handle.sync();await handle.close();handle=null;
+      await platformPersistence.syncFileHandle(handle);await handle.close();handle=null;
       try{await fs.link(temporary,this.location(digest));}catch(error){if(error.code!=='EEXIST')throw error;}
       await this.verify(digest);
-      if(process.platform!=='win32'){const directory=await fs.open(this.directory,constants.O_RDONLY);try{await directory.sync();}finally{await directory.close();}}
+      await platformPersistence.syncDirectory(this.directory);
       return {digest,byteLength};
     } finally {await handle?.close();await fs.unlink(temporary).catch(error=>{if(error.code!=='ENOENT')throw error;});}
   }

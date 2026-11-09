@@ -50,11 +50,10 @@ const evidence = {
 };
 
 async function fixture() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'nozeli-platform-probe-'));
+  return fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'nozeli-platform-probe-'));
 }
 
-// Real exercise of the production safe-open chain: pinned ancestor opens via
-// /proc/self/fd, O_NOFOLLOW everywhere, inode/nlink identity, digest read.
+// Exercise the production safe-open chain, including symlink rejection.
 async function probeSafeFileIo() {
   let root;
   try {
@@ -75,10 +74,11 @@ async function probeSafeFileIo() {
       await inspectFile(root, 'documents/trap/evidence.txt');
       return { status: 'failed', error: 'safe chain followed a symlinked directory component', root };
     } catch (enforced) {
+      if (!['ELOOP', 'ENOTDIR', 'PATH_REJECTED'].includes(enforced.code)) throw enforced;
       return { status: 'ok', digest, symlinkDirectoryRejected: { code: enforced.code ?? null }, root };
     }
   } catch (error) {
-    return { status: error.code === 'SAFE_OPEN_UNSUPPORTED' ? 'unsupported' : 'failed', error: String(error.message), code: error.code ?? null, root };
+    return { status: error.code === 'FS_PLATFORM_UNSUPPORTED' ? 'unsupported' : 'failed', error: String(error.message), code: error.code ?? null, root };
   } finally {
     if (root) await fs.rm(root, { recursive: true, force: true }).catch(() => {});
   }
@@ -107,14 +107,13 @@ async function probeDurablePersistence() {
   }
 }
 
-// Real identity stamp for THIS process from the landed Linux adapter.
+// Exercise the same platform-selected identity boundary used by live owners.
 async function probeProcessOwnership() {
   try {
-    const adapter = await import('../src/platform/linux/process-ownership.mjs');
-    const boot = await adapter.bootId();
+    const adapter = await import('../src/agents/managed/process-ownership.mjs');
     const stamp = await adapter.processStamp(process.pid);
-    if (!stamp || !stamp.startsWith(boot + ':')) return { status: 'failed', error: 'self process stamp missing or not bound to the current boot id', stamp: stamp ?? null };
-    return { status: 'ok', pid: process.pid, stampFormat: 'bootId:starttime', bootIdLength: boot.length };
+    if (!stamp || !/^[a-f0-9-]{36}:\d+$/.test(stamp) || !await adapter.ownerAlive({pid: process.pid, stamp})) return { status: 'failed', error: 'self process identity was not verified' };
+    return { status: 'ok', pid: process.pid, stampFormat: 'bootId:starttime', mechanisms: adapter.processIdentityCapability().mechanisms };
   } catch (error) {
     return { status: 'failed', error: String(error.message), code: error.code ?? null };
   }
@@ -175,7 +174,7 @@ async function probeBundledNode() {
   }
 }
 
-const piHome = await fs.mkdtemp(path.join(os.tmpdir(), 'nozeli-platform-probe-home-'));
+const piHome = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'nozeli-platform-probe-home-'));
 try {
   evidence.executedProbes.safeFileIo = await probeSafeFileIo();
   evidence.executedProbes.durablePersistence = await probeDurablePersistence();
@@ -198,13 +197,14 @@ if (isolationGating === 'required') required.push('executionIsolation');
 const failures = required.filter(name => evidence.executedProbes[name]?.status !== 'ok')
   .map(name => ({ probe: name, status: evidence.executedProbes[name]?.status ?? 'missing' }));
 if (evidence.executedProbes.bundledNodeRuntime?.status === 'failed') failures.push({ probe: 'bundledNodeRuntime', status: 'failed' });
+const requiredCoverageMissing = evidence.declaredCoverage.missing.filter(entry => isolationGating === 'required' || entry.capability !== 'execution-isolation');
 evidence.managedExecution = {
   platform: evidence.host.platformRaw,
-  declaredCoverageComplete: evidence.declaredCoverage.complete, declaredCoverageMissing: evidence.declaredCoverage.missing,
+  declaredCoverageComplete: requiredCoverageMissing.length === 0, declaredCoverageMissing: requiredCoverageMissing,
   isolationGating,
   requiredProbes: required,
   failed: failures,
-  ready: evidence.declaredCoverage.complete && failures.length === 0,
+  ready: requiredCoverageMissing.length === 0 && failures.length === 0,
   note: 'ready requires declared implementation coverage AND executed host evidence to agree (implementationCoverage alone is never readiness); this probe runs unchanged on real Windows/macOS hosts, where unverified capabilities must stay not-run/unsupported rather than green.',
 };
 

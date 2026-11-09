@@ -21,15 +21,35 @@ export async function gitHasOutput(cwd,args){let any=false;await gitStream(cwd,a
 // A small descriptor batch avoids one Git process per file without keeping an
 // unbounded set of descriptors or any file bodies in memory.
 export async function blobFiles(cwd,root,rels,known=new Map(),format='sha1'){
- const results=new Map(),opened=[];
- const capture=async at=>{if(at===rels.length){
-   const changed=opened.filter(row=>row.oid!==known.get(row.rel)?.[2]);
-   if(changed.length){const ids=(await runGit(cwd,['hash-object','-w','--no-filters','--stdin-paths'],{env:gitEnv(),input:Readable.from(changed.map(row=>row.file.fdSourcePath()+'\n'))})).toString().trim().split('\n');
-    if(ids.length!==changed.length||ids.some((oid,i)=>oid!==changed[i].oid))fail('SOURCE_CHANGED','Git对象与文件流摘要不一致');}
-   for(const {rel,file,digest,size,oid} of opened)results.set(rel,{oid,digest,size,mode:file.mode});return;
+ const results=new Map();
+ for(const rel of rels){
+  // Pass 1: anchored read computes the digest and the git object id of the
+  // pinned bytes under the full read policy (path rules, regular/nlink
+  // checks, stability verify). null means the entry is missing.
+  const captured=await withSafeFile(root,rel,async file=>{
+   const hash=createHash('sha256'),objectHash=createHash(format).update('blob '+file.stat.size+'\0');
+   let size=0;for await(const chunk of file.stream()){hash.update(chunk);objectHash.update(chunk);size+=chunk.length;}
+   if(BigInt(size)!==file.stat.size)fail('SOURCE_CHANGED','文件读取期间变化：'+rel);
+   return {digest:hash.digest('hex'),oid:objectHash.digest('hex'),size,mode:file.mode};
+  });
+  if(captured===null){results.set(rel,null);continue;}
+  // Pass 2: entries not already recorded in the known tree are streamed
+  // into git's own object writer, and git's hash must match the first
+  // pass — the cross-check that used to ride on /proc fd source paths,
+  // expressed as content so no descriptor has to cross the process
+  // boundary (impossible on macOS and identical in guarantee here).
+  if(captured.oid!==known.get(rel)?.[2]){
+   const stored=await withSafeFile(root,rel,async file=>{
+    if(file.stat.size!==BigInt(captured.size))fail('SOURCE_CHANGED','文件读取期间变化：'+rel);
+    const oid=(await runGit(cwd,['hash-object','-w','--no-filters','--stdin'],{env:gitEnv(),input:file.stream()})).toString().trim();
+    if(oid!==captured.oid)fail('SOURCE_CHANGED','Git对象与文件流摘要不一致');
+    return oid;
+   });
+   if(stored===null)fail('SOURCE_CHANGED','文件读取期间消失：'+rel);
   }
-  const rel=rels[at];let entered=false;const value=await withSafeFile(root,rel,async file=>{entered=true;const hash=createHash('sha256'),objectHash=createHash(format).update('blob '+file.stat.size+'\0');let size=0;for await(const chunk of file.stream()){hash.update(chunk);objectHash.update(chunk);size+=chunk.length;}if(BigInt(size)!==file.stat.size)fail('SOURCE_CHANGED','文件读取期间变化：'+rel);opened.push({rel,file,digest:hash.digest('hex'),oid:objectHash.digest('hex'),size});await capture(at+1);return true;});if(!entered){results.set(rel,null);await capture(at+1);}return value;
- };await capture(0);return results;
+  results.set(rel,captured);
+ }
+ return results;
 }
 export async function blobFile(cwd,root,rel){return (await blobFiles(cwd,root,[rel],new Map(),await str(cwd,['rev-parse','--show-object-format']))).get(rel);}
 export async function updateIndexRows(cwd,index,rows){if(!rows.length)return;const format=await str(cwd,['rev-parse','--show-object-format']);const zero='0'.repeat(format==='sha256'?64:40);await gitStream(cwd,['update-index','-z','--index-info'],{input:Readable.from((function*(){for(const {rel,mode,oid} of rows)yield (oid?mode+' '+oid:'0 '+zero)+'\t'+rel+'\0';})())},{GIT_INDEX_FILE:index});}

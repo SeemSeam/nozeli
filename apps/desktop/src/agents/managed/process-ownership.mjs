@@ -1,17 +1,19 @@
 // Shared process-ownership contract (OMP/Codex providers, workspace locks and
 // cold recovery). Business modules keep calling these functions; the real
-// /proc identity, env-tag verified reaping and kill(-pgid) group termination
-// live in the Linux platform adapter selected through platform-capabilities.
-// Platforms without a verified implementation keep honest semantics: no stamp,
-// no recovery, no verified reaping, no liveness verdict — an unknown identity
-// never releases a budget slot or a writer. Windows/macOS adapters must be
-// implemented and verified on real hosts (phase2) before those platforms
-// report available.
+// identity, env-tag verified reaping and kill(-pgid) group termination live
+// in the platform adapters selected through platform-capabilities (Linux
+// /proc; macOS kinfo/KERN_PROCARGS2 facts via runtime/native/nozeli-procinfo).
+// Platforms without a verified implementation keep honest semantics: no
+// stamp, no recovery, no verified reaping, no liveness verdict — an unknown
+// identity never releases a budget slot or a writer. Windows adapters must
+// be implemented and verified on real hosts (phase2) before that platform
+// reports available.
 import path from 'node:path';
 import {selectCapability} from '../../platform/platform-capabilities.mjs';
 import * as linux from '../../platform/linux/process-ownership.mjs';
+import * as macos from '../../platform/darwin/process-ownership.mjs';
 
-const select=()=>selectCapability({capability:'verified-process-ownership',implementations:{linux}});
+const select=()=>selectCapability({capability:'verified-process-ownership',implementations:{linux,macos}});
 
 // OMP/Codex ownership proof: descendants carry the private CODEX_HOME env tag;
 // the leader must also look like the codex CLI this host launched (native

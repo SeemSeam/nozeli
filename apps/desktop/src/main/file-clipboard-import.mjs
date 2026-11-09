@@ -6,6 +6,7 @@ import {FileTags} from '../domain/file-tags.mjs';
 import {FileChanges} from '../domain/file-changes.mjs';
 import {fileIdentity,sameFileIdentity} from './file-clipboard.mjs';
 import {requireCapability} from '../platform/platform-capabilities.mjs';
+import {platformPersistence} from '../platform/shared/persistence.mjs';
 
 const inside=(file,root)=>{const rel=path.relative(root,file);return rel===''||(!rel.startsWith('..'+path.sep)&&rel!=='..'&&!path.isAbsolute(rel));};
 const under=(rel,parent)=>rel===parent||rel.startsWith(parent+'/');
@@ -42,7 +43,7 @@ async function copyNode(source,dest,created,expected,parentIdentity){
       if(!sameFileIdentity(fileIdentity(before),fileIdentity(await input.stat()))||!sameFileIdentity(fileIdentity(before),fileIdentity(await noLinks(source))))fail('源文件已变化，未完成复制。');
       // Preserve executable/read-only bits without importing setuid/setgid.
       await output.chmod(before.mode & 0o777);
-      await output.sync();
+      await platformPersistence.syncFileHandle(output);
       const identity=fileIdentity(await output.stat());
       await sameDirectory(path.dirname(dest),parentIdentity);
       await fs.link(temporary,dest);created.push({file:dest,directory:false,identity});

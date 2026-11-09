@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {constants} from 'node:fs';
+import {platformPersistence} from '../../platform/shared/persistence.mjs';
 import {createHash,randomUUID} from 'node:crypto';
 import {atomicJson} from './workspace.mjs';
 import {resolveTextReplacements} from '../../domain/document-collaboration.mjs';
@@ -91,14 +91,14 @@ export class ExecutionWorkspace {
   const intentFile=path.join(evidence,'repository-init.json');
   if(!top){await atomicJson(intentFile,{repo:root,created:true,status:'requested'});await git(root,['init','--initial-branch=main']);}
   const priorBytes=await read(intentFile),prior=priorBytes?JSON.parse(priorBytes):null,existingHead=await str(root,['rev-parse','--verify','HEAD']).catch(()=>null);
-  if(existingHead){if(prior?.status==='ready'&&prior.commit===existingHead&&prior.created){const targetIndex=path.resolve(root,await str(root,['rev-parse','--git-path','index'])),saved=path.join(evidence,'initial.index');if(!await fs.stat(saved).catch(()=>null))fail('INIT_RECOVERY','初始索引恢复材料缺失');if(!await fs.stat(targetIndex).catch(()=>null)){const h=await fs.open(targetIndex+'.lock','wx',0o600);try{if(await fs.stat(targetIndex).catch(()=>null))fail('INDEX_CHANGED','恢复期间索引变化');await copyToHandle(saved,h);await h.sync();await h.close();await fs.rename(targetIndex+'.lock',targetIndex);}catch(error){await h.close().catch(()=>{});await fs.rm(targetIndex+'.lock',{force:true});throw error;}}await atomicJson(intentFile,{...prior,status:'complete'});}return;}
+  if(existingHead){if(prior?.status==='ready'&&prior.commit===existingHead&&prior.created){const targetIndex=path.resolve(root,await str(root,['rev-parse','--git-path','index'])),saved=path.join(evidence,'initial.index');if(!await fs.stat(saved).catch(()=>null))fail('INIT_RECOVERY','初始索引恢复材料缺失');if(!await fs.stat(targetIndex).catch(()=>null)){const h=await fs.open(targetIndex+'.lock','wx',0o600);try{if(await fs.stat(targetIndex).catch(()=>null))fail('INDEX_CHANGED','恢复期间索引变化');await copyToHandle(saved,h);await platformPersistence.syncFileHandle(h);await h.close();await fs.rename(targetIndex+'.lock',targetIndex);}catch(error){await h.close().catch(()=>{});await fs.rm(targetIndex+'.lock',{force:true});throw error;}}await atomicJson(intentFile,{...prior,status:'complete'});}return;}
   const ref=await str(root,['symbolic-ref','HEAD']),index=path.join(evidence,'initial.index'),env={GIT_INDEX_FILE:index};
   const created=!top||prior?.created===true;await atomicJson(intentFile,{repo:root,ref,created,status:'baseline-requested'});await git(root,['read-tree','--empty'],env);
   const batch=[],rows=[],format=await str(root,['rev-parse','--show-object-format']);const flush=async()=>{if(!batch.length)return;const captured=await blobFiles(root,root,batch,new Map(),format);for(const [rel,file] of captured)if(file)rows.push({rel,...file});batch.length=0;};
   for(const rel of await gitRecords(root,['ls-files','-co','--exclude-standard','-z'])){try{capturePath(rel);}catch{continue;}batch.push(rel);if(batch.length===16)await flush();}await flush();await updateIndexRows(root,index,rows);
   const tree=await str(root,['write-tree'],env),commit=await commitTree(root,tree,[],'Nozeli project baseline',evidence);await atomicJson(intentFile,{repo:root,ref,commit,created,status:'ready'});
   await git(root,['update-ref',ref,commit,'0'.repeat(commit.length)]);
-  if(created){const targetIndex=path.resolve(root,await str(root,['rev-parse','--git-path','index'])),lock=targetIndex+'.lock';const h=await fs.open(lock,'wx',0o600);try{if(await fs.stat(targetIndex).catch(()=>null))fail('INDEX_CHANGED','初始化期间索引出现，未覆盖');await copyToHandle(index,h);await h.sync();await h.close();await fs.rename(lock,targetIndex);}catch(error){await h.close().catch(()=>{});await fs.rm(lock,{force:true});throw error;}}
+  if(created){const targetIndex=path.resolve(root,await str(root,['rev-parse','--git-path','index'])),lock=targetIndex+'.lock';const h=await fs.open(lock,'wx',0o600);try{if(await fs.stat(targetIndex).catch(()=>null))fail('INDEX_CHANGED','初始化期间索引出现，未覆盖');await copyToHandle(index,h);await platformPersistence.syncFileHandle(h);await h.close();await fs.rename(lock,targetIndex);}catch(error){await h.close().catch(()=>{});await fs.rm(lock,{force:true});throw error;}}
   await atomicJson(intentFile,{repo:root,ref,commit,status:'complete'});await fs.rm(index,{force:true});
  }
  async prepareInner(id){
@@ -328,14 +328,14 @@ export class ExecutionWorkspace {
   const format=await str(m.repo,['rev-parse','--show-ref-format']).catch(()=>'files');if(!['files','--show-ref-format'].includes(format))fail('REF_FORMAT','仅支持Git files引用后端');
   const refFile=path.join(m.commonDir,m.targetRef),refLock=refFile+'.lock',lock=m.index+'.lock',headLock=m.headFile+'.lock',owned=[];let published=false;
   try{
-   await fs.mkdir(path.dirname(refFile),{recursive:true});for(const file of [refLock,lock,headLock]){const prior=await read(file);if(prior){const stat=await fs.lstat(file),saved=intent.locks?.[file];if(prior.toString()!==intent.token&&!(file===refLock&&prior.toString()===intent.commit+'\n'&&saved?.ino===stat.ino&&saved?.dev===stat.dev))fail('GIT_LOCKED','Git锁不属于本次整合：'+file);}else{const h=await fs.open(file,'wx',0o600);await h.writeFile(intent.token);await h.sync();const stat=await h.stat();intent.locks??={};intent.locks[file]={ino:stat.ino,dev:stat.dev};await h.close();}owned.push(file);}await this.save(m);
+   await fs.mkdir(path.dirname(refFile),{recursive:true});for(const file of [refLock,lock,headLock]){const prior=await read(file);if(prior){const stat=await fs.lstat(file),saved=intent.locks?.[file];if(prior.toString()!==intent.token&&!(file===refLock&&prior.toString()===intent.commit+'\n'&&saved?.ino===stat.ino&&saved?.dev===stat.dev))fail('GIT_LOCKED','Git锁不属于本次整合：'+file);}else{const h=await fs.open(file,'wx',0o600);await h.writeFile(intent.token);await platformPersistence.syncFileHandle(h);const stat=await h.stat();intent.locks??={};intent.locks[file]={ino:stat.ino,dev:stat.dev};await h.close();}owned.push(file);}await this.save(m);
    await this.identity(m);if(![intent.beforeIndexDigest,intent.afterIndexDigest].includes(await this.indexDigest(m.index)))fail('INDEX_CHANGED','加锁期间用户索引变化');
    const head=await str(m.repo,['rev-parse',m.targetRef]);if(head!==m.targetHead&&head!==intent.commit)fail('HEAD_DRIFT','目标分支变化');published=head===intent.commit;
    for(const f of intent.files){const disk=await this.files.inspectFile(m.repo,f.rel),digest=disk?.digest??null;if(digest!==f.before&&digest!==f.after)fail('SOURCE_CHANGED','文件在恢复/整合时变化：'+f.rel);if(disk&&![f.beforeMode,f.mode].includes(disk.mode))fail('SOURCE_CHANGED','文件权限在整合时变化：'+f.rel);}
    if(!published){intent.status='applying';await this.save(m);}
    for(const f of intent.files)await this.installFile(m,f,false);
    if(await this.indexDigest(m.index)===intent.beforeIndexDigest){const temp=m.index+'.nozeli-'+randomUUID();await fs.copyFile(path.join(intent.directory,'after.index'),temp);await fs.rename(temp,m.index);}else if(await this.indexDigest(m.index)!==intent.afterIndexDigest)fail('INDEX_CHANGED','发布后索引变化；未覆盖');
-   if(!published){intent.status='files-installed';await this.save(m);const h=await fs.open(refLock,'r+');await h.truncate(0);await h.writeFile(intent.commit+'\n');await h.sync();await h.close();await fs.rename(refLock,refFile);const directory=await fs.open(path.dirname(refFile),constants.O_RDONLY|constants.O_DIRECTORY);try{await directory.sync();}finally{await directory.close();}published=true;}
+   if(!published){intent.status='files-installed';await this.save(m);const h=await fs.open(refLock,'r+');await h.truncate(0);await h.writeFile(intent.commit+'\n');await platformPersistence.syncFileHandle(h);await h.close();await fs.rename(refLock,refFile);await platformPersistence.syncDirectory(path.dirname(refFile));published=true;}
    intent.status='ref-published';await this.save(m);intent.status='integrated';await this.save(m);
   }catch(error){
    if(!published&&await str(m.repo,['rev-parse',m.targetRef]).catch(()=>null)===intent.commit)published=true;

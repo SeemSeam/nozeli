@@ -1,10 +1,21 @@
 {
-  "schema": 1,
+  "schema": 2,
   "version": "22.23.4",
-  "platform": "linux",
-  "arch": "x64",
-  "archive": "node-v22.23.4-linux-x64.tar.xz",
-  "url": "https://nodejs.org/dist/v22.23.4/node-v22.23.4-linux-x64.tar.xz",
-  "sha256Archive": "1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce",
-  "notes": "Standalone Node bundled for the private Pi runtime (Pi SDK requires >=22.19.0). Pin upgrades deliberately: update version+url+sha256Archive together after verifying the new build."
+  "platforms": {
+    "linux-x64": {
+      "platform": "linux",
+      "arch": "x64",
+      "archive": "node-v22.23.4-linux-x64.tar.xz",
+      "url": "https://nodejs.org/dist/v22.23.4/node-v22.23.4-linux-x64.tar.xz",
+      "sha256Archive": "1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce"
+    },
+    "darwin-arm64": {
+      "platform": "darwin",
+      "arch": "arm64",
+      "archive": "node-v22.23.4-darwin-arm64.tar.gz",
+      "url": "https://nodejs.org/dist/v22.23.4/node-v22.23.4-darwin-arm64.tar.gz",
+      "sha256Archive": "c9e1dbc748b33ed2d14f42445191ecaf14c56259c7a9a26d0042c49ec2b66428"
+    }
+  },
+  "notes": "Standalone Node bundled for the private Pi runtime (Pi SDK requires >=22.19.0). Pin upgrades deliberately: update version+url+sha256Archive together after verifying the new build against the official SHASUMS256.txt for the release."
 }

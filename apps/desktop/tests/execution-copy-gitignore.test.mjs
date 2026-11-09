@@ -9,7 +9,7 @@ import {withSafeFile} from '../src/agents/managed/file-stream.mjs';
 import {openTestWorkspace} from './project-storage.fixture.mjs';
 
 async function fixture(t,{plain=false}={}){
- const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-managed-tree-')),project=path.join(root,'project');await fs.mkdir(project);let store;t.after(async()=>{await store?.close().catch(()=>{});await fs.rm(root,{recursive:true,force:true});});
+ const root=await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()),'nozeli-managed-tree-')),project=path.join(root,'project');await fs.mkdir(project);let store;t.after(async()=>{await store?.close().catch(()=>{});await fs.rm(root,{recursive:true,force:true});});
  await fs.writeFile(path.join(project,'worker.txt'),'base\n');await fs.writeFile(path.join(project,'user.txt'),'user base\n');await fs.writeFile(path.join(project,'.gitignore'),'ignored/\n.nozeli/\n');
  if(!plain){await git(project,['init','--initial-branch=main']);await git(project,['add','.']);await git(project,['-c','user.name=Test','-c','user.email=test@example.invalid','commit','-m','initial']);}
  store=await openTestWorkspace(path.join(root,'runtime'),project);

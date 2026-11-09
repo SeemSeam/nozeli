@@ -68,7 +68,8 @@ Agent 交付得快，不代表人已经理解。Nozeli 希望让你看清成果�
 
 ## 当前状态
 
-- 面向 Windows、macOS、Linux；当前验证为 **Linux x64／Wayland 与 X11/XWayland**，其他平台尚未通过。
+- 面向 Windows、macOS、Linux；Linux x64／Wayland 与 X11/XWayland 保留既有验证。本机开发新增 **macOS arm64** 原生能力与独立 `.app`，已实际验证阅读、保存、项目终端及 Pi 本地夹具；不是 Mac 全功能或公开发行签收。开发命令见[桌面说明](apps/desktop/README.md#本机开发与打包macos-arm64)。
+- 当前Mac工作树 `/Users/bfly/nozeli-macos-alpha6`（分支 `macos-alpha6`，基线 `v0.1.0-alpha.6` = `9a2466a847267620747b79f9c1b97fbac8f00280`），包为该树 `dist/Nozeli-0.1.0-alpha.6-macos-arm64-verified/Nozeli.app`；旧 `/Users/bfly/nozeli` 保留。已完成新基线默认回归及受限初始化／明确重置／任务工作区本机专项，不等于Mac全功能或公开分发签收；九格式显示矩阵截图超时仍未通过。详见[测试记录](docs/testing.md#alpha6-macos-本机迁移与验收2026-11-09)。
 - 已有阅读、批注、编辑、真实文件与后台协作工作流；具体格式、版本和能力边界见[当前状态与能力边界](docs/status.md)。
 - **Alpha预发行候选 `v0.1.0-alpha.6`**（实际发行状态及附件以[GitHub发布页](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.6)为准）：稳定报告记忆、任务内续聊与只读过程、项目恢复/明确重置、原生skill初始化、精简初始页和随主题配色的功能图片。仅Linux实测，Windows/macOS未验；完整应用200%缩放和真实断电/满盘/磁盘损坏不在签收范围。
 - 所有者于2026-11-08在获知六项分发审计仍未签收后，明确授权alpha.6公开Alpha预发布例外；不是合规认证，不把公开审计检查记作通过。此前[alpha.5](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.5)保留原发行记录。

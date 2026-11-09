@@ -10,8 +10,9 @@ export async function packagePiRuntime({source,application,includeDependency}){
  const lock=JSON.parse(await fs.readFile(path.join(integration,'package-lock.json'),'utf8'));
  const modules=path.join(integration,'node_modules');
  await fs.cp(modules,path.join(target,'node_modules'),{recursive:true,filter:file=>{const relative=path.relative(modules,file);return relative.split(path.sep)[0]!=='.bin'&&includeDependency(lock,relative);}});
- const node=JSON.parse(await fs.readFile(path.join(source,'tools/node-runtime.lock.json'),'utf8'));
- if(node.platform!==process.platform||node.arch!==process.arch)throw Error('No pinned standalone Node for this packaging platform');
+ const runtimeLock=JSON.parse(await fs.readFile(path.join(source,'tools/node-runtime.lock.json'),'utf8'));
+ const node=Object.values(runtimeLock.platforms??{}).find(entry=>entry.platform===process.platform&&entry.arch===process.arch);
+ if(!node)throw Error('No pinned standalone Node for this packaging platform');
  const cache=path.join(source,'.test-output','node-runtime');await fs.mkdir(cache,{recursive:true});
  const archive=process.env.NOZELI_NODE_ARCHIVE??path.join(cache,node.archive);
  try{await fs.access(archive);}catch(error){
@@ -21,8 +22,8 @@ export async function packagePiRuntime({source,application,includeDependency}){
  }
  if(createHash('sha256').update(await fs.readFile(archive)).digest('hex')!==node.sha256Archive)throw Error('Standalone Node archive integrity mismatch');
  const directory=path.join(application,'runtime/node');await fs.mkdir(directory,{recursive:true});
- execFileSync('tar',['-xJf',archive,'--strip-components=1','-C',directory],{stdio:'inherit'});
+ execFileSync('tar',['-xf',archive,'--strip-components=1','-C',directory],{stdio:'inherit'});
  const executable=path.join(directory,'bin/node');await fs.access(executable,fs.constants.X_OK);
  const sha256Executable=createHash('sha256').update(await fs.readFile(executable)).digest('hex');
- await fs.writeFile(path.join(directory,'NODE-RUNTIME.json'),JSON.stringify({...node,executable:'bin/node',sha256Executable},null,2)+'\n');
+ await fs.writeFile(path.join(directory,'NODE-RUNTIME.json'),JSON.stringify({schema:1,version:runtimeLock.version,...node,executable:'bin/node',sha256Executable},null,2)+'\n');
 }

@@ -93,9 +93,12 @@ for (const target of ['ignore', 'index']) {
       fs.open = async function(file, ...args) {
         const handle = await originalOpen.call(this, file, ...args);
         if (file === lock && outcome === 'taken-over') {
-          const originalSync = handle.sync;
-          handle.sync = async function(...syncArgs) {
-            await originalSync.apply(this, syncArgs);
+          // The durability barrier is platform-specific (darwin's F_FULLFSYNC
+          // never calls FileHandle.sync), so inject right after our bytes land;
+          // the post-barrier rechecks must still reject the taken-over lock.
+          const originalWriteFile = handle.writeFile;
+          handle.writeFile = async function(...writeArgs) {
+            await originalWriteFile.apply(this, writeArgs);
             intercepted = true;
             await replaceLock();
           };
@@ -152,9 +155,11 @@ for (const change of ['bytes', 'entity']) {
     fs.open = async function(name, ...args) {
       const handle = await originalOpen.call(this, name, ...args);
       if (name === lock) {
-        const originalSync = handle.sync;
-        handle.sync = async function(...syncArgs) {
-          await originalSync.apply(this, syncArgs);
+        // Inject after our bytes land: the post-barrier compare-and-swap must
+        // still reject a concurrent change of the target's bytes or entity.
+        const originalWriteFile = handle.writeFile;
+        handle.writeFile = async function(...writeArgs) {
+          await originalWriteFile.apply(this, writeArgs);
           if (change === 'entity') await fs.rename(file, file + '.previous');
           await fs.writeFile(file, concurrent);
           intercepted = true;
@@ -192,9 +197,11 @@ test('index supplied during baseline publication is preserved and only our lock 
   fs.open = async function(file, ...args) {
     const handle = await originalOpen.call(this, file, ...args);
     if (file === lock) {
-      const originalSync = handle.sync;
-      handle.sync = async function(...syncArgs) {
-        await originalSync.apply(this, syncArgs);
+      // Inject after our lock bytes land: the post-barrier recheck must keep
+      // the externally supplied index and remove only our own lock entity.
+      const originalWriteFile = handle.writeFile;
+      handle.writeFile = async function(...writeArgs) {
+        await originalWriteFile.apply(this, writeArgs);
         await fs.writeFile(index, externalIndex, { flag: 'wx' });
         supplied = true;
       };

@@ -118,6 +118,94 @@ test('two instances publishing concurrently keep both commits reachable in one c
   assert.equal(list.length, 2);
 });
 
+test('many instances racing their first checkpoint all settle into one linear chain', async t => {
+  const { project, host, id } = await fixture(t);
+  const instances = Array.from({ length: 6 },
+    () => new ShadowVersions({ projectRoot: project, projectId: id, storage: host.storage }));
+  const settled = await Promise.allSettled(instances.map((instance, i) =>
+    instance.checkpoint({ requestId: `race-${i}`, workId: 'w', relPaths: ['doc.md'] })));
+  for (const result of settled) assert.equal(result.status, 'fulfilled', result.reason?.message);
+  const log = execFileSync('git', ['--git-dir', path.join(project, '.nozeli', 'versions.git'),
+    'log', '--format=%H %P', 'refs/heads/nozeli/versions']).toString().trim().split('\n');
+  assert.equal(log.length, instances.length);
+  const commits = log.map(line => line.split(' ')[0]);
+  for (let i = 0; i < log.length; i++) {
+    const parent = log[i].split(' ')[1];
+    // newest first: every commit sits on the one chain, the last one is the root
+    if (i + 1 < log.length) assert.equal(parent, commits[i + 1]);
+    else assert.ok(!parent);
+  }
+  const seen = new Set(commits);
+  assert.equal(seen.size, instances.length);
+  for (const result of settled) assert.ok(seen.has(result.value.commit));
+  const list = await instances[0].list();
+  assert.equal(list.length, instances.length);
+  // initialization leaves no staging directories behind (`.nozeli` also
+  // holds unrelated project metadata)
+  const nozeli = await fs.readdir(path.join(project, '.nozeli'));
+  assert.ok(nozeli.includes('versions.git'));
+  assert.equal(nozeli.filter(name => name.startsWith('versions.git.init')).length, 0);
+});
+
+test('two instances publishing the same requestId converge on one shared commit', async t => {
+  const { project, host, id } = await fixture(t);
+  const a = new ShadowVersions({ projectRoot: project, projectId: id, storage: host.storage });
+  const b = new ShadowVersions({ projectRoot: project, projectId: id, storage: host.storage });
+  const [first, second] = await Promise.all([
+    a.checkpoint({ requestId: 'shared', workId: 'w', relPaths: ['doc.md'] }),
+    b.checkpoint({ requestId: 'shared', workId: 'w', relPaths: ['doc.md'] }),
+  ]);
+  assert.equal(first.commit, second.commit);
+  const log = execFileSync('git', ['--git-dir', path.join(project, '.nozeli', 'versions.git'),
+    'log', '--format=%H %P', 'refs/heads/nozeli/versions']).toString().trim().split('\n');
+  assert.equal(log.length, 1);
+  const [root, rootParent] = log[0].split(' ');
+  assert.equal(root, first.commit);
+  assert.ok(!rootParent);
+  const list = await a.list();
+  assert.equal(list.length, 1);
+});
+
+test('a pre-existing published repository is adopted and extended, never replaced', async t => {
+  const { project, versions } = await fixture(t);
+  const gitDir = path.join(project, '.nozeli', 'versions.git');
+  await fs.mkdir(path.dirname(gitDir), { recursive: true });
+  // an interrupted older initialization: bare repository present, HEAD still on
+  // the default branch, and a commit the user could already see on the ref
+  execFileSync('git', ['init', '--bare', '-q', gitDir]);
+  const seedTree = execFileSync('git', ['--git-dir', gitDir, 'mktree'], { input: '' }).toString().trim();
+  const seed = execFileSync('git', ['--git-dir', gitDir, 'commit-tree', seedTree, '-m', 'seed checkpoint'], {
+    env: { ...process.env, GIT_AUTHOR_NAME: 'seed', GIT_AUTHOR_EMAIL: 'seed@localhost', GIT_COMMITTER_NAME: 'seed', GIT_COMMITTER_EMAIL: 'seed@localhost' },
+  }).toString().trim();
+  execFileSync('git', ['--git-dir', gitDir, 'update-ref', 'refs/heads/nozeli/versions', seed]);
+  const saved = await versions.checkpoint({ requestId: 'legacy', workId: 'w', relPaths: ['doc.md'] });
+  assert.equal(saved.reused, false);
+  const head = execFileSync('git', ['--git-dir', gitDir, 'symbolic-ref', 'HEAD']).toString().trim();
+  assert.equal(head, 'refs/heads/nozeli/versions');
+  const log = execFileSync('git', ['--git-dir', gitDir,
+    'log', '--format=%H %P', 'refs/heads/nozeli/versions']).toString().trim().split('\n');
+  assert.equal(log.length, 2);
+  assert.equal(log[0].split(' ')[0], saved.commit);
+  assert.equal(log[0].split(' ')[1], seed);
+  assert.equal(log[1].split(' ')[0], seed);
+  assert.equal((await versions.readBlob(saved.commit, 'doc.md')).toString('utf8'), ORIGINAL);
+});
+
+test('a foreign occupant at the shadow location is refused, not overwritten', async t => {
+  const { project, versions } = await fixture(t);
+  const gitDir = path.join(project, '.nozeli', 'versions.git');
+  await fs.mkdir(gitDir, { recursive: true });
+  await fs.writeFile(path.join(gitDir, 'occupant.txt'), 'not a bare repository\n');
+  await assert.rejects(
+    () => versions.checkpoint({ requestId: 'occupied', workId: 'w', relPaths: ['doc.md'] }),
+    { code: 'SHADOW_REPO_INVALID' },
+  );
+  // the occupant stays exactly as it was, and nothing was staged next to it
+  assert.equal(await fs.readFile(path.join(gitDir, 'occupant.txt'), 'utf8'), 'not a bare repository\n');
+  const nozeli = await fs.readdir(path.join(project, '.nozeli'));
+  assert.equal(nozeli.filter(name => name.startsWith('versions.git.init')).length, 0);
+});
+
 test('a failed checkpoint does not poison the queue; later requests still run', async t => {
   const { project, versions, host, id } = await fixture(t);
   // Disk drifts past the ledger → provenance failure inside the queue.

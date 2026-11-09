@@ -45,7 +45,7 @@ export class OpenQueueStorage {
  }
  async sync(){
   await this.read();const handle=await fs.open(this.file,constants.O_RDONLY|(constants.O_NOFOLLOW??0));
-  try{await this.fault('file-sync');await handle.sync();}finally{await handle.close();}
+  try{await this.fault('file-sync');await platformPersistence.syncFileHandle(handle);}finally{await handle.close();}
   await this.syncDirectory();
  }
  async syncDirectory(){
@@ -61,7 +61,7 @@ export class OpenQueueStorage {
   try{
    await this.fault('create');handle=await fs.open(tmp,'wx',0o600);
    await this.fault('write');await handle.writeFile(bytes);
-   await this.fault('file-sync');await handle.sync();await handle.close();handle=null;
+   await this.fault('file-sync');await platformPersistence.syncFileHandle(handle);await handle.close();handle=null;
    await this.fault('rename');
    const current=await this.read(path.basename(tmp)),again=await fs.lstat(this.dir);
    if(current.hash!==expectedHash||again.isSymbolicLink()||again.dev!==dirStat.dev||again.ino!==dirStat.ino)fail('OPEN_QUEUE_CHANGED','Queue or parent changed before rename.');

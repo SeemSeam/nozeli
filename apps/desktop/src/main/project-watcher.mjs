@@ -40,6 +40,13 @@ async function directoryIdentity(root, parts) {
  * onError receives {projectId,parentRelPath,code,message}; setup failures also reject.
  * No file contents are read. Directory metadata is checked when subscribing only;
  * new/replaced directories are followed only by a subsequent explicit watch().
+ * Every new subscription first emits one invalidating change (paths: []) — its
+ * establishment snapshot — which callers use to load initial state before
+ * applying deltas. A backend may deliver pre-subscription history in the first
+ * delivery after subscribing (macOS FSEvents does), so that whole first
+ * delivery is coalesced into one conservative invalidation instead of being
+ * guessed apart into file changes; later deliveries report precise
+ * project-relative paths and are never dropped.
  * close() is terminal. All handles and debounce timers are unref'ed.
  */
 export class ProjectWatcher {
@@ -122,7 +129,15 @@ export class ProjectWatcher {
       if (!entry.active) throw failure('WATCH_CANCELLED', 'Watch subscription was cancelled');
       entry.handle = watchDirectory(before.absolute, {recursive: false, persistent: false}, (_event, filename) => {
         if (!entry.active) return;
-        if (!entry.installed) { entry.dirty = true; return; }
+        if (!entry.installed) {
+          // The first delivery after subscribing may still carry backend history
+          // (macOS FSEvents replays pre-subscription changes). Rather than guess
+          // which filenames are new, invalidate the whole directory once; precise
+          // project-relative paths follow in later deliveries.
+          entry.installed = true;
+          this.queue(projectId, parentRelPath, null);
+          return;
+        }
         this.queue(projectId, parentRelPath, filename);
       });
       entry.handle.unref();
@@ -135,9 +150,11 @@ export class ProjectWatcher {
       const after = await directoryIdentity(project.root, parts);
       if (!entry.active) throw failure('WATCH_CANCELLED', 'Watch subscription was cancelled');
       if (before.dev !== after.dev || before.ino !== after.ino) throw failure('WATCH_CHANGED', 'Watch directory changed during subscription');
-      entry.installed = true;
       entry.identity = after;
-      if (entry.dirty) this.queue(projectId, parentRelPath, null);
+      // Establishment snapshot: every new subscription emits exactly one initial
+      // invalidation, and the first delivery above merges into the same pending
+      // change. One conservative rescan beat, then precise deltas.
+      this.queue(projectId, parentRelPath, null);
       return {projectId, parentRelPath, watching: true, overflow: false};
     } catch (error) {
       release();
