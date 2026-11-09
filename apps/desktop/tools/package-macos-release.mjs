@@ -24,6 +24,7 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {createReadStream} from 'node:fs';
 import {execFileSync} from 'node:child_process';
+import {createRequire} from 'node:module';
 import {assembleMacosBundle, validateMacApplication, macosVersionStrings, BUNDLE_IDENTIFIER} from './package-macos.mjs';
 
 if (process.platform !== 'darwin' || process.arch !== 'arm64') throw Error('macOS release packaging supports darwin arm64 only.');
@@ -47,9 +48,9 @@ if (!['pending', 'complete'].includes(auditStatus)) throw Error('compliance-inve
 async function exists(file) { try { await fs.access(file); return true; } catch { return false; } }
 async function requirePath(file, remedy) { if (!await exists(file)) throw Error('Missing prerequisite ' + path.relative(repository, file) + ' — ' + remedy); }
 
-// Installed inputs this tool deliberately does not rebuild: network fetches
-// stay in the documented preparation commands (apps/desktop/README.md).
-await requirePath(path.join(source, 'node_modules/electron/dist/Electron.app/Contents/Info.plist'), 'run `npm ci` in apps/desktop (downloads Electron darwin-arm64, rebuilds node-pty for the Electron ABI and installs the pinned dugite Git).');
+// Electron resolves/downloads its binary lazily; npm ci alone need not create dist.
+const electronExecutable = createRequire(import.meta.url)('electron');
+await requirePath(electronExecutable, 'resolve the locked Electron package on this darwin arm64 host.');
 const integration = path.join(repository, 'integrations/pi');
 for (const marker of ['runtime-manifest.json', 'src/owner.mjs', 'dist/vendor/pi-gui/packages/pi-sdk-driver/index.js', 'node_modules/@earendil-works/pi-coding-agent/package.json']) await requirePath(path.join(integration, marker), 'run `npm ci --prefix ../../integrations/pi` and `npm run build:pi` in apps/desktop to prepare the private Pi runtime.');
 await requirePath(path.join(source, 'vendor/pptist/dist'), 'run `npm run build:pptist` in apps/desktop to build the pinned office engine.');

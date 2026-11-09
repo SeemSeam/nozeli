@@ -59,10 +59,11 @@ export async function assembleMacosBundle({source, output, manifest, lock, relea
   if (!source || !output || !manifest || !lock) throw Error('assembleMacosBundle requires source, output, manifest and lock');
   const repository = path.resolve(source, '../..');
   const require = createRequire(path.join(source, 'package.json'));
+  require('electron'); // Materialize the locked package's lazily downloaded binary.
   const electronRoot = path.dirname(require.resolve('electron/package.json'));
   const electronVersion = JSON.parse(await fs.readFile(path.join(electronRoot, 'package.json'), 'utf8')).version;
   const electronApp = path.join(electronRoot, 'dist', 'Electron.app');
-  await fs.access(path.join(electronApp, 'Contents/Info.plist')); // npm ci postinstall must have finished.
+  await fs.access(path.join(electronApp, 'Contents/Info.plist'));
   const bundle = path.join(output, 'Nozeli.app');
   // Exclusive creation: never overwrite an existing app bundle.
   try { await fs.mkdir(bundle); } catch (error) { if (error.code === 'EEXIST') throw Error('Refusing to overwrite existing app bundle: ' + bundle); throw error; }

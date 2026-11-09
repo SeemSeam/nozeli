@@ -801,3 +801,7 @@ Linux 已观察结果：unit816通过／零失败；Pi与生产renderer构建成
 新增草稿检查器七个离线黑盒场景通过：历史Linux-only Alpha、双平台本地资产、mac包错误提交拒绝、完整草稿、缺mac资产拒绝、已公开版本拒绝及历史Alpha草稿。首跑确实暴露缺失tarfile导入与夹具USAGE校验和漏项，已修正后全过；不是只做语法检查。两份工作流YAML已实际解析；mac版本映射已执行验证，CFBundleVersion保持三段数字，完整预发行身份独立保留。
 
 mac候选须由macos-15 arm64工作流在精确提交真实构建并解压运行，旧Mac证据不是本版本通过；Linux解压发行程序也须单独验收。六项审计仍pending，元数据检查0 failures，`--public`仍因六项未签收阻断；CI、草稿与技术验收均不替代公证或法律签收。
+
+首个干净候选 `4ef2576` 的Linux实际解压包通过基础保存／冷恢复（`.test-output/ci/smoke-yQAY4y/report.json`），以及随包Pi多Task／同线程问答和第二次发布／43890字节原文／草稿与冷启动零重放／浅深320、390、1280和200%缩放真实旅程（`/var/tmp/nozeli-task-workspace-OUWUaT/report.json`，ok=true，providerErrors为空）。独立运行时复核未发现范围内P1/P2；发行复核发现Ubuntu解压包sandbox需单独配置root所有者及4755，CI已沿用既有正常sandbox策略补齐，不改分发归档或使用no-sandbox。
+
+mac首轮工作流 `42721116462` 的darwin arm64确认、锁定依赖、PPTist与Pi构建均成功，打包预检因Electron惰性下载尚未生成Electron.app而失败，尚未运行mac解压烟测。修正为调用锁定Electron包官方resolver准备二进制，开发者与发行打包共用该安装语义；不能把此首轮局部构建成功说成mac包通过，须以修正提交重新构建和运行。
