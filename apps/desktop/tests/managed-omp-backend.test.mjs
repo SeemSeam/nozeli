@@ -145,6 +145,10 @@ test('restore dispatches recovery by provider kind (omp record skips codex auth 
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const home = path.join(root, 'agents', 'x');
   await fs.mkdir(home, { recursive: true });
+  if(process.platform!=='linux'){
+    await assert.rejects(recoverOmpProvider({kind:'omp-rpc',pid:999999999,home,stamp:'00000000-0000-0000-0000-000000000000:1'},root),/verified on Linux only/);
+    return;
+  }
   const boot = (await fs.readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim();
   const result = await recoverOmpProvider({ kind: 'omp-rpc', pid: 999999999, home, stamp: `${boot}:1` }, root);
   assert.ok(['already-exited', 'exited-during-check'].includes(result.status));

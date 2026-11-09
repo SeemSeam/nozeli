@@ -13,7 +13,7 @@ import puppeteer from 'puppeteer-core';
 // A synthetic local provider controls refusal and a delayed map tool response.
 const app = path.resolve(import.meta.dirname, '..');
 const binary = process.env.NOZELI_TEST_BINARY || createRequire(import.meta.url)('electron');
-const out = await fs.mkdtemp(path.join(os.tmpdir(), 'nozeli-initialization-native-'));
+const out = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'nozeli-initialization-native-'));
 const config = path.join(out, '.Nozeli'), profile = path.join(config, 'desktop');
 const sourceText = '# Synthetic memory acceptance project\nLocal reading remains available.\n';
 const mapText = 'Synthetic project for native initialization acceptance. README.md is the material entrance. Other files were not inspected; no verification or source edits performed.';
@@ -142,7 +142,7 @@ const status = () => call('managed.initialization.status', {projectId});
 const state = async () => (await call('managed.status', {projectId})).state;
 async function launch() {
   launchError = null;
-  child = spawn(binary, [...(process.env.NOZELI_TEST_BINARY ? [] : [path.join(app, 'src/main/main.cjs')]), '--ozone-platform=' + (process.env.DISPLAY ? 'x11' : 'wayland')], {cwd: out, env, detached: true, stdio: ['ignore', 'pipe', 'pipe']});
+  child = spawn(binary, [...(process.env.NOZELI_TEST_BINARY ? [] : [path.join(app, 'src/main/main.cjs')]), ...(process.platform==='linux'?['--ozone-platform='+(process.env.DISPLAY?'x11':'wayland')]:[])], {cwd: out, env, detached: true, stdio: ['ignore', 'pipe', 'pipe']});
   child.once('error', error => { launchError = error; });
   exit = new Promise(resolve => child.once('exit', (code, signal) => resolve({code, signal})));
   for (const stream of [child.stdout, child.stderr]) stream.on('data', bytes => log += bytes);

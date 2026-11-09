@@ -31,7 +31,9 @@ async function stubMechanismDir(script) {
   await fs.writeFile(stub, `#!/bin/sh\n${script}\n`, { mode: 0o755 });
   return { bin, res: path.join(bin, 'res'), env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}` } };
 }
-const brokerWith = (options = {}) => createPrivilegeBroker({ interpreter, ...options });
+// These mechanism tests exercise the Linux pkexec strategy through owned stubs,
+// even on a Mac host. Never fall through to real osascript/UAC authentication.
+const brokerWith = (options = {}) => createPrivilegeBroker({ platform: 'linux', interpreter, ...options });
 
 async function approved(command, args, cwd, action, extra = {}) {
   const commandDigest = await digestOf(command);
@@ -57,12 +59,12 @@ test('capabilities reports real availability, honest semantics, trust model', as
   const stubbed = await stubMechanismDir('exec "$@"');
   t.after(() => fs.rm(stubbed.bin, { recursive: true, force: true }).catch(() => {}));
   const caps = await brokerWith({ env: stubbed.env }).capabilities();
-  assert.equal(caps.platform, process.platform);
+  assert.equal(caps.platform, 'linux');
   assert.equal(caps.authMethod, 'pkexec-python3');
   assert.equal(caps.elevationAvailable, true);
   assert.equal(caps.osAuthPerLaunch, true); // 每次经 OS 机制启动；OS 决定是否提示；不声称每次密码验证
   assert.match(caps.trustModel, /不防御恶意 root 命令/);
-  assert.equal(caps.platformVerification, process.platform === 'linux' ? 'implemented' : 'implemented-untested');
+  assert.equal(caps.platformVerification, 'implemented');
 
   const empty = await fs.mkdtemp(path.join(os.tmpdir(), 'nozeli-empty-'));
   const missing = await brokerWith({ env: { ...process.env, PATH: empty } }).capabilities();
@@ -210,7 +212,7 @@ test('admin inline launcher is honest as an unprivileged user (no fake root)', a
   const identity = spawnSync('/usr/bin/python3', ['-c', LINUX_ADMIN_PYTHON, '--', '--identity'], { encoding: 'utf8' });
   assert.equal(identity.status, 7);
   assert.match(identity.stderr, /NOZELI_ADMIN_NOT_ELEVATED/); // 未提权即拒绝，不写任何结果
-  const bad = spawnSync('/usr/bin/python3', ['-c', LINUX_ADMIN_PYTHON, '--', '--manifest', '/etc/hostname', '--expect-digest', '0'.repeat(64)], { encoding: 'utf8' });
+  const bad = spawnSync('/usr/bin/python3', ['-c', LINUX_ADMIN_PYTHON, '--', '--manifest', import.meta.filename, '--expect-digest', '0'.repeat(64)], { encoding: 'utf8' });
   assert.equal(bad.status, 3);
   assert.match(bad.stderr, /manifest digest mismatch/);
 });

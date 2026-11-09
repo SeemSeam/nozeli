@@ -27,7 +27,7 @@ export const serve=async(handler)=>{
  return {url:`http://127.0.0.1:${server.address().port}/v1`,requests,errors,close:async()=>{if(closed)return;closed=true;server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}};
 };
 export const prepare=async(url)=>{
- const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-pi-real-')),cwd=path.join(root,'project'),home=path.join(root,'agents','worker'),agentDir=path.join(root,'pi-config');
+ const root=await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()),'nozeli-pi-real-')),cwd=path.join(root,'project'),home=path.join(root,'agents','worker'),agentDir=path.join(root,'pi-config');
  await Promise.all([fs.mkdir(cwd,{recursive:true}),fs.mkdir(home,{recursive:true}),fs.mkdir(agentDir,{recursive:true})]);
  await fs.writeFile(path.join(agentDir,'models.json'),JSON.stringify({providers:{'local-fixture':{baseUrl:url,api:'openai-completions',apiKey:'local-nonsecret',models:[{id:'scripted',name:'Scripted local fixture',reasoning:false,input:['text','image'],cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:65536,maxTokens:4096}]}}}),{mode:0o600});
  return {root,cwd,home,agentDir};

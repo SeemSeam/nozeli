@@ -38,9 +38,11 @@ test('real provider HTTP observations preserve Request streams and exclude crede
   assert.deepEqual(bounded.map(row=>row.pathname),Array.from({length:16},(_,i)=>'/bounded/'+(24+i)));
   const networkStart=providerHttpObserverSeq();
   await new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve()));
-  await assert.rejects(fetch(base+'/disconnected',{method:'POST'}));
+  let transportError;
+  await assert.rejects(fetch(base+'/disconnected',{method:'POST'}),error=>{transportError=error;return true;});
   const failures=providerHttpObservations({sinceSeq:networkStart});
-  assert.equal(failures.length,1);assert.equal(failures[0].status,null);assert.ok(['ECONNREFUSED','UND_ERR_SOCKET'].includes(failures[0].networkCode),'closed listener or recycled keepalive socket must retain a supported transport failure code');
+  assert.equal(failures.length,1);assert.equal(failures[0].status,null);
+  assert.equal(failures[0].networkCode,transportError.cause?.code??transportError.code??null,'retain the actual transport failure rather than pinning OS-specific socket behavior');
  }finally{
   globalThis.fetch=original;
   if(server.listening)await new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve()));

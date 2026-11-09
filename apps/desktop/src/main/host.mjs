@@ -413,7 +413,7 @@ export class DesktopHost {
     const payload = Buffer.from(JSON.stringify(value), 'utf8');
     const handle = await fs.open(tmp, 'wx', 0o600);
     try {
-      try { await handle.writeFile(payload); await handle.sync(); }
+      try { await handle.writeFile(payload); await platformPersistence.syncFileHandle(handle); }
       finally { await handle.close(); }
       await fs.rename(tmp, file);
       await syncDirectory(path.dirname(file));
@@ -759,7 +759,7 @@ export class DesktopHost {
         const relPath=base+(converted.mode==='body-only'?'.正文导入':'.导入')+(n===1?'':'-'+n)+'.docx';
         const target=await this.resolveFile(project,relPath);if(!target.missing)continue;
         let handle;try{handle=await fs.open(target.abs,'wx',0o600);}catch(error){if(error.code==='EEXIST')continue;throw error;}
-        try{await handle.writeFile(converted.bytes);await handle.sync();}catch(error){await handle.close();await fs.unlink(target.abs);throw error;}
+        try{await handle.writeFile(converted.bytes);await platformPersistence.syncFileHandle(handle);}catch(error){await handle.close();await fs.unlink(target.abs);throw error;}
         await handle.close();return {relPath,mode:converted.mode,sourceDigest:digest};
       }
       throw new HostError('CONFLICT','导入副本名称已占用，请先整理已有副本。');
@@ -1183,7 +1183,7 @@ export class DesktopHost {
     const handle = await fs.open(tmp, 'wx', 0o600);
     try {
       await handle.writeFile(bytes);
-      await handle.sync();
+      await platformPersistence.syncFileHandle(handle);
     } finally {
       await handle.close();
     }
@@ -1219,7 +1219,7 @@ export class DesktopHost {
     try {
       await handle.writeFile(payload);
       await handle.chmod(mode & 0o777);
-      await handle.sync();
+      await platformPersistence.syncFileHandle(handle);
     } catch (error) {
       await handle.close();
       await fs.unlink(tmp).catch(() => {});

@@ -17,7 +17,7 @@ import puppeteer from 'puppeteer-core';
 import {DesktopHost} from '../src/main/host.mjs';
 import {serve} from './pi-provider.fixture.mjs';
 
-const appRoot=path.resolve(import.meta.dirname,'..'),out=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-pi-model-mgmt-'));
+const appRoot=path.resolve(import.meta.dirname,'..'),out=await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()),'nozeli-pi-model-mgmt-'));
 const config=path.join(out,'.Nozeli'),profile=path.join(config,'desktop'),projectRoot=path.join(out,'project');
 await fs.mkdir(projectRoot);await fs.writeFile(path.join(projectRoot,'reading.txt'),'Model management keeps Pi owners unchanged.\n');
 const host=new DesktopHost(profile),project=(await host.pick(projectRoot)).project;await host.storage.db.close();
@@ -26,7 +26,7 @@ let expectedKey='local-nonsecret-v1';
 const provider=await serve(()=>({text:'Model management live response.'}));
 const port=await new Promise(resolve=>{const server=net.createServer();server.listen(0,'127.0.0.1',()=>{const value=server.address().port;server.close(()=>resolve(value));});});
 const env={...process.env};for(const key of Object.keys(env))if(key!=='XAUTHORITY'&&(/^(NOZELI_|CCB_|CODEX_|OMP_|PI_)/.test(key)||/AUTH|TOKEN|SECRET|PASSWORD|CREDENTIAL|API_?KEY/i.test(key)||['NODE_OPTIONS','ELECTRON_RUN_AS_NODE'].includes(key)))delete env[key];
-const ozone=process.env.NOZELI_OZONE||(process.env.DISPLAY?'x11':process.env.WAYLAND_DISPLAY?'wayland':'headless');
+const ozone=process.platform==='linux'?(process.env.NOZELI_OZONE||(process.env.DISPLAY?'x11':process.env.WAYLAND_DISPLAY?'wayland':'headless')):'';
 Object.assign(env,{NOZELI_CONFIG_ROOT:config,NOZELI_USER_DATA:profile,NOZELI_TEST_INSTANCE:'1',NOZELI_DEBUG_PORT:String(port),NOZELI_SHOT_DIR:out,NOZELI_HIDDEN:'0',NOZELI_OZONE:ozone});
 const binary=process.env.NOZELI_TEST_BINARY;
 let child,exited;
@@ -96,7 +96,12 @@ try{
  const lastChat=chatRequests().at(-1);
  assert.equal(lastChat?.authorization,'Bearer '+expectedKey,'rotated key must reach the existing session without a new session (requires regenerated Pi dist: cd integrations/pi && npm run build)');
  const afterAgent=(await call(conversation,'managed.status',{projectId:project.id})).state.agents.find(row=>row.target==='frontdesk');assert.deepEqual({ownerId:afterAgent.ownerId,threadId:afterAgent.threadId},beforeIdentity);
- await shell.click('#open-settings');await shell.click('[data-settings-section="settings-models"]');await shell.screenshot({path:path.join(out,'model-management.png')});
+ await shell.click('#open-settings');await shell.click('[data-settings-section="settings-models"]');
+ await shell.waitForFunction(()=>{const roles=['frontdesk','orchestrator','worker'];return roles.every(role=>{const select=document.querySelector('[data-default-role="'+role+'"]');return select&&!select.disabled&&[...select.options].some(option=>option.value==='mgmt-local/scripted')&&[...select.options].some(option=>option.value==='mgmt-local/scripted-reasoner');});});
+ const visibleDefaults=await shell.$$eval('[data-default-role]',selects=>Object.fromEntries(selects.map(select=>[select.dataset.defaultRole,select.value])));
+ assert.deepEqual(visibleDefaults,{frontdesk:'mgmt-local/scripted',orchestrator:'mgmt-local/scripted-reasoner',worker:'mgmt-local/scripted'});
+ result.checks.push('loaded settings UI shows both catalog models and the exact three saved role selectors');
+ await shell.screenshot({path:path.join(out,'model-management.png')});
  result.checks.push('post-rotation request used the rotated key on the same live session; zero replay of the earlier turn');
  assert.equal(chatRequests().length,2,'one request per explicit input, no replay');
  assert.equal(listRequests().every(request=>request.authorization!=='Bearer local-nonsecret-v2'),true,'listing used the pre-rotation key as saved at that revision');
@@ -108,7 +113,7 @@ finally{
  await provider.close();await fs.writeFile(path.join(out,'report.json'),JSON.stringify({...result,errors,requests:provider.requests},null,2));await fs.writeFile(path.join(out,'main.log'),log);console.log(JSON.stringify(result,null,2));
 }
 function launch(){
- child=spawn(binary||createRequire(import.meta.url)('electron'),[...(binary?[]:[path.join(appRoot,'src/main/main.cjs')]),'--ozone-platform='+ozone],{cwd:projectRoot,env,stdio:['ignore','pipe','pipe']});
+ child=spawn(binary||createRequire(import.meta.url)('electron'),[...(binary?[]:[path.join(appRoot,'src/main/main.cjs')]),...(ozone?['--ozone-platform='+ozone]:[])],{cwd:projectRoot,env,stdio:['ignore','pipe','pipe']});
  for(const stream of [child.stdout,child.stderr])stream.on('data',chunk=>log+=chunk);
  exited=new Promise(resolve=>child.once('exit',(code,signal)=>resolve({code,signal})));
 }

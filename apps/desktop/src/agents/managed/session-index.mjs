@@ -4,6 +4,7 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {canonicalNativeEntryDigest} from './collab/runtime.mjs';
 import {intakeLineage} from '../../domain/managed-work-records.mjs';
+import {platformPersistence} from '../../platform/shared/persistence.mjs';
 
 const sha = value => createHash('sha256').update(value).digest('hex');
 const MAX_ENTRY_BYTES = 64 * 1024 * 1024;
@@ -268,7 +269,7 @@ export class SessionIndex {
       if (CONVERSATION_ROLES.includes(role)) Object.assign(record, {speaker:role === 'assistant' ? 'agent' : role === 'user' ? 'user' : 'tool'}, historicalModel(entry.message));
       try {
         const handle = await fs.open(path.join(this.root, objectId + '.json'), 'wx', 0o600);
-        try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
+        try { await handle.writeFile(bytes); await platformPersistence.syncFileHandle(handle); } finally { await handle.close(); }
       } catch (error) {
         if (error.code !== 'EEXIST') throw error;
         const saved = await fs.readFile(path.join(this.root, objectId + '.json'));

@@ -1,9 +1,7 @@
 import fs from 'node:fs/promises';
-import syncFs from 'node:fs';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {withSafeFile,readSafeBytes,defaultFilesystemAdapter} from './file-stream.mjs';
-import {platformPersistence} from '../../platform/shared/persistence.mjs';
 
 export const INITIALIZATION_LIMITS=Object.freeze({entries:1200,inventoryMs:1500,bytes:96000,fileBytes:12000,calls:24,runMs:180000,mapBytes:24000});
 const digest=value=>createHash('sha256').update(value).digest('hex');
@@ -71,8 +69,15 @@ export class ProjectInitialization {
   return withSafeFile(root,rel,async pinned=>{
    const stat=pinned.stat,allowance=Math.min(INITIALIZATION_LIMITS.fileBytes,INITIALIZATION_LIMITS.bytes-run.bytes);
    if(allowance<=0)fail('PROJECT_INITIALIZATION_READ_BUDGET');
-   const file=await fs.open(pinned.fdSourcePath(),'r');let bytes;
-   try{const buffer=Buffer.alloc(allowance),{bytesRead}=await file.read(buffer,0,allowance,0);run.bytes+=bytesRead;bytes=buffer.subarray(0,bytesRead);}finally{await file.close();}
+   // Bounded prefix read through the pinned descriptor's own stream: the
+   // entry is never re-resolved through a path, and withSafeFile verifies the
+   // inode and its directory entry again after the read. The {end} range
+   // makes the stream finish naturally — breaking iteration (or destroying
+   // the stream) would tear down the shared pin's descriptor.
+   const chunks=[];
+   for await(const chunk of pinned.stream({end:allowance-1}))chunks.push(chunk);
+   const bytes=Buffer.concat(chunks);
+   run.bytes+=bytes.length;
    if(bytes.includes(0))fail('PROJECT_INITIALIZATION_BINARY');
    const complete=BigInt(bytes.length)===stat.size;
    let text=new TextDecoder('utf-8',{fatal:true}).decode(bytes,{stream:!complete});
@@ -85,32 +90,34 @@ export class ProjectInitialization {
   await this.inventory(job,run);if(typeof args.text!=='string'||!args.text.trim()||Buffer.byteLength(args.text)>INITIALIZATION_LIMITS.mapBytes)fail('PROJECT_INITIALIZATION_MAP_INVALID');
   if(args.expectedVersion!==run.mapVersion)fail('PROJECT_INITIALIZATION_MAP_CONFLICT');
   const c=this.controller;await this.assert(job);
+  const chain=defaultFilesystemAdapter.chain;
   const root=path.dirname(c.store.plan),parent=await defaultFilesystemAdapter.openWriteParent(root,'topics/project-map.md');await parent.close();
-  const topicPin=await defaultFilesystemAdapter.chain.directory(root,'topics'),indexPin=await defaultFilesystemAdapter.chain.directory(root);
-  const topicTemporary=defaultFilesystemAdapter.chain.anchoredPath(topicPin.handle,'.project-map-'+randomUUID()+'.prepared'),indexTemporary=defaultFilesystemAdapter.chain.anchoredPath(indexPin.handle,'.project-map-index-'+randomUUID()+'.prepared');
+  const topicPin=await chain.directory(root,'topics'),indexPin=await chain.directory(root);
+  const topicTemporary='.project-map-'+randomUUID()+'.prepared',indexTemporary='.project-map-index-'+randomUUID()+'.prepared';
   try{
   await this.assert(job);
   const content='# Project map\n\n'+args.text+'\n\n## Host source spans and coverage\n\n```json\n'+JSON.stringify({schema:1,projectInstanceId:job.context.projectInstanceId,sources:run.sources,coverage:this.coverage(run)},null,2)+'\n```\n';
-  // Synchronous final CAS/publication prevents another host editor from
-  // interleaving between compare and rename; stale results never overwrite it.
-  const read=filename=>{let fd;try{fd=syncFs.openSync(filename,syncFs.constants.O_RDONLY|syncFs.constants.O_NOFOLLOW|syncFs.constants.O_NONBLOCK);const stat=syncFs.fstatSync(fd);if(!stat.isFile()||stat.nlink!==1||stat.size>64000)fail('PROJECT_INITIALIZATION_PATH_REJECTED');return syncFs.readFileSync(fd);}catch(e){if(e.code==='ENOENT')return null;throw e;}finally{if(fd!==undefined)syncFs.closeSync(fd);}};
-  const topic=defaultFilesystemAdapter.chain.anchoredPath(topicPin.handle,'project-map.md'),index=defaultFilesystemAdapter.chain.anchoredPath(indexPin.handle,'index.md');
+  // Only this bounded final read/compare/publication window is synchronous:
+  // another host JS editor cannot interleave. This is not cross-process CAS.
+  // All operations stay inside the platform's pinned-descriptor boundary.
+  const prepare=async(pin,name,bytes)=>{const handle=await chain.openExclusive(pin.handle,name,{mode:0o600});try{await handle.writeFile(bytes);await handle.sync();}finally{await handle.close();}};
+  const read=(pin,name)=>{let handle;try{handle=chain.openFileSync(pin.handle,name);const stat=handle.statSync();if(!stat.isFile()||Number(stat.nlink)!==1||Number(stat.size)>64000)fail('PROJECT_INITIALIZATION_PATH_REJECTED');return handle.readFileSync();}catch(e){if(e.code==='ENOENT')return null;throw e;}finally{if(handle)handle.closeSync();}};
   const version=digest(content),needsLink=!run.indexText.includes('](topics/project-map.md)'),indexText=needsLink?run.indexText+'\n- [Project map](topics/project-map.md)\n':run.indexText;
   await c.store.mutate(()=>{c.store.state.jobs.find(j=>j.id===job.id).projectMapPublication={state:'prepared',expectedVersion:args.expectedVersion,version,indexVersion:run.indexVersion};});
-  await platformPersistence.writeAtomic(topicTemporary,content);
-  if(needsLink)await platformPersistence.writeAtomic(indexTemporary,indexText);
+  await prepare(topicPin,topicTemporary,content);
+  if(needsLink)await prepare(indexPin,indexTemporary,indexText);
   await this.assert(job);
-  const current=read(topic),indexBytes=read(index);
+  const current=read(topicPin,'project-map.md'),indexBytes=read(indexPin,'index.md');
   if((current===null?'absent':digest(current))!==args.expectedVersion||(indexBytes===null?null:digest(indexBytes))!==run.indexVersion)fail('PROJECT_INITIALIZATION_MAP_CONFLICT');
   // Link first: interruption can leave an explicit missing topic, never an
   // unreachable generated map. Only the existing job receipt claims success.
   // A retry re-reads both files and respects all subsequent user corrections.
-  if(needsLink){syncFs.renameSync(indexTemporary,index);syncFs.fsyncSync(indexPin.handle.fd);}
-  syncFs.renameSync(topicTemporary,topic);syncFs.fsyncSync(topicPin.handle.fd);
+  if(needsLink){chain.renameSync(indexPin.handle,indexTemporary,indexPin.handle,'index.md');chain.syncSync(indexPin.handle);}
+  chain.renameSync(topicPin.handle,topicTemporary,topicPin.handle,'project-map.md');chain.syncSync(topicPin.handle);
   run.mapVersion=version;run.indexVersion=digest(indexText);run.indexText=indexText;
   await c.store.mutate(()=>{const saved=c.store.state.jobs.find(j=>j.id===job.id);saved.projectMapPublication.state='durable';saved.projectMap={path:'topics/project-map.md',version,coverage:this.coverage(run)};});
   return {saved:true,path:'topics/project-map.md',version,hostControl:true};
-  }finally{for(const temporary of [topicTemporary,indexTemporary]){try{syncFs.unlinkSync(temporary);}catch(error){if(error.code!=='ENOENT')throw error;}}await topicPin.close();await indexPin.close();}
+  }finally{for(const [pin,temporary] of [[topicPin,topicTemporary],[indexPin,indexTemporary]]){try{await chain.removeTree(pin.handle,temporary);}catch(error){if(error.code!=='ENOENT')throw error;}}await topicPin.close();await indexPin.close();}
  }
  async tool(job,name,args={}){
   const end=this.controller.beginHostOperation?.('orchestrator','project-initialization');try{

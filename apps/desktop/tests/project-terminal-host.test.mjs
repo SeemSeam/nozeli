@@ -23,14 +23,21 @@ function fakePty() {
 }
 
 // Fake verified-ownership adapter with the same shape the host consumes:
-// stable /proc stamps, group signals, and the whole-table tagged reaper with
-// optional test control over its verdict and timing.
+// stable /proc stamps, the pre-spawn uninspectable baseline snapshot, group
+// signals, and the whole-table tagged reaper with optional test control over
+// its verdict and timing.
 function fakeOwnership() {
   const alive = new Set(), tagged = new Map(), control = { gate: null, fail: false, stampGate: null, stampNull: false };
   const selection = { state: 'available', platform: 'linux', capability: 'verified-process-ownership', implementation: {
     processStamp: async pid => { if (control.stampGate) { await control.stampGate.promise; } return control.stampNull ? null : (alive.has(pid) ? `boot:7:${pid}` : null); },
     signalProcess(pid) { alive.delete(pid); },
     signalProcessGroup(pid) { alive.delete(pid); },
+    // Pre-spawn uninspectable snapshot, mirroring the real adapters (darwin
+    // helper scan; the host /proc fallback is Linux-only): the fake table has
+    // no uninspectable incarnations yet, so each spawn captures a fresh empty
+    // Set — anything uninspectable appearing later stays an unknown to the
+    // strict reaper.
+    captureUninspectableBaseline: async () => new Set(),
     reapOwnerTaggedTree: async (record, identity, options) => { control.lastOptions = options ?? null;
       if (control.gate) { await control.gate.promise; }
       if (control.fail) throw Object.assign(new Error('owned project terminal descendants did not exit'), { code: 'TERMINAL_DESCENDANTS_ALIVE' });

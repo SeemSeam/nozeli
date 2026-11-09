@@ -3,6 +3,7 @@ import {constants} from 'node:fs';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {resolveTextReplacements} from '../../domain/document-collaboration.mjs';
+import {platformPersistence} from '../../platform/shared/persistence.mjs';
 
 const digest=bytes=>createHash('sha256').update(bytes).digest('hex');
 const fail=(code,message)=>{throw Object.assign(new Error(message),{code});};
@@ -113,12 +114,11 @@ export function createExternalDocuments({storage,projectId}){
    try{
     temp=path.join(parent,'.nozeli-write-'+randomUUID());
     const temporary=await fs.open(temp,'wx',before?.mode??0o600);
-    try{await temporary.writeFile(text);await temporary.sync();}finally{await temporary.close();}
+    try{await temporary.writeFile(text);await platformPersistence.syncFileHandle(temporary);}finally{await temporary.close();}
     await recheck();
     if(before){await fs.rename(temp,destination);temp=null;}
     else{await fs.link(temp,destination);await fs.unlink(temp);temp=null;}
-    const directory=await fs.open(parent,constants.O_RDONLY|(constants.O_DIRECTORY??0));
-    try{await directory.sync();}finally{await directory.close();}
+    await platformPersistence.syncDirectory(parent);
     await storage.putLocal(projectId,key,{...receipt,status:'completed',value});return {ok:true,value};
    }finally{if(temp)await fs.unlink(temp).catch(()=>{});}
   }catch(error){return {ok:false,error:{code:error.code??'DOCUMENT_FAILED',message:error.message}};}

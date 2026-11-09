@@ -17,8 +17,9 @@ export {defaultAdapter as defaultFilesystemAdapter};
 // its directory entry after the consumer has finished streaming. Policy
 // (path rules, byte budgets, mode mapping, error codes) lives here; the
 // native anchoring mechanics live in the selected platform adapter
-// (platform/linux/filesystem.mjs). Platforms without a verified adapter
-// reject with structured FS_PLATFORM_UNSUPPORTED evidence before any I/O.
+// (platform/linux/filesystem.mjs, platform/darwin/filesystem.mjs).
+// Platforms without a verified adapter reject with structured
+// FS_PLATFORM_UNSUPPORTED evidence before any I/O.
 export function createFileStream({filesystem=defaultAdapter}={}){
  const withSafeFile=async(root,rel,consume)=>{
   safeRelativePath(rel);
@@ -26,7 +27,7 @@ export function createFileStream({filesystem=defaultAdapter}={}){
   if(file===null)return null;
   try{
    if(!file.stat.isFile()||file.stat.nlink!==1n)reject('PATH_REJECTED','非安全普通文件：'+rel);
-   const value=await consume({stat:file.stat,mode:Number(file.stat.mode)&0o111?'100755':'100644',stream:file.stream,fdSourcePath:file.fdSourcePath});
+   const value=await consume({stat:file.stat,mode:Number(file.stat.mode)&0o111?'100755':'100644',stream:file.stream});
    const check=await file.verify();
    if(!check.stable)reject('SOURCE_CHANGED',check.reason==='ancestor'?'文件读取期间父目录变化：'+rel:check.reason==='missing'?'文件读取期间消失：'+rel:'文件读取期间变化：'+rel);
    return value;

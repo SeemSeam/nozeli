@@ -111,14 +111,42 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  macos-native:
+    name: macOS native safety
+    runs-on: macos-15
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: apps/desktop
+    env:
+      TMPDIR: /private/tmp
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '22.22.2'
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Record actual host architecture
+        run: node -p 'JSON.stringify({platform:process.platform,arch:process.arch,node:process.version})'
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Build and self-check native process and filesystem helpers
+        run: node src/platform/darwin/native/build.mjs && node tools/build-darwin-procinfo.mjs
+      - name: Exercise native safety boundaries
+        run: |
+          mkdir -p "$RUNNER_TEMP/nozeli-native-home"
+          HOME="$RUNNER_TEMP/nozeli-native-home" node --test tests/darwin-procinfo-native.test.mjs tests/platform-capabilities.test.mjs tests/platform-filesystem.test.mjs tests/platform-persistence.test.mjs tests/platform-chain-boundaries.test.mjs tests/platform-process-boundary.test.mjs tests/project-semantic-initialization.test.mjs tests/shadow-versions.test.mjs
+
   gate:
     name: CI gate
     if: always()
-    needs: [tests, build-smoke]
+    needs: [tests, build-smoke, macos-native]
     runs-on: ubuntu-24.04
     steps:
       - name: Require every job to succeed
         env:
           TESTS: ${{ needs.tests.result }}
           BUILD: ${{ needs.build-smoke.result }}
-        run: test "$TESTS" = success && test "$BUILD" = success
+          MACOS: ${{ needs.macos-native.result }}
+        run: test "$TESTS" = success && test "$BUILD" = success && test "$MACOS" = success

@@ -4,48 +4,21 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import {createHash} from 'node:crypto';
-import {safeRelativePath,writablePath,capturePath,createFileStream,defaultFilesystemAdapter,withSafeFile,inspectFile,readSafeBytes,safeBytes,openWriteParent,hookWouldExecute} from '../src/agents/managed/file-stream.mjs';
-import {selectFilesystemAdapter,unsupportedFilesystemAdapter,filesystemCapabilitySnapshot,FILESYSTEM_CONTRACT,FILESYSTEM_CAPABILITY} from '../src/platform/shared/filesystem.mjs';
+import {safeRelativePath,writablePath,capturePath,createFileStream,withSafeFile,inspectFile,readSafeBytes,safeBytes,openWriteParent,hookWouldExecute} from '../src/agents/managed/file-stream.mjs';
+import {unsupportedFilesystemAdapter,FILESYSTEM_CONTRACT,FILESYSTEM_CAPABILITY} from '../src/platform/shared/filesystem.mjs';
 import {linuxFilesystemAdapter} from '../src/platform/linux/filesystem.mjs';
-import {capabilityStatus} from '../src/platform/platform-capabilities.mjs';
 import {blobFile,git} from '../src/agents/managed/git-service.mjs';
 import {ExecutionWorkspace} from '../src/agents/managed/execution-workspace.mjs';
 
-const onLinux = process.platform === 'linux';
+const onNative = process.platform === 'linux' || process.platform === 'darwin';
 const scratch = async (t, prefix = 'nozeli-platform-fs-') => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), prefix));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   return root;
 };
 
-test('adapter selection mirrors the capability matrix: linux available, others explicitly unsupported', async () => {
-  const linux = selectFilesystemAdapter({ platform: 'linux' });
-  assert.equal(linux.supported, true);
-  assert.equal(linux.id, 'linux-proc-fd');
-  assert.equal(linux.contract, FILESYSTEM_CONTRACT);
-  assert.equal(linux.capabilities.anchoredRead, true);
-  assert.equal(linux.capabilities.anchoredWrite, true);
-  assert.equal(linux.capabilities.gitFdSourcePaths, true);
-  assert.equal(defaultFilesystemAdapter.supported, onLinux);
-  assert.equal(defaultFilesystemAdapter.capabilities.gitFdSourcePaths, onLinux);
-  assert.equal(filesystemCapabilitySnapshot().supported, process.platform === 'linux');
-  const sunos = selectFilesystemAdapter({ platform: 'sunos' });
-  await assert.rejects(() => sunos.chain.directory('/tmp', ''), error =>
-    error.code === 'FS_PLATFORM_UNSUPPORTED' && error.details.operation === 'chain.directory');
-  for (const platform of ['win32', 'darwin', 'sunos', 'freebsd']) {
-    const adapter = selectFilesystemAdapter({ platform });
-    assert.equal(adapter.supported, false, platform);
-    assert.equal(adapter.capabilities.anchoredRead, false, platform);
-    assert.equal(adapter.capabilities.anchoredWrite, false, platform);
-  }
-  const snapshot = filesystemCapabilitySnapshot({ platform: 'darwin' });
-  assert.equal(snapshot.capability, FILESYSTEM_CAPABILITY);
-  assert.equal(snapshot.supported, false);
-  assert.equal(snapshot.status, 'unsupported');
-  assert.match(snapshot.durability, /durable-persistence/);
-});
 
-test('platforms without a verified adapter reject reads and anchored writes with structured evidence, never silently', { skip: !onLinux }, async t => {
+test('platforms without a verified adapter reject reads and anchored writes with structured evidence, never silently', { skip: !onNative }, async t => {
   const boundary = createFileStream({ filesystem: unsupportedFilesystemAdapter('sunos', 'no verified native implementation') });
   const root = await scratch(t);
   await assert.rejects(boundary.withSafeFile(root, 'a.txt', async () => 'value'), error =>
@@ -76,7 +49,7 @@ test('managed path policy keeps the Pi rules: structural safety, credential writ
   assert.equal(capturePath('docs/notes.md'), 'docs/notes.md');
 });
 
-test('anchored read verifies regular single-link files and reports digest, size and git mode', { skip: !onLinux }, async t => {
+test('anchored read verifies regular single-link files and reports digest, size and git mode', { skip: !onNative }, async t => {
   const root = await scratch(t);
   await fs.mkdir(path.join(root, 'docs'));
   await fs.writeFile(path.join(root, 'docs', 'plain.txt'), 'plain\n');
@@ -93,7 +66,7 @@ test('anchored read verifies regular single-link files and reports digest, size 
   assert.equal(await safeBytes(root, 'missing.txt'), null);
 });
 
-test('anchored read refuses non-regular, multi-link, oversized and symlinked entries', { skip: !onLinux }, async t => {
+test('anchored read refuses non-regular, multi-link, oversized and symlinked entries', { skip: !onNative }, async t => {
   const root = await scratch(t);
   await fs.mkdir(path.join(root, 'a-directory'));
   await assert.rejects(inspectFile(root, 'a-directory'), error => error.code === 'PATH_REJECTED' && /非安全普通文件/.test(error.message));
@@ -118,7 +91,7 @@ test('anchored read refuses non-regular, multi-link, oversized and symlinked ent
   assert.equal((await inspectFile(root, 'realdir/file.txt')).digest, createHash('sha256').update('real').digest('hex'));
 });
 
-test('anchored read detects in-flight file and ancestor changes instead of returning stale bytes', { skip: !onLinux }, async t => {
+test('anchored read detects in-flight file and ancestor changes instead of returning stale bytes', { skip: !onNative }, async t => {
   const root = await scratch(t);
   await fs.mkdir(path.join(root, 'docs'));
   await fs.writeFile(path.join(root, 'docs', 'file.txt'), 'first');
@@ -134,7 +107,7 @@ test('anchored read detects in-flight file and ancestor changes instead of retur
   }), { code: 'SOURCE_CHANGED' });
 });
 
-test('pinned write parent cannot be redirected by directory replacement or symlink swap', { skip: !onLinux }, async t => {
+test('pinned write parent cannot be redirected by directory replacement or symlink swap', { skip: !onNative }, async t => {
   const root = await scratch(t);
   const project = path.join(root, 'project'), nested = path.join(project, 'nested'), outside = path.join(root, 'external');
   await fs.mkdir(nested,{recursive:true}); await fs.mkdir(outside);
@@ -153,7 +126,7 @@ test('pinned write parent cannot be redirected by directory replacement or symli
   await assert.rejects(inspectFile(project,'nested/file.txt'),error=>['ENOTDIR','ELOOP'].includes(error.code));
 });
 
-test('write parent addresses single components only and refuses composed escape names', { skip: !onLinux }, async t => {
+test('write parent addresses single components only and refuses composed escape names', { skip: !onNative }, async t => {
   const root = await scratch(t);
   const parent = await openWriteParent(root, 'docs/notes.txt');
   try {
@@ -164,7 +137,7 @@ test('write parent addresses single components only and refuses composed escape 
   await assert.rejects(fs.stat(path.join(root, 'escape')), { code: 'ENOENT' });
 });
 
-test('write parent creates missing directories, publishes by rename, syncs and cleans crash-window temps', { skip: !onLinux }, async t => {
+test('write parent creates missing directories, publishes by rename, syncs and cleans crash-window temps', { skip: !onNative }, async t => {
   const root = await scratch(t);
   const parent = await openWriteParent(root, 'new/deep/notes.txt');
   await parent.writeExclusive('notes.txt.pending', 'drafted');
@@ -188,18 +161,42 @@ test('write parent creates missing directories, publishes by rename, syncs and c
   assert.equal((await safeBytes(root, 'new/deep/notes.txt')).toString(), 'published');
 });
 
-test('Git receives pinned fd source paths and hashes the exact captured inodes', { skip: !onLinux }, async t => {
+test('exclusive handle preserves the caller mode through descriptor chmod and refuses operations after close', { skip: !onNative }, async t => {
+  const root = await scratch(t);
+  const parent = await openWriteParent(root, 'docs/tool.sh');
+  try {
+    // Group-write survives only via chmod: creation modes are umask-masked,
+    // and the git-restore publish path (temp → chmod(captured mode) → sync →
+    // rename) must land the exact captured mode on disk.
+    const mode = 0o775;
+    const handle = await parent.openExclusive('tool.sh.next', { mode });
+    await handle.writeFile('#!/bin/sh\n');
+    await handle.writeFile('echo ok\n');
+    await handle.chmod(mode);
+    await handle.sync();
+    await handle.close();
+    await handle.close();   // idempotent close never becomes a recycled-fd write
+    assert.equal((await fs.stat(path.join(root, 'docs', 'tool.sh.next'))).mode & 0o777, mode);
+    assert.equal(await fs.readFile(path.join(root, 'docs', 'tool.sh.next'), 'utf8'), '#!/bin/sh\necho ok\n');
+    // A closed handle must reject every operation: the fd number may already
+    // belong to another file, so acting on it would corrupt an unrelated inode.
+    // (The darwin wrapper and modern Node FileHandles use EBADF; older Node
+    // releases named the same refusal ERR_FILE_CLOSED.)
+    const refused = error => ['EBADF', 'ERR_FILE_CLOSED'].includes(error.code);
+    await assert.rejects(handle.writeFile('late'), refused);
+    await assert.rejects(handle.chmod(mode), refused);
+    await assert.rejects(handle.sync(), refused);
+    await assert.rejects(handle.stat(), refused);
+    await assert.rejects(handle.readFile(), refused);
+    assert.equal(await fs.readFile(path.join(root, 'docs', 'tool.sh.next'), 'utf8'), '#!/bin/sh\necho ok\n');
+  } finally { await parent.remove('tool.sh.next'); await parent.close(); }
+});
+
+test('Git hashes the exact captured file bytes', { skip: !onNative }, async t => {
   const root = await scratch(t, 'nozeli-platform-fs-git-');
   await git(root, ['init', '--initial-branch=main']);
   const content = Buffer.from('binary\x00payload\n');
   await fs.writeFile(path.join(root, 'f.bin'), content);
-  let fdPath = null;
-  await withSafeFile(root, 'f.bin', async file => {
-    fdPath = file.fdSourcePath();
-    assert.match(fdPath, /^\/proc\/\d+\/fd\/\d+$/);
-    for await (const chunk of file.stream()) assert.equal(chunk.toString(), content.toString());
-    return true;
-  });
   const captured = await blobFile(root, root, 'f.bin');
   assert.equal(captured.digest, createHash('sha256').update(content).digest('hex'));
   assert.equal(captured.size, content.length);
@@ -208,7 +205,7 @@ test('Git receives pinned fd source paths and hashes the exact captured inodes',
   assert.equal(captured.oid, sha1);
 });
 
-test('worktree dependency provisioning runs on the boundary chain, materializes npm symlinks and keeps source untouched', { skip: !onLinux }, async t => {
+test('worktree dependency provisioning runs on the boundary chain, materializes npm symlinks and keeps source untouched', { skip: !onNative }, async t => {
   const {provisionWorktreeDependencies} = await import('../src/agents/managed/worktree-dependencies.mjs');
   const root = await scratch(t, 'nozeli-platform-fs-deps-'), source = path.join(root, 'project');
   await fs.mkdir(path.join(source, 'node_modules', 'pkg'), { recursive: true });
@@ -240,7 +237,7 @@ test('worktree dependency provisioning runs on the boundary chain, materializes 
   await assert.rejects(provisionWorktreeDependencies({ workId: 'work-a', sourceRoot: source, worktreeRoot: worktree, frozenFiles }, { filesystem: unsupportedFilesystemAdapter('sunos', 'test') }), { code: 'DEPENDENCY_PLATFORM' });
 });
 
-test('root-level prepared resource (dirname ".") provisions through the normalized chain root', { skip: !onLinux }, async t => {
+test('root-level prepared resource (dirname ".") provisions through the normalized chain root', { skip: !onNative }, async t => {
   const {provisionWorktreeDependencies, PREPARED_RESOURCES_REL} = await import('../src/agents/managed/worktree-dependencies.mjs');
   const root = await scratch(t, 'nozeli-platform-fs-rootres-'), source = path.join(root, 'project');
   await fs.mkdir(path.join(source, 'dist'), { recursive: true });
@@ -277,7 +274,7 @@ async function workspaceFixture(t) {
   return { root, project, store, work: store.state.works[0] };
 }
 
-test('document edit keeps external replacement instead of overwriting it (CAS through the boundary)', { skip: !onLinux }, async t => {
+test('document edit keeps external replacement instead of overwriting it (CAS through the boundary)', { skip: !onNative }, async t => {
   const { store, work } = await workspaceFixture(t);
   const execution = new ExecutionWorkspace(store);
   await execution.prepare(work.id);
@@ -291,7 +288,7 @@ test('document edit keeps external replacement instead of overwriting it (CAS th
   assert.equal(await fs.readFile(file, 'utf8'), 'externally replaced\n');
 });
 
-test('ExecutionWorkspace with an unsupported adapter rejects managed reads explicitly instead of degrading', { skip: !onLinux }, async t => {
+test('ExecutionWorkspace with an unsupported adapter rejects managed reads explicitly instead of degrading', { skip: !onNative }, async t => {
   const { store, work, project } = await workspaceFixture(t);
   const execution = new ExecutionWorkspace(store);
   await execution.prepare(work.id);

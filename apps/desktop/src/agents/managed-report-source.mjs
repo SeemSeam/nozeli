@@ -7,6 +7,7 @@ import {readManagedState,readManagedObject,verifyManagedObject} from './managed/
 import {publicationOrdinal} from '../domain/managed-work-records.mjs';
 import {WorkChanges} from './managed/work-changes.mjs';
 import {activeDrafts,readDraftRecord,draftTextFor} from './managed/review-candidate.mjs';
+import {platformPersistence} from '../platform/shared/persistence.mjs';
 const STATE_LIMIT=32*1024*1024;
 const fail=(code,message)=>new HostError(code,message+'，未另存。');
 const unavailable=()=>fail('REPORT_UNAVAILABLE','报告来源缺失、过大或不是安全的普通文件');
@@ -116,10 +117,10 @@ export async function managedReportSource({project,storage,runtime,objectId,cont
       let online=true;try{await storage.requireOnline(project.id);}catch{online=false;}
       if(online){try{await storage.withObject(project.id,ref.digest,copy);}catch(error){if(error.code!=='MATERIAL_MISSING')throw error;await storage.withRecoveryObject(project.id,ref.digest,copy);}}
       else await storage.withRecoveryObject(project.id,ref.digest,copy);
-      await handle.sync();await handle.close();handle=null;
+      await platformPersistence.syncFileHandle(handle);await handle.close();handle=null;
       await source.readManifest();
       await fs.link(temporary,destination);
-      const directory=await fs.open(path.dirname(destination),'r');try{await directory.sync();}finally{await directory.close();}
+      await platformPersistence.syncDirectory(path.dirname(destination));
       return {saved:true,digest:ref.digest,byteLength:ref.byteLength,relPath:ref.relPath};
     }finally{await handle?.close();await fs.rm(temporary,{force:true});}
   }};

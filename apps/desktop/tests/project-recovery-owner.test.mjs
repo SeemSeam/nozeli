@@ -1,7 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import {assertRecoverySourceStopped} from '../src/main/project-recovery-owner.mjs';
+import {assertRecoverySourceStopped as linuxAssert} from '../src/main/project-recovery-owner.mjs';
+import * as linuxRecoveryOwner from '../src/platform/linux/recovery-owner.mjs';
+
+// The wrapper's capability selector picks the host platform's adapter, so on
+// macOS these /proc fixtures would never reach the Linux algorithm under test.
+// Inject the linux selection explicitly (the same shape selectCapability
+// returns on Linux) instead of mocking the selector.
+const assertRecoverySourceStopped=root=>linuxAssert(root,{selection:{state:'available',platform:'linux',implementation:linuxRecoveryOwner}});
 
 // Synthetic /proc reads only: no live account, project or process is changed.
 function probe(t,{args=['/usr/lib/systemd/systemd','--user'],cmdError,exeError='EACCES',exe='/fixture/nozeli',changed=false,parentArgs=['/usr/lib/systemd/systemd','--user'],parentChanged=false,parentUid=process.getuid(),fdError='EACCES'}={}){

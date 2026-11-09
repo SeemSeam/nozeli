@@ -7,6 +7,18 @@ node tools/test-suites.mjs --list          # 默认套件（unit+integration）�
 node tools/test-suites.mjs smoke --list    # 任一套件的文件清单
 ```
 
+## alpha6 macOS 本机迁移与验收（2026-11-09）
+
+- 固定上游 `v0.1.0-alpha.6`＝`9a2466a847267620747b79f9c1b97fbac8f00280`。旧基线 `9215afaf` 的未提交Mac修改先保存binary patch与19个新增文件，再三方合入独立工作树 `/Users/bfly/nozeli-macos-alpha6`（分支 `macos-alpha6`）。旧 `/Users/bfly/nozeli`、所有旧包、日常profile及用户项目不作为迁移／破坏性测试目标，不提交／推送。
+- 解决alpha6报告来源／会话索引与Mac持久化import的冲突，保留新报告／任务合同。新增初始化流程适配：Darwin chain.opendir、openExclusive、sync；初始化使用固定文件流的有界前缀读取及固定目录句柄内临时文件、CAS、rename、F_FULLFSYNC。修复早停for-await流导致原始fd提前关闭的EBADF，范围流只接受start/end，不可覆盖fd／autoClose。永久重置文件屏障走platformPersistence，不退化为普通fsync。
+- 依赖按alpha6锁安装，重新构建Pi驱动（manifest验证12项）、PPTist、Mac native helpers与renderer。包 `dist/Nozeli-0.1.0-alpha.6-macos-arm64-verified/Nozeli.app` 自带Node22.23.4／Git2.53.0／Pi，ad-hoc签名深校验通过，保留真实原生叠放修复与品牌ICNS／Dock图标；不公证、不自动替换用户运行实例。
+- 完整默认 `TMPDIR=/private/tmp npm test`：unit799项／798通过／1跳过／0失败，integration1898项／1873通过／25跳过／0失败。跳过含Linux-only沙箱／proc／更新提升等，不计为Mac支持。新目录合同／初始化／永久重置／关闭保存专项29项全过；原生Pi／skill／生命周期32项中31通过、1项Linux隔离跳过。原始流与报告归档 `.test-output/alpha6-acceptance/`，旧alpha5结果不代替这轮证据。
+- 确切最终包 `npm run test:macos-ui` 通过9轮物理搜索打开、分屏／独立窗／dock／正常关闭冷重启／真实权限失败下未保存稿，以及DOCX／XLSX编辑保存重开、PPTX副本导出与DOCX外部冲突恢复。Office导出目的地由单次native dialog选择覆写，第一阶段冲突冷启动可能SIGKILL，原始exit回执保留，不冒称全部正常退出。最终workspace退出码0／renderer错误0；原件 `nozeli-mac-quick-open-gGMqdE`、`nozeli-mac-workspace-Y0UTcl`、`nozeli-office-journey-JKf7eo` 均在canonical系统临时目录并归档。
+- alpha6新功能实际包旅程：`desktop-project-initialization-live.mjs` 验证真实Pi受限skill渐进读取、inventory→read→map、403门控／明确解除、取消晚到不发布、SIGKILL后零静默重放及完成后冷开零请求（`nozeli-initialization-native-iCFps9`）；`desktop-project-reset-live.mjs` 验证真实PTY停稳、取消保留／显式永久清理、源文件和Git不变、另一项目／恢复稿保持（`nozeli-permanent-reset-Rv0wIR`）；`desktop-task-workspace-live.mjs` 验证双任务／普通对话交错、同Worker问答与第二次发布、只读任务过程分屏、原任务DOM／草稿／身份和冷开无重放（`nozeli-task-workspace-oegJzO`）。全部合成项目＋本地HTTP，无个人key或付费模型。任务UI浅深与320／390／1280、200%截图有证据，但不扩大为全应用缩放资格。
+- 复跑入口：`NOZELI_TEST_BINARY=<app>/Contents/MacOS/Nozeli npm run test:macos-alpha6`（初始化→重置→任务），GUI必须串行。原生叠放通过真实Electron入口 `tests/native-view-stacking.entry.cjs`；HTML镜像新guest需要等待alpha6裁切布局收敛后判断，不以初始1440默认尺寸误报。
+- **明确未通过**：完整九格式显示矩阵在alpha6运行时 `Page.captureScreenshot` 超时（`nozeli-display-matrix-Rfp4ND/report.json`），此前一次还停在PDF窄窗工具菜单等待；不能据零风险数组宣称矩阵通过。alpha6导航栏已移除重复域名标题，测试改核对实际地址栏；保留截图失败，不用旧矩阵代替。未验：Mac强退完整后代树（上游force-quit仍Linux-only残留）、沙箱、系统终端接管、自动更新、Developer ID／公证、任意OOXML保真、系统IME及真实磁盘故障／付费模型质量。
+
+
 ## 稳定结果记忆定向验证（2026-11-07）
 
 源码首版与完整使用边界见[实现记录](result-memory-implementation.md)。`result-memory.test.mjs`为纯逻辑，`managed-result-memory-integration.test.mjs`与`managed-result-memory-binding.test.mjs`注册常规integration。额外运行`node tests/result-memory-live.mjs`以真实SQLite/对象验证100/1000报告分页、缓存及子进程SIGKILL恢复；可设`NOZELI_MEMORY_SMOKE_CACHE_BYTES=2097152`核对生产默认缓存预算。`node tests/desktop-result-memory-live.mjs`使用真实Electron/Pi与loopback确定性模型验证报告采用收尾、冷重启、主控查询、派发来源及Worker确切读取。它不使用个人凭据，不证明真实LLM选择/摘要质量；修改Pi桥后先在`integrations/pi`执行`npm run build`更新完整性清单。
@@ -19,6 +31,34 @@ node tools/test-suites.mjs smoke --list    # 任一套件的文件清单
 父任务以实际安装版 `2026-11-06T00-54-32-789Z`、隔离合成 profile／项目和本机脚本源浏览十处：全部 Agent、单 Agent 模型、会话管理、连接与历史、服务故障、设置外观、默认模型、Agent 资源、AI 连接、本机恢复。原记录 `/tmp/nozeli-status-design-FV7Dip/audit.md` 与同目录 `01-all-agents.png` 至 `10-local-recovery.png`。浏览仅覆盖空闲双角色、单模型／单源、空故障／空恢复；父任务报告未发送问题、最终 jobs=[]、正常 exit0，不据此声明操作或动态分支通过。
 
 Reviewer 本轮读取完整记录、查看十图并静态审查相关代码，更新[信息设计与验收契约](agent-conversation-status-demo.md#简洁状态与管理页设计2026-11-06未实施)，没有另行运行产品、修改实现或安装。用户原图的 local URI 在 reviewer 会话不可读，搜索未找到，执行中主控反馈保留为用户事实而非 reviewer 图像观察。任务详情、保留进展、非空故障／修复／恢复、历史只读、过期、很多 Worker／大目录均只有源码复核；浅色／窄窗、动态行为和其他平台待真实场景补验。文档设计稿不作生产 After 截图，静态组件或合成 DTO 不冒充真实会话行为。
+## macOS 真实 Nozeli 项目全面验收（2026-11-06）
+
+- 实际打开 `/Users/bfly/nozeli` 源码树，不是副本。原 README 与 `src/platform/platform-capabilities.mjs` 哈希保持不变；本轮可写材料单独创建于 `mac-acceptance-materials/`，结束后归档到忽略的 `.test-output/real-project-acceptance/materials/` 并删除原测试目录。
+- 项目 profile 必须位于源码树外：本轮 `/private/tmp/nozeli-real-project-20261106/config`。将 profile 放入源码树会被 `runtime and content roots overlap` 拒绝；这条安全保护保留。
+- 实测读取 Markdown／真实源码／图片／PDF／DOCX／XLSX／PPTX／HTML。Office 检查实际截图；HTML 正文由独立隔离预览页承载，不能用外层壳截图空白判为正文缺失。保存测试 UTF-8 文本逐字核对；Unicode 批注经生产 IPC 保存且原件不变；实际 PTY 执行 `pwd` 与 `uname -m`；实际对话输入框发送一次本地 Provider 请求并由真实 Pi job 完成。无付费服务或个人密钥。
+- 自动化限制如实记录：深层快速打开的连续操作多次超时，后续多格式验收通过生产 `__workspaceGroups.open` 进入，并非把失败搜索路径算作通过；批注使用生产 IPC，不声称本轮物理框选已验收。原生内容面与主窗的输入／可见性分离，需要等待真实 contentReady，不能把错投到主窗的输入算产品失败或成功。
+- 原始完整默认套件：unit 634 项／633通过／1跳过／0失败；integration 1765项／1717通过／21跳过／27失败。原件 `.test-output/ci/{unit,integration}.tap`。后续定向复验分别记录，不将原始完整套件失败改称全绿。Linux 更新器、旧 OMP 的 `/proc` 恢复测试不构成 Mac 能力。
+- 已定位真实缺陷：Darwin `openExclusive` 句柄漏 `chmod` 导致成果合入异常；已改为原生 `fchmod(fd)`，补关闭后 EBADF 守卫，并移除 F_FULLFSYNC 的弱降级。合入／队列／报告导出专项99项全过；路径／权限失败恢复／网络传输事实专项18项全过。其余并发版本库与监听专项以最终复验记录为准。
+- 证据目录：`apps/desktop/.test-output/real-project-acceptance/`，含 `real-project-report.json`（15项界面／宿主检查）、`real-project-agent.json`、`annotation-terminal.json`、各格式截图。实际验收实例正常退出码0。Chromium disk-cache 创建警告仍可见，不声明其根因已修复。
+- 后续 CAS／影子版本库专项49项全过：首次初始化改为私有 staging 完整构建后原子 rename 仲裁，已有仓库只采纳、不替换；不使用基于年龄猜测崩溃的破锁机制。跨实例并发首检查点、相同 requestId 收敛、原有提交链及 GC 已实际复验。`project-git` 的测试竞态注入由 Linux-only `handle.sync` 改为平台共用写入边界，生产 CAS 保护未放松。
+- 最终监听／TeX资源监听／CAS／并发版本专项42项全过。监听建立期与首投递保守归并为目录失效，不以固定毫秒窗口猜测历史边界，也不丢弃真实变更；测试用真实哨兵事件建立增量边界后验证非递归与项目隔离。
+- 最终修复包：`dist/macos-verified-20261106/Nozeli.app`。重建原生模块／renderer／独立包，ad-hoc 签名深校验通过；最终包通过真实文件树打开源码项目 README，包内原生 helper 的 write→fchmod(0755)→F_FULLFSYNC→rename 与磁盘字节／权限复核通过，实例正常退出0。`final-package-smoke.json` 保存原件。修复后的专项不替代一次完整默认套件重跑：原完整失败仍保留，Linux 更新器6项与旧 OMP `/proc` 恢复1项未作 Mac 移植验收。
+- 后续快速打开专项已关闭此前超时项：`tests/desktop-macos-quick-open-live.mjs` 通过9轮实际鼠标／键盘搜索、中文／深层路径、已有文档再激活与精确原文核对；合成项目与真实 `/Users/bfly/nozeli` 各跑一轮。原件 `nozeli-mac-quick-open-PXwX7P/report.json` 与 `nozeli-mac-quick-open-n4UuGe/report.json` 位于本机 canonical 系统临时目录。脚本验证重新打开时前次查询完整选中，直接输入替换；不再点击输入框破坏选择后依赖 CDP 的 Cmd+A 模拟，也等待已有文档激活完成后才核对弹窗关闭。无需改生产搜索逻辑。复跑命令：`NOZELI_TEST_BINARY=<app>/Contents/MacOS/Nozeli NOZELI_TEST_PROJECT=/Users/bfly/nozeli npm run test:macos-quick-open`；不传项目变量则使用自建隔离项目。
+- 更新器平台边界专项：Mac 上验证 Linux 安装布局不触发下载／提升／退出，旧 OMP 恢复明确拒绝；相关22项中18通过、4项 Linux-only 提升／回滚明确跳过。跳过不算 Mac 自动更新能力已实现，Linux 上仍保留原完整提升与回滚断言。
+- 后续窗口终验：`NOZELI_TEST_BINARY=<app>/Contents/MacOS/Nozeli npm run test:macos-workspace` 通过左右／上下双轴、只读 mirror 的 adapter+IPC 双层写拒绝、准确文本切换、独立原生窗／阅读位置差异、dock 移回、同 profile 正常重启布局和编辑恢复；用 b.txt 的真实0444权限阻断保存，关闭另一pane后草稿存储保持完整候选且磁盘原件未变。两次正常退出码0、renderer错误0。原件 canonical临时目录 `nozeli-mac-workspace-N05hPE/report.json`，含重启前截图。前半段允许自动保存，只签收“本地编辑未丢失”，不把已自动保存文本伪称未落盘草稿。
+- 剩余功能终验完整默认重跑已完成：unit 634项／633通过／1跳过／0失败；integration 1769项／1744通过／25跳过／0失败。新增的4项跳过为 Linux-only 安装提升／回滚；其余Mac更新器用例改为验证 unsupported、不下载、不切换当前版本。证据已复制到 `.test-output/macos-final-acceptance/{unit,integration}.tap`；故障注入的 `guest rollback add fails` 日志是预期拒绝场景，测试计数无失败。
+- Office实际旅程 `NOZELI_TEST_BINARY=<app或内层可执行> npm run test:macos-office` 已通过：DOCX真实引擎中英文输入、显式键盘保存、ZIP正文精确标记；XLSX文本／数字单元格编辑保存与ZIP值；PPTX追加标题文案并通过可见文档菜单导出新副本，原件逐字节不变；DOCX外部改写后保存拒绝且恢复包保留未保存稿；冷启动重开三种已存／导出内容，最后正常退出0。导出目的路径由单次saveDialog选择覆写，实际原生文件选择器交互不算通过；全部保存均走键盘，无synthetic-keydown回退。第一阶段冲突留存后冷启动采用SIGKILL（实际exit已记录），不伪称两次均正常退出。
+- 三条GUI旅程串行运行（原生焦点共享）：`NOZELI_TEST_BINARY=<app>/Contents/MacOS/Nozeli npm run test:macos-ui`。报告、截图及Office每次启动日志归档在 `.test-output/macos-final-acceptance/{quick-open,workspace,office}/`。这些证据只签收明确路径，不等于任意OOXML保真、物理框选／涂鸦、真实账号OAuth／付费推理、管理员认证、TeX实际编译、沙箱或自动更新完成。
+- 本轮最新交付包 `dist/macos-final-20261106/Nozeli.app` 已重建原生／renderer、独立打包并通过ad-hoc签名深校验；对该确切产物执行 `npm run test:macos-ui`，快速打开9轮、窗口8类检查、Office7类检查全部通过。最终证据为 `.test-output/macos-final-acceptance/summary.json` 与 `{final-quick-open,final-workspace,final-office}/`；Office最后正常退出0，第一阶段SIGKILL冷重启保留原始回执。此前 `macos-verified-20261106` 包和原失败证据保留，不覆盖历史结论。
+
+
+## macOS 模型目录继承验收（2026-11-06）
+
+- 被测产物：`dist/macos-development/Nozeli.app`，实际 Electron + Pi owner + 本地 HTTP Provider；`NOZELI_TEST_BINARY=<app>/Contents/MacOS/Nozeli node tests/pi-model-management-live.mjs` 通过，正常退出码 0。合成源的创建／修订号拒绝／留空保留密钥／跨源凭据确认、显式 `/models` 发现、三角色默认模型与原生思考档位修正、同 owner/thread 密钥轮换后继续对话、无旧输入重放均已实测；设置页加载完成后断言两个候选模型和三角色保存值，再截图。没有访问个人 OMP 配置或付费服务。
+- 原件：`/private/var/folders/s8/703vpzcx7q7d17vkm45xr0r00000gn/T/nozeli-pi-model-mgmt-BJkyQw/report.json` 与同目录 `model-management.png`。Mac 夹具使用真实临时根，不传 Linux Ozone 标志。
+- **完整 OMP 模型目录继承不通过**：旧集成固定 OMP 18.11.0；其公开 `@oh-my-pi/pi-catalog@18.11.0/src/models.json` 有 78 provider／5718 条目，当前 `@earendil-works/pi-ai@1.4.0/dist/models.generated.js` 的 `MODELS` 有 42 provider／1599 条目。按 `provider/modelId` 精确对照：共有1192，OMP独有4526，Pi独有407。这只是静态目录差集，不是服务端发现、推理授权或协议兼容结论；provider 重命名没有强行等同。完整差集保存在 `.test-output/macos-development/omp-model-catalog-comparison.json`。
+- 当前生产路径是 `bridge.modelsList → ProviderSettings.models → 设置／managed.model.options`，使用私有 Pi 目录并过滤未配置凭据项，不读取 OMP 的个人配置。不能把“当前模型管理正常”描述成“已完整继承 OMP”；本轮未拼接缺失目录、未迁移登录机制或替换执行内核。
+- 后续用户明确授权仅继承本机OMP API与key，已执行显式 `tools/import-omp-api.mjs --discover --apply --adopt-default`。只读源静态配置，成功源写入 Nozeli 私有Pi配置（0600），共同compat开关保留；403源跳过，命令型key／OAuth不迁移，原OMP配置不修改。实际 `macos-final-20261106/Nozeli.app` 正常profile的设置目录显示15项、三角色默认选择与OMP当前默认一致，内存对照API/key/compat完全一致且未输出key。仅调用模型列表接口，推理请求0；列出不证明推理授权。脱敏原件 `.test-output/omp-api-import/verification.json` 与 `imported-models.png`。合成安全回归 `node --test tests/omp-api-import.test.mjs` 通过，覆盖预览零落盘、0600、命令凭据不执行、源不变、同名冲突不覆盖和输出无密钥；本轮未重跑完整套件。
 
 ## 套件总览
 
@@ -659,3 +699,46 @@ postinstall 用 `electron-rebuild` 针对 Electron 重建 `node-pty`。该依赖
 - 功能提交 `9c28387`；本机current=`task-contained-20261108-local-01`，previous=`task-workspace-20261108-local-01`。安装器验证并原子激活，786项源码／构建输入逐字节一致。实际安装ELF＋包内Pi／Git的独立双任务、多轮问答／续改、任务框归组、只读过程、原文、草稿、正常退出与冷恢复 `/tmp/nozeli-task-workspace-nFjRUN/report.json` ok=true、providerErrors=[]，截图已查看。
 - 日常旧PID1320393通过 `_NET_CLOSE_WINDOW` 正常退出，不发送kill／force，不选择取消任务；原入口／profile启动验收PID1788993，激活既有conversation view而非新建会话，验证4个本页任务框宽760px、零框外后台输入与零初始化错误。两个项目job／Work／消息身份不变，5个源文件摘要不变；243条原项目记录中242条不变，唯一重写为collectionOrder，另有正常host-opened审计。此差异先核实为排序／生命周期记录再限定通过，未抹去差异或修改产品兜底。
 - 验收进程再次正常退出后，使用相同系统入口和原项目目录参数重开，最终PID1899563运行本次ELF、`NOZELI_DESKTOP_READY ... debugPort=none`；无测试实例／profile覆盖，普通系统窗口保持打开。收据及隐私受限本地截图位于 `/tmp/nozeli-contained-install-HdAA4R`，不加入仓库。程序重启后再次核对两项目job与消息身份保持。此前590px旧resize等待超时仍单列，不外推本次全部旧脚本通过；其他平台、系统IME与付费模型质量未验。
+## HTML 只读镜像与多格式显示验收（2026-11-06）
+
+拆分出的 HTML 只读镜像（split-x 阅读副本）此前永远打不开隔离离线预览：镜像端 web workspace 先发起编辑缓冲 publish，而主进程对无租约只读面固定 `EDIT_LEASE_DENIED`（workspace-native.mjs `workspace.document.publish`），renderer 捕获后镜像 pane 只剩空占位与错误状态，第二个原生 guest 从不创建。修复为只读面跳过该 publish，快照走既有 `syncDocument(captureBuffer)` → owner `publishDocumentBuffer` → `workspace.buffers`，捕获优先缓冲字节而非磁盘，writer 未保存编辑不丢失（isolated-surfaces.mjs / isolated-preview.mjs capturePreview）。
+
+| 验证 | 实际结果 | 证据／边界 |
+| --- | --- | --- |
+| `NOZELI_TEST_BINARY=<Nozeli.app>/Contents/MacOS/Nozeli node tests/desktop-native-html-mirror-preview-live.mjs`（darwin 实际包） | 旧构建精确失败于镜像 `EDIT_LEASE_DENIED`；修复包 owner guest 与 mirror guest 均可见，双侧564×747、中文正文与占位尺寸匹配，正常退出0 | 修复包 `dist/macos-display-fixed-20261106/Nozeli.app`；实际原件 `nozeli-mac-html-mirror-0JqlDg/report.json`，截图 `mirror-body.png` |
+| 自有隔离实例串行矩阵（未入库脚本） | 激活切换 A↔B、设置对话框、窄抽屉、模式 source/web/split 往返、窗口缩放：guest 隐藏/恢复与占位尺寸全部一致 | surface 页因 `backgroundThrottling:false` 不能作 visibility 证据，以 guest 页 visibilityState 为准；split 镜像为唯一确认缺陷，未复现其它几何/z-order bug |
+
+未放宽 CSP、隔离或授权边界。修复包已实际构建、ad-hoc签名深验证；定向隔离预览／在线网页／原生工作区回归117项全过，本轮未重跑完整默认套件；Windows/Linux打包行为未验证。
+
+- 新增永久显示矩阵 `tests/desktop-display-matrix-live.mjs`：在1180×820与660×520两种实际原生窗口下，逐项验证Markdown中文／表格／滚动、长代码着色／滚动、PNG天然尺寸／四色像素、双页PDF文字层／canvas／真实翻页、DOCX长文／滚动、XLSX单元格／canvas、PPTX三页引擎／中文、本地HTML网页／源码／对照、回环在线网页实际guest正文／图片／滚动及resize。修复包完整矩阵9类全部通过，检测风险0；原件 `nozeli-display-matrix-ifDuTt/report.json`，归档见 `.test-output/display-review/final/`。合成样本通过不等于所有网页或任意Office文件保真通过。
+- 截图界限：HTML与在线网页截真实guest，外壳截图不含原生guest像素，只能作布局参照；系统桌面screencapture接口当前不可用，未声称完成系统级合成截屏验证。窄窗HTML对照按产品响应式设计上下堆叠，二维无重叠，不能用单纯x轴相交误报。
+- 复跑：`NOZELI_TEST_BINARY=<app>/Contents/MacOS/Nozeli npm run test:macos-display`。普通切换、设置遮挡／恢复、尺寸跟随未复现其它z-order问题；用户特定网页／文件仍需对照其原件，不能将本矩阵当作已修复所有显示差异。
+
+## 桌面残留测试实例与退出排查（2026-11-06）
+
+- 用户报告错误窗口且不能关闭。现场PID40186使用旧 `macos-final-20261106` 包，打开的SQLite／Chromium文件全部指向本轮临时 `nozeli-probe2-yMXhVm/.Nozeli`，不是用户正常profile；其父进程已退出。原临时探针被timeout终止且未处理SIGTERM，finally未执行，遗留应用子进程。主线程采样停在 `NSAlert.runModal`；辅助访问读取被系统拒绝、调试端口不响应，因此错误弹窗正文未观测，不能声称其具体异常已修复。
+- 先归档自有测试目录与主线程采样，再发送普通SIGTERM；主进程和已知Chromium子进程全部退出，未使用SIGKILL，不删除用户项目或正常配置。七个废弃临时探针已从原可运行位置移除并归档；永久回归保留。清理后进程快照未发现其它Nozeli实例。
+- 对 `macos-display-fixed-20261106/Nozeli.app` 重新执行快速打开和窗口恢复永久旅程：9轮文件打开、双轴分屏／只读拒绝／独立窗移回／重启恢复／权限失败下未保存稿均通过，renderer错误0、最终正常退出 `{code:0,signal:null}`。事故事实与报告归档 `.test-output/desktop-hang-20261106/`。此复验不等于同步错误弹窗根因已修复，也未新增通用强退或异常抑制逻辑。
+
+## 当前用户窗口的网页实屏白屏（2026-11-07）
+
+- 用户确认Bing与index.html实屏白屏；此前guest截图／DOM显示正常不能证明窗口合成正确。经同日常profile正常重开、主进程诊断，原生children顺序为chrome→guest→不透明wrapper，实际覆盖正文；仅将guest放到wrapper后，用户明确确认“必应显示出来了”。不是网络或CSP问题。此前仅靠guest像素与visibilityState的显示通过结论对此不充分。
+- 根因在 `workspace-window.cjs` 的 addChildView包装：传undefined index并反复重插siblings导致原生顺序倒置。改为显式append index与仅将chrome保持底部。真实Electron回归 `node_modules/electron/dist/Electron.app/Contents/MacOS/Electron tests/native-view-stacking.entry.cjs` 通过，覆盖wrapper→guest、新面加入、guest重新挂载与显式索引。
+- 新包 `dist/macos-native-stacking-fixed-20261107/Nozeli.app` 已实际构建及签名验证，在用户日常profile重开原项目后，index与Bing自动形成chrome→wrapper→guest，无现场shim；原index文件内容不变。本轮未重跑完整默认套件，未将软件内截图冒称系统合成截图。
+- 排查副作用：用隔离profile注册真实用户项目触发既有身份迁移，造成旧日常入口身份失配。已停稳两实例、归档迁移前后元数据、还原原project.sqlite/project.json及原catalog元数据目录身份；原项目ID、日常会话绑定与入口恢复，index哈希不变。双份备份与诊断在 `.test-output/current-blank-review/`。后续真实用户原件排查不得以独立profile注册同一目录；应使用原profile或项目外只读副本。
+
+## macOS 应用图标修复（2026-11-08）
+
+旧包复制Electron.app而未替换 `CFBundleIconFile=electron.icns`。打包改用现有Nozeli paired-tabs品牌PNG经sips生成完整iconset，再由iconutil输出Nozeli.icns；Dock启动图标也显式设置为同一品牌资源。`dist/macos-icon-fixed-20261108/Nozeli.app` 已实际构建／签名验证／启动；通过NSRunningApplication读取系统识别的运行图标并转PNG，视觉确认为红框黑色N。证据 `.test-output/icon-check/{verification.json,system-running-icon.png}`。不清空系统图标缓存、不覆盖旧包、不强退用户实例；本轮仅图标专项，不重跑完整默认套件。
+
+## PR #27 主线整合安全复核（2026-11-09）
+
+在独立干净worktree检出原PR `5fbc482`（base `9a2466a`），未改变日常安装或原开发目录的在途修改。内置reviewer分别审查文件／持久化与进程／打包两域，识别并关闭五项新增缺陷：最终发布async间隙覆盖同宿主修正、FIFO最终打开阻塞、长requestId临时文件名超限、Darwin进程表ENOMEM重试耗尽冒充空表、PID查询错误冒充gone。最终发布恢复平台内同步pin操作，明确不宣称跨进程原子CAS；Darwin错误均传播非零退出，不能授权回收锁或进程槽。两名reviewer复审确认对应发现关闭，不代替原生运行。
+
+本地验证：锁定npm依赖重新安装并重建node-pty、Pi、PPTist、renderer；元数据检查0 failures、六项第三方义务仍pending。原PR Linux定向239项中236通过／3个Darwin专用跳过；修正后的五文件安全回归50项中47通过／3个Darwin跳过。对原PR解压包运行新增测试，200字符请求ID确实ENAMETOOLONG，map/index并发修正均被覆盖，两个FIFO目标均达到子进程期限；修正后相同永久回归通过。不能把Darwin跳过算本机Mac通过。
+
+原PR已从全新依赖构建Linux便携包、独立解压运行：X11 `/tmp/nozeli-pr27-acceptance-PU98Ky/unpacked-smoke/smoke-olHJSm/report.json`、Wayland `.../smoke-w5M5ok/report.json` 均ok=true，真实文件编辑／保存、挂起切项目保留及正常退出／冷恢复通过。只读HTML镜像真实双guest及几何 `/tmp/nozeli-mac-html-mirror-WhkPYB/report.json` ok=true、exit0；原生View叠放入口通过。guest截图只证明guest像素，不冒充OS合成截图。初次临时驱动因Puppeteer模块路径不符停止，修正驱动导入后通过，未修改产品兜底。
+
+`.github/workflows/ci.yml` 增加macOS native safety：真实Darwin编译／selfcheck、生产helper syscall注入的错误／确认消失／重试成功及JS adapter传播回归、平台文件／持久化／初始化／版本回归；纳入原CI gate，不能用Linux替代Mac原生修正验证。`darwin-procinfo-native.test.mjs`已注册integration，Linux明确跳过。合并仍须当前head全部CI通过、更新后便携包／真实流程验收；此记录不是提前宣称已合并或最终CI全绿。Mac现有用户验收与Linux本轮证据分开，保留截图矩阵、OS IME、完整强退后代树、自动更新、公证及发行审计等未测边界。
+
+首轮macOS arm64 CI `42576568859`：fs_anchor/fullsync/procinfo真实编译和selfcheck成功，新增helper故障注入四组全部通过；总计64通过／4跳过／2失败。两项文件系统测试在Git仓库准备阶段受runner宿主配置触发 `FILTER_UNSUPPORTED`，不是跳过或降低产品拒绝规则；后续CI给原生测试显式独立HOME，避免继承runner全局Git过滤器。此初轮失败保留，最终须重跑完整合并门，不能把局部native通过说成整个job通过。

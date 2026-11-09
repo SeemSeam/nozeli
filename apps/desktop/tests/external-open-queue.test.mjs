@@ -3,13 +3,16 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import {fork} from 'node:child_process';
+import {fork,execFile} from 'node:child_process';
+import {promisify} from 'node:util';
 import {randomUUID,createHash} from 'node:crypto';
 import {DesktopHost} from '../src/main/host.mjs';
 import {ExternalOpenQueue} from '../src/main/external-open-queue.mjs';
 import {externalTarget,parseExternalArguments} from '../src/main/external-open.mjs';
 
-const out=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-open-queue-'));
+// Production requires a canonical profile root (symlink-free); on macOS the
+// raw os.tmpdir() sits under /var -> /private/var, so pin the canonical root.
+const out=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-open-queue-')));
 console.log('OPEN_QUEUE_EVIDENCE '+out);
 const hashes=v=>createHash('sha256').update(v).digest('hex');
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};};
@@ -17,6 +20,25 @@ const payload=c=>{const {requestId,attemptId,claimToken,generation}=c;return {re
 const owner=(generation=0,wc={})=>({window:{webContents:wc},webContents:wc,generation});
 const code=value=>e=>e.code===value;
 let sequence=0;
+// Own-child identity is read from the platform's real process facilities:
+// Linux /proc, darwin ps/lsof. Any other platform fails instead of faking it.
+const run=promisify(execFile);
+async function ownChildIdentity(pid){
+ if(process.platform==='linux'){
+  const stat=await fs.readFile('/proc/'+pid+'/stat','utf8'),fields=stat.slice(stat.lastIndexOf(')')+2).split(' ');
+  return {platform:'linux',start:fields[19],exe:await fs.realpath('/proc/'+pid+'/exe'),cwd:await fs.realpath('/proc/'+pid+'/cwd'),argv:(await fs.readFile('/proc/'+pid+'/cmdline','utf8')).split('\0')};
+ }
+ if(process.platform==='darwin'){
+  const command=(await run('ps',['-ww','-o','command=','-p',String(pid)])).stdout.trim();
+  return {platform:'darwin',start:(await run('ps',['-o','lstart=','-p',String(pid)])).stdout.trim(),exe:(await run('ps',['-o','comm=','-p',String(pid)])).stdout.trim(),cwd:(await run('lsof',['-a','-p',String(pid),'-d','cwd','-Fn'])).stdout.split('\n').find(line=>line.startsWith('n')).slice(1),command};
+ }
+ throw Error('Own-child identity verification is unavailable on '+process.platform+'; refusing to fake evidence.');
+}
+async function ownChildGone(pid){
+ if(process.platform==='linux')return await fs.stat('/proc/'+pid).then(()=>false,error=>{if(error.code!=='ENOENT')throw error;return true;});
+ if(process.platform==='darwin')return await new Promise(resolve=>{try{process.kill(pid,0);}catch(error){return resolve(error.code==='ESRCH');}resolve(false);});
+ throw Error('Own-child exit verification is unavailable on '+process.platform+'; refusing to fake evidence.');
+}
 async function fixture(options={}){
  const dir=path.join(out,String(++sequence)),project=path.join(dir,'project'),profile=path.join(dir,'profile');await fs.mkdir(project,{recursive:true});
  const file=path.join(project,'A.txt');await fs.writeFile(file,'Source original\n');
@@ -197,11 +219,14 @@ for(const phase of ['claim','terminal'])test('real own child SIGKILL after '+pha
  const exit=new Promise(resolve=>child.once('exit',(code,signal)=>{exited=true;resolve({code,signal});}));let timer;
  try{
   const row=await Promise.race([new Promise((resolve,reject)=>{child.once('message',resolve);child.once('error',reject);exit.then(r=>reject(Error('early exit '+JSON.stringify(r)+log)));}),new Promise((_,reject)=>timer=setTimeout(()=>reject(Error('child timeout')),20000))]);clearTimeout(timer);
-  assert.equal(row.pid,child.pid);const stat=await fs.readFile('/proc/'+child.pid+'/stat','utf8'),start=stat.slice(stat.lastIndexOf(')')+2).split(' ')[19];const exe=await fs.realpath('/proc/'+child.pid+'/exe'),cwd=await fs.realpath('/proc/'+child.pid+'/cwd'),argv=(await fs.readFile('/proc/'+child.pid+'/cmdline','utf8')).split('\0');
-  assert.equal(exe,await fs.realpath(process.execPath));assert.equal(cwd,f.dir);assert(argv.includes(fixturePath)&&argv.includes(f.dir));assert.equal((await fs.readFile('/proc/'+child.pid+'/stat','utf8')).slice(stat.lastIndexOf(')')+2).split(' ')[19],start);
-  child.kill('SIGKILL');assert.deepEqual(await exit,{code:null,signal:'SIGKILL'});await fs.writeFile(path.join(f.dir,'child-audit.json'),JSON.stringify({pid:child.pid,start,exe,cwd,argv,phase,signal:'SIGKILL',only:'identity-verified own child',row,exit:{code:null,signal:'SIGKILL'}},null,2));
+  assert.equal(row.pid,child.pid);const identity=await ownChildIdentity(child.pid);
+  assert.equal(identity.exe,await fs.realpath(process.execPath));assert.equal(identity.cwd,f.dir);
+  if(identity.argv)assert(identity.argv.includes(fixturePath)&&identity.argv.includes(f.dir));
+  else assert(identity.command.startsWith(process.execPath)&&identity.command.includes(fixturePath)&&identity.command.includes(f.dir));
+  assert.equal((await ownChildIdentity(child.pid)).start,identity.start);
+  child.kill('SIGKILL');assert.deepEqual(await exit,{code:null,signal:'SIGKILL'});await fs.writeFile(path.join(f.dir,'child-audit.json'),JSON.stringify({pid:child.pid,identity,phase,signal:'SIGKILL',only:'identity-verified own child',row,exit:{code:null,signal:'SIGKILL'}},null,2));
   f.q=f.make();f.owner={...f.owner,bootId:f.q.bootId};const restored=await f.q.openQueue();if(phase==='claim'){assert.equal(restored.requests.length,1);assert.equal(restored.requests[0].lastError.code,'OPEN_INTERRUPTED');assert.equal(restored.requests[0].requiresUserAction,true);await finish(f,await claim(f,row.requestId,'retry'));}else{assert.equal(restored.requests.length,0);assert.equal(JSON.parse(await disk(f)).receipts[0].outcome,'opened');}
-  await assert.rejects(fs.stat('/proc/'+child.pid),code('ENOENT'));assert.equal(await fs.readFile(f.file,'utf8'),'Source original\n');
+  assert(await ownChildGone(child.pid));assert.equal(await fs.readFile(f.file,'utf8'),'Source original\n');
  }finally{clearTimeout(timer);if(!exited){child.send('finish');await Promise.race([exit,new Promise(r=>setTimeout(r,1000))]);if(!exited)throw Error('Own child cleanup incomplete; preserved PID '+child.pid);}await fs.writeFile(path.join(f.dir,'child.log'),log);}
 });
 test('fresh Host and queue inherit the bound project and retained draft after recent-root changes',async()=>{

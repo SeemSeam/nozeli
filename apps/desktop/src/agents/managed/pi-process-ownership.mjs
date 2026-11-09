@@ -8,11 +8,12 @@
 import path from 'node:path';
 import {selectCapability} from '../../platform/platform-capabilities.mjs';
 import * as linux from '../../platform/linux/process-ownership.mjs';
+import * as macos from '../../platform/darwin/process-ownership.mjs';
 
 const validStamp=value=>typeof value==='string'&&/^[a-f0-9-]{36}:\d+$/.test(value);
 const validOwner=value=>typeof value==='string'&&/^[a-f0-9-]{36}$/.test(value);
 
-const select=()=>selectCapability({capability:'verified-process-ownership',implementations:{linux}});
+const select=()=>selectCapability({capability:'verified-process-ownership',implementations:{linux,macos}});
 
 // Pi ownership proof: the host stamps every owned process with the owner home
 // and owner id env tags; the leader must also be running the bundled

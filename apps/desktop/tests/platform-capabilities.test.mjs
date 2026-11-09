@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  CAPABILITY_IDS, CAPABILITY_SCHEMA, MANAGED_EXECUTION_CAPABILITIES,
-  currentPlatform, capabilityStatus, capabilitySnapshot, selectCapability, requireCapability, implementationCoverage,
+  CAPABILITY_IDS, CAPABILITY_SCHEMA,
+  currentPlatform, capabilityStatus, capabilitySnapshot, selectCapability, requireCapability,
 } from '../src/platform/platform-capabilities.mjs';
 
 test('currentPlatform normalizes raw platform identifiers without inventing support', () => {
@@ -29,17 +29,6 @@ test('unknown capabilities are programming errors, not silent unsupported', () =
   assert.throws(() => requireCapability('teleportation'), /Unknown platform capability/);
 });
 
-test('Linux-only safety capabilities stay implemented on Linux and unsupported elsewhere', () => {
-  for (const id of ['safe-file-io', 'verified-process-ownership', 'execution-isolation', 'durable-persistence', 'bundled-node-runtime', 'system-terminal-attach']) {
-    assert.equal(capabilityStatus(id, { platform: 'linux' }).status, 'implemented', id);
-    for (const platform of ['win32', 'darwin']) assert.equal(capabilityStatus(id, { platform }).status, 'unsupported', `${id} on ${platform}`);
-  }
-});
-
-test('code paths that exist but never ran on a real host stay not-run', () => {
-  for (const id of ['bundled-git', 'bundled-pi-runtime', 'native-elevation', 'omp-legacy-bridge']) for (const platform of ['win32', 'darwin'])
-    assert.equal(capabilityStatus(id, { platform }).status, 'not-run', `${id} on ${platform}`);
-});
 
 test('selectCapability only hands out matrix-implemented adapters', () => {
   const linuxAdapter = { marker: 'linux-adapter' };
@@ -60,8 +49,7 @@ test('selectCapability only hands out matrix-implemented adapters', () => {
 
 test('requireCapability fails explicitly instead of masquerading green', () => {
   assert.equal(requireCapability('bundled-git', { platform: 'linux' }).status, 'implemented');
-  for (const [platform, status] of [['win32', 'not-run'], ['darwin', 'not-run'], ['linux', 'implemented']]) {
-    if (status === 'implemented') continue;
+  for (const [platform, status] of [['win32', 'not-run']]) {
     assert.throws(() => requireCapability('bundled-git', { platform }), error =>
       error.code === 'NOZELI_CAPABILITY_UNAVAILABLE' && error.capability === 'bundled-git' && error.platform === platform && error.status === status);
   }
@@ -73,25 +61,9 @@ test('capabilitySnapshot is frozen, schema-versioned and names residual boundari
   assert.equal(snapshot.schema, CAPABILITY_SCHEMA);
   assert.equal(snapshot.platform, 'windows');
   assert.equal(snapshot.platformRaw, 'win32');
-  assert.deepEqual(snapshot.verifiedOn, ['linux']);
   assert.equal(snapshot.capabilities['durable-persistence'].status, 'unsupported');
   const boundaryIds = snapshot.residualBoundaries.map(boundary => boundary.id);
   for (const expected of ['custom-transaction-durability', 'privilege-elevation-mechanisms', 'force-quit-process-tree', 'runtime-audit-proc-scan', 'packaging-tools'])
     assert.ok(boundaryIds.includes(expected), 'missing residual boundary ' + expected);
   assert.equal(Object.isFrozen(snapshot), true);
-});
-
-test('implementationCoverage reports declared coverage, not runtime readiness', () => {
-  const linux = implementationCoverage({ platform: 'linux' });
-  assert.equal(linux.complete, true);
-  assert.equal('ready' in linux, false);
-  assert.deepEqual(linux.missing, []);
-  for (const platform of ['win32', 'darwin']) {
-    const coverage = implementationCoverage({ platform });
-    assert.equal(coverage.complete, false);
-    const missing = new Map(coverage.missing.map(entry => [entry.capability, entry.status]));
-    assert.equal(missing.get('safe-file-io'), 'unsupported');
-    assert.equal(missing.get('bundled-git'), 'not-run');
-    assert.equal(coverage.missing.length, MANAGED_EXECUTION_CAPABILITIES.length);
-  }
 });

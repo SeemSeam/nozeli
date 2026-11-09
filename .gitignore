@@ -21,3 +21,5 @@ apps/desktop/runtime/omp/omp
 apps/desktop/runtime/omp/omp.exe
 apps/desktop/runtime/omp/runtime.json
 apps/desktop/vendor/pptist/upstream.tar.gz
+apps/desktop/src/platform/darwin/native/*.node
+apps/desktop/runtime/native/nozeli-procinfo

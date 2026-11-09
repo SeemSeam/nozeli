@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { OMP_CONFIG_FILES } from './omp-system-source.mjs';
+import { platformPersistence } from '../../platform/shared/persistence.mjs';
 
 async function optional(file) { try { return await fs.readFile(file, 'utf8'); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } }
 async function atomic(file, bytes) {
@@ -55,7 +56,7 @@ async function migrateProjectedCapabilities(home, parse, stringify) {
     const backup = path.join(archive, name + '.original');
     if (!await safe(backup)) {
       const handle = await fs.open(backup, 'wx', 0o600);
-      try { await handle.writeFile(raw); await handle.sync(); } finally { await handle.close(); }
+      try { await handle.writeFile(raw); await platformPersistence.syncFileHandle(handle); } finally { await handle.close(); }
     }
     await atomic(file, stringify(cleaned));
   }
@@ -104,7 +105,7 @@ async function migrateProjectedCredentials(home, source, parse, stringify) {
     const backup = path.join(archive, name + '.original');
     if (!await safe(backup)) {
       const handle = await fs.open(backup, 'wx', 0o600);
-      try { await handle.writeFile(raw); await handle.sync(); } finally { await handle.close(); }
+      try { await handle.writeFile(raw); await platformPersistence.syncFileHandle(handle); } finally { await handle.close(); }
     }
     const status = { version: 1, loginRequired: unresolved.size > 0, unresolvedProviders: [...unresolved] };
     await atomic(statusFile, JSON.stringify(status));

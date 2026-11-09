@@ -46,19 +46,19 @@ function rawPlatform(platform) {
 // Owner names the adapter or resolver that implements the capability today.
 const MATRIX = {
   'safe-file-io': {
-    owner: 'platform/linux/filesystem.mjs via platform/shared/filesystem.mjs (PlatformFileBoundary)',
-    note: 'Linux: /proc/self/fd component-wise O_DIRECTORY|O_NOFOLLOW opens with held descriptors; other platforms reject before any read or write.',
-    platforms: { linux: 'implemented', win32: 'unsupported', darwin: 'unsupported' },
+    owner: 'platform/linux/filesystem.mjs + platform/darwin/filesystem.mjs via platform/shared/filesystem.mjs',
+    note: 'Linux pins directory descriptors through /proc/self/fd; macOS uses native openat/fstatat/renameat with O_NOFOLLOW and held directory descriptors. Both verify file, entry and ancestor identity; Git receives the pinned content stream, never a reopened source path. Missing macOS native helpers fail closed.',
+    platforms: { linux: 'implemented', win32: 'unsupported', darwin: 'implemented' },
   },
   'verified-process-ownership': {
-    owner: 'platform/linux/process-ownership.mjs + platform/linux/recovery-owner.mjs (PlatformProcessBoundary)',
-    note: 'Linux: /proc stat + boot_id identity stamps, env-tagged verified group reaping, processTree.terminateGroup; sessions refuse unverified owners (PI_PLATFORM_UNSUPPORTED) instead of spawning blind, and ownerAlive refuses with PROCESS_OWNERS_UNSUPPORTED on unverified platforms (lock/writer retained, no signal-0 existence guess).',
-    platforms: { linux: 'implemented', win32: 'unsupported', darwin: 'unsupported' },
+    owner: 'platform/linux/process-ownership.mjs + platform/darwin/process-ownership.mjs',
+    note: 'Linux /proc and macOS native kinfo/KERN_PROCARGS2 bind process incarnation to boot identity, verify host-owned environment tags and reap owned descendants. Unverified identities retain locks and writer slots; no signal-0 liveness guess.',
+    platforms: { linux: 'implemented', win32: 'unsupported', darwin: 'implemented' },
   },
   'recovery-source-ownership': {
-    owner: 'platform/linux/recovery-owner.mjs via main/project-recovery-owner.mjs selector (PlatformProcessBoundary)',
-    note: 'Linux project-recovery ownership identity on the same /proc foundation (narrower algorithm than verified-process-ownership). The main/project-recovery-owner.mjs wrapper selects this dedicated row directly; win32/darwin select to explicit RECOVERY_OWNER_UNVERIFIED refusal.',
-    platforms: { linux: 'implemented', win32: 'unsupported', darwin: 'unsupported' },
+    owner: 'platform/linux/recovery-owner.mjs + platform/darwin/recovery-owner.mjs via main/project-recovery-owner.mjs',
+    note: 'Platform-native project-recovery ownership checks refuse live or unverified source owners. Missing helpers or unreadable ownership facts do not authorize lock takeover.',
+    platforms: { linux: 'implemented', win32: 'unsupported', darwin: 'implemented' },
   },
   'execution-isolation': {
     owner: 'platform/linux/bwrap-isolation.mjs (PlatformProcessBoundary)',
@@ -66,24 +66,24 @@ const MATRIX = {
     platforms: { linux: 'implemented', win32: 'unsupported', darwin: 'unsupported' },
   },
   'durable-persistence': {
-    owner: 'platform/shared/persistence.mjs + platform/linux/persistence.mjs',
-    note: 'Atomic replace + directory durability barrier. Linux implemented; win32/darwin reject PERSISTENCE_UNSUPPORTED before creating or replacing anything; post-publication barrier failure reports committed=true durability=uncertain. All reviewed atomic writers are routed onto this contract (phase1 landed: project-storage, host, external-open-queue-storage, workspace-capture-store, managed workspace, work-changes, token-usage-checkpoint, guided-demo, updater atomicJson, main appearance, pi-session session metadata); writers whose publication is a custom transaction (git index-lock rename, hardlink publish, reserve-then-rename moves) are listed separately under custom-transaction-durability. Native per-platform verification stays phase2.',
-    platforms: { linux: 'implemented', win32: 'unsupported', darwin: 'unsupported' },
+    owner: 'platform/shared/persistence.mjs + platform/linux/persistence.mjs + platform/darwin/persistence.mjs',
+    note: 'Atomic replacement with file and directory barriers: Linux fsync; macOS native F_FULLFSYNC. Missing macOS helper rejects before effects. A post-publication barrier failure reports committed=true, durability=uncertain. Custom multi-file transactions retain their own journal/reconciliation and are not a power-loss qualification.',
+    platforms: { linux: 'implemented', win32: 'unsupported', darwin: 'implemented' },
   },
   'bundled-git': {
     owner: 'agents/managed/git-runtime.mjs (dugite relocatable layout)',
-    note: "Linux implemented and regression-exercised. dugite's Windows MinGit path/DLL/helper checks and F_OK rule exist in code but have never been executed on a real Windows host; darwin layout likewise unverified.",
-    platforms: { linux: 'implemented', win32: 'not-run', darwin: 'not-run' },
+    note: 'Relocatable dugite runtime with executable, helper and template checks. Linux x64 and local macOS arm64 builds include their own Git; Windows path remains unverified.',
+    platforms: { linux: 'implemented', win32: 'not-run', darwin: 'implemented' },
   },
   'bundled-pi-runtime': {
     owner: 'agents/managed/pi-runtime.mjs + integrations/pi pinned manifest',
-    note: 'Pinned Pi integration (runtime-manifest.json digests, owner entry, env scrub). Resolution code is platform-neutral and regression-exercised on Linux only; spawn/process-tree/env semantics on Windows/macOS are unverified.',
-    platforms: { linux: 'implemented', win32: 'not-run', darwin: 'not-run' },
+    note: 'Pinned Pi integration with manifest digest verification, owner entry and environment scrubbing. Native owner management exists for Linux and macOS; Windows remains unverified. This does not qualify a public model provider or OAuth login.',
+    platforms: { linux: 'implemented', win32: 'not-run', darwin: 'implemented' },
   },
   'bundled-node-runtime': {
     owner: 'apps/desktop/tools/node-runtime.lock.json + runtime/node NODE-RUNTIME.json',
-    note: 'Packaged builds must run the pinned standalone Node. The lock pins a Linux archive only; packaging refuses other platforms ("No pinned standalone Node for this packaging platform"), so Windows/macOS packaged Pi is blocked, not merely untested.',
-    platforms: { linux: 'implemented', win32: 'unsupported', darwin: 'unsupported' },
+    note: 'Packaged builds run their own SHA-256-pinned Node archive, selected for Linux x64 or macOS arm64. Windows has no pinned archive and packaging refuses it.',
+    platforms: { linux: 'implemented', win32: 'unsupported', darwin: 'implemented' },
   },
   'system-terminal-attach': {
     owner: 'agents/managed/system-terminal-launch.mjs',
@@ -120,8 +120,8 @@ const RESIDUAL_BOUNDARIES = [
   { id: 'lsp-external-node', file: 'main/language-service-manager.mjs', note: 'Optional JS/TS language service spawns NOZELI_LSP_NODE/NODE/ambient "node"; the only production path that may consult an ambient runtime (optional capability, degrades honestly). Phase2 bundle-or-gate decision.' },
   { id: 'electron-native-surface', file: 'main/main.cjs + window-recovery.cjs + isolated-preview.mjs', note: 'Native dialogs (incl. unparented Wayland open dialog), clipboard items, shell.reveal, error boxes: real-host verification is gate W4/M4.' },
   { id: 'linux-session-flags', file: 'main/main.cjs + agents/managed-projects.mjs', note: 'ozone headless/wayland switches, wayland dialog parenting, disable-gpu fallback: Linux session integration.' },
-  { id: 'runtime-audit-proc-scan', file: 'agents/managed/runtime-audit.mjs', note: 'Managed-agent process audit scans /proc environ; on other platforms it returns an empty process list with the platform recorded — readers must not treat empty as verified-none. Phase2.' },
-  { id: 'packaging-tools', file: 'apps/desktop/tools/package-portable.mjs + package-candidate.mjs + package-pi-runtime.mjs', note: 'Portable/candidate packaging and the pinned standalone Node lock refuse non-Linux-x64 hosts explicitly; Windows/macOS packaging is phase2 (W5/M5).' },
+  { id: 'runtime-audit-proc-scan', file: 'agents/managed/runtime-audit.mjs', note: 'Linux scans /proc environ; macOS scans same-user KERN_PROCARGS2 through the native process adapter and propagates failures. Windows audit is unverified; an empty list there is not verified-none.' },
+  { id: 'packaging-tools', file: 'apps/desktop/tools/package-portable.mjs + package-candidate.mjs + package-macos.mjs + package-pi-runtime.mjs', note: 'Linux portable/candidate installers remain Linux-only. macOS arm64 has a local ad-hoc-signed Nozeli.app builder with bundled Node/Git/Pi, not Developer ID signing, notarization or auto-update qualification. Windows packaging remains unavailable.' },
 ];
 
 export function capabilityStatus(capability, { platform = process.platform } = {}) {

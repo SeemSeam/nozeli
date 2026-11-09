@@ -268,6 +268,7 @@ async function main() {
   app.setPath('sessionData',nozeliPaths.desktop);
   await app.whenReady();
   app.setName('Nozeli');
+  if (process.platform === 'darwin') app.dock.setIcon(path.join(APP_ROOT, 'assets/brand/nozeli-paired-tabs-icon.png'));
   ({ dialog, session } = require('electron'));
   ({ DesktopHost, HostError, ops } = await import('./host.mjs'));
   const { LanguageServiceManager } = await import('./language-service-manager.mjs');
