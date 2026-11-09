@@ -41,6 +41,9 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Install locked Pi SDK test dependencies
         run: npm ci --prefix ../../integrations/pi --no-audit --no-fund
+      - name: Build locked Pi driver for integration consumers
+        if: matrix.suite == 'integration'
+        run: npm run build:pi
       - name: Run deterministic tests
         run: npm run test:${{ matrix.suite }}
         env:
