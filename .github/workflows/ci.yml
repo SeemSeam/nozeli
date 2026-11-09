@@ -134,7 +134,9 @@ jobs:
       - name: Build and self-check native process and filesystem helpers
         run: node src/platform/darwin/native/build.mjs && node tools/build-darwin-procinfo.mjs
       - name: Exercise native safety boundaries
-        run: node --test tests/darwin-procinfo-native.test.mjs tests/platform-capabilities.test.mjs tests/platform-filesystem.test.mjs tests/platform-persistence.test.mjs tests/platform-chain-boundaries.test.mjs tests/platform-process-boundary.test.mjs tests/project-semantic-initialization.test.mjs tests/shadow-versions.test.mjs
+        run: |
+          mkdir -p "$RUNNER_TEMP/nozeli-native-home"
+          HOME="$RUNNER_TEMP/nozeli-native-home" node --test tests/darwin-procinfo-native.test.mjs tests/platform-capabilities.test.mjs tests/platform-filesystem.test.mjs tests/platform-persistence.test.mjs tests/platform-chain-boundaries.test.mjs tests/platform-process-boundary.test.mjs tests/project-semantic-initialization.test.mjs tests/shadow-versions.test.mjs
 
   gate:
     name: CI gate

@@ -740,3 +740,5 @@ postinstall 用 `electron-rebuild` 针对 Electron 重建 `node-pty`。该依赖
 原PR已从全新依赖构建Linux便携包、独立解压运行：X11 `/tmp/nozeli-pr27-acceptance-PU98Ky/unpacked-smoke/smoke-olHJSm/report.json`、Wayland `.../smoke-w5M5ok/report.json` 均ok=true，真实文件编辑／保存、挂起切项目保留及正常退出／冷恢复通过。只读HTML镜像真实双guest及几何 `/tmp/nozeli-mac-html-mirror-WhkPYB/report.json` ok=true、exit0；原生View叠放入口通过。guest截图只证明guest像素，不冒充OS合成截图。初次临时驱动因Puppeteer模块路径不符停止，修正驱动导入后通过，未修改产品兜底。
 
 `.github/workflows/ci.yml` 增加macOS native safety：真实Darwin编译／selfcheck、生产helper syscall注入的错误／确认消失／重试成功及JS adapter传播回归、平台文件／持久化／初始化／版本回归；纳入原CI gate，不能用Linux替代Mac原生修正验证。`darwin-procinfo-native.test.mjs`已注册integration，Linux明确跳过。合并仍须当前head全部CI通过、更新后便携包／真实流程验收；此记录不是提前宣称已合并或最终CI全绿。Mac现有用户验收与Linux本轮证据分开，保留截图矩阵、OS IME、完整强退后代树、自动更新、公证及发行审计等未测边界。
+
+首轮macOS arm64 CI `42576568859`：fs_anchor/fullsync/procinfo真实编译和selfcheck成功，新增helper故障注入四组全部通过；总计64通过／4跳过／2失败。两项文件系统测试在Git仓库准备阶段受runner宿主配置触发 `FILTER_UNSUPPORTED`，不是跳过或降低产品拒绝规则；后续CI给原生测试显式独立HOME，避免继承runner全局Git过滤器。此初轮失败保留，最终须重跑完整合并门，不能把局部native通过说成整个job通过。
