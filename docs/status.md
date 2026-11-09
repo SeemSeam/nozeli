@@ -2,6 +2,9 @@
 
 状态基线：`0.1.0-alpha.6`（Alpha预发行，发行状态以[发布说明与发行边界](release.md)及GitHub发布页为准；所有者已针对本版本明确授权公开Alpha例外，六项分发审计仍未签收）。上游发行资格仅Linux；本工作树另有macOS arm64本机开发包与限定验收，不外推Windows或Mac公开分发资格。
 
+2026-11-09 **PR #27 跨平台整合候选安全修正**：保留原alpha.6 Linux主线与Mac arm64适配，修复最终初始化发布交错／FIFO阻塞、长请求ID暂存文件名、Darwin进程事实两处fail-open；内置reviewer已复审关闭发现。Linux干净依赖／Pi／Office／renderer构建和原PR解压包X11／Wayland真实保存冷恢复、HTML只读双guest通过；新增失败前／修正后回归保留。新增必须通过的macOS原生安全CI，编译及syscall注入测试只能由Darwin完成。当前仍是待CI和最终包验证的PR候选，不冒称Mac公开发行、Windows支持或自动更新／公证通过；未替换日常安装。详见[整合记录](testing.md#pr-27-主线整合安全复核2026-11-09)。
+
+
 2026-11-08 **简洁生命周期／自动恢复／项目初始化已按用户后续授权安装并完成Linux异常验收，未提交/发布**。current=`2026-11-08T08-52-12-275Z`，803份src/dist/Pi-src与源码构建一致，原日常版本仍保留。真实安装ELF八档自动保存时序/PPT退出保留、六种原生关闭故障、并发关闭/重置、PTY取消/清除、EACCES部分清除后SIGKILL冷恢复及真正替换实体拒绝删除通过；七格式独立窗口返回/resize/全屏通过，修复PDF双滚动尺寸反馈。初始化403故障门/显式解除原排队重试、取消晚到不发布、SIGKILL零静默重放、完成后冷开零推理通过。恢复定向回归59/59。日常项目未被破坏性测试，未强关原进程；Windows/macOS、真实断电/磁盘损坏/满盘及付费模型理解质量未验。[安装后证据](project-lifecycle-initialization-design.md#9-用户授权安装后的异常验收2026-11-08)。
 
 状态基线：`0.1.0-alpha.5`（Alpha预发行，发行状态以[发布说明与发行边界](release.md)及 GitHub 发布页为准；`v0.1.0-alpha.4` 已于 2026-11-01 公开发布）。能力以Linux x64/Wayland、X11/XWayland及GitHub Ubuntu/X11实际验证为准；Windows/macOS尚未验证，安装与打包工具仅实现Linux。

@@ -730,3 +730,13 @@ postinstall 用 `electron-rebuild` 针对 Electron 重建 `node-pty`。该依赖
 ## macOS 应用图标修复（2026-11-08）
 
 旧包复制Electron.app而未替换 `CFBundleIconFile=electron.icns`。打包改用现有Nozeli paired-tabs品牌PNG经sips生成完整iconset，再由iconutil输出Nozeli.icns；Dock启动图标也显式设置为同一品牌资源。`dist/macos-icon-fixed-20261108/Nozeli.app` 已实际构建／签名验证／启动；通过NSRunningApplication读取系统识别的运行图标并转PNG，视觉确认为红框黑色N。证据 `.test-output/icon-check/{verification.json,system-running-icon.png}`。不清空系统图标缓存、不覆盖旧包、不强退用户实例；本轮仅图标专项，不重跑完整默认套件。
+
+## PR #27 主线整合安全复核（2026-11-09）
+
+在独立干净worktree检出原PR `5fbc482`（base `9a2466a`），未改变日常安装或原开发目录的在途修改。内置reviewer分别审查文件／持久化与进程／打包两域，识别并关闭五项新增缺陷：最终发布async间隙覆盖同宿主修正、FIFO最终打开阻塞、长requestId临时文件名超限、Darwin进程表ENOMEM重试耗尽冒充空表、PID查询错误冒充gone。最终发布恢复平台内同步pin操作，明确不宣称跨进程原子CAS；Darwin错误均传播非零退出，不能授权回收锁或进程槽。两名reviewer复审确认对应发现关闭，不代替原生运行。
+
+本地验证：锁定npm依赖重新安装并重建node-pty、Pi、PPTist、renderer；元数据检查0 failures、六项第三方义务仍pending。原PR Linux定向239项中236通过／3个Darwin专用跳过；修正后的五文件安全回归50项中47通过／3个Darwin跳过。对原PR解压包运行新增测试，200字符请求ID确实ENAMETOOLONG，map/index并发修正均被覆盖，两个FIFO目标均达到子进程期限；修正后相同永久回归通过。不能把Darwin跳过算本机Mac通过。
+
+原PR已从全新依赖构建Linux便携包、独立解压运行：X11 `/tmp/nozeli-pr27-acceptance-PU98Ky/unpacked-smoke/smoke-olHJSm/report.json`、Wayland `.../smoke-w5M5ok/report.json` 均ok=true，真实文件编辑／保存、挂起切项目保留及正常退出／冷恢复通过。只读HTML镜像真实双guest及几何 `/tmp/nozeli-mac-html-mirror-WhkPYB/report.json` ok=true、exit0；原生View叠放入口通过。guest截图只证明guest像素，不冒充OS合成截图。初次临时驱动因Puppeteer模块路径不符停止，修正驱动导入后通过，未修改产品兜底。
+
+`.github/workflows/ci.yml` 增加macOS native safety：真实Darwin编译／selfcheck、生产helper syscall注入的错误／确认消失／重试成功及JS adapter传播回归、平台文件／持久化／初始化／版本回归；纳入原CI gate，不能用Linux替代Mac原生修正验证。`darwin-procinfo-native.test.mjs`已注册integration，Linux明确跳过。合并仍须当前head全部CI通过、更新后便携包／真实流程验收；此记录不是提前宣称已合并或最终CI全绿。Mac现有用户验收与Linux本轮证据分开，保留截图矩阵、OS IME、完整强退后代树、自动更新、公证及发行审计等未测边界。

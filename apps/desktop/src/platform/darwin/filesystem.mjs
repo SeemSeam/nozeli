@@ -295,8 +295,20 @@ export const darwinFilesystemAdapter = {
     },
     async openFile(directory, name) {
       const N = need();
-      return openFileHandle(N, N.openEntryAt(dirFd(directory), anchoredName(name), 0));
+      return openFileHandle(N, N.openEntryAt(dirFd(directory), anchoredName(name), 1));
     },
+    openFileSync(directory, name) {
+      const N = need(), handle = { fd: N.openEntryAt(dirFd(directory), anchoredName(name), 1), closed: false };
+      return {
+        statSync: () => toStats(N.fstatEntry(liveFd(handle, '文件'))),
+        readFileSync: () => N.readAll(liveFd(handle, '文件')),
+        closeSync() { if (handle.closed) return; handle.closed = true; N.closeFd(handle.fd); },
+      };
+    },
+    renameSync(fromDirectory, fromName, toDirectory, toName) {
+      need().renameAt(dirFd(fromDirectory), anchoredName(fromName), dirFd(toDirectory), anchoredName(toName));
+    },
+    syncSync(directory) { need().fsyncFd(dirFd(directory)); },
     // Exclusive-creation write handle inside the pin: the same primitive
     // openWriteParent.openExclusive hands out, addressed through an existing
     // chain pin. writeFile/sync/close only; sync is fcntl(fd, F_FULLFSYNC).

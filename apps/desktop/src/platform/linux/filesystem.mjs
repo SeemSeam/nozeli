@@ -35,7 +35,7 @@
 // Persistence barriers are the separate durable-persistence capability
 // (platform/shared/persistence.mjs).
 import fs from 'node:fs/promises';
-import {constants} from 'node:fs';
+import syncFs, {constants} from 'node:fs';
 
 const DIRECTORY_FLAGS = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
 const ENTRY_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
@@ -187,7 +187,21 @@ export const linuxFilesystemAdapter = {
     opendir: async directory => fs.opendir(pinnedPath(directory)),
     lstat: async (directory, name) => fs.lstat(pinnedPath(directory) + '/' + anchoredName(name)),
     openDirectory: async (directory, name) => fs.open(pinnedPath(directory) + '/' + anchoredName(name), DIRECTORY_FLAGS),
-    openFile: async (directory, name) => fs.open(pinnedPath(directory) + '/' + anchoredName(name), constants.O_RDONLY | constants.O_NOFOLLOW),
+    openFile: async (directory, name) => fs.open(pinnedPath(directory) + '/' + anchoredName(name), ENTRY_FLAGS),
+    openFileSync(directory, name) {
+      const fd = syncFs.openSync(pinnedPath(directory) + '/' + anchoredName(name), ENTRY_FLAGS);
+      let closed = false;
+      const live = () => { if (closed) throw Object.assign(new Error('Closed pinned file'), { code: 'EBADF' }); return fd; };
+      return {
+        statSync: () => syncFs.fstatSync(live()),
+        readFileSync: () => syncFs.readFileSync(live()),
+        closeSync() { if (closed) return; closed = true; syncFs.closeSync(fd); },
+      };
+    },
+    renameSync(fromDirectory, fromName, toDirectory, toName) {
+      syncFs.renameSync(pinnedPath(fromDirectory) + '/' + anchoredName(fromName), pinnedPath(toDirectory) + '/' + anchoredName(toName));
+    },
+    syncSync: directory => syncFs.fsyncSync(directory.fd),
     openExclusive: async (directory, name, { mode = 0o600 } = {}) => fs.open(pinnedPath(directory) + '/' + anchoredName(name), 'wx', mode),
     // Namespace barrier through the pin itself: fsync on the pinned
     // directory descriptor, a real storage barrier on Linux.

@@ -56,6 +56,17 @@ test('checkpoint freezes exact content: blob hash == metadata digest == ledger d
   await assert.rejects(() => versions.checkpoint({ requestId: 'env', workId: 'w', relPaths: ['.env'] }), { code: 'PATH_REJECTED' });
 });
 
+test('maximum-length request ID checkpoints exact bytes without leaving staging scratch', async t => {
+  const { versions } = await fixture(t);
+  const requestId = 'r'.repeat(200);
+  const result = await versions.checkpoint({ requestId, workId: 'w', relPaths: ['doc.md'] });
+  assert.equal(result.checkpointId, requestId);
+  assert.deepEqual(await versions.readBlob(result.commit, 'doc.md'), Buffer.from(ORIGINAL, 'utf8'));
+  assert.equal((await versions.readRequest(requestId)).requestId, requestId);
+  assert.equal((await versions.readMeta(result.commit)).checkpointRequestId, requestId);
+  assert.deepEqual(await fs.readdir(versions.requestsDir), []);
+});
+
 test('concurrent disk mutation cannot split metadata digest from blob digest', async t => {
   const { project, versions } = await fixture(t);
   const pendingCheckpoint = versions.checkpoint({ requestId: 'race', workId: 'w', relPaths: ['doc.md'] });

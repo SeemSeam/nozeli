@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import syncFs from 'node:fs';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
 import {ProjectInitialization,INITIALIZATION_LIMITS,initializationPath} from '../src/agents/managed/project-initialization.mjs';
@@ -58,16 +61,57 @@ test('legacy and AI-disabled local opens do not connect or initialize',async()=>
 test('path exclusions reject known credential variants',()=>{for(const rel of ['.git/config','.nozeli/project.json','.env.local','x/secret.key','credentials.json','dist/app.js','vendor/module.js'])assert.throws(()=>initializationPath(rel));});
 test('partial publication never claims initialized or leaves an orphan; explicit retry completes the linked topic',async t=>{
  const {job,init,memory,controller}=await fixture(t),inventory=await init.tool(job,'nozeli_project_inventory');
- // The publication rename is a pinned chain operation (native renameat on
- // macOS, /proc-pinned fs.rename on Linux); fs.renameSync is never on the
- // path. The fault is injected at that contract seam and only for the topic
- // publish itself — the link-first index rename, barriers, cleanup and retry
- // keep their real behavior.
- const chain=defaultFilesystemAdapter.chain,rename=chain.rename;chain.rename=async(fromDirectory,fromName,toDirectory,toName)=>{if(toName==='project-map.md')throw Object.assign(Error('injected publication failure'),{code:'EIO'});return rename(fromDirectory,fromName,toDirectory,toName);};
- try{await assert.rejects(init.tool(job,'nozeli_project_map',{expectedVersion:inventory.map.expectedVersion,text:'First attempt'}),{code:'EIO'});}finally{chain.rename=rename;}
+ // Inject at the pinned synchronous namespace boundary; keep link-first
+ // publication, durability barriers, cleanup and retry real.
+ const chain=defaultFilesystemAdapter.chain,rename=chain.renameSync;chain.renameSync=(fromDirectory,fromName,toDirectory,toName)=>{if(toName==='project-map.md')throw Object.assign(Error('injected publication failure'),{code:'EIO'});return rename(fromDirectory,fromName,toDirectory,toName);};
+ try{await assert.rejects(init.tool(job,'nozeli_project_map',{expectedVersion:inventory.map.expectedVersion,text:'First attempt'}),{code:'EIO'});}finally{chain.renameSync=rename;}
  assert.equal(job.projectMap,undefined);assert.equal(job.projectMapPublication.state,'prepared');assert.match(await fs.readFile(path.join(memory,'index.md'),'utf8'),/topics\/project-map\.md/);await assert.rejects(fs.stat(path.join(memory,'topics','project-map.md')),{code:'ENOENT'});
  const retry=new ProjectInitialization(controller),current=await retry.tool(job,'nozeli_project_inventory');await retry.tool(job,'nozeli_project_map',{expectedVersion:current.map.expectedVersion,text:'Retry completed'});
  assert.equal(job.projectMapPublication.state,'durable');const snapshot=await controller.memoryVersion.snapshot();assert.match(snapshot.topics[0].text,/Retry completed/);
+});
+
+for(const target of ['project-map.md','index.md'])test(`final publication retains a host correction queued after reading ${target}`,async t=>{
+ const {job,init,memory}=await fixture(t);
+ await fs.mkdir(path.join(memory,'topics'));await fs.writeFile(path.join(memory,'topics','project-map.md'),'Original map');
+ const inventory=await init.tool(job,'nozeli_project_inventory'),chain=defaultFilesystemAdapter.chain;
+ const filename=target==='index.md'?path.join(memory,target):path.join(memory,'topics',target),correction='Concurrent user correction';
+ let queued=false;
+ const schedule=()=>{if(!queued){queued=true;queueMicrotask(()=>syncFs.writeFileSync(filename,correction));}};
+ // Exercise both boundary variants so this also detects the former async
+ // read/compare/rename window. Actual pinned reads and writes remain real.
+ const open=chain.openFile,openSync=chain.openFileSync;
+ chain.openFile=async(directory,name)=>{const handle=await open(directory,name);if(name===target){const read=handle.readFile.bind(handle);handle.readFile=async()=>{const bytes=await read();schedule();return bytes;};}return handle;};
+ chain.openFileSync=(directory,name)=>{const handle=openSync(directory,name);if(name===target){const read=handle.readFileSync.bind(handle);handle.readFileSync=()=>{const bytes=read();schedule();return bytes;};}return handle;};
+ try{await init.tool(job,'nozeli_project_map',{expectedVersion:inventory.map.expectedVersion,text:'Generated replacement'});}finally{chain.openFile=open;chain.openFileSync=openSync;}
+ assert.equal(queued,true);assert.equal(await fs.readFile(filename,'utf8'),correction);
+ assert.equal(job.projectMapPublication.state,'durable');
+});
+
+for(const target of ['project-map.md','index.md'])test(`final publication refuses a swapped ${target} FIFO without blocking`,async t=>{
+ const {memory,content}=await fixture(t);
+ // A child deadline protects the test runner even if a synchronous native
+ // open regresses to blocking. No writer ever opens the FIFO.
+ const moduleUrl=new URL('../src/agents/managed/project-initialization.mjs',import.meta.url).href;
+ const script=`
+  import assert from 'node:assert/strict';
+  import fs from 'node:fs';
+  import path from 'node:path';
+  import {execFileSync} from 'node:child_process';
+  import {ProjectInitialization} from ${JSON.stringify(moduleUrl)};
+  const memory=${JSON.stringify(memory)},content=${JSON.stringify(content)};
+  const job={id:'fifo-job',status:'running',context:{projectInstanceId:'instance-a'}};
+  const controller={projectId:'p',store:{content,plan:path.join(memory,'index.md'),state:{jobs:[job]},storage:{requireRegistered:async()=>({instanceId:'instance-a'}),assertActive(){}},mutate:async fn=>fn()}};
+  const init=new ProjectInitialization(controller),inventory=await init.tool(job,'nozeli_project_inventory');
+  const original=init.assert.bind(init);let swapped=false;
+  init.assert=async job=>{await original(job);if(!swapped&&job.projectMapPublication?.state==='prepared'){
+   swapped=true;const filename=path.join(memory,${JSON.stringify(target==='index.md'?'index.md':'topics/project-map.md')});
+   fs.rmSync(filename,{force:true});execFileSync('mkfifo',[filename]);
+  }};
+  await assert.rejects(init.tool(job,'nozeli_project_map',{expectedVersion:inventory.map.expectedVersion,text:'Must not publish'}),{code:'PROJECT_INITIALIZATION_PATH_REJECTED'});
+  assert.equal(swapped,true);assert.equal(job.projectMap,undefined);assert.equal(job.projectMapPublication.state,'prepared');
+  assert.equal(fs.lstatSync(path.join(memory,${JSON.stringify(target==='index.md'?'index.md':'topics/project-map.md')})).isFIFO(),true);
+ `;
+ await promisify(execFile)(process.execPath,['--input-type=module','-e',script],{timeout:10000});
 });
 
 test('diagnostic admission excludes external refusal and held projects without creating owners',async()=>{

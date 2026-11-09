@@ -22,6 +22,16 @@
 //    on the open descriptor (fchmod), never a path re-resolution. Every
 //    operation rejects with EBADF after close so a recycled descriptor
 //    number is never touched.
+//  - chain.openFileSync(directory,name) → {statSync,readFileSync,closeSync},
+//    chain.renameSync(fromDirectory,fromName,toDirectory,toName), and
+//    chain.syncSync(directory): non-yielding pinned operations for bounded
+//    final compare/publication windows. Reads open O_NOFOLLOW|O_NONBLOCK;
+//    callers validate regular-file type, link count and size before reading.
+//    syncSync supplies the platform namespace durability barrier. No native
+//    fd paths escape the adapter. This excludes interleaving host JS writers,
+//    not writers in other processes; it is not a cross-process CAS primitive.
+//    The async chain.openFile also opens nonblocking to permit special-file
+//    refusal before any read, rather than hanging on an unopened FIFO.
 //
 // Durability scope: this contract provides no fsync barrier. Anchored
 // writes rely on the caller's durable intent manifest (reconcile on
@@ -67,7 +77,7 @@ export function unsupportedFilesystemAdapter(platform, reason, status = 'unsuppo
     contract: FILESYSTEM_CONTRACT,
     openAnchoredFile: async (root, rel) => reject('openAnchoredFile'),
     openWriteParent: async (root, rel) => reject('openWriteParent'),
-    chain: new Proxy({}, { get: (_target, operation) => async () => reject('chain.' + String(operation)) }),
+    chain: new Proxy({}, { get: (_target, operation) => String(operation).endsWith('Sync') ? () => reject('chain.' + String(operation)) : async () => reject('chain.' + String(operation)) }),
     status,
   };
 }

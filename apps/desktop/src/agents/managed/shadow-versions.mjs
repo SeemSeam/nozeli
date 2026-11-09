@@ -175,27 +175,27 @@ export class ShadowVersions {
   async persistRequest(requestId, record) { await this.storage.putProject(this.projectId, 'version_requests', requestId, record); }
 
   // Stage frozen bytes into the bare repo with a dedicated temp index and
-  // verify each staged blob against the frozen digest. Every scratch name is
-  // unique per staging attempt: two instances resuming the same prepared
-  // request never write through one another's index or blob files.
-  async stageEntries(requestId, entries, meta) {
+  // verify each staged blob against the frozen digest. UUID-only scratch
+  // tokens bound filenames independently of request ID length and separate
+  // concurrent attempts; request identity stays in persisted records/meta.
+  async stageEntries(entries, meta) {
     this.requestsDir = path.join(await this.storage.localDirectory(this.projectId), 'versions-staging');
     const token = randomUUID();
-    const tmpIndex = path.join(this.requestsDir, `${requestId}.${token}.index`);
+    const tmpIndex = path.join(this.requestsDir, `${token}.index`);
     await fs.mkdir(path.dirname(tmpIndex), { recursive: true });
     const indexEnv = { GIT_INDEX_FILE: tmpIndex };
     try {
       for (const entry of entries) {
         const bytes = await this.storage.readObject(this.projectId, entry.digest);
         if (digest(bytes) !== entry.digest) fail('CHECKPOINT_DATA_LOST', '定格材料校验失败：' + entry.relPath);
-        const file = path.join(this.requestsDir, `${requestId}.${token}.${entry.digest}.blob.tmp`);
+        const file = path.join(this.requestsDir, `${token}.${entry.digest}.blob.tmp`);
         await fs.writeFile(file, bytes, { mode: 0o600 });
         let sha;
         try { sha = (await this.git(['hash-object', '-w', file], { extra: indexEnv })).toString().trim(); }
         finally { await fs.rm(file, { force: true }); }
         await this.git(['update-index', '--add', '--cacheinfo', `100644,${sha},${entry.relPath}`], { extra: indexEnv });
       }
-      const tmpMeta = path.join(this.requestsDir, `${requestId}.${token}.meta.json`);
+      const tmpMeta = path.join(this.requestsDir, `${token}.meta.json`);
       await fs.writeFile(tmpMeta, JSON.stringify(meta, null, 2));
       const metaSha = (await this.git(['hash-object', '-w', tmpMeta], { extra: indexEnv })).toString().trim();
       await fs.rm(tmpMeta, { force: true });
@@ -259,7 +259,7 @@ export class ShadowVersions {
       const entries = prior.entries.map(e => ({ ...e }));
       const docs = prior.docs || docsFromEntries(entries);
       const meta = { checkpointRequestId: requestId, workId: prior.workId, workName: prior.workName, createdAt: prior.createdAt, docs };
-      const tree = await this.stageEntries(requestId, entries, meta);
+      const tree = await this.stageEntries(entries, meta);
       const { commit } = await this.publishWithCAS(requestId, docs, tree, `Nozeli checkpoint ${requestId}\n\nwork: ${prior.workId || ''}\n`);
       const record = { ...prior, status: 'committed', commit, tree, publishedAt: new Date().toISOString() };
       await this.persistRequest(requestId, record);
@@ -276,7 +276,7 @@ export class ShadowVersions {
       payloadDigest: frozen.payloadDigest, entries, docs, createdAt,
     });
     const meta = { checkpointRequestId: requestId, workId: frozen.workId, workName: frozen.workName, createdAt, docs };
-    const tree = await this.stageEntries(requestId, frozen.entries, meta);
+    const tree = await this.stageEntries(frozen.entries, meta);
     const { commit } = await this.publishWithCAS(requestId, docs, tree, `Nozeli checkpoint ${requestId}\n\nwork: ${frozen.workId || ''}\n`);
     const record = { requestId, status: 'committed', workId: frozen.workId, workName: frozen.workName, payloadDigest: frozen.payloadDigest, entries, docs, tree, commit, createdAt, publishedAt: new Date().toISOString() };
     await this.persistRequest(requestId, record);

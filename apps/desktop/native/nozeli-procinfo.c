@@ -67,7 +67,8 @@
 //       current process; non-zero exit if any core fact source is unusable.
 //
 // Exit codes: 0 = facts emitted (per-pid gone/denied are facts, not errors),
-// 1 = usage error, 2 = a required kernel interface failed globally.
+// 1 = usage error, 2 = a required kernel fact could not be verified. A failed
+// identity query or incomplete table snapshot never proves absence.
 //
 // Every string is JSON-escaped with a UTF-8 validator: valid sequences pass
 // through untouched; invalid bytes become \ufffd. ASCII payloads (the env-tag
@@ -149,12 +150,22 @@ static void line_flush(void) {
 
 // Whole-process facts from kinfo_proc — readable for every process on the
 // system regardless of owner (the /proc/<pid>/stat equivalent).
+// Returns 0 for present, 1 only for kernel-confirmed absence. Unreadable or
+// malformed identity facts abort the command, including batched queries.
 static int kinfo_for_pid(pid_t pid, struct kinfo_proc *out) {
   int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, pid};
   size_t len = sizeof *out;
   memset(out, 0, len);
-  if (sysctl(mib, 4, out, &len, NULL, 0) != 0) return -1;
-  if (len < sizeof *out || out->kp_proc.p_pid != pid) return -1;
+  if (sysctl(mib, 4, out, &len, NULL, 0) != 0) {
+    if (errno == ESRCH || errno == ENOENT) return 1;
+    fprintf(stderr, "nozeli-procinfo: KERN_PROC_PID %ld failed: %s\n", (long)pid, strerror(errno));
+    exit(2);
+  }
+  if (len == 0) return 1;
+  if (len != sizeof *out || out->kp_proc.p_pid != pid) {
+    fprintf(stderr, "nozeli-procinfo: KERN_PROC_PID %ld returned invalid identity facts\n", (long)pid);
+    exit(2);
+  }
   return 0;
 }
 
@@ -358,23 +369,41 @@ static void emit_scan(int argc, char **argv) {
   int with_argv = flag_present(argc, argv, "--argv");
   int with_paths = flag_present(argc, argv, "--paths");
   int mib[3] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL};
-  size_t len = 0;
-  if (sysctl(mib, 3, NULL, &len, NULL, 0) != 0) {
-    fprintf(stderr, "nozeli-procinfo: KERN_PROC_ALL sizing failed: %s\n", strerror(errno));
-    exit(2);
-  }
   struct kinfo_proc *procs = NULL;
   size_t count = 0;
+  int complete = 0;
   for (int round = 0; round < 4; round++) {
-    if (len == 0) break;
-    procs = malloc(len);
-    if (!procs) exit(2);
-    if (sysctl(mib, 3, procs, &len, NULL, 0) == 0) { count = len / sizeof(struct kinfo_proc); break; }
-    free(procs); procs = NULL;
-    if (errno != ENOMEM) {
-      fprintf(stderr, "nozeli-procinfo: KERN_PROC_ALL failed: %s\n", strerror(errno));
+    size_t len = 0;
+    if (sysctl(mib, 3, NULL, &len, NULL, 0) != 0) {
+      fprintf(stderr, "nozeli-procinfo: KERN_PROC_ALL sizing failed: %s\n", strerror(errno));
       exit(2);
     }
+    // A size probe is not a snapshot. Even a zero estimate must be followed
+    // by a data read; this running helper itself makes an empty table invalid.
+    size_t capacity = len ? len : sizeof(struct kinfo_proc);
+    procs = malloc(capacity);
+    if (!procs) exit(2);
+    len = capacity;
+    if (sysctl(mib, 3, procs, &len, NULL, 0) == 0) {
+      if (len == 0 || len > capacity || len % sizeof(struct kinfo_proc) != 0) {
+        fprintf(stderr, "nozeli-procinfo: KERN_PROC_ALL returned an invalid snapshot\n");
+        free(procs);
+        exit(2);
+      }
+      count = len / sizeof(struct kinfo_proc);
+      complete = 1;
+      break;
+    }
+    int error = errno;
+    free(procs); procs = NULL;
+    if (error != ENOMEM) {
+      fprintf(stderr, "nozeli-procinfo: KERN_PROC_ALL failed: %s\n", strerror(error));
+      exit(2);
+    }
+  }
+  if (!complete) {
+    fprintf(stderr, "nozeli-procinfo: KERN_PROC_ALL retry limit reached without a complete snapshot\n");
+    exit(2);
   }
   uid_t me = getuid();
   for (size_t i = 0; i < count; i++) {

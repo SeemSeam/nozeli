@@ -97,25 +97,23 @@ export class ProjectInitialization {
   try{
   await this.assert(job);
   const content='# Project map\n\n'+args.text+'\n\n## Host source spans and coverage\n\n```json\n'+JSON.stringify({schema:1,projectInstanceId:job.context.projectInstanceId,sources:run.sources,coverage:this.coverage(run)},null,2)+'\n```\n';
-  // The final CAS/publication still prevents another host editor from
-  // interleaving between compare and rename, but every step runs through the
-  // pinned descriptors (openExclusive/openFile/rename/sync): no
-  // consumer-composed path can redirect the publication window, and the
-  // file-data plus namespace barriers are the platform durability primitives.
+  // Only this bounded final read/compare/publication window is synchronous:
+  // another host JS editor cannot interleave. This is not cross-process CAS.
+  // All operations stay inside the platform's pinned-descriptor boundary.
   const prepare=async(pin,name,bytes)=>{const handle=await chain.openExclusive(pin.handle,name,{mode:0o600});try{await handle.writeFile(bytes);await handle.sync();}finally{await handle.close();}};
-  const read=async(pin,name)=>{let handle;try{handle=await chain.openFile(pin.handle,name);const stat=await handle.stat();if(!stat.isFile()||Number(stat.nlink)!==1||Number(stat.size)>64000)fail('PROJECT_INITIALIZATION_PATH_REJECTED');return await handle.readFile();}catch(e){if(e.code==='ENOENT')return null;throw e;}finally{if(handle)await handle.close();}};
+  const read=(pin,name)=>{let handle;try{handle=chain.openFileSync(pin.handle,name);const stat=handle.statSync();if(!stat.isFile()||Number(stat.nlink)!==1||Number(stat.size)>64000)fail('PROJECT_INITIALIZATION_PATH_REJECTED');return handle.readFileSync();}catch(e){if(e.code==='ENOENT')return null;throw e;}finally{if(handle)handle.closeSync();}};
   const version=digest(content),needsLink=!run.indexText.includes('](topics/project-map.md)'),indexText=needsLink?run.indexText+'\n- [Project map](topics/project-map.md)\n':run.indexText;
   await c.store.mutate(()=>{c.store.state.jobs.find(j=>j.id===job.id).projectMapPublication={state:'prepared',expectedVersion:args.expectedVersion,version,indexVersion:run.indexVersion};});
   await prepare(topicPin,topicTemporary,content);
   if(needsLink)await prepare(indexPin,indexTemporary,indexText);
   await this.assert(job);
-  const current=await read(topicPin,'project-map.md'),indexBytes=await read(indexPin,'index.md');
+  const current=read(topicPin,'project-map.md'),indexBytes=read(indexPin,'index.md');
   if((current===null?'absent':digest(current))!==args.expectedVersion||(indexBytes===null?null:digest(indexBytes))!==run.indexVersion)fail('PROJECT_INITIALIZATION_MAP_CONFLICT');
   // Link first: interruption can leave an explicit missing topic, never an
   // unreachable generated map. Only the existing job receipt claims success.
   // A retry re-reads both files and respects all subsequent user corrections.
-  if(needsLink){await chain.rename(indexPin.handle,indexTemporary,indexPin.handle,'index.md');await chain.sync(indexPin.handle);}
-  await chain.rename(topicPin.handle,topicTemporary,topicPin.handle,'project-map.md');await chain.sync(topicPin.handle);
+  if(needsLink){chain.renameSync(indexPin.handle,indexTemporary,indexPin.handle,'index.md');chain.syncSync(indexPin.handle);}
+  chain.renameSync(topicPin.handle,topicTemporary,topicPin.handle,'project-map.md');chain.syncSync(topicPin.handle);
   run.mapVersion=version;run.indexVersion=digest(indexText);run.indexText=indexText;
   await c.store.mutate(()=>{const saved=c.store.state.jobs.find(j=>j.id===job.id);saved.projectMapPublication.state='durable';saved.projectMap={path:'topics/project-map.md',version,coverage:this.coverage(run)};});
   return {saved:true,path:'topics/project-map.md',version,hostControl:true};

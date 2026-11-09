@@ -148,6 +148,7 @@ const SUITES = {
       'collab-controller-projection.test.mjs',
       'core-file-stream.test.mjs',
       'curation-presentation.test.mjs',
+      'darwin-procinfo-native.test.mjs',
       'discussion-thread-transcript.test.mjs',
       'document-authorship.test.mjs',
       'document-image.test.mjs',
