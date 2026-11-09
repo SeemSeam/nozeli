@@ -44,11 +44,17 @@ test('legacy proven incomplete migrates, ambiguous labels remain fenced, complet
 test('only complete host finalization marks ended, archive failure retains closing and slot',async t=>{
  const f=await fixture(t),store=f.store,w=f.work;
  await store.end(w.id,{by:'user',decision:'discard',revision:w.revision,binding:dispositionBinding(w),requestKey:'discard-request-1'});
- const c=new Controller(store);c.changed=()=>{};c.kick=()=>{};c.timeline={drain:async()=>{}};
+ const c=new Controller(store),visible=[];c.changed=()=>visible.push({status:w.status,phase:w.closure.phase,stopped:w.closure.stopped===true,gitComplete:w.closure.git?.complete===true});c.kick=()=>{};c.timeline={drain:async()=>{}};
  c.execution={finish:async()=>({cleaned:true,status:'discarded'})};store.archiveReport=async()=>{};store.cleanupWorkerHome=async()=>{};
  let fail=true;store.updateClosureArchive=async()=>{if(fail)throw Object.assign(Error('archive unavailable'),{code:'MERGE_CONSENT_REQUIRED'});};
  await c.finishClosure(w.id);assert.equal(w.status,'closing');assert.equal(w.closure.phase,'blocked');assert.equal(w.endedAt,undefined);assert.equal(store.used(),1);
  fail=false;await c.finishClosure(w.id);assert.equal(w.status,'ended');assert.equal(w.closure.phase,'complete');assert.equal(w.endedAt,w.closure.completedAt);assert.equal(store.used(),0);
+ assert(visible.some(f=>f.phase==='stopping'&&f.status==='closing'&&!f.stopped),'stop progress is published before the stop completes');
+ assert(visible.some(f=>f.phase==='report'&&f.stopped&&!f.gitComplete),'verified stop and pending report/integration are visible');
+ assert(visible.some(f=>f.phase==='integrating'&&f.status==='closing'&&!f.gitComplete),'integration is not presented as complete in advance');
+ assert(visible.some(f=>f.phase==='cleanup'&&f.status==='closing'&&f.gitComplete),'integration completion does not hide remaining cleanup');
+ assert(visible.some(f=>f.phase==='blocked'&&f.status==='closing'),'failed final archival remains visibly blocked');
+ assert(visible.some(f=>f.phase==='complete'&&f.status==='ended'),'only final durable closure publishes ended');
 });
 
 test('restart admits only unsent queue normally and preserves original native recovery identity and manual pause',()=>{

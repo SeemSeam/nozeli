@@ -37,73 +37,47 @@ async function fixture(t){
 }
 async function versionOf(c,objectId){return (await c.reviewRead({objectId})).reviewVersion;}
 
-test('discussion read exposes real host records with bounded ascending pagination and no provider startup',async t=>{
+test('discussion reads the exact scoped timeline, never mutable request metadata, with original cursors',async t=>{
   const {c,w,objectId}=await fixture(t);
-  const dto=await c.reviewDiscussionRead({objectId});
-  assert.equal(dto.workId,w.id);assert.equal(dto.objectId,objectId);assert.equal(dto.latestObjectId,objectId);
-  assert.equal(dto.canSend,true);assert.deepEqual(dto.reasons,[]);assert.equal(dto.active,false);assert.equal(dto.queued,0);
-  assert.equal(dto.pageStart,0);assert.equal(dto.latestCursor,null);assert.ok(dto.total>=3);
-  assert.equal(dto.entries[0].source,'work-request');assert.equal(dto.entries[0].text,'整理阅读笔记并产出markdown');
-  assert.equal(dto.entries[1].source,'work-handoff');assert.equal(dto.entries[1].speaker,'orchestrator');assert.equal(dto.entries[1].text,'worker brief for discussion');
-  const publication=dto.entries.find(e=>e.source==='publication');
-  assert.ok(publication);assert.equal(publication.objectId,objectId);assert.equal(publication.publication,'result');assert.equal(publication.text,null);
-  for(const [index,entry] of dto.entries.entries())assert.equal(entry.seq,index);
-  // 有界分页：limit切片 + 稳定数值游标 + latestCursor 指向最后一页。
-  const first=await c.reviewDiscussionRead({objectId,limit:2});
-  assert.equal(first.entries[0].seq,0);
-  assert.equal(typeof first.nextCursor,'string');assert.ok(first.latestCursor&&Number(first.latestCursor)>0);
-  const second=await c.reviewDiscussionRead({objectId,limit:2,cursor:first.nextCursor});
-  assert.equal(second.pageStart,2);assert.equal(second.entries[0].seq,2);
-  const latest=await c.reviewDiscussionRead({objectId,limit:2,cursor:first.latestCursor});
-  assert.equal(latest.pageStart,Number(first.latestCursor));assert.equal(latest.entries.at(-1).seq,dto.total-1);
-  // 读取绝不初始化provider会话。
+  await c.store.mutate(()=>{
+    for(let index=0;index<8;index++)c.store.state.messages.push({id:'original-'+index,target:w.id,speaker:'user',text:index===0?'原请求':'原记录 '+index});
+    c.store.state.messages.push({id:'foreign',target:'other-work',speaker:'user',text:'不可泄露'});
+  });
+  const before=await c.reviewDiscussionRead({objectId,limit:2});
+  assert.deepEqual(before.taskFrame,await c.timeline.page({workId:w.id,limit:2}));
+  assert.deepEqual(before.taskScope,{workId:w.id,sourceJobId:null});
+  assert.equal(before.readingObject.objectId,objectId);
+  assert.equal(before.taskFrame.hasMore,true);assert.match(before.taskFrame.nextCursor,/^scope:.*:before:/);
+  const ids=new Set();let cursor=null;
+  do{
+    const dto=await c.reviewDiscussionRead({objectId,limit:2,cursor});
+    for(const entry of dto.taskFrame.entries){assert.equal(ids.has(entry.id),false);ids.add(entry.id);}
+    cursor=dto.taskFrame.nextCursor;
+  }while(cursor);
+  assert.ok(ids.has('original-0'));assert.equal(ids.has('foreign'),false);
+  assert.equal([...ids].some(id=>id.startsWith('work-request:')||id.startsWith('work-handoff:')),false);
+  await c.store.mutate(()=>{w.request='变更请求';w.brief='变更brief';});
+  const reopened=await c.reviewDiscussionRead({objectId,limit:2});
+  assert.deepEqual(reopened.taskFrame,before.taskFrame);
+  assert.equal(JSON.stringify(reopened.taskState).includes('变更brief'),false);
+  await assert.rejects(c.reviewDiscussionRead({objectId,cursor:'2'}),error=>error.code==='TIMELINE_PAGE');
   assert.equal(c.sessions.size,0);
 });
 
-test('discussion read projects real native worker replies with identity-only dedup and host-role classification',async t=>{
+test('discussion preserves live and canonical timeline replacement identity without cross-Work streams',async t=>{
   const {c,w,objectId}=await fixture(t);
-  const reviewVersion=await versionOf(c,objectId);
-  const sent=await c.reviewDiscussionSend({objectId,reviewVersion,requestKey:'discuss-native-01',text:'请核对第二节'});
-  const job=c.store.state.jobs.find(j=>j.id===sent.jobId);
-  // 原生timeline已接受可见回复：portableMessages=真实Pi记录投影（精确原文/
-  // 原ID/原摘要；工具与元数据行已在timeline侧过滤，不进此通道）。
-  await c.store.mutate(()=>{
-    c.store.state.sessionIndex??={version:1,sequence:0,entries:[],messageSequences:{},deltas:[]};
-    c.store.state.sessionIndex.entries.push({id:'native-abc',sessionId:'thread-1',entryId:'e-1',target:w.id,workId:w.id,revision:1,jobId:job.id,speaker:'agent',sequence:7,recordKind:'conversation',source:'native',at:new Date().toISOString()});
-    c.store.state.sessionIndex.portableMessages??=[];
-    c.store.state.sessionIndex.portableMessages.push({id:'native-abc',target:w.id,speaker:'agent',text:'已核对：第二节引用与冻结证据一致。',jobId:job.id,revision:1,at:new Date().toISOString(),status:'completed',nativeEntryDigest:'feedbeef'});
-    // 同一原生身份的重录（不同行id、相同nativeEntryDigest）=同一记录，折叠。
-    c.store.state.sessionIndex.portableMessages.push({id:'native-abc-replay',target:w.id,speaker:'agent',text:'已核对：第二节引用与冻结证据一致。',jobId:job.id,revision:1,status:'completed',nativeEntryDigest:'feedbeef'});
-    // 相同正文的不同原生身份=两条真实回复，绝不按内容折叠。
-    c.store.state.sessionIndex.portableMessages.push({id:'native-repeat-text',target:w.id,speaker:'agent',text:'已核对：第二节引用与冻结证据一致。',jobId:job.id,revision:1,status:'completed',nativeEntryDigest:'cafebabe'});
-    c.store.state.sessionIndex.portableMessages.push({id:'native-other',target:'other-work',speaker:'agent',text:'别的工作的回复',jobId:null,status:'completed'});
-    // 宿主代发的初始交接（user行绑定initial job）按messageRole显示为主控。
-    c.store.state.messages.push({id:'initial-input',target:w.id,speaker:'user',text:'初始交接正文（宿主代发）',jobId:'report-job'});
-  });
-  const dto=await c.reviewDiscussionRead({objectId});
-  const reply=dto.entries.find(e=>e.id==='native-abc');
-  assert.ok(reply,'native worker reply must be projected from real records');
-  assert.equal(reply.speaker,'worker');assert.equal(reply.text,'已核对：第二节引用与冻结证据一致。');
-  assert.equal(reply.source,'review-discussion');assert.equal(reply.status,'completed');
-  assert.equal(reply.nativeEntryDigest,'feedbeef');assert.equal(reply.jobId,job.id);
-  assert.equal(reply.sessionId,'thread-1','read markers use the exact native session, not current Work identity');
-  assert.equal(dto.entries.find(e=>e.id==='native-repeat-text').sessionId,undefined,'missing native ownership must not fabricate a read identity');
-  assert.equal(dto.entries.some(e=>e.id==='native-abc-replay'),false,'same native identity (digest) collapses');
-  const repeat=dto.entries.find(e=>e.id==='native-repeat-text');
-  assert.ok(repeat,'same text with a different native identity stays a real separate reply');
-  assert.equal(repeat.speaker,'worker');assert.equal(repeat.nativeEntryDigest,'cafebabe');
-  assert.equal(dto.entries.some(e=>e.id==='native-other'),false);
-  const handoff=dto.entries.find(e=>e.id==='initial-input');
-  assert.equal(handoff.speaker,'orchestrator','host-authored initial handoff shows as 主控 per messageRole');
-  assert.equal(handoff.source,'user-input');
-  const mine=dto.entries.findIndex(e=>e.source==='review-discussion'&&e.speaker==='user');
-  assert.ok(mine>=0&&dto.entries.findIndex(e=>e.id==='native-abc')>mine,'native reply follows the user message in timeline order');
-  // 流式回复不投影：本读取只反映durable已接受事实（canonical替换身份就绪前）。
-  c.timeline.streams.set('stream-1',{id:'stream-1',entryId:'e-2',sessionId:'thread-1',epoch:1,requestId:'r-1',jobId:job.id,target:w.id,entryType:'message',recordKind:'conversation',revision:1,workId:w.id,speaker:'agent',text:'正在核对第三节……',source:'native',streaming:true,sequence:Number.MAX_SAFE_INTEGER});
-  try{
-    const durableOnly=await c.reviewDiscussionRead({objectId});
-    assert.equal(durableOnly.entries.some(e=>e.id==='stream-1'),false);
-  }finally{c.timeline.streams.delete('stream-1');}
+  const stream={id:'stream-1',jobId:'report-job',target:w.id,workId:w.id,speaker:'agent',text:'正在核对',streaming:true,sequence:Number.MAX_SAFE_INTEGER};
+  c.timeline.streams.set(stream.id,stream);
+  c.timeline.streams.set('foreign',{...stream,id:'foreign',target:'other-work',workId:'other-work',jobId:'other-job'});
+  const live=await c.reviewDiscussionRead({objectId});
+  assert.deepEqual(live.taskFrame,await c.timeline.page({workId:w.id,limit:50}));
+  assert.equal(live.taskFrame.entries.filter(entry=>entry.id===stream.id).length,1);
+  assert.equal(live.taskFrame.entries.some(entry=>entry.id==='foreign'),false);
+  c.timeline.streams.delete(stream.id);c.timeline.streams.delete('foreign');
+  await c.store.mutate(()=>{c.store.state.messages.push({...stream,streaming:false,complete:true,text:'已核对'});});
+  const canonical=await c.reviewDiscussionRead({objectId});
+  assert.equal(canonical.taskFrame.entries.filter(entry=>entry.id===stream.id).length,1);
+  assert.equal(canonical.taskFrame.entries.find(entry=>entry.id===stream.id).streaming,false);
 });
 
 test('pure discussion send keeps one Work, one revision and never forces a new report for unchanged answers',async t=>{
@@ -126,17 +100,17 @@ test('pure discussion send keeps one Work, one revision and never forces a new r
   assert.equal(w.status,'review');
   // 条目实时推导：讨论用户消息带queued/运行状态；worker回复按jobId归入讨论。
   const dto=await c.reviewDiscussionRead({objectId});
-  const mine=dto.entries.find(e=>e.id===userMessage.id);
-  assert.equal(mine.source,'review-discussion');assert.equal(mine.status,'queued');
+  const mine=dto.taskFrame.entries.find(e=>e.id===userMessage.id);
+  assert.equal(mine.source,'host');assert.equal(dto.taskState.jobs.find(j=>j.id===job.id).status,'queued');
   await c.store.mutate(()=>{
     const saved=c.store.state.jobs.find(j=>j.id===job.id);saved.status='completed';saved.finishedAt=new Date().toISOString();
     c.store.state.messages.push({id:'reply-1',target:w.id,speaker:'agent',text:'已解释：依据是原文第二节的对照实验。',jobId:job.id});
   });
   const after=await c.reviewDiscussionRead({objectId});
-  const mineAfter=after.entries.find(e=>e.id===userMessage.id);
-  assert.equal(mineAfter.status,'completed');
-  const reply=after.entries.find(e=>e.id==='reply-1');
-  assert.equal(reply.source,'review-discussion');assert.equal(reply.speaker,'worker');assert.equal(reply.status,'completed');
+  const mineAfter=after.taskFrame.entries.find(e=>e.id===userMessage.id);
+  assert.equal(mineAfter.id,mine.id);assert.equal(after.taskState.jobs.find(j=>j.id===job.id).status,'completed');
+  const reply=after.taskFrame.entries.find(e=>e.id==='reply-1');
+  assert.equal(reply.source,'host');assert.equal(reply.speaker,'agent');assert.equal(reply.jobId,job.id);
 });
 
 test('discussion send is idempotent by exact digest and the host receipt precheck replays the original acceptance',async t=>{
@@ -165,12 +139,27 @@ test('stale reviewVersion binds the manual-draft baseline: reject, never silentl
   assert.equal(c.store.state.jobs.filter(j=>j.context?.reviewDiscussion).length,0);
 });
 
-test('discussion send with saved drafts applies them through the continuation machinery and requires a fresh matching publication',async t=>{
+test('ordinary discussion with a saved manual draft preserves execution bytes and revision',async t=>{
+ const {c,w,objectId,dir}=await fixture(t);
+ const human='# Saved locally, not authorized for execution\n';
+ await c.reviewSave({objectId,relPath:'reading.md',text:human,expectedDraftRevision:0});
+ const draftBefore=structuredClone(w.review.drafts['reading.md']);
+ const p={objectId,reviewVersion:await versionOf(c,objectId),requestKey:'question-with-draft-01',text:'请解释原候选的依据，不交回人工稿'};
+ const sent=await c.reviewDiscussionSend(p);
+ assert.equal(sent.accepted,true);assert.equal(w.revision,1);
+ assert.equal(await fs.readFile(path.join(dir,'reading.md'),'utf8'),CANDIDATE_MD);
+ assert.deepEqual(w.review.drafts['reading.md'],draftBefore);
+ assert.equal((w.review.continuations||[]).length,0);
+ await assert.rejects(c.reviewDiscussionSend({...p,applyDrafts:true}),{code:'REVIEW_REQUEST_COLLISION'});
+ assert.throws(()=>c.reviewDiscussionReceipt({...p,workId:w.id,applyDrafts:true}),{code:'REVIEW_REQUEST_COLLISION'});
+});
+
+test('explicit version-bound manual-draft handback applies the confirmed draft and requires a fresh publication',async t=>{
   const {c,w,objectId,dir}=await fixture(t);
   const human='# 人工修订\n\n确认正文 HUMAN-REVIEWED。\n';
   await c.reviewSave({objectId,relPath:'reading.md',text:human,expectedDraftRevision:0});
   const fresh=await versionOf(c,objectId);
-  const sent=await c.reviewDiscussionSend({objectId,reviewVersion:fresh,requestKey:'discuss-draft-001',text:'请按我改的版本继续'});
+  const sent=await c.reviewDiscussionSend({objectId,reviewVersion:fresh,requestKey:'discuss-draft-001',text:'请按我改的版本继续',applyDrafts:true});
   assert.equal(sent.accepted,true);
   assert.equal(await fs.readFile(path.join(dir,'reading.md'),'utf8'),human);
   assert.equal(w.revision,2);assert.equal(w.status,'running');
@@ -188,7 +177,7 @@ test('discussion send with saved drafts applies them through the continuation ma
   assert.equal(c.store.state.receipts.find(r=>r.objectId===objectId).stale.code,'SUPERSEDED');
   await assert.rejects(c.reviewAccept({objectId,reviewVersion:fresh,requestKey:'accept-blocked-1'}),error=>error.code==='REVIEW_CANDIDATE_STALE');
   // 宿主幂等回执同样覆盖带草稿的讨论续作。
-  const receipt=await c.reviewDiscussionReceipt({objectId,reviewVersion:fresh,requestKey:'discuss-draft-001',text:'请按我改的版本继续',workId:w.id});
+  const receipt=await c.reviewDiscussionReceipt({objectId,reviewVersion:fresh,requestKey:'discuss-draft-001',text:'请按我改的版本继续',workId:w.id,applyDrafts:true});
   assert.equal(receipt.jobId,sent.jobId);assert.equal(receipt.duplicate,true);
   // Worker 在同一Work发布v2（同线程同Work，不新建Work）。
   const worksBefore=c.store.state.works.length;
@@ -289,7 +278,7 @@ test('pure messages queue durably behind an active discussion round: FIFO single
   // 队列进行中拒绝并发草稿apply（显式安全边界），纯文本已排队不受影响。
   await c.reviewSave({objectId,relPath:'reading.md',text:'# 排队期间的草稿\n',expectedDraftRevision:0});
   const queuedVersion=await versionOf(c,objectId);
-  await assert.rejects(c.reviewDiscussionSend({objectId,reviewVersion:queuedVersion,requestKey:'discuss-q-0004',text:'带草稿的排队'}),error=>error.code==='WORK_BUSY');
+  await assert.rejects(c.reviewDiscussionSend({objectId,reviewVersion:queuedVersion,requestKey:'discuss-q-0004',text:'带草稿的排队',applyDrafts:true}),error=>error.code==='WORK_BUSY');
   // 队列在飞时接受保持阻断；全部结算后恢复review。
   await assert.rejects(c.reviewAccept({objectId,reviewVersion:queuedVersion,requestKey:'accept-q-0001'}),error=>error.code==='DISCUSSION_ACTIVE');
   await c.store.mutate(()=>{for(const j of queue){j.status='completed';j.finishedAt=new Date().toISOString();}});

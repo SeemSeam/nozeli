@@ -882,3 +882,23 @@ ownerId／generation、PID与进程树、spawn reservation、exit confirmation�
 - [ ] 宿主只读接口实测不创建Controller／owner、不中断或唤醒Agent、不调用backstage／observe、不改ack或待办账本；不能用当前managed.status初始化路径的存在代替该证明。
 
 以上清单保留完整设计验收目标；本轮已运行、已安装及未验边界以§12.0实施证据为准，不以历史Linux通过记录替代未执行的人机或跨平台矩阵。
+
+## 13. 永久清除项目状态与确认数字徽章（2026-11-07，源码修复，未安装／未提交）
+
+用户明确以本节取代旧归档式重置，以及§12的未知问号／省略号／陈旧数字展示。当前已安装的上一版本不会因源码修改自动改变；未在日常用户项目执行重置、未安装、未提交或推送。
+
+### 行为切换
+
+- `project-attention.mjs/.css`仅在完整、未过期且无不一致的权威正数时显示单个红圈数字，0／加载／未知／失败／过期均无可见徽章，不将未知改写成健康0；ARIA／tooltip仍如实说明状态。去掉单独小点与陈旧数fallback。1位圆圈、长数自适应，99+不裁切。
+- 去掉每秒只检查过期而不更新的interval。基于deadline合并纯只读摘要刷新，仅前台可见、有焦点且非IME时执行；失败最多2秒／10秒两次有限重试，之后等待focus/event恢复。没有模型调用、项目切换或自动开栏。
+- `permanent-project-reset.mjs`替代归档式实现：预览并绑定同root／同目录实体的现有与退役身份、metadata、所有instance/recovery、旧reset归档及可核验初始化/临时目录；清除前按所有权校验受管worktree/ref并解除登记，不影响用户Git资源或其他项目。共享instance别名、未知worktree、链接／身份冲突均拒绝。
+- `project-lifecycle`冻结全部关联身份，显式要求`confirmPermanentDelete:true`，停稳、drain、flush、数据库关闭与资源核验后才删除；原生关闭的`strictStop:true`不再吞终端清理失败。清除后再创建新project/instance；catalog保留仅最小阶段回执/围栏，旧业务档案不保留、不重新建立旧recovery。部分失败跨冷启动仍阻断，仅只读核验，不盲重放。
+- UI菜单为“永久清除状态并重新打开…”，确认页展示范围和不可恢复影响，用户需亲自勾选；未发送稿、未采纳候选及旧恢复副本明确删除。实际文件、已采纳内容、用户Git、全局账号/API/模型及其他项目保留；取消或未确认均不执行。
+
+### 已执行验证
+
+- renderer构建通过。生命周期reset/admission/其他清理、项目摘要/徽章与workspace-native定向安全回归128/128通过；覆盖多代归档、空新身份、受管worktree/ref、用户/其他项目/全局哨兵、stop/save/close故障、symlink、scope竞态、共享instance、部分失败/冷fence、strict terminal close、TTL/前后台/IME/有限重试等行为。不表示全仓测试已跑。
+- 真实Electron临时项目＋SQLite＋真实Git＋实际交互PTY：`/tmp/nozeli-permanent-reset-yiq2HD/report.json`，4组通过；终端PID身份退出确认后旧current/retired local和recovery、旧对象和归档全部消失，新id自动打开；原论文和Git HEAD不变，other项目草稿/UI保留，正常exit0。实际确认页／新项目截图已查看。没有真实账号或模型请求。
+- 真实跨项目徽章：`/tmp/nozeli-project-attention-rCTiR8/report.json`，6组通过；2/100/0独立显示2/99+/隐藏，ack不结算；目录暂失时无可见徽章但内部状态未知，恢复后0仍隐藏；前台空闲65秒后真实纯读刷新保持正数、零不变问号。四主题、390/320px、真实Electron200%缩放和键盘焦点返回通过，原业务记录/文件不变，零新job/messages。红圈数字对比度最低6.52:1；已实际查看正数及无信息截图。
+- 边界：Linux限定。未验Windows/macOS、实机读屏/完整IME候选窗，以及日常用户项目的所有外部writer组合。不能把安全拒绝解释为允许强删，也不承诺恢复已明确永久清除的业务数据。
+

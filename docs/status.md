@@ -1,14 +1,14 @@
 # 当前状态与能力边界
 
-状态基线：`0.1.0-alpha.6`（Alpha预发行，发行状态以[发布说明与发行边界](release.md)及GitHub发布页为准；所有者已针对本版本明确授权公开Alpha例外，六项分发审计仍未签收）。上游发行资格仅Linux；本工作树另有macOS arm64本机开发包与限定验收，不外推Windows或Mac公开分发资格。
+状态基线：`0.1.0-beta.1`（Linux x64＋macOS arm64双平台草稿准备，未公开发布）。用户于2026-11-10明确选择只准备草稿；六项分发审计仍pending，公开门阻断，alpha.6例外不适用于本版本。已合并mac支持为cb07c51；本轮同步本地Task／审核／过程／材料／提醒修复，最终提交及两平台真实包验收另行记录，不把旧版证据当本轮通过。Windows／Intel Mac／mac自动更新／Developer ID公证未提供。
 
 2026-11-09 **PR #27 跨平台整合候选安全修正**：保留原alpha.6 Linux主线与Mac arm64适配，修复最终初始化发布交错／FIFO阻塞、长请求ID暂存文件名、Darwin进程事实两处fail-open；内置reviewer已复审关闭发现。Linux干净依赖／Pi／Office／renderer构建和原PR解压包X11／Wayland真实保存冷恢复、HTML只读双guest通过；新增失败前／修正后回归保留。新增必须通过的macOS原生安全CI，编译及syscall注入测试只能由Darwin完成。当前仍是待CI和最终包验证的PR候选，不冒称Mac公开发行、Windows支持或自动更新／公证通过；未替换日常安装。详见[整合记录](testing.md#pr-27-主线整合安全复核2026-11-09)。
 
 
 2026-11-08 **简洁生命周期／自动恢复／项目初始化已按用户后续授权安装并完成Linux异常验收，未提交/发布**。current=`2026-11-08T08-52-12-275Z`，803份src/dist/Pi-src与源码构建一致，原日常版本仍保留。真实安装ELF八档自动保存时序/PPT退出保留、六种原生关闭故障、并发关闭/重置、PTY取消/清除、EACCES部分清除后SIGKILL冷恢复及真正替换实体拒绝删除通过；七格式独立窗口返回/resize/全屏通过，修复PDF双滚动尺寸反馈。初始化403故障门/显式解除原排队重试、取消晚到不发布、SIGKILL零静默重放、完成后冷开零推理通过。恢复定向回归59/59。日常项目未被破坏性测试，未强关原进程；Windows/macOS、真实断电/磁盘损坏/满盘及付费模型理解质量未验。[安装后证据](project-lifecycle-initialization-design.md#9-用户授权安装后的异常验收2026-11-08)。
 
-状态基线：`0.1.0-alpha.5`（Alpha预发行，发行状态以[发布说明与发行边界](release.md)及 GitHub 发布页为准；`v0.1.0-alpha.4` 已于 2026-11-01 公开发布）。能力以Linux x64/Wayland、X11/XWayland及GitHub Ubuntu/X11实际验证为准；Windows/macOS尚未验证，安装与打包工具仅实现Linux。
-状态基线：`0.1.0-alpha.5` 本地 Mac 开发线（原基线 `9215afafcb82c2b96b80acaa05e302db71228a07`）：新增 macOS arm64 原生安全文件／耐久性／进程归属与独立 ad-hoc `.app`，已在旧基线实际验证包内 Markdown 阅读、Command-S 保存、项目 zsh 终端与正常退出，以及本地 HTTP Provider 的 Pi 交接、发布、丢弃、冲突与生命周期。这些是 alpha.5 时代的本机证据，不冒称已在 alpha.6 基线复验，也不代表完整回归、真实模型质量、公证或公开发行资格。
+历史基线（非当前版本）：`0.1.0-alpha.5` 的 Linux x64/Wayland、X11/XWayland及GitHub Ubuntu/X11验证，当时安装与打包工具仅实现Linux。当前双平台草稿状态以上方Beta基线为准。
+历史 Mac 开发线：基于 `0.1.0-alpha.5`（`9215afafcb82c2b96b80acaa05e302db71228a07`）新增 macOS arm64 原生安全文件／耐久性／进程归属与独立 ad-hoc `.app`，已在该旧基线实际验证包内 Markdown 阅读、Command-S 保存、项目 zsh 终端与正常退出，以及本地 HTTP Provider 的 Pi 交接、发布、丢弃、冲突与生命周期。这些是 alpha.5 时代的本机证据，不代表本轮Beta回归、真实账号、Developer ID或Apple公证通过。
 
 2026-11-09 **Mac 已基于 alpha.6 构建与验收**：新工作树 `/Users/bfly/nozeli-macos-alpha6`（分支 `macos-alpha6`，基线 `v0.1.0-alpha.6` = `9a2466a847267620747b79f9c1b97fbac8f00280`），旧 `/Users/bfly/nozeli` 留存。交付 `dist/Nozeli-0.1.0-alpha.6-macos-arm64-verified/Nozeli.app`，独立Node/Git/Pi、原生文件／耐久性／进程适配、品牌图标与网页叠放修复均保留。完整默认unit798通过/1跳过、integration1873通过/25跳过，零失败；新增初始化／重置／退出合同29项全过。真实Mac包的受限skill初始化（403门控、取消、SIGKILL零重放）、永久重置＋PTY停稳、任务多轮／只读过程／冷恢复通过，只用合成项目与本地Provider。旧基线证据不冒作新验收；九格式显示矩阵仍在截图阶段超时，不能计通过。详见[测试记录](testing.md#alpha6-macos-本机迁移与验收2026-11-09)与 `.test-output/alpha6-acceptance/`。未提交、推送、安装到Applications或操作日常项目；ad-hoc签名，未公证。
 

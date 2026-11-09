@@ -23,7 +23,8 @@ await fs.mkdir(root);
 const relPath='笔记/访谈摘要.md';
 const source='# 组会材料\n\n访谈为合成样本：10人中8人来自同一实验室，未做长期追踪。\n';
 await fs.writeFile(path.join(root,'材料说明.md'),source);
-const host=new DesktopHost(profile),project=(await host.pick(root)).project;await host.storage.db.close();
+const host=new DesktopHost(profile),project=(await host.pick(root)).project;
+const registered=await host.storage.requireRegistered(project.id);registered.semanticInitializationEligible=false;await host.storage.db.request(host.storage.catalog,'put',{collection:'instances',id:project.id,value:registered});await host.storage.db.close();
 const request='请整理一份访谈摘要，说明主要发现、样本局限和还需核对的内容，供组会审阅。';
 const question='这里的十人样本为什么不能代表所有研究者？先解释，不要增加结论。';
 const modification='把结论写得更简洁，明确说明没有做长期追踪。';
@@ -157,11 +158,11 @@ try{
  for(const width of [1440,800]){await resize(width,width===800?650:900);await shot('01-报告主体与底部审核按钮-'+width,{floatVisible:false});}
  const firstDiscussion=await invoke(review,'managed.review.discussion.read',{projectId:project.id,workId:work.id,objectId:work.result.objectId,limit:100});
  const mainFrame=await invoke(shell,'managed.timeline.page',{projectId:project.id,limit:100}),mainRows=new Map(mainFrame.entries.map(row=>[row.id,row]));
- const workerRows=firstDiscussion.entries.filter(row=>row.speaker==='worker'&&row.source!=='publication');assert.equal(workerRows.length,2,'真实初稿回合有两段原生助手正文');
+ const workerRows=firstDiscussion.taskFrame.entries.filter(row=>row.speaker==='agent'&&row.target===work.id&&typeof row.text==='string'&&row.text.trim()&&!row.publication);assert.equal(workerRows.length,2,'真实初稿回合有两段原生助手正文');
  for(const row of workerRows){assert(mainRows.has(row.id),'同一原消息也在主对话canonical timeline');assert.equal(mainRows.get(row.id).text,row.text);assert.equal(row.workId,work.id);}
  await resize(1440,900);await shell.click('#workspace-open-conversation');const conversationPage=await activePage('conversation');
- await conversationPage.waitForSelector('.session-worker details > summary');const workerDetails=await conversationPage.$('.session-worker details');if(!await workerDetails.evaluate(node=>node.open))await conversationPage.click('.session-worker details > summary');
- await conversationPage.waitForFunction(text=>document.body.textContent.includes(text),{},workerRows[0].text);await conversationPage.$eval('.session-worker',node=>node.scrollIntoView({block:'start'}));
+ await conversationPage.waitForSelector('.session-task-card');
+ await conversationPage.waitForFunction(text=>document.body.textContent.includes(text),{},workerRows[0].text);await conversationPage.$eval('.session-task-card',node=>node.scrollIntoView({block:'start'}));
  await shot('00-主对话同一Work原始内容-1440',{page:conversationPage});
  await activateReview();await expectDiscussionVisible(false);await resize(800,650);
  const previewKey=await review.$eval('.managed-report-body .isolated-viewport',node=>node.dataset.previewKey),previewOrigin=(await invoke(review,'isolated-preview.snapshot',{key:previewKey})).origin;
@@ -183,14 +184,14 @@ try{
  const discussionScope=await discussion.evaluate(()=>window.__workspaceScope);assert.equal(discussionScope.workId,work.id);assert.equal(discussionScope.objectId,work.result.objectId);assert.equal(discussionScope.ownerSurfaceId,await review.evaluate(()=>window.__workspaceScope.viewId));
  await shot('01b-显式打开不重排报告-800',{floatVisible:true,distinctFrom:'01a-报告非零阅读位置-800'});report.layoutProof.afterOpen=await nativeReportLayout();assert.deepEqual(report.layoutProof.afterOpen,report.layoutProof.beforeOpen,'仅打开讨论不得改变原生viewport或报告文字行位置');
  await compareReportPixels('01a-报告非零阅读位置-800','01b-显式打开不重排报告-800');
- const reviewBubbles=await discussion.$$eval('[data-review-discussion-history] .tag-message-assistant',nodes=>nodes.map(node=>({ids:[...node.querySelectorAll('[data-message-id]')].map(n=>n.dataset.messageId),text:node.textContent})));
- assert(reviewBubbles.some(bubble=>workerRows.every(row=>bubble.ids.includes(row.id))),'同一真实回合两段正文在同一个AI气泡内，原消息ID不丢');
- report.steps.push({action:'核对主对话同一Work与审核窗口',workId:work.id,sourceMessageIds:workerRows.map(row=>row.id),sameTexts:true,singleReplyBubble:true});
+ const reviewMessages=await discussion.$$eval('[data-review-discussion-history] [data-message]',nodes=>nodes.map(node=>({id:node.dataset.message,text:node.textContent})));
+ for(const original of workerRows)assert(reviewMessages.some(message=>message.id===original.id&&message.text.includes(original.text)),'同一Task原消息在审核展开体保留原ID和正文');
+ report.steps.push({action:'核对主对话同一Work与审核窗口',workId:work.id,sourceMessageIds:workerRows.map(row=>row.id),sameTexts:true,sharedTaskReader:true});
  report.steps.push({action:'待办进入审阅',report:'访谈摘要初稿',files:[relPath]});
  await submit(question);await discussion.waitForFunction(answer=>document.querySelector('[data-review-discussion-history]')?.textContent.includes(answer),{},answer);
  assert.equal((await state()).works[0].result.objectId,work.result.objectId,'pure explanation must retain the original published report');
  await discussion.waitForFunction(()=>{const e=document.querySelector('[data-review-instruction]');return e&&!e.disabled&&!e.readOnly;});
- const answerView=await discussion.evaluate(answer=>{const log=document.querySelector('[data-review-discussion-history]'),clip=log.getBoundingClientRect(),body=[...log.querySelectorAll('.tag-message-assistant [data-message-id]')].find(node=>node.textContent.includes(answer));if(!body)return null;const walker=document.createTreeWalker(body,NodeFilter.SHOW_TEXT),lines=[];for(let node=walker.nextNode();node;node=walker.nextNode()){if(!node.textContent.trim())continue;const range=document.createRange();range.selectNodeContents(node);for(const rect of range.getClientRects())if(rect.width>0&&rect.height>0)lines.push({top:rect.top,bottom:rect.bottom});}return {text:body.textContent,scrollTop:log.scrollTop,clip:{top:clip.top,bottom:clip.bottom},lines,fullyReadable:lines.length>0&&lines.every(rect=>rect.top>=clip.top-1&&rect.bottom<=clip.bottom+1)};},answer);
+ const answerView=await discussion.evaluate(answer=>{const log=document.querySelector('[data-review-discussion-history]'),clip=log.getBoundingClientRect(),body=[...log.querySelectorAll('.session-task-card [data-message] .session-markdown')].find(node=>node.textContent.includes(answer));if(!body)return null;const walker=document.createTreeWalker(body,NodeFilter.SHOW_TEXT),lines=[];for(let node=walker.nextNode();node;node=walker.nextNode()){if(!node.textContent.trim())continue;const range=document.createRange();range.selectNodeContents(node);for(const rect of range.getClientRects())if(rect.width>0&&rect.height>0)lines.push({top:rect.top,bottom:rect.bottom});}return {text:body.textContent,scrollTop:log.scrollTop,clip:{top:clip.top,bottom:clip.bottom},lines,fullyReadable:lines.length>0&&lines.every(rect=>rect.top>=clip.top-1&&rect.bottom<=clip.bottom+1)};},answer);
  assert(answerView?.fullyReadable,'本次完整助手解释必须实际在讨论视口内，不能仅存在DOM中');report.steps.push({action:'核对当前完整解释实际可读',...answerView});
  await shot('02-显式打开标签式审核讨论-800',{floatVisible:true,distinctFrom:'01-报告主体与底部审核按钮-800'});
  report.layoutProof.beforeDrag=await nativeReportLayout();assert.deepEqual(report.layoutProof.beforeDrag.blocks,report.layoutProof.beforeOpen.blocks,'问答不改报告正文换行');assert.deepEqual(report.layoutProof.beforeDrag.scroll,report.layoutProof.beforeOpen.scroll,'问答不抢报告阅读位置');

@@ -29,7 +29,7 @@ import {HostContextBudget} from './context-budget.mjs';
 import {frontSource,frontReadLimits,readPage} from './frontdesk-read.mjs';
 import {MemoryVersion} from './memory-version.mjs';
 import {ResultMemory} from './result-memory.mjs';
-import {SessionIndex} from './session-index.mjs';
+import {SessionIndex,sanitizeTimelineValue} from './session-index.mjs';
 import {WorkChanges} from './work-changes.mjs';
 import {TagMaterialDelivery} from './tag-material-delivery.mjs';
 import {loadWorkerArchive,readWorkerArchive as readWorkerArchiveFile} from './worker-archive.mjs';
@@ -2708,6 +2708,27 @@ export class Controller extends EventEmitter {
         if(job.context?.effectWorkRevision!=null&&job.context.effectWorkRevision!==w.revision)throw Object.assign(Error('Effect approval Work binding changed; approved effect is not replayed automatically'),{code:'RESTART_RECONCILIATION_REQUIRED'});
         if(job.type==='problem-resume'&&job.revision!=null&&job.revision!==w.revision)throw Object.assign(Error('Problem decision Work binding changed; superseded proposal is not executed'),{code:'RESTART_RECONCILIATION_REQUIRED'});
         if(job.restartRecovery?.kind==='native-continuation'&&(w.revision!==job.revision||w.status!=='running'))throw Object.assign(Error('Original Work revision or execution state changed; native turn not replayed'),{code:'RESTART_RECONCILIATION_REQUIRED'});if(job.type!=='initial'&&w.status!=='running')await this.store.continue(w.id);job.revision=w.revision;await this.store.mutate(()=>{savedJob().revision=job.revision;});}
+      // A referenced file belongs to its original accepted input, not the
+      // Worker worktree or a later version of the source path. Rehydrate only
+      // the exact bound input chain when this handoff has no direct materials.
+      if(!job.context?.materials?.length){
+        const work=isWork?this.store.find(job.target):null;
+        const sourceIds=job.type==='initial'&&work
+          ? Array.isArray(job.context?.sourceInputJobIds)?job.context.sourceInputJobIds:[work.sourceJob]
+          : [job.context?.sourceJobId,job.context?.frontJobId];
+        // An intake may itself reference a frontdesk input without copying its
+        // materials into durable context. Follow only those explicit bindings,
+        // including after restart; never scan unrelated Work/input history.
+        const pending=[...sourceIds],seen=new Set([job.id]),refs=[];
+        for(let index=0;index<pending.length;index++){
+          const id=pending[index];if(!id||seen.has(id))continue;seen.add(id);
+          const source=this.store.state.jobs.find(source=>source.id===id);
+          if(source?.context?.materials?.length)refs.push(...source.context.materials);
+          else pending.push(source?.context?.sourceJobId,source?.context?.frontJobId);
+        }
+        const materials=[...new Map(refs.map(ref=>[JSON.stringify([ref.id,ref.version]),ref])).values()];
+        if(materials.length)job.context={...job.context,materials,materialsExplicit:true};
+      }
       const session=await this.maintenanceTransaction(job,'session-start',()=>this.session(job.target),s=>Boolean(s&&!s.closed));
       // ── Context cutover delivery ─────────────────────────────────────
       // The raw current user text becomes the single native user entry,
@@ -3366,7 +3387,7 @@ export class Controller extends EventEmitter {
   // 重新发布；带人工草稿的发送走既有续作机器（字节级应用、旧发布全stale、
   // 必须发布匹配新快照，否则接受保持阻断）。
   #discussionPayloadDigest(p){
-    return createHash('sha256').update(JSON.stringify({objectId:p.objectId,reviewVersion:p.reviewVersion,text:p.text})).digest('hex');
+    return createHash('sha256').update(JSON.stringify({objectId:p.objectId,reviewVersion:p.reviewVersion,text:p.text,...(p.applyDrafts===true?{applyDrafts:true}:{})})).digest('hex');
   }
   #discussionRecords(w){return w.review?.discussions??[];}
   #discussionJobs(id){
@@ -3383,6 +3404,7 @@ export class Controller extends EventEmitter {
     if(typeof p.workId!=='string'||!p.workId)throw Object.assign(Error('需要工作标识'),{code:'INVALID_PAYLOAD'});
     if(typeof p.requestKey!=='string'||!REVIEW_REQUEST_KEY.test(p.requestKey))throw Object.assign(Error('讨论确认身份无效'),{code:'INVALID_PAYLOAD'});
     if(typeof p.objectId!=='string'||!p.objectId||typeof p.reviewVersion!=='string'||!/^[a-f0-9]{64}$/.test(p.reviewVersion)||typeof p.text!=='string')throw Object.assign(Error('讨论回执身份无效'),{code:'INVALID_PAYLOAD'});
+    if(p.applyDrafts!==undefined&&typeof p.applyDrafts!=='boolean')throw Object.assign(Error('人工稿交回确认无效'),{code:'INVALID_PAYLOAD'});
     const work=this.#reviewWork(p.objectId,p.workId);
     const w=this.store.find(work.id);
     const record=this.#discussionRecords(w).find(d=>d.requestKey===p.requestKey)??(w.review?.continuations||[]).find(c=>c.requestKey===p.requestKey&&c.discussion===true);
@@ -3390,119 +3412,56 @@ export class Controller extends EventEmitter {
     if(record.payloadDigest!==this.#discussionPayloadDigest(p))throw Object.assign(Error('同一讨论确认身份已用于不同请求'),{code:'REVIEW_REQUEST_COLLISION'});
     return {accepted:true,jobId:record.jobId,workId:work.id,revision:record.revision,duplicate:true};
   }
-  // 条目=真实记录投影：Work原始请求/交接brief锚点 + 宿主账本消息行（用户
-  // 输入/发布/系统）+ 原生timeline已接受可见回复（sessionIndex.portableMessages，
-  // 精确原文/原ID/原状态）+ 原生工具/过程记录（conversation tool行：真实执行
-  // 痕迹折进回合作process记录，正文由读取按页有界hydration补充，超限保留
-  // read-required与原id分页入口）。按timeline统一序号排序；去重只认同一
-  // 原生身份（相同id或相同nativeEntryDigest），绝不按正文折叠重复的真实
-  // 回复。说话人分类与 session-presentation.messageRole 同判（宿主代发
-  // initial/supplement 显示为主控，agent按目标显示为worker），只改展示分类，
-  // 不改写原始记录。回合分组所需的实际身份字段随行透传（workId/jobId/
-  // requestId/revision/sequence）：全部取该行自身已证实事实（原生verified
-  // 输入绑定、manual prompt身份、行上/回执记录的任务修订、canonical
-  // timeline序号），绝不把当前报告修订或当前Work修订补到旧记录上。
-  // 流式回复暂不投影（等待canonical替换身份；本读取只反映durable已接受事实）。
-  #discussionEntries(w){
-    const jobs=new Map((this.store.state.jobs||[]).filter(j=>j.target===w.id||j.context?.boundWorkId===w.id).map(j=>[j.id,j]));
-    const native=this.store.state.sessionIndex;
-    const nativeRecords=new Map((native?.entries||[]).map(r=>[r.id,r]));
-    const seqMap=new Map((native?.entries||[]).map(r=>[r.id,r.sequence??0]));
-    const msgSeq=native?.messageSequences??{};
-    const keyOf=row=>seqMap.get(row.id)??msgSeq[row.id]??Number.MAX_SAFE_INTEGER;
-    // 每job已证实的原生请求身份：verified user记录=canonical echo抑制证据
-    // （session-index ingest/owner 同判），多epoch取timeline序号最高的一条。
-    const nativeRequest=new Map();
-    for(const record of (native?.entries||[])){
-      if(!jobs.has(record.jobId)||record.ownership!=='verified'||record.speaker!=='user'||typeof record.requestId!=='string'||!record.requestId)continue;
-      const prior=nativeRequest.get(record.jobId);
-      if(!prior||(record.sequence??0)>=(prior.sequence??0))nativeRequest.set(record.jobId,record);
+  // The review host reads the original scoped timeline, never mutable Work
+  // request/brief fields reconstructed as historical messages. State is a bounded
+  // presentation-only whitelist; execution contexts and provider config stay local.
+  #discussionTaskState(w,scope,frame){
+    const pick=(row,keys)=>Object.fromEntries(keys.filter(key=>row?.[key]!==undefined).flatMap(key=>{
+      const value=row[key];
+      if(value===null||typeof value==='boolean'||typeof value==='number')return [[key,value]];
+      if(typeof value==='string')return [[key,value.slice(0,2048)]];
+      if(key==='sourceInputJobIds'&&Array.isArray(value))return [[key,value.filter(id=>typeof id==='string'&&id.length<=512)]];
+      if(['pause','stale','needsReconciliation'].includes(key))return [[key,true]];
+      return [];
+    }));
+    const state=this.store.state;
+    const related=(state.jobs||[]).filter(job=>scope.matches({jobId:job.id,target:job.target})||job.type==='maintenance'&&w.maintenance?.bugId&&job.context?.bugId===w.maintenance.bugId);
+    const pageJobs=new Set(frame.entries.flatMap(entry=>[entry.jobId,entry.taskRequestId]).filter(Boolean));
+    const selected=new Set(related.slice(-200).map(job=>job.id));
+    for(const job of related)if(pageJobs.has(job.id)||['running','queued'].includes(job.status)||job.id===w.sourceJob||(w.sourceInputJobIds||[]).includes(job.id))selected.add(job.id);
+    // Keep clarification/retry ancestry intact for the selected intake rows.
+    const byId=new Map(related.map(job=>[job.id,job])),questions=new Map((state.todos||[]).filter(todo=>todo.kind==='routing').map(todo=>[todo.id,todo]));
+    const pending=[...selected];
+    while(pending.length){
+      const job=byId.get(pending.pop());if(!job)continue;
+      const question=questions.get(job.context?.routingQuestionId);
+      for(const id of [job.context?.retryOf,job.context?.pendingIntakeId,question?.sourceJobId,job.context?.sourceJobId,...(job.context?.sourceInputJobIds||[])])if(id&&!selected.has(id)&&byId.has(id)){selected.add(id);pending.push(id);}
     }
-    const requestIdOf=(m,job)=>{
-      if(typeof m.reviewDiscussion==='string'&&m.reviewDiscussion)return m.reviewDiscussion;
-      const bound=nativeRequest.get(m.jobId)?.requestId;
-      if(bound)return bound;
-      if(job?.manual&&typeof job.manualPromptId==='string'&&job.manualPromptId)return job.manualPromptId;
-      return null;
-    };
-    // messageRole 同判：Work上的宿主代发（initial/supplement交接/补充）＝主控。
-    const roleOf=(m,job)=>m.speaker==='user'&&job&&job.target===w.id&&['initial','supplement'].includes(job.type)?'orchestrator':m.speaker==='agent'?'worker':m.speaker;
-    const rows=[];
-    const seenIds=new Set(),seenDigests=new Set();
-    const admit=row=>{
-      if(seenIds.has(row.id))return;
-      if(row.nativeEntryDigest&&seenDigests.has(row.nativeEntryDigest))return;
-      seenIds.add(row.id);if(row.nativeEntryDigest)seenDigests.add(row.nativeEntryDigest);
-      rows.push(row);
-    };
-    for(const m of (this.store.state.messages||[])){
-      if(m.target!==w.id)continue;
-      const job=m.jobId?jobs.get(m.jobId):null;
-      const discussion=Boolean(job?.context?.reviewDiscussion||m.reviewDiscussion);
-      const source=discussion?'review-discussion':m.publication||m.objectId?'publication':m.speaker==='user'?'user-input':m.speaker==='agent'?'worker-reply':'system';
-      const receipt=m.objectId?(this.store.state.receipts||[]).find(r=>r.objectId===m.objectId):null;
-      const key=keyOf(m);
-      admit({id:m.id,speaker:roleOf(m,job),text:m.text??null,jobId:m.jobId??null,source,...(m.objectId?{objectId:m.objectId}:{}),...(m.publication?{publication:m.publication}:{}),...(m.nativeEntryDigest?{nativeEntryDigest:m.nativeEntryDigest}:{}),...(m.taskRequestId?{taskRequestId:m.taskRequestId}:{}),...(m.jobId&&job?{status:job.status}:{}),key,
-        workId:w.id,
-        requestId:source==='publication'?null:requestIdOf(m,job),
-        revision:m.revision??receipt?.revision??job?.revision??null,
-        sequence:key===Number.MAX_SAFE_INTEGER?null:key,
-        // 发布行的版次来自该回执自身（publicationOrdinal 按真实回执计数），
-        // 不用当前报告修订补值；正文保持 null，原文在冻结报告对象里。
-        ...(source==='publication'&&receipt?{publicationNumber:publicationOrdinal(this.store.state,w.id,m.objectId,receipt.kind)}:{})});
-    }
-    // 原生已接受可见回复（真实Pi Worker正文）：durable已确认事实；requestId/
-    // revision 取canonical原生记录的已证实字段（无记录时不猜）。
-    for(const m of (native?.portableMessages||[])){
-      if(m.target!==w.id||m.speaker!=='agent'||typeof m.text!=='string'||!m.text.trim())continue;
-      const record=nativeRecords.get(m.id),key=keyOf(m);
-      admit({id:m.id,speaker:'worker',text:m.text,jobId:m.jobId??null,status:m.status??null,source:null,...(m.nativeEntryDigest?{nativeEntryDigest:m.nativeEntryDigest}:{}),...(m.at?{at:m.at}:{}),key,
-        workId:w.id,requestId:record?.requestId??null,revision:record?.revision??m.revision??null,sequence:key===Number.MAX_SAFE_INTEGER?null:key});
-    }
-    // 原生工具/过程记录（真实执行痕迹）：以process记录进入回合折叠，绝不成
-    // 为AI答复；正文按页有界装载（#discussionProcessText）。
-    for(const record of (native?.entries||[])){
-      if((record.workId??record.target)!==w.id||record.recordKind!=='conversation'||record.speaker!=='tool')continue;
-      admit({id:record.id,speaker:'tool',text:null,jobId:record.jobId??null,source:'native-tool',key:record.sequence??keyOf(record),
-        workId:w.id,requestId:record.requestId??null,revision:record.revision??null,sequence:record.sequence??null,
-        ...(record.at?{at:record.at}:{}),availability:'read-required'});
-    }
-    const projected=rows.sort((a,b)=>a.key-b.key).map(({key,...row})=>{
-      const job=row.jobId?jobs.get(row.jobId):null;
-      return {id:row.id,speaker:row.speaker,target:w.id,text:row.text,jobId:row.jobId,source:row.source??(job?.context?.reviewDiscussion?'review-discussion':row.speaker==='worker'?'worker-reply':row.speaker==='tool'?'native-tool':'system'),
-        workId:row.workId,requestId:row.requestId,revision:row.revision,sequence:row.sequence,
-        ...(nativeRecords.get(row.id)?.sessionId?{sessionId:nativeRecords.get(row.id).sessionId}:{}),
-        ...(row.status?{status:row.status}:{}),...(row.objectId?{objectId:row.objectId}:{}),...(row.publication?{publication:row.publication}:{}),...(row.nativeEntryDigest?{nativeEntryDigest:row.nativeEntryDigest}:{}),...(row.taskRequestId?{taskRequestId:row.taskRequestId}:{}),...(row.publicationNumber!=null?{publicationNumber:row.publicationNumber}:{}),...(row.at?{at:row.at}:{}),...(row.availability?{availability:row.availability}:{}),...(row.reason?{reason:row.reason}:{})};
-    });
-    return [
-      {id:'work-request:'+w.id,speaker:'user',target:w.id,text:w.request,source:'work-request',workId:w.id,requestId:null,revision:null,sequence:null},
-      ...(typeof w.brief==='string'&&w.brief.trim()?[{id:'work-handoff:'+w.id,speaker:'orchestrator',target:w.id,text:w.brief,source:'work-handoff',workId:w.id,requestId:null,revision:null,sequence:null}]:[]),
-      ...projected,
-    ];
-  }
-  // 过程/工具记录按页有界装载：复用timeline hydration预算与nativeDTO投影
-  // （canonical正文/身份）；超预算或暂不可读的行保留read-required与真实原
-  // 因，原文仍可按原id经 managed.timeline.read 分页读取——不用替换文本伪
-  // 装，也不把这些记录升级为AI答复。
-  async #discussionProcessText(page){
-    const wanted=page.filter(row=>row.source==='native-tool');
-    if(!wanted.length)return;
-    const byId=new Map(this.timeline.records().map(record=>[record.id,record]));
-    const records=wanted.map(row=>byId.get(row.id)).filter(Boolean);
-    if(records.length){try{await this.timeline.hydrate(records);}catch{/* 读取保持只读事实：装载失败即保留原文分页入口 */}}
-    for(const row of wanted){
-      const record=byId.get(row.id);
-      if(!record)continue;
-      let dto;
-      try{dto=this.timeline.nativeDTO(record);}catch{continue;}
-      if(!dto||dto.availability!=='available'){if(dto?.reason)row.reason=dto.reason;continue;}
-      const text=typeof dto.text==='string'?dto.text:'';
-      const tool=dto.tool?{name:dto.tool.name??null,status:dto.tool.status??null}:null;
-      if(Buffer.byteLength(JSON.stringify({entry:{...row,text,...(tool?{tool}:{})}}))<=128*1024){
-        row.text=text;delete row.availability;delete row.reason;
-        if(tool)row.tool=tool;
-      }else row.reason='工具输出超过单页预算；请按原记录分页读取原文';
-    }
+    const jobs=related.filter(job=>selected.has(job.id)).map(job=>({...pick(job,['id','target','type','status','revision','at','startedAt','finishedAt','interruptionReason','manual','manualPromptId']),
+      context:pick(job.context,['sourceJobId','sourceInputJobIds','sourceMessageId','boundWorkId','retryOf','pendingIntakeId','routingQuestionId','reviewContinuation']),
+      ...(job.context?.reviewDiscussion?{context:{...pick(job.context,['sourceJobId','sourceInputJobIds','sourceMessageId','boundWorkId','retryOf','pendingIntakeId','routingQuestionId','reviewContinuation']),reviewDiscussion:pick(job.context.reviewDiscussion,['objectId','requestKey','revision'])}}:{}),
+      ...(job.routing?{routing:pick(job.routing,['action','workId','at'])}:{}),...(job.transfer?{transfer:pick(job.transfer,['settledAt'])}:{}),
+      ...(job.progress?{progress:pick(job.progress,['status','at','kind','phase'])}:{})}));
+    for(const job of jobs){const original=byId.get(job.id);if(original?.context?.bugId)job.context.bugId=pick(original.context,['bugId']).bugId;}
+    const receipts=(state.receipts||[]).filter(receipt=>receipt.workId===w.id);
+    const visibleReceipts=receipts.filter(receipt=>receipt.objectId===w.result?.objectId||frame.entries.some(entry=>entry.objectId===receipt.objectId)||receipts.indexOf(receipt)>=receipts.length-200);
+    const work={...pick(w,['id','name','status','revision','sourceJob','sourceInputJobIds','readOnly','outcome','endedAt','needsReconciliation']),
+      ...(w.result?{result:pick(w.result,['objectId','revision'])}:{}),...(w.manualControl?{manualControl:pick(w.manualControl,['pause'])}:{}),
+      ...(w.execution?.candidate?{execution:{candidate:pick(w.execution.candidate,['commit'])}}:{}),
+      ...(w.deviation?{deviation:sanitizeTimelineValue(pick(w.deviation,['status','todoId','sourceJobId','admittedJobId','sourceText','changedGoal','reason','progress']))}:{}),
+      ...(w.maintenance?{maintenance:sanitizeTimelineValue(pick(w.maintenance,['status','message','bugId','debugState']))}:{}),
+      ...(w.closure?{closure:{...pick(w.closure,['decision','revision','requestKey','phase','completedAt','at','decidedAt','stopped']),
+        ...(w.closure.binding?{binding:pick(w.closure.binding,['workId','objectId','revision','candidateCommit'])}:{}),
+        ...(w.closure.report?{report:pick(w.closure.report,['digest'])}:{}),...(w.closure.git?{git:pick(w.closure.git,['complete'])}:{}),
+        ...(w.closure.error?{error:sanitizeTimelineValue(typeof w.closure.error==='string'?w.closure.error.slice(0,2048):pick(w.closure.error,['code','message']))}:{}),
+        ...(w.closure.workerHome?{workerHome:pick(w.closure.workerHome,['cleaned'])}:{})}}:{})};
+    const result={works:[work],jobs,receipts:visibleReceipts.map(receipt=>({...pick(receipt,['id','workId','objectId','kind','revision','jobId','sourceJobId','at','stale','changeSetId']),publicationNumber:publicationOrdinal(state,w.id,receipt.objectId,receipt.kind),...(receipt.report?{report:pick(receipt.report,['objectId','digest','title','format'])}:{}),...(receipt.snapshot?{snapshot:pick(receipt.snapshot,['reportDigest'])}:{})})),
+      todos:(state.todos||[]).filter(todo=>todo.workId===w.id||todo.kind==='routing'&&selected.has(todo.sourceJobId)).slice(-200).map(todo=>pick(todo,['id','workId','sourceJobId','kind','status','objectId','revision','at','userActionable'])),
+      backstageEvents:(state.backstageEvents||[]).filter(event=>event.workId===w.id||event.target===w.id||selected.has(event.sourceJobId)).slice(-200).map(event=>sanitizeTimelineValue(pick(event,['id','workId','target','sourceJobId','revision','status','kind','reason','at']))),
+      agents:[...this.sessions].filter(([target])=>target===w.id).map(([target,session])=>({target,threadId:session.threadId??null,starting:this.starting.has(target),restarting:this.restarting?.has(target)??false,busy:session.busy===true,closed:session.closed===true,phase:session.phase??null,interactions:(session.interactions||[]).slice(0,20).map(interaction=>pick(interaction,['id','type','status']))})),
+      projection:{jobsTotal:related.length,jobsLoaded:jobs.length,receiptsTotal:receipts.length,receiptsLoaded:visibleReceipts.length,bounded:true,reviewFacts:'recorded-transitions-only',missingDecisionHistory:Boolean(w.closure&&!(state.sessionIndex?.deltas||[]).some(delta=>delta.kind==='review-decision-registered'&&delta.workId===w.id&&delta.requestKey===w.closure.requestKey))}};
+    if(Buffer.byteLength(JSON.stringify(result))>1024*1024)throw Object.assign(Error('当前任务页关联的状态与原请求祖先超过读取预算；请缩小每页数量重试，原记录未被截断。'),{code:'TASK_READING_STATE_LIMIT'});
+    return result;
   }
   // 同修订讨论队列是否还有排队回合（runJob结算面用：队列未清空前不结算、
   // 不强制交付，最后一回合统一ensureWorkerDelivery+settle收口）。
@@ -3511,20 +3470,15 @@ export class Controller extends EventEmitter {
   }
   async reviewDiscussionRead(p={}){
     if(!p||typeof p!=='object'||Array.isArray(p))throw Object.assign(Error('讨论读取参数无效'),{code:'INVALID_PAYLOAD'});
-    if(p.cursor!==undefined&&p.cursor!==null&&(typeof p.cursor!=='string'||!/^([0-9]|[1-9][0-9]*)$/.test(p.cursor)))throw Object.assign(Error('讨论分页游标无效'),{code:'INVALID_PAYLOAD'});
+    if(p.cursor!==undefined&&p.cursor!==null&&typeof p.cursor!=='string')throw Object.assign(Error('讨论分页游标无效'),{code:'INVALID_PAYLOAD'});
     if(p.limit!==undefined&&p.limit!==null&&(!Number.isSafeInteger(p.limit)||p.limit<1||p.limit>200))throw Object.assign(Error('讨论分页数量无效'),{code:'INVALID_PAYLOAD'});
     const work=this.#reviewWork(p.objectId,p.workId);
     const w=this.store.find(work.id);
     const objectId=typeof p.objectId==='string'&&p.objectId?p.objectId:(w.result?.objectId??null);
     const receipt=objectId?this.#reviewReceipt(w,objectId):null;
-    const limit=p.limit??50;
-    const all=this.#discussionEntries(w);
-    const start=p.cursor?Math.min(Number(p.cursor),all.length):0;
-    const page=all.slice(start,start+limit);
-    await this.#discussionProcessText(page); // 过程/工具正文按页有界装载；分页/游标语义不变
-    const nextCursor=start+page.length<all.length?String(start+page.length):null;
-    const latestStart=Math.max(0,all.length-limit);
-    const latestCursor=latestStart>0?String(latestStart):null;
+    const taskFrame=await this.timeline.page({workId:w.id,cursor:p.cursor,limit:p.limit??50});
+    const scope=this.timeline.scope({workId:w.id});
+    const taskState=this.#discussionTaskState(w,scope,taskFrame);
     const inflight=this.#discussionInFlight(w.id);
     const reasons=[];
     if(['closing','ended'].includes(w.status))reasons.push('WORK_ENDED');
@@ -3545,8 +3499,8 @@ export class Controller extends EventEmitter {
       if(!receipt?.snapshot)reasons.push('CANDIDATE_REQUIRED');
     }
     return {
-      entries:page.map((entry,offset)=>({...entry,seq:start+offset})),
-      nextCursor,pageStart:start,latestCursor,total:all.length,
+      taskFrame,taskState,taskScope:{workId:w.id,sourceJobId:null},
+      readingObject:{workId:w.id,objectId,revision:receipt?.revision??null},
       workId:w.id,objectId,latestObjectId:w.result?.objectId??null,
       active:inflight.some(j=>j.status==='running'),queued:inflight.filter(j=>j.status==='queued').length,
       canSend:reasons.length===0,reasons:[...new Set(reasons)],
@@ -3558,6 +3512,7 @@ export class Controller extends EventEmitter {
     if(typeof p.reviewVersion!=='string'||!/^[a-f0-9]{64}$/.test(p.reviewVersion))throw Object.assign(Error('审校版本令牌无效'),{code:'INVALID_PAYLOAD'});
     if(typeof p.requestKey!=='string'||!REVIEW_REQUEST_KEY.test(p.requestKey))throw Object.assign(Error('讨论确认身份无效'),{code:'INVALID_PAYLOAD'});
     if(typeof p.text!=='string'||!p.text.trim()||p.text.length>32000)throw Object.assign(Error('讨论正文必须是≤32000字符的非空文本'),{code:'INVALID_PAYLOAD'});
+    if(p.applyDrafts!==undefined&&typeof p.applyDrafts!=='boolean')throw Object.assign(Error('人工稿交回确认无效'),{code:'INVALID_PAYLOAD'});
     const work=this.#reviewWork(p.objectId,p.workId);
     return this.workLocked(work.id,async()=>{
       const w=this.store.find(work.id);
@@ -3590,11 +3545,11 @@ export class Controller extends EventEmitter {
       if(deviationHeld(w))throw Object.assign(Error('任务偏离待用户决定；不能讨论'),{code:'WORK_DEVIATION_HELD'});
       if((this.store.state.todos||[]).some(t=>t.workId===work.id&&t.kind==='recovery'&&t.status==='open'))throw Object.assign(Error('存在未处理的恢复决定；先核对未知效果'),{code:'RECOVERY_REQUIRED'});
       if(w.manualControl?.pause!=null)throw Object.assign(Error('人工暂停生效中；先恢复后再讨论'),{code:'WORK_CONTROL_HELD'});
-      // 草稿基线由reviewVersion绑定：草稿在读取后变化即拒绝，绝不静默忽略
-      // 或覆盖；发送本身不修改任何草稿（纯讨论）或按续作机器显式应用（下）。
-      const drafts=activeDrafts(w),record=await readDraftRecord(this.store.storage,this.store.projectId,work.id);
+      // Saved drafts are not an execution grant. Only the explicit, version-bound
+      // handback action may apply them; ordinary discussion preserves them locally.
+      const drafts=p.applyDrafts===true?activeDrafts(w):{},record=p.applyDrafts===true?await readDraftRecord(this.store.storage,this.store.projectId,work.id):null;
       const plan=[];
-      for(const [relPath,draft] of Object.entries(drafts)){
+      for(const [relPath,draft] of p.applyDrafts===true?Object.entries(drafts):[]){
         if(draft.objectId!==p.objectId)continue;
         const entry=current.snapshot.files.find(f=>f.relPath===relPath);
         if(!entry)throw Object.assign(Error('草稿文件不在当前候选中：'+relPath),{code:'REVIEW_CANDIDATE_STALE'});

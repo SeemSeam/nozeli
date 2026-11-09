@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {NativeReviewDiscussionManager,runReviewDiscard} from '../src/main/native-review-discussion.mjs';
 import {EventEmitter} from 'node:events';
+import {WorkspaceNative} from '../src/main/workspace-native.mjs';
 function fixture(){
  const workspace={lifecycle:new Set(),lifecycleFlushOwner:()=>null};
  const manager=new NativeReviewDiscussionManager({workspace});
@@ -18,14 +19,34 @@ test('native child only reads/writes its bound discussion and geometry',()=>{
  owner.generation++;assert.throws(()=>manager.authorize(record,'workspace.bootstrap',{}),{code:'REVIEW_SCOPE_DENIED'});
 });
 test('native original-reader authority is only the IDs actually disclosed by its Work',()=>{
- const {manager,record}=fixture();manager.capture(record,'managed.review.discussion.read',{entries:[{id:'allowed'}]});
+ const {manager,record}=fixture();manager.capture(record,'managed.review.discussion.read',{workId:'work',objectId:'object',taskFrame:{entries:[{id:'allowed'}]}});
  assert.equal(manager.authorize(record,'managed.timeline.read',{projectId:'p',id:'allowed'}),record);
  assert.throws(()=>manager.authorize(record,'managed.timeline.read',{projectId:'p',id:'other-work'}),{code:'REVIEW_SCOPE_DENIED'});
+});
+test('disclosure rejects stale ownership and other Work frames; navigation only routes reports',async()=>{
+ const {manager,record,row,workspace,owner}=fixture();
+ manager.capture(record,'managed.review.discussion.read',{workId:'foreign',objectId:'object',taskFrame:{entries:[{id:'foreign'}]}});
+ assert.throws(()=>manager.authorize(record,'managed.timeline.read',{projectId:'p',id:'foreign'}),{code:'REVIEW_SCOPE_DENIED'});
+ const sent=[];owner.windowId='root';
+ const root={projectId:'p',ready:true,wc:{send:(...args)=>sent.push(args)},win:{show(){},focus(){}}};
+ workspace.windows=new Map([['root',root]]);workspace.flushOne=async()=>{};
+ workspace.openTaskProcess=async()=>{throw Error('process split must not open from the review child');};
+ manager.capture(record,'managed.review.discussion.read',{workId:'work',objectId:'object',taskFrame:{entries:[]},taskState:{receipts:[{workId:'work',objectId:'object',revision:1,kind:'result'},{workId:'foreign',objectId:'foreign',kind:'result'}]}});
+ await manager.invoke(record,'workspace.reviewDiscussion.navigate',{projectId:'p',workId:'work',kind:'report',objectId:'object'});
+ assert.equal(sent[0][1].report.objectId,'object');assert.equal(row.objectId,'object');
+ await assert.rejects(manager.invoke(record,'workspace.reviewDiscussion.navigate',{projectId:'p',workId:'work',kind:'report',objectId:'foreign'}),{code:'REVIEW_SCOPE_DENIED'});
+ // The inline process contract replaced the old split exit: process kind is
+ // gone from navigation entirely, so no click can create a view or window.
+ await assert.rejects(manager.invoke(record,'workspace.reviewDiscussion.navigate',{projectId:'p',workId:'work',kind:'process'}),{code:'REVIEW_SCOPE_DENIED'});
+ await assert.rejects(manager.invoke(record,'workspace.reviewDiscussion.navigate',{projectId:'p',workId:'work',kind:'report',objectId:'object',messageId:'m1'}),{code:'REVIEW_SCOPE_DENIED'});
+ assert.equal(sent.length,1);
+ owner.generation++;manager.capture(record,'managed.review.discussion.read',{workId:'work',objectId:'object',taskFrame:{entries:[{id:'stale'}]}});
+ assert.equal(row.originalIds.has('stale'),false);
 });
 test('presentation accepts only visible bound messages and never a different report or hidden child',()=>{
  const {manager,record,row,owner}=fixture(),parent={isMinimized:()=>false,isVisible:()=>true,isFocused:()=>true};
  owner.win=parent;owner.view={getVisible:()=>true};row.requested=true;row.win.getParentWindow=()=>parent;
- manager.capture(record,'managed.review.discussion.read',{entries:[{id:'message'}]});
+ manager.capture(record,'managed.review.discussion.read',{workId:'work',objectId:'object',taskFrame:{entries:[{id:'message'}]}});
  const payload={projectId:'p',objectId:'object',messageId:'message'};
  assert.equal(manager.authorize(record,'workspace.attention.presented',payload),record);
  for(const mismatch of [{projectId:'other'},{objectId:'new-report'},{messageId:'other-thread'}])assert.throws(()=>manager.authorize(record,'workspace.attention.presented',{...payload,...mismatch}),{code:'REVIEW_SCOPE_DENIED'});
@@ -36,6 +57,31 @@ test('native pending send allows only exact receipt replay after a rebind',()=>{
  manager.authorize(record,'managed.review.discussion.send',payload);row.objectId='next';
  assert.equal(manager.authorize(record,'managed.review.discussion.send',payload),record);
  assert.throws(()=>manager.authorize(record,'managed.review.discussion.send',{...payload,text:'another turn'}),{code:'REVIEW_SCOPE_DENIED'});
+ assert.throws(()=>manager.authorize(record,'managed.review.discussion.send',{...payload,applyDrafts:true}),{code:'REVIEW_SCOPE_DENIED'});
+});
+test('agent broadcasts disclose only fixed-scope invalidations to a review child',()=>{
+ const {manager,record}=fixture(),child=[],normal=[];
+ record.projectId='p';record.wc={send:(...args)=>child.push(args)};
+ const native=Object.create(WorkspaceNative.prototype);native.reviewDiscussions=manager;
+ native.senders=new Map([[1,record],[2,{projectId:'p',wc:{send:(...args)=>normal.push(args)}}]]);
+ const event={kind:'managed-timeline',projectId:'p',state:{secret:'OTHER WORK'},timeline:{entries:[{text:'PRIVATE'}]}};
+ native.broadcast('nozeli:agent',event,'p');
+ assert.deepEqual(child,[['nozeli:agent',{kind:'managed-timeline',projectId:'p',workId:'work'}]]);
+ assert.equal(normal[0][1],event);
+ native.broadcast('nozeli:agent',{...event,workId:'foreign'},'p');
+ native.broadcast('nozeli:agent',{...event,projectId:'foreign'});
+ assert.equal(child.length,1);
+});
+test('frozen material reads use only the exact disclosed attachment and original Work',async()=>{
+ const {manager,record,workspace}=fixture();
+ const attachment={projectId:'p',storage:'project',digest:'a'.repeat(64),source:'source-1',mime:'text/plain'};
+ let read=null;workspace.host={readMaterialAttachment:async ref=>{read=ref;return {bytes:'c2FtcGxl',mime:ref.mime};}};
+ manager.capture(record,'managed.review.discussion.read',{workId:'work',objectId:'object',taskFrame:{entries:[{id:'real',attachments:[attachment,{...attachment,projectId:'foreign'}]}]},taskState:{hostFacts:[{id:'invented'}]}});
+ const payload={projectId:'p',workId:'work',messageId:'real',index:0};
+ const value=await manager.invoke(record,'workspace.reviewDiscussion.materialRead',payload);
+ assert.equal(value.bytes,'c2FtcGxl');assert.deepEqual(read,attachment);
+ for(const change of [{workId:'foreign'},{messageId:'invented'},{index:1},{index:2},{digest:'b'.repeat(64)}])await assert.rejects(manager.invoke(record,'workspace.reviewDiscussion.materialRead',{...payload,...change}),{code:'REVIEW_SCOPE_DENIED'});
+ assert.throws(()=>manager.authorize(record,'managed.timeline.read',{projectId:'p',id:'invented'}),{code:'REVIEW_SCOPE_DENIED'});
 });
 test('native lifecycle save requires the actual pending flush receipt',()=>{
  const {manager,workspace,record}=fixture(),payload={projectId:'p',workId:'work',objectId:'object'};workspace.lifecycle.add('p');
@@ -93,4 +139,113 @@ test('native host reports parent CSS coordinates and applies only final DIP clie
  f.row.geometrySignature=JSON.stringify([geometry.bounds,geometry.origin,geometry.zoomFactor]);
  const result=await f.manager.invoke(f.record,'workspace.reviewDiscussion.bounds',{generation:1,epoch:1,sequence:1,visible:false,rect:{x:330,y:205,width:630,height:54}});
  assert.deepEqual(result.contentBounds,{x:330,y:205,width:630,height:54});assert.deepEqual(applied,result.contentBounds);
+});
+
+test('owned review child may copy but cannot read clipboard or delegate to foreign frames',()=>{
+ const {manager,record,owner}=fixture(),native=Object.create(WorkspaceNative.prototype);
+ const origin='app://trusted/',wc={id:9,isDestroyed:()=>false,mainFrame:{url:origin}};
+ native.origin=origin;native.reviewDiscussions=manager;native.senders=new Map([[9,record]]);
+ const details={isMainFrame:true,requestingUrl:origin};
+ assert.equal(native.allowClipboardWrite(wc,'clipboard-sanitized-write',details),true);
+ assert.equal(native.allowClipboardWrite(wc,'clipboard-read',details),false);
+ assert.equal(native.allowClipboardWrite(wc,'clipboard-sanitized-write',{...details,isMainFrame:false}),false);
+ assert.equal(native.allowClipboardWrite(wc,'clipboard-sanitized-write',{...details,requestingUrl:'https://foreign.test/'}),false);
+ wc.mainFrame.url='https://foreign.test/';assert.equal(native.allowClipboardWrite(wc,'clipboard-sanitized-write',details),false);wc.mainFrame.url=origin;
+ owner.dead=true;assert.equal(native.allowClipboardWrite(wc,'clipboard-sanitized-write',details),false);
+});
+
+function processFixture(){
+ const {workspace,manager,row,record,owner}=fixture();record.projectId='p';
+ const rows=[{id:'m1',sequence:1,native:{id:'m1'}},{id:'m2',sequence:2,native:{id:'m2'}},{id:'foreign',sequence:3,native:{id:'foreign',workId:'other'}}];
+ const scope={key:'k'.repeat(64),matches:candidate=>{const row=candidate?.native??candidate;return Boolean(row)&&row.workId!=='other';}};
+ const index={
+  ordered:()=>rows,
+  select:(cursor,limit)=>rows.filter(item=>item.sequence<Number(cursor.slice(cursor.lastIndexOf(':')+1))).slice(-limit),
+  records:()=>rows,
+  async page({cursor,limit,workId}){
+   const prefix='scope:'+scope.key+':before:';
+   if(cursor!==undefined&&cursor!==null&&(typeof cursor!=='string'||!cursor.startsWith(prefix)||!/^[0-9]+$/.test(cursor.slice(prefix.length))))throw Object.assign(Error('Invalid or mismatched history cursor'),{code:'TIMELINE_PAGE'});
+   const selected=index.select(cursor??(prefix+'999'),limit??50);
+   return {version:1,entries:selected.filter(row=>scope.matches(row)).map(row=>({id:row.id,attachments:[]})),deltas:[],hasMore:false,nextCursor:null};
+  }
+ };
+ const calls={command:0,openTaskProcess:0,control:0};
+ workspace.taskSource=async(projectId,taskScope)=>{assert.equal(projectId,'p');assert.deepEqual(taskScope,{workId:'work'});return {index,scope};};
+ workspace.taskLocateCursor=WorkspaceNative.prototype.taskLocateCursor;
+ workspace.command=async()=>{calls.command++;throw Error('process reads never change layout');};
+ workspace.openTaskProcess=async()=>{calls.openTaskProcess++;throw Error('process reads never open a split');};
+ return {workspace,manager,row,record,owner,index,scope,calls};
+}
+test('processRead returns the original frame, locates the exact record and captures reading authority without layout writes',async()=>{
+ const {manager,record,row,calls}=processFixture();
+ const value=await manager.invoke(record,'workspace.reviewDiscussion.processRead',{projectId:'p',workId:'work',messageId:'m2'});
+ assert.deepEqual(Object.keys(value).sort(),['frame','location','taskScope']);
+ assert.deepEqual(value.taskScope,{workId:'work',sourceJobId:null});
+ assert.deepEqual(value.frame.entries.map(entry=>entry.id),['m1','m2']);
+ assert.equal(value.location.messageId,'m2');
+ assert.equal(value.location.cursor,'scope:'+'k'.repeat(64)+':before:3');
+ // Delivered process ids become original/material readable, foreign ids stay closed.
+ assert.equal(manager.authorize(record,'managed.timeline.read',{projectId:'p',id:'m1'}),record);
+ assert.throws(()=>manager.authorize(record,'managed.timeline.read',{projectId:'p',id:'foreign'}),{code:'REVIEW_SCOPE_DENIED'});
+ const paged=await manager.invoke(record,'workspace.reviewDiscussion.processRead',{projectId:'p',workId:'work',cursor:value.frame.nextCursor??value.location.cursor,limit:1});
+ assert.equal('location' in paged,false);
+ assert.deepEqual(paged.frame.entries.map(entry=>entry.id),['m2']);
+ assert.equal(calls.command,0);assert.equal(calls.openTaskProcess,0);
+});
+test('processRead rejects foreign Work, broadened payloads, invalid cursors, limits and unknown records',async()=>{
+ const {manager,record}=processFixture();
+ const base={projectId:'p',workId:'work'};
+ for(const change of [{projectId:'other'},{workId:'other'},{sourceJobId:'job'},{limit:101},{limit:0},{cursor:5},{cursor:'before:1'},{messageId:'missing'},{messageId:'foreign'}])
+  await assert.rejects(manager.invoke(record,'workspace.reviewDiscussion.processRead',{...base,...change}),error=>['REVIEW_SCOPE_DENIED','TIMELINE_SCOPE','TIMELINE_PAGE'].includes(error.code));
+ await assert.rejects(manager.invoke(record,'workspace.reviewDiscussion.processRead',{projectId:'p',workId:'work',messageId:'m2',extra:1}),{code:'REVIEW_SCOPE_DENIED'});
+});
+test('exportOriginal only saves disclosed originals through the controlled host dialog',async t=>{
+ const root=await import('node:fs/promises').then(async fs=>fs.mkdtemp((await import('node:os')).tmpdir()+'/nozeli-review-export-'));
+ t.after(async()=>{await import('node:fs/promises').then(fs=>fs.rm(root,{recursive:true,force:true}));});
+ const fs=await import('node:fs/promises'),os=await import('node:os'),crypto=await import('node:crypto');
+ const bytes=Buffer.from(JSON.stringify({id:'m1',original:true}));
+ const objectId=crypto.createHash('sha256').update(bytes).digest('hex');
+ await fs.writeFile(root+'/'+objectId+'.json',bytes);
+ const {manager,record,row}=processFixture();
+ const rows=[{id:'m1',sequence:1,native:{id:'m1'},objectId}];
+ const index={records:()=>rows,ordered:()=>rows,select:()=>rows,async page(){return {version:1,entries:[{id:'m1',attachments:[]}],deltas:[],hasMore:false,nextCursor:null};}};
+ manager.workspace.taskSource=async()=>({index,scope:{key:'k'.repeat(64),matches:()=>true}});
+ manager.managed={projectionSource:async()=>({index:{records:()=>rows,root}})};
+ const dialogCalls=[];manager.dialog={showSaveDialog:async(win,options)=>{dialogCalls.push(options);return {canceled:false,filePath:root+'/saved.json'};}};
+ // Undisclosed or malformed ids never reach the dialog at all.
+ for(const change of [{id:'undisclosed'},{id:'m1',version:'not-hex'},{projectId:'other'},{workId:'other'}])
+  await assert.rejects(manager.invoke(record,'workspace.reviewDiscussion.exportOriginal',{projectId:'p',workId:'work',id:'m1',version:objectId,...change}),{code:'REVIEW_SCOPE_DENIED'});
+ assert.equal(dialogCalls.length,0);
+ manager.captureFrame(row,{entries:[{id:'m1',attachments:[]}]});
+ await assert.rejects(manager.invoke(record,'workspace.reviewDiscussion.exportOriginal',{projectId:'p',workId:'work',id:'m1',version:'0'.repeat(64)}),{code:'TIMELINE_VERSION'});
+ const saved=await manager.invoke(record,'workspace.reviewDiscussion.exportOriginal',{projectId:'p',workId:'work',id:'m1',version:objectId});
+ assert.deepEqual(saved,{exported:true,byteLength:bytes.length});
+ assert.equal((await fs.readFile(root+'/saved.json')).equals(bytes),true);
+ manager.dialog={showSaveDialog:async()=>({canceled:true})};
+ assert.deepEqual(await manager.invoke(record,'workspace.reviewDiscussion.exportOriginal',{projectId:'p',workId:'work',id:'m1',version:objectId}),{cancelled:true});
+});
+test('readingState persists bounded disclosures behind its own record CAS and lifecycle gate',async()=>{
+ const {manager,record,workspace}=processFixture();
+ const local=new Map();
+ const storage={requireRegistered:async()=>({instanceId:'inst-1'}),getLocal:async(_project,key)=>local.get(key)??null,putLocal:async(_project,key,value)=>{local.set(key,value);return {ok:true};}};
+ workspace.host={storage};
+ assert.deepEqual(await manager.invoke(record,'workspace.reviewDiscussion.readingState.read',{projectId:'p',workId:'work'}),{state:null});
+ const disclosures={'m1':true,'m2':{cursor:'scope:'+'k'.repeat(64)+':before:3',read:{version:'a'.repeat(64),field:'text',offset:0}}};
+ const written=await manager.invoke(record,'workspace.reviewDiscussion.readingState.write',{projectId:'p',workId:'work',expectedRevision:0,disclosures});
+ assert.equal(written.revision,1);
+ assert.deepEqual(await manager.invoke(record,'workspace.reviewDiscussion.readingState.read',{projectId:'p',workId:'work'}),{state:{schema:1,revision:1,disclosures}});
+ assert.deepEqual(await manager.invoke(record,'workspace.reviewDiscussion.readingState.write',{projectId:'p',workId:'work',expectedRevision:0,disclosures:{}}),{conflict:true,current:{schema:1,revision:1,disclosures}});
+ for(const bad of [undefined,{'m1':'yes'},{'m1':{history:true}},{...disclosures,m2:{read:{version:'zz',field:'text',offset:0}}},Object.fromEntries(Array.from({length:401},(_,i)=>['id'+i,true]))])
+  await assert.rejects(manager.invoke(record,'workspace.reviewDiscussion.readingState.write',{projectId:'p',workId:'work',expectedRevision:1,disclosures:bad}),{code:'INVALID_PAYLOAD'});
+ await assert.rejects(manager.invoke(record,'workspace.reviewDiscussion.readingState.write',{projectId:'p',workId:'work',expectedRevision:1,disclosures,extra:1}),{code:'INVALID_PAYLOAD'});
+ workspace.lifecycle.add('p');
+ assert.throws(()=>manager.authorize(record,'workspace.reviewDiscussion.readingState.write',{projectId:'p',workId:'work',expectedRevision:1,disclosures}),{code:'REVIEW_SCOPE_DENIED'});
+ workspace.lifecycleFlushOwner=(_r,id)=>id==='flush-1';
+ assert.equal(manager.authorize(record,'workspace.reviewDiscussion.readingState.write',{projectId:'p',workId:'work',expectedRevision:1,disclosures,flushRequestId:'flush-1'}),record);
+ assert.equal(manager.authorize(record,'workspace.reviewDiscussion.readingState.read',{projectId:'p',workId:'work'}),record);
+ const next=await manager.invoke(record,'workspace.reviewDiscussion.readingState.write',{projectId:'p',workId:'work',expectedRevision:1,disclosures:{m1:false},flushRequestId:'flush-1'});
+ assert.equal(next.revision,2);
+ // Corrupted stored shape is reported, never silently rewritten.
+ local.set('reading-state:'+JSON.stringify({projectInstanceId:'inst-1',ownerKind:'review',ownerId:'work',surfaceId:'report'}),{state:{schema:1,revision:9,disclosures:{bad:'shape'}}});
+ await assert.rejects(manager.invoke(record,'workspace.reviewDiscussion.readingState.write',{projectId:'p',workId:'work',expectedRevision:9,disclosures}),{code:'DISPLAY_SCHEMA_UNKNOWN'});
 });

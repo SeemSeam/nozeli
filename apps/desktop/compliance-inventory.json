@@ -3,22 +3,23 @@
   "purpose": "Machine-verifiable companion to apps/desktop/SOURCES.md and docs/release.md: pinned third-party inputs, evidence locations, exact rebuild commands and the still-pending redistribution obligations. Engineering bookkeeping only; not a legal audit or compliance certification.",
   "checkedBy": "tools/check-repository.mjs",
   "product": "Nozeli",
-  "productVersion": "0.1.0-alpha.6",
+  "productVersion": "0.1.0-beta.1",
   "license": "AGPL-3.0-only",
   "licenseEvidence": ["LICENSE"],
   "release": {
-    "tag": "v0.1.0-alpha.6",
-    "url": "https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.6",
+    "tag": "v0.1.0-beta.1",
+    "url": "https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-beta.1",
     "commit": null,
-    "channel": "alpha-prerelease",
+    "channel": "beta-prerelease",
     "platformsExercised": ["linux-x64-wayland", "linux-x64-x11"],
-    "notes": "Owner explicitly authorized the alpha.6 public Alpha exception on 2026-11-08 after disclosure of all six pending obligations. Publication requires technical CI and portable-artifact qualification; it is not compliance certification."
+    "platformsTargeted": ["linux-x64", "macos-arm64"],
+    "notes": "Beta.1 dual-platform draft preparation only, explicitly selected by the owner on 2026-11-10. All six redistribution obligations remain pending; alpha.6 authorization does not extend to this version. Linux x64 and macOS arm64 candidate qualification is recorded separately at the exact commit; no public publication or compliance certification is authorized."
   },
   "publicRedistributionAudit": "pending",
   "rebuildCommands": {
     "installDependencies": {
       "command": "npm --prefix apps/desktop ci",
-      "notes": "Node.js >=22.22.2 for typescript-language-server 6.0.2, Linux x64, native toolchain. postinstall runs @electron/rebuild for node-pty (Electron 44.9.1 ABI); does not touch global node-gyp or user config. Existing CI pins Node 22.22.0 and still needs alignment."
+      "notes": "CI pins Node.js 22.23.4, matching the bundled runtime lock. Linux x64 and macOS arm64 require their own native toolchains; postinstall rebuilds node-pty for Electron 44.9.1 ABI, then macOS builds its platform-native safety modules. No global node-gyp or user configuration is changed."
     },
     "buildPptist": {
       "command": "npm --prefix apps/desktop run build:pptist",

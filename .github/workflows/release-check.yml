@@ -7,7 +7,7 @@ on:
         description: Existing release tag to validate (never a branch or arbitrary shell input)
         required: true
         type: string
-        default: v0.1.0-alpha.1
+        default: v0.1.0-beta.1
 
 permissions:
   contents: read
@@ -32,7 +32,7 @@ jobs:
           ref: refs/tags/${{ inputs.tag }}
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: '22.22.2'
+          node-version: '22.23.4'
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -46,7 +46,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y xvfb libgtk-3-0 libnss3 libasound2t64 libgbm1 bubblewrap && sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Install and test
         working-directory: apps/desktop
-        run: npm ci --no-audit --no-fund && npm ci --prefix ../../integrations/pi --no-audit --no-fund && npm test
+        run: npm ci --no-audit --no-fund && npm ci --prefix ../../integrations/pi --no-audit --no-fund && npm run build:pi && npm test
       - name: Configure Electron sandbox on this ephemeral runner
         working-directory: apps/desktop
         run: |

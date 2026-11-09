@@ -118,6 +118,10 @@ Runner 为每个套件创建独立 HOME/XDG 配置目录，禁用用户/系统 G
 
 Agent状态／模型默认回归：unit新增`pi-activity.test.mjs`、`target-model-intent.test.mjs`，覆盖原生活动归纳、身份／版本拒旧、未结算保护、配置CAS／幂等／撤销／继承、effort和clamp确认、旧owner回执隔离；integration新增`collaboration-status.test.mjs`，覆盖真实大缓存的标量分页、纯读不派工、项目全局保持与未完closure跨页、冷任务不重放、超出provider前缀的未知owner不能改模型。`session-index/session-store`回归覆盖真实历史模型在streaming／portable／裁剪／冷恢复下的忠实透传。真实生产对话模型操作由`desktop-pi-live.mjs`和`pi-model-management-live.mjs`使用Pi＋回环Provider验证；源改变后先在`integrations/pi`执行`npm run build`重建私有完整性清单，不能忽略`PI_RUNTIME_UNAVAILABLE`。
 
+冻结附件交接回归（在 `apps/desktop` 下）：`node --test tests/file-attachments-host.test.mjs tests/managed-context-cutover.test.mjs`。前者覆盖登记附件的验证、发送时冻结、幂等与二进制／跨项目拒绝；后者覆盖前台→主控→Worker 初始／补充交接沿显式 `frontJobId`／`sourceJobId` 绑定读取同一冻结版本，不扫描无关任务或读取同名当前文件。初始交接存在 `sourceInputJobIds` 时严格使用该准入集合（包括空集合），只有旧记录缺少该字段时才回退 `work.sourceJob`。2026-11-09与`project-attention`、summary及managed-projects合计79项通过；真实附件选择／冻结／发送／后续不重附旅程`/tmp/nozeli-material-native-pick-KLPeN0/report.json`通过。模型请求按确切原生用户输入归属计数，项目初始化请求不冒充重复发送；原生追加的材料块也不冒充新的用户输入。此为Linux源码限定验证，未安装。
+
+2026-11-09任务流向恢复：`session-store`、`task-timeline-scope`、`task-workspace-presentation`合计44项通过。`desktop-session-timeline.test.mjs`真实React/Electron消费者新增实际前向位移、回流、暂停恢复不重播、减少动态状态验证，`/tmp/nozeli-session-consumer-9rzvcV`通过。真实Electron/Pi/Git双任务、多轮、只读分屏及正常冷恢复旅程`/tmp/nozeli-task-workspace-wwKFXo/report.json`通过，截图已查看；不将源码或组件验收记为日常安装／其他平台验收。
+
 Agent自动生命周期回归已注册integration：`node --test tests/agent-idle-lifecycle.test.mjs tests/agent-process-budget.test.mjs`。确定性时钟覆盖连续空闲截止、亚32毫秒原生活动经真实Controller/Manager事件路径重置期限、owner替换、回收中输入、正常按需唤醒、原线程、冷输入不重放、退出失败不捐赠预算、单个定时器及关闭清理。真实Pi验收另需观察实际PID退出、忙Worker保留、闲置角色卸载及原线程恢复；仅在构造器缩短测试闲置期限，不新增renderer／产品环境变量后门，也不将本地确定性Provider算作付费模型验证。执行结果见[动态管理§11](agent-conversation-status-demo.md)。
 
 生产维修协同回归：`node --test tests/maintenance-runtime.test.mjs tests/maintenance-status-page.test.mjs tests/agent-idle-lifecycle.test.mjs tests/agent-process-budget.test.mjs tests/collaboration-status.test.mjs`。覆盖原事务精确绑定、仅结算未准入queued技术事件、已结束Work的原closure修复、效果已验证后的持久化失败与仅补结算（包括已用尽维修次数）、原Worker正常结束与延期发布并发、冷恢复不重放、不可写／UNKNOWN／用户决定保护、损坏账本／编码字符串／不安全整数／NULL live-flight的分页及全局计数。
@@ -567,6 +571,17 @@ postinstall 用 `electron-rebuild` 针对 Electron 重建 `node-pty`。该依赖
 - 最终支持路径回归：`node --no-warnings --test tests/desktop-session-timeline.test.mjs tests/renderer-projection-coalescing.test.mjs tests/workspace-layout.test.mjs tests/workspace-native.test.mjs`，110/110通过。`NOZELI_OZONE=x11 node tests/desktop-ci-smoke.mjs` 的五项真实启动／文件／项目切换／退出／冷恢复检查通过、两次正常退出code0、无pageerror；原件 `apps/desktop/.test-output/ci/smoke-j7w9zF/report.json`。`node tools/test-suites.mjs live --list` 确认新增对话回归已登记。
 - 本轮只在 Linux X11／XWayland 验证；Windows/macOS、纯原生 Wayland、物理多屏和实际商业模型未验。未安装、提交、推送或发布，未操作用户论文或日常 profile。
 
+## 2026-11-06 成果页重做候选与未通过的像素门
+
+未激活日常安装的真实ELF：`/tmp/nozeli-review-redesign-ARiK9h/candidate-home/.local/opt/nozeli/releases/review-page-redesign-r4-20261106/nozeli`。原生讨论不再靠裁掉报告避让；标签local-window继续独占CSS几何，原生仅一次单位转换。独立reviewer已按源码及原件逐项复核，不冒称reviewer亲自执行GUI。
+
+- `NOZELI_TEST_BINARY=<r4>/nozeli NOZELI_QA_LIFECYCLE_ONLY=1 node tests/desktop-review-page-acceptance-live.mjs`：采纳原件 `/tmp/nozeli-independent-review-pFV7Bs/report.json`；加`NOZELI_QA_DECISION=discard`的放弃原件 `/tmp/nozeli-independent-review-mgT5dM/report.json`。两者ok:true、自然exit0；保存拒绝零决定、显式业务retry同revision、同DOM草稿、detach/dock、确认取消与实际bytes、原Work完整结束及意见只读保持均核对。应用CompositionEvent只测应用屏障，不代表真实OS IME。
+- r3尺寸及普通文件标签同操作、zoom原件 `/tmp/nozeli-independent-review-gYlXgI/report.json` 的五条observations通过；整体该报告因后续定位fixture失败仍ok:false，不改写历史。数据支持420×460→470×500→400×450、36CSS收展及偏好恢复，非多屏／多DPI／OS硬件／像素完全一致签收。
+- r4性能原件 `/tmp/nozeli-independent-review-mgT5dM/performance-report.json`：opened及拖后各60个样本均child可见／应用持焦，79次trusted-CDP拖动30.284s；静置讨论bounds／displayView.write增量0，CPU中位增量0。workspace.bounds打开段11次；未实测input→pixel p95、逐帧pending与所有硬件组合。旧mixed-hidden性能原件保留，不能混用。
+- HTML成果／删除基线／真实HTMLJS与Diff旅程原件 `/tmp/nozeli-review-html-ibD2ow/report.json` 通过9项；当时fixture未给当前报告归档changeSet，附录保守标未核实正确，后续fixture已改真实retainCandidate归档、具体类型完整GUI复测仍需覆盖。
+- 最终r4包重跑 `desktop-review-html-preview-live.mjs`：`/tmp/nozeli-review-html-ku6RXc/report.json` 已验证当前精确归档的added/modified/removed类型、HTMLJS和未保存预览，随后旧“删除图片不可编辑文本”文案断言过时超时（实际已进入冻结图片reader）。删除该措辞断言、改测真实图片与基线摘要后，`/tmp/nozeli-review-html-lbxQsN/report.json` 又在整窗像素变化门失败；已读取的删除文本及source身份正确，但不能据此宣布完整GUI通过。未降低像素门或把无变化截图改记成功。
+- **未通过：真实父子同帧像素。** Spectacle activewindow捕不到child；正常区域UI的确切PID验证／选区自动化未产图，最后probe原件`/tmp/nozeli-review-redesign-ARiK9h/composite-owned-final.capture-failure.json`。没有绕过截图权限或拼接父子图。现有DOM／native bounds／child单窗截图不等于窗外正文无黑块；整页不能宣称reviewer验收通过。
+
 ## 2026-11-06 用户授权合并安装验证
 
 代码提交 `a772582` 的父提交为 `e4dd289`，无需重复 cherry-pick；实际本机安装 current=`2026-11-06T06-50-32-215Z`，previous=`2026-11-06T03-38-28-248Z`。415个src、354个dist文件与冻结工作树逐字节一致；安装包括保留的其他既有后端工作树修改，不声称安装包只来自干净commit。记录 `/tmp/nozeli-unified-install-88KARQ/installed.json`。
@@ -672,6 +687,40 @@ postinstall 用 `electron-rebuild` 针对 Electron 重建 `node-pty`。该依赖
 - 补齐后的独立树 `/var/tmp/nozeli-source-fix-index-final-c4nd28u9` 采用串行文件检查且不放宽程序期限：77项中76通过，包含全部新增参数、历史 Debug 续行及状态展示测试；`large cold ledger is worker-paged metadata with global counts and no starts` 仍以 `STORAGE_RESULT_UNKNOWN` 超时失败。该压力项原因未在本轮定位，不将这轮快照检查计作全绿，也未通过延长生产超时或吞掉异常伪造通过。
 - 上述额外失败不回写为此前工作树144/144或实际安装版同场景失败；两组既有运行结果及其输入、安装版本和证据仍分别保留。当前确认范围仅是已复现的空游标／空 brief 参数缺陷修复，不代表全仓或所有负载边界无问题。
 
+## 项目临时不可用后移除／重新添加恢复（2026-11-06，源码修复，未安装）
+
+- 日常 `nozeli_test` 调查确认：磁盘 root／metadata 实体、清单与数据库身份一致，无持久 lifecycle hold，登记在一次已完成 remove 后为 removed。安装版隔离复制可冷重加；原现场缺少具体失败返回，不能将下面复现直接等同日常现场确证。未修改日常目录、登记库或业务请求。
+- 使用 `2026-11-06T06-50-32-215Z` 实际安装代码复现：临时移走原 `.nozeli`→真实 Host.open 报 `PROJECT_METADATA_MISSING`→原目录恢复→同一 Host 移除并重新 pick，仍报 `STORAGE_RESULT_UNKNOWN`；新 Host 可成功。原因是 requireOnline 使数据库隔离并缓存 unavailable，register 在重新添加时未走同身份核查恢复。原件 `/var/tmp/nozeli-readd-cache-SzNvwp/report.json` 与同一烟测驱动的安装版失败 `/var/tmp/nozeli-readd-fixed-x3v7ZH/report.json`。
+- 修复 `ProjectStorage.initialize` 的显式重新添加分支：仅限已移除登记和同 metadata 实体，先确认旧连接退出，拒绝任何待核查 operationIds，再经独立 probe 验证 root／metadata／manifest＋DB 身份，调用现有 recover，复核生命周期及实体后清旧缓存、恢复原登记。`retry` 增加 settledOnly 模式，在异步身份探测后再次拒绝未知操作；普通显式存储核查语义保持。目录替换／符号链接／格式不符、未知写入与持久生命周期围栏不被添加操作绕过。
+- 修复前新增回归 root／metadata 恢复两项均失败（STORAGE_RESULT_UNKNOWN）；修复后 `HOME=/home/bfly TMPDIR=/var/tmp NODE_NO_WARNINGS=1 node --test tests/project-storage-initialization.test.mjs tests/project-lifecycle.test.mjs tests/project-lifecycle-reset.test.mjs tests/project-lifecycle-admission.test.mjs tests/project-lifecycle-stale-remove-hold.test.mjs` 最终64/64通过，0失败／跳过。验证原project／instance、批注／草稿／恢复正文保留，以及未知操作／锁和同UUID替换实体拒绝。
+- 真实生产源码 DesktopHost 烟测 `/var/tmp/nozeli-readd-fixed-NOavNF/report.json`：同进程 pick→metadata loss→open失败→恢复→remove→pick→open→recent可用，原projectId／instanceId不变，原文件、批注、未发送草稿和恢复文本逐项核对，唯一登记，无模型／任务启动。一次性驱动已删除，隔离证据保留。
+- 此轮未构建／验收 Electron UI、未安装／提交／推送；日常现场未执行恢复操作，不冒称用户项目已恢复。旧安装仍包含原缺陷；Linux限定，Windows/macOS未验。
+
+### 用户追加安装复测（2026-11-06，已完成）
+
+- `HOME=/home/bfly node tools/install-local.mjs` 构建／校验／激活 `2026-11-06T08-40-52-916Z`，previous=`2026-11-06T06-50-32-215Z` 保留回退。未热改旧进程、未强关日常窗口；正常重启才加载修复。
+- 使用安装内 Node 与实际安装 DesktopHost，在隔离目录同进程真实 pick→metadata loss→open拒绝→原metadata恢复→remove→pick→open。原project／instance不变、唯一登记，批注／未发送草稿／恢复正文／源文件逐项保留，报告 `/var/tmp/nozeli-installed-readd-host-y7YIqM/report.json`，ok=true。
+- 实际安装ELF/main＋隔离profile：读取原文后正常关闭项目，临时移走metadata，真实 project.open 返回 PROJECT_METADATA_MISSING，恢复metadata后沿生产 remove 生命周期、添加按钮重新添加，同一live main复用原ID并打开原生文档显示实际原文。只通过隔离子进程测试配置提供目录选择结果，未修改业务状态／安装字节／内部ledger。原manifest／源字节／Git HEAD及唯一available入口均验证，provider零推理、无业务重放、正常exit0。原件 `/var/tmp/nozeli-installed-project-readd-restored-BWTEBB/report.json`、`electron.log`、`readded-original-project.png`，截图已查看。
+- 首轮扩大到有活跃文档页面时丢metadata，恢复后移除被真实保存屏障拒绝 `PROJECT_FLUSH_FAILED`，报告 `/var/tmp/nozeli-installed-project-readd-restored-JIveSu/report.json`。没有绕过保存保护；最终明确验证已安全关闭／可正常移除的重加路径，不宣称该活跃保存失败分支已修复。
+- 一次性安装驱动已删除、证据保留。未改日常项目、未证明日常原窗口的确切错误与本复现相同；未清锁／重置／重发旧任务、未提交／推送，不外推Windows/macOS。源码64/64结果与上述安装证据分别记录，不混称全仓验收。
+
+## 永久清除项目状态与确认待办数字（2026-11-07，源码修复，未安装）
+
+- 定向：在`apps/desktop`运行`node --test tests/project-lifecycle-reset.test.mjs tests/project-lifecycle-admission.test.mjs tests/project-lifecycle.test.mjs tests/project-attention.test.mjs tests/project-attention-summary.test.mjs tests/workspace-native.test.mjs`；本轮128/128通过。
+- 真实GUI：先`npm run build:renderer`，再依次运行`node tests/desktop-project-reset-live.mjs`和`node tests/desktop-project-attention-live.mjs`。两者只创建隔离临时项目/profile，无远程模型；前者会永久清除它自己创建的多代fixture数据，不得改成日常项目路径。后者包含真实65秒空闲等待以验证到期刷新，不能用瞬时DOM检查替代。
+- reset实测4组：`/tmp/nozeli-permanent-reset-yiq2HD/report.json`；真实PTY停稳、current/retired实例与恢复区/归档清除、新id打开、原文件/Git/其他项目保留、正常退出。徽章实测6组：`/tmp/nozeli-project-attention-rCTiR8/report.json`；未知/0隐藏、正数红圈、四主题、320/390与200%原生zoom、空闲到期刷新、原业务不变。
+- 以上不验证日常项目已清除，不代表Windows/macOS或完整辅助技术签收；本轮未安装、提交或推送。行为合同和证据详见[§13](agent-conversation-status-demo.md#13-永久清除项目状态与确认数字徽章2026-11-07源码修复未安装未提交)。
+
+
+## 退役项目启动恢复污染新身份存储（2026-11-07，已安装复测）
+
+- 故障：旧归档reset保留enabled退役登记；startup恢复对旧ID调用managedExecutionSummary，requireOnline旧实体校验失败后按共享metadataRoot/project.sqlite隔离连接，新ID随后STORAGE_RESULT_UNKNOWN。旧安装隔离storage复现`/tmp/nozeli-old-id-block-MoRvaP`；实际旧ELF冷启动fixture`/tmp/nozeli-retired-startup-z3zzpZ/report.json`失败，未改日常数据。
+- 修复：requireOnline在任何metadata/DB访问前PROJECT_RETIRED拒绝removed，异步校验后再次确认登记，在catch不得隔离其他有效owner。真实活跃身份损坏与unknown提交仍隔离，不自动recover。显式重新添加先核验原实体/manifest/DB，再发布active登记，失败回退。startup/config扫描跳过removed业务恢复；旧provider inventory继续核验未知所有权，未直接释放名额。
+- `node --test tests/project-retired-isolation.test.mjs tests/project-storage-initialization.test.mjs tests/managed-projects.test.mjs tests/project-lifecycle-reset.test.mjs`64/64通过，renderer构建通过。新isolation测试加入integration名册。
+- `node tests/desktop-retired-startup-live.mjs`源码通过`/tmp/nozeli-retired-startup-stXTIs/report.json`；冻结ELF`/tmp/nozeli-retired-startup-lXGOxV/report.json`、激活后的current/nozeli`/tmp/nozeli-retired-startup-nXsMIa/report.json`均通过。每次运行含两次实际冷启动，3个enabled退役身份共享新metadata路径仍不使当前项目不可用；原project/instance、paper/annotation/前台草稿/退役恢复稿保持，未生成退役连接错误提醒，无模型请求，正常exit0。
+- 用户授权安装已激活`/home/bfly/.local/opt/nozeli/releases/retired-storage-isolation-20261107`，previous=`project-attention-badges-r2-20261107`。该包同时包含此前已测永久清除及确认数字徽章；current/nozeli徽章6组再次通过`/tmp/nozeli-project-attention-AsFCgh/report.json`。
+- 对实际nozeli_test用冻结包requireOnline＋严格readOnly DB适配器核验：当前7d9ed862-bbdc-4c7c-946d-a63b368fba6e available，5个retired均PROJECT_RETIRED且未invalidate。此为实际磁盘事实+新代码只读核验，不是日常live进程的UI验收；未强关旧进程、未修改原catalog、未重置或清除用户数据，需正常退出重开才能消除旧内存隔离并加载新版本。未提交／推送，Linux限定。
+
 ## 任务标签、限定历史与只读原生分屏（2026-11-08，Linux源码限定通过）
 
 - 默认unit已登记 `task-workspace-presentation.test.mjs`，integration已登记 `task-timeline-scope.test.mjs`。集中实测：`npm run build:renderer`、`npm run test:unit`（797项）、`node --test tests/task-timeline-scope.test.mjs`（13项）、`node tests/desktop-session-timeline.test.mjs` 均通过。消费者覆盖真实React／Electron DOM与受控读取边界，不冒称真实调度或模型执行。
@@ -742,3 +791,13 @@ postinstall 用 `electron-rebuild` 针对 Electron 重建 `node-pty`。该依赖
 `.github/workflows/ci.yml` 增加macOS native safety：真实Darwin编译／selfcheck、生产helper syscall注入的错误／确认消失／重试成功及JS adapter传播回归、平台文件／持久化／初始化／版本回归；纳入原CI gate，不能用Linux替代Mac原生修正验证。`darwin-procinfo-native.test.mjs`已注册integration，Linux明确跳过。合并仍须当前head全部CI通过、更新后便携包／真实流程验收；此记录不是提前宣称已合并或最终CI全绿。Mac现有用户验收与Linux本轮证据分开，保留截图矩阵、OS IME、完整强退后代树、自动更新、公证及发行审计等未测边界。
 
 首轮macOS arm64 CI `42576568859`：fs_anchor/fullsync/procinfo真实编译和selfcheck成功，新增helper故障注入四组全部通过；总计64通过／4跳过／2失败。两项文件系统测试在Git仓库准备阶段受runner宿主配置触发 `FILTER_UNSUPPORTED`，不是跳过或降低产品拒绝规则；后续CI给原生测试显式独立HOME，避免继承runner全局Git过滤器。此初轮失败保留，最终须重跑完整合并门，不能把局部native通过说成整个job通过。
+
+## Beta1 双平台私有草稿准备（2026-11-10）
+
+本轮用户只授权准备 Linux x64／macOS arm64 草稿，不公开发布；历史 alpha.6 例外不复用。Linux整合工作树从 `/tmp/nozeli-beta1-integration` 迁到 `/var/tmp/nozeli-beta1-integration`：首轮完整集成在 `/tmp` 遭 errno -122（EDQUOT）、SQLite I/O及最终日志写入失败，后续烟测截图也写入失败，均不计通过。首轮原件保留 `/var/tmp/nozeli-beta1-first-attempt-evidence`，不删除用户文件或把失败改为跳过。
+
+Linux 已观察结果：unit816通过／零失败；Pi与生产renderer构建成功；迁移磁盘后PPTist完整构建及upstream来源归档成功；完整Electron smoke六脚本通过，包含真实合成项目阅读／编辑／原文件保存、挂起切项目保留、正常退出与冷恢复、PPT待提交文字和28项真实审核消费者。烟测原件 `.test-output/ci/smoke.log`、`smoke-Y7biLY/report.json`（ok=true，两个正常exit0，renderer errors为空）；已查看实际编辑截图。完整integration与最终发行包资格分别记录，不能用这些源码烟测提前替代。
+
+新增草稿检查器七个离线黑盒场景通过：历史Linux-only Alpha、双平台本地资产、mac包错误提交拒绝、完整草稿、缺mac资产拒绝、已公开版本拒绝及历史Alpha草稿。首跑确实暴露缺失tarfile导入与夹具USAGE校验和漏项，已修正后全过；不是只做语法检查。两份工作流YAML已实际解析；mac版本映射已执行验证，CFBundleVersion保持三段数字，完整预发行身份独立保留。
+
+mac候选须由macos-15 arm64工作流在精确提交真实构建并解压运行，旧Mac证据不是本版本通过；Linux解压发行程序也须单独验收。六项审计仍pending，元数据检查0 failures，`--public`仍因六项未签收阻断；CI、草稿与技术验收均不替代公证或法律签收。

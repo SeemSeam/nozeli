@@ -7,7 +7,7 @@ import './task-workspace.css';
 export async function mountTaskWorkspace({root,scope,invoke,subscribe}){
  const projectId=scope.projectId,taskScope=Object.freeze({...scope.viewState?.taskScope});
  if(!projectId||(!taskScope.workId&&!taskScope.sourceJobId)){root.ownerDocument.defaultView.__nozeliInitError={code:'TASK_SCOPE_MISSING',message:'任务阅读身份缺失'};throw Error('任务阅读身份缺失');}
- const doc=root.ownerDocument,win=doc.defaultView,pages=new Map();
+ const doc=root.ownerDocument,win=doc.defaultView,pages=new Map(),consumedLocations=new Set();
  let state={},current=null,disposed=false,composing=false,saveTimer=0,saveQueue=Promise.resolve();
  const host=doc.createElement('section');host.className='task-workspace-surface';host.setAttribute('aria-label','只读任务工作面');root.replaceChildren(host);
  const applyFont=value=>{if(Number.isFinite(value))host.style.setProperty('--conversation-font',Math.max(11,Math.min(24,value))+'px');};
@@ -46,6 +46,15 @@ export async function mountTaskWorkspace({root,scope,invoke,subscribe}){
   }catch(error){if(disposed||serial!==page.request)return;page.loading=false;page.error=error.message;render(page);}
  }
  function refresh(){const page=pages.get('process');if(!page||page.cursor||reading(page))return;if(page.loading){page.dirty=true;return;}void read(page,undefined,{automatic:true});}
+ async function locate(target){
+  if(!target||typeof target.messageId!=='string'||typeof target.cursor!=='string')return false;
+  const identity=target.requestId||JSON.stringify([target.messageId,target.cursor]);delete scope.viewState.taskLocate;if(consumedLocations.has(identity))return false;consumedLocations.add(identity);
+  await open('process');const page=pages.get('process');page.reading=true;await read(page,target.cursor);
+  await new Promise(resolve=>win.requestAnimationFrame(()=>win.requestAnimationFrame(resolve)));
+  if(disposed)return;const node=[...page.body.querySelectorAll('[data-process-entry]')].find(node=>node.dataset.processEntry===target.messageId);
+  if(!node){fail(page,Error('原游标页没有该消息；未跳转到其他任务或最新记录。'));return;}
+  node.tabIndex=-1;node.scrollIntoView({block:'start',behavior:'instant'});node.focus({preventScroll:true});page.status.textContent='已定位原记录 · '+target.messageId;scheduleSave();return true;
+ }
  function open(mode,{focus=false}={}){
   mode=mode==='overview'?'overview':'process';current=mode;
   for(const page of pages.values())page.root.hidden=true;
@@ -69,7 +78,7 @@ export async function mountTaskWorkspace({root,scope,invoke,subscribe}){
   if(event.type==='host'){
    const incoming=event.viewState?.taskScope;
    if(event.projectId!==projectId||event.viewId!==scope.viewId||event.kind!=='task-process'||event.resourceId!==scope.resourceId||event.readOnly!==true||!incoming||incoming.workId!==taskScope.workId||incoming.sourceJobId!==taskScope.sourceJobId||Object.keys(incoming).some(key=>!['workId','sourceJobId'].includes(key))||event.generation<scope.generation)return;
-   scope.windowId=event.windowId;scope.generation=event.generation;scope.viewState={...scope.viewState,...event.viewState,taskScope:{...taskScope}};applyFont(event.workspace?.conversationFontSize);open(event.viewState.taskMode,{focus:false});return;
+   scope.windowId=event.windowId;scope.generation=event.generation;scope.viewState={...scope.viewState,...event.viewState,taskScope:{...taskScope}};applyFont(event.workspace?.conversationFontSize);if(event.viewState.taskLocate)void locate(event.viewState.taskLocate).then(located=>{if(!located)open(event.viewState.taskMode,{focus:false});}).catch(error=>fail(pages.get('process'),error));else open(event.viewState.taskMode,{focus:false});return;
   }
   if(event.type==='task-workspace'&&event.projectId===projectId&&['process','overview'].includes(event.action))open(event.action,{focus:true});
   else if(event.type==='focus-content')pages.get(current)?.root.focus({preventScroll:true});
@@ -81,6 +90,7 @@ export async function mountTaskWorkspace({root,scope,invoke,subscribe}){
  try{
   const ready=await invoke('workspace.ready',{});if(!ready.ok)throw Error(ready.error?.message||'任务工作面未就绪');
   const status=await call('status');state=status.state||{};await open(scope.viewState?.taskMode);
+  if(scope.viewState?.taskLocate)await locate(scope.viewState.taskLocate);
   const result=await invoke('workspace.ready',{contentReady:true});if(!result.ok)throw Error(result.error?.message||'任务内容未就绪');win.__nozeliReady=true;
  }catch(error){const failure={code:error.code||'TASK_READING_FAILED',message:error.message};win.__nozeliInitError=failure;host.textContent='任务过程无法读取：'+error.message;host.setAttribute('role','alert');await invoke('workspace.ready',{contentFailed:true,error:failure});}
 }

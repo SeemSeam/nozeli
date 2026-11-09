@@ -222,7 +222,7 @@ const TEXT_EXT = new Set([
   '.py', '.yml', '.yaml', '.csv', '.xml', '.svg', '.ts', '.tsx', '.jsx', '.log',
   '.bib', '.sty', '.cls', '.toml', '.ini', '.sh',
 ]);
-const OFFICE_EXT = new Set(['.doc', '.docx', '.ppt', '.pptx', '.xls', '.xlsx', '.odt', '.odp', '.ods']);
+export const OFFICE_EXT = new Set(['.doc', '.docx', '.ppt', '.pptx', '.xls', '.xlsx', '.odt', '.odp', '.ods']);
 
 function lock() {
   let chain = Promise.resolve();
@@ -278,7 +278,7 @@ function draftKey(relPath) {
   return createHash('sha256').update(relPath).digest('hex');
 }
 
-function isUtf8Text(bytes) {
+export function isUtf8Text(bytes) {
   if (bytes.includes(0)) return false;
   try {
     new TextDecoder('utf-8', { fatal: true }).decode(bytes);
@@ -1465,8 +1465,6 @@ export class DesktopHost {
       dock: ['top','right','bottom','left'].includes(w.dock) ? w.dock : 'bottom',
       floating: w.floating === true, minimized: w.minimized === true,
       chatExpanded: w.chatExpanded === true,
-      ...(typeof w.chatCompact === 'boolean' ? {chatCompact:w.chatCompact} : {}),
-      chatLayoutExplicit: w.chatLayoutExplicit === true,
       readingWidth: number('readingWidth',72,60,100),
       chatWidth: number('chatWidth', 320, 180, 900), chatHeight: number('chatHeight', 210, 120, 800),
       x: number('x', 240, 0, 10000), y: number('y', 180, 0, 10000),

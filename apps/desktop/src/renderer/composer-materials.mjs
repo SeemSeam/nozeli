@@ -1,7 +1,7 @@
 import { appendDrawingMaterial } from '../domain/drawing-delivery.mjs';
-import { renderTagMarkdown } from './tag-markdown.mjs';
 import { createFileIcon, fileIconType } from './file-icons.mjs';
 import './conversation-rendering.css';
+import {renderFrozenMaterialBody} from './frozen-material-viewer.mjs';
 
 /* Composer materials and formatting for the main conversation.
  * - The original #composer textarea stays the single editing source.
@@ -538,44 +538,7 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
     if(drawing){const provenance=document.createElement('p');provenance.textContent=drawing.sources?.length?drawing.sources.map(s=>s.summary||s.identity?.relPath||'工作区来源 · 仅视口').join('；'):'工作区截图，未锚定文件';body.append(provenance);}
     viewer.querySelector('.mv-title').textContent = `${name} · ${fmtSize(size)} · 只读${source === 'drawing' ? ' · 涂鸦截图' : source === 'paste' ? ' · 粘贴' : source === 'drop' ? ' · 拖入' : source === 'path-select' ? ' · 路径引用' : ' · 本地选择'}`;
     note.remove();
-    const kind = classify(name, mime);
-    if (kind === 'image') {
-      const img = document.createElement('img');
-      img.className = 'mv-image';
-      img.src = `data:${mime};base64,${bytes}`;
-      img.alt = name;
-      body.append(img);
-    } else if (kind === 'pdf') {
-      const frame = document.createElement('iframe');
-      frame.className = 'mv-pdf';
-      frame.src = `data:application/pdf;base64,${bytes}`;
-      frame.title = name + '（只读 PDF）';
-      body.append(frame);
-      const cap = document.createElement('p');
-      cap.className = 'mv-note';
-      cap.textContent = '浏览器内置 PDF 阅读 · 附件为发送时冻结的副本。';
-      body.append(cap);
-    } else if (kind === 'markdown' || kind === 'text') {
-      let text = '';
-      try { text = new TextDecoder().decode(Uint8Array.from(atob(bytes), c => c.charCodeAt(0))); } catch { text = ''; }
-      if (text && !text.includes('\u0000')) {
-        const rendered = document.createElement('div');
-        rendered.className = 'agent-message-body';
-        renderTagMarkdown(rendered, text, {});
-        body.append(rendered);
-      } else {
-        const meta = metaPanel(name, mime, size, '文本解码失败，按二进制材料保留');
-        body.append(meta);
-      }
-    } else {
-      body.append(metaPanel(name, mime, size, '该格式不支持解析预览（本产品未内置该引擎）；附件按原样冻结保留，可随消息引用'));
-    }
-  }
-  function metaPanel(name, mime, size, note) {
-    const p = document.createElement('p');
-    p.className = 'mv-meta';
-    p.textContent = `${name} · ${mime} · ${fmtSize(size)} · ${note}。`;
-    return p;
+    try{renderFrozenMaterialBody(body,result.value);}catch(error){const note=document.createElement('p');note.className='mv-meta';note.textContent='冻结材料解码失败：'+error.message;body.append(note);}
   }
 
   /* ---------- send snapshot / confirm -------------------------------------- */

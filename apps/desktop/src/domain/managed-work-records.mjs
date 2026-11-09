@@ -39,6 +39,7 @@ export function publicationOrdinal(state,workId,objectId,kind='result'){
  if(typeof workId!=='string'||typeof objectId!=='string'||!objectId)return null;
  const rows=(state?.receipts||[]).filter(row=>row?.workId===workId&&row.kind===kind);
  const index=rows.findIndex(row=>row.objectId===objectId);
+ if(index>=0&&Number.isSafeInteger(rows[index].publicationNumber)&&rows[index].publicationNumber>0)return rows[index].publicationNumber;
  return index>=0?index+1:null;
 }
 // Human edits saved for this exact publication: review drafts bound to the

@@ -112,6 +112,27 @@ test('scoped host page is available offline without configuration or provider/co
  assert.equal(starts,0);assert.equal(manager.controllers.size,0);await manager.stop();
 });
 
+test('managed timeline locate resolves exact scoped cursors for inline disclosure without mutation',async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-locate-')),projectRoot=path.join(root,'project');await fs.mkdir(projectRoot);
+ const host=new DesktopHost(root),{project}=await host.pick(projectRoot),projectId=project.id;
+ t.after(async()=>{await host.storage.db.close();await fs.rm(root,{recursive:true,force:true});});
+ const manager=new ManagedProjects({userDataDir:root,host,legacy:{projects:new Map()},openController:async()=>{throw Error('provider must not start');}});
+ const store=await openTestWorkspace(await managedRuntime(host.storage,projectId),projectRoot,{storage:host.storage,projectId});
+ await store.mutate(()=>{const fixture=history(projectId).state;store.state.jobs=fixture.jobs;store.state.works=fixture.works;store.state.messages=fixture.messages;});await store.close();
+ const before=await readManagedState(host.storage,projectId,{offline:true});
+ const located=await manager.invoke('managed.timeline.locate',{projectId,workId:'work-a',messageId:'message-round-2'});
+ assert.equal(located.messageId,'message-round-2');assert.deepEqual(located.taskScope,{workId:'work-a'});assert(located.cursor.startsWith('scope:'));
+ assert.equal((await manager.invoke('managed.timeline.page',{projectId,workId:'work-a',cursor:located.cursor,limit:50})).entries.at(-1).id,'message-round-2');
+ // A source-only scope with no Work yet stays locatable for the main card.
+ const source=await manager.invoke('managed.timeline.locate',{projectId,sourceJobId:'pending',messageId:'message-pending-answer'});
+ assert.deepEqual(source.taskScope,{sourceJobId:'pending'});
+ assert.equal((await manager.invoke('managed.timeline.page',{projectId,sourceJobId:'pending',cursor:source.cursor,limit:50})).entries.at(-1).id,'message-pending-answer');
+ for(const bad of [{projectId,workId:'work-a',messageId:'message-other'},{projectId,workId:'work-b',messageId:'message-round-2'},{projectId,workId:'work-a',messageId:'delta-a'},{projectId,messageId:'message-round-2'},{projectId,workId:'work-a',messageId:'missing'},{projectId,workId:'work-a',messageId:'message-round-2',extra:1}])
+  await assert.rejects(manager.invoke('managed.timeline.locate',bad),error=>['TIMELINE_SCOPE','INVALID_PAYLOAD'].includes(error.code)||error.message==='invalid managed payload');
+ assert.deepEqual(await readManagedState(host.storage,projectId,{offline:true}),before,'locate never mutates persisted state');
+ assert.equal(manager.controllers.size,0);await manager.stop();
+});
+
 test('task surfaces split beside existing chat, reuse fixed scope and retain layout/reading without admission',async()=>{
  const store=history('p'),index=new SessionIndex(store),controls=[],win={show(){},focus(){}},shell={role:'shell',windowId:'main',projectId:'p',generation:0,ready:true,win,wc:{id:1,focus(){},send:(channel,payload)=>controls.push(payload)}};
  const native=Object.create(WorkspaceNative.prototype);native.shell=shell;native.surfaces=new Map();native.windows=new Map([['main',shell]]);native.layouts=new Map();
@@ -232,4 +253,58 @@ test('task original export keeps the only full path for oversized native records
  const target=path.join(root,'original-export.json');let dialogs=0;
  await exportTimelineOriginal({managed:native.managedAgents,scope:record,dialog:{showSaveDialog:async()=>{dialogs++;return {filePath:target,canceled:false};}},...request});
  assert.equal(dialogs,1);assert.equal(createHash('sha256').update(await fs.readFile(target)).digest('hex'),objectId);assert.equal(createHash('sha256').update(await fs.readFile(path.join(index.root,objectId+'.json'))).digest('hex'),objectId);
+});
+
+test('process location survives bootstrap probes with one request identity and explicit overview or cold reopen never replays it',async()=>{
+ const store=history(),index=new SessionIndex(store),scope={workId:'work-a'};
+ const native=Object.create(WorkspaceNative.prototype),root={projectId:store.projectId},record={projectId:store.projectId,windowId:'detached',generation:1};
+ let layout={projectId:store.projectId,revision:1,views:{}},controls=[],contentReady=true;
+ native.managedAgents={projectionSource:async()=>({index,state:store.state})};
+ native.windows=new Map([['detached',root]]);native.surfaces=new Map();native.layout=async()=>layout;native.layouts=new Map();
+ native.command=async(sender,payload,options)=>{
+  assert.equal(sender,root);
+  if(payload.command.type==='openTask'){
+   assert.equal(options.taskOpen,true);assert.deepEqual(payload.command.scope,scope);
+   const viewState={...layout.views.task?.viewState,taskScope:scope,taskMode:payload.command.mode};delete viewState.taskLocate;
+   layout={...layout,revision:layout.revision+1,views:{task:{id:'task',kind:'task-process',resourceId:taskResourceId(store.projectId,scope),viewState}}};
+   native.surfaces.set('task',{role:'surface',kind:'task-process',viewId:'task',projectId:store.projectId,ready:contentReady,wc:{send:(...args)=>controls.push(args),focus(){}},win:{show(){},focus(){}}});
+  }else layout={...layout,views:{task:{...layout.views.task,viewState:payload.command.viewState}}};
+  native.layouts.set(store.projectId,layout);
+  return {layout};
+ };
+ const result=await native.openTaskProcess(record,scope,'message-round-1');
+ assert.equal(result.locationSupported,true);
+ assert.equal(result.taskLocate.messageId,'message-round-1');
+ const frame=await index.page({...scope,cursor:result.taskLocate.cursor});
+ assert.equal(frame.entries.at(-1).id,'message-round-1');
+ assert.equal(frame.entries.some(entry=>entry.id==='message-round-2'),false);
+ assert.deepEqual(controls[0][1].viewState.taskLocate,result.taskLocate);
+ assert.equal(layout.views.task.viewState.taskLocate,undefined,'location is not persisted');
+ assert.deepEqual(native.bootstrap(native.surfaces.get('task')).viewState.taskLocate,result.taskLocate,'metadata bootstrap cannot consume delivery');
+ assert.deepEqual(native.bootstrap(native.surfaces.get('task')).viewState.taskLocate,result.taskLocate,'repeated host metadata keeps the same deduplication request identity');
+ await native.openTaskProcess(record,scope,undefined,'overview');
+ assert.equal(layout.views.task.viewState.taskMode,'overview');
+ assert.equal(controls.at(-1)[1].viewState.taskLocate,undefined);
+ const cold=Object.create(WorkspaceNative.prototype);cold.layouts=new Map([[store.projectId,JSON.parse(JSON.stringify(layout))]]);
+ assert.equal(cold.bootstrap(native.surfaces.get('task')).viewState.taskLocate,undefined,'cold reopen retains overview without jumping');
+ assert.equal(cold.bootstrap(native.surfaces.get('task')).viewState.taskMode,'overview');
+ contentReady=false;const delivered=controls.length;
+ const pending=await native.openTaskProcess(record,scope,'message-round-1');
+ assert.notEqual(pending.taskLocate.requestId,result.taskLocate.requestId,'a later explicit locate is a new request even for the same message');
+ assert.equal(controls.length,delivered,'not-ready content waits for its initial bootstrap');
+ const initial=native.bootstrap(native.surfaces.get('task'));
+ assert.deepEqual(initial.viewState.taskLocate,pending.taskLocate);
+ assert.deepEqual(native.bootstrap(native.surfaces.get('task')).viewState.taskLocate,pending.taskLocate,'an earlier metadata read cannot lose the initial location');
+ const located=await index.page({...scope,cursor:initial.viewState.taskLocate.cursor});assert.equal(located.entries.at(-1).id,'message-round-1');
+ await assert.rejects(native.openTaskProcess(record,scope,'message-other'),{code:'TIMELINE_SCOPE'});
+ await assert.rejects(native.openTaskProcess(record,scope,'missing'),{code:'TIMELINE_SCOPE'});
+});
+
+test('explicit task modes retire legacy persisted location without replacing reading choices',()=>{
+ let layout=reduceLayout(createLayout('p'),{type:'openTask',scope:{workId:'work-a'},mode:'process'});
+ const view=Object.values(layout.views).find(view=>view.kind==='task-process');
+ layout=reduceLayout(layout,{type:'restoreViewState',viewId:view.id,viewState:{...view.viewState,taskLocate:{messageId:'old',cursor:'old-cursor'},reading:{anchor:'kept'}}});
+ layout=reduceLayout(layout,{type:'openTask',scope:{workId:'work-a'},mode:'overview'});
+ assert.equal(layout.views[view.id].viewState.taskMode,'overview');assert.equal(layout.views[view.id].viewState.taskLocate,undefined);
+ assert.deepEqual(layout.views[view.id].viewState.reading,{anchor:'kept'});
 });

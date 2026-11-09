@@ -1,7 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {managedWorkRecords,intakeLineage,managedInboxTodos} from '../src/domain/managed-work-records.mjs';
+import {managedWorkRecords,intakeLineage,managedInboxTodos,publicationOrdinal} from '../src/domain/managed-work-records.mjs';
 const base=()=>({jobs:[],works:[],todos:[],receipts:[],drafts:{}});
+test('bounded receipt windows retain the host publication ordinal, not their array position',()=>{
+ const state={receipts:[{id:'old',workId:'w',kind:'result',objectId:'object-37',publicationNumber:37},{id:'new',workId:'w',kind:'result',objectId:'object-41',publicationNumber:41},{id:'other',workId:'another',kind:'result',objectId:'object-42',publicationNumber:999}]};
+ assert.equal(publicationOrdinal(state,'w','object-37'),37);assert.equal(publicationOrdinal(state,'w','object-41'),41);assert.equal(publicationOrdinal(state,'w','object-42'),null);
+ assert.equal(publicationOrdinal({receipts:[{workId:'w',kind:'result',objectId:'a'},{workId:'w',kind:'result',objectId:'b'}]},'w','b'),2,'full main state still derives ordinals from its complete ledger');
+});
 const intake=(id,extra={})=>({id,target:'orchestrator',type:'intake',text:'做一项工作',status:'queued',context:{},at:'2026-10-12T08:00:00Z',...extra});
 test('accepted request survives clarification and dispatch as one record',()=>{
  const s=base(),original=intake('one');s.jobs.push(original);const id=managedWorkRecords(s)[0].id;assert.equal(id,'request:one');assert.equal(managedWorkRecords(s)[0].workId,undefined);

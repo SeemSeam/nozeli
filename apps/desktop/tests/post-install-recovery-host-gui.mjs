@@ -58,9 +58,8 @@ async function launch(){
 async function close(){if(!child||child.exitCode!==null||child.signalCode)return;assert((await invoke('session.requestClose')).ok);const result=await Promise.race([exited,pause(15000).then(()=>null)]);assert.deepEqual(result,{code:0,signal:null},'owned Electron must close normally');await browser.disconnect();browser=null;page=null;}
 async function writeSnapshot(label){
  const dir=path.join(output,label);await fs.mkdir(dir);const s=await status();
- await page.waitForFunction(count=>Number(document.querySelector('#work-count').textContent)===count,{},s.quotaUsed);
- const dom=await page.evaluate(()=>({target:document.querySelector('#conversation-panel').dataset.managedConversation,composerDisabled:document.querySelector('#composer').disabled,composer:document.querySelector('#composer').value,quota:Number(document.querySelector('#work-count').textContent),status:document.querySelector('#compose-status').textContent,report:document.querySelector('#managed-doc').textContent,error:document.querySelector('#managed-review-error')?.textContent||null}));
- assert.equal(dom.quota,s.quotaUsed);await fs.writeFile(path.join(dir,'dom.json'),JSON.stringify(dom,null,2));
+ const dom=await page.evaluate(()=>({target:document.querySelector('#conversation-panel').dataset.managedConversation,composerDisabled:document.querySelector('#composer').disabled,composer:document.querySelector('#composer').value,status:document.querySelector('#compose-status').textContent,report:document.querySelector('#managed-doc').textContent,error:document.querySelector('#managed-review-error')?.textContent||null}));
+ await fs.writeFile(path.join(dir,'dom.json'),JSON.stringify(dom,null,2));
  await fs.writeFile(path.join(dir,'state.json'),JSON.stringify(s,null,2));await fs.copyFile(path.join(runtime,'state.json'),path.join(dir,'durable-state.json'));await fs.copyFile(path.join(project,'.git/index'),path.join(dir,'index.bin'));await fs.writeFile(path.join(dir,'git.txt'),git('log','--format=fuller','--stat')+'\n'+git('status','--porcelain=v1'));await page.screenshot({path:path.join(dir,'gui.png')});return s;
 }
 async function sidebar(){if(await page.$eval('#toggle-sidebar',n=>n.getAttribute('aria-expanded')!=='true'))await page.click('#toggle-sidebar');}

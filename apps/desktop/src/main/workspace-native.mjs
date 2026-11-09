@@ -179,7 +179,8 @@ export class WorkspaceNative {
     const record = this.senders.get(wc.id);
     // Only our registered application main document can use navigator writes.
     // Vendor iframes use the trusted parent bridge; reports never gain access.
-    return !!record && !record.dead && !record.transferring && ['shell','detached','surface'].includes(record.role)
+    const ownedReview=record?.role==='review-discussion'&&record.discussionRow?.record===record&&this.reviewDiscussions?.owns(record.discussionRow);
+    return !!record && !record.dead && !record.transferring && (['shell','detached','surface'].includes(record.role)||ownedReview)
       && wc.mainFrame.url === this.origin && details?.isMainFrame === true && details.requestingUrl === this.origin;
   }
   documentSourceOf(record){ return record.documentSource === undefined ? undefined : record.documentSource; }
@@ -194,6 +195,35 @@ export class WorkspaceNative {
     const source=await this.managedAgents.projectionSource(projectId),scope=source.index.scope(taskScope);
     if(!scope)throw fail('TIMELINE_SCOPE');
     return {...source,scope};
+  }
+  // Locate validation is a pure scope read shared by the split opener and the
+  // inline process disclosure; it never creates views or changes layout.
+  taskLocateCursor(index,scope,messageId){
+    if(typeof messageId!=='string'||!messageId||messageId.length>512)throw fail('TIMELINE_SCOPE');
+    const row=index.ordered().find(row=>row.id===messageId);
+    if(!row||row.delta||!scope.matches(row.native??row.legacy)||!Number.isSafeInteger(row.sequence+1))throw fail('TIMELINE_SCOPE');
+    const cursor='scope:'+scope.key+':before:'+(row.sequence+1);
+    if(!index.select(cursor,1,scope).some(entry=>entry.id===messageId))throw fail('TIMELINE_SCOPE');
+    return {messageId,cursor};
+  }
+  async openTaskProcess(record,taskScope,messageId,mode='process'){
+    const projectId=record.projectId,generation=record.generation;
+    const assertSender=()=>{if(record.dead||record.projectId!==projectId||record.generation!==generation)throw fail('PROJECT_SCOPE_DENIED');};
+    const {index,scope}=await this.taskSource(projectId,taskScope);
+    const taskLocate=messageId===undefined?null:{requestId:randomUUID(),...this.taskLocateCursor(index,scope,messageId)};
+    assertSender();
+    const layout=await this.layout(projectId),root=this.windows.get(record.windowId)??this.shell;
+    if(!root||root.dead||root.projectId!==projectId)throw fail('MAIN_WINDOW_UNAVAILABLE');
+    const result=await this.command(root,{projectId,expectedRevision:layout.revision,requestKey:randomUUID(),command:{type:'openTask',scope:taskScope,mode}},{taskOpen:true});assertSender();
+    const descriptor=Object.values(result.layout.views).find(view=>view.kind==='task-process'&&view.resourceId===taskResourceId(projectId,taskScope)&&!view.sourceViewId);
+    // Location is transient delivery, not durable reading mode. Bootstrap is a
+    // pure read: retransmissions keep requestId for renderer deduplication;
+    // explicit mode navigation clears the pending request, cold restore has none.
+    this.taskLocations??=new Map();
+    if(taskLocate)this.taskLocations.set(descriptor.id,taskLocate);else this.taskLocations.delete(descriptor.id);
+    const owner=this.surfaces.get(descriptor.id);
+    if(owner){if(owner.ready)owner.wc.send('nozeli:workspace-control',{type:'host',...this.bootstrap(owner)});owner.win.show();owner.win.focus();if(owner.ready)owner.wc.focus();}
+    return {routed:true,viewId:descriptor.id,locationSupported:true,...(taskLocate?{taskLocate}:{})};
   }
   async authorizeTaskExport(record,p){
     if(p.projectId!==record.projectId)throw fail('PROJECT_SCOPE_DENIED');
@@ -354,7 +384,12 @@ export class WorkspaceNative {
       if (!lease || lease.viewId === r.viewId && lease.generation !== r.generation) this.leases.set(key, { resourceId: key, viewId: r.viewId, windowId: r.windowId, generation: r.generation, epoch: ++this.epoch });
       r.readOnly = this.leases.get(key)?.viewId !== r.viewId;
     }else if(descriptor?.readOnly)r.readOnly=true;
-    const viewState=this.layouts.get(r.projectId)?.views[r.viewId]?.viewState;
+    let viewState=this.layouts.get(r.projectId)?.views[r.viewId]?.viewState;
+    if(r.kind==='task-process'){
+      viewState={...viewState};delete viewState.taskLocate;
+      const taskLocate=this.taskLocations?.get(r.viewId);
+      if(taskLocate)viewState.taskLocate=taskLocate;
+    }
     return { ...(r.kind==='task-process'?{workspace:r.taskWorkspace??{}}:{}), role: r.role, projectId: r.projectId, viewId: r.viewId, kind: r.kind, relPath: r.relPath, ...(r.kind==='web'?{url:descriptor?.url,title:descriptor?.title}:{}), ...(r.documentSource !== undefined ? { documentSource: structuredClone(r.documentSource) } : {}), resourceId: descriptor?.resourceId ?? null, documentKey: r.role === 'surface' && r.kind === 'document' ? this.resourceOfRecord(r) : null, windowId: r.windowId, generation: r.generation, readOnly: !!r.readOnly, draftOnly:viewState?.draftOnly===true, viewState, lease: r.relPath ? this.leases.get(this.resource(r.projectId, r.relPath, r.documentSource)) : null, contentFailed: !!r.contentFailed, initError: r.initError ?? null };
   }
   flush(records) { return Promise.all([...new Set(records)].filter(r => !r.dead&&!['demo-controls','demo-hint'].includes(r.role)).map(r => this.flushOne(r))).then(() => this.host.settled()); }
@@ -390,7 +425,7 @@ export class WorkspaceNative {
       if(payload.projectId!==record.projectId||record.role!=='shell')return null;
     }else if(op==='managed.draft'){
       if(payload.projectId!==record.projectId||record.kind!=='conversation'||payload.target!=='frontdesk')return null;
-    }else if(!['workspace.displayView.write','workspace.recovery','file.draft','file.save','file.retain','managed.review.instruction.save','managed.review.save'].includes(op))return null;
+    }else if(!['workspace.displayView.write','workspace.recovery','file.draft','file.save','file.retain','managed.review.instruction.save','managed.review.save','workspace.reviewDiscussion.readingState.write'].includes(op))return null;
     const receipt=this.receipts.get(requestId);
     if(!receipt||receipt.record!==record||receipt.generation!==record.generation||record.dead||!receipt.lifecycleHold||this.host.storage.lifecycleHolds.get(record.projectId)!==receipt.lifecycleHold&&this.lifecycle.get(record.projectId)!==receipt.lifecycleHold)return null;
     return receipt.lifecycleHold;
@@ -500,7 +535,16 @@ export class WorkspaceNative {
   }
   projectRecords(projectId, windowId) { return [...this.surfaces.values()].filter(r => r.projectId === projectId && (windowId === undefined || r.windowId === windowId)); }
   broadcast(channel, payload, projectId) {
-    for (const r of this.senders.values()) if (!r.dead && (!projectId || r.projectId === projectId)) r.wc.send(channel, payload);
+    for (const r of this.senders.values()) if (!r.dead && (!projectId || r.projectId === projectId)) {
+      if(r.role==='review-discussion'&&channel==='nozeli:agent'){
+        const row=r.discussionRow;
+        if(!this.reviewDiscussions?.owns(row)||payload?.projectId!==row.projectId)continue;
+        if(payload.workId&&payload.workId!==row.workId||payload.target&&!['frontdesk','orchestrator',row.workId].includes(payload.target))continue;
+        // Notifications carry no project state, model events or other Work body.
+        // The child refreshes through its original fixed-scope read capability.
+        r.wc.send(channel,{kind:payload.kind,projectId:row.projectId,workId:row.workId});
+      }else r.wc.send(channel, payload);
+    }
   }
   changed(layout) {
     for (const r of this.windows.values()) if (r.projectId === layout.projectId && !r.dead) {
@@ -1248,19 +1292,12 @@ export class WorkspaceNative {
       if(p.type==='task-workspace'){
         if(!(r.role==='shell'||r.role==='surface'&&['conversation','task-process'].includes(r.kind)))throw fail('IPC_DENIED');
         const validId=id=>typeof id==='string'&&id.length>0&&id.length<=512&&!/[\x00-\x1f]/.test(id);
-        if(p.projectId!==r.projectId||!['process','overview','locate','inspect'].includes(p.action)||Object.keys(p).some(key=>!['type','action','projectId','workId','sourceJobId','section'].includes(key))||!validId(p.workId)&&!validId(p.sourceJobId)||p.workId!==undefined&&!validId(p.workId)||p.sourceJobId!==undefined&&!validId(p.sourceJobId)||p.action==='inspect'&&!['details','report','control','versions','request'].includes(p.section)||p.action!=='inspect'&&p.section!==undefined)throw fail('INVALID_COMMAND');
+        if(p.projectId!==r.projectId||!['process','overview','locate','inspect'].includes(p.action)||Object.keys(p).some(key=>!['type','action','projectId','workId','sourceJobId','section','messageId'].includes(key))||!validId(p.workId)&&!validId(p.sourceJobId)||p.workId!==undefined&&!validId(p.workId)||p.sourceJobId!==undefined&&!validId(p.sourceJobId)||p.messageId!==undefined&&(!validId(p.messageId)||p.action!=='process')||p.action==='inspect'&&!['details','report','control','versions','request'].includes(p.section)||p.action!=='inspect'&&p.section!==undefined)throw fail('INVALID_COMMAND');
         const projectId=r.projectId,generation=r.generation,taskScope={...(p.workId!==undefined?{workId:p.workId}:{}),...(p.sourceJobId!==undefined?{sourceJobId:p.sourceJobId}:{})};
         if(r.kind==='task-process'&&taskResourceId(projectId,taskScope)!==this.layouts.get(projectId)?.views[r.viewId]?.resourceId)throw fail('TIMELINE_SCOPE');
         await this.taskSource(projectId,taskScope);
         const assertSender=()=>{if(r.dead||r.projectId!==projectId||r.generation!==generation)throw fail('PROJECT_SCOPE_DENIED');};assertSender();
-        if(['process','overview'].includes(p.action)){
-          const layout=await this.layout(projectId),root=this.windows.get(r.windowId)??this.shell;
-          if(!root||root.dead||root.projectId!==projectId)throw fail('MAIN_WINDOW_UNAVAILABLE');
-          const result=await this.command(root,{projectId,expectedRevision:layout.revision,requestKey:randomUUID(),command:{type:'openTask',scope:taskScope,mode:p.action}},{taskOpen:true});assertSender();
-          const descriptor=Object.values(result.layout.views).find(view=>view.kind==='task-process'&&view.resourceId===taskResourceId(projectId,taskScope)&&!view.sourceViewId),owner=this.surfaces.get(descriptor.id);
-          if(owner){owner.wc.send('nozeli:workspace-control',{type:'host',...this.bootstrap(owner)});owner.win.show();owner.win.focus();if(owner.ready)owner.wc.focus();}
-          return {routed:true,viewId:descriptor.id};
-        }
+        if(['process','overview'].includes(p.action))return this.openTaskProcess(r,taskScope,p.messageId,p.action);
         const owner=p.action==='locate'?this.projectRecords(projectId).find(row=>!row.dead&&row.kind==='conversation'):this.shell;
         if(!owner)return {routed:false};
         if(owner.dead||owner.projectId!==projectId)throw fail('PROJECT_SCOPE_DENIED');

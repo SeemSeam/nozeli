@@ -34,7 +34,7 @@ try {
   await fs.mkdir(notices, {recursive:true});
   for (const name of ['LICENSE','README.md','package-lock.json']) await fs.copyFile(path.join(source,'vendor/pptist',name),path.join(notices,name));
   await fs.writeFile(path.join(release, 'AppRun'), `#!/bin/sh\nset -eu\nHERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nif [ -n "\${DISPLAY:-}" ]; then\n  exec "$HERE/nozeli" --ozone-platform=x11 "$@"\nelif [ -n "\${WAYLAND_DISPLAY:-}" ]; then\n  exec "$HERE/nozeli" --ozone-platform=wayland "$@"\nelse\n  exec "$HERE/nozeli" "$@"\nfi\n`, {mode:0o755});
-  const instructions = `# Nozeli ${manifest.version} — Linux x64 Alpha
+  const instructions = `# Nozeli ${manifest.version} — Linux x64 预发行草稿
 
 ## 无需源码安装
 
@@ -58,11 +58,11 @@ Nozeli源码：Nozeli-${manifest.version}-source.tar.gz（仅Git管理源码，�
 
 Nozeli自有代码采用AGPL-3.0-only，正文见NOZELI-LICENSE。根LICENSE为Electron许可；第三方组件保留原许可证，声明位于LICENSES.chromium.html、resources/app/SOURCES.md、resources/app/assets/licenses、resources/app/integrations/pi及依赖目录内，PPTist许可单独保留。
 
-本包为 Alpha 构建，不是稳定版本或合规认证。向他人拷贝或公开上传均可能触发GPL/AGPL等义务；Git及原生发行的完整对应源码、SuperDoc/PPTist源码提供、Pi闭包和传递依赖审计等义务仍未签收。Nozeli源码归档和上游链接不能代替这些要求。公开预发行须有仓库所有者对该次发行的明确授权，并在发行说明披露未完成义务；一般发布门仍保持阻塞，授权不改变许可证、不代表审计通过。
+本包为预发行草稿，不是稳定版本或合规认证。向他人拷贝或公开上传均可能触发GPL/AGPL等义务；Git及原生发行的完整对应源码、SuperDoc/PPTist源码提供、Pi闭包和传递依赖审计等义务仍未签收。Nozeli源码归档和上游链接不能代替这些要求。公开发布门保持阻断；其他发行版本的例外授权不适用于本包，草稿或技术验收不代表审计通过。
 `;
   await fs.writeFile(path.join(release, '使用说明.md'), instructions);
   await fs.writeFile(path.join(output, '使用说明.md'), instructions);
-  await fs.writeFile(path.join(release, 'RELEASE.json'), JSON.stringify({application:'Nozeli',version:manifest.version,platform:process.platform,arch:process.arch,commit,format:'portable-tar.gz',distribution:'local-alpha',publicRedistributionAudit:'pending',nodeNpmRequired:false},null,2)+'\n');
+  await fs.writeFile(path.join(release, 'RELEASE.json'), JSON.stringify({application:'Nozeli',version:manifest.version,platform:process.platform,arch:process.arch,commit,format:'portable-tar.gz',distribution:'private-prerelease-draft',publicRedistributionAudit:'pending',nodeNpmRequired:false},null,2)+'\n');
   await validateRelease(root, release);
   const archive = `${label}.tar.gz`;
   execFileSync('tar', ['-czf', path.join(output, archive), '-C', path.dirname(release), label], {stdio:'inherit'});

@@ -3,9 +3,15 @@ const allowed=new Set(['workspace.bootstrap','workspace.ready','session.flushed'
 allowed.add('settings.appearance.read');
 allowed.add('workspace.reviewDiscussion.receipt');
 allowed.add('workspace.attention.presented');
+allowed.add('workspace.reviewDiscussion.navigate');
+allowed.add('workspace.reviewDiscussion.materialRead');
+allowed.add('workspace.reviewDiscussion.processRead');
+allowed.add('workspace.reviewDiscussion.exportOriginal');
+allowed.add('workspace.reviewDiscussion.readingState.read');
+allowed.add('workspace.reviewDiscussion.readingState.write');
+const invoke=(op,payload={})=>{if(!allowed.has(op))return Promise.resolve({ok:false,error:{code:'IPC_DENIED',message:'此窗口只允许审核讨论。'}});return ipcRenderer.invoke('nozeli:invoke',op,active&&['managed.review.instruction.save','workspace.displayView.write','workspace.reviewDiscussion.readingState.write'].includes(op)?{...payload,flushRequestId:active}:payload);};
 const handlers=new Map(['session.flush','workspace.control','agent','review-discussion.command'].map(name=>[name,new Set()]));
 let active=null,queue=Promise.resolve();
-const invoke=(op,payload={})=>{if(!allowed.has(op))return Promise.resolve({ok:false,error:{code:'IPC_DENIED',message:'此窗口只允许审核讨论。'}});return ipcRenderer.invoke('nozeli:invoke',op,active&&['managed.review.instruction.save','workspace.displayView.write'].includes(op)?{...payload,flushRequestId:active}:payload);};
 ipcRenderer.on('nozeli:flush',(_event,request)=>{const requestId=typeof request==='string'?request:request?.requestId;if(!requestId)return;queue=queue.catch(()=>{}).then(async()=>{active=requestId;try{const handler=[...handlers.get('session.flush')][0];const result=handler?await handler(request):{ok:false,error:{code:'NO_FLUSH',message:'讨论页面尚未准备好保存'}};await invoke('session.flushed',{...result,requestId});}catch(error){await invoke('session.flushed',{ok:false,requestId,error:{code:error.code||'FLUSH_FAILED',message:error.message}});}finally{active=null;}});});
 for(const [channel,name] of [['nozeli:workspace-control','workspace.control'],['nozeli:agent','agent'],['nozeli:review-discussion-command','review-discussion.command']])ipcRenderer.on(channel,(_event,payload)=>{for(const handler of handlers.get(name))handler(payload);});
 contextBridge.exposeInMainWorld('nozeli',{invoke,subscribe(name,handler){const set=handlers.get(name);if(!set||typeof handler!=='function')return ()=>{};set.add(handler);return ()=>set.delete(handler);}});

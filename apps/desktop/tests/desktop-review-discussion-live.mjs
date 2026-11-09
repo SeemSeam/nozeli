@@ -19,7 +19,9 @@ await fs.mkdir(projectRoot);await fs.writeFile(path.join(projectRoot,'candidate.
 const exec=promisify(execFile);
 for(const args of [['init','--initial-branch=main'],['add','.'],['-c','user.name=Review Smoke','-c','user.email=review@example.invalid','commit','-m','isolated baseline']])await exec('git',args,{cwd:projectRoot});
 const host=new DesktopHost(profile),project=(await host.pick(projectRoot)).project;
-const otherRoot=path.join(out,'other-project');await fs.mkdir(otherRoot);await fs.writeFile(path.join(otherRoot,'readme.md'),'isolated second project');const otherProject=(await host.pick(otherRoot)).project;await host.storage.db.close();
+const otherRoot=path.join(out,'other-project');await fs.mkdir(otherRoot);await fs.writeFile(path.join(otherRoot,'readme.md'),'isolated second project');const otherProject=(await host.pick(otherRoot)).project;
+for(const p of [project,otherProject]){const registered=await host.storage.requireRegistered(p.id);registered.semanticInitializationEligible=false;await host.storage.db.request(host.storage.catalog,'put',{collection:'instances',id:p.id,value:registered});}
+await host.storage.db.close();
 const wireText=message=>typeof message?.content==='string'?message.content:message?.content?.filter(part=>part.type==='text').map(part=>part.text).join('')||'';
 const trace=[];
 let releaseQueuedTurn;
@@ -75,7 +77,7 @@ async function send(text){
  await discussionPage.$eval('[data-review-instruction]',(node,text)=>{node.value=text;node.dispatchEvent(new Event('input',{bubbles:true}));},text);
  await discussionPage.waitForSelector('[data-review-action="send"]:not([disabled])',{visible:true});
  await clickDiscussion('[data-review-action="send"]');
- await until(async()=>{const s=await state(),job=s.jobs.findLast(row=>row.text===text);if(job?.status==='failed'||job?.status==='unknown')throw Error(JSON.stringify(job));return job?.status==='completed'&&!s.jobs.some(row=>row.target===job.target&&['queued','running'].includes(row.status));},text+' settles');
+ await until(async()=>{const s=await state(),job=s.jobs.findLast(row=>row.text===text);if(job?.status==='failed'||job?.status==='unknown')throw Error(JSON.stringify(job));return job?.status==='completed'&&s.works.find(work=>work.id===job.target)?.status==='review'&&!s.jobs.some(row=>row.target===job.target&&['queued','running'].includes(row.status));},text+' settles');
 }
 try{
  child=spawn(process.env.NOZELI_TEST_BINARY||require('electron'),[...(process.env.NOZELI_TEST_BINARY?[]:[path.join(app,'src/main/main.cjs')]),'--ozone-platform='+ozone,'--inspect=0'],{cwd:projectRoot,env,stdio:['ignore','pipe','pipe']});
@@ -122,6 +124,23 @@ try{
  await reviewPage.waitForSelector('.managed-review');assert.equal(await reviewPage.$('[data-review-discussion]'),null);
  assert.equal(await until(async()=>{const pages=await browser.pages();return Promise.all(pages.map(p=>p.evaluate(()=>window.__workspaceScope?.role==='review-discussion').catch(()=>false))).then(values=>!values.some(Boolean));},'cold report has no native discussion'),true);await reviewPage.click('[data-review-action="open-discussion"]');await discussion();await discussionPage.waitForSelector('[data-review-discussion]',{visible:true});await discussionPage.waitForSelector('[data-review-instruction]:not([disabled])',{visible:true});
  assert(await reviewPage.$('.managed-report-body'));assert.equal(await discussionPage.$('.managed-report-body'),null);
+ await discussionPage.waitForSelector('.session-task-card .session-task-flow');
+ assert.equal(await discussionPage.$('[data-review-context]'),null,'the old separate context bucket is retired');
+ assert.equal(await discussionPage.$eval('[data-task-toggle]',node=>node.getAttribute('aria-expanded')),'true','review discussion defaults to expanded independently of conversation cards');
+ const layoutBeforeInline=await invoke(shell,'workspace.snapshot',{projectId:project.id}),inlineViewIds=Object.keys(layoutBeforeInline.layout.views).sort(),inlinePageCount=(await browser.pages()).length;
+ await discussionPage.click('[data-task-action="process"]');await discussionPage.waitForSelector('[data-task-inline-process] [data-task-process]',{visible:true});
+ assert.deepEqual(Object.keys((await invoke(shell,'workspace.snapshot',{projectId:project.id})).layout.views).sort(),inlineViewIds,'review process disclosure never creates a split');
+ assert.equal((await browser.pages()).length,inlinePageCount,'review process disclosure never opens a new page');
+ await discussionPage.click('[data-task-action="process"]');await discussionPage.waitForSelector('[data-task-inline-process]',{hidden:true});
+ const taskFrame=await invoke(discussionPage,'managed.review.discussion.read',{projectId:project.id,workId:work.id,objectId:originalReceipt.objectId,limit:100});
+ assert.equal(taskFrame.taskState.works.length,1);assert.equal(taskFrame.taskState.works[0].id,work.id);
+ const mainTaskFrame=await invoke(shell,'managed.timeline.page',{projectId:project.id,workId:work.id,limit:100});
+ const canonical=new Map(mainTaskFrame.entries.map(row=>[row.id,row]));
+ for(const entry of taskFrame.taskFrame.entries){const same=canonical.get(entry.id);if(same)assert.equal(entry.text,same.text,'shared source text for '+entry.id);}
+ assert(taskFrame.taskFrame.entries.some(entry=>entry.speaker==='user'),'the task reader includes the original accepted input');
+ await discussionPage.screenshot({path:path.join(out,'shared-task-reader-open.png')});
+ await discussionPage.$eval('.session-task-flow',node=>node.scrollIntoView({block:'start'}));
+ await discussionPage.screenshot({path:path.join(out,'shared-task-direction-and-request.png')});
  await visibleReport('REVIEW_REPORT_V1');
  check('Todo opens the original report first; only its bottom button opens the separate nonmodal Work discussion');await shot('approval-open');
  await shell.evaluate(()=>{window.__presentedMessages=[];window.nozeli.subscribe('workspace.control',event=>{if(event.type==='attention-presented')window.__presentedMessages.push(event);});});
@@ -139,6 +158,9 @@ try{
  await discussionPage.waitForFunction(()=>{const e=document.querySelector('[data-review-instruction]');return e&&!e.disabled&&!e.readOnly;});
  await discussionVisible('[data-review-instruction]');await discussionPage.$eval('[data-review-instruction]',node=>{node.value='DISCUSS_HOLD';node.dispatchEvent(new Event('input',{bubbles:true}));});await discussionPage.waitForSelector('[data-review-action="send"]:not([disabled])',{visible:true});await clickDiscussion('[data-review-action="send"]');
  await until(()=>trace.includes('DISCUSS_HOLD'),'held native discussion started');
+ await discussionPage.waitForFunction(()=>document.querySelector('.session-task-flow')?.dataset.running==='true');
+ assert.match(await discussionPage.$eval('.session-task-detail',node=>node.textContent),/./,'real discussion activity is visible while the Task remains in review');
+ assert.equal(await discussionPage.$$eval('.session-task-trail[data-returning=true]',nodes=>nodes.length),0,'a question is not fabricated as an approval modification return');
  await discussionPage.waitForFunction(()=>{const e=document.querySelector('[data-review-instruction]');return e&&!e.disabled&&!e.readOnly;});
  await discussionVisible('[data-review-instruction]');await discussionPage.$eval('[data-review-instruction]',node=>{node.value='DISCUSS_QUEUED';node.dispatchEvent(new Event('input',{bubbles:true}));});await discussionPage.waitForSelector('[data-review-action="send"]:not([disabled])',{visible:true});await clickDiscussion('[data-review-action="send"]');
  await until(async()=>{const s=await state();return s.jobs.some(j=>j.text==='DISCUSS_QUEUED'&&j.status==='queued');},'second discussion durably queued');
@@ -151,6 +173,8 @@ try{
  await send('DISCUSS_MODIFY');
  current=await state();assert.equal(current.works.length,1);assert.equal(current.works[0].threadId,originalThread);
  const publications=current.receipts.filter(r=>r.workId===work.id&&r.kind==='result');assert.equal(publications.length,2);const updated=publications.at(-1);assert.notEqual(updated.objectId,originalReceipt.objectId);
+ assert.equal(await reviewPage.evaluate(()=>window.__workspaceScope.viewState?.report?.objectId),originalReceipt.objectId,'new publication never silently upgrades the read object');
+ assert.equal(await discussionPage.evaluate(()=>window.__workspaceScope.objectId),originalReceipt.objectId,'discussion read binding remains on the original publication');
  await until(async()=>{
   const currentObject=await reviewPage.evaluate(()=>window.__workspaceScope.viewState?.report?.objectId);
   if(currentObject===updated.objectId)return true;
@@ -199,6 +223,7 @@ try{
   await invoke(shell,'workspace.control',{type:'window-control',action:'resize',...size});
   await reviewPage.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
   await discussionVisible('[data-review-action="send"]');
+  await discussionPage.$eval('[data-review-action="send"]',node=>node.scrollIntoView({block:'nearest'}));
   const geometry=await until(async()=>{const native=(await nativeDiscussionState()).find(row=>row.visible);if(!native)return null;const g=await discussionPage.evaluate(()=>{const float=document.querySelector('[data-review-discussion]').getBoundingClientRect(),send=document.querySelector('[data-review-action="send"]').getBoundingClientRect();return {left:float.left,right:float.right,top:float.top,bottom:float.bottom,floatWidth:float.width,floatHeight:float.height,sendWidth:send.width,sendHeight:send.height,sendBottom:send.bottom,width:innerWidth,height:innerHeight};});return g.floatWidth>0&&g.floatHeight>0&&g.sendWidth>0&&g.sendHeight>0&&g.left>=-1&&g.right<=g.width+1&&g.bottom<=g.height+1&&g.sendBottom<=g.height+1&&Math.abs(g.floatWidth-native.contentBounds.width/native.zoomFactor)<=1&&Math.abs(g.floatHeight-native.contentBounds.height/native.zoomFactor)<=1?{...g,native}:null;},'positive discussion controls match actual native client DIP through zoom',6000);
   (report.windowGeometry??=[]).push({requested:size,actual:geometry});
   await shot('approval-'+size.width+'x'+size.height);
@@ -207,7 +232,8 @@ try{
  const zoomReport=async factor=>observer.evaluate(`(async()=>{const{webContents}=process.mainModule.require('electron');for(const wc of webContents.getAllWebContents()){const scope=await wc.executeJavaScript('window.__workspaceScope').catch(()=>null);if(scope?.role==='surface'&&scope.kind==='report'&&scope.projectId===${JSON.stringify(project.id)}){wc.setZoomFactor(${factor});return wc.getZoomFactor();}}throw Error('Report owner missing');})()`);
  assert.equal(await zoomReport(2),2);await until(async()=>{const native=(await nativeDiscussionState()).find(row=>row.visible&&row.zoomFactor===2);return native;},'200 percent native discussion zoom');
  await discussionVisible('[data-review-action="send"]');
- const zoomGeometry=await until(()=>discussionPage.evaluate(()=>{const send=document.querySelector('[data-review-action="send"]').getBoundingClientRect(),input=document.querySelector('[data-review-instruction]').getBoundingClientRect(),float=document.querySelector('[data-review-discussion]').getBoundingClientRect();if(Math.abs(float.width-innerWidth)>1||Math.abs(float.height-innerHeight)>1||innerWidth<160)return null;return {width:innerWidth,height:innerHeight,send:{left:send.left,right:send.right,top:send.top,bottom:send.bottom},input:{left:input.left,right:input.right,top:input.top,bottom:input.bottom},draft:document.querySelector('[data-review-instruction]').value};}),'settled CSS and native zoom rectangle');
+ await discussionPage.$eval('[data-review-action="send"]',node=>node.scrollIntoView({block:'nearest'}));
+ const zoomGeometry=await until(()=>discussionPage.evaluate(async()=>{const float=document.querySelector('[data-review-discussion]').getBoundingClientRect();if(Math.abs(float.width-innerWidth)>1||Math.abs(float.height-innerHeight)>1||innerWidth<160)return null;document.querySelector('[data-review-action="send"]').scrollIntoView({block:'nearest'});await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));const send=document.querySelector('[data-review-action="send"]').getBoundingClientRect(),input=document.querySelector('[data-review-instruction]').getBoundingClientRect();if(send.left<0||send.right>innerWidth+1||send.bottom>innerHeight+1||input.left<0||input.right>innerWidth+1||input.bottom>innerHeight+1)return null;return {width:innerWidth,height:innerHeight,send:{left:send.left,right:send.right,top:send.top,bottom:send.bottom},input:{left:input.left,right:input.right,top:input.top,bottom:input.bottom},draft:document.querySelector('[data-review-instruction]').value};}),'settled CSS and reachable single-scroll input through native zoom');
  assert(zoomGeometry.send.left>=0&&zoomGeometry.send.right<=zoomGeometry.width+1&&zoomGeometry.send.bottom<=zoomGeometry.height+1);assert(zoomGeometry.input.left>=0&&zoomGeometry.input.right<=zoomGeometry.width+1&&zoomGeometry.input.bottom<=zoomGeometry.height+1);assert.equal(zoomGeometry.draft,'UNSENT_APPROVAL_DRAFT');report.zoom200=zoomGeometry;await discussionPage.screenshot({path:path.join(out,'discussion-zoom200.png')});await zoomReport(1);await until(async()=>{const native=(await nativeDiscussionState()).find(row=>row.visible&&row.zoomFactor===1);return native;},'normal native discussion zoom');
  check('Actual narrow/short native surfaces retain the movable discussion and reachable input; adoption belongs to the report footer');
  check('Latest report discussion remains in the original thread, and collapsing/reopening retains the Work-scoped unsent draft');

@@ -506,3 +506,43 @@ test('native system instructions are metadata while explicit native system error
  const error=page.entries.find(e=>e.entryId==='native-system-error');assert.equal(error.recordKind,'unclassified');assert.equal(error.availability,'read-required');assert.match(error.text,/Synthetic real system failure/);
  const raw=await cold.read(cold.records().find(r=>r.entryId==='native-base-instructions').id);assert.equal(raw.recordKind,'metadata');assert.match(raw.text,/Synthetic execution base instructions/);
 });
+
+test('review decisions, blocked application, application completion and cleanup remain separate durable scoped facts',async t=>{
+ const {store,index}=await fixture(t),created=await store.submit('Review facts','Host fixture');
+ const work=store.find(created.id);
+ await store.mutate(()=>{work.status='review';work.revision=1;work.result={objectId:'frozen-review-object',revision:1};});
+ await store.mutate(()=>{
+  work.status='closing';work.outcome='accept';
+  work.closure={decision:'accept',revision:1,requestKey:'decision-fact-001',binding:{workId:work.id,revision:1,objectId:work.result.objectId,candidateCommit:null},phase:'requested'};
+ });
+ await store.mutate(()=>{work.closure.phase='integrating';});
+ await store.mutate(()=>{work.closure.phase='blocked';work.closure.error='Merge paused; api_key=PRIVATE';});
+ const blocked=structuredClone(store.state.sessionIndex.deltas.find(row=>row.kind==='review-application-blocked'));
+ assert.ok(blocked);assert.equal(blocked.reason.includes('PRIVATE'),false);
+ await store.mutate(()=>{});
+ await store.mutate(()=>{work.closure.phase='integrating';delete work.closure.error;});
+ await store.mutate(()=>{work.closure.git={complete:true,status:'merged',commit:'frozen-commit'};work.closure.phase='cleanup';});
+ await store.mutate(()=>{work.closure.phase='complete';work.closure.completedAt='2026-11-09T00:00:00Z';work.status='ended';});
+ await store.mutate(()=>{});
+ const facts=store.state.sessionIndex.deltas.filter(row=>row.workId===work.id&&row.kind.startsWith('review-'));
+ assert.deepEqual(facts.map(row=>row.kind),['review-decision-registered','review-application-blocked','review-application-completed','review-cleanup-completed']);
+ assert.deepEqual(facts[1],blocked,'later success never overwrites the earlier blocked event');
+ assert.equal(new Set(facts.map(row=>row.id)).size,4);
+ assert.ok(facts.every((row,i)=>row.source==='host'&&row.objectId==='frozen-review-object'&&row.revision===1&&(!i||row.sequence>facts[i-1].sequence)));
+ const rows=[];let cursor=null;
+ do{const frame=await index.page({workId:work.id,cursor,limit:1});rows.unshift(...frame.deltas);cursor=frame.nextCursor;}while(cursor);
+ assert.deepEqual(rows.filter(row=>row.kind.startsWith('review-')),facts);
+ const restored=new SessionIndex(store);assert.deepEqual((await restored.page({workId:work.id})).deltas.filter(row=>row.kind.startsWith('review-')),facts);
+});
+
+test('existing legacy closures are not backfilled into invented review history',async t=>{
+ const {store}=await fixture(t),created=await store.submit('Legacy closure','Host fixture'),work=store.find(created.id);
+ await store.mutate(()=>{
+  work.status='ended';work.outcome='accept';work.revision=1;work.result={objectId:'legacy-object',revision:1};
+  work.closure={decision:'accept',revision:1,requestKey:'legacy-decision-001',binding:{workId:work.id,revision:1,objectId:'legacy-object',candidateCommit:null},phase:'complete',git:{complete:true}};
+ });
+ // Simulate an old ledger which retained only its current closure snapshot.
+ await store.mutate(()=>{store.state.sessionIndex.deltas=store.state.sessionIndex.deltas.filter(row=>!row.kind.startsWith('review-'));});
+ await store.mutate(()=>{});
+ assert.equal(store.state.sessionIndex.deltas.some(row=>row.kind.startsWith('review-')),false);
+});

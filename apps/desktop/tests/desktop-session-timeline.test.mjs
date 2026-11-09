@@ -24,9 +24,10 @@ const port = await new Promise(resolve => {
 await build({
   absWorkingDir: root,
   stdin: {resolveDir: root, sourcefile: 'session-consumer-entry.mjs', contents: `
-    import {mountSessionTimeline,mountTaskProcess} from './src/renderer/session-timeline.mjs';
+    import {mountSessionTimeline,mountTaskProcess,mountTaskReader} from './src/renderer/session-timeline.mjs';
     import {mountTaskWorkspace} from './src/renderer/task-workspace.mjs';
     import {createSessionStore,sessionMessages} from './src/renderer/session-store.mjs';
+    import {mountManagedReview} from './src/renderer/managed-review.mjs';
     import './src/renderer/styles.css';
     import './src/renderer/conversation-rendering.css';
     import './src/renderer/file-icons.css';
@@ -36,8 +37,8 @@ await build({
     window.__consumerTasks=[];window.__quoteSink=[];
     window.nozeli={invoke:async(op,payload)=>op==='document.clipboard'&&payload?.action==='write'?{ok:true}:{ok:false,error:{message:'consumer stub: '+op}}};
     window.__composerMaterials={setQuote:quote=>window.__quoteSink.push(quote)};
-    const pages=new Map(),originals=new Map();
-    const props={store,state,projectId:'project-consumer',context:{filePaths:new Set(),onFile(){},onExternal(){},onError(error){throw error;}},
+    const pages=new Map(),originals=new Map(),inlinePages=new Map();
+    const props={store,state,projectId:'project-consumer',initialReading:JSON.parse(localStorage.getItem('task-reading')||'{}'),onReadingChange:value=>{props.initialReading=value;localStorage.setItem('task-reading',JSON.stringify(value));},context:{filePaths:new Set(),onFile(){},onExternal(){},onError(error){throw error;}},
       call:async(op,args)=>{calls.push({op,args});if(op==='timeline.read'){
         const original=originals.get(args.id);if(!original)throw Error('Missing original');
         const values={text:original.text,reasoning:original.reasoning,'tool.input':original.tool?.input,'tool.output':original.tool?.output,toolCalls:original.toolCalls};
@@ -46,17 +47,32 @@ await build({
         if(args.version!==version||args.limit>16384)throw Error('Unbounded or stale original read');
         const bytes=new TextEncoder().encode(fields.find(value=>value.field===args.field).content);let end=Math.min(bytes.length,args.offset+args.limit);while(end<bytes.length&&(bytes[end]&192)===128)end--;
         return {entry:{id:args.id,version,field:args.field,offset:args.offset,nextOffset:end<bytes.length?end:null,totalBytes:bytes.length,content:new TextDecoder('utf-8',{fatal:true}).decode(bytes.slice(args.offset,end)),availability:'available'}};
-      }if(op!=='changes.list')throw Error('Unexpected consumer IPC: '+op);const page=pages.get(args.changeSetId+':'+args.offset);if(!page)throw Error('Missing bounded page');return page;},
+      }if(op==='timeline.page'){if(!args.workId&&!args.sourceJobId)throw Error('Missing Task scope');const frame=inlinePages.get(args.cursor||'latest');if(!frame)throw Error('Missing inline page');return frame;}if(op!=='changes.list')throw Error('Unexpected consumer IPC: '+op);const page=pages.get(args.changeSetId+':'+args.offset);if(!page)throw Error('Missing bounded page');return page;},
       openFrozenChange:args=>{opened.push(args);},onPage(){},onLatest(){},onTask:entry=>window.__consumerTasks.push(entry)};
     const navigationContainer=document.createElement('div');navigationContainer.className='session-navigation-slot';document.querySelector('#conversation').after(navigationContainer);props.navigationContainer=navigationContainer;
-    const view=mountSessionTimeline(document.querySelector('#timeline'),props);
+    let view=mountSessionTimeline(document.querySelector('#timeline'),props);
     view.render({});
-    window.consumer={store,calls,opened,pages,originals,state,
+    window.consumer={store,calls,opened,pages,originals,inlinePages,state,
+      reader(){const container=document.createElement('section');container.id='shared-task-reader';container.className='session-surface';container.style.cssText='width:390px;max-width:100%;height:360px;overflow:auto;container:session / inline-size';document.body.append(container);const reader=mountTaskReader(container,{...props,initialReading:JSON.parse(localStorage.getItem('review-reading')||'{}'),onReadingChange:value=>localStorage.setItem('review-reading',JSON.stringify(value)),workId:'contained-work',onResult:receipt=>calls.push({op:'reader.report',objectId:receipt.objectId,kind:receipt.kind})});window.__sharedReader={render(){reader.render({snapshot:store.getSnapshot(),state});},destroy(){reader.destroy();container.remove();}};window.__sharedReader.render();},
       process(snapshot,processState){const container=document.querySelector('#task-process-fixture');window.__processView??=mountTaskProcess(container,{...props,onPage:cursor=>calls.push({op:'process.page',cursor}),onLatest:()=>calls.push({op:'process.latest'})});window.__processView.render({snapshot,state:processState});},
       async workspace(frame,taskScope={sourceJobId:'budget-intake'}){window.__scopeFrame=frame;const previous=document.querySelector('#scope-workspace');if(previous){previous.id='scope-source-fixture';previous.hidden=true;}const root=document.createElement('section');root.id='scope-workspace';document.body.append(root);window.__scopeListeners={};await mountTaskWorkspace({root,scope:{projectId:props.projectId,viewId:taskScope.workId?'work-reader':'source-reader',kind:'task-process',readOnly:true,viewState:{taskScope,taskMode:'process'}},subscribe:(name,listener)=>{window.__scopeListeners[name]=listener;return()=>{};},invoke:async(op,args)=>{calls.push({op:op==='managed.timeline.page'?'timeline.page':op,args});if(op==='managed.timeline.page')return {ok:true,value:window.__scopeFrame};if(op==='managed.status')return {ok:true,value:{state}};if(op==='workspace.ready'||op==='workspace.command')return {ok:true,value:{}};if(op.startsWith('managed.'))return {ok:true,value:await props.call(op.slice(8),args)};throw Error('Unexpected native reader fixture IPC: '+op);}});},
       messages:()=>sessionMessages(store.getSnapshot()),
+      remount(){view.destroy();view=mountSessionTimeline(document.querySelector('#timeline'),{...props,initialReading:JSON.parse(localStorage.getItem('task-reading')||'{}')});view.render({});},
       render:()=>view.render({state:{...state}}),
       destroy:()=>{view.destroy();store.dispose();}};
+    consumer.reviewReadingFailure=async()=>{
+      const host=document.createElement('section');host.id='review-reading-recovery';document.body.append(host);window.nozeli.subscribe=()=>()=>{};
+      const fixture={reads:0,writes:[],failWrite:false,state:{schema:1,revision:7,disclosures:{'preserved-old-round':false,'preserved-field':{read:{version:'a'.repeat(64),field:'text',offset:16384}}}}};window.__reviewReadingFixture=fixture;
+      const invoke=async(op,args)=>{
+        if(op==='workspace.reviewDiscussion.readingState.read'){if(++fixture.reads===1)return {ok:false,error:{message:'TEMPORARY_READING_READ_FAILURE'}};return {ok:true,value:{state:structuredClone(fixture.state)}};}
+        if(op==='workspace.reviewDiscussion.readingState.write'){if(fixture.failWrite)return {ok:false,error:{message:'TEMPORARY_READING_WRITE_FAILURE'}};if(args.expectedRevision!==fixture.state.revision)return {ok:true,value:{conflict:true,current:fixture.state}};fixture.writes.push(structuredClone(args));fixture.state={schema:1,revision:fixture.state.revision+1,disclosures:structuredClone(args.disclosures)};return {ok:true,value:{revision:fixture.state.revision}};}
+        if(op==='managed.review.instruction.read')return {ok:true,value:{text:'UNSENT_READING_RECOVERY_DRAFT',revision:1}};
+        if(op==='managed.review.read')return {ok:true,value:{files:[],revision:1,publicationNumber:1,status:'review',reviewVersion:'review-v1',capabilities:{reasons:[]}}};
+        if(op==='managed.review.discussion.read')return {ok:true,value:{canSend:false,reasons:[],taskFrame:{version:1,entries:[],deltas:[]},taskState:{works:[{id:'reading-work',sourceJob:'reading-intake',name:'Reading recovery',status:'review',revision:1}],jobs:[{id:'reading-intake',type:'intake',target:'orchestrator',status:'completed'}],receipts:[]}}};
+        throw Error('Unexpected review recovery IPC: '+op);
+      };
+      fixture.surface=mountManagedReview(host,{invoke,projectId:'project-reading-recovery',workId:'reading-work',objectId:'reading-report',discussionHost:true});await fixture.surface.ready;fixture.surface.root.hidden=false;host.querySelector('.managed-review-discussion').hidden=false;
+    };
   `},
   bundle: true, format: 'iife', platform: 'browser', outfile: path.join(out, 'consumer.js'),
   loader: {'.css': 'css','.ttf':'file','.woff':'file','.woff2':'file'},
@@ -175,12 +191,12 @@ try {
   });
   await page.waitForSelector('[data-message="front-stream"]');
   assert.equal(await page.$$eval('.session-message',nodes=>nodes.length),1,'tools and streaming answer share one reply bubble');
-  assert.equal(await page.$('[data-process-entry]'),null,'process stays collapsed initially');
+  assert.equal(await page.$$eval('[data-process-entry]',nodes=>nodes.some(node=>node.getClientRects().length>0)),false,'process DOM is retained but initially not visible or focusable');
   await page.click('.session-message>.session-tool>summary');
   await page.waitForSelector('[data-process-entry="front-result"]');
   assert.deepEqual(await page.$$eval('[data-process-entry]',nodes=>nodes.map(node=>node.dataset.processEntry)),['front-call','front-result'],'process keeps original event order');
   await page.focus('.session-message>.session-tool>summary');await page.keyboard.press('Space');
-  await page.waitForFunction(()=>!document.querySelector('[data-process-entry]'));
+  await page.waitForFunction(()=>![...document.querySelectorAll('[data-process-entry]')].some(node=>node.getClientRects().length>0));
   await page.keyboard.press('Enter');await page.waitForSelector('[data-process-entry="front-result"]');
   await page.evaluate(()=>window.consumer.render());
   assert.equal(await page.$eval('.session-message>.session-tool',node=>node.open),true,'process remains open across unrelated render');
@@ -224,7 +240,7 @@ try {
       await page.waitForFunction(()=>!document.querySelector('[data-message="large-original"] .session-original [role="status"]'));
       const chunk=await page.$eval('[data-message="large-original"] .session-plain',node=>node.textContent);
       assert(Buffer.byteLength(chunk)<=16384);assert.equal(chunk.includes('\uFFFD'),false);text+=chunk;
-      const next=await page.$('[data-message="large-original"] .session-content nav button:last-child');
+      const next=await page.$('[data-message="large-original"] .session-content nav button:nth-of-type(2)');
       if(await next.evaluate(node=>node.disabled))break;
       const position=await page.$eval('[data-message="large-original"] .session-content nav span',node=>node.textContent);await next.click();
       await page.waitForFunction(position=>document.querySelector('[data-message="large-original"] .session-content nav span').textContent!==position,{},position);
@@ -232,6 +248,8 @@ try {
     return text;
   };
   assert.equal(await consumeOriginal(),originalText,'host UTF-8 page boundaries preserve every original character');
+  await page.click('[data-message="large-original"] [data-original-copy-page]');
+  await page.waitForFunction(()=>document.querySelector('[data-message="large-original"] .session-original').textContent.includes('已复制当前字段页'));
   for(const [label,expected] of [['推理 / Reasoning','推理🙂'.repeat(9000)+'END-REASONING'],['工具输入',JSON.stringify({unsafe:'<img onerror="window.consumerUnsafe=true">'})],['工具输出','工具🙂'.repeat(9000)+'END-TOOL'],['工具调用（JSON）',JSON.stringify([{name:'read',input:{unsafe:'<script>window.consumerUnsafe=true</script>'}}])]]){
     await page.$$eval('[data-message="large-original"] [aria-label="原文字段"] button',(nodes,label)=>nodes.find(node=>node.textContent===label).click(),label);
     await page.waitForFunction(label=>[...document.querySelectorAll('[data-message="large-original"] [aria-label="原文字段"] button')].some(node=>node.textContent===label&&node.getAttribute('aria-pressed')==='true'),{},label);
@@ -279,11 +297,88 @@ try {
     ],deltas:[]});c.render();
   });
   await page.waitForSelector('.session-task-card [data-message="contained-answer"]');
+  assert.equal(await page.$eval('#timeline [data-task-toggle]',node=>node.getAttribute('aria-expanded')),'false','main Task body starts collapsed');
+  assert.equal(await page.$eval('#timeline [data-task-body]',node=>node.hidden),true);
   assert.deepEqual(await page.$$eval('.session-timeline>.session-message',nodes=>nodes.map(node=>node.dataset.message)),['ordinary-input','ordinary-answer']);
   assert.deepEqual(await page.$$eval('.session-task-card .session-message',nodes=>nodes.map(node=>node.dataset.message)),['contained-request','contained-question','contained-answer']);
   assert.equal(await page.$('[data-message="contained-handoff"],[data-message="contained-internal-supplement"]'),null,'programmatic handoffs remain process records, never repeated user-authored inputs');
+  // Production main card and embedded review reader consume the exact same IDs,
+  // round grammar and originals, without acquiring composer or decision actions.
+  await page.evaluate(()=>consumer.reader());
+  await page.waitForSelector('#shared-task-reader [data-message="contained-answer"]');
+  assert.equal(await page.$eval('#shared-task-reader [data-task-toggle]',node=>node.getAttribute('aria-expanded')),'true','review Task starts expanded independently');
+  assert.equal(await page.$eval('#timeline [data-task-toggle]',node=>node.getAttribute('aria-expanded')),'false');
+  await page.click('#timeline [data-task-toggle]');
+  assert.equal(await page.$eval('#timeline .session-task-conversation>details:first-of-type>summary',node=>node.textContent.includes('优化 chaos-demo.html')),false,'expanded summary does not duplicate original body');
+  assert.deepEqual(await page.$$eval('#shared-task-reader .session-message',nodes=>nodes.map(node=>node.dataset.message)),await page.$$eval('#timeline .session-task-card .session-message',nodes=>nodes.map(node=>node.dataset.message)));
+  assert.equal(await page.$$eval('#shared-task-reader .session-task-flow>span',nodes=>nodes.length),5);
+  assert.equal(await page.$('#shared-task-reader textarea,#shared-task-reader [data-review-action="accept"],#shared-task-reader [data-review-action="discard"]'),null);
+  assert.equal(await page.$$eval('#shared-task-reader .session-task-conversation>details>summary',nodes=>nodes.filter(node=>node.textContent.startsWith('原始请求')).length),1,'only the exact root intake is an original request');
+  await page.evaluate(()=>{consumer.store.apply('project-consumer',{version:1,entries:[],deltas:[{id:'decision-fact',kind:'review-decision-registered',workId:'contained-work',objectId:'contained-report',sequence:6.5,text:'Decision registered'}]});__sharedReader.render();});
+  await page.waitForSelector('#shared-task-reader [data-host-delta="decision-fact"] button:not([disabled])');
+  await page.click('#shared-task-reader [data-host-delta="decision-fact"] button');
+  assert.deepEqual(await page.evaluate(()=>consumer.calls.findLast(call=>call.op==='reader.report')),{op:'reader.report',objectId:'contained-report',kind:'result'},'event display kind never replaces the real result receipt kind');
+  await page.evaluate(()=>{const c=consumer;c.state.works[0].brief='MUTATED_CURRENT_BRIEF_NOT_HISTORY';c.state.works[0].request='MUTATED_CURRENT_REQUEST_NOT_HISTORY';__sharedReader.render();});
+  assert.equal(await page.$eval('#shared-task-reader',node=>node.textContent.includes('MUTATED_CURRENT_')),false,'mutable Work metadata never reconstructs historical original text');
+  await page.click('#shared-task-reader .session-task-conversation>details:first-of-type>summary');
+  await page.evaluate(()=>__sharedReader.render());
+  assert.equal(await page.$eval('#shared-task-reader .session-task-conversation>details:first-of-type',node=>node.open),false,'refresh preserves a manual collapse independently of the main card');
+  await page.click('#shared-task-reader [data-task-toggle]');
+  await page.evaluate(()=>{__sharedReader.destroy();consumer.reader();});
+  await page.waitForFunction(()=>document.querySelector('#shared-task-reader [data-task-toggle]')?.getAttribute('aria-expanded')==='false');
+  assert.equal(await page.$eval('#timeline [data-task-toggle]',node=>node.getAttribute('aria-expanded')),'true','remount restores review choice without changing main choice');
+  await page.click('#shared-task-reader [data-task-toggle]');
+  assert.equal(await page.$eval('#timeline .session-task-conversation>details:first-of-type',node=>node.open),true);
+  await page.evaluate(()=>{consumer.store.apply('project-consumer',{version:1,entries:[{id:'contained-stream',sequence:7,target:'contained-work',jobId:'contained-discussion',speaker:'agent',source:'native',text:'真实流式回复',streaming:true}],deltas:[]});__sharedReader.render();});
+  await page.waitForSelector('#shared-task-reader [data-message="contained-stream"]');
+  await page.evaluate(()=>{window.__streamNode=document.querySelector('#shared-task-reader [data-message="contained-stream"]');consumer.store.apply('project-consumer',{version:1,entries:[{id:'contained-canonical',replacesId:'contained-stream',sequence:7,target:'contained-work',jobId:'contained-discussion',speaker:'agent',source:'native',text:'真实流式回复完成',complete:true}],deltas:[]});__sharedReader.render();});
+  await page.waitForSelector('#shared-task-reader [data-message="contained-canonical"]');
+  assert.equal(await page.evaluate(()=>window.__streamNode===document.querySelector('#shared-task-reader [data-message="contained-canonical"]')),true,'streaming-to-canonical replacement retains the original message DOM');
+  assert.equal(await page.$('#shared-task-reader [data-message="contained-stream"]'),null);
+  await page.evaluate(()=>{__sharedReader.destroy();consumer.store.apply('project-consumer',{version:1,entries:consumer.store.getSnapshot().entries.filter(entry=>entry.id!=='contained-canonical'),deltas:[]},{replace:true});consumer.render();});
   await page.click('[data-message="contained-request"] [data-message-actions-toggle]');await page.click('[data-message="contained-request"] [data-message-action="quote"]');
   assert.equal(await page.evaluate(()=>__quoteSink.at(-1).text),'原输入：优化 chaos-demo.html，增加3D感。','nested quote preserves the exact original input');
+  await page.evaluate(()=>{const c=consumer;c.inlinePages.set('latest',{version:1,entries:[{id:'inline-latest',sequence:200,speaker:'tool',target:'contained-work',text:'LATEST_PROCESS',tool:{name:'read',status:'completed',output:'LATEST_PROCESS'}}],deltas:[],hasMore:true,nextCursor:'INLINE_ORIGINAL_CURSOR'});c.inlinePages.set('INLINE_ORIGINAL_CURSOR',{version:1,entries:[{id:'inline-old',sequence:100,speaker:'tool',target:'contained-work',text:'ORIGINAL_OLD_PROCESS'}],deltas:[],hasMore:false});window.__taskDom=document.querySelector('#timeline .session-task-card');window.__inlineCalls=c.calls.length;});
+  await page.evaluate(()=>{consumer.originals.set('inline-original',{text:'冻结原文🙂'.repeat(10000)+'INLINE-END'});consumer.inlinePages.get('INLINE_ORIGINAL_CURSOR').entries.push({id:'inline-original',sequence:101,speaker:'tool',target:'contained-work',availability:'read-required',reason:'原文分页'});});
+  await page.click('#timeline [data-task-action=process]');
+  await page.waitForSelector('#timeline [data-task-inline-process] [data-process-entry="inline-latest"]');
+  assert.equal(await page.evaluate(()=>window.__taskDom===document.querySelector('#timeline .session-task-card')),true);
+  assert.equal(await page.evaluate(()=>consumer.calls.slice(__inlineCalls).some(call=>call.op==='workspace.control'||call.op==='reader.process')),false,'inline open never routes layout or opens another reader');
+  await page.click('#timeline [data-task-inline-process] [data-task-page=earlier]');
+  await page.waitForSelector('#timeline [data-process-entry="inline-old"]');
+  assert.equal(await page.evaluate(()=>consumer.calls.findLast(call=>call.op==='timeline.page').args.cursor),'INLINE_ORIGINAL_CURSOR');
+  await page.click('#timeline [data-process-entry="inline-original"] .session-original button');
+  await page.waitForSelector('#timeline [data-process-entry="inline-original"] .session-plain');
+  let inlineOriginal='';
+  for(let part=0;part<20;part++){
+    inlineOriginal+=await page.$eval('#timeline [data-process-entry="inline-original"] .session-plain',node=>node.textContent);
+    const next=await page.$eval('#timeline [data-process-entry="inline-original"] [aria-label="原文分段"]',node=>{const button=[...node.querySelectorAll('button')].find(node=>node.textContent==='下一段');if(button.disabled)return false;button.click();return true;});
+    if(!next)break;
+    await page.waitForFunction(()=>![...document.querySelectorAll('#timeline [data-process-entry="inline-original"] button')].find(node=>node.textContent==='复制当前字段页')?.disabled);
+  }
+  assert.equal(inlineOriginal,'冻结原文🙂'.repeat(10000)+'INLINE-END','inline UTF-8 field pages expose the entire original');
+  await page.click('#timeline [data-process-entry="inline-original"] [data-original-copy-page]');
+  await page.waitForFunction(()=>document.querySelector('#timeline [data-process-entry="inline-original"]').textContent.includes('已复制当前字段页'));
+  await page.evaluate(()=>{window.__inlineOld=document.querySelector('#timeline [data-process-entry="inline-old"]');const range=document.createRange();range.selectNodeContents(__inlineOld);getSelection().removeAllRanges();getSelection().addRange(range);window.__inlineSelected=getSelection().toString();consumer.render();});
+  await page.waitForFunction(()=>document.querySelector('#timeline [data-task-inline-process]').textContent.includes('有新过程记录'));
+  assert.equal(await page.evaluate(()=>getSelection().toString()),await page.evaluate(()=>__inlineSelected),'log update preserves old-page selection');
+  assert.equal(await page.evaluate(()=>__inlineOld===document.querySelector('#timeline [data-process-entry="inline-old"]')),true);
+  await page.evaluate(()=>{getSelection().removeAllRanges();document.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));});
+  await page.click('#timeline [data-task-inline-process] [data-task-page=latest]');
+  assert(await page.$('#timeline [data-process-entry="inline-old"]'),'IME pins the exact page');
+  await page.evaluate(()=>document.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true})));
+  await page.click('#timeline [data-task-action=process]');
+  await page.click('#timeline [data-task-action=process]');
+  assert.equal(await page.evaluate(()=>__inlineOld===document.querySelector('#timeline [data-process-entry="inline-old"]')),true,'fold retains bounded page DOM');
+  await page.evaluate(()=>{document.querySelector('#timeline [data-task-page=latest]').focus();document.querySelector('#timeline [data-task-toggle]').click();});
+  assert.equal(await page.evaluate(()=>document.activeElement.matches('#timeline [data-task-toggle]')),true,'collapse returns contained focus to disclosure');
+  await page.evaluate(()=>consumer.remount());
+  await page.waitForFunction(()=>document.querySelector('#timeline [data-task-toggle]')?.getAttribute('aria-expanded')==='false');
+  await page.click('#timeline [data-task-toggle]');
+  await page.waitForSelector('#timeline [data-process-entry="inline-old"]');
+  assert.equal(await page.evaluate(()=>consumer.calls.findLast(call=>call.op==='timeline.page').args.cursor),'INLINE_ORIGINAL_CURSOR','remount restores original scoped cursor');
+  await page.waitForFunction(()=>document.querySelector('#timeline [data-process-entry="inline-original"] .session-plain')?.textContent.endsWith('INLINE-END'));
+  await page.click('#timeline [data-task-action=process]');
   const widths=[];
   for(const width of [1200,480,320]){
     await page.setViewport({width,height:1000});await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
@@ -292,6 +387,25 @@ try {
     for(const theme of ['light','dark']){await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);await page.screenshot({path:path.join(out,'task-contained-'+theme+'-'+width+'.png'),fullPage:true});}
   }
   assert(widths[0]>widths[1]&&widths[1]>widths[2],'task width grows with real available space rather than a fixed narrow slot');
+  await page.emulateMediaFeatures([{name:'prefers-reduced-motion',value:'no-preference'}]);
+  await page.evaluate(()=>{const c=consumer;c.state.works[0].status='running';c.state.jobs.find(job=>job.id==='contained-initial').status='running';c.render();});
+  await page.waitForFunction(()=>getComputedStyle(document.querySelector('.session-task-flow [data-current=true]'),'::after').animationName==='task-forward');
+  const forwardStart=await page.$eval('.session-task-flow [data-current=true]',node=>getComputedStyle(node,'::after').transform);
+  await pause(150);
+  assert.notEqual(await page.$eval('.session-task-flow [data-current=true]',node=>getComputedStyle(node,'::after').transform),forwardStart,'only the real active node has a short moving marker');
+  assert.equal(await page.$eval('.session-task-flow',node=>getComputedStyle(node,'::after').animationName),'none','no full-width false percentage progress');
+  await page.evaluate(()=>{const c=consumer;c.state.jobs.push({id:'return-one',target:'orchestrator',type:'intake',status:'completed',routing:{action:'continue',workId:'contained-work'}});c.render();});
+  await page.waitForFunction(()=>getComputedStyle(document.querySelector('.session-task-trail'),'::after').animationName==='task-return');
+  await page.evaluate(()=>{consumer.state.works[0].status='paused';consumer.render();});
+  await page.waitForFunction(()=>getComputedStyle(document.querySelector('.session-task-flow [data-current=true]'),'::after').animationName==='none');
+  await page.evaluate(()=>{consumer.state.works[0].status='running';consumer.render();});
+  await page.waitForFunction(()=>getComputedStyle(document.querySelector('.session-task-flow [data-current=true]'),'::after').animationName==='task-forward');
+  assert.equal(await page.$eval('.session-task-trail',node=>getComputedStyle(node,'::after').animationName),'none','resuming the same work never replays an old return');
+  await page.emulateMediaFeatures([{name:'prefers-reduced-motion',value:'reduce'}]);
+  assert.equal(await page.$eval('.session-task-flow [data-current=true]',node=>getComputedStyle(node,'::after').animationName),'none','reduced-motion keeps directions without animation');
+  await page.emulateMediaFeatures([{name:'prefers-reduced-motion',value:'no-preference'}]);
+  await page.evaluate(()=>{consumer.state.works[0].status='review';consumer.render();});
+  await page.waitForFunction(()=>getComputedStyle(document.querySelector('.session-task-flow [data-current=true]'),'::after').animationName==='none');
   await page.setViewport({width:320,height:1000});
   await page.evaluate(()=>{const c=consumer;c.state.works[0].status='queued';c.state.works[0].manualControl={pause:{at:'2026-11-08T00:00:00Z'}};c.render();});
   await page.waitForFunction(()=>document.querySelector('.session-task-status')?.textContent.includes('已暂停调度'));
@@ -308,6 +422,14 @@ try {
     await inspector.evaluate(`(()=>{process.mainModule.require('electron').BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(1);return true;})()`);
   }finally{inspector.close();}
   await page.setViewport({width:1440,height:1000});
+  await page.evaluate(()=>{const c=consumer;c.store.reset('project-consumer');c.state.receipts=[];c.state.works=[];c.state.jobs=[{id:'late-intake',type:'intake',target:'orchestrator',status:'queued'}];c.store.apply('project-consumer',{version:1,entries:[{id:'late-input',sequence:1,jobId:'late-intake',taskRequestId:'late-intake',target:'frontdesk',speaker:'user',source:'host',text:'Task waiting for dispatch'}],deltas:[]});c.render();});
+  await page.waitForSelector('#timeline [data-task-toggle][aria-expanded="false"]');
+  await page.evaluate(()=>{window.__beforeDispatch=document.querySelector('#timeline .session-task-card');const c=consumer;c.state.works=[{id:'late-work',sourceJob:'late-intake',name:'Dispatched task',status:'running',revision:1}];c.state.jobs[0].status='completed';c.render();});
+  await page.waitForSelector('#timeline [data-workflow-work="late-work"]');
+  assert.equal(await page.evaluate(()=>__beforeDispatch===document.querySelector('#timeline .session-task-card')),true,'dispatch retains original lineage DOM');
+  await page.click('#timeline [data-task-toggle]');await page.click('#timeline [data-task-action=process]');
+  await page.waitForFunction(()=>consumer.calls.findLast(call=>call.op==='timeline.page')?.args.workId==='late-work');
+  assert.equal(await page.evaluate(()=>consumer.calls.findLast(call=>call.op==='timeline.page').args.cursor),undefined,'hidden pre-dispatch process does not pin source scope or cross its cursor into Work');
   // DOM composition events exercise the guard, not an OS IME candidate window.
   await page.evaluate(()=>{const c=consumer;c.store.reset('project-consumer');c.state.jobs=[];c.state.works=[];c.state.receipts=[];c.store.apply('project-consumer',{version:1,entries:Array.from({length:80},(_,i)=>({id:'reading-'+i,sequence:i,target:'frontdesk',speaker:'agent',source:'native',jobId:'reading-job-'+i,text:'Reading position '+i+'\\n'+('retained content '.repeat(20))})),deltas:[]});c.render();});
   await page.waitForSelector('[data-message="reading-79"]');
@@ -378,6 +500,36 @@ try {
   await page.evaluate(()=>window.__scopeListeners['workspace.control']({type:'host',projectId:'project-consumer',viewId:'work-reader',kind:'task-process',readOnly:true,generation:1,viewState:{taskScope:{workId:'budget-work'},taskMode:'process'}}));
   await page.waitForSelector(visibleScope+' [data-process-entry="live-scope-new-body"]');
   assert.equal(await page.evaluate(()=>document.querySelector('#scope-workspace [data-task-process]')===window.__retainedProcess),true,'same-scope host mode switch retains the existing process DOM');
+  await page.evaluate(()=>window.__scopeListeners['workspace.control']({type:'host',projectId:'project-consumer',viewId:'work-reader',kind:'task-process',readOnly:true,generation:2,viewState:{taskScope:{workId:'budget-work'},taskMode:'process',taskLocate:{requestId:'locate-once',messageId:'live-scope-new-body',cursor:'scoped:budget-work:before:exact-message'}}}));
+  await page.waitForFunction(()=>document.activeElement?.dataset.processEntry==='live-scope-new-body');
+  assert.equal(await page.evaluate(()=>consumer.calls.filter(call=>call.op==='timeline.page').at(-1).args.cursor),'scoped:budget-work:before:exact-message','original-field navigation preserves the host supplied scoped cursor instead of navigating latest');
+  assert.equal(await page.evaluate(()=>consumer.calls.filter(call=>call.op==='timeline.page').at(-1).args.workId),'budget-work');
+  const locationReads=await page.evaluate(()=>consumer.calls.filter(call=>call.op==='timeline.page').length);
+  await page.evaluate(()=>window.__scopeListeners['workspace.control']({type:'host',projectId:'project-consumer',viewId:'work-reader',kind:'task-process',readOnly:true,generation:3,viewState:{taskScope:{workId:'budget-work'},taskMode:'overview',taskLocate:{requestId:'locate-once',messageId:'live-scope-new-body',cursor:'scoped:budget-work:before:exact-message'}}}));
+  await page.waitForFunction(()=>[...document.querySelectorAll('#scope-workspace .task-workspace-page')].some(node=>!node.hidden&&node.textContent.includes('只读任务概览')));
+  assert.equal(await page.evaluate(()=>consumer.calls.filter(call=>call.op==='timeline.page').length),locationReads,'a consumed location request cannot pull a later overview back into process');
+  await page.evaluate(()=>window.__scopeListeners['session.flush']());
+  assert.equal(await page.evaluate(()=>Object.hasOwn(consumer.calls.filter(call=>call.op==='workspace.command').at(-1).args.command.viewState,'taskLocate')),false,'location effects are not persisted with ordinary reading state');
+  await page.evaluate(()=>consumer.reviewReadingFailure());
+  await page.waitForSelector('#review-reading-recovery [data-review-action=retry-reading]:not([hidden])');
+  assert.equal(await page.$('#review-reading-recovery [data-task-toggle]'),null,'failed initial reading-state read never mounts mutable disclosure controls from an empty snapshot');
+  assert.equal(await page.evaluate(()=>__reviewReadingFixture.writes.length),0,'failed initial read cannot write a replacement snapshot');
+  await page.$eval('#review-reading-recovery [data-review-action=retry-reading]',node=>node.click());
+  await page.waitForSelector('#review-reading-recovery [data-task-toggle]');
+  await page.$eval('#review-reading-recovery [data-task-toggle]',node=>node.click());
+  await page.waitForFunction(()=>__reviewReadingFixture.writes.length===1);
+  assert.equal(await page.evaluate(()=>__reviewReadingFixture.state.disclosures['preserved-old-round']),false,'recovered initial read retains previous round state');
+  assert.deepEqual(await page.evaluate(()=>__reviewReadingFixture.state.disclosures['preserved-field']),{read:{version:'a'.repeat(64),field:'text',offset:16384}});
+  await page.evaluate(()=>{__reviewReadingFixture.failWrite=true;document.querySelector('#review-reading-recovery [data-task-toggle]').click();});
+  await page.waitForFunction(()=>document.querySelector('#review-reading-recovery [data-review-reading-status]').textContent.includes('TEMPORARY_READING_WRITE_FAILURE'));
+  assert.equal(await page.$eval('#review-reading-recovery [data-task-toggle]',node=>node.getAttribute('aria-expanded')),'true','failed save preserves local disclosure choice');
+  assert.equal(await page.evaluate(()=>__reviewReadingFixture.surface.destroy()),false,'failed disclosure save prevents disposal of unsaved local choices');
+  await page.evaluate(()=>{__reviewReadingFixture.state.disclosures['concurrent-other-round']=true;__reviewReadingFixture.state.revision++;__reviewReadingFixture.failWrite=false;document.querySelector('#review-reading-recovery [data-review-action=retry-reading]').click();});
+  await page.waitForFunction(()=>__reviewReadingFixture.writes.length===2);
+  assert.equal(await page.evaluate(()=>__reviewReadingFixture.state.disclosures['concurrent-other-round']),true,'retry merges dirty keys into current revision rather than overwriting unrelated persisted choices');
+  assert.equal(await page.evaluate(()=>__reviewReadingFixture.state.disclosures['preserved-old-round']),false);
+  assert.equal(await page.$eval('#review-reading-recovery [data-review-instruction]',node=>node.value),'UNSENT_READING_RECOVERY_DRAFT');
+  await page.evaluate(()=>__reviewReadingFixture.surface.destroy());
   await page.evaluate(()=>window.consumer.destroy());
   console.log('Session timeline React/Electron consumer contracts passed');
 } catch(error) {

@@ -1,5 +1,4 @@
 import {encodeRecoveryBytes,decodeRecoveryBytes,recoveryPptModel} from '../domain/office-recovery.mjs';
-import {mountProjectInitialization} from './project-initialization.mjs';
 import { mountContextMenu } from './context-menu.mjs';
 import {createDiscussionDrafts,ownsDiscussionReceipt} from './surface-identity-state.mjs';
 import {mountRegionDrawing,compositeDrawing} from './region-drawing.mjs';
@@ -1975,7 +1974,6 @@ async function pickProject() {
 
 $('pick-project').addEventListener('click', pickProject);
 if (workspaceScope.role === 'shell') {
-  mountProjectInitialization({anchor:$('project-name'),invoke,currentProject:()=>ui.project?.id,subscribe:(event,handler)=>window.nozeli.subscribe(event,handler)});
   mountAutoUpdate({root:$('settings-update'),invoke,subscribe:window.nozeli.subscribe});
   // Local recovery lives inside the settings dialog: no persistent toolbar
   // button; the nav entry carries a count badge while records are retained.

@@ -17,7 +17,6 @@
 #app #recent > button:focus-visible { outline:2px dashed var(--ui-control-focus,var(--green)); outline-offset:-2px; }
 /* Optical sizes override chrome scaling; expanded uppercase/suffixed labels fit without clipping. */
 #app #recent [data-project-initial] { position:absolute; inset:6px; display:grid; place-items:center; line-height:1; font-size:var(--project-label-size,11px)!important; font-weight:500; letter-spacing:0; white-space:nowrap; }
-#app #recent > button:has([data-project-attention-badge]:not([hidden])) [data-project-initial] { top:16px; }
 #app #recent [data-project-attention-badge] { --project-attention-fill:#b4232d; --project-attention-ink:#fff; position:absolute; top:0; right:0; display:flex; align-items:center; justify-content:center; min-width:16px; height:16px; padding:0 3px; box-sizing:border-box; border:1px solid var(--project-attention-fill); border-radius:999px; background:var(--project-attention-fill); color:var(--project-attention-ink); font-size:10px!important; font-weight:700; font-variant-numeric:tabular-nums; line-height:14px; pointer-events:none; white-space:nowrap; }
 #app #pick-project { width:36px; height:36px; min-height:36px; border-radius:7px; }
 html[data-theme=dark] #app #recent [data-project-attention-badge] { --project-attention-fill:#ffaca6; --project-attention-ink:#461014; }

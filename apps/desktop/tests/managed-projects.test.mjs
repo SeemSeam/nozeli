@@ -124,6 +124,12 @@ test('artifact read uses verified report bytes, never original-root lookalikes',
  await fs.writeFile(path.join(project.root,'result.txt'),'original-root lookalike');
  const m=new ManagedProjects({userDataDir:root,host,legacy:{}});m.controllers.set('p',{store});
  const actual=await m.invoke('managed.artifact.read',{projectId:'p',objectId,relPath:'result.txt'});assert.equal(actual.text,'candidate bytes');assert.equal(actual.readOnly,true);
+ const listed=await m.invoke('managed.artifact.list',{projectId:'p',objectId});
+ assert.equal(listed.files[0].relPath,'result.txt');assert.equal(listed.endMatter.objectId,objectId);assert.equal(listed.endMatter.workId,workId);assert.equal(listed.endMatter.metadataState,'unverified');assert.equal(listed.endMatter.files[0].candidateDigest,digest);assert.deepEqual(listed.endMatter.references,[]);
+ const reportFile=objects.location(state.receipts[0].report.digest);await fs.writeFile(reportFile,'corrupt report body');
+ const withoutReport=await m.invoke('managed.artifact.list',{projectId:'p',objectId});
+ assert.deepEqual(withoutReport.files,listed.files);assert.equal(withoutReport.endMatter.metadataState,'unverified');assert.ok(withoutReport.endMatter.metadataError);assert.equal(withoutReport.endMatter.references,undefined);
+ await fs.writeFile(reportFile,reportBytes);
  const originalWorkspaceId=state.workspaceId;state.workspaceId='foreign-project';await assert.rejects(m.invoke('managed.artifact.list',{projectId:'p',objectId}),e=>e.code==='REPORT_INVALID');state.workspaceId=originalWorkspaceId;
  state.receipts[0].snapshot.files.push({relPath:'removed.txt',digest:null,size:0});assert.equal((await m.invoke('managed.artifact.read',{projectId:'p',objectId,relPath:'result.txt'})).text,'candidate bytes');const absent=await m.invoke('managed.artifact.read',{projectId:'p',objectId,relPath:'removed.txt'});assert.equal(absent.availability,'absent');assert.equal(absent.base64,null);
  state.receipts[0].snapshot.files[1].size=1;await assert.rejects(m.invoke('managed.artifact.read',{projectId:'p',objectId,relPath:'result.txt'}),e=>e.code==='REPORT_INVALID');state.receipts[0].snapshot.files[1].size=0;
@@ -143,7 +149,7 @@ test('artifact read uses verified report bytes, never original-root lookalikes',
  await assert.rejects(m.invoke('managed.artifact.read',{projectId:'p',objectId,relPath:'result.txt'}),e=>e.code==='MATERIAL_CORRUPT');
  await fs.unlink(file);await fs.writeFile(file,bytes);
  await writeTestState(store,state);m.controllers.delete('p');
- assert.equal((await m.invoke('managed.artifact.list',{projectId:'p',objectId})).files[0].relPath,'result.txt');
+ const offlineList=await m.invoke('managed.artifact.list',{projectId:'p',objectId});assert.equal(offlineList.files[0].relPath,'result.txt');assert.equal(offlineList.endMatter.objectId,objectId);assert.equal(offlineList.endMatter.workId,workId);assert.equal(m.controllers.size,0);
  assert.equal((await m.invoke('managed.artifact.read',{projectId:'p',objectId,relPath:'result.txt'})).text,'candidate bytes');
  await writeTestState(store,{...state,receipts:[{...state.receipts[0],report:{...state.receipts[0].report,objectId:workId}}]});
  await assert.rejects(m.invoke('managed.artifact.list',{projectId:'p',objectId}),error=>error.code==='REPORT_INVALID');

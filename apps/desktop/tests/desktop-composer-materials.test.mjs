@@ -8,7 +8,8 @@ import path from 'node:path';
 import puppeteer from 'puppeteer-core';
 
 // Real-Electron acceptance for local material freezing, picker/keyboard behavior,
-// failure retention, managed send receipts, quotes and narrow viewports.
+// failure retention, the accepted text-material handoff send, managed send
+// receipts, quotes and narrow viewports.
 // Controlled sessions exercise product transport/state, not native model support.
 const require = createRequire(import.meta.url);
 const source = path.resolve(import.meta.dirname, '..');
@@ -98,7 +99,6 @@ try {
 
   // ---- B: 输入区收敛（用户纠正）：无 tabs/工具栏/预览；原生输入保持 ----
   await page.waitForSelector('.composer-footer', { timeout: 8000 });
-  if (await page.$eval('#conversation-panel', n => n.classList.contains('compact-composer'))) await page.click('#chat-history-toggle');
   await wait(() => document.getElementById('composer').getBoundingClientRect().height > 30);
   const absence = await page.evaluate(() => ({
     tabs: !!document.querySelector('.cm-tabs'),
@@ -265,25 +265,8 @@ try {
   await wait(() => (document.querySelector('#file-path')?.textContent || '').endsWith('同名.md'), 8000);
   check('项目内 chip 打开项目文件（openProjectFile 接线）', true);
 
-  // Local attachments are frozen and viewable, but the current managed
-  // frontend explicitly does not accept them. Never claim a model saw them.
-  const draftBefore = await page.$eval('#composer', n => n.value);
-  const beforeRejected = await page.evaluate(id => window.nozeli.invoke('managed.status', {projectId:id}), pid);
-  await holdDraftSave();
-  await page.$eval('#composer',n=>n.dispatchEvent(new Event('input',{bubbles:true})));
-  await page.waitForFunction(()=>window.__materialSaveGate.pending.length>0);
-  await page.focus('.cm-add');
-  const pendingStatus=await page.$eval('#compose-status',n=>n.textContent);
-  await page.keyboard.down('Control'); await page.keyboard.press('Enter'); await page.keyboard.up('Control');
-  await wait(previous=>{const n=document.querySelector('#compose-status');return n.textContent.trim()&&n.textContent!==previous&&n.dataset.draftSaving!=='true';},15000,pendingStatus);
-  await releaseDraftSave();
-  const afterRejected = await page.evaluate(id => window.nozeli.invoke('managed.status', {projectId:id}), pid);
-  check('unsupported local-material send retains exact draft/chips without accepting a job',
-    await page.$eval('#composer', (n, text) => n.value === text, draftBefore)
-      && await page.$$eval('#compose-form .cm-chip', ns => ns.length === 5)
-      && beforeRejected.ok && afterRejected.ok
-      && beforeRejected.value.state.jobs.length === afterRejected.value.state.jobs.length);
-  // Source mutation must not change the host-frozen read-only material.
+  // Source mutation must not change the host-frozen read-only material (checked
+  // while the chips still exist — the accepted send below consumes them).
   await writeFile(path.join(outside, '外部笔记.md'), 'MUTATED-AFTER-FREEZE\n');
   await page.evaluate(() => [...document.querySelectorAll('#compose-form .cm-chip-main')].find(c => c.textContent.includes('外部笔记')).click());
   await wait(() => !document.querySelector('.material-viewer').hidden && document.querySelector('.mv-body').textContent.includes('MARKER-EXT-4242'));
@@ -291,11 +274,35 @@ try {
   await page.screenshot({path:path.join(output, 'material-viewer-1440.png')});
   await page.keyboard.press('Escape');
   check('viewer Escape closes', await page.evaluate(() => document.querySelector('.material-viewer').hidden));
+
+  // Local text materials now ride the managed send as host-verified file
+  // attachments (supported text handoff): one accepted job consumes the raw
+  // draft and every pending material chip together.
+  const materialDraft = 'LIGHT 本地材料随消息发送-LOCAL-9211';
+  await page.click('#composer');
+  await page.evaluate(text => { const i = document.getElementById('composer'); i.value = text; i.dispatchEvent(new Event('input', { bubbles: true })); }, materialDraft);
+  const beforeHandoff = await page.evaluate(id => window.nozeli.invoke('managed.status', {projectId:id}), pid);
+  await page.focus('.cm-add');
+  await page.keyboard.down('Control'); await page.keyboard.press('Enter'); await page.keyboard.up('Control');
+  await wait(async ({ id, expected }) => {
+    const result = await window.nozeli.invoke('managed.status', {projectId:id});
+    return result.ok && result.value.state.jobs.length === expected
+      && result.value.state.jobs.at(-1)?.status === 'completed'
+      && document.getElementById('composer').value === ''
+      && document.querySelectorAll('#compose-form .cm-chip').length === 0;
+  }, 15000, { id: pid, expected: beforeHandoff.ok ? beforeHandoff.value.state.jobs.length + 1 : -1 });
+  const afterHandoff = await page.evaluate(id => window.nozeli.invoke('managed.status', {projectId:id}), pid);
+  check('supported local-material send accepts one job and consumes draft + all material chips',
+    beforeHandoff.ok && afterHandoff.ok
+      && afterHandoff.value.state.jobs.length === beforeHandoff.value.state.jobs.length + 1
+      && await page.$eval('#composer', n => n.value === '')
+      && await page.$$eval('#compose-form .cm-chip', ns => ns.length === 0));
+  check('material send renders the raw user text once', await page.$$eval('.agent-message-user', ns => ns.some(n => n.textContent.includes('LOCAL-9211'))));
   await page.evaluate(() => [...document.querySelectorAll('#compose-form .cm-chip-x')].forEach(n => n.click()));
   await holdDraftSave();
   await page.$eval('#composer', n => {n.value='LIGHT Materials receipt acceptance';n.dispatchEvent(new Event('input',{bubbles:true}));});
   await page.waitForFunction(()=>window.__materialSaveGate.pending.length>0);
-  const jobsBefore = afterRejected.value.state.jobs.length;
+  const jobsBefore = afterHandoff.value.state.jobs.length;
   await page.click('#send-message');
   await wait(async ({id, expected}) => {
     const result=await window.nozeli.invoke('managed.status',{projectId:id});
@@ -305,9 +312,10 @@ try {
   check('accepted managed send clears composer and renders user message', await page.$eval('#composer', n => n.value === '') && await page.$$eval('.agent-message-user', ns => ns.some(n => n.textContent.includes('LIGHT Materials receipt acceptance'))));
   await releaseDraftSave();
 
-  // Long draft with an unsupported local attachment remains intact on rejection.
+  // Long draft with a local file attachment sends through the same supported
+  // handoff: one accepted job consumes the long draft and the material chip.
   await page.click('#composer');
-  await page.evaluate(() => { const i = document.getElementById('composer'); i.value = 'x'.repeat(21000); i.dispatchEvent(new Event('input', { bubbles: true })); });
+  await page.evaluate(() => { const i = document.getElementById('composer'); i.value = 'LIGHT ' + 'x'.repeat(21000); i.dispatchEvent(new Event('input', { bubbles: true })); });
   await page.click('.cm-add');
   await page.waitForSelector('.cm-picker:not([hidden])');
   await new Promise(r => setTimeout(r, 500));
@@ -317,15 +325,17 @@ try {
   await page.evaluate(() => document.querySelector('.cm-confirm').click());
   await wait(() => document.querySelector('.cm-picker').hidden === true && [...document.querySelectorAll('.cm-chip-status')].every(s => s && s.dataset.status !== 'reading'), 15000);
   check('closing picker restores keyboard focus to add-material control',await page.evaluate(()=>document.activeElement===document.querySelector('.cm-add')));
-  const beforeLongRejected=await page.evaluate(id=>window.nozeli.invoke('managed.status',{projectId:id}),pid);
-  const longPendingStatus=await page.$eval('#compose-status',n=>n.textContent);
+  const beforeLongHandoff=await page.evaluate(id=>window.nozeli.invoke('managed.status',{projectId:id}),pid);
   await page.keyboard.down('Control'); await page.keyboard.press('Enter'); await page.keyboard.up('Control');
-  await wait(previous=>{const n=document.querySelector('#compose-status');return n.textContent.trim()&&n.textContent!==previous&&n.dataset.draftSaving!=='true';},15000,longPendingStatus);
-  const failed = await page.evaluate(() => ({ draft: document.getElementById('composer').value, chips: document.querySelectorAll('#compose-form .cm-chip').length, status: document.getElementById('compose-status').textContent }));
-  const afterLongRejected=await page.evaluate(id=>window.nozeli.invoke('managed.status',{projectId:id}),pid);
-  check('rejected form-focus keyboard send keeps long draft/materials and accepts no job', failed.draft === 'x'.repeat(21000) && failed.chips === 1 && failed.status.trim().length>0 && beforeLongRejected.ok && afterLongRejected.ok && beforeLongRejected.value.state.jobs.length===afterLongRejected.value.state.jobs.length, JSON.stringify({draftLength:failed.draft.length,chips:failed.chips,status:failed.status}));
-  await page.evaluate(() => { const i = document.getElementById('composer'); i.value = ''; i.dispatchEvent(new Event('input', { bubbles: true })); });
-  await page.evaluate(() => { [...document.querySelectorAll('.cm-chip-x')].forEach(b => b.click()); });
+  await wait(async ({id, expected}) => {
+    const result=await window.nozeli.invoke('managed.status',{projectId:id});
+    return result.ok && result.value.state.jobs.length===expected && result.value.state.jobs.at(-1)?.status==='completed'
+      && document.getElementById('composer').value==='' && document.querySelectorAll('#compose-form .cm-chip').length===0;
+  }, 15000, {id:pid, expected:beforeLongHandoff.ok?beforeLongHandoff.value.state.jobs.length+1:-1});
+  const afterLongHandoff=await page.evaluate(id=>window.nozeli.invoke('managed.status',{projectId:id}),pid);
+  check('accepted long-draft send with dropped file consumes draft and material in one job',
+    beforeLongHandoff.ok && afterLongHandoff.ok && afterLongHandoff.value.state.jobs.length===beforeLongHandoff.value.state.jobs.length+1,
+    JSON.stringify({draftLength:(await page.$eval('#composer',n=>n.value)).length,chips:await page.$$eval('#compose-form .cm-chip',ns=>ns.length)}));
 
   // ---- @ search keyboard ----
   await page.click('#composer');
@@ -365,7 +375,7 @@ try {
   check('no renderer errors', errors.length === 0, errors.join(' | ').slice(0, 300));
   await browser.disconnect();
   const failedChecks = checks.filter(c => !c.ok);
-  const capabilities = {localMaterialFreeze:'exercised',managedTextSend:'controlled-session-only',externalAttachmentSend:'unsupported by current managed frontend',acceptedImageSend:'not exercised; unsupported attachment path',nativeModelAcceptance:'not exercised'};
+  const capabilities = {localMaterialFreeze:'exercised',managedTextSend:'controlled-session-only',localTextMaterialSend:'exercised via accepted fileAttachments handoff (controlled session)',acceptedImageSend:'not exercised; drawing image path separate',nativeModelAcceptance:'not exercised'};
   await writeFile(path.join(output, 'report.json'), JSON.stringify({ ok: failedChecks.length === 0, checks, capabilities }, null, 2));
   console.log(`composer-materials ${checks.length - failedChecks.length}/${checks.length} ok; ${output}`);
   if (failedChecks.length) throw new Error(JSON.stringify(failedChecks, null, 2));

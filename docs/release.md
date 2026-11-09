@@ -1,8 +1,12 @@
 # 发布说明与发行边界
 
-当前版本基线：**`0.1.0-alpha.6`**（见[CHANGELOG](../CHANGELOG.md)与package.json）。精确提交由同名tag及发行包RELEASE.json绑定；产品构建、测试和分发审计分别记录，不互相替代。
+当前版本基线：**`0.1.0-beta.1`**（双平台草稿准备，未公开发布；见[CHANGELOG](../CHANGELOG.md)与package.json）。精确提交由同名tag及发行包RELEASE.json绑定；产品构建、测试和分发审计分别记录，不互相替代。
 
 ## 版本状态
+
+- **beta.1当前授权与门槛（2026-11-10）**：用户选择仅准备 Linux x64 与 macOS arm64 双平台草稿，不公开发布或公开二进制附件。六项分发义务仍 pending，`--public` 保持失败；历史alpha.6授权不可沿用。本轮同步已合并mac原生安全／耐久性支持与本地Task／审核／执行过程／材料／提醒修复，逐平台记录同提交真实包验收，不能用Linux或旧Mac证据代替本版本结果。草稿不是稳定发行，不标latest。
+- **macOS分发边界**：本轮目标为Apple Silicon arm64，使用真实macOS构建原生模块并验证独立包内Node／Git／Pi。只提供ad-hoc签名，不含Developer ID或Apple公证，Gatekeeper可能拒绝；不把绕过系统安全检查作为普通安装前提。未提供Intel Mac包，不声称自动更新、九格式完整显示矩阵、跨DPI／所有原生像素及强杀进程树全覆盖。
+
 
 - **alpha.6当前所有者授权**：2026-11-08用户获知六项分发义务未签收、`--public`失败后，明确授权alpha.6公开Alpha预发布例外。仅此版本有效，不构成合规认证，不宣称公开审计通过。需确切提交CI、干净源码打包、解压实际ELF冒烟及远端附件校验后才发布。候选包含稳定报告记忆、任务工作区与任务内对话、生命周期恢复/重置、原生技能初始化和初始页/网页栏精简；仅Linux资格，不外推Windows/macOS、200%完整应用可用性或真实磁盘硬件故障。
 
@@ -65,9 +69,17 @@ CI生成的`sbom.cdx.json`来自`npm sbom --package-lock-only --sbom-format cycl
 
 [nozeli-github](../dev_tools/skills/nozeli-github/SKILL.md) 保存本项目的提交、受保护PR合并、版本/tag/默认分支一致性、便携包实测、GitHub附件发布及中断恢复流程。安装到用户级系统OMP的 `~/.omp/agent/skills/nozeli-github` 后可跨会话使用；这是开发维护技能，不是产品运行依赖，不发布npm包。
 
-只读检查器：`python3 dev_tools/skills/nozeli-github/scripts/check_release_state.py --phase prepare`；提交推送后用 `--phase dev`，发布后用 `--phase published --assets-dir <发行物目录>`。安装副本支持 `--root <仓库目录>`。检查器不提交、不推送、不发布、不重跑CI，也不将待审计状态当作已签收。
+只读检查器：`python3 dev_tools/skills/nozeli-github/scripts/check_release_state.py --phase prepare`；提交推送后用 `--phase dev`，未公开草稿用 `--phase draft --assets-dir <双平台附件目录>`，发布后用 `--phase published --assets-dir <发行物目录>`。安装副本支持 `--root <仓库目录>`。检查器不提交、不推送、不发布、不重跑CI，也不将待审计状态当作已签收。
 
 公开附件沿用 `USAGE.zh-CN.md`：打包器生成的 `使用说明.md` 保留在包内，外部发布前复制为ASCII文件名并将SHA256SUMS对应条目绑定到该文件名。GitHub会把纯中文上传文件名规范化成 `default.md`；应核对实际远端名称，不能仅凭上传命令成功认定一致。维护技能／烟测工具在tag后单独修补时，不移动产品tag，不重写原便携包的提交绑定。
+
+### 双平台草稿构建
+
+- 在各自原生平台、同一干净提交准备锁定 npm／Pi 依赖与 PPTist／Pi 构建；Linux x64 用 `node tools/package-portable.mjs <绝对新目录>`，macOS arm64 用 `node tools/package-macos-release.mjs <绝对新目录>`（均从 `apps/desktop` 执行）。输出目录须独占新建，不覆盖旧候选。
+- mac 打包器重建原生模块与 renderer，将版本／提交／平台及 ad-hoc 未公证事实写入签名密封的 `Nozeli.app/Contents/Resources/RELEASE.json`，再制作 zip；解压后检查签名、架构、包内 Node／Git 与 plist。Gatekeeper 的本机评估如实记录，不要求禁用系统安全检查。
+- `.github/workflows/macos-release-draft.yml` 在 `release/beta1-**` 候选分支运行原生构建与实际解压程序烟测；Linux CI 的同类分支也打包并实测解压后的二进制。两者仅保留7天 Actions artifacts，不上传公开发行。烟测使用 `NOZELI_TEST_BINARY` 指定实际程序，覆盖真实编辑／平台原生保存快捷键／正常关闭／冷恢复，不调用模型。
+- 汇总时核对两平台同提交源码 tar 字节一致，保留 Linux `USAGE.zh-CN.md` 与 mac `USAGE-macos.zh-CN.md`，重算一个覆盖两包、同提交源码及两份说明的 SHA256SUMS。`release.platformsTargeted` 和 `platformsExercised` 的并集决定检查器必需附件；target 不是已通过声明，最终资格以各平台精确提交 CI／解压运行报告为准。
+- `--phase draft` 要求草稿仍未公开、预发行标记正确、tag提交一致、该提交CI通过、两平台资产完整且校验和及包内提交绑定正确；公开审计门独立保留失败。未经本轮明确授权，不执行发布草稿、公开附件或标为 latest。
 
 ## 自动更新发布物契约（开发源码）
 

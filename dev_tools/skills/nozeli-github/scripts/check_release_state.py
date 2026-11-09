@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import tarfile
+import zipfile
 from urllib.parse import quote
 
 
@@ -41,7 +42,7 @@ class Audit:
     def section(self, name, action):
         try:
             return action()
-        except (Failure, OSError, ValueError, KeyError, TypeError, tarfile.TarError) as exc:
+        except (Failure, OSError, ValueError, KeyError, TypeError, tarfile.TarError, zipfile.BadZipFile) as exc:
             self.check(False, f'{name}: {exc}')
             return None
 
@@ -61,8 +62,7 @@ class Audit:
         if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?', version):
             raise Failure('invalid version (use version without leading v)')
         self.version, self.tag = version, 'v' + version
-        self.names = [f'Nozeli-{version}-linux-x64.tar.gz',
-                      f'Nozeli-{version}-source.tar.gz', 'USAGE.zh-CN.md']
+        self.prerelease = '-' in version
         self.check(package['version'] == version, f'package version = {version}')
         self.check(package.get('private') is True, 'desktop package remains private (npm publish forbidden)')
         lock = json.loads(self.text('apps/desktop/package-lock.json'))
@@ -79,6 +79,17 @@ class Audit:
             self.check(bool(baseline and baseline[1] == version), f'{name} current baseline matches')
         inventory = json.loads(self.text('apps/desktop/compliance-inventory.json'))
         self.inventory = inventory
+        # Linux assets stay mandatory for every release; the macOS arm64 zip and
+        # its ASCII usage note become required as soon as the inventory declares
+        # a mac platform — either exercised (recorded validation evidence) or
+        # targeted by this release (a declared distribution must not skip the
+        # mac asset checks). Linux-only alpha history keeps its previous set.
+        declared = list(inventory.get('release', {}).get('platformsExercised') or [])
+        declared += inventory.get('release', {}).get('platformsTargeted') or []
+        self.names = [f'Nozeli-{version}-linux-x64.tar.gz',
+                      f'Nozeli-{version}-source.tar.gz', 'USAGE.zh-CN.md']
+        if any(str(item).startswith('macos') for item in declared):
+            self.names += [f'Nozeli-{version}-macos-arm64.zip', 'USAGE-macos.zh-CN.md']
         release = inventory.get('release', {})
         url = f'https://github.com/{self.repo}/releases/tag/{self.tag}'
         self.check(inventory.get('productVersion') == version and release.get('tag') == self.tag
@@ -149,7 +160,7 @@ class Audit:
             self.check(name in entries, f'checksum coverage: {name}')
         return entries
 
-    def published(self):
+    def tag_commit(self):
         self.tag_sha = self.git('rev-parse', '--verify', f'refs/tags/{self.tag}^{{commit}}')
         ref = self.api(f'repos/{self.repo}/git/ref/tags/{quote(self.tag, safe="")}')['object']
         for _ in range(8):
@@ -162,22 +173,8 @@ class Audit:
         self.check(True, 'clean pushed checkout contains release tag (later maintainer commits need not retag product)')
         commit = self.inventory.get('release', {}).get('commit')
         self.check(commit in (None, self.tag_sha), 'inventory commit is unset or matches tag (archive binding checked separately)')
-        repo = self.api(f'repos/{self.repo}')
-        default = repo['default_branch']
-        self.check(default == 'main', 'default branch is expected protected main')
-        comparison = self.api(f'repos/{self.repo}/compare/{self.tag_sha}...{quote(default, safe="")}')
-        self.check(comparison.get('status') in ('ahead', 'identical'), 'remote default branch contains tag commit')
-        readme = self.remote_file('README.md', default)
-        self.check(f'https://github.com/{self.repo}/releases/tag/{self.tag}' in readme, 'homepage default-branch README links current release')
-        if self.audit_pending:
-            self.check('审计未完成' in readme, 'remote homepage discloses pending audit')
-        release = self.api(f'repos/{self.repo}/releases/tags/{quote(self.tag, safe="")}')
-        self.check(release.get('tag_name') == self.tag and not release.get('draft'), 'selected release is published (not latest-stable lookup)')
-        if '-alpha' in self.version:
-            self.check(release.get('prerelease') is True, 'Alpha release is marked prerelease')
-        if self.audit_pending:
-            self.check('-alpha' in self.version, 'pending-audit exception is not used for stable release')
-            self.check(bool(re.search(r'audit|审计', release.get('body') or '', re.I)), 'release notes disclose audit status (review wording/authorization manually)')
+
+    def release_assets(self, release):
         assets = release.get('assets', [])
         by_name = {asset['name']: asset for asset in assets}
         self.check(len(by_name) == len(assets), 'remote asset names are unique')
@@ -191,6 +188,42 @@ class Audit:
             data = run(['gh', 'api', '-H', 'Accept: application/octet-stream',
                         f"repos/{self.repo}/releases/assets/{manifest['id']}"], self.root, binary=True)
             self.remote_sums = self.checksum_map(data.decode('utf-8'))
+
+    def drafted(self):
+        self.tag_commit()
+        releases = self.api(f'repos/{self.repo}/releases?per_page=100')
+        selected = [release for release in releases if release.get('tag_name') == self.tag]
+        self.check(len(selected) == 1, f'exactly one release entry carries tag {self.tag}')
+        release = selected[0] if len(selected) == 1 else {}
+        self.check(release.get('draft') is True, 'selected release is still a draft (publication happens only by explicit maintainer action)')
+        if self.prerelease:
+            self.check(release.get('prerelease') is True, 'prerelease version is marked prerelease')
+        if self.audit_pending:
+            self.check(self.prerelease, 'pending-audit exception is not used for stable release')
+            self.check(bool(re.search(r'audit|审计', release.get('body') or '', re.I)), 'release notes disclose audit status (review wording/authorization manually)')
+        self.release_assets(release)
+        self.section('release commit CI', lambda: self.ci(self.tag_sha))
+        print('INFO Draft assets are upload-only evidence; draft state authorizes no publication and no audit signoff.')
+
+    def published(self):
+        self.tag_commit()
+        repo = self.api(f'repos/{self.repo}')
+        default = repo['default_branch']
+        self.check(default == 'main', 'default branch is expected protected main')
+        comparison = self.api(f'repos/{self.repo}/compare/{self.tag_sha}...{quote(default, safe="")}')
+        self.check(comparison.get('status') in ('ahead', 'identical'), 'remote default branch contains tag commit')
+        readme = self.remote_file('README.md', default)
+        self.check(f'https://github.com/{self.repo}/releases/tag/{self.tag}' in readme, 'homepage default-branch README links current release')
+        if self.audit_pending:
+            self.check('审计未完成' in readme, 'remote homepage discloses pending audit')
+        release = self.api(f'repos/{self.repo}/releases/tags/{quote(self.tag, safe="")}')
+        self.check(release.get('tag_name') == self.tag and not release.get('draft'), 'selected release is published (not latest-stable lookup)')
+        if self.prerelease:
+            self.check(release.get('prerelease') is True, 'prerelease version is marked prerelease')
+        if self.audit_pending:
+            self.check(self.prerelease, 'pending-audit exception is not used for stable release')
+            self.check(bool(re.search(r'audit|审计', release.get('body') or '', re.I)), 'release notes disclose audit status (review wording/authorization manually)')
+        self.release_assets(release)
         self.section('release commit CI', lambda: self.ci(self.tag_sha))
         print('INFO Release candidate check is separate: its public-audit failure is not CI success; inspect exact tag-ref run and logs manually.')
 
@@ -223,12 +256,29 @@ class Audit:
                 self.check(record.get('application') == 'Nozeli' and record.get('version') == self.version
                            and record.get('commit') == commit, 'portable RELEASE.json binds Nozeli version and intended commit')
         self.check(found == 1, 'portable archive contains exactly one expected RELEASE.json (streamed, not extracted)')
+        mac_zip = f'Nozeli-{self.version}-macos-arm64.zip'
+        if mac_zip in self.names:
+            # The mac bundle keeps its RELEASE.json inside the app (sealed under
+            # the ad-hoc signature), read straight from the zip without extraction.
+            with zipfile.ZipFile(directory / mac_zip) as archive:
+                executable = [info for info in archive.infolist()
+                              if info.filename == 'Nozeli.app/Contents/MacOS/Nozeli']
+                self.check(len(executable) == 1, 'mac zip contains the Nozeli executable entry')
+                record = json.loads(archive.read('Nozeli.app/Contents/Resources/RELEASE.json'))
+            commit = getattr(self, 'tag_sha', None) or self.git('rev-parse', 'HEAD')
+            self.check(record.get('application') == 'Nozeli' and record.get('version') == self.version
+                       and record.get('commit') == commit, 'mac zip RELEASE.json binds Nozeli version and intended commit')
+            self.check(record.get('platform') == 'darwin' and record.get('arch') == 'arm64',
+                       'mac zip RELEASE.json declares darwin arm64')
+            self.check(record.get('codesign') == 'ad-hoc' and record.get('notarized') is False
+                       and record.get('developerId') is False,
+                       'mac zip RELEASE.json records ad-hoc signing without notarization')
         print('INFO Local hashes do not prove remote tar bytes; download published assets separately and verify before reporting release complete.')
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--phase', choices=['prepare', 'dev', 'published'], default='prepare')
+    parser.add_argument('--phase', choices=['prepare', 'dev', 'draft', 'published'], default='prepare')
     parser.add_argument('--repo', default='SeemSeam/nozeli')
     parser.add_argument('--version', help='version without leading v; defaults to desktop package')
     parser.add_argument('--assets-dir', type=Path)
@@ -248,6 +298,8 @@ def main():
         head = audit.section('clean/pushed state', audit.pushed)
     if args.phase == 'dev' and head:
         audit.section('development CI', lambda: audit.ci(head))
+    if args.phase == 'draft' and version:
+        audit.section('draft release state', audit.drafted)
     if args.phase == 'published' and version:
         audit.section('published state', audit.published)
     if args.assets_dir and version:

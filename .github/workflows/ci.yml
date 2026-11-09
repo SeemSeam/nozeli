@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, 'integration/**']
+    branches: [main, 'integration/**', 'release/beta1-**']
   pull_request:
   workflow_dispatch:
 
@@ -29,7 +29,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: '22.22.2'
+          node-version: '22.23.4'
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
       - name: Prepare isolation regression on ephemeral runner
@@ -69,7 +69,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: '22.22.2'
+          node-version: '22.23.4'
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
       - name: Install desktop test dependencies
@@ -94,6 +94,29 @@ jobs:
         env:
           CI: 'true'
           NOZELI_OZONE: x11
+      - name: Package Linux Beta draft at the tested commit
+        if: startsWith(github.ref, 'refs/heads/release/beta1-')
+        run: node tools/package-portable.mjs "$RUNNER_TEMP/nozeli-linux-draft"
+      - name: Unpack and exercise the actual Linux draft archive
+        if: startsWith(github.ref, 'refs/heads/release/beta1-')
+        run: |
+          VERSION=$(node -p 'require("./package.json").version')
+          mkdir "$RUNNER_TEMP/nozeli-linux-unpacked"
+          tar -xzf "$RUNNER_TEMP/nozeli-linux-draft/Nozeli-$VERSION-linux-x64.tar.gz" -C "$RUNNER_TEMP/nozeli-linux-unpacked"
+          sudo chown root:root "$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/chrome-sandbox"
+          sudo chmod 4755 "$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/chrome-sandbox"
+          NOZELI_TEST_BINARY="$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/nozeli" xvfb-run -a node tests/desktop-ci-smoke.mjs
+          TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_BINARY="$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/nozeli" xvfb-run -a node tests/desktop-task-workspace-live.mjs
+        env:
+          NOZELI_OZONE: x11
+      - name: Preserve private Linux draft artifacts
+        if: success() && startsWith(github.ref, 'refs/heads/release/beta1-')
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: linux-beta1-draft
+          path: ${{ runner.temp }}/nozeli-linux-draft/*
+          if-no-files-found: error
+          retention-days: 7
       - name: Generate locked npm production dependency inventory
         run: mkdir -p .test-output/ci && npm sbom --package-lock-only --sbom-format cyclonedx --omit dev > .test-output/ci/sbom.cdx.json
       - name: Preserve build and smoke evidence
@@ -107,6 +130,9 @@ jobs:
             apps/desktop/.test-output/ci/smoke-*/*.png
             apps/desktop/.test-output/ci/smoke-*/report.json
             apps/desktop/.test-output/ci/smoke-*/main.log
+            apps/desktop/.test-output/ci/nozeli-task-workspace-*/report.json
+            apps/desktop/.test-output/ci/nozeli-task-workspace-*/electron.log
+            apps/desktop/.test-output/ci/nozeli-task-workspace-*/*.png
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 7
@@ -124,7 +150,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: '22.22.2'
+          node-version: '22.23.4'
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
       - name: Record actual host architecture

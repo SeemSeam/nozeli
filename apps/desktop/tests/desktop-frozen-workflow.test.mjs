@@ -26,7 +26,9 @@ async function clickProject(id){
   await page.waitForSelector(selector);await page.$eval(selector,node=>node.click());
 }
 async function back(){await page.$eval('.frozen-change-reader .document-diff-head button',node=>node.click());await page.waitForFunction(()=>!document.querySelector('.frozen-change-reader'));}
+async function openTaskProcess(){await invoke('workspace.control',{type:'task-workspace',action:'process',projectId:fixture.a.id,workId:fixture.workId});await page.waitForSelector('[data-task-process]');}
 async function openDiff(){
+  await openTaskProcess();
   await page.waitForSelector(`[data-frozen-diff="${fixture.fileId}"]`);
   await page.$eval(`[data-frozen-diff="${fixture.fileId}"]`,node=>node.scrollIntoView({block:'center'}));
   await page.click(`[data-frozen-diff="${fixture.fileId}"]`);
@@ -53,6 +55,7 @@ try {
   assert.equal((await invoke('config.status')).initialized,false,'Cancel configuration, never initialize a provider');
   await invoke('session.resize',{width:1440,height:1000});await page.waitForFunction(()=>innerWidth===1440);
   await clickProject(fixture.a.id);
+  await openTaskProcess();
   await page.waitForSelector(`[data-frozen-file="${fixture.fileId}"]`);
   let status=await invoke('managed.status',{projectId:fixture.a.id});
   assert.equal(status.ready,false);assert.equal(status.enabled,true);
@@ -60,9 +63,8 @@ try {
   const receipt=status.state.receipts.find(r=>r.id===fixture.receiptId);
   assert.deepEqual([receipt.workId,receipt.jobId,receipt.revision,receipt.changeSetId],[fixture.workId,fixture.jobId,1,fixture.changeSetId]);
   assert(status.state.timeline.entries.some(entry=>entry.jobId===fixture.jobId));
-  assert.equal(await page.$eval('.session-worker details',node=>node.open),false);
   assert.equal(await page.$eval(`[data-frozen-file="${fixture.fileId}"]`,node=>node.closest('details')===null),true);
-  checks.push('Production Controller archive projection reaches collapsed React Worker with external real-Git files, without provider connection');
+  checks.push('Production Controller archive projection reaches independent task process and external real-Git files, without provider connection');
 
   stage='retain unsaved editor and draft';
   await page.click('#file-tree button[data-path="reading.txt"]');

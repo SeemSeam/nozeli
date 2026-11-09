@@ -21,11 +21,13 @@
 // panel/viewport and hit-test reachable, and the path input keeps flexing to
 // fill the bar.
 //
-// Two contracts verified with bytes, not labels: confirmed selections freeze the
-// ACTUAL file bytes (material.read returns byte-identical content even after the
-// source files are mutated on disk), and a synthetic credentials file planted in
-// the isolated HOME is never surfaced in any material ref nor in the single
-// recorded loopback model request.
+// Three contracts verified with bytes, not labels: confirmed selections freeze
+// the ACTUAL file bytes (material.read returns byte-identical content even
+// after the source files are mutated on disk); the frozen text materials ride
+// one real send as host-verified fileAttachments (the request carries the
+// frozen originals, never the post-freeze mutations); and a synthetic
+// credentials file planted in the isolated HOME is never surfaced in any
+// material ref nor in any recorded loopback model request.
 //
 // Launch (source mode only; dist/renderer must already be built):
 //   node tests/desktop-material-native-pick-live.mjs --app-root <repo>/apps/desktop
@@ -78,6 +80,7 @@ const MUTATED_A='MUTATED-AFTER-FREEZE-NATIVE-4475\n';
 const SECRET_MARKER='CREDENTIAL-SECRET-MARKER-7731';
 const REPLY_MARKER='合成回复 NATIVE-PICK（脚本模型）';
 const DRAFT_MARKER='原生选择-草稿保持-NATIVE-PICK-第一段';
+const FOLLOWUP_MARKER='原生选择-后续补充-NATIVE-PICK-第二段';
 const report={ok:false,kind:'material-native-pick-live',mode:'source',out,binary,appRoot,projectRoot,
  coverage:'Native selection entries (选择文件… / 选择文件夹…) driven by real renderer clicks through the real IPC ops and real main handlers; electron.dialog.showOpenDialog intercepted by a main-process fixture returning scripted paths/cancel (native OS chooser window itself not exercised). Frozen bytes proven via material.read + read-only viewer after on-disk mutation. Isolated HOME/XDG/config; loopback scripted model over the real CLI transport; real CDP mouse/keyboard with elementFromPoint hit tests.',
  checks:[],scenes:[],modelRequests:[],dialogCalls:[],sizes:{},errors:[],normalExits:[],
@@ -85,7 +88,7 @@ const report={ok:false,kind:'material-native-pick-live',mode:'source',out,binary
   'NOZELI_TEST_PICK bypass — proven absent by construction (env unset) plus the dialog call log; the bypass branch itself is not exercised here',
   'installed --release mode — unsupported: the fixture entry must wrap the source src/main/main.cjs',
   'OS IME/composition, OS zoom, 641-entry pagination and the full Esc matrix — owned by tests/desktop-composer-picker-live.mjs',
-  'send-time promotion of path-select materials — currently refused by the drawing-PNG-only send guard; asserted as-is, not redesigned here']};
+  'binary/non-UTF-8 attachment rejection leg — the accepted send here covers UTF-8 text materials only; the host-side per-file UTF-8/NUL refusal contract is owned by the host attachment suites']};
 console.log('EVIDENCE_ROOT='+out);
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function until(fn,label,timeout=90000){
@@ -94,7 +97,7 @@ async function until(fn,label,timeout=90000){
  throw new Error('Timed out: '+label);
 }
 const freePort=()=>new Promise(resolve=>{const server=net.createServer();server.listen(0,'127.0.0.1',()=>{const port=server.address().port;server.close(()=>resolve(port));});});
-// Loopback scripted model: records FULL request bodies so the single send is
+// Loopback scripted model: records FULL request bodies so every send is
 // provable and the credentials-never-read claim is checkable on real traffic.
 const server=http.createServer((req,res)=>{let body='';req.on('data',bytes=>body+=bytes);req.on('end',()=>{
  report.modelRequests.push({at:new Date().toISOString(),path:req.url,body:body.slice(0,131072)});
@@ -103,6 +106,9 @@ const server=http.createServer((req,res)=>{let body='';req.on('data',bytes=>body
   res.write('data: '+JSON.stringify({id:'material-native-pick-local',object:'chat.completion.chunk',choices:[{index:0,delta,finish_reason:finish}]})+'\n\n');
  res.end('data: [DONE]\n\n');
 });});
+const requestInput=request=>{
+ return JSON.parse(request.body).messages.filter(message=>message.role==='user').map(user=>typeof user.content==='string'?user.content:(user.content||[]).filter(block=>block.type==='text').map(block=>block.text).join('\n')).filter(text=>!text.startsWith('<nozeli-materials ')).at(-1)||'';
+};
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 
 /* ---------- synthetic project + external materials + planted credentials ---------- */
@@ -118,7 +124,7 @@ await fs.writeFile(fixtureState,JSON.stringify({queue:[]}));
 
 function isolatedEnvironment(port){
  const env={...process.env};
- for(const key of Object.keys(env))if(/^(NOZELI_|CCB_|CODEX_|OMP_|PI_)/.test(key)||/AUTH|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API_?KEY|PRIVATE_?KEY/i.test(key)||['NODE_OPTIONS','ELECTRON_RUN_AS_NODE'].includes(key))delete env[key];
+ for(const key of Object.keys(env))if(key!=='XAUTHORITY'&&(/^(NOZELI_|CCB_|CODEX_|OMP_|PI_)/.test(key)||/AUTH|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API_?KEY|PRIVATE_?KEY/i.test(key)||['NODE_OPTIONS','ELECTRON_RUN_AS_NODE'].includes(key)))delete env[key];
  // NOZELI_TEST_PICK is intentionally NOT set: the native pick ops must reach
  // the real dialog call path, intercepted only by the main-process fixture.
  Object.assign(env,{HOME:path.join(out,'home'),XDG_CONFIG_HOME:path.join(out,'home','.config'),XDG_DATA_HOME:path.join(out,'home','.local','share'),XDG_CACHE_HOME:path.join(out,'home','.cache'),
@@ -407,17 +413,25 @@ const reread=await raw(chat,'material.read',{projectId,instanceId:refA.instanceI
  report.checks.push('freeze honesty: after mutating 外部材料甲.md on disk, material.read AND the read-only viewer still serve the original frozen bytes');
  assert(!refs.some(ref=>JSON.stringify(ref).includes(SECRET_MARKER)),'planted HOME credentials never appear in any material ref');
 
- /* ---------- F. send guard with path-select materials (exact current behavior) ---------- */
- await realClick(chat,'#composer','composer for guard leg');
+ /* ---------- F. path-select materials ride one send as host-verified fileAttachments ---------- */
+ await realClick(chat,'#composer','composer for material send leg');
+ const jobsBeforeF=(await call(chat,'managed.status',{projectId})).state.jobs.length;
  await chat.keyboard.down('Control');await chat.keyboard.press('Enter');await chat.keyboard.up('Control');
- await until(async()=>(await chat.$eval('#compose-status',node=>node.textContent)).includes('发送未发出'),'path-select materials block the send with an explicit reason');
- const guardStatus=await chat.$eval('#compose-status',node=>node.textContent);
- assert(/涂鸦|附件/.test(guardStatus),'send refusal names the unsupported attachments: '+guardStatus);
- assert.equal(report.modelRequests.length,0,'the refused send produced zero model requests');
- assert.equal((await chipsNow()).length,3,'refused send keeps all three frozen materials');
- assert(await draftNow()===draftE,'refused send keeps the draft');
- report.checks.push('exact current send contract: with path-select materials attached, Ctrl+Enter is refused (drawing-PNG-only guard), draft + materials preserved, zero requests — asserted as implemented, not redesigned');
- await until(async()=>await chat.$eval('#toast',node=>node.hidden),'send-refusal toast dismisses before picker hit-test matrix');
+ await until(async()=>{const value=await draftNow();return value==='';},'Ctrl+Enter sends the draft plus the three frozen materials and clears the composer');
+ await until(async()=>{const jobs=(await call(chat,'managed.status',{projectId})).state.jobs;return jobs.length===jobsBeforeF+1&&jobs.at(-1)?.status==='completed';},'material send job completes on the scripted model');
+ await until(async()=>(await chipsNow()).length===0,'the accepted send consumes the pending material chips');
+ await until(async()=>await chat.$eval('#conversation',(node,marker)=>node.innerText.includes(marker),DRAFT_MARKER),'user message rendered verbatim');
+ await until(async()=>await chat.$eval('#conversation',(node,marker)=>node.innerText.includes(marker),REPLY_MARKER),'scripted reply rendered');
+ const materialRequests=report.modelRequests.filter(request=>requestInput(request).includes(DRAFT_MARKER));
+ assert.equal(materialRequests.length,1,'exactly one request for the submitted material input, independent of project initialization');
+ const materialBody=materialRequests[0].body;
+ assert(materialBody.includes(DRAFT_MARKER),'the real CLI request carries the typed draft text verbatim');
+ for(const [label,frozen] of [['外部材料甲.md',FROZEN_A],['外部材料乙.md',FROZEN_B],['材料-说明.md',PROJECT_DOC]])
+  assert(materialBody.includes(frozen.trim()),'frozen bytes of '+label+' ride the send as native material data: '+frozen.trim());
+ assert(!materialBody.includes(MUTATED_A.trim()),'the post-freeze on-disk mutation never reaches the model');
+ assert(!materialBody.includes(SECRET_MARKER),'the planted HOME credentials never reach the model request');
+ report.checks.push('supported text handoff: one Ctrl+Enter with 3 path-select materials sends once through the real send path — 1 request carries the verbatim draft plus all three frozen texts (not the mutated bytes), chips consumed, no credentials on the wire');
+ await until(async()=>await chat.$eval('#toast',node=>node.hidden).catch(()=>true),'no lingering toast before the picker hit-test matrix');
 
  /* ---------- G. responsive matrix for the bar (regression sentinel) ---------- */
  for(const [width,height,extra] of [[420,720,{}],[360,700,{}],[1280,800,{needInputFlex:true}]]){
@@ -434,24 +448,28 @@ const reread=await raw(chat,'material.read',{projectId,instanceId:refA.instanceI
   report.checks.push('picker bar honest at '+width+'x'+height+': no bar overflow, 上级/路径/选择文件…/选择文件夹… inside the panel and hit-test reachable, footer buttons reachable, only the list scrolls');
  }
 
- /* ---------- H. chips removed, one real send, credentials never on the wire ---------- */
- while(await chat.$('.cm-chip-x')){await (await chat.$('.cm-chip-x')).scrollIntoView();await realClick(chat,'.cm-chip-x','remove chip');await pause(80);}
- assert.equal((await chipsNow()).length,0,'all chips removed before the send leg');
- assert(await draftNow()===draftE,'chip removal preserves the draft');
- await realClick(chat,'#composer','composer for send');
- const requestsBefore=report.modelRequests.length;
- const jobsBefore=(await call(chat,'managed.status',{projectId})).state.jobs.length;
+ /* ---------- H. follow-up plain send stays single-shot after material delivery ---------- */
+ assert.equal((await chipsNow()).length,0,'material chips were consumed by the material send');
+ assert(await draftNow()==='','composer is empty after the material send');
+ await realClick(chat,'#composer','composer for follow-up send');
+ await chat.keyboard.type(FOLLOWUP_MARKER);
+ const jobsBeforeH=(await call(chat,'managed.status',{projectId})).state.jobs.length;
  await chat.keyboard.down('Control');await chat.keyboard.press('Enter');await chat.keyboard.up('Control');
- await until(async()=>{const value=await draftNow();return value==='';},'Ctrl+Enter really sends and clears the composer');
- await until(async()=>{const jobs=(await call(chat,'managed.status',{projectId})).state.jobs;return jobs.length===jobsBefore+1&&jobs.at(-1)?.status==='completed';},'scripted-model job completes');
- await until(async()=>await chat.$eval('#conversation',(node,marker)=>node.innerText.includes(marker),DRAFT_MARKER),'user message rendered');
- await until(async()=>await chat.$eval('#conversation',(node,marker)=>node.innerText.includes(marker),REPLY_MARKER),'scripted reply rendered');
- assert.equal(report.modelRequests.length,requestsBefore+1,'exactly one loopback model request for the single send');
- const sentBody=report.modelRequests.at(-1).body;
- assert(sentBody.includes(DRAFT_MARKER),'the real CLI request carries the typed draft text');
- assert(!sentBody.includes(SECRET_MARKER),'the planted HOME credentials never reach the model request');
- assert(!sentBody.includes(FROZEN_A.trim()),'frozen material bytes are not shipped after the guard refused them (current behavior)');
- report.checks.push('single scripted send over the real CLI transport: 1 recorded request carrying the draft, and neither the planted credentials nor material bytes appear on the wire');
+ await until(async()=>{const value=await draftNow();return value==='';},'follow-up Ctrl+Enter sends and clears the composer');
+ await until(async()=>{const jobs=(await call(chat,'managed.status',{projectId})).state.jobs;return jobs.length===jobsBeforeH+1&&jobs.at(-1)?.status==='completed';},'follow-up job completes');
+ await until(async()=>await chat.$eval('#conversation',(node,marker)=>node.innerText.includes(marker),FOLLOWUP_MARKER),'follow-up user message rendered');
+ const followRequests=report.modelRequests.filter(request=>requestInput(request).includes(FOLLOWUP_MARKER));
+ assert.equal(followRequests.length,1,'exactly one request for the follow-up input');
+ assert.equal(report.modelRequests.filter(request=>requestInput(request).includes(DRAFT_MARKER)).length,1,'material input is not replayed');
+ const followBody=followRequests[0].body;
+ assert(followBody.includes(FOLLOWUP_MARKER),'the follow-up request carries its own text');
+ assert(!followBody.includes(SECRET_MARKER),'the planted HOME credentials never reach any model request');
+ // Prior material remains in the Pi conversation history by design; only
+ // the newly submitted user entry must be material-free on this plain send.
+ const newestUser=JSON.parse(followBody).messages.filter(message=>message.role==='user').at(-1);
+ const newestText=typeof newestUser.content==='string'?newestUser.content:newestUser.content.filter(block=>block.type==='text').map(block=>block.text).join('\n');
+ assert(newestText.includes(FOLLOWUP_MARKER)&&!newestText.includes(FROZEN_A.trim()),'the new user entry contains only the follow-up, not a duplicate attachment');
+ report.checks.push('follow-up plain send after material delivery: one request and new user entry per explicit send; original native history retained without reattaching consumed materials; no credentials on the wire');
  await shot('native-pick-send');
  assert.deepEqual(report.errors,[],'no renderer page errors across all surfaces');
 

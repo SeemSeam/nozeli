@@ -665,3 +665,50 @@ test('oversized document metadata yields frozen pages and an answer in one admit
  assert.equal(c.store.state.jobs.filter(job=>job.target==='frontdesk').length,1);assert.equal(c.store.state.messages.filter(message=>message.speaker==='user').length,1);
  assert.equal(await fs.readFile(file,'utf8'),'NEW DISK CONTENT MUST NOT REPLACE FROZEN PAGES');
 });
+
+test('Worker file handoffs read only bound frozen input versions, including later supplements',async t=>{
+ const {c,native}=await open(t,async()=>({text:'材料核对完成'}));
+ c.kick=()=>{};c.execution.prepare=async id=>{await fs.mkdir(path.join(c.store.root,'execution',id),{recursive:true});};
+ await c.start();
+ const original='<!doctype html><p>FIRST_FROZEN_ORBIT</p>',later='<p>SECOND_FROZEN_ORBIT</p>';
+ const freeze=async text=>({id:'file:orbit',version:await c.store.putObject(Buffer.from(text)),title:'orbit.html',kind:'file-material'});
+ const firstRef=await freeze(original),secondRef=await freeze(later);
+ const unrelated=await c.enqueue('orchestrator','intake','无关任务',{context:{materials:[await freeze('UNRELATED_MUST_NOT_LEAK')]}});
+ const front=await c.enqueue('frontdesk','front','美化引用文件',{context:{materials:[firstRef],materialsExplicit:true}});
+ const input=await c.enqueue('orchestrator','intake','美化引用文件',{context:{frontJobId:front.jobId}});
+ const work=await c.store.submit('美化引用文件','仅处理冻结附件',{name:'冻结文件任务',sourceJob:input.jobId});
+ await c.store.activate(work.id);
+ await fs.writeFile(path.join(c.store.content,'orbit.html'),'LATER_DISK_MUST_NOT_REPLACE_REFERENCE');
+ const initial=await c.enqueue(work.id,'initial',c.initialWorkerText(c.store.find(work.id)),{context:{sourceInputJobIds:[input.jobId,input.jobId]}});
+ await c.runJob(c.store.state.jobs.find(j=>j.id===initial.jobId));
+ assert.equal(c.store.state.jobs.find(j=>j.id===initial.jobId).status,'completed');
+ const first=native.calls.find(call=>call.opts.job.id===initial.jobId);
+ assert.deepEqual(first.opts.materials.map(m=>({version:m.version,title:m.title,text:m.text})),[{version:firstRef.version,title:'orbit.html',text:original}]);
+ assert(!JSON.stringify(first.opts).includes('UNRELATED_MUST_NOT_LEAK'));
+ const supplementFront=await c.enqueue('frontdesk','front','修改第二份附件',{context:{materials:[secondRef],materialsExplicit:true}});
+ const supplementInput=await c.enqueue('orchestrator','intake','修改第二份附件',{context:{frontJobId:supplementFront.jobId}});
+ const supplement=await c.store.mutate(()=>c.queueJob(work.id,'supplement','修改第二份附件',{key:'file-supplement',context:{sourceJobId:supplementInput.jobId}}));
+ await c.runJob(c.store.state.jobs.find(j=>j.id===supplement.id));
+ const second=native.calls.find(call=>call.opts.job.id===supplement.id);
+ assert.deepEqual(second.opts.materials.map(m=>m.text),[later]);
+ assert.equal(second.text,'修改第二份附件');
+ assert.equal(native.calls.length,2,'no extra original-input replay or unrelated delivery');
+ assert.equal(c.store.state.jobs.find(j=>j.id===unrelated.jobId).status,'queued');
+});
+
+for(const explicitEmpty of [false,true])test('Worker initial material admission respects '+(explicitEmpty?'an explicit empty source set':'legacy sourceJob fallback'),async t=>{
+ const {c,native}=await open(t,async()=>({text:'核对完成'}));
+ c.kick=()=>{};c.execution.prepare=async id=>{await fs.mkdir(path.join(c.store.root,'execution',id),{recursive:true});};
+ await c.start();
+ const body='BOUND_LEGACY_FROZEN_MATERIAL';
+ const material={id:'legacy-file',version:await c.store.putObject(Buffer.from(body)),title:'legacy.md',kind:'file-material'};
+ const input=await c.enqueue('orchestrator','intake','原任务',{context:{materials:[material],materialsExplicit:true}});
+ const work=await c.store.submit('原任务','核对冻结材料',{name:'准入测试',sourceJob:input.jobId});
+ await c.store.activate(work.id);
+ const initial=await c.enqueue(work.id,'initial',c.initialWorkerText(c.store.find(work.id)),{context:explicitEmpty?{sourceInputJobIds:[]}: {}});
+ await c.runJob(c.store.state.jobs.find(job=>job.id===initial.jobId));
+ assert.equal(c.store.state.jobs.find(job=>job.id===initial.jobId).status,'completed');
+ const call=native.calls.find(call=>call.opts.job.id===initial.jobId);
+ assert.deepEqual((call.opts.materials??[]).map(material=>material.text),explicitEmpty?[]:[body]);
+ assert.equal(c.store.state.jobs.find(job=>job.id===input.jobId).status,'queued','source input is not replayed');
+});

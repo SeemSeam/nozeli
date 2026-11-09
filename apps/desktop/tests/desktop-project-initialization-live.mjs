@@ -297,10 +297,6 @@ try {
     await stable('completed', beforeCold, 'completed cold reopen has zero requests');
     assert.equal((await call('managed.initialization.read', {projectId, version: completed.map.version, offset: 0})).text, completed.persistedText);
   }
-  await shell.click('[data-project-initialization] button');
-  await shell.waitForFunction(() => [...document.querySelectorAll('dialog[open] pre')].some(node => node.textContent.includes('README.md')));
-  await shell.screenshot({path: path.join(out, 'project-map-visible.png')});
-  await shell.keyboard.press('Escape');
   await close();
   result.checks.push('Native skill progressively read; restricted inventory/read/map, credentials/generated files/symlink excluded; no Work; map persists and completed cold reopen makes zero requests');
   result.ok = true;

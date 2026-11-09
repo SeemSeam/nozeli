@@ -37,10 +37,13 @@ Run from anywhere inside the target git checkout, or supply `--root /path/to/che
 ```sh
 python3 "$HOME/.omp/agent/skills/nozeli-github/scripts/check_release_state.py" --phase prepare
 python3 "$HOME/.omp/agent/skills/nozeli-github/scripts/check_release_state.py" --phase dev
+python3 "$HOME/.omp/agent/skills/nozeli-github/scripts/check_release_state.py" --phase draft --assets-dir /path/to/release-output
 python3 "$HOME/.omp/agent/skills/nozeli-github/scripts/check_release_state.py" --phase published --version 0.1.0-alpha.3 --assets-dir /path/to/release-output
 ```
 
 `--repo` defaults to `SeemSeam/nozeli`; `--version` otherwise derives from `apps/desktop/package.json`. `--assets-dir` enables local SHA-256 and streaming portable `RELEASE.json` verification without extracting an archive. `prepare` allows dirty edits and performs local metadata checks. `dev` additionally requires clean, remotely pushed HEAD and successful `CI` at exactly HEAD. `published` additionally validates the selected tag/release/assets, exact tag CI, default-branch containment and README. It checks the selected prerelease directly, not GitHub's latest stable release. Exit 0 means these mechanical checks passed, not legal approval, manual smoke acceptance, or authorization to publish. `WARN AUDIT` is separate from technical `FAIL`.
+
+`draft` requires a still-unpublished prerelease, matching local/remote tag, exact-commit CI and complete checksum-bound assets; it does not require default-branch publication or authorize publishing. Required macOS assets are selected by the union of `release.platformsTargeted` and `platformsExercised`: targeting a platform must not silently skip its archive checks, and does not claim qualification. macOS arm64 uses `apps/desktop/tools/package-macos-release.mjs` on a real arm64 Mac, with ad-hoc signing and no notarization; local asset checks inspect its sealed in-zip `RELEASE.json`. See `docs/release.md` for combining both platforms' checksum manifests and separately exercising extracted applications.
 
 If gh cannot find the desktop login under a tool's alternate configuration, explicitly use the user's normal home configuration:
 

@@ -10,6 +10,9 @@ const group=()=>({kind:'group',id:id('group'),views:[],activeViewId:null,history
 const clone=value=>structuredClone(value);
 const relPath=value=>typeof value==='string'&&value.length>0&&value.length<=4096&&!/[\\\x00-\x1f]/.test(value)&&!value.startsWith('/')&&!value.split('/').some(part=>!part||part==='.'||part==='..');
 const identity=(value,max=200)=>typeof value==='string'&&value.length>0&&value.length<=max&&!/[\x00-\x1f]/.test(value)&&!['__proto__','constructor','prototype'].includes(value);
+const disclosureId=id=>typeof id==='string'&&id.length>0&&id.length<=512&&!/[\x00-\x1f]/.test(id)&&!['__proto__','constructor','prototype'].includes(id);
+const disclosureRead=read=>Boolean(read)&&typeof read==='object'&&!Array.isArray(read)&&Object.keys(read).every(key=>['version','field','offset'].includes(key))&&/^[a-f0-9]{64}$/.test(read.version)&&typeof read.field==='string'&&read.field.length>0&&read.field.length<=128&&!/[\x00-\x1f]/.test(read.field)&&Number.isSafeInteger(read.offset)&&read.offset>=0;
+const taskDisclosures=value=>Boolean(value)&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).length<=400&&encoder.encode(JSON.stringify(value)).byteLength<=65536&&Object.entries(value).every(([id,entry])=>disclosureId(id)&&(entry===true||entry===false||entry&&typeof entry==='object'&&!Array.isArray(entry)&&Object.keys(entry).every(key=>['cursor','read'].includes(key))&&(entry.cursor===undefined||typeof entry.cursor==='string'&&entry.cursor.length>0&&entry.cursor.length<=512&&!/[\x00-\x1f]/.test(entry.cursor))&&(entry.read===undefined||disclosureRead(entry.read))));
 export function taskResourceId(projectId,scope){
  if(!scope||typeof scope!=='object'||Array.isArray(scope)||Object.keys(scope).some(key=>!['workId','sourceJobId'].includes(key))||!Object.keys(scope).length||Object.values(scope).some(value=>!identity(value,512)))invalid('任务阅读范围无效。');
  return 'task-process:'+JSON.stringify([projectId,scope.workId??null,scope.sourceJobId??null]);
@@ -81,6 +84,9 @@ export function validateLayout(layout){
    if(isProjectDocumentSource(view.documentSource)&&view.documentSource!==undefined)invalid('项目文档不携带文档来源。');
   }
   if(view.kind==='conversation'&&++conversation>1)invalid('项目主对话不能重复。');
+  // Inline task-process disclosure state rides the existing conversation
+  // viewState key; bounded so saved layouts cannot smuggle unbounded maps.
+  if(view.kind==='conversation'&&view.viewState?.taskDisclosures!==undefined&&!taskDisclosures(view.viewState.taskDisclosures))invalid('任务披露状态无效。');
   if(view.kind==='task-process'&&(view.readOnly!==true||view.relPath!==undefined||view.resourceId!==taskResourceId(layout.projectId,view.viewState?.taskScope)||!['process','overview'].includes(view.viewState?.taskMode)))invalid('任务阅读面身份无效。');
   if(view.kind==='project-terminal'){
    // Host-owned ordinary shell view: one per project, fixed resource identity,
@@ -143,7 +149,7 @@ export function reduceLayout(previous,command){
     const conversation=Object.values(layout.views).find(view=>view.kind==='conversation'),found=conversation&&findView(layout,conversation.id);
     target=found?split(layout,{groupId:found.group.id,axis:'x',side:'after'}):checkedGroup(layout,command.groupId).group;
    }
-   if(existing){existing.viewState.taskMode=command.mode;addToGroup(target,existing.id);}
+   if(existing){existing.viewState.taskMode=command.mode;delete existing.viewState.taskLocate;addToGroup(target,existing.id);}
    else{const viewId=id('view');layout.views[viewId]={id:viewId,projectId:layout.projectId,kind:'task-process',resourceId,readOnly:true,viewState:{taskScope:clone(command.scope),taskMode:command.mode}};addToGroup(target,viewId);}
    break;
   }

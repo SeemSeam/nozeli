@@ -16,7 +16,8 @@ import {createFrontdeskDocuments} from './managed/frontdesk-documents.mjs';
 import {ShadowVersions} from './managed/shadow-versions.mjs';
 import {attachNativeTerminal} from './managed/native-terminal.mjs';
 import {managedReportSource,managedHistory,managedArtifact} from './managed-report-source.mjs';
-import {HostError} from '../main/host.mjs';
+import {HostError,OFFICE_EXT,isUtf8Text} from '../main/host.mjs';
+import {imageExtension} from '../main/image-format.mjs';
 import {recordAdoption} from './managed/adoption-history.mjs';
 import {SessionIndex} from './managed/session-index.mjs';
 import {WorkChanges} from './managed/work-changes.mjs';
@@ -907,6 +908,19 @@ export class ManagedProjects {
    this.timelineReadFlights.set(id,run);
    try{return await run;}finally{if(this.timelineReadFlights.get(id)===run)this.timelineReadFlights.delete(id);}
   }
+  if(action==='timeline.locate'){
+   // Read-only anchor resolution for inline task process disclosure: fixed
+   // work/source scope, returns the original scoped cursor for timeline.page.
+   if(Object.keys(p).some(key=>!['projectId','workId','sourceJobId','messageId'].includes(key))||typeof p.messageId!=='string'||!p.messageId||p.messageId.length>512)throw new HostError('INVALID_PAYLOAD','原记录定位参数无效');
+   const {index}=await this.projectionSource(id);
+   const scope=index.scope({workId:p.workId,sourceJobId:p.sourceJobId});
+   if(!scope)throw new HostError('TIMELINE_SCOPE','任务历史范围无效');
+   const row=index.ordered().find(row=>row.id===p.messageId);
+   if(!row||row.delta||!scope.matches(row.native??row.legacy)||!Number.isSafeInteger(row.sequence+1))throw new HostError('TIMELINE_SCOPE','原记录不在当前任务范围内');
+   const cursor='scope:'+scope.key+':before:'+(row.sequence+1);
+   if(!index.select(cursor,1,scope).some(entry=>entry.id===p.messageId))throw new HostError('TIMELINE_SCOPE','原记录定位失败');
+   return {messageId:p.messageId,cursor,taskScope:{...(p.workId!==undefined?{workId:p.workId}:{}),...(p.sourceJobId!==undefined?{sourceJobId:p.sourceJobId}:{})}};
+  }
   const {index,state}=await this.projectionSource(id);
   if(action==='timeline.request'){
    if(typeof p.requestId!=='string'||!p.requestId||p.requestId.length>512||!Number.isSafeInteger(p.offset??0)||(p.offset??0)<0)throw new HostError('INVALID_PAYLOAD','讨论轮次查询无效');
@@ -974,7 +988,7 @@ export class ManagedProjects {
   if(op==='managed.frontdesk.route.resolve'&&(!p||typeof p!=='object'||Array.isArray(p)))throw new HostError('INVALID_PAYLOAD','前台去向决定参数必须是对象。');
   const allowed={status:['projectId'],connect:['projectId'],enable:['projectId'],send:['projectId','target','text','relPath','materialText','tags','routingQuestionId','requestKey'],task:['projectId','text','relPath','materialText','tags','routingQuestionId','requestKey'],'intake.retry':['projectId','jobId','requestKey'],draft:['projectId','target','text'],end:['projectId','workId','revision','decision'],retry:['projectId','workId'],restart:['projectId','target'],binding:['projectId','role','skills'],limit:['projectId','limit'],'terminal.screen':['projectId','target'],'terminal.system':['projectId','target'],'terminal.return':['projectId','target'],'terminal.attach':['projectId','target'],'terminal.input':['projectId','target','terminalId','data'],'terminal.resize':['projectId','target','terminalId','cols','rows'],'terminal.close':['projectId','target','terminalId','detach']};
   allowed['terminal.attach']=['projectId','target','ownerId'];
-  allowed.send=[...allowed.send,'imageAttachments','drawingSources','preserveDraft','textMaterials'];allowed.task=[...allowed.task,'imageAttachments','drawingSources','preserveDraft','textMaterials'];
+  allowed.send=[...allowed.send,'imageAttachments','drawingSources','preserveDraft','textMaterials','fileAttachments'];allowed.task=[...allowed.task,'imageAttachments','drawingSources','preserveDraft','textMaterials','fileAttachments'];
   allowed.disposition=['projectId','workId'];allowed.end=['projectId','workId','revision','decision','binding','requestKey'];allowed.retry=['projectId','workId','binding','requestKey'];
   allowed['merge.constraint']=['projectId','workId','expectedVersion','decision','requestKey'];
   allowed['versions.list']=['projectId'];
@@ -995,6 +1009,7 @@ export class ManagedProjects {
   allowed['problem.resolve']=['projectId','workId','objectId','revision','action','text','requestKey'];
   allowed['frontdesk.route.resolve']=['projectId','proposalId','expectedVersion','action','requestKey'];
   allowed['timeline.page']=['projectId','cursor','limit','workId','sourceJobId'];allowed['timeline.read']=['projectId','id','version','field','offset','limit'];
+  allowed['timeline.locate']=['projectId','workId','sourceJobId','messageId'];
   allowed['timeline.request']=['projectId','requestId','offset'];
   allowed['attention.ack']=['projectId','ids','occurrences'];
   allowed['attention.respond']=['projectId','todoId','answer','cancel','attentionKind','attentionId','expectedVersion','action','sourceJobId','requestKey'];
@@ -1008,7 +1023,7 @@ export class ManagedProjects {
   allowed['review.instruction.read']=['projectId','workId','objectId'];
   allowed['review.instruction.save']=['projectId','workId','objectId','text','expectedRevision'];
   allowed['review.discussion.read']=['projectId','workId','objectId','cursor','limit'];
-  allowed['review.discussion.send']=['projectId','workId','objectId','reviewVersion','requestKey','text'];
+  allowed['review.discussion.send']=['projectId','workId','objectId','reviewVersion','requestKey','text','applyDrafts'];
   allowed['merge.consent']=['projectId','workId','requestId','expectedVersion','decision','requestKey','binding'];
   allowed['collaboration.status']=['projectId','cursor','limit'];
   allowed['maintenance.status']=['projectId','cursor','limit'];allowed['maintenance.retry']=['projectId','bugId','binding','expectedRetryMode'];allowed['maintenance.scan']=['projectId'];
@@ -1099,7 +1114,7 @@ export class ManagedProjects {
    const capabilities=workControlCapabilitiesFromState({works:source.state.works??[],jobs:source.state.jobs??[]},target,{live:false,bindingProvider:record?.binding?.provider??record?.provider??null,projectInstanceId:project.instanceId});
    return {...capabilities,schema:capabilities?.schema??1,projectId:p.projectId,projectInstanceId:project.instanceId,workRevision:capabilities?.workRevision??null};
   }
-  if(['collaboration.status','model.options','model.set','draft','status','maintenance.status','attention.ack','todo.manage','timeline.page','timeline.read','timeline.request','resident.history','worker.history','disposition','work.progress.read','history.list','history.read','artifact.read','artifact.list','changes.list','changes.read','review.read','review.save','review.continue','review.accept','review.instruction.read','review.instruction.save','review.discussion.read','merge.consent','merge.constraint'].includes(action))await this.host.requireRegisteredProject(p.projectId);else await this.host.requireProject(p.projectId);
+  if(['collaboration.status','model.options','model.set','draft','status','maintenance.status','attention.ack','todo.manage','timeline.page','timeline.read','timeline.request','timeline.locate','resident.history','worker.history','disposition','work.progress.read','history.list','history.read','artifact.read','artifact.list','changes.list','changes.read','review.read','review.save','review.continue','review.accept','review.instruction.read','review.instruction.save','review.discussion.read','merge.consent','merge.constraint'].includes(action))await this.host.requireRegisteredProject(p.projectId);else await this.host.requireProject(p.projectId);
   if(action==='draft')return this.saveLocalDraft(p.projectId,p.target,p.text);
   if(action==='maintenance.status')return this.maintenanceStatus(p.projectId,p);
   if(action==='maintenance.retry'||action==='maintenance.scan'){
@@ -1123,7 +1138,7 @@ export class ManagedProjects {
   if(action==='todo.manage'&&(await this.attention.read(p.projectId)).todos.some(t=>t.id===p.todoId)){const source=this.controllers.get(p.projectId)?.store?.state??(await this.projectionSource(p.projectId)).state;return this.attention.manage(p.projectId,p,source);}
   if(action==='collaboration.status')return this.collaborationStatus(p.projectId,p);
   if(action==='status')return this.status(p.projectId);if(action==='enable'||action==='connect')return this.connect(p.projectId,{enable:action==='enable'});
-  if(action==='timeline.page'||action==='timeline.read'||action==='timeline.request')return this.timelineQuery(p.projectId,action,p);
+  if(action==='timeline.page'||action==='timeline.read'||action==='timeline.request'||action==='timeline.locate')return this.timelineQuery(p.projectId,action,p);
   if(action==='changes.list'||action==='changes.read')return this.changesQuery(p.projectId,action,p);
   if(action==='resident.handoff')return this.handoffResident(p.projectId,p);
   if(action==='resident.history')return this.residentHistory(p.projectId,p);
@@ -1247,7 +1262,7 @@ export class ManagedProjects {
   if(action==='send'||action==='task'){
    if(p.requestKey!=null&&!(typeof p.requestKey==='string'&&/^[a-zA-Z0-9:_-]{8,160}$/.test(p.requestKey)))throw Error('invalid submission key');
    if(typeof p.text!=='string'||!p.text.trim())throw new Error('输入为空');
-   const submissionDigest=createHash('sha256').update(JSON.stringify([p.target||'frontdesk',p.text,p.relPath,p.materialText,p.tags,p.routingQuestionId,p.imageAttachments,p.drawingSources,p.textMaterials,...(sourceInput?[sourceInput]:[])])).digest('hex');
+   const submissionDigest=createHash('sha256').update(JSON.stringify([p.target||'frontdesk',p.text,p.relPath,p.materialText,p.tags,p.routingQuestionId,p.imageAttachments,p.drawingSources,p.textMaterials,p.fileAttachments,...(sourceInput?[sourceInput]:[])])).digest('hex');
    const previous=p.requestKey&&c.store.state.jobs.find(j=>j.key===(action==='task'?'task:':'input:')+p.requestKey);
    if(previous){if(previous.context?.submissionDigest!==submissionDigest)throw Error('submission key collision');return {accepted:true,jobId:previous.id};}
    // Raw user text stays verbatim; every explicit material is frozen into a
@@ -1275,12 +1290,45 @@ export class ManagedProjects {
    const imageAttachments=[...preferredRegionAssets(packets).map(a=>({digest:a.digest,mime:'image/png',storage:'project',projectId:p.projectId})),...drawingImages];
    for(const ref of imageAttachments.filter(ref=>!drawingImages.includes(ref))){const bytes=await this.host.storage.readObject(p.projectId,ref.digest);if(bytes.length>8*1024*1024)throw Error('单张图片超过8MiB');imageBytes+=bytes.length;}
    if(imageAttachments.length>8||imageBytes>24*1024*1024)throw Error('图片超过8张或24MiB');
+   // Registered non-drawing local text references ride their own channel: the
+   // host re-verifies the ProjectAttachments registry (cross-project, forged,
+   // stale-instance and corrupted refs all fail promote/readBytes), refuses
+   // declared binary families regardless of decodable bytes, and freezes the
+   // exact registered bytes as a file material. Drawings stay on the image
+   // channel; acceptance is registry+content truth, never an HTML/extension
+   // special case, and no PDF/Office parsing happens here.
+   const fileAttachments=[];
+   if(p.fileAttachments!=null){
+    if(!Array.isArray(p.fileAttachments)||p.fileAttachments.length>20)throw new HostError('INVALID_PAYLOAD','文件附件最多20个。');
+    const fileAttachmentKeys=['digest','mime','source','storage','projectId','instanceId'];
+    for(const ref of p.fileAttachments)if(!ref||typeof ref!=='object'||Array.isArray(ref)||Object.keys(ref).some(key=>!fileAttachmentKeys.includes(key)))throw new HostError('INVALID_PAYLOAD','文件附件引用字段无效，未发送。');
+    const binaryExtensions=new Set(['.pdf','.zip','.gz','.tgz','.bz2','.xz','.7z','.rar','.tar','.jar','.exe','.dll','.so','.dylib','.bin','.class']);
+    const binaryMimes=/^(?:image|audio|video)\//;
+    const officeMimes=/^application\/(?:pdf|zip|x-zip-compressed|gzip|x-gzip|x-tar|x-7z-compressed|x-rar-compressed|java-archive|x-msdownload|x-executable|x-sharedlib|msword|vnd\.ms-(?:excel|powerpoint)|vnd\.openxmlformats-officedocument\.|x-ms-installer)/;
+    let fileAttachmentBytes=0;
+    for(const [index,ref] of p.fileAttachments.entries()){
+     if(ref.source==='drawing')throw new HostError('INVALID_PAYLOAD','涂鸦材料须以图片附件发送，不能占用文件附件通道。');
+     const promoted=await this.host.attachments.promote(p.projectId,ref);
+     if(promoted.source==='drawing')throw new HostError('INVALID_PAYLOAD','涂鸦材料须以图片附件发送，不能占用文件附件通道。');
+     const extension=path.posix.extname(promoted.name).toLowerCase();
+     if(imageExtension.test(promoted.name)||OFFICE_EXT.has(extension)||binaryExtensions.has(extension)||binaryMimes.test(promoted.mime)||officeMimes.test(promoted.mime))throw new HostError('INVALID_PAYLOAD','文件附件 '+promoted.name+' 是声明的二进制格式，不能作为文本材料发送。');
+     if(promoted.size>8*1024*1024)throw new HostError('INVALID_PAYLOAD','文件附件 '+promoted.name+' 超过8MiB。');
+     fileAttachmentBytes+=promoted.size;
+     if(fileAttachmentBytes>24*1024*1024)throw new HostError('INVALID_PAYLOAD','文件附件总量超过24MiB，未发送。');
+     const bytes=await this.host.storage.readObject(p.projectId,promoted.digest);
+     if(!isUtf8Text(bytes))throw new HostError('INVALID_PAYLOAD','文件附件 '+promoted.name+' 不是有效 UTF-8 文本（含 NUL 或非法字节），未发送。');
+     const version=await c.store.putObject(bytes);
+     if(version!==promoted.digest)throw new HostError('INVALID_PAYLOAD','文件附件 '+promoted.name+' 冻结内容与登记摘要不一致，未发送。');
+     materials.push({id:'file-attachment:'+index+':'+promoted.digest,version,title:promoted.name,kind:'file-material',provenance:{source:'attachment:'+promoted.name,versionLabel:'frozen-at-send',fetchedAt:now}});
+     fileAttachments.push({digest:promoted.digest,mime:promoted.mime,storage:'project',projectId:p.projectId,name:promoted.name,size:promoted.size,source:promoted.source,sourceManifest:promoted.sourceManifest});
+    }
+   }
    if(p.routingQuestionId&&!c.store.state.todos.some(t=>t.id===p.routingQuestionId&&t.kind==='routing'&&t.status==='open'))throw new Error('澄清问题已过期');
-   const context={...(p.requestKey?{submissionDigest}:{}),...(p.routingQuestionId?{routingQuestionId:p.routingQuestionId}:{}),...(imageAttachments.length?{imageAttachments}:{})};
+   const context={...(p.requestKey?{submissionDigest}:{}),...(p.routingQuestionId?{routingQuestionId:p.routingQuestionId}:{}),...(imageAttachments.length?{imageAttachments}:{}),...(fileAttachments.length?{fileAttachments}:{})};
    if(material)context.tagMaterial={version:material.version,binding:material.binding,brief:material.brief,reusable:material.reusable};
    if(drawingImages.length){context.drawingSources=drawingSources;const version=await c.store.putObject(Buffer.from(JSON.stringify(drawingSources),'utf8'));materials.push({id:'drawing-sources',version,title:'涂鸦截图来源（未锚定文件的画面仅作工作区素材）',kind:'drawing-sources',provenance:{source:'drawing-attachments',versionLabel:'frozen-at-send',fetchedAt:now}});}
    if(materials.length)context.materials=materials;
-   if(p.tags?.length||p.textMaterials?.length)context.materialsExplicit=true;
+   if(p.tags?.length||p.textMaterials?.length||fileAttachments.length)context.materialsExplicit=true;
    if(packets.length)context.userInput={text:p.text,sources:packets.map(packet=>({relPath:packet.relPath,annotationId:packet.tagId,materialDigest:packet.origin?.materialDigest,quote:packet.origin?.anchor?.quote||'',location:packet.information?.location?.label||'',changed:packet.resolution?.targetDigest!==packet.origin?.materialDigest}))};
    if(sourceInput)context.userInput=structuredClone(sourceInput);
    return action==='task'?c.submitTask(text,{requestKey:p.requestKey,context,draftText:p.text,preserveDraft:p.preserveDraft===true}):c.send(p.target||'frontdesk',text,{requestKey:p.requestKey,context,draftText:p.text,preserveDraft:p.preserveDraft===true});

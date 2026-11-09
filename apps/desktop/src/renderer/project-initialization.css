@@ -1,3 +1,0 @@
-.project-initialization { display:inline-flex; align-items:center; gap:.35rem; flex-wrap:wrap; font-size:.8rem; color:var(--muted); margin-inline:.5rem; }
-.project-initialization[hidden] { display:none; }
-.project-initialization button { font:inherit; padding:.15rem .4rem; }

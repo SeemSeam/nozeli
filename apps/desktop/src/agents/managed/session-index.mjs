@@ -4,6 +4,7 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {canonicalNativeEntryDigest} from './collab/runtime.mjs';
 import {intakeLineage} from '../../domain/managed-work-records.mjs';
+import {confirmedDisposition} from './review-lifecycle.mjs';
 import {platformPersistence} from '../../platform/shared/persistence.mjs';
 
 const sha = value => createHash('sha256').update(value).digest('hex');
@@ -25,6 +26,7 @@ const publicValue = value => {
   try { const parsed=JSON.parse(value); if(parsed && typeof parsed==='object')return JSON.stringify(publicValue(parsed)); } catch {}
   return value.replace(/(?:\b[A-Za-z]:[\\/]|(?<![\w:/])\/(?!\/))[^\s"'<>`,;\]}]+/g,'[internal path]').replace(/\b(readHandle|capability|credentials?|password|secret|(?:access|refresh|write|room|api)[_-]?(?:token|key)|authorization)\s*[:=]\s*(?:"[^"\n]*"|'[^'\n]*'|[^\s,;}]+)/gi,'$1: [redacted]');
 };
+export {publicValue as sanitizeTimelineValue};
 // Message or exact completed-turn evidence, never current session configuration.
 const historicalModel = (message, assistant = message?.role === 'assistant') => {
   if (!assistant) return {};
@@ -88,11 +90,33 @@ export function recordBusinessTimeline(prior, state) {
   }
   const previous = new Map((prior.works ?? []).map(work => [work.id, work]));
   const add = (kind, work, text) => index.deltas.push({id:'delta-' + (++index.sequence), sequence:index.sequence, kind, workId:work.id, revision:work.revision, text, at:new Date().toISOString()});
+  const factIds=new Set(index.deltas.map(row=>row.id));
+  const reviewFact=(kind,work,text,details={})=>{
+    const closure=work.closure;
+    const id='delta-host-'+sha(JSON.stringify([work.id,closure.requestKey,kind,prior.sessionIndex?.sequence??0,details]));
+    if(factIds.has(id))return;
+    factIds.add(id);
+    index.deltas.push({id,sequence:++index.sequence,kind,source:'host',workId:work.id,revision:closure.revision,objectId:closure.binding.objectId,decision:closure.decision,requestKey:closure.requestKey,text,at:new Date().toISOString(),...publicValue(details)});
+  };
   for (const work of state.works ?? []) {
     const old = previous.get(work.id);
     if (!old) add('work-created', work, '创建工作：' + (work.name || work.id));
-    else if (old.status !== 'ended' && work.status === 'ended') add('work-ended', work, (work.outcome === 'accept' ? '用户接受并结束：' : '用户丢弃并结束：') + (work.name || work.id));
+    else if (old.status !== 'ended' && work.status === 'ended') add('work-ended', work, (confirmedDisposition(work)&&!work.needsReconciliation?(work.closure.decision==='accept'?'用户接受并结束：':'用户丢弃并结束：'):'宿主登记工作结束；人工决定尚未核实：') + (work.name || work.id));
     else if (old.deviation?.status !== work.deviation?.status && work.deviation?.status) add('scope-decision', work, '工作范围状态：' + work.deviation.status + ' · ' + (work.name || work.id));
+    // Observe successful transaction edges only. Existing closures loaded from
+    // old ledgers are not evidence that their missing historical steps occurred.
+    if(!old||work.needsReconciliation||!confirmedDisposition(work))continue;
+    const closure=work.closure,previousClosure=old.closure;
+    const sameDecision=!old.needsReconciliation&&confirmedDisposition(old)&&previousClosure.requestKey===closure.requestKey;
+    const freshDecision=!previousClosure||previousClosure.requestKey!==closure.requestKey;
+    if(freshDecision)reviewFact('review-decision-registered',work,closure.decision==='accept'?'宿主已登记接受决定；尚不代表应用或收尾完成':'宿主已登记放弃决定；尚不代表候选处置或收尾完成');
+    if(!sameDecision&&!freshDecision)continue;
+    const baseline=sameDecision?previousClosure:{};
+    const blocked=value=>value.phase==='blocked'||value.merge?.status==='blocked';
+    if(blocked(closure)&&!blocked(baseline))reviewFact('review-application-blocked',work,'宿主处置受阻；原决定与成果保留，尚未完成',{phase:closure.phase,blockedCode:closure.merge?.blockedCode??null,reason:String(closure.error?.message??closure.error??closure.merge?.message??'').slice(0,2048)});
+    const applied=value=>value.git?.complete===true||value.merge?.status==='merged';
+    if(applied(closure)&&!applied(baseline))reviewFact('review-application-completed',work,closure.decision==='accept'?'宿主已完成接受候选的应用处置；技术收尾另行记录':'宿主已完成放弃候选的处置；未作为接受合入',{status:closure.git?.status??closure.merge?.status??null,commit:closure.git?.commit??closure.merge?.commit??null});
+    if(work.status==='ended'&&closure.phase==='complete'&&!(old.status==='ended'&&baseline.phase==='complete'))reviewFact('review-cleanup-completed',work,'宿主已完成技术收尾并登记工作结束',{completedAt:closure.completedAt??null});
   }
   const priorJobs=new Map((prior.jobs??[]).map(job=>[job.id,job]));
   for(const job of state.jobs??[]){
@@ -342,7 +366,7 @@ export class SessionIndex {
     const observed=message.speaker==='agent'&&job?.status==='completed'&&job.target===message.target&&(message.revision==null||message.revision===job.revision)&&identity(job.effective?.provider)&&identity(job.effective?.modelId)?job.effective:null;
     const modelEvidence=message.model!=null||!observed||message.provider&&message.provider!==observed.provider?message:{provider:observed.provider,model:observed.modelId};
     message = {...message, ...historicalModel(modelEvidence, message.speaker === 'agent')};
-    const attachments=message.attachments??(message.speaker==='user'?(job?.context?.imageAttachments??[]).map((ref,i)=>({...ref,name:ref.name||'区域图片 '+(i+1)})):[]);
+    const attachments=message.attachments??(message.speaker==='user'?[...(job?.context?.imageAttachments??[]).map((ref,i)=>({...ref,name:ref.name||'区域图片 '+(i+1)})),...(job?.context?.fileAttachments??[])]:[]);
     const userInput=message.speaker==='user'&&job?.context?.userInput;
     return {...message, text:userInput?.text ?? message.text ?? receipt?.report?.excerpt ?? '',...(receipt?{report:receipt.report}:{}),...(userInput?{materialSources:userInput.sources}:{}),...(message.speaker==='user'&&job?.context?.drawingSources?{drawingSources:job.context.drawingSources}:{}), sequence:state.sessionIndex?.messageSequences?.[message.id] ?? 0, source:message.nativeEntryDigest?'portable':message.speaker === 'system' || message.publication || userInput || job ? 'host' : 'legacy', jobId:message.jobId ?? receipt?.sourceJobId ?? null, revision:message.revision ?? receipt?.revision ?? job?.revision ?? null, workId:!['frontdesk','orchestrator'].includes(message.target) ? message.target : null, attachments,...(receipt?.changeSetId ? {changeSetId:receipt.changeSetId} : {})};
   }
