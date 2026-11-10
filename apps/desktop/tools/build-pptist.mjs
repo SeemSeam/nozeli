@@ -21,6 +21,20 @@ run('git',['-c','core.autocrlf=false','archive','--format=tar','--output='+archi
 const digest=createHash('sha256');for await(const chunk of createReadStream(archive))digest.update(chunk);
 const actual=digest.digest('hex');if(actual!==sourceSha256)throw Error('PPTist source SHA-256 mismatch: '+actual);
 run('tar',['-xf',archive]);
+// Keep pinned versions/integrity; fetch npm packages from their primary registry.
+// Only the disposable build tree changes. The archived upstream source stays raw.
+const lockPath=path.join(work,'package-lock.json');
+const lock=JSON.parse(await fs.readFile(lockPath,'utf8'));
+function primaryRegistry(dependencies){
+  for(const entry of Object.values(dependencies??{})){
+    if(!entry||typeof entry!=='object')continue;
+    if(entry.resolved?.startsWith('https://registry.npmmirror.com/'))entry.resolved='https://registry.npmjs.org/'+entry.resolved.slice('https://registry.npmmirror.com/'.length);
+    primaryRegistry(entry.dependencies);
+  }
+}
+primaryRegistry(lock.packages);
+primaryRegistry(lock.dependencies);
+await fs.writeFile(lockPath,JSON.stringify(lock,null,2)+'\n');
 const app=path.join(work,'src/App.vue');let s=await fs.readFile(app,'utf8');
 s=s.replace("import { onMounted } from 'vue'","import { onMounted } from 'vue'\nimport useImport from '@/hooks/useImport'\nimport useExport from '@/hooks/useExport'\nimport { toCanvas } from 'html-to-image'\nimport { cancelPendingSnapshot } from '@/hooks/useHistorySnapshot'\nimport { db } from '@/utils/database'\nimport { flushPptTextCommits } from '@/utils/nozeliTextCommits'");
 // Chromium copies logical inset declarations too; reset both logical and
@@ -94,7 +108,7 @@ s=s.replace('return resolve(text)\n      })', 'return resolve(text)\n      }).ca
 const exp=path.join(work,'src/hooks/useExport.ts');s=await fs.readFile(exp,'utf8');s=s.replaceAll('pptx.writeFile({ fileName: `${title.value}.pptx` })',"pptx.write({ outputType: 'blob' }).then(blob => (window as any).__nozeliExport?.(blob))");await fs.writeFile(exp,s);
 // Host provides the only export path. Hide cloud and alternate import/export entrypoints.
 const html=path.join(work,'index.html');s=await fs.readFile(html,'utf8');s=s.replace('</head>',`<style>.editor-header{display:none!important}</style></head>`);await fs.writeFile(html,s);
-run('npm',['ci','--ignore-scripts','--no-audit','--no-fund']);run('npm',['run','build-only']);
+run('npm',['ci','--ignore-scripts','--no-audit','--no-fund','--registry=https://registry.npmjs.org']);run('npm',['run','build-only']);
 await fs.rm(path.join(vendor,'dist'),{recursive:true,force:true});
 await fs.cp(path.join(work,'dist'),path.join(vendor,'dist'),{recursive:true});
 // Retain the verified, unmodified upstream tree for corresponding-source distribution.

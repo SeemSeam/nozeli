@@ -1,6 +1,6 @@
 # 当前状态与能力边界
 
-状态基线：`0.1.0-beta.1`（Linux x64＋macOS arm64双平台预发行，公开状态以[发行页](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-beta.1)为准）。用户于2026-11-10在知悉六项审计仍pending后追加明确授权公开本版，取代只准备草稿的限制，不沿用alpha.6例外、不构成合规签收；`--public`仍阻断。产品提交`17209df`及main完整CI、两平台真实包阅读／保存／冷恢复与随包Pi多轮Task旅程均已通过；本次仅同步授权和文档，不移动tag、不替换已验附件。Windows／Intel Mac／mac自动更新／Developer ID公证未提供，九格式完整显示矩阵及OS原生IME未验。
+状态基线：`0.1.0-beta.1`（Linux x64＋macOS arm64双平台预发行，公开状态以[发行页](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-beta.1)为准）。用户于2026-11-10在知悉六项审计仍pending后追加明确授权公开本版，取代只准备草稿的限制，不沿用alpha.6例外、不构成合规签收；`--public`仍阻断。产品提交`17209df`及main完整CI、两平台真实包阅读／保存／冷恢复与随包Pi多轮Task旅程均已通过；后续维护只涉及授权文档、构建下载入口和测试夹具关闭顺序，不改产品运行时代码、不移动tag或替换已验附件。Windows／Intel Mac／mac自动更新／Developer ID公证未提供，九格式完整显示矩阵及OS原生IME未验。
 
 2026-11-09 **PR #27 跨平台整合候选安全修正**：保留原alpha.6 Linux主线与Mac arm64适配，修复最终初始化发布交错／FIFO阻塞、长请求ID暂存文件名、Darwin进程事实两处fail-open；内置reviewer已复审关闭发现。Linux干净依赖／Pi／Office／renderer构建和原PR解压包X11／Wayland真实保存冷恢复、HTML只读双guest通过；新增失败前／修正后回归保留。新增必须通过的macOS原生安全CI，编译及syscall注入测试只能由Darwin完成。当前仍是待CI和最终包验证的PR候选，不冒称Mac公开发行、Windows支持或自动更新／公证通过；未替换日常安装。详见[整合记录](testing.md#pr-27-主线整合安全复核2026-11-09)。
 

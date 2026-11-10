@@ -50,7 +50,7 @@ async function open(t,script){
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-context-cutover-'));
   const native=fakeNative(script);
   const c=await openTestController({runtimeRoot:path.join(root,'runtime'),contentRoot:path.join(root,'project'),sessionFactory:spec=>new native.Session(spec),projectHome:home=>fs.mkdir(home,{recursive:true})});
-  t.after(async()=>{try{await c.stop();}finally{try{await c.store.close();}catch{}await fs.rm(root,{recursive:true,force:true});}});
+  t.after(async()=>{await c.stop();await c.store.close();await c.store.storage.db.close();await fs.rm(root,{recursive:true,force:true});});
   return {c,native,root};
 }
 
@@ -316,19 +316,25 @@ test('cold restart hydrates epoch usage; persistence failure fails closed with z
   await c.stop();
   const restartNative=fakeNative(async()=>({text:'回答'}));
   const reopened=await Controller.open({storage:c.store.storage,projectId:c.projectId,runtimeRoot:path.join(path.dirname(c.store.root),'runtime2'),contentRoot:c.store.contentRoot,sessionFactory:spec=>new restartNative.Session(spec),projectHome:async()=>{}});
-  await reopened.start();
-  const reopenedSession=reopened.sessions.get('frontdesk');
-  assert.equal(reopenedSession?.threadId,c.store.state.residents.frontdesk?.threadId??reopenedSession?.threadId,'reconnect resumes the persisted native thread');
-  t.after(async()=>{try{await reopened.stop();}catch{}});
-  assert.equal(reopened.contextBudget.epochUsed(key),used,'cold restart hydrates the same namespaced epoch usage');
-  // Fail-closed: budget persistence error aborts the request before any prompt.
-  const nativeBefore=native.calls.length;
-  const realMutate=reopened.store.mutate.bind(reopened.store);
-  reopened.store.mutate=async fn=>{if(String(fn).includes('contextBudgetEpochs'))throw Error('disk full');return realMutate(fn);};
-  const failing=await materialTurn('记账失败的一轮。','persist-fail-1',reopened);
-  const failed=await waitFor(()=>reopened.store.state.jobs.find(j=>j.id===failing.jobId&&j.status==='failed'),'persist-fail job');
-  assert.equal(failed.error.includes('预算记账持久化失败'),true,'fail-closed reason is visible');
-  assert.equal(native.calls.length,nativeBefore,'no model request was submitted');
+  const originalMutate=reopened.store.mutate;
+  try{
+    await reopened.start();
+    const reopenedSession=reopened.sessions.get('frontdesk');
+    assert.equal(reopenedSession?.threadId,c.store.state.residents.frontdesk?.threadId??reopenedSession?.threadId,'reconnect resumes the persisted native thread');
+    assert.equal(reopened.contextBudget.epochUsed(key),used,'cold restart hydrates the same namespaced epoch usage');
+    // Fail-closed: budget persistence error aborts the request before any prompt.
+    const nativeBefore=native.calls.length;
+    const realMutate=originalMutate.bind(reopened.store);
+    reopened.store.mutate=async fn=>{if(String(fn).includes('contextBudgetEpochs'))throw Error('disk full');return realMutate(fn);};
+    const failing=await materialTurn('记账失败的一轮。','persist-fail-1',reopened);
+    const failed=await waitFor(()=>reopened.store.state.jobs.find(j=>j.id===failing.jobId&&j.status==='failed'),'persist-fail job');
+    assert.equal(failed.error.includes('预算记账持久化失败'),true,'fail-closed reason is visible');
+    assert.equal(native.calls.length,nativeBefore,'no model request was submitted');
+  }finally{
+    reopened.store.mutate=originalMutate;
+    await reopened.stop();
+    await reopened.store.close();
+  }
 });
 
 test('mid-run typed nozeliCompaction rotates the generation scope before the next charge',async t=>{

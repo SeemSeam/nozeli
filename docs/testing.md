@@ -813,3 +813,13 @@ mac修正提交的工作流 `42721602963` 已通过原生构建、组装／ad-ho
 候选 `37dc8c8` 的mac工作流 `42722979684` 已全过：实际可见.app阅读／Command-S保存／挂起切项目／正常关闭／冷恢复，以及随包Pi多Task、多轮、长原文、卡内过程／草稿、浅深320／390／1280与200%／冷重开零重放均ok=true、Provider错误为空。已查看Mac实际截图，归档及报告下载到 `/var/tmp/nozeli-beta1-mac-artifacts-37dc8c8`、`/var/tmp/nozeli-beta1-mac-evidence-37dc8c8`。两平台源码tar逐字节一致、五payload统一SHA及两包RELEASE绑定检查0技术失败；未创建tag或草稿。
 
 同提交完整CI `42722979666` 的Linux构建／实际包旅程、unit和Mac native safety通过，但integration为1884通过／5失败／4跳过，故总门失败。三项privilege-broker真实普通用户执行返回failed，另两项task-permissions真实授权执行亦失败；不是取消，不能用本地1889通过替代。权限助手明确拒绝组／其他可写命令二进制，runner的setup-node解释器权限是待核实环境差异。CI现在在冻结批准前记录解释器实际mode与属主、去掉组／其他写位，并先执行一次完整冻结／摘要／真实UID／stdout验证；失败打印完整代理结果以定位，原产品拒绝规则、五项测试及完整套件均不放宽或跳过。须以新提交runner输出与完整CI结果确认该修正。
+
+## Beta1 公开授权与发布前维护（2026-11-10）
+
+用户在获知六项义务仍未签收后追加明确要求“发布”，授权本版Beta公开预发行，不标稳定版／latest，不沿用旧Alpha许可。后续维护只更新授权披露及构建／测试基础设施；产品tag、源码归档与六附件继续绑定`17209df`，不修改或重上传已验程序。原产品main CI `42739206219`全绿，双平台实包及远端字节资格保持。
+
+首轮授权文档CI `42747241832`：unit与Mac native safety通过，Linux构建因上游锁定依赖 `registry.npmmirror.com/yargs-parser/-/yargs-parser-21.1.1.tgz` 返回HTTP504而失败；integration为1888通过／1个hookFailed／4跳过，唯一失败为冷重开夹具清理 `storage-v2/recovery` 时ENOTEMPTY。该夹具注册根目录删除早于重开控制器的停止，并把storage worker留到文件级after才关闭，存在真实清理竞态；不重试删除来掩盖。
+
+修正：冷重开控制器在try/finally内还原故障注入、停止并关闭自身store；统一夹具先停止controller、关闭store与storage数据库线程，再删除自有目录。整个 `managed-context-cutover.test.mjs` 24项通过／零失败，原业务断言保留。PPTist只在一次性构建树把v2锁文件两套resolved记录的npmmirror地址映射到官方npm，同时固定本次npm ci的registry；版本与integrity不变，raw上游tar仍先经原SHA验证、原样保留。完整真实构建成功：464包、1933模块、Vite 5.4.21、`index-BzK7tRF9.js`。首个本机Git传输曾因GnuTLS/early EOF失败；随后仅该构建调用以临时HTTP/1.1配置完成，未改全局Git/npm配置或增加产品重试策略。
+
+元数据与来源检查、完整修正提交CI及公开后匿名字节核验分别记录；六项pending与`--public`失败保持，不把当前发布授权记为法律审计签收。

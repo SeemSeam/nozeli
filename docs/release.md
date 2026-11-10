@@ -1,6 +1,6 @@
 # 发布说明与发行边界
 
-当前版本基线：**`0.1.0-beta.1`**（双平台预发行；公开状态以[GitHub发行页](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-beta.1)为准，见[CHANGELOG](../CHANGELOG.md)与package.json）。产品tag及两平台包保持绑定`17209df`，本次仅后续同步公开授权与文档，不移动tag或替换已验附件。产品构建、测试和分发审计分别记录，不互相替代。
+当前版本基线：**`0.1.0-beta.1`**（双平台预发行；公开状态以[GitHub发行页](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-beta.1)为准，见[CHANGELOG](../CHANGELOG.md)与package.json）。产品tag及两平台包保持绑定`17209df`，本次后续维护仅同步公开授权、构建依赖下载入口和测试夹具关闭顺序，不改产品运行时代码、不移动tag或替换已验附件。产品构建、测试和分发审计分别记录，不互相替代。
 
 ## 版本状态
 
