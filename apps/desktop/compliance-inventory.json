@@ -11,9 +11,9 @@
     "url": "https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-beta.1",
     "commit": null,
     "channel": "beta-prerelease",
-    "platformsExercised": ["linux-x64-wayland", "linux-x64-x11"],
+    "platformsExercised": ["linux-x64-wayland", "linux-x64-x11", "macos-arm64"],
     "platformsTargeted": ["linux-x64", "macos-arm64"],
-    "notes": "Beta.1 dual-platform draft preparation only, explicitly selected by the owner on 2026-11-10. All six redistribution obligations remain pending; alpha.6 authorization does not extend to this version. Linux x64 and macOS arm64 candidate qualification is recorded separately at the exact commit; no public publication or compliance certification is authorized."
+    "notes": "On 2026-11-10, after disclosure that all six redistribution obligations remain pending, the owner explicitly authorized public Beta.1 prerelease publication, superseding draft-only preparation. This authorization is specific to this version, not reused alpha.6 approval and not compliance certification. Preserve prerelease status and the existing product tag/artifacts at 17209df; both platforms have independently exercised extracted packages and exact-commit CI evidence. Public audit remains pending and --public remains blocked."
   },
   "publicRedistributionAudit": "pending",
   "rebuildCommands": {

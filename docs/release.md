@@ -1,10 +1,10 @@
 # 发布说明与发行边界
 
-当前版本基线：**`0.1.0-beta.1`**（双平台草稿准备，未公开发布；见[CHANGELOG](../CHANGELOG.md)与package.json）。精确提交由同名tag及发行包RELEASE.json绑定；产品构建、测试和分发审计分别记录，不互相替代。
+当前版本基线：**`0.1.0-beta.1`**（双平台预发行；公开状态以[GitHub发行页](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-beta.1)为准，见[CHANGELOG](../CHANGELOG.md)与package.json）。产品tag及两平台包保持绑定`17209df`，本次仅后续同步公开授权与文档，不移动tag或替换已验附件。产品构建、测试和分发审计分别记录，不互相替代。
 
 ## 版本状态
 
-- **beta.1当前授权与门槛（2026-11-10）**：用户选择仅准备 Linux x64 与 macOS arm64 双平台草稿，不公开发布或公开二进制附件。六项分发义务仍 pending，`--public` 保持失败；历史alpha.6授权不可沿用。本轮同步已合并mac原生安全／耐久性支持与本地Task／审核／执行过程／材料／提醒修复，逐平台记录同提交真实包验收，不能用Linux或旧Mac证据代替本版本结果。草稿不是稳定发行，不标latest。
+- **beta.1当前授权与门槛（2026-11-10）**：用户在得知六项分发审计仍未签收后，追加明确要求“发布”，授权公开 Linux x64 与 macOS arm64 的本版 Beta 预发行及六个附件，取代此前只准备草稿的限制；不沿用alpha.6授权，不记为法律或合规签收，不标稳定版或latest。六项义务仍pending，`--public`保持失败。产品提交`17209df`已合main，main完整CI及Mac原生打包／解压运行均通过；两平台源码tar逐字节一致，独立下载原件的哈希及包内提交绑定已验证。后续文档提交不改产品tag和附件；公开后再次核对远端状态与字节。
 - **macOS分发边界**：本轮目标为Apple Silicon arm64，使用真实macOS构建原生模块并验证独立包内Node／Git／Pi。只提供ad-hoc签名，不含Developer ID或Apple公证，Gatekeeper可能拒绝；不把绕过系统安全检查作为普通安装前提。未提供Intel Mac包，不声称自动更新、九格式完整显示矩阵、跨DPI／所有原生像素及强杀进程树全覆盖。
 
 
