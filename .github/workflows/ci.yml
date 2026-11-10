@@ -41,6 +41,34 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Install locked Pi SDK test dependencies
         run: npm ci --prefix ../../integrations/pi --no-audit --no-fund
+      - name: Harden and verify the runner interpreter for approved execution
+        if: matrix.suite == 'integration'
+        run: |
+          NODE_BINARY=$(node -p 'process.execPath')
+          stat -c '%a %U:%G %n' "$NODE_BINARY"
+          sudo chmod go-w "$NODE_BINARY"
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs/promises';
+          import {createReadStream} from 'node:fs';
+          import {createHash} from 'node:crypto';
+          import os from 'node:os';
+          import path from 'node:path';
+          import {createPrivilegeBroker, computeEffectHash} from './src/main/privilege-broker.mjs';
+          const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'nozeli-ci-privilege-'));
+          try {
+            const hash = createHash('sha256');
+            for await (const chunk of createReadStream(process.execPath)) hash.update(chunk);
+            const stat = await fs.stat(cwd);
+            const frozen = {version:1,command:process.execPath,resolvedCommand:process.execPath,args:['-e','process.stdout.write(String(process.getuid()))'],cwd,cwdIdentity:{dev:stat.dev,ino:stat.ino},scope:'host-exec',elevation:'user',action:'CI ordinary-user execution',commandDigest:hash.digest('hex')};
+            const result = await createPrivilegeBroker({interpreter:process.execPath}).execute({requestId:'ci-user-exec',grantId:'ci-user-grant',effectHash:computeEffectHash(frozen),frozenEffect:frozen});
+            console.log(JSON.stringify(result));
+            assert.equal(result.status,'completed');
+            assert.equal(result.exitCode,0);
+            assert.equal(result.actualIdentity.uid,process.getuid());
+            assert.equal(Buffer.from(result.output.stdoutB64,'base64').toString(),String(process.getuid()));
+          } finally { await fs.rm(cwd,{recursive:true,force:true}); }
+          NODE
       - name: Build locked Pi driver for integration consumers
         if: matrix.suite == 'integration'
         run: npm run build:pi

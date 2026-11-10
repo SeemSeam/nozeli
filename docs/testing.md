@@ -809,3 +809,7 @@ mac首轮工作流 `42721116462` 的darwin arm64确认、锁定依赖、PPTist�
 迁移后的完整Linux integration最终1889通过／4跳过／零失败（175文件，`.test-output/ci/integration.tap`）。候选 `5b9f446` Linux新包再次完成保存／正常退出／冷恢复（`smoke-yj9IQ8/report.json`），随包Pi真实Task旅程再次ok=true且无Provider错误（`/var/tmp/nozeli-task-workspace-IO52Zb/report.json`）；已查看最终深色320px截图。
 
 mac修正提交的工作流 `42721602963` 已通过原生构建、组装／ad-hoc签名、zip解压后的codesign／架构／包内Node和Git／plist／RELEASE绑定自检；未通过交互烟测：只完成首页截图，首次点击期间CDP调用超时，主日志明确 `hidden=true`。烟测误将无DISPLAY的darwin当作Linux headless，现将该判定限定为Linux，让Mac运行真实可见窗口；不延长超时、不跳过点击或宣称Mac交互已通过。失败截图／report／main.log保留 `/var/tmp/nozeli-beta1-mac-failure-5b9f446`，最终资格仍须修正后的mac工作流实测。
+
+候选 `37dc8c8` 的mac工作流 `42722979684` 已全过：实际可见.app阅读／Command-S保存／挂起切项目／正常关闭／冷恢复，以及随包Pi多Task、多轮、长原文、卡内过程／草稿、浅深320／390／1280与200%／冷重开零重放均ok=true、Provider错误为空。已查看Mac实际截图，归档及报告下载到 `/var/tmp/nozeli-beta1-mac-artifacts-37dc8c8`、`/var/tmp/nozeli-beta1-mac-evidence-37dc8c8`。两平台源码tar逐字节一致、五payload统一SHA及两包RELEASE绑定检查0技术失败；未创建tag或草稿。
+
+同提交完整CI `42722979666` 的Linux构建／实际包旅程、unit和Mac native safety通过，但integration为1884通过／5失败／4跳过，故总门失败。三项privilege-broker真实普通用户执行返回failed，另两项task-permissions真实授权执行亦失败；不是取消，不能用本地1889通过替代。权限助手明确拒绝组／其他可写命令二进制，runner的setup-node解释器权限是待核实环境差异。CI现在在冻结批准前记录解释器实际mode与属主、去掉组／其他写位，并先执行一次完整冻结／摘要／真实UID／stdout验证；失败打印完整代理结果以定位，原产品拒绝规则、五项测试及完整套件均不放宽或跳过。须以新提交runner输出与完整CI结果确认该修正。
