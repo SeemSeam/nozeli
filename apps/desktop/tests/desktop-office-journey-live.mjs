@@ -201,9 +201,11 @@ try {
   pptPage = await openDoc('sample.pptx');
   let pptFrame = await until(() => pptPage.frames().find(f => f.url().includes('/ppt-vendor/')), 'PPT frame');
   await pptFrame.waitForFunction(() => window.__nozeliPptist?.store?.slides?.length === 3, {timeout: 90000});
-  const title = await pptFrame.evaluateHandle(() => [...document.querySelectorAll('.editable-element .ProseMirror')].find(n => n.textContent.includes('NOZELI_PPTIST_TITLE')));
-  const titleElement = title.asElement(); assert.ok(titleElement, 'Fixture title element missing');
-  await titleElement.click({clickCount: 2}); // No select-all: append after End, per native-keyboard constraints.
+  const title = pptFrame.locator(() => [...document.querySelectorAll('.editable-element .ProseMirror')].find(node => {
+    const rect = node.getBoundingClientRect();
+    return node.textContent.includes('NOZELI_PPTIST_TITLE') && node.checkVisibility({checkOpacity: true, checkVisibilityCSS: true}) && rect.width > 0 && rect.height > 0;
+  }));
+  await title.click({clickCount: 2}); // Fresh, visible, stable DOM; still physical keyboard editing, never a store write.
   await pptPage.keyboard.press('End');
   await pptPage.keyboard.type(' ' + pptMarker);
   await pptFrame.waitForFunction(marker => JSON.stringify(window.__nozeliPptist.store.slides).includes(marker), {timeout: 30000}, pptMarker);
@@ -304,6 +306,11 @@ try {
   report.error = error.stack;
   process.exitCode = 1;
   await wordPage?.screenshot({path: path.join(out, 'failure.png')}).catch(() => {});
+  if (pptPage) {
+    await pptPage.screenshot({path: path.join(out, 'failure-ppt.png')}).catch(() => {});
+    const frame = pptPage.frames().find(item => item.url().includes('/ppt-vendor/'));
+    report.pptGeometry = await frame?.evaluate(() => ({viewport: {width: innerWidth, height: innerHeight}, titles: [...document.querySelectorAll('.editable-element .ProseMirror')].filter(node => node.textContent.includes('NOZELI_PPTIST_TITLE')).map(node => {const rect = node.getBoundingClientRect();return {connected: node.isConnected, visible: node.checkVisibility(), rect: {x: rect.x, y: rect.y, width: rect.width, height: rect.height}};})})).catch(() => null);
+  }
 } finally {
   try { await inspector?.close(); } catch {}
   if (process.exitCode && child.exitCode === null) report.exits.forced = await stop();

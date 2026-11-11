@@ -7,6 +7,7 @@
 - 新独立安全候选 `/var/tmp/nozeli-beta3-candidate-UgrSJ3/releases/beta3` 包内Node/Pi/Git解析成功。普通保存/冷恢复 `.test-output/ci/smoke-IOMH8H/report.json`、Office `/var/tmp/nozeli-office-journey-7hq2IV/report.json`、平台窗口 `/var/tmp/nozeli-platform-chrome-OqeZxQ/report.json`、原生Pi时间线 `/var/tmp/nozeli-timeline-order-vJnIfq/report.json`、完整双Task/修改/过程/缩放/冷恢复 `/var/tmp/nozeli-task-workspace-sCswii/report.json` 均ok=true；仅本机Linux与回环Provider，不调用付费模型或操作用户项目。
 - 实际安全候选Monaco `/var/tmp/nozeli-beta3-code-cbvj5D/monaco-editor.png` 验证精确JavaScript、真实键盘修改、源码保存及正常退出，无renderer错误。临时启动脚本的input-type继承导致SQLite worker拒绝、以及错误的Puppeteer组合键写法均已纠正于夹具，不改生产存储/键盘逻辑；失败临时目录保留，临时脚本验后删除。
 - 安全升级后本机完整unit仍842通过；完整integration未签收：1200秒命令时限结束前已观察到遗留omp-bridge-endpoint测试强制/tmp部署时的-122写入配额失败，其余输出没有完整结束汇总。未将部分通过冒充全量、未删除该安全回归或改产品桥接逻辑绕过环境。新提交仍须由隔离runner完成完整CI与实际包验收。
+- d62a148的Linux实际解压包五旅程、unit与Mac原生安全通过；Linuxintegration尚未运行就因azure.archive.ubuntu.com临时DNS失败、bubblewrap下载exit100而失败，不跳过隔离准备或测试来变绿。Mac43039028636的普通保存/冷恢复、完整Task、DOCX/XLSX通过，PPT在旧瞬时ElementHandle双击处报不可点击。改为查询当前CSS可见、非零尺寸且稳定的真实标题，由Locator完成原生滚动/物理双击；不写store、不用DOM click、不放宽PPT导出和原件不变断言。失败保留PPT截图/几何及会话日志；本机实际安全包Office旅程 `/var/tmp/nozeli-office-journey-aaSJZ1/report.json` 通过，最终Mac仍须新提交实际验收。
 
 ## Beta3 发布闭包瘦身（2026-11-11，Linux候选已验，双平台发行验收待CI）
 

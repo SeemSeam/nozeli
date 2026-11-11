@@ -165,7 +165,8 @@ jobs:
             apps/desktop/.test-output/ci/nozeli-task-workspace-*/electron.log
             apps/desktop/.test-output/ci/nozeli-task-workspace-*/*.png
             apps/desktop/.test-output/ci/nozeli-office-journey-*/report.json
-            apps/desktop/.test-output/ci/nozeli-office-journey-*/electron.log
+            apps/desktop/.test-output/ci/nozeli-office-journey-*/electron-session-logs.json
+            apps/desktop/.test-output/ci/nozeli-office-journey-*/*.png
             apps/desktop/.test-output/ci/nozeli-platform-chrome-*/report.json
             apps/desktop/.test-output/ci/nozeli-platform-chrome-*/electron.log
             apps/desktop/.test-output/ci/nozeli-platform-chrome-*/*.png
