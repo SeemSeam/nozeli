@@ -13,7 +13,7 @@ Status: isolated Linux integration candidate on `integration/pi-gui`; not instal
 
 ## Static HTML reports and offline diagrams (2026-10-23)
 
-HTML/CSS/JavaScript syntax analysis uses the existing MIT Lezer parsers, now explicit production dependencies: `@lezer/html` 1.3.13, `@lezer/css` 1.3.8 and `@lezer/javascript` 1.5.5. Host SVG validation reuses `@xmldom/xmldom` 0.9.12 (MIT); raster bounds reuse `image-size` 2.0.2 (MIT). These parsers do not grant HTML any application or filesystem privileges.
+HTML/CSS/JavaScript syntax analysis uses the existing MIT Lezer parsers, now explicit production dependencies: `@lezer/html` 1.3.13, `@lezer/css` 1.3.9 and `@lezer/javascript` 1.5.6. Host SVG validation reuses `@xmldom/xmldom` 0.9.12 (MIT); raster bounds reuse `image-size` 2.0.3 (MIT). These parsers do not grant HTML any application or filesystem privileges.
 
 The Nozeli-owned static diagram closure under `src/agents/managed/archify-vendor/` is derived from the inspected Archify 2.16.0-dev.0 skill distribution. Its `SOURCES.json` records exact inspected and shipped file hashes plus generator identity. The original MIT copyright holders, tt-a1i and Cocoon AI, are retained in the vendor LICENSE and exported SVG notices. The adaptation removes remote capture, process/filesystem CLI behavior and the interactive viewer runtime; it renders and validates architecture, workflow, sequence, dataflow and lifecycle diagrams offline. Built-in Simple Icons 16.28.0 paths retain CC0 notices; trademark rights are not granted. Runtime generation never loads a personal skill path, CCB, CDN or runtime npm package. This is a product-owned adapted closure, not an assertion of an unverified upstream repository URL.
 
@@ -29,6 +29,10 @@ Git 2.53.0 is GPL version 2; retain its COPYING notice in the application assets
 File icons reuse the VS Code Codicons font included in `monaco-editor` 0.57.0 (MIT, https://github.com/microsoft/monaco-editor and https://github.com/microsoft/vscode-codicons). No additional icon package or remote font is loaded. Bundled font SHA256: `77f902557231f95c4c71ae517d09a1a842753656f5f665086b3e5ad8095538da`; Monaco license SHA256: `33e4ff1a06ef62ba21788ea162564ee8165269a24a9ce6ef301837447eab0ac6`. The renderer build copies the license as `MONACO-CODICONS-LICENSE`. W/P/T badges are repository CSS; file color labels remain separate.
 
 The Beta.3 renderer build derives `dist/renderer/BUNDLED-NPM-NOTICES.json` and `dist/renderer/npm-notices/` from every actual esbuild input, preserving package identities and unmodified notice files for transitive bundled dependencies. Frontend-only npm packages remain available for reproducible builds as devDependencies but their original distribution trees no longer ship beside the compiled renderer. Canvas stays explicitly pinned in production at its existing version while native/PDF closure validation remains deferred. Document engines, fonts, source offers and the independent Pi dependency closure are not removed; this bookkeeping is not redistribution audit signoff.
+
+Before Beta.3 publication, owner-authorized security fixes pin image-size 2.0.3 and override Monaco's transitive DOMPurify to 3.4.17. The independent Pi tree retains SDK 1.4.0 and its reviewed source patches, with explicit undici 8.12.2 and minimatch 11.0.1 overrides; rebuilding records the new lockfile SHA-256 in runtime-manifest.json. Puppeteer 25.17.0 is development-only. These targeted dependency fixes do not establish a complete vendor, binary or legal audit.
+
+Monaco 0.57.0 also embeds a DOMPurify 3.4.15 module under its own source tree. The renderer build explicitly resolves that import to the locked npm DOMPurify 3.4.17 module for both the application and optional editor lab; changing the npm override alone would not replace the embedded code. The actual esbuild input inventory includes the patched npm module and its unchanged dual-license notices. The original Monaco package and its third-party notices remain pinned and unmodified in source.
 
 Fortune Sheet 1.0.4 history updaters memoize results when React replays the same input state, preventing duplicate native undo entries; undo/redo also recalculates derived formula values in the same transaction. These exact, version-guarded patches apply only to the generated renderer copy in `tools/build-renderer.mjs`; pinned vendor bytes remain unchanged. PPTist history initialization/pending snapshots and stale asynchronous clipboard checks are reproduced from source by `tools/build-pptist.mjs`; clipboard reads use the validated Electron host bridge.
 
@@ -61,7 +65,7 @@ This development build does not import `prototypes/`, `.ccb/`, or an absolute de
 | prettier | 3.6.2 | in-memory JavaScript/TypeScript/JSON/CSS/HTML/Markdown formatter | MIT |
 | @lezer/python | 1.1.19 | Python parser runtime for CodeMirror | MIT |
 | katex | 0.19.1 (lockfile) | safe inline and display math rendering in conversation Markdown | MIT |
-| puppeteer-core | 25.11.0 | Linux integration test only | Apache-2.0 declared; this package is not shipped in the app. |
+| puppeteer-core | 25.17.0 | real application acceptance tooling on Linux/macOS | Apache-2.0 declared; development-only, not shipped in the app. |
 | esbuild | 0.25.10 | bundles the renderer during `npm start` / tests | MIT; not a runtime dependency of the window. |
 | @xterm/xterm | 6.0.0 | former renderer PTY terminal UI; unmounted by the Pi session cutover (2026-10-30) and kept only until host-side legacy terminal paths are removed | MIT |
 | @xterm/headless | 6.0.0 | bounded host-owned ANSI screen cache for read-only Worker previews; same PTY, no reply/input transport | MIT; upstream 6.0.0 LICENSE retained at src/agents/managed/xterm-headless.LICENSE (npm tarball omits license text) |
@@ -113,7 +117,7 @@ SHA256 (matches the official GitHub release asset digest): `4d519d6236ee6798e3ec
 
 ## Image viewer (2026-10-08)
 
-`image-size` 2.0.2 (MIT, https://github.com/image-size/image-size) validates raster dimensions and JPEG orientation in the host. Electron/Chromium's existing image decoders and Canvas/ImageBitmap APIs provide static rendering and pixel crops; no external executable or OS-specific viewer is required. PNG/JPEG/WebP have Linux desktop evidence; GIF/BMP/AVIF routes depend on the bundled Chromium decoder and are not claimed as individually validated formats. SVG remains a source-text document in this slice.
+`image-size` 2.0.3 (MIT, https://github.com/image-size/image-size) validates raster dimensions and JPEG orientation in the host, including upstream fixes for malformed ICNS/HEIF/JXL parser loops. Electron/Chromium's existing image decoders and Canvas/ImageBitmap APIs provide static rendering and pixel crops; no external executable or OS-specific viewer is required. PNG/JPEG/WebP have Linux desktop evidence; GIF/BMP/AVIF routes depend on the bundled Chromium decoder and are not claimed as individually validated formats. SVG remains a source-text document in this slice.
 
 ## Source/preview linking (2026-10-09)
 

@@ -101,7 +101,7 @@
     "@xterm/headless": "^6.0.0",
     "codemirror": "6.0.2",
     "dugite": "3.2.3",
-    "image-size": "2.0.2",
+    "image-size": "2.0.3",
     "jszip": "3.10.2",
     "node-pty": "^1.1.0",
     "prettier": "3.6.2",
@@ -129,6 +129,9 @@
     "react-dom": "19.2.0",
     "electron": "44.9.1",
     "esbuild": "0.25.10",
-    "puppeteer-core": "25.11.0"
+    "puppeteer-core": "25.17.0"
+  },
+  "overrides": {
+    "dompurify": "3.4.17"
   }
 }

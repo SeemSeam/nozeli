@@ -1,3 +1,13 @@
+## Beta3 安全依赖与Mac退出契约补修（2026-11-11，新的精确提交验收待CI）
+
+- 推送候选3eaad19后发现16条Dependabot告警；用户明确选择“先修安全依赖再发布”。锁定image-size2.0.3、DOMPurify3.4.17、Pi undici8.12.2/minimatch11.0.1及开发工具Puppeteer25.17.0，保留SDK1.4.0与原Node版本；Pi重建刷新lock摘要。npm旧审计客户端的quick端点返回400不记作干净；npm11.6.2对桌面和Pi完整锁定树均报告0条已知告警。此结果不是完整vendor/二进制审计，更不代替六项人工分发签收。
+- Monaco0.57.0内嵌DOMPurify3.4.15，单独npm覆盖不改变该代码；构建解析器现在将Monaco的内嵌导入映射到锁定3.4.17，并从实际esbuild输入记录其独立通告。其它Office vendor未检出DOMPurify标记；不因此宣称全部第三方二进制无漏洞。SDK原始源码/声明/map、Node头文件、Canvas、文档引擎与字体仍保留。
+- 修前冻结包的16字节零长度ICNS输入在64MiB限堆的隔离子进程中SIGABRT；修后同输入exit0并被生产imageInfo拒绝，未把输入送给日常实例。image-host新增5秒强制回收/10秒外界限回归，正常图片材料、不可变截图与陈旧版本保护及报告资源消费者共65项通过。
+- 旧候选Linux CI43028071493成功；Mac43028071361完成原生arm64打包、自检、报告恢复专项，失败在解压程序首次关窗后等待退出，日志实际值null而非exit0。新Mac契约是末窗关闭驻留，不回退产品行为；普通/Task/时间线/Office冷重启旅程改为通过真实主进程app.quit显式退出，保留原保存、exit0和零重放断言；Office使用Command-S，Darwin不传Linux Ozone。新Mac实机结果仍待新提交runner，不复用旧候选资格。
+- 新独立安全候选 `/var/tmp/nozeli-beta3-candidate-UgrSJ3/releases/beta3` 包内Node/Pi/Git解析成功。普通保存/冷恢复 `.test-output/ci/smoke-IOMH8H/report.json`、Office `/var/tmp/nozeli-office-journey-7hq2IV/report.json`、平台窗口 `/var/tmp/nozeli-platform-chrome-OqeZxQ/report.json`、原生Pi时间线 `/var/tmp/nozeli-timeline-order-vJnIfq/report.json`、完整双Task/修改/过程/缩放/冷恢复 `/var/tmp/nozeli-task-workspace-sCswii/report.json` 均ok=true；仅本机Linux与回环Provider，不调用付费模型或操作用户项目。
+- 实际安全候选Monaco `/var/tmp/nozeli-beta3-code-cbvj5D/monaco-editor.png` 验证精确JavaScript、真实键盘修改、源码保存及正常退出，无renderer错误。临时启动脚本的input-type继承导致SQLite worker拒绝、以及错误的Puppeteer组合键写法均已纠正于夹具，不改生产存储/键盘逻辑；失败临时目录保留，临时脚本验后删除。
+- 安全升级后本机完整unit仍842通过；完整integration未签收：1200秒命令时限结束前已观察到遗留omp-bridge-endpoint测试强制/tmp部署时的-122写入配额失败，其余输出没有完整结束汇总。未将部分通过冒充全量、未删除该安全回归或改产品桥接逻辑绕过环境。新提交仍须由隔离runner完成完整CI与实际包验收。
+
 ## Beta3 发布闭包瘦身（2026-11-11，Linux候选已验，双平台发行验收待CI）
 
 - 本轮用户要求不减少当前功能，并明确要求Release同时包含Linux和Mac；再次披露六项人工分发审计pending后，明确选择授权公开beta.3预发行例外。不沿用beta.2授权，不标stable/latest，不替换日常安装。确切提交CI和两平台实际解压验收通过后才发布。

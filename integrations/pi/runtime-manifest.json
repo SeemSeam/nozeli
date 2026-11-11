@@ -19,6 +19,6 @@
     "src/questions.mjs": "84b45d9008d20def0f53f5582d9bb4a02763aeeb3b3b4865c950f214f0a6c0d8",
     "src/catalog-memory.mjs": "32894625049686253231ba3de106a07a4607a929674dcef9d8d91ea3ecd647e4",
     "dist/vendor/pi-gui/packages/pi-sdk-driver/index.js": "e61ce11b5c557dd8b0496dfadc84f8a330b5cd0cd563d08d161380216a1e294d",
-    "package-lock.json": "d524a6760b40882e4ff74e3c3abb001eefffba2278dfbdd5169d3d4bd2a71dd9"
+    "package-lock.json": "75df4c4bab553bed682bcdb9e7f6ef94eabd874117a9120059444af48b09d3f6"
   }
 }

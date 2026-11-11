@@ -66,7 +66,7 @@
 
 `Release candidate check`通过workflow_dispatch接受已存在且版本匹配的tag，验证测试/构建/烟测和公开发行元数据门，不自动上传公开包。旧tag如果缺少新检查工具会明确失败，不能把当前main检查冒充旧包验证。
 
-CI生成的`sbom.cdx.json`来自`npm sbom --package-lock-only --sbom-format cyclonedx --omit dev`，是锁定npm生产依赖清单，不包含完整Electron/OMP原生二进制、手工vendor或字体闭包。它与compliance inventory互补，不是完整发行物SBOM或来源签名，也不代表许可证审计通过。
+CI生成的`sbom.cdx.json`来自`npm sbom --package-lock-only --sbom-format cyclonedx --omit dev`，仅为锁定npm宿主生产依赖清单。Beta3将已编译前端依赖归为构建期，因此另保留实际esbuild输入生成的`frontend-bundled-notices.json`（发行包内为`BUNDLED-NPM-NOTICES.json`及逐包/版本通告），不能因dev标记就把已编译前端代码排除出来源核对。两者仍不包含完整Electron/历史OMP原生二进制、手工vendor或字体闭包；须与compliance inventory互补，不是完整发行物SBOM、来源签名或许可证签收。
 
 ## 维护者发布技能
 

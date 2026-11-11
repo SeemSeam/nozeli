@@ -13,7 +13,7 @@
     "channel": "beta-prerelease",
     "platformsExercised": ["linux-x64"],
     "platformsTargeted": ["linux-x64", "macos-arm64"],
-    "notes": "On 2026-11-11, after renewed disclosure that all six redistribution obligations remain pending, the owner explicitly selected public Beta.3 prerelease authorization for Linux x64 and macOS arm64. Version-specific authorization only: not reused Beta.2 approval, not compliance certification, not stable/latest, and no daily-install authorization. This version retains the document engines/fonts, offline features and Node/Pi/Git while reducing redundant frontend npm copies, foreign PTY prebuilds and source asset duplicates. Frontend npm notices are derived from actual esbuild inputs. Exact-commit CI and extracted-package Linux/macOS acceptance must pass before publication; do not preclaim runner outcomes. macOS remains ad-hoc signed without Developer ID or notarization. Published Beta.2 and earlier tags/artifacts remain unchanged. Public audit remains pending and --public remains blocked."
+    "notes": "On 2026-11-11, after renewed disclosure of all six pending redistribution obligations, the owner explicitly authorized public Beta.3 prerelease for Linux x64 and macOS arm64, and then required fixing newly disclosed dependency security alerts before publication. Fix image-size 2.0.3, actual Monaco DOMPurify build input 3.4.17, Pi undici 8.12.2/minimatch 11.0.1 and development Puppeteer 25.17.0; retain SDK 1.4.0 and regenerate runtime lock integrity. Retain all document engines/fonts, offline features and Node/Pi/Git while removing redundant frontend npm copies, foreign PTY prebuilds and duplicate build inputs. Version-specific authorization only: not reused Beta.2 approval, compliance certification, stable/latest or daily-install authorization. Exact-commit CI and both extracted applications must pass before publishing. Mac stays ad-hoc signed without Developer ID/notarization. Prior tags/artifacts remain unchanged. Public audit stays pending and --public blocked; npm audit results do not establish complete vendor/binary or legal signoff."
   },
   "publicRedistributionAudit": "pending",
   "rebuildCommands": {
@@ -152,11 +152,11 @@
     },
     {
       "id": "npm-production-dependencies",
-      "name": "npm production dependency set (renderer + host)",
-      "version": "pinned by apps/desktop/package-lock.json; table in SOURCES.md (pdfjs-dist 6.4.299, monaco-editor 0.57.0, codemirror 6.x, react/react-dom 19.2.0, xterm 6.0.0, ws 8.22.0, node-pty 1.1.0, katex 0.19.1, tar 7.5.22, shiki 4.5.0 family, typescript 5.9.3, prettier 3.6.2, @xmldom/xmldom 0.9.12, image-size 2.0.2, word-extractor 1.0.4, lucide-static 0.468.0 subset, ...)",
+      "name": "npm host dependencies and compiled frontend inputs",
+      "version": "pinned by apps/desktop/package-lock.json; table in SOURCES.md (pdfjs-dist 6.4.299, monaco-editor 0.57.0 with DOMPurify 3.4.17 build substitution, codemirror 6.x, react/react-dom 19.2.0, xterm 6.0.0, ws 8.22.0, node-pty 1.1.0, katex 0.19.1, tar 7.5.22, shiki 4.5.0 family, typescript 5.9.3, prettier 3.6.2, @xmldom/xmldom 0.9.12, image-size 2.0.3, word-extractor 1.0.4, lucide-static 0.468.0 subset, ...)",
       "license": "MIT/Apache-2.0/BlueOak-1.0.0 per package; tar 7.5.22 package license retained in bundled node_modules; @xterm/headless license retained at src/agents/managed/xterm-headless.LICENSE; lucide subset at src/renderer/ui-icons.LICENSE and src/renderer/workspace-conversation-controls.LICENSE; Monaco Codicons font SHA256 77f902557231f95c4c71ae517d09a1a842753656f5f665086b3e5ad8095538da, license SHA256 33e4ff1a06ef62ba21788ea162564ee8165269a24a9ce6ef301837447eab0ac6",
       "distribution": "bundled-npm",
-      "evidence": ["apps/desktop/package-lock.json", "apps/desktop/SOURCES.md", "apps/desktop/src/agents/managed/xterm-headless.LICENSE", "apps/desktop/src/renderer/ui-icons.LICENSE", "apps/desktop/src/renderer/workspace-conversation-controls.LICENSE"]
+      "evidence": ["apps/desktop/package-lock.json", "apps/desktop/SOURCES.md", "apps/desktop/tools/build-renderer.mjs", "apps/desktop/tools/bundled-notices.mjs", "apps/desktop/src/agents/managed/xterm-headless.LICENSE", "apps/desktop/src/renderer/ui-icons.LICENSE", "apps/desktop/src/renderer/workspace-conversation-controls.LICENSE"]
     },
     {
       "id": "external-optional-tools",

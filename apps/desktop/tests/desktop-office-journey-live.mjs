@@ -23,7 +23,7 @@ import {spawn} from 'node:child_process';
 import {createRequire} from 'node:module';
 import puppeteer from 'puppeteer-core';
 import JSZip from 'jszip';
-import WebSocket from 'ws';
+import {MainObserver} from './post-install-startup-recovery-fixture.mjs';
 import {contentToolForPage} from './native-content-tools.fixture.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
@@ -110,6 +110,7 @@ async function dismiss(page) {
 }
 // Bounded teardown: SIGTERM, bounded wait, SIGKILL; never an unbounded exit await.
 async function stop(signal = 'SIGTERM') {
+  inspector?.close(); inspector = null;
   try { await browser?.disconnect(); } catch {}
   browser = null;
   if (!child || child.exitCode !== null) return child ? await exited : null;
@@ -121,13 +122,13 @@ async function stop(signal = 'SIGTERM') {
   }
   return exit;
 }
-const ctrlS = async page => {await page.keyboard.down('Control'); await page.keyboard.press('s'); await page.keyboard.up('Control');};
+const saveShortcut = async page => {const modifier = process.platform === 'darwin' ? 'Meta' : 'Control'; await page.keyboard.down(modifier); await page.keyboard.press('s'); await page.keyboard.up(modifier);};
 // Real accelerator first; a renderer-dispatched keydown (same production
 // handler, no trust gate) is the bounded fallback if the host drops CDP keys.
 async function explicitSave(page, effect) {
-  await ctrlS(page);
+  await saveShortcut(page);
   try { await effect(); return 'keyboard'; } catch {}
-  await page.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', {key: 's', code: 'KeyS', ctrlKey: true, bubbles: true, cancelable: true})));
+  await page.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', {key: 's', code: 'KeyS', ctrlKey: window.nozeli.platform !== 'darwin', metaKey: window.nozeli.platform === 'darwin', bubbles: true, cancelable: true})));
   await effect();
   return 'synthetic-keydown';
 }
@@ -213,11 +214,8 @@ try {
   // Single-use native save-dialog override through the real main inspector;
   // the export itself runs the production flush + IPC + exclusive file write.
   const inspectorUrl = await until(() => log.match(/Debugger listening on (ws:\/\/127\.0\.0\.1:\d+\/\S+)/)?.[1], 'main inspector');
-  inspector = new WebSocket(inspectorUrl);
-  await new Promise((resolve, reject) => {inspector.once('open', resolve); inspector.once('error', reject);});
-  const pending = new Map(); let seq = 0;
-  inspector.on('message', raw => {const message = JSON.parse(raw); const waiter = pending.get(message.id); if (waiter) {pending.delete(message.id); message.error ? waiter.reject(Error(message.error.message)) : waiter.resolve(message.result);}});
-  const evaluateMain = async expression => {const response=await new Promise((resolve,reject)=>{const id=++seq;pending.set(id,{resolve,reject});inspector.send(JSON.stringify({id,method:'Runtime.evaluate',params:{expression,returnByValue:true}}));});if(response.exceptionDetails)throw Error(response.exceptionDetails.text);return response.result?.value;};
+  inspector = await MainObserver.connect(inspectorUrl);
+  const evaluateMain = expression => inspector.evaluate(expression);
   const exportedPath = path.join(project, 'exported.pptx');
   const overridden = await evaluateMain(`(() => {const dialog = process.mainModule.require('electron').dialog; const original = dialog.showSaveDialog;
     dialog.showSaveDialog = async () => {dialog.showSaveDialog = original; return {canceled: false, filePath: ${JSON.stringify(exportedPath)}};}; return true;})()`);
@@ -289,7 +287,11 @@ try {
   report.checks.push('cold restart reopens the exported PPTX copy with the edited text; original still pristine');
 
   // ---- Graceful quit with an exact exit receipt. ----
-  await call(shell, 'session.requestClose');
+  if (process.platform === 'darwin') {
+    inspector = await MainObserver.connect(await until(() => log.match(/Debugger listening on (ws:\/\/127\.0\.0\.1:\d+\/\S+)/)?.[1], 'restarted main inspector'));
+    await inspector.evaluate('setTimeout(()=>process.mainModule.require("electron").app.quit(),0);true');
+    inspector.close(); inspector = null;
+  } else await call(shell, 'session.requestClose');
   const graceful = await Promise.race([exited, pause(20000).then(() => null)]);
   if (!graceful) {
     report.exits.session2 = await stop();

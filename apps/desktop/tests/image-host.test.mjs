@@ -1,5 +1,7 @@
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs/promises';import path from 'node:path';import os from 'node:os';
 import {DesktopHost} from '../src/main/host.mjs';import {FileTags} from '../src/domain/file-tags.mjs';
+import {spawn} from 'node:child_process';
+import {once} from 'node:events';
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7ioAAAAASUVORK5CYII=','base64');
 test('image material validates dimensions/regions and preserves immutable screenshot with stale-version protection',async()=>{
  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-image-'));const root=path.join(dir,'project');await fs.mkdir(root);await fs.writeFile(path.join(root,'sample.png'),png);const host=new DesktopHost(path.join(dir,'profile'));const {project}=await host.pick(root);
@@ -13,4 +15,20 @@ test('image material validates dimensions/regions and preserves immutable screen
  await fs.writeFile(path.join(root,'sample.png'),Buffer.concat([png,Buffer.from('changed')]));const stale=await host.tagMaterial(project.id,{relPath:'sample.png',annotationId:annotation.id});assert.equal(stale.resolution.anchor,null);assert.equal(stale.information.assets[0].digest,packet.information.assets[0].digest);
  await fs.writeFile(path.join(root,'bad.png'),'not image');await assert.rejects(host.readFile(project.id,'bad.png'),/损坏/);
  }finally{await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('malformed zero-length ICNS image input rejects without stalling the parser process', {timeout: 10000}, async t => {
+ const module = new URL('../src/main/image-format.mjs', import.meta.url).href;
+ const script = `const {imageInfo}=await import(${JSON.stringify(module)});const bytes=Buffer.alloc(16);bytes.write('icns');bytes.writeUInt32BE(16,4);bytes.write('icp4',8);try{imageInfo(bytes);process.exitCode=2;}catch{process.stdout.write('rejected');}`;
+ const child = spawn(process.execPath, ['--max-old-space-size=64', '--input-type=module', '-e', script], {stdio: ['ignore', 'pipe', 'pipe']});
+ let output = '', errors = '', timedOut = false;
+ child.stdout.on('data', bytes => { output += bytes; });
+ child.stderr.on('data', bytes => { errors += bytes; });
+ const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, 5000);
+ t.after(() => { clearTimeout(timer); if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); });
+ const [code, signal] = await once(child, 'close');
+ clearTimeout(timer);
+ assert.equal(timedOut, false, 'an image header must not permanently block parsing');
+ assert.deepEqual({code, signal}, {code: 0, signal: null}, errors.slice(-2000));
+ assert.equal(output, 'rejected');
 });
