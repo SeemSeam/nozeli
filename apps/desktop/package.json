@@ -125,7 +125,7 @@
     "katex": "^0.19.1",
     "monaco-editor": "0.57.0",
     "pdfjs-dist": "6.4.299",
-    "react": "19.2.0",
+    "react": "19.3.1",
     "react-dom": "19.2.0",
     "electron": "44.9.1",
     "esbuild": "0.25.10",
