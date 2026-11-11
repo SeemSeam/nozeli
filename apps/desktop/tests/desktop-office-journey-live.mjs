@@ -132,7 +132,7 @@ async function explicitSave(page, effect) {
 }
 
 const report = {ok: false, out, project, config, profile, binary, packaged, platform: process.platform, port, markers: {}, checks: [], saves: {}, exits: {}};
-let shell, wordPage, sheetPage, pptPage, inspector, sheetDebugger;
+let shell, wordPage, sheetPage, pptPage, inspector;
 try {
   launch(); await connect();
   shell = await scope(state => state.role === 'shell'); await dismiss(shell);
@@ -172,26 +172,33 @@ try {
 
   // ---- XLSX: engine cell edits, explicit save, ZIP worksheet values. ----
   const sheetMarker = 'JOURNEY_SHEET_中文_7402'; report.markers.sheet = sheetMarker;
-  sheetPage = await openDoc('sample.xlsx');
-  const sheetFrame = await until(() => sheetPage.frames().find(f => f.url().endsWith('/sheet-frame.html')), 'Sheet frame');
-  await sheetFrame.waitForFunction(() => window.nozeliSheetEditor?.getAllSheets()?.length, {timeout: 90000});
-  await sheetFrame.waitForFunction(() => !document.querySelector('#sheet')?.inert, {timeout: 90000});
-  if (process.env.NOZELI_SHEET_LAYOUT_DIAGNOSTIC === '1') {
-    sheetDebugger = await sheetPage.createCDPSession();
-    await sheetDebugger.send('Debugger.enable');
-    const source = await fs.readFile(path.join(root, 'src/renderer/sheet-frame.mjs'), 'utf8');
-    const lineNumber = source.split('\n').findIndex(line => line.includes('if(layout(initial)!==layout(current))'));
-    assert.ok(lineNumber >= 0, 'Sheet layout guard must exist for read-only diagnostics');
-    const {breakpointId} = await sheetDebugger.send('Debugger.setBreakpointByUrl', {urlRegex: '/sheet-frame\\.mjs$', lineNumber});
-    sheetDebugger.on('Debugger.paused', async event => {
-      try {
-        if (event.hitBreakpoints?.includes(breakpointId)) {
-          const result = await sheetDebugger.send('Debugger.evaluateOnCallFrame', {callFrameId: event.callFrames[0].callFrameId, expression: '({initial:layout(initial),current:layout(current)})', returnByValue: true});
-          report.sheetLayout = result.result.value ?? result.exceptionDetails;
-        }
-      } catch (error) { report.sheetLayoutDiagnosticError = error.message; }
-      finally { await sheetDebugger.send('Debugger.resume').catch(() => {}); }
-    });
+  // A slow renderer used to publish ready while its baseline was still [].
+  // Throttle the real new document target before Fortune's initialization.
+  const slowSheetSessions = [];
+  const slowSheetTarget = target => {
+    if (target.type() !== 'page') return;
+    slowSheetSessions.push((async () => {
+      const session = await target.createCDPSession();
+      await session.send('Emulation.setCPUThrottlingRate', {rate: 8});
+      return session;
+    })().then(session => ({session}), error => ({error})));
+  };
+  browser.on('targetcreated', slowSheetTarget);
+  let sheetFrame;
+  try {
+    sheetPage = await openDoc('sample.xlsx');
+    sheetFrame = await until(() => sheetPage.frames().find(f => f.url().endsWith('/sheet-frame.html')), 'Sheet frame');
+    await sheetFrame.waitForFunction(() => window.nozeliSheetEditor?.getAllSheets()?.length, {timeout: 90000});
+    await sheetFrame.waitForFunction(() => !document.querySelector('#sheet')?.inert, {timeout: 90000});
+  } finally {
+    browser.off('targetcreated', slowSheetTarget);
+    const results = await Promise.all(slowSheetSessions);
+    for (const {session} of results) if (session) {
+      await session.send('Emulation.setCPUThrottlingRate', {rate: 1});
+      await session.detach();
+    }
+    const failed = results.find(result => result.error);
+    if (failed) throw failed.error;
   }
   await sheetPage.bringToFront();
   await sheetFrame.locator('#sheet').click();
@@ -210,7 +217,15 @@ try {
   assert.match(sheetXml + ' ' + (sharedXml ?? ''), new RegExp(sheetMarker), 'saved XLSX must store the edited cell value');
   assert.match(sheetXml, /47012/, 'saved XLSX must store the edited numeric cell');
   await sheetPage.screenshot({path: path.join(out, 'sheet-saved.png')});
-  report.checks.push('XLSX engine cell edits + explicit save + saved ZIP worksheet values verified');
+  report.checks.push('XLSX slow renderer initialization + engine edits + native save + saved ZIP worksheet values verified');
+  await sheetFrame.evaluate(() => nozeliSheetEditor.setCellFormat(1, 0, 'bl', 1));
+  await sheetFrame.waitForFunction(() => nozeliSheetEditor.getAllSheets()[0].data[1][0].bl === 1);
+  await explicitSave(sheetPage, () => sheetPage.waitForFunction(() => document.querySelector('#save-status')?.dataset?.state === 'error' && document.querySelector('#save-error')?.textContent.includes('仅支持内容与公式'), {timeout: 25000}));
+  assert.deepEqual(await fs.readFile(path.join(project, 'sample.xlsx')), xlsxSaved, 'unsupported formatting must not overwrite the saved workbook');
+  await sheetFrame.evaluate(() => nozeliSheetEditor.handleUndo());
+  await sheetFrame.waitForFunction(() => nozeliSheetEditor.getAllSheets()[0].data[1][0].bl !== 1);
+  await explicitSave(sheetPage, () => waitSaved(sheetPage));
+  report.checks.push('XLSX unsupported formatting refuses native save without changing source; undo restores saving');
 
   // ---- PPTX: engine text edit, exported copy via real export path, original untouched. ----
   const pptMarker = 'JOURNEY_PPT_中文_7403'; report.markers.ppt = pptMarker;
@@ -358,7 +373,6 @@ try {
     report.pptGeometry = await frame?.evaluate(() => ({viewport: {width: innerWidth, height: innerHeight}, titles: [...document.querySelectorAll('.editable-element .ProseMirror')].filter(node => node.textContent.includes('NOZELI_PPTIST_TITLE')).map(node => {const rect = node.getBoundingClientRect();return {connected: node.isConnected, visible: node.checkVisibility(), rect: {x: rect.x, y: rect.y, width: rect.width, height: rect.height}};})})).catch(() => null);
   }
 } finally {
-  await sheetDebugger?.detach().catch(() => {});
   try { await inspector?.close(); } catch {}
   if (process.exitCode && child.exitCode === null) report.exits.forced = await stop();
   else if (child.exitCode === null) await stop();

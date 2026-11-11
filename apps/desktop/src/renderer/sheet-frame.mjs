@@ -15,10 +15,21 @@ const canonical=value=>Array.isArray(value)?value.map(canonical):value&&typeof v
 const layout=sheets=>JSON.stringify(canonical(shape(sheets)));
 let workbookKey=0;
 function renderWorkbook(sheets,restore=null){
- const firstMount=!ready;
+ const firstMount=!ready;let initializing=false;
  root.render(React.createElement(react.Workbook,{key:workbookKey,data:structuredClone(sheets),allowEdit:!readOnly,showToolbar:false,cellContextMenu:['copy'],headerContextMenu:['copy'],sheetTabContextMenu:[],hooks:{beforeAddSheet:()=>false},onChange:data=>{if(ready&&!readOnly){const next=contents(data),structure=layout(data);if(next!==lastContent||structure!==lastLayout){lastContent=next;lastLayout=structure;send('changed');}}},ref:ref=>{
   if(!ref)return;editor=ref;window.nozeliSheetEditor=editor;
-  if(firstMount&&!ready)setTimeout(()=>{editor.calculateFormula();setTimeout(()=>{if(ready)return;initial=structuredClone(editor.getAllSheets());lastContent=contents(initial);lastLayout=layout(initial);ready=true;document.querySelector('#sheet').inert=false;send('ready');},0);},0);
+  // The first imperative ref still exposes Fortune's empty pre-effect context.
+  // Timers do not guarantee React has committed the imported workbook.
+  if(firstMount&&!ready&&!initializing){
+   const loaded=ref.getAllSheets();
+   if(loaded.length>0&&loaded.length===sheets.length&&loaded.every((sheet,index)=>sheet.id===sheets[index].id)){
+    initializing=true;
+    setTimeout(()=>{
+     ReactDOM.flushSync(()=>editor.calculateFormula());
+     initial=structuredClone(editor.getAllSheets());lastContent=contents(initial);lastLayout=layout(initial);ready=true;document.querySelector('#sheet').inert=false;send('ready');
+    },0);
+   }
+  }
   if(restore){const saved=restore;restore=null;requestAnimationFrame(()=>restoreSheetReadingPosition(saved,true));}
  }}));
 }
