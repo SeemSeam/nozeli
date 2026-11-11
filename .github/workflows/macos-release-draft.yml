@@ -85,7 +85,7 @@ jobs:
           /usr/bin/ditto -x -k --sequesterRsrc "$ZIP" "$SMOKE_ROOT"
           NOZELI_TEST_BINARY="$SMOKE_ROOT/Nozeli.app/Contents/MacOS/Nozeli" node tests/desktop-ci-smoke.mjs
           TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_BINARY="$SMOKE_ROOT/Nozeli.app/Contents/MacOS/Nozeli" node tests/desktop-task-workspace-live.mjs
-          TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_BINARY="$SMOKE_ROOT/Nozeli.app/Contents/MacOS/Nozeli" node tests/desktop-office-journey-live.mjs
+          TMPDIR="$PWD/.test-output/ci" NOZELI_SHEET_LAYOUT_DIAGNOSTIC=1 NOZELI_TEST_BINARY="$SMOKE_ROOT/Nozeli.app/Contents/MacOS/Nozeli" node tests/desktop-office-journey-live.mjs
           TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_BINARY="$SMOKE_ROOT/Nozeli.app/Contents/MacOS/Nozeli" node tests/desktop-platform-chrome-live.mjs
           TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_BINARY="$SMOKE_ROOT/Nozeli.app/Contents/MacOS/Nozeli" node tests/desktop-timeline-order-live.mjs
       - name: Keep draft artifacts as Actions artifacts (never a public release upload)

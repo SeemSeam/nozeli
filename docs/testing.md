@@ -13,6 +13,7 @@
 - CI镜像列表变更后仍在mirror+file传输中DNS失败，不能称已修复。后续使用仅限临时GitHub Ubuntu机器的Node安装助手，通过独立临时deb822源直接访问官方HTTPS archive/security，显式沿用Ubuntu archive keyring；不修改开发机源、不取消GPG、不跳过bubblewrap/隔离测试，结果仍需新精确提交CI验证。
 - b87741f Mac原生工作流43052304472完成全部构建/解压应用旅程并成功：窄PPT真实布局、原面板保持、Office编辑导出与冲突保护、主/独立窗口、原生Pi Task和时间线均运行，不把Linux模拟当成Mac结果。对应Linux归档本机实际解压Office `/var/tmp/nozeli-office-journey-lDH857/report.json` 通过；新最终提交仍须完整CI。Linux集成准备的直接官方HTTPS请求也明确DNS失败（作业130632424536），不是产品测试失败或已修好；改用Ubuntu在Launchpad正式登记为Official的Kernel.org镜像，地址 https://mirrors.edge.kernel.org/ubuntu/ ，noble-security InRelease与bubblewrap包已观察到，签名信任仍仅来自Ubuntu archive keyring、Valid-Until等APT检查不关闭。出处 https://launchpad.net/ubuntu/+mirror/mirrors.us.kernel.org-archive 。只改变临时CI依赖获取地址，不更改普通用户机器的源或产品运行要求。
 - 00eda2d Mac43054898303全部原生构建/解压旅程成功，444px窄PPT保留444px画布与399.59px幻灯片，真实原生窗口/正文截图已查看。Linux CI已通过签名镜像准备、完整unit和基础/Task实际解压旅程，但Office在API改格后等待保存超时；旧报告未采集当时Sheet保存状态，不能直接断言唯一根因。夹具现在先物理聚焦表格，保存前激活当前文档，仅使用真实Ctrl/Command-S，删除合成keydown与可能重复准入的回退；失败记录真实保存状态/焦点和Sheet截图。实际同提交Linux解压包 `/var/tmp/nozeli-office-journey-l50qvN/report.json` 严格原生保存全程通过，新精确提交仍须完整CI，未以本机通过替代runner结果。
+- 8258836 的Linux完整unit、构建烟测与integration通过；Mac首次未获runner，重试后已实际运行，DOCX原生保存通过，XLSX仅改单元格内容却被现有格式/结构比较拒绝，真实截图明确显示该错误，不再归因于焦点或runner排队。增加受环境变量控制的只读CDP断点，记录比较当时的initial/current语义布局，不改模型、不跳过保护、不恢复合成按键。Linux开发程序完整Office旅程 `/var/tmp/nozeli-office-journey-6jfc0N/report.json` 通过且断点观察到两布局相等；Mac根因仍待同样取证，发行附件保持未公开。
 
 ## Beta3 发布闭包瘦身（2026-11-11，Linux候选已验，双平台发行验收待CI）
 
