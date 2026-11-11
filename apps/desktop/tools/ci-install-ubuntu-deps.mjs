@@ -9,15 +9,11 @@ if (process.env.GITHUB_ACTIONS !== 'true' || process.platform !== 'linux' || !pr
 const packages = process.argv.slice(2);
 if (!packages.length) throw Error('Specify the CI packages to install');
 const sources = path.join(process.env.RUNNER_TEMP, 'nozeli-ubuntu.sources');
+// Ubuntu registers Kernel.org as an official archive mirror. Signature trust
+// stays with Ubuntu's keyring; this avoids the failing ubuntu.com DNS path.
 await fs.writeFile(sources, `Types: deb
-URIs: https://archive.ubuntu.com/ubuntu/
-Suites: noble noble-updates noble-backports
-Components: main restricted universe multiverse
-Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
-
-Types: deb
-URIs: https://security.ubuntu.com/ubuntu/
-Suites: noble-security
+URIs: https://mirrors.edge.kernel.org/ubuntu/
+Suites: noble noble-updates noble-backports noble-security
 Components: main restricted universe multiverse
 Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
 `);

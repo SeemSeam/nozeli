@@ -11,7 +11,7 @@
     "url": "https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-beta.3",
     "commit": null,
     "channel": "beta-prerelease",
-    "platformsExercised": ["linux-x64"],
+    "platformsExercised": ["linux-x64", "macos-arm64"],
     "platformsTargeted": ["linux-x64", "macos-arm64"],
     "notes": "On 2026-11-11, after renewed disclosure of all six pending redistribution obligations, the owner explicitly authorized public Beta.3 prerelease for Linux x64 and macOS arm64, and then required fixing newly disclosed dependency security alerts before publication. Fix image-size 2.0.3, actual Monaco DOMPurify build input 3.4.17, Pi undici 8.12.2/minimatch 11.0.1 and development Puppeteer 25.17.0; retain SDK 1.4.0 and regenerate runtime lock integrity. Retain all document engines/fonts, offline features and Node/Pi/Git while removing redundant frontend npm copies, foreign PTY prebuilds and duplicate build inputs. Version-specific authorization only: not reused Beta.2 approval, compliance certification, stable/latest or daily-install authorization. Exact-commit CI and both extracted applications must pass before publishing. Mac stays ad-hoc signed without Developer ID/notarization. Prior tags/artifacts remain unchanged. Public audit stays pending and --public blocked; npm audit results do not establish complete vendor/binary or legal signoff."
   },
