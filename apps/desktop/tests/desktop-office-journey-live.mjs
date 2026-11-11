@@ -122,15 +122,13 @@ async function stop(signal = 'SIGTERM') {
   }
   return exit;
 }
-const saveShortcut = async page => {const modifier = process.platform === 'darwin' ? 'Meta' : 'Control'; await page.keyboard.down(modifier); await page.keyboard.press('s'); await page.keyboard.up(modifier);};
-// Real accelerator first; a renderer-dispatched keydown (same production
-// handler, no trust gate) is the bounded fallback if the host drops CDP keys.
+const saveShortcut = async page => {await page.bringToFront(); const modifier = process.platform === 'darwin' ? 'Meta' : 'Control'; await page.keyboard.down(modifier); await page.keyboard.press('s'); await page.keyboard.up(modifier);};
+// Use the real native shortcut. A failed save must stay observable; do not
+// dispatch synthetic key events or retry a possibly admitted write.
 async function explicitSave(page, effect) {
   await saveShortcut(page);
-  try { await effect(); return 'keyboard'; } catch {}
-  await page.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', {key: 's', code: 'KeyS', ctrlKey: window.nozeli.platform !== 'darwin', metaKey: window.nozeli.platform === 'darwin', bubbles: true, cancelable: true})));
   await effect();
-  return 'synthetic-keydown';
+  return 'keyboard';
 }
 
 const report = {ok: false, out, project, config, profile, binary, packaged, platform: process.platform, port, markers: {}, checks: [], saves: {}, exits: {}};
@@ -178,6 +176,8 @@ try {
   const sheetFrame = await until(() => sheetPage.frames().find(f => f.url().endsWith('/sheet-frame.html')), 'Sheet frame');
   await sheetFrame.waitForFunction(() => window.nozeliSheetEditor?.getAllSheets()?.length, {timeout: 90000});
   await sheetFrame.waitForFunction(() => !document.querySelector('#sheet')?.inert, {timeout: 90000});
+  await sheetPage.bringToFront();
+  await sheetFrame.locator('#sheet').click();
   report.sheetOriginalA1 = await sheetFrame.evaluate(() => nozeliSheetEditor.getCellValue(0, 0));
   await sheetFrame.evaluate(marker => nozeliSheetEditor.setCellValue(0, 0, marker), sheetMarker);
   await sheetFrame.waitForFunction(marker => nozeliSheetEditor.getCellValue(0, 0) === marker, {timeout: 30000}, sheetMarker);
@@ -328,6 +328,12 @@ try {
 } catch (error) {
   report.error = error.stack;
   process.exitCode = 1;
+  report.documentStates = {};
+  for (const [kind, page] of [['word', wordPage], ['sheet', sheetPage], ['ppt', pptPage]]) {
+    if (!page) continue;
+    report.documentStates[kind] = await page.evaluate(() => {const status = document.querySelector('#save-status');return {status: status?.dataset?.state, message: status?.textContent, focused: document.hasFocus(), active: document.activeElement?.tagName};}).catch(() => null);
+  }
+  await sheetPage?.screenshot({path: path.join(out, 'failure-sheet.png')}).catch(() => {});
   await wordPage?.screenshot({path: path.join(out, 'failure.png')}).catch(() => {});
   if (pptPage) {
     await pptPage.screenshot({path: path.join(out, 'failure-ppt.png')}).catch(() => {});
