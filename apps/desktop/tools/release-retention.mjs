@@ -6,6 +6,10 @@ import os from 'node:os';
 export const installationRoot = () => path.join(os.homedir(), '.local/opt/nozeli');
 const contained = (parent, child) => { const rel = path.relative(parent, child); return rel !== '' && rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel); };
 const missing = error => error.code === 'ENOENT';
+// Private-by-creation mode for installation layout directories: the desktop
+// updater refuses group/other-writable layout dirs, so creation must never
+// inherit a permissive packaging umask (0002 would yield 0775).
+export const PRIVATE_LAYOUT_MODE = 0o700;
 
 export async function assertLayout(root) {
   root = path.resolve(root);
@@ -158,7 +162,10 @@ export async function retainReleases(options) {
 }
 
 export async function withInstallationLock(root, action) {
-  await fs.mkdir(path.join(root, 'releases'), {recursive: true});
+  // Create the layout private to this user; existing directories are never
+  // tightened here — repairing a legacy layout is an explicit operator decision.
+  await fs.mkdir(root, {recursive: true, mode: PRIVATE_LAYOUT_MODE});
+  await fs.mkdir(path.join(root, 'releases'), {recursive: true, mode: PRIVATE_LAYOUT_MODE});
   await assertLayout(root);
   const lock = path.join(root, '.installer-lock');
   await fs.mkdir(lock); // An interrupted operation requires explicit operator review.

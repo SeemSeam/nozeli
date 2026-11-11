@@ -1,3 +1,11 @@
+## 自动更新故障修复（2026-11-11，源码已修，未安装／发布）
+
+- 日常 Linux 安装只读证据：`~/.local/opt/nozeli` 与 `releases` 为 0775，更新器安全拒绝后误标为 source/development；当前版本 alpha.6，历史状态有 HTTP403。历史响应头未保留，403 限流原因仅推断，不能当成已复现事实。真实匿名请求观察到共享 60 次/小时额度；Node 直连资产 CDN 实测 TLS ECONNRESET，Chromium 网络会话可下载。
+- 修复：专用非持久更新网络会话与逐跳 allowlist，显式私有安装布局，真实安装安全条件失败明确报错、不改既有权限；限流只按响应头证据解释。无凭据、无未验证 fallback，tag／SHA256／闲时退出／健康回执与回退保持。
+- 定向 `auto-update.test.mjs`＋`auto-update-network.test.mjs` 23/23；`auto-update-installation.test.mjs`＋`update-lifecycle.test.mjs` 12/12；`release-retention.test.mjs` 11/11。renderer 构建通过。`TMPDIR=/var/tmp node --test tests/auto-update-package-smoke.mjs` 四项通过：真实 Electron 受管／便携布局晋升、两布局新程序启动失败回退。初轮 /tmp 配额 -122、随后旧夹具缺少平台持久化模块导致失败，已改用磁盘临时根并补齐真实依赖，不改原回退断言。
+- `node tests/desktop-auto-update-live.mjs` 真实 Nozeli 设置页五项通过：回环 GitHub-style 403 后保留安装并显示恢复时间，实际点击检查后下载校验、设置模态阻止重启、关闭后原程序正常退出、新程序健康确认、previous 与用户数据不变、全新调试端点及新程序正常关闭。原件 `apps/desktop/.test-output/desktop-auto-update-tgcrHO/report.json`，限流及等待空闲截图均已查看。打包前缺少锁定 Node 归档的下载失败保留；补齐归档并经既有 SHA256 验证后运行通过。
+- Linux 实测限定；回环发行包不等于公网全量更新签收。不写用户项目／日常安装，不清理个人更新缓存，不移动已发布 tag。现有 0775 安装尚未收紧权限且运行旧代码，不能宣称用户日常更新已恢复。macOS／Windows 自动安装仍不支持。
+
 # 测试套件与运行边界
 
 本页定义仓库的确定性测试入口、各套件的分类边界与前置条件。命令均在 `apps/desktop` 下执行；套件清单的唯一来源是 [`apps/desktop/tools/test-suites.mjs`](../apps/desktop/tools/test-suites.mjs) 中的显式文件列表（无 shell 通配、无目录扫描），列出成员可用：
@@ -6,6 +14,17 @@
 node tools/test-suites.mjs --list          # 默认套件（unit+integration）文件清单
 node tools/test-suites.mjs smoke --list    # 任一套件的文件清单
 ```
+
+## 标签输入后无法移动／缩放（2026-11-11，源码修复，未安装）
+
+- 真实 Electron＋合成 HTML 文档复现：CDP `Input.imeSetComposition` 输入中文后，第一次标题鼠标拖动先触发 pointerdown，随后失焦才 compositionend；原 `local-window.mjs` 在 pointerdown 被 composing 标志直接拦住，位移为零。原件 `/var/tmp/nozeli-label-windows-u0w3K7/report.json`。PPT 文件讨论／工作面涂鸦的未输入场景原13项通过，不拿该局部通过否定用户故障。
+- 修复共用 geometry control 的事件顺序：合法标题／尺寸手柄在 composition 活跃时先聚焦，让浏览器正常结束组合，再检查 guard 并接续同一次捕获手势；如果仍在组合继续拒绝，不手动清标志、不合成结束事件、不发送或清草稿。按钮／链接／正文仍不启动移动。HTML 修后原件 `/var/tmp/nozeli-label-windows-SUKvyT/report.json`：首次移动 +80/+55、首次缩放 +50/+40、中文完整保留、历史与键盘操作正常，4项通过；截图已查看。中间 J0AMeh 因探针旧的未含中文草稿预期而整体 false，位移已修复，不抹去该原件。
+- `TMPDIR=/var/tmp node --test tests/local-window.test.mjs tests/tag-session-identity.test.mjs tests/renderer-tag-draft.test.mjs tests/region-drawing.test.mjs tests/snapshot-card-view.test.mjs` 45/45；renderer 构建通过。初轮默认 /tmp 因配额耗尽出现 SQLite I/O 与 esbuild 写失败，改磁盘临时根后全过，不放宽断言。临时 HTML 定位探针已删除，正式多标签回归另列实际结果。
+- 扩展实测暴露第二处 PPT 恢复缺陷：区域讨论位置／尺寸恢复一致，但未发送文字未显示；隔离数据库中 `text` 与 `draftText` 均完整为 `Unsent region draft`，不是存储丢失。`renderWordNotes` 把带 projection 的 PPT 记录也交给 `makeNoteTag`，讨论随后复用错误备注卡。改为与 Word 分支一致，备注渲染排除 projection。修前原件 `/var/tmp/nozeli-label-windows-CHxvxD/report.json` 保留；草稿、类型分流与重开几何验收不删除。
+- 最终真实 PPT／区域涂鸦／工作面冻结涂鸦：`TMPDIR=/var/tmp node tests/desktop-label-windows-live.mjs` **33/33**，`ok:true`、renderer错误0、正常退出；`/var/tmp/nozeli-label-windows-cCBW3z/report.json`。包含真实框选→画笔→讨论、两轴拖动／放大／反向缩到下限／折叠展开、PPT 重开草稿与几何、返回笔迹／本地恢复、touch cancel、窄窗夹取恢复、IME后首次移动与缩放。原文哈希、区域锚／笔迹／素材记录精确不变，无模型jobs。两处PPT首次挂载和刷新统一沿排除projection的备注路径，修前失败的重开草稿断言修后通过；未删断言或重写原记录。
+- 最终真实 Markdown／纯文本／HTML原生隔离预览／图片区域标签：`TMPDIR=/var/tmp NOZELI_OZONE=x11 node tests/desktop-tag-interactions-live.mjs` **60/60**，`ok:true`、正常退出、pageerror空；原件 `tag-interactions-live-f3eUET/result.json` 位于本轮隔离测试缓存。覆盖普通备注、选区讨论、文件讨论、位置讨论、图片区域涂鸦讨论：标题文字与空白拖动、右下柄放大和反向缩小、键盘／Shift／Home、收起恢复、文档切换与关闭重开、真实浏览器IME首拖／首缩、涂鸦编辑菜单打开同笔迹并取消。退出后重新读取真实存储，锚点、历史、完整中英文草稿、笔迹与素材摘要保持；四个原件逐字节不变，零模型jobs。关键PPT／输入法／图片重开截图已查看。初轮测试夹具缺材料、隐藏工具入口、跨上下文变量、其他浮层遮挡及自动定位合法夹取的失败原件保留；修正真实操作前提后未放宽位移、持久化或原数据断言。
+- Linux X11／XWayland、真实 Electron＋可信 CDP 鼠标与浏览器合成输入；不等于物理输入法／触控硬件、纯 Wayland、Windows/macOS 验收。用户日常安装与原文未改；源码修复不等于运行中的旧版已生效。
+
 
 ## alpha6 macOS 本机迁移与验收（2026-11-09）
 

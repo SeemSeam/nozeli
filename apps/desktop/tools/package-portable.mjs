@@ -23,7 +23,8 @@ await fs.mkdir(output);
 const label = `Nozeli-${manifest.version}-linux-x64`;
 const staging = await fs.mkdtemp(path.join(output, '.staging-'));
 const root = path.join(staging, 'installation');
-await fs.mkdir(path.join(root, 'releases'), {recursive:true});
+await fs.mkdir(root, {mode:0o700});
+await fs.mkdir(path.join(root, 'releases'), {mode:0o700});
 const release = path.join(root, 'releases', label);
 let completed = false;
 try {

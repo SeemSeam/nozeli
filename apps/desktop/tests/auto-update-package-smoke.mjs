@@ -37,6 +37,7 @@ async function realPackage(directory, version, fails) {
   await fs.mkdir(path.join(app, 'src/main'), {recursive: true});
   await fs.mkdir(path.join(app, 'dist/renderer'), {recursive: true});
   for (const name of ['auto-update.mjs', 'auto-update-helper.mjs', 'auto-update-files.mjs', 'auto-update-extract.mjs']) await fs.copyFile(path.join(source, 'src/main', name), path.join(app, 'src/main', name));
+  await fs.cp(path.join(source, 'src/platform'), path.join(app, 'src/platform'), {recursive: true, mode: fs.constants.COPYFILE_FICLONE});
   await copyDependency('tar', app);
   await fs.writeFile(path.join(app, 'package.json'), JSON.stringify({name: 'nozeli-desktop', version, type: 'module', main: 'src/main/main.cjs'}));
   await fs.writeFile(path.join(app, 'dist/renderer/app.js'), '');

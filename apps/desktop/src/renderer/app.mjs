@@ -1217,7 +1217,7 @@ async function retryViewRead() {
   }
 
 function renderWordNotes(){
- if(ui.file?.kind==='ppt'){ui.word?.setNotes?.((ui.annotations||[]).filter(n=>n.kind?.startsWith('ppt-')).map(n=>({...n,ordinal:ui.noteDisplayOrdinals.get(n.id)||n.ordinal})));return;}
+ if(ui.file?.kind==='ppt'){ui.word?.setNotes?.((ui.annotations||[]).filter(n=>n.kind?.startsWith('ppt-')&&!n.projection).map(n=>({...n,ordinal:ui.noteDisplayOrdinals.get(n.id)||n.ordinal})));return;}
  if(ui.file?.kind==='word')ui.word?.setNotes?.((ui.annotations||[]).filter(n=>['word-selection','word-region'].includes(n.kind)&&!n.projection&&n.resolution?.anchor).map(n=>({...n,ordinal:ui.noteDisplayOrdinals.get(n.id)||n.ordinal})));
 }
 
@@ -1517,7 +1517,7 @@ async function refreshNotes() {
         onSelection:selected=>{if(ui.file!==file)return;ui.wordSelection=selected;if(!selected){$('selection-menu').hidden=true;return;}if(!$('note-form').hidden)return;showSelectionMenu(selected.rect);},
         onChange:()=>{ui.wordDirty=true;ui.dirty=true;ui.wordRevision=(ui.wordRevision||0)+1;setStatus('dirty','PPTX 草稿未保存');clearTimeout(ui.timer);ui.timer=setTimeout(()=>flushCurrent(),1200);},
         onExport:async bytes=>{const saved=await flushNow();if(!saved.ok)throw Error(saved.error.message);const result=await invoke('ppt.export',{...payload,bytes});if(!result.ok)throw Error(result.error.message);workspace.toast(result.value.cancelled?'已取消导出':'PPTX 副本已导出');}
-      });$('word-region').hidden=documentReadOnly()||isReviewDocument;$('word-region').title='拖动框选文档区域';if(!documentReadOnly()&&!isReviewDocument){ui.wordDirty=true;await flushNow();ui.word.setNotes(file.sourceChanged?[]:(ui.annotations||[]).filter(n=>n.kind?.startsWith('ppt-')).map(n=>({...n,ordinal:ui.noteDisplayOrdinals.get(n.id)||n.ordinal})));}setStatus(file.sourceChanged?'conflict':'saved',file.sourceChanged?'PPTX 原件已变化 · 旧版本草稿已恢复':documentReadOnly()||isReviewDocument?'PPTX · 只读冻结正文':recovered?.model?'PPTX · 已恢复草稿':'PPTX · 本地编辑');showPptRecovery(file,recovered);
+      });$('word-region').hidden=documentReadOnly()||isReviewDocument;$('word-region').title='拖动框选文档区域';if(!documentReadOnly()&&!isReviewDocument){ui.wordDirty=true;await flushNow();if(file.sourceChanged)ui.word.setNotes([]);else renderWordNotes();}setStatus(file.sourceChanged?'conflict':'saved',file.sourceChanged?'PPTX 原件已变化 · 旧版本草稿已恢复':documentReadOnly()||isReviewDocument?'PPTX · 只读冻结正文':recovered?.model?'PPTX · 已恢复草稿':'PPTX · 本地编辑');showPptRecovery(file,recovered);
     }catch(error){$('unsupported').hidden=false;$('unsupported').textContent=error.message;setStatus('error','PPTX 未能打开');}
   } else if (['word','sheet'].includes(file.kind)) {
     $('reader').classList.add('document-word');

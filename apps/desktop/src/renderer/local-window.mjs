@@ -88,8 +88,12 @@ export function mountLocalWindow({layer,key,title,body,actions,state=defaultLoca
   function release() { const old=gesture;gesture=null;if(old){try{if(old.target.hasPointerCapture(old.id))old.target.releasePointerCapture(old.id);}catch{}} }
   function cancel(redraw=true) { if(!gesture)return;view={...gesture.original,revision:durable.revision};release();if(frame){win.cancelAnimationFrame(frame);frame=0;}if(redraw)paint(); }
   function down(event,mode) {
-    if(gesture||event.button!==0||event.isPrimary===false||composing)return;
+    if(gesture||event.button!==0||event.isPrimary===false)return;
     if(mode==='move'&&event.composedPath().some(el=>el!==header&&el!==caption&&el.matches?.('button,input,textarea,select,a,summary,[contenteditable]:not([contenteditable="false"]),[role="button"],[role="textbox"],[role="menuitem"],[data-no-drag]')))return;
+    // Clicking a geometry control leaves the editor. Let the browser finish
+    // its composition before checking the guard, rather than losing the first
+    // drag while the default pointer focus change ends composition afterwards.
+    if(composing){event.currentTarget.focus({preventScroll:true});if(composing)return;}
     const start=environment.toLocal(event.clientX,event.clientY,event); gesture={id:event.pointerId,target:event.currentTarget,mode,start,rect:{...rect},original:structuredClone(view),moved:false};
     event.currentTarget.setPointerCapture(event.pointerId);node.style.zIndex=String(++reg.z);event.preventDefault();
   }

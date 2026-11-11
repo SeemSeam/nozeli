@@ -20,6 +20,7 @@ const checks = []; let child, browser, page, server, error, logs = '', childExit
 const pageEvents = [], observedPages = new Set();
 const debugEndpoints = [];
 let releaseFeed;
+let feedRequests = 0, rateLimitReset = 0;
 const fixturePromise = new Promise(resolve => { releaseFeed = resolve; });
 function observe(candidate) {
   if (observedPages.has(candidate)) return;
@@ -64,7 +65,8 @@ async function stamp(directory, version) {
   await fs.writeFile(path.join(directory, 'AppRun'), '#!/bin/sh\nexec "$(dirname "$0")/nozeli" "$@"\n', {mode: 0o755});
 }
 try {
-  await fs.mkdir(path.join(root, 'releases'), {recursive: true});
+  await fs.mkdir(root, {mode: 0o700});
+  await fs.mkdir(path.join(root, 'releases'), {mode: 0o700});
   await fs.mkdir(profile, {recursive: true});
   const sentinel = path.join(profile, 'update-preservation-sentinel.txt');
   await fs.writeFile(sentinel, 'Generated user data must survive a real package update.\n');
@@ -81,6 +83,12 @@ try {
       // Fixture network latency keeps the automatic check pending until the real
       // settings modal is open; no application guard or state is overridden.
       void fixturePromise.then(() => {
+        if (++feedRequests === 1) {
+          rateLimitReset = Math.ceil(Date.now() / 1000) + 1;
+          response.writeHead(403, {'Content-Type': 'application/json', 'X-RateLimit-Remaining': '0', 'X-RateLimit-Reset': String(rateLimitReset)});
+          response.end(JSON.stringify({message: 'API rate limit exceeded'}));
+          return;
+        }
         if (!response.destroyed) response.end(JSON.stringify([{tag_name: 'v' + NEW, prerelease: true, assets: [{name: assetName, size: bytes.length, browser_download_url: origin + '/archive'}, {name: 'SHA256SUMS.txt', size: 160, browser_download_url: origin + '/sums'}]}]));
       });
     }
@@ -104,6 +112,15 @@ try {
   await page.click('[data-settings-section="settings-update"]');
   await page.waitForSelector('#settings-update', {visible: true});
   releaseFeed();
+  await page.waitForFunction(async () => { const response = await window.nozeli.invoke('update.status', {}); return response.ok && response.value.phase === 'error'; }, {timeout: 30000, polling: 100});
+  const limited = await page.evaluate(() => window.nozeli.invoke('update.status', {}));
+  assert.equal(limited.value.currentVersion, OLD); assert.equal(limited.value.supported, true);
+  assert.equal(await fs.realpath(path.join(root, 'current')), old);
+  assert.equal(feedRequests, 1);
+  await page.screenshot({path: path.join(out, 'settings-update-rate-limited.png')});
+  checks.push('real GitHub-style 403 preserves active installation and renders an actionable update failure');
+  await page.waitForFunction(reset => Date.now() >= reset * 1000, {timeout: 10000}, rateLimitReset);
+  await page.click('#settings-update button');
   await page.waitForFunction(async () => { const response = await window.nozeli.invoke('update.status', {}); return response.ok && response.value.phase === 'waiting-idle'; }, {timeout: 180000, polling: 100});
   const blocked = await page.evaluate(() => window.nozeli.invoke('update.status', {}));
   assert.equal(blocked.value.currentVersion, OLD); assert.equal(blocked.value.availableVersion, NEW);

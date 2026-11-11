@@ -53,20 +53,24 @@ export async function processIdentity(pid) {
 export async function detectInstallation(appRoot) {
   if (process.platform !== 'linux' || process.arch !== 'x64') return null;
   const release = path.resolve(appRoot, '../..');
-  try {
-    await ownedDirectory(release);
-    const marker = await readJson(path.join(release, 'INSTALLATION.json'));
-    if (marker.application !== 'Nozeli' || marker.platform !== 'linux' || marker.arch !== 'x64' || marker.state !== 'validated') return null;
-    if (path.basename(path.dirname(release)) === 'releases') {
-      const root = path.dirname(path.dirname(release));
-      await ownedDirectory(root); await ownedDirectory(path.join(root, 'releases'));
-      if (await fs.realpath(path.join(root, 'current')) !== release) return null;
-      return {kind: 'managed', root, release};
-    }
-    await fs.access(path.join(release, 'AppRun'), fs.constants.X_OK);
-    await ownedDirectory(path.dirname(release));
-    return {kind: 'portable', root: path.dirname(release), release};
-  } catch { return null; }
+  let marker;
+  try { marker = await readJson(path.join(release, 'INSTALLATION.json')); } catch { return null; }
+  if (marker.application !== 'Nozeli' || marker.platform !== 'linux' || marker.arch !== 'x64' || marker.state !== 'validated') return null;
+  // The validated marker claims this layout is a real Nozeli installation, so
+  // contract violations below stay diagnosable instead of collapsing into the
+  // source-installation branch: a silent null would hide a broken owner or
+  // permission boundary behind the check-only label. Detection stays read-only;
+  // repairing a legacy layout is an explicit operator decision.
+  const unsafe = async directory => { try { await ownedDirectory(directory); } catch (error) { if (error.code === 'ENOENT') throw error; throw Error('Unsafe updater directory: ' + directory); } };
+  if (path.basename(path.dirname(release)) === 'releases') {
+    const root = path.dirname(path.dirname(release));
+    await unsafe(release); await unsafe(root); await unsafe(path.join(root, 'releases'));
+    if (await fs.realpath(path.join(root, 'current')).catch(() => null) !== release) throw Error('Installation reference mismatch: current does not select this release');
+    return {kind: 'managed', root, release};
+  }
+  try { await fs.access(path.join(release, 'AppRun'), fs.constants.X_OK); } catch { throw Error('Portable installation entrypoint is not executable: ' + path.join(release, 'AppRun')); }
+  await unsafe(release); await unsafe(path.dirname(release));
+  return {kind: 'portable', root: path.dirname(release), release};
 }
 export async function validatePackage(release, version, expectedCommit) {
   await ownedDirectory(release);

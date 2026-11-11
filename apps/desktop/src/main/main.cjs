@@ -394,12 +394,21 @@ async function main() {
     if(recovery){recovery.requestClose();quitPending=false;return;}
     void workspaceNative.onClose(r).catch(error=>console.error('quit failed',error)).finally(()=>{quitPending=false;});
   });
-  const {AutoUpdater,acknowledgeUpdateHealth:health}=await import('./auto-update.mjs');acknowledgeUpdateHealth=health;
+  const {AutoUpdater,acknowledgeUpdateHealth:health,trustedUpdaterRequest}=await import('./auto-update.mjs');acknowledgeUpdateHealth=health;
   const {createUpdateLifecycle}=await import('./update-lifecycle.mjs');
   const updateTest=ISOLATED_TEST_INSTANCE&&process.env.NOZELI_TEST_UPDATE_FEED&&process.env.NOZELI_CONFIG_ROOT&&process.env.NOZELI_USER_DATA;
   const updateTestOptions=updateTest?{idleInterval:100,dependencies:{feed:process.env.NOZELI_TEST_UPDATE_FEED,tagApiBase:new URL(process.env.NOZELI_TEST_UPDATE_FEED).origin,allowLoopback:true}}:{};
+  // Updater traffic uses a dedicated non-persistent session on Chromium's network stack:
+  // Node's global fetch ignores the OS proxy and its direct TLS to GitHub's asset CDN is
+  // reset (ECONNRESET) here. session.fetch reports no final URL after redirects, so a
+  // blocking webRequest guard allowlists the host of every request and redirect hop
+  // before it is sent (loopback http only for isolated test instances). Browser cookies
+  // are never reused and credentials stay omitted on every request.
+  const updateSession=session.fromPartition('nozeli-updater');
+  updateSession.webRequest.onBeforeRequest((details,callback)=>callback(trustedUpdaterRequest(details.url,{allowLoopback:updateTest})?{}:{cancel:true}));
+  const updateDependencies={...(updateTestOptions.dependencies||{}),fetch:(input,init)=>updateSession.fetch(String(input),{...init,credentials:'omit'})};
   updateLifecycle=createUpdateLifecycle({workspace:workspaceNative,host,managedAgents,agents,powerMonitor,idleSeconds:updateTest?0:60,isClosing:()=>quitting||quitPending||forceQuitting||Boolean(workspaceCapture?.active),freeze:held=>{updateFrozen=held;workspaceNative.broadcast('nozeli:workspace-control',{type:'lifecycle-hold',held});},quit:async()=>{allowClose=true;quitting=true;autoUpdater.stop();app.quit();}});
-  autoUpdater=new AutoUpdater({currentVersion:require(path.join(APP_ROOT,'package.json')).version,appRoot:APP_ROOT,stateDir:path.join(app.getPath('userData'),'updates'),enabled:!ISOLATED_TEST_INSTANCE||Boolean(updateTest),...updateLifecycle,...updateTestOptions,onStatus:status=>workspaceNative.broadcast('nozeli:update',status)});
+  autoUpdater=new AutoUpdater({currentVersion:require(path.join(APP_ROOT,'package.json')).version,appRoot:APP_ROOT,stateDir:path.join(app.getPath('userData'),'updates'),enabled:!ISOLATED_TEST_INSTANCE||Boolean(updateTest),...updateLifecycle,...updateTestOptions,dependencies:updateDependencies,onStatus:status=>workspaceNative.broadcast('nozeli:update',status)});
   ipcMain.handle('nozeli:invoke', async (event, op, payload) => {
     try {
       const scope=trusted(event,'workspace.bootstrap',{});

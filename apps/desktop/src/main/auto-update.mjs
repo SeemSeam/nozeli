@@ -28,8 +28,46 @@ export function manifestChecksum(text, name) {
   if (matches.length !== 1) throw Error('Checksum manifest must contain exactly one matching archive');
   return matches[0][1].toLowerCase();
 }
+
+export function formatResetTime(epochSeconds) {
+  const date = new Date(epochSeconds * 1000), pad = value => String(value).padStart(2, '0');
+  const offset = -date.getTimezoneOffset(), minutes = Math.abs(offset);
+  const zone = 'UTC' + (offset < 0 ? '-' : '+') + pad(Math.floor(minutes / 60)) + (minutes % 60 ? ':' + pad(minutes % 60) : '');
+  return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + ' ' + pad(date.getHours()) + ':' + pad(date.getMinutes()) + ':' + pad(date.getSeconds()) + ' ' + zone;
+}
+export function releaseRequestError(response) {
+  const base = 'Release request failed: HTTP ' + response?.status;
+  if (response?.status !== 403 && response?.status !== 429) return Error(base);
+  // Only throttling confirmed by present, numeric GitHub headers is explained — a missing
+  // header must never parse as 0 — and every other 403/429 keeps the bare status so
+  // unrelated causes are not mislabeled as rate limiting.
+  const count = name => {
+    let value = null;
+    try { value = response.headers?.get?.(name); } catch { return null; }
+    if (typeof value !== 'string' || !/^\d{1,12}$/.test(value = value.trim())) return null;
+    return Number(value);
+  };
+  const remaining = count('x-ratelimit-remaining'), reset = count('x-ratelimit-reset'), retryAfter = count('retry-after');
+  if (remaining === 0 && reset !== null && reset >= 1577836800 && reset < 4102444800) return Error(base + ': GitHub anonymous rate limit exhausted (shared per-network quota); quota resets at ' + formatResetTime(reset));
+  if (retryAfter !== null && retryAfter <= 86400) return Error(base + ': GitHub rate limit engaged; retry after ' + retryAfter + ' seconds');
+  return Error(base);
+}
+export function trustedRedirectTarget(href) {
+  try {
+    const url = new URL(href);
+    return url.protocol === 'https:' && !url.username && !url.password && ['api.github.com', 'github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com'].includes(url.hostname);
+  } catch { return false; }
+}
+export function trustedUpdaterRequest(href, {allowLoopback = false} = {}) {
+  try {
+    const url = new URL(href);
+    if (url.username || url.password) return false;
+    if (allowLoopback && url.protocol === 'http:' && ['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname)) return true;
+    return trustedRedirectTarget(url.href);
+  } catch { return false; }
+}
 async function boundedText(response, max, signal) {
-  if (!response.ok || !response.body) throw Error('Release request failed: HTTP ' + response.status);
+  if (!response.ok || !response.body) throw releaseRequestError(response);
   const chunks = []; let received = 0;
   for await (const chunk of response.body) {
     signal?.throwIfAborted(); received += chunk.length;
@@ -53,6 +91,13 @@ export class AutoUpdater {
     this.initialized = false; this.running = null; this.installing = false; this.timer = null; this.idleTimer = null;
   }
   status() { return structuredClone(this.state); }
+  installationNotice() {
+    // detectInstallation collapses marker-less, marker-mismatched, and foreign-platform
+    // layouts into null; broken real installations throw their own precise error instead.
+    // None of the null cases is necessarily a source checkout, so never claim one.
+    if (process.platform !== 'linux' || process.arch !== 'x64') return '当前平台 ' + process.platform + '/' + process.arch + ' 暂不支持自动安装；保留当前版本，仅执行更新检查';
+    return '当前平台或安装布局/权限不支持自动安装；保留当前版本；通过正式安装入口安装后重试';
+  }
   async initialize() {
     if (this.initialized) return;
     await fs.mkdir(this.options.stateDir, {recursive: true, mode: 0o700});
@@ -111,7 +156,7 @@ export class AutoUpdater {
       return this.status();
     }
     if (this.timer) return this.status();
-    this.update({phase: this.installation ? 'current' : 'unsupported', message: this.installation ? this.state.message : 'Source/development installation: update checks only; automatic installation unavailable'});
+    this.update({phase: this.installation ? 'current' : 'unsupported', message: this.installation ? this.state.message : this.installationNotice()});
     this.timer = setInterval(() => { if (this.state.enabled) void this.check({automatic: true}); }, this.options.checkInterval); this.timer.unref?.();
     this.idleTimer = setInterval(() => { if (this.state.enabled) void this.installIfIdle(); }, this.options.idleInterval); this.idleTimer.unref?.();
     if (this.state.enabled) void this.check({automatic: true});
@@ -134,10 +179,14 @@ export class AutoUpdater {
   async request(url, kind, signal) {
     const value = this.url(url, kind);
     // GitHub assets redirect to an HTTPS object store; fetch never carries credentials.
+    // The production wiring installs a session guard that allowlists the host of every
+    // request and redirect hop before it is sent (session.fetch reports no final URL);
+    // the final-URL check below still runs on stacks that report one.
     const response = await this.fetch(value, {signal, credentials: 'omit', headers: {'User-Agent': 'Nozeli-updater', 'Accept': kind === 'feed' ? 'application/vnd.github+json' : 'application/octet-stream'}, redirect: 'follow'});
     if (response.url) {
       const final = new URL(response.url);
-      if (!(this.testEndpoint && final.protocol === 'http:' && ['127.0.0.1', '[::1]', 'localhost'].includes(final.hostname)) && (final.protocol !== 'https:' || !['api.github.com', 'github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com'].includes(final.hostname))) throw Error('Unsafe release redirect');
+      const loopback = this.testEndpoint && final.protocol === 'http:' && ['127.0.0.1', '[::1]', 'localhost'].includes(final.hostname);
+      if (!loopback && !trustedRedirectTarget(final.href)) throw Error('Unsafe release redirect');
     }
     return response;
   }
@@ -201,7 +250,7 @@ export class AutoUpdater {
         return this.status();
       }
       this.update({availableVersion: release.version});
-      if (!this.installation) { this.update({phase: 'unsupported', message: 'New release available; source/development installations are check-only'}); return this.status(); }
+      if (!this.installation) { this.update({phase: 'unsupported', message: '新版本 ' + release.version + ' 可用；' + this.installationNotice()}); return this.status(); }
       const expectedCommit = await this.resolveTagCommit(release.tag, signal);
       if (this.candidate?.version === release.version && this.candidate.commit === expectedCommit) {
         await validatePackage(this.candidate.path, release.version, expectedCommit);

@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {createRequire} from 'node:module';
 import {pathToFileURL} from 'node:url';
-import {ownedRelease} from './release-retention.mjs';
+import {ownedRelease, PRIVATE_LAYOUT_MODE} from './release-retention.mjs';
 import {packagePiRuntime} from './package-pi-runtime.mjs';
 
 export async function auditBundledLinks(directory, release = directory) {
@@ -49,8 +49,10 @@ export async function packageRelease({root, release, source}) {
   const lock = JSON.parse(await fs.readFile(path.join(source, 'package-lock.json'), 'utf8'));
   const require = createRequire(path.join(source, 'package.json'));
   const electron = path.dirname(require('electron'));
-  // Exclusive directory creation: never overwrite a candidate/current/unknown path.
-  await fs.mkdir(release);
+  // Exclusive directory creation: never overwrite a candidate/current/unknown
+  // path. Private mode keeps the release inside the updater's ownership
+  // boundary regardless of the packaging umask.
+  await fs.mkdir(release, {mode: PRIVATE_LAYOUT_MODE});
   await fs.writeFile(path.join(release, 'INSTALLATION.json'), JSON.stringify({application: 'Nozeli', version: manifest.version, installedAt: new Date().toISOString(), kind: 'local-development-snapshot', platform: process.platform, arch: process.arch, state: 'building'}, null, 2));
   await fs.cp(electron, release, {recursive: true});
   await fs.rename(path.join(release, 'electron'), path.join(release, 'nozeli'));
