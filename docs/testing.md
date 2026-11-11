@@ -8,6 +8,7 @@
 - 实际安全候选Monaco `/var/tmp/nozeli-beta3-code-cbvj5D/monaco-editor.png` 验证精确JavaScript、真实键盘修改、源码保存及正常退出，无renderer错误。临时启动脚本的input-type继承导致SQLite worker拒绝、以及错误的Puppeteer组合键写法均已纠正于夹具，不改生产存储/键盘逻辑；失败临时目录保留，临时脚本验后删除。
 - 安全升级后本机完整unit仍842通过；完整integration未签收：1200秒命令时限结束前已观察到遗留omp-bridge-endpoint测试强制/tmp部署时的-122写入配额失败，其余输出没有完整结束汇总。未将部分通过冒充全量、未删除该安全回归或改产品桥接逻辑绕过环境。新提交仍须由隔离runner完成完整CI与实际包验收。
 - d62a148的Linux实际解压包五旅程、unit与Mac原生安全通过；Linuxintegration尚未运行就因azure.archive.ubuntu.com临时DNS失败、bubblewrap下载exit100而失败，不跳过隔离准备或测试来变绿。Mac43039028636的普通保存/冷恢复、完整Task、DOCX/XLSX通过，PPT在旧瞬时ElementHandle双击处报不可点击。改为查询当前CSS可见、非零尺寸且稳定的真实标题，由Locator完成原生滚动/物理双击；不写store、不用DOM click、不放宽PPT导出和原件不变断言。失败保留PPT截图/几何及会话日志；本机实际安全包Office旅程 `/var/tmp/nozeli-office-journey-aaSJZ1/report.json` 通过，最终Mac仍须新提交实际验收。
+- 2263e22的Mac失败发生在更早的reading.txt导航，确切日志为旧page.click持有的节点已脱离文档，未到PPT步骤；不将其归因为PPT仍失败。项目/文件/浏览入口统一改为新鲜稳定Locator物理点击，不替换生产UI、不注入DOM点击，保留“pending保留期间仍接受更新的两次trusted点击”、保存和冷恢复断言。本机实际包 `.test-output/ci/smoke-EeUJox/report.json` 与Office `/var/tmp/nozeli-office-journey-vFKWfG/report.json` 均通过。Ubuntu隔离runner的apt镜像列表显式使用官方HTTPS archive/security源，保留GPG校验、bubblewrap与原隔离测试；只作用于临时CI机器，不更改用户机器或产品运行要求。
 
 ## Beta3 发布闭包瘦身（2026-11-11，Linux候选已验，双平台发行验收待CI）
 

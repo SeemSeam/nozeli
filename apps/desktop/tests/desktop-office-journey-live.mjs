@@ -140,11 +140,10 @@ try {
   shell = await scope(state => state.role === 'shell'); await dismiss(shell);
   const picked = await call(shell, 'project.pick'); const projectId = picked.project.id; report.projectId = projectId;
   await shell.reload({waitUntil: 'domcontentloaded'}); await shell.waitForFunction(() => window.__nozeliReady); await dismiss(shell);
-  await shell.waitForSelector(`#recent [data-project-id="${projectId}"]`); await shell.click(`#recent [data-project-id="${projectId}"]`);
+  await shell.locator(`#recent [data-project-id="${projectId}"]`).click();
 
   const openDoc = async name => {
-    await shell.waitForSelector(`#file-tree button[data-path="${name}"]`);
-    await shell.click(`#file-tree button[data-path="${name}"]`);
+    await shell.locator(`#file-tree button[data-path="${name}"]`).click();
     return until(async () => {
       for (const page of await browser.pages()) {
         const state = await page.evaluate(async () => (await window.nozeli.invoke('workspace.bootstrap', {})).value).catch(() => null);
@@ -261,7 +260,7 @@ try {
   launch(); await connect();
   shell = await scope(state => state.role === 'shell'); await dismiss(shell);
   await shell.waitForSelector(`#recent [data-project-id="${projectId}"]`, {timeout: 60000});
-  await shell.click(`#recent [data-project-id="${projectId}"]`);
+  await shell.locator(`#recent [data-project-id="${projectId}"]`).click();
 
   const reopenedWord = await openDoc('sample.docx');
   const reopenedWordFrame = await until(() => reopenedWord.frames().find(f => f.url().endsWith('/word-frame.html')), 'reopened Word frame');

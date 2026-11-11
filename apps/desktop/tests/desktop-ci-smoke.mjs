@@ -47,9 +47,9 @@ async function close(){
 try{
  await launch();await shell.waitForSelector('.guided-start-welcome');
  await shell.screenshot({path:path.join(out,'welcome.png')});result.checks.push('unconfigured application opens feature welcome without provider startup');
- await shell.click('[data-project-id="'+projectId+'"]');await shell.waitForSelector('[data-start-browse]');
- await shell.click('[data-start-browse]');await shell.waitForFunction(()=>document.activeElement?.id==='file-filter');
- await shell.click('#file-tree [data-path="reading.txt"]');const doc=await documentPage();
+ await shell.locator('[data-project-id="'+projectId+'"]').click();await shell.waitForSelector('[data-start-browse]');
+ await shell.locator('[data-start-browse]').click();await shell.waitForFunction(()=>document.activeElement?.id==='file-filter');
+ await shell.locator('#file-tree [data-path="reading.txt"]').click();const doc=await documentPage();
  await doc.waitForFunction(()=>window.__nozeliInput?.text?.()==='Synthetic local document.\n');
  result.checks.push('project empty page browses into the real local document workspace');
  await doc.evaluate(()=>window.__nozeliInput.focus());await doc.keyboard.down('Control');await doc.keyboard.press('End');await doc.keyboard.up('Control');await doc.keyboard.type('CI_SMOKE_EDIT\n');
@@ -66,11 +66,11 @@ try{
  });
  const targetLock=new DatabaseSync(otherUi);targetLock.exec('BEGIN EXCLUSIVE');
  try{
-   await shell.click('[data-project-id="'+otherId+'"]');
+   await shell.locator('[data-project-id="'+otherId+'"]').click();
    await shell.waitForFunction(()=>window.__ciSwitchHold,{polling:10,timeout:1000});
    assert.equal(await shell.$eval('#reader',node=>node.inert),true,'source content stays held');
    assert.equal(await shell.$eval('#recent',node=>!!node.closest('[inert]')),false,'navigation must remain interactive');
-   await shell.click('[data-project-id="'+projectId+'"]');
+   await shell.locator('[data-project-id="'+projectId+'"]').click();
  }finally{targetLock.exec('ROLLBACK');targetLock.close();}
  await shell.waitForFunction(id=>window.__workspaceScope?.projectId===id&&!document.querySelector('[data-project-id][aria-busy="true"]'),{polling:10,timeout:10000},projectId);
  assert.deepEqual(await shell.evaluate(()=>window.__ciRailClicks),[{id:otherId,trusted:true},{id:projectId,trusted:true}]);
@@ -79,7 +79,7 @@ try{
  result.checks.push('real pending retention freezes source controls but accepts the newer trusted project selection and preserves the editor');
  result.firstExit=await close();assert((await fs.readFile(path.join(project,'reading.txt'),'utf8')).includes('CI_SMOKE_EDIT'));
  result.checks.push('explicit native save writes original source and normal close preserves it');
- await launch();if(await shell.$('[data-project-id="'+projectId+'"]'))await shell.click('[data-project-id="'+projectId+'"]');
+ await launch();if(await shell.$('[data-project-id="'+projectId+'"]'))await shell.locator('[data-project-id="'+projectId+'"]').click();
  let restored=await until(async()=>{for(const p of await browser.pages())if(await p.evaluate(()=>window.__workspaceScope?.kind==='document'&&window.__workspaceScope.relPath==='reading.txt').catch(()=>false))return p;return null;},'restored document');
  await restored.waitForFunction(()=>window.__nozeliInput?.text?.().includes('CI_SMOKE_EDIT'));
  result.checks.push('cold restart restores persisted document content without model replay');
