@@ -9,6 +9,8 @@
 - 安全升级后本机完整unit仍842通过；完整integration未签收：1200秒命令时限结束前已观察到遗留omp-bridge-endpoint测试强制/tmp部署时的-122写入配额失败，其余输出没有完整结束汇总。未将部分通过冒充全量、未删除该安全回归或改产品桥接逻辑绕过环境。新提交仍须由隔离runner完成完整CI与实际包验收。
 - d62a148的Linux实际解压包五旅程、unit与Mac原生安全通过；Linuxintegration尚未运行就因azure.archive.ubuntu.com临时DNS失败、bubblewrap下载exit100而失败，不跳过隔离准备或测试来变绿。Mac43039028636的普通保存/冷恢复、完整Task、DOCX/XLSX通过，PPT在旧瞬时ElementHandle双击处报不可点击。改为查询当前CSS可见、非零尺寸且稳定的真实标题，由Locator完成原生滚动/物理双击；不写store、不用DOM click、不放宽PPT导出和原件不变断言。失败保留PPT截图/几何及会话日志；本机实际安全包Office旅程 `/var/tmp/nozeli-office-journey-aaSJZ1/report.json` 通过，最终Mac仍须新提交实际验收。
 - 2263e22的Mac失败发生在更早的reading.txt导航，确切日志为旧page.click持有的节点已脱离文档，未到PPT步骤；不将其归因为PPT仍失败。项目/文件/浏览入口统一改为新鲜稳定Locator物理点击，不替换生产UI、不注入DOM点击，保留“pending保留期间仍接受更新的两次trusted点击”、保存和冷恢复断言。本机实际包 `.test-output/ci/smoke-EeUJox/report.json` 与Office `/var/tmp/nozeli-office-journey-vFKWfG/report.json` 均通过。Ubuntu隔离runner的apt镜像列表显式使用官方HTTPS archive/security源，保留GPG校验、bubblewrap与原隔离测试；只作用于临时CI机器，不更改用户机器或产品运行要求。
+- 323109a的Mac证据不是继续等待即可解决：下载的真实PPT截图显示444px视口被固定160px缩略图+260px属性栏挤满，标题实际高度0.69px。父适配新增窄布局，在900px以下由显式按钮按需显示原面板；原canvas/Pinia模型不重建，工具不删除，原popover在body不受滚动裁切，Escape不抢IME/弹出菜单，readonly镜像不受影响，放映/编辑根节点切换有独立监听与清理。实际新包 `/var/tmp/nozeli-beta3-candidate-VZFuGg/releases/beta3` Office `/var/tmp/nozeli-office-journey-pMCCgR/report.json` ok=true：445px视口保留445.33px画布、400.5px幻灯片，两面板物理开关后同canvas/模型不变，随后真实PPT双击键入/导出/原件不变、DOCX冲突及冷恢复全过；截图已查看。18项PPT恢复/发行/平台回归通过。最初用旧session.resize的夹具失败已改为现行workspace.control，不恢复旧接口。
+- CI镜像列表变更后仍在mirror+file传输中DNS失败，不能称已修复。后续使用仅限临时GitHub Ubuntu机器的Node安装助手，通过独立临时deb822源直接访问官方HTTPS archive/security，显式沿用Ubuntu archive keyring；不修改开发机源、不取消GPG、不跳过bubblewrap/隔离测试，结果仍需新精确提交CI验证。
 
 ## Beta3 发布闭包瘦身（2026-11-11，Linux候选已验，双平台发行验收待CI）
 

@@ -197,9 +197,33 @@ try {
 
   // ---- PPTX: engine text edit, exported copy via real export path, original untouched. ----
   const pptMarker = 'JOURNEY_PPT_中文_7403'; report.markers.ppt = pptMarker;
+  await call(shell, 'workspace.control', {type: 'window-control', action: 'resize', width: 1024, height: 800});
   pptPage = await openDoc('sample.pptx');
   let pptFrame = await until(() => pptPage.frames().find(f => f.url().includes('/ppt-vendor/')), 'PPT frame');
   await pptFrame.waitForFunction(() => window.__nozeliPptist?.store?.slides?.length === 3, {timeout: 90000});
+  await pptFrame.waitForSelector('.pptist-editor[data-nozeli-ppt-layout="compact"]', {visible: true});
+  await pptFrame.waitForFunction(() => document.querySelector('.canvas')?.getBoundingClientRect().width >= innerWidth * .9 && document.querySelector('.canvas .viewport-wrapper')?.getBoundingClientRect().width >= 150);
+  const layoutBaseline = await pptFrame.evaluate(() => {
+    window.__ciPptCanvas = document.querySelector('.canvas');
+    const canvas = window.__ciPptCanvas.getBoundingClientRect();
+    const viewport = document.querySelector('.canvas .viewport-wrapper').getBoundingClientRect();
+    return {model: JSON.stringify(window.__nozeliPptist.store.$state), width: innerWidth, canvasWidth: canvas.width, viewportWidth: viewport.width};
+  });
+  assert(layoutBaseline.width <= 900, 'exercise the actual narrow document viewport');
+  assert(layoutBaseline.canvasWidth >= layoutBaseline.width * .9, 'sidebars must not squeeze the editable canvas');
+  assert(layoutBaseline.viewportWidth >= 150, 'the fitted slide must not collapse into a tiny strip');
+  for (const [panel, selector] of [['tools', '.layout-content-right'], ['slides', '.layout-content-left']]) {
+    await pptFrame.locator(`.nozeli-ppt-panel-controls [data-panel="${panel}"]`).click();
+    await pptFrame.waitForFunction(selector => document.querySelector(selector)?.checkVisibility(), {}, selector);
+    await pptPage.keyboard.press('Escape');
+    await pptFrame.waitForFunction(panel => document.querySelector(`.nozeli-ppt-panel-controls [data-panel="${panel}"]`)?.getAttribute('aria-expanded') === 'false', {}, panel);
+    const retained = await pptFrame.evaluate(() => ({sameCanvas: window.__ciPptCanvas === document.querySelector('.canvas'), model: JSON.stringify(window.__nozeliPptist.store.$state)}));
+    assert.equal(retained.sameCanvas, true, 'opening tools must not replace the live editor');
+    assert.equal(retained.model, layoutBaseline.model, 'panel layout must not edit or reset the document');
+  }
+  report.pptLayout = {width: layoutBaseline.width, canvasWidth: layoutBaseline.canvasWidth, viewportWidth: layoutBaseline.viewportWidth};
+  await pptPage.screenshot({path: path.join(out, 'ppt-narrow-canvas.png')});
+  report.checks.push('narrow PPT retains a usable canvas and both original tool panels without replacing the editor or changing its model');
   const title = pptFrame.locator(() => [...document.querySelectorAll('.editable-element .ProseMirror')].find(node => {
     const rect = node.getBoundingClientRect();
     return node.textContent.includes('NOZELI_PPTIST_TITLE') && node.checkVisibility({checkOpacity: true, checkVisibilityCSS: true}) && rect.width > 0 && rect.height > 0;

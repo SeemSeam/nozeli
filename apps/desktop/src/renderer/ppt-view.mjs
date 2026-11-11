@@ -1,5 +1,6 @@
 import {mountPptAnnotations} from './ppt-annotations.mjs';
 import {mountPptContextMenu} from './ppt-context-menu.mjs';
+import {mountPptLayout} from './ppt-layout.mjs';
 // PPTX edits are persisted as an independent model, never over the source package.
 export async function mountPpt({parent,bytes,name,draft,readOnly=false,onChange,onExport,onSelection,onRegionMode,noteActions,tagActions,onContextMenu,onContextClose,onSelectionStart,onPointItems}){
  const host=document.createElement('div');host.style.cssText='height:100%;min-height:0;display:flex;flex-direction:column;background:var(--bg);color:var(--ink)';
@@ -8,7 +9,7 @@ export async function mountPpt({parent,bytes,name,draft,readOnly=false,onChange,
  const info=document.createElement('span');info.textContent='PPTX · 编辑自动保存为 Nozeli 草稿，原件保持不变';
  const button=document.createElement('button');button.textContent='导出 PPTX 副本';button.id='ppt-export';bar.append(info,button);
  const frame=document.createElement('iframe');frame.id='ppt-frame';frame.title='PPTX 编辑器';frame.src='./ppt-vendor/index.html';frame.setAttribute('sandbox','allow-scripts allow-same-origin');frame.style.cssText='width:100%;flex:1;min-height:0;border:0';host.append(bar,frame);parent.replaceChildren(host);parent.hidden=false;
- let disposed=false,unsubscribe;const deadline=Date.now()+45000;
+ let disposed=false,unsubscribe,disposeLayout;const deadline=Date.now()+45000;
  try{
   let engine;
   while(!disposed){engine=frame.contentWindow?.__nozeliPptist;if(engine?.ready&&engine.store.slides.length)break;if(Date.now()>deadline)throw Error('PPTX 引擎打开超时');await new Promise(r=>setTimeout(r,100));}
@@ -20,6 +21,7 @@ export async function mountPpt({parent,bytes,name,draft,readOnly=false,onChange,
   if(draft)engine.store.$patch(draft);
   await engine.resetHistory();
   engine.store.setTitle(name.replace(/\.pptx$/i,''));
+ if(!readOnly)disposeLayout=mountPptLayout(frame);
   frame.contentWindow.onbeforeunload=null;
   const flushText=()=>{if(disposed)throw Error('PPTX 已关闭');return engine.flushText()===true;};
   const snapshot=()=>{flushText();return JSON.parse(JSON.stringify(engine.store.$state));};
@@ -42,6 +44,6 @@ export async function mountPpt({parent,bytes,name,draft,readOnly=false,onChange,
   button.onclick=async()=>{button.disabled=true;try{await onExport(await exportBytes());}catch(e){bar.hidden=false;info.textContent=e.message;}finally{button.disabled=false;}};
   const annotations=readOnly?{dispose(){}}:mountPptAnnotations({host,frame,engine,onSelection,onRegionMode,noteActions,tagActions});
   const context=readOnly?{close(){},dispose(){}}:mountPptContextMenu({frame,onOpen:onContextMenu,onClose:onContextClose,onSelectionStart,pointItems:onPointItems});
-  return {...annotations,flushText,snapshot,snapshotModel:snapshot,export:exportBytes,applyModel:model=>{if(!readOnly)throw Error('Only a reading mirror accepts shared models.');const page=engine.store.slideIndex;engine.store.$patch(model);if(Number.isInteger(page)&&page<engine.store.slides.length)engine.store.setSlideIndex(page);},closeContextMenu:context.close,dispose(){context.dispose();annotations.dispose();disposed=true;unsubscribe?.();host.remove();}};
- }catch(e){host.remove();throw e;}
+  return {...annotations,flushText,snapshot,snapshotModel:snapshot,export:exportBytes,applyModel:model=>{if(!readOnly)throw Error('Only a reading mirror accepts shared models.');const page=engine.store.slideIndex;engine.store.$patch(model);if(Number.isInteger(page)&&page<engine.store.slides.length)engine.store.setSlideIndex(page);},closeContextMenu:context.close,dispose(){context.dispose();annotations.dispose();disposeLayout?.();disposed=true;unsubscribe?.();host.remove();}};
+ }catch(e){disposeLayout?.();host.remove();throw e;}
 }
