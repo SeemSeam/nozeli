@@ -6,9 +6,10 @@ export function mountProviderSettings({invoke,providers=document.getElementById(
  const message=node('p','',{role:'status','aria-live':'polite','data-provider-status':''});
  const modelMessage=node('p','',{role:'status','aria-live':'polite','data-model-status':''});models.append(modelMessage);
  const parseModelLines=value=>String(value??'').split(/[\n,]+/).map(line=>line.trim()).filter(Boolean).map(line=>{
-  const thinking=/\s*\[thinking\]\s*$/.test(line);
-  const id=line.replace(/\s*\[thinking\]\s*$/,'').trim();
-  return {id,...(thinking?{reasoning:true}:{})};
+  const suffix=line.match(/(?:\s*\[(?:thinking|image)\])+\s*$/)?.[0]||'';
+  const flags=[...suffix.matchAll(/\[(thinking|image)\]/g)].map(match=>match[1]);
+  const id=(suffix?line.slice(0,-suffix.length):line).trim();
+  return {id,...(flags.includes('thinking')?{reasoning:true}:{}),...(flags.includes('image')?{images:true}:{})};
  });
  const list=node('div',null,{'data-provider-list':''}),loginArea=node('div',null,{'data-provider-login':''});
  providers.append(node('h2','账号与 API 源'),node('p','管理凭据与模型目录。密钥仅存于本机；模型可列出不代表拥有推理授权。'),list);
@@ -20,8 +21,8 @@ export function mountProviderSettings({invoke,providers=document.getElementById(
  const form=node('form',null,{'data-provider-api-form':''});
  const providerField=field(form,'源 ID（不可改名；改名需新增源）','provider');
  const baseUrlField=field(form,'API 地址（base URL）','baseUrl','url');
- const modelLines=node('textarea','',{name:'models',rows:'4','data-provider-models':'',placeholder:'每行一个模型ID；声明支持思考的模型在行尾加 [thinking]'});
- const modelsWrap=node('label','模型ID（每行一个，可多个；[thinking] 声明该模型支持思考）');modelsWrap.append(modelLines);form.append(modelsWrap);
+ const modelLines=node('textarea','',{name:'models',rows:'4','data-provider-models':'',placeholder:'每行一个模型ID；支持图片加 [image]，支持思考加 [thinking]'});
+ const modelsWrap=node('label','模型ID（每行一个；[image] 声明图片输入，[thinking] 声明思考）');modelsWrap.append(modelLines);form.append(modelsWrap);
  const protocol=node('label','API协议'),api=node('select',null,{name:'api'});for(const value of ['openai-completions','openai-responses','anthropic-messages']){const opt=node('option',value,{value});api.append(opt);}protocol.append(api);form.append(protocol);
  const key=field(form,'API密钥（编辑时留空＝保留已存密钥）','key','password');key.placeholder='新增必填；编辑留空保留原密钥，输入则替换';
  const originConsent=node('label','API地址来源变化时复用原密钥');const originConsentBox=node('input',null,{type:'checkbox',name:'confirmNewOrigin'});originConsent.prepend(originConsentBox);form.append(originConsent);originConsent.hidden=true;
@@ -88,9 +89,9 @@ nativeKeyWrap.append(nativeKeyInput);nativeKeyProvider.append(node('option','正
  }
  const report=error=>{message.textContent=error?.message||'操作未完成。';modelMessage.textContent=message.textContent;};
  // Read-DTO -> write-DTO: only allowlisted fields; unknown/null capability values are omitted, never forwarded to settings.providers.save.
- const writeModel=m=>({id:m.id,...(text200(m.name)?{name:m.name}:{}),...(m.reasoning===true?{reasoning:true}:{})});
+ const writeModel=m=>({id:m.id,...(text200(m.name)?{name:m.name}:{}),...(m.reasoning===true?{reasoning:true}:{}),...(typeof m.images==='boolean'?{images:m.images}:{})});
  const text200=v=>typeof v==='string'&&v.trim()&&v.length<=200&&v.trim()===v?v:null;
- const formatModelLines=modelsList=>(modelsList??[]).map(m=>m.id+(m.reasoning===true?' [thinking]':'')).join('\n');
+ const formatModelLines=modelsList=>(modelsList??[]).map(m=>m.id+(m.reasoning===true?' [thinking]':'')+(m.images===true?' [image]':'')).join('\n');
  // 摘要行只报已保存／待生效／失败计数；逐项结果收进默认折叠的明细披露。
  function renderSync(sync,{saved=false}={}){
   const summary=[],details=[];
@@ -150,7 +151,7 @@ nativeKeyWrap.append(nativeKeyInput);nativeKeyProvider.append(node('option','正
   if(available.length&&!busy&&document.activeElement===select){pendingChoices.set(select,{available,savedDefault});return;}
   pendingChoices.delete(select);
   const selected=select.dataset.dirty==='true'?select.value:savedDefault;
-  const choices=[['','会话原生默认（清除全局覆盖）'],...available.map(model=>[model.selector,`${model.name||model.id||model.selector} · ${model.provider} · ${model.catalogSource==='configured'?'手动配置':model.credentialConfigured?'内置目录（凭据已配置）':'内置目录'}${model.thinking?.supported===true?' · 支持思考':''}`])];
+  const choices=[['','会话原生默认（清除全局覆盖）'],...available.map(model=>[model.selector,`${model.name||model.id||model.selector} · ${model.provider} · ${model.catalogSource==='configured'?'手动配置':model.credentialConfigured?'内置目录（凭据已配置）':'内置目录'}${model.images===true?' · 支持图片':''}${model.thinking?.supported===true?' · 支持思考':''}`])];
   if(selected&&selected!==''&&!available.some(model=>model.selector===selected))choices.push([selected,selected+'（当前目录不可见，保留原设置；不可重新选择）','disabled']);
   if(select.options.length!==choices.length||choices.some(([value,text],index)=>select.options[index].value!==value||select.options[index].textContent!==text)){
    select.replaceChildren(...choices.map(([value,text,disabled])=>{const option=node('option',text,{value});if(disabled)option.disabled=true;return option;}));

@@ -9,6 +9,8 @@ export interface CustomProviderModelInput {
    * capability metadata, not UI-only state.
    */
   readonly reasoning?: boolean;
+  /** Explicit user declaration; maps to the SDK's native image input metadata. */
+  readonly images?: boolean;
 }
 
 export interface CustomProviderInput {

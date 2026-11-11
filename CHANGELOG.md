@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+- Make workspace drawing discussions transcript-first: remove the permanent footer instructions and secondary button row, move source/retention actions into the title menu, bound the compact composer and let the transcript grow with the shared local window.
+- Preserve explicit custom-model image capability through settings, native models.json and static OMP imports. Refuse image submissions to a non-vision native model before inference instead of letting the SDK silently replace images with text. Existing personal configurations are not automatically rewritten.
+- Send frozen ink bounds, image dimensions, normalized coordinates and intersected viewport identities with the composite PNG. Preserve original receipts and portable source manifests; do not invent document pages or precise file selections.
+- Retain body scrolling when a shared drawing discussion is resized to its supported 100px minimum height; physically resize and verify the composer and both explicit send actions remain reachable after scrolling. Keep image capability configuration and frozen provenance unchanged.
+
 ## 0.1.0-beta.3
 - Owner-authorized public prerelease (2026-11-11): after the six still-pending redistribution obligations were disclosed again, the owner explicitly authorized this Beta.3 public exception for Linux x64 and macOS arm64. Not reused Beta.2 approval, compliance certification, stable/latest promotion or daily-install authorization. Keep the public audit blocked and the Mac ad-hoc/not-notarized boundary explicit; publish only after exact-commit CI and both extracted-package journeys pass.
 - Reduce installed application footprint without optional downloads or removing document formats, fonts, offline resources or Node/Pi/Git: classify compiled frontend dependencies as build-only, retain Canvas explicitly at its existing pinned version, exclude foreign-platform PTY prebuilds and duplicate source illustrations/icons, and preserve target native helpers and compiled assets. Derive retained third-party notices from actual frontend build inputs, including transitive packages, rather than discarding licenses with the original npm directories. Retain the complete Pi dependency tree with the security overrides below; do not remove SDK declarations/maps, Node headers or native Canvas binaries.

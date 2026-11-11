@@ -11,6 +11,8 @@ The product GUI no longer mounts an embedded OMP terminal. Durable Pi journal ro
 
 Status: isolated Linux integration candidate on `integration/pi-gui`; not installed or publicly distributed. `integrations/pi/upstream-manifest.json` records 46 original/patched file SHA-256 pairs, `patches/` records the three exact modifications, and `package-lock.json` pins the SDK dependency closure. Pi SDK's fixed v1.4.0 MIT notice is retained at `integrations/pi/licenses/pi-1.4.0.LICENSE` (source: https://raw.githubusercontent.com/earendil-works/pi/v1.4.0/LICENSE). The full transitive binary/notice/corresponding-source audit remains pending; these records are not redistribution signoff.
 
+Source-only update (2026-11-12; not installed or released): `0006-custom-model-image-input.patch` preserves an explicit `images` declaration through the custom provider store as the SDK's native `input` metadata. The two changed vendored files retain their original upstream hashes and updated patched hashes in `upstream-manifest.json`; the SDK version and license remain unchanged. The bridge refuses an attached image when the live native model does not accept image input, rather than relying on the SDK's text-placeholder downgrade. This is not redistribution signoff.
+
 ## Static HTML reports and offline diagrams (2026-10-23)
 
 HTML/CSS/JavaScript syntax analysis uses the existing MIT Lezer parsers, now explicit production dependencies: `@lezer/html` 1.3.13, `@lezer/css` 1.3.9 and `@lezer/javascript` 1.5.6. Host SVG validation reuses `@xmldom/xmldom` 0.9.12 (MIT); raster bounds reuse `image-size` 2.0.3 (MIT). These parsers do not grant HTML any application or filesystem privileges.

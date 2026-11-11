@@ -24,7 +24,8 @@ import {createDiscussionTransport,createDiscussionThread,createThreadMessageSour
 import {mountLocalWindow,ensureLocalWindowLayer,viewportWindowEnvironment} from './local-window.mjs';
 import {createLocalWindowView} from './local-window-view.mjs';
 import {migrateLegacyCardOffset,consumableLegacyCardOffset,cardWindowOwnerId} from './snapshot-card-view.mjs';
-import {menuShortcut} from './context-menu.mjs';
+import {menuShortcut,mountContextMenu} from './context-menu.mjs';
+import {panelButton,panelMenuPosition} from './panel-menu.mjs';
 
 export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openConversation=null,subscribe=null}){
   let dialog=null,editor=null,statusEl=null,recoverRow=null,recoverSelect=null,recoverClean=null;
@@ -37,7 +38,7 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
   // only the revision it actually captured.
   let saveTimer=null,writeChain=Promise.resolve(),saveError=null,lastDrawing=null,lastDrawingDirty=false,changeSeq=0;
   let card=null,cardBox=null,cardImage=null,cardOverlay=null,cardPanel=null,cardHint=null,cardText=null,cardSend=null,cardLocal=null,cardBack=null,cardDraft=null,cardOpen=null,cardDone=null,cardThreadEl=null,cardStatusLine=null,cardReopen=null;
-  let cardTask=null,cardTaskReceipt=null,cardSourceSummary=null;
+  let cardTask=null,cardTaskReceipt=null,cardSourceSummary=null,cardHeading=null,cardMore=null,cardMenu=null;
   let cardState=null,cardMessageDraft='',cardSavedText=null,cardSavedRect=null;
   let cardWindow=null,cardWindowKey=null,cardEpoch=0,cardTitle=null,cardWindowObserver=null;
   // Discussion thread state: one thread per dialog session, shared layer with
@@ -56,7 +57,13 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
   const call=async(op,p={})=>{const result=await invoke(op,p);if(!result?.ok)throw Error(result?.error?.message||'涂鸦操作失败');return result.value;};
   const image=url=>{const im=new Image();im.src=url;return im.decode().then(()=>im);};
   const status=text=>{if(statusEl){statusEl.textContent=text;statusEl.title=text;statusEl.dataset.state=/失败|错误/.test(text)?'error':'info';}};
-  const cardStatus=(text,state='')=>{if(!cardStatusLine)return;cardStatusLine.textContent=text||'';if(state)cardStatusLine.dataset.state=state;else delete cardStatusLine.dataset.state;};
+  const cardStatus=(text,state='')=>{
+    if(!cardStatusLine)return;
+    cardStatusLine.textContent=text||'';cardStatusLine.title=text||'';cardStatusLine.hidden=!text;
+    if(state)cardStatusLine.dataset.state=state;else delete cardStatusLine.dataset.state;
+    if(state==='error')cardPanel.insertBefore(cardStatusLine,cardThreadEl);
+    else cardHeading.append(cardStatusLine);
+  };
   const closeDialogEl=()=>{if(dialog?.open)dialog.close();};
 
   function ensure(){
@@ -364,14 +371,12 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
     if(!card)return;
     const mode=cardMode(),rounds=discussion?.thread?.history?.length||0;
     cardSend.textContent=rounds?'发送续问':'发送讨论';
-    cardSend.classList.toggle('snapshot-card-send',mode==='compose'||!rounds);
-    cardSend.classList.toggle('snapshot-card-followup',mode!=='compose'&&rounds>0);
     cardDraft.hidden=mode!=='compose';
     cardLocal.hidden=mode!=='compose';
     cardBack.hidden=mode==='finalized';
     cardOpen.hidden=mode==='compose';
     cardDone.hidden=mode==='compose';
-    cardThreadEl.hidden=!rounds&&mode==='compose';
+    cardThreadEl.hidden=false;
     cardSend.disabled=sending||discussion?.pending()===true;
     cardTask.disabled=sending;
     for(const button of [cardDraft,cardLocal,cardBack])button.disabled=sending||Boolean(cardState?.pendingSubmission);
@@ -390,6 +395,7 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
     else if(thread.status==='failed')cardStatus('回复失败 · 原问题已保留，可续问或到对话中重试','error');
     else if(thread.status==='accepted-awaiting-reply'||thread.status==='pending')cardStatus('等待前台回复…');
     else if((thread.history||[]).length)cardStatus('前台已回复 · 可续问');
+    else cardStatus('');
     renderCardMode();
   }
   function ensureCard(){
@@ -399,29 +405,25 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
     cardImage=document.createElement('img');cardImage.alt='冻结截图';cardImage.draggable=false;
     Object.assign(cardImage.style,{display:'block',width:'100%',height:'100%',pointerEvents:'none',userSelect:'none'});
     cardOverlay=document.createElement('div');Object.assign(cardOverlay.style,{position:'absolute',inset:'0',pointerEvents:'none'});
-    // Visual language lives in region-drawing.css (snapshot-card-*): paper
-    // panel, red marker title, frozen-source caption, tag-style transcript,
-    // hint chip, pill actions. The panel itself is a shared local-window body:
-    // local-window.mjs owns drag/resize/keyboard/persistence; layoutCard only
-    // derives the stroke-anchored natural default rect for auto placement.
+    // The shared local-window shell owns geometry; the body is the same
+    // transcript-first, compact-composer shape as a file discussion window.
     cardPanel=document.createElement('div');cardPanel.className='snapshot-card-panel';
-    // The title node is the shell header caption — display only, no listeners.
     const title=document.createElement('strong');title.textContent='位置讨论';title.className='snapshot-card-title';
-    cardTitle=title;
+    cardHeading=document.createElement('span');cardHeading.className='snapshot-card-heading';cardHeading.append(title);cardTitle=cardHeading;
     cardHint=document.createElement('span');cardHint.className='snapshot-card-hint';
-    const sourceDetails=document.createElement('details');sourceDetails.className='snapshot-card-source';
-    cardSourceSummary=document.createElement('summary');cardSourceSummary.textContent='冻结来源 · 展开核对';sourceDetails.append(cardSourceSummary,cardHint);
-    const sourceRisk=document.createElement('span');sourceRisk.className='snapshot-card-source-risk';sourceRisk.textContent='发送包含冻结截图及来源；视口位置不是精确文件选区。';
+    const sourceDetails=document.createElement('details');sourceDetails.className='snapshot-card-source';sourceDetails.hidden=true;
+    cardSourceSummary=document.createElement('summary');cardSourceSummary.textContent='冻结来源';sourceDetails.append(cardSourceSummary,cardHint);
+    const sourceRisk=document.createElement('span');sourceRisk.className='snapshot-card-source-risk';sourceRisk.textContent='发送的是带笔迹的冻结图片；截图坐标不等于精确文件选区。';sourceDetails.append(sourceRisk);
     cardTaskReceipt=document.createElement('span');cardTaskReceipt.className='snapshot-card-task-receipt';cardTaskReceipt.setAttribute('role','status');cardTaskReceipt.hidden=true;
     cardThreadEl=document.createElement('span');cardThreadEl.className='tag-transcript snapshot-card-thread';cardThreadEl.setAttribute('role','log');cardThreadEl.setAttribute('aria-label','此涂鸦的完整讨论');
-    renderTranscript=mountThreadTranscript(cardThreadEl,{welcome:'围绕这处冻结截图继续讨论。输入问题后发送，回复会留在这里和对话时间线。'});
-    cardText=document.createElement('textarea');cardText.placeholder=menuShortcut('补充说明（可留空直接发送截图；Ctrl/Cmd+Enter 发送讨论）');cardText.setAttribute('aria-label','讨论说明');cardText.className='snapshot-card-text';
-    cardStatusLine=document.createElement('span');cardStatusLine.className='snapshot-card-status';cardStatusLine.setAttribute('role','status');
-    const row=document.createElement('div');row.className='snapshot-card-actions';
+    renderTranscript=mountThreadTranscript(cardThreadEl);
+    cardText=document.createElement('textarea');cardText.rows=1;cardText.placeholder='关于这处涂鸦，聊一聊…';cardText.title=menuShortcut('Ctrl/Cmd+Enter 发送讨论');cardText.setAttribute('aria-label','讨论说明');cardText.className='snapshot-card-text';
+    cardStatusLine=document.createElement('span');cardStatusLine.className='snapshot-card-status';cardStatusLine.setAttribute('role','status');cardStatusLine.hidden=true;cardHeading.append(cardStatusLine);
+    const row=document.createElement('div');row.className='snapshot-card-actions snapshot-card-secondary';row.hidden=true;
     cardSend=document.createElement('button');cardSend.type='button';cardSend.textContent='发送讨论';cardSend.className='snapshot-card-send';
     cardTask=document.createElement('button');cardTask.type='button';cardTask.textContent='提交后台任务';cardTask.className='snapshot-card-task';cardTask.title='将当前要求与同一冻结截图交给后台，不先等待前台回复';
     const primary=document.createElement('div');primary.className='snapshot-card-actions snapshot-card-primary';primary.setAttribute('role','group');primary.setAttribute('aria-label','提交方式');
-    const actionHint=document.createElement('span');actionHint.className='snapshot-card-action-hint';actionHint.textContent='发送讨论：在这里接收回复；后台任务：在工作栏查看进展。';
+    const composer=document.createElement('div');composer.className='tag-composer snapshot-card-composer';
     cardDraft=document.createElement('button');cardDraft.type='button';cardDraft.textContent='加入对话草稿';cardDraft.className='snapshot-card-local';
     cardLocal=document.createElement('button');cardLocal.type='button';cardLocal.textContent='仅保存本地';cardLocal.className='snapshot-card-local';
     cardBack=document.createElement('button');cardBack.type='button';cardBack.textContent='返回笔迹';cardBack.className='snapshot-card-back';
@@ -433,8 +435,19 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
     cardText.addEventListener('keydown',event=>{if((event.ctrlKey||event.metaKey)&&event.key==='Enter'&&!event.isComposing&&event.keyCode!==229&&!event.repeat&&!cardSend.disabled){event.preventDefault();cardSend.click();}});
     cardSend.onclick=()=>void sendDiscussion();cardTask.onclick=()=>void sendDiscussion(true);cardDraft.onclick=()=>void finishCard(false);cardLocal.onclick=()=>void finishCard(true);cardBack.onclick=()=>void backToDrawing();
     cardOpen.onclick=()=>void enterConversation();cardDone.onclick=()=>void exitDialog();
-    primary.append(cardSend,cardTask);row.setAttribute('role','group');row.setAttribute('aria-label','保留与返回');row.append(cardDraft,cardLocal,cardBack,cardOpen,cardDone);
-    cardPanel.append(sourceDetails,sourceRisk,cardThreadEl,cardTaskReceipt,cardText,primary,actionHint,cardStatusLine,row);
+    primary.append(cardSend,cardTask);composer.append(cardText,primary);row.append(cardDraft,cardLocal,cardBack,cardOpen,cardDone);
+    cardMenu=mountContextMenu({id:'snapshot-card-menu',label:'涂鸦讨论操作',onClose:()=>cardMore?.setAttribute('aria-expanded','false'),onError:message=>cardStatus(message,'error')});
+    cardMenu.menu.classList.add('snapshot-card-menu');dialog.append(cardMenu.menu);
+    cardMore=panelButton(null,'涂鸦讨论更多操作');cardMore.classList.add('snapshot-card-more');
+    cardMore.addEventListener('click',event=>{
+      event.stopPropagation();cardMore.setAttribute('aria-expanded','true');
+      const buttons=[...row.children].filter(button=>!button.hidden);
+      cardMenu.open([{id:'source',label:sourceDetails.hidden?'查看截图与位置':'收起截图与位置'},...buttons.map((button,index)=>({id:String(index),label:button.textContent,enabled:!button.disabled}))],{...panelMenuPosition(cardMore),focus:cardMore,run:command=>{
+        if(command==='source'){sourceDetails.hidden=!sourceDetails.hidden;sourceDetails.open=!sourceDetails.hidden;return;}
+        buttons[Number(command)]?.click();
+      }});
+    });
+    cardPanel.append(sourceDetails,cardThreadEl,composer,row);sourceDetails.append(cardTaskReceipt);
     cardBox.append(cardImage,cardOverlay);
     card.append(cardBox);
     dialog.append(card);
@@ -509,6 +522,8 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
     cardWindow=mountLocalWindow({layer,key,title:cardTitle,body:cardPanel,state,
       environment:viewportWindowEnvironment(layer,{defaultRect:()=>cardState?.panelNatural?{x:cardState.panelNatural[0],y:cardState.panelNatural[1],width:Math.min(360,Math.max(220,innerWidth-48)),height:Math.min(420,Math.max(160,innerHeight-48))}:{x:24,y:24,width:Math.min(360,Math.max(220,innerWidth-48)),height:Math.min(420,Math.max(160,innerHeight-48))},epoch:()=>cardEpoch}),
       commitView:store.commitView,beforeHide:()=>{},onError:error=>toast(error.message)});
+    cardWindow.node.classList.add('snapshot-discussion-window');
+    cardWindow.header.insertBefore(cardMore,cardWindow.header.querySelector('[data-local-window-collapse]'));
     cardWindow.node.setAttribute('role','region');
     cardWindow.node.setAttribute('aria-label','位置讨论');
     cardPanel.localWindow=cardWindow;cardWindow.node.localWindow=cardWindow;

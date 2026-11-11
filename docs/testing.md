@@ -1,3 +1,13 @@
+## 涂鸦讨论去冗余与图片定位（2026-11-12，源码修复，未安装／提交／发布）
+
+- 独立工作树 `/var/tmp/nozeli-drawing-discussion-20261112`，基于已发布 `49ea178`，不修改原发布归档或日常个人配置。窗口正文复用共享讨论渲染与局部窗口，只保留紧凑输入／两个显式提交动作；来源、限制和保留／返回动作移到标题更多菜单，正常状态不占底部。移除继承的260px正文上限，窗口放大时正文真正伸展；不以隐藏失败或丢弃草稿换取面积。
+- 修前真实 Electron＋Pi＋回环HTTP `/var/tmp/nozeli-drawing-background-M1YuWE/report.json`：宿主已登记带笔迹PNG，但模型端图片块0，笔迹位置资料缺失。原生SDK会把未声明image输入的模型降为文字占位，自定义模型存储／界面及既有静态导入此前均未保留该能力。新增显式 `[image]`／`images` 保存到原生models.json input；不猜模型名、不自动修改个人源。非视觉模型在推理前返回PI_IMAGE_UNSUPPORTED，直接原生回归证明没有HTTP推理、没有插入或重放被拒绝输入，随后显式文字仍可使用。
+- 最终实际协议端及窗口 `/var/tmp/nozeli-drawing-background-1AHM8j/report.json` 通过：真实设置页编辑留空密钥保存保留图片声明；后台一次准入、原生Worker真实Git工作树写入／发布；前台讨论和续问同样携图。源图2163×1350由SDK等比缩放为2000×1248，模型端红笔实际像素为[199,53,46]，与笔迹色#c7362f一致；按归一化位置核对，不把压缩／缩放后的传输字节变化误报为丢图。原图尺寸、笔迹含线宽的像素范围／归一化范围、相交来源视口进入实际请求文本；未伪造文件页码或精确选区。该端点按脚本回复，证明程序送达，不证明真实模型理解质量。
+- 最终真实深浅主题320/390、长回复、前台两轮、输入保留及物理放大通过；图已查看，窄窗正文501.3px／可用正文面602.7px，约83%，放大后正文548px／648.7px。不保留伪装前台回复的空态气泡，快捷键说明只放悬停提示；不把单个截图概括为全部平台验收。
+- 最终保留组件 `/var/tmp/nozeli-snapshot-retention-nh2VF0/report.json` 18场景通过（脚本化存储，不冒充真实磁盘故障）；实际局部窗口 `/var/tmp/nozeli-label-windows-bNosdi/report.json` 通过文件／涂鸦拖动、键盘移动、缩放、收展、返回笔迹、本地恢复及CDP组合输入保留。不是系统IME候选窗、付费模型或Windows/macOS验收。
+- 默认unit842/842；图片交接／Provider设置／区域笔迹29/29，另原生非视觉拒图与静态导入各1项通过；Pi driver及renderer构建通过。0006可重建补丁与两个供应文件摘要已记录，补齐独立工作树缺失的原PPT上游归档后，check-repository --verify-hashes为0失败；六项历史分发审计仍pending。
+- 额外旧广义离线脚本未签收：首次有合成项目自动初始化作业影响“零新增作业”断言，明确将该预置历史样本标为非首次语义初始化，不改变生产行为；后续 `/var/tmp/nozeli-offline-results-tGo0sO/report.json` 在进入涂鸦前的历史报告读取触发REPORT_CHANGED守卫，未放宽该守卫、未将此轮算通过。新布局、更多菜单、绘画保留及前台／后台图片链另有上述独立实际路径证明。
+
 ## Beta3 安全依赖与Mac退出契约补修（2026-11-11，新的精确提交验收待CI）
 
 - 推送候选3eaad19后发现16条Dependabot告警；用户明确选择“先修安全依赖再发布”。锁定image-size2.0.3、DOMPurify3.4.17、Pi undici8.12.2/minimatch11.0.1及开发工具Puppeteer25.17.0，保留SDK1.4.0与原Node版本；Pi重建刷新lock摘要。npm旧审计客户端的quick端点返回400不记作干净；npm11.6.2对桌面和Pi完整锁定树均报告0条已知告警。此结果不是完整vendor/二进制审计，更不代替六项人工分发签收。
@@ -936,3 +946,15 @@ Liuhuaiyu真实界面显示当前成果第2版已review，讨论输入却只读�
 独立整合树Linux单元820通过、恢复／诊断／审核专项109通过、真实Electron smoke六脚本通过（`.test-output/ci/smoke.log`）；真实Pi诊断旅程`/var/tmp/nozeli-pi-debug-activation-live-cU2X5I/report.json` ok=true。首候选e683fb7 Mac工作流42943350011实际darwin arm64编译／组装／签名深校验／zip解压自检已过；新增专项72通过／11失败、零跳过，失败全部为managed-review-discussion夹具初始化受runner全局Git过滤配置影响而FILTER_UNSUPPORTED，未运行后续实包交互。该失败保留，不宣称Mac包验收通过。修正仅为此测试步骤独立HOME／GIT_CONFIG_GLOBAL及GIT_CONFIG_NOSYSTEM，沿用主线Mac原生安全测试隔离惯例，不更改产品过滤器拒绝语义、不断言通过或跳过测试，须以新提交完整CI与实包旅程为最终资格。
 
 候选1e8e1bb Mac工作流42944224985全过：原生包自检、新恢复／审核专项、真实解压.app阅读／保存／正常关闭冷恢复与随包Pi多Task旅程成功，Provider错误为空。独立本地完整Linux集成为1923通过／1失败／4跳过，失败是`html-candidate-transaction`注入原事务提交拒绝后，onTool新增故障证据的后续mutate碰到已封存存储，返回PROJECT_UNAVAILABLE覆盖原INJECTED_PROJECT_COMMIT。已修正为原异常携带安全证据后，仅在存储可写时尽力持久诊断投影；投影失败记录有界诊断、绝不替换原异常，不抑制或重试原事务，原回滚／未知效果围栏不变。原事务／控制器／恢复／维修四文件46项通过，新增精确原异常对象不被覆盖与commitUnknown零追加写入回归；最终需新提交双平台完整CI及包验收，不复用此候选归档。
+
+## 全部本地改动检查与安装准备（2026-11-12）
+
+用户授权检查、commit并安装全部产品修改。当前实现位于 `fix/drawing-discussion-20261112`，以已发布Beta3代码49ea178为基线；旧工作树只有未跟踪评估原件，不将实验输出、个人数据或node_modules链接打入产品提交。完整Pi/renderer重建、842项unit、7项图像交接／保留／导入专项通过；真实Pi上下文旅程9项通过，包括非视觉模型推理前拒绝图片且后续纯文本仍可正常执行。元数据与上游归档摘要检查0失败，六项公开分发义务保持pending；0006补丁对vendor源码逆向检查通过。
+
+内置reviewer确认image能力跨UI／host／native SDK传递与来源坐标路径无阻断；另发现讨论窗合法缩到100px时overflow:hidden裁掉输入／按钮，已恢复主体overflow:auto。最终源码实际Electron／Pi／回环HTTP `/tmp/nozeli-drawing-background-RFAMO2/report.json` ok=true：真实笔迹PNG像素／归一化坐标到达、后台唯一派工、前台和续问均携图、100px窗口真实键盘resize后滚动命中输入／双操作、浅深320/390及草稿保持；Reviewer复审关闭该阻断。非真实付费模型理解与跨平台验收。
+
+扩大检查的首轮额外失败保留：`npm run test:smoke` 通过启动／编辑／冷恢复后，在PPT脚本操作时Node detached；provider-settings刷新组件因pending-refresh场景键盘选择未提交而超时，均不计通过。按实际驱动与生产路径调查后续结果，不为此放宽内容／焦点断言。首次冻结因开发依赖目录是外部符号链接被安装器安全拒绝，current/previous未动；改为锁定npm ci实体安装后新候选 `all-local-20261112-02` 完整校验通过。候选891项生产输入（447src、432dist、12Pi-src）与已验输入逐字节相同，清单 `/var/tmp/nozeli-full-local-install-98Ycqz/input-manifest.json`。最终实包与激活结果另记，不提前宣称已安装。
+
+扩大检查收尾：PPT失败堆栈精确定位到首次文件树点击，尚未进入PPT画布；一次性ElementHandle遇文件树重绘失联，改用现有locator真实点击，原OOXML末次按键／外部冲突／恢复断言不变。修正后完整smoke六脚本全部通过，含原生审核读取28项；无PPT生产代码兜底。冻结候选真实ELF／包内Pi的最终图像讨论 `/tmp/nozeli-drawing-background-vjzWLZ/report.json` ok=true，包含100px最小窗滚动命中、真实图片笔迹和前台／续问／后台交付；同候选启动保存／项目切换保护／冷恢复 `apps/desktop/.test-output/ci/smoke-R2NzFb/report.json` ok=true、两次exit0。实际候选生产输入相同，不含开发依赖链接；尚未激活时不将测试实例当作日常安装生效。
+
+独立广义涂鸦脚本 `desktop-workspace-drawing.test.mjs` 本轮在旧离线报告fixture入口停止，`/tmp/nozeli-offline-results-8Gq2zI/report.json` 为 `REPORT_CHANGED`，未进入涂鸦手势；与前轮已记录的同类入口限制一致，不修改产品报告身份检查以让旧夹具通过，也不把该脚本算通过。当前修改的真实图像交付／保留／最小窗另由上述生产旅程证明。模型刷新组件的原失败截图显示值已提交但原生popup仍打开，测试驱动仅在确切目标值已提交时再按一次Enter确认关闭，仍同时要求值和关闭状态，不改生产renderer；串行验证结果另记。

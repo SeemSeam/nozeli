@@ -1,0 +1,46 @@
+Nozeli patch 0006 — explicit custom model image input.
+Keep the user declaration in the SDK model registry; never infer vision from a model name.
+
+--- a/packages/pi-sdk-driver/custom-provider-types.ts
++++ b/packages/pi-sdk-driver/custom-provider-types.ts
+@@ -9,6 +9,8 @@
+    * capability metadata, not UI-only state.
+    */
+   readonly reasoning?: boolean;
++  /** Explicit user declaration; maps to the SDK's native image input metadata. */
++  readonly images?: boolean;
+ }
+ 
+ export interface CustomProviderInput {
+
+--- a/packages/pi-sdk-driver/custom-provider-store.ts
++++ b/packages/pi-sdk-driver/custom-provider-store.ts
+@@ -113,6 +113,9 @@
+     if (model.reasoning !== undefined && typeof model.reasoning !== "boolean") {
+       throw new Error(`Model ${model.id} has non-boolean reasoning.`);
+     }
++    if (model.images !== undefined && typeof model.images !== "boolean") {
++      throw new Error(`Model ${model.id} has non-boolean images.`);
++    }
+   }
+ }
+ 
+@@ -133,6 +136,9 @@
+       }
+       if (model.reasoning !== undefined) {
+         entry.reasoning = model.reasoning;
++      }
++      if (model.images !== undefined) {
++        entry.input = model.images ? ["text", "image"] : ["text"];
+       }
+       return entry;
+     }),
+@@ -179,6 +185,7 @@
+             if (contextWindow !== undefined) entry.contextWindow = contextWindow;
+             if (name !== undefined) entry.name = name;
+             if (reasoning !== undefined) entry.reasoning = reasoning;
++            if (Array.isArray(modelConfig.input)) entry.images = modelConfig.input.includes("image");
+             return entry;
+           })
+           .filter((entry): entry is CustomProviderModelInput => entry !== undefined)
+

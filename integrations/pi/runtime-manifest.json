@@ -9,7 +9,7 @@
   "entry": "src/owner.mjs",
   "files": {
     "src/owner.mjs": "c803a67966e52096b6a89795d055a98beaf18c6a6b583ecfe072cf023a498222",
-    "src/bridge.mjs": "ca6b24d29a6bf151b9827ebf3f393a92f19d437439355d3b9a79583cd3e79909",
+    "src/bridge.mjs": "14a03c9cd287191eff6acde1cf066a8bdbfde8a2fdb65aa39a385c8a9daccdc4",
     "src/native-skills.mjs": "349ffd7f4c32ca9fe01a80eb06228069537e986859ff9e62e82bb1a586ec1178",
     "src/activity.mjs": "57d0669ad412479a88a960f5c6c1a9d0a7ebf5efd763f50a676dfdc8404d1e45",
     "src/http-observer.mjs": "43bd80ce6635e3ef56108ea4bfcd985ac0fd086e403803b570049ac94c974263",
@@ -18,7 +18,7 @@
     "src/tools.mjs": "8fb0f24fb75478cdf8d3469f30d0ff657fe6812166578f5b435fc80cb9ceb84f",
     "src/questions.mjs": "84b45d9008d20def0f53f5582d9bb4a02763aeeb3b3b4865c950f214f0a6c0d8",
     "src/catalog-memory.mjs": "32894625049686253231ba3de106a07a4607a929674dcef9d8d91ea3ecd647e4",
-    "dist/vendor/pi-gui/packages/pi-sdk-driver/index.js": "e61ce11b5c557dd8b0496dfadc84f8a330b5cd0cd563d08d161380216a1e294d",
+    "dist/vendor/pi-gui/packages/pi-sdk-driver/index.js": "86c18ce7845df017eb4b93d706b37c29e6306aae008ddbcf1e89f625da70502e",
     "package-lock.json": "75df4c4bab553bed682bcdb9e7f6ef94eabd874117a9120059444af48b09d3f6"
   }
 }

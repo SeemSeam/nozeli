@@ -990,6 +990,9 @@ export class OwnerRuntime {
       }
     }
     const attachments = await normalizeImages(params.images);
+    if (attachments.length && !this.nativeRuntime.session.model?.input?.includes('image')) {
+      throw Object.assign(new Error('当前模型未声明支持图片，截图未发送。请在 AI 源为支持图片的模型添加 [image]，或切换支持图片的模型。'), {code:'PI_IMAGE_UNSUPPORTED'});
+    }
     const restricted=restrictedPolicy(params.restrictedMode??params.job?.context?.restrictedMode,params);
     const supplied=restricted?validateRestrictedTools(restricted,normalizeHostTools(params.tools??[])):null;
     const ordinaryTools=restricted?this.nativeRuntime.session.getActiveToolNames():null;
@@ -1574,6 +1577,7 @@ export class OwnerRuntime {
           ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
           ...(model.name ? { name: model.name } : {}),
           ...(model.reasoning !== undefined ? { reasoning: model.reasoning } : {}),
+          ...(model.images !== undefined ? { images: model.images } : {}),
         })),
       })),
     };
@@ -1618,6 +1622,9 @@ export class OwnerRuntime {
           code: "PI_INVALID_PARAMS",
         });
       }
+      if (model.images !== undefined && typeof model.images !== 'boolean') {
+        throw Object.assign(new Error('model images must be boolean'), {code:'PI_INVALID_PARAMS'});
+      }
     }
     const workspace = workspaceRefFor(path.resolve(params.cwd ?? this.cwd ?? process.cwd()));
     const supervisor = this.runtimeSupervisor();
@@ -1658,6 +1665,7 @@ export class OwnerRuntime {
           ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
           ...(model.name ? { name: model.name } : {}),
           ...(model.reasoning !== undefined ? { reasoning: model.reasoning } : {}),
+          ...(model.images !== undefined ? { images: model.images } : {}),
         })),
       });
     } catch (error) {

@@ -121,13 +121,29 @@ const menuOpenState=async role=>{
 };
 const clickSelect=async role=>{await page.click('[data-default-role="'+role+'"]');};
 const keys=async list=>{for(const key of list){await page.keyboard.press(key);await tick(50);}};
+// Commit wait shared by pick() and the open-menu scene: the value must be the
+// keyboard-committed one AND the native menu closed. A concurrent GUI run can
+// steal window focus mid-pick: Chromium closes the popup, the remaining keys
+// then edit the closed select directly (still the keyboard edit under test),
+// and the trailing Enter re-opens the popup over the already committed value.
+// One re-press of the same commit key closes it the way a user would; if the
+// keyboard commit itself never happened the rescue never fires and this still
+// times out, so no assertion is weakened.
+const untilCommitted=async(role,expected,label)=>{
+  let rescuePressed=false;
+  await until(async()=>{
+    const state=await dom();
+    if(!rescuePressed&&state.selects[role].value===expected&&state.selects[role].open===true){rescuePressed=true;await page.keyboard.press('Enter');return false;}
+    return state.selects[role].value===expected&&state.selects[role].open!==true;
+  },label);
+};
 // Real user pick: click the native select, confirm the popup is actually open,
 // navigate with the keyboard, commit with Enter, then confirm the committed value.
 const pick=async(role,list,expected,label)=>{
   await clickSelect(role);
   await until(async()=>(await menuOpenState(role)).open===true,label+': menu opens for '+role);
   await keys(list);
-  await until(async()=>{const state=await dom();return state.selects[role].value===expected&&state.selects[role].open!==true;},label+': committed '+role+'='+expected);
+  await untilCommitted(role,expected,label+': committed '+role+'='+expected);
   const state=await dom();assert.equal(state.selects[role].value,expected,label+': '+role+' value');return state;
 };
 const clickSave=()=>page.click('[data-role-model-form] button[type="submit"]');
@@ -193,7 +209,7 @@ try{
   assert.equal(state.selects.orchestrator.open,true,'an identical catalog reply must not close the open native menu');
   assert.equal(state.selects.orchestrator.disabled,false,'select stays operable across the identical reply');
   await keys(['Home','ArrowDown','Enter']);
-  await until(async()=>{const current=await dom();return current.selects.orchestrator.value==='alpha/m-one'&&current.selects.orchestrator.open!==true;},'user commits the still-open menu');
+  await untilCommitted('orchestrator','alpha/m-one','user commits the still-open menu');
   await shot('same-catalog-menu-survives');
   // 6. failed refresh preserves the loaded catalog and dirty selections.
   await holdStatus();await clickRefresh();

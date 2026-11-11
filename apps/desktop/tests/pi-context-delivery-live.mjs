@@ -339,3 +339,18 @@ test('real provider overflow triggers native compaction and retry without duplic
   assert.equal(JSON.stringify(journalLines).includes(PROJECTION_OPEN),false,'no projection entered the native history during overflow recovery');
   t.diagnostic('Overflow recovery evidence: '+dirs.root);
 });
+
+test('a text-only native model refuses attached images before inference, while later explicit text input still works',{timeout:90000},async t=>{
+ const provider=await serve(()=>({text:'TEXT_ONLY_RECEIPT'}));t.after(()=>provider.close());
+ const dirs=await prepare(provider.url),modelsFile=path.join(dirs.agentDir,'models.json');
+ const config=JSON.parse(await fs.readFile(modelsFile,'utf8'));config.providers['local-fixture'].models[0].input=['text'];await fs.writeFile(modelsFile,JSON.stringify(config));
+ const session=new PiSession({...dirs,role:'frontdesk',piRuntime:{agentDir:dirs.agentDir},model:'local-fixture/scripted',tools:[]});
+ t.after(()=>session.stop());await session.start();
+ const image='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7ioAAAAASUVORK5CYII=';
+ await assert.rejects(session.prompt('IMAGE_MUST_NOT_BE_SILENTLY_REMOVED',{images:[image],job:{id:'image-refused',target:'frontdesk',type:'front'}}),error=>error.code==='PI_IMAGE_UNSUPPORTED');
+ assert.equal(provider.requests.filter(request=>!request.listing).length,0,'no text-only downgrade reaches inference');
+ const answer=await session.prompt('EXPLICIT_TEXT_AFTER_REFUSAL',{job:{id:'text-after-image-refusal',target:'frontdesk',type:'front'}});
+ assert.equal(answer.text,'TEXT_ONLY_RECEIPT');
+ assert.equal(provider.requests.filter(request=>!request.listing).length,1);
+ assert.equal(provider.requests[0].messages.some(message=>(textOf(message)||'').includes('IMAGE_MUST_NOT_BE_SILENTLY_REMOVED')),false,'rejected image input is not inserted or replayed as text');
+});

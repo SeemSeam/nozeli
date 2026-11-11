@@ -8,6 +8,8 @@ import {ProjectStorage} from '../src/main/project-storage.mjs';
 import {ProjectAttachments} from '../src/main/project-attachments.mjs';
 import {Controller} from '../src/agents/managed/controller.mjs';
 import {WorkspaceCaptureStore} from '../src/main/workspace-capture-store.mjs';
+import {createCanvas} from '@napi-rs/canvas';
+import {DRAWING_SCHEMA} from '../src/domain/region-drawing.mjs';
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7ioAAAAASUVORK5CYII=','base64');
 async function fixture(t){
  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-drawing-image-')),project=path.join(directory,'project');await fs.mkdir(project);
@@ -82,4 +84,23 @@ test('actual controller prompt reads sent drawing from portable project objects 
  assert.equal(controller.running.size,0);assert.equal(controller.kicking,false);
  assert.equal(calls.length,1);assert.deepEqual(calls[0].options.images,['data:image/png;base64,'+png.toString('base64')]);
  assert.deepEqual(controller.store.state.jobs.find(j=>j.id===receipt.jobId).context.imageAttachments,[ref]);
+});
+
+test('frozen ink coordinates include pen width, bind viewport intersections and survive recovery removal without rewriting history',async t=>{
+ const f=await fixture(t),id=randomUUID(),canvas=createCanvas(100,50),bytes=canvas.toBuffer('image/png'),ref=await attach(f,bytes);
+ const directory=path.join(await f.storage.recoveryDirectory(f.projectId),'drawing-captures'),store=new WorkspaceCaptureStore({directory});
+ const sources=[{sourceId:'doc',kind:'document',relPath:'paper.txt',locationStatus:'viewport-only',selection:null,outputRegion:{x:30,y:0,width:70,height:50}}];
+ await store.saveFrozen({id,projectId:f.projectId,width:100,height:50,tiles:[{id:'w',width:100,height:50,layers:[{bounds:{x:0,y:0,width:100,height:50},dataUrl:'data:image/png;base64,'+bytes.toString('base64')}]}]});
+ const drawing={schema:DRAWING_SCHEMA,width:100,height:50,strokes:[{color:'#c7362f',width:.04,points:[[.2,.3],[.6,.7]]}]};
+ await store.saveResult(id,f.projectId,{attachment:{...ref,kind:'image'},state:'delivered',sources,drawing});
+ const original=await fs.readFile(path.join(directory,id+'.result.json'));
+ const frozen=await f.attachments.drawingSources(f.projectId,{...ref,deliveryId:id}),focus=frozen.find(source=>source.kind==='drawing-focus');
+ assert.deepEqual(focus.drawing.pixelBounds,{x:19,y:14,width:42,height:22});
+ assert.deepEqual(focus.drawing.normalizedBounds,{x:.19,y:.28,width:.42,height:.44});
+ assert.deepEqual(focus.sourceRegions,[{sourceId:'doc',relPath:'paper.txt',locationStatus:'viewport-only',pixelBounds:{x:30,y:14,width:31,height:22},selection:null}]);
+ assert.deepEqual(await fs.readFile(path.join(directory,id+'.result.json')),original);
+ const promoted=await f.attachments.promote(f.projectId,ref,{sources:frozen});
+ const recovery=await f.storage.recoveryDirectory(f.projectId);await f.storage.db.request(path.join(recovery,'recovery.sqlite'),'close');await fs.rm(recovery,{recursive:true,force:true});
+ assert.deepEqual(await f.attachments.drawingSources(f.projectId,promoted),frozen);
+ assert.deepEqual(await f.attachments.readBytes(promoted),bytes);
 });

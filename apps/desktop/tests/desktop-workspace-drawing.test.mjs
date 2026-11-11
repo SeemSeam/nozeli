@@ -116,6 +116,8 @@ try{
  out=process.env.NOZELI_REPORT_ACTIONS_OUT?path.resolve(process.env.NOZELI_REPORT_ACTIONS_OUT):await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-offline-results-'));
  if(process.env.NOZELI_REPORT_ACTIONS_OUT)await fs.mkdir(out);
  report.out=out;fixture=await prepareFrozenWorkflow(out,{appRoot});
+ // This preloaded offline workspace is not a first-run semantic inventory.
+ for(const project of [fixture.a,fixture.b]){const instance=await fixture.storage.requireRegistered(project.id);instance.semanticInitializationEligible=false;await fixture.storage.db.request(fixture.storage.catalog,'put',{collection:'instances',id:project.id,value:instance});}
  await fs.writeFile(path.join(fixture.project,'peer.txt'),'Peer original text.\n');
  // A live business Work with a persisted result, but no native thread/provider. Do not execute it.
  const c=await Controller.open({storage:fixture.storage,projectId:fixture.a.id,runtimeRoot:fixture.runtimeRoot,contentRoot:fixture.project});
@@ -192,15 +194,15 @@ try{
  // still works unchanged afterwards.
  const gateReceiptFile=path.join(await fixture.storage.recoveryDirectory(fixture.a.id),'drawing-captures',snapshotSession.captureId+'.result.json');
  assert(!await fs.stat(gateReceiptFile).then(()=>true,()=>false),'no receipt exists before any handoff');
- await shell.evaluate(()=>[...document.querySelectorAll('[aria-label="位置讨论卡"] button')].find(b=>b.textContent==='发送讨论').click());
- await shell.waitForFunction(()=>{const line=document.querySelector('[aria-label="位置讨论卡"] .snapshot-card-status');return line&&line.textContent.includes('发送未发出');},{timeout:10000});
+ await shell.click('.snapshot-card-send');
+ await shell.waitForFunction(()=>{const line=document.querySelector('.snapshot-discussion-window .snapshot-card-status');return line&&line.textContent.includes('发送未发出');},{timeout:10000});
  assert.equal(await shell.$eval('[aria-label="讨论说明"]',node=>node.value),'请解释这里的红色标记。','a refused direct send keeps the question editable');
- assert.equal(await shell.$eval('[aria-label="位置讨论卡"]',node=>node.querySelector('.snapshot-card-send').disabled),false,'the refused card stays retryable');
+ assert.equal(await shell.$eval('.snapshot-card-send',node=>node.disabled),false,'the refused card stays retryable');
  assert.equal((await snapshot()).state.jobs.length,initial.state.jobs.length,'a refused direct send dispatches no work');
  assert(!await fs.stat(gateReceiptFile).then(()=>true,()=>false),'a refused direct send persists no capture receipt');
  report.checks.push('Direct send is refused by the shared agent gate without committing or dispatching anything');
  await shell.screenshot({path:path.join(out,'drawing-local-discussion.png')});
- await shell.evaluate(()=>[...document.querySelectorAll('[aria-label="位置讨论卡"] button')].find(b=>b.textContent==='加入对话草稿').click());
+ await shell.click('aria/涂鸦讨论更多操作');await shell.click('aria/加入对话草稿');
  const chat=await scoped('conversation');await chat.page.waitForSelector('.cm-chip',{visible:true});
  const materials=await chat.page.evaluate(()=>window.__composerMaterials.snapshotPersist());
  assert.equal(materials.pending.filter(p=>p.source==='drawing').length,1);
@@ -225,7 +227,7 @@ try{
  });
  await shell.click('#snapshot-drawing-finish');await shell.waitForSelector('[aria-label="位置讨论卡"]',{visible:true});
  assert.equal(await shell.$eval('[aria-label="讨论说明"]',node=>node.value),'请解释这里的红色标记。');
- await shell.evaluate(()=>[...document.querySelectorAll('[aria-label="位置讨论卡"] button')].find(button=>button.textContent==='加入对话草稿').click());
+ await shell.click('aria/涂鸦讨论更多操作');await shell.click('aria/加入对话草稿');
  await shell.waitForFunction(()=>!document.querySelector('dialog[aria-label="工作面涂鸦"]').open);
  assert.equal((await chat.page.evaluate(()=>__composerMaterials.snapshotPersist())).pending.filter(item=>item.source==='drawing').length,1,'a recovered lost acknowledgement must not duplicate the original attachment');
  assert.equal(JSON.parse(await fs.readFile(receiptFile,'utf8')).state,'delivered');
@@ -244,7 +246,7 @@ try{
   await shell.click('dialog[aria-label="工作面涂鸦"] #snapshot-drawing-finish');
   await shell.waitForSelector('[aria-label="位置讨论卡"]',{visible:true});
   await shell.type('[aria-label="讨论说明"]','本地保留的问题');
-  await shell.evaluate(()=>[...document.querySelectorAll('[aria-label="位置讨论卡"] button')].find(b=>b.textContent==='仅保存本地').click());
+  await shell.click('aria/涂鸦讨论更多操作');await shell.click('aria/仅保存本地');
   await shell.waitForFunction(()=>!document.querySelector('dialog[aria-label="工作面涂鸦"]').open);
  });
  const afterLocal=await chat.page.evaluate(()=>__composerMaterials.snapshotPersist());
@@ -265,6 +267,7 @@ try{
  await shell.click('#snapshot-drawing-finish');await shell.waitForSelector('[aria-label="位置讨论卡"]',{visible:true});
  const revisedQuestion='修订后的本地问题';await shell.click('[aria-label="讨论说明"]');await shell.keyboard.down(mod);await shell.keyboard.press('a');await shell.keyboard.up(mod);await shell.keyboard.type(revisedQuestion);
  await profile(shell, 'back-to-drawing/return-to-ink', async () => {
+  await shell.click('aria/涂鸦讨论更多操作');
   await shell.click('aria/返回笔迹');await shell.waitForSelector('dialog[aria-label="工作面涂鸦"] .drawing-area',{visible:true});
  });
  const revisedBounds=await shell.$eval('dialog[aria-label="工作面涂鸦"] .drawing-area',node=>node.getBoundingClientRect().toJSON());
@@ -275,6 +278,7 @@ try{
  assert.equal(await shell.$eval('[aria-label="讨论说明"]',node=>node.value),revisedQuestion,'returning to ink and finishing again keeps the newest recovered question');
  const revisedSession=await call(shell,'workspace.capture.begin',{projectId:fixture.a.id});
  await profile(shell, 'local-save/revised', async () => {
+  await shell.click('aria/涂鸦讨论更多操作');
   await shell.click('aria/仅保存本地');await shell.waitForFunction(()=>!document.querySelector('dialog[aria-label="工作面涂鸦"]').open);
  });
  const captureDirectory=path.join(await fixture.storage.recoveryDirectory(fixture.a.id),'drawing-captures');
@@ -312,7 +316,7 @@ try{
    });
    await profile(shell, tag + '/local-save', async () => {
     await shell.type('[aria-label="讨论说明"]', '响应性周期本地保存 ' + i);
-    await shell.evaluate(() => [...document.querySelectorAll('[aria-label="位置讨论卡"] button')].find(button => button.textContent === '仅保存本地').click());
+    await shell.click('aria/涂鸦讨论更多操作');await shell.click('aria/仅保存本地');
     await shell.waitForFunction(() => !document.querySelector('dialog[aria-label="工作面涂鸦"]').open);
    });
    row.phases = Object.fromEntries(Object.entries(responsiveness.nodeElapsedMs).slice(mark0));
@@ -346,7 +350,7 @@ try{
  });
  await detached.page.screenshot({path:path.join(out,'detached-drawing-local-discussion.png')});
  await profile(detached.page, 'local-save/detached', async () => {
-  await detached.page.evaluate(()=>[...document.querySelectorAll('[aria-label="位置讨论卡"] button')].find(button=>button.textContent==='仅保存本地').click());
+  await detached.page.click('aria/涂鸦讨论更多操作');await detached.page.click('aria/仅保存本地');
   await detached.page.waitForFunction(()=>!document.querySelector('dialog[aria-label="工作面涂鸦"]').open);
  });
  assert.deepEqual((await chat.page.evaluate(()=>__composerMaterials.snapshotPersist())).pending,afterLocal.pending,'detached local discussion never replaces or appends the main draft');

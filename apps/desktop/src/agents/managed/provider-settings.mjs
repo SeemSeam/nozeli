@@ -14,7 +14,7 @@ const text=(value,max=200)=>typeof value==='string'&&value.length>0&&value.lengt
 const unavailable=()=>Object.assign(new Error('Nozeli 私有 Pi 运行环境不可用，设置未变更。'),{code:'PI_RUNTIME_UNAVAILABLE'});
 const originOf=value=>{try{const url=new URL(value);return ['http:','https:'].includes(url.protocol)?url.origin:null;}catch{return null;}};
 const sourceFields=['operation','provider','expectedRevision','baseUrl','api','credential','models'];
-const modelFields=['id','name','reasoning','contextWindow'];
+const modelFields=['id','name','reasoning','images','contextWindow'];
 
 export function validateApiSource(p){
  if(!p||typeof p!=='object'||Array.isArray(p)||Object.keys(p).some(k=>!sourceFields.includes(k)))fail('源配置字段无效。');
@@ -32,8 +32,9 @@ export function validateApiSource(p){
   if(!text(m.id,200)||m.id.trim()!==m.id||m.id.startsWith('!'))fail('请输入有效模型ID。');
   if(m.name!==undefined&&(!text(m.name,200)||m.name.trim()!==m.name))fail('模型名称无效。');
   if(m.reasoning!==undefined&&typeof m.reasoning!=='boolean')fail('模型思考能力声明无效。');
+  if(m.images!==undefined&&typeof m.images!=='boolean')fail('模型图片能力声明无效。');
   if(m.contextWindow!==undefined&&(!Number.isInteger(m.contextWindow)||m.contextWindow<1024||m.contextWindow>10000000))fail('模型上下文窗口无效。');
-  return {id:m.id,...(m.name?{name:m.name}:{}),...(m.reasoning!==undefined?{reasoning:m.reasoning}:{}),...(m.contextWindow?{contextWindow:m.contextWindow}:{})};
+  return {id:m.id,...(m.name?{name:m.name}:{}),...(m.reasoning!==undefined?{reasoning:m.reasoning}:{}),...(m.images!==undefined?{images:m.images}:{}),...(m.contextWindow?{contextWindow:m.contextWindow}:{})};
  });
  const seen=new Set();for(const m of models){if(seen.has(m.id))fail('模型ID重复：'+m.id);seen.add(m.id);}
  const credential=p.credential;
@@ -195,12 +196,12 @@ export class ProviderSettings {
    if(!credentialConfigured)continue;
    const selector=m.provider+'/'+m.modelId;
    const levels=Array.isArray(m.thinkingLevels)&&m.thinkingLevels.length?m.thinkingLevels:null;
-   list.set(selector,{selector,provider:m.provider,id:m.modelId,name:text(m.name,300)?m.name:m.modelId,credentialConfigured,catalogSource:entry?'configured':'native',entitlement:'unknown',thinking:{supported:m.reasoning===true,levels,source:levels?'native-model-definition':entry?'configured-metadata':'native-model-definition'}});
+   list.set(selector,{selector,provider:m.provider,id:m.modelId,name:text(m.name,300)?m.name:m.modelId,credentialConfigured,catalogSource:entry?'configured':'native',entitlement:'unknown',images:m.supportsImages===true,thinking:{supported:m.reasoning===true,levels,source:levels?'native-model-definition':entry?'configured-metadata':'native-model-definition'}});
   }
   return [...list.values()];
  }
  sourceSummary(entry,credential,revision,storedDiscovery){
-  const models=(entry.models??[]).map(m=>m&&text(m.id,200)?{id:m.id,...(text(m.name,200)?{name:m.name}:{}),reasoning:m.reasoning===true?true:m.reasoning===false?false:null,metadataSource:'configured'}:null).filter(Boolean);
+  const models=(entry.models??[]).map(m=>m&&text(m.id,200)?{id:m.id,...(text(m.name,200)?{name:m.name}:{}),reasoning:m.reasoning===true?true:m.reasoning===false?false:null,images:typeof m.images==='boolean'?m.images:null,metadataSource:'configured'}:null).filter(Boolean);
   const oauth=credential?.type==='oauth'&&credential.hasAuth!==false;
   const keyConfigured=entry.hasApiKey===true||credential?.hasAuth===true;
   return {provider:entry.provider,revision,type:oauth?'oauth':'api',baseUrl:this.safeUrl(entry.baseUrl),...(entry.api?{api:entry.api}:{}),credential:{configured:keyConfigured,kind:oauth?'oauth':keyConfigured?'api-key':'none'},models,discovery:discoveryDTO(storedDiscovery)};

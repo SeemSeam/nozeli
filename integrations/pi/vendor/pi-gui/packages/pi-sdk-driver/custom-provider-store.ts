@@ -113,6 +113,9 @@ function validateInput(input: CustomProviderInput): void {
     if (model.reasoning !== undefined && typeof model.reasoning !== "boolean") {
       throw new Error(`Model ${model.id} has non-boolean reasoning.`);
     }
+    if (model.images !== undefined && typeof model.images !== "boolean") {
+      throw new Error(`Model ${model.id} has non-boolean images.`);
+    }
   }
 }
 
@@ -133,6 +136,9 @@ function toProviderConfig(input: CustomProviderInput): Record<string, unknown> {
       }
       if (model.reasoning !== undefined) {
         entry.reasoning = model.reasoning;
+      }
+      if (model.images !== undefined) {
+        entry.input = model.images ? ["text", "image"] : ["text"];
       }
       return entry;
     }),
@@ -179,6 +185,7 @@ function readCustomProviders(data: ModelsJson): readonly CustomProviderEntry[] {
             if (contextWindow !== undefined) entry.contextWindow = contextWindow;
             if (name !== undefined) entry.name = name;
             if (reasoning !== undefined) entry.reasoning = reasoning;
+            if (Array.isArray(modelConfig.input)) entry.images = modelConfig.input.includes("image");
             return entry;
           })
           .filter((entry): entry is CustomProviderModelInput => entry !== undefined)

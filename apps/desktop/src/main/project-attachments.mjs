@@ -1,6 +1,7 @@
 import path from 'node:path';
 import {WorkspaceCaptureStore} from './workspace-capture-store.mjs';
 import {createHash} from 'node:crypto';
+import {validateDrawing} from '../domain/region-drawing.mjs';
 
 const MAX_BYTES = 8 * 1024 * 1024;
 const fail = message => {throw Object.assign(new Error(message), {code: 'INVALID_ATTACHMENT'});};
@@ -11,6 +12,26 @@ export function validateDrawingPng(bytes, mime = 'image/png') {
  if (mime !== 'image/png' || bytes.length < 33 || bytes.length > MAX_BYTES || bytes.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a' || bytes.toString('ascii', 12, 16) !== 'IHDR') fail('涂鸦材料不是有效的有界 PNG。');
  const width = bytes.readUInt32BE(16), height = bytes.readUInt32BE(20);
  if (!width || !height || width > 20000 || height > 20000 || width * height > 40_000_000) fail('涂鸦 PNG 超过像素上限。');
+}
+
+function drawingFocus(record) {
+ const value=record.result?.drawing??record.drawingDraft?.drawing;
+ if(!value)return null;
+ const drawing=validateDrawing(value),{width,height,strokes}=drawing;
+ if(width!==record.width||height!==record.height)fail('冻结笔迹与原图尺寸不一致，未发送。');
+ let left=width,top=height,right=0,bottom=0;
+ for(const stroke of strokes){
+  const radius=stroke.width*Math.min(width,height)/2;
+  for(const [x,y] of stroke.points){left=Math.min(left,x*width-radius);right=Math.max(right,x*width+radius);top=Math.min(top,y*height-radius);bottom=Math.max(bottom,y*height+radius);}
+ }
+ const x=Math.max(0,Math.floor(left)),y=Math.max(0,Math.floor(top));
+ const pixelBounds=strokes.length?{x,y,width:Math.min(width,Math.ceil(right))-x,height:Math.min(height,Math.ceil(bottom))-y}:null;
+ const sourceRegions=pixelBounds?(record.result?.sources||[]).flatMap(source=>{
+  const r=source.outputRegion;if(!r)return [];
+  const left=Math.max(x,r.x),top=Math.max(y,r.y),right=Math.min(x+pixelBounds.width,r.x+r.width),bottom=Math.min(y+pixelBounds.height,r.y+r.height);
+  return right>left&&bottom>top?[{sourceId:source.sourceId,relPath:source.relPath??null,locationStatus:'viewport-only',pixelBounds:{x:left,y:top,width:right-left,height:bottom-top},selection:null}]:[];
+ }):[];
+ return {sourceId:'drawing:'+record.id,kind:'drawing-focus',locationStatus:'image-relative',summary:'带笔迹的冻结PNG原图；像素坐标基于原图左上角，模型端等比缩放时归一化坐标保持不变；不是文件页码或精确选区。',image:{width,height},drawing:{strokeCount:strokes.length,colors:[...new Set(strokes.map(stroke=>stroke.color))],coordinateSpace:'image-pixels',origin:'top-left',pixelBounds,normalizedBounds:pixelBounds?{x:x/width,y:y/height,width:pixelBounds.width/width,height:pixelBounds.height/height}:null},sourceRegions};
 }
 
 /** Pending selections belong to local instance recovery; sent bytes and provenance belong to the project. */
@@ -83,6 +104,8 @@ export class ProjectAttachments {
   const store = new WorkspaceCaptureStore({directory: path.join(await this.storage.recoveryDirectory(projectId), 'drawing-captures')});
   const record = await store.load(ref.deliveryId, projectId);
   if (record.result?.attachment?.digest !== ref.digest) fail('涂鸦图片与冻结捕获记录不符。');
-  return structuredClone(record.result.sources || []);
+  const sources=structuredClone(record.result.sources||[]),focus=drawingFocus(record);
+  if(focus)sources.push(focus);
+  return sources;
  }
 }
