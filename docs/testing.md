@@ -33,6 +33,7 @@ node tools/test-suites.mjs smoke --list    # 任一套件的文件清单
 - `workspace-snapshot-retention.test.mjs` 18场景通过（`/var/tmp/nozeli-snapshot-retention-QT5eUr/report.json`），含前台既有13场景及后台单飞／失败同键重试／晚到输入／混合前后台线程隔离；相关讨论／来源／持久化21项通过，renderer构建通过。新卡沿已有PPT／区域／工作面33项真实移动缩放旅程通过（`/var/tmp/nozeli-label-windows-0FHYCi/report.json`）。
 - `DISPLAY=:1 TMPDIR=/var/tmp NOZELI_OZONE=x11 node tests/desktop-workspace-drawing-background-live.mjs` 12项通过（`/var/tmp/nozeli-drawing-background-VePD2m/report.json`）：真实Electron点击→唯一后台intake→原生Pi／回环脚本Provider→独立worktree写文件并发布，原项目不变，无前台回合；确切冻结图片digest和非空input.txt视口来源逐字相等。320／390浅深标题／输入／双动作真实命中可达，后写输入保持、exit0。截图已查看。不把脚本Provider当作真实模型理解质量或跨平台资格。
 - 初轮测试遗漏输入、故意hold模式未重置、无关对话开窗干扰以及首次项目初始化被错误计成frontdesk失败均保留原件；用现有“既有项目”fixture隔离语义初始化，未改产品门禁或删后台/材料/唯一受理断言。实现及验收登记live，提交安装另记实际结果。
+- 全部追加实现／测试／文档提交 `ad5c540`，正式安装激活 `2026-11-11T07-25-55-817Z`，previous=`2026-11-11T06-33-12-803Z`，正在运行的旧review-recovery版本额外保护保留；未推送、未发布、不移动beta.2 tag。最终实际安装ELF在独立X11显示隔离profile复测：涂鸦真实后台 **12/12**（`/var/tmp/nozeli-drawing-background-E2LOML/report.json`），各类文档标签 **60/60**（`tag-interactions-live-QERbb9/result.json`），PPT／区域及冻结涂鸦 **33/33**（`/var/tmp/nozeli-label-windows-excf21/report.json`），更新检测supported=true、403诊断→重查current与正常退出（`/var/tmp/nozeli-installed-update-POhUU7/report.json`）。最终窄屏浅深截图已查看。用户profile未启动／改写，未强退原日常进程；正常退出旧程序后从原快捷方式启动生效。
 
 
 
