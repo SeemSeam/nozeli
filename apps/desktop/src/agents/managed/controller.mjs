@@ -2094,8 +2094,11 @@ export class Controller extends EventEmitter {
       const code=/^[A-Z][A-Z0-9_]{0,79}$/.test(String(error?.code??''))?error.code:'HOST_TOOL_ERROR';
       const hostToolFailure=sanitizeHostToolFailure({schema:1,tool:p.tool,callId:p.callId,stage:p.tool==='nozeli_diagram'?'render':'tool',effect:p.tool==='nozeli_diagram'?'none':'unknown',code});
       if(active&&hostToolFailure){
-        await this.store.mutate(()=>{const saved=this.store.state.jobs.find(j=>j.id===active.id);if(saved)saved.hostToolFailure=hostToolFailure;});
         error.hostToolFailure=hostToolFailure;
+        if(!this.store.closed&&!this.store.lifecycleHold&&!this.store.commitUnknown&&!this.store.nativeCommitUnknown){
+          try{await this.store.mutate(()=>{const saved=this.store.state.jobs.find(j=>j.id===active.id);if(saved)saved.hostToolFailure=hostToolFailure;});}
+          catch(projectionError){this.emit?.('diagnostic','Host-tool evidence persistence pending: '+String(projectionError.code??'INTERNAL_FAILURE'));}
+        }
       }
       if(['HOST_CONTEXT_BUDGET_EXHAUSTED','RESULT_MEMORY_BUDGET'].includes(error.code))return this.readBudgetDenied(target);
       if(readTool&&this.isReadProtocolError(error))return this.readProtocolFault(target,p,error);

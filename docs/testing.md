@@ -857,3 +857,5 @@ Liuhuaiyu真实界面显示当前成果第2版已review，讨论输入却只读�
 用户明确授权提交当前产品修改并发布0.1.0-beta.2 Linux x64／macOS arm64预发行；六项再分发义务仍pending，--public诚实保留六项失败，不设stable／latest。原本机修改294f91f整合到最新main6c893df，保留主线Mac原生安全／耐久性／打包支持，不纳入未跟踪实验原件目录。
 
 独立整合树Linux单元820通过、恢复／诊断／审核专项109通过、真实Electron smoke六脚本通过（`.test-output/ci/smoke.log`）；真实Pi诊断旅程`/var/tmp/nozeli-pi-debug-activation-live-cU2X5I/report.json` ok=true。首候选e683fb7 Mac工作流42943350011实际darwin arm64编译／组装／签名深校验／zip解压自检已过；新增专项72通过／11失败、零跳过，失败全部为managed-review-discussion夹具初始化受runner全局Git过滤配置影响而FILTER_UNSUPPORTED，未运行后续实包交互。该失败保留，不宣称Mac包验收通过。修正仅为此测试步骤独立HOME／GIT_CONFIG_GLOBAL及GIT_CONFIG_NOSYSTEM，沿用主线Mac原生安全测试隔离惯例，不更改产品过滤器拒绝语义、不断言通过或跳过测试，须以新提交完整CI与实包旅程为最终资格。
+
+候选1e8e1bb Mac工作流42944224985全过：原生包自检、新恢复／审核专项、真实解压.app阅读／保存／正常关闭冷恢复与随包Pi多Task旅程成功，Provider错误为空。独立本地完整Linux集成为1923通过／1失败／4跳过，失败是`html-candidate-transaction`注入原事务提交拒绝后，onTool新增故障证据的后续mutate碰到已封存存储，返回PROJECT_UNAVAILABLE覆盖原INJECTED_PROJECT_COMMIT。已修正为原异常携带安全证据后，仅在存储可写时尽力持久诊断投影；投影失败记录有界诊断、绝不替换原异常，不抑制或重试原事务，原回滚／未知效果围栏不变。原事务／控制器／恢复／维修四文件46项通过，新增精确原异常对象不被覆盖与commitUnknown零追加写入回归；最终需新提交双平台完整CI及包验收，不复用此候选归档。

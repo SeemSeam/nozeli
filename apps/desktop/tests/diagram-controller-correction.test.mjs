@@ -31,6 +31,16 @@ test('unexpected host failure retains technical tool provenance without raw inpu
  assert.equal(JSON.stringify(job.hostToolFailure).includes('PRIVATE'),false);assert.equal(work.status,'running');
 });
 
+test('fault evidence cannot replace the original publication failure when storage is fenced',async()=>{
+ const {controller,job}=host(),original=Object.assign(Error('original transaction rejected'),{code:'INJECTED_PROJECT_COMMIT'});let writes=0;
+ controller.handleTool=async()=>{throw original;};controller.store.mutate=async()=>{writes++;throw Object.assign(Error('projection unavailable'),{code:'PROJECT_UNAVAILABLE'});};controller.emit=()=>{};
+ await assert.rejects(controller.onTool(job.target,{tool:'nozeli_publish',arguments:{},callId:'failed-publication'}),error=>error===original);
+ assert.equal(writes,1);assert.equal(original.hostToolFailure.tool,'nozeli_publish');
+ controller.store.commitUnknown=true;
+ await assert.rejects(controller.onTool(job.target,{tool:'nozeli_publish',arguments:{},callId:'fenced-publication'}),error=>error===original);
+ assert.equal(writes,1);
+});
+
 test('queued diagram recovery cannot rebase onto a changed Work revision or native thread',()=>{
  const {controller,job,work}=host();work.threadId='original-thread';
  job.diagramRecovery={id:'receipt',bugId:'bug',jobId:job.id,workId:work.id,revision:1,threadId:work.threadId,supplementJobId:'supplement'};
