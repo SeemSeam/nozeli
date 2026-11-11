@@ -958,3 +958,7 @@ Liuhuaiyu真实界面显示当前成果第2版已review，讨论输入却只读�
 扩大检查收尾：PPT失败堆栈精确定位到首次文件树点击，尚未进入PPT画布；一次性ElementHandle遇文件树重绘失联，改用现有locator真实点击，原OOXML末次按键／外部冲突／恢复断言不变。修正后完整smoke六脚本全部通过，含原生审核读取28项；无PPT生产代码兜底。冻结候选真实ELF／包内Pi的最终图像讨论 `/tmp/nozeli-drawing-background-vjzWLZ/report.json` ok=true，包含100px最小窗滚动命中、真实图片笔迹和前台／续问／后台交付；同候选启动保存／项目切换保护／冷恢复 `apps/desktop/.test-output/ci/smoke-R2NzFb/report.json` ok=true、两次exit0。实际候选生产输入相同，不含开发依赖链接；尚未激活时不将测试实例当作日常安装生效。
 
 独立广义涂鸦脚本 `desktop-workspace-drawing.test.mjs` 本轮在旧离线报告fixture入口停止，`/tmp/nozeli-offline-results-8Gq2zI/report.json` 为 `REPORT_CHANGED`，未进入涂鸦手势；与前轮已记录的同类入口限制一致，不修改产品报告身份检查以让旧夹具通过，也不把该脚本算通过。当前修改的真实图像交付／保留／最小窗另由上述生产旅程证明。模型刷新组件的原失败截图显示值已提交但原生popup仍打开，测试驱动仅在确切目标值已提交时再按一次Enter确认关闭，仍同时要求值和关闭状态，不改生产renderer；串行验证结果另记。
+
+最终功能提交 `d184c07`（26文件）；明确排除node_modules和未跟踪评估运行原件。provider组件修正后串行 `/tmp/nozeli-provider-refresh-P2zvir/report.json` ok=true，标签窗口 `/tmp/nozeli-label-windows-hmYiUx/report.json` ok=true，生产设置renderer未为驱动超时增加兜底。安装器激活 `all-local-20261112-02`，previous保留 `2026-11-11T07-25-55-817Z`，桌面／命令入口同步，操作前无运行中日常进程，不强退、不打开个人项目或派工。
+
+激活后的current路径实际ELF：`desktop-ci-smoke.mjs` `apps/desktop/.test-output/ci/smoke-ChOl0g/report.json` ok=true，真实原文保存、项目切换保护、正常退出及冷恢复两次exit0；`desktop-ppt-pending-text-live.mjs` `/tmp/nozeli-ppt-pending-tWpN71/result.json` ok=true，实际引擎导出含末次文本、原件不变、外部冲突禁止文件剪贴板、旧源草稿恢复及正常exit0。候选实包图像讨论 `/tmp/nozeli-drawing-background-vjzWLZ/report.json` 与891项生产输入相等证明最终激活仍为该包，不以源程序替代实包。安装收据／清单 `/var/tmp/nozeli-full-local-install-98Ycqz/`，截图已查看，未入库个人运行数据。未push／发布、未重跑全integration；旧REPORT_CHANGED夹具失败和跨平台／OS IME／付费模型限制保留。
