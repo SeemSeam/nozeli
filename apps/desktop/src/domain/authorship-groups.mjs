@@ -1,10 +1,10 @@
 const timeFormatter = new Intl.DateTimeFormat('zh-CN', {year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
 export function formatAuthorshipTime(time) {
-  const date=new Date(time);
-  return Number.isNaN(date.getTime())?'Invalid Date':timeFormatter.format(date);
+  const zeliAuthorshipDate=new Date(time);
+  return Number.isNaN(zeliAuthorshipDate.getTime())?'Invalid Date':timeFormatter.format(zeliAuthorshipDate);
 }
 
-// A view projection only. Exact spans and historical events stay unchanged.
+// zeli: A view projection only. Exact spans and historical events stay unchanged.
 export function uniqueChanges(items) {
   return [...new Map(items.map(item => [item.eventId, item])).values()]
     .sort((a, b) => b.revision - a.revision || a.eventId.localeCompare(b.eventId));

@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, 'integration/**', 'release/beta1-**']
+    branches: [main, 'integration/**', 'release/beta*-**']
   pull_request:
   workflow_dispatch:
 
@@ -123,10 +123,10 @@ jobs:
           CI: 'true'
           NOZELI_OZONE: x11
       - name: Package Linux Beta draft at the tested commit
-        if: startsWith(github.ref, 'refs/heads/release/beta1-')
+        if: startsWith(github.ref, 'refs/heads/release/beta')
         run: node tools/package-portable.mjs "$RUNNER_TEMP/nozeli-linux-draft"
       - name: Unpack and exercise the actual Linux draft archive
-        if: startsWith(github.ref, 'refs/heads/release/beta1-')
+        if: startsWith(github.ref, 'refs/heads/release/beta')
         run: |
           VERSION=$(node -p 'require("./package.json").version')
           mkdir "$RUNNER_TEMP/nozeli-linux-unpacked"
@@ -138,10 +138,10 @@ jobs:
         env:
           NOZELI_OZONE: x11
       - name: Preserve private Linux draft artifacts
-        if: success() && startsWith(github.ref, 'refs/heads/release/beta1-')
+        if: success() && startsWith(github.ref, 'refs/heads/release/beta')
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: linux-beta1-draft
+          name: linux-beta-draft
           path: ${{ runner.temp }}/nozeli-linux-draft/*
           if-no-files-found: error
           retention-days: 7

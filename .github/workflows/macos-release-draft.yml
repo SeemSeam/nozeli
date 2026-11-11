@@ -6,13 +6,13 @@ name: macOS release draft build
 # It never creates or uploads a public GitHub release; publication stays an
 # explicit maintainer action (dev_tools/skills/nozeli-github/SKILL.md).
 #
-# Push trigger on release/beta1-** lets this workflow run straight from the
+# Push trigger on release/beta*-** builds each Beta candidate without a merge.
 # release branch (workflow_dispatch registration needs no default-branch
 # merge first); the dispatch input pins one exact 40-hex commit SHA.
 
 on:
   push:
-    branches: ['release/beta1-**']
+    branches: ['release/beta*-**']
   workflow_dispatch:
     inputs:
       ref:
@@ -71,6 +71,8 @@ jobs:
         run: npm run build:pi
       - name: Package, checksum and self-check the release bundle
         run: node tools/package-macos-release.mjs "$RUNNER_TEMP/nozeli-macos-release"
+      - name: Exercise report correction and recovery on the native host
+        run: node --test tests/archify-diagram.test.mjs tests/diagram-controller-correction.test.mjs tests/diagram-recovery.test.mjs tests/report-recovery.test.mjs tests/managed-debug-protocol.test.mjs tests/managed-review-discussion.test.mjs
       - name: Smoke the packaged app from the extracted archive
         run: |
           OUT="$RUNNER_TEMP/nozeli-macos-release"

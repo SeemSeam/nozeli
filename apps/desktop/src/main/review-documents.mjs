@@ -17,7 +17,7 @@ const binaryKind = (relPath, bytes) => {
 };
 const omittedReason = value => value === 'size' || value === 'binary' ? `frozen-${value}` : value ?? 'frozen-unavailable';
 
-// Host-side review document adapter: the single bridge between ordinary
+// nzl: Host-side review document adapter: the single bridge between ordinary
 // file.*/document.*/annotation.*/tag.* operations and the managed review
 // controller (managed.review.read / managed.review.save). The controller stays
 // the only content authority; this module never touches the project worktree

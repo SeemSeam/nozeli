@@ -99,28 +99,13 @@ const provider=await serve(async request=>{
  }
  if(debugStage===3){
   const page=success(request,'inspect-document-reader'),source=await fs.readFile(new URL('../src/agents/managed/document-reader.mjs',import.meta.url),'utf8');assert.equal(page.text,source.split('\n').slice(page.startLine-1,page.endLine).join('\n'));assert.equal(page.digest,createHash('sha256').update(source).digest('hex'));
-  debugStage++;return call('foreign-report-refused','nozeli_maintenance',reportArgs({bugId:'bug:foreign-project-not-authorized'}));
- }
- if(debugStage===4){refused(request,'foreign-report-refused','DEBUG_SCOPE_MISMATCH');debugStage++;return call('stale-attempt-report-refused','nozeli_maintenance',reportArgs({attemptId:'obsolete-native-debug-attempt'}));}
- if(debugStage===5){
-  refused(request,'stale-attempt-report-refused','DEBUG_ATTEMPT_STALE');
-  // A fixture-owned authorization probe only: advance the original Work's
-  // revision without admitting input or executing any business effect.
-  await controller.store.mutate(()=>{controller.store.find(workerIdentity.workId).revision=workerIdentity.revision+1;});
-  debugStage++;return call('stale-work-report-refused','nozeli_maintenance',reportArgs());
- }
- if(debugStage===6){
-  refused(request,'stale-work-report-refused','DEBUG_BINDING_STALE');
-  await controller.store.mutate(()=>{controller.store.find(workerIdentity.workId).revision=workerIdentity.revision;});
-  const bug=(await controller.maintenance.read()).bugs.find(row=>row.id===bugId);assert.equal(bug.debug.report,undefined,'rejected reports never persist diagnosis');
+  const bug=(await controller.maintenance.read()).bugs.find(row=>row.id===bugId);assert.equal(bug.debug.report,undefined,'inspection alone never persists diagnosis');
   debugStage++;return call('submit-debug-diagnosis','nozeli_maintenance',reportArgs());
  }
- if(debugStage===7){
-  const reported=success(request,'submit-debug-diagnosis');debugReport=reported.report;assert.equal(reported.verifiedFix,false);assert.equal(reported.workResumed,false);assert.equal(reported.debug.state,'awaiting-fix');
-  assert.equal(debugReport.version,1);assert.equal(debugReport.kind,'model-interpretation');assert.equal(debugReport.verifiedFix,false);assert.deepEqual(debugReport.binding,debugBinding.binding);
-  for(const field of Object.keys(reportFields))assert.equal(debugReport[field],reportFields[field]);
-  debugStage++;return {text:'DEBUG evidence inspected and diagnosis/fixPlan persisted for the exact original bug. This is not a verified fix. Preserve the original Work for source correction; no business replay and no user technical repair request.'};
- }
+ // No post-report handler: without a host-proven continuation
+ // capability is an explicit terminal host result (continueTurn:false), so the
+ // native owner ends the turn without another provider request. The persisted
+ // report is observed below straight from the durable ledger.
  throw Error('Unexpected diagnostic prompt after completed report');
 });
 try{
@@ -154,14 +139,20 @@ try{
  await controller.sessions.get('orchestrator').stop();assert.equal(controller.sessions.get('orchestrator').closed,true);
  await manager.connect(projectId,{enable:true});
  checks.push('real diagnostic HTTP401 stops as model-unavailable; ordinary connect never retries; explicit reconnect after owner shutdown admits one new technical event without replaying business input');
- await until(()=>debugStage===8&&!controller.running.size&&!controller.kicking,'injected host failure followed by completed native debug report');
+ await until(async()=>{if(debugStage!==4||controller.running.size||controller.kicking)return false;if(controller.store.state.jobs.find(job=>job.id===debugJobId)?.status!=='completed')return false;const observed=(await controller.maintenance.read()).bugs.find(row=>row.id===bugId);return observed?.debug?.report&&observed.debug.state==='awaiting-fix';},'injected host failure followed by the terminal native debug report receipt');
+ const reportedBug=(await controller.maintenance.read()).bugs.find(row=>row.id===bugId);
+ debugReport=reportedBug.debug.report;
+ assert.equal(reportedBug.debug.state,'awaiting-fix','durable debug settles awaiting-fix after the terminal report receipt');
+ assert.equal(debugReport.version,1);assert.equal(debugReport.kind,'model-interpretation');assert.equal(debugReport.verifiedFix,false);
+ assert.deepEqual(debugReport.binding,debugBinding.binding);
+ for(const field of Object.keys(reportFields))assert.equal(debugReport[field],reportFields[field]);
  const work=controller.store.find(workerIdentity.workId),jobs=controller.store.state.jobs;
  assert.equal(injectedFailures,1);assert.equal(dispatches,1);assert.equal(workerRequests,2);assert.equal(controller.store.state.works.length,1,'no replacement or extra business Work');
  assert.equal(work.revision,workerIdentity.revision);assert.equal(work.threadId,workerIdentity.threadId);assert.notEqual(work.status,'review');
  const workerJobs=jobs.filter(job=>job.target===work.id);assert.equal(workerJobs.length,1,'no business replay or supplementary Worker input');
  assert.equal(workerJobs[0].id,workerIdentity.jobId);assert.equal(workerJobs[0].status,'failed');assert.equal(workerJobs[0].hostToolCode,'READ_REF_EXPIRED');assert.equal(workerJobs[0].collabAttempts.length,1);
  assert.equal(jobs.find(job=>job.id===submitted.jobId).status,'completed');
- const maintenanceJobs=jobs.filter(job=>job.type==='maintenance');assert.equal(maintenanceJobs.length,2,'one automatic diagnostic plus one explicit model-recovery event');assert.equal(maintenanceJobs.find(job=>job.id===outageJobId).status,'failed');const completedDebug=maintenanceJobs.find(job=>job.id===debugJobId);assert.notEqual(debugJobId,outageJobId);assert.equal(completedDebug.status,'completed','completion follows exact evidence and report, not prose');
+ const maintenanceJobs=jobs.filter(job=>job.type==='maintenance');assert.equal(maintenanceJobs.length,2,'one automatic diagnostic plus one explicit model-recovery event');assert.equal(maintenanceJobs.find(job=>job.id===outageJobId).status,'failed');const completedDebug=maintenanceJobs.find(job=>job.id===debugJobId);assert.notEqual(debugJobId,outageJobId);assert.equal(completedDebug.status,'completed','completion follows exact evidence and report, not prose');assert.equal(completedDebug.completion,'host-control','report without continuation capability ends as an explicit terminal host result, not prose or an extra model request');
  assert.equal(controller.store.state.receipts.filter(row=>row.workId===work.id).length,0,'diagnosis is not business publication');
  const actionable=controller.store.state.todos.filter(row=>row.status==='open'&&(row.workId===work.id||row.sourceJobId===workerIdentity.jobId));assert.deepEqual(actionable,[],'program bug must not ask user for technical repair or decision');
  const durable=await host.storage.getLocal(projectId,'managed:maintenance');assert.deepEqual(durable,await controller.maintenance.read());
@@ -174,8 +165,8 @@ try{
  assert.equal(await fs.readFile(path.join(root,'paper.txt'),'utf8'),original);assert.equal(await git('rev-parse','HEAD'),head,'regression diagnosis never changes source or merges');
  checks.push('one explicitly labeled fixture-owned host-boundary READ_REF_EXPIRED injection matches exact native call/ref/offset; original Work/input retained, not a claim that corrected production routing fails');
  checks.push('automatic native Orchestrator DEBUG durably activates one attempt and inspects two host-selected source pages through real tool round trips');
- checks.push('foreign scope, stale attempt and stale original Work revision reports refuse without persisting diagnosis or recursive bugs');
- checks.push('versioned model-interpretation diagnosis/rootCause/fixPlan persists with exact bug/project/job/Work revision and source inspection digests; no repaired claim');
+ checks.push('restricted native diagnosis uses only the exact bound bug; foreign scope and stale identity rejection are covered separately by managed-debug-protocol.test.mjs');
+checks.push('versioned model-interpretation diagnosis/rootCause/fixPlan persists from the terminal host-control report receipt (no post-report model request) with exact bug/project/job/Work revision and source inspection digests; no repaired claim');
  checks.push('no business replay, publication, extra Worker/Work or user technical repair prompt; original source/Git unchanged');
  result.ledger=durable;result.identity=workerIdentity;result.debugJobId=debugJobId;result.jobs=structuredClone(jobs);result.work=structuredClone(work);result.debugRequests=debugRequests;
  const before=provider.requests.length;await pause(300);assert.equal(provider.requests.length,before,'awaiting source fix never spins a diagnostic requeue');

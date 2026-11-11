@@ -18,22 +18,85 @@ const renderers = { architecture, workflow, sequence, dataflow, lifecycle };
 const collections = { architecture: ['components', 'connections'], workflow: ['nodes', 'edges'], sequence: ['participants', 'messages'], dataflow: ['nodes', 'flows'], lifecycle: ['states', 'transitions'] };
 const hash = value => createHash('sha256').update(value).digest('hex');
 
-// This byte representation is also returned for the host to freeze as the spec artifact.
-// JSON-only input keeps digests stable across process/platform and rejects lossy coercions.
+// Known, correctable diagram-input failures carry this stable code so the
+// controller can return them to the originating Worker as a retryable tool
+// result instead of routing the turn to maintenance. Everything else —
+// TypeError, malformed renderer output, internal invariants — stays an
+// unexpected failure and is never reclassified or swallowed here.
+export const DIAGRAM_INPUT_INVALID = 'DIAGRAM_INPUT_INVALID';
+
+// Closed vocabulary: rule-family prefix -> reported validation category.
+const RULE_CATEGORY = new Map([
+  ['schema', 'schema'], ['layout', 'layout'], ['clean-flow', 'layout'], ['composition', 'layout'], ['legend', 'layout'],
+  ['guided-view', 'guided-view'], ['relationship', 'relationship'], ['engineering', 'engineering-profile'],
+  ['brand', 'brand'], ['type', 'type'], ['spec', 'spec'], ['policy', 'policy'],
+  ['render-output', 'render-output'], ['output', 'output-size'],
+]);
+
+// Rule codes must come from the closed vendor/adapter vocabularies (for example
+// "schema/required", "clean-flow/endpoint-side-direction"). The pattern admits
+// no spaces, quotes or user text, so a code can never leak a label.
+function safeRuleCode(value) {
+  const code = String(value ?? '').trim();
+  return /^[a-z0-9][a-z0-9_-]*(?:\/[a-z0-9][a-z0-9_-]*)*$/.test(code) ? code : 'internal/unclassified';
+}
+
+function ruleCounts(codes) {
+  const counts = new Map();
+  for (const code of codes) counts.set(code, (counts.get(code) || 0) + 1);
+  return [...counts.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([code, count]) => ({ code, count }));
+}
+
+// Machine evidence for ledgers/diagnostics: tool, stage, effect, category and
+// rule-code histogram only. Raw labels and document text stay out by design;
+// the human-readable message on the error is the Worker-facing channel.
+// `correction` additionally carries the vendor's supported fixes for the
+// originating Worker; those may echo spec-authored ids the Worker itself wrote,
+// so they belong to the Worker reply, never to a ledger.
+function typedDiagramError(error, category, codes, supportedFixes) {
+  const rules = ruleCounts(codes.map(safeRuleCode));
+  error.code = DIAGRAM_INPUT_INVALID;
+  error.diagramEvidence = { tool: 'nozeli_diagram', stage: 'validation', effect: 'none', category, rules };
+  error.correction = { retryTool: 'nozeli_diagram', category, rules, supportedFixes };
+  return error;
+}
+
+function diagramInputError(message, category, codes) {
+  return typedDiagramError(new Error(message), category, codes, []);
+}
+
+// Classification boundary for vendor failures: every renderer/validator error
+// raised through the vendor diagnostics channel carries `archifyDiagnostics`.
+// Those describe what the author must fix, so they become typed input errors.
+// Geometry diagnostics carry their specific rule only as a bracketed message
+// prefix, which the safe-code pattern extracts without keeping any label text.
+export function classifyDiagramFailure(error) {
+  if (!error || typeof error !== 'object') return error;
+  if (error.code === DIAGRAM_INPUT_INVALID) return error;
+  if (!Array.isArray(error.archifyDiagnostics)) return error;
+  const codes = error.archifyDiagnostics.map(entry => {
+    const inline = String(entry?.message || '').match(/^\[([a-z0-9_-]+(?:\/[a-z0-9_-]+)+)\]/);
+    return inline ? inline[1] : entry?.code;
+  });
+  const category = codes.length ? (RULE_CATEGORY.get(String(codes[0]).split('/')[0]) || 'validation') : 'validation';
+  const supportedFixes = [...new Set(error.archifyDiagnostics.flatMap(entry => (Array.isArray(entry?.supportedFixes) ? entry.supportedFixes : []).map(fix => String(fix))).filter(Boolean))];
+  return typedDiagramError(error, category, codes, supportedFixes);
+}
+
 export function canonicalDiagramSpec(value) {
   let nodes = 0;
   function visit(item, depth) {
-    if (++nodes > 30_000 || depth > 64) throw new Error('Diagram specification complexity budget exceeded');
+    if (++nodes > 30_000 || depth > 64) throw diagramInputError('Diagram specification complexity budget exceeded', 'spec', ['spec/complexity-budget']);
     if (item === null || typeof item === 'string' || typeof item === 'boolean') return JSON.stringify(item);
     if (typeof item === 'number' && Number.isFinite(item)) return JSON.stringify(item);
     if (Array.isArray(item)) return '[' + item.map(child => visit(child, depth + 1)).join(',') + ']';
     if (item && typeof item === 'object' && [Object.prototype, null].includes(Object.getPrototypeOf(item))) {
       return '{' + Object.keys(item).sort().map(key => JSON.stringify(key) + ':' + visit(item[key], depth + 1)).join(',') + '}';
     }
-    throw new Error('Diagram specification must contain only finite JSON values');
+    throw diagramInputError('Diagram specification must contain only finite JSON values', 'spec', ['spec/non-finite-json']);
   }
   const text = visit(value, 0) + '\n';
-  if (Buffer.byteLength(text) > 1024 * 1024) throw new Error('Diagram specification exceeds 1 MiB');
+  if (Buffer.byteLength(text) > 1024 * 1024) throw diagramInputError('Diagram specification exceeds 1 MiB', 'spec', ['spec/size-limit']);
   return text;
 }
 
@@ -60,14 +123,25 @@ function canonicalSvg(raw, spec, description, hasBrands) {
 }
 
 /** Offline, reentrant rendering. No filesystem writes, subprocess, network or runtime npm. */
-export async function renderArchifyDiagram({ type, spec } = {}) {
-  if (!Object.hasOwn(renderers, type)) throw new Error('Unsupported Archify diagram type');
+export async function renderArchifyDiagram(options) {
+  try {
+    return await renderDiagram(options);
+  } catch (error) {
+    // Only vendor diagnostics-channel failures gain the typed code here; every
+    // other error (adapter admission throws its own typed errors above) is
+    // returned untouched so genuine internal failures stay failures.
+    throw classifyDiagramFailure(error);
+  }
+}
+
+async function renderDiagram({ type, spec } = {}) {
+  if (!Object.hasOwn(renderers, type)) throw diagramInputError('Unsupported Archify diagram type', 'type', ['type/unsupported']);
   const specText = canonicalDiagramSpec(spec);
   const diagram = JSON.parse(specText);
   validateSchema(type, diagram);
-  if (diagram.diagram_type !== type) throw new Error('Diagram type does not match specification');
+  if (diagram.diagram_type !== type) throw diagramInputError('Diagram type does not match specification', 'type', ['type/mismatch']);
   // Repository claims cannot be verified by a pure renderer; cite host-frozen sources in HTML instead.
-  if (diagram.meta.repository || diagram.components?.some(node => node.sources?.length)) throw new Error('Repository evidence requires host-frozen report references; embedded unverified repository claims are unsupported');
+  if (diagram.meta.repository || diagram.components?.some(node => node.sources?.length)) throw diagramInputError('Repository evidence requires host-frozen report references; embedded unverified repository claims are unsupported', 'policy', ['policy/repository-evidence']);
   validateGuidedViews(type, diagram);
   validateRelationshipIds(type, diagram);
   validateEngineeringProfile(type, diagram);
@@ -76,7 +150,8 @@ export async function renderArchifyDiagram({ type, spec } = {}) {
   const validation = checkRenderOutput(raw);
   validation.visualReview = 'pending';
   if (!validation.ok) {
-    const error = new Error('Archify render validation failed: ' + validation.checks.filter(check => !check.ok).map(check => check.name + ': ' + check.details.join('; ')).join('\n'));
+    const failed = validation.checks.filter(check => !check.ok);
+    const error = diagramInputError('Archify render validation failed: ' + failed.map(check => check.name + ': ' + check.details.join('; ')).join('\n'), 'render-output', failed.map(check => 'render-output/' + check.name));
     error.validation = validation;
     throw error;
   }
@@ -85,6 +160,6 @@ export async function renderArchifyDiagram({ type, spec } = {}) {
   const relationships = (diagram[edgeKey] || []).map(edge => `${labels.get(edge.from) || edge.from} → ${labels.get(edge.to) || edge.to}${edge.label ? ': ' + edge.label : ''}`);
   const alt = `${diagram.meta.title}. ${[...labels.values()].join('; ')}.${relationships.length ? ' ' + relationships.join('; ') + '.' : ''}`;
   const svg = canonicalSvg(raw, diagram, alt, diagram[nodeKey].some(node => node.brand));
-  if (Buffer.byteLength(svg) > 8 * 1024 * 1024) throw new Error('Rendered diagram exceeds 8 MiB');
+  if (Buffer.byteLength(svg) > 8 * 1024 * 1024) throw diagramInputError('Rendered diagram exceeds 8 MiB', 'output-size', ['output/size-limit']);
   return { svg, spec: JSON.parse(specText), specText, specDigest: hash(specText), generatorDigest: GENERATOR_DIGEST, validation, alt, caption: diagram.meta.subtitle || diagram.meta.title };
 }

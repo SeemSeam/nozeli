@@ -4,7 +4,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {randomUUID,createHash} from 'node:crypto';
-import {MaintenanceLedger,maintenanceBoundary,maintenanceError} from '../src/agents/managed/maintenance-ledger.mjs';
+import {MaintenanceLedger,maintenanceBoundary,maintenanceError,sanitizeHostToolFailure} from '../src/agents/managed/maintenance-ledger.mjs';
+import {DiagramRecovery} from '../src/agents/managed/diagram-recovery.mjs';
 import {openTestController} from './project-storage.fixture.mjs';
 const memory=()=>{const values=new Map();return {getLocal:async(p,k)=>structuredClone(values.get(p+':'+k)),putLocal:async(p,k,v)=>values.set(p+':'+k,structuredClone(v))};};
 
@@ -62,6 +63,41 @@ test('Git ref lock diagnostics retain only categorized symptom and app-relative 
  const error=Object.assign(Error('cannot lock ref secret-token document body'),{code:128});error.stack='Error: secret-token\n at git (/home/private/apps/desktop/src/agents/managed/git.mjs:21:4)\n at user (/private/user/document.mjs:1:2)';
  const context=maintenanceError(error);assert.equal(context.symptom,'git-ref-lock');assert.deepEqual(context.frames,['src/agents/managed/git.mjs:21:4']);assert(!JSON.stringify(context).includes('secret-token'));assert(!JSON.stringify(context).includes('/home/private'));
  for(const code of ['INJECTED_PROJECT_COMMIT','PROJECT_UNAVAILABLE','STORAGE_UNAVAILABLE','OMP_SESSION_FILE_NOT_FOUND','PI_SESSION_FILE_NOT_FOUND'])assert(maintenanceBoundary({code}),code);
+});
+
+test('structured host-tool failure provenance survives only through the strict allowlist',async()=>{
+ const digest='a'.repeat(64);
+ const valid={schema:1,tool:'nozeli_diagram',callId:'call_9F',stage:'render',effect:'none',code:'ARCHIFY_RENDER_FAILED',validationKind:'render-output',ruleCodes:['single_svg'],issueCount:2,argumentsDigest:digest,diagramEvidence:{tool:'nozeli_diagram',stage:'validation',effect:'none',category:'schema',rules:[{code:'schema/required',count:2},{code:'clean-flow/endpoint-side-direction',count:1}]}};
+ const kept=maintenanceError(Object.assign(Error('raw token=SECRET document body'),{hostToolFailure:valid}));
+ assert.deepEqual(kept.hostToolFailure,{schema:1,tool:'nozeli_diagram',callId:'call_9F',stage:'render',effect:'none',code:'ARCHIFY_RENDER_FAILED',validationKind:'render-output',ruleCodes:['single_svg'],issueCount:2,argumentsDigest:digest,diagramEvidence:{tool:'nozeli_diagram',stage:'validation',effect:'none',category:'schema',rules:[{code:'schema/required',count:2},{code:'clean-flow/endpoint-side-direction',count:1}]}});
+ assert(!JSON.stringify(kept).includes('SECRET'),'raw message never rides the structured block');
+ // Exactly the sanitized block is durable; raw error text stays out of the ledger.
+ const storage=memory(),ledger=new MaintenanceLedger(storage,'p');
+ await ledger.record({phase:'tool',jobId:'j',error:Object.assign(Error('PRIVATE user document token=SECRET'),{code:'ARCHIFY_RENDER_FAILED',hostToolFailure:valid})});
+ const persisted=(await ledger.read()).bugs[0].error;
+ assert.deepEqual(persisted.hostToolFailure,kept.hostToolFailure);
+ assert(!JSON.stringify(persisted).includes('PRIVATE'));assert(!JSON.stringify(persisted).includes('SECRET'));
+ // Unrecognizable input is excluded wholesale; no forged evidence survives.
+ for(const forged of [
+  {schema:2,tool:'nozeli_diagram',callId:'c',stage:'render',effect:'none',code:'A'},
+  {schema:1,tool:'rm -rf /etc',callId:'c',stage:'render',effect:'none',code:'A'},
+  {schema:1,tool:'nozeli_dispatch',callId:'c',stage:'execute',effect:'none',code:'A'},
+  {schema:1,tool:'nozeli_dispatch',callId:'c',stage:'tool',effect:'maybe',code:'A'},
+  {schema:1,tool:'nozeli_diagram',callId:'call id with spaces',stage:'render',effect:'none',code:'A'},
+  {schema:1,tool:'nozeli_diagram',callId:'c',stage:'validation',effect:'none',code:'A'},
+  'not-an-object',null,42,[],{schema:1,tool:'nozeli_diagram',stage:'render',effect:'none',code:'A'},
+ ])assert.equal(sanitizeHostToolFailure(forged),null,JSON.stringify(forged));
+ // Only the recognized pure renderer may claim a pre-effect proof; anything
+ // else degrades to unknown instead of fabricating safety.
+ assert.deepEqual(sanitizeHostToolFailure({schema:1,tool:'nozeli_publish',callId:'c',stage:'tool',effect:'none',code:'PUBLISH_FAILED'}).effect,'unknown');
+ // Invalid optional fields drop individually; machine fallbacks stay bounded.
+ const partial=sanitizeHostToolFailure({schema:1,tool:'nozeli_diagram',callId:'c',stage:'render',effect:'none',code:'not a machine code',validationKind:'user label',ruleCodes:['single_svg','BAD CODE!'],issueCount:-3,argumentsDigest:'zzz',diagramEvidence:{tool:'nozeli_diagram',stage:'validation',effect:'none',category:'user label',rules:[{code:'x y',count:1}]}});
+ assert.deepEqual(partial,{schema:1,tool:'nozeli_diagram',callId:'c',stage:'render',effect:'none',code:'HOST_TOOL_ERROR'});
+ // Nested diagram evidence keeps only closed-vocabulary categories and rule
+ // code histograms; labels and free text never enter.
+ const nested=sanitizeHostToolFailure({schema:1,tool:'nozeli_diagram',callId:'c',stage:'render',effect:'none',code:'A',diagramEvidence:{tool:'nozeli_diagram',stage:'validation',effect:'none',category:'render-output',rules:[{code:'single_svg',count:1},{code:'finite_svg',count:2},{code:'has spaces',count:1},{code:'schema/required',count:0}]},correction:{retryTool:'nozeli_diagram',supportedFixes:['echo PRIVATE user id']}});
+ assert.deepEqual(nested.diagramEvidence,{tool:'nozeli_diagram',stage:'validation',effect:'none',category:'render-output',rules:[{code:'single_svg',count:1},{code:'finite_svg',count:2}]});
+ assert(!JSON.stringify(nested).includes('PRIVATE'));assert.equal(nested.correction,undefined,'worker-facing correction never persists');
 });
 
 test('resident mismatch escapes real startup unchanged with target and no maintenance recursion',async()=>{
@@ -289,6 +325,9 @@ test('provider diagnostics never become internal maintenance or fan out paid dia
 test('historical host wrapper adoption is readonly and unknown effects never get a reconstructed action',async()=>{
  const {c,job}=await repairFixture();job.target='orchestrator';job.type='intake';job.error='historic failure';job.errorCode='PI_HOST_TOOL_FAILED';job.diagnosticOnly=true;job.promptStartedAt='already-started';job.collabAttempts=[{everAdmitted:true,status:'unknown'}];
  c.store.state.todos.push({sourceJobId:job.id,kind:'system',status:'open'});c.maintenanceEvent=async()=>{};
+ // maintenanceScan always runs the real diagram recovery recipe scan; the
+ // Object.create fixture must carry the same wiring as a production controller.
+ c.diagramRecovery=new DiagramRecovery(c);
  const {adopted,automaticReplay}=await c.maintenanceScan();assert.equal(adopted.length,1);assert.equal(automaticReplay,false);assert.notEqual(job.diagnosticOnly,true);assert.equal(job.status,'failed');assert.equal(job.maintenanceFault.phase,'runtime');assert.equal(c.store.state.todos[0].status,'resolved');
  const bug=(await c.maintenance.read()).bugs.find(row=>row.id===job.maintenanceBugId);assert.equal(bug.status,'needs-version-fix');assert.equal(c.maintenanceCapability(bug).retry,false);assert.equal(c.maintenanceActions.size,0);
 });

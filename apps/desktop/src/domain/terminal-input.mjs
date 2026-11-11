@@ -1,4 +1,4 @@
-// Terminal capability replies share the input stream with user keystrokes.
+// zeli: Terminal capability replies share the input stream with user keystrokes.
 // A read can contain several replies, a split reply, or replies plus typed text.
 const responseSource=String.raw`\x1b(?:\[[\d;?:><=]*[Rcu]|\[\??[\d;]*\$y|\[[IO]|\]\d+;[^\x07\x1b]*(?:\x07|\x1b\\))`;
 const replies=()=>new RegExp(responseSource,'g');

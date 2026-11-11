@@ -159,6 +159,12 @@ function freeze(value) { if (value && typeof value === 'object') { for (const ch
 // The host baseline must keep passing the same strict CSS policy as author styles.
 css(REPORT_READER_STYLE);
 
+export function validateHtmlReportSyntax(html){
+  if(typeof html!=='string'||!html.trim())fail('nonempty HTML is required');
+  if(Buffer.byteLength(html)>HTML_REPORT_LIMITS.bodyBytes)fail('body byte budget exceeded');
+  const tree=checkedTree(htmlParser,html,HTML_REPORT_LIMITS.nodes,'HTML');
+  tree.iterate({enter(node){if(['MismatchedCloseTag','IncompleteTag','IncompleteCloseTag'].includes(node.name))fail('unsupported HTML syntax '+node.name);}});
+}
 export async function prepareHtmlReport(html, { readAsset, resolveReference } = {}) {
   if (typeof html !== 'string' || !html.trim()) fail('nonempty HTML is required');
   // Republishing a previously frozen report can carry the baked host baseline

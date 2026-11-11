@@ -1,12 +1,19 @@
 import fs from 'node:fs/promises';
 import {createHash,randomUUID} from 'node:crypto';
+import {sanitizeHostToolFailure} from './maintenance-ledger.mjs';
 
 const now=()=>new Date().toISOString();
 const fail=code=>{throw Object.assign(Error(code),{code});};
-const sourceFiles=['controller.mjs','context-reader.mjs','document-reader.mjs','pi-session.mjs','maintenance-ledger.mjs','workspace.mjs','debug-protocol.mjs'];
+const baseSourceFiles=['controller.mjs','context-reader.mjs','document-reader.mjs','pi-session.mjs','maintenance-ledger.mjs','workspace.mjs','debug-protocol.mjs'];
+// Trusted additional read-only sources per known failing tool: the offline
+// diagram adapter plus the validator and workflow renderer its failures cite.
+// Inspect resolves only these allowlisted exact paths, never a stored free path.
+const toolSourceFiles={'nozeli_diagram':['archify-diagram.mjs','archify-vendor/renderers/shared/validator.mjs','archify-vendor/renderers/workflow/render-workflow.mjs','diagram-recovery.mjs']};
+const sourceRoot='src/agents/managed/';
+const sourceFileByPath=new Map([...baseSourceFiles,...Object.values(toolSourceFiles).flat()].map(name=>[sourceRoot+name,name]));
 const digest=text=>createHash('sha256').update(text).digest('hex');
 const clean=value=>value.replace(/(?:Bearer\s+|(?:api[_-]?key|token|password|secret)\s*[:=]\s*)\S+/gi,'[redacted]').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g,'');
-export const debugInstructions='系统内部 DEBUG 事件，不是用户业务任务。必须调用 nozeli_maintenance action=debug、debug.inspect 阅读宿主证据和只读源码，然后以 debug.report 提交 diagnosis/rootCause/fixPlan。status 或文字回答不算完成。报告仅为模型解释，不是已验证修复；不得自派新 Work、重放原 prompt/未知效果、改源码/安装程序、请求用户技术维修或绕过人工暂停/权限。报告保存后，若宿主返回 hostContinuation（已证明写入前拒绝的临时续行能力），必须在同一 attempt 主动调用 action=debug.continue 让原任务继续：verifiedFix 恒为 false，源码缺陷仍待修复，原请求不改写。仅模型/提供方不可用时保留停止事实。';
+export const debugInstructions='系统内部 DEBUG 事件，不是用户业务任务。必须调用 nozeli_maintenance action=debug、debug.inspect 阅读宿主证据和只读源码，然后以 debug.report 提交 diagnosis/rootCause/fixPlan。status 或文字回答不算完成。报告仅为模型解释，不是已验证修复；不得自派新 Work、重放原 prompt/未知效果、改源码/安装程序、请求用户技术维修或绕过人工暂停/权限。报告保存后，若宿主返回 hostContinuation（已证明写入前拒绝的临时续行能力），必须在同一 attempt 主动调用 action=debug.continue 让原任务继续：verifiedFix 恒为 false，源码缺陷仍待修复，原请求不改写。若宿主未返回 hostContinuation，报告回执即诊断终态，宿主直接结束本回合；不得再调用其他 action、重复报告或以文字续写。仅模型/提供方不可用时保留停止事实。';
 export const debugToolProperties={action:{type:'string',enum:['status','retry','scan','debug','debug.inspect','debug.report','debug.continue']},bugId:{type:'string'},attemptId:{type:'string'},sourceId:{type:'string'},startLine:{type:'integer',minimum:1},lineCount:{type:'integer',minimum:1,maximum:80},diagnosis:{type:'string',maxLength:1200},rootCause:{type:'string',maxLength:1200},fixPlan:{type:'string',maxLength:1200}};
 
 // The debug ledger is interpretation/evidence only. It never changes repair
@@ -65,12 +72,21 @@ export class DebugProtocol{
   const old=bug.debug,previousAttempt=old?{eventJobId:old.eventJobId,attemptId:old.attemptId??null,state:old.state}:null;
   bug.debug={schema:1,state:'queued',eventJobId,queuedAt:now(),...(previousAttempt?{previousAttempt}:{})};
  });}
- async sources(){return Promise.all(sourceFiles.map(async(name,index)=>{const text=await fs.readFile(new URL(name,import.meta.url),'utf8');return {sourceId:'source:'+index,path:'src/agents/managed/'+name,lineCount:text.split('\n').length,digest:digest(text)};}));}
+ // Additional trusted sources are selected by the sanitized host-tool failure
+ // evidence only; evidence without a known tool keeps the base catalog. A
+ // tool source not yet shipped is simply unlisted (never fabricated), and it
+ // appears automatically once the module exists.
+ async sources(hostToolFailure=null){
+  const names=[...baseSourceFiles];
+  if(hostToolFailure&&toolSourceFiles[hostToolFailure.tool])for(const name of toolSourceFiles[hostToolFailure.tool])if(!names.includes(name))names.push(name);
+  const rows=await Promise.all(names.map(async(name,index)=>{let text;try{text=await fs.readFile(new URL(name,import.meta.url),'utf8');}catch(error){if(error?.code==='ENOENT')return null;throw error;}return {sourceId:'source:'+index,path:sourceRoot+name,lineCount:text.split('\n').length,digest:digest(text)};}));
+  return rows.filter(Boolean);
+ }
  async action(job,args){
   const {bug,original,binding}=await this.scope(job,args.bugId);
   if(args.action==='debug'){
-   const sources=await this.sources(),capability=await this.host.debugContinuationCapability(bug);
-   const debug=await this.update(bug.id,b=>{if(b.debug?.eventJobId===job.id&&b.debug.attemptId)return;const previousAttempt=b.debug?.previousAttempt;b.debug={schema:1,state:'running',eventJobId:job.id,attemptId:randomUUID(),binding,startedAt:now(),...(previousAttempt?{previousAttempt}:{}),evidence:{error:structuredClone(b.error),originalJob:original?{id:original.id,type:original.type,target:original.target,revision:original.revision??null,status:original.status,errorCode:original.errorCode??null,hostToolCode:original.hostToolCode??null,failureOrigin:original.failureOrigin??null}:null,continuationCapability:capability?{kind:capability.kind,name:capability.name??null,intent:capability.intent}:null,sources},inspections:[]};},job);
+   const hostToolFailure=sanitizeHostToolFailure(original?.hostToolFailure),sources=await this.sources(hostToolFailure),capability=await this.host.debugContinuationCapability(bug);
+   const debug=await this.update(bug.id,b=>{if(b.debug?.eventJobId===job.id&&b.debug.attemptId)return;const previousAttempt=b.debug?.previousAttempt;b.debug={schema:1,state:'running',eventJobId:job.id,attemptId:randomUUID(),binding,startedAt:now(),...(previousAttempt?{previousAttempt}:{}),evidence:{error:structuredClone(b.error),originalJob:original?{id:original.id,type:original.type,target:original.target,revision:original.revision??null,status:original.status,errorCode:original.errorCode??null,hostToolCode:original.hostToolCode??null,failureOrigin:original.failureOrigin??null,...(hostToolFailure?{hostToolFailure}:{})}:null,continuationCapability:capability?{kind:capability.kind,name:capability.name??null,intent:capability.intent}:null,sources},inspections:[]};},job);
    return {binding,attemptId:debug.attemptId,evidence:debug.evidence,hostContinuation:capability,debug,readOnly:true,continueTurn:true};
   }
   const d=bug.debug;
@@ -78,7 +94,8 @@ export class DebugProtocol{
   if(args.action==='debug.inspect'){
    const source=d.evidence.sources.find(s=>s.sourceId===args.sourceId);if(!source)fail('DEBUG_SOURCE_INVALID');
    const start=args.startLine??1,count=args.lineCount??60;if(!Number.isInteger(start)||start<1||!Number.isInteger(count)||count<1||count>80)fail('DEBUG_SOURCE_INVALID');
-   const text=await fs.readFile(new URL(sourceFiles[Number(source.sourceId.slice(7))],import.meta.url),'utf8');if(digest(text)!==source.digest)fail('DEBUG_BINDING_STALE');
+   const name=sourceFileByPath.get(source.path);if(!name)fail('DEBUG_SOURCE_INVALID');
+   const text=await fs.readFile(new URL(name,import.meta.url),'utf8');if(digest(text)!==source.digest)fail('DEBUG_BINDING_STALE');
    const lines=text.split('\n');if(start>lines.length)fail('DEBUG_SOURCE_INVALID');
    const page=[];let bytes=0;for(const line of lines.slice(start-1,start-1+count)){const size=Buffer.byteLength(line+'\n');if(bytes+size>12288)break;page.push(line);bytes+=size;}if(!page.length)fail('DEBUG_SOURCE_INVALID');
    const receipt={sourceId:source.sourceId,digest:source.digest,startLine:start,endLine:start+page.length-1};
@@ -94,7 +111,14 @@ export class DebugProtocol{
     if(current.report){if(['diagnosis','rootCause','fixPlan'].some(k=>current.report[k]!==report[k]))fail('DEBUG_REPORT_INVALID');return;}
     current.state='awaiting-fix';current.report={version:1,kind:'model-interpretation',verifiedFix:false,attemptId:d.attemptId,binding,...report,at:now()};
    },job);
-   return {debug,report:debug.report,verifiedFix:false,workResumed:false,hostContinuation:await this.host.debugContinuationCapability(bug),continueTurn:true};
+   // A completed report is an interpretation, never a verified repair.
+   // Without a host-proven continuation capability the diagnostics stop here:
+   // an explicit terminal host result (continueTurn:false + hostControl) lets
+   // finishOnHostControl end the turn cleanly instead of burning another
+   // model request; with a capability the model must still call
+   // debug.continue in this same attempt.
+   const capability=await this.host.debugContinuationCapability(bug);
+   return {debug,report:debug.report,verifiedFix:false,workResumed:false,hostContinuation:capability,...(capability?{continueTurn:true}:{hostControl:true,saved:true,continueTurn:false})};
   }
   if(args.action==='debug.continue')return await this.#continue(job,bug);
   fail('DEBUG_REPORT_INVALID');

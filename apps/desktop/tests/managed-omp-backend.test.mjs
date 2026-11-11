@@ -230,7 +230,8 @@ test('recovery gates: never-dispatched green, cancelled-after-prompt red, unknow
     await assert.rejects(c.session('frontdesk'), /PI_SESSION_FILE_NOT_FOUND/, 'unknown history must not restart');
   }
 
-  // A zero-activity flag without a pinned original journal is not proof of emptiness.
+  // Injected persisted-fault refusal (the fake preflight throws on any
+  // digest difference): a real ordinary tool upgrade resumes instead.
   {
     const { c, created } = await makeCtrl([], {});
     await c.store.mutate(() => {

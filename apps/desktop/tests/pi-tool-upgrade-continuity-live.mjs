@@ -247,10 +247,11 @@ if(!failed)try{
         assert.equal(page.endLine-page.startLine+1,40);
         inspectVerified=true;stage=3;
         return {id:'ctl-report',tool:'nozeli_maintenance',args:{action:'debug.report',bugId:proofBugId,attemptId,diagnosis:'工具清单升级被误判为不兼容并强制交接。',rootCause:'历史宿主把工具摘要变化当作拒绝恢复的身份错误。',fixPlan:'以线程与属主身份为准恢复；摘要变化仅作诊断证据。'}}};
-      const report=lastToolResult(request,'ctl-report');
-      assert.equal(report.verifiedFix,false);assert.equal(report.report.kind,'model-interpretation');
-      stage=4;
-      return {text:NEW_ACK};
+      // The report receipt without a continuation capability is an explicit
+      // terminal host result: the native owner ends the turn without another
+      // provider request, so the persisted report is asserted below from the
+      // durable ledger.
+      throw Error('Unexpected maintenance prompt after the terminal report');
     }
     assert.deepEqual(enum_,OLD_ACTIONS,'generation one Controller session exposes only the historical actions');
     if(stage===0){stage=1;return {id:'ctl-old-status',tool:'nozeli_maintenance',args:{action:'status'}};}
@@ -341,6 +342,7 @@ if(!failed)try{
   assert.equal(reloaded.debug.state,'awaiting-fix');
   assert.equal(reloaded.debug.inspections.length,1);
   assert(reloaded.debug.report.diagnosis);
+  assert.equal(reloaded.debug.report.kind,'model-interpretation');assert.equal(reloaded.debug.report.verifiedFix,false);
   assert.deepEqual(await storage.getLocal(registered.id,'managed:maintenance'),ledger,'diagnosis durably persisted');
   const ctlJournal2=await fs.readFile(ctlFile,'utf8');
   assert(ctlJournal2.startsWith(ctlJournal),'controller original history retained as prefix after the new turn');

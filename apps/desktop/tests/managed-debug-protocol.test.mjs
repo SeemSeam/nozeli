@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
+import {existsSync} from 'node:fs';
+import {fileURLToPath} from 'node:url';
 import {Controller} from '../src/agents/managed/controller.mjs';
 import {MaintenanceLedger} from '../src/agents/managed/maintenance-ledger.mjs';
 import {DebugProtocol} from '../src/agents/managed/debug-protocol.mjs';
@@ -46,6 +48,50 @@ test('action-null bugs inspect bounded trusted source and persist interpretation
  assert.deepEqual((await f.call({action:'debug.report',attemptId:begin.attemptId,...report})).report,saved.report);
  const durable=JSON.stringify(await f.read());for(const privateText of ['PRIVATE_USER_REQUEST','PRIVATE_WORK_BRIEF','PRIVATE_ERROR','SECRET_TOKEN'])assert.equal(durable.includes(privateText),false);
  assert.equal(f.original.collabAttempts[0].status,'unknown');assert.equal(f.host.kicks,undefined);
+});
+
+test('report without continuation capability ends the turn as an explicit terminal host result',async()=>{
+ const f=await fixture(),{begin}=await inspect(f);
+ const saved=await f.call({action:'debug.report',attemptId:begin.attemptId,...report});
+ assert.equal(saved.hostContinuation,null);
+ assert.equal(saved.continueTurn,false);assert.notEqual(saved.readOnly,true);
+ assert.equal(saved.hostControl,true);assert.equal(saved.saved,true);
+ assert.equal(['accepted','saved','blocked','maintenance','transferred','userDecisionRequired','responded'].some(key=>saved[key]===true),true,'terminal stop stays classified for finishOnHostControl, never HOST_CONTROL_UNCLASSIFIED');
+ assert.equal(saved.ok===false,false);assert.equal(saved.verifiedFix,false);assert.equal(saved.workResumed,false);
+ assert.equal((await f.read()).bugs[0].status,'needs-version-fix','completed report is not a verified repair');
+ assert.equal(f.work.status,'running');assert.equal(f.original.status,'failed');
+ assert.equal(await f.host.debugProtocol.completed(f.event),true);
+ const duplicate=await f.call({action:'debug.report',attemptId:begin.attemptId,...report});
+ assert.deepEqual(duplicate.report,saved.report);assert.equal(duplicate.continueTurn,false);assert.equal(duplicate.hostControl,true);
+});
+
+test('bound original host-tool failure evidence adds the exact archify sources under the same bounds',async()=>{
+ const f=await fixture();
+ f.original.hostToolFailure={schema:1,tool:'nozeli_diagram',callId:'call-7',stage:'render',effect:'none',code:'ARCHIFY_RENDER_FAILED',diagramEvidence:{tool:'nozeli_diagram',stage:'validation',effect:'none',category:'render-output',rules:[{code:'single_svg',count:1}]}};
+ const begin=await f.call({action:'debug'});
+ assert.equal(begin.evidence.originalJob.hostToolFailure.tool,'nozeli_diagram');
+ assert.equal(begin.evidence.originalJob.hostToolFailure.diagramEvidence.category,'render-output');
+ assert.equal(begin.evidence.error.hostToolFailure,undefined,'ledger error context stays exactly as recorded');
+ const paths=begin.evidence.sources.map(s=>s.path);
+ for(const suffix of ['/archify-diagram.mjs','/validator.mjs','/render-workflow.mjs'])assert(paths.some(p=>p.endsWith(suffix)),'trusted tool source visible: '+suffix);
+ assert.equal(paths.some(p=>p.endsWith('/diagram-recovery.mjs')),existsSync(fileURLToPath(new URL('../src/agents/managed/diagram-recovery.mjs',import.meta.url))),'the shipped diagram recovery recipe source is listed exactly when the module exists');
+ const archify=begin.evidence.sources.find(s=>s.path.endsWith('/archify-diagram.mjs'));
+ const page=await f.call({action:'debug.inspect',attemptId:begin.attemptId,sourceId:archify.sourceId,startLine:1,lineCount:80});
+ assert.equal(page.value.path,'src/agents/managed/archify-diagram.mjs');
+ assert.equal(page.value.digest,archify.digest);assert.ok(Buffer.byteLength(page.value.text)<=12288);
+ // Tampered stored evidence cannot turn inspect into arbitrary file reads:
+ // only allowlisted exact paths resolve and page digests must still match.
+ await f.host.maintenance.mutate(state=>{state.bugs[0].debug.evidence.sources.find(s=>s.sourceId===archify.sourceId).path='/etc/passwd';});
+ assert.equal((await f.call({action:'debug.inspect',attemptId:begin.attemptId,sourceId:archify.sourceId,startLine:1,lineCount:10})).error.code,'DEBUG_SOURCE_INVALID');
+ await f.host.maintenance.mutate(state=>{const source=state.bugs[0].debug.evidence.sources.find(s=>s.sourceId===archify.sourceId);source.path='src/agents/managed/archify-diagram.mjs';source.digest='0'.repeat(64);});
+ assert.equal((await f.call({action:'debug.inspect',attemptId:begin.attemptId,sourceId:archify.sourceId,startLine:1,lineCount:10})).error.code,'DEBUG_BINDING_STALE');
+ // A forged invalid bound block adds no evidence field and no extra sources.
+ const forged=await fixture();
+ forged.original.hostToolFailure={schema:1,tool:'nozeli_diagram',callId:'c',stage:'validation',effect:'none',code:'USER LABEL bypass'};
+ const begin2=await forged.call({action:'debug'});
+ assert.equal(begin2.evidence.originalJob.hostToolFailure,undefined);
+ assert.equal(begin2.evidence.sources.some(s=>s.path.includes('archify')),false);
+ assert(!JSON.stringify(begin2.evidence).includes('USER LABEL'));
 });
 
 test('debug report requires source evidence, current exact event/project/attempt and original revision',async()=>{
@@ -231,6 +277,7 @@ test('a historically captured empty-brief failure continues once via debug with 
  await call({action:'debug.inspect',attemptId:begin.attemptId,sourceId:source.sourceId,startLine:1,lineCount:10});
  const reported=await call({action:'debug.report',attemptId:begin.attemptId,...report});
  assert.equal(reported.report.verifiedFix,false);assert.equal(reported.hostContinuation.kind,'dispatch-empty-brief');
+ assert.equal(reported.continueTurn,true,'a host-proven continuation capability keeps the turn open: debug.continue is still required in this same attempt');assert.equal(reported.hostControl,undefined);
  const continued=await call({action:'debug.continue',attemptId:begin.attemptId});
  assert.equal(continued.ok,true);assert.equal(continued.verifiedFix,false);assert.equal(continued.sourceRepairRequired,true);
  assert.equal(continued.debugState,'continued-with-known-fault');assert.equal(continued.duplicate,false);assert.equal(continued.continueTurn,true);

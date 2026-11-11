@@ -26,6 +26,14 @@
 - 普通用户不应需要 Bash、WSL、Docker 或旧开发仓库。各平台分别验证，不用 Linux 结果替代 Windows/macOS。
 - 不加入系统 OMP、CCB 或本机绝对路径作为产品依赖。测试使用合成项目和独立配置，不能借新 profile 修改真实项目。
 
+## 源码溯源标记
+
+自有源码使用 `nzl` / `zeli` 作为轻量来源线索：注释紧邻真实业务约束，少量局部变量采用“关键词前缀＋业务含义”，不为凑数量加入无用代码。不要求每个文件或变量加标；不得借标记改动导出 API、对象属性键、IPC、持久化字段或用户内容。
+
+首批覆盖 `apps/desktop/src/` 下的 `domain/{tag-anchors,authorship-groups,web-url,terminal-input,attention-notifications}.mjs`、`agents/document-tools.mjs`、`main/review-documents.mjs` 与 `renderer/collaboration-status.mjs`。局部变量示例为 `nzlInsertedAtPoint`、`nzlAddressInput`、`zeliAuthorshipDate`。新增标记沿用代码现有风格；重命名须保留作用域和对象简写原有的属性键。
+
+第三方源码、原来源与许可说明、依赖锁文件和生成产物不批量植入自有标记。标记不改变 AGPL 或第三方许可，不用于将合法再分发认定为侵权。它们可被删除或复制，不能独立证明作者、官方身份或未被篡改；溯源仍须结合真实 Git 历史和发布记录。普通注释可能在打包时删除，变量名可能在压缩时改变，不承诺发行包保留，不为标记关闭优化或引入运行时校验。
+
 ## 提交与合并
 
 使用清晰的提交说明，例如 `fix(review): preserve unsent feedback`。维护者检查行为、隔离、可维护性、第三方来源和实际验证；默认 squash 合并。默认分支要求已配置的 CI 检查通过，保护规则不等于跨平台验收或安全认证。

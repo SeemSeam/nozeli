@@ -227,20 +227,11 @@ const handler=async request=>{
         stage=4;
         return call('submit-debug-diagnosis','nozeli_maintenance',{action:'debug.report',bugId,attemptId:debugAttemptId,...reportFields});
       }
-      if(stage===4){
-        const reported=success(request,'submit-debug-diagnosis');
-        debugReport=reported.report;
-        assert.equal(reported.verifiedFix,false,'diagnosis is never a verified fix');
-        assert.equal(reported.workResumed,false,'diagnosis never resumes the original Work');
-        assert.equal(reported.debug.state,'awaiting-fix');
-        assert.equal(debugReport.version,1);
-        assert.equal(debugReport.kind,'model-interpretation');
-        assert.equal(debugReport.verifiedFix,false);
-        assert.deepEqual(debugReport.binding,debugBinding,'report is bound to the actual debug binding');
-        for(const field of Object.keys(reportFields))assert.equal(debugReport[field],reportFields[field]);
-        stage=5;
-        return {text:'Installed DEBUG evidence inspected and diagnosis/fixPlan persisted for the exact original bug. This is not a verified fix. Preserve the original Work for source correction; no business replay and no user technical repair request.'};
-      }
+      // No stage-4 handler: the report receipt without a host-proven
+      // continuation capability is an explicit terminal host result
+      // (continueTurn:false), so the installed native owner ends the turn
+      // without another provider request; the persisted report is observed
+      // below straight from the owned sqlite ledger.
       throw new Error('Unexpected diagnostic prompt after completed report');
     }
   }
@@ -286,12 +277,25 @@ try{
   await until(async()=>{
     const live=await gateState();
     if(live?.violation)throw new Error('hardened gate refused to inject; wrapper-side violation: '+JSON.stringify(live.violation));
-    return stage===5;
-  },'injected host failure followed by the completed installed native debug flow');
+    if(stage!==4)return false;
+    const state=await fixture.status();
+    return state.jobs.find(row=>row.id===debugJobId)?.status==='completed';
+  },'injected host failure followed by the terminal installed debug report receipt');
   await until(async()=>{
     const state=await fixture.status();
     return !state.jobs.some(job=>['queued','running','transferring'].includes(job.status));
-  },'owned installed app settles after the debug report');
+  },'owned installed app settles after the terminal debug report');
+  // The report is observed from the durable owned ledger after the terminal
+  // host receipt, not from any follow-up model request.
+  const reportedLedger=await readUiRecordLive(fixture.ledgerFile,'managed:maintenance');
+  const reportedBug=reportedLedger.bugs.find(row=>row.id===bugId);
+  debugReport=reportedBug.debug.report;
+  assert.equal(reportedBug.debug.state,'awaiting-fix','durable debug settles awaiting-fix after the terminal report receipt');
+  assert.equal(debugReport.version,1);
+  assert.equal(debugReport.kind,'model-interpretation');
+  assert.equal(debugReport.verifiedFix,false,'diagnosis is never a verified fix');
+  assert.deepEqual(debugReport.binding,debugBinding,'report is bound to the actual debug binding');
+  for(const field of Object.keys(reportFields))assert.equal(debugReport[field],reportFields[field]);
   const gate=await gateState();
   assert(gate,'gate state readable after the flow');
   assert(!gate.violation,'hardened gate refused to inject; wrapper-side violation: '+JSON.stringify(gate.violation));
@@ -424,7 +428,7 @@ try{
 function checks1(){
   result.checks.push('test wrapper on the actual installed Controller.prototype.onTool injected READ_REF_EXPIRED (failureOrigin host) for exactly one exact test callId/projectId with live job/Work/native prompt/ref/offset identity; every other call delegated');
   result.checks.push('real installed Worker read the long synthetic file with a genuine nozeli_document_read page and then issued the exact injected nozeli_history_read call; the failed job retained hostToolCode READ_REF_EXPIRED with one collab attempt');
-  result.checks.push('automatic installed maintenance ran real native DEBUG: one activation with real binding/attempt, two host-selected installed-source inspections with exact bytes and digests, and a model-interpretation report through the actual binding');
+  result.checks.push('automatic installed maintenance ran real native DEBUG: one activation with real binding/attempt, two host-selected installed-source inspections with exact bytes and digests, and a model-interpretation report persisted after the terminal host-control receipt (no post-report model request)');
   result.checks.push('no Worker replay, extra Work, publication, user technical-repair todo or diagnostic requeue; original intake job completed and original source/Git baseline unchanged');
 }
 function checks2(){

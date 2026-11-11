@@ -36,11 +36,13 @@ import {loadWorkerArchive,readWorkerArchive as readWorkerArchiveFile} from './wo
 import {readStoredReport,reportSemanticText} from './report-descriptor.mjs';
 import {resolveProblemDecision} from './problem-decisions.mjs';
 import {renderArchifyDiagram} from './archify-diagram.mjs';
-import {prepareHtmlReport} from './html-report.mjs';
+import {prepareHtmlReport,validateHtmlReportSyntax} from './html-report.mjs';
 import {activeDrafts,computeReviewVersion,decodeInline,draftTextFor,hasActiveDrafts,normalizeReviewText,readDraftRecord,reviewDraftBytes,reviewMergeProjection,writeDraftRecord,appendDraftEntry,REVIEW_HISTORY_LIMIT,REVIEW_REQUEST_KEY} from './review-candidate.mjs';
 import {managedArtifact,managedReportSource} from '../managed-report-source.mjs';
-import {MaintenanceLedger,maintenanceBoundary} from './maintenance-ledger.mjs';
+import {MaintenanceLedger,maintenanceBoundary,sanitizeHostToolFailure} from './maintenance-ledger.mjs';
 import {DebugProtocol,debugToolProperties} from './debug-protocol.mjs';
+import {DiagramRecovery} from './diagram-recovery.mjs';
+import {reconcileReportRecovery} from './report-recovery.mjs';
 import {validateWorkControlPayload,resolveWorkControlTarget,workControlTargetDescriptor,jobBoundWork,workControlCapabilitiesFromState,applyWorkControlState,findControlReceipt,attachControlResponse,recordControlFinal,processResumeRequeueState,buildControlResponse,receiptResponse,heldNeverAdmitted,assertProjectInstance} from './work-control.mjs';
 import {ProjectInitialization,initializationTools} from './project-initialization.mjs';
 
@@ -90,6 +92,7 @@ export class Controller extends EventEmitter {
     this.hostOperations=new Map();this.hostOperationFlights=new Map();
     this.processBudget=processBudget;this.reclaiming=new Map();this.mergeDrain=null;
     this.timeline=new SessionIndex(store);
+    this.diagramRecovery=new DiagramRecovery(this);
     this.changes=new WorkChanges({runtimeRoot:store.root,storage:store.storage,projectId:store.projectId,readState:()=>store.state});
     this.projectInitialization=new ProjectInitialization(this);
   }
@@ -283,7 +286,7 @@ export class Controller extends EventEmitter {
       if(!job.maintenanceFault||!['input-preparation','publication','session-start'].includes(job.maintenanceFault.phase))continue;
       const bug=await this.maintenance.record({phase:job.maintenanceFault.phase,jobId:job.id,workId:job.target,revision:job.revision,error:{code:job.maintenanceFault.code}});
       await this.maintenance.finish(bug.id,{outcome:'needs-version-fix'});await this.store.mutate(()=>{job.maintenanceBugId=bug.id;for(const todo of this.store.state.todos)if(todo.sourceJobId===job.id&&['system','recovery'].includes(todo.kind))todo.status='resolved';});await this.maintenanceEvent(bug);adopted.push(bug.id);
-    }return {adopted,automaticReplay:false};
+    }const recovery=await this.diagramRecovery.scan();return {adopted,automaticReplay:false,recovery};
   }
   async recordTransport(target,fact){
     const statuses=new Set(['prepared','submitted','pending','admitted','native-record-confirmed','executed','rejected','unknown','settled']);
@@ -444,6 +447,8 @@ export class Controller extends EventEmitter {
     const rejected=preflight.find(result=>result.status==='rejected');if(rejected)throw rejected.reason;
     const results=await Promise.allSettled(residents.map(target=>bootstrap(target,'resident-start',()=>this.session(target))));const failed=results.find(result=>result.status==='rejected');if(failed)throw failed.reason;
     await this.reconcileResidentSchemaMaintenance(previousThreads);
+    if(this.diagramRecovery)await this.diagramRecovery.scan();
+    await reconcileReportRecovery(this);
     this.started=true;this.changed();this.kick();return this.snapshot();
   }
   async applyModelDefaults(defaults){
@@ -2085,6 +2090,13 @@ export class Controller extends EventEmitter {
       return value;
     }catch(error){
       if(error&&typeof error==='object')error.failureOrigin='host';
+      const active=this.current.get(target);
+      const code=/^[A-Z][A-Z0-9_]{0,79}$/.test(String(error?.code??''))?error.code:'HOST_TOOL_ERROR';
+      const hostToolFailure=sanitizeHostToolFailure({schema:1,tool:p.tool,callId:p.callId,stage:p.tool==='nozeli_diagram'?'render':'tool',effect:p.tool==='nozeli_diagram'?'none':'unknown',code});
+      if(active&&hostToolFailure){
+        await this.store.mutate(()=>{const saved=this.store.state.jobs.find(j=>j.id===active.id);if(saved)saved.hostToolFailure=hostToolFailure;});
+        error.hostToolFailure=hostToolFailure;
+      }
       if(['HOST_CONTEXT_BUDGET_EXHAUSTED','RESULT_MEMORY_BUDGET'].includes(error.code))return this.readBudgetDenied(target);
       if(readTool&&this.isReadProtocolError(error))return this.readProtocolFault(target,p,error);
       if(maintenanceBoundary(error)||!/^INTERNAL_|^HOST_INTERNAL_/.test(String(error.code??'')))throw error;
@@ -2277,7 +2289,12 @@ export class Controller extends EventEmitter {
     if(p.tool==='nozeli_diagram'&&!['frontdesk','orchestrator'].includes(target)){
       const isActive=()=>!this.stopping&&this.current.get(target)===job&&this.store.find(target).status==='running'&&this.store.find(target).revision===job.revision;
       if(!isActive())throw Object.assign(new Error('工作已停止'),{code:'WORK_STOPPED'});
-      const rendered=await renderArchifyDiagram({type:a.type,spec:a.spec});
+      let rendered;
+      try{rendered=await renderArchifyDiagram({type:a.type,spec:a.spec});}
+      catch(error){
+        if(error.code!=='DIAGRAM_INPUT_INVALID')throw error;
+        return {ok:false,continueTurn:true,error:{code:error.code,message:error.message},effect:'none',correction:{...error.correction,instruction:'调整当前图示参数后在本回合重新调用；不要重放原任务或已完成操作。'}};
+      }
       // Diagrams exist only inside the immutable report object: validate the exact inline <figure> embedding the report will freeze, and create no project files.
       await prepareHtmlReport('<!doctype html><html><head><title>Diagram validation</title></head><body><figure>'+rendered.svg+'<figcaption>Diagram validation</figcaption></figure></body></html>');
       const fingerprint=createHash('sha256').update(JSON.stringify({type:a.type,specDigest:rendered.specDigest,generatorDigest:rendered.generatorDigest,svg:rendered.svg})).digest('hex');
@@ -2417,6 +2434,7 @@ export class Controller extends EventEmitter {
       // provider schemas; kind determines interpretation, never content sniffing.
       const kind=a.kind,body=a.content;
       if(!['result','problem'].includes(kind)||Object.keys(a).some(key=>!['kind','content','files'].includes(key))||typeof body!=='string'||!body.trim()||!Array.isArray(a.files))throw Object.assign(Error('publication requires exactly kind, non-empty content and files'),{code:'PUBLICATION_ARGUMENTS_INVALID'});
+      if(kind==='result')try{validateHtmlReportSyntax(body);}catch(error){if(error.code!=='HTML_REPORT_INVALID')throw error;return {ok:false,continueTurn:true,effect:'none',error:{code:error.code,message:error.message},correction:'修正报告HTML标签及结构后重新发布；原任务与已执行文件操作保留，不重放。'};}
       const publicationInputDigest=createHash('sha256').update(JSON.stringify({kind,content:body,files:a.files})).digest('hex'),existing=this.store.state.receipts.find(row=>row.id===p.callId);
       if(existing){if(existing.workId!==target||existing.revision!==job.revision||existing.publicationInputDigest!==publicationInputDigest)throw Error('receipt collision');return {saved:true,kind,object:existing.objectId,report:existing.report,files:(existing.snapshot?.files||[]).map(({relPath,size})=>({relPath,size})),rejectedFiles:[],duplicate:true,workRemainsOpen:true};}
       let frozen,receipt;
@@ -2437,6 +2455,7 @@ export class Controller extends EventEmitter {
       return receipt;
       },()=>this.store.state.receipts.some(r=>r.id===p.callId&&r.workId===target&&r.publicationInputDigest===publicationInputDigest));
       }catch(error){if(error.code==='MAINTENANCE_PENDING')return {saved:false,hostControl:true,maintenance:true,bugId:error.bugId,workRemainsOpen:true,message:'宿主发布故障已交后台维修，不转换为业务问题，不重复Worker。'};throw error;}
+      await reconcileReportRecovery(this);
       this.changed();this.kick();return {saved:true,kind,object:receipt.objectId,files:artifacts.files,rejectedFiles:artifacts.rejected,...(frozen?{candidate:frozen.candidate}:{}),workRemainsOpen:true};
     }
     throw new Error('tool unavailable in this role/event');
@@ -2661,7 +2680,7 @@ export class Controller extends EventEmitter {
   async recordInternalFailure(job,error){
     const saved=this.store.state.jobs.find(j=>j.id===job.id);
     const existing=saved?.maintenanceBugId&&(await this.maintenance.read()).bugs.find(b=>b.id===saved.maintenanceBugId);
-    const bug=existing??await this.maintenance.record({phase:'runtime',jobId:job.id,workId:this.store.state.works.some(w=>w.id===job.target)?job.target:null,revision:job.revision??null,error:error.hostToolCode?{code:error.hostToolCode,message:error.message,stack:error.stack}:error});
+    const bug=existing??await this.maintenance.record({phase:'runtime',jobId:job.id,workId:this.store.state.works.some(w=>w.id===job.target)?job.target:null,revision:job.revision??null,error:{code:error.hostToolCode??error.code,message:error.message,stack:error.stack,hostToolFailure:saved?.hostToolFailure??error.hostToolFailure}});
     // No captured action means no repair capability: retain evidence rather
     // than reconstructing a prompt or replaying admitted/unknown effects.
     if(!existing)await this.maintenance.finish(bug.id,{outcome:'needs-version-fix'});
@@ -2690,6 +2709,11 @@ export class Controller extends EventEmitter {
     // the request instead of degrading to a diagnostic-only record.
     await this.store.mutate(()=>{this.store.state.contextBudgetEpochs=this.contextBudget.persistedEpochs();});
   }
+  assertDiagramRecoveryAdmission(job,session=null){
+    if(!job.context?.diagramRecoveryReceiptId)return;
+    const original=this.store.state.jobs.find(row=>row.id===job.context.sourceJobId),receipt=original?.diagramRecovery,work=this.store.find(job.target);
+    if(!receipt||receipt.id!==job.context.diagramRecoveryReceiptId||receipt.bugId!==job.context.diagramRecoveryBugId||receipt.supplementJobId!==job.id||receipt.workId!==work.id||receipt.revision!==job.context.diagramRecoveryRevision||receipt.threadId!==job.context.diagramRecoveryThreadId||work.revision!==receipt.revision||work.threadId!==receipt.threadId||work.status!=='running'||session&&session.threadId!==receipt.threadId)throw Object.assign(Error('Diagram recovery Work/thread binding changed; original effects are not replayed'),{code:'RESTART_RECONCILIATION_REQUIRED'});
+  }
   async runJob(inputJob){
     const job=structuredClone(inputJob);
     let didStart=false,settledOk=false,pendingMaterialDelivery=null;
@@ -2700,6 +2724,7 @@ export class Controller extends EventEmitter {
       if(job.context?.pendingIntakeId){const parent=this.store.state.jobs.find(j=>j.id===job.context.pendingIntakeId),work=parent&&(this.intakeBoundWork(parent)||this.store.state.works.find(w=>w.sourceJob===parent.id));if(work)await this.store.mutate(()=>{const field=job.context.softWorkHint?'workHintId':'boundWorkId';job.context[field]=work.id;savedJob().context[field]=work.id;});else {const question=parent&&this.store.state.todos.findLast(q=>q.kind==='routing'&&q.sourceJobId===parent.id&&q.status==='open');if(!question)throw Error('原目标尚未明确处理结果，请先核对已有提交');await this.store.mutate(()=>{job.context.routingQuestionId=question.id;savedJob().context.routingQuestionId=question.id;});}}
       const isWork=!['frontdesk','orchestrator'].includes(job.target);
       if(isWork){const w=this.store.find(job.target);
+        this.assertDiagramRecoveryAdmission(job);
         // An approved effect continuation admits only against the exact Work
         // revision pinned at approval, checked BEFORE continue() can advance
         // the revision or job.revision is rewritten: a later revision change
@@ -2730,6 +2755,7 @@ export class Controller extends EventEmitter {
         if(materials.length)job.context={...job.context,materials,materialsExplicit:true};
       }
       const session=await this.maintenanceTransaction(job,'session-start',()=>this.session(job.target),s=>Boolean(s&&!s.closed));
+      this.assertDiagramRecoveryAdmission(job,session);
       // ── Context cutover delivery ─────────────────────────────────────
       // The raw current user text becomes the single native user entry,
       // verbatim (whitespace included), with no wrappers, no unseen-history
@@ -2816,10 +2842,12 @@ export class Controller extends EventEmitter {
       // long multi-turn runs. (Transfer check stays between record and run.)
       if(job.restartRecovery?.kind!=='native-continuation')await this.store.mutate(()=>{savedJob().requestContext=requestContext;});
       if(job.type==='front'&&this.transferFor(job)){await this.saveTransferredFront(job);return;}
+      this.assertDiagramRecoveryAdmission(job,session);
       await this.store.mutate(()=>{if(isWork)this.assertDeviationReleased(job.target);const hold=this.#admissionHold(job);if(hold)throw Object.assign(new Error('人工/故障门已暂停准入；输入保留在队列'),{code:hold});const source=this.serviceFaultGate?.(savedJob())?.source;if(source)savedJob().serviceSource=structuredClone(source);delete savedJob().resourceBlocked;if(job.restartRecovery?.kind!=='native-continuation')savedJob().promptStartedAt=Date.now();const owner=isWork?this.store.find(job.target):this.store.state.residents[job.target];if(owner)owner.zeroActivity=false;});
       // 最终核验（§7：真正提交prompt前再核门）：事务提交后到prompt发送前的
       // 窗口内门生效则撤回准入（未发送任何内容，promptStartedAt 无副作用回退）。
       if(this.#admissionHold(job)){await this.store.mutate(()=>{const saved=savedJob();if(saved&&saved.status==='running'){saved.status='queued';if(job.restartRecovery?.kind!=='native-continuation')delete saved.promptStartedAt;delete saved.startedAt;}});return;}
+      this.assertDiagramRecoveryAdmission(job,session);
       let response;
       if(job.restartRecovery?.kind==='native-continuation'){
         const attempt=savedJob().collabAttempts?.findLast(a=>a.kind==='prompt'&&!a.definitiveRejection);
@@ -2830,7 +2858,7 @@ export class Controller extends EventEmitter {
         await this.store.mutate(()=>{const saved=savedJob();saved.restartRecovery={...saved.restartRecovery,requestId:identity.requestId,userEntryId:identity.userEntryId,originalEpoch:attempt.epoch,ownerEpoch:session.epoch,ownerId:session.viewOwnerId,expectedLeafId:inspection.leafId,recoveryAttemptId:saved.restartRecovery?.expectedLeafId===inspection.leafId?saved.restartRecovery.recoveryAttemptId??randomUUID():randomUUID()};});
         response=await session.recover({...identity,expectedLeafId:inspection.leafId,recoveryAttemptId:savedJob().restartRecovery.recoveryAttemptId,job:{id:job.id,target:job.target,revision:job.revision??null,type:job.type},admissionCheck:()=>this.sessions.get(job.target)!==session||this.stopping?'WORK_CONTROL_HELD':this.#admissionHold(job)});
         if(response?.settlement?.observed!==true||response.settlement.persisted!==true||response.recovery?.sessionId!==identity.sessionId||response.recovery.requestId!==identity.requestId||response.recovery.jobId!==identity.jobId||response.recovery.userEntryId!==identity.userEntryId||response.recovery.leafId!==inspection.leafId||response.recovery.recoveryAttemptId!==savedJob().restartRecovery.recoveryAttemptId)throw Object.assign(Error('Native recovery settlement identity was not confirmed'),{code:'RESTART_RECONCILIATION_REQUIRED'});
-      }else response=await session.prompt(prompt,{timeout:job.context?.restrictedMode?180000:session.settleTimeoutMs??600000,images,admissionCheck:()=>this.sessions.get(job.target)!==session||this.stopping?'WORK_CONTROL_HELD':this.#admissionHold(job),job:{id:job.id,target:job.target,revision:job.revision??null,type:job.type,context:job.context},...this.restrictedPromptOptions(job),...(materials.length?{materials}:{}),...(projection?{projection:{text:projection.text,version:projection.version,sources:[{id:'work:'+job.target,version:String(this.store.find(job.target)?.revision??'')}],generation:epoch}}:{})});
+      }else response=await session.prompt(prompt,{timeout:job.context?.restrictedMode?180000:session.settleTimeoutMs??600000,images,admissionCheck:()=>{this.assertDiagramRecoveryAdmission(job,session);return this.sessions.get(job.target)!==session||this.stopping?'WORK_CONTROL_HELD':this.#admissionHold(job);},job:{id:job.id,target:job.target,revision:job.revision??null,type:job.type,context:job.context},...this.restrictedPromptOptions(job),...(materials.length?{materials}:{}),...(projection?{projection:{text:projection.text,version:projection.version,sources:[{id:'work:'+job.target,version:String(this.store.find(job.target)?.revision??'')}],generation:epoch}}:{})});
       if(await this.settleUserInterruption(job))return;
       if(savedJob()?.context?.cancelRequested)return;
       // Delivery advancement uses the exact native entry barrier, never turn

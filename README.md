@@ -68,12 +68,12 @@ Agent 交付得快，不代表人已经理解。Nozeli 希望让你看清成果�
 
 ## 当前状态
 
-- 面向 Windows、macOS、Linux；本版 Linux x64 与 macOS arm64 分别完成真实包验证，不代表各平台全功能签收。开发命令见[桌面说明](apps/desktop/README.md#本机开发与打包macos-arm64)。
-- macOS alpha.6 本机迁移与专项保留为[历史证据](docs/testing.md#alpha6-macos-本机迁移与验收2026-11-09)，不冒充 Beta1 验收；本版资格见下述同提交 CI 与发行说明。
+- 面向 Windows、macOS、Linux；本版为 Linux x64＋macOS arm64 双平台预发行（Beta2），Linux 冻结安装旅程已实测，不代表各平台全功能签收。开发命令见[桌面说明](apps/desktop/README.md#本机开发与打包macos-arm64)。
+- macOS alpha.6 本机迁移与专项保留为[历史证据](docs/testing.md#alpha6-macos-本机迁移与验收2026-11-09)，不冒充本版 Beta2 验收；本版资格以发行页与发行流程在同提交实测后补录的 CI／runner 记录为准。
 - 已有阅读、批注、编辑、真实文件与后台协作工作流；具体格式、版本和能力边界见[当前状态与能力边界](docs/status.md)。
-- **Beta1 双平台预发行 `v0.1.0-beta.1`**（[发行页](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-beta.1)，公开状态及下载以发行页为准）：整合 macOS arm64 原生支持与紧凑Task卡、审核同流阅读、卡内执行过程、附件冻结交接和提醒稳定性修复。Linux x64 与 macOS arm64 包均绑定 `17209df`，真实阅读／保存／冷恢复及随包 Pi 多轮 Task 旅程已分别通过；[main CI](https://github.com/SeemSeam/nozeli/actions/runs/42739206219)和[Mac 实包工作流](https://github.com/SeemSeam/nozeli/actions/runs/42727225581)全绿。
-- 用户于2026-11-10在知悉六项义务未签收后，追加明确授权**公开本版 Beta 预发行**，取代此前“只准备草稿”的限制；这不是沿用 alpha.6 授权或合规签收，不标稳定版或 latest。第三方源码／再分发审计未完成，六项义务仍 pending，`--public` 仍阻断。mac 包仅 ad-hoc 签名，未经 Developer ID 签名或公证；Intel Mac、Windows、mac 自动更新及完整九格式显示矩阵未提供或未验。
-- 已公开的 [alpha.6](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.6)及更早发行记录保留；草稿、CI、技术验收与合规签收是不同状态，不互相替代。
+- **Beta2 双平台预发行 `v0.1.0-beta.2`**（[发行页](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-beta.2)，公开状态及下载以发行页为准）：在 Beta1 双平台基础上，图示校验失败改为原 Worker 回合可纠正并附有界诊断证据与终局诊断回执、遗留纯图示故障按原 Work／线程安全恢复、报告 HTML 发布前纯语法预检，旧 HTML 语法恢复事项结算后恢复审核讨论，另有源码溯源微修。Linux x64 冻结安装真实旅程已通过；本版确切提交 CI 与 macOS arm64 实际 runner 记录由发行流程实测后补录，未补录前不记为通过。
+- 用户于2026-11-11在知悉六项义务未签收后，追加明确授权**公开本版 Beta2 预发行**；这不是沿用 beta.1/alpha.6 授权或合规签收，不标稳定版或 latest，也未授权替换日常安装。第三方源码／再分发审计未完成，六项义务仍 pending，`--public` 仍阻断。mac 包仅 ad-hoc 签名，未经 Developer ID 签名或公证；Intel Mac、Windows、mac 自动更新及完整九格式显示矩阵未提供或未验。
+- 上一版 [Beta1 `v0.1.0-beta.1`](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-beta.1)（产品提交 `17209df`）与已公开的 [alpha.6](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-alpha.6)及更早发行记录保留，tag 与附件不变；草稿、CI、技术验收与合规签收是不同状态，不互相替代。
 
 ## 进一步了解
 

@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { agentActor } from '../domain/document-changes.mjs';
 
-// Capabilities are issued by the host, never by the model or renderer. This is
+// zeli: Capabilities are issued by the host, never by the model or renderer. This is
 // a local managed write path, not an interceptor for arbitrary shell writes.
 export async function startDocumentTools(host, { beforeOperation = async () => () => {} } = {}) {
   const grants = new Map();

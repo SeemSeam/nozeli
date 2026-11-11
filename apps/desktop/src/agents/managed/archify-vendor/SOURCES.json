@@ -4,12 +4,12 @@
   "distribution": "Inspected Archify skill distribution; package.json version 2.16.0-dev.0, SKILL.md author tt-a1i. Exact inspected source bytes are recorded per file; no upstream repository URL was independently verified.",
   "basedOn": "Cocoon-AI/architecture-diagram-generator (MIT, v1.0), as attributed by the inspected SKILL.md",
   "license": "MIT",
-  "generatorDigest": "dbcb03866820923800f474441623a04c4bbb6d74581485f00353091dd4d50fc3",
+  "generatorDigest": "15232c63e2f3eda8c2b2995521c91c526de7df78bdfb7203fcaea858464247a4",
   "adaptation": "CLI renderers scoped into reentrant functions; schema/semantic/layout checks retained; render-output checker returns data; process environment, disk writes, viewer template and network capture removed. Static CSS retains theme/preset palettes and semantic classes with print contrast. No external fonts or runtime npm. Built-in Simple Icons 16.28.0 paths CC0; trademarks not licensed. Exported SVG carries applicable notices. Generator identity excludes self-referential identity and manifest. Upstream hashes pin the inspected source bytes, shipped hashes pin modified closure.",
   "files": [
     {
       "path": "../archify-diagram.mjs",
-      "sha256": "2382d34ddde3c74bd6c87f36af0b62d57291b2e69797f2681f5ad4130a332fdb",
+      "sha256": "a757a2e569416bac1741e740741df6a1bee93ef0854b4c873f560c11ebda8391",
       "source": "Nozeli static adapter"
     },
     {
@@ -196,7 +196,7 @@
     },
     {
       "path": "generator-identity.mjs",
-      "sha256": "212855542099145d6023fc27a5f38e3d23e8af78f47c2d553f0d508b6bc7e70f",
+      "sha256": "7893d3f7d2e1b9252055626a70f0441e486bee7db486a9ff12017a46c90323fd",
       "source": "Nozeli generated identity; SHA-256 of canonical sorted path/hash list excluding self and SOURCES.json"
     }
   ]

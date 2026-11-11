@@ -823,3 +823,31 @@ mac修正提交的工作流 `42721602963` 已通过原生构建、组装／ad-ho
 修正：冷重开控制器在try/finally内还原故障注入、停止并关闭自身store；统一夹具先停止controller、关闭store与storage数据库线程，再删除自有目录。整个 `managed-context-cutover.test.mjs` 24项通过／零失败，原业务断言保留。PPTist只在一次性构建树把v2锁文件两套resolved记录的npmmirror地址映射到官方npm，同时固定本次npm ci的registry；版本与integrity不变，raw上游tar仍先经原SHA验证、原样保留。完整真实构建成功：464包、1933模块、Vite 5.4.21、`index-BzK7tRF9.js`。首个本机Git传输曾因GnuTLS/early EOF失败；随后仅该构建调用以临时HTTP/1.1配置完成，未改全局Git/npm配置或增加产品重试策略。
 
 元数据与来源检查、完整修正提交CI及公开后匿名字节核验分别记录；六项pending与`--public`失败保持，不把当前发布授权记为法律审计签收。
+
+## 图示校验错误与原Work自恢复（2026-11-10）
+
+用户报告HOST_MAINTENANCE；只读原生日志确认末尾`nozeli_diagram`因布局校验失败被无code异常升级为HOST_TOOL_ERROR／PI_HOST_TOOL_FAILED，Work维护暂停，并非全机维护窗口。原始参数在纯离线渲染器中复现；没有重放原任务或写入用户材料。修复将已知作者输入／schema／布局错误类型化为DIAGRAM_INPUT_INVALID，在原Worker回合返回校验详情和修正建议；未知内部异常继续失败。
+
+维修账本保留白名单工具名／callId／阶段／效果确定性／机器码及有界规则，正文、参数、凭据不进入诊断。图示故障诊断可按摘要读取固定允许的渲染／恢复源码；没有安全续行能力时，debug.report以持久host-control回执直接终结，不再额外耗一次模型回合。已知遗留故障由不可变最终单一工具调用／失败结果、精确job／Work／revision／线程及纯渲染类型化拒绝证明安全；唯一恢复回执与同线程补充原子入账，未知传输／并行调用／人工暂停／权限／版本漂移继续拒绝，冷开只补账。独立复核发现并修正排队后版本漂移和中断后回执过滤两项问题，复核无剩余P1/P2。
+
+验证：绘图／控制器／恢复／诊断／维修五文件86项全过；补充真实宿主终态unknown区分与执行准入围栏后，控制器／恢复21项全过。真实私有Pi／本地确定性HTTP诊断旅程 `/var/tmp/nozeli-pi-debug-activation-live-nmK6ms/report.json` ok=true，诊断报告以host-control终结，原Worker与业务请求不重放、原文件／Git不变。初次旅程因过时夹具试图跨bug调用被正确限制，已将正常旅程改为绑定本bug，跨范围拒绝仍由确定性回归覆盖，未放松产品保护。
+
+冻结本机候选`diagram-recovery-20261110-local-01`的五个核心修复文件与已验源码摘要一致，实际ELF＋包内Pi／Git多Task／多轮／长工具原文／草稿／浅深窄屏与200%／正常关闭冷恢复旅程 `/var/tmp/nozeli-task-workspace-kFuMvP/report.json` ok=true、Provider错误为空。旧日常宿主正常窗口关闭退出，原账本私有备份后激活候选，previous保留`compact-inline-task-20261109-local-01`；未提交或发布本轮修改，跨平台未验。
+
+用户授权的Liuhuaiyu恢复使用原profile及现有项目入口，未独立profile重新注册用户目录。新宿主按原生最终工具档案及纯渲染复验证明只有输入校验失败，保持同一个Work／revision1／原线程，原失败job历史不改，仅排入一个持久回执绑定的纠错补充；未直接清理数据库或新建替代任务。真实后续交付以私有本机证据目录`/var/tmp/nozeli-liuhuaiyu-recovery-proof-DHAZu0`记录，不向仓库提交用户内容。
+
+真实续作越过图示故障后，首个恢复补充因报告HTML的MismatchedCloseTag被原发布路径终止，不能记为任务通过。追加纯HTML语法预检在artifact捕获前返回可纠正结果，保留严格解析策略；控制器／HTML回归67项全过。激活`diagram-recovery-20261110-local-03`，previous保留`diagram-recovery-20261110-local-01`，此前宿主exit0正常关闭。用户已授权在原项目继续，沿原Work追加一次明确HTML纠错说明，不重发原始业务请求；这是用户授权的后续补充，可能按既有Work合同进入新revision，不冒称仍为最初revision1。任务实际交付与问题／成果回执分别核验，不以Worker已启动代替完成。
+
+最终真实原Work恢复完成：同Work与原线程保留，用户授权的HTML纠错回合completed，Work进入revision2／review并发布result冻结回执；旧revision1问题及失败历史保留，不清除或伪改。已通过实际Task“查看成果”打开原生报告表面，确认正文可见、6706字符、1个SVG及实际截图，未点击接受／丢弃，未自动合入。最终技术原件`final-result.json`与隐私报告截图留在上述私有目录，不入仓库。日常程序保持运行，current为`diagram-recovery-20261110-local-03`；本轮只声称运行／交付链已恢复，不以此证明用户报告的医学结论正确性。
+
+## 已交付成果仍无法审核讨论（2026-11-11）
+
+Liuhuaiyu真实界面显示当前成果第2版已review，讨论输入却只读，原因RECOVERY_REQUIRED。只读账本确认第1版HTML_REPORT_INVALID／MismatchedCloseTag的恢复事项仍open，审核代码按同Work任意open recovery阻断；不是429限流，也不是历史报告绑定错误。此前成果交付验收遗漏恢复事项结算及讨论准入，本次保留该事实。
+
+新增宿主报告恢复结算：只核对旧失败job／todo／Work修订、已确认的同线程原生最终单一nozeli_publish调用和错误结果，纯重验原HTML确实语法拒绝；只有更新修订的成功result回执、快照、来源job与原线程均匹配才精确resolve旧事项，并持久绑定原失败与新成果及日志摘要。未知传输／其他工具／并行调用／无结果回执／不同线程／新结果被替代继续拒绝；不按版本旧就批量清空，不改变旧失败job和用户草稿，不发送模型或接受成果。新发布及项目启动各自调用，修复已有账本也防止复发。
+
+本地恢复／控制器／诊断回归39项通过，恢复与既有审核讨论回归21项通过；来源调用边界与冷恢复为纯只读核验＋确定性持久结算，不以生成新任务替代原Work。安装候选为review-recovery-20261111-local-01，真实界面与安装后结果另行记录；跨平台／全量回归不作已验声明。
+
+已安装review-recovery-20261111-local-01，previous保留diagram-recovery-20261110-local-03。冻结实包Electron／随包Pi／合成文件多Task、讨论、长原文、草稿、冷恢复旅程 `/var/tmp/nozeli-task-workspace-PsArKg/report.json` ok=true。日常旧程序正常关闭exit0；新宿主沿原profile打开Liuhuaiyu后，宿主自动把唯一旧恢复事项结清为report-syntax-corrected，绑定原失败job、新成果来源job及冻结报告／日志摘要。原Work／revision2／result对象不变、jobs仍9条、无活动或新模型回合。
+
+实际打开当前成果的审核讨论：textarea从readonly变为可编辑，输入临时文字后发送按钮实际启用；未点击发送，已还原原本空草稿并观测“本地草稿已保存·未发送”。截图已查看；私有证据 `/var/tmp/nozeli-review-recovery-proof-Cee7zD/{discussion.png,result.json}`。随后程序正常exit0，再次只读SQLite确认旧事项resolved已持久、任务仍review、jobs9条，无接受／丢弃／合入或任务重放。未重新打开用户已关闭的窗口；本轮未提交／发布。

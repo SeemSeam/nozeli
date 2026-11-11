@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
-import { renderArchifyDiagram, canonicalDiagramSpec } from '../src/agents/managed/archify-diagram.mjs';
+import { renderArchifyDiagram, canonicalDiagramSpec, classifyDiagramFailure, DIAGRAM_INPUT_INVALID } from '../src/agents/managed/archify-diagram.mjs';
 import { prepareHtmlReport } from '../src/agents/managed/html-report.mjs';
 import { checkRenderOutput } from '../src/agents/managed/archify-vendor/scripts/check-render-output.mjs';
 
@@ -107,4 +107,85 @@ test('fixed vendor and adapter bytes match the shipped provenance manifest', asy
   const closure = manifest.files.filter(entry => entry.path !== 'generator-identity.mjs').map(entry => ({ path: entry.path, sha256: entry.sha256 })).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
   assert.equal(sha(JSON.stringify(closure)), manifest.generatorDigest);
   assert.equal(manifest.version, '2.16.0-dev.0');
+});
+
+test('workflow layout validation fails typed and correctable, and the corrected spec renders', async () => {
+  const corrected = await fixture('workflow');
+  const broken = structuredClone(corrected);
+  broken.nodes[0].label = 'ConfidentialLedgerLabel';
+  broken.nodes[0].width = 32; // schema-legal box far too narrow for the label
+  const failure = await renderArchifyDiagram({ type: 'workflow', spec: broken }).then(() => null, error => error);
+  assert.ok(failure, 'layout validation must reject the call');
+  assert.equal(failure.code, DIAGRAM_INPUT_INVALID);
+  assert.match(failure.message, /Workflow layout validation failed/);
+  assert.match(failure.message, /ConfidentialLedgerLabel/, 'message keeps the label for the originating Worker');
+  assert.equal(failure.diagramEvidence.tool, 'nozeli_diagram');
+  assert.equal(failure.diagramEvidence.stage, 'validation');
+  assert.equal(failure.diagramEvidence.effect, 'none');
+  assert.equal(failure.diagramEvidence.category, 'layout');
+  assert.ok(failure.diagramEvidence.rules.length >= 1);
+  assert.ok(failure.diagramEvidence.rules.some(rule => rule.code === 'layout/constraint' && rule.count >= 1));
+  for (const rule of failure.diagramEvidence.rules) assert.match(rule.code, /^[a-z0-9][a-z0-9_-]*(?:\/[a-z0-9][a-z0-9_-]*)*$/);
+  // Machine evidence and the retry hint stay label-free; only the Worker-facing message may quote spec text.
+  assert.ok(!JSON.stringify(failure.diagramEvidence).includes('ConfidentialLedgerLabel'));
+  assert.ok(!JSON.stringify(failure.correction).includes('ConfidentialLedgerLabel'));
+  assert.equal(failure.correction.retryTool, 'nozeli_diagram');
+  assert.equal(failure.correction.category, 'layout');
+  assert.ok(Array.isArray(failure.archifyDiagnostics) && failure.archifyDiagnostics.length >= 1);
+  assert.equal(failure.svg, undefined, 'a failed call produces no rendered output');
+  // The same call path succeeds once the author corrects the spec.
+  const recovered = await renderArchifyDiagram({ type: 'workflow', spec: corrected });
+  assert.equal(recovered.validation.ok, true);
+  assert.match(recovered.svg, />User</);
+});
+
+test('schema validation failures return typed input errors without leaking spec text into machine evidence', async () => {
+  const corrected = await fixture('workflow');
+  const broken = structuredClone(corrected);
+  broken.nodes[0].col = -1; // below the JSON-schema minimum
+  broken.nodes[0].ConfidentialExtra = 'secret document text';
+  const failure = await renderArchifyDiagram({ type: 'workflow', spec: broken }).then(() => null, error => error);
+  assert.ok(failure);
+  assert.equal(failure.code, DIAGRAM_INPUT_INVALID);
+  assert.match(failure.message, /schema validation failed/);
+  assert.equal(failure.diagramEvidence.category, 'schema');
+  assert.ok(failure.diagramEvidence.rules.some(rule => /^schema\//.test(rule.code)));
+  assert.ok(!JSON.stringify(failure.diagramEvidence).includes('ConfidentialExtra'));
+  assert.ok(!JSON.stringify(failure.diagramEvidence).includes('secret document text'));
+  const recovered = await renderArchifyDiagram({ type: 'workflow', spec: corrected });
+  assert.equal(recovered.validation.ok, true);
+});
+
+test('adapter admission failures are typed input errors', async () => {
+  const unsupported = await renderArchifyDiagram({ type: 'unknown', spec: {} }).then(() => null, error => error);
+  assert.equal(unsupported.code, DIAGRAM_INPUT_INVALID);
+  assert.match(unsupported.message, /Unsupported/);
+  assert.equal(unsupported.diagramEvidence.category, 'type');
+  assert.deepEqual(unsupported.diagramEvidence.rules, [{ code: 'type/unsupported', count: 1 }]);
+  const nonFinite = await renderArchifyDiagram({ type: 'workflow', spec: { n: NaN } }).then(() => null, error => error);
+  assert.equal(nonFinite.code, DIAGRAM_INPUT_INVALID);
+  assert.match(nonFinite.message, /finite JSON/);
+  assert.equal(nonFinite.diagramEvidence.category, 'spec');
+  assert.deepEqual(nonFinite.diagramEvidence.rules, [{ code: 'spec/non-finite-json', count: 1 }]);
+});
+
+test('unexpected internal failures are never reclassified as correctable input', () => {
+  const typeError = new TypeError('renderer invariant broke');
+  assert.equal(classifyDiagramFailure(typeError), typeError);
+  assert.equal(typeError.code, undefined);
+  assert.equal(typeError.diagramEvidence, undefined);
+  assert.equal(typeError.correction, undefined);
+  const malformed = new Error('Archify produced malformed SVG');
+  assert.equal(classifyDiagramFailure(malformed), malformed);
+  assert.equal(malformed.code, undefined);
+  const thrown = 'not even an error object';
+  assert.equal(classifyDiagramFailure(thrown), thrown);
+  const typed = classifyDiagramFailure(Object.assign(new Error('Workflow layout validation failed:\n- Node "a" collides with the title or boundary of lane "ui".'), { archifyDiagnostics: [{ code: 'layout/constraint', severity: 'error', message: 'Node "a" collides with the title or boundary of lane "ui".', subject: { diagramType: 'workflow' }, supportedFixes: ['move one to another col'] }] }));
+  assert.equal(typed.code, DIAGRAM_INPUT_INVALID);
+  assert.equal(typed.diagramEvidence.category, 'layout');
+  assert.deepEqual(typed.diagramEvidence.rules, [{ code: 'layout/constraint', count: 1 }]);
+  assert.deepEqual(typed.correction.supportedFixes, ['move one to another col']);
+  assert.ok(!JSON.stringify(typed.diagramEvidence).includes('collides'));
+  // Already-classified errors pass through untouched.
+  assert.equal(classifyDiagramFailure(typed), typed);
 });

@@ -4,7 +4,7 @@ import { diff } from '@codemirror/merge';
 // CodeMirror's document model uses UTF-16 positions and LF line separators.
 export const anchorText = text => text.replace(/\r\n?/g, '\n');
 const result = (anchor, locationStatus, contentStatus, method) => ({ anchor, locationStatus, contentStatus, method });
-// Position confidence is advisory for discussions, not a material-access gate.
+// nzl: Position confidence is advisory for discussions, not a material-access gate.
 export function anchorAdvisory(resolution, kind) {
   if (!resolution?.anchor) return '原位置未找到';
   if (kind === 'file') return null;
@@ -45,9 +45,9 @@ export function resolveTextPointAnchor(anchor, before, after) {
   // An external diff that inserts exactly at the point carries no affinity
   // evidence; unlike a live editor transaction it cannot pick a side, so the
   // point stays pending instead of guessing before/after the new text.
-  let insertedAtPoint = false;
-  changes.iterChanges((from, to) => { if (from === to && from === anchor.start) insertedAtPoint = true; });
-  if (insertedAtPoint) return result(null, 'unresolved', 'unknown', 'point-ambiguous');
+  let nzlInsertedAtPoint = false;
+  changes.iterChanges((from, to) => { if (from === to && from === anchor.start) nzlInsertedAtPoint = true; });
+  if (nzlInsertedAtPoint) return result(null, 'unresolved', 'unknown', 'point-ambiguous');
   const mapped = mapTextPointAnchor(anchor, before, after, changes);
   if (mapped.anchor) return mapped;
   if (mapped.method === 'point-replaced') return result(null, 'orphaned', 'modified', 'point-replaced');
