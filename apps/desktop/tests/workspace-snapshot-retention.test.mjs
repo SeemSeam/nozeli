@@ -15,6 +15,11 @@
 //      replies project into the card, 续问 reuses the committed digest, a
 //      failed send retries on the same delivery/requestKey, and a refused
 //      gate never commits anything.
+//   8. 提交后台任务 = the same frozen attachment through managed.task (never
+//      managed.send, never the frontdesk requestKey identity): unique
+//      reception under repeated clicks, a failed submit keeps the draft and
+//      retries on the same key, success clears only the submitted input, and
+//      the frontdesk thread is never mislabeled.
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
 import {createRequire} from 'node:module';
@@ -41,8 +46,19 @@ const png='data:image/png;base64,'+Buffer.concat([Buffer.from([0x89,0x50,0x4E,0x
 await build({absWorkingDir:root,stdin:{resolveDir:root,contents:`
 import {mountWorkspaceSnapshot} from './src/renderer/workspace-snapshot.mjs';
 const PNG=${JSON.stringify(png)};
-const state={beginCount:0,recoverForks:0,saveMode:'ok',commitMode:'ok',stranded:false,recoverable:[],lastGoodSave:null,agentReady:true,sendMode:'ok',finalizeMode:'ok',requestSeq:0,jobs:[],messages:[],directReceipts:new Map(),recoverScripted:{},seenRequestKeys:new Map()};
-const calls=[],pendingSaves=[],pendingCommits=[],toasts=[],sends=[];
+const state={beginCount:0,recoverForks:0,saveMode:'ok',commitMode:'ok',stranded:false,recoverable:[],lastGoodSave:null,agentReady:true,sendMode:'ok',finalizeMode:'ok',requestSeq:0,jobs:[],messages:[],directReceipts:new Map(),recoverScripted:{},seenRequestKeys:new Map(),taskMode:'ok',taskSeq:0,taskJobs:[],taskRequestKeys:new Map()};
+const calls=[],pendingSaves=[],pendingCommits=[],toasts=[],sends=[],taskSends=[],pendingTasks=[];
+// managed.task mirrors controller.submitTask: an orchestrator intake job keyed
+// task:<requestKey> with manual:true, dedupe on the key, and never a
+// frontdesk timeline message.
+const acceptTask=p=>{
+ if(!(typeof p.requestKey==='string'&&/^[a-zA-Z0-9:_-]{8,160}$/.test(p.requestKey)))return {ok:false,error:{message:'invalid submission key'}};
+ if(state.taskRequestKeys.has(p.requestKey))return {ok:true,value:{accepted:true,jobId:state.taskRequestKeys.get(p.requestKey),deduplicated:true}};
+ const jobId='task-'+(++state.taskSeq);
+ state.taskJobs.push({id:jobId,type:'intake',target:'orchestrator',status:'queued',key:'task:'+p.requestKey,context:{manual:true,imageAttachments:(p.imageAttachments||[]).slice()}});
+ state.taskRequestKeys.set(p.requestKey,jobId);
+ return {ok:true,value:{accepted:true,jobId}};
+};
 const descriptor=()=>({captureId:'cap-'+state.beginCount,windowId:'win-1',width:8,height:8,omittedWindowCount:0,createdAt:'2026-10-25T00:00:00.000Z',
  sources:[{sourceId:'src-1',summary:'fixture 来源 · 视口'}],
  tiles:[{x:0,y:0,width:8,height:8,windowBounds:{x:0,y:0,width:8,height:8},layers:[{dataUrl:PNG,bounds:{x:0,y:0,width:8,height:8}}]}],
@@ -90,6 +106,12 @@ const invoke=async(op,p={})=>{
   state.messages.push({id:'msg-'+requestId,target:'frontdesk',speaker:'agent',jobId:requestId,sequence:state.messages.length+1,text:'fixture 回复 '+requestId+'：已看到这处笔迹。',availability:'readable'});
   return {ok:true,value:{accepted:true,jobId:requestId}};
  }
+ if(op==='managed.task'){
+  taskSends.push({p});
+  if(state.taskMode==='fail')return {ok:false,error:{message:'fixture 后台提交失败'}};
+  if(state.taskMode==='hold')return new Promise(resolve=>pendingTasks.push({p,resolve}));
+  return acceptTask(p);
+ }
  if(op==='managed.timeline.request'){const ids=state.messages.filter(m=>m.jobId===p.requestId).map(m=>m.id);return {ok:true,value:{ids,nextOffset:null}};}
  if(op==='managed.timeline.read'){const message=state.messages.find(m=>m.id===p.id);return message?{ok:true,value:{entry:message}}:{ok:false,error:{message:'fixture 无此消息'}};}
  if(op==='workspace.capture.cancel')return {ok:true,value:{}};
@@ -130,12 +152,15 @@ window.snapshotFixture={
  dialogOpen:()=>!!(dialog()&&dialog().open),
  editorVisible:()=>{const area=document.querySelector('#snapshot-drawing .drawing-area');return !!area&&area.getClientRects().length>0;},
  areaBox:()=>{const area=document.querySelector('#snapshot-drawing .drawing-area');const b=area.getBoundingClientRect();return {x:b.x,y:b.y,width:b.width,height:b.height};},
- card:()=>{const buttons=[...dialog().querySelectorAll('.snapshot-card-actions button')].map(node=>({label:node.textContent,disabled:node.disabled,hidden:node.hidden}));return {open:!!(card()&&!card().hidden),value:cardText()?cardText().value:null,readOnly:cardText()?cardText().readOnly:null,primary:buttons[0]?.label??null,buttons,
+ card:()=>{const buttons=[...dialog().querySelectorAll('.snapshot-card-actions button')].map(node=>({label:node.textContent,cls:node.className,disabled:node.disabled,hidden:node.hidden}));const primary=buttons.find(b=>typeof b.cls==='string'&&(b.cls.includes('snapshot-card-send')||b.cls.includes('snapshot-card-followup')))??buttons[0];return {open:!!(card()&&!card().hidden),value:cardText()?cardText().value:null,readOnly:cardText()?cardText().readOnly:null,primary:primary?.label??null,buttons,
   thread:[...document.querySelectorAll('.snapshot-card-thread .tag-message')].map(node=>node.textContent.trim())};},
  statusLine:()=>document.querySelector('.snapshot-card-status')?.textContent||'',
  windowInfo:()=>{const el=document.querySelector('.local-window');return el?{hidden:el.hidden,left:el.style.left,top:el.style.top,inputs:el.querySelectorAll('[aria-label="讨论说明"]').length,aria:el.getAttribute('aria-label')}:null;},
  sends:()=>[...sends],setSendMode:mode=>{state.sendMode=mode;},setAgentReady:value=>{state.agentReady=value;},
  setFinalizeMode:mode=>{state.finalizeMode=mode;},messages:()=>state.messages.length,
+ taskSends:()=>[...taskSends],setTaskMode:mode=>{state.taskMode=mode;},pendingTasks:()=>pendingTasks.length,
+ settleTasks:error=>{const list=pendingTasks.splice(0);for(const {p,resolve} of list)resolve(error?{ok:false,error:{message:error}}:acceptTask(p));return list.length;},
+ taskJobs:()=>state.taskJobs.map(j=>({id:j.id,key:j.key})),
  stagePendingRecovery:()=>{const pending=[...state.directReceipts.entries()].reverse().find(([,receipt])=>receipt.state==='pending-delivery');if(!pending)throw Error('fixture 没有待恢复的直发回执');const [,info]=pending;const thread=state.lastGoodSave?.target?.card?.thread||[];state.directReceipts.set('cap-recover:direct1',{attachment:info.attachment,question:info.question,state:'pending-delivery',thread:[]});state.recoverable=[{id:'rec-pending',state:'pending-delivery',createdAt:new Date().toISOString()}];state.recoverScripted={'rec-pending':{...descriptor(),captureId:'cap-recover',recoverable:[],receipt:{id:'cap-recover:direct1',attachment:info.attachment,state:'pending-delivery',card:{message:info.question,thread:[]}},drawingDraft:{drawing:state.lastGoodSave.drawing,target:structuredClone(state.lastGoodSave.target)}}};},
  directReceipts:()=>[...state.directReceipts.entries()].map(([id,receipt])=>({id,...receipt})),
  typeCard:text=>{const node=cardText();node.value=text;node.dispatchEvent(new Event('input',{bubbles:true}));},
@@ -555,6 +580,141 @@ try{
  const reopened=await windowAt();
  assert.ok(reopened&&Math.abs(reopened.x-dragged.x)<3&&Math.abs(reopened.y-dragged.y)<3,'the dragged position survived the recovery fork: dragged='+JSON.stringify(dragged)+' reopened='+JSON.stringify(reopened));
  report.scenes.push('local-save-fork-keeps-dragged-position');
+
+ // ── Scene N (consumer contract): 提交后台任务 sends the SAME frozen
+ // attachment through managed.task — never managed.send and never the
+ // frontdesk requestKey identity — with unique reception, an untouched
+ // frontdesk thread, and only the submitted input cleared.
+ await fixture(fx=>fx.clickButton('退出'));
+ await waitFixture('!fx.dialogOpen()','scene M session exited');
+ await fixture(fx=>fx.open());
+ await waitFixture('fx.dialogOpen()&&fx.editorVisible()','background session opened');
+ await stroke(page,.32,.38,.56,.62);
+ await fixture(fx=>fx.clickFinish());
+ await waitFixture('fx.card().open&&fx.card().value!==null&&!fx.card().readOnly','card opened for the background submission');
+ let taskCard=await fixture(fx=>fx.card());
+ const taskButtonN=taskCard.buttons.find(b=>b.label==='提交后台任务');
+ assert.ok(taskButtonN&&!taskButtonN.hidden&&!taskButtonN.disabled,'the always-visible 提交后台任务 action is offered beside 发送讨论: '+JSON.stringify(taskCard.buttons));
+ assert.ok(taskCard.buttons.some(b=>b.label==='发送讨论'&&!b.hidden),'发送讨论 remains visible beside the background action');
+ assert.equal(taskCard.primary,'发送讨论','发送讨论 keeps the primary frontdesk role');
+ const threadBaselineN=taskCard.thread.length;
+ const msgBaselineN=await fixture(fx=>fx.messages());
+ const sendBaselineN=(await fixture(fx=>fx.sends())).length;
+ const materialBaselineN=(await fixture(fx=>fx.ops('workspace.capture.commit'))).filter(c=>c.direct&&!c.requestId).length;
+ const toastBaselineN=(await fixture(fx=>fx.toasts())).length;
+ await fixture(fx=>fx.typeCard('后台任务的问题'));
+ await fixture(fx=>fx.clickButton('提交后台任务'));
+ await waitFixture('fx.taskSends().length===1&&fx.card().value===""','background submission accepted and the submitted input cleared');
+ const taskN=(await fixture(fx=>fx.taskSends()))[0];
+ assert.equal(taskN.p.text,'后台任务的问题','the submitted text rides the task verbatim');
+ assert.equal(taskN.p.target,undefined,'managed.task carries no frontdesk target');
+ assert.ok(taskN.p.requestKey.startsWith('snap-task-')&&/^[a-zA-Z0-9:_-]{8,160}$/.test(taskN.p.requestKey),'the background requestKey uses its own snap-task- identity');
+ assert.equal((await fixture(fx=>fx.sends())).length,sendBaselineN,'the background click never dispatches a frontdesk managed.send');
+ const receiptN=(await fixture(fx=>fx.directReceipts())).at(-1);
+ assert.ok(receiptN,'the direct commit produced the frozen receipt before the task dispatch');
+ assert.equal(taskN.p.imageAttachments[0].digest,receiptN.attachment.digest,'managed.task carries the SAME frozen attachment the receipt committed');
+ assert.equal(taskN.p.imageAttachments[0].deliveryId,receiptN.id,'the frozen attachment keeps its delivery identity');
+ assert.notEqual(taskN.p.requestKey,'snap-'+receiptN.id+'-1','the background key never reuses the frontdesk round-1 identity');
+ assert.equal((await fixture(fx=>fx.ops('workspace.capture.commit'))).filter(c=>c.direct&&!c.requestId).length,materialBaselineN+1,'the background click committed the frozen material exactly once');
+ assert.equal(await fixture(fx=>fx.messages()),msgBaselineN,'a background submission never writes a frontdesk timeline message');
+ taskCard=await fixture(fx=>fx.card());
+ assert.equal(taskCard.thread.length,threadBaselineN,'the card thread gains no round for the background submission');
+ assert.ok(!taskCard.thread.some(t=>t.includes('后台任务的问题')),'the background question never renders as a frontdesk discussion round');
+ assert.ok(taskCard.buttons.some(b=>b.label==='提交后台任务'&&!b.hidden&&!b.disabled),'提交后台任务 stays available after an accepted background round (常显)');
+ const taskJobsN=await fixture(fx=>fx.taskJobs());
+ assert.equal(taskJobsN.length,1,'unique reception: exactly one orchestrator intake job');
+ assert.equal(taskJobsN[0].key,'task:'+taskN.p.requestKey,'the intake job is keyed by the submission requestKey');
+ const toastsN=(await fixture(fx=>fx.toasts())).slice(toastBaselineN);
+ assert.ok(toastsN.length>0&&toastsN.every(t=>!t.includes('失败')),'the accepted background submission reports success without masked errors');
+ report.scenes.push('background-task-frozen-attachment-unique-reception');
+
+ // ── Scene O: repeated clicks stay single-flight — one managed.task invoke
+ // and one intake job even while the dispatch is held in flight.
+ await fixture(fx=>fx.setTaskMode('hold'));
+ await fixture(fx=>fx.typeCard('双击的后台任务'));
+ const jobsBaselineO=(await fixture(fx=>fx.taskJobs())).length;
+ const taskBaselineO=(await fixture(fx=>fx.taskSends())).length;
+ await fixture(fx=>fx.clickButton('提交后台任务'));
+ await waitFixture('fx.taskSends().length==='+taskBaselineO+'+1&&fx.pendingTasks()===1','first repeated-click dispatch held in flight');
+ await fixture(fx=>fx.clickButton('提交后台任务'));
+ assert.equal(await fixture(fx=>fx.pendingTasks()),1,'a click while the submission is in flight never starts a second dispatch');
+ assert.equal((await fixture(fx=>fx.taskSends())).length,taskBaselineO+1,'single-flight: exactly one managed.task invoke for the repeated clicks');
+ await fixture(fx=>fx.settleTasks(null));
+ await waitFixture('fx.card().value===""&&fx.taskJobs().length==='+jobsBaselineO+'+1','the held submission was accepted exactly once');
+ report.scenes.push('background-double-click-single-flight');
+
+ // ── Scene P: a failed background submission keeps the draft; the retry
+ // reuses the same requestKey and frozen digest — no double dispatch.
+ await fixture(fx=>fx.setTaskMode('fail'));
+ await fixture(fx=>fx.typeCard('会失败的后台任务'));
+ const jobsBaselineP=(await fixture(fx=>fx.taskJobs())).length;
+ const taskBaselineP=(await fixture(fx=>fx.taskSends())).length;
+ await fixture(fx=>fx.clickButton('提交后台任务'));
+ await waitFixture('fx.statusLine().includes("提交失败")&&fx.card().open&&fx.card().value!==null&&!fx.card().readOnly','failed background submission surfaced while keeping the editable draft');
+ assert.equal((await fixture(fx=>fx.card())).value,'会失败的后台任务','the refused background input stays in the card');
+ assert.equal((await fixture(fx=>fx.taskSends())).length,taskBaselineP+1,'the failed attempt was dispatched once');
+ assert.equal((await fixture(fx=>fx.taskJobs())).length,jobsBaselineP,'a failed submission creates no background job');
+ await fixture(fx=>fx.setTaskMode('ok'));
+ await fixture(fx=>fx.clickButton('提交后台任务'));
+ await waitFixture('fx.card().value===""&&fx.taskJobs().length==='+(jobsBaselineP+1),'the retried submission is accepted exactly once');
+ const tasksP=await fixture(fx=>fx.taskSends());
+ assert.equal(tasksP.at(-1).p.requestKey,tasksP.at(-2).p.requestKey,'the retry reuses the deterministic submission key — no second job at the host');
+ assert.equal(tasksP.at(-1).p.imageAttachments[0].digest,tasksP.at(-2).p.imageAttachments[0].digest,'the retry reuses the frozen attachment digest');
+ report.scenes.push('background-failure-keeps-draft-idempotent-retry');
+
+ // ── Scene Q: success clears only the submitted input — text typed while
+ // the dispatch is in flight survives the acceptance.
+ await fixture(fx=>fx.typeCard('提交时的输入'));
+ await fixture(fx=>fx.setTaskMode('hold'));
+ const taskBaselineQ=(await fixture(fx=>fx.taskSends())).length;
+ await fixture(fx=>fx.clickButton('提交后台任务'));
+ await waitFixture('fx.taskSends().length==='+taskBaselineQ+'+1&&fx.pendingTasks()===1','held submission in flight');
+ await fixture(fx=>fx.typeCard('后写的输入'));
+ await fixture(fx=>fx.settleTasks(null));
+ await waitFixture('fx.pendingTasks()===0','held submission settled');
+ assert.equal((await fixture(fx=>fx.card())).value,'后写的输入','acceptance clears only the submitted input; later typing survives');
+ assert.equal((await fixture(fx=>fx.taskSends())).at(-1).p.text,'提交时的输入','the in-flight submission carried the text captured at click time');
+ report.scenes.push('background-success-clears-only-submitted-input');
+
+ // ── Scene R: the frontdesk thread is never mislabeled — a background
+ // submission adds no round, keeps the frontdesk requestKey namespace
+ // intact, and a later 续问 keeps its own round identity and frozen digest.
+ await fixture(fx=>fx.clickButton('退出'));
+ await waitFixture('!fx.dialogOpen()','scene Q session exited');
+ await fixture(fx=>fx.setTaskMode('ok'));
+ await fixture(fx=>fx.open());
+ await waitFixture('fx.dialogOpen()&&fx.editorVisible()','frontdesk-isolation session opened');
+ await stroke(page,.34,.42,.6,.58);
+ await fixture(fx=>fx.clickFinish());
+ await waitFixture('fx.card().open&&fx.card().value!==null&&!fx.card().readOnly','card opened for the isolation round');
+ await fixture(fx=>fx.typeCard('前台第一问'));
+ await fixture(fx=>fx.clickButton('发送讨论'));
+ await waitFixture('fx.card().thread.some(t=>t.includes("前台第一问"))&&fx.card().thread.some(t=>t.includes("fixture 回复"))','frontdesk round one delivered');
+ const frontdeskRound1=(await fixture(fx=>fx.sends())).at(-1);
+ const deliveryR=(await fixture(fx=>fx.directReceipts())).at(-1).id;
+ assert.equal(frontdeskRound1.p.target,'frontdesk','the frontdesk round keeps its explicit frontdesk target');
+ assert.equal(frontdeskRound1.p.requestKey,'snap-'+deliveryR+'-1','round one uses the deterministic frontdesk key');
+ const threadBaselineR=(await fixture(fx=>fx.card())).thread.length;
+ const msgBaselineR=await fixture(fx=>fx.messages());
+ const sendBaselineR=(await fixture(fx=>fx.sends())).length;
+ const taskBaselineR=(await fixture(fx=>fx.taskSends())).length;
+ await fixture(fx=>fx.typeCard('随后的后台任务'));
+ await fixture(fx=>fx.clickButton('提交后台任务'));
+ await waitFixture('fx.taskSends().length==='+taskBaselineR+'+1&&fx.card().value===""','background submission accepted after a frontdesk round');
+ const taskR=(await fixture(fx=>fx.taskSends())).at(-1);
+ assert.equal((await fixture(fx=>fx.sends())).length,sendBaselineR,'the background click added no frontdesk dispatch');
+ assert.equal((await fixture(fx=>fx.card())).thread.length,threadBaselineR,'the background submission adds no round to the frontdesk thread');
+ assert.equal(await fixture(fx=>fx.messages()),msgBaselineR,'no frontdesk timeline message appears for the background submission');
+ assert.notEqual(taskR.p.requestKey,frontdeskRound1.p.requestKey,'the background key never reuses the frontdesk round-1 identity');
+ assert.notEqual(taskR.p.requestKey,'snap-'+deliveryR+'-2','the background key never consumes the frontdesk round-2 identity');
+ assert.equal(taskR.p.imageAttachments[0].digest,frontdeskRound1.p.imageAttachments[0].digest,'both routes share the SAME frozen attachment');
+ await fixture(fx=>fx.typeCard('后台之后的续问'));
+ await fixture(fx=>fx.clickButton('发送续问'));
+ await waitFixture('fx.sends().length==='+(sendBaselineR+1)+'&&fx.card().thread.some(t=>t.includes("后台之后的续问"))','the follow-up frontdesk round still sends');
+ const frontdeskRound2=(await fixture(fx=>fx.sends())).at(-1);
+ assert.equal(frontdeskRound2.p.requestKey,'snap-'+deliveryR+'-2','续问 keeps its own round-2 identity — the background submission never shifted it');
+ assert.equal(frontdeskRound2.p.target,'frontdesk','续问 still addresses the frontdesk');
+ report.scenes.push('background-never-mislabels-frontdesk-thread');
 
  assert.deepEqual(pageErrors,[],'no renderer errors across all retention scenes');
  report.ok=true;

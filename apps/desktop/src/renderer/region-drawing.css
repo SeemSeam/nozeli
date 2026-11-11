@@ -148,8 +148,8 @@
 .snapshot-card-title{display:flex;align-items:center;gap:9px;font-size:14px;line-height:1.5;letter-spacing:.02em}
 .snapshot-card-title::before{content:'';flex:none;width:7px;height:16px;border-radius:4px;background:var(--ui-control-focus,#466b55)}
 .snapshot-card-hint{
-  max-height:48px;overflow:auto;overflow-wrap:anywhere;padding:8px 10px;border-radius:8px;
-  border-left:2px solid color-mix(in srgb,var(--ui-control-focus,#466b55) 35%,transparent);background:color-mix(in srgb,var(--ink,#263932) 3%,transparent);color:var(--muted,#65766d);font-size:11px;line-height:1.6;
+  display:block;max-height:120px;overflow:auto;overflow-wrap:anywhere;padding:8px 10px;border-radius:8px;
+  border-left:2px solid var(--ui-control-focus,#466b55);background:color-mix(in srgb,var(--ink,#263932) 3%,transparent);color:var(--ink,#263932);font-size:11px;line-height:1.6;
 }
 .snapshot-card-text{
   min-height:76px;max-height:180px;flex-shrink:0;box-sizing:border-box;resize:vertical;font:inherit;line-height:1.65;padding:10px 12px;border-radius:10px;
@@ -159,7 +159,7 @@
 .snapshot-card-text:focus-visible{outline:2px solid var(--ui-control-focus,#466b55);outline-offset:1px}
 .snapshot-card-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding-top:10px;border-top:1px solid var(--line,#e4e7e0)}
 .snapshot-card-actions button{
-  display:inline-flex;align-items:center;justify-content:center;height:32px;padding:0 12px;border-radius:9px;
+  display:inline-flex;align-items:center;justify-content:center;min-height:36px;height:auto;max-width:100%;padding:7px 12px;border-radius:9px;white-space:normal;overflow-wrap:anywhere;
   font:inherit;font-size:12px;font-weight:500;cursor:pointer;
   transition:background-color .16s ease,color .16s ease,border-color .16s ease;
 }
@@ -172,6 +172,17 @@
 .snapshot-card-actions button:disabled{opacity:.5;cursor:default}
 .snapshot-card-actions button:focus-visible{outline:2px solid var(--ui-control-focus,#466b55);outline-offset:2px}
 .snapshot-card-actions button[hidden]{display:none}
+.snapshot-card-primary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));padding-top:0;border-top:0}
+.snapshot-card-primary button{width:100%;min-height:40px}
+.snapshot-card-task{background:var(--paper,#fffdf6);color:var(--ink,#263932);border:1px solid var(--ui-control-focus,#466b55)}
+.snapshot-card-task:hover:not(:disabled){background:color-mix(in srgb,var(--ui-control-focus,#466b55) 12%,var(--paper,#fffdf6))}
+.snapshot-card-source{min-width:0;flex-shrink:0}
+.snapshot-card-source summary{padding:4px 0;min-height:28px;box-sizing:border-box;overflow-wrap:anywhere;color:var(--ink,#263932)}
+.snapshot-card-source summary:focus-visible{outline:2px solid var(--ui-control-focus,#466b55);outline-offset:2px}
+.snapshot-card-source-risk,.snapshot-card-action-hint{font-size:11px;line-height:1.5;color:var(--ink,#263932);overflow-wrap:anywhere}
+.snapshot-card-task-receipt{padding:8px 10px;border-left:2px solid var(--ui-control-focus,#466b55);font-size:12px;line-height:1.5;max-height:96px;overflow:auto;overflow-wrap:anywhere}
+@media(pointer:coarse){.snapshot-card-actions button,.snapshot-card-source summary{min-height:44px}}
+@media(max-width:360px){.snapshot-card-primary{grid-template-columns:minmax(0,1fr)}}
 /* Tag-style thread transcript inside the snapshot card (shared layer with
    file tags: same .tag-message rows, scoped paper styling for the dialog). */
 .snapshot-card-thread{

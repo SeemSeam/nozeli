@@ -348,6 +348,7 @@ const SUITES = {
       'desktop-direct-background-live.mjs',
       'desktop-conversation-collapse-live.mjs',
       'desktop-label-windows-live.mjs',
+      'desktop-workspace-drawing-background-live.mjs',
       'desktop-tag-interactions-live.mjs',
       'desktop-review-discussion-live.mjs',
       'pi-native-tools-live.mjs',

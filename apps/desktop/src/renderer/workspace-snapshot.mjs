@@ -36,6 +36,7 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
   // only the revision it actually captured.
   let saveTimer=null,writeChain=Promise.resolve(),saveError=null,lastDrawing=null,lastDrawingDirty=false,changeSeq=0;
   let card=null,cardBox=null,cardImage=null,cardOverlay=null,cardPanel=null,cardHint=null,cardText=null,cardSend=null,cardLocal=null,cardBack=null,cardDraft=null,cardOpen=null,cardDone=null,cardThreadEl=null,cardStatusLine=null,cardReopen=null;
+  let cardTask=null,cardTaskReceipt=null,cardSourceSummary=null;
   let cardState=null,cardMessageDraft='',cardSavedText=null,cardSavedRect=null;
   let cardWindow=null,cardWindowKey=null,cardEpoch=0,cardTitle=null,cardWindowObserver=null;
   // Discussion thread state: one thread per dialog session, shared layer with
@@ -133,11 +134,9 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
   // next stroke/keystroke, and gates commit/exit paths below. While the
   // discussion card is open, its current text/anchor is persisted too, so a
   // quit-time flush can neither duplicate an identical save nor lose newer
-  // same-text/card changes. Once a round was sent, the retained message is the
-  // last SENT question — the follow-up input stays live-only.
+  // same-text/card changes. Keep the current input separately from sent rounds.
   function retainedMessage(){
     if(!cardState)return null;
-    if(cardState.delivery)return discussion?.message()||cardText.value.trim();
     return cardText.value.trim();
   }
   function cardInfo(state,text){
@@ -149,7 +148,7 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
     // The legacy card.offset displacement rides through unchanged too — never
     // rewritten by drags, never applied twice — so an unconsumed migration
     // record survives forks untouched; rect stays the only anchor.
-    return {...previous,message:text,rect:state.rect||previous.rect||null,thread:rounds,offset:state.legacyOffset??null,windowOwnerId:state.windowOwnerId??previous.windowOwnerId??null};
+    return {...previous,message:text,draftText:cardText?.value??text,backgroundSubmissions:state.backgroundSubmissions||[],pendingSubmission:state.pendingSubmission??null,rect:state.rect||previous.rect||null,thread:rounds,offset:state.legacyOffset??null,windowOwnerId:state.windowOwnerId??previous.windowOwnerId??null};
   }
   async function writeDrawing(){
     if(!session||saveError)return;
@@ -357,8 +356,8 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
     return cardState.delivery?'thread':'compose';
   }
   function setCardBusy(busy){
-    cardText.readOnly=busy;
-    for(const button of [cardSend,cardDraft,cardLocal,cardBack,cardOpen,cardDone])if(button)button.disabled=busy;
+    cardText.readOnly=busy&&!sending;
+    for(const button of [cardSend,cardTask,cardDraft,cardLocal,cardBack,cardOpen,cardDone])if(button)button.disabled=busy;
   }
   function renderCardMode(){
     if(!card)return;
@@ -373,13 +372,21 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
     cardDone.hidden=mode==='compose';
     cardThreadEl.hidden=!rounds&&mode==='compose';
     cardSend.disabled=sending||discussion?.pending()===true;
+    cardTask.disabled=sending;
+    for(const button of [cardDraft,cardLocal,cardBack])button.disabled=sending||Boolean(cardState?.pendingSubmission);
+    const submissions=cardState?.backgroundSubmissions||[];
+    cardTaskReceipt.hidden=!submissions.length;
+    cardTaskReceipt.textContent=submissions.length?'最近 '+submissions.length+' 条后台提交记录 · 不代表执行完成，请在工作栏查看进展。最近要求：'+submissions.at(-1).question:'';
   }
   function renderThreadCard(){
     if(!cardState||!discussion||!renderTranscript)return;
     renderTranscript(discussion.thread.history||[]);
     const thread=discussion.thread;
-    if(thread.status==='failed')cardStatus('回复失败 · 原问题已保留，可续问或到对话中重试','error');
-    else if(cardState.finalizeFailed)cardStatus('回执保存失败 · 讨论已送达、回复正常显示；可续问（会继续尝试保存）或稍后从恢复记录重试','error');
+    if(sending)return renderCardMode();
+    if(cardState.sendError)cardStatus(cardState.sendError,'error');
+    else if(cardState.finalizeFailed)cardStatus('已提交，但回执保存失败 · 输入与记录保留，请稍后重试保存','error');
+    else if(cardState.lastBackground)cardStatus('已提交后台 · 不代表执行完成，可在工作栏查看进展');
+    else if(thread.status==='failed')cardStatus('回复失败 · 原问题已保留，可续问或到对话中重试','error');
     else if(thread.status==='accepted-awaiting-reply'||thread.status==='pending')cardStatus('等待前台回复…');
     else if((thread.history||[]).length)cardStatus('前台已回复 · 可续问');
     renderCardMode();
@@ -401,12 +408,19 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
     const title=document.createElement('strong');title.textContent='位置讨论';title.className='snapshot-card-title';
     cardTitle=title;
     cardHint=document.createElement('span');cardHint.className='snapshot-card-hint';
+    const sourceDetails=document.createElement('details');sourceDetails.className='snapshot-card-source';
+    cardSourceSummary=document.createElement('summary');cardSourceSummary.textContent='冻结来源 · 展开核对';sourceDetails.append(cardSourceSummary,cardHint);
+    const sourceRisk=document.createElement('span');sourceRisk.className='snapshot-card-source-risk';sourceRisk.textContent='发送包含冻结截图及来源；视口位置不是精确文件选区。';
+    cardTaskReceipt=document.createElement('span');cardTaskReceipt.className='snapshot-card-task-receipt';cardTaskReceipt.setAttribute('role','status');cardTaskReceipt.hidden=true;
     cardThreadEl=document.createElement('span');cardThreadEl.className='tag-transcript snapshot-card-thread';cardThreadEl.setAttribute('role','log');cardThreadEl.setAttribute('aria-label','此涂鸦的完整讨论');
     renderTranscript=mountThreadTranscript(cardThreadEl,{welcome:'围绕这处冻结截图继续讨论。输入问题后发送，回复会留在这里和对话时间线。'});
     cardText=document.createElement('textarea');cardText.placeholder='补充说明（可留空直接发送截图；Ctrl+Enter 发送讨论）';cardText.setAttribute('aria-label','讨论说明');cardText.className='snapshot-card-text';
     cardStatusLine=document.createElement('span');cardStatusLine.className='snapshot-card-status';cardStatusLine.setAttribute('role','status');
     const row=document.createElement('div');row.className='snapshot-card-actions';
     cardSend=document.createElement('button');cardSend.type='button';cardSend.textContent='发送讨论';cardSend.className='snapshot-card-send';
+    cardTask=document.createElement('button');cardTask.type='button';cardTask.textContent='提交后台任务';cardTask.className='snapshot-card-task';cardTask.title='将当前要求与同一冻结截图交给后台，不先等待前台回复';
+    const primary=document.createElement('div');primary.className='snapshot-card-actions snapshot-card-primary';primary.setAttribute('role','group');primary.setAttribute('aria-label','提交方式');
+    const actionHint=document.createElement('span');actionHint.className='snapshot-card-action-hint';actionHint.textContent='发送讨论：在这里接收回复；后台任务：在工作栏查看进展。';
     cardDraft=document.createElement('button');cardDraft.type='button';cardDraft.textContent='加入对话草稿';cardDraft.className='snapshot-card-local';
     cardLocal=document.createElement('button');cardLocal.type='button';cardLocal.textContent='仅保存本地';cardLocal.className='snapshot-card-local';
     cardBack=document.createElement('button');cardBack.type='button';cardBack.textContent='返回笔迹';cardBack.className='snapshot-card-back';
@@ -416,10 +430,10 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
     cardText.addEventListener('compositionstart',()=>{cardText.dataset.composing='true';});
     cardText.addEventListener('compositionend',()=>{delete cardText.dataset.composing;});
     cardText.addEventListener('keydown',event=>{if((event.ctrlKey||event.metaKey)&&event.key==='Enter'&&!event.isComposing&&event.keyCode!==229&&!event.repeat&&!cardSend.disabled){event.preventDefault();cardSend.click();}});
-    cardSend.onclick=()=>void sendDiscussion();cardDraft.onclick=()=>void finishCard(false);cardLocal.onclick=()=>void finishCard(true);cardBack.onclick=()=>void backToDrawing();
+    cardSend.onclick=()=>void sendDiscussion();cardTask.onclick=()=>void sendDiscussion(true);cardDraft.onclick=()=>void finishCard(false);cardLocal.onclick=()=>void finishCard(true);cardBack.onclick=()=>void backToDrawing();
     cardOpen.onclick=()=>void enterConversation();cardDone.onclick=()=>void exitDialog();
-    row.append(cardSend,cardDraft,cardLocal,cardBack,cardOpen,cardDone);
-    cardPanel.append(cardHint,cardThreadEl,cardText,cardStatusLine,row);
+    primary.append(cardSend,cardTask);row.setAttribute('role','group');row.setAttribute('aria-label','保留与返回');row.append(cardDraft,cardLocal,cardBack,cardOpen,cardDone);
+    cardPanel.append(sourceDetails,sourceRisk,cardThreadEl,cardTaskReceipt,cardText,primary,actionHint,cardStatusLine,row);
     cardBox.append(cardImage,cardOverlay);
     card.append(cardBox);
     dialog.append(card);
@@ -513,7 +527,7 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
     const legacyOffset=Array.isArray(saved)&&saved.length===2&&saved.every(v=>Number.isFinite(v))?[Math.round(saved[0]),Math.round(saved[1])]:null;
     // Mint the display lineage once: a recovered record reuses its carried
     // card.windowOwnerId; a first open mints from this capture session.
-    cardState={target:t,drawing,png,rect:strokeRect(drawing),legacyOffset,windowOwnerId:cardWindowOwnerId(t.card,session?.captureId),delivery:null,finalized:false,finalizeFailed:false};
+    cardState={target:t,drawing,png,rect:strokeRect(drawing),legacyOffset,windowOwnerId:cardWindowOwnerId(t.card,session?.captureId),delivery:null,finalized:false,finalizeFailed:false,backgroundSubmissions:t.card?.backgroundSubmissions||[],pendingSubmission:t.card?.pendingSubmission??null};
     ensureCard();ensureDiscussion();
     // A recovered receipt (failed direct send, or a pending delivery from an
     // earlier dialog) reopens the card with its thread state: the committed
@@ -527,6 +541,9 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
     const draftRounds=t.card?.thread||[];
     if(receipt?.attachment){
       const receiptRounds=receipt.card?.thread||[];
+      const receiptSubmissions=receipt.card?.backgroundSubmissions||[];
+      if(receiptSubmissions.length>cardState.backgroundSubmissions.length||cardState.pendingSubmission&&receiptSubmissions.some(row=>row.requestKey===cardState.pendingSubmission.requestKey))cardState.backgroundSubmissions=receiptSubmissions.slice(-32);
+      if(cardState.pendingSubmission&&(cardState.backgroundSubmissions.some(row=>row.requestKey===cardState.pendingSubmission.requestKey)||!cardState.pendingSubmission.background&&receiptRounds.length>draftRounds.length&&receipt.card?.pendingSubmission===null))cardState.pendingSubmission=null;
       cardState.delivery={deliveryId:receipt.id||receipt.deliveryId||session.captureId,attachment:receipt.attachment,state:receipt.state||'pending-delivery'};
       cardState.finalized=receipt.state==='delivered';
       discussion.adopt(draftRounds.length>=receiptRounds.length?draftRounds:receiptRounds);
@@ -541,103 +558,87 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
     // receipt without rounds (pending delivery, e.g. a recovered draft
     // hand-off) keeps its stored question as the retry text.
     cardText.value=t.card?.message??cardMessageDraft;
-    if(cardState.delivery)cardText.value=discussion.message()||t.card?.message||'';
+    if(typeof t.card?.draftText==='string')cardText.value=t.card.draftText;
+    else if(cardState.delivery)cardText.value=discussion.message()||t.card?.message||'';
     cardSavedText=cardState.delivery?(discussion.message()||t.card?.message||'').trim():cardText.value.trim();cardSavedRect=cardState.rect??null;
     // Screenshot-bound anchor presentation: frozen source + stroke position.
     // Never a file anchor — viewport-only sources carry no file identity.
     const position=t.card?.rect||cardState.rect;
     cardHint.textContent='冻结来源 · '+(t.sourceSummary||'工作区截图 · 视口来源，非精确文件选区')+(position?` · 笔迹位置 ${Math.round(position[0]*100)}%,${Math.round(position[1]*100)}%（占画面 ${Math.round(position[2]*100)}%×${Math.round(position[3]*100)}%）`:' · 未画笔迹');
+    cardSourceSummary.textContent='冻结来源 · 展开核对'+(session?.omittedWindowCount?' · '+session.omittedWindowCount+' 个窗口未纳入':'');
     recoverRow.hidden=true;
     card.hidden=false;layoutCard();
     // A failed view load/persist keeps the card open with the shell's notice.
     await ensureCardWindow().catch(()=>{});
-    status(cardState.delivery?'完成 · 讨论已交接；回复会显示在卡片与对话':'完成 · 可发送讨论，或补充说明后加入对话草稿');
+    status('完成 · 可发送讨论或提交后台任务；保存本地不会派工');
     renderThreadCard();
     cardText.focus();
   }
-  // One explicit 发送讨论 click = commit + send. The direct commit stores the
-  // material and a pending-delivery receipt without routing the image into the
-  // conversation draft (the sent message replaces the draft chip) and keeps
-  // the capture session alive; the managed send goes through the existing
-  // image-attachment chain; the finalize commit marks the receipt delivered
-  // with its requestId association and ends the session. Every step is
-  // idempotent: unchanged retries reuse the delivery id and requestKey, and a
-  // refused gate never commits anything.
-  async function sendDiscussion(){
+  // Both explicit routes share the frozen evidence; only foreground rounds
+  // enter the reply projection. Pending intent survives an uncertain receipt.
+  async function sendDiscussion(background=false){
     const state=cardState,active=session;
-    if(!state||sending)return;
+    if(!state||!active||sending)return;
     if(cardText.dataset.composing==='true'){cardStatus('输入法组合尚未结束，请完成输入后再发送。','error');return;}
-    if(discussion?.pending())return;
-    const question=cardText.value.trim()||'请查看这张工作面涂鸦截图。';
-    sending=true;setCardBusy(true);
-    cardStatus('正在发送讨论…');
+    if(!background&&discussion?.pending())return;
+    const rawText=cardText.value,inputSeq=changeSeq,question=rawText.trim()||'请查看这张工作面涂鸦截图。';
+    const pending=state.pendingSubmission;
+    if(pending&&(pending.background!==background||pending.question!==question)){
+      state.sendError='上次提交尚未确认，请先以原方式重试原要求（新输入已保留）：'+pending.question;renderThreadCard();return;
+    }
+    sending=true;state.sendError=null;setCardBusy(true);
+    cardStatus(background?'正在提交后台任务…':'正在发送讨论…');
     try{
       const gate=await transport.gate();
       if(session!==active||cardState!==state)return;
-      if(!gate?.ok){const message=gate?.message||'发送未发出：Agent 尚未就绪。';cardStatus(message,'error');toast(message);return;}
+      if(!gate?.ok)throw Error(gate?.message||'Agent 尚未就绪，未发送。');
       if(!state.delivery){
         const flushed=await flushWrite();if(!flushed.ok)throw flushed.error;
-        // Late results stay scoped to the session that started them: if the host
-        // ended or replaced the session meanwhile, its teardown already ran.
         if(session!==active||cardState!==state)return;
-        // target.card carries the discussion anchor + text on both paths, so
-        // crash/local recovery reopens the card intact; nothing auto-sends.
         const committed=await call('workspace.capture.commit',{captureId:active.captureId,png:state.png,drawing:state.drawing,target:{...structuredClone(state.target),card:cardInfo(state,question)},local:false,direct:true});
         if(session!==active||cardState!==state)return;
         if(!committed?.attachment||!committed.deliveryId)throw Error('直发回执未返回附件身份');
         state.delivery={deliveryId:committed.deliveryId,attachment:committed.attachment,state:committed.state||'pending-delivery'};
-        cardSavedText=question;cardSavedRect=state.rect??null;
       }
       const delivery=state.delivery;
-      const round=(discussion.thread.history?.length||0)+1;
-      const requestKey='snap-'+String(delivery.deliveryId).replace(/[^a-zA-Z0-9:_-]/g,'_')+'-'+round;
-      const sent=await transport.send({projectId:gate.projectId,text:question,imageAttachments:[{...delivery.attachment,deliveryId:delivery.deliveryId}],requestKey});
+      const requestKey=pending?.requestKey||(background?'snap-task-'+crypto.randomUUID():'snap-'+String(delivery.deliveryId).replace(/[^a-zA-Z0-9:_-]/g,'_')+'-'+((discussion.thread.history?.length||0)+1));
+      state.pendingSubmission={background,question,requestKey};
+      cardSavedText=null;changeSeq++;
+      const saved=await flushWrite();if(!saved.ok)throw saved.error;
       if(session!==active||cardState!==state)return;
-      if(sent===false||!sent?.accepted){cardStatus('发送未发出：会话未就绪或被拒绝；输入已保留，可重试。','error');return;}
-      discussion.record(question,sent.requestId);
-      // (retained-message bookkeeping resets below to force the round persist)
-      cardText.value='';cardMessageDraft='';
-      // Persist the accepted round immediately (belt) into the retained draft:
-      // a crash before the receipt finalize below still reopens with the full
-      // thread via the recovery draft.
+      const sent=await transport.send({projectId:gate.projectId,text:question,imageAttachments:[{...delivery.attachment,deliveryId:delivery.deliveryId}],requestKey,background});
+      if(session!==active||cardState!==state)return;
+      if(!sent?.accepted||!sent.requestId)throw Error('提交未确认；请以原方式和原要求重试。');
+      if(background)state.backgroundSubmissions=[...state.backgroundSubmissions,{question,requestId:sent.requestId,requestKey}].slice(-32);
+      else discussion.record(question,sent.requestId);
+      state.pendingSubmission=null;state.lastBackground=background;
+      // Internal persistence increments once; later input (even equal text)
+      // must not be consumed by a delayed acceptance.
+      if(changeSeq===inputSeq+1&&cardText.value===rawText){cardText.value='';cardMessageDraft='';}
       cardSavedText=null;changeSeq++;
       clearTimeout(saveTimer);saveTimer=setTimeout(()=>void enqueueWrite(),150);
-      // Per-round receipt finalize (braces): associate the newest requestId,
-      // persist the full thread onto the receipt and mark it delivered. The
-      // capture session stays alive until the card's completion paths — 续问
-      // therefore never re-commits the material, reuses the committed digest,
-      // and a later round simply refreshes the same receipt.
-      if(active){
-        let finalizeError=null;
-        try{
-          await call('workspace.capture.commit',{captureId:active.captureId,png:state.png,drawing:state.drawing,target:{...structuredClone(state.target),card:cardInfo(state,discussion.message())},local:false,direct:true,requestId:sent.requestId});
-        }catch(error){finalizeError=error;}
-        if(cardState!==state)return;
-        if(finalizeError){
-          delivery.state='pending-delivery';state.finalized=false;state.finalizeFailed=true;
-          toast('已发送，但回执保存失败：'+(finalizeError.message||finalizeError));
-        }else{
-          delivery.state='delivered';state.finalized=true;state.finalizeFailed=false;
-          toast('讨论已发送；回复会显示在卡片与对话时间线');
-        }
-      }else{
-        cardStatus('已发送 · 等待前台回复…');
-        toast('讨论已发送；回复会显示在卡片与对话时间线');
+      try{
+        await call('workspace.capture.commit',{captureId:active.captureId,png:state.png,drawing:state.drawing,target:{...structuredClone(state.target),card:cardInfo(state,cardText.value.trim())},local:false,direct:true,requestId:sent.requestId});
+        if(session!==active||cardState!==state)return;
+        delivery.state='delivered';state.finalized=true;state.finalizeFailed=false;
+      }catch(error){
+        if(session!==active||cardState!==state)return;
+        delivery.state='pending-delivery';state.finalized=false;state.finalizeFailed=true;
+        toast('已提交，但回执保存失败：'+(error.message||error));
       }
-      void discussion.refresh();
-      renderThreadCard();
+      toast(background?'已提交后台任务，不代表执行完成；请在工作栏查看进展':'讨论已发送；回复会显示在卡片与对话时间线');
+      if(!background)void discussion.refresh();
     }catch(error){
-      cardStatus('发送失败：'+(error?.message||error)+' · 输入已保留，重试不会重复投递','error');
-      toast('发送失败：'+(error?.message||error));
+      if(cardState===state){state.sendError='提交失败：'+(error?.message||error)+' · 输入已保留';cardStatus(state.sendError,'error');}
+      toast('提交失败：'+(error?.message||error));
     }finally{
       sending=false;
-      if(cardState)setCardBusy(false);
-      if(cardState===state)renderThreadCard();
+      if(cardState===state){setCardBusy(false);renderThreadCard();}
     }
   }
   async function finishCard(local){
     const state=cardState,active=session;
-    if(!state||!active)return;
+    if(!state||!active||sending||state.pendingSubmission)return;
     if(cardText.dataset.composing==='true'){status('输入法组合尚未结束，请完成输入后再交接。');return;}
     const message=cardText.value.trim();
     cardMessageDraft=message;
@@ -662,9 +663,9 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
     }
   }
   async function backToDrawing(){
-    const state=cardState;if(!state)return;
-    const message=cardMode()==='compose'?cardText.value.trim():discussion?.message()||'';
-    cardMessageDraft=cardMode()==='compose'?message:'';
+    const state=cardState;if(!state||sending||state.pendingSubmission)return;
+    const message=cardText.value.trim();
+    cardMessageDraft=message;
     // Fold the card's newest message/anchor into the retained target BEFORE
     // the editor restarts: autosave, re-finish and the quit-time flush all
     // persist `target` (cardState is null from here on), so the stale

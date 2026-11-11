@@ -24,6 +24,16 @@ node tools/test-suites.mjs smoke --list    # 任一套件的文件清单
 - 最终真实 PPT／区域涂鸦／工作面冻结涂鸦：`TMPDIR=/var/tmp node tests/desktop-label-windows-live.mjs` **33/33**，`ok:true`、renderer错误0、正常退出；`/var/tmp/nozeli-label-windows-cCBW3z/report.json`。包含真实框选→画笔→讨论、两轴拖动／放大／反向缩到下限／折叠展开、PPT 重开草稿与几何、返回笔迹／本地恢复、touch cancel、窄窗夹取恢复、IME后首次移动与缩放。原文哈希、区域锚／笔迹／素材记录精确不变，无模型jobs。两处PPT首次挂载和刷新统一沿排除projection的备注路径，修前失败的重开草稿断言修后通过；未删断言或重写原记录。
 - 最终真实 Markdown／纯文本／HTML原生隔离预览／图片区域标签：`TMPDIR=/var/tmp NOZELI_OZONE=x11 node tests/desktop-tag-interactions-live.mjs` **60/60**，`ok:true`、正常退出、pageerror空；原件 `tag-interactions-live-f3eUET/result.json` 位于本轮隔离测试缓存。覆盖普通备注、选区讨论、文件讨论、位置讨论、图片区域涂鸦讨论：标题文字与空白拖动、右下柄放大和反向缩小、键盘／Shift／Home、收起恢复、文档切换与关闭重开、真实浏览器IME首拖／首缩、涂鸦编辑菜单打开同笔迹并取消。退出后重新读取真实存储，锚点、历史、完整中英文草稿、笔迹与素材摘要保持；四个原件逐字节不变，零模型jobs。关键PPT／输入法／图片重开截图已查看。初轮测试夹具缺材料、隐藏工具入口、跨上下文变量、其他浮层遮挡及自动定位合法夹取的失败原件保留；修正真实操作前提后未放宽位移、持久化或原数据断言。
 - Linux X11／XWayland、真实 Electron＋可信 CDP 鼠标与浏览器合成输入；不等于物理输入法／触控硬件、纯 Wayland、Windows/macOS 验收。用户日常安装与原文未改；源码修复不等于运行中的旧版已生效。
+- 用户授权“commit所有修改，安装复测”后，20文件整体提交 `df73bd2`，正式 install-local 激活 `2026-11-11T06-33-12-803Z`，previous 保留 `review-recovery-20261111-local-01`；仅收紧安装根与releases的组／其他写权限至0755，不写业务数据。安装实际ELF隔离profile更新烟测 `/var/tmp/nozeli-installed-update-uDRCWz/report.json`：supported=true、403确认限流提示、手动重查current、正常exit0，截图已查看。
+- 安装实际ELF的主桌面早轮鼠标测试出现外来坐标与lostpointercapture，保留txM4Rf／7Sws7U／S2rJyQ失败原件；无产品主动释放调用。独立X11显示采用临时解包Xvfb（未系统安装／不需提权）及磁盘临时根，不与物理鼠标共用输入；原生切换后的辅助隔离操作改用可见关闭按钮，原独立Escape断言保留。最终安装程序标签 **60/60**（`tag-interactions-live-UIpHS6/result.json`）及PPT／涂鸦 **33/33**（`/var/tmp/nozeli-label-windows-HjhF7o/report.json`）通过。离屏X11为真实程序集成证据，不冒称用户物理桌面／所有输入硬件通过。随后追加涂鸦后台入口另行记录提交与安装，不将本次安装当作新增功能已生效。
+
+## 涂鸦后讨论卡直接后台任务（2026-11-11）
+
+- 双明确动作“发送讨论／提交后台任务”，来源详情折叠但视口／未核验风险直显，保留与返回操作独立分组。后台走真实 `managed.task`，不伪装前台回复；共用同冻结截图、笔迹和来源，后台请求键与前台轮次分离。同卡单飞、IME拒绝、失败保留、未确认意图同键重试、晚到新输入不被清空；接受只标已提交，不宣称执行完成。
+- `workspace-snapshot-retention.test.mjs` 18场景通过（`/var/tmp/nozeli-snapshot-retention-QT5eUr/report.json`），含前台既有13场景及后台单飞／失败同键重试／晚到输入／混合前后台线程隔离；相关讨论／来源／持久化21项通过，renderer构建通过。新卡沿已有PPT／区域／工作面33项真实移动缩放旅程通过（`/var/tmp/nozeli-label-windows-0FHYCi/report.json`）。
+- `DISPLAY=:1 TMPDIR=/var/tmp NOZELI_OZONE=x11 node tests/desktop-workspace-drawing-background-live.mjs` 12项通过（`/var/tmp/nozeli-drawing-background-VePD2m/report.json`）：真实Electron点击→唯一后台intake→原生Pi／回环脚本Provider→独立worktree写文件并发布，原项目不变，无前台回合；确切冻结图片digest和非空input.txt视口来源逐字相等。320／390浅深标题／输入／双动作真实命中可达，后写输入保持、exit0。截图已查看。不把脚本Provider当作真实模型理解质量或跨平台资格。
+- 初轮测试遗漏输入、故意hold模式未重置、无关对话开窗干扰以及首次项目初始化被错误计成frontdesk失败均保留原件；用现有“既有项目”fixture隔离语义初始化，未改产品门禁或删后台/材料/唯一受理断言。实现及验收登记live，提交安装另记实际结果。
+
 
 
 ## alpha6 macOS 本机迁移与验收（2026-11-09）

@@ -171,12 +171,12 @@ export function createDirectSendTransport({invoke,getProjectId}){
     if(!result?.ok)return {ok:false,message:'发送未发出：'+(result?.error?.message||'前台连接失败，请重试连接。')};
     return {ok:true,projectId};
   };
-  const send=async({projectId=getProjectId(),text,imageAttachments,requestKey})=>{
+  const send=async({projectId=getProjectId(),text,imageAttachments,requestKey,background=false})=>{
     if(projectId!==getProjectId())throw Error('项目已切换，未发送原讨论。');
     const key=String(requestKey||crypto.randomUUID());
     if(flights.has(key))return flights.get(key);
     const promise=(async()=>{
-      const result=await invoke('managed.send',{projectId,target:'frontdesk',text,imageAttachments,requestKey:key});
+      const result=await invoke(background?'managed.task':'managed.send',{projectId,...(!background?{target:'frontdesk'}:{}),text,imageAttachments,requestKey:key,preserveDraft:true});
       if(!result?.ok)throw new Error(result?.error?.message||'发送失败');
       const value=result.value||{};
       return {accepted:value.accepted!==false,requestId:value.requestId??value.jobId};
