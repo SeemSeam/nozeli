@@ -72,7 +72,9 @@ jobs:
       - name: Package, checksum and self-check the release bundle
         run: node tools/package-macos-release.mjs "$RUNNER_TEMP/nozeli-macos-release"
       - name: Exercise report correction and recovery on the native host
-        run: node --test tests/archify-diagram.test.mjs tests/diagram-controller-correction.test.mjs tests/diagram-recovery.test.mjs tests/report-recovery.test.mjs tests/managed-debug-protocol.test.mjs tests/managed-review-discussion.test.mjs
+        run: |
+          mkdir -p "$RUNNER_TEMP/nozeli-recovery-home"
+          HOME="$RUNNER_TEMP/nozeli-recovery-home" GIT_CONFIG_GLOBAL="$RUNNER_TEMP/nozeli-recovery-home/.gitconfig" GIT_CONFIG_NOSYSTEM=1 node --test tests/archify-diagram.test.mjs tests/diagram-controller-correction.test.mjs tests/diagram-recovery.test.mjs tests/report-recovery.test.mjs tests/managed-debug-protocol.test.mjs tests/managed-review-discussion.test.mjs
       - name: Smoke the packaged app from the extracted archive
         run: |
           OUT="$RUNNER_TEMP/nozeli-macos-release"

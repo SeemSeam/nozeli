@@ -851,3 +851,9 @@ Liuhuaiyu真实界面显示当前成果第2版已review，讨论输入却只读�
 已安装review-recovery-20261111-local-01，previous保留diagram-recovery-20261110-local-03。冻结实包Electron／随包Pi／合成文件多Task、讨论、长原文、草稿、冷恢复旅程 `/var/tmp/nozeli-task-workspace-PsArKg/report.json` ok=true。日常旧程序正常关闭exit0；新宿主沿原profile打开Liuhuaiyu后，宿主自动把唯一旧恢复事项结清为report-syntax-corrected，绑定原失败job、新成果来源job及冻结报告／日志摘要。原Work／revision2／result对象不变、jobs仍9条、无活动或新模型回合。
 
 实际打开当前成果的审核讨论：textarea从readonly变为可编辑，输入临时文字后发送按钮实际启用；未点击发送，已还原原本空草稿并观测“本地草稿已保存·未发送”。截图已查看；私有证据 `/var/tmp/nozeli-review-recovery-proof-Cee7zD/{discussion.png,result.json}`。随后程序正常exit0，再次只读SQLite确认旧事项resolved已持久、任务仍review、jobs9条，无接受／丢弃／合入或任务重放。未重新打开用户已关闭的窗口；本轮未提交／发布。
+
+## Beta2 双平台发行候选整合（2026-11-11）
+
+用户明确授权提交当前产品修改并发布0.1.0-beta.2 Linux x64／macOS arm64预发行；六项再分发义务仍pending，--public诚实保留六项失败，不设stable／latest。原本机修改294f91f整合到最新main6c893df，保留主线Mac原生安全／耐久性／打包支持，不纳入未跟踪实验原件目录。
+
+独立整合树Linux单元820通过、恢复／诊断／审核专项109通过、真实Electron smoke六脚本通过（`.test-output/ci/smoke.log`）；真实Pi诊断旅程`/var/tmp/nozeli-pi-debug-activation-live-cU2X5I/report.json` ok=true。首候选e683fb7 Mac工作流42943350011实际darwin arm64编译／组装／签名深校验／zip解压自检已过；新增专项72通过／11失败、零跳过，失败全部为managed-review-discussion夹具初始化受runner全局Git过滤配置影响而FILTER_UNSUPPORTED，未运行后续实包交互。该失败保留，不宣称Mac包验收通过。修正仅为此测试步骤独立HOME／GIT_CONFIG_GLOBAL及GIT_CONFIG_NOSYSTEM，沿用主线Mac原生安全测试隔离惯例，不更改产品过滤器拒绝语义、不断言通过或跳过测试，须以新提交完整CI与实包旅程为最终资格。
