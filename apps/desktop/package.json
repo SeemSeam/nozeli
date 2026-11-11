@@ -106,7 +106,7 @@
     "node-pty": "^1.1.0",
     "prettier": "3.6.2",
     "tar": "7.5.22",
-    "typescript": "5.9.3",
+    "typescript": "7.0.2",
     "typescript-language-server": "6.0.2",
     "vscode-jsonrpc": "9.0.3",
     "word-extractor": "1.0.4",
