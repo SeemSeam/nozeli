@@ -1,8 +1,10 @@
 # 发布说明与发行边界
 
-当前版本基线：**`0.1.0-beta.2`**（双平台预发行；公开状态以[GitHub发行页](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-beta.2)为准，见[CHANGELOG](../CHANGELOG.md)与package.json）。本版内容为图示校验原Worker回合纠正、有界诊断证据、原Work/线程安全恢复、报告HTML发布前语法预检与旧恢复事项结算，及源码溯源微修；Linux冻结安装旅程已实测，本版确切提交CI与macOS arm64实际构建／解压运行记录由发行流程在本版提交实测后补录，未补录前不记为通过。上一版beta.1产品tag及两平台包保持绑定`17209df`不变，不移动tag或替换已验附件。产品构建、测试和分发审计分别记录，不互相替代。
+当前版本基线：**`0.1.0-beta.3`**（Linux x64＋macOS arm64双平台预发行；公开状态以[GitHub发行页](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-beta.3)为准，见[CHANGELOG](../CHANGELOG.md)与package.json）。本版包含Mac原生窗口/退出生命周期、对话和Task首次提交排序、涂鸦直接交接、更新修复与发布闭包瘦身；不移除文档引擎、字体、离线能力、Node/Pi/Git，不启用可选组件下载。确切提交CI及两平台实际构建/解压程序验收均须通过才公开；未运行前不宣称通过，不覆盖Beta2及更早tag/附件。
 
 ## 版本状态
+
+- **beta.3当前授权与门槛（2026-11-11）**：本轮再次披露六项人工分发审核仍未签收、Mac仅ad-hoc签名且未公证后，用户明确选择“授权公开 beta.3 预发行”。此为本版本公开例外，不沿用Beta2授权、不记作合规签收，不标稳定版或latest，未授权替换日常安装。`--public`继续如实失败；先完成低风险瘦身、当前功能保持、受保护main精确提交CI与Linux/macOS arm64实际解压验收，再上传并逐字节核对双平台附件。
 
 - **beta.2当前授权与门槛（2026-11-11）**：用户在得知六项分发审计仍未签收后，追加明确授权公开 Linux x64 与 macOS arm64 的本版 Beta 预发行及附件；此为本版权限，不沿用beta.1/alpha.6授权，不记为法律或合规签收，不标稳定版或latest，且未授权替换日常安装。六项义务仍pending，`--public`保持失败。本版Linux冻结安装真实旅程已通过（见[测试记录](testing.md#图示校验错误与原work自恢复2026-11-10)与[审核讨论恢复](testing.md#已交付成果仍无法审核讨论2026-11-11)）；确切提交CI、两平台源码tar一致性与macOS arm64实际构建／解压运行须由发行工作流在本版提交上运行并记录后才算通过，本页不预填结果。mac仍仅ad-hoc签名（见下述macOS分发边界）。
 

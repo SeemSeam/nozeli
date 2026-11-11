@@ -11,6 +11,8 @@ if (process.argv.includes('--nozeli-document')) {
 const { app, BrowserWindow, BaseWindow, View, WebContentsView, webContents, screen, ipcMain, Menu, shell, clipboard, ClipboardItem, nativeTheme, powerMonitor } = require('electron');
 if (process.platform === 'linux') app.setDesktopName('io.nozeli.Nozeli.desktop');
 const {WorkspaceWindow} = require('./workspace-window.cjs');
+const {buildApplicationMenuTemplate, createMenuDispatcher} = require('./app-menu.cjs');
+const {staysResidentAfterLastWindow, quitIntentIsStale, resolveQuitVehicle, decideWindowAllClosed, retainedDuringHold, createCloseAdmission, createWindowCloseStop, requiresQuitWindow, createQuitCleanup} = require('./app-lifecycle.cjs');
 let dialog, session;
 let DesktopHost, HostError, ops, agents, managedAgents, agentHandlers, lspManager, formatterService, texManager, texLanguage, guidedDemo;
 const http = require('node:http');
@@ -118,6 +120,37 @@ let projectWatcher;
 let allowClose = false;
 let quitting = false;
 let quitPending=false;
+// Explicit quit intent (Cmd+Q / menu Quit / auto-update / forced). It must
+// survive the async close barrier that before-quit hands off to; quitPending
+// cannot, because that handoff resets it immediately.
+let quitIntent = false;
+let windowlessQuit = false;      // our own windowless app.quit() re-entry guard
+let quitCleanupStarted = false;  // will-quit final cleanup runs exactly once
+const closeAdmission = createCloseAdmission();
+const quitState = () => ({ quitting, quitIntent, forceQuitting });
+// macOS: a close not driven by a quit request keeps the app resident.
+const residentClose = () => staysResidentAfterLastWindow(process.platform, quitState());
+function resetStaleQuitIntent(recovery) {
+  if (!quitIntent) return;
+  const snapshot = recovery && typeof recovery.snapshot === 'function' ? recovery.snapshot() : null;
+  if (quitIntentIsStale(quitState(), snapshot ? { pending: Boolean(snapshot.pending), prompt: Boolean(snapshot.prompt) } : null)) quitIntent = false;
+}
+// A resident close keeps the idle runtime reusable; a real quit stops it.
+// The shared stop step checks the live close generation before freezing input.
+const stopForWindowClose=createWindowCloseStop({residentClose,closeOnlineBrowsers,stopManaged:()=>managedAgents?.stop(),stopIdle:()=>agents?.stopIdle?.(),admission:closeAdmission});
+// The close barrier finished: every window closes without further guards.
+// Only a real quit request commits the process to teardown; on macOS the app
+// stays resident for Dock activation over the same server and controllers.
+function finalizeWindowClose() {
+  const previousQuitting=quitting;
+  allowClose = true;
+  if (!residentClose()) quitting = true;
+  try{
+    for (const s of [...workspaceNative.surfaces.values()]) workspaceNative.destroySurface(s);
+    for (const r of workspaceNative.windows.values()) { r.closing = true; r.win.close(); }
+  }catch(error){allowClose=false;if(!quitCleanupStarted)quitting=previousQuitting;for(const r of workspaceNative.windows.values())if(!r.dead)r.closing=false;throw error;}
+  finally{closeAdmission.release();}
+}
 function forceQuitApplication(){forceQuitting=true;quitting=true;forceQuit();}
 let origin = '';
 async function syncDocument(payload) {
@@ -125,10 +158,19 @@ async function syncDocument(payload) {
   return workspaceNative.syncDocument(payload);
 }
 let restoringNavigation=null;
+// The single deduplicated shell-recreation path: the Dock-activate branch,
+// external file opens and windowless menu actions all reuse it.
+async function ensureShell(){
+  if(!workspaceNative||quitting||quitIntent||windowlessQuit||quitCleanupStarted||closeAdmission.held())return null;
+  let root=workspaceNative.windows.get('main');
+  if(root&&!root.dead)return root;
+  restoringNavigation??=Promise.resolve().then(()=>workspaceNative.restoreShell?.()).finally(()=>{restoringNavigation=null;});
+  await restoringNavigation;
+  return workspaceNative.windows.get('main');
+}
 async function revealNavigation(){
   if(!workspaceNative)return;
-  let root=workspaceNative.windows.get('main');
-  if(!root||root.dead){restoringNavigation??=Promise.resolve().then(()=>workspaceNative.restoreShell?.()).finally(()=>{restoringNavigation=null;});await restoringNavigation;root=workspaceNative.windows.get('main');}
+  const root=await ensureShell();
   if(root&&!root.dead){revealWindow(root.win);root.wc.send('nozeli:open-request');}
 }
 
@@ -187,7 +229,7 @@ async function createWindow(server) {
     height: 900,
     show: !HIDDEN,
     frame: false,
-    title: '选择项目',
+    title: process.platform==='darwin'?'Nozeli':'选择项目',
     icon: path.join(APP_ROOT,'assets/nozeli.png'),
     backgroundColor: '#f3f4f0',
     webPreferences: {
@@ -199,15 +241,12 @@ async function createWindow(server) {
       preload: path.join(APP_ROOT, 'src/preload/preload.cjs'),
     },
   });
-  const menuAction = action => win.webContents.send('nozeli:menu-action', action);
+  // Menu actions route to the live navigation shell, never a captured window:
+  // a resident macOS app may have no shell at all, so 打开项目… first reopens
+  // it through the same Dock-activate path and then delivers the action.
+  const menuAction=createMenuDispatcher({shellOf:()=>workspaceNative.windows.get('main'),ensureShell,onError:error=>console.error('menu shell reopen failed',error)});
   const textEdit = action => workspaceNative.editFocusedText(action, webContents.getFocusedWebContents());
-  Menu.setApplicationMenu(Menu.buildFromTemplate([
-    ...(process.platform === 'darwin' ? [{role:'appMenu'}] : []),
-    {label:'文件',submenu:[{label:'打开项目…',accelerator:'CmdOrCtrl+O',click:()=>menuAction('open-project')},{type:'separator'},{label:'关闭窗口',click:()=>win.close()}]},
-    {label:'编辑',submenu:[{role:'undo',label:'撤销'},{role:'redo',label:'重做'},{type:'separator'},{label:'剪切',accelerator:'CmdOrCtrl+X',click:()=>textEdit('cut')},{label:'复制',accelerator:'CmdOrCtrl+C',click:()=>textEdit('copy')},{role:'paste',label:'粘贴'},{role:'selectAll',label:'全选'}]},
-    {label:'视图',submenu:[{label:'专注模式',accelerator:'CmdOrCtrl+Shift+F11',click:()=>menuAction('focus')},{id:'view.authorship',label:'显示修改者',type:'checkbox',checked:true,click:()=>menuAction('authorship-toggle')},{label:'当前文件修改记录…',click:()=>menuAction('authorship-history')},{role:'togglefullscreen',label:'全屏'}]},
-    {label:'窗口',submenu:[{role:'minimize',label:'最小化'},{role:'zoom',label:'缩放窗口'}]},
-  ]));
+  Menu.setApplicationMenu(Menu.buildFromTemplate(buildApplicationMenuTemplate({ menuAction, textEdit })));
   if(process.platform !== 'darwin'){win.setMenu(null);win.setMenuBarVisibility(false);}
   win.webContents.once('did-finish-load', () => revealWindow(win));
   const scope = workspaceNative.registerShell(win);
@@ -219,9 +258,9 @@ async function createWindow(server) {
   const recovery=new WindowRecovery(win,{
     prepareClose:()=>finishDrawing(),
     dialog,settle:async()=>{await workspaceNative.flush([...workspaceNative.senders.values()].filter(r=>r.role==='surface'));await host.settled();},busy:()=>agents?.busy()||managedAgents?.busy(),
-    stop:async()=>{await closeOnlineBrowsers();await managedAgents?.stop();await agents?.stopIdle?.();},
+    stop:stopForWindowClose,
     forceQuit:forceQuitApplication,
-    reveal:()=>revealWindow(win),onClose:()=>{allowClose=true;quitting=true;for(const s of [...workspaceNative.surfaces.values()])workspaceNative.destroySurface(s);for(const r of workspaceNative.windows.values()){r.closing=true;r.win.close();}},
+    reveal:()=>revealWindow(win),onClose:finalizeWindowClose,
   });
   win.webContents.on('did-start-navigation',(_event,_url,_inPlace,isMainFrame)=>{if(isMainFrame)recovery.navigation();});
   win.webContents.on('render-process-gone',(_event,details)=>{console.error('renderer gone',details);recovery.rendererGone(details);});
@@ -229,6 +268,7 @@ async function createWindow(server) {
   win.on('close',event=>{
     if(allowClose||quitting||scope.closing)return;
     event.preventDefault();
+    resetStaleQuitIntent(recovery);
     if(workspaceNative.currentWindowCount()>1)void finishDrawing({windowId:scope.windowId}).then(()=>workspaceNative.closeWindow(scope)).catch(error=>{console.error('window close failed',error);recovery.offer('save-failed',error,true);});
     else recovery.requestClose();
   });
@@ -334,7 +374,7 @@ async function main() {
   const {ProjectWatcher}=await import('./project-watcher.mjs');
   projectWatcher=new ProjectWatcher({onChange:event=>workspaceNative?.broadcast('nozeli:workspace-control',{type:'file-tree-changed',...event},event.projectId),onError:error=>workspaceNative?.broadcast('nozeli:workspace-control',{type:'file-tree-watch-error',...error},error.projectId)});
   const address=server.address();origin=`http://127.0.0.1:${address.port}/`;
-  workspaceNative=new WorkspaceNative({BrowserWindow:WorkspaceWindow,WebContentsView,screen,origin,preload:path.join(APP_ROOT,'src/preload/preload.cjs'),icon:path.join(APP_ROOT,'assets/nozeli.png'),userDataDir:app.getPath('userData'),host,hidden:HIDDEN,onClose:async r=>{const recovery=windowRecovery(r.win);if(recovery){recovery.requestClose();return;}await workspaceNative.flush([...workspaceNative.senders.values()]);if(agents?.busy()||managedAgents?.busy()){r.wc.send('nozeli:quit-confirm');return;}await managedAgents?.stop();await agents?.stopIdle?.();r.closing=true;for(const s of workspaceNative.projectRecords(r.projectId,r.windowId))workspaceNative.destroySurface(s);r.win.close();}});
+  workspaceNative=new WorkspaceNative({BrowserWindow:WorkspaceWindow,WebContentsView,screen,origin,preload:path.join(APP_ROOT,'src/preload/preload.cjs'),icon:path.join(APP_ROOT,'assets/nozeli.png'),userDataDir:app.getPath('userData'),host,hidden:HIDDEN,onClose:async r=>{const recovery=windowRecovery(r.win);if(recovery){resetStaleQuitIntent(recovery);recovery.requestClose();return;}await workspaceNative.flush([...workspaceNative.senders.values()]);if(agents?.busy()||managedAgents?.busy()){r.wc.send('nozeli:quit-confirm');return;}await managedAgents?.stop();await agents?.stopIdle?.();r.closing=true;for(const s of workspaceNative.projectRecords(r.projectId,r.windowId))workspaceNative.destroySurface(s);r.win.close();}});
   workspaceNative.managedAgents=managedAgents;
   const {IsolatedPreviewManager}=await import('./isolated-preview.mjs');
   isolatedPreview=new IsolatedPreviewManager({View,WebContentsView,session,workspace:workspaceNative,host,managedAgents,dialog});
@@ -360,7 +400,7 @@ async function main() {
   guidedDemo.lifecycle=projectLifecycle;workspaceNative.guidedDemo=guidedDemo;host.guidedDemo=guidedDemo;managedAgents.guidedDemo=guidedDemo;
   const stopManagedUnavailable=host.storage.onUnavailable;
   host.storage.onUnavailable=(id,error)=>{workspaceNative.unavailableProjects??=new Set();if(workspaceNative.unavailableProjects.has(id))return;workspaceNative.unavailableProjects.add(id);const stopped=stopManagedUnavailable(id,error);void Promise.allSettled([stopped,projectLifecycle.beforeStop(id)]).then(results=>{if(results.some(result=>result.status==='rejected'))workspaceNative.broadcast('nozeli:workspace-control',{type:'project-stop-pending',projectId:id,error:{code:'OMP_EXIT_UNCONFIRMED',message:'原生停稳尚未确认，未允许继续执行或清理。'}},id);});workspaceNative.broadcast('nozeli:workspace-control',{type:'project-unavailable',projectId:id,error:{code:error.code,message:error.message}},id);};
-  workspaceNative.restoreShell=()=>createWindow(server);
+  workspaceNative.restoreShell=()=>{if(quitting||quitIntent||windowlessQuit||quitCleanupStarted||closeAdmission.held())throw new HostError('APP_CLOSING','应用正在关闭，未创建新窗口。');allowClose=false;return createWindow(server);};
   workspaceNative.ensureConversation=async(projectId,target)=>{
     if(guidedDemo.isDemo(projectId)){await guidedDemo.verify(projectId);return;}
     // Main chat is frontdesk-only: admitting a conversation must never wake a
@@ -377,7 +417,7 @@ async function main() {
     }catch(error){await managedAgents.reportConnectionError(projectId,error);throw error;}
   };
   workspaceNative.setupWindow=r=>{
-    const recovery=new WindowRecovery(r.win,{dialog,prepareClose:()=>finishDrawing(),settle:async()=>{await workspaceNative.flush([...workspaceNative.surfaces.values()]);await host.settled();},busy:()=>agents?.busy()||managedAgents?.busy(),stop:async()=>{await closeOnlineBrowsers();await managedAgents?.stop();await agents?.stopIdle?.();},forceQuit:forceQuitApplication,reveal:()=>revealWindow(r.win),onClose:()=>{allowClose=true;quitting=true;for(const s of [...workspaceNative.surfaces.values()])workspaceNative.destroySurface(s);for(const w of workspaceNative.windows.values()){w.closing=true;w.win.close();}}});
+    const recovery=new WindowRecovery(r.win,{dialog,prepareClose:()=>finishDrawing(),settle:async()=>{await workspaceNative.flush([...workspaceNative.surfaces.values()]);await host.settled();},busy:()=>agents?.busy()||managedAgents?.busy(),stop:stopForWindowClose,forceQuit:forceQuitApplication,reveal:()=>revealWindow(r.win),onClose:finalizeWindowClose});
     r.wc.on('did-start-navigation',(_e,_url,_inPlace,isMain)=>{if(isMain)recovery.navigation();});
     r.wc.on('did-finish-load',()=>recovery.loaded());r.wc.on('render-process-gone',(_e,details)=>recovery.rendererGone(details));r.win.on('closed',()=>recovery.destroyed());
   };
@@ -387,12 +427,35 @@ async function main() {
     finally{r.recovering=false;}
   };
   app.on('before-quit',event=>{
-    if(quitting)return;event.preventDefault();if(quitPending)return;quitPending=true;
-    const r=workspaceNative.windows.get('main')||workspaceNative.windows.values().next().value;
-    if(!r){quitPending=false;return;}
-    const recovery=windowRecovery(r.win);
-    if(recovery){recovery.requestClose();quitPending=false;return;}
-    void workspaceNative.onClose(r).catch(error=>console.error('quit failed',error)).finally(()=>{quitPending=false;});
+    if(quitting||quitCleanupStarted)return;
+    if(windowlessQuit)return; // our own windowless app.quit() re-entry
+    const records=[...workspaceNative.windows.values()];
+    const recovery=resolveQuitVehicle(records,windowRecovery);
+    resetStaleQuitIntent(recovery);
+    if(quitIntent){event.preventDefault();return;} // a live barrier already carries this quit
+    const live=records.find(r=>r.win&&!r.dead&&!(typeof r.win.isDestroyed==='function'&&r.win.isDestroyed()));
+    if(!live){
+      event.preventDefault();
+      if(quitPending)return;
+      if(requiresQuitWindow({platform:process.platform,hasLiveWindow:false,busy:agents?.busy()||managedAgents?.busy()})){
+        quitPending=true;
+        void ensureShell().then(root=>{quitPending=false;if(!root||root.dead)throw Error('退出确认窗口尚未就绪，应用已保留。');app.quit();}).catch(error=>{quitPending=false;console.error('quit confirmation reopen failed',error);});
+        return;
+      }
+      quitIntent=true;windowlessQuit=true;app.quit();return;
+    }
+    event.preventDefault();
+    if(quitPending)return;
+    quitPending=true;
+    quitIntent=true; // this barrier must end in a real quit, not a resident close
+    if(recovery){
+      recovery.requestClose();
+      quitPending=false;
+      return;
+    }
+    // Live window without a recovery vehicle: keep the flush/confirm path so
+    // the quit never stalls against the window close guards.
+    void workspaceNative.onClose(live).catch(error=>console.error('quit failed',error)).finally(()=>{quitPending=false;});
   });
   const {AutoUpdater,acknowledgeUpdateHealth:health,trustedUpdaterRequest}=await import('./auto-update.mjs');acknowledgeUpdateHealth=health;
   const {createUpdateLifecycle}=await import('./update-lifecycle.mjs');
@@ -451,7 +514,9 @@ async function main() {
         if(op==='update.cancel'){autoUpdater.cancel();return {ok:true,value:autoUpdater.status()};}
         throw new HostError('UNKNOWN_OP','未知更新操作。');
       }
-      if(updateFrozen){const receipt=workspaceNative.receipts.get(payload?.flushRequestId),owned=updateFlushWrites.has(op)&&receipt?.record===scope&&receipt.generation===scope.generation;const retention=owned||['session.flushed','workspace.bootstrap','workspace.snapshot','workspace.bounds','workspace.recovery','state.write','managed.draft'].includes(op)||op==='workspace.command'&&payload.command?.type==='restoreViewState';if(!retention)throw new HostError('UPDATE_RESTART_PENDING','应用正在保留现场以安装更新，请稍候。');}
+      const heldRetained=(op,payload)=>{const receipt=workspaceNative.receipts.get(payload?.flushRequestId),owned=updateFlushWrites.has(op)&&receipt?.record===scope&&receipt.generation===scope.generation;return retainedDuringHold(op,payload,owned);};
+      if(updateFrozen&&!heldRetained(op,payload))throw new HostError('UPDATE_RESTART_PENDING','应用正在保留现场以安装更新，请稍候。');
+      if(closeAdmission.held()&&!heldRetained(op,payload))throw new HostError('WORKSPACE_CLOSING','最后一个窗口正在关闭，新输入已暂停；保存与确认仍然允许。');
       if(op.startsWith('web.')){
         trusted(event,op,payload);if(scope.role!=='surface'||scope.kind!=='web'||payload.viewId!==scope.viewId)throw new HostError('IPC_DENIED','网站操作不属于当前网页工作面。');
         const method=op.slice(4);if(!['open','bounds','navigate','action','close','discussionAction'].includes(method))throw new HostError('UNKNOWN_OP','未知网站操作。');
@@ -679,7 +744,7 @@ async function main() {
       }
       if (op === 'session.quitChoice') {
         if (payload?.choice === 'stay') {
-          allowClose = false;
+          allowClose = false; quitIntent = false; quitPending = false;
           return { ok: true, value: { stayed: true } };
         }
         if (payload?.choice === 'cancel') {
@@ -876,18 +941,11 @@ async function main() {
   // Confirmed local dispositions must finish even before AI setup is complete.
   void managedAgents.resumeUnfinishedProjects({hostOnly:!!piRuntimeError||startupConfiguration.choiceRequired}).catch(error=>console.error('Task restart recovery',error.message));
   if(process.env.NOZELI_UPDATE_RECEIPT){await initialWindow.webContents.executeJavaScript('new Promise((resolve,reject)=>{const deadline=Date.now()+20000;const timer=setInterval(()=>{if(window.__nozeliReady){clearInterval(timer);resolve(true);}else if(Date.now()>deadline){clearInterval(timer);reject(Error("应用工作面尚未就绪"));}},50);})');await acknowledgeUpdateHealth({appRoot:APP_ROOT});}
-  app.on('activate', async () => {
-    if (quitting || BaseWindow.getAllWindows().length > 0) return;
-    allowClose = false;
-    await createWindow(server);
-  });
-  app.on('window-all-closed', async () => {
-    if (forceQuitting) return;
+  const shutdownForQuit=async()=>{
     autoUpdater?.stop();
     await texManager?.stopAll();
     await texLanguage?.stopAll();
     await lspManager?.stopAll();
-    quitting = true;
     await workspaceNative.projectTerminals.stopAll().catch(error=>console.error('project terminal cleanup failed',error.message));
     await host.settled();
     await managedAgents?.stop().catch(error=>console.error('managed cleanup failed',error.message));
@@ -895,8 +953,30 @@ async function main() {
     await providerSettings.stop();
     await piAuth?.stop().catch(error=>console.error('Pi settings worker stop failed',error.message));
     server.close();
-    app.quit();
+  };
+  app.on('activate', async () => {
+    if (closeAdmission.held()) return;
+    if (quitting || windowlessQuit || quitCleanupStarted) return;
+    resetStaleQuitIntent(resolveQuitVehicle(workspaceNative.windows.values(),windowRecovery));
+    if (quitIntent) return; // never race an in-flight quit with a new window
+    if (BaseWindow.getAllWindows().length > 0) return;
+    allowClose = false;
+    await ensureShell();
   });
+  app.on('window-all-closed', () => {
+    const decision=decideWindowAllClosed({platform:process.platform,state:quitState(),forceQuitting});
+    if (decision.resident) {
+      // macOS stays resident after a plain last-window close: the barrier
+      // already settled saves and window-scoped work; Dock activation
+      // reopens the shell over the same server and live controllers.
+      return;
+    }
+    if (decision.quit) app.quit();
+  });
+  // The one-shot final cleanup: the handlers above only decide; teardown of
+  // server, providers and managed runtime runs here exactly once, after the
+  // last window is gone, on every quit path.
+  app.on('will-quit',createQuitCleanup({cleanup:shutdownForQuit,quit:()=>app.quit(),onStart:()=>{quitCleanupStarted=true;quitting=true;},onError:error=>console.error('quit cleanup failed',error)}));
 }
 
 main().catch((error) => {

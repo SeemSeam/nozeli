@@ -1,6 +1,6 @@
 # 当前状态与能力边界
 
-状态基线：`0.1.0-beta.2`（Linux x64＋macOS arm64双平台预发行，公开状态以[发行页](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-beta.2)为准）。用户于2026-11-11在知悉六项审计仍pending后追加明确授权公开本版；授权仅限本版预发行，不沿用beta.1/alpha.6例外、不构成合规签收，`--public`仍阻断，不标稳定版/latest，也未授权替换日常安装。本版产品内容为图示校验失败原Worker回合纠正、有界结构化诊断证据与终局诊断回执、遗留纯图示故障原Work/线程安全恢复、报告HTML发布前纯语法预检、旧HTML语法恢复事项结算后恢复审核讨论，及源码溯源微修；Linux冻结安装旅程已实测（见下方2026-11-10／11记录）。本版确切提交CI与macOS arm64实际构建／解压运行记录由发行流程在本版提交实测后补录，未补录前不记为通过；macOS仍仅ad-hoc签名，无Developer ID或公证。Windows／Intel Mac／mac自动更新／九格式完整显示矩阵及OS原生IME未验。上一版`0.1.0-beta.1`产品tag及附件保持绑定`17209df`不变。
+状态基线：`0.1.0-beta.3`（Linux x64＋macOS arm64双平台预发行，公开状态以[发行页](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-beta.3)为准）。用户于2026-11-11再次获知六项审计仍pending后明确选择授权公开本版；仅限本版预发行，不沿用Beta2例外、不构成合规签收，`--public`仍阻断，不标稳定版/latest，未授权替换日常安装。本版含Mac原生标题栏与关闭生命周期、对话/Task首次提交排序、涂鸦讨论交接、更新修复及低风险发布闭包瘦身；保留全部文档引擎、字体、离线能力和Node/Pi/Git，不做可选组件。精确提交CI、Linux和macOS arm64实际构建/解压程序验收须通过才发布，未跑不预填结果。macOS仍仅ad-hoc签名，无Developer ID或公证；Windows、Intel Mac、Mac自动更新及完整九格式显示矩阵未签收。Beta2及更早产品tag和附件不变，下方为历史证据。
 
 2026-11-11 **Beta2 公开预发行授权**：用户在获知六项再分发审计义务仍未签收后，明确授权公开`v0.1.0-beta.2`（Linux x64＋macOS arm64，非稳定版/latest）；此为本版权限，不构成合规签收，`--public`仍阻断，也未授权替换日常安装。本版修复图示校验错误原回合纠正、有界诊断证据与终局诊断回执、原Work/线程安全恢复、报告HTML发布前语法预检，以及旧HTML语法恢复事项结算后解除审核讨论只读，证据见[测试记录](testing.md#图示校验错误与原work自恢复2026-11-10)与[审核讨论恢复](testing.md#已交付成果仍无法审核讨论2026-11-11)。Linux冻结安装真实旅程已通过；本版确切提交CI与macOS arm64实际runner记录由发行流程实测后补录再记为通过。mac仍ad-hoc签名、未公证。
 

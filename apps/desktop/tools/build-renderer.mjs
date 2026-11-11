@@ -1,6 +1,14 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { build } from 'esbuild';
+import { build as esbuild } from 'esbuild';
+import { writeBundledNotices } from './bundled-notices.mjs';
+
+const metafiles = [];
+async function build(options) {
+  const result = await esbuild({...options, metafile: true});
+  metafiles.push(result.metafile);
+  return result;
+}
 
 const root = path.resolve(import.meta.dirname, '..');
 const output = path.join(root, 'dist/renderer');
@@ -88,3 +96,4 @@ for (const name of ['sheet-frame.html', 'sheet-frame.css', 'sheet-frame.mjs', 'x
 
 // Pinned PPTist (AGPL-3.0), local-only, with separate Nozeli draft persistence.
 await fs.cp(path.join(root,'vendor/pptist/dist'),path.join(output,'ppt-vendor'),{recursive:true});
+await writeBundledNotices(metafiles, output);

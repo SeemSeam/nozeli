@@ -6,7 +6,7 @@ import os from 'node:os';
 import {activateRelease, ownedRelease, planRetention, retainReleases, withInstallationLock, trustedSystemCommand, trustedPamChild} from '../tools/release-retention.mjs';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
-import {auditBundledLinks, dependencyIncluded} from '../tools/local-release.mjs';
+import {auditBundledLinks, dependencyIncluded, applicationDependencyIncluded, applicationSourceIncluded} from '../tools/local-release.mjs';
 
 async function fixture(t) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'nozeli-retention-'));
@@ -131,6 +131,26 @@ test('production filter excludes dev-only trees but keeps shared runtime and nes
   assert.equal(dependencyIncluded(lock, ''), true);
   for (const name of ['devtool', 'devtool/bin/cli.js', '@scope/dev/index.js', 'electron/dist/electron']) assert.equal(dependencyIncluded(lock, name), false);
   for (const name of ['shared/index.js', 'runtime/node_modules/nested/index.js', '@scope/runtime']) assert.equal(dependencyIncluded(lock, name), true);
+});
+
+test('application packages preserve target PTY binaries and helpers without foreign prebuilds', () => {
+  const lock = {packages: {'node_modules/build-tool': {dev: true}}};
+  const included = (relative, target) => applicationDependencyIncluded(lock, relative.split('/').join(path.sep), target);
+  assert.equal(included('node-pty/prebuilds/darwin-arm64/spawn-helper', {platform: 'darwin', arch: 'arm64'}), true);
+  assert.equal(included('node-pty/prebuilds/darwin-x64/pty.node', {platform: 'darwin', arch: 'arm64'}), false);
+  assert.equal(included('node-pty/build/Release/pty.node', {platform: 'linux', arch: 'x64'}), true);
+  assert.equal(included('node-pty/prebuilds/win32-x64/conpty/OpenConsole.exe', {platform: 'win32', arch: 'x64'}), true);
+  assert.equal(included('node-pty/prebuilds/win32-arm64/conpty.node', {platform: 'win32', arch: 'x64'}), false);
+  assert.equal(included('nested/node_modules/node-pty/prebuilds/darwin-arm64/pty.node', {platform: 'linux', arch: 'x64'}), false);
+  assert.equal(included('build-tool/bin/cli.js', {platform: 'linux', arch: 'x64'}), false);
+  assert.equal(included('@napi-rs/canvas-linux-x64-musl/skia.linux-x64-musl.node', {platform: 'linux', arch: 'x64'}), true);
+});
+
+test('source filtering retains offline UI and native icons but excludes private data and duplicate build inputs', () => {
+  const source = path.resolve('synthetic-source');
+  const included = relative => applicationSourceIncluded(source, path.join(source, ...relative.split('/')));
+  for (const name of ['dist/renderer/start-page/feature.png', 'dist/renderer/nozeli-small-icon.png', 'dist/renderer/ppt-vendor/assets/font.woff2', 'assets/brand/nozeli-paired-tabs-icon.png', 'assets/guided-demo/manifest.json', 'runtime/node/bin/node']) assert.equal(included(name), true, name);
+  for (const name of ['assets/start-page/feature.png', 'assets/brand/nozeli-small-icon.png', 'runtime/omp/runtime.json', 'src/.ccb/secret', 'assets/.nozeli/user-data']) assert.equal(included(name), false, name);
 });
 
 test('real Linux proc command line protects a node-hosted release', {skip: process.platform !== 'linux'}, async t => {

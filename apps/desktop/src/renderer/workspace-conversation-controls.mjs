@@ -1,6 +1,7 @@
 import './workspace-conversation-controls.css';
 import {setIconButton} from './ui-icons.mjs';
 import {panelButton} from './panel-menu.mjs';
+import {usesNativeWindowChrome} from './window-chrome.mjs';
 export {uiIcon as workspaceIcon} from './ui-icons.mjs';
 
 // Window geometry belongs to the native workspace, never to conversation preferences.
@@ -15,7 +16,7 @@ export function mountConversationControls({close}) {
   const header=document.getElementById('conversation-head');
   const detached = () => Boolean(window.__workspaceScope?.windowId && window.__workspaceScope.windowId !== 'main');
   const updateChrome = () => {
-    header.classList.toggle('nozeli-draggable', detached());
+    header.classList.toggle('nozeli-draggable', detached()&&!usesNativeWindowChrome());
     header.classList.toggle('conversation-head-detached', detached());
   };
   window.nozeli.subscribe('workspace.control',()=>queueMicrotask(updateChrome));updateChrome();
@@ -36,7 +37,7 @@ export function mountConversationControls({close}) {
     const runtime = document.getElementById('chat-session-runtime');
     if (runtime && !runtime.hidden) entries.push({id:'chat-session-runtime',label:'会话管理：压缩、重载与诊断…',enabled:!runtime.disabled});
     entries.push({id:'chat-agent-details',label:'连接与历史…'});
-    if (detached()) entries.push(...windowActions.map(({id,label}) => ({id,label})));
+    if (detached()&&!usesNativeWindowChrome()) entries.push(...windowActions.map(({id,label}) => ({id,label})));
     const clear = document.getElementById('chat-clear-frontdesk-context');
     if (clear && !clear.hidden) entries.push({id:'chat-clear-frontdesk-context',label:clear.textContent,enabled:!clear.disabled});
     return entries;

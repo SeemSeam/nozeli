@@ -1,7 +1,8 @@
 import {uiIcon} from './ui-icons.mjs';
 export function menuShortcut(value = '') {
-  const mac = /Mac/i.test(globalThis.navigator?.userAgentData?.platform || globalThis.navigator?.platform || '');
-  return value.replaceAll('Ctrl/Cmd', mac ? 'Cmd' : 'Ctrl').replaceAll('CmdOrCtrl', mac ? 'Cmd' : 'Ctrl');
+  const platform=globalThis.nozeli?.platform;
+  const mac = platform ? platform==='darwin' : /Mac/i.test(globalThis.navigator?.userAgentData?.platform || globalThis.navigator?.platform || '');
+  return value.replace(/Ctrl\s*\/\s*Cmd|CmdOrCtrl/g, mac ? '⌘' : 'Ctrl');
 }
 
 // Shared shell for application commands; drivers retain their own transactions.

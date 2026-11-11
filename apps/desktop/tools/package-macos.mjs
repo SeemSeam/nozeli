@@ -12,7 +12,7 @@ import {createRequire} from 'node:module';
 import {pathToFileURL} from 'node:url';
 import {execFile, execFileSync} from 'node:child_process';
 import {promisify} from 'node:util';
-import {dependencyIncluded, auditBundledLinks} from './local-release.mjs';
+import {dependencyIncluded, applicationSourceIncluded, applicationDependencyIncluded, auditBundledLinks} from './local-release.mjs';
 import {packagePiRuntime} from './package-pi-runtime.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -105,15 +105,15 @@ export async function assembleMacosBundle({source, output, manifest, lock, relea
 
     const application = path.join(resources, 'app');
     await fs.mkdir(application, {recursive: true});
-    for (const name of ['src', 'dist', 'assets', 'runtime', 'native', 'package.json', 'package-lock.json', 'SOURCES.md', 'README.md', 'compliance-inventory.json']) await fs.cp(path.join(source, name), path.join(application, name), {recursive: true, filter: file => {const parts = path.relative(source, file).split(path.sep); return !parts.some(part => part === '.nozeli' || part === '.ccb') && !(parts[0] === 'runtime' && parts[1] === 'omp');}});
+    for (const name of ['src', 'dist', 'assets', 'runtime', 'native', 'package.json', 'package-lock.json', 'SOURCES.md', 'README.md', 'compliance-inventory.json']) await fs.cp(path.join(source, name), path.join(application, name), {recursive: true, filter: file => applicationSourceIncluded(source, file)});
     const dependencyRoot = path.join(source, 'node_modules');
     await fs.cp(dependencyRoot, path.join(application, 'node_modules'), {recursive: true, verbatimSymlinks: true, filter: async file => {
       const relative = path.relative(dependencyRoot, file);
-      if (!dependencyIncluded(lock, relative)) return false;
+      if (!applicationDependencyIncluded(lock, relative)) return false;
       if ((await fs.lstat(file)).isSymbolicLink()) {
         const target = await fs.realpath(file);
         if (target === dependencyRoot) return false;
-        if (relative.split(path.sep).includes('.bin') && !dependencyIncluded(lock, path.relative(dependencyRoot, target))) return false;
+        if (relative.split(path.sep).includes('.bin') && !applicationDependencyIncluded(lock, path.relative(dependencyRoot, target))) return false;
       }
       return true;
     }});

@@ -5,6 +5,7 @@ import { mountDocumentHeader } from './document-header.mjs';
 import { mountActionConfirmation } from './action-confirmation.mjs';
 import {createSidebarVisit} from './sidebar-visit.mjs';
 import { mountSidebarLayout } from './sidebar-layout.mjs';
+import {menuShortcut} from './context-menu.mjs';
 
 const $ = id => document.getElementById(id);
 const clamp = (n, min, max) => Math.min(Math.max(n, min), max);
@@ -13,6 +14,9 @@ const defaults = () => ({ filesCollapsed: false, drawerFilesOpen:false, fontSize
 // The same composer node survives every layout change. All persisted state is project-scoped.
 export function mountWorkspace({ save, saveProjectSettings, openProject, addNote, send }) {
   mountDocumentHeader();
+  for(const id of ['composer','code-jump']){const node=$(id);if(node)node.title=menuShortcut(node.title);}
+  const shortcuts=document.querySelector('#settings-general > .settings-hint:last-child');
+  if(shortcuts)shortcuts.textContent=menuShortcut(shortcuts.textContent);
   const ownsConversation=window.__workspaceScope?.role==='surface'&&window.__workspaceScope.kind==='conversation';
   let state = defaults(), toastTimer;
   const sidebarVisit=createSidebarVisit();
@@ -124,7 +128,7 @@ export function mountWorkspace({ save, saveProjectSettings, openProject, addNote
     $('app').classList.toggle('focus-mode', enabled);
     $('toggle-focus').setAttribute('aria-pressed', String(enabled));
     $('toggle-focus').setAttribute('aria-label', enabled ? '退出 Zen 专注模式' : '进入 Zen 专注模式');
-    $('toggle-focus').title = enabled ? '退出 Zen (Esc)' : 'Zen 专注模式 (Ctrl/Cmd+Shift+F11)';
+    $('toggle-focus').title = enabled ? '退出 Zen (Esc)' : menuShortcut('Zen 专注模式 (Ctrl/Cmd+Shift+F11)');
     $('focus-exit').hidden = !enabled;
     document.dispatchEvent(new CustomEvent('zen:change', { detail: { enabled } }));
   }
@@ -155,7 +159,7 @@ export function mountWorkspace({ save, saveProjectSettings, openProject, addNote
     } catch { /* Window-filling remains useful when fullscreen is denied. */ }
     finally { focusTransition = false; }
   }
-  window.nozeli.subscribe('menu.action', action => { if(action === 'focus') void toggleFocus(); if(action === 'open-project') openProject(); });
+  window.nozeli.subscribe('menu.action', action => { if(action === 'focus') void toggleFocus(); if(action === 'open-project') openProject(); if(action === 'settings') $('open-settings').click(); });
   document.addEventListener('keydown', event => {
     if(event.key === 'F11' && event.shiftKey && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();

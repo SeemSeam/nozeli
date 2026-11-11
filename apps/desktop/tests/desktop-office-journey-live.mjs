@@ -62,7 +62,7 @@ for (const {name, source} of Object.values(fixtures)) {
 
 const port = await new Promise(resolve => {const server = net.createServer(); server.listen(0, '127.0.0.1', () => {const value = server.address().port; server.close(() => resolve(value));});});
 const env = {...process.env};
-for (const key of Object.keys(env)) if (/^(NOZELI_|CCB_|CODEX_|OMP_|PI_)/.test(key) || /AUTH|TOKEN|SECRET|PASSWORD|CREDENTIAL|API_?KEY|PRIVATE_?KEY/i.test(key) || ['NODE_OPTIONS', 'ELECTRON_RUN_AS_NODE'].includes(key)) delete env[key];
+for (const key of Object.keys(env)) if (key !== 'XAUTHORITY' && (/^(NOZELI_|CCB_|CODEX_|OMP_|PI_)/.test(key) || /AUTH|TOKEN|SECRET|PASSWORD|CREDENTIAL|API_?KEY|PRIVATE_?KEY/i.test(key) || ['NODE_OPTIONS', 'ELECTRON_RUN_AS_NODE'].includes(key))) delete env[key];
 const ozone = process.env.NOZELI_OZONE; // darwin never receives an Ozone switch.
 Object.assign(env, {NOZELI_TEST_INSTANCE: '1', NOZELI_TEST_PICK: project, NOZELI_CONFIG_ROOT: config, NOZELI_USER_DATA: profile, NOZELI_DEBUG_PORT: String(port), NOZELI_HIDDEN: '0'});
 const args = [...(packaged ? [] : [path.join(root, 'src/main/main.cjs')]), '--inspect=0',

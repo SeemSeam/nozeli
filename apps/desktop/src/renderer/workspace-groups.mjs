@@ -1,7 +1,7 @@
 import {layoutGroups} from '../domain/workspace-layout.mjs';
 import {normalizeWebUrl} from '../domain/web-url.mjs';
 import './workspace-groups.css';
-import {windowBrand,windowControls} from './window-chrome.mjs';
+import {usesNativeWindowChrome,windowBrand,windowControls} from './window-chrome.mjs';
 import {mountContextMenu} from './context-menu.mjs';
 import {setIconButton} from './ui-icons.mjs';
 import {mountWorkspaceTitleDrag} from './workspace-title-drag.mjs';
@@ -21,7 +21,7 @@ export function mountWorkspaceGroups({invoke,scope,toast=()=>{}}){
   if(scope.role==='shell'){
     const toolbar=document.getElementById('app').querySelector('.topbar');
 
-    toolbar.prepend(windowBrand());toolbar.append(windowControls(invoke));
+    if(!usesNativeWindowChrome())toolbar.prepend(windowBrand());toolbar.append(windowControls(invoke));
   }
   host.append(tree);document.getElementById('reader').append(host);
   const call=async(op,payload={})=>{const r=await invoke(op,payload);if(!r.ok)throw Object.assign(new Error(r.error?.message||'工作区操作失败'),{code:r.error?.code});return r.value;};
@@ -78,7 +78,7 @@ export function mountWorkspaceGroups({invoke,scope,toast=()=>{}}){
     if(scope.role==='detached'){
       add('drawing','涂鸦当前窗口',async()=>{await bounds();window.dispatchEvent(new Event('nozeli-draw-current-window'));});
       add('dock','返回主窗口',()=>command({type:'dock',windowId,targetGroupId:layoutGroups(layout,'main').find(g=>!g.activeViewId)?.id||layoutGroups(layout,'main').at(-1)?.id}));
-      for(const [action,label]of [['minimize','最小化'],['maximize','最大化／还原'],['close','关闭窗口']])add(action,label,()=>call('workspace.control',{type:'window-control',action}));
+      if(!usesNativeWindowChrome())for(const [action,label]of [['minimize','最小化'],['maximize','最大化／还原'],['close','关闭窗口']])add(action,label,()=>call('workspace.control',{type:'window-control',action}));
     }else{
       add('closePane','关闭当前分区',()=>command({type:'closePane',groupId:node.id}));
       add('layout-save','保存当前布局…',()=>nameDialog('保存当前布局','',(name,projectId)=>namedAction('save',{name},projectId)));

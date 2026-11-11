@@ -26,6 +26,20 @@ export function dependencyIncluded(lock, relative) {
   return relative.split(path.sep)[0] !== 'electron';
 }
 
+export function applicationSourceIncluded(source, file) {
+  const parts = path.relative(source, file).split(path.sep);
+  if (parts.some(part => part === '.nozeli' || part === '.ccb')) return false;
+  if (parts[0] === 'runtime' && parts[1] === 'omp') return false;
+  if (parts[0] === 'assets' && parts[1] === 'start-page') return false;
+  return !(parts[0] === 'assets' && parts[1] === 'brand' && parts[2] === 'nozeli-small-icon.png');
+}
+
+export function applicationDependencyIncluded(lock, relative, {platform = process.platform, arch = process.arch} = {}) {
+  if (!dependencyIncluded(lock, relative)) return false;
+  const parts = relative.split(path.sep), offset = parts.lastIndexOf('node_modules') + 1;
+  return !(parts[offset] === 'node-pty' && parts[offset + 1] === 'prebuilds' && parts[offset + 2] && parts[offset + 2] !== `${platform}-${arch}`);
+}
+
 export async function validateRelease(root, release) {
   const {metadata} = await ownedRelease(root, release);
   if (metadata.arch !== process.arch) throw Error('Release architecture does not match this machine');
@@ -59,15 +73,15 @@ export async function packageRelease({root, release, source}) {
   await fs.copyFile(path.resolve(source, '../../LICENSE'), path.join(release, 'NOZELI-LICENSE'));
   const application = path.join(release, 'resources/app');
   await fs.mkdir(application, {recursive: true});
-  for (const name of ['src', 'dist', 'assets', 'runtime', 'package.json', 'package-lock.json', 'SOURCES.md', 'README.md']) await fs.cp(path.join(source, name), path.join(application, name), {recursive: true, filter: file => {const parts=path.relative(source,file).split(path.sep);return !parts.some(part=>part==='.nozeli'||part==='.ccb')&&!(parts[0]==='runtime'&&parts[1]==='omp');}});
+  for (const name of ['src', 'dist', 'assets', 'runtime', 'package.json', 'package-lock.json', 'SOURCES.md', 'README.md']) await fs.cp(path.join(source, name), path.join(application, name), {recursive: true, filter: file => applicationSourceIncluded(source, file)});
   const dependencyRoot = path.join(source, 'node_modules');
   await fs.cp(dependencyRoot, path.join(application, 'node_modules'), {recursive: true, verbatimSymlinks: true, filter: async file => {
     const relative = path.relative(dependencyRoot, file);
-    if (!dependencyIncluded(lock, relative)) return false;
+    if (!applicationDependencyIncluded(lock, relative)) return false;
     if ((await fs.lstat(file)).isSymbolicLink()) {
       const target = await fs.realpath(file);
       if (target === dependencyRoot) return false;
-      if (relative.split(path.sep).includes('.bin') && !dependencyIncluded(lock, path.relative(dependencyRoot, target))) return false;
+      if (relative.split(path.sep).includes('.bin') && !applicationDependencyIncluded(lock, path.relative(dependencyRoot, target))) return false;
     }
     return true;
   }});

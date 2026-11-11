@@ -1,5 +1,11 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+// The platform is host-owned, not inferred from a mutable browser user agent.
+if(typeof document!=='undefined'){
+  const markPlatform=()=>{document.documentElement.dataset.platform=process.platform;};
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',markPlatform,{once:true});else markPlatform();
+}
+
 let flushHandler = null;
 // Flush-scoped writes: exactly the ops a lifecycle/barrier flush itself must
 // persist. They carry the active flush receipt id so the host can admit them
@@ -59,6 +65,7 @@ ipcRenderer.on('nozeli:lsp', (_event, payload) => { for (const handler of push.l
 ipcRenderer.on('nozeli:quit-confirm', () => { for (const handler of push['quit.confirm']) handler(); });
 
 contextBridge.exposeInMainWorld('nozeli', {
+  platform: process.platform,
   invoke(op, payload) {
     const active = flushQueue.activeRequest();
     const scoped = active && (flushScopedWrites.has(op) || op==='workspace.command'&&payload?.command?.type==='restoreViewState');

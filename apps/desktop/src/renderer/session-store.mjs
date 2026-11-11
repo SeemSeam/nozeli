@@ -9,7 +9,7 @@ function weight(value,limit=SESSION_LIMITS.characters){
  if(!value||typeof value!=='object')return 0;
  let size=0;for(const child of Object.values(value)){size+=weight(child,limit-size);if(size>limit)break;}return size;
 }
-function boundedEntry(entry,limit){return weight(entry,limit)>limit?{id:entry.id,sequence:entry.sequence,target:entry.target,speaker:entry.speaker,source:entry.source,entryType:entry.entryType,recordKind:entry.recordKind,sessionId:entry.sessionId,entryId:entry.entryId,requestId:entry.requestId,taskRequestId:entry.taskRequestId,workId:entry.workId,jobId:entry.jobId,revision:entry.revision,at:entry.at,...(entry.speaker==='agent'?{provider:entry.provider,model:entry.model,modelStatus:entry.modelStatus}:{}),streaming:Boolean(entry.streaming),durable:entry.durable,complete:entry.complete,status:entry.status,failed:entry.failed===true,read:entry.read,text:'',availability:'read-required',reason:'消息超过缓存预算；请单独读取原文'}:entry;}
+function boundedEntry(entry,limit){return weight(entry,limit)>limit?{id:entry.id,sequence:entry.sequence,firstSubmissionSequence:entry.firstSubmissionSequence,target:entry.target,speaker:entry.speaker,source:entry.source,entryType:entry.entryType,recordKind:entry.recordKind,sessionId:entry.sessionId,entryId:entry.entryId,requestId:entry.requestId,taskRequestId:entry.taskRequestId,jobId:entry.jobId,workId:entry.workId,revision:entry.revision,at:entry.at,...(entry.speaker==='agent'?{provider:entry.provider,model:entry.model,modelStatus:entry.modelStatus}:{}),streaming:Boolean(entry.streaming),durable:entry.durable,complete:entry.complete,status:entry.status,failed:entry.failed===true,read:entry.read,text:'',availability:'read-required',reason:'消息超过缓存预算；请单独读取原文'}:entry;}
 function windowRows(rows,count,budget){const result=[];let size=0;for(const row of rows.sort(order).reverse()){const next=boundedEntry(row,budget);const cost=weight(next);if(result.length>=count||size+cost>budget)break;result.push(next);size+=cost;}return result.reverse();}
 export function createSessionStore({schedule = callback => {
   if(typeof requestAnimationFrame==='function'){const id=requestAnimationFrame(callback);return()=>cancelAnimationFrame(id);}
@@ -201,9 +201,14 @@ export function groupSessionWorkflows(snapshot,receipts=[],state){
   if(entry.speaker!=='user'||entry.source!=='host')continue;
   const id=entry.taskRequestId||entry.jobId;
   if(!id||!entry.taskRequestId&&jobs.get(id)?.type!=='intake')continue;
-  const root=rootOf(id),sequence=entry.sequence??0;
+  const root=rootOf(id),sequence=Number.isFinite(entry.firstSubmissionSequence??NaN)?entry.firstSubmissionSequence:entry.sequence??0;
   anchors.set(root,Math.min(anchors.get(root)??Infinity,sequence));
  }
+ // firstSubmissionSequence is the host-derived durable sequence of the intake
+ // root's first accepted input. Every on-page row of the task re-states it, so
+ // evicting the original input from the live window or a scoped page can never
+ // re-position the block; the page-local scan above stays as honest fallback.
+ const anchorHint=(row,entry)=>Number.isFinite(entry?.firstSubmissionSequence??NaN)?entry.firstSubmissionSequence:(row.entries??[]).map(item=>item.firstSubmissionSequence).find(Number.isFinite);
  for(const row of rows){
   if(row.kind==='message'&&nestedInputs.has(row.entry.id))continue;
   const entry=row.entry||row.delta,jobId=row.jobId||entry?.taskRequestId||entry?.jobId;
@@ -213,11 +218,14 @@ export function groupSessionWorkflows(snapshot,receipts=[],state){
   if(!workId&&!intake){result.push(row);continue;}
   const work=works.get(workId),sourceRoot=work?.sourceJob?rootOf(work.sourceJob):null;
   const root=sourceRoot&&intakeWorks.get(sourceRoot)===workId?sourceRoot:intake;
+  const hint=anchorHint(row,entry);
+  if(root!=null&&hint!==undefined)anchors.set(root,Math.min(anchors.get(root)??Infinity,hint));
   const id=root?'workflow:intake:'+root:'workflow:work:'+workId;
   let block=blocks.get(id);
+  if(!block){block={kind:'workflow',id,workId:workId||null,sourceJobId:root,sequence:anchors.get(root)??row.sequence,rows:[]};blocks.set(id,block);result.push(block);}
+  block.rows.push(row);
   const anchor=anchors.get(root);
-  if(!block){block={kind:'workflow',id,workId:workId||null,sourceJobId:root,sequence:anchor??row.sequence,rows:[]};blocks.set(id,block);result.push(block);}
-  block.rows.push(row);if(anchor===undefined)block.sequence=Math.min(block.sequence,row.sequence);
+  if(anchor===undefined)block.sequence=Math.min(block.sequence,row.sequence);else if(anchor<block.sequence)block.sequence=anchor;
  }
  return result.sort(order);
 }

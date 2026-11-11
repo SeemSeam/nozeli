@@ -9,7 +9,7 @@ test('overlapping native flushes serialize callbacks and scope tokens to recover
  const ipc=new EventEmitter(),calls=[];let bridge;
  ipc.invoke=async(channel,op,payload)=>{calls.push({op,payload});return {ok:true};};
  const source=await fs.readFile(new URL('../src/preload/preload.cjs',import.meta.url),'utf8');
- vm.runInNewContext(source,{require:()=>({ipcRenderer:ipc,contextBridge:{exposeInMainWorld:(_name,value)=>{bridge=value;}}})});
+ vm.runInNewContext(source,{process:{platform:process.platform},require:()=>({ipcRenderer:ipc,contextBridge:{exposeInMainWorld:(_name,value)=>{bridge=value;}}})});
  let release;const gate=new Promise(resolve=>{release=resolve;});let active=0,max=0,turn=0;
  bridge.subscribe('session.flush',async()=>{active++;max=Math.max(max,active);turn++;if(turn===1)await gate;await bridge.invoke('workspace.recovery',{projectId:'project'});await bridge.invoke('managed.send',{projectId:'project',text:'not authorized'});active--;return {ok:true};});
  ipc.emit('nozeli:flush',{},'first');ipc.emit('nozeli:flush',{},'second');
@@ -52,7 +52,7 @@ test('native flush envelope follows only restoreViewState, not other layout comm
  const ipc=new EventEmitter(),calls=[];let bridge;
  ipc.invoke=async(_channel,op,payload)=>{calls.push({op,payload});return {ok:true};};
  const source=await fs.readFile(new URL('../src/preload/preload.cjs',import.meta.url),'utf8');
- vm.runInNewContext(source,{require:()=>({ipcRenderer:ipc,contextBridge:{exposeInMainWorld:(_name,value)=>{bridge=value;}}})});
+ vm.runInNewContext(source,{process:{platform:process.platform},require:()=>({ipcRenderer:ipc,contextBridge:{exposeInMainWorld:(_name,value)=>{bridge=value;}}})});
  bridge.subscribe('session.flush',async()=>{await bridge.invoke('workspace.command',{projectId:'p',command:{type:'restoreViewState',viewId:'v'}});await bridge.invoke('workspace.command',{projectId:'p',command:{type:'close',viewId:'v'}});return {ok:true};});
  ipc.emit('nozeli:flush',{},'restore-request');
  for(let i=0;i<10&&!calls.some(c=>c.op==='session.flushed');i++)await new Promise(resolve=>setImmediate(resolve));

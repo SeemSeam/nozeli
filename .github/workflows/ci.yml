@@ -135,6 +135,9 @@ jobs:
           sudo chmod 4755 "$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/chrome-sandbox"
           NOZELI_TEST_BINARY="$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/nozeli" xvfb-run -a node tests/desktop-ci-smoke.mjs
           TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_BINARY="$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/nozeli" xvfb-run -a node tests/desktop-task-workspace-live.mjs
+          TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_BINARY="$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/nozeli" xvfb-run -a node tests/desktop-office-journey-live.mjs
+          TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_BINARY="$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/nozeli" xvfb-run -a node tests/desktop-platform-chrome-live.mjs
+          TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_BINARY="$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/nozeli" xvfb-run -a node tests/desktop-timeline-order-live.mjs
         env:
           NOZELI_OZONE: x11
       - name: Preserve private Linux draft artifacts
@@ -161,6 +164,14 @@ jobs:
             apps/desktop/.test-output/ci/nozeli-task-workspace-*/report.json
             apps/desktop/.test-output/ci/nozeli-task-workspace-*/electron.log
             apps/desktop/.test-output/ci/nozeli-task-workspace-*/*.png
+            apps/desktop/.test-output/ci/nozeli-office-journey-*/report.json
+            apps/desktop/.test-output/ci/nozeli-office-journey-*/electron.log
+            apps/desktop/.test-output/ci/nozeli-platform-chrome-*/report.json
+            apps/desktop/.test-output/ci/nozeli-platform-chrome-*/electron.log
+            apps/desktop/.test-output/ci/nozeli-platform-chrome-*/*.png
+            apps/desktop/.test-output/ci/nozeli-timeline-order-*/report.json
+            apps/desktop/.test-output/ci/nozeli-timeline-order-*/electron.log
+            apps/desktop/.test-output/ci/nozeli-timeline-order-*/*.png
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 7

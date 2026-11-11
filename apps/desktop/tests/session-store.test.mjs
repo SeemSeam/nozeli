@@ -276,3 +276,76 @@ test('converted input, Worker discussion and bound diagnostics stay in the exact
  const historical=groupSessionWorkflows({entries:[answer],deltas:[],hasMore:true},[],state);
  assert.deepEqual(historical[0].rows.flatMap(row=>row.entries).map(row=>row.id),['answer'],'a history page cannot manufacture its missing original or later discussion');
 });
+
+test('durable first-submission anchors keep task position when the original input left the page',()=>{
+ const state={jobs:[
+  {id:'a-root',target:'orchestrator',type:'intake'},
+  {id:'a-next',target:'orchestrator',type:'intake',routing:{action:'continue',workId:'a'}},
+  {id:'b-root',target:'orchestrator',type:'intake'},
+  {id:'a-job',target:'a',type:'initial',revision:1},
+ ],works:[{id:'a',sourceJob:'a-root',sourceInputJobIds:['a-root','a-next'],revision:1,status:'review'},{id:'b',sourceJob:'b-root',revision:1,status:'review'}]};
+ // The original a-input (sequence 10) is absent: viewport eviction or an older
+ // scoped page. Without the host anchor the block floated to min(page rows).
+ const bInput=entry('b-input',{sequence:20,speaker:'user',source:'host',jobId:'b-root',taskRequestId:'b-root',text:'second task',firstSubmissionSequence:20});
+ const aWorker=entry('a-round',{sequence:30,target:'a',workId:'a',jobId:'a-job',revision:1,firstSubmissionSequence:10});
+ const aSupplement=entry('a-more',{sequence:50,speaker:'user',source:'host',jobId:'a-next',taskRequestId:'a-next',text:'补充',firstSubmissionSequence:10});
+ const rows=groupSessionWorkflows({entries:[bInput,aWorker,aSupplement],deltas:[]},[],state);
+ const cards=rows.filter(row=>row.kind==='workflow');
+ assert.deepEqual(cards.map(card=>card.sequence),[10,20],'the task stays at its first submission while later tasks keep their own position');
+ assert.deepEqual(cards.map(card=>card.workId),['a','b'],'independent tasks never merge');
+ const workerOnly=groupSessionWorkflows({entries:[bInput,aWorker],deltas:[],hasMore:true},[],state);
+ assert.deepEqual(workerOnly.filter(row=>row.kind==='workflow').map(card=>card.sequence),[10,20],'a worker-only page still pins the block at the original submission');
+});
+
+test('viewport eviction keeps the anchored task position without renderer caches',()=>{
+ const store=createSessionStore();store.reset('p');
+ const state={jobs:[{id:'root',target:'orchestrator',type:'intake'},{id:'job',target:'w',type:'initial',revision:1}],works:[{id:'w',sourceJob:'root',revision:1,status:'review'}]};
+ store.apply('p',{version:1,entries:[entry('a-input',{sequence:1,speaker:'user',source:'host',jobId:'root',taskRequestId:'root',text:'first task',firstSubmissionSequence:1})]});
+ for(let i=0;i<250;i++)store.apply('p',{version:1,entries:[entry('noise-'+i,{sequence:2+i,speaker:'user',jobId:null,requestId:null})]});
+ store.apply('p',{version:1,entries:[entry('a-round',{sequence:252,target:'w',workId:'w',jobId:'job',revision:1,text:'latest round',firstSubmissionSequence:1})]});
+ const snapshot=store.getSnapshot();
+ assert.equal(snapshot.entries.some(item=>item.id==='a-input'),false,'the original first input left the 200-entry window');
+ assert.equal(snapshot.entries.find(item=>item.id==='a-round').firstSubmissionSequence,1);
+ const card=groupSessionWorkflows(snapshot,[],state).find(row=>row.kind==='workflow');
+ assert.equal(card.sequence,1,'the task block keeps its first-submission position after eviction');
+ store.dispose();
+});
+
+test('streaming task output settles durably without jumping position',()=>{
+ const state={jobs:[{id:'root',target:'orchestrator',type:'intake'},{id:'job',target:'w',type:'initial',revision:1}],works:[{id:'w',sourceJob:'root',revision:1,status:'running'}]};
+ const store=createSessionStore();store.reset('p');
+ store.apply('p',{version:1,entries:[
+  entry('older',{sequence:2,speaker:'user',jobId:null,requestId:null}),
+  entry('stream',{sequence:Number.MAX_SAFE_INTEGER-1,target:'w',workId:'w',jobId:'job',revision:1,streaming:true,text:'partial',firstSubmissionSequence:1}),
+ ]});
+ const during=groupSessionWorkflows(store.getSnapshot(),[],state).find(row=>row.kind==='workflow');
+ assert.equal(during.sequence,1,'the live round already anchors at the first submission');
+ store.apply('p',{version:1,entries:[entry('settled',{sequence:3,target:'w',workId:'w',jobId:'job',revision:1,replacesId:'stream',text:'final',firstSubmissionSequence:1})]});
+ const snapshot=store.getSnapshot();
+ assert.equal(snapshot.entries.some(item=>item.id==='stream'),false);
+ const after=groupSessionWorkflows(snapshot,[],state).find(row=>row.kind==='workflow');
+ assert.equal(after.sequence,1);
+ assert.ok(after.rows.some(row=>row.entries?.some(item=>item.id==='settled')),'the durable round stays inside its task');
+ store.dispose();
+});
+
+test('clarification answers keep the original task anchor on late pages',()=>{
+ const root={id:'root',target:'orchestrator',type:'intake'},answer={id:'answer',target:'orchestrator',type:'intake',context:{routingQuestionId:'question'}};
+ const todos=[{id:'question',kind:'routing',sourceJobId:'root'}];
+ const state={jobs:[root,answer],todos,works:[]};
+ const clarified=entry('clarified',{sequence:40,speaker:'user',source:'host',jobId:'answer',taskRequestId:'answer',text:'clarified',firstSubmissionSequence:10});
+ const rows=groupSessionWorkflows({entries:[clarified],deltas:[],hasMore:true},[],state);
+ assert.equal(rows.filter(row=>row.kind==='workflow').length,1);
+ assert.equal(rows[0].sequence,10,'the clarification answer page anchors at the original submission, not the answer position');
+});
+
+test('bounded page entries retain the durable task anchor through cache clipping',()=>{
+ const store=createSessionStore();store.reset('p');
+ const input=entry('big-input',{speaker:'user',source:'host',jobId:'root',taskRequestId:'root',text:'x'.repeat(3*1024*1024),firstSubmissionSequence:9});
+ store.apply('p',{version:1,entries:[input]});
+ const clipped=store.getSnapshot().entries[0];
+ assert.equal(clipped.availability,'read-required');
+ assert.equal(clipped.firstSubmissionSequence,9,'the anchor survives the bounded cache projection');
+ assert.equal(clipped.taskRequestId,'root');
+ store.dispose();
+});

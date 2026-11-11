@@ -546,3 +546,83 @@ test('existing legacy closures are not backfilled into invented review history',
  await store.mutate(()=>{});
  assert.equal(store.state.sessionIndex.deltas.some(row=>row.kind.startsWith('review-')),false);
 });
+
+test('unindexed ledger rows keep their retained position in frames and reads instead of sequence zero',async()=>{
+ // Degraded ledger: rows exist without durable messageSequences (lost local
+ // index, imported or portable history). ordered() kept the retained position;
+ // frames and reads must agree instead of flattening every row to 0 and
+ // letting random id ties float a new conversation to the top.
+ const state={jobs:[],works:[],messages:[
+  {id:'older',target:'frontdesk',speaker:'user',text:'older conversation'},
+  {id:'older-reply',target:'frontdesk',speaker:'agent',text:'older answer'},
+  {id:'newer',target:'frontdesk',speaker:'user',text:'new conversation'},
+ ],sessionIndex:{version:1,sequence:0,entries:[],messageSequences:{},deltas:[]}};
+ const index=Object.create(SessionIndex.prototype);index.store={state};index.streams=new Map();
+ assert.deepEqual(index.ordered().map(row=>[row.id,row.sequence]),[['older',1],['older-reply',2],['newer',3]]);
+ const page=index.frame();
+ assert.deepEqual(page.entries.map(entry=>[entry.id,entry.sequence]),[['older',1],['older-reply',2],['newer',3]],'a new conversation appends after older history, never jumps to the top');
+ assert.equal(index.legacyDTO(state.messages[2]).sequence,3);
+ assert.equal((await index.read('newer')).sequence,3);
+});
+
+test('task rows carry the durable first-submission anchor across supplements, worker rounds and updates',async t=>{
+ const {store,index}=await fixture(t);
+ await store.mutate(()=>{
+  store.state.messages.push({id:'plain-later',target:'frontdesk',speaker:'user',text:'ordinary chat',jobId:'job-a'});
+  store.state.jobs.push(
+   {id:'a-root',target:'orchestrator',type:'intake',status:'completed'},
+   {id:'a-next',target:'orchestrator',type:'intake',routing:{action:'continue',workId:'a'},status:'completed'},
+   {id:'a-worker',target:'a',type:'supplement',revision:2,context:{sourceJobId:'a-next'},status:'running',collabAttempts:[{requestId:'request-a',sessionId:'native-session',epoch:'native-session#0'}]});
+  store.state.works.push({id:'a',sourceJob:'a-root',sourceInputJobIds:['a-root','a-next'],revision:2,status:'running'});
+  store.state.messages.push({id:'a-input',target:'orchestrator',speaker:'user',text:'first task',jobId:'a-root',taskRequestId:'a-root'});
+  store.state.messages.push({id:'plain-after',target:'frontdesk',speaker:'user',text:'ordinary after',jobId:'job-a'});
+  store.state.messages.push({id:'a-more',target:'orchestrator',speaker:'user',text:'supplement',jobId:'a-next',taskRequestId:'a-next'});
+ });
+ const anchor=store.state.sessionIndex.messageSequences['a-input'];
+ assert.ok(Number.isSafeInteger(anchor));
+ const row=id=>index.frame().entries.find(entry=>entry.id===id);
+ assert.equal(row('a-input').firstSubmissionSequence,anchor);
+ assert.equal(row('a-more').firstSubmissionSequence,anchor,'a supplement re-states the first submission position, never its own latest sequence');
+ assert.equal(row('plain-after').firstSubmissionSequence,undefined,'ordinary conversations carry no task anchor');
+ const delta=index.frame().deltas.find(item=>item.kind==='work-created'&&item.workId==='a');
+ assert.equal(delta.firstSubmissionSequence,anchor,'work-created facts stay anchored to the same first submission');
+ const retainedDelta=store.state.sessionIndex.deltas.find(item=>item.id===delta.id);
+ delete retainedDelta.firstSubmissionSequence;
+ assert.equal(index.frame().deltas.find(item=>item.id===delta.id).firstSubmissionSequence,anchor,'older stored facts receive the same read-only anchor without rewriting history');
+ assert.equal(retainedDelta.firstSubmissionSequence,undefined);
+ await index.recordBatch([fact('a-round','A worker output',{jobId:'a-worker'})],'a');
+ const native=index.frame().entries.find(entry=>entry.entryId==='a-round');
+ assert.equal(native.firstSubmissionSequence,anchor);
+ assert.ok(native.sequence>anchor,'the row keeps its own durable sequence for paging and boundary filters');
+ const scoped=await index.page({workId:'a'});
+ assert.ok(scoped.entries.length>0);
+ assert.ok(scoped.entries.every(item=>item.firstSubmissionSequence===anchor),'scoped task pages stay pinned through cold recovery');
+});
+
+test('converted foreground input anchors at its original accounting sequence',async t=>{
+ const {store,index}=await fixture(t);
+ await store.mutate(()=>{
+  store.state.jobs.push({id:'front',target:'frontdesk',type:'front',status:'completed'});
+  store.state.messages.push({id:'front-user',target:'frontdesk',speaker:'user',text:'discuss colors',jobId:'front'});
+ });
+ const original=store.state.sessionIndex.messageSequences['front-user'];
+ await store.mutate(()=>{
+  store.state.jobs.push({id:'conv',target:'orchestrator',type:'intake',status:'completed',context:{frontJobId:'front'}});
+  const source=store.state.messages.find(message=>message.id==='front-user');source.taskRequestId='conv';
+  store.state.messages.push({id:'conv-input',target:'frontdesk',speaker:'user',text:'move to background',jobId:'conv',taskRequestId:'conv'});
+ });
+ const row=id=>index.frame().entries.find(entry=>entry.id===id);
+ assert.equal(row('front-user').firstSubmissionSequence,original,'the anchor keeps the original foreground accounting, not the background intake creation');
+ assert.equal(row('conv-input').firstSubmissionSequence,original);
+ assert.ok(row('conv-input').sequence>original,'the conversion instruction itself still appends in its own turn');
+});
+
+test('live streams keep their start order with distinct sequences instead of hash-id ties',async t=>{
+ const {index}=await fixture(t);
+ const live=(stream,text)=>index.event({sessionId:'native-session',epoch:'native-session#0',requestId:'request-a',jobId:'job-a',streamId:stream,event:{type:'message_update',message:{role:'assistant',content:[{type:'text',text}]}}},'frontdesk');
+ live('stream-b','first started');live('stream-a','second started');
+ const rows=index.frame().entries.filter(entry=>entry.streaming);
+ assert.deepEqual(rows.map(entry=>entry.text),['first started','second started']);
+ assert.ok(rows[0].sequence<rows[1].sequence,'start order decides the live order, not the stream id hash');
+ assert.ok(rows[0].sequence>Number.MAX_SAFE_INTEGER-16,'live rows still sort after every durable row');
+});

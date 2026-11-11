@@ -48,6 +48,10 @@ html[data-workspace-role=detached] .workspace-pane{border-top:0}
 html[data-workspace-role=detached] .workspace-pane-header{-webkit-app-region:drag;cursor:default}
 html[data-workspace-role=detached] .workspace-pane-title{-webkit-app-region:no-drag;flex:0 1 auto;max-width:60%;cursor:grab}
 html[data-workspace-role=detached] .workspace-pane-header button{-webkit-app-region:no-drag;cursor:pointer}
+/* macOS owns window movement in its native title bar, outside content bounds.
+   Content titles and split dividers retain their existing pane-drag behavior. */
+html[data-platform=darwin][data-workspace-role=shell] .topbar,
+html[data-platform=darwin][data-workspace-role=detached] .workspace-pane-header{-webkit-app-region:no-drag}
 .workspace-pane{box-sizing:border-box;min-width:0;min-height:0}
 .workspace-split>:first-child,.workspace-split>:last-child{min-width:0;min-height:0;overflow:hidden}
 /* Narrow mode removes split tracks and gives the visible pane the flex viewport. */

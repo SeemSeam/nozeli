@@ -95,12 +95,14 @@ class WindowRecovery {
       this.invalidate();this.phase='stop-failed';
       this.offer('stop-failed',Object.assign(Error('等待清理完成超时。'),{code:'STOP_STALLED'}));
     },this.timeoutMs);
-    try{await this.stop();}catch(error){
+    try{await this.stop({isCurrent:()=>this.current(p)});}catch(error){
       if(!this.current(p))return {accepted:false};
       this.invalidate();this.phase='stop-failed';this.offer('stop-failed',error);this.report('close cleanup failed',error);return {accepted:true};
     }
     if(!this.current(p))return {accepted:false};
-    this.invalidate();this.phase='closing';this.onClose();return {accepted:true};
+    this.invalidate();this.phase='closing';
+    try{this.onClose();}catch(error){this.phase='stop-failed';this.offer('stop-failed',error);this.report('native window close failed',error);}
+    return {accepted:true};
   }
   // 继续等待 (and cancelling a confirmation) resumes the real in-flight close:
   // re-supervise it, or continue it from whatever outcome parked while the

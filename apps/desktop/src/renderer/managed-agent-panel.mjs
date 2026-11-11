@@ -17,7 +17,7 @@ import {renderMergeConstraintCard} from './merge-constraint.mjs';
 import {managedProgress} from './managed-progress.mjs';
 import {readFileAvailability,availabilityCaption} from './file-availability.mjs';
 import {mountManagedTodos} from './managed-todos.mjs';
-import {mountContextMenu} from './context-menu.mjs';
+import {mountContextMenu,menuShortcut} from './context-menu.mjs';
 import {mountAttentionDialogue} from './attention-dialogue.mjs';
 import {mountManagedReview,flushManagedReviews,mountReviewDetail} from './managed-review.mjs';
 import {appendReviewFileIdentity,reviewDiffUnavailable} from './managed-review-files.mjs';
@@ -655,7 +655,7 @@ async function openWorkReport(workId){
   runtimeControls.update({active,ownsConversation,projectId,history:Boolean(viewed?.history)});
   $('ai-status').textContent=`${name(target)} · ${lifecycle.reason||progress.requests[0]?.text||'已就绪'} · ${progress.summary}`;$('ai-status').dataset.state=lifecycle.state;
   const canSend=lifecycle.canSend||lifecycle.state==='ready';$('selection-explain').disabled=!canSend;
-  $('composer').disabled=Boolean(viewed?.readOnly);$('send-message').disabled=!canSend;$('send-message').title=canSend?'发送（Ctrl/Cmd+Enter）':lifecycle.reason;
+  $('composer').disabled=Boolean(viewed?.readOnly);$('send-message').disabled=!canSend;$('send-message').title=canSend?menuShortcut('发送（Ctrl/Cmd+Enter）'):lifecycle.reason;
   updateBackgroundSubmit();
   if(viewed?.readOnly){const back=button('回到前台讨论',()=>{select('frontdesk');$('composer').disabled=false;});toolbar.append(back);}
   updateReviewActions();

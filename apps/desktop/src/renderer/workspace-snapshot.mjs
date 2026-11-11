@@ -24,6 +24,7 @@ import {createDiscussionTransport,createDiscussionThread,createThreadMessageSour
 import {mountLocalWindow,ensureLocalWindowLayer,viewportWindowEnvironment} from './local-window.mjs';
 import {createLocalWindowView} from './local-window-view.mjs';
 import {migrateLegacyCardOffset,consumableLegacyCardOffset,cardWindowOwnerId} from './snapshot-card-view.mjs';
+import {menuShortcut} from './context-menu.mjs';
 
 export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openConversation=null,subscribe=null}){
   let dialog=null,editor=null,statusEl=null,recoverRow=null,recoverSelect=null,recoverClean=null;
@@ -414,7 +415,7 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
     cardTaskReceipt=document.createElement('span');cardTaskReceipt.className='snapshot-card-task-receipt';cardTaskReceipt.setAttribute('role','status');cardTaskReceipt.hidden=true;
     cardThreadEl=document.createElement('span');cardThreadEl.className='tag-transcript snapshot-card-thread';cardThreadEl.setAttribute('role','log');cardThreadEl.setAttribute('aria-label','此涂鸦的完整讨论');
     renderTranscript=mountThreadTranscript(cardThreadEl,{welcome:'围绕这处冻结截图继续讨论。输入问题后发送，回复会留在这里和对话时间线。'});
-    cardText=document.createElement('textarea');cardText.placeholder='补充说明（可留空直接发送截图；Ctrl+Enter 发送讨论）';cardText.setAttribute('aria-label','讨论说明');cardText.className='snapshot-card-text';
+    cardText=document.createElement('textarea');cardText.placeholder=menuShortcut('补充说明（可留空直接发送截图；Ctrl/Cmd+Enter 发送讨论）');cardText.setAttribute('aria-label','讨论说明');cardText.className='snapshot-card-text';
     cardStatusLine=document.createElement('span');cardStatusLine.className='snapshot-card-status';cardStatusLine.setAttribute('role','status');
     const row=document.createElement('div');row.className='snapshot-card-actions';
     cardSend=document.createElement('button');cardSend.type='button';cardSend.textContent='发送讨论';cardSend.className='snapshot-card-send';

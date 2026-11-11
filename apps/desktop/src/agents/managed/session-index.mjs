@@ -41,7 +41,7 @@ const boundedDTO = dto => {
   if (dto.availability === 'read-required' && dto.read?.discoveryRequired) return dto;
   const read=readDescriptor(dto);
   if(Buffer.byteLength(JSON.stringify({entry:{...dto,read}}))<=RESPONSE_BYTES)return {...dto,read};
-  const metadata=Object.fromEntries(['id','sessionId','entryId','requestId','jobId','taskRequestId','target','workId','revision','speaker','at','sequence','source','ownership','replacesId','durable','complete','status','failed','provider','model','modelStatus','entryType','recordKind'].filter(key=>dto[key]!=null).map(key=>[key,dto[key]]));
+  const metadata=Object.fromEntries(['id','sessionId','entryId','requestId','jobId','taskRequestId','target','workId','revision','speaker','at','sequence','firstSubmissionSequence','source','ownership','replacesId','durable','complete','status','failed','provider','model','modelStatus','entryType','recordKind'].filter(key=>dto[key]!=null).map(key=>[key,dto[key]]));
   return {...metadata,text:'',availability:'read-required',reason:'消息超过单页预算；请分段读取原文',read};
 };
 const own = (value, key) => Object.hasOwn(value, key);
@@ -75,6 +75,50 @@ const nativeRecordKind = (record, entry) => ['conversation','metadata','unclassi
   : record.speaker ? 'conversation'
   : entry ? classifyNativeEntry(entry)
   : 'unclassified';
+// Durable task anchor: the earliest accepted user input of a workflow root,
+// as one bounded sequence derived from messageSequences and the same intake
+// lineage/Work bindings the renderer uses for workflow identity. No second
+// ordering ledger, timestamp or id hash: supplements, replies and updates
+// re-derive the same number, so a task block keeps its first-submission
+// position across page and viewport evictions.
+const taskAnchorFacts = state => {
+  const byJob = new Map((state.jobs ?? []).map(job => [job.id, job])), byWork = new Map((state.works ?? []).map(work => [work.id, work]));
+  const rootOfJobId = id => {
+    const job = byJob.get(id);
+    if (!job || job.type !== 'intake') return null;
+    try { return intakeLineage(state, job)[0]?.id ?? null; } catch { return null; }
+  };
+  const workOfIntake = new Map();
+  const bind = (id, workId) => {
+    if (!id || !byWork.has(workId)) return;
+    const root = rootOfJobId(id) ?? id, existing = workOfIntake.get(root);
+    workOfIntake.set(root, existing === undefined || existing === workId ? workId : null);
+  };
+  for (const work of byWork.values()) for (const id of [work.sourceJob, ...(work.sourceInputJobIds ?? [])]) bind(id, work.id);
+  for (const job of byJob.values()) {
+    if (byWork.has(job.target)) for (const id of [job.context?.sourceJobId, ...(job.context?.sourceInputJobIds ?? [])]) bind(id, job.target);
+    if (job.target === 'orchestrator' && job.type === 'intake') {
+      if (['dispatch','continue','cancel'].includes(job.routing?.action)) bind(job.id, job.routing.workId);
+      bind(job.id, job.context?.boundWorkId);
+    }
+  }
+  const rootOf = ({taskId, jobId, workId, target} = {}) => {
+    const boundId = byWork.get(workId ?? target)?.id ?? (taskId != null ? workOfIntake.get(rootOfJobId(taskId) ?? taskId) : undefined) ?? (jobId != null ? workOfIntake.get(rootOfJobId(jobId) ?? jobId) : undefined);
+    const work = boundId != null ? byWork.get(boundId) : undefined;
+    if (work) { const sourceRoot = rootOfJobId(work.sourceJob); if (sourceRoot != null) return sourceRoot; }
+    return rootOfJobId(taskId) ?? rootOfJobId(jobId);
+  };
+  const sequences = state.sessionIndex?.messageSequences;
+  const anchors = new Map();
+  for (const [position, message] of (state.messages ?? []).entries()) {
+    if (message?.speaker !== 'user') continue;
+    const root = rootOf({taskId: message.taskRequestId, jobId: message.jobId, target: message.target});
+    if (!root) continue;
+    const durable = sequences?.[message.id];
+    anchors.set(root, Math.min(anchors.get(root) ?? Infinity, Number.isSafeInteger(durable) ? durable : position + 1));
+  }
+  return {rootOf, anchors};
+};
 
 export function timelineState(state) {
   if (!state.sessionIndex) state.sessionIndex = {version:1, sequence:0, entries:[], messageSequences:{}, deltas:[]};
@@ -89,14 +133,23 @@ export function recordBusinessTimeline(prior, state) {
     if (identity(message.id) && !own(index.messageSequences, message.id)) Object.defineProperty(index.messageSequences, message.id, {value:++index.sequence,enumerable:true,writable:true,configurable:true});
   }
   const previous = new Map((prior.works ?? []).map(work => [work.id, work]));
-  const add = (kind, work, text) => index.deltas.push({id:'delta-' + (++index.sequence), sequence:index.sequence, kind, workId:work.id, revision:work.revision, text, at:new Date().toISOString()});
+  // Deltas carry the same durable first-submission anchor as message rows, so
+  // routing/review facts never re-position their task on later updates.
+  let anchors = null;
+  const taskAnchor = binding => {
+    const facts = anchors ?? (anchors = taskAnchorFacts(state));
+    const root = facts.rootOf(binding);
+    const anchor = root != null ? facts.anchors.get(root) : undefined;
+    return Number.isSafeInteger(anchor) ? {firstSubmissionSequence: anchor} : {};
+  };
+  const add = (kind, work, text) => index.deltas.push({id:'delta-' + (++index.sequence), sequence:index.sequence, kind, workId:work.id, revision:work.revision, text, at:new Date().toISOString(), ...taskAnchor({workId:work.id})});
   const factIds=new Set(index.deltas.map(row=>row.id));
   const reviewFact=(kind,work,text,details={})=>{
     const closure=work.closure;
     const id='delta-host-'+sha(JSON.stringify([work.id,closure.requestKey,kind,prior.sessionIndex?.sequence??0,details]));
     if(factIds.has(id))return;
     factIds.add(id);
-    index.deltas.push({id,sequence:++index.sequence,kind,source:'host',workId:work.id,revision:closure.revision,objectId:closure.binding.objectId,decision:closure.decision,requestKey:closure.requestKey,text,at:new Date().toISOString(),...publicValue(details)});
+    index.deltas.push({id,sequence:++index.sequence,kind,source:'host',workId:work.id,revision:closure.revision,objectId:closure.binding.objectId,decision:closure.decision,requestKey:closure.requestKey,text,at:new Date().toISOString(),...publicValue(details),...taskAnchor({workId:work.id})});
   };
   for (const work of state.works ?? []) {
     const old = previous.get(work.id);
@@ -123,7 +176,7 @@ export function recordBusinessTimeline(prior, state) {
     const route=job.routing,old=priorJobs.get(job.id)?.routing;
     if(!route||old||route.action==='status'||route.action==='dispatch')continue;
     const clarification=route.action==='clarify';
-    index.deltas.push({id:'delta-'+(++index.sequence),sequence:index.sequence,kind:clarification?'routing-clarification':'routing',target:'orchestrator',jobId:job.id,workId:route.workId??null,needsAnswer:clarification,text:clarification?route.question:'工作路由已更新：'+route.action+(route.workName?' · '+route.workName:''),at:route.at??new Date().toISOString()});
+    index.deltas.push({id:'delta-'+(++index.sequence),sequence:index.sequence,kind:clarification?'routing-clarification':'routing',target:'orchestrator',jobId:job.id,workId:route.workId??null,needsAnswer:clarification,text:clarification?route.question:'工作路由已更新：'+route.action+(route.workName?' · '+route.workName:''),at:route.at??new Date().toISOString(),...taskAnchor({jobId:job.id,workId:route.workId??null})});
   }
 }
 
@@ -324,7 +377,7 @@ export class SessionIndex {
       for (const [id, stream] of this.streams) if (stream.sessionId===record.sessionId&&stream.epoch===record.epoch&&stream.requestId===record.requestId&&stream.jobId===record.jobId&&(id===record.replacesId||stream.entryId===record.entryId)) this.streams.delete(id);
     }
   }
-  nativeDTO(record, loaded) {
+  nativeDTO(record, loaded, tasks = taskAnchorFacts(this.store.state)) {
     const entry = loaded ?? this.cache.get(record.id)?.value;
     const kind = nativeRecordKind(record, entry);
     // Archived native metadata is a session-control fact, never a chat turn or
@@ -334,14 +387,18 @@ export class SessionIndex {
     // accepted host input never re-enters the timeline, hydrated or not.
     if (record.jobId && (record.speaker === 'user' || record.entryType === 'custom_message')) return null;
     const entryType = record.entryType ?? (entry ? entryTypeOf(entry) : null);
-    const metadata = {...record, entryType, recordKind: kind, ...(record.speaker === 'agent' ? historicalModel(record, true) : {})};
+    // Task-bound rows carry their intake root's durable first-submission
+    // anchor; the row keeps its own sequence, the anchor pins the task block.
+    const anchorRoot = tasks.rootOf({jobId: record.jobId, workId: record.workId, target: record.target});
+    const firstSubmissionSequence = anchorRoot != null ? tasks.anchors.get(anchorRoot) : undefined;
+    const metadata = {...record, entryType, recordKind: kind, ...(record.speaker === 'agent' ? historicalModel(record, true) : {}), ...(Number.isSafeInteger(firstSubmissionSequence) ? {firstSubmissionSequence} : {})};
     if (!entry && this.deferred.has(record.id)) return {...metadata, source:'native', speaker:record.speaker ?? 'system', text:'', availability:'read-required', reason:'消息超过预览预算；可按需读取，较大原始记录请导出到可信本地位置', read:{version:record.objectId,fields:[],maxBytes:READ_BYTES,discoveryRequired:true,originalExport:{version:record.objectId}}};
     if (!entry) return kind==='unclassified' ? {...metadata, source:'native', speaker:'system', text:'', availability:'read-required', reason:'原生记录尚未分类；可读取原件，尚未认定为执行回合。', read:{version:record.objectId,fields:[],maxBytes:READ_BYTES,discoveryRequired:true,originalExport:{version:record.objectId}}} : {...metadata, source:'native', speaker:record.speaker ?? 'system', text:'', availability:'not-loaded'};
     if (entry.unavailable) return {...metadata, source:'native', speaker:record.speaker ?? 'system', text:'原生历史暂不可读取', availability:'unavailable', reason:entry.reason};
     const message = entry.type === 'message' ? entry.message : entry.type === 'custom_message' ? entry : null;
     // Unknown or pending kinds stay readable unbound system records carrying
     // their own body; they never gain conversation or execution semantics.
-    if (kind !== 'conversation' || !message) return this.rawNativeDTO(record, entry, kind, entryType);
+    if (kind !== 'conversation' || !message) return this.rawNativeDTO(record, entry, kind, entryType, firstSubmissionSequence);
     const role = entry.type === 'custom_message' ? 'user' : message.role;
     // GUI user text is the accepted business original, never expanded host context.
     if(entry.type==='custom_message'&&entry.details?.from==='nozeli-gateway')return null;
@@ -355,11 +412,11 @@ export class SessionIndex {
   // Native records without a conversation projection (metadata envelopes,
   // unknown or pending kinds) keep bounded original access: the sanitized
   // body pages through the public read protocol instead of inventing chat.
-  rawNativeDTO(record, entry, kind = nativeRecordKind(record, entry), entryType = record.entryType ?? entryTypeOf(entry)) {
+  rawNativeDTO(record, entry, kind = nativeRecordKind(record, entry), entryType = record.entryType ?? entryTypeOf(entry), firstSubmissionSequence = null) {
     if (!entry || entry.unavailable) return null;
-    return {id:record.id, sessionId:record.sessionId, entryId:record.entryId, epoch:record.epoch ?? null, requestId:record.requestId ?? null, jobId:record.jobId ?? null, ownership:record.ownership ?? null, target:record.target, workId:record.workId ?? null, revision:record.revision ?? null, sequence:record.sequence, at:record.at ?? null, source:'native', speaker:'system', entryType, recordKind:kind, text:JSON.stringify(publicValue(entry)), availability:'read-required', reason:'原生记录未进入对话投影；请分段读取原始内容'};
+    return {id:record.id, sessionId:record.sessionId, entryId:record.entryId, epoch:record.epoch ?? null, requestId:record.requestId ?? null, jobId:record.jobId ?? null, ownership:record.ownership ?? null, target:record.target, workId:record.workId ?? null, revision:record.revision ?? null, sequence:record.sequence, ...(Number.isSafeInteger(firstSubmissionSequence) ? {firstSubmissionSequence} : {}), at:record.at ?? null, source:'native', speaker:'system', entryType, recordKind:kind, text:JSON.stringify(publicValue(entry)), availability:'read-required', reason:'原生记录未进入对话投影；请分段读取原始内容'};
   }
-  legacyDTO(message) {
+  legacyDTO(message, tasks = taskAnchorFacts(this.store.state)) {
     const state = this.store.state, job = state.jobs?.find(j => j.id === message.jobId), receipt = message.objectId && state.receipts?.find(r => r.objectId === message.objectId);
     // Host publication projections lack native message metadata; their settled
     // source job still retains the observed model, even after owner reclamation.
@@ -368,12 +425,26 @@ export class SessionIndex {
     message = {...message, ...historicalModel(modelEvidence, message.speaker === 'agent')};
     const attachments=message.attachments??(message.speaker==='user'?[...(job?.context?.imageAttachments??[]).map((ref,i)=>({...ref,name:ref.name||'区域图片 '+(i+1)})),...(job?.context?.fileAttachments??[])]:[]);
     const userInput=message.speaker==='user'&&job?.context?.userInput;
-    return {...message, text:userInput?.text ?? message.text ?? receipt?.report?.excerpt ?? '',...(receipt?{report:receipt.report}:{}),...(userInput?{materialSources:userInput.sources}:{}),...(message.speaker==='user'&&job?.context?.drawingSources?{drawingSources:job.context.drawingSources}:{}), sequence:state.sessionIndex?.messageSequences?.[message.id] ?? 0, source:message.nativeEntryDigest?'portable':message.speaker === 'system' || message.publication || userInput || job ? 'host' : 'legacy', jobId:message.jobId ?? receipt?.sourceJobId ?? null, revision:message.revision ?? receipt?.revision ?? job?.revision ?? null, workId:!['frontdesk','orchestrator'].includes(message.target) ? message.target : null, attachments,...(receipt?.changeSetId ? {changeSetId:receipt.changeSetId} : {})};
+    const anchorRoot = tasks.rootOf({taskId: message.taskRequestId, jobId: message.jobId, target: message.target});
+    const firstSubmissionSequence = anchorRoot != null ? tasks.anchors.get(anchorRoot) : undefined;
+    return {...message, text:userInput?.text ?? message.text ?? receipt?.report?.excerpt ?? '',...(receipt?{report:receipt.report}:{}),...(userInput?{materialSources:userInput.sources}:{}),...(message.speaker==='user'&&job?.context?.drawingSources?{drawingSources:job.context.drawingSources}:{}), sequence:this.legacySequence(message), ...(Number.isSafeInteger(firstSubmissionSequence) ? {firstSubmissionSequence} : {}), source:message.nativeEntryDigest?'portable':message.speaker === 'system' || message.publication || userInput || job ? 'host' : 'legacy', jobId:message.jobId ?? receipt?.sourceJobId ?? null, revision:message.revision ?? receipt?.revision ?? job?.revision ?? null, workId:!['frontdesk','orchestrator'].includes(message.target) ? message.target : null, attachments,...(receipt?.changeSetId ? {changeSetId:receipt.changeSetId} : {})};
+  }
+  // Shared entry sequence resolver: ordered(), page frames and read entries
+  // must agree on a legacy row's durable position. An unindexed ledger keeps
+  // its retained position instead of flattening every row to sequence zero.
+  legacySequence(message, position) {
+    const known = message?.id == null ? undefined : this.store.state.sessionIndex?.messageSequences?.[message.id];
+    if (Number.isSafeInteger(known)) return known;
+    const record = message?.id == null ? null : this.records().find(row => row.id === message.id);
+    if (record && Number.isSafeInteger(record.sequence)) return record.sequence;
+    if (Number.isSafeInteger(position)) return position + 1;
+    const found = (this.store.state.messages ?? []).findIndex(row => row.id === message?.id);
+    return found >= 0 ? found + 1 : 0;
   }
   ordered() {
-    const nativeIds=new Set(this.records().map(record=>record.id));
+    const nativeIds=new Set(this.records().map(record => record.id));
     const rows = this.records().map(record => ({id:record.id, sequence:record.sequence, native:record}));
-    for (const [position,message] of (this.store.state.messages ?? []).entries()) if(!nativeIds.has(message.id))rows.push({id:message.id, sequence:this.store.state.sessionIndex?.messageSequences?.[message.id] ?? position+1, legacy:message});
+    for (const [position,message] of (this.store.state.messages ?? []).entries()) if(!nativeIds.has(message.id))rows.push({id:message.id, sequence:this.legacySequence(message, position), legacy:message});
     for(const delta of this.store.state.sessionIndex?.deltas??[])rows.push({id:delta.id,sequence:delta.sequence,delta});
     return rows.sort((a,b) => a.sequence - b.sequence || a.id.localeCompare(b.id));
   }
@@ -423,20 +494,34 @@ export class SessionIndex {
     return this.ordered().filter(row => row.sequence < before && (!scope||scope.matches(row.native??row.legacy??row.delta))).slice(-limit);
   }
   frame(cursor, limit = 100, scope = null) {
+    const tasks = taskAnchorFacts(this.store.state);
     const epoch=this.store.state.frontdeskContextEpoch;
     const boundary=epoch?.sequence??(epoch?.messageId?this.ordered().find(row=>row.id===epoch.messageId)?.sequence:undefined);
     const current=!scope&&cursor==null&&Number.isSafeInteger(boundary);
     const rows = this.select(cursor, limit, scope).filter(row=>!current||row.sequence>boundary), entries = [], deltas=[];
     let bytes = 0, first = rows[0]?.sequence ?? 0;
     for (let i = rows.length - 1; i >= 0; i--) {
-      const dto = rows[i].delta ?? boundedDTO(rows[i].native ? this.nativeDTO(rows[i].native) : this.legacyDTO(rows[i].legacy));
+      let dto;
+      if(rows[i].delta){const delta=rows[i].delta,root=tasks.rootOf({jobId:delta.jobId,workId:delta.workId,target:delta.target}),anchor=root!=null?tasks.anchors.get(root):undefined;dto=Number.isSafeInteger(anchor)?{...delta,firstSubmissionSequence:anchor}:delta;}
+      else dto=boundedDTO(rows[i].native ? this.nativeDTO(rows[i].native, undefined, tasks) : this.legacyDTO(rows[i].legacy, tasks));
       if (!dto) continue;
       const size = Buffer.byteLength(JSON.stringify(dto));
       if (bytes + size > PAGE_BYTES && entries.length+deltas.length) { first = rows[i + 1].sequence; break; }
       if(rows[i].delta)deltas.unshift(dto);else entries.unshift(dto);
       bytes+=size;
     }
-    if (cursor == null) entries.push(...[...this.streams.values()].filter(row=>!scope||scope.matches(row)));
+    if (cursor == null) {
+      const live = [...this.streams.values()].filter(row=>!scope||scope.matches(row));
+      // Live rows keep their start order (map insertion order) with strictly
+      // increasing sequences, instead of tying at the ceiling and falling back
+      // to a random stream-id comparison; updates never re-position a stream.
+      live.forEach((row, position) => { row.sequence = Number.MAX_SAFE_INTEGER - live.length + position; });
+      for (const row of live) {
+        const root = tasks.rootOf({jobId: row.jobId, workId: row.workId, target: row.target});
+        const firstSubmissionSequence = root != null ? tasks.anchors.get(root) : undefined;
+        entries.push(Number.isSafeInteger(firstSubmissionSequence) ? {...row, firstSubmissionSequence} : {...row});
+      }
+    }
     const hasMore = this.ordered().some(row => row.sequence < first&&(!current||row.sequence>boundary)&&(!scope||scope.matches(row.native??row.legacy??row.delta)));
     return {version:1, entries, deltas, hasMore, nextCursor:hasMore ? (scope?'scope:'+scope.key+':before:':'before:') + first : null};
   }
@@ -507,7 +592,9 @@ export class SessionIndex {
     while (this.streams.size > 16) this.streams.delete(this.streams.keys().next().value);
   }
   messages() {
-    return this.frame('before:'+Number.MAX_SAFE_INTEGER, 200).entries.filter(entry => entry.speaker !== 'tool' && !entry.streaming && entry.availability !== 'not-loaded' && (entry.recordKind == null || entry.recordKind === 'conversation')).map(entry => ({...entry, source:entry.source}));
+    // Context delivery keeps its exact prior shape; the first-submission
+    // anchor is a timeline projection concern, not prompt content.
+    return this.frame('before:'+Number.MAX_SAFE_INTEGER, 200).entries.filter(entry => entry.speaker !== 'tool' && !entry.streaming && entry.availability !== 'not-loaded' && (entry.recordKind == null || entry.recordKind === 'conversation')).map(({firstSubmissionSequence, ...entry}) => ({...entry, source:entry.source}));
   }
   async drain() { await this.serial; }
 }

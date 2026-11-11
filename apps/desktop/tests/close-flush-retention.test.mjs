@@ -6,7 +6,7 @@ import {createSaveDrain} from '../src/renderer/save-drain.mjs';
 
 // Execute the real preload with the sandbox's require whitelist. A local-module
 // require here must fail just as it would in every production content surface.
-const sandbox={require(name){assert.equal(name,'electron');return {contextBridge:{exposeInMainWorld(){}},ipcRenderer:{on(){},invoke(){return Promise.resolve();}}};}};
+const sandbox={process:{platform:process.platform},require(name){assert.equal(name,'electron');return {contextBridge:{exposeInMainWorld(){}},ipcRenderer:{on(){},invoke(){return Promise.resolve();}}};}};
 vm.runInNewContext(fs.readFileSync(new URL('../src/preload/preload.cjs',import.meta.url),'utf8'),sandbox);
 const {createFlushQueue}=sandbox;
 

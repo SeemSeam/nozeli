@@ -1,3 +1,14 @@
+## Beta3 发布闭包瘦身（2026-11-11，Linux候选已验，双平台发行验收待CI）
+
+- 本轮用户要求不减少当前功能，并明确要求Release同时包含Linux和Mac；再次披露六项人工分发审计pending后，明确选择授权公开beta.3预发行例外。不沿用beta.2授权，不标stable/latest，不替换日常安装。确切提交CI和两平台实际解压验收通过后才发布。
+- 将已编译前端依赖归为构建期；在原版本显式保留Canvas生产依赖，保留全部CodeMirror后端、格式化/TS语言服务器、终端解析、Node/Pi/Git、文档引擎、字体及离线资源。共享Linux/Mac过滤器只剔除非目标PTY预编译和重复首页/小图标构建输入；保留目标平台fallback及spawn helper。Pi闭包、SDK源码/声明/map、Node头文件和Canvas原生变体不作清理。
+- 前端构建依据全部esbuild输入生成BUNDLED-NPM-NOTICES.json及按包/版本隔离的npm-notices目录；实际候选保留68包69份通告，Monaco ThirdPartyNotices存在并与源通告逐字节一致。通告整理不等于六项审计签收。
+- 独立候选 `/var/tmp/nozeli-beta3-candidate-RLWxlJ/releases/beta3` 经包内Node/Pi/Git解析及Git实际运行校验；表观989705994字节、实占1067257856字节，对比此前当前安装实占1320583168字节减少约241.6MiB。此为本机ext4候选实测，最终发行物另行统计；未改current/previous、启动器、用户配置或业务文件。
+- 默认unit842/842；发布/窗口/会话定向114项在TMPDIR=/var/tmp通过。首次默认/tmp写入配额-122及SQLite I/O失败保留，不冒称通过或修改存储逻辑。无本机xvfb-run；无显示后端的Office点击失败及未传X授权失败保留。Office夹具此前误将XAUTHORITY视作模型凭据清理，现与其它真实GUI夹具一致仅保留图形授权路径，模型凭据仍清除；未绕过X权限、sandbox或业务断言。
+- 实际候选Office `/var/tmp/nozeli-office-journey-DbPI04/report.json` ok=true：DOCX/XLSX真引擎修改保存并解包核对、PPT真编辑导出且原件不变、外部DOCX冲突保留及冷重开。实际普通保存/项目切换/关闭冷恢复 `.test-output/ci/smoke-rr7Ncb/report.json` ok=true。
+- 实际主/独立内容/独立对话、主题/窄窗/设置及dock `/var/tmp/nozeli-platform-chrome-R7IoaJ/report.json` ok=true、exit0、模型请求0，截图已查看；实际包原生Pi/Git/回环脚本时间线 `/var/tmp/nozeli-timeline-order-2h0C5S/report.json` 四场景通过，补充不移位、新消息位于底部、冷重开零重放，12次回环请求、Provider错误0，最终截图已查看。不是付费模型或Mac原生按钮物理点击验收。
+- CI发行分支新增从两平台实际解压产物运行Office、平台窗口及时间线旅程，并保留报告/截图；Mac只允许darwin arm64原生runner构建。此处不预填CI结果，Mac仍ad-hoc签名、未Developer ID签名/公证；原生红黄绿悬停/物理点击等未验证边界不扩大。
+
 ## 自动更新故障修复（2026-11-11，源码已修，未安装／发布）
 
 - 日常 Linux 安装只读证据：`~/.local/opt/nozeli` 与 `releases` 为 0775，更新器安全拒绝后误标为 source/development；当前版本 alpha.6，历史状态有 HTTP403。历史响应头未保留，403 限流原因仅推断，不能当成已复现事实。真实匿名请求观察到共享 60 次/小时额度；Node 直连资产 CDN 实测 TLS ECONNRESET，Chromium 网络会话可下载。
@@ -14,6 +25,23 @@
 node tools/test-suites.mjs --list          # 默认套件（unit+integration）文件清单
 node tools/test-suites.mjs smoke --list    # 任一套件的文件清单
 ```
+
+## macOS 原生窗口与设计适配（2026-11-11，源码完成，待Mac实机验收）
+
+- 梳理见[Mac桌面设计原则](principles.md#macos-桌面设计2026-11-11)，依据Apple HIG与Electron原生标题栏接口。原问题为主／独立窗口共同强制frame:false且renderer无条件创建右侧“− □ ×”。现在WorkspaceWindow在Darwin使用完整原生frame/default标题栏，由系统绘制左侧红黄绿与活动／失焦状态，content bounds自动排除标题栏；辅助审校utility及隔离预览不走此策略。preload只读platform与html data-platform驱动界面分支，Mac不创建HTML三键、不重复品牌大图标；Windows/Linux原样。⌘W与⌘S不被全局菜单抢走，⌘⇧W沿native close role关闭key window，⌘,进入既有设置界面。
+- Mac普通最后关窗与真正退出分离：保存／忙碌门禁保持，闲置运行时可驻留；Dock、菜单与外部文件复用主窗恢复入口，创建前恢复关闭保存准入，退出中拒绝重建。新输入冻结仅在当前有效关闭清理完成后、最终关闭前生效，不用定时器擅自解锁；过期清理不会冻结保留窗口。重复Quit等待同一清理完成；无窗口但工作忙碌时恢复确认载体，不直接绕过原忙碌决定。实际关闭实现与WindowRecovery回归共用，未以复制状态机或构造选项拷贝作为行为签收。
+- Linux定向7文件回归154/154（app-menu、desktop-quit-lifecycle、renderer-platform-chrome、close-flush-retention、lifecycle-flush-capability、main-startup-recovery、workspace-native）；最后补齐设置入口后对应3文件17/17复验，renderer构建通过。纯renderer平台模拟只证明无重复HTML按钮／真实快捷键格式，不证明Mac原生红绿灯。
+- 实际Nozeli/Electron平台旅程 `/var/tmp/nozeli-platform-chrome-6IGMge/report.json` ok=true、exit0、renderer错误0、Provider请求0：真实1280/680窗口尺寸、浅深媒体外观、主／独立内容／独立聊天、菜单与dock、真实menu-action打开设置；截图已查看。此前夹具跨浏览器上下文process变量、未配置就连接对话、初始化前提错误原件保留，未放宽平台DOM/窗口交互断言。
+- 额外实际Linux延迟保存关闭 `/var/tmp/nozeli-close-recovery-tJhXIA/report.json` 通过：阻塞renderer后，精确自有PID／启动身份／对话标题的原生“继续等待”取消选择沿原晚到保存回执自然exit0，原文件与已接收草稿不变。独立X显示的早轮失败来自探针取消步骤固定依赖当前KWin会话，临时Openbox不能替代该DBus所有者；失败原件DCPV36/dTVWfB保留，最终仅使用自有测试窗口，未操控日常实例。
+- **未验／缺失前提**：当前Linux，SSH能力与已配置别名未提供Mac连接；没有Mac WindowServer或实际.app签收。新增 `npm run test:macos-window-chrome`（使用锁定Electron，非Mac／非Electron明确exit2拒绝签收，本机拒绝已实测）验证真原生frame、content bounds、关闭拦截、全屏与最小化；`desktop-platform-chrome-live.mjs`也可在真实Mac上运行，原生截图限自有测试窗口区域。真实红黄绿点击／悬停／失焦、Dock重开、Mac忙碌退出与完整.app仍须Mac实机；不把Linux或平台模拟当成通过。未提交、打包、安装或发布，前轮对话时序源码修改保留。
+
+## 对话与 Task 首次提交时序（2026-11-11，源码修复，未安装）
+
+- 用户报告新对话浮到顶部，要求Task整体位置以首次提交为准。修前确定性复现：未索引账本 `ordered()` 给older1/newer2，`legacyDTO` 却全0，导致renderer按UUID并列排序；共享legacySequence使分页、frame和原文read一致。另一复现：Task原请求seq10、普通对话seq20、Worker seq30，原请求离开当前页后原卡从10退到30，越过普通对话。现在从既有入账序号与intake lineage／Work身份派生 `firstSubmissionSequence`，贯穿普通／原生／超预算条目、历史业务delta及流式更新；不按最后更新时间排序，不新增第二账本，不重写历史原文。原始entry.sequence、游标和上下文清空边界不变；流式并列最大序号改为按起始顺序排列。
+- `TMPDIR=/var/tmp node --test tests/session-store.test.mjs tests/session-index.test.mjs tests/session-execution-presentation.test.mjs` **91/91**，零失败／跳过；renderer构建通过。覆盖分页／200条视口逐出后首次Task锚不变、流转持久、补充／澄清／前台转后台、裁剪和旧业务delta只读补锚、双流式启动先后，以及旧历史原文和读版本边界。
+- `DISPLAY=:1 TMPDIR=/var/tmp NOZELI_OZONE=x11 node tests/desktop-timeline-order-live.mjs`：真实Electron／原生Pi／回环脚本Provider／Git／持久会话四场景通过，原件 `/var/tmp/nozeli-timeline-order-yQ2Yyn/report.json`。普通对话A→Task1→普通B→前台输入后转后台的Task2→普通C；Task1真实补充并重新发布后两卡不移动，随后新对话D仍底部；正常关闭冷开后持久消息／Task身份顺序逐位相等，零模型重放、原Git和文件不变。短页完整记录的修前旅程排序本来正常，不把它当作对用户报告的反证；根因红证据为未索引DTO归零与首次请求缺页漂移。
+- 最终截图旅程再次通过（`/var/tmp/nozeli-timeline-order-ObAkID/report.json`，4场景、12次回环Provider请求、零Provider错误）：主动滚动到列表末尾后，新普通对话D确实位于C之后最底部；冷恢复仍为相同持久身份顺序且零重放。`03-new-conversation-bottom.png`、`04-cold-restart.png`已查看；冷恢复原生正文按既有按需读取策略，不以未预加载的正文标记判定排序失败。
+- 真实验收初轮额度默认1使Task2排队、脚本工具回执ID碰撞、冷恢复正文按需加载及前台原请求／handoff双记录的前提错误均保留失败原件；仅修正合成profile的并发2与唯一调用身份，冷开按稳定身份验证顺序而非强迫预加载正文；不删除或放宽时序／卡片位置／零重放断言。限定Linux独立X11与合成项目；未操作用户会话，不代表Windows/macOS、物理输入或当前安装版通过。未提交、未安装、未发布。
 
 ## 标签输入后无法移动／缩放（2026-11-11，源码修复，未安装）
 

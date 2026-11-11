@@ -6,6 +6,12 @@ const {BaseWindow, WebContentsView} = require('electron');
 // can cover returned child views on the software-composited Wayland path.
 class WorkspaceWindow extends BaseWindow {
   constructor({webPreferences, ...options} = {}) {
+    // macOS uses the system's own full title bar (left traffic lights). It
+    // sits outside the content bounds, so sizing chrome from getContentSize()
+    // keeps clear of it without drawing or positioning native controls. Every
+    // other platform keeps the frameless workspace chrome unchanged; utility
+    // discussion and preview surfaces are not WorkspaceWindows and stay as-is.
+    if (process.platform === 'darwin') { options.frame = true; options.titleBarStyle = 'default'; }
     super(options);
     this.chromeView = new WebContentsView({webPreferences});
     this.webContents = this.chromeView.webContents;
