@@ -164,3 +164,28 @@ Frontdesk原请求 `job_ffd523fd1fe7` 最初因 `omp_editor_not_focused` 停在a
 ## 8. 人工控制协同提案（2026-11-02，未实施）
 
 [人工修复与任务控制设计](manual-task-control-repair-design.md)继承§7生产接口与验收边界，区分外部服务故障解除、确切宿主事务维修和任务人工控制。暂停门不改写正在发布的Work状态；原效果两次尝试／同Controller验证栅栏／finalize-only／cold no-replay不被人工按钮绕过。工作区顶部只升级必须用户处理的故障，右侧待办与任务目录保留；跨项目解除按绑定快照逐项目核验，不批量restart或无差别maintenance.retry。该提案不改变本节已实现API，不据此授权安装或重演旧输入。
+
+## 9. 缺失Git索引导致收尾受阻（2026-11-12，已授权本机安装并恢复现场）
+
+现场只读定位到已接受的报告型Work在备份主仓库 `.git/index` 时触发 `ENOENT`，Worker已停止且冻结报告摘要核验一致，但合入处置未完成；不将技术失败改写为用户未接受或重跑内容任务。原始项目、报告正文与本机绝对路径不写入本合同。
+
+根因是索引生命周期合同不一致：已有但无HEAD的仓库由执行模块创建基线时，只用临时索引生成提交，却仅在仓库由该模块新建时发布主索引；收尾无条件复制主索引，连零文件变更也假设它存在。
+
+- `execution-workspace.mjs`：对无HEAD仓库明确记录 `publishIndex`，初始主索引缺失时发布本次自建基线索引；恢复分支沿原commit与意图完成。发布持有index锁并重新检查，不能覆盖后来出现的用户索引；已有索引不替换。
+- 报告型、零文件变更接受：缺失索引保存为前后均为null的确切状态，不伪造空索引或从HEAD静默补造；不复制不存在的索引，保持原HEAD、原文件和索引缺失。锁前／锁内摘要比较与Work授权仍执行，重试时索引出现即拒绝覆盖。
+- 有文件变更时不将缺失索引解释为干净HEAD；继续明确阻断，保留候选和原文件。原有非null摘要事务的备份、发布和失败回滚不变，不添加绕过审核或自动reset。
+- 回归新增：缺失index报告接受不增提交／不建索引；已有unborn仓库获得其基线索引并完成文件接受；恢复前外部索引出现时返回INDEX_CHANGED且逐字节保留外部staging。
+
+修前报告接受及恢复回归确实命中copyfile ENOENT；unborn测试首次准备代码错误（尚未git init）未作为产品失败证据。修正测试准备后新路径通过。独立真实Git smoke实际运行prepare→publish→finish：status=merged、cleaned=true、index仍不存在、HEAD不变、原文不变，exit0；使用隔离合成目录，脚本已清理。独立Reviewer静态结论correct，无必须修复发现；不是替代运行验证。
+
+定向回归：`node --test apps/desktop/tests/execution-copy-gitignore.test.mjs apps/desktop/tests/project-git.test.mjs apps/desktop/tests/project-git-edge.test.mjs apps/desktop/tests/core-file-stream.test.mjs`，77/77通过，0失败、0跳过；覆盖索引、暂存保护、真实文件接受与发布失败回滚。仅Linux实测；没有安装、改写受阻现场、调用模型或触发用户项目收尾。源码修复不等于现有安装版和现场已恢复；应在用户明确授权安装后沿原决定恢复，不手改数据库为ended、不重放Worker。
+
+### 用户授权安装与现场恢复（2026-11-12）
+
+用户追加明确要求“安装并测试修复”。以日常安装 `2026-11-12T02-03-36-112Z` 为基线冻结 `index-closure-20261112T111836Z`，仅迁入本节索引修复，保留安装版的platformPersistence调用，不夹带源码树其他在途变更。23147个普通文件逐项SHA-256核对，唯一变化为 `src/agents/managed/execution-workspace.mjs`。候选捆绑Node与Git实际运行隔离prepare→publish→finish通过，index仍缺失、HEAD与原文不变、清理完成、exit0。
+
+沿既有install-local --existing-release激活，previous保留原日常版本；旧窗口通过WM_DELETE_WINDOW正常关闭，再由正常用户启动入口打开新版。真实主进程exe确认来自新release，启动输出hidden=false。安装器按既有策略清理更早非活跃版本，不覆盖用户配置或业务文件。
+
+日常应用冷启动沿原接受决定自动恢复原Work，无再次接受或手动改账：status=ended、closure.phase=complete、git.complete=true、workerHome.cleaned=true、provenance.complete=true；关联维修bug为repaired、finalizationPending=false、outcome=original-closure-complete。包内生产workSlotFacts核验used=0、released=1、blocked=false。
+
+前后比对：原接受binding与报告digest保持，冻结报告19516字节且SHA-256核验一致；所有非maintenance业务job记录摘要保持；项目根目录普通文件摘要及Git HEAD保持，主index依旧不存在。不是git reset或补造索引，不重发Worker、不重做报告。原件位于本机 `~/.cache/nozeli-smokes/index-closure-20261112/`：before.json、after.json、report.json、package-and-slots.json。只记录技术标量，不向仓库提交用户报告。实际程序与持久状态验收，不冒称已人工查看生产UI报告正文；Linux限定，未提交、推送或公开发布。

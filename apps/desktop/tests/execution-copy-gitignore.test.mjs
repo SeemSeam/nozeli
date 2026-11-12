@@ -29,6 +29,28 @@ const finish=(f,decision='accept',options={})=>(async()=>{
 })();
 async function candidate(f,text='worker result\n'){await f.execution.prepare(f.work.id);await fs.writeFile(path.join(f.execution.directory(f.work.id),'worker.txt'),text);return f.execution.publish(f.work,{id:'job-1'},()=>true);}
 
+test('report-only acceptance preserves an absent index and does not create a commit',async t=>{
+ const f=await fixture(t),index=path.join(f.project,'.git','index');await fs.unlink(index);
+ await f.execution.prepare(f.work.id);await f.execution.publish(f.work,{id:'report-only'},()=>true);
+ const head=await str(f.project,['rev-parse','HEAD']);const result=await finish(f);
+ assert.equal(result.cleaned,true);assert.equal(await str(f.project,['rev-parse','HEAD']),head);await assert.rejects(fs.stat(index),{code:'ENOENT'});
+ assert.equal(await f.read('worker.txt'),'base\n');assert.equal(await f.read('user.txt'),'user base\n');
+});
+test('an existing unborn repository receives its owned baseline index',async t=>{
+ const f=await fixture(t,{plain:true});
+ // Simulate a repository initialized independently before the execution baseline.
+ await git(f.project,['init','--initial-branch=main']);
+ await f.execution.prepare(f.work.id);assert.equal(await str(f.project,['show',':worker.txt']),'base');
+ await candidate(f);await finish(f);assert.equal(await f.read('worker.txt'),'worker result\n');
+});
+test('an index appearing after absent-index preparation blocks recovery without overwriting staging',async t=>{
+ const f=await fixture(t),index=path.join(f.project,'.git','index');await fs.unlink(index);
+ await f.execution.prepare(f.work.id);await f.execution.publish(f.work,{id:'report-only'},()=>true);
+ const save=f.execution.save.bind(f.execution);let interrupted=false;f.execution.save=async m=>{await save(m);if(!interrupted&&m.finishIntent?.status==='prepared'){interrupted=true;throw Error('absent-index interruption')}};
+ await assert.rejects(finish(f),/absent-index interruption/);await git(f.project,['add','worker.txt']);const staged=await fs.readFile(index);
+ f.execution=new ExecutionWorkspace(f.store);await assert.rejects(finish(f),{code:'INDEX_CHANGED'});assert.deepEqual(await fs.readFile(index),staged);assert.equal(await f.read('worker.txt'),'base\n');
+});
+
 test('creates a registered worktree, freezes actual user input and never publishes to original on report',async t=>{
  const f=await fixture(t);await f.write('user.txt','user disk input\n');await f.write('untracked.txt','input only\n');await fs.mkdir(path.join(f.project,'ignored'));await f.write('ignored/build.txt','generated');const head=await str(f.project,['rev-parse','HEAD']),index=await fs.readFile(path.join(f.project,'.git','index'));
  const m=await f.execution.prepare(f.work.id);assert.equal(m.schema,2);assert.equal(m.targetHead,head);assert.equal(await str(m.directory,['rev-parse','--git-common-dir']),m.commonDir);assert.equal(await fs.readFile(path.join(m.directory,'user.txt'),'utf8'),'user disk input\n');await assert.rejects(fs.stat(path.join(m.directory,'ignored')));
