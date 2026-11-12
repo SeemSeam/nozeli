@@ -1224,12 +1224,13 @@ export class WorkspaceNative {
         const current = record ? record.state ?? record : null;
         if (op === 'workspace.displayView.read') return {key,state:current};
         const next = p.next;
-        if (!next || next.schema !== 1 || !Number.isSafeInteger(p.expectedRevision) || p.expectedRevision < 0 || !['auto','manual'].includes(next.placement?.mode) || next.placement.mode === 'manual' && ![next.placement.x,next.placement.y].every(Number.isFinite) || next.size !== null && (!next.size || ![next.size.width,next.size.height].every(n => Number.isFinite(n) && n > 0)) || typeof next.collapsed !== 'boolean' || typeof next.hidden !== 'boolean') throw fail('INVALID_DISPLAY_VIEW');
-        if (current && (current.schema !== 1 || !Number.isSafeInteger(current.revision) || current.revision < 0 || !['auto','manual'].includes(current.placement?.mode) || current.placement.mode === 'manual' && ![current.placement.x,current.placement.y].every(Number.isFinite) || current.size !== null && (!current.size || ![current.size.width,current.size.height].every(n => Number.isFinite(n) && n > 0)) || typeof current.collapsed !== 'boolean' || typeof current.hidden !== 'boolean')) throw fail('DISPLAY_SCHEMA_UNKNOWN','展示记录版本未知或损坏，原记录已保留。');
+        if (!next || !(next.schema === 1 || next.schema === 2 && next.placement?.space === 'source-page') || !Number.isSafeInteger(p.expectedRevision) || p.expectedRevision < 0 || !['auto','manual'].includes(next.placement?.mode) || next.placement.mode === 'manual' && ![next.placement.x,next.placement.y].every(Number.isFinite) || next.size !== null && (!next.size || ![next.size.width,next.size.height].every(n => Number.isFinite(n) && n > 0)) || typeof next.collapsed !== 'boolean' || typeof next.hidden !== 'boolean') throw fail('INVALID_DISPLAY_VIEW');
+        if (current && (!(current.schema === 1 || current.schema === 2 && current.placement?.space === 'source-page') || !Number.isSafeInteger(current.revision) || current.revision < 0 || !['auto','manual'].includes(current.placement?.mode) || current.placement.mode === 'manual' && ![current.placement.x,current.placement.y].every(Number.isFinite) || current.size !== null && (!current.size || ![current.size.width,current.size.height].every(n => Number.isFinite(n) && n > 0)) || typeof current.collapsed !== 'boolean' || typeof current.hidden !== 'boolean')) throw fail('DISPLAY_SCHEMA_UNKNOWN','展示记录版本未知或损坏，原记录已保留。');
         if ((current?.revision || 0) !== p.expectedRevision) return {conflict:true,current};
-        const state = {schema:1,revision:p.expectedRevision+1,placement:next.placement,size:next.size,collapsed:next.collapsed,hidden:next.hidden};
+        const state = {schema:next.schema,revision:p.expectedRevision+1,placement:next.placement,size:next.size,collapsed:next.collapsed,hidden:next.hidden};
         if(r.dead || r.projectId !== projectId)throw fail('PROJECT_SCOPE_DENIED');
-        await this.host.storage.putLocal(projectId, storageKey, {key,state,legacy:record?.legacy ?? p.legacy ?? null});
+        const sourcePageMigration=record?.sourcePageMigration??(current&&current.schema!==2&&next.schema===2?current:null);
+        await this.host.storage.putLocal(projectId, storageKey, {key,state,legacy:record?.legacy ?? p.legacy ?? null,...(sourcePageMigration?{sourcePageMigration}:{})});
         return {revision:state.revision};
       });
       this.displayViewWrites.set(storageKey, flight);

@@ -1,15 +1,44 @@
+## 图片基础查看与平移（2026-11-12，源码完成，未安装／提交／发布）
+
+- 原 `image-view.mjs` 已有缩放、fit及100%实现，但 `document-header.mjs` 把工具搬入原生内容面隐藏的旧标题行；本轮复用现有解码／原图canvas／区域裁取，图片工具固定在内容面滚动区上方，不另造编辑器。直接显示缩小、当前比例、放大、适应、100%、拖动、区域框选，窄分区换行而不藏基础动作。
+- 新增视口中心／鼠标点保持的缩放、Ctrl／Cmd＋滚轮、图片聚焦时的+／-／0／F，以及左键拖动、空格临时拖动、中键拖动和Escape结束。手势不接管输入／标签；框选与普通左键平移互斥。手势进行中的修改键滚轮被限定在图片域，不放大整个应用。原图只解码一次，查看只改CSS尺寸／滚动，截图仍裁原像素；正常图片面退出先保存现有view state，重开恢复比例及横纵位置和未发讨论。
+- `image-host`、文档图片与内容菜单定向 **11/11**；renderer构建通过。真实Electron＋真实PNG/JPEG/WebP／四色已知像素图，`desktop-image-navigation-live.mjs` 已登记live；最终 `/tmp/nozeli-label-windows-yBkpYU/report.json` **29/29**、正常exit0、renderer错误0：按钮实际命中、固定鼠标／中心点、三类平移、Escape／修改键手势、输入不抢键、原图归一化锚点与裁图像素及宽高、重开比例／双轴位置／草稿、低于5%适应后不反向放大及原PNG哈希保持。
+- 真正窄窗为原生320×520、实际图片内容面 **192px**；工具两行，六个动作中心均可命中、页面不横溢，深色截图已查看。初轮m3m7J7的窄窗断言抢跑，读到旧860px，不当作窄窗证据；1ZsLJr／GswCvu／hRY1Ub在等待真实窄视口时失败，诊断发现响应式侧栏抽屉仍覆盖内容，WCV按原协议隐藏并保留旧bounds。夹具改为等待shell CSS尺寸，再经真实按钮收起抽屉并等待原生图片面几何；未改全局布局、遮挡权限或用viewport模拟尺寸来变绿。
+- 同一最终源码随后通过Word页归属 **18/18** `/tmp/nozeli-label-windows-J140Vx/report.json`、Markdown手势 **15/15** `/tmp/nozeli-label-windows-rrfykW/report.json`。Linux隔离X11限定；没有真实账号／付费模型、用户论文或日常profile写入。Windows/macOS、物理触控／多点捏合不据此验收；此轮不增加原图旋转／裁剪写回，不安装或发布。
+
+## Word标签来源页归属（2026-11-12，源码修复，未安装／提交／发布）
+
+- 用户报告Word翻页后标签漂移。真实安装版 `2026-11-12T02-03-36-112Z` 的三页合成DOCX复现原件 `/tmp/nozeli-label-windows-RG1UtS/report.json`：14项中5项失败，分别为第二页讨论浮到第一页、跨页编号／讨论跟随当前可见片段、手动讨论不随页移动、翻到第三页仍残留第二页窗口。无renderer错误、正常exit0；不将正常退出误当行为通过。
+- 两条根因：`word-frame.js` 从可见片段取编号起点，跨页选区随滚动换页；`word-view.mjs` 只隐藏页内marker，`note-tag.mjs` 已把窗口提升到视口层，manual存屏幕坐标。现在明确取逻辑选区起点的原页和矩形；后续页仍高亮，但不替代起点。Word适配器发布页矩形／未缩放尺寸／原文起点，页内窗口通过共用环境转换随页滚动，并裁到Word可读区域，不复制私有拖动控制器。
+- 页内展示采用schema2／source-page空间，普通文件级和冻结工作面仍schema1视口；来源不可测量则不猜坐标，来源页离屏只改变派生可见性，不写业务批注／关闭状态／草稿／历史。旧屏幕坐标按来源重新默认放置并保留尺寸比例；宿主在同一CAS中保留原 `sourcePageMigration`，不让旧包把页内坐标误当视口像素，也不丢弃旧偏好。
+- 初轮坐标接线（尚未加入schema2隔离）真实源码三页Word `/tmp/nozeli-label-windows-3DbyKd/report.json` 18/18；覆盖普通备注、区域讨论、跨页文字讨论，直接拖动／缩放、100px页移动与窗口同步、第三页无残留、返回／重开草稿和位置、旧偏好保留及源DOCX哈希不变。初轮同源Markdown15、PPT／涂鸦33和多格式60亦通过；只作这一时点证据，最终版schema2回归单独记录。
+- 最终schema2版本已实跑：定向状态／来源坐标／草稿／原生审核边界 **63/63**，renderer构建通过；三页Word **18/18** `/tmp/nozeli-label-windows-DACMDN/report.json`，正常exit0、renderer错误0，原偏好迁移保存、DOCX原件及未发文字保持。页移动-100px时已拖动／缩放讨论窗也移动-100px，`placement`与revision不因滚动改变；第二／三页截图已查看。并行既有路径按序通过：Markdown **15/15** `/tmp/nozeli-label-windows-j9Dn2m/report.json`，PPT／区域／工作面涂鸦 **33/33** `/tmp/nozeli-label-windows-QdISYZ/report.json`。以上均实际Electron及合成文件，不是浏览器模拟产品；Linux隔离X11限定。
+- 最终扩展命令在完成上述63项、Word18、Markdown15和PPT33后，最后的 `desktop-tag-interactions-live.mjs` 未返回完成汇总，整条命令于600秒超时；不把初轮60通过替代最终schema2版该长旅程的签收，不声称本轮完整多格式回归全绿。Word专项及前三条独立成功回执保留；本轮用户报告的Word页归属行为已由真实三页DOCX逐项验证。
+- 当前主合同见[Word勘误](worker-review-chat-demo.md#word来源页定位勘误2026-11-12用户确认方向源码修复未安装)。本轮未安装、未改日常profile或用户Word文件、未运行付费模型；其他文档的页绑定及Windows/macOS／物理输入设备不因本轮通过而签收。
+
 ## 全平台圆角应用图标（2026-11-12，源码完成，未安装／提交／发布）
 
 - 用户先要求适配Mac，随后明确所有平台都可改圆角。保留品牌原图与README宣传图，`tools/build-app-icons.mjs` 生成1024px `assets/nozeli.png`和256px `assets/brand/nozeli-small-icon.png`：透明留白、抗锯齿圆角、不依赖CSS遮罩。原生主窗／独立窗和Linux安装入口沿原assets/nozeli.png路径，renderer沿原小图标路径；Mac ICNS及Dock改为读取同一原生图稿，删除临时Mac专用资产，不保留两份运行来源。
 - 实际生成器连续重建字节一致；原生PNG alpha范围(80,80,944,944)，小图标(20,20,236,236)，四角透明、中心不透明且边缘含抗锯齿；renderer输出与小图标原件逐字节相同。原品牌图SHA256保持不变。renderer构建与三个入口语法检查通过。
 - Linux真实Electron `/var/tmp/nozeli-platform-chrome-8xUnYV/report.json` ok=true、正常exit0、Provider请求0，主窗／独立内容／对话及深浅色／窄窗截图已生成，主窗图标截图已查看。截图同时出现合成项目待办“ERR_SQLITE_ERROR”提示，该旅程未检查此存储状态，不据此宣称整产品无错，也未修改存储逻辑。Mac原生ICNS／Dock及Windows桌面外观本轮未实机验证；不清系统图标缓存、不替换日常安装。
 
+## Markdown小窗拖动／缩放回退（2026-11-12）
+
+- 安装版真实手势定位到 `lostpointercapture → cancel()`：仍有左键按下的移动事件，但共用控制器直接还原手势前几何。失败时epoch未变、无flush/dispose调用；原生实例级追踪未观察到setBounds/setVisible/焦点调用。底层捕获丢失起因未坐实，不将物理桌面输入干扰或某个Chromium内部缺陷当作已证明结论。另实测初始窗口只缩放后仍为auto，原文标记滚出视口后跳到(24,24)。
+- 修复鼠标生命周期：捕获丢失本身不等于pointercancel，下一次仍按住左键的文档移动重新捕获；释放按键、明确pointercancel、窗口失焦、Escape仍回退。几何控件合法pointerdown先聚焦，保证Escape可达并正常结束浏览器组合输入。首次鼠标／键盘缩放固定当时位置，Home显式恢复auto／默认尺寸；不修改来源、历史、笔迹或发送草稿。
+- 新增并登记live `desktop-markdown-label-gestures-live.mjs`：真实Electron＋独立文件/profile，在浏览器捕获API边界主动释放capture，验证持续按住后的移动／缩放；取消和丢失mouseup边界用明确事件注入，IME用CDP，不冒充物理输入法。旧安装失败原件 `/tmp/nozeli-label-windows-FKuaDg/report.json`；源码修后 `/tmp/nozeli-label-windows-gD5jAh/report.json` 全15项通过，退出0、原件哈希及草稿保留。
+- 源码串行实测：Markdown15项 `/tmp/nozeli-label-windows-stXgWb/report.json`、PPT／区域／工作面涂鸦33项 `/tmp/nozeli-label-windows-QV35Pr/report.json` 在独立嵌套X11（DISPLAY=:99）通过；多格式标签60项 `tag-interactions-live-PtWuKs/result.json` 通过，但该脚本初轮自行选择后端，不外推为隔离X11证据。后者位于本机隔离smoke缓存。原物理桌面PPT轮有一次首次放大不生效（`/tmp/nozeli-label-windows-ITlMgR/report.json`），追加探针轮S6hCGV通过；失败原件保留，不将后续通过抹成首次全过。未放宽原33／60项断言。
+- 定向窗口／身份／草稿49项通过。完整unit：842项中838通过、4失败，均在未修改的 `session-controls.test.mjs` 上下文展开夹具读取缺失details节点；不改该模块／夹具来冒充全绿。Linux/X11限定，无付费模型、Windows/macOS／物理触控／系统IME验收；安装及安装版结果另追加。
+- 打包隔离并行修改：从ad864bb建立 `/var/tmp/nozeli-label-gesture-install-20261112`，只带入本轮窗口控制器、专项回归及live登记，不带入在途模型／弹窗修改。该干净安装树完整unit **842/842**、renderer构建及Markdown专项15项（`/tmp/nozeli-label-windows-D25a5B/report.json`）通过。按用户授权，显式HOME=/home/bfly的正式installer已激活 `/home/bfly/.local/opt/nozeli/releases/2026-11-12T02-03-36-112Z`，previous保留 `all-local-20261112-02`。控制器及renderer bundle SHA-256分别与干净安装树相同；安装版结果见下文。
+- 日常程序通过KWin对确切旧PID4167455发正常关窗请求后退出，未点击丢弃／强退；新安装实际日常shell已真实启动并截图核对。一次仅用于核验的调试会话随后通过 `session.requestClose` 正常exit0；最终普通启动PID736713经原生KWin窗口与 `/proc/736713/exe` 核实为上述新release，不配置调试端口。日常仍处于关窗前的选择项目状态；未替用户发送消息、改模型、编辑论文或切换项目。
+- 确切激活包最终实测：显式DISPLAY=:99、NOZELI_OZONE=x11，Markdown **15/15** `/tmp/nozeli-label-windows-0kJqjM/report.json`，PPT／区域／工作面涂鸦 **33/33** `/tmp/nozeli-label-windows-XJffIs/report.json`，多格式标签 **60/60** `tag-interactions-live-KPW7Ml/result.json`（本机隔离smoke缓存）。三旅程真实程序集成，未用浏览器模拟产品替代；全部正常退出、renderer错误0，截图已查看。保留原稿、未发草稿、几何及来源／笔迹不变断言，不调用付费模型。
+- 广义夹具先后暴露覆盖窗口的关闭按钮误点、原生切换后Escape路由及返回既有文档时抢跑焦点（OKkLne／FygWkw／h4NTaS／iT8Cwl原件保留，部分检查通过不记整套通过）。最终仅修正操作隔离：聚焦确切原生关闭按钮后按Enter，并在文件树点击后等待工作区activeView及原生document可见，再做动作。单独Escape、真实鼠标拖动／尺寸手柄、完整原60项行为断言保持；不改产品IPC、权限、显示或持久化来迁就夹具。
+
 ## 模型选择与长内容弹窗固定操作区（2026-11-12，源码修复，未安装／提交／发布）
 
 - 用户报告模型选择的确认按钮在长列表末尾不可见。本轮改为弹窗内容独立滚动、操作区常驻可见，不使用覆盖列表项的全局fixed样式。相同问题同步修复Agent状态长列表的关闭区、会话管理长诊断／上下文详情的操作区。设置主窗已有独立内容滚动及常驻关闭，不扩大成所有dialog的全局重排；业务model.set、owner／revision、禁用条件和晚到保护未变。
 - 实际生产组件运行于真实Electron，合成只读／受控保存网关 `/var/tmp/nozeli-collaboration-ui-rLMWP2/report.json` ok=true：103个模型，1000×900、390×460及320×320，列表顶部／底部所有可见动作经中心命中验证可点击，真实选择末项；深色320px、62个Agent、长诊断展开后关闭／刷新可达。保存中取消后新输入保留、晚到回执不重开弹窗、搜索／选中与刷新、修复禁用及跨项目晚到均通过。截图已查看；不冒充真实模型切换／Pi或Mac／Windows实机验收。
 - renderer构建通过；collaboration-status／collaboration-timing宿主回归25/25通过。本轮没有安装、提交、推送或发布，也不改用户当前模型／草稿；不将并发在途修改记作本轮实现。
-
 
 ## 涂鸦讨论去冗余与图片定位（2026-11-12，源码修复，未安装／提交／发布）
 

@@ -140,10 +140,12 @@ function updateNoteSource(){
   resumeDrawing.hidden=!draft?.drawing;noteComposer.reset();positionNoteForm();
 }
 const imageToolbar=document.createElement('div');imageToolbar.id='image-toolbar';imageToolbar.hidden=true;
-imageToolbar.innerHTML='<span id="image-size"></span><button id="image-out" aria-label="缩小图片">−</button><button id="image-actual" title="原始像素大小">100%</button><button id="image-fit">适应</button><button id="image-in" aria-label="放大图片">＋</button><button id="image-region" aria-pressed="false">区域框选</button>';
+imageToolbar.setAttribute('role','group');imageToolbar.setAttribute('aria-label','图片查看工具');
+imageToolbar.innerHTML='<button id="image-out" aria-label="缩小图片" title="缩小图片（−）">−</button><output id="image-zoom-value" aria-label="图片缩放比例"></output><button id="image-in" aria-label="放大图片" title="放大图片（+）">＋</button><button id="image-fit" title="适应窗口（F）" aria-pressed="true">适应</button><button id="image-actual" title="原始像素大小（0）" aria-pressed="false">100%</button><button id="image-pan" aria-label="拖动图片" title="拖动图片；空格临时拖动，也可按住中键" aria-pressed="true">拖动</button><button id="image-region" title="区域框选" aria-label="图片区域框选" aria-pressed="false">区域框选</button><span id="image-size"></span>';
 $('reader-scroll').before(imageToolbar);
 for(const [id,value] of [['image-out',1/1.2],['image-in',1.2],['image-fit',null],['image-actual','actual']])$(id).addEventListener('click',()=>ui.pdf?.zoom(value));
 $('image-region').addEventListener('click',()=>ui.pdf?.region($('image-region').getAttribute('aria-pressed')!=='true'));
+$('image-pan').addEventListener('click',()=>ui.pdf?.pan?.($('image-pan').getAttribute('aria-pressed')!=='true'));
 const SAVE_DELAY = 700;
 const SAVE_MAX_WAIT = 2000;
 const inputCompositions=new Set();
@@ -928,6 +930,7 @@ async function retainWorkspace() {
     if (workspaceScope.relPath && ui.file?.relPath !== workspaceScope.relPath) return {ok:true, retained:false, reason:'document-not-loaded'};
   } else if (!ui.project) return {ok:true};
   if (projectComposing()) return {ok:false,composing:true,error:{code:'COMPOSING',message:'输入法组合尚未结束，未关闭。'}};
+  if(ui.file?.kind==='image'){const imageView=await writeView();if(!imageView.ok)return imageView;}
   window.clearTimeout(ui.timer); window.clearTimeout(ui.maxTimer); ui.maxTimer = 0;
   const project = ui.project, file = ui.file, generation = ++recoveryGeneration;
   const revision = ui.wordRevision, baseDigest = ui.baseDigest, sourceDigest = file?.digest, baselineText = ui.lastSavedText;
@@ -1612,11 +1615,12 @@ async function refreshNotes() {
     $('text-mode-toggle').hidden=true;$('reader').classList.add('document-image');imageToolbar.hidden=false;
     try {
       ui.pdf=await mountImage({parent:$('image-host'),bytes:file.bytes,info:file.image,noteActions:noteActions(ui.project.id),tagActions:{...tagActions,autoEdit:id=>consumeInitialTagEdit(id,'image')},
-        onZoom:state=>{$('image-size').textContent=`${state.width} × ${state.height} · ${Math.round(state.scale*100)}%`;$('image-fit').setAttribute('aria-pressed',String(state.mode==='fit'));},
+        onZoom:state=>{$('image-size').textContent=`${state.width} × ${state.height}`;const percent=state.scale*100;$('image-zoom-value').textContent=`${percent<1?Number(percent.toPrecision(2)):Math.round(percent)}%`;$('image-zoom-value').title=`原图 ${state.width} × ${state.height}`;$('image-out').disabled=state.scale<=state.minScale;$('image-in').disabled=state.scale>=state.maxScale;$('image-fit').setAttribute('aria-pressed',String(state.mode==='fit'));$('image-actual').setAttribute('aria-pressed',String(state.mode==='manual'&&state.scale===1));},
         onRegion:enabled=>$('image-region').setAttribute('aria-pressed',String(enabled)),
+        onPan:enabled=>$('image-pan').setAttribute('aria-pressed',String(enabled)),
         onSelection:selection=>{if(selection?.error)return workspace.toast(selection.error);ui.pdfSelection=selection;ui.selectionRect=selection?.viewportRect||null;if(!selection)$('selection-menu').hidden=true;else showSelectionMenu(selection.viewportRect);},
       });ui.pdf.setNotes(visibleNotes(file,notes));setStatus('saved','图片 · 只读静态预览');
-    }catch(error){$('unsupported').hidden=false;$('unsupported').textContent=error.message;setStatus('error','图片无法打开');}
+    }catch(error){imageToolbar.hidden=true;$('unsupported').hidden=false;$('unsupported').textContent=error.message;setStatus('error','图片无法打开');}
   } else if(file.kind==='legacy-word'){
     const box=$('unsupported');box.hidden=false;box.textContent='旧版 DOC 需要导入。正文导入仅保留文字和段落，不保留图片、表格结构及原排版；原件不会修改。若实际内容已是 DOCX，则完整复制。';
     const button=document.createElement('button');button.id='import-doc';button.textContent='导入为 DOCX 副本并打开';

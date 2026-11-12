@@ -65,7 +65,13 @@ await host.storage.db.close();
 const pause=ms=>new Promise(r=>setTimeout(r,ms));let child,browser,shell,doc,exited,log='';
 async function until(fn,label,ms=45000){const end=Date.now()+ms;while(Date.now()<end){if(child&&child.exitCode!==null)throw Error('App exited '+log);const v=await fn();if(v)return v;await pause(75);}throw Error('Timeout '+label);}
 async function call(op,payload={},page=doc||shell){const r=await page.evaluate(({op,payload})=>nozeli.invoke(op,payload),{op,payload});assert(r.ok,op+': '+JSON.stringify(r.error));return r.value;}
-async function openDoc(rel){await shell.bringToFront();await shell.click('#file-tree [data-path="'+rel+'"]');doc=await until(async()=>{for(const p of await browser.pages())if(await p.evaluate(rel=>window.__nozeliReady&&window.__workspaceScope?.kind==='document'&&window.__workspaceScope.relPath===rel,rel).catch(()=>false))return p;},'document '+rel);await doc.bringToFront();doc.on('pageerror',e=>{if(!result.errors.includes(e.message))result.errors.push(e.message);});return doc;}
+async function openDoc(rel){
+ await shell.bringToFront();await shell.click('#file-tree [data-path="'+rel+'"]');
+ await until(()=>shell.evaluate(rel=>window.__workspaceGroups?.activeView()?.relPath===rel,rel),'active document '+rel);
+ doc=await until(async()=>{for(const p of await browser.pages())if(await p.evaluate(rel=>window.__nozeliReady&&window.__workspaceScope?.kind==='document'&&window.__workspaceScope.relPath===rel,rel).catch(()=>false))return p;},'document '+rel);
+ await until(()=>doc.evaluate(()=>document.visibilityState==='visible'),'native document visible '+rel);
+ await doc.bringToFront();await raf(doc);doc.on('pageerror',e=>{if(!result.errors.includes(e.message))result.errors.push(e.message);});return doc;
+}
 const window_=(page,id)=>page.waitForSelector('.local-window[data-annotation="'+id+'"]',{visible:true});
 const bounds=async(page,sel)=>page.$eval(sel,n=>n.getBoundingClientRect().toJSON());
 const raf=page=>page.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));
@@ -81,7 +87,16 @@ async function parkTag(page,id){await raf(page);const b=await bounds(page,'.loca
 const win=id=>'.local-window[data-annotation="'+id+'"]';
 const markerFor=id=>{const s=seed[id],attr='.note-anchor[data-annotation="'+id+'"] .note-index';
  return s.rel==='notes.md'?(s.kind==='file'?'#reader-discussion-tags '+attr:'#text-preview .markdown-annotations '+attr):s.rel==='plain.txt'?'#text-host '+attr:'#image-host '+attr;};
-async function hideTag(page,id){if(await page.$eval(win(id),n=>n.hidden).catch(()=>true))return;await page.bringToFront();await page.click(win(id)+' [data-local-window-hide]');await until(()=>page.$eval(win(id),n=>n.hidden).catch(()=>true),'hide '+id);await raf(page);}
+async function hideTag(page,id){
+ if(await page.$eval(win(id),n=>n.hidden).catch(()=>true))return;
+ await page.bringToFront();
+ // Native button activation also works when another retained window covers it;
+ // Escape has a separate behavior assertion, not an isolation dependency.
+ const close=win(id)+' [data-local-window-hide]';
+ await page.focus(close);await raf(page);
+ assert(await page.$eval(close,n=>document.activeElement===n),'exact close control has keyboard focus');
+ await page.keyboard.press('Enter');await until(()=>page.$eval(win(id),n=>n.hidden).catch(()=>true),'hide '+id);await raf(page);
+}
 async function showTag(page,id){if(!await page.$eval(win(id),n=>n.hidden).catch(()=>true))return;const marker=markerFor(id);await page.waitForSelector(marker,{visible:true});
  await (await page.$(marker)).scrollIntoView();await raf(page);
  await until(()=>page.$eval(marker,n=>{const r=n.getBoundingClientRect();if(r.width<=0||r.height<=0)return false;const el=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return Boolean(el&&(el===n||n.contains(el)));}),'marker hittable '+id);
@@ -105,7 +120,7 @@ try{
  await doc.waitForSelector('#text-preview:not([hidden]) .markdown-annotations .note-anchor[data-annotation="'+noteId+'"]');
 await doc.screenshot({path:path.join(out,'01-md-initial.png')});
 // Operation isolation: exercise one tag at a time through production controls —
-// hide the other windows with focus+Escape so every grab and marker click hits its target.
+// activate exact close buttons so every later grab and marker click hits its target.
 await hideTag(doc,mdDiscussId);await hideTag(doc,fileTagId);
 let a=await bounds(doc,noteWin);await dragTitle(doc,noteId,80,55);let b=await bounds(doc,noteWin);
  check('md note: real mouse drag by title text moves exactly with the pointer',same(b.x-a.x,80,4)&&same(b.y-a.y,55,4),{before:a,after:b});
@@ -147,7 +162,7 @@ await openDoc('notes.md');await window_(doc,mdDiscussId);
  const reopened=await bounds(doc,'.local-window[data-annotation="'+mdDiscussId+'"]');
  check('md discussion: close/reopen restores the same window position and size',same(reopened.x,mdDiscussRect.x,3)&&same(reopened.y,mdDiscussRect.y,3)&&same(reopened.width,mdDiscussRect.width,3)&&same(reopened.height,mdDiscussRect.height,3),{before:mdDiscussRect,reopened});
  check('md discussion: reopen keeps history and the unsent draft editor',await doc.$eval('.local-window[data-annotation="'+mdDiscussId+'"] .tag-editor',n=>n.value==='MD_UNSENT_DRAFT')&&await doc.$eval('.local-window[data-annotation="'+mdDiscussId+'"]',n=>n.textContent.includes('MD_FROZEN_QUESTION')));
-// file discussion: isolate via focus+Escape, then reopen through its real marker in the reader layer.
+// File discussion: isolate via its close button, then reopen through its real marker.
 await hideTag(doc,mdDiscussId);await showTag(doc,fileTagId);
 await parkTag(doc,fileTagId);
 const fileBefore=await bounds(doc,'.local-window[data-annotation="'+fileTagId+'"]');
@@ -181,7 +196,7 @@ check('html isolated preview: collapse/expand keeps the preview alive and the wi
  await openDoc('plain.txt');await window_(doc,txtDiscussId);await window_(doc,txtPointId);
  await doc.waitForSelector('#text-host .cm-content');
 // Park both windows with the keyboard only (never a drag) so first-gesture deltas stay unclamped;
-// then isolate each target with production controls (focus+Escape hides the other window) so
+// then isolate each target with focused production close buttons so
 // neither window can cover the other's title, handle, editor or marker.
 await doc.focus(txtWin+' .local-window-header');for(let i=0;i<6;i++)await doc.keyboard.press('ArrowLeft');for(let i=0;i<4;i++)await doc.keyboard.press('ArrowUp');
 await doc.focus(pointWin+' .local-window-header');for(let i=0;i<3;i++)await doc.keyboard.press('ArrowRight');for(let i=0;i<8;i++)await doc.keyboard.press('ArrowDown');

@@ -1,5 +1,6 @@
 import {mountLocalWindow,ensureLocalWindowLayer,viewportWindowEnvironment,defaultLocalWindowView} from './local-window.mjs';
 import {createLocalWindowView} from './local-window-view.mjs';
+import {sourcePageWindowEnvironment} from './source-page-window-environment.mjs';
 const tagWindows = new Set();
 const tagSessions = new Map();
 const tagMounts = new Set();
@@ -388,7 +389,8 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
     if (layoutDisposed || !sourceMarker(sessionKey,root).isConnected) return;
     renderThread.attachOriginalReaders?.();
     if (inline) { watchTagRemoval(root, disposeLayout); autoGrow(); return; }
-    const initial = {...defaultLocalWindowView(),hidden:!open};
+    const pageAnchored=Boolean(root.closest('.word-note-overlay')&&anchor?.space?.startsWith('docx-'));
+    const initial = {...defaultLocalWindowView(),hidden:!open,...(pageAnchored?{schema:2,placement:{mode:'auto',space:'source-page'}}:{})};
     const offset = oldView?.noteOffset, marker = index.getBoundingClientRect();
     const pane = root.closest('.cm-scroller, #markdown-preview-scroll, .reader-scroll, .monaco-editor');
     const paneRect = pane?.getBoundingClientRect();
@@ -411,7 +413,7 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
     const store = createLocalWindowView({invoke:(...args)=>window.nozeli.invoke(...args),key,initial,legacy:oldView});
     const parent = sourceMarker(sessionKey,root).closest('#documents') || document.body;
     const layer = ensureLocalWindowLayer(parent);
-    const environment = viewportWindowEnvironment(layer, {epoch:()=>scope.generation || 0,defaultRect:()=>{
+    const environment = pageAnchored ? sourcePageWindowEnvironment(layer,()=>sourceMarker(sessionKey,root).sourcePageGeometry,{epoch:()=>scope.generation || 0}) : viewportWindowEnvironment(layer, {epoch:()=>scope.generation || 0,defaultRect:()=>{
       const marker = sourceMarker(sessionKey,root).querySelector('.note-index').getBoundingClientRect();
       const visible = marker.width > 0 && marker.bottom > 0 && marker.top < document.documentElement.clientHeight;
       return {x:visible ? marker.right+8 : 24,y:visible ? marker.top : 24,width:380,height:380};

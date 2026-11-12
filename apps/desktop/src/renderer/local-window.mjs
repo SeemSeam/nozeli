@@ -18,7 +18,7 @@ export function viewportWindowEnvironment(layer, { defaultRect = () => ({x:24,y:
 }
 export const defaultLocalWindowView = () => ({schema:1,revision:0,placement:{mode:'auto'},size:null,collapsed:false,hidden:false});
 export function validLocalWindowView(value) {
-  return value?.schema === 1 && Number.isSafeInteger(value.revision) && value.revision >= 0 && ['auto','manual'].includes(value.placement?.mode) && (value.placement.mode === 'auto' || [value.placement.x,value.placement.y].every(Number.isFinite)) && (value.size === null || value.size && [value.size.width,value.size.height].every(n => Number.isFinite(n) && n > 0)) && typeof value.collapsed === 'boolean' && typeof value.hidden === 'boolean';
+  return (value?.schema === 1 || value?.schema === 2 && value.placement?.space === 'source-page') && Number.isSafeInteger(value.revision) && value.revision >= 0 && ['auto','manual'].includes(value.placement?.mode) && (value.placement.mode === 'auto' || [value.placement.x,value.placement.y].every(Number.isFinite)) && (value.size === null || value.size && [value.size.width,value.size.height].every(n => Number.isFinite(n) && n > 0)) && typeof value.collapsed === 'boolean' && typeof value.hidden === 'boolean';
 }
 export function localWindowRect(state, measured) {
   const b = measured.bounds, d = measured.defaultRect;
@@ -49,23 +49,31 @@ export function mountLocalWindow({layer,key,title,body,actions,state=defaultLoca
   function paintNotice() {const error=failure||operationFailure;notice.hidden=!error;errorText.textContent=error?.message||'';reload.hidden=!conflict;retry.hidden=!failure;}
   function report(error) {failure=error;paintNotice();onError(error);}
   function reportOperation(error) {if(error===failure||error===operationFailure)return;operationFailure=error;paintNotice();onError(error);}
-  function paintRect(value) {const painted=environment.paintRect?.(value,measured)??value;Object.assign(node.style,{left:painted.x+'px',top:painted.y+'px',width:painted.width+'px',height:painted.height+'px'});}
+  let paintedRect;
+  function placement(mode,x,y) {return {mode,...(environment.coordinateSpace?{space:environment.coordinateSpace}:{}),...(mode==='manual'?{x,y}:{})};}
+  function paintRect(value) {
+    const painted=environment.paintRect?.(value,measured)??value;paintedRect=painted;
+    Object.assign(node.style,{left:painted.x+'px',top:painted.y+'px',width:painted.width+'px',height:painted.height+'px'});
+    const clip=environment.clipRect?.(measured);
+    node.style.clipPath=clip?`inset(${Math.max(0,clip.top-painted.y)}px ${Math.max(0,painted.x+painted.width-clip.right)}px ${Math.max(0,painted.y+painted.height-clip.bottom)}px ${Math.max(0,clip.left-painted.x)}px)`:'';
+  }
   function publish(geometryRetries=0) {
     const current=++sequence, frame=measured, epoch=frame.epoch, row={key,epoch,sequence:current,rect:{...rect}};
     const visible=!view.hidden&&!disposed&&node.isConnected&&win.getComputedStyle(node).visibility!=='hidden'&&node.getClientRects().length>0;
-    if(!visible)reg.rows.delete(token);else reg.rows.set(token,row);
+    if(!visible)reg.rows.delete(token);else reg.rows.set(token,{...row,rect:{...paintedRect}});
     const rows=localWindowOcclusions(doc);
     const run=Promise.all([...reg.listeners].map(listener=>Promise.resolve().then(()=>listener(rows))).concat(environment.publishOcclusion ? [Promise.resolve().then(()=>environment.publishOcclusion({...row,visible},frame))] : []));
-    publications=run.then(()=>{if(current===sequence&&!disposed&&epoch===measured.epoch)confirmed={rect:{...row.rect},hidden:view.hidden};},error=>{if(disposed)return;if(current!==sequence||epoch!==measured.epoch)return publications;if(error.code==='REVIEW_GEOMETRY_STALE'&&geometryRetries===0&&environment.measure().epoch>epoch)return paint(1);cancel(false);if(confirmed){rect={...confirmed.rect};paintRect(rect);node.hidden=confirmed.hidden;if(confirmed.hidden)reg.rows.delete(token);else reg.rows.set(token,{...row,rect:{...rect}});}report(error);throw error;});
+    publications=run.then(()=>{if(current===sequence&&!disposed&&epoch===measured.epoch)confirmed={rect:{...row.rect},hidden:node.hidden};},error=>{if(disposed)return;if(current!==sequence||epoch!==measured.epoch)return publications;if(error.code==='REVIEW_GEOMETRY_STALE'&&geometryRetries===0&&environment.measure().epoch>epoch)return paint(1);cancel(false);if(confirmed){rect={...confirmed.rect};paintRect(rect);node.hidden=confirmed.hidden;if(confirmed.hidden)reg.rows.delete(token);else reg.rows.set(token,{...row,rect:{...paintedRect}});}report(error);throw error;});
     publications.catch(()=>{}); return publications;
   }
   function paint(geometryRetries=0) {
     if(disposed)return; const next=environment.measure();
-    if(gesture && measured && next.epoch!==measured.epoch)cancel(false);
+    if(gesture && measured && (next.epoch!==measured.epoch||next.visible===false))cancel(false);
+    const migrated=environment.migrateView?.(view,next);if(migrated){view=migrated;dirty=true;}
     measured=next;rect=localWindowRect(view,measured);
     paintRect(rect);
-    node.hidden=view.hidden;node.classList.toggle('is-collapsed',view.collapsed);content.hidden=view.collapsed;resize.hidden=view.collapsed;fold.textContent=view.collapsed?'展开':'收起';fold.setAttribute('aria-expanded',String(!view.collapsed));
-    return publish(geometryRetries);
+    node.hidden=view.hidden||next.visible===false;node.classList.toggle('is-collapsed',view.collapsed);content.hidden=view.collapsed;resize.hidden=view.collapsed;fold.textContent=view.collapsed?'展开':'收起';fold.setAttribute('aria-expanded',String(!view.collapsed));
+    const publication=publish(geometryRetries);if(migrated)void persist('reset').catch(()=>{});return publication;
   }
   function schedule() { if(!frame)frame=win.requestAnimationFrame(()=>{frame=0;paint();}); }
   function persist(reason) {
@@ -93,16 +101,28 @@ export function mountLocalWindow({layer,key,title,body,actions,state=defaultLoca
     // Clicking a geometry control leaves the editor. Let the browser finish
     // its composition before checking the guard, rather than losing the first
     // drag while the default pointer focus change ends composition afterwards.
-    if(composing){event.currentTarget.focus({preventScroll:true});if(composing)return;}
-    const start=environment.toLocal(event.clientX,event.clientY,event); gesture={id:event.pointerId,target:event.currentTarget,mode,start,rect:{...rect},original:structuredClone(view),moved:false};
+    event.currentTarget.focus({preventScroll:true});if(composing)return;
+    const start=environment.toLocal(event.clientX,event.clientY,event); gesture={id:event.pointerId,pointerType:event.pointerType,target:event.currentTarget,mode,start,rect:{...rect},original:structuredClone(view),moved:false};
     event.currentTarget.setPointerCapture(event.pointerId);node.style.zIndex=String(++reg.z);event.preventDefault();
   }
-  function moving(event) { const g=gesture;if(!g||g.id!==event.pointerId)return;const point=environment.toLocal(event.clientX,event.clientY,event),dx=point.x-g.start.x,dy=point.y-g.start.y;if(!g.moved&&Math.hypot(dx,dy)<3)return;g.moved=true;if(g.mode==='move')view.placement={mode:'manual',x:g.rect.x+dx,y:g.rect.y+dy};else view.size={width:Math.max(160,g.rect.width+dx),height:Math.max(100,g.rect.height+dy)};schedule();event.preventDefault(); }
+  function moving(event) {
+    const g=gesture;if(!g||g.id!==event.pointerId)return;
+    if(g.pointerType==='mouse') {
+      if(!(event.buttons&1)){cancel();return;}
+      // Losing capture is not pointercancel. Continue a held mouse gesture
+      // through document events and reacquire capture before moving again.
+      if(!g.target.hasPointerCapture(g.id))g.target.setPointerCapture(g.id);
+    }
+    const point=environment.toLocal(event.clientX,event.clientY,event),dx=point.x-g.start.x,dy=point.y-g.start.y;if(!g.moved&&Math.hypot(dx,dy)<3)return;g.moved=true;
+    view.placement=placement('manual',g.rect.x+(g.mode==='move'?dx:0),g.rect.y+(g.mode==='move'?dy:0));
+    if(g.mode==='resize')view.size={width:Math.max(160,g.rect.width+dx),height:Math.max(100,g.rect.height+dy)};
+    schedule();event.preventDefault();
+  }
   function up(event) { if(!gesture||event.pointerId!==gesture.id)return;const {moved,mode}=gesture;release();if(frame){win.cancelAnimationFrame(frame);frame=0;}if(moved){paint();void persist(mode).catch(()=>{});} }
-  function keys(event,mode) { if(event.target!==event.currentTarget||event.isComposing||composing)return;if(event.key==='Home'){event.preventDefault();void api.reset().catch(()=>{});return;}if(!event.key.startsWith('Arrow'))return;event.preventDefault();const step=event.shiftKey?1:10,dx=event.key==='ArrowLeft'?-step:event.key==='ArrowRight'?step:0,dy=event.key==='ArrowUp'?-step:event.key==='ArrowDown'?step:0;if(mode==='move')view.placement={mode:'manual',x:rect.x+dx,y:rect.y+dy};else view.size={width:Math.max(160,rect.width+dx),height:Math.max(100,rect.height+dy)};paint();dirty=true;clearTimeout(keyboardTimer);keyboardTimer=setTimeout(()=>{keyboardTimer=0;void persist(mode).catch(()=>{});},180); }
+  function keys(event,mode) { if(event.target!==event.currentTarget||event.isComposing||composing)return;if(event.key==='Home'){event.preventDefault();void api.reset().catch(()=>{});return;}if(!event.key.startsWith('Arrow'))return;event.preventDefault();const step=event.shiftKey?1:10,dx=event.key==='ArrowLeft'?-step:event.key==='ArrowRight'?step:0,dy=event.key==='ArrowUp'?-step:event.key==='ArrowDown'?step:0;view.placement=placement('manual',rect.x+(mode==='move'?dx:0),rect.y+(mode==='move'?dy:0));if(mode==='resize')view.size={width:Math.max(160,rect.width+dx),height:Math.max(100,rect.height+dy)};paint();dirty=true;clearTimeout(keyboardTimer);keyboardTimer=setTimeout(()=>{keyboardTimer=0;void persist('move');},180); }
   function listen(target,type,fn,options) { target.addEventListener(type,fn,options);cleanups.push(()=>target.removeEventListener(type,fn,options)); }
-  for(const [target,mode] of [[header,'move'],[resize,'resize']]){listen(target,'pointerdown',e=>down(e,mode));listen(target,'keydown',e=>keys(e,mode));listen(target,'lostpointercapture',()=>cancel());}
-  listen(doc,'pointermove',moving);listen(doc,'pointerup',up);listen(doc,'pointercancel',e=>{if(gesture?.id===e.pointerId)cancel();});listen(win,'blur',()=>cancel());
+  for(const [target,mode] of [[header,'move'],[resize,'resize']]){listen(target,'pointerdown',e=>down(e,mode));listen(target,'keydown',e=>keys(e,mode));listen(target,'lostpointercapture',()=>{if(gesture?.pointerType!=='mouse')cancel();});}
+  listen(doc,'pointermove',moving,true);listen(doc,'pointerup',up,true);listen(doc,'pointercancel',e=>{if(gesture?.id===e.pointerId)cancel();},true);listen(win,'blur',()=>cancel());
   listen(node,'compositionstart',()=>{composing=true;});listen(node,'compositionend',()=>{composing=false;});
   listen(node,'keydown',event=>{if(event.key!=='Escape'||event.isComposing||composing||event.defaultPrevented)return;if(gesture){event.preventDefault();event.stopPropagation();cancel();return;}if([...doc.querySelectorAll('dialog[open],[aria-modal="true"]:not([hidden]),.nozeli-context-menu:not([hidden])')].some(overlay=>overlay.getClientRects().length&&!overlay.contains(node)))return;event.preventDefault();event.stopPropagation();void api.hide().catch(()=>{});});
   listen(node,'pointerdown',()=>{node.style.zIndex=String(++reg.z);});
@@ -113,7 +133,7 @@ export function mountLocalWindow({layer,key,title,body,actions,state=defaultLoca
     show(opener) {return transition(async()=>{entry=opener?.focus?opener:doc.activeElement;view.hidden=false;view.collapsed=false;await paint();return persist('hide');});},
     async collapse(value=true) {cancel();view.collapsed=value;await paint();return persist('collapse');},
     hide() {return transition(async()=>{try{if(composing)throw Error('请先完成输入法组合，草稿仍保留。');await beforeHide?.();}catch(error){reportOperation(error);throw error;}operationFailure=null;paintNotice();await flushStable();cancel();view.hidden=true;await paint();try{await persist('hide');}catch(error){view.hidden=false;paint();throw error;}entry?.focus?.({preventScroll:true});});},
-    async reset() {cancel();view.placement={mode:'auto'};view.size=null;await paint();return persist('reset');},
+    async reset() {cancel();view.placement=placement('auto');view.size=null;await paint();return persist('reset');},
     update(value={}) {if(value.title!==undefined){caption.replaceChildren();if(typeof value.title==='string')caption.textContent=value.title;else caption.append(value.title);}if(value.state&&validLocalWindowView(value.state)&&!gesture&&!dirty){view=structuredClone(value.state);durable=structuredClone(view);}if(value.environment){cancel();unsubscribe?.();environment=value.environment;unsubscribe=environment.subscribe?.(schedule);}if(value.error)report(value.error);paint();},
     async flush() {await visibility.catch(()=>{});await flushStable();},
     async dispose() {await api.flush();cancel(false);const previousHidden=view.hidden;view.hidden=true;try{await paint();}catch(error){view.hidden=previousHidden;throw error;}disposed=true;if(frame)win.cancelAnimationFrame(frame);clearTimeout(keyboardTimer);unsubscribe?.();cleanups.forEach(fn=>fn());reg.rows.delete(token);node.remove();}

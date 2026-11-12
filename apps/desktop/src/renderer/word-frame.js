@@ -231,26 +231,39 @@ function queueAnchorLayout(){
  anchorLayoutFrame=requestAnimationFrame(()=>{anchorLayoutFrame=0;
   const runs=[...document.querySelectorAll('#document .superdoc-text-run[data-pm-start][data-pm-end]')];
   const top=Math.max(0,document.querySelector('#toolbar').getBoundingClientRect().bottom);
+  const pages=[...document.querySelectorAll('.superdoc-page')];
   const anchors=floatingAnchors.map(({id,anchor})=>{
+   const visible=b=>b.width&&b.right>0&&b.left<innerWidth&&b.bottom>top&&b.top<innerHeight;
+   const finish=(page,origin,rects)=>{
+    if(!page||!origin)return {id,status:'unresolved',rects};
+    const box=page.getBoundingClientRect();
+    return {id,status:visible(origin)?'visible':'offscreen',left:origin.left,top:origin.top,rects,page:pages.indexOf(page)+1,
+     anchorRect:{left:origin.left,top:origin.top,width:origin.width,height:origin.height},
+     pageRect:{left:box.left,top:box.top,width:box.width,height:box.height},pageSize:{width:page.offsetWidth,height:page.offsetHeight}};
+   };
    if(anchor.space==='docx-rendered-page-normalized'){
-    const page=document.querySelectorAll('.superdoc-page')[anchor.page-1];if(!page||wordRegionDirty)return {id,status:'unresolved'};
-    const box=page.getBoundingClientRect(),rects=anchor.rects.map(r=>({left:box.left+r[0]*box.width,top:box.top+r[1]*box.height,width:r[2]*box.width,height:r[3]*box.height,bottom:box.top+(r[1]+r[3])*box.height})).filter(r=>r.bottom>top&&r.top<innerHeight&&r.left+r.width>0&&r.left<innerWidth);
-    return rects.length?{id,status:'visible',...rects[0],rects}:{id,status:'offscreen',rects:[]};
+    const page=pages[anchor.page-1];if(!page||wordRegionDirty)return {id,status:'unresolved'};
+    const box=page.getBoundingClientRect(),rects=anchor.rects.map(r=>({left:box.left+r[0]*box.width,right:box.left+(r[0]+r[2])*box.width,top:box.top+r[1]*box.height,width:r[2]*box.width,height:r[3]*box.height,bottom:box.top+(r[1]+r[3])*box.height}));
+    return finish(page,rects[0],rects.filter(visible));
    }
    const found=resolveFloatingAnchor(anchor);if(!found)return {id,status:'unresolved'};
-   const rects=[];
+   const rects=[];let origin=null,page=null;
    for(const run of runs){
     const start=Number(run.dataset.pmStart),end=Number(run.dataset.pmEnd);
     if(found.to<=start||found.from>=end)continue;
     const walker=document.createTreeWalker(run,NodeFilter.SHOW_TEXT);let node,offset=0;
     while(node=walker.nextNode()){
-     const from=Math.max(0,found.from-start-offset),to=Math.min(node.length,found.to-start-offset);
+     const from=Math.max(0,found.from-start-offset),to=Math.min(node.length,found.to-start-offset),startsAnchor=start+offset+from===found.from;
      offset+=node.length;if(to<=from)continue;
      const range=document.createRange();range.setStart(node,from);range.setEnd(node,to);
-     for(const b of range.getClientRects())if(b.width&&b.right>0&&b.left<innerWidth&&b.bottom>top&&b.top<innerHeight)rects.push({left:b.left,top:b.top,width:b.width,height:b.height,bottom:b.bottom});
+     for(const b of range.getClientRects()){
+      if(!b.width||!b.height)continue;
+      if(!origin&&startsAnchor){origin=b;page=run.closest('.superdoc-page');}
+      if(visible(b))rects.push({left:b.left,top:b.top,width:b.width,height:b.height,bottom:b.bottom});
+     }
     }
    }
-   return rects.length?{id,status:'visible',...rects[0],rects}:{id,status:'offscreen',rects:[]};
+   return finish(page,origin,rects);
   });
   send('anchor-layout',{anchors,top});
   if(ready&&authorshipEnabled)reportAuthorshipLayout(top);

@@ -54,10 +54,18 @@ export async function mountWord({parent,bytes,name,readOnly=false,onChange,onErr
    overlay.style.clipPath=`inset(${Math.max(0,data.top)}px 0 0)`;
    marks.replaceChildren();
    const occupied=new Map();
+   const frameRect=frame.getBoundingClientRect(),sx=frameRect.width/(frame.clientWidth||frameRect.width),sy=frameRect.height/(frame.clientHeight||frameRect.height);
    for(const point of data.anchors){const card=cards.get(point.id);if(!card)continue;
     for(const rect of point.rects||[]){const mark=document.createElement('span');mark.className='pdf-note-mark word-note-mark';const tag=tags.find(t=>t.id===point.id);if(tag)mark.classList.add('tag-'+(tag.status==='followup'?'followup':tag.kind));Object.assign(mark.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px'});marks.append(mark);}
+    card.sourcePageGeometry=point.pageRect?.width>0&&point.pageRect.height>0&&point.pageSize?.width>0&&point.pageSize.height>0?{
+     page:point.page,pageSize:point.pageSize,
+     pageRect:{left:frameRect.left+point.pageRect.left*sx,top:frameRect.top+point.pageRect.top*sy,width:point.pageRect.width*sx,height:point.pageRect.height*sy},
+     anchorRect:{left:frameRect.left+point.anchorRect.left*sx,top:frameRect.top+point.anchorRect.top*sy},
+     viewportRect:{left:frameRect.left,top:frameRect.top+Math.max(0,data.top)*sy,right:frameRect.right,bottom:frameRect.bottom},
+    }:null;
     card.hidden=point.status!=='visible';card.dataset.location=point.status;
-    if(!card.hidden){const key=Math.round(point.left)+':'+Math.round(point.top),slot=occupied.get(key)||0;occupied.set(key,slot+1);card.style.left=Math.max(18,point.left+slot*22)+'px';card.style.top=point.top+'px';card.relayout?.();}
+    if(!card.hidden){const key=Math.round(point.left)+':'+Math.round(point.top),slot=occupied.get(key)||0;occupied.set(key,slot+1);card.style.left=Math.max(18,point.left+slot*22)+'px';card.style.top=point.top+'px';}
+    card.relayout?.();
    }
   }
   else if(data.type==='selection'){

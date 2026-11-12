@@ -19,8 +19,8 @@ export function mountDocumentHeader() {
   const secondaryRow = document.getElementById('secondary-pane').querySelector('.reader-bar');
   secondaryRow.insertBefore(document.getElementById('secondary-tools'),document.getElementById('secondary-close'));
   secondaryRow.append(panelButton('secondary-more'));
-  for(const id of ['code-jump','pdf-outline-toggle','pdf-prev','pdf-next','pdf-search-toggle','word-zoom-out','word-zoom-in','image-out','image-in','secondary-prev','secondary-next'])document.getElementById(id)?.classList.add('panel-overflow-first');
-  for(const id of ['pdf-zoom-out','pdf-zoom-in','word-zoom-reset','image-actual','secondary-zoom-out','secondary-zoom-in'])document.getElementById(id)?.classList.add('panel-overflow-second');
+  for(const id of ['code-jump','pdf-outline-toggle','pdf-prev','pdf-next','pdf-search-toggle','word-zoom-out','word-zoom-in','secondary-prev','secondary-next'])document.getElementById(id)?.classList.add('panel-overflow-first');
+  for(const id of ['pdf-zoom-out','pdf-zoom-in','word-zoom-reset','secondary-zoom-out','secondary-zoom-in'])document.getElementById(id)?.classList.add('panel-overflow-second');
   document.getElementById('open-beside').classList.add('panel-overflow-first');
   observePanelWidth(header); observePanelWidth(bar); observePanelWidth(secondaryRow);
   const pdfTools = document.getElementById('pdf-toolbar');
@@ -78,10 +78,8 @@ export function mountDocumentHeader() {
       else if(texTools.hidden&&texTools.parentElement!==document.getElementById('primary-pane'))document.getElementById('reader-scroll').before(texTools);
     }
     const pdf = !pdfTools.hidden;
-    const image=imageTools && !imageTools.hidden;
-    reader.classList.toggle('document-pdf', pdf);
-    if(image){if(imageTools.parentElement!==parent){if(dual)bar.append(imageTools);else header.insertBefore(imageTools,tools);}}
-    else if(imageTools && imageTools.parentElement!==document.getElementById('primary-pane'))document.getElementById('primary-pane').insertBefore(imageTools,document.getElementById('reader-scroll'));
+    // Image navigation is a visible content toolbar, not part of hidden native pane chrome.
+    if(imageTools&&imageTools.parentElement!==document.getElementById('primary-pane'))document.getElementById('reader-scroll').before(imageTools);
     const pdfParent = pdf ? parent : document.getElementById('primary-pane');
     if (pdfTools.parentElement !== pdfParent) {
       if (pdf && !dual) header.insertBefore(pdfTools, tools);
