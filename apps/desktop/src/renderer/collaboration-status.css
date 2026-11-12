@@ -47,6 +47,13 @@ html[data-theme=dark] .collaboration-status{--agent-active:var(--chat-success,#9
 .collaboration-model-option{display:flex!important;gap:8px;align-items:center;flex-wrap:wrap;padding:10px;border:1px solid var(--line);border-radius:7px;margin-bottom:6px;max-width:100%;white-space:normal!important}
 .collaboration-model-option small{flex:1 0 100%;font-size:max(12px,.9em);color:var(--muted);overflow-wrap:anywhere;margin-inline-start:23px}
 .collaboration-model-actions{display:flex;justify-content:flex-end;gap:7px;flex-wrap:wrap;margin-top:12px}
+/* Keep decision controls outside the long model/Agent list's scrollport. */
+.collaboration-dialog[open]{display:flex;flex-direction:column;overflow:hidden;padding:0}
+.collaboration-dialog-body{flex:1 1 auto;min-height:0;min-width:0;box-sizing:border-box;overflow:auto;overscroll-behavior:contain;padding:20px;scroll-padding-block:12px;overflow-wrap:anywhere}
+.collaboration-dialog>.collaboration-model-actions{flex:none;margin:0;padding:10px 20px;border-top:1px solid var(--line);background:var(--bg);max-height:45dvh;overflow:auto}
+.collaboration-model-dialog>[role=status]{flex:none;margin:0;padding:0 20px;max-height:20dvh;overflow:auto}
+.collaboration-model-dialog>[role=status]:empty{display:none}
 .collaboration-dialog :is(button,input,summary):focus-visible,.collaboration-status button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 @media(max-width:520px){.collaboration-dialog{padding:12px}.collaboration-dialog button,.collaboration-dialog summary,.collaboration-status button{min-height:44px}.collaboration-agent{grid-template-columns:minmax(0,1fr) auto}.collaboration-agent .management-secondary{grid-column:1/-1;grid-row:2}.collaboration-agent .management-actions{grid-column:1/-1!important;grid-row:4;justify-content:flex-start}}
+@media(max-width:520px){.collaboration-dialog[open]{padding:0}.collaboration-dialog-body{padding:12px}.collaboration-dialog>.collaboration-model-actions{padding:8px 12px}.collaboration-model-dialog>[role=status]{padding-inline:12px}}
 @media(forced-colors:active){.collaboration-dot{forced-color-adjust:auto;background:CanvasText;border-color:CanvasText}.collaboration-chip:is([data-state=queued],[data-state=waiting],[data-state=review],[data-state=blocked]) .collaboration-dot{background:transparent;border-width:2px}.collaboration-chip[data-state=failed] .collaboration-dot{border-style:double;border-width:3px}}

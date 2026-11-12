@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Keep model selection confirmation/cancellation, Agent-status close and session-management controls outside independently scrolling content. Preserve model selection, revision/owner checks, diagnostics and unsent drafts; long lists no longer require scrolling to their end to reach actions.
 - Make workspace drawing discussions transcript-first: remove the permanent footer instructions and secondary button row, move source/retention actions into the title menu, bound the compact composer and let the transcript grow with the shared local window.
 - Preserve explicit custom-model image capability through settings, native models.json and static OMP imports. Refuse image submissions to a non-vision native model before inference instead of letting the SDK silently replace images with text. Existing personal configurations are not automatically rewritten.
 - Send frozen ink bounds, image dimensions, normalized coordinates and intersected viewport identities with the composite PNG. Preserve original receipts and portable source manifests; do not invent document pages or precise file selections.

@@ -56,7 +56,7 @@ export function mountSessionRuntimeControls({call,current,refresh,toast=()=>{}})
  contextDetails.className='session-context-details';contextSummary.textContent='上下文详情';contextBody.className='session-context-body';contextDetails.append(contextSummary,contextBody);
  contextDetails.addEventListener('toggle',()=>{if(contextDetails.open)renderContextDetails(contextBody,info?.contextDetails);});
  const technical=disclosure({key:'session-diagnostics',label:'技术诊断',content:[facts,diagnostics]});technical.addEventListener('toggle',()=>{if(technical.open)paintDiagnostics();});
- dialog.append(title,sessionLine.node,status,unavailable,actions,contextDetails,technical);document.body.append(dialog);
+ const body=document.createElement('div');body.className='session-runtime-body';body.append(title,sessionLine.node,status,unavailable,contextDetails,technical);dialog.append(body,actions);document.body.append(dialog);
  let ctx=null,info=null,pending=false,serial=0;const keys=new Map();
  const same=()=>ctx&&current()?.projectId===ctx.projectId&&current()?.target===ctx.target&&current()?.agent?.ownerId===ctx.agent?.ownerId;
  const make=(label,run)=>{const b=document.createElement('button');b.type='button';b.textContent=label;b.onclick=()=>void run();actions.append(b);return b;};

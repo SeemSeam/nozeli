@@ -19,6 +19,10 @@
 .session-runtime-dialog textarea{min-height:150px;resize:vertical}
 .session-runtime-dialog :is(button,pre,textarea):focus-visible{outline:2px solid var(--ui-control-focus,var(--green));outline-offset:2px}
 @media(max-width:640px){.session-runtime-dialog{padding:12px}.session-runtime-actions button{min-height:44px}}
+.session-runtime-dialog[open]{display:flex;flex-direction:column;overflow:hidden;padding:0}
+.session-runtime-body{flex:1 1 auto;min-height:0;min-width:0;box-sizing:border-box;overflow:auto;overscroll-behavior:contain;padding:20px;overflow-wrap:anywhere}
+.session-runtime-dialog>.session-runtime-actions{flex:none;padding:10px 20px;border-top:1px solid var(--line);background:var(--paper);max-height:45dvh;overflow:auto}
+@media(max-width:640px){.session-runtime-body{padding:12px}.session-runtime-dialog>.session-runtime-actions{padding:8px 12px}}
 .session-context-details{margin-block:16px;border-block:1px solid var(--line);min-width:0}
 .session-context-details summary{padding:12px 4px;min-height:44px;box-sizing:border-box;cursor:pointer;font-weight:600}
 .session-context-details summary:focus-visible{outline:2px solid var(--ui-control-focus,var(--green));outline-offset:2px}
