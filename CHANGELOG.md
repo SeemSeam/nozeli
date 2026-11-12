@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Use shared transparent rounded application artwork for native windows, Linux launchers, in-app branding and macOS Dock/ICNS. Retain the original brand image and a deterministic icon rebuild script; packaging and runtime use the same native PNG.
 - Keep model selection confirmation/cancellation, Agent-status close and session-management controls outside independently scrolling content. Preserve model selection, revision/owner checks, diagnostics and unsent drafts; long lists no longer require scrolling to their end to reach actions.
 - Make workspace drawing discussions transcript-first: remove the permanent footer instructions and secondary button row, move source/retention actions into the title menu, bound the compact composer and let the transcript grow with the shared local window.
 - Preserve explicit custom-model image capability through settings, native models.json and static OMP imports. Refuse image submissions to a non-vision native model before inference instead of letting the SDK silently replace images with text. Existing personal configurations are not automatically rewritten.

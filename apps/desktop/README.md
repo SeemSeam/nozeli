@@ -64,7 +64,7 @@ node tools/package-macos.mjs /absolute/new-output-directory
 ```
 
 - 输出已存在的 `Nozeli.app` 会拒绝覆盖；迭代时选新的输出目录。开发入口与产物均不修改 `/Applications`，不自动提交或推送。
-- Mac 打包从 `assets/brand/nozeli-paired-tabs-icon.png` 生成16至1024像素的ICNS表示，写入 `CFBundleIconFile=Nozeli.icns`；程序启动时同步设置Dock品牌图标。生成失败会使打包失败，不保留Electron默认图标作为替代。
+- 应用图标统一使用透明留白、抗锯齿圆角资源：`node tools/build-app-icons.mjs` 从未修改的 `assets/brand/nozeli-paired-tabs-icon.png` 生成原生图标 `assets/nozeli.png`（1024px）和界面图标 `assets/brand/nozeli-small-icon.png`（256px）；renderer构建复制小图标，Linux安装入口和原生窗口读取原生图标，Mac Dock与ICNS也共用该原生图稿。Mac打包生成16至1024像素ICNS并写入 `CFBundleIconFile=Nozeli.icns`，生成失败中止打包，不回退Electron默认图标。品牌原图／README宣传图不改变。
 - 包内自带 SHA-256 锁定 Node 22.23.4、Git 2.53.0、Pi SDK；无需依赖用户安装的 Node/Git/Pi。原生 `.node` helper 与进程工具随包携带，缺失时明确拒绝，不放松安全边界。
 - 签名仅 **ad-hoc**，无 Developer ID、无公证、无自动更新验收；不应当作已完成审计的公开安装包。macOS 沙箱隔离和外部系统终端接管仍明确不支持，普通 Agent／内置项目终端以当前用户权限执行。
 - 本机专项：`node tools/platform-probe.mjs --no-isolation --pretty`；文件／耐久性回归 `node --test tests/platform-filesystem.test.mjs tests/platform-persistence.test.mjs`；真实 Pi 本地夹具 `node --test tests/pi-native-tools-live.mjs tests/pi-lifecycle-live.mjs`（Linux bubblewrap 专项在 Mac 跳过）。隔离临时根使用 `realpath(os.tmpdir())`；不要将 `/tmp` 符号链接当作安全锚定根。

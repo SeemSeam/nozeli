@@ -86,7 +86,7 @@ export async function assembleMacosBundle({source, output, manifest, lock, relea
     try {
       const directory = path.join(iconset, 'Nozeli.iconset');
       await fs.mkdir(directory);
-      const artwork = path.join(source, 'assets/brand/nozeli-paired-tabs-icon.png');
+      const artwork = path.join(source, 'assets/nozeli.png');
       for (const size of [16, 32, 128, 256, 512]) for (const scale of [1, 2]) {
         const pixels = String(size * scale);
         execFileSync('/usr/bin/sips', ['-z', pixels, pixels, artwork, '--out', path.join(directory, `icon_${size}x${size}${scale === 2 ? '@2x' : ''}.png`)], {stdio: 'pipe'});

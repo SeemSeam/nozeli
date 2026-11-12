@@ -1,3 +1,9 @@
+## 全平台圆角应用图标（2026-11-12，源码完成，未安装／提交／发布）
+
+- 用户先要求适配Mac，随后明确所有平台都可改圆角。保留品牌原图与README宣传图，`tools/build-app-icons.mjs` 生成1024px `assets/nozeli.png`和256px `assets/brand/nozeli-small-icon.png`：透明留白、抗锯齿圆角、不依赖CSS遮罩。原生主窗／独立窗和Linux安装入口沿原assets/nozeli.png路径，renderer沿原小图标路径；Mac ICNS及Dock改为读取同一原生图稿，删除临时Mac专用资产，不保留两份运行来源。
+- 实际生成器连续重建字节一致；原生PNG alpha范围(80,80,944,944)，小图标(20,20,236,236)，四角透明、中心不透明且边缘含抗锯齿；renderer输出与小图标原件逐字节相同。原品牌图SHA256保持不变。renderer构建与三个入口语法检查通过。
+- Linux真实Electron `/var/tmp/nozeli-platform-chrome-8xUnYV/report.json` ok=true、正常exit0、Provider请求0，主窗／独立内容／对话及深浅色／窄窗截图已生成，主窗图标截图已查看。截图同时出现合成项目待办“ERR_SQLITE_ERROR”提示，该旅程未检查此存储状态，不据此宣称整产品无错，也未修改存储逻辑。Mac原生ICNS／Dock及Windows桌面外观本轮未实机验证；不清系统图标缓存、不替换日常安装。
+
 ## 模型选择与长内容弹窗固定操作区（2026-11-12，源码修复，未安装／提交／发布）
 
 - 用户报告模型选择的确认按钮在长列表末尾不可见。本轮改为弹窗内容独立滚动、操作区常驻可见，不使用覆盖列表项的全局fixed样式。相同问题同步修复Agent状态长列表的关闭区、会话管理长诊断／上下文详情的操作区。设置主窗已有独立内容滚动及常驻关闭，不扩大成所有dialog的全局重排；业务model.set、owner／revision、禁用条件和晚到保护未变。
