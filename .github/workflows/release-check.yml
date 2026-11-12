@@ -7,7 +7,7 @@ on:
         description: Existing release tag to validate (never a branch or arbitrary shell input)
         required: true
         type: string
-        default: v0.1.0-beta.2
+        default: v0.1.0-beta.4
 
 permissions:
   contents: read

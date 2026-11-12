@@ -31,7 +31,7 @@ jobs:
   package:
     name: macOS arm64 draft packaging and archive smoke
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 75
     defaults:
       run:
         working-directory: apps/desktop
@@ -88,6 +88,9 @@ jobs:
           TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_BINARY="$SMOKE_ROOT/Nozeli.app/Contents/MacOS/Nozeli" node tests/desktop-office-journey-live.mjs
           TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_BINARY="$SMOKE_ROOT/Nozeli.app/Contents/MacOS/Nozeli" node tests/desktop-platform-chrome-live.mjs
           TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_BINARY="$SMOKE_ROOT/Nozeli.app/Contents/MacOS/Nozeli" node tests/desktop-timeline-order-live.mjs
+          TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_APP_ROOT="$SMOKE_ROOT/Nozeli.app/Contents/Resources/app" NOZELI_TEST_BINARY="$SMOKE_ROOT/Nozeli.app/Contents/MacOS/Nozeli" node tests/desktop-image-navigation-live.mjs
+          TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_APP_ROOT="$SMOKE_ROOT/Nozeli.app/Contents/Resources/app" NOZELI_TEST_BINARY="$SMOKE_ROOT/Nozeli.app/Contents/MacOS/Nozeli" node tests/desktop-word-page-tags-live.mjs
+          TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_APP_ROOT="$SMOKE_ROOT/Nozeli.app/Contents/Resources/app" NOZELI_TEST_BINARY="$SMOKE_ROOT/Nozeli.app/Contents/MacOS/Nozeli" node tests/desktop-markdown-label-gestures-live.mjs
       - name: Keep draft artifacts as Actions artifacts (never a public release upload)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -123,6 +126,9 @@ jobs:
             apps/desktop/.test-output/ci/nozeli-timeline-order-*/report.json
             apps/desktop/.test-output/ci/nozeli-timeline-order-*/electron.log
             apps/desktop/.test-output/ci/nozeli-timeline-order-*/*.png
+            apps/desktop/.test-output/ci/nozeli-label-windows-*/report.json
+            apps/desktop/.test-output/ci/nozeli-label-windows-*/electron.log
+            apps/desktop/.test-output/ci/nozeli-label-windows-*/*.png
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 7

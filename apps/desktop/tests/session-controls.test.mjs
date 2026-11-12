@@ -38,7 +38,7 @@ test('context disclosure renders only local allowlisted evidence without extra c
  environment();const calls=[],details=contextFixture();
  const ui=mountSessionRuntimeControls({current:()=>owner(),call:async(op)=>{calls.push(op);return {available:true,ownerId:'owner',contextDetails:details};}});
  ui.update(visible);ui.button.click();await settle();
- const dialog=document.body.children[0],disclosure=dialog.children.find(node=>node.tag==='details'),body=disclosure.children[1];
+ const dialog=document.body.children[0],disclosure=descendants(dialog).find(node=>node.className==='session-context-details'),body=disclosure.children[1];
  assert.equal(disclosure.open,false);assert.equal(body.children.length,0);
  toggle(disclosure,true);const rendered=allText(body);
  for(const expected of ['  原文\n\n保持空白  ','material-digest','entry-digest','scope-2','可选内容超过预算','REJECTED','content-rejection','未提供捕获证据','未确认收到','字节不等于 token','source-digest'])assert.ok(rendered.includes(expected),expected);
@@ -49,13 +49,13 @@ test('context disclosure renders only local allowlisted evidence without extra c
 test('pending admission, absent body and captured native request remain distinct from provider receipt',async()=>{
  environment();const details=contextFixture();details.lastRequest.userText.exact=null;details.lastRequest.evidence={stage:'submitted',nativeContext:{captured:true,note:'本地 hook 捕获'},providerObserved:false};
  const ui=mountSessionRuntimeControls({current:()=>owner(),call:async()=>({available:true,contextDetails:details})});
- ui.button.click();await settle();const disclosure=document.body.children[0].children.find(node=>node.tag==='details');toggle(disclosure,true);
+ ui.button.click();await settle();const disclosure=descendants(document.body.children[0]).find(node=>node.className==='session-context-details');toggle(disclosure,true);
  const rendered=allText(disclosure);for(const expected of ['已提交（未证明准入）','无可读取正文','已有本地 native context hook 捕获','未确认收到'])assert.ok(rendered.includes(expected),expected);
 });
 test('late snapshots cannot repopulate context after owner changes',async()=>{
  environment();let ctx=owner(),resolve;
  const ui=mountSessionRuntimeControls({current:()=>ctx,call:()=>new Promise(done=>{resolve=done;})});
- ui.button.click();const disclosure=document.body.children[0].children.find(node=>node.tag==='details');toggle(disclosure,true);
+ ui.button.click();const disclosure=descendants(document.body.children[0]).find(node=>node.className==='session-context-details');toggle(disclosure,true);
  ctx=owner('other-project','other-owner');ui.update(visible);resolve({contextDetails:contextFixture()});await settle();
  assert.equal(disclosure.open,false);assert.equal(disclosure.children[1].children.length,0);
  toggle(disclosure,true);assert.ok(!allText(disclosure).includes('原文\n\n保持空白'));
@@ -63,7 +63,7 @@ test('late snapshots cannot repopulate context after owner changes',async()=>{
 test('failed snapshot refresh clears old context without starting a diagnostic request',async()=>{
  environment();let fail=false;const calls=[];
  const ui=mountSessionRuntimeControls({current:()=>owner(),call:async(op)=>{calls.push(op);if(fail)throw Error('local read failed');return {contextDetails:contextFixture()};}});
- ui.button.click();await settle();const dialog=document.body.children[0],disclosure=dialog.children.find(node=>node.tag==='details');toggle(disclosure,true);fail=true;
+ ui.button.click();await settle();const dialog=document.body.children[0],disclosure=descendants(dialog).find(node=>node.className==='session-context-details');toggle(disclosure,true);fail=true;
  dialog.children.find(node=>node.className==='session-runtime-actions').children[3].click();await settle();
  assert.equal(disclosure.children[1].children.length,0);assert.deepEqual(calls,['session.options','session.options']);assert.ok(allText(dialog).includes('读取失败：local read failed'));
 });

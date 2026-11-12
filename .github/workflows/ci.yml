@@ -89,7 +89,7 @@ jobs:
   build-smoke:
     name: Linux clean build and smoke
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: apps/desktop
@@ -138,6 +138,9 @@ jobs:
           TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_BINARY="$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/nozeli" xvfb-run -a node tests/desktop-office-journey-live.mjs
           TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_BINARY="$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/nozeli" xvfb-run -a node tests/desktop-platform-chrome-live.mjs
           TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_BINARY="$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/nozeli" xvfb-run -a node tests/desktop-timeline-order-live.mjs
+          TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_APP_ROOT="$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/resources/app" NOZELI_TEST_BINARY="$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/nozeli" xvfb-run -a node tests/desktop-image-navigation-live.mjs
+          TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_APP_ROOT="$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/resources/app" NOZELI_TEST_BINARY="$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/nozeli" xvfb-run -a node tests/desktop-word-page-tags-live.mjs
+          TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_APP_ROOT="$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/resources/app" NOZELI_TEST_BINARY="$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/nozeli" xvfb-run -a node tests/desktop-markdown-label-gestures-live.mjs
         env:
           NOZELI_OZONE: x11
       - name: Preserve private Linux draft artifacts
@@ -173,6 +176,9 @@ jobs:
             apps/desktop/.test-output/ci/nozeli-timeline-order-*/report.json
             apps/desktop/.test-output/ci/nozeli-timeline-order-*/electron.log
             apps/desktop/.test-output/ci/nozeli-timeline-order-*/*.png
+            apps/desktop/.test-output/ci/nozeli-label-windows-*/report.json
+            apps/desktop/.test-output/ci/nozeli-label-windows-*/electron.log
+            apps/desktop/.test-output/ci/nozeli-label-windows-*/*.png
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 7
