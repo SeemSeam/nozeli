@@ -1632,7 +1632,7 @@ async function refreshNotes() {
   }
   projectTags();
   applyPendingNote(file);
-  if(view?.fileView?.zoom)await ui.pdf?.restoreView?.(view.fileView.zoom);
+  if(view?.fileView?.zoom)await ui.pdf?.restoreView?.(file.kind==='image'?{...view.fileView.zoom,scrollTop:Number.isFinite(view.scrollTop)?view.scrollTop:view.fileView.zoom.scrollTop}:view.fileView.zoom);
   if (!ui.editor || ui.textMode === 'read') $('reader-scroll').scrollTop = Number.isFinite(view?.scrollTop) ? view.scrollTop : 0;
   renderFileTabs();
   if (isDocumentMirror && pendingMirrorBuffer) applyMirrorBuffer(pendingMirrorBuffer);

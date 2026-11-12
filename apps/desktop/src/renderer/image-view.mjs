@@ -11,7 +11,7 @@ export async function mountImage({parent,bytes,info,onSelection=()=>{},onZoom=()
  try{original.getContext('2d').drawImage(bitmap,0,0);}finally{bitmap.close();}
  const wrap=document.createElement('div');wrap.className='image-page';wrap.tabIndex=0;wrap.setAttribute('role','region');wrap.setAttribute('aria-label','图片查看与区域标注；加减键缩放，0原始尺寸，F适应，空格临时拖动');
  const canvas=document.createElement('canvas');canvas.width=info.width;canvas.height=info.height;canvas.getContext('2d').drawImage(original,0,0);wrap.append(canvas);parent.append(wrap);
- const scroll=parent.parentElement;let disposed=false,scale=1,mode='fit',region=false,drawing=false,notes=[],tags=[],selection=null,drag=null,panDrag=null,panPreferred=true,spaceHeld=false;const open=new Map(),cleanups=[];
+ const scroll=parent.parentElement;let disposed=false,scale=1,mode='fit',region=false,drawing=false,notes=[],tags=[],selection=null,drag=null,panDrag=null,panPreferred=true,spaceHeld=false,restoredPosition=null;const open=new Map(),cleanups=[];
  const remember=()=>{for(const n of wrap.querySelectorAll('.note-anchor'))open.set(n.dataset.annotation,n.querySelector('.note-index')?.getAttribute('aria-expanded')==='true');};
  function paint(){remember();const retained=new Map([...wrap.querySelectorAll('.note-anchor')].filter(node=>tags.some(tag=>tag.id===node.dataset.annotation)).map(node=>[node.dataset.annotation,node]));wrap.querySelectorAll('.image-region-mark,.image-point-mark,.note-anchor,.region-drawing-projection').forEach(n=>{if(!retained.has(n.dataset.annotation))n.remove();});
   for(const [items,conversation] of [[notes,false],[tags,true]])for(const item of items){
@@ -59,13 +59,14 @@ export async function mountImage({parent,bytes,info,onSelection=()=>{},onZoom=()
  }
  function zoom(action,point){
   if(disposed||drawing)return;
+  restoredPosition=null;
   if(action===null)mode='fit';
   else if(action==='actual'){mode='manual';scale=1;}
   else {if(!Number.isFinite(action)||action<=0||action<1&&scale<=minScale)return;mode='manual';scale=Math.max(minScale,Math.min(maxScale,scale*action));}
   layout({point});
  }
  const observer=new ResizeObserver(()=>{
-  const left=scroll.scrollLeft,top=scroll.scrollTop;layout();
+  const left=restoredPosition?.left??scroll.scrollLeft,top=restoredPosition?.top??scroll.scrollTop;layout();
   if(mode==='manual'){scroll.scrollLeft=left;scroll.scrollTop=top;}
  });observer.observe(scroll);layout();
  function modeRegion(value){stopPan();cancelRegion();region=Boolean(value);wrap.classList.toggle('region-selecting',region);onRegion(region);reportPan();clear();}
@@ -106,6 +107,8 @@ export async function mountImage({parent,bytes,info,onSelection=()=>{},onZoom=()
  }
  function wheel(e){if(!(e.ctrlKey||e.metaKey)||!e.deltaY||blocked(e.target))return;e.preventDefault();if(drawing||drag||panDrag)return;const delta=e.deltaY*(e.deltaMode===1?16:e.deltaMode===2?scroll.clientHeight:1);zoom(Math.exp(-Math.max(-100,Math.min(100,delta))*.002),e.target.closest('.image-page')===wrap?{x:e.clientX,y:e.clientY}:undefined);}
  function listen(target,type,fn,options){target.addEventListener(type,fn,options);cleanups.push(()=>target.removeEventListener(type,fn,options));}
+ const userNavigation=event=>{if(event.isTrusted&&!blocked(event.target))restoredPosition=null;};
+ listen(scroll,'pointerdown',userNavigation,true);listen(scroll,'wheel',userNavigation,{capture:true,passive:true});listen(scroll,'keydown',userNavigation,true);
  listen(wrap,'pointerdown',down);listen(document,'pointermove',move,true);listen(document,'pointerup',up,true);listen(document,'pointercancel',cancel,true);
  listen(wrap,'lostpointercapture',e=>{if(e.pointerType!=='mouse')cancel(e);});
  listen(scroll,'wheel',wheel,{passive:false});listen(scroll,'keydown',key);
@@ -118,12 +121,15 @@ export async function mountImage({parent,bytes,info,onSelection=()=>{},onZoom=()
   pointRect(a){if(!a||a.space!=='image-normalized'||a.width!==info.width||a.height!==info.height||!Number.isFinite(a.x))return null;const b=wrap.getBoundingClientRect();return {left:b.left+a.x*b.width,top:b.top+a.y*b.height,right:b.left+a.x*b.width,bottom:b.top+a.y*b.height};},
   drawingActive(value){drawing=value;if(drawing)blur();cursor();},
   regionRect(a){if(a.space!=='image-normalized'||a.width!==info.width||a.height!==info.height)return null;const b=wrap.getBoundingClientRect(),r=a.rects[0];return {left:b.left+r[0]*b.width,top:b.top+r[1]*b.height,right:b.left+(r[0]+r[2])*b.width,bottom:b.top+(r[1]+r[3])*b.height};},
-  viewState:()=>({mode,scale,scrollLeft:scroll.scrollLeft,pan:panPreferred}),
+  viewState:()=>({mode,scale,scrollLeft:restoredPosition?.left??scroll.scrollLeft,scrollTop:restoredPosition?.top??scroll.scrollTop,pan:panPreferred}),
   restoreView(value){
    mode=value?.mode==='manual'?'manual':'fit';
    if(Number.isFinite(value?.scale)&&value.scale>0)scale=Math.max(minScale,Math.min(maxScale,value.scale));
    panPreferred=value?.pan!==false;layout();
-   if(mode==='manual'&&Number.isFinite(value?.scrollLeft))scroll.scrollLeft=Math.max(0,value.scrollLeft);
+   if(mode==='manual'){
+    restoredPosition={left:Number.isFinite(value?.scrollLeft)?Math.max(0,value.scrollLeft):scroll.scrollLeft,top:Number.isFinite(value?.scrollTop)?Math.max(0,value.scrollTop):scroll.scrollTop};
+    scroll.scrollLeft=restoredPosition.left;scroll.scrollTop=restoredPosition.top;
+   }
    reportPan();
   },
   captureRegion,current:()=>1,region:modeRegion,
