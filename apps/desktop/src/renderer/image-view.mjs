@@ -64,7 +64,10 @@ export async function mountImage({parent,bytes,info,onSelection=()=>{},onZoom=()
   else {if(!Number.isFinite(action)||action<=0||action<1&&scale<=minScale)return;mode='manual';scale=Math.max(minScale,Math.min(maxScale,scale*action));}
   layout({point});
  }
- const observer=new ResizeObserver(()=>layout());observer.observe(scroll);layout();
+ const observer=new ResizeObserver(()=>{
+  const left=scroll.scrollLeft,top=scroll.scrollTop;layout();
+  if(mode==='manual'){scroll.scrollLeft=left;scroll.scrollTop=top;}
+ });observer.observe(scroll);layout();
  function modeRegion(value){stopPan();cancelRegion();region=Boolean(value);wrap.classList.toggle('region-selecting',region);onRegion(region);reportPan();clear();}
  function down(e){
   if(drawing||e.isPrimary===false||blocked(e.target)||drag||panDrag)return;
