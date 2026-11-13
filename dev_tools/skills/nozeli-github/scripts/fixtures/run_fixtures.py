@@ -125,11 +125,17 @@ def gh_endpoint_map(version, head, manifest, asset_names, draft=True):
              'assets': asset_list},
         ],
         f'repos/{REPO_NAME}/actions/workflows/ci.yml/runs?head_sha={head}&per_page=100': {
-            'workflow_runs': [{'id': 7, 'run_number': 3, 'run_attempt': 1, 'head_sha': head,
+            'workflow_runs': [{'id': 7, 'workflow_id': 42, 'run_number': 3, 'run_attempt': 1, 'head_sha': head,
                                'status': 'completed', 'conclusion': 'success',
                                'html_url': 'https://fixture.invalid/run/7'}]},
-        'repos/fixture/nozeli/actions/runs/7/jobs?per_page=100': {
-            'jobs': [{'name': 'CI gate', 'conclusion': 'success'}]},
+        f'repos/{REPO_NAME}/actions/runs/7': {
+            'id': 7, 'workflow_id': 42, 'run_attempt': 1, 'head_sha': head,
+            'path': '.github/workflows/ci.yml', 'event': 'push',
+            'head_repository': {'full_name': REPO_NAME}, 'status': 'completed',
+            'conclusion': 'success', 'html_url': 'https://fixture.invalid/run/7'},
+        f'repos/{REPO_NAME}/actions/runs/7/attempts/1/jobs?per_page=100': {
+            'jobs': [{'name': name, 'conclusion': 'success'} for name in
+                     ['Linux unit', 'Linux integration', 'Linux clean build and smoke', 'macOS native safety', 'CI gate']]},
         f'repos/{REPO_NAME}/releases/assets/{sums_id}': manifest,  # octet-stream download
     }
 
@@ -148,11 +154,13 @@ def install_gh_stub(bin_dir, map_path):
     return env
 
 
-def run_checker(repo, phase, assets_dir, env=None):
+def run_checker(repo, phase, assets_dir, env=None, ci_run_id=None):
     command = [sys.executable, str(CHECKER), '--phase', phase, '--repo', REPO_NAME,
                '--root', str(repo)]
     if assets_dir is not None:
         command += ['--assets-dir', str(assets_dir)]
+    if ci_run_id is not None:
+        command += ['--ci-run-id', str(ci_run_id)]
     finished = subprocess.run(command, cwd=repo, env=env or os.environ.copy(),
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                               text=True, timeout=180)
@@ -207,6 +215,23 @@ SCENARIOS = [
          excludes=['macos-arm64']),
 ]
 
+for case in [
+    dict(name='reuse-success-with-new-pending', duplicate='in_progress', expect=0),
+    dict(name='reuse-never-masks-new-failure', duplicate='completed', duplicate_conclusion='failure', expect=1),
+    dict(name='reuse-never-masks-cancelled', duplicate='completed', duplicate_conclusion='cancelled', expect=1),
+    dict(name='reuse-wrong-sha', ci_detail={'head_sha': '0'*40}, expect=1),
+    dict(name='reuse-wrong-workflow', ci_detail={'path': '.github/workflows/untrusted.yml'}, expect=1),
+    dict(name='reuse-fork', ci_detail={'head_repository': {'full_name': 'fork/nozeli'}}, expect=1),
+    dict(name='reuse-new-attempt', ci_detail={'run_attempt': 2}, expect=1),
+    dict(name='reuse-failed-gate', gate_failure=True, expect=1),
+    dict(name='reuse-unknown-run', ci_run_id=99, expect=1),
+]:
+    SCENARIOS.append(dict(version='0.1.0-alpha.6', platforms=LINUX_PLATFORMS, phase='draft',
+                          mac=False, remote=dict(draft=True, drop_mac=False), ci_run_id=7,
+                          contains=[], excludes=[], **{k:v for k,v in case.items() if k!='ci_run_id'}))
+    if 'ci_run_id' in case:
+        SCENARIOS[-1]['ci_run_id'] = case['ci_run_id']
+
 
 def run_scenario(workspace, scenario):
     root = workspace / 'repo'
@@ -233,10 +258,20 @@ def run_scenario(workspace, scenario):
         public_names += ['SHA256SUMS.txt']
         mapping = gh_endpoint_map(scenario['version'], head, manifest, public_names,
                                   draft=remote['draft'])
+        ci_endpoint = f'repos/{REPO_NAME}/actions/workflows/ci.yml/runs?head_sha={head}&per_page=100'
+        detail = mapping[f'repos/{REPO_NAME}/actions/runs/7']
+        if scenario.get('duplicate'):
+            duplicate = dict(mapping[ci_endpoint]['workflow_runs'][0], id=8, run_number=4,
+                             status=scenario['duplicate'], conclusion=scenario.get('duplicate_conclusion'))
+            mapping[ci_endpoint]['workflow_runs'].append(duplicate)
+        if scenario.get('ci_detail'):
+            detail.update(scenario['ci_detail'])
+        if scenario.get('gate_failure'):
+            mapping[f'repos/{REPO_NAME}/actions/runs/7/attempts/1/jobs?per_page=100']['jobs'][-1]['conclusion'] = 'failure'
         map_path = workspace / 'gh_map.json'
         write(map_path, json.dumps(mapping, indent=2))
         env = install_gh_stub(workspace / 'bin', map_path)
-    code, output = run_checker(root, scenario['phase'], assets, env)
+    code, output = run_checker(root, scenario['phase'], assets, env, scenario.get('ci_run_id'))
     problems = []
     if code != scenario['expect']:
         problems.append(f'exit {code}, expected {scenario["expect"]}')

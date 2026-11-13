@@ -14,24 +14,240 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  tests:
-    name: Linux ${{ matrix.suite }}
+  plan:
+    name: CI test plan
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        suite: [unit, integration]
+    timeout-minutes: 15
+    permissions:
+      # Read-only GitHub API access to resolve the latest published release tag.
+      contents: read
+    outputs:
+      mode: ${{ steps.plan.outputs.mode }}
+      suites: ${{ steps.plan.outputs.suites }}
+      buildSmoke: ${{ steps.plan.outputs.buildSmoke }}
+      macosNative: ${{ steps.plan.outputs.macosNative }}
     defaults:
       run:
         working-directory: apps/desktop
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: the planner diffs base..head and verifies ancestry itself.
+          fetch-depth: 0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '22.23.4'
+      - name: Resolve trusted base and head from the GitHub event payload
+        id: refs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PLAN_REFS_PATH: ${{ runner.temp }}/ci-plan-refs.json
+        run: |
+          node --input-type=module <<'NODE'
+          import {execFileSync} from 'node:child_process';
+          import {mkdirSync, readFileSync, writeFileSync} from 'node:fs';
+          import path from 'node:path';
+
+          const gitOk = (...args) => {
+            try { execFileSync('git', args, {stdio: 'ignore'}); return true; } catch { return false; }
+          };
+          const isSha = (value) => typeof value === 'string' && /^[0-9a-f]{40}$/i.test(value);
+          const brief = (error) => String(error?.message ?? error).replace(/\s+/g, ' ').slice(0, 200);
+          const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
+          const eventName = process.env.GITHUB_EVENT_NAME ?? '';
+          const head = execFileSync('git', ['rev-parse', 'HEAD'], {encoding: 'utf8'}).trim();
+          const ref = typeof event?.ref === 'string' ? event.ref : '';
+          const releaseBranch = /^refs\/heads\/release\/beta/.test(ref);
+          let base = '';
+          let forceFullReason = '';
+          const forceFull = (reason) => { if (!forceFullReason) forceFullReason = reason; };
+
+          const apiHeaders = {accept: 'application/vnd.github+json', authorization: `Bearer ${process.env.GITHUB_TOKEN}`, 'x-github-api-version': '2022-11-28'};
+          const fetchJson = async (url) => {
+            const response = await fetch(url, {headers: apiHeaders});
+            if (!response.ok) throw new Error(`${url} responded ${response.status}`);
+            return response.json();
+          };
+
+          // Release branches must diff against the latest published (non-draft) v* release,
+          // never against the previous push tip; drafts and pagination truncation are rejected.
+          const latestPublishedReleaseTag = async () => {
+            const repo = event.repository?.full_name;
+            if (!repo) throw new Error('event payload lacks repository identity');
+            for (let page = 1; page <= 10; page += 1) {
+              const releases = await fetchJson(`https://api.github.com/repos/${repo}/releases?per_page=100&page=${page}`);
+              if (!Array.isArray(releases)) throw new Error('releases response is not a list');
+              const published = releases.find((release) => release?.draft === false && typeof release.tag_name === 'string' && release.tag_name.startsWith('v'));
+              if (published) return published.tag_name;
+              if (releases.length < 100) return null;
+            }
+            throw new Error('published release scan exceeded the bounded page budget');
+          };
+
+          const resolveTagCommit = async (tagName) => {
+            const repo = event.repository.full_name;
+            const ref = await fetchJson(`https://api.github.com/repos/${repo}/git/ref/tags/${encodeURIComponent(tagName)}`);
+            if (!isSha(ref?.object?.sha)) throw new Error(`tag ${tagName} ref is malformed`);
+            if (ref.object.type === 'commit') return ref.object.sha;
+            if (ref.object.type !== 'tag') throw new Error(`tag ${tagName} points at a ${ref.object.type}`);
+            const annotated = await fetchJson(`https://api.github.com/repos/${repo}/git/tags/${ref.object.sha}`);
+            if (annotated?.object?.type !== 'commit' || !isSha(annotated.object.sha)) throw new Error(`annotated tag ${tagName} does not resolve to a commit`);
+            return annotated.object.sha;
+          };
+
+          const resolveReleaseBaseline = async () => {
+            try {
+              const tagName = await latestPublishedReleaseTag();
+              if (!tagName) { forceFull('no published v* release exists to diff this release against'); return; }
+              const tagCommit = await resolveTagCommit(tagName);
+              if (!gitOk('cat-file', '-e', `${tagCommit}^{commit}`)) { forceFull(`release tag ${tagName} commit is absent from the fetched history`); return; }
+              if (!gitOk('merge-base', '--is-ancestor', tagCommit, head)) { forceFull(`latest published release ${tagName} is not an ancestor of this release head`); return; }
+              base = tagCommit;
+            } catch (error) {
+              forceFull(`release baseline lookup failed: ${brief(error)}`);
+            }
+          };
+
+          if (eventName === 'push') {
+            const before = event?.before;
+            const after = event?.after;
+            if (typeof before !== 'string' || typeof after !== 'string') {
+              forceFull('push payload lacks top-level before/after');
+            } else {
+              if (!isSha(after) || after !== head) forceFull('push head does not match the checked-out commit');
+              if (releaseBranch) {
+                await resolveReleaseBaseline();
+              } else if (/^refs\/heads\/integration\//.test(ref)) {
+                // Re-verify the branch's complete increment: a leaf push whose `before`
+                // only reaches the last tip would hide earlier unverified commits.
+                if (!gitOk('cat-file', '-e', 'refs/remotes/origin/main')) forceFull('integration push lacks origin/main for the branch increment baseline');
+                else {
+                  let mergeBase = '';
+                  try { mergeBase = execFileSync('git', ['merge-base', 'origin/main', head], {encoding: 'utf8'}).trim(); } catch { mergeBase = ''; }
+                  if (!isSha(mergeBase)) forceFull('integration push shares no merge-base with origin/main');
+                  else if (mergeBase === head) {
+                    // main already contains this head; fall back to the push tip, requiring ancestry.
+                    if (isSha(before) && !/^0+$/.test(before) && gitOk('merge-base', '--is-ancestor', before, head)) base = before;
+                    else forceFull('integration head is already in main and its before tip is not a usable ancestor baseline');
+                  } else {
+                    base = mergeBase;
+                  }
+                }
+              } else if (isSha(before) && !/^0+$/.test(before)) {
+                // main is protected: its previous tip is a trusted baseline.
+                base = before;
+              } else {
+                forceFull('push carries no usable before baseline (new or rewritten ref)');
+              }
+            }
+          } else if (eventName === 'pull_request' && event?.pull_request) {
+            const baseSha = event.pull_request.base?.sha;
+            if (isSha(baseSha)) base = baseSha;
+            else forceFull('pull request event lacks a base sha');
+          } else if (eventName === 'workflow_dispatch') {
+            forceFull('manual dispatch always plans the complete CI matrix');
+          } else {
+            forceFull(`event ${eventName || 'unknown'} has no trusted diff baseline`);
+          }
+
+          if (!isSha(head)) throw new Error('resolved head is not a commit sha');
+          const refs = {head, base, releaseBranch, forceFull: Boolean(forceFullReason), reason: forceFullReason || 'trusted event baseline'};
+          mkdirSync(path.dirname(process.env.PLAN_REFS_PATH), {recursive: true});
+          writeFileSync(process.env.PLAN_REFS_PATH, `${JSON.stringify(refs)}\n`);
+          console.log(`CI plan refs: forceFull=${refs.forceFull} base=${base || '(none)'} head=${head} reason=${refs.reason}`);
+          NODE
+      - name: Compute the CI test plan for the resolved refs
+        id: plan
+        env:
+          PLAN_REFS_PATH: ${{ runner.temp }}/ci-plan-refs.json
+          PLAN_JSON_PATH: ${{ runner.temp }}/ci-plan/plan.json
+        run: |
+          node --input-type=module <<'NODE'
+          import {spawnSync} from 'node:child_process';
+          import {appendFileSync, mkdirSync, readFileSync, writeFileSync} from 'node:fs';
+          import path from 'node:path';
+
+          const refs = JSON.parse(readFileSync(process.env.PLAN_REFS_PATH, 'utf8'));
+          mkdirSync(path.dirname(process.env.PLAN_JSON_PATH), {recursive: true});
+          const runPlanner = (extra) => spawnSync(process.execPath, ['tools/ci-test-plan.mjs', ...extra], {encoding: 'utf8'});
+          const parsePlan = (stdout) => {
+            try {
+              const plan = JSON.parse(stdout);
+              if (plan?.schema === 1 && ['full', 'targeted', 'docs'].includes(plan.mode)
+                  && Array.isArray(plan.suites) && plan.suites.includes('unit')
+                  && typeof plan.buildSmoke === 'boolean' && typeof plan.macosNative === 'boolean') return plan;
+            } catch {}
+            return null;
+          };
+
+          const primaryArgs = refs.forceFull
+            ? [`--force-full=${refs.reason}`, '--head', refs.head]
+            : ['--base', refs.base, '--head', refs.head];
+          let attempt = runPlanner(primaryArgs);
+          let plan = attempt.status === 0 ? parsePlan(attempt.stdout) : null;
+          if (!plan) {
+            console.error(`planner failed (exit ${attempt.status ?? 'signal'}); refusing to shrink CI, falling back to full`);
+            if (attempt.stderr) process.stderr.write(attempt.stderr);
+            attempt = runPlanner(['--force-full=planner could not produce a trusted plan; full CI required', '--head', refs.head]);
+            plan = attempt.status === 0 ? parsePlan(attempt.stdout) : null;
+            if (!plan) {
+              if (attempt.stderr) process.stderr.write(attempt.stderr);
+              process.exit(attempt.status ?? 1);
+            }
+          }
+          if (refs.releaseBranch && plan.mode === 'docs') {
+            console.error('docs-only plan on a release branch forfeits the release qualification jobs; requiring full CI');
+            attempt = runPlanner(['--force-full=release branch change must retain the full qualification job matrix', '--head', refs.head]);
+            plan = attempt.status === 0 ? parsePlan(attempt.stdout) : null;
+            if (!plan) {
+              if (attempt.stderr) process.stderr.write(attempt.stderr);
+              process.exit(attempt.status ?? 1);
+            }
+          }
+          writeFileSync(process.env.PLAN_JSON_PATH, attempt.stdout.endsWith('\n') ? attempt.stdout : `${attempt.stdout}\n`);
+          const out = (key, value) => appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${value}\n`);
+          out('mode', plan.mode);
+          out('suites', JSON.stringify(plan.suites));
+          out('buildSmoke', String(plan.buildSmoke));
+          out('macosNative', String(plan.macosNative));
+          console.log(`CI plan: mode=${plan.mode} suites=${plan.suites.join(',')} buildSmoke=${plan.buildSmoke} macosNative=${plan.macosNative}`);
+          NODE
+      - name: Preserve the CI test plan evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-test-plan
+          path: ${{ runner.temp }}/ci-plan/plan.json
+          if-no-files-found: error
+          retention-days: 7
+
+  tests:
+    name: Linux ${{ matrix.suite }}
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ${{ fromJSON(needs.plan.outputs.suites) }}
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # affected-integration re-derives the plan from plan.base..plan.head locally,
+          # which needs full history to resolve the base and the common ancestry.
+          fetch-depth: ${{ matrix.suite == 'integration' && needs.plan.outputs.mode == 'targeted' && '0' || '1' }}
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '22.23.4'
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
+      - name: Restore the CI test plan for this exact run
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ci-test-plan
+          path: ${{ runner.temp }}/ci-plan
       - name: Prepare isolation regression on ephemeral runner
         if: matrix.suite == 'integration'
         run: |
@@ -73,7 +289,13 @@ jobs:
         if: matrix.suite == 'integration'
         run: npm run build:pi
       - name: Run deterministic tests
+        if: matrix.suite != 'integration' || needs.plan.outputs.mode != 'targeted'
         run: npm run test:${{ matrix.suite }}
+        env:
+          CI: 'true'
+      - name: Run the plan-selected integration tests
+        if: matrix.suite == 'integration' && needs.plan.outputs.mode == 'targeted'
+        run: node tools/test-suites.mjs affected-integration --plan "$RUNNER_TEMP/ci-plan/plan.json"
         env:
           CI: 'true'
       - name: Preserve test reports
@@ -88,6 +310,8 @@ jobs:
 
   build-smoke:
     name: Linux clean build and smoke
+    needs: plan
+    if: needs.plan.outputs.buildSmoke != 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     defaults:
@@ -186,6 +410,8 @@ jobs:
 
   macos-native:
     name: macOS native safety
+    needs: plan
+    if: needs.plan.outputs.macosNative != 'false'
     runs-on: macos-15
     timeout-minutes: 30
     defaults:
@@ -214,12 +440,48 @@ jobs:
   gate:
     name: CI gate
     if: always()
-    needs: [tests, build-smoke, macos-native]
+    needs: [plan, tests, build-smoke, macos-native]
     runs-on: ubuntu-24.04
     steps:
-      - name: Require every job to succeed
+      - name: Require the plan and every job it selected to succeed
         env:
+          PLAN: ${{ needs.plan.result }}
           TESTS: ${{ needs.tests.result }}
           BUILD: ${{ needs.build-smoke.result }}
           MACOS: ${{ needs.macos-native.result }}
-        run: test "$TESTS" = success && test "$BUILD" = success && test "$MACOS" = success
+          PLAN_BUILD: ${{ needs.plan.outputs.buildSmoke }}
+          PLAN_MACOS: ${{ needs.plan.outputs.macosNative }}
+        run: |
+          test "$PLAN" = success
+          test "$TESTS" = success
+          if test "$PLAN_BUILD" = false; then test "$BUILD" = skipped; else test "$BUILD" = success; fi
+          if test "$PLAN_MACOS" = false; then test "$MACOS" = skipped; else test "$MACOS" = success; fi
+      - name: Restore the CI test plan evidence for this exact run
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ci-test-plan
+          path: ${{ runner.temp }}/ci-plan
+      - name: Require gate decisions to match the recorded plan evidence
+        env:
+          PLAN_JSON_PATH: ${{ runner.temp }}/ci-plan/plan.json
+          EXPECTED_HEAD: ${{ github.sha }}
+          EXPECTED_MODE: ${{ needs.plan.outputs.mode }}
+          EXPECTED_SUITES: ${{ needs.plan.outputs.suites }}
+          EXPECTED_BUILD: ${{ needs.plan.outputs.buildSmoke }}
+          EXPECTED_MACOS: ${{ needs.plan.outputs.macosNative }}
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import {readFileSync} from 'node:fs';
+
+          const plan = JSON.parse(readFileSync(process.env.PLAN_JSON_PATH, 'utf8'));
+          assert.equal(plan.schema, 1);
+          assert.equal(plan.head, process.env.EXPECTED_HEAD);
+          assert.equal(plan.mode, process.env.EXPECTED_MODE);
+          assert.deepEqual(plan.suites, JSON.parse(process.env.EXPECTED_SUITES));
+          assert.ok(plan.suites.includes('unit'));
+          assert.equal(String(plan.buildSmoke), process.env.EXPECTED_BUILD);
+          assert.equal(String(plan.macosNative), process.env.EXPECTED_MACOS);
+          if (!plan.buildSmoke || !plan.macosNative) assert.equal(plan.mode, 'docs', 'jobs may be skipped only under the docs-only plan');
+          console.log(`CI gate matched plan evidence: mode=${plan.mode} suites=${plan.suites.join(',')} buildSmoke=${plan.buildSmoke} macosNative=${plan.macosNative}`);
+          NODE

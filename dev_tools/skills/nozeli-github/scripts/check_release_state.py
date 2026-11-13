@@ -133,12 +133,41 @@ class Audit:
         if not matching:
             self.check(False, f'CI missing for intended SHA {sha}; no unrelated run accepted')
             return
-        latest = max(matching, key=lambda r: (r.get('run_number', 0), r.get('run_attempt', 0)))
-        ok = latest.get('status') == 'completed' and latest.get('conclusion') == 'success'
-        self.check(ok, f"CI at {sha}: {latest.get('status')}/{latest.get('conclusion')} {latest.get('html_url')}")
-        jobs = self.api(f"repos/{self.repo}/actions/runs/{latest['id']}/jobs?per_page=100")['jobs']
-        gates = [j for j in jobs if j.get('name') == 'CI gate']
-        self.check(bool(gates and all(j.get('conclusion') == 'success' for j in gates)), 'intended SHA has successful CI gate')
+        order = lambda r: (r.get('run_number', 0), r.get('run_attempt', 0))
+        latest = max(matching, key=order)
+        selected = latest
+        if self.args.ci_run_id is not None:
+            selected = next((r for r in matching if r.get('id') == self.args.ci_run_id), None)
+            if selected is None:
+                raise Failure('selected CI run is not in ci.yml runs for the exact intended SHA')
+            # Never hide a newer failed/cancelled/re-run attempt behind old green.
+            if any(order(r) >= order(selected) and r.get('status') == 'completed'
+                   and r.get('conclusion') != 'success' for r in matching):
+                raise Failure('newer completed CI failure/cancellation blocks reuse; inspect the failing run')
+        detail = self.api(f"repos/{self.repo}/actions/runs/{selected['id']}")
+        valid = (detail.get('id') == selected['id'] and detail.get('head_sha') == sha
+                 and detail.get('path') == '.github/workflows/ci.yml'
+                 and isinstance(detail.get('workflow_id'), int)
+                 and detail.get('head_repository', {}).get('full_name', '').lower() == self.repo.lower()
+                 and detail.get('event') in ('push', 'workflow_dispatch')
+                 and detail.get('run_attempt') == selected.get('run_attempt')
+                 and detail.get('workflow_id') == selected.get('workflow_id'))
+        self.check(valid, 'CI run identity binds repository, workflow, SHA, event and current attempt')
+        if not valid:
+            return
+        ok = detail.get('status') == 'completed' and detail.get('conclusion') == 'success'
+        self.check(ok, f"CI at {sha}: {detail.get('status')}/{detail.get('conclusion')} {detail.get('html_url')}")
+        if not ok:
+            return
+        jobs = self.api(f"repos/{self.repo}/actions/runs/{selected['id']}/attempts/{detail['run_attempt']}/jobs?per_page=100")
+        if jobs.get('total_count', len(jobs['jobs'])) > 100:
+            raise Failure('CI job list exceeds bounded response; cannot verify complete gate')
+        required = {'Linux unit', 'Linux integration', 'Linux clean build and smoke', 'macOS native safety', 'CI gate'}
+        rows = jobs['jobs']
+        complete = all(len([j for j in rows if j.get('name') == name and j.get('conclusion') == 'success']) == 1 for name in required)
+        self.check(complete, 'intended SHA has successful CI gate and all required qualification jobs')
+        if complete and selected['id'] != latest['id']:
+            print(f"INFO Reusing verified CI run {selected['id']}; duplicate run {latest['id']} is {latest.get('status')}. No cancellation, status write or branch-protection bypass performed.")
 
     def remote_file(self, name, ref):
         obj = self.api(f'repos/{self.repo}/contents/{name}?ref={quote(ref, safe="")}')
@@ -283,9 +312,12 @@ def main():
     parser.add_argument('--version', help='version without leading v; defaults to desktop package')
     parser.add_argument('--assets-dir', type=Path)
     parser.add_argument('--root', type=Path, help='git checkout; otherwise discover from current working directory')
+    parser.add_argument('--ci-run-id', type=int, help='bind an existing successful exact-SHA CI run; never mask a newer completed failure')
     args = parser.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', args.repo):
         parser.error('--repo must be OWNER/REPO')
+    if args.ci_run_id is not None and (args.ci_run_id <= 0 or args.phase == 'prepare'):
+        parser.error('--ci-run-id requires a positive run ID and phase dev/draft/published')
     try:
         root = Path(run(['git', 'rev-parse', '--show-toplevel'], args.root or Path.cwd()))
     except Failure as exc:

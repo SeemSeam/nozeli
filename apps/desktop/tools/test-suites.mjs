@@ -2,8 +2,18 @@
 //
 // Usage:
 //   node tools/test-suites.mjs <unit|integration|smoke|live|default> [--list]
+//   node tools/test-suites.mjs affected-integration --plan <plan.json>
 //
-// Design rules (see docs/testing.md):
+// affected-integration runs a subset of the integration suite selected by a CI
+// plan produced by tools/ci-test-plan.mjs. The plan is validated by
+// re-deriving the expected plan from plan.base/plan.head through the same
+// planner (mode/suites/integrationFiles/buildSmoke/macosNative must match
+// exactly) with head equal to the checked-out git HEAD, and every listed file
+// must already be registered in the integration suite above. Validation only
+// covers committed history: it cannot speak for uncommitted working-tree
+// edits. The subset then runs through the exact preflight, environment
+// isolation and node --test runner of the full suite. CI must check out with
+// enough history (fetch-depth: 0 or fetch plan.base) for the recomputation.
 // - File lists are explicit. No shell globs, no directory discovery: a test joins
 //   a suite only by being named here, so `npm test` can never pick up an
 //   accidental probe.
@@ -25,6 +35,7 @@ import { finished } from 'node:stream/promises';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { planForRevisions } from './ci-test-plan.mjs';
 
 const appRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const testsDir = path.join(appRoot, 'tests');
@@ -54,6 +65,7 @@ const SUITES = {
       'attention-presentation.test.mjs',
       'authorship-groups.test.mjs',
       'capture-sources.test.mjs',
+      'ci-test-plan.test.mjs',
       'code-file-support.test.mjs',
       'collaboration-timing.test.mjs',
       'close-flush-retention.test.mjs',
@@ -151,6 +163,7 @@ const SUITES = {
       'auto-update-network.test.mjs',
       'auto-update.test.mjs',
       'c1-installed-open-entry.test.mjs',
+      'ci-test-plan-cli.test.mjs',
       'collab-controller-projection.test.mjs',
       'core-file-stream.test.mjs',
       'static-assets.test.mjs',
@@ -485,6 +498,68 @@ function resolveSuite(name) {
   return null;
 }
 
+// Read and strictly validate a CI plan for the affected-integration subset.
+// A plan is only usable when it is the exact schema produced by
+// tools/ci-test-plan.mjs, it is a targeted plan (the only mode with a subset),
+// its head is the checked-out HEAD (a stale plan can never run here), the
+// planner independently recomputes the expected plan from plan.base/plan.head
+// and mode/suites/integrationFiles/buildSmoke/macosNative match exactly (a
+// forged subset swapped for different registered tests cannot run), and every
+// listed file is already a registered integration test that exists on disk.
+// Validation covers committed history only; it does not inspect the
+// working tree.
+function readAffectedIntegrationPlan(planPath) {
+  let raw;
+  try {
+    raw = fs.readFileSync(planPath, 'utf8');
+  } catch (error) {
+    fail(`cannot read plan file ${planPath}: ${error.message}`);
+  }
+  let plan;
+  try {
+    plan = JSON.parse(raw);
+  } catch {
+    fail(`plan file ${planPath} is not valid JSON`);
+  }
+  if (!plan || plan.schema !== 1) fail(`plan file ${planPath} must carry {"schema":1}`);
+  if (plan.mode !== 'targeted') {
+    fail(`plan mode must be "targeted" to run an integration subset (got ${JSON.stringify(plan.mode)}); full plans run the whole integration suite, docs plans run none`);
+  }
+  const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: appRoot, encoding: 'utf8' });
+  if (head.status !== 0) fail(`cannot resolve git HEAD in ${appRoot}: ${head.stderr?.trim()}`);
+  if (plan.head !== head.stdout.trim()) {
+    fail(`plan head ${JSON.stringify(plan.head)} does not match checked-out HEAD ${head.stdout.trim()}; regenerate the plan for this commit`);
+  }
+  if (!Array.isArray(plan.suites) || plan.suites.length !== 2 || plan.suites[0] !== 'unit' || plan.suites[1] !== 'integration') {
+    fail('targeted plan must request suites ["unit","integration"]');
+  }
+  if (!Array.isArray(plan.integrationFiles) || plan.integrationFiles.length === 0) {
+    fail('targeted plan must list a non-empty integrationFiles subset');
+  }
+  let expected;
+  try {
+    expected = planForRevisions(plan.base, plan.head);
+  } catch (error) {
+    fail(`cannot recompute the expected plan from ${JSON.stringify(plan.base)}..${JSON.stringify(plan.head)}: ${error.message} (CI must check out with fetch-depth 0 or fetch the base commit)`);
+  }
+  for (const field of ['mode', 'suites', 'integrationFiles', 'buildSmoke', 'macosNative']) {
+    if (JSON.stringify(plan[field]) !== JSON.stringify(expected[field])) {
+      fail(`plan ${field}=${JSON.stringify(plan[field])} does not match the recomputed planner output ${JSON.stringify(expected[field])}; regenerate the plan`);
+    }
+  }
+  const registered = new Set(SUITES.integration.files);
+  const files = [...new Set(plan.integrationFiles)].sort();
+  for (const file of files) {
+    if (typeof file !== 'string' || path.basename(file) !== file || !registered.has(file)) {
+      fail(`plan integrationFiles entry ${JSON.stringify(file)} is not a registered integration test in tools/test-suites.mjs`);
+    }
+    if (!fs.existsSync(path.join(testsDir, file))) {
+      fail(`plan integrationFiles entry tests/${file} does not exist on disk`);
+    }
+  }
+  return files;
+}
+
 // spawn + wait without a shell; keeps output streaming to the parent terminal.
 function awaitExit(child) {
   return new Promise((resolve) => {
@@ -555,13 +630,43 @@ async function runNodeTest(suite, name) {
 async function main() {
   const args = process.argv.slice(2);
   const KNOWN_FLAGS = new Set(['--list']);
-  const unknown = args.filter((arg) => arg.startsWith('--') && !KNOWN_FLAGS.has(arg));
+  const VALUE_FLAGS = new Set(['--plan']);
+  const unknown = [];
+  const names = [];
+  let planPath = null;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (!arg.startsWith('--')) {
+      names.push(arg);
+      continue;
+    }
+    if (VALUE_FLAGS.has(arg)) {
+      const value = args[i + 1];
+      if (!value || value.startsWith('--')) fail('--plan requires a path to a CI plan JSON file');
+      planPath = value;
+      i++;
+      continue;
+    }
+    if (!KNOWN_FLAGS.has(arg)) unknown.push(arg);
+  }
   if (unknown.length) {
-    console.error(`[test-suites] unknown option(s): ${unknown.join(', ')}. Known: --list`);
+    console.error(`[test-suites] unknown option(s): ${unknown.join(', ')}. Known: --list, --plan <path>`);
     process.exit(2);
   }
   const listOnly = args.includes('--list');
-  const names = args.filter((arg) => !arg.startsWith('--'));
+  if (planPath !== null && !(names.length === 1 && names[0] === 'affected-integration')) {
+    fail('--plan is only valid together with the affected-integration suite');
+  }
+  if (planPath === null && names.includes('affected-integration')) {
+    fail('affected-integration requires --plan <path> pointing at a CI plan from tools/ci-test-plan.mjs');
+  }
+  if (planPath !== null) {
+    SUITES['affected-integration'] = {
+      ...SUITES.integration,
+      description: 'integration subset selected by a validated targeted CI plan; same preflight, isolation and runner as the full integration suite',
+      files: readAffectedIntegrationPlan(planPath),
+    };
+  }
   const requested = names.length ? names : ['default'];
   const expanded = [];
   for (const name of requested) {

@@ -97,3 +97,23 @@ Linux x64 更新源固定为本仓库 GitHub Releases，使用 `Nozeli-<version>
 开发源码更新修复（2026-11-11，尚未安装／发布）：桌面更新使用独立非持久 Chromium 网络会话，遵循桌面网络／代理，每一跳发送前检查 HTTPS GitHub／资产域名白名单，不复用浏览器账号或读取 GitHub 凭据。403/429 只有在响应头证实配额耗尽或 Retry-After 时才显示限流及恢复时间；普通 403 不推断原因，不绕过匿名 API 配额、tag 或校验和。
 
 Linux 安装工具与便携打包显式创建私有目录，不再由 umask 0002 产生组可写布局。已存在的可写权限不被检测器或安装工具静默收紧；validated 安装若违反拥有者／权限／current 身份契约，明确报告失败并停止自动安装，不再冒称源码安装。存量安装需要所有者明确修复安装目录权限并装入修复构建后才能获得该行为，不能仅靠“立即检查更新”修复运行中的旧检测器。macOS／Windows 自动安装仍未实现。
+
+## 快速发布运行绑定（2026-11-13，维护工具已实现）
+
+`dev_tools/skills/nozeli-github/scripts/check_release_state.py` 增加 `--ci-run-id`，用于dev/draft/published绑定同仓库ci.yml在精确产品SHA上的成功运行。核对实时run详情、当前attempt、事件和五项必需job／gate；更晚完成的失败或取消阻断，错误SHA、fork、工作流、attempt及gate不能复用。默认不传仍核验最新运行。具体命令见同目录SKILL.md。
+
+16个隔离fixture通过，包含主支重复运行仍in_progress时复用成功发行分支、拒绝新失败／取消及错误绑定。真实干净beta.5快照调用新检查器，以43345593857代替较晚的43349288387完成published＋本地双平台资产绑定检查，0技术失败；六项分发审计pending仍保留。脏开发树和缺upstream首次smoke明确拒绝，改用独立干净已推快照后通过，未放宽清洁检查。
+
+发布顺序为最终SHA分支CI与双平台打包并行→下载已验同SHA原包→主支按原保护快进→绑定原成功运行检查→tag/draft/publish/远端摘要；无须因同SHA主支重复运行再等待或重建。此变更不取消后台重复workflow、不写成功status、不改保护、也未实施path-filter快速CI。第一次强制全套仍需原耗时，不承诺几分钟发布。仓库与本机skill已同步；本次未提交／推送维护改动，未改已发布beta.5标签／附件。
+
+## 受影响测试矩阵（2026-11-13，源码实现，待远端部署）
+
+本节后续实现了上一节尚未实施的增量CI：`apps/desktop/tools/ci-test-plan.mjs` 对可靠base..head完整差异生成full/targeted/docs计划，ci.yml按JSON选择unit/integration矩阵，并把计划artifact作为本次gate证据。unit完整跑；targeted只跑映射消费者integration，但Linux真实build/smoke与Mac native保留，发布五项资格job名称不变。纯docs可仅unit，不具备产品包发布资格。未知、高风险、删除／改名／新增非文档、CI/规划器变化均full。
+
+首版精确映射仅collaboration-status.mjs/.css、project-attention.mjs/.css四个renderer叶路径；provider设置、agent、平台/存储/Git与共享core不缩矩阵。纯版本metadata需三文件结构白名单对比、四版本齐全一致及tag/URL绑定，落targeted并保留非空release-retention基线。依赖／平台／审计义务变化不能冒充版本更新。
+
+release用最新非draft已公开v* tag完整差异；integration用origin/main分叉点完整差异防前序未验commit漏测，main用受保护before，PR用base到实际merge HEAD。事件payload字段来自可信文件、无shell ref拼接；缺基线/非祖先/查询失败/手动运行保守full或失败。gate总是存在，plan/tests必须成功，只有docs显式false才容许build/native skipped，并重读artifact核对outputs及head。
+
+子集执行器复用原隔离环境/preflight/TAP，并按plan.base/head独立重算，拒绝篡改为另一已注册测试。24项分类纯逻辑＋真实Git CLI回归全部通过；生产workflow resolver提取后12个真实事件fixture通过；独立scratch提交只改collaboration-status.css，实际原integration消费者20/20通过（约4.7秒），篡改测试列表／base／head均exit2拒绝。scratch初次缺依赖未计通过；CLI回归原fixture在rename后新增映射文件应full，已修测试准备为恢复映射后真实修改，不放宽分类器。独立reviewer workflow及planner/runner最终均correct，仅静态复审。
+
+该代码尚未提交、推送到GitHub，不能把本地验证称为远端Actions已经提速。此次自身修改CI和runner，首次部署必full；远端部署后需以独立叶模块变化确认实际targeted计划及对应jobs。未变更主支保护或已发布beta.5；详细操作已同步本机nozeli-github skill。

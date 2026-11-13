@@ -71,7 +71,35 @@ Respect an intentionally configured account. Never read, print, copy or embed to
 | 简单补丁发布 | 已知良好发行基线上的局部UI／逻辑修正，依赖／协议／持久化／权限／平台和打包均不变 | 受影响模块及直接消费者回归；bug修前失败／修后通过证据；真实最终包启动、改变路径、保存／正常退出／冷恢复 | 影响面不明、消费者失败、跨模块交互扩大时转风险专项 |
 | 风险专项发布 | 进程生命周期、内存回收、认证、数据迁移、Git/文件写入与回滚、权限、更新器、依赖／原生库／打包、代码分包或跨平台变更 | 上述基础＋实际边界专项：并发／UNKNOWN／失败恢复／回滚／持久化；每个声明平台最终包验证 | 无法约束影响范围、共享核心广泛变化、基线过旧或回归暴露广泛问题时增加本地全量 |
 
-**所有发布仍需最终提交的强制CI成功。** 若主支保护要求全套 `CI gate`，简单路径仅省去额外重复的本地全量运行，不省远端门禁。不删除／改名必需check、不制造成功status、不使用admin bypass、不为快发临时降低workflow覆盖或延长超时掩盖失败。未来若需真正的远端快速CI，应另获授权设计path-filter与始终存在的gate，并证明高风险变更无法漏测；本skill不假装该能力已存在。
+**所有发布仍需最终提交的强制CI成功。** 新增受影响矩阵由 `apps/desktop/tools/ci-test-plan.mjs` 生成并由ci.yml消费；`CI gate`始终存在，验证plan与所有选中job，不能全跳绿。没有删除必需check、伪造status或修改GitHub保护。此工作流修改尚须提交、推送并经远端验证才在GitHub生效，本机skill更新不等于远端已部署。
+
+### 已实现：绑定成功CI，避免重复主支运行阻塞发布
+
+检查器支持 `--ci-run-id <ID>`（dev/draft/published）。默认仍核验最新运行；快速发布显式携带本次发行已成功运行的ID，所有阶段复用同一ID。检查器向GitHub读取ci.yml运行清单、选中运行详情和确切attempt的jobs，核对同仓库、同SHA、同workflow、事件、attempt、完整五项资格job及CI gate全部成功。若更晚的同SHA运行已失败／取消，或选中运行被重新执行而状态未确认，拒绝复用，不能挑旧绿掩盖红。
+
+主支快进相同SHA后，重复CI若仍pending/running，不必等待它再完成：
+
+```sh
+# CI_RUN_ID是本次发行分支在最终SHA上已成功的CI运行ID，不是任意历史运行。
+GH_CONFIG_DIR="$HOME/.config/gh" python3 dev_tools/skills/nozeli-github/scripts/check_release_state.py --phase dev --ci-run-id "$CI_RUN_ID"
+# 在原标签和完整资产已经就绪后，用相同ID检查草稿和公开状态。
+GH_CONFIG_DIR="$HOME/.config/gh" python3 dev_tools/skills/nozeli-github/scripts/check_release_state.py --phase draft --ci-run-id "$CI_RUN_ID" --assets-dir "$ASSETS_DIR"
+GH_CONFIG_DIR="$HOME/.config/gh" python3 dev_tools/skills/nozeli-github/scripts/check_release_state.py --phase published --ci-run-id "$CI_RUN_ID" --assets-dir "$ASSETS_DIR"
+```
+
+执行顺序：最终版本提交一次推送release/beta分支，CI与Mac打包并行；成功后下载其精确SHA已验资产，主支快进同SHA，按绑定运行检查→tag→draft上传→检查→publish→远端下载hash。不因main新增同SHA运行串行等待或重建包。检查器只读、不取消CI、不改保护；主支拒绝推进必须解决原保护问题。首次CI是否全量由下面的真实差异计划决定；高风险仍全量，不承诺所有版本几分钟发布。
+
+产物晋升须核对Actions运行SHA、最终包RELEASE.json和checksum，且对应解压验收已通过。分支包若精确绑定最终交付SHA，无需合入后重建；旧SHA、不同依赖/工具链的本地包不能冒充。发布前任何新代码提交都重新绑定新SHA/CI/资产。网络下载、校验和、小说明文件规范化可以并行，最终发布仍人工授权。
+
+### 受影响测试矩阵（实现与部署边界）
+
+`node apps/desktop/tools/ci-test-plan.mjs --base <SHA> --head <SHA>` 输出full/targeted/docs计划。所有模式跑完整unit；首版精确白名单只有renderer的collaboration-status.mjs/.css、project-attention.mjs/.css，targeted运行映射integration消费者，并保持Linux build/smoke与Mac native。不是“所有UI自动低风险”：provider-settings、共享核心、main/agents/platform、依赖、打包、CI/规划器/测试框架、未知路径和新增非文档／删除／改名全部full。添加映射必须追踪真实消费者并补分类回归。
+
+纯版本字段更新可targeted，但必须对三个JSON移除明确允许的版本字段后做结构相等性检查，四个版本字段齐全同semver，tag/URL与版本及仓库绑定，平台／义务／依赖不变；有非空release-retention消费者基线。纯Markdown文档仅unit，不能凭docs-only运行获得产品发行资格；release分支docs计划保守升级full。最终双平台产物验收不缩减。
+
+基线：release取上一非draft已公开v* tag到HEAD的完整差异；integration取origin/main分叉点到HEAD，不能只看最后一次push漏掉前序未验改动；main用受保护before，PR用base到实际merge HEAD；缺refs／非祖先／API失效／手动dispatch均full或明确失败。执行子集从同run plan artifact读取，再按base/head重算验证，拒绝替换成另一合法已注册测试。保留原隔离HOME、环境清理、preflight和真实TAP，不用任意shell执行测试名。
+
+本地验证命令：`node --test apps/desktop/tests/ci-test-plan.test.mjs apps/desktop/tests/ci-test-plan-cli.test.mjs`、`node tools/ci-plan-refs-fixture.mjs`。修改本规划器／workflow本身必须full；远端首次部署需实际跑full gate，随后以独立安全叶修改验证targeted记录，不以本地模拟代替Actions通过。用户没有提交／推送授权时保留源码，不自动上线CI或发版。
 
 ### 简单发布操作卡
 
