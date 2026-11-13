@@ -285,14 +285,20 @@ export class AutoUpdater {
     }
     return this.status();
   }
-  async installIfIdle() {
-    if (!this.candidate || this.installing || !this.state.enabled) return this.status();
+  async installIfIdle({manual=false} = {}) {
+    if (this.installing) return this.status();
+    if (!this.candidate) {
+      if (manual) this.update({message: this.installation ? '请先检查更新，等待下载和校验完成后再安装' : this.installationNotice()});
+      return this.status();
+    }
+    if (!manual && !this.state.enabled) return this.status();
+    const mode = {manual};
     const {canInstall, prepareShutdown, quit} = this.options;
     if (![canInstall, prepareShutdown, quit].every(callback => typeof callback === 'function')) { this.update({phase: 'waiting-idle', message: 'Host lifecycle guards are unavailable'}); return this.status(); }
     this.installing = true;
     let lock, helper, shutdownAttempted = false;
     try {
-      const readiness = await canInstall();
+      const readiness = await canInstall(mode);
       if (!readiness?.ready) { this.update({phase: 'waiting-idle', message: readiness?.reason || 'Waiting for idle and no unsaved work'}); return this.status(); }
       // Revalidate installation identity immediately before taking the shared installer lock.
       const current = await detectInstallation(this.options.appRoot);
@@ -307,8 +313,8 @@ export class AutoUpdater {
       }
       lock = await acquireInstallLock(current.root, token);
       shutdownAttempted = true;
-      if (await prepareShutdown() !== true) { this.update({phase: 'waiting-idle', message: 'Shutdown guard declined update restart'}); return this.status(); }
-      const finalReadiness = await canInstall();
+      if (await prepareShutdown(mode) !== true) { this.update({phase: 'waiting-idle', message: 'Shutdown guard declined update restart'}); return this.status(); }
+      const finalReadiness = await canInstall(mode);
       if (!finalReadiness?.ready) { this.update({phase: 'waiting-idle', message: finalReadiness?.reason || 'New work appeared before restart'}); return this.status(); }
       const journal = path.join(this.options.stateDir, 'handoff.json');
       await atomicJson(journal, {...(this.recovery || {}), token, installation: this.recovery?.installation || current, candidate: this.candidate.path, version: this.candidate.version, expectedCommit: this.candidate.commit, parent: await processIdentity(process.pid), phase: 'prepared', recovery: Boolean(this.recovery)});
@@ -322,7 +328,7 @@ export class AutoUpdater {
         if (handoff.token !== token) throw Error('Helper handoff identity changed');
         if (handoff.phase === 'helper-ready') {
           this.update({phase: 'installing', message: 'Restarting to install verified update'});
-          await quit();
+          await quit(mode);
           lock = null; // helper owns cleanup only after the host accepted quit
           return this.status();
         }

@@ -155,9 +155,12 @@ try {
   assert.equal(await page.$eval('#settings-dialog', element => element.open), true);
   await page.screenshot({path: path.join(out, 'settings-update-waiting-idle.png')});
   checks.push('real automatic download/staging completes but open application-update settings modal blocks restart');
-  await page.click('#settings-close');
+  await page.evaluate(()=>window.nozeli.invoke('update.preferences',{enabled:false}));
+  await page.waitForFunction(()=>[...document.querySelectorAll('#settings-update button')].some(node=>node.textContent==='安装并重启'&&!node.disabled));
+  const installButton=await page.evaluateHandle(()=>[...document.querySelectorAll('#settings-update button')].find(node=>node.textContent==='安装并重启'));
+  await installButton.asElement().click();
   const oldExit = await Promise.race([childExit, pause(60000).then(() => null)]);
-  assert.deepEqual(oldExit, {code: 0, signal: null}, 'old real app exits normally through host idle lifecycle');
+  assert.deepEqual(oldExit, {code: 0, signal: null}, 'explicit install button exits old app normally even with automatic updating disabled');
   await browser.disconnect().catch(() => {}); browser = null;
   const handoff = await waitFor(async () => { const value = await json(path.join(profile, 'updates/handoff.json')).catch(() => null); return ['installed', 'rolled-back', 'error'].includes(value?.phase) ? value : null; }, 'new real app startup health', 180000);
   assert.equal(handoff.phase, 'installed', JSON.stringify(handoff));
@@ -165,7 +168,7 @@ try {
   assert.equal(receipt.version, NEW); assert.equal(receipt.release, await fs.realpath(path.join(root, 'current')));
   assert.equal(await fs.realpath(path.join(root, 'previous')), old);
   assert.equal(await fs.readFile(sentinel, 'utf8'), 'Generated user data must survive a real package update.\n');
-  checks.push('closing settings permits real old-app normal exit, managed promotion, new renderer startup health, previous-release preservation and unchanged user data');
+  checks.push('Install and restart button closes settings and permits real normal exit, verified managed promotion, new renderer startup health, previous-release preservation and unchanged user data with automatic updating disabled');
   ({browser, page} = await connect(debugEndpoints[0].endpoint));
   assert.notEqual(debugEndpoints[1].browserPath, debugEndpoints[0].browserPath, 'updated app publishes a fresh debug endpoint');
   const state = await page.evaluate(() => window.nozeli.invoke('update.status', {}));

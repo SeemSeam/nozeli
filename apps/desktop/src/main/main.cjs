@@ -510,6 +510,7 @@ async function main() {
         if(Object.keys(payload).length)throw new HostError('INVALID_PAYLOAD','更新操作不接受路径或发布源参数。');
         if(op==='update.status')return {ok:true,value:autoUpdater.status()};
         if(op==='update.check')return {ok:true,value:await autoUpdater.check()};
+        if(op==='update.install')return {ok:true,value:await autoUpdater.installIfIdle({manual:true})};
         if(op==='update.cancel'){autoUpdater.cancel();return {ok:true,value:autoUpdater.status()};}
         throw new HostError('UNKNOWN_OP','未知更新操作。');
       }

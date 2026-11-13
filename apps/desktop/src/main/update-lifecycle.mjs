@@ -2,10 +2,10 @@
 // original or cancel a business task just to make an update installable.
 export function createUpdateLifecycle({workspace,host,managedAgents,agents,powerMonitor,isClosing,freeze,quit,idleSeconds=60}){
   let frozen=false;
-  async function canInstall(){
+  async function canInstall({manual=false}={}){
     if(isClosing())return {ready:false,reason:'正在关闭或处理其他生命周期操作'};
     if(workspace.onlineBrowser?.slots.size)return {ready:false,reason:'请先关闭网站工作面，避免自动更新丢失网页表单输入'};
-    if(powerMonitor.getSystemIdleTime()<idleSeconds)return {ready:false,reason:'等待系统空闲至少一分钟'};
+    if(!manual&&powerMonitor.getSystemIdleTime()<idleSeconds)return {ready:false,reason:'等待系统空闲至少一分钟'};
     if(host.active||workspace.receipts.size||workspace.lifecycle.size||workspace.drags.size)return {ready:false,reason:'等待文件操作与保存回执完成'};
     if(agents?.busy()||managedAgents?.busy())return {ready:false,reason:'等待后台任务结束'};
     for(const c of managedAgents?.controllers.values()||[]){
@@ -20,18 +20,18 @@ export function createUpdateLifecycle({workspace,host,managedAgents,agents,power
       try{state=await Promise.race([r.wc.executeJavaScript('window.__nozeliUpdateState?.()'),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('更新就绪查询超时')),3000);timer.unref?.();})]);}catch{return {ready:false,reason:'无法确认全部阅读面的保存状态'};}finally{clearTimeout(timer);}
       if(!state?.ready||state.dirty||state.blocked)return {ready:false,reason:'有未保存编辑、输入组合、打开的对话框或待处理操作'};
     }
-    if(host.active||agents?.busy()||managedAgents?.busy()||powerMonitor.getSystemIdleTime()<idleSeconds)return {ready:false,reason:'检测期间出现新的活动，稍后再更新'};
+    if(host.active||agents?.busy()||managedAgents?.busy()||(!manual&&powerMonitor.getSystemIdleTime()<idleSeconds))return {ready:false,reason:'检测期间出现新的活动，稍后再更新'};
     return {ready:true,reason:''};
   }
-  async function prepareShutdown(){
-    if(!(await canInstall()).ready)return false;
+  async function prepareShutdown(mode){
+    if(!(await canInstall(mode)).ready)return false;
     frozen=true;freeze(true);
-    try{await workspace.flush([...workspace.senders.values()]);await host.settled();if(!(await canInstall()).ready){resumeShutdown();return false;}return true;}
+    try{await workspace.flush([...workspace.senders.values()]);await host.settled();if(!(await canInstall(mode)).ready){resumeShutdown();return false;}return true;}
     catch(error){resumeShutdown();throw error;}
   }
   function resumeShutdown(){if(!frozen)return;frozen=false;freeze(false);}
-  async function finish(){
-    if(!frozen||!(await canInstall()).ready)throw Error('出现新活动，已取消自动重启');
+  async function finish(mode){
+    if(!frozen||!(await canInstall(mode)).ready)throw Error('出现新活动，已取消重启');
     // Only idle services reach this point; do not cancel running work.
     await managedAgents?.stop();await agents?.stopIdle?.();await host.settled();
     await quit();
