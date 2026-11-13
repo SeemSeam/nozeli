@@ -24,6 +24,9 @@ Role: 当前源码项目的设计注册与维护入口
 | PROJECT-OPEN-001 | 简洁生命周期、自动恢复与项目初始化 | [重设计合同](../project-lifecycle-initialization-design.md) | [安装后异常验收](../project-lifecycle-initialization-design.md#9-用户授权安装后的异常验收2026-11-08)、[原现场根因](../project-open-failure-analysis.md) | 已授权本机安装；真实权限/SIGKILL/PTY/取消/并发/七格式窗口及Pi初始化故障验收通过，日常项目未重置，其他平台未验 |
 | LOCAL-WINDOW-001 | 局部讨论外壳与来源页归属 | [窗口合同与Word勘误](../worker-review-chat-demo.md#word来源页定位勘误2026-11-12用户确认方向源码修复未安装) | [实际测试](../testing.md)、[用户指南](../user-guide.md) | Word页内标签随来源页，不将统一外壳泛化为屏幕固定；源码修复未安装，其他页适配器／平台分别验收 |
 | IMAGE-VIEW-001 | 图片基础查看交互 | [查看合同](../principles.md#图片查看2026-11-12) | [实际测试](../testing.md)、[用户指南](../user-guide.md) | 可见缩放／适应／原始尺寸／平移，原图与区域坐标保持；不扩成原图编辑器，安装与平台资格单独记录 |
+| OPT-001 | 安装占用与运行内存优化 | [闭包合同](../deep-optimization-goal.md)、[内存实施](../responsiveness-optimization.md) | 目标依赖裁剪、设置owner空闲回收及Monaco按需加载已验；安装与发行资格分别记录 | 不以压缩或销毁编辑现场冒充运行内存优化 |
+| MARKET-001 | 扩展市场与全局管理助手 | [Demo设计边界](../market-admin-demo.md) | [独立原型](../demos/market-admin/index.html) | 仅内存模拟Demo，未接生产市场／管理员Agent |
+| WEBSITE-001 | 官网介绍与下载导流 | [设计合同](../website-design.md) | [独立原型](../demos/website/index.html) | 本地设计，不代表公网部署或生产模型能力 |
 
 前期记忆候选研究：[研究记录](../long-term-memory-evaluation.md)；仅来源参考，不与MEMORY-001并列成为另一实施合同。
 

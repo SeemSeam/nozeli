@@ -1,0 +1,38 @@
+{
+  "sourceDirectory": "/home/bfly/yunwei/nozeli/output/imagegen/nozeli-feature-closeups-20261108",
+  "type": "AI-generated feature closeups, not tested product screenshots",
+  "images": [
+    {
+      "file": "01-annotation-closeup.png",
+      "resolution": [
+        1536,
+        1024
+      ],
+      "sha256": "89f7c5d1ff39eb60e875a30444e988f3646012b46856ddefad9c8d911c2b1553"
+    },
+    {
+      "file": "02-task-loop-closeup.png",
+      "resolution": [
+        1536,
+        1024
+      ],
+      "sha256": "15699f50e49fc938aa360bd4658d5a86f9970d2f6ad1765ca01c7a8b9d0f5508"
+    },
+    {
+      "file": "03-split-reading-closeup.png",
+      "resolution": [
+        1536,
+        1024
+      ],
+      "sha256": "c83a11b18cc243427a67c38710c956654c033ac6ce637d0341f958028db2950c"
+    },
+    {
+      "file": "04-detached-window-closeup.png",
+      "resolution": [
+        1536,
+        1024
+      ],
+      "sha256": "9f19cb480a3a924030cda5023e163fa3d670f799f98f343fae56757a4f2f3954"
+    }
+  ]
+}
