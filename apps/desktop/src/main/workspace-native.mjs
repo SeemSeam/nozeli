@@ -102,6 +102,7 @@ export class WorkspaceNative {
   register(wc, scope) {
     const record = { ...scope, wc, generation: 0, recoveryOwner:randomUUID(), ready: false, contentFailed: false, initError: null, dead: false };
     this.senders.set(wc.id, record);
+    if(record.role==='shell')wc.on('page-title-updated',(_event,title)=>{if(!record.dead&&!record.win.isDestroyed())record.win.setTitle(title||'Nozeli');});
     wc.on('before-input-event',(_event,input)=>{if(!['shell','demo-controls'].includes(record.role)&&input.type==='keyDown')void this.guidedDemo?.pauseProject(record.projectId,'用户操作了真实内容面，演示已暂停。').catch(this.onError);});
     wc.on('focus',()=>{if(record.role==='surface'){const root=this.windows.get(record.windowId);if(root&&!root.dead)root.wc.send('nozeli:workspace-control',{type:'surface-focus',viewId:record.viewId,projectId:record.projectId});}});
     wc.on('before-input-event',(event,input)=>{if(record.role!=='surface'||input.type!=='keyDown'||input.isComposing)return;const numbered=(input.control||input.meta)&&!input.alt&&!input.shift&&/^[1-9]$/.test(input.key),cycle=input.key==='F6'&&!input.control&&!input.meta&&!input.alt;if(!numbered&&!cycle)return;const root=this.windows.get(record.windowId);if(!root||root.dead||root.projectId!==record.projectId)return;event.preventDefault();root.wc.send('nozeli:workspace-control',{type:'group-focus',projectId:record.projectId,viewId:record.viewId,...(numbered?{index:Number(input.key)-1}:{direction:input.shift?-1:1})});});

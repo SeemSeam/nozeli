@@ -5,13 +5,10 @@ const {BaseWindow, WebContentsView} = require('electron');
 // BrowserWindow's implicit primary view is a sibling outside contentView and
 // can cover returned child views on the software-composited Wayland path.
 class WorkspaceWindow extends BaseWindow {
-  constructor({webPreferences, ...options} = {}) {
-    // macOS uses the system's own full title bar (left traffic lights). It
-    // sits outside the content bounds, so sizing chrome from getContentSize()
-    // keeps clear of it without drawing or positioning native controls. Every
-    // other platform keeps the frameless workspace chrome unchanged; utility
-    // discussion and preview surfaces are not WorkspaceWindows and stay as-is.
-    if (process.platform === 'darwin') { options.frame = true; options.titleBarStyle = 'default'; }
+  constructor({webPreferences, centeredProjectTitle=false, ...options} = {}) {
+    // Native traffic lights remain in the inset title strip; the shell centers
+    // its project identity independently of the macOS title alignment.
+    if (process.platform === 'darwin') { options.frame = true; options.titleBarStyle = centeredProjectTitle?'hiddenInset':'default'; }
     super(options);
     this.chromeView = new WebContentsView({webPreferences});
     this.webContents = this.chromeView.webContents;
