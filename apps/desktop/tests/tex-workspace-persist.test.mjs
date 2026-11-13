@@ -3,6 +3,20 @@ import assert from 'node:assert/strict';
 import {createTexPersistFixture,deferred} from './tex-workspace-persist.fixture.mjs';
 async function fixture(t,options){const f=await createTexPersistFixture(options);t.after(()=>f.cleanup());return f;}
 const assertNoSideEffects=f=>assert.equal(f.calls.some(c=>['tex.build','tex.cancel','file.save','file.draft','tag.put'].includes(c.op)),false);
+// Run the production ui-actions→ui-icons SVG pipeline on the persist fixture
+// instead of stubbing it: the fixture assigns globalThis.document right
+// before mountTexWorkspace, so this accessor decorates every fixture
+// document in place with the namespace-aware element factory and the
+// delegated tooltip controller's document-listener surface. No pointer,
+// focus or scroll events are dispatched in these tests.
+class SvgNode{
+ constructor(tag,namespaceURI){this.tag=tag;this.namespaceURI=namespaceURI;this.children=[];this.attributes={};this.dataset={};const classes=new Set();this.classList={add:(...names)=>names.forEach(name=>classes.add(name)),remove:(...names)=>names.forEach(name=>classes.delete(name)),toggle:(name,force)=>force===undefined?(classes.has(name)?(classes.delete(name),false):(classes.add(name),true)):force?(classes.add(name),true):(classes.delete(name),false),contains:name=>classes.has(name)};}
+ setAttribute(key,value){this.attributes[key]=String(value);}
+ append(...nodes){for(const node of nodes){node.remove();node.parentElement=this;this.children.push(node);}}
+ remove(){if(this.parentElement){this.parentElement.children=this.parentElement.children.filter(node=>node!==this);this.parentElement=null;}}
+}
+let fixtureDocument=globalThis.document;
+Object.defineProperty(globalThis,'document',{configurable:true,get:()=>fixtureDocument,set(value){if(value&&typeof value==='object'){if(typeof value.createElementNS!=='function')value.createElementNS=(namespaceURI,tag)=>new SvgNode(tag,namespaceURI);if(typeof value.addEventListener!=='function')value.addEventListener=()=>{};}fixtureDocument=value;}});
 
 test('no TeX or no current context explicitly returns not-applicable without IPC',async t=>{
  for(const context of [null,{}, {project:{id:'p'},file:{relPath:'readme.md'}}]){const f=await fixture(t,{context});assert.deepEqual(await f.workspace.persistChecked(),{ok:true,value:{applicable:false}});assert.deepEqual(f.calls,[]);}

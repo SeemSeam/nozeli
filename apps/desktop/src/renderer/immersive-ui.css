@@ -87,6 +87,7 @@ form.note-form.annotation-composer { gap:7px;padding:10px 12px 12px;background:v
 /* Quick actions belong to the visible primary document and never wrap words. */
 #selection-menu { transform:none;display:flex;flex-wrap:nowrap;gap:3px;max-width:calc(100vw - 16px);width:max-content;padding:4px;border:1px solid var(--line);border-radius:7px;background:var(--paper); }
 #selection-menu button { flex:none;white-space:nowrap;word-break:keep-all;min-width:42px;border:0;padding:4px 8px;font-size:12px; }
+#selection-menu button.ui-icon-button { min-width:0;width:28px;min-height:28px;height:28px;padding:4px;flex:0 0 28px; }
 
 
 /* Narrow desktop windows use drawers without changing the saved wide layout. */

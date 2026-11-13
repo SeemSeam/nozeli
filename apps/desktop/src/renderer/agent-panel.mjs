@@ -3,11 +3,17 @@ import {mountManagedAgent} from './managed-agent-panel.mjs';
 import { renderTagMarkdown } from './tag-markdown.mjs';
 import './conversation-rendering.css';
 import {mountDemoConversation} from './guided-demo-conversation.mjs';
+import {setActionButton} from './ui-actions.mjs';
 const $ = (id) => document.getElementById(id);
 
 
 import {mountSettingsPanel} from './settings-panel.mjs';
 export function mountAgent({ invoke, toast, attachment, getProjectId, openManaged, openProjectFile, openExternal, openFrozenChange, onMessages = () => {}, subscribe = window.nozeli.subscribe }) {
+  // Selection-menu tools and the composer send button are unified actions here;
+  // later title/disabled updates only carry state and never rewrite the icon.
+  for(const [id,action] of [['selection-draw','draw'],['selection-note','note'],['selection-discuss','discuss'],['selection-explain','explain'],['send-message','send']]){
+    const button=$(id);if(button)setActionButton(button,action);
+  }
   const managed = mountManagedAgent({invoke,toast,onMessages,openManaged,openProjectFile,openExternal,openFrozenChange});
   const scope=window.__workspaceScope;
   const ownsConversation=!scope||(scope.role==='surface'&&scope.kind==='conversation');

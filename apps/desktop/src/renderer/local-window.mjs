@@ -1,3 +1,4 @@
+import {setActionButton} from './ui-actions.mjs';
 const registries = new WeakMap();
 function registry(doc) { let value = registries.get(doc); if (!value) registries.set(doc, value = { rows: new Map(), listeners: new Set(), z: 10 }); return value; }
 export function localWindowOcclusions(doc = document) { return [...registry(doc).rows.values()].map(value => structuredClone(value)); }
@@ -39,6 +40,7 @@ export function mountLocalWindow({layer,key,title,body,actions,state=defaultLoca
   const button = (label,action) => { const b=doc.createElement('button'); b.type='button'; b.textContent=label; b.addEventListener('click',()=>{void Promise.resolve().then(action).catch(reportOperation);}); return b; };
   const fold = button('收起',()=>api.collapse(!view.collapsed)), close = button('关闭',()=>api.hide());
   fold.dataset.localWindowCollapse='';close.dataset.localWindowHide='';
+  setActionButton(fold,'collapse',{label:'收起窗口'});setActionButton(close,'close-view',{label:'关闭窗口'});
   header.append(caption,fold,close);
   const content = doc.createElement('div'); content.className='local-window-body'; if(body)content.append(body); if(actions)content.append(actions);
   const notice = doc.createElement('div'); notice.className='local-window-error'; notice.hidden=true; notice.setAttribute('role','alert');
@@ -72,7 +74,7 @@ export function mountLocalWindow({layer,key,title,body,actions,state=defaultLoca
     const migrated=environment.migrateView?.(view,next);if(migrated){view=migrated;dirty=true;}
     measured=next;rect=localWindowRect(view,measured);
     paintRect(rect);
-    node.hidden=view.hidden||next.visible===false;node.classList.toggle('is-collapsed',view.collapsed);content.hidden=view.collapsed;resize.hidden=view.collapsed;fold.textContent=view.collapsed?'展开':'收起';fold.setAttribute('aria-expanded',String(!view.collapsed));
+    node.hidden=view.hidden||next.visible===false;node.classList.toggle('is-collapsed',view.collapsed);content.hidden=view.collapsed;resize.hidden=view.collapsed;setActionButton(fold,view.collapsed?'expand':'collapse',{label:view.collapsed?'展开窗口':'收起窗口'});fold.setAttribute('aria-expanded',String(!view.collapsed));
     const publication=publish(geometryRetries);if(migrated)void persist('reset').catch(()=>{});return publication;
   }
   function schedule() { if(!frame)frame=win.requestAnimationFrame(()=>{frame=0;paint();}); }

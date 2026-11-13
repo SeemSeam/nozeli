@@ -17,6 +17,7 @@ Role: 当前源码项目的设计注册与维护入口
 
 | ID | 主题 | 主合同 | 实施与证据 | 下一步与边界 |
 | --- | --- | --- | --- | --- |
+| ICON-001 | 统一图标、双语动作清单与提示 | [界面契约](../user-guide.md#统一图标与操作提示2026-11-13源码已实现未安装) | 62动作生产单源，自有页面已迁移；Linux真实Electron多格式／全部设置分类／批注涂鸦／保存冷恢复及823单元、29审阅提示回归通过 | 未安装／发布；其他平台未验，真实TeX编译因本机缺工具链未通过，不扩大验收 |
 | MEMORY-001 | Plantree统一报告与稳定结果记忆 | [整体合同](../plantree-result-memory-design.md) | [实现／真实项目验收](../result-memory-implementation.md) | 复用Pi原生上下文，不另建压缩/短期记忆；后续局部读一致性、统一目录、规模检索及可恢复整理按主合同验收 |
 | CONTEXT-001 | Pi与Nozeli上下文交付边界 | [交付合同](../context-delivery-design.md) | [Pi整合记录](../pi-integration-execution.md)、[测试入口](../testing.md) | 只测试Nozeli来源/版本/输入接线；不复建Pi压缩、会话历史和恢复 |
 | ORCH-001 | 任务管理与主控 | [主控／Plan Tree设计](../orchestrator-long-term-design.md) | [稳定结果多task证据](../result-memory-implementation.md) | 宿主账本唯一权威；主控按需查询并选源，不扩大任务授权 |

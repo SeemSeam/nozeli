@@ -3,7 +3,7 @@ import {normalizeWebUrl} from '../domain/web-url.mjs';
 import './workspace-groups.css';
 import {usesNativeWindowChrome,windowBrand,windowControls} from './window-chrome.mjs';
 import {mountContextMenu} from './context-menu.mjs';
-import {setIconButton} from './ui-icons.mjs';
+import {setActionButton} from './ui-actions.mjs';
 import {mountWorkspaceTitleDrag} from './workspace-title-drag.mjs';
 import {createStartPage} from './guided-demo.mjs';
 
@@ -103,9 +103,9 @@ export function mountWorkspaceGroups({invoke,scope,toast=()=>{}}){
     const bar=document.createElement('header');bar.className='workspace-pane-header';bar.dataset.sourceGroup=node.id;if(view)bar.dataset.sourceView=view.id;
     const label=document.createElement('strong');label.className='workspace-pane-title';label.textContent=(view?viewTitle(view):'工作区')+(view?.viewState?.documentStatus?.dirty?' · 未保存':'');label.title=view?.relPath||label.textContent;bar.append(label);
     const actions=document.createElement('div');actions.className='workspace-pane-actions';actions.setAttribute('role','group');actions.setAttribute('aria-label','当前分区操作');
-    if(view){const floating=button(windowId==='main'?'独立窗口':'返回主工作区',windowId==='main'?'floatOpen':'dock',()=>command(windowId==='main'?{type:'floatOpen',viewId:view.id}:{type:'dock',windowId,targetGroupId:layoutGroups(layout,'main').find(g=>!g.activeViewId)?.id||layoutGroups(layout,'main').at(-1)?.id}));floating.dataset.workspaceFloatOpen=view.id;setIconButton(floating,'floating',{label:windowId==='main'?'独立窗口':'返回主工作区'});actions.append(floating);}
-    const select=button('切换内容','select-content',()=>{const rect=select.getBoundingClientRect();titleMenu.open(Object.values(layout.views).map(v=>({id:v.id,label:viewTitle(v),checked:v.id===view?.id})),{x:rect.left,y:rect.bottom,run:id=>activate(id,node.id)});select.setAttribute('aria-expanded','true');});setIconButton(select,'chevron-down',{label:'切换内容'});select.setAttribute('aria-haspopup','menu');select.setAttribute('aria-expanded','false');select.disabled=!Object.keys(layout.views).length;actions.append(select);
-    const more=button('更多操作','pane-more',()=>{const rect=more.getBoundingClientRect();void openPaneMenu({preventDefault(){},clientX:rect.left,clientY:rect.bottom},node,view).then(()=>more.setAttribute('aria-expanded','true')).catch(error=>toast(error.message));});setIconButton(more,'ellipsis',{label:'更多操作'});more.setAttribute('aria-haspopup','menu');more.setAttribute('aria-expanded','false');actions.append(more);bar.append(actions);
+    if(view){const floating=button(windowId==='main'?'独立窗口':'返回主工作区',windowId==='main'?'floatOpen':'dock',()=>command(windowId==='main'?{type:'floatOpen',viewId:view.id}:{type:'dock',windowId,targetGroupId:layoutGroups(layout,'main').find(g=>!g.activeViewId)?.id||layoutGroups(layout,'main').at(-1)?.id}));floating.dataset.workspaceFloatOpen=view.id;setActionButton(floating,windowId==='main'?'float-view':'dock-view',{label:windowId==='main'?'独立窗口':'返回主工作区'});actions.append(floating);}
+    const select=button('切换内容','select-content',()=>{const rect=select.getBoundingClientRect();titleMenu.open(Object.values(layout.views).map(v=>({id:v.id,label:viewTitle(v),checked:v.id===view?.id})),{x:rect.left,y:rect.bottom,run:id=>activate(id,node.id)});select.setAttribute('aria-expanded','true');});setActionButton(select,'collapse',{label:'切换内容'});select.setAttribute('aria-haspopup','menu');select.setAttribute('aria-expanded','false');select.disabled=!Object.keys(layout.views).length;actions.append(select);
+    const more=button('更多操作','pane-more',()=>{const rect=more.getBoundingClientRect();void openPaneMenu({preventDefault(){},clientX:rect.left,clientY:rect.bottom},node,view).then(()=>more.setAttribute('aria-expanded','true')).catch(error=>toast(error.message));});setActionButton(more,'more',{label:'更多操作'});more.setAttribute('aria-haspopup','menu');more.setAttribute('aria-expanded','false');actions.append(more);bar.append(actions);
     bar.addEventListener('contextmenu',event=>void openPaneMenu(event,node,view).catch(error=>toast(error.message)));return bar;
   }
   function updateHeader(){

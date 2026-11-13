@@ -1,8 +1,12 @@
-Lucide SVG definitions used by workspace-conversation-controls.mjs
+Lucide SVG definitions used by workspace-conversation-controls.mjs and ui-icons.mjs
 Source: https://github.com/lucide-icons/lucide/tree/main/icons
 Retrieved: 2026-10-01
 Icons: panels-top-left, maximize, minimize, rotate-ccw, text-cursor-input,
 arrow-up, minus, picture-in-picture-2, terminal, x.
+Retrieved: 2026-11-13, via https://raw.githubusercontent.com/lucide-icons/lucide/main/icons/{name}.svg
+(moved into ui-icons.mjs from apps/desktop/demos/icon-list-v2, plus additions)
+Icons: save, download, panel-top, file-cog, plug-zap, square, trash,
+square-pen, message-square-reply, corner-up-right, folder-open, rotate-cw, copy.
 
 ISC License
 

@@ -1,5 +1,5 @@
 import { mountContextMenu } from './context-menu.mjs';
-import { uiIcon } from './ui-icons.mjs';
+import { setActionButton } from './ui-actions.mjs';
 import { managedInboxTodos, userTodoEligible, resultSettlementIssue } from '../domain/managed-work-records.mjs';
 import { todoCapabilities } from '../domain/todo-management.mjs';
 import { createMessageAttentionPresentation, occurrenceKey } from '../domain/attention-presentation.mjs';
@@ -133,7 +133,7 @@ export function mountManagedTodos({ document, invoke, openTodo, viewWork, recove
     filters.hidden=false;summary.hidden=false;
     for(const b of filters.querySelectorAll('[data-todo-filter]'))b.setAttribute('aria-pressed',String(b.dataset.todoFilter===filter));
     const viewLabel={open:'待处理',completed:'历史',closed:'已关闭',all:'全部'}[filter];
-    filterMore.replaceChildren(uiIcon('ellipsis'));filterMore.title='更多待办视图，当前：'+viewLabel;filterMore.setAttribute('aria-label',filterMore.title);filterMore.setAttribute('aria-pressed',String(filter==='closed'||filter==='all'));
+    setActionButton(filterMore,'more',{label:'更多待办视图，当前：'+viewLabel});filterMore.setAttribute('aria-pressed',String(filter==='closed'||filter==='all'));
     const all=rows(),current=all.filter(t=>t.pending),visible=all.filter(t=>filter==='all'||filter==='open'&&t.pending||filter==='closed'&&t.historical&&t.status==='closed'||filter==='completed'&&t.historical).reverse();
     summary.hidden=filter==='open'&&!loading&&!stale;
     summary.textContent=stale?'待办暂不可用'+(state?'；保留上次状态，请重试。':'，请重试。'):loading?'正在读取待办…':filter==='completed'?'包含已关闭提醒；删除提醒不会删除原报告。':filter==='closed'?'已关闭的提醒；原任务和报告仍保留。':'仅显示用户事项，不包含后台运行日志。';
@@ -151,7 +151,7 @@ export function mountManagedTodos({ document, invoke, openTodo, viewWork, recove
         const secondary=document.createElement('span');secondary.className='managed-todo-secondary';
         const version=document.createElement('span'),chip=document.createElement('span'),action=document.createElement('span');version.className='managed-todo-version';chip.className='managed-todo-chip';action.className='managed-todo-action';secondary.append(version,chip,action);content.append(title,secondary);open.append(marker,content);
         open.onpointerenter=()=>showName(open);open.onfocus=()=>showName(open);open.onpointerleave=hideName;open.onblur=hideName;
-        const more=document.createElement('button');more.type='button';more.append(uiIcon('ellipsis'));more.dataset.todoMore=todo.id;more.setAttribute('aria-haspopup','menu');
+        const more=document.createElement('button');more.type='button';setActionButton(more,'more');more.dataset.todoMore=todo.id;more.setAttribute('aria-haspopup','menu');
         row.append(open,more);
       }
       row.dataset.state=todo.status;row.dataset.kind=todo.kind;
@@ -169,7 +169,7 @@ export function mountManagedTodos({ document, invoke, openTodo, viewWork, recove
       row.querySelector('.managed-todo-chip').textContent=todo.statusLabel;
       row.querySelector('.managed-todo-action').textContent=todo.actionLabel;
       open.setAttribute('aria-label',title+' · '+secondary);
-      const more=row.querySelector('[data-todo-more]');more.setAttribute('aria-label','更多操作：'+[title,todo.versionLabel].filter(Boolean).join(' · '));more.disabled=open.disabled;more.onclick=()=>showMenu(todo,null,more);
+      const more=row.querySelector('[data-todo-more]');setActionButton(more,'more',{label:'更多操作：'+[title,todo.versionLabel].filter(Boolean).join(' · ')});more.disabled=open.disabled;more.onclick=()=>showMenu(todo,null,more);
       row.oncontextmenu=e=>showMenu(todo,e,e.target.closest('button')||open);row.onkeydown=e=>{if(e.key==='ContextMenu'||e.key==='Menu'||e.shiftKey&&e.key==='F10'){e.preventDefault();showMenu(todo,null,e.target.closest('button')||open);}};
       if(list.children[position]!==row)list.insertBefore(row,list.children[position]||null);
     }

@@ -3,6 +3,7 @@
 // onExit belongs to a dedicated host surface: awaiting it must not clear this
 // overlay. The host closes content through pane history and owns its disposal.
 // Omit onExit for a local overlay that restores the retained reader in place.
+import {setActionButton} from './ui-actions.mjs';
 export function mountFrozenChangeReader({ parent, invoke, mountDiff, currentProjectId, onExit }) {
   const document = parent.ownerDocument;
   let overlay = null, diff = null, retained = [], focus = null, generation = 0;
@@ -63,8 +64,7 @@ export function mountFrozenChangeReader({ parent, invoke, mountDiff, currentProj
     const fullPath = document.createElement('p'); fullPath.textContent = '正在读取文件身份…';
     pathDetails.append(pathSummary, fullPath);
     const previous = document.createElement('button'), next = document.createElement('button'), count = document.createElement('span');
-    previous.type = next.type = 'button'; previous.textContent = '上一处'; next.textContent = '下一处';
-    previous.setAttribute('aria-label', '上一处差异'); next.setAttribute('aria-label', '下一处差异');
+    previous.type = next.type = 'button';setActionButton(previous,'diff-previous',{text:''});setActionButton(next,'diff-next',{text:''});
     previous.disabled = next.disabled = true; count.setAttribute('role', 'status');
     previous.addEventListener('click', () => diff?.navigate(-1));
     next.addEventListener('click', () => diff?.navigate(1));

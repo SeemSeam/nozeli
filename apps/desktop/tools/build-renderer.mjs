@@ -106,7 +106,7 @@ for(const direction of ['undo','redo']){
   fortune=fortune.replace(original,`newContext.formulaCache.updateFormulaCache(newContext, history, "${direction}");\n          return fn(newContext,function(draftCtx){calculateFormula(draftCtx);triggerGroupValuesRefresh(draftCtx);});`);
 }
 await fs.writeFile(fortuneFile,fortune);
-for (const name of ['sheet-frame.html', 'sheet-frame.css', 'sheet-frame.mjs', 'xlsx-package.mjs','context-menu.mjs','ui-icons.mjs','ui-icons.LICENSE']) await fs.copyFile(path.join(root, 'src/renderer', name), path.join(output, name));
+for (const name of ['sheet-frame.html', 'sheet-frame.css', 'sheet-frame.mjs', 'xlsx-package.mjs','context-menu.mjs','ui-icons.mjs','ui-tooltip.mjs','ui-icons.LICENSE','workspace-conversation-controls.LICENSE']) await fs.copyFile(path.join(root, 'src/renderer', name), path.join(output, name));
 
 // Pinned PPTist (AGPL-3.0), local-only, with separate Nozeli draft persistence.
 await fs.cp(path.join(root,'vendor/pptist/dist'),path.join(output,'ppt-vendor'),{recursive:true});

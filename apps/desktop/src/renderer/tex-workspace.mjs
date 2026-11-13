@@ -1,6 +1,7 @@
 import { mountPdf } from './pdf-view.mjs';
 import { mountPreviewScrollLink } from './preview-scroll-link.mjs';
-import { offsetToPosition } from './editor-adapter.mjs';
+import {setActionButton} from './ui-actions.mjs';
+import {offsetToPosition} from './editor-adapter.mjs';
 
 // TeX owns only its toolbar and the shared comparison pane while explicitly open.
 export function mountTexWorkspace({ getContext, beside, closeBeside, openFile }) {
@@ -212,7 +213,7 @@ export function mountTexWorkspace({ getContext, beside, closeBeside, openFile })
     finally { if(identity===active&&ticket===configurationEpoch)configuring=false; }
   }
   for (const id of ['tex-root', 'tex-engine', 'tex-auto']) $(id).addEventListener('change', configure);
-  $('tex-build').onclick = build;
+  setActionButton($('tex-build'),'compile');$('tex-build').onclick = build;
   $('tex-cancel').onclick = () => { clearTimeout(timer); if (active) void call('tex.cancel', { projectId: active.projectId }).catch(e => message(e.message)); };
   $('tex-preview').onclick = () => {
     showPreview = !showPreview; $('tex-preview').setAttribute('aria-pressed', String(showPreview));

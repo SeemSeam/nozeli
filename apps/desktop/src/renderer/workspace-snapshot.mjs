@@ -18,7 +18,7 @@
 // 笔迹位置, never a file anchor.
 import './local-window.css';
 import {mountDrawingEditor,drawingSvg} from './region-drawing.mjs';
-import {uiIcon} from './ui-icons.mjs';
+import {setActionButton} from './ui-actions.mjs';
 import {CAPTURE_PIXELS} from '../domain/workspace-capture.mjs';
 import {createDiscussionTransport,createDiscussionThread,createThreadMessageSource,mountThreadTranscript,plainThreadRounds} from './discussion-thread.mjs';
 import {mountLocalWindow,ensureLocalWindowLayer,viewportWindowEnvironment} from './local-window.mjs';
@@ -96,11 +96,10 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
     // Shared-hide re-entry: closing/Escape on the card window only HIDES it;
     // this chip reopens the same window node with its draft, thread and
     // selection — hiding is never completion and never loses the question.
-    cardReopen=document.createElement('button');cardReopen.type='button';cardReopen.className='snapshot-card-reopen';cardReopen.textContent='位置讨论';cardReopen.title='重新打开位置讨论卡（隐藏的窗口保留草稿与讨论）';
-    cardReopen.setAttribute('aria-label','重新打开位置讨论卡');
+    cardReopen=document.createElement('button');cardReopen.type='button';cardReopen.className='snapshot-card-reopen';setActionButton(cardReopen,'discuss',{label:'重新打开位置讨论卡（隐藏的窗口保留草稿与讨论）',text:'位置讨论'});
     cardReopen.hidden=true;
     cardReopen.onclick=()=>{if(cardWindow)void cardWindow.show().catch(()=>{});};
-    const exit=document.createElement('button');exit.type='button';exit.className='snapshot-exit';exit.textContent='退出';exit.prepend(uiIcon('close'));
+    const exit=document.createElement('button');exit.type='button';exit.className='snapshot-exit';setActionButton(exit,'cancel-drawing',{label:'退出涂鸦'});
     exit.onclick=()=>void exitDialog();
     bar.append(recoverRow,cardReopen,exit);dialog.append(statusEl,bar);document.body.append(dialog);
     dialog.addEventListener('cancel',event=>{event.preventDefault();if(cardState&&cardMode()==='compose')void backToDrawing();else void exitDialog();});
@@ -370,7 +369,7 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
   function renderCardMode(){
     if(!card)return;
     const mode=cardMode(),rounds=discussion?.thread?.history?.length||0;
-    cardSend.textContent=rounds?'发送续问':'发送讨论';
+    setActionButton(cardSend,'send',{label:rounds?'发送续问':'发送讨论'});
     cardDraft.hidden=mode!=='compose';
     cardLocal.hidden=mode!=='compose';
     cardBack.hidden=mode==='finalized';
@@ -420,12 +419,12 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
     cardText=document.createElement('textarea');cardText.rows=1;cardText.placeholder='关于这处涂鸦，聊一聊…';cardText.title=menuShortcut('Ctrl/Cmd+Enter 发送讨论');cardText.setAttribute('aria-label','讨论说明');cardText.className='snapshot-card-text';
     cardStatusLine=document.createElement('span');cardStatusLine.className='snapshot-card-status';cardStatusLine.setAttribute('role','status');cardStatusLine.hidden=true;cardHeading.append(cardStatusLine);
     const row=document.createElement('div');row.className='snapshot-card-actions snapshot-card-secondary';row.hidden=true;
-    cardSend=document.createElement('button');cardSend.type='button';cardSend.textContent='发送讨论';cardSend.className='snapshot-card-send';
+    cardSend=document.createElement('button');cardSend.type='button';setActionButton(cardSend,'send',{label:'发送讨论'});cardSend.className='snapshot-card-send';
     cardTask=document.createElement('button');cardTask.type='button';cardTask.textContent='提交后台任务';cardTask.className='snapshot-card-task';cardTask.title='将当前要求与同一冻结截图交给后台，不先等待前台回复';
     const primary=document.createElement('div');primary.className='snapshot-card-actions snapshot-card-primary';primary.setAttribute('role','group');primary.setAttribute('aria-label','提交方式');
     const composer=document.createElement('div');composer.className='tag-composer snapshot-card-composer';
     cardDraft=document.createElement('button');cardDraft.type='button';cardDraft.textContent='加入对话草稿';cardDraft.className='snapshot-card-local';
-    cardLocal=document.createElement('button');cardLocal.type='button';cardLocal.textContent='仅保存本地';cardLocal.className='snapshot-card-local';
+    cardLocal=document.createElement('button');cardLocal.type='button';cardLocal.className='snapshot-card-local';setActionButton(cardLocal,'save',{label:'仅保存本地，不发送'});
     cardBack=document.createElement('button');cardBack.type='button';cardBack.textContent='返回笔迹';cardBack.className='snapshot-card-back';
     cardOpen=document.createElement('button');cardOpen.type='button';cardOpen.textContent='进入对话';cardOpen.className='snapshot-card-open';cardOpen.hidden=true;
     cardDone=document.createElement('button');cardDone.type='button';cardDone.textContent='完成讨论';cardDone.className='snapshot-card-back';cardDone.hidden=true;

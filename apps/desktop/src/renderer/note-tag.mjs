@@ -14,7 +14,7 @@ export async function disposeTagWindows(annotationId) {
   }
 }
 export async function flushTagWindows() { await Promise.all([...tagMounts]); await Promise.all([...tagWindows].map(window => window.flush())); }
-import {setIconButton} from './ui-icons.mjs';
+import {setActionButton} from './ui-actions.mjs';
 import { renderTagMarkdown, tagMarkdownSummary } from './tag-markdown.mjs';
 import { mountAnnotationComposer, describeAnnotationSource } from './annotation-composer.mjs';
 import { mountThreadTranscript, threadRounds } from './discussion-thread.mjs';
@@ -127,7 +127,7 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
     }).join('\n\n');
   };
   content.textContent = tagMarkdownSummary(displayText());
-  const close = document.createElement('button'); close.type = 'button'; close.className = 'tag-close'; close.textContent = '×';
+  const close = document.createElement('button'); close.type = 'button'; close.className = 'tag-close';
   close.setAttribute('aria-label', `关闭${kind === 'note' ? '备注' : '对话'} ${ordinal}`);
   const focusCard = () => {
     const scope = root.closest('.cm-scroller, #markdown-preview-scroll, .reader-scroll, .monaco-editor') || root.parentElement;
@@ -158,7 +158,7 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   const canFollowup = conversation && status !== 'draft';
   const composerRow = document.createElement('span'); composerRow.className = 'tag-composer';
   const submit = document.createElement('button'); submit.type = 'button'; submit.className = 'tag-send';
-  submit.textContent = kind === 'note' ? '保存备注' : (canFollowup ? '发送续问' : '发送讨论');
+  setActionButton(submit, kind === 'note' ? 'save' : 'send', {label: kind === 'note' ? '保存本地备注，不发送' : (canFollowup ? '发送续问' : '发送讨论')});
   submit.disabled = readOnly || (conversation && pending);
   composerRow.append(editor, submit);
   // Status lines exist only when they carry state (pending/failed/execute).
@@ -190,16 +190,18 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   });
   const removeButton = document.createElement('button'); removeButton.type = 'button';
   removeButton.className = conversation ? 'tag-remove' : 'tag-delete';
-  if (conversation) { setIconButton(removeButton, 'close'); removeButton.classList.add('ui-danger'); } else removeButton.textContent = '删除备注';
-  removeButton.setAttribute('aria-label', conversation ? `移除对话标签 ${ordinal}，保留对话历史` : `删除备注 ${ordinal}`);
-  removeButton.title = conversation ? '移除标签，保留对话历史' : '删除备注';
+  const paintRemoveButton = (value = ordinal) => {
+    if (conversation) { setActionButton(removeButton, 'remove-tag', {label: `移除对话标签 ${value}，保留对话历史`, ...(inline ? {text: '移除标签（保留历史）'} : {})}); removeButton.classList.add('ui-danger'); }
+    else setActionButton(removeButton, 'delete', {label: `删除备注 ${value}`});
+  };
+  paintRemoveButton();
   removeButton.disabled = readOnly;
   removeButton.addEventListener('click', event => { event.stopPropagation(); if (!readOnly) remove?.(id); });
-  const editButton = document.createElement('button'); editButton.type = 'button'; editButton.className = 'tag-edit'; editButton.textContent = '编辑备注';
+  const editButton = document.createElement('button'); editButton.type = 'button'; editButton.className = 'tag-edit'; setActionButton(editButton, 'edit', {label: '编辑备注'});
   editButton.addEventListener('click', () => openEdit());
   editButton.disabled = readOnly;
   const drawingButton = information?.drawing && draw ? document.createElement('button') : null;
-  if (drawingButton) { drawingButton.type = 'button'; drawingButton.className = 'tag-drawing-edit'; drawingButton.textContent = '编辑涂鸦'; drawingButton.onclick = () => draw(id); }
+  if (drawingButton) { drawingButton.type = 'button'; drawingButton.className = 'tag-drawing-edit'; setActionButton(drawingButton, 'draw', {label: '编辑涂鸦'}); drawingButton.onclick = () => draw(id); }
   if(conversation&&execute)composerRow.append(executeButton);else menuActions.append(executeButton);
   menuActions.append(editButton);
   if (drawingButton) menuActions.append(drawingButton);
@@ -266,9 +268,7 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
     source.hidden = collapsed || !source.open;
     syncSource();
     editButton.hidden = conversation || editing;
-    setIconButton(close, collapsed ? 'plus' : 'minus');
-    close.setAttribute('aria-label', (collapsed ? '展开' : '折叠') + (conversation ? '对话 ' : '备注 ') + ordinal);
-    close.title = close.getAttribute('aria-label');
+    setActionButton(close, collapsed ? 'expand' : 'collapse', {label: (collapsed ? '展开' : '折叠') + (conversation ? '对话 ' : '备注 ') + ordinal});
     index.setAttribute('aria-expanded', String(open));
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(fitConversation);
     if (notify && controller) void (open ? controller.show(opener) : controller.collapse(true)).catch(error => setDelivery(error.message));
@@ -359,7 +359,7 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
     editor.value = draftValue || '';
     editor.placeholder = pending ? '继续记下问题，收到回复后发送…' : '关于这处材料，聊一聊…';
     editor.addEventListener('keydown', event => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !event.isComposing && event.keyCode !== 229 && !event.repeat && !submit.disabled) { event.preventDefault(); submit.click(); } });
-    setIconButton(close, 'minus');
+    setActionButton(close, 'collapse', {label: '折叠' + (conversation ? '对话 ' : '备注 ') + ordinal});
   }
   const noteBody = document.createElement('span'); noteBody.className = 'tag-markdown tag-note-body';
   if (!conversation) { renderTagMarkdown(noteBody, initialDraft || '（无文字）'); transcript.append(noteBody); editor.placeholder = '用 Markdown 记录你的理解…'; }
@@ -367,7 +367,7 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   if (inline) head.append(close);
   card.append(head, source, transcript, composerRow, delivery, executeStatusLine, menuActions);
   if (inline) {
-    if (conversation) { removeButton.classList.remove('ui-icon-button'); removeButton.textContent = '移除标签（保留历史）'; }
+    if (conversation) paintRemoveButton();
     const view = document.createElement('button'); view.type = 'button'; view.className = 'tag-view'; view.textContent = '查看原文与备注';
     view.addEventListener('click', () => { setOpen(true); if (!source.open) toggleSource(); });
     menuActions.append(view);
@@ -461,9 +461,8 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
     index.textContent = String(value); cardNumber.textContent = String(value);
     index.setAttribute('aria-label', `打开${conversation ? '对话' : '备注'} ${value}`);
     cardNumber.setAttribute('aria-label', `查看${conversation ? '对话' : '备注'} ${value} 的来源`);
-    close.setAttribute('aria-label', `${collapsed ? '展开' : '折叠'}${conversation ? '对话' : '备注'} ${value}`);
-    close.title = close.getAttribute('aria-label');
-    removeButton.setAttribute('aria-label', conversation ? `移除对话标签 ${value}，保留对话历史` : `删除备注 ${value}`);
+    setActionButton(close, collapsed ? 'expand' : 'collapse', {label: `${collapsed ? '展开' : '折叠'}${conversation ? '对话' : '备注'} ${value}`});
+    paintRemoveButton(value);
   };
   root.fitConversation = fitConversation;
   root.updateExecuteStatus = value => { executeStatusLine.textContent=value||'';executeStatusLine.hidden=!executeStatusLine.textContent;executeButton.disabled=readOnly||executing; };

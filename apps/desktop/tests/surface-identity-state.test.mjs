@@ -86,18 +86,25 @@ test('file reference listings fence project switches, same-project reloads and r
  const first=refresh(),second=refresh();gates[4].resolve(result('new'));await second;gates[3].resolve(result('stale'));await first;assert.deepEqual(applied,[['b'],['new']]);
 });
 
-class Element {constructor(tag){this.tag=tag;this.children=[];this.style={};this.value='';this._text='';this.className='';this.dataset={};this.attributes=new Map();this.hidden=false;this.disabled=false;this.handlers={};}
+class Element {constructor(tag){this.tag=tag;this.children=[];this.style={};this.value='';this._text='';this.className='';this.dataset={};this.attributes=new Map();this.hidden=false;this.disabled=false;this.handlers={};const classes=new Set();
+ this.classList={add:(...names)=>names.forEach(name=>classes.add(name)),remove:(...names)=>names.forEach(name=>classes.delete(name)),toggle:(name,force)=>force===undefined?(classes.has(name)?(classes.delete(name),false):(classes.add(name),true)):(force?classes.add(name):classes.delete(name),force),contains:name=>classes.has(name)};}
  get textContent(){return this._text+this.children.map(child=>child.textContent).join('');}
  set textContent(value){this._text=String(value);}
  append(...nodes){this.children.push(...nodes);}
  replaceChildren(...nodes){this.children=nodes;}
  setAttribute(name,value){this.attributes.set(name,String(value));}
  getAttribute(name){return this.attributes.get(name)??null;}
+ removeAttribute(name){this.attributes.delete(name);}
  addEventListener(type,fn){(this.handlers[type]??=[]).push(fn);}
+ querySelector(selector){const match=/^:scope > \.([\w-]+)$/.exec(selector);if(!match)throw Error('Unsupported fixture selector: '+selector);return this.children.find(node=>node.classList?.contains(match[1])||String(node.className||'').split(' ').includes(match[1]))??null;}
  click(){for(const fn of this.handlers.click??[])fn({preventDefault(){},stopPropagation(){}});}
  getBoundingClientRect(){const g=geometry.get(this);const top=g?g.top:1000000;return {top,left:0,right:100,bottom:top+50,width:100,height:50};}
  scrollIntoView(){}}
-const document={createElement:tag=>new Element(tag)};
+const document={createElement:tag=>{const node=new Element(tag);node.ownerDocument=document;return node;},createElementNS:(_namespace,tag)=>{const node=new Element(tag);node.ownerDocument=document;return node;},addEventListener(){},removeEventListener(){}};
+// setActionButton/uiIcon resolve the module-global document for the real SVG
+// glyph path, so the archive fixture document doubles as the global during tests.
+const previousDocument=globalThis.document;globalThis.document=document;
+after(()=>{globalThis.document=previousDocument;});
 // Reader auto-paging/windowing behavior is covered by the REAL Electron DOM
 // regression (desktop-tag-history.test.mjs) against the bundled renderer; the
 // former fake-geometry unit doubles could not model the attach/IO lifecycle

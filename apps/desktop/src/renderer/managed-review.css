@@ -45,6 +45,7 @@
 .managed-review-detail::backdrop{background:#0006}
 .managed-review-detail>h3{margin:0 0 12px}
 .managed-review-detail>button{float:right;min-height:32px}
+.managed-review-detail>button.ui-icon-button{min-height:var(--ui-hit-size,28px)}
 .managed-review-detail-body{min-width:0;overflow-wrap:anywhere;white-space:normal}
 .managed-review-detail-body p{white-space:pre-wrap}
 .managed-review-heading>h3{min-width:0;max-width:100%;overflow-wrap:anywhere;font-size:13px}

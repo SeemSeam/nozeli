@@ -76,7 +76,7 @@ try{
   await conversation.focus('.session-context-details summary');await conversation.keyboard.press('Enter');
   await conversation.waitForFunction(expected=>document.querySelector('.session-context-details')?.open&&document.querySelector('.session-context-body pre[aria-label="用户原文（已有本地记录）"]')?.textContent===expected,{},expectedInput);
  };
- const closeDetails=async()=>{await conversation.$$eval('.session-runtime-actions button',nodes=>nodes.find(node=>node.textContent==='关闭').click());};
+ const closeDetails=async()=>{await conversation.click('.session-runtime-dialog [data-session-command="close"]');};
  const assertReadOnly=async(expected)=>{
   for(let i=0;i<3;i++){await conversation.focus('.session-context-details summary');await conversation.keyboard.press('Enter');await conversation.keyboard.press('Enter');}
   await pause(600);

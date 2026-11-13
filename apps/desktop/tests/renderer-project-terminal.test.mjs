@@ -2,9 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import xterm from '@xterm/xterm';
+import {setActionButton} from '../src/renderer/ui-actions.mjs';
 
 const source=await readFile(new URL('../src/renderer/project-terminal-view.mjs',import.meta.url),'utf8');
-const create=new Function('Terminal','FitAddon','ResizeObserver',source.split('\n').filter(line=>!line.startsWith('import ')).join('\n').replace('export async function','async function')+';return mountProjectTerminal;');
+const create=new Function('Terminal','FitAddon','ResizeObserver','setActionButton',source.split('\n').filter(line=>!line.startsWith('import ')).join('\n').replace('export async function','async function')+';return mountProjectTerminal;');
 const tick=()=>new Promise(resolve=>setTimeout(resolve,2));
 async function until(check){for(let i=0;i<500;i++){if(check())return;await tick();}assert.fail('Timed out waiting for terminal controller');}
 
@@ -14,7 +15,9 @@ async function harness(t,{cold=false}={}){
     setTimeout(fn,ms){const id=setTimeout(()=>{timers.delete(id);fn();},ms);timers.add(id);return id;},
     requestAnimationFrame:()=>1,cancelAnimationFrame(){},addEventListener:(name,fn)=>windowEvents.set(name,fn),removeEventListener(){}};
   const doc={defaultView:win,hidden:false,querySelector:()=>null,hasFocus:()=>false,addEventListener(){},removeEventListener(){}};
-  doc.createElement=()=>({ownerDocument:doc,dataset:{},clientWidth:640,clientHeight:480,children:[],setAttribute(){},append(...nodes){this.children.push(...nodes);},replaceChildren(...nodes){this.children=nodes;},addEventListener(){},focus(){}});
+  doc.createElement=()=>{const classes=new Set();return {ownerDocument:doc,dataset:{},clientWidth:640,clientHeight:480,children:[],classList:{add:(...names)=>names.forEach(name=>classes.add(name)),remove:(...names)=>names.forEach(name=>classes.delete(name)),toggle:(name,force)=>force===undefined?(classes.has(name)?(classes.delete(name),false):(classes.add(name),true)):(force?classes.add(name):classes.delete(name),force),contains:name=>classes.has(name)},setAttribute(){},removeAttribute(){},querySelector(selector){const match=/^:scope > \.([\w-]+)$/.exec(selector);if(!match)throw Error('Unsupported fixture selector: '+selector);return this.children.find(node=>node.classList?.contains(match[1]))??null;},append(...nodes){this.children.push(...nodes);},replaceChildren(...nodes){this.children=nodes;},addEventListener(){},focus(){}};};
+  doc.createElementNS=(_namespace,tag)=>doc.createElement(tag);
+  const previousDocument=globalThis.document;globalThis.document=doc;
   const root=doc.createElement();
   class Terminal extends xterm.Terminal{
     constructor(options){super(options);terminal=this;}
@@ -24,8 +27,8 @@ async function harness(t,{cold=false}={}){
   }
   class FitAddon{activate(){}fit(){}dispose(){}}
   class ResizeObserver{observe(){}disconnect(){}}
-  t.after(()=>{windowEvents.get('beforeunload')?.();for(const timer of timers)clearTimeout(timer);});
-  const mount=create(Terminal,FitAddon,ResizeObserver);
+  t.after(()=>{windowEvents.get('beforeunload')?.();for(const timer of timers)clearTimeout(timer);globalThis.document=previousDocument;});
+  const mount=create(Terminal,FitAddon,ResizeObserver,setActionButton);
   await mount({root,scope:{projectId:'project',viewId:'view'},subscribe:(name,fn)=>{events.set(name,fn);return()=>{};},invoke:async(op,args)=>{
     calls.push({op,args});let value={};
     if(op==='project-terminal.attach')value=cold&&!args.restart?{instanceId:null,status:'not-started'}:{instanceId:'shell-1',status:'running',shell:{name:'sh'}};

@@ -1,3 +1,4 @@
+import {setActionButton} from './ui-actions.mjs';
 import {statusLine,disclosure,roleLabel} from './management-presentation.mjs';
 // Only the read-only DTO is rendered; never stringify runtime/provider payloads here.
 function renderContextDetails(root,value){
@@ -62,7 +63,7 @@ export function mountSessionRuntimeControls({call,current,refresh,toast=()=>{}})
  const make=(label,run)=>{const b=document.createElement('button');b.type='button';b.textContent=label;b.onclick=()=>void run();actions.append(b);return b;};
  const compact=make('压缩上下文',()=>command('compact')),reload=make('重新加载资源',()=>command('reload')),interrupt=make('停止当前回合',()=>command('interrupt')),read=make('刷新',load);
  make('连接与历史',()=>{if(!same())return;dialog.close();window.dispatchEvent(new Event('nozeli-agent-details'));});
- make('关闭',()=>dialog.close());
+ const sessionClose=make('关闭',()=>dialog.close());sessionClose.dataset.sessionCommand='close';setActionButton(sessionClose,'close-view',{label:'关闭'});
  compact.dataset.sessionCommand='compact';reload.dataset.sessionCommand='reload';interrupt.dataset.sessionCommand='interrupt';
  function paintDiagnostics(){if(!technical.open||!info)return;facts.textContent=JSON.stringify({target:info.target,ownerId:info.ownerId,threadId:info.threadId,capabilities:info.capabilities,...info.state},null,2);const value=info.diagnostics||'暂无原生诊断输出。';if(diagnostics.value!==value){const start=diagnostics.selectionStart,end=diagnostics.selectionEnd,scroll=diagnostics.scrollTop;diagnostics.value=value;diagnostics.setSelectionRange(start,end);diagnostics.scrollTop=scroll;}}
  function paint(){for(const [b,key]of [[compact,'compact'],[reload,'reload'],[interrupt,'interrupt']]){const wrongPhase=key==='interrupt'?!info?.busy||!info?.state?.jobId:info?.busy;b.hidden=info?.capabilities?.[key]!==true||(key==='interrupt'&&!info?.busy);b.disabled=pending||!same()||!info?.available||!info?.ownerId||wrongPhase||info.capabilities?.[key]!==true;b.title=wrongPhase?key==='interrupt'?'没有可中断的当前回合':'当前回合结束后可用':!info?.available?'原会话不可用，请使用连接与历史':'';}unavailable.textContent=info?.busy?'压缩与重新加载：当前回合结束后可用。':info&&!info.available?'原会话不可用，请查看连接与历史。':'';unavailable.hidden=!unavailable.textContent;read.disabled=pending;sessionLine.update({subject:roleLabel(ctx?.agent?.role??(ctx?.target==='frontdesk'?'frontdesk':ctx?.target==='orchestrator'?'orchestrator':'worker')),state:{label:!same()?'会话已变化':info?.busy?'处理中':info?.available?'待命':'状态待核实'},secondary:info?.state?.model?.id??info?.state?.model??''});}

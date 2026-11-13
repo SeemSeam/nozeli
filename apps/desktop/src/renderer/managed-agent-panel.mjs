@@ -1,4 +1,5 @@
 import './management-presentation.css';
+import {setActionButton} from './ui-actions.mjs';
 import { appendDrawingMaterial } from '../domain/drawing-delivery.mjs';
 import {createSessionStore,sessionMessages} from './session-store.mjs';
 import {createIdentityHydration,createProjectFiles,bindComposerDrafts} from './surface-identity-state.mjs';
@@ -182,7 +183,7 @@ export function mountManagedAgent({invoke,toast,openManaged,onMessages=()=>{},op
  agentDetails.dataset.mode='connection';
  const agentDetailsTitle=document.createElement('h2');agentDetailsTitle.id='managed-agent-details-title';agentDetailsTitle.textContent='连接与历史';
  const agentDetailsBody=document.createElement('div');agentDetailsBody.className='managed-agent-details-body';
- const agentDetailsClose=document.createElement('button');agentDetailsClose.type='button';agentDetailsClose.textContent='关闭';agentDetailsClose.addEventListener('click',()=>agentDetails.close());
+ const agentDetailsClose=document.createElement('button');agentDetailsClose.type='button';setActionButton(agentDetailsClose,'close-view',{label:'关闭'});agentDetailsClose.addEventListener('click',()=>agentDetails.close());
  agentDetails.append(agentDetailsTitle,agentDetailsBody,agentDetailsClose);document.body.append(agentDetails);
  agentDetailsBody.append($('ai-status'));
  const agentDetailsStatus=document.createElement('p');agentDetailsStatus.setAttribute('role','status');agentDetailsBody.prepend(agentDetailsStatus);
@@ -546,7 +547,7 @@ async function openWorkReport(workId){
   closeRetainedProgress();if(agentDetails.open)agentDetails.close();
   const source=projectId,gen=generation,dialog=document.createElement('dialog'),body=document.createElement('section'),title=document.createElement('h2');
   dialog.className='managed-report-dialog';dialog.dataset.retainedProgressDialog=workId;dialog.setAttribute('aria-label',(work.name||'任务')+' · 保留进展');title.textContent=(work.name||'任务')+' · 保留进展';
-  const close=button('关闭',()=>closeRetainedProgress());dialog.append(title,body,close);document.body.append(dialog);retainedDialog=dialog;
+ const close=button('关闭',()=>closeRetainedProgress());setActionButton(close,'close-view',{label:'关闭'});dialog.append(title,body,close);document.body.append(dialog);retainedDialog=dialog;
   const current=()=>source===projectId&&gen===generation&&retainedDialog===dialog;
   const route=async action=>{if(!current())return;closeRetainedProgress();try{await action();}catch(error){toast('保留内容未改变：'+error.message);}};
   retainedView=mountWorkProgress({root:body,document,loadProgress:async()=>{const value=await call('work.progress.read',{workId},source);if(!current())throw Error('项目已变化，请重新进入原任务');return value;},
@@ -671,7 +672,7 @@ async function openWorkReport(workId){
  const orderedRecords=ongoingRecords.reverse().concat(historicalRecords.reverse());
  const works=$('work-items'),recordIds=new Set(orderedRecords.map(record=>record.id));
  for(const filter of document.querySelectorAll('[data-managed-category]'))filter.setAttribute('aria-pressed',String(filter.dataset.managedCategory===category));
- const extraCategory=extraCategories.find(item=>item.id===category);categoryMore.textContent='…';categoryMore.classList.toggle('active',Boolean(extraCategory));categoryMore.title=extraCategory?'更多工作分类，当前：'+extraCategory.label:'更多工作分类';categoryMore.setAttribute('aria-label',categoryMore.title);
+ const extraCategory=extraCategories.find(item=>item.id===category);setActionButton(categoryMore,'more',{label:extraCategory?'更多工作分类，当前：'+extraCategory.label:'更多工作分类'});categoryMore.classList.toggle('active',Boolean(extraCategory));categoryMore.setAttribute('aria-pressed',String(Boolean(extraCategory)));
   for(const [id,row] of workRows)if(!recordIds.has(id)){row.remove();workRows.delete(id);}
   for(const [position,record] of orderedRecords.entries()){
    let row=workRows.get(record.id);
@@ -789,7 +790,7 @@ async function openWorkReport(workId){
  const restoreReportTitleFocus=()=>void invoke('workspace.control',{type:'report-tools-closed',projectId,viewId:scope?.viewId});
  const reportMenu=mountContextMenu({id:'managed-report-menu',label:'报告操作',onClose:restoreReportTitleFocus,onError:message=>reportFailure(message)});
  function reportFailure(message){const node=$('managed-review-error');if(node){node.textContent=message;node.hidden=false;}else toast(message);}
- function reportDialog(title,fill){const trigger=document.activeElement,dialog=document.createElement('dialog');dialog.className='managed-report-dialog';const heading=document.createElement('h2'),content=document.createElement('section'),close=button('关闭',()=>dialog.close());heading.textContent=title;fill(content);dialog.append(heading,content,close);document.body.append(dialog);dialog.addEventListener('close',()=>{dialog.remove();if(trigger?.isConnected&&trigger!==document.body)trigger.focus({preventScroll:true});else restoreReportTitleFocus();},{once:true});dialog.showModal();close.focus();return dialog;}
+ function reportDialog(title,fill){const trigger=document.activeElement,dialog=document.createElement('dialog');dialog.className='managed-report-dialog';const heading=document.createElement('h2'),content=document.createElement('section'),close=button('关闭',()=>dialog.close());setActionButton(close,'close-view',{label:'关闭'});heading.textContent=title;fill(content);dialog.append(heading,content,close);document.body.append(dialog);dialog.addEventListener('close',()=>{dialog.remove();if(trigger?.isConnected&&trigger!==document.body)trigger.focus({preventScroll:true});else restoreReportTitleFocus();},{once:true});dialog.showModal();close.focus();return dialog;}
  function todoDetails(id){reportDialog('待办详情',content=>{todoUI.details(content,id);const note=document.createElement('p');note.textContent='提醒管理不结束工作。静态 HTML 禁止脚本，冻结原件只读。';content.append(note);});}
  async function queryDisposition(){const source=projectId,gen=generation,doc=reportDocument,request=++dispositionRequest;if(!doc?.workId)return;disposition=null;dispositionError='';updateReviewActions();try{const value=await call('disposition',{workId:doc.workId},source);if(source!==projectId||gen!==generation||doc!==reportDocument||request!==dispositionRequest)return;disposition=value;}catch(error){if(source!==projectId||gen!==generation||doc!==reportDocument||request!==dispositionRequest)return;dispositionError=error.message;}updateReviewActions();}
  async function confirmDecision(message,title='确认成果决定',options=null){const labels=options||{},cancelLabel=labels.cancelLabel||'取消',confirmLabel=labels.confirmLabel||'确认';return new Promise(resolve=>{const trigger=document.activeElement,dialog=document.createElement('dialog');dialog.className='managed-report-dialog';dialog.dataset.confirmationDialog='';const heading=document.createElement('h2'),text=document.createElement('p'),cancel=button(cancelLabel,()=>finish(false)),confirm=button(confirmLabel,()=>finish(true));cancel.dataset.confirmationCancel='';confirm.dataset.confirmationConfirm='';heading.textContent=title;text.textContent=message;confirm.className='ui-action';cancel.className='ui-action';dialog.append(heading,text,cancel,confirm);document.body.append(dialog);function finish(value){dialog.close();dialog.remove();trigger?.focus?.({preventScroll:true});resolve(value);}dialog.oncancel=event=>{event.preventDefault();finish(false);};dialog.showModal();cancel.focus();});}

@@ -2,7 +2,8 @@ import {encodeRecoveryBytes,decodeRecoveryBytes,recoveryPptModel} from '../domai
 import { mountContextMenu } from './context-menu.mjs';
 import {createDiscussionDrafts,ownsDiscussionReceipt} from './surface-identity-state.mjs';
 import {mountRegionDrawing,compositeDrawing} from './region-drawing.mjs';
-import {uiIcon,setIconButton} from './ui-icons.mjs';
+import {uiIcon} from './ui-icons.mjs';
+import {setActionButton} from './ui-actions.mjs';
 import {readFileAvailability} from './file-availability.mjs';
 import {createFileIcon,updateFileIcon} from './file-icons.mjs';
 import './file-icons.css';
@@ -131,7 +132,7 @@ recoverResourceButton.addEventListener('click',async()=>{recoverResourceButton.d
 const noteSource=document.createElement('details');noteSource.className='tag-source note-form-source';
 const noteSourceLabel=document.createElement('summary'),noteSourceQuote=document.createElement('blockquote');
 noteSource.append(noteSourceLabel,noteSourceQuote);$('note-input').before(noteSource);
-const resumeDrawing=document.createElement('button');resumeDrawing.type='button';resumeDrawing.id='note-resume-drawing';resumeDrawing.textContent='继续涂鸦';resumeDrawing.hidden=true;noteSource.after(resumeDrawing);resumeDrawing.onclick=()=>startDrawing(ui.frozenNote);
+const resumeDrawing=document.createElement('button');resumeDrawing.type='button';resumeDrawing.id='note-resume-drawing';setActionButton(resumeDrawing,'draw',{label:'继续涂鸦',text:''});resumeDrawing.hidden=true;noteSource.after(resumeDrawing);resumeDrawing.onclick=()=>startDrawing(ui.frozenNote);
 const noteComposer=mountAnnotationComposer({root:$('note-form'),input:$('note-input')});
 function updateNoteSource(){
   const draft=ui.frozenNote||captureLiveAnchor();noteSource.hidden=!draft;
@@ -556,6 +557,11 @@ const composerMaterials = isConversation ? mountComposerMaterials({
 }) : null;
 window.__composerMaterials = composerMaterials;
 mountInterfaceAppearance();
+for(const [id,action,label] of [['show-note','note','添加本地备注'],['cancel-note','close-view','收起备注编辑'],['add-note','save','保存本地备注，不发送'],['code-jump','jump-definition','跳转到当前符号定义'],['pdf-search-next','next','下一处匹配']]){
+ const button=$(id);if(button)setActionButton(button,action,{label,text:''});
+}
+const pdfSearchButton=$('pdf-search')?.querySelector('button[type="submit"]');
+if(pdfSearchButton)setActionButton(pdfSearchButton,'search',{label:'查找 PDF 文字',text:''});
 const workspaceSnapshot=mountWorkspaceSnapshot({invoke,getProjectId:()=>ui.project?.id??workspaceScope.projectId,toast:message=>workspace.toast(message),
   openConversation:async()=>{const button=$('workspace-open-conversation');if(button&&!button.disabled&&!button.hidden){button.click();return;}const result=await invoke('workspace.control',{type:'conversation-action',projectId:ui.project?.id??workspaceScope.projectId,action:'open'});if(!result.ok)workspace.toast(result.error?.message||'打开对话失败');}});
 const drawingLauncher=mountDrawingLauncher({activate:()=>workspaceSnapshot.open(),getProjectId:()=>ui.project?.id??workspaceScope.projectId,onError:message=>workspace.toast(message)});
@@ -619,7 +625,7 @@ const openFrozenChange = target => (!isSurface || workspaceScope.kind!=='diff')
   $('selection-menu').hidden=true;
   return frozenChangeReader.open(target);
 });
-const comparisonChange=document.createElement('button');comparisonChange.type='button';comparisonChange.id='comparison-change';comparisonChange.className='comparison-change';comparisonChange.textContent='更换…';comparisonChange.title='更换对照文件或历史版本';
+const comparisonChange=document.createElement('button');comparisonChange.type='button';comparisonChange.id='comparison-change';comparisonChange.className='comparison-change';setActionButton(comparisonChange,'choose-comparison',{label:'更换对照文件或历史版本',text:''});
 $('secondary-pane').querySelector('.reader-bar').insertBefore(comparisonChange,$('secondary-pane').querySelector('.compare-switch'));
 comparisonChange.addEventListener('click',()=>void comparison.open(beside.file?.version?'history':'file'));
 function setDiffMode(enabled) {
@@ -632,7 +638,7 @@ function setDiffMode(enabled) {
     $('documents').append(beside.diffHost);
     const head=document.createElement('div');head.className='document-diff-head';const left=document.createElement('header'),right=document.createElement('header'),label=document.createElement('span');label.className='document-diff-title';
     label.textContent=beside.leftSnapshot?beside.leftSnapshot.relPath+' · '+versionCaption(beside.leftSnapshot.version):ui.file.relPath+' · 当前内容'+(ui.dirty||ui.composing?'（含草稿）':'');label.title=label.textContent+' · 进入对比时的快照';left.append(label);
-    const navigation=document.createElement('div');navigation.className='diff-navigation';const previous=document.createElement('button'),next=document.createElement('button'),count=document.createElement('span');previous.type=next.type='button';previous.id='diff-previous';next.id='diff-next';count.id='diff-count';count.setAttribute('role','status');setIconButton(previous,'chevron-up');setIconButton(next,'chevron-down');previous.setAttribute('aria-label','上一处差异');next.setAttribute('aria-label','下一处差异');previous.title='上一处差异';next.title='下一处差异';navigation.append(previous,count,next);left.append(navigation);
+    const navigation=document.createElement('div');navigation.className='diff-navigation';const previous=document.createElement('button'),next=document.createElement('button'),count=document.createElement('span');previous.type=next.type='button';previous.id='diff-previous';next.id='diff-next';count.id='diff-count';count.setAttribute('role','status');setActionButton(previous,'diff-previous',{label:'上一处差异',text:''});setActionButton(next,'diff-next',{label:'下一处差异',text:''});navigation.append(previous,count,next);left.append(navigation);
     const diffMore=panelButton('diff-primary-more');left.append(diffMore);beside.diffHeaderDisposers=[observePanelWidth(left),observePanelWidth(right)];
     diffMore.addEventListener('click',()=>documentMenu.openMore(beside.diff.merge.a.dom,diffMore));
     right.append($('secondary-path'),comparisonChange,$('secondary-pane').querySelector('.compare-switch'),$('secondary-close'),$('secondary-more'));head.append(left,right);
@@ -801,7 +807,7 @@ function setTextMode(mode) {
   $('text-preview').hidden = ui.textMode === 'edit';
   markdownWorkspace.setMode(ui.textMode);
   const toggle = $('text-mode-toggle');
-  toggle.textContent = ui.textMode === 'read' ? '编辑' : '阅读';
+  setActionButton(toggle,ui.textMode === 'read' ? 'edit' : 'read',{label:ui.textMode === 'read'?'切换到编辑':'切换到阅读',text:''});
   toggle.setAttribute('aria-pressed', String(ui.textMode === 'read'));
   $('markdown-preview-toggle').hidden = !isMarkdownPath(ui.file?.relPath) || ui.textMode === 'read';
   $('markdown-preview-toggle').setAttribute('aria-pressed', String(ui.textMode === 'split'));
@@ -1343,7 +1349,7 @@ async function refreshNotes() {
     $('subject-title').textContent += ' · 阅读副本';
     document.title = $('subject-title').textContent;
     if (!$('document-owner-focus')) {
-      const button = document.createElement('button');button.id = 'document-owner-focus';button.type = 'button';button.textContent = '回到编辑位置';
+      const button = document.createElement('button');button.id = 'document-owner-focus';button.type = 'button';setActionButton(button,'focus-editor',{label:'回到编辑位置',text:''});
       button.addEventListener('click', () => void invoke('workspace.control',{type:'focus-document-owner',projectId:workspaceScope.projectId,relPath:workspaceScope.relPath,documentSource}));
       $('subject-title').after(button);
     }
@@ -3189,7 +3195,7 @@ async function openBesideSnapshot(file, diff=false, left=null) {
   function refreshConversationLauncher(){const button=$('workspace-open-conversation'),error=conversationErrors.get(ui.project?.id);button.disabled=!ui.project?.id;button.dataset.state=error?'error':'';button.title=(error?'对话 · 连接异常：'+(error.message||''):(ui.project?.id?'打开当前项目对话':'请先打开项目'));button.setAttribute('aria-label',button.title);}
   const terminalButton=$('workspace-open-terminal');
   let openingTerminal=false;
-  setIconButton(terminalButton,'terminal',{label:'终端'});
+  setActionButton(terminalButton,'terminal',{label:'终端',text:''});
   function refreshTerminalLauncher(){terminalButton.disabled=!ui.project?.id||openingTerminal;}
   terminalButton.hidden=workspaceScope.role!=='shell';
   window.addEventListener('nozeli-project-change',refreshTerminalLauncher);
@@ -3202,10 +3208,10 @@ async function openBesideSnapshot(file, diff=false, left=null) {
   });
   refreshTerminalLauncher();
   const websiteButton=$('workspace-open-website');
-  setIconButton(websiteButton,'globe',{label:'打开网站'});
+  setActionButton(websiteButton,'web',{label:'打开网站',text:''});
   if(workspaceScope.role==='shell')websiteButton.addEventListener('click',()=>{if(!ui.project?.id){workspace.toast('请先打开项目，再打开网站。');return;}const projectId=ui.project.id,dialog=document.createElement('dialog'),form=document.createElement('form'),heading=document.createElement('h2'),input=document.createElement('input'),error=document.createElement('p'),cancel=document.createElement('button'),open=document.createElement('button');heading.textContent='打开网站';input.type='text';input.placeholder='https://example.org';input.setAttribute('aria-label','网站地址');input.required=true;input.style.width='100%';cancel.type='button';cancel.textContent='取消';open.type='submit';open.textContent='打开';error.setAttribute('role','alert');form.append(heading,input,error,cancel,open);dialog.append(form);document.body.append(dialog);const finish=()=>{dialog.close();dialog.remove();};cancel.onclick=finish;dialog.oncancel=event=>{event.preventDefault();finish();};form.onsubmit=async event=>{event.preventDefault();if(ui.project?.id!==projectId){error.textContent='项目已切换，请重新打开网址。';return;}open.disabled=true;try{await workspaceGroups.open({kind:'web',url:input.value});finish();}catch(failure){error.textContent=failure.message;open.disabled=false;}};dialog.showModal();input.focus();});
   else websiteButton.hidden=true;
-  setIconButton($('workspace-open-conversation'),'message-square',{label:'打开当前项目对话'});
+  setActionButton($('workspace-open-conversation'),'discuss',{label:'打开当前项目对话',text:''});
   const conversationFailure=document.createElement('dialog');conversationFailure.setAttribute('aria-label','对话连接异常');conversationFailure.id='conversation-connection-error';
   const connectionTitle=document.createElement('h2'),connectionReason=document.createElement('p'),retryConversation=document.createElement('button'),connectionDetails=document.createElement('button'),closeConnection=document.createElement('button');
   connectionTitle.textContent='暂时无法打开对话';connectionReason.setAttribute('role','alert');retryConversation.textContent='重试连接';connectionDetails.textContent='连接与历史…';closeConnection.textContent='关闭';

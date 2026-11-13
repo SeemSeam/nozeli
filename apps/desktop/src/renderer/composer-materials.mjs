@@ -1,5 +1,7 @@
 import { appendDrawingMaterial } from '../domain/drawing-delivery.mjs';
 import { createFileIcon, fileIconType } from './file-icons.mjs';
+import {setActionButton} from './ui-actions.mjs';
+import {uiIcon} from './ui-icons.mjs';
 import './conversation-rendering.css';
 import {renderFrozenMaterialBody} from './frozen-material-viewer.mjs';
 
@@ -66,7 +68,7 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
   quoteBar.className = 'cm-quote';
   quoteBar.hidden = true;
   const quoteText = document.createElement('span'); quoteText.className = 'cm-quote-text';
-  const quoteCancel = document.createElement('button'); quoteCancel.type = 'button'; quoteCancel.textContent = '✕'; quoteCancel.setAttribute('aria-label', '取消回复');
+  const quoteCancel = document.createElement('button'); quoteCancel.type = 'button'; setActionButton(quoteCancel, 'remove-material', {label: '取消回复引用'});
   quoteBar.append(quoteText, quoteCancel);
   composer.before(quoteBar);
 
@@ -154,7 +156,7 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
   panel.className = 'cm-picker'; panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', '引用文件'); panel.hidden = true;
   panel.innerHTML = `
     <div class="cm-picker-bar">
-      <button type="button" class="cm-up" title="返回上级目录">↑ 上级</button>
+      <button type="button" class="cm-up"></button>
       <input class="cm-path" type="text" placeholder="输入本机目录路径后 Enter，或点右侧选择…" aria-label="目录路径">
       <button type="button" class="cm-pick-files">选择文件…</button>
       <button type="button" class="cm-browse">选择文件夹…</button>
@@ -173,6 +175,7 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
   const errorEl = panel.querySelector('.cm-picker-error'), countEl = panel.querySelector('.cm-picker-count');
   const moreEl = panel.querySelector('.cm-picker-more'), confirmBtn = panel.querySelector('.cm-confirm');
   const upBtn = panel.querySelector('.cm-up'), browseBtn = panel.querySelector('.cm-browse'), pickFilesBtn = panel.querySelector('.cm-pick-files');
+  setActionButton(upBtn, 'parent-directory', {label: '返回上级目录'});
   let pickerPath = null, pickerOffset = 0, pickerHasMore = false, pickerEntries = [];
   const picked = new Map(); // absPath -> {name,size}
 
@@ -246,7 +249,8 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
         const row = document.createElement('button');
         row.type = 'button'; row.className = 'cm-entry cm-entry-dir'; row.dataset.dir = pickerPath + pathSep() + entry.name;
         row.setAttribute('role', 'option'); row.setAttribute('aria-selected', 'false');
-        row.innerHTML = `<span class="cm-dir-mark">▸</span><span class="cm-entry-name">${esc(entry.name)}</span><span class="cm-entry-note">目录</span>`;
+        row.innerHTML = `<span class="cm-dir-mark"></span><span class="cm-entry-name">${esc(entry.name)}</span><span class="cm-entry-note">目录</span>`;
+        row.querySelector('.cm-dir-mark')?.append(uiIcon('chevron-right'));
         listEl.append(row);
       }
     }
@@ -444,7 +448,7 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
     badge.textContent = a.status === 'ok' ? '已就绪' : a.status === 'reading' ? '读取中' : a.status === 'dup' ? '重复' : a.status === 'error' ? '失败' : '已就绪';
     main.append(badge);
     const x = document.createElement('button');
-    x.type = 'button'; x.className = 'cm-chip-x'; x.setAttribute('aria-label', '移除材料 ' + a.name); x.textContent = '×';
+    x.type = 'button'; x.className = 'cm-chip-x'; setActionButton(x, 'remove-material', {label: '移除材料 ' + a.name});
     x.addEventListener('click', () => {
       const i = pending.indexOf(a);
       if (i >= 0) pending.splice(i, 1);
@@ -507,7 +511,7 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
   viewer.innerHTML = `<header><strong class="mv-title"></strong><button type="button" class="mv-close">关闭 Esc</button></header><div class="mv-body" tabindex="0"></div>`;
   document.body.append(viewer);
   let viewerOpener = null;
-  viewer.querySelector('.mv-close').addEventListener('click', closeViewer);
+  const mvClose = viewer.querySelector('.mv-close'); setActionButton(mvClose, 'close-view', {label: '关闭（Esc）'}); mvClose.addEventListener('click', closeViewer);
   viewer.addEventListener('keydown', event => { if (event.key === 'Escape') { event.stopPropagation(); closeViewer(); } });
   document.addEventListener('keydown', event => { if (event.key === 'Escape' && !viewer.hidden) { closeViewer(); } });
   function closeViewer() {

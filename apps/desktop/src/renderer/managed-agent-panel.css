@@ -92,6 +92,9 @@ body[data-managed-agents=true] #managed-doc{overflow-wrap:anywhere;line-height:1
 #managed-agent-details[data-mode=work] .managed-agent-details-body>:not(#managed-current-work){display:none!important}
 #managed-agent-details[data-mode=work] #managed-current-work{margin:0;padding:0;min-width:0;border:0;border-radius:0;background:transparent;font-size:inherit;line-height:inherit}
 #managed-agent-details[data-mode=work]>button{display:block;margin:18px 0 0 auto;min-height:36px}
+#managed-agent-details[data-mode=work]>button.ui-icon-button{display:inline-flex;margin:18px 0 0 auto}
+.managed-report-dialog button.ui-icon-button{min-height:var(--ui-hit-size,28px)}
+.session-runtime-actions button.ui-icon-button{min-height:var(--ui-hit-size,28px)}
 @media(max-width:479px){#managed-agent-details[data-mode=work]{padding:16px;width:calc(100vw - 24px);max-width:calc(100vw - 24px)}}
 #managed-work-menu [data-command=discard]{color:var(--red)}
 #managed-work-archive{border-top:1px solid var(--line);margin-top:12px;padding-top:8px;font-size:12px}

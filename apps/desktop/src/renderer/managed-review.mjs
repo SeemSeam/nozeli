@@ -6,6 +6,7 @@ import {mountTaskReader,createTaskReadingMemory} from './session-timeline.mjs';
 import {mountLocalWindow,ensureLocalWindowLayer,viewportWindowEnvironment} from './local-window.mjs';
 import {createLocalWindowView} from './local-window-view.mjs';
 import {mountFrozenMaterialViewer} from './frozen-material-viewer.mjs';
+import { setActionButton } from './ui-actions.mjs';
 
 const discussionReasons={WORK_ENDED:'工作已结束',HISTORICAL_SESSION_READ_ONLY:'历史会话只读',REVIEW_CANDIDATE_STALE:'当前显示旧报告，请查看最新报告',REVIEW_CONTINUE_PENDING:'人工稿正在交回AI助手核对',WORK_BUSY:'工作处理中，请等待当前回合',WORK_STATE:'当前工作状态不可发送',WORK_DEVIATION_HELD:'工作偏离问题尚待处理',RECOVERY_REQUIRED:'原会话需要恢复',WORK_CONTROL_HELD:'工作已暂停或正在控制操作',CANDIDATE_REQUIRED:'冻结候选尚不可用'};
 const surfaces=new Set();
@@ -26,7 +27,7 @@ export function mountReviewDetail(parent,title,{inline=false}={}){
  }
  const trigger=document.createElement('button');trigger.type='button';trigger.textContent=title;
  const dialog=document.createElement('dialog');dialog.className='managed-review-detail';dialog.setAttribute('aria-label',title);
- const close=document.createElement('button');close.type='button';close.textContent='关闭';
+ const close=document.createElement('button');close.type='button';setActionButton(close,'close-view',{label:'关闭'});
  const heading=document.createElement('h3');heading.textContent=title;
  const body=document.createElement('div');body.className='managed-review-detail-body';
  dialog.append(close,heading,body);parent.append(trigger,dialog);
@@ -44,11 +45,11 @@ export function mountManagedReview(parent,{invoke,projectId,workId,objectId,work
  const status=node('p','managed-review-status');status.dataset.reviewStatus='';status.setAttribute('role','status');
  const warning=node('p','managed-review-warning');warning.dataset.reviewWarning='';warning.setAttribute('role','alert');
  const button=(text,key,action)=>{const el=node('button','',text);el.type='button';el.dataset.reviewAction=key;el.onclick=()=>Promise.resolve().then(action).catch(fail);return el;};
- const reopen=button('审核讨论','open-discussion',()=>show());reopen.setAttribute('aria-expanded','false');
+ const reopen=button('审核讨论','open-discussion',()=>show());reopen.setAttribute('aria-expanded','false');setActionButton(reopen,'discuss',{text:'审核讨论',label:'打开审核讨论窗口'});
  const latest=node('a','','查看最新报告');latest.dataset.reviewAction='latest';latest.href='#';latest.hidden=true;latest.onclick=event=>{event?.preventDefault();return Promise.resolve(onOpenLatest?.()).catch(fail);};
  heading.append(status,latest);
  const outdated=node('p','managed-review-warning');outdated.dataset.reviewReportOutdated='';outdated.hidden=true;root.append(outdated);
- const versions=node('dialog','managed-review-detail');versions.dataset.reviewVersions='';versions.setAttribute('aria-label','版本与技术详情');const closeDetails=button('关闭','close-details',()=>versions.close());versions.append(closeDetails,node('h3','','版本与技术详情'));
+ const versions=node('dialog','managed-review-detail');versions.dataset.reviewVersions='';versions.setAttribute('aria-label','版本与技术详情');const closeDetails=button('关闭','close-details',()=>versions.close());setActionButton(closeDetails,'close-view',{label:'关闭'});versions.append(closeDetails,node('h3','','版本与技术详情'));
  const versionText=node('p');versions.append(versionText);
  const actions=node('div','managed-review-actions');
  root.append(heading,warning,actions,versions);parent.append(root);
@@ -73,7 +74,7 @@ export function mountManagedReview(parent,{invoke,projectId,workId,objectId,work
  const inputLabel=node('label','managed-review-input-label','继续此Task的讨论');inputLabel.htmlFor=inputId;
  const sendReason=node('p','managed-review-send-reason');sendReason.id=inputId+'-reason';
  const send=button('发送','send',sendDiscussion);send.className='tag-send';send.setAttribute('aria-describedby',inputId+'-reason');instruction.setAttribute('aria-describedby',inputId+'-reason '+inputId+'-save');
- const accept=button('采纳并结束','accept',acceptReview);accept.className='tag-execute';accept.title='将当前文件应用到项目，后台处理完成后结束工作';
+ const accept=button('采纳并结束','accept',acceptReview);accept.className='tag-execute';setActionButton(accept,'accept',{text:'',label:'采纳并结束工作'});
  const discard=button('放弃并结束','discard',async()=>{await saveAll();await nativeCall('modal',{held:true});try{await onDiscard?.();}finally{await nativeCall('modal',{held:false});}});
  const discardReason=node('p','managed-review-warning');discardReason.dataset.reviewDiscardReason='';discardReason.setAttribute('role','status');discardReason.hidden=true;root.insertBefore(discardReason,versions);
  const instructionStatus=node('p','managed-review-instruction-status');instructionStatus.setAttribute('role','status');instructionStatus.dataset.reviewInstructionStatus='';
@@ -81,7 +82,7 @@ export function mountManagedReview(parent,{invoke,projectId,workId,objectId,work
  const retry=button('重试保存','retry-instruction',async()=>{if(draft)await draft.retry();else {instructionReady=loadInstruction();await instructionReady;}});retry.hidden=true;
  const returnDrafts=button('交回人工稿并发送','return-drafts',()=>sendDiscussion({applyDrafts:true}));returnDrafts.hidden=true;
  composer.append(inputLabel,instruction,send,returnDrafts,sendReason);discussionBody.append(discussionMeta,readingResult,sources,latestChat,queue,arrivals,history,composer,instructionStatus,retry);discussionBody.hidden=true;root.insertBefore(currentState,actions);
- if(discussionHost){root.hidden=true;root.append(discussionBody);}else actions.append(reopen,accept,discard);
+ if(discussionHost){root.hidden=true;root.append(discussionBody);}else actions.append(reopen,node('span','managed-review-accept-hint','采纳会应用当前审核稿到项目并结束工作。'),accept,discard);
  const navigate=async(kind,target,messageId)=>{const result=await invoke('workspace.reviewDiscussion.navigate',{projectId,workId,...(kind==='report'?{objectId:target||objectId}:{}),...(messageId?{messageId}:{}),kind});if(!result.ok)throw Error(result.error?.message||'固定任务阅读面暂不可打开');if(messageId&&result.value?.locationSupported===false)throw Error(result.value.reason||'过程面尚未支持原消息定位');return result.value;};
  const materials=discussionHost?mountFrozenMaterialViewer({read:async(_attachment,entry)=>{const result=await invoke('workspace.reviewDiscussion.materialRead',{projectId,workId,messageId:entry.id,index:entry.attachmentIndex});if(!result.ok)throw Error(result.error?.message||'冻结材料不可读取');return result.value;}}):null;
  let readingValues={},readingQueue=Promise.resolve(),readingError=null,readingLoaded=false,readingMemory=null;
@@ -191,7 +192,7 @@ export function mountManagedReview(parent,{invoke,projectId,workId,objectId,work
     currentState.textContent=heldCauses[heldCode]+'；'+(blocked.length>1?blocked.join('与')+'当前都不可用':blocked[0]+'当前不可用')+'，任务不会自动恢复。已发布的报告和文件仍可查看；未发送的意见保留。';
     if(discussionHost)queue.dataset.severity=heldCode==='RECOVERY_REQUIRED'||heldCode==='WORK_DEVIATION_HELD'?'decision':'paused';
   }
-  send.textContent=pendingSend?'核对 / 重试发送':discussion?.active||discussion?.queued?'排队发送':'发送';
+  setActionButton(send,'send',{text:pendingSend?'核对 / 重试发送':discussion?.active||discussion?.queued?'排队发送':'',label:'发送审核意见给AI助手'});
   sendReason.textContent=!send.disabled?'':busy?'正在发送…':held?'正在保存或核对审核决定，请等待':composing?'请先完成输入法组合':persistenceError?'发送凭据无法读取，已暂停发送':state?.error?'草稿保存失败，请先重试保存':!draft?'正在读取本地草稿':discussionReadOnly||historical?'当前历史版本只读':closed?'审核已决定，不能继续发送':!pendingSend&&unavailable?'当前审核版本不可用':!pendingSend&&!discussion?.canSend?(discussion?.reasons||[]).map(reason=>typeof reason==='string'?(discussionReasons[reason]||reason):reason.message).filter(Boolean).join(' · ')||'当前线程暂不可发送':!instruction.value.trim()&&!pendingSend?'输入内容后可发送':'';
   sendReason.hidden=!sendReason.textContent;
   returnDrafts.hidden=!(data?.files||[]).some(file=>file.draft&&file.draft.textDigest!==file.candidateDigest);returnDrafts.disabled=send.disabled||Boolean(pendingSend);

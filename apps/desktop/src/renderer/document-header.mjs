@@ -1,5 +1,5 @@
-import {setIconButton} from './ui-icons.mjs';
-import { workspaceIcon } from './workspace-conversation-controls.mjs';
+import {uiIcon} from './ui-icons.mjs';
+import {setActionButton} from './ui-actions.mjs';
 import './document-header.css';
 import {mountPopupMenu} from './popup-menu.mjs';
 import {decorateFileTitle} from './file-icons.mjs';
@@ -27,7 +27,7 @@ export function mountDocumentHeader() {
   const imageTools=document.getElementById('image-toolbar');
   const fontControl=document.createElement('span');fontControl.id='font-control';
   const fontButton=document.createElement('button');fontButton.type='button';fontButton.id='font-settings';fontButton.title='字号与阅读行宽';
-  fontButton.append(document.getElementById('font-size-label'),workspaceIcon('chevron-down'));fontControl.append(fontButton);
+  fontButton.append(document.getElementById('font-size-label'),uiIcon('chevron-down'));fontControl.append(fontButton);
   tools.insertBefore(fontControl,document.getElementById('font-smaller'));
   const fontMenu=document.createElement('div');fontMenu.id='font-menu';fontMenu.className='surface-menu';
   const fontCaption=document.createElement('span');fontCaption.className='menu-caption';fontCaption.textContent='正文大小';
@@ -57,13 +57,13 @@ export function mountDocumentHeader() {
   document.body.append(contentToolsAnchor);
   const definitions = [
     ['open-beside', 'layout', '在旁边打开文件'],
-    ['toggle-focus', 'maximize', null],
-    ['close-subject', 'close', '关闭当前内容'],
+    ['toggle-focus', 'maximize-content', null],
+    ['close-subject', 'close-view', '关闭当前内容'],
   ];
-  for (const [id, name, label] of definitions) {
+  for (const [id, action, label] of definitions) {
     const button = document.getElementById(id);
-    setIconButton(button,name);
-    if (label) { button.title = label; button.setAttribute('aria-label', label); }
+    // Focus-mode naming stays owned by workspace.mjs runtime state.
+    setActionButton(button, action, label ? { label, text: '' } : { text: '' });
   }
   reader.classList.add('document-header-unified');
   function render() {
@@ -106,7 +106,7 @@ export function mountDocumentHeader() {
     if (status.title !== label) status.title = label;
     if (status.getAttribute('aria-label') !== label) status.setAttribute('aria-label', label);
     status.classList.toggle('quiet-saved',status.dataset.state==='saved');
-    mode.setAttribute('aria-label', mode.textContent === '编辑' ? '切换到编辑模式' : '切换到阅读模式');
+    mode.setAttribute('aria-label', mode.dataset.action === 'edit' ? '切换到编辑模式' : '切换到阅读模式');
   }
   const observer = new MutationObserver(render);
   observer.observe(documents, { attributes: true, attributeFilter: ['class'] });

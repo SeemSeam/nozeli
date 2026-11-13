@@ -2,22 +2,27 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mountSessionRuntimeControls} from '../src/renderer/session-model-controls.mjs';
 class Node{
- constructor(tag){this.tag=tag;this.children=[];this.listeners={};this.attributes={};this.dataset={};this.style={};this.value='';this.selectionStart=this.selectionEnd=0;}
+ constructor(tag,namespaceURI=null){this.tag=tag;this.namespaceURI=namespaceURI;this.children=[];this.listeners={};this.attributes={};this.dataset={};this.style={};this.value='';this.selectionStart=this.selectionEnd=0;const classes=new Set();this.classList={add:(...names)=>names.forEach(name=>classes.add(name)),remove:(...names)=>names.forEach(name=>classes.delete(name)),toggle:(name,force)=>force===undefined?(classes.has(name)?(classes.delete(name),false):(classes.add(name),true)):force?(classes.add(name),true):(classes.delete(name),false),contains:name=>classes.has(name)};}
  get childNodes(){return this.children;}
  append(...nodes){for(const node of nodes){node.remove();node.parent=this;this.children.push(node);}}
  replaceChildren(...nodes){for(const node of this.children)node.parent=null;this.children=[];this.append(...nodes);}
  insertBefore(node,before){node.remove();node.parent=this;this.children.splice(before?this.children.indexOf(before):this.children.length,0,node);}
  setSelectionRange(start,end){this.selectionStart=start;this.selectionEnd=end;}
  setAttribute(key,value){this.attributes[key]=String(value);}
+ removeAttribute(key){delete this.attributes[key];}
  addEventListener(type,fn){(this.listeners[type]??=[]).push(fn);}
  remove(){if(this.parent){this.parent.children=this.parent.children.filter(node=>node!==this);this.parent=null;}} hidePopover(){this.open=false;} showPopover(){this.open=true;} showModal(){this.open=true;} close(){this.open=false;}
  matches(){return this.open===true;} getBoundingClientRect(){return {right:200,bottom:40,width:200,height:100};}
- querySelector(){return null;} focus(){}
+ querySelector(selector){const match=/^:scope > \.([\w-]+)$/.exec(selector);if(!match)throw Error('Unsupported fixture selector: '+selector);return this.children.find(node=>node.classList?.contains(match[1])||String(node.className||'').split(' ').includes(match[1]))||null;} focus(){}
  click(){if(this.disabled)return;this.onclick?.();for(const fn of this.listeners.click??[])fn({preventDefault(){}});}
 }
 const descendants=node=>[node,...node.children.flatMap(descendants)];
 const settle=async()=>{for(let i=0;i<5;i++)await new Promise(resolve=>setImmediate(resolve));};
-function environment(){globalThis.document={createElement:tag=>new Node(tag),body:new Node('body')};globalThis.window={addEventListener(){},dispatchEvent(){},confirm:()=>true};globalThis.CustomEvent=class{};globalThis.innerWidth=1000;globalThis.innerHeight=800;}
+// The real ui-actions→ui-icons pipeline runs against this document:
+// createElementNS yields SVG-shaped nodes, and mountUiTooltip's delegated
+// controller registers its listeners here (no pointer/focus events fire in
+// these tests, so registration is the whole surface it needs).
+function environment(){const doc={addEventListener(){},createElement:tag=>owned(new Node(tag)),createElementNS:(namespaceURI,tag)=>owned(new Node(tag,namespaceURI))};const owned=node=>{node.ownerDocument=doc;return node;};doc.body=owned(new Node('body'));globalThis.document=doc;globalThis.window={addEventListener(){},dispatchEvent(){},confirm:()=>true};globalThis.CustomEvent=class{};globalThis.innerWidth=1000;globalThis.innerHeight=800;}
 const owner=(projectId='p',ownerId='owner')=>({projectId,target:'frontdesk',agent:{ownerId}});
 const visible={active:true,ownsConversation:true,projectId:'p',history:false};
 test('runtime options are read-only and busy commands do not dispatch',async()=>{

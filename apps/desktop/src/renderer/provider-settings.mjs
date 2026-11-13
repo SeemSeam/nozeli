@@ -1,4 +1,5 @@
 import {disclosure} from './management-presentation.mjs';
+import {setActionButton} from './ui-actions.mjs';
 export function mountProviderSettings({invoke,providers=document.getElementById('settings-provider'),models=document.getElementById('settings-models')}) {
  const call=async(op,payload={})=>{const response=await invoke(op,payload);if(response?.ok===false)throw Error(response.error?.message||'设置操作未完成');return response?.ok===true?response.value:response;};
  const node=(tag,text,attrs={})=>{const el=document.createElement(tag);if(text)el.textContent=text;for(const [key,value]of Object.entries(attrs))el.setAttribute(key,value);return el;};
@@ -265,6 +266,7 @@ nativeKeyWrap.append(nativeKeyInput);nativeKeyProvider.append(node('option','正
     const modelDetails=node('details',null,{'data-provider-model-panel':source.provider}),modelSummary=node('summary','查看模型（'+sourceModels.length+'）');modelDetails.append(modelSummary);
     modelDetails.addEventListener('toggle',()=>{if(modelDetails.open&&!modelDetails.querySelector(':scope > .provider-model-browser')){const browser=modelBrowser(sourceModels,source.baseUrl?'已配置':'内置目录',{'data-provider-model-list':source.provider});modelSummary.after(browser);if(source.discovery&&source.discovery.status!=='none'){const previous=node('button','查看上次服务发现结果',{type:'button'});previous.onclick=()=>renderDiscovery(source);modelDetails.append(previous);}}});
     const edit=node('button',source.baseUrl?'编辑':source.type==='oauth'?'重新登录':'更新密钥',{type:'button','data-provider-edit':source.provider});
+    if(source.baseUrl)setActionButton(edit,'edit',{label:'编辑 API 源 '+source.provider,text:''});
     edit.disabled=busy;
     edit.onclick=()=>{if(busy)return;if(source.baseUrl){startEdit(source);return;}const section=source.type==='oauth'?loginSection:nativeSection,select=source.type==='oauth'?loginProvider:nativeKeyProvider;section.open=true;select.value=source.provider;select.dispatchEvent(new Event('change'));select.focus();};
     const discover=node('button','发现模型',{type:'button','data-provider-discover':source.provider});

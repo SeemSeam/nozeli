@@ -1,3 +1,4 @@
+import {setActionButton} from './ui-actions.mjs';
 import './guided-demo.css';
 import {demoChapters,demoIdentity,unwrapDemo,createDemoActions} from '../domain/guided-demo.mjs';
 const flow=demoChapters[0];
@@ -14,7 +15,7 @@ export function createStartPage({project,start,browse,compact=false}){
   else{button('打开本地项目',()=>document.getElementById('pick-project')?.click(),undefined,true);button('体验演示',start,compact?undefined:'start-demo-entry');}
   if(actions.children.length)root.append(actions);
   const viewer=document.createElement('dialog');viewer.className='guided-start-viewer';viewer.setAttribute('aria-label','功能图片');
-  const header=document.createElement('header'),title=document.createElement('strong'),close=document.createElement('button');close.type='button';close.textContent='×';close.setAttribute('aria-label','关闭图片');close.onclick=()=>viewer.close();header.append(title,close);
+  const header=document.createElement('header'),title=document.createElement('strong'),close=document.createElement('button');close.type='button';setActionButton(close,'close-view',{label:'关闭图片',text:''});close.onclick=()=>viewer.close();header.append(title,close);
   const zoom=document.createElement('nav'),scroll=document.createElement('div'),large=document.createElement('img');scroll.className='guided-start-image-scroll';scroll.tabIndex=0;scroll.setAttribute('aria-label','图片滚动区域');scroll.append(large);
   for(const [label,mode]of [['适应窗口','fit'],['原始尺寸','original']]){const control=document.createElement('button');control.type='button';control.textContent=label;control.onclick=()=>{viewer.dataset.size=mode;};zoom.append(control);}
   viewer.append(header,zoom,scroll);

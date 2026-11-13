@@ -5,6 +5,7 @@
 .local-window-header { display:flex;align-items:center;gap:6px;min-height:36px;flex:none;padding:0 6px;cursor:move;touch-action:none;user-select:none;-webkit-app-region:no-drag; }
 .local-window-title { display:flex;flex:1;align-items:center;min-width:0;overflow:hidden; }
 .local-window-header button { flex:none;min-height:28px; }
+.local-window-header button.ui-icon-button{width:26px;min-width:26px;height:26px;min-height:26px;flex:0 0 26px;padding:3px;border-radius:6px}
 .local-window-header:focus-visible,.local-window-resize:focus-visible { outline:2px solid var(--ui-control-focus,#5479a5);outline-offset:-2px; }
 .local-window-body { display:flex;flex:1;flex-direction:column;overflow:auto;min-height:0;min-width:0; }
 .local-window-resize { position:absolute;right:0;bottom:0;width:24px;height:24px;border:0;background:linear-gradient(135deg,transparent 55%,var(--muted,#777) 56%,transparent 62%,transparent 72%,var(--muted,#777) 73%,transparent 80%);cursor:nwse-resize;touch-action:none;-webkit-app-region:no-drag; }

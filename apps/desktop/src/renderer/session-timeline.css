@@ -71,6 +71,7 @@ html[data-theme=dark] :is(.session-surface,.session-timeline){
 .session-message .message-actions>summary{display:inline-flex;align-items:center;min-height:28px;padding:2px 8px;border:0;border-radius:5px;background:none;color:var(--chat-muted);font-family:var(--chrome-font-family,system-ui,sans-serif);font-size:var(--chat-ui-font);line-height:1.5;cursor:pointer;list-style:none}
 .session-message .message-actions>summary::-webkit-details-marker{display:none}
 .session-message .message-actions>summary:is(:hover,:focus-visible){color:var(--chat-ink);background:var(--chat-surface)}
+.session-message .message-actions>summary:is(.ui-icon-button,.ui-icon-label){width:auto;min-width:var(--ui-hit-size,28px);flex:0 0 auto;box-sizing:border-box;padding:2px 8px}
 .session-message .message-actions-list{position:absolute;inset-inline-end:0;top:calc(100% + 2px);z-index:6;display:flex;flex-direction:column;min-width:max-content;max-width:min(240px,100%);margin:0;padding:4px;border:1px solid var(--chat-line);border-radius:8px;background:var(--chat-surface);box-shadow:0 6px 18px #00000024;box-sizing:border-box}
 .session-message .message-actions-list button{display:block;min-height:32px;padding:5px 10px;border:0;border-radius:5px;background:none;color:var(--chat-ink);font-family:var(--chrome-font-family,system-ui,sans-serif);font-size:var(--chat-ui-font);line-height:1.5;text-align:start;cursor:pointer;white-space:normal;overflow-wrap:anywhere}
 .session-message .message-actions-list button:is(:hover,:focus-visible){background:var(--chat-user);color:var(--chat-ink)}

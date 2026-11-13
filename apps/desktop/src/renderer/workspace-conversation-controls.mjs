@@ -1,5 +1,5 @@
 import './workspace-conversation-controls.css';
-import {setIconButton} from './ui-icons.mjs';
+import {setActionButton} from './ui-actions.mjs';
 import {panelButton} from './panel-menu.mjs';
 import {usesNativeWindowChrome} from './window-chrome.mjs';
 export {uiIcon as workspaceIcon} from './ui-icons.mjs';
@@ -7,12 +7,14 @@ export {uiIcon as workspaceIcon} from './ui-icons.mjs';
 // Window geometry belongs to the native workspace, never to conversation preferences.
 export function mountConversationControls({close}) {
   const controls = document.querySelector('#conversation-head .conversation-controls');
-  for(const [id,label,icon]of [['chat-workspace-detach','独立窗口','floating'],['chat-workspace-close','收起对话到底部，保留对话与草稿','chevron-down']]){
-    const button=document.createElement('button');button.type='button';button.id=id;button.dataset.chatWindowAction=id;button.className='chat-tool';
-    setIconButton(button,icon,{label});
-    button.onclick=()=>void run(id);controls.append(button);
-  }
+  // Window order stays float → more → close on every surface.
+  const detach=document.createElement('button');detach.type='button';detach.id='chat-workspace-detach';detach.dataset.chatWindowAction='chat-workspace-detach';detach.className='chat-tool';
+  setActionButton(detach,'float-view',{label:'独立窗口',text:''});
+  detach.onclick=()=>void run('chat-workspace-detach');controls.append(detach);
   const more=panelButton('chat-more');more.dataset.chatMore='';more.classList.add('chat-tool');controls.append(more);
+  const collapse=document.createElement('button');collapse.type='button';collapse.id='chat-workspace-close';collapse.dataset.chatWindowAction='chat-workspace-close';collapse.className='chat-tool';
+  setActionButton(collapse,'hide-conversation',{label:'收起对话到底部，保留对话与草稿',text:''});
+  collapse.onclick=()=>void run('chat-workspace-close');controls.append(collapse);
   const header=document.getElementById('conversation-head');
   const detached = () => Boolean(window.__workspaceScope?.windowId && window.__workspaceScope.windowId !== 'main');
   const updateChrome = () => {

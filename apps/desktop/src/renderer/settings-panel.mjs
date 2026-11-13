@@ -1,6 +1,6 @@
 import './settings-panel.css';
 import './management-presentation.css';
-import {setIconButton} from './ui-icons.mjs';
+import {setActionButton} from './ui-actions.mjs';
 import {mountProviderSettings} from './provider-settings.mjs';
 import {mountAppearanceSettings} from './settings-appearance.mjs';
 import {mountAgentSettings} from './settings-agents.mjs';
@@ -11,8 +11,8 @@ import './settings-appearance.css';
 export function mountSettingsPanel({invoke,onInitialize,getProjectId=()=>null}) {
   const $=id=>document.getElementById(id);
   const dialog=$('settings-dialog'),trigger=$('open-settings');
-  setIconButton(trigger,'settings',{label:'设置'});
-  setIconButton($('settings-close'),'close',{label:'关闭设置'});
+  setActionButton(trigger,'settings');
+  setActionButton($('settings-close'),'close-view',{label:'关闭设置'});
   const zenButton=$('settings-zen');
   function refreshZen(){const active=$('app').classList.contains('focus-mode');zenButton.textContent=active?'退出 Zen 专注模式':'进入 Zen 专注模式';zenButton.setAttribute('aria-pressed',String(active));}
   zenButton.addEventListener('click',()=>{dialog.close();$('toggle-focus').click();});

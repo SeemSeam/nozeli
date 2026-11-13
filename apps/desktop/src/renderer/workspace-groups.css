@@ -69,3 +69,5 @@ html[data-platform=darwin][data-workspace-role=shell] .topbar .project-navigatio
 html[data-platform=darwin][data-workspace-role=shell] .topbar .project-name{display:block;text-align:center}
 html[data-platform=darwin][data-workspace-role=shell] .app.focus-mode{padding-top:38px;box-sizing:border-box}
 html[data-platform=darwin][data-workspace-role=shell] .app.focus-mode>.topbar{display:flex;position:absolute;inset:0 0 auto;height:38px}
+.workspace-open-editor-row>[data-editor-close].ui-icon-button{width:24px;min-width:24px;height:24px;min-height:24px;flex:0 0 24px;padding:2px}
+.workspace-open-editor-row>[data-editor-close] .ui-icon{width:14px;height:14px}

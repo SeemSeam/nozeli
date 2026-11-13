@@ -15,6 +15,8 @@
 .cm-quote-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cm-quote button{border:0;background:transparent;color:var(--muted);cursor:pointer}
 .cm-quote button:hover{color:var(--red)}
+.cm-quote button.ui-icon-button{width:22px;min-width:22px;height:22px;min-height:22px;flex:0 0 22px;padding:2px}
+.cm-quote button .ui-icon{width:13px;height:13px}
 .cm-chips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
 .cm-chip{display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border:1px solid var(--line);border-radius:13px;background:var(--paper);font-size:11px;max-width:100%}
 .cm-chip-main{border:0;background:transparent;padding:0;font:inherit;color:inherit;display:inline-flex;align-items:center;gap:6px;cursor:pointer;min-width:0}
@@ -26,6 +28,8 @@
 .cm-chip-status[data-status="error"],.cm-chip-status[data-status="dup"]{color:var(--amber);border-color:var(--amber)}
 .cm-chip-x{border:0;background:transparent;cursor:pointer;color:var(--muted);padding:0 2px}
 .cm-chip-x:hover{color:var(--red)}
+.cm-chip-x.ui-icon-button{width:20px;min-width:20px;height:20px;min-height:20px;flex:0 0 20px;padding:2px}
+.cm-chip-x .ui-icon{width:12px;height:12px}
 .cm-chip-warn{border-color:var(--amber)}
 .cm-add{border:1px solid var(--line);background:var(--paper);border-radius:8px;padding:3px 10px;font-size:11px;cursor:pointer;color:var(--muted)}
 .cm-add:hover{color:var(--ink)}
@@ -33,6 +37,7 @@
 .cm-picker[hidden]{display:none}
 .cm-picker-bar{display:flex;flex-shrink:0;flex-wrap:wrap;gap:6px;padding:8px 10px;border-bottom:1px solid var(--line);align-items:center;min-width:0}
 .cm-picker-bar .cm-up,.cm-picker-bar .cm-pick-files,.cm-picker-bar .cm-browse{border:1px solid var(--line);background:var(--paper);border-radius:6px;padding:3px 8px;font-size:11px;cursor:pointer;color:var(--muted);white-space:nowrap;flex:0 0 auto}
+.cm-picker-bar .cm-up.ui-icon-button{padding:3px 5px}
 .cm-picker-bar .cm-path{flex:1 1 100px;min-width:0;width:0;border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:11px;background:var(--bg);color:var(--ink)}
 .cm-picker-bar :is(.cm-up,.cm-pick-files,.cm-browse):disabled{opacity:.55;cursor:wait}
 .cm-picker-error{flex-shrink:0;margin:0;padding:4px 10px;color:var(--amber);font-size:11px;overflow-wrap:anywhere}
@@ -47,6 +52,7 @@
 .cm-entry-current .cm-entry-note{color:var(--green);font-weight:600}
 .cm-entry-dir .cm-entry-name{color:var(--ink)}
 .cm-dir-mark{color:var(--amber);width:1em}
+.cm-dir-mark .ui-icon{width:12px;height:12px}
 .cm-entry-more{color:var(--muted);justify-content:center}
 .cm-picker-foot{display:flex;flex-shrink:0;flex-wrap:wrap;gap:8px;align-items:center;padding:8px 10px;border-top:1px solid var(--line)}
 .cm-picker-count{flex:1;min-width:0;color:var(--muted);font-size:11px;overflow-wrap:anywhere}
@@ -63,6 +69,8 @@
 .material-viewer header{display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--line)}
 .material-viewer header strong{flex:1;min-width:0;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mv-close{border:1px solid var(--line);background:transparent;border-radius:6px;padding:3px 10px;font-size:11px;cursor:pointer;color:var(--muted)}
+.mv-close.ui-icon-button{width:26px;min-width:26px;height:26px;min-height:26px;flex:0 0 26px;padding:3px}
+.mv-close .ui-icon{width:14px;height:14px}
 .mv-body{flex:1;min-height:0;overflow:auto;padding:12px}
 .mv-image{display:block;max-width:100%;margin:0 auto;border:1px solid var(--line);border-radius:8px}
 .mv-pdf{width:100%;height:min(60dvh,520px);border:1px solid var(--line);border-radius:7px}

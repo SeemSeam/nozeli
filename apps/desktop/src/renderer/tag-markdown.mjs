@@ -3,6 +3,7 @@ import { javascriptLanguage } from '@codemirror/lang-javascript';
 import { highlightTree, classHighlighter } from '@lezer/highlight';
 import katex from 'katex';
 import {highlightMarkdownCode} from './markdown-code.mjs';
+import {setActionButton} from './ui-actions.mjs';
 
 const SAFE_PROTOCOLS = new Set(['https:', 'http:', 'mailto:']);
 const FILE_SUFFIX = /^(.*?)(?::(?:line|行)?(\d+))?$/u;
@@ -144,14 +145,14 @@ export function renderTagMarkdown(target, value, options = {}) {
       const count=headings.get(base)||0;headings.set(base,count+1);heading.id=base+(count?'-'+count:'');
     }
     for(const code of target.querySelectorAll('pre code')){
-      const copy=doc.createElement('button');copy.type='button';copy.className='conversation-copy';copy.textContent='⧉';copy.title='复制代码';copy.setAttribute('aria-label','复制代码');
+      const copy=doc.createElement('button');copy.type='button';copy.className='conversation-copy';setActionButton(copy,'copy',{label:'复制代码',text:''});
       copy.addEventListener('click',async()=>{
         try{
           if(options.onCopy)await options.onCopy(code.textContent);
           else if(globalThis.window?.nozeli?.invoke){const result=await window.nozeli.invoke('document.clipboard',{action:'write',text:code.textContent});if(!result.ok)throw Error(result.error?.message || '复制失败');}
           else await navigator.clipboard.writeText(code.textContent);
-          copy.textContent='✓';copy.title='已复制';
-        }catch{copy.textContent='!';copy.title='复制失败';options.onCopyError?.();}
+          setActionButton(copy,'copy',{label:'已复制代码',text:''});
+        }catch{setActionButton(copy,'copy',{label:'复制失败，重试',text:'重试'});options.onCopyError?.();}
       });
       code.parentElement.prepend(copy);
     }

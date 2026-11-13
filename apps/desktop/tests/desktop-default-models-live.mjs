@@ -74,7 +74,7 @@ let app;try{
  await chat.click('#chat-more');await chat.click('#conversation-context-menu:not([hidden]) [data-command="chat-session-runtime"]');await chat.waitForSelector('.session-runtime-dialog[open]');
  await until(async()=>(await chat.$eval('.session-runtime-dialog pre',e=>e.textContent)).includes(GLM),'session facts report the GLM model');
  const facts=await chat.$eval('.session-runtime-dialog pre',e=>e.textContent);assert.ok(!facts.includes(GPT),'session facts must not report the stale GPT model');await chat.screenshot({path:path.join(root,'session-runtime-model-facts.png')});
- await chat.$$eval('.session-runtime-actions button',bs=>bs.find(b=>b.textContent==='关闭')?.click());await chat.waitForFunction(()=>!document.querySelector('.session-runtime-dialog')?.open);
+ await chat.click('.session-runtime-dialog [data-session-command="close"]');await chat.waitForFunction(()=>!document.querySelector('.session-runtime-dialog')?.open);
  // ===== cold reopen: the saved GLM default must not revert to GPT =====
  await stopApp(app);
  app=await startApp();

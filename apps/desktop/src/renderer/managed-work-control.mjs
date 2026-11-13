@@ -1,10 +1,11 @@
+import {setActionButton} from './ui-actions.mjs';
 import './managed-work-control.css';
 const make=(tag,text)=>{const n=document.createElement(tag);if(text!=null)n.textContent=text;return n;};
 const labels={pause:'暂停调度','stop-current':'停止当前执行','resume':'恢复'};
 const reasons={'already-held':'已暂停调度','not-held':'没有人工暂停','work-ended':'工作已结束','work-closing':'工作正在收尾','owner-unavailable':'原运行时不可核实','lifecycle-held':'生命周期暂不允许','storage-unknown':'存储结果待核实','unknown-target':'原任务不存在'};
 const dispositions={'held':'后续调度已暂停；已准入回合仍可完成','eligible':'原输入具备继续资格，不代表执行成功','waiting-capacity':'等待运行资源','review':'仍待审核，不会自动接受结果','needs-decision':'仍需处理原用户决定','needs-reconciliation':'原执行效果待核查，未重放','unsupported-cold-recovery':'冷开记录不能自动重放','stale':'原绑定已变化，请重新核对','ended':'工作已结束','no-pending-input':'没有可安全续作的原输入，未生成新任务','stopped-unconfirmed':'停止未确认，原运行资源仍保留'};
 export function mountWorkControl({call,current,toast=()=>{}}){
- const dialog=make('dialog');dialog.className='managed-control-dialog';dialog.setAttribute('aria-label','任务执行控制');const title=make('h2'),facts=make('p'),actions=make('div'),status=make('p'),refresh=make('button','重新核对'),close=make('button','关闭');actions.className='managed-control-actions';status.setAttribute('role','status');refresh.type=close.type='button';dialog.append(title,facts,actions,status,refresh,close);document.body.append(dialog);
+ const dialog=make('dialog');dialog.className='managed-control-dialog';dialog.setAttribute('aria-label','任务执行控制');const title=make('h2'),facts=make('p'),actions=make('div'),status=make('p'),refresh=make('button','重新核对'),close=make('button');setActionButton(close,'close-view',{label:'关闭'});actions.className='managed-control-actions';status.setAttribute('role','status');refresh.type=close.type='button';dialog.append(title,facts,actions,status,refresh,close);document.body.append(dialog);
  const buttons=new Map();for(const action of Object.keys(labels)){const b=make('button',labels[action]);b.type='button';b.dataset.workControlAction=action;b.onclick=()=>void submit(action);actions.append(b);buttons.set(action,b);}
  let selection=null,frame=null,serial=0,reading=false,pending=false,stale=true;const keys=new Map();
  const context=()=>JSON.stringify(current());

@@ -5,3 +5,4 @@
 html[data-workspace-role=shell] .app#app:not(.focus-mode):has(.managed-service-faults:not([hidden])){grid-template-rows:auto minmax(0,1fr)}
 .app#app>.topbar:has(.managed-service-faults:not([hidden])),
 html[data-workspace-role=shell] .app#app>.topbar:has(.managed-service-faults:not([hidden])){height:auto;min-height:44px;overflow:visible;flex-wrap:wrap;padding-block:6px;gap:6px 18px}
+.managed-control-dialog button.ui-icon-button{min-height:var(--ui-hit-size,28px)}

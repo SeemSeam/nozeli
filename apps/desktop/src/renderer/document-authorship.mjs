@@ -1,4 +1,4 @@
-import {setIconButton} from './ui-icons.mjs';
+import {setActionButton} from './ui-actions.mjs';
 import { changeRecord, mapAttribution, userActor } from '../domain/document-changes.mjs';
 import { textChangeSet, anchorText } from '../domain/tag-anchors.mjs';
 import { sourceLeaves } from './markdown-source.mjs';
@@ -12,7 +12,7 @@ export function mountDocumentAuthorship({current,invoke,reload,toast,onCompare})
   try {visible=localStorage.getItem('nozeli.authorship.visible')!=='false';}catch{}
   const dialog=document.createElement('dialog');dialog.id='document-change-history';dialog.className='document-change-history';
   const header=document.createElement('header'),heading=document.createElement('strong'),close=document.createElement('button');
-  heading.id='change-history-heading';dialog.setAttribute('aria-labelledby',heading.id);close.type='button';setIconButton(close,'close');close.setAttribute('aria-label','关闭修改记录');header.append(heading,close);
+  heading.id='change-history-heading';dialog.setAttribute('aria-labelledby',heading.id);close.type='button';setActionButton(close,'close-view',{label:'关闭修改记录',text:''});header.append(heading,close);
   const legend=document.createElement('p');legend.className='authorship-legend';
   for(const [kind,label]of [['user','你'],['agent1','Agent1'],['agent2','Agent2'],['external','外部修改']]){const labelNode=document.createElement('span');labelNode.className='authorship-'+kind;labelNode.textContent=label;legend.append(labelNode);}
   const content=document.createElement('div');content.className='change-history-list';dialog.append(header,legend,content);document.body.append(dialog);

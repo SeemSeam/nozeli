@@ -22,3 +22,6 @@ html[data-workspace-role=surface][data-workspace-kind=web] #app.app>.online-brow
 .web-discussion-history{flex:1;min-height:70px;overflow:auto;display:flex;flex-direction:column;gap:12px}
 .web-discussion-history article{padding:8px;border:1px solid var(--border,#d8ded8);border-radius:5px}
 .web-discussion textarea{box-sizing:border-box;width:100%;min-height:80px;max-height:50%;resize:vertical;font:inherit;background:var(--panel-bg,#fff);color:inherit}
+/* Navigation actions are shared icons; the address submit keeps its label. */
+.online-browser-toolbar button.ui-icon-button{width:30px;min-width:30px;flex:0 0 30px;padding:4px}
+.online-browser-toolbar button.ui-icon-button .ui-icon{width:16px;height:16px}

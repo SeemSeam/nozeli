@@ -1,13 +1,14 @@
 import {mountPptAnnotations} from './ppt-annotations.mjs';
 import {mountPptContextMenu} from './ppt-context-menu.mjs';
 import {mountPptLayout} from './ppt-layout.mjs';
+import {setActionButton} from './ui-actions.mjs';
 // PPTX edits are persisted as an independent model, never over the source package.
 export async function mountPpt({parent,bytes,name,draft,readOnly=false,onChange,onExport,onSelection,onRegionMode,noteActions,tagActions,onContextMenu,onContextClose,onSelectionStart,onPointItems}){
  const host=document.createElement('div');host.style.cssText='height:100%;min-height:0;display:flex;flex-direction:column;background:var(--bg);color:var(--ink)';
  // Parent chrome tokens update in place; the vendor iframe keeps its native canvas.
  const bar=document.createElement('div');bar.hidden=true;bar.style.cssText='padding:6px 10px;display:flex;gap:12px;align-items:center;background:var(--paper);color:var(--ink);border-bottom:1px solid var(--line)';
  const info=document.createElement('span');info.textContent='PPTX · 编辑自动保存为 Nozeli 草稿，原件保持不变';
- const button=document.createElement('button');button.textContent='导出 PPTX 副本';button.id='ppt-export';bar.append(info,button);
+ const button=document.createElement('button');button.type='button';setActionButton(button,'export',{label:'导出 PPTX 副本，不修改原件',text:''});button.id='ppt-export';bar.append(info,button);
  const frame=document.createElement('iframe');frame.id='ppt-frame';frame.title='PPTX 编辑器';frame.src='./ppt-vendor/index.html';frame.setAttribute('sandbox','allow-scripts allow-same-origin');frame.style.cssText='width:100%;flex:1;min-height:0;border:0';host.append(bar,frame);parent.replaceChildren(host);parent.hidden=false;
  let disposed=false,unsubscribe,disposeLayout;const deadline=Date.now()+45000;
  try{

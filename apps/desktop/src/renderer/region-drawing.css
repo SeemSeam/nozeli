@@ -33,6 +33,7 @@
   background-color:transparent;color:inherit;cursor:pointer;
   transition:background-color .16s ease,color .16s ease,box-shadow .16s ease;
 }
+.drawing-controls button.ui-icon-button{width:30px;padding:0;flex:0 0 30px}
 .drawing-controls button:hover{background-color:color-mix(in srgb,var(--ink,#292723) 8%,transparent)}
 .drawing-controls button:active{background-color:color-mix(in srgb,var(--ink,#292723) 13%,transparent)}
 .drawing-controls button[aria-pressed=true]{
@@ -122,6 +123,7 @@
   box-shadow:0 6px 20px rgba(0,0,0,.35);
   transition:background-color .16s ease,border-color .16s ease;
 }
+.snapshot-exit.ui-icon-button{width:32px;padding:0;flex:0 0 32px}
 .snapshot-card-reopen{
   display:inline-flex;align-items:center;box-sizing:border-box;height:32px;padding:0 13px;
   border:1px solid rgba(166,203,169,.4);border-radius:999px;background:rgba(20,22,20,.74);
@@ -166,6 +168,7 @@
   font:inherit;font-size:12px;font-weight:500;cursor:pointer;
   transition:background-color .16s ease,color .16s ease,border-color .16s ease;
 }
+.snapshot-card-actions button.ui-icon-button{width:32px;padding:0;flex:0 0 32px}
 .snapshot-card-send{background-color:var(--ui-action-bg,#466b55);color:var(--ui-action-ink,#fff);border:0;box-shadow:0 2px 5px rgba(15,18,16,.12)}
 .snapshot-card-send:hover{filter:brightness(1.08)}
 .snapshot-card-actions button:disabled{opacity:.5;cursor:default}

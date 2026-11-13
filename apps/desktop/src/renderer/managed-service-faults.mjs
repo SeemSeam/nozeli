@@ -1,3 +1,4 @@
+import {setActionButton} from './ui-actions.mjs';
 import './managed-work-control.css';
 import {emptyState} from './management-presentation.mjs';
 import './management-presentation.css';
@@ -6,7 +7,7 @@ const node=(tag,text)=>{const n=document.createElement(tag);if(text!=null)n.text
 const outcomeText=value=>({'accepted':'已接受继续请求','waiting-capacity':'等待运行资源','needs-reconciliation':'原执行效果待核查','unsupported-cold-recovery':'冷开记录只读，未重放','manual-hold':'仍由人工暂停','other-fault':'仍有其他服务阻塞','project-disconnected':'项目未连接，未唤醒','stale':'范围已变化，需重新核对','ended':'工作已结束'}[value]||value);
 export function mountServiceFaults({root,invoke,current,onChange=()=>{}}){
  const banner=node('section');banner.className='managed-service-faults';banner.setAttribute('aria-label','需要处理的服务故障');banner.hidden=true;root.append(banner);
- const dialog=node('dialog');dialog.className='managed-control-dialog';dialog.setAttribute('aria-label','服务故障与记录');const heading=node('h2','服务故障与记录'),facts=node('div'),notice=node('p'),more=node('button','加载更多记录'),close=node('button','关闭');notice.setAttribute('role','status');more.type=close.type='button';dialog.append(heading,facts,notice,more,close);document.body.append(dialog);
+ const dialog=node('dialog');dialog.className='managed-control-dialog';dialog.setAttribute('aria-label','服务故障与记录');const heading=node('h2','服务故障与记录'),facts=node('div'),notice=node('p'),more=node('button','加载更多记录'),close=node('button');setActionButton(close,'close-view',{label:'关闭'});notice.setAttribute('role','status');more.type=close.type='button';dialog.append(heading,facts,notice,more,close);document.body.append(dialog);
  // 单层导航：open({onClosed}) 让调用方在故障页关闭后恢复原入口（如连接页与焦点）。
  // suppressClosed 区分用户关闭与 clear() 的程序关闭，项目切换不误触发返回。
  let onClosed=null,suppressClosed=false;

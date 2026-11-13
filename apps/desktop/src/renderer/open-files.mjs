@@ -1,4 +1,4 @@
-import {setIconButton} from './ui-icons.mjs';
+import {setActionButton} from './ui-actions.mjs';
 import {createFileIcon} from './file-icons.mjs';
 import {mountContextMenu} from './context-menu.mjs';
 // Presentation only: all mutations go through the app's serialized save/close path.
@@ -18,7 +18,7 @@ export function mountOpenFiles({state,open,close,reorder,batch,persist,projectId
  const status=s.availability?.get(path)?.status;row.dataset.availability=status||'unknown';
  const button=document.createElement('button');button.className='open-file-select';const nameLabel=document.createElement('span');nameLabel.className='open-file-name';nameLabel.textContent=label+(path===s.active&&s.dirty?' ●':'');button.append(createFileIcon(path),nameLabel);button.title=path;button.setAttribute('aria-current',String(path===s.active));button.onclick=()=>open(path);
  if(status==='missing'||status==='unavailable'){const note=document.createElement('small');note.className='open-file-availability';note.textContent=status==='missing'?'原路径不存在':'暂不可用';button.append(note);button.title+=' · '+note.textContent;}
- const x=document.createElement('button');x.className='open-file-close';setIconButton(x,'close');x.title='关闭文件';x.setAttribute('aria-label','关闭 '+path);x.onclick=()=>close(path);row.append(button,x);row.onauxclick=e=>{if(e.button===1){e.preventDefault();close(path);}};row.oncontextmenu=e=>showMenu(e,path);row.onkeydown=e=>{if(e.key==='ContextMenu'||(e.shiftKey&&e.key==='F10')){e.stopPropagation();showMenu(e,path);}};row.ondragstart=e=>{dragging=path;e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',path);};row.ondragover=e=>{if(dragging)e.preventDefault();};row.ondrop=e=>{e.preventDefault();if(dragging&&dragging!==path)reorder(dragging,path);dragging=null;};row.ondragend=()=>dragging=null;parent.append(row);}
+ const x=document.createElement('button');x.className='open-file-close';setActionButton(x,'close-view',{label:'关闭 '+path,text:''});x.onclick=()=>close(path);row.append(button,x);row.onauxclick=e=>{if(e.button===1){e.preventDefault();close(path);}};row.oncontextmenu=e=>showMenu(e,path);row.onkeydown=e=>{if(e.key==='ContextMenu'||(e.shiftKey&&e.key==='F10')){e.stopPropagation();showMenu(e,path);}};row.ondragstart=e=>{dragging=path;e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',path);};row.ondragover=e=>{if(dragging)e.preventDefault();};row.ondrop=e=>{e.preventDefault();if(dragging&&dragging!==path)reorder(dragging,path);dragging=null;};row.ondragend=()=>dragging=null;parent.append(row);}
  }if(list.open)entries.querySelector('[data-active=true]')?.scrollIntoView({block:'nearest'});
  }
  return {render};

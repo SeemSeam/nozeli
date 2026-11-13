@@ -26,3 +26,6 @@ html[data-workspace-kind='project-terminal'] #app { display: block; }
 .project-terminal-viewport .xterm { height: 100%; }
 .project-terminal-viewport:focus-within { box-shadow: inset 0 0 0 1px #86baf0; }
 .project-terminal [hidden] { display: none !important; }
+/* Reconnect is a shared action icon; the status line keeps the real state text. */
+.project-terminal-toolbar button.ui-icon-button{width:30px;min-width:30px;flex:0 0 30px;padding:3px}
+.project-terminal-toolbar button.ui-icon-button .ui-icon{width:18px;height:18px}

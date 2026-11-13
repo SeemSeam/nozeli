@@ -76,3 +76,7 @@
 .rail .rail-actions>.rail-action.conversation-minimized{color:var(--green);border-color:var(--green);background:var(--green-soft)}
 .rail .rail-actions>.rail-action[data-state=error]{color:var(--red);border-color:var(--red)}
 @media(max-width:600px){.rail .rail-actions{position:fixed;bottom:12px;left:9px;z-index:30}.focus-mode .rail .rail-actions{display:none}}
+/* Singleton delegated hint tooltip (ui-tooltip.mjs); themed by the existing
+   palette variables, clamped inside the viewport for narrow windows. */
+.ui-tooltip{position:fixed;z-index:70;max-width:min(320px,calc(100vw - 16px));box-sizing:border-box;padding:6px 10px;border:1px solid var(--line,#dde3e4);border-radius:8px;background:var(--paper,#fff);color:var(--ink,#26343d);font:12px/1.55 system-ui,sans-serif;text-align:left;box-shadow:0 4px 16px #00000024;pointer-events:none}
+@media(prefers-color-scheme:dark){.ui-tooltip{border-color:var(--line,#3c4a55);background:var(--paper,#222d37);color:var(--ink,#e2e8ec)}}

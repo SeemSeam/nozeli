@@ -37,6 +37,7 @@ class Node {
  contains(node){return this===node||this.children.some(child=>child.contains(node));}
  remove(){this.isConnected=false;if(this.parent)this.parent.children=this.parent.children.filter(node=>node!==this);}
  setAttribute(key,value){this.attributes.set(key,value);}
+ getAttribute(key){return this.attributes.get(key)??null;}
  removeAttribute(key){this.attributes.delete(key);}
  addEventListener(key,listener){this.listeners.set(key,listener);}
  removeEventListener(key,listener){this.listeners.delete(key);}
@@ -68,6 +69,7 @@ function dom(t){
   removeEventListener(type){doc.listeners?.delete(type);},
   querySelector(){return null;},querySelectorAll(){return [];},
   get activeElement(){return documentState.activeElement;},set activeElement(value){documentState.activeElement=value;}};
+ doc.createElementNS=(namespace,tag)=>{const node=doc.createElement(tag);node.namespaceURI=namespace;return node;};
  doc.body.ownerDocument=doc;doc.documentElement.ownerDocument=doc;doc.head.ownerDocument=doc;doc.body.className='';
  globalThis.document=doc;
  globalThis.getComputedStyle=()=>({fontSize:'13px'});globalThis.ResizeObserver=globalThis.MutationObserver=class{observe(){}disconnect(){}};
@@ -131,13 +133,12 @@ test('late comparison responses cannot cross same-path work identities',async t=
  finish({ok:true,value:{kind:'text',text:'old'}});await pending;assert.equal(opened,0);
 });
 
-test('report exposes exactly three actions and content-only version details',async t=>{
+test('report discard respects host permission and keeps version details read-only',async t=>{
  let allowed=false,discarded=0;
  const f=report(t,{options:{onDiscard:async()=>{discarded++;},getDiscardState:()=>({allowed,message:'host permission'})}});await f.surface.ready;
- const actions=all(f.root).find(node=>node.className==='managed-review-actions');
- assert.deepEqual(actions.children.map(node=>node.textContent),['审核讨论','采纳并结束','放弃并结束']);
- assert.equal(actions.children[2].disabled,true);assert.equal(by(f.root)('reviewDiscardReason').hidden,false);assert.match(by(f.root)('reviewDiscardReason').textContent,/host permission/);allowed=true;f.surface.updateAvailability();assert.equal(actions.children[2].disabled,false);assert.equal(by(f.root)('reviewDiscardReason').hidden,true);
- await actions.children[2].onclick();assert.equal(discarded,1);assert.equal(f.calls.some(([op])=>op==='workspace.review.decide'),false);
+ const discard=all(f.root).find(node=>node.dataset.reviewAction==='discard');
+ assert.equal(discard.disabled,true);assert.equal(by(f.root)('reviewDiscardReason').hidden,false);assert.match(by(f.root)('reviewDiscardReason').textContent,/host permission/);allowed=true;f.surface.updateAvailability();assert.equal(discard.disabled,false);assert.equal(by(f.root)('reviewDiscardReason').hidden,true);
+ await discard.onclick();assert.equal(discarded,1);assert.equal(f.calls.some(([op])=>op==='workspace.review.decide'),false);
  assert.equal(all(f.root).some(node=>node.dataset.reviewFilesPanel!==undefined||node.dataset.reviewDiffPanel!==undefined),false);
  await f.surface.openDetails();assert.equal(by(f.root)('reviewVersions').open,true);
 });
@@ -341,4 +342,14 @@ browserTest('task action uses the active discussion job original tool and output
  const f=report(t,{options:{discussionHost:true},handle:async op=>{if(op!=='managed.review.discussion.read')return null;const value=reviewReading([entry]);Object.assign(value.taskState.jobs.find(job=>job.id==='round-a'),{status:'running',revision:1,context:{reviewDiscussion:true}});return {ok:true,value};}});await f.surface.ready;await f.surface.show();await paintReview();const root=f.surface.localWindow.node;
  assert.match(root.querySelector('.session-task-detail').textContent,/工具/);
  entry={id:'live-activity',jobId:'round-a',sequence:1,target:'work-a',speaker:'agent',source:'native',text:'Actual streamed output',streaming:true};await f.surface.refresh();await paintReview();assert.match(root.querySelector('.session-task-detail').textContent,/输出/);
+});
+
+browserTest('action hints follow later caller routing state without losing other descriptions',async()=>{
+ const dialog=document.createElement('dialog'),button=document.createElement('button'),other=document.createElement('input');
+ const reason=document.createElement('p');reason.id='routing-reason';reason.textContent='Current route evidence';
+ setActionButton(button,'send');button.setAttribute('aria-describedby',reason.id);dialog.append(button,other,reason);document.body.append(dialog);dialog.showModal();button.focus();await paintReview();
+ assert.equal(button.getAttribute('aria-describedby').split(/\s+/).includes(reason.id),true);
+ const liveRoute='Offline preview: no model request will be made';button.title=liveRoute;other.focus();button.focus();await paintReview();
+ assert.equal(document.getElementById('ui-tooltip').textContent,liveRoute);assert.equal(button.title,liveRoute);assert.equal(document.activeElement,button);
+ other.focus();assert.equal(document.getElementById('ui-tooltip'),null);assert.equal(button.getAttribute('aria-describedby'),reason.id);dialog.close();dialog.remove();
 });

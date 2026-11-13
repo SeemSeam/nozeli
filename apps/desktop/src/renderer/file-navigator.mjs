@@ -2,6 +2,7 @@ import {createFileIcon} from './file-icons.mjs';
 import './file-navigator.css';
 import {readFileAvailability} from './file-availability.mjs';
 import {mountContextMenu} from './context-menu.mjs';
+import {setActionButton} from './ui-actions.mjs';
 
 export const isProjectDocument = view => view?.kind === 'document' && (!view.documentSource || view.documentSource.type === 'project');
 
@@ -113,7 +114,7 @@ export function mountFileNavigator({invoke, projectId, open, toast=()=>{}, works
       return true;
     }catch(e){toast(e.message||'文件打开失败');return false;}
   }
-  const overlay=document.createElement('dialog');overlay.id='quick-open';overlay.setAttribute('aria-label','快速打开');const input=document.createElement('input');input.id='quick-open-input';input.placeholder='搜索项目文件…';input.setAttribute('aria-label','搜索项目文件');const status=document.createElement('p');status.id='quick-open-status';status.setAttribute('role','status');const results=document.createElement('div');results.id='quick-open-results';results.setAttribute('role','list');results.setAttribute('aria-label','文件搜索结果');const close=document.createElement('button');close.type='button';close.textContent='关闭';close.onclick=()=>overlay.close();overlay.append(input,status,results,close);document.body.append(overlay);let timer,searchSequence=0,returnFocus=null,openingFile=false,focusHandoffViewId=null,skipLauncherRestore=false;
+  const overlay=document.createElement('dialog');overlay.id='quick-open';overlay.setAttribute('aria-label','快速打开');const input=document.createElement('input');input.id='quick-open-input';input.placeholder='搜索项目文件…';input.setAttribute('aria-label','搜索项目文件');const status=document.createElement('p');status.id='quick-open-status';status.setAttribute('role','status');const results=document.createElement('div');results.id='quick-open-results';results.setAttribute('role','list');results.setAttribute('aria-label','文件搜索结果');const close=document.createElement('button');close.type='button';setActionButton(close,'close-view',{label:'关闭',text:''});close.onclick=()=>overlay.close();overlay.append(input,status,results,close);document.body.append(overlay);let timer,searchSequence=0,returnFocus=null,openingFile=false,focusHandoffViewId=null,skipLauncherRestore=false;
   const searchCurrent=(sequence,id,q)=>overlay.open&&sequence===searchSequence&&id===projectId()&&!transitioning&&q===input.value.trim();
   async function search(){
     const q=input.value.trim(),id=projectId(),sequence=++searchSequence;results.replaceChildren();
@@ -184,7 +185,7 @@ export function mountFileNavigator({invoke, projectId, open, toast=()=>{}, works
       if(view.relPath?.includes('/')){const parent=document.createElement('small');parent.textContent=' · '+view.relPath.split('/').slice(0,-1).join('/');b.append(parent);}
       const hidden=isProjectDocument(view)&&Array.from(visibility().hidden||[]).some(p=>view.relPath===p||view.relPath?.startsWith(p+'/'));if(hidden)b.title+=' · 已隐藏';
       b.onclick=()=>void api.command({type:'activate',viewId:id,groupId:api.activeGroup?.()}).catch(e=>toast(e.message));
-      const close=document.createElement('button');close.type='button';close.textContent='×';close.title='关闭 '+b.textContent;close.dataset.editorClose=id;close.onclick=()=>void api.command({type:'close',viewId:id}).catch(e=>toast(e.message));row.append(b,close);editorList.append(row);
+      const close=document.createElement('button');close.type='button';close.dataset.editorClose=id;setActionButton(close,'close-view',{label:'关闭 '+b.textContent,text:''});close.onclick=()=>void api.command({type:'close',viewId:id}).catch(e=>toast(e.message));row.append(b,close);editorList.append(row);
     }
   }
   editorList.addEventListener('contextmenu',event=>{const node=event.target.closest('[data-editor-view]'),view=workspaceGroups()?.snapshot()?.views[node?.dataset.editorView],id=projectId();if(!view)return;event.preventDefault();const api=workspaceGroups();editorMenu.open([{id:'split-x',label:'分屏打开（右侧）'},{id:'split-y',label:'分屏打开（下方）'},{id:'float',label:'在独立窗口打开'},...(isProjectDocument(view)?[{id:'locate',label:'在文件树中定位'}]:[]),{id:'close',label:'关闭'}],{x:event.clientX,y:event.clientY,run:key=>{if(id!==projectId())return;const viewId=view.id;if(key==='locate')return isProjectDocument(view)&&view.relPath&&locate(view.relPath);if(key==='split-x'||key==='split-y')return api.command({type:'splitOpen',viewId,groupId:api.activeGroup?.(),axis:key==='split-x'?'x':'y',side:'after'});if(key==='float')return api.command({type:'floatOpen',viewId});if(key==='close')return api.command({type:'close',viewId});}});});

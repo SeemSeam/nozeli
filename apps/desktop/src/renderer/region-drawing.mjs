@@ -1,4 +1,4 @@
-import {setIconButton} from './ui-icons.mjs';
+import {setActionButton} from './ui-actions.mjs';
 import {DRAWING_SCHEMA,validateDrawing} from '../domain/region-drawing.mjs';
 import './region-drawing.css';
 const ns='http://www.w3.org/2000/svg';
@@ -28,8 +28,8 @@ export function mountDrawingEditor({getRect,getViewport,container=document.body,
  // Capsule toolbar: segmented tool group | ink settings | history | finish/exit,
  // with the frozen-source caption folded under the controls. The capsule floats
  // above the image — layout() positions it and never reserves layout space.
- setIconButton(pen,'pencil',{text:'画笔',label:'画笔'});setIconButton(eraser,'eraser',{text:'擦除笔画'});setIconButton(undo,'undo',{text:'撤销'});setIconButton(redo,'redo',{text:'重做'});setIconButton(finish,'check',{text:'完成'});setIconButton(cancel,'close',{text:fullscreen?'退出':'取消'});
- if(onAdjustRange)setIconButton(adjust,'scan',{text:'调整范围'});if(onSaveLocal)setIconButton(local,'sticky-note',{text:'仅保存本地备注'});
+setActionButton(pen,'draw');setActionButton(eraser,'erase');setActionButton(undo,'undo');setActionButton(redo,'redo');setActionButton(finish,'finish-drawing');setActionButton(cancel,'cancel-drawing',{label:fullscreen?'退出涂鸦':'取消涂鸦'});
+if(onAdjustRange)setActionButton(adjust,'select-region',{label:'调整范围'});if(onSaveLocal)setActionButton(local,'note',{label:'仅保存本地备注，不发送给 AI'});
  const group=(...controls)=>{const g=document.createElement('div');g.className='drawing-group';g.append(...controls);return g;};
  const sep=()=>{const s=document.createElement('div');s.className='drawing-sep';s.setAttribute('aria-hidden','true');return s;};
  const row=document.createElement('div');row.className='drawing-controls-row';row.append(group(pen,eraser),sep(),group(color,width),sep(),group(undo,redo));

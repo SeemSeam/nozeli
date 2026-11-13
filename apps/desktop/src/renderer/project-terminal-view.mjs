@@ -2,6 +2,7 @@ import {Terminal} from '@xterm/xterm';
 import {FitAddon} from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import './project-terminal-view.css';
+import {setActionButton} from './ui-actions.mjs';
 
 // xterm's own stylesheet gets the existing page nonce, without relaxing CSP.
 function terminalDocument(container) {
@@ -19,7 +20,7 @@ export async function mountProjectTerminal({root,scope,invoke,subscribe}) {
   const toolbar=doc.createElement('header');toolbar.className='project-terminal-toolbar';
   const title=doc.createElement('strong');title.textContent='终端';doc.title='终端';
   const status=doc.createElement('p');status.className='project-terminal-status';status.setAttribute('role','status');status.setAttribute('aria-live','polite');
-  const reconnect=doc.createElement('button');reconnect.type='button';reconnect.dataset.terminalAction='reconnect';reconnect.textContent='启动终端';
+  const reconnect=doc.createElement('button');reconnect.type='button';reconnect.dataset.terminalAction='reconnect';reconnect.setAttribute('aria-label','启动终端');
   const viewport=doc.createElement('div');viewport.className='project-terminal-viewport';viewport.setAttribute('aria-label','交互式终端');
   toolbar.append(title,status,reconnect);host.append(toolbar,viewport);root.replaceChildren(host);
   const terminal=new Terminal({documentOverride:terminalDocument(viewport),cursorBlink:!win.matchMedia('(prefers-reduced-motion: reduce)').matches,
@@ -35,7 +36,7 @@ export async function mountProjectTerminal({root,scope,invoke,subscribe}) {
   const call=async(op,payload={})=>{const response=await invoke(op,payload);if(!response?.ok)throw Object.assign(Error(response?.error?.message||'终端操作失败'),{code:response?.error?.code});return response.value;};
   function paint(next,message){state=next;host.dataset.terminalState=state;host.dataset.instanceId=instanceId||'';status.textContent=message;
     terminal.options.disableStdin=held||state!=='running';reconnect.hidden=state==='running';reconnect.disabled=held||connecting;
-    reconnect.textContent=state==='not-started'?'启动终端':'重新连接';}
+    setActionButton(reconnect,'reconnect',{label:state==='not-started'?'启动终端':'重新连接',text:''});}
   function fail(error){if(disposed)return;paint('error',error.message||'终端连接失败，请重新连接。');}
   const writeOutput=text=>new Promise(resolve=>{if(!text||disposed)return resolve();terminal.write(text,resolve);});
   function schedulePoll(delay=80){clearTimeout(timer);if(!disposed&&instanceId)timer=win.setTimeout(()=>{pollQueue=pollQueue.then(poll).catch(fail);},delay);}
