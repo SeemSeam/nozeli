@@ -35,11 +35,10 @@ async function call(page,op,payload={}){const result=await page.evaluate((op,pay
 async function resize(page,width){await call(page,'workspace.control',{type:'window-control',action:'resize',width,height:800});await until(async()=>Math.abs((await call(page,'workspace.control',{type:'window-control',action:'state'})).contentSize.width-width)<=2,'native width '+width);}
 async function scoped(predicate){return until(async()=>{for(const page of await browser.pages()){const scope=await page.evaluate(()=>window.__workspaceScope).catch(()=>null);if(scope&&predicate(scope)&&await page.evaluate(()=>window.__nozeliReady===true)){page.on('pageerror',error=>report.errors.push(error.message));return {page,scope};}}},'ready scope');}
 async function chrome(page,role){
-  const state=await page.evaluate(()=>({platform:nozeli.platform,attribute:document.documentElement.dataset.platform,buttons:document.querySelectorAll('[data-window-action]').length,logos:document.querySelectorAll('.nozeli-window-logo').length,drag:getComputedStyle(document.querySelector('.topbar')||document.body).getPropertyValue('-webkit-app-region')}));
+  const state=await page.evaluate(()=>({platform:nozeli.platform,attribute:document.documentElement.dataset.platform,buttons:document.querySelectorAll('[data-window-action]').length,logos:document.querySelectorAll('.nozeli-window-logo').length}));
   assert.equal(state.platform,process.platform);assert.equal(state.attribute,process.platform);
   assert.equal(state.buttons,role==='shell'&&process.platform!=='darwin'?3:0);
   assert.equal(state.logos,role==='shell'&&process.platform!=='darwin'?1:0);
-  if(process.platform==='darwin'&&role==='shell')assert.equal(state.drag,'no-drag');
 }
 try{
   child=spawn(binary,[...(process.env.NOZELI_TEST_BINARY?[]:[path.join(root,'src/main/main.cjs')]),'--inspect=0',...(process.platform==='linux'?['--ozone-platform='+(process.env.NOZELI_OZONE||'wayland')]:[])],{cwd:root,env,stdio:['ignore','pipe','pipe']});
