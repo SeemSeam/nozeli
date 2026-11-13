@@ -133,6 +133,7 @@ jobs:
           tar -xzf "$RUNNER_TEMP/nozeli-linux-draft/Nozeli-$VERSION-linux-x64.tar.gz" -C "$RUNNER_TEMP/nozeli-linux-unpacked"
           sudo chown root:root "$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/chrome-sandbox"
           sudo chmod 4755 "$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/chrome-sandbox"
+          TMPDIR="$PWD/.test-output/ci" NOZELI_PACKAGED_APP="$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/resources/app" node --test tests/package-native-runtime.test.mjs
           NOZELI_TEST_BINARY="$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/nozeli" xvfb-run -a node tests/desktop-ci-smoke.mjs
           TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_BINARY="$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/nozeli" xvfb-run -a node tests/desktop-task-workspace-live.mjs
           TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_BINARY="$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/nozeli" xvfb-run -a node tests/desktop-office-journey-live.mjs

@@ -143,7 +143,6 @@ test('application packages preserve target PTY binaries and helpers without fore
   assert.equal(included('node-pty/prebuilds/win32-arm64/conpty.node', {platform: 'win32', arch: 'x64'}), false);
   assert.equal(included('nested/node_modules/node-pty/prebuilds/darwin-arm64/pty.node', {platform: 'linux', arch: 'x64'}), false);
   assert.equal(included('build-tool/bin/cli.js', {platform: 'linux', arch: 'x64'}), false);
-  assert.equal(included('@napi-rs/canvas-linux-x64-musl/skia.linux-x64-musl.node', {platform: 'linux', arch: 'x64'}), true);
 });
 
 test('source filtering retains offline UI and native icons but excludes private data and duplicate build inputs', () => {

@@ -14,6 +14,7 @@ import {runGit} from '../src/agents/managed/git-runtime.mjs';
 import {serve} from './pi-provider.fixture.mjs';
 import {staticReport} from './static-report.fixture.mjs';
 import {MainObserver} from './post-install-startup-recovery-fixture.mjs';
+import {installShutdownDiagnostics,ownedProcessTree,reclaimOwnedProcesses} from './task-workspace-shutdown.fixture.mjs';
 
 const app=path.resolve(import.meta.dirname,'..'),out=await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()),'nozeli-task-workspace-'));
 const project=path.join(out,'project'),home=path.join(out,'home'),config=path.join(out,'config'),profile=path.join(config,'desktop');
@@ -59,10 +60,23 @@ async function shot(name,page=shell){const file=path.join(out,name+'.png');await
 async function scopePages(workId){const all=[],seen=new Set();let cursor;do{const frame=await call('managed.timeline.page',{projectId,workId,limit:2,...(cursor?{cursor}:{})});assert(frame.entries.filter(row=>!row.streaming).length+frame.deltas.length<=2,'durable entries and deltas respect the history page limit');if(cursor)assert(!frame.entries.some(row=>row.streaming),'older pages cannot contain the current stream');for(const row of frame.entries){assert(!seen.has(row.id));seen.add(row.id);all.push(row);}cursor=frame.nextCursor;assert.equal(frame.hasMore,!!cursor);}while(cursor);return all;}
 async function readField(entry,field){const meta=await call('managed.timeline.read',{projectId,id:entry.id});const version=meta.entry.read?.version;if(!version)return null;field=meta.entry.read.fields.some(f=>f.field===field)?field:meta.entry.read.fields[0].field;let text='',offset=0;do{const r=(await call('managed.timeline.read',{projectId,id:entry.id,field,version,offset,limit:16384})).entry;assert.equal(r.version,version);assert.equal(r.offset,offset);assert(!r.content.includes('\uFFFD'));text+=r.content;offset=r.nextOffset;}while(offset!==null);return {text,version};}
 async function closeNormally(){
- if(process.platform==='darwin')await observer.evaluate('setTimeout(()=>process.mainModule.require("electron").app.quit(),0);true');
- else await shell.evaluate(()=>{setTimeout(()=>void window.nozeli.invoke('session.requestClose'),0);});
- observer?.close();observer=null;
- assert.deepEqual(await Promise.race([exit,pause(30000).then(()=>null)]),{code:0,signal:null});await browser.disconnect();browser=null;
+ if(process.env.NOZELI_SHUTDOWN_DIAGNOSTICS==='1')report.shutdownDiagnostics=await installShutdownDiagnostics(observer,out);
+ // The original 30s bound covers dispatch acceptance AND process exit.
+ // Waiting for the IPC receipt must not silently extend the shutdown gate.
+ let timer,result;
+ const deadline=new Promise(resolve=>{timer=setTimeout(()=>resolve(null),30000);});
+ try{
+  const completion=(async()=>{
+   if(process.platform==='darwin')await observer.evaluate('setImmediate(()=>process.mainModule.require("electron").app.quit());true');
+   else assert.deepEqual(await call('session.requestClose'),{closing:true});
+   observer?.close();observer=null;
+   return await exit;
+  })();
+  result=await Promise.race([completion,deadline]);
+ }finally{clearTimeout(timer);observer?.close();observer=null;}
+ report.closeResults??=[];report.closeResults.push(result);
+ if(!result)report.shutdownProcesses=await ownedProcessTree(child);
+ assert.deepEqual(result,{code:0,signal:null});await browser.disconnect();browser=null;
 }
 async function boardsVisible(){assert.equal(await shell.evaluate(()=>{const body=document.querySelector('#sidebar-body');return !body.dataset.taskWorkspace&&!body.querySelector('[data-task-process]')&&['.inbox-panel','.workflow-panel'].every(selector=>{const node=body.querySelector(selector);return node&&!node.hidden&&node.checkVisibility();});}),true,'native task pane never replaces either right status board');}
 try{
@@ -132,4 +146,12 @@ try{
  await call('session.resize',{width:1280,height:800});await observer.evaluate(`(()=>{for(const wc of process.mainModule.require('electron').webContents.getAllWebContents())wc.setZoomFactor(2);return true;})()`);await chat.$eval(card(a.id),n=>n.scrollIntoView({block:'start'}));await chat.waitForFunction(selector=>{const n=document.querySelector(selector),r=n?.getBoundingClientRect();return r&&r.top>=0&&r.top<innerHeight&&r.width>0;},{},card(a.id));await shot('zoom200-shell');await shot('zoom200-conversation',chat);assert.equal(await chat.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);await observer.evaluate(`(()=>{for(const wc of process.mainModule.require('electron').webContents.getAllWebContents())wc.setZoomFactor(1);return true;})()`);
  const requestsBeforeRestart=provider.requests.length,ids=final.jobs.map(j=>j.id);await closeNormally();log='';await launch();await openChat();await chat.waitForSelector(card(a.id));assert.equal(await chat.$eval(card(a.id),n=>n.dataset.taskTone),before.tone);assert.equal(await chat.$eval('#composer',n=>n.value),'UNSENT_TASK_DRAFT_界🙂');assert.deepEqual((await state()).jobs.map(j=>j.id),ids);assert.equal(provider.requests.length,requestsBeforeRestart);await shot('cold-restart',chat);await closeNormally();report.checks.push('Light/dark, 320/390/native wide, reduced motion and real 200% zoom captured; normal exit/cold restart retain task identity, draft, job IDs and unchanged source with no replay');report.ok=true;
 }catch(error){report.error=error.stack;process.exitCode=1;await shell?.screenshot({path:path.join(out,'failure-shell.png')}).catch(()=>{});await chat?.screenshot({path:path.join(out,'failure-conversation.png')}).catch(()=>{});await processPage?.screenshot({path:path.join(out,'failure-task-process.png')}).catch(()=>{});}
-finally{releaseLong?.();observer?.close();await browser?.disconnect().catch(()=>{});if(child?.exitCode===null)child.kill('SIGTERM');await provider.close();report.providerPhases=phases;report.providerErrors=provider.errors.map(e=>e.stack);await fs.writeFile(path.join(out,'report.json'),JSON.stringify(report,null,2));await fs.writeFile(path.join(out,'electron.log'),log);console.log(JSON.stringify(report,null,2));}
+finally{
+ releaseLong?.();observer?.close();await browser?.disconnect().catch(()=>{});
+ if(child&&((child.exitCode===null&&child.signalCode===null)||report.shutdownProcesses?.length)){
+  const identities=report.shutdownProcesses??await ownedProcessTree(child);
+  report.cleanup=await reclaimOwnedProcesses(child,identities,exit);
+ }
+ await provider.close();report.providerPhases=phases;report.providerErrors=provider.errors.map(e=>e.stack);
+ await fs.writeFile(path.join(out,'report.json'),JSON.stringify(report,null,2));await fs.writeFile(path.join(out,'electron.log'),log);console.log(JSON.stringify(report,null,2));
+}

@@ -14,8 +14,8 @@ export function mountCollaborationStatus({root,after,call,current,onSelect,toast
  const confirm=make('button','保存选择'),cancelPending=make('button','撤销待切换'),inherit=make('button','恢复角色默认'),close=make('button','取消');for(const button of [confirm,cancelPending,inherit,close])button.type='button';footer.append(cancelPending,inherit,close,confirm);
  const modelConnection=make('button','管理连接');modelConnection.type='button';modelConnection.hidden=true;modelConnection.onclick=()=>{dialog.close();if(list.open)list.close();window.dispatchEvent(new CustomEvent('nozeli-open-settings',{detail:'settings-provider'}));};footer.prepend(modelConnection);
  let project=null,generation=0,flight=null,pending=false,frame=null,rows=new Map(),menu=null,choice=null,submitting=false,menuSerial=0,requestKey=null;
- const chipNodes=new Map(),workerLabels=new Map(),listNodes=new Map(),modelNodes=new Map();
- let menuFlight=null,menuAgain=false,menuDirty=false,menuForce=false,requestAction=null;
+ const chipNodes=new Map(),workerLabels=new Map(),listNodes=new Map(),modelNodes=new Map(),modelGroups=new Map();
+ let menuFlight=null,menuAgain=false,menuDirty=false,menuForce=false,requestAction=null,modelQuery='',initialModelProvider=null;
  const repairs=make('details',null,'collaboration-repairs'),repairSummary=make('summary','项目修复 · 正在读取'),repairNote=make('p',null,'collaboration-note'),repairRows=make('div'),repairMore=make('button','加载更多修复记录');repairMore.type='button';repairs.append(repairSummary,repairNote,repairRows,repairMore);list.insertBefore(repairs,listClose);
  repairSummary.dataset.maintenanceOpen='';
  const repairAlert=make('p',null,'collaboration-repair-alert'),repairOpen=make('button','查看修复记录');repairOpen.type='button';repairOpen.onclick=()=>{repairs.hidden=false;repairs.open=true;repairSummary.focus();};repairSummary.tabIndex=0;list.insertBefore(repairAlert,listRows);help.append(repairOpen);
@@ -127,7 +127,7 @@ export function mountCollaborationStatus({root,after,call,current,onSelect,toast
   menuFlight=(async()=>{try{const info=await call('model.options',{target:captured.row.target},captured.id);if(!still(captured.id,captured.gen)||ticket!==menuSerial||!dialog.open)return;captured.stale=!!captured.stale||info.ownerId!==captured.row.ownerId||info.ownerGeneration!==captured.row.ownerGeneration||info.workRevision!==captured.row.workRevision;captured.info={...info,available:info.available&&!captured.stale};if(!menuDirty)choice=info.desired?.model??info.override?.model??info.effective?.model??info.recorded?.model??null;paintMenu();if(captured.stale)scopeNote.textContent='会话归属或工作版本已变化；此菜单只读，请关闭重开后修改。';}catch(error){if(ticket===menuSerial){captured.info.available=false;paintMenu();result.textContent='模型事实读取未确认：'+error.message+'；原选择与草稿保留。';}}finally{menuFlight=null;if(menuAgain){menuAgain=false;if(menu?.info&&dialog.open)void refreshMenu(true);}}})();return menuFlight;
  }
  async function openModel(row){
-  const id=project,gen=generation,ticket=++menuSerial;menu={id,gen,row,info:null,signature:modelSignature(row),stale:false};menuDirty=false;choice=null;requestKey=null;submitting=false;dialogTitle.textContent=(row.workName||row.displayName)+' · 后续回合模型';scopeNote.textContent='正在读取原 Agent 设置；此操作不会唤醒会话。';result.textContent='';options.replaceChildren();modelNodes.clear();facts.replaceChildren();search.value='';confirm.disabled=cancelPending.disabled=inherit.disabled=true;dialog.showModal();
+  const id=project,gen=generation,ticket=++menuSerial;menu={id,gen,row,info:null,signature:modelSignature(row),stale:false};menuDirty=false;choice=null;requestKey=null;submitting=false;dialogTitle.textContent=(row.workName||row.displayName)+' · 后续回合模型';scopeNote.textContent='正在读取原 Agent 设置；此操作不会唤醒会话。';result.textContent='';options.replaceChildren();modelNodes.clear();modelGroups.clear();modelQuery='';initialModelProvider=null;facts.replaceChildren();search.value='';confirm.disabled=cancelPending.disabled=inherit.disabled=true;dialog.showModal();
   try{const info=await call('model.options',{target:row.target},id);if(!still(id,gen)||ticket!==menuSerial||!dialog.open)return;menu.row={...row,ownerId:info.ownerId,ownerGeneration:info.ownerGeneration,workRevision:info.workRevision};menu.info=info;choice=info.desired?.model??info.override?.model??info.effective?.model??info.recorded?.model??null;paintMenu();}catch(error){if(ticket===menuSerial)result.textContent='读取失败：'+error.message+'；原模型保持不变。';}
  }
  function paintMenu(){
@@ -140,13 +140,38 @@ export function mountCollaborationStatus({root,after,call,current,onSelect,toast
  }
  function paintModelAvailability(){modelConnection.hidden=!!menu?.info?.models?.length;const error=menu?.info?.error;if(error)scopeNote.textContent+=' '+(error.message??error.code??'模型切换失败');}
  function paintOptions(){
-  if(!menu?.info)return;const info=menu.info,query=search.value.toLocaleLowerCase(),wanted=new Set();let selectedAvailable=false;
+  if(!menu?.info)return;const info=menu.info,query=search.value.trim().toLocaleLowerCase(),wanted=new Set(),focused=document.activeElement;let selectedAvailable=false;
+  const providerOf=id=>id?.includes('/')?id.slice(0,id.indexOf('/')):'未标明来源';
+  initialModelProvider??=providerOf(info.effective?.model??choice??info.recorded?.model);
+  // Native disclosure state is untouched by refreshes; search temporarily borrows it.
+  if(query&&!modelQuery)for(const group of modelGroups.values())group.savedOpen=group.details.open;
+  const groupFor=provider=>{
+   let group=modelGroups.get(provider);if(group)return group;
+   const details=make('details',null,'collaboration-model-group'),summary=make('summary'),body=make('div',null,'collaboration-model-group-body');details.dataset.modelProvider=provider;details.open=provider===initialModelProvider;details.append(summary,body);group={details,summary,body,savedOpen:details.open,new:true};modelGroups.set(provider,group);options.append(details);return group;
+  };
+  const entryFor=(id,provider)=>{
+   let entry=modelNodes.get(id);if(entry)return entry;
+   const label=make('label',null,'collaboration-model-option'),radio=make('input'),caption=make('span'),source=make('small');radio.type='radio';radio.name='collaboration-model';radio.value=id;radio.onchange=()=>{choice=id;menuDirty=true;requestKey=null;paintOptions();};label.append(radio,caption,source);entry={label,radio,caption,source,provider};modelNodes.set(id,entry);groupFor(provider).body.append(label);return entry;
+  };
   for(const model of info.models??[]){
    const id=typeof model==='string'?model:model.selector??(model.provider&&model.id?model.provider+'/'+model.id:model.id),name=typeof model==='string'?model:model.name??model.id??id;if(!id)continue;wanted.add(id);
-   let entry=modelNodes.get(id);if(!entry){const label=make('label',null,'collaboration-model-option'),radio=make('input'),caption=make('span'),source=make('small');radio.type='radio';radio.name='collaboration-model';radio.value=id;label.append(radio,caption,source);entry={label,radio,caption,source};modelNodes.set(id,entry);options.append(label);}
-   entry.caption.textContent=name;entry.source.textContent=id;entry.label.hidden=choice!==id&&!(name+' '+id).toLocaleLowerCase().includes(query);entry.radio.checked=choice===id;entry.radio.disabled=submitting||!info.available||model.available===false;entry.radio.onchange=()=>{choice=id;menuDirty=true;requestKey=null;paintOptions();};if(choice===id&&!entry.radio.disabled)selectedAvailable=true;
+   const provider=typeof model==='string'?providerOf(id):model.provider||providerOf(id),entry=entryFor(id,provider);
+   entry.caption.textContent=name;entry.source.textContent=id;entry.label.hidden=choice!==id&&!entry.label.contains(focused)&&!(name+' '+id+' '+entry.provider).toLocaleLowerCase().includes(query);entry.radio.checked=choice===id;entry.radio.disabled=submitting||!info.available||model.available===false;if(choice===id&&!entry.radio.disabled)selectedAvailable=true;
   }
-  for(const [id,entry]of modelNodes)if(!wanted.has(id)){if(id===choice||entry.label.contains(document.activeElement)){entry.radio.disabled=true;entry.label.hidden=false;entry.source.textContent=id+' · 当前目录不可用，原选择保留';}else{entry.label.remove();modelNodes.delete(id);}}
+  const currentId=info.effective?.model??info.recorded?.model;
+  for(const id of [choice,currentId])if(id&&!wanted.has(id))entryFor(id,providerOf(id));
+  for(const [id,entry]of modelNodes)if(!wanted.has(id)){
+   if(id===choice||id===currentId||entry.label.contains(focused)){entry.caption.textContent=id;entry.radio.checked=id===choice;entry.radio.disabled=true;entry.label.hidden=false;entry.source.textContent='当前目录不可用，原选择保留 · '+id;}
+   else{entry.label.remove();modelNodes.delete(id);}
+  }
+  for(const [provider,group]of modelGroups){
+   const labels=[...group.body.children],shown=labels.filter(label=>!label.hidden).length;
+   group.summary.textContent=provider+' · '+(query?shown+'/'+labels.length:labels.length)+' 个模型';group.details.hidden=!shown&&!group.details.contains(focused);
+   if(query&&(query!==modelQuery||group.new))group.details.open=shown>0;
+   else if(!query&&modelQuery)group.details.open=group.savedOpen;
+   group.new=false;
+  }
+  modelQuery=query;
   confirm.disabled=submitting||!info.available||!selectedAvailable||choice===(info.desired?.model??info.override?.model??info.effective?.model);
  }
  async function change(action){

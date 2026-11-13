@@ -5,6 +5,7 @@ import {createHash} from 'node:crypto';
 import {createReadStream} from 'node:fs';
 import {execFileSync} from 'node:child_process';
 import {packageRelease, validateRelease} from './local-release.mjs';
+import {exportNodeSymbols} from './package-pi-runtime.mjs';
 
 if (process.platform !== 'linux' || process.arch !== 'x64') throw Error('Portable packaging currently supports Linux x64 only.');
 const [destination, ...extra] = process.argv.slice(2);
@@ -69,15 +70,17 @@ Nozeli自有代码采用AGPL-3.0-only，正文见NOZELI-LICENSE。根LICENSE为E
   execFileSync('tar', ['-czf', path.join(output, archive), '-C', path.dirname(release), label], {stdio:'inherit'});
   const sourceArchive = `Nozeli-${manifest.version}-source.tar.gz`;
   execFileSync('git', ['archive','--format=tar.gz',`--prefix=Nozeli-${manifest.version}-source/`,'-o',path.join(output,sourceArchive),commit], {cwd:repository,stdio:'inherit'});
+  const symbolsArchive=`${label}-node-debug.tar.gz`;
+  await exportNodeSymbols({source,application:path.join(release,'resources/app'),archive:path.join(output,symbolsArchive)});
   const sums=[];
-  for (const name of [archive,sourceArchive,'使用说明.md']) {
+  for (const name of [archive,sourceArchive,symbolsArchive,'使用说明.md']) {
     const hash=createHash('sha256');
     for await (const chunk of createReadStream(path.join(output,name))) hash.update(chunk);
     sums.push(`${hash.digest('hex')}  ${name}`);
   }
   await fs.writeFile(path.join(output,'SHA256SUMS.txt'),sums.join('\n')+'\n');
   completed=true;
-  console.log(JSON.stringify({output,archive,sourceArchive,commit,version:manifest.version,publicRedistributionAudit:'pending',currentInstallationUntouched:true},null,2));
+  console.log(JSON.stringify({output,archive,sourceArchive,symbolsArchive,commit,version:manifest.version,publicRedistributionAudit:'pending',currentInstallationUntouched:true},null,2));
 } finally {
   await fs.rm(staging,{recursive:true,force:true});
   if (!completed) console.error('Packaging failed; output is not an accepted release: '+output);

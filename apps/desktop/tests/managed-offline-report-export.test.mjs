@@ -19,10 +19,9 @@ async function setup(t,{html=false}={}) {
   const profile=path.join(root,'profile'),host=new DesktopHost(profile);
   const projectId=(await host.pick(project)).project.id;
   let opens=0,connects=0,starts=0,stops=0;
-  const sourceRoot=path.join(root,'private-omp'),ompSystemSource={private:true,root:sourceRoot,agentDir:path.join(sourceRoot,'agent')};
-  const managed=new ManagedProjects({userDataDir:profile,host,legacy:{projects:new Map()},ompSystemSource,openController:async options=>{
-    assert.equal(options.ompSystemSource,ompSystemSource);
-    opens++;return {on(){},start:async()=>{starts++;throw Error('OMP native startup failed');},stop:async()=>{stops++;}};
+  const sourceRoot=path.join(root,'private-pi'),piSource={private:true,root:sourceRoot,agentDir:path.join(sourceRoot,'agent')};
+  const managed=new ManagedProjects({userDataDir:profile,host,legacy:{projects:new Map()},piSource,openController:async options=>{
+    opens++;return {on(){},start:async()=>{starts++;throw Error('Pi native startup failed');},stop:async()=>{stops++;}};
   }});
   const connect=managed.connect.bind(managed);managed.connect=(...args)=>{connects++;return connect(...args);};
   const runtime=await managedRuntime(host.storage,projectId);
@@ -59,8 +58,8 @@ test('cold offline exports historical and current exact versions without startin
   await s.invariant();
 });
 
-test('after a simulated native OMP startup failure export makes zero reconnect/open/start calls',async t=>{
-  const s=await setup(t);await assert.rejects(s.managed.connect(s.projectId,{enable:true}),/OMP native startup failed/);
+test('after a simulated native Pi startup failure export makes zero reconnect/open/start calls',async t=>{
+  const s=await setup(t);await assert.rejects(s.managed.connect(s.projectId,{enable:true}),/Pi native startup failed/);
   assert.deepEqual(s.calls(),{opens:1,connects:1,starts:1,stops:1});assert.equal(s.managed.controllers.size,0);
   s.resetCalls();await s.exporter.export(s.input());
   assert.equal(await fs.readFile(path.join(s.project,'copy.md'),'utf8'),s.oldBody);await s.invariant();

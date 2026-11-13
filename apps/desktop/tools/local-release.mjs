@@ -3,7 +3,7 @@ import path from 'node:path';
 import {createRequire} from 'node:module';
 import {pathToFileURL} from 'node:url';
 import {ownedRelease, PRIVATE_LAYOUT_MODE} from './release-retention.mjs';
-import {packagePiRuntime} from './package-pi-runtime.mjs';
+import {packagePiRuntime, canvasDependencyIncluded} from './package-pi-runtime.mjs';
 
 export async function auditBundledLinks(directory, release = directory) {
   for (const entry of await fs.readdir(directory, {withFileTypes: true})) {
@@ -16,14 +16,14 @@ export async function auditBundledLinks(directory, release = directory) {
 }
 
 // npm lockfile v2/v3 marks exclusively development packages with dev:true.
-// Keep all other entries, including optional/runtime and shared dependencies.
-export function dependencyIncluded(lock, relative) {
+// Keep runtime/shared dependencies; narrow only known non-target Canvas binaries.
+export function dependencyIncluded(lock, relative, target) {
   if (!relative) return true;
   const normalized = 'node_modules/' + relative.split(path.sep).join('/');
   for (let name = normalized; name.startsWith('node_modules/'); name = path.posix.dirname(name)) {
     if (lock.packages?.[name]?.dev === true) return false;
   }
-  return relative.split(path.sep)[0] !== 'electron';
+  return relative.split(path.sep)[0] !== 'electron' && canvasDependencyIncluded(relative, target);
 }
 
 export function applicationSourceIncluded(source, file) {
@@ -34,8 +34,9 @@ export function applicationSourceIncluded(source, file) {
   return !(parts[0] === 'assets' && parts[1] === 'brand' && parts[2] === 'nozeli-small-icon.png');
 }
 
-export function applicationDependencyIncluded(lock, relative, {platform = process.platform, arch = process.arch} = {}) {
-  if (!dependencyIncluded(lock, relative)) return false;
+export function applicationDependencyIncluded(lock, relative, target = {}) {
+  const {platform = process.platform, arch = process.arch} = target;
+  if (!dependencyIncluded(lock, relative, target)) return false;
   const parts = relative.split(path.sep), offset = parts.lastIndexOf('node_modules') + 1;
   return !(parts[offset] === 'node-pty' && parts[offset + 1] === 'prebuilds' && parts[offset + 2] && parts[offset + 2] !== `${platform}-${arch}`);
 }

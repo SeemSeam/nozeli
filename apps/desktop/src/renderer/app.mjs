@@ -35,7 +35,6 @@ import { createTagSessionProjection } from './tag-session-projection.mjs';
 import { mountPdf } from './pdf-view.mjs';
 import { languageIdForPath, isCodePath } from './code-language.mjs';
 import { mountText } from './text-view.mjs';
-import { mountMonaco } from './monaco-adapter.mjs';
 import { ChangeSet } from '@codemirror/state';
 import { codeMirrorAdapter, remoteDocumentChange } from './editor-adapter.mjs';
 import { rebaseDocumentEvent } from './document-collaboration.mjs';
@@ -1252,13 +1251,33 @@ async function refreshNotes() {
   return result.value.annotations;
 }
 
+  let fileOpenGeneration = 0;
   async function openFileNow(relPath, view, force=false, pptChoice=null) {
     if (!isSurface) return workspaceGroups?.open({kind:'document',relPath,viewState:view});
     if (relPath !== workspaceScope.relPath) return invoke('workspace.control',{type:'open-file',projectId:ui.project?.id,relPath,documentSource,view});
+    const generation = ++fileOpenGeneration, project = ui.project, previousFile = ui.file;
+    const currentOpen = () => generation === fileOpenGeneration && ui.project === project;
+    const staleOpen = () => ({ok:false,error:{code:'OPEN_SUPERSEDED',message:'打开目标已改变，未挂载过期编辑器。'}});
     frozenChangeReader.restore({focus:false});
     const checked=isReviewDocument?null:await invoke('file.availability',{projectId:ui.project.id,paths:[relPath]});
     if(checked?.ok){openFilesState.availability??=new Map();openFilesState.availability.set(relPath,checked.value.entries[0]);renderFileTabs();}
     if(ui.file?.relPath===relPath && !view && !force){if(checked?.value?.entries[0]?.status==='missing')workspace.toast('原路径不存在，当前显示保留正文。');return;}
+    if (!currentOpen() || ui.file !== previousFile) return staleOpen();
+    // Load before flushing or destroying the existing surface: a missing chunk
+    // must leave its buffer, selection and undo history intact. The normal save
+    // barrier below also captures edits/IME made while the module was loading.
+    let mountMonaco;
+    if (languageIdForPath(relPath)) {
+      try { ({ mountMonaco } = await import('./monaco-adapter.mjs')); }
+      catch (cause) {
+        if (!currentOpen() || ui.file !== previousFile) return staleOpen();
+        const error = {code:'EDITOR_LOAD_FAILED',message:`代码编辑器加载失败，当前内容保留：${cause.message || cause}`};
+        window.__lastOpen = {relPath,step:'editor-load-failed',error};
+        showFailure(error);
+        return {ok:false,error};
+      }
+      if (!currentOpen() || ui.file !== previousFile) return staleOpen();
+    }
     window.__lastOpen = { relPath, step: 'start' };
     rememberCurrentNote();
     const flushed = await flushNow();
@@ -1289,6 +1308,7 @@ async function refreshNotes() {
       workspace.toast(message);
       return {ok:false,error:{...result.error,message}};
     }
+    if (!currentOpen() || ui.file !== previousFile) return staleOpen();
     window.__lastOpen = { relPath, step: 'read', kind: result.value.kind };
     cancelSearch();
     rememberCurrentNote();
@@ -1296,6 +1316,7 @@ async function refreshNotes() {
     ui.selectionRect = null;
     $('selection-menu').hidden = true;
     await destroySurface();
+    if (!currentOpen() || ui.file !== previousFile) return staleOpen();
     $('reader-scroll').scrollTop = $('reader-scroll').scrollLeft = 0;
     const file = result.value;
     ui.file = file;
@@ -1338,6 +1359,7 @@ async function refreshNotes() {
   else if (file.sourceChanged) showFailure({ code: 'CONFLICT', message: '磁盘内容与草稿基线不同。两边都保留着，没有覆盖。' });
   else { clearFailure(); if (!ui.dirty) setStatus('saved', '已保存'); else setStatus('dirty', '未保存'); }
   const notes = await refreshNotes();
+  if (!currentOpen() || ui.file !== file) return staleOpen();
   if (file.kind === 'text') {
     const text = file.draft ? file.draft.text : file.text;
     const marks = textMarks(file, notes);

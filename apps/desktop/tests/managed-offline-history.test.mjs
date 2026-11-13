@@ -18,10 +18,10 @@ async function setup(t) {
   const project=path.join(root,'project');await fs.mkdir(project);
   const profile=path.join(root,'profile'),host=new DesktopHost(profile),projectId=(await host.pick(project)).project.id;
   let opens=0,connects=0;
-  const sourceRoot=path.join(root,'private-omp'),ompSystemSource={private:true,root:sourceRoot,agentDir:path.join(sourceRoot,'agent')};
-  const managed=new ManagedProjects({userDataDir:profile,host,legacy:{projects:new Map()},ompSystemSource,openController:async options=>{
-    assert.equal(options.ompSystemSource,ompSystemSource);
-    opens++;return {on(){},start:async()=>{throw Error('OMP native startup failed');},stop:async()=>{}};
+  const sourceRoot=path.join(root,'private-pi'),piSource={private:true,root:sourceRoot,agentDir:path.join(sourceRoot,'agent')};
+  const managed=new ManagedProjects({userDataDir:profile,host,legacy:{projects:new Map()},piSource,openController:async options=>{
+    assert.equal(options.piSource,piSource);
+    opens++;return {on(){},start:async()=>{throw Error('Pi native startup failed');},stop:async()=>{}};
   }});
   const connect=managed.connect.bind(managed);managed.connect=(...args)=>{connects++;return connect(...args);};
   const runtime=await managedRuntime(host.storage,projectId),store=await Workspace.open(runtime,project,{storage:host.storage,projectId});
@@ -52,7 +52,7 @@ test('cold Host history lists metadata and reads exact historical/current report
 });
 
 test('production connect startup failure does not prevent readonly history or reconnect',async t=>{
-  const s=await setup(t);await assert.rejects(s.managed.connect(s.projectId,{enable:true}),/OMP native startup failed/);assert.deepEqual(s.calls(),{opens:1,connects:1});assert.equal(s.managed.controllers.size,0);s.reset();
+  const s=await setup(t);await assert.rejects(s.managed.connect(s.projectId,{enable:true}),/Pi native startup failed/);assert.deepEqual(s.calls(),{opens:1,connects:1});assert.equal(s.managed.controllers.size,0);s.reset();
   assert.equal((await s.list()).total,2);assert.equal((await s.read()).body,s.oldBody);await s.invariant();
 });
 

@@ -81,3 +81,41 @@
 
 上述“未提交／安装”是源码验收时状态。用户随后授权后，实施提交为`355f2e4`；本机current=`2026-11-01T04-39-18-355Z`，previous=`2026-11-01T01-02-12-605Z`保留。版本号仍alpha.4，不新建发行tag；未push，未强关旧窗口。766个源码／构建／资源文件与安装副本SHA256一致；真实安装二进制的七格式原生几何完整烟测通过exit0，证据与边界见[提交安装记录](pi-integration-execution.md#流畅性优化提交与真实安装版验证2026-11-01)。
 
+## 2026-11-12 内存分析与安全优化（后续已授权本地激活）
+
+实际安装基线为 `all-local-model-sources-20261112`；隔离真实ELF、X11、同一合成六个小文本文件与相同操作顺序，以进程树PSS而非RSS相加比较。空工作台无Pi也有约600MiB级基础占用；每组当前＋3个历史面为有界驻留，跨项目保留编辑现场。未以驻留增加直接推断无限泄漏，未清理用户进程或强制GC。
+
+本轮只优化三个现有职责，不调整保留文档数量、跨项目驱逐或后台业务Agent：
+
+1. `renderer/app.mjs`仅在代码/TeX确需原Monaco时动态import；模块读取失败发生在flush/销毁前，返回明确失败，代次／项目／原文件检查阻止晚到挂载。`tools/build-renderer.mjs`启用ESM splitting，chunk与worker同目录，nonce／DOMPurify安全插件、app.css中的Monaco样式和fonts保持。
+2. `main/static-assets.cjs`通过文件句柄流式发送非模板资产，HEAD仅stat；HTML保留UTF-8 nonce替换和准确Content-Length。客户端中断关闭流，已发送响应头后的错误销毁响应，不重复写状态码。方法、路径边界、MIME、nosniff与CSP保持。
+3. 设置专用Pi子进程只在已核实无请求／授权交互／未知效果且空闲时退休；不是永久stop，下次明确设置请求single-flight启动新owner，不重放旧请求。30秒默认期限，无生产环境测试后门。超时保留child绑定的未确认标记，直到迟到响应／明确cancel或stop／该child退出才清除；旧child输出或exit不拒绝新child请求，stop等待已有退休交接，不重复发stop。
+
+源码真实Electron已实测：空shell／纯文本不请求Monaco JS，JavaScript首次加载后编辑、undo/redo及实际磁盘保存，TeX加载并保存，exit0；故意阻断chunk时，旧文档正文／选区／源码保持，失败面不发布业务ready，正常退出。原件 `smoke-npctzF`／`smoke-NrSKCS`（集成树apps/desktop/.test-output/ci），后者包含预期加载失败异常，不能称零异常正常路径。HTTP字节／HEAD／Unicode nonce／中断后完整读取3项通过。
+
+独立reviewer分别审查流式资产、懒加载和Pi生命周期，三者最终均correct；仅静态审查，不代替实际运行。Pi设置回收首轮新增回归4失败，父会话发现未知效果超时标记与旧child迟到exit范围问题后补修；测试实际投递等待仍有1处过早读取replacement，修复为先等replacement出现。最终Pi/runtime＋静态资源＋ProviderSettings三文件40/40通过，0失败／跳过。前次含execution的三文件60项中56通过4失败保留，不计全通过；execution本轮无修改。
+
+基线原件 `apps/desktop/.test-output/ci/smoke-xgd3DC/report.json`；统一摘要本机 `~/.cache/nozeli-smokes/memory-optimization-20261112/`。中间候选 `memory-renderer-candidate-20261112` 仅供测量，不是最终交付或已安装版本；不将不完整生命周期修正的中间收益列为最终保证。
+
+最终候选 `memory-optimized-final-20261112` 已独立冻结，未激活current。正式串行同负载基线 `smoke-xgd3DC` 对最终 `smoke-at96aA`，两次真实ELF均exit0、无GC/清缓存/文档驱逐；以MiB PSS计：空工作台586.9→595.7（无下降，不宣称收益），一个文本890.2→838.2，四个驻留文档1149.1→993.2，六次切文件1145.6→991.5，关闭文档后35秒空闲709.3→574.8，再读目录716.9→719.9（重新启动Pi的冷成本）。本轮单次阶段采样，不作为跨机器固定比例或长时泄漏消除保证。中间并发跑的两个最终包实例因共享页分摊污染PSS，只用作功能验证，数值不纳入正式前后表。
+
+最终实包设置凭据闭环 `smoke-Vt4jsS`：合成密钥写入后记录owner，默认期限后无Pi owner；读取源目录产生新PID、原源和模型配置保持、密钥不回传，随后移除测试密钥并正常exit0。实际代码／TeX `smoke-PwyTBc` 三组通过，真实输入、undo/redo、源文件保存和Monaco CSS／字体已观察；实际文本编辑／项目切换／保存／冷重启 `smoke-lnRKtS` 五组通过、两次exit0。截图已查看，临时观察脚本清理，JSON原件保留。
+
+最终收益主要是减小每个保留面及设置空闲成本，未改变每组当前＋3历史面的上限，未销毁用户编辑／撤销／网页或后台任务现场。主进程基础原生占用仍在，streaming未单独量化为固定节省额。仅Linux X11、小合成文本、无付费模型；不宣称Windows/macOS、长时高负载或所有格式完整通过。没有提交／推送／发布，也未自动替换日常安装；current仍 `all-local-model-sources-20261112`。
+
+### 正式落地方案（用户后续授权，2026-11-12）
+
+目标是减少已确认的重复JS加载和空闲设置owner成本，不承诺空工作台固定比例下降，也不以牺牲编辑现场获得数字。三项代码按上述合同完整交付：Monaco仅按需加载、非模板资源流式发送、Pi设置owner核实空闲后退出并按显式访问重启。实施源固定为 `/var/tmp/nozeli-all-local-20261112`，不是旧alpha工作树；保留beta.4全部本地修改、Z.AI仅密钥入口、按源模型选择和索引收尾修复。
+
+准入：同负载真实ELF前后PSS；JS/TeX实际编辑保存与undo/redo；模块失败保留正文／选区；真实30秒空闲退休与凭据复读；并发、OAuth等待、超时UNKNOWN与旧child退出隔离回归。当前40项确定性回归和上述实包烟测已通过、三位reviewer均correct，候选946项源码／构建／资源摘要与实施树一致。
+
+执行本地激活既有最终候选并保留紧邻previous，安装后复测实际入口、阅读编辑保存／冷恢复及原项目已完成状态和业务记录不重放。用户正在编辑的窗口不强退；不改真实Key，不发模型请求。本次不提交、推送、修改发行版本或公开发布。
+
+后续优化仅在追加证据后实施：主进程原生分配需专门profile；全局文档内存预算必须先能证明保留undo／未保存／IME／网页状态完整恢复。二者不是本次已实现能力，不以降低历史面数量或强制GC作为替代。
+
+### 本地激活结果
+
+上述“候选未激活”为先前测量阶段。用户随后要求方案落地，已通过既有install-local --existing-release激活 `memory-optimized-final-20261112`，previous保留 `all-local-model-sources-20261112`，版本元数据仍0.1.0-beta.4，不发布beta.5。正式安装后从current实际ELF完成五项阅读编辑／项目切换保留／真实磁盘保存／正常退出与冷恢复检查，两次exit0、errors为空；原件 `apps/desktop/.test-output/ci/smoke-Gtqw0W/report.json`。
+
+安装前后原项目状态仍ended/complete，非maintenance业务job记录摘要、项目根目录源文件摘要与Git HEAD保持，冻结报告SHA-256有效。没有重放Worker、修改用户Key／默认模型、关闭用户窗口或调用付费模型。启动入口和桌面图标由安装器同步；正在运行的旧窗口正常重开后使用新版，不强退未保存现场。946项源码／构建／资源与最终候选一致。最终证据 `~/.cache/nozeli-smokes/memory-optimization-20261112/{before.json,comparison.json,installed.json}`；独立集成源码树保留供后续提交，本次不Git提交／推送／公开发布。
+

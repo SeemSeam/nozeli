@@ -51,7 +51,10 @@ const monacoSanitizer = {
     });
   },
 };
-await build({ plugins: [monacoStylesheetNonce, monacoSanitizer], entryPoints: [path.join(root, 'src/renderer/app.mjs')], bundle: true, format: 'esm', platform: 'browser', outfile: path.join(output, 'app.js'), loader: { '.woff2': 'file', '.woff': 'file', '.ttf': 'file' }, assetNames: 'assets/[name]-[hash]' });
+// Keep chunks alongside app.js: Monaco resolves monaco-worker.js relative to
+// import.meta.url. esbuild includes dynamic-import CSS in the entry app.css,
+// already linked by index.html; importing the JS chunk alone does not load CSS.
+await build({ plugins: [monacoStylesheetNonce, monacoSanitizer], entryPoints: { app: path.join(root, 'src/renderer/app.mjs') }, bundle: true, splitting: true, format: 'esm', platform: 'browser', outdir: output, chunkNames: '[name]-[hash]', loader: { '.woff2': 'file', '.woff': 'file', '.ttf': 'file' }, assetNames: 'assets/[name]-[hash]' });
 await fs.copyFile(path.join(root,'src/renderer/guided-demo-controls.html'),path.join(output,'guided-demo-controls.html'));
 await build({entryPoints:[path.join(root,'src/renderer/guided-demo-controls.mjs')],bundle:true,format:'esm',platform:'browser',outfile:path.join(output,'guided-demo-controls.js')});
 await fs.copyFile(path.join(root,'src/renderer/guided-demo-hint.html'),path.join(output,'guided-demo-hint.html'));

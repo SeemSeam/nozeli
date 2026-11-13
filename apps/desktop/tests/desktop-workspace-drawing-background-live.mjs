@@ -114,7 +114,9 @@ try{
   await openDoodle();
   const threadBefore=await shell.$$eval('.snapshot-card-thread .tag-message',nodes=>nodes.length);
   await shell.type('.snapshot-card-text','REAL_BACKGROUND_QUESTION');
-  const firstClick=shell.click('.snapshot-card-task');const secondClick=shell.click('.snapshot-card-task');await Promise.all([firstClick,secondClick]);
+  // One physical pointer cannot execute two overlapping down/up sequences.
+  // Keep the repeated-click admission check, but finish each trusted gesture.
+  await shell.click('.snapshot-card-task');await shell.click('.snapshot-card-task');
   const intake=await until(async()=>{const s=await state();return s.jobs.find(j=>j.type==='intake'&&j.target==='orchestrator');},'real managed.task intake',90000);
   await pause(700);
   const s=await state();

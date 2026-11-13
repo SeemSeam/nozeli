@@ -83,6 +83,7 @@ jobs:
           test "$(printf '%s\n' "$ZIP" | wc -l)" -eq 1
           SMOKE_ROOT="$(mktemp -d "$RUNNER_TEMP/nozeli-archive-smoke-XXXX")"
           /usr/bin/ditto -x -k --sequesterRsrc "$ZIP" "$SMOKE_ROOT"
+          NOZELI_PACKAGED_APP="$SMOKE_ROOT/Nozeli.app/Contents/Resources/app" node --test tests/package-native-runtime.test.mjs
           NOZELI_TEST_BINARY="$SMOKE_ROOT/Nozeli.app/Contents/MacOS/Nozeli" node tests/desktop-ci-smoke.mjs
           TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_BINARY="$SMOKE_ROOT/Nozeli.app/Contents/MacOS/Nozeli" node tests/desktop-task-workspace-live.mjs
           TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_BINARY="$SMOKE_ROOT/Nozeli.app/Contents/MacOS/Nozeli" node tests/desktop-office-journey-live.mjs

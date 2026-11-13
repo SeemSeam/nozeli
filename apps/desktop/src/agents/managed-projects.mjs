@@ -45,7 +45,7 @@ import {decodeReportState} from './managed/report-descriptor.mjs';
 import {residentHistoryPage} from './managed/resident-history.mjs';
 import {AgentProcessBudget,validateAgentLimit} from './managed/agent-process-budget.mjs';
 import {Workspace} from './managed/workspace.mjs';
-import {recoverOmpProvider} from './managed/omp-process-ownership.mjs';
+import {recoverOmpProvider,pinSessionFileById} from './managed/omp-process-ownership.mjs';
 import {recoverPiProvider} from './managed/pi-process-ownership.mjs';
 import {recoverProvider} from './managed/process-ownership.mjs';
 import {readManagedState,managedRuntime,readManagedObject} from './managed/managed-storage.mjs';
@@ -60,9 +60,8 @@ import {jobBoundWork,workControlHeldFor} from './managed/work-control.mjs';
 import {neverAdmitted} from './managed/restart-recovery.mjs';
 import {boundedMemoryFile} from './managed/project-initialization.mjs';
 export class ManagedProjects {
- constructor({userDataDir,host,legacy,beforeDocumentOperation,ompSystemSource=null,ompAuthBroker=null,ompCommand=null,piSource=null,piRuntime=null,piAuth=null,openController=Controller.open,attachTerminal=attachNativeTerminal,stopTimeoutMs=15000,privilegeBroker=null,modelCatalog=null,idleTimeoutMs=300000,idleClock,serviceFaultBackoffMs}){
-  // ompOptions 仅供旧 OMP 进程回收（只读历史）；新执行一律 Pi（piSource/piRuntime/piAuth）。
-  Object.assign(this,{host,legacy,beforeDocumentOperation,openController,attachTerminal,stopTimeoutMs,privilegeBroker,modelCatalog,ompOptions:{ompSystemSource,ompCommand,ompAuthBroker},piSource,piRuntime,piAuth});
+ constructor({userDataDir,host,legacy,beforeDocumentOperation,piSource=null,piRuntime=null,piAuth=null,openController=Controller.open,attachTerminal=attachNativeTerminal,stopTimeoutMs=15000,privilegeBroker=null,modelCatalog=null,idleTimeoutMs=300000,idleClock,serviceFaultBackoffMs}){
+  Object.assign(this,{host,legacy,beforeDocumentOperation,openController,attachTerminal,stopTimeoutMs,privilegeBroker,modelCatalog,piSource,piRuntime,piAuth});
   this.modelIntents=new TargetModelIntents(host.storage);
   this.attention=new AttentionLedger(host.storage);
   this.permissions=new TaskPermissions(host.storage);
@@ -760,7 +759,7 @@ export class ManagedProjects {
      finally{checkpointInFlight.delete(requestId);}
    };
    const frontdeskDocuments=createFrontdeskDocuments({host:this.host,projectId:id,sync:this.beforeDocumentOperation});
-   const controller=await this.openController({storage:this.host.storage,offline,localOnly:true,projectId:id,modelIntents:this.modelIntents,processBudget:this.processBudget,runtimeRoot:await managedRuntime(this.host.storage,id),contentRoot:project.root,piSource:this.piSource,piRuntime:this.piRuntime,piAuth:this.piAuth,...this.ompOptions,taskPermissions:this.permissions,privilegeBroker:this.privilegeBroker,resolveRegisteredProject:value=>this.resolveRegisteredProject(id,value),resolveProjectRoot:value=>this.resolveProjectRoot(value),frontdeskDocuments,afterAdoption:(work,receipt)=>recordAdoption({host:this.host,projectId:id,work,receipt}),beforeAccept:async(work,admittedPaths)=>{const paths=Array.isArray(admittedPaths)&&admittedPaths.length?admittedPaths:work.execution?.candidate?.files||[];for(const relPath of paths){const release=await this.beforeDocumentOperation?.({projectId:id,relPath,hold:false});release?.();const draft=await this.host.readDraftRecord(id,relPath);if(draft?.draftError||draft&&draft.status!=='saved')throw new HostError('DRAFT_CONFLICT','成果合入受阻：请先保存或明确处理原项目草稿 '+relPath);}},isolateProcesses:false,readProjectText:async rel=>{const file=await this.host.readFile(id,rel);if(file.draftError)throw new HostError(file.draftError.code||'DRAFT_CONFLICT',file.draftError.message||'项目草稿无法读取。');const draft=file.draft&&file.draft.status!=='saved'?file.draft:null;return {text:draft?.text??file.text,buffer:Boolean(draft),diskVersion:file.digest};},
+   const controller=await this.openController({storage:this.host.storage,offline,localOnly:true,projectId:id,modelIntents:this.modelIntents,processBudget:this.processBudget,runtimeRoot:await managedRuntime(this.host.storage,id),contentRoot:project.root,piSource:this.piSource,piRuntime:this.piRuntime,piAuth:this.piAuth,taskPermissions:this.permissions,privilegeBroker:this.privilegeBroker,resolveRegisteredProject:value=>this.resolveRegisteredProject(id,value),resolveProjectRoot:value=>this.resolveProjectRoot(value),frontdeskDocuments,afterAdoption:(work,receipt)=>recordAdoption({host:this.host,projectId:id,work,receipt}),beforeAccept:async(work,admittedPaths)=>{const paths=Array.isArray(admittedPaths)&&admittedPaths.length?admittedPaths:work.execution?.candidate?.files||[];for(const relPath of paths){const release=await this.beforeDocumentOperation?.({projectId:id,relPath,hold:false});release?.();const draft=await this.host.readDraftRecord(id,relPath);if(draft?.draftError||draft&&draft.status!=='saved')throw new HostError('DRAFT_CONFLICT','成果合入受阻：请先保存或明确处理原项目草稿 '+relPath);}},isolateProcesses:false,readProjectText:async rel=>{const file=await this.host.readFile(id,rel);if(file.draftError)throw new HostError(file.draftError.code||'DRAFT_CONFLICT',file.draftError.message||'项目草稿无法读取。');const draft=file.draft&&file.draft.status!=='saved'?file.draft:null;return {text:draft?.text??file.text,buffer:Boolean(draft),diskVersion:file.digest};},
     // Service-fault integration (single authority: faults module). The hook
     // is fire-and-forget on the controller side; observation failures are
     // surfaced, never thrown into the failing run.
@@ -831,7 +830,7 @@ export class ManagedProjects {
    return {projectId:id,role,archiveId,provider:'pi',threadId:record.threadId,source:'host-message-ledger',...await residentHistoryPage({messages,offset,version})};
   }
   const home=path.join(await managedRuntime(this.host.storage,id),'agents',`resident-${role}-omp`),sessions=path.join(home,'sessions');
-  const {pinSessionFileById}=await import('./managed/omp-process-ownership.mjs');const file=await pinSessionFileById(sessions,record.threadId);if(!file)throw Error('原归档会话文件缺失，未创建替代历史');
+  const file=await pinSessionFileById(sessions,record.threadId);if(!file)throw Error('原归档会话文件缺失，未创建替代历史');
   const real=await fs.realpath(file),root=await fs.realpath(sessions);if(!real.startsWith(root+path.sep))throw Error('归档来源越界');
   return {projectId:id,role,archiveId,threadId:record.threadId,...await residentHistoryPage({file:real,offset,version})};
  }
@@ -1182,7 +1181,6 @@ export class ManagedProjects {
     const controller=this.controllers.get(p.projectId);
     if(controller)return controller.manageTodo(p);
     // Local reminder management never requires starting a Provider.
-    const {Workspace}=await import('./managed/workspace.mjs');
     const {manageTodoState}=await import('../domain/todo-management.mjs');
     const project=await this.host.requireProject(p.projectId);
     const store=await Workspace.open(await managedRuntime(this.host.storage,p.projectId),project.root,{storage:this.host.storage,projectId:p.projectId,recoverStale:true});

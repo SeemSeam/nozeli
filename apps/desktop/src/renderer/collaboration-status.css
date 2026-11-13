@@ -44,6 +44,10 @@ html[data-theme=dark] .collaboration-status{--agent-active:var(--chat-success,#9
 .collaboration-dialog dt{color:var(--muted)}
 .collaboration-dialog dd{margin:0}
 .collaboration-dialog input[type=search]{width:100%;box-sizing:border-box;margin:8px 0 12px}
+.collaboration-model-group{min-width:0;margin-block:0 8px;border:1px solid var(--line);border-radius:7px}
+.collaboration-model-group>summary{box-sizing:border-box;min-height:44px;padding:10px;cursor:pointer;font-weight:600;overflow-wrap:anywhere}
+.collaboration-model-group-body{padding:0 8px 2px;min-width:0}
+.collaboration-model-group[hidden],.collaboration-model-option[hidden]{display:none!important}
 .collaboration-model-option{display:flex!important;gap:8px;align-items:center;flex-wrap:wrap;padding:10px;border:1px solid var(--line);border-radius:7px;margin-bottom:6px;max-width:100%;white-space:normal!important}
 .collaboration-model-option small{flex:1 0 100%;font-size:max(12px,.9em);color:var(--muted);overflow-wrap:anywhere;margin-inline-start:23px}
 .collaboration-model-actions{display:flex;justify-content:flex-end;gap:7px;flex-wrap:wrap;margin-top:12px}

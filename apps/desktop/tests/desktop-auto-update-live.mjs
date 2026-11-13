@@ -19,6 +19,9 @@ const old = path.join(root, 'releases', 'old'), published = path.join(root, 'rel
 const checks = []; let child, browser, page, server, error, logs = '', childExit, newPid;
 const pageEvents = [], observedPages = new Set();
 const debugEndpoints = [];
+const packageInputs={};
+const oldInput=process.env.NOZELI_TEST_OLD_RELEASE,newInput=process.env.NOZELI_TEST_NEW_RELEASE;
+assert.equal(Boolean(oldInput),Boolean(newInput),'Cross-version qualification requires both explicit old and new release directories');
 let releaseFeed;
 let feedRequests = 0, rateLimitReset = 0;
 const fixturePromise = new Promise(resolve => { releaseFeed = resolve; });
@@ -64,14 +67,37 @@ async function stamp(directory, version) {
   await fs.writeFile(path.join(directory, 'RELEASE.json'), JSON.stringify({application: 'Nozeli', version, platform: 'linux', arch: 'x64', commit, format: 'portable-tar.gz'}) + '\n');
   await fs.writeFile(path.join(directory, 'AppRun'), '#!/bin/sh\nexec "$(dirname "$0")/nozeli" "$@"\n', {mode: 0o755});
 }
+async function copyInput(input,destination,name){
+  assert(path.isAbsolute(input),'Qualification release input must be absolute');
+  const original=await fs.realpath(input);
+  const application=path.join(original,'resources/app');
+  const metadata=await json(path.join(original,'INSTALLATION.json'));
+  assert.equal(metadata.application,'Nozeli');assert.equal(metadata.state,'validated');
+  const hashes={};
+  for(const relative of ['nozeli','resources/app/src/main/main.cjs','resources/app/src/main/auto-update.mjs','resources/app/runtime/node/bin/node']){
+    const bytes=await fs.readFile(path.join(original,relative));
+    hashes[relative]=crypto.createHash('sha256').update(bytes).digest('hex');
+  }
+  const release=await json(path.join(original,'RELEASE.json')).catch(failure=>{if(failure.code==='ENOENT')return null;throw failure;});
+  const manifest=await json(path.join(application,'package.json'));
+  packageInputs[name]={original,version:manifest.version,release,hashes};
+  await fs.cp(original,destination,{recursive:true,verbatimSymlinks:true,mode:fs.constants.COPYFILE_FICLONE});
+}
 try {
   await fs.mkdir(root, {mode: 0o700});
   await fs.mkdir(path.join(root, 'releases'), {mode: 0o700});
   await fs.mkdir(profile, {recursive: true});
   const sentinel = path.join(profile, 'update-preservation-sentinel.txt');
   await fs.writeFile(sentinel, 'Generated user data must survive a real package update.\n');
-  await packageRelease({root, release: old, source}); await stamp(old, OLD);
-  await fs.cp(old, published, {recursive: true, verbatimSymlinks: true, mode: fs.constants.COPYFILE_FICLONE}); await stamp(published, NEW);
+  if(oldInput){
+    await copyInput(oldInput,old,'old');await copyInput(newInput,published,'new');
+  }else{
+    await packageRelease({root,release:old,source});
+    await fs.cp(old,published,{recursive:true,verbatimSymlinks:true,mode:fs.constants.COPYFILE_FICLONE});
+  }
+  // Synthetic versions/tag route only this isolated feed. Original input bytes
+  // and released tags stay untouched; client/runtime code is copied verbatim.
+  await stamp(old,OLD);await stamp(published,NEW);
   await fs.symlink(old, path.join(root, 'current'));
   const archive = path.join(out, path.basename(published) + '.tar.gz');
   await tar.c({cwd: path.dirname(published), gzip: true, file: archive}, [path.basename(published)]);
@@ -198,7 +224,7 @@ try {
   await fs.writeFile(path.join(out, 'main.log'), logs);
   await fs.writeFile(path.join(out, 'debug-endpoints.json'), JSON.stringify(debugEndpoints, null, 2));
   await fs.writeFile(path.join(out, 'page-events.json'), JSON.stringify(pageEvents, null, 2));
-  const report = {ok: !error, checks, error};
+  const report = {ok: !error, checks, error, packageInputs,scope:oldInput?'Real distinct old/new package code with synthetic isolated version/feed metadata; not a public release or user installation':'Fresh same-source packages with synthetic isolated version/feed metadata'};
   await fs.writeFile(path.join(out, 'report.json'), JSON.stringify(report, null, 2) + '\n');
   console.log(JSON.stringify({out, ...report}, null, 2)); process.exitCode = error ? 1 : 0;
 }

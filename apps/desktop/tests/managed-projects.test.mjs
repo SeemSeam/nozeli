@@ -290,10 +290,10 @@ test('later project startup reads the current source defaults without connecting
  let value='first/model',opened=0;const source={modelFor:async role=>role==='frontdesk'?value:''};
  class Startup extends EventEmitter{
   constructor(options){super();this.options=options;this.store={state:{works:[]}};this.sessions=new Map();}
-  async start(){this.model=await this.options.ompSystemSource.modelFor('frontdesk');this.started=true;}
+  async start(){this.model=await this.options.piSource.modelFor('frontdesk');this.started=true;}
   snapshot(){return {model:this.model};}async stop(){}
  }
- const manager=new ManagedProjects({userDataDir:root,ompSystemSource:source,host:await storageHost(path.join(root,'project'),['sleeping']),legacy:{projects:new Map()},openController:async options=>{opened++;return new Startup(options);}});
+ const manager=new ManagedProjects({userDataDir:root,piSource:source,host:await storageHost(path.join(root,'project'),['sleeping']),legacy:{projects:new Map()},openController:async options=>{opened++;return new Startup(options);}});
  value='latest/model';assert.deepEqual(await manager.applyModelDefaults(schema2({frontdesk:value})),{applied:0,pending:0,failed:[],sessions:[]});assert.equal(opened,0);
  const result=await manager.connect('sleeping',{enable:true});assert.equal(opened,1);assert.equal(result.state.model,'latest/model');await manager.stop();
 });

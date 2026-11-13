@@ -19,6 +19,7 @@ const http = require('node:http');
 const { randomUUID, randomBytes } = require('node:crypto');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const {serveStaticAsset} = require('./static-assets.cjs');
 const {WindowRecovery,forWindow:windowRecovery} = require('./window-recovery.cjs');
 const {createForceQuit} = require('./force-quit.cjs');
 let forceQuitting = false;
@@ -87,20 +88,17 @@ function startStatic() {
           res.writeHead(403).end();
           return;
         }
-        const body = rel === '/index.html' || rel === '/editor-lab.html'
-          ? (await fs.readFile(abs, 'utf8')).replaceAll('__NOZELI_STYLE_NONCE__', styleNonce)
-          : await fs.readFile(abs);
-        res.writeHead(200, {
+        await serveStaticAsset(req, res, abs, {
           'content-type': MIME[path.extname(abs).toLowerCase()] || 'application/octet-stream',
           'cache-control': 'no-store',
           'x-content-type-options': 'nosniff',
           // The pptist entry page suppresses its own context menu with one
           // inline script; allow exactly that hash (no unsafe-inline).
           ...(rel.startsWith('/ppt-vendor/') ? {'content-security-policy': "default-src 'self'; script-src 'self' 'sha256-WKmn6REn6//A+1yCOLGMpXcVL/noe7RAT/ez0nAAXd4='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' blob: data:; media-src 'self' blob: data:; object-src 'none'; frame-src 'none'"} : {}),
-        });
-        res.end(req.method === 'HEAD' ? undefined : body);
+        }, {styleNonce, template: rel === '/index.html' || rel === '/editor-lab.html'});
       } catch (error) {
-        res.writeHead(error.code === 'ENOENT' ? 404 : 500).end();
+        if (res.headersSent) { if (!res.destroyed) res.destroy(); }
+        else res.writeHead(error.code === 'ENOENT' ? 404 : 500).end();
       }
     });
     server.listen(0, '127.0.0.1', () => resolve(server));

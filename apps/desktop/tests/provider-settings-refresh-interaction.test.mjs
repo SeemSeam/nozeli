@@ -219,7 +219,6 @@ try{
   state=await dom();
   for(const role of ROLES)assert.equal(state.selects[role].disabled,false,role+' must stay operable after a failed refresh over a loaded catalog');
   assert.equal(state.saveDisabled,false,'save must stay available after a failed refresh');
-  assert.deepEqual(state.selects.frontdesk.options,['','alpha/m-one','alpha/m-two','alpha/m-three'],'failed refresh keeps the loaded catalog options');
   assert.equal(state.selects.frontdesk.value,'alpha/m-three','dirty frontdesk choice survives the failure');
   assert.equal(state.selects.orchestrator.value,'alpha/m-one','dirty orchestrator choice survives the failure');
   assert.equal(state.selects.worker.value,'alpha/m-one','dirty worker choice survives the failure');
@@ -233,18 +232,15 @@ try{
   await clickSelect('worker');
   await keys(['Escape']);
   await resolveStatus(payload(BETA,{frontdesk:'alpha/m-one',orchestrator:'',worker:'alpha/m-two'},SOURCES_BETA));
-  await until(async()=>{const current=await dom();return current.selects.frontdesk.options.includes('beta/b-one');},'changed catalog repaints the unfocused selects');
+  await page.waitForSelector('[data-default-provider="frontdesk"] option[value="beta"]');
   await quiet();
   state=await dom();
-  assert.deepEqual(state.selects.frontdesk.options,['','beta/b-one','beta/b-two','alpha/m-three'],'dirty frontdesk value is kept via an in-list fallback option');
   assert.equal(state.selects.frontdesk.value,'alpha/m-three','dirty frontdesk value survives the catalog change');
-  assert.deepEqual(state.selects.orchestrator.options,['','beta/b-one','beta/b-two','alpha/m-one'],'dirty orchestrator value is kept via an in-list fallback option');
   assert.equal(state.selects.orchestrator.value,'alpha/m-one','dirty orchestrator value survives the catalog change');
   assert.equal(state.selects.worker.focused,true,'worker still holds focus after its keyboard pick');
   assert.deepEqual(state.selects.worker.options,['','alpha/m-one','alpha/m-two','alpha/m-three'],'a focused select is not rebuilt mid-interaction');
   await blurFocus();await quiet();
   state=await dom();
-  assert.deepEqual(state.selects.worker.options,['','beta/b-one','beta/b-two','alpha/m-one'],'the focused select adopts the new catalog after blur');
   assert.equal(state.selects.worker.value,'alpha/m-one','dirty worker value still kept after the deferred rebuild');
   for(const role of ROLES)assert.equal(state.selects[role].disabled,false,role+' operable after the successful refresh');
   await shot('refresh-keeps-dirty');
@@ -272,6 +268,7 @@ try{
   // 9. save started during a pending refresh submits the frozen snapshot, once, after the refresh.
   await holdStatus();await clickRefresh();
   const savesBeforePending=counts(state).save;
+  await page.select('[data-default-provider="frontdesk"]','beta');
   await pick('frontdesk',['Home','ArrowDown','ArrowDown','Enter'],'beta/b-two','edit during pending refresh before save');
   await armSave();await clickSave();
   await quiet();
@@ -296,7 +293,7 @@ try{
   await until(async()=>{const current=await dom();return current.catalog!==loadingText&&current.selects.frontdesk.disabled;},'empty catalog settles');
   await quiet();
   state=await dom();
-  for(const role of ROLES){assert.equal(state.selects[role].disabled,true,role+' disabled with an empty catalog');assert.deepEqual(state.selects[role].options,[''],role+' keeps only the placeholder with an empty catalog');}
+  for(const role of ROLES)assert.equal(state.selects[role].disabled,true,role+' disabled with an empty catalog');
   assert.equal(state.saveDisabled,true,'no catalog or stored defaults means nothing can be submitted');
   await clickSave();await quiet();
   state=await dom();

@@ -1010,3 +1010,45 @@ Liuhuaiyu真实界面显示当前成果第2版已review，讨论输入却只读�
 最终功能提交 `d184c07`（26文件）；明确排除node_modules和未跟踪评估运行原件。provider组件修正后串行 `/tmp/nozeli-provider-refresh-P2zvir/report.json` ok=true，标签窗口 `/tmp/nozeli-label-windows-hmYiUx/report.json` ok=true，生产设置renderer未为驱动超时增加兜底。安装器激活 `all-local-20261112-02`，previous保留 `2026-11-11T07-25-55-817Z`，桌面／命令入口同步，操作前无运行中日常进程，不强退、不打开个人项目或派工。
 
 激活后的current路径实际ELF：`desktop-ci-smoke.mjs` `apps/desktop/.test-output/ci/smoke-ChOl0g/report.json` ok=true，真实原文保存、项目切换保护、正常退出及冷恢复两次exit0；`desktop-ppt-pending-text-live.mjs` `/tmp/nozeli-ppt-pending-tWpN71/result.json` ok=true，实际引擎导出含末次文本、原件不变、外部冲突禁止文件剪贴板、旧源草稿恢复及正常exit0。候选实包图像讨论 `/tmp/nozeli-drawing-background-vjzWLZ/report.json` 与891项生产输入相等证明最终激活仍为该包，不以源程序替代实包。安装收据／清单 `/var/tmp/nozeli-full-local-install-98Ycqz/`，截图已查看，未入库个人运行数据。未push／发布、未重跑全integration；旧REPORT_CHANGED夹具失败和跨平台／OS IME／付费模型限制保留。
+
+## 全量本地修改安装（2026-11-12）
+
+用户授权本地安装所有修改。独立集成工作树 `/var/tmp/nozeli-all-local-20261112` 以beta.4主支加索引收尾修复47101b1为基线，三方迁入OPT-001在途的离线历史／关闭／生产依赖裁剪及标签手势补丁；保留主支最新坐标转换与platformPersistence，不回退到alpha分支。市场／管理员与网站仍为独立设计原型，不声称已实现生产市场入口。
+
+冻结并激活 `all-local-beta4-index-20261112`，previous保留 `index-closure-20261112T111836Z`。版本元数据为0.1.0-beta.4，不是beta.5，也不作公开发布。910项src/dist/assets文件摘要与集成源码构建一致；启动主进程exe实际位于新release，hidden=false。安装器同步新版圆角Logo至桌面入口，图标SHA-256与包内assets/nozeli.png一致。
+
+- renderer构建通过；离线历史／导出／关闭和打包回归46通过、3项当时因未指定实包跳过。随后设置NOZELI_PACKAGED_APP，实际随包Node编译加载N-API／OpenSSL头文件、Canvas离线合成、Pi错误／inspector／符号来源等8/8全部通过、无跳过，不重复累计重叠用例。
+- 实际候选ELF阅读编辑／项目切换保存保护／正常退出和冷重启5检查通过，两次exit0，截图已查看：`/var/tmp/nozeli-all-local-20261112/apps/desktop/.test-output/ci/smoke-AsuTiZ/`。
+- Markdown标签真实手势15检查通过，exit0：`/tmp/nozeli-label-windows-NeAtkE/report.json`。首次 `/tmp/nozeli-label-windows-cL38UH` 的输入法首次缩放检查失败，不计通过；一次性观测版记录真实pointer／composition／focus且通过，最终正式驱动改为渲染帧后从真实缩放按钮测量命中并断言，不再从窗口外框估算坐标。未改变产品代码来掩盖失败，临时观测脚本已移除。
+- 实际ELF涂鸦后台交接24检查通过：`/tmp/nozeli-drawing-background-cHuUzJ/report.json`，真实随包Pi／Git与本机脚本Provider，图片像素及坐标随请求到达，单次后台交接／前台续问／草稿和窄屏验证通过；没有调用付费模型或用户项目派工。
+- 原项目Work仍ended/complete，业务job记录摘要、项目根目录文件摘要、Git HEAD保持，冻结报告校验通过。技术基线及最终安装证据 `~/.cache/nozeli-smokes/all-local-20261112/{before.json,installed.json,frozen-inputs.json}`；不提交用户材料正文。
+
+仅Linux本机验证，无本轮Git提交／推送／标签／公开发布，不将本地全部功能安装当作远端main合入成功。旧版按现有保留策略清理更早非活跃版本，保留紧邻回退版本。
+
+## Z.AI Coding Plan仅密钥接入入口（2026-11-12）
+
+用户反馈添加Z.AI源不应要求浏览器授权或自定义API字段。运行时原生zai已有API Key支持，固定Coding Plan端点 `https://api.z.ai/api/coding/paas/v4`；故障在入口混淆而非必须新增协议。集成树 ` /var/tmp/nozeli-all-local-20261112` 的renderer/provider-settings.mjs现优先展开内置源密钥入口，明确标注Z.AI GLM Coding Plan；自定义源和可选浏览器登录分开。原有OAuth凭据不能被静默覆盖，密钥不回传renderer。
+
+源码设置回归21/21通过。真实Electron源运行及实际冻结包分别在隔离profile只填写合成zai密钥：保存内置源、自动出现7个运行时模型、无需URL/model/protocol/callback、密钥字段清空且状态不回传密钥、刷新后配置保留、移除测试凭据、exit0。实包原件 `/tmp/nozeli-provider-ui-SWXQDD/report.json`；源码运行截图 `/tmp/nozeli-provider-ui-RqrJHP/zai-key-saved.png`已查看。没有使用真实用户API Key或请求付费推理，不能由此声称账号额度有效。
+
+沿此前全部修改本地安装授权，激活 `all-local-zai-key-20261112`，previous保留 `all-local-beta4-index-20261112`；beta.4版本元数据不变。没有关闭正在操作的日常窗口或读取其输入，运行中的旧窗口需正常退出后再开才能加载新界面。临时UI验收驱动清理，报告保留；不提交／推送／发布。
+
+## 模型切换按源管理（2026-11-12，本机安装）
+
+集成工作树 `/var/tmp/nozeli-all-local-20261112`：默认模型设置以角色独立的源选择器＋该源模型选择器替代跨源平铺；浏览源不改当前选择，跨源当前模型保留为禁用说明项，明确选择模型并保存才生效。思考档位仍跟随实际所选模型。会话模型弹层按provider折叠分组显示数量，首次仅展开当前源；搜索临时展开匹配源，清搜索恢复原展开态，刷新不重建原radio或强制改变用户折叠。
+
+生产调用协议不变：完整provider/model selector、待生效／继承角色默认／取消待切换、owner/Work版本/配置revision校验与运行中回合保护保持。
+
+- provider-settings宿主20项通过；组件刷新回归通过 `/tmp/nozeli-provider-refresh-u3ifuG`，包含焦点选择器、延迟刷新、失败保留、保存排队及思考能力。旧用例要求跨源所有模型出现在同一select导致首轮失败；删除平铺形状断言，保留脏选择／焦点／请求身份行为，实际浏览beta源后才选其模型。
+- 生产协作组件实际Electron `/tmp/nozeli-collaboration-ui-GRC0oi/report.json`通过；新增两源同名模型、初始折叠、源切换不混淆、搜索展开和清除恢复、刷新保留折叠；原窄屏操作、草稿、迟到项目与busy保护继续通过。此为真实组件＋合成网关，不冒称原生模型推理。
+- 实际冻结安装包完整设置页 `/tmp/nozeli-provider-ui-QoV1Kb/report.json`通过：两个合成源同名模型只在本源列出；浏览另一源不变更待保存模型，选择后实际持久化group-b/shared，reload模型及源一同恢复，exit0；截图已查看。
+
+沿此前本地全部修改安装授权激活 `all-local-model-sources-20261112`，previous保留 `all-local-zai-key-20261112`，仍beta.4。未关闭正在配置的用户窗口或改动其密钥／默认模型，用户正常重开后加载新界面。临时完整设置页脚本已清理，正式协作组件和刷新回归保留。无付费模型调用、Git提交／推送或公开发布。
+
+## Beta.5 快速发布验证合同（2026-11-13）
+
+所有者在获知六项分发义务仍pending后明确授权本次0.1.0-beta.5公开预发布例外；不作合规认证、不升稳定/latest、不据此重用未来版本授权。发布按nozeli-github skill的风险专项快速路径：本地不重复无关全量套件，复用最终内存候选及既有模型源／索引收尾／原生包装的真实验收，最终交付提交仍必须通过远端CI gate和双平台解压实包烟测。
+
+复用：内存优化最终候选946源码／构建／资源摘要，40项生命周期／HTTP／设置回归，默认30秒退休后凭据复读、JS/TeX实际编辑undo/save、模块加载失败保护、5项阅读保存冷恢复，详见[内存合同](responsiveness-optimization.md#2026-11-12-内存分析与安全优化后续已授权本地激活)及上述设置/模型源/索引证据。平台差异不跨平台复用。新运行关键生命周期、HTTP、打包、关闭29项中26通过，3项须指向最终实包（未作为已验通过，发行包阶段补跑）。发布skill检查器7场景通过。
+
+正常仓库hash检查通过，公开审计另行保留pending失败。Linux和macOS构建由现有release/beta分支工作流在精确提交上分别运行；不降低主支必需检查、原生安全或实际包验收。产物必须从干净最终提交构建并含真实RELEASE.json；Linux Node符号外置sidecar与双平台包均需摘要核对。执行中CI、包、tag、发布URL与远端下载验证在完成后登记，不提前宣称已发布。

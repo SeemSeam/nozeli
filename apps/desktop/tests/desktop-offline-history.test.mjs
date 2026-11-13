@@ -21,9 +21,9 @@ await fs.copyFile(path.join(source,'tests/post-install-recovery-transport.fixtur
 await fs.copyFile(path.join(source,'tests/static-report.fixture.mjs'),path.join(app,'static-report.fixture.mjs'));
 await fs.writeFile(controlFile,JSON.stringify({fail:true,providerDelay:4000,delay:0}));await fs.writeFile(callsFile,'');await fs.writeFile(opensFile,'');
 const mainFile=path.join(app,'src/main/main.cjs');let main=await fs.readFile(mainFile,'utf8');
-const injection="managedAgents=new ManagedProjects({userDataDir:app.getPath('userData'),host,legacy:agents,beforeDocumentOperation:syncDocument,ompSystemSource,ompAuthBroker,ompCommand:ompRuntime?.command});";assert(main.includes(injection));
+const injection="managedAgents=new ManagedProjects({userDataDir:app.getPath('userData'),host,legacy:agents,beforeDocumentOperation:syncDocument,piSource,piRuntime:piSessionRuntime,piAuth,privilegeBroker,modelCatalog:()=>providerSettings.models()});";assert(main.includes(injection));
 main=main.replace(injection,`const {openTransportController}=await import('../../transport-fixture.mjs');
-  managedAgents=new ManagedProjects({userDataDir:app.getPath('userData'),host,legacy:agents,beforeDocumentOperation:syncDocument,ompSystemSource,ompAuthBroker,ompCommand:ompRuntime?.command,sourceHome:process.env.NOZELI_CODEX_SOURCE_HOME,openController:async options=>{
+  managedAgents=new ManagedProjects({userDataDir:app.getPath('userData'),host,legacy:agents,beforeDocumentOperation:syncDocument,piSource,piRuntime:piSessionRuntime,piAuth,privilegeBroker,modelCatalog:()=>providerSettings.models(),openController:async options=>{
     const config=JSON.parse(await fs.readFile(process.env.NOZELI_HISTORY_CONTROL,'utf8'));await fs.appendFile(process.env.NOZELI_HISTORY_OPENS,JSON.stringify({phase:'start',at:Date.now(),contentRoot:options.contentRoot})+'\\n');
     if(config.fail){await new Promise(r=>setTimeout(r,config.providerDelay));await fs.appendFile(process.env.NOZELI_HISTORY_OPENS,JSON.stringify({phase:'failed',at:Date.now()})+'\\n');throw Error('OFFLINE_HISTORY_TRANSPORT_START_FAILED');}
     return openTransportController(options);

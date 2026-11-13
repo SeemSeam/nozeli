@@ -19,7 +19,7 @@ const host=new DesktopHost(profile),projectId=(await host.pick(project)).project
 const otherProject=path.join(out,'other-project');await fs.mkdir(otherProject);await fs.writeFile(path.join(otherProject,'other.txt'),'Other synthetic project.\n');
 const otherId=(await host.pick(otherProject)).project.id;await host.storage.putLocal(otherId,'smoke:seed',true);
 const otherUi=path.join(await host.storage.localDirectory(otherId),'ui.sqlite');await host.storage.db.close();
-const result={ok:false,out,binary:process.env.NOZELI_TEST_BINARY||null,checks:[],errors:[],scope:'Actual Electron production host/native document, isolated synthetic project; no model calls or personal accounts'};
+const result={ok:false,out,binary:process.env.NOZELI_TEST_BINARY||null,checks:[],errors:[],timings:[],scope:'Actual Electron production host/native document, isolated synthetic project; no model calls or personal accounts'};
 const pause=ms=>new Promise(r=>setTimeout(r,ms));let child,browser,shell,observer,exited,log='';
 async function until(fn,label,ms=30000){const deadline=Date.now()+ms;while(Date.now()<deadline){if(child?.exitCode!==null&&child?.exitCode!==undefined)throw Error('Application exited: '+log);const value=await fn();if(value)return value;await pause(80);}throw Error('Timed out: '+label);}
 async function invoke(op,payload={},page=shell){const r=await page.evaluate(({op,payload})=>nozeli.invoke(op,payload),{op,payload});assert(r.ok,op+': '+JSON.stringify(r.error));return r.value;}
@@ -29,6 +29,7 @@ async function launch(){
  const env={...process.env};for(const key of Object.keys(env))if(key!=='XAUTHORITY'&&(/^(NOZELI_|CCB_|CODEX_|OMP_|PI_)/.test(key)||/AUTH|TOKEN|SECRET|PASSWORD|CREDENTIAL|API_?KEY/i.test(key)||['NODE_OPTIONS','ELECTRON_RUN_AS_NODE'].includes(key)))delete env[key];
  const ozone=process.platform==='linux'?(process.env.NOZELI_OZONE||(process.env.WAYLAND_DISPLAY?'wayland':process.env.DISPLAY?'x11':'headless')):'';
  Object.assign(env,{NOZELI_CONFIG_ROOT:config,NOZELI_USER_DATA:profile,NOZELI_TEST_INSTANCE:'1',NOZELI_DEBUG_PORT:String(port),NOZELI_HIDDEN:ozone==='headless'?'1':'0',NOZELI_OZONE:ozone});
+ const launchedAt=performance.now();
  child=spawn(process.env.NOZELI_TEST_BINARY||require('electron'),[...(process.env.NOZELI_TEST_BINARY?[]:[path.join(appRoot,'src/main/main.cjs')]),...(process.platform==='darwin'?['--inspect=0']:[]),...(process.platform==='linux'?['--ozone-platform='+ozone]:[])],{cwd:project,env,stdio:['ignore','pipe','pipe']});
  exited=new Promise(r=>child.once('exit',(code,signal)=>r({code,signal})));for(const stream of[child.stdout,child.stderr])stream.on('data',b=>log+=b);
  browser=await until(()=>puppeteer.connect({browserURL:'http://127.0.0.1:'+port,defaultViewport:null}).catch(()=>null),'CDP');
@@ -36,6 +37,7 @@ async function launch(){
  for(const p of await browser.pages())p.on('pageerror',e=>result.errors.push(e.message));
  if(process.platform==='darwin')observer=await MainObserver.connect(await until(()=>log.slice(launchLogOffset).match(/Debugger listening on (ws:\/\/127\.0\.0\.1:\d+\/\S+)/)?.[1],'main inspector'));
  if(await shell.$eval('#configuration-setup',n=>n.open).catch(()=>false))await shell.click('#configuration-cancel');
+ result.timings.push({stage:result.timings.some(row=>row.stage==='fresh-profile-ready')?'retained-profile-ready':'fresh-profile-ready',milliseconds:performance.now()-launchedAt});
 }
 async function documentPage(){return until(async()=>{for(const p of await browser.pages())if(await p.evaluate(()=>window.__nozeliReady&&window.__workspaceScope?.kind==='document'&&window.__workspaceScope.relPath==='reading.txt').catch(()=>false))return p;},'native document surface');}
 async function close(){
@@ -49,8 +51,9 @@ try{
  await shell.screenshot({path:path.join(out,'welcome.png')});result.checks.push('unconfigured application opens feature welcome without provider startup');
  await shell.locator('[data-project-id="'+projectId+'"]').click();await shell.waitForSelector('[data-start-browse]');
  await shell.locator('[data-start-browse]').click();await shell.waitForFunction(()=>document.activeElement?.id==='file-filter');
- await shell.locator('#file-tree [data-path="reading.txt"]').click();const doc=await documentPage();
+ const fileOpenedAt=performance.now();await shell.locator('#file-tree [data-path="reading.txt"]').click();const doc=await documentPage();
  await doc.waitForFunction(()=>window.__nozeliInput?.text?.()==='Synthetic local document.\n');
+ result.timings.push({stage:'first-file-interactive',milliseconds:performance.now()-fileOpenedAt});
  result.checks.push('project empty page browses into the real local document workspace');
  await doc.evaluate(()=>window.__nozeliInput.focus());await doc.keyboard.down('Control');await doc.keyboard.press('End');await doc.keyboard.up('Control');await doc.keyboard.type('CI_SMOKE_EDIT\n');
  await doc.waitForFunction(()=>window.__nozeliInput.text().includes('CI_SMOKE_EDIT'));

@@ -47,7 +47,8 @@
 @media(max-width:600px){.settings-scope-label{grid-column:1/-1;flex-direction:row;align-items:baseline;gap:8px;margin-top:4px;padding-top:8px}}
 .settings-scope-label details{min-width:0}.settings-scope-label details span{display:block;overflow-wrap:anywhere}.settings-scope-label details button{font-size:inherit}
 @media(max-width:600px){.settings-nav{max-height:32dvh}.settings-nav #settings-zen{grid-column:auto;border:0;font-weight:400}}
-.role-default-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(10em,220px);gap:6px 16px;align-items:center;margin:12px 0}
+.role-default-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 16px;align-items:start;margin:16px 0;padding-bottom:16px;border-bottom:1px solid var(--line)}
 .role-default-row>.management-field{margin:0}
 .role-default-row>label{display:grid;gap:6px;margin:0;color:var(--muted);font-size:max(12px,calc(var(--chrome-font-size) - 1px))}
+.role-default-row>label:last-child{grid-column:1/-1}.role-default-row select{width:100%;min-width:0;max-width:100%}
 @media(max-width:600px){.role-default-row{grid-template-columns:minmax(0,1fr)}.role-default-row>label{min-height:44px}}

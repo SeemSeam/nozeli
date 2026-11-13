@@ -1,4 +1,4 @@
-import {fieldRow, disclosure} from './management-presentation.mjs';
+import {disclosure} from './management-presentation.mjs';
 export function mountProviderSettings({invoke,providers=document.getElementById('settings-provider'),models=document.getElementById('settings-models')}) {
  const call=async(op,payload={})=>{const response=await invoke(op,payload);if(response?.ok===false)throw Error(response.error?.message||'设置操作未完成');return response?.ok===true?response.value:response;};
  const node=(tag,text,attrs={})=>{const el=document.createElement(tag);if(text)el.textContent=text;for(const [key,value]of Object.entries(attrs))el.setAttribute(key,value);return el;};
@@ -14,10 +14,10 @@ export function mountProviderSettings({invoke,providers=document.getElementById(
  const list=node('div',null,{'data-provider-list':''}),loginArea=node('div',null,{'data-provider-login':''});
  providers.append(node('h2','账号与 API 源'),node('p','管理凭据与模型目录。密钥仅存于本机；模型可列出不代表拥有推理授权。'),list);
  const setup=node('div',null,{class:'provider-setup'});
- const apiSection=node('details',null,{'data-provider-api-section':''}),apiSummary=node('summary','添加 API 源');apiSection.append(apiSummary);
- const loginSection=node('details',null,{'data-provider-login-section':''});loginSection.append(node('summary','账号登录'));
- const nativeSection=node('details',null,{'data-provider-native-section':''});nativeSection.append(node('summary','内置源密钥'));
- setup.append(apiSection,loginSection,nativeSection);providers.append(setup);
+ const apiSection=node('details',null,{'data-provider-api-section':''}),apiSummary=node('summary','自定义 API 源（手填地址与模型）');apiSection.append(apiSummary);
+ const loginSection=node('details',null,{'data-provider-login-section':''});loginSection.append(node('summary','可选：浏览器账号登录'));
+ const nativeSection=node('details',null,{'data-provider-native-section':'',open:''});nativeSection.append(node('summary','添加内置源（只需 API Key）'));
+ setup.append(nativeSection,apiSection,loginSection);providers.append(setup);
  const form=node('form',null,{'data-provider-api-form':''});
  const providerField=field(form,'源 ID（不可改名；改名需新增源）','provider');
  const baseUrlField=field(form,'API 地址（base URL）','baseUrl','url');
@@ -31,11 +31,12 @@ export function mountProviderSettings({invoke,providers=document.getElementById(
  const draftDiscover=node('button','先测试发现（不保存）',{type:'button','data-provider-draft-discover':''});form.append(draftDiscover);
  const formActions=node('div',null,{class:'settings-actions'});formActions.append(submitButton,cancelEdit);form.append(formActions);apiSection.append(form);
  const loginForm=node('form',null,{'data-provider-login-form':''}),loginLabel=node('label','选择Pi支持的账号源'),loginProvider=node('select',null,{name:'provider','data-login-provider':'',required:''}),loginStart=node('button','登录 / 激活所选源',{type:'submit'});
- loginProvider.append(node('option','请选择账号源',{value:''}));loginLabel.append(loginProvider);loginForm.append(loginLabel,loginStart);loginSection.append(loginForm,loginArea,node('p','Z.AI（GLM Coding Plan）授权会创建/复用专用密钥“nozeli”，不修改 ZCode 密钥。Nozeli 不接管 zcode:// 回调，请手动粘贴回调地址或 code#state。'));providers.append(message);
+ loginProvider.append(node('option','请选择账号源',{value:''}));loginLabel.append(loginProvider);loginForm.append(loginLabel,loginStart);loginSection.append(loginForm,loginArea,node('p','浏览器登录是可选方式。Z.AI Coding Plan 已有 API Key 时，请使用上方“添加内置源”，无需授权或粘贴回调。只有选择浏览器授权时，Nozeli 才创建/复用专用密钥“nozeli”，不修改 ZCode 密钥，也不接管 zcode:// 回调。'));providers.append(message);
 const nativeKeyForm=node('form',null,{'data-provider-native-key-form':''}),nativeKeyLabel=node('label','内置源 API 密钥（Pi 原生模型定义）'),nativeKeyProvider=node('select',null,{name:'provider','data-native-key-provider':'',required:''});
 const nativeKeyWrap=node('label','API密钥'),nativeKeyInput=node('input',null,{name:'key',type:'password',autocomplete:'off'});
 nativeKeyWrap.append(nativeKeyInput);nativeKeyProvider.append(node('option','正在读取内置源…',{value:''}));nativeKeyLabel.append(nativeKeyProvider);nativeKeyForm.append(nativeKeyLabel,nativeKeyWrap,node('button','保存内置源密钥',{type:'submit'}));nativeKeyForm.append(node('p','仅列出运行时声明支持密钥设置的内置 Provider（模型定义随 Pi 运行时提供，无需手填模型）；密钥写入本机私有认证存储，不回传界面。已保存订阅登录的源需先退出登录才能改用密钥。'));
  nativeSection.append(nativeKeyForm);nativeKeyForm.querySelector('button[type="submit"]').disabled=true;
+ const nativeKeyHelp=node('p','选择内置源后只需输入 API Key；地址、协议和模型由运行时提供。',{'data-native-key-help':''});nativeKeyForm.prepend(nativeKeyHelp);
  const discoveryArea=node('div',null,{'data-provider-discovery':''});providers.append(discoveryArea);
  const refreshButton=node('button','刷新源和模型',{type:'button','data-provider-refresh':''});const toolbar=node('div',null,{class:'settings-actions provider-toolbar'});toolbar.append(refreshButton);list.before(toolbar);
  const safety=node('details',null,{class:'provider-help'});safety.append(node('summary','凭据与模型说明'),node('p','密钥不会回传界面；编辑时留空保存即保留原密钥。目录刷新不发送对话或模型请求；发现模型只调用模型列表接口，不证明推理授权。'));providers.append(safety);
@@ -43,22 +44,27 @@ nativeKeyWrap.append(nativeKeyInput);nativeKeyProvider.append(node('option','正
   node('p','保存后同步同角色在线会话；执行中的回合结束后应用，休眠会话恢复时应用。'),
   node('p','清除选择即恢复会话原生默认，并取消排队中的切换；不覆盖会话内已做的选择。'),
  ]}));
- const modelForm=node('form',null,{'data-role-model-form':''}),selects={},thinkingSelects={};
+ const modelForm=node('form',null,{'data-role-model-form':''}),selects={},sourceSelects={},thinkingSelects={};
  for(const [role,label]of [['frontdesk','前台'],['orchestrator','主控'],['worker','工作助手']]){
   const row=node('div',null,{class:'role-default-row','data-role-default-row':role});
+  const source=node('select',null,{'data-default-provider':role,name:role+'-source'});sourceSelects[role]=source;
+  const sourceWrap=node('label',label+'模型源（仅浏览）');sourceWrap.append(source);
   const select=node('select',null,{'data-default-role':role,name:role});selects[role]=select;
   const think=node('select',null,{'data-default-thinking':role,name:role+'-thinking'});thinkingSelects[role]=think;
   const thinkWrap=node('label','思考档位');thinkWrap.append(think);
-  row.append(fieldRow({label,control:select}),thinkWrap);
+  const modelWrap=node('label','模型');modelWrap.append(select);
+  row.append(sourceWrap,modelWrap,thinkWrap);
   modelForm.append(row);
  }
  modelForm.append(node('button','保存默认模型',{type:'submit',class:'ui-action','data-ui-action':'primary'}));models.append(modelForm);
+ modelForm.append(node('p','先选源，再选该源的模型。切换源仅浏览目录，不改变已选模型；只有选择模型并保存才更新默认。'));
  const modelSyncBody=node('div',null,{'data-model-sync-details-body':''}),modelSync=disclosure({key:'model-sync-details',label:'保存结果明细',content:modelSyncBody});modelSync.hidden=true;models.append(modelSync);
  const catalogMessage=node('p','正在读取目录模型…',{role:'status','aria-live':'polite','data-model-catalog-status':''});
  const modelRefresh=node('button','刷新模型列表',{type:'button','data-model-refresh':''}),configureSource=node('button','管理连接',{type:'button','data-model-configure-source':''});
  const modelActions=node('div',null,{class:'settings-actions'});modelActions.append(modelRefresh,configureSource);modelForm.before(catalogMessage,modelActions);
  const modelSave=modelForm.querySelector('button[type="submit"]');let catalogReady=false,refreshFlight=null,editing=null,lastSources=[],lastCatalog=[],storedDefaultsExist=false;
  for(const select of Object.values(selects)){select.disabled=true;select.append(node('option','正在读取模型…',{value:''}));}modelSave.disabled=true;
+ for(const source of Object.values(sourceSelects)){source.disabled=true;source.append(node('option','正在读取源…',{value:''}));}
  for(const think of Object.values(thinkingSelects)){think.disabled=true;think.append(node('option','正在读取…',{value:''}));}
  configureSource.onclick=()=>window.dispatchEvent(new CustomEvent('nozeli-open-settings',{detail:'settings-provider'}));
  let polling=null,loginId=null,busy=false;
@@ -112,7 +118,7 @@ nativeKeyWrap.append(nativeKeyInput);nativeKeyProvider.append(node('option','正
   modelSync.hidden=!details.length;
   modelSyncBody.replaceChildren(...details.map(line=>node('p',line)));
  }
- function syncModelControls(){const disabled=busy||!catalogReady;for(const select of Object.values(selects))if(select.disabled!==disabled)select.disabled=disabled;modelSave.disabled=busy||(!catalogReady&&!storedDefaultsExist);modelRefresh.disabled=refreshButton.disabled=busy||!!refreshFlight;for(const think of Object.values(thinkingSelects))think.disabled=busy;}
+ function syncModelControls(){const disabled=busy||!catalogReady;for(const select of [...Object.values(selects),...Object.values(sourceSelects)])if(select.disabled!==disabled)select.disabled=disabled;modelSave.disabled=busy||(!catalogReady&&!storedDefaultsExist);modelRefresh.disabled=refreshButton.disabled=busy||!!refreshFlight;for(const think of Object.values(thinkingSelects))think.disabled=busy;}
  async function run(action){if(busy)return;busy=true;const inputs=[...providers.querySelectorAll('input,select,textarea')].map(input=>[input,input.disabled]);for(const [input]of inputs)input.disabled=true;for(const b of [...providers.querySelectorAll('button'),...models.querySelectorAll('button')])b.disabled=true;syncModelControls();try{await refreshFlight;await action();}catch(e){report(e);}finally{busy=false;for(const [input,disabled]of inputs)input.disabled=disabled;for(const b of [...providers.querySelectorAll('button'),...models.querySelectorAll('button')])b.disabled=false;syncModelControls();loginStart.disabled=!loginProvider.value||loginProvider.disabled;const nativeSubmit=nativeKeyForm.querySelector('button[type="submit"]');if(nativeSubmit)nativeSubmit.disabled=!nativeKeyProvider.value||nativeKeyProvider.disabled;}}
  function renderLogin(login){
   const draft=loginArea.querySelector('input')?.value||'';
@@ -136,24 +142,38 @@ nativeKeyWrap.append(nativeKeyInput);nativeKeyProvider.append(node('option','正
   try{
    const rows=await call('settings.providers.nativeKeyProviders');
    nativeKeyProvider.replaceChildren(node('option','请选择内置源',{value:''}));
-   for(const row of rows)nativeKeyProvider.append(node('option',row.name+(row.credential==='oauth'?' · 已订阅登录':row.configured?' · 已存密钥':''),{value:row.id,'data-credential':row.credential}));
+   for(const row of rows)nativeKeyProvider.append(node('option',(row.id==='zai'?'Z.AI · GLM Coding Plan（API Key）':row.name)+(row.credential==='oauth'?' · 已订阅登录':row.configured?' · 已存密钥':''),{value:row.id,'data-credential':row.credential}));
    if(rows.some(row=>row.id===selected))nativeKeyProvider.value=selected;
-   nativeKeyProvider.disabled=false;submit.disabled=busy||!nativeKeyProvider.value;
+   nativeKeyProvider.disabled=false;submit.disabled=busy||!nativeKeyProvider.value;updateNativeKeyHelp();
   }catch(error){nativeKeyProvider.replaceChildren(node('option','内置源目录暂不可用，请刷新',{value:''}));report(error);}
  }
- nativeKeyProvider.addEventListener('change',()=>{const submit=nativeKeyForm.querySelector('button[type="submit"]');submit.disabled=busy||!nativeKeyProvider.value;});
+ function updateNativeKeyHelp(){nativeKeyHelp.textContent=nativeKeyProvider.value==='zai'?'Z.AI GLM Coding Plan：只需填写该套餐的 API Key。使用内置 Coding Plan 端点和模型，无需填写 API 地址、协议、模型 ID 或浏览器回调；普通按量 API 密钥不代表拥有套餐额度。':'选择内置源后只需输入 API Key；地址、协议和模型由运行时提供。';}
+ nativeKeyProvider.addEventListener('change',()=>{const submit=nativeKeyForm.querySelector('button[type="submit"]');submit.disabled=busy||!nativeKeyProvider.value;updateNativeKeyHelp();});
  nativeKeyForm.addEventListener('submit',event=>{event.preventDefault();const provider=nativeKeyProvider.value;if(!provider)return;
   run(async()=>{await call('settings.providers.nativeKey',{provider,key:nativeKeyInput.value});nativeKeyInput.value='';message.textContent='内置源密钥已保存到本机私有认证存储。';await refreshAfterChange();await refreshNativeKeyProviders();});
  });
  const pendingChoices=new Map();
- function renderModelChoices(select,available,savedDefault){
-  // Do not replace options underneath an open native picker or keyboard editing.
-  if(available.length&&!busy&&document.activeElement===select){pendingChoices.set(select,{available,savedDefault});return;}
+ function renderModelChoices(select,available,savedDefault,browsing=false){
+  const source=sourceSelects[select.dataset.defaultRole];
+  // Do not replace either picker while it is open; browsing changes only the model list.
+  if(!busy&&(document.activeElement===select||(!browsing&&document.activeElement===source))){pendingChoices.set(select,{savedDefault});return;}
   pendingChoices.delete(select);
   const selected=select.dataset.dirty==='true'?select.value:savedDefault;
-  const choices=[['','会话原生默认（清除全局覆盖）'],...available.map(model=>[model.selector,`${model.name||model.id||model.selector} · ${model.provider} · ${model.catalogSource==='configured'?'手动配置':model.credentialConfigured?'内置目录（凭据已配置）':'内置目录'}${model.images===true?' · 支持图片':''}${model.thinking?.supported===true?' · 支持思考':''}`])];
-  if(selected&&selected!==''&&!available.some(model=>model.selector===selected))choices.push([selected,selected+'（当前目录不可见，保留原设置；不可重新选择）','disabled']);
-  if(select.options.length!==choices.length||choices.some(([value,text],index)=>select.options[index].value!==value||select.options[index].textContent!==text)){
+  const current=available.find(model=>model.selector===selected);
+  const providers=[...new Set([...available.map(model=>model.provider),...lastSources.map(row=>row.provider)])];
+  const sourceValue=source.dataset.initialized==='true'&&source.value?source.value:(current?.provider??providers[0]??'');
+  const sourceChoices=providers.map(provider=>[provider,provider]);
+  if(!sourceChoices.length)sourceChoices.push(['','暂无目录源，请刷新']);
+  if(sourceValue&&!providers.includes(sourceValue))sourceChoices.push([sourceValue,sourceValue+'（当前目录不可见）',true]);
+  if(document.activeElement!==source){
+   if(source.options.length!==sourceChoices.length||sourceChoices.some(([value,text,disabled],index)=>source.options[index].value!==value||source.options[index].textContent!==text||source.options[index].disabled!==!!disabled))source.replaceChildren(...sourceChoices.map(([value,text,disabled])=>{const option=node('option',text,{value});option.disabled=!!disabled;return option;}));
+   source.value=sourceValue;source.dataset.initialized='true';
+  }
+  const visible=available.filter(model=>model.provider===sourceValue);
+  const choices=[['','会话原生默认（清除全局覆盖）'],...visible.map(model=>[model.selector,`${model.name||model.id||model.selector} · ${model.provider} · ${model.catalogSource==='configured'?'手动配置':model.credentialConfigured?'内置目录（凭据已配置）':'内置目录'}${model.images===true?' · 支持图片':''}${model.thinking?.supported===true?' · 支持思考':''}`])];
+  if(!visible.length)choices.push(['','此源暂无目录模型','disabled']);
+  if(selected&&!visible.some(model=>model.selector===selected))choices.push([selected,selected+(current?'（当前选择属于其他源，保留原设置；不可重新选择）':'（当前目录不可见，保留原设置；不可重新选择）'),'disabled']);
+  if(select.options.length!==choices.length||choices.some(([value,text,disabled],index)=>select.options[index].value!==value||select.options[index].textContent!==text||select.options[index].disabled!==!!disabled)){
    select.replaceChildren(...choices.map(([value,text,disabled])=>{const option=node('option',text,{value});if(disabled)option.disabled=true;return option;}));
   }
   if(select.value!==selected)select.value=selected;
@@ -315,6 +335,10 @@ nativeKeyWrap.append(nativeKeyInput);nativeKeyProvider.append(node('option','正
  baseUrlField.addEventListener('input',updateOriginConsent);
  loginForm.addEventListener('submit',event=>{event.preventDefault();const provider=loginProvider.value;if(!provider)return;run(async()=>{renderLogin(await call('settings.login.start',{provider}));clearInterval(polling);polling=setInterval(async()=>{try{const login=await call('settings.login.status');renderLogin(login);if(login&&login.state!=='running')await refresh();}catch(e){clearInterval(polling);polling=null;report(e);}},1000);});});
  for(const select of Object.values(selects)){select.onchange=()=>{select.dataset.dirty='true';const role=select.dataset.defaultRole,think=thinkingSelects[role];if(think)renderThinkingChoices(think,think.dataset.dirty==='true'?think.value:'',select.value?(lastCatalog.find(candidate=>candidate.selector===select.value)?.thinking?.levels??null):null);};select.addEventListener('blur',()=>flushModelChoices(select));}
+ for(const [role,source]of Object.entries(sourceSelects)){
+  source.onchange=()=>{if(busy)return;source.dataset.initialized='true';renderModelChoices(selects[role],lastCatalog,selects[role].value,true);};
+  source.addEventListener('blur',()=>{if(pendingChoices.has(selects[role]))flushModelChoices(selects[role]);else renderModelChoices(selects[role],lastCatalog,selects[role].value);});
+ }
  for(const think of Object.values(thinkingSelects))think.onchange=()=>{think.dataset.dirty='true';};
  modelForm.addEventListener('submit',event=>{event.preventDefault();if(busy)return;
   const defaults={};
