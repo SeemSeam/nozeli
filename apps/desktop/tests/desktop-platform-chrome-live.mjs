@@ -69,7 +69,7 @@ try{
   await resize(shell,1280);
   await shell.waitForSelector('#file-tree [data-path="chrome.txt"]',{visible:true});await shell.click('#file-tree [data-path="chrome.txt"]');
   const content=await scoped(scope=>scope.role==='surface'&&scope.relPath==='chrome.txt');
-  await shell.waitForSelector('[data-workspace-command="floatOpen"]',{visible:true});await shell.click('[data-workspace-command="floatOpen"]');
+  await shell.locator('[data-workspace-command="floatOpen"]').click();
   const detached=await scoped(scope=>scope.role==='detached');
   await chrome(detached.page,'detached');
   await detached.page.locator('.workspace-pane-title').click({button:'right'});
