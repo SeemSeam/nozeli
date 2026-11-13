@@ -223,6 +223,7 @@ async function createWindow(server) {
   const address = server.address();
   origin = `http://127.0.0.1:${address.port}/`;
   const win = new WorkspaceWindow({
+    centeredProjectTitle: true,
     width: 1440,
     height: 900,
     show: !HIDDEN,

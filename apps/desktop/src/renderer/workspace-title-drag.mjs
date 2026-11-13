@@ -19,8 +19,8 @@ export function mountWorkspaceTitleDrag({tree,call,toast}) {
     const title=event.target.closest('.workspace-pane-header');
     if(!title||event.button!==0||event.target.closest('button')||pending||finishing)return;
     if(document.documentElement.dataset.workspaceRole==='detached'&&!event.target.closest('.workspace-pane-title'))return;
-    const viewId=title.parentElement.querySelector('[data-view-id]')?.dataset.viewId;
-    const groupId=title.parentElement.dataset.workspaceGroup;
+    const viewId=title.dataset.sourceView||title.parentElement.querySelector('[data-view-id]')?.dataset.viewId;
+    const groupId=title.dataset.sourceGroup||title.parentElement.dataset.workspaceGroup;
     if(!viewId&&document.documentElement.dataset.workspaceRole!=='detached')return;
     title.setPointerCapture(event.pointerId);
     sourceView=viewId;sourceGroup=groupId;

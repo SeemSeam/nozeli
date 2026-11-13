@@ -56,3 +56,16 @@ html[data-platform=darwin][data-workspace-role=detached] .workspace-pane-header{
 .workspace-split>:first-child,.workspace-split>:last-child{min-width:0;min-height:0;overflow:hidden}
 /* Narrow mode removes split tracks and gives the visible pane the flex viewport. */
 .workspace-narrow .workspace-pane.is-focused{flex:1 1 0;min-width:0;min-height:0}
+
+/* One compact control strip follows the focused content; other panes start at their content edge. */
+.workspace-pane-header .workspace-pane-actions{display:flex;align-items:center;gap:2px;flex:0 0 auto;margin-left:8px}
+.workspace-pane-header .workspace-pane-actions>button{width:30px;min-width:30px;height:30px;padding:6px;margin:0}
+.workspace-pane-header .workspace-pane-actions .ui-icon{width:18px;height:18px}
+.workspace-pane-header .workspace-pane-title{min-width:0;flex:1}
+.workspace-pane-header .workspace-pane-actions>button:focus-visible{outline:2px solid var(--green);outline-offset:-2px}
+html[data-platform=darwin][data-workspace-role=shell] .app#app:not(.focus-mode):not(:has(.managed-service-faults:not([hidden]))){grid-template-rows:38px minmax(0,1fr)}
+html[data-platform=darwin][data-workspace-role=shell] .app#app>.topbar{height:38px;min-height:38px;padding:0 80px;position:relative;-webkit-app-region:drag}
+html[data-platform=darwin][data-workspace-role=shell] .topbar .project-navigation{position:absolute;left:50%;transform:translateX(-50%);width:max-content;max-width:calc(100vw - 176px);justify-content:center;pointer-events:none}
+html[data-platform=darwin][data-workspace-role=shell] .topbar .project-name{display:block;text-align:center}
+html[data-platform=darwin][data-workspace-role=shell] .app.focus-mode{padding-top:38px;box-sizing:border-box}
+html[data-platform=darwin][data-workspace-role=shell] .app.focus-mode>.topbar{display:flex;position:absolute;inset:0 0 auto;height:38px}

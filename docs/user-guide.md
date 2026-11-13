@@ -1,5 +1,11 @@
 # Nozeli 用户指南
 
+## 顶部布局
+
+macOS 主窗项目名按整个窗口水平居中，保留原生红黄绿。工作区仅左分区保留“独立窗口／内容下拉／更多”紧凑工具条；右分区没有重复顶部区域。点击内容后工具跟随其确切视图，更多菜单保留文档操作、关闭、分屏与布局；独立窗口可返回工作区。服务故障入口仍保留。
+
+开发验收：`NOZELI_TEST_BINARY=<Mac应用>/Contents/MacOS/Nozeli node tests/desktop-centered-topbar-live.mjs`（apps/desktop）。使用合成项目，无个人数据或模型请求。
+
 面向最终用户的安装、配置与日常使用说明。当前发行目标为 **Linux x64 与 macOS Apple Silicon arm64 的 Beta预发行**；具体平台资格以本版精确提交与实际解压程序验收为准，不外推Windows、Intel Mac或全功能签收。Linux在有 `DISPLAY` 时优先使用X11／XWayland。Agent会话使用随包Pi运行时，不需要系统OMP，也不提供旧原生OMP终端接管；模型与思考档位通过图形界面操作。
 
 下载与发行状态：<https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-beta.4>（公开状态及附件以发行页为准；第三方源码与再分发审计未完成，发布不是合规认证，见[发布说明与发行边界](release.md)）。macOS包仅ad-hoc签名、未公证；本版不标stable/latest。

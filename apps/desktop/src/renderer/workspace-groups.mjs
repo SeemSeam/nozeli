@@ -25,7 +25,7 @@ export function mountWorkspaceGroups({invoke,scope,toast=()=>{}}){
   }
   host.append(tree);document.getElementById('reader').append(host);
   const call=async(op,payload={})=>{const r=await invoke(op,payload);if(!r.ok)throw Object.assign(new Error(r.error?.message||'工作区操作失败'),{code:r.error?.code});return r.value;};
-  const titleMenu=mountContextMenu({id:'workspace-title-menu',label:'窗口操作',onError:toast,onOpen:()=>scheduleBounds(),onClose:()=>scheduleBounds()});
+  const titleMenu=mountContextMenu({id:'workspace-title-menu',label:'工作区操作',onError:toast,onOpen:()=>scheduleBounds(),onClose:()=>{for(const b of tree.querySelectorAll('[aria-haspopup="menu"]'))b.setAttribute('aria-expanded','false');scheduleBounds();}});
   mountWorkspaceTitleDrag({tree,call,toast});
   const groups=()=>layout?layoutGroups(layout,windowId):[];const group=()=>groups().find(g=>g.id===activeGroup)||groups()[0];
   const viewTitle=v=>v?.kind==='web'?(v.title||new URL(v.url).host):v?.viewState?.title||({conversation:'对话',report:'报告',diff:'Diff',history:'历史',terminal:'Terminal 预览','project-terminal':'终端','task-process':'任务过程'}[v?.kind])||v?.relPath?.split('/').pop()||'文档';
@@ -73,7 +73,9 @@ export function mountWorkspaceGroups({invoke,scope,toast=()=>{}}){
     if(scope.role==='shell')await refreshNamedLayouts();
     const actions=new Map(),items=[],add=(id,label,run)=>{actions.set(id,run);items.push({id,label});};
     if(view?.kind==='document')add('tools','文档全部操作',()=>call('workspace.control',{type:'content-tools',projectId:layout.projectId,viewId:view.id}));
-    if(view?.kind==='document')add('closeContentView','关闭当前文件',()=>command({type:'close',viewId:view.id}));
+    if(view?.kind==='document')for(const [key,label]of documentCommands(view))add('content-'+key,label,()=>call('workspace.control',{type:'content-command',projectId:layout.projectId,viewId:view.id,command:key}));
+    if(view&&['report','history'].includes(view.kind))add('report-tools','报告全部操作',()=>call('workspace.control',{type:'content-command',projectId:layout.projectId,viewId:view.id,command:'report-tools'}));
+    if(view)add('closeContentView',view.kind==='project-terminal'?'关闭终端并结束 Shell':'关闭当前内容',()=>command({type:'close',viewId:view.id}));
     for(const [axis,label]of [['x','向右拆分'],['y','向下拆分']])add('split-'+axis,label,()=>command({type:'split',groupId:node.id,axis,side:'after'}));
     if(scope.role==='detached'){
       add('drawing','涂鸦当前窗口',async()=>{await bounds();window.dispatchEvent(new Event('nozeli-draw-current-window'));});
@@ -93,27 +95,33 @@ export function mountWorkspaceGroups({invoke,scope,toast=()=>{}}){
   }
   function activate(viewId,groupId){return command({type:'activate',viewId,groupId:groupId||group()?.id});}
   const minimum=node=>{if(!node||node.kind==='group')return {width:280,height:180};const a=minimum(node.first),b=minimum(node.second);return node.axis==='x'?{width:a.width+b.width+6,height:Math.max(a.height,b.height)}:{width:Math.max(a.width,b.width),height:a.height+b.height+6};};
+  function documentCommands(view){
+    const ext=view.relPath?.split('.').pop()?.toLowerCase();
+    return ext==='pdf'?[['find','查找'],['page-prev','上一页'],['page-next','下一页'],['zoom-out','缩小'],['zoom-in','放大']]:ext==='docx'?[['fit','适应宽度'],['zoom-out','缩小'],['zoom-in','放大'],['region','区域框选']]:ext==='pptx'?[['region','区域框选']]:ext==='tex'?[['find','查找'],['texBuild','编译'],['preview-toggle','预览']]:['md','markdown','txt','js','mjs','cjs','ts','tsx','jsx','json','css','html','py','rs','c','cpp','h','yml','yaml','toml'].includes(ext)?[['find','查找'],['text-mode','阅读／编辑'],['document-font-smaller','缩小正文'],['document-font-larger','放大正文']]:[];
+  }
+  function paneHeader(node,view){
+    const bar=document.createElement('header');bar.className='workspace-pane-header';bar.dataset.sourceGroup=node.id;if(view)bar.dataset.sourceView=view.id;
+    const label=document.createElement('strong');label.className='workspace-pane-title';label.textContent=(view?viewTitle(view):'工作区')+(view?.viewState?.documentStatus?.dirty?' · 未保存':'');label.title=view?.relPath||label.textContent;bar.append(label);
+    const actions=document.createElement('div');actions.className='workspace-pane-actions';actions.setAttribute('role','group');actions.setAttribute('aria-label','当前分区操作');
+    if(view){const floating=button(windowId==='main'?'独立窗口':'返回主工作区',windowId==='main'?'floatOpen':'dock',()=>command(windowId==='main'?{type:'floatOpen',viewId:view.id}:{type:'dock',windowId,targetGroupId:layoutGroups(layout,'main').find(g=>!g.activeViewId)?.id||layoutGroups(layout,'main').at(-1)?.id}));floating.dataset.workspaceFloatOpen=view.id;setIconButton(floating,'floating',{label:windowId==='main'?'独立窗口':'返回主工作区'});actions.append(floating);}
+    const select=button('切换内容','select-content',()=>{const rect=select.getBoundingClientRect();titleMenu.open(Object.values(layout.views).map(v=>({id:v.id,label:viewTitle(v),checked:v.id===view?.id})),{x:rect.left,y:rect.bottom,run:id=>activate(id,node.id)});select.setAttribute('aria-expanded','true');});setIconButton(select,'chevron-down',{label:'切换内容'});select.setAttribute('aria-haspopup','menu');select.setAttribute('aria-expanded','false');select.disabled=!Object.keys(layout.views).length;actions.append(select);
+    const more=button('更多操作','pane-more',()=>{const rect=more.getBoundingClientRect();void openPaneMenu({preventDefault(){},clientX:rect.left,clientY:rect.bottom},node,view).then(()=>more.setAttribute('aria-expanded','true')).catch(error=>toast(error.message));});setIconButton(more,'ellipsis',{label:'更多操作'});more.setAttribute('aria-haspopup','menu');more.setAttribute('aria-expanded','false');actions.append(more);bar.append(actions);
+    bar.addEventListener('contextmenu',event=>void openPaneMenu(event,node,view).catch(error=>toast(error.message)));return bar;
+  }
+  function updateHeader(){
+    if(scope.role!=='shell')return;
+    const node=group(),view=layout?.views[node?.activeViewId],target=tree.querySelector(host.classList.contains('workspace-narrow')?'.workspace-pane.is-focused':'.workspace-pane');
+    if(!node||!target)return;
+    const key=JSON.stringify([node.id,view?.id,view&&viewTitle(view),view?.viewState?.documentStatus?.dirty]);
+    let header=tree.querySelector('.workspace-pane-header');
+    if(header?.dataset.controlKey!==key){header?.remove();header=paneHeader(node,view);header.dataset.controlKey=key;}
+    if(header.parentElement!==target)target.prepend(header);
+  }
   function pane(node){
     const el=document.createElement('section');el.className='workspace-pane';el.dataset.workspaceGroup=node.id;el.classList.toggle('is-focused',node.id===activeGroup);
-    el.addEventListener('pointerdown',()=>{activeGroup=node.id;for(const p of tree.querySelectorAll('[data-workspace-group]'))p.classList.toggle('is-focused',p===el);scheduleBounds();});
+    el.addEventListener('pointerdown',event=>{if(event.target.closest('.workspace-pane-header'))return;activeGroup=node.id;for(const p of tree.querySelectorAll('[data-workspace-group]'))p.classList.toggle('is-focused',p===el);scheduleBounds();});
     const view=node.activeViewId&&layout.views[node.activeViewId];
-    if(view?.kind!=='conversation'||scope.role==='detached'){
-      const bar=document.createElement('header');bar.className='workspace-pane-header';
-      const label=document.createElement('strong');label.className='workspace-pane-title';label.textContent=view?viewTitle(view):'空分区';bar.append(label);
-      if(view){
-        if(view.kind==='document'&&scope.role!=='detached'){
-          const ext=view.relPath?.split('.').pop()?.toLowerCase();
-          const common=ext==='pdf'?[['find','查找'],['page-prev','上一页'],['page-next','下一页'],['zoom-out','缩小'],['zoom-in','放大']]:ext==='docx'?[['fit','适应'],['zoom-out','缩小'],['zoom-in','放大'],['region','框选']]:ext==='pptx'?[['region','框选']]:ext==='tex'?[['find','查找'],['texBuild','编译'],['preview-toggle','预览']]:['md','markdown','txt','js','mjs','cjs','ts','tsx','jsx','json','css','html','py','rs','c','cpp','h','yml','yaml','toml'].includes(ext)?[['find','查找'],['text-mode','阅读／编辑'],['document-font-smaller','A−'],['document-font-larger','A＋']]:[];
-          for(const [key,label] of common)bar.append(button(label,'content-'+key,()=>call('workspace.control',{type:'content-command',projectId:layout.projectId,viewId:view.id,command:key})));
-        }
-        const close=button('关闭','close',()=>command({type:'close',viewId:view.id}));close.title=view.kind==='project-terminal'?'关闭终端并结束 Shell':'关闭当前内容，不结束后台工作';bar.append(close);
-        const dockTarget=()=>layoutGroups(layout,'main').find(g=>!g.activeViewId)?.id||layoutGroups(layout,'main').at(-1)?.id;
-        const floating=button(windowId==='main'?'独立窗口':'返回主工作区',windowId==='main'?'floatOpen':'dock',()=>command(windowId==='main'?{type:'floatOpen',viewId:view.id}:{type:'dock',windowId,targetGroupId:dockTarget()}));floating.dataset.workspaceFloatOpen=view.id;if(windowId!=='main')floating.title='把此内容移回主窗口工作区';bar.append(floating);
-      }
-      if(view&&['report','history'].includes(view.kind)){const more=button('报告操作','more',()=>{const b=more.getBoundingClientRect(),content=el.querySelector('.workspace-content').getBoundingClientRect();return call('workspace.control',{type:'content-command',projectId:layout.projectId,viewId:view.id,command:'report-tools',anchor:{x:b.right-content.left,y:b.bottom-content.top}});});setIconButton(more,'ellipsis',{label:'报告操作'});more.setAttribute('aria-haspopup','menu');bar.append(more);}
-      el.append(bar);
-      bar.addEventListener('contextmenu',event=>void openPaneMenu(event,node,view).catch(e=>toast(e.message)));
-    }
+    if(scope.role==='detached')el.append(paneHeader(node,view));
     const content=document.createElement('div');content.className='workspace-content';content.dataset.workspaceContent=node.id;
     if(view)content.dataset.viewId=view.id;
     else{
@@ -170,7 +178,8 @@ export function mountWorkspaceGroups({invoke,scope,toast=()=>{}}){
       else if(!el){const next=pane(g);next.dataset.renderedView=viewId;renderedPanes.set(g.id,viewId);}
       if(!el)continue;el.classList.toggle('is-focused',g.id===activeGroup);
       const v=viewId?layout.views[viewId]:null,label=el.querySelector('.workspace-pane-title');
-      if(v&&label){label.textContent=viewTitle(v)+(v.viewState?.documentStatus?.dirty?' · 未保存':'');label.title=v.relPath||viewTitle(v);}}
+      if(scope.role==='detached'&&v&&label){label.textContent=viewTitle(v)+(v.viewState?.documentStatus?.dirty?' · 未保存':'');label.title=v.relPath||viewTitle(v);}}
+    updateHeader();
     geometryObserver.disconnect();geometryObserver.observe(host);geometryObserver.observe(tree);
     for(const content of tree.querySelectorAll('[data-workspace-content]'))geometryObserver.observe(content);
     scheduleBounds();}
@@ -180,6 +189,7 @@ export function mountWorkspaceGroups({invoke,scope,toast=()=>{}}){
     const root=windowId==='main'?layout.mainRoot:layout.detached.find(w=>w.id===windowId)?.root,min=minimum(root),narrow=host.clientWidth<min.width||tree.clientHeight<min.height;
     if(narrow&&!group()?.activeViewId){const occupied=groups().find(g=>g.activeViewId);if(occupied){activeGroup=occupied.id;for(const pane of tree.querySelectorAll('[data-workspace-group]'))pane.classList.toggle('is-focused',pane.dataset.workspaceGroup===activeGroup);}}
     host.classList.toggle('workspace-narrow',narrow);
+    updateHeader();
     const boxes=[];for(const el of tree.querySelectorAll('[data-workspace-content]')){const r=el.getBoundingClientRect();if(el.dataset.viewId&&r.width>0&&r.height>0)boxes.push({groupId:el.dataset.workspaceContent,viewId:el.dataset.viewId,rect:{x:r.left,y:r.top,width:r.width,height:r.height}});}
     const overlayRects=overlays(),drawer=document.getElementById('app')?.classList.contains('drawer-files-open')||document.getElementById('app')?.classList.contains('drawer-side-open');
     const generation=transitionGeneration;return call('workspace.bounds',{projectId:layout.projectId,windowId,layoutRevision:layout.revision,sequence:++boundsSequence,viewport:{width:innerWidth,height:innerHeight},groups:boxes,overlay:Boolean(drawer),overlayRects}).catch(e=>{if(strict)throw e;if(!transitioning&&generation===transitionGeneration)toast(e.message);});
