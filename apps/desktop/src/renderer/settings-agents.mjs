@@ -29,6 +29,40 @@ export function mountAgentSettings({invoke,container,getProjectId=()=>null}) {
     counting,occupancy,message,save,
   );
   container.replaceChildren(node('h3','Agent 资源'),form);
+  const skillCard=node('section',null,{class:'settings-card','data-frontdesk-skills-card':''});
+  const skillStatus=node('p',null,{role:'status','data-frontdesk-skills-status':''});
+  const enableSkills=node('button','启用项目分析与历史接续',{type:'button','data-frontdesk-skills-enable':''});
+  const refreshSkillsButton=node('button','刷新技能状态',{type:'button'});
+  skillCard.append(node('h4','前台项目技能'),node('p','新增项目分析、进展梳理与历史接续方法。仅启用技能，不发送问题、不执行历史任务；已有会话在空闲时保留原线程更新。'),skillStatus,enableSkills,refreshSkillsButton);container.append(skillCard);
+  const projectSkillNames=['nozeli-frontdesk-project-analysis','nozeli-frontdesk-project-progress','nozeli-frontdesk-history-handoff'];
+  let skillSerial=0,skillState=null,skillProject=null,skillSaving=false;
+  const managedCall=async(op,payload)=>{const result=await invoke('managed.'+op,payload);if(!result?.ok)throw Error(result?.error?.message||'技能配置请求失败');return result.value;};
+  async function refreshSkills(){
+    if(skillSaving)return;
+    const serial=++skillSerial,id=getProjectId();skillProject=id;skillState=null;enableSkills.hidden=false;enableSkills.disabled=true;
+    if(!id){skillStatus.textContent='打开项目后可查看前台技能。';return;}
+    skillStatus.textContent='正在读取前台技能…';
+    try{
+      const status=await managedCall('status',{projectId:id});if(serial!==skillSerial||getProjectId()!==id)return;
+      const state=status.state,selected=state?.bindings?.frontdesk?.skills,available=state?.roleSkills?.frontdesk||[];
+      skillState=state;
+      if(!Array.isArray(selected)){skillStatus.textContent='当前项目尚未启用 AI；连接前台后可配置技能。';return;}
+      const enabled=projectSkillNames.every(name=>selected.includes(name));
+      const busy=(state.busyTargets||[]).includes('frontdesk')||(state.configuringTargets||[]).includes('frontdesk')||(state.jobs||[]).some(job=>job.target==='frontdesk'&&['queued','running','transferring'].includes(job.status));
+      skillStatus.textContent=enabled?'三项项目技能已启用，按需读取；打开页面不会触发分析。':busy?'前台仍有输入或操作未结束，请空闲后启用。':'有新的项目技能可启用；保留你原有的技能选择。';
+      enableSkills.hidden=enabled;enableSkills.disabled=enabled||busy||!projectSkillNames.every(name=>available.includes(name));
+    }catch(error){if(serial===skillSerial&&getProjectId()===id)skillStatus.textContent=error.message;}
+  }
+  enableSkills.onclick=async()=>{
+    const id=getProjectId();if(skillSaving||enableSkills.disabled||id!==skillProject||!skillState)return;
+    const skills=[...new Set([...(skillState.bindings.frontdesk.skills||[]),...projectSkillNames])];
+    skillSaving=true;enableSkills.disabled=true;skillStatus.textContent='正在空闲边界更新技能…';
+    try{await managedCall('binding',{projectId:id,role:'frontdesk',skills});}
+    catch(error){if(getProjectId()===id)skillStatus.textContent=error.message;return;}
+    finally{skillSaving=false;enableSkills.disabled=getProjectId()!==id;}
+    await refreshSkills();
+  };
+  refreshSkillsButton.onclick=()=>void refreshSkills();
   let generation=0,loadedProject,loaded=false,dirty=false,editVersion=0,saving=false,refreshPending=false;
   form.addEventListener('input',()=>{dirty=true;editVersion++;});
   const call=async(op,payload)=>{const result=await invoke('settings.agents.'+op,payload);if(!result?.ok)throw Error(result?.error?.message||'Agent 额度请求失败');return result.value;};
@@ -43,6 +77,7 @@ export function mountAgentSettings({invoke,container,getProjectId=()=>null}) {
     processStatus.textContent=agents.map(agent=>`${agent.projectName||'其他项目'} · ${roleNames[agent.target]||agent.workName||'工作助手'}：${stateNames[agent.state]||agent.state}${agent.blockedReason?'（'+agent.blockedReason+'）':''}`).join('；');
   }
   async function refresh(){
+    void refreshSkills();
     if(saving){refreshPending=true;return;}
     if(dirty&&loaded){if(loadedProject!==getProjectId()){save.disabled=true;message.textContent='项目已切换；未保存输入保留在原项目，返回原项目后可继续保存。';}else save.disabled=false;return;}
     const version=++generation,id=getProjectId()||null;loaded=false;save.disabled=true;project.disabled=true;message.textContent='正在读取 Agent 额度…';

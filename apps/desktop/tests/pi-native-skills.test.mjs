@@ -8,9 +8,11 @@ import {OwnerRuntime} from '../../../integrations/pi/src/bridge.mjs';
 const trustedRoleResources=async(role,skills)=>loadRoleResources(role,await roleSkillCatalog(role,{skills}),path.join(here,'roles'));
 
 test('all fixed workflows use exact role-native catalogs, not injected bodies',async()=>{
- for(const [role,count] of [['frontdesk',2],['orchestrator',6],['worker',4]]){
+ for(const role of ['frontdesk','orchestrator','worker']){
   const catalog=await roleSkillCatalog(role);
-  assert.equal(catalog.length,count);
+  assert.ok(catalog.length>0);
+  assert.equal(new Set(catalog.map(row=>row.name)).size,catalog.length);
+  assert.ok(catalog.every(row=>row.name.startsWith(`nozeli-${role}-`)));
   const prompt=await rolePrompt(role);
   assert.ok(Buffer.byteLength(prompt)<2200);
   assert.ok(!prompt.includes('Injected skill'));

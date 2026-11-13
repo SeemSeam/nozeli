@@ -21,7 +21,7 @@ Role: 当前源码项目的设计注册与维护入口
 | MEMORY-001 | Plantree统一报告与稳定结果记忆 | [整体合同](../plantree-result-memory-design.md) | [实现／真实项目验收](../result-memory-implementation.md) | 复用Pi原生上下文，不另建压缩/短期记忆；后续局部读一致性、统一目录、规模检索及可恢复整理按主合同验收 |
 | CONTEXT-001 | Pi与Nozeli上下文交付边界 | [交付合同](../context-delivery-design.md) | [Pi整合记录](../pi-integration-execution.md)、[测试入口](../testing.md) | 只测试Nozeli来源/版本/输入接线；不复建Pi压缩、会话历史和恢复 |
 | ORCH-001 | 任务管理与主控 | [主控／Plan Tree设计](../orchestrator-long-term-design.md) | [稳定结果多task证据](../result-memory-implementation.md) | 宿主账本唯一权威；主控按需查询并选源，不扩大任务授权 |
-| ROLE-001 | 角色契约与技能 | [角色设计](../role-memory-skills-design.md) | 具体落地范围见原文 | 原生skill扩展与通用知识学习仍属独立范围，不借记忆完善自动启用 |
+| ROLE-001 | 角色契约与技能 | [角色设计及前台技能实施](../role-memory-skills-design.md#2026-11-13-前台项目起点技能源码已实现2026-11-14-linux限定验证未安装) | 三项frontdesk技能、只读进展／历史工具与旧项目显式启用已落盘；原生Pi及Electron验证见主合同 | zai/glm-5.3复测API可用、分析报告已保存，但进展／历史后页覆盖未通过；未安装／发布，不借记忆完善自动启用 |
 | PROJECT-OPEN-001 | 简洁生命周期、自动恢复与项目初始化 | [重设计合同](../project-lifecycle-initialization-design.md) | [安装后异常验收](../project-lifecycle-initialization-design.md#9-用户授权安装后的异常验收2026-11-08)、[原现场根因](../project-open-failure-analysis.md) | 已授权本机安装；真实权限/SIGKILL/PTY/取消/并发/七格式窗口及Pi初始化故障验收通过，日常项目未重置，其他平台未验 |
 | LOCAL-WINDOW-001 | 局部讨论外壳与来源页归属 | [窗口合同与Word勘误](../worker-review-chat-demo.md#word来源页定位勘误2026-11-12用户确认方向源码修复未安装) | [实际测试](../testing.md)、[用户指南](../user-guide.md) | Word页内标签随来源页，不将统一外壳泛化为屏幕固定；源码修复未安装，其他页适配器／平台分别验收 |
 | IMAGE-VIEW-001 | 图片基础查看交互 | [查看合同](../principles.md#图片查看2026-11-12) | [实际测试](../testing.md)、[用户指南](../user-guide.md) | 可见缩放／适应／原始尺寸／平移，原图与区域坐标保持；不扩成原图编辑器，安装与平台资格单独记录 |

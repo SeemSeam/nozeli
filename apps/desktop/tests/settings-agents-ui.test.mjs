@@ -50,3 +50,17 @@ test('a late successful save retains edits made after submission',async()=>{
 test('a project change during save refreshes the current project after settlement',async()=>{
  let project='A',finish;const calls=[];const ui=fixture(async(op,payload)=>{calls.push([op,payload]);return op.endsWith('.save')?new Promise(resolve=>{finish=resolve;}):{ok:true,value:{...status,projectLimit:payload.projectId==='B'?5:3}};},()=>project);await ui.panel.refresh();ui.node('global-limit').value='12';ui.node('limits-form').listeners.input();const saving=ui.submit();project='B';await ui.panel.projectChanged();finish({ok:true,value:{...status,globalLimit:12}});await saving;assert.equal(ui.node('project-limit').value,5);assert.equal(ui.node('limits-save').disabled,false);assert.deepEqual(calls.at(-1),['settings.agents.status',{projectId:'B'}]);
 });
+
+const projectSkills=['nozeli-frontdesk-project-analysis','nozeli-frontdesk-project-progress','nozeli-frontdesk-history-handoff'];
+const flushSkills=()=>new Promise(resolve=>setImmediate(resolve));
+test('explicit project skill enable preserves selected skills without granting other disabled skills',async()=>{
+ const selected=['nozeli-frontdesk-read-material'];let current=[...selected];const calls=[];
+ const ui=fixture(async(op,payload)=>{calls.push([op,payload]);if(op==='managed.status')return {ok:true,value:{state:{bindings:{frontdesk:{skills:current}},roleSkills:{frontdesk:[...projectSkills,...selected,'nozeli-frontdesk-handoff']},jobs:[]}}};if(op==='managed.binding'){current=payload.skills;return {ok:true,value:{skills:current}};}return {ok:true,value:status};},()=> 'A');
+ await ui.panel.refresh();await flushSkills();const enable=ui.container.querySelector('[data-frontdesk-skills-enable]');assert.equal(enable.disabled,false);assert.equal(calls.some(([op])=>op==='managed.binding'),false);
+ await enable.onclick();const request=calls.find(([op])=>op==='managed.binding');assert.deepEqual(request,['managed.binding',{projectId:'A',role:'frontdesk',skills:[...selected,...projectSkills]}]);assert.equal(enable.hidden,true);
+});
+test('project skill enable rejects a switched project and a busy frontdesk without changing its binding',async()=>{
+ let id='A',busy=false;const calls=[];const ui=fixture(async(op,payload)=>{calls.push([op,payload]);return op==='managed.status'?{ok:true,value:{state:{bindings:{frontdesk:{skills:[]}},roleSkills:{frontdesk:projectSkills},jobs:busy?[{target:'frontdesk',status:'running'}]:[]}}}:{ok:true,value:status};},()=>id);
+ await ui.panel.refresh();await flushSkills();const enable=ui.container.querySelector('[data-frontdesk-skills-enable]');id='B';await enable.onclick();assert.equal(calls.some(([op])=>op==='managed.binding'),false);
+ busy=true;await ui.panel.projectChanged();await flushSkills();assert.equal(enable.disabled,true);await enable.onclick();assert.equal(calls.some(([op])=>op==='managed.binding'),false);
+});

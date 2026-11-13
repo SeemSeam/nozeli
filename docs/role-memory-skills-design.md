@@ -9,6 +9,53 @@ Scope: 保留 frontdesk／orchestrator／Worker；角色最小强制契约与原
 固化边界与实施路线以该主合同§15—§18为准；`fe24f1c`已提交同项目稳定报告查询、确切来源交接及多输入证据保留，尚未安装。每输入至多4个选择，早期输入来源经版本目录保留；报告主张不授予指令或skill能力。本文通用知识批准、自动提炼及原生skill扩展继续暂缓，不把首版接线误读为这些方向已实施。
 
 
+## 2026-11-13 前台项目起点技能（源码已实现，2026-11-14 Linux限定验证，未安装）
+
+用户确认将项目起点方法内置frontdesk，并按Reviewer要求补齐程序能力；不是仅新增提示词。新增 `nozeli-frontdesk-project-analysis`（当前结构／运行方式／内容问题）、`nozeli-frontdesk-project-progress`（当前进展／任务／未决决定）、`nozeli-frontdesk-history-handoff`（历史来源／决定／接续材料）。材料读取与保存复用 `read-material`，持续后台剩余工作复用 `handoff`；不复制第二加载器／历史账本／初始化地图。
+
+- 前台分析报告通过真实文档创建／保存回执交付，不冒充Worker发布、用户采用或稳定记忆；“检查运行方式”默认不执行命令，“问题检查”不混同Nozeli宿主维修。
+- 进展工具复用宿主任务板，提供有版本边界的只读分页与详情；不授予调度、采纳、删除或修改状态权限，未读范围明确。
+- 历史搜索经宿主限定的本地格式适配和确切项目cwd关联；优先核实Codex、Claude Code、Pi会话JSONL。模型不提供历史根路径或内部身份；未知格式、无权限、损坏、预算耗尽与无命中分别说明。同名目录／正文提及路径不是关联证明，读取游标绑定项目、源及版本。历史内容不成为权限、事实保证或自动重放依据。
+- 新默认技能与已有绑定启用分开；保留用户自选及原线程历史，在空闲边界应用，不在运行中热换技能或重放请求。旧默认迁移需要可辨识依据及归档记录。
+- 测试先合成多格式历史、隔离本地Provider与真实Pi原生skill读取，再在隔离项目中核对真实项目的只读文件来源。原工作树、用户私人历史和凭据不写入测试日志；付费模型质量验收与确定性接线分开，不将固定脚本回复冒称真实理解。无安装、提交或发布授权。
+
+### 实际接线与生效范围
+
+- `managed/runtime.mjs` 注册完整五项frontdesk目录；正文仍由Pi原生read按需读取，不进入常驻role prompt。新增文件位于 `roles/frontdesk/skills/nozeli-frontdesk-{project-analysis,project-progress,history-handoff}/SKILL.md`。
+- `nozeli_project_progress({action:'list'|'detail',cursor?,limit?,workId?})` 复用宿主任务板／未决todo账本；Work与todo同时有界续页，job／状态／决定变化触发重同步。详情仅本项目。只读权限在消费者再次检查，不因伪造工具名获得主控操作。
+- `nozeli_provider_history_search({query?,provider?,cursor?,limit?})` 和 `nozeli_provider_history_read({source,cursor?,maxBytes?})` 经 `provider-history.mjs` 读取Codex、Claude Code、Pi支持的JSONL。source与cursor为reader/项目绑定的有期票据；参数与输出纳入当前回合预算，prepared-page缓存支持未投递结果重试，不因预算持久化失败跳页。
+- 默认路径为用户home下 `.codex/sessions`、`.claude/projects`、`.pi/agent/sessions`；这里只读各客户端历史，不包含Nozeli全部内部会话、所有归档目录或未知客户端版本。精确canonical cwd关联，不从项目名或正文猜归属；worktree／别名／移动路径尚无可证明关联时不纳入。目录被替换使来源失效。
+- 报告引用 `descriptor` 的provider相对sourcePath、sourceVersion及versionKind，配合sessionId、JSONL字节起点／行号／recordIndex和解码后正文UTF-16区间。stat版本不是内容digest；随机票据不是永久证据。源追加／轮转／删除需重新搜索，早期错误／超大／未知记录的“不完整”标记贯穿末页，不因EOF恢复成完整覆盖。
+- `provider-history-file.mjs` 以全部祖先、打开前entry与实开descriptor的bigint身份复核保护实际读取，读取前后和关闭均验证；身份无法可靠取得、硬链接或路径替换拒绝。无/proc或shell依赖，但本轮仅Linux实测。
+- 新默认标记 `skillSelection:'default',defaultVersion:2`。无来源标记的旧两项绑定不猜作默认；有确切default标记才升级并归档。设置→Agent资源→前台项目技能提供显式增量启用，只合并新增三项，不恢复用户关闭的其他技能；忙时拒绝，在原线程空闲更新，不重放输入。
+
+### 已执行验证与失败边界
+
+| 验证 | 实际结果 | 证据／范围 |
+| --- | --- | --- |
+| 技能／历史／设置定向基础检查 | 35项通过 | 原生目录发现、角色隔离、三格式、来源变化、票据与设置保护；后续修订另有下列回归 |
+| 修订后的进展／历史消费者回归 | 38项通过 | 93个Work及全部180项未决事项真实续页、权限、状态变化、预算拒绝和持久化失败重试、祖先／entry替换、未知格式与累计不完整、稳定引用 |
+| 全单元集 | 831/831通过 | 85个文件，新增skill及设置消费者回归已注册 |
+| 真实Pi原生skill接线 | 1项集成通过 | `/tmp/nozeli-pi-real-WmR6Yo/frontdesk-skill-evidence.json`；本地确定性Provider，按需read三技能后搜索／读取Nozeli真实源码的隔离副本，核对版本与readHandle，原件未变；不是模型理解质量 |
+| 既有项目真实Electron启用 | 通过，exit0，errors=[] | `/tmp/nozeli-pi-real-Nkjm49/skills-ui-report.json`；增量启用保留关闭项及原thread，无模型prompt，390px卡片滚动可读 |
+| 原生read测试前置范围拦截 | 本地probe通过 | `/tmp/nozeli-pi-real-N4x6sp/native-read-probe.json`；真实PiSession在工具执行前拒绝snapshot外路径与符号链接，允许snapshot和exact skill；测试侧SDK门，不是OS沙箱 |
+| 当前默认真实模型理解评测 | **服务拒绝，不通过** | `/tmp/nozeli-frontdesk-real-evaluation-oaqaI2/report.json`；GLM-5.3-Flash/off，1次真实completion HTTP401后立即停止，未观察到skill读取／分析／报告回执，进展和历史两例未运行；SDK零usage占位不等于零费用，实际费用未知 |
+
+独立审核提出的祖先目录竞态、分页末页完整性误报、已关联未知记录静默丢弃已修复并增加回归。真实模型脚本 `tests/frontdesk-skills-real-evaluation.mjs` 仅显式 `--run-real-frontdesk` 启动，不进默认测试；最多3输入／24 completion／每输入120秒／每次输出2500 tokens，不自动重试或换源。实际服务401不归因为skill通过；下一次真实调用需要先确认认证可用及新的测试授权。本轮不改账号配置、不继续发送私人历史或原工作树。
+
+追加独立复核：descriptor身份复核和已关联未知格式两项确认闭合；发现超长无换行尾记录恰在缓冲清空边界结束时未记incomplete。已改为首次丢弃即累计标记并单次记录诊断；新增401字节无换行尾记录回归，最终历史适配34/34通过，不把EOF误称完整覆盖。该末项为定向复验，不复用此前全单元数字冒称最新全量运行。
+
+2026-11-14用户授权切换模型后复测并提交：项目级前台覆盖已应用 `zai/glm-5.3`，不以仍未改变的全局默认代替实际选择。人工评测脚本支持显式 `--model`／`--effort`，以隔离配置和限额执行，不修改原模型设置；复测结果按新证据另记，保留上次401记录，不将本地接线通过覆盖真实理解结果。
+
+复测原件：`/tmp/nozeli-frontdesk-real-evaluation-PS1NaO/report.json`，原生正文补充核对 `native-review.json`。显式 `zai/glm-5.3`，20次completion全部HTTP200，3个输入均completed；请求off但SDK实际应用low，不能称off模式通过。analysis/history实际按需读对应skill，progress未观察到skill读取。`ANALYSIS.md` 有真实document_create回执与文件，分析区分裁剪快照／声明／未知，但未核实全部复制的实现源码。
+
+进展仅offset0/todoOffset0，历史三格式均只读首页、都有hasMore，无cursor续读，目标后页阻塞未取到，故整体内容深测仍未通过；原生答复有声明未读／额度限制，并正确区分export-pending与历史export-ready。历史答复另把搜索覆盖中的unconfirmed计数误归给已匹配来源，不能据此判关联理解正确。合成93个Work在Controller.start后被调度而产生额外待办（实报179及HOST_MAINTENANCE），87这个种子数不是运行后真值，计数差异不能全归模型。原始脚本final误取旧state.messages，修复后从原生timeline采集；旧报告不改写、不据补充核对再次发模型请求。
+
+SDK报告 input45129、output5739、cacheRead400064、totalTokens450932；SDK费用估算0.19244884（单位沿SDK），实际账单未知。未主动尝试越界读，不能把“无违规尝试”冒称本次拒绝路径验证；另有前述localhost拒绝probe。原件digest未变、临时凭据副本已删除，未重试或换源。本轮按用户授权提交实现及真实失败记录，未安装／发布。
+
+尚未签收：真实模型进展／历史后页覆盖与完整内容质量、用户私人历史的格式覆盖、Windows/macOS行为；不开启全局个人skill发现、不恢复外部Agent会话、不复制第二历史账本。空页／空对话开场入口仍为独立Demo，本次交付是技能、工具及显式启用路径，不宣称Demo已接入生产。未安装、发布。
+
+
 ## 1. 决策与不做什么
 
 以 [context-delivery-design.md](context-delivery-design.md) 为交付合同：Pi 独占原生历史、工具循环、压缩与恢复；Nozeli 管材料版本、Work、CAS、效果与准入。`memory.md` 是现有角色契约文件名，不是会话学习结果。三个角色不拥有各自不断增长的长期聊天记忆。知识是用户批准的项目来源，不是模型自行形成的权限或事实。
