@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
+import {canonicalSections,canonicalDefinedSymbols,canonicalDynamicSymbols,qualifyStrippedNode} from './elf-strip-qualification.mjs';
 
 // Only proven libc identities narrow Linux variants; unknown hosts keep both.
 let hostLibc;
@@ -47,16 +48,20 @@ export async function pruneNodeHeaders(directory,{platform=process.platform,arch
 
 const digest=bytes=>createHash('sha256').update(bytes).digest('hex');
 
-// The exact processed ELF was qualified against the pinned original: allocated
-// sections, dynamic/defined native symbols, N-API and diagnostics stay intact.
-// Qualify output bytes, not one workstation's binutils patch release.
+// The processed ELF is qualified against the pinned original upstream digest:
+// ELF64 little-endian x86-64 run identity, every SHF_ALLOC section's bytes,
+// address, flags and type, program-header load behavior, dynamic symbols and
+// all defined native symbols must stay identical. Only debug-only symbols and
+// non-allocated debug bytes may differ, so differing GNU binutils patch
+// releases (CI 2.42 vs workstation 2.46) pass while --strip-unneeded output
+// or any loaded-byte or symbol change fails.
 
 export async function separateNodeSymbols(executable,evidenceDirectory,{platform=process.platform,arch=process.arch}={}){
  if(platform!=='linux'||arch!=='x64')return undefined;
  const original=await fs.readFile(executable),sha256Original=digest(original);
  if(sha256Original!=='94efd062ed066c1a0b332e18249859c905e920eeada5df55d24c99b919629a90')throw Error('Unqualified upstream Node executable for symbol separation');
  const tools={};
- for(const tool of ['strip','objcopy']){
+ for(const tool of ['strip','objcopy','readelf','nm']){
   const version=execFileSync(tool,['--version'],{encoding:'utf8'}).split('\n')[0];
   if(!version.startsWith('GNU '))throw Error('Unsupported Node symbol tool: '+version);
   tools[tool]=version;
@@ -70,9 +75,15 @@ export async function separateNodeSymbols(executable,evidenceDirectory,{platform
   execFileSync('objcopy',['--only-keep-debug',executable,debug]);
   execFileSync('strip',['--strip-debug',output]);
   const processed=await fs.readFile(output);
-  if(digest(processed)!=='754e3447ef3af852665c877f97579c210a92168079174d4cfa6aa5a1da37532e')throw Error('Unqualified processed Node executable; original candidate retained');
+  // Binutils evidence uses each tool's canonical rows, never raw output that
+  // renumbers with the section table.
+  const evidence=file=>({sections:execFileSync('readelf',['-SW',file],{encoding:'utf8'}),symbols:execFileSync('nm',['--defined-only',file],{encoding:'utf8',maxBuffer:128<<20}),dynamicSymbols:execFileSync('readelf',['--dyn-syms','-W',file],{encoding:'utf8',maxBuffer:32<<20})});
+  const upstreamEvidence=evidence(executable),processedEvidence=evidence(output);
+  const violations=qualifyStrippedNode({originalImage:original,processedImage:processed,originalSections:upstreamEvidence.sections,processedSections:processedEvidence.sections,originalSymbols:upstreamEvidence.symbols,processedSymbols:processedEvidence.symbols,originalDynamicSymbols:upstreamEvidence.dynamicSymbols,processedDynamicSymbols:processedEvidence.dynamicSymbols});
+  if(violations.length)throw Error('Unqualified processed Node executable ('+violations.length+' findings): '+violations.join('; ')+'; original candidate retained');
   if(processed.length>=original.length)throw Error('Node symbol separation did not reduce executable size');
-  const provenance={schema:1,sha256Original,sha256Executable:digest(processed),bytesOriginal:original.length,bytesExecutable:processed.length,tools,operations:[['objcopy','--only-keep-debug','upstream-node','node.debug'],['strip','--strip-debug','candidate-node']],debug:{file:'node.debug',sha256:digest(await fs.readFile(debug)),bytes:(await fs.stat(debug)).size}};
+  const qualification={elf:'ELF64-little-endian-x86-64',allocatedSections:canonicalSections(processedEvidence.sections).filter(section=>section.allocated).length,definedNativeSymbols:canonicalDefinedSymbols(processedEvidence.symbols).length,dynamicSymbols:canonicalDynamicSymbols(processedEvidence.dynamicSymbols).length};
+  const provenance={schema:1,sha256Original,sha256Executable:digest(processed),bytesOriginal:original.length,bytesExecutable:processed.length,tools,operations:[['objcopy','--only-keep-debug','upstream-node','node.debug'],['strip','--strip-debug','candidate-node']],qualification,debug:{file:'node.debug',sha256:digest(await fs.readFile(debug)),bytes:(await fs.stat(debug)).size}};
   // This content-addressed build artifact stays outside the installed runtime.
   await fs.copyFile(debug,path.join(directory,'node.debug'));
   await fs.writeFile(path.join(directory,'provenance.json'),JSON.stringify(provenance,null,2)+'\n');
