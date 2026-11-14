@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {randomUUID} from 'node:crypto';
+import {randomUUID,createHash} from 'node:crypto';
 import {createReadStream} from 'node:fs';
 import {createInterface} from 'node:readline';
 import {platformPersistence} from '../../platform/shared/persistence.mjs';
@@ -169,6 +169,19 @@ export class ProviderSettings {
  get revisionsFile(){return path.join(this.source.agentDir,'nozeli-source-revisions.json');}
  get discoveryFile(){return path.join(this.source.agentDir,'nozeli-source-discovery.json');}
  async defaults(){const raw=await readJson(this.file,'{"schema":2,"roles":{}}');return validateRoleDefaults(migrateRoleDefaults(raw));}
+ async defaultsSnapshot(){return this.serial(async()=>({defaults:await this.defaults(),version:createHash('sha256').update(await optional(this.file,'')).digest('hex')}));}
+ async adminSummary(){
+  const {defaults,version}=await this.defaultsSnapshot();
+  let sources=[];
+  if(this.worker){
+   const [providers,auth]=await Promise.all([this.worker.request('providerList'),this.worker.request('authList')]);
+   const revisions=await this.readRevisions();const rows=new Map();
+   for(const row of providers?.providers??[])if(text(row.provider,64))rows.set(row.provider,{provider:row.provider,configured:row.hasApiKey===true,kind:row.hasApiKey===true?'api-key':'none'});
+   for(const row of auth?.credentials??[])if(text(row.provider,64))rows.set(row.provider,{provider:row.provider,configured:row.hasAuth===true,kind:row.type==='oauth'?'oauth':row.hasAuth===true?'api-key':'none'});
+   sources=[...rows.values()].map(row=>({provider:row.provider,revision:revisions.sources[row.provider]?.revision??1,credential:{configured:row.configured,kind:row.kind}}));
+  }
+  return {defaults,version,sources};
+ }
  async modelFor(role){if(!roles.includes(role))throw Error('unknown role');const entry=(await this.defaults())[role];return entry.model.mode==='explicit'?entry.model.selector:null;}
  async roleDefaultsFor(role){
   if(!roles.includes(role))throw Error('unknown role');
@@ -264,9 +277,12 @@ export class ProviderSettings {
   if(!saved)fail('源保存后未出现在私有目录中；请刷新。');
   return {saved:true,revision,source:this.sourceSummary(saved,(afterCredentials?.credentials??[]).find(c=>c.provider===p.provider),revision,afterDiscovery.sources[p.provider]),application};
  });}
- saveDefaults(payload){
+ saveDefaults(payload,options={}){
   const value=validateRoleDefaults(payload);
   return this.serial(async()=>{
+   const raw=await optional(this.file,'');
+   const version=createHash('sha256').update(raw).digest('hex');
+   if(options.expectedVersion!==undefined&&options.expectedVersion!==version)throw Object.assign(Error('全局默认配置已变更，请重新准备方案。'),{code:'SETTINGS_CONFLICT'});
    const models=await this.models();
    const current=await this.defaults();
    for(const role of roles){
@@ -277,8 +293,11 @@ export class ProviderSettings {
     if(model.mode==='explicit'&&model.selector!==current[role].model.selector&&!models.some(m=>m.selector===model.selector))fail('所选模型不在当前已配置Pi目录中，请刷新。');
    }
    await fs.mkdir(path.dirname(this.file),{recursive:true,mode:0o700});
-   await atomic(this.file,JSON.stringify({schema:2,roles:value},null,2)+'\n');
-   return {saved:true,modelSync:await this.onDefaultsSaved(value)};
+   await atomic(this.file,JSON.stringify({schema:2,revision:randomUUID(),roles:value},null,2)+'\n');
+   let modelSync;
+   try{modelSync=await this.onDefaultsSaved(value);}
+   catch{modelSync={applied:0,pending:0,failed:[{code:'PI_DEFAULTS_APPLY_UNKNOWN',message:'默认配置已保存，在线应用结果未知。'}],sessions:[]};}
+   return {saved:true,modelSync};
   });
  }
  async discover(payload){

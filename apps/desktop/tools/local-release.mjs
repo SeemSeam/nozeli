@@ -22,6 +22,11 @@ export function dependencyIncluded(lock, relative, target) {
   const normalized = 'node_modules/' + relative.split(path.sep).join('/');
   for (let name = normalized; name.startsWith('node_modules/'); name = path.posix.dirname(name)) {
     if (lock.packages?.[name]?.dev === true) return false;
+    const packageName = name.slice(name.lastIndexOf('node_modules/') + 13);
+    if (/^@vscode\/ripgrep-[^/]+$/.test(packageName)) {
+      const {platform = process.platform, arch = process.arch} = target ?? {};
+      if (packageName !== `@vscode/ripgrep-${platform}-${arch}`) return false;
+    }
   }
   return relative.split(path.sep)[0] !== 'electron' && canvasDependencyIncluded(relative, target);
 }

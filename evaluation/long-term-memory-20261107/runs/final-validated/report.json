@@ -1,0 +1,57 @@
+{
+  "scope": "Linux synthetic research, not product acceptance",
+  "corpusSHA256": "eab596d321cad3f1c74ef63ac49a2b020c2de33fb25ad303c6ada6b220ad0cdb",
+  "oracleSHA256": "d4380c5e1944d20e5de793bcf5e602ad43caabbe7b60d8b79383da9ee41444d4",
+  "steps": [
+    {
+      "name": "baseline",
+      "argv": [
+        "node",
+        "/home/bfly/yunwei/nozeli_git/evaluation/long-term-memory-20261107/baseline.mjs"
+      ],
+      "returncode": 0,
+      "wallSeconds": 0.10223215213045478,
+      "stdout": "/home/bfly/yunwei/nozeli_git/evaluation/long-term-memory-20261107/runs/final-validated/baseline.stdout",
+      "stderr": "/home/bfly/yunwei/nozeli_git/evaluation/long-term-memory-20261107/runs/final-validated/baseline.stderr"
+    },
+    {
+      "name": "audit",
+      "argv": [
+        "/usr/bin/python3",
+        "/home/bfly/yunwei/nozeli_git/evaluation/long-term-memory-20261107/audit/run.py"
+      ],
+      "returncode": 0,
+      "wallSeconds": 0.03390114079229534,
+      "stdout": "/home/bfly/yunwei/nozeli_git/evaluation/long-term-memory-20261107/runs/final-validated/audit.stdout",
+      "stderr": "/home/bfly/yunwei/nozeli_git/evaluation/long-term-memory-20261107/runs/final-validated/audit.stderr"
+    },
+    {
+      "name": "embedded",
+      "argv": [
+        "/usr/bin/python3",
+        "/home/bfly/yunwei/nozeli_git/evaluation/long-term-memory-20261107/embedded/run.py",
+        "run",
+        "--output",
+        "/home/bfly/yunwei/nozeli_git/evaluation/long-term-memory-20261107/embedded/runs/final-validated"
+      ],
+      "returncode": 0,
+      "wallSeconds": 4.652987635927275,
+      "stdout": "/home/bfly/yunwei/nozeli_git/evaluation/long-term-memory-20261107/runs/final-validated/embedded.stdout",
+      "stderr": "/home/bfly/yunwei/nozeli_git/evaluation/long-term-memory-20261107/runs/final-validated/embedded.stderr"
+    },
+    {
+      "name": "basic",
+      "argv": [
+        "/usr/bin/python3",
+        "/home/bfly/yunwei/nozeli_git/evaluation/long-term-memory-20261107/basic-memory/run.py",
+        "--output",
+        "/home/bfly/yunwei/nozeli_git/evaluation/long-term-memory-20261107/basic-memory/runs/final-validated"
+      ],
+      "returncode": 0,
+      "wallSeconds": 223.1480506658554,
+      "stdout": "/home/bfly/yunwei/nozeli_git/evaluation/long-term-memory-20261107/runs/final-validated/basic.stdout",
+      "stderr": "/home/bfly/yunwei/nozeli_git/evaluation/long-term-memory-20261107/runs/final-validated/basic.stderr"
+    }
+  ],
+  "executionCompleted": true
+}

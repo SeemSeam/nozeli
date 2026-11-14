@@ -4,6 +4,7 @@ import {createDiscussionDrafts,ownsDiscussionReceipt} from './surface-identity-s
 import {mountRegionDrawing,compositeDrawing} from './region-drawing.mjs';
 import {uiIcon} from './ui-icons.mjs';
 import {setActionButton} from './ui-actions.mjs';
+import {setUiHint,getUiHint} from './ui-tooltip.mjs';
 import {readFileAvailability} from './file-availability.mjs';
 import {createFileIcon,updateFileIcon} from './file-icons.mjs';
 import './file-icons.css';
@@ -21,6 +22,7 @@ import { mountSheet } from './sheet-view.mjs';
 import { mountWord } from './word-view.mjs';
 import { tagDisplayOrdinals } from './tag-numbering.mjs';
 import { mountFileNavigator } from './file-navigator.mjs';
+import {mountSearchSurface} from './search-surface.mjs';
 import { mountFileTreeActions } from './file-tree-actions.mjs';
 import {mountProjectFileRefresh} from './project-file-refresh.mjs';
 import { tagProjectionContent } from './tag-projection-state.mjs';
@@ -60,6 +62,7 @@ import {mountDemoSurface} from './guided-demo-surface.mjs';
 import {mountAutoUpdate} from './auto-update-view.mjs';
 import {mountProjectAttention} from './project-attention.mjs';
 import './project-attention.css';
+import {mountAdminAgent} from './admin-agent.mjs';
 
 const workspaceBootstrap = await window.nozeli.invoke('workspace.bootstrap', {});
 if (!workspaceBootstrap.ok) throw new Error(workspaceBootstrap.error?.message || '工作区身份无法读取');
@@ -496,7 +499,7 @@ function enqueue(action, freeze = false) {
     if (!current || current.kind !== frozen.kind || !current.anchor || JSON.stringify(current.anchor) !== JSON.stringify(frozen.anchor) || !ui.word?.selectionValid?.(current.anchor)) return workspace.toast('选区已变化，未对旧选区执行操作。');
     if (action === 'note') return beginNote({ anchored: true });
     if (action === 'discuss') return $('selection-discuss').click();
-    if ($('selection-explain').disabled) return workspace.toast($('selection-explain').title || '解释暂不可用，前台尚未就绪');
+    if ($('selection-explain').disabled) return workspace.toast(getUiHint($('selection-explain')) || '解释暂不可用，前台尚未就绪');
     return $('selection-explain').click();
   }
 
@@ -538,7 +541,9 @@ const ui = {
 };
 const workspace = mountWorkspace({ save: () => writeView(), saveProjectSettings: settings => { if (!ui.project) return; ui.projectSettings = { focusMode: settings?.focusMode === true }; return writeView({ projectSettings: ui.projectSettings }); }, openProject: pickProject, addNote: options => beginNote(options), send: () => window.__agentSend?.() });
 if (!isSurface) workspaceGroups = mountWorkspaceGroups({invoke,scope:workspaceScope,toast:workspace.toast});
+let adminAgent=null;
 if(workspaceScope.role==='shell'){
+  adminAgent=mountAdminAgent({invoke,onOpenProject:id=>requireProjectSwitch(activateProject(id))});
   guidedDemo=mountGuidedDemo({invoke,subscribe:window.nozeli.subscribe,openProject:id=>requireProjectSwitch(activateProject(id)),openFile:relPath=>openFile(relPath),getProjectId:()=>ui.project?.id,captureReturn:async()=>{const retained=await retainWorkspace();if(!retained.ok)throw Error(retained.error?.message||'当前编辑尚未保留');await writeView();return {projectId:ui.project?.id};},restoreReturn:async saved=>{if(saved?.projectId)await requireProjectSwitch(activateProject(saved.projectId));else if(ui.project?.demo){const id=ui.project.id,result=await invoke('workspace.closeProject',{projectId:id});if(!result.ok)throw Error(result.error.message);await clearProjectPage(id);}},onExit:async()=>{await renderRecent();},onError:message=>workspace.toast(message)});
   window.addEventListener('nozeli-demo-start',()=>void guidedDemo.start().catch(error=>workspace.toast(error.message)));
   window.addEventListener('nozeli-demo-settings-close',()=>{const dialog=$('settings-dialog');if(dialog.open)dialog.close();});
@@ -1531,7 +1536,7 @@ async function refreshNotes() {
             return [
               {id:'note-here',label:'备注选区',run:()=>actOnPptSelection('note',frozen)},
               {id:'discuss-here',label:'讨论选区',run:()=>actOnPptSelection('discuss',frozen)},
-              {id:'explain-selection',label:'解释选区',enabled:explainReady,hint:explainReady?'':($('selection-explain').title||'解释暂不可用，前台尚未就绪'),run:()=>actOnPptSelection('explain',frozen)},
+              {id:'explain-selection',label:'解释选区',enabled:explainReady,hint:explainReady?'':(getUiHint($('selection-explain'))||'解释暂不可用，前台尚未就绪'),run:()=>actOnPptSelection('explain',frozen)},
             ];
           }
           const captured=ui.word?.pointAt?.(clientX,clientY);
@@ -1548,7 +1553,7 @@ async function refreshNotes() {
         onSelection:selected=>{if(ui.file!==file)return;ui.wordSelection=selected;if(!selected){$('selection-menu').hidden=true;return;}if(!$('note-form').hidden)return;showSelectionMenu(selected.rect);},
         onChange:()=>{ui.wordDirty=true;ui.dirty=true;ui.wordRevision=(ui.wordRevision||0)+1;setStatus('dirty','PPTX 草稿未保存');clearTimeout(ui.timer);ui.timer=setTimeout(()=>flushCurrent(),1200);},
         onExport:async bytes=>{const saved=await flushNow();if(!saved.ok)throw Error(saved.error.message);const result=await invoke('ppt.export',{...payload,bytes});if(!result.ok)throw Error(result.error.message);workspace.toast(result.value.cancelled?'已取消导出':'PPTX 副本已导出');}
-      });$('word-region').hidden=documentReadOnly()||isReviewDocument;$('word-region').title='拖动框选文档区域';if(!documentReadOnly()&&!isReviewDocument){ui.wordDirty=true;await flushNow();if(file.sourceChanged)ui.word.setNotes([]);else renderWordNotes();}setStatus(file.sourceChanged?'conflict':'saved',file.sourceChanged?'PPTX 原件已变化 · 旧版本草稿已恢复':documentReadOnly()||isReviewDocument?'PPTX · 只读冻结正文':recovered?.model?'PPTX · 已恢复草稿':'PPTX · 本地编辑');showPptRecovery(file,recovered);
+      });$('word-region').hidden=documentReadOnly()||isReviewDocument;setUiHint($('word-region'),'拖动框选文档区域');if(!documentReadOnly()&&!isReviewDocument){ui.wordDirty=true;await flushNow();if(file.sourceChanged)ui.word.setNotes([]);else renderWordNotes();}setStatus(file.sourceChanged?'conflict':'saved',file.sourceChanged?'PPTX 原件已变化 · 旧版本草稿已恢复':documentReadOnly()||isReviewDocument?'PPTX · 只读冻结正文':recovered?.model?'PPTX · 已恢复草稿':'PPTX · 本地编辑');showPptRecovery(file,recovered);
     }catch(error){$('unsupported').hidden=false;$('unsupported').textContent=error.message;setStatus('error','PPTX 未能打开');}
   } else if (['word','sheet'].includes(file.kind)) {
     $('reader').classList.add('document-word');
@@ -1776,7 +1781,7 @@ async function renderTree() {
     for(const node of tree.querySelectorAll('button'))node.setAttribute('aria-current',String(node.dataset.path===ui.file?.relPath));
   }
 }
-const fileNavigator = mountFileNavigator({invoke, projectId:()=>ui.project?.id, open:relPath=>openFile(relPath), toast:message=>workspace.toast(message), workspaceGroups:()=>workspaceGroups, visibility:fileTreeState, onRendered:()=>{for(const b of document.querySelectorAll('#file-tree button[data-path]:not(.dir)'))fileLabels.decorate(b);treeActions.paint();}});
+const fileNavigator = mountFileNavigator({invoke, projectId:()=>ui.project?.id, open:relPath=>openFile(relPath), revealHit:hit=>invoke('project.search.reveal',{projectId:ui.project?.id,hit}), toast:message=>workspace.toast(message), workspaceGroups:()=>workspaceGroups, visibility:fileTreeState, onRendered:()=>{for(const b of document.querySelectorAll('#file-tree button[data-path]:not(.dir)'))fileLabels.decorate(b);treeActions.paint();}});
 mountProjectFileRefresh({subscribe:fn=>window.nozeli.subscribe('agent',fn),getProject:()=>ui.project,
   refresh:project=>enqueue(async()=>{if(ui.project===project)await renderTree();}),onError:error=>workspace.toast('目录刷新失败：'+error.message)});
 window.addEventListener('nozeli-report-exported',event=>{const project=ui.project;if(project?.id===event.detail?.projectId)void enqueue(async()=>{if(ui.project===project)await renderTree();}).catch(showFailure);});
@@ -2084,7 +2089,8 @@ if (workspaceScope.role === 'shell') {
 } else { for(const section of ['settings-recovery','settings-update']){document.querySelector('[data-settings-section="'+section+'"]')?.setAttribute('hidden','');$(section)?.setAttribute('hidden','');} }
 window.__nozeliUpdateState=async()=>{
   const queued=actions;await queued;
-  return {ready:window.__nozeliReady===true,dirty:Boolean(ui.dirty||ui.wordDirty||ui.maxFlushPending||projectComposing()||managedReviewComposing()||regionDrawing.active()||projectSwitches.pending()),blocked:Boolean(ui.conflict||ui.file?.sourceChanged||ui.viewBlocked||ui.sourceMissing||ui.documentHolds.size||[...document.querySelectorAll('dialog[open],[aria-modal="true"]')].some(node=>node.getClientRects().length>0))};
+  const admin=adminAgent?.getState();
+  return {ready:window.__nozeliReady===true,dirty:Boolean(admin?.dirty||ui.dirty||ui.wordDirty||ui.maxFlushPending||projectComposing()||managedReviewComposing()||regionDrawing.active()||projectSwitches.pending()),blocked:Boolean(admin?.blocked||ui.conflict||ui.file?.sourceChanged||ui.viewBlocked||ui.sourceMissing||ui.documentHolds.size||[...document.querySelectorAll('dialog[open],[aria-modal="true"]')].some(node=>node.getClientRects().length>0))};
 };
 $('pdf-prev').addEventListener('click', () => enqueue(async () => { await ui.pdf?.go((ui.pdf.current() || 1) - 1); }));
 $('pdf-next').addEventListener('click', () => enqueue(async () => { await ui.pdf?.go((ui.pdf.current() || 1) + 1); }));
@@ -3022,8 +3028,10 @@ async function openBesideSnapshot(file, diff=false, left=null) {
       return view.adapter.getText();
     },
   };
+  mountSearchSurface({current:()=>({projectId:ui.project?.id,file:ui.file,editor:ui.editor,pdf:ui.pdf,office:ui.word,review:isReviewDocument,dirty:ui.dirty||ui.wordDirty,composing:ui.composing||projectComposing(),blocked:ui.conflict||ui.sourceMissing||ui.viewBlocked||ui.file?.sourceChanged}),setTextMode});
   mountDemoSurface({invoke,subscribe:window.nozeli.subscribe,scope:workspaceScope,getCurrent:()=>({project:ui.project,file:ui.file,editor:ui.editor,pdf:ui.pdf,office:ui.word,officeRevision:ui.wordRevision||0,tags:[...ui.threads.values()]}),setTextMode,flush:flushCurrent,beginNote,addTag,persistTag,tagActions,regionDrawing,startDrawing,workspaceGroups:()=>workspaceGroups});
   window.nozeli.subscribe('session.flush', async () => {
+    if(adminAgent){const saved=await adminAgent.flush();if(!saved.ok)return saved;}
     const drawingSaved=await workspaceSnapshot.flush();if(!drawingSaved.ok)return drawingSaved;
     // Detached roots own layout chrome only; their content surfaces flush separately.
     if(workspaceScope.role==='detached')return Promise.resolve({ok:true});
@@ -3192,7 +3200,7 @@ async function openBesideSnapshot(file, diff=false, left=null) {
     openExternal:url=>invoke('links.openExternal',{url}).then(result=>{if(!result.ok)workspace.toast(result.error.message);}),
   });
   const conversationErrors=new Map();
-  function refreshConversationLauncher(){const button=$('workspace-open-conversation'),error=conversationErrors.get(ui.project?.id);button.disabled=!ui.project?.id;button.dataset.state=error?'error':'';button.title=(error?'对话 · 连接异常：'+(error.message||''):(ui.project?.id?'打开当前项目对话':'请先打开项目'));button.setAttribute('aria-label',button.title);}
+  function refreshConversationLauncher(){const button=$('workspace-open-conversation'),error=conversationErrors.get(ui.project?.id),hint=error?'对话 · 连接异常：'+(error.message||''):(ui.project?.id?'打开当前项目对话':'请先打开项目');button.disabled=!ui.project?.id;button.dataset.state=error?'error':'';setUiHint(button,hint);button.setAttribute('aria-label',hint);}
   const terminalButton=$('workspace-open-terminal');
   let openingTerminal=false;
   setActionButton(terminalButton,'terminal',{label:'终端',text:''});

@@ -1,0 +1,9 @@
+{
+  "package": "py_rust_stemmers",
+  "version": "0.1.8",
+  "metadataLicenseUnknown": true,
+  "inspectedInstalledLicense": "MIT",
+  "evidence": "py-rust-stemmers-LICENSE",
+  "sha256": "f79ad92c0936186de30f349d55f5e4162845793661e5f8b4d07e8734a92fed6a",
+  "scope": "Resolves the single empty-license metadata record; not full transitive legal clearance"
+}

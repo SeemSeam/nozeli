@@ -224,6 +224,7 @@ function element() {
     append(...children) {this.children.push(...children);},
     setAttribute(name,value) {attributes.set(name,value);},
     getAttribute(name) {return attributes.get(name)??null;},
+    removeAttribute(name){attributes.delete(name);},
     addEventListener(name,fn) {const group=listeners.get(name)||[];group.push(fn);listeners.set(name,group);},
     dispatchEvent(event) {for(const fn of listeners.get(event.type)||[])fn(event);},
     querySelector(selector) {
@@ -239,9 +240,11 @@ test('routine mounted refresh keeps a confirmed badge until new facts arrive', a
   const time=clock(),host=element(),app=element(),body=element(),document=element(),window=element(),listeners={};
   Object.assign(document,{body,hidden:false,hasFocus:()=>true,createElement:element,getElementById:id=>id==='recent'?host:app});
   Object.assign(window,{setTimeout:time.setTimeout,clearTimeout:time.clearTimeout});
+  document.defaultView=window;
   let count=5,pending=null;
   const attention=mountProjectAttention({document,window,currentProject:()=>null,subscribe:(name,fn)=>{listeners[name]=fn;},invoke:()=>pending?pending.promise:Promise.resolve(reply([row('a',count)]))});
   const button=element();button.dataset.projectId='a';host.append(button);attention.decorate(button);
+  button.ownerDocument=document;
   const badge=button.querySelector('[data-project-attention-badge]');
   attention.sync([{id:'a',name:'Alpha',available:true}]);await time.advance(100);
   assert.equal(badge.hidden,false);assert.equal(badge.textContent,'5');

@@ -8,10 +8,15 @@ import {openTestController} from './project-storage.fixture.mjs';
 import {FRONTDESK_DEFAULT_SKILLS,FRONTDESK_LEGACY_DEFAULT_SKILLS} from '../src/agents/managed/runtime.mjs';
 import {createProviderHistoryReader} from '../src/agents/managed/provider-history.mjs';
 import {HostContextBudget} from '../src/agents/managed/context-budget.mjs';
+import {normalizeHostTools,createHostToolBridge} from '../../../integrations/pi/src/tools.mjs';
+const {makeStrictJsonSchema}=await import('../../../integrations/pi/node_modules/@earendil-works/pi-ai/dist/api/constrained-sampling.js');
+const {validateToolArguments}=await import('../../../integrations/pi/node_modules/@earendil-works/pi-ai/dist/utils/validation.js');
+import {DesktopHost} from '../src/main/host.mjs';
+import {createFrontdeskDocuments} from '../src/agents/managed/frontdesk-documents.mjs';
 
 // A transport fixture only: no prompt/model/network is ever permitted.
 class IdleSession {
- constructor(spec){Object.assign(this,spec,{closed:false,busy:false,toolsDigest:'fixture-schema'});}
+ constructor(spec){Object.assign(this,spec,{closed:false,busy:false,toolsDigest:'fixture-schema',viewOwnerId:randomUUID()});}
  async start(threadId){this.threadId=threadId??randomUUID();}
  async preflightToolsDigest(){}
  async assertToolsDigest(){}
@@ -29,6 +34,44 @@ async function admit(c,target='frontdesk'){
 }
 const invoke=(c,tool,args,target='frontdesk')=>c.onTool(target,{tool,arguments:args,callId:randomUUID()});
 const progress=(c,args)=>invoke(c,'nozeli_project_progress',args);
+
+// Exercise the actual Pi schema adapter, pinned strict provider conversion,
+// argument validator and reverse-RPC receipt, without a model or network.
+async function strictTransport(c){
+ const bridge=createHostToolBridge({send:frame=>{
+  invoke(c,frame.tool,frame.arguments).then(result=>bridge.resolveReverse(frame.id,{result}),error=>bridge.resolveReverse(frame.id,{error:{code:error.code,message:error.message}}));
+ }});
+ const names=['nozeli_project_progress','nozeli_provider_history_search','nozeli_provider_history_read','nozeli_document_read'];
+ const definitions=bridge.definitionsFor(normalizeHostTools((await c.session('frontdesk')).tools.filter(tool=>names.includes(tool.name))));
+ const wire=new Map(definitions.map(tool=>[tool.name,{...tool,parameters:makeStrictJsonSchema(tool.parameters)}]));
+ for(const tool of wire.values()){
+  assert.deepEqual(tool.parameters.required,Object.keys(tool.parameters.properties));
+  assert.equal(tool.parameters.additionalProperties,false);
+  for(const [key,schema] of Object.entries(tool.parameters.properties))if(!['action','source'].includes(key))assert(schema.anyOf.some(branch=>branch.type==='null'),key+' permits strict null');
+ }
+ return {wire,call:async(name,args)=>{
+  const tool=definitions.find(tool=>tool.name===name);
+  validateToolArguments(wire.get(name),{name,arguments:args});
+  const reply=await tool.execute(randomUUID(),validateToolArguments(tool,{name,arguments:args}));
+  assert.equal(reply.terminate,undefined,'read receipt continues the native turn');
+  return JSON.parse(reply.content[0].text);
+ }};
+}
+
+test('strict nullable progress transport reads actual lists and exact details; blank legacy selectors are omitted',async t=>{
+ const {c}=await fixture(t);for(let i=0;i<3;i++)await c.store.submit('request '+i,'brief',{name:'same display name'});await admit(c);
+ const transport=await strictTransport(c),name='nozeli_project_progress';
+ for(const placeholder of [null,'']){
+  const first=await transport.call(name,{action:'list',cursor:placeholder,limit:1,workId:placeholder});
+  assert.equal(first.rows[0].workId,c.store.state.works[0].id);assert(first.nextCursor);
+  const next=await transport.call(name,{action:'list',cursor:first.nextCursor,limit:1,workId:placeholder});assert.equal(next.rows[0].workId,c.store.state.works[1].id);
+  const detail=await transport.call(name,{action:'detail',cursor:placeholder,limit:null,workId:first.rows[0].workId});assert.equal(detail.work.workId,first.rows[0].workId);
+ }
+ assert.equal((await transport.call(name,{action:'list',cursor:null,limit:null,workId:null})).rows.length,3);
+ for(const [args,code] of [[{action:'list',cursor:null,limit:1,workId:c.store.state.works[0].id},'INVALID_PAYLOAD'],[{action:'detail',cursor:null,limit:null,workId:null},'INVALID_PAYLOAD'],[{action:'detail',cursor:null,limit:null,workId:'same display name'},'WORK_NOT_FOUND'],[{action:'list',cursor:'forged',limit:1,workId:null},'INVALID_CURSOR']])assert.equal((await transport.call(name,args)).error.code,code);
+ assert.throws(()=>validateToolArguments(transport.wire.get(name),{name,arguments:{action:'list',cursor:null,limit:null,workId:null,unknown:null}}));
+ assert.equal((await progress(c,{action:'list',unknown:null})).error.code,'INVALID_PAYLOAD');
+});
 
 test('frontdesk pages more than forty Works and every pending todo without dispatch or writes',async t=>{
  const {c}=await fixture(t);for(let i=0;i<93;i++)await c.store.submit('request '+i,'brief',{name:'Work '+i});
@@ -97,4 +140,56 @@ test('history tool consumers route actual synthetic provider files without autom
  const withheld=await invoke(c,'nozeli_provider_history_read',nextArgs);assert.equal(withheld.error.code,'HOST_BUDGET_PERSIST_FAILED');c.store.mutate=mutate;
  c.contextBudget.beginRun({target:'frontdesk',runId:'persist-retry',epoch:'persist-retry'});
  const replay=await invoke(c,'nozeli_provider_history_read',nextArgs);assert.equal(replay.status,'ok');assert(replay.records.length,'prepared but undelivered page remains retryable');
+});
+
+test('strict history consumers accept omitted, null and blank initial cursors without repairing bad tickets',async t=>{
+ const {c,root}=await fixture(t),history=path.join(root,'history');await fs.mkdir(history);
+ for(const id of ['one','two'])await fs.writeFile(path.join(history,id+'.jsonl'),[
+  {type:'session',version:3,id,cwd:c.store.content},
+  {type:'message',message:{role:'user',content:[{type:'text',text:'history '+id+' '+('正文😀'.repeat(5000))}]}}
+ ].map(JSON.stringify).join('\n')+'\n');
+ c.providerHistory=createProviderHistoryReader({projectRoot:c.store.content,home:path.join(root,'empty-home'),providerRoots:{pi:history}});
+ await admit(c);const transport=await strictTransport(c),search='nozeli_provider_history_search',read='nozeli_provider_history_read';
+ const omitted=await invoke(c,search,{});assert.equal(omitted.status,'ok');assert.equal(omitted.items.length,2);
+ for(const placeholder of [null,'']){
+  const found=await transport.call(search,{query:null,provider:null,cursor:placeholder,limit:1});assert.equal(found.status,'ok');assert.equal(found.items.length,1);assert(found.nextCursor);
+  const next=await transport.call(search,{query:null,provider:null,cursor:found.nextCursor,limit:1});assert.equal(next.status,'ok');assert.notEqual(next.items[0].sessionId,found.items[0].sessionId);
+  const source=found.items[0].source,body=await transport.call(read,{source,cursor:placeholder,maxBytes:null});assert.equal(body.status,'ok');assert(body.records.some(record=>record.text.includes('history')));assert(body.nextCursor);
+  assert.equal(body.coverage.pageLimitReached,true);
+  const budget=c.contextBudget.snapshot('frontdesk');assert(budget.run.usedBytes<budget.run.limitBytes);
+  const continued=await transport.call(read,{source,cursor:body.nextCursor,maxBytes:12000});assert.equal(continued.status,'ok');assert(continued.records.length);
+  assert.equal(continued.records[0].location.textStart,body.records.at(-1).location.textEnd);
+  assert.equal((await transport.call(read,{source,cursor:'forged',maxBytes:null})).status,'invalid_cursor');
+ }
+ assert.equal((await transport.call(search,{query:null,provider:null,cursor:'forged',limit:null})).status,'invalid_cursor');
+ for(const source of [null,'',path.join(history,'one.jsonl'),'forged']){
+  const result=await invoke(c,read,{source,cursor:null,maxBytes:null});assert.equal(result.status,'invalid_source');assert.deepEqual(result.records,[]);
+ }
+ assert.equal((await invoke(c,search,{cursor:null,unknown:null})).error.code,'INVALID_PAYLOAD');
+ assert.equal((await invoke(c,read,{source:omitted.items[0].source,unknown:null})).error.code,'INVALID_PAYLOAD');
+ const filename=path.join(history,omitted.items[0].sessionId+'.jsonl');await fs.appendFile(filename,'{}\n');
+ assert.equal((await transport.call(read,{source:omitted.items[0].source,cursor:null,maxBytes:null})).status,'stale');
+ // A non-empty query is user text, not an optional selector to trim away.
+ assert.equal((await transport.call(search,{query:'  ',provider:'pi',cursor:null,limit:null})).items.length,0);
+});
+
+test('strict document read selectors preserve real snapshot identity and deny foreign refs and private files',async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-strict-document-')),contentRoot=path.join(root,'project');await fs.mkdir(contentRoot);
+ const host=new DesktopHost(path.join(root,'host-profile')),project=await host.storage.register(contentRoot);
+ const c=await openTestController({storage:host.storage,projectId:project.id,runtimeRoot:path.join(root,'runtime'),contentRoot,sessionFactory:spec=>new IdleSession(spec)});
+ t.after(async()=>{await c.stop();await host.storage.db.close();await fs.rm(root,{recursive:true,force:true});});
+ const original='actual document 😀\n'+('body 正文\n'.repeat(5000));
+ await fs.writeFile(path.join(c.store.content,'notes.md'),original);await fs.writeFile(path.join(c.store.content,'.env'),'PRIVATE-CREDENTIAL');
+ c.frontdeskDocuments=createFrontdeskDocuments({host,projectId:project.id,sync:async()=>{}});await admit(c);
+ const transport=await strictTransport(c),name='nozeli_document_read';
+ for(const placeholder of [null,'']){
+  const first=await transport.call(name,{relPath:'notes.md',readRef:placeholder,projectPath:placeholder,access:null});assert.equal(first.ok,true);assert(first.value.text.startsWith('actual document'));assert(first.value.nextReadRef);
+  const next=await transport.call(name,{relPath:placeholder,readRef:first.value.nextReadRef,projectPath:placeholder,access:null});assert.equal(next.ok,true);assert.equal(next.value.readHandle,first.value.readHandle);assert.deepEqual(next.value.version,first.value.version);assert.equal(next.value.offset,first.value.endOffset);
+ }
+ const first=await invoke(c,name,{relPath:'notes.md'});await fs.writeFile(path.join(c.store.content,'notes.md'),'changed on disk');
+ const frozen=await transport.call(name,{relPath:null,readRef:first.value.nextReadRef,projectPath:null,access:null});assert.equal(frozen.ok,true);assert.equal(frozen.value.text,original.slice(frozen.value.offset,frozen.value.endOffset));assert.deepEqual(frozen.value.version,first.value.version);
+ const mixed=await transport.call(name,{relPath:'notes.md',readRef:frozen.value.nextReadRef,projectPath:null,access:null});assert.equal(mixed.error.code,'INVALID_PAYLOAD');
+ assert.equal((await invoke(c,name,{relPath:'notes.md',readRef:null,unknown:null})).error.code,'INVALID_PAYLOAD');
+ const denied=await transport.call(name,{relPath:'.env',readRef:null,projectPath:null,access:'read'});assert.equal(denied.ok,false);assert(!JSON.stringify(denied).includes('PRIVATE-CREDENTIAL'));
+ await admit(c);const foreign=await transport.call(name,{relPath:null,readRef:first.value.nextReadRef,projectPath:null,access:null});assert.equal(foreign.error.code,'READ_REF_EXPIRED');
 });

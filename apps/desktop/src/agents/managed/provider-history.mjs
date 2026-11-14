@@ -89,7 +89,7 @@ function unsupportedRecord(provider, row) {
   return contentReason(message.content);
 }
 function coverage() {
-  return { files: 0, entries: 0, records: 0, bytes: 0, matchedProjects: 0, unconfirmed: 0, unsupported: [], errors: [], budgetExhausted: false, scope: 'exact-canonical-cwd', contentScope: 'text-only;system,credentials,and-known-nontext-excluded', exhaustive: false, traversalComplete: false };
+  return { files: 0, entries: 0, records: 0, bytes: 0, matchedProjects: 0, unconfirmed: 0, unsupported: [], errors: [], pageLimitReached: false, limitScope: 'response-page; use nextCursor while host allows reads', scope: 'exact-canonical-cwd', contentScope: 'text-only;system,credentials,and-known-nontext-excluded', exhaustive: false, traversalComplete: false };
 }
 
 export function createProviderHistoryReader({ projectRoot, projectIdentity = projectRoot, home = os.homedir(), providerRoots = {}, budgets = {}, ticketTtlMs = 15 * 60 * 1000, now = Date.now, fault } = {}) {
@@ -274,7 +274,7 @@ export function createProviderHistoryReader({ projectRoot, projectIdentity = pro
     const hasMore = Boolean(state.current || state.stack.length);
     cov.traversalComplete = !hasMore;
     cov.exhaustive = false; // A preview stops at the first matching record of each session.
-    cov.budgetExhausted = hasMore && items.length < count;
+    cov.pageLimitReached = hasMore && items.length < count;
     cov.previewOnly = true;
     return { status: 'ok', items, hasMore, nextCursor: hasMore ? issue('search', state) : null, coverage: cov };
   }
@@ -326,7 +326,7 @@ export function createProviderHistoryReader({ projectRoot, projectIdentity = pro
       const hasMore = Boolean(state.queue.length || !state.scan.eof || state.scan.pending.length);
       cov.traversalComplete = !hasMore;
       cov.incomplete = state.scan.incomplete;
-      cov.exhaustive = !hasMore && !state.scan.incomplete; cov.budgetExhausted = hasMore;
+      cov.exhaustive = !hasMore && !state.scan.incomplete; cov.pageLimitReached = hasMore;
       return { status: 'ok', descriptor: descriptor(src), provider: src.provider, sessionId: src.meta.id, records: result, hasMore, nextCursor: hasMore ? issue('read', state) : null, coverage: cov, untrusted: true };
     } catch (error) { cov.errors.push({ provider: src.provider, code: error.code || error.message }); return fail(error.message === 'stale' || ['ENOENT', 'SOURCE_CHANGED'].includes(error.code) ? 'stale' : error.code === 'IDENTITY_UNSUPPORTED' ? 'unsupported' : 'read_error'); }
   }
@@ -376,9 +376,18 @@ export function createProviderHistoryReader({ projectRoot, projectIdentity = pro
     responses.clear();
     return Promise.all([...tickets].map(([key, ticket]) => retire(key, ticket)));
   }
+ // One boundary for direct and budgeted consumers; source tickets are never
+ // repaired, and unknown fields cannot disappear during projection below.
+ function argumentsFor(kind,args={}){
+   const optional=kind==='search'?['query','provider','cursor','limit']:['cursor','maxBytes'];
+   if(!args||typeof args!=='object'||Array.isArray(args)||Object.keys(args).some(key=>!optional.includes(key)&&!(kind==='read'&&key==='source')))throw Object.assign(Error('历史工具包含未知参数'),{code:'INVALID_PAYLOAD'});
+   const normalized={...args};
+   for(const key of optional)if(normalized[key]===null||(['cursor','provider'].includes(key)&&normalized[key]===''))delete normalized[key];
+   return normalized;
+ }
   return {
-    search: (args, host) => host === undefined ? search(args) : deliver('search', args, host),
-    read: (args, host) => host === undefined ? read(args) : deliver('read', args, host),
+    search: (args, host) => host === undefined ? search(argumentsFor('search',args)) : deliver('search', argumentsFor('search',args), host),
+    read: (args, host) => host === undefined ? read(argumentsFor('read',args)) : deliver('read', argumentsFor('read',args), host),
     close,
   };
 }

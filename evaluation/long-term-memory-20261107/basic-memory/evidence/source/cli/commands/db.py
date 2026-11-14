@@ -1,0 +1,638 @@
+"""Database management commands."""
+
+# PEP 563 lazy annotations let signatures reference IndexProgress without importing
+# the indexing stack at module load; reset/reindex import their heavy database and
+# indexing dependencies at call time so CLI startup stays fast (#886).
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath, PureWindowsPath
+
+import psutil
+import typer
+from loguru import logger
+from rich.console import Console
+from rich.markup import escape
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+
+from basic_memory.cli.app import app
+from basic_memory.cli.commands.command_utils import report_project_readiness, run_with_cleanup
+from basic_memory.config import ConfigManager, ProjectMode
+from basic_memory.utils import generate_permalink, shell_command
+from basic_memory.cli.markup import literal
+
+console = Console()
+
+# A reindex lists at most this many failed files per project; the count covers the rest.
+FAILED_FILES_SHOWN = 10
+
+REINDEX_ERROR_SUMMARY_MAX_LENGTH = 240
+
+
+def _reindex_error_summary(message: str) -> str:
+    """Collapse one error to a bounded single-line CLI summary."""
+    single_line = " ".join(message.split())
+    if len(single_line) <= REINDEX_ERROR_SUMMARY_MAX_LENGTH:
+        return single_line
+    return f"{single_line[: REINDEX_ERROR_SUMMARY_MAX_LENGTH - 3].rstrip()}..."
+
+
+def _is_basic_memory_mcp(cmdline: list[str]) -> bool:
+    """Heuristic: does this argv represent a `basic-memory mcp` server?
+
+    The MCP server can be launched any of:
+      basic-memory mcp
+      bm mcp                                  # entrypoint alias from pyproject.toml
+      python -m basic_memory.cli.main mcp     # module form
+      uv run basic-memory mcp / uv run bm mcp # uv wrappers
+      /abs/path/to/{bm,basic-memory}[.exe] mcp
+
+    A reliable match needs both signals:
+      1. "mcp" appears as an exact argv token (not "mcp-foo").
+      2. Some argv token names the basic-memory entrypoint — either by
+         hyphen/underscore form, or as a `bm` script (covers `/usr/local/bin/bm`,
+         `bm.exe`, etc. via Path.stem).
+    """
+    if "mcp" not in cmdline:
+        return False
+    for arg in cmdline:
+        if "basic-memory" in arg or "basic_memory" in arg:
+            return True
+        # Try both POSIX and Windows path interpretations so a test on
+        # macOS still recognizes `C:\\...\\bm.exe`, and a real Windows
+        # run still recognizes `/usr/local/bin/bm`. Path() alone uses
+        # the host OS, which gives wrong stems for foreign separators.
+        if PurePosixPath(arg).stem == "bm" or PureWindowsPath(arg).stem == "bm":
+            return True
+    return False
+
+
+def _find_live_mcp_processes() -> list[tuple[int, str]]:
+    """Return (pid, joined_cmdline) for live `basic-memory mcp` processes.
+
+    Why this exists (issue #765):
+        On POSIX, `Path.unlink()` removes the directory entry but the inode
+        survives as long as any process holds the file open. A `bm reset`
+        run while Claude Desktop (or another MCP client) is alive will
+        therefore "succeed" — but the still-running MCP keeps reading the
+        old, now-invisible memory.db inode and returns phantom rows. On
+        Windows the OS naturally raises PermissionError on `unlink()`, so
+        the bug is POSIX-specific. We detect proactively to give the same
+        error experience on every platform before doing damage.
+
+    The current process is excluded so this can be called from inside a
+    `bm reset` invocation. NoSuchProcess / AccessDenied are swallowed
+    because process tables race with the scan and we don't want a
+    transient permission error to mask a real zombie.
+    """
+    me = os.getpid()
+    matches: list[tuple[int, str]] = []
+    for proc in psutil.process_iter(["pid", "cmdline"]):
+        try:
+            pid = proc.info.get("pid")
+            if pid is None or pid == me:
+                continue
+            cmdline = proc.info.get("cmdline") or []
+            if not cmdline:
+                continue
+            if _is_basic_memory_mcp(cmdline):
+                matches.append((pid, " ".join(cmdline)))
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return matches
+
+
+def _abort_if_mcp_processes_alive() -> None:
+    """Refuse `bm reset` while basic-memory MCP processes are still running.
+
+    See _find_live_mcp_processes for the underlying POSIX-vs-Windows
+    rationale. Prints a per-PID list and platform-appropriate cleanup
+    instructions, then exits non-zero so destructive work never starts.
+    """
+    zombies = _find_live_mcp_processes()
+    if not zombies:
+        return
+
+    console.print("[red]Refusing to reset:[/red] basic-memory MCP processes are still running.")
+    console.print(
+        "[yellow]On macOS/Linux these would keep reading the deleted memory.db inode "
+        "and return phantom search results (see #765).[/yellow]"
+    )
+    for pid, cmd in zombies:
+        console.print(f"  PID {pid}: {literal(cmd)}")
+    console.print("\n[bold]How to clean up:[/bold]")
+    console.print("  1. Quit Claude Desktop and any other MCP clients.")
+    if os.name == "nt":
+        console.print(
+            "  2. Verify nothing remains: "
+            "[green]Get-CimInstance Win32_Process | "
+            "Where-Object {$_.CommandLine -like '*basic-memory*mcp*'}[/green]"
+        )
+    else:
+        console.print("  2. Verify nothing remains: [green]pgrep -fa 'basic-memory mcp'[/green]")
+    console.print("  3. Re-run [green]bm reset[/green].")
+    raise typer.Exit(1)
+
+
+@dataclass(slots=True)
+class EmbeddingProgress:
+    """Typed CLI progress payload for embedding backfills."""
+
+    entity_id: int
+    completed: int
+    total: int
+
+
+async def _reindex_projects(app_config):
+    """Reindex all projects in a single async context.
+
+    This ensures all database operations use the same event loop,
+    and proper cleanup happens when the function completes.
+    """
+    # Deferred: SQLAlchemy, repositories, and the indexing stack load only when a
+    # reindex actually runs, not on every CLI start (#886).
+    from basic_memory import db
+    from basic_memory.repository import ProjectRepository
+    from basic_memory.services.initialization import reconcile_projects_with_config
+    from basic_memory.index.local_project import (
+        LocalProjectIndexRuntimeFactory,
+        run_local_project_index_for_project,
+    )
+
+    try:
+        await reconcile_projects_with_config(app_config)
+
+        # Get database session (migrations already run if needed)
+        _, session_maker = await db.get_or_create_db(
+            db_path=app_config.database_path,
+            db_type=db.DatabaseType.FILESYSTEM,
+        )
+        project_repository = ProjectRepository()
+        async with db.scoped_session(session_maker) as session:
+            projects = await project_repository.get_active_projects(session)
+
+        for project in projects:
+            console.print(f"  Indexing [cyan]{literal(project.name)}[/cyan]...")
+            logger.info(f"Starting project index for project: {project.name}")
+            result = await run_local_project_index_for_project(
+                project,
+                runtime_factory=LocalProjectIndexRuntimeFactory(),
+                force_full=True,
+            )
+            logger.info(
+                "Project index completed",
+                project_name=project.name,
+                total_files=result.total_files,
+                enqueued_files=result.enqueued_files,
+                enqueued_batches=result.enqueued_batches,
+                deleted_files=result.deleted_files,
+            )
+    finally:
+        # Clean up database connections before event loop closes
+        await db.shutdown_db()
+
+
+@app.command()
+def reset(
+    reindex: bool = typer.Option(False, "--reindex", help="Rebuild db index from filesystem"),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help=(
+            "Skip the pre-flight check that refuses to reset while "
+            "basic-memory MCP processes are running. Use only in "
+            "automated workflows where you've already ensured no MCP "
+            "clients are attached to the database."
+        ),
+    ),
+):  # pragma: no cover
+    """Reset database (drop all tables and recreate)."""
+    # Deferred: SQLAlchemy and the db module load only when a reset actually
+    # runs, not on every CLI start (#886).
+    from sqlalchemy.exc import OperationalError
+
+    from basic_memory import db
+
+    console.print(
+        "[yellow]Note:[/yellow] This only deletes the index database. "
+        "Your markdown note files will not be affected.\n"
+        "Use [green]bm reset --reindex[/green] to automatically rebuild the index afterward."
+    )
+    if typer.confirm("Reset the database index?"):
+        # Pre-flight: refuse to proceed if MCP processes still hold the DB
+        # file open. POSIX would silently let us unlink the inode while
+        # they keep reading it; Windows would error here anyway. See
+        # _find_live_mcp_processes for the full story. --force is the
+        # documented escape hatch for scripted/CI runs.
+        if not force:
+            _abort_if_mcp_processes_alive()
+
+        logger.info("Resetting database...")
+        config_manager = ConfigManager()
+        app_config = config_manager.config
+        # Get database path
+        db_path = app_config.app_database_path
+
+        # Delete the database file and WAL files if they exist
+        for suffix in ["", "-shm", "-wal"]:
+            path = db_path.parent / f"{db_path.name}{suffix}"
+            if path.exists():
+                try:
+                    path.unlink()
+                    logger.info(f"Deleted: {path}")
+                except OSError as e:
+                    console.print(
+                        f"[red]Error:[/red] Cannot delete {literal(path.name)}: {literal(e)}\n"
+                        "The database may be in use by another process (e.g., MCP server).\n"
+                        "Please close Claude Desktop or any other Basic Memory clients and try again."
+                    )
+                    raise typer.Exit(1)
+
+        # Create a new empty database (preserves project configuration)
+        try:
+            run_with_cleanup(db.run_migrations(app_config))
+        except OperationalError as e:
+            if "disk I/O error" in str(e) or "database is locked" in str(e):
+                console.print(
+                    "[red]Error:[/red] Cannot access database. "
+                    "It may be in use by another process (e.g., MCP server).\n"
+                    "Please close Claude Desktop or any other Basic Memory clients and try again."
+                )
+                raise typer.Exit(1)
+            raise
+        console.print("[green]Database reset complete[/green]")
+
+        if reindex:
+            projects = list(app_config.projects)
+            if not projects:
+                console.print("[yellow]No projects configured. Skipping reindex.[/yellow]")
+            else:
+                console.print(f"Rebuilding search index for {len(projects)} project(s)...")
+                # Note: _reindex_projects has its own cleanup, but run_with_cleanup
+                # ensures db.shutdown_db() is called even if _reindex_projects changes
+                run_with_cleanup(_reindex_projects(app_config))
+                console.print("[green]Reindex complete[/green]")
+
+
+def run_reindex_command(
+    *,
+    embeddings: bool,
+    search: bool,
+    full: bool,
+    project: str | None,
+) -> None:
+    """Run one reindex invocation, flag resolution included.
+
+    This is the single implementation behind both `bm reindex` and its
+    project-scoped alias `bm project index` (#1414). The alias supplies fixed
+    flags rather than restating what they mean, so the two names cannot drift.
+    """
+    # If neither flag is set, do both
+    if not embeddings and not search:
+        embeddings = True
+        search = True
+
+    config_manager = ConfigManager()
+    app_config = config_manager.config
+
+    run_with_cleanup(
+        _reindex(app_config, search=search, embeddings=embeddings, full=full, project=project)
+    )
+
+
+async def index_project_and_report_readiness(project: str) -> None:
+    """Index a just-added project the way `bm project index` does, then report readiness.
+
+    `bm project add` used to index through the API in one foreground request,
+    which embeds inline and prints nothing until it returns: a 1000-note project
+    sat silent for two minutes between "added successfully" and the final count
+    (#1635). `_reindex` runs the search pass and then the embedding pass under the
+    progress bar `bm reindex` shows, so the add reports progress and leaves the
+    project in the state its own remedy, `bm project index`, would.
+
+    It is incremental (`full=False`) for the same reason the remedy is: change
+    detection sees every file of a never-indexed project as new, and an adopted,
+    already-indexed project only redoes what changed.
+    """
+    app_config = ConfigManager().config
+    await _reindex(
+        app_config,
+        search=True,
+        embeddings=True,
+        full=False,
+        project=project,
+    )
+    await report_project_readiness(project)
+
+
+@app.command()
+def reindex(
+    embeddings: bool = typer.Option(False, "--embeddings", "-e", help="Rebuild vector embeddings"),
+    search: bool = typer.Option(False, "--search", "-s", help="Rebuild full-text search index"),
+    full: bool = typer.Option(
+        False,
+        "--full",
+        help="Request a full project-index run instead of the default project-index pass",
+    ),
+    project: str = typer.Option(
+        None, "--project", "-p", help="Reindex a specific project (default: all)"
+    ),
+):  # pragma: no cover
+    """Rebuild search indexes and/or vector embeddings without dropping the database.
+
+    By default runs the project-index coordinator + embeddings (if semantic search is enabled).
+    Use --full to request a full project-index run and re-embed all eligible notes.
+    Use --search or --embeddings to rebuild only one side.
+
+    Examples:
+        bm reindex                  # Project index + embeddings
+        bm reindex --full           # Full project index + full re-embed
+        bm reindex --embeddings     # Only rebuild vector embeddings
+        bm reindex --search         # Only run project index
+        bm reindex --full --search  # Full project index only
+        bm reindex --full --embeddings  # Full re-embed only
+        bm reindex -p claw --full   # Full reindex for only the 'claw' project
+    """
+    run_reindex_command(embeddings=embeddings, search=search, full=full, project=project)
+
+
+async def _reindex(
+    app_config,
+    *,
+    search: bool,
+    embeddings: bool,
+    full: bool,
+    project: str | None,
+):
+    """Run reindex operations."""
+    # Deferred: SQLAlchemy, repositories, and the indexing stack load only when a
+    # reindex actually runs, not on every CLI start (#886).
+    from basic_memory import db
+    from basic_memory.index.local_project import (
+        LocalProjectIndexRuntimeFactory,
+        run_local_project_index_for_project,
+    )
+    from basic_memory.repository import EntityRepository, ProjectRepository
+    from basic_memory.repository.search_repository import create_search_repository
+    from basic_memory.indexing.models import IndexFileJobStatus
+    from basic_memory.repository.search_repository_base import purge_stale_search_index_rows
+    from basic_memory.services.initialization import (
+        reconcile_projects_with_config,
+        recover_project_materializations,
+    )
+    from basic_memory.services.search_service import SearchService
+    from basic_memory.services.file_service import FileService
+    from basic_memory.markdown.markdown_processor import MarkdownProcessor
+    from basic_memory.markdown.entity_parser import EntityParser
+
+    try:
+        await reconcile_projects_with_config(app_config)
+
+        _, session_maker = await db.get_or_create_db(
+            db_path=app_config.database_path,
+            db_type=db.DatabaseType.FILESYSTEM,
+        )
+        project_repository = ProjectRepository()
+        async with db.scoped_session(session_maker) as session:
+            projects = await project_repository.get_active_projects(session)
+
+        if project:
+            # Trigger: the caller names the project as typed, e.g. `new_default`.
+            # Why: config reconciliation above stores normalized names
+            #      (`new-default`), so exact name equality can miss the project
+            #      the caller just registered; the API resolves by permalink too.
+            # Outcome: `bm project add new_default` and `bm project index
+            #          new_default` index the project they name.
+            project_permalink = generate_permalink(project)
+            projects = [p for p in projects if p.permalink == project_permalink]
+            if not projects:
+                # Check if it's a cloud-only project — those can't be reindexed locally
+                project_mode = app_config.get_project_mode(project)
+                if project_mode == ProjectMode.CLOUD:
+                    console.print(
+                        f"[yellow]Project '{literal(project)}' is a cloud project.[/yellow]\n"
+                        "Reindexing is a local operation — cloud projects are "
+                        "indexed on the server."
+                    )
+                else:
+                    console.print(f"[red]Project '{literal(project)}' not found.[/red]")
+                raise typer.Exit(1)
+
+        embedding_entities_total = 0
+        embedding_errors_total = 0
+        incomplete_projects: list[str] = []
+        failed_file_projects: list[str] = []
+        for proj in projects:
+            console.print(f"\n[bold]Project: [cyan]{literal(proj.name)}[/cyan][/bold]")
+
+            if search:
+                # Trigger: the project-index scan below reconciles deletes against
+                # the filesystem, and a crash can leave an accepted note stuck
+                # mid-materialization with its markdown file never written.
+                # Why: scanning first would treat the missing file as a delete and
+                # destroy the entity plus its accepted content — data loss of an
+                # acknowledged write.
+                # Outcome: run the same per-project recovery sweep as startup so
+                # stuck materializations are re-driven to disk before the scan.
+                await recover_project_materializations(proj, session_maker)
+
+                search_mode_label = "full project index" if full else "project index"
+                console.print(
+                    f"  Rebuilding full-text search index ([cyan]{search_mode_label}[/cyan])..."
+                )
+                result = await run_local_project_index_for_project(
+                    proj,
+                    runtime_factory=LocalProjectIndexRuntimeFactory(),
+                    force_full=full,
+                    # The full-text search rebuild must never embed: the explicit
+                    # embeddings phase below owns vector (re)builds. Passing the CLI
+                    # flag here would double-embed on a full reindex — the inline
+                    # project-index sync, then reindex_vectors discarding and
+                    # rebuilding it — so callers pay the embedding cost twice.
+                    embeddings=False,
+                )
+                # A local reindex runs every batch inline, so each submitted file's
+                # outcome is here; a failed file has no entity or search row (#1742).
+                failed_files = [
+                    file_result
+                    for batch_result in result.batch_results
+                    for file_result in batch_result.file_results
+                    if file_result.status is IndexFileJobStatus.failed
+                ]
+                console.print(
+                    "  [dim]project index: "
+                    f"{result.total_files} observed, "
+                    f"{result.enqueued_files - len(failed_files)} indexed, "
+                    f"{len(failed_files)} failed, "
+                    f"{result.deleted_files} deleted, "
+                    f"{result.enqueued_batches} batches[/dim]"
+                )
+                for file_result in failed_files[:FAILED_FILES_SHOWN]:
+                    console.print(f"  [red]failed[/red] {escape(file_result.reason)}")
+                if len(failed_files) > FAILED_FILES_SHOWN:
+                    console.print(
+                        f"  [red]...and {len(failed_files) - FAILED_FILES_SHOWN} more[/red]"
+                    )
+
+                if result.restored_search_entities:
+                    console.print(
+                        f"  [dim]{result.restored_search_entities} entities had no search rows; "
+                        "restored[/dim]"
+                    )
+                purged = await purge_stale_search_index_rows(session_maker, proj.id)
+                console.print(f"  [dim]{purged} stale search rows purged[/dim]")
+
+                if failed_files:
+                    failed_file_projects.append(proj.name)
+                    console.print(
+                        "  [yellow]incomplete[/yellow] Full-text search index rebuilt; "
+                        f"{len(failed_files)} files could not be indexed"
+                    )
+                else:
+                    console.print("  [green]done[/green] Full-text search index rebuilt")
+
+            if embeddings:
+                embedding_mode_label = "full rebuild" if full else "incremental sync"
+                console.print(
+                    f"  Building vector embeddings ([cyan]{embedding_mode_label}[/cyan])..."
+                )
+                entity_repository = EntityRepository(project_id=proj.id)
+                search_repository = create_search_repository(
+                    session_maker, project_id=proj.id, app_config=app_config
+                )
+                project_path = Path(proj.path)
+                entity_parser = EntityParser(project_path)
+                markdown_processor = MarkdownProcessor(entity_parser, app_config=app_config)
+                file_service = FileService(project_path, markdown_processor, app_config=app_config)
+                search_service = SearchService(
+                    search_repository,
+                    entity_repository,
+                    file_service,
+                    session_maker=session_maker,
+                )
+
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    BarColumn(),
+                    TaskProgressColumn(),
+                    console=console,
+                ) as progress:
+                    task = progress.add_task("  Embedding entities...", total=None)
+
+                    def on_progress(entity_id, index, total):
+                        embedding_progress = EmbeddingProgress(
+                            entity_id=entity_id,
+                            completed=index,
+                            total=total,
+                        )
+                        # Trigger: repository progress now reports terminal entity completion.
+                        # Why: operators need to see finished embedding work rather than
+                        # entities merely entering prepare.
+                        # Outcome: the CLI bar advances steadily with real completed work.
+                        progress.update(
+                            task,
+                            total=embedding_progress.total,
+                            completed=embedding_progress.completed,
+                        )
+
+                    stats = await search_service.reindex_vectors(
+                        progress_callback=on_progress,
+                        force_full=full,
+                    )
+                    # Entities still owed chunks are not finished, so the bar stops
+                    # short of 100% instead of claiming work it did not do (#1726).
+                    progress.update(
+                        task,
+                        total=stats["total_entities"],
+                        completed=stats["total_entities"] - stats["deferred"],
+                    )
+
+                if stats["search_rows_restored"]:
+                    console.print(
+                        f"  [dim]{stats['search_rows_restored']} entities had no search rows; "
+                        "restored before embedding[/dim]"
+                    )
+
+                # Trigger: the host cannot load sqlite-vec, so search runs keyword-only
+                #          (#711) and the vector rebuild returned without an index or model.
+                # Why: there is nothing to report as done or failed (#1743).
+                # Outcome: say embeddings were skipped; the full-text index still serves.
+                if stats["vector_index"] is None:
+                    console.print(
+                        "  [yellow]skipped[/yellow] Embeddings skipped: semantic search is "
+                        "unavailable on this host, so search is keyword-only"
+                    )
+                else:
+                    embedding_status = (
+                        "[yellow]incomplete[/yellow] Embeddings incomplete"
+                        if stats["deferred"]
+                        else "[green]done[/green] Embeddings complete"
+                    )
+                    console.print(
+                        f"  {embedding_status} "
+                        f"([cyan]index={escape(stats['vector_index'])}[/cyan], "
+                        f"[cyan]model={escape(stats['embedding_model'])}[/cyan]): "
+                        f"{stats['embedded']} entities embedded, "
+                        f"{stats['skipped']} skipped, "
+                        f"{stats['errors']} errors, "
+                        f"{stats['deferred']} with pending chunks"
+                    )
+                if stats["sample_errors"]:
+                    console.print(
+                        "  [yellow]Representative error:[/yellow] "
+                        f"{escape(_reindex_error_summary(stats['sample_errors'][0]))}"
+                    )
+                embedding_entities_total += stats["total_entities"]
+                embedding_errors_total += stats["errors"]
+                if stats["deferred"]:
+                    incomplete_projects.append(proj.name)
+                if stats["total_entities"] == 0 and not search:
+                    # Trigger: embeddings-only mode found no database entities.
+                    # Why: this mode rebuilds derived vectors; it does not discover files.
+                    # Outcome: explain the prerequisite instead of reporting a silent no-op.
+                    console.print(
+                        "  [yellow]No indexed entities found.[/yellow] "
+                        "[cyan]--embeddings[/cyan] only processes notes already in the "
+                        "database. Run [green]bm reindex[/green] to index project files first, "
+                        "or start the MCP server and retry after its initial index completes."
+                    )
+
+        # Trigger: every entity attempted across the selected projects failed to embed.
+        # Why: requested search work and other project summaries must still finish first.
+        # Outcome: the command preserves useful output but no longer reports false success.
+        if embedding_entities_total > 0 and embedding_errors_total == embedding_entities_total:
+            console.print("\n[red]Reindex failed: all vector embedding attempts failed.[/red]")
+            raise typer.Exit(code=1)
+
+        # Trigger: an embedding drain stopped while entities still had pending chunks.
+        # Why: deferred work is neither embedded nor failed; reporting success would
+        # hide missing vectors from semantic search (#1726).
+        # Outcome: name the projects, point at the incremental run that continues
+        # from the stored chunks, and exit non-zero so scripts notice.
+        if incomplete_projects:
+            console.print(
+                "\n[yellow]Reindex incomplete: some entities still have pending chunks.[/yellow]"
+            )
+            for name in incomplete_projects:
+                console.print(
+                    "  Continue with "
+                    f"[green]{literal(shell_command('bm', 'reindex', '--embeddings', '--project', name))}[/green] "
+                    "(without --full, which would start over)."
+                )
+            raise typer.Exit(code=1)
+
+        # Trigger: some files failed to index in the full-text pass.
+        # Why: those notes have no entity or search row, so reporting success would
+        #      hide notes that search cannot find (#1742).
+        # Outcome: name the projects and exit non-zero so scripts notice.
+        if failed_file_projects:
+            console.print("\n[yellow]Reindex incomplete: some files could not be indexed.[/yellow]")
+            for name in failed_file_projects:
+                console.print(f"  Fix the files listed under [cyan]{literal(name)}[/cyan].")
+            raise typer.Exit(code=1)
+
+        console.print("\n[green]Reindex complete![/green]")
+    finally:
+        await db.shutdown_db()

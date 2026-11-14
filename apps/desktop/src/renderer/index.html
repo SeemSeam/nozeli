@@ -115,6 +115,7 @@
         <button type="button" data-settings-section="settings-provider">AI 连接与账号</button>
         <button type="button" data-settings-section="settings-models">默认模型</button>
         <button type="button" data-settings-section="settings-agents">Agent 资源</button>
+        <button type="button" data-settings-section="settings-admin">管理助手</button>
         <button type="button" data-settings-section="settings-general">快捷键与初始化</button>
         <button type="button" data-settings-section="settings-recovery">本机恢复 <span class="badge" id="settings-recovery-count" hidden></span></button>
         <button type="button" data-settings-section="settings-help">帮助与演示</button>
@@ -132,6 +133,11 @@
         <section id="settings-provider" aria-label="账号与 API 源"></section>
         <section id="settings-models" aria-label="默认模型" hidden></section>
         <section id="settings-agents" aria-label="Agent 额度" hidden></section>
+        <section id="settings-admin" aria-label="管理助手" hidden>
+          <h3>Nozeli 管理助手</h3>
+          <p class="settings-hint">独立全局上下文，不读取当前项目材料。查看已登记项目和脱敏配置，准备并明确确认默认模型变更。</p>
+          <div class="settings-card"><h4>同一个管理会话</h4><p>开始页与此入口共享草稿和历史。管理助手使用独立模型；账号与密钥只在可信设置中管理。</p><button type="button" id="settings-open-admin">打开管理助手</button></div>
+        </section>
         <section id="settings-appearance" aria-label="外观" hidden></section>
         <section id="settings-reading-display" aria-label="阅读显示" hidden></section>
         <section id="settings-update" aria-label="应用更新" hidden></section>

@@ -1,0 +1,153 @@
+[project]
+name = "lancedb"
+# version in Cargo.toml
+dynamic = ["version"]
+dependencies = [
+    "deprecation>=2.1.0",
+    "numpy>=1.24.0",
+    "overrides>=0.7; python_version<'3.12'",
+    "packaging>=23.0",
+    "pyarrow>=16",
+    "pydantic>=2.7.4,<3",
+    "tqdm>=4.27.0",
+    "lance-namespace>=0.13.0"
+]
+description = "lancedb"
+authors = [{ name = "LanceDB Devs", email = "dev@lancedb.com" }]
+license = { file = "LICENSE" }
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = [
+    "data-format",
+    "data-science",
+    "machine-learning",
+    "arrow",
+    "data-analytics",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+]
+
+[project.urls]
+repository = "https://github.com/lancedb/lancedb"
+
+[project.optional-dependencies]
+pylance = [
+    # Keep the minimum in the bundled Lance major and compatible with tests below.
+    "pylance>=14.0.2",
+]
+# A library only needs the OpenTelemetry API; the application supplies and
+# configures the SDK (the actual exporter/reader). See
+# https://opentelemetry.io/docs/languages/python/instrumentation/
+otel = ["opentelemetry-api"]
+tests = [
+    "aiohttp>=3.9.0",
+    "boto3>=1.28.57",
+    "pandas>=1.4",
+    "pytest>=7.0",
+    "pytest-mock>=3.10",
+    "pytest-asyncio>=0.21",
+    "duckdb>=0.9.0",
+    "pytz>=2023.3",
+    "polars>=0.19, <=1.32.3",
+    "pyarrow<25",
+    "pyarrow-stubs>=16.0",
+    "pylance==14.0.2",
+    "requests>=2.31.0",
+    "datafusion>=54,<55",
+    "opentelemetry-sdk>=1.30.0",
+]
+dev = [
+    "ruff>=0.3.0",
+    "pre-commit>=3.5.0",
+    "pyright>=1.1.350",
+    'typing-extensions>=4.0.0; python_version < "3.11"',
+    "maturin>=1.10",
+]
+docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings-python"]
+clip = ["torch", "pillow>=12.1.1", "open-clip-torch"]
+siglip = ["torch", "pillow>=12.1.1", "transformers>=4.41.0","sentencepiece"]
+embeddings = [
+    "requests>=2.31.0",
+    "openai>=1.6.1",
+    "sentence-transformers>=2.2.0",
+    "torch>=2.0.0",
+    "pillow>=12.1.1",
+    "open-clip-torch>=2.20.0",
+    "cohere>=4.0",
+    "colpali-engine>=0.3.10",
+    "huggingface_hub>=0.19.0",
+    "InstructorEmbedding>=1.0.1",
+    "google-genai>=1.0.0",
+    "boto3>=1.28.57",
+    "awscli>=1.44.38",
+    "botocore>=1.31.57",
+    'ibm-watsonx-ai>=1.1.2; python_version >= "3.10"',
+    "ollama>=0.3.0",
+    "sentencepiece>=0.1.99"
+]
+azure = ["adlfs>=2024.2.0"]
+
+[tool.maturin]
+python-source = "python"
+module-name = "lancedb._lancedb"
+# uv installs the project as an editable package before `uv run`, so keep that
+# bootstrap build consistent with `maturin develop`.
+editable-profile = "dev"
+
+[build-system]
+requires = ["maturin>=1.10"]
+build-backend = "maturin"
+
+[tool.ruff.lint]
+select = ["F", "E", "W", "G", "PERF"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers --ignore-glob=lancedb/embeddings/*.py"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "asyncio",
+    "s3_test",
+]
+
+[tool.pyright]
+include = [
+    "python/lancedb/index.py",
+    "python/lancedb/rerankers/util.py",
+    "python/lancedb/rerankers/__init__.py",
+    "python/lancedb/rerankers/voyageai.py",
+    "python/lancedb/rerankers/typesafe.py",
+    "python/lancedb/rerankers/jinaai.py",
+    "python/lancedb/rerankers/openai.py",
+    "python/lancedb/rerankers/cross_encoder.py",
+    "python/lancedb/rerankers/colbert.py",
+    "python/lancedb/rerankers/answerdotai.py",
+    "python/lancedb/rerankers/cohere.py",
+    "python/lancedb/arrow.py",
+    "python/lancedb/__init__.py",
+    "python/lancedb/types.py",
+    "python/lancedb/integrations/__init__.py",
+    "python/lancedb/exceptions.py",
+    "python/lancedb/background_loop.py",
+    "python/lancedb/schema.py",
+    "python/lancedb/sql.py",
+    "python/lancedb/remote/__init__.py",
+    "python/lancedb/remote/errors.py",
+    "python/lancedb/embeddings/__init__.py",
+    "python/lancedb/_lancedb.pyi",
+    "python/type_tests/connect.py",
+]
+exclude = ["python/tests/"]
+pythonVersion = "3.13"

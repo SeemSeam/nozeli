@@ -16,6 +16,11 @@ function decode(cursor){
 // persisted index, jobs, dispatches or decisions are created by this adapter.
 export function projectProgress(controller,args={}){
  if(!args||!['list','detail'].includes(args.action)||Object.keys(args).some(key=>!['action','cursor','limit','workId'].includes(key)))fail('INVALID_PAYLOAD','进展工具仅支持 list/detail 只读参数');
+ // Strict transports materialize optional fields. Only selector placeholders,
+ // never arbitrary user text or unknown keys, are equivalent to omission.
+ args={...args};
+ for(const key of ['cursor','workId'])if(args[key]===null||args[key]==='')delete args[key];
+ if(args.limit===null)delete args.limit;
  if(args.limit!==undefined&&(!Number.isSafeInteger(args.limit)||args.limit<1||args.limit>50))fail('INVALID_PAYLOAD','limit 必须为 1–50');
  const state=controller.store.state,todos=state.todos.filter(t=>t.status==='open');
  const version=digest({project:controller.projectId,instance:state.workspaceId,works:state.works,receipts:state.receipts,todos,jobs:(state.jobs??[]).map(job=>[job.id,job.target,job.status,job.revision,job.interruptionReason,job.maintenanceBugId]),coldQueued:[...(controller.coldQueued??[])]});

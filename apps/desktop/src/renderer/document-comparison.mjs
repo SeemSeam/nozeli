@@ -1,3 +1,4 @@
+import {setUiHint} from './ui-tooltip.mjs';
 
 const $ = id => document.getElementById(id);
 export function versionCaption(version) {
@@ -79,7 +80,7 @@ export function mountDocumentComparison({ current, invoke, openSnapshot, toast }
     if (!result.ok) return toast(result.error.message);
     await openSnapshot(result.value, true, file);
   }
-  $('open-beside').title = '文档对比：其他文件或历史版本'; $('open-beside').setAttribute('aria-label', '文档对比');
+  setUiHint($('open-beside'), '文档对比：其他文件或历史版本'); $('open-beside').setAttribute('aria-label', '文档对比');
   $('open-beside').addEventListener('click', () => void open());
   $('beside-cancel').addEventListener('click', () => dialog.close());
   dialog.addEventListener('close', () => { if(!dialog.open)token++; });

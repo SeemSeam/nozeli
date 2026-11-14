@@ -4,16 +4,17 @@ import {demoChapters,demoIdentity,unwrapDemo,createDemoActions} from '../domain/
 const flow=demoChapters[0];
 export function createStartPage({project,start,browse,compact=false}){
   const root=document.createElement('section');root.className='guided-start'+(project?' guided-start-project':' guided-start-welcome')+(compact?' guided-start-compact':'');if(!compact)root.id='start-page';
-  const ideals=document.createElement('p');ideals.className='guided-start-ideals';ideals.textContent='直观 · 专注 · 控制';root.append(ideals);
+  if(!project){const ideals=document.createElement('p');ideals.className='guided-start-ideals';ideals.textContent='直观 · 专注 · 控制';root.append(ideals);}
   if(project){
-    const heading=document.createElement('h2');heading.textContent=compact||!browse?'此分区暂无内容':'未打开文件';
-    const description=document.createElement('p');description.className='guided-start-description';description.textContent=browse?(compact?'选择项目文件，在此分区打开。':'从项目中选择文件，开始阅读或编辑。'):'从主窗口打开文件。';root.append(heading,description);
+    const heading=document.createElement('h2');heading.textContent=compact||!browse?'此分区暂无内容':'打开一份文件';
+    const description=document.createElement('p');description.className='guided-start-description';description.textContent=browse?'从左侧选择项目文件，开始阅读或编辑。':'从主窗口打开文件，在此继续阅读。';root.append(heading,description);
   }
   const actions=document.createElement('div');actions.className='guided-start-actions';
   const button=(text,run,id,primary=false)=>{const b=document.createElement('button');b.type='button';b.textContent=text;if(id)b.id=id;if(primary)b.className='guided-start-primary';b.onclick=run;actions.append(b);return b;};
-  if(project){if(browse)button('浏览项目文件',browse,undefined,true).dataset.startBrowse='true';}
+  if(project){if(browse)button('浏览文件',browse,undefined,true).dataset.startBrowse='true';}
   else{button('打开本地项目',()=>document.getElementById('pick-project')?.click(),undefined,true);button('体验演示',start,compact?undefined:'start-demo-entry');}
   if(actions.children.length)root.append(actions);
+  if(project)return root;
   const viewer=document.createElement('dialog');viewer.className='guided-start-viewer';viewer.setAttribute('aria-label','功能图片');
   const header=document.createElement('header'),title=document.createElement('strong'),close=document.createElement('button');close.type='button';setActionButton(close,'close-view',{label:'关闭图片',text:''});close.onclick=()=>viewer.close();header.append(title,close);
   const zoom=document.createElement('nav'),scroll=document.createElement('div'),large=document.createElement('img');scroll.className='guided-start-image-scroll';scroll.tabIndex=0;scroll.setAttribute('aria-label','图片滚动区域');scroll.append(large);

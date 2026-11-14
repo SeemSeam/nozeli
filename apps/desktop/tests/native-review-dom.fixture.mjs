@@ -15,6 +15,8 @@ export async function startReviewDOM(directory){
  await build({absWorkingDir:root,stdin:{resolveDir:root,sourcefile:'review-dom-entry.mjs',contents:`
  import {mountManagedReview,flushManagedReviews,applyManagedReviewBarrier} from './src/renderer/managed-review.mjs';
  import {setActionButton} from './src/renderer/ui-actions.mjs';
+ import {setUiHint,getUiHint} from './src/renderer/ui-tooltip.mjs';
+ window.setUiHint=setUiHint;window.getUiHint=getUiHint;
  import './src/renderer/interface-appearance.css';
  window.setActionButton=setActionButton;
  import './src/renderer/styles.css';

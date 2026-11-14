@@ -1,0 +1,37 @@
+{
+  "previousCore": {
+    "ok": true,
+    "checks": [
+      "settings/project entry share retained management draft",
+      "read-only synthetic diagnostics",
+      "cancel preserves pending proposal",
+      "simulated apply and rollback",
+      "development binding required",
+      "candidate never installs"
+    ]
+  },
+  "entryAndModel": {
+    "ok": true,
+    "checks": [
+      "blank project home entry",
+      "settings first section is admin Agent",
+      "initial API/login setup entry",
+      "cancel does not configure connection",
+      "simulated API and login both reachable",
+      "admin model independent of project roles",
+      "source browsing alone does not replace saved model",
+      "return to original management draft"
+    ]
+  },
+  "finalTwoEntries": {
+    "ok": true,
+    "loginAndModelReturnDraft": true
+  },
+  "narrow": {
+    "width": 390,
+    "height": 844,
+    "scrollWidth": 390,
+    "composerBottom": 836
+  },
+  "scope": "Memory-only simulated connection/model settings; no real credentials, login or model calls"
+}

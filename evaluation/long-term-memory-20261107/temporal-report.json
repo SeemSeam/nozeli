@@ -1,0 +1,97 @@
+{
+  "scope": "Synthetic real SQLite bitemporal SQL smoke, not production API or semantic extraction",
+  "cases": [
+    {
+      "validAt": "2026-01-15",
+      "recordedBefore": "2026-02-10",
+      "includeConflicts": false,
+      "rows": [
+        [
+          "k-integrator",
+          1,
+          "欧拉法",
+          "confirmed",
+          "accept",
+          "2431705aad1f933f9b843c2c3945bf80ef050ff5311eba8d81d7fa044f3bc92d",
+          1
+        ]
+      ],
+      "expectedIDsAndRevisions": [
+        [
+          "k-integrator",
+          1
+        ]
+      ],
+      "exact": true
+    },
+    {
+      "validAt": "2026-02-03",
+      "recordedBefore": "2026-02-04",
+      "includeConflicts": false,
+      "rows": [],
+      "expectedIDsAndRevisions": [],
+      "exact": true
+    },
+    {
+      "validAt": "2026-02-03",
+      "recordedBefore": "2026-02-10",
+      "includeConflicts": false,
+      "rows": [
+        [
+          "k-integrator",
+          2,
+          "辛积分器",
+          "verified",
+          "discard",
+          "eed9ce3c170c089f3f98fa622b97b27d4e9bf67d577e62b0090b38172767fb14",
+          2
+        ]
+      ],
+      "expectedIDsAndRevisions": [
+        [
+          "k-integrator",
+          2
+        ]
+      ],
+      "exact": true
+    },
+    {
+      "validAt": "2026-02-03",
+      "recordedBefore": "2026-02-10",
+      "includeConflicts": true,
+      "rows": [
+        [
+          "k-conflict",
+          1,
+          "该条件下方法尚有冲突",
+          "conflict",
+          "unconfirmed",
+          "e3052201e69c355e0bb85120dd49659d39169cb93c8c21517b59fd5d3bf4e8ba",
+          1
+        ],
+        [
+          "k-integrator",
+          2,
+          "辛积分器",
+          "verified",
+          "discard",
+          "eed9ce3c170c089f3f98fa622b97b27d4e9bf67d577e62b0090b38172767fb14",
+          2
+        ]
+      ],
+      "expectedIDsAndRevisions": [
+        [
+          "k-conflict",
+          1
+        ],
+        [
+          "k-integrator",
+          2
+        ]
+      ],
+      "exact": true
+    }
+  ],
+  "outcomeDoesNotGateKnowledgeApproval": true,
+  "oldSourceRevisionDigestPreserved": true
+}

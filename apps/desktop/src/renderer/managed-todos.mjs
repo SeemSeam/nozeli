@@ -1,5 +1,6 @@
 import { mountContextMenu } from './context-menu.mjs';
 import { setActionButton } from './ui-actions.mjs';
+import { setUiHint, hideUiTooltip } from './ui-tooltip.mjs';
 import { managedInboxTodos, userTodoEligible, resultSettlementIssue } from '../domain/managed-work-records.mjs';
 import { todoCapabilities } from '../domain/todo-management.mjs';
 import { createMessageAttentionPresentation, occurrenceKey } from '../domain/attention-presentation.mjs';
@@ -39,10 +40,7 @@ export function mountManagedTodos({ document, invoke, openTodo, viewWork, recove
     if(header?.getClientRects().length)header.focus({preventScroll:true});
   });
   const summary=document.createElement('p');summary.id='managed-todo-summary';summary.hidden=true;list.before(summary);
-  const fullName=document.createElement('div');fullName.id='managed-todo-full-name';fullName.role='tooltip';fullName.hidden=true;document.body.append(fullName);
-  const hideName=()=>{fullName.hidden=true;};
-  function showName(button){fullName.textContent=button.getAttribute('aria-label');fullName.hidden=false;const box=button.getBoundingClientRect();fullName.style.maxWidth=Math.max(0,Math.min(400,window.innerWidth-24))+'px';fullName.style.left=Math.max(12,Math.min(box.left,window.innerWidth-fullName.offsetWidth-12))+'px';fullName.style.top=Math.max(12,Math.min(box.bottom+4,window.innerHeight-fullName.offsetHeight-12))+'px';}
-  list.addEventListener('scroll',hideName);document.addEventListener('keydown',event=>{if(event.key==='Escape')hideName();});
+  const hideName=()=>hideUiTooltip(document);
   for (const [value,label] of [['open','待处理'],['completed','历史']]) {
     const b = document.createElement('button'); b.type='button'; b.textContent=label; b.dataset.todoFilter=value;
     b.onclick=()=>{filter=value;count=50;paint();}; filters.append(b);
@@ -144,13 +142,12 @@ export function mountManagedTodos({ document, invoke, openTodo, viewWork, recove
       let row=existing.get(todo.id);
       if(!row){
         row=document.createElement('article');row.dataset.todoRow=todo.id;row.className='managed-todo-row';
-        const open=document.createElement('button');open.type='button';open.dataset.managedTodo=todo.id;open.setAttribute('aria-describedby',fullName.id);
+        const open=document.createElement('button');open.type='button';open.dataset.managedTodo=todo.id;
         const marker=document.createElement('span');marker.className='managed-todo-marker';marker.setAttribute('aria-hidden','true');
         const content=document.createElement('span');content.className='managed-todo-content';
         const title=document.createElement('strong');title.className='managed-todo-title';
         const secondary=document.createElement('span');secondary.className='managed-todo-secondary';
         const version=document.createElement('span'),chip=document.createElement('span'),action=document.createElement('span');version.className='managed-todo-version';chip.className='managed-todo-chip';action.className='managed-todo-action';secondary.append(version,chip,action);content.append(title,secondary);open.append(marker,content);
-        open.onpointerenter=()=>showName(open);open.onfocus=()=>showName(open);open.onpointerleave=hideName;open.onblur=hideName;
         const more=document.createElement('button');more.type='button';setActionButton(more,'more');more.dataset.todoMore=todo.id;more.setAttribute('aria-haspopup','menu');
         row.append(open,more);
       }
@@ -169,6 +166,7 @@ export function mountManagedTodos({ document, invoke, openTodo, viewWork, recove
       row.querySelector('.managed-todo-chip').textContent=todo.statusLabel;
       row.querySelector('.managed-todo-action').textContent=todo.actionLabel;
       open.setAttribute('aria-label',title+' · '+secondary);
+      setUiHint(open, open.getAttribute('aria-label'));
       const more=row.querySelector('[data-todo-more]');setActionButton(more,'more',{label:'更多操作：'+[title,todo.versionLabel].filter(Boolean).join(' · ')});more.disabled=open.disabled;more.onclick=()=>showMenu(todo,null,more);
       row.oncontextmenu=e=>showMenu(todo,e,e.target.closest('button')||open);row.onkeydown=e=>{if(e.key==='ContextMenu'||e.key==='Menu'||e.shiftKey&&e.key==='F10'){e.preventDefault();showMenu(todo,null,e.target.closest('button')||open);}};
       if(list.children[position]!==row)list.insertBefore(row,list.children[position]||null);

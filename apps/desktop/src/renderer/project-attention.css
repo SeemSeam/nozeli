@@ -22,7 +22,6 @@
 html[data-theme=dark] #app #recent [data-project-attention-badge] { --project-attention-fill:#ffaca6; --project-attention-ink:#461014; }
 #app #recent [data-project-attention-badge][hidden] { display:none; }
 .project-attention-description { position:absolute!important; width:1px!important; height:1px!important; padding:0!important; margin:-1px!important; overflow:hidden!important; clip-path:inset(50%); white-space:nowrap; border:0!important; }
-.project-attention-tooltip { position:fixed; z-index:10000; max-width:min(320px,calc(100vw - 16px)); padding:8px 10px; border:1px solid var(--line); border-radius:6px; background:var(--paper); color:var(--ink); font-size:13px; line-height:1.5; overflow-wrap:anywhere; pointer-events:none; }
 /* Reserve the narrow file toggle in the rail instead of covering a project midway. */
 #app.narrow-layout > .rail { padding-bottom:46px; position:relative; }
 #app.narrow-layout #file-toggle { top:auto; bottom:8px; left:8px; transform:none; width:36px; height:36px; min-height:36px; max-height:36px; }

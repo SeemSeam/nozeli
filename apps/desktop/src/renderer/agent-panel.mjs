@@ -4,13 +4,14 @@ import { renderTagMarkdown } from './tag-markdown.mjs';
 import './conversation-rendering.css';
 import {mountDemoConversation} from './guided-demo-conversation.mjs';
 import {setActionButton} from './ui-actions.mjs';
+import {setUiHint,getUiHint} from './ui-tooltip.mjs';
 const $ = (id) => document.getElementById(id);
 
 
 import {mountSettingsPanel} from './settings-panel.mjs';
 export function mountAgent({ invoke, toast, attachment, getProjectId, openManaged, openProjectFile, openExternal, openFrozenChange, onMessages = () => {}, subscribe = window.nozeli.subscribe }) {
   // Selection-menu tools and the composer send button are unified actions here;
-  // later title/disabled updates only carry state and never rewrite the icon.
+  // later hint/disabled updates only carry state and never rewrite the icon.
   for(const [id,action] of [['selection-draw','draw'],['selection-note','note'],['selection-discuss','discuss'],['selection-explain','explain'],['send-message','send']]){
     const button=$(id);if(button)setActionButton(button,action);
   }
@@ -91,9 +92,9 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
       if(await demo.bind(id)){
         if(id!==projectId||gen!==generation)return;
         managed.observeFixture(id,demo.state);
-        $('composer').readOnly=false;$('send-message').disabled=false;$('send-message').title='发送到离线演示源，不使用模型';
+        $('composer').readOnly=false;$('send-message').disabled=false;setUiHint($('send-message'),'发送到离线演示源，不使用模型');
         if(ownsConversation){$('submit-background').disabled=false;$('submit-background').title='提交到离线演示源，不使用模型。';}
-        $('selection-explain').disabled=false;$('selection-explain').title='演示选区解释 · 固定回复';
+        $('selection-explain').disabled=false;setUiHint($('selection-explain'),'演示选区解释 · 固定回复');
         setAi('离线演示 · 非原生 Agent','demo');return;
       }
       const initialized = await configuration.ready;
@@ -170,8 +171,8 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     $('submit-background').disabled=true;
     $('selection-discuss').disabled = false;
     $('selection-explain').disabled = true;
-    $('selection-explain').title = '请先完成配置并连接前台 Agent';
-    $('send-message').title = '前台尚未就绪';
+    setUiHint($('selection-explain'), '请先完成配置并连接前台 Agent');
+    setUiHint($('send-message'), '前台尚未就绪');
     setAi(id ? '正在加载项目会话；草稿不会自动发送。' : '尚未打开项目。', id ? 'pending' : 'unavailable');
     generation += 1;
     const gen = generation;
@@ -185,7 +186,7 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
   const agentSendGate = () => {
     const id = projectId;
     const gated = $('send-message').disabled;
-    if (!id || gated || (!managed.active&&!demo.active)) return { ok: false, message: '发送未发出：' + (!id ? '尚未打开项目。' : $('send-message').title || 'Agent 尚未就绪或当前内容只读。') };
+    if (!id || gated || (!managed.active&&!demo.active)) return { ok: false, message: '发送未发出：' + (!id ? '尚未打开项目。' : getUiHint($('send-message')) || 'Agent 尚未就绪或当前内容只读。') };
     return { ok: true, projectId: id };
   };
   window.__agentSelectionAction = async ({ action, excerpt, relPath, materialText, annotationRef, comment = '', background = false }) => {
@@ -213,7 +214,7 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     const reject = reason => { lastSubmissionNotice='发送未发出：'+reason+'；草稿与材料仍保留';$('compose-status').textContent=lastSubmissionNotice;toast(lastSubmissionNotice);return false; };
     if (!id) return reject('尚未打开项目');
     if (!managed.active&&!demo.active) return reject('Agent 尚未启用或连接，请完成配置并重试连接');
-    if ($('send-message').disabled) return reject($('send-message').title||'Agent 尚未就绪或当前内容只读');
+    if ($('send-message').disabled) return reject(getUiHint($('send-message'))||'Agent 尚未就绪或当前内容只读');
     if (materialsApi?.blocked()) return reject('有材料未就绪（失败/读取中），请先移除或重新添加再发送');
     const snap = materialsApi?.snapshot();
     const text = rawText;

@@ -5,7 +5,7 @@
 本 demo 不再持有第二份清单或图形。生产单源已落地：
 
 - `../../src/renderer/ui-actions.mjs`：生产双语动作清单（对象 `actionList`，按 key 索引；`actionGroups` 保留分组），含确认版 45 个动作与各分片新增的语义 key（jump-definition、diff-previous/diff-next、window-minimize/window-maximize、choose-comparison、focus-editor、show-conversation、browse-back/browse-forward、reload、stop-load、open-project、cancel-drawing、remove-tag、parent-directory）。`setActionButton(button,key,{label,text,locale})` 负责图形、展示策略、双语标签、aria 与悬停/键盘提示；`text:''` 强制纯图标，`label` 覆写 aria 与提示文案并保留具体对象。
-- 当前62个动作；补充通用 `copy` 后，代码块复制不再手写“⧉/✓/!”字符。运行时连接／发送对象更新的 title 优先于目录初始提示，仍保留完整目录说明。
+- 当前62个动作；补充通用 `copy` 后，代码块复制不再手写“⧉/✓/!”字符。运行时连接／发送说明通过 `setUiHint/getUiHint` 更新，不使用title；统一图标按钮移除原生title，避免双重提示。
 - `../../src/renderer/ui-icons.mjs`：唯一图形定义。确认版9个官方SVG已并入生产，另有 corner-up-right、folder-open、rotate-cw、copy。本demo的 `icons/` 与独立许可证副本已移除，许可统一保留在 `../../src/renderer/workspace-conversation-controls.LICENSE`。
 - `../../src/renderer/ui-tooltip.mjs`：每 document 单例事件委派提示。demo 按钮与页面不再各自挂监听；Escape 关闭、不抢焦点、disabled/移除节点不留孤立提示。demo 仅保留一份 `.ui-tooltip` 主题样式以配合本页配色。
 

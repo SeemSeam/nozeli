@@ -14,6 +14,7 @@ export async function createTexPersistFixture({context={project:{id:'project-a'}
   before(...values){this.beforeNodes=values;}
   replaceChildren(...values){this.children=[];this.append(...values);}
   setAttribute(k,v){this.attrs[k]=String(v);}
+  removeAttribute(k){delete this.attrs[k];}
   addEventListener(type,fn){const list=this.handlers.get(type)||[];list.push(fn);this.handlers.set(type,list);}
   removeEventListener(type,fn){this.handlers.set(type,(this.handlers.get(type)||[]).filter(x=>x!==fn));}
   querySelector(selector){if(selector==='.compare-switch')return this.compareSwitch??=new Element();return null;}

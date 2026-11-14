@@ -1,5 +1,6 @@
 import './management-presentation.css';
 import {setActionButton} from './ui-actions.mjs';
+import {setUiHint,getUiHint} from './ui-tooltip.mjs';
 import { appendDrawingMaterial } from '../domain/drawing-delivery.mjs';
 import {createSessionStore,sessionMessages} from './session-store.mjs';
 import {createIdentityHydration,createProjectFiles,bindComposerDrafts} from './surface-identity-state.mjs';
@@ -259,7 +260,7 @@ async function openWorkReport(workId){
  function updateBackgroundSubmit(){
   backgroundSubmit.disabled=!ownsConversation||backgroundSubmitting||$('send-message').disabled;
   backgroundSubmit.textContent=backgroundSubmitting?'正在提交…':'提交后台';
-  backgroundSubmit.title=backgroundSubmitting?'正在等待宿主接收；草稿与材料尚未清除。':$('send-message').disabled?$('send-message').title:'将当前要求和材料直接交给主控创建后台任务，不先发送给前台。';
+  backgroundSubmit.title=backgroundSubmitting?'正在等待宿主接收；草稿与材料尚未清除。':$('send-message').disabled?getUiHint($('send-message')):'将当前要求和材料直接交给主控创建后台任务，不先发送给前台。';
  }
  const collaboration=mountCollaborationStatus({root:$('conversation-panel')??$('conversation'),after:$('compose-form'),call,current:()=>ownsConversation&&active&&!fixtureMode&&!viewed?.history?{projectId,target}:null,onSelect:select,toast});
  const controlContext=()=>({projectId,generation});
@@ -592,7 +593,7 @@ async function openWorkReport(workId){
  }
  function lockHistory(){
   const locked=Boolean(viewed?.history);document.body.dataset.managedHistory=String(locked);$('compose-form').inert=locked;
-  if(locked){$('composer').disabled=true;$('send-message').disabled=true;$('send-message').title='当前历史内容只读，请返回原对话后发送。';toolbar.hidden=false;toolbar.replaceChildren();toolbar.textContent=viewed.historyLabel+' · 只读，不发送或处理任务';toolbar.append(button('返回原对话',leaveHistory));}
+  if(locked){$('composer').disabled=true;$('send-message').disabled=true;setUiHint($('send-message'),'当前历史内容只读，请返回原对话后发送。');toolbar.hidden=false;toolbar.replaceChildren();toolbar.textContent=viewed.historyLabel+' · 只读，不发送或处理任务';toolbar.append(button('返回原对话',leaveHistory));}
   updateBackgroundSubmit();
  }
  async function openHistory(item,version){
@@ -656,7 +657,7 @@ async function openWorkReport(workId){
   runtimeControls.update({active,ownsConversation,projectId,history:Boolean(viewed?.history)});
   $('ai-status').textContent=`${name(target)} · ${lifecycle.reason||progress.requests[0]?.text||'已就绪'} · ${progress.summary}`;$('ai-status').dataset.state=lifecycle.state;
   const canSend=lifecycle.canSend||lifecycle.state==='ready';$('selection-explain').disabled=!canSend;
-  $('composer').disabled=Boolean(viewed?.readOnly);$('send-message').disabled=!canSend;$('send-message').title=canSend?menuShortcut('发送（Ctrl/Cmd+Enter）'):lifecycle.reason;
+  $('composer').disabled=Boolean(viewed?.readOnly);$('send-message').disabled=!canSend;setUiHint($('send-message'),canSend?menuShortcut('发送（Ctrl/Cmd+Enter）'):lifecycle.reason);
   updateBackgroundSubmit();
   if(viewed?.readOnly){const back=button('回到前台讨论',()=>{select('frontdesk');$('composer').disabled=false;});toolbar.append(back);}
   updateReviewActions();

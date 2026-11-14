@@ -1,3 +1,5 @@
+import { setUiHint, hideUiTooltip } from './ui-tooltip.mjs';
+
 export const PROJECT_ATTENTION_TTL = 60_000;
 
 export function projectAttentionView(entry, now = Date.now()) {
@@ -113,8 +115,7 @@ export function mountProjectAttention({document, window, invoke, subscribe, curr
   document.getElementById('app').classList.add('has-project-attention');
   const live = document.createElement('p'); live.id = 'project-attention-live'; live.className = 'project-attention-description';
   live.setAttribute('role','status'); live.setAttribute('aria-live','polite'); live.setAttribute('aria-atomic','true'); document.body.append(live);
-  const tooltip = document.createElement('div'); tooltip.id = 'project-attention-tooltip'; tooltip.className = 'project-attention-tooltip'; tooltip.role = 'tooltip'; tooltip.hidden = true; document.body.append(tooltip);
-  let tooltipButton = null, announcementTimer = null, lastAnnouncement = 0, composing = false;
+  let announcementTimer = null, lastAnnouncement = 0, composing = false;
   const updates = new Map(), baseline = new Map(), quiet = new Map();
   const meaningful = (old, view) => view.state !== 'live' && old.state === 'live' || view.state === 'live' && (view.count > old.count || view.count === 0 && old.count > 0);
   const store = createProjectAttentionStore({invoke, changed:paint});
@@ -150,17 +151,8 @@ export function mountProjectAttention({document, window, invoke, subscribe, curr
     const description = [entry.project.available ? '' : '项目目录不可用，可右键重试或移除入口', action, view.count > 0 ? '需要处理，不代表执行失败' : '', entry.row ? '最近确认：'+entry.row.observedAt : '', entry.sidebarMismatch ? '与当前待办清单尚未对齐，正在核对' : '', entry.error].filter(Boolean).join('。');
     button.querySelector('[data-project-attention-description]').textContent = description;
     button.setAttribute('aria-label', `${entry.project.name || '项目'}，${view.label}${button.getAttribute('aria-busy') === 'true' ? '，正在切换' : ''}`);
-    button.title = `${entry.project.name || '项目'}，${view.label}。${description}`;
-    if (tooltipButton === button && !tooltip.hidden) tooltip.textContent = button.title;
+    setUiHint(button, `${entry.project.name || '项目'}，${view.label}。${description}`);
   }
-  function showTooltip(button) {
-    tooltipButton = button; tooltip.textContent = button.title; tooltip.hidden = false;
-    const rect = button.getBoundingClientRect(); tooltip.style.left = Math.max(8, Math.min(rect.right + 8, window.innerWidth - tooltip.offsetWidth - 8))+'px';
-    tooltip.style.top = Math.max(8, Math.min(rect.top, window.innerHeight - tooltip.offsetHeight - 8))+'px';
-  }
-  function hideTooltip() {tooltip.hidden = true; tooltipButton = null;}
-  host.addEventListener('scroll', hideTooltip);
-  document.addEventListener('keydown', event => {if (event.key === 'Escape') hideTooltip();});
   document.addEventListener('compositionstart', () => {composing = true; refresh.wake();});
   document.addEventListener('compositionend', () => {composing = false; refresh.wake(); scheduleAnnouncement();});
   function resume() {if (!document.hidden && document.hasFocus()) {request([...store.entries.keys()], false); scheduleAnnouncement();} else refresh.wake();}
@@ -179,8 +171,8 @@ export function mountProjectAttention({document, window, invoke, subscribe, curr
       const badge = document.createElement('span'); badge.dataset.projectAttentionBadge = ''; badge.dataset.projectAttentionCount = ''; badge.setAttribute('aria-hidden','true'); badge.hidden = true;
       const description = document.createElement('span'); description.dataset.projectAttentionDescription = ''; description.className = 'project-attention-description'; description.id = 'project-attention-description-'+button.dataset.projectId;
       button.setAttribute('aria-describedby',description.id); button.append(initial,badge,description);
-      button.addEventListener('pointerenter', () => showTooltip(button)); button.addEventListener('pointerleave', hideTooltip);
-      button.addEventListener('focus', () => {button.scrollIntoView({block:'nearest',inline:'nearest'}); showTooltip(button);}); button.addEventListener('blur',hideTooltip);
+      button.dataset.uiHintPlacement = 'right';
+      button.addEventListener('focus', () => button.scrollIntoView({block:'nearest',inline:'nearest'}));
     },
     sync(projects) {
       store.sync(projects);
@@ -192,7 +184,7 @@ export function mountProjectAttention({document, window, invoke, subscribe, curr
     reveal(projectId, trigger) {
       const view = projectAttentionView(store.entries.get(projectId));
       if (projectId !== currentProject() || view.state === 'live' && view.count === 0) return false;
-      updates.delete(projectId); quiet.set(projectId,Date.now()+10000); hideTooltip();
+      updates.delete(projectId); quiet.set(projectId,Date.now()+10000); hideUiTooltip(document);
       document.dispatchEvent(new CustomEvent('nozeli-reveal-project-todos',{detail:{projectId,trigger}}));
       request([projectId],false); return true;
     }

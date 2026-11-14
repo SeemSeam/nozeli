@@ -15,7 +15,7 @@
 //   tooltip:false marks user-confirmed icon-only actions (delete/reconnect/
 //   accept): accurate zh/en labels stay in aria-label, no hover/focus hint.
 import {setIconButton} from './ui-icons.mjs';
-import {mountUiTooltip} from './ui-tooltip.mjs';
+import {setUiHint} from './ui-tooltip.mjs';
 
 // [key, glyph|null, presentation, zh label, en label, zh hint, en hint]
 // Rows without dedicated hints intentionally reuse their labels as hints.
@@ -111,9 +111,9 @@ export const actionList = Object.fromEntries(actionGroups.flatMap(group => group
 //   label: overrides the accessible name AND the hover/focus tooltip, so the
 //     caller can carry the concrete object and consequences (e.g. 关闭 methods.md).
 //   text: visible caption; text:'' forces pure icon even for label/text actions.
-// Re-rendering the SAME key without label preserves caller-owned title/aria/
-// hint state: production code stores real rejection reasons in button.title
-// and the catalog default must never overwrite them; pass label to rewrite.
+// Re-rendering the same key without label preserves caller-owned aria/hint
+// state. Live routing and rejection reasons use setUiHint/getUiHint rather
+// than native title; pass label to rewrite both name and initial hint.
 // Business handling (onclick, aria-pressed, disabled, extra classes such as
 // ui-danger) stays with the caller; existing classes are never rewritten.
 export function setActionButton(button, key, {label, text, locale = 'zh-CN'} = {}) {
@@ -134,15 +134,10 @@ export function setActionButton(button, key, {label, text, locale = 'zh-CN'} = {
     button.replaceChildren(span);
     button.classList.remove('ui-icon-button');
     button.classList.add('ui-icon-label');
-    if (refresh) { if (button.title !== name) button.title = name; button.setAttribute('aria-label', name); }
-    mountUiTooltip(button.ownerDocument);
+    if (refresh) button.setAttribute('aria-label', name);
   }
-  if(refresh)button.dataset.uiHintTitle=button.title || '';
   if (action.tooltip && hint) {
-    if (refresh || !button.dataset.uiHint) button.dataset.uiHint = hint;
-  } else {
-    delete button.dataset.uiHint;
-    if (!action.tooltip && refresh) button.removeAttribute('title'); // icon-only: no redundant tooltip
-  }
+    if (refresh || !button.dataset.uiHint) setUiHint(button,hint);
+  } else setUiHint(button,null);
   return button;
 }

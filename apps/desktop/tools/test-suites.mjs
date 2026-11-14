@@ -58,6 +58,8 @@ const SUITES = {
     description: 'pure logic, plain Node, no fs writes / subprocesses / GUI / credentials',
     files: [
       'app-menu.test.mjs',
+      'admin-agent-ui.test.mjs',
+      'admin-operations.test.mjs',
       'application-singleton.test.mjs',
       'archify-diagram.test.mjs',
       'attention-dialogue.test.mjs',
@@ -86,6 +88,7 @@ const SUITES = {
       'source-page-window-environment.test.mjs',
       'management-presentation.test.mjs',
       'native-review-discussion.test.mjs',
+      'native-tooltip.test.mjs',
       'review-discussion-environment.test.mjs',
       'main-startup-recovery.test.mjs',
       'managed-context-budget.test.mjs',
@@ -139,6 +142,8 @@ const SUITES = {
       'terminal-screen.test.mjs',
       'tex-inference.test.mjs',
       'tex-workspace-persist.test.mjs',
+      'search-surface.test.mjs',
+      'project-search-sessions.test.mjs',
       'update-lifecycle.test.mjs',
       'web-discussion-panel.test.mjs',
       'web-window-clip.test.mjs',
@@ -154,6 +159,7 @@ const SUITES = {
     description: 'real temp files / Git / storage under plain Node; isolated mkdtemp roots; no GUI, no model provider',
     files: [
       'acceptance-request-control.test.mjs',
+      'admin-agent.test.mjs',
       'agent-control.test.mjs',
       'agent-idle-lifecycle.test.mjs',
       'agent-legacy-quota.test.mjs',
@@ -213,6 +219,8 @@ const SUITES = {
       'managed-file-refresh.test.mjs',
       'managed-frontdesk-progress.test.mjs',
       'managed-frontdesk-read.test.mjs',
+      'project-search.test.mjs',
+      'search-document-text.test.mjs',
       'managed-frontdesk-transfer.test.mjs',
       'managed-frontgoal-targets.test.mjs',
       'managed-input-boundaries.test.mjs',
@@ -347,6 +355,7 @@ const SUITES = {
     description: 'lightweight CI smoke: actual Electron no-model startup, synthetic project registration, file browse, native edit, clean close, cold-restart persistence (headless by default, Xvfb compatible)',
     files: [
       'desktop-ci-smoke.mjs',
+      'desktop-project-search-live.mjs',
       'desktop-ppt-pending-text-live.mjs',
       'renderer-projection-coalescing.test.mjs',
       'desktop-collaboration-status.test.mjs',
@@ -365,6 +374,7 @@ const SUITES = {
   live: {
     description: 'actual Pi SDK owners with deterministic loopback HTTP, real files and private sessions; explicit opt-in, no paid model',
     files: [
+      'admin-native-session-live.mjs',
       'agent-control-electron-live.mjs',
       'agent-control-pi-live.mjs',
       'desktop-maintenance-live.mjs',
@@ -378,6 +388,7 @@ const SUITES = {
       'desktop-workspace-drawing-background-live.mjs',
       'desktop-tag-interactions-live.mjs',
       'desktop-timeline-order-live.mjs',
+      'desktop-admin-agent-live.mjs',
       'desktop-review-discussion-live.mjs',
       'frontdesk-skills-live.mjs',
       'pi-native-tools-live.mjs',

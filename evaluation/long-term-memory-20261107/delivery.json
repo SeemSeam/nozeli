@@ -1,0 +1,16 @@
+{
+  "status": "research-and-isolated-evaluation-complete; production-cutover-not-authorized-or-performed",
+  "mainReport": "docs/long-term-memory-evaluation.md",
+  "updatedDesignEntrypoints": ["docs/orchestrator-long-term-design.md", "docs/role-memory-skills-design.md"],
+  "recommendedAuthority": "existing Nozeli project.sqlite plus existing immutable objects; incremental knowledge transactions/outbox; rebuildable FTS5 CJK-bigram and explicit aliases",
+  "executionEvidence": ["evaluation/long-term-memory-20261107/runs/final-validated/report.json", "evaluation/long-term-memory-20261107/basic-memory/runs/final-validated/report.json", "evaluation/long-term-memory-20261107/embedded/runs/final-validated/report.json", "evaluation/long-term-memory-20261107/comparison.json", "evaluation/long-term-memory-20261107/audit/report.json", "evaluation/long-term-memory-20261107/temporal-report.json", "evaluation/long-term-memory-20261107/embedded/query-smoke.json", "evaluation/long-term-memory-20261107/lifecycle-reset-observed.json"],
+  "replayCommand": "python3 evaluation/long-term-memory-20261107/run.py --name independent-replay",
+  "offlineCandidate": "actual basic-memory==1.0.0, documented FASTMCP_CHECK_FOR_UPDATES=off, no network/model attempts in final run",
+  "retainedFailures": ["basic-memory/runs/final: MCP startup version check attempted PyPI and failed closed", "basic-memory/runs/final-offline-config: evaluation diagnostic-list aggregation AttributeError; fixed before final run"],
+  "executed": {"syntheticCorpusRows": 1000, "candidateScales": [10,100,1000], "officialCandidateGroups": 8, "officialFilesHashChecked": 223, "realSIGKILLRestartPhases": 4, "temporalSQLCases": 4, "unseenQuestionWordings": 3, "existingPermanentResetTestsPassed": 11},
+  "productionGatesUnverified": ["Electron/Pi memory adapter and incremental project DB/object transaction integration", "real LLM extraction and conflict detection quality", "real filesystem watcher and noncooperating concurrent-save protection", "native packaged Windows/macOS and production Electron SQLite compilation", "optional vector/graph/skill/cache derivatives (not in baseline)", "hardware power loss, disk-full/corrupt WAL and multi-device restore", "full native-run context-budget source continuation"],
+  "noProductSourceEdits": true,
+  "noDailyInstallOrRealProjectMigration": true,
+  "noCommitPushRelease": true,
+  "noUserMaterialsOrCredentialsOrPaidEndpoint": true
+}

@@ -1,7 +1,7 @@
 import {fieldRow, disclosure} from './management-presentation.mjs';
 
 const stateNames={sleeping:'休眠',waiting:'等待名额',reserved:'启动预留',starting:'启动中（已预留）',live:'存活',unconfirmed:'退出待确认（仍占用）',running:'运行中',idle:'空闲',closing:'关闭中'};
-const roleNames={frontdesk:'前台',orchestrator:'主控'};
+const roleNames={frontdesk:'前台',orchestrator:'主控',admin:'管理助手'};
 
 export function mountAgentSettings({invoke,container,getProjectId=()=>null}) {
   const node=(tag,text=null,attrs={})=>{const el=document.createElement(tag);if(text!=null)el.textContent=text;for(const [key,value] of Object.entries(attrs))el.setAttribute(key,value);return el;};

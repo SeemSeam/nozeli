@@ -617,6 +617,10 @@ export class OwnerRuntime {
       const runtimeImpl = async (options) => {
         const config = this.sessionConfig;
         const merged = { ...options };
+        // An application admin conversation keeps native storage separate from
+        // the shared credential/settings directory. Preserve the SDK manager
+        // on resume; only replace the driver's new-session default manager.
+        if(this.creatingAdminSession)merged.sessionManager=vendor.SessionManager.create(this.cwd,this.adminSessionDir);
         if(config.resources)merged.settingsManager=roleResourceSettings(options.settingsManager,options.cwd??this.cwd,this.agentDir);
         if (config.definitions.length > 0) {
           merged.customTools = [...(options.customTools ?? []), ...config.definitions];
@@ -760,6 +764,13 @@ export class OwnerRuntime {
 
   async start(params) {
     await this.ensureInitialized(params);
+    if(params.role==='admin'){
+      const home=typeof params.home==='string'?path.resolve(params.home):null;
+      if(!home||typeof params.sessionDir!=='string'||path.resolve(params.sessionDir)!==path.join(home,'sessions'))throw Object.assign(new Error('Admin requires its exact private native session directory'),{code:'PI_SESSION_SCOPE'});
+      this.adminSessionDir=path.resolve(params.sessionDir);
+      await mkdir(this.adminSessionDir,{recursive:true,mode:0o700});
+    }else if(params.sessionDir!==undefined)throw Object.assign(new Error('Explicit session directory is restricted to the application admin role'),{code:'PI_SESSION_SCOPE'});
+    else this.adminSessionDir=null;
     if (this.sessionRef) {
       throw Object.assign(new Error("owner already holds a session"), {
         code: "PI_OWNER_EXISTS",
@@ -799,13 +810,14 @@ export class OwnerRuntime {
     let probeEntries = null;
     if (typeof params.sessionFile === "string" && params.sessionFile) {
       sessionFile = path.resolve(params.sessionFile);
+      if(this.adminSessionDir&&path.dirname(sessionFile)!==this.adminSessionDir)throw Object.assign(new Error('Admin resume file is outside its private native session directory'),{code:'PI_SESSION_SCOPE'});
       if (!existsSync(sessionFile)) {
         throw Object.assign(new Error(`session file not found: ${sessionFile}`), {
           code: "PI_SESSION_FILE_NOT_FOUND",
         });
       }
     } else if (typeof params.sessionId === "string" && params.sessionId) {
-      sessionFile = SessionManager.findById(this.cwd, params.sessionId) ?? null;
+      sessionFile = SessionManager.findById(this.cwd, params.sessionId,this.adminSessionDir) ?? null;
       if (!sessionFile) {
         throw Object.assign(
           new Error(`session ${params.sessionId} not found under ${this.agentDir}`),
@@ -836,6 +848,8 @@ export class OwnerRuntime {
       snapshot = await this.driver.openSession({ workspaceId: workspace.workspaceId, sessionId });
       probeEntries = probe.getEntries();
     } else {
+      this.creatingAdminSession=!!this.adminSessionDir;
+      try{
       snapshot = await this.driver.createSession(workspace, {
         title: typeof params.role === "string" && params.role ? params.role : "nozeli",
         ...(model?.provider && model?.modelId
@@ -843,6 +857,7 @@ export class OwnerRuntime {
           : {}),
         ...(params.effort ? { initialThinkingLevel: params.effort } : {}),
       });
+      }finally{this.creatingAdminSession=false;}
       sessionId = snapshot.ref.sessionId;
     }
 

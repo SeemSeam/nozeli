@@ -158,3 +158,9 @@ Nozeli-owned local React root; no upstream App, iframe chat, ConnectScreen, Agen
 | `src/tool-render/ToolView.tsx` | `a601a88d06a307e5106349e278719d400b583f7fe7b17029f920aed49320bbf9` | `session-timeline.mjs`: stateful tool-card chrome and lazily mounted tool output, host-projected tool data only |
 
 `react` and `react-dom` are exactly pinned to 19.2.0 (MIT), https://github.com/facebook/react/tree/v19.2.0; npm tarball integrity and transitive scheduler are retained by `package-lock.json`. Their installed LICENSE files are copied into renderer distribution alongside the Collab notice by `tools/build-renderer.mjs`. Existing safe `renderTagMarkdown`, KaTeX, code highlighting and file-icons remain the shared rendering implementation. Frozen diffs reuse installed CodeMirror MergeView, not prototype parsers or LCS. Browser source caches are projections only; native journal and host receipts remain authoritative.
+
+## Project search (2026-11-14 local integration)
+
+Pinned @vscode/ripgrep1.18.0 (MIT wrapper, https://github.com/microsoft/vscode-ripgrep) and current-target binary package; resolve process.platform/arch directly, no PATH fallback or runtime download. Keep only target platform when packaging and retain package licenses/notices. Linux target binary reports ripgrep15.0.0 rev3a612f88b8, SHA256 193906679498de4d939345b937fa24e0e69a03c244bd70c859f5e41232713f21. Upstream engine MIT/Unlicense and bundled PCRE2 notices remain applicable. Wrapper version differs from engine version; other platforms require actual qualification.
+
+PDF/Office search reuses pdfjs-dist6.4.299, JSZip and @xmldom/xmldom. PDF.js is now a production dependency because standalone host extraction imports its Node modules; existing Node runtime executes bounded short-lived parsers on frozen bytes. No Electron main PDF import, external converter, OCR, model request or persistent index service. This dependency closure is larger than the rg binary alone.

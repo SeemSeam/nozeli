@@ -9,8 +9,8 @@
   "entry": "src/owner.mjs",
   "files": {
     "src/owner.mjs": "c803a67966e52096b6a89795d055a98beaf18c6a6b583ecfe072cf023a498222",
-    "src/bridge.mjs": "14a03c9cd287191eff6acde1cf066a8bdbfde8a2fdb65aa39a385c8a9daccdc4",
-    "src/native-skills.mjs": "349ffd7f4c32ca9fe01a80eb06228069537e986859ff9e62e82bb1a586ec1178",
+    "src/bridge.mjs": "4e50f905a0e833b73cf3b9a99c4c4aae63c169a73968bb237259bf17a68f55b4",
+    "src/native-skills.mjs": "b4bda0a573b5123bca275c41188a5dfed8dece3576ed1c0076ee6c5a0ff5ac73",
     "src/activity.mjs": "57d0669ad412479a88a960f5c6c1a9d0a7ebf5efd763f50a676dfdc8404d1e45",
     "src/http-observer.mjs": "43bd80ce6635e3ef56108ea4bfcd985ac0fd086e403803b570049ac94c974263",
     "src/zai-coding-plan.mjs": "012f48b68017b1ece936caf828d60b9ddbd1f7e79942e262dbf16d0ed2994404",

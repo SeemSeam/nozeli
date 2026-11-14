@@ -85,27 +85,26 @@ try{
  const opened=[];
  for(const rel of files){
   await shell.locator('#file-filter').fill(rel);
-  await measure('open '+rel,async()=>{await shell.locator('#quick-open-results [data-open-target="current"][data-path="'+rel+'"]').click();const v=await scoped(s=>s.role==='surface'&&s.relPath===rel);opened.push({relPath:rel,viewId:v.scope.viewId,synthetic:false});});
+  await measure('open '+rel,async()=>{await shell.locator('#project-search-results [data-open-target="current"][data-path="'+rel+'"]').click();const v=await scoped(s=>s.role==='surface'&&s.relPath===rel);opened.push({relPath:rel,viewId:v.scope.viewId,synthetic:false});});
  }
  report.checks.push('four real public source/README files opened read-only from the isolated byte-identical copy');
- // Deterministic synthetic navigation stress (labeled): quick-open over 2500 small
+ // Deterministic synthetic navigation stress (labeled): inline file search over 2500 small
  // synthetic files, then open one synthetic document for the detach/dock cycles.
  const syntheticPath=syntheticRel(7);
  await measure('open '+syntheticPath+' (synthetic)',async()=>{
   await shell.locator('#file-filter').fill('synthetic-note-0007');
-  await shell.waitForFunction(()=>document.querySelector('#quick-open-results [data-open-target]')!==null);
-  await shell.locator('#quick-open-results [data-open-target="current"][data-path="'+syntheticPath+'"]').click();
+  await shell.waitForFunction(()=>document.querySelector('#project-search-results [data-open-target]')!==null);
+  await shell.locator('#project-search-results [data-open-target="current"][data-path="'+syntheticPath+'"]').click();
   const v=await scoped(s=>s.role==='surface'&&s.relPath===syntheticPath);opened.push({relPath:syntheticPath,viewId:v.scope.viewId,synthetic:true});
  });
  await phase('root',shell,'synthetic tree navigation filter (root renderer)',async()=>{
   for(const probe of ['synthetic-note-1249','synthetic-note-2499','synthetic-note-1000']){
-   const searchInput=await shell.$eval('#quick-open',dialog=>dialog.open)?'#quick-open-input':'#file-filter';
-   await shell.locator(searchInput).fill(probe);
-   await shell.waitForFunction(value=>[...document.querySelectorAll('#quick-open-results [data-open-target="current"]')].some(button=>button.dataset.path?.includes(value)),{},probe);
+   await shell.locator('#file-filter').fill(probe);
+   await shell.waitForFunction(value=>[...document.querySelectorAll('#project-search-results [data-open-target="current"]')].some(button=>button.dataset.path?.includes(value)),{},probe);
   }
   await shell.keyboard.press('Escape');
  });
- report.checks.push('quick-open navigation stays responsive across the labeled 2500-file synthetic stress tree');
+ report.checks.push('inline file search stays responsive across the labeled 2500-file synthetic stress tree');
  const source=opened[2],other=opened[3];let state=await layout();const initialGroups=layoutGroups(state).length;
  await measure('split-open x',async()=>{await context(source.viewId,'split-x');await until(async()=>layoutGroups(await layout()).length===initialGroups+1,'split-x');});
  await measure('split-open y',async()=>{await context(other.viewId,'split-y');await until(async()=>layoutGroups(await layout()).length===initialGroups+2,'split-y');});

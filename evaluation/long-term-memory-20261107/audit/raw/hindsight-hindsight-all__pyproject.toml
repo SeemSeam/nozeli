@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hindsight-all"
+version = "1.2.0"
+description = "Hindsight: Agent Memory That Learns - All-in-One Bundle"
+license = "MIT"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "hindsight-api-slim[all]==1.2.0",
+    "hindsight-client>=0.0.7",
+    "hindsight-embed==1.2.0",
+]
+
+[tool.uv.sources]
+hindsight-api-slim = { workspace = true }
+hindsight-client = { workspace = true }
+hindsight-embed = { workspace = true }
+
+[project.optional-dependencies]
+local-llm = [
+    "hindsight-api-slim[local-llm]==1.2.0",
+]
+test = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["hindsight"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

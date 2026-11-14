@@ -1,0 +1,6 @@
+.venv/
+home/
+cache/
+runs/
+__pycache__/
+guard/__pycache__/

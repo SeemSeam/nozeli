@@ -14,6 +14,25 @@ async function fixture(t) {
 }
 async function intent(storage){const rows=await storage.db.request(storage.catalog,'list',{collection:'initializations'});return rows.map(row=>row.value);}
 
+test('a fresh profile attaches verified metadata without replacing project identity or records',async t=>{
+ const {base,root,storage}=await fixture(t),original=await storage.register(root);
+ await storage.putProject(original.id,'managed_messages','user-record',{id:'user-record',projectId:original.id,text:'retained original'});
+ const manifest=await fs.readFile(path.join(original.metadataRoot,'project.json'));
+ const before=await fs.stat(original.metadataRoot);
+ const other=new ProjectStorage(path.join(base,'other-app'));t.after(()=>other.db.close());
+ const attached=await other.register(root);
+ assert.equal(attached.id,original.id);assert.notEqual(attached.instanceId,original.instanceId);
+ assert.equal((await fs.stat(original.metadataRoot)).ino,before.ino);
+ assert.deepEqual(await fs.readFile(path.join(original.metadataRoot,'project.json')),manifest);
+ assert.deepEqual(await other.getProject(attached.id,'managed_messages','user-record'),{id:'user-record',projectId:original.id,text:'retained original'});
+ assert.equal((await storage.requireOnline(original.id)).id,original.id);
+ await other.putLocal(attached.id,'view',{marker:'other profile'});
+ assert.equal(await storage.getLocal(original.id,'view'),null);
+ await other.db.close();const cold=new ProjectStorage(path.join(base,'other-app'));t.after(()=>cold.db.close());
+ assert.equal((await cold.register(root)).id,original.id);
+ assert.equal((await cold.requireRegistered(original.id)).instanceId,attached.instanceId);
+});
+
 for(const phase of ['prepared','staging','staged','source-preserved','published','complete']){
  test(`initialization resumes durable ${phase} checkpoint with the same identity`,async t=>{
   const {root,storage}=await fixture(t);await fs.writeFile(path.join(root,'original.txt'),'preserved\r\n');

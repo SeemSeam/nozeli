@@ -1,0 +1,22 @@
+{
+  "ok": true,
+  "out": "/tmp/nozeli-integrated-admin-mS0o5j",
+  "port": 39789,
+  "profile": "/tmp/nozeli-integrated-admin-mS0o5j/config/desktop",
+  "checks": [
+    "real production Nozeli shell and welcome entry",
+    "real settings navigation with first admin item",
+    "administrator model inside original default-model section",
+    "simulated API path to model then original draft",
+    "return restores original workspace, settings reopens same session",
+    "390px real surface fits composer"
+  ],
+  "geometry": {
+    "bottom": 835.3333435058594,
+    "height": 844,
+    "scroll": 390,
+    "width": 390
+  },
+  "errors": [],
+  "scope": "isolated Electron instance, Demo injected UI only, no real credentials/model/installation"
+}

@@ -16,7 +16,7 @@ export function roleResourceSettings(settings,cwd,agentDir){
  }});
 }
 export async function trustedRoleResources(role,catalog,rolePackageRoot){
- if(!['frontdesk','orchestrator','worker'].includes(role)||!Array.isArray(catalog)||typeof rolePackageRoot!=='string'||!path.isAbsolute(rolePackageRoot))throw invalid('Trusted host role package and catalog are required');
+ if(!['frontdesk','orchestrator','worker','admin'].includes(role)||!Array.isArray(catalog)||typeof rolePackageRoot!=='string'||!path.isAbsolute(rolePackageRoot))throw invalid('Trusted host role package and catalog are required');
  const names=new Set();
  const allowed=new Map();
  const loaded=[];
@@ -36,13 +36,13 @@ export async function trustedRoleResources(role,catalog,rolePackageRoot){
 }
 export function restrictedPolicy(mode,{maxTurns,maxToolCalls}={}){
  if(mode==null)return null;
- const defaults=mode==='project-initialization'?[12,24]:mode==='project-diagnosis'?[6,12]:null;
+ const defaults=mode==='project-initialization'||mode==='admin'?[12,24]:mode==='project-diagnosis'?[6,12]:null;
  if(!defaults)throw Object.assign(Error('Unknown restricted mode'),{code:'PI_INVALID_PARAMS'});
  const limit=(value,max)=>value===undefined?max:Number.isSafeInteger(value)&&value>0&&value<=max?value:(()=>{throw Object.assign(Error('Invalid restricted budget'),{code:'PI_INVALID_PARAMS'});})();
  return {mode,maxTurns:limit(maxTurns,defaults[0]),maxToolCalls:limit(maxToolCalls,defaults[1]),turns:0,toolCalls:0};
 }
 export function validateRestrictedTools(policy,tools){
- const names=policy.mode==='project-initialization'?['nozeli_project_inventory','nozeli_project_read','nozeli_project_map']:['nozeli_debug','nozeli_maintenance'];
+ const names=policy.mode==='admin'?['nozeli_admin_registry','nozeli_admin_configuration','nozeli_admin_prepare_defaults','nozeli_admin_suggest_project','nozeli_admin_suggest_settings']:policy.mode==='project-initialization'?['nozeli_project_inventory','nozeli_project_read','nozeli_project_map']:['nozeli_debug','nozeli_maintenance'];
  if(tools.some(tool=>!names.includes(tool.name)))throw Object.assign(Error('Unrestricted tool in restricted job catalog'),{code:'PI_INVALID_PARAMS'});
  return tools;
 }

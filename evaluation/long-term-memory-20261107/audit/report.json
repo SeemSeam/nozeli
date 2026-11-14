@@ -1,0 +1,1413 @@
+{
+  "kind": "offline-source-evidence-integrity-only",
+  "candidate_execution": false,
+  "model_calls": 0,
+  "installed_dependencies": [],
+  "corpus_used": false,
+  "performance_measured": false,
+  "candidates": [
+    {
+      "candidate": "hindsight",
+      "repo": "vectorize-io/hindsight",
+      "pin_ref": "v1.2.0",
+      "pin_commit": "34a138684a899b6ec34175f7a2b633860466d289",
+      "files": [
+        {
+          "file": "raw/hindsight-repository.json",
+          "url": "https://api.github.com/repos/vectorize-io/hindsight",
+          "sha256": "d3aa1cb3a3a4f8337c7b4bbe4ef0d0065909e93b48252a7f4c8d6660e239a562",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-latest_release.json",
+          "url": "https://api.github.com/repos/vectorize-io/hindsight/releases/latest",
+          "sha256": "2cbc8d7b312a9665a20de1a85099d12c722edd5d84ff99858b8c7e59e5cd19ef",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-head.json",
+          "url": "https://api.github.com/repos/vectorize-io/hindsight/commits/HEAD",
+          "sha256": "c614fceb74b11e435bb580472cc3d37113cd83106b9fc1362f0f92f0a203dccb",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-tree.json",
+          "url": "https://api.github.com/repos/vectorize-io/hindsight/git/trees/34a138684a899b6ec34175f7a2b633860466d289?recursive=1",
+          "sha256": "51fa91205f586f2c27079190d64d9a6944ab9eb4d04b623d53f719c84f542d70",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-LICENSE",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/LICENSE",
+          "sha256": "01fde0bedf83bdc185065d7af524a61690efe576a67f922eaff3a1280c17b63a",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-README.md",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/README.md",
+          "sha256": "a3e2745dedec4f9e0d4452857ef054699e60414740f5d8f12d41bd42711d476a",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-all-npm__package.json",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-all-npm/package.json",
+          "sha256": "3532198a149c01dd5c4ce7493ed419c498196cd2dff151464ecbc823a4d1101c",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-all-slim__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-all-slim/pyproject.toml",
+          "sha256": "0686cf1364483fe0bbd550d265554de735e5569f5f8e7d1c8fd98565d32b0d4b",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-all__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-all/pyproject.toml",
+          "sha256": "73cc5a5312a7a607f6553c069667210d4ee592efc336e3581187a3e3ec702920",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-api-slim__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-api-slim/pyproject.toml",
+          "sha256": "b0e856a440008f106a99872bf19b804038e8fa1ba4c07208b4ce43ede0804590",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-api__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-api/pyproject.toml",
+          "sha256": "6344cc706a82df58ca7da14aa2c7ea7673d8cfd14e627aaf1a417c5c97d32150",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-clients__python__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-clients/python/pyproject.toml",
+          "sha256": "41b6d39d9482cec34dfbc91c98d9767c5d941bdcb163cd7a5f52dc095cd01f5c",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-clients__typescript__package.json",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-clients/typescript/package.json",
+          "sha256": "d2fc6165e0b595c06e90c0375dbe92ab51c2e2ffcff754661244432ff8d3378d",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-control-plane__package.json",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-control-plane/package.json",
+          "sha256": "82ebe68d9f13d8dd08c2c61058ead0b8c7f8816772d470e195779343838479f9",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-dev__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-dev/pyproject.toml",
+          "sha256": "b4ec6d8ab078a837cbdbc39a6faff1d182f7db5fa22def760c8839d242fc0bb3",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-docs__package.json",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-docs/package.json",
+          "sha256": "98933235466fad78698f313d7e47145229f2709e5ae92e50ac0b42e9ca1e2f6c",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-embed__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-embed/pyproject.toml",
+          "sha256": "fe45450370930ff3520f10781bd49c1e1643783716cd7f9690fd4341b5db91a1",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-extensions__bank-llm-routing__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-extensions/bank-llm-routing/pyproject.toml",
+          "sha256": "95acb31144102819abb90e1cf5d720c0bee503bf0a674cd545a8fbb119f172d5",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-extensions__static-keys-tenant__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-extensions/static-keys-tenant/pyproject.toml",
+          "sha256": "0af48ccd3259184b5671fb7f37354b4d8833ef743247a81fb7f3a17e39bf9d16",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-extensions__supabase-tenant__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-extensions/supabase-tenant/pyproject.toml",
+          "sha256": "42c1a7023c8654bfada579c908a45d2787282d354d61bf3f7002da84e6f52131",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integration-tests__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integration-tests/pyproject.toml",
+          "sha256": "fa3aa51cdd9bf31346fbfabd058c306384d236f736b9207fa63cbd1253482507",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__ag2__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/ag2/pyproject.toml",
+          "sha256": "15d6063735dc9b3a90db19b23233082e823c16dddda9b91d7e09574ae38713d1",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__agent-framework__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/agent-framework/pyproject.toml",
+          "sha256": "5ab63d79aadf65a2c1e2de0bce3259402a034350383c4e5d35a9361ba928a519",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__agentcore__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/agentcore/pyproject.toml",
+          "sha256": "74632c74e7d8e45954fb3c8b359c42bf9c053c2e34b95edb91c2032fc82cc0ea",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__agno__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/agno/pyproject.toml",
+          "sha256": "46a7cc40bc476fd64b222c6ffacbbf2458ed44ba7cdf784c142d0b621287dfd1",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__ai-sdk__package.json",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/ai-sdk/package.json",
+          "sha256": "b8e26080dea59e7c3a652c70b09293d6b50014d474c97272d4f6351fb1b626e3",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__aider__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/aider/pyproject.toml",
+          "sha256": "7473524c7e0bcadaa881e8ba719b84e8ad9e29cc8dced9e09937d7d274998e02",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__autogen__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/autogen/pyproject.toml",
+          "sha256": "bf06dfa1a1a568c7a5e5ad21291b06633744a53d7f8e2749fffa31de36dbda6d",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__chat__package.json",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/chat/package.json",
+          "sha256": "6f4a6e79d39f7d6dca13497bb44f04da4505e7c8ba74341dff280e915a6de445",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__claude-agent-sdk__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/claude-agent-sdk/pyproject.toml",
+          "sha256": "bfb222affe59196f14ea0ceb9e871b4cd9d1fdd3db1d6846e609f6e611877f50",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__cloudflare-oauth-proxy__package.json",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/cloudflare-oauth-proxy/package.json",
+          "sha256": "6a8ea37bf7ea83e2b178a51ce0a396fcde29d98ea7a00672cfdd6f0556f2a6f4",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__coding-agents__package.json",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/coding-agents/package.json",
+          "sha256": "c7aaf5e49b4f639829e40d5d5a200159bd927bef5a38173645bef0f620bf1ef3",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__composio__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/composio/pyproject.toml",
+          "sha256": "b3ea5e8e4edf0866809e805dfe33f5a2fbbcc35f2aaf846d3a197e258055a3e8",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__continue__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/continue/pyproject.toml",
+          "sha256": "701ffe1bf304c14c6fa9f6a461f38655f2cfc88722f0accbf8f6d632a0ce1e7d",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__crewai__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/crewai/pyproject.toml",
+          "sha256": "5d1749ffa2ebbde3b8e0e5ee575b731a09a364b412316f5c3b64e8e57fceab92",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__cursor__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/cursor/pyproject.toml",
+          "sha256": "146f40e0d0fa0f6253513082b9376d9723355c87fcf2077a3cc0c12dd84cf608",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__devin-desktop__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/devin-desktop/pyproject.toml",
+          "sha256": "7f5df31d3c4124ce19f02bac95e0f8d244b4ec8e4811495a81f1cbf72f34295e",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__dify__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/dify/pyproject.toml",
+          "sha256": "e9300ff631ae9a420823634271478b7ac93150819c466c9bc9d8a1b314e5ffe2",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__eliza__package.json",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/eliza/package.json",
+          "sha256": "b477634006322b54190a9f535a935cb1360a4585f9a43ddf7877c33565738301",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__eve__package.json",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/eve/package.json",
+          "sha256": "ada9d7f9cdd1c2760b96ea75c7e5f21e69de11fa87802cd7f673216614250bab",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__flowise__package.json",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/flowise/package.json",
+          "sha256": "abad131c65c6011502c4562e3dcc0ca5db00f08df03ce741f48ecda7068459c5",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__gemini-spark__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/gemini-spark/pyproject.toml",
+          "sha256": "7249866c773311e3049d3f7947725654a376e72509e90d81dbfd8d73b516fadf",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__github-copilot__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/github-copilot/pyproject.toml",
+          "sha256": "2a840c352018ae3c1fcfe7ba6849bec0883654a41dc3417b32e260ecc276ecc1",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__google-adk__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/google-adk/pyproject.toml",
+          "sha256": "bc059fa107d13dfc9282826d2c6a85b55e54efa6aae5493e93941652f77b7363",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__haystack__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/haystack/pyproject.toml",
+          "sha256": "3eb2917985b0b2af270cc94b405faa2bcd3b60853c2d7ae23294a1267cc2f906",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__hermes__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/hermes/pyproject.toml",
+          "sha256": "ba9ae36f06f9475c3b70d84e8fced795539ca56b7a592fdf8fc9beddc3236602",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__langgraph__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/langgraph/pyproject.toml",
+          "sha256": "8a9d48d14b5b8ff3af274b538ffabf0a65b38bfb38ea14e06586935709418066",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__litellm__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/litellm/pyproject.toml",
+          "sha256": "7954e85f877e8d5673b18379eee0e1903428358dd378f20e8f51816c51399518",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__llamaindex__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/llamaindex/pyproject.toml",
+          "sha256": "4d3291cac8ccbde2a33cfdb64a847c213f52aaeff12c764e6a0679e40335f9fa",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__meta-muse__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/meta-muse/pyproject.toml",
+          "sha256": "9d35415581bd929892493d0b0e66e879c6b5f7f9d797a46aa0ce7020d4c47f45",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__n8n__package.json",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/n8n/package.json",
+          "sha256": "cfd67dccd0b7078d14460a929dea81182f1dfbe558de4882b5681bda645cea6c",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__nemoclaw__package.json",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/nemoclaw/package.json",
+          "sha256": "367680354b6d5a0163d1cdbfe571cf80fc394e13d90f6b41cbd3c6c18056e7f0",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__obsidian__package.json",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/obsidian/package.json",
+          "sha256": "5fee262c55a43a758a9933312cb7395eaa5033b97be3c2a966413b5f1c9f93d1",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__openai-agents__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/openai-agents/pyproject.toml",
+          "sha256": "8f45b3b698b721b2e53b4daff858582ff6e4953cff38277cfab59e725043d00f",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__openclaw__package.json",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/openclaw/package.json",
+          "sha256": "b5fd33e4612649ea83ebb10537d836ddea9dbf26bda5f6ed4eb94bf66e3269da",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__openhands__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/openhands/pyproject.toml",
+          "sha256": "f2a03c4512741e33d8bf5d42677ed3a9ab65c9da93776d1f8ca9bf561d4244dd",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__paperclip__package.json",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/paperclip/package.json",
+          "sha256": "f21ba340caaf52b8a5c798d24fe71155169a4a5eaed2c61d7b73e139e4be6229",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__pipecat__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/pipecat/pyproject.toml",
+          "sha256": "c98c1571fd0c415c898db6950d0cee726240028ca19dd1bfe601acfc83b94ca9",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__pydantic-ai__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/pydantic-ai/pyproject.toml",
+          "sha256": "d41372db7904a00e75ce3b7e1082af4ae29ea23c14fd6c94592abd3c31c9f479",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__roo-code__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/roo-code/pyproject.toml",
+          "sha256": "b4592f383158896ec9c0861d518ca85f004a501fdf1346afe8a52d76946f7dc9",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__smolagents__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/smolagents/pyproject.toml",
+          "sha256": "3b6aac769780dfef1ba606a83411e8860f01abdc569c1fd14f29a70a85fedd97",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__strands__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/strands/pyproject.toml",
+          "sha256": "1eb63acfa7148e64abe54147030dda080583baf4776f0a19f6a40ef9dd1da53b",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__superagent__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/superagent/pyproject.toml",
+          "sha256": "85a95d580961588dcdfb37ff28ea407b0eb78be2746a31840e35604a691a69f9",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__vapi__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/vapi/pyproject.toml",
+          "sha256": "f53408dd175606853944bbdd220e4041d3c575cfbde1fef9a6ab2cbface29ef2",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__zapier__package.json",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/zapier/package.json",
+          "sha256": "46d61bd2850082741a5593753e318d0ab428ad2a78513e5d5ec698d3e158c3be",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-integrations__zed__package.json",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-integrations/zed/package.json",
+          "sha256": "ec0b8f27155297209be53c8889e9665dc7648183d9ea3c6e4b1aedf895853988",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-system-evals__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-system-evals/pyproject.toml",
+          "sha256": "750eeb1d94512c67eb8814b39ba20a320008e7d3db1ee221c085a3cf234451f1",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-system-tests__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-system-tests/pyproject.toml",
+          "sha256": "e7926738054bfffb07c245cf9acc1b0f89e2529ef03520345ae9d74823c4648a",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-package.json",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/package.json",
+          "sha256": "77280237dda9832ae06c04d5c36980aabd182b7267d21262e2d4bd53d6287f32",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-pyproject.toml",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/pyproject.toml",
+          "sha256": "053f9add3a6a726254745493425967470b8da784b06bc766b6841b9449c5029e",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-docs__docs__developer__installation.md",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-docs/docs/developer/installation.md",
+          "sha256": "811f8946d14d9369641221e73311dd01feb1749f75e668f4c8903f45b8fd4612",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-api-slim__hindsight_api__config.py",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-api-slim/hindsight_api/config.py",
+          "sha256": "24124b4e60783482d57d54dc967641f49e62e81914082184306c2aacbe945901",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-all-npm__README.md",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-all-npm/README.md",
+          "sha256": "4ddcbdcb64ed3b8618339cb41c1a3b12c906c46ed8f74cbea63e61cc3d325610",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-all-npm__src__server.ts",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-all-npm/src/server.ts",
+          "sha256": "e5b22dbcd40047070527c975cfeb6e58066e2410b5469a856ef87998bcf1d4e1",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-api-slim__hindsight_api__engine__search__tags.py",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-api-slim/hindsight_api/engine/search/tags.py",
+          "sha256": "20de293c24d710589bfa32da3019073229c8f0144ebdd3429e70ca55ae876024",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-api-slim__hindsight_api__engine__document_history.py",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-api-slim/hindsight_api/engine/document_history.py",
+          "sha256": "b5da6d69997a39543ba14c5decedab8ca392c51c98763f26f3bfbe37ca72b7a5",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-docs__docs__developer__api__documents.mdx",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-docs/docs/developer/api/documents.mdx",
+          "sha256": "c73587c0fac24fddce5e44a4e7db9295b814abce21121d9ed5f4d1d3d6a35b66",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-all-npm__src__command.ts",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-all-npm/src/command.ts",
+          "sha256": "f07ad591c0021286bcbd3fbd1054777312e917367aee5cdc27469d3544f9d41d",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-embed__hindsight_embed__daemon_embed_manager.py",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-embed/hindsight_embed/daemon_embed_manager.py",
+          "sha256": "ca4be0d4a6be28f3bf7f674601e8fec6707779893622072592348e93ef2a53e7",
+          "matches": true
+        },
+        {
+          "file": "raw/hindsight-hindsight-embed__hindsight_embed__embed_manager.py",
+          "url": "https://raw.githubusercontent.com/vectorize-io/hindsight/34a138684a899b6ec34175f7a2b633860466d289/hindsight-embed/hindsight_embed/embed_manager.py",
+          "sha256": "80412280ba1fd9c27a3560d5379a75290e1b7682e4fde08ebe56f2d67284d257",
+          "matches": true
+        }
+      ]
+    },
+    {
+      "candidate": "memos",
+      "repo": "MemTensor/MemOS",
+      "pin_ref": "v2.0.34",
+      "pin_commit": "41bf5c7fa89ee08ebedf3c662638b06fc29aca8d",
+      "files": [
+        {
+          "file": "raw/memos-repository.json",
+          "url": "https://api.github.com/repos/MemTensor/MemOS",
+          "sha256": "5e54c4973f41ab60c4bee338297c45b0ff9a64ee1a7bbe25e8018222b3a3f344",
+          "matches": true
+        },
+        {
+          "file": "raw/memos-latest_release.json",
+          "url": "https://api.github.com/repos/MemTensor/MemOS/releases/latest",
+          "sha256": "e539e640c50b7a1eeda2bab93939eac896e94e2b0f186e84d1fa3e6361209ac9",
+          "matches": true
+        },
+        {
+          "file": "raw/memos-head.json",
+          "url": "https://api.github.com/repos/MemTensor/MemOS/commits/HEAD",
+          "sha256": "1ce1d83fbc2d3fbee82e79f7df910edac329567962bc0e5d1ae4ec1d49512b18",
+          "matches": true
+        },
+        {
+          "file": "raw/memos-tree.json",
+          "url": "https://api.github.com/repos/MemTensor/MemOS/git/trees/41bf5c7fa89ee08ebedf3c662638b06fc29aca8d?recursive=1",
+          "sha256": "b262795e46f0dde55321095ca81c9b96bb1a494a0d158c0664f76c2f82e26282",
+          "matches": true
+        },
+        {
+          "file": "raw/memos-LICENSE",
+          "url": "https://raw.githubusercontent.com/MemTensor/MemOS/41bf5c7fa89ee08ebedf3c662638b06fc29aca8d/LICENSE",
+          "sha256": "154f9be8df2d55ceddcd4646c8d8d4206d48867ae1da2b81ce2ab86b51a5f075",
+          "matches": true
+        },
+        {
+          "file": "raw/memos-README.md",
+          "url": "https://raw.githubusercontent.com/MemTensor/MemOS/41bf5c7fa89ee08ebedf3c662638b06fc29aca8d/README.md",
+          "sha256": "9c2ec97ba97e5371088e041d04085f70195b4626a9dcb517194f90b9495b30dc",
+          "matches": true
+        },
+        {
+          "file": "raw/memos-apps__MemOS-Cloud-OpenClaw-Plugin__package.json",
+          "url": "https://raw.githubusercontent.com/MemTensor/MemOS/41bf5c7fa89ee08ebedf3c662638b06fc29aca8d/apps/MemOS-Cloud-OpenClaw-Plugin/package.json",
+          "sha256": "de71798c83ff77c0c1c5e05896b197139ac2f82fbcbc7b7cf07cc46f10dc5d43",
+          "matches": true
+        },
+        {
+          "file": "raw/memos-apps__memos-local-openclaw__package.json",
+          "url": "https://raw.githubusercontent.com/MemTensor/MemOS/41bf5c7fa89ee08ebedf3c662638b06fc29aca8d/apps/memos-local-openclaw/package.json",
+          "sha256": "fb0702da62acbec6af038887269a1bf690e82500c4a800c1363e500dcf181b8c",
+          "matches": true
+        },
+        {
+          "file": "raw/memos-apps__memos-local-plugin__package.json",
+          "url": "https://raw.githubusercontent.com/MemTensor/MemOS/41bf5c7fa89ee08ebedf3c662638b06fc29aca8d/apps/memos-local-plugin/package.json",
+          "sha256": "ac4d7e8c8fc91c19a266485583a29a98d557e0f7631c78ae7d18659b872c1327",
+          "matches": true
+        },
+        {
+          "file": "raw/memos-apps__openwork-memos-integration__package.json",
+          "url": "https://raw.githubusercontent.com/MemTensor/MemOS/41bf5c7fa89ee08ebedf3c662638b06fc29aca8d/apps/openwork-memos-integration/package.json",
+          "sha256": "ca9e1c1f3daa58e0f23036be7e453e4f480dd6663d42faaadd9f756b505ce6ca",
+          "matches": true
+        },
+        {
+          "file": "raw/memos-pyproject.toml",
+          "url": "https://raw.githubusercontent.com/MemTensor/MemOS/41bf5c7fa89ee08ebedf3c662638b06fc29aca8d/pyproject.toml",
+          "sha256": "027c6540048adfe6daf937f0eafc9a17c1be2dbb1299735e038bff84adb22a1a",
+          "matches": true
+        },
+        {
+          "file": "raw/memos-apps__memos-local-plugin__README.md",
+          "url": "https://raw.githubusercontent.com/MemTensor/MemOS/41bf5c7fa89ee08ebedf3c662638b06fc29aca8d/apps/memos-local-plugin/README.md",
+          "sha256": "3b20f23e17048fa432a941704f2493437121b9f43a674aae16f7323469f74371",
+          "matches": true
+        },
+        {
+          "file": "raw/memos-apps__memos-local-plugin__core__telemetry__index.ts",
+          "url": "https://raw.githubusercontent.com/MemTensor/MemOS/41bf5c7fa89ee08ebedf3c662638b06fc29aca8d/apps/memos-local-plugin/core/telemetry/index.ts",
+          "sha256": "b1acbc2acec89ca4a8d0194dd1373cacdc3e2c37902e4e50a42e3c88e8e8b104",
+          "matches": true
+        },
+        {
+          "file": "raw/memos-apps__memos-local-plugin__core__telemetry__sender.ts",
+          "url": "https://raw.githubusercontent.com/MemTensor/MemOS/41bf5c7fa89ee08ebedf3c662638b06fc29aca8d/apps/memos-local-plugin/core/telemetry/sender.ts",
+          "sha256": "dbc891ca0f92cf9c33f53b09cce26780d3e13d23785b5984fab46e45aa84f239",
+          "matches": true
+        },
+        {
+          "file": "raw/memos-apps__memos-local-openclaw__src__telemetry.ts",
+          "url": "https://raw.githubusercontent.com/MemTensor/MemOS/41bf5c7fa89ee08ebedf3c662638b06fc29aca8d/apps/memos-local-openclaw/src/telemetry.ts",
+          "sha256": "e9a13426f78c3e9d8b88f04ba016827798d4418563f7f47bd51d80e023973128",
+          "matches": true
+        },
+        {
+          "file": "raw/memos-main-apps__memos-local-plugin__package.json",
+          "url": "https://raw.githubusercontent.com/MemTensor/MemOS/d326a6419467c2205041b58533b0ebfdf4f38173/apps/memos-local-plugin/package.json",
+          "sha256": "08788a4f9d0d5eed9abc97916c3aa4522913dc0ad3ac70da86a39604028c011e",
+          "matches": true
+        },
+        {
+          "file": "raw/memos-main-apps__memos-local-plugin__core__pipeline__memory-core.ts",
+          "url": "https://raw.githubusercontent.com/MemTensor/MemOS/d326a6419467c2205041b58533b0ebfdf4f38173/apps/memos-local-plugin/core/pipeline/memory-core.ts",
+          "sha256": "299cef9e597fb1bab9e6d89ceced9b0f943b25fd5f7aed39d0e9db0fd442ecfc",
+          "matches": true
+        },
+        {
+          "file": "raw/memos-main-apps__memos-local-plugin__core__storage__repos__traces.ts",
+          "url": "https://raw.githubusercontent.com/MemTensor/MemOS/d326a6419467c2205041b58533b0ebfdf4f38173/apps/memos-local-plugin/core/storage/repos/traces.ts",
+          "sha256": "17177ea17cc9270b8fad33d0268be4c61794ce956d3dfe25e824f36866823a92",
+          "matches": true
+        },
+        {
+          "file": "raw/memos-main-apps__memos-local-plugin__core__capture__capture.ts",
+          "url": "https://raw.githubusercontent.com/MemTensor/MemOS/d326a6419467c2205041b58533b0ebfdf4f38173/apps/memos-local-plugin/core/capture/capture.ts",
+          "sha256": "8ef0cac7bf3ef80a3139b3ad454a232831c33bce03707d9bf430c8d153a51884",
+          "matches": true
+        },
+        {
+          "file": "raw/memos-main-apps__memos-local-plugin__core__capture__subscriber.ts",
+          "url": "https://raw.githubusercontent.com/MemTensor/MemOS/d326a6419467c2205041b58533b0ebfdf4f38173/apps/memos-local-plugin/core/capture/subscriber.ts",
+          "sha256": "b43e56004765531059846390267c587556aa046f2c7e25191524435d3c643432",
+          "matches": true
+        },
+        {
+          "file": "raw/memos-main-apps__memos-local-plugin__core__storage__connection.ts",
+          "url": "https://raw.githubusercontent.com/MemTensor/MemOS/d326a6419467c2205041b58533b0ebfdf4f38173/apps/memos-local-plugin/core/storage/connection.ts",
+          "sha256": "302e8f4844b4ebd3c8adb1794aee3e9a8ee4a9f91dc29dd0c167b91438c2009c",
+          "matches": true
+        },
+        {
+          "file": "raw/memos-main-apps__memos-local-plugin__core__storage__repos__trace-policy-links.ts",
+          "url": "https://raw.githubusercontent.com/MemTensor/MemOS/d326a6419467c2205041b58533b0ebfdf4f38173/apps/memos-local-plugin/core/storage/repos/trace-policy-links.ts",
+          "sha256": "f12e64df0f97c73c09cdd0d2e2ea8430ad7fb7159f2cba3286bacc97be83fc31",
+          "matches": true
+        }
+      ]
+    },
+    {
+      "candidate": "openviking",
+      "repo": "volcengine/OpenViking",
+      "pin_ref": "v0.5.3",
+      "pin_commit": "178a8cdfb41b51e7d24c4bf79a13cc54981e0ee8",
+      "files": [
+        {
+          "file": "raw/openviking-repository.json",
+          "url": "https://api.github.com/repos/volcengine/OpenViking",
+          "sha256": "ed46a1ee8568db3a5f02c3a8b0e57516c96975b46c9d05135619c0945d1a73e0",
+          "matches": true
+        },
+        {
+          "file": "raw/openviking-latest_release.json",
+          "url": "https://api.github.com/repos/volcengine/OpenViking/releases/latest",
+          "sha256": "55ce5f062a9eed4fe0f507ff1d5ed671c783f2542afbdd5d79bf20fa4c36114d",
+          "matches": true
+        },
+        {
+          "file": "raw/openviking-head.json",
+          "url": "https://api.github.com/repos/volcengine/OpenViking/commits/HEAD",
+          "sha256": "bd314b5e3f6e8febccb0fb4e0ca3fe07c0274ec70d8e7a033837ad987fcca4f3",
+          "matches": true
+        },
+        {
+          "file": "raw/openviking-tree.json",
+          "url": "https://api.github.com/repos/volcengine/OpenViking/git/trees/178a8cdfb41b51e7d24c4bf79a13cc54981e0ee8?recursive=1",
+          "sha256": "7c74f88209166441083d16c94eef6c3e8a7e814bdbe1c7507d8a4f75f3db1b0e",
+          "matches": true
+        },
+        {
+          "file": "raw/openviking-LICENSE",
+          "url": "https://raw.githubusercontent.com/volcengine/OpenViking/178a8cdfb41b51e7d24c4bf79a13cc54981e0ee8/LICENSE",
+          "sha256": "1bd87fa6d9a5c79daf0c2af042b6725c9773bf095cc3d1bdf3656e66d1c3e5b1",
+          "matches": true
+        },
+        {
+          "file": "raw/openviking-README.md",
+          "url": "https://raw.githubusercontent.com/volcengine/OpenViking/178a8cdfb41b51e7d24c4bf79a13cc54981e0ee8/README.md",
+          "sha256": "f2d78862cfaccf26113a29f4dfd7743b3c02ae1863096f53878978201b8fe5a8",
+          "matches": true
+        },
+        {
+          "file": "raw/openviking-bot__bridge__package.json",
+          "url": "https://raw.githubusercontent.com/volcengine/OpenViking/178a8cdfb41b51e7d24c4bf79a13cc54981e0ee8/bot/bridge/package.json",
+          "sha256": "f1e2e966dd6faed22b86cddc193496fdc2bba6feec10656ac64e871d13de7687",
+          "matches": true
+        },
+        {
+          "file": "raw/openviking-bot__package.json",
+          "url": "https://raw.githubusercontent.com/volcengine/OpenViking/178a8cdfb41b51e7d24c4bf79a13cc54981e0ee8/bot/package.json",
+          "sha256": "d6fb21b24673856eba3f72f30b2542048bbc5c380e99fd456fde64b5956546c1",
+          "matches": true
+        },
+        {
+          "file": "raw/openviking-crates__ragfs-python__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/volcengine/OpenViking/178a8cdfb41b51e7d24c4bf79a13cc54981e0ee8/crates/ragfs-python/pyproject.toml",
+          "sha256": "32990ddf81d3f793246898cb41bb6d9c967a2423a563dde84cce554901c936af",
+          "matches": true
+        },
+        {
+          "file": "raw/openviking-docker-compose.yml",
+          "url": "https://raw.githubusercontent.com/volcengine/OpenViking/178a8cdfb41b51e7d24c4bf79a13cc54981e0ee8/docker-compose.yml",
+          "sha256": "76b8425eb1ad402a646b92bbb7ff3a734393df65bac091807dcdc7c7128b7ff7",
+          "matches": true
+        },
+        {
+          "file": "raw/openviking-docs__package.json",
+          "url": "https://raw.githubusercontent.com/volcengine/OpenViking/178a8cdfb41b51e7d24c4bf79a13cc54981e0ee8/docs/package.json",
+          "sha256": "8060d169d3bbf2d5fa6885f60716898b1cbb1e378c37ba3f92084d4a474e0c51",
+          "matches": true
+        },
+        {
+          "file": "raw/openviking-examples__claude-code-memory-plugin__package.json",
+          "url": "https://raw.githubusercontent.com/volcengine/OpenViking/178a8cdfb41b51e7d24c4bf79a13cc54981e0ee8/examples/claude-code-memory-plugin/package.json",
+          "sha256": "7c42c9f3274fe7475772e78399c8865769042128da83aefbe73de1317e90a7a7",
+          "matches": true
+        },
+        {
+          "file": "raw/openviking-examples__dsh-memory-plugin__package.json",
+          "url": "https://raw.githubusercontent.com/volcengine/OpenViking/178a8cdfb41b51e7d24c4bf79a13cc54981e0ee8/examples/dsh-memory-plugin/package.json",
+          "sha256": "5482bef627fdf28f0da45e48ec80bcdfcaec35f8c07854af608153cdf9385b35",
+          "matches": true
+        },
+        {
+          "file": "raw/openviking-examples__hermes-plugin__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/volcengine/OpenViking/178a8cdfb41b51e7d24c4bf79a13cc54981e0ee8/examples/hermes-plugin/pyproject.toml",
+          "sha256": "b86845a5aae2d6422b3161fb1ab942858c0136c608d4b432708f3070aceb5b58",
+          "matches": true
+        },
+        {
+          "file": "raw/openviking-examples__llamaparse-understanding-bridge__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/volcengine/OpenViking/178a8cdfb41b51e7d24c4bf79a13cc54981e0ee8/examples/llamaparse-understanding-bridge/pyproject.toml",
+          "sha256": "97eb0aa4d309d7f9abbbe60e6498c20f92b84905abf9f607e37e6fb1aa89be07",
+          "matches": true
+        },
+        {
+          "file": "raw/openviking-examples__multi_tenant__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/volcengine/OpenViking/178a8cdfb41b51e7d24c4bf79a13cc54981e0ee8/examples/multi_tenant/pyproject.toml",
+          "sha256": "204d53a60283bbe9026b33cfca8df113a525a2c41fffe12822703b95056477bb",
+          "matches": true
+        },
+        {
+          "file": "raw/openviking-examples__openclaw-plugin__package.json",
+          "url": "https://raw.githubusercontent.com/volcengine/OpenViking/178a8cdfb41b51e7d24c4bf79a13cc54981e0ee8/examples/openclaw-plugin/package.json",
+          "sha256": "8a3926b6f57855d73ca61257576e470f4eeef9de52c5b2fc357deeaef88039e2",
+          "matches": true
+        },
+        {
+          "file": "raw/openviking-examples__opencode-plugin__package.json",
+          "url": "https://raw.githubusercontent.com/volcengine/OpenViking/178a8cdfb41b51e7d24c4bf79a13cc54981e0ee8/examples/opencode-plugin/package.json",
+          "sha256": "2f81a2a383969324ec11ea201df5dbd2dbf1c05c6b9872ac323667b893efab27",
+          "matches": true
+        },
+        {
+          "file": "raw/openviking-examples__openwebui-plugin__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/volcengine/OpenViking/178a8cdfb41b51e7d24c4bf79a13cc54981e0ee8/examples/openwebui-plugin/pyproject.toml",
+          "sha256": "7025d40887c489dd3423908b7a38fed23ba5948feeefad64d43d31b5b6813767",
+          "matches": true
+        },
+        {
+          "file": "raw/openviking-examples__pi-coding-agent-extension__package.json",
+          "url": "https://raw.githubusercontent.com/volcengine/OpenViking/178a8cdfb41b51e7d24c4bf79a13cc54981e0ee8/examples/pi-coding-agent-extension/package.json",
+          "sha256": "afcf1fcf5048ab6925253d13b0bc973f4e0eaaa4e03cb1df50ca79e805548a36",
+          "matches": true
+        },
+        {
+          "file": "raw/openviking-npm__cli__package.json",
+          "url": "https://raw.githubusercontent.com/volcengine/OpenViking/178a8cdfb41b51e7d24c4bf79a13cc54981e0ee8/npm/cli/package.json",
+          "sha256": "6e805fb6888005ed0f3782ba18d3cb66fe8c06ebda0c71fcf95a6be78f1d7611",
+          "matches": true
+        },
+        {
+          "file": "raw/openviking-pyproject.toml",
+          "url": "https://raw.githubusercontent.com/volcengine/OpenViking/178a8cdfb41b51e7d24c4bf79a13cc54981e0ee8/pyproject.toml",
+          "sha256": "b8d64519179355d22927ef5583842bac8274d7468cb429913f9bf34c3aa9c907",
+          "matches": true
+        },
+        {
+          "file": "raw/openviking-sdk__python__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/volcengine/OpenViking/178a8cdfb41b51e7d24c4bf79a13cc54981e0ee8/sdk/python/pyproject.toml",
+          "sha256": "084035a1a3f83c8e736f83fe588907ae3c15eac75983b776a8ffe3fc4cd30b5e",
+          "matches": true
+        },
+        {
+          "file": "raw/openviking-sdk__typescript__package.json",
+          "url": "https://raw.githubusercontent.com/volcengine/OpenViking/178a8cdfb41b51e7d24c4bf79a13cc54981e0ee8/sdk/typescript/package.json",
+          "sha256": "273796af3339cea62bacd311dfd52612a58a72377a6fa6f8e20fb5340871a8aa",
+          "matches": true
+        },
+        {
+          "file": "raw/openviking-tests__oc2ov_test__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/volcengine/OpenViking/178a8cdfb41b51e7d24c4bf79a13cc54981e0ee8/tests/oc2ov_test/pyproject.toml",
+          "sha256": "6eccf15276a78c96a9ed8aade06bfeaa01191fd9ee99f92cc10ce00a060c2437",
+          "matches": true
+        },
+        {
+          "file": "raw/openviking-web-studio__package.json",
+          "url": "https://raw.githubusercontent.com/volcengine/OpenViking/178a8cdfb41b51e7d24c4bf79a13cc54981e0ee8/web-studio/package.json",
+          "sha256": "4e11171825e82ee09efd59b7ab9f2255f0e5d450028b49745a0c730befa4f676",
+          "matches": true
+        },
+        {
+          "file": "raw/openviking-docs__en__guides__07-operation-telemetry.md",
+          "url": "https://raw.githubusercontent.com/volcengine/OpenViking/178a8cdfb41b51e7d24c4bf79a13cc54981e0ee8/docs/en/guides/07-operation-telemetry.md",
+          "sha256": "cc395600b99a39381fde38d2c4f878d8ff05d1bee60941aa8c26ed290f1cbf10",
+          "matches": true
+        },
+        {
+          "file": "raw/openviking-docs__en__concepts__07-retrieval.md",
+          "url": "https://raw.githubusercontent.com/volcengine/OpenViking/178a8cdfb41b51e7d24c4bf79a13cc54981e0ee8/docs/en/concepts/07-retrieval.md",
+          "sha256": "74e7b1e0886f6ba558e6e9982fae95a160036b8bff11c527a74a3fdba11fe387",
+          "matches": true
+        },
+        {
+          "file": "raw/openviking-openviking__retrieve__hierarchical_retriever.py",
+          "url": "https://raw.githubusercontent.com/volcengine/OpenViking/178a8cdfb41b51e7d24c4bf79a13cc54981e0ee8/openviking/retrieve/hierarchical_retriever.py",
+          "sha256": "6c48fe4d2da1c728c77096a86058dba61eca10aeb2955e965ad88a0d2719bdcf",
+          "matches": true
+        }
+      ]
+    },
+    {
+      "candidate": "graphiti",
+      "repo": "getzep/graphiti",
+      "pin_ref": "v0.31.2",
+      "pin_commit": "d72407dcedac911e1be9fc15b55e8c05a3efcc36",
+      "files": [
+        {
+          "file": "raw/graphiti-repository.json",
+          "url": "https://api.github.com/repos/getzep/graphiti",
+          "sha256": "eb2f85ae68046b54bd78861dfbc5d6e7ff4216b0ed6776758fdc9920fd2ea0b2",
+          "matches": true
+        },
+        {
+          "file": "raw/graphiti-latest_release.json",
+          "url": "https://api.github.com/repos/getzep/graphiti/releases/latest",
+          "sha256": "03e7b439a90f3d4c8e281642ba043e1dd4dfc1f246492518bcc0f2c9425ee3c6",
+          "matches": true
+        },
+        {
+          "file": "raw/graphiti-head.json",
+          "url": "https://api.github.com/repos/getzep/graphiti/commits/HEAD",
+          "sha256": "c4708bded180d4a4b85e28c8952611632dc39f193ca0e5e8cc78f41459aa3cb4",
+          "matches": true
+        },
+        {
+          "file": "raw/graphiti-tree.json",
+          "url": "https://api.github.com/repos/getzep/graphiti/git/trees/d72407dcedac911e1be9fc15b55e8c05a3efcc36?recursive=1",
+          "sha256": "bdfd2d0ca3318b7124a5f0c3607a8115d935088e234246bd367398b42fdccc32",
+          "matches": true
+        },
+        {
+          "file": "raw/graphiti-LICENSE",
+          "url": "https://raw.githubusercontent.com/getzep/graphiti/d72407dcedac911e1be9fc15b55e8c05a3efcc36/LICENSE",
+          "sha256": "2825300b20d7b951209835a4a331f29e24725a39d65168e4b831df53aa372650",
+          "matches": true
+        },
+        {
+          "file": "raw/graphiti-README.md",
+          "url": "https://raw.githubusercontent.com/getzep/graphiti/d72407dcedac911e1be9fc15b55e8c05a3efcc36/README.md",
+          "sha256": "e3331e411e5532a0f9c32c2f0c7ca5e08639fa18dc1bc072c7fb3173ec0c9f41",
+          "matches": true
+        },
+        {
+          "file": "raw/graphiti-docker-compose.yml",
+          "url": "https://raw.githubusercontent.com/getzep/graphiti/d72407dcedac911e1be9fc15b55e8c05a3efcc36/docker-compose.yml",
+          "sha256": "71105330f31857b4c75222e077ae50835541629bce1944b436847a95f994551c",
+          "matches": true
+        },
+        {
+          "file": "raw/graphiti-examples__opentelemetry__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/getzep/graphiti/d72407dcedac911e1be9fc15b55e8c05a3efcc36/examples/opentelemetry/pyproject.toml",
+          "sha256": "413166f181eb2bfcac765bb1161e131f999b1a2a00a58161683e649300d8cbeb",
+          "matches": true
+        },
+        {
+          "file": "raw/graphiti-mcp_server__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/getzep/graphiti/d72407dcedac911e1be9fc15b55e8c05a3efcc36/mcp_server/pyproject.toml",
+          "sha256": "e260f8083f82d9bc12b52078588afeb39c24ae8c9e81e83565645fbf07b2ba07",
+          "matches": true
+        },
+        {
+          "file": "raw/graphiti-pyproject.toml",
+          "url": "https://raw.githubusercontent.com/getzep/graphiti/d72407dcedac911e1be9fc15b55e8c05a3efcc36/pyproject.toml",
+          "sha256": "fa842260cb2724ef5142ebee50395149dee51d224372bccfeb084a63655563ba",
+          "matches": true
+        },
+        {
+          "file": "raw/graphiti-server__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/getzep/graphiti/d72407dcedac911e1be9fc15b55e8c05a3efcc36/server/pyproject.toml",
+          "sha256": "64ab77b4b66e7b044c0378a15197bc1e0e57db0836abdbdc9248b92376fe74e4",
+          "matches": true
+        },
+        {
+          "file": "raw/graphiti-graphiti_core__telemetry__telemetry.py",
+          "url": "https://raw.githubusercontent.com/getzep/graphiti/d72407dcedac911e1be9fc15b55e8c05a3efcc36/graphiti_core/telemetry/telemetry.py",
+          "sha256": "e3b2ebcce54109c671b183ec9d2c56162ced1e8c5828ac4fc32457d219db0c67",
+          "matches": true
+        }
+      ]
+    },
+    {
+      "candidate": "mem0",
+      "repo": "mem0ai/mem0",
+      "pin_ref": "ts-v3.3.1",
+      "pin_commit": "94c3fe9f238f3dbf29c9ce98643bd71eb13077cd",
+      "files": [
+        {
+          "file": "raw/mem0-repository.json",
+          "url": "https://api.github.com/repos/mem0ai/mem0",
+          "sha256": "ce917227528e8fa055f63f53d1ac2beb0a5e2f64559ac64161a9e20b88bfb05e",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-latest_release.json",
+          "url": "https://api.github.com/repos/mem0ai/mem0/releases/latest",
+          "sha256": "7f5c61095ab38f8dae9e362ea1e0bc91823d6431e4da9a6aa4571f3b4d2f3964",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-head.json",
+          "url": "https://api.github.com/repos/mem0ai/mem0/commits/HEAD",
+          "sha256": "f800086c80c4456ba00d081907f00675f34adad306d4594c843585cbc1d67014",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-tree.json",
+          "url": "https://api.github.com/repos/mem0ai/mem0/git/trees/94c3fe9f238f3dbf29c9ce98643bd71eb13077cd?recursive=1",
+          "sha256": "a477f6d040af39d4b8fdf3fc14e26bd7cee990699d2347455a70af6bc468e3ed",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-LICENSE",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/94c3fe9f238f3dbf29c9ce98643bd71eb13077cd/LICENSE",
+          "sha256": "0bbcbe931c353293a2fafce08326181dfeea0e568c566afd4ce8337a70f5e219",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-README.md",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/94c3fe9f238f3dbf29c9ce98643bd71eb13077cd/README.md",
+          "sha256": "7509347d34a767a2ef37ceb6cf6c714de9e8d84fe66ad5eea92bbae824a8fbeb",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-cli__node__package.json",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/94c3fe9f238f3dbf29c9ce98643bd71eb13077cd/cli/node/package.json",
+          "sha256": "c1bf213177d7d0427acbb565b40f5c145c22259adb46f7838e2cfe67bd151768",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-cli__python__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/94c3fe9f238f3dbf29c9ce98643bd71eb13077cd/cli/python/pyproject.toml",
+          "sha256": "958cacfd928829b20f59b73ea847093fe6df835089078bf0dca0d98da4f84faf",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-examples__mem0-demo__package.json",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/94c3fe9f238f3dbf29c9ce98643bd71eb13077cd/examples/mem0-demo/package.json",
+          "sha256": "87ca4887d3cf593fd84706a1e0fb87d661ee5c85851e49012adb015edbb2d12a",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-examples__multimodal-demo__package.json",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/94c3fe9f238f3dbf29c9ce98643bd71eb13077cd/examples/multimodal-demo/package.json",
+          "sha256": "7ac00dd229aecf22f674c4c8eb519bcb450f0b11e2065ffa46d59b62c68222b4",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-examples__openai-inbuilt-tools__package.json",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/94c3fe9f238f3dbf29c9ce98643bd71eb13077cd/examples/openai-inbuilt-tools/package.json",
+          "sha256": "fbbd9a04f8c57c5891196ed04a5eab9fe57fe361137d93377dac0e2c35792781",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-examples__vercel-ai-sdk-chat-app__package.json",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/94c3fe9f238f3dbf29c9ce98643bd71eb13077cd/examples/vercel-ai-sdk-chat-app/package.json",
+          "sha256": "5952fdc80b2fee35ea1e43eca01a93ced5790da71386a6728a547442d2a2f104",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-examples__yt-assistant-chrome__package.json",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/94c3fe9f238f3dbf29c9ce98643bd71eb13077cd/examples/yt-assistant-chrome/package.json",
+          "sha256": "362e8e3facc76e0246dbd4196db844134a4de6a5f6c363a4e6859897c49c9ff9",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-integrations__deepseek-plugin__package.json",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/94c3fe9f238f3dbf29c9ce98643bd71eb13077cd/integrations/deepseek-plugin/package.json",
+          "sha256": "823b6ecbf2acd817c88fd3701cb30ec8e3ff50a3866a25324337359fdfc4290f",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-integrations__hermes-plugin-mem0__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/94c3fe9f238f3dbf29c9ce98643bd71eb13077cd/integrations/hermes-plugin-mem0/pyproject.toml",
+          "sha256": "48922a407a7ebe2434c3aa0981c6de5cdc075b6d0ddfd4f9ce9d61976fc6ea97",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-integrations__n8n-nodes-mem0__package.json",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/94c3fe9f238f3dbf29c9ce98643bd71eb13077cd/integrations/n8n-nodes-mem0/package.json",
+          "sha256": "93cbaca907749df94e176ddd54a4c44b02fae657fa37e33eac33b5c1345b6b6f",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-integrations__openclaw__package.json",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/94c3fe9f238f3dbf29c9ce98643bd71eb13077cd/integrations/openclaw/package.json",
+          "sha256": "2ee48b1c27399a3339ea8aa9e758fbb0f5ef9bde516a2e700be8019417f31f88",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-integrations__opencode-plugin__package.json",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/94c3fe9f238f3dbf29c9ce98643bd71eb13077cd/integrations/opencode-plugin/package.json",
+          "sha256": "dc4baa0cdec866797c9bfb0394884bb046f3b33dd438abfbeba077bf2b68f575",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-integrations__pi-agent-plugin__package.json",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/94c3fe9f238f3dbf29c9ce98643bd71eb13077cd/integrations/pi-agent-plugin/package.json",
+          "sha256": "7b5b8243e93e6b5649e85a3bd999761f8d625ad15fed2f84e1cffb9d21d73ea4",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-integrations__vercel-ai-sdk__package.json",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/94c3fe9f238f3dbf29c9ce98643bd71eb13077cd/integrations/vercel-ai-sdk/package.json",
+          "sha256": "ec439f030dd405d88f35a96278e9fcc5ef00cf0621df0393040ed74fb2ee1701",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-integrations__zapier-mem0__package.json",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/94c3fe9f238f3dbf29c9ce98643bd71eb13077cd/integrations/zapier-mem0/package.json",
+          "sha256": "a9a188f3f83b06942582f7f7e34cb98e22e2fd6a861c25a573fb24b1ed72e87f",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-mem0-ts__package.json",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/94c3fe9f238f3dbf29c9ce98643bd71eb13077cd/mem0-ts/package.json",
+          "sha256": "3b5711fd86762c4e9de35bf80d3ec2bbf27141f502aca88d4664dd850c4d8db7",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-pyproject.toml",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/94c3fe9f238f3dbf29c9ce98643bd71eb13077cd/pyproject.toml",
+          "sha256": "d4bc078a05cc7b9d677bbf4d0b262cfc532495b5aadeded053ac84fd90b6e974",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-server__dashboard__package.json",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/94c3fe9f238f3dbf29c9ce98643bd71eb13077cd/server/dashboard/package.json",
+          "sha256": "0f9ceb65cbbe5fe6278121d3b01b5d59adab40e9084fce11ebe095bd2f293515",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-mem0__memory__telemetry.py",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/94c3fe9f238f3dbf29c9ce98643bd71eb13077cd/mem0/memory/telemetry.py",
+          "sha256": "89f36bd0b87059fa0710adcccfbd9639ab4d5c4a762d875a1caceaf688aca687",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-mem0-ts__src__oss__src__utils__telemetry.ts",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/94c3fe9f238f3dbf29c9ce98643bd71eb13077cd/mem0-ts/src/oss/src/utils/telemetry.ts",
+          "sha256": "474e599574c3ea87c4b356030b987008614716c3706910bbf9c2e9c9ddb42895",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-tags.json",
+          "url": "https://api.github.com/repos/mem0ai/mem0/tags?per_page=30",
+          "sha256": "7de6978a4050c75107aa4b99d5eef0ba58bccfbcdf54e1dd4e8b7ae82280a6e4",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-main-tree.json",
+          "url": "https://api.github.com/repos/mem0ai/mem0/git/trees/f1791daa86d469249c9b002f62644d58a1eb96a0?recursive=1",
+          "sha256": "9714c1fe91b9b7b2d158c1750d978a83c69757c2b173005711295c3c8e126217",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-main-README.md",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/f1791daa86d469249c9b002f62644d58a1eb96a0/README.md",
+          "sha256": "f72db3426438dbdf6879a2b50583fbee8e7e2dde5d01308c6295bcd09fd3db86",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-main-pyproject.toml",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/f1791daa86d469249c9b002f62644d58a1eb96a0/pyproject.toml",
+          "sha256": "d4bc078a05cc7b9d677bbf4d0b262cfc532495b5aadeded053ac84fd90b6e974",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-main-mem0__memory__main.py",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/f1791daa86d469249c9b002f62644d58a1eb96a0/mem0/memory/main.py",
+          "sha256": "e37b2775aafbc654113cb643dae2a8a9cf299d2e7eee29904f1ed212f89aa570",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-main-mem0-ts__src__oss__src__index.ts",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/f1791daa86d469249c9b002f62644d58a1eb96a0/mem0-ts/src/oss/src/index.ts",
+          "sha256": "c33272741b63eb8076dcfd85cf096863bec6f0a094503a43bfd63c1ade0183bd",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-main-mem0-ts__src__oss__src__memory__index.ts",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/f1791daa86d469249c9b002f62644d58a1eb96a0/mem0-ts/src/oss/src/memory/index.ts",
+          "sha256": "3cbacbe8040aa1984af3f48234f9d944cec1d494dbe24864ff014068ccf4d2a1",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-main-mem0-ts__src__oss__src__storage__SQLiteManager.ts",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/f1791daa86d469249c9b002f62644d58a1eb96a0/mem0-ts/src/oss/src/storage/SQLiteManager.ts",
+          "sha256": "9e18733f478acd2d62979a8925cf07b0bed4c61ed5a48f074f7820fccb98c0c3",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-main-mem0-ts__src__oss__src__config__defaults.ts",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/f1791daa86d469249c9b002f62644d58a1eb96a0/mem0-ts/src/oss/src/config/defaults.ts",
+          "sha256": "8a156c6f355f990ec2d547c65ad1cc641e83b7c1a878f6918916011b8193be3c",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-main-mem0-ts__src__oss__src__config__manager.ts",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/f1791daa86d469249c9b002f62644d58a1eb96a0/mem0-ts/src/oss/src/config/manager.ts",
+          "sha256": "afa61cceb7b9f45e54fcbfecaefc64dc960cc5321a2cb39a8c1e0746ece0b8f1",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-main-mem0-ts__src__oss__src__vector_stores__memory.ts",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/f1791daa86d469249c9b002f62644d58a1eb96a0/mem0-ts/src/oss/src/vector_stores/memory.ts",
+          "sha256": "337dc7b58c66d5524b3c8a71a708f388b86655000ba0c71e79214bac03698986",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-main-mem0-ts__src__oss__src__utils__factory.ts",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/f1791daa86d469249c9b002f62644d58a1eb96a0/mem0-ts/src/oss/src/utils/factory.ts",
+          "sha256": "d4beed95d340a666a8f4a23adaacdf0c754b203b5c3475af2186662f83568c4c",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-main-docs__migration__oss-v2-to-v3.mdx",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/f1791daa86d469249c9b002f62644d58a1eb96a0/docs/migration/oss-v2-to-v3.mdx",
+          "sha256": "8fa60e6375aebe7869feb7e3e6c7a974dc4f83c2e322ccd16ec4bb496642ff2d",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-mem0-ts__src__oss__src__vector_stores__memory.ts",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/94c3fe9f238f3dbf29c9ce98643bd71eb13077cd/mem0-ts/src/oss/src/vector_stores/memory.ts",
+          "sha256": "1e71f3dd8471a89e4b822a482b37df9160c9da900f9f321bd7eaa256a9a9f52e",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-mem0-ts__src__oss__src__config__defaults.ts",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/94c3fe9f238f3dbf29c9ce98643bd71eb13077cd/mem0-ts/src/oss/src/config/defaults.ts",
+          "sha256": "8a156c6f355f990ec2d547c65ad1cc641e83b7c1a878f6918916011b8193be3c",
+          "matches": true
+        },
+        {
+          "file": "raw/mem0-main-mem0-ts__src__oss__src__utils__sqlite.ts",
+          "url": "https://raw.githubusercontent.com/mem0ai/mem0/f1791daa86d469249c9b002f62644d58a1eb96a0/mem0-ts/src/oss/src/utils/sqlite.ts",
+          "sha256": "cd71a477119d0cde5ad87de725fa0f19d32acaf1a7955642d46bf7825bbcd20b",
+          "matches": true
+        }
+      ]
+    },
+    {
+      "candidate": "letta",
+      "repo": "letta-ai/letta",
+      "pin_ref": "0.16.8",
+      "pin_commit": "1131535716e8a31c9a437f8695e25ac98f203a24",
+      "files": [
+        {
+          "file": "raw/letta-head.json",
+          "url": "https://api.github.com/repos/letta-ai/letta/commits/HEAD",
+          "sha256": "fe1f85f3762faefd219544ab3096513168e3d812fc09bbfd82d05673a1a2fb00",
+          "matches": true
+        },
+        {
+          "file": "raw/letta-repository.json",
+          "url": "https://api.github.com/repos/letta-ai/letta",
+          "sha256": "f05f13955d1360490ce885599af27a2ebccc2de36810a31d7d5402ead0908e07",
+          "matches": true
+        },
+        {
+          "file": "raw/letta-latest_release.json",
+          "url": "https://api.github.com/repos/letta-ai/letta/releases/latest",
+          "sha256": "22499ce70e21f5290090fdd2455303bdbc55271cdf565ef81fb3b378df86da05",
+          "matches": true
+        },
+        {
+          "file": "raw/letta-tree.json",
+          "url": "https://api.github.com/repos/letta-ai/letta/git/trees/1131535716e8a31c9a437f8695e25ac98f203a24?recursive=1",
+          "sha256": "0fd47c43f181f39b74fa8b8946a196c1d39826f96b9e2ef625beb6937ec310b3",
+          "matches": true
+        },
+        {
+          "file": "raw/letta-LICENSE",
+          "url": "https://raw.githubusercontent.com/letta-ai/letta/1131535716e8a31c9a437f8695e25ac98f203a24/LICENSE",
+          "sha256": "984c6db99fc6609803108dfc196762118662cd94b82a456dd9217583f18f3612",
+          "matches": true
+        },
+        {
+          "file": "raw/letta-README.md",
+          "url": "https://raw.githubusercontent.com/letta-ai/letta/1131535716e8a31c9a437f8695e25ac98f203a24/README.md",
+          "sha256": "622daccfe69e7bc7cdc950b35751a125e8c7da0451205afccadadbac23d2132d",
+          "matches": true
+        },
+        {
+          "file": "raw/letta-pyproject.toml",
+          "url": "https://raw.githubusercontent.com/letta-ai/letta/1131535716e8a31c9a437f8695e25ac98f203a24/pyproject.toml",
+          "sha256": "ba86147a334a4900962b260d1912e263e011e8698377327b9f1a8fd943540c3e",
+          "matches": true
+        },
+        {
+          "file": "raw/letta-letta__services__memory_repo__memfs_client_base.py",
+          "url": "https://raw.githubusercontent.com/letta-ai/letta/1131535716e8a31c9a437f8695e25ac98f203a24/letta/services/memory_repo/memfs_client_base.py",
+          "sha256": "d908b70a8c34424d846975fa3c807dd4f5a7d7233e2e341f791c530da4017b65",
+          "matches": true
+        },
+        {
+          "file": "raw/letta-letta__services__telemetry_manager.py",
+          "url": "https://raw.githubusercontent.com/letta-ai/letta/1131535716e8a31c9a437f8695e25ac98f203a24/letta/services/telemetry_manager.py",
+          "sha256": "e26b6d043f345a4ea2b188fd90e068d4618a91194ac299f40158161b9b21a3b6",
+          "matches": true
+        },
+        {
+          "file": "raw/letta-memfs.html",
+          "url": "https://docs.letta.com/concepts/memfs",
+          "sha256": "1eeb13622cda2c29da022877389c7a7f766054a316fe70e3c68a043442944b14",
+          "matches": true
+        },
+        {
+          "file": "raw/letta-letta__settings.py",
+          "url": "https://raw.githubusercontent.com/letta-ai/letta/1131535716e8a31c9a437f8695e25ac98f203a24/letta/settings.py",
+          "sha256": "6448d8dd78920d507e8a3291c6c48a633241c73266ae4f1c98f5fc1716407410",
+          "matches": true
+        },
+        {
+          "file": "raw/letta-memfs.md",
+          "url": "https://docs.letta.com/concepts/memfs/index.md",
+          "sha256": "f181f55f9d014b2af22145be13281b49a09df684b9107cb4442540feb51afe68",
+          "matches": true
+        },
+        {
+          "file": "raw/letta-letta-code-npm-latest.json",
+          "url": "https://registry.npmjs.org/@letta-ai%2fletta-code/latest",
+          "sha256": "a0dcdda552e98f656c310f09c75e68dbdae7242805173079d7157a4e1ae82e75",
+          "matches": true
+        },
+        {
+          "file": "raw/letta-letta-agent-sdk-npm-latest.json",
+          "url": "https://registry.npmjs.org/@letta-ai%2fletta-agent-sdk/latest",
+          "sha256": "7e20d0ade9e2bd527a471a2353f24d3bf653e9230cb4f6afd332a573b02c0653",
+          "matches": true
+        },
+        {
+          "file": "raw/letta-self-hosting.md",
+          "url": "https://docs.letta.com/self-hosting/index.md",
+          "sha256": "a7cb8b07c78799cd9160ea74bc03b2f477fe469dc93080d929512fc2db92f82f",
+          "matches": true
+        },
+        {
+          "file": "raw/letta-letta-code-package.json",
+          "url": "https://raw.githubusercontent.com/letta-ai/letta-code/5e20013556fb8f3c52dc4054e00f69bfb3215df8/package.json",
+          "sha256": "b76248ae58a36e71dfb703639a16f8553b6fcd92c5d4332ad1b3fb92d58932c8",
+          "matches": true
+        },
+        {
+          "file": "raw/letta-letta-code-README.md",
+          "url": "https://raw.githubusercontent.com/letta-ai/letta-code/5e20013556fb8f3c52dc4054e00f69bfb3215df8/README.md",
+          "sha256": "7543b5df7349bb8fbdbf7f377a161c3163b6ff062a9c6f7b7430a5ca9a3d0abe",
+          "matches": true
+        },
+        {
+          "file": "raw/letta-letta-code-LICENSE",
+          "url": "https://raw.githubusercontent.com/letta-ai/letta-code/5e20013556fb8f3c52dc4054e00f69bfb3215df8/LICENSE",
+          "sha256": "036e78b9d7dd33ae5b378fdda973b4aad7901c8d8371a0ae40fae1f6659a89d0",
+          "matches": true
+        },
+        {
+          "file": "raw/letta-letta-agent-sdk-package.json",
+          "url": "https://raw.githubusercontent.com/letta-ai/letta-agent-sdk/f25b0d0cd384a6bacf5a4118db6beca2f97ca7a3/package.json",
+          "sha256": "eba934d40a47db31ad0bf5779290f6ee7957a09f71bc4f51943a5daebb63270a",
+          "matches": true
+        },
+        {
+          "file": "raw/letta-letta-agent-sdk-README.md",
+          "url": "https://raw.githubusercontent.com/letta-ai/letta-agent-sdk/f25b0d0cd384a6bacf5a4118db6beca2f97ca7a3/README.md",
+          "sha256": "3a59385786d5a9cf30c36af42935a9787507c142cf60732200ec24d3faed1f24",
+          "matches": true
+        },
+        {
+          "file": "raw/letta-letta-agent-sdk-LICENSE",
+          "url": "https://raw.githubusercontent.com/letta-ai/letta-agent-sdk/f25b0d0cd384a6bacf5a4118db6beca2f97ca7a3/LICENSE",
+          "sha256": "da78fec14c419a2eab062407c37626f910dbecf79293ff281e10c434ba0fb325",
+          "matches": true
+        }
+      ]
+    },
+    {
+      "candidate": "langmem",
+      "repo": "langchain-ai/langmem",
+      "pin_ref": "8620b986af5b0c7593e6b7fbece2998690d22d15",
+      "pin_commit": "8620b986af5b0c7593e6b7fbece2998690d22d15",
+      "files": [
+        {
+          "file": "raw/langmem-repository.json",
+          "url": "https://api.github.com/repos/langchain-ai/langmem",
+          "sha256": "92ba3a83e46a3377e02b9761745c6c0d06b78c30dd77aee6a8b39c4b123f2c38",
+          "matches": true
+        },
+        {
+          "file": "raw/langmem-head.json",
+          "url": "https://api.github.com/repos/langchain-ai/langmem/commits/HEAD",
+          "sha256": "1a281825fdf9809dc972c716ca6578374955fb7dddd1a3cac5e70c4856b48f3c",
+          "matches": true
+        },
+        {
+          "file": "raw/langmem-tree.json",
+          "url": "https://api.github.com/repos/langchain-ai/langmem/git/trees/8620b986af5b0c7593e6b7fbece2998690d22d15?recursive=1",
+          "sha256": "2b65baeb33644f3c5af8680589abaca6368563e0f909ce65001ed59c91b0341f",
+          "matches": true
+        },
+        {
+          "file": "raw/langmem-LICENSE",
+          "url": "https://raw.githubusercontent.com/langchain-ai/langmem/8620b986af5b0c7593e6b7fbece2998690d22d15/LICENSE",
+          "sha256": "98af1351ea856e008c835bc89a312905960a318072f950732bf346c741027c7d",
+          "matches": true
+        },
+        {
+          "file": "raw/langmem-README.md",
+          "url": "https://raw.githubusercontent.com/langchain-ai/langmem/8620b986af5b0c7593e6b7fbece2998690d22d15/README.md",
+          "sha256": "e1edd000d263bfea842c34273add82421340c2caf2d7b87edd285daf02156ca3",
+          "matches": true
+        },
+        {
+          "file": "raw/langmem-pyproject.toml",
+          "url": "https://raw.githubusercontent.com/langchain-ai/langmem/8620b986af5b0c7593e6b7fbece2998690d22d15/pyproject.toml",
+          "sha256": "8fcfd63d312ea0f1bd679d70c6b9a7c10e3d1f6a4cb557500a59758fd02e9901",
+          "matches": true
+        },
+        {
+          "file": "raw/langmem-tags.json",
+          "url": "https://api.github.com/repos/langchain-ai/langmem/tags?per_page=30",
+          "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "matches": true
+        }
+      ]
+    },
+    {
+      "candidate": "lancedb",
+      "repo": "lancedb/lancedb",
+      "pin_ref": "v0.41.0",
+      "pin_commit": "3936a8b3bcce8f8e073f3ec6a47e4ca4d3381b92",
+      "files": [
+        {
+          "file": "raw/lancedb-repository.json",
+          "url": "https://api.github.com/repos/lancedb/lancedb",
+          "sha256": "a0c4eff30adb2d456aaa5686a58e30f8a5fda8369ba802d9fc5483a0a410146f",
+          "matches": true
+        },
+        {
+          "file": "raw/lancedb-latest_release.json",
+          "url": "https://api.github.com/repos/lancedb/lancedb/releases/latest",
+          "sha256": "e701bd7508794f07b727d04975616561a9c32027cf0b28f0f18d6c2aa7bf6b34",
+          "matches": true
+        },
+        {
+          "file": "raw/lancedb-head.json",
+          "url": "https://api.github.com/repos/lancedb/lancedb/commits/HEAD",
+          "sha256": "a20f4a783c2aab8097a5c1f4787a0fb6a3aca48f30a28de35d8f1ef09a268d0b",
+          "matches": true
+        },
+        {
+          "file": "raw/lancedb-tree.json",
+          "url": "https://api.github.com/repos/lancedb/lancedb/git/trees/3936a8b3bcce8f8e073f3ec6a47e4ca4d3381b92?recursive=1",
+          "sha256": "12c922cc2154afffa8881e38394fc09a255f3af10c49a7dc72556192f78b9e85",
+          "matches": true
+        },
+        {
+          "file": "raw/lancedb-LICENSE",
+          "url": "https://raw.githubusercontent.com/lancedb/lancedb/3936a8b3bcce8f8e073f3ec6a47e4ca4d3381b92/LICENSE",
+          "sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
+          "matches": true
+        },
+        {
+          "file": "raw/lancedb-README.md",
+          "url": "https://raw.githubusercontent.com/lancedb/lancedb/3936a8b3bcce8f8e073f3ec6a47e4ca4d3381b92/README.md",
+          "sha256": "1bc4fef6b6dc7919593d05c6a4fda051fd5d09450bb78ca4022af48f986c9cde",
+          "matches": true
+        },
+        {
+          "file": "raw/lancedb-docker-compose.yml",
+          "url": "https://raw.githubusercontent.com/lancedb/lancedb/3936a8b3bcce8f8e073f3ec6a47e4ca4d3381b92/docker-compose.yml",
+          "sha256": "48359e9e5c441d50d094d4415c7b18957eb276420619c202badd1a31f094b610",
+          "matches": true
+        },
+        {
+          "file": "raw/lancedb-nodejs__examples__package.json",
+          "url": "https://raw.githubusercontent.com/lancedb/lancedb/3936a8b3bcce8f8e073f3ec6a47e4ca4d3381b92/nodejs/examples/package.json",
+          "sha256": "e8d0a05911a2b8a2d55adba7c88acbe4c98ed6c87dae6cb310b91b13166aba57",
+          "matches": true
+        },
+        {
+          "file": "raw/lancedb-nodejs__package.json",
+          "url": "https://raw.githubusercontent.com/lancedb/lancedb/3936a8b3bcce8f8e073f3ec6a47e4ca4d3381b92/nodejs/package.json",
+          "sha256": "7994f8e19a449ecf297f7e2948a7c335fe9d276387a9a624c8b4663cbb2535f8",
+          "matches": true
+        },
+        {
+          "file": "raw/lancedb-python__pyproject.toml",
+          "url": "https://raw.githubusercontent.com/lancedb/lancedb/3936a8b3bcce8f8e073f3ec6a47e4ca4d3381b92/python/pyproject.toml",
+          "sha256": "7c45bafc5fc1a4ed514ad5eff0e7c88cc4aaf5a6791d8220b9a1b6e4ce3e773d",
+          "matches": true
+        }
+      ]
+    }
+  ],
+  "failures": []
+}

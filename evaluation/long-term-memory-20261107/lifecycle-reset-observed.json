@@ -1,0 +1,11 @@
+{
+  "command": "node --test apps/desktop/tests/project-lifecycle-reset.test.mjs",
+  "scope": "Existing real ProjectStorage/ProjectLifecycle synthetic filesystem and Git tests; not a new memory adapter or packaged GUI acceptance",
+  "tests": 11,
+  "pass": 11,
+  "fail": 0,
+  "skipped": 0,
+  "duration_ms": 19684.726692,
+  "observed": ["all archived generations and owned Git resources removed; user source/global/neighbor preserved", "explicit permanent consent and non-destructive preview", "stop/save/close failure retains persistent fence", "symlink external files preserved", "preview binds history scope and root manifest", "unknown worktree owner refuses cleanup", "partial deletion remains fenced after cold restart; no automatic replay", "shared instance at another root refuses preview"],
+  "raw_output": "Full TAP and SQLite experimental warnings retained in this task tool transcript; this JSON is an observed summary, not fabricated raw TAP"
+}

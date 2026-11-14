@@ -1,7 +1,46 @@
 # 扩展市场与 Nozeli 全局管理 Demo
 
 Date: 2026-11-12
-Status: 可点击设计原型；非生产接线、非安装授权。布局与产品方案待用户评估。
+Status: 最小管理员生产功能已实施并完成Linux限定验证；2026-11-14按用户授权随全部工作树修改本机安装。市场／扩展仍为独立交互原型，不代表已接通生产能力。
+
+## 2026-11-14 当前方向与主源码落盘
+
+用户确认先独立管理员Agent，Store/资源库延期；管理员仍为交互Demo，不把模拟回复/登录当作已安装产品能力。主源码已保存[独立原型](demos/admin-agent/index.html)及[当前Nozeli外壳融合驱动](demos/admin-agent/integrated-demo.mjs)。空白主页“从管理员Agent开始”、设置第一项、独立管理员默认模型，以及API/登录引导回原管理草稿已在隔离Electron实例演示；模拟连接不读取或写入真实凭据。
+
+融合驱动在当前Nozeli真实shell的临时config/profile中注入Demo视图，复用原设置与主题，返回保留原工作面；不是生产main/app接线，不向日常项目注入模拟Agent。源码执行`node docs/demos/admin-agent/integrated-demo.mjs`可重现。最新极简搜索栏为单行“搜索…”与原“…”菜单，所有模式/高级条件按需打开；搜索功能独立于管理员Demo，本次本机安装仅安装真实搜索及主树原有能力。历史市场原型在下文保留来源，不构成本期实现授权。
+
+### 2026-11-14 最小生产管理助手（用户授权实施／测试）
+
+本轮从Demo方向收敛为：独立应用级管理会话、两项原生按需skill（项目管理／Nozeli配置）、已登记项目列表与打开、脱敏配置查询、全局角色默认模型／effort变更方案与可信UI确认，以及敏感配置跳转原设置。管理员不是OS root，不提供通用IPC、Shell、项目文档／历史读取、删除／重置／清理、市场安装、更新或自我开发。
+
+管理会话、原生历史、草稿、模型配置与skills绑定保存于应用用户目录独立命名空间，不登记虚拟项目，不写项目Controller／ProjectStorage状态。切换／关闭项目不切换管理上下文；用户明确选择的操作目标由宿主ID固定，不因当前项目变化改绑；项目消息、草稿、选区、附件、地图及历史不得自动注入管理Agent。开始页与设置共用同一管理会话，打开入口不推理、恢复不重放旧输入。模型选择不继承某个项目配置。
+
+变更只准备全局frontdesk／orchestrator／worker默认，保留项目显式覆盖；展示before／after、作用域和生效状态，用户确认具体版本后才能执行。准备后配置被其他入口修改须CAS拒绝；重复确认不重放，未知效果保留unknown。密钥与OAuth交互只在原可信设置输入，不交给模型。配置目录模型／已配置凭据不是API资格保证。实际持久化／原生Pi／GUI隔离验收完成后在本节追加结果，不以Demo截图代替产品证据。本轮不授权安装、提交、推送或发布。
+
+实施文件：独立 `apps/desktop/src/agents/admin-agent.mjs`、`src/agents/admin/roles/admin/` 的最小契约及两项skills；生产 `renderer/admin-agent.mjs`／CSS与开始页／设置入口；主进程 `admin-operations.mjs` 仅允许可信shell且不走项目payload改绑。复用PiSession，显式独立sessionDir为应用 `admin-agent/agents/admin/sessions`；共享Pi目录仅供既有账户配置，不复制密钥。native admin模式只允许五个管理host tools及精确skill原生read，不授予文件／shell／项目内容工具。全局进程预算以projectId=null、target=admin计数，不创建虚拟项目。
+
+ProviderSettings默认模型保存增加串行队列内版本CAS及每次写入独立revision，避免预览后并发覆盖与同值ABA；确认前journal持久化executing，冷恢复改unknown不重放。默认配置保存回执与在线应用／等待／失败分开。退出与更新等待管理草稿串行保存及IME结束，管理mutation／推理计入lifecycleBusy；停稳失败保留进程占用。
+
+集中验证：`build:pi`、`build:renderer`及main／真实GUI脚本语法检查通过；`admin-agent`、`admin-agent-ui`、`admin-operations`、`provider-settings`、`pi-native-skills`、`pi-session-admission`、`update-lifecycle`、`settings-agents-ui`共97项通过。真实Electron＋原生Pi／本地确定性Provider验收由 `tests/desktop-admin-agent-live.mjs` 单独执行，结论待下文实际证据；不把97项当真实模型理解或跨平台通过。
+
+真实Electron首轮已通过管理独立模型、跨项目草稿、两项原生skill读取、准备／确认默认配置及项目document面拒绝admin，但正常退出失败：WindowRecovery已等待shell flush回执，settle再次flush同一shell形成自等待。已恢复为只刷新其他项目surface，管理草稿由最初shell flush保存，不跳过管理保存屏障。第二轮首关exit0及冷恢复不重放通过；末尾在全局模型已配置后打开另一项目触发现有项目自动初始化和任务退出确认，测试未处理该独立业务，因此不能据此判管理员退出故障。后续将管理导航验证移到全局默认变更之前，明确隔离项目初始化与管理会话，保留实际项目切换与草稿验证，不隐藏／取消产品任务来冒称空闲退出。
+
+最终真实Electron验收通过：`/tmp/nozeli-admin-electron-xodBb0/report.json`，8条场景、errors=[]、两次正常退出均code0。实际生产main／renderer、独立原生Pi、localhost确定性Provider执行：查看状态和保存管理员独立模型不推理；切换两个真实合成项目保留管理草稿，模型输入未包含项目正文／项目草稿／测试凭据；管理按钮按精确registry ID打开项目；两项skill真实原生read及管理host tools准备方案；确认前不写全局默认，用户点击确认后真实ProviderSettings保存Worker模型；真实项目document surface调用admin.status被拒；冷恢复原生历史／模型／草稿一致且无新增模型请求；390px实际无水平溢出、Escape返回不删上下文。已查看admin-narrow／admin-restored截图。
+
+这些结果只证明Linux生产接线与限定隔离，不证明付费模型理解质量、所有可访问性／平台、项目内工作内容管理或市场安装。97项回归与GUI分别记录，不把固定脚本回复冒充通用模型能力。本轮未安装／提交／推送／发布，未修改日常账户、模型配置、项目文件或原会话。
+
+### 2026-11-14 全部修改安装与提交授权
+
+用户明确授权“当前所有修改安装commit”。`node tools/install-local.mjs`构建及安装校验成功，current为 `/home/bfly/.local/opt/nozeli/releases/2026-11-14T10-15-48-903Z`，previous保留 `compact-search-main-20261114-01`；桌面与命令行入口已切换。范围包含当前搜索、界面、管理员及此前工具修复，不仅管理员。待提交445个变更／新增文件中未发现凭据格式命中或私有数据库；记忆评测目录为合成／公开来源，原型图片保留各自来源声明。安装不改变日常模型／凭据，不自动重启正在使用的旧窗口；正常重开加载新版。不推送或公开发布，跨平台仍未验。
+
+安装包追加实测：`NOZELI_TEST_BINARY=/home/bfly/.local/opt/nozeli/current/nozeli node tests/desktop-admin-agent-live.mjs`实际启动上述release的Electron／main／Pi资源，8场景通过、errors=[]、两次exit0；证据 `/tmp/nozeli-admin-electron-gXwJhn/report.json`。隔离profile与合成项目、localhost确定性Provider，不读取日常凭据，不宣称付费模型理解或搜索全路径本轮重验。
+
+
+
+
+
+
+
 
 ## 入口与范围
 

@@ -17,17 +17,18 @@ Role: 当前源码项目的设计注册与维护入口
 
 | ID | 主题 | 主合同 | 实施与证据 | 下一步与边界 |
 | --- | --- | --- | --- | --- |
-| ICON-001 | 统一图标、双语动作清单与提示 | [界面契约](../user-guide.md#统一图标与操作提示2026-11-13源码已实现未安装) | 62动作生产单源，自有页面已迁移；Linux真实Electron多格式／全部设置分类／批注涂鸦／保存冷恢复及823单元、29审阅提示回归通过 | 未安装／发布；其他平台未验，真实TeX编译因本机缺工具链未通过，不扩大验收 |
 | MEMORY-001 | Plantree统一报告与稳定结果记忆 | [整体合同](../plantree-result-memory-design.md) | [实现／真实项目验收](../result-memory-implementation.md) | 复用Pi原生上下文，不另建压缩/短期记忆；后续局部读一致性、统一目录、规模检索及可恢复整理按主合同验收 |
 | CONTEXT-001 | Pi与Nozeli上下文交付边界 | [交付合同](../context-delivery-design.md) | [Pi整合记录](../pi-integration-execution.md)、[测试入口](../testing.md) | 只测试Nozeli来源/版本/输入接线；不复建Pi压缩、会话历史和恢复 |
 | ORCH-001 | 任务管理与主控 | [主控／Plan Tree设计](../orchestrator-long-term-design.md) | [稳定结果多task证据](../result-memory-implementation.md) | 宿主账本唯一权威；主控按需查询并选源，不扩大任务授权 |
-| ROLE-001 | 角色契约与技能 | [角色设计及前台技能实施](../role-memory-skills-design.md#2026-11-13-前台项目起点技能源码已实现2026-11-14-linux限定验证未安装) | 三项frontdesk技能、只读进展／历史工具与旧项目显式启用已落盘；原生Pi及Electron验证见主合同 | zai/glm-5.3复测API可用、分析报告已保存，但进展／历史后页覆盖未通过；未安装／发布，不借记忆完善自动启用 |
+| ROLE-001 | 角色契约与技能 | [角色设计及前台技能实施](../role-memory-skills-design.md#2026-11-13-前台项目起点技能源码已实现2026-11-14-linux已安装) | strict可选参数及历史页限额语义已修；真实DeePoly源码分析、隔离账本首读与历史6页续读已观察 | Linux修复版已安装、保留回退；24请求上限内历史完整尾页／最终摘要仍未签收，未发布、不自动启用 |
 | PROJECT-OPEN-001 | 简洁生命周期、自动恢复与项目初始化 | [重设计合同](../project-lifecycle-initialization-design.md) | [安装后异常验收](../project-lifecycle-initialization-design.md#9-用户授权安装后的异常验收2026-11-08)、[原现场根因](../project-open-failure-analysis.md) | 已授权本机安装；真实权限/SIGKILL/PTY/取消/并发/七格式窗口及Pi初始化故障验收通过，日常项目未重置，其他平台未验 |
 | LOCAL-WINDOW-001 | 局部讨论外壳与来源页归属 | [窗口合同与Word勘误](../worker-review-chat-demo.md#word来源页定位勘误2026-11-12用户确认方向源码修复未安装) | [实际测试](../testing.md)、[用户指南](../user-guide.md) | Word页内标签随来源页，不将统一外壳泛化为屏幕固定；源码修复未安装，其他页适配器／平台分别验收 |
 | IMAGE-VIEW-001 | 图片基础查看交互 | [查看合同](../principles.md#图片查看2026-11-12) | [实际测试](../testing.md)、[用户指南](../user-guide.md) | 可见缩放／适应／原始尺寸／平移，原图与区域坐标保持；不扩成原图编辑器，安装与平台资格单独记录 |
 | OPT-001 | 安装占用与运行内存优化 | [闭包合同](../deep-optimization-goal.md)、[内存实施](../responsiveness-optimization.md) | 目标依赖裁剪、设置owner空闲回收及Monaco按需加载已验；安装与发行资格分别记录 | 不以压缩或销毁编辑现场冒充运行内存优化 |
-| MARKET-001 | 扩展市场与全局管理助手 | [Demo设计边界](../market-admin-demo.md) | [独立原型](../demos/market-admin/index.html) | 仅内存模拟Demo，未接生产市场／管理员Agent |
-| WEBSITE-001 | 官网介绍与下载导流 | [设计合同](../website-design.md) | [独立原型](../demos/website/index.html) | 本地设计，不代表公网部署或生产模型能力 |
+| MARKET-001 | 独立管理Agent／后续扩展市场 | [最小管理员生产合同](../market-admin-demo.md#2026-11-14-最小生产管理助手用户授权实施测试) | 独立应用上下文、两项skills、项目摘要／打开及全局模型方案确认已落盘；97回归及源码／安装包各8场景、两次exit0通过 | 2026-11-14全工作树已授权本机安装；未验证付费模型理解与跨平台，Store／扩展延期，不提升OS权限 |
+| WEBSITE-001 | 官网介绍、交互演示与下载导流 | [首版设计合同](../website-design.md) | [可点击原型](../demos/website/index.html)，桌面／手机截图与Chromium实测见主文 | 本地设计待审阅；预设AI、无上传／模型／后台，下载指向GitHub Beta.3；未购买域名／托管、未公网部署 |
+| ICON-001 | 统一图标、双语动作清单与提示 | [界面契约](../user-guide.md#统一图标与操作提示2026-11-13源码已实现未安装) | 62动作生产单源，自有页面已迁移；Linux真实Electron多格式／全部设置分类／批注涂鸦／保存冷恢复及823单元、29审阅提示回归通过 | 未安装／发布；其他平台未验，真实TeX编译因本机缺工具链未通过，不扩大验收 |
+| SEARCH-001 | 项目文件与内容搜索 | [主合同](../project-search-design.md) | [选型驱动](../../evaluation/project-search/engine-probe.mjs)、主源码本机安装验收见testing.md | 极简一行搜索＋原省略菜单，文件/内容同引擎；2026-11-14主树38回归/实包11项/保存冷恢复5项通过并本机安装，其他平台未验 |
 
 前期记忆候选研究：[研究记录](../long-term-memory-evaluation.md)；仅来源参考，不与MEMORY-001并列成为另一实施合同。
 

@@ -160,6 +160,20 @@ node tools/test-suites.mjs smoke --list    # 任一套件的文件清单
 
 复杂多task追加：`node --test tests/managed-memory-multitask.test.mjs tests/memory-source-manifest.test.mjs tests/result-memory-concurrency.test.mjs`覆盖六task/额度2、冲突与丢弃历史来源、忙/排队补充、替换/清空导航但保留输入依据、冷重启、目录版本续读及缓存并发计费，已注册unit/integration。`node tests/result-memory-concurrency-live.mjs`以200份约5MB正文、默认2MiB缓存、124项混合读/解析/提交及独立冷进程验证性能/快照重试/完整性；`node tests/desktop-memory-multitask-live.mjs`启动实际Electron/Pi与确定性loopback，验证四task/额度2、排队补充去重、两次冷开及用户放弃释放原排队任务。只计实际运行结果，详见实现记录“复杂多task交错与记忆深测”。
 
+大项目真实模型验收（付费，必须显式执行，不进任何自动套件）：
+
+```bash
+node tests/frontdesk-large-project-real-evaluation.mjs --run-real-frontdesk --project /absolute/path/to/deeploy --model paratera/gpt-6.1-sol --effort low
+```
+
+Linux本机已安装current为默认被测产物；通过 `NOZELI_LARGE_EVALUATION_APP` 可指定另一安装包的 `resources/app`。脚本必须显式给项目、模型与推理级别，不读取项目默认模型替代选择。三项输入针对DeePoly多分支工作区：源码结构、真实规划与隔离Work账本、前两输入的真实原生会话接续；最多24completion、每输入120秒、每次输出2500tokens，不自动重试／换源。生产 `ManagedProjects.resolveRegisteredProject` 接入Controller，并在付费请求前实际核对根目录解析及列表读取；缺能力立即失败，不把夹具缺口算作模型错误。测试侧禁止命令／派工／写入，按需冻结被读文件摘要，不扫描虚拟环境、私人provider／CCB历史或全量文件内容；该门不是OS沙箱。输出位于私有临时目录，报告只由测试侧保存，不冒称项目内document_create。HTTP200／completed不等于内容质量通过，需核对三份native-answer、工具回执、预算与覆盖；具体执行结果另记[技能实施证据](role-memory-skills-design.md)。
+
+历史页限制回执使用 `coverage.pageLimitReached`／`limitScope`，只表示当前页到上限；`hasMore`／`nextCursor` 支持继续，整轮停止以宿主 `HOST_CONTEXT_BUDGET_EXHAUSTED` 为准。手动定向复验可追加 `--history-source /absolute/path/to/prior-evaluation/authentic-history/pi/frontdesk-first-two-inputs.jsonl --max-completions 8`，只对显式指定的前次验收真实会话副本发送历史输入，不重发分析／进展。不得把用户私人provider历史作为此参数；父级需将前次已用请求和本次上限合计计费／限额，不能以新进程偷偷重置授权总额度。
+
+独立管理员最小生产验证（2026-11-14，源码未安装）：`admin-agent-ui.test.mjs`、`admin-operations.test.mjs` 注册unit，`admin-agent.test.mjs` 注册integration，均无付费请求。原生会话目录创建／恢复及共享目录拒绝放在live的 `admin-native-session-live.mjs`，不让默认integration依赖预构建driver；单项1/1通过。`desktop-admin-agent-live.mjs` 使用真实生产Electron、原生Pi、localhost确定性Provider和隔离profile／合成项目，不读取个人账号；需先build:pi及build:renderer、有可用图形会话。它覆盖管理独立模型、草稿跨项目保留、两skill原生读取、方案准备／UI确认、项目document面拒绝admin、冷恢复不重放和390px布局。集中相关回归97项通过（其中原生目录一项随后移入live），真实GUI8场景、两次exit0、errors=[]；证据 `/tmp/nozeli-admin-electron-xodBb0/report.json`。不等于真实付费模型、Windows/macOS或市场／更新功能验收，完整边界见[管理员合同](market-admin-demo.md#2026-11-14-最小生产管理助手用户授权实施测试)。
+
+
+
 
 ## 2026-11-06 状态与管理页信息设计复核（未实施）
 
@@ -1068,3 +1082,13 @@ Beta.6首次候选373ba1e：Mac run43393103574在6m52s结束失败；构建、�
 Beta.6发布期间用户追加“安装并重启”按钮：复用已验证候选、installer lock、退出保存、helper交接、启动健康确认与回滚；手动操作只豁免60秒系统空闲，不豁免编辑／任务／网站保护。设置弹窗本身会阻止自动退出，因此按钮先关闭该弹窗；受阻或失败重新显示原设置与原因。Linux本机36项更新／生命周期定向回归通过，包含主动模式0秒空闲可退出、未保存/排队/flush晚到编辑仍拒绝。现有真实Electron更新旅程通过：下载/校验、关闭自动开关、点击真实按钮、旧进程exit0、受管目录晋升、新进程健康回执、previous/用户数据保留、新端点及正常退出/锁释放。原件`apps/desktop/.test-output/desktop-auto-update-0qTHPg/report.json`及两张设置截图；为隔离同源码合成版本/本地HTTP，不宣称公开GitHub实网跨版本或Mac自动安装。原计划xvfb-run因本机未安装不可用，改用本机实际显示完成，未以模拟浏览器代替应用。新增提交仍须重跑最终SHA CI与双平台构建，不复用4efd3a6包。
 
 含按钮候选b2744ac：Mac run43399507330在8m27s失败；构建、报告恢复、启动冷恢复、任务、Office通过，platform-chrome在floatOpen点击时出现Node is detached from document（72行），为ready后工具栏重绘造成旧ElementHandle失效。改用同文件已有locator.click模式，让点击绑定当前元素，未放宽浮动/回嵌行为断言；Linux真实窗口旅程`/tmp/nozeli-platform-chrome-I4iU52`通过、零provider请求、exit0。下一提交重新运行原生Mac实际包验证，不以Linux代签Mac。
+
+## 极简搜索主源码落盘与本机安装（2026-11-14，用户授权）
+
+产品主树为`/home/bfly/yunwei/nozeli_git`，不是已迁出产品文件的旧`/home/bfly/yunwei/nozeli`壳。将集成树的真实搜索模块、极简单行UI、定位、提取worker、依赖及直接消费者定向迁入主树；保留HEAD3d543c8及当前frontdesk技能/历史修复、原生tooltip和用户未提交变更，不整树覆盖、不从旧分支回退这些能力。设计、管理Demo与测试证据也已放入主树docs/evaluation；管理员仍仅Demo，不向生产应用加入模拟回复/登录。
+
+主树实际运行搜索引擎/会话/编辑面/文档worker及native-tooltip共38项全部通过，零跳过。renderer构建通过，冻结`~/.local/opt/nozeli/releases/compact-search-main-20261114-01`。855个src/dist/assets文件与主树构建逐项摘要一致。版本元数据沿主树0.1.0-alpha.6，本次是本机补丁，不冒充公开beta6原包，也未自动发新版本。
+
+最终包实际11项搜索旅程通过：默认仅搜索…与原省略菜单（选项默认不占布局），模式和正则均经省略菜单操作、中文/emoji精确选区且原件不变、原生快捷键/立即Enter、缓冲覆盖旧磁盘、PDF页/DOCX引文/XLSX单元格/PPT页定位、忽略规则/错误区分、320px及Escape。errors=[]、正常exit0；原件`/tmp/nozeli-project-search-live-Xh5sXv/report.json`和compact-search-idle.png/text-search-wide.png/search-320.png。随后现有desktop-ci-smoke支持指定候选可执行文件，实际同一候选完成文件显式保存、项目切换保留、正常退出、冷启动内容恢复5项通过、两次exit0：`apps/desktop/.test-output/ci/smoke-zToJGy/report.json`。无测试模型调用或个人凭据。
+
+通过原install-local --existing-release激活；previous保留`2026-11-14T05-42-56-758Z`。原日常PID3750288仍运行更早23-42版本，核验窗口WM_CLASS/PID后发送WM_DELETE_WINDOW并正常退出，不发强杀信号或接受丢弃确认；正式桌面入口启动PID432169，/proc/exe精确位于新release，输出NOZELI_DESKTOP_READY hidden=false。本机记录`~/.cache/nozeli-smokes/compact-search-main-20261114/{before.json,frozen-inputs.json,installed.json}`。用户数据/profile沿原路径，不覆盖论文原件。管理Agent保持独立隔离Demo，Store延期。仅Linux本机安装验收，无提交、推送、标签或公开发布，Mac/Windows未验。

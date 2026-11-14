@@ -80,6 +80,25 @@ for (const provider of ['codex', 'claude', 'pi']) test(`${provider}: actual tran
   assert.ok(found.pages.reduce((n, p) => n + p.coverage.unconfirmed, 0) >= 1);
 });
 
+test('direct and budgeted history consumers share nullable optionals without weakening tickets or unknown fields',async t=>{
+ const f=await setup(t);
+ for(const name of ['one','two'])await f.fixture('pi',name+'.jsonl',[header('pi',f.project,name),message('pi','actual history '+name)]);
+ for(const host of [undefined,{maxBytes:12000}]){
+  const omitted=await f.reader.search({},host);assert.equal(omitted.status,'ok');assert.equal(omitted.items.length,2);
+  for(const cursor of [null,'']){
+   const first=await f.reader.search({query:null,provider:null,cursor,limit:1},host);assert.equal(first.status,'ok');assert(first.nextCursor);
+   const next=await f.reader.search({query:null,provider:null,cursor:first.nextCursor,limit:1},host);assert.equal(next.status,'ok');assert.notEqual(next.items[0].sessionId,first.items[0].sessionId);
+   const body=await f.reader.read({source:first.items[0].source,cursor,maxBytes:null},host);assert.equal(body.status,'ok');assert.match(body.records[0].text,/actual history/);
+  }
+  assert.equal((await f.reader.search({provider:'',cursor:null,limit:null},host)).items.length,2);
+  assert.equal((await f.reader.search({cursor:'forged'},host)).status,'invalid_cursor');
+  assert.equal((await f.reader.read({source:omitted.items[0].source,cursor:'forged'},host)).status,'invalid_cursor');
+  assert.equal((await f.reader.read({source:null,cursor:null},host)).status,'invalid_source');
+  assert.throws(()=>f.reader.search({cursor:null,unknown:null},host),{code:'INVALID_PAYLOAD'});
+  assert.throws(()=>f.reader.read({source:omitted.items[0].source,unknown:null},host),{code:'INVALID_PAYLOAD'});
+ }
+});
+
 test('default home layout discovers all three providers without internal options', async t => {
   const f = await setup(t);
   const home = path.join(f.temp, 'home');
@@ -177,7 +196,7 @@ test('bounded file, entry, record and byte scans resume without loss, oversized 
     assert.ok(page.coverage.files <= 1); assert.ok(page.coverage.entries <= 2);
     assert.ok(page.coverage.records <= 1); assert.ok(page.coverage.bytes <= 64);
   }
-  assert.ok(result.pages.some(p => p.coverage.budgetExhausted));
+  assert.ok(result.pages.some(p => p.coverage.pageLimitReached));
   assert.ok(result.pages.some(p => p.coverage.unsupported.some(e => e.reason === 'record_too_large')));
 });
 
@@ -243,13 +262,11 @@ test('missing Claude cwd and system/credential envelopes never establish project
   assert.ok(result.pages.some(p => p.coverage.unconfirmed || p.coverage.unsupported.length));
 });
 
-test('close revokes capabilities and empty-string cursors are not accepted as new scans', async t => {
+test('close revokes source and continuation capabilities', async t => {
   const f = await setup(t);
   await f.fixture('pi', 'session.jsonl', [header('pi', f.project), message('pi', 'synthetic')]);
-  assert.equal((await f.reader.search({ cursor: '' })).status, 'invalid_cursor');
   const page = await f.reader.search({ provider: 'pi', limit: 1 });
   const source = page.items[0].source;
-  assert.equal((await f.reader.read({ source, cursor: '' })).status, 'invalid_cursor');
   f.reader.close();
   assert.equal((await f.reader.read({ source })).status, 'invalid_source');
   assert.equal((await f.reader.search({ provider: 'pi' })).status, 'closed');

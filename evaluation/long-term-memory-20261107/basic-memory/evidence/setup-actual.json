@@ -1,0 +1,28 @@
+{
+  "candidate": "basic-memory==1.0.0",
+  "venv_python": "3.12.13",
+  "installation_commands": [
+    [
+      "uv",
+      "venv",
+      "--python",
+      "3.12",
+      "/home/bfly/yunwei/nozeli_git/evaluation/long-term-memory-20261107/basic-memory/.venv"
+    ],
+    [
+      "uv",
+      "pip",
+      "install",
+      "--python",
+      "/home/bfly/yunwei/nozeli_git/evaluation/long-term-memory-20261107/basic-memory/.venv/bin/python",
+      "basic-memory==1.0.0"
+    ]
+  ],
+  "returncodes": [
+    0,
+    0
+  ],
+  "original_wall_time_seconds": null,
+  "timing_note": "Initial setup wall time was not instrumented; reproduction setup.py captures it",
+  "license_metadata_distributions": 159
+}

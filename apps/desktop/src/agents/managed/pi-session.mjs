@@ -249,7 +249,7 @@ export class PiSession extends EventEmitter {
   // header identity during the same open. Refuse before any side effect.
   if(resumeId&&this.pinnedThreadId&&this.pinnedThreadId!==resumeId)throw fail('PI_SESSION_IDENTITY',`Pi pinned session metadata names thread ${this.pinnedThreadId}, not the requested ${resumeId}`);
   if(!this.processTree.verified)throw fail('PI_PLATFORM_UNSUPPORTED',`Pi owner process ownership is not verified on ${this.processTree.platform}; refusing to start an unverified owner process`);
-  const skillCatalog=await roleSkillCatalog(this.role,{skills:this.spec.skills});
+  const skillCatalog=this.spec.roleSkillCatalog??await roleSkillCatalog(this.role,{skills:this.spec.skills});
   await fs.mkdir(this.home,{recursive:true,mode:0o700});
   const runtime=this.spec.piRuntime??{};
   if(!resumeId){
@@ -279,7 +279,8 @@ export class PiSession extends EventEmitter {
   await new Promise((resolve,reject)=>{child.once('spawn',resolve);child.once('error',reject);});
   this.pid=child.pid;this.groupRecord={pid:this.pid,home:this.home,ownerId:this.viewOwnerId,stamp:await this.processTree.stamp(this.pid),kind:'pi-node'};
   await this.spec.onSpawn?.(this.pid);
-  const result=await this.request('start',{cwd:this.cwd,home:this.home,agentDir:env.PI_CODING_AGENT_DIR,instructions:[this.spec.baseInstructions,this.spec.instructions].filter(Boolean).join('\n'),tools:this.tools,rolePackageRoot:path.join(roleRuntimeRoot,'roles'),roleSkillCatalog:skillCatalog,sessionId:resumeId,sessionFile:this.sessionFile,model:this.model,effort:this.effort,role:this.role,...(this.spec.budget?{budget:this.spec.budget}:{})},60000);
+  const sessionDirectory=this.spec.sessionDir!==undefined?{sessionDir:this.spec.sessionDir}:{};
+  const result=await this.request('start',{cwd:this.cwd,home:this.home,agentDir:env.PI_CODING_AGENT_DIR,instructions:[this.spec.baseInstructions,this.spec.instructions].filter(Boolean).join('\n'),tools:this.tools,...sessionDirectory,...(this.spec.nativeTools!==undefined?{nativeTools:this.spec.nativeTools}:{}),rolePackageRoot:this.spec.rolePackageRoot??path.join(roleRuntimeRoot,'roles'),roleSkillCatalog:skillCatalog,sessionId:resumeId,sessionFile:this.sessionFile,model:this.model,effort:this.effort,role:this.role,...(this.spec.budget?{budget:this.spec.budget}:{})},60000);
   this.threadId=result.sessionId;this.sessionFile=result.sessionFile;
   if(!this.threadId||resumeId&&this.threadId!==resumeId)throw fail('PI_SESSION_IDENTITY','Pi owner did not confirm exact original session identity');
   this.model=modelSelector(result.model)??this.model;this.effort=result.effort??this.effort;this.effective=result.effective;this.thinkingLevels=result.thinkingLevels??this.thinkingLevels;this.hasPrompted=result.hasPrompted===true;

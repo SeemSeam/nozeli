@@ -3,10 +3,11 @@ import './file-navigator.css';
 import {readFileAvailability} from './file-availability.mjs';
 import {mountContextMenu} from './context-menu.mjs';
 import {setActionButton} from './ui-actions.mjs';
+import {mountProjectSearchView} from './project-search-view.mjs';
 
 export const isProjectDocument = view => view?.kind === 'document' && (!view.documentSource || view.documentSource.type === 'project');
 
-export function mountFileNavigator({invoke, projectId, open, toast=()=>{}, workspaceGroups=()=>null, visibility=()=>({}), onRendered=()=>{}, rowHeight=32, overscan=8}){
+export function mountFileNavigator({invoke, projectId, open, revealHit, toast=()=>{}, workspaceGroups=()=>null, visibility=()=>({}), onRendered=()=>{}, rowHeight=32, overscan=8}){
   const tree=document.getElementById('file-tree'), filter=document.getElementById('file-filter');
   const canvas=document.createElement('div');canvas.className='tree-virtual-canvas';tree.replaceChildren(canvas);
   const editorMenu=mountContextMenu({id:'navigator-editor-menu',label:'已打开文件',onError:toast});
@@ -19,12 +20,12 @@ export function mountFileNavigator({invoke, projectId, open, toast=()=>{}, works
   window.nozeli?.subscribe?.('workspace.control', event => {
     if (event.type === 'project-unavailable') unavailable.add(event.projectId);
     if (['project-unavailable','project-closed'].includes(event.type) && event.projectId === owner) {
-      revision++; transitionGeneration++; searchSequence++; directories.clear(); visible=[]; selected.clear();
-      clearTimeout(timer); if(overlay.open)overlay.close(); results.replaceChildren(); editorList.replaceChildren();
+      revision++; transitionGeneration++; searchView.invalidate(); directories.clear(); visible=[]; selected.clear();
+      editorList.replaceChildren();
       tree.replaceChildren(); tree.textContent = event.type === 'project-unavailable' ? '项目目录不可用；可关闭或移除入口。' : '';
     }
   });
-  window.addEventListener('nozeli-project-transition',event=>{transitioning=event.detail.active;transitionGeneration++;searchSequence++;clearTimeout(timer);if(transitioning){if(overlay.open)overlay.close();results.replaceChildren();}else{paintEditors();void checkEditorPaths();}});
+  window.addEventListener('nozeli-project-transition',event=>{transitioning=event.detail.active;transitionGeneration++;searchView.invalidate();if(!transitioning){paintEditors();void checkEditorPaths();}});
   rowHeight=Math.max(20,Number(rowHeight)||32);overscan=Math.max(0,Math.min(20,Number(overscan)||8));
   tree.style.setProperty('--tree-row-height',`${rowHeight}px`);
   tree.setAttribute('aria-multiselectable','true');
@@ -74,7 +75,7 @@ export function mountFileNavigator({invoke, projectId, open, toast=()=>{}, works
   async function refresh(){
     if (unavailable.has(projectId())) return;
     const id=projectId(),switching=id!==owner;
-    if(switching){revision++;if(owner)sessions.set(owner,[...expanded]);owner=id;expanded.clear();selected.clear();directories.clear();anchor=null;focusedPath=null;tree.scrollTop=0;searchSequence++;results.replaceChildren();editorList.replaceChildren();tree.replaceChildren();if(overlay.open)overlay.close();if(id){const state=await invoke('tree.view',{projectId:id});if(id!==projectId())return;for(const path of sessions.get(id)||state.value?.expanded||[])expanded.add(path);}}
+    if(switching){revision++;if(owner)sessions.set(owner,[...expanded]);owner=id;expanded.clear();selected.clear();directories.clear();anchor=null;focusedPath=null;tree.scrollTop=0;searchView.invalidate();editorList.replaceChildren();tree.replaceChildren();if(id){const state=await invoke('tree.view',{projectId:id});if(id!==projectId())return;for(const path of sessions.get(id)||state.value?.expanded||[])expanded.add(path);}}
     if(!id){render();return;}
     if(directories.has(''))await refreshDirectory('');else if(!await load(''))return;
     for(const path of expanded){if(id!==projectId())return;if(directories.has(path))await refreshDirectory(path);else await load(path);}
@@ -114,62 +115,11 @@ export function mountFileNavigator({invoke, projectId, open, toast=()=>{}, works
       return true;
     }catch(e){toast(e.message||'文件打开失败');return false;}
   }
-  const overlay=document.createElement('dialog');overlay.id='quick-open';overlay.setAttribute('aria-label','快速打开');const input=document.createElement('input');input.id='quick-open-input';input.placeholder='搜索项目文件…';input.setAttribute('aria-label','搜索项目文件');const status=document.createElement('p');status.id='quick-open-status';status.setAttribute('role','status');const results=document.createElement('div');results.id='quick-open-results';results.setAttribute('role','list');results.setAttribute('aria-label','文件搜索结果');const close=document.createElement('button');close.type='button';setActionButton(close,'close-view',{label:'关闭',text:''});close.onclick=()=>overlay.close();overlay.append(input,status,results,close);document.body.append(overlay);let timer,searchSequence=0,returnFocus=null,openingFile=false,focusHandoffViewId=null,skipLauncherRestore=false;
-  const searchCurrent=(sequence,id,q)=>overlay.open&&sequence===searchSequence&&id===projectId()&&!transitioning&&q===input.value.trim();
-  async function search(){
-    const q=input.value.trim(),id=projectId(),sequence=++searchSequence;results.replaceChildren();
-    if(!searchCurrent(sequence,id,q))return null;
-    if(!q||!id){status.textContent='输入文件名或路径';return null;}
-    status.textContent='搜索中…';
-    try{
-      const r=await invoke('project.search',{projectId:id,query:q,limit:100,treeView:true,filesOnly:true});
-      if(!searchCurrent(sequence,id,q))return null;
-      if(!r.ok){status.textContent=r.error?.message||'搜索失败';return null;}
-      const entries=(r.value.entries||[]).filter(e=>e.kind!=='dir');status.textContent=(r.value.truncated||r.value.budgetExceeded)?'更多结果 · 搜索不完整，请缩小关键词':`${entries.length} 个结果`;
-      for(const entry of entries){
-        const row=document.createElement('div');row.className='quick-open-result';row.setAttribute('role','listitem');
-        for(const [label,where] of [[entry.relPath,'current'],['在右侧打开','right'],['在下方打开','bottom'],['在新窗口打开','window']]){
-          const b=document.createElement('button');b.type='button';b.dataset.openTarget=where;b.dataset.path=entry.relPath;b.textContent=label;b.title=where==='current'?entry.relPath:`${label}：${entry.relPath}`;if(where!=='current')b.setAttribute('aria-label',b.title);
-          b.onclick=async()=>{
-            if(openingFile||!searchCurrent(sequence,id,q))return;
-            openingFile=true;for(const button of results.querySelectorAll('button'))button.disabled=true;status.textContent='正在打开文件…';
-            try{
-              const opened=await openAt(entry.relPath,where);
-              if(searchCurrent(sequence,id,q)){
-                if(opened){
-                  // Only the current target owns the keyboard after a successful open:
-                  // right/bottom/window place mirrors (or float the writer) where the
-                  // layout — not this dialog — decides focus, so hand off only the
-                  // concrete writer the user opened or activated.
-                  const api=workspaceGroups();
-                  const writer=where==='current'&&api?Object.values(api.snapshot()?.views||{}).find(v=>isProjectDocument(v)&&v.relPath===entry.relPath&&!v.readOnly):null;
-                  focusHandoffViewId=writer?.id||null;skipLauncherRestore=where==='window';returnFocus=null;filter.disabled=true;overlay.close();
-                }else status.textContent='文件未打开，请查看错误提示后重试。';
-              }
-            }finally{openingFile=false;for(const button of results.querySelectorAll('button'))button.disabled=false;}
-          };row.append(b);
-        }results.append(row);
-      }
-      return sequence;
-    }catch(error){if(searchCurrent(sequence,id,q))status.textContent=error.message||'搜索失败';return null;}
-  }
-  const showSearch=()=>{
-    if(window.__workspaceScope?.role==='surface')return false;
-    if(!projectId()){toast('请先打开项目');return false;}
-    if(transitioning){toast('项目正在切换，请稍后重试。');return false;}
-    const opening=!overlay.open;
-    if(opening){returnFocus=document.activeElement;filter.disabled=false;overlay.showModal();filter.setAttribute('aria-expanded','true');}
-    input.focus();if(opening){input.select();void search();}return true;
-  };
-  const scheduleSearch=()=>{clearTimeout(timer);searchSequence++;results.replaceChildren();status.textContent=input.value.trim()?'搜索中…':'输入文件名或路径';timer=setTimeout(()=>void search(),150);};
-  input.addEventListener('input',scheduleSearch);
-  overlay.addEventListener('close',()=>{if(overlay.open)return;clearTimeout(timer);searchSequence++;results.replaceChildren();filter.setAttribute('aria-expanded','false');filter.disabled=false;const handoff=focusHandoffViewId;focusHandoffViewId=null;if(handoff){const api=workspaceGroups();if(api)void api.focusView(handoff).catch(e=>toast(e.message));return;}if(skipLauncherRestore){skipLauncherRestore=false;return;}const target=[returnFocus,filter,...document.querySelectorAll('[data-workspace-command]')].find(node=>node?.isConnected&&node!==document.body&&node.getClientRects().length&&!node.disabled);returnFocus=null;target?.focus({preventScroll:true});});
-  overlay.addEventListener('keydown',async e=>{if(e.key==='Escape'&&!e.isComposing){e.preventDefault();overlay.close();return;}if(e.key==='Enter'&&e.target===input&&!e.isComposing){e.preventDefault();if(openingFile)return;clearTimeout(timer);const sequence=await search();if(sequence!==null&&sequence===searchSequence&&overlay.open)results.querySelector('button')?.click();return;}if(!['ArrowDown','ArrowUp'].includes(e.key)||e.isComposing)return;const all=[...results.querySelectorAll('[data-open-target="current"]:not(:disabled)')],i=all.indexOf(document.activeElement);if(all.length){e.preventDefault();all[(i<0?(e.key==='ArrowDown'?0:all.length-1):(i+(e.key==='ArrowDown'?1:-1)+all.length)%all.length)]?.focus();}});
-  document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&!e.altKey&&!e.shiftKey&&!e.isComposing&&e.key.toLowerCase()==='p'){e.preventDefault();showSearch();}});
-  filter.placeholder='快速打开文件…';filter.setAttribute('aria-label','快速打开项目文件');filter.setAttribute('aria-haspopup','dialog');filter.setAttribute('aria-controls','quick-open');filter.setAttribute('aria-expanded','false');
-  filter.addEventListener('click',()=>showSearch());
-  filter.addEventListener('keydown',e=>{if(['Enter','ArrowDown'].includes(e.key)&&!e.isComposing){e.preventDefault();showSearch();}});
-  filter.addEventListener('input',e=>{e.stopImmediatePropagation();input.value=filter.value;if(showSearch()){input.setSelectionRange(input.value.length,input.value.length);scheduleSearch();}},true);
+  const searchView=mountProjectSearchView({invoke,projectId,filter,tree,openAt,revealHit,toast,canSearch:()=>!transitioning&&!unavailable.has(projectId()),focusOpened:async path=>{
+    const api=workspaceGroups(),writer=Object.values(api?.snapshot()?.views||{}).find(view=>isProjectDocument(view)&&view.relPath===path&&!view.readOnly);
+    if(writer)await api.focusView(writer.id);
+  }});
+  const showSearch=searchView.search;
   const editors=document.createElement('details');editors.id='workspace-open-editors';editors.open=true;const heading=document.createElement('summary');heading.textContent='已打开';const editorList=document.createElement('div');editorList.className='workspace-open-editor-list';editors.append(heading,editorList);tree.before(editors);
   function paintEditors(){
     const api=workspaceGroups(),layout=api?.snapshot();editorList.replaceChildren();if(!layout||layout.projectId!==projectId())return;
@@ -222,7 +172,11 @@ export function mountFileNavigator({invoke, projectId, open, toast=()=>{}, works
     if(editorFrame)return;
     editorFrame=requestAnimationFrame(()=>{editorFrame=0;if(transitioning||unavailable.has(projectId()))return;paintEditors();void checkEditorPaths();});
   }
-  window.nozeli?.subscribe?.('workspace.control',event=>{if(event.type==='quick-open'&&event.projectId===projectId())showSearch();});
+  window.nozeli?.subscribe?.('workspace.control',event=>{
+    if(event.projectId!==projectId())return;
+    if(event.type==='quick-open')showSearch();
+    else if(event.type==='content-search')searchView.searchContent();
+  });
   if(document.documentElement.dataset.workspaceRole==='shell'){
     window.nozeli?.subscribe?.('workspace.changed',scheduleEditors);
     window.nozeli?.subscribe?.('workspace.control',event=>{if(event.type==='file-tree-changed'&&event.projectId===projectId())void refreshDirectory(event.parentRelPath||'');if(event.type==='file-tree-watch-error'&&event.projectId===projectId())toast('目录监听不可用：'+event.message+'；可手动刷新。');});
@@ -234,5 +188,5 @@ export function mountFileNavigator({invoke, projectId, open, toast=()=>{}, works
     for(let i=0;i<parts.length;i++){const parent=parts.slice(0,i).join('/'),child=parts.slice(0,i+1).join('/');if(!directories.has(parent)&&!await load(parent))return;while(!directories.get(parent)?.entries.some(e=>e.relPath===child)&&directories.get(parent)?.nextCursor){if(!await load(parent,true))return;}if(id!==projectId())return;if(i<parts.length-1){expanded.add(child);}}
     persistExpanded();render();const index=visible.findIndex(v=>v.entry?.relPath===path);if(index>=0)focusIndex(index);
   }
-  return {render:refresh,refreshDirectory,search:showSearch,openAt,selection:()=>[...selected],paintEditors,collapse,applyClosed,locate};
+  return {render:refresh,refreshDirectory,search:showSearch,searchContent:searchView.searchContent,openAt,selection:()=>[...selected],paintEditors,collapse,applyClosed,locate};
 }

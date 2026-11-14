@@ -1,6 +1,6 @@
 // Official Lucide SVG definitions: https://github.com/lucide-icons/lucide
 // ISC/MIT notices are retained in workspace-conversation-controls.LICENSE.
-import {mountUiTooltip} from './ui-tooltip.mjs';
+import {setUiHint} from './ui-tooltip.mjs';
 
 // 2026-11-13: confirmed icon-list-v2 set moved here as the single source
 // (save, download, panel-top, file-cog, plug-zap, square, trash, square-pen,
@@ -76,9 +76,8 @@ export function setIconButton(button, name, {label, text = ''} = {}) {
     if (text) { const span=document.createElement('span');span.className='ui-icon-text';span.textContent=text;button.append(span); }
   }
   button.classList.toggle('ui-icon-button', !text);button.classList.toggle('ui-icon-label', Boolean(text));
-  // label keeps title/aria authoritative; the empty marker opts the button
-  // into the delegated tooltip, which resolves title/aria live on each show.
-  if (label) { button.title=label;button.setAttribute('aria-label',label);button.dataset.uiHint='';mountUiTooltip(button.ownerDocument); }
+  if (label) { button.setAttribute('aria-label',label);setUiHint(button,label); }
+  else if(button.title){setUiHint(button,button.title);}
   return button;
 }
 

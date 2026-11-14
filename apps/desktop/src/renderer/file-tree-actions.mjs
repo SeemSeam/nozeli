@@ -44,6 +44,7 @@ export function mountFileTreeActions({ invoke, projectId, perform, open, openAt,
   };
   async function execute(action, ctx, dropped=null) {
     if(!action || busy || ctx.projectId!==projectId()) return;
+    if(action==='searchOptions'){filter.dispatchEvent(new Event('nozeli-search-options'));return;}
     const source=ctx.relPath, destination=ctx.directory?source:parent(source);
     busy=true;
     try {
@@ -106,7 +107,7 @@ export function mountFileTreeActions({ invoke, projectId, perform, open, openAt,
   const menuItems=(ctx,canPaste=false)=>[...(!ctx.directory?[{label:'在右侧打开',id:'right'},{label:'在下方打开',id:'bottom'},{label:'在新窗口打开',id:'window'},...targets().map(group=>({label:'在指定组打开 · '+group.label,id:'group:'+group.id}))]:[]),{label:'快速打开',id:'quickOpen'},...treeMenuItems({directory:ctx.directory,root:!ctx.relPath,canPaste,visibility:true,hidden:ctx.hidden,showHidden:visibility().showHidden})];
   function showMenu(ctx,position,panel=false){
     const version=++menuVersion;
-    popup.open([...menuItems(ctx),...(panel?[menuNotice]:[])],{...position,run:action=>execute(action,ctx)});
+    popup.open([...(panel?[{id:'searchOptions',label:'搜索选项…'}]:[]),...menuItems(ctx),...(panel?[menuNotice]:[])],{...position,run:action=>execute(action,ctx)});
     if(panel)more.setAttribute('aria-expanded','true');
     void readClipboard(ctx).then(clip=>{
       if(version!==menuVersion||ctx.projectId!==projectId()||!popup.isOpen())return;

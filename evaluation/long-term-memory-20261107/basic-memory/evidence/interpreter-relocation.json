@@ -1,0 +1,5 @@
+{
+  "reason": "Remove inherited uv interpreter location dependency; exact installed interpreter copied unchanged, no package reinstall",
+  "original_python": "/home/bfly/yunwei/nozeli/.ccb/agents/worker2/provider-state/omp/data/uv/python/cpython-3.12.13-linux-x86_64-gnu/bin/python3.12",
+  "isolated_python": "/home/bfly/yunwei/nozeli_git/evaluation/long-term-memory-20261107/basic-memory/home/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/bin/python3.12"
+}

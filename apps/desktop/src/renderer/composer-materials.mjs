@@ -1,6 +1,7 @@
 import { appendDrawingMaterial } from '../domain/drawing-delivery.mjs';
 import { createFileIcon, fileIconType } from './file-icons.mjs';
 import {setActionButton} from './ui-actions.mjs';
+import {setUiHint} from './ui-tooltip.mjs';
 import {uiIcon} from './ui-icons.mjs';
 import './conversation-rendering.css';
 import {renderFrozenMaterialBody} from './frozen-material-viewer.mjs';
@@ -472,7 +473,7 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
     if (!send) return;
     const blocked = pending.some(a => a.status === 'error' || a.status === 'reading');
     send.classList.toggle('cm-send-blocked', blocked);
-    if (blocked) send.title = '有材料未就绪，先移除或重新添加'; else send.title = '';
+    setUiHint(send, blocked ? '有材料未就绪，先移除或重新添加' : '');
   }
 
   /* ---------- reply quote --------------------------------------------------- */

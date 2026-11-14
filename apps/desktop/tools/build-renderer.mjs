@@ -15,6 +15,7 @@ const output = path.join(root, 'dist/renderer');
 await fs.mkdir(output, { recursive: true });
 await fs.copyFile(path.join(root,'src/renderer/context-menu.css'),path.join(output,'context-menu.css'));
 for (const name of ['index.html', 'styles.css', 'workspace.css']) await fs.copyFile(path.join(root, 'src/renderer', name), path.join(output, name));
+await fs.copyFile(path.join(root,'src/renderer/native-tooltip.html'),path.join(output,'native-tooltip.html'));
 await fs.copyFile(path.join(root,'assets/brand/nozeli-small-icon.png'),path.join(output,'nozeli-small-icon.png'));
 await fs.cp(path.join(root,'assets/start-page'),path.join(output,'start-page'),{recursive:true});
 await fs.copyFile(path.join(root, 'node_modules/katex/dist/katex.min.css'), path.join(output, 'katex.css'));

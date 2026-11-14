@@ -1,0 +1,212 @@
+{
+  "scope": "Same corpus/oracle, lexical only; MCP roundtrip vs in-process API not bare engine speed comparison",
+  "corpusSHA256": "eab596d321cad3f1c74ef63ac49a2b020c2de33fb25ad303c6ada6b220ad0cdb",
+  "scales": [
+    {
+      "rows": 10,
+      "basic": {
+        "firstPageWarmMCP": {
+          "samples": 14,
+          "p50ms": 24.23877699766308,
+          "p95ms": 474.95806589722633
+        },
+        "coldIndexSeconds": 1.856783548137173,
+        "mcpStartupSeconds": 2.0695408969186246,
+        "statePlusNotesBytes": 587925,
+        "sampledTreePeakRSSBytes": 355082240,
+        "totalScenarioTreeCPUSeconds": 44.519999999999996,
+        "paginationBeyondFive": true,
+        "sourceReadCount": 10,
+        "sourceReadExact": true,
+        "allRebuiltIDsExact": true,
+        "blockedNetworkAttempts": 0
+      },
+      "embedded": {
+        "warmInProcessBigram": {
+          "samples": 14,
+          "p50_ms": 0.131471,
+          "p95_ms": 0.16467,
+          "max_ms": 0.16467
+        },
+        "indexSeconds": 0.030219316948205233,
+        "databaseAndSidecarBytes": 208896,
+        "authorityUnchangedByRebuild": true,
+        "allCurrentHistoryOracleChecksExact": true,
+        "sourceReadCount": 10
+      }
+    },
+    {
+      "rows": 100,
+      "basic": {
+        "firstPageWarmMCP": {
+          "samples": 14,
+          "p50ms": 22.765968460589647,
+          "p95ms": 493.3717348612845
+        },
+        "coldIndexSeconds": 6.244484327966347,
+        "mcpStartupSeconds": 2.1463302539195865,
+        "statePlusNotesBytes": 2276186,
+        "sampledTreePeakRSSBytes": 361676800,
+        "totalScenarioTreeCPUSeconds": 58.12,
+        "paginationBeyondFive": true,
+        "sourceReadCount": 100,
+        "sourceReadExact": true,
+        "allRebuiltIDsExact": true,
+        "blockedNetworkAttempts": 0
+      },
+      "embedded": {
+        "warmInProcessBigram": {
+          "samples": 14,
+          "p50_ms": 0.267547,
+          "p95_ms": 0.374829,
+          "max_ms": 0.374829
+        },
+        "indexSeconds": 0.2115184769500047,
+        "databaseAndSidecarBytes": 454656,
+        "authorityUnchangedByRebuild": true,
+        "allCurrentHistoryOracleChecksExact": true,
+        "sourceReadCount": 100
+      }
+    },
+    {
+      "rows": 1000,
+      "basic": {
+        "firstPageWarmMCP": {
+          "samples": 14,
+          "p50ms": 31.420777086168528,
+          "p95ms": 478.16606401465833
+        },
+        "coldIndexSeconds": 51.13319064490497,
+        "mcpStartupSeconds": 2.117127978010103,
+        "statePlusNotesBytes": 13251848,
+        "sampledTreePeakRSSBytes": 391131136,
+        "totalScenarioTreeCPUSeconds": 200.83999999999997,
+        "paginationBeyondFive": true,
+        "sourceReadCount": 1000,
+        "sourceReadExact": true,
+        "allRebuiltIDsExact": true,
+        "blockedNetworkAttempts": 0
+      },
+      "embedded": {
+        "warmInProcessBigram": {
+          "samples": 14,
+          "p50_ms": 4.219687,
+          "p95_ms": 6.224418,
+          "max_ms": 6.224418
+        },
+        "indexSeconds": 2.0869442189577967,
+        "databaseAndSidecarBytes": 2678784,
+        "authorityUnchangedByRebuild": true,
+        "allCurrentHistoryOracleChecksExact": true,
+        "sourceReadCount": 1000
+      }
+    }
+  ],
+  "queries1000": [
+    {
+      "query": "双星",
+      "basicNativeCurrent": {
+        "precision": 1.0,
+        "recall": 0.4
+      },
+      "basicRawHistory": {
+        "precision": 0.95,
+        "recall": 0.4
+      },
+      "embeddedCurrent": {
+        "precision": 1.0,
+        "recall": 1.0
+      }
+    },
+    {
+      "query": "混沌",
+      "basicNativeCurrent": {
+        "precision": 1.0,
+        "recall": 0.8
+      },
+      "basicRawHistory": {
+        "precision": 0.95,
+        "recall": 0.8
+      },
+      "embeddedCurrent": {
+        "precision": 1.0,
+        "recall": 1.0
+      }
+    },
+    {
+      "query": "雙星",
+      "basicNativeCurrent": {
+        "precision": 1.0,
+        "recall": 0.2
+      },
+      "basicRawHistory": {
+        "precision": 0.95,
+        "recall": 0.2
+      },
+      "embeddedCurrent": {
+        "precision": 1.0,
+        "recall": 1.0
+      }
+    },
+    {
+      "query": "binary chaos",
+      "basicNativeCurrent": {
+        "precision": 1.0,
+        "recall": 0.2
+      },
+      "basicRawHistory": {
+        "precision": 0.95,
+        "recall": 0.2
+      },
+      "embeddedCurrent": {
+        "precision": 1.0,
+        "recall": 1.0
+      }
+    },
+    {
+      "query": "目前双星混沌应当采用哪一种积分方法",
+      "basicNativeCurrent": {
+        "precision": null,
+        "recall": 0.0
+      },
+      "basicRawHistory": {
+        "precision": null,
+        "recall": 0.0
+      },
+      "embeddedCurrent": {
+        "precision": 1.0,
+        "recall": 1.0
+      }
+    },
+    {
+      "query": "finishClosure",
+      "basicNativeCurrent": {
+        "precision": 1.0,
+        "recall": 1.0
+      },
+      "basicRawHistory": {
+        "precision": 0.951048951048951,
+        "recall": 1.0
+      },
+      "embeddedCurrent": {
+        "precision": 1.0,
+        "recall": 1.0
+      }
+    },
+    {
+      "query": "src/agents/managed/controller.mjs",
+      "basicNativeCurrent": {
+        "precision": 1.0,
+        "recall": 1.0
+      },
+      "basicRawHistory": {
+        "precision": 0.951048951048951,
+        "recall": 1.0
+      },
+      "embeddedCurrent": {
+        "precision": 1.0,
+        "recall": 1.0
+      }
+    }
+  ]
+}

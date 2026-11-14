@@ -1,0 +1,124 @@
+# Letta Agent SDK
+
+[![npm](https://img.shields.io/npm/v/@letta-ai/letta-agent-sdk.svg?style=flat-square)](https://www.npmjs.com/package/@letta-ai/letta-agent-sdk) [![Discord](https://img.shields.io/badge/discord-join-blue?style=flat-square&logo=discord)](https://discord.gg/letta)
+
+The SDK for [stateful agents](https://docs.letta.com/concepts/stateful-agents): create an agent once, then resume it from anywhere. Each agent has its own identity and long-term memory, and keeps both across conversations, models, and the computers it runs on.
+
+Read the [documentation](https://docs.letta.com/agent-sdk) for guides and the full API reference.
+
+## Quick start
+
+```bash
+npm install @letta-ai/letta-agent-sdk
+```
+
+```typescript
+import { LettaAgentClient } from "@letta-ai/letta-agent-sdk";
+
+const client = new LettaAgentClient({ backend: "cloud" });
+
+// Create the agent once...
+const agentId = await client.createAgent({
+  systemPrompt: "You are Nora, a research analyst who tracks our competitors.",
+  memfs: true,
+});
+
+// ...then resume it, from anywhere, for as long as it lives.
+await using session = client.resumeSession(agentId);
+
+await session.send("What changed since last week?");
+for await (const message of session.stream()) {
+  if (message.type === "assistant") process.stdout.write(message.content);
+}
+```
+
+Local and remote management clients can use `await using client = new
+LettaAgentClient(...)`, or call `await client.close()` explicitly. Client
+disposal closes its pooled management connection and shared local App Server.
+Local calls share one lazily started server per client; closing a session does
+not stop its siblings. Keep the client open while using these sessions.
+Sessions with environment overrides or memory confinement retain dedicated
+processes and must be closed separately. Externally hosted servers are never
+stopped by the client.
+The top-level convenience functions own short-lived clients; use a
+`LettaAgentClient` instance to share a server across repeated or concurrent calls.
+
+Latency-sensitive applications can initialize the runtime and transport before
+the first user action without fetching transcript history or invoking the model:
+
+```typescript
+const session = client.resumeSession(conversationId);
+await session.ready();
+await session.send(message);
+```
+
+`ready()` is idempotent and safe to call concurrently. `SDKResultMessage.durationMs`
+measures the tracked turn and excludes session initialization; measure `ready()`
+separately when startup latency matters.
+
+Use the final `result.success` to determine whether a turn succeeded. A turn can
+recover from a failed API run: run-scoped errors and explicitly nonterminal
+error notices remain `stream_event` diagnostics while the harness continues.
+They do not close the session or produce a failed result on their own.
+
+For a simple question that should not create or use an agent, call `query()`.
+It creates an ordinary conversation from the supplied model and
+system prompt, streams the turn, and closes the runtime when iteration ends:
+
+```typescript
+for await (const message of client.query({
+  prompt: "What is the capital of France?",
+  options: {
+    model: "openai/gpt-5.6-luna",
+    system: "Answer directly and concisely.",
+  },
+})) {
+  if (message.type === "assistant") process.stdout.write(message.content);
+}
+```
+
+`query()` supports API-backed App Servers and local App Servers that advertise
+local conversation support. Older local App Servers return an upgrade error.
+
+Pass the returned `query.conversationId` as `options.conversationId` on a later
+`query()` to continue that conversation with its history. On resume, `model`,
+`system`, and other creation settings are ignored; the conversation keeps its
+stored configuration.
+
+Cloud queries require an explicit connected computer. Local and remote clients
+run the conversation through their App Server.
+
+Set `LETTA_API_KEY` for the cloud backend. See the [quickstart](https://docs.letta.com/agent-sdk/quickstart) for the local and self-hosted paths.
+
+## Where your agents run
+
+One interface, three backends:
+
+| Backend    | Agent state         | Tools execute                          |
+| ---------- | ------------------- | -------------------------------------- |
+| `"cloud"`  | Hosted by Letta     | A managed sandbox, or a computer you connect |
+| `"local"`  | On this machine*    | On this machine*                       |
+| `"remote"` | Your App Server     | On your App Server machine             |
+
+\* *"this machine" refers to the machine that the SDK code itself is running on*
+
+Browser, Expo, and React Native applications import from `@letta-ai/letta-agent-sdk/client`, which does not require Node and supports the cloud and remote backends. See [Deployment](https://docs.letta.com/agent-sdk/deployment).
+
+## Examples
+
+Runnable applications live in [`examples/`](./examples). Start with the [examples guide](./examples/README.md), which orders the demos by concept and lists their setup and side effects. See the [React chat template](https://github.com/letta-ai/letta-agent-sdk-react-chat) for a more complete custom UI.
+
+## Contributing
+
+Development conventions for this repository are in [AGENTS.md](./AGENTS.md).
+
+---
+
+Made with 💜 in San Francisco
+
+<img
+  referrerpolicy="no-referrer-when-downgrade"
+  src="https://static.scarf.sh/a.png?x-pxid=29de91a5-e18c-4366-b192-33a909e184bc&page=README.md"
+  alt=""
+  aria-hidden="true"
+/>

@@ -127,6 +127,21 @@ export class ProjectStorage {
   const checkpoint=async patch=>{const next={...intent,...patch};await this.db.request(this.catalog,'put',{collection:'initializations',id:key,value:next});intent=next;};
   if(!intent){
    let source=null;if(await present(metadataRoot))source=await checkedMetadata(metadataRoot,this.db);
+   if(source){
+    // Attaching an existing project is not a metadata migration. A new
+    // profile owns only its local instance, never a replacement project UUID.
+    if(!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(source.projectId))throw fail('PROJECT_METADATA_CONFLICT','项目身份编号无效');
+    const prior=all.find(p=>p.id===source.projectId);
+    if(prior&&(prior.root!==root||!same(prior.identity,identity)))throw fail('PROJECT_IDENTITY_CONFLICT','该项目ID已关联其他目录；未自动生成新ID或改写副本');
+    const metadataIdentity=await directoryIdentity(metadataRoot),now=new Date().toISOString();
+    await rejectLinks(metadataRoot);
+    await directoryIdentity(root,identity);await directoryIdentity(metadataRoot,metadataIdentity);
+    const confirmed=await checkedMetadata(metadataRoot,this.db);
+    if(confirmed.projectId!==source.projectId||confirmed.operationId!==source.operationId)throw fail('PROJECT_IDENTITY_CONFLICT','登记期间项目身份已变化');
+    const value={id:source.projectId,instanceId:randomUUID(),semanticInitializationEligible:false,root,metadataRoot,identity,metadataIdentity,lineage:source.lineage?[source.lineage].flat():[],name:path.basename(root),openedAt:now,lastOpenedAt:now,removed:false};
+    await this.db.request(this.catalog,'put',{collection:'instances',id:value.id,value});this.bindings.set(value.id,value);
+    await this.requireOnline(value.id);return value;
+   }
    const id=randomUUID(),instanceId=randomUUID(),operationId=randomUUID(),now=new Date().toISOString();
    await checkpoint({version:1,key,root,identity,id,instanceId,operationId,now,source,recoverySource,phase:'prepared',temporary:path.join(root,'.nozeli-init-'+operationId),swap:path.join(root,'.nozeli-source-'+operationId),backup:path.join(this.root,'initialization',operationId,'source')});
   }

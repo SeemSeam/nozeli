@@ -166,7 +166,7 @@ export class ManagedProjects {
    if(slot&&session){slot.state=slot.state==='unconfirmed'?'unconfirmed':session.busy||c.running?.has(target)?'running':slot.state==='starting'?'starting':'idle';slot.blockedReason=c.externalTerminalTargets?.has(target)?'系统终端正在使用':c.nativeDraftTargets?.has(target)?'原生终端有未发送草稿':session.busy||c.running?.has(target)?'任务执行中':c.terminals?.has(target)&&id===this.activeProjectId?'当前内置终端正在使用':null;}
    else if(!slot)agents.push({projectId:id,target,state:'sleeping'});
   }}
-  const projectNames=new Map();for(const agent of agents){if(!projectNames.has(agent.projectId)){try{const project=await this.host.requireProject(agent.projectId);projectNames.set(agent.projectId,project.name??project.title??null);}catch{projectNames.set(agent.projectId,null);}}agent.projectName=projectNames.get(agent.projectId);const work=this.controllers.get(agent.projectId)?.store?.state?.works?.find(w=>w.id===agent.target);if(work?.name)agent.workName=work.name;}
+  const projectNames=new Map([[null,'Nozeli 全局']]);for(const agent of agents){if(!projectNames.has(agent.projectId)){try{const project=await this.host.requireProject(agent.projectId);projectNames.set(agent.projectId,project.name??project.title??null);}catch{projectNames.set(agent.projectId,null);}}agent.projectName=projectNames.get(agent.projectId);const work=this.controllers.get(agent.projectId)?.store?.state?.works?.find(w=>w.id===agent.target);if(work?.name)agent.workName=work.name;}
   return {globalLimit:this.processBudget.limit,globalUsed:this.processBudget.used,projectLimit,projectUsed,projectPendingVerification,agents};
  }
  async saveResourceLimits(payload={}){

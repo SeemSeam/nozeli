@@ -1,5 +1,5 @@
-// Real-Electron interaction regression for Quick Open (快速打开): clicking or
-// typing into #file-filter must open the #quick-open modal, searches must open
+// Real-Electron interaction regression for inline file search and Quick Open:
+// typing into #file-filter searches inline; CtrlP opens #quick-open; both open
 // the real NativeDocument for the exact file (same name in different dirs,
 // nested paths, Chinese names), and the four open targets must produce real
 // layout geometry — never just a request or a label. Uses only synthetic
@@ -146,10 +146,10 @@ const ctrlP = async page => {
 const quickOpen = async (page, query) => { await ctrlP(page); await page.keyboard.down('Control'); await page.keyboard.press('a'); await page.keyboard.up('Control'); if (query) await page.type('#quick-open-input', query); };
 const closeQuick = async page => { await page.keyboard.press('Escape'); await page.waitForFunction(() => !document.querySelector('#quick-open').open); };
 const waitSettled = async page => until(async () => {
-  const status = await page.$eval('#quick-open-status', node => node.textContent);
-  return status && !status.includes('搜索中') ? status : null;
+  const status = await page.$eval('#project-search-status', node => node.textContent);
+  return /^\d+ 个匹配/.test(status) || /搜索失败|搜索已停止/.test(status) ? status : null;
 }, 'quick-open status settles');
-const resultPaths = page => page.$$eval('#quick-open-results [data-open-target="current"]', nodes => nodes.map(node => node.dataset.path));
+const resultPaths = page => page.$$eval('#project-search-results [data-open-target="current"]', nodes => nodes.map(node => node.dataset.path));
 const scopedPage = expression => until(async () => {
   for (const page of await browser.pages()) if (await page.evaluate(expression).catch(() => false)) return page;
   return null;
@@ -253,34 +253,38 @@ try {
   await until(() => shell.evaluate(() => window.__workspaceGroups?.snapshot?.()?.projectId || null), 'project opens');
   const projectId = await shell.evaluate(() => window.__workspaceGroups.snapshot().projectId);
 
-  // 1. Clicking #file-filter opens the modal; Escape returns focus to the launcher.
+  // 1. Ordinary sidebar input stays inline and Escape restores navigation.
   await shell.click('#file-filter');
-  await shell.waitForSelector('#quick-open[open]');
-  assert.equal(await shell.$eval('#quick-open-input', node => node.id === document.activeElement?.id ? 'focused' : document.activeElement?.id), 'focused', 'modal must focus its input');
-  assert.equal(await shell.$eval('#file-filter', node => node.getAttribute('aria-expanded')), 'true');
-  await shot(shell, '01-click-opens-modal');
+  assert.equal(await shell.$eval('#quick-open',node=>node.open),false,'clicking the sidebar input must not launch a modal');
+  await shell.type('#file-filter','dup');
+  await until(async()=> (await resultPaths(shell)).includes('beta/dup.md'),'inline file matches');
+  assert.equal(await shell.$eval('#quick-open',node=>node.open),false,'typing stays inline');
+  await shell.keyboard.press('ArrowDown');
+  assert.equal(await shell.evaluate(()=>document.activeElement?.dataset.openTarget),'current','ArrowDown reaches inline results');
+  await shot(shell,'01-inline-file-search');
+  await shell.keyboard.press('Escape');
+  assert.equal(await shell.evaluate(()=>document.activeElement?.id),'file-filter','Escape restores input focus');
+  assert.equal(await shell.$eval('#file-filter',node=>node.value),'','Escape clears sidebar query');
+  assert.equal(await shell.$eval('#file-tree',node=>getComputedStyle(node).display==='none'),false,'Escape restores the file tree');
+  report.checks.push('sidebar click and typing stay inline; ArrowDown reaches results and Escape restores tree and input');
+
+  // 2. Explicit quick-open shortcut focuses its input and restores its launcher.
+  await ctrlP(shell);
+  assert.equal(await shell.evaluate(()=>document.activeElement?.id),'quick-open-input','CtrlP focuses quick-open input');
   await closeQuick(shell);
-  assert.equal(await shell.evaluate(() => document.activeElement?.id), 'file-filter', 'close must return focus to #file-filter');
-  report.checks.push('click on #file-filter opens #quick-open, focuses its input, Escape returns focus to the launcher');
+  assert.equal(await shell.evaluate(()=>document.activeElement?.id),'file-filter','quick-open Escape returns to launcher');
+  report.checks.push('CtrlP opens the modal and Escape returns focus to its launcher');
 
-  // 2. Enter and ArrowDown on the filter also open it.
-  for (const key of ['Enter', 'ArrowDown']) { await shell.focus('#file-filter'); await shell.keyboard.press(key); await shell.waitForSelector('#quick-open[open]'); await closeQuick(shell); }
-  report.checks.push('Enter and ArrowDown on #file-filter open the modal');
-
-  // 3. Typing into #file-filter keeps the legacy input entry working.
-  await shell.type('#file-filter', 'd');
-  await shell.waitForSelector('#quick-open[open]');
-  assert.equal(await shell.$eval('#quick-open-input', node => node.value), 'd', 'first filter keystroke seeds the modal query');
-  await shell.keyboard.down('Control'); await shell.keyboard.press('a'); await shell.keyboard.up('Control');
-  await shell.type('#quick-open-input', 'dup');
-  const dupPaths = await until(async () => { const paths = await resultPaths(shell); return paths.length >= 2 ? paths : null; }, 'two dup results');
-  for (const expected of ['alpha/dup.md', 'beta/dup.md']) assert(dupPaths.includes(expected), `results must include ${expected}, got ${dupPaths}`);
-  report.checks.push('typing into #file-filter opens the modal with the typed query and both same-name files are offered');
+  // 3. Same-name files remain distinguishable by their project-relative path.
+  await quickOpen(shell,'dup');
+  const dupPaths=await until(async()=>{const paths=await resultPaths(shell);return paths.length>=2?paths:null;},'two dup results');
+  for(const expected of ['alpha/dup.md','beta/dup.md'])assert(dupPaths.includes(expected),`results must include ${expected}, got ${dupPaths}`);
+  report.checks.push('quick-open offers both same-name files with their full relative paths');
 
   // 4. Same name in different dirs: the clicked row opens exactly that file.
   await wireFocusLog();
   const betaOpenedAt = Date.now();
-  await shell.click('#quick-open-results [data-path="beta/dup.md"][data-open-target="current"]');
+  await shell.click('#project-search-results [data-path="beta/dup.md"][data-open-target="current"]');
   await shell.waitForFunction(() => !document.querySelector('#quick-open').open);
   const betaPage = await scopedPage(`window.__nozeliReady===true&&window.__workspaceScope?.kind==='document'&&window.__workspaceScope?.relPath==='beta/dup.md'&&!window.__workspaceScope?.readOnly`);
   const beta = await docState(betaPage);
@@ -338,16 +342,22 @@ try {
   // 6b. A failing open keeps the dialog open with an honest status.
   const missingFile = path.join(projectA, 'missing.md');
   await quickOpen(shell, 'missing');
-  await shell.waitForSelector('#quick-open-results [data-path="missing.md"]');
+  await shell.waitForSelector('#project-search-results [data-path="missing.md"]');
   await fs.chmod(missingFile, 0o000);
-  await shell.click('#quick-open-results [data-path="missing.md"][data-open-target="current"]');
-  await until(async () => { const status = await shell.$eval('#quick-open-status', node => node.textContent); return status && status !== '正在打开文件…' ? status : null; }, 'failure status');
+  await shell.click('#project-search-results [data-path="missing.md"][data-open-target="current"]');
+  await until(async()=>shell.$eval('#project-search-status',node=>node.textContent.startsWith('打开失败：')),'failure status');
   assert.equal(await shell.$eval('#quick-open', node => node.open), true, 'failed open must keep the dialog open');
   // 6b-retry: clicking the same failing result again must not claim success either
   // (activating the retained failed surface is not a successful open).
-  await shell.click('#quick-open-results [data-path="missing.md"][data-open-target="current"]');
-  await until(async () => (await shell.$eval('#quick-open-status', node => node.textContent)) === '正在打开文件…', 'retry enters busy state');
-  await until(async () => { const status = await shell.$eval('#quick-open-status', node => node.textContent); return status && status !== '正在打开文件…' ? status : null; }, 'retry failure status');
+  await shell.evaluate(()=>{
+    window.__quickBusyObserved=false;
+    const results=document.querySelector('#project-search-results');
+    const observer=new MutationObserver(records=>{if(results.getAttribute('aria-busy')==='true'||records.some(record=>record.oldValue==='true')){window.__quickBusyObserved=true;observer.disconnect();}});
+    observer.observe(results,{attributes:true,attributeFilter:['aria-busy'],attributeOldValue:true});
+  });
+  await shell.click('#project-search-results [data-path="missing.md"][data-open-target="current"]');
+  await until(async()=>shell.evaluate(()=>window.__quickBusyObserved),'retry exposes accessible busy state');
+  await until(async()=>shell.evaluate(()=>document.querySelector('#project-search-results').getAttribute('aria-busy')!=='true'&&document.querySelector('#project-search-status').textContent.startsWith('打开失败：')),'retry failure status');
   assert.equal(await shell.$eval('#quick-open', node => node.open), true, 'retrying the failed open must keep the dialog open');
   await closeQuick(shell);
   await fs.chmod(missingFile, 0o644);
@@ -369,8 +379,9 @@ try {
   const openTarget = async (rel, target) => {
     await quickOpen(shell, rel.includes('/') ? rel.split('/').pop() : rel);
     await waitSettled(shell);
-    await shell.waitForSelector(`#quick-open-results [data-path="${rel}"]`);
-    await shell.click(`#quick-open-results [data-path="${rel}"][data-open-target="${target}"]`);
+    await shell.waitForSelector(`#project-search-results [data-path="${rel}"]`);
+    await shell.click(`#project-search-results .project-search-hit:has([data-path="${rel}"]) .project-search-open-options>summary`);
+    await shell.click(`#project-search-results .project-search-hit:has([data-path="${rel}"]) [data-open-target="${target}"]`);
     await shell.waitForFunction(() => !document.querySelector('#quick-open').open);
   };
   const expectWriterMirror = async rel => {
@@ -453,7 +464,7 @@ try {
   await shell.keyboard.press('Escape');
   await sleep(1200);
   assert.equal(await shell.$eval('#quick-open', node => node.open), false, 'dialog must stay closed');
-  assert.equal(await shell.$eval('#quick-open-results', node => node.children.length), 0, 'no late result paint after close');
+  assert.equal(await shell.$eval('#project-search-results', node => node.children.length), 0, 'no late result paint after close');
   assert.equal(await shell.evaluate(() => Object.keys(window.__workspaceGroups.snapshot().views).length), viewsBeforeEscape, 'close must not open anything');
   report.checks.push('closing during the in-flight debounce keeps the dialog closed with no late paint and nothing opened');
 
@@ -479,11 +490,11 @@ try {
   await quickOpen(shell, 'folder-hit');
   const status = await waitSettled(shell);
   const paths = await resultPaths(shell);
-  assert(paths.length >= 1 && paths.length <= 100, `folder-hit must return real files within the limit, got ${paths.length}`);
+  assert(paths.length>=1,'folder-hit must return real file matches');
   for (const rel of paths) assert(/^folder-hit-\d{3}\/hit-\d{3}\.md$/.test(rel), `result must be a real file, got ${rel}`);
-  assert(/个结果|更多结果/.test(status), `status must be honest, got "${status}"`);
+  assert(/^\d+ 个匹配/.test(status),`completed status must report matches, got "${status}"`);
   const pick = paths[Math.floor(paths.length / 2)];
-  await shell.click(`#quick-open-results [data-path="${pick}"][data-open-target="current"]`);
+  await shell.click(`#project-search-results [data-path="${pick}"][data-open-target="current"]`);
   const pickedPage = await scopedPage(`window.__nozeliReady===true&&window.__workspaceScope?.kind==='document'&&window.__workspaceScope?.relPath==='${pick}'`);
   assert((await docState(pickedPage)).text.includes(markerFor(pick)), `picked middle result ${pick} must open its own content`);
   report.checks.push(`120 same-prefix directories: search still returns real files (picked ${pick}, DOM marker proof), status honest: "${status}"`);
@@ -503,19 +514,27 @@ try {
   report.measurements.shellNarrow = await shell.evaluate(() => ({ innerWidth, innerHeight }));
   await quickOpen(shell, 'folder-hit');
   await waitSettled(shell);
+  for(let previous=-1;;){
+    const count=(await resultPaths(shell)).length;
+    if(count===previous)break;
+    previous=count;
+    await shell.$eval('#project-search-results',results=>{results.scrollTop=results.scrollHeight;results.dispatchEvent(new Event('scroll'));});
+    await shell.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  }
+  const lastPath=(await resultPaths(shell)).at(-1);
+  await shell.click(`#project-search-results .project-search-hit:has([data-path="${lastPath}"]) .project-search-open-options>summary`);
   const narrow = await shell.evaluate(() => {
     const close = document.querySelector('#quick-open > button');
-    const results = document.querySelector('#quick-open-results');
+    const results = document.querySelector('#project-search-results');
     const closeRect = close.getBoundingClientRect();
     results.scrollTop = results.scrollHeight;
-    const rows = [...results.querySelectorAll('.quick-open-result')].slice(-3).map(row => [...row.querySelectorAll('button')].map(button => ({ target: button.dataset.openTarget, w: button.getBoundingClientRect().width, h: button.getBoundingClientRect().height, bottom: button.getBoundingClientRect().bottom })));
+    const rows=[...results.querySelectorAll('.project-search-hit')].slice(-1).map(row=>[...row.querySelectorAll('[data-open-target]')].map(button=>({target:button.dataset.openTarget,w:button.getBoundingClientRect().width,h:button.getBoundingClientRect().height,bottom:button.getBoundingClientRect().bottom})));
     return { closeVisible: closeRect.top >= 0 && closeRect.bottom <= innerHeight && closeRect.width > 0, scrollable: results.scrollHeight > results.clientHeight, innerHeight, rows };
   });
   assert(narrow.closeVisible, 'close button must stay inside the short viewport');
   assert(narrow.scrollable, 'long result list must scroll in the short viewport');
   for (const row of narrow.rows) for (const button of row) assert(button.w > 0 && button.h > 0 && button.bottom <= narrow.innerHeight + 2, `all open actions reachable at the bottom, got ${JSON.stringify(row)}`);
-  const lastPath = (await resultPaths(shell)).at(-1);
-  await shell.click(`#quick-open-results [data-path="${lastPath}"][data-open-target="current"]`);
+  await shell.click(`#project-search-results [data-path="${lastPath}"][data-open-target="current"]`);
   const narrowPage = await scopedPage(`window.__nozeliReady===true&&window.__workspaceScope?.kind==='document'&&window.__workspaceScope?.relPath==='${lastPath}'`);
   assert((await docState(narrowPage)).text.includes(markerFor(lastPath)), 'bottom-most result must still open its file');
   report.measurements.narrowDocSurface = { relPath: lastPath, ...(await narrowPage.evaluate(() => ({ innerWidth, innerHeight }))) };
@@ -543,7 +562,7 @@ try {
   await dumpFocusTrace('focusTraceFailure').catch(() => {});
   await shell?.screenshot({ path: path.join(root, 'failure-state.png') }).catch(() => {});
   console.error('QuickOpen evidence', root, log.slice(-4000));
-  if (browser) for (const page of await browser.pages()) console.error(await page.evaluate(() => ({ scope: window.__workspaceScope, quickOpen: { open: document.querySelector('#quick-open')?.open, value: document.querySelector('#quick-open-input')?.value, status: document.querySelector('#quick-open-status')?.textContent, rows: document.querySelectorAll('#quick-open-results .quick-open-result').length }, active: document.activeElement?.id || document.activeElement?.tagName, filter: document.querySelector('#file-filter')?.getAttribute('aria-expanded') })).catch(() => null));
+  if (browser) for (const page of await browser.pages()) console.error(await page.evaluate(() => ({ scope: window.__workspaceScope, quickOpen: { open: document.querySelector('#quick-open')?.open, value: document.querySelector('#quick-open-input')?.value, status: document.querySelector('#project-search-status')?.textContent, rows: document.querySelectorAll('#project-search-results .project-search-hit').length }, active: document.activeElement?.id || document.activeElement?.tagName, filter: document.querySelector('#file-filter')?.getAttribute('aria-expanded') })).catch(() => null));
 } finally {
   await fs.writeFile(path.join(root, 'report.json'), JSON.stringify(report, null, 2)).catch(() => {});
   console.log(JSON.stringify(report, null, 2));

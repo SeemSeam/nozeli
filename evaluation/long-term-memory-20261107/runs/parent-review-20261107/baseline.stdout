@@ -1,0 +1,27 @@
+{
+  "observations": {
+    "reportBlocksBecomeSingleIndex": true,
+    "topicHitsCappedAtFour": true,
+    "matchingPassageAbsentFromPreview": true,
+    "recognizedTopicPaths": [
+      "topics/missing.md",
+      "topics/plain.md"
+    ]
+  },
+  "frozenRead": true,
+  "sqlite": "3.46.1",
+  "tokenizer": {
+    "unicode61": {
+      "双星": 0,
+      "混沌": 0,
+      "双星混沌": 1,
+      "finishClosure": 1
+    },
+    "trigram": {
+      "双星": 0,
+      "混沌": 0,
+      "双星混沌": 1,
+      "finishClosure": 1
+    }
+  }
+}

@@ -1,17 +1,14 @@
 // One delegated tooltip controller per document (singleton per ownerDocument).
 // Elements opt in by carrying a data-ui-hint attribute: setIconButton and
 // setActionButton set it, and plain DOM or React code may set it directly.
-// An empty data-ui-hint resolves dynamically to the element's current title
-// (then aria-label) at event time, so later real rejection reasons written to
-// button.title are never masked by a stale copy. The controller never touches
-// title or aria-label; the only attribute it manages is aria-describedby,
-// where it appends its own token on show and removes exactly that token on
-// hide, preserving any other ids the caller maintains in between.
+// Hints live only in data-ui-hint; title is removed on opt-in to prevent the
+// browser's native bubble from duplicating the themed tooltip. Accessible
+// names stay independent. aria-describedby retains all caller-owned tokens.
 // Listeners attach once per document, so re-renders never add handlers, and
 // the controller never scans the DOM or guesses element meaning. It reacts
-// only to real pointer/focus events, never takes focus, closes on Escape,
-// follows the anchor while scrollers move, and drops tooltips whose anchor
-// is removed or disabled (no orphan bubbles).
+// only to real pointer/focus events, never takes focus, and closes on interaction
+// or anchor invalidation. The DOM owns accessibility and measurement; a trusted
+// workspace host owns visuals above native content views when supported.
 const controllers = new WeakMap();
 const HOVER_DELAY_MS = 300;
 const TOOLTIP_ID = 'ui-tooltip';
@@ -25,20 +22,30 @@ export function hideUiTooltip(doc = document) {
   if (state) hide(state);
 }
 
-// Thin adapter for any DOM or React code: mark an element (hint text, or ''
-// for dynamic title/aria resolution) or unmark it (falsy hint). Geometry
-// stays in ui-icons.mjs; no path data is copied here.
+// Explicit adapter for dynamic tool state; unrelated native titles stay intact.
+export function getUiHint(element) {
+  return element?.dataset.uiHint ?? '';
+}
 export function setUiHint(element, hint) {
   if (!element) return element;
-  if (hint !== undefined && hint !== null && hint !== false) element.dataset.uiHint = String(hint);
-  else delete element.dataset.uiHint;
+  element.removeAttribute('title');
+  if (hint !== undefined && hint !== null && hint !== false) {
+    element.dataset.uiHint = String(hint);
+    mountUiTooltip(element.ownerDocument);
+  } else delete element.dataset.uiHint;
+  const state = controllers.get(element.ownerDocument);
+  if (state?.anchor === element) {
+    if (!hint) hide(state);
+    else if (state.tooltip.textContent !== String(hint).trim()) show(state, element);
+  }
   return element;
 }
 
 function controllerFor(doc) {
   const existing = controllers.get(doc);
   if (existing) return existing;
-  const state = {doc, view: doc.defaultView, tooltip: null, anchor: null, hover: null, focus: null, showTimer: 0, raf: 0};
+  const session = doc.defaultView?.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  const state = {doc, view: doc.defaultView, session, tooltip: null, anchor: null, hover: null, focus: null, showTimer: 0, raf: 0, epoch: 0, nativeId: null, nativeSupported: null};
   controllers.set(doc, state);
   const marked = node => node && typeof node.closest === 'function' ? node.closest('[data-ui-hint]') : null;
   doc.addEventListener('pointerover', event => {
@@ -71,11 +78,11 @@ function controllerFor(doc) {
   // Close only; the tooltip never owns focus, so Escape must not move it.
   doc.addEventListener('keydown', event => { if (event.key === 'Escape') hide(state); });
   doc.addEventListener('pointerdown', () => hide(state));
-  // Follow the anchor while any scroller moves; hiding here would also kill
-  // freshly shown tooltips because appending the bubble itself can fire a
-  // scroll event (scroll anchoring) on the document.
-  doc.addEventListener('scroll', () => { if (state.anchor) position(state, state.anchor); }, {capture: true, passive: true});
+  doc.addEventListener('scroll', () => hide(state), {capture: true, passive: true});
   state.view?.addEventListener?.('resize', () => hide(state));
+  state.view?.addEventListener?.('blur', () => { state.hover = state.focus = null; hide(state); });
+  state.view?.addEventListener?.('pagehide', () => hide(state));
+  doc.addEventListener('visibilitychange', () => { if (doc.hidden) hide(state); });
   return state;
 }
 
@@ -90,11 +97,10 @@ function cancelSchedule(state) {
 
 function show(state, anchor) {
   cancelSchedule(state);
-  // A caller's newer title describes live routing/failure state; otherwise
-  // keep the catalog's fuller hint instead of the short initial title.
-  const title=anchor.title || '',changedTitle=anchor.dataset.uiHintTitle!==undefined&&title!==anchor.dataset.uiHintTitle;
-  const hint = String((changedTitle&&title)||anchor.dataset.uiHint||title||anchor.getAttribute('aria-label')||'').trim();
+  const hint = getUiHint(anchor).trim();
   if (!hint || !anchor.isConnected || anchor.matches(':disabled,[aria-disabled="true"]')) return hide(state);
+  if (state.anchor === anchor && state.tooltip?.textContent === hint) return;
+  hide(state);
   if (!state.tooltip) {
     state.tooltip = state.doc.createElement('div');
     state.tooltip.id = TOOLTIP_ID;
@@ -102,7 +108,10 @@ function show(state, anchor) {
     state.tooltip.setAttribute('role', 'tooltip');
   }
   const tip = state.tooltip;
-  if (state.anchor && state.anchor !== anchor) detach(state);
+  tip.style.opacity = '';
+  tip.style.overflowWrap = 'anywhere';
+  tip.style.maxHeight = 'calc(100vh - 16px)';
+  tip.style.overflow = 'hidden';
   if (tip.textContent !== hint) tip.textContent = hint;
   if (!state.anchor) {
     state.anchor = anchor;
@@ -112,9 +121,11 @@ function show(state, anchor) {
     if (!tokens.includes(TOOLTIP_ID)) tokens.push(TOOLTIP_ID);
     anchor.setAttribute('aria-describedby', tokens.join(' '));
   }
-  const parent = anchor.closest('dialog[open], [popover]:popover-open') || state.doc.body;
+  const topLayer = anchor.closest('dialog[open], [popover]:popover-open');
+  const parent = topLayer || state.doc.body;
   if (parent && tip.parentNode !== parent) parent.append(tip);
   position(state, anchor);
+  if (!topLayer) showNative(state, hint);
   watch(state);
 }
 
@@ -132,6 +143,7 @@ function detach(state) {
 function hide(state) {
   cancelSchedule(state);
   cancelWatch(state);
+  hideNative(state);
   detach(state);
   if (state.tooltip) state.tooltip.remove();
 }
@@ -153,14 +165,72 @@ function cancelWatch(state) {
   if (state.raf) { state.view.cancelAnimationFrame(state.raf); state.raf = 0; }
 }
 
+function nativeBridge(state) {
+  const view = state.view, scope = view?.__workspaceScope;
+  const trustedScope = ['shell', 'detached'].includes(scope?.role) || scope?.role === 'surface' && ['document', 'conversation', 'task-process', 'terminal', 'project-terminal'].includes(scope.kind);
+  return trustedScope && typeof view.nozeli?.invoke === 'function' ? view.nozeli : null;
+}
+
+function reportNativeError(state, operation, error) {
+  state.view?.console?.error?.(`[ui-tooltip] ${operation} failed`, error);
+}
+
+function hideNative(state) {
+  const id = state.nativeId;
+  state.nativeId = null;
+  if (id === null) return;
+  const bridge = nativeBridge(state);
+  if (!bridge) return;
+  try {
+    Promise.resolve(bridge.invoke('workspace.tooltip.hide', {id})).then(result => {
+      if (!result?.ok && result?.error?.code !== 'UNKNOWN_OP') reportNativeError(state, 'hide', result?.error || result);
+    }, error => reportNativeError(state, 'hide', error));
+  } catch (error) { reportNativeError(state, 'hide', error); }
+}
+
+function showNative(state, text) {
+  const bridge = nativeBridge(state);
+  if (!bridge || state.nativeSupported === false) return;
+  const tip = state.tooltip, box = tip.getBoundingClientRect(), style = state.view.getComputedStyle(tip);
+  const anchor = state.anchor.getBoundingClientRect();
+  const id = `ui-tooltip-${state.session}-${++state.epoch}`;
+  state.nativeId = id;
+  // Opacity, not visibility/display: keep this description in the accessibility
+  // tree and measurable, without painting a second bubble during the IPC.
+  tip.style.opacity = '0';
+  const payload = {id, text, rect: {x:box.x, y:box.y, width:box.width, height:box.height},
+    // Both rectangles use this viewport's CSS pixels: rect is the final bubble,
+    // anchorRect is only the trigger boundary for host pointer-leave cleanup.
+    anchorRect: {x:anchor.x, y:anchor.y, width:anchor.width, height:anchor.height},
+    appearance: {background:style.backgroundColor, color:style.color, border:style.borderColor, fontSize:parseFloat(style.fontSize)}};
+  const finish = result => {
+    const supported = result?.ok === true && result.value?.supported === true && typeof result.value.shown === 'boolean';
+    if (supported) state.nativeSupported = true;
+    else if (result?.error?.code === 'UNKNOWN_OP' || result?.ok === true && result.value?.supported === false) state.nativeSupported = false;
+    else reportNativeError(state, 'show', result?.error || result);
+    if (state.nativeId !== id) return;
+    if (!supported) {
+      hideNative(state);
+      tip.style.opacity = '';
+    }
+    // supported + shown:false is intentional host suppression (e.g. a modal),
+    // never permission to paint over it with a renderer fallback.
+  };
+  try { Promise.resolve(bridge.invoke('workspace.tooltip.show', payload)).then(finish, error => finish({ok:false,error})); }
+  catch (error) { finish({ok:false,error}); }
+}
+
 function position(state, anchor) {
   const tip = state.tooltip, view = state.view, margin = 8, gap = 6;
   tip.style.left = '0px';
   tip.style.top = '0px';
   const box = anchor.getBoundingClientRect(), size = tip.getBoundingClientRect();
-  const left = Math.max(margin, Math.min(view.innerWidth - size.width - margin, box.left + (box.width - size.width) / 2));
+  const side = anchor.dataset.uiHintPlacement === 'right';
+  const preferredLeft = side ? box.right + gap : box.left + (box.width - size.width) / 2;
+  const left = Math.max(margin, Math.min(view.innerWidth - size.width - margin, preferredLeft));
   const below = box.bottom + gap + size.height <= view.innerHeight - margin;
-  const top = below ? box.bottom + gap : Math.max(margin, box.top - gap - size.height);
+  const preferredTop = side ? box.top : below ? box.bottom + gap : box.top - gap - size.height;
+  const top = Math.max(margin, Math.min(view.innerHeight - size.height - margin, preferredTop));
   tip.style.left = Math.round(left) + 'px';
   tip.style.top = Math.round(top) + 'px';
 }

@@ -1,0 +1,65 @@
+{
+  "name": "@letta-ai/letta-agent-sdk",
+  "version": "0.8.73",
+  "packageManager": "bun@1.3.14",
+  "description": "SDK for programmatic control of Letta agents",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client-entry.d.ts",
+      "react-native": "./dist/client-entry.js",
+      "browser": "./dist/client-entry.js",
+      "import": "./dist/client-entry.js",
+      "default": "./dist/client-entry.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src/*.ts",
+    "AGENTS.md",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "bun run build.ts",
+    "dev": "bun run build.ts --watch",
+    "check": "tsc --noEmit && bun run check:source-size",
+    "check:source-size": "bun scripts/check-source-size.ts",
+    "test": "bun test",
+    "test:live": "LETTA_LIVE_INTEGRATION=1 bun test src/tests/live.integration.test.ts",
+    "test:live:record": "LETTA_LIVE_INTEGRATION=1 LETTA_RECORD_FIXTURES=1 bun test src/tests/live.integration.test.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/letta-ai/letta-agent-sdk"
+  },
+  "dependencies": {
+    "@letta-ai/letta-client": "^1.12.1",
+    "ajv": "^8.20.0"
+  },
+  "peerDependencies": {
+    "@letta-ai/letta-code": ">=0.34.44 <0.35.0"
+  },
+  "devDependencies": {
+    "@letta-ai/letta-code": "0.34.44",
+    "@modelcontextprotocol/server-everything": "^2026.7.4",
+    "@types/bun": "latest",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "Apache-2.0",
+  "trustedDependencies": [
+    "@letta-ai/letta-code"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

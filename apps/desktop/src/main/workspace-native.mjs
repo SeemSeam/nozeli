@@ -106,7 +106,7 @@ export class WorkspaceNative {
     wc.on('before-input-event',(_event,input)=>{if(!['shell','demo-controls'].includes(record.role)&&input.type==='keyDown')void this.guidedDemo?.pauseProject(record.projectId,'用户操作了真实内容面，演示已暂停。').catch(this.onError);});
     wc.on('focus',()=>{if(record.role==='surface'){const root=this.windows.get(record.windowId);if(root&&!root.dead)root.wc.send('nozeli:workspace-control',{type:'surface-focus',viewId:record.viewId,projectId:record.projectId});}});
     wc.on('before-input-event',(event,input)=>{if(record.role!=='surface'||input.type!=='keyDown'||input.isComposing)return;const numbered=(input.control||input.meta)&&!input.alt&&!input.shift&&/^[1-9]$/.test(input.key),cycle=input.key==='F6'&&!input.control&&!input.meta&&!input.alt;if(!numbered&&!cycle)return;const root=this.windows.get(record.windowId);if(!root||root.dead||root.projectId!==record.projectId)return;event.preventDefault();root.wc.send('nozeli:workspace-control',{type:'group-focus',projectId:record.projectId,viewId:record.viewId,...(numbered?{index:Number(input.key)-1}:{direction:input.shift?-1:1})});});
-    wc.on('before-input-event',(event,input)=>{if(record.role!=='surface'||record.dead||record.transferring||input.type==='keyDown'&&input.isComposing)return;const quick=(input.control||input.meta)&&!input.alt&&!input.shift&&input.key.toLowerCase()==='p';if(!quick||record.kind==='project-terminal')return;const root=this.windows.get(record.windowId);if(!root||root.dead||!record.projectId||root.projectId!==record.projectId)return;event.preventDefault();root.wc.focus();root.wc.send('nozeli:workspace-control',{type:'quick-open',projectId:record.projectId,viewId:record.viewId});});
+    wc.on('before-input-event',(event,input)=>{if(record.role!=='surface'||record.dead||record.transferring||input.type!=='keyDown'||input.isComposing)return;const key=input.key.toLowerCase(),modified=(input.control||input.meta)&&!input.alt,quick=modified&&!input.shift&&key==='p',content=modified&&input.shift&&key==='f';if((!quick&&!content)||record.kind==='project-terminal')return;const root=this.windows.get(record.windowId);if(!root||root.dead||!record.projectId||root.projectId!==record.projectId)return;event.preventDefault();root.wc.focus();root.wc.send('nozeli:workspace-control',{type:content?'content-search':'quick-open',projectId:record.projectId,viewId:record.viewId});});
     // Project terminal owns its keyboard: shell history keeps Ctrl/Cmd+P, and
     // paste is the focused surface's native clipboard paste (no host-side
     // clipboard read; xterm receives the paste event).
@@ -122,6 +122,7 @@ export class WorkspaceNative {
     wc.on('will-attach-webview', event => event.preventDefault());
     wc.on('did-start-navigation', (_event, _url, _inPlace, main) => {
       if (!main) return;
+      this.tooltips?.closeScope(record);
       this.reviewDiscussions?.closeScope(record);
       this.isolatedPreview?.closeScope(record);
       if(record.kind==='web')this.onlineBrowser?.forceCloseScope(record);
@@ -134,6 +135,7 @@ export class WorkspaceNative {
       for (const [id, receipt] of this.receipts) if (receipt.record === record) { receipt.reject(fail('SURFACE_RELOADED')); this.receipts.delete(id); }
     });
     wc.on('render-process-gone', (_event, details) => {
+      this.tooltips?.closeScope(record);
       if(record.role==='demo-controls'){this.demoControls.failed(record,Error('演示控制区进程已退出：'+details.reason));return;}
       if(record.role==='demo-hint'){this.demoControls.hintFailed(record,Error('演示提示进程已退出：'+details.reason));return;}
       if(record.kind==='web')this.onlineBrowser?.forceCloseScope(record);
@@ -144,6 +146,7 @@ export class WorkspaceNative {
       this.recover?.(record, details);
     });
     wc.once('destroyed', () => {
+      this.tooltips?.closeScope(record);
       this.reviewDiscussions?.closeScope(record);
       this.isolatedPreview?.closeScope(record);
       this.onlineBrowser?.forceCloseScope(record);
@@ -294,6 +297,7 @@ export class WorkspaceNative {
     if(r.role==='demo-controls'){if(!this.demoControls.owns(r)||!this.demoControls.allowed(op))throw fail('IPC_DENIED');return r;}
     if(r.role==='demo-hint'){if(!this.demoControls.hintOwns(r)||!this.demoControls.hintAllowed(op))throw fail('IPC_DENIED');return r;}
     if(r.role==='review-discussion')return this.reviewDiscussions.authorize(r,op,payload);
+    if(op==='workspace.tooltip.show'||op==='workspace.tooltip.hide'){this.tooltips.authorize(r);return r;}
     if (payload.projectId && payload.projectId !== r.projectId && !(r.role === 'shell' && (['demo.state','demo.exit','managed.status','managed.attention.ack','managed.fault.status','managed.work.control.status','managed.work.control','workspace.project','workspace.closeProject','workspace.recovery.detail','workspace.recovery.export','workspace.recovery.object','workspace.recovery.settle','project.open','project.remove','project.retry','project.lifecycle.preview','project.lifecycle.reconcile'].includes(op)||op==='demo.transition'&&payload.action==='stop'))) throw fail('PROJECT_SCOPE_DENIED');
     if(r.role==='surface'&&r.kind==='task-process'){
       if(!taskReads.has(op)&&!taskWorkspaceOps.has(op))throw fail('IPC_DENIED');
@@ -705,6 +709,7 @@ export class WorkspaceNative {
     this.host.storage.assertActive(projectId);
     const work=async()=>{
       const generation=r.generation, previousProjectId=r.projectId;
+      if(previousProjectId!==projectId)this.tooltips?.closeWindow(r.win);
       if(previousProjectId&&previousProjectId!==projectId)await this.guidedDemo?.pauseProject(previousProjectId,'离开演示项目，自动操作已暂停。');
       const owners=previousProjectId&&previousProjectId!==projectId?[r,...this.projectRecords(previousProjectId)]:[];
       if(owners.some(owner=>owner.previewRecoveryFailed))throw fail('TRANSFER_RECOVERY_REQUIRED','报告恢复未确认，原项目保持打开。');
@@ -844,6 +849,7 @@ export class WorkspaceNative {
         void nativeView.webContents.loadURL(this.origin).catch(error=>{r.ready=false;this.onError(error);});
       } else if (r.windowId !== found.windowId) {
         const previousWindow=r.win;
+        this.tooltips?.closeScope(r);
         r.view.setVisible(false); previousWindow.contentView.removeChildView(r.view); destination.win.contentView.addChildView(r.view);
         this.isolatedPreview?.reparentScope(r,destination.win);
         this.reviewDiscussions?.reparentScope(r,destination.win);
@@ -863,6 +869,7 @@ export class WorkspaceNative {
   }
   destroySurface(r,{discardState=false}={}) {
     if(r.previewRecoveryFailed&&!discardState)throw fail('TRANSFER_RECOVERY_REQUIRED','报告正文回滚未确认；不能销毁原生承载。');
+    this.tooltips?.closeScope(r);
     this.isolatedPreview?.closeScope(r);
     this.reviewDiscussions?.closeScope(r);
     this.onlineBrowser?.forceCloseScope(r);
@@ -959,6 +966,7 @@ export class WorkspaceNative {
           if(!destination||destination.dead||destination.win.isDestroyed())throw fail('TRANSFER_TARGET_CHANGED');
           const move={surface:s,source:s.win,sourceWindowId:s.windowId,destination:destination.win,destinationWindowId:location.windowId,bounds:s.view.getBounds(),removed:false,attached:false};
           staged.push(move);destination.staging=(destination.staging||0)+1;
+          this.tooltips?.closeScope(s);
           s.view.setVisible(false);s.win.contentView.removeChildView(s.view);move.removed=true;
           destination.win.contentView.addChildView(s.view);move.attached=true;this.isolatedPreview?.reparentScope(s,destination.win);this.onlineBrowser?.reparentScope(s,destination.win);move.previewMoved=true;
           this.reviewDiscussions?.reparentScope(s,destination.win);

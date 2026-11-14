@@ -9,7 +9,7 @@ Scope: 保留 frontdesk／orchestrator／Worker；角色最小强制契约与原
 固化边界与实施路线以该主合同§15—§18为准；`fe24f1c`已提交同项目稳定报告查询、确切来源交接及多输入证据保留，尚未安装。每输入至多4个选择，早期输入来源经版本目录保留；报告主张不授予指令或skill能力。本文通用知识批准、自动提炼及原生skill扩展继续暂缓，不把首版接线误读为这些方向已实施。
 
 
-## 2026-11-13 前台项目起点技能（源码已实现，2026-11-14 Linux限定验证，未安装）
+## 2026-11-13 前台项目起点技能（源码已实现，2026-11-14 Linux已安装）
 
 用户确认将项目起点方法内置frontdesk，并按Reviewer要求补齐程序能力；不是仅新增提示词。新增 `nozeli-frontdesk-project-analysis`（当前结构／运行方式／内容问题）、`nozeli-frontdesk-project-progress`（当前进展／任务／未决决定）、`nozeli-frontdesk-history-handoff`（历史来源／决定／接续材料）。材料读取与保存复用 `read-material`，持续后台剩余工作复用 `handoff`；不复制第二加载器／历史账本／初始化地图。
 
@@ -53,7 +53,60 @@ Scope: 保留 frontdesk／orchestrator／Worker；角色最小强制契约与原
 
 SDK报告 input45129、output5739、cacheRead400064、totalTokens450932；SDK费用估算0.19244884（单位沿SDK），实际账单未知。未主动尝试越界读，不能把“无违规尝试”冒称本次拒绝路径验证；另有前述localhost拒绝probe。原件digest未变、临时凭据副本已删除，未重试或换源。本轮按用户授权提交实现及真实失败记录，未安装／发布。
 
-尚未签收：真实模型进展／历史后页覆盖与完整内容质量、用户私人历史的格式覆盖、Windows/macOS行为；不开启全局个人skill发现、不恢复外部Agent会话、不复制第二历史账本。空页／空对话开场入口仍为独立Demo，本次交付是技能、工具及显式启用路径，不宣称Demo已接入生产。未安装、发布。
+### 2026-11-14 本机安装与既有项目启用
+
+用户授权后执行 `node tools/install-local.mjs`，安装版为 `/home/bfly/.local/opt/nozeli/releases/2026-11-13T23-42-26-021Z`，current已切换；旧版 `all-fixes-tex-icons-20261113-local-02` 保留回退。安装包含当前工作树已有界面修正，不将其他未提交修改纳入技能提交。未推送／发布，也不据Linux安装声称跨平台通过。
+
+真实日常Electron中正常关闭旧窗口、启动安装版，重新打开既有 `deeploy` 项目。在“设置→Agent资源”显式增量启用三项技能，原有read-material／handoff仍保留；宿主managed.status返回五项已选技能、busyTargets=[]、Work=0。未向该日常项目发送测试问题、未改项目文件。截图已人工查看：`/tmp/nozeli-installed-skills-ui-20261114/installed-skills-after-enable.png`，结构化证据同目录 `skills-ui-report.json`。首次连接使用自动化默认视口时，项目切换报工作面视口持续变化；后改用原生窗口尺寸连接并完成绑定与启用。期间一次安装版主进程exit0，原因未确认，不将其归因为产品崩溃或稳定性通过。最终保留日常窗口打开。
+
+安装包真实源码评测（非GUI发送输入，使用已安装Controller／PiSession／owner）：`/tmp/nozeli-installed-real-project-GYB8PR/report.json` 及 `native-review.md`。真实contentRoot为Nozeli源码项目，profile／runtime隔离，测试侧禁止原项目写入、命令、派工；只读门不是OS沙箱。最初脚本缺少显式安装版owner入口，在Controller.start阶段失败、HTTP=0，原件保留 `/tmp/nozeli-installed-real-project-l5Or88`；修正夹具路径后按明确授权单次重跑，不归因于产品故障。
+
+实际应用 `zai/glm-5.3 / low`，三个输入均completed，24次completion全部HTTP200，无模型重试或换源。三次均有原生读取对应skill的记录。analysis实际读README、package.json、runtime.mjs及project-progress.mjs，区分源码／声明／未知；progress正确报告隔离账本0 Work／0待办，并区分真实规划未完项和未读范围。报告为测试侧保存的原生答复，不冒称宿主document_create或项目内写入。
+
+history使用前两输入的真实Pi会话冻结副本，不读私人provider／CCB历史；12页成功续读，末次HOST_CONTEXT_BUDGET_EXHAUSTED，仍hasMore，不能称完整接续或跨Codex／Claude覆盖。答复误报“8页成功”、缺逐条完整location引用，且把前两回合的当前文件核对说成本回合已核对，质量仍未全部通过。生产预算保持run65536／epoch262144 bytes，各输入不同runId，不复用前次records12夹具。1791个纳入检查的原文件SHA-256前后一致，临时凭据副本已删，初末Work均0，无命令／写入／派工尝试。SDK合计input36732、output3687、cacheRead539264、totalTokens579683，实际结算金额未知。Linux限定，不据completed或HTTP200推进整体内容质量签收。
+
+2026-11-14用户要求改用真实大项目deeploy继续测试。根目录 `/home/bfly/workspace/computeforcfd/deeploy` 保持完整，未裁剪；只统计路径与大小时，排除常见虚拟环境、点目录元数据和缓存后仍有121154个文件、14491602651 bytes，此数包含实验产物，不代表唯一有效源码量。人工只读确认DeePoly_git主代码、DeePoly_git_jianhua_fitting简化分支及早期实验／论文并存，主分支pyproject声明deepoly=src.cli:main，当前复杂边界计划顶部为2026-09-18的0221审阅，不能用旧README或较早handoff替代当前状态。
+
+安装版Controller／PiSession已绑定真实大项目及隔离状态，显式 `zai/glm-5.3 / low`；三场景限24completion／每输入120秒／输出2500tokens，禁止项目写入、训练、编译、命令、派工及私人历史读取。首次请求即HTTP429，服务code1308说明五小时用量耗尽，原文给出reset `2026-11-14 14:03:25`（未注明时区）；立即停止，无重试／换源。技能read和模型工具调用均0，analysis失败、progress／history未发，不构成大项目能力或性能验收。证据 `/tmp/nozeli-deeploy-real-project-d3y2sW/report.json`、`http.json`；临时认证副本已清除，纳入摘要检查的安装模块／技能原件未变，不能把该摘要范围冒称整个14.5GB项目内容核验。用户项目内容未被模型读取，没有项目写入尝试。真实大项目三场景仍待服务恢复后另次执行。
+
+用户追加授权换模型重测，明确选择 `paratera/gpt-6.1-sol`；安装版会话实际应用该selector／low（catalog支持low），只改变隔离测试配置，不改全局或日常项目模型。证据 `/tmp/nozeli-deeploy-model-retest-OsxoHj/report.json`、`http.json` 和三项native-timeline／native-answer文件。24次HTTP均200，无服务429；三项对应skill均原生read成功，但整体验收未通过。
+
+- analysis：约10.5秒后失败，根目录nozeli_project_list带projectPath时返回CAPABILITY_UNAVAILABLE／“文件路径解析未接入”，未完成源码分析。此安装模块直连夹具没有配齐路径解析能力的可能性必须保留，不将其当作真实GUI同路径故障证据。
+- progress：约107.1秒completed，读到Plantree、当前状态、路线图、0221决策及0220／0221审阅记录，区分旧handoff与09-18当前状态，给出两项非执行下一步。但9次账本list均传workId空串并被INVALID_PAYLOAD拒绝，document_read带readRef空串也被拒绝；另一次原生read项目文件被测试门拦截，随后source_read成功。答复如实声明无法核对账本，不能把completed当进度工具通过；答复“schema要求workId”仅为模型自述，未独立验证其根因。
+- history：约53.6秒失败，7次搜索都传cursor空串，宿主返回invalid_cursor，items为空，没有history_read、正文或后页证据。达到24请求上限后终态为PI_PROVIDER_FAILED／Connection error；HTTP账本本身全部200、refused=false，不把最后错误冒称服务端拒绝或完整历史质量结论。重复无效调用是本轮观察，不据此擅自增加调用额度或自动换源。
+
+纳入摘要核对的17个原件（10个安装模块／技能、7个项目文档）均前后一致，未检查整个大项目的全部内容；初末Work均0，临时认证副本已删，无命令、写入或派工工具尝试。SDK合计input28872、output3290、cacheRead332844、totalTokens365006，实际账单未知。后续修正重点为测试路径解析接线及空可选字段与宿主schema的兼容；本轮仅测试和记录，未改产品、未重装、未自动重试。另日常安装版进程收到exit0通知，退出原因未确认，本轮不宣称其持续打开。
+
+### 2026-11-14 strict可选参数修复与大项目推进
+
+修复范围限定为strict-provider可选参数与宿主协议的一致性，以及真实大项目验收夹具缺失的生产路径解析接线。新增显式手动入口 `tests/frontdesk-large-project-real-evaluation.mjs`，从current安装包加载实际模块，接入已安装 `ManagedProjects.resolveRegisteredProject` 并在付费前实际执行根目录解析／列表预检；项目文本原生read与宿主read均受相同只读范围约束，按需摘要核验。入口必须显式指定项目、模型和effort，不进入自动套件，不再依赖已删除的临时脚本。回归、重装与模型复验结果按后续实际输出追加，不预记通过；路径解析和参数协议缺陷不以增加调用额度、隐藏错误或提示词重试代替。
+
+根因核实：固定Pi 1.4.0的 `makeStrictJsonSchema` 将所有属性加入required，同时为optional字段增加null分支；不是必须填写非空字符串。产品在具体消费者边界将nullable optional及空选择器占位按省略处理（progress workId／cursor、history cursor及optional provider、document readRef／路径／access），不全局清理用户文本。list仍拒绝非空workId，detail需精确本项目Work；非空非法cursor、外国readRef、混合续读路径、未知字段及私密文件仍拒绝。无需修改Pi adapter／vendor／manifest，无提示词循环重试或权限fallback。
+
+定向回归分阶段执行：`frontdesk-documents`、`managed-document-reader`、`provider-history`共69项通过；`managed-frontdesk-progress`前7项通过，最后strict文档消费者回归单项1/1通过。初跑strict测试使用createRequire解析ESM-only导出失败，改为固定依赖真实ESM模块；文档回归最初双storage重复注册产生身份冲突，改为真实DesktopHost和Controller共用单storage后单项通过，不修改产品身份校验。新增回归走实际Pi strict schema转换／参数验证／reverse-RPC及真实临时文件，覆盖首读、续页、原版本快照、非法票据／未知字段／私密内容拒绝。正式manual脚本node --check通过；这些分阶段数字不冒称最新全量集运行。
+
+本机安装已完成：current为 `/home/bfly/.local/opt/nozeli/releases/2026-11-14T05-35-59-922Z`，previous保留 `2026-11-13T23-42-26-021Z`。本轮真实模型验证沿用 `paratera/gpt-6.1-sol / low`，不改日常默认或项目配置；未提交／推送／公开发布。
+
+修复安装版三场景实测证据 `/tmp/nozeli-large-project-evaluation-4ntpQD/report.json`：实际paratera/gpt-6.1-sol／low，16次HTTP全部200，三个输入均completed，无原参数错误循环。analysis列根目录成功，读取主包pyproject、CLI、函数拟合solver与简化分支README，给出版本口径、调用链及未验范围；progress的null workId／cursor首读返回0 Work／0待办，且明确只代表隔离账本。history的null cursor搜索与正文首读成功，引用稳定location，不再invalid_cursor。17个纳入核对原件未变，临时凭据已删，初末Work为0；不是全项目内容摘要核验，也不是GUI输入端到端验收。
+
+未全部通过：progress在一次300项目录列表被HOST_CONTEXT_BUDGET_EXHAUSTED拒绝后停止，未独立读取0220／0221证据正文，只按已读当前状态给出有限结论。history仅读一页，将coverage.budgetExhausted误称整轮额度耗尽；实际宿主run只使用14638／65536 bytes、epoch92172／262144 bytes，仍可续读。该字段原本描述页级截断，命名误导；继续改为coverage.pageLimitReached及明确limitScope，删除旧budgetExhausted字段，history skill升v2解释下一页与宿主HOST_CONTEXT_BUDGET_EXHAUSTED区别。确定性回归验证有宿主余量时原样cursor取得连续正文，不增加预算或静默重试。后续只使用本轮24上限剩余最多8次请求，显式冻结前两输入原生副本做历史单项复验；不重发分析／进展、不增加总额度。
+
+页限额追加修复后，provider-history回归35/35及strict历史消费者续读单项1/1通过，脚本语法检查通过。最终安装current为 `/home/bfly/.local/opt/nozeli/releases/2026-11-14T05-42-56-758Z`，previous为05-35-59版；旧版23-42-26也由安装器保留。删除旧budgetExhausted输出及其断言，所有源码消费者改为pageLimitReached；无兼容别名，宿主预算不变。
+
+历史定向复验证据 `/tmp/nozeli-large-project-evaluation-1NFPWW/report.json`：同模型／low，明确使用前次 `4ntpQD/authentic-history/pi/frontdesk-first-two-inputs.jsonl` 冻结原件，不接入私人历史。新增8次HTTP均200，搜索1页成功，正文6页均status=ok并原样cursor推进，lineOrdinal／UTF-16 textStart/End连续，不再因页限额停在首页。达到显式max-completions=8后测试门记stopReason=EVAL_HTTP_LIMIT，终态failed／Connection error，没有最终摘要；仍有后页，不据此宣称完整接续通过。本轮两次合计16+8=24请求，无额外扩额／自动重试。宿主run用量48589／65536 bytes，剩余读取额度不代表测试请求额度也未耗尽。
+
+定向复验纳入核对的安装原件和输入冻结副本未变，凭据副本已清除，无业务写入或派工。当前已证实：真实大项目列目录与指定源码分析可执行，nullable首读账本／历史请求不再拒绝循环，分页语义修正后实际续读6页。未签收：历史完整尾页及最终摘要、当前计划决策证据全链、真实日常账本与私人跨provider历史、GUI输入全链及跨平台。未提交／推送／发布，日常模型配置不变。
+
+
+
+
+
+
+
+
+
+
+尚未签收：真实模型进展／历史后页覆盖与完整内容质量、用户私人历史的格式覆盖、Windows/macOS行为；不开启全局个人skill发现、不恢复外部Agent会话、不复制第二历史账本。空页／空对话开场入口仍为独立Demo，本次交付是技能、工具及显式启用路径，不宣称Demo已接入生产。Linux已安装，未发布。
 
 
 ## 1. 决策与不做什么

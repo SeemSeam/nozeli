@@ -1,0 +1,379 @@
+{
+  "scope": "Synthetic baseline; no user project read",
+  "runtime": "v22.22.1",
+  "platform": "linux",
+  "arch": "x64",
+  "directory": "/tmp/nozeli-memory-baseline-4KFanv",
+  "markerClassification": {
+    "totalChars": 234,
+    "sections": 1,
+    "note": "定位摘要优先提供匹配的整理主题/索引；historyMatches 保留原 Work 历史入口，不能把历史报告直接当作当前规则。主题也须核对来源、适用范围及未决冲突，不以位置或时间自动裁定真假。通过 nozeli_inspect_work 的 workName 复制 readRef 读正文，长正文用 nextReadRef。没有命中不代表没有历史。",
+    "matches": [
+      {
+        "title": "Plan Tree",
+        "source": "memory/plantree/index.md",
+        "kind": "index",
+        "preview": "# Plan Tree\n<!-- report:r0 -->\n- 双星混沌 PPT revision 1; user accept\n<!-- /report:r0 -->\n<!-- report:r1 -->\n- 双星混沌 PPT revision 2; user accept\n<!-- /report:r1 -->\n<!-- report:r2 -->\n- 双星混沌 PPT revision 3; user discard\n<!-- /report:r2 -->",
+        "readRef": "读取 441ba2ba/1：Plan Tree"
+      }
+    ],
+    "historyMatches": [],
+    "recent": [],
+    "allReadRef": "读取 441ba2ba/2：Plan Tree 根索引与 Work 历史（分页；主题另读）"
+  },
+  "topK": {
+    "totalChars": 6887,
+    "sections": 10,
+    "note": "定位摘要优先提供匹配的整理主题/索引；historyMatches 保留原 Work 历史入口，不能把历史报告直接当作当前规则。主题也须核对来源、适用范围及未决冲突，不以位置或时间自动裁定真假。通过 nozeli_inspect_work 的 workName 复制 readRef 读正文，长正文用 nextReadRef。没有命中不代表没有历史。",
+    "matches": [
+      {
+        "title": "双星 8",
+        "source": "memory/plantree/topics/t8.md",
+        "kind": "topic",
+        "preview": "# 双星 8\n无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正… [正文可按读取引用获取]",
+        "readRef": "读取 6b4bffcf/1：双星 8"
+      },
+      {
+        "title": "双星 7",
+        "source": "memory/plantree/topics/t7.md",
+        "kind": "topic",
+        "preview": "# 双星 7\n无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正… [正文可按读取引用获取]",
+        "readRef": "读取 6b4bffcf/2：双星 7"
+      },
+      {
+        "title": "双星 6",
+        "source": "memory/plantree/topics/t6.md",
+        "kind": "topic",
+        "preview": "# 双星 6\n无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正… [正文可按读取引用获取]",
+        "readRef": "读取 6b4bffcf/3：双星 6"
+      },
+      {
+        "title": "双星 5",
+        "source": "memory/plantree/topics/t5.md",
+        "kind": "topic",
+        "preview": "# 双星 5\n无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正文。无关正… [正文可按读取引用获取]",
+        "readRef": "读取 6b4bffcf/4：双星 5"
+      }
+    ],
+    "historyMatches": [],
+    "recent": [],
+    "allReadRef": "读取 6b4bffcf/5：Plan Tree 根索引与 Work 历史（分页；主题另读）"
+  },
+  "snapshot": {
+    "version": "c051ec04a0d13fa17187ae18cbbddb429e842a6f1eb32292a483500dedfa943f",
+    "root": {
+      "path": "index.md",
+      "digest": "f6d971fcce8321469a4eba6f3ac5c660bb35392e1151e6ed6d888c6fc5147d41",
+      "text": "# Plan Tree\n[中文](topics/双星.md)\n[anchor](topics/plain.md#section)\n[plain](topics/plain.md)\n[nested](topics/sub/deep.md)\n[missing](topics/missing.md)"
+    },
+    "topics": [
+      {
+        "path": "topics/missing.md",
+        "digest": null,
+        "text": null
+      },
+      {
+        "path": "topics/plain.md",
+        "digest": "2e10827bbfa116f5e373df42b4307e1c9b83563070dddeb041c598b856d05b6f",
+        "text": "# Plain\n[child](topics/child.md)"
+      }
+    ]
+  },
+  "frozenRead": {
+    "pages": 22,
+    "ranges": [
+      [
+        0,
+        930
+      ],
+      [
+        930,
+        1860
+      ],
+      [
+        1860,
+        2790
+      ],
+      [
+        2790,
+        3720
+      ],
+      [
+        3720,
+        4650
+      ],
+      [
+        4650,
+        5580
+      ],
+      [
+        5580,
+        6510
+      ],
+      [
+        6510,
+        7440
+      ],
+      [
+        7440,
+        8370
+      ],
+      [
+        8370,
+        9300
+      ],
+      [
+        9300,
+        10230
+      ],
+      [
+        10230,
+        11160
+      ],
+      [
+        11160,
+        12090
+      ],
+      [
+        12090,
+        13020
+      ],
+      [
+        13020,
+        13950
+      ],
+      [
+        13950,
+        14880
+      ],
+      [
+        14880,
+        15810
+      ],
+      [
+        15810,
+        16740
+      ],
+      [
+        16740,
+        17670
+      ],
+      [
+        17670,
+        18600
+      ],
+      [
+        18600,
+        19530
+      ],
+      [
+        19530,
+        20000
+      ]
+    ],
+    "exact": true
+  },
+  "sqlite": {
+    "version": "3.46.1",
+    "compile": [
+      {
+        "compile_options": "ALLOW_ROWID_IN_VIEW"
+      },
+      {
+        "compile_options": "ATOMIC_INTRINSICS=1"
+      },
+      {
+        "compile_options": "COMPILER=gcc-15.2.0"
+      },
+      {
+        "compile_options": "DEFAULT_AUTOVACUUM"
+      },
+      {
+        "compile_options": "DEFAULT_CACHE_SIZE=-2000"
+      },
+      {
+        "compile_options": "DEFAULT_FILE_FORMAT=4"
+      },
+      {
+        "compile_options": "DEFAULT_JOURNAL_SIZE_LIMIT=-1"
+      },
+      {
+        "compile_options": "DEFAULT_MMAP_SIZE=0"
+      },
+      {
+        "compile_options": "DEFAULT_PAGE_SIZE=4096"
+      },
+      {
+        "compile_options": "DEFAULT_PCACHE_INITSZ=20"
+      },
+      {
+        "compile_options": "DEFAULT_RECURSIVE_TRIGGERS"
+      },
+      {
+        "compile_options": "DEFAULT_SECTOR_SIZE=4096"
+      },
+      {
+        "compile_options": "DEFAULT_SYNCHRONOUS=2"
+      },
+      {
+        "compile_options": "DEFAULT_WAL_AUTOCHECKPOINT=1000"
+      },
+      {
+        "compile_options": "DEFAULT_WAL_SYNCHRONOUS=2"
+      },
+      {
+        "compile_options": "DEFAULT_WORKER_THREADS=0"
+      },
+      {
+        "compile_options": "DIRECT_OVERFLOW_READ"
+      },
+      {
+        "compile_options": "ENABLE_COLUMN_METADATA"
+      },
+      {
+        "compile_options": "ENABLE_DBPAGE_VTAB"
+      },
+      {
+        "compile_options": "ENABLE_DBSTAT_VTAB"
+      },
+      {
+        "compile_options": "ENABLE_FTS3"
+      },
+      {
+        "compile_options": "ENABLE_FTS3_PARENTHESIS"
+      },
+      {
+        "compile_options": "ENABLE_FTS4"
+      },
+      {
+        "compile_options": "ENABLE_FTS5"
+      },
+      {
+        "compile_options": "ENABLE_LOAD_EXTENSION"
+      },
+      {
+        "compile_options": "ENABLE_MATH_FUNCTIONS"
+      },
+      {
+        "compile_options": "ENABLE_PREUPDATE_HOOK"
+      },
+      {
+        "compile_options": "ENABLE_RTREE"
+      },
+      {
+        "compile_options": "ENABLE_SESSION"
+      },
+      {
+        "compile_options": "ENABLE_STMTVTAB"
+      },
+      {
+        "compile_options": "ENABLE_UNLOCK_NOTIFY"
+      },
+      {
+        "compile_options": "ENABLE_UPDATE_DELETE_LIMIT"
+      },
+      {
+        "compile_options": "HAVE_ISNAN"
+      },
+      {
+        "compile_options": "LIKE_DOESNT_MATCH_BLOBS"
+      },
+      {
+        "compile_options": "MALLOC_SOFT_LIMIT=1024"
+      },
+      {
+        "compile_options": "MAX_ATTACHED=10"
+      },
+      {
+        "compile_options": "MAX_COLUMN=2000"
+      },
+      {
+        "compile_options": "MAX_COMPOUND_SELECT=500"
+      },
+      {
+        "compile_options": "MAX_DEFAULT_PAGE_SIZE=32768"
+      },
+      {
+        "compile_options": "MAX_EXPR_DEPTH=1000"
+      },
+      {
+        "compile_options": "MAX_FUNCTION_ARG=127"
+      },
+      {
+        "compile_options": "MAX_LENGTH=1000000000"
+      },
+      {
+        "compile_options": "MAX_LIKE_PATTERN_LENGTH=50000"
+      },
+      {
+        "compile_options": "MAX_MMAP_SIZE=0x7fff0000"
+      },
+      {
+        "compile_options": "MAX_PAGE_COUNT=0xfffffffe"
+      },
+      {
+        "compile_options": "MAX_PAGE_SIZE=65536"
+      },
+      {
+        "compile_options": "MAX_SCHEMA_RETRY=25"
+      },
+      {
+        "compile_options": "MAX_SQL_LENGTH=1000000000"
+      },
+      {
+        "compile_options": "MAX_TRIGGER_DEPTH=1000"
+      },
+      {
+        "compile_options": "MAX_VARIABLE_NUMBER=250000"
+      },
+      {
+        "compile_options": "MAX_VDBE_OP=250000000"
+      },
+      {
+        "compile_options": "MAX_WORKER_THREADS=8"
+      },
+      {
+        "compile_options": "MUTEX_PTHREADS"
+      },
+      {
+        "compile_options": "SECURE_DELETE"
+      },
+      {
+        "compile_options": "SOUNDEX"
+      },
+      {
+        "compile_options": "SYSTEM_MALLOC"
+      },
+      {
+        "compile_options": "TEMP_STORE=1"
+      },
+      {
+        "compile_options": "THREADSAFE=1"
+      },
+      {
+        "compile_options": "USE_URI"
+      }
+    ],
+    "unicode61": {
+      "双星": 0,
+      "混沌": 0,
+      "双星混沌": 1,
+      "finishClosure": 1
+    },
+    "trigram": {
+      "双星": 0,
+      "混沌": 0,
+      "双星混沌": 1,
+      "finishClosure": 1
+    }
+  },
+  "observations": {
+    "reportBlocksBecomeSingleIndex": true,
+    "topicHitsCappedAtFour": true,
+    "matchingPassageAbsentFromPreview": true,
+    "recognizedTopicPaths": [
+      "topics/missing.md",
+      "topics/plain.md"
+    ]
+  }
+}

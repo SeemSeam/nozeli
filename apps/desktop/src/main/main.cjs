@@ -14,7 +14,7 @@ const {WorkspaceWindow} = require('./workspace-window.cjs');
 const {buildApplicationMenuTemplate, createMenuDispatcher} = require('./app-menu.cjs');
 const {staysResidentAfterLastWindow, quitIntentIsStale, resolveQuitVehicle, decideWindowAllClosed, retainedDuringHold, createCloseAdmission, createWindowCloseStop, requiresQuitWindow, createQuitCleanup} = require('./app-lifecycle.cjs');
 let dialog, session;
-let DesktopHost, HostError, ops, agents, managedAgents, agentHandlers, lspManager, formatterService, texManager, texLanguage, guidedDemo;
+let DesktopHost, HostError, ops, agents, managedAgents, adminAgent, agentHandlers, lspManager, formatterService, texManager, texLanguage, guidedDemo;
 const http = require('node:http');
 const { randomUUID, randomBytes } = require('node:crypto');
 const fs = require('node:fs/promises');
@@ -135,7 +135,7 @@ function resetStaleQuitIntent(recovery) {
 }
 // A resident close keeps the idle runtime reusable; a real quit stops it.
 // The shared stop step checks the live close generation before freezing input.
-const stopForWindowClose=createWindowCloseStop({residentClose,closeOnlineBrowsers,stopManaged:()=>managedAgents?.stop(),stopIdle:()=>agents?.stopIdle?.(),admission:closeAdmission});
+const stopForWindowClose=createWindowCloseStop({residentClose,closeOnlineBrowsers,stopManaged:async()=>{await adminAgent?.stop();await managedAgents?.stop();},stopIdle:()=>agents?.stopIdle?.(),admission:closeAdmission});
 // The close barrier finished: every window closes without further guards.
 // Only a real quit request commits the process to teardown; on macOS the app
 // stays resident for Dock activation over the same server and controllers.
@@ -256,7 +256,7 @@ async function createWindow(server) {
   win.webContents.on('will-attach-webview', (event) => event.preventDefault());
   const recovery=new WindowRecovery(win,{
     prepareClose:()=>finishDrawing(),
-    dialog,settle:async()=>{await workspaceNative.flush([...workspaceNative.senders.values()].filter(r=>r.role==='surface'));await host.settled();},busy:()=>agents?.busy()||managedAgents?.busy(),
+    dialog,settle:async()=>{await workspaceNative.flush([...workspaceNative.senders.values()].filter(r=>r.role==='surface'));await host.settled();},busy:()=>agents?.busy()||managedAgents?.busy()||adminAgent?.lifecycleBusy(),
     stop:stopForWindowClose,
     forceQuit:forceQuitApplication,
     reveal:()=>revealWindow(win),onClose:finalizeWindowClose,
@@ -348,6 +348,7 @@ async function main() {
   const piAuth=piRuntime?new PiSettingsWorker({runtime:piRuntime,source:piSource}):null;
   const {ProviderSettings,hasProviderReferences}=await import('../agents/managed/provider-settings.mjs');
   const providerSettings=new ProviderSettings({source:piSource,worker:piAuth,onDefaultsSaved:next=>managedAgents.applyModelDefaults(next),getModelSync:()=>managedAgents.modelSync(),onSourceSaved:(provider,info)=>managedAgents.applyProviderUpdate(provider,info),isReferenced:async provider=>{
+    if(adminAgent?.referencesProvider(provider))return true;
     for(const controller of managedAgents?.controllers?.values()??[]){
       if(controller.starting?.size)return true;
       for(const session of controller.sessions.values())if(!session.model||session.model.startsWith(provider+'/'))return true;
@@ -363,6 +364,10 @@ async function main() {
   piSource.roleDefaultsFor=role=>providerSettings.roleDefaultsFor(role);
   const piSessionRuntime=piRuntime?{...piRuntime,args:piRuntime.args.filter(value=>value!==piRuntime.entry)}:null;
   managedAgents=new ManagedProjects({userDataDir:app.getPath('userData'),host,legacy:agents,beforeDocumentOperation:syncDocument,piSource,piRuntime:piSessionRuntime,piAuth,privilegeBroker,modelCatalog:()=>providerSettings.models()});
+  const {AdminAgent}=await import('../agents/admin-agent.mjs');
+  const {adminOperation}=await import('./admin-operations.mjs');
+  adminAgent=new AdminAgent({userDataDir:app.getPath('userData'),host,providerSettings,piSource,piRuntime:piSessionRuntime,processBudget:managedAgents.processBudget});
+  try{await adminAgent.start();}catch(error){console.error('Admin state unavailable',error.code??'ADMIN_STATE_UNAVAILABLE');}
   // Review-candidate documents reuse the managed controller as their sole
   // content authority; ordinary file.* operations dispatch through it.
   const {createReviewDocumentAdapter,runReviewDecision,stripFlushEnvelope}=await import('./review-documents.mjs');
@@ -373,8 +378,10 @@ async function main() {
   const {ProjectWatcher}=await import('./project-watcher.mjs');
   projectWatcher=new ProjectWatcher({onChange:event=>workspaceNative?.broadcast('nozeli:workspace-control',{type:'file-tree-changed',...event},event.projectId),onError:error=>workspaceNative?.broadcast('nozeli:workspace-control',{type:'file-tree-watch-error',...error},error.projectId)});
   const address=server.address();origin=`http://127.0.0.1:${address.port}/`;
-  workspaceNative=new WorkspaceNative({BrowserWindow:WorkspaceWindow,WebContentsView,screen,origin,preload:path.join(APP_ROOT,'src/preload/preload.cjs'),icon:path.join(APP_ROOT,'assets/nozeli.png'),userDataDir:app.getPath('userData'),host,hidden:HIDDEN,onClose:async r=>{const recovery=windowRecovery(r.win);if(recovery){resetStaleQuitIntent(recovery);recovery.requestClose();return;}await workspaceNative.flush([...workspaceNative.senders.values()]);if(agents?.busy()||managedAgents?.busy()){r.wc.send('nozeli:quit-confirm');return;}await managedAgents?.stop();await agents?.stopIdle?.();r.closing=true;for(const s of workspaceNative.projectRecords(r.projectId,r.windowId))workspaceNative.destroySurface(s);r.win.close();}});
+  workspaceNative=new WorkspaceNative({BrowserWindow:WorkspaceWindow,WebContentsView,screen,origin,preload:path.join(APP_ROOT,'src/preload/preload.cjs'),icon:path.join(APP_ROOT,'assets/nozeli.png'),userDataDir:app.getPath('userData'),host,hidden:HIDDEN,onClose:async r=>{const recovery=windowRecovery(r.win);if(recovery){resetStaleQuitIntent(recovery);recovery.requestClose();return;}await workspaceNative.flush([...workspaceNative.senders.values()]);if(agents?.busy()||managedAgents?.busy()||adminAgent?.lifecycleBusy()){r.wc.send('nozeli:quit-confirm');return;}await adminAgent?.stop();await managedAgents?.stop();await agents?.stopIdle?.();r.closing=true;for(const s of workspaceNative.projectRecords(r.projectId,r.windowId))workspaceNative.destroySurface(s);r.win.close();}});
   workspaceNative.managedAgents=managedAgents;
+  const {NativeTooltip}=await import('./native-tooltip.mjs');
+  workspaceNative.tooltips=new NativeTooltip({workspace:workspaceNative,BrowserWindow,screen,appRoot:APP_ROOT});
   const {IsolatedPreviewManager}=await import('./isolated-preview.mjs');
   isolatedPreview=new IsolatedPreviewManager({View,WebContentsView,session,workspace:workspaceNative,host,managedAgents,dialog});
   const {NativeReviewDiscussionManager,runReviewDiscard}=await import('./native-review-discussion.mjs');
@@ -416,7 +423,7 @@ async function main() {
     }catch(error){await managedAgents.reportConnectionError(projectId,error);throw error;}
   };
   workspaceNative.setupWindow=r=>{
-    const recovery=new WindowRecovery(r.win,{dialog,prepareClose:()=>finishDrawing(),settle:async()=>{await workspaceNative.flush([...workspaceNative.surfaces.values()]);await host.settled();},busy:()=>agents?.busy()||managedAgents?.busy(),stop:stopForWindowClose,forceQuit:forceQuitApplication,reveal:()=>revealWindow(r.win),onClose:finalizeWindowClose});
+    const recovery=new WindowRecovery(r.win,{dialog,prepareClose:()=>finishDrawing(),settle:async()=>{await workspaceNative.flush([...workspaceNative.senders.values()].filter(record=>record.role==='surface'));await host.settled();},busy:()=>agents?.busy()||managedAgents?.busy()||adminAgent?.lifecycleBusy(),stop:stopForWindowClose,forceQuit:forceQuitApplication,reveal:()=>revealWindow(r.win),onClose:finalizeWindowClose});
     r.wc.on('did-start-navigation',(_e,_url,_inPlace,isMain)=>{if(isMain)recovery.navigation();});
     r.wc.on('did-finish-load',()=>recovery.loaded());r.wc.on('render-process-gone',(_e,details)=>recovery.rendererGone(details));r.win.on('closed',()=>recovery.destroyed());
   };
@@ -436,7 +443,7 @@ async function main() {
     if(!live){
       event.preventDefault();
       if(quitPending)return;
-      if(requiresQuitWindow({platform:process.platform,hasLiveWindow:false,busy:agents?.busy()||managedAgents?.busy()})){
+      if(requiresQuitWindow({platform:process.platform,hasLiveWindow:false,busy:agents?.busy()||managedAgents?.busy()||adminAgent?.lifecycleBusy()})){
         quitPending=true;
         void ensureShell().then(root=>{quitPending=false;if(!root||root.dead)throw Error('退出确认窗口尚未就绪，应用已保留。');app.quit();}).catch(error=>{quitPending=false;console.error('quit confirmation reopen failed',error);});
         return;
@@ -469,8 +476,15 @@ async function main() {
   const updateSession=session.fromPartition('nozeli-updater');
   updateSession.webRequest.onBeforeRequest((details,callback)=>callback(trustedUpdaterRequest(details.url,{allowLoopback:updateTest})?{}:{cancel:true}));
   const updateDependencies={...(updateTestOptions.dependencies||{}),fetch:(input,init)=>updateSession.fetch(String(input),{...init,credentials:'omit'})};
-  updateLifecycle=createUpdateLifecycle({workspace:workspaceNative,host,managedAgents,agents,powerMonitor,idleSeconds:updateTest?0:60,isClosing:()=>quitting||quitPending||forceQuitting||Boolean(workspaceCapture?.active),freeze:held=>{updateFrozen=held;workspaceNative.broadcast('nozeli:workspace-control',{type:'lifecycle-hold',held});},quit:async()=>{allowClose=true;quitting=true;autoUpdater.stop();app.quit();}});
+  updateLifecycle=createUpdateLifecycle({workspace:workspaceNative,host,managedAgents,agents,adminAgent,powerMonitor,idleSeconds:updateTest?0:60,isClosing:()=>quitting||quitPending||forceQuitting||Boolean(workspaceCapture?.active),freeze:held=>{updateFrozen=held;workspaceNative.broadcast('nozeli:workspace-control',{type:'lifecycle-hold',held});},quit:async()=>{allowClose=true;quitting=true;autoUpdater.stop();app.quit();}});
   autoUpdater=new AutoUpdater({currentVersion:require(path.join(APP_ROOT,'package.json')).version,appRoot:APP_ROOT,stateDir:path.join(app.getPath('userData'),'updates'),enabled:!ISOLATED_TEST_INSTANCE||Boolean(updateTest),...updateLifecycle,...updateTestOptions,dependencies:updateDependencies,onStatus:status=>workspaceNative.broadcast('nozeli:update',status)});
+  const {ProjectSearchEngine}=await import('./project-search.mjs');
+  const {ProjectSearchSessions}=await import('./project-search-sessions.mjs');
+  const {createSearchDocumentReader}=await import('./search-document-process.mjs');
+  const searchEnv={};for(const key of ['SystemRoot','WINDIR','TEMP','TMP','HOME','XDG_CACHE_HOME'])if(process.env[key])searchEnv[key]=process.env[key];
+  if(piRuntime?.env?.ELECTRON_RUN_AS_NODE)searchEnv.ELECTRON_RUN_AS_NODE=piRuntime.env.ELECTRON_RUN_AS_NODE;
+  const readSearchDocument=piRuntime?createSearchDocumentReader({command:piRuntime.command,env:searchEnv}):async()=>{throw new HostError('SEARCH_RUNTIME','独立文档提取运行时不可用，文本搜索不受影响。');};
+  const projectSearch=new ProjectSearchSessions({host,workspace:workspaceNative,engine:new ProjectSearchEngine({host,readDocument:readSearchDocument}),readDocument:readSearchDocument});
   ipcMain.handle('nozeli:invoke', async (event, op, payload) => {
     try {
       const scope=trusted(event,'workspace.bootstrap',{});
@@ -478,6 +492,11 @@ async function main() {
         throw new HostError('INVALID_PAYLOAD', 'Payload must be an object.');
       }
       if(typeof op!=='string')throw new HostError('UNKNOWN_OP','Unknown host operation.');
+      if(op.startsWith('admin.'))return {ok:true,value:await adminOperation({scope,op,payload:payload??{},admin:adminAgent,prepareSend:()=>managedAgents.initializeResources(),frozen:updateFrozen||quitting||quitPending})};
+      if(op==='workspace.tooltip.show'||op==='workspace.tooltip.hide'){
+        trusted(event,op,payload??{});
+        return {ok:true,value:await workspaceNative.tooltips[op.endsWith('.show')?'show':'hide'](scope,payload??{})};
+      }
       // Force quit is a trusted renderer control, not a storage operation. It
       // must remain reachable while another quit invocation awaits flush/stop.
       if (op === 'session.quitChoice' && payload?.choice === 'force') {
@@ -751,6 +770,7 @@ async function main() {
           try {
             await workspaceNative.flush([...workspaceNative.senders.values()]);
             if (forceQuitting) return {ok:true,value:{closing:true,forced:true}};
+            await adminAgent?.stop();
             await managedAgents?.stop();
             if (forceQuitting) return {ok:true,value:{closing:true,forced:true}};
             await agents.cancelAllAndStop();
@@ -943,11 +963,13 @@ async function main() {
   if(process.env.NOZELI_UPDATE_RECEIPT){await initialWindow.webContents.executeJavaScript('new Promise((resolve,reject)=>{const deadline=Date.now()+20000;const timer=setInterval(()=>{if(window.__nozeliReady){clearInterval(timer);resolve(true);}else if(Date.now()>deadline){clearInterval(timer);reject(Error("应用工作面尚未就绪"));}},50);})');await acknowledgeUpdateHealth({appRoot:APP_ROOT});}
   const shutdownForQuit=async()=>{
     autoUpdater?.stop();
+    await projectSearch.stop();
     await texManager?.stopAll();
     await texLanguage?.stopAll();
     await lspManager?.stopAll();
     await workspaceNative.projectTerminals.stopAll().catch(error=>console.error('project terminal cleanup failed',error.message));
     await host.settled();
+    await adminAgent?.stop().catch(error=>console.error('admin cleanup failed',error.message));
     await managedAgents?.stop().catch(error=>console.error('managed cleanup failed',error.message));
     projectWatcher?.close();
     await providerSettings.stop();

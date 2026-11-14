@@ -1,0 +1,13 @@
+# Installed research dependencies and downloaded interpreter stay local.
+basic-memory/.venv/
+basic-memory/cache/
+basic-memory/home/
+__pycache__/
+**/__pycache__/
+# Synthetic run DBs remain evidence on this machine, not product dependencies.
+**/*.sqlite
+**/*.sqlite-wal
+**/*.sqlite-shm
+**/memory.db
+**/memory.db-wal
+**/memory.db-shm
