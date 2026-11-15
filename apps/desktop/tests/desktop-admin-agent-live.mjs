@@ -50,7 +50,7 @@ async function launch(){
  shell.on('pageerror',e=>report.errors.push(e.message));
  if(await shell.$eval('#configuration-setup',n=>n.open).catch(()=>false))await shell.click('#configuration-cancel');
 }
-async function close(){observer?.close();observer=null;await invoke('session.requestClose');const result=await Promise.race([exit,pause(15000).then(()=>null)]);assert.deepEqual(result,{code:0,signal:null});await browser.disconnect();browser=null;return result;}
+async function close(){if(process.platform==='darwin'){observer??=await MainObserver.connect(await until(()=>log.match(/Debugger listening on (ws:\/\/127\.0\.0\.1:\d+\/\S+)/)?.[1],'quit Inspector'));await observer.evaluate('setTimeout(()=>process.mainModule.require("electron").app.quit(),0);true');}else await invoke('session.requestClose');observer?.close();observer=null;const result=await Promise.race([exit,pause(15000).then(()=>null)]);assert.deepEqual(result,{code:0,signal:null});await browser.disconnect();browser=null;return result;}
 try{
  await launch();
  const initial=await invoke('admin.status');assert.equal(initial.busy,false);assert.equal(provider.requests.length,0);assert(!JSON.stringify(initial).includes(secret));
