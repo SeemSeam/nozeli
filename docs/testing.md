@@ -1099,3 +1099,11 @@ Beta.6发布期间用户追加“安装并重启”按钮：复用已验证候�
 ## 已有项目ID复用定向验证（2026-11-14，源码未安装）
 
 `node --test tests/project-storage-initialization.test.mjs tests/storage-host-cutover.test.mjs tests/storage-managed-cutover.test.mjs tests/storage-worker-safety.test.mjs tests/project-semantic-initialization.test.mjs`：91/91通过，零跳过。新profile接入保留projectId、元数据目录实体和业务记录，本机instanceId独立；覆盖catalog提交前后中断、重复UUID根目录冲突及清单／数据库不一致拒绝。既有初始化阶段恢复、受管记录与离线恢复、数据库worker关闭／隔离边界同时通过。输出`artifact://19280`。真实Electron项目循环脚本已迁移稳定ID断言，但本轮未执行，不作为验收证据。未修改Deeploy或其他用户项目数据，未安装／提交／发布；Windows/macOS未验。
+
+## Beta7快速发布准备（2026-11-15）
+
+基线v0.1.0-beta.6（29b6d72），将全部本地产品提交线性整合到远端，保留Mac原生、更新器及依赖安全修复。存储／生命周期／依赖交叉变更按风险专项，不重复无关本地全量；最终远端完整CI与双平台最终解压包为强制门。用户在本轮披露六项义务后明确授权beta.7公开Beta例外，--public实跑仍六项失败，不伪造签收、不替换日常安装。
+
+整合后管理助手／maintenance／force recovery／设置／存储5类9文件142项通过，零跳过；Pi与renderer构建通过（artifact://19337）。真实Linux Electron＋Pi回环Provider全局助手13场景通过，正常退出及冷恢复零重放，原件/tmp/nozeli-admin-electron-h49ZT0/report.json。首次恢复实跑发现Pi owner绝对路径识别错误；修正保留真实父进程核验。第二次发现旧metadata只读故障隔离仍阻断新登记校验，恢复路径在确认停稳且无未知操作后沿既有db.recover核查，未知写入仍拒绝。失败原件不回写通过。版本／仓库元数据和来源hash检查零技术失败，审计六项pending单独保留。
+
+修正后真实恢复四场景通过：/tmp/nozeli-force-recovery-gui-jmaJYS/report.json，实际确认恢复并打开原正文、重复确认无效果、原文件字节与旧实例草稿保留、新登记不启用模型且要求显式连接、正常exit0。没有用户项目、付费模型或伪造维修动作。双平台最终归档重复覆盖此路径，不能将本地源码证据冒充最终包证据。

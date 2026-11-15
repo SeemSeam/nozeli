@@ -98,6 +98,7 @@ export class ProjectForceRecovery {
     await storage.putLocal(newProjectId,'managed:binding',{schema:1,enabled:false,recoveryRequiresConnection:true,roles:{}});
     await checkpoint({phase:'registration-published',newProjectId,newInstanceId:fresh.instanceId});
     await storage.releaseProject(projectId,hold);
+    await storage.db.recover(metadataFile);
     await lifecycle.host.requireProject(newProjectId);
     await storage.requireOnline(newProjectId);
     const result={status:'recovered',recovered:true,message:'已恢复项目访问；旧本机状态和元数据已保留，未启用模型或重放业务。',operationId,projectId,newProjectId,backupDirectory:backup,automaticReplay:false};
@@ -105,7 +106,7 @@ export class ProjectForceRecovery {
    });
   }catch(error){
    const result={status:published?'unknown':'blocked',recovered:published?null:false,message:published?'恢复发布结果未能完整核验；不会重复执行。':error.message,operationId,projectId,backupDirectory:c.forceRecovery.backupDirectory,automaticReplay:false};
-   await checkpoint({phase:'needs-attention',failedPhase:record.phase,result}).catch(()=>{});return result;
+   await checkpoint({phase:'needs-attention',failedPhase:record.phase,errorCode:error.code??'UNKNOWN',result}).catch(()=>{});return result;
   }finally{
    if(!published&&!hold.pendingCount&&!hold.needsStopCheck)await storage.releaseProject(projectId,hold);
    if(!completed&&published)hold.needsStopCheck=true;

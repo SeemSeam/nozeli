@@ -367,6 +367,7 @@ jobs:
           TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_APP_ROOT="$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/resources/app" NOZELI_TEST_BINARY="$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/nozeli" xvfb-run -a node tests/desktop-word-page-tags-live.mjs
           TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_APP_ROOT="$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/resources/app" NOZELI_TEST_BINARY="$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/nozeli" xvfb-run -a node tests/desktop-markdown-label-gestures-live.mjs
           TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_BINARY="$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/nozeli" xvfb-run -a node tests/desktop-admin-agent-live.mjs
+          TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_BINARY="$RUNNER_TEMP/nozeli-linux-unpacked/Nozeli-$VERSION-linux-x64/nozeli" xvfb-run -a node tests/desktop-force-recovery-live.mjs
         env:
           NOZELI_OZONE: x11
       - name: Preserve private Linux draft artifacts

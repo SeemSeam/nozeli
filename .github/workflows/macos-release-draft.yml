@@ -93,6 +93,7 @@ jobs:
           TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_APP_ROOT="$SMOKE_ROOT/Nozeli.app/Contents/Resources/app" NOZELI_TEST_BINARY="$SMOKE_ROOT/Nozeli.app/Contents/MacOS/Nozeli" node tests/desktop-word-page-tags-live.mjs
           TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_APP_ROOT="$SMOKE_ROOT/Nozeli.app/Contents/Resources/app" NOZELI_TEST_BINARY="$SMOKE_ROOT/Nozeli.app/Contents/MacOS/Nozeli" node tests/desktop-markdown-label-gestures-live.mjs
           TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_BINARY="$SMOKE_ROOT/Nozeli.app/Contents/MacOS/Nozeli" node tests/desktop-admin-agent-live.mjs
+          TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_BINARY="$SMOKE_ROOT/Nozeli.app/Contents/MacOS/Nozeli" node tests/desktop-force-recovery-live.mjs
       - name: Keep draft artifacts as Actions artifacts (never a public release upload)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

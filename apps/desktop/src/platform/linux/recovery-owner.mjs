@@ -52,7 +52,7 @@ export async function assertRecoverySourceStopped(root){
    // exact leading executable + first --type flag identifies a child here.
    const childTypes=new Set(['zygote','renderer','gpu-process','utility','broker']);
    const first=args.length===1&&args[0].startsWith(exe+' ')?args[0].slice(exe.length+1).split(' ',1)[0]:null;
-   if(args.some(arg=>arg.startsWith('--type=')&&childTypes.has(arg.slice(7)))||first?.startsWith('--type=')&&childTypes.has(first.slice(7))||args.includes('/integrations/pi/src/owner.mjs')&&await isNozeliOwner(pid))continue;
+   if(args.some(arg=>arg.startsWith('--type=')&&childTypes.has(arg.slice(7)))||first?.startsWith('--type=')&&childTypes.has(first.slice(7))||args.some(arg=>path.isAbsolute(arg)&&arg.endsWith('/integrations/pi/src/owner.mjs'))&&await isNozeliOwner(pid))continue;
    // Electron rewrites its initial environ as well. Never guess the default
    // profile from missing keys: the open catalog inode is ownership evidence.
    let catalogs=0;

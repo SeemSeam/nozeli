@@ -13,7 +13,7 @@ import {serve} from './pi-provider.fixture.mjs';
 import {MainObserver} from './post-install-startup-recovery-fixture.mjs';
 const require=createRequire(import.meta.url),appRoot=path.resolve(import.meta.dirname,'..');
 const installedBinary=process.env.NOZELI_TEST_BINARY?await fs.realpath(process.env.NOZELI_TEST_BINARY):null;
-const testedApp=installedBinary?path.join(path.dirname(installedBinary),'resources/app'):appRoot;
+const testedApp=installedBinary?path.resolve(path.dirname(installedBinary),process.platform==='darwin'?'../Resources/app':'resources/app'):appRoot;
 const out=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-admin-electron-')),config=path.join(out,'.Nozeli'),profile=path.join(config,'desktop');
 const secret='DO_NOT_DELIVER_PROJECT_CONTENT_93f824',key='DO_NOT_DELIVER_CREDENTIAL_185a9f';
 const host=new DesktopHost(profile),ids=[];
@@ -43,7 +43,7 @@ async function launch(){
  const port=await new Promise(resolve=>{const server=net.createServer();server.listen(0,'127.0.0.1',()=>{const p=server.address().port;server.close(()=>resolve(p));});});
  const env={...process.env};for(const k of Object.keys(env))if(k!=='XAUTHORITY'&&(/^(NOZELI_|CCB_|CODEX_|OMP_|PI_)/.test(k)||/AUTH|TOKEN|SECRET|PASSWORD|CREDENTIAL|API_?KEY/i.test(k)||['NODE_OPTIONS','ELECTRON_RUN_AS_NODE'].includes(k)))delete env[k];
  Object.assign(env,{NOZELI_CONFIG_ROOT:config,NOZELI_USER_DATA:profile,NOZELI_TEST_INSTANCE:'1',NOZELI_DEBUG_PORT:String(port),NOZELI_HIDDEN:'0',NOZELI_OZONE:process.env.NOZELI_OZONE||'x11'});
- child=spawn(installedBinary||require('electron'),[...(!installedBinary?[path.join(appRoot,'src/main/main.cjs')]:[]),'--ozone-platform='+env.NOZELI_OZONE,'--inspect=0'],{cwd:out,env,stdio:['ignore','pipe','pipe']});
+ child=spawn(installedBinary||require('electron'),[...(!installedBinary?[path.join(appRoot,'src/main/main.cjs')]:[]),...(process.platform==='linux'?['--ozone-platform='+env.NOZELI_OZONE]:[]),'--inspect=0'],{cwd:out,env,stdio:['ignore','pipe','pipe']});
  exit=new Promise(resolve=>child.once('exit',(code,signal)=>resolve({code,signal})));for(const stream of [child.stdout,child.stderr])stream.on('data',bytes=>log+=bytes);
  browser=await until(()=>puppeteer.connect({browserURL:'http://127.0.0.1:'+port,defaultViewport:null}).catch(()=>null),'CDP');
  shell=await until(async()=>{for(const p of await browser.pages())if(await p.evaluate(()=>window.__nozeliReady&&window.__workspaceScope?.role==='shell').catch(()=>false))return p;},'ready shell');
