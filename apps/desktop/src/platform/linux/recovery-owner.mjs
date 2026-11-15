@@ -29,7 +29,7 @@ async function fixedDesktopService(pid,args,uid){
 
 const childTypes=new Set(['zygote','renderer','gpu-process','utility','broker']);
 function chromiumChildExecutable(args){
- const merged=args.length===1?args[0].match(/^(\/.*) (--type=[^ ]+)(?: |$)/):null;
+ const merged=args.length&&args.slice(1).every(arg=>arg==='')?args[0].match(/^(\/.*) (--type=[^ ]+)(?: |$)/):null;
  const exe=merged?.[1]??args[0],type=merged?.[2]??args[1];
  return path.isAbsolute(exe??'')&&['electron','nozeli'].includes(path.basename(exe))&&type?.startsWith('--type=')&&childTypes.has(type.slice(7))?exe:null;
 }

@@ -80,6 +80,9 @@ for(const type of ['zygote','renderer','gpu-process','utility','broker']){
   const args=merged?[`/fixture/nozeli --type=${type} --synthetic`]:['/fixture/nozeli',`--type=${type}`,'--synthetic'];
   const p=probe(t,{args});await assertRecoverySourceStopped('/synthetic/project');assert.equal(p.exeReads(),1);assert.equal(p.fdReads(),0);
  });
+ test('non-dumpable Chromium '+type+' accepts only empty argv padding after merged title',async t=>{
+  probe(t,{args:[`/fixture/nozeli --type=${type} --synthetic`,'','']});await assertRecoverySourceStopped('/synthetic/project');
+ });
 }
 for(const [name,options] of [
  ['different executable parent',{parentExe:'/other/nozeli'}],
@@ -91,6 +94,7 @@ for(const [name,options] of [
  ['type flag after application argument',{args:['/fixture/nozeli','/project/main.cjs','--type=renderer']}],
  ['basename-only executable',{args:['nozeli','--type=renderer']}],
  ['main without child type',{args:['/fixture/nozeli']}],
+ ['merged title followed by real application argument',{args:['/fixture/nozeli --type=renderer','/project/main.cjs']}],
 ])test('inaccessible Chromium candidate fails closed: '+name,async t=>{
  probe(t,{args:['/fixture/nozeli','--type=zygote'],...options});
  await assert.rejects(assertRecoverySourceStopped('/synthetic/project'),{code:'RECOVERY_OWNER_UNVERIFIED'});

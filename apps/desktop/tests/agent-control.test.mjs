@@ -41,6 +41,9 @@ async function fixture(t,options={}){
   await manager.connect(host.project.id,{enable:true});
   const controller=manager.controllers.get(host.project.id);
   await controller.store.mutate(()=>{controller.store.state.limit=2;});
+  // connect() kicks asynchronously; suppressing a later kick cannot stop that
+  // already-running pump from activating the first submitted Work.
+  await drain(controller);
   return {host,manager,controller,clock,prompts,scriptFor,projectId:host.project.id};
 }
 const submitWork=async(c,name)=>c.store.submit(`Synthetic request ${name}`,`Synthetic brief ${name}`,{name});
@@ -89,12 +92,27 @@ test('pause commits before scheduler admission and holds only new business',asyn
 test('pause racing queued pickup: committed pause wins; admitted turn completes',async t=>{
   const f=await fixture(t),c=f.controller;
   const work=await submitWork(c,'Race A');
-  const realKick=c.kick.bind(c);c.kick=()=>{};
-  await controlApi.controllerControl(c,{workId:work.id,action:'pause',requestKey:'ctl-race-hold-1'});
-  c.kick=realKick;c.kick();
+  const admission=barrier(),release=barrier();
+  const prepare=c.serviceSourcePrepare;
+  c.serviceSourcePrepare=async job=>{
+    await prepare?.call(c,job);
+    if(job.target===work.id&&job.type==='initial'){
+      admission.open();
+      await release.promise;
+    }
+  };
+  t.after(()=>{release.open();c.serviceSourcePrepare=prepare;});
+  c.kick();
+  await admission.promise;
+  try{
+    await controlApi.controllerControl(c,{workId:work.id,action:'pause',requestKey:'ctl-race-hold-1'});
+  }finally{
+    release.open();
+  }
   await drain(c);
   assert.equal(c.store.find(work.id).status,'queued');
   assert.equal(c.store.state.jobs.some(job=>job.target===work.id),false,'no initial job created for held work');
+  c.serviceSourcePrepare=prepare;
   f.scriptFor.set(work.id,holdScript);
   await controlApi.controllerControl(c,{workId:work.id,action:'resume',requestKey:'ctl-race-free-1'});
   const first=await runningJob(c,work.id);
@@ -215,6 +233,25 @@ test('requestKey dedupe and version CAS semantics',async t=>{
   await assert.rejects(controlApi.controllerControl(c,{workId:work.id,action:'pause',requestKey:'ctl-dedupe-key-3',expectedWorkRevision:c.store.find(work.id).revision+3}),{code:'STALE_WORK_REVISION'});
   await assert.rejects(controlApi.controllerControl(c,{workId:'no-such-work',action:'pause',requestKey:'ctl-dedupe-key-4'}),{code:'WORK_CONTROL_TARGET_UNKNOWN'});
   await assert.rejects(controlApi.controllerControl(c,{workId:work.id,jobId:'no-such-job',action:'pause',requestKey:'ctl-dedupe-key-5'}));
+});
+
+test('scheduler activation invalidates an explicit queued Work control baseline',async t=>{
+  const f=await fixture(t),c=f.controller;
+  const work=await submitWork(c,'Activation CAS');
+  const caps=await controlApi.capabilities(c,work.id);
+  assert.equal(caps.workRevision,0);
+  f.scriptFor.set(work.id,holdScript);
+  c.kick();
+  const run=await runningJob(c,work.id);
+  assert.equal(c.store.find(work.id).revision,1);
+  const requestKey='ctl-activation-stale-1';
+  await assert.rejects(c.workControl({projectId:f.projectId,workId:work.id,action:'pause',requestKey,
+    expectedProjectInstanceId:caps.projectInstanceId,expectedControlVersion:caps.controlVersion,expectedWorkRevision:caps.workRevision}),{code:'STALE_WORK_REVISION'});
+  assert.equal(controlApi.held(c,work.id),false,'stale user baseline never installs a hold');
+  assert.equal(c.store.find(work.id).manualControl?.version??0,caps.controlVersion);
+  assert.equal(c.store.find(work.id).manualControl?.receipts?.some(row=>row.requestKey===requestKey)??false,false);
+  run.session.finishPending();
+  await drain(c);
 });
 
 // ── receipt ledger: CAS identity, capped replays, gated resume ───────────────
