@@ -1,7 +1,6 @@
 // Linux native recovery-source ownership verification (narrower algorithm
 // under the verified-process-ownership capability: Linux-only, conservative
-// same-user probe). Extracted verbatim from main/project-recovery-owner.mjs;
-// the algorithm is unchanged. Platform facts owned here: /proc enumeration,
+// same-user probe). Platform facts owned here: /proc enumeration,
 // argv/exe identity, PPID relationships, open-fd catalog evidence and
 // per-step incarnation re-stamping. There is no second proof path — the
 // managed wrapper either delegates here or refuses explicitly.
@@ -28,6 +27,33 @@ async function fixedDesktopService(pid,args,uid){
  return false;
 }
 
+const childTypes=new Set(['zygote','renderer','gpu-process','utility','broker']);
+function chromiumChildExecutable(args){
+ const merged=args.length===1?args[0].match(/^(\/.*) (--type=[^ ]+)(?: |$)/):null;
+ const exe=merged?.[1]??args[0],type=merged?.[2]??args[1];
+ return path.isAbsolute(exe??'')&&['electron','nozeli'].includes(path.basename(exe))&&type?.startsWith('--type=')&&childTypes.has(type.slice(7))?exe:null;
+}
+
+// A setuid Chromium sandbox can leave a same-uid child non-dumpable, making
+// /proc/<pid>/exe unreadable. Its argv alone is not proof: require a stable
+// same-uid parent chain of exact Chromium child launches ending at a readable
+// instance of that exact executable. Unknown or reparented processes still fail.
+async function sandboxedChromiumChild(pid,args,uid,seen=new Set()){
+ const exe=chromiumChildExecutable(args);if(!exe||seen.has(pid))return false;
+ seen.add(pid);
+ const text=await fs.readFile(`/proc/${pid}/stat`,'utf8'),parent=Number(text.slice(text.lastIndexOf(')')+2).split(' ')[1]);
+ if(!Number.isSafeInteger(parent)||parent<=0||seen.has(parent))return false;
+ const stamp=await processStamp(parent);if(!stamp||(await fs.stat(`/proc/${parent}`)).uid!==uid)return false;
+ let verified;
+ try{verified=await fs.readlink(`/proc/${parent}/exe`)===exe;}
+ catch(error){
+  if(error.code!=='EACCES')throw error;
+  const parentArgs=await commandLine(parent);
+  verified=chromiumChildExecutable(parentArgs)===exe&&await sandboxedChromiumChild(parent,parentArgs,uid,seen);
+ }
+ return verified&&await processStamp(parent)===stamp;
+}
+
 // Only explicit recovery uses this conservative same-user Linux probe. It is
 // not a cross-user lease and never authorizes a recovery after an unknown scan.
 export async function assertRecoverySourceStopped(root){
@@ -45,12 +71,17 @@ export async function assertRecoverySourceStopped(root){
     if(await processStamp(pid)!==stamp)throw fail('RECOVERY_OWNER_UNVERIFIED','核验期间进程身份发生变化，请稍后重试；未恢复项目。');
     continue;
    }
-   const exe=await fs.readlink(`/proc/${pid}/exe`);
+   let exe;
+   try{exe=await fs.readlink(`/proc/${pid}/exe`);}
+   catch(error){
+    if(error.code!=='EACCES'||!await sandboxedChromiumChild(pid,args,stat.uid))throw error;
+    if(await processStamp(pid)!==stamp)throw fail('RECOVERY_OWNER_UNVERIFIED','核验期间进程身份发生变化，请稍后重试；未恢复项目。');
+    continue;
+   }
    // Exact executable identity, not a substring in a user-supplied process name.
    if(!(exe===ownExe&&['electron','nozeli'].includes(path.basename(ownExe)))&&!['nozeli','electron'].includes(path.basename(exe)))continue;
    // Chromium can rewrite argv into a single process-title string. Only an
    // exact leading executable + first --type flag identifies a child here.
-   const childTypes=new Set(['zygote','renderer','gpu-process','utility','broker']);
    const first=args.length===1&&args[0].startsWith(exe+' ')?args[0].slice(exe.length+1).split(' ',1)[0]:null;
    if(args.some(arg=>arg.startsWith('--type=')&&childTypes.has(arg.slice(7)))||first?.startsWith('--type=')&&childTypes.has(first.slice(7))||args.some(arg=>path.isAbsolute(arg)&&arg.endsWith('/integrations/pi/src/owner.mjs'))&&await isNozeliOwner(pid))continue;
    // Electron rewrites its initial environ as well. Never guess the default
@@ -75,7 +106,9 @@ export async function assertRecoverySourceStopped(root){
    if(await processStamp(pid)!==stamp)throw fail('RECOVERY_OWNER_UNVERIFIED','核验期间实例身份发生变化，请稍后重试；未恢复项目。');
   }catch(error){
    if(error.code==='RECOVERY_SOURCE_ACTIVE'||error.code==='RECOVERY_OWNER_UNVERIFIED')throw error;
-   if(['ENOENT','ESRCH'].includes(error.code)&&!(await processStamp(pid)))continue;
+   // A process that exited (including a zombie) during any failed proc read
+   // cannot own an open catalog. A still-live inaccessible process is unknown.
+   if(!(await processStamp(pid)))continue;
    throw fail('RECOVERY_OWNER_UNVERIFIED',`无法完整核验另一个 Electron/Nozeli 进程（code=${error.code??'unknown'} message=${error.message??'unknown'}）；未恢复项目。`);
   }
  }

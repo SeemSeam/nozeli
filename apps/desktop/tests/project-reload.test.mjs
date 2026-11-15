@@ -17,8 +17,18 @@ async function replaceMetadata(f){
  await f.storage.putRecovery(old.id,'unsent',{draft:'old local draft'});
  await f.storage.remove(old.id);
  await f.storage.closeProjectHandles(old.id);
+ // A second profile attaching the same metadata now preserves its UUID. Use a
+ // genuinely different project's metadata to exercise explicit identity recovery.
+ const otherRoot=path.join(f.base,'other-project');await fs.mkdir(otherRoot);
  const other=new ProjectStorage(path.join(f.base,'other-profile'));
- try{const replacement=await other.register(f.root);return {old,replacement};}finally{await other.db.close();}
+ let replacement;
+ try{
+  replacement=await other.register(otherRoot);
+  await other.putProject(replacement.id,'reload-test','retained',{projectId:replacement.id,text:'source data'});
+ }finally{await other.db.close();}
+ await fs.rename(path.join(f.root,'.nozeli'),path.join(f.base,'old-metadata'));
+ await fs.rename(path.join(otherRoot,'.nozeli'),path.join(f.root,'.nozeli'));
+ return {old,replacement};
 }
 
 // The recovery reload flow must not depend on the machine's live process table:
@@ -39,28 +49,55 @@ test('same-identity removed reload preserves instance and recovery without speci
  assert.equal(result.id,old.id);assert.equal(result.instanceId,old.instanceId);assert.equal(result.removed,false);
  assert.deepEqual(await f.storage.getRecovery(old.id,'unsent'),{draft:'retained'});
 });
-test('removed legal fork requires confirmation, preserves old recovery and never adopts foreign identity',{skip:process.platform!=='linux'},async t=>{
+test('another profile attachment preserves removed project identity and local recovery without confirmation',async t=>{
+ const f=await fixture(t),old=await f.storage.register(f.root);
+ await f.storage.putRecovery(old.id,'unsent',{draft:'old local draft'});
+ await f.storage.remove(old.id);await f.storage.closeProjectHandles(old.id);
+ const manifest=await fs.readFile(path.join(f.root,'.nozeli/project.json'),'utf8');
+ const other=new ProjectStorage(path.join(f.base,'other-profile'));
+ try{
+  const attached=await other.register(f.root);
+  assert.equal(attached.id,old.id);assert.notEqual(attached.instanceId,old.instanceId);
+  await other.putRecovery(attached.id,'unsent',{draft:'other local draft'});
+ }finally{await other.db.close();}
+ const result=await f.storage.register(f.root,{confirmRecovery:()=>assert.fail('another profile must not fork project identity')});
+ assert.equal(result.id,old.id);assert.equal(result.instanceId,old.instanceId);assert.equal(result.removed,false);
+ assert.equal(await fs.readFile(path.join(f.root,'.nozeli/project.json'),'utf8'),manifest);
+ assert.deepEqual(await f.storage.getRecovery(old.id,'unsent'),{draft:'old local draft'});
+});
+test('removed project with different metadata requires confirmation, preserves source identity and old recovery',{skip:process.platform!=='linux'},async t=>{
  isolateRecoveryOwnerScan(t);
  const f=await fixture(t),{old,replacement}=await replaceMetadata(f);
+ assert.notEqual(replacement.id,old.id);
+ const metadataIdentity=await fs.stat(path.join(f.root,'.nozeli'));
+ const manifest=await fs.readFile(path.join(f.root,'.nozeli/project.json'),'utf8');
  await assert.rejects(f.storage.register(f.root),{code:'PROJECT_RECOVERY_CANCELLED'});
- assert.equal(JSON.parse(await fs.readFile(path.join(f.root,'.nozeli/project.json'))).projectId,replacement.id);
- let snapshot;const result=await f.storage.register(f.root,{confirmRecovery:async value=>{snapshot=value;return true;}});
- assert.equal(snapshot.projectId,replacement.id);assert.equal(snapshot.previousId,old.id);
- assert.notEqual(result.id,old.id);assert.notEqual(result.id,replacement.id);assert.notEqual(result.instanceId,old.instanceId);
+ assert.equal(await fs.readFile(path.join(f.root,'.nozeli/project.json'),'utf8'),manifest);
  assert.equal((await f.storage.requireRegistered(old.id)).removed,true);
  assert.deepEqual(await f.storage.getRecovery(old.id,'unsent'),{draft:'old local draft'});
- const intents=await f.storage.db.request(f.storage.catalog,'list',{collection:'initializations'});
- const intent=intents.find(row=>row.value.id===result.id).value;
- assert.equal(JSON.parse(await fs.readFile(path.join(intent.backup,'project.json'))).projectId,replacement.id);
+ let snapshot;const result=await f.storage.register(f.root,{confirmRecovery:async value=>{snapshot=value;return true;}});
+ assert.equal(snapshot.projectId,replacement.id);assert.equal(snapshot.previousId,old.id);
+ assert.equal(result.id,replacement.id);assert.notEqual(result.instanceId,old.instanceId);assert.notEqual(result.instanceId,replacement.instanceId);
+ assert.equal((await f.storage.requireRegistered(old.id)).removed,true);
+ assert.deepEqual(await f.storage.getRecovery(old.id,'unsent'),{draft:'old local draft'});
+ assert.equal(await f.storage.getRecovery(result.id,'unsent'),null);
+ assert.equal(await fs.readFile(path.join(f.root,'.nozeli/project.json'),'utf8'),manifest);
+ const currentIdentity=await fs.stat(path.join(f.root,'.nozeli'));
+ assert.equal(currentIdentity.dev,metadataIdentity.dev);assert.equal(currentIdentity.ino,metadataIdentity.ino);
+ assert.deepEqual(await f.storage.getProject(result.id,'reload-test','retained'),{projectId:replacement.id,text:'source data'});
  assert.equal((await f.storage.register(f.root)).id,result.id);
 });
 test('confirmation cannot authorize a metadata entity substituted while awaiting the user',{skip:process.platform!=='linux'},async t=>{
  isolateRecoveryOwnerScan(t);
- const f=await fixture(t);await replaceMetadata(f);
+ const f=await fixture(t),{old,replacement}=await replaceMetadata(f);
  await assert.rejects(f.storage.register(f.root,{confirmRecovery:async()=>{
   await f.storage.db.request(path.join(f.root,'.nozeli/project.sqlite'),'close');
   await fs.cp(path.join(f.root,'.nozeli'),path.join(f.base,'replacement'),{recursive:true});
   await fs.rename(path.join(f.root,'.nozeli'),path.join(f.base,'before'));
   await fs.rename(path.join(f.base,'replacement'),path.join(f.root,'.nozeli'));return true;
  }}),{code:'PROJECT_IDENTITY_CONFLICT'});
+ assert.equal((await f.storage.requireRegistered(old.id)).removed,true);
+ assert.deepEqual(await f.storage.getRecovery(old.id,'unsent'),{draft:'old local draft'});
+ assert.equal(JSON.parse(await fs.readFile(path.join(f.root,'.nozeli/project.json'))).projectId,replacement.id);
+ assert.equal((await f.storage.list()).some(project=>project.id===replacement.id),false);
 });

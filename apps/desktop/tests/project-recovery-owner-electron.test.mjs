@@ -21,9 +21,29 @@ test('real Electron profile with the same synthetic registered root prevents rec
  const exit=new Promise(resolve=>child.once('exit',resolve));
  t.after(async()=>{child.stdin.end();await Promise.race([exit,new Promise(resolve=>{const timer=setTimeout(()=>{child.kill('SIGTERM');resolve();},3000);timer.unref();})]);await fs.rm(directory,{recursive:true,force:true});});
  await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Electron owner startup timeout '+log)),10000);child.stdout.on('data',bytes=>{if(String(bytes).includes('OWNER_READY')){clearTimeout(timer);resolve();}});child.once('exit',code=>{clearTimeout(timer);reject(Error('Electron owner exited '+code+' '+log));});});
+ const electronExecutable=await fs.realpath(require('electron'));
  console.log('synthetic Electron identity',JSON.stringify({pid:child.pid,exe:await fs.readlink(`/proc/${child.pid}/exe`),args:(await fs.readFile(`/proc/${child.pid}/cmdline`)).toString().split('\0').filter(Boolean),profile}));
  const entries=(await fs.readFile(`/proc/${child.pid}/environ`)).toString().split('\0');
  console.log('synthetic profile environment',JSON.stringify(Object.fromEntries(['NOZELI_TEST_INSTANCE','NOZELI_CONFIG_ROOT','NOZELI_USER_DATA'].map(key=>[key,entries.find(value=>value.startsWith(key+'='))?.slice(key.length+1)]))));
+ // Exercise the real sandbox process table, not just a readable Electron main.
+ // Depending on kernel sandbox support, its zygote may be non-dumpable even
+ // though it has our uid. Record that fact without requiring a particular
+ // sandbox implementation or disabling sandboxing to make recovery pass.
+ const chromiumChildren=[];
+ for(const entry of await fs.readdir('/proc')){
+  if(!/^\d+$/.test(entry))continue;
+  try{
+   const stat=await fs.readFile(`/proc/${entry}/stat`,'utf8');
+   if(Number(stat.slice(stat.lastIndexOf(')')+2).split(' ')[1])!==child.pid)continue;
+   const args=(await fs.readFile(`/proc/${entry}/cmdline`)).toString().split('\0');
+   if(!args.some(arg=>arg.startsWith('--type=')||arg.startsWith(electronExecutable+' --type=')))continue;
+   let executableReadable=true;
+   try{await fs.readlink(`/proc/${entry}/exe`);}catch(error){if(error.code!=='EACCES')throw error;executableReadable=false;}
+   chromiumChildren.push({pid:Number(entry),args,executableReadable});
+  }catch(error){if(!['ENOENT','ESRCH'].includes(error.code))throw error;}
+ }
+ assert(chromiumChildren.length>0,'the recovery consumer must scan actual sandboxed Chromium children');
+ console.log('real Chromium child ownership evidence',JSON.stringify(chromiumChildren));
  await assert.rejects(assertRecoverySourceStopped(root),{code:'RECOVERY_SOURCE_ACTIVE'});
  await assertRecoverySourceStopped(path.join(directory,'different-unregistered-root'));
  const catalog=path.join(profile,'nozeli','storage-v2','catalog.sqlite');await fs.unlink(catalog);

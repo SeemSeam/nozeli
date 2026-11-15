@@ -35,12 +35,11 @@ test('real typescript-language-server supports diagnostics and cross-file reques
     const format = await manager.request({ projectId: fx.projectId, relPath: 'src/main.ts', text: main.text, version: 1, action: 'format' });
     assert.ok(Array.isArray(format) || Array.isArray(format?.value));
     assert.equal(manager.status().projectId, fx.projectId);
+    const expectedDiagnostic = event => event.type === 'diagnostics' && event.relPath === 'src/main.ts' && event.diagnostics.some(item => /number|string|type/i.test(item.message));
     const deadline = Date.now() + 5000;
-    while (Date.now() < deadline && !events.some(event => event.type === 'diagnostics')) await new Promise(resolve => setTimeout(resolve, 100));
+    while (Date.now() < deadline && !events.some(expectedDiagnostic)) await new Promise(resolve => setTimeout(resolve, 100));
     assert.ok(events.some(event => event.type === 'ready'));
-    assert.ok(events.some(event => event.type === 'diagnostics'));
-    const diagnostic = events.find(event => event.type === 'diagnostics');
-    assert.ok(diagnostic.diagnostics.some(item => /number|string|type/i.test(item.message)));
+    assert.ok(events.some(expectedDiagnostic), JSON.stringify(events.filter(event => event.type === 'diagnostics')));
     const unsaved = main.text.replace('const value: number', 'const value: string');
     await manager.sync({ projectId: fx.projectId, relPath: 'src/main.ts', text: unsaved, version: 2 });
     assert.equal(manager.status().projectId, fx.projectId);

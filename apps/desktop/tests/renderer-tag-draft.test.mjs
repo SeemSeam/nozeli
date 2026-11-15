@@ -29,10 +29,16 @@ const noteTag = {
   makeAnchorTag: (data, actions = {}) => rendererBundle.noteTag.makeAnchorTag(data, { inline: true, ...actions }),
 };
 after(async()=>{await fs.rm(bundleOut,{recursive:true,force:true});});
+// Match surface-identity-state and frozen-change-reader: action buttons use the
+// production SVG/tooltip APIs against their owning document, not UI shims.
+const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
 class Element {
   constructor(tag = 'span') { this.tag = tag; this.children = []; this.handlers = {}; this.style = {}; this.dataset = {}; this.hidden = false; this.value = ''; this.textContent = ''; this.attributes = new Map(); const classes = new Set(); this.classList = { add: (...items) => items.forEach(item => classes.add(item)), remove: (...items) => items.forEach(item => classes.delete(item)), toggle: (item, force) => force === undefined ? (classes.has(item) ? (classes.delete(item), false) : (classes.add(item), true)) : (force ? classes.add(item) : classes.delete(item), force), contains: item => classes.has(item) }; }
+  // SVG descendants and delegated tooltip registration share this document.
+  ownerDocument = globalThis.document;
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   getAttribute(name) { return this.attributes.get(name) ?? null; }
+  removeAttribute(name) { this.attributes.delete(name); }
   getBoundingClientRect() { return {left:0,top:0,right:420,bottom:42,width:420,height:42}; }
   removeEventListener(type, fn) { this.handlers[type]=(this.handlers[type]||[]).filter(handler=>handler!==fn); }
   closest() { return null; }
@@ -51,7 +57,12 @@ class Element {
     await Promise.all((this.handlers[type] ?? []).map(handler => handler(event)));
   }
 }
-globalThis.document = { createElement: tag => new Element(tag), createElementNS: (_namespace,tag) => new Element(tag), elementFromPoint: () => null };
+globalThis.document = {
+  createElement: tag => new Element(tag),
+  createElementNS: (namespaceURI, tag) => Object.assign(new Element(tag), { namespaceURI }),
+  elementFromPoint: () => null,
+  addEventListener() {},
+};
 // A real renderer always has window and a workspace identity. Keep identities
 // separate between tests, since annotation sessions are keyed by project/view/id.
 const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
@@ -62,6 +73,8 @@ beforeEach(() => {
 after(() => {
   if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow);
   else delete globalThis.window;
+  if (previousDocument) Object.defineProperty(globalThis, 'document', previousDocument);
+  else delete globalThis.document;
 });
 globalThis.ResizeObserver = class {
   constructor(callback) { this.callback=callback; this.targets=new Set(); }
@@ -89,6 +102,10 @@ test('unlocated inline cards keep explicit view, edit and removal actions when c
   assert.equal(editorOf(card).hidden,false);
   actions.children.find(node=>node.className==='tag-delete').emit('click');
   assert.equal(removed,1);
+  const send = sendOf(card);
+  assert.ok(send.querySelector(':scope > .ui-icon'), 'render the production action glyph');
+  assert.equal(send.getAttribute('aria-label'), '保存本地备注，不发送');
+  assert.equal(send.getAttribute('title'), null, 'the themed hint must not duplicate a native tooltip');
 });
 
 test('collapsed inline discussions expose removal without sending or erasing history', () => {
@@ -98,7 +115,7 @@ test('collapsed inline discussions expose removal without sending or erasing his
   const card=root.children[1],actions=menuActionsOf(card);
   assert.equal(editorOf(card).hidden,true);
   const remove=actions.children.find(node=>node.className==='tag-remove');
-  assert.equal(remove.textContent,'移除标签（保留历史）');
+  assert.equal(remove.dataset.action,'remove-tag');
   remove.emit('click');
   assert.equal(removed,1); assert.equal(sent,0);
   assert.deepEqual(history,[{question:'original question',reply:'preserved reply',status:'completed'}]);
