@@ -1111,3 +1111,9 @@ Beta.6发布期间用户追加“安装并重启”按钮：复用已验证候�
 首轮完整远端CI发现搜索会话IPC在整合时漏接、图标fake DOM消费者过期、三处复制目录测试仍依赖旧静默fork语义；保留原失败日志。搜索路由补回可信主窗口准入后，真实Electron搜索11项通过、errors=[]、正常exit0：/tmp/nozeli-project-search-live-kATGvS/report.json，含中文精确位置、缓冲覆盖、PDF/Word/表格/PPT提取、忽略规则、正则错误、320px与Escape。Mac首轮新增管理助手11项已通过但将关闭窗口误作进程退出，沿现有驻留应用验收改为正常app.quit；不修改产品驻留行为。修正后的新SHA重新完整CI／双平台归档，不重用旧包。
 
 动态提示专项发现常用动作默认不设提示后，已获键盘焦点的按钮晚到setUiHint没有focusin可触发展示。修复动态更新仅在当前焦点且非鼠标抑制状态显示，保留鼠标点击去提示规则；真实Electron native-review-renderer 29/29通过。夹具显式聚焦真实窗口并进入键盘导航，不伪造tooltip节点；旧失败保留。Mac冷启动最后退出选择累计日志的最新Inspector URL，避免误连已退出的首轮进程。
+
+## Beta7最终发布验收（2026-11-16）
+
+最终产品提交`84101656e17b5287a0be63a7a9eb3008417d5382`已快进`main`并标记`v0.1.0-beta.7`，公开预发行：<https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-beta.7>。CI `43736248023`完整门禁通过；Linux x64与macOS arm64最终包均从该提交构建并解压验收。Mac归档报告10份全部`ok=true`，含管理助手13场景、显式访问恢复4场景、冷恢复、正常退出、Office／窗口／批注旅程；Linux实包同门覆盖恢复路径，setuid sandbox启动器按同目录、确切可执行文件和稳定父链核验，未知进程仍阻断。Linux/macOS/source/Node debug symbols/双语使用说明及`SHA256SUMS.txt`已上传。
+
+公开前草稿核验与公开后核验均技术零失败；远端附件已从GitHub下载到全新目录并按公开`SHA256SUMS.txt`逐项通过。六项再分发审计义务仍pending，`--public`仍如实阻断；本次依据用户对beta.7的明确预发行例外授权公开，不构成合规认证或稳定版。Mac仅ad-hoc签名、无Developer ID／公证；未替换日常安装、未创建PR、Windows未验。

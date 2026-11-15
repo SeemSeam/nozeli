@@ -119,4 +119,6 @@ release用最新非draft已公开v* tag完整差异；integration用origin/main�
 
 子集执行器复用原隔离环境/preflight/TAP，并按plan.base/head独立重算，拒绝篡改为另一已注册测试。24项分类纯逻辑＋真实Git CLI回归全部通过；生产workflow resolver提取后12个真实事件fixture通过；独立scratch提交只改collaboration-status.css，实际原integration消费者20/20通过（约4.7秒），篡改测试列表／base／head均exit2拒绝。scratch初次缺依赖未计通过；CLI回归原fixture在rename后新增映射文件应full，已修测试准备为恢复映射后真实修改，不放宽分类器。独立reviewer workflow及planner/runner最终均correct，仅静态复审。
 
-该代码尚未提交、推送到GitHub，不能把本地验证称为远端Actions已经提速。此次自身修改CI和runner，首次部署必full；远端部署后需以独立叶模块变化确认实际targeted计划及对应jobs。未变更主支保护或已发布beta.5；详细操作已同步本机nozeli-github skill。
+## beta.7已发布（2026-11-16）
+
+`v0.1.0-beta.7`已在`84101656e17b5287a0be63a7a9eb3008417d5382`公开为Linux x64＋macOS arm64 prerelease。精确CI `43736248023`、双平台最终包解压验收及远端附件SHA-256核对通过；发布页为<https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-beta.7>。资产含Linux便携包、Node debug symbols、macOS arm64包、源码包、双平台使用说明和校验清单。六项再分发义务仍pending，依据本版本明确Beta例外公开，不构成合规认证或稳定版；Mac无Developer ID／公证，Windows未验。
