@@ -84,6 +84,9 @@ for(const type of ['zygote','renderer','gpu-process','utility','broker']){
   probe(t,{args:[`/fixture/nozeli --type=${type} --synthetic`,'','']});await assertRecoverySourceStopped('/synthetic/project');
  });
 }
+test('setuid sandbox zygote helper requires same-package executable parent',async t=>{
+ probe(t,{args:['/fixture/chrome-sandbox','/fixture/nozeli','--type=zygote']});await assertRecoverySourceStopped('/synthetic/project');
+});
 for(const [name,options] of [
  ['different executable parent',{parentExe:'/other/nozeli'}],
  ['unreadable unknown parent',{parentExeError:'EACCES'}],
@@ -95,6 +98,9 @@ for(const [name,options] of [
  ['basename-only executable',{args:['nozeli','--type=renderer']}],
  ['main without child type',{args:['/fixture/nozeli']}],
  ['merged title followed by real application argument',{args:['/fixture/nozeli --type=renderer','/project/main.cjs']}],
+ ['sandbox helper launching another directory',{args:['/other/chrome-sandbox','/fixture/nozeli','--type=zygote']}],
+ ['sandbox helper launching main code',{args:['/fixture/chrome-sandbox','/fixture/nozeli','/project/main.cjs']}],
+ ['sandbox helper with extra application argument',{args:['/fixture/chrome-sandbox','/fixture/nozeli','--type=zygote','/project/main.cjs']}],
 ])test('inaccessible Chromium candidate fails closed: '+name,async t=>{
  probe(t,{args:['/fixture/nozeli','--type=zygote'],...options});
  await assert.rejects(assertRecoverySourceStopped('/synthetic/project'),{code:'RECOVERY_OWNER_UNVERIFIED'});
