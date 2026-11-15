@@ -132,3 +132,9 @@ PDF补修及真实安装验收：父子双滚动容器与首帧适宽尺寸反�
 当前用户入口`current=2026-11-08T08-52-12-275Z`，previous为`2026-11-08T08-50-23-133Z`；原日常`task-contained-20261108-local-01`仍保留。803份src/dist/Pi-src与安装包逐文件SHA256一致，原件`/tmp/nozeli-installed-lifecycle-20261108/final-package-verification.json`。安装切换不等于现有日常旧进程已经重启；未强关用户工作。
 
 最终初始化异常验收通过：`/tmp/nozeli-initialization-native-y3Ff15/report.json`，实际安装ELF及包内Pi、真实本地HTTP。403只失败一次、本地阅读仍可用；显式retry保持排队零请求，明确解除当前授权故障后继续同一个排队作业，原失败输入不重放。真实在途map响应取消后晚到不发布，取消状态冷开保留；SIGKILL后标interrupted且零静默重放，显式重试完成；原生skill按需读取、受限工具、凭据/外链排除、无Work、地图持久化及完成后冷开零推理均通过。测试夹具曾错误把正文当JSON、IPC登记后未刷新真实rail，均修正测试而未削弱产品边界。
+
+## 10. 已有项目身份复用（2026-11-14，源码修复，未安装）
+
+新profile登记含有效`.nozeli/project.json`与`project.sqlite`的项目时，核验二者身份一致后复用原projectId；仅生成本机instanceId和catalog登记，不再将“本profile未登记”解释为需要复制元数据并生成新项目ID。不替换元数据目录，不改历史材料或回执引用。清单／数据库不一致仍拒绝；同一profile内其他根目录已登记同一UUID时以PROJECT_IDENTITY_CONFLICT拒绝，不静默分叉。已有持久初始化中断仍按其原回执恢复；明确完全重置的全新身份规则不变。
+
+定向5文件91项通过，包括新profile接入保留身份与记录、目录实体不变、接入catalog提交前后中断恢复、UUID副本冲突、元数据不一致及替换拒绝、受管记录／离线恢复和数据库worker围栏。此修复不自动修复Deeploy既有错配，不安装、不提交、不操作用户项目；未做Windows/macOS或真实Electron流程验收。

@@ -1,4 +1,4 @@
-import {disclosure} from './management-presentation.mjs';
+import {fieldRow, disclosure} from './management-presentation.mjs';
 import {setActionButton} from './ui-actions.mjs';
 export function mountProviderSettings({invoke,providers=document.getElementById('settings-provider'),models=document.getElementById('settings-models')}) {
  const call=async(op,payload={})=>{const response=await invoke(op,payload);if(response?.ok===false)throw Error(response.error?.message||'设置操作未完成');return response?.ok===true?response.value:response;};
@@ -59,6 +59,12 @@ nativeKeyWrap.append(nativeKeyInput);nativeKeyProvider.append(node('option','正
  }
  modelForm.append(node('button','保存默认模型',{type:'submit',class:'ui-action','data-ui-action':'primary'}));models.append(modelForm);
  modelForm.append(node('p','先选源，再选该源的模型。切换源仅浏览目录，不改变已选模型；只有选择模型并保存才更新默认。'));
+ const adminForm=node('form',null,{'data-admin-default-form':''}),adminModel=node('select',null,{'data-admin-default-model':'',name:'admin-model'}),adminEffort=node('select',null,{'data-admin-default-effort':'',name:'admin-effort'});
+ const adminSave=node('button','保存全局助手模型',{type:'submit',class:'ui-action','data-ui-action':'primary','data-admin-default-save':''}),adminMessage=node('p','正在读取全局助手配置…',{role:'status','aria-live':'polite','data-admin-default-status':''});
+ const adminRow=node('div',null,{class:'role-default-row'});adminRow.append(fieldRow({label:'模型',control:adminModel}),fieldRow({label:'思考档位',control:adminEffort}));
+ adminForm.append(node('h3','nozeli 全局助手'),node('p','应用独立配置与上下文；不继承当前项目，不改变项目角色。'),adminRow,adminSave,adminMessage);models.append(adminForm);
+ let adminState=null,adminCatalog=[],adminFlight=null,adminSaving=false,adminEditRevision=null;
+ adminModel.disabled=adminEffort.disabled=adminSave.disabled=true;
  const modelSyncBody=node('div',null,{'data-model-sync-details-body':''}),modelSync=disclosure({key:'model-sync-details',label:'保存结果明细',content:modelSyncBody});modelSync.hidden=true;models.append(modelSync);
  const catalogMessage=node('p','正在读取目录模型…',{role:'status','aria-live':'polite','data-model-catalog-status':''});
  const modelRefresh=node('button','刷新模型列表',{type:'button','data-model-refresh':''}),configureSource=node('button','管理连接',{type:'button','data-model-configure-source':''});
@@ -119,7 +125,7 @@ nativeKeyWrap.append(nativeKeyInput);nativeKeyProvider.append(node('option','正
   modelSync.hidden=!details.length;
   modelSyncBody.replaceChildren(...details.map(line=>node('p',line)));
  }
- function syncModelControls(){const disabled=busy||!catalogReady;for(const select of [...Object.values(selects),...Object.values(sourceSelects)])if(select.disabled!==disabled)select.disabled=disabled;modelSave.disabled=busy||(!catalogReady&&!storedDefaultsExist);modelRefresh.disabled=refreshButton.disabled=busy||!!refreshFlight;for(const think of Object.values(thinkingSelects))think.disabled=busy;}
+ function syncModelControls(){const disabled=busy||!catalogReady;for(const select of [...Object.values(selects),...Object.values(sourceSelects)])if(select.disabled!==disabled)select.disabled=disabled;modelSave.disabled=busy||(!catalogReady&&!storedDefaultsExist);modelRefresh.disabled=refreshButton.disabled=busy||!!refreshFlight;for(const think of Object.values(thinkingSelects))think.disabled=busy;syncAdminControls();}
  async function run(action){if(busy)return;busy=true;const inputs=[...providers.querySelectorAll('input,select,textarea')].map(input=>[input,input.disabled]);for(const [input]of inputs)input.disabled=true;for(const b of [...providers.querySelectorAll('button'),...models.querySelectorAll('button')])b.disabled=true;syncModelControls();try{await refreshFlight;await action();}catch(e){report(e);}finally{busy=false;for(const [input,disabled]of inputs)input.disabled=disabled;for(const b of [...providers.querySelectorAll('button'),...models.querySelectorAll('button')])b.disabled=false;syncModelControls();loginStart.disabled=!loginProvider.value||loginProvider.disabled;const nativeSubmit=nativeKeyForm.querySelector('button[type="submit"]');if(nativeSubmit)nativeSubmit.disabled=!nativeKeyProvider.value||nativeKeyProvider.disabled;}}
  function renderLogin(login){
   const draft=loginArea.querySelector('input')?.value||'';
@@ -154,7 +160,7 @@ nativeKeyWrap.append(nativeKeyInput);nativeKeyProvider.append(node('option','正
   run(async()=>{await call('settings.providers.nativeKey',{provider,key:nativeKeyInput.value});nativeKeyInput.value='';message.textContent='内置源密钥已保存到本机私有认证存储。';await refreshAfterChange();await refreshNativeKeyProviders();});
  });
  const pendingChoices=new Map();
- function renderModelChoices(select,available,savedDefault,browsing=false){
+ function renderModelChoices(select,available,savedDefault,browsing=false,emptyLabel='会话原生默认（清除全局覆盖）'){
   const source=sourceSelects[select.dataset.defaultRole];
   // Do not replace either picker while it is open; browsing changes only the model list.
   if(!busy&&(document.activeElement===select||(!browsing&&document.activeElement===source))){pendingChoices.set(select,{savedDefault});return;}
@@ -162,18 +168,18 @@ nativeKeyWrap.append(nativeKeyInput);nativeKeyProvider.append(node('option','正
   const selected=select.dataset.dirty==='true'?select.value:savedDefault;
   const current=available.find(model=>model.selector===selected);
   const providers=[...new Set([...available.map(model=>model.provider),...lastSources.map(row=>row.provider)])];
-  const sourceValue=source.dataset.initialized==='true'&&source.value?source.value:(current?.provider??providers[0]??'');
+  const sourceValue=source?.dataset.initialized==='true'&&source.value?source.value:(current?.provider??providers[0]??'');
   const sourceChoices=providers.map(provider=>[provider,provider]);
   if(!sourceChoices.length)sourceChoices.push(['','暂无目录源，请刷新']);
   if(sourceValue&&!providers.includes(sourceValue))sourceChoices.push([sourceValue,sourceValue+'（当前目录不可见）',true]);
-  if(document.activeElement!==source){
+  if(source&&document.activeElement!==source){
    if(source.options.length!==sourceChoices.length||sourceChoices.some(([value,text,disabled],index)=>source.options[index].value!==value||source.options[index].textContent!==text||source.options[index].disabled!==!!disabled))source.replaceChildren(...sourceChoices.map(([value,text,disabled])=>{const option=node('option',text,{value});option.disabled=!!disabled;return option;}));
    source.value=sourceValue;source.dataset.initialized='true';
   }
-  const visible=available.filter(model=>model.provider===sourceValue);
-  const choices=[['','会话原生默认（清除全局覆盖）'],...visible.map(model=>[model.selector,`${model.name||model.id||model.selector} · ${model.provider} · ${model.catalogSource==='configured'?'手动配置':model.credentialConfigured?'内置目录（凭据已配置）':'内置目录'}${model.images===true?' · 支持图片':''}${model.thinking?.supported===true?' · 支持思考':''}`])];
+  const visible=source?available.filter(model=>model.provider===sourceValue):available;
+  const choices=[['',emptyLabel],...visible.map(model=>[model.selector,`${model.name||model.id||model.selector} · ${model.provider} · ${model.catalogSource==='configured'?'手动配置':model.credentialConfigured?'内置目录（凭据已配置）':'内置目录'}${model.images===true?' · 支持图片':''}${model.thinking?.supported===true?' · 支持思考':''}`])];
   if(!visible.length)choices.push(['','此源暂无目录模型','disabled']);
-  if(selected&&!visible.some(model=>model.selector===selected))choices.push([selected,selected+(current?'（当前选择属于其他源，保留原设置；不可重新选择）':'（当前目录不可见，保留原设置；不可重新选择）'),'disabled']);
+  if(selected&&!visible.some(model=>model.selector===selected))choices.push([selected,selected+(current&&source?'（当前选择属于其他源，保留原设置；不可重新选择）':'（当前目录不可见，保留原设置；不可重新选择）'),'disabled']);
   if(select.options.length!==choices.length||choices.some(([value,text,disabled],index)=>select.options[index].value!==value||select.options[index].textContent!==text||select.options[index].disabled!==!!disabled)){
    select.replaceChildren(...choices.map(([value,text,disabled])=>{const option=node('option',text,{value});if(disabled)option.disabled=true;return option;}));
   }
@@ -203,6 +209,43 @@ nativeKeyWrap.append(nativeKeyInput);nativeKeyProvider.append(node('option','正
   const think=thinkingSelects[select.dataset.defaultRole];
   if(think)renderThinkingChoices(think,think.dataset.dirty==='true'?think.value:(saved!=null?saved.thinking:think.value),lastCatalog.find(model=>model.selector===select.value)?.thinking?.levels??null);
  }
+ function syncAdminControls(){
+  const disabled=busy||adminSaving||!adminState||adminState.busy;
+  adminModel.disabled=adminEffort.disabled=Boolean(disabled);
+  adminSave.disabled=Boolean(disabled||adminFlight||!adminModel.value);
+ }
+ function renderAdminChoices(){
+  renderModelChoices(adminModel,adminCatalog,adminState?.model??'',false,'请选择独立模型（不继承项目）');
+  renderThinkingChoices(adminEffort,adminState?.effort??'',adminCatalog.find(model=>model.selector===adminModel.value)?.thinking?.levels??null);
+ }
+ function acceptAdminState(value){
+  if(!Number.isSafeInteger(value?.configRevision)||value.configRevision<0||!Array.isArray(value.models))throw Error('全局助手配置读取失败：版本或模型目录无效。');
+  adminState=value;adminCatalog=value.models;renderAdminChoices();
+ }
+ function refreshAdmin(){
+  if(adminFlight)return adminFlight;if(adminSaving)return Promise.resolve();
+  adminFlight=(async()=>{try{
+   acceptAdminState(await call('admin.status'));
+   adminMessage.textContent=adminState.busy?'全局助手正在运行，请在回合结束后刷新再保存。':adminEditRevision!==null&&adminEditRevision!==adminState.configRevision?'配置版本已变化；本地选择保留，保存时将检查原版本。':`应用独立配置 · 版本 ${adminState.configRevision}${adminEditRevision!==null?'；选择尚未保存。':'。'}`;
+  }catch(error){adminMessage.textContent='全局助手配置读取失败；选择保留。'+error.message;}finally{adminFlight=null;syncAdminControls();}})();syncAdminControls();return adminFlight;
+ }
+ adminModel.onchange=()=>{if(adminEditRevision===null)adminEditRevision=adminState?.configRevision??null;adminModel.dataset.dirty='true';adminEffort.dataset.dirty='true';adminEffort.value='';renderAdminChoices();syncAdminControls();};
+ adminEffort.onchange=()=>{if(adminEditRevision===null)adminEditRevision=adminState?.configRevision??null;adminModel.dataset.dirty=adminEffort.dataset.dirty='true';};
+ adminModel.addEventListener('blur',()=>{if(pendingChoices.has(adminModel)){pendingChoices.delete(adminModel);renderAdminChoices();}});
+ adminForm.addEventListener('submit',async event=>{
+  event.preventDefault();if(busy||adminSaving||adminFlight||!adminState||adminState.busy||!adminModel.value)return;
+  const payload={model:adminModel.value,effort:adminEffort.value||null,expectedRevision:adminEditRevision??adminState.configRevision};
+  adminModel.dataset.dirty=adminEffort.dataset.dirty='true';adminSaving=true;syncAdminControls();adminMessage.textContent='正在保存全局助手模型…';
+  try{
+   const value=await call('admin.configure',payload);acceptAdminState(value);
+   delete adminModel.dataset.dirty;delete adminEffort.dataset.dirty;adminEditRevision=null;pendingChoices.delete(adminModel);renderAdminChoices();
+   adminMessage.textContent=`全局助手模型已保存 · 版本 ${adminState.configRevision}。仅影响应用独立助手，项目角色未改变。`;
+  }catch(error){
+   let recovered=false;
+   try{acceptAdminState(await call('admin.status'));adminEditRevision=adminState.configRevision;recovered=true;}catch{}
+   adminMessage.textContent='全局助手模型未保存；选择保留。'+error.message+(recovered?' 已读取最新配置版本；确认选择后可再次保存。':' 请刷新配置后重试。');
+  }finally{adminSaving=false;syncAdminControls();}
+ });
  const apiDrafts=new Map();
  function rememberDraft(){apiDrafts.set(editing?.provider??'',{source:editing,provider:providerField.value,baseUrl:baseUrlField.value,api:api.value,models:modelLines.value,key:key.value});}
  function restoreDraft(draft){if(!draft)return;editing=draft.source;providerField.value=draft.provider;baseUrlField.value=draft.baseUrl;api.value=draft.api;modelLines.value=draft.models;key.value=draft.key;updateOriginConsent();}
@@ -250,7 +293,7 @@ nativeKeyWrap.append(nativeKeyInput);nativeKeyProvider.append(node('option','正
   }
   discoveryArea.append(box);discoveryArea.scrollIntoView({block:'nearest'});
  }
- async function refresh(duringAction=false){if(refreshFlight)return refreshFlight;if(busy&&!duringAction)return;
+ async function refreshModels(duringAction=false){if(refreshFlight)return refreshFlight;if(busy&&!duringAction)return;
   modelRefresh.disabled=refreshButton.disabled=true;catalogMessage.textContent=catalogReady?'正在刷新模型目录；现有目录和选择保留。':'正在读取目录模型…';
   refreshFlight=(async()=>{try{
    const value=await call('settings.providers.status');list.replaceChildren();discoveryArea.replaceChildren();
@@ -292,6 +335,7 @@ nativeKeyWrap.append(nativeKeyInput);nativeKeyProvider.append(node('option','正
    catalogMessage.textContent=catalogReady?`目录模型 ${available.length} 个（手动配置 ${available.filter(m=>m.catalogSource==='configured').length}／内置目录 ${available.filter(m=>m.catalogSource!=='configured').length}）。凭据已配置或服务列出都不代表推理授权，实际调用以服务端为准。`:value.sources?.length?'已配置账号或 API 源，但当前没有凭据已配置的目录模型。请检查授权或 API 配置后刷新；原设置未更改。':'尚无目录模型：请先登录账号或配置 API 源，再刷新模型列表。';
    message.textContent='';renderSync(value.modelSync);if(value.login)renderLogin(value.login);
   }catch(e){catalogMessage.textContent=catalogReady?'模型目录刷新失败；现有目录和选择保留，仍可保存未变化的默认。请稍后刷新或检查 Pi 源配置。':'模型目录读取失败，暂无目录。已保存且未变化的选择仍可保存；新选择需刷新。';if(!catalogReady)for(const select of Object.values(selects))if(select.options.length===1&&!select.value)select.options[0].textContent='暂无目录模型，请刷新';report(e);}finally{refreshFlight=null;syncModelControls();}})();return refreshFlight;}
+ async function refresh(duringAction=false){if((busy&&!duringAction)||adminSaving)return;return Promise.all([refreshModels(duringAction),refreshAdmin()]);}
  async function refreshAfterChange(){await refreshFlight;return refresh(true);}
  form.addEventListener('submit',event=>{event.preventDefault();if(busy)return;
   const modelsList=parseModelLines(modelLines.value);

@@ -366,7 +366,8 @@ async function main() {
   managedAgents=new ManagedProjects({userDataDir:app.getPath('userData'),host,legacy:agents,beforeDocumentOperation:syncDocument,piSource,piRuntime:piSessionRuntime,piAuth,privilegeBroker,modelCatalog:()=>providerSettings.models()});
   const {AdminAgent}=await import('../agents/admin-agent.mjs');
   const {adminOperation}=await import('./admin-operations.mjs');
-  adminAgent=new AdminAgent({userDataDir:app.getPath('userData'),host,providerSettings,piSource,piRuntime:piSessionRuntime,processBudget:managedAgents.processBudget});
+  const {AdminMaintenance}=await import('../agents/admin-maintenance.mjs');
+  adminAgent=new AdminAgent({userDataDir:app.getPath('userData'),host,providerSettings,piSource,piRuntime:piSessionRuntime,processBudget:managedAgents.processBudget,maintenance:new AdminMaintenance({host,managed:managedAgents,recovery:{preview:payload=>projectLifecycle.preview(payload),execute:payload=>projectLifecycle.execute(payload)}})});
   try{await adminAgent.start();}catch(error){console.error('Admin state unavailable',error.code??'ADMIN_STATE_UNAVAILABLE');}
   // Review-candidate documents reuse the managed controller as their sole
   // content authority; ordinary file.* operations dispatch through it.

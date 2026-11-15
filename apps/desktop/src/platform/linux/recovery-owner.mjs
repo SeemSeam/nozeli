@@ -12,7 +12,8 @@ import {processStamp} from './process-ownership.mjs';
 
 const fail=(code,message)=>Object.assign(Error(message),{code});
 const commandLine=async pid=>{const args=(await fs.readFile(`/proc/${pid}/cmdline`)).toString().split('\0');if(args.at(-1)==='')args.pop();return args;};
-const userManager=args=>args.length===2&&['/usr/lib/systemd/systemd','/lib/systemd/systemd'].includes(args[0])&&args[1]==='--user';
+const isNozeliOwner=async pid=>{try{const text=await fs.readFile(`/proc/${pid}/stat`,'utf8');const parent=Number(text.slice(text.lastIndexOf(')')+2).split(' ')[1]);if(!Number.isSafeInteger(parent)||parent<=0)return false;const args=await commandLine(parent);return args.some(value=>value.endsWith('/src/main/main.cjs')||value.endsWith('/resources/app/src/main/main.cjs'));}catch(error){if(['ENOENT','ESRCH'].includes(error.code))return false;throw error;}};
+const userManager=args=>args.length>=2&&['/usr/lib/systemd/systemd','/lib/systemd/systemd'].includes(args[0])&&args[1]==='--user'&&args.slice(2).every(value=>/^--deserialize=\d+$/.test(value));
 async function fixedDesktopService(pid,args,uid){
  if(userManager(args))return true;
  if(args.length===2&&args[0]==='/usr/bin/ssh-agent'&&args[1]==='-D')return true;
@@ -51,7 +52,7 @@ export async function assertRecoverySourceStopped(root){
    // exact leading executable + first --type flag identifies a child here.
    const childTypes=new Set(['zygote','renderer','gpu-process','utility','broker']);
    const first=args.length===1&&args[0].startsWith(exe+' ')?args[0].slice(exe.length+1).split(' ',1)[0]:null;
-   if(args.some(arg=>arg.startsWith('--type=')&&childTypes.has(arg.slice(7)))||first?.startsWith('--type=')&&childTypes.has(first.slice(7)))continue;
+   if(args.some(arg=>arg.startsWith('--type=')&&childTypes.has(arg.slice(7)))||first?.startsWith('--type=')&&childTypes.has(first.slice(7))||args.includes('/integrations/pi/src/owner.mjs')&&await isNozeliOwner(pid))continue;
    // Electron rewrites its initial environ as well. Never guess the default
    // profile from missing keys: the open catalog inode is ownership evidence.
    let catalogs=0;
@@ -70,12 +71,12 @@ export async function assertRecoverySourceStopped(root){
     }finally{db?.close();}
     const after=await fs.stat(file);if(before.dev!==after.dev||before.ino!==after.ino)throw fail('RECOVERY_OWNER_UNVERIFIED','核验期间登记数据库句柄已变化；未恢复项目。');
    }
-   if(!catalogs)throw fail('RECOVERY_OWNER_UNVERIFIED','Electron 主进程的实际登记数据库无法核验；未推测默认配置目录。');
+   if(!catalogs)throw fail('RECOVERY_OWNER_UNVERIFIED',`Electron 主进程的实际登记数据库无法核验（current=${process.pid} pid=${pid} args=${args.join(' ')}）；未推测默认配置目录。`);
    if(await processStamp(pid)!==stamp)throw fail('RECOVERY_OWNER_UNVERIFIED','核验期间实例身份发生变化，请稍后重试；未恢复项目。');
   }catch(error){
    if(error.code==='RECOVERY_SOURCE_ACTIVE'||error.code==='RECOVERY_OWNER_UNVERIFIED')throw error;
    if(['ENOENT','ESRCH'].includes(error.code)&&!(await processStamp(pid)))continue;
-   throw fail('RECOVERY_OWNER_UNVERIFIED','无法完整核验另一个 Electron/Nozeli 进程（可能是无关程序）是否使用此目录；未恢复项目。');
+   throw fail('RECOVERY_OWNER_UNVERIFIED',`无法完整核验另一个 Electron/Nozeli 进程（code=${error.code??'unknown'} message=${error.message??'unknown'}）；未恢复项目。`);
   }
  }
 }

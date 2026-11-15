@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {randomUUID, createHash} from 'node:crypto';
 import {boundedProjectWait} from '../domain/project-lifecycle-wait.mjs';
+import {ProjectForceRecovery} from './project-force-recovery.mjs';
 
 const fail = (code, message) => Object.assign(new Error(message), {code});
 const inside = (parent, child) => {const relative=path.relative(parent,child);return relative==='' || (!relative.startsWith('..'+path.sep) && relative!=='..' && !path.isAbsolute(relative));};
@@ -22,7 +23,19 @@ export class ProjectLifecycle {
   constructor({host,workspace,managed,trashItem,beforeStop=async()=>{},reconcileManaged,protectedRoots=[],timeoutMs=15000}) {
     Object.assign(this,{host,workspace,managed,trashItem,beforeStop,reconcileManaged,timeoutMs});
     this.protectedRoots=[os.homedir(),host.storage.root,...protectedRoots].map(root=>path.resolve(root));
-    this.tokens=new Map();this.operations=new Map();this.removeAdmissions=new Map();this.availability=new Map();
+    this.tokens=new Map();this.operations=new Map();this.removeAdmissions=new Map();this.availability=new Map();this.forceOperations=new Map();this.forceRecovery=new ProjectForceRecovery(this);
+  }
+  async previewForceRecovery(payload){
+    if(payload?.action!=='force-recover')throw fail('INVALID_LIFECYCLE_ACTION','未知项目恢复操作。');
+    if(this.operations.has(payload.projectId))throw fail('PROJECT_LIFECYCLE_ACTIVE','该项目已有生命周期操作。');
+    const project=await this.host.requireRegisteredProject(payload.projectId);
+    const result=await this.forceRecovery.preview(project);this.tokens.set(result.token,result);return structuredClone(result);
+  }
+  async executeForceRecovery(payload){
+    if(payload?.confirmForceRecovery!==true)throw fail('FORCE_RECOVERY_CONFIRMATION_REQUIRED','恢复访问需要明确确认。');
+    const frozen=this.tokens.get(payload.token);if(!frozen||frozen.expiresAt<Date.now())throw fail('LIFECYCLE_CONFIRMATION_EXPIRED','恢复确认已失效，请重新预览。');
+    this.tokens.delete(payload.token);if(this.forceOperations.has(frozen.projectId))return this.forceOperations.get(frozen.projectId);
+    const operation=this.forceRecovery.execute(frozen).finally(()=>{if(this.forceOperations.get(frozen.projectId)===operation)this.forceOperations.delete(frozen.projectId);});this.forceOperations.set(frozen.projectId,operation);return operation;
   }
   async localScope(project) {
     if(typeof project.instanceId!=='string' || !/^[a-f0-9-]{36}$/i.test(project.instanceId))throw fail('INVALID_INSTANCE','本机项目身份无效。');
@@ -80,6 +93,7 @@ export class ProjectLifecycle {
     return {root,identity:current,metadataRoot:metadata,metadataIdentity:metadataStat,manifestDigest:createHash('sha256').update(bytes).digest('hex'),manifestBytes:bytes.toString('utf8')};
   }
   async preview({projectId,action}) {
+    if(action==='force-recover')return this.previewForceRecovery({projectId,action});
     if(!['clean-local','delete-project','reset-project'].includes(action))throw fail('INVALID_LIFECYCLE_ACTION','未知项目清理操作。');
     if(this.operations.has(projectId))throw fail('PROJECT_LIFECYCLE_ACTIVE','该项目已有生命周期操作。');
     if(action!=='reset-project')this.host.storage.assertActive(projectId);
@@ -105,8 +119,10 @@ export class ProjectLifecycle {
     await this.host.storage.putRecovery(projectId,'lifecycle:'+record.operationId,record);
   }
   async execute({token,allowDemoChanges=false,confirmPermanentDelete=false}) {
+    if(arguments[0]?.confirmForceRecovery===true)return this.executeForceRecovery(arguments[0]);
     const confirmation=this.tokens.get(token);
     if(!confirmation || confirmation.expiresAt<Date.now())throw fail('LIFECYCLE_CONFIRMATION_EXPIRED','确认已失效，请重新查看范围。');
+    if(confirmation.action==='force-recover')return this.executeForceRecovery(arguments[0]);
     if(confirmation.action==='reset-project'&&confirmPermanentDelete!==true)throw fail('PERMANENT_DELETE_CONFIRMATION_REQUIRED','永久清除需要明确勾选不可恢复确认。');
     this.tokens.delete(token);
     if(this.operations.has(confirmation.projectId))throw fail('PROJECT_LIFECYCLE_ACTIVE','该项目已有生命周期操作。');

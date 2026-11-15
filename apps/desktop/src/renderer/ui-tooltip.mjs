@@ -45,19 +45,23 @@ function controllerFor(doc) {
   const existing = controllers.get(doc);
   if (existing) return existing;
   const session = doc.defaultView?.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-  const state = {doc, view: doc.defaultView, session, tooltip: null, anchor: null, hover: null, focus: null, showTimer: 0, raf: 0, epoch: 0, nativeId: null, nativeSupported: null};
+  const state = {doc, view: doc.defaultView, session, tooltip: null, anchor: null, hover: null, focus: null, showTimer: 0, raf: 0, epoch: 0, nativeId: null, nativeSupported: null, pointerAnchor: null, suppressFocus: false};
   controllers.set(doc, state);
   const marked = node => node && typeof node.closest === 'function' ? node.closest('[data-ui-hint]') : null;
+  const interactive = node => node && typeof node.closest === 'function' ? node.closest('button,[role="button"],a,input,select,textarea,[tabindex]') : null;
   doc.addEventListener('pointerover', event => {
     const target = marked(event.target);
+    if (event.pointerType === 'touch') { state.hover = null; hide(state); return; }
+    if (state.pointerAnchor && state.pointerAnchor !== target) { state.pointerAnchor = null; state.suppressFocus = false; }
     state.hover = target;
     if (!target) { if (!state.focus) hide(state); return; }
     if (state.anchor === target) return;
     schedule(state, target, HOVER_DELAY_MS);
   });
   doc.addEventListener('pointerout', event => {
-    const from = marked(event.target);
+    const from = marked(event.target) || interactive(event.target);
     if (!from || from.contains(event.relatedTarget)) return;
+    if (state.pointerAnchor === from) { state.pointerAnchor = null; state.suppressFocus = false; }
     if (state.hover === from) state.hover = null;
     cancelSchedule(state);
     if (!state.focus && state.anchor === from) hide(state);
@@ -65,9 +69,8 @@ function controllerFor(doc) {
   doc.addEventListener('focusin', event => {
     const target = marked(event.target);
     state.focus = target;
+    if (state.suppressFocus) { hide(state); return; }
     if (target) show(state, target);
-    // Focus moved to an unmarked control: clear the previous hint even if its
-    // anchor is still hovered, so a keyboard transition never leaves it stale.
     else hide(state);
   });
   doc.addEventListener('focusout', event => {
@@ -75,9 +78,18 @@ function controllerFor(doc) {
     if (state.focus === from) state.focus = null;
     if (!state.hover && state.anchor === from) hide(state);
   });
-  // Close only; the tooltip never owns focus, so Escape must not move it.
-  doc.addEventListener('keydown', event => { if (event.key === 'Escape') hide(state); });
-  doc.addEventListener('pointerdown', () => hide(state));
+  doc.addEventListener('keydown', event => {
+    if (event.key === 'Tab') { state.suppressFocus = false; state.pointerAnchor = null; return; }
+    if (event.key === 'Enter' || event.key === ' ') hide(state);
+    else if (event.key === 'Escape') hide(state);
+  });
+  doc.addEventListener('pointerdown', event => {
+    const target = marked(event.target), focusTarget = target || interactive(event.target);
+    state.pointerAnchor = focusTarget;
+    state.suppressFocus = Boolean(focusTarget);
+    hide(state);
+  });
+  doc.addEventListener('click', () => hide(state), true);
   doc.addEventListener('scroll', () => hide(state), {capture: true, passive: true});
   state.view?.addEventListener?.('resize', () => hide(state));
   state.view?.addEventListener?.('blur', () => { state.hover = state.focus = null; hide(state); });

@@ -93,7 +93,12 @@ const table = [
     ['warning','triangle-alert','status','需注意','Needs attention','具体问题应直接可见，不能只藏在提示中','Show the actual issue inline, not only in a tooltip']
   ]]
 ];
-const NO_TOOLTIP = new Set(['delete','reconnect','accept']); // user-confirmed icon-only; aria stays
+const NO_TOOLTIP = new Set([
+  'close-view','hide-conversation','expand','collapse','previous','next','scroll-up','scroll-bottom',
+  'zoom-in','zoom-out','window-minimize','window-maximize','search','parent-directory','browse-back','browse-forward','reload','stop-load',
+  'draw','erase','undo','redo','send','open-project','edit','save','copy','export','settings','terminal','web',
+  'delete','reconnect','accept'
+]); // familiar controls keep precise aria names; hints remain for ambiguous or consequential actions
 const CANDIDATES = new Set(['return-work']); // candidate entries, not standalone production entries
 
 export const actionGroups = table.map(([id,zh,en,rows]) => ({id,zh,en,actions:rows.map(([key,icon,presentation,zh,en,hintZh,hintEn]) => ({

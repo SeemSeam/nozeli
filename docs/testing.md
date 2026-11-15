@@ -172,6 +172,9 @@ Linux本机已安装current为默认被测产物；通过 `NOZELI_LARGE_EVALUATI
 
 独立管理员最小生产验证（2026-11-14，源码未安装）：`admin-agent-ui.test.mjs`、`admin-operations.test.mjs` 注册unit，`admin-agent.test.mjs` 注册integration，均无付费请求。原生会话目录创建／恢复及共享目录拒绝放在live的 `admin-native-session-live.mjs`，不让默认integration依赖预构建driver；单项1/1通过。`desktop-admin-agent-live.mjs` 使用真实生产Electron、原生Pi、localhost确定性Provider和隔离profile／合成项目，不读取个人账号；需先build:pi及build:renderer、有可用图形会话。它覆盖管理独立模型、草稿跨项目保留、两skill原生读取、方案准备／UI确认、项目document面拒绝admin、冷恢复不重放和390px布局。集中相关回归97项通过（其中原生目录一项随后移入live），真实GUI8场景、两次exit0、errors=[]；证据 `/tmp/nozeli-admin-electron-xodBb0/report.json`。不等于真实付费模型、Windows/macOS或市场／更新功能验收，完整边界见[管理员合同](market-admin-demo.md#2026-11-14-最小生产管理助手用户授权实施测试)。
 
+自管理／受控维修追加：`admin-maintenance.test.mjs`注册integration，使用真实DesktopHost／ManagedProjects／Controller维护门与可验证临时receipt动作，不发模型。覆盖身份／能力／状态漂移拒绝、opaque票据TTL及分页、unknown／cold／人工门、重复确认不重放；UI回归覆盖诊断追加草稿不执行、修复卡与默认配置卡回执区分。集中62项中61通过，新增cold任务夹具准入修正后单项通过，不冒称重新全量跑过。`desktop-admin-agent-live.mjs`追加第三skill原生read→诊断source→prepare→UI确认→实际原宿主动作一次的13场景，双exit0／errors=[]；证据 `/tmp/nozeli-admin-electron-6eHJey/report.json`。Inspector只在测试自有main准备合成故障／动作，模型不提供执行函数，未接真实DeepPoly故障、不证明付费理解或广泛自修复资格。
+
+
 
 
 
@@ -1092,3 +1095,7 @@ Beta.6发布期间用户追加“安装并重启”按钮：复用已验证候�
 最终包实际11项搜索旅程通过：默认仅搜索…与原省略菜单（选项默认不占布局），模式和正则均经省略菜单操作、中文/emoji精确选区且原件不变、原生快捷键/立即Enter、缓冲覆盖旧磁盘、PDF页/DOCX引文/XLSX单元格/PPT页定位、忽略规则/错误区分、320px及Escape。errors=[]、正常exit0；原件`/tmp/nozeli-project-search-live-Xh5sXv/report.json`和compact-search-idle.png/text-search-wide.png/search-320.png。随后现有desktop-ci-smoke支持指定候选可执行文件，实际同一候选完成文件显式保存、项目切换保留、正常退出、冷启动内容恢复5项通过、两次exit0：`apps/desktop/.test-output/ci/smoke-zToJGy/report.json`。无测试模型调用或个人凭据。
 
 通过原install-local --existing-release激活；previous保留`2026-11-14T05-42-56-758Z`。原日常PID3750288仍运行更早23-42版本，核验窗口WM_CLASS/PID后发送WM_DELETE_WINDOW并正常退出，不发强杀信号或接受丢弃确认；正式桌面入口启动PID432169，/proc/exe精确位于新release，输出NOZELI_DESKTOP_READY hidden=false。本机记录`~/.cache/nozeli-smokes/compact-search-main-20261114/{before.json,frozen-inputs.json,installed.json}`。用户数据/profile沿原路径，不覆盖论文原件。管理Agent保持独立隔离Demo，Store延期。仅Linux本机安装验收，无提交、推送、标签或公开发布，Mac/Windows未验。
+
+## 已有项目ID复用定向验证（2026-11-14，源码未安装）
+
+`node --test tests/project-storage-initialization.test.mjs tests/storage-host-cutover.test.mjs tests/storage-managed-cutover.test.mjs tests/storage-worker-safety.test.mjs tests/project-semantic-initialization.test.mjs`：91/91通过，零跳过。新profile接入保留projectId、元数据目录实体和业务记录，本机instanceId独立；覆盖catalog提交前后中断、重复UUID根目录冲突及清单／数据库不一致拒绝。既有初始化阶段恢复、受管记录与离线恢复、数据库worker关闭／隔离边界同时通过。输出`artifact://19280`。真实Electron项目循环脚本已迁移稳定ID断言，但本轮未执行，不作为验收证据。未修改Deeploy或其他用户项目数据，未安装／提交／发布；Windows/macOS未验。

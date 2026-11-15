@@ -33,6 +33,17 @@ test('a fresh profile attaches verified metadata without replacing project ident
  assert.equal((await cold.requireRegistered(original.id)).instanceId,attached.instanceId);
 });
 
+test('fresh-profile attachment rejects mismatched manifest and database rather than generating a new ID',async t=>{
+ const {base,root,storage}=await fixture(t),original=await storage.register(root);
+ await storage.db.request(path.join(original.metadataRoot,'project.sqlite'),'close');
+ const file=path.join(original.metadataRoot,'project.json'),value=JSON.parse(await fs.readFile(file,'utf8'));
+ value.projectId='d70f022a-e373-4c7b-94a1-b004d3e5465c';await fs.writeFile(file,JSON.stringify(value));
+ const other=new ProjectStorage(path.join(base,'other-app'));t.after(()=>other.db.close());
+ await assert.rejects(other.register(root),{code:'PROJECT_METADATA_CONFLICT'});
+ assert.equal((await other.list()).length,0);
+ assert.equal(JSON.parse(await fs.readFile(file,'utf8')).projectId,value.projectId);
+});
+
 for(const phase of ['prepared','staging','staged','source-preserved','published','complete']){
  test(`initialization resumes durable ${phase} checkpoint with the same identity`,async t=>{
   const {root,storage}=await fixture(t);await fs.writeFile(path.join(root,'original.txt'),'preserved\r\n');
@@ -49,31 +60,35 @@ for(const phase of ['prepared','staging','staged','source-preserved','published'
  });
 }
 
-test('copied metadata forks once and retains immutable history and app-local source',async t=>{
- const {base,root,storage}=await fixture(t);const original=await storage.register(root);
- await storage.putProject(original.id,'material_attachments','attachment',{projectId:original.id,digest:'historical-digest',sourceManifest:{projectId:original.id}});
+test('a copied UUID already registered at another root is refused without rewriting either project',async t=>{
+ const {base,root,storage}=await fixture(t),original=await storage.register(root);
  await storage.putProject(original.id,'managed_receipts','receipt',{projectId:original.id,history:{projectId:original.id}});
  await storage.db.request(path.join(original.metadataRoot,'project.sqlite'),'close');
  const copy=path.join(base,'copy');await fs.cp(root,copy,{recursive:true});
- const project=await storage.register(copy);assert.notEqual(project.id,original.id);
- const attachment=await storage.getProject(project.id,'material_attachments','attachment');assert.equal(attachment.projectId,project.id);assert.equal(attachment.sourceManifest.projectId,original.id);
- const receipt=await storage.getProject(project.id,'managed_receipts','receipt');assert.equal(receipt.projectId,project.id);assert.equal(receipt.history.projectId,original.id);
- const operation=(await intent(storage)).find(row=>row.id===project.id);
- assert.equal(JSON.parse(await fs.readFile(path.join(operation.backup,'project.json'),'utf8')).projectId,original.id);
- assert.equal((await fs.readdir(copy)).some(name=>name.startsWith('.nozeli-source-')||name.startsWith('.nozeli-init-')),false);
- assert.equal((await storage.register(copy)).id,project.id);
+ const before=await fs.readFile(path.join(copy,'.nozeli','project.json'));
+ await assert.rejects(storage.register(copy),{code:'PROJECT_IDENTITY_CONFLICT'});
+ assert.deepEqual(await fs.readFile(path.join(copy,'.nozeli','project.json')),before);
+ assert.deepEqual(await storage.getProject(original.id,'managed_receipts','receipt'),{projectId:original.id,history:{projectId:original.id}});
+ assert.equal((await storage.list()).length,1);
 });
 
-for(const phase of ['staged','source-preserved','published','source-cleanup']){
- test(`copied metadata resumes ${phase} without leaving sibling private metadata`,async t=>{
-  const {base,root,storage}=await fixture(t);const original=await storage.register(root);await storage.db.request(path.join(original.metadataRoot,'project.sqlite'),'close');
-  const copy=path.join(base,'copy');await fs.cp(root,copy,{recursive:true});const request=storage.db.request.bind(storage.db);let stopped=false;
-  storage.db.request=async(file,op,args={})=>{const result=await request(file,op,args);if(!stopped&&file===storage.catalog&&op==='put'&&args.collection==='initializations'&&args.value.root===copy&&args.value.phase===phase){stopped=true;throw Error('simulated copy interruption');}return result;};
-  await assert.rejects(storage.register(copy),/simulated copy interruption/);const before=(await intent(storage)).find(row=>row.root===copy);
-  storage.db.request=request;const project=await storage.register(copy);assert.equal(project.id,before.id);
-  assert.equal((await fs.readdir(copy)).some(name=>name.startsWith('.nozeli-source-')||name.startsWith('.nozeli-init-')),false);
- });
-}
+for(const afterCommit of [false,true])test(`existing-ID attachment recovers a catalog interruption ${afterCommit?'after':'before'} commit without changing metadata`,async t=>{
+ const {base,root,storage}=await fixture(t),original=await storage.register(root);
+ const metadata=await fs.stat(original.metadataRoot),manifest=await fs.readFile(path.join(original.metadataRoot,'project.json'));
+ const other=new ProjectStorage(path.join(base,'other-app'));t.after(()=>other.db.close());
+ const request=other.db.request.bind(other.db);let stopped=false;
+ other.db.request=async(file,op,args={})=>{
+  if(!stopped&&file===other.catalog&&op==='put'&&args.collection==='instances'){
+   stopped=true;if(afterCommit)await request(file,op,args);throw Error('simulated catalog interruption');
+  }
+  return request(file,op,args);
+ };
+ await assert.rejects(other.register(root),/simulated catalog interruption/);other.db.request=request;
+ const attached=await other.register(root);assert.equal(attached.id,original.id);
+ assert.equal((await fs.stat(original.metadataRoot)).ino,metadata.ino);
+ assert.deepEqual(await fs.readFile(path.join(original.metadataRoot,'project.json')),manifest);
+ assert.equal((await storage.requireOnline(original.id)).id,original.id);
+});
 
 test('online identity validation rejects a manifest/database mismatch',async t=>{
  const {root,storage}=await fixture(t);const project=await storage.register(root);

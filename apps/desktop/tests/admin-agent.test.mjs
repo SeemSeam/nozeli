@@ -51,6 +51,18 @@ test('independent draft CAS persists across cold restart without inference',asyn
  assert.ok(!JSON.stringify(state).includes('NEVER_EXPOSE_CREDENTIAL'));
 });
 
+test('global floating view persists with CAS without binding project or modifying model and draft',async t=>{
+ const {agent,options,control}=await fixture(t);
+ const initial=await agent.invoke('view.read',{});assert.equal(initial.state.revision,0);
+ const next={...initial.state,placement:{mode:'manual',x:82,y:64},size:{width:480,height:560},hidden:false};
+ assert.deepEqual(await agent.invoke('view.write',{expectedRevision:0,next,reason:'move'}),{revision:1});
+ const stale=await agent.invoke('view.write',{expectedRevision:0,next:{...next,hidden:true},reason:'hide'});assert.equal(stale.conflict,true);assert.equal(stale.current.hidden,false);
+ await assert.rejects(agent.invoke('view.write',{projectId:'a',expectedRevision:1,next,reason:'move'}),{code:'ADMIN_INVALID_PAYLOAD'});
+ const restarted=new AdminAgent(options),restored=await restarted.invoke('view.read',{});assert.deepEqual(restored.state,{...next,revision:1});
+ const status=await restarted.invoke('status',{});assert.equal(status.model,null);assert.equal(status.draft,'');assert.equal(control.sessions,undefined);
+});
+
+
 test('send is single-flight, request-key idempotent and projects never bind native context',async t=>{
  const {agent,control,options,projects,budget}=await fixture(t);await configure(agent);
  let entered;const admitted=new Promise(resolve=>entered=resolve);
@@ -133,7 +145,7 @@ test('crash journal marks executing effects unknown without replaying and preser
 
 test('admin native skill catalog and restricted read reject project files and all foreign tools',async()=>{
  const packageRoot=fileURLToPath(new URL('../src/agents/admin/roles',import.meta.url));
- const catalog=['nozeli-admin-project-management','nozeli-admin-configuration'].map(name=>({name,filePath:path.join(packageRoot,'admin','skills',name,'SKILL.md')}));
+ const catalog=['nozeli-admin-project-management','nozeli-admin-configuration','nozeli-admin-nozeli-maintenance'].map(name=>({name,filePath:path.join(packageRoot,'admin','skills',name,'SKILL.md')}));
  const resources=await trustedRoleResources('admin',catalog,packageRoot);const policy=restrictedPolicy('admin');
  assert.equal(validateRestrictedTools(policy,ADMIN_TOOLS),ADMIN_TOOLS);assert.throws(()=>validateRestrictedTools(policy,[{name:'confirm'}]));
  const hooks=new Map();let reader;const turn={restricted:policy,allowedTools:new Set(ADMIN_TOOLS.map(t=>t.name))};

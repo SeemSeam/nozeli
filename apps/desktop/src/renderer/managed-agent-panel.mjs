@@ -1099,6 +1099,7 @@ async function openWorkReport(workId){
   const gen=generation;let status;try{status=await call('status',{},id);}catch(error){if(gen===generation&&id===projectId)todoUI.unavailable(id);throw error;}if(gen!==generation||id!==projectId)return false;
   state=status.state;if(!state)todoUI.unavailable(id);if(ownsConversation&&!oldHistory)restoreInput(frame);
   if(pendingConversation&&pendingConversation.projectId===projectId){const event=pendingConversation;pendingConversation=null;if(event.action==='select')select(event.target);if(event.action==='todo')await openTodo(event.todoId);}
+  if(status.recoveryRequiresConnection){show(true);ready=false;if(state)render();if(ownsConversation){$('composer').disabled=false;$('send-message').disabled=true;}return true;}
   if(!status.enabled){show(true);ready=false;if(state)render();else if(ownsConversation){renderInputIdentity();$('composer').disabled=false;$('send-message').disabled=true;}return false;}
   updateBackgroundSubmit();
   show(true);ready=Boolean(status.ready);renderResidentRecovery(status);if(state)render();

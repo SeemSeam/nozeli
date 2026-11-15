@@ -464,7 +464,7 @@ export class ManagedProjects {
   const binding=await this.config(id),controller=this.controllers.get(id),failure=this.connectionErrors.get(id);let state=controller?.snapshot()??null;
   if(!state&&binding.enabled){const source=await this.projectionSource(id);const timeline=await source.index.page();const {sessionIndex,messages,...business}=source.state;state={jobs:[],works:[],todos:[],receipts:[],drafts:{},limit:1,...business,messages:source.index.messages(),timeline,agents:[],quotaUsed:workSlotFacts(business.works??[]).used,configuringTargets:[],externalTerminalTargets:[],nativeDraftTargets:[],busyTargets:[],stopping:false};}
   state=await this.attentionState(id,state,{connected:!!controller});
-  return {enabled:binding.enabled===true,ready:controller?.started===true,runtimeRoot:await managedRuntime(this.host.storage,id),state,connectionError:failure?.error??null,handoff:failure?.handoff??null};
+  return {enabled:binding.enabled===true,recoveryRequiresConnection:binding.recoveryRequiresConnection===true,ready:controller?.started===true,runtimeRoot:await managedRuntime(this.host.storage,id),state,connectionError:failure?.error??null,handoff:failure?.handoff??null};
  }
  async disposition(id,workId){
   await this.host.requireRegisteredProject(id);const c=this.controllers.get(id),state=c?.store?.state??(await this.projectionSource(id)).state;
@@ -1136,7 +1136,7 @@ export class ManagedProjects {
   if(action==='attention.draft.read'||action==='attention.draft.write')return this.attentionDraft(p.projectId,p,action==='attention.draft.write');
   if(action==='todo.manage'&&(await this.attention.read(p.projectId)).todos.some(t=>t.id===p.todoId)){const source=this.controllers.get(p.projectId)?.store?.state??(await this.projectionSource(p.projectId)).state;return this.attention.manage(p.projectId,p,source);}
   if(action==='collaboration.status')return this.collaborationStatus(p.projectId,p);
-  if(action==='status')return this.status(p.projectId);if(action==='enable'||action==='connect')return this.connect(p.projectId,{enable:action==='enable'});
+  if(action==='status')return this.status(p.projectId);if(action==='enable'){await this.connect(p.projectId,{enable:true});const binding=await this.config(p.projectId);if(binding.recoveryRequiresConnection===true)await this.host.storage.putLocal(p.projectId,'managed:binding',{...binding,recoveryRequiresConnection:false,enabled:true});return this.status(p.projectId);}if(action==='connect')return this.connect(p.projectId,{enable:false});
   if(action==='timeline.page'||action==='timeline.read'||action==='timeline.request'||action==='timeline.locate')return this.timelineQuery(p.projectId,action,p);
   if(action==='changes.list'||action==='changes.read')return this.changesQuery(p.projectId,action,p);
   if(action==='resident.handoff')return this.handoffResident(p.projectId,p);

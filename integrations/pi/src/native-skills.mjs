@@ -42,7 +42,7 @@ export function restrictedPolicy(mode,{maxTurns,maxToolCalls}={}){
  return {mode,maxTurns:limit(maxTurns,defaults[0]),maxToolCalls:limit(maxToolCalls,defaults[1]),turns:0,toolCalls:0};
 }
 export function validateRestrictedTools(policy,tools){
- const names=policy.mode==='admin'?['nozeli_admin_registry','nozeli_admin_configuration','nozeli_admin_prepare_defaults','nozeli_admin_suggest_project','nozeli_admin_suggest_settings']:policy.mode==='project-initialization'?['nozeli_project_inventory','nozeli_project_read','nozeli_project_map']:['nozeli_debug','nozeli_maintenance'];
+ const names=policy.mode==='admin'?['nozeli_admin_registry','nozeli_admin_configuration','nozeli_admin_prepare_defaults','nozeli_admin_suggest_project','nozeli_admin_suggest_settings','nozeli_admin_diagnostics','nozeli_admin_prepare_repair','nozeli_admin_prepare_force_recovery']:policy.mode==='project-initialization'?['nozeli_project_inventory','nozeli_project_read','nozeli_project_map']:['nozeli_debug','nozeli_maintenance'];
  if(tools.some(tool=>!names.includes(tool.name)))throw Object.assign(Error('Unrestricted tool in restricted job catalog'),{code:'PI_INVALID_PARAMS'});
  return tools;
 }

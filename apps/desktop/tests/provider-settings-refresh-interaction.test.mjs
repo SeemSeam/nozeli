@@ -60,6 +60,7 @@ window.__ps={calls:log,mounts:[],armed:null,saveHold:null,
   armSave(){window.__ps.saveHold=new Promise(resolve=>{window.__ps.releaseSave=()=>resolve();});}};
 const invoke=async(op,p={})=>{
   log.push({op,args:structuredClone(p),seq:log.length});
+  if(op==='admin.status')return {ok:true,value:{model:null,effort:null,configRevision:0,busy:false,models:structuredClone(state.catalog)}};
   if(op==='settings.providers.status'){
     if(window.__ps.armed)await window.__ps.armed;
     return {ok:true,value:{sources:structuredClone(state.sources),models:structuredClone(state.catalog),defaults:structuredClone(state.defaults),modelSync:{applied:0,pending:0,failed:[]},login:null}};
@@ -297,7 +298,7 @@ try{
   assert.equal(state.saveDisabled,true,'no catalog or stored defaults means nothing can be submitted');
   await clickSave();await quiet();
   state=await dom();
-  assert.equal(state.calls.length,callsAtMount+1,'an empty-catalog save click sends only the status refresh read plus nothing hidden');
+  assert(state.calls.slice(callsAtMount).every(call=>['settings.providers.status','admin.status'].includes(call.op)),'refresh and disabled save perform only catalog/configuration reads, never hidden mutation or inference');
   assert.equal(counts(state).save,savesAtMount,'no model selection is ever submitted from an empty catalog (user did not change any role)');
   await shot('empty-catalog-not-savable');
   const capabilityCatalog=[{...ALPHA[0],thinking:{supported:true,levels:['off','low'],source:'native-model-definition'}},{...ALPHA[1],thinking:{supported:true,levels:['off','high'],source:'native-model-definition'}}];
@@ -323,7 +324,7 @@ try{
   report.scenes.push({name:'discovery-before-first-model-expansion',configuredAndDiscoveredRemainSeparate:true});
   // Contract guard: the component never asked the double for anything else.
   state=await dom();
-  assert.ok(state.calls.every(call=>['settings.providers.status','settings.models.save','settings.providers.discover'].includes(call.op)),'no unexpected IPC operations');
+  assert.ok(state.calls.every(call=>['settings.providers.status','settings.models.save','settings.providers.discover','admin.status'].includes(call.op)),'no unexpected IPC operations');
   report.ok=report.errors.length===0;
 }catch(error){
   report.failure=String(error.stack||error);console.log(report.failure);

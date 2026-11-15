@@ -131,6 +131,10 @@ jobs:
             apps/desktop/.test-output/ci/nozeli-label-windows-*/report.json
             apps/desktop/.test-output/ci/nozeli-label-windows-*/electron.log
             apps/desktop/.test-output/ci/nozeli-label-windows-*/*.png
+            apps/desktop/.test-output/ci/nozeli-admin-electron-*/report.json
+            apps/desktop/.test-output/ci/nozeli-admin-electron-*/*.png
+            apps/desktop/.test-output/ci/nozeli-force-recovery-gui-*/report.json
+            apps/desktop/.test-output/ci/nozeli-force-recovery-gui-*/*.png
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 7

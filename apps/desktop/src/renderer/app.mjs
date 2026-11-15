@@ -1814,11 +1814,11 @@ async function removeProjectEntry(projectId) {
   await clearProjectPage(projectId); await renderRecent();
 }
 async function manageProjectStorage(project,action){
-  const reset=action==='reset-project';
+  const reset=action==='reset-project',force=action==='force-recover';
   const preview=await invoke('project.lifecycle.preview',{projectId:project.id,action});if(!preview.ok)return workspace.toast(preview.error.message);
   const value=preview.value,dialog=document.createElement('dialog'),title=document.createElement('h2'),detail=document.createElement('pre'),cancel=document.createElement('button'),accept=document.createElement('button'),error=document.createElement('p');
   dialog.id='project-lifecycle-dialog';error.setAttribute('role','alert');
-  title.textContent=reset?'永久清除 Nozeli 项目状态并重新打开？':action==='delete-project'?'将整个项目移到回收站？':'重置本机项目视图？';
+  title.textContent=force?'保留旧状态并强制恢复访问？':reset?'永久清除 Nozeli 项目状态并重新打开？':action==='delete-project'?'将整个项目移到回收站？':'重置本机项目视图？';
   const kinds={added:'新增文件','added-directory':'新增目录',modified:'已修改',missing:'已移除',link:'符号链接',special:'特殊文件',uninspected:'未完整核验'};
   const changes=value.demoChanges??[];
   detail.textContent=reset?[
@@ -1831,10 +1831,13 @@ async function manageProjectStorage(project,action){
     ...((value.relatedProjectIds||[]).length?['清除的项目身份：'+value.relatedProjectIds.join('、')]:[]),
     ...(value.removeDirectories||[]).map(directory=>'Nozeli 数据目录：'+directory),
   ].join('\n'):['项目：'+project.name,'原目录：'+value.root,...value.removeDirectories.map(p=>'目录：'+p),...value.removeFiles.map(p=>'文件：'+p),...(value.removeRecords??[]).map(key=>'视图记录：'+key),...changes.map(change=>(kinds[change.kind]||change.kind)+'：'+change.path),'将先停止该项目运行并关闭视图；保留恢复区、账号配置。',action==='delete-project'?'包含目录内原文件、批注、草稿与.nozeli；未保存内容先沿正常关闭协议保留。不会退回永久删除。':'仅重置列出的视图记录；先保留完整快照，不删除原文件、原生会话、执行关联或命名布局。'].join('\n');
+  if(force)detail.textContent=['项目：'+project.name,'目录：'+value.root,'将当前 Nozeli 元数据及旧本机实例保留后，建立可打开的新登记。此操作恢复访问，不证明旧身份已恢复；不合并历史、草稿或任务，不自动重放。','保留：项目文件、Git、全局账号及旧草稿／会话。','保留位置：'+value.forceRecovery.backupDirectory,'若目录实体变化或写入者无法停稳，仍会拒绝；不会强删锁或强杀未知进程。'].join('\n');
   detail.style.whiteSpace='pre-wrap';detail.style.maxHeight='40vh';detail.style.overflow='auto';
   let consent=null,executing=false;
-  cancel.textContent='取消';accept.textContent=reset?'永久清除并重新打开':action==='delete-project'?'移到回收站':'重置本机视图';dialog.append(title,detail,error);
-  if(reset){
+  cancel.textContent='取消';accept.textContent=force?'保留状态并恢复访问':reset?'永久清除并重新打开':action==='delete-project'?'移到回收站':'重置本机视图';dialog.append(title,detail,error);
+  if(force){
+    const label=document.createElement('label');consent=document.createElement('input');consent.type='checkbox';consent.id='project-force-recovery-consent';label.append(consent,'我理解这会建立新访问登记，旧草稿／历史保留但不自动合并或重放；确认强制恢复访问。');dialog.append(label);accept.disabled=true;consent.onchange=()=>{accept.disabled=!consent.checked;};
+  }else if(reset){
     const label=document.createElement('label');consent=document.createElement('input');consent.type='checkbox';consent.id='project-reset-consent';
     label.append(consent,'我已导出需要保留的内容，确认永久删除上述全部 Nozeli 项目状态和恢复副本；保留实际文件、用户 Git 及全局账号配置。');dialog.append(label);accept.disabled=true;
     consent.onchange=()=>{accept.disabled=!consent.checked;};
@@ -1846,16 +1849,16 @@ async function manageProjectStorage(project,action){
   dialog.append(cancel,accept);document.body.append(dialog);
   cancel.onclick=()=>{dialog.close();dialog.remove();};
   accept.onclick=async event=>{
-    if(consent&&(!event.isTrusted||!consent.checked)){error.textContent='请亲自核对清除范围并勾选确认；脚本不能代为授权。';return;}
+    if(consent&&(!event.isTrusted||!consent.checked)){error.textContent='请亲自核对操作范围并勾选确认；脚本不能代为授权。';return;}
     executing=true;accept.disabled=cancel.disabled=true;
     try{
-      const result=await invoke('project.lifecycle.execute',{token:value.token,allowDemoChanges:Boolean(!reset&&consent?.checked),...(reset?{confirmPermanentDelete:consent?.checked===true}:{})});
+      const result=await invoke('project.lifecycle.execute',{token:value.token,allowDemoChanges:Boolean(!reset&&!force&&consent?.checked),...(reset?{confirmPermanentDelete:consent?.checked===true}:{}),...(force?{confirmForceRecovery:consent?.checked===true}:{})});
       if(!result.ok){error.textContent=result.error.message+'；请关闭此窗口，核对后重新操作。';return;}
       dialog.close();dialog.remove();
       await clearProjectPage(project.id);await renderRecent();
-      if(reset){
+      if(force||reset){
         const loaded=await activateProject(result.value.newProjectId);
-        if(loaded.ok)workspace.toast('已永久清除旧 Nozeli 项目状态，并作为全新项目打开；实际文件、Git 和全局账号配置保留。');
+        if(loaded.ok)workspace.toast(force?'已恢复项目访问；旧状态已保留，不自动合并或重放。':'已永久清除旧 Nozeli 项目状态，并作为全新项目打开；实际文件、Git 和全局账号配置保留。');
       }
     }catch(failure){error.textContent=failure.message;}
     finally{executing=false;cancel.disabled=false;}
@@ -1889,14 +1892,14 @@ async function renderRecent() {
       button.type='button';button.dataset.projectId=project.id;
       if(projectAttention)projectAttention.decorate(button);
       else {const initial=document.createElement('span');initial.dataset.projectInitial='';button.append(initial);}
-      button.addEventListener('contextmenu', event => {const project=button._project;event.preventDefault();projectMenu.open([{id:'retry',label:'重试原位置',hint:'只核验一次，不自动重连Agent'},{id:'close',label:'关闭项目',hint:'保留项目与本机恢复内容'},{id:'remove',label:'从 Nozeli 移除项目',hint:'保留磁盘文件、草稿及工作记录'},{id:'reset-project',label:'永久清除状态并重新打开…',hint:'删除全部关联 Nozeli 状态和恢复副本；保留实际文件与 Git'},{id:'clean-local',label:'清理本机项目数据…',hint:'不删除原文件，保留恢复区'},{id:'delete-project',label:'删除磁盘项目…',hint:'整个目录移到回收站，需再次确认'}],{x:event.clientX,y:event.clientY,focus:button,run:async action=>{if(action==='retry'){const result=await invoke('project.retry',{projectId:project.id});if(!result.ok)return workspace.toast(result.error.message);await renderRecent();}else if(action==='close'){const result=await invoke('workspace.closeProject',{projectId:project.id,operationId:crypto.randomUUID()});if(!result.ok)return workspace.toast(result.error.message);await clearProjectPage(project.id);}else if(action==='remove')await removeProjectEntry(project.id);else await manageProjectStorage(project,action);}});});
+      button.addEventListener('contextmenu', event => {const project=button._project;event.preventDefault();projectMenu.open([{id:'retry',label:'重试原位置',hint:'只核验一次，不自动重连Agent'},{id:'force-recover',label:'保留状态并强制恢复访问…',hint:'保留当前元数据与旧实例，不合并或重放任务'},{id:'close',label:'关闭项目',hint:'保留项目与本机恢复内容'},{id:'remove',label:'从 Nozeli 移除项目',hint:'保留磁盘文件、草稿及工作记录'},{id:'reset-project',label:'永久清除状态并重新打开…',hint:'删除全部关联 Nozeli 状态和恢复副本；保留实际文件与 Git'},{id:'clean-local',label:'清理本机项目数据…',hint:'不删除原文件，保留恢复区'},{id:'delete-project',label:'删除磁盘项目…',hint:'整个目录移到回收站，需再次确认'}],{x:event.clientX,y:event.clientY,focus:button,run:async action=>{if(action==='retry'){const result=await invoke('project.retry',{projectId:project.id});if(!result.ok)return workspace.toast(result.error.message);await renderRecent();}else if(action==='close'){const result=await invoke('workspace.closeProject',{projectId:project.id,operationId:crypto.randomUUID()});if(!result.ok)return workspace.toast(result.error.message);await clearProjectPage(project.id);}else if(action==='remove')await removeProjectEntry(project.id);else await manageProjectStorage(project,action);}});});
       button.addEventListener('click',()=>{const project=button._project;if(project.available&&!projectSwitches.pending()&&projectAttention?.reveal(project.id,button))return;return activateProject(project.id);});
     }
     button._project=project;
     button.dataset.projectLabel=labels.get(project.id);
     // Uppercasing can expand graphemes (ß → SS); collision suffixes can also exceed two glyphs.
     button.style.setProperty('--project-label-size',Math.min(11,30/glyphs(button.dataset.projectLabel).length)+'px');
-    button.dataset.projectTitle=project.available?project.name:`${project.name}（点击自动核查；无法恢复可重置状态）`;
+    button.dataset.projectTitle=project.available?project.name:`${project.name}（点击核查；右键可保留状态并强制恢复访问）`;
     button.setAttribute('aria-disabled','false');
     button.setAttribute('aria-current',String(project.id===ui.project?.id));
     if(host.children[index]!==button)host.insertBefore(button,host.children[index]||null);

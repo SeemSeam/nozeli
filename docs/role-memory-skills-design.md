@@ -96,6 +96,15 @@ history使用前两输入的真实Pi会话冻结副本，不读私人provider／
 历史定向复验证据 `/tmp/nozeli-large-project-evaluation-1NFPWW/report.json`：同模型／low，明确使用前次 `4ntpQD/authentic-history/pi/frontdesk-first-two-inputs.jsonl` 冻结原件，不接入私人历史。新增8次HTTP均200，搜索1页成功，正文6页均status=ok并原样cursor推进，lineOrdinal／UTF-16 textStart/End连续，不再因页限额停在首页。达到显式max-completions=8后测试门记stopReason=EVAL_HTTP_LIMIT，终态failed／Connection error，没有最终摘要；仍有后页，不据此宣称完整接续通过。本轮两次合计16+8=24请求，无额外扩额／自动重试。宿主run用量48589／65536 bytes，剩余读取额度不代表测试请求额度也未耗尽。
 
 定向复验纳入核对的安装原件和输入冻结副本未变，凭据副本已清除，无业务写入或派工。当前已证实：真实大项目列目录与指定源码分析可执行，nullable首读账本／历史请求不再拒绝循环，分页语义修正后实际续读6页。未签收：历史完整尾页及最终摘要、当前计划决策证据全链、真实日常账本与私人跨provider历史、GUI输入全链及跨平台。未提交／推送／发布，日常模型配置不变。
+2026-11-15用户要求安装并用真实DeepPoly定位、修复。自修复版安装成功，current `/home/bfly/.local/opt/nozeli/releases/2026-11-15T00-51-16-784Z`，安装包自修复原生Electron检测13场景、两次exit0、errors=[]（`/tmp/nozeli-admin-electron-yfgInT/report.json`）。
+
+实际DeepPoly诊断使用安装版 `AdminMaintenance` 只读适配器，根 `/home/bfly/workspace/computeforcfd/deeploy`、注册ID `7e737751-e7e8-431b-a2c8-5cbb7823c34d`、注册instance `37ef816b-8d8c-4dfb-b610-2ea153e39f85`。诊断未创建Controller、未启动项目模型、未读项目正文、未改源码、未执行维修；返回真实阻断 `PROJECT_IDENTITY_CONFLICT: 项目目录实体已变化`。登记metadata identity为dev66308/ino23632804，当前 `.nozeli` identity为dev66308/ino24173899；当前manifest projectId为 `fba5cd43-46a0-476a-879f-ca446cd74721`，与登记ID及历史lineage冲突；maintenance总数0，故障没有可安全签发的repair source，不能执行修复。
+
+用户明确选择“恢复原项目身份”。可访问的临时评测备份只保存派生身份（例如projectId `3a882e03-f53e-477c-9e1a-c6613efb9071`、lineage为原登记ID），不是完整原始7e身份；不能将派生副本冒充原元数据，也不能直接覆盖当前 `.nozeli`。已保存当前冲突现场快照 `/home/bfly/.cache/nozeli/deeploy-recovery/20261115T010715Z/current-nozeli`，并保存可用派生清单为同目录 `available-derived-project.json`；DeepPoly原目录未再修改。恢复因此安全阻断，等待真正原始元数据备份或用户明确选择按新身份重新登记；不自动重置、不合并、不删除评测状态、不重放任务。实际结论是“定位完成，修复不可安全执行”，不是DeepPoly已修复。
+2026-11-15真实安装版全局助手DeepPoly自检查：脚本 `/tmp/nozeli-admin-real-deepoly-KwCwfm/report.json` 使用安装版 `2026-11-15T00-51-16-784Z`、真实 `zai/glm-5.3/low`，单次用户输入，实际原生read了 `nozeli-admin-nozeli-maintenance` skill，调用 `nozeli_admin_registry`，随后两次调用 `nozeli_admin_diagnostics`（首次空占位被宿主纠正，第二次 `limit:24`），没有调用prepare/confirm/任何修复工具。助手正确报告registry目标deeploy身份匹配但available=false，diagnostics返回supported=false、reason=maintenance-page-stale、rows为空；明确无法判断具体故障／没有retry source，不重置身份、不改项目、不连接项目模型、不重放任务，并指出缺少宿主维修元数据／分页状态。模型原生答复不是固定脚本，工具输入与答复保存在隔离管理会话。
+
+实际副作用核对：DeepPoly `.nozeli`及纳入快照未变，诊断阶段未创建项目Controller；报告 `metadataUnchanged:true`，请求1 completed，临时凭据副本删除。当前可证实能力是“真实助手自检查并安全阻断”，不是“已修复DeepPoly”。此前发现的真实根因仍为登记metadata identity `dev66308/ino23632804` 与当前磁盘 `dev66308/ino24173899` 不一致，当前manifest `fba5cd43-46a0-476a-879f-ca446cd74721`与登记ID冲突；原始7e身份备份缺失，不能安全恢复。
+
 
 
 

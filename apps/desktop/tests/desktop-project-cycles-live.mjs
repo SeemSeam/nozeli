@@ -122,10 +122,10 @@ try{
  report.checks.push('three new roots, each real Worker execution/remove followed by same-identity reload/re-execution/remove; final Worker removed while real tool still running');
  const original=await choose(main,roots[3]);await execute(original.project,roots[3],'SPECIAL_BEFORE');
  other=await launch('other');await choose(other,roots[3]);
- await fs.writeFile(main.control,JSON.stringify({pick:roots[3],confirm:1}));const refused=await raw(main,'project.pick');report.ownerRefusal=refused.error;assert.equal(refused.ok,false);assert.equal(refused.error.code,'RECOVERY_SOURCE_ACTIVE');
+ const stillOriginal=await choose(main,roots[3]);assert.equal(stillOriginal.project.id,original.project.id,'another profile must not rewrite the live project identity');
  await close(other);other=null;
- const restored=await choose(main,roots[3]);assert.notEqual(restored.project.id,original.project.id);await execute(restored.project,roots[3],'SPECIAL_AFTER');
- report.checks.push('independent real Electron same-root owner rejected; after normal owner exit explicit native recovery creates independent identity, then real Worker runs and removes');
+ const restored=await choose(main,roots[3]);assert.equal(restored.project.id,original.project.id);await execute(restored.project,roots[3],'SPECIAL_AFTER');
+ report.checks.push('independent profile registration preserves the original UUID; after normal profile exit the original project still executes and removes a real Worker');
  await close(main);main=null;assert.equal(report.errors.length,0);report.ok=true;
 }catch(error){report.error=error.stack;if(main?.shell)await main.shell.screenshot({path:path.join(out,'failure.png')}).catch(()=>{});throw error;}
 finally{

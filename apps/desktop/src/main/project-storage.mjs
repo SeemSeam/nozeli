@@ -134,7 +134,6 @@ export class ProjectStorage {
     const prior=all.find(p=>p.id===source.projectId);
     if(prior&&(prior.root!==root||!same(prior.identity,identity)))throw fail('PROJECT_IDENTITY_CONFLICT','该项目ID已关联其他目录；未自动生成新ID或改写副本');
     const metadataIdentity=await directoryIdentity(metadataRoot),now=new Date().toISOString();
-    await rejectLinks(metadataRoot);
     await directoryIdentity(root,identity);await directoryIdentity(metadataRoot,metadataIdentity);
     const confirmed=await checkedMetadata(metadataRoot,this.db);
     if(confirmed.projectId!==source.projectId||confirmed.operationId!==source.operationId)throw fail('PROJECT_IDENTITY_CONFLICT','登记期间项目身份已变化');

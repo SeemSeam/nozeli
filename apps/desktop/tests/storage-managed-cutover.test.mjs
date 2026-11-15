@@ -44,7 +44,7 @@ test('copied project reports and artifacts remain readable without the execution
  await fs.rm(runtime,{recursive:true,force:true});
  const copy=path.join(root,'copied-project');await fs.cp(content,copy,{recursive:true});
  const imported=new ProjectStorage(path.join(root,'other-profile'));t.after(()=>imported.db.close());
- const binding=await imported.register(copy);assert.notEqual(binding.id,project.id);assert.notEqual(binding.instanceId,project.instanceId);
+ const binding=await imported.register(copy);assert.equal(binding.id,project.id);assert.notEqual(binding.instanceId,project.instanceId);
  const state=await readManagedState(imported,binding.id);assert.equal(state.workspaceId,binding.id);assert.equal(state.works[0].threadId,undefined);
  const options={project:binding,storage:imported,runtime:await managedRuntime(imported,binding.id),controller:null,currentController:()=>null};
  const source=await managedReportSource({...options,objectId:receipt.objectId});assert.deepEqual(await source.read(),original);
