@@ -347,7 +347,7 @@ browserTest('task action uses the active discussion job original tool and output
 browserTest('action hints follow later caller routing state without losing other descriptions',async()=>{
  const dialog=document.createElement('dialog'),button=document.createElement('button'),other=document.createElement('input');
  const reason=document.createElement('p');reason.id='routing-reason';reason.textContent='Current route evidence';
- button.title='Legacy hint';setActionButton(button,'send');assert.equal(button.hasAttribute('title'),false);button.setAttribute('aria-describedby',reason.id);dialog.append(button,other,reason);document.body.append(dialog);dialog.showModal();button.focus();await paintReview();
+ button.title='Legacy hint';setActionButton(button,'send');assert.equal(button.hasAttribute('title'),false);button.setAttribute('aria-describedby',reason.id);dialog.append(button,other,reason);document.body.append(dialog);dialog.showModal();await paintReview();other.focus();other.dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',bubbles:true}));button.focus();await paintReview();
  assert.equal(button.getAttribute('aria-describedby').split(/\s+/).includes(reason.id),true);
  const liveRoute='Offline preview: no model request will be made';setUiHint(button,liveRoute);await paintReview();
  assert.equal(document.getElementById('ui-tooltip').textContent,liveRoute);assert.equal(getUiHint(button),liveRoute);assert.equal(button.hasAttribute('title'),false);assert.equal(document.activeElement,button);

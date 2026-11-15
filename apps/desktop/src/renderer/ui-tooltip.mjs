@@ -38,6 +38,7 @@ export function setUiHint(element, hint) {
     if (!hint) hide(state);
     else if (state.tooltip.textContent !== String(hint).trim()) show(state, element);
   }
+  else if (hint && element.ownerDocument?.activeElement === element && !state?.suppressFocus) show(state, element);
   return element;
 }
 
