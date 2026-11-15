@@ -109,7 +109,8 @@ export async function assertRecoverySourceStopped(root){
    // A process that exited (including a zombie) during any failed proc read
    // cannot own an open catalog. A still-live inaccessible process is unknown.
    if(!(await processStamp(pid)))continue;
-   throw fail('RECOVERY_OWNER_UNVERIFIED',`无法完整核验另一个 Electron/Nozeli 进程（code=${error.code??'unknown'} message=${error.message??'unknown'}）；未恢复项目。`);
+   const evidence={pid,args:await commandLine(pid).catch(()=>null),stat:await fs.readFile(`/proc/${pid}/stat`,'utf8').catch(()=>null)};
+   throw fail('RECOVERY_OWNER_UNVERIFIED',`无法完整核验另一个 Electron/Nozeli 进程（code=${error.code??'unknown'} message=${error.message??'unknown'} evidence=${JSON.stringify(evidence)}）；未恢复项目。`);
   }
  }
 }
