@@ -320,9 +320,22 @@ test('copying project metadata never copies private demo ownership or cleanup au
  const f=await demoFixture(t),original=await f.host.requireProject(f.created.project.id),copy=path.join(f.directory,'user-copy');
  await f.host.storage.closeProjectHandles(original.id);
  await fs.cp(original.root,copy,{recursive:true});
- const copied=await f.host.storage.register(copy);
- assert.notEqual(copied.id,original.id);assert.equal(f.manager.isDemo(copied.id),false);
- await assert.rejects(f.manager.cleanupPreview({...binding(f.created),projectId:copied.id}),{code:'DEMO_NOT_OWNED'});
+ const registrations=await f.host.storage.list(),registry=await fs.readFile(f.manager.file);
+ const metadata=await Promise.all(['project.json','project.sqlite'].map(name=>fs.readFile(path.join(copy,'.nozeli',name))));
+ await assert.rejects(f.host.storage.register(copy),{code:'PROJECT_IDENTITY_CONFLICT'});
+ assert.deepEqual(await f.host.storage.list(),registrations);
+ assert.deepEqual(await fs.readFile(f.manager.file),registry);
+ for(const root of [original.root,copy])for(const [index,name] of ['project.json','project.sqlite'].entries())assert.deepEqual(await fs.readFile(path.join(root,'.nozeli',name)),metadata[index]);
+ const userDataDir=path.join(f.directory,'copy-profile'),host=new DesktopHost(userDataDir);
+ closers.get(f.directory).push(()=>host.storage.db.close());
+ const copied=await host.storage.register(copy),manager=await createGuidedDemo({host,userDataDir,examplesRoot:f.examplesRoot,appRoot});
+ host.guidedDemo=manager;
+ assert.equal(copied.id,original.id);assert.notEqual(copied.instanceId,original.instanceId);
+ assert.equal(manager.isDemo(copied.id),false);assert.equal(f.manager.isDemo(original.id),true);
+ assert.equal((await manager.state({projectId:copied.id})).isDemo,false);
+ await assert.rejects(manager.cleanupPreview({...binding(f.created),projectId:copied.id}),{code:'DEMO_NOT_OWNED'});
+ assert.deepEqual(await fs.readFile(f.manager.file),registry);
+ assert.equal((await f.host.requireProject(original.id)).root,original.root);
  assert.equal((await fs.stat(copy)).isDirectory(),true);
 });
 

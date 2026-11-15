@@ -507,6 +507,11 @@ async function main() {
       }
       payload=await workspaceNative.resolvePayload(scope,op,payload??{});
       if(scope.role==='surface'&&scope.kind==='task-process'&&op.startsWith('managed.')&&op!=='managed.timeline.export')return {ok:true,value:await workspaceNative.taskManagedRead(scope,op,payload)};
+      if(['project.search.start','project.search.poll','project.search.cancel','project.search.reveal'].includes(op)){
+        trusted(event,op,payload);
+        if(scope.role!=='shell')throw new HostError('IPC_DENIED','搜索会话只允许来自当前项目主窗口。');
+        return {ok:true,value:await projectSearch[op.slice('project.search.'.length)](scope,payload)};
+      }
       if(op==='project.attention.summary'){
         if(scope.role!=='shell')throw new HostError('IPC_DENIED','项目待办摘要仅允许主窗口读取。');
         return {ok:true,value:await managedAgents.projectAttentionSummary(payload)};

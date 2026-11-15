@@ -1107,3 +1107,5 @@ Beta.6发布期间用户追加“安装并重启”按钮：复用已验证候�
 整合后管理助手／maintenance／force recovery／设置／存储5类9文件142项通过，零跳过；Pi与renderer构建通过（artifact://19337）。真实Linux Electron＋Pi回环Provider全局助手13场景通过，正常退出及冷恢复零重放，原件/tmp/nozeli-admin-electron-h49ZT0/report.json。首次恢复实跑发现Pi owner绝对路径识别错误；修正保留真实父进程核验。第二次发现旧metadata只读故障隔离仍阻断新登记校验，恢复路径在确认停稳且无未知操作后沿既有db.recover核查，未知写入仍拒绝。失败原件不回写通过。版本／仓库元数据和来源hash检查零技术失败，审计六项pending单独保留。
 
 修正后真实恢复四场景通过：/tmp/nozeli-force-recovery-gui-jmaJYS/report.json，实际确认恢复并打开原正文、重复确认无效果、原文件字节与旧实例草稿保留、新登记不启用模型且要求显式连接、正常exit0。没有用户项目、付费模型或伪造维修动作。双平台最终归档重复覆盖此路径，不能将本地源码证据冒充最终包证据。
+
+首轮完整远端CI发现搜索会话IPC在整合时漏接、图标fake DOM消费者过期、三处复制目录测试仍依赖旧静默fork语义；保留原失败日志。搜索路由补回可信主窗口准入后，真实Electron搜索11项通过、errors=[]、正常exit0：/tmp/nozeli-project-search-live-kATGvS/report.json，含中文精确位置、缓冲覆盖、PDF/Word/表格/PPT提取、忽略规则、正则错误、320px与Escape。Mac首轮新增管理助手11项已通过但将关闭窗口误作进程退出，沿现有驻留应用验收改为正常app.quit；不修改产品驻留行为。修正后的新SHA重新完整CI／双平台归档，不重用旧包。

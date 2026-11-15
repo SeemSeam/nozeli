@@ -92,7 +92,7 @@ test('consecutive saves, conflict, delete, readonly, and restart keep both sides
 
 test('projects, notes, and view state stay isolated and bound to old material', async () => {
   const fx = await scratch();
-  const other = await mkdtemp(path.join(os.tmpdir(), 'nozeli-host-other-'));
+  const other = await mkdtemp(path.join(os.tmpdir(), 'nozeli-host-other-')), moved = `${fx.root}-moved`, clients = [];
   try {
     const rel = 'notes.md';
     await seed(fx.root, rel, '甲项目');
@@ -139,17 +139,39 @@ test('projects, notes, and view state stay isolated and bound to old material', 
     assert.notEqual(saved.digest, file.materialDigest);
     await fx.host.writeState(a, { currentRelPath: rel, pdfPage: 3, scrollTop: 12 });
     const restarted = new DesktopHost(fx.userData);
+    clients.push(restarted);
     assert.equal((await restarted.readState(a)).state.currentRelPath, rel);
     assert.equal((await restarted.listAnnotations(b, rel)).annotations.length, 0);
-    const moved = `${fx.root}-moved`;
+    const original = await restarted.requireRegisteredProject(a);
+    await fx.host.storage.closeProjectHandles(a);
+    await restarted.storage.closeProjectHandles(a);
+    const manifest = await readFile(path.join(fx.root, '.nozeli', 'project.json'));
+    const database = await readFile(path.join(fx.root, '.nozeli', 'project.sqlite'));
+    const registrations = await restarted.storage.list();
     await rename(fx.root, moved);
     await assert.rejects(() => restarted.open(a), (error) => error.code === 'PROJECT_ROOT_MISSING');
-    const reassociated = await restarted.pick(moved);
-    assert.notEqual(reassociated.project.id, a);
-    await rm(moved, { recursive: true, force: true });
+    await assert.rejects(() => restarted.pick(moved), { code: 'PROJECT_IDENTITY_CONFLICT' });
+    assert.deepEqual(await restarted.storage.list(), registrations);
+    assert.deepEqual(await readFile(path.join(moved, '.nozeli', 'project.json')), manifest);
+    assert.deepEqual(await readFile(path.join(moved, '.nozeli', 'project.sqlite')), database);
+    assert.equal((await restarted.readState(a)).state.currentRelPath, rel);
+    const independent = new DesktopHost(path.join(fx.userData, 'independent-profile'));
+    clients.push(independent);
+    const reassociated = await independent.pick(moved);
+    assert.equal(reassociated.project.id, a);
+    assert.notEqual((await independent.requireRegisteredProject(a)).instanceId, original.instanceId);
+    assert.equal(await independent.storage.getLocal(a, 'view'), null);
+    const portableNotes = await independent.listAnnotations(a, rel);
+    assert.deepEqual(portableNotes.annotations, bound.annotations);
+    assert.equal((await independent.readFile(a, rel)).text, '甲项目已改');
+    assert.equal((await independent.storage.readObject(a, file.materialDigest)).toString('utf8'), '甲项目');
+    await independent.writeState(a, { currentRelPath: rel, pdfPage: 9, scrollTop: 99 });
+    assert.equal((await restarted.readState(a)).state.pdfPage, 3);
   } finally {
+    await Promise.all([fx.host, ...clients].map(host => host.storage.db.close()));
     await fx.cleanup();
     await rm(other, { recursive: true, force: true });
+    await rm(moved, { recursive: true, force: true });
   }
 });
 

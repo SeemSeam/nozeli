@@ -1,12 +1,22 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mountFrozenChangeReader, frozenChangePresentation } from '../src/renderer/frozen-change-reader.mjs';
 
-// Only DOM ownership/focus primitives are needed; MergeView is injected below.
+// Match the action-button primitives in surface-identity-state's DOM fixture;
+// MergeView remains injected, while action SVGs and accessibility stay real.
+const previousDocument = globalThis.document;
+after(() => { if (previousDocument === undefined) delete globalThis.document; else globalThis.document = previousDocument; });
 class Node {
-  constructor(document, tag = 'div') {
-    this.ownerDocument = document; this.tagName = tag; this.children = []; this.style = { visibility: '' };
-    this.attributes = new Map(); this.listeners = new Map(); this.inert = false; this.isConnected = true;
+  constructor(document, tag = 'div', namespaceURI) {
+    this.ownerDocument = document; this.tagName = tag; this.namespaceURI = namespaceURI; this.children = []; this.style = { visibility: '' };
+    this.attributes = new Map(); this.listeners = new Map(); this.inert = false; this.isConnected = true; this.dataset = {};
+    const classes = new Set();
+    this.classList = {
+      add: (...names) => names.forEach(name => classes.add(name)),
+      remove: (...names) => names.forEach(name => classes.delete(name)),
+      contains: name => classes.has(name),
+      toggle(name, force) { if (force) classes.add(name); else classes.delete(name); return Boolean(force); },
+    };
   }
   append(...children) { for (const child of children) { if (typeof child === 'object') child.parent = this; this.children.push(child); } }
   replaceChildren(...children) { this.children = []; this.append(...children); }
@@ -15,11 +25,22 @@ class Node {
   getAttribute(name) { return this.attributes.get(name) ?? null; }
   removeAttribute(name) { this.attributes.delete(name); }
   addEventListener(name, fn) { this.listeners.set(name, fn); }
+  querySelector(selector) {
+    const match = /^:scope > \.([\w-]+)$/.exec(selector);
+    assert(match, 'Unsupported fixture selector: ' + selector);
+    return this.children.find(child => child.classList?.contains(match[1]) || String(child.className || '').split(' ').includes(match[1])) ?? null;
+  }
   click() { return this.listeners.get('click')?.(); }
   focus(options) { this.ownerDocument.activeElement = this; this.focusOptions = options; }
 }
 function fixture(invoke, onExit) {
-  const document = { createElement(tag) { return new Node(this, tag); } };
+  const document = {
+    createElement(tag) { return new Node(this, tag); },
+    createElementNS(namespaceURI, tag) { return new Node(this, tag, namespaceURI); },
+    addEventListener() {},
+  };
+  // uiIcon resolves the same global document as the fixture's ownerDocument.
+  globalThis.document = document;
   const parent = new Node(document), reading = new Node(document), comparison = new Node(document);
   const editor = { buffer: 'unsaved draft', undo: ['original'], selection: { anchor: 2, head: 5 } };
   reading.editor = editor; reading.scrollTop = 712; reading.append(new Node(document));
@@ -46,6 +67,11 @@ test('opens exact immutable before/after, navigates hunks and returns the retain
   assert.equal(f.parent.children[0], f.reading);
   const overlay = f.parent.children[2], head = overlay.children[0];
   const navigation = head.children[1].children[1];
+  assert.deepEqual([navigation.children[0].dataset.action, navigation.children[2].dataset.action], ['diff-previous', 'diff-next']);
+  for (const button of [navigation.children[0], navigation.children[2]]) {
+    assert(button.getAttribute('aria-label'));
+    assert(button.querySelector(':scope > .ui-icon'));
+  }
   navigation.children[0].click(); navigation.children[2].click();
   assert.deepEqual(f.navigation, [-1, 1]);
   head.children[0].children[0].click();

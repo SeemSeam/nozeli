@@ -51,19 +51,29 @@ test('source facts are frozen capture facts and promoted material survives compl
  await assert.rejects(f.attachments.readBytes(ref));
 });
 
-test('forked drawing history reads immutable original provenance after original recovery and project removal',async t=>{
+test('copied drawing history keeps stable identity and immutable provenance after original recovery and project removal',async t=>{
  const f=await fixture(t),sources=[{projectId:f.projectId,summary:'frozen source viewport',identity:{projectId:f.projectId,relPath:'source.txt'}}];
  const promoted=await f.attachments.promote(f.projectId,await attach(f),{sources});
  await f.storage.putProject(f.projectId,'managed_messages','drawing-message',{id:'drawing-message',projectId:f.projectId,attachments:[promoted],drawingSources:[{digest:promoted.digest,sourceManifest:promoted.sourceManifest,sources}]});
- await f.storage.db.request(path.join(await f.storage.projectDirectory(f.projectId),'project.sqlite'),'close');
+ await f.storage.putLocal(f.projectId,'copy-isolation',{original:true});
+ await f.storage.closeProjectHandles(f.projectId);
  const copied=path.join(f.directory,'copied');await fs.cp(f.project,copied,{recursive:true});
- const fork=await f.storage.register(copied),history=await f.storage.getProject(fork.id,'managed_messages','drawing-message'),ref=history.attachments[0];
- assert.equal(ref.projectId,fork.id);assert.equal(ref.storage,'project');assert.deepEqual(ref.sourceManifest,promoted.sourceManifest);
+ const original=await f.storage.requireRegistered(f.projectId),registrations=await f.storage.list();
+ const metadata=await Promise.all(['project.json','project.sqlite'].map(name=>fs.readFile(path.join(copied,'.nozeli',name))));
+ await assert.rejects(f.storage.register(copied),{code:'PROJECT_IDENTITY_CONFLICT'});
+ assert.deepEqual(await f.storage.list(),registrations);
+ for(const root of [f.project,copied])for(const [index,name] of ['project.json','project.sqlite'].entries())assert.deepEqual(await fs.readFile(path.join(root,'.nozeli',name)),metadata[index]);
+ const storage=new ProjectStorage(path.join(f.directory,'copied-profile')),attachments=new ProjectAttachments(storage);f.dispose(()=>storage.db.close());
+ const copy=await storage.register(copied),history=await storage.getProject(copy.id,'managed_messages','drawing-message'),ref=history.attachments[0];
+ assert.equal(copy.id,f.projectId);assert.notEqual(copy.instanceId,original.instanceId);
+ assert.equal(await storage.getLocal(copy.id,'copy-isolation'),null);
+ assert.deepEqual(await f.storage.getLocal(f.projectId,'copy-isolation'),{original:true});
+ assert.deepEqual(ref,promoted);assert.equal(ref.storage,'project');
  const recovery=await f.storage.recoveryDirectory(f.projectId);await f.storage.db.request(path.join(recovery,'recovery.sqlite'),'close');await fs.rm(recovery,{recursive:true,force:true});await fs.rm(f.project,{recursive:true,force:true});
- assert.deepEqual(await f.attachments.readBytes(ref),png);
- assert.deepEqual(await f.attachments.drawingSources(fork.id,ref),sources);
- assert.deepEqual(history.drawingSources[0].sourceManifest,promoted.sourceManifest);
- const manifest=JSON.parse((await f.storage.readObject(fork.id,ref.sourceManifest.digest)).toString('utf8'));assert.equal(manifest.projectId,f.projectId);
+ assert.deepEqual(await attachments.readBytes(ref),png);
+ assert.deepEqual(await attachments.drawingSources(copy.id,ref),sources);
+ assert.deepEqual(history.drawingSources,[{digest:promoted.digest,sourceManifest:promoted.sourceManifest,sources}]);
+ const manifest=JSON.parse((await storage.readObject(copy.id,ref.sourceManifest.digest)).toString('utf8'));assert.equal(manifest.projectId,f.projectId);
 });
 
 test('actual controller prompt reads sent drawing from portable project objects without a model',async t=>{
