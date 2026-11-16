@@ -1125,3 +1125,7 @@ Beta.6发布期间用户追加“安装并重启”按钮：复用已验证候�
 本地定向6文件50/50通过，含恶意ZIP／权限、版本/tag绑定、网络拒绝、未保存／排队／晚到活动保护；实际Electron managed/portable成功和启动失败回退4/4通过。真实公开beta7原版extractor消费新候选23784条归档，特殊权限为0、保留执行位，准入通过。真实完整旧／新Nozeli包GUI升级5场景通过：403保留、下载就绪但设置modal阻断、明确安装正常退出旧进程、真实新renderer健康回执／previous保留／用户数据不变、正常关闭释放安装锁。原件`apps/desktop/.test-output/desktop-auto-update-WzoO2w/report.json`；版本／feed为隔离合成值，产品updater代码来自不同真实包，不冒称公开升级或日常安装已改变。
 
 原生Mac首轮`43807790363`在打包前缺fs_anchor.node停止，未进入更新测试；工作流补齐现有build-macos-native前置，原失败保留。原生更新成功／启动失败／中断恢复三场景结论待实跑，不以Linux模拟签收。当前公开beta7附件不变。
+
+最终原生macOS arm64更新资格通过：[运行43821746428](https://github.com/SeemSeam/nozeli/actions/runs/43821746428)，源码`a838a64a2de2656265f936f3d60982e997e37988`。实际构建完整Nozeli.app，成功升级／启动失败回退／中断恢复三份报告全部`ok=true`，原件下载至`/tmp/nozeli-macos-updater-passed`。成功场景走真实设置UI→原进程正常退出→独立捆绑Node helper→原子.app交换→新版真实renderer健康确认→原生Quit事件正常退出；失败／中断场景恢复并启动旧签名.app，用户持久数据不回滚。签名篡改、错误版本／tag、越界链接及不可写／不安全权限均拒绝，设置modal仍阻断自动重启。合成版本与本地feed、显式启动失败注入不冒称公开发行物或旧Mac首次bootstrap资格。
+
+原生实跑修复了两处实际竞态：完整bundle最终复核在握手前可能超过15秒，移到父进程退出后、交换前执行，不取消签名／inode复核；父进程在身份快照期间正常退出时，内核确认null应视为停止，不误判活跃PID替换，活跃身份变化和未知所有者仍拒绝。新增确定性回归14/14通过；Linux帮助进程／真实Electron升级回退19/19通过。旧失败原件保留。最终变化仅在隔离测试分支提交，不合main、不发版、不替换日常安装；Mac无Developer ID／公证、Windows自动安装未提供。
