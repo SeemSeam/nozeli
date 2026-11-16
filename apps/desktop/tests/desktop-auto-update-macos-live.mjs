@@ -146,16 +146,14 @@ try {
     assert.equal((await json(path.join(handoff.backup,'Contents/Resources/RELEASE.json'))).version,OLD);
     page=await connect(firstEndpoint); assert.equal((await page.evaluate(()=>window.nozeli.invoke('update.status',{}))).value.currentVersion,NEW);
     if(await page.$('#configuration-setup[open]'))await page.click('#configuration-cancel');
-    await page.bringToFront();
-    await page.keyboard.down('Meta'); await page.keyboard.press('KeyQ'); await page.keyboard.up('Meta').catch(()=>{});
-    await waitFor(async()=>!(await processStamp(newPid)),'new app normal Cmd+Q shutdown',30000);
-    checks.push('Install UI -> normal original exit -> independent Node helper -> atomic .app swap -> real new renderer health -> normal Cmd+Q quit');
+    execFileSync('/usr/bin/osascript',['-e','tell application '+JSON.stringify(old)+' to quit']);
+    await waitFor(async()=>!(await processStamp(newPid)),'new app normal native Quit event shutdown',30000);
+    checks.push('Install UI -> normal original exit -> independent Node helper -> atomic .app swap -> real new renderer health -> normal native Quit event');
   } else {
     page = await connect(firstEndpoint);
     assert.equal((await page.evaluate(()=>window.nozeli.invoke('update.status',{}))).value.currentVersion, OLD);
     checks.push('Real helper '+scenario+' restores and launches the old signed .app renderer without rolling back persistent user data');
-    await page.bringToFront();
-    await page.keyboard.down('Meta'); await page.keyboard.press('KeyQ'); await page.keyboard.up('Meta').catch(()=>{});
+    execFileSync('/usr/bin/osascript',['-e','tell application '+JSON.stringify(old)+' to quit']);
   }
 } catch(failure) { error=failure.stack;console.error(error);console.error(logs.slice(-12000));await fs.writeFile(path.join(out,'update-status.json'),JSON.stringify(await json(path.join(profile,'updates/status.json')).catch(()=>null))); }
 finally {
