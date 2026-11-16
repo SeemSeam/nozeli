@@ -56,17 +56,16 @@ export async function runUpdateHelper(journalFile, {spawnProcess = spawn, identi
       const stat = await fs.lstat(candidate);
       candidateIdentity = {dev: stat.dev, ino: stat.ino};
     }
-    await validatePackage(candidate, version, journal.expectedCommit);
+    if(installation.kind !== 'macos') await validatePackage(candidate, version, journal.expectedCommit);
     const old = await readJson(path.join(installation.kind === 'macos' ? macApplication(installation.release) : path.join(installation.release, 'resources/app'), 'package.json'));
     oldVersion = old.version;
-    if (installation.kind === 'macos') oldCommit = (await validatePackage(installation.release, oldVersion)).commit;
+    if (installation.kind === 'macos') oldCommit = (await readJson(path.join(installation.release, 'Contents/Resources/RELEASE.json'))).commit;
     if (compareVersions(version, old.version) <= 0) throw Error('Refusing update downgrade or same-version installation');
   }
   const expectedBase = installation.kind === 'managed' ? path.join(installation.root, 'releases') : installation.root;
   if (path.dirname(candidate) !== expectedBase || candidate === installation.release) throw Error('Candidate is outside installation');
   if (installation.kind === 'macos' && ((await fs.stat(candidate)).dev !== (await fs.stat(installation.root)).dev || path.basename(installation.release) !== 'Nozeli.app')) throw Error('Mac update must remain on the installation volume');
   if (journal.recovery && installation.kind !== 'managed' && (path.dirname(journal.backup || '') !== installation.root || (installation.kind === 'macos' ? journal.backup !== candidate : !path.basename(journal.backup).startsWith(path.basename(installation.release) + '.previous-')))) throw Error('Unsafe recovery backup');
-  if (journal.recovery && installation.kind === 'macos') await macRecoveryNeedsExchange(journal);
   const receipt = path.join(journalDirectory, 'health-' + token + '.json');
   const helperIdentity = await processIdentity(process.pid);
   await atomicJson(journalFile, {...journal, oldVersion, oldCommit, candidateIdentity, helperIdentity, phase: 'helper-ready'});
@@ -164,7 +163,7 @@ export async function runUpdateHelper(journalFile, {spawnProcess = spawn, identi
     }
     await atomicJson(journalFile, {...journal, oldVersion, oldCommit, candidateIdentity, helperIdentity, phase: journal.recovery ? 'recovery-blocked' : promoted ? 'rolled-back' : 'error', message: error.message});
     // The old app must observe rollback/quarantine before its automatic check starts.
-    if (promoted) launch(installation.release, null, null, spawnProcess);
+    if (promoted || installation.kind === 'macos' && !journal.recovery) launch(installation.release, null, null, spawnProcess);
     throw error;
   } finally {
     const current = await readJson(path.join(lock, 'owner.json')).catch(() => null);
