@@ -20,7 +20,16 @@ if(!process.env.NOZELI_TEST_BINARY)env.NOZELI_PI_NODE=process.execPath;
 let child,browser,shell,observer,exited,log='';const report={ok:false,out,checks:[],errors:[],screenshots:[],scope:'Actual Electron search UI/host/ripgrep and synthetic project only, no providers or inference'};const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function until(fn,label,ms=30000){const deadline=Date.now()+ms;while(Date.now()<deadline){if(child?.exitCode!==null&&child?.exitCode!==undefined)throw Error(log);const value=await fn();if(value)return value;await pause(40);}throw Error('Timeout '+label);}
 async function call(op,p={}){const r=await shell.evaluate(({op,p})=>nozeli.invoke(op,p),{op,p});assert(r.ok,JSON.stringify(r.error));return r.value;}
-async function options(){if(await shell.$eval('#project-search-options',n=>n.matches(':popover-open')))return;await shell.click('#file-tree-more');await shell.click('#file-tree-menu [data-command="searchOptions"]');await shell.waitForSelector('#project-search-options:popover-open');}
+async function options(){
+ if(await shell.$eval('#project-search-options',n=>n.matches(':popover-open')))return;
+ // Project activation can leave More disabled; wait for real click actionability.
+ await shell.locator('#file-tree-more').click();
+ const command='#file-tree-menu:not([hidden]) [data-command="searchOptions"]:not(:disabled)';
+ await shell.waitForSelector(command,{visible:true});
+ await shell.locator(command).click();
+ // Menu commands run in a microtask after the menu closes and restores focus.
+ await shell.waitForSelector('#project-search-options:popover-open',{visible:true});
+}
 async function search(query,mode='content'){await options();await shell.click(`[data-search-mode="${mode}"]`);await shell.$eval('#file-filter',(n,q)=>{n.value=q;n.dispatchEvent(new Event('input',{bubbles:true}));},query);await until(async()=>{const text=await shell.$eval('#project-search-status',n=>n.textContent);if(text.includes('搜索失败'))throw Error(text);return /个匹配|未找到匹配/.test(text)&&!text.startsWith('搜索中');},'search '+query);}
 async function surface(rel){return until(async()=>{for(const p of await browser.pages())if(await p.evaluate(rel=>window.__nozeliReady&&window.__workspaceScope?.role==='surface'&&window.__workspaceScope?.relPath===rel,rel).catch(()=>false))return p;},'surface '+rel);}
 async function shot(name){await shell.screenshot({path:path.join(out,name)});report.screenshots.push(name);}

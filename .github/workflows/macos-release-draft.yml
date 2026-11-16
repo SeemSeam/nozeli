@@ -94,6 +94,7 @@ jobs:
           TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_APP_ROOT="$SMOKE_ROOT/Nozeli.app/Contents/Resources/app" NOZELI_TEST_BINARY="$SMOKE_ROOT/Nozeli.app/Contents/MacOS/Nozeli" node tests/desktop-markdown-label-gestures-live.mjs
           TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_BINARY="$SMOKE_ROOT/Nozeli.app/Contents/MacOS/Nozeli" node tests/desktop-admin-agent-live.mjs
           TMPDIR="$PWD/.test-output/ci" NOZELI_TEST_BINARY="$SMOKE_ROOT/Nozeli.app/Contents/MacOS/Nozeli" node tests/desktop-force-recovery-live.mjs
+          NOZELI_MAC_UPDATE_APP="$SMOKE_ROOT/Nozeli.app" node --test tests/auto-update-macos-native.test.mjs
       - name: Keep draft artifacts as Actions artifacts (never a public release upload)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -136,6 +137,9 @@ jobs:
             apps/desktop/.test-output/ci/nozeli-admin-electron-*/*.png
             apps/desktop/.test-output/ci/nozeli-force-recovery-gui-*/report.json
             apps/desktop/.test-output/ci/nozeli-force-recovery-gui-*/*.png
+            apps/desktop/.test-output/macos-update-*/report.json
+            apps/desktop/.test-output/macos-update-*/main.log
+            apps/desktop/.test-output/macos-update-*/update-status.json
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 7

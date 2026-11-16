@@ -3,17 +3,17 @@
   "purpose": "Machine-verifiable companion to apps/desktop/SOURCES.md and docs/release.md: pinned third-party inputs, evidence locations, exact rebuild commands and the still-pending redistribution obligations. Engineering bookkeeping only; not a legal audit or compliance certification.",
   "checkedBy": "tools/check-repository.mjs",
   "product": "Nozeli",
-  "productVersion": "0.1.0-beta.7",
+  "productVersion": "0.1.0-beta.8",
   "license": "AGPL-3.0-only",
   "licenseEvidence": ["LICENSE"],
   "release": {
-    "tag": "v0.1.0-beta.7",
-    "url": "https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-beta.7",
+    "tag": "v0.1.0-beta.8",
+    "url": "https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-beta.8",
     "commit": null,
     "channel": "beta-prerelease",
     "platformsExercised": ["linux-x64", "macos-arm64"],
     "platformsTargeted": ["linux-x64", "macos-arm64"],
-    "notes": "On 2026-11-15, after disclosure of all six pending redistribution obligations, the owner explicitly authorized this Beta.7 public prerelease exception for Linux x64 and macOS arm64. Integrates global assistant, confirmed maintenance, preserving access recovery, compact search, scoped history and unified actions onto beta.6, retaining native platform and updater fixes. Market and website remain prototypes. Exact-commit full CI and both final extracted applications are required before publication, not claimed in advance. Not compliance certification, stable/latest promotion or daily-install authorization. Mac stays ad-hoc signed without Developer ID/notarization. Prior tags and assets remain unchanged; public audit stays pending and --public blocked."
+    "notes": "On 2026-11-16, after disclosure of all six pending redistribution obligations, the owner explicitly authorized this Beta.8 public prerelease exception for Linux x64 and macOS arm64. Normalize special permission bits only in Linux distribution copies, preserving existing unsafe archive rejection; old Linux releases can update to beta.8. Add macOS arm64 native updates with signed bundle validation, same-volume atomic application exchange, independent helper, renderer health confirmation, rollback and parent-exit race handling. Old Mac releases require a one-time manual installation of beta.8 before future automatic upgrades. Earlier local and native run 43821746428 evidence is not final-release SHA qualification. Exact-commit full CI and both final extracted applications are required before publication, not claimed in advance. Not compliance certification, stable/latest promotion or daily-install authorization. Mac stays ad-hoc signed without Developer ID/notarization. Prior tags and assets remain unchanged; all six obligations remain pending and --public blocked."
   },
   "publicRedistributionAudit": "pending",
   "rebuildCommands": {

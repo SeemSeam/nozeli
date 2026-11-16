@@ -1,8 +1,11 @@
 # Changelog
 
-## Unreleased
-- Normalize special permission bits only in Linux distribution copies so CI sandbox configuration cannot produce archives rejected by the existing updater. Preserve host sandbox permissions and keep unsafe archive rejection unchanged.
-- Implement macOS arm64 native update support with platform-matched ZIP selection, signed bundle validation, same-volume staging and preserved previous application, independent bundled helper, startup health confirmation and failure recovery. Old Mac releases without this updater still require a one-time manual installation. Native qualification is recorded separately; no release, default-branch merge or daily installation is implied.
+## 0.1.0-beta.8
+- Owner-authorized public Beta.8 exception (2026-11-16) for Linux x64 and macOS arm64 after disclosure of all six pending redistribution obligations. All six remain pending and public audit stays blocked; not compliance certification, stable/latest promotion or daily-install authorization. Exact-commit full CI and both final extracted applications must pass before publication; no final qualification is claimed in advance. macOS remains ad-hoc signed without Developer ID or notarization. Existing Beta.7 tags and assets remain unchanged.
+- Normalize special permission bits only in Linux distribution copies so CI sandbox configuration cannot produce archives rejected by the existing updater. Preserve host sandbox permissions, executable bits and unsafe archive rejection. Old Linux releases can update to beta.8.
+- Add macOS arm64 native updates with platform-matched ZIP selection, signed bundle validation, same-volume staging and atomic application exchange, a preserved previous application and an independent bundled helper. Confirm health through the new renderer; roll back failed startup and recover interrupted swaps. Old Mac releases require a one-time manual installation of beta.8 before future automatic upgrades.
+- Handle parent-exit races without weakening identity checks: perform full bundle revalidation after parent exit and before exchange, and accept a kernel-confirmed exit during the process identity snapshot while still refusing changed live identities or unknown ownership.
+- Earlier local updater journeys and native macOS arm64 run [43821746428](https://github.com/SeemSeam/nozeli/actions/runs/43821746428) at `a838a64a2de2656265f936f3d60982e997e37988` cover success, startup-failure rollback and interrupted recovery at that source stage. They do not qualify the final beta.8 release SHA, CI or archives.
 
 ## 0.1.0-beta.7
 - Integrate the global assistant, scoped maintenance and explicit access recovery, compact project search, source-bound history skills and unified desktop actions onto the beta.6 baseline; retain native platform, updater and safety fixes.
