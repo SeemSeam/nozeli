@@ -15,6 +15,18 @@ export async function auditBundledLinks(directory, release = directory) {
   }
 }
 
+// Normalize only the private copy, never the host's Electron sandbox (which CI
+// may need setuid). Apply to every copied payload, not just chrome-sandbox:
+// source, dependencies and private runtimes can inherit special bits too.
+export async function normalizeReleaseModes(directory) {
+  const stat = await fs.lstat(directory);
+  if (stat.isSymbolicLink()) return; // Never chmod through a bundled link.
+  if (stat.mode & 0o7000) await fs.chmod(directory, stat.mode & 0o777);
+  if (stat.isDirectory()) {
+    for (const name of await fs.readdir(directory)) await normalizeReleaseModes(path.join(directory, name));
+  }
+}
+
 // npm lockfile v2/v3 marks exclusively development packages with dev:true.
 // Keep runtime/shared dependencies; narrow only known non-target Canvas binaries.
 export function dependencyIncluded(lock, relative, target) {
@@ -94,6 +106,7 @@ export async function packageRelease({root, release, source}) {
   await packagePiRuntime({source,application,includeDependency:dependencyIncluded});
   manifest.productName = 'Nozeli';
   await fs.writeFile(path.join(application, 'package.json'), JSON.stringify(manifest, null, 2) + '\n');
+  await normalizeReleaseModes(release);
   await validateRelease(root, release);
   const marker = path.join(release, 'INSTALLATION.json');
   const metadata = JSON.parse(await fs.readFile(marker, 'utf8'));

@@ -42,6 +42,9 @@ export async function validateMacApplication(application, source) {
   if (!pi.command.startsWith(application + path.sep)) throw Error('Bundle must run its own packaged Pi Node runtime');
   const piNodeVersion = (await execFileAsync(pi.command, ['--version'], {env: {...pi.env, PATH: ''}})).stdout.trim();
   if (!/^v\d+\./.test(piNodeVersion)) throw Error('Packaged Pi Node runtime did not execute: ' + piNodeVersion);
+  const updaterNode = path.join(application, 'runtime/node/bin/node');
+  if ((await execFileAsync(updaterNode, ['--version'], {env: {PATH: ''}})).stdout.trim() !== piNodeVersion) throw Error('Updater must share the validated independent Pi Node');
+  await fs.access(path.join(application, 'runtime/native/nozeli-update-swap'), fs.constants.X_OK);
   // The bundled Git must be the bundle's own relocatable copy and must actually run.
   const bundledGit = await import(pathToFileURL(path.join(application, 'src/agents/managed/git-runtime.mjs')).href);
   const gitRuntime = await bundledGit.ensureGit();
@@ -118,6 +121,9 @@ export async function assembleMacosBundle({source, output, manifest, lock, relea
       return true;
     }});
     await packagePiRuntime({source, application, includeDependency: dependencyIncluded});
+    const swap = path.join(application, 'runtime/native/nozeli-update-swap');
+    execFileSync('/usr/bin/clang', ['-O2', '-Wall', '-Wextra', '-Werror', '-arch', 'arm64', path.join(source, 'src/main/native/auto-update-swap.c'), '-o', swap], {stdio: 'inherit'});
+    execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', swap], {stdio: 'inherit'});
     manifest.productName = 'Nozeli';
     await fs.writeFile(path.join(application, 'package.json'), JSON.stringify(manifest, null, 2) + '\n');
 

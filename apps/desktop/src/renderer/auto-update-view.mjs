@@ -1,7 +1,7 @@
 const phases={checking:'正在检查更新',downloading:'正在下载更新',staging:'正在校验与准备更新',ready:'更新已就绪', 'waiting-idle':'更新已下载，等待空闲',installing:'正在安全退出并安装更新',current:'已是当前通道最新版本',error:'更新失败，当前版本保留',unsupported:'当前安装不支持自动安装',stopped:'自动更新已暂停'};
 export function mountAutoUpdate({root,invoke,subscribe}){
   const heading=document.createElement('h3');heading.textContent='应用更新';
-  const policy=document.createElement('p');policy.className='settings-hint';policy.textContent='从 Nozeli GitHub Releases 检查更新，包含 Alpha / Beta 预发行。受支持的 Linux x64 安装会下载并校验，在无未保存编辑、无在途任务且系统空闲时安装重启；更新就绪后也可点击“安装并重启”，只跳过空闲等待，不跳过保存与任务保护。失败保留旧版本；其他平台或不满足安装安全条件时只检查，不自动替换。';
+  const policy=document.createElement('p');policy.className='settings-hint';policy.textContent='从 Nozeli GitHub Releases 检查更新，包含 Alpha / Beta 预发行。受支持的 Linux x64 安装及用户可写的 macOS arm64 应用会下载并校验，在无未保存编辑、无在途任务且系统空闲时安装重启；“安装并重启”只跳过空闲等待，不跳过保存与任务保护。失败保留旧版本，不回滚用户内容。只读卷、权限不足或其他不支持的安装位置仅检查更新；旧Mac版本首次需手动安装支持更新的新版。';
   const version=document.createElement('p'),state=document.createElement('p'),detail=document.createElement('p');state.setAttribute('role','status');detail.className='settings-hint';
   const progress=document.createElement('progress');progress.hidden=true;progress.setAttribute('aria-label','更新下载进度');
   const label=document.createElement('label'),enabled=document.createElement('input');label.className='auto-update-toggle';enabled.type='checkbox';label.append(enabled,document.createTextNode(' 自动检查、下载并在空闲时安装重启'));

@@ -14,7 +14,7 @@
 //      real execution of the bundled Pi Node and Git, Info.plist binding
 //
 // Honest boundaries, never fabricated: ad-hoc signature only — no Developer
-// ID, no notarization, no auto-update on macOS — and the public redistribution
+// ID, no notarization — and the public redistribution
 // audit stays exactly what compliance-inventory.json records (pending). This
 // tool only writes the requested output directory; it never publishes.
 //
@@ -77,7 +77,7 @@ async function sha256(file) { const hash = createHash('sha256'); for await (cons
 let completed = false;
 try {
   const {short: bundleShort, build: bundleBuild} = macosVersionStrings(manifest.version);
-  const releaseRecord = {application: 'Nozeli', version: manifest.version, platform: 'darwin', arch: 'arm64', commit, format: 'app-zip', distribution: 'local-beta', publicRedistributionAudit: auditStatus, nodeNpmRequired: false, codesign: 'ad-hoc', notarized: false, developerId: false, autoUpdate: 'unsupported'};
+  const releaseRecord = {application: 'Nozeli', version: manifest.version, platform: 'darwin', arch: 'arm64', commit, format: 'app-zip', distribution: 'local-beta', publicRedistributionAudit: auditStatus, nodeNpmRequired: false, codesign: 'ad-hoc', notarized: false, developerId: false, autoUpdate: 'native-app-swap'};
   const assembled = await assembleMacosBundle({source, output: staging, manifest, lock, releaseRecord});
 
   // ditto preserves resource forks, symlinks, permissions and bundle layout.
@@ -119,7 +119,7 @@ try {
 
 ## 使用边界
 
-- 无自动更新：macOS 更新通道为 unsupported，不会下载或切换版本。升级＝退出旧版后用新 Nozeli.app 整体替换旧包；删除 Nozeli.app 不会删除 \`~/.Nozeli\` 配置/会话与项目内 \`.nozeli\` 批注。
+- 自动更新仅支持本用户拥有且可写的本地 Nozeli.app 安装（例如 ~/Applications），拒绝只读卷、/Volumes 与 AppTranslocation；下载验证后等待无未保存工作/活动任务再退出并原子交换应用包，保留旧包，启动健康确认失败则回退。旧版 macOS 无更新器，首次须手动整体安装支持更新的新包。更新与回退不会回滚配置/会话或项目数据。ad-hoc 签名不等于发行者认证或 Apple 公证。
 - AI 能力需自行配置服务/模型/账号；本包不附带开发者密钥、OAuth 或个人数据，也不依赖系统 OMP/CCB。
 - macOS 无沙箱隔离与外部系统终端接管声明；管理员提权策略为 implemented-untested。九种格式显示矩阵在 alpha.6 上未通过，本包不作通过宣称。
 - 公开分发审计仍为 ${auditStatus}：六项 GPL/AGPL 等再分发义务未签收。拷贝给他人或公开上传可能触发对应源码提供等义务；本次预发行须经仓库所有者当次明确授权，历史 Alpha 授权不可复用。

@@ -172,6 +172,8 @@ const SUITES = {
       'auto-update-installation.test.mjs',
       'auto-update-network.test.mjs',
       'auto-update.test.mjs',
+      'local-release-permissions.test.mjs',
+      'auto-update-macos.test.mjs',
       'c1-installed-open-entry.test.mjs',
       'ci-test-plan-cli.test.mjs',
       'collab-controller-projection.test.mjs',

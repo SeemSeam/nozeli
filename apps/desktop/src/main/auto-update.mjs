@@ -5,17 +5,20 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {atomicJson, ownedDirectory, readJson, semver, compareVersions, detectInstallation, extractPackage, validatePackage, downloadFile, processIdentity, MAX_ARCHIVE} from './auto-update-files.mjs';
 import {acquireInstallLock} from './auto-update-helper.mjs';
+import {prepareMacHelper} from './auto-update-macos.mjs';
 export {detectInstallation} from './auto-update-files.mjs';
 export {acknowledgeUpdateHealth} from './auto-update-helper.mjs';
 
 const FEED = 'https://api.github.com/repos/SeemSeam/nozeli/releases';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const safeMessage = error => String(error?.message || error).replace(/https?:\/\/[^\s]+/g, '[release endpoint]').slice(0, 300);
-export function selectRelease(releases, currentVersion) {
+export function selectRelease(releases, currentVersion, platform = process.platform, arch = process.arch) {
   if (!Array.isArray(releases)) throw Error('Invalid release feed');
   return releases.filter(release => !release.draft && semver(release.tag_name) && compareVersions(release.tag_name, currentVersion) > 0).map(release => {
     const version = semver(release.tag_name).version;
-    const name = 'Nozeli-' + version + '-linux-x64.tar.gz';
+    const suffix = platform === 'darwin' && arch === 'arm64' ? 'macos-arm64.zip' : platform === 'linux' && arch === 'x64' ? 'linux-x64.tar.gz' : null;
+    if (!suffix) return null;
+    const name = 'Nozeli-' + version + '-' + suffix;
     const assets = release.assets || [];
     const archives = assets.filter(asset => asset.name === name);
     const manifests = assets.filter(asset => asset.name === 'SHA256SUMS.txt');
@@ -95,7 +98,7 @@ export class AutoUpdater {
     // detectInstallation collapses marker-less, marker-mismatched, and foreign-platform
     // layouts into null; broken real installations throw their own precise error instead.
     // None of the null cases is necessarily a source checkout, so never claim one.
-    if (process.platform !== 'linux' || process.arch !== 'x64') return '当前平台 ' + process.platform + '/' + process.arch + ' 暂不支持自动安装；保留当前版本，仅执行更新检查';
+    if (!(process.platform === 'linux' && process.arch === 'x64') && !(process.platform === 'darwin' && process.arch === 'arm64')) return '当前平台 ' + process.platform + '/' + process.arch + ' 暂不支持自动安装；保留当前版本，仅执行更新检查';
     return '当前平台或安装布局/权限不支持自动安装；保留当前版本；通过正式安装入口安装后重试';
   }
   async initialize() {
@@ -114,7 +117,7 @@ export class AutoUpdater {
       this.state.failedVersion = prior.version;
       this.state.message = 'Update ' + prior.version + ' failed startup and was rolled back; automatic retry is paused. Check manually to retry.';
     }
-    if (prior && ['promoting', 'awaiting-health'].includes(prior.phase) && prior.installation?.root === this.installation?.root) {
+    if (prior && (['promoting', 'awaiting-health'].includes(prior.phase) || (prior.recovery === true && ['prepared', 'helper-ready', 'recovery-blocked'].includes(prior.phase))) && prior.installation?.root === this.installation?.root) {
       const helper = prior.helperIdentity && await processIdentity(prior.helperIdentity.pid);
       const parent = prior.parent && await processIdentity(prior.parent.pid);
       if ((!helper || helper.start !== prior.helperIdentity.start) && (!parent || parent.start !== prior.parent.start)) {
@@ -123,6 +126,7 @@ export class AutoUpdater {
         this.recovery = prior;
         this.candidate = {path: prior.candidate, version: prior.version};
         this.state.message = 'Interrupted update requires safe idle rollback';
+        this.state.availableVersion = prior.version;
       }
     }
   }
@@ -156,7 +160,7 @@ export class AutoUpdater {
       return this.status();
     }
     if (this.timer) return this.status();
-    this.update({phase: this.installation ? 'current' : 'unsupported', message: this.installation ? this.state.message : this.installationNotice()});
+    this.update({phase: this.recovery ? 'ready' : this.installation ? 'current' : 'unsupported', message: this.installation ? this.state.message : this.installationNotice()});
     this.timer = setInterval(() => { if (this.state.enabled) void this.check({automatic: true}); }, this.options.checkInterval); this.timer.unref?.();
     this.idleTimer = setInterval(() => { if (this.state.enabled) void this.installIfIdle(); }, this.options.idleInterval); this.idleTimer.unref?.();
     if (this.state.enabled) void this.check({automatic: true});
@@ -225,7 +229,7 @@ export class AutoUpdater {
       await this.initialize();
       // Only an explicit host/user check opts into retrying a rolled-back release.
       if (!automatic) this.quarantinedVersion = null;
-      if (this.recovery && this.candidate) { await this.installIfIdle(); return this.status(); }
+      if (this.recovery && this.candidate) { this.update({phase: 'ready', message: 'Interrupted update requires safe idle rollback'}); await this.installIfIdle(); return this.status(); }
       this.controller = new AbortController();
       const signal = this.controller.signal;
       timeout = setTimeout(() => this.controller?.abort(Error('Update request timed out')), 30 * 60 * 1000); timeout.unref?.();
@@ -261,7 +265,7 @@ export class AutoUpdater {
       const manifest = await boundedText(await this.request(release.manifest, 'asset', signal), 256 * 1024, signal);
       const expected = manifestChecksum(manifest, release.name);
       const nonce = crypto.randomUUID();
-      archive = path.join(this.options.stateDir, 'download-' + nonce + '.tar.gz');
+      archive = path.join(this.options.stateDir, 'download-' + nonce + (this.installation.kind === 'macos' ? '.zip' : '.tar.gz'));
       this.update({phase: 'downloading', progress: {received: 0, total: 0}});
       let lastProgress = 0;
       await downloadFile({response: await this.request(release.archive, 'asset', signal), file: archive, expected, signal, onProgress: progress => {
@@ -271,7 +275,7 @@ export class AutoUpdater {
       const base = this.installation.kind === 'managed' ? path.join(this.installation.root, 'releases') : this.installation.root;
       staging = path.join(base, '.nozeli-staging-' + nonce);
       const extracted = await extractPackage(archive, staging, release.version, signal, expectedCommit);
-      const candidate = path.join(base, '.nozeli-update-' + release.version + '-' + nonce);
+      const candidate = path.join(base, '.nozeli-update-' + release.version + '-' + nonce + (this.installation.kind === 'macos' ? '.app' : ''));
       await fs.rename(extracted, candidate); await fs.rmdir(staging); staging = null;
       this.candidate = {path: candidate, version: release.version, commit: expectedCommit};
       this.update({phase: 'ready', message: 'Update downloaded and verified; waiting for safe idle restart'});
@@ -296,7 +300,7 @@ export class AutoUpdater {
     const {canInstall, prepareShutdown, quit} = this.options;
     if (![canInstall, prepareShutdown, quit].every(callback => typeof callback === 'function')) { this.update({phase: 'waiting-idle', message: 'Host lifecycle guards are unavailable'}); return this.status(); }
     this.installing = true;
-    let lock, helper, shutdownAttempted = false;
+    let lock, helper, helperRuntime, shutdownAttempted = false;
     try {
       const readiness = await canInstall(mode);
       if (!readiness?.ready) { this.update({phase: 'waiting-idle', message: readiness?.reason || 'Waiting for idle and no unsaved work'}); return this.status(); }
@@ -304,22 +308,30 @@ export class AutoUpdater {
       const current = await detectInstallation(this.options.appRoot);
       if (!current || current.release !== this.installation.release || current.root !== this.installation.root) throw Error('Installation identity changed');
       const token = crypto.randomBytes(32).toString('hex');
+      if (!this.recovery) lock = await acquireInstallLock(current.root, token, {macos: current.kind === 'macos'});
+      shutdownAttempted = true;
+      if (await prepareShutdown(mode) !== true) { this.update({phase: 'waiting-idle', message: 'Shutdown guard declined update restart'}); return this.status(); }
+      const finalReadiness = await canInstall(mode);
+      if (!finalReadiness?.ready) { this.update({phase: 'waiting-idle', message: finalReadiness?.reason || 'New work appeared before restart'}); return this.status(); }
       if (this.recovery) {
         const staleLock = path.join(current.root, '.installer-lock');
         const stale = await readJson(path.join(staleLock, 'owner.json'));
         const live = this.recovery.helperIdentity && await processIdentity(this.recovery.helperIdentity.pid);
         if (stale.token !== this.recovery.token || live?.start === this.recovery.helperIdentity?.start) throw Error('Recovery installer still active');
         await fs.rm(staleLock, {recursive: true});
+        lock = await acquireInstallLock(current.root, token, {macos: current.kind === 'macos'});
       }
-      lock = await acquireInstallLock(current.root, token);
-      shutdownAttempted = true;
-      if (await prepareShutdown(mode) !== true) { this.update({phase: 'waiting-idle', message: 'Shutdown guard declined update restart'}); return this.status(); }
-      const finalReadiness = await canInstall(mode);
-      if (!finalReadiness?.ready) { this.update({phase: 'waiting-idle', message: finalReadiness?.reason || 'New work appeared before restart'}); return this.status(); }
       const journal = path.join(this.options.stateDir, 'handoff.json');
-      await atomicJson(journal, {...(this.recovery || {}), token, installation: this.recovery?.installation || current, candidate: this.candidate.path, version: this.candidate.version, expectedCommit: this.candidate.commit, parent: await processIdentity(process.pid), phase: 'prepared', recovery: Boolean(this.recovery)});
+      const handoff = {...(this.recovery || {}), token, installation: this.recovery?.installation || current, candidate: this.candidate.path, version: this.candidate.version, expectedCommit: this.candidate.commit ?? this.recovery?.expectedCommit, parent: await processIdentity(process.pid), phase: 'prepared', recovery: Boolean(this.recovery)};
+      await atomicJson(journal, handoff);
+      if (this.recovery) this.recovery = handoff;
       const script = fileURLToPath(new URL('./auto-update-helper.mjs', import.meta.url));
-      helper = this.spawn(path.join(current.release, 'nozeli'), [script, journal], {env: {...process.env, ELECTRON_RUN_AS_NODE: '1'}, cwd: current.root, detached: true, stdio: 'ignore'});
+      if (current.kind === 'macos') helperRuntime = await prepareMacHelper(current, token);
+      const helperEnv = {...process.env};
+      for (const key of Object.keys(helperEnv)) if (key.startsWith('NOZELI_UPDATE_') || key === 'NOZELI_DARWIN_PROCINFO') delete helperEnv[key];
+      if (current.kind === 'macos') delete helperEnv.ELECTRON_RUN_AS_NODE;
+      else helperEnv.ELECTRON_RUN_AS_NODE = '1';
+      helper = this.spawn(helperRuntime?.command || path.join(current.release, 'nozeli'), [helperRuntime?.script || script, journal], {env: helperEnv, cwd: current.root, detached: true, stdio: 'ignore'});
       let helperError; helper.once('error', error => { helperError = error; }); helper.unref?.();
       const deadline = this.clock() + 15000;
       while (this.clock() < deadline) {
@@ -340,7 +352,10 @@ export class AutoUpdater {
     } finally {
       if (lock) {
         if (helper?.pid) { try { process.kill(helper.pid, 'SIGTERM'); } catch {} }
-        await fs.rm(lock, {recursive: true, force: true});
+        if (!this.recovery) {
+          await fs.rm(lock, {recursive: true, force: true});
+          if (helperRuntime) await fs.rm(helperRuntime.directory, {recursive: true, force: true});
+        }
       }
       if (this.state.phase !== 'installing') {
         this.installing = false;

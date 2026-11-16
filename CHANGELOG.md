@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- Normalize special permission bits only in Linux distribution copies so CI sandbox configuration cannot produce archives rejected by the existing updater. Preserve host sandbox permissions and keep unsafe archive rejection unchanged.
+- Implement macOS arm64 native update support with platform-matched ZIP selection, signed bundle validation, same-volume staging and preserved previous application, independent bundled helper, startup health confirmation and failure recovery. Old Mac releases without this updater still require a one-time manual installation. Native qualification is recorded separately; no release, default-branch merge or daily installation is implied.
 
 ## 0.1.0-beta.7
 - Integrate the global assistant, scoped maintenance and explicit access recovery, compact project search, source-bound history skills and unified desktop actions onto the beta.6 baseline; retain native platform, updater and safety fixes.

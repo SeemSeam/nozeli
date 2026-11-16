@@ -11,7 +11,7 @@ import {compareVersions, semver, atomicJson, extractPackage, downloadFile, proce
 import {acquireInstallLock, runUpdateHelper} from '../src/main/auto-update-helper.mjs';
 
 async function temporary(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nozeli-update-test-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'nozeli-update-test-')));
   t.after(() => fs.rm(root, {recursive: true, force: true})); return root;
 }
 async function packageFixture(directory, version) {
@@ -26,7 +26,8 @@ async function packageFixture(directory, version) {
   await fs.writeFile(path.join(directory, 'nozeli'), elf, {mode: 0o755});
 }
 function release(version) {
-  return {tag_name: 'v' + version, assets: [{name: 'Nozeli-' + version + '-linux-x64.tar.gz', browser_download_url: 'https://github.com/SeemSeam/nozeli/releases/download/v' + version + '/archive', size: 100}, {name: 'SHA256SUMS.txt', browser_download_url: 'https://github.com/SeemSeam/nozeli/releases/download/v' + version + '/SHA256SUMS.txt', size: 100}]};
+  const suffix = process.platform === 'darwin' && process.arch === 'arm64' ? '-macos-arm64.zip' : '-linux-x64.tar.gz';
+  return {tag_name: 'v' + version, assets: [{name: 'Nozeli-' + version + suffix, browser_download_url: 'https://github.com/SeemSeam/nozeli/releases/download/v' + version + '/archive', size: 100}, {name: 'SHA256SUMS.txt', browser_download_url: 'https://github.com/SeemSeam/nozeli/releases/download/v' + version + '/SHA256SUMS.txt', size: 100}]};
 }
 test('semantic ordering includes alpha and ignores draft/missing-asset releases and downgrades', () => {
   assert.equal(selectRelease([release('1.0.0-alpha.9'), release('1.0.0-alpha.10'), {...release('2.0.0'), draft: true}, {tag_name: '9.0.0', assets: []}], '1.0.0-alpha.8').version, '1.0.0-alpha.10');
@@ -46,7 +47,7 @@ test('checksum requires one exact filename and streaming download verifies bytes
   await assert.rejects(fs.access(file + '-bad'));
   await assert.rejects(downloadFile({response: new Response(data), file: file + '-large', expected: checksum, max: 2}), /limit/);
 });
-test('archive staging validates native metadata and rejects root and escaping links', async t => {
+test('archive staging validates native metadata and rejects root and escaping links', {skip: process.platform !== 'linux' ? 'Linux tar/ELF fixtures; Mac ZIP consumer has independent native qualification' : false}, async t => {
   const root = await temporary(t), label = 'Nozeli-1.0.1-linux-x64', source = path.join(root, label);
   await packageFixture(source, '1.0.1');
   const archive = path.join(root, 'release.tar.gz');

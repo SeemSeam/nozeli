@@ -13,7 +13,7 @@ const RATE_LIMIT_RESET = 1794371556; // x-ratelimit-reset observed from api.gith
 const SKIP_LINUX_LAYOUT = process.platform !== 'linux' || process.arch !== 'x64' ? 'requires the Linux x64 installation layout; not Mac updater qualification' : false;
 
 async function temporary(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nozeli-update-net-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'nozeli-update-net-')));
   t.after(() => fs.rm(root, {recursive: true, force: true}));
   return root;
 }

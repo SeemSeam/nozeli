@@ -7,6 +7,7 @@ import {pipeline} from 'node:stream/promises';
 import {Transform} from 'node:stream';
 import {Worker} from 'node:worker_threads';
 import {platformPersistence} from '../platform/shared/persistence.mjs';
+import {detectMacInstallation, validateMacPackage, extractMacPackage, macProcessIdentity} from './auto-update-macos.mjs';
 const fs = process.versions.electron ? createRequire(import.meta.url)('original-fs').promises : nodeFs;
 
 export const MAX_ARCHIVE = 3 * 1024 ** 3;
@@ -44,6 +45,7 @@ export function compareVersions(a, b) {
   return 0;
 }
 export async function processIdentity(pid) {
+  if (process.platform === 'darwin') return macProcessIdentity(pid);
   try {
     const directory = '/proc/' + pid, stat = await fs.stat(directory);
     const text = await fs.readFile(directory + '/stat', 'utf8');
@@ -51,6 +53,7 @@ export async function processIdentity(pid) {
   } catch (error) { if (['ENOENT', 'ESRCH'].includes(error.code)) return null; throw error; }
 }
 export async function detectInstallation(appRoot) {
+  if (process.platform === 'darwin' && process.arch === 'arm64') return detectMacInstallation(appRoot);
   if (process.platform !== 'linux' || process.arch !== 'x64') return null;
   const release = path.resolve(appRoot, '../..');
   let marker;
@@ -73,6 +76,7 @@ export async function detectInstallation(appRoot) {
   return {kind: 'portable', root: path.dirname(release), release};
 }
 export async function validatePackage(release, version, expectedCommit) {
+  if (process.platform === 'darwin') return validateMacPackage(release, version, expectedCommit);
   await ownedDirectory(release);
   const metadata = await readJson(path.join(release, 'RELEASE.json'));
   if (metadata.application !== 'Nozeli' || metadata.version !== version || metadata.platform !== 'linux' || metadata.arch !== 'x64' || metadata.format !== 'portable-tar.gz' || !/^[a-f0-9]{40}$/.test(metadata.commit)) throw Error('Release metadata does not match update');
@@ -94,6 +98,7 @@ export async function validatePackage(release, version, expectedCommit) {
   return metadata;
 }
 export async function extractPackage(archive, destination, version, signal, expectedCommit) {
+  if (process.platform === 'darwin') return extractMacPackage(archive, destination, version, signal, expectedCommit);
   const label = 'Nozeli-' + version + '-linux-x64';
   await fs.mkdir(destination, {mode: 0o700});
   try {
