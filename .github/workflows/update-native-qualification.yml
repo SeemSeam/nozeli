@@ -33,6 +33,8 @@ jobs:
         run: npm ci --no-audit --no-fund && npm ci --prefix ../../integrations/pi --no-audit --no-fund
       - name: Build actual private runtime and renderer
         run: npm run build:pptist && npm run build:pi && npm run build:renderer
+      - name: Build native filesystem and process helpers
+        run: node tools/build-macos-native.mjs
       - name: Build standalone application with bundled updater helper
         run: node tools/package-macos.mjs "$RUNNER_TEMP/nozeli-update-app"
       - name: Exercise native update and failure rollback
