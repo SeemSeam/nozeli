@@ -1117,3 +1117,11 @@ Beta.6发布期间用户追加“安装并重启”按钮：复用已验证候�
 最终产品提交`84101656e17b5287a0be63a7a9eb3008417d5382`已快进`main`并标记`v0.1.0-beta.7`，公开预发行：<https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-beta.7>。CI `43736248023`完整门禁通过；Linux x64与macOS arm64最终包均从该提交构建并解压验收。Mac归档报告10份全部`ok=true`，含管理助手13场景、显式访问恢复4场景、冷恢复、正常退出、Office／窗口／批注旅程；Linux实包同门覆盖恢复路径，setuid sandbox启动器按同目录、确切可执行文件和稳定父链核验，未知进程仍阻断。Linux/macOS/source/Node debug symbols/双语使用说明及`SHA256SUMS.txt`已上传。
 
 公开前草稿核验与公开后核验均技术零失败；远端附件已从GitHub下载到全新目录并按公开`SHA256SUMS.txt`逐项通过。六项再分发审计义务仍pending，`--public`仍如实阻断；本次依据用户对beta.7的明确预发行例外授权公开，不构成合规认证或稳定版。Mac仅ad-hoc签名、无Developer ID／公证；未替换日常安装、未创建PR、Windows未验。
+
+## Linux与Mac更新修复（2026-11-16，隔离测试分支）
+
+用户授权落盘测试，追加授权`integration/update-native-20261116`独立提交／推送以运行原生Mac runner；不合main、不发布、不替换日常安装。Linux本机实际错误为`Unsafe archive entry type/mode`，公开beta7的chrome-sandbox为04755，与旧extractor拒绝setuid/setgid规则冲突。打包仅清除发行副本特殊权限，不更改宿主sandbox或放宽旧extractor。Mac补原生arm64 ZIP、签名／路径／架构验证、同卷原子.app交换、独立捆绑Node helper及失败／中断恢复。旧Mac包首次需手动安装支持更新的新版本。
+
+本地定向6文件50/50通过，含恶意ZIP／权限、版本/tag绑定、网络拒绝、未保存／排队／晚到活动保护；实际Electron managed/portable成功和启动失败回退4/4通过。真实公开beta7原版extractor消费新候选23784条归档，特殊权限为0、保留执行位，准入通过。真实完整旧／新Nozeli包GUI升级5场景通过：403保留、下载就绪但设置modal阻断、明确安装正常退出旧进程、真实新renderer健康回执／previous保留／用户数据不变、正常关闭释放安装锁。原件`apps/desktop/.test-output/desktop-auto-update-WzoO2w/report.json`；版本／feed为隔离合成值，产品updater代码来自不同真实包，不冒称公开升级或日常安装已改变。
+
+原生Mac首轮`43807790363`在打包前缺fs_anchor.node停止，未进入更新测试；工作流补齐现有build-macos-native前置，原失败保留。原生更新成功／启动失败／中断恢复三场景结论待实跑，不以Linux模拟签收。当前公开beta7附件不变。

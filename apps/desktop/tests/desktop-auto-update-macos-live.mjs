@@ -118,7 +118,7 @@ try {
   child.stdout.on('data',chunk=>{logs+=chunk;}); child.stderr.on('data',chunk=>{logs+=chunk;});
   const childExit=new Promise(resolve=>child.once('exit',(code,signal)=>resolve({code,signal})));
   let page=await connect(); const firstEndpoint=browser.wsEndpoint(); await openSettings(page); releaseFeed();
-  await page.waitForFunction(async()=>{const result=await window.nozeli.invoke('update.status',{});return result.ok&&result.value.phase==='waiting-idle';},{timeout:180000,polling:100});
+  await waitFor(async()=>{const result=await page.evaluate(()=>window.nozeli.invoke('update.status',{}));assert.equal(result.ok,true,JSON.stringify(result));if(['error','unsupported'].includes(result.value.phase))throw Error(JSON.stringify(result.value));return result.value.phase==='waiting-idle';},'Mac staged update');
   assert.equal((await json(path.join(old,'Contents/Resources/RELEASE.json'))).version,OLD);
   checks.push('Real old renderer settings modal blocks staged update; idle guard is not replaced');
   await install(page); assert.deepEqual(await Promise.race([childExit,sleep(60000).then(()=>null)]),{code:0,signal:null});
@@ -157,7 +157,7 @@ try {
     await page.bringToFront();
     await page.keyboard.down('Meta'); await page.keyboard.press('KeyQ'); await page.keyboard.up('Meta').catch(()=>{});
   }
-} catch(failure) { error=failure.stack; }
+} catch(failure) { error=failure.stack;console.error(error);console.error(logs.slice(-12000));await fs.writeFile(path.join(out,'update-status.json'),JSON.stringify(await json(path.join(profile,'updates/status.json')).catch(()=>null))); }
 finally {
   await browser?.disconnect().catch(()=>{}); await terminateOwned('SIGTERM'); await sleep(1500); await terminateOwned('SIGKILL');
   child?.stdout?.destroy();child?.stderr?.destroy();child?.unref();
