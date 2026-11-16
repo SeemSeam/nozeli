@@ -41,12 +41,14 @@ export async function verifyMacRoot(root) {
   if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== 0 || stat.gid !== 80 || stat.mode & 0o6002 || await fs.realpath(root) !== root) throw Error('Unsafe /Applications installation permissions');
   await fs.access(root, fs.constants.W_OK | fs.constants.X_OK);
 }
-export async function macProcessIdentity(pid) {
-  const start = await processStamp(pid);
+export async function macProcessIdentity(pid, {stamp=processStamp,snapshot=sameUserSnapshot}={}) {
+  const start = await stamp(pid);
   if (!start) return null;
-  const row = (await sameUserSnapshot()).find(row => row.pid === pid);
+  const row = (await snapshot()).find(row => row.pid === pid);
+  const after = await stamp(pid);
+  if (!after) return null; // Kernel-confirmed exit during the snapshot is not PID reuse.
+  if (after !== start) throw Error('Updater process identity changed');
   if (!row || row.euid !== process.getuid() || row.ruid !== process.getuid()) throw Error('Updater process owner cannot be verified');
-  if (await processStamp(pid) !== start) throw Error('Updater process identity changed');
   return {pid, uid: row.euid, start};
 }
 async function auditMacBundle(release) {

@@ -4,8 +4,15 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {selectRelease} from '../src/main/auto-update.mjs';
-import {macZipEntries, detectMacInstallation} from '../src/main/auto-update-macos.mjs';
+import {macZipEntries, detectMacInstallation, macProcessIdentity} from '../src/main/auto-update-macos.mjs';
 
+test('native update helper observes parent exit during snapshot without treating it as changed live ownership',async()=>{
+ const pid=1234,uid=process.getuid();let reads=0;
+ assert.equal(await macProcessIdentity(pid,{stamp:async()=>++reads===1?'boot:start':null,snapshot:async()=>[{pid,euid:uid,ruid:uid}]}),null);
+ reads=0;assert.equal(await macProcessIdentity(pid,{stamp:async()=>++reads===1?'boot:start':null,snapshot:async()=>[]}),null);
+ await assert.rejects(macProcessIdentity(pid,{stamp:async()=> 'boot:start',snapshot:async()=>[]}),/owner cannot be verified/);
+ reads=0;await assert.rejects(macProcessIdentity(pid,{stamp:async()=>++reads===1?'boot:start':'boot:reused',snapshot:async()=>[{pid,euid:uid,ruid:uid}]}),/identity changed/);
+});
 // Structural ZIP fixtures are not native Mac/signature qualification.
 function zip(entries) {
   const locals = [], central = []; let position = 0;
