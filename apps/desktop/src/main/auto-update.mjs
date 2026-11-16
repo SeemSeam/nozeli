@@ -331,14 +331,16 @@ export class AutoUpdater {
       for (const key of Object.keys(helperEnv)) if (key.startsWith('NOZELI_UPDATE_') || key === 'NOZELI_DARWIN_PROCINFO') delete helperEnv[key];
       if (current.kind === 'macos') delete helperEnv.ELECTRON_RUN_AS_NODE;
       else helperEnv.ELECTRON_RUN_AS_NODE = '1';
-      helper = this.spawn(helperRuntime?.command || path.join(current.release, 'nozeli'), [helperRuntime?.script || script, journal], {env: helperEnv, cwd: current.root, detached: true, stdio: current.kind === 'macos' ? ['ignore','ignore','pipe'] : 'ignore'});
-      let helperError, helperExit, helperDiagnostic='';
-      helper.stderr?.on('data',chunk=>{helperDiagnostic=(helperDiagnostic+chunk.toString()).slice(-4096);});
+      const diagnosticFile=path.join(this.options.stateDir,'helper-'+token+'.log');
+      const diagnostic=current.kind==='macos'?await fs.open(diagnosticFile,'wx',0o600):null;
+      try{helper = this.spawn(helperRuntime?.command || path.join(current.release, 'nozeli'), [helperRuntime?.script || script, journal], {env: helperEnv, cwd: current.root, detached: true, stdio: diagnostic ? ['ignore','ignore',diagnostic.fd] : 'ignore'});}finally{await diagnostic?.close();}
+      let helperError, helperExit;
+      const helperDiagnostic=async()=>diagnostic?(await fs.readFile(diagnosticFile,'utf8')).slice(-4096):'';
       helper.once('error', error => { helperError = error; });helper.once('exit',(code,signal)=>{helperExit={code,signal};});helper.unref?.();
       const deadline = this.clock() + 15000;
       while (this.clock() < deadline) {
         if (helperError) throw helperError;
-        if(helperExit)throw Error('Update helper exited before handoff: '+JSON.stringify(helperExit)+' '+helperDiagnostic);
+        if(helperExit)throw Error('Update helper exited before handoff: '+JSON.stringify(helperExit)+' '+await helperDiagnostic());
         const handoff = await readJson(journal);
         if (handoff.token !== token) throw Error('Helper handoff identity changed');
         if (handoff.phase === 'helper-ready') {
@@ -349,7 +351,7 @@ export class AutoUpdater {
         }
         await sleep(50);
       }
-      throw Error('Update helper did not become ready'+(helperDiagnostic?': '+helperDiagnostic:''));
+      throw Error('Update helper did not become ready: '+await helperDiagnostic());
     } catch (error) {
       this.update({phase: 'error', message: safeMessage(error)});
     } finally {

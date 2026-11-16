@@ -155,7 +155,7 @@ try {
     checks.push('Real helper '+scenario+' restores and launches the old signed .app renderer without rolling back persistent user data');
     execFileSync('/usr/bin/osascript',['-e','tell application '+JSON.stringify(old)+' to quit']);
   }
-} catch(failure) { error=failure.stack;console.error(error);console.error(logs.slice(-12000));const handoff=await json(path.join(profile,'updates/handoff.json')).catch(()=>null);console.error('Final update phase:',handoff?.phase,handoff?.message);await fs.writeFile(path.join(out,'update-status.json'),JSON.stringify({status:await json(path.join(profile,'updates/status.json')).catch(()=>null),handoff})); }
+} catch(failure) { error=failure.stack;console.error(error);console.error(logs.slice(-12000));const handoff=await json(path.join(profile,'updates/handoff.json')).catch(()=>null);console.error('Final update phase:',handoff?.phase,handoff?.message);const helperLogs={};for(const file of await fs.readdir(path.join(profile,'updates')).catch(()=>[]))if(/^helper-[a-f0-9]+\.log$/.test(file)){helperLogs[file]=(await fs.readFile(path.join(profile,'updates',file),'utf8')).slice(-12000);console.error(helperLogs[file]);}await fs.writeFile(path.join(out,'update-status.json'),JSON.stringify({status:await json(path.join(profile,'updates/status.json')).catch(()=>null),handoff,helperLogs})); }
 finally {
   await browser?.disconnect().catch(()=>{}); await terminateOwned('SIGTERM'); await sleep(1500); await terminateOwned('SIGKILL');
   child?.stdout?.destroy();child?.stderr?.destroy();child?.unref();
