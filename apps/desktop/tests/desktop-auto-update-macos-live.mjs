@@ -121,7 +121,7 @@ try {
   await waitFor(async()=>{const result=await page.evaluate(()=>window.nozeli.invoke('update.status',{}));assert.equal(result.ok,true,JSON.stringify(result));if(['error','unsupported'].includes(result.value.phase))throw Error(JSON.stringify(result.value));return result.value.phase==='waiting-idle';},'Mac staged update');
   assert.equal((await json(path.join(old,'Contents/Resources/RELEASE.json'))).version,OLD);
   checks.push('Real old renderer settings modal blocks staged update; idle guard is not replaced');
-  await install(page); assert.deepEqual(await Promise.race([childExit,sleep(60000).then(()=>null)]),{code:0,signal:null});
+  await install(page);await waitFor(async()=>{const result=await page.evaluate(()=>window.nozeli.invoke('update.status',{})).catch(()=>null);if(result?.ok&&result.value.phase==='error')throw Error(JSON.stringify(result.value));return child.exitCode!==null||child.signalCode;},'old app safe update exit',60000);assert.deepEqual(await childExit,{code:0,signal:null});
   await browser.disconnect(); browser=null;
   const journalFile=path.join(profile,'updates/handoff.json');
   if(scenario==='interrupted') {
