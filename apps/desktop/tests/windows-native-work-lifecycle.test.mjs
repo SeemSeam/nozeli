@@ -21,9 +21,10 @@ async function fixture(t,{existing=true,projectLength}={}){
  for(const [name,bytes]of Object.entries({'正文.md':'baseline','delete.txt':'delete baseline','staged.txt':'staged baseline','draft.txt':'original draft'}))await fs.writeFile(path.join(projectRoot,name),bytes);
  if(existing){await git(projectRoot,['init','--initial-branch=main']);await git(projectRoot,['config','core.autocrlf','false']);await git(projectRoot,['add','--','正文.md','delete.txt','staged.txt','draft.txt']);const tree=await str(projectRoot,['write-tree']),commit=await commitTree(projectRoot,tree,[],'synthetic baseline',path.join(root,'seed'));await git(projectRoot,['update-ref','refs/heads/main',commit,'0'.repeat(commit.length)]);}
  const runtime=path.join(root,'runtime');await ensure(root,runtime);const work={id:'synthetic-work',revision:1,result:{objectId:'synthetic-report'}},store={root:runtime,content:projectRoot,storage,projectId:project.id,state:{works:[work]}};
- const workspace=new ExecutionWorkspace(store,{filesystem,experimentalWindowsRoot:root});
+ const options={filesystem,experimentalWindowsRoot:root,publicDirectory:directory=>directory===projectRoot?projectRoot:false};
+ const workspace=new ExecutionWorkspace(store,options);
  return {root,projectRoot,profile,project,storage,work,store,workspace,
-  cold(){return new ExecutionWorkspace(store,{filesystem,experimentalWindowsRoot:root});},
+  cold(){return new ExecutionWorkspace(store,options);},
   async candidate(){const m=await workspace.prepare(work.id);await fs.writeFile(path.join(m.directory,'正文.md'),'candidate');await fs.unlink(path.join(m.directory,'delete.txt'));await fs.writeFile(path.join(m.directory,'新增.txt'),'new material');const receiptId='report-receipt';await workspace.publish(work,{id:'synthetic-job'},()=>true,async(_m,candidate)=>{await storage.putProject(project.id,'managed_receipts',receiptId,{workId:work.id,revision:work.revision,snapshot:{candidate}});return {id:'synthetic-change-set'};},{receiptId});return workspace.readManifest(work.id);},
  };
 }
@@ -34,7 +35,7 @@ async function exitDuringAcceptance(f,m,phase){
  const source=`import {ProjectStorage} from ${JSON.stringify(new URL('../src/main/project-storage.mjs',import.meta.url).href)};
  import {ExecutionWorkspace} from ${JSON.stringify(new URL('../src/agents/managed/execution-workspace.mjs',import.meta.url).href)};
  import {experimentalWindowsVersionedFilesystem as filesystem} from ${JSON.stringify(new URL('../src/platform/windows/experimental-filesystem.mjs',import.meta.url).href)};
- const input=JSON.parse(process.argv[2]),storage=new ProjectStorage(input.profile,{experimentalWindowsRoot:input.root,experimentalWindowsInitialization:true});const project=await storage.register(input.projectRoot),store={root:input.runtime,content:input.projectRoot,storage,projectId:project.id,state:{works:[input.work]}},execution=new ExecutionWorkspace(store,{filesystem,experimentalWindowsRoot:input.root}),save=execution.save.bind(execution);
+ const input=JSON.parse(process.argv[2]),storage=new ProjectStorage(input.profile,{experimentalWindowsRoot:input.root,experimentalWindowsInitialization:true});const project=await storage.register(input.projectRoot),store={root:input.runtime,content:input.projectRoot,storage,projectId:project.id,state:{works:[input.work]}},execution=new ExecutionWorkspace(store,{filesystem,experimentalWindowsRoot:input.root,publicDirectory:directory=>directory===input.projectRoot?input.projectRoot:false}),save=execution.save.bind(execution);
  execution.save=async manifest=>{await save(manifest);if(input.phase==='locks-held'?manifest.finishIntent?.status==='prepared'&&Object.keys(manifest.finishIntent.locks??{}).length===3:manifest.finishIntent?.status===input.phase)process.exit(91);};
  await execution.finish(input.work,{decision:'accept',reportPersisted:true,mergeAuthorization:input.authorization});await storage.db.close();`;
  await fs.writeFile(script,source);const child=spawnSync(process.execPath,[script,JSON.stringify({root:f.root,profile:f.profile,projectRoot:f.projectRoot,runtime:f.store.root,work:f.work,phase,authorization:authorization(f,m)})],{encoding:'utf8',windowsHide:true,timeout:90000});assert.ifError(child.error);assert.equal(child.signal,null);assert.equal(child.status,91,child.stdout+child.stderr);

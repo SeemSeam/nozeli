@@ -55,7 +55,6 @@ try{
   await observer.evaluate('process.mainModule.require("electron").BaseWindow.getAllWindows().find(win=>win.webContents&&!win.isDestroyed()).webContents.send("nozeli:menu-action","settings");true');
   await shell.waitForSelector('#settings-dialog[open]',{visible:true});await shell.click('#settings-close');
   report.checks.push('real menu-action delivery opens the existing settings surface without replacing the workspace');
-  assert.equal(await shell.$eval('#composer',(node,shortcut)=>node.title.includes(shortcut),process.platform==='darwin'?'⌘+Enter':'Ctrl+Enter'),true);
   for(const theme of ['light','dark']){
     await shell.emulateMediaFeatures([{name:'prefers-color-scheme',value:theme}]);
     for(const width of [1280,680]){
@@ -89,13 +88,17 @@ try{
   await shell.click('#workspace-open-conversation');
   const chat=await scoped(scope=>scope.role==='surface'&&scope.kind==='conversation');
   await chat.page.waitForSelector('#conversation-head',{visible:true});
+  const enter=process.platform==='darwin'?'Return':'Enter';
+  const inputHint=await chat.page.$eval('#composer',node=>node.placeholder);
+  assert(inputHint.includes(`${enter} 发送`)&&inputHint.includes(`Shift + ${enter} 换行`),inputHint);
   await chat.page.click('#chat-workspace-detach');
   const chatWindow=await scoped(scope=>scope.role==='detached');
   await until(async()=>(await call(chat.page,'workspace.bootstrap')).windowId===chatWindow.scope.windowId,'chat detached');
   await chrome(chatWindow.page,'detached');
   await chat.page.click('#conversation-head',{button:'right'});
   await chat.page.waitForSelector('#conversation-context-menu:not([hidden])');
-  assert.equal(await chat.page.$$eval('#conversation-context-menu [data-command^="chat-window-"]',nodes=>nodes.length),process.platform==='darwin'?0:3);
+  const chatWindowCommands=await chat.page.$$eval('#conversation-context-menu [data-command^="chat-window-"]',nodes=>nodes.map(node=>node.dataset.command).sort());
+  assert.deepEqual(chatWindowCommands,process.platform==='darwin'?[]:['chat-window-maximize','chat-window-minimize']);
   if(process.platform==='darwin')assert.equal(await chat.page.$eval('#conversation-head',node=>node.classList.contains('nozeli-draggable')),false);
   await chat.page.keyboard.press('Escape');
   await chat.page.screenshot({path:path.join(out,'detached-chat-content-toolbar.png')});
