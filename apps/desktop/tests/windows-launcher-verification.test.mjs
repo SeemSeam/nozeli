@@ -90,6 +90,9 @@ function powershell(){return path.join(process.env.SystemRoot??'C:\\Windows','Sy
 function runLauncher(root,args=[],extraEnv={}){
   const env={...process.env};for(const key of Object.keys(env))if(key.startsWith('NOZELI_')||key==='ELECTRON_RUN_AS_NODE')delete env[key];
   Object.assign(env,extraEnv);
+  // Node inherits pwsh's module path verbatim; let Windows PowerShell 5.1
+  // construct its own so Get-FileHash resolves from the matching Utility module.
+  for(const key of Object.keys(env))if(key.toUpperCase()==='PSMODULEPATH')delete env[key];
   return spawnSync(powershell(),['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',path.join(root,'Launch-Nozeli.ps1'),...args],{encoding:'utf8',env,windowsHide:true,timeout:120000});
 }
 
