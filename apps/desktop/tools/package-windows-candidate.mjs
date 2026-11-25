@@ -80,7 +80,6 @@ export async function packageWindowsCandidate({source,candidate,input,nativeProv
  for(const name of ['src','dist','tests','assets','runtime','native','tools','package.json','package-lock.json','SOURCES.md','README.md'])await fs.cp(path.join(source,name),path.join(application,name),{recursive:true,filter:file=>{const parts=path.relative(source,file).split(path.sep);return applicationSourceIncluded(source,file)&&!parts.some(p=>['.git','.test-output'].includes(p))&&!(parts[0]==='runtime'&&parts[1]==='node');}});
  const modules=path.join(source,'node_modules');await fs.cp(modules,path.join(application,'node_modules'),{recursive:true,filter:file=>windowsDependencyIncluded(lock,path.relative(modules,file))});
  await packagePiRuntime({source,application,includeDependency:windowsDependencyIncluded});
- await fs.copyFile(path.resolve(source,'../../integrations/pi/build.mjs'),path.join(application,'integrations/pi/build.mjs'));
  await fs.copyFile(path.resolve(source,'../../LICENSE'),path.join(candidate,'NOZELI-LICENSE'));
  if(releaseRecord)await fs.writeFile(path.join(candidate,'RELEASE.json'),json(releaseRecord),{flag:'wx'});
  const tree=await openPayload(candidate);let manifest;

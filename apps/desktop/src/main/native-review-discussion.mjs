@@ -240,7 +240,7 @@ export class NativeReviewDiscussionManager {
   if(p.objectId==null){
    if(!row.workMode||Object.keys(p).some(key=>!['projectId','workId','objectId','revision','requestKey','text','lane','importedSkill'].includes(key)))throw denied();
    const {projectId,workId,revision,requestKey,text,lane,importedSkill}=p;
-   const receipt=await this.managed.workChatReceipt({projectId,workId,revision,requestKey,text,lane,importedSkill});
+   const receipt=await this.managed.workChatReceipt({projectId,workId,revision,requestKey,text,lane,...(importedSkill!==undefined?{importedSkill}:{})});
    if(!this.owns(row))throw denied();
    return receipt;
   }

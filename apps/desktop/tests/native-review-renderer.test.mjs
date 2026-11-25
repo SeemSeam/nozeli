@@ -70,7 +70,7 @@ const {renderWorkOverview}=await import(pathToFileURL(overviewPath).href);
 class Node {
  constructor(tag='div'){this.tagName=tag;this.children=[];this.dataset={};this.listeners=new Map();this.attributes=new Map();this.value='';this.isConnected=true;this.open=false;this.style={setProperty(){}};this.hidden=false;this.className='';this.tabIndex=-1;
   this.classList={contains:name=>String(this.className).split(/\s+/).includes(name),add:name=>{if(!this.classList.contains(name))this.className=(this.className+' '+name).trim();},remove:name=>{this.className=String(this.className).split(/\s+/).filter(part=>part!==name).join(' ');},toggle:(name,force)=>{const on=force===undefined?!String(this.className).split(/\s+/).includes(name):force;this.classList[on?'add':'remove'](name);return on;}};}
- append(...nodes){for(const node of nodes){if(node.parent)node.parent.children=node.parent.children.filter(child=>child!==node);node.parent=this;this.children.push(node);}}
+ append(...nodes){for(const child of nodes){const node=typeof child==='string'?Object.assign(new Node('#text'),{textContent:child}):child;if(node.parent)node.parent.children=node.parent.children.filter(child=>child!==node);node.parent=this;this.children.push(node);}}
  replaceChildren(...nodes){for(const node of this.children)node.parent=null;this.children=[];this.value='';this.append(...nodes);}
  insertBefore(node,before){if(node===before)return;if(node.parent)node.parent.children=node.parent.children.filter(child=>child!==node);const index=before?this.children.indexOf(before):this.children.length;node.parent=this;this.children.splice(index,0,node);}
  get firstElementChild(){return this.children[0]??null;}
@@ -100,7 +100,7 @@ class Node {
  closest(selector){return this.matches(selector)?this:this.parent?.closest(selector)??null;}
 }
 function dom(t){
- const previous=Object.fromEntries(['document','window','ResizeObserver','MutationObserver','getComputedStyle'].map(key=>[key,globalThis[key]]));
+ const previous=Object.fromEntries(['document','window','ResizeObserver','MutationObserver','getComputedStyle','Option'].map(key=>[key,globalThis[key]]));
  const ids=new Map(),window=new Node(),cleanup=[];
  window.innerWidth=1024;window.innerHeight=768;
  window.requestAnimationFrame=callback=>{queueMicrotask(()=>callback());return 1;};
@@ -115,6 +115,7 @@ function dom(t){
  doc.createElementNS=(namespace,tag)=>{const node=doc.createElement(tag);node.namespaceURI=namespace;return node;};
  doc.body.ownerDocument=doc;doc.documentElement.ownerDocument=doc;doc.head.ownerDocument=doc;doc.body.className='';
  globalThis.document=doc;
+ globalThis.Option=class extends Node{constructor(text,value){super('option');this.textContent=text;this.value=value;}};
  globalThis.getComputedStyle=()=>({fontSize:'13px'});globalThis.ResizeObserver=globalThis.MutationObserver=class{observe(){}disconnect(){}};
  globalThis.window=window;t.after(()=>{for(const dispose of cleanup)dispose();Object.assign(globalThis,previous);});return {ids,cleanup,node:id=>doc.getElementById(id)};
 }

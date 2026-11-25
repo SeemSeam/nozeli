@@ -454,6 +454,8 @@ jobs:
         working-directory: apps/desktop
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '22.23.4'
@@ -466,8 +468,8 @@ jobs:
           node tools/build-windows-native.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node tools/build-windows-process.mjs
-      - name: Exercise native filesystem contract in Node and Electron
-        run: npm run test:windows-native
+      - name: Exercise native filesystem contract as a standard user in Node and Electron
+        run: ./tools/run-windows-native-ci.ps1
       - name: Exercise immutable manual installer contract
         run: node tools/test-suites.mjs windows-manual-install
 

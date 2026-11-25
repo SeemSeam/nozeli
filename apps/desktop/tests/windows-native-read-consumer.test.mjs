@@ -182,19 +182,21 @@ test('Git stream error or mismatching bytes reject capture and release all guard
   const root = await fixture(t); await git(root, ['init','--initial-branch=synthetic']);
   for (const fault of ['error','mismatch']) {
     const target = path.join(root, fault); await fs.writeFile(target, 'source bytes');
+    let opens = 0;
     const injected = {...filesystem, async openAnchoredFile(...args) {
-      const file = await filesystem.openAnchoredFile(...args); let streams=0;
-      return {...file, stream:() => {
-        if (++streams === 1) return file.stream();
-        return Readable.from((async function* () {
-          if (fault === 'error') throw Object.assign(new Error('synthetic transport fault'), {code:'READ_FAULT'});
-          yield Buffer.from('different bytes');
-        })());
-      }};
+      const file = await filesystem.openAnchoredFile(...args);
+      // Capture reopens the file for Git's second pass; it does not stream
+      // twice from the first lease.
+      if (++opens === 1) return file;
+      return {...file, stream:() => Readable.from((async function* () {
+        if (fault === 'error') throw Object.assign(new Error('synthetic transport fault'), {code:'READ_FAULT'});
+        yield Buffer.from('changed data');
+      })())};
     }};
     await assert.rejects(blobFile(root, root, fault, {filesystem:injected}), {code:fault==='error'?'READ_FAULT':'SOURCE_CHANGED'});
+    assert.equal(opens, 2);
     assert.equal(await fs.readFile(target, 'utf8'), 'source bytes');
-    await fs.writeFile(target, 'released');
+    await fs.rename(target, target + '-released');
   }
   assert.equal((await git(root, ['for-each-ref'])).length, 0);
   assert.equal(selectFilesystemAdapter().supported, false);

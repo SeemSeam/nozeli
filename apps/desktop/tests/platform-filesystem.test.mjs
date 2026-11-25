@@ -296,10 +296,10 @@ test('ExecutionWorkspace with an unsupported adapter rejects managed reads expli
   const unsupported = new ExecutionWorkspace(store, { filesystem: unsupportedFilesystemAdapter('sunos', 'test: no verified adapter') });
   const rejected = await unsupported.documentOperation({ work, op: 'read', arguments: { relPath: 'worker.txt' } });
   assert.equal(rejected.ok, false);
-  assert.equal(rejected.error.code, 'DEPENDENCY_PLATFORM');
+  assert.equal(rejected.error.code, 'FS_PLATFORM_UNSUPPORTED');
   const write = await unsupported.documentOperation({ work, op: 'apply', callId: 'w1', arguments: { readHandle: 'forged', replacements: [] } });
   assert.equal(write.ok, false);
-  assert.equal(write.error.code, 'DEPENDENCY_PLATFORM');
+  assert.equal(write.error.code, 'READ_HANDLE_REJECTED');
   assert.deepEqual((await fs.readdir(execution.directory(work.id))).sort(), before);
   assert.equal(await fs.readFile(path.join(project, 'worker.txt'), 'utf8'), 'base\n');
 });

@@ -33,6 +33,14 @@ The command runs the same explicit read and write test files against the same co
 with pinned development Node and locked Electron in its Node mode
 (`ELECTRON_RUN_AS_NODE=1`). The driver waits for the actual child processes and
 requires nonempty TAP summaries with no failures or skips in both hosts.
+Run the suite as a standard user. Windows can assign the token's default owner
+(for example, `BUILTIN\Administrators`) to an ordinary file even when it
+inherits a sole-user DACL. Such files, including SQLite sidecars and private
+tree members, do not meet Nozeli's owner check and are rejected. The hosted
+Windows job runs both hosts under a disposable standard account; it does not
+relax that check or repair descriptors. The driver uses the resolved temporary
+directory for both hosts so a temporary-directory alias does not change the
+scope when project registration resolves the fixture path.
 Per-host logs, runtime facts, binary SHA-256 and a validation receipt are saved
 under `.test-output/ci/windows-native-hosts/`, or `NOZELI_TEST_EVIDENCE_ROOT` when
 set. Compilation does not prove either host runs.
