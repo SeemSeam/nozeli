@@ -54,8 +54,10 @@ const longSegment='目录段-'.repeat(15);
 const longRelative=app+'dist/'+[longSegment,longSegment,longSegment,'渲染器-'+('长'.repeat(60))+'.js'].join('/');
 const longBytes=Buffer.concat(Array.from({length:12000},(_,i)=>Buffer.from('长路径成员 '+String(i).padStart(6,'0')+'\n')));
 async function fixture(t){
-  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-launcher-behavior-'));
-  t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+  const scratch=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-launcher-behavior-'));
+  t.after(()=>fs.rm(scratch,{recursive:true,force:true}));
+  // Hosted TEMP can use an 8.3 alias, but PowerShell passes the long path as $PSScriptRoot.
+  const directory=await fs.realpath(scratch);
   return {directory,root:path.join(directory,'安装 空间 启动'),candidate:name=>path.join(directory,name)};
 }
 async function candidate(directory,version='synthetic-1',{productExit=false}={}){
