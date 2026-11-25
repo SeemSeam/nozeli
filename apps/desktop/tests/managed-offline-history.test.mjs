@@ -165,8 +165,9 @@ test('exact cold report read survives controller attachment without weakening pi
   content=Buffer.alloc(bytes.length);reads=0;
   await assert.rejects(read(),{code:'REPORT_CHANGED'});assert.equal(reads,1);
   content=bytes;reads=0;
+  // One pinned retry is allowed; a second replacement must stop the read.
   onRead=()=>{controllers.set(projectId,{store:controller.store});};
-  await assert.rejects(read(),{code:'REPORT_CHANGED'});assert.equal(reads,1);
+  await assert.rejects(read(),{code:'REPORT_CHANGED'});assert.equal(reads,2);
 
   // Same object and bytes are insufficient if the attached receipt is a different record.
   controllers.clear();reads=0;
