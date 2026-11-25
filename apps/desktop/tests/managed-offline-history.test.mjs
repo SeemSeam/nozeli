@@ -130,14 +130,15 @@ test('read accepts a canonical eight MiB Markdown object without inline receipt 
 });
 
 test('exact cold report read survives controller attachment without weakening pinned history',async()=>{
-  const projectId=randomUUID(),workId=randomUUID(),objectId=randomUUID(),project={id:projectId};
+  const projectId=randomUUID(),workId=randomUUID(),objectId=randomUUID(),project={id:projectId,instanceId:randomUUID(),removed:false};
   const bytes=Buffer.from(staticReport('冻结报告')),report=reportDescriptor(bytes,{format:'html-static',objectId});
   const state={schema:2,reportStateVersion:1,workspaceId:projectId,limit:1,memoryPending:[],todos:[],
     works:[{id:workId,revision:1,status:'ended'}],receipts:[{id:randomUUID(),workId,objectId,revision:1,kind:'result',report,at:'2026-01-01T00:00:00Z'}]};
   const controllers=new Map(),localDirectory=path.resolve('history-read-fixture');
   const controller={store:{root:path.join(localDirectory,'execution'),state}};
   let onRead,reads=0,content=bytes;
-  const storage={localDirectory:async()=>localDirectory,requireOnline:async()=>project,getLocal:async()=>null,getRecovery:async()=>null,
+  const requireRegistered=async id=>{assert.equal(id,projectId);return project;};
+  const storage={localDirectory:async()=>localDirectory,requireOnline:requireRegistered,requireRegistered,getLocal:async()=>null,getRecovery:async()=>null,
     listProject:async(id,table)=>{
       assert.equal(id,projectId);
       if(table==='managed_settings')return [{id:'collections',value:['works','receipts']}];
@@ -148,7 +149,7 @@ test('exact cold report read survives controller attachment without weakening pi
       onRead?.();
       return content;
     }};
-  const host={storage,requireRegisteredProject:async id=>{assert.equal(id,projectId);return project;}};
+  const host={storage,requireRegisteredProject:requireRegistered};
   const invoke=ManagedProjects.prototype.invoke.bind({host,controllers});
   const read=query=>invoke('managed.history.read',{projectId,objectId,...query});
   const {version}=await invoke('managed.history.list',{projectId});
@@ -165,5 +166,11 @@ test('exact cold report read survives controller attachment without weakening pi
   await assert.rejects(read(),{code:'REPORT_CHANGED'});assert.equal(reads,1);
   content=bytes;reads=0;
   onRead=()=>{controllers.set(projectId,{store:controller.store});};
+  await assert.rejects(read(),{code:'REPORT_CHANGED'});assert.equal(reads,1);
+
+  // Same object and bytes are insufficient if the attached receipt is a different record.
+  controllers.clear();reads=0;
+  const drifted=structuredClone(state);drifted.receipts[0].id=randomUUID();
+  onRead=()=>{onRead=null;controllers.set(projectId,{store:{...controller.store,state:drifted}});};
   await assert.rejects(read(),{code:'REPORT_CHANGED'});assert.equal(reads,1);
 });

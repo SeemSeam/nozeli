@@ -1509,16 +1509,7 @@ this.connectionErrors=new Map();this.handoffFlights=new Map();this.hostReleases=
    const {projectId,...query}=p;
    const storage=this.host.storage,runtime=await managedRuntime(storage,projectId);
    const currentController=()=>this.controllers.get(projectId),controller=currentController();
-   const read=authority=>managedHistory({storage,project,runtime,controller:authority,currentController},query);
-   try{return await read(controller);}
-   catch(error){
-    const attached=currentController();
-    // A cold restore can overlap resident attachment. Start a fresh exact-object
-    // read under the newly authoritative controller; never rebind pinned history
-    // or return bytes from the invalidated offline snapshot.
-    if(action!=='history.read'||query.version!==undefined||controller||!attached||error.code!=='REPORT_CHANGED')throw error;
-    return read(attached);
-   }
+   return managedHistory({storage,project,runtime,controller,currentController},query);
   }
   if(action==='versions.list'||action==='versions.diff'||action==='versions.restore'){
    const versions=this.versions.get(p.projectId);

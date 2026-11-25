@@ -105,15 +105,31 @@ test('serialized competing operations accept one version and preserve exact-key 
  const receipt=outcomes[0].value;assert.deepEqual(await f.manage(request('close',0,{requestKey:'race-key-a'})),receipt);assert.equal(f.todo().managementHistory.length,1);assert.equal(f.todo().managementRevision,1);
 });
 
-test('write failures roll back close and remove, including ledgers and tombstones',async t=>{
+test('write failures roll back close and remove until explicit recovery, including ledgers and tombstones',async t=>{
  const f=await fixture(t);await f.seed([reminder()]);await f.restart();
  for(const [action,revision] of [['close',0],['remove',1]]){
-  const storage=f.store.storage,replace=storage.replaceProjectCollections.bind(storage),before=structuredClone(f.store.state),durable=await readManagedState(storage,f.store.projectId,{offline:false});
+  const payload=request(action,revision),storage=f.store.storage,replace=storage.replaceProjectCollections.bind(storage),before=structuredClone(f.store.state),durable=await readManagedState(storage,f.store.projectId,{offline:false});
   storage.replaceProjectCollections=async()=>{throw Object.assign(new Error('injected transaction rejection'),{code:'EINJECTED_COMMIT'});};
-  try{await assert.rejects(f.manage(request(action,revision)),{code:'EINJECTED_COMMIT'});}finally{storage.replaceProjectCollections=replace;}
+  let pendingId;try{await assert.rejects(f.manage(payload),error=>{assert.equal(error.code,'EINJECTED_COMMIT');assert.equal(error.commitUnknown,undefined);pendingId=error.pendingId;assert.equal(typeof pendingId,'string');return true;});}finally{storage.replaceProjectCollections=replace;}
   assert.deepEqual(f.store.state,before);assert.deepEqual(await readManagedState(storage,f.store.projectId,{offline:false}),durable);
-  let pending;for(const row of (await f.store.listPending()).filter(row=>row.kind==='business')){const detail=await readManagedPending(storage,f.store.projectId,row.id);if(detail.error?.code==='EINJECTED_COMMIT'){pending={...row,...detail};break;}}assert(pending);assert.equal(pending.automaticReplay,false);assert.equal(pending.requiresConfirmation,true);
-  await f.restart();for(const key of ['todos','todoManagementActions','todoTombstones','todoActions','todoManagementHistory','todoHistory','works','jobs','messages','receipts'])assert.deepEqual(f.store.state[key]??[],before[key]??[],`${key} must survive rejected ${action} unchanged across recovery`);await f.manage(request(action,revision));
+  const pending=(await f.store.listPending()).find(row=>row.id===pendingId);
+  assert.equal(pending.kind,'business');assert.equal(pending.automaticReplay,false);assert.equal(pending.requiresConfirmation,true);
+  assert.equal((await readManagedPending(storage,f.store.projectId,pendingId)).error.code,'EINJECTED_COMMIT');
+  await f.restart();
+  for(const key of ['todos','todoManagementActions','todoTombstones','todoActions','todoManagementHistory','todoHistory','works','jobs','messages','receipts'])assert.deepEqual(f.store.state[key]??[],before[key]??[],`${key} must survive rejected ${action} unchanged across recovery`);
+  await rejectsCode(f.manage(payload),'STORAGE_RESULT_UNKNOWN');
+  assert.deepEqual(await readManagedState(storage,f.store.projectId,{offline:false}),durable);
+  const options={pendingId,requestKey:`recover-rejected-${action}`};
+  await rejectsCode(f.store.reconcilePending(options),'RECOVERY_CONFIRM_REQUIRED');
+  const result=await f.store.reconcilePending({...options,confirmed:true});
+  assert.equal(result.status,'reconciled');assert.equal(result.automaticReplay,false);
+  await rejectsCode(f.manage(payload),'STORAGE_RESULT_UNKNOWN'); // The already-open snapshot is still stale.
+  await f.restart();
+  if(action==='close'){assert.equal(f.todo().status,'closed');assert.equal(f.todo().managementHistory.length,1);}
+  else{assert.equal(f.todo(),undefined);assert.equal(f.store.state.todoTombstones.length,1);}
+  const snapshot=structuredClone(f.store.state),receipt=await f.manage(payload);
+  assert.deepEqual(receipt,{accepted:true,todoId:payload.todoId,action,status:action==='close'?'closed':'removed',managementRevision:revision+1,requestKey:payload.requestKey});
+  assert.deepEqual(f.store.state,snapshot);
  }
  await f.restart();assert.equal(f.todo(),undefined);assert.equal(f.store.state.todoTombstones.length,1);
 });

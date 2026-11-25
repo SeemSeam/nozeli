@@ -74,7 +74,7 @@ test('real archival filesystem blocker preserves candidate until retry',async t=
  const response=await c.endWork(w.id,{revision:1,decision:'discard'});assert.equal(response.status,'closing');assert.equal(response.closure.phase,'blocked');
  assert.equal(c.store.find(w.id).status,'closing');assert.equal(c.store.find(w.id).closure.phase,'blocked');assert.equal(await fs.readFile(path.join(w.execution.directory,'result.txt'),'utf8'),'candidate bytes');
  const persisted=await readTestState(c.store);assert.equal(persisted.works.find(row=>row.id===w.id).closure.phase,'blocked');
- const bug=(await c.maintenance.read()).bugs.find(row=>row.phase==='closure');assert.equal(bug.error.code,'EISDIR');assert.equal(bug.status,'needs-version-fix');assert.equal(bug.attempts.length,1);assert.equal(persisted.works.find(row=>row.id===w.id).maintenance.bugId,bug.id);
+ const bug=(await c.maintenance.read()).bugs.find(row=>row.phase==='closure');assert.equal(bug.error.code,'WORKSPACE_FILE_INVALID');assert.equal(bug.status,'needs-version-fix');assert.equal(bug.attempts.length,1);assert.equal(persisted.works.find(row=>row.id===w.id).maintenance.bugId,bug.id);
  await fs.rmdir(c.store.plan);await fs.rename(savedPlan,c.store.plan);await c.maintenanceRetry(bug.id);
  assert.equal(c.store.find(w.id).closure.phase,'complete');assert.equal((await c.maintenance.read()).bugs.find(row=>row.id===bug.id).status,'repaired');assert.equal(c.store.state.jobs.find(row=>row.context?.bugId===bug.id).status,'completed');await assert.rejects(fs.stat(w.execution.directory),{code:'ENOENT'});
 });

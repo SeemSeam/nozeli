@@ -2,6 +2,11 @@
 
 当前版本基线：**`0.1.0-beta.9`**（Linux x64、macOS arm64 与 Windows x64 预发行候选，尚待同一提交的 CI 和三平台实包验收）。用户明确批准本版 Beta 公开预发行审计例外：SuperDoc/PPTist 与 Git、OMP 对应源码，Electron/Chromium 第三方通知，PPTist 传递依赖及 Pi 运行时闭包六项仍未签核，`--public` 继续阻断，不构成合规认证或稳定版授权。
 
+## Beta.9 候选回归记录
+
+- `ae23b696ba` 的 [CI](https://github.com/SeemSeam/nozeli/actions/runs/45596828821) 通过 Linux 单测、Linux 解包烟测和 macOS 原生安全；[Windows 解包运行时烟测](https://github.com/SeemSeam/nozeli/actions/runs/45596829206) 通过，Windows 原生文件系统在 Node 和 Electron 各通过 310 项。必需门禁仍失败：Linux 集成 2194 通过、17 失败、70 跳过；Windows 手动启动器测试因 PowerShell 模块路径失败；[macOS 解包烟测](https://github.com/SeemSeam/nozeli/actions/runs/45596828742) 卡在窄窗格拖动断言。以上结果不替代修复提交的验收。
+- 后续修复保留历史报告的原回执绑定、未完成路由的原请求核对与禁止重放，以及未知提交的恢复保护。Windows 测试进程使用对应 PowerShell 模块；手势测试用垂直位移避开窄窗格的水平限制。未创建发布标签或公开产物。
+
 ## 三平台稳定版准备（2026-11-18，用户已确认）
 
 目标为真正的稳定正式版，不通过Beta例外绕过分发审计。平台固定Linux x64、macOS arm64、Windows x64；不暗含Intel Mac或Windows ARM。当前源码版本仍为beta.8历史基线，不提前分配稳定tag、不修改已公开附件，不推送／开PR／上传或替换日常安装。

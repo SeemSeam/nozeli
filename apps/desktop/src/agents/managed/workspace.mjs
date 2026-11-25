@@ -73,8 +73,11 @@ export class Workspace {
     this.firstStorageFault={projectId:this.projectId,instanceId:project?.instanceId,sourceIdentity:project?{root:project.root,identity:project.identity,metadataRoot:project.metadataRoot,metadataIdentity:project.metadataIdentity}:null,error:codes(error)};
     console.error('NOZELI_WORKSPACE_FIRST_FAULT:'+JSON.stringify(this.firstStorageFault));
   }
-  async ownedCommit(operation){
+  assertOwnedCommitKnown(){
     if(this.commitUnknown||this.nativeCommitUnknown)throw Object.assign(Error('Workspace outcome requires explicit recovery'),{code:'STORAGE_RESULT_UNKNOWN',commitUnknown:this.commitUnknown??this.nativeCommitUnknown,automaticReplay:false});
+  }
+  async ownedCommit(operation){
+    this.assertOwnedCommitKnown();
     try{
       await this.custody?.check?.();const result=await operation();
       try{await this.custody?.check?.();}catch(cause){this.commitUnknown??={projectId:this.projectId,hostPostcheck:true};this.offline=true;throw Object.assign(Error('Workspace owner postcheck failed after storage effects'),{code:'STORAGE_RESULT_UNKNOWN',cause,automaticReplay:false,commitUnknown:this.commitUnknown});}
@@ -110,7 +113,10 @@ export class Workspace {
     });
     this.serial=run.catch(()=>{});return run;
   }
-  persistDrafts(){
+  async persistDrafts(){
+    // A refusal at admission is not an attempted draft write. Do not replace
+    // the drain promise with this rejection and strand an otherwise closable workspace.
+    this.assertOwnedCommitKnown();
     const run=this.draftSerial.catch(()=>{}).then(()=>this.ownedCommit(()=>this.storage.putRecovery(this.projectId,'managed:drafts',structuredClone(this.state.drafts??{}))));
     this.draftSerial=run;return run;
   }

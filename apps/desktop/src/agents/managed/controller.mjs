@@ -3542,8 +3542,9 @@ export class Controller extends EventEmitter {
         }
         const binding=w?.binding||this.store.state.bindings[job.target];
         if(binding){this.store.state.modelObservations??={};this.store.state.modelObservations[`${binding.model}:${binding.effort}`]={status:'turn-failed',error:e.message,at:new Date().toISOString()};}
-        this.store.state.messages.push({id:randomUUID(),target:job.target,speaker:'system',text:internalBug?'系统正在诊断处理，原请求与已保存进展保留；无需重复提交。':job.type==='maintenance'?(this.debugModelUnavailable(e)?'系统诊断因模型服务暂不可用而停止，故障与原进展保留；未重放原任务。':'系统诊断证据待补全，故障与原进展保留；无需用户技术维修或重复提交。'):runtimeFailureMessage(e,{work:Boolean(ending)}).text,jobId:job.id,...(job.context?.frontJobId||job.context?.manual||job.context?.boundWorkId?{audience:'frontdesk'}:{})});
-        if(w?.status==='running')this.pauseState(w,e.message,saved);else if(!w&&!diagnostic&&!internalBug&&!['maintenance','backstage','project-initialization'].includes(job.type))this.store.state.todos.push({id:randomUUID(),kind:'system',status:'open',target:job.target,sourceJobId:job.id,text:e.message});
+        const needsIntakeReconciliation=e.code==='INTAKE_ROUTE_REQUIRED';
+        this.store.state.messages.push({id:randomUUID(),target:job.target,speaker:'system',text:needsIntakeReconciliation?e.message:internalBug?'系统正在诊断处理，原请求与已保存进展保留；无需重复提交。':job.type==='maintenance'?(this.debugModelUnavailable(e)?'系统诊断因模型服务暂不可用而停止，故障与原进展保留；未重放原任务。':'系统诊断证据待补全，故障与原进展保留；无需用户技术维修或重复提交。'):runtimeFailureMessage(e,{work:Boolean(ending)}).text,jobId:job.id,...(job.context?.frontJobId||job.context?.manual||job.context?.boundWorkId?{audience:'frontdesk'}:{})});
+        if(w?.status==='running')this.pauseState(w,e.message,saved);else if(!w&&!diagnostic&&!internalBug&&!needsIntakeReconciliation&&!['maintenance','backstage','project-initialization'].includes(job.type))this.store.state.todos.push({id:randomUUID(),kind:'system',status:'open',target:job.target,sourceJobId:job.id,text:e.message});
       });
       if(internalBug&&job.type!=='maintenance')await this.maintenanceEvent(internalBug,{schedule:false});
       // 真实管线的服务故障事实出口（§4.2）：只从实际 run 失败发出。等待

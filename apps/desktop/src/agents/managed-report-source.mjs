@@ -171,12 +171,13 @@ export async function managedHistory(options,{objectId,version,offset=0,limit=50
   if(!Number.isSafeInteger(offset)||offset<0||!Number.isInteger(limit)||limit<1||limit>100||offset>0&&!version)throw payloadError();
   try{return await readHistory(options,{objectId,version,offset,limit});}
   catch(error){
-    if(!objectId||version!==undefined||!error.sourceMoved)throw readable(error);
+    const attached=options.currentController();
+    if(!objectId||version!==undefined||!error.sourceMoved||options.controller||!attached)throw readable(error);
     // Only a controller handoff is retryable. Keep the exact original receipt
     // and registered project instance; never substitute the latest publication.
     const project=await options.storage.requireRegistered(options.project.id);
     if(project.instanceId!==options.project.instanceId||project.removed)throw readable(changed());
-    try{return await readHistory({...options,controller:options.currentController()},{objectId,offset,limit},error.identity);}
+    try{return await readHistory({...options,controller:attached},{objectId,offset,limit},error.identity);}
     catch(retryError){throw readable(retryError);}
   }
 }

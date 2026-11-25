@@ -79,15 +79,30 @@ test('failed stop is explicitly retryable and reconciliation never removes or re
  await f.manager.reconcile({projectId:f.project.id,operationId:'remove-stop-failure'});
  assert.equal(closes,2);assert.notEqual((await f.storage.requireRegistered(f.project.id)).removed,true);assert.equal(f.closed.length,0);
  assert.deepEqual(await f.storage.getRecovery(f.project.id,'managed:pending:preserved-fixture'),pending);
+ assert.equal(f.storage.lifecycleHolds.has(f.project.id),false);
  assert.equal((await f.manager.removeProject(f.project.id,{operationId:'remove-after-explicit-check'})).removed,true);
  assert.deepEqual(await f.storage.getRecovery(f.project.id,'managed:pending:preserved-fixture'),pending);
  assert.equal(c.store.lifecycleHold,null);
  const registered=await f.storage.register(f.root);assert.equal(registered.instanceId,f.project.instanceId);
+ // Stop reconciliation releases lifecycle admission, not the independent durable commit fence.
+ await f.storage.requireOnline(f.project.id);
+ await assert.rejects(f.managed.connect(f.project.id,{enable:true,localOnly:true,startResidents:false}),{code:'STORAGE_RESULT_UNKNOWN'});
+ assert.equal(f.managed.controllers.has(f.project.id),false);
+ assert.equal(await f.storage.getProject(f.project.id,'managed_jobs','never-replay'),null);
+ assert.equal((await f.manager.removeProject(f.project.id,{operationId:'remove-fenced-instance'})).removed,true);
+ assert.deepEqual(await f.storage.getRecovery(f.project.id,'managed:pending:preserved-fixture'),pending);
+ assert.equal(await fs.readFile(path.join(f.root,'source.txt'),'utf8'),'retained source\n');
+});
+
+test('a settled removal does not transfer its lifecycle hold to a reconnected controller',async t=>{
+ const f=await fixture(t),c=await controller(f);
+ assert.equal((await f.manager.removeProject(f.project.id,{operationId:'remove-before-reconnect'})).removed,true);
+ assert.equal(c.store.lifecycleHold,null);
+ const registered=await f.storage.register(f.root);assert.equal(registered.instanceId,f.project.instanceId);
  await f.managed.connect(f.project.id,{enable:true,localOnly:true,startResidents:false});
  const reopened=f.managed.controllers.get(f.project.id);assert.notEqual(reopened,c);assert.notEqual(reopened.store,c.store);
- assert.equal(reopened.store.lifecycleHold,undefined);assert.equal(reopened.store.state.jobs.some(job=>job.id==='never-replay'),false);
+ assert.equal(reopened.store.lifecycleHold,undefined);
  assert.equal((await f.manager.removeProject(f.project.id,{operationId:'remove-reconnected-instance'})).removed,true);
- assert.deepEqual(await f.storage.getRecovery(f.project.id,'managed:pending:preserved-fixture'),pending);
 });
 
 test('a pre-hold connection flight is drained and cancelled without poisoning managed persistence',async t=>{

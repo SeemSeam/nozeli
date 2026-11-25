@@ -124,8 +124,10 @@ test('unverified ownerAlive refuses a verdict instead of guessing liveness',{tim
 
 test('a stale workspace lock is only releasable through a verified identity answer',{timeout:20000},async t=>{
   // Exercise the actual extracted acquisition path against a real stale lock.
-  const runtime=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-lock-takeover-'));
-  t.after(()=>fs.rm(runtime,{recursive:true,force:true}));
+  const base=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-lock-takeover-'));
+  t.after(()=>fs.rm(base,{recursive:true,force:true}));
+  const runtime=path.join(base,'runtime'),content=path.join(base,'content');
+  await fs.mkdir(runtime);await fs.mkdir(content);
   const lock=path.join(runtime,'host.lock');
   const dead=spawn(process.execPath,['-e','process.exit(0)'],{stdio:'ignore'});
   await once(dead,'exit');
@@ -135,7 +137,7 @@ test('a stale workspace lock is only releasable through a verified identity answ
   }
   await assert.rejects(ownerAlive(JSON.parse(await fs.readFile(lock,'utf8')),{selection:unsupportedProcess}),refusesProcessOwnership);
   await assert.doesNotReject(fs.access(lock),'the refused takeover never unlinked the stale lock');
-  const before=await fs.readFile(lock),options={project:{root:path.join(runtime,'separate-content')},runtimeRoot:runtime,recoverStale:true};
+  const before=await fs.readFile(lock),options={project:{root:content},runtimeRoot:runtime,recoverStale:true};
   if(process.platform==='linux'){
     const custody=await legacyWorkspaceIO.acquire(options);assert.notDeepEqual(await fs.readFile(lock),before);await custody.release();await assert.rejects(fs.stat(lock),{code:'ENOENT'});
   }else if(process.platform==='win32'){

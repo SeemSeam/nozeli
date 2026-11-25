@@ -257,10 +257,10 @@ test('task original export keeps the only full path for oversized native records
 
 test('process location survives bootstrap probes with one request identity and explicit overview or cold reopen never replays it',async()=>{
  const store=history(),index=new SessionIndex(store),scope={workId:'work-a'};
- const native=Object.create(WorkspaceNative.prototype),root={projectId:store.projectId},record={projectId:store.projectId,windowId:'detached',generation:1};
+ const native=new WorkspaceNative({host:{}}),root={projectId:store.projectId},record={projectId:store.projectId,windowId:'detached',generation:1};
  let layout={projectId:store.projectId,revision:1,views:{}},controls=[],contentReady=true;
  native.managedAgents={projectionSource:async()=>({index,state:store.state})};
- native.windows=new Map([['detached',root]]);native.surfaces=new Map();native.layout=async()=>layout;native.layouts=new Map();
+ native.windows.set('detached',root);native.layout=async()=>layout;
  native.command=async(sender,payload,options)=>{
   assert.equal(sender,root);
   if(payload.command.type==='openTask'){
@@ -285,7 +285,7 @@ test('process location survives bootstrap probes with one request identity and e
  await native.openTaskProcess(record,scope,undefined,'overview');
  assert.equal(layout.views.task.viewState.taskMode,'overview');
  assert.equal(controls.at(-1)[1].viewState.taskLocate,undefined);
- const cold=Object.create(WorkspaceNative.prototype);cold.layouts=new Map([[store.projectId,JSON.parse(JSON.stringify(layout))]]);
+ const cold=new WorkspaceNative({host:{}});cold.layouts.set(store.projectId,JSON.parse(JSON.stringify(layout)));
  assert.equal(cold.bootstrap(native.surfaces.get('task')).viewState.taskLocate,undefined,'cold reopen retains overview without jumping');
  assert.equal(cold.bootstrap(native.surfaces.get('task')).viewState.taskMode,'overview');
  contentReady=false;const delivered=controls.length;

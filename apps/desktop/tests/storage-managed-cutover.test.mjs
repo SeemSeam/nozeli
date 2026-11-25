@@ -169,16 +169,42 @@ test('reconcile retry after post-commit recovery failure is idempotent across re
 });
 
 test('unknown project commit keeps draft until explicit inspection-only reconciliation',async t=>{
- const {store,storage,project}=await fixture(t);await store.setDraft('frontdesk','Unknown commit input');
+ const {store,storage,project,runtime,content}=await fixture(t);await store.setDraft('frontdesk','Unknown commit input');
  const replace=storage.replaceProjectCollections.bind(storage);storage.replaceProjectCollections=async(...args)=>{await replace(...args);throw Object.assign(Error('lost commit response'),{code:'STORAGE_RESULT_UNKNOWN'});};
- await assert.rejects(consumeInput(store,'Unknown commit input'),{code:'STORAGE_RESULT_UNKNOWN'});storage.replaceProjectCollections=replace;
+ try{await assert.rejects(consumeInput(store,'Unknown commit input'),{code:'STORAGE_RESULT_UNKNOWN'});}finally{storage.replaceProjectCollections=replace;}
  assert.equal((await storage.getRecovery(project.id,'managed:drafts')).frontdesk,'Unknown commit input');assert.equal((await storage.listProject(project.id,'managed_jobs')).length,1);
  assert.equal(store.state.jobs[0].text,'Unknown commit input');assert.equal(typeof store.commitUnknown.pendingId,'string');
  let entered=false;await assert.rejects(store.mutate(()=>{entered=true;}),{code:'STORAGE_RESULT_UNKNOWN'});assert.equal(entered,false);
  await assert.rejects(store.requireOnline(),{code:'STORAGE_RESULT_UNKNOWN'});await assert.rejects(store.save(),{code:'STORAGE_RESULT_UNKNOWN'});
- await store.setDraft('frontdesk','Late input still recoverable during unknown hold');assert.equal((await storage.getRecovery(project.id,'managed:drafts')).frontdesk,'Late input still recoverable during unknown hold');
- const pending=(await listManagedPending(storage,project.id)).find(row=>row.kind==='business'),result=await reconcileManagedPending(storage,project.id,{pendingId:pending.id,requestKey:'unknown-commit-inspection',confirmed:true});
- assert.equal(result.accepted,true);assert.equal((await storage.listProject(project.id,'managed_jobs')).length,1);assert.equal((await storage.listProject(project.id,'managed_jobs'))[0].value.status,'interrupted');
+ const lateDraft='Late unsaved input during unknown hold';
+ await assert.rejects(store.setDraft('frontdesk',lateDraft),{code:'STORAGE_RESULT_UNKNOWN',automaticReplay:false});
+ assert.equal(store.state.drafts.frontdesk,lateDraft);
+ assert.equal((await storage.getRecovery(project.id,'managed:drafts')).frontdesk,'Unknown commit input');
+ const pending=(await listManagedPending(storage,project.id)).find(row=>row.id===store.commitUnknown.pendingId);
+ assert.equal(pending.status,'pending');
+ const pendingRecord=await readManagedPending(storage,project.id,pending.id);
+ assert.equal(pendingRecord.error.code,'STORAGE_RESULT_UNKNOWN');assert.equal(pending.automaticReplay,false);
+ await store.close(); // An already-fenced draft refusal did not start a write or poison the legacy close drain.
+ const cold=await Workspace.open(runtime,content,{storage,projectId:project.id});
+ try{
+  assert.equal(cold.state.drafts.frontdesk,'Unknown commit input');
+  await assert.rejects(cold.requireOnline(),{code:'STORAGE_RESULT_UNKNOWN'});
+  const options={pendingId:pending.id,requestKey:'unknown-commit-inspection'};
+  await assert.rejects(cold.reconcilePending(options),{code:'RECOVERY_CONFIRM_REQUIRED'});
+  const result=await cold.reconcilePending({...options,confirmed:true});
+  assert.equal(result.accepted,true);assert.equal(result.automaticReplay,false);
+  await assert.rejects(cold.requireOnline(),{code:'STORAGE_RESULT_UNKNOWN'});
+ }finally{await cold.close();}
+ const reopened=await Workspace.open(runtime,content,{storage,projectId:project.id});
+ try{
+  await reopened.requireOnline();
+  assert.equal(reopened.state.drafts.frontdesk,'Unknown commit input');
+  assert.equal(reopened.state.jobs.length,1);assert.equal(reopened.state.jobs[0].id,'accepted-input');assert.equal(reopened.state.jobs[0].status,'interrupted');
+  assert.equal(reopened.state.jobs[0].recoveryRequiresExplicitInput,true);assert.equal(reopened.state.jobs[0].automaticReplay,false);
+  await reopened.setDraft('frontdesk',lateDraft);
+  assert.equal((await storage.getRecovery(project.id,'managed:drafts')).frontdesk,lateDraft);
+  assert.equal((await storage.listProject(project.id,'managed_jobs')).length,1);
+ }finally{await reopened.close();}
 });
 
 test('business merge checks its complete baseline atomically against a late project writer',async t=>{

@@ -120,10 +120,40 @@ test('dispatch, lineage and route commit once; save failure rolls everything bac
  for(const s of snapshots){const w=s.works[0];assert.equal(w.sourceJob,job.id);assert.deepEqual(w.sourceInputJobIds,[job.id]);assert.equal(s.jobs[0].routing.workId,w.id);}
  c.current.delete('orchestrator');
 });
-test('failed intake retries explicitly on original root and blocks replay after dispatch',async t=>{
- const {c,open}=await fixture(t);c.started=false;const accepted=await c.submitTask('Retry this',{requestKey:'retry-source'});await c.store.mutate(()=>{c.store.state.jobs[0].status='interrupted';});await c.stop();const restored=await open();assert.equal(restored.store.state.jobs.length,1);assert.equal(restored.store.state.jobs[0].status,'interrupted');
- const retry=await restored.retryIntake(accepted.jobId,'retry-click');assert.equal((await restored.retryIntake(accepted.jobId,'second-click')).jobId,retry.jobId);assert.equal(restored.store.state.jobs.length,2);const job=restored.store.state.jobs.at(-1);assert.deepEqual(restored.intakeSource(job).sourceInputJobIds,[accepted.jobId,retry.jobId]);assert.equal(restored.intakeSource(job).request,'Retry this');
- restored.current.set('orchestrator',structuredClone(job));await restored.onTool('orchestrator',{tool:'nozeli_dispatch',arguments:{name:'Retry',brief:'Do it'}});await assert.rejects(restored.retryIntake(accepted.jobId,'late-click'),/重复派工/);restored.current.delete('orchestrator');
+test('cold interrupted intake cannot replay; a distinct explicit request gets one dispatch',async t=>{
+ const {c,open,prompts}=await fixture(t);c.started=false;
+ const request='Original interrupted input',key='interrupted-original';
+ const accepted=await c.submitTask(request,{requestKey:key});
+ // Persist a stopped request with no proof that admission was prevented.
+ await c.store.mutate(()=>{Object.assign(c.store.state.jobs.find(j=>j.id===accepted.jobId),{status:'interrupted',promptStartedAt:1});});
+ await c.stop();const restored=await open();
+ const job=restored.store.state.jobs.find(j=>j.id===accepted.jobId);
+ assert.equal(job.status,'interrupted');assert.equal(job.text,request);
+ const reconciliation=restored.intakeReconcile(job.id,restored.store.projectInstanceId);
+ assert.equal(reconciliation.status,'needs-reconciliation');assert.equal(reconciliation.effectUnknown,true);
+ const before=await readTestState(restored.store);
+ for(const requestKey of ['retry-click','second-click'])await assert.rejects(restored.retryIntake(job.id,requestKey),{code:'INTAKE_REPLAY_FORBIDDEN'});
+ assert.deepEqual(await restored.submitTask(request,{requestKey:key}),accepted);
+ assert.deepEqual(await readTestState(restored.store),before);
+ assert.equal(restored.store.state.jobs.length,1);assert.equal(restored.store.state.works.length,0);assert.equal(prompts.length,0);
+
+ const nextText='New explicit instruction',next=await restored.submitTask(nextText,{requestKey:'distinct-new-request'});
+ assert.notEqual(next.jobId,job.id);
+ const fresh=restored.store.state.jobs.find(j=>j.id===next.jobId);
+ restored.current.set('orchestrator',structuredClone(fresh));
+ try{
+  const dispatch={tool:'nozeli_dispatch',arguments:{name:'Explicit Work',brief:'Do it'}};
+  const route=await restored.onTool('orchestrator',dispatch);
+  assert.ok(route.workId);
+  assert.equal((await restored.onTool('orchestrator',dispatch)).workId,route.workId);
+  const persisted=await readTestState(restored.store);
+  assert.equal(persisted.works.length,1);
+  const [work]=persisted.works;assert.equal(work.id,route.workId);assert.equal(work.sourceJob,next.jobId);
+  assert.equal(work.request,nextText);assert.deepEqual(work.sourceInputJobIds,[next.jobId]);
+  for(const id of [job.id,next.jobId])await assert.rejects(restored.retryIntake(id,'late-click'),{code:'INTAKE_REPLAY_FORBIDDEN'});
+  assert.deepEqual(await readTestState(restored.store),persisted);
+  assert.equal(restored.store.state.jobs.length,2);assert.equal(prompts.length,0);
+ }finally{restored.current.delete('orchestrator');}
 });
 test('direct queued Worker input is host-resolved on original Work without model routing',async t=>{
  const {c}=await fixture(t);c.started=false;const w=await c.store.submit('queued original','brief',{name:'Queued'});await c.setDraft(w.id,'extra');const accepted=await c.send(w.id,'extra',{requestKey:'queued-supplement'});const job=c.store.state.jobs.find(j=>j.id===accepted.jobId);assert.equal(job.type,'intake');assert.equal(job.context.boundWorkId,w.id);assert.equal(c.store.state.messages.at(-1).target,w.id);assert.equal(c.store.state.drafts[w.id],'');assert.equal(accepted.hostResolved,true);assert.equal(job.status,'completed');assert.equal(job.promptStartedAt,null);assert.equal(c.store.find(w.id).inputs[0].text,'extra');assert.equal(c.store.find(w.id).brief,'brief');assert.equal(c.store.state.works.length,1);assert.equal(c.store.find(w.id).threadId,undefined);

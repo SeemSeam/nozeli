@@ -2,22 +2,31 @@ import {openTestController,openTestWorkspace,readTestState,writeTestState,readTe
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs/promises';import os from 'node:os';import path from 'node:path';import {randomUUID} from 'node:crypto';
 import {Controller} from '../src/agents/managed/controller.mjs';import {managedWorkRecords} from '../src/domain/managed-work-records.mjs';
 const wait=async fn=>{const end=Date.now()+30000;while(Date.now()<end){if(fn())return;await new Promise(r=>setTimeout(r,5));}throw Error('condition timeout');};
-async function fixture(t){const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-transfer-'));let c,resolve,reject;const events=[];let failInterrupt=false,interrupts=0;
- class Session { async preflightToolsDigest() {} async assertToolsDigest() {} constructor(spec,target){Object.assign(this,spec,{target,busy:false,closed:false});}async start(id){this.threadId=id||randomUUID();return this;}async stop(){this.closed=true;reject?.(Error('stopped'));}async interrupt(){interrupts++;if(failInterrupt)throw Error('模拟中断请求失败');events.push('interrupt-requested');return {requested:true};}async prompt(){this.busy=true;const job=c.current.get(this.target);events.push(this.target+':start');try{if(this.target==='frontdesk')return await new Promise((r,j)=>{resolve=r;reject=j;});await this.onTool({tool:'nozeli_manage',arguments:{action:'clarify',text:'后台任务已接收；请补充验收标准'},callId:randomUUID()});return {text:'',completion:'host-control',threadId:this.threadId};}finally{events.push(this.target+':settled');this.busy=false;}}}
+async function fixture(t){const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-transfer-'));let c,resolve,reject;const events=[],prompts=[];let failInterrupt=false,interrupts=0;
+ class Session { async preflightToolsDigest() {} async assertToolsDigest() {} constructor(spec,target){Object.assign(this,spec,{target,busy:false,closed:false});}async start(id){this.threadId=id||randomUUID();return this;}async stop(){this.closed=true;reject?.(Error('stopped'));}async interrupt(){interrupts++;if(failInterrupt)throw Error('模拟中断请求失败');events.push('interrupt-requested');return {requested:true};}async prompt(text){this.busy=true;const job=c.current.get(this.target);prompts.push({jobId:job.id,text});events.push(this.target+':start');try{if(this.target==='frontdesk')return await new Promise((r,j)=>{resolve=r;reject=j;});await this.onTool({tool:'nozeli_manage',arguments:{action:'clarify',text:'后台任务已接收；请补充验收标准'},callId:randomUUID()});return {text:'',completion:'host-control',threadId:this.threadId};}finally{events.push(this.target+':settled');this.busy=false;}}}
  const options={runtimeRoot:path.join(root,'runtime'),contentRoot:path.join(root,'project'),projectHome:home=>fs.mkdir(home,{recursive:true}),sessionFactory:(spec,target)=>new Session(spec,target)};c=await openTestController(options);await c.start();t.after(async()=>{await c.stop();await fs.rm(root,{recursive:true,force:true});});
  const r=await c.send('frontdesk','解释项目资料'),source=c.store.state.messages.find(m=>m.jobId===r.jobId);await wait(()=>c.sessions.get('frontdesk').busy);
- return {c,options,source,events,finish:()=>resolve({text:'尚未验证的部分解释',metrics:{tokens:null,tokenCompleteness:'unavailable'},threadId:c.sessions.get('frontdesk').threadId,completion:'user-transfer',providerStatus:'interrupted'}),fail:()=>{failInterrupt=true;},allow:()=>{failInterrupt=false;},interrupts:()=>interrupts};
+ return {c,options,source,events,prompts,finish:()=>resolve({text:'尚未验证的部分解释',metrics:{tokens:null,tokenCompleteness:'unavailable'},threadId:c.sessions.get('frontdesk').threadId,completion:'user-transfer',providerStatus:'interrupted'}),fail:()=>{failInterrupt=true;},allow:()=>{failInterrupt=false;},interrupts:()=>interrupts};
 }
 test('active transfer persists first, gates main until settlement, preserves partial/draft and dedupes races',async t=>{
- const {c,source,events,finish}=await fixture(t);const thread=c.sessions.get('frontdesk').threadId;await c.setDraft('frontdesk','无关草稿');const r=await c.convertMessage(source.id,'核对项目',{requestKey:'active-transfer-one'});assert(r.transferring);await wait(()=>events.includes('interrupt-requested'));const saved=await readTestState(c.store);assert.equal(saved.jobs.find(j=>j.id===r.jobId).status,'transferring');assert.equal(c.store.used(),0);assert.equal(managedWorkRecords(c.snapshot())[0].phase,'正在转交，等待前台停稳');assert(!events.includes('orchestrator:start'));
+ const {c,source,events,prompts,finish}=await fixture(t);const thread=c.sessions.get('frontdesk').threadId;await c.setDraft('frontdesk','无关草稿');const r=await c.convertMessage(source.id,'核对项目',{requestKey:'active-transfer-one'});assert(r.transferring);await wait(()=>events.includes('interrupt-requested'));const saved=await readTestState(c.store);const accepted=saved.jobs.find(j=>j.id===r.jobId);assert.equal(accepted.status,'transferring');assert.equal(c.store.used(),0);assert.equal(managedWorkRecords(c.snapshot())[0].phase,'正在转交，等待前台停稳');assert(!events.includes('orchestrator:start'));
  assert.equal((await c.convertMessage(source.id,'核对项目',{requestKey:'active-transfer-two'})).jobId,r.jobId);const callback=await c.onTool('frontdesk',{tool:'nozeli_handoff',arguments:{reason:'自动交接'},callId:'race'});assert.equal(callback.jobId,r.jobId);for(const reason of ['@read state','@new 新目标','@continue'])assert((await c.onTool('frontdesk',{tool:'nozeli_handoff',arguments:{reason},callId:reason})).transferred);
- finish();await wait(()=>c.store.state.jobs.find(j=>j.id===r.jobId).status==='completed'&&!c.running.size);assert(events.indexOf('frontdesk:settled')<events.indexOf('orchestrator:start'));assert.equal(c.store.state.jobs.filter(j=>j.type==='intake').length,1);assert.equal(c.sessions.get('frontdesk').threadId,thread);assert(!c.sessions.get('frontdesk').closed);assert.equal(c.store.state.drafts.frontdesk,'无关草稿');assert.equal(c.store.state.messages.find(m=>m.partial).text,'尚未验证的部分解释');assert.match(c.store.state.jobs.find(j=>j.id===r.jobId).text,/非最终成果/);assert(!c.store.state.todos.some(t=>t.kind==='system'));
+ finish();await wait(()=>c.store.state.jobs.find(j=>j.id===r.jobId).status==='completed'&&!c.running.size);assert(events.indexOf('frontdesk:settled')<events.indexOf('orchestrator:start'));assert.equal(c.store.state.jobs.filter(j=>j.type==='intake').length,1);assert.equal(c.sessions.get('frontdesk').threadId,thread);assert(!c.sessions.get('frontdesk').closed);assert.equal(c.store.state.drafts.frontdesk,'无关草稿');
+ const partial=c.store.state.messages.find(m=>m.jobId===source.jobId&&m.partial);
+ assert.equal(partial.text,'尚未验证的部分解释');
+ // A settled partial is host-added discussion evidence, never part of the frozen intake input.
+ assert.equal((await readTestState(c.store)).jobs.find(j=>j.id===r.jobId).text,accepted.text);
+ const delivered=prompts.filter(p=>p.jobId===r.jobId);
+ assert.equal(delivered.length,1);
+ assert.ok(delivered[0].text.includes('转交前可观察输出（讨论材料，非最终成果）：\n'+partial.text));
+ assert.equal(delivered[0].text.split(partial.text).length-1,1);
+ assert(!c.store.state.todos.some(t=>t.kind==='system'));
 });
 test('failed interrupt remains pending, retry uses same receipt and natural completion settles safely',async t=>{
  const {c,source,events,finish,fail,allow,interrupts}=await fixture(t);fail();const r=await c.convertMessage(source.id,'核对',{requestKey:'stop-failure-one'});await wait(()=>c.store.state.jobs.find(j=>j.id===r.jobId).transfer.error);assert(!events.includes('orchestrator:start'));const record=managedWorkRecords(c.snapshot())[0];assert.equal(record.retryJobId,r.jobId);assert.match(record.phase,/尚未停稳/);allow();await c.retryIntake(r.jobId,'retry-stop-one');assert.equal(interrupts(),2);assert.equal(c.store.state.jobs.filter(j=>j.type==='intake').length,1);assert(!events.includes('orchestrator:start'));finish();await wait(()=>c.store.state.jobs.find(j=>j.id===r.jobId).status==='completed');
 });
 test('restart preserves accepted transfer and retained destination input without replaying source',async t=>{
- const {c,source,options,events}=await fixture(t);const r=await c.convertMessage(source.id,'核对',{requestKey:'recovery-transfer-one'});await c.stop();const reopened=await openTestController(options);try{const intake=reopened.store.state.jobs.find(j=>j.id===r.jobId);assert.equal(intake.status,'queued');assert.equal(intake.restartRecovery?.kind,'never-admitted');assert.equal(intake.transfer.status,'settled');const text=intake.text;await reopened.finalizeTransfers({restoring:true});assert.equal(intake.text,text);assert.equal(reopened.store.state.jobs.filter(j=>j.type==='intake').length,1);const sourceJob=reopened.store.state.jobs.find(j=>j.id===source.jobId);assert.equal(sourceJob.status,'queued');assert.equal(sourceJob.restartRecovery?.kind,'native-continuation');assert.equal(events.filter(e=>e==='frontdesk:start').length,1);assert.equal(reopened.sessions.size,0);await assert.rejects(reopened.retryIntake(intake.id,'explicit-transfer-retry'),/不可重试/);assert.equal(reopened.store.state.jobs.filter(j=>j.type==='intake').length,1);}finally{await reopened.stop();}
+ const {c,source,options,events}=await fixture(t);const r=await c.convertMessage(source.id,'核对',{requestKey:'recovery-transfer-one'});const text=c.store.state.jobs.find(j=>j.id===r.jobId).text;await c.stop();const reopened=await openTestController(options);try{const intake=reopened.store.state.jobs.find(j=>j.id===r.jobId);assert.equal(intake.status,'queued');assert.equal(intake.restartRecovery?.kind,'never-admitted');assert.equal(intake.transfer.status,'settled');await reopened.finalizeTransfers({restoring:true});assert.equal(reopened.store.state.jobs.find(j=>j.id===r.jobId).text,text);assert.equal(reopened.store.state.jobs.filter(j=>j.type==='intake').length,1);const sourceJob=reopened.store.state.jobs.find(j=>j.id===source.jobId);assert.equal(sourceJob.status,'queued');assert.equal(sourceJob.restartRecovery?.kind,'native-continuation');assert.equal(reopened.sessions.size,0);await assert.rejects(reopened.retryIntake(intake.id,'explicit-transfer-retry'),{code:'INTAKE_REPLAY_FORBIDDEN'});assert.equal(reopened.store.state.jobs.filter(j=>j.type==='intake').length,1);assert.equal(events.filter(e=>e==='frontdesk:start').length,1);assert(!events.includes('orchestrator:start'));assert.equal(reopened.sessions.size,0);}finally{await reopened.stop();}
 });
 test('converting old unrelated message never interrupts current different goal',async t=>{
  const {c,finish,interrupts}=await fixture(t);await c.store.mutate(()=>c.store.state.messages.push({id:'unrelated-old',target:'frontdesk',speaker:'agent',text:'独立旧问题答案'}));const r=await c.convertMessage('unrelated-old','核对旧问题',{requestKey:'unrelated-transfer-one'});assert(!r.transferring);assert.equal(interrupts(),0);await wait(()=>c.store.state.jobs.find(j=>j.id===r.jobId).status==='completed');assert(c.sessions.get('frontdesk').busy);finish();await wait(()=>!c.running.size);
@@ -78,30 +87,37 @@ test('a continue miss is never converted into a dispatch; explicit nozeli_dispat
   assert.equal(c.store.state.works.length,1);
  }finally{c.current.delete('orchestrator');}
 });
-test('status never routes an intake; ending without routing retains input and activates technical DEBUG',async t=>{
- const {c}=await fixture(t);const front=c.current.get('frontdesk');
- const intake=await c.store.mutate(()=>c.queueJob('orchestrator','intake','全新的独立后台任务',{context:{frontJobId:front.id}}));
- c.current.set('orchestrator',intake);
+test('status never routes an intake; ending after status requires reconciliation without replay',async t=>{
+ const {c,source}=await fixture(t);
+ const session=c.sessions.get('orchestrator'),originalPrompt=session.prompt.bind(session),observations=[];
+ let prompts=0;
+ session.prompt=async()=>{
+  prompts++;
+  const active=c.current.get('orchestrator');
+  for(const callId of ['status-first','status-repeat']){
+   const result=await session.onTool({tool:'nozeli_manage',arguments:{action:'status',text:''},callId});
+   observations.push({result,routing:c.store.state.jobs.find(j=>j.id===active.id).routing});
+  }
+  return {text:'',completion:'provider-completed',threadId:session.threadId};
+ };
  try{
-  const observed=await c.onTool('orchestrator',{tool:'nozeli_manage',arguments:{action:'status',text:''},callId:'s-1'});
-  assert.equal(observed.action,'status');assert.equal(observed.continueTurn,true);
-  assert.equal(c.store.state.jobs.find(j=>j.id===intake.id).routing,undefined);
-  // The same status query stays repeatable and still never routes.
-  const again=await c.onTool('orchestrator',{tool:'nozeli_manage',arguments:{action:'status',text:''},callId:'s-2'});
-  assert.equal(again.continueTurn,true);assert.equal(c.store.state.jobs.find(j=>j.id===intake.id).routing,undefined);
-  // A missing routing decision is an internal fault, not a user technical-repair todo.
-  c.current.delete('orchestrator');
-  const session=c.sessions.get('orchestrator'),originalPrompt=session.prompt.bind(session);
-  session.prompt=async()=>{await session.onTool({tool:'nozeli_manage',arguments:{action:'status',text:''},callId:'s-3'});return {text:'',completion:'host-control',threadId:session.threadId};};
-  try{
-   await c.store.mutate(()=>{Object.assign(c.store.state.jobs.find(j=>j.id===intake.id),{status:'queued'});});
-   c.kick();
-   await wait(()=>{const saved=c.store.state.jobs.find(j=>j.id===intake.id);return saved?.status==='failed'&&saved.maintenanceBugId&&c.store.state.jobs.some(job=>job.type==='maintenance'&&job.context?.bugId===saved.maintenanceBugId);});
-   const saved=c.store.state.jobs.find(j=>j.id===intake.id);
-   assert.equal(saved.status,'failed');assert.equal(saved.text,'全新的独立后台任务');assert.equal(saved.routing,undefined);assert.equal(c.store.state.works.length,0);
-   const bug=(await c.maintenance.read()).bugs.find(bug=>bug.id===saved.maintenanceBugId);assert.ok(bug);assert.equal(bug.jobId,saved.id);assert.equal(bug.phase,'runtime');assert.notEqual(bug.status,'repaired');
-   assert.equal(c.store.state.jobs.filter(job=>job.type==='maintenance'&&job.context?.bugId===bug.id).length,1);assert.equal(c.store.state.jobs.filter(job=>job.type==='intake').length,1);
-   assert.equal(c.snapshot().todos.some(todo=>todo.sourceJobId===saved.id&&['system','recovery'].includes(todo.kind)&&todo.status==='open'),false);
-  }finally{session.prompt=originalPrompt;}
- }finally{c.current.delete('orchestrator');}
+  const text='全新的独立后台任务';
+  const {jobId}=await c.submitTask(text,{requestKey:'status-no-route',context:{frontJobId:source.jobId}});
+  await wait(()=>c.store.state.jobs.find(j=>j.id===jobId)?.status==='failed'&&!c.running.has('orchestrator'));
+  assert.equal(observations.length,2);
+  for(const {result,routing} of observations){
+   assert.equal(result.action,'status');assert.equal(result.readOnly,true);assert.equal(result.continueTurn,true);assert.equal(routing,undefined);
+  }
+  const saved=(await readTestState(c.store)).jobs.find(j=>j.id===jobId);
+  assert.equal(saved.errorCode,'INTAKE_ROUTE_REQUIRED');assert.equal(saved.text,text);assert.equal(saved.routing,undefined);
+  assert.equal(c.intakeReconcile(jobId,c.store.projectInstanceId).status,'needs-reconciliation');
+  await assert.rejects(c.retryIntake(jobId,'status-no-replay'),{code:'INTAKE_REPLAY_FORBIDDEN'});
+  assert.equal(prompts,1);
+  assert.equal(c.store.state.works.length,0);
+  assert.equal(c.store.state.jobs.filter(job=>job.type==='intake').length,1);
+  assert.equal(saved.maintenanceBugId,undefined);
+  const {bugs}=await c.maintenance.read();
+  assert.ok(!bugs.some(bug=>bug.jobId===jobId));
+  assert.ok(!c.snapshot().todos.some(todo=>todo.sourceJobId===jobId&&['system','recovery'].includes(todo.kind)&&todo.status==='open'));
+ }finally{session.prompt=originalPrompt;}
 });

@@ -462,8 +462,24 @@ test('review instruction drafts are durable, CAS-guarded and scope-validated',as
   await assert.rejects(c.reviewInstructionSave({objectId,text:'伪装。',expectedRevision:0,workId:other.id}),error=>error.code==='REVIEW_OBJECT_UNKNOWN');
   await c.reviewSave({objectId,relPath:'reading.md',text:'人工正文 busy。\n',expectedDraftRevision:0});
   const busyVersion=await c.reviewRead({objectId});
-  await c.reviewContinue({objectId,reviewVersion:busyVersion.reviewVersion,requestKey:'cont-busy-1'});
-  await assert.rejects(c.reviewInstructionSave({objectId,text:'忙碌期写入。',expectedRevision:1}),error=>error.code==='WORK_BUSY');
+  const continued=await c.reviewContinue({objectId,reviewVersion:busyVersion.reviewVersion,requestKey:'cont-busy-1'});
+  assert.equal(c.store.find(continued.workId).status,'running');
+  const queued=c.store.state.jobs.find(job=>job.id===continued.jobId);
+  assert.equal(queued.status,'queued');
+  const {capabilities}=await c.reviewRead({objectId});
+  assert.equal(capabilities.canContinue,false);
+  assert.equal(capabilities.canAccept,false);
+  assert(capabilities.reasons.some(({code})=>code==='WORK_BUSY'));
+  const workflowBefore=structuredClone({jobs:c.store.state.jobs,messages:c.store.state.messages});
+  // An unsent Work draft keeps its own CAS while a continuation is queued.
+  const busyText='忙碌期写入。';
+  const busySave=await c.reviewInstructionSave({objectId,text:busyText,expectedRevision:1});
+  assert.equal(busySave.revision,2);
+  await assert.rejects(c.reviewInstructionSave({objectId,text:'忙碌期并发覆盖。',expectedRevision:1}),{code:'REVIEW_INSTRUCTION_STALE',currentRevision:2});
+  const busyRead=await c.reviewInstructionRead({workId:continued.workId});
+  assert.equal(busyRead.revision,2);
+  assert.equal(busyRead.text,busyText);
+  assert.deepEqual({jobs:c.store.state.jobs,messages:c.store.state.messages},workflowBefore);
 });
 
 test('fullunion: complete change set with fixed counts, exact accepted token and archived history',async t=>{

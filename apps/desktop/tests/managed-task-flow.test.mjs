@@ -18,13 +18,24 @@ test('frontdesk follow-up resumes existing Work and projects management reply wi
 test('semantic queued follow-up reaches the original initial Worker without a replacement',async t=>{const {c,turns}=await fixture(t);await submitBackground(c, 'NEW Alpha A');await submitBackground(c, 'NEW Beta B');await wait(()=>c.store.state.works.length===2&&c.store.state.works[0].status==='review'&&!c.running.size);const [alpha,beta]=c.store.state.works;await submitBackground(c, 'CONTINUE Beta updated brief');await wait(()=>c.store.state.jobs.some(j=>j.routing?.action==='continue')&&!c.running.size);assert.equal(c.store.find(beta.id).status,'queued');assert.equal(c.store.find(beta.id).brief,'B');assert.equal(c.store.state.jobs.filter(j=>j.target===beta.id).length,0);await c.endWork(alpha.id,{revision:alpha.revision,decision:'accept'});await wait(()=>c.store.find(beta.id).status==='review'&&!c.running.size);const delivered=turns.filter(j=>j.target===beta.id);assert.equal(delivered.length,1);assert(delivered[0].prompt.includes('NEW Beta B'));assert.equal(delivered[0].prompt.split('CONTINUE Beta updated brief').length-1,1);assert.equal(c.store.state.works.length,2);});
 test('explicit queued cancellation closes without starting worker or releasing another work quota',async t=>{const {c}=await fixture(t);await submitBackground(c, 'NEW Alpha A');await submitBackground(c, 'NEW Beta B');await wait(()=>c.store.state.works.length===2&&!c.running.size);const b=c.store.state.works[1];let maxQuota=0;c.on('state',s=>{maxQuota=Math.max(maxQuota,s.quotaUsed);});await c.endWork(b.id,{revision:b.revision,decision:'discard'});await wait(()=>c.store.find(b.id).status==='ended'&&!c.running.size);assert.equal(c.store.state.jobs.filter(j=>j.target===b.id).length,0);assert.equal(c.store.used(),1);;assert.equal(maxQuota,1);});
 test('ambiguous work identity becomes a frontdesk clarification todo, not a duplicate Work',async t=>{const {c}=await fixture(t);await submitBackground(c, 'CLARIFY ALL Which work?');await wait(()=>c.store.state.jobs.some(j=>j.routing?.action==='clarify')&&!c.running.size);assert.equal(c.store.state.works.length,0);assert.ok(c.store.state.todos.some(t=>t.kind==='routing'&&t.target==='frontdesk'&&t.status==='open'));});
-test('intake with no management callback retains its input and activates DEBUG without replay or user repair todo',async t=>{
- const {c,turns}=await fixture(t);c.sessions.get('orchestrator').prompt=async()=>({text:'I will arrange it',threadId:'fixture',turnId:randomUUID()});
- await submitBackground(c,'NEW Alpha A');await wait(()=>c.store.state.jobs.some(job=>job.type==='intake'&&job.status==='failed'&&job.maintenanceBugId)&&!c.running.size);
- const saved=c.store.state.jobs.find(job=>job.type==='intake');assert.equal(saved.status,'failed');assert.equal(saved.text,'NEW Alpha A');assert.equal(saved.routing,undefined);assert.equal(c.store.state.works.length,0);
- const bug=(await c.maintenance.read()).bugs.find(bug=>bug.id===saved.maintenanceBugId);assert.ok(bug);assert.equal(bug.jobId,saved.id);assert.equal(bug.phase,'runtime');assert.notEqual(bug.status,'repaired');
- assert.equal(c.store.state.jobs.filter(job=>job.type==='maintenance'&&job.context?.bugId===bug.id).length,1);assert.equal(c.store.state.jobs.filter(job=>job.type==='intake').length,1);assert.equal(turns.some(turn=>!['frontdesk','orchestrator'].includes(turn.target)),false);
- assert.equal(c.store.state.todos.some(todo=>todo.sourceJobId===saved.id&&['system','recovery'].includes(todo.kind)&&todo.status==='open'),false);
+test('intake with no management callback retains its input for reconciliation without replay or user repair todo',async t=>{
+ const {c,turns}=await fixture(t);let prompts=0;
+ c.sessions.get('orchestrator').prompt=async()=>{prompts++;return {text:'I will arrange it',threadId:'fixture',turnId:randomUUID()};};
+ const text='NEW Alpha A',{jobId}=await submitBackground(c,text);
+ await wait(()=>c.store.state.jobs.find(job=>job.id===jobId)?.status==='failed'&&!c.running.size);
+ const persisted=await readTestState(c.store),saved=persisted.jobs.find(job=>job.id===jobId);
+ assert.equal(saved.status,'failed');assert.equal(saved.errorCode,'INTAKE_ROUTE_REQUIRED');assert.equal(saved.text,text);assert.equal(saved.routing,undefined);
+ const reconciliation=c.intakeReconcile(jobId,c.store.projectInstanceId);
+ assert.equal(reconciliation.status,'needs-reconciliation');assert.equal(reconciliation.effectUnknown,true);assert.equal(reconciliation.route,null);
+ assert.equal(saved.maintenanceBugId,undefined);assert.ok(!persisted.jobs.some(job=>job.type==='maintenance'));
+ await assert.rejects(c.retryIntake(jobId,'no-callback-no-replay'),{code:'INTAKE_REPLAY_FORBIDDEN'});
+ assert.equal(prompts,1);assert.equal(persisted.works.length,0);assert.equal(persisted.jobs.filter(job=>job.type==='intake').length,1);
+ assert.equal(turns.some(turn=>!['frontdesk','orchestrator'].includes(turn.target)),false);
+ assert.ok(!persisted.todos.some(todo=>todo.sourceJobId===jobId&&['system','recovery'].includes(todo.kind)&&todo.status==='open'));
+ const response=persisted.messages.find(message=>message.jobId===jobId&&message.speaker==='system');
+ assert.match(response?.text??'',/核对原请求/);
+ assert.doesNotMatch(response.text,/重新提交输入/);
+ assert.deepEqual(await readTestState(c.store),persisted);
 });
 test('negated cancellation never ends a Work',async t=>{const {c}=await fixture(t);await submitBackground(c, 'NEW Alpha A');await wait(()=>c.store.state.works[0]?.status==='review'&&!c.running.size);await submitBackground(c, "CANCEL Alpha do not cancel Alpha");await wait(()=>c.store.state.jobs.some(j=>j.target==='orchestrator'&&j.status==='failed')&&!c.running.size);assert.equal(c.store.state.works[0].status,'review');assert.equal(c.store.used(),1);});
 test('busy worker supplement queues on the same thread and runs after its current turn',async t=>{const {c,turns}=await fixture(t);await submitBackground(c, 'NEW Alpha A');await wait(()=>c.store.state.works[0]?.status==='running'&&c.running.has(c.store.state.works[0].id));const id=c.store.state.works[0].id;await submitBackground(c, 'CONTINUE Alpha additional constraints');await wait(()=>c.store.find(id).revision===2&&c.store.find(id).status==='review'&&!c.running.size);assert.equal(c.store.state.works.length,1);assert.equal(turns.filter(j=>j.target===id).length,2);assert.equal(c.store.state.jobs.filter(j=>j.target===id&&j.status==='completed').length,2);assert.equal(c.store.state.receipts.filter(r=>r.workId===id).length,2);});
@@ -76,10 +87,44 @@ test('cold state preserves bound queued receipts without replay or new routing t
 });
 
 
+async function pauseHistoricalFixture(c){
+ // start() schedules an asynchronous pump. Disabling new kicks does not
+ // cancel that pump; drain it before creating any synthetic Work rows.
+ c.started=false;
+ await wait(()=>!c.kicking&&!c.running.size);
+}
+
 test('historical Work lookup is read-only, reference-addressable and prefers an open reused name',async t=>{
- const {c}=await fixture(t);c.started=false;const old=await c.store.submit('historical request','historical brief',{name:'Shared'}),live=await c.store.submit('live request','live brief',{name:'Current'});await c.store.mutate(()=>{c.store.find(old.id).status='ended';c.store.find(live.id).name='Shared';});c.current.set('orchestrator',{type:'intake'});const inspect=workName=>c.onTool('orchestrator',{tool:'nozeli_inspect_work',arguments:{workName}}),before=JSON.stringify(c.store.state);const current=await inspect('Shared'),historical=await inspect('@work:'+old.id);assert.equal(current.workId,live.id);assert.equal(historical.workId,old.id);assert.equal(historical.request,'historical request');assert.equal(historical.status,'ended');assert.equal(historical.readOnly,true);assert.equal(historical.continueTurn,true);assert.deepEqual(await inspect(old.id),historical);assert.equal(JSON.stringify(c.store.state),before);await c.store.mutate(()=>{c.store.find(live.id).name='Current';});assert.equal((await inspect('Shared')).workId,old.id);c.current.delete('orchestrator');
+ const {c}=await fixture(t);await pauseHistoricalFixture(c);
+ const old=await c.store.submit('historical request','historical brief',{name:'Shared'}),live=await c.store.submit('live request','live brief',{name:'Current'});
+ await c.store.mutate(()=>{c.store.find(old.id).status='ended';c.store.find(live.id).name='Shared';});
+ c.current.set('orchestrator',{type:'intake'});
+ const inspect=workName=>c.onTool('orchestrator',{tool:'nozeli_inspect_work',arguments:{workName}});
+ try{
+  const before=structuredClone(c.store.state),persisted=await readTestState(c.store);
+  const current=await inspect('Shared'),historical=await inspect('@work:'+old.id);
+  assert.equal(current.workId,live.id);assert.equal(historical.workId,old.id);assert.equal(historical.request,'historical request');assert.equal(historical.status,'ended');assert.equal(historical.readOnly,true);assert.equal(historical.continueTurn,true);
+  assert.deepEqual(await inspect(old.id),historical);
+  assert.deepEqual(c.store.state,before);assert.deepEqual(await readTestState(c.store),persisted);
+  await c.store.mutate(()=>{c.store.find(live.id).name='Current';});
+  assert.equal((await inspect('Shared')).workId,old.id);
+ }finally{c.current.delete('orchestrator');}
 });
 
 test('historical inspection exposes outcome and paged exact closure error without state mutation',async t=>{
- const {c}=await fixture(t);c.started=false;const w=await c.store.submit('historical request','brief',{name:'Blocked history'}),error='Original closure failure\n'+('preserve exact source 😀\n'.repeat(1400));await c.store.mutate(()=>{Object.assign(c.store.find(w.id),{status:'ended',outcome:{decision:'accept'},closure:{phase:'blocked',error}});});c.current.set('orchestrator',{type:'intake'});const inspect=workName=>c.onTool('orchestrator',{tool:'nozeli_inspect_work',arguments:{workName}}),before=JSON.stringify(c.store.state),detail=await inspect('@work:'+w.id);assert.deepEqual(detail.outcome,{decision:'accept'});assert.equal(detail.closure.phase,'blocked');assert.ok(detail.closure.error.startsWith(error.slice(0,800)));assert.ok(detail.closure.error.includes('[已截断'));assert.equal(detail.closure.errorTruncated,true);let ref=detail.closure.errorReadRef,full='',pages=0;while(ref){const page=await inspect(ref);assert.equal(page.readOnly,true);assert.equal(page.continueTurn,true);assert.equal(page.source,`state.json#work:${w.id}/closure.error`);full+=page.text;ref=page.nextReadRef;pages++;}assert(pages>1);assert.equal(full,error);assert.equal(JSON.stringify(c.store.state),before);await c.store.mutate(()=>{c.store.find(w.id).closure.error='Exact small failure';});const small=await inspect(detail.workRef);assert.equal(small.closure.error,'Exact small failure');assert.equal(small.closure.errorReadRef,undefined);c.current.delete('orchestrator');
+ const {c}=await fixture(t);await pauseHistoricalFixture(c);
+ const w=await c.store.submit('historical request','brief',{name:'Blocked history'}),error='Original closure failure\n'+('preserve exact source 😀\n'.repeat(1400));
+ await c.store.mutate(()=>{Object.assign(c.store.find(w.id),{status:'ended',outcome:{decision:'accept'},closure:{phase:'blocked',error}});});
+ c.current.set('orchestrator',{type:'intake'});
+ const inspect=workName=>c.onTool('orchestrator',{tool:'nozeli_inspect_work',arguments:{workName}});
+ try{
+  const before=structuredClone(c.store.state),persisted=await readTestState(c.store),detail=await inspect('@work:'+w.id);
+  assert.deepEqual(detail.outcome,{decision:'accept'});assert.equal(detail.closure.phase,'blocked');assert.ok(detail.closure.error.startsWith(error.slice(0,800)));assert.ok(detail.closure.error.includes('[已截断'));assert.equal(detail.closure.errorTruncated,true);
+  let ref=detail.closure.errorReadRef,full='',pages=0;
+  while(ref){const page=await inspect(ref);assert.equal(page.readOnly,true);assert.equal(page.continueTurn,true);assert.equal(page.source,`state.json#work:${w.id}/closure.error`);full+=page.text;ref=page.nextReadRef;pages++;}
+  assert(pages>1);assert.equal(full,error);
+  assert.deepEqual(c.store.state,before);assert.deepEqual(await readTestState(c.store),persisted);
+  await c.store.mutate(()=>{c.store.find(w.id).closure.error='Exact small failure';});
+  const small=await inspect(detail.workRef);assert.equal(small.closure.error,'Exact small failure');assert.equal(small.closure.errorReadRef,undefined);
+ }finally{c.current.delete('orchestrator');}
 });

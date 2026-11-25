@@ -4,6 +4,7 @@
 
 - Integrate the current desktop changes with Windows x64, Linux x64 and macOS arm64. Final native qualification is required for the exact release commit.
 - The owner authorized the Beta.9 prerelease exception after disclosure of six pending redistribution obligations. This is not an audit signoff or a stable release.
+- 冷读历史报告遇到控制器接管时保留原回执身份；路由结果缺失时提示核对原请求，不提示重发。未知提交保护期间拒绝的新草稿写入不再阻塞旧工作区关闭，已持久化草稿仍可冷恢复。
 
 - Windows x64 首发承诺冻结：支持离线阅读/批注/编辑保存、可信本机项目的 Managed Work（真实 Worker 报告、Git 采纳/合并、冷重开不重放）与原生隔离安装的手动 `upgrade`/`rollback`。执行隔离（bubblewrap 等价）、系统终端附着、Shell 原位回收与永久重置继续显式拒绝，Windows Job 只托管进程寿命，不作为沙箱宣传。打包工具支持 `--manual [tag]` 产出仅手动更新的候选（`automaticUpdater:'unsupported'`），发布 tag 与版本、源码提交、解压后 manifest 逐项核对；`WINDOWS-SMOKE.json` 记录 manifest SHA-256。
 

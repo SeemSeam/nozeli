@@ -233,13 +233,21 @@ test('a worker failure reply received during close settles with its known operat
 test('a worker reports an unknown storage outcome by fencing all accepted requests until actual exit',async t=>{
  const {storage,workers,file}=controlled(t),first=storage.request(file,'put',{operationId:'committed-or-unknown'}),second=storage.request(file,'get',{operationId:'queued'}),worker=workers[0];
  const outcomes=Promise.allSettled([first,second]);
- worker.emit('message',{id:worker.messages[0].id,error:{code:'STORAGE_RESULT_UNKNOWN',message:'postcommit integrity lost'}});
+ const id=worker.messages[0].id,completedAt=storage.channels.get(file).pending.get(id).deadline-1n;
+ worker.respond({id,completedAt,error:{code:'STORAGE_RESULT_UNKNOWN',message:'postcommit integrity lost'}});
  await microtasks();assert.equal(worker.terminations,1);assert.equal(storage.channels.has(file),true);
- for(const result of await outcomes){assert.equal(result.status,'rejected');assert.equal(result.reason.code,'STORAGE_RESULT_UNKNOWN');}
+ for(const [index,result] of (await outcomes).entries()){
+  const operationId=['committed-or-unknown','queued'][index];
+  assert.equal(result.status,'rejected');assert.equal(result.reason.code,'STORAGE_RESULT_UNKNOWN');
+  assert.equal(result.reason.operationId,operationId);assert.deepEqual(result.reason.commitUnknown,{file,operationId});
+  assert.equal(result.reason.cause.message,'postcommit integrity lost');
+ }
  assert.deepEqual(storage.quarantined.get(file).operationIds,['committed-or-unknown','queued']);
  await assert.rejects(storage.request(file,'put',{operationId:'no-replay'}),{code:'STORAGE_RESULT_UNKNOWN'});
  await assert.rejects(storage.reconcile(file,'committed-or-unknown'),/尚未退出/);
- worker.reply(0,{revision:1});assert.equal(workers.length,1);worker.finishTermination();await storage.close();
+ worker.reply(0,{revision:1});worker.reply(1,'late read');
+ assert.equal(storage.channels.has(file),true);assert.equal(workers.length,1);assert.equal(worker.messages.length,2);
+ worker.finishTermination();await storage.close();assert.equal(storage.channels.has(file),false);assert.equal(storage.quarantined.has(file),true);
 });
 
 for(const closeFailure of ['outcome','rejection'])test(`unconfirmed staging close (${closeFailure}) prevents initialization cleanup`,async t=>{
