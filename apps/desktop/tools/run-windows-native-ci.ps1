@@ -23,8 +23,8 @@ if ($AsTestUser) {
 
 if (-not $env:RUNNER_TEMP) { throw 'This launcher requires a disposable Windows CI runner.' }
 $app = Split-Path -Parent $PSScriptRoot
-$NodePath = (Get-Command node.exe -CommandType Application).Source
-$GitPath = (Get-Command git.exe -CommandType Application).Source
+$NodePath = (Get-Command node.exe -CommandType Application | Select-Object -First 1).Source
+$GitPath = (Get-Command git.exe -CommandType Application | Select-Object -First 1).Source
 # Cache the locked Electron binary before granting the test account read/execute access.
 & $NodePath -e 'require("electron")'
 if ($LASTEXITCODE -ne 0) { throw "Electron setup failed (exit $LASTEXITCODE)." }
