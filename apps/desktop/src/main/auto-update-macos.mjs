@@ -209,7 +209,7 @@ export async function prepareMacHelper(installation, token) {
   const directory = path.join(installation.root, '.nozeli-helper-' + token);
   await fs.mkdir(directory, {mode: 0o700});
   const application = macApplication(installation.release);
-  const files = ['src/main/auto-update-helper.mjs', 'src/main/auto-update-files.mjs', 'src/main/auto-update-macos.mjs', 'src/platform/shared/persistence.mjs', 'src/platform/linux/persistence.mjs', 'src/platform/darwin/persistence.mjs', 'src/platform/darwin/process-ownership.mjs', 'src/platform/darwin/native/fullsync.node', 'runtime/native/nozeli-procinfo', 'runtime/native/nozeli-update-swap'];
+  const files = ['src/main/auto-update-helper.mjs', 'src/main/auto-update-files.mjs', 'src/main/auto-update-platform.mjs', 'src/main/auto-update-macos.mjs', 'src/platform/shared/persistence.mjs', 'src/platform/linux/persistence.mjs', 'src/platform/darwin/persistence.mjs', 'src/platform/darwin/process-ownership.mjs', 'src/platform/darwin/native/fullsync.node', 'runtime/native/nozeli-procinfo', 'runtime/native/nozeli-update-swap'];
   try {
     for (const file of files) {
       const destination = path.join(directory, file);
