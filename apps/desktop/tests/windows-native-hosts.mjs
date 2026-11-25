@@ -47,8 +47,8 @@ for (const host of hosts) {
   delete env.NODE_OPTIONS;
   delete env.ELECTRON_RUN_AS_NODE;
   if (host.name === 'electron') env.ELECTRON_RUN_AS_NODE = '1';
-  const invoke = args => spawnSync(host.executable, args, {
-    cwd:appRoot, env, encoding:'utf8', timeout:240000, windowsHide:true, maxBuffer:8 * 1024 * 1024,
+  const invoke = (args, timeout = 30000) => spawnSync(host.executable, args, {
+    cwd:appRoot, env, encoding:'utf8', timeout, windowsHide:true, maxBuffer:8 * 1024 * 1024,
   });
   try {
     const facts = invoke(['-p', probeCode]);
@@ -63,7 +63,8 @@ for (const host of hosts) {
     assert.equal(run.runtime[host.name], host.version, 'Unexpected host version');
     assert.equal(digest(), receipt.binarySha256, 'Native binary changed before testing');
 
-    const child = invoke(['--test', '--test-reporter=tap', ...testFiles]);
+    // Hosted Windows can exceed four minutes across the complete native suite.
+    const child = invoke(['--test', '--test-reporter=tap', ...testFiles], 480000);
     run.log = path.join(evidenceRoot, `native-filesystem-${host.name}.tap`);
     run.stderr = path.join(evidenceRoot, `native-filesystem-${host.name}.err`);
     fs.writeFileSync(run.log, child.stdout || '');

@@ -23,7 +23,7 @@ async function fixture(t,{existing=true,projectLength}={}){
  const runtime=path.join(root,'runtime');await ensure(root,runtime);const work={id:'synthetic-work',revision:1,result:{objectId:'synthetic-report'}},store={root:runtime,content:projectRoot,storage,projectId:project.id,state:{works:[work]}};
  const options={filesystem,experimentalWindowsRoot:root,publicDirectory:directory=>directory===projectRoot?projectRoot:false};
  const workspace=new ExecutionWorkspace(store,options);
- return {root,projectRoot,profile,project,storage,work,store,workspace,
+ return {root,projectRoot,profile,project,storage,work,store,workspace,options,
   cold(){return new ExecutionWorkspace(store,options);},
   async candidate(){const m=await workspace.prepare(work.id);await fs.writeFile(path.join(m.directory,'正文.md'),'candidate');await fs.unlink(path.join(m.directory,'delete.txt'));await fs.writeFile(path.join(m.directory,'新增.txt'),'new material');const receiptId='report-receipt';await workspace.publish(work,{id:'synthetic-job'},()=>true,async(_m,candidate)=>{await storage.putProject(project.id,'managed_receipts',receiptId,{workId:work.id,revision:work.revision,snapshot:{candidate}});return {id:'synthetic-change-set'};},{receiptId});return workspace.readManifest(work.id);},
  };
@@ -186,7 +186,7 @@ test('broad manifest ACL drift is refused without repairing or rewriting executi
 
 test('actual index parent closure after CAS publication holds recovery and all locks until explicit cold retry',native,async t=>{
  const f=await fixture(t),m=await f.candidate();let failed=false;
- f.workspace.io=createExperimentalExecutionWorkspaceIO(f.root,{directorySync:parent=>{if(!failed&&parent.path.endsWith('\\.git\\')){failed=true;parent.close();}parent.syncDirectory();}});
+ f.workspace.io=createExperimentalExecutionWorkspaceIO(f.root,{publicDirectory:f.options.publicDirectory,directorySync:parent=>{if(!failed&&parent.path.endsWith('\\.git\\')){failed=true;parent.close();}parent.syncDirectory();}});
  await assert.rejects(f.workspace.finish(f.work,{decision:'accept',reportPersisted:true,mergeAuthorization:authorization(f,m)}),error=>error.code==='FS_HANDLE_CLOSED'&&error.committed===true&&error.executionRecovery.status==='recovery-held');
  const held=await f.cold().readManifest(f.work.id);assert.equal(held.finishIntent.status,'recovery-held');assert.equal(Object.keys(held.finishIntent.locks).length,3);assert.equal(await str(f.projectRoot,['rev-parse','main']),m.targetHead);assert.equal(await f.workspace.indexDigest(m.index),held.finishIntent.afterIndexDigest);
  const receipt=await f.cold().finish(f.work,{decision:'accept',reportPersisted:true,mergeAuthorization:authorization(f,m)});assert.equal(receipt.status,'merged');
