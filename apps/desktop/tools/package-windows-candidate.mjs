@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {createRequire} from 'node:module';
 import {pathToFileURL} from 'node:url';
-import {dependencyIncluded} from './local-release.mjs';
+import {applicationSourceIncluded,dependencyIncluded} from './local-release.mjs';
 import {packagePiRuntime} from './package-pi-runtime.mjs';
 import {absolute,openPayload,sha256,json,reject,readRegular} from './windows-install-core.mjs';
 
@@ -77,7 +77,7 @@ export async function packageWindowsCandidate({source,candidate,input,nativeProv
  await fs.cp(electron,candidate,{recursive:true,errorOnExist:false,force:false});
  await fs.rename(path.join(candidate,'electron.exe'),path.join(candidate,'Nozeli.exe'));
  const application=path.join(candidate,'resources/app');await fs.mkdir(application,{recursive:true});
- for(const name of ['src','dist','tests','assets','runtime','native','tools','package.json','package-lock.json','SOURCES.md','README.md'])await fs.cp(path.join(source,name),path.join(application,name),{recursive:true,filter:file=>{const parts=path.relative(source,file).split(path.sep);return !parts.some(p=>['.nozeli','.ccb','.git','.test-output'].includes(p))&&!(parts[0]==='runtime'&&['omp','node'].includes(parts[1]));}});
+ for(const name of ['src','dist','tests','assets','runtime','native','tools','package.json','package-lock.json','SOURCES.md','README.md'])await fs.cp(path.join(source,name),path.join(application,name),{recursive:true,filter:file=>{const parts=path.relative(source,file).split(path.sep);return applicationSourceIncluded(source,file)&&!parts.some(p=>['.git','.test-output'].includes(p))&&!(parts[0]==='runtime'&&parts[1]==='node');}});
  const modules=path.join(source,'node_modules');await fs.cp(modules,path.join(application,'node_modules'),{recursive:true,filter:file=>windowsDependencyIncluded(lock,path.relative(modules,file))});
  await packagePiRuntime({source,application,includeDependency:windowsDependencyIncluded});
  await fs.copyFile(path.resolve(source,'../../integrations/pi/build.mjs'),path.join(application,'integrations/pi/build.mjs'));

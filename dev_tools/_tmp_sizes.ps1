@@ -1,1 +1,0 @@
-Get-ChildItem 'N:\restored-20261112\nozeli_windows\.cache\temp' -Directory | ForEach-Object { $s=(Get-ChildItem $_.FullName -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum; [pscustomobject]@{GB=[math]::Round($s/1GB,2);Name=$_.Name} } | Sort-Object GB -Descending | Select-Object -First 20
