@@ -57,14 +57,15 @@ try{
  const ime=await doc.createCDPSession();await doc.focus(tag+' .tag-editor');await ime.send('Input.imeSetComposition',{text:'输入中',selectionStart:3,selectionEnd:3});let b=await bounds(doc,card);await moveWindow(doc,card,-35,25);let a=await bounds(doc,card);check('composition commits before first title drag',near(a.x,b.x-35)&&near(a.y,b.y+25),{b,a});
  await doc.focus(tag+' .tag-editor');await ime.send('Input.imeSetComposition',{text:'继续输入',selectionStart:4,selectionEnd:4});b=await bounds(doc,card);await gripResize(doc,card,35,25);a=await bounds(doc,card);check('composition commits before first resize',near(a.width,b.width+35)&&near(a.height,b.height+25),{b,a});const draft=await doc.$eval(tag+' .tag-editor',n=>n.value);check('unsent draft survives geometry operations',draft.includes('Unsent file discussion')&&draft.includes('输入'),{draft});
  const beforeRelease=await bounds(doc,card),releasePoint=await startGesture('move');
- await doc.mouse.move(releasePoint.x+25,releasePoint.y+20,{steps:5});await captureLoss();
+ // Move vertically: a narrow native pane can clamp the card's right edge.
+ await doc.mouse.move(releasePoint.x,releasePoint.y-20,{steps:5});await captureLoss();
  await doc.evaluate(()=>{const p=window.__lastLabelPointer;document.dispatchEvent(new PointerEvent('pointermove',{pointerId:p.id,pointerType:'mouse',buttons:0,bubbles:true}));});
  await doc.mouse.up();await raf(doc);const afterRelease=await bounds(doc,card);
- check('hover sample after capture loss does not cancel a real release',near(afterRelease.x,beforeRelease.x+25)&&near(afterRelease.y,beforeRelease.y+20),{beforeRelease,afterRelease});
- const dropped=await startGesture('move');await doc.mouse.move(dropped.x-25,dropped.y-20,{steps:5});await captureLoss();
+ check('hover sample after capture loss does not cancel a real release',near(afterRelease.x,beforeRelease.x)&&near(afterRelease.y,beforeRelease.y-20),{beforeRelease,afterRelease});
+ const dropped=await startGesture('move');await doc.mouse.move(dropped.x,dropped.y+20,{steps:5});await captureLoss();
  await doc.evaluate(()=>window.addEventListener('pointerup',event=>event.stopImmediatePropagation(),{capture:true,once:true}));
  await doc.mouse.up();await raf(doc);
- const beforeNextPress=await bounds(doc,card);assert(near(beforeNextPress.x,afterRelease.x-25)&&near(beforeNextPress.y,afterRelease.y-20),'dropped release leaves the moved preview uncommitted');
+ const beforeNextPress=await bounds(doc,card);assert(near(beforeNextPress.x,afterRelease.x)&&near(beforeNextPress.y,afterRelease.y+20),'dropped release leaves the moved preview uncommitted');
  await startGesture('move');await doc.mouse.up();await raf(doc);const recovered=await bounds(doc,card);
  check('next press discards movement after a genuinely dropped release',near(recovered.x,afterRelease.x)&&near(recovered.y,afterRelease.y),{afterRelease,recovered});
  await doc.focus(tag+' [data-local-window-resize]');await doc.keyboard.press('Home');await doc.$eval(card,n=>n.localWindow.flush());const reset=await state();check('Home explicitly restores automatic placement and size',reset.placement.mode==='auto'&&reset.size===null,{reset});const kb=await bounds(doc,card);await doc.keyboard.press('ArrowRight');await raf(doc);await doc.$eval(card,n=>n.localWindow.flush());const ka=await bounds(doc,card),ks=await state();check('keyboard resize also pins initial location',near(ka.width,kb.width+10)&&near(ka.x,kb.x)&&near(ka.y,kb.y)&&ks.placement.mode==='manual',{kb,ka,ks});
