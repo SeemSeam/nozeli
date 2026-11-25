@@ -18,6 +18,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import {realpathSync} from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import {randomUUID} from 'node:crypto';
@@ -57,7 +58,7 @@ async function fixture(t){
   const scratch=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-launcher-behavior-'));
   t.after(()=>fs.rm(scratch,{recursive:true,force:true}));
   // Hosted TEMP can use an 8.3 alias, but PowerShell passes the long path as $PSScriptRoot.
-  const directory=await fs.realpath(scratch);
+  const directory=realpathSync.native(scratch);
   return {directory,root:path.join(directory,'安装 空间 启动'),candidate:name=>path.join(directory,name)};
 }
 async function candidate(directory,version='synthetic-1',{productExit=false}={}){
